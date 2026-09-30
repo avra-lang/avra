@@ -1,0 +1,37 @@
+// The formats, each read into one Value: JSON's kinds, TOML's
+// sections nested in their parents, and text that is neither.
+use @std.validate.{from_json, from_toml}
+
+fn shown_json(text: string) -> string {
+    match from_json(text) { .Ok(v) -> v.shown(), .Err(e) -> "refused: " + e.all[0].message }
+}
+
+fn shown_toml(text: string) -> string {
+    match from_toml(text) {
+        .Ok(v) -> v.shown(),
+        .Err(e) -> "refused ${e.count()}: " + e.all[0].rule,
+    }
+}
+
+spec "std/validate formats" {
+    given "JSON" {
+        then "every kind, order kept" {
+            shown_json("{\"b\": [1, true, null], \"a\": {\"c\": \"x\"}}") == "{\"b\": [1, true, null], \"a\": {\"c\": \"x\"}}"
+        }
+        then "the empty object" { shown_json("{}") == "{}" }
+        then "text that is not JSON is one issue at the root" {
+            shown_json("{") == "refused: is not json: unexpected the end of the text, wanting a field's name in quotes at byte 1"
+        }
+    }
+    given "TOML" {
+        then "the empty document is the empty map" { shown_toml("") == "{}" }
+        then "top-level keys, then sections nested" {
+            shown_toml(
+                "name = \"x\"\n[server]\nport = 80\n[server.tls]\non = true\n[db]\nurl = \"u\"\n",
+            ) == "{\"name\": \"x\", \"server\": {\"port\": 80, \"tls\": {\"on\": true}}, \"db\": {\"url\": \"u\"}}"
+        }
+        then "a section named only by its child still nests" { shown_toml("[a.b]\nc = 1\n") == "{\"a\": {\"b\": {\"c\": 1}}}" }
+        then "string arrays and inline tables" { shown_toml("x = [\"a\", \"b\"]\ny = { k = 1 }\n") == "{\"x\": [\"a\", \"b\"], \"y\": {\"k\": 1}}" }
+        then "every refused line is an issue" { shown_toml("a = \nb = @\n") == "refused 2: toml" }
+    }
+}

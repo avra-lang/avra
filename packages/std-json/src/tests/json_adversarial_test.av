@@ -55,6 +55,21 @@ spec "std/json — adversarial" {
     given "nesting" {
         then "sixty levels deep reads and writes back" { a_round(deep(60)) == deep(60) }
         then "an object in an array in an object" { a_round("{\"a\":[{\"b\":[]}]}") == "{\"a\":[{\"b\":[]}]}" }
+        then "exactly the bound reads" { a_round(deep(128)) == deep(128) }
+        then "one past the bound is refused at its opener" { a_round(deep(129)) == "the value at byte 128 nests deeper than 128 levels" }
+        then "twenty thousand deep is one refusal, never a crash" {
+            a_round(deep(20000)) == "the value at byte 128 nests deeper than 128 levels"
+        }
+        then "the bound is the caller's" {
+            match parse("[[1]]", 1) { .Ok(_) -> "read", .Err(e) -> e.describe().kind } == "json.too_deep" &&
+                parse("[[1]]", 2) is .Ok
+        }
+        then "objects count as arrays do" {
+            match parse("{\"a\":{\"b\":1}}", 1) {
+                .Ok(_) -> "read",
+                .Err(e) -> e.describe().message,
+            } == "the value at byte 5 nests deeper than 1 levels"
+        }
     }
     given "escapes at their edges" {
         then "a backslash at the very end" { a_round("\"\\") == "the escape at byte 1 names nothing" }

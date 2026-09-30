@@ -4,8 +4,10 @@
 //! never a map, so what is written reads back the same. Numbers are
 //! integers: the language has no float yet, so a fraction or an
 //! exponent is refused by name rather than rounded. Strings decode
-//! every escape, `\uXXXX` and surrogate pairs included. Every
-//! refusal is a `JsonError` that says where.
+//! every escape, `\uXXXX` and surrogate pairs included. Nesting is
+//! bounded — 128 levels unless the caller says — and refused at the
+//! opener past it, before anything below is read. Every refusal is a
+//! `JsonError` that says where.
 use @std.text.{builder, repeat, from_codepoint, parse_int}
 use @std.errors.{Error, ErrorInfo, info}
 
@@ -170,6 +172,7 @@ export enum JsonError {
     Fraction(at: int)
     Trailing(at: int)
     Overflow(at: int)
+    TooDeep(at: int, most: int)
 }
 
 impl Error for JsonError {
@@ -184,6 +187,7 @@ impl Error for JsonError {
             ),
             .Trailing(at) -> info("json.trailing", "text goes on past the value, at byte ${at}"),
             .Overflow(at) -> info("json.overflow", "the number at byte ${at} does not fit an int"),
+            .TooDeep(at, most) -> info("json.too_deep", "the value at byte ${at} nests deeper than ${most} levels"),
         }
     }
 }
@@ -197,10 +201,11 @@ enum Scan {
     Refused(e: JsonError)
 }
 
-/// The text as one JSON value, whitespace around it allowed.
-export fn parse(text: string) -> Result<Json, JsonError> {
+/// The text as one JSON value, whitespace around it allowed, nested
+/// no deeper than `depth` arrays and objects.
+export fn parse(text: string, depth: int = 128) -> Result<Json, JsonError> {
     let n = text.length
-    match scan_value(text, n, skip_space(text, n, 0)) {
+    match scan_value(text, n, skip_space(text, n, 0), Room { left: depth, most: depth }) {
         .Refused(e) -> { fail e },
         .Value(j, next) -> {
             let end = skip_space(text, n, next)
@@ -210,12 +215,20 @@ export fn parse(text: string) -> Result<Json, JsonError> {
     }
 }
 
-fn scan_value(text: string, n: int, i: int) -> Scan {
+/// How many more levels an array or object may open, of the most.
+type Room = { left: int, most: int }
+
+impl Room {
+    fn inner() -> Room { self with { left: self.left - 1 } }
+}
+
+fn scan_value(text: string, n: int, i: int, room: Room) -> Scan {
     if i >= n { return Scan.Refused(JsonError.Unexpected(i, "the end of the text")) }
     let c = text.char_code(i)
     when {
-        c == 123 -> scan_object(text, n, i)
-        c == 91 -> scan_array(text, n, i)
+        (c == 123 || c == 91) && room.left <= 0 -> Scan.Refused(JsonError.TooDeep(i, room.most))
+        c == 123 -> scan_object(text, n, i, room.inner())
+        c == 91 -> scan_array(text, n, i, room.inner())
         c == 34 -> scan_string(text, n, i)
         c == 45 || is_digit(c) -> scan_number(text, n, i)
         is_letter(c) -> scan_word(text, n, i)
@@ -224,7 +237,7 @@ fn scan_value(text: string, n: int, i: int) -> Scan {
 }
 
 /// `{` fields `}` — each a string key, `:`, a value; `,` between.
-fn scan_object(text: string, n: int, i: int) -> Scan {
+fn scan_object(text: string, n: int, i: int, room: Room) -> Scan {
     mut fields: List<Field> = []
     mut j = skip_space(text, n, i + 1)
     if at(text, n, j, 125) { return Scan.Value(Json.Obj([]), j + 1) }
@@ -238,7 +251,7 @@ fn scan_object(text: string, n: int, i: int) -> Scan {
             },
         }
         if !at(text, n, j, 58) { return Scan.Refused(unexpected(text, n, j, "`:` after the field's name")) }
-        match scan_value(text, n, skip_space(text, n, j + 1)) {
+        match scan_value(text, n, skip_space(text, n, j + 1), room) {
             .Refused(e) -> { return Scan.Refused(e) },
             .Value(v, next) -> {
                 fields.push(field(key, v))
@@ -253,12 +266,12 @@ fn scan_object(text: string, n: int, i: int) -> Scan {
 }
 
 /// `[` values `]` — `,` between.
-fn scan_array(text: string, n: int, i: int) -> Scan {
+fn scan_array(text: string, n: int, i: int, room: Room) -> Scan {
     mut items: List<Json> = []
     mut j = skip_space(text, n, i + 1)
     if at(text, n, j, 93) { return Scan.Value(Json.Arr([]), j + 1) }
     while true {
-        match scan_value(text, n, j) {
+        match scan_value(text, n, j, room) {
             .Refused(e) -> { return Scan.Refused(e) },
             .Value(v, next) -> {
                 items.push(v)

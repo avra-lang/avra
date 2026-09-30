@@ -473,3 +473,32 @@ The basics, and nothing past them until the owner has seen it run:
 5. Annotations on record fields and named types, type-checked against
    the field, and a derive that makes §11's `Signup` work as written.
 6. `check(t)` for cross-field rules, without a context.
+
+## 14. What the first build chose
+
+Recorded as each decision landed on `lane/validate`.
+
+- **Rules are plain fns answering `Result`** (the owner's shape). The
+  framework reads a `string` or an `Issue` refusal through one trait,
+  `Refusal`, so `ruled(d, slot, "range", range(v, 13, 130))` takes
+  either. `Rule<T>` as a fn-type alias was built first and retired;
+  it needed no F2031 either way.
+- **Within one field, rules run in order and stop at the first
+  refusal**, because each reads what the last one answered. Across
+  fields, every issue is kept.
+- **`length` is `length<T: Counted>`.** `string` is `Counted` today.
+  A list is not: `impl Counted for List<T>` is F2031, so `@length` on
+  a list waits on it (ticketed). A field of any type without a length
+  is refused where the rule is used: "`int` does not implement
+  `Counted`".
+- **The derived entry point is `Signup.decode(v)`.** `decode<Signup>(v)`
+  needs a static trait fn reached through a type parameter, which the
+  language lacks (sugar backlog).
+- **Bounds are the parser's, not only the decoder's.** `@std/json`
+  now refuses nesting past 128 levels at the opener; before, 200,000
+  nested `[` crashed a native program. The decoder bounds depth and
+  list length again for every other format.
+- **A field written twice is refused**, in both coercion modes: a
+  reader that took the other copy would see another value.
+- **A secret stays secret all the way down**: a secret list's
+  elements and a secret object's fields never show what they received.

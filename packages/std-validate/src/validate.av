@@ -1,0 +1,204 @@
+//! @std.validate — one way to accept data.
+//!
+//! A RULE is a plain fn: its first parameter is the value, its answer
+//! `Result<T, string>` — or `Result<T, Issue>` when it names a fix. It
+//! fails with `fail "message"`, composes with `?`, and answers the
+//! value, so a rule may normalise and the field receives what it
+//! answered. Its name is the fn's name; an annotation's arguments are
+//! the parameters after the value (`@range(13, 130)` is
+//! `range(v, 13, 130)`), so a rule on the wrong type is a type error:
+//!
+//!     export fn divisible_by(v: int, n: int) -> Result<int, string> {
+//!         if v % n != 0 { fail "must be a multiple of ${n}" }
+//!         v
+//!     }
+//!
+//! The framework adds the path, the rule's name and what was received,
+//! and keeps every issue across every field.
+//!
+//! ```
+//! validate.av this file — the rules
+//! value.av   the Value every format reads into
+//! formats.av JSON and TOML, read into a Value
+//! issue.av   Path, Issue and Issues — where, what, and the report
+//! decode.av  Decoding: a Value read into a typed value, every rule run
+//! ```
+use @std.text.{codepoint_count}
+use issue.{Issue, root}
+use value.{Value, quoted}
+
+/// What a rule fails with: its words, or a whole issue. The framework
+/// reads both the same way.
+export trait Refusal {
+    fn issue() -> Issue
+}
+
+impl Refusal for string {
+    fn issue() -> Issue { Issue { path: root(), rule: "", message: self } }
+}
+
+impl Refusal for Issue {
+    fn issue() -> Issue { self }
+}
+
+/// `lo` to `hi`, both included.
+export fn range(v: int, lo: int, hi: int, message: string? = null) -> Result<int, string> {
+    if v < lo || v > hi { fail message ?? between(lo, hi) }
+    v
+}
+
+/// What has a length: text, counted in code points as a person counts
+/// them, never bytes.
+export trait Counted {
+    fn count() -> int
+    /// What one of it is called: "characters", "items".
+    fn unit() -> string
+}
+
+impl Counted for string {
+    fn count() -> int { codepoint_count(self) }
+    fn unit() -> string { "characters" }
+}
+
+/// Between `min` and `max` long. Anything without a length refuses
+/// `@length` where it is written.
+export fn length<T: Counted>(v: T, min: int = 0, max: int? = null, message: string? = null) -> Result<
+    T,
+    string,
+> {
+    let n = v.count()
+    if n < min || n > max ?? n { fail message ?? measured(min, max, v.unit()) }
+    v
+}
+
+/// An email address as a mailbox reads it: a local part, one `@`,
+/// and a domain of two or more dotted labels.
+export fn email(v: string, message: string? = null) -> Result<string, string> {
+    if !is_email(v) { fail message ?? mailbox() }
+    v
+}
+
+/// A format, tested by a fn — a `grammar` declaration's `parse`, a
+/// character class, anything that answers a bool: `pattern(v, slug)`,
+/// or `pattern(v, slug, "slug")` to name it in the refusal.
+export fn pattern(
+    v: string,
+    test: fn(string) -> bool,
+    name: string? = null,
+    message: string? = null,
+) -> Result<string, string> {
+    if !test(v) { fail message ?? shaped(name) }
+    v
+}
+
+/// One of the options; a near miss names the option it meant.
+export fn one_of(v: string, options: List<string>, message: string? = null) -> Result<string, Issue> {
+    if !options.contains(v) { fail Issue {
+            path: root(),
+            rule: "",
+            message: message ?? choices(options),
+            fix: suggested(v, options),
+        } }
+    v
+}
+
+/// The same text as a sibling field — a confirmation; `field` names it
+/// in the refusal. Nothing to compare when the sibling was refused.
+export fn matches(v: string, other: string?, field: string? = null, message: string? = null) -> Result<
+    string,
+    string,
+> {
+    if other != null && other! != v { fail message ?? same_as(field) }
+    v
+}
+
+/// The option within a few edits of `v`, when one is that close —
+/// what a "did you mean" names.
+export fn nearest(v: string, options: List<string>) -> string? {
+    options.find(near(v, it))
+}
+
+// ── the tests the rules share ───────────────────────────────────
+
+fn is_email(v: string) -> bool {
+    if v.length > 254 { return false }
+    match v { "{local}@{domain}" -> is_local(local) && is_domain(domain), _ -> false }
+}
+
+fn is_local(s: string) -> bool {
+    !s.is_empty() && s.length <= 64 && [s.char_code(i) for i in 0..s.length].all(local_char(it))
+}
+
+fn local_char(c: int) -> bool { c > 32 && c < 127 && c != 64 && c != 34 && c != 44 && c != 59 }
+
+fn is_domain(s: string) -> bool {
+    let labels = s.split(".")
+    labels.length >= 2 && !s.ends_with(".") && labels.all(is_label(it))
+}
+
+fn is_label(s: string) -> bool {
+    !s.is_empty() &&
+        s.length <= 63 &&
+        !s.starts_with("-") &&
+        !s.ends_with("-") &&
+        [s.char_code(i) for i in 0..s.length].all(label_char(it))
+}
+
+fn label_char(c: int) -> bool { is_alnum(c) || c == 45 || c >= 128 }
+
+fn is_alnum(c: int) -> bool { c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 }
+
+fn suggested(v: string, options: List<string>) -> Value? {
+    let best? = nearest(v, options) else { return null }
+    Value.Text(best)
+}
+
+/// Within a few edits; lengths further apart than that are never
+/// measured, so a huge value costs nothing here.
+fn near(v: string, option: string) -> bool {
+    let most = if v.length < 6 { 1 } else { 2 }
+    let apart = v.length - option.length
+    apart <= most && apart >= 0 - most && edits(v, option) <= most
+}
+
+/// Levenshtein distance, one row at a time.
+fn edits(a: string, b: string) -> int {
+    mut prev = [j for j in 0..b.length + 1]
+    for i in 0..a.length {
+        mut row = [i + 1]
+        for j in 0..b.length {
+            let cost = if a.char_code(i) == b.char_code(j) { 0 } else { 1 }
+            row.push(least(least(prev[j + 1] + 1, row[j] + 1), prev[j] + cost))
+        }
+        prev = row
+    }
+    prev[b.length]
+}
+
+fn least(a: int, b: int) -> int { if a < b { a } else { b } }
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn between(lo: int, hi: int) -> string { "must be between ${lo} and ${hi}" }
+fn mailbox() -> string { "must be an email address" }
+
+fn shaped(name: string?) -> string {
+    let named? = name else { return "is not in the expected format" }
+    "must be a valid ${named}"
+}
+
+fn same_as(field: string?) -> string {
+    let named? = field else { return "does not match" }
+    "must match ${named}"
+}
+
+fn choices(options: List<string>) -> string {
+    "must be one of ${[quoted(o) for o in options].join(", ")}"
+}
+
+fn measured(min: int, max: int?, unit: string) -> string {
+    let most? = max else { return "must be at least ${min} ${unit}" }
+    if min == 0 { return "must be at most ${most} ${unit}" }
+    if min == most { return "must be exactly ${most} ${unit}" }
+    "must be between ${min} and ${most} ${unit}"
+}
