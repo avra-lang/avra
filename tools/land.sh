@@ -706,8 +706,9 @@ commit_chore_if_moved() {
 # store rather than re-derived. A body-only edit to ONE leaf file
 # (its text digest moves, its interface does not) should still leave
 # every OTHER file held, so a second check's `held` count is the
-# signal: a floor it must clear, ratcheted in tools/land.baseline
-# under `warm_held_floor`.
+# signal: at most AVRA_LAND_WARM_SLACK (default 5) of the M files may
+# be re-derived. The floor is relative to M, so a package that sheds
+# files never falls under a count it once cleared.
 #
 # compiler/format/receipt.av backs `avra fmt --write`'s own lossless
 # gate — nothing in analysis, typing or lowering reads it — so
@@ -760,20 +761,17 @@ warm_gate_step() {
     m="${nm#*/}"
 
     cd "$land_wt"
-    floor_file="$(stage_baseline "$land_wt" land.baseline)"
-    old_floor="$(baseline_get "$floor_file" warm_held_floor)"
-    # `st=$?` AFTER the assignment reads 0 unconditionally (the
-    # assignment itself, once its substitution has run, always
-    # "succeeds" as a shell command) — worse under `set -eu`, a
-    # substitution answering non-zero aborts the whole script right
-    # here, before `st=$?` is ever reached. `|| st=$?` on the
-    # assignment itself is the only safe capture (heavy()'s own note).
-    st=0
-    out="$(ratchet_check "$floor_file" warm_held_floor "$n" up "${AVRA_LAND_WARM_OK:-}")" || st=$?
-    word="PASS"
-    [ "$st" -ne 0 ] && word="FAIL"
-    echo "land: warm-reuse: held $n/$m (floor ${old_floor:-none}) — $word ($out)"
-    return "$st"
+    floor=$((m - ${AVRA_LAND_WARM_SLACK:-5}))
+    if [ "$n" -ge "$floor" ]; then
+        echo "land: warm-reuse: held $n/$m (floor $floor) — PASS"
+        return 0
+    fi
+    if [ -n "${AVRA_LAND_WARM_OK:-}" ]; then
+        echo "land: warm-reuse: held $n/$m (floor $floor) — PASS (signed: $AVRA_LAND_WARM_OK)"
+        return 0
+    fi
+    echo "land: warm-reuse: held $n/$m (floor $floor) — FAIL"
+    return 1
 }
 
 # ── THE LINUX GATE (behind AVRA_LAND_LINUX, default 1) ────────────────

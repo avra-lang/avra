@@ -1723,7 +1723,7 @@ test_warm_gate_prints_held_pass() {
     mkdir -p "$scr"
     out="$(AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call warm_gate_step "$d" 2>&1)"
     st=$?
-    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -qE 'land: warm-reuse: held 41/42 \(floor 5\) — PASS'; then
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -qE 'land: warm-reuse: held 41/42 \(floor 37\) — PASS'; then
         ok "warm-gate: prints held N/M, the floor, and PASS"
     else
         bad "warm-gate: expected the held/floor/PASS line — got ($st): $out"
@@ -1737,7 +1737,7 @@ test_warm_gate_prints_held_pass() {
 
 test_warm_gate_fails_below_floor() {
     heldfile="$scratch/warm-held-fail-value"
-    echo "held 41/42" > "$heldfile"
+    echo "held 30/42" > "$heldfile"
     d="$(warm_gate_repo warm-held-fail "$heldfile")"
     printf 'warm_held_floor=100\n' > "$d/tools/land.baseline"
     scr="$scratch/warm-held-fail-scratch"
@@ -1752,9 +1752,36 @@ test_warm_gate_fails_below_floor() {
     fi
 }
 
+# The floor is relative to the files checked, so a package that sheds
+# files never falls under a number it once cleared.
+test_warm_gate_floor_is_relative() {
+    heldfile="$scratch/warm-held-relative-value"
+    echo "held 700/702" > "$heldfile"
+    d="$(warm_gate_repo warm-held-relative "$heldfile")"
+    printf 'warm_held_floor=775\n' > "$d/tools/land.baseline"
+    scr="$scratch/warm-held-relative-scratch"
+    rm -rf "$scr"
+    mkdir -p "$scr"
+    out="$(AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call warm_gate_step "$d" 2>&1)"
+    st=$?
+    if [ "$st" -eq 0 ] && printf '%s' "$out" | grep -q 'held 700/702 (floor 697) — PASS'; then
+        ok "warm-gate: 700 of 702 held clears the relative floor 697, whatever the old absolute one"
+    else
+        bad "warm-gate: expected held 700/702 (floor 697) to PASS — got ($st): $out"
+    fi
+    echo "held 696/702" > "$heldfile"
+    out="$(AVRA_LAND_SCRATCH="$scr" branch=x sh "$land" --call warm_gate_step "$d" 2>&1)"
+    st=$?
+    if [ "$st" -ne 0 ] && printf '%s' "$out" | grep -q 'held 696/702 (floor 697) — FAIL'; then
+        ok "warm-gate: six files re-derived is under the floor"
+    else
+        bad "warm-gate: expected held 696/702 (floor 697) to FAIL — got ($st): $out"
+    fi
+}
+
 test_warm_gate_override_passes() {
     heldfile="$scratch/warm-held-override-value"
-    echo "held 41/42" > "$heldfile"
+    echo "held 30/42" > "$heldfile"
     d="$(warm_gate_repo warm-held-override "$heldfile")"
     printf 'warm_held_floor=100\n' > "$d/tools/land.baseline"
     scr="$scratch/warm-held-override-scratch"
@@ -2615,6 +2642,7 @@ run_test test_speed_gate_median_of_three
 run_test test_run_checks_launch_order
 run_test test_remote_suites
 run_test test_batch_conflict_drops_at_once
+run_test test_warm_gate_floor_is_relative
 run_test test_tools_only_gate_script_runs_its_step
 run_test test_tools_only_several_gate_scripts_run_all_steps
 
