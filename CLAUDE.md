@@ -1924,20 +1924,19 @@ Runtime facts, ours to ratify:
 
 ## How work lands
 
-- WORK IN A SIBLING WORKTREE (`git worktree add -b <branch> ../avra-<name>
-  refs/heads/main`), never in `avra/` itself and never nested under
-  `.claude/worktrees/` (a nested tree shares the outer cache). Start its
-  compiler from main's standing one (`cp ../avra/build/avra build/avra`
-  and `build/libavra_runtime.a`, then `make avra` twice), not a gen-1
-  bootstrap from the seed.
-- MAIN MOVES ONLY THROUGH `sh tools/land.sh <branch>`. A
+- ALL WORK MOVES THROUGH FIVE COMMANDS, and nothing else touches main:
+
+      sh tools/work new <name>   # worktree ../avra-<name>, off main, compiler seeded
+      sh tools/work test         # what the branch touches, built and tested on Sprites
+      sh tools/work run <cmd>    # any command in this worktree, on a Sprite
+      sh tools/work land         # push, open the PR, queue it to merge
+      sh tools/work status       # every open PR, its checks and queue state
+
+  Main lives on GitHub (avra-lang/avra) and moves only through its merge
+  queue: squash merges, linear history, no direct pushes. A local
   reference-transaction hook refuses every other update of
-  `refs/heads/main` (a commit, merge, reset or update-ref, from any
-  worktree); a deliberate repair sets `AVRA_MAIN_OVERRIDE="<reason>"`,
-  which is printed. A landing gates speed (+1% instructions, +10% peak
-  footprint, same input), warm reuse, a Linux leg on a Sprite, every
-  affected suite, idioms, fmt and seed-check. Exit 0 means LANDED; exit
-  3 is a tool failure, never the branch's.
+  `refs/heads/main`; a deliberate repair sets
+  `AVRA_MAIN_OVERRIDE="<reason>"`, which is printed.
 - A PRE-COMMIT HOOK refuses staged `.av` that is not canonical; the fix
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
 - HEAVY RUNS GO ON SPRITES: `AVRA_SP_TREE=$PWD sh tools/sp <cmd>`, or
