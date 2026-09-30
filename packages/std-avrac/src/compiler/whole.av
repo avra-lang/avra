@@ -44,10 +44,22 @@ impl Workspace {
         let _ = self.each_open_file((f: FileId) -> { let _ = self.sig_diagnostics(f) })
         self.timed("sigs", self.clock() - t2)
         let t3 = self.clock()
-        let ids = self.each_open_file((f: FileId) -> { let _ = self.analysis(f) })
-        let out = [self.analysis(f) for f in ids]
+        let out = self.settled_analyses()
         self.timed("bodies", self.clock() - t3)
         out
+    }
+
+    /// Every open file's analysis, asked again until no late input moved:
+    /// a late write (a package a `use` first reached) bumps the revision,
+    /// so a pass that saw one re-asks, and only what read a moved cell
+    /// recomputes. Admission only adds, and a workspace reaches finitely
+    /// many packages, so it settles.
+    fn settled_analyses() -> List<Analysis> {
+        let before = self.db.revision()
+        let ids = self.each_open_file((f: FileId) -> { let _ = self.analysis(f) })
+        let out = [self.analysis(f) for f in ids]
+        if self.db.revision() == before { return out }
+        self.settled_analyses()
     }
 
     /// EVERY OPEN (non-held) FILE, WALKED AS THE TABLE ITSELF GROWS. A

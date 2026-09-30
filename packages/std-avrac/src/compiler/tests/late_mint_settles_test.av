@@ -1,0 +1,58 @@
+// A LATE WRITE IS AN INPUT ARRIVING: a file minted after a query read its
+// module's file bucket bumps the revision, so that query re-verifies, and
+// the whole-program pass asks again until nothing moves — it settles.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+
+fn late_files() -> Map<string, string> {
+    {
+        "/w/src/a.av": "export fn f() -> int {\n    1\n}\n",
+        "/w/src/b.av": "export fn g() -> int {\n    f() + 1\n}\n",
+    }
+}
+
+fn late_workspace() -> Workspace {
+    new_workspace(memory_host(late_files(), ["/w/src/a.av", "/w/src/b.av"]), "/w", avra())
+}
+
+spec "compiler/late mint — a re-verified enumeration settles" {
+    given "a query that read its module's files, then a file minted in that module" {
+        then "the late mint bumps the revision" {
+            let ws = late_workspace()
+            let _ = ws.analysis(ws.file_id("/w/src/a.av"))
+            let before = ws.db.revision()
+            let _ = ws.file_id("/w/src/b.av")
+            ws.db.revision() > before
+        }
+        then "the whole program still settles, the late file in it and clean" {
+            let ws = late_workspace()
+            let _ = ws.analysis(ws.file_id("/w/src/a.av"))
+            let _ = ws.file_id("/w/src/b.av")
+            let p = ws.program(null)
+            p.files.length == 2 && p.report() == ""
+        }
+    }
+    given "a pass with no late write" {
+        then "the revision stands still across the whole program" {
+            let ws = late_workspace()
+            let _ = ws.file_id("/w/src/a.av")
+            let _ = ws.file_id("/w/src/b.av")
+            let before = ws.db.revision()
+            let _ = ws.program(null)
+            ws.db.revision() == before
+        }
+    }
+    given "an armed relation read, then a revision in which nothing moved" {
+        then "the query re-verifies as unchanged and reuses — a cell answers when it MOVED, never its hash" {
+            let ws = late_workspace()
+            let a = ws.file_id("/w/src/a.av")
+            let _ = ws.file_id("/w/src/b.av")
+            let _ = ws.program(null)
+            ws.db.kernel.bump()
+            let before = ws.db.kernel.misses()
+            let _ = ws.analysis(a)
+            ws.db.kernel.misses() == before
+        }
+    }
+}
