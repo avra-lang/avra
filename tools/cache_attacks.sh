@@ -816,7 +816,7 @@ got_cl1=$($R/cl/src/main 2>&1)
 # itself, not against a synthetic fixture here.
 
 # M5 S2: `Decls.decl(d)` now fetches its row through the pinned
-# `Rows<DeclRow>` handle, `row(d.index)`, never the relation's own
+# `Rows<Decl>` handle, `row(d.index)`, never the relation's own
 # recorded `get` — but it must still call `rows_read(x.file)`, the SAME
 # file-grain edge the hand table's read always fed the kernel. `drm`'s
 # held const `M` reads `drl`'s `seed` — a Const it runs — through a
@@ -829,7 +829,7 @@ printf 'export fn seed() -> int { 21 }\n' > $R/drl/src/seed.av
 printf 'export const M: int = seed()\n' > $R/drl/src/lib.av
 printf '[package]\nname = "rt-drm"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/drl" = { path = "../drl" }\n' > $R/drm/avra.toml
 printf 'use @rt.drl.{M}\nprintln("drm ${M}")\n' > $R/drm/src/main.av
-S "cold drm: a held const reads its callee's DeclRow through the pinned handle" drm
+S "cold drm: a held const reads its callee's Decl row through the pinned handle" drm
 got_drm1=$($R/drm/src/main 2>&1)
 [ "$got_drm1" = "drm 21" ] || { fails=$((fails+1)); echo "FAIL  cold drm printed '$got_drm1', wanted 'drm 21'"; }
 ed $R/drl/src/seed.av "{ 21 }" "{ 22 }"
