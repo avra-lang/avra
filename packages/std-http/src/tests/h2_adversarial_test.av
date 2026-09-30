@@ -1,0 +1,268 @@
+// HTTP/2 under attack: HPACK kept in step across every refused stream,
+// every split of a session, bounded memory under stream churn, and a
+// deterministic fuzz that must never trap.
+use @std.http.h2.{
+    H2Conn,
+    Frame,
+    FrameAt,
+    FrameKind,
+    H2Error,
+    h2_server,
+    frame_at,
+    frame_bytes,
+    error_code,
+    preface,
+    u32_bytes,
+    u32_at,
+    end_stream,
+    end_headers,
+    padded,
+    prioritised,
+}
+use @std.http.hpack.{HeaderField, field, encoder, decoder}
+use @std.http.frame.{limits, Limits, no_bytes}
+
+fn lit_block(fs: List<HeaderField>) -> Bytes {
+    mut e = encoder(false)
+    e.encoded(fs)
+}
+
+fn plain_get(path: string) -> List<HeaderField> {
+    [
+        field(":method", "GET"),
+        field(":scheme", "http"),
+        field(":path", path),
+        field(":authority", "a"),
+    ]
+}
+
+fn opening() -> Bytes { preface.concat(frame_bytes(.Settings, 0, 0, no_bytes)) }
+
+fn fed_all(frames: List<Bytes>) -> H2Conn {
+    mut c = h2_server(limits())
+    let _ = c.fed(opening().concat(frames.bytes()), 0)
+    c
+}
+
+fn all_frames(b: Bytes) -> List<Frame> {
+    mut out: List<Frame> = []
+    mut at = 0
+    while at < b.length {
+        match frame_at(b, at, 16777215) {
+            .Whole(f, end) -> {
+                out.push(f)
+                at = end
+            },
+            .Partial or .Oversized -> { return out },
+        }
+    }
+    out
+}
+
+fn goaway_code(c: H2Conn) -> int {
+    let g? = all_frames(c.out).find(it.kind is .GoAway) else { return -1 }
+    u32_at(g.payload, 4)
+}
+
+fn reset_code(c: H2Conn, id: int) -> int {
+    let r? = all_frames(c.out).find(it.kind is .Reset && it.stream == id) else { return -1 }
+    u32_at(r.payload, 0)
+}
+
+fn ready_paths(c: H2Conn) -> string { [r.fields.find(it.name == ":path".bytes())?.value?.text() ?? "?" for r in c.ready].join(",") }
+
+/// A GET whose block KEEPS `:path: <path>` in the peer's table at index
+/// 62 — a literal with incremental indexing — and names its authority
+/// without indexing, so nothing else enters.
+fn keeping_block(path: string) -> Bytes { [130, 134, 68, path.length].bytes()!.concat(path.bytes()).concat([1, 1, 97].bytes()!) }
+
+/// A GET whose `:path` is index 62 — whatever the last kept block kept.
+fn indexing_get(id: int) -> Bytes { frame_bytes(.Headers, end_headers | end_stream, id, [130, 134, 190, 1, 1, 97].bytes()!) }
+
+/// The next value of a linear congruential sequence.
+fn next_rand(x: int) -> int { (x * 1103515245 + 12345) % 2147483648 }
+
+/// A deterministic run of `n` frames of random kind, flags, stream and
+/// payload, from seed `seed`.
+fn noise(seed: int, n: int) -> Bytes {
+    mut x = seed
+    mut out: List<Bytes> = []
+    for i in 0..n {
+        x = next_rand(x)
+        let kind = x % 11
+        x = next_rand(x)
+        let flags = x % 256
+        x = next_rand(x)
+        let stream = x % 8
+        x = next_rand(x)
+        let len = x % 24
+        mut p: List<int> = []
+        for j in 0..len {
+            x = next_rand(x)
+            p.push(x % 256)
+        }
+        out.push([0, 0, len, kind, flags, 0, 0, 0, stream].bytes()!.concat(p.bytes()!))
+    }
+    out.bytes()
+}
+
+spec "std.http h2 adversarial" {
+    given "HPACK stays in step across every refused stream" {
+        then "a block on a stream past the concurrency bound still moves the table" {
+            let open = [frame_bytes(.Headers, end_headers, 2 * i + 1, lit_block(plain_get("/"))) for i in 0..100]
+            let refused = frame_bytes(
+                .Headers,
+                end_headers | end_stream,
+                201,
+                keeping_block("/refused"),
+            )
+            let c = fed_all(open.concat([refused, indexing_get(203)]))
+            let c2 = fed_all(
+                open.concat([refused, frame_bytes(.Reset, 0, 1, u32_bytes(8)), indexing_get(203)]),
+            )
+            reset_code(c, 201) == error_code(.RefusedStream) &&
+                goaway_code(c) == -1 &&
+                ready_paths(c2) == "/refused"
+        }
+        then "a block on a stream that depends on itself still moves the table" {
+            let body = u32_bytes(1).concat([15].bytes()!).concat(keeping_block("/self"))
+            let c = fed_all(
+                [
+                    frame_bytes(.Headers, end_headers | end_stream | prioritised, 1, body),
+                    indexing_get(3),
+                ],
+            )
+            reset_code(c, 1) == error_code(.Protocol) && ready_paths(c) == "/self"
+        }
+        then "a block on a stream the peer already ended still moves the table" {
+            let again = frame_bytes(.Headers, end_headers | end_stream, 1, keeping_block("/again"))
+            let c = fed_all(
+                [
+                    frame_bytes(
+                        .Headers,
+                        end_headers | end_stream,
+                        1,
+                        lit_block(plain_get("/first")),
+                    ),
+                    again,
+                    indexing_get(3),
+                ],
+            )
+            reset_code(c, 1) == error_code(.StreamClosed) && ready_paths(c) == "/first,/again"
+        }
+        then "a malformed head still moves the table" {
+            let bad = [130, 68, 4].bytes()!.concat("/bad".bytes())
+            let c = fed_all(
+                [frame_bytes(.Headers, end_headers | end_stream, 1, bad), indexing_get(3)],
+            )
+            reset_code(c, 1) == error_code(.Protocol) && ready_paths(c) == "/bad"
+        }
+    }
+    given "malformed frames that could slice past their end" {
+        then "a prioritised HEADERS too short for its five octets is a FRAME_SIZE_ERROR, not a trap" {
+            goaway_code(
+                fed_all([frame_bytes(.Headers, end_headers | prioritised, 1, [0, 0, 0].bytes()!)]),
+            ) == error_code(.FrameSize)
+        }
+        then "a padded, prioritised HEADERS whose padding leaves too little is a FRAME_SIZE_ERROR" {
+            goaway_code(
+                fed_all(
+                    [
+                        frame_bytes(
+                            .Headers,
+                            end_headers | prioritised | padded,
+                            1,
+                            [2, 0, 0, 0, 0].bytes()!,
+                        ),
+                    ],
+                ),
+            ) == error_code(.FrameSize)
+        }
+        then "a padded frame with an empty payload is a PROTOCOL_ERROR" {
+            goaway_code(fed_all([frame_bytes(.Headers, end_headers | padded, 1, no_bytes)])) == error_code(.Protocol)
+        }
+        then "a padded DATA of the pad-length octet alone is an empty body" {
+            let c = fed_all(
+                [
+                    frame_bytes(.Headers, end_headers, 1, lit_block(plain_get("/"))),
+                    frame_bytes(.Data, padded | end_stream, 1, [0].bytes()!),
+                ],
+            )
+            c.ready.length == 1 && c.ready[0].body.is_empty()
+        }
+    }
+    given "every split of a session" {
+        then "a session fed one octet at a time answers as it does whole" {
+            let whole = opening()
+                .concat(
+                    [frame_bytes(
+                        .Headers,
+                        end_headers | end_stream,
+                        2 * i + 1,
+                        lit_block(plain_get("/p${i}")),
+                    ) for i in 0..3]
+                        .bytes(),
+                )
+            mut c = h2_server(limits())
+            mut at = 0
+            for n in 1..whole.length + 1 { at = c.fed(whole.slice(0, n), at) }
+            at == whole.length && ready_paths(c) == "/p0,/p1,/p2" && goaway_code(c) == -1
+        }
+    }
+    given "memory under churn" {
+        then "a thousand streams opened and reset leave nothing live and a bounded memory of them" {
+            let churn = [frame_bytes(.Headers, end_headers | end_stream, 2 * i + 1, lit_block(plain_get("/")))
+                .concat(frame_bytes(.Reset, 0, 2 * i + 1, u32_bytes(8))) for i in 0..1000]
+            let c = fed_all(churn)
+            c.streams.is_empty() &&
+                c.gone.length == 256 &&
+                c.ready.is_empty() &&
+                c.peer_resets == 1000
+        }
+        then "the 413 refusal ignores the DATA the client had in flight" {
+            let l = Limits { body: 4 }
+            mut c = h2_server(l)
+            let head = [
+                field(":method", "POST"),
+                field(":scheme", "http"),
+                field(":path", "/"),
+                field(":authority", "a"),
+            ]
+            let frames = [
+                frame_bytes(.Headers, end_headers, 1, lit_block(head)),
+                frame_bytes(.Data, 0, 1, "0123456789".bytes()),
+                frame_bytes(.Data, end_stream, 1, "more".bytes()),
+            ]
+            let _ = c.fed(opening().concat(frames.bytes()), 0)
+            goaway_code(c) == -1 && reset_code(c, 1) == error_code(.NoError) && c.streams.is_empty()
+        }
+    }
+    given "the peer's table size" {
+        then "a SETTINGS that shrinks the peer's table opens the next answer with the size update" {
+            mut c = fed_all(
+                [
+                    frame_bytes(.Settings, 0, 0, [0, 1].bytes()!.concat(u32_bytes(0))),
+                    frame_bytes(.Headers, end_headers | end_stream, 1, lit_block(plain_get("/"))),
+                ],
+            )
+            let _ = c.drained()
+            c.respond(1, [field(":status", "200")], no_bytes)
+            let hs = all_frames(c.drained())
+            mut d = decoder(0, 65536)
+            hs[0].payload.at(0) == 32 && d.decoded(hs[0].payload) is .Fields
+        }
+    }
+    given "a deterministic fuzz" {
+        then "two hundred runs of random frames never trap, and every run ends alive or with GOAWAY" {
+            [fuzz_run(seed) for seed in 1..201].all(it)
+        }
+    }
+}
+
+/// One fuzz run: the connection either lives or owes exactly one GOAWAY.
+fn fuzz_run(seed: int) -> bool {
+    mut c = h2_server(limits())
+    let _ = c.fed(opening().concat(noise(seed, 40)), 0)
+    let goaways = all_frames(c.out).filter(it.kind is .GoAway).length
+    goaways == 0 && !c.closing || goaways == 1 && c.closing
+}

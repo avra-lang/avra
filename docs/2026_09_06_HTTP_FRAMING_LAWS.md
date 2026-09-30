@@ -491,3 +491,144 @@ every other row (rows 2–3 are the harness that proves it).
 
 Near-miss rule for the harness: rows 12 and 33 both fail on a bare LF — assert the reason
 names line termination, not header parsing; row 37 must fail at the SP, not at the CR.
+
+## 5. HTTP/2 (RFC 9113, RFC 7541)
+
+Sources: [RFC 9113](https://www.rfc-editor.org/rfc/rfc9113.html) (HTTP/2, cited bare),
+[RFC 7541](https://www.rfc-editor.org/rfc/rfc7541.html) (HPACK). The code is
+`packages/std-http/src/h2.av` and `hpack.av`; every row below is a `then` in
+`src/tests/h2_test.av` (H2), `hpack_test.av` (HP) or `hpack_adversarial_test.av` (HA),
+quoted by its name.
+
+Recommendation in one line: **a law broken on one stream resets that stream; a law
+broken on the connection ends it with GOAWAY; a header block is decoded whole even for
+a stream about to be refused**, because the peer's HPACK table moved when it wrote the
+block, and a decoder that skips one is out of step with every block after it (§4.3).
+
+### 5.1 What a connection is
+
+The connection is one value, fed octets and read back: `fed(buf, at)` takes every whole
+frame in the buffer and answers where the next read continues; `out` is what is owed the
+peer; `ready` the requests whose streams ended. Nothing touches a socket, so a law is a
+fixture over bytes, as §1's are. A 1.1 framer refusal answers a status and closes; an h2
+refusal answers a CODE (§7), on RST_STREAM or on GOAWAY — the arm is the RFC's, law by
+law, never a choice.
+
+### 5.2 Framing (§3.4, §4, §5.5)
+
+- The client's preface is 24 fixed octets; anything else is PROTOCOL_ERROR. A torn one
+  is waited for. The first frame after it is a SETTINGS that is not an ACK (§3.4).
+- A frame whose length passes this end's SETTINGS_MAX_FRAME_SIZE (16384 here) is
+  FRAME_SIZE_ERROR, judged from the nine-octet head before a payload octet is held (§4.2).
+- An unknown frame type is ignored — except inside a header block, where ANY frame other
+  than a CONTINUATION on the same stream is PROTOCOL_ERROR (§5.5, §6.10).
+- PUSH_PROMISE from a client is PROTOCOL_ERROR (§8.4).
+
+### 5.3 Streams (§5.1)
+
+- A client opens odd streams, each id above every one it opened before; an even id, id 0
+  on a stream frame, or a lower id not remembered closed is PROTOCOL_ERROR on the
+  connection (§5.1.1).
+- A frame on an idle stream other than HEADERS or PRIORITY is PROTOCOL_ERROR (§5.1).
+- DATA or HEADERS on a stream the peer has ended is STREAM_CLOSED on the stream; on a
+  stream the peer RESET it is STREAM_CLOSED on the connection; on a stream THIS END reset
+  it is ignored, since it was in flight when the reset left (§5.1). The last 256 closed
+  ids are remembered for that purpose.
+- A stream past SETTINGS_MAX_CONCURRENT_STREAMS (100 here) is REFUSED_STREAM, its block
+  still decoded (§5.1.2).
+- A stream depending on itself — in HEADERS or in PRIORITY — is PROTOCOL_ERROR on the
+  stream (§5.3.1). PRIORITY is otherwise parsed and ignored (§5.3.2).
+
+### 5.4 The small frames (§6.3–§6.9)
+
+| Frame | Refused as | Law |
+|---|---|---|
+| SETTINGS on a stream | PROTOCOL_ERROR | §6.5 |
+| SETTINGS of a length not a multiple of 6; an ACK with a payload | FRAME_SIZE_ERROR | §6.5 |
+| ENABLE_PUSH > 1; MAX_FRAME_SIZE outside 2^14 .. 2^24-1 | PROTOCOL_ERROR | §6.5.2 |
+| INITIAL_WINDOW_SIZE > 2^31-1, or a change that overflows a stream's window | FLOW_CONTROL_ERROR | §6.5.2, §6.9.2 |
+| PING not of 8 octets / on a stream | FRAME_SIZE_ERROR / PROTOCOL_ERROR | §6.7 |
+| RST_STREAM not of 4 octets / on stream 0 / on an idle stream | FRAME_SIZE_ERROR / PROTOCOL_ERROR / PROTOCOL_ERROR | §6.4 |
+| PRIORITY not of 5 octets | FRAME_SIZE_ERROR on the stream | §6.3 |
+| WINDOW_UPDATE not of 4 octets | FRAME_SIZE_ERROR | §6.9 |
+| WINDOW_UPDATE of 0 | PROTOCOL_ERROR, on the stream or the connection it names | §6.9 |
+| WINDOW_UPDATE past 2^31-1 | FLOW_CONTROL_ERROR, on the stream or the connection | §6.9.1 |
+| GOAWAY on a stream / under 8 octets | PROTOCOL_ERROR / FRAME_SIZE_ERROR | §6.8 |
+
+A PING is answered with an ACK carrying its payload; a PING ACK is not answered. A peer's
+GOAWAY ends the connection gracefully: the requests already taken are answered, none
+more are read.
+
+### 5.5 Flow control (§5.2, §6.9)
+
+Every DATA octet, padding included, is charged to both windows, and both are given back
+at once by WINDOW_UPDATE — so a body is paced by `Limits.body`, never by the window's
+size. Sending, an answer's DATA is cut to the lesser of the connection window, the
+stream window and the peer's MAX_FRAME_SIZE; what does not fit is owed on the stream and
+sent when a WINDOW_UPDATE — or a SETTINGS that grows INITIAL_WINDOW_SIZE — opens it. A
+SETTINGS may drive a window below zero; nothing is sent until it is positive again.
+
+### 5.6 The message (§8.1–§8.3)
+
+- A request head: pseudo-fields first, each of `:method :scheme :path :authority` at
+  most once and no other; `:method`, `:scheme` and a non-empty `:path`, except CONNECT,
+  which takes `:authority` and neither of the others (§8.3.1).
+- Every regular field name is a lowercase token; every value is octets the 1.1 framer
+  admits, with no space or tab at either end; `connection`, `keep-alive`,
+  `proxy-connection`, `transfer-encoding` and `upgrade` are refused, and `te` is admitted
+  only as `trailers` (§8.2.1, §8.2.2). ONE value class serves both versions, so a field
+  that frames over 1.1 frames over h2 and the other way round — a request cannot become a
+  different request by changing the version it arrives on.
+- A declared `content-length` must equal the DATA octets received (§8.1.1).
+- A second HEADERS is trailers: it must end the stream and carry no pseudo-field (§8.1).
+- Each of these is PROTOCOL_ERROR on the stream: the request is malformed and never
+  reaches a handler (§8.1.1).
+- A head whose decoded list passes SETTINGS_MAX_HEADER_LIST_SIZE is answered 431; a body
+  past `Limits.body` is answered 413; either stream is then reset with NO_ERROR, asking
+  the client to stop sending (§8.1).
+
+### 5.7 HPACK (RFC 7541)
+
+- Every quantity the peer names meets a bound before use: an integer is refused past
+  2^31-1 or after five continuation octets (a run of `0x80` adds nothing and would never
+  end); a string length past the block's end is truncated; a table size update past the
+  advertised SETTINGS_HEADER_TABLE_SIZE is refused, never allocated (§5.1, §6.3).
+- A size update opens a block or is refused; one this end is owed after lowering its
+  limit must arrive before the next block's first field (§4.2).
+- Huffman padding longer than seven bits, or not the EOS code's leading ones, is refused;
+  EOS itself inside a string is refused (§5.2).
+- Index 0, or an index past both tables, is refused (§6.1).
+- THE HPACK BOMB: one entry kept, then indexed a thousand times, is a few KiB of block
+  and megabytes of list. The decoded list is costed as the table costs a field (32 plus
+  the octets) and the block answers `TooLarge` at the bound — decoded whole, so the table
+  stays in step, and only that stream is refused.
+- Every refusal is COMPRESSION_ERROR on the connection: a decoder that refused a block no
+  longer knows the peer's table.
+
+### 5.8 Attack table
+
+| # | Input | Required outcome | Law | Fixture |
+|---|---|---|---|---|
+| H1 | `GET / HTTP/1.1…` where the preface belongs | GOAWAY PROTOCOL_ERROR | §3.4 | H2 "a wrong preface ends the connection with PROTOCOL_ERROR" |
+| H2 | The preface in two reads | waited for, then taken | §3.4 | H2 "a preface torn across reads is waited for" |
+| H3 | PING as the first frame | GOAWAY PROTOCOL_ERROR | §3.4 | H2 "a first frame that is not SETTINGS is a PROTOCOL_ERROR" |
+| H4 | A frame head claiming 16 385 octets | GOAWAY FRAME_SIZE_ERROR, no payload read | §4.2 | H2 "a frame longer than the advertised size is a FRAME_SIZE_ERROR, read from its head alone" |
+| H5 | HEADERS on streams 5 then 3 | GOAWAY PROTOCOL_ERROR | §5.1.1 | H2 "a stream id below one already opened is a PROTOCOL_ERROR" |
+| H6 | HEADERS, then PING, then the CONTINUATION | GOAWAY PROTOCOL_ERROR | §6.10 | H2 "any other frame inside a header block is a PROTOCOL_ERROR" |
+| H7 | HEADERS then 64 empty CONTINUATIONs (CVE-2024-27316 shape) | GOAWAY ENHANCE_YOUR_CALM at the 64th | §6.10; §10.5 | H2 "a flood of empty CONTINUATIONs is ENHANCE_YOUR_CALM at the bound" |
+| H8 | CONTINUATIONs carrying 80 KB of block | GOAWAY ENHANCE_YOUR_CALM past the list bound | §10.5.1 | H2 "a header block past the list bound in CONTINUATIONs is ENHANCE_YOUR_CALM" |
+| H9 | 101 open streams | the 101st REFUSED_STREAM, the rest live | §5.1.2 | H2 "a stream past the concurrency bound is REFUSED_STREAM" |
+| H10 | HEADERS(END_STREAM) then RST_STREAM (rapid reset, CVE-2023-44487 shape) | the request is dropped before any handler sees it | §6.4; §10.5 | H2 "a reset request is dropped before anything answers it" |
+| H11 | DATA after END_STREAM | RST STREAM_CLOSED | §5.1 | H2 "DATA after the stream ended is STREAM_CLOSED on the stream" |
+| H12 | Padding length ≥ the payload | GOAWAY PROTOCOL_ERROR | §6.1 | H2 "padding that claims the whole frame is a PROTOCOL_ERROR" |
+| H13 | `content-length: 5` over 3 octets of DATA | RST PROTOCOL_ERROR | §8.1.1 | H2 "a body shorter or longer than its content-length resets the stream" |
+| H14 | `Accept:` (uppercase) / `connection: close` / `te: gzip` | RST PROTOCOL_ERROR | §8.2 | H2 "an uppercase name, a connection field, or te other than trailers is malformed" |
+| H15 | `:status` in a request; `:method` after `accept` | RST PROTOCOL_ERROR | §8.3 | H2 "a pseudo-field after a regular one, or an unknown one, is malformed" |
+| H16 | A value holding CR, NUL, or a leading space | RST PROTOCOL_ERROR | §8.2.1 | H2 "a value with a CR, a NUL, or a space at an end is malformed" |
+| H17 | WINDOW_UPDATE 2^31-1 on a fresh window | FLOW_CONTROL_ERROR, stream or connection | §6.9.1 | H2 "a WINDOW_UPDATE past 2^31-1 is a FLOW_CONTROL_ERROR — on the stream or the connection" |
+| H18 | INITIAL_WINDOW_SIZE 0, then an answer of 10 octets | HEADERS only; DATA follows WINDOW_UPDATEs | §6.9.2 | H2 "a window shrunk by SETTINGS below zero holds DATA until it is positive" |
+| H19 | A 4 KB entry kept, then `0xbe` ×1000 (HPACK bomb) | `TooLarge`; next block still reads the entry | RFC 7541 §7.3 | HA "one kept entry indexed a thousand times is too large, not a gigabyte" |
+| H20 | A table size update of 2^31-1 | COMPRESSION_ERROR, nothing allocated | RFC 7541 §6.3 | HA "a resize past the advertised limit is refused, not allocated" |
+| H21 | An integer `0x7f` then ten `0xff` | COMPRESSION_ERROR, not a wrapped value | RFC 7541 §5.1 | HA "a 64-bit overflow is refused, not wrapped" |
+| H22 | `0xff ×4` as a Huffman string | COMPRESSION_ERROR (EOS) | RFC 7541 §5.2 | HA "the EOS symbol inside a string is refused" |
+| H23 | Every vector of RFC 7541 Appendix C | decoded AND encoded octet for octet | RFC 7541 App. C | HP, by section |
