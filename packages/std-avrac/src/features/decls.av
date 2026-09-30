@@ -362,15 +362,16 @@ export type Decls = {
     /// file settled below records that file's `Items` cell (a held file's module
     /// record) in the open query — once per query, by the Kernel's own stamp.
     /// `rows_state` is dense by FileId: 0 while the file's rows are being minted (the
-    /// minter's own reads record nothing), 1 settled, 2 held.
-    record_kernel: Cell<Kernel>,
+    /// minter's own reads record nothing), 1 settled, 2 held. The kernel is the
+    /// workspace's own, fixed at construction: never a `Cell`, so no callee can
+    /// replace what a read of it holds across `record_dep`.
+    record_kernel: Kernel,
     /// THE DECLARATION TABLE'S OWN `Db`: every declaration is a `Decl` row under it,
     /// inserted at mint and reseated at every later field write. A `Cell`, never a bare
     /// `Db`: `Decls` is copied somewhere in the pipeline, and a bare `Db` field forked
     /// on that copy — `family()`'s registration landed on one copy's own state while a
     /// later read reached another's, "index 21 is out of bounds (length 0)" in the
-    /// whole-package suite. `record_kernel` above already pays this; `decl_rows` pays
-    /// it the same way.
+    /// whole-package suite.
     decl_rows: Cell<Db>,
     /// `File`/`Module`'s own rows, pinned once at construction — a
     /// `Cell`, `decl_rows`'s own reason: `Rows<T>` is not itself
@@ -582,7 +583,7 @@ export fn new_decls() -> Decls {
         stores: Cell.new(no_stores),
         auditing: Cell.new(false),
         audit_hook: Cell.new(no_audit),
-        record_kernel: Cell.new(new_kernel()),
+        record_kernel: new_kernel(),
         decl_rows: Cell.new(db),
         file_rows: Cell.new(File.rows_in(db)),
         module_rows: Cell.new(Module.rows_in(db)),
@@ -759,19 +760,15 @@ impl Decls {
         let state = self.rows_state.get()
         if f.index >= state.length { return }
         if state[f.index] == 1 {
-            self
-                .record_kernel
-                .get()
-                .record_dep(Key { family: self.record_items.get(), arg: f.index })
+            self.record_kernel.record_dep(Key { family: self.record_items.get(), arg: f.index })
         } else if state[f.index] == 2 {
             (self.held_rows.get())(f)
         }
     }
 
-    /// The workspace arms the recording once: the kernel the reads record into, the
-    /// family a file's rows settle under, and what a held file's rows read instead.
-    fn arm_recording(kernel: Kernel, items: int, methods: int, held: fn(FileId) -> void) {
-        self.record_kernel.set(kernel)
+    /// The workspace arms the recording once: the family a file's rows settle under,
+    /// and what a held file's rows read instead.
+    fn arm_recording(items: int, methods: int, held: fn(FileId) -> void) {
         self.record_items.set(items)
         self.record_methods.set(methods)
         self.held_rows.set(held)
@@ -1166,7 +1163,6 @@ impl Decls {
     /// sig asked after that is held or, loudly, absent.
     fn disarm() {
         self.auditing.set(false)
-        self.record_kernel.set(new_kernel())
         self.held_rows.set(no_store)
         self.ensure.set(no_ensure)
         self.seat_ensure.set(no_ensure)
@@ -2164,10 +2160,7 @@ impl Decls {
     @bracket("methods")
     fn methods_of(target: DeclId) -> List<DeclId> {
         if audit_build && self.auditing.get() { self.audited(Bypassed.Methods(target)) }
-        self
-            .record_kernel
-            .get()
-            .record_dep(Key { family: self.record_methods.get(), arg: target.index })
+        self.record_kernel.record_dep(Key { family: self.record_methods.get(), arg: target.index })
         self.registered_methods(target)
     }
 
