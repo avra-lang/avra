@@ -31,6 +31,7 @@ use features.{
     TypeCx,
     FnSig,
     StructSig,
+    Lacked,
     EnumSig,
     NamedSig,
     DeclSig,
@@ -112,6 +113,7 @@ impl TypeCx {
     /// An enum's variant table — the index IS the runtime tag, and
     /// the payloads ride slots 1.. of the value, in order.
     fn declare_enum_sig(s: StmtId, variants: List<Variant>) {
+        if !self.view.decls.lacking(self.decl_of(s)).is_empty() { self.enum_lacks(s) }
         let sig = EnumSig {
             names: [v.name.of for v in variants],
             payloads: [self.payload_types(s, v) for v in variants],
@@ -183,10 +185,13 @@ impl TypeCx {
         let types = [self.field_type(s, f) for f in fields]
         let record = self.decl_of(s)
         if self.marks_identity(record) { self.identity_law(s, record, names, types) }
+        let lacking = self.view.decls.lacking(record)
+        self.lacks_law(s, owner, names, lacking)
         let sig = StructSig {
             names: [t.of for t in names],
             types: types,
             defaults: [self.view.decls.default_named(record, f.name.of) for f in fields],
+            lacking: lacking,
         }
         self.declare(s, DeclSig.Record(sig))
     }
@@ -237,6 +242,54 @@ impl TypeCx {
     /// trait to claim it).
     fn identity_plain_fields(d: DeclId) -> List<string> {
         [a.args[0] for a in self.meta_annotations(d, "plain_field") if a.args.length == 1]
+    }
+
+    /// A record lacks each field ONCE, and only a field it does not
+    /// declare — a second reason, or a declared field, contradicts it.
+    fn lacks_law(s: StmtId, owner: string, names: List<Scoped>, lacking: List<Lacked>) {
+        for j, l in lacking {
+            if names.any(it.of == l.field) { self.lacks_declared(s, owner, l.field) }
+            if lacking.slice(0, j).any(it.field == l.field) { self.lacks_twice(s, owner, l.field) }
+        }
+    }
+
+    fn enum_lacks(s: StmtId) {
+        self
+            .emit(
+                refusal(
+                    "type.lacks",
+                    self.stmt_loc(s),
+                    "an enum has no fields to lack",
+                    "`@lacks` on an enum",
+                    "`@lacks` marks a record",
+                ),
+            )
+    }
+
+    fn lacks_twice(s: StmtId, owner: string, field: string) {
+        self
+            .emit(
+                refusal(
+                    "type.lacks",
+                    self.stmt_loc(s),
+                    "`${owner}` lacks `${field}` twice",
+                    "a second `@lacks(\"${field}\", …)` here",
+                    "keep one reason",
+                ),
+            )
+    }
+
+    fn lacks_declared(s: StmtId, owner: string, field: string) {
+        self
+            .emit(
+                refusal(
+                    "type.lacks",
+                    self.stmt_loc(s),
+                    "`${owner}` cannot lack `${field}` — it declares it",
+                    "`@lacks(\"${field}\", …)` here",
+                    "drop the field, or the `@lacks`",
+                ),
+            )
     }
 
     fn non_identity_field(s: StmtId, field: string, found: TypeId) {
