@@ -1,5 +1,7 @@
 # Collection vocabulary — lists, maps, sequences
 
+**Tracker:** epic `avra-8sb5.65` — S0 `.65.2`, S1 `.65.3`, S2 `.65.4`, S3 `.65.5`, S4 `.65.6`, bench `.65.1`; one ticket per work item.
+
 **Status:** design, 2026-09-30. Not built. Probes and counts name base
 `96fa525` (main).
 **Not to confuse with** `docs/2026_09_22_COLLECTIONS.md`, which is the
