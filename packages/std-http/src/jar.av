@@ -30,7 +30,7 @@
 //! its 3000 newest.
 use @std.time.{now_ms}
 use @std.text.{parse_int, ascii_lower}
-use http.{Header}
+use http.{Header, every_octet}
 use client.{Answer}
 
 /// One cookie: its pair, where it is sent, and until when — a
@@ -98,7 +98,7 @@ type Heard = { host: string, path: string, secure: bool, now: int, date: int? }
 /// One attribute of a `set-cookie`, its name folded.
 type Attribute = { key: string, value: string }
 
-fn is_set_cookie(h: Header) -> bool { named(h, set_cookie_name) }
+fn is_set_cookie(h: Header) -> bool { h.named(set_cookie_name) }
 
 const set_cookie_name: Bytes = "set-cookie".bytes()
 
@@ -112,7 +112,11 @@ fn cookie_of(field: string, at: Heard) -> Cookie? {
     if eq < 0 { return null }
     let name = pair.substring(0, eq).trim()
     let value = pair.substring(eq + 1, pair.length).trim()
-    if name.is_empty() || name.length + value.length > max_cookie || controlled(pair) { return null }
+    if name.is_empty() ||
+        name.length + value.length > max_cookie ||
+        !every_octet(pair, uncontrolled) {
+        return null
+    }
     let attrs = [attribute_of(p) for p in parts.slice(1, parts.length)]
     let domain = named_domain(last_of(attrs, "domain") ?? "")
     if !domain.is_empty() && !admitted(domain, at.host) { return null }
@@ -217,12 +221,6 @@ fn masks_secure(kept: Cookie, c: Cookie) -> bool {
         (path_matches(kept.path, c.path) || path_matches(c.path, kept.path))
 }
 
-/// Whether a pair holds an octet a field cannot carry.
-fn controlled(pair: string) -> bool {
-    let b = pair.bytes()
-    b.run(0, uncontrolled) < b.length
-}
-
 /// `all` with its domain's oldest past `per_domain` dropped, then the
 /// jar's oldest past `per_jar`.
 fn capped(all: List<Cookie>, domain: string) -> List<Cookie> {
@@ -247,9 +245,7 @@ const colon: Bytes = ":".bytes()
 fn date_of(text: string) -> int? {
     let b = text.bytes()
     mut parts = DateParts {}
-    for i in 0..b.length {
-        if starts_token(b, i) { parts = parts.took(b.slice(i, b.run(i, date_octet))) }
-    }
+    for t in [b.slice(i, b.run(i, date_octet)) for i in 0..b.length if starts_token(b, i)] { parts = parts.took(t) }
     parts.seconds()
 }
 

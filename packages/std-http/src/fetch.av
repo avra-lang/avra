@@ -24,12 +24,22 @@
 //! the reply's first octet, and `total` everything. A refusal names
 //! the stage whose deadline passed, and a stage that outran `total`
 //! is named `.Total`.
+//!
+//! REDIRECTS AND RETRIES ARE POLICY, NAMED IN THE OPTIONS. A redirect
+//! is followed by RFC 9110's method rules up to `Follow(max)`, never
+//! into a loop, never carrying a caller's credentials to another
+//! origin; a request the peer dropped is tried again only when asking
+//! twice means what asking once does. The answer says which URLs it
+//! left (`via`) and how many attempts it took (`attempts`).
+//!
+//! COOKIES ARE ASKED FOR: a `jar` in the options keeps what each answer
+//! sets and sends it back where RFC 6265 says (jar.av).
 use @std.url.{Url, UrlError, parse, encoded, default_port}
 use @std.net.{Conn, connect}
 use @std.json.{Json, to_text}
 use @std.time.{Duration, ms, secs, now_ms, sleep, within}
 use frame.{Method, Limits, limits}
-use http.{Header}
+use http.{Header, names_one_of}
 use client.{
     Client,
     Answer,
@@ -159,7 +169,7 @@ fn path_of(target: string) -> string { target.split("?").first() ?? "/" }
 /// The jar's `cookie` field for `aim`, unless the caller wrote one.
 fn jarred(o: Options, aim: Aim) -> List<Header> {
     let j? = o.jar else { return [] }
-    if o.headers.any(named(it, cookie_name)) { return [] }
+    if o.headers.any(it.named(cookie_name)) { return [] }
     let c? = j.sent(aim.host, path_of(aim.target), aim.secure) else { return [] }
     [c]
 }
@@ -202,15 +212,9 @@ fn crossed(o: Options, from: Aim, to: string) -> Options {
     o with { headers: [h for h in o.headers if !credential(h)] }
 }
 
-fn credential(h: Header) -> bool { credential_names.any(named(h, it)) }
+fn credential(h: Header) -> bool { names_one_of(h.name, credential_names) }
 
 const credential_names: List<Bytes> = [n.bytes() for n in ["authorization", "proxy-authorization", "cookie"]]
-
-/// Whether `h` is named `name`, ASCII-folded.
-fn named(h: Header, name: Bytes) -> bool {
-    let octets = h.name.bytes()
-    octets.ieq_at(0, octets.length, name)
-}
 
 /// The request over a lent connection, tried again by `o.retry` when
 /// the peer dropped it; the answer records how many attempts it took.
@@ -458,7 +462,7 @@ fn form_pair(f: FormField) -> string {
 /// The `content-type` a body names, unless the caller's headers name
 /// one already.
 fn kind_of(body: Payload, headers: List<Header>) -> List<Header> {
-    if headers.any(named(it, content_type_name)) { return [] }
+    if headers.any(it.named(content_type_name)) { return [] }
     let kind? = content_type(body) else { return [] }
     [Header { name: "content-type", value: kind }]
 }
