@@ -867,7 +867,7 @@ sprites_by_load() {
 
 # One Sprite's load, cores and MB free, as three words.
 sprite_probe() {
-    timeout "${AVRA_SPRITE_PROBE_S:-30}" sprite exec -s "$1" -- sh -c 'set -- $(cat /proc/loadavg); l=$1; c=$(nproc); a=$(awk "/^MemAvailable:/ { print int(\$2 / 1024) }" /proc/meminfo); echo "$l $c $a"'
+    timeout -k 1 "${AVRA_SPRITE_PROBE_S:-30}" sprite exec -s "$1" -- sh -c 'set -- $(cat /proc/loadavg); l=$1; c=$(nproc); a=$(awk "/^MemAvailable:/ { print int(\$2 / 1024) }" /proc/meminfo); echo "$l $c $a"'
 }
 
 linux_gate_step() {

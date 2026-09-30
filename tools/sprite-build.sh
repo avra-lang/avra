@@ -314,6 +314,60 @@ exit "$status"
 SCRIPT
 sprite -s "$sprite" file push "$run_script" "$run_remote" >/dev/null
 
+# BUILD ONCE, COPY EVERYWHERE: a hash this Sprite lacks is copied from a
+# pool Sprite whose cache holds it, and built here only when none does.
+# The hash's lock makes every other caller wait for that one build, then copy.
+cache_root=/home/sprite/avra-compilers
+holds() { timeout -k 1 8 sprite -s "$1" exec --no-port-forward -- test -x "$cache_root/$compiler_hash/avra" >/dev/null 2>&1; }
+donor() {
+    pool=${AVRA_SPRITES:-$(sprite list 2>/dev/null | grep -vx -e web-terminal -e avra-bench)}
+    found=$(mktemp -d -t avra-sp-donor.XXXXXX)
+    pids=
+    for s in $pool; do
+        [ "$s" = "$sprite" ] && continue
+        { holds "$s" && : > "$found/$s"; } &
+        pids="$pids $!"
+    done
+    # The first holder to answer wins; a sleeping or unreachable Sprite is never waited out.
+    n=0
+    while [ "$n" -lt 20 ] && [ -z "$(ls "$found")" ]; do sleep 0.5; n=$((n + 1)); done
+    ls "$found" | head -n 1
+    kill $pids 2>/dev/null || :
+    rm -rf "$found"
+}
+copy_from() {
+    sprite -s "$1" exec --no-port-forward -- tar -C "$cache_root" -czf - "$compiler_hash" \
+        | sprite -s "$sprite" exec --no-port-forward -- sh -c "mkdir -p '$cache_root' && tar -C '$cache_root' -xzf -"
+}
+copied=
+prebuilt=
+pre_s=
+if [ "$do_store" = 1 ]; then
+    hash_lock="/tmp/avra-sp-hash-$compiler_hash"
+    until mkdir "$hash_lock" 2>/dev/null; do
+        owner=$(cat "$hash_lock/pid" 2>/dev/null || echo)
+        [ -z "$owner" ] || kill -0 "$owner" 2>/dev/null || rm -rf "$hash_lock"
+        sleep 3
+    done
+    echo $$ > "$hash_lock/pid"
+    trap 'rm -f "$info_script" "$run_script"; rm -rf "$hash_lock"' EXIT
+    pre_t0=$(date +%s)
+    from=$(donor)
+    if [ -n "$from" ] && copy_from "$from" && holds "$sprite"; then
+        copied=$from
+        do_store=0
+        do_restore=1
+    else
+        sprite -s "$sprite" exec --no-port-forward -- bash -lc "sh '$run_remote' '$remote' '$compiler_hash' 0 1 0 true" >/dev/null 2>&1 || :
+        if holds "$sprite"; then
+            prebuilt=built
+            do_store=0
+        fi
+    fi
+    pre_s=$(( $(date +%s) - pre_t0 ))
+    rm -rf "$hash_lock"
+fi
+
 status=0
 remote_run_cmd="sh '$run_remote' '$remote' '$compiler_hash' '$do_restore' '$do_store' '$do_prebuild' \"\$@\""
 sprite -s "$sprite" exec --no-port-forward -- bash -lc "$remote_run_cmd" avra-sprite-run "$@" || status=$?
@@ -361,5 +415,8 @@ else
     compiler_state=cached
 fi
 
+[ -z "$copied" ] || compiler_state="copied-from-$copied"
+[ -z "$prebuilt" ] || compiler_state=$prebuilt
+[ -z "$pre_s" ] || compile_s=$pre_s
 echo "sprite-build: $slug@$compiler_hash tree=$sync_state compiler=$compiler_state sync=${sync_s}s build=${compile_s}s cmd=${wall}s -> exit $status" >&2
 exit "$status"
