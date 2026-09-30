@@ -162,10 +162,13 @@ build/std_tls.a: $(TLS_OBJS)
 # probes a frame wider than a page, a page at a time. Apple's clang
 # does so by default (___chkstk_darwin); elsewhere it is asked for.
 STACK_PROBES := $(if $(filter Darwin,$(shell uname -s)),,-fstack-clash-protection)
+# A PROGRAM CARRIES WHAT IT REACHES: every C function and datum stands in a
+# section of its own, so a link that drops unreached sections drops it.
+SECTIONS := -ffunction-sections -fdata-sections
 
 build/%.o: %.c build/%.sha
 	@mkdir -p build
-	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
+	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(SECTIONS) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
 -include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS))))
 
@@ -360,7 +363,7 @@ build/ffi.sha: SHA_SRC := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
 
 build/%.sha: %.c FORCE
 	@mkdir -p build
-	@{ shasum -a 256 $(if $(SHA_SRC),$(SHA_SRC),$<); echo 'flags: $(CFLAGS_$*)'; } | shasum -a 256 | cut -d' ' -f1 > $@.tmp
+	@{ shasum -a 256 $(if $(SHA_SRC),$(SHA_SRC),$<); echo 'flags: $(SECTIONS) $(CFLAGS_$*)'; } | shasum -a 256 | cut -d' ' -f1 > $@.tmp
 	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
 	@rm -f $@.tmp
 
@@ -719,13 +722,21 @@ census-types:
 
 # Bytes of code per symbol by package: the compiler and a request's
 # server, each against BEFORE / REQUEST_BEFORE when given (a saved
-# binary), as the tables a slice's size delta is read from.
+# binary), as the tables a slice's size delta is read from; then what
+# each reach probe carries (tools/bench/reach) — a program pays for
+# what it calls, never for what it imports.
 #   make sizes BEFORE=build/avra.pre
+REACH := plain unreached tls sign
 sizes:
 	@build/avra build tools/bench/request/src/main.av >/dev/null
 	@python3 tools/symsize.py build/avra $(BEFORE)
 	@echo
 	@python3 tools/symsize.py tools/bench/request/src/main $(REQUEST_BEFORE)
+	@echo
+	@echo '| reach probe | bytes |'
+	@echo '|---|---:|'
+	@for p in $(REACH); do build/avra build tools/bench/reach/$$p >/dev/null && \
+	    echo "| $$p | $$(wc -c < tools/bench/reach/$$p/src/main | tr -d ' ') |"; done
 
 # Mutated program tests through `avra check`: diagnose, never crash.
 fuzz: $(COMPILER_OBJS)

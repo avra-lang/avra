@@ -1,15 +1,23 @@
 //! The vocabulary a build links with: clang's words for a link, and the binary
 //! a source names.
+use compiler.backend.{unreached_dropped}
 
 /// clang's words for a link: the objects, the packages' own objects and
-/// flags, the runtime, then the binary's path. `-rdynamic` is not decoration:
-/// the evaluator resolves an extern through `dlsym(RTLD_DEFAULT)`, which on ELF
-/// reaches the executable only when its globals stand in the dynamic table.
+/// flags, the runtime, then the binary's path.
+/// A PROGRAM CARRIES WHAT IT REACHES: the link drops every fn and object
+/// member nothing reaches, so a package imported and not called costs
+/// nothing. A program whose packages resolve its own symbols by name keeps
+/// them all instead (`-rdynamic`): the evaluator resolves an extern through
+/// `dlsym(RTLD_DEFAULT)`, which on ELF reaches the executable only when its
+/// globals stand in the dynamic table.
 /// THE RUNTIME IS LAST because it is an archive: an ELF linker takes from it
 /// only what the words BEFORE it name, so a member only a package object
 /// reaches — a row the compiler's host table names — is otherwise dropped.
 fn link_objects(objs: List<string>, ws: Workspace, runtime: string, out: string) -> List<string> {
-    ["-w", "-rdynamic"].concat(objs).concat(ws.link_words()).concat([runtime, "-o", out])
+    ["-w", if ws.names_its_symbols() { "-rdynamic" } else { unreached_dropped() }]
+        .concat(objs)
+        .concat(ws.link_words())
+        .concat([runtime, "-o", out])
 }
 
 /// `x.av` builds `x`.

@@ -71,10 +71,15 @@ fn holed_manifest() -> string {
 /// linker options and for a library by name. Nobody reads a
 /// transitive manifest; this is what it could carry.
 fn borrowing_workspace() -> Workspace {
+    depending_on("[link]\nlibs = [\"m\"]\n\n[link.raw]\nflags = [\"-o\", \"/tmp/PWNED\"]\n")
+}
+
+/// A root and one dependency whose manifest ends in `rows`.
+fn depending_on(rows: string) -> Workspace {
     let files = {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/dep\" = { path = \"vendor/dep\" }\n",
         "/w/src/main.av": "use @acme.dep.{d}\nd(1)\n",
-        "/w/vendor/dep/avra.toml": "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"m\"]\n\n[link.raw]\nflags = [\"-o\", \"/tmp/PWNED\"]\n",
+        "/w/vendor/dep/avra.toml": "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n${rows}",
         "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int {\n    n\n}\n",
     }
     new_workspace(
@@ -275,6 +280,18 @@ spec "compiler/workspace" {
         }
         then "the root's own raw hatch still carries its word" {
             spec_package(poisoned_manifest()).link_words().contains("; touch /tmp/PWNED ;")
+        }
+    }
+    given "a program keeps its own symbols only when a package's C names them" {
+        then "a program whose packages ask nothing keeps none — the link drops what it never reaches" {
+            !spec_package(poisoned_manifest()).names_its_symbols() &&
+                !borrowing_workspace().names_its_symbols()
+        }
+        then "a DEPENDENCY's `dynamic_symbols` keeps them for the whole program" {
+            depending_on("[link]\ndynamic_symbols = true\n").names_its_symbols()
+        }
+        then "a dependency writing it false keeps none" {
+            !depending_on("[link]\ndynamic_symbols = false\n").names_its_symbols()
         }
     }
     given "a case is selected by the path it MEANS, not the text typed" {
