@@ -355,6 +355,36 @@ spec "collect's own laws" {
                 "is not a declaration kind",
             )
         }
+        then "a declaration wearing the annotation twice is gathered once" {
+            answered(
+                provided(
+                    tag_decl() +
+                        "@tag(\"a\")\n@tag(\"b\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect models: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n[e.name for e in models].join(\" \")",
+                    ui(),
+                ),
+            ) == "Widget"
+        }
+        then "a collect enum over a declaration wearing its annotation twice declares one variant" {
+            answered(
+                provided(
+                    tag_decl() +
+                        "@tag(\"x\")\n@tag(\"y\")\nfn build() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "\"\${Command.build.ordinal}\"",
+                    ui(),
+                ),
+            ) == "0"
+        }
+        then "an annotation's word and a component's word are two buckets" {
+            answered(
+                built(
+                    "widget w { n -> null }\ntype Entry = { name: string }\n" +
+                        "collect xs: List<Entry> = @widget in self as Entry { name: it.name } by it.name\n" +
+                        "collect ys: List<Entry> = widget in self as Entry { name: it.name } by it.name\n" +
+                        "\"\${xs.length} \${ys.length}\"",
+                ),
+            ) == "0 1"
+        }
         then "a path past `mark` on an `.Annotated` kind refuses — it has no instance value to read a field off" {
             refused_in(
                 provided(
