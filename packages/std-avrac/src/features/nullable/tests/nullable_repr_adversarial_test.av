@@ -3,7 +3,7 @@
 // OPERATORS' record lives in nullable_adversarial_test.av; this
 // file attacks what a nullable IS at runtime.
 use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refusals, refused_with, finder, halver}
+use @std.avrac.testing.{shown, refusals, refused_with, refused_at_run, finder, halver}
 
 /// A `string?` maker — the niche's plainest subject.
 fn greet() -> string {
@@ -129,6 +129,19 @@ spec "features/nullable (representation, adversarial)" {
         }
         then "a member follows `!` — one interleaved postfix fold" {
             shown("${greet()}g(true)!.length") == "1" && shown("${greet()}(g(true)!).length") == "1"
+        }
+    }
+    given "`!` on a foreign pointer's niche" {
+        then "an absent one stops in the insist's own words" {
+            refused_at_run(
+                "extern fn avra_ptr_at(address: int) -> ptr?\nfn held(_p: ptr) -> int { 1 }\nheld(avra_ptr_at(0)!)",
+                "unwrapped an absent value",
+            )
+        }
+        then "a present one with nothing mapped below it passes untouched" {
+            shown(
+                "extern fn avra_ptr_at(address: int) -> ptr?\nfn held(_p: ptr) -> int { 1 }\nheld(avra_ptr_at(65536)!)",
+            ) == "1"
         }
     }
 }
