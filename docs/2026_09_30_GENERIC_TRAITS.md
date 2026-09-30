@@ -61,3 +61,15 @@ receiver contract; the answer agrees while the trait member's answer
 does not mention the trait's own parameters. C2a.4 routes those passes
 through the chosen member, or refuses a generic trait member whose
 answer names `T` until it does.
+
+## Recorded, not landed
+
+- **A default in a generic trait** is refused (`type.trait`). A default's
+  body is lowered once per signatory with `Self` substituted; its `T`
+  needs the arguments of the impl it is reached through. Fires when the
+  first site wants one (the likely first: `Realize<T>`'s shared helpers).
+- **A bound or `dyn` with trait arguments** (`<R: Realize<Text>>`,
+  `dyn Realize<Text>`) parses as an error today — C2a.4 and C2b.
+- **An inherent method sharing a generic trait member's name** is
+  refused at the call as ambiguous; the refusal belongs at the
+  declaration. With C2a.4.
