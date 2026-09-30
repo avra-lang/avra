@@ -126,3 +126,49 @@ the compiler already holds the facts (P10, P12).
 3. How far the admin goes: read-only by default, or full CRUD derived?
 4. Containers: generate an OCI image from the manifest, or leave packaging
    to users?
+
+## 5. What the language and std need, smallest first
+
+Every framework row above leans on the language. These are the pieces the
+HTTP, validate and UI lanes kept hitting, ordered SMALL FIRST: the small
+ones cost days and remove daily friction; the large ones unlock speed.
+Detail lives in each ticket.
+
+### Small (days)
+
+| need | why | ticket |
+|---|---|---|
+| `break` / `continue` | loops written around their absence, in every lane | `avra-8sb5.11.68`, `.11.109`, `.11.205` |
+| List and map vocabulary: `fold`, `sum`, `max`, `sort_by`, `last_index_of`, `Map.remove`, map iteration | hand-written loops for each, in every lane | `avra-8sb5.11.202`, `.11.190`, `.11.206` |
+| File-private names | a package's files share one namespace; one merge renamed five fns | `avra-8sb5.11.158` |
+| Program tests share a helper file | the same helper exists in three copies | `avra-8sb5.11.197` |
+| `export use` (re-exports) | one `use @std.http`; layers offered from one surface at no size cost | `avra-8sb5.10.6` |
+| `Bytes.with_room(n)` | build a response without regrowing | `avra-8sb5.10.104` |
+
+### Medium (a week or so)
+
+| need | why | ticket |
+|---|---|---|
+| `Self` and static trait fns through a type parameter | `decode<T>(v)` instead of `T.decode(v)`; generic constructors | `avra-8sb5.10.141` |
+| Trait impls over generic TYPES (F2031): `impl Respond for Created<T>`, `impl Counted for List<T>` | typed routes' answer types; `@length` on lists; `Stream<T>`, `Untrusted<T>` | `avra-8sb5.11.76`, `.11.211` |
+| A fiber wait primitive (park until woken) | pool waits instead of refusing; SSE without polling; HTTP/2 reading beside handlers; the network queues of §2 | `avra-8sb5.1.28.9`, `.1.26.10` |
+
+F2031 is not generic TRAITS, which the UI lane built (`trait Realize<T>`,
+`docs/2026_09_30_GENERIC_TRAITS.md` on lane/gtraits, landing). F2031 is the
+sibling case, and builds on that branch: its conformance already threads a
+trait's own type variables, and the generic target is the impl's own
+variables.
+
+### Large (weeks) — the Rust/C speed levers
+
+| need | why | ticket |
+|---|---|---|
+| Zero-copy views: a `Bytes` span into its buffer, never boxed | most of the ~29 boxes per request are copied pieces; serde's speed is borrowing from the input | `avra-8sb5.9.13` |
+| Per-request arenas (`@arena_scope`, FULL_SPEC Axis 9) | a request's allocations freed in one step, no per-object counts | to file |
+| SIMD vector values | JSON, header and memchr scans at libc speed | `avra-8sb5.62.1.3` |
+
+### Order
+
+Small wave first, as one lane, then F2031 on lane/gtraits, then the wait
+primitive, then the speed levers once the validator and HTTP benches say
+which one matters most.
