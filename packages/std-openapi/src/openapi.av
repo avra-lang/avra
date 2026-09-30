@@ -1,0 +1,191 @@
+//! @std.openapi — an OpenAPI 3.1 document PROJECTED from what the
+//! program already declares: the route table gives every method and
+//! path, a route's holes its path parameters, and a `@json` record its
+//! schema (`T.json_schema()`, and `T.json_schemas()` for the records
+//! it reads). Nothing is written twice, so the document cannot drift
+//! from the server.
+//!
+//!     let api = Api {
+//!         title: "Ideas",
+//!         version: "1.0.0",
+//!         operations: described(operations(routes), Operation {
+//!             method: .Post, pattern: "/ideas",
+//!             body: Idea.json_schema(), answers: Idea.json_schema(), schemas: Idea.json_schemas(),
+//!         }),
+//!     }
+//!     let docs = served_at("/openapi.json", api)
+//!
+//! A package of its own, so a server that publishes no document links
+//! none of this.
+use @std.json.{Json, Field, field, to_text}
+use @std.http.frame.{Method}
+use @std.http.route.{Route, Reach, fixed}
+use @std.http.http.{Request, Unrouted, Response, Header}
+
+/// A document: its title and version, and its operations.
+export type Api = { title: string, version: string, summary: string? = null, operations: List<Operation> }
+
+/// One operation: the method and route pattern it answers, and what it
+/// takes and answers when a record describes them — each a JSON Schema,
+/// with `schemas` the records those schemas reference.
+export type Operation = {
+    method: Method,
+    pattern: string,
+    reach: Reach = Reach.Width,
+    summary: string? = null,
+    body: Json? = null,
+    answers: Json? = null,
+    schemas: Json? = null,
+}
+
+/// Every operation a route table declares, bare: its method, its path
+/// and the parameters its holes bind.
+export fn operations(routes: List<Route>) -> List<Operation> {
+    [Operation { method: r.method, pattern: r.pattern, reach: r.reach } for r in routes if word_of(r.method) != null]
+}
+
+/// `ops` with `o` in place of the one of its method and pattern — or
+/// after them, when none is.
+export fn described(ops: List<Operation>, o: Operation) -> List<Operation> {
+    if !ops.any(same_route(it, o)) { return ops.concat([o]) }
+    [if same_route(p, o) { o with { reach: p.reach } } else { p } for p in ops]
+}
+
+fn same_route(a: Operation, b: Operation) -> bool { a.method == b.method && a.pattern == b.pattern }
+
+/// The OpenAPI 3.1 document for `api`: its info, a path item per
+/// path in the order first declared, and every schema an operation
+/// references under `components`.
+export fn openapi(api: Api) -> Json {
+    let ops = [o for o in api.operations if word_of(o.method) != null]
+    let paths = [path_of(o) for o in ops]
+    let unique = [p for j, p in paths if paths.index_of(p) == j]
+    Json
+        .Obj(
+            [
+                field("openapi", Json.Str("3.1.0")),
+                field("info", info_of(api)),
+                field("paths", Json.Obj([field(p, path_item(p, ops)) for p in unique])),
+                field("components", Json.Obj([field("schemas", Json.Obj(schemas_of(ops)))])),
+            ],
+        )
+}
+
+/// A route serving `api`'s document as JSON at `path`: written once,
+/// here, and handed out whole.
+export fn served_at(path: string, api: Api) -> Route {
+    let doc = to_text(openapi(api)).bytes()
+    fixed(
+        Method.Get,
+        path,
+        (_q: Request<Unrouted>) -> Response {
+            headers: [Header { name: "content-type", value: "application/json" }],
+            body: doc,
+        },
+    )
+}
+
+fn info_of(api: Api) -> Json {
+    Json
+        .Obj(
+            [field("title", Json.Str(api.title)), field("version", Json.Str(api.version))]
+                .concat(text_field("summary", api.summary)),
+        )
+}
+
+/// A path's item: one operation per method declared at it.
+fn path_item(p: string, ops: List<Operation>) -> Json {
+    Json.Obj([field(word_of(o.method)!, operation_of(o)) for o in ops if path_of(o) == p])
+}
+
+fn operation_of(o: Operation) -> Json {
+    Json
+        .Obj(
+            text_field("summary", o.summary)
+                .concat([field("parameters", Json.Arr([parameter(n) for n in holes_of(o)]))])
+                .concat(json_field("requestBody", request_body(o.body)))
+                .concat([field("responses", responses(o.answers))]),
+        )
+}
+
+fn parameter(name: string) -> Json {
+    Json
+        .Obj(
+            [
+                field("name", Json.Str(name)),
+                field("in", Json.Str("path")),
+                field("required", Json.Bool(true)),
+                field("schema", Json.Obj([field("type", Json.Str("string"))])),
+            ],
+        )
+}
+
+/// A required JSON body of `schema`, when there is one.
+fn request_body(schema: Json?) -> Json? {
+    let s? = schema else { return null }
+    Json.Obj([field("required", Json.Bool(true)), field("content", json_content(s))])
+}
+
+/// A member `key` of text `v`, or none when `v` is absent.
+fn text_field(key: string, v: string?) -> List<Field> {
+    let s? = v else { return [] }
+    [field(key, Json.Str(s))]
+}
+
+/// A member `key` of `v`, or none when `v` is absent.
+fn json_field(key: string, v: Json?) -> List<Field> {
+    let j? = v else { return [] }
+    [field(key, j)]
+}
+
+/// The answers: a 200, carrying `schema` as JSON when one is described.
+fn responses(schema: Json?) -> Json {
+    let described = [field("description", Json.Str("OK"))]
+    let s? = schema else { return Json.Obj([field("200", Json.Obj(described))]) }
+    Json.Obj([field("200", Json.Obj(described.concat([field("content", json_content(s))])))])
+}
+
+fn json_content(schema: Json) -> Json { Json.Obj([field("application/json", Json.Obj([field("schema", schema)]))]) }
+
+/// Every schema the operations reference, each name once, first kept.
+fn schemas_of(ops: List<Operation>) -> List<Field> {
+    let all = [f for o in ops for f in o.schemas?.fields() ?? []]
+    let names = [f.key for f in all]
+    [f for j, f in all if names.index_of(f.key) == j]
+}
+
+// ── Paths ───────────────────────────────────────────────────────
+
+/// A route pattern as an OpenAPI path: a greedy hole's `...` dropped,
+/// a literal pattern as it is.
+fn path_of(o: Operation) -> string {
+    match o.reach { .Literal -> o.pattern, .Width or .Rest -> o.pattern.replace("...}", "}") }
+}
+
+/// The names a pattern's holes bind, in order, wherever in a segment
+/// they sit — none for a literal pattern.
+fn holes_of(o: Operation) -> List<string> {
+    match o.reach {
+        .Literal -> [],
+        .Width or .Rest -> [hole_name(piece) for j, piece in o.pattern.split("{") if j > 0 && piece.contains("}")],
+    }
+}
+
+/// The name a hole binds: what follows its `{` up to its `}`, a greedy
+/// mark dropped.
+fn hole_name(piece: string) -> string { piece.substring(0, piece.index_of("}")).replace("...", "") }
+
+/// OpenAPI's word for a method, or null for one it has no field for.
+fn word_of(m: Method) -> string? {
+    match m {
+        .Get -> "get",
+        .Head -> "head",
+        .Post -> "post",
+        .Put -> "put",
+        .Delete -> "delete",
+        .Patch -> "patch",
+        .Options -> "options",
+        .Trace -> "trace",
+        .Connect or .Other -> null,
+    }
+}

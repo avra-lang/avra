@@ -58,6 +58,10 @@ fn codec(t: Type) -> Decls {
     let reads = [member_read(f) for f in t.fields]
     let body = record_of(t, reads)
     let members = members_of(t)
+    let schema = schema_of(t)
+    let schemas = listed(
+        [quote { field(${literal(n)}, ${name(n)}.json_schema()) } for n in read_closure(t)],
+    )
     quote {
         impl ${t} {
             /// This record read from a JSON document.
@@ -75,6 +79,19 @@ fn codec(t: Type) -> Decls {
             /// This record as a JSON object, its fields in declared order.
             fn to_json() -> Json {
                 Json.Obj(${members})
+            }
+
+            /// This record's JSON Schema: an object of its fields, each
+            /// named record by reference into `json_schemas`.
+            static fn json_schema() -> Json {
+                ${schema}
+            }
+
+            /// The schema of this record and of every record it reads,
+            /// by name — the `components.schemas` its references point
+            /// into.
+            static fn json_schemas() -> Json {
+                Json.Obj(${schemas})
             }
         }
     }
@@ -127,10 +144,17 @@ fn read_items(elem: Kind, v: Code, p: Code, depth: int) -> Code {
 /// The object's members as one list, one `field` per record field,
 /// folded where the derive runs so the literal's length is fixed.
 fn members_of(t: Type) -> Code {
-    let fs = [quote { field(${literal(f.name)}, ${written(f.kind, quote { self.${f} }, 0)}) } for f in t.fields]
-    if fs.is_empty() { return quote { [] } }
-    mut all = quote { [${fs[0]}] }
-    for m in fs.slice(1, fs.length) {
+    listed(
+        [quote { field(${literal(f.name)}, ${written(f.kind, quote { self.${f} }, 0)}) } for f in t.fields],
+    )
+}
+
+/// One list of the generated elements `xs`, folded where the derive
+/// runs so the literal's length is fixed.
+fn listed(xs: List<Code>) -> Code {
+    if xs.is_empty() { return quote { [] } }
+    mut all = quote { [${xs[0]}] }
+    for m in xs.slice(1, xs.length) {
         let sofar = all
         all = quote { ${sofar}.concat([${m}]) }
     }
@@ -166,6 +190,63 @@ fn written_items(elem: Kind, v: Code, depth: int) -> Code {
     let e = "e${depth}"
     let out = written(elem, name(e), depth + 1)
     quote { Json.Arr([${out} for ${e} in ${v}]) }
+}
+
+// ── Schema ───────────────────────────────────────────────────────
+
+/// The JSON Schema of a record: an object, its properties, and every
+/// field that is not optional required.
+fn schema_of(t: Type) -> Code {
+    let props = listed(
+        [quote { field(${literal(f.name)}, ${kind_schema(f.kind)}) } for f in t.fields],
+    )
+    let required = listed(
+        [quote { Json.Str(${literal(f.name)}) } for f in t.fields if !optional(f.kind)],
+    )
+    quote {
+        Json.Obj([
+            field("type", Json.Str("object")),
+            field("properties", Json.Obj(${props})),
+            field("required", Json.Arr(${required})),
+        ])
+    }
+}
+
+/// The schema of a field of `kind`: a named record by reference.
+fn kind_schema(kind: Kind) -> Code {
+    match kind {
+        .Int -> typed("integer"),
+        .Float -> typed("number"),
+        .Str -> typed("string"),
+        .Bool -> typed("boolean"),
+        .Opt(inner) -> quote { Json.Obj([field("anyOf", Json.Arr([${kind_schema(inner)}, ${typed("null")}]))]) },
+        .List(elem) -> quote { Json.Obj([field("type", Json.Str("array")), field("items", ${kind_schema(elem)})]) },
+        .Named(n, _) -> quote { Json.Obj([field("$ref", Json.Str(${literal("#/components/schemas/" + n)}))]) },
+        rest -> quote { unwritable() },
+    }
+}
+
+fn typed(word: string) -> Code { quote { Json.Obj([field("type", Json.Str(${literal(word)}))]) } }
+
+/// Whether a field may be absent. A PROJECTION: only `T?` answers.
+fn optional(k: Kind) -> bool {
+    match k { .Opt(_) -> true, rest -> false }
+}
+
+/// This record and every record it reads, transitively, each once, in
+/// the order first reached — found here, where the derive runs, so a
+/// record that reads itself adds nothing twice.
+fn read_closure(t: Type) -> List<string> {
+    mut seen = [t.name]
+    mut at = 0
+    while at < seen.length {
+        let fields = if at == 0 { t.fields } else { type_named(seen[at])?.fields ?? [] }
+        for n in [n for f in fields for n in records_read(f.kind)] {
+            if !seen.contains(n) { seen = seen.concat([n]) }
+        }
+        at = at + 1
+    }
+    seen
 }
 
 // ── The shape a codec reads ──────────────────────────────────────
