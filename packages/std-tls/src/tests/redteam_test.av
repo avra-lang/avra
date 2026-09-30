@@ -6,7 +6,7 @@
 // — so no peer can restart a handshake to flood one.
 use @std.net.{Listener, connect}
 use @std.time.{Duration, ms, secs, sleep, within}
-use @std.tls.{TlsError, server, session}
+use @std.tls.{TlsError, server_config, session, wired}
 use @std.tls.testing.{
     localhost_ca,
     localhost_chain,
@@ -38,7 +38,7 @@ fn swollen_chain(copies: int) -> Bytes {
 }
 
 fn huge_chain_refused() -> Result<bool, TlsError> {
-    let s = server()?
+    let s = server_config()?
     let refused = words(s.presenting(swollen_chain(60), localhost_key()))
     let fits = s.presenting(swollen_chain(5), localhost_key())?
     let p = paired(trusting_localhost()?, fits, "localhost")?
@@ -80,7 +80,7 @@ fn serving_within(l: Listener, d: Duration) -> string {
 fn dribble_meets_the_deadline() -> Result<bool, TlsError> {
     let l = bound()?
     let server = spawn serving_within(l, ms(400))
-    let c = lifted(connect("127.0.0.1", l.port, secs(2)))?
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
     let head = [22, 3, 1, 1, 0].bytes()!
     mut i = 0
     while i < 12 {

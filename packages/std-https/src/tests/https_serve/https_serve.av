@@ -10,7 +10,8 @@ use @std.time.{ms, secs, within}
 use @std.http.frame.{limits}
 use @std.http.http.{text}
 use @std.http.server.{served, timing}
-use @std.http.client.{Client, ClientError, secured, request}
+use @std.http.client.{Client, ClientError, request, netted}
+use @std.https.{over_tls, secured, tls_carried}
 use @std.tls.{TlsError}
 use @std.tls.testing.{trusting_localhost, serving_localhost}
 
@@ -19,14 +20,6 @@ type App = { hits: Cell<int> }
 fn fetched(mut c: Client, path: string) -> Result<string, ClientError> {
     let a = c.fetched(.Get, request("GET", path, "localhost", [], "".bytes())!, secs(5))?
     .Ok("${a.status} ${a.body.text() ?? "?"}")
-}
-
-fn netted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
-    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
-}
-
-fn tlsed<T>(r: Result<T, TlsError>) -> Result<T, ClientError> {
-    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Tls(e)) }
 }
 
 /// A plain request written to `port` and whatever comes back before
@@ -51,19 +44,19 @@ fn plain_at(port: int) -> Result<string, NetError> {
 
 fn shown() -> Result<string, ClientError> {
     let l = netted(listen("127.0.0.1", 0))?
-    let sc = tlsed((tlsed(serving_localhost())?).offering(["http/1.1"]))?
+    let sc = tls_carried((tls_carried(serving_localhost())?).offering(["http/1.1"]))?
     let s = served(l, () -> App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
         app.hits.set(app.hits.get() + 1)
         text(200, "${q.target() ?? "?"}|${app.hits.get()}")
     }
-        .secured(sc)
+        .secured(over_tls(sc))
     spawn s.run(1)
     defer s.stop()
-    let cc = tlsed((tlsed(trusting_localhost())?).offering(["http/1.1"]))?
+    let cc = tls_carried((tls_carried(trusting_localhost())?).offering(["http/1.1"]))?
     mut c = secured("localhost", l.port, secs(5), limits(), cc)?
     let one = fetched(c, "/one")?
     let two = fetched(c, "/two")?
-    let agreed = match c.conn { .Secure(t) -> t.protocol() ?? "<none>", .Plain(_) -> "<plain>" }
+    let agreed = c.protocol() ?? "<none>"
     c.close()?
     mut again = secured("localhost", l.port, secs(5), limits(), cc)?
     let three = fetched(again, "/three")?

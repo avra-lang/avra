@@ -6,15 +6,11 @@
 //! side's error ends the program with its words.
 use @std.net.{listen, Listener, NetError}
 use @std.time.{secs}
-use @std.tls.{TlsConn, TlsError, dial, handshake}
+use @std.tls.{TlsConn, TlsError, dial, handshake, wired}
 use @std.tls.testing.{trusting_localhost, serving_localhost}
 
-fn lifted<T>(r: Result<T, NetError>) -> Result<T, TlsError> {
-    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
-}
-
 fn echo(l: Listener) -> Result<int, TlsError> {
-    let c = handshake(lifted(l.accept())?, (serving_localhost()?).offering(["h2", "http/1.1"])?, "")?
+    let c = handshake(wired(l.accept())?, (serving_localhost()?).offering(["h2", "http/1.1"])?, "")?
     mut total = 0
     mut open = true
     while open {
@@ -41,7 +37,7 @@ fn drained(c: TlsConn) -> Result<string, TlsError> {
 }
 
 fn run() -> Result<string, TlsError> {
-    let l = lifted(listen("127.0.0.1", 0))?
+    let l = wired(listen("127.0.0.1", 0))?
     let server = spawn echo(l)
     let c = dial("localhost", l.port, secs(5), (trusting_localhost()?).offering(["http/1.1"])?)?
     let sent = c.write("hello, secure world".bytes())?

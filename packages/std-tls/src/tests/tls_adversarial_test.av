@@ -3,7 +3,7 @@
 // after they end, ciphertext that is garbage or cut short, a peer
 // feeding past the session's cap, and an identity whose key is a
 // stranger's. Each refusal names its verb and subject.
-use @std.tls.{Session, TlsError, client, server, session}
+use @std.tls.{Session, TlsError, client_config, server_config, session}
 use @std.tls.testing.{localhost_ca, localhost_chain, trusting_localhost, serving_localhost}
 
 /// A P-256 key that belongs to no certificate here.
@@ -22,18 +22,18 @@ fn stranger_key() -> Bytes {
 fn pem_of(lines: List<string>) -> Bytes { (lines.join("\n") + "\n").bytes() }
 
 fn empty_pem_refused() -> Result<bool, TlsError> {
-    let c = client()?
+    let c = client_config()?
     words(c.trusting("".bytes())).starts_with("trust 0 bytes of PEM: ")
 }
 
 fn a_bundle_counts_its_anchors() -> Result<bool, TlsError> {
-    let c = client()?
+    let c = client_config()?
     let twice = localhost_ca().concat(localhost_ca())
     c.trusting(twice)? == 2
 }
 
 fn stranger_key_refused() -> Result<bool, TlsError> {
-    let s = server()?
+    let s = server_config()?
     words(s.presenting(localhost_chain(), stranger_key())) == "identity 709 bytes of PEM: a private key that is not its certificate's"
 }
 

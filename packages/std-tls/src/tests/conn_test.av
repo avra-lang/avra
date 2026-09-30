@@ -5,14 +5,10 @@
 // runs as its own task, so every verb parks as it would in service.
 use @std.net.{Listener, Conn, NetError, listen, connect}
 use @std.time.{Duration, secs, ms, within}
-use @std.tls.{TlsConn, TlsError, dial, handshake}
+use @std.tls.{TlsConn, TlsError, dial, handshake, wired}
 use @std.tls.testing.{trusting_localhost, serving_localhost}
 
-fn lifted<T>(r: Result<T, NetError>) -> Result<T, TlsError> {
-    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
-}
-
-fn bound() -> Result<Listener, TlsError> { lifted(listen("127.0.0.1", 0)) }
+fn bound() -> Result<Listener, TlsError> { wired(listen("127.0.0.1", 0)) }
 
 /// The next connection's handshake as the server runs it: its words
 /// on failure, "<ok>" once secured.
@@ -27,7 +23,7 @@ fn served_words(l: Listener) -> string {
 }
 
 fn accepted_tls(l: Listener) -> Result<TlsConn, TlsError> {
-    handshake(lifted(l.accept())?, serving_localhost()?, "")
+    handshake(wired(l.accept())?, serving_localhost()?, "")
 }
 
 fn accepted_tls_within(l: Listener, d: Duration) -> string {
@@ -43,28 +39,28 @@ fn accepted_tls_within(l: Listener, d: Duration) -> string {
 fn hangup_mid_handshake() -> Result<bool, TlsError> {
     let l = bound()?
     let server = spawn served_words(l)
-    let c = lifted(connect("127.0.0.1", l.port, secs(2)))?
-    lifted(c.close())?
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
+    wired(c.close())?
     server.await.contains("the peer closed without close_notify")
 }
 
 fn plain_http_at_a_tls_port() -> Result<bool, TlsError> {
     let l = bound()?
     let server = spawn served_words(l)
-    let c = lifted(connect("127.0.0.1", l.port, secs(2)))?
-    lifted(c.write("GET / HTTP/1.1\r\nhost: localhost\r\n\r\n".bytes()))?
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
+    wired(c.write("GET / HTTP/1.1\r\nhost: localhost\r\n\r\n".bytes()))?
     let refused = server.await
     let answer = within secs(2) { c.read(4096) }
-    lifted(c.close())?
+    wired(c.close())?
     refused.starts_with("handshake ") && !(answer is .Err)
 }
 
 fn silent_peer_times_out() -> Result<bool, TlsError> {
     let l = bound()?
     let server = spawn accepted_tls_within(l, ms(200))
-    let c = lifted(connect("127.0.0.1", l.port, secs(2)))?
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
     let words = server.await
-    lifted(c.close())?
+    wired(c.close())?
     words == "timed out"
 }
 
@@ -73,7 +69,7 @@ fn silent_peer_times_out() -> Result<bool, TlsError> {
 fn cut_after_a_word(l: Listener) -> Result<int, TlsError> {
     let c = accepted_tls(l)?
     c.write("partial".bytes())?
-    lifted(c.conn.close())
+    wired(c.conn.close())
 }
 
 fn cut_stream_is_cut() -> Result<bool, TlsError> {
@@ -132,7 +128,7 @@ fn closed_twice() -> Result<bool, TlsError> {
 fn wrong_host_refused_by_the_client() -> Result<bool, TlsError> {
     let l = bound()?
     let server = spawn served_words(l)
-    let c = lifted(connect("127.0.0.1", l.port, secs(2)))?
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
     let refused = words(handshake(c, trusting_localhost()?, "example.com"))
     let _ = server.await
     refused == misnamed("example.com")
@@ -141,7 +137,7 @@ fn wrong_host_refused_by_the_client() -> Result<bool, TlsError> {
 fn nobody_listening() -> Result<bool, TlsError> {
     let l = bound()?
     let port = l.port
-    lifted(l.close())?
+    wired(l.close())?
     words(dial("localhost", port, secs(2), trusting_localhost()?)).starts_with("connect ")
 }
 

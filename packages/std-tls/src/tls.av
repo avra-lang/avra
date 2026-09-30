@@ -13,7 +13,7 @@
 //! connection's engine, touching no socket: the peer's ciphertext is
 //! `fed` in and its own `outgoing` drained out.
 //!
-//! VERIFICATION IS ON BY DEFAULT: `client()` checks the peer's chain
+//! VERIFICATION IS ON BY DEFAULT: `client_config()` checks the peer's chain
 //! against the system's trust anchors (`roots_path`) and the host it
 //! named, and `anchored(pem)` against a private authority instead. A
 //! refusal names its reason. `unverified` is the one way off, named
@@ -98,7 +98,7 @@ impl Error for TlsError {
 }
 
 /// A net result as TLS's: the failure wears `.Net`.
-fn wired<T>(r: Result<T, NetError>) -> Result<T, TlsError> {
+export fn wired<T>(r: Result<T, NetError>) -> Result<T, TlsError> {
     match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
 }
 
@@ -133,7 +133,7 @@ export type Config = { handle: int, side: Side }
 /// anchors: the bundle `SSL_CERT_FILE` names, else the first of the
 /// platform's usual bundles that exists. A client remembers the last
 /// session each host granted, and its next connection there resumes.
-export fn client() -> Result<Config, TlsError> {
+export fn client_config() -> Result<Config, TlsError> {
     let path? = roots_path() else {
         fail TlsError
             .Unanchored("SSL_CERT_FILE is unset and none of ${root_bundles().join(", ")} exists")
@@ -176,7 +176,7 @@ fn root_bundles() -> List<string> {
 
 /// A server config: presenting nothing until an identity is added,
 /// issuing resumption tickets.
-export fn server() -> Result<Config, TlsError> { configured(Side.Server) }
+export fn server_config() -> Result<Config, TlsError> { configured(Side.Server) }
 
 fn configured(side: Side) -> Result<Config, TlsError> {
     let h = counted(avra_tls_config(side_word(side)), "config", side_name(side))?

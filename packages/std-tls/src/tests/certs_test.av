@@ -6,7 +6,7 @@
 // a client that names no host. The fixtures below are signed by the
 // test authority in @std.tls.testing and are good for nothing else.
 use @std.io.{read_bytes}
-use @std.tls.{Config, TlsError, client, server, anchored, roots_path}
+use @std.tls.{Config, TlsError, client_config, server_config, anchored, roots_path}
 use @std.tls.testing.{localhost_ca, localhost_chain, localhost_key, trusting_localhost}
 
 /// `*.example.test`, leaf first, then the intermediate that signed it.
@@ -107,13 +107,13 @@ fn expired_key() -> Bytes {
 
 /// A server presenting localhost first, then the wildcard.
 fn named_server() -> Result<Config, TlsError> {
-    let s = server()?
+    let s = server_config()?
     s.presenting(localhost_chain(), localhost_key())?
     s.presenting(wildcard_chain(), wildcard_key())
 }
 
 fn served(chain: Bytes, key: Bytes) -> Result<Config, TlsError> {
-    (server()?).presenting(chain, key)
+    (server_config()?).presenting(chain, key)
 }
 
 /// A client's handshake against `sc`, asking for `host`: "<ok>" or
@@ -132,7 +132,10 @@ fn shaken_with(cc: Result<Config, TlsError>, sc: Config, host: string) -> Result
 fn asked(sc: Config, host: string) -> string { verdict(trusting_localhost(), sc, host) }
 
 fn asked_system(host: string) -> string {
-    match named_server() { .Ok(sc) -> verdict(client(), sc, host), .Err(e) -> e.describe().message }
+    match named_server() {
+        .Ok(sc) -> verdict(client_config(), sc, host),
+        .Err(e) -> e.describe().message,
+    }
 }
 
 fn asked_named(host: string) -> string {
@@ -145,7 +148,7 @@ fn asked_of(chain: Bytes, key: Bytes, host: string) -> string {
 
 fn system_roots_load() -> Result<bool, TlsError> {
     let path? = roots_path() else { return false }
-    let c = client()?
+    let c = client_config()?
     let bundle = read_bytes(path) catch "".bytes()
     let counted = (anchored(bundle)?).trusting(localhost_ca())?
     c.free()?
