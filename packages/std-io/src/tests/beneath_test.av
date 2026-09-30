@@ -1,0 +1,60 @@
+// A file opened beneath a root and never above it, and a span of it
+// read.
+use @std.io.{open_beneath, Opened, Entry}
+
+fn root() -> string { "packages/std-io/src/tests/beneath_root" }
+
+fn kind_said(rel: string) -> string {
+    match open_beneath(root(), rel) {
+        .Ok(o) -> {
+            o.close()
+            match o.kind {
+                .File -> "file ${o.size}",
+                .Dir -> "dir",
+                .Other -> "other",
+                .Missing -> "missing",
+            }
+        },
+        .Err(e) -> "refused",
+    }
+}
+
+fn span_said(rel: string, from: int, n: int) -> string {
+    match open_beneath(root(), rel) {
+        .Ok(o) -> {
+            defer o.close()
+            match o.span(from, n) { .Ok(b) -> b.text() ?? "?", .Err(_) -> "failed" }
+        },
+        .Err(_) -> "refused",
+    }
+}
+
+spec "std/io — open_beneath" {
+    given "the empty case, written first" {
+        then "an empty path is refused" { kind_said("") == "refused" }
+        then "an empty span is empty" { span_said("ten.txt", 0, 0) == "" }
+    }
+    given "what it opens" {
+        then "a file, with its size" { kind_said("ten.txt") == "file 10" }
+        then "a nested file" { kind_said("d/f.txt") == "file 5" }
+        then "a directory" { kind_said("d") == "dir" }
+        then "a missing file" { kind_said("nope") == "refused" }
+    }
+    given "never above the root" {
+        then "a parent" { kind_said("../beneath_outside.txt") == "refused" &&
+                kind_said("d/../../beneath_outside.txt") == "refused" }
+        then "a dot, an empty segment, a leading slash" {
+            kind_said("./ten.txt") == "refused" &&
+                kind_said("d//f.txt") == "refused" &&
+                kind_said("/etc/hosts") == "refused"
+        }
+        then "a symlink out" { kind_said("out_link") == "refused" }
+        then "a trailing slash names an empty segment" { kind_said("d/") == "refused" }
+    }
+    given "a span" {
+        then "from the start" { span_said("ten.txt", 0, 3) == "abc" }
+        then "from the middle" { span_said("ten.txt", 4, 3) == "efg" }
+        then "past the end is short" { span_said("ten.txt", 8, 10) == "ij" }
+        then "wholly past the end is empty" { span_said("ten.txt", 20, 5) == "" }
+    }
+}

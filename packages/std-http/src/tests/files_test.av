@@ -1,0 +1,190 @@
+// A directory served: every way out of the root refused first, then
+// the file, its index, its validators, its conditional answers and
+// its byte ranges.
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.route.{compiled, dispatch}
+use @std.http.files.{Files, directory}
+use @std.http.date.{http_date, http_date_parsed}
+
+fn site() -> Files { Files { root: "packages/std-http/src/tests/files_root" } }
+
+/// The response to one request line and its extra fields, served
+/// from `files` under `/static`.
+fn served_by(files: Files, line: string, fields: string) -> Response {
+    let q = framed_from("${line}\r\nHost: h\r\n${fields}\r\n".bytes())!
+    dispatch(compiled(directory("/static", files)), q)
+}
+
+fn got(target: string) -> Response { served_by(site(), "GET ${target} HTTP/1.1", "") }
+
+fn got_with(target: string, fields: string) -> Response { served_by(site(), "GET ${target} HTTP/1.1", fields) }
+
+fn field_of(r: Response, name: string) -> string { r.headers.find(it.name == name)?.value ?? "-" }
+
+fn said(r: Response) -> string { "${r.status} ${r.body.text() ?? "?"}" }
+
+spec "std/http — static files" {
+    given "every way out of the root is a 404" {
+        then "a parent segment" { got("/static/../files_outside.txt").status == 404 }
+        then "a parent segment deeper in" { got("/static/css/../../files_outside.txt").status == 404 }
+        then "an encoded parent" { got("/static/%2e%2e/files_outside.txt").status == 404 }
+        then "an encoded slash around a parent" { got("/static/css%2F..%2F..%2Ffiles_outside.txt").status == 404 }
+        then "a doubly encoded parent stays a name that is not there" { got("/static/%252e%252e/files_outside.txt").status == 404 }
+        then "a backslash" { got("/static/css\\..\\a.txt").status == 404 &&
+                got("/static/css%5C..%5Ca.txt").status == 404 }
+        then "an encoded NUL" { got("/static/a.txt%00.png").status == 404 }
+        then "a malformed escape" { got("/static/a%2.txt").status == 404 }
+        then "an empty segment" { got("/static//a.txt").status == 404 && got("/static/css//app.css").status == 404 }
+        then "a dot segment" { got("/static/./a.txt").status == 404 }
+        then "a symlink leading out of the root" { got("/static/escape.txt").status == 404 }
+        then "a symlink staying inside the root is refused too" { got("/static/inner_link.txt").status == 404 }
+        then "a symlinked directory" { got("/static/sub/css_link/app.css").status == 404 }
+        then "a dotfile" { got("/static/.secret").status == 404 && got("/static/%2esecret").status == 404 }
+        then "a dotfile when dotfiles are served" {
+            served_by(
+                Files { root: site().root, dotfiles: true },
+                "GET /static/.secret HTTP/1.1",
+                "",
+            )
+                .status == 200
+        }
+        then "a root that does not exist" { served_by(Files { root: "/definitely/not/here" }, "GET /static/a.txt HTTP/1.1", "")
+                .status == 404 }
+        then "a sibling of the prefix is not beneath it" { got("/staticx/a.txt").status == 404 }
+    }
+    given "a file" {
+        then "its body" { said(got("/static/a.txt")) == "200 hello world\n" }
+        then "a nested one" { said(got("/static/css/app.css")) == "200 body{}\n" }
+        then "a name holding an escaped `%`" { said(got("/static/per%25cent.txt")) == "200 x" }
+        then "its media type by extension" { field_of(got("/static/css/app.css"), "content-type") == "text/css; charset=utf-8" }
+        then "an unknown extension is octets" { field_of(got("/static/nodex/plain.bin"), "content-type") == "application/octet-stream" }
+        then "nosniff and ranges advertised" {
+            let r = got("/static/a.txt")
+            field_of(r, "x-content-type-options") == "nosniff" &&
+                field_of(r, "accept-ranges") == "bytes"
+        }
+        then "a missing file" { got("/static/nope.txt").status == 404 }
+        then "a HEAD answers like a GET" { served_by(site(), "HEAD /static/a.txt HTTP/1.1", "").status == 200 }
+        then "a POST is not routed" { served_by(site(), "POST /static/a.txt HTTP/1.1", "Content-Length: 0\r\n").status == 404 }
+        then "max_age sends cache-control" {
+            field_of(
+                served_by(
+                    Files { root: site().root, max_age: 60 },
+                    "GET /static/a.txt HTTP/1.1",
+                    "",
+                ),
+                "cache-control",
+            ) == "max-age=60"
+        }
+        then "past `largest` it is not read whole" {
+            served_by(Files { root: site().root, largest: 4 }, "GET /static/a.txt HTTP/1.1", "")
+                .status == 500
+        }
+        then "past `largest` a range still reads" {
+            said(
+                served_by(
+                    Files { root: site().root, largest: 4 },
+                    "GET /static/a.txt HTTP/1.1",
+                    "Range: bytes=0-4\r\n",
+                ),
+            ) == "206 hello"
+        }
+    }
+    given "a directory" {
+        then "the root's index" { said(got("/static/")) == "200 <h1>home</h1>\n" }
+        then "a nested index" { said(got("/static/sub/")) == "200 sub home\n" }
+        then "without its slash it is sent to it" {
+            let r = got("/static/sub")
+            r.status == 301 && field_of(r, "location") == "/static/sub/"
+        }
+        then "no index file is a 404" { got("/static/nodex/").status == 404 }
+        then "no index configured is a 404" { served_by(Files { root: site().root, index: null }, "GET /static/ HTTP/1.1", "").status == 404 }
+    }
+    given "validators and conditions" {
+        then "a strong tag and a date" {
+            let r = got("/static/a.txt")
+            field_of(r, "etag").starts_with("\"12-") &&
+                http_date_parsed(field_of(r, "last-modified")) != null
+        }
+        then "the tag it sent answers 304" { got_with(
+                "/static/a.txt",
+                "If-None-Match: ${field_of(got("/static/a.txt"), "etag")}\r\n",
+            )
+                .status == 304 }
+        then "a weak form of it, in a list, answers 304" {
+            got_with(
+                "/static/a.txt",
+                "If-None-Match: \"x\", W/${field_of(got("/static/a.txt"), "etag")}\r\n",
+            )
+                .status == 304
+        }
+        then "`*` answers 304" { got_with("/static/a.txt", "If-None-Match: *\r\n").status == 304 }
+        then "another tag answers 200" { got_with("/static/a.txt", "If-None-Match: \"nope\"\r\n").status == 200 }
+        then "the date it sent answers 304" { got_with(
+                "/static/a.txt",
+                "If-Modified-Since: ${field_of(got("/static/a.txt"), "last-modified")}\r\n",
+            )
+                .status == 304 }
+        then "an older date answers 200" { got_with("/static/a.txt", "If-Modified-Since: ${http_date(0)}\r\n").status == 200 }
+        then "a tag that misses overrules a date that matches" {
+            got_with(
+                "/static/a.txt",
+                "If-None-Match: \"nope\"\r\nIf-Modified-Since: ${field_of(got("/static/a.txt"), "last-modified")}\r\n",
+            )
+                .status == 200
+        }
+        then "an unreadable date is ignored" { got_with("/static/a.txt", "If-Modified-Since: yesterday\r\n").status == 200 }
+        then "a 304 carries no body and keeps its tag" {
+            let r = got_with("/static/a.txt", "If-None-Match: *\r\n")
+            r.body.is_empty() && field_of(r, "etag").starts_with("\"")
+        }
+    }
+    given "byte ranges" {
+        then "a closed range" {
+            let r = got_with("/static/a.txt", "Range: bytes=0-4\r\n")
+            said(r) == "206 hello" && field_of(r, "content-range") == "bytes 0-4/12"
+        }
+        then "an open range" { said(got_with("/static/a.txt", "Range: bytes=6-\r\n")) == "206 world\n" }
+        then "a suffix" { said(got_with("/static/a.txt", "Range: bytes=-6\r\n")) == "206 world\n" }
+        then "a suffix longer than the file is the file" { said(got_with("/static/a.txt", "Range: bytes=-100\r\n")) == "206 hello world\n" }
+        then "an end past the file is clipped" { field_of(got_with("/static/a.txt", "Range: bytes=6-999\r\n"), "content-range") == "bytes 6-11/12" }
+        then "a start past the file is 416" {
+            let r = got_with("/static/a.txt", "Range: bytes=12-\r\n")
+            r.status == 416 && field_of(r, "content-range") == "bytes */12"
+        }
+        then "a zero suffix is 416" { got_with("/static/a.txt", "Range: bytes=-0\r\n").status == 416 }
+        then "several ranges serve the whole file" { got_with("/static/a.txt", "Range: bytes=0-1,3-4\r\n").status == 200 }
+        then "another unit serves the whole file" { got_with("/static/a.txt", "Range: items=0-1\r\n").status == 200 }
+        then "a backwards range serves the whole file" { got_with("/static/a.txt", "Range: bytes=5-2\r\n").status == 200 }
+        then "a signed or junk number serves the whole file" {
+            got_with("/static/a.txt", "Range: bytes=-1-3\r\n").status == 200 &&
+                got_with("/static/a.txt", "Range: bytes=a-3\r\n").status == 200
+        }
+        then "an If-Range naming its tag keeps the range" {
+            got_with(
+                "/static/a.txt",
+                "Range: bytes=0-4\r\nIf-Range: ${field_of(got("/static/a.txt"), "etag")}\r\n",
+            )
+                .status == 206
+        }
+        then "an If-Range naming another tag serves the whole file" {
+            got_with("/static/a.txt", "Range: bytes=0-4\r\nIf-Range: \"old\"\r\n").status == 200
+        }
+        then "a HEAD's range is ignored" { served_by(site(), "HEAD /static/a.txt HTTP/1.1", "Range: bytes=0-4\r\n").status == 200 }
+    }
+    given "HTTP dates" {
+        then "the epoch" { http_date(0) == "Thu, 01 Jan 1970 00:00:00 GMT" }
+        then "RFC 9110's example" { http_date(784111777) == "Sun, 06 Nov 1994 08:49:37 GMT" }
+        then "a leap day" { http_date(951782400) == "Tue, 29 Feb 2000 00:00:00 GMT" }
+        then "read back" { http_date_parsed("Sun, 06 Nov 1994 08:49:37 GMT") == 784111777 }
+        then "every day of a leap year round-trips" { [d * 86400 + 3661 for d in 10957..11323].all(http_date_parsed(http_date(it)) == it) }
+        then "the obsolete forms are absent" {
+            http_date_parsed("Sunday, 06-Nov-94 08:49:37 GMT") == null &&
+                http_date_parsed("Sun Nov  6 08:49:37 1994") == null
+        }
+        then "a wrong month or a sign is absent" {
+            http_date_parsed("Sun, 06 Foo 1994 08:49:37 GMT") == null &&
+                http_date_parsed("Sun, -6 Nov 1994 08:49:37 GMT") == null
+        }
+    }
+}

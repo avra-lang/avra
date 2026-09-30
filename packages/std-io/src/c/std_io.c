@@ -230,3 +230,73 @@ int64_t avra_io_drop(int64_t h) {
 int64_t avra_io_env_set(const char* name) {
     return getenv(name) != NULL ? 0 : -1;
 }
+
+/* A read descriptor for `rel` BENEATH the directory `root`, or
+   -errno. Each segment is opened relative to the one before with
+   O_NOFOLLOW, so a symlink anywhere below the root refuses (ELOOP or
+   ENOTDIR) rather than leading out of it, and `..`, `.` and an empty
+   segment refuse as EACCES — the walk never names a parent. The last
+   segment opens O_NONBLOCK so a FIFO standing there cannot block the
+   caller; `avra_io_fd_kind` says what was opened. `rel` is `/`-split
+   and never begins with one. */
+int64_t avra_io_open_beneath(const char* root, const char* rel) {
+    int dir;
+    while ((dir = open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0 && errno == EINTR) {}
+    if (dir < 0) return -errno;
+    const char* seg = rel;
+    for (;;) {
+        const char* end = strchr(seg, '/');
+        size_t n = end ? (size_t)(end - seg) : strlen(seg);
+        if (n == 0 || n >= 256 || (n == 1 && seg[0] == '.') || (n == 2 && seg[0] == '.' && seg[1] == '.')) {
+            close(dir);
+            return -EACCES;
+        }
+        char name[256];
+        memcpy(name, seg, n);
+        name[n] = '\0';
+        int flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | (end ? O_DIRECTORY : O_NONBLOCK);
+        int fd;
+        while ((fd = openat(dir, name, flags)) < 0 && errno == EINTR) {}
+        int err = errno;
+        close(dir);
+        if (fd < 0) return -err;
+        if (!end) return fd;
+        dir = fd;
+        seg = end + 1;
+    }
+}
+
+/* What a descriptor holds: 1 a file, 2 a directory, 3 something
+   else; -errno when the host will not say. */
+int64_t avra_io_fd_kind(int64_t fd) {
+    struct stat st;
+    if (fstat((int)fd, &st) != 0) return -errno;
+    if (S_ISREG(st.st_mode)) return 1;
+    if (S_ISDIR(st.st_mode)) return 2;
+    return 3;
+}
+
+/* A descriptor's size in octets, or -errno. */
+int64_t avra_io_fd_size(int64_t fd) {
+    struct stat st;
+    if (fstat((int)fd, &st) != 0) return -errno;
+    return (int64_t)st.st_size;
+}
+
+/* A descriptor's modification time, whole seconds since the epoch,
+   or -errno. */
+int64_t avra_io_fd_mtime(int64_t fd) {
+    struct stat st;
+    if (fstat((int)fd, &st) != 0) return -errno;
+#ifdef __APPLE__
+    return (int64_t)st.st_mtimespec.tv_sec;
+#else
+    return (int64_t)st.st_mtim.tv_sec;
+#endif
+}
+
+/* The descriptor positioned at `at` from its start: `at`, or -errno. */
+int64_t avra_io_seek(int64_t fd, int64_t at) {
+    off_t o = lseek((int)fd, (off_t)at, SEEK_SET);
+    return o < 0 ? -errno : (int64_t)o;
+}
