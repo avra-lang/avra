@@ -17,8 +17,7 @@
 //! wrong kind are each `-32602` naming the param. Numbers are
 //! integers, as in `@std/json`.
 use @std.json.{Json, Field, field, parse, to_text}
-use @std.action.{Impact, Presentation}
-use @std.action.{faults as impact_faults}
+use @std.action.{Impact, faults as impact_faults}
 use @std.errors.{Error}
 use @std.http.frame.{Method}
 use @std.http.http.{Request, Unrouted, Response, Header}
@@ -110,8 +109,8 @@ fn name_char(c: int) -> bool {
 
 // ── The protocol ────────────────────────────────────────────────
 
-/// The methods this server speaks.
-enum Method_ { Initialize, Initialized, ToolsList, ToolsCall, Ping }
+/// The JSON-RPC methods this server speaks.
+enum Verb { Initialize, Initialized, ToolsList, ToolsCall, Ping }
 
 /// A request, read: its id echoed as sent, and whether it is a
 /// notification — no `id` member at all, so never answered.
@@ -159,7 +158,7 @@ fn id_fits(id: Json) -> bool {
     match id { .Null or .Int(_) or .Str(_) -> true, .Bool(_) or .Arr(_) or .Obj(_) -> false }
 }
 
-fn method_of(name: string) -> Method_? {
+fn method_of(name: string) -> Verb? {
     match name {
         "initialize" -> .Initialize,
         "notifications/initialized" -> .Initialized,
@@ -330,13 +329,13 @@ fn line_limit() -> int { 8388608 }
 fn answer_line(tools: List<Tool>, line: Bytes) {
     if line.length == 0 { return }
     let answer? = handle_octets(tools, line) else { return }
-    written(1, (answer + "\n").bytes())
+    written((answer + "\n").bytes())
 }
 
-fn written(fd: int, out: Bytes) {
+fn written(out: Bytes) {
     mut at = 0
     while at < out.length {
-        let n = avra_fd_write(fd, out, at)
+        let n = avra_fd_write(1, out, at)
         at = if n > 0 { at + n } else { out.length }
     }
 }
