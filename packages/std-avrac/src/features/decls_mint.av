@@ -11,7 +11,7 @@ use core.{
     StmtId,
     ExprId,
     Span,
-    NodeStore,
+    SyntaxArena,
     Param,
     filled,
     same_decl,
@@ -103,7 +103,7 @@ impl Decls {
         [r.id for r in File.by_module(self.decl_rows.get(), m)]
     }
 
-    fn store_of(f: FileId) -> NodeStore {
+    fn store_of(f: FileId) -> SyntaxArena {
         if self.stores.get()[f.index] == null { (self.ensure_store.get())(f) }
         if audit_build && self.auditing.get() { self.audited(Bypassed.Store(f)) }
         self.stores.get()[f.index]!
@@ -111,13 +111,13 @@ impl Decls {
 
     fn arm_store(ensure: fn(FileId) -> void) { self.ensure_store.set(ensure) }
 
-    fn remember_store(f: FileId, store: NodeStore) { self.stores.set_at(f.index, store) }
+    fn remember_store(f: FileId, store: SyntaxArena) { self.stores.set_at(f.index, store) }
 
     /// A file admitted with its parse: which statements declare, and
     /// every declaration minted — the top-level ones, then each
     /// trait's and impl's methods under their owner. Answers the
     /// top-level ids, in order.
-    fn admit(f: FileId, store: NodeStore, stmts: List<StmtId>) -> List<DeclId> {
+    fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
         self.stores.set_at(f.index, store)
         mut by_stmt = side_table<DeclId?>("decl_ids", 0, store.stmts.count(), null)
         mut out: List<DeclId> = []
@@ -276,7 +276,7 @@ impl Decls {
     /// Every declaration's expression range: each expression belongs
     /// to the INNERMOST declaration whose span holds it; the rest —
     /// the run-time statements' — belong to Main.
-    fn range_bodies(f: FileId, store: NodeStore, main: DeclId) {
+    fn range_bodies(f: FileId, store: SyntaxArena, main: DeclId) {
         let owners = self.owner_spans(f)
         // -1 until a first expression lands: an ownerless decl's
         // range is the empty 0..0
@@ -455,7 +455,7 @@ impl Decls {
     fn mint_method(
         key: string,
         f: FileId,
-        store: NodeStore,
+        store: SyntaxArena,
         m: StmtId,
         owner: string,
         parent: DeclId,
@@ -573,7 +573,7 @@ impl Decls {
         // readers asked the store per pass; they ask this row now, and a held file's row
         // comes from its record instead of a store it does not have.
         if f.index < self.stores.get().length {
-            let st: NodeStore? = self.stores.get()[f.index]
+            let st: SyntaxArena? = self.stores.get()[f.index]
             if st != null { self.face(id, capture_facts(st!, d)) }
         }
         // A DECLARATION'S NOMINAL NAME IS INTERNED AT MINT — not at typing. A held file's
@@ -619,7 +619,7 @@ impl Decls {
     /// declaration's facts over an earlier one's at the same id.
     fn mint_generated_code(
         f: FileId,
-        store: NodeStore,
+        store: SyntaxArena,
         stmts: List<StmtId>,
         lo: int,
         tag: string,
@@ -655,7 +655,7 @@ impl Decls {
     /// impl block and methods.
     fn mint_code_stmt(
         f: FileId,
-        store: NodeStore,
+        store: SyntaxArena,
         s: StmtId,
         tag: string,
         ann: string,
@@ -674,7 +674,7 @@ impl Decls {
     /// wearing the range of its own value.
     fn mint_code_const(
         f: FileId,
-        store: NodeStore,
+        store: SyntaxArena,
         s: StmtId,
         tag: string,
         ann: string,
@@ -712,7 +712,7 @@ impl Decls {
     /// pattern without its enum.
     fn mint_code_decl(
         f: FileId,
-        store: NodeStore,
+        store: SyntaxArena,
         s: StmtId,
         kind: DeclKind,
         tag: string,
@@ -764,7 +764,7 @@ impl Decls {
     /// its own expression range (see `mint_code_decl`).
     fn mint_code_impl(
         f: FileId,
-        store: NodeStore,
+        store: SyntaxArena,
         s: StmtId,
         block: ImplParts,
         tag: string,
@@ -975,7 +975,7 @@ fn names_its_stmt(kind: DeclKind) -> bool {
 /// A member's key: its name under its owner, or — when an earlier
 /// sibling took that name — its statement too, so the repeat stays a
 /// declaration of its own for the method-table law to refuse.
-fn member_key(owner_key: string, store: NodeStore, m: StmtId, siblings: List<StmtId>) -> string {
+fn member_key(owner_key: string, store: SyntaxArena, m: StmtId, siblings: List<StmtId>) -> string {
     let name = store.fn_parts(m)?.name ?? ""
     let key = "${owner_key}#${name}"
     if siblings.any((s) -> s.index < m.index && store.fn_parts(s)?.name == name) { "${key}#${m.index}" } else { key }
