@@ -21,9 +21,19 @@ export fn findings_of(p: Program) -> List<Finding> {
     Finding.all(db)
 }
 
-fn file_findings(db: RelDb, a: Analysis) {
+fn file_findings(db: RelDb, a: Analysis) { filed_findings(db, a, rule_findings(analysed(a), a.view.stmts)) }
+
+fn filed_findings(db: RelDb, a: Analysis, found: List<Diag>) {
     let src = current_source(db, a.view.source)
-    for d in rule_findings(analysed(a), a.view.stmts) { filed_finding(db, src, d) }
+    for d in found { filed_finding(db, src, d) }
+}
+
+/// One file's findings, in `findings_text`'s lines — the row a held file
+/// answers with in place of its rules running again.
+export fn file_findings_text(a: Analysis, found: List<Diag>) -> string {
+    let db = new_findings_db()
+    filed_findings(db, a, found)
+    joined([finding_line(f) for f in Finding.all(db)], "\n")
 }
 
 /// The file's line table, rebuilt over its CURRENT bytes — read
