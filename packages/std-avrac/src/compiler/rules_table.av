@@ -109,9 +109,9 @@ export collect rules: List<RuleEntry> = rule in closure as RuleEntry { name: it.
 export type RuleIndex = { roots: List<int>, at_root: List<List<RuleEntry>>, anywhere: List<RuleEntry> }
 
 /// The rule table's index, built once.
-export once fn rule_index() -> RuleIndex { indexed(rules) }
+export once fn rule_index() -> RuleIndex { rules_indexed(rules) }
 
-export fn indexed(entries: List<RuleEntry>) -> RuleIndex {
+export fn rules_indexed(entries: List<RuleEntry>) -> RuleIndex {
     let rooted = flatten([r.root for r in entries if !is_any_root(r)])
     let roots = [k for i, k in rooted if rooted.index_of(k) == i]
     RuleIndex {
@@ -130,4 +130,18 @@ impl RuleIndex {
         let i = self.roots.index_of(kind)
         if i < 0 { self.anywhere } else { self.at_root[i] }
     }
+
+    /// The rules a node is tried against: those filed under its shallow
+    /// fold and those filed under its kind alone (a pattern whose own root
+    /// names a hole), each once.
+    fn at_node(shallow: int, kind: int) -> List<RuleEntry> {
+        let j = self.roots.index_of(kind)
+        if j < 0 { return self.at(shallow) }
+        let i = self.roots.index_of(shallow)
+        if i < 0 { return self.at_root[j] }
+        let first = self.at_root[i]
+        first.concat([r for r in self.at_root[j] if !first.any(same_rule(it, r))])
+    }
 }
+
+fn same_rule(a: RuleEntry, b: RuleEntry) -> bool { a.module == b.module && a.name == b.name }

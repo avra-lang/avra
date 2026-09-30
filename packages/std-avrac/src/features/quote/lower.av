@@ -364,15 +364,16 @@ fn avrac_self(mut cx: LowerCx, name: string) -> TypeId {
     cx.view.decls.self_type_of(d)
 }
 
-/// A self-lookup across a rename in progress: the binary compiling
-/// THIS source may predate a name this source now answers to, so it
-/// tries every name in order — licensed ahead of the NodeStore ->
-/// SyntaxArena rename (avra-8sb5.57.18.4).
+/// A self-lookup across a rename: the speed gate runs a candidate
+/// compiler over the base tree's own source, which lags the
+/// candidate's own rename until a landing refreshes the baseline
+/// (avra-8sb5.57.18.4). Tries every name in order, oldest first --
+/// one lookup per name, never a second pass over a name already
+/// found.
 fn avrac_self_any(mut cx: LowerCx, names: List<string>) -> TypeId {
-    let hit? = names.find((n: string) -> cx.view.decls.avrac_named(n) != null) else {
-        return avrac_type_missing(cx, names[0])
-    }
-    cx.view.decls.self_type_of(cx.view.decls.avrac_named(hit)!)
+    let found = [d! for n in names for d in [cx.view.decls.avrac_named(n)] if d != null].first()
+    let d? = found else { return avrac_type_missing(cx, names[0]) }
+    cx.view.decls.self_type_of(d)
 }
 
 fn avrac_type_missing(mut cx: LowerCx, name: string) -> TypeId {

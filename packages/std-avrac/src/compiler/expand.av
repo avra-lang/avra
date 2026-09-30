@@ -68,7 +68,7 @@ use core.{
     Inits,
     spoiled_inits,
     Rebuilder,
-    NodeStore,
+    SyntaxArena,
     copier,
     hole_runs,
     quote_kind,
@@ -445,7 +445,7 @@ impl Workspace {
     /// those, rebuilt, never the declaration that wrapped them.
     fn lifted_from(
         f: FileId,
-        src: NodeStore,
+        src: SyntaxArena,
         ss: List<StmtId>,
         seat: HoleKind,
         file: string,
@@ -466,7 +466,7 @@ impl Workspace {
     /// A declaration's fields — a type's, or a fn's parameters — and a
     /// refusal for a declaration that carries none. A statement that
     /// declares nothing is a template typing already refused here.
-    fn carried_fields(f: FileId, src: NodeStore, s: StmtId, file: string, at: int) -> List<Param> {
+    fn carried_fields(f: FileId, src: SyntaxArena, s: StmtId, file: string, at: int) -> List<Param> {
         let fields? = fields_of(src.stmt(s)) else {
             if src.declares(s) { self.decls.speak_expansion(f, [unliftable(file, at, no_fields("${file}:${at}"))]) }
             return []
@@ -478,7 +478,7 @@ impl Workspace {
     /// a template that is not one.
     fn carried_inits(
         f: FileId,
-        src: NodeStore,
+        src: SyntaxArena,
         ss: List<StmtId>,
         file: string,
         at: int,
@@ -917,7 +917,7 @@ fn absent_lifted() -> Lifted { Lifted { answer: MetaVal.Absent, heap: new_meta_h
 /// never has to name — or even know — the owner type. A method
 /// nested inside a spliced `impl` block is found too, for a template
 /// that prefers writing one.
-fn wrap_target_stmt(store: NodeStore, stmts: List<StmtId>, name: string) -> StmtId? {
+fn wrap_target_stmt(store: SyntaxArena, stmts: List<StmtId>, name: string) -> StmtId? {
     let top? = stmts.find((s: StmtId) -> is_free_fn_named(store, s, name)) else {
         let members = flatten([store.impl_parts(s)?.fns ?? [] for s in stmts])
         return members.find((m: StmtId) -> store.fn_parts(m)?.name == name)
@@ -925,7 +925,7 @@ fn wrap_target_stmt(store: NodeStore, stmts: List<StmtId>, name: string) -> Stmt
     top
 }
 
-fn is_free_fn_named(store: NodeStore, s: StmtId, name: string) -> bool {
+fn is_free_fn_named(store: SyntaxArena, s: StmtId, name: string) -> bool {
     let k? = store.declared_kind(s) else { return false }
     k is .Fn && store.fn_parts(s)?.name == name
 }
@@ -935,7 +935,7 @@ fn is_free_fn_named(store: NodeStore, s: StmtId, name: string) -> bool {
 /// `const`, default PRESENCE) in order, and the answer type's own
 /// spelling. Compared as WRITTEN — expansion runs before typing, so
 /// this is the only signature either side has yet.
-fn wrap_signature_matches(store: NodeStore, found: StmtId, w: DeclareWork) -> bool {
+fn wrap_signature_matches(store: SyntaxArena, found: StmtId, w: DeclareWork) -> bool {
     let parts? = store.fn_parts(found) else { return false }
     same_tparams(w.tparams, parts.tparams) &&
         same_params(w.params, store.declared_params(found)) &&

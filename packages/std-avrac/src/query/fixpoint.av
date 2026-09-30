@@ -39,6 +39,9 @@ export type Fixpoint<T> = {
     join: fn(T, T) -> T,
     // plain for its identity: registered once, then read only
     fp: fn(T) -> int,
+    // plain for its identity: minted lazily on first `solve`, then
+    // read only — see `scc_key`
+    frame_family: Cell<int>,
     values: Table<T>,
     // plain for its identity: set at registration, `with` swaps in
     // a fresh value rather than writing through a path
@@ -61,6 +64,7 @@ export fn new_fixpoint<T>(db: Kernel, family: int, bottom: T, join: fn(T, T) -> 
         bottom: bottom,
         join: join,
         fp: fp,
+        frame_family: Cell.new(0 - 1),
         values: new_table<T>(),
         turn_cap: default_turn_cap,
     }
@@ -78,6 +82,19 @@ export enum FixpointRefusal {
 
 impl Fixpoint {
     fn query_key(arg: int) -> Key { Key { family: self.family, arg: arg } }
+
+    /// The whole solve's own frame — one key, never a member's,
+    /// minted on first use. A read made before any member's own frame
+    /// exists (the law-check sample) or between two members' turns
+    /// still lands somewhere: here, never in whatever frame happened
+    /// to be open in the CALLER that reached this fixpoint at all.
+    fn scc_key() -> Key {
+        let known = self.frame_family.get()
+        if known >= 0 { return Key { family: known, arg: 0 } }
+        let minted = self.db.family((arg: int) -> 0)
+        self.frame_family.set(minted)
+        Key { family: minted, arg: 0 }
+    }
 
     /// The current best-known answer — `bottom` before anything settles.
     /// Records a dependency on `arg`, so a `compute` body reading a
@@ -168,9 +185,19 @@ impl Fixpoint {
         null
     }
 
-    /// Solve the fixpoint over `members`, each answered by `compute`.
-    /// Answers the number of steps run, or the law the group broke.
+    /// Solve the fixpoint over `members`, each answered by `compute`,
+    /// the whole run inside ONE frame of its own (`scc_key`) — settled
+    /// on every exit, `solve_within`'s answer whatever it is, so a
+    /// refused law or a blown turn cap still closes it.
     fn solve(members: List<int>, compute: fn(int) -> T) -> Result<int, FixpointRefusal> {
+        let scc = self.scc_key()
+        self.db.begin(scc)
+        let result = self.solve_within(members, compute)
+        self.db.settle(scc, 0)
+        result
+    }
+
+    fn solve_within(members: List<int>, compute: fn(int) -> T) -> Result<int, FixpointRefusal> {
         if !members.is_empty() {
             let refusal = self.refused_join(compute(members[0]))
             if refusal != null { return .Err(refusal!) }

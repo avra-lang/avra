@@ -24,7 +24,7 @@ export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 @identity
-export type NodeStore = {
+export type SyntaxArena = {
     exprs: Arena<Expr>,
     expr_fingerprints: Cell<List<int>>,
     stmts: Arena<Stmt>,
@@ -114,9 +114,9 @@ export type NodeStore = {
     foreign: Cell<List<ForeignRange>>,
 }
 
-export fn new_node_store(file: string = "") -> NodeStore {
+export fn new_node_store(file: string = "") -> SyntaxArena {
     let no_file_doc: List<string>? = null
-    NodeStore {
+    SyntaxArena {
         file: file,
         exprs: new_arena(),
         expr_fingerprints: list_cell(),
@@ -213,7 +213,7 @@ fn lower_bound(xs: List<int>, target: int) -> int {
     lo
 }
 
-impl NodeStore {
+impl SyntaxArena {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
         self.expr_fingerprints.push(self.fingerprint_expr(e))
@@ -987,7 +987,7 @@ impl NodeStore {
     /// Every kind's own bucket of `ExprId`s, in arena order — built
     /// ONCE per file, on first ask (COMPILER DB townhall §6.11's
     /// `@index kind`), kept behind `self.exprs.kind_index`
-    /// (`Arena`'s own identity law, never a new field on `NodeStore`
+    /// (`Arena`'s own identity law, never a new field on `SyntaxArena`
     /// itself — a hot, constantly copied/dropped record costs one
     /// retain/release per field per copy, DOGFOODING.md): a copy of
     /// `self` still reads and grows the same buckets. Keyed by
@@ -1179,7 +1179,7 @@ fn named_binders(id: PatId, names: List<string>) -> List<Binder> {
     [Binder { pat: id, name: n } for n in names]
 }
 
-impl NodeStore {
+impl SyntaxArena {
     /// A case list's fingerprint parts — one value per case.
     fn case_fps(cases: List<Case>) -> List<int> {
         [fp(125, [fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)]) for c in cases]
@@ -1242,7 +1242,7 @@ impl NodeStore {
 // list of them, an Arm/Param/Variant/Case that holds one) is walked
 // here instead — `case_fps`/`param_fps`/`variant_fps`'s own siblings,
 // comparing rather than folding.
-impl NodeStore {
+impl SyntaxArena {
     fn exact_opt_expr(a: ExprId?, b: ExprId?) -> bool {
         if a == null || b == null { return a == null && b == null }
         self.exact_expr(self.expr(a!), self.expr(b!))

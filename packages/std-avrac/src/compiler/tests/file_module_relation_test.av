@@ -1,47 +1,11 @@
-// THE PARITY KEEPER: `File`/`Module` carry the real shape. Every minted
-// file and module agrees with the hand table on every field, and a file
-// minted after its module's file-bucket was already read in the same
-// revision still reads back correctly through the relation.
-use core.{FileId, ModuleId, same_file}
+// THE PARITY KEEPER: `File`/`Module` carry the real shape — the hand
+// tables they replaced are gone, so what remains pins the two edges a
+// relation-backed table can still get wrong: a bucket read before the
+// row that belongs in it exists, and a row inserted after the pinned
+// handle was taken.
+use core.{FileId, same_file}
 use compiler.{Workspace}
-use features.{File, Module, FileInfo, Decls, new_decls}
-
-fn file_parity_line(ws: Workspace, fi: FileInfo) -> string {
-    let row? = File.get(ws.decls.decl_rows.get(), fi.id) else { return "no-row" }
-    "${row.path == fi.path} ${row.module == fi.module_id} ${row.test == fi.test}"
-}
-
-fn file_parity_lines(ws: Workspace) -> List<string> {
-    [file_parity_line(ws, fi) for fi in ws.decls.files.get()]
-}
-
-fn module_parity_line(ws: Workspace, name: string) -> string {
-    let mid? = ws.decls.module_ids.get().get(name) else { return "no-id" }
-    let row? = Module.get(ws.decls.decl_rows.get(), mid) else { return "no-row" }
-    "${row.name == name}"
-}
-
-fn module_parity_lines(ws: Workspace) -> List<string> {
-    [module_parity_line(ws, name) for name in ws.decls.modules.get()]
-}
-
-spec "compiler/file_rows — File/Module agree with the hand tables" {
-    then "fixture: every minted file and module has a relation row" {
-        let ws = a_process(package_files(), fresh_pack_path("file_parity_fixture"))
-        !file_parity_lines(ws).is_empty() &&
-            !file_parity_lines(ws).any(it == "no-row") &&
-            !module_parity_lines(ws).is_empty() &&
-            !module_parity_lines(ws).any(it == "no-id" || it == "no-row")
-    }
-    then "every file's stable fields agree" {
-        let ws = a_process(package_files(), fresh_pack_path("file_parity_agree"))
-        file_parity_lines(ws).all(it == "true true true")
-    }
-    then "every module's name agrees" {
-        let ws = a_process(package_files(), fresh_pack_path("module_parity_agree"))
-        module_parity_lines(ws).all(it == "true")
-    }
-}
+use features.{Decls, new_decls}
 
 spec "compiler/file_rows — a module's file bucket read then written in one revision" {
     then "a file minted after its module's file list was read still reads back through the relation" {

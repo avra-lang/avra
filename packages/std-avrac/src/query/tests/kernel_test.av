@@ -364,3 +364,43 @@ spec "query/memo" {
         }
     }
 }
+
+// A cell's address must never depend on a count that can grow — a
+// family registered AFTER others have already written cells must not
+// remap a single one of them (avra-8sb5.57.81: a flat, multiplied
+// address once did exactly this the moment a later family registered).
+spec "query/kernel — a family registers without disturbing cells already written" {
+    then "an existing family's settled cell answers the same after a new family joins, over many args" {
+        mut db = new_kernel()
+        let early = db.family((arg: int) -> 0)
+        for i in 0..50 {
+            db.begin(Key { family: early, arg: i })
+            db.settle(Key { family: early, arg: i }, i * 7)
+        }
+        let before = [db.value_hash_of(Key { family: early, arg: i }) for i in 0..50]
+        let _ = db.family((arg: int) -> 0)
+        let after = [db.value_hash_of(Key { family: early, arg: i }) for i in 0..50]
+        before.all((h: int?) -> h != null) &&
+            before.length == after.length &&
+            [i for i in 0..50].all((i: int) -> before[i] == after[i])
+    }
+    then "an existing family's cell still answers Reuse after a new family joins" {
+        mut db = new_kernel()
+        let early = db.family((arg: int) -> 0)
+        let key = Key { family: early, arg: 3 }
+        db.begin(key)
+        db.settle(key, 9)
+        let _ = db.family((arg: int) -> 0)
+        db.ask(key) is .Reuse
+    }
+    then "a relation reached for the first time after other families are busy still answers its own values, never another family's" {
+        mut db = new_kernel()
+        let busy = db.family((arg: int) -> 0)
+        for i in 0..20 {
+            db.begin(Key { family: busy, arg: i })
+            db.settle(Key { family: busy, arg: i }, i)
+        }
+        let late = new_memo<int>(db, db.family((arg: int) -> 0))
+        late.demand(3, () -> 999, (v: int) -> v) == 999
+    }
+}
