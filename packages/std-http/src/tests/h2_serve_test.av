@@ -57,6 +57,26 @@ fn served_one() -> H2Conn {
     h
 }
 
+/// `h` with stream `id`'s GET taken too.
+fn opened_again(mut h: H2Conn, id: int) {
+    mut e = encoder(false)
+    let _ = h
+        .fed(frame_bytes(.Headers, end_headers | end_stream, id, e.encoded(fields_get("/"))), 0)
+    let _ = h.drained()
+    let _ = h.taken()
+}
+
+/// The names an answer's header blocks mark never-indexed, read by
+/// the client's decoder `d`.
+fn sensitive_names(mut d: Decoder, b: Bytes) -> string {
+    [f.name.text() ?? "?" for fr in frames_in(b) if fr.kind is .Headers for f in fields_of(d, fr.payload) if f.sensitive]
+        .join(",")
+}
+
+fn fields_of(mut d: Decoder, b: Bytes) -> List<HeaderField> {
+    match d.decoded(b) { .Fields(fs) -> fs, .TooLarge or .Refused(_) -> [] }
+}
+
 /// The answer's decoded fields as `name: value` lines, and its DATA.
 fn answer_text(mut h: H2Conn) -> string {
     let fs = frames_in(h.drained())
@@ -160,6 +180,25 @@ spec "std.http h2 serve" {
             )
             answer_text(h) == ":status: 200\ncontent-length: 0\nbody=" &&
                 answer_text(g) == ":status: 500\ncontent-length: 0\nbody="
+        }
+        then "set-cookie goes never-indexed and stays out of the table, answer after answer (RFC 7541 §7.1.3)" {
+            mut h = served_one()
+            let secret = Response {
+                status: 200,
+                headers: [
+                    Header { name: "Set-Cookie", value: "sid=s3cret" },
+                    Header { name: "x-echo", value: "sid=s3cret" },
+                ],
+            }
+            let _ = answered_on(h, 1, secret, Method.Get)
+            let first = h.drained()
+            opened_again(h, 3)
+            let _ = answered_on(h, 3, secret, Method.Get)
+            let second = h.drained()
+            mut d = decoder(4096, 65536)
+            !h.encoder.dynamic.entries.any(it.name == "set-cookie".bytes()) &&
+                sensitive_names(d, first) == "set-cookie" &&
+                sensitive_names(d, second) == "set-cookie"
         }
         then "folding lowercases ASCII letters alone" { folded("Content-Type-É".bytes()) == "content-type-É".bytes() }
     }
