@@ -422,6 +422,13 @@ impl SyntaxArena {
     /// template was copied from.
     fn spanned_elsewhere(e: ExprId) -> bool { self.foreign_of(e)?.spanned_home ?? false }
 
+    /// Whether a statement's span is this file's: it has one, and no
+    /// template copied it here from its origin's offsets.
+    fn spanned_here(s: StmtId) -> bool {
+        self.stmt_span(s) != null &&
+            !self.foreign.get().any(it.spanned_home && it.runs.stmts.holds(s.index))
+    }
+
     /// Every node minted since `since` was written in the file at
     /// `path`, and spanned in this file's offsets.
     fn note_foreign(since: ArenaMarks, path: string) { self.foreign.push(self.minted_since(since, path, false)) }
@@ -760,11 +767,12 @@ impl SyntaxArena {
         self.remarks.set(merged_remarks(self.remarks.get(), added))
     }
 
-    /// Every spanned statement by where it begins, earliest first — equal
-    /// starts in statement order.
+    /// Every statement spanned in THIS file by where it begins, earliest
+    /// first — equal starts in statement order. A copied template's keep
+    /// their origin's offsets and would land among this file's.
     fn stmt_starts() -> List<StmtStart> {
         sorted_by(
-            [StmtStart { lo: self.stmt_span(s)!.lo, stmt: s } for s in self.stmt_ids() if self.stmt_span(s) != null],
+            [StmtStart { lo: self.stmt_span(s)!.lo, stmt: s } for s in self.stmt_ids() if self.spanned_here(s)],
             (a: StmtStart, b: StmtStart) -> a.lo < b.lo,
         )
     }
