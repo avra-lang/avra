@@ -1,7 +1,7 @@
 // The no-script door: a form POST answers 303, 422, 409, 415 or 400,
 // and a repeated identity answers its first receipt again.
 use @std.action.derive.{action, impact}
-use @std.action.{routine, destructive}
+use @std.action.{routine, destructive, external, reversible, Impact}
 use @std.action.route.{action_route}
 use @std.action.wire.{ActionRefusal}
 use @std.http.frame.{Method}
@@ -21,6 +21,20 @@ fn wipe(target: string) -> string { "wiped ${target}" }
 @action
 @impact(routine)
 fn alike(confirm: string, next: string, idempotency: string) -> string { "${confirm}|${next}|${idempotency}" }
+
+@action
+@impact(external)
+fn dispatch_mail(to: string) -> string { to }
+
+@action
+@impact(reversible)
+fn archive(to: string) -> string { to }
+
+const typed_only: Impact = routine with { safeguard: .Typed }
+
+@action
+@impact(typed_only)
+fn retire(to: string) -> string { to }
 
 /// How often the action ran: a route over a counting call.
 fn counted_rename(runs: Cell<int>, fields: Map<string, string>) -> Result<
@@ -113,6 +127,15 @@ spec "an action's form door" {
             )
             r.status == 303 && where_to(r) == "/"
         }
+        then "a space goes to the root" {
+            where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=/a%20b")) == "/"
+        }
+        then "a NUL goes to the root" {
+            where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=/a%00b")) == "/"
+        }
+        then "a backslash past the first octet is only a path" {
+            where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=/a%5Cb")) == "/a\\b"
+        }
         then "a non-ASCII path goes to the root" {
             where_to(answer(rename_route(zero()), "rename", "title=a&column=1&_next=/%C3%A9")) == "/"
         }
@@ -201,6 +224,39 @@ spec "an action's form door" {
         }
         then "refuses a confirmed submission that is invalid" {
             answer(wipe_route(zero()), "wipe", "_confirm=yes").status == 422
+        }
+    }
+    given "an action whose safeguard is a confirmation though nothing is shown pending" {
+        then "awaits it" {
+            answer(
+                action_route(dispatch_mail_action(), dispatch_mail_from_text),
+                "dispatch_mail",
+                "to=a",
+            )
+                .status == 409
+        }
+        then "runs once confirmed" {
+            answer(
+                action_route(dispatch_mail_action(), dispatch_mail_from_text),
+                "dispatch_mail",
+                "to=a&_confirm=yes",
+            )
+                .status == 303
+        }
+    }
+    given "an action whose safeguard is an undo" {
+        then "needs no confirmation" {
+            answer(action_route(archive_action(), archive_from_text), "archive", "to=a").status == 303
+        }
+    }
+    given "an action whose safeguard a form cannot discharge" {
+        then "is held, and says what it asks for" {
+            let r = answer(action_route(retire_action(), retire_from_text), "retire", "to=a")
+            r.status == 409 && words(r).contains("re-authentication")
+        }
+        then "is not discharged by a confirmation" {
+            answer(action_route(retire_action(), retire_from_text), "retire", "to=a&_confirm=yes")
+                .status == 409
         }
     }
     given "a routine action" {

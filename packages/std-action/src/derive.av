@@ -60,6 +60,7 @@ fn shape_problems(f: Fn) -> List<Diagnostic> {
     seats
         .concat(if f.answers is .Void { [no_answer(f)] } else { [] })
         .concat(if f.params.length > MAX_PARAMS { [too_many_params(f)] } else { [] })
+        .concat(if unreadable_failure(f) { [failure_kind(f)] } else { [] })
         .concat(impact_problems(f))
 }
 
@@ -94,6 +95,11 @@ fn impact_problems(f: Fn) -> List<Diagnostic> {
     []
 }
 
+/// A `Result` answer whose failure is not text a form can show.
+fn unreadable_failure(f: Fn) -> bool {
+    match f.answers { .Result(_, failure) -> !(failure is .Str), _ -> false }
+}
+
 /// A name the wire reserves for its own fields.
 fn reserved(p: Param) -> bool { p.name.starts_with("_") }
 
@@ -121,43 +127,71 @@ fn action_name(f: Fn) -> string { "${f.name}_action" }
 
 fn from_text_name(f: Fn) -> string { "${f.name}_from_text" }
 
-fn slot(i: int) -> string { "a${i}" }
+/// Names the generated bodies bind. A `$` is no character of a written
+/// name, so none of them can capture the annotated fn's own or an
+/// impact's.
+fn slot(i: int) -> string { "a\$${i}" }
+
+fn seats_local() -> string { "seats\$" }
+
+fn fields_local() -> string { "fields\$" }
+
+fn problems_local() -> string { "problems\$" }
 
 fn generated(f: Fn) -> Decls {
     quote {
         export fn ${action_name(f)}() -> ActionInfo {
-            mut seats: List<ActionParam> = []
+            mut ${seats_local()}: List<ActionParam> = []
             ${[describe(p) for p in f.params]}
-            ActionInfo { name: ${literal(f.name)}, params: seats, impact: ${name(impact_word(f)!)}, answer: ${literal(f.answer)} }
+            ActionInfo { name: ${literal(f.name)}, params: ${name(seats_local())}, impact: ${name(impact_word(f)!)}, answer: ${literal(f.answer)} }
         }
 
-        export fn ${from_text_name(f)}(fields: Map<string, string>) -> Result<${f.answer}, List<ActionRefusal>> {
-            mut problems: List<ActionRefusal> = []
+        export fn ${from_text_name(f)}(${fields_local()}: Map<string, string>) -> Result<${success(f)}, List<ActionRefusal>> {
+            mut ${problems_local()}: List<ActionRefusal> = []
             ${[read(p, i) for i, p in f.params]}
-            if !problems.is_empty() { fail problems }
-            ${called(f)}
+            if !${name(problems_local())}.is_empty() { fail ${name(problems_local())} }
+            ${finished(f)}
         }
     }
 }
 
-fn describe(p: Param) -> Code {
-    quote { seats.push(ActionParam { name: ${literal(p.name)}, kind: ${literal(p.ty)}, required: ${!optional(p.kind)} }) }
+/// What `_from_text` answers on success: a fn answering a `Result` has
+/// its failure carried as a refusal, so only its ok side remains.
+fn success(f: Fn) -> string {
+    match f.answers { .Result(ok, _) -> ok.spelled(), _ -> f.answer }
 }
 
-/// One seat's read from its field, bound to `a<i>` as a nullable.
+/// The call, its failure turned into the refusal a form places.
+fn finished(f: Fn) -> Code {
+    match f.answers {
+        .Result(_, _) -> quote {
+            match ${called(f)} {
+                .Ok(done) -> done,
+                .Err(why) -> { fail [ActionRefusal { field: null, message: why }] },
+            }
+        },
+        _ -> called(f),
+    }
+}
+
+fn describe(p: Param) -> Code {
+    quote { ${name(seats_local())}.push(ActionParam { name: ${literal(p.name)}, kind: ${literal(p.ty)}, required: ${!optional(p.kind)} }) }
+}
+
+/// One seat's read from its field, bound to `a$<i>` as a nullable.
 fn read(p: Param, i: int) -> Stmts {
     let required = !optional(p.kind)
     match unwrapped(p.kind) {
-        .Int -> quote { let ${slot(i)} = int_field(fields, ${literal(p.name)}, ${required}, problems) },
-        .Bool -> quote { let ${slot(i)} = bool_field(fields, ${literal(p.name)}, ${required}, problems) },
-        .Str -> quote { let ${slot(i)} = text_field(fields, ${literal(p.name)}, ${required}, problems) },
+        .Int -> quote { let ${slot(i)} = int_field(${name(fields_local())}, ${literal(p.name)}, ${required}, ${name(problems_local())}) },
+        .Bool -> quote { let ${slot(i)} = bool_field(${name(fields_local())}, ${literal(p.name)}, ${required}, ${name(problems_local())}) },
+        .Str -> quote { let ${slot(i)} = text_field(${name(fields_local())}, ${literal(p.name)}, ${required}, ${name(problems_local())}) },
         .Float or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> unreadable(p, i),
     }
 }
 
 /// A seat that no text can fill: refused by name, never read.
 fn unreadable(p: Param, i: int) -> Stmts {
-    quote { let ${slot(i)}: ${unwrapped(p.kind).spelled()}? = unread_field(${literal(p.name)}, ${literal(unwrapped(p.kind).spelled())}, problems) }
+    quote { let ${slot(i)}: ${unwrapped(p.kind).spelled()}? = unread_field(${literal(p.name)}, ${literal(unwrapped(p.kind).spelled())}, ${name(problems_local())}) }
 }
 
 /// One seat's argument: a required one is unwrapped, and the guard
@@ -223,6 +257,15 @@ fn too_many_params(f: Fn) -> Diagnostic {
         f.at,
         "`${f.name}` takes ${f.params.length} seats, and an action takes at most ${MAX_PARAMS}",
         "group the seats into a record",
+    )
+}
+
+fn failure_kind(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "failure_kind",
+        f.at,
+        "`${f.name}` answers `${f.answer}`, and a door shows a failure as text",
+        "make the failure a `string`: `Result<T, string>`",
     )
 }
 
