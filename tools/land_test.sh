@@ -1906,6 +1906,23 @@ test_linux_rerun_after_reseed() {
     if sh "$land" --call linux_saw_old_seed "$d" 0; then bad "linux-seed: re-ran a passing leg"; else ok "linux-seed: a passing leg is never re-run"; fi
 }
 
+# The main guard refuses a bare update of main, allows one made under
+# tools/land.sh (by the flag or as an ancestor), and never touches a
+# branch that is not main.
+test_main_guard() {
+    hook="$(cd "$(dirname "$land")" && pwd)/hooks/reference-transaction"
+    z=0000000000000000000000000000000000000000
+    o=1111111111111111111111111111111111111111
+    upd() { printf '%s %s %s\n' "$o" "$z" "$1"; }
+    if upd refs/heads/main | sh "$hook" prepared > /dev/null 2>&1; then bad "main-guard: a bare update of main passed"; else ok "main-guard: a bare update of main is refused"; fi
+    if upd refs/heads/main | AVRA_LANDING=1 sh "$hook" prepared > /dev/null 2>&1; then ok "main-guard: land.sh's flag passes"; else bad "main-guard: the flag was refused"; fi
+    fake="$scratch/guard/tools"
+    mkdir -p "$fake"
+    printf '#!/bin/sh\nprintf "%%s %%s refs/heads/main\\n" "%s" "%s" | sh "%s" prepared\n' "$o" "$z" "$hook" > "$fake/land.sh"
+    if sh "$fake/land.sh" > /dev/null 2>&1; then ok "main-guard: an update made under tools/land.sh passes"; else bad "main-guard: an update under tools/land.sh was refused"; fi
+    if upd refs/heads/lane/x | sh "$hook" prepared > /dev/null 2>&1; then ok "main-guard: a branch that is not main is never refused"; else bad "main-guard: a branch update was refused"; fi
+}
+
 # MAIN MOVES WHOLE OR NOT AT ALL: a fast-forward refused after git has
 # written the files (a hook the incoming tree adds refuses the ref)
 # leaves main's checkout at HEAD again; a dirty file the landing changes
@@ -2499,6 +2516,7 @@ run_test test_linux_gate_suites_run_in_parallel
 run_test test_linux_gate_cap_reads_memory
 run_test test_refresh_main_compiler
 run_test test_main_ff_whole_or_not
+run_test test_main_guard
 run_test test_exit_verdict
 run_test test_sprites_by_load
 run_test test_linux_watchdog
