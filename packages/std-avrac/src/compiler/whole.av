@@ -196,10 +196,23 @@ impl Workspace {
 
     fn package_link(pkg: Package) -> List<string> {
         let m = self.manifest(pkg.ordinal)
-        [joined_path(pkg.root, o) for o in filled_words(m.objects)]
+        self
+            .package_objects(pkg)
             .concat(["-L${d}" for d in filled_words(m.search)])
             .concat(["-l${l}" for l in filled_words(m.libs)])
             .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
+    }
+
+    /// The objects a package's manifest links into every program that
+    /// reaches it.
+    fn package_objects(pkg: Package) -> List<string> {
+        [joined_path(pkg.root, o) for o in filled_words(self.manifest(pkg.ordinal).objects)]
+    }
+
+    /// Every file a link reads besides the program's own objects: the
+    /// runtime archive, and each reached package's objects.
+    fn linked_files(runtime: string) -> List<string> {
+        [runtime].concat(flatten([self.package_objects(pkg) for pkg in self.packages()]))
     }
 
     /// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —

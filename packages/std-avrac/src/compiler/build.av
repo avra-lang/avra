@@ -234,6 +234,27 @@ fn compiler_print(ws: Workspace) -> string {
     print
 }
 
+/// WHAT A KEPT BINARY LINKED BESIDE ITS SOURCES — the runtime archive and the
+/// package objects, each with its bytes' digest. A program's key covers what it
+/// was COMPILED from; these are what it was LINKED with, and an archive rebuilt
+/// from unchanged sources moves no source digest. So a binary is reused only
+/// while every file it linked still holds the bytes it linked.
+fn links_key(key: string) -> string { node_key(Stored.Unit, ["links", key]) }
+
+/// Each linked file and its digest, one per line — an unreadable one as `-`,
+/// which no digest equals.
+fn links_text(files: List<string>) -> string {
+    joined(["${f}\t${digest_of_binary(f) ?? "-"}" for f in files], "\n")
+}
+
+/// Whether every file a kept binary linked still holds the bytes it linked. A
+/// binary kept with no such record is not trusted.
+fn links_unchanged(store: Store, key: string) -> bool {
+    let kept? = store.get(Stored.Unit, links_key(key)) else { return false }
+    let files = [line.split("\t")[0] for line in kept.split("\n") if !line.is_empty()]
+    links_text(files) == kept
+}
+
 /// A roll line's print: its first field. A roll holds no empty line.
 fn print_of(line: string) -> string { line.split("\t")[0] }
 
@@ -323,7 +344,9 @@ impl Workspace {
     fn kept_binary(key: string, binary: string) -> BuildOutcome? {
         let store = store_at(build_cache_root(self))
         let staged = staged_beside(binary)
-        if !store.has(Stored.Bin, key) || !store.place(Stored.Bin, key, staged) { return null }
+        if !store.has(Stored.Bin, key) ||
+            !links_unchanged(store, key) ||
+            !store.place(Stored.Bin, key, staged) { return null }
         // a stored binary is bytes, and its mode is not in them
         let _ = avra_spawn_status("chmod", ["+x", staged])
         if !published(staged, binary) { return null }
@@ -496,6 +519,9 @@ impl Workspace {
         if code != 0 { fail BuildError.LinkFailed(code) }
         clock.mark("link")
         let key = self.kept_key(under)
+        let _ = d
+            .store
+            .keep(Stored.Unit, links_key(key), links_text(self.linked_files(tools.runtime)), [key])
         let _ = d.store.keep_file(Stored.Bin, key, staged, [key])
         let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
         if !published(staged, binary) { fail BuildError.Unpublished(binary) }
