@@ -164,6 +164,7 @@ do_prebuild=0; [ -n "$prebuild" ] && do_prebuild=1
 # (tools/idioms.baseline, tools/cited.py). rsync is its own no-op check.
 sync_paths=$(cd "$worktree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
     backend runtime packages tools bootstrap corpus; do [ ! -e "$p" ] || printf "%s " "$p"; done)
+echo "sprite-build: $sprite: sync" >&2
 sync_t0=$(date +%s)
 changes=$(cd "$worktree" && rsync -az --delete -i -e "sh $here/sprite-rsh.sh" \
     --exclude build/ --exclude .avra-cache/ --exclude .claude/ --exclude .git \
@@ -352,7 +353,9 @@ if [ "$do_store" = 1 ]; then
     echo $$ > "$hash_lock/pid"
     trap 'rm -f "$info_script" "$run_script"; rm -rf "$hash_lock"' EXIT
     pre_t0=$(date +%s)
+    echo "sprite-build: $sprite: compiler — looking for a Sprite that holds it" >&2
     from=$(donor)
+    [ -n "$from" ] || echo "sprite-build: no Sprite answered holding compiler ${compiler_hash%"${compiler_hash#????????????}"} — building it on $sprite" >&2
     if [ -n "$from" ] && copy_from "$from" && holds "$sprite"; then
         copied=$from
         do_store=0
@@ -368,6 +371,8 @@ if [ "$do_store" = 1 ]; then
     rm -rf "$hash_lock"
 fi
 
+[ -z "$copied" ] || echo "sprite-build: $sprite: compiler copied from $copied" >&2
+echo "sprite-build: $sprite: cmd" >&2
 status=0
 remote_run_cmd="sh '$run_remote' '$remote' '$compiler_hash' '$do_restore' '$do_store' '$do_prebuild' \"\$@\""
 sprite -s "$sprite" exec --no-port-forward -- bash -lc "$remote_run_cmd" avra-sprite-run "$@" || status=$?
