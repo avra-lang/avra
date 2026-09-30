@@ -581,9 +581,24 @@ impl LowerCx {
     /// name a type parameter.
     mut fn field_read(subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
         if !self.view.types.is_flat(subject_ty) { return self.boxed_field(subject, subject_ty, n, ty) }
-        let dst = if ty == null { self.mint_shape(Type.Int) } else { self.mint_ty(ty!) }
-        self.emit(Ins.Extract(dst, subject, n))
-        dst
+        self
+            .extracted(
+                self.read_as(subject, subject_ty),
+                n,
+                if ty == null { self.mint_shape(Type.Int) } else { self.mint_ty(ty!) },
+            )
+    }
+
+    /// `subject` in a register of the type being read. A READ WEARS THE
+    /// TYPE OF WHAT IS READ: a name's register is BARE, so both engines
+    /// read its slot 0 as the whole value, and a slot of the record it
+    /// stands over must be read from a register of that record. Each
+    /// name unwraps by `Extract` at 0 — the register itself, no work.
+    mut fn read_as(subject: Reg, read_ty: TypeId) -> Reg {
+        let own = self.out.type_of_reg(subject)
+        if own == read_ty { return subject }
+        let under? = self.view.types.stands_for(own) else { return subject }
+        self.read_as(self.extracted(subject, 0, self.mint_ty(under)), read_ty)
     }
 
     /// A boxed record's Nth field, from its slot OFFSET: a value-record
