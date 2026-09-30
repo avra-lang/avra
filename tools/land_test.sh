@@ -1774,6 +1774,20 @@ test_linux_gate_runs_warm() {
     fi
 }
 
+# A failed Linux leg is re-run only when the landing re-emitted the seed
+# after the leg synced; a failure over an unmoved seed is the branch's.
+test_linux_rerun_after_reseed() {
+    d="$(git_repo linux-seed)"
+    mkdir -p "$d/bootstrap"
+    printf 'old\n' > "$d/bootstrap/seed.ll"
+    printf 'a.av\n' > "$d/bootstrap/seed.sources"
+    commit_all "$d" "base"
+    if sh "$land" --call linux_saw_old_seed "$d" 1; then bad "linux-seed: re-ran a failure over an unmoved seed"; else ok "linux-seed: a failure over an unmoved seed stands"; fi
+    printf 'new\n' > "$d/bootstrap/seed.ll"
+    if sh "$land" --call linux_saw_old_seed "$d" 1; then ok "linux-seed: a failure after a re-emitted seed re-runs"; else bad "linux-seed: a failure after a re-emitted seed stood"; fi
+    if sh "$land" --call linux_saw_old_seed "$d" 0; then bad "linux-seed: re-ran a passing leg"; else ok "linux-seed: a passing leg is never re-run"; fi
+}
+
 # A landing that reached the compiler leaves main's checkout holding the
 # landing's compiler and runtime; one that did not leaves main's alone;
 # a process running main's old binary keeps its file.
@@ -2320,6 +2334,7 @@ run_test test_warm_gate_override_passes
 run_test test_linux_gate_suites_run_in_parallel
 run_test test_linux_gate_cap_reads_memory
 run_test test_refresh_main_compiler
+run_test test_linux_rerun_after_reseed
 run_test test_linux_gate_runs_warm
 run_test test_linux_gate_starts_before_the_builds
 run_test test_linux_gate_failure_refuses_the_landing
