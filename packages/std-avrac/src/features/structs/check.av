@@ -9,7 +9,6 @@ use features.{
     StructSig,
     this_is,
     fields_are,
-    repeated_at,
     slot_worthy,
     tparams_refused,
     unpinned_of,
@@ -66,7 +65,7 @@ fn generic_lit(
     mut bound = no_pins(tp.length)
     mut spoke = false
     for j, f in fields {
-        if !generic_field(cx, name, sig, f, values[j], repeated_at(fields, j), decl, bound) {
+        if !generic_field(cx, name, sig, f, values[j], written_at(fields, j), decl, bound) {
             spoke = true
         }
     }
@@ -92,30 +91,50 @@ fn generic_field(
     sig: StructSig,
     f: string,
     v: ExprId,
-    dup: bool,
+    w: Written,
     decl: DeclId,
     mut bound: Pins,
 ) -> bool {
-    let slot? = field_slot(cx, name, sig, f, v, dup) else { return false }
+    let slot? = field_slot(cx, name, sig, f, v, w) else { return false }
     let want = sig.types[slot]
     if cx.agreed(v, want, decl, bound) { return true }
     wrong_field_type(cx, v, f, want)
     false
 }
 
+/// How often a written field's name stood before it.
+enum Written { Once, Twice, Again }
+
+fn written_at(fields: List<string>, j: int) -> Written {
+    match [i for i in 0..j if fields[i] == fields[j]].length {
+        0 -> .Once,
+        1 -> .Twice,
+        _ -> .Again,
+    }
+}
+
 /// The field's slot, once the name is declared and written once —
-/// the half of the field law both paths share.
-fn field_slot(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, dup: bool) -> int? {
-    let slot: int? = sig.slot_of(f)
-    if slot == null {
+/// the half of the field law both paths share. A refused write's
+/// value is settled unjudged, and a field written twice speaks once
+/// however often it repeats: one mistake, one voice.
+fn field_slot(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, w: Written) -> int? {
+    let slot? = sig.slot_of(f) else {
+        cx.settled_value(v)
         unknown_field(cx, v, name, f, sig)
         return null
     }
-    if dup {
-        repeated_field(cx, v, f)
-        return null
+    match w {
+        .Once -> slot,
+        .Twice -> {
+            cx.settled_value(v)
+            repeated_field(cx, v, f)
+            null
+        },
+        .Again -> {
+            cx.settled_value(v)
+            null
+        },
     }
-    slot
 }
 
 /// Every declared field without a default is written — the
@@ -146,7 +165,7 @@ fn check_fields(
 }
 
 /// The written-field half of the law, shared by literal and
-/// `with`. A dup is a name whose FIRST position is earlier.
+/// `with`.
 fn written_checks(
     mut cx: TypeCx,
     name: string,
@@ -155,13 +174,13 @@ fn written_checks(
     sig: StructSig,
 ) {
     for j, f in fields {
-        field_check(cx, name, sig, f, values[j], repeated_at(fields, j))
+        field_check(cx, name, sig, f, values[j], written_at(fields, j))
     }
 }
 
 /// One written field's law: declared, written once, right type.
-fn field_check(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, dup: bool) {
-    let slot: int? = field_slot(cx, name, sig, f, v, dup)
+fn field_check(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, w: Written) {
+    let slot: int? = field_slot(cx, name, sig, f, v, w)
     if slot == null { return }
     // the ONE assignment door — a field slot lifts like any other
     // (auto-Ok, dyn boxing), and the lift is recorded for lowering
