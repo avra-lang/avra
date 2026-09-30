@@ -260,8 +260,9 @@ fn sending(st: StreamState) -> bool {
 /// A live stream: its state, both windows, the request's head, the
 /// body octets arrived and not yet taken and how many arrived in all,
 /// whether a response head has been written, the response body still
-/// owed because a window is shut, whether more of it is to come, and
-/// whether its request body is no longer heard.
+/// owed because a window is shut, whether more of it is to come,
+/// whether its request body is no longer heard, and whether its request
+/// has been taken by the server to answer.
 export type H2Stream = {
     id: int,
     state: StreamState,
@@ -275,6 +276,7 @@ export type H2Stream = {
     more: bool,
     deaf: bool,
     declared: int?,
+    handed: bool,
 }
 
 /// How a stream closed, which decides what a late frame on it means
@@ -342,7 +344,11 @@ export enum Arrived {
 /// stream's law — and `answers` the streams this end answered: churn
 /// past its budget ends the connection (`churned`). `delivered` counts
 /// the answer octets sent, so a stalled answer can be told from a slow
-/// one.
+/// one. `orphans` are the streams that closed while the server was
+/// still answering them — each holds its place in the concurrency bound
+/// until the server says it is done with it (`released`), so a peer
+/// that resets what it asked cannot make the server answer more at once
+/// than the bound.
 export type H2Conn = {
     ours: Settings,
     theirs: Settings,
@@ -365,6 +371,7 @@ export type H2Conn = {
     churn: int,
     answers: int,
     delivered: int,
+    orphans: List<int>,
 }
 
 /// A server connection awaiting the client's preface, its own SETTINGS
@@ -393,6 +400,7 @@ export fn h2_server(limits: Limits) -> H2Conn {
         churn: 0,
         answers: 0,
         delivered: 0,
+        orphans: [],
     }
 }
 
@@ -488,6 +496,7 @@ impl H2Conn {
     /// `remembered` slots written in place, so a close costs one write
     /// however many streams came before it.
     mut fn closed(id: int, how: Closure) {
+        if self.answering(id) { self.orphans.push(id) }
         self.dropped_stream(id)
         let g = Gone { id: id, how: how }
         if self.gone.length < remembered { self.gone.push(g) } else { self.gone[self.closes % remembered] = g }
@@ -693,7 +702,7 @@ impl H2Conn {
     mut fn opened(id: int, depends: int) -> Purpose {
         self.last = id
         if depends == id { return .Discarded(H2Error.Protocol) }
-        if self.streams.length >= self.ours.streams { return .Discarded(H2Error.RefusedStream) }
+        if self.streams.length + self.orphans.length >= self.ours.streams { return .Discarded(H2Error.RefusedStream) }
         let s = H2Stream {
             id: id,
             state: .Open,
@@ -707,6 +716,7 @@ impl H2Conn {
             more: false,
             deaf: false,
             declared: null,
+            handed: false,
         }
         self.streams = self.streams.concat([s])
         .Head
@@ -1002,11 +1012,31 @@ impl H2Conn {
         self.streams[at].state = .HalfClosedLocal
     }
 
-    /// The requests completed since the last ask, taken.
+    /// The requests completed since the last ask, taken — each stream
+    /// marked handed, the server's to answer.
     mut fn taken() -> List<Exchange> {
         let r = self.ready
         self.ready = []
+        for x in r { self.handed(x.stream) }
         r
+    }
+
+    /// Live stream `id` marked taken by the server.
+    mut fn handed(id: int) {
+        let at? = self.live_at(id) else { return }
+        self.streams[at].handed = true
+    }
+
+    /// Whether live stream `id` is the server's and still unanswered.
+    fn answering(id: int) -> bool {
+        let at? = self.live_at(id) else { return false }
+        self.streams[at].handed && !self.streams[at].answered
+    }
+
+    /// The server is done with stream `id`: if it closed while being
+    /// answered, its place in the concurrency bound is given up.
+    mut fn released(id: int) {
+        if !self.orphans.is_empty() { self.orphans = [o for o in self.orphans if o != id] }
     }
 
     /// What is owed the peer, taken.

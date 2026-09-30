@@ -49,9 +49,9 @@
 //! its head ends the connection with no second status; a `101` hands
 //! the connection to its upgrade, on this same task, and no more of it
 //! is read as HTTP.
-use @std.net.{Listener, Conn, NetError, listen}
+use @std.net.{Listener, Conn, NetError, Bell, bell, listen}
 use @std.time.{Duration, ms, secs, sleep, now_ms, within}
-use frame.{Head, Limits, Method, ReplyBody, RequestBody, framed, status_of, limits}
+use frame.{Head, Limits, Method, ReplyBody, RequestBody, framed, status_of, limits, no_bytes}
 use body.{Body, BodyError, measured, chunked_from, whole}
 use http.{
     Request,
@@ -76,8 +76,8 @@ use http.{
 }
 use wire.{Transport, WireError, Secure, plainly}
 use route.{Route, compiled, dispatch}
-use h2.{H2Conn, H2Error, Exchange, h2_server, preface}
-use h2_serve.{H2Side, Pour, request_of, answered_on, refused_on, scheme_of, stream_body}
+use h2.{H2Conn, H2Error, Exchange, Arrived, h2_server, preface}
+use h2_serve.{Pour, request_of, answered_on, refused_on, scheme_of, stream_body, handed_on}
 
 extern fn avra_cores_online() -> int
 extern fn avra_cores_group(n: int) -> int
@@ -611,90 +611,172 @@ fn awaits_preface(l: Link) -> bool {
 }
 
 impl Serving {
-    /// The link as HTTP/2: every frame fed to one connection value,
-    /// every request whose head arrives answered by the same handler a
-    /// 1.1 request is, every streamed answer pulled as its windows open,
-    /// what is owed written — until either end goes away, the link has
-    /// served its bound, or its peer is silent too long. An answer held
-    /// behind a shut window that has not moved for the idle deadline
-    /// ends the link, whatever else the peer sends: a window held shut
-    /// behind a trickle of PINGs holds nothing longer than an idle link.
-    mut fn h2_conversed(mut l: Link) -> int {
-        mut h = h2_server(self.limits)
-        mut pours: List<Pour> = []
-        mut delivered = 0
-        mut moved = now_ms()
-        while true {
-            let at = h.fed(l.buf, 0)
-            l.buf = l.buf.slice(at, l.buf.length)
-            while !h.ready.is_empty() {
-                for x in h.taken() {
-                    l.served = l.served + 1
-                    let more = match h.arrived(x.stream) {
-                        .Whole(b) -> self.h2_delivered(h, x, self.h2_reply(l, x, (_k) -> whole(b))),
-                        .Flowing(b) -> {
-                            let side = Cell.new(H2Side { conn: h, buf: l.buf })
-                            let reply = self
-                                .h2_reply(
-                                    l,
-                                    x,
-                                    stream_body(
-                                        side,
-                                        l.conn,
-                                        x.stream,
-                                        b,
-                                        self.timing.body,
-                                        self.limits,
-                                    ),
-                                )
-                            let back = side.get()
-                            h = back.conn
-                            l.buf = back.buf
-                            self.h2_delivered(h, x, reply)
-                        },
-                        .Cut -> [],
-                    }
-                    pours = pours.concat(more)
-                }
-            }
-            pours = self.h2_poured(h, pours)
-            if l.served >= self.timing.requests && !h.closing { h.ended() }
-            h.parted_when_quiet()
-            let waiting = h.owing() > 0 || !pours.is_empty()
-            if !waiting || h.delivered != delivered { moved = now_ms() }
-            delivered = h.delivered
-            if waiting && now_ms() - moved > self.timing.idle.ms && !h.closing { h.ended() }
-            l.out = h.drained()
-            if !self.flushed(l) {
-                unpoured(pours)
-                return self.dropped(l)
-            }
-            if l.closing || h.closing { unpoured(pours) }
-            if l.closing { return self.parted(l) }
-            if h.closing { return self.lingered(l) }
-            let pouring = pours.any((p) -> h.hungry(p.id))
-            let wait = if pouring { 0 } else if h.streams.is_empty() { self.timing.idle.ms } else { self.timing.body.ms }
-            match within ms(wait) { l.conn.wire_read(read_size()) } {
-                .Ok(b) -> heard(l, b),
-                .Err(e) -> {
-                    if !(pouring && timed_out(e)) {
-                        unpoured(pours)
-                        return self.broken(l, h, e)
-                    }
-                },
-            }
+    /// The link as HTTP/2, on three kinds of task meeting at one bell.
+    /// The link is READ on a task of its own (`read_beside`), so frames
+    /// are taken as they arrive whatever a handler is doing (RFC 9113
+    /// §5.2.2); each request is ANSWERED on a task of its own, over its
+    /// own copy of the application; and this task FRAMES what the reader
+    /// brings, hands each stream its body, sends each answer as its task
+    /// ends, pulls every streamed answer as its windows open, and writes
+    /// what is owed. The link ends when either end goes away, it has
+    /// served its bound, or its peer is silent too long — and an answer
+    /// held behind a shut window that has not moved for the idle deadline
+    /// ends it, whatever else the peer sends. Every task has ended before
+    /// this answers, the reader before the socket closes.
+    fn h2_conversed(mut l: Link) -> int {
+        let b = match bell() { .Ok(b) -> b, .Err(_) -> { return self.dropped(l) } }
+        let fd = self.h2_tasked(l, b)
+        b.close()
+        fd
+    }
+
+    /// The conversation over `b`, its tasks joined before this answers.
+    fn h2_tasked(mut l: Link, b: Bell) -> int {
+        let answering = Tasks.new()
+        let inbox = Cell.new(Inbox { got: l.buf, closed: false, failed: null })
+        l.buf = no_bytes
+        let reader = spawn read_beside(l.conn, inbox, b)
+        mut t = Talk {
+            h: h2_server(self.limits),
+            lines: [],
+            pours: [],
+            delivered: 0,
+            moved: now_ms(),
+            heard: now_ms(),
+            graceful: false,
         }
-        l.conn.wire_fd()
+        let parting = self.talked(l, t, inbox, b, answering)
+        unpoured(t.pours)
+        cut_lines(t.lines, b)
+        let _ = l.conn.wire_unheard()
+        let _ = reader.await
+        if parting { self.parted(l) } else { self.dropped(l) }
+    }
+
+    /// The conversation, turn by turn, until it ends; whether the write
+    /// side is still to be shut before the socket closes.
+    fn talked(mut l: Link, mut t: Talk, inbox: Cell<Inbox>, b: Bell, answering: Tasks) -> bool {
+        while true {
+            let seen = b.rings()
+            let came = self.framed_in(l, t, inbox, b, answering)
+            if self.breached(l, t.h, came.failed) { return false }
+            if came.closed {
+                l.closing = true
+                cut_lines(t.lines, b)
+            }
+            if [handed_on(t.h, ln.x.stream, ln.handed) for ln in t.lines].any(it) { b.rouse() }
+            self.answered_lines(t)
+            t.pours = self.h2_poured(t.h, t.pours)
+            self.ends_when_due(l, t)
+            l.out = t.h.drained()
+            if !self.flushed(l) { return false }
+            if t.said_all() {
+                lingered(l, inbox, b)
+                return false
+            }
+            if l.closing && t.lines.is_empty() { return true }
+            if !self.waited_on(t, b, seen) { return false }
+        }
+        false
+    }
+
+    /// What the reader brought, framed: each request whose head arrived
+    /// given a task of its own, which runs before this task goes on, so
+    /// an answer that needs no wait goes out in this turn's write. What
+    /// the reader's reading came to, answered.
+    fn framed_in(mut l: Link, mut t: Talk, inbox: Cell<Inbox>, b: Bell, answering: Tasks) -> Inbox {
+        let came = inbox.get()
+        inbox.set(came with { got: no_bytes })
+        b.rouse()
+        if !came.got.is_empty() { t.heard = now_ms() }
+        l.buf = l.buf.concat(came.got)
+        let at = t.h.fed(l.buf, 0)
+        l.buf = l.buf.slice(at, l.buf.length)
+        let fresh = [self.opened_line(l, t.h, x, b, answering) for x in t.h.taken()]
+        let lines = [ln! for ln in fresh if ln != null]
+        l.served = l.served + fresh.length
+        t.lines = t.lines.concat(lines)
+        if !lines.is_empty() { sleep(ms(0)) }
+        came
+    }
+
+    /// Stream `x` handed to a task of its own, its body what has arrived
+    /// so far and the rest as the connection hands it on — or nothing,
+    /// for a stream the peer already reset.
+    fn opened_line(l: Link, mut h: H2Conn, x: Exchange, b: Bell, answering: Tasks) -> Line? {
+        let handed = Cell.new(h.arrived(x.stream))
+        let bodied: fn(RequestBody) -> Body = match handed.get() {
+            .Whole(got) -> (_k) -> whole(got),
+            .Flowing(_) -> stream_body(handed, b, l.conn, self.timing.body, self.limits),
+            .Cut -> { return null },
+        }
+        let reply: Cell<H2Reply?> = Cell.new(null)
+        answering
+            .push(spawn stream_answered(self, x, l.peer, l.conn.wire_secured(), bodied, b, reply))
+        Line { x: x, handed: handed, reply: reply }
+    }
+
+    /// Each stream whose task has answered, sent; the rest kept.
+    fn answered_lines(mut t: Talk) {
+        for ln in t.lines { t.pours = t.pours.concat(self.h2_answered(t.h, ln)) }
+        t.lines = [ln for ln in t.lines if ln.reply.get() == null]
+    }
+
+    /// Stream `ln`'s answer sent, when its task has given one: the pour
+    /// it leaves, if any.
+    fn h2_answered(mut h: H2Conn, ln: Line) -> List<Pour> {
+        let reply? = ln.reply.get() else { return [] }
+        self.h2_delivered(h, ln.x, reply)
+    }
+
+    /// GOAWAY owed when the link is due to end: gracefully once it has
+    /// served its bound — its streams still answered — and at once when
+    /// an answer has waited on a shut window for the idle deadline.
+    fn ends_when_due(l: Link, mut t: Talk) {
+        if l.served >= self.timing.requests && !t.h.closing {
+            t.graceful = true
+            t.h.ended()
+        }
+        t.h.parted_when_quiet()
+        let waiting = t.h.owing() > 0 || !t.pours.is_empty()
+        if !waiting || t.h.delivered != t.delivered { t.moved = now_ms() }
+        t.delivered = t.h.delivered
+        if waiting && now_ms() - t.moved > self.timing.idle.ms && !t.h.closing { t.h.ended() }
+    }
+
+    /// This task parked on the bell until something moves — not at
+    /// all when the bell rang after it had rung `seen` times, since this
+    /// turn's writes may have paused past a ring; at once while an
+    /// answer wants its next piece; with no deadline while a handler
+    /// runs, else within the body deadline while a stream is open and
+    /// the idle one otherwise, counted from when the peer last spoke,
+    /// and no longer than a stalled answer's deadline. Whether the peer
+    /// is still within its deadline.
+    fn waited_on(t: Talk, b: Bell, seen: int) -> bool {
+        if t.pours.any((p) -> t.h.hungry(p.id)) {
+            let _ = b.waited(0)
+            return true
+        }
+        let stall = if t.h.owing() > 0 || !t.pours.is_empty() { self.timing.idle.ms - (now_ms() - t.moved) } else { -1 }
+        if !t.lines.is_empty() {
+            let _ = b.waited_since(seen, stall)
+            return true
+        }
+        let deadline = if t.h.streams.is_empty() { self.timing.idle } else { self.timing.body }
+        let silence = deadline.ms - (now_ms() - t.heard)
+        if silence <= 0 { return false }
+        let _ = b.waited_since(seen, if stall >= 0 && stall < silence { stall } else { silence })
+        true
     }
 
     /// Stream `x`'s request answered by the handler, its body what
     /// `bodied` makes — or, when its head is one the 1.1 framer refuses,
     /// that refusal's status. A body that broke while the handler read it
     /// is answered by the law it broke, never by the handler.
-    mut fn h2_reply(l: Link, x: Exchange, bodied: fn(RequestBody) -> Body) -> H2Reply {
-        match request_of(x, l.peer, self.limits, bodied) {
+    mut fn h2_reply(x: Exchange, peer: string, secured: bool, bodied: fn(RequestBody) -> Body) -> H2Reply {
+        match request_of(x, peer, self.limits, bodied) {
             .Ok(q) -> H2Reply {
-                answer: judged(q, self.answer(q, scheme_of(x), l.conn.wire_secured())),
+                answer: judged(q, self.answer(q, scheme_of(x), secured)),
                 asked: q.head.method,
                 body: q.body,
             },
@@ -708,6 +790,7 @@ impl Serving {
     /// sends refused once the answer ends. The pour a streamed answer
     /// leaves, if any.
     fn h2_delivered(mut h: H2Conn, x: Exchange, reply: H2Reply) -> List<Pour> {
+        h.released(x.stream)
         let broke = reply.body.failure()
         reply.body.detached()
         h.unheard(x.stream)
@@ -761,34 +844,16 @@ impl Serving {
         [p with { sent: sent }]
     }
 
-    /// The link ended by a read that failed with `e`: a peer the secure
-    /// layer refused — a TLS renegotiation is the one RFC 9113 names
-    /// (§9.2.1) — broke the connection's protocol, and is told so with
-    /// GOAWAY PROTOCOL_ERROR before the socket closes.
-    fn broken(l: Link, mut h: H2Conn, e: WireError) -> int {
-        let why? = breach_of(e) else { return self.dropped(l) }
+    /// Whether the reader's reading failed. A peer the secure layer
+    /// refused — a TLS renegotiation is the one RFC 9113 names (§9.2.1)
+    /// — broke the connection's protocol, and is told so with GOAWAY
+    /// PROTOCOL_ERROR before the socket closes.
+    fn breached(l: Link, mut h: H2Conn, failed: WireError?) -> bool {
+        let e? = failed else { return false }
+        let why? = breach_of(e) else { return true }
         if !h.closing { h.failed(why) }
         let _ = self.sent(l.conn, h.drained())
-        self.dropped(l)
-    }
-
-    /// The write side shut after this end's GOAWAY, then what the peer
-    /// still sends read and dropped until it closes — for at most eight
-    /// reads of a linger's length — and only then the socket closed. A
-    /// socket closed over unread octets answers the peer with a reset,
-    /// and a reset may destroy the GOAWAY before the peer reads it.
-    fn lingered(l: Link) -> int {
-        let _ = l.conn.wire_shutdown()
-        mut open = true
-        mut turns = 0
-        while open && turns < 8 {
-            open = match within ms(125) { l.conn.wire_read(read_size()) } {
-                .Ok(b) -> b != null,
-                .Err(_) -> false,
-            }
-            turns = turns + 1
-        }
-        self.dropped(l)
+        true
     }
 
     /// The handler's answer to `q` — or `421` when `scheme` is one the
@@ -802,6 +867,104 @@ impl Serving {
 /// A stream's request as its handler answered it: the answer, what was
 /// asked, and the body the handler read.
 type H2Reply = { answer: Response, asked: Method, body: Body }
+
+/// A stream in its handler's hands: its request, what of its body the
+/// connection has handed it and it has not read, and its answer once
+/// its task has one.
+type Line = { x: Exchange, handed: Cell<Arrived>, reply: Cell<H2Reply?> }
+
+/// What the link's reader has brought and nobody has framed, and how
+/// its reading ended: the peer's end, or a failure.
+type Inbox = { got: Bytes, closed: bool, failed: WireError? }
+
+/// One HTTP/2 conversation as its connection's task holds it: the
+/// connection value, the streams being answered, the answers being
+/// poured, the answer octets sent when last counted and when that count
+/// last moved, when the peer last spoke, and whether the connection is
+/// ending gracefully — its streams answered before it closes.
+type Talk = {
+    h: H2Conn,
+    lines: List<Line>,
+    pours: List<Pour>,
+    delivered: int,
+    moved: int,
+    heard: int,
+    graceful: bool,
+}
+
+impl Talk {
+    /// Whether the conversation has said all it will: GOAWAY is owed,
+    /// and no stream it still promised to answer is being answered.
+    fn said_all() -> bool { self.h.closing && (!self.graceful || self.lines.is_empty()) }
+}
+
+/// How much the reader holds unframed before it waits for room.
+const inbox_room: int = 262144
+
+/// The link read on a task of its own until its reading ends — each
+/// read's octets added to `inbox` and the bell rung — so frames are
+/// read while handlers run (RFC 9113 §5.2.2). While the inbox holds
+/// its room's worth unframed, the reader waits.
+fn read_beside(c: dyn Transport, inbox: Cell<Inbox>, b: Bell) -> int {
+    while !inbox.get().closed && inbox.get().failed == null {
+        if inbox.get().got.length >= inbox_room {
+            let _ = b.waited(-1)
+        } else {
+            let r = c.wire_read(read_size())
+            inbox.set(heard_into(inbox.get(), r))
+            b.ring()
+        }
+    }
+    c.wire_fd()
+}
+
+/// `i` with what a read answered: its octets, the peer's end, or the
+/// read's failure.
+fn heard_into(i: Inbox, r: Result<Bytes?, WireError>) -> Inbox {
+    match r {
+        .Ok(got) -> if got == null { i with { closed: true } } else { i with { got: i.got.concat(got!) } },
+        .Err(e) -> i with { failed: e },
+    }
+}
+
+/// Stream `x` answered on a task of its own, over its own copy of the
+/// connection's application: the answer put `into` its line, and the
+/// bell rung.
+fn stream_answered<A>(
+    s: Serving<A>,
+    x: Exchange,
+    peer: string,
+    secured: bool,
+    bodied: fn(RequestBody) -> Body,
+    b: Bell,
+    into: Cell<H2Reply?>,
+) {
+    mut own = s with { app: s.app }
+    into.set(own.h2_reply(x, peer, secured, bodied))
+    b.ring()
+}
+
+/// Every stream still reading its body cut off — nothing more of it
+/// will come — and its reader woken to learn so.
+fn cut_lines(lines: List<Line>, b: Bell) {
+    for ln in lines { if ln.handed.get() is .Flowing { ln.handed.set(.Cut) } }
+    b.rouse()
+}
+
+/// The write side shut after this end's GOAWAY, then the peer given a
+/// second to close its end — what it still sends read by the reader and
+/// dropped — before the socket closes. A socket closed over unread
+/// octets answers the peer with a reset, and a reset may destroy the
+/// GOAWAY before the peer reads it.
+fn lingered(l: Link, inbox: Cell<Inbox>, b: Bell) {
+    let _ = l.conn.wire_shutdown()
+    let until = now_ms() + 1000
+    while !inbox.get().closed && inbox.get().failed == null && now_ms() < until {
+        inbox.set(inbox.get() with { got: no_bytes })
+        b.rouse()
+        let _ = b.waited(until - now_ms())
+    }
+}
 
 /// Pour `p` ended: its last piece — or, when it did not go out whole,
 /// its stream reset if it still lives — and its producer released.

@@ -271,6 +271,17 @@ spec "std.http h2" {
             let c = conn_after([heads(2 * i + 1, get_head("/"), 0) for i in 0..101])
             reset_of(c, 201) == code(.RefusedStream) && reset_of(c, 199) == -1 && alive(c)
         }
+        then "a stream reset while the server answers it holds its place in the bound until released" {
+            mut c = conn_after([heads(2 * i + 1, get_head("/"), 0) for i in 0..99])
+            let _ = c.taken()
+            let _ = c
+                .fed([frame_bytes(.Reset, 0, 2 * i + 1, u32_bytes(8)) for i in 0..99].bytes(), 0)
+            let _ = c.fed(heads(199, get_head("/"), 0).concat(heads(201, get_head("/"), 0)), 0)
+            let full = reset_of(c, 199) == -1 && reset_of(c, 201) == code(.RefusedStream)
+            c.released(1)
+            let _ = c.fed(heads(203, get_head("/"), 0), 0)
+            full && reset_of(c, 203) == -1 && alive(c) && c.orphans.length == 98
+        }
         then "a malformed header block is a COMPRESSION_ERROR" {
             goaway_of(
                 conn_after([frame_bytes(.Headers, end_headers | end_stream, 1, [128].bytes()!)]),

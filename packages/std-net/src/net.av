@@ -39,6 +39,9 @@ extern fn avra_errno_again() -> int
 extern fn avra_errno_invalid() -> int
 extern fn avra_errno_timed_out() -> int
 extern fn avra_net_entropy32() -> int
+extern fn avra_net_bell() -> int
+extern fn avra_net_bell_rung() -> int
+extern fn avra_net_ring(heard: int, rung: int) -> int
 
 /// 32 bits the kernel drew from its entropy, as a non-negative word —
 /// unpredictable to any peer, as a WebSocket client's masking key
@@ -291,6 +294,16 @@ impl Conn {
         .Ok(self.fd)
     }
 
+    /// The read side closed: a task parked reading wakes to the end,
+    /// and nothing more is read. The descriptor stays this
+    /// connection's until `close`, so a task still reading it never
+    /// reads a stranger's.
+    fn shutdown_read() -> Result<int, NetError> {
+        let r = avra_net_shutdown(self.fd, 0)
+        if r < 0 { return failed("shutdown", self.named(), r) }
+        .Ok(self.fd)
+    }
+
     /// Closed; answers the descriptor it held.
     fn close() -> Result<int, NetError> {
         let r = avra_net_close(self.fd)
@@ -380,3 +393,71 @@ fn hex_group(w: int) -> string {
 }
 
 fn hex_digit(d: int) -> string { "0123456789abcdef".substring(d, d + 1) }
+
+// ── A bell ──────────────────────────────────────────────────────
+
+/// A DOORBELL BETWEEN TASKS: one parks on it until another rings. A
+/// ring reaches every task parked at that moment and no other, so a
+/// task tests what it waits for, then parks — nothing runs between
+/// the test and the park — and tests again when it wakes. A task that
+/// may pause between its test and its park counts the rings first
+/// (`rings`) and parks only if none came since (`waited_since`); it
+/// wakes the others with `rouse`, which is no news to itself and is
+/// not counted. A ring with nobody parked costs no write. Close it once
+/// no task can ring it.
+export type Bell = { heard: int, rung: int, parked: Cell<bool>, count: Cell<int> }
+
+/// A bell, or the errno opening its pipe answered.
+export fn bell() -> Result<Bell, NetError> {
+    let heard = avra_net_bell()
+    if heard < 0 { return failed("open", "a bell", heard) }
+    .Ok(
+        Bell {
+            heard: heard,
+            rung: avra_net_bell_rung(),
+            parked: Cell.new(false),
+            count: Cell.new(0),
+        },
+    )
+}
+
+impl Bell {
+    /// Every task parked on the bell woken, and the ring counted.
+    fn ring() {
+        self.count.set(self.count.get() + 1)
+        self.rouse()
+    }
+
+    /// Every task parked on the bell woken, the ring not counted.
+    fn rouse() {
+        if !self.parked.get() { return }
+        self.parked.set(false)
+        let _ = avra_net_ring(self.heard, self.rung)
+    }
+
+    /// The calling task parked until the bell rings, or until
+    /// `timeout_ms` passes — a negative one never — or the deadline of a
+    /// `within` around it, which fails the wait `timed_out()`, as every
+    /// parking verb here does.
+    fn waited(timeout_ms: int) -> Result<int, NetError> {
+        self.parked.set(true)
+        if avra_fiber_park_fd(self.heard, 0, timeout_ms) == 0 { return timed_out("wait", "a bell") }
+        .Ok(self.heard)
+    }
+
+    /// How many times the bell has rung.
+    fn rings() -> int { self.count.get() }
+
+    /// `waited`, unless the bell has rung since it had rung `seen`
+    /// times — then at once.
+    fn waited_since(seen: int, timeout_ms: int) -> Result<int, NetError> {
+        if self.count.get() != seen { return .Ok(self.heard) }
+        self.waited(timeout_ms)
+    }
+
+    /// Both ends closed.
+    fn close() {
+        let _ = avra_net_close(self.heard)
+        let _ = avra_net_close(self.rung)
+    }
+}
