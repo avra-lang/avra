@@ -17,6 +17,18 @@
 #include "mbedtls/error.h"
 #include "psa/crypto.h"
 
+/* Mechanisms this package promises are absent, held at compile time:
+   a config that turns one on does not build. */
+#if defined(MBEDTLS_SSL_RENEGOTIATION)
+#error "renegotiation is compiled out of @std/tls: a peer may not restart the handshake"
+#endif
+#if defined(MBEDTLS_SSL_PROTO_DTLS)
+#error "@std/tls is TLS over a stream; DTLS is compiled out"
+#endif
+#if !defined(MBEDTLS_SSL_EXTENDED_MASTER_SECRET)
+#error "TLS 1.2 sessions in @std/tls bind the master secret to the handshake (RFC 7627)"
+#endif
+
 /* mbedTLS codes are -0x0001..-0x7FFF; ours sit below them. */
 enum {
     TLS_ERR_HANDLE = -0x10001, /* a handle that names nothing live */
@@ -31,6 +43,7 @@ enum {
     TLS_ERR_BUSY = -0x1000a,   /* a config freed under a live session */
     TLS_ERR_NAMELESS = -0x1000b, /* a verifying client naming no host */
     TLS_ERR_PROTOCOL = -0x1000c, /* an ALPN name empty, too long, holding a NUL, or one too many */
+    TLS_ERR_CHAIN = -0x1000d,  /* a chain larger than a handshake message holds */
 };
 
 /* Fed ciphertext is bounded: a peer that sends faster than records are
@@ -305,6 +318,17 @@ int64_t avra_tls_config_roots(int64_t cfg, const unsigned char* pem, int64_t n) 
     return after > before ? after - before : TLS_ERR_EMPTY;
 }
 
+/* A chain is sent whole in one handshake message, which the record
+   layer bounds; room is kept for the message's own framing. */
+enum { TLS_CHAIN_MAX = MBEDTLS_SSL_OUT_CONTENT_LEN - 1024 };
+
+/* The bytes a chain occupies in a Certificate message. */
+static size_t chain_bytes(const mbedtls_x509_crt* x) {
+    size_t n = 0;
+    for (; x && x->raw.len; x = x->next) n += x->raw.len + 8;
+    return n;
+}
+
 /* A certificate chain (leaf first) and its private key, from PEM. The
    first identity added answers a peer that names no host. */
 int64_t avra_tls_config_identity(int64_t cfg, const unsigned char* chain, int64_t chain_n,
@@ -321,6 +345,7 @@ int64_t avra_tls_config_identity(int64_t cfg, const unsigned char* chain, int64_
         mbedtls_pk_init(&id->key);
     }
     if (!rc) rc = mbedtls_x509_crt_parse(&id->chain, tc, (size_t)chain_n + 1);
+    if (!rc && chain_bytes(&id->chain) > TLS_CHAIN_MAX) rc = TLS_ERR_CHAIN;
     if (!rc && mbedtls_pk_parse_key(&id->key, tk, (size_t)key_n + 1, NULL, 0)) rc = TLS_ERR_KEY;
     if (!rc && mbedtls_pk_check_pair(&id->chain.pk, &id->key)) rc = TLS_ERR_PAIR;
     if (!rc) rc = mbedtls_ssl_conf_own_cert(&c->conf, &id->chain, &id->key);
@@ -620,6 +645,7 @@ int64_t avra_tls_words(int64_t code) {
     case TLS_ERR_BUSY: ours = "a config still serving sessions — end them first"; break;
     case TLS_ERR_NAMELESS: ours = "a verifying client names the host it expects"; break;
     case TLS_ERR_PROTOCOL: ours = "an ALPN name is 1 to 255 bytes with no NUL, eight at most"; break;
+    case TLS_ERR_CHAIN: ours = "a chain larger than one handshake message holds — present fewer certificates"; break;
     }
     if (ours) {
         strncpy(g_words, ours, sizeof g_words - 1);
