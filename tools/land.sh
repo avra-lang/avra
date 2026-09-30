@@ -818,13 +818,25 @@ watched() {
     return "$wst"
 }
 
-# A process and every descendant, children first.
+# A process and every descendant, children first. A TRAILING `:` ON
+# ITS OWN LINE GUARDS NOTHING BEFORE IT — `set -e` aborts the instant
+# the PRECEDING command fails, never waiting to see whether a later
+# line would have absorbed it. The KILL right above one is exactly
+# that command: it finds nothing to kill (ESRCH) in the ORDINARY case
+# where the TERM just above it already worked, so the trailing `:`
+# was a no-op every time this function was about to return cleanly —
+# `watched()`'s own two callers (the cap and the no-progress paths)
+# never reached their `return 124`/`return 125` at all, the whole
+# process dying with `kill -KILL`'s own exit status instead. Found
+# calling `watched()` directly (`sh land.sh --call watched …`, exactly
+# tools/land_train.sh's own calling convention) and confirmed with a
+# five-line reproduction before touching this function. Each kill now
+# guards ITSELF.
 kill_tree() {
     for kid in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$kid"; done
-    kill -TERM "$1" 2>/dev/null
+    kill -TERM "$1" 2>/dev/null || :
     sleep 1
-    kill -KILL "$1" 2>/dev/null
-    :
+    kill -KILL "$1" 2>/dev/null || :
 }
 
 # THE IDLEST SPRITE FIRST: every Sprite in the pool is asked, in
@@ -935,6 +947,21 @@ linux_progress() {
     grep '^land-linux: progress ' "$linux_out" | tail -1 | awk '{ print $3 }'
     grep -c '' "$linux_out"
 }
+
+# The train's own leg, `linux_progress`'s twin over a `land-train:`
+# log — one `watched()` covers every remote step regardless of which
+# gate's own body it is running (docs/2026_09_29_LAND_TRAIN.md).
+train_progress() {
+    grep -q '^land-train: body started' "$train_out" 2>/dev/null || return 0
+    grep '^land-train: progress ' "$train_out" | tail -1 | awk '{ print $3 }'
+    grep -c '' "$train_out"
+}
+
+# The landing pool's own list — the ONE place tools/land_train.sh
+# reads it, so it never drifts from `linux_gate_step`'s own default
+# (`${AVRA_LAND_SPRITE:-$land_sprite_pool}`) and never names a Sprite
+# (avra-unions-* included) that is not this pool's to claim.
+land_pool() { printf '%s' "${AVRA_LAND_SPRITE:-$land_sprite_pool}"; }
 
 # The Sprite after `$1` in the rest of the list.
 next_after() {
@@ -2088,6 +2115,91 @@ batch_core() {
 # Whether `b` is among the space-separated `set`.
 listed() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
 
+# ── THE TRAIN HAND-OFF (AVRA_LAND_TRAIN=1) ───────────────────────────
+# docs/2026_09_29_LAND_TRAIN.md. Drop-in for `batch_core`, same
+# contract (sets `good`, `culprits`, `landed`, `batch_note` — never a
+# return value, exactly as batch_core's own callers already read it):
+# tools/land_train.sh verifies the WHOLE queue's candidate ladder on
+# Sprites, in parallel, and hands back the longest green prefix — this
+# function never re-enters the FIFO lock train_ladder runs under none
+# of (it takes none), and runs the ordinary local pipeline exactly
+# ONCE, over that prefix alone, for the Mac-only half (speed, warm-
+# reuse, codesign, the real fast-forward) — AVRA_LAND_LINUX=0 for that
+# one pass, since the Linux suites already ran, MORE of them, once per
+# candidate, on the Sprites the train just used.
+train_core() {
+    train_dry_run="$1"
+    shift
+    branches="$*"
+    good=""
+    culprits=""
+    landed=""
+    batch_note=""
+    batch_base="$(git -C "$main_wt" rev-parse refs/heads/main)"
+    [ -n "$batch_wt" ] || batch_wt="$(cd "$main_wt/.." && pwd -P)/avra-land-batch-wt"
+    echo "land: train over: $branches"
+
+    # A DETERMINISTIC scratch, named from THIS run's own — never left
+    # for land_train.sh to mint its own under /tmp, which this
+    # function could then never point back at to read its tool-failure
+    # marker (a temp var read only from the ENVIRONMENT, never from a
+    # child process's own private default).
+    train_scratch="$scratch/train-ladder"
+    ladder_log="$(log_of train-ladder)"
+    good="$(AVRA_LAND_TRAIN_SCRATCH="$train_scratch" sh "$tools_dir/land_train.sh" --call train_ladder $branches 2>"$ladder_log")" || true
+    cat "$ladder_log" >&2
+    culprits="$(grep -h '^CULPRIT: ' "$ladder_log" 2>/dev/null | sed 's/^CULPRIT: //' | tr '\n' ' ')"
+    if grep -q '^TOOLFAIL' "$ladder_log" 2>/dev/null || [ -f "$train_scratch/tool-failure" ]; then
+        good=""
+        culprits=""
+        reason="$(cat "$train_scratch/tool-failure" 2>/dev/null || grep -h '^TOOLFAIL' "$ladder_log" | head -1)"
+        batch_note="land: TOOL FAILURE in the train, no branch judged — see $ladder_log"
+        # THE TOP-LEVEL SCRATCH, not the ladder's own nested one — this
+        # is what finish_lock's exit_verdict reads to answer exit 3
+        # ("NOT LANDED — tool failure") rather than the generic exit 1
+        # a plain batch_note alone would fall through to.
+        tool_failed "$reason"
+        return 0
+    fi
+    if [ -z "$(printf '%s' "$good" | tr -d '[:space:]')" ]; then
+        batch_note="land: every branch failed the train — nothing to land"
+        return 0
+    fi
+    echo "land: train green prefix: $good"
+    [ -n "$(printf '%s' "$culprits" | tr -d '[:space:]')" ] && echo "land: culprit(s), excluded: $culprits"
+    if [ "$train_dry_run" -eq 1 ]; then
+        batch_note="land: --dry-run — skipping the Mac finalization pass and the fast-forward"
+        return 0
+    fi
+    AVRA_LAND_LINUX=0
+    export AVRA_LAND_LINUX
+    if ! try_integration "train-final" $good; then
+        [ -f "$scratch/tool-failure" ] || batch_note="land: the train's own green prefix disagreed once combined and Mac-finalized — logs: $scratch/logs"
+        return 0
+    fi
+    if git -C "$main_wt" merge --ff-only "$batch_branch" > "$(log_of train-ff)" 2>&1; then
+        landed="$(git -C "$main_wt" rev-parse HEAD)"
+        refresh_main_compiler "$batch_wt" "$main_wt"
+        return 0
+    fi
+    if main_moved_since "$batch_base"; then
+        batch_note="land: main moved during the train's finalization — land it again once it settles"
+    else
+        batch_note="land: the fast-forward was refused and main did not move — git says: $(cat "$(log_of train-ff)")"
+    fi
+}
+
+# batch_core, or the train when AVRA_LAND_TRAIN=1 — the ONE place that
+# decides which, so a queue is served identically either way from both
+# of this file's own call sites.
+dispatch_batch() {
+    if [ "${AVRA_LAND_TRAIN:-0}" = "1" ]; then
+        train_core "$@"
+    else
+        batch_core "$@"
+    fi
+}
+
 main_batch() {
     dry_run="$1"
     shift
@@ -2110,7 +2222,7 @@ main_batch() {
             exit 1
         fi
     done
-    batch_core "$dry_run" "$@"
+    dispatch_batch "$dry_run" "$@"
     if [ -n "$batch_note" ] && [ -z "$landed" ]; then
         echo "$batch_note" >&2
         [ "$dry_run" -eq 1 ] && [ -n "$good" ] && [ -z "$(printf '%s' "$culprits" | tr -d '[:space:]')" ] && { verdict_ok=1; exit 0; }
@@ -2128,7 +2240,7 @@ land_absorbed() {
     riders=""
     for t in $absorbed; do riders="$riders $(ticket_field "$d/$t" branch)"; done
     echo "land: absorbing the queue behind ticket $ticket:$riders"
-    batch_core 0 "$branch" $riders
+    dispatch_batch 0 "$branch" $riders
     for t in $absorbed; do
         b="$(ticket_field "$d/$t" branch)"
         if [ -n "$landed" ] && listed "$b" "$good"; then
