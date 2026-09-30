@@ -34,12 +34,12 @@
 //!
 //! COOKIES ARE ASKED FOR: a `jar` in the options keeps what each answer
 //! sets and sends it back where RFC 6265 says (jar.av).
-use @std.url.{Url, UrlError, parse, encoded, default_port}
+use @std.url.{Url, UrlError, parse, encoded as percent_encoded, default_port}
 use @std.net.{Conn, connect}
 use @std.json.{Json, to_text}
 use @std.time.{Duration, ms, secs, now_ms, sleep, within}
 use frame.{Method, Limits, limits}
-use http.{Header, names_one_of}
+use http.{Header, names_one_of, piece_on_wire, body_end}
 use client.{
     Client,
     Answer,
@@ -48,8 +48,6 @@ use client.{
     over,
     request,
     chunked_request,
-    chunk,
-    last_chunk,
     method_word,
     staged,
     carried,
@@ -152,7 +150,7 @@ fn followed(q: Hop, o: Options, deadline: int) -> Fetched {
     let aim = aimed(q.url)?
     if aim.secure && o.tls == null { return .Err(.NoTls) }
     let wire = wire_of(q.method, aim, q.body, o.headers.concat(jarred(o, aim)))?
-    let a = retried(q, wire, aim, o, deadline, Try { n: 1, wait: o.retry.backoff.ms })?
+    let a = tried(q, wire, aim, o, deadline, Try { n: 1, wait: o.retry.backoff.ms })?
     remembered(o, aim, a)
     let max? = following(o.redirects) else { return .Ok(a) }
     let next? = rewritten(a.status, q) else { return .Ok(a) }
@@ -218,11 +216,11 @@ const credential_names: List<Bytes> = [n.bytes() for n in ["authorization", "pro
 
 /// The request over a lent connection, tried again by `o.retry` when
 /// the peer dropped it; the answer records how many attempts it took.
-fn retried(q: Hop, wire: Bytes, aim: Aim, o: Options, deadline: int, t: Try) -> Fetched {
+fn tried(q: Hop, wire: Bytes, aim: Aim, o: Options, deadline: int, t: Try) -> Fetched {
     let r = lent(q.method, wire, aim, q.body, o, deadline)
     if !again(r, q, o.retry, t.n) || now_ms() + t.wait >= deadline { return attempted(r, q, t.n) }
     if t.wait > 0 { sleep(ms(t.wait)) }
-    retried(
+    tried(
         q,
         wire,
         aim,
@@ -345,7 +343,7 @@ fn lent(method: Method, wire: Bytes, aim: Aim, body: Payload, o: Options, deadli
     Answer,
     ClientError,
 > {
-    let carrier = o.pool.take(aim.origin, () -> dialed(aim, o))?
+    let carrier = o.pool.take(aim.origin, () -> dialed_for(aim, o))?
     mut client = client_of(carrier)
     match exchanged(client, method, wire, body, o, deadline) {
         .Ok(done) -> {
@@ -361,7 +359,7 @@ fn lent(method: Method, wire: Bytes, aim: Aim, body: Payload, o: Options, deadli
 
 /// A new connection to `aim`: made within the connect deadline, then
 /// secured within the TLS one when the URL asked for it.
-fn dialed(aim: Aim, o: Options) -> Result<Carrier, ClientError> {
+fn dialed_for(aim: Aim, o: Options) -> Result<Carrier, ClientError> {
     let c = staged(.Connect, netted(connect(aim.host, aim.port, o.timeouts.connect)))?
     .Ok(.H1(over(secured(c, aim, o)?, o.limits)))
 }
@@ -426,13 +424,13 @@ fn poured(c: Client, next: fn() -> Bytes?, deadline: int) -> Result<int, ClientE
         if now_ms() >= deadline { return .Err(.TimedOut(.Total)) }
         match next() {
             piece? -> {
-                carried(c.conn.wire_write(chunk(piece)))?
+                carried(c.conn.wire_write(piece_on_wire(piece, .Chunked)))?
                 total = total + piece.length
             }
             null -> { more = false }
         }
     }
-    carried(c.conn.wire_write(last_chunk))?
+    carried(c.conn.wire_write(body_end(.Chunked)))?
     .Ok(total)
 }
 
@@ -454,8 +452,8 @@ fn form_of(fields: List<FormField>) -> string {
 }
 
 fn form_pair(f: FormField) -> string {
-    let name = encoded(f.name.bytes(), .Param).text() ?? ""
-    let value = encoded(f.value.bytes(), .Param).text() ?? ""
+    let name = percent_encoded(f.name.bytes(), .Param).text() ?? ""
+    let value = percent_encoded(f.value.bytes(), .Param).text() ?? ""
     "${name}=${value}"
 }
 

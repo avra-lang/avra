@@ -219,8 +219,8 @@ export fn request(method: string, target: string, host: string, headers: List<He
 }
 
 /// A request head whose body follows as CHUNKS (RFC 9112 §7.1), each
-/// written by `chunk` and ended by `last_chunk`; absent as `request`
-/// is.
+/// written by http.av's `piece_on_wire` and ended by its `body_end`;
+/// absent as `request` is.
 export fn chunked_request(method: string, target: string, host: string, headers: List<Header>) -> Bytes? {
     headed(method, target, host, headers, "transfer-encoding: chunked\r\n")
 }
@@ -232,26 +232,6 @@ fn headed(method: string, target: string, host: string, headers: List<Header>, f
     let fields = ["${h.name}: ${h.value}\r\n" for h in headers].join("")
     "${method} ${target} HTTP/1.1\r\nhost: ${host}\r\n${fields}${framing}\r\n".bytes()
 }
-
-/// One chunk of a chunked body: its size in hex, the octets, a CRLF.
-/// Empty octets are no chunk at all — the empty chunk ENDS a body, so
-/// it is written only by `last_chunk`.
-export fn chunk(b: Bytes) -> Bytes {
-    if b.is_empty() { return b }
-    "${hex_size(b.length)}\r\n".bytes().concat(b).concat(crlf_octets)
-}
-
-/// The chunk that ends a chunked body, with no trailers.
-export const last_chunk: Bytes = "0\r\n\r\n".bytes()
-
-const crlf_octets: Bytes = "\r\n".bytes()
-
-fn hex_size(n: int) -> string {
-    if n < 16 { return hex_digits.substring(n, n + 1) }
-    hex_size(n >> 4) + hex_digits.substring(n & 15, (n & 15) + 1)
-}
-
-const hex_digits: string = "0123456789abcdef"
 
 /// A method's word on the request line; absent for `.Other`, whose
 /// word the enum does not hold.
