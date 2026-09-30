@@ -85,11 +85,14 @@ sprites=$(ranked)
 
 if [ "$1" != -p ]; then
     set -- "$(for a in "$@"; do printf "'%s' " "$(printf '%s' "$a" | sed "s/'/'\\\\''/g")"; done)"
-    set -- $(claim_waiting "$sprites" "") "$1"
-    trap 'rm -rf "$2" "$3"' EXIT
-    echo "sp: $1" >&2
+    cmd=$1
+    claimed=$(claim_waiting "$sprites" "")
+    sprite=${claimed%% *}; rest=${claimed#* }
+    slot=${rest%% *}; tree=${rest#* }
+    trap 'rm -rf "${slot:-}" "${tree:-}"' EXIT
+    echo "sp: $sprite" >&2
     st=0
-    run_on "$1" "$4" || st=$?
+    run_on "$sprite" "$cmd" || st=$?
     exit "$st"
 fi
 
@@ -100,26 +103,23 @@ used=""
 i=0
 for cmd in "$@"; do
     i=$((i + 1))
-    set -- $(claim_waiting "$sprites" "$used")
-    used="$used $1"
+    claimed=$(claim_waiting "$sprites" "$used")
+    sprite=${claimed%% *}; rest=${claimed#* }
+    slot=${rest%% *}; tree=${rest#* }
+    used="$used $sprite"
     printf '%s\n' "$cmd" > "$out/$i.cmd"
-    echo "$1" > "$out/$i.sprite"
-    : > "$out/$i.pipe"
+    echo "$sprite" > "$out/$i.sprite"
     (
-        trap 'rm -rf "$2" "$3"' EXIT
+        trap 'rm -rf "$slot" "$tree"' EXIT
         t=$(date +%s)
-        st=0
-        run_on "$1" "$cmd" > "$out/$i.pipe" 2>&1 || st=$?
-        echo "$st" > "$out/$i.st"
+        { st=0; run_on "$sprite" "$cmd" 2>&1 || st=$?; echo "$st" > "$out/$i.st"; } |
+            awk -v p="[$i $sprite] " '{ print p $0; fflush() }'
         echo $(( $(date +%s) - t )) > "$out/$i.s"
     ) &
     runners="${runners:-} $!"
-    tail -n +1 -f "$out/$i.pipe" 2>/dev/null | awk -v p="[$i $1] " '{ print p $0; fflush() }' &
 done
 n=$i
 wait $runners
-sleep 0.5
-pkill -f "tail -n \+1 -f $out/" 2>/dev/null || :
 
 fail=0
 echo
