@@ -1,0 +1,35 @@
+//! The WebSocket server the Autobahn fuzzingclient drives: every
+//! message echoed as it came, on every path, on AUTOBAHN_PORT (9001).
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.net.{listen}
+use @std.http.frame.{limits}
+use @std.http.server.{served, timing}
+use @std.http.ws.{Socket, WsLimits, accepted}
+
+type App = {}
+
+/// Every message sent back as it came, until the peer closes or breaks
+/// a law.
+fn echoed(s: Socket) {
+    while true {
+        match s.receive() {
+            .Ok(m) -> match m {
+                .Text(t) -> { let _ = s.send_text(t) },
+                .Binary(b) -> { let _ = s.send_binary(b) },
+                .Close(_, _) -> { return },
+            },
+            .Err(_) -> { return },
+        }
+    }
+}
+
+let port = parse_int(env_or("AUTOBAHN_PORT", "9001")) ?? 9001
+match listen(env_or("AUTOBAHN_HOST", "127.0.0.1"), port) {
+    .Ok(l) -> {
+        let s = served(l, () -> App {}, limits(), timing()) { _app, q -> accepted(q, WsLimits {}, echoed) }
+        println("serving WebSocket echo on ${port}")
+        let _ = s.run(cores: 1)
+    },
+    .Err(e) -> eprintln("could not listen: ${e.describe().message}"),
+}
