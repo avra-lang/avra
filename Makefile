@@ -132,10 +132,11 @@ CFLAGS_sqlite_sentinel := -Ipackages/std-sqlite/vendor
 # THE VENDORED mbedTLS, ONE OBJECT PER UPSTREAM UNIT: each
 # packages/std-tls/vendor/mbedtls_<unit>.c wrapper includes one upstream
 # .c, so every unit compiles as upstream compiles it (a unity build lets
-# one unit's macros reach the next). The units are ARCHIVED, so a
-# program links the members its handshake reaches and no more. The two
-# config headers in src/c are the whole mechanism list; @std/tls's own
-# C reads mbedTLS's structs, so it compiles under the same words.
+# one unit's macros reach the next). They are ARCHIVED with @std/tls's
+# own C, so a program links the members it reaches and no more — one
+# that only signs links no handshake. The two config headers in src/c
+# are the whole mechanism list; @std/tls's own C reads mbedTLS's
+# structs, so it compiles under the same words.
 MBEDTLS_DIR := packages/std-tls/vendor/mbedtls
 MBEDTLS_OBJS := $(patsubst packages/std-tls/vendor/%.c,build/%.o,$(wildcard packages/std-tls/vendor/mbedtls_*.c))
 MBEDTLS_FLAGS := -I$(MBEDTLS_DIR)/include -I$(MBEDTLS_DIR)/tf-psa-crypto/include \
@@ -145,10 +146,10 @@ MBEDTLS_FLAGS := -I$(MBEDTLS_DIR)/include -I$(MBEDTLS_DIR)/tf-psa-crypto/include
   -I$(MBEDTLS_DIR)/tf-psa-crypto/platform -I$(MBEDTLS_DIR)/tf-psa-crypto/utilities \
   -Ipackages/std-tls/src/c '-DTF_PSA_CRYPTO_CONFIG_FILE="std_tls_crypto_config.h"' \
   '-DMBEDTLS_CONFIG_FILE="std_tls_ssl_config.h"'
-$(foreach o,$(MBEDTLS_OBJS),$(eval CFLAGS_$(basename $(notdir $(o))) := $(MBEDTLS_FLAGS)))
-CFLAGS_std_tls := $(MBEDTLS_FLAGS)
+TLS_OBJS := $(patsubst packages/std-tls/src/c/%.c,build/%.o,$(wildcard packages/std-tls/src/c/*.c)) $(MBEDTLS_OBJS)
+$(foreach o,$(TLS_OBJS),$(eval CFLAGS_$(basename $(notdir $(o))) := $(MBEDTLS_FLAGS)))
 
-build/mbedtls.a: $(MBEDTLS_OBJS)
+build/std_tls.a: $(TLS_OBJS)
 	@rm -f $@
 	ar rcs $@ $^
 
@@ -166,7 +167,7 @@ build/%.o: %.c build/%.sha
 	@mkdir -p build
 	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
--include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(MBEDTLS_OBJS))))
+-include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS))))
 
 # THE HOT LEAVES AS BYTES THE COMPILER CARRIES (runtime/avra_hot.h):
 # runtime/avra_hot.c compiled to bitcode by the LLVM the compiler links,
