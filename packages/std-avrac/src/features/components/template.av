@@ -3,7 +3,7 @@
 //! importing file's parse copies it where an instance stands, so the
 //! reading needs nothing but the provider's text — never its typing.
 use core.{
-    NodeStore,
+    SyntaxArena,
     StmtId,
     ExprId,
     TypeRef,
@@ -20,7 +20,7 @@ use features.{ComponentWord, Instancing, Template, Record, ChildSlot, Instanced}
 use grammar.{Token, TokenKind, lex_source}
 
 /// An exported component as an importing file's block word.
-export fn word_of(store: NodeStore, s: StmtId, origin: string) -> ComponentWord? {
+export fn word_of(store: SyntaxArena, s: StmtId, origin: string) -> ComponentWord? {
     let c? = store.component_parts(s) else { return null }
     ComponentWord {
         word: c.name,
@@ -32,7 +32,7 @@ export fn word_of(store: NodeStore, s: StmtId, origin: string) -> ComponentWord?
 }
 
 /// A named instance's statement as a name a body may list.
-export fn instanced(store: NodeStore, s: StmtId) -> Instanced? {
+export fn instanced(store: SyntaxArena, s: StmtId) -> Instanced? {
     let of? = store.instance_of(s) else { return null }
     let name? = store.let_name(s) else { return null }
     Instanced { name: name, declared: of }
@@ -77,7 +77,7 @@ fn binds_name(c: ComponentWord) -> bool {
 
 /// How an instance of the component stands in place: its template,
 /// or the library's reason it cannot.
-fn instancing(store: NodeStore, c: ComponentParts) -> Instancing {
+fn instancing(store: SyntaxArena, c: ComponentParts) -> Instancing {
     let expand? = expand_of(store, c) else { return Instancing.Record(record_of(store, c)) }
     if c.fields.is_empty() { return Instancing.Refused(no_block_field(c.name)) }
     if c.fields.length > 1 { return Instancing.Refused(many_fields(c.name, c.fields.length)) }
@@ -100,7 +100,7 @@ fn instancing(store: NodeStore, c: ComponentParts) -> Instancing {
 
 /// A component read as a record: its head in order, the `List` fields
 /// its instance's statements may fill, and its one fn field.
-fn record_of(store: NodeStore, c: ComponentParts) -> Record {
+fn record_of(store: SyntaxArena, c: ComponentParts) -> Record {
     let arrow_fields = [p for p in c.fields if p.ty?.arrow ?? false]
     Record {
         head: [p.name.of for p in c.head],
@@ -127,7 +127,7 @@ fn answers_nullable(ty: TypeRef?) -> bool {
 
 /// Whether the file declares a component by this name — a list of its
 /// records takes that component's instances alone.
-fn declares_component(store: NodeStore, name: string) -> bool {
+fn declares_component(store: SyntaxArena, name: string) -> bool {
     store.stmt_ids().any((s) -> store.component_parts(s)?.name == name)
 }
 
@@ -141,17 +141,17 @@ fn lists(p: Param) -> bool {
 }
 
 /// A component's `expand`, when it declares one.
-export fn expand_of(store: NodeStore, c: ComponentParts) -> FnParts? {
+export fn expand_of(store: SyntaxArena, c: ComponentParts) -> FnParts? {
     member(store, c, "expand")
 }
 
 /// A component's method of this name, when it declares one.
-export fn member(store: NodeStore, c: ComponentParts, name: string) -> FnParts? {
+export fn member(store: SyntaxArena, c: ComponentParts, name: string) -> FnParts? {
     flatten([some_list(store.fn_parts(m)) for m in c.fns]).find(it.name == name)
 }
 
 /// The `quote` an `expand` answers, when its body is that one quote.
-export fn template_body(store: NodeStore, expand: FnParts) -> BodyParts? {
+export fn template_body(store: SyntaxArena, expand: FnParts) -> BodyParts? {
     let quoted? = store.lone_value(expand.body) else { return null }
     let body? = store.expr(quoted).body_of() else { return null }
     if !(body_behavior(body.word) is .Quote) { return null }
@@ -160,7 +160,7 @@ export fn template_body(store: NodeStore, expand: FnParts) -> BodyParts? {
 
 /// The first CODE field of `self` a template reads more than once —
 /// a pattern is a value, read as often as the template likes.
-export fn read_twice(store: NodeStore, body: BodyParts, values: List<string>) -> string? {
+export fn read_twice(store: SyntaxArena, body: BodyParts, values: List<string>) -> string? {
     let reads = [r for r in flatten([some_list(self_field(store, h)) for h in body.holes]) if !values.contains(r)]
     reads.find([x for x in reads if x == it].length > 1)
 }
@@ -176,7 +176,7 @@ fn verbatim(view: BodyView) -> List<StmtId> {
 }
 
 /// The field of `self` an expression reads, when that is all it does.
-fn self_field(store: NodeStore, e: ExprId) -> string? {
+fn self_field(store: SyntaxArena, e: ExprId) -> string? {
     let step? = store.place_step(e) else { return null }
     match step {
         .Field(subject, name) -> if is_self(store, subject) { name.of } else { null },
@@ -184,7 +184,7 @@ fn self_field(store: NodeStore, e: ExprId) -> string? {
     }
 }
 
-fn is_self(store: NodeStore, e: ExprId) -> bool {
+fn is_self(store: SyntaxArena, e: ExprId) -> bool {
     let step? = store.place_step(e) else { return false }
     match step { .Root(name) -> name.of == "self", _ -> false }
 }

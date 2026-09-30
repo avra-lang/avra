@@ -4,7 +4,7 @@
 //! type. Coverage is the point: adding a variant breaks every match
 //! that spelled them, and a hole under two or more ANSWERING arms
 //! is warned — under one it is a projection, and `rest` is quiet.
-use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, NodeStore, joined, filled, flatten}
+use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, SyntaxArena, joined, filled, flatten}
 use features.{TypeCx, EnumSig, this_is, nothing, duplicate_names, variants_are, pat_semantics_of}
 use features.enums.{all_irrefutable, hole_of}
 use diagnostics.{refusal, warning, defect_at}
@@ -381,7 +381,7 @@ fn rest_of(r: Row) -> Row {
 
 /// Whether any of the arm's alternatives is a variant test —
 /// structural, no type asked.
-fn tests_variant(store: NodeStore, a: Arm) -> bool {
+fn tests_variant(store: SyntaxArena, a: Arm) -> bool {
     for p in a.pats {
         if store.pat(p) is .Variant { return true }
     }
@@ -394,7 +394,7 @@ fn tests_variant(store: NodeStore, a: Arm) -> bool {
 /// PROJECTION, TWO OR MORE a REGISTRY. `Code.answering()`
 /// (features/code.av) reads the same count outside a `match`'s own
 /// typing.
-export fn answering_arms(store: NodeStore, arms: List<Arm>) -> int {
+export fn answering_arms(store: SyntaxArena, arms: List<Arm>) -> int {
     mut n = 0
     for a in arms {
         let hole: PatId? = hole_of(store, a.pats)

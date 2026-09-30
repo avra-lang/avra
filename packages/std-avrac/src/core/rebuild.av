@@ -40,8 +40,8 @@ export type Inits = { names: List<Plain>, values: List<ExprId>, spoiled: bool = 
 export type Unplaced = { hole: int, why: string }
 
 export type Rebuilder = {
-    src: NodeStore,
-    dst: NodeStore,
+    src: SyntaxArena,
+    dst: SyntaxArena,
     // the fills by hole index, each materialized AT ITS SEAT and by
     // the seat's kind — so a fill's nodes mint just before the node
     // that holds them, as a parsed child does; empty while classifying
@@ -94,7 +94,7 @@ export type Rebuilder = {
 /// A classifying walk over a store's quote body, `runs` the run mark
 /// of each hole by index (`store.is_run_hole` over its fill
 /// expression).
-export fn classifier(store: NodeStore, runs: List<bool>) -> Rebuilder {
+export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
     Rebuilder {
         src: store,
         dst: store,
@@ -121,8 +121,8 @@ export fn classifier(store: NodeStore, runs: List<bool>) -> Rebuilder {
 /// the run mark of each hole by index, read from `src` the same way
 /// `classifier` read it.
 export fn copier(
-    src: NodeStore,
-    dst: NodeStore,
+    src: SyntaxArena,
+    dst: SyntaxArena,
     fills: List<fn(HoleKind) -> Filled>,
     runs: List<bool>,
 ) -> Rebuilder {
@@ -150,13 +150,13 @@ export fn copier(
 
 /// A hole's fill expressions run marks, by index — the currency
 /// `classifier` and `copier` both take.
-export fn hole_runs(store: NodeStore, e: ExprId) -> List<bool> {
+export fn hole_runs(store: SyntaxArena, e: ExprId) -> List<bool> {
     let bp? = store.expr(e).body_of() else { return [] }
     [store.is_run_hole(h) for h in bp.holes]
 }
 
 /// A quote's holes classified — the kind of each, by its index.
-export fn hole_kinds(store: NodeStore, e: ExprId) -> List<HoleKind> {
+export fn hole_kinds(store: SyntaxArena, e: ExprId) -> List<HoleKind> {
     let bp? = store.expr(e).body_of() else { return [] }
     match bp.view {
         .Verbatim(ss, arms) -> {
@@ -171,7 +171,7 @@ export fn hole_kinds(store: NodeStore, e: ExprId) -> List<HoleKind> {
 }
 
 /// What a quote's body PARSED as.
-export fn quote_kind(store: NodeStore, e: ExprId) -> QuoteKind {
+export fn quote_kind(store: SyntaxArena, e: ExprId) -> QuoteKind {
     let bp? = store.expr(e).body_of() else { return QuoteKind.Stmts }
     match bp.view {
         .Verbatim(ss, arms) -> {
