@@ -497,8 +497,8 @@ names line termination, not header parsing; row 37 must fail at the SP, not at t
 Sources: [RFC 9113](https://www.rfc-editor.org/rfc/rfc9113.html) (HTTP/2, cited bare),
 [RFC 7541](https://www.rfc-editor.org/rfc/rfc7541.html) (HPACK). The code is
 `packages/std-http/src/h2.av` and `hpack.av`; every row below is a `then` in
-`src/tests/h2_test.av` (H2), `hpack_test.av` (HP) or `hpack_adversarial_test.av` (HA),
-quoted by its name.
+`src/tests/h2_test.av` (H2), `h2_adversarial_test.av` (H2A), `hpack_test.av` (HP) or
+`hpack_adversarial_test.av` (HA), quoted by its name, or a program test named as one.
 
 Recommendation in one line: **a law broken on one stream resets that stream; a law
 broken on the connection ends it with GOAWAY; a header block is decoded whole even for
@@ -530,10 +530,10 @@ law, never a choice.
   on a stream frame, or a lower id not remembered closed is PROTOCOL_ERROR on the
   connection (§5.1.1).
 - A frame on an idle stream other than HEADERS or PRIORITY is PROTOCOL_ERROR (§5.1).
-- DATA or HEADERS on a stream the peer has ended is STREAM_CLOSED on the stream; on a
-  stream the peer RESET it is STREAM_CLOSED on the connection; on a stream THIS END reset
-  it is ignored, since it was in flight when the reset left (§5.1). The last 256 closed
-  ids are remembered for that purpose.
+- DATA or HEADERS on a stream the peer has ended is STREAM_CLOSED on the stream, and so
+  is one on a stream the peer RESET; on a stream that ENDED both ways it is STREAM_CLOSED
+  on the connection; on a stream THIS END reset it is ignored, since it was in flight when
+  the reset left (§5.1). The last 256 closed ids are remembered with how each closed.
 - A stream past SETTINGS_MAX_CONCURRENT_STREAMS (100 here) is REFUSED_STREAM, its block
   still decoded (§5.1.2).
 - A stream depending on itself — in HEADERS or in PRIORITY — is PROTOCOL_ERROR on the
@@ -556,17 +556,34 @@ law, never a choice.
 | GOAWAY on a stream / under 8 octets | PROTOCOL_ERROR / FRAME_SIZE_ERROR | §6.8 |
 
 A PING is answered with an ACK carrying its payload; a PING ACK is not answered. A peer's
-GOAWAY ends the connection gracefully: the requests already taken are answered, none
-more are read.
+GOAWAY opens no more streams and ends nothing at once: this end reads on — the answers it
+owes may still need WINDOW_UPDATEs, and the peer may still PING — and says its own
+GOAWAY once every stream is answered and sent (§6.8). After any GOAWAY of its own the
+link shuts its write side and reads what is still in flight for a bounded linger before
+it closes: a socket closed over unread octets answers with a reset, and a reset may
+destroy the GOAWAY before the peer reads it.
 
 ### 5.5 Flow control (§5.2, §6.9)
 
-Every DATA octet, padding included, is charged to both windows, and both are given back
-at once by WINDOW_UPDATE — so a body is paced by `Limits.body`, never by the window's
-size. Sending, an answer's DATA is cut to the lesser of the connection window, the
+Every DATA octet, padding included, is charged to both windows, and a window that falls
+below half is given back whole by one WINDOW_UPDATE — so a body is paced by
+`Limits.body`, never by the window's size, and a flood of one-octet DATA frames earns one
+update per half window rather than one per frame. Sending, an answer's DATA is cut to the lesser of the connection window, the
 stream window and the peer's MAX_FRAME_SIZE; what does not fit is owed on the stream and
 sent when a WINDOW_UPDATE — or a SETTINGS that grows INITIAL_WINDOW_SIZE — opens it. A
-SETTINGS may drive a window below zero; nothing is sent until it is positive again.
+SETTINGS may drive a window below zero; nothing is sent until it is positive again. An
+answer whose owed octets have not moved for the idle deadline ends the link with GOAWAY,
+whatever else the peer sends: a window held shut behind a trickle of PINGs holds nothing
+longer than an idle link does.
+
+### 5.5a Churn (§10.5)
+
+The streams the peer makes end in a reset — by resetting them itself (rapid reset,
+CVE-2023-44487) or by breaking a stream law so this end resets them ("made you reset") —
+are counted, and past twice the concurrency bound plus the streams this end answered the
+connection ends with ENHANCE_YOUR_CALM. A client that cancels no more than it lets finish
+never meets the bound; one that only opens and resets meets it after 201 streams of
+bounded work. A request reset before its handler ran is dropped unanswered.
 
 ### 5.6 The message (§8.1–§8.3)
 
@@ -632,3 +649,21 @@ SETTINGS may drive a window below zero; nothing is sent until it is positive aga
 | H21 | An integer `0x7f` then ten `0xff` | COMPRESSION_ERROR, not a wrapped value | RFC 7541 §5.1 | HA "a 64-bit overflow is refused, not wrapped" |
 | H22 | `0xff ×4` as a Huffman string | COMPRESSION_ERROR (EOS) | RFC 7541 §5.2 | HA "the EOS symbol inside a string is refused" |
 | H23 | Every vector of RFC 7541 Appendix C | decoded AND encoded octet for octet | RFC 7541 App. C | HP, by section |
+| H24 | 1000 × (HEADERS + RST_STREAM) | GOAWAY ENHANCE_YOUR_CALM at churn 201, nothing live | §10.5; CVE-2023-44487 | H2A "rapid reset: open-then-reset past twice the stream bound is ENHANCE_YOUR_CALM, with nothing live" |
+| H25 | 300 malformed HEADERS | GOAWAY ENHANCE_YOUR_CALM | §10.5 | H2A "made-you-reset: malformed streams past the budget are ENHANCE_YOUR_CALM" |
+| H26 | 500 answered streams beside 500 reset ones | never ENHANCE_YOUR_CALM | §10.5 | H2A "a client that cancels no more than it lets finish never meets the budget" |
+| H27 | 40 000 one-octet DATA frames | two WINDOW_UPDATEs in all | §6.9; §10.5 | H2A "a flood of one-octet DATA earns one WINDOW_UPDATE per half window, not one per frame" |
+| H28 | INITIAL_WINDOW_SIZE 0, a GET, then PINGs forever | GOAWAY NO_ERROR once the idle deadline passes; no DATA | §6.9; §10.5 | program `h2_starved` |
+| H29 | HEADERS or DATA on a stream that ENDED both ways | GOAWAY STREAM_CLOSED | §5.1 | H2 "DATA or HEADERS on a stream that ended both ways is STREAM_CLOSED on the connection" |
+| H30 | GOAWAY then PING | the PING is answered; this end's GOAWAY follows when quiet | §6.8 | H2 "a GOAWAY from the peer is read past: a PING after it is still answered" |
+
+### 5.9 h2spec
+
+h2spec 2.6.0 against the h2c server (`get "/"` answering 100 KB, `post "/"`), three runs:
+**145 of 146 pass, 0 skipped.** The one failure is 3.5 #2, "Sends invalid connection
+preface": this port serves HTTP/1.1 AND HTTP/2 by prior knowledge, so octets that are not
+the preface are a 1.1 request, and `INVALID CONNECTION PREFACE` followed by a blank line is
+answered 400 as §1 requires. h2spec expects an h2-only port. The two h2spec failures that
+WERE defects — HEADERS on a stream that ended both ways (a stream error where §5.1 demands
+a connection error), and a peer's GOAWAY followed by a PING (the link stopped reading and
+the close became a reset) — are rows H29 and H30.

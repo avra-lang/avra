@@ -79,6 +79,12 @@ fn keeping_block(path: string) -> Bytes { [130, 134, 68, path.length].bytes()!.c
 /// A GET whose `:path` is index 62 — whatever the last kept block kept.
 fn indexing_get(id: int) -> Bytes { frame_bytes(.Headers, end_headers | end_stream, id, [130, 134, 190, 1, 1, 97].bytes()!) }
 
+/// A GET on stream `id`, reset by the client at once.
+fn open_and_reset(id: int) -> Bytes {
+    frame_bytes(.Headers, end_headers | end_stream, id, lit_block(plain_get("/")))
+        .concat(frame_bytes(.Reset, 0, id, u32_bytes(8)))
+}
+
 /// The next value of a linear congruential sequence.
 fn next_rand(x: int) -> int { (x * 1103515245 + 12345) % 2147483648 }
 
@@ -210,14 +216,57 @@ spec "std.http h2 adversarial" {
         }
     }
     given "memory under churn" {
-        then "a thousand streams opened and reset leave nothing live and a bounded memory of them" {
-            let churn = [frame_bytes(.Headers, end_headers | end_stream, 2 * i + 1, lit_block(plain_get("/")))
-                .concat(frame_bytes(.Reset, 0, 2 * i + 1, u32_bytes(8))) for i in 0..1000]
+        then "rapid reset: open-then-reset past twice the stream bound is ENHANCE_YOUR_CALM, with nothing live" {
+            let churn = [open_and_reset(2 * i + 1) for i in 0..1000]
             let c = fed_all(churn)
-            c.streams.is_empty() &&
-                c.gone.length == 256 &&
-                c.ready.is_empty() &&
-                c.peer_resets == 1000
+            goaway_code(c) == error_code(.EnhanceYourCalm) &&
+                c.churn == 201 &&
+                c.streams.is_empty() &&
+                c.gone.length <= 256 &&
+                c.ready.is_empty()
+        }
+        then "two hundred resets are within the budget" {
+            let c = fed_all([open_and_reset(2 * i + 1) for i in 0..200])
+            goaway_code(c) == -1 && c.churn == 200 && c.gone.length == 200
+        }
+        then "a client that cancels no more than it lets finish never meets the budget" {
+            mut c = fed_all([])
+            for i in 0..500 {
+                let _ = c
+                    .fed(
+                        frame_bytes(
+                            .Headers,
+                            end_headers | end_stream,
+                            4 * i + 1,
+                            lit_block(plain_get("/")),
+                        ),
+                        0,
+                    )
+                c.respond(4 * i + 1, [field(":status", "204")], no_bytes)
+                let _ = c.fed(open_and_reset(4 * i + 3), 0)
+            }
+            goaway_code(c) == -1 && c.churn == 500 && c.answers == 500
+        }
+        then "made-you-reset: malformed streams past the budget are ENHANCE_YOUR_CALM" {
+            let bad = [frame_bytes(
+                .Headers,
+                end_headers | end_stream,
+                2 * i + 1,
+                lit_block([field(":method", "GET")]),
+            ) for i in 0..300]
+            goaway_code(fed_all(bad)) == error_code(.EnhanceYourCalm)
+        }
+        then "a flood of one-octet DATA earns one WINDOW_UPDATE per half window, not one per frame" {
+            let head = frame_bytes(
+                .Headers,
+                end_headers,
+                1,
+                lit_block(plain_get("/").concat([field("content-length", "40000")])),
+            )
+            let c = fed_all(
+                [head].concat([frame_bytes(.Data, 0, 1, "x".bytes()) for i in 0..40000]),
+            )
+            goaway_code(c) == -1 && all_frames(c.out).filter(it.kind is .WindowUpdate).length == 2
         }
         then "the 413 refusal ignores the DATA the client had in flight" {
             let l = Limits { body: 4 }

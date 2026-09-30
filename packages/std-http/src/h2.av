@@ -233,10 +233,14 @@ export type H2Stream = {
     owed: Bytes,
 }
 
-/// A stream no longer live: its id, and whether this end reset it —
-/// frames already in flight to a stream this end reset are ignored,
-/// where any other frame on a closed stream is refused (§5.1).
-type Gone = { id: int, by_us: bool }
+/// How a stream closed, which decides what a late frame on it means
+/// (§5.1): one THIS END reset may still receive what was in flight, so
+/// its frames are ignored; one the PEER reset is refused stream by
+/// stream; one that ENDED both ways is refused on the connection.
+enum Closure { Reset, PeerReset, Ended }
+
+/// A stream no longer live: its id, and how it closed.
+type Gone = { id: int, how: Closure }
 
 /// How many closed streams are remembered.
 const remembered: int = 256
@@ -245,13 +249,13 @@ const remembered: int = 256
 enum Standing {
     Idle
     Live(at: int)
-    Closed(by_us: bool)
+    Closed(how: Closure)
     Forgotten
 }
 
 /// Why a header block is being gathered: a request's head, a request's
 /// trailers, or a block decoded only to keep HPACK in step — resetting
-/// its stream with `why`, or with no_bytes when it is already gone.
+/// its stream with `why`, or with nothing when it is already gone.
 enum Purpose {
     Head
     Trailers
@@ -277,7 +281,12 @@ export type Exchange = { stream: int, fields: List<HeaderField>, body: Bytes }
 /// highest stream the peer opened, both connection windows, the header
 /// block in flight, and the two things `fed` leaves behind — `out`,
 /// what is owed the peer, and `ready`, the requests completed.
-/// `closing` is set once GOAWAY is owed: no_bytes more is read.
+/// `closing` is set once GOAWAY is owed: nothing more is read.
+/// `parting` is set once the peer sent GOAWAY: no stream opens, and the
+/// link ends when it is quiet. `churn` counts the streams that ended in
+/// a reset the peer provoked — by resetting one itself or by breaking a
+/// stream's law — and `answers` the streams this end answered: churn
+/// past its budget ends the connection (`churned`).
 export type H2Conn = {
     ours: Settings,
     theirs: Settings,
@@ -295,7 +304,9 @@ export type H2Conn = {
     out: Bytes,
     ready: List<Exchange>,
     closing: bool,
-    peer_resets: int,
+    parting: bool,
+    churn: int,
+    answers: int,
 }
 
 /// A server connection awaiting the client's preface, its own SETTINGS
@@ -319,7 +330,9 @@ export fn h2_server(limits: Limits) -> H2Conn {
         out: frame_bytes(.Settings, 0, 0, settings_payload(ours)),
         ready: [],
         closing: false,
-        peer_resets: 0,
+        parting: false,
+        churn: 0,
+        answers: 0,
     }
 }
 
@@ -372,7 +385,7 @@ impl H2Conn {
 
     /// The frame's law, by kind — or the connection error it broke.
     /// The first frame is SETTINGS (§3.4), and a header block in flight
-    /// admits no_bytes but its own CONTINUATIONs (§6.10).
+    /// admits nothing but its own CONTINUATIONs (§6.10).
     mut fn dispatched(f: Frame) -> H2Error? {
         if !self.settled && !(f.kind is .Settings && !flagged(f.flags, ack)) { return .Protocol }
         if self.assembling != null &&
@@ -408,24 +421,23 @@ impl H2Conn {
     fn not_live(id: int) -> Standing {
         if id > self.last { return .Idle }
         let g? = self.gone.find_index(it.id == id) else { return .Forgotten }
-        .Closed(self.gone[g].by_us)
+        .Closed(self.gone[g].how)
     }
 
-    /// H2Stream `id` closed, remembered as closed — reset by this end
-    /// when `by_us`.
-    mut fn closed(id: int, by_us: bool) {
+    /// Stream `id` closed, remembered with how it closed.
+    mut fn closed(id: int, how: Closure) {
         self.streams = [s for s in self.streams if s.id != id]
         let kept = if self.gone.length >= remembered { self.gone.slice(1, self.gone.length) } else { self.gone }
-        self.gone = kept.concat([Gone { id: id, by_us: by_us }])
+        self.gone = kept.concat([Gone { id: id, how: how }])
     }
 
     /// RST_STREAM owed on stream `id`, which closes.
     mut fn reset(id: int, why: H2Error) {
         self.out = self.out.concat(frame_bytes(.Reset, 0, id, u32_bytes(error_code(why))))
-        self.closed(id, true)
+        self.closed(id, .Reset)
     }
 
-    /// GOAWAY owed, naming the last stream the peer opened; no_bytes more
+    /// GOAWAY owed, naming the last stream the peer opened; nothing more
     /// is read (§5.4.1). An error also drops the requests not yet taken
     /// — the connection they came on broke a law.
     mut fn failed(why: H2Error) {
@@ -436,7 +448,7 @@ impl H2Conn {
         self.closing = true
     }
 
-    /// A graceful end: GOAWAY with no error, and no_bytes more read.
+    /// A graceful end: GOAWAY with no error, and nothing more read.
     mut fn ended() { self.failed(.NoError) }
 
     // ── DATA (§6.1) ─────────────────────────────────────────────
@@ -447,10 +459,10 @@ impl H2Conn {
         let n = f.payload.length
         if n > self.recv { return .FlowControl }
         self.recv = self.recv - n
-        self.replenished(0, n)
+        self.replenished(0, self.recv)
         match self.standing(f.stream) {
             .Idle or .Forgotten -> .Protocol,
-            .Closed(by_us) -> if by_us { null } else { .StreamClosed },
+            .Closed(how) -> self.late(f.stream, how),
             .Live(at) -> self.data_on(at, f, body),
         }
     }
@@ -466,16 +478,19 @@ impl H2Conn {
         self.streams[at].recv = s.recv - n
         self.streams[at].body = s.body.concat(body)
         if !flagged(f.flags, end_stream) {
-            self.replenished(s.id, n)
+            self.replenished(s.id, s.recv - n)
             return null
         }
         self.remote_ended(at)
     }
 
-    /// Both windows given back what a DATA frame spent, so a body is
-    /// paced by the bound on it, never by the window's size.
-    mut fn replenished(stream: int, n: int) {
-        if n == 0 { return }
+    /// A window that fell below half given back whole: a body is paced
+    /// by the bound on it, never by the window's size, and a flood of
+    /// one-octet DATA frames earns one WINDOW_UPDATE per half a window,
+    /// never one per frame.
+    mut fn replenished(stream: int, left: int) {
+        let n = self.ours.window - left
+        if left * 2 >= self.ours.window || n <= 0 { return }
         self.out = self.out.concat(frame_bytes(.WindowUpdate, 0, stream, u32_bytes(n)))
         if stream == 0 { self.recv = self.recv + n } else { self.refilled(stream, n) }
     }
@@ -492,7 +507,7 @@ impl H2Conn {
         let s = self.streams[at]
         if !length_kept(s.fields, s.body.length) { return self.stream_error(s.id, .Protocol) }
         if s.state is .HalfClosedLocal {
-            self.closed(s.id, false)
+            self.closed(s.id, .Ended)
             return null
         }
         self.streams[at].state = .HalfClosedRemote
@@ -500,9 +515,21 @@ impl H2Conn {
         null
     }
 
-    /// A stream error: RST_STREAM owed, the connection lives on.
+    /// A stream error: RST_STREAM owed, and the connection lives on —
+    /// unless the peer's churn is past its budget.
     mut fn stream_error(id: int, why: H2Error) -> H2Error? {
         self.reset(id, why)
+        self.churn = self.churn + 1
+        self.churned()
+    }
+
+    /// ENHANCE_YOUR_CALM once the streams the peer made end in a reset
+    /// outnumber twice the concurrency bound plus the streams answered
+    /// (§10.5): a client that cancels no more than it lets finish never
+    /// meets it, and a stream of open-then-reset — rapid reset, or a
+    /// peer that makes this end reset for it — meets it in bounded work.
+    fn churned() -> H2Error? {
+        if self.churn > 2 * self.ours.streams + self.answers { return .EnhanceYourCalm }
         null
     }
 
@@ -524,7 +551,7 @@ impl H2Conn {
         if body.length < lead { return .FrameSize }
         let fragment = body.slice(lead, body.length)
         let depends = if lead > 0 { u32_at(body, 0) & int_bound } else { -1 }
-        let purpose? = self.purpose_of(f, depends) else { return .Protocol }
+        let purpose = match self.purpose_of(f, depends) { .Ok(p) -> p, .Err(why) -> { return why } }
         let a = Assembly {
             stream: f.stream,
             block: fragment,
@@ -541,15 +568,35 @@ impl H2Conn {
 
     /// Why this HEADERS is gathered, opening its stream when it is a
     /// new request — a stream past the concurrency bound is refused, and
-    /// one that depends on itself is malformed (§5.3.1). Absent for a
-    /// stream id below one already opened and not remembered closed,
-    /// which ends the connection (§5.1.1).
-    mut fn purpose_of(f: Frame, depends: int) -> Purpose? {
+    /// one that depends on itself is malformed (§5.3.1) — or the
+    /// connection error it is: a stream id below one already opened and
+    /// not remembered closed (§5.1.1), or one that ended (§5.1).
+    mut fn purpose_of(f: Frame, depends: int) -> Result<Purpose, H2Error> {
         match self.standing(f.stream) {
-            .Idle -> self.opened(f.stream, depends),
-            .Live(at) -> self.trailers_of(at, f),
-            .Closed(by_us) -> .Discarded(if by_us { null } else { H2Error.StreamClosed }),
-            .Forgotten -> null,
+            .Idle -> .Ok(self.opened(f.stream, depends)),
+            .Live(at) -> .Ok(self.trailers_of(at, f)),
+            .Closed(how) -> self.late_purpose(how),
+            .Forgotten -> .Err(H2Error.Protocol),
+        }
+    }
+
+    /// A late DATA on a closed stream, answered as its closure says.
+    mut fn late(id: int, how: Closure) -> H2Error? {
+        match how {
+            .Reset -> null,
+            .PeerReset -> self.stream_error(id, .StreamClosed),
+            .Ended -> .StreamClosed,
+        }
+    }
+
+    /// A late HEADERS on a closed stream: its block is still decoded, and
+    /// then ignored, reset, or — on a stream that ended — the connection
+    /// ends.
+    fn late_purpose(how: Closure) -> Result<Purpose, H2Error> {
+        match how {
+            .Reset -> .Ok(.Discarded(null)),
+            .PeerReset -> .Ok(.Discarded(H2Error.StreamClosed)),
+            .Ended -> .Err(H2Error.StreamClosed),
         }
     }
 
@@ -659,10 +706,10 @@ impl H2Conn {
             .Idle -> .Protocol,
             .Closed(_) or .Forgotten -> null,
             .Live(_) -> {
-                self.peer_resets = self.peer_resets + 1
+                self.churn = self.churn + 1
                 self.ready = [r for r in self.ready if r.stream != f.stream]
-                self.closed(f.stream, false)
-                null
+                self.closed(f.stream, .PeerReset)
+                self.churned()
             },
         }
     }
@@ -692,13 +739,21 @@ impl H2Conn {
         null
     }
 
-    /// The peer is going away: this end answers the streams it has and
-    /// opens no more — the server ends the link once they are done.
+    /// The peer is going away: it opens no more streams, and this end
+    /// answers the ones it has — reading on, for the WINDOW_UPDATEs and
+    /// PINGs those answers still need — then ends once it is quiet
+    /// (§6.8).
     mut fn goaway(f: Frame) -> H2Error? {
         if f.stream != 0 { return .Protocol }
         if f.payload.length < 8 { return .FrameSize }
-        self.ended()
+        self.parting = true
         null
+    }
+
+    /// GOAWAY owed once a parting peer's streams are all answered and
+    /// sent.
+    mut fn parted_when_quiet() {
+        if self.parting && !self.closing && self.quiet() { self.ended() }
     }
 
     mut fn window_update(f: Frame) -> H2Error? {
@@ -734,13 +789,14 @@ impl H2Conn {
     /// A response on stream `id`: its head now, split to the peer's frame
     /// size, then as much of `body` as both windows allow — the rest
     /// owed until a WINDOW_UPDATE opens them. A stream that is gone takes
-    /// no_bytes.
+    /// nothing.
     mut fn respond(id: int, fields: List<HeaderField>, body: Bytes) {
         let at? = self.live_at(id) else { return }
         if self.streams[at].answered { return }
         let block = self.encoder.encoded(fields)
         self.out = self.out.concat(header_frames(id, block, body.is_empty(), self.theirs.frame))
         self.streams[at].answered = true
+        self.answers = self.answers + 1
         self.streams[at].owed = body
         if body.is_empty() { return self.local_ended(id) }
         self.flushed(id)
@@ -751,7 +807,7 @@ impl H2Conn {
         for id in [s.id for s in self.streams if !s.owed.is_empty()] { self.flushed(id) }
     }
 
-    /// H2Stream `id`'s owed body sent as far as both windows allow, in
+    /// Stream `id`'s owed body sent as far as both windows allow, in
     /// frames no longer than the peer takes; the last ends the stream.
     mut fn flushed(id: int) {
         let at? = self.live_at(id) else { return }
@@ -785,7 +841,7 @@ impl H2Conn {
     /// too, and is half closed otherwise.
     mut fn local_ended(id: int) {
         let at? = self.live_at(id) else { return }
-        if self.streams[at].state is .HalfClosedRemote { return self.closed(id, false) }
+        if self.streams[at].state is .HalfClosedRemote { return self.closed(id, .Ended) }
         self.streams[at].state = .HalfClosedLocal
     }
 
@@ -801,6 +857,13 @@ impl H2Conn {
         let o = self.out
         self.out = no_bytes
         o
+    }
+
+    /// How many answer octets are owed and waiting on a window.
+    fn owing() -> int {
+        mut n = 0
+        for st in self.streams { n = n + st.owed.length }
+        n
     }
 
     /// Whether every stream is answered and sent, so a closing link may
@@ -903,7 +966,7 @@ fn edged(v: Bytes) -> bool { !v.is_empty() && (is_space(v.at(0)) || is_space(v.a
 fn is_space(c: int) -> bool { c == 32 || c == 9 }
 
 /// A declared `content-length` equals the body's length (§8.1.1); an
-/// undeclared one keeps no_bytes to break.
+/// undeclared one keeps nothing to break.
 export fn length_kept(fs: List<HeaderField>, n: int) -> bool {
     let v? = value_named(fs, content_length_name) else { return true }
     v == "${n}".bytes()

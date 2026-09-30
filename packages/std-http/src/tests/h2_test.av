@@ -207,18 +207,34 @@ spec "std.http h2" {
             let c = conn_after([frame_bytes(.Ping, 0, 0, p)])
             frames_in(c.out).any(it.kind == FrameKind.Ping && it.flags == ack && it.payload == p)
         }
-        then "a PING ACK is not answered" { kinds_owed(
+        then "a PING ACK is not answered" {
+            kinds_owed(
                 conn_after([frame_bytes(.Ping, ack, 0, u32_bytes(0).concat(u32_bytes(0)))]),
                 .Ping,
-            ) == 0 }
+            ) == 0
+        }
         then "a PING of seven octets is a FRAME_SIZE_ERROR" {
             goaway_of(conn_after([frame_bytes(.Ping, 0, 0, [0, 0, 0, 0, 0, 0, 0].bytes()!)])) == code(.FrameSize)
         }
         then "a PING on a stream is a PROTOCOL_ERROR" {
             goaway_of(conn_after([frame_bytes(.Ping, 0, 1, u32_bytes(0).concat(u32_bytes(0)))])) == code(.Protocol)
         }
-        then "a GOAWAY from the peer ends the connection without error" {
-            goaway_of(conn_after([frame_bytes(.GoAway, 0, 0, u32_bytes(0).concat(u32_bytes(0)))])) == code(.NoError)
+        then "a GOAWAY from the peer is read past: a PING after it is still answered" {
+            let bye = frame_bytes(.GoAway, 0, 0, u32_bytes(0).concat(u32_bytes(0)))
+            let c = conn_after([bye, frame_bytes(.Ping, 0, 0, u32_bytes(1).concat(u32_bytes(2)))])
+            c.parting &&
+                !c.closing &&
+                frames_in(c.out).any(it.kind == FrameKind.Ping && it.flags == ack)
+        }
+        then "a parting peer's open streams are answered before this end says GOAWAY" {
+            mut c = conn_after(
+                [get_on(1), frame_bytes(.GoAway, 0, 0, u32_bytes(1).concat(u32_bytes(0)))],
+            )
+            c.parted_when_quiet()
+            let early = goaway_of(c)
+            c.respond(1, [field(":status", "204")], no_bytes)
+            c.parted_when_quiet()
+            early == -1 && goaway_of(c) == code(.NoError) && c.closing
         }
         then "a PUSH_PROMISE from a client is a PROTOCOL_ERROR" {
             goaway_of(conn_after([frame_bytes(.PushPromise, end_headers, 1, u32_bytes(2))])) == code(.Protocol)
@@ -322,14 +338,14 @@ spec "std.http h2" {
         }
     }
     given "DATA and the body (§6.1, §8.1.1)" {
-        then "a POST's DATA is its body, and both windows are given back" {
+        then "a POST's DATA is its body, charged to the connection's window" {
             let c = conn_after(
                 [heads(1, post_head(5), 0), data_on(1, "hel", 0), data_on(1, "lo", end_stream)],
             )
             c.ready.length == 1 &&
                 c.ready[0].body == "hello".bytes() &&
-                kinds_owed(c, .WindowUpdate) == 3 &&
-                c.recv == 65535
+                kinds_owed(c, .WindowUpdate) == 0 &&
+                c.recv == 65530
         }
         then "DATA on stream 0 is a PROTOCOL_ERROR" { goaway_of(conn_after([data_on(0, "x", 0)])) == code(.Protocol) }
         then "DATA on an idle stream is a PROTOCOL_ERROR" { goaway_of(conn_after([data_on(1, "x", 0)])) == code(.Protocol) }
@@ -337,7 +353,7 @@ spec "std.http h2" {
             let c = conn_after([get_on(1), data_on(1, "x", 0)])
             reset_of(c, 1) == code(.StreamClosed) && alive(c)
         }
-        then "DATA on a stream the peer reset is STREAM_CLOSED on the connection" {
+        then "DATA on a stream the peer reset is STREAM_CLOSED on the stream" {
             let c = conn_after(
                 [
                     heads(1, post_head(1), 0),
@@ -345,7 +361,32 @@ spec "std.http h2" {
                     data_on(1, "x", 0),
                 ],
             )
-            goaway_of(c) == code(.StreamClosed)
+            reset_of(c, 1) == code(.StreamClosed) && alive(c)
+        }
+        then "DATA or HEADERS on a stream that ended both ways is STREAM_CLOSED on the connection" {
+            mut c = conn_after([get_on(1)])
+            c.respond(1, [field(":status", "204")], no_bytes)
+            let _ = c.fed(data_on(1, "x", 0), 0)
+            mut d = conn_after([get_on(1)])
+            d.respond(1, [field(":status", "204")], no_bytes)
+            let _ = d.fed(get_on(1), 0)
+            goaway_of(c) == code(.StreamClosed) && goaway_of(d) == code(.StreamClosed)
+        }
+        then "HEADERS on a stream the peer reset is STREAM_CLOSED on the stream" {
+            let c = conn_after(
+                [heads(1, post_head(1), 0), frame_bytes(.Reset, 0, 1, u32_bytes(8)), get_on(1)],
+            )
+            reset_of(c, 1) == code(.StreamClosed) && alive(c)
+        }
+        then "frames in flight to a stream this end reset are ignored" {
+            let c = conn_after(
+                [
+                    heads(1, get_head("/").concat([field("Bad", "x")]), 0),
+                    data_on(1, "x", 0),
+                    get_on(1),
+                ],
+            )
+            reset_of(c, 1) == code(.Protocol) && alive(c)
         }
         then "padding that claims the whole frame is a PROTOCOL_ERROR" {
             goaway_of(
@@ -378,13 +419,13 @@ spec "std.http h2" {
                 c.ready.is_empty() &&
                 alive(c)
         }
-        then "every DATA frame is given back at once, so a long body never shuts either window" {
+        then "a window below half is given back whole, so a long body never shuts either one" {
             let frame = frame_bytes(.Data, 0, 1, [97 for i in 0..16384].bytes()!)
             let c = conn_after([heads(1, post_head(81920), 0)].concat([frame for i in 0..5]))
             alive(c) &&
-                c.recv == 65535 &&
-                c.streams[0].recv == 65535 &&
-                kinds_owed(c, .WindowUpdate) == 10
+                c.recv * 2 >= 65535 &&
+                c.streams[0].recv * 2 >= 65535 &&
+                kinds_owed(c, .WindowUpdate) == 4
         }
     }
     given "RST_STREAM, PRIORITY, WINDOW_UPDATE (§6.3, §6.4, §6.9)" {
@@ -395,7 +436,7 @@ spec "std.http h2" {
         }
         then "a reset request is dropped before anything answers it" {
             let c = conn_after([get_on(1), frame_bytes(.Reset, 0, 1, u32_bytes(8)), get_on(3)])
-            paths_ready(c) == "/s3" && c.peer_resets == 1
+            paths_ready(c) == "/s3" && c.churn == 1
         }
         then "PRIORITY of four octets is a stream FRAME_SIZE_ERROR" {
             reset_of(conn_after([frame_bytes(.Priority, 0, 1, u32_bytes(0))]), 1) == code(.FrameSize)

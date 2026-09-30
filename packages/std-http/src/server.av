@@ -35,7 +35,7 @@
 //! its bytes; a connection silent past the deadline its state names is
 //! dropped.
 use @std.net.{Listener, Conn, NetError, listen}
-use @std.time.{Duration, ms, secs, within}
+use @std.time.{Duration, ms, secs, within, now_ms}
 use frame.{Head, Chunker, Limits, framed, chunker, fed, status_of, limits}
 use http.{Request, Unrouted, Response, wire, status, read_size, as_sent}
 use route.{Route, compiled, dispatch}
@@ -477,16 +477,27 @@ impl Serving {
     /// every request it completes answered by the same handler a 1.1
     /// request is, what is owed written — until either end goes away,
     /// the link has served its bound, or its peer is silent too long.
+    /// An answer whose owed octets have not moved for the idle deadline
+    /// ends the link, whatever else the peer sends: a window held shut
+    /// behind a trickle of PINGs holds nothing longer than an idle link.
     mut fn h2_conversed(mut l: Link) -> int {
         mut h = h2_server(self.limits)
+        mut owed = 0
+        mut moved = now_ms()
         while true {
             let at = h.fed(l.buf, 0)
             l.buf = l.buf.slice(at, l.buf.length)
             for x in h.taken() { self.h2_answered(h, l, x) }
             if l.served >= self.timing.requests && !h.closing { h.ended() }
+            h.parted_when_quiet()
+            let owing = h.owing()
+            if owing == 0 || owing < owed { moved = now_ms() }
+            owed = owing
+            if owing > 0 && now_ms() - moved > self.timing.idle.ms && !h.closing { h.ended() }
             l.out = h.drained()
             if !self.flushed(l) { return self.dropped(l) }
-            if h.closing || l.closing { return self.parted(l) }
+            if l.closing { return self.parted(l) }
+            if h.closing { return self.lingered(l) }
             let wait = if h.streams.is_empty() { self.timing.idle.ms } else { self.timing.body.ms }
             match within ms(wait) { l.conn.read(read_size()) } {
                 .Ok(b) -> heard(l, b),
@@ -494,6 +505,25 @@ impl Serving {
             }
         }
         l.conn.fd
+    }
+
+    /// The write side shut after this end's GOAWAY, then what the peer
+    /// still sends read and dropped until it closes — for at most eight
+    /// reads of a linger's length — and only then the socket closed. A
+    /// socket closed over unread octets answers the peer with a reset,
+    /// and a reset may destroy the GOAWAY before the peer reads it.
+    fn lingered(l: Link) -> int {
+        let _ = l.conn.shutdown_write()
+        mut open = true
+        mut turns = 0
+        while open && turns < 8 {
+            open = match within ms(125) { l.conn.read(read_size()) } {
+                .Ok(b) -> b != null,
+                .Err(_) -> false,
+            }
+            turns = turns + 1
+        }
+        self.dropped(l)
     }
 
     /// One stream's request answered by the handler — or, when its head
