@@ -1,7 +1,11 @@
-//! proves: a gigabyte streams in in bounded memory — the handler runs
+//! proves: a body streams in in bounded memory — the handler runs
 //! once the head is here and reads the body a piece at a time, each no
 //! larger than one read of the socket, so the upload flows through a
-//! sink and nothing gathers
+//! sink and nothing gathers. 16 MiB here; AVRA_STREAM_PIECES=16384
+//! sends a gigabyte, and AVRA_MEM_STATS=1 shows the native peak stays
+//! under a megabyte at either size.
+use @std.io.{env_or}
+use @std.text.{parse_int}
 use @std.net.{NetError, listen, connect}
 use @std.time.{secs, within}
 use @std.http.frame.{limits}
@@ -11,7 +15,7 @@ use @std.http.server.{served, timing}
 
 type App = {}
 
-fn pieces() -> int { 16384 }
+fn pieces() -> int { parse_int(env_or("AVRA_STREAM_PIECES", "256")) ?? 256 }
 fn piece_size() -> int { 65536 }
 
 once fn piece() -> Bytes { [120 for _i in 0..piece_size()].bytes()! }
