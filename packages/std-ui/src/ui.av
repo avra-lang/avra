@@ -1,0 +1,140 @@
+//! `@std/ui` — the semantic vocabulary. A view answers a `Node` tree:
+//! interaction contracts (a button, a toggle, a heading), never
+//! widgets. A REALIZER draws the tree for its target — HTML, the
+//! terminal, UIKit, an in-memory tree for tests — and every realizer
+//! is one exhaustive match over `Role` and `Setting`.
+//!
+//!     use @std.ui.{column, text, button}
+//!
+//!     column {
+//!         gap: .M
+//!         text "Tasks"
+//!         button "Add"
+//!     }
+//!
+//! The head of a component says WHAT it is (its content, its value,
+//! its label); the body says HOW (its look, its children). Docs:
+//! docs/2026_09_29_UI.md §4, §15.
+
+/// The interaction contract a node carries. A registry: every realizer
+/// spells every arm.
+export enum Role {
+    Text(content: string)
+    Heading(content: string, level: int)
+    Image(src: string, alt: string)
+    Link(label: string, to: string)
+    Button(label: string)
+    Toggle(label: string, on: bool)
+    Field(label: string, value: string)
+    Column
+    Row
+    Section(title: string)
+    List
+    Item
+}
+
+/// A style ROLE, never a CSS value: the theme decides what `.M` or
+/// `.Muted` means on each target.
+export enum Setting {
+    Gap(Size)
+    Pad(Size)
+    Radius(Size)
+    Fill(Tone)
+    Color(Tone)
+    Face(Font)
+}
+
+export enum Size { None, Xs, S, M, L, Xl }
+export enum Tone { Text, Muted, Danger, Surface, SurfaceRaised, SurfaceSunk, SurfaceHover }
+export enum Font { Body, Heading, Footnote, Mono }
+
+/// One element of the semantic tree. `key` is a list item's identity
+/// (reconciliation and state follow it), null elsewhere.
+export type Node = {
+    role: Role,
+    look: List<Setting> = [],
+    children: List<Node> = [],
+    key: string? = null,
+}
+
+/// What every component answers. A realizer walks the answer.
+export trait View {
+    fn node() -> Node
+}
+
+/// How a value shows itself wherever it is listed: a `list` of `T`
+/// renders each `T` through its `Shows`.
+export trait Shows {
+    fn view() -> dyn View
+}
+
+// ── Exemplars: a value head with settings, a bodiless control, two
+// containers. The rest of the vocabulary follows these shapes.
+
+export component text(content: string) {
+    tone: Tone = .Text
+    font: Font = .Body
+}
+
+impl View for text {
+    fn node() -> Node {
+        Node { role: .Text(self.content), look: [Setting.Color(self.tone), .Face(self.font)] }
+    }
+}
+
+export component button(label: string) {}
+
+impl View for button {
+    fn node() -> Node { Node { role: .Button(self.label) } }
+}
+
+export component column {
+    gap: Size = .None
+    pad: Size = .None
+    items: List<dyn View> = []
+}
+
+impl View for column {
+    fn node() -> Node {
+        Node {
+            role: .Column,
+            look: [Setting.Gap(self.gap), .Pad(self.pad)],
+            children: nodes(self.items),
+        }
+    }
+}
+
+export component row {
+    gap: Size = .None
+    pad: Size = .None
+    items: List<dyn View> = []
+}
+
+impl View for row {
+    fn node() -> Node {
+        Node {
+            role: .Row,
+            look: [Setting.Gap(self.gap), .Pad(self.pad)],
+            children: nodes(self.items),
+        }
+    }
+}
+
+/// The children of a container, as nodes.
+export fn nodes(views: List<dyn View>) -> List<Node> { [v.node() for v in views] }
+
+/// The text a node would read as, for tests and the terminal: content
+/// and labels, joined by its structure.
+export fn spoken(n: Node) -> string {
+    let own = match n.role {
+        .Text(c) or .Heading(c, _) -> c,
+        .Image(_, alt) -> alt,
+        .Link(l, _) -> l,
+        .Button(l) -> "[${l}]",
+        .Toggle(l, on) -> if on { "[x] ${l}" } else { "[ ] ${l}" },
+        .Field(l, v) -> "${l}: ${v}",
+        .Section(t) -> t,
+        .Column or .Row or .List or .Item -> "",
+    }
+    [s for s in [own].concat([spoken(c) for c in n.children]) if s != ""].join(" ")
+}
