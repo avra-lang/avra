@@ -1,0 +1,121 @@
+// The census law over a hand-written relation: its marks are the ones
+// a derive writes. Every lookup answers nothing, so a narrowed scan is
+// told from a full one by its answer.
+use @std.avrac.testing.{refused_in, provided, answered}
+
+/// A relation a census counts at `rows`, one row `n: 1, tag: "a"`:
+/// `tag` is planned, `sku` looked up one row at a time, and nothing
+/// answers `n`, `note` or `marks`.
+fn counted(census: string) -> string {
+    "use @std.meta.{plans, plans_all, looks_up, census}\n" +
+        census +
+        "export type Row = { n: int, tag: string, sku: string, note: string?, marks: List<string> }\n" +
+        "impl Row {\n" +
+        "    @plans_all\n" +
+        "    static fn all(db: int) -> List<Row> { [Row { n: db, tag: \"a\", sku: \"s\", note: null, marks: [] }] }\n" +
+        "    @plans(\"tag\")\n" +
+        "    static fn by_tag(db: int, v: string) -> List<Row> { [] }\n" +
+        "    @looks_up(\"sku\")\n" +
+        "    static fn by_sku(db: int, v: string) -> Row? { null }\n" +
+        "}\n" +
+        "export fn ok(r: Row) -> bool { r.n > 0 }\n"
+}
+
+fn big() -> string { counted("@census(50000)\n") }
+
+fn census_use() -> string { "use @x.c.{Row, ok}\n" }
+
+/// The warnings a program over `relation` said, rendered.
+fn warned(main: string, relation: string) -> string { provided(census_use() + main, relation).warnings() }
+
+spec "features/lists — the census law" {
+    given "a relation a census counts past the floor" {
+        then "a compare no index answers is warned, naming the field and the index" {
+            warned("[r for r in Row.all(1) if r.n == 1].length", big()) == "warning[type.plan_scan]: this filter scans all of `Row`, which a census counts at 50000 rows, and no index answers `n`\n" +
+                "  ╭─[/w/src/main.av:2:27]\n" +
+                "2 │ [r for r in Row.all(1) if r.n == 1].length\n" +
+                "  ·                           ┬\n" +
+                "  ·                           ╰── compared on every row\n" +
+                "──╯\n" +
+                "help: add `@index n` to `Row` — a `@plans(\"n\")` lookup — and the scan reads it instead"
+        }
+        then "the warned scan still runs whole" {
+            answered(provided(census_use() + "[r for r in Row.all(1) if r.n == 1].length", big())) == "1"
+        }
+        then "a planned compare is clean" {
+            warned("[r for r in Row.all(1) if r.tag == \"a\"].length", big()) == ""
+        }
+        then "an unindexed compare beside a planned one is clean — the lookup narrows" {
+            warned("[r for r in Row.all(1) if r.tag == \"a\" && r.n == 1].length", big()) == ""
+        }
+        then "a compare a one-row lookup answers is clean" {
+            warned("[r for r in Row.all(1) if r.sku == \"s\"].length", big()) == ""
+        }
+        then "a compare written value-first is warned" {
+            warned("[r for r in Row.all(1) if 1 == r.n].length", big())
+                .contains("no index answers `n`")
+        }
+        then "a compare of the row to itself is clean — the value is not invariant" {
+            warned("[r for r in Row.all(1) if r.n == r.n].length", big()) == ""
+        }
+        then "a compare to a captured local is warned" {
+            warned("let k = 3\n[r for r in Row.all(1) if r.n == k].length", big())
+                .contains("no index answers `n`")
+        }
+        then "a compare to a local that could be null is clean — no bucket holds null" {
+            warned("let k: int? = 3\n[r for r in Row.all(1) if r.n == k].length", big()) == ""
+        }
+        then "a nullable field compared to a value is warned" {
+            warned("[r for r in Row.all(1) if r.note == \"x\"].length", big())
+                .contains("no index answers `note`")
+        }
+        then "a list field's `contains` is warned" {
+            warned("[r for r in Row.all(1) if r.marks.contains(\"x\")].length", big())
+                .contains("no index answers `marks`")
+        }
+        then "a compare whose planned lookup is skipped for a nullable value warns the unindexed one" {
+            warned(
+                "let t: string? = \"a\"\n[r for r in Row.all(1) if r.tag == t && r.n == 1].length",
+                big(),
+            )
+                .contains("no index answers `n`")
+        }
+        then "a disjunction names no one index and is clean" {
+            warned("[r for r in Row.all(1) if r.n == 1 || r.n == 2].length", big()) == ""
+        }
+        then "a compare to a call is clean — the value is not invariant" {
+            warned("fn one() -> int { 1 }\n[r for r in Row.all(1) if r.n == one()].length", big()) == ""
+        }
+        then "an ordering compare names no index and is clean" {
+            warned("[r for r in Row.all(1) if r.n > 1].length", big()) == ""
+        }
+        then "an inner head's unindexed compare to the outer row is warned" {
+            warned(
+                "[s.n for r in Row.all(1) if r.tag == \"a\" for s in Row.all(2) if s.n == r.n].length",
+                big(),
+            )
+                .contains("no index answers `n`")
+        }
+        then "a residual stays the refusal, and alone" {
+            refused_in(
+                provided(
+                    census_use() + "[r for r in Row.all(1) if r.n == 1 && ok(r)].length",
+                    big(),
+                ),
+                "this filter hands `Row`'s rows to a call",
+            )
+        }
+    }
+    given "a relation the census does not count past the floor" {
+        then "a census one past the floor is warned" {
+            warned("[r for r in Row.all(1) if r.n == 1].length", counted("@census(1001)\n"))
+                .contains("a census counts at 1001 rows")
+        }
+        then "a census at the floor is clean" {
+            warned("[r for r in Row.all(1) if r.n == 1].length", counted("@census(1000)\n")) == ""
+        }
+        then "a relation with no census is clean" {
+            warned("[r for r in Row.all(1) if r.n == 1].length", counted("")) == ""
+        }
+    }
+}

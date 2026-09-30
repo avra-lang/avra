@@ -41,8 +41,10 @@
 //! names could shadow. The templates' own names (`stable_hasher`,
 //! `Writer`) resolve here.
 use @std.meta.{
+    lacks,
     plans,
     plans_all,
+    looks_up,
     type_named,
     Type,
     Field,
@@ -666,7 +668,25 @@ fn localized(t: Type) -> bool { content(t).any(marked(it, "local")) }
 fn stored_record(t: Type) -> List<Decls> {
     if !localized(t) { return [] }
     let fields = [quote { type _ = { ${f.name}: ${f.ty} } } for f in stable(t)]
-    [quote { export type ${t}Stored = { ..${fields} } }]
+    [
+        lacking_all(
+            t,
+            [f for f in content(t) if marked(f, "local")],
+            quote { export type ${t}Stored = { ..${fields} } },
+        ),
+    ]
+}
+
+/// `row` wearing one `@lacks` per process-local column of `t`, so a
+/// read of one refuses with the reason instead of "no field".
+fn lacking_all(t: Type, local: List<Field>, row: Decls) -> Decls {
+    let f? = local.first() else { return row }
+    let why = "it is `@local` on `${t.name}`, and a stored row carries no process-local column — read it from the live `${t.name}` row"
+    lacking_all(
+        t,
+        local.slice(1, local.length),
+        quote { @lacks(${literal(f.name)}, ${literal(why)}) ${row} },
+    )
 }
 
 /// The key record: the `@key` fields as a value to hold, hash and look
@@ -709,6 +729,7 @@ fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
     match k {
         .Str -> if one {
             quote {
+                @looks_up(${literal(f.name)})
                 static fn ${n}(db: Db, v: string) -> ${t}? {
                     let rs = ${name(t.name)}.rows_in(db)
                     rs.row(rs.first_id(rs.read_text(db, ${i}, v)) ?? -1)
@@ -725,6 +746,7 @@ fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
         },
         rest -> if one {
             quote {
+                @looks_up(${literal(f.name)})
                 static fn ${n}(db: Db, v: ${k.spelled()}) -> ${t}? {
                     let rs = ${name(t.name)}.rows_in(db)
                     rs.row(rs.first_id(rs.read_key(db, ${i}, ${key_of(quote { v }, k)})) ?? -1)

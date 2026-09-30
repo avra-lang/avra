@@ -1,0 +1,105 @@
+// A view read out of a cell survives a call that replaces what the cell
+// holds: the callee reaches the cell through a capture, never through
+// a seat, so only a cell on the chain says the view must be held.
+type K = {
+    name: Cell<string>,
+    hook: Cell<fn() -> void>,
+}
+
+fn quiet() {}
+
+fn fresh(s: string) -> K { K { name: Cell.new(s), hook: Cell.new(quiet) } }
+
+impl K {
+    fn record() -> string {
+        (self.hook.get())()
+        self.name.get()
+    }
+}
+
+type Holder = { kernel: Cell<K>, pad: int }
+
+impl Holder {
+    fn read() -> string { self.kernel.get().record() }
+}
+
+/// A flat record over a cell is the cell.
+type Slot = { cell: Cell<K> }
+
+impl Slot {
+    fn read() -> string { self.cell.get().record() }
+}
+
+type Shelf = { items: Cell<List<K>>, pad: int }
+
+impl Shelf {
+    fn read(i: int) -> string { self.items.get()[i].record() }
+}
+
+type Book = { pages: Cell<Map<string, K>>, pad: int }
+
+impl Book {
+    fn read(key: string) -> string { self.pages.get().get(key)!.record() }
+}
+
+/// A nullable cell is the cell once unwrapped.
+type Maybe = { kernel: Cell<K>?, pad: int }
+
+impl Maybe {
+    fn read() -> string { self.kernel!.get().record() }
+}
+
+/// A flat record may carry its cell beside other fields.
+type Mixed = { cell: Cell<K>, n: int }
+
+impl Mixed {
+    fn read() -> string { self.cell.get().record() }
+}
+
+fn minted(s: string) -> string { s + "-" + s }
+
+fn replaced() -> string {
+    let h = Holder { kernel: Cell.new(fresh(minted("a"))), pad: 0 }
+    h.kernel.get().hook.set(() -> h.kernel.set(fresh(minted("b"))))
+    h.read() + " " + h.read()
+}
+
+fn replaced_flat() -> string {
+    let s = Slot { cell: Cell.new(fresh(minted("c"))) }
+    s.cell.get().hook.set(() -> s.cell.set(fresh(minted("d"))))
+    s.read() + " " + s.read()
+}
+
+fn replaced_element() -> string {
+    let sh = Shelf { items: Cell.new([fresh(minted("e"))]), pad: 0 }
+    sh.items.get()[0].hook.set(() -> sh.items.set_at(0, fresh(minted("f"))))
+    sh.read(0) + " " + sh.read(0)
+}
+
+fn replaced_value() -> string {
+    let b = Book { pages: Cell.new({"p": fresh(minted("g"))}), pad: 0 }
+    b.pages.get().get("p")!.hook.set(() -> b.pages.put("p", fresh(minted("h"))))
+    b.read("p") + " " + b.read("p")
+}
+
+fn replaced_nullable() -> string {
+    let m = Maybe { kernel: Cell.new(fresh(minted("i"))), pad: 0 }
+    m.kernel!.get().hook.set(() -> m.kernel!.set(fresh(minted("j"))))
+    m.read() + " " + m.read()
+}
+
+fn replaced_mixed() -> string {
+    let x = Mixed { cell: Cell.new(fresh(minted("k"))), n: 0 }
+    x.cell.get().hook.set(() -> x.cell.set(fresh(minted("l"))))
+    x.read() + " " + x.read()
+}
+
+[
+    replaced(),
+    replaced_flat(),
+    replaced_element(),
+    replaced_value(),
+    replaced_nullable(),
+    replaced_mixed(),
+]
+    .join(", ")

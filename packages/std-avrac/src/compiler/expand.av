@@ -78,6 +78,13 @@ use core.{
 use diagnostics.{loc_at}
 use @std.testing.{words}
 
+/// A literal an annotation argument reaches, in the file it stands.
+export type Spelled = { file: FileId, e: ExprId }
+
+/// How many consts a chain of names may pass through — past it, a
+/// cycle the const law refuses.
+const const_chain_limit: int = 64
+
 impl Workspace {
 
     /// Memoized per file; minting is idempotent by the generated key,
@@ -122,6 +129,7 @@ impl Workspace {
         // a loaded `@std/meta` the crossing cannot read generates
         // nothing; the annotation law speaks it
         if self.decls.meta_disagreement() != null { return [] }
+        if !self.is_derived(w.ret) && self.spoke_unspelled(f, w, p) { return [] }
         let directives = if self.is_derived(w.ret) {
             self.derive_directives(w, f, p, vis)
         } else if self.is_declared(w.ret) {
@@ -130,6 +138,45 @@ impl Workspace {
             self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
         }
         flatten([self.materialized_directive(f, w, directive, vis) for directive in directives])
+    }
+
+    /// Whether an argument names a declaration where the seat takes a
+    /// VALUE the source does not spell — spoken at the argument.
+    fn spoke_unspelled(f: FileId, w: DeclareWork, p: Parsed) -> bool {
+        let seats = self.decls.sig(w.ann)?.fn_sig()?.params ?? []
+        for j, e in w.args {
+            let name: string? = p.store.ident_name(e)
+            if name != null && j + 1 < seats.length && self.unspelled(f, e, name!, seats[j + 1]) {
+                let at = loc_at(self.decls.file(f).path, p.store.expr_span(e))
+                self
+                    .decls
+                    .speak_expansion(f, [unspelled_const(self.decls.decl(w.ann).name, name!, at)])
+                return true
+            }
+        }
+        false
+    }
+
+    /// A declaration's name in a VALUE seat that reaches no literal. A
+    /// name no declaration answers is typing's to refuse.
+    fn unspelled(f: FileId, e: ExprId, name: string, seat: TypeId) -> bool {
+        self.visible(f).fn_decl(name) != null &&
+            !self.decls.takes_a_decl(seat) &&
+            self.spelled_at(f, e, 0) == null
+    }
+
+    /// Where the literal an argument spells stands: the argument
+    /// itself, or through a const naming one — however many consts
+    /// deep — that const's own value. Null for anything computed.
+    fn spelled_at(f: FileId, e: ExprId, depth: int) -> Spelled? {
+        let store = self.decls.store_of(f)
+        if source_spelled(store.expr(e)) { return Spelled { file: f, e: e } }
+        if depth > const_chain_limit { return null }
+        let name? = store.ident_name(e) else { return null }
+        let c? = self.visible(f).fn_decl(name) else { return null }
+        let x = self.decls.decl(c)
+        let v? = self.decls.store_of(x.file).const_value(x.stmt) else { return null }
+        self.spelled_at(x.file, v, depth + 1)
     }
 
     /// One directive: a `source` is generated CODE parsed and admitted
