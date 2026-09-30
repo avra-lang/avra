@@ -21,6 +21,7 @@ use core.{
     joined,
     sorted_texts,
     distinct,
+    flatten,
     same_decl,
     module_path,
     ModulePath,
@@ -1067,25 +1068,33 @@ impl Workspace {
 
     /// EVERY OTHER MODULE'S FILE A MODULE'S OBJECTS CAN DEPEND ON: each file its own
     /// files reference, and — since a type reaches a body through a signature the body
-    /// never names — each file a reached file's types name, closed. Never its own files.
+    /// never names, and an impl through its type — each file a reached file's types
+    /// name or its types' impls sit in, closed. Never its own files.
     fn reached_files(store: Store, m: ModulePath) -> List<string> {
         let own = self.module_files(m)
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
         mut seen = distinct(
             [t for p in record_fields(self, store, m) if is_ref_row(p) && !names_builtin(p) for t in [ref_target(p)] if !own.contains(t)],
         )
+        // an impl aimed at a file sits in any reached module's record, so each is asked
+        mut mods = distinct([self.module_of(t) for t in seen])
         mut at = 0
         while at < seen.length {
-            for t in self.typed_index(store, self.module_path_of(seen[at])).get(seen[at]) ?? [] {
+            for t in flatten(
+                [self.typed_index(store, module_path(d.split("."))).get(seen[at]) ?? [] for d in mods],
+            ) {
                 if !own.contains(t) && !seen.contains(t) { seen.push(t) }
             }
-            at = at + 1
+            let grown = distinct(mods.concat([self.module_of(t) for t in seen]))
+            at = if grown.length > mods.length { 0 } else { at + 1 }
+            mods = grown
         }
         sorted_texts(seen)
     }
 
     /// Each file of a module's record with the files its types name — its type uses',
-    /// and its declarations' wires' — memoized for the build.
+    /// and its declarations' wires' — and each type's file with the files its impls
+    /// sit in, memoized for the build.
     fn typed_index(store: Store, m: ModulePath) -> Map<string, List<string>> {
         let known: Map<string, List<string>>? = self.keys.typed_files.get().get(m.text())
         if known != null { return known! }
@@ -1097,6 +1106,8 @@ impl Workspace {
                 _ -> []
             }
             if !named.is_empty() { made.set(p[1], (made.get(p[1]) ?? []).concat(named)) }
+            let aimed = aimed_file(p)
+            if aimed != null { made.set(aimed!, (made.get(aimed!) ?? []).concat([p[1]])) }
         }
         self.keys.typed_files.put(m.text(), made)
         made
@@ -1306,6 +1317,14 @@ fn names_builtin(row: List<string>) -> bool {
 fn wired_files(row: List<string>) -> List<string> {
     let words = [w for field in row.slice(13, row.length) for a in field.split(";") for b in a.split("|") for c in b.split(":") for w in c.split("~")]
     [words[i + 1] for i, w in words if i + 1 < words.length && opens_decl_wire(w)]
+}
+
+/// The file an `impl` line's aimed type sits in — the impl rides wherever that type
+/// goes, a `dyn` box's vtable included. Null for every other line.
+fn aimed_file(row: List<string>) -> string? {
+    if row.length <= 13 { return null }
+    let shape? = shape_of(row[0]) else { return null }
+    match shape { .Aims -> wire_fields(row[13], "~")[0], _ -> null }
 }
 
 /// Whether a type wire's word is a tag a declaration's wire follows.
