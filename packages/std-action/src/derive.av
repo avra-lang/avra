@@ -63,10 +63,26 @@ fn shape_problems(f: Fn) -> List<Diagnostic> {
         .concat(impact_problems(f))
 }
 
-/// The impact annotation's own words, absent when none is written.
+/// The impact annotation's argument when it is a bare name — the one
+/// form the generated code can refer to.
 fn impact_word(f: Fn) -> string? {
     let written? = f.annotations.find(it.name == "impact") else { return null }
-    written.args.first()
+    let word? = written.args.first() else { return null }
+    if is_name(word) { word } else { null }
+}
+
+/// Whether the text is one identifier.
+fn is_name(text: string) -> bool {
+    let octets = text.bytes()
+    octets.length > 0 &&
+        !is_digit(octets.at(0)) &&
+        [i for i in 0..octets.length if !is_name_octet(octets.at(i))].is_empty()
+}
+
+fn is_digit(octet: int) -> bool { octet >= 48 && octet <= 57 }
+
+fn is_name_octet(octet: int) -> bool {
+    is_digit(octet) || octet >= 65 && octet <= 90 || octet >= 97 && octet <= 122 || octet == 95
 }
 
 /// A missing `@impact`, or one that names no value the generated

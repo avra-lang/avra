@@ -1,6 +1,7 @@
 // `@action` generates a description and a text reader beside the fn.
 use @std.action.derive.{action, impact}
-use @std.action.{routine, destructive}
+use @std.action.{routine, destructive, Impact}
+use @std.time.{Duration}
 use @std.action.wire.{ActionRefusal}
 
 @action
@@ -27,6 +28,13 @@ fn scaled(scale: float) -> int { 1 }
 @action
 @impact(routine)
 fn nothing_taken() -> int { 7 }
+
+/// A profile overridden, named so the annotation can refer to it.
+const trashed: Impact = destructive with { recovery: .Trash(Duration { ms: 1000 }) }
+
+@action
+@impact(trashed)
+fn discard(card: string) -> string { card }
 
 fn said(r: Result<string, List<ActionRefusal>>) -> string {
     match r { .Ok(v) -> v, .Err(rs) -> [x.message for x in rs].join(";") }
@@ -55,6 +63,11 @@ spec "@action's description" {
         }
         then "a destructive action is pending" {
             purge_action().impact.presentation is .Pending
+        }
+    }
+    given "an impact named by a const built with an override" {
+        then "carries the override, not the profile it started from" {
+            discard_action().impact.recovery is .Trash
         }
     }
     given "an action with no seats" {
