@@ -44,6 +44,7 @@ enum {
     TLS_ERR_NAMELESS = -0x1000b, /* a verifying client naming no host */
     TLS_ERR_PROTOCOL = -0x1000c, /* an ALPN name empty, too long, holding a NUL, or one too many */
     TLS_ERR_CHAIN = -0x1000d,  /* a chain larger than a handshake message holds */
+    TLS_ERR_CLEARTEXT = -0x1000e, /* an ALPN name TLS never agrees */
 };
 
 /* Fed ciphertext is bounded: a peer that sends faster than records are
@@ -379,10 +380,18 @@ int64_t avra_tls_config_verify(int64_t cfg, int64_t required) {
 /* An application protocol offered (a client) or accepted (a server),
    after those already named — a server picks by its own order. A name
    is 1 to 255 bytes with no NUL; eight at most. */
+/* Whether an ALPN name is registered for cleartext TCP alone: `h2c`,
+   which a TLS client MUST NOT offer nor a server select (RFC 9113 §3.2).
+   ALPN names compare as exact octets (RFC 7301 §3.1). */
+static int cleartext_only(const unsigned char* name, int64_t n) {
+    return n == 3 && memcmp(name, "h2c", 3) == 0;
+}
+
 int64_t avra_tls_config_protocol(int64_t cfg, const unsigned char* name, int64_t n) {
     Config* c = held(&g_configs, cfg);
     if (!c) return TLS_ERR_HANDLE;
     if (n < 1 || n > 255 || memchr(name, 0, (size_t)n) || c->nprotocols == TLS_PROTOCOLS) return TLS_ERR_PROTOCOL;
+    if (cleartext_only(name, n)) return TLS_ERR_CLEARTEXT;
     char* copy = (char*)terminated(name, n);
     if (!copy) return TLS_ERR_MEMORY;
     c->protocols[c->nprotocols++] = copy;
@@ -646,6 +655,7 @@ int64_t avra_tls_words(int64_t code) {
     case TLS_ERR_NAMELESS: ours = "a verifying client names the host it expects"; break;
     case TLS_ERR_PROTOCOL: ours = "an ALPN name is 1 to 255 bytes with no NUL, eight at most"; break;
     case TLS_ERR_CHAIN: ours = "a chain larger than one handshake message holds — present fewer certificates"; break;
+    case TLS_ERR_CLEARTEXT: ours = "h2c is HTTP/2 over cleartext TCP, which TLS never agrees (RFC 9113 §3.2)"; break;
     }
     if (ours) {
         strncpy(g_words, ours, sizeof g_words - 1);
