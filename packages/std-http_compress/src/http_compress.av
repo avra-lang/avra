@@ -21,7 +21,17 @@
 //! produced, one that is not what it claims a 400, and a coding this
 //! layer does not read a 415 naming the ones it does.
 use @std.compress.{Format, CompressError, encoded, decoded}
-use @std.http.http.{Request, Unrouted, Response, Handler, Header, text, media_of}
+use @std.http.http.{
+    Request,
+    Unrouted,
+    Response,
+    Handler,
+    Header,
+    text,
+    media_of,
+    same_token,
+    lists_token,
+}
 use @std.http.body.{whole}
 
 /// How a server codes: the smallest body worth coding, the effort of
@@ -64,17 +74,8 @@ fn coding_word(f: Format) -> string {
 /// The format a coding names, `x-gzip` read as `gzip` (RFC 9110
 /// §8.4.1.3); null for any other.
 fn format_named(coding: string) -> Format? {
-    if spells(coding, x_gzip) { return Format.Gzip }
-    codings().find((f) -> spells(coding, coding_word(f).bytes()))
-}
-
-const x_gzip: Bytes = "x-gzip".bytes()
-
-/// Whether `word`, trimmed, is `token`, ASCII-folded — how every
-/// coding, directive and field name in these headers compares.
-fn spells(word: string, token: Bytes) -> bool {
-    let w = word.trim().bytes()
-    w.ieq_at(0, w.length, token)
+    if same_token(coding, "x-gzip") { return Format.Gzip }
+    codings().find(same_token(coding, coding_word(it)))
 }
 
 // ── The request ─────────────────────────────────────────────────
@@ -89,7 +90,7 @@ fn spells(word: string, token: Bytes) -> bool {
 fn request_decoded(c: Compression, q: Request<Unrouted>) -> Result<Request<Unrouted>, Response> {
     if q.header("content-encoding") == null { return q }
     let coding = q.headers("content-encoding").join(",")
-    if spells(coding, identity) { return q }
+    if same_token(coding, "identity") { return q }
     let f? = format_named(coding) else { fail unread_coding() }
     let packed = q.gathered()?
     let plain = if packed.is_empty() { packed } else { inflated(packed, f, c.inflated)? }
@@ -100,8 +101,6 @@ fn request_decoded(c: Compression, q: Request<Unrouted>) -> Result<Request<Unrou
 fn inflated(packed: Bytes, f: Format, ceiling: int) -> Result<Bytes, Response> {
     match decoded(packed, f, ceiling) { .Ok(b) -> b, .Err(e) -> { fail decode_refused(e) } }
 }
-
-const identity: Bytes = "identity".bytes()
 
 const content_encoding: Bytes = "content-encoding".bytes()
 
@@ -140,10 +139,8 @@ fn codable(c: Compression, r: Response) -> bool {
 /// Whether a `cache-control` carries `no-transform`, case folded.
 fn forbids_transform(cc: string?) -> bool {
     let directives? = cc else { return false }
-    directives.split(",").any(spells(it, no_transform))
+    lists_token(directives, "no-transform")
 }
-
-const no_transform: Bytes = "no-transform".bytes()
 
 fn effort(c: Compression, f: Format) -> int {
     match f { .Brotli -> c.brotli_effort, .Gzip or .Zlib -> c.gzip_effort }
@@ -168,11 +165,7 @@ fn vary_added(headers: List<Header>) -> List<Header> {
     [if h.named("vary") && !varies_on_coding(h.value) { h with { value: h.value + ", accept-encoding" } } else { h } for h in headers]
 }
 
-fn varies_on_coding(value: string) -> bool { value.split(",").any(spells(it, wildcard) || spells(it, accept_encoding)) }
-
-const wildcard: Bytes = "*".bytes()
-
-const accept_encoding: Bytes = "accept-encoding".bytes()
+fn varies_on_coding(value: string) -> bool { lists_token(value, "*") || lists_token(value, "accept-encoding") }
 
 // ── Media types ─────────────────────────────────────────────────
 
@@ -225,7 +218,7 @@ fn weight_of(members: List<string>, f: Format) -> int {
 }
 
 fn star_weight(members: List<string>) -> int {
-    let any_coding? = members.find(spells(coding_of(it), wildcard)) else { return 0 }
+    let any_coding? = members.find(same_token(coding_of(it), "*")) else { return 0 }
     weight(any_coding)
 }
 

@@ -7,7 +7,9 @@ use @std.http.body.{whole}
 use @std.http.http.{Request, Unrouted, Response, Header, Handler, text, json_body}
 use @std.http.route.{compiled, dispatch}
 use @std.http.files.{Files, directory}
+use @std.http.form.{Part, Sink}
 use @std.http_compress.{compressed}
+use @std.json.{parse}
 use @std.json.codec.{json}
 use @std.text.{repeat}
 use @std.time.{now_ns}
@@ -44,6 +46,26 @@ fn voted(q: Request<Unrouted>) -> Response {
     match json_body(q, (j) -> Vote.from_json(j)) { .Ok(v) -> text(200, "${v.idea}"), .Err(r) -> r }
 }
 
+fn floats(q: Request<Unrouted>) -> Response {
+    match parse(q.body.text() ?? "") {
+        .Ok(_) -> text(200, "ok"),
+        .Err(e) -> text(400, e.describe().message),
+    }
+}
+
+fn signup(q: Request<Unrouted>) -> Response {
+    match q.urlencoded() { .Ok(f) -> text(200, f.value("email") ?? "-"), .Err(r) -> r }
+}
+
+/// A sink that counts what it is handed and keeps nothing.
+fn counted(_p: Part) -> Sink { Sink { take: (b: Bytes) -> b.length > 0, ended: dropped } }
+
+fn dropped(_whole: bool) {}
+
+fn upload(q: Request<Unrouted>) -> Response {
+    match q.multipart(counted) { .Ok(p) -> text(200, "${p.files[0].size}"), .Err(r) -> r }
+}
+
 fn through(inner: Handler) -> Handler { (q: Request<Unrouted>) -> compressed(q, inner) }
 
 let n = 200000
@@ -68,6 +90,39 @@ println(
         "Content-Type: application/json\r\n",
         "{\"idea\": 7, \"up\": true, \"note\": \"yes\"}".bytes(),
         voted,
+    ),
+)
+println(
+    timed(
+        "json parse, eight floats",
+        n,
+        "POST / HTTP/1.1",
+        "",
+        "[0.5, 1.25, -3.75e2, 6.02e23, 1e-7, 3.141592653589793, 2.5, 100.0]".bytes(),
+        floats,
+    ),
+)
+println(
+    timed(
+        "urlencoded form, five fields",
+        n,
+        "POST / HTTP/1.1",
+        "Content-Type: application/x-www-form-urlencoded\r\n",
+        "name=Ada+Lovelace&email=ada%40example.com&age=36&plan=pro&agree=on".bytes(),
+        signup,
+    ),
+)
+println(
+    timed(
+        "multipart, a field and a 64 KB file",
+        n / 100,
+        "POST / HTTP/1.1",
+        "Content-Type: multipart/form-data; boundary=----bench\r\n",
+        "------bench\r\nContent-Disposition: form-data; name=\"t\"\r\n\r\nhello\r\n------bench\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.bin\"\r\n\r\n"
+            .bytes()
+            .concat(repeat("0123456789abcdef", 4096).bytes())
+            .concat("\r\n------bench--\r\n".bytes()),
+        upload,
     ),
 )
 println(

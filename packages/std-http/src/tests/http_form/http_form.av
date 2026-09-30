@@ -1,0 +1,56 @@
+// proves: forms end to end, evaluated and native alike — a urlencoded
+// body decoded after its split, a multipart body's field kept and its
+// file saved to a path the server chose, a form read as a `@form`
+// record, and a bomb of parts refused.
+use @std.io.{env_or, read_text, remove}
+use @std.http.frame.{framed, limits}
+use @std.http.body.{whole}
+use @std.http.http.{Request, Unrouted}
+use @std.http.form.{Part, Sink, FormLimits, saved_to, form_body}
+use @std.http.form_codec.{form}
+
+@form
+type Vote = { idea: int, up: bool, note: string? }
+
+fn posted(ct: string, body: string) -> Request<Unrouted> {
+    let raw = "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: ${ct}\r\n\r\n".bytes()
+    let head = match framed(raw, 0, 0, limits()) {
+        .Complete(h) -> h,
+        .Partial or .Refused(_) -> null,
+    }
+    Request { raw: raw, head: head!, body: whole(body.bytes()), peer: "t", params: Unrouted {} }
+}
+
+/// Where an upload lands: a path the server chose.
+fn upload_path() -> string { "${env_or("TMPDIR", "/tmp")}/avra-http-form-upload.txt" }
+
+fn to_disk(_p: Part) -> Sink { saved_to(upload_path()) }
+
+match posted("application/x-www-form-urlencoded", "name=Ada+Lovelace&note=1%2B1%3D2&tag=a&tag=b")
+    .urlencoded() {
+    .Ok(f) -> println(
+        "${f.value("name") ?? "-"} | ${f.value("note") ?? "-"} | ${f.all("tag").join(",")} | ${f.value("tag") ?? "repeated"}",
+    ),
+    .Err(r) -> println("${r.status}"),
+}
+match form_body(
+    posted("application/x-www-form-urlencoded", "idea=7&up=on"),
+    (f) -> Vote.from_form(f),
+) {
+    .Ok(v) -> println("vote ${v.idea} ${v.up} ${v.note ?? "-"}"),
+    .Err(r) -> println("${r.status} ${r.body.text() ?? "?"}"),
+}
+let body = "--b1\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nhello\r\n--b1\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"../../etc/passwd\"\r\nContent-Type: text/plain\r\n\r\nkept on disk\r\n--b1--\r\n"
+match posted("multipart/form-data; boundary=b1", body).multipart(to_disk) {
+    .Ok(p) -> println(
+        "${p.form.value("title") ?? "-"} | ${p.files.length} file ${p.files[0].part.filename ?? "-"} ${p.files[0].size} | ${read_text(upload_path()) catch "unread"}",
+    ),
+    .Err(r) -> println("${r.status} ${r.body.text() ?? "?"}"),
+}
+let _ = remove(upload_path())
+let many = ["--b1\r\nContent-Disposition: form-data; name=\"p${k}\"\r\n\r\nx\r\n" for k in 0..200].join("") +
+    "--b1--"
+match posted("multipart/form-data; boundary=b1", many).multipart(to_disk) {
+    .Ok(p) -> "${p.form.fields.length}",
+    .Err(r) -> "${r.status} ${r.body.text() ?? "?"}",
+}
