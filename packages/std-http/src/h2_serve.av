@@ -1,0 +1,107 @@
+//! A STREAM IS A REQUEST: the fields an HTTP/2 stream carried spelled
+//! as the 1.1 head they mean, and that head framed by the 1.1 framer —
+//! so one set of laws judges both versions, and a handler, a route and a
+//! layer read the same `Request` whichever version it came on. A
+//! `Response` goes back as the stream's answer: `:status`, the fields
+//! lowercased, the body's length, and the body — none of it for HEAD.
+//!
+//! The fields were already held to HTTP/2's own laws (h2.av, §8): what
+//! reaches this file is lowercase, pseudo-fields first, and free of the
+//! connection-specific fields, so the head spelled here is one the 1.1
+//! framer would have read off a wire.
+use frame.{Limits, Method, framed, status_of, no_bytes}
+use hpack.{HeaderField, field}
+use h2.{
+    Exchange,
+    H2Conn,
+    value_named,
+    is_pseudo,
+    method_name,
+    path_name,
+    authority_name,
+    connect_word,
+    connection_specific,
+}
+use http.{Request, Unrouted, Response, as_sent, status}
+
+/// The 1.1 head a request's fields mean: the method and target — the
+/// path, or CONNECT's authority — then `host` from `:authority` when no
+/// `host` field was sent, the regular fields in order, and the cookie
+/// crumbs joined into one field (RFC 9113 §8.2.3).
+export fn head_text(fs: List<HeaderField>) -> Bytes {
+    let method = value_named(fs, method_name) ?? no_bytes
+    let authority = value_named(fs, authority_name)
+    let target = if method == connect_word { authority ?? no_bytes } else { value_named(fs, path_name) ?? no_bytes }
+    let regular = fs.filter(!is_pseudo(it))
+    let crumbs = [f.value for f in regular if f.name == cookie_name]
+    let lines = [line(f.name, f.value) for f in regular if f.name != cookie_name]
+    [method, space, target, version_line]
+        .concat(host_line(regular, authority))
+        .concat(lines)
+        .concat(cookie_line(crumbs))
+        .concat([crlf])
+        .bytes()
+}
+
+/// `host` from the authority, unless the request sent its own.
+fn host_line(regular: List<HeaderField>, authority: Bytes?) -> List<Bytes> {
+    let a? = authority else { return [] }
+    if regular.any(it.name == host_name) { return [] }
+    [line(host_name, a)]
+}
+
+/// The crumbs as one `cookie` field, or nothing when there are none.
+fn cookie_line(crumbs: List<Bytes>) -> List<Bytes> {
+    if crumbs.is_empty() { return [] }
+    [
+        line(
+            cookie_name,
+            [if i == 0 { c } else { crumb_join.concat(c) } for i, c in crumbs].bytes(),
+        ),
+    ]
+}
+
+fn line(name: Bytes, value: Bytes) -> Bytes { [name, colon, value, crlf].bytes() }
+
+/// A stream's request, framed by the 1.1 framer from the head its fields
+/// mean — or the status that framer refuses it with.
+export fn request_of(x: Exchange, peer: string, limits: Limits) -> Result<Request<Unrouted>, int> {
+    let raw = head_text(x.fields)
+    match framed(raw, 0, 0, limits) {
+        .Complete(head) -> .Ok(Request { raw: raw, head: head, body: x.body, peer: peer, params: Unrouted {} }),
+        .Refused(why) -> .Err(status_of(why)),
+        .Partial -> .Err(400),
+    }
+}
+
+/// A response as stream `id`'s answer: what `as_sent` says is sendable,
+/// its fields lowercased — a connection-specific one dropped, since
+/// HTTP/2 has no connection to speak of — the body's length, and the
+/// body, which a HEAD's answer measures and never sends.
+export fn answered_on(mut h: H2Conn, id: int, r: Response, asked: Method) {
+    let sent = as_sent(r)
+    let fields = [field(":status", "${sent.status}")]
+        .concat(
+            [HeaderField { name: folded(hd.name.bytes()), value: hd.value.bytes() } for hd in sent.headers if !scoped(hd.name)],
+        )
+        .concat([field("content-length", "${sent.body.length}")])
+    h.respond(id, fields, if asked is .Head { no_bytes } else { sent.body })
+}
+
+/// A stream answered with a bare status.
+export fn refused_on(mut h: H2Conn, id: int, code: int) { answered_on(h, id, status(code), Method.Get) }
+
+/// Whether a field names the connection, which HTTP/2 refuses (§8.2.2).
+fn scoped(name: string) -> bool { connection_specific.any(it == folded(name.bytes())) }
+
+/// ASCII letters lowercased; every other octet as it is.
+export fn folded(b: Bytes) -> Bytes { [lower_octet(b.at(i)) for i in 0..b.length].bytes()! }
+
+fn lower_octet(c: int) -> int { if c >= 65 && c <= 90 { c + 32 } else { c } }
+
+const host_name: Bytes = "host".bytes()
+const cookie_name: Bytes = "cookie".bytes()
+const crumb_join: Bytes = "; ".bytes()
+const space: Bytes = " ".bytes()
+const colon: Bytes = ": ".bytes()
+const version_line: Bytes = " HTTP/1.1\r\n".bytes()

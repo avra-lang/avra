@@ -39,6 +39,8 @@ use @std.time.{Duration, ms, secs, within}
 use frame.{Head, Chunker, Limits, framed, chunker, fed, status_of, limits}
 use http.{Request, Unrouted, Response, wire, status, read_size, as_sent}
 use route.{Route, compiled, dispatch}
+use h2.{H2Conn, Exchange, h2_server, preface}
+use h2_serve.{request_of, answered_on, refused_on}
 
 extern fn avra_cores_online() -> int
 extern fn avra_cores_group(n: int) -> int
@@ -325,6 +327,7 @@ impl Serving {
             served: 0,
         }
         while true {
+            if opens_h2(l) { return self.h2_conversed(l) }
             self.advanced(l)
             if !self.flushed(l) { return self.dropped(l) }
             l.out = "".bytes()
@@ -346,7 +349,7 @@ impl Serving {
     /// One request's worth of progress over the buffer: whether a
     /// request was served, so another may follow.
     mut fn stepped(mut l: Link) -> bool {
-        if l.closing { return false }
+        if l.closing || awaits_preface(l) { return false }
         if l.head == null { return self.framing(l) }
         self.bodied(l, l.head!)
     }
@@ -449,6 +452,60 @@ impl Serving {
 }
 
 fn nothing_stepped() {}
+
+// ── HTTP/2 with prior knowledge ─────────────────────────────────
+
+/// Whether a link's first octets are the HTTP/2 preface — only a link
+/// that has served nothing yet may turn out to be one (RFC 9113 §3.3).
+/// A link whose TLS handshake selected `h2` by ALPN enters
+/// `h2_conversed` without asking: its client sends the same preface.
+fn opens_h2(l: Link) -> bool { l.served == 0 && l.buf.length >= preface.length && l.buf.slice(0, preface.length) == preface }
+
+/// Whether a fresh link's octets so far are a proper prefix of the
+/// preface — neither version yet, so the 1.1 framer is not asked: the
+/// preface's first eighteen octets are a whole 1.1 head, which it would
+/// refuse as another major version.
+fn awaits_preface(l: Link) -> bool {
+    l.served == 0 &&
+        l.buf.length < preface.length &&
+        !l.buf.is_empty() &&
+        l.buf == preface.slice(0, l.buf.length)
+}
+
+impl Serving {
+    /// The link as HTTP/2: every frame fed to one connection value,
+    /// every request it completes answered by the same handler a 1.1
+    /// request is, what is owed written — until either end goes away,
+    /// the link has served its bound, or its peer is silent too long.
+    mut fn h2_conversed(mut l: Link) -> int {
+        mut h = h2_server(self.limits)
+        while true {
+            let at = h.fed(l.buf, 0)
+            l.buf = l.buf.slice(at, l.buf.length)
+            for x in h.taken() { self.h2_answered(h, l, x) }
+            if l.served >= self.timing.requests && !h.closing { h.ended() }
+            l.out = h.drained()
+            if !self.flushed(l) { return self.dropped(l) }
+            if h.closing || l.closing { return self.parted(l) }
+            let wait = if h.streams.is_empty() { self.timing.idle.ms } else { self.timing.body.ms }
+            match within ms(wait) { l.conn.read(read_size()) } {
+                .Ok(b) -> heard(l, b),
+                .Err(_) -> { return self.dropped(l) },
+            }
+        }
+        l.conn.fd
+    }
+
+    /// One stream's request answered by the handler — or, when its head
+    /// is one the 1.1 framer refuses, by that refusal's status.
+    mut fn h2_answered(mut h: H2Conn, mut l: Link, x: Exchange) {
+        l.served = l.served + 1
+        match request_of(x, l.peer, self.limits) {
+            .Ok(q) -> answered_on(h, x.stream, self.handle(self.app, q), q.head.method),
+            .Err(code) -> refused_on(h, x.stream, code),
+        }
+    }
+}
 
 /// A partial head: what was scanned is not scanned again.
 fn waited(mut l: Link) -> bool {

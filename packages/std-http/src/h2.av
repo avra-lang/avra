@@ -15,7 +15,7 @@
 //! to §8's laws, its body gathered under the bound, its declared length
 //! kept. A stream IS a request; what answers it is the server's.
 use hpack.{HeaderField, Decoder, Encoder, decoder, encoder, field, int_bound}
-use frame.{Limits, admits, is_tchar, is_vchar, no_bytes}
+use frame.{Limits, admits, is_tchar, is_vchar, is_target, no_bytes}
 
 // ── Codes ───────────────────────────────────────────────────────
 
@@ -222,7 +222,7 @@ export enum StreamState { Open, HalfClosedRemote, HalfClosedLocal }
 /// A live stream: its state, both windows, the request's head and the
 /// body gathered so far, whether a response head has been written, and
 /// the response body still owed because a window is shut.
-export type Stream = {
+export type H2Stream = {
     id: int,
     state: StreamState,
     send: int,
@@ -286,7 +286,7 @@ export type H2Conn = {
     encoder: Encoder,
     prefaced: bool,
     settled: bool,
-    streams: List<Stream>,
+    streams: List<H2Stream>,
     gone: List<Gone>,
     last: int,
     send: int,
@@ -394,7 +394,7 @@ impl H2Conn {
         }
     }
 
-    // ── Stream bookkeeping ──────────────────────────────────────
+    // ── H2Stream bookkeeping ──────────────────────────────────────
 
     /// Where live stream `id` sits in `streams`, or absent.
     fn live_at(id: int) -> int? { self.streams.find_index(it.id == id) }
@@ -411,7 +411,7 @@ impl H2Conn {
         .Closed(self.gone[g].by_us)
     }
 
-    /// Stream `id` closed, remembered as closed — reset by this end
+    /// H2Stream `id` closed, remembered as closed — reset by this end
     /// when `by_us`.
     mut fn closed(id: int, by_us: bool) {
         self.streams = [s for s in self.streams if s.id != id]
@@ -557,7 +557,7 @@ impl H2Conn {
         self.last = id
         if depends == id { return .Discarded(H2Error.Protocol) }
         if self.streams.length >= self.ours.streams { return .Discarded(H2Error.RefusedStream) }
-        let s = Stream {
+        let s = H2Stream {
             id: id,
             state: .Open,
             send: self.theirs.window,
@@ -751,7 +751,7 @@ impl H2Conn {
         for id in [s.id for s in self.streams if !s.owed.is_empty()] { self.flushed(id) }
     }
 
-    /// Stream `id`'s owed body sent as far as both windows allow, in
+    /// H2Stream `id`'s owed body sent as far as both windows allow, in
     /// frames no longer than the peer takes; the last ends the stream.
     mut fn flushed(id: int) {
         let at? = self.live_at(id) else { return }
@@ -864,11 +864,16 @@ export fn request_head_kept(fs: List<HeaderField>) -> bool {
 /// server takes.
 export fn trailers_kept(fs: List<HeaderField>) -> bool { fs.all(!is_pseudo(it) && regular_kept(it)) }
 
-fn is_pseudo(f: HeaderField) -> bool { f.name.length > 0 && f.name.at(0) == 58 }
+/// Whether a field is a pseudo-field — its name opens with `:`.
+export fn is_pseudo(f: HeaderField) -> bool { f.name.length > 0 && f.name.at(0) == 58 }
 
-/// A known request pseudo-field with a value of visible octets.
+/// A known request pseudo-field whose value is non-empty and of its own
+/// grammar: `:method` and `:scheme` a token, `:path` and `:authority`
+/// the octets a 1.1 target admits — so no space in any of them, and the
+/// head they spell for the router reads as the one they mean.
 fn pseudo_kept(f: HeaderField) -> bool {
-    pseudo_names.any(it == f.name) && f.value.run(0, value_octet) == f.value.length
+    let class = if f.name == method_name || f.name == scheme_name { token_octet } else { target_octet }
+    pseudo_names.any(it == f.name) && !f.value.is_empty() && f.value.run(0, class) == f.value.length
 }
 
 /// Each of the four pseudo-fields once; the method's own shape.
@@ -911,13 +916,15 @@ fn is_name_octet(c: int) -> bool { is_tchar(c) && !(c >= 65 && c <= 90) }
 
 const name_octet: Bytes = admits(is_name_octet)
 const value_octet: Bytes = admits(is_vchar)
-const method_name: Bytes = ":method".bytes()
+const token_octet: Bytes = admits(is_tchar)
+const target_octet: Bytes = admits(is_target)
+export const method_name: Bytes = ":method".bytes()
 const scheme_name: Bytes = ":scheme".bytes()
-const path_name: Bytes = ":path".bytes()
-const authority_name: Bytes = ":authority".bytes()
+export const path_name: Bytes = ":path".bytes()
+export const authority_name: Bytes = ":authority".bytes()
 const pseudo_names: List<Bytes> = [method_name, scheme_name, path_name, authority_name]
-const connect_word: Bytes = "CONNECT".bytes()
+export const connect_word: Bytes = "CONNECT".bytes()
 const te_name: Bytes = "te".bytes()
 const trailers_word: Bytes = "trailers".bytes()
 const content_length_name: Bytes = "content-length".bytes()
-const connection_specific: List<Bytes> = [w.bytes() for w in ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"]]
+export const connection_specific: List<Bytes> = [w.bytes() for w in ["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"]]
