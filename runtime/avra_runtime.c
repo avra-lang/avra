@@ -354,6 +354,7 @@ static void acc_report(void) {
 }
 
 static int64_t g_mem_ceiling;
+static int64_t g_mem_next;
 
 // Settled at load, for the reason `rc_guard_init` gives: a lazy
 // getenv inside this carries into every allocation's fast path.
@@ -362,7 +363,7 @@ static void acc_settled(void) {
     g_acc_on = getenv("AVRA_MEM_STATS") != NULL;
     if (g_acc_on) atexit(acc_report);
     const char* ceiling = getenv("AVRA_MEM_CEILING_MB");
-    if (ceiling && *ceiling) g_mem_ceiling = strtoll(ceiling, NULL, 10) << 20;
+    if (ceiling && *ceiling) g_mem_ceiling = g_mem_next = strtoll(ceiling, NULL, 10) << 20;
     CENSUS(g_sites_census = getenv("AVRA_CENSUS_SITES") != NULL);
 }
 
@@ -389,23 +390,43 @@ static int64_t g_live_bytes = 0;
 
 int64_t avra_mem_live(void) { return g_live_bytes; }
 
-// THE MEMORY CEILING: live bytes past AVRA_MEM_CEILING_MB trap, so a
-// runaway program ends as a wreck instead of taking the machine. The
+// THE MEMORY CEILING: memory in use past AVRA_MEM_CEILING_MB traps, so
+// a runaway program ends as a wreck instead of taking the machine. The
 // default suits a 16 GB machine; 0 turns it off. Read only where fresh
 // memory is taken from the system, never on a recycled box.
+// THE LEDGER ONLY SAYS WHEN TO LOOK; THE ALLOCATOR DECIDES. The live
+// ledger is cheap and can drift from what is really held, so crossing
+// `g_mem_next` measures the allocator's own bytes in use: past the
+// ceiling it traps, and under it the next look waits for the ledger to
+// grow by the headroom that measurement left.
 static int64_t g_mem_ceiling = (int64_t)6000 << 20;
+static int64_t g_mem_next = (int64_t)6000 << 20;
 
-__attribute__((noinline, cold, noreturn))
-static void mem_ceiling_trap(void) {
-    char msg[96];
-    snprintf(msg, sizeof msg, "memory ceiling exceeded: %lld MB (AVRA_MEM_CEILING_MB)",
-             (long long)(g_mem_ceiling >> 20));
-    avra_trap(msg);
-    __builtin_unreachable();
+static int64_t mem_in_use(void) {
+#ifdef __APPLE__
+    malloc_statistics_t st;
+    malloc_zone_statistics(NULL, &st);
+    return (int64_t)st.size_in_use;
+#else
+    struct mallinfo2 mi = mallinfo2();
+    return (int64_t)(mi.uordblks + mi.hblkhd);
+#endif
+}
+
+__attribute__((noinline, cold))
+static void mem_ceiling_measure(void) {
+    int64_t used = mem_in_use();
+    if (used > g_mem_ceiling) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "memory ceiling exceeded: %lld MB (AVRA_MEM_CEILING_MB)",
+                 (long long)(g_mem_ceiling >> 20));
+        avra_trap(msg);
+    }
+    g_mem_next = g_live_bytes + (g_mem_ceiling - used);
 }
 
 static inline void mem_ceiling_check(void) {
-    if (__builtin_expect(g_mem_ceiling > 0 && g_live_bytes > g_mem_ceiling, 0)) mem_ceiling_trap();
+    if (__builtin_expect(g_mem_ceiling > 0 && g_live_bytes > g_mem_next, 0)) mem_ceiling_measure();
 }
 
 // Fresh memory from the system, past the ceiling's check: one call in

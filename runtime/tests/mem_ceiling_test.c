@@ -11,6 +11,7 @@
 #include "../avra_runtime.h"
 
 void* avra_array_new(void);
+void avra_rc_release(void* p);
 
 static int g_checks = 0, g_fails = 0;
 #define CHECK(cond, what) do { g_checks++; if (!(cond)) { g_fails++; fprintf(stderr, "mem_ceiling_test: FAILED %s (%s:%d)\n", what, __FILE__, __LINE__); } } while (0)
@@ -48,6 +49,15 @@ int main(int argc, char** argv) {
     // bounded, so a ceiling that never fires fails with 3, never with the machine
     if (argc > 1 && strcmp(argv[1], "forever") == 0) { grow(1024); return 3; }
     if (argc > 1 && strcmp(argv[1], "grow64") == 0) return grow(64);
+    if (argc > 1 && strcmp(argv[1], "churn") == 0) {
+        // 4 GB taken and given back, 16 MB at a time: never 16 MB live at once
+        for (int k = 0; k < 256; k++) {
+            void* xs = avra_array_new();
+            for (int64_t i = 0; i < (16 << 20) / 8; i++) avra_array_push(xs, i);
+            avra_rc_release(xs);
+        }
+        return 0;
+    }
     char err[512];
 
     int s = run_as(argv[0], "32", "forever", err, sizeof err);
@@ -60,6 +70,9 @@ int main(int argc, char** argv) {
 
     s = run_as(argv[0], NULL, "grow64", err, sizeof err);
     CHECK(s == 0, "the default ceiling admits 64 MB live");
+
+    s = run_as(argv[0], "100", "churn", err, sizeof err);
+    CHECK(s == 0, "4 GB allocated and freed in total never trips a 100 MB ceiling");
 
     s = run_as(argv[0], "32", "grow64", err, sizeof err);
     CHECK(s == 2, "64 MB live under a 32 MB ceiling exits 2");
