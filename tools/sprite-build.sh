@@ -65,7 +65,8 @@ slug=$(basename "$worktree")
 tarfile=$(mktemp -t avra-sprite.XXXXXX)
 info_script=$(mktemp -t avra-sprite-info.XXXXXX)
 run_script=$(mktemp -t avra-sprite-run.XXXXXX)
-trap 'rm -f "$tarfile" "$info_script" "$run_script"' EXIT
+chunks=$(mktemp -d -t avra-sprite-chunks.XXXXXX)
+trap 'rm -f "$tarfile" "$info_script" "$run_script"; rm -rf "$chunks"' EXIT
 
 # The archive IS the tree's identity: hashing it means a changed file,
 # a new file and a deleted file all name a different tree. The gate
@@ -148,6 +149,34 @@ sprite_ready() {
 }
 sprite_ready || exit 3
 
+# A push is bounded by the client's fixed deadline, so a file past one
+# chunk travels as 4 MB parts, four at a time, each retried; the Sprite
+# joins them in order and the join must match the local sha256.
+chunk_bytes=4194304
+push_file() {
+    size=$(wc -c < "$1" | tr -d ' ')
+    if [ "$size" -le "$chunk_bytes" ]; then
+        sprite -s "$sprite" file push "$1" "$2" >/dev/null
+        return
+    fi
+    find "$chunks" -type f -exec rm -f {} +
+    split -b "$chunk_bytes" "$1" "$chunks/part."
+    ( cd "$chunks" && ls ) | SPRITE="$sprite" DEST="$2" DIR="$chunks" xargs -P 4 -I{} sh -c '
+        n=0
+        until sprite -s "$SPRITE" file push "$DIR/$1" "$DEST.$1" >/dev/null; do
+            n=$((n + 1))
+            [ $n -lt 3 ] || { echo "sprite-build: push of $1 failed 3 times" >&2; exit 1; }
+        done' _ {} || return 1
+    parts=$( (cd "$chunks" && ls) | tr '\n' ' ')
+    sum=$(shasum -a 256 "$1" | cut -d' ' -f1)
+    sprite -s "$sprite" exec --no-port-forward -- sh -c '
+        dest=$1; sum=$2; shift 2
+        for p in "$@"; do cat "$dest.$p"; done > "$dest"
+        rm -f "$dest".part.*
+        [ "$(sha256sum "$dest" | cut -d" " -f1)" = "$sum" ] || { echo "sprite-build: joined $dest does not match its sha256" >&2; exit 1; }' \
+        _ "$2" "$sum" $parts
+}
+
 sprite -s "$sprite" file push "$provision_script" "/home/sprite/.avra-provision.sh" >/dev/null
 
 # RT1: what the persistent tree and the shared cache already hold, so
@@ -180,7 +209,7 @@ do_restore=0; [ "$cache_flag" = yes ] && [ "$build_marker" != "$compiler_hash" ]
 do_store=0; [ "$cache_flag" = no ] && do_store=1
 do_prebuild=0; [ -n "$prebuild" ] && do_prebuild=1
 
-[ "$do_sync" = 1 ] && sprite -s "$sprite" file push "$tarfile" "$staging" >/dev/null
+if [ "$do_sync" = 1 ]; then push_file "$tarfile" "$staging" || exit 3; fi
 
 # RT2: sync (if needed), idempotent provisioning, compiler restore or
 # a verified store, then the caller's own command, timed. Nothing here
