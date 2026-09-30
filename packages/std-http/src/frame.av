@@ -348,15 +348,25 @@ fn past_userinfo(buf: Bytes, at: int, end: int) -> int {
 // ── The host (RFC 9110 §7.2, RFC 3986 §3.2.2) ───────────────────
 
 /// Whether `lo..hi` is `uri-host [ ":" port ]` with a host that is not
-/// empty, and a port when `port_owed` — THE ONE HOST LAW: the `Host`
+/// empty and a port that fits one, owed when `port_owed` — THE ONE HOST LAW: the `Host`
 /// field, an absolute-form authority and CONNECT's target all ask it.
 fn hosted(buf: Bytes, lo: int, hi: int, port_owed: bool) -> bool {
     let name_end = host_end(buf, lo, hi)
     if name_end <= lo || name_end > hi { return false }
     if name_end == hi { return !port_owed }
     if buf.at(name_end) != ":".char_code() { return false }
-    let port_end = buf.run(name_end + 1, digit)
-    port_end == hi && (!port_owed || port_end > name_end + 1)
+    buf.run(name_end + 1, digit) == hi && port_fits(buf, name_end + 1, hi, port_owed)
+}
+
+/// Whether the digits in `lo..hi` name a port: at most 65535, and —
+/// when one is owed — present and not 0 (RFC 9110 §9.3.6).
+fn port_fits(buf: Bytes, lo: int, hi: int, owed: bool) -> bool {
+    mut n = 0
+    for i in lo..hi {
+        n = n * 10 + buf.at(i) - "0".char_code()
+        if n > 65535 { return false }
+    }
+    !owed || n > 0
 }
 
 /// Where a host ends: past an IP literal's `]`, or where a reg-name

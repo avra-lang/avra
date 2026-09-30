@@ -701,7 +701,7 @@ fuzz-http: build/libavra_runtime.a
 	@sh tools/fuzz_http.sh
 
 # THE HTTP SERVER SOAKED: 10k keep-alive connections on every core for
-# SOAK_HTTP_SECONDS (default 300), the client's reset law looped 1000x
+# SOAK_HTTP_SECONDS (default 600, ten minutes), the reset law looped 1000x
 # under that load; prints the load, memory, descriptors and resets it saw.
 soak-http: build/libavra_runtime.a
 	@sh tools/soak_http.sh

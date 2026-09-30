@@ -3,7 +3,7 @@
 #
 # @std/http on every core (packages/std-http/soak), held open by
 # SOAK_HTTP_CONNECTIONS keep-alive connections (default 10000, oha) for
-# SOAK_HTTP_SECONDS (default 300; SOAK_HTTP_QPS caps the rate, else
+# SOAK_HTTP_SECONDS (default 600, ten minutes; SOAK_HTTP_QPS caps the rate, else
 # as fast as the server answers), while the client's reset law is
 # looped SOAK_HTTP_RESETS times (default 1000) under that load. Then
 # it says what it saw:
@@ -17,7 +17,7 @@
 # A status is a verdict: 0 when all four hold.
 set -u
 cd "$(dirname "$0")/.."
-secs="${SOAK_HTTP_SECONDS:-300}"
+secs="${SOAK_HTTP_SECONDS:-600}"
 conns="${SOAK_HTTP_CONNECTIONS:-10000}"
 loops="${SOAK_HTTP_RESETS:-1000}"
 qps="${SOAK_HTTP_QPS:-}"

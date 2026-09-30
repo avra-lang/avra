@@ -8,6 +8,7 @@ use @std.http.http.{Request, Unrouted, Response, wire, text, ok, sendable}
 use @std.http.route.{Route, fixed}
 use @std.http.server.{timing}
 use @std.http.client.{request}
+use @std.text.{parse_int}
 
 // ── Fixtures ────────────────────────────────────────────────────
 
@@ -132,6 +133,21 @@ fn cf_continue_skipped() -> Result<bool, NetError> {
     )
 }
 
+/// A handler answering the status its `x-s` field names.
+fn cf_status_named(app: App, q: Request<Unrouted>) -> Response {
+    let _ = bumped(app)
+    Response { status: parse_int(q.header("x-s") ?? "") ?? 200 }
+}
+
+/// What a handler's status becomes as the answer to CONNECT.
+fn cf_connect_as(code: int) -> Result<string, NetError> {
+    let b = bed_with(cf_status_named, limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\nX-S: ${code}\r\n\r\n")?
+    .Ok(r.substring(0, 12))
+}
+
 /// A HEAD to a GET route through the loop: the GET's length, none of
 /// its body (RFC 9110 §9.1, §9.3.2).
 fn cf_head_through_the_loop() -> Result<bool, NetError> {
@@ -169,6 +185,13 @@ spec "@std.http RFC 9110/9112 conformance" {
         then "an empty port frames — a port is any run of digits" { head_of(cf_hosted("a:")) != null }
         then "a Host of only a port is refused — an empty host names nothing" { refuses(cf_hosted(":80"), Refusal.Host) }
         then "an empty Host is refused, where the grammar would admit it" { refuses(cf_hosted(""), Refusal.Host) }
+        then "a port past 65535 is refused" {
+            refuses(cf_hosted("a:65536"), Refusal.Host) &&
+                refuses(cf_hosted("a:99999999999999999999"), Refusal.Host)
+        }
+        then "a port of 65535, and one spelled with leading zeros, frames" {
+            head_of(cf_hosted("a:65535")) != null && head_of(cf_hosted("a:000000000080")) != null
+        }
     }
     given "the target's forms (RFC 9112 §3.2, RFC 9110 §4.2.1, §9.3.6)" {
         then "absolute-form with an empty host is refused" {
@@ -196,6 +219,11 @@ spec "@std.http RFC 9110/9112 conformance" {
         then "CONNECT with a port that is not digits is refused" {
             refuses(req_line("CONNECT h:x HTTP/1.1"), Refusal.Target)
         }
+        then "CONNECT to port 0 or past 65535 is refused" {
+            refuses(req_line("CONNECT h:0 HTTP/1.1"), Refusal.Target) &&
+                refuses(req_line("CONNECT h:65536 HTTP/1.1"), Refusal.Target)
+        }
+        then "CONNECT to port 65535 is authority-form" { cf_form(Method.Connect, "h:65535") == TargetForm.Authority }
         then "CONNECT with no host is refused" { refuses(req_line("CONNECT :443 HTTP/1.1"), Refusal.Target) }
         then "CONNECT to an IP literal and port is authority-form" {
             cf_form(Method.Connect, "[::1]:443") == TargetForm.Authority
@@ -293,6 +321,37 @@ spec "@std.http RFC 9110/9112 conformance" {
         then "a 204 goes out with no length and the connection persists" { passes(cf_no_content_persists()) }
         then "a handler's 2xx to CONNECT goes out as the server's 500, with no tunnel promised" {
             passes(cf_connect_answered())
+        }
+    }
+    given "the red team's survivors" {
+        then "bad whitespace before an extension, torn at every cut, resumes to the whole's end" {
+            let whole = "5 \t ;x\r\nhello\r\n0 ;y\r\n\r\n"
+            [resumes(whole, i) for i in 1..whole.length].all(it) && end_of(whole) == whole.length
+        }
+        then "bad whitespace before a last chunk's extension ends the body" { body_of("0 ;x\r\n\r\n") == "" }
+        then "a HEAD with a query is answered by the GET route" {
+            answer_of([fixed(Method.Get, "/r", cf_get)], "HEAD /r?a=1 HTTP/1.1") == "200 got"
+        }
+        then "a HEAD in absolute-form is answered by the GET route" {
+            answer_of([fixed(Method.Get, "/r", cf_get)], "HEAD http://h/r HTTP/1.1") == "200 got"
+        }
+        then "a HEAD whose GET grammar refuses the target is a 404" {
+            answer_of([r_png()], "HEAD /img/a.jpg HTTP/1.1") == "404 " &&
+                answer_of([r_png()], "HEAD /img/a.png HTTP/1.1") == "200 png a"
+        }
+        then "a 204 to an HTTP/1.0 keep-alive says so and states no length" {
+            wire(Response { status: 204 }, true, 0).text() == "HTTP/1.1 204 No Content\r\nconnection: keep-alive\r\n\r\n"
+        }
+        then "a CONNECT's 299 reply is a tunnel and its 300 is framed by its length" {
+            cf_reply_body("HTTP/1.1 299 X\r\ncontent-length: 5\r\n\r\n", Method.Connect) == "none" &&
+                cf_reply_body("HTTP/1.1 300 X\r\ncontent-length: 5\r\n\r\n", Method.Connect) == "length 5"
+        }
+        then "a handler's 299 to CONNECT is the server's 500, and its 300 goes out as chosen" {
+            passes_with(cf_connect_as(299), "HTTP/1.1 500") &&
+                passes_with(cf_connect_as(300), "HTTP/1.1 300")
+        }
+        then "a handler's 199 to CONNECT is the server's 500 too — a 1xx answers nothing" {
+            passes_with(cf_connect_as(199), "HTTP/1.1 500")
         }
     }
 }
