@@ -10,6 +10,7 @@
 //! arrive — answering the reply when it is whole; `fetched` sends and
 //! receives until the reply, all of it within one deadline.
 use @std.errors.{Error, ErrorInfo, info}
+use @std.url.{UrlError}
 use @std.net.{NetError, connect}
 use @std.time.{Duration, within}
 use frame.{
@@ -30,32 +31,53 @@ use http.{Header, read_size, every_octet, fields_writable, token_char}
 use wire.{Transport, WireError, plainly}
 
 /// What a fetch answers: the status, the fields as text, the body
-/// whole.
-export type Answer = { status: int, headers: List<Header>, body: Bytes }
+/// whole — and, by URL, every URL a redirect led away from, in order,
+/// and how many attempts the last request took.
+export type Answer = { status: int, headers: List<Header>, body: Bytes, via: List<string> = [], attempts: int = 1 }
 
 impl Answer {
     /// The first header of this name, ASCII-folded, or null.
     fn header(name: string) -> string? {
-        let h: Header? = self.headers.find(same_name(it.name, name))
+        let wanted = name.bytes()
+        let h: Header? = self.headers.find(it.named(wanted))
         h?.value
     }
 }
 
-fn same_name(a: string, b: string) -> bool {
-    let octets = a.bytes()
-    octets.ieq_at(0, octets.length, b.bytes())
-}
-
-/// Why a fetch did not answer: the network, the secure layer, a reply
-/// the framer refuses (with the status the refusal names, as a server
-/// would answer it), the peer closing before a reply, or the deadline.
+/// Why a fetch did not answer: the network, the secure layer, a
+/// reply the framer refuses (with the status the refusal names, as a
+/// server would answer it), the peer closing before a reply, a
+/// deadline and the stage it bounded, a pool with every connection to
+/// the origin already lent, a URL that does not parse or names nothing
+/// this client can reach, or a request the framer would not frame.
 export enum ClientError {
     Net(e: NetError)
     Refused(why: Refusal)
     Closed
-    TimedOut
+    TimedOut(stage: Stage)
+    Exhausted(origin: string, per_host: int)
+    Url(e: UrlError)
+    Unspoken(scheme: string)
+    NoTls
+    NoHost
+    Userinfo
+    Unwritable
     Secure(e: dyn Error)
+    Redirect(why: Redirected)
 }
+
+/// Why a redirect was not followed.
+export enum Redirected {
+    TooMany(max: int)
+    Loop(url: string)
+    NoLocation(status: int)
+    BadLocation(e: UrlError)
+    Unreplayable(status: int)
+}
+
+/// What a deadline bounded: making the connection, securing it, the
+/// wait for the reply's first byte, or the whole request.
+export enum Stage { Connect, Tls, FirstByte, Total }
 
 impl Error for ClientError {
     fn describe() -> ErrorInfo {
@@ -63,17 +85,37 @@ impl Error for ClientError {
             .Net(e) -> e.describe(),
             .Refused(why) -> info("http.refused", "the reply breaks a framing law and would earn ${status_of(why)}"),
             .Closed -> info("http.closed", "the peer closed before a reply"),
-            .TimedOut -> info("http.timed_out", "no reply within the deadline"),
+            .TimedOut(stage) -> info("http.timed_out", "${stage_word(stage)} outran its deadline"),
+            .Exhausted(origin, n) -> info("http.exhausted", "all ${n} connections to ${origin} are lent"),
+            .Url(e) -> e.describe(),
+            .Unspoken(scheme) -> info("http.scheme", "this client speaks `http` and `https`; `${scheme}` is neither"),
+            .NoTls -> info(
+                "http.no_tls",
+                "an `https` URL needs TLS, and these options carry none — `@std/https`'s verbs do, or `Options { tls: verified(config) }`",
+            ),
+            .NoHost -> info("http.no_host", "the URL names no host to connect to"),
+            .Userinfo -> info(
+                "http.userinfo",
+                "credentials in a URL are never sent — ask for an `authorization` header by name",
+            ),
+            .Unwritable -> info("http.unwritable", "a method, target, host or field the framer would not frame"),
             .Secure(e) -> e.describe(),
+            .Redirect(why) -> redirect_info(why),
         }
     }
 
     fn cause() -> dyn Error? {
-        match self { .Net(n) -> n, .Secure(t) -> t, .Refused(_) or .Closed or .TimedOut -> null }
+        match self {
+            .Net(n) -> n,
+            .Secure(t) -> t,
+            .Url(u) or .Redirect(.BadLocation(u)) -> u,
+            .Refused(_) or .Closed or .TimedOut(_) or .Exhausted(_, _) or .Unspoken(_) or .NoTls or .NoHost or .Userinfo or .Unwritable or .Redirect(.TooMany(_)) or .Redirect(.Loop(_)) or .Redirect(.NoLocation(_)) or .Redirect(.Unreplayable(_)) -> null,
+        }
     }
 }
 
-/// A connection with a request in flight.
+/// A connection with a request in flight. `persists` is what the last
+/// reply said of the connection (RFC 9112 §9.3).
 export type Client = {
     conn: dyn Transport,
     asked: Method,
@@ -82,6 +124,29 @@ export type Client = {
     reply: Reply?,
     decoder: Chunker?,
     limits: Limits,
+    persists: bool = false,
+}
+
+fn redirect_info(why: Redirected) -> ErrorInfo {
+    match why {
+        .TooMany(max) -> info("http.redirects", "more than ${max} redirects"),
+        .Loop(url) -> info("http.redirect_loop", "a redirect led back to ${url}"),
+        .NoLocation(status) -> info("http.redirect_location", "a ${status} named no `location` to follow"),
+        .BadLocation(e) -> info("http.redirect_location", "a redirect's `location` is no URL: ${e.describe().message}"),
+        .Unreplayable(status) -> info(
+            "http.redirect_replay",
+            "a ${status} asks for the body again, and a stream is sent once",
+        ),
+    }
+}
+
+fn stage_word(stage: Stage) -> string {
+    match stage {
+        .Connect -> "the connect",
+        .Tls -> "the TLS handshake",
+        .FirstByte -> "the wait for the reply's first byte",
+        .Total -> "the request",
+    }
 }
 
 /// A net result as the client's: the failure wears `.Net`.
@@ -134,10 +199,60 @@ export fn over(w: dyn Transport, limits: Limits) -> Client {
 /// escaped, the way `decoded` refuses a malformed escape: a builder
 /// that repairs and a peer that does not disagree about what was sent.
 export fn request(method: string, target: string, host: string, headers: List<Header>, body: Bytes) -> Bytes? {
+    let length = if body.length > 0 { "content-length: ${body.length}\r\n" } else { "" }
+    headed(method, target, host, headers, length)?.concat(body)
+}
+
+/// A request head whose body follows as CHUNKS (RFC 9112 §7.1), each
+/// written by `chunk` and ended by `last_chunk`; absent as `request`
+/// is.
+export fn chunked_request(method: string, target: string, host: string, headers: List<Header>) -> Bytes? {
+    headed(method, target, host, headers, "transfer-encoding: chunked\r\n")
+}
+
+/// The line, `host`, the fields and the one framing field the caller
+/// chose, ended by the blank line.
+fn headed(method: string, target: string, host: string, headers: List<Header>, framing: string) -> Bytes? {
     if !sayable(method, target, host, headers) { return null }
     let fields = ["${h.name}: ${h.value}\r\n" for h in headers].join("")
-    let length = if body.length > 0 { "content-length: ${body.length}\r\n" } else { "" }
-    "${method} ${target} HTTP/1.1\r\nhost: ${host}\r\n${fields}${length}\r\n".bytes().concat(body)
+    "${method} ${target} HTTP/1.1\r\nhost: ${host}\r\n${fields}${framing}\r\n".bytes()
+}
+
+/// One chunk of a chunked body: its size in hex, the octets, a CRLF.
+/// Empty octets are no chunk at all — the empty chunk ENDS a body, so
+/// it is written only by `last_chunk`.
+export fn chunk(b: Bytes) -> Bytes {
+    if b.is_empty() { return b }
+    "${hex_size(b.length)}\r\n".bytes().concat(b).concat(crlf_octets)
+}
+
+/// The chunk that ends a chunked body, with no trailers.
+export const last_chunk: Bytes = "0\r\n\r\n".bytes()
+
+const crlf_octets: Bytes = "\r\n".bytes()
+
+fn hex_size(n: int) -> string {
+    if n < 16 { return hex_digits.substring(n, n + 1) }
+    hex_size(n >> 4) + hex_digits.substring(n & 15, (n & 15) + 1)
+}
+
+const hex_digits: string = "0123456789abcdef"
+
+/// A method's word on the request line; absent for `.Other`, whose
+/// word the enum does not hold.
+export fn method_word(m: Method) -> string? {
+    match m {
+        .Get -> "GET",
+        .Head -> "HEAD",
+        .Post -> "POST",
+        .Put -> "PUT",
+        .Delete -> "DELETE",
+        .Patch -> "PATCH",
+        .Options -> "OPTIONS",
+        .Connect -> "CONNECT",
+        .Trace -> "TRACE",
+        .Other -> null,
+    }
 }
 
 /// Whether every word and field of a request can be written.
@@ -177,7 +292,7 @@ impl Client {
 
     /// The request sent and the reply received, all within `deadline`.
     mut fn fetched(asked: Method, req: Bytes, deadline: Duration) -> Result<Answer, ClientError> {
-        timed(within deadline { self.exchanged(asked, req) })
+        staged(.Total, within deadline { self.exchanged(asked, req) })
     }
 
     mut fn exchanged(asked: Method, req: Bytes) -> Result<Answer, ClientError> {
@@ -246,6 +361,7 @@ impl Client {
         self.scanned = 0
         self.reply = null
         self.decoder = null
+        self.persists = r.keep_alive && !(r.body is .UntilClose)
         .Ok(
             Answer {
                 status: r.status,
@@ -255,6 +371,13 @@ impl Client {
         )
     }
 
+    /// Whether another request may follow on this connection: the last
+    /// reply kept it, it was read to its end, and nothing arrived past
+    /// it — a byte no request asked for means the framing is lost.
+    fn reusable() -> bool {
+        self.persists && self.reply == null && self.decoder == null && self.buf.is_empty()
+    }
+
     /// The application protocol agreed with the server, or null.
     fn protocol() -> string? { self.conn.wire_protocol() }
 
@@ -262,7 +385,6 @@ impl Client {
     fn close() -> Result<int, ClientError> { carried(self.conn.wire_close()) }
 }
 
-/// A net failure that was the deadline passing reads as `.TimedOut`.
 /// Field `i` of a reply, as text — values are ASCII by framing.
 fn header_at(raw: Bytes, fields: Fields, i: int) -> Header {
     let n = fields.name_at(i)
@@ -270,9 +392,11 @@ fn header_at(raw: Bytes, fields: Fields, i: int) -> Header {
     Header { name: raw.slice(n.lo, n.hi).text() ?? "", value: raw.slice(v.lo, v.hi).text() ?? "" }
 }
 
-fn timed(r: Result<Answer, ClientError>) -> Result<Answer, ClientError> {
+/// A result whose net failure was a deadline passing, as the stage
+/// that deadline bounded.
+export fn staged<T>(stage: Stage, r: Result<T, ClientError>) -> Result<T, ClientError> {
     match r {
-        .Err(.Net(e)) if e.timed_out() -> .Err(.TimedOut),
+        .Err(.Net(e)) if e.timed_out() -> .Err(.TimedOut(stage)),
         .Err(e) -> .Err(e),
         .Ok(a) -> .Ok(a),
     }

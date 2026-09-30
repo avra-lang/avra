@@ -46,6 +46,11 @@ export trait Transport {
     /// The application protocol the transport agreed (ALPN), or null
     /// when it agreed none — always, for a plain socket.
     fn wire_protocol() -> string?
+
+    /// Whether nothing has arrived and the peer has not ended, asked
+    /// without waiting — what a pool asks of a kept connection before
+    /// it lends it again.
+    fn wire_silent() -> bool
 }
 
 /// A net result as the wire's.
@@ -62,6 +67,14 @@ impl Transport for Conn {
     fn wire_fd() -> int { self.fd }
     fn wire_secured() -> bool { false }
     fn wire_protocol() -> string? { null }
+    fn wire_silent() -> bool { silent(self) }
+}
+
+/// Whether `c` has nothing to say: a read that finds data or the end
+/// means the peer moved on. A byte it finds is consumed, so a
+/// connection that is not silent is closed, never read again.
+export fn silent(c: Conn) -> bool {
+    match c.try_read(1) { .Ok(r) -> r is .Pending, .Err(_) -> false }
 }
 
 /// `c` as a transport.
@@ -71,3 +84,9 @@ export fn plainly(c: Conn) -> dyn Transport { c }
 /// transport within the deadline it is handed — a handshake, for TLS —
 /// or answers null, the socket closed.
 export type Secure = { open: fn(Conn, Duration) -> dyn Transport? }
+
+/// How a client secures a connection it made: `open` runs the
+/// handshake within the deadline, the server verified as the host it
+/// is handed, and answers the secured transport — or the failure, the
+/// socket closed.
+export type Securing = { open: fn(Conn, string, Duration) -> Result<dyn Transport, WireError> }

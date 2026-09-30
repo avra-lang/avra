@@ -214,3 +214,38 @@ fn lead_mark(width: int) -> int {
         _ -> 192
     }
 }
+
+// ── ASCII case ──────────────────────────────────────────────────
+
+/// `b` with `A`–`Z` folded to `a`–`z` and every other octet as is —
+/// the case a protocol's words ignore, never a language's.
+export fn ascii_lowered(b: Bytes) -> Bytes { [ascii_folded(b.at(i)) for i in 0..b.length].bytes()! }
+
+/// `s` ASCII-lowercased; every non-ASCII character as is.
+export fn ascii_lower(s: string) -> string { ascii_lowered(s.bytes()).text()! }
+
+/// Octet `c` ASCII-lowercased.
+export fn ascii_folded(c: int) -> int { if c >= 65 && c <= 90 { c + 32 } else { c } }
+
+// ── Base64 ──────────────────────────────────────────────────────
+
+/// `b` in base64 (RFC 4648 §4): each three octets as four letters of
+/// the standard alphabet, a short last group padded with `=`.
+export fn base64(b: Bytes) -> string {
+    [base64_letter(b, i) for i in 0..(b.length + 2) / 3 * 4].bytes()!.text()!
+}
+
+/// Letter `i` of `b`'s encoding: sextet `i % 4` of group `i / 4`, or
+/// the pad past the octets the group holds.
+fn base64_letter(b: Bytes, i: int) -> int {
+    let at = i / 4 * 3
+    let k = i % 4
+    if k > b.length - at { return 61 }
+    let word = (b.at(at) << 16) | (octet_or_zero(b, at + 1) << 8) | octet_or_zero(b, at + 2)
+    base64_alphabet.at((word >> 18 - 6 * k) & 63)
+}
+
+fn octet_or_zero(b: Bytes, i: int) -> int { if i < b.length { b.at(i) } else { 0 } }
+
+const base64_alphabet: Bytes = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    .bytes()

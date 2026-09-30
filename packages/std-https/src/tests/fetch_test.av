@@ -1,0 +1,115 @@
+// Requests by URL over TLS: an `https` URL secured by the options'
+// `tls`, verified as the URL's host, pooled like a plain connection;
+// `http` and `https` through one set of options; a server the anchors
+// do not trust and a TLS client at a plain port each refused by
+// their own words.
+use @std.net.{listen}
+use @std.time.{ms, secs, now_ms}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Server, served, timing}
+use @std.http.client.{ClientError, Answer, Stage, netted}
+use @std.http.pool.{pool}
+use @std.http.fetch.{Options, Timeouts, fetch}
+use @std.https.{over_tls, tls_carried, verified, options}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+type HfApp = {}
+
+fn hf_server(secure: bool) -> Result<Server<HfApp>, ClientError> {
+    let l = netted(listen("127.0.0.1", 0))?
+    let s = served(l, () -> HfApp {}, limits(), timing()) { _a, q -> text(200, q.target() ?? "?") }
+    if !secure { return .Ok(s) }
+    .Ok(s.secured(over_tls(tls_carried(serving_localhost())?)))
+}
+
+/// Options trusting the test authority, over a pool of their own.
+fn hf_trusting() -> Result<Options, ClientError> {
+    .Ok(Options { pool: pool(), tls: verified(tls_carried(trusting_localhost())?) })
+}
+
+fn hf_shown(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(a) -> "${a.status} ${a.body.text() ?? "?"}", .Err(e) -> e.describe().kind }
+}
+
+/// Two requests to `host` on a TLS server by URL: what each answered,
+/// and how many connections the server saw.
+fn hf_twice(host: string) -> Result<string, ClientError> {
+    let s = hf_server(true)?
+    spawn s.run(1)
+    defer s.stop()
+    let o = hf_trusting()?
+    defer o.pool.close_all()
+    let base = "https://${host}:${s.listener.port}"
+    let one = hf_shown(fetch(.Get, "${base}/one", .Empty, o))
+    let two = hf_shown(fetch(.Get, "${base}/two", .Empty, o))
+    .Ok("${one}, ${two}, ${s.connections()}")
+}
+
+fn hf_plain_through_tls_options() -> Result<string, ClientError> {
+    let s = hf_server(false)?
+    spawn s.run(1)
+    defer s.stop()
+    let o = hf_trusting()?
+    defer o.pool.close_all()
+    .Ok(hf_shown(fetch(.Get, "http://127.0.0.1:${s.listener.port}/p", .Empty, o)))
+}
+
+fn hf_system_anchors() -> Result<string, ClientError> {
+    let s = hf_server(true)?
+    spawn s.run(1)
+    defer s.stop()
+    let o = options() with { pool: pool() }
+    defer o.pool.close_all()
+    .Ok(hf_shown(fetch(.Get, "https://localhost:${s.listener.port}/", .Empty, o)))
+}
+
+/// A TLS client at a plain port: how it was refused, and whether
+/// within a moment of the TLS deadline.
+fn hf_at_plain_port() -> Result<string, ClientError> {
+    let s = hf_server(false)?
+    spawn s.run(1)
+    defer s.stop()
+    let o = hf_trusting()? with { timeouts: Timeouts { tls: ms(500) } }
+    defer o.pool.close_all()
+    let t0 = now_ms()
+    let r = fetch(.Get, "https://localhost:${s.listener.port}/", .Empty, o)
+    .Ok("${hf_refusal(r)} ${if now_ms() - t0 < 3000 { "promptly" } else { "slowly" }}")
+}
+
+fn hf_refusal(r: Result<Answer, ClientError>) -> string {
+    match r {
+        .Ok(_) -> "answered",
+        .Err(.TimedOut(.Tls)) -> "tls deadline",
+        .Err(.Secure(_)) or .Err(.Net(_)) or .Err(.Closed) -> "refused",
+        .Err(e) -> e.describe().kind,
+    }
+}
+
+/// What a probe answered, or the words of why it could not ask.
+fn hf_words(r: Result<string, ClientError>) -> string {
+    match r { .Ok(s) -> s, .Err(e) -> "no probe: ${e.describe().message}" }
+}
+
+spec "@std.https by URL" {
+    given "an https URL" {
+        then "is fetched over TLS, twice over one connection" {
+            hf_words(hf_twice("localhost")) == "200 /one, 200 /two, 1"
+        }
+        then "an address the certificate names verifies as its name does" {
+            hf_words(hf_twice("127.0.0.1")) == "200 /one, 200 /two, 1"
+        }
+        then "a server the system's anchors do not trust is refused" {
+            hf_words(hf_system_anchors()).starts_with("tls.")
+        }
+        then "a TLS client at a plain port is refused within the TLS deadline" {
+            hf_words(hf_at_plain_port()).ends_with(" promptly") &&
+                !hf_words(hf_at_plain_port()).starts_with("answered")
+        }
+    }
+    given "an http URL" {
+        then "options carrying TLS still speak plain http to it" {
+            hf_words(hf_plain_through_tls_options()) == "200 /p"
+        }
+    }
+}

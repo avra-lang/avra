@@ -1,0 +1,22 @@
+// proves: @std/url end to end, evaluated and native alike — a parse,
+// its components, the canonical form, a resolution, the builder and a
+// refusal described.
+use @std.url.{UrlError, parse, decoded}
+use @std.errors.{Error}
+
+fn shown() -> Result<int, UrlError> {
+    let u = parse("HTTPS://User@Example.COM:443/a/./b/../c%7e?x=1#top")?
+    println(u.text())
+    println("${u.scheme} ${u.hostname() ?? "-"} ${u.port() ?? 0} ${u.path.text() ?? "?"}")
+    println(u.normalized().text())
+    println((u.resolve("../d?y=2")?).text())
+    println(u.with_param("q", "a b&c").target().text() ?? "?")
+    println(decoded("caf%C3%A9".bytes())?.text() ?? "?")
+    .Ok(0)
+}
+
+let _ = shown()
+match parse("http://127.1/") {
+    .Ok(v) -> println("accepted ${v.text()}"),
+    .Err(e) -> println(e.describe().kind),
+}

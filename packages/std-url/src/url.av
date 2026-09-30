@@ -1,0 +1,643 @@
+//! @std.url — a URL as a value: read by RFC 3986, normalized when
+//! asked, resolved against a base, percent-encoded one component at a
+//! time, and built up a parameter at a time.
+//!
+//! OCTETS AS WRITTEN. Every component keeps what arrived — escapes
+//! undecoded, case unfolded — except the scheme, which is
+//! case-insensitive by definition and always lowercase here.
+//! `normalized` is the one door to the canonical form; nothing folds
+//! behind a caller's back.
+//!
+//! STRICT, AND EVERY REFUSAL IS TYPED. An octet a component may not
+//! carry, a `%` opening no escape, a second `@`, an IPv6 zone, a port
+//! past 65535 — each is a `UrlError` naming the octet. Nothing is
+//! repaired: a reader that repairs and one that refuses disagree about
+//! what the text said, and that disagreement is how a URL walks one
+//! host past a check and connects to another.
+//!
+//! A HOST THAT ENDS IN A NUMBER IS A DOTTED QUAD OR NOTHING. The
+//! resolver reads `127.1`, `0x7f.1` and `2130706433` as 127.0.0.1
+//! while RFC 3986 reads them as names, so a check against the name and
+//! a connection to the address would see two hosts. Only the strict
+//! quad is an address here, and every other numeric spelling is
+//! refused.
+//!
+//! `+` IS NOT A SPACE. That is a form body's encoding, never a URI's:
+//! `decoded` leaves it alone and `encoded` writes a space as `%20`.
+use @std.errors.{Error, ErrorInfo, info}
+use @std.text.{ascii_lowered, ascii_folded}
+
+/// A URL: an absolute reference, its scheme required. A component
+/// never written is ABSENT and one written empty is EMPTY — `http://h?`
+/// carries an empty query and `http://h` none.
+export type Url = {
+    scheme: string,
+    authority: Authority?,
+    path: Bytes,
+    query: Bytes?,
+    fragment: Bytes?,
+}
+
+/// What follows `//`. An empty port (`h:`) is absent, as RFC 3986
+/// §3.2.3 asks of a producer.
+export type Authority = { userinfo: Bytes?, host: Host, port: int? }
+
+/// A host, by the grammar that read it. An IPv6 address is held
+/// without its brackets.
+export enum Host {
+    Name(name: Bytes)
+    V4(address: Bytes)
+    V6(address: Bytes)
+}
+
+/// A component: what a refusal names, and what `encoded` encodes for.
+/// `Segment` is one path segment, where `/` is data; `Param` is one
+/// name or value of a query pair, where `&`, `=` and `+` are data.
+export enum Part { Userinfo, Host, Path, Segment, Query, Param, Fragment }
+
+/// Why text is not a URL, at the octet where it stopped being one.
+export enum UrlError {
+    Relative
+    Scheme(at: int)
+    Octet(at: int, part: Part)
+    Escape(at: int)
+    Host(at: int)
+    Port(at: int)
+    Dots
+}
+
+impl Error for UrlError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Relative -> info(
+                "url.relative",
+                "a reference with no scheme is not a URL — resolve it against one",
+            ),
+            .Scheme(at) -> info(
+                "url.scheme",
+                "the scheme breaks at octet ${at}: a letter, then letters, digits, `+`, `-` or `.`",
+            ),
+            .Octet(at, part) -> info("url.octet", "octet ${at} cannot appear in the ${part_word(part)} — encode it"),
+            .Escape(at) -> info(
+                "url.escape",
+                "the `%` at octet ${at} opens no escape — two hex digits follow one",
+            ),
+            .Host(at) -> info(
+                "url.host",
+                "the host at octet ${at} is not a name, a dotted quad or a bracketed IPv6 address",
+            ),
+            .Port(at) -> info("url.port", "the port at octet ${at} is not a number from 0 to 65535"),
+            .Dots -> info("url.dots", "a `.` or `..` segment names a place in the path, never data"),
+        }
+    }
+}
+
+fn part_word(part: Part) -> string {
+    match part {
+        .Userinfo -> "userinfo",
+        .Host -> "host",
+        .Path -> "path",
+        .Segment -> "segment",
+        .Query -> "query",
+        .Param -> "query parameter",
+        .Fragment -> "fragment",
+    }
+}
+
+/// A URL read from text: absolute, its scheme required.
+export fn parse(text: string) -> Result<Url, UrlError> {
+    let r = reference(text.bytes())?
+    let scheme? = r.scheme else { return .Err(.Relative) }
+    .Ok(r.at(scheme))
+}
+
+/// A URI reference: a URL, or one relative to a URL not yet known.
+type Ref = { scheme: string?, authority: Authority?, path: Bytes, query: Bytes?, fragment: Bytes? }
+
+impl Ref {
+    /// The reference as a URL under `scheme`.
+    fn at(scheme: string) -> Url {
+        Url {
+            scheme: scheme,
+            authority: self.authority,
+            path: self.path,
+            query: self.query,
+            fragment: self.fragment,
+        }
+    }
+}
+
+/// A reference read by RFC 3986 appendix B: the fragment cut at the
+/// first `#`, the query at the first `?` before it, the scheme at a
+/// `:` no `/` precedes, the authority after `//` up to the next `/`.
+fn reference(b: Bytes) -> Result<Ref, UrlError> {
+    let hash = first(b, hash_mark, 0, b.length)
+    let ask = first(b, question, 0, hash)
+    let colon = scheme_colon(b, ask)?
+    let lo = (colon ?? -1) + 1
+    let authored = lo + 2 <= ask && b.eq_at(lo, lo + 2, slashes)
+    let path_lo = if authored { first(b, slash, lo + 2, ask) } else { lo }
+    let authority: Authority? = if authored { authority_of(b, lo + 2, path_lo)? } else { null }
+    .Ok(
+        Ref {
+            scheme: scheme_named(b, colon),
+            authority: authority,
+            path: checked(b, path_lo, ask, .Path)?,
+            query: if ask < hash { checked(b, ask + 1, hash, .Query)? } else { null },
+            fragment: if hash < b.length { checked(b, hash + 1, b.length, .Fragment)? } else { null },
+        },
+    )
+}
+
+/// Where the scheme's `:` sits, or null for a relative reference — a
+/// `:` with a `/` before it belongs to the path.
+fn scheme_colon(b: Bytes, ask: int) -> Result<int?, UrlError> {
+    let colon = first(b, colon_mark, 0, ask)
+    if colon == ask || first(b, slash, 0, colon) < colon { return .Ok(null) }
+    if colon == 0 || !is_alpha(b.at(0)) { return .Err(.Scheme(0)) }
+    let stop = b.run(0, scheme_class)
+    if stop < colon { return .Err(.Scheme(stop)) }
+    .Ok(colon)
+}
+
+fn scheme_named(b: Bytes, colon: int?) -> string? {
+    let c? = colon else { return null }
+    ascii_lowered(b.slice(0, c)).text()
+}
+
+/// The authority between `lo` and `hi`: userinfo to the FIRST `@`,
+/// then the host, then the port. A second `@` lands in the host,
+/// which refuses it.
+fn authority_of(b: Bytes, lo: int, hi: int) -> Result<Authority, UrlError> {
+    let at = first(b, at_mark, lo, hi)
+    let userinfo: Bytes? = if at < hi { checked(b, lo, at, .Userinfo)? } else { null }
+    let host_lo = if at < hi { at + 1 } else { lo }
+    let host_hi = host_end(b, host_lo, hi)?
+    .Ok(
+        Authority {
+            userinfo: userinfo,
+            host: host_of(b, host_lo, host_hi)?,
+            port: port_of(b, host_hi, hi)?,
+        },
+    )
+}
+
+/// Where the host ends: past a bracketed literal's `]`, or at a name's
+/// first `:`.
+fn host_end(b: Bytes, lo: int, hi: int) -> Result<int, UrlError> {
+    if lo == hi || b.at(lo) != open_bracket_octet { return .Ok(first(b, colon_mark, lo, hi)) }
+    let close = first(b, close_bracket, lo, hi)
+    if close == hi { return .Err(.Host(lo)) }
+    if close + 1 < hi && b.at(close + 1) != colon_octet { return .Err(.Host(close + 1)) }
+    .Ok(close + 1)
+}
+
+fn host_of(b: Bytes, lo: int, hi: int) -> Result<Host, UrlError> {
+    if lo < hi && b.at(lo) == open_bracket_octet { return bracketed(b, lo, hi) }
+    let name = checked(b, lo, hi, .Host)?
+    if !ends_in_number(decoded(name)!) { return .Ok(.Name(name)) }
+    if !dotted_quad(name) { return .Err(.Host(lo)) }
+    .Ok(.V4(name))
+}
+
+fn bracketed(b: Bytes, lo: int, hi: int) -> Result<Host, UrlError> {
+    let address = b.slice(lo + 1, hi - 1)
+    if !is_v6(address) { return .Err(.Host(lo)) }
+    .Ok(.V6(address))
+}
+
+/// The port after the host's `:`, absent when there is none or it is
+/// empty. Six digits are refused before they are summed, so no run of
+/// them can overflow.
+fn port_of(b: Bytes, colon: int, hi: int) -> Result<int?, UrlError> {
+    if colon + 1 >= hi { return .Ok(null) }
+    let digits = b.slice(colon + 1, hi)
+    let stop = digits.run(0, digit_class)
+    if stop < digits.length { return .Err(.Port(colon + 1 + stop)) }
+    if digits.length > 5 { return .Err(.Port(colon + 1)) }
+    let n = decimal(digits)
+    if n > 65535 { return .Err(.Port(colon + 1)) }
+    .Ok(n)
+}
+
+/// The value of a run of decimal digits, short enough to fit a word.
+fn decimal(digits: Bytes) -> int {
+    mut n = 0
+    for i in 0..digits.length { n = n * 10 + digits.at(i) - zero_octet }
+    n
+}
+
+/// The octets between `lo` and `hi` when `part` may carry every one of
+/// them, or the first it may not.
+fn checked(b: Bytes, lo: int, hi: int, part: Part) -> Result<Bytes, UrlError> {
+    let s = b.slice(lo, hi)
+    let at? = fault(s, class_of(part)) else { return .Ok(s) }
+    if s.at(at) == percent_octet { return .Err(.Escape(lo + at)) }
+    .Err(.Octet(lo + at, part))
+}
+
+/// The first octet outside `class` that is not a whole escape.
+fn fault(s: Bytes, class: Bytes) -> int? {
+    mut i = s.run(0, class)
+    while i < s.length && escaped(s, i) { i = s.run(i + 3, class) }
+    if i < s.length { i } else { null }
+}
+
+/// Whether a `%` at `i` opens an escape: two hex digits follow it.
+fn escaped(b: Bytes, i: int) -> bool {
+    b.at(i) == percent_octet && i + 2 < b.length && is_hex(b.at(i + 1)) && is_hex(b.at(i + 2))
+}
+
+/// The first `needle` in `lo..hi`, or `hi`.
+fn first(b: Bytes, needle: Bytes, lo: int, hi: int) -> int {
+    let i = b.index_of(needle, lo)
+    if i < 0 || i >= hi { hi } else { i }
+}
+
+/// The runs between each `mark`, empty ones kept — a trailing mark
+/// ends in an empty run.
+fn pieces(b: Bytes, mark: int) -> List<Bytes> {
+    let cuts = [-1].concat([i for i in 0..b.length if b.at(i) == mark]).concat([b.length])
+    [b.slice(cuts[k] + 1, cuts[k + 1]) for k in 0..cuts.length - 1]
+}
+
+/// Whether a name's last label is a number — all digits, or `0x` and
+/// hex — which the resolver would read as an address. Judged decoded,
+/// since the resolver reads `%31` as `1`.
+fn ends_in_number(name: Bytes) -> bool {
+    let labels = pieces(name, dot_octet)
+    let n = labels.length
+    numeric(if n > 1 && labels[n - 1].is_empty() { labels[n - 2] } else { labels[n - 1] })
+}
+
+fn numeric(l: Bytes) -> bool {
+    if l.is_empty() { return false }
+    if l.run(0, digit_class) == l.length { return true }
+    l.length >= 2 &&
+        l.at(0) == zero_octet &&
+        ascii_folded(l.at(1)) == lower_x &&
+        l.run(2, hex_class) == l.length
+}
+
+/// Four decimal octets and three dots, no leading zero — octal to the
+/// resolver.
+fn dotted_quad(b: Bytes) -> bool {
+    let quads = pieces(b, dot_octet)
+    quads.length == 4 && quads.all(dec_octet)
+}
+
+fn dec_octet(p: Bytes) -> bool {
+    if p.is_empty() || p.length > 3 || p.run(0, digit_class) < p.length { return false }
+    if p.length > 1 && p.at(0) == zero_octet { return false }
+    decimal(p) <= 255
+}
+
+/// An IPv6 address by RFC 3986 §3.2.2: eight groups, or fewer around
+/// one `::`, the last two of them spellable as a dotted quad. A zone
+/// (`%25…`) and an IPvFuture (`v1.…`) are refused.
+fn is_v6(a: Bytes) -> bool {
+    let d = a.index_of(double_colon, 0)
+    if d < 0 { return groups(a, true) == 8 }
+    if a.index_of(double_colon, d + 1) >= 0 { return false }
+    let head? = groups(a.slice(0, d), false) else { return false }
+    let tail? = groups(a.slice(d + 2, a.length), true) else { return false }
+    head + tail <= 7
+}
+
+/// How many 16-bit groups colon-separated `part` spells, or null when
+/// it spells none — a dotted quad last counts two.
+fn groups(part: Bytes, quad_last: bool) -> int? {
+    if part.is_empty() { return 0 }
+    let ps = pieces(part, colon_octet)
+    let n = ps.length
+    if ![ps[k] for k in 0..n - 1].all(h16) { return null }
+    if h16(ps[n - 1]) { return n }
+    if quad_last && dotted_quad(ps[n - 1]) { return n + 1 }
+    null
+}
+
+fn h16(p: Bytes) -> bool { p.length >= 1 && p.length <= 4 && p.run(0, hex_class) == p.length }
+
+/// Octets as one component's text: every octet the component cannot
+/// carry as itself becomes `%XY`, uppercase — `%` included, since what
+/// is handed here is data, never already encoded.
+export fn encoded(b: Bytes, part: Part) -> Bytes {
+    let keep = class_of(part)
+    if b.run(0, keep) == b.length { return b }
+    [kept_or_escaped(b.at(i), keep) for i in 0..b.length].bytes()
+}
+
+fn kept_or_escaped(c: int, keep: Bytes) -> Bytes {
+    if keep.at(c) == 1 { [c].bytes()! } else { escape(c) }
+}
+
+fn escape(c: int) -> Bytes { [percent_octet, upper_hex.at(c >> 4), upper_hex.at(c & 15)].bytes()! }
+
+/// PERCENT-DECODING, and the only place it happens. `%XY` becomes the
+/// octet the two hex digits name; everything else is copied. A
+/// MALFORMED ESCAPE IS NOT A CHARACTER — a `%` at the end, or one not
+/// followed by two hex digits, answers ABSENCE rather than passing the
+/// `%` through, because a reader that repairs an escape and one that
+/// refuses it disagree about what was sent.
+///
+/// `%00` decodes to a real NUL. Decode AFTER splitting on a component's
+/// separators, never before, so what it mints cannot move a boundary.
+///
+/// Octets with no `%` are answered as they arrived, allocating nothing.
+export fn decoded(b: Bytes) -> Bytes? {
+    if b.index_of(percent, 0) < 0 { return b }
+    if malformed(b) { return null }
+    [octet_at(b, i) for i in 0..b.length if !inside_escape(b, i)].bytes()!
+}
+
+/// Whether any `%` here opens no escape.
+fn malformed(b: Bytes) -> bool {
+    [i for i in 0..b.length if b.at(i) == percent_octet].any(!escaped(b, it))
+}
+
+/// Whether the octet at `i` is one of the two hex digits of an escape
+/// that opened at `i - 1` or `i - 2` — sound only once every `%` is
+/// known to open one, since a hex digit is never a `%`.
+fn inside_escape(b: Bytes, i: int) -> bool {
+    i >= 1 && b.at(i - 1) == percent_octet || i >= 2 && b.at(i - 2) == percent_octet
+}
+
+/// The octet position `i` contributes: an escape's value at its `%`,
+/// otherwise the octet itself.
+fn octet_at(b: Bytes, i: int) -> int {
+    let c = b.at(i)
+    if c != percent_octet { return c }
+    escaped_value(b, i)
+}
+
+fn escaped_value(b: Bytes, i: int) -> int { hex_value(b.at(i + 1)) * 16 + hex_value(b.at(i + 2)) }
+
+fn hex_value(c: int) -> int {
+    if c <= nine_octet { return c - zero_octet }
+    ascii_folded(c) - lower_a + 10
+}
+
+/// Escapes in their canonical spelling: an unreserved octet's decoded,
+/// every other one's hex uppercase (RFC 3986 §6.2.2.1–2). Octets
+/// holding a `%` that opens none — only a hand-built `Url` can — are
+/// left as they are.
+fn escapes_normal(b: Bytes) -> Bytes {
+    if b.index_of(percent, 0) < 0 || malformed(b) { return b }
+    [normal_at(b, i) for i in 0..b.length if !inside_escape(b, i)].bytes()
+}
+
+fn normal_at(b: Bytes, i: int) -> Bytes {
+    let c = b.at(i)
+    if c != percent_octet { return [c].bytes()! }
+    kept_or_escaped(escaped_value(b, i), unreserved_class)
+}
+
+fn escapes_normal_opt(b: Bytes?) -> Bytes? {
+    let v? = b else { return null }
+    escapes_normal(v)
+}
+
+/// A path with its `.` and `..` segments spent (RFC 3986 §5.2.4): `.`
+/// is dropped, `..` drops the segment before it and never climbs past
+/// the root, and a path ending in either keeps its trailing `/`.
+fn removed_dots(path: Bytes) -> Bytes {
+    if path.index_of(dot, 0) < 0 { return path }
+    let rooted = !path.is_empty() && path.at(0) == slash_octet
+    let segs = pieces(if rooted { path.slice(1, path.length) } else { path }, slash_octet)
+    mut kept: List<Bytes> = []
+    for i, s in segs {
+        let spent = s == dot || s == dots
+        if s == dots && !kept.is_empty() { kept.pop() }
+        if !spent { kept.push(s) }
+        if spent && i == segs.length - 1 { kept.push(empty) }
+    }
+    let body = [if k == 0 { s } else { slash.concat(s) } for k, s in kept].bytes()
+    if rooted { slash.concat(body) } else { body }
+}
+
+/// A scheme's port when none is written, for the schemes that name
+/// one.
+export fn default_port(scheme: string) -> int? {
+    match scheme { "http" or "ws" -> 80, "https" or "wss" -> 443, _ -> null }
+}
+
+impl Url {
+    /// The URL as text, recomposed by RFC 3986 §5.3.
+    fn text() -> string { self.bytes().text()! }
+
+    fn bytes() -> Bytes {
+        [
+            self.scheme.bytes(),
+            colon_mark,
+            authored(self.authority),
+            self.path,
+            marked(question, self.query),
+            marked(hash_mark, self.fragment),
+        ]
+            .bytes()
+    }
+
+    /// The port written, or the scheme's own.
+    fn port() -> int? { self.authority?.port ?? default_port(self.scheme) }
+
+    /// The host as a resolver reads it: a name decoded, an address
+    /// bare; null when there is no authority.
+    fn hostname() -> string? {
+        let a? = self.authority else { return null }
+        a.host.named()
+    }
+
+    /// The path and query as a request line's origin-form: an empty
+    /// path is `/`, and the fragment is never sent.
+    fn target() -> Bytes {
+        let path = if self.path.is_empty() { slash } else { self.path }
+        path.concat(marked(question, self.query))
+    }
+
+    /// The canonical spelling (RFC 3986 §6.2.2–3): the host's case
+    /// folded, escapes in one spelling, dot segments spent, a default
+    /// port dropped, and an empty path under an authority made `/` for
+    /// a scheme that names a port.
+    fn normalized() -> Url {
+        let path = removed_dots(escapes_normal(self.path))
+        let named = default_port(self.scheme) != null
+        Url {
+            scheme: self.scheme,
+            authority: self.authority?.normalized(self.scheme),
+            path: if named && self.authority != null && path.is_empty() { slash } else { path },
+            query: escapes_normal_opt(self.query),
+            fragment: escapes_normal_opt(self.fragment),
+        }
+    }
+
+    /// `reference` resolved against this URL (RFC 3986 §5.2.2).
+    fn resolve(reference_text: string) -> Result<Url, UrlError> {
+        .Ok(self.resolved(reference(reference_text.bytes())?))
+    }
+
+    fn resolved(r: Ref) -> Url {
+        let s? = r.scheme else { return self.beneath(r) }
+        r.at(s) with { path: removed_dots(r.path) }
+    }
+
+    /// A reference with no scheme, resolved under this URL's.
+    fn beneath(r: Ref) -> Url {
+        if r.authority != null { return r.at(self.scheme) with { path: removed_dots(r.path) } }
+        if r.path.is_empty() { return self with { query: r.query ?? self.query, fragment: r.fragment } }
+        let path = if r.path.at(0) == slash_octet { r.path } else { self.merged(r.path) }
+        self with { path: removed_dots(path), query: r.query, fragment: r.fragment }
+    }
+
+    /// A relative path set after the base's last `/` (RFC 3986 §5.2.3).
+    fn merged(path: Bytes) -> Bytes {
+        if self.authority != null && self.path.is_empty() { return slash.concat(path) }
+        let cut = [i + 1 for i in 0..self.path.length if self.path.at(i) == slash_octet].last() ?? 0
+        self.path.slice(0, cut).concat(path)
+    }
+
+    /// One more path segment, encoded so a `/`, `?` or `#` in it is
+    /// data. A `.` or `..` segment is refused: it names a place in the
+    /// path, which no encoding keeps from being spent.
+    fn joined(segment: string) -> Result<Url, UrlError> {
+        let s = segment.bytes()
+        if s == dot || s == dots { return .Err(.Dots) }
+        let n = self.path.length
+        let base = if n > 0 && self.path.at(n - 1) == slash_octet { self.path } else { self.path.concat(slash) }
+        .Ok(self with { path: base.concat(encoded(s, .Segment)) })
+    }
+
+    /// One more query pair, name and value each encoded so `&`, `=`,
+    /// `+` and `#` in them are data.
+    fn with_param(name: string, value: string) -> Url {
+        let pair = [encoded(name.bytes(), .Param), equals, encoded(value.bytes(), .Param)].bytes()
+        self with { query: appended(self.query, pair) }
+    }
+}
+
+fn appended(query: Bytes?, pair: Bytes) -> Bytes {
+    let had? = query else { return pair }
+    if had.is_empty() { pair } else { [had, amp, pair].bytes() }
+}
+
+fn authored(a: Authority?) -> Bytes {
+    let has? = a else { return empty }
+    slashes.concat(has.bytes())
+}
+
+fn marked(mark: Bytes, part: Bytes?) -> Bytes {
+    let p? = part else { return empty }
+    mark.concat(p)
+}
+
+impl Authority {
+    fn bytes() -> Bytes {
+        [signed(self.userinfo), self.host.bytes(), ported(self.port)].bytes()
+    }
+
+    fn normalized(scheme: string) -> Authority {
+        Authority {
+            userinfo: escapes_normal_opt(self.userinfo),
+            host: self.host.normalized(),
+            port: if self.port == default_port(scheme) { null } else { self.port },
+        }
+    }
+}
+
+fn signed(userinfo: Bytes?) -> Bytes {
+    let u? = userinfo else { return empty }
+    u.concat(at_mark)
+}
+
+fn ported(port: int?) -> Bytes {
+    let p? = port else { return empty }
+    ":${p}".bytes()
+}
+
+impl Host {
+    fn bytes() -> Bytes {
+        match self { .Name(a) or .V4(a) -> a, .V6(a) -> [open_bracket, a, close_bracket].bytes() }
+    }
+
+    /// The host as a resolver reads it.
+    fn named() -> string? {
+        match self { .Name(n) -> decoded(n)?.text(), .V4(a) or .V6(a) -> a.text() }
+    }
+
+    fn normalized() -> Host {
+        match self {
+            .Name(n) -> .Name(escapes_normal(ascii_lowered(n))),
+            .V4(a) -> .V4(a),
+            .V6(a) -> .V6(ascii_lowered(a)),
+        }
+    }
+}
+
+/// The octets `part` carries as themselves; `%` is never one, since an
+/// escape is judged whole.
+fn class_of(part: Part) -> Bytes {
+    match part {
+        .Userinfo -> userinfo_class,
+        .Host -> name_class,
+        .Path -> path_class,
+        .Segment -> pchar_class,
+        .Query or .Fragment -> query_class,
+        .Param -> unreserved_class,
+    }
+}
+
+fn class_where(admits: fn(int) -> bool) -> Bytes { [if admits(i) { 1 } else { 0 } for i in 0..256].bytes()! }
+
+fn is_alpha(c: int) -> bool { c >= upper_a && c <= upper_z || c >= lower_a && c <= lower_z }
+fn is_digit(c: int) -> bool { c >= zero_octet && c <= nine_octet }
+fn is_hex(c: int) -> bool { is_digit(c) || ascii_folded(c) >= lower_a && ascii_folded(c) <= lower_f }
+fn one_of(set: string, c: int) -> bool { set.bytes().index_of([c].bytes()!, 0) >= 0 }
+fn is_unreserved(c: int) -> bool { is_alpha(c) || is_digit(c) || one_of("-._~", c) }
+fn is_scheme(c: int) -> bool { is_alpha(c) || is_digit(c) || one_of("+-.", c) }
+fn is_name(c: int) -> bool { is_unreserved(c) || one_of("!\$&'()*+,;=", c) }
+fn is_userinfo(c: int) -> bool { is_name(c) || c == colon_octet }
+fn is_pchar(c: int) -> bool { is_userinfo(c) || c == at_octet }
+fn is_path(c: int) -> bool { is_pchar(c) || c == slash_octet }
+fn is_query(c: int) -> bool { is_path(c) || c == question_octet }
+
+const unreserved_class: Bytes = class_where(is_unreserved)
+const scheme_class: Bytes = class_where(is_scheme)
+const name_class: Bytes = class_where(is_name)
+const userinfo_class: Bytes = class_where(is_userinfo)
+const pchar_class: Bytes = class_where(is_pchar)
+const path_class: Bytes = class_where(is_path)
+const query_class: Bytes = class_where(is_query)
+const digit_class: Bytes = class_where(is_digit)
+const hex_class: Bytes = class_where(is_hex)
+const upper_hex: Bytes = "0123456789ABCDEF".bytes()
+
+const empty: Bytes = "".bytes()
+const slash: Bytes = "/".bytes()
+const slashes: Bytes = "//".bytes()
+const colon_mark: Bytes = ":".bytes()
+const double_colon: Bytes = "::".bytes()
+const question: Bytes = "?".bytes()
+const hash_mark: Bytes = "#".bytes()
+const at_mark: Bytes = "@".bytes()
+const amp: Bytes = "&".bytes()
+const equals: Bytes = "=".bytes()
+const percent: Bytes = "%".bytes()
+const dot: Bytes = ".".bytes()
+const dots: Bytes = "..".bytes()
+const open_bracket: Bytes = "[".bytes()
+const close_bracket: Bytes = "]".bytes()
+
+const percent_octet: int = 37
+const dot_octet: int = 46
+const slash_octet: int = 47
+const zero_octet: int = 48
+const nine_octet: int = 57
+const colon_octet: int = 58
+const question_octet: int = 63
+const at_octet: int = 64
+const upper_a: int = 65
+const upper_z: int = 90
+const open_bracket_octet: int = 91
+const lower_a: int = 97
+const lower_f: int = 102
+const lower_x: int = 120
+const lower_z: int = 122

@@ -5,7 +5,10 @@
 //! answers a `Result` whose failure names the verb, its subject and
 //! the platform's errno. `accept`, `read`, `write` and `connect` PARK
 //! the calling task until the socket is ready — the other tasks run
-//! meanwhile, and a program with none simply waits. Inside a `within`
+//! meanwhile, and a program with none simply waits. A name resolves on
+//! a helper thread the task parks on, is remembered for a TTL, and
+//! connects by racing its addresses (RFC 8305); the addresses dialed
+//! are the addresses resolved, never looked up again. Inside a `within`
 //! a park that outlasts it fails the verb, `timed_out()` true. Their `try_`
 //! twins never wait: a read that finds nothing answers `.Pending`, a
 //! write that takes nothing answers 0, and a poller loop decides.
@@ -15,8 +18,14 @@ use @std.time.{Duration, now_ms}
 extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
 extern fn avra_net_listen_all(port: int, backlog: int) -> int
 extern fn avra_net_accept(lfd: int) -> int
-extern fn avra_net_addresses(host: string, port: int) -> int
-extern fn avra_net_dial(host: string, port: int, i: int) -> int
+extern fn avra_net_lookup(host: string) -> int
+extern fn avra_net_lookup_ready(h: int) -> int
+extern fn avra_net_lookup_count(h: int) -> int
+extern fn avra_net_lookup_failure(h: int) -> int
+extern fn avra_net_lookup_family(h: int, i: int) -> int
+extern fn avra_net_lookup_word(h: int, i: int, w: int) -> int
+extern fn avra_net_lookup_close(h: int) -> int
+extern fn avra_net_dial_address(address: string, port: int) -> int
 extern fn avra_net_dialed(fd: int) -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
 extern fn avra_fiber_fd_ready(fd: int, writing: int) -> int
@@ -38,19 +47,41 @@ extern fn avra_errno_text(err: int) -> string
 extern fn avra_errno_again() -> int
 extern fn avra_errno_invalid() -> int
 extern fn avra_errno_timed_out() -> int
+extern fn avra_net_errno_reset() -> int
+extern fn avra_net_errno_pipe() -> int
 
-/// A verb that failed: which, on what, and the platform's word.
-export type NetError = { verb: string, subject: string, errno: int }
+/// A verb that failed: which, on what, and the platform's word — and,
+/// for a name that resolved to nothing, why.
+export type NetError = { verb: string, subject: string, errno: int, unresolved: Unresolved? = null }
 
 impl NetError {
     /// Whether the verb failed because its deadline passed — a
     /// `within` running out, or a connect's own budget.
     fn timed_out() -> bool { self.errno == avra_errno_timed_out() }
+
+    /// Whether the peer dropped the connection under the verb — reset
+    /// it, or closed it before a write landed.
+    fn reset() -> bool { self.errno == avra_net_errno_reset() || self.errno == avra_net_errno_pipe() }
 }
 
 impl Error for NetError {
     fn describe() -> ErrorInfo {
-        info("net.${self.verb}", "${self.verb} ${self.subject}: ${avra_errno_text(self.errno)}")
+        let why? = self.unresolved else {
+            return info(
+                "net.${self.verb}",
+                "${self.verb} ${self.subject}: ${avra_errno_text(self.errno)}",
+            )
+        }
+        info("net.${self.verb}", "${self.verb} ${self.subject}: ${unresolved_word(why)}")
+    }
+}
+
+fn unresolved_word(why: Unresolved) -> string {
+    match why {
+        .NoSuchName -> "no such name",
+        .NoAddress -> "the name has no address",
+        .TryAgain -> "the resolver could not answer now",
+        .Failed -> "the resolver failed",
     }
 }
 
@@ -110,47 +141,11 @@ fn bound(fd: int, subject: string) -> Result<Listener, NetError> {
 fn backlog() -> int { 511 }
 
 /// A connection to host:port made within `timeout`, the calling task
-/// parked while it is made. The budget spans every address the host
-/// resolves to, tried in the resolver's order until one connects; it
-/// is never a sentinel — a negative one is refused rather than read as
-/// "forever", and a zero one looks once.
+/// parked while the name resolves and while the addresses race. The
+/// budget spans both; it is never a sentinel — a negative one is
+/// refused rather than read as "forever", and a zero one looks once.
 export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
-    if !names_a_host(host) { return no_host("connect", host, port) }
-    if timeout.ms < 0 {
-        return failed(
-            "connect",
-            "${host}:${port} within ${timeout.ms} ms",
-            0 - avra_errno_invalid(),
-        )
-    }
-    let n = avra_net_addresses(host, port)
-    if n < 0 { return failed("connect", "${host}:${port}", n) }
-    streamed(
-        dialed_from(host, port, 0, n, now_ms() + timeout.ms, 0 - avra_errno_invalid()),
-        "connect",
-        "${host}:${port}",
-    )
-}
-
-/// The first of addresses `i..n` to connect by `deadline`, or the last
-/// refusal — a timeout ends the walk, since the budget is spent.
-fn dialed_from(host: string, port: int, i: int, n: int, deadline: int, last: int) -> int {
-    if i >= n { return last }
-    let r = dialed(host, port, i, deadline)
-    if r >= 0 || r == 0 - avra_errno_timed_out() { return r }
-    dialed_from(host, port, i + 1, n, deadline, r)
-}
-
-/// Address `i` connected by `deadline` — the task parked until the
-/// socket is writable — as its descriptor, or -errno.
-fn dialed(host: string, port: int, i: int, deadline: int) -> int {
-    let fd = avra_net_dial(host, port, i)
-    if fd < 0 { return fd }
-    let left = deadline - now_ms()
-    let err = if avra_fiber_park_fd(fd, 1, if left < 0 { 0 } else { left }) == 0 { 0 - avra_errno_timed_out() } else { avra_net_dialed(fd) }
-    if err == 0 { return fd }
-    let _ = avra_net_close(fd)
-    err
+    resolver().connect(host, port, timeout)
 }
 
 /// A connected descriptor as a stream, or the verb that failed on it.
@@ -179,6 +174,10 @@ fn names_a_host(host: string) -> bool {
 
 fn no_host<T>(verb: string, host: string, port: int) -> Result<T, NetError> {
     failed(verb, "\"${host}\":${port}", 0 - avra_errno_invalid())
+}
+
+fn no_budget_for<T>(verb: string, subject: string, timeout: Duration) -> Result<T, NetError> {
+    failed(verb, "${subject} within ${timeout.ms} ms", 0 - avra_errno_invalid())
 }
 
 /// A BUDGET ALREADY SPENT: present and negative. Absence is not spent
@@ -299,9 +298,11 @@ impl Conn {
     /// it is gone.
     fn peer() -> string {
         let port = avra_net_peer_port(self.fd)
+        let fd = self.fd
+        let word = (i: int) -> avra_net_peer_word(fd, i)
         match avra_net_peer_family(self.fd) {
-            4 -> "${dotted(self.fd)}:${port}",
-            6 -> "[${grouped(self.fd)}]:${port}",
+            4 -> "${dotted(word)}:${port}",
+            6 -> "[${grouped(word)}]:${port}",
             _ -> "",
         }
     }
@@ -351,17 +352,17 @@ fn event_at(i: int) -> Event {
     }
 }
 
-/// A v4 address as its four octets.
-fn dotted(fd: int) -> string {
-    let hi = avra_net_peer_word(fd, 0)
-    let lo = avra_net_peer_word(fd, 1)
+/// A v4 address as its four octets, from its two words.
+fn dotted(word: fn(int) -> int) -> string {
+    let hi = word(0)
+    let lo = word(1)
     "${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}"
 }
 
 /// A v6 address as its eight groups, lowercase hex, leading zeros
 /// dropped, uncompressed.
-fn grouped(fd: int) -> string {
-    [hex_group(avra_net_peer_word(fd, i)) for i in 0..8].join(":")
+fn grouped(word: fn(int) -> int) -> string {
+    [hex_group(word(i)) for i in 0..8].join(":")
 }
 
 fn hex_group(w: int) -> string {
@@ -370,3 +371,246 @@ fn hex_group(w: int) -> string {
 }
 
 fn hex_digit(d: int) -> string { "0123456789abcdef".substring(d, d + 1) }
+
+/// An address a name resolved to: its family, and its text, which a
+/// dial reads back as a LITERAL and never resolves again — so the
+/// address checked is the address connected to.
+export type Address = { family: Family, text: string }
+
+export enum Family { V4, V6 }
+
+/// Why a name resolved to no address.
+export enum Unresolved {
+    NoSuchName
+    NoAddress
+    TryAgain
+    Failed
+}
+
+/// Names remembered for `ttl`. The platform resolver answers no TTL
+/// of its own, so how long an answer stands is the caller's word; a
+/// failure is never remembered. `connect` asks the process's own
+/// (`resolver()`, thirty seconds).
+export type Resolver = { ttl: Duration, held: Cell<Map<string, Resolved>> }
+
+/// A remembered answer and the clock reading it stands until.
+export type Resolved = { addresses: List<Address>, until: int }
+
+/// A resolver remembering each answer for `ttl`.
+export fn resolver_for(ttl: Duration) -> Resolver {
+    let none: Map<string, Resolved> = {}
+    Resolver { ttl: ttl, held: Cell.new(none) }
+}
+
+/// The process's resolver: every `connect` shares its answers.
+once fn resolver() -> Resolver { resolver_for(Duration { ms: 30000 }) }
+
+/// The addresses `host` names, within `timeout`, from the process's
+/// resolver.
+export fn resolve(host: string, timeout: Duration) -> Result<List<Address>, NetError> {
+    resolver().resolve(host, timeout)
+}
+
+impl Resolver {
+    /// The addresses `host` names: remembered while fresh, otherwise
+    /// looked up on the resolver's own thread, the calling task parked
+    /// until the answer or `timeout`.
+    fn resolve(host: string, timeout: Duration) -> Result<List<Address>, NetError> {
+        if !names_a_host(host) { return failed("resolve", "\"${host}\"", 0 - avra_errno_invalid()) }
+        if timeout.ms < 0 { return no_budget_for("resolve", host, timeout) }
+        let hit? = self.fresh(host) else { return self.looked_up(host, timeout) }
+        .Ok(hit)
+    }
+
+    fn fresh(host: string) -> List<Address>? {
+        let r? = self.held.get().get(host) else { return null }
+        if r.until <= now_ms() { return null }
+        r.addresses
+    }
+
+    fn looked_up(host: string, timeout: Duration) -> Result<List<Address>, NetError> {
+        let found = looked_up(host, timeout)?
+        self.remember(host, found)
+        .Ok(found)
+    }
+
+    /// An answer held until its TTL; a table grown past its bound is
+    /// dropped whole first, so no stream of names grows it forever.
+    fn remember(host: string, addresses: List<Address>) {
+        if self.held.get().length >= held_bound() {
+            let none: Map<string, Resolved> = {}
+            self.held.set(none)
+        }
+        self.held.put(host, Resolved { addresses: addresses, until: now_ms() + self.ttl.ms })
+    }
+
+    /// A connection to host:port within `timeout`: resolved here, then
+    /// raced across the addresses.
+    fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
+        if !names_a_host(host) { return no_host("connect", host, port) }
+        if timeout.ms < 0 { return no_budget_for("connect", "${host}:${port}", timeout) }
+        let deadline = now_ms() + timeout.ms
+        let addresses = self.resolve(host, timeout)?
+        streamed(raced(addresses, port, deadline), "connect", "${host}:${port}")
+    }
+}
+
+fn held_bound() -> int { 1024 }
+
+/// One lookup on the resolver's thread, the task parked on its
+/// descriptor until it answers or `timeout` passes.
+fn looked_up(host: string, timeout: Duration) -> Result<List<Address>, NetError> {
+    let h = avra_net_lookup(host)
+    if h < 0 { return failed("resolve", host, h) }
+    let answer: Result<List<Address>, NetError> = if awaited(h, now_ms() + timeout.ms) { answered(host, h) } else { timed_out("resolve", host) }
+    let _ = avra_net_lookup_close(h)
+    answer
+}
+
+/// Whether lookup `h` answered by `deadline`, the task parked on its
+/// descriptor meanwhile. A wake with no answer parks again.
+fn awaited(h: int, deadline: int) -> bool {
+    if avra_net_lookup_ready(h) != 0 { return true }
+    let left = deadline - now_ms()
+    if left < 0 || avra_fiber_park_fd(h, 0, left) == 0 { return avra_net_lookup_ready(h) != 0 }
+    awaited(h, deadline)
+}
+
+fn answered(host: string, h: int) -> Result<List<Address>, NetError> {
+    let n = avra_net_lookup_count(h)
+    if n < 0 {
+        return .Err(
+            NetError {
+                verb: "resolve",
+                subject: host,
+                errno: 0 - n,
+                unresolved: unresolved_of(avra_net_lookup_failure(h)),
+            },
+        )
+    }
+    .Ok([address_at(h, i) for i in 0..n])
+}
+
+fn unresolved_of(kind: int) -> Unresolved? {
+    match kind { 1 -> .NoSuchName, 2 -> .NoAddress, 3 -> .TryAgain, 4 -> .Failed, _ -> null }
+}
+
+fn address_at(h: int, i: int) -> Address {
+    let word = (w: int) -> avra_net_lookup_word(h, i, w)
+    if avra_net_lookup_family(h, i) == 6 { return Address { family: .V6, text: grouped(word) } }
+    Address { family: .V4, text: dotted(word) }
+}
+
+/// Addresses in RFC 8305's order: the families alternate, the
+/// resolver's first family first, each in the resolver's order.
+export fn interleaved(xs: List<Address>) -> List<Address> {
+    if xs.is_empty() { return xs }
+    let lead = xs[0].family
+    let a = [x for x in xs if x.family == lead]
+    let b = [x for x in xs if x.family != lead]
+    let m = if a.length < b.length { a.length } else { b.length }
+    let rest = if a.length > m { a } else { b }
+    [if k >= 2 * m { rest[k - m] } else if k % 2 == 0 { a[k / 2] } else { b[k / 2] } for k in 0..xs.length]
+}
+
+/// How long one attempt runs alone before the next joins it (RFC 8305
+/// §5's Connection Attempt Delay).
+fn attempt_delay() -> int { 250 }
+
+/// A connection raced across `addresses`, HAPPY EYEBALLS (RFC 8305):
+/// one attempt starts, the next joins after the attempt delay or at
+/// once when one fails, the first to connect wins and every other is
+/// closed. Its descriptor, or the last attempt's -errno.
+fn raced(addresses: List<Address>, port: int, deadline: int) -> int {
+    let p = avra_net_poll_new()
+    if p < 0 { return p }
+    mut race = Race {
+        poller: p,
+        order: interleaved(addresses),
+        port: port,
+        next: 0,
+        live: [],
+        last: 0 - avra_errno_invalid(),
+        due: now_ms(),
+        deadline: deadline,
+    }
+    let won = race.run()
+    for fd in race.live { if fd != won { let _ = avra_net_close(fd) } }
+    let _ = avra_net_close(p)
+    won
+}
+
+/// A race in flight: the poller its attempts are watched on, the next
+/// address to try and when, the attempts still connecting, and the
+/// last refusal.
+type Race = {
+    poller: int,
+    order: List<Address>,
+    port: int,
+    next: int,
+    live: List<int>,
+    last: int,
+    due: int,
+    deadline: int,
+}
+
+impl Race {
+    /// Turns until one answers; each parks or starts an attempt, so
+    /// the turns are bounded by the addresses and the deadline.
+    mut fn run() -> int {
+        let answer? = self.turn() else { return self.run() }
+        answer
+    }
+
+    /// One turn: an attempt started if one is due, the task parked
+    /// until an attempt settles, the next is due or the deadline, and
+    /// what settled read. An answer ends the race.
+    mut fn turn() -> int? {
+        let now = now_ms()
+        if now >= self.deadline { return 0 - avra_errno_timed_out() }
+        if self.waiting() && now >= self.due { self.start(now) }
+        if self.live.is_empty() { return if self.waiting() { null } else { self.last } }
+        let until = if self.waiting() && self.due < self.deadline { self.due } else { self.deadline }
+        if avra_fiber_park_fd(self.poller, 0, until - now) == 0 && now_ms() < until {
+            return 0 - avra_errno_timed_out()
+        }
+        self.settled()
+    }
+
+    fn waiting() -> bool { self.next < self.order.length }
+
+    /// The next address dialed and watched; one refused at once lets
+    /// the one after start without waiting.
+    mut fn start(now: int) {
+        let fd = avra_net_dial_address(self.order[self.next].text, self.port)
+        self.next = self.next + 1
+        if fd >= 0 && avra_net_watch(self.poller, fd, bits_of(.Write)) >= 0 {
+            self.live.push(fd)
+            self.due = now + attempt_delay()
+        } else {
+            if fd >= 0 { let _ = avra_net_close(fd) }
+            self.last = fd
+            self.due = now
+        }
+    }
+
+    /// The attempts that settled: the first connected one wins; a
+    /// failed one is closed and the next address is due at once.
+    /// Each outcome is read ONCE: reading a socket's error clears it.
+    mut fn settled() -> int? {
+        let n = avra_net_wait(self.poller, 0)
+        let fds = [avra_net_event_fd(i) for i in 0..if n < 0 { 0 } else { n }]
+        let errs = [avra_net_dialed(fd) for fd in fds]
+        let won = errs.index_of(0)
+        if won >= 0 { return fds[won] }
+        for i, fd in fds { self.dropped(fd, errs[i]) }
+        null
+    }
+
+    mut fn dropped(fd: int, err: int) {
+        self.last = err
+        self.live = [f for f in self.live if f != fd]
+        let _ = avra_net_close(fd)
+        self.due = now_ms()
+    }
+}

@@ -1,0 +1,100 @@
+// THE RESOLVER UNDER ATTACK: hundreds of lookups through one process
+// with the descriptor table watched, a lookup abandoned while its thread still runs, hostile names,
+// a cache fed past its bound, a name whose every family refuses, and
+// the budget that is never a sentinel.
+use @std.net.{NetError, listen, connect, resolve, resolver_for}
+use @std.time.{secs, ms}
+use @std.text.{from_codepoint}
+
+fn ra_words<T>(r: Result<T, NetError>) -> string {
+    match r { .Err(e) -> e.describe().message, .Ok(_) -> "<ok>" }
+}
+
+/// `n` lookups of a NAME, each on a fresh resolver so none is served
+/// from memory — every one a thread and a descriptor, released.
+fn ra_many(n: int) -> bool { [i for i in 0..n].all(ra_looks_up) }
+
+/// The lowest free descriptor before and after `n` lookups: the kernel
+/// hands out the lowest, so a leak moves it by the leak's size. A
+/// thread may still hold its wake end for a moment, hence the slack.
+fn ra_table_kept(n: int) -> Result<bool, NetError> {
+    let before = ra_lowest()?
+    let all = ra_many(n)
+    .Ok(all && ra_lowest()? < before + 8)
+}
+
+fn ra_lowest() -> Result<int, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    l.close()?
+    .Ok(l.fd)
+}
+
+fn ra_looks_up(_i: int) -> bool { resolver_for(ms(0)).resolve("localhost", secs(5)) is .Ok }
+
+/// Lookups abandoned with no budget, their threads left to finish
+/// into descriptors nobody reads — then a lookup that must still work.
+fn ra_abandoned() -> bool {
+    let _ = [resolver_for(ms(0)).resolve("localhost", ms(0)) for i in 0..200]
+    resolve("localhost", secs(5)) is .Ok
+}
+
+/// More names than the cache holds: it is dropped whole, never grown
+/// past its bound.
+fn ra_bounded() -> Result<bool, NetError> {
+    let r = resolver_for(secs(60))
+    for i in 0..1100 { r.resolve("10.0.${i / 256}.${i % 256}", secs(5))? }
+    .Ok(r.held.get().length <= 1024 && r.held.get().length > 0)
+}
+
+/// A port nobody listens on, reached by a name that may answer both
+/// families: every attempt refused, and the refusal is the answer.
+fn ra_all_refused() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let port = l.close()?
+    let w = ra_words(connect("localhost", port, secs(2)))
+    .Ok(w.starts_with("connect localhost:${port}: ") && w.contains("refused"))
+}
+
+spec "std.net resolution under attack" {
+    given "many lookups through one process" {
+        then "five hundred lookups leave the lowest free descriptor where it was" {
+            match ra_table_kept(500) { .Ok(b) -> b, .Err(_) -> false }
+        }
+        then "lookups abandoned mid-flight leave the resolver working" { ra_abandoned() }
+    }
+    given "hostile names" {
+        then "an empty name is refused before any lookup" {
+            ra_words(resolve("", secs(1))) == "resolve \"\": Invalid argument"
+        }
+        then "a name holding a NUL is refused by its bytes" {
+            ra_words(resolve("local" + from_codepoint(0) + "host", secs(1))).starts_with("resolve ")
+        }
+        then "a name of a hundred thousand octets resolves to nothing, typed" {
+            match resolve(["a" for i in 0..100000].join(""), secs(5)) {
+                .Ok(_) -> false,
+                .Err(e) -> e.unresolved != null,
+            }
+        }
+        then "a name of dots resolves to nothing, typed" {
+            match resolve("..", secs(5)) { .Ok(_) -> false, .Err(e) -> e.unresolved != null }
+        }
+    }
+    given "the budget" {
+        then "a negative budget is refused, never read as forever" {
+            ra_words(resolve("localhost", ms(-1))) == "resolve localhost within -1 ms: Invalid argument"
+        }
+        then "a zero budget on a literal still answers — the answer is born ready" {
+            resolve("127.0.0.1", ms(0)) is .Ok
+        }
+    }
+    given "the cache" {
+        then "fed past its bound, it is dropped whole" {
+            match ra_bounded() { .Ok(b) -> b, .Err(_) -> false }
+        }
+    }
+    given "the race" {
+        then "a name whose every address refuses answers the refusal" {
+            match ra_all_refused() { .Ok(b) -> b, .Err(_) -> false }
+        }
+    }
+}

@@ -6,7 +6,7 @@
 //! frame.av   the FRAMER: a head over `Bytes`, stateless, every
 //!            widening MAY refused, each refusal a named law
 //! query.av   the QUERY: what follows the target's `?`, as keyed
-//!            fields over raw octets, and the one decoder
+//!            fields over raw octets; decoding is @std/url's
 //! http.av    this file — the values a handler sees and answers
 //! route.av   the ROUTER: a route is a grammar over the PATH, and
 //!            one table compiled from the declared list
@@ -14,6 +14,15 @@
 //!            handler that writes through app state
 //! client.av  the CLIENT: one connection as a value, the reply
 //!            framed as it arrives, its body by the reply's rule
+//! pool.av    the POOL: connections kept per origin, lent and
+//!            given back under per-host and idle bounds
+//! wire.av    the TRANSPORT a connection rides; TLS plugs in
+//!            from @std/https
+//! fetch.av   ONE REQUEST BY URL: `get(url)?` and its siblings,
+//!            over a pool, each stage on its own deadline,
+//!            redirects and retries by an explicit policy
+//! jar.av     COOKIES a server set, kept and sent back by RFC 6265
+//! auth.av    CREDENTIALS as the `authorization` field
 //! ```
 //!
 //! The head's field spans index the buffer they were framed from, so
@@ -169,6 +178,14 @@ impl Request {
 
 /// One outgoing field.
 export type Header = { name: string, value: string }
+
+impl Header {
+    /// Whether this field is named `name`, ASCII-folded.
+    fn named(name: Bytes) -> bool {
+        let b = self.name.bytes()
+        b.ieq_at(0, b.length, name)
+    }
+}
 
 /// What a handler answers. `content-length` is written from the body;
 /// nothing here is chunked.
@@ -376,10 +393,7 @@ export fn every_octet(s: string, class: Bytes) -> bool {
 /// Whether `name` is one of `written_by`, ASCII-folded.
 export fn names_one_of(name: string, written_by: List<Bytes>) -> bool {
     let b = name.bytes()
-    for w in written_by {
-        if b.ieq_at(0, b.length, w) { return true }
-    }
-    false
+    written_by.any((w) -> b.ieq_at(0, b.length, w))
 }
 
 /// What octet a field NAME may carry, as a class table.
