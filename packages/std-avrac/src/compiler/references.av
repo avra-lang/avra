@@ -48,6 +48,8 @@ use core.{
     some_list,
     Span,
     wire_fields,
+    distinct,
+    ModulePath,
 }
 use features.{
     NameFacts,
@@ -121,15 +123,24 @@ impl Workspace {
     fn restored_refs(store: Store, f: FileId) -> List<Ref> {
         let path = self.decls.file(f).path
         let rows = [p for p in record_fields(self, store, self.module_path_of(path)) if p.length >= 4 && p[0] == "ref" && p[1] == path]
+        // a wire names its file, which answers only once its module's declarations
+        // stand: each named module is stood up once, never once per row
+        for named in distinct([wire_fields(p[2], "~")[0] for p in rows]) { self.module_stands(self.module_path_of(named)) }
         flatten([some_list(self.resolved_ref(f, p)) for p in rows])
+    }
+
+    /// Every file of `m` with its declarations standing.
+    fn module_stands(m: ModulePath) {
+        for path in self.module_files(m) {
+            let g = self.file_id(path)
+            let _ = self.items(g)
+            let _ = self.decls.decls_of_file(g)
+        }
     }
 
     fn resolved_ref(f: FileId, p: List<string>) -> Ref? {
         let kind? = use_kind_of_word(p[3]) else { return null }
-        let wire = wire_fields(p[2], "~")
-        // a wire names its file, which answers only once its module's declarations stand
-        let _ = self.interface_decls(self.module_path_of(wire[0]))
-        let target? = self.decls.wire_decl(wire, 0) else { return null }
+        let target? = self.decls.wire_decl(wire_fields(p[2], "~"), 0) else { return null }
         Ref { decl: target.id, file: f, at: At.Stmt(StmtId { index: 0 }), kind: kind }
     }
 

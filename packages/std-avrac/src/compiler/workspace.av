@@ -162,7 +162,8 @@ fn new_keys() -> Keys {
 /// row on the ask that names it, so a row that names another still
 /// unfilled in the same module can fill it first (`row_filled`); and what
 /// moved in each file's key when this build replaced its kept parts
-/// (`moved`).
+/// (`moved`); each file's module (`file_module`), and the revision each
+/// module's `HeldSig` was last asked at (`sig_asked`).
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
@@ -181,6 +182,8 @@ type Hold = {
     named_in: Cell<Map<string, List<string>>>,
     held_flat: Cell<List<TypeId>>,
     moved: Cell<Map<string, List<PartMoved>>>,
+    file_module: Table<int>,
+    sig_asked: Table<int>,
 }
 
 fn new_hold() -> Hold {
@@ -211,6 +214,8 @@ fn new_hold() -> Hold {
         named_in: Cell.new(no_named_in),
         held_flat: Cell.new(no_flat),
         moved: Cell.new(no_moved),
+        file_module: new_table<int>(),
+        sig_asked: new_table<int>(),
     }
 }
 
@@ -1622,23 +1627,43 @@ impl Workspace {
     /// revision, against the module's CURRENT record text, so a caller
     /// asking this compile's own Kernel sees an edge to it, not
     /// nothing (§2.5, limit 1).
+    /// Every held row read lands here, so after the revision's first ask a
+    /// read records its edge and nothing more, as a read file's row does.
     fn held_sig_dep(f: FileId) {
-        let _ = self.held_sig(self.decls.file(f).module_id)
+        let mid = self.hold.file_module.at(f.index) ?? self.held_module(f)
+        let rev = self.db.revision()
+        if self.hold.sig_asked.at(mid) ?? 0 == rev {
+            self.db.record_dep(key(Family.HeldSig, mid))
+        } else {
+            self.held_sig_asked(ModuleId { index: mid })
+            self.hold.sig_asked.keep(mid, rev)
+        }
     }
 
-    /// The verified read: asks the Kernel, reading the module's record
-    /// only on a real miss. `refetched`'s own re-derivation for this
-    /// family, so a re-ask through the Kernel's verifier matches a
-    /// direct one exactly.
+    /// `f`'s module index, kept: a file's module never moves.
+    fn held_module(f: FileId) -> int {
+        let mid = self.decls.module_of_file(f).index
+        self.hold.file_module.keep(f.index, mid)
+        mid
+    }
+
+    /// The verified read, answering the module's name.
     fn held_sig(mid: ModuleId) -> string {
-        let name = self.decls.module_name(mid)
-        let store? = self.store.get() else { return name }
+        self.held_sig_asked(mid)
+        self.decls.module_name(mid)
+    }
+
+    /// Asks the Kernel, reading the module's record only on a real miss —
+    /// a hit is the ask alone, since every held row read lands here.
+    /// `refetched`'s own re-derivation for this family, so a re-ask
+    /// through the Kernel's verifier matches a direct one exactly.
+    fn held_sig_asked(mid: ModuleId) {
+        let store? = self.store.get() else { return }
         let hk = key(Family.HeldSig, mid.index)
-        if !(self.db.ask(hk) is .Compute) { return name }
+        if !(self.db.ask(hk) is .Compute) { return }
         self.db.begin(hk)
-        let text = record_cached(self, store, module_path(segments_of(name)))
+        let text = record_cached(self, store, module_path(segments_of(self.decls.module_name(mid))))
         self.db.settle(hk, fp_str(text))
-        name
     }
 
     /// A type's method table, filled from its own members and every
