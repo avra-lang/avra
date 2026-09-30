@@ -1,0 +1,126 @@
+// Degenerate shapes, hostile names, duplicate keys and digest
+// boundaries against the gallery's page, listing, snapshots and diff.
+use @std.ui.{View, text, column, button}
+use @std.text.{from_codepoint, repeat}
+use @std.ui_gallery.{
+    Case,
+    Entry,
+    Snapshot,
+    Change,
+    ChangeKind,
+    gallery,
+    snapshots,
+    changed,
+    gallery_text,
+}
+use @std.ui_html.{html}
+
+fn worded(t: string) -> dyn View { text t }
+
+fn lone(view: string, name: string, t: string) -> Entry {
+    Entry { view: view, cases: [Case { name: name, view: worded(t) }] }
+}
+
+fn digest_of(view: string, name: string, t: string) -> string { snapshots([lone(view, name, t)])[0].digest }
+
+fn kinds(cs: List<Change>) -> string {
+    [match c.kind { .Added -> "+", .Removed -> "-", .Changed -> "~" } for c in cs].join("")
+}
+
+spec "std/ui-gallery adversarial" {
+    given "degenerate shapes" {
+        then "an entry with no cases has no snapshots and no listing" {
+            snapshots([Entry { view: "v", cases: [] }]).length == 0 &&
+                gallery_text([Entry { view: "v", cases: [] }], 20) == ""
+        }
+        then "an entry with no cases is an empty section on the page" {
+            html(gallery([Entry { view: "v", cases: [] }]).node()).contains(">v</h2>")
+        }
+        then "no entries make an empty column" {
+            html(gallery([]).node()).contains("<div class=\"col ") &&
+                !html(gallery([]).node()).contains("<section")
+        }
+        then "an empty view name and an empty case name still snapshot" {
+            snapshots([lone("", "", "")]).length == 1 &&
+                gallery_text([lone("", "", "")], 20).starts_with("──  /  ──")
+        }
+        then "a width below one still lists" {
+            gallery_text([lone("v", "c", "ab")], 0).contains("v / c")
+        }
+        then "before and after both empty differ nowhere" {
+            changed([], []).length == 0
+        }
+        then "everything added from nothing and everything removed to nothing" {
+            kinds(changed([], snapshots([lone("a", "x", "1"), lone("b", "y", "2")]))) == "++" &&
+                kinds(changed(snapshots([lone("a", "x", "1"), lone("b", "y", "2")]), [])) == "--"
+        }
+    }
+    given "digests" {
+        then "the digest is sixteen hex digits for empty and for large text" {
+            digest_of("v", "c", "").length == 16 &&
+                digest_of("v", "c", repeat("x", 5000)).length == 16
+        }
+        then "a one-character difference at the end of a long text changes it" {
+            digest_of("v", "c", repeat("x", 5000) + "a") != digest_of("v", "c", repeat("x", 5000) + "b")
+        }
+        then "a NUL in the text is part of it" {
+            digest_of("v", "c", "a" + from_codepoint(0) + "b") != digest_of("v", "c", "a")
+        }
+        then "unicode text digests apart from its lookalike" {
+            digest_of("v", "c", "é") != digest_of("v", "c", "e")
+        }
+        then "the view and case names are not part of the digest" {
+            digest_of("a", "x", "same") == digest_of("b", "y", "same")
+        }
+        then "a look-only change moves the digest though the words agree" {
+            let a = snapshots(
+                [Entry { view: "v", cases: [Case { name: "c", view: column { text "t" } }] }],
+            )[0]
+            let b = snapshots([Entry { view: "v", cases: [Case { name: "c", view: worded("t") }] }])[0]
+            a.spoken == b.spoken && a.digest != b.digest
+        }
+    }
+    given "hostile names and texts" {
+        then "a hostile view and case name escape on the page" {
+            let doc = html(gallery([lone("<i>", "\"><script>", "x")]).node())
+            !doc.contains("<script>") && !doc.contains("<i>") && doc.contains("&lt;i&gt;")
+        }
+        then "a newline in a case name stays one rule line" {
+            gallery_text([lone("v", "a\nb", "x")], 20).starts_with("── v / a\nb ──")
+        }
+        then "a hostile text is escaped in the snapshot html" {
+            snapshots([lone("v", "c", "<script>1</script>")])[0].html.contains("&lt;script&gt;")
+        }
+    }
+    given "duplicate keys" {
+        then "the same (view, case) twice with the same content is not a change" {
+            let twice = snapshots([lone("v", "c", "a"), lone("v", "c", "a")])
+            changed(twice, twice).length == 0
+        }
+        then "a duplicate pair compares each after row against the first before row" {
+            let before = snapshots([lone("v", "c", "a")])
+            kinds(changed(before, snapshots([lone("v", "c", "a"), lone("v", "c", "b")]))) == "~"
+        }
+        then "a case removed once from a duplicate pair is not reported removed" {
+            kinds(
+                changed(
+                    snapshots([lone("v", "c", "a"), lone("v", "c", "a")]),
+                    snapshots([lone("v", "c", "a")]),
+                ),
+            ) == ""
+        }
+    }
+    given "the diff's identity" {
+        then "a slash-shaped split of view and case is not the same case" {
+            kinds(changed(snapshots([lone("a/b", "c", "1")]), snapshots([lone("a", "b/c", "1")]))) == "+-"
+        }
+        then "a moved but unchanged case is one add and one remove" {
+            kinds(changed(snapshots([lone("a", "x", "1")]), snapshots([lone("b", "x", "1")]))) == "+-"
+        }
+        then "changes list in the after order, removals last" {
+            let before = snapshots([lone("a", "x", "1"), lone("b", "y", "1"), lone("c", "z", "1")])
+            let after = snapshots([lone("c", "z", "2"), lone("a", "x", "2")])
+            [c.view for c in changed(before, after)].join("") == "cab"
+        }
+    }
+}
