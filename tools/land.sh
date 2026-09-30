@@ -1407,7 +1407,7 @@ remote_suites() {
     done
     shift "$n"
     [ "$has_av" -eq 1 ] && set -- "$idioms" "$@"
-    AVRA_SP_TREE="$wt" sh "$tools_dir/sp" -p "$@"
+    AVRA_SP_TREE="$wt" sh "${AVRA_LAND_SP:-$tools_dir/sp}" -p "$@"
 }
 
 # One package's idioms check — `--call`-invoked (never a bare function
@@ -1649,7 +1649,8 @@ check_phase() {
 # THE LINUX GATE RUNS REMOTELY, so it takes no local slot and starts
 # before the local builds: the Sprite builds its own compiler from the
 # merged tree while this machine builds ours.
-remote_on() { [ "${AVRA_LAND_REMOTE:-1}" = "1" ]; }
+# The remote suites ride the Linux leg, so they are on only while it is.
+remote_on() { [ "${AVRA_LAND_REMOTE:-1}" = "1" ] && [ "${AVRA_LAND_LINUX:-1}" = "1" ]; }
 
 linux_pid=""
 linux_launch() {

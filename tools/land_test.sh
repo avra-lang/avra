@@ -24,7 +24,8 @@ affected="$here/affected_packages.sh"
 AVRA_LAND_LINUX=0
 AVRA_LAND_SPEED_GATE=0
 AVRA_LAND_WARM_GATE=0
-export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE
+AVRA_LAND_REMOTE=0
+export AVRA_LAND_LINUX AVRA_LAND_SPEED_GATE AVRA_LAND_WARM_GATE AVRA_LAND_REMOTE
 
 scratch="/tmp/avra-land-test-$$"
 mkdir -p "$scratch"
@@ -103,8 +104,10 @@ fixture_kill() {
     :
 }
 
+# AVRA_LAND_TEST_ONLY names the one fixture to run.
 run_test() {
     name="$1"
+    [ -z "${AVRA_LAND_TEST_ONLY:-}" ] || [ "$name" = "$AVRA_LAND_TEST_ONLY" ] || return 0
     cap="${AVRA_LAND_TEST_JOBS:-8}"
     while [ "$(tests_running)" -ge "$cap" ]; do sleep 0.2; done
     ( set +e; fixture_timed "$name" > "$test_logs/$name.log" 2>&1; st=$?; echo "$st" > "$test_status/$name.status"; exit "$st" ) &
@@ -2423,6 +2426,45 @@ EOF
     fi
 }
 
+# ══ THE REMOTE SUITES RIDE THE LINUX LEG ══════════════════════════════
+# With the leg on, the suites and idioms leave the local pool for
+# tools/sp -p; with it off they stay local, or nothing would run them.
+test_remote_suites() {
+    read -r d base_sha <<EOF
+$(gates_order_repo remote-suites)
+EOF
+    sp_stub="$scratch/remote-suites-sp.sh"
+    printf '#!/bin/sh\nfor a in "$@"; do echo "$a"; done > %s\n' "$scratch/remote-suites-argv" > "$sp_stub"
+    sprite_stub="$scratch/remote-suites-sprite.sh"
+    sprite_stub_write "$sprite_stub" pass
+    for leg in 1 0; do
+        scr="$scratch/remote-suites-scr-$leg"
+        rm -rf "$scr"
+        AVRA_LAND_JOBS=8 AVRA_LAND_SCRATCH="$scr" AVRA_SLOTS_DIR="$scratch/remote-suites-slots-$leg" \
+            AVRA_LAND_REMOTE=1 AVRA_LAND_LINUX=$leg AVRA_LAND_SPRITE_BUILD="$sprite_stub" \
+            branch=x sh "$land" --call run_checks "$d" "$base_sha" HEAD "" 1 1 \
+            > "$scratch/remote-suites-$leg.out" 2>&1
+        local_suites="$(awk '{print $2}' "$scr/jobs.list" 2>/dev/null | grep -E '^(test-|idioms)' | sort | tr '\n' ' ')"
+        if [ "$leg" = 1 ]; then
+            if [ -z "$local_suites" ]; then ok "remote-suites: with the leg on, no suite or idioms runs locally"
+            else bad "remote-suites: with the leg on, ran locally [$local_suites]"; fi
+        elif [ "$local_suites" = "idioms test-cli test-pa test-std-avrac " ]; then
+            ok "remote-suites: with the leg off, every suite and idioms runs locally"
+        else
+            bad "remote-suites: with the leg off, wanted every suite and idioms locally, got [$local_suites]"
+        fi
+    done
+    AVRA_LAND_SP="$sp_stub" sh "$land" --call remote_suites "$d" 1 pa cli > /dev/null 2>&1
+    want="-p|true && build/avra check packages/pa --baseline tools/idioms.baseline && build/avra check packages/cli --baseline tools/idioms.baseline|build/avra test packages/pa|build/avra test packages/cli|"
+    got="$(tr '\n' '|' < "$scratch/remote-suites-argv" 2>/dev/null)"
+    if [ "$got" = "$want" ]; then ok "remote-suites: sp -p gets idioms, then one suite per package"
+    else bad "remote-suites: sp -p got [$got]"; fi
+    AVRA_LAND_SP="$sp_stub" sh "$land" --call remote_suites "$d" 0 pa > /dev/null 2>&1
+    got="$(tr '\n' '|' < "$scratch/remote-suites-argv" 2>/dev/null)"
+    if [ "$got" = "-p|build/avra test packages/pa|" ]; then ok "remote-suites: no .av change sends no idioms"
+    else bad "remote-suites: without .av, sp -p got [$got]"; fi
+}
+
 # ══ A CHANGED GATE SCRIPT RUNS ITS OWN GATE, TOOLS-ONLY ══════════════
 test_tools_only_gate_script_runs_its_step() {
     d="$(batch_repo gate-script-one)"
@@ -2538,6 +2580,7 @@ run_test test_speed_gate_object_hit_tool_failure
 run_test test_speed_gate_held_assertion_tool_failure
 run_test test_speed_gate_median_of_three
 run_test test_run_checks_launch_order
+run_test test_remote_suites
 run_test test_tools_only_gate_script_runs_its_step
 run_test test_tools_only_several_gate_scripts_run_all_steps
 
