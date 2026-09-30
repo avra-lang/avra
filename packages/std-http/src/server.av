@@ -76,7 +76,7 @@ use http.{
 }
 use wire.{Transport, WireError, Secure, plainly}
 use route.{Route, compiled, dispatch}
-use h2.{H2Conn, Exchange, h2_server, preface}
+use h2.{H2Conn, H2Error, Exchange, h2_server, preface}
 use h2_serve.{H2Side, Pour, request_of, answered_on, refused_on, scheme_of, stream_body}
 
 extern fn avra_cores_online() -> int
@@ -679,7 +679,7 @@ impl Serving {
                 .Err(e) -> {
                     if !(pouring && timed_out(e)) {
                         unpoured(pours)
-                        return self.dropped(l)
+                        return self.broken(l, h, e)
                     }
                 },
             }
@@ -761,6 +761,17 @@ impl Serving {
         [p with { sent: sent }]
     }
 
+    /// The link ended by a read that failed with `e`: a peer the secure
+    /// layer refused — a TLS renegotiation is the one RFC 9113 names
+    /// (§9.2.1) — broke the connection's protocol, and is told so with
+    /// GOAWAY PROTOCOL_ERROR before the socket closes.
+    fn broken(l: Link, mut h: H2Conn, e: WireError) -> int {
+        let why? = breach_of(e) else { return self.dropped(l) }
+        if !h.closing { h.failed(why) }
+        let _ = self.sent(l.conn, h.drained())
+        self.dropped(l)
+    }
+
     /// The write side shut after this end's GOAWAY, then what the peer
     /// still sends read and dropped until it closes — for at most eight
     /// reads of a linger's length — and only then the socket closed. A
@@ -803,6 +814,13 @@ fn ended_pour(mut h: H2Conn, p: Pour, whole: bool) -> List<Pour> {
 /// How much a connection may owe before its pours stop pulling and
 /// what they pulled is written.
 const pour_batch: int = 65536
+
+/// The connection error a failed read is: the secure layer refusing
+/// what the peer sent is PROTOCOL_ERROR; a socket's failure, or the
+/// transport cut off, is nobody left to tell.
+fn breach_of(e: WireError) -> H2Error? {
+    match e { .Secure(_) -> .Protocol, .Net(_) or .Reset -> null }
+}
 
 /// Whether a transport verb failed only because its deadline passed.
 fn timed_out(e: WireError) -> bool {

@@ -1,9 +1,10 @@
 #!/bin/sh
 # h2spec (github.com/summerwind/h2spec) against std-http's HTTP/2 server,
-# in the clear and over TLS. Skips, saying so, when h2spec is not on the
-# PATH. The server is this script's child and is killed when it exits,
-# whatever ends it.
+# in the clear and over TLS, after the TLS renegotiation probe. Skips,
+# saying so, when h2spec is not on the PATH. The server is this script's
+# child and is killed when it exits, whatever ends it.
 set -u
+sh tools/tls_renegotiation.sh || exit 1
 if ! command -v h2spec > /dev/null 2>&1; then
     echo "h2spec: not on the PATH — skipped (github.com/summerwind/h2spec/releases)"
     exit 0

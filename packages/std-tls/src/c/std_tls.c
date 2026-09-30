@@ -45,6 +45,7 @@ enum {
     TLS_ERR_PROTOCOL = -0x1000c, /* an ALPN name empty, too long, holding a NUL, or one too many */
     TLS_ERR_CHAIN = -0x1000d,  /* a chain larger than a handshake message holds */
     TLS_ERR_CLEARTEXT = -0x1000e, /* an ALPN name TLS never agrees */
+    TLS_ERR_RENEGOTIATION = -0x1000f, /* the peer asked to renegotiate */
 };
 
 /* Fed ciphertext is bounded: a peer that sends faster than records are
@@ -516,6 +517,18 @@ static int progressed(Session* s, size_t before, int rc) {
     return rc == MBEDTLS_ERR_SSL_WANT_READ && s->in.len < before;
 }
 
+/* Whether a read refused a renegotiation, the ciphertext owed the peer
+   having stood at `owed` before it (SIZE_MAX for a read that began
+   inside the handshake, which writes as it goes). Once the handshake is
+   over, a TLS 1.2 read answers the peer only to refuse a renegotiation:
+   the one handshake message a 1.2 peer may send then asks for one, and
+   this build, renegotiation compiled out, answers it with a warning
+   alert and reads on. It is surfaced as a failure, so a protocol that
+   must end the connection on it (RFC 9113 §9.2.1) is told. */
+static int renegotiation_refused(Session* s, size_t owed) {
+    return s->out.len > owed && mbedtls_ssl_get_version_number(&s->ssl) == MBEDTLS_SSL_VERSION_TLS1_2;
+}
+
 /* One handshake step: 0 once it is complete, else a negative code —
    `avra_tls_want_read()` when it needs the peer's next flight. */
 int64_t avra_tls_handshake(int64_t ses) {
@@ -571,12 +584,14 @@ int64_t avra_tls_receive(int64_t ses, int64_t max) {
     if (!s) return TLS_ERR_HANDLE;
     if (max <= 0) return TLS_ERR_BOUNDS;
     size_t want = max < TLS_PLAIN_CAP ? (size_t)max : TLS_PLAIN_CAP;
+    size_t owed = mbedtls_ssl_is_handshake_over(&s->ssl) ? s->out.len : SIZE_MAX;
     int rc;
     size_t before;
     do {
         before = s->in.len;
         rc = mbedtls_ssl_read(&s->ssl, s->plain, want);
     } while (progressed(s, before, rc));
+    if (renegotiation_refused(s, owed)) return TLS_ERR_RENEGOTIATION;
     return rc == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY ? 0 : rc;
 }
 
@@ -656,6 +671,7 @@ int64_t avra_tls_words(int64_t code) {
     case TLS_ERR_PROTOCOL: ours = "an ALPN name is 1 to 255 bytes with no NUL, eight at most"; break;
     case TLS_ERR_CHAIN: ours = "a chain larger than one handshake message holds — present fewer certificates"; break;
     case TLS_ERR_CLEARTEXT: ours = "h2c is HTTP/2 over cleartext TCP, which TLS never agrees (RFC 9113 §3.2)"; break;
+    case TLS_ERR_RENEGOTIATION: ours = "the peer asked to renegotiate, which is refused"; break;
     }
     if (ours) {
         strncpy(g_words, ours, sizeof g_words - 1);
