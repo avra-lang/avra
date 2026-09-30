@@ -1,0 +1,145 @@
+// The engine over memory: a client and a server session in one
+// process, the wire two buffers moved by hand. A verified handshake,
+// records each way, close_notify, a message larger than a record, and
+// the refusals verification owes — no anchors, the wrong host, no
+// identity. Every case answers `Result<bool, TlsError>` so `?` reads
+// straight, and `passes` is the one seam to the harness.
+use @std.tls.{Config, Session, Opened, TlsError, client, server, session}
+use @std.tls.testing.{localhost_chain, localhost_key, trusting_localhost, serving_localhost}
+
+/// A client and a server session, not yet shaken.
+type Pair = { c: Session, s: Session }
+
+fn passes(r: Result<bool, TlsError>) -> bool {
+    match r { .Ok(b) -> b, .Err(_) -> false }
+}
+
+fn words<T>(r: Result<T, TlsError>) -> string {
+    match r { .Err(e) -> e.describe().message, .Ok(_) -> "<ok>" }
+}
+
+fn paired(cc: Config, sc: Config, host: string) -> Result<Pair, TlsError> {
+    Pair { c: session(cc, host)?, s: session(sc, "")? }
+}
+
+fn localhost_pair() -> Result<Pair, TlsError> {
+    paired(trusting_localhost()?, serving_localhost()?, "localhost")
+}
+
+/// Both sides stepped and each flight moved across until both are
+/// done — true — or ten turns pass.
+fn shaken(p: Pair) -> Result<bool, TlsError> { shaken_from(p, 1) }
+
+fn shaken_from(p: Pair, turn: int) -> Result<bool, TlsError> {
+    let cs = p.c.step()?
+    p.s.fed(p.c.outgoing()?)?
+    let ss = p.s.step()?
+    p.c.fed(p.s.outgoing()?)?
+    if cs is .Done && ss is .Done { return true }
+    if turn == 10 { return false }
+    shaken_from(p, turn + 1)
+}
+
+/// `b` sealed whole from `from` into `into`'s outgoing ciphertext.
+fn sealed_all(into: Session, b: Bytes, from: int) -> Result<int, TlsError> {
+    if from >= b.length { return b.length }
+    sealed_all(into, b, from + into.sealed(b, from)?)
+}
+
+/// Everything `from` can open now, joined.
+fn opened_all(from: Session, got: Bytes) -> Result<Bytes, TlsError> {
+    match from.opened(65536)? {
+        .Data(b) -> opened_all(from, got.concat(b)),
+        .Reading or .Closed -> got,
+    }
+}
+
+/// `b` from `a` to `z`, moved and opened.
+fn carried(a: Session, z: Session, b: Bytes) -> Result<Bytes, TlsError> {
+    sealed_all(a, b, 0)?
+    z.fed(a.outgoing()?)?
+    opened_all(z, "".bytes())
+}
+
+fn verified_handshake() -> Result<bool, TlsError> {
+    let p = localhost_pair()?
+    let done = shaken(p)?
+    done && p.c.version() == 772 && p.s.version() == 772
+}
+
+fn records_each_way() -> Result<bool, TlsError> {
+    let p = localhost_pair()?
+    shaken(p)?
+    let there = carried(p.c, p.s, "GET / HTTP/1.1\r\n\r\n".bytes())?
+    let back = carried(p.s, p.c, "HTTP/1.1 204 No Content\r\n\r\n".bytes())?
+    there.text() == "GET / HTTP/1.1\r\n\r\n" && back.text() == "HTTP/1.1 204 No Content\r\n\r\n"
+}
+
+fn close_notify_reads_closed() -> Result<bool, TlsError> {
+    let p = localhost_pair()?
+    shaken(p)?
+    p.c.closing()?
+    p.s.fed(p.c.outgoing()?)?
+    p.s.opened(64)? is .Closed
+}
+
+fn larger_than_a_record() -> Result<bool, TlsError> {
+    let p = localhost_pair()?
+    shaken(p)?
+    let big = [i % 251 for i in 0..100000].bytes()!
+    carried(p.c, p.s, big)? == big
+}
+
+fn empty_message() -> Result<bool, TlsError> {
+    let p = localhost_pair()?
+    shaken(p)?
+    (carried(p.c, p.s, "".bytes())?).is_empty()
+}
+
+fn refusal(p: Result<Pair, TlsError>) -> string {
+    match p { .Ok(pair) -> words(shaken(pair)), .Err(e) -> e.describe().message }
+}
+
+fn anchors_nothing() -> Result<Pair, TlsError> { paired(client()?, serving_localhost()?, "localhost") }
+
+fn wrong_host() -> Result<Pair, TlsError> { paired(trusting_localhost()?, serving_localhost()?, "example.com") }
+
+fn no_identity() -> Result<Pair, TlsError> { paired(trusting_localhost()?, server()?, "localhost") }
+
+fn unverified_completes() -> Result<bool, TlsError> {
+    let cc = (client()?).unverified()?
+    let p = paired(cc, serving_localhost()?, "example.com")?
+    shaken(p)
+}
+
+fn identity_named(chain: Bytes, key: Bytes) -> string {
+    match server() { .Ok(s) -> words(s.presenting(chain, key)), .Err(e) -> e.describe().message }
+}
+
+spec "std.tls over memory" {
+    given "a client trusting the test authority and a server presenting its leaf" {
+        then "the handshake completes, verified, on TLS 1.3" { passes(verified_handshake()) }
+        then "a record each way arrives exactly" { passes(records_each_way()) }
+        then "close_notify reads as Closed" { passes(close_notify_reads_closed()) }
+        then "a message larger than a record arrives whole" { passes(larger_than_a_record()) }
+        then "an empty message is sealed and opened as nothing" { passes(empty_message()) }
+    }
+    given "verification on by default" {
+        then "a client trusting nothing refuses the server" {
+            refusal(anchors_nothing()).starts_with("handshake localhost: ")
+        }
+        then "a client expecting another host refuses the certificate" {
+            refusal(wrong_host()).starts_with("handshake example.com: ")
+        }
+        then "a server with no identity cannot complete a handshake" {
+            refusal(no_identity()).starts_with("handshake ")
+        }
+        then "an unverified client completes against any certificate" { passes(unverified_completes()) }
+    }
+    given "the identity a server presents" {
+        then "a chain and its key are accepted" { identity_named(localhost_chain(), localhost_key()) == "<ok>" }
+        then "a key that is not PEM is refused, naming the verb" {
+            identity_named(localhost_chain(), "not a key".bytes()).starts_with("identity ")
+        }
+    }
+}

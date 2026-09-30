@@ -1,0 +1,207 @@
+//! @std.tls — TLS 1.2 and 1.3, client and server, over memory.
+//!
+//! A `Config` is one side of a service: its trust anchors, its
+//! identities, whether it verifies its peer. A `Session` is one
+//! connection's protocol engine and touches no socket: ciphertext from
+//! the peer is `fed` in, `outgoing` ciphertext is drained out, and the
+//! caller moves both over whatever wire it holds — which is how a
+//! handshake parks wherever the wire's own reads and writes park.
+//!
+//! VERIFICATION IS ON BY DEFAULT: a client config checks the peer's
+//! chain against its anchors and the host it named. `unverified` is the
+//! one way off, named for what it gives up.
+//!
+//! The engine is mbedTLS 4.1 LTS, vendored (vendor/import.sh); the
+//! mechanisms compiled in are the two config headers in src/c.
+use @std.errors.{Error, ErrorInfo, info}
+
+extern fn avra_tls_config(server: int) -> int
+extern fn avra_tls_config_roots(cfg: int, pem: Bytes, n: int) -> int
+extern fn avra_tls_config_identity(cfg: int, chain: Bytes, chain_n: int, key: Bytes, key_n: int) -> int
+extern fn avra_tls_config_verify(cfg: int, required: int) -> int
+extern fn avra_tls_config_free(cfg: int) -> int
+extern fn avra_tls_session(cfg: int, host: Bytes, n: int) -> int
+extern fn avra_tls_feed(ses: int, b: Bytes, from: int, n: int) -> int
+extern fn avra_tls_handshake(ses: int) -> int
+extern fn avra_tls_outgoing(ses: int) -> int
+extern fn avra_tls_outgoing_at(ses: int) -> ptr?
+extern fn avra_tls_sent(ses: int, n: int) -> int
+extern fn avra_tls_send(ses: int, b: Bytes, from: int, n: int) -> int
+extern fn avra_tls_receive(ses: int, max: int) -> int
+extern fn avra_tls_received_at(ses: int) -> ptr?
+extern fn avra_tls_close_notify(ses: int) -> int
+extern fn avra_tls_version(ses: int) -> int
+extern fn avra_tls_end(ses: int) -> int
+extern fn avra_tls_want_read() -> int
+extern fn avra_tls_words(code: int) -> int
+extern fn avra_tls_words_at() -> ptr?
+extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
+
+/// A verb that failed: which, on what, and the engine's code.
+export type TlsError = { verb: string, subject: string, code: int }
+
+impl Error for TlsError {
+    fn describe() -> ErrorInfo {
+        info("tls.${self.verb}", "${self.verb} ${self.subject}: ${words(self.code)}")
+    }
+}
+
+/// A code's words, as the engine states them.
+fn words(code: int) -> string {
+    let n = avra_tls_words(code)
+    avra_bytes_adopted(avra_tls_words_at()!, n).text() ?? "TLS code ${code}"
+}
+
+/// An engine answer as a count, or the verb that failed on it.
+fn counted(code: int, verb: string, subject: string) -> Result<int, TlsError> {
+    if code < 0 { fail TlsError { verb: verb, subject: subject, code: code } }
+    code
+}
+
+/// Which end of a handshake a config serves.
+export enum Side { Client, Server }
+
+/// One side of a service. The handle is the engine's; `free` returns
+/// it, after every session made from it has ended.
+export type Config = { handle: int, side: Side }
+
+/// A client config: verifying, trusting nothing until anchors are
+/// added.
+export fn client() -> Result<Config, TlsError> { configured(Side.Client) }
+
+/// A server config: presenting nothing until an identity is added,
+/// issuing resumption tickets.
+export fn server() -> Result<Config, TlsError> { configured(Side.Server) }
+
+fn configured(side: Side) -> Result<Config, TlsError> {
+    let h = counted(avra_tls_config(side_word(side)), "config", side_name(side))?
+    Config { handle: h, side: side }
+}
+
+fn side_word(side: Side) -> int {
+    match side { .Client -> 0, .Server -> 1 }
+}
+
+fn side_name(side: Side) -> string {
+    match side { .Client -> "client", .Server -> "server" }
+}
+
+impl Config {
+    /// Trust anchors added from PEM text; answers how many the text
+    /// held. Certificates this build cannot read are skipped, and text
+    /// holding none it can is refused.
+    fn trusting(pem: Bytes) -> Result<int, TlsError> {
+        counted(
+            avra_tls_config_roots(self.handle, pem, pem.length),
+            "trust",
+            "${pem.length} bytes of PEM",
+        )
+    }
+
+    /// A certificate chain, leaf first, and its private key, from PEM.
+    /// The first identity answers a peer that names no host.
+    fn presenting(chain: Bytes, key: Bytes) -> Result<Config, TlsError> {
+        counted(
+            avra_tls_config_identity(self.handle, chain, chain.length, key, key.length),
+            "identity",
+            "${chain.length} bytes of PEM",
+        )?
+        self
+    }
+
+    /// The peer's certificate taken on trust — no chain, no name. For
+    /// tests against a throwaway certificate; never the default.
+    fn unverified() -> Result<Config, TlsError> {
+        counted(avra_tls_config_verify(self.handle, 0), "verify", side_name(self.side))?
+        self
+    }
+
+    /// The config's handle returned to the engine.
+    fn free() -> Result<int, TlsError> {
+        counted(avra_tls_config_free(self.handle), "free", side_name(self.side))
+    }
+}
+
+/// What a handshake step needs next.
+export enum Step { Done, Reading }
+
+/// What a receive found.
+export enum Opened {
+    Data(b: Bytes)
+    Reading
+    Closed
+}
+
+/// One connection's engine: the protocol state, the ciphertext fed
+/// and not yet read, the ciphertext owed to the peer.
+export type Session = { handle: int, host: string }
+
+/// A session under `config`. A client names the host it expects: the
+/// name it sends and the name the peer's certificate must carry. A
+/// server passes "".
+export fn session(config: Config, host: string) -> Result<Session, TlsError> {
+    let name = host.bytes()
+    let h = counted(avra_tls_session(config.handle, name, name.length), "session", host)?
+    Session { handle: h, host: host }
+}
+
+impl Session {
+    /// Ciphertext from the peer, queued for the engine.
+    fn fed(b: Bytes) -> Result<int, TlsError> {
+        counted(avra_tls_feed(self.handle, b, 0, b.length), "feed", self.named())
+    }
+
+    /// One handshake step: `.Done` once it is complete, `.Reading`
+    /// when the engine needs the peer's next flight fed.
+    fn step() -> Result<Step, TlsError> {
+        let rc = avra_tls_handshake(self.handle)
+        if rc == 0 { return Step.Done }
+        if rc == avra_tls_want_read() { return Step.Reading }
+        fail TlsError { verb: "handshake", subject: self.named(), code: rc }
+    }
+
+    /// Every byte of ciphertext owed to the peer, taken: empty when
+    /// nothing is owed.
+    fn outgoing() -> Result<Bytes, TlsError> {
+        let n = counted(avra_tls_outgoing(self.handle), "drain", self.named())?
+        if n == 0 { return "".bytes() }
+        let b = avra_bytes_adopted(avra_tls_outgoing_at(self.handle)!, n)
+        counted(avra_tls_sent(self.handle, n), "drain", self.named())?
+        b
+    }
+
+    /// Plaintext from `from` sealed for the peer, one record at most;
+    /// answers how many bytes the record took.
+    fn sealed(b: Bytes, from: int) -> Result<int, TlsError> {
+        counted(avra_tls_send(self.handle, b, from, b.length - from), "send", self.named())
+    }
+
+    /// Plaintext from the peer, up to `max` bytes: `.Reading` when the
+    /// fed ciphertext holds no whole record, `.Closed` once the peer
+    /// sent close_notify.
+    fn opened(max: int) -> Result<Opened, TlsError> {
+        let rc = avra_tls_receive(self.handle, max)
+        if rc == avra_tls_want_read() { return Opened.Reading }
+        let n = counted(rc, "receive", self.named())?
+        if n == 0 { return Opened.Closed }
+        Opened.Data(avra_bytes_adopted(avra_tls_received_at(self.handle)!, n))
+    }
+
+    /// close_notify queued for the peer.
+    fn closing() -> Result<int, TlsError> {
+        counted(avra_tls_close_notify(self.handle), "close", self.named())
+    }
+
+    /// The protocol settled: 0x0303 for TLS 1.2, 0x0304 for 1.3, 0
+    /// before the handshake settles it.
+    fn version() -> int { avra_tls_version(self.handle) }
+
+    /// The engine's state returned; answers the handle.
+    fn end() -> Result<int, TlsError> {
+        counted(avra_tls_end(self.handle), "end", self.named())
+    }
+
+    fn named() -> string {
+        if self.host.is_empty() { "session ${self.handle}" } else { self.host }
+    }
+}

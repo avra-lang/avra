@@ -129,6 +129,29 @@ CFLAGS_ffi := -Iruntime
 CFLAGS_sqlite3 = $(SQLITE_FLAGS)
 CFLAGS_sqlite_sentinel := -Ipackages/std-sqlite/vendor
 
+# THE VENDORED mbedTLS, ONE OBJECT PER UPSTREAM UNIT: each
+# packages/std-tls/vendor/mbedtls_<unit>.c wrapper includes one upstream
+# .c, so every unit compiles as upstream compiles it (a unity build lets
+# one unit's macros reach the next). The units are ARCHIVED, so a
+# program links the members its handshake reaches and no more. The two
+# config headers in src/c are the whole mechanism list; @std/tls's own
+# C reads mbedTLS's structs, so it compiles under the same words.
+MBEDTLS_DIR := packages/std-tls/vendor/mbedtls
+MBEDTLS_OBJS := $(patsubst packages/std-tls/vendor/%.c,build/%.o,$(wildcard packages/std-tls/vendor/mbedtls_*.c))
+MBEDTLS_FLAGS := -I$(MBEDTLS_DIR)/include -I$(MBEDTLS_DIR)/tf-psa-crypto/include \
+  -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/builtin/include -I$(MBEDTLS_DIR)/library \
+  -I$(MBEDTLS_DIR)/tf-psa-crypto/core -I$(MBEDTLS_DIR)/tf-psa-crypto/dispatch \
+  -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/builtin/src -I$(MBEDTLS_DIR)/tf-psa-crypto/extras \
+  -I$(MBEDTLS_DIR)/tf-psa-crypto/platform -I$(MBEDTLS_DIR)/tf-psa-crypto/utilities \
+  -Ipackages/std-tls/src/c '-DTF_PSA_CRYPTO_CONFIG_FILE="std_tls_crypto_config.h"' \
+  '-DMBEDTLS_CONFIG_FILE="std_tls_ssl_config.h"'
+$(foreach o,$(MBEDTLS_OBJS),$(eval CFLAGS_$(basename $(notdir $(o))) := $(MBEDTLS_FLAGS)))
+CFLAGS_std_tls := $(MBEDTLS_FLAGS)
+
+build/mbedtls.a: $(MBEDTLS_OBJS)
+	@rm -f $@
+	ar rcs $@ $^
+
 # A HEADER IS A SOURCE. cc writes each object's dependency list beside
 # it and the next make reads it back, so editing a .h rebuilds what
 # includes it — without this a package that grows a header links a
@@ -143,7 +166,7 @@ build/%.o: %.c build/%.sha
 	@mkdir -p build
 	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
--include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS))))
+-include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(MBEDTLS_OBJS))))
 
 # THE HOT LEAVES AS BYTES THE COMPILER CARRIES (runtime/avra_hot.h):
 # runtime/avra_hot.c compiled to bitcode by the LLVM the compiler links,
