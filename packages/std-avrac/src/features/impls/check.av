@@ -112,7 +112,10 @@ fn selfed_sig(cx: TypeCx, subject: ExprId, m: DeclId?, sig: FnSig, trait_args: L
     if m == null { return sig }
     let contract? = cx.view.decls.decl(m!).parent else { return sig }
     if !cx.view.decls.is_trait(contract) { return sig }
-    let args = [cx.type_at(subject)].concat(trait_args)
+    // a trait's own parameters stand for themselves where no call supplies them —
+    // inside its default bodies, typed once over the trait
+    let own = cx.view.decls.instance_vars(contract).slice(1, cx.view.decls.tparams(contract).length)
+    let args = [cx.type_at(subject)].concat(if trait_args.is_empty() { own } else { trait_args })
     FnSig {
         params: [cx.view.types.substituted(p, contract, args) for p in sig.params],
         ret: cx.view.types.substituted(sig.ret, contract, args),
