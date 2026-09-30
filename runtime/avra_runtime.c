@@ -2320,6 +2320,21 @@ int64_t avra_bytes_run(const char* b, int64_t from, const char* table) {
     return i;
 }
 
+// Where the run of octets `table` admits ends, walking BACK from `from`:
+// the least i with every byte of i..from admitted — `from` itself when
+// the byte before it is refused. `avra_bytes_run`'s mirror, for a tail
+// (trailing whitespace) read without a counter loop.
+int64_t avra_bytes_run_back(const char* b, int64_t from, const char* table) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(from < 0 || from > n, 0)) avra_trap_bounds(from, n);
+    if (__builtin_expect(bytes_len(table) != 256, 0)) trap_table((int64_t)bytes_len(table));
+    const unsigned char* t = (const unsigned char*)table;
+    const unsigned char* p = (const unsigned char*)b;
+    int64_t i = from;
+    while (i > 0 && t[p[i - 1]]) i--;
+    return i;
+}
+
 // Whether the bytes from lo up to hi are exactly `needle`.
 int64_t avra_bytes_eq_at(const char* b, int64_t lo, int64_t hi, const char* needle) {
     int64_t n = (int64_t)bytes_len(b);

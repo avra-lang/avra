@@ -213,6 +213,33 @@ spec "features/bytes" {
                 "a class table holds 256 bytes (length 3)",
             )
         }
+        then "run_back starts at the first admitted byte after the last refused one" {
+            shown(
+                "let d = [if i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!\n\"ab12\".bytes().run_back(4, d)",
+            ) == "2"
+        }
+        then "run_back at a refused byte answers from" {
+            shown(
+                "let d = [if i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!\n\"a12b\".bytes().run_back(4, d)",
+            ) == "4"
+        }
+        then "run_back over admitted bytes to the start answers 0, and from 0 answers 0" {
+            shown(
+                "let d = [1 for i in 0..256].bytes()!\n\"\${\"ab\".bytes().run_back(2, d)} \${\"\".bytes().run_back(0, d)}\"",
+            ) == "0 0"
+        }
+        then "run_back past the end is the trap" {
+            refused_at_run(
+                "let d = [1 for i in 0..256].bytes()!\n\"ab\".bytes().run_back(3, d)",
+                "index 3 is out of bounds (length 2)",
+            )
+        }
+        then "run_back with a table of the wrong length is the trap" {
+            refused_at_run(
+                "let b = [1, 2, 3].bytes()!\nb.run_back(3, b)",
+                "a class table holds 256 bytes (length 3)",
+            )
+        }
         then "eq_at compares a span exactly" {
             shown(
                 "let l = \"Host: x\".bytes()\n\"\${l.eq_at(0, 4, \"Host\".bytes())} \${l.eq_at(0, 4, \"host\".bytes())} \${l.eq_at(0, 3, \"Host\".bytes())}\"",

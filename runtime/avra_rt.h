@@ -164,6 +164,7 @@ extern const char avra_rt_held_avra_str_of_bytes __asm__(AVRA_RT_LABEL(avra_str_
 extern const char avra_rt_held_avra_str_of_bytes_reusing __asm__(AVRA_RT_LABEL(avra_str_of_bytes_reusing));
 extern const char avra_rt_held_avra_utf8_bad_at __asm__(AVRA_RT_LABEL(avra_utf8_bad_at));
 extern const char avra_rt_held_avra_bytes_run __asm__(AVRA_RT_LABEL(avra_bytes_run));
+extern const char avra_rt_held_avra_bytes_run_back __asm__(AVRA_RT_LABEL(avra_bytes_run_back));
 extern const char avra_rt_held_avra_bytes_eq_at __asm__(AVRA_RT_LABEL(avra_bytes_eq_at));
 extern const char avra_rt_held_avra_bytes_ieq_at __asm__(AVRA_RT_LABEL(avra_bytes_ieq_at));
 extern const char avra_rt_held_avra_bytes_gathered __asm__(AVRA_RT_LABEL(avra_bytes_gathered));
@@ -317,6 +318,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_str_of_bytes_reusing,
     &avra_rt_held_avra_utf8_bad_at,
     &avra_rt_held_avra_bytes_run,
+    &avra_rt_held_avra_bytes_run_back,
     &avra_rt_held_avra_bytes_eq_at,
     &avra_rt_held_avra_bytes_ieq_at,
     &avra_rt_held_avra_bytes_gathered,
@@ -573,6 +575,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_utf8_bad_at(AVRA_RT_
     "avra_utf8_bad_at: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_run(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
     "avra_bytes_run: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_run_back(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
+    "avra_bytes_run_back: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_eq_at(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
     "avra_bytes_eq_at: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_ieq_at(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
