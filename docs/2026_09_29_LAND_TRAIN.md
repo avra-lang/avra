@@ -320,23 +320,36 @@ one-time, then joins the warm ~5-minute rate — worth knowing before
 reading a fresh Sprite's first landing as evidence the pool addition
 was a bad idea.
 
-AN OPEN QUESTION THE PROOF SURFACED BUT DID NOT SETTLE: dispatching
-`land-proof-1 land-proof-2 land-proof-3` together, candidate 2
-(`land-proof-1`+`land-proof-2`) took the SAME "never cached, build
-from nothing" path candidate 1 had just paid moments earlier on the
-SAME Sprite — `sprite-build.sh`'s own cache is keyed by a hash over
-the compiler's source closure, tests excluded, and the only new
-content `land-proof-2` (`41c6515`) adds over `land-proof-1` is a
-merge whose own diff touched only `packages/std-relation/src/tests/*`
-— files that hash should exclude. Whether this is a real cache-key
-gap (something inside that closure DID move and this entry has not
-found it) or an ordering artifact of three candidates each computing
-their own hash-and-cache-check before the first one's store had
-landed is UNRESOLVED — recorded here rather than asserted, and worth
-tracing (`AVRA_QTRACE`-style: diff what `compiler_hash()` actually
-hashed for candidate 1 against candidate 2, file by file) before
-trusting that a ladder's later candidates are always as cheap as its
-first on an already-warm Sprite.
+RETRACTED, TRACED, AND RESOLVED — not an ordering artifact, not a
+cache-key gap. The entry above claimed candidate 2's diff over
+candidate 1 "touched only `packages/std-relation/src/tests/*`," read
+from a `git show --stat -1 e3fa5c9 | tail -6` during the original
+proof session — a `tail` that cut the diff's OWN interesting lines,
+exactly the law this repo's own CLAUDE.md names ("A PROBE THAT
+TRUNCATES ITS OWN OUTPUT REPORTS THE ABSENCE OF WHAT IT CUT"). Traced
+for real: `sprite-build.sh`'s own `compiler_source_paths` +
+`compiler_hash` functions, run byte-for-byte against two real
+worktrees (`b0fd739` and `41c6515`, i.e. candidate 1 and candidate 2's
+own trees) reproduce the EXACT two hashes seen live
+(`dd484e4f…` and `77c5cfc6…`) — confirming the two candidates really
+do have different compiler-hash identities, not a race. Diffing the
+two hash lists file-by-file names it precisely: `e3fa5c9`'s own full
+diff (not its last 6 stat lines) changes
+`packages/std-relation/src/db.av` and `.../rows.av` — real,
+non-test source ("a Db's owner names its running query; a frame's
+repeat read is told once") — alongside the test files that were all
+`tail -6` had left visible. `std-relation` is inside `cli`'s own
+`use`-graph closure (the DB/workspace unification work), so
+`compiler_source_paths` was RIGHT to hash it, and the fresh build for
+candidate 2 was the cache answering correctly to a genuine source
+change, not a defect. The general lesson survives the retraction: a
+ladder's later candidates are NOT guaranteed as cheap as its warmed
+first ONLY WHEN one of them touches a file inside the compiler's own
+`use`-graph closure — which is exactly when `land.sh`'s own serial
+pipeline would ALSO pay for a second build (`compiler_reached`,
+`affected_packages.sh`'s own compiler-changed case) — so this is the
+train correctly inheriting an existing cost, never a new one it
+invented.
 
 **A failure mid-train costs a re-wave**, not a re-run of everything
 before it: dropping `bj` and rebuilding `Cj'..CN'` re-dispatches only
