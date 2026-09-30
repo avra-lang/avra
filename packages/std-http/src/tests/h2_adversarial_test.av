@@ -233,6 +233,48 @@ spec "std.http h2 adversarial" {
             goaway_of(c) == -1 && reset_of(c, 1) == error_code(.NoError) && c.streams.is_empty()
         }
     }
+    given "an answer in pieces" {
+        then "a piece on a stream nothing answered yet sends nothing" {
+            mut c = conn_after([get_on(1)])
+            let _ = c.drained()
+            c.piece(1, "x".bytes(), true)
+            c.drained().is_empty()
+        }
+        then "a last piece with nothing owed is an empty DATA that ends the stream" {
+            mut c = conn_after([get_on(1)])
+            let _ = c.drained()
+            c.began(1, [field(":status", "200")])
+            c.piece(1, no_bytes, true)
+            let fs = frames_in(c.drained())
+            fs.length == 2 &&
+                fs[1].kind is .Data &&
+                fs[1].payload.is_empty() &&
+                fs[1].flags & end_stream != 0 &&
+                c.streams.is_empty()
+        }
+        then "a stream whose window is shut is not hungry, and its piece waits owed" {
+            mut c = conn_after(
+                [frame_bytes(.Settings, 0, 0, [0, 4].bytes()!.concat(u32_bytes(0))), get_on(1)],
+            )
+            c.began(1, [field(":status", "200")])
+            let wanted = c.hungry(1)
+            c.piece(1, "abc".bytes(), false)
+            !wanted && !c.hungry(1) && c.owing() == 3 && c.delivered == 0
+        }
+        then "a stream the peer reset is never hungry, and cancelling it says nothing more" {
+            mut c = conn_after([get_on(1)])
+            c.began(1, [field(":status", "200")])
+            let _ = c.fed(frame_bytes(.Reset, 0, 1, u32_bytes(8)), 0)
+            let _ = c.drained()
+            c.cancelled(1, .Internal)
+            !c.hungry(1) && c.drained().is_empty()
+        }
+        then "delivered counts the answer octets sent" {
+            mut c = conn_after([get_on(1)])
+            c.respond(1, [field(":status", "200")], "hello".bytes())
+            c.delivered == 5
+        }
+    }
     given "the peer's table size" {
         then "a SETTINGS that shrinks the peer's table opens the next answer with the size update" {
             mut c = conn_after(

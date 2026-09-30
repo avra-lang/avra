@@ -617,34 +617,36 @@ impl Serving {
         while true {
             let at = h.fed(l.buf, 0)
             l.buf = l.buf.slice(at, l.buf.length)
-            for x in h.taken() {
-                l.served = l.served + 1
-                let more = match h.arrived(x.stream) {
-                    .Whole(b) -> self.h2_delivered(h, x, self.h2_reply(l, x, (_k) -> whole(b))),
-                    .Flowing(b) -> {
-                        let side = Cell.new(H2Side { conn: h, buf: l.buf })
-                        let reply = self
-                            .h2_reply(
-                                l,
-                                x,
-                                (k) -> stream_body(
-                                    side,
-                                    l.conn,
-                                    x.stream,
-                                    b,
-                                    k,
-                                    self.timing.body,
-                                    self.limits,
-                                ),
-                            )
-                        let back = side.get()
-                        h = back.conn
-                        l.buf = back.buf
-                        self.h2_delivered(h, x, reply)
-                    },
-                    .Cut -> [],
+            while !h.ready.is_empty() {
+                for x in h.taken() {
+                    l.served = l.served + 1
+                    let more = match h.arrived(x.stream) {
+                        .Whole(b) -> self.h2_delivered(h, x, self.h2_reply(l, x, (_k) -> whole(b))),
+                        .Flowing(b) -> {
+                            let side = Cell.new(H2Side { conn: h, buf: l.buf })
+                            let reply = self
+                                .h2_reply(
+                                    l,
+                                    x,
+                                    (k) -> stream_body(
+                                        side,
+                                        l.conn,
+                                        x.stream,
+                                        b,
+                                        k,
+                                        self.timing.body,
+                                        self.limits,
+                                    ),
+                                )
+                            let back = side.get()
+                            h = back.conn
+                            l.buf = back.buf
+                            self.h2_delivered(h, x, reply)
+                        },
+                        .Cut -> [],
+                    }
+                    pours = pours.concat(more)
                 }
-                pours = pours.concat(more)
             }
             pours = self.h2_poured(h, pours)
             if l.served >= self.timing.requests && !h.closing { h.ended() }
@@ -706,7 +708,7 @@ impl Serving {
         }
         released(reply.answer)
         let code? = broken_status(e) else {
-            h.reset(x.stream, .Cancel)
+            h.cancelled(x.stream, .Cancel)
             return []
         }
         refused_on(h, x.stream, code)
@@ -782,9 +784,9 @@ impl Serving {
 type H2Reply = { answer: Response, asked: Method, body: Body }
 
 /// Pour `p` ended: its last piece — or, when it did not go out whole,
-/// its stream reset — and its producer released.
+/// its stream reset if it still lives — and its producer released.
 fn ended_pour(mut h: H2Conn, p: Pour, whole: bool) -> List<Pour> {
-    if whole { h.piece(p.id, "".bytes(), true) } else { h.reset(p.id, .Internal) }
+    if whole { h.piece(p.id, "".bytes(), true) } else { h.cancelled(p.id, .Internal) }
     p.stream.ended()
     []
 }
