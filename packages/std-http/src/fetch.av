@@ -1,0 +1,298 @@
+//! fetch.av — ONE REQUEST BY URL: `get(url)?`, over a pool, every stage
+//! on a deadline of its own.
+//!
+//! THE URL DECIDES WHERE, AND IS READ STRICTLY. It parses by RFC 3986
+//! (@std/url) or the request is refused before a socket opens. Its
+//! scheme, host and port name the ORIGIN the pool lends for; its path
+//! and query are sent as written, and its fragment never is. A URL
+//! carrying credentials is refused rather than sent or stripped:
+//! credentials travel in a header a caller names.
+//!
+//! A BODY IS A SEAT WITH A KIND. Text, JSON, a form and raw octets are
+//! sent whole with their length; a STREAM is pulled a piece at a time
+//! and sent chunked, so its size need not be known. Each names its
+//! own `content-type`, unless the caller's headers already name one —
+//! the explicit header wins.
+//!
+//! FOUR DEADLINES. `connect` bounds resolving and connecting, `tls`
+//! the handshake, `first_byte` the wait between the request sent and
+//! the reply's first octet, and `total` everything. A refusal names
+//! the stage whose deadline passed, and a stage that outran `total`
+//! is named `.Total`.
+use @std.url.{Url, UrlError, parse, encoded, default_port}
+use @std.json.{Json, to_text}
+use @std.time.{Duration, secs, now_ms, within}
+use frame.{Method, Limits, limits}
+use http.{Header}
+use client.{
+    Client,
+    Answer,
+    ClientError,
+    Stage,
+    connected,
+    request,
+    chunked_request,
+    chunk,
+    last_chunk,
+    method_word,
+    staged,
+    netted,
+}
+use pool.{Pool, Carrier, pool, origin_of}
+
+/// A request body, by kind.
+export enum Payload {
+    Empty
+    Text(text: string)
+    Json(value: Json)
+    Form(fields: List<FormField>)
+    Octets(bytes: Bytes, kind: string)
+    Stream(next: fn() -> Bytes?, kind: string)
+}
+
+/// One field of a form body, encoded when the body is written.
+export type FormField = { name: string, value: string }
+
+/// The four deadlines of a request.
+export type Timeouts = {
+    connect: Duration = secs(10),
+    tls: Duration = secs(10),
+    first_byte: Duration = secs(30),
+    total: Duration = secs(60),
+}
+
+/// How a request is made: the pool its connection comes from, its
+/// deadlines, the bounds its reply is framed under, and the headers
+/// every request carries.
+export type Options = {
+    pool: Pool = shared_pool(),
+    timeouts: Timeouts = Timeouts {},
+    limits: Limits = limits(),
+    headers: List<Header> = [],
+}
+
+/// The process's pool: every request made with the default options
+/// shares its connections.
+once fn shared_pool() -> Pool { pool() }
+
+/// The default options.
+export fn options() -> Options { Options {} }
+
+export fn get(url: string) -> Result<Answer, ClientError> { fetch(.Get, url, .Empty, options()) }
+
+export fn post(url: string, body: Payload) -> Result<Answer, ClientError> { fetch(.Post, url, body, options()) }
+
+export fn put(url: string, body: Payload) -> Result<Answer, ClientError> { fetch(.Put, url, body, options()) }
+
+export fn patch(url: string, body: Payload) -> Result<Answer, ClientError> { fetch(.Patch, url, body, options()) }
+
+export fn delete(url: string) -> Result<Answer, ClientError> { fetch(.Delete, url, .Empty, options()) }
+
+/// Where a URL sends a request: its origin, the host and port to
+/// connect to, the `host` field, and the target on the request line.
+export type Aim = { origin: string, host: string, port: int, field: string, target: string }
+
+/// `method` to `url` with `body`, under `o`.
+export fn fetch(method: Method, url: string, body: Payload, o: Options) -> Result<
+    Answer,
+    ClientError,
+> {
+    let aim = aimed(url)?
+    let wire = wire_of(method, aim, body, o)?
+    let deadline = now_ms() + o.timeouts.total.ms
+    let answer = within o.timeouts.total { lent(method, wire, aim, body, o, deadline) }
+    overran(answer, deadline)
+}
+
+/// The request as it goes on the wire — whole, or a stream's head — or
+/// the refusal of a word or field the framer would not frame, BEFORE
+/// any socket opens.
+fn wire_of(method: Method, aim: Aim, body: Payload, o: Options) -> Result<Bytes, ClientError> {
+    let word? = method_word(method) else { return .Err(.Unwritable) }
+    let headers = o.headers.concat(kind_of(body, o.headers))
+    let wire = match body {
+        .Stream(_, _) -> chunked_request(word, aim.target, aim.field, headers),
+        .Empty or .Text(_) or .Json(_) or .Form(_) or .Octets(_, _) -> request(word, aim.target, aim.field, headers, octets_of(body)),
+    }
+    let w? = wire else { return .Err(.Unwritable) }
+    .Ok(w)
+}
+
+/// A deadline's stage as `.Total` once the whole request's deadline
+/// has passed: the stage that noticed is not the one that ran out.
+fn overran(r: Result<Answer, ClientError>, deadline: int) -> Result<Answer, ClientError> {
+    match r {
+        .Err(.TimedOut(_)) if now_ms() >= deadline -> .Err(.TimedOut(.Total)),
+        .Err(e) -> .Err(e),
+        .Ok(a) -> .Ok(a),
+    }
+}
+
+/// A URL read into where it aims, or why it aims nowhere this client
+/// can reach.
+export fn aimed(url: string) -> Result<Aim, ClientError> {
+    let u = urled(parse(url))?
+    if u.scheme != "http" { return .Err(.Unspoken(u.scheme)) }
+    let a? = u.authority else { return .Err(.NoHost) }
+    if a.userinfo != null { return .Err(.Userinfo) }
+    let host? = u.normalized().hostname() else { return .Err(.NoHost) }
+    if host.is_empty() { return .Err(.NoHost) }
+    let port = u.port() ?? 80
+    .Ok(
+        Aim {
+            origin: origin_of(u.scheme, host, port),
+            host: host,
+            port: port,
+            field: host_field(u),
+            target: u.target().text() ?? "/",
+        },
+    )
+}
+
+fn urled(r: Result<Url, UrlError>) -> Result<Url, ClientError> {
+    match r { .Ok(u) -> .Ok(u), .Err(e) -> .Err(.Url(e)) }
+}
+
+/// The `host` field (RFC 9110 §7.2): the host as written, bracketed
+/// when an IPv6 address, and the port when one is written that is not
+/// the scheme's own.
+fn host_field(u: Url) -> string {
+    let a = u.authority!
+    let host = a.host.bytes().text() ?? ""
+    let p? = a.port else { return host }
+    if p == default_port(u.scheme) { return host }
+    "${host}:${p}"
+}
+
+/// A connection lent by the pool, the exchange made over it, and the
+/// connection handed back — kept when the reply lets it be, dropped
+/// on any failure.
+fn lent(method: Method, wire: Bytes, aim: Aim, body: Payload, o: Options, deadline: int) -> Result<
+    Answer,
+    ClientError,
+> {
+    let carrier = o.pool.take(aim.origin, () -> dialed(aim, o))?
+    mut client = client_of(carrier)
+    match exchanged(client, method, wire, body, o, deadline) {
+        .Ok(done) -> {
+            o.pool.give(aim.origin, .H1(done.client))
+            .Ok(done.answer)
+        },
+        .Err(e) -> {
+            o.pool.drop(aim.origin, carrier)
+            .Err(e)
+        },
+    }
+}
+
+fn dialed(aim: Aim, o: Options) -> Result<Carrier, ClientError> {
+    .Ok(.H1(staged(.Connect, connected(aim.host, aim.port, o.timeouts.connect, o.limits))?))
+}
+
+fn client_of(c: Carrier) -> Client {
+    match c { .H1(client) -> client }
+}
+
+/// A finished exchange: the connection as it now stands, and the
+/// answer it carried.
+type Exchanged = { client: Client, answer: Answer }
+
+fn exchanged(mut c: Client, method: Method, wire: Bytes, body: Payload, o: Options, deadline: int) -> Result<
+    Exchanged,
+    ClientError,
+> {
+    sent(c, method, wire, body, deadline)?
+    let first = staged(.FirstByte, within o.timeouts.first_byte { c.received() })?
+    let answer = first ?? received_whole(c)?
+    .Ok(Exchanged { client: c, answer: answer })
+}
+
+/// Reads until the reply is whole; the request's own deadline bounds
+/// every one.
+fn received_whole(mut c: Client) -> Result<Answer, ClientError> {
+    let got? = c.received()? else { return received_whole(c) }
+    .Ok(got)
+}
+
+/// The request sent: whole, or a stream's head followed by each piece
+/// as a chunk and the last chunk.
+fn sent(mut c: Client, method: Method, wire: Bytes, body: Payload, deadline: int) -> Result<
+    int,
+    ClientError,
+> {
+    let n = c.sent(method, wire)?
+    match body {
+        .Stream(next, _) -> poured(c, next, deadline),
+        .Empty or .Text(_) or .Json(_) or .Form(_) or .Octets(_, _) -> .Ok(n),
+    }
+}
+
+/// A stream's pieces written as chunks until it answers null, then
+/// the last chunk. The request's deadline is asked between pieces too:
+/// a producer that never ends, into a socket that never fills, would
+/// otherwise never park where a deadline is read.
+fn poured(c: Client, next: fn() -> Bytes?, deadline: int) -> Result<int, ClientError> {
+    mut total = 0
+    mut more = true
+    while more {
+        if now_ms() >= deadline { return .Err(.TimedOut(.Total)) }
+        match next() {
+            piece? -> {
+                netted(c.conn.write(chunk(piece)))?
+                total = total + piece.length
+            }
+            null -> { more = false }
+        }
+    }
+    netted(c.conn.write(last_chunk))?
+    .Ok(total)
+}
+
+/// A whole body's octets.
+fn octets_of(body: Payload) -> Bytes {
+    match body {
+        .Empty or .Stream(_, _) -> empty_octets,
+        .Text(t) -> t.bytes(),
+        .Json(v) -> to_text(v).bytes(),
+        .Form(fields) -> form_of(fields).bytes(),
+        .Octets(b, _) -> b,
+    }
+}
+
+/// `application/x-www-form-urlencoded`: each name and value encoded as
+/// a query parameter, a space as `%20`, the pairs joined by `&`.
+fn form_of(fields: List<FormField>) -> string {
+    [form_pair(f) for f in fields].join("&")
+}
+
+fn form_pair(f: FormField) -> string {
+    let name = encoded(f.name.bytes(), .Param).text() ?? ""
+    let value = encoded(f.value.bytes(), .Param).text() ?? ""
+    "${name}=${value}"
+}
+
+/// The `content-type` a body names, unless the caller's headers name
+/// one already.
+fn kind_of(body: Payload, headers: List<Header>) -> List<Header> {
+    if headers.any(names_content_type(it)) { return [] }
+    let kind? = content_type(body) else { return [] }
+    [Header { name: "content-type", value: kind }]
+}
+
+fn content_type(body: Payload) -> string? {
+    match body {
+        .Empty -> null,
+        .Text(_) -> "text/plain; charset=utf-8",
+        .Json(_) -> "application/json",
+        .Form(_) -> "application/x-www-form-urlencoded",
+        .Octets(_, kind) or .Stream(_, kind) -> kind,
+    }
+}
+
+fn names_content_type(h: Header) -> bool {
+    let octets = h.name.bytes()
+    octets.ieq_at(0, octets.length, content_type_name)
+}
+
+const content_type_name: Bytes = "content-type".bytes()
+const empty_octets: Bytes = "".bytes()
