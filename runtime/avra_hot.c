@@ -68,6 +68,27 @@ void* avra_array_get_owned(void* arr, int64_t i) {
     return v;
 }
 
+// A slot the reader's type proves exists — a declared field, a cell's
+// one slot — so the read is two loads and no bounds test. The guard's
+// dead-box check is left to the counts around it.
+int64_t avra_slot_get(void* box, int64_t i) {
+    CENSUS(g_list_gets++);
+    return ((AvraArray*)box)->data[i];
+}
+
+// The proven read plus its owned +1, fused as `avra_array_get_owned` is.
+void* avra_slot_get_owned(void* box, int64_t i) {
+    CENSUS(g_list_gets++);
+    void* v = (void*)(uintptr_t)((AvraArray*)box)->data[i];
+    Header* h = avra_hdr(v);
+    if (h != 0 && h->kind >= 0) {
+        if (__builtin_expect(avra_rc_guard_on, 0)) { avra_retain_noted(v, h); return v; }
+        CENSUS(g_rc_retains++);
+        h->rc++;
+    }
+    return v;
+}
+
 int64_t avra_array_len(void* arr) {
     return ((AvraArray*)arr)->len;
 }

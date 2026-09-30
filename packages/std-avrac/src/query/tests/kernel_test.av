@@ -123,6 +123,46 @@ spec "query/db" {
                 t.db.cell(Key { family: t.double_family, arg: 0 }) != null
         }
     }
+    given "verification that re-enters or moves the database" {
+        then "a verifier re-asking the key under verification reuses rather than recursing" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let key = Key { family: fam, arg: 0 }
+            let dep = db
+                .family(
+                    (arg: int) -> {
+                        let _ = db.ask(key)
+                        0
+                    },
+                )
+            db.begin(key)
+            db.record_dep(Key { family: dep, arg: 0 })
+            db.settle(key, 0)
+            db.bump()
+            db.ask(key) is .Reuse
+        }
+        then "a revision that moves during the walk leaves the cell stale, so the next ask walks again" {
+            mut db = new_kernel()
+            let walks: Cell<int> = Cell.new(0)
+            let fam = db.family((arg: int) -> 0)
+            let key = Key { family: fam, arg: 0 }
+            let dep = db
+                .family(
+                    (arg: int) -> {
+                        walks.set(walks.get() + 1)
+                        db.bump()
+                        0
+                    },
+                )
+            db.begin(key)
+            db.record_dep(Key { family: dep, arg: 0 })
+            db.settle(key, 0)
+            db.bump()
+            let _ = db.ask(key)
+            let _ = db.ask(key)
+            walks.get() == 2
+        }
+    }
     given "the open stack — `active` is the bracket, seen from outside" {
         then "an unopened key is not active" {
             mut db = new_kernel()
