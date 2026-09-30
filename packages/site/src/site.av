@@ -5,6 +5,8 @@
 //!     build/avra build packages/site && packages/site/src/main    # http://127.0.0.1:8788
 use @std.ui.{View, Shows, column, row, section, heading, text, link, list, item, rows}
 use @std.ui_web.{Screen}
+use @std.ui_gallery.{gallery}
+use gallery.{site_gallery}
 use @std.http.http.{Request, Unrouted, Response, Handler, Respond}
 use @std.http.route.{Route, fixed}
 use @std.http.frame.{Method}
@@ -17,18 +19,19 @@ export server site {
 }
 
 /// One address, its title, and the fn that draws it.
-type Entry = { path: string, title: string, draw: fn() -> dyn View }
+type Address = { path: string, title: string, draw: fn() -> dyn View }
 
 /// The screens, in the order the navigation lists them.
-fn screens() -> List<Entry> {
+fn screens() -> List<Address> {
     [
-        Entry { path: "/", title: "Avra", draw: home },
-        Entry { path: "/why", title: "Why Avra", draw: why },
-        Entry { path: "/principles", title: "Principles", draw: principles },
+        Address { path: "/", title: "Avra", draw: home },
+        Address { path: "/why", title: "Why Avra", draw: why },
+        Address { path: "/principles", title: "Principles", draw: principles },
+        Address { path: "/gallery", title: "Gallery", draw: views },
     ]
 }
 
-fn route(e: Entry) -> Route { fixed(Method.Get, e.path, (_q: Request<Unrouted>) -> screen(e.title, e.draw()).response()) }
+fn route(e: Address) -> Route { fixed(Method.Get, e.path, (_q: Request<Unrouted>) -> screen(e.title, e.draw()).response()) }
 
 /// A screen in the site's chrome.
 fn screen(title: string, body: dyn View) -> Screen { Screen { title: title, body: shell(body) } }
@@ -41,7 +44,7 @@ export layer not_found { q, next ->
 
 // ── Screens ─────────────────────────────────────────────────────
 
-fn home() -> dyn View {
+export fn home() -> dyn View {
     column {
         gap: .L
         heading "Avra is the language machines write software in, and the one compiler that knows the whole program."
@@ -50,7 +53,7 @@ fn home() -> dyn View {
     }
 }
 
-fn why() -> dyn View {
+export fn why() -> dyn View {
     column {
         gap: .M
         heading "Why Avra exists"
@@ -60,17 +63,23 @@ fn why() -> dyn View {
     }
 }
 
-fn principles() -> dyn View {
+fn principles() -> dyn View { principles_of(beliefs()) }
+
+/// The principles screen over these beliefs.
+export fn principles_of(bs: List<Belief>) -> dyn View {
     column {
         gap: .M
         heading "What Avra believes"
         list {
-            rows([b for b in beliefs()])
+            rows([b for b in bs])
         }
     }
 }
 
-fn missing() -> dyn View {
+/// Every site view in every state.
+fn views() -> dyn View { gallery(site_gallery()) }
+
+export fn missing() -> dyn View {
     column {
         heading "Not found"
         text "No screen answers this address."
@@ -92,14 +101,14 @@ fn shell(body: dyn View) -> dyn View {
     }
 }
 
-fn nav_link(e: Entry) -> dyn View {
+fn nav_link(e: Address) -> dyn View {
     link e.title {
         to: e.path
     }
 }
 
 /// Three receipts, each true today.
-fn proofs() -> dyn View {
+export fn proofs() -> dyn View {
     section "Proof points" {
         gap: .S
         text "The compiler is written in Avra and compiles itself, to a fixed point."
@@ -108,9 +117,9 @@ fn proofs() -> dyn View {
     }
 }
 
-type Belief = { name: string, says: string }
+export type Belief = { name: string, says: string }
 
-fn beliefs() -> List<Belief> {
+export fn beliefs() -> List<Belief> {
     [
         Belief {
             name: "Correct on the first try",

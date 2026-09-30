@@ -29,3 +29,37 @@ spec "site" {
         }
     }
 }
+
+// The gallery screen: every view in every state, in the shell.
+spec "site gallery" {
+    given "GET /gallery" {
+        then "it answers 200 and is listed in the navigation" {
+            status_of("GET /gallery HTTP/1.1") == 200 &&
+                document_at("/why").contains("href=\"/gallery\"")
+        }
+        then "it names every view and every case" {
+            [
+                "home",
+                "why",
+                "proofs",
+                "missing",
+                "principles",
+                "as served",
+                "zero beliefs",
+                "one belief",
+                "five beliefs",
+                "pathological belief",
+            ]
+                .all(on_gallery(it))
+        }
+        then "a hostile belief is inert on it" {
+            !document_at("/gallery").contains("<script>alert") &&
+                document_at("/gallery").contains("&lt;script&gt;alert(1)")
+        }
+        then "it ships no script" {
+            !document_at("/gallery").contains("<script")
+        }
+    }
+}
+
+fn on_gallery(name: string) -> bool { document_at("/gallery").contains(name) }
