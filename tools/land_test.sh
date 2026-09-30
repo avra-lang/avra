@@ -1855,6 +1855,18 @@ test_step_cap() {
     if [ "$st" -ne 0 ] && [ "$wall" -lt 15 ] && grep -q "the step slowstep ran past its" "$scratch/cap-run/tool-failure" 2>/dev/null; then ok "step-cap: a step past its cap is a TOOL failure naming it (${wall}s)"; else bad "step-cap: exit $st after ${wall}s, $(cat "$scratch/cap-run/tool-failure" 2>/dev/null)"; fi
 }
 
+# A status is a verdict: 0 only where a verdict said so, a tool failure
+# 3 with NOT LANDED, a run that ended 0 with no verdict 3 too.
+test_exit_verdict() {
+    v() { out="$(sh "$land" --call exit_verdict "$1" "$2" "$3" 2>&1)"; echo "$?|$out"; }
+    [ "$(v 0 1 "")" = "0|" ] && ok "verdict: a landing exits 0" || bad "verdict: landing gave $(v 0 1 "")"
+    case "$(v 1 0 "no Linux Sprite could run the suites (tried: a b)")" in "3|NOT LANDED — tool failure: no Linux Sprite could run the suites (tried: a b)") ok "verdict: a tool failure exits 3 and says NOT LANDED" ;; *) bad "verdict: tool failure gave $(v 1 0 x)" ;; esac
+    case "$(v 0 0 "a Sprite failed")" in "3|NOT LANDED — tool failure:"*) ok "verdict: a tool failure that would exit 0 exits 3" ;; *) bad "verdict: exit-0 tool failure gave $(v 0 0 x)" ;; esac
+    case "$(v 0 0 "")" in "3|NOT LANDED — the run ended with no verdict") ok "verdict: exit 0 with no verdict is 3" ;; *) bad "verdict: no-verdict exit gave $(v 0 0 "")" ;; esac
+    [ "$(v 1 0 "")" = "1|" ] && ok "verdict: a branch's own failure keeps its status" || bad "verdict: branch failure gave $(v 1 0 "")"
+    [ "$(v 0 1 "leftover")" = "0|" ] && ok "verdict: a landing stands over a superseded tool note" || bad "verdict: landing with a note gave $(v 0 1 leftover)"
+}
+
 # The Linux leg's Sprites run idlest first: load per core, then free
 # memory, with a Sprite that did not answer last.
 test_sprites_by_load() {
@@ -1878,6 +1890,20 @@ PROBE
     [ "$got" = "roomy idle " ] && ok "sprite-load: equal load breaks on free memory" || bad "sprite-load: memory tie-break '$got'"
     err="$(AVRA_LAND_SPRITE_PROBE="$probe" sh "$land" --call sprites_by_load busy gone 2>&1 >/dev/null)"
     case "$err" in *"busy load 12.0 on 8 cores, 2000 MB free"*"gone did not answer"*) ok "sprite-load: every answer is printed" ;; *) bad "sprite-load: silent ($err)" ;; esac
+}
+
+# A failed Linux leg is re-run only when the landing re-emitted the seed
+# after the leg synced; a failure over an unmoved seed is the branch's.
+test_linux_rerun_after_reseed() {
+    d="$(git_repo linux-seed)"
+    mkdir -p "$d/bootstrap"
+    printf 'old\n' > "$d/bootstrap/seed.ll"
+    printf 'a.av\n' > "$d/bootstrap/seed.sources"
+    commit_all "$d" "base"
+    if sh "$land" --call linux_saw_old_seed "$d" 1; then bad "linux-seed: re-ran a failure over an unmoved seed"; else ok "linux-seed: a failure over an unmoved seed stands"; fi
+    printf 'new\n' > "$d/bootstrap/seed.ll"
+    if sh "$land" --call linux_saw_old_seed "$d" 1; then ok "linux-seed: a failure after a re-emitted seed re-runs"; else bad "linux-seed: a failure after a re-emitted seed stood"; fi
+    if sh "$land" --call linux_saw_old_seed "$d" 0; then bad "linux-seed: re-ran a passing leg"; else ok "linux-seed: a passing leg is never re-run"; fi
 }
 
 # A landing that reached the compiler leaves main's checkout holding the
@@ -2426,9 +2452,11 @@ run_test test_warm_gate_override_passes
 run_test test_linux_gate_suites_run_in_parallel
 run_test test_linux_gate_cap_reads_memory
 run_test test_refresh_main_compiler
+run_test test_exit_verdict
 run_test test_sprites_by_load
 run_test test_linux_watchdog
 run_test test_step_cap
+run_test test_linux_rerun_after_reseed
 run_test test_linux_gate_runs_warm
 run_test test_linux_gate_starts_before_the_builds
 run_test test_linux_gate_failure_refuses_the_landing

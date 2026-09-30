@@ -84,6 +84,9 @@
 # every moved baseline together — at most one per landing.
 set -eu
 verdict_ok=0
+# THE LANDING POOL: every Sprite no session keeps for itself, the idlest
+# chosen per leg (sprites_by_load); PERF's quiet census box is never in it.
+land_sprite_pool="avra-idioms-pay avra-comptime avra-phase-d avra-cores"
 
 LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
 export LLVM_PREFIX
@@ -859,7 +862,7 @@ linux_gate_step() {
     wt="$1"
     shift
     pkgs="$*"
-    sprites="$(sprites_by_load ${AVRA_LAND_SPRITE:-avra-idioms-pay avra-comptime})"
+    sprites="$(sprites_by_load ${AVRA_LAND_SPRITE:-$land_sprite_pool})"
     sprite_build="${AVRA_LAND_SPRITE_BUILD:-$tools_dir/sprite-build.sh}"
     # `-o avra` skips avra's OWN prerequisites too (libavra_runtime.a
     # among them, COMPILER_OBJS) — `make objects` first, whether or
@@ -1607,8 +1610,17 @@ linux_launch() {
         return 0
     fi
     linux_suffix="$4"
+    linux_wt="$1"
     ( AVRA_LAND_PARALLEL_SLOT=1 heavy "linux$4" sh "$self" --call linux_gate_step "$1" $linux_pkgs ) &
     linux_pid=$!
+}
+
+# Whether a failed Linux leg ran against a seed this landing has since
+# re-emitted: the leg synced the tree before seed-check moved the seed,
+# so a Sprite whose compiler cannot read HEAD had no seed that could.
+linux_saw_old_seed() {
+    [ "$2" -ne 0 ] || return 1
+    ! git -C "$1" diff --quiet -- bootstrap/seed.ll bootstrap/seed.sources 2>/dev/null
 }
 
 # The Linux gate's verdict, once the local checks are done; a local
@@ -1623,6 +1635,13 @@ linux_collect() {
     lst=0
     wait "$linux_pid" || lst=$?
     grep -h '^land-linux: ' "$(log_of "linux$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
+    if linux_saw_old_seed "$linux_wt" "$lst"; then
+        echo "land: linux: the leg ran before the seed was re-emitted — once more, with the new seed" >&2
+        rm -f "$scratch/tool-failure"
+        lst=0
+        AVRA_LAND_PARALLEL_SLOT=1 heavy "linux-reseeded$linux_suffix" sh "$self" --call linux_gate_step "$linux_wt" $linux_pkgs || lst=$?
+        grep -h '^land-linux: ' "$(log_of "linux-reseeded$linux_suffix")" 2>/dev/null | sed 's/^land-linux: /land: linux: /' >&2
+    fi
     return "$lst"
 }
 
