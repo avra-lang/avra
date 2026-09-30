@@ -43,12 +43,14 @@ fn same_name(a: string, b: string) -> bool {
 
 /// Why a fetch did not answer: the network, a reply the framer
 /// refuses (with the status the refusal names, as a server would
-/// answer it), the peer closing before a reply, or the deadline.
+/// answer it), the peer closing before a reply, the deadline, or a
+/// pool with every connection to the origin already lent.
 export enum ClientError {
     Net(e: NetError)
     Refused(why: Refusal)
     Closed
     TimedOut
+    Exhausted(origin: string, per_host: int)
 }
 
 impl Error for ClientError {
@@ -58,15 +60,17 @@ impl Error for ClientError {
             .Refused(why) -> info("http.refused", "the reply breaks a framing law and would earn ${status_of(why)}"),
             .Closed -> info("http.closed", "the peer closed before a reply"),
             .TimedOut -> info("http.timed_out", "no reply within the deadline"),
+            .Exhausted(origin, n) -> info("http.exhausted", "all ${n} connections to ${origin} are lent"),
         }
     }
 
     fn cause() -> dyn Error? {
-        match self { .Net(e) -> e, .Refused(_) or .Closed or .TimedOut -> null }
+        match self { .Net(e) -> e, .Refused(_) or .Closed or .TimedOut or .Exhausted(_, _) -> null }
     }
 }
 
-/// A connection with a request in flight.
+/// A connection with a request in flight. `persists` is what the last
+/// reply said of the connection (RFC 9112 §9.3).
 export type Client = {
     conn: Conn,
     asked: Method,
@@ -75,6 +79,7 @@ export type Client = {
     reply: Reply?,
     decoder: Chunker?,
     limits: Limits,
+    persists: bool = false,
 }
 
 /// A net result as the client's: the failure wears `.Net`.
@@ -87,18 +92,21 @@ export fn connected(host: string, port: int, timeout: Duration, limits: Limits) 
     Client,
     ClientError,
 > {
-    let c = netted(connect(host, port, timeout))?
-    .Ok(
-        Client {
-            conn: c,
-            asked: .Get,
-            buf: "".bytes(),
-            scanned: 0,
-            reply: null,
-            decoder: null,
-            limits: limits,
-        },
-    )
+    .Ok(client_over(netted(connect(host, port, timeout))?, limits))
+}
+
+/// A client over a connection already made — a socket, or a stream a
+/// transport layered on one.
+export fn client_over(c: Conn, limits: Limits) -> Client {
+    Client {
+        conn: c,
+        asked: .Get,
+        buf: "".bytes(),
+        scanned: 0,
+        reply: null,
+        decoder: null,
+        limits: limits,
+    }
 }
 
 /// A request on the wire: the line, `host`, the fields, the body's
@@ -225,6 +233,7 @@ impl Client {
         self.scanned = 0
         self.reply = null
         self.decoder = null
+        self.persists = r.keep_alive && !(r.body is .UntilClose)
         .Ok(
             Answer {
                 status: r.status,
@@ -232,6 +241,13 @@ impl Client {
                 body: body,
             },
         )
+    }
+
+    /// Whether another request may follow on this connection: the last
+    /// reply kept it, it was read to its end, and nothing arrived past
+    /// it — a byte no request asked for means the framing is lost.
+    fn reusable() -> bool {
+        self.persists && self.reply == null && self.decoder == null && self.buf.is_empty()
     }
 
     fn close() -> Result<int, NetError> { self.conn.close() }
