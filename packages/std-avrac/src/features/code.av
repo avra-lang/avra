@@ -31,6 +31,7 @@ use core.{
     some_list,
     hole_name,
     CompClause,
+    body_behavior,
 }
 use features.{
     FileView,
@@ -165,6 +166,32 @@ impl Code {
             .Expr(id) -> match self.of.view.store.expr(id) { .StrLit(v) -> v, _ -> null },
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
         }
+    }
+
+    /// A text literal's leading text — a plain literal's value, or an
+    /// interpolated one's run before its first hole — null for every
+    /// other seat.
+    fn text_head() -> string? { self.str_lit_value() ?? self.text_body_head() }
+
+    fn text_body_head() -> string? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) {
+                .Body(word, parts, _, _) -> if body_behavior(word) is .Text {
+                    parts.first()
+                } else {
+                    null
+                },
+                _ -> null,
+            },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// Every name this node's FILE calls a fn by, once per call.
+    fn file_callees() -> List<string> {
+        flatten(
+            [some_list(self.of.view.store.callee_name(e)) for e in self.of.view.store.expr_ids()],
+        )
     }
 
     /// Whether this node is a method call (`subject.name(args)`) —

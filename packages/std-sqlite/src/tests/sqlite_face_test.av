@@ -3,11 +3,12 @@
 //! Every case cites the trap it defends against, by number, from the
 //! semantics research. The behaviour asserted is SQLite's DOCUMENTED
 //! behaviour, never this driver's preference.
-use @std.io.{exists, write_text}
+use @std.io.{exists, write_text, make_dirs}
 use @std.sqlite.{version}
 use @std.sqlite.open.{Db}
 use @std.sqlite.error.{SqlError}
 use @std.sqlite.sql.{sql, Row, SqlValue}
+use @std.time.{now_ns}
 
 // ── The fixtures ────────────────────────────────────────────────
 
@@ -32,12 +33,20 @@ fn face_empties() -> Result<Db, SqlError> {
     db
 }
 
-/// A file that is not a database. Answers its path.
-fn face_not_a_database() -> string {
-    write_text("/tmp/avra-sqlite-not-a-db.db", "this is not a database") catch "/tmp/avra-sqlite-not-a-db.db"
+/// One directory per run, so no earlier run's files answer for this one.
+once fn face_base() -> string {
+    let d = "/tmp/avra-sqlite-face-test/${now_ns()}"
+    let _ = make_dirs(d)
+    d
 }
 
-fn face_absent_path() -> string { "/tmp/avra-sqlite-absent.db" }
+/// A file that is not a database. Answers its path.
+fn face_not_a_database() -> string {
+    let path = "${face_base()}/not-a-db.db"
+    write_text(path, "this is not a database") catch path
+}
+
+fn face_absent_path() -> string { "${face_base()}/absent.db" }
 
 // ── The projections a `then` reads through ──────────────────────
 
