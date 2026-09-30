@@ -9,7 +9,7 @@
 use @std.meta.{derive}
 use @std.time.{now_ns}
 use @std.io.{read_text, env}
-use @std.text.{admits}
+use @std.text.{admits, parse_int}
 use @std.json.{parse}
 use @std.validate.{
     Decode,
@@ -97,13 +97,29 @@ fn timed(label: string, n: int, run: fn(int) -> int) -> int {
     r
 }
 
+/// One row run `n` times and nothing printed — what `instructions.sh`
+/// counts under callgrind.
+fn counted(row: string, n: int, good: string, bad: string) -> int {
+    when {
+        row == "parse" -> parse_only(good, n)
+        row == "valid" -> direct(good, n)
+        row == "refused" -> direct(bad, n)
+        _ -> 0
+    }
+}
+
 let dir = env("AVRA_BENCH_PAYLOADS") ?? "tools/bench/validate/payloads"
 let good = read_text("${dir}/valid.json") catch ""
 let bad = read_text("${dir}/refused.json") catch ""
-let r1 = timed("parse only (valid)", 200000, (n) -> parse_only(good, n))
-let r2 = timed("to Value (valid)", 200000, (n) -> to_value(good, n))
-let r3 = timed("decode + rules (valid)", 200000, (n) -> direct(good, n))
-let r4 = timed("decode + rules (refused, every rule)", 200000, (n) -> direct(bad, n))
-let r5 = timed("tree: Value + decode + rules (valid)", 200000, (n) -> full(good, n))
-let r6 = timed("tree: Value + decode + rules (refused)", 200000, (n) -> full(bad, n))
-"${r1 + r2 + r3 + r4 + r5 + r6}"
+let row = env("ROW")
+if row != null {
+    println("${counted(row!, parse_int(env("N") ?? "0") ?? 0, good, bad)}")
+} else {
+    let r1 = timed("parse only (valid)", 200000, (n) -> parse_only(good, n))
+    let r2 = timed("to Value (valid)", 200000, (n) -> to_value(good, n))
+    let r3 = timed("decode + rules (valid)", 200000, (n) -> direct(good, n))
+    let r4 = timed("decode + rules (refused, every rule)", 200000, (n) -> direct(bad, n))
+    let r5 = timed("tree: Value + decode + rules (valid)", 200000, (n) -> full(good, n))
+    let r6 = timed("tree: Value + decode + rules (refused)", 200000, (n) -> full(bad, n))
+    println("${r1 + r2 + r3 + r4 + r5 + r6}")
+}

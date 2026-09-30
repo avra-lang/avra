@@ -167,6 +167,17 @@ int main(int argc, char **argv) {
     char *good = slurp(p, &gn);
     snprintf(p, sizeof p, "%s/refused.json", dir);
     char *bad = slurp(p, &bn);
+    const char *row = getenv("ROW");
+    if (row) {
+        int k = getenv("N") ? atoi(getenv("N")) : 0;
+        for (int i = 0; i < k; i++) {
+            if (!strcmp(row, "parse")) { yyjson_doc *d = yyjson_read(good, gn, 0); sink += d != 0; yyjson_doc_free(d); }
+            else if (!strcmp(row, "valid")) sink += issues(good, gn);
+            else if (!strcmp(row, "refused")) sink += issues(bad, bn);
+        }
+        printf("%ld\n", (long)sink);
+        return 0;
+    }
     int n = 200000;
     timed("parse only (valid)", n, good, gn, 1);
     timed("decode + rules (valid)", n, good, gn, 0);

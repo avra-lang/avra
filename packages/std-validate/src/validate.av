@@ -26,16 +26,20 @@
 //! ```
 use @std.text.{codepoint_count, admits}
 use issue.{Issue, Issues, root}
-use value.{Value, quoted}
+use value.{Value, quoted_each}
 
 /// What a rule fails with: its words, a whole issue, or several. The
 /// framework reads each the same way.
 export trait Refusal {
     fn issues() -> List<Issue>
+    /// The words alone, when the refusal is nothing more — one issue
+    /// the framework builds whole, never a list of one.
+    fn said() -> string? { null }
 }
 
 impl Refusal for string {
     fn issues() -> List<Issue> { [Issue { path: root(), rule: "", message: self }] }
+    fn said() -> string? { self }
 }
 
 impl Refusal for Issue {
@@ -176,7 +180,9 @@ fn suggested(v: string, options: List<string>) -> Value? {
 /// Within a few edits; lengths further apart than that are never
 /// measured, so a huge value costs nothing here.
 fn near(v: string, option: string) -> bool {
-    within(v.bytes(), option.bytes(), 0, 0, if v.length < 6 { 1 } else { 2 })
+    let most = if v.length < 6 { 1 } else { 2 }
+    let apart = v.length - option.length
+    apart <= most && apart >= 0 - most && within(v.bytes(), option.bytes(), 0, 0, most)
 }
 
 /// Whether `a` from `i` becomes `b` from `j` in `k` edits or fewer —
@@ -216,7 +222,7 @@ fn same_as(field: string?) -> string {
 }
 
 fn choices(options: List<string>) -> string {
-    "must be one of ${[quoted(o) for o in options].join(", ")}"
+    "must be one of ${quoted_each(options)}"
 }
 
 fn measured(min: int, max: int?, unit: string) -> string {

@@ -1,7 +1,7 @@
-// The direct reader against the treed path: `T.from_json(text)` must
+// The direct reader against the tree path: `T.from_json(text)` must
 // answer what `T.decode(from_json(text)?)` answers — the value, or
 // every issue with its path, rule, message, what was received and the
-// fix, in the same order — over generated gen_payloads: every field shape,
+// fix, in the same order — over generated payloads: every field shape,
 // out of order, missing, repeated, unknown, escaped, mistyped, null,
 // deep, truncated at every byte, and text that is not JSON at all.
 use @std.meta.{derive}
@@ -53,6 +53,21 @@ type Form = {
     grid: List<List<int>> = [],
 }
 
+/// Fields named for the words the derive's generated code speaks.
+@derive(Decode)
+type Words = {
+    depth: int,
+    required: bool = false,
+    secret: string = "",
+    at: int = 0,
+    got: string? = null,
+    made: int = 0,
+    d: int = 0,
+    s: int = 0,
+    o: int = 0,
+    @length(min: 2) @matches(secret, "secret") entry: string = "",
+}
+
 @derive(Decode)
 enum Sort {
     A
@@ -66,7 +81,7 @@ type Odds = {
     names: List<Nick?> = [],
 }
 
-/// A decode as text: the value's fields, or the whole_form report.
+/// A decode as text: the value's fields, or the whole report.
 fn told(r: Result<Form, Issues>) -> string {
     match r {
         .Ok(v) -> "ok ${v.name} ${v.age} ${v.tags.length} ${v.inner.x} ${v.inner.flag} ${v.rows.length} ${v.note ?? "-"} ${v.pin} ${v.pin2} ${v.ratio} ${v.grid.length}",
@@ -83,12 +98,17 @@ fn treed(text: string, limits: Limits) -> Result<Form, Issues> {
     Form.decode(v, Coercion.Strict, limits)
 }
 
+fn treed_words(text: string) -> Result<Words, Issues> {
+    let v = from_json(text)?
+    Words.decode(v)
+}
+
 fn treed_odd(text: string) -> Result<Odds, Issues> {
     let v = from_json(text)?
     Odds.decode(v)
 }
 
-/// The gen_payloads where the two paths disagree, each with both answers.
+/// The payloads where the two paths disagree, each with both answers.
 fn disagreements(texts: List<string>, limits: Limits) -> string {
     ["${t}\n  direct: ${told(Form.from_json(t, Coercion.Strict, limits))}\n  tree:   ${told(treed(t, limits))}" for t in texts if told(Form.from_json(t, Coercion.Strict, limits)) != told(treed(t, limits))]
         .join("\n\n")
@@ -97,6 +117,27 @@ fn disagreements(texts: List<string>, limits: Limits) -> string {
 fn odd_disagreements(texts: List<string>) -> string {
     ["${t}\n  direct: ${told_odd(Odds.from_json(t))}\n  tree:   ${told_odd(treed_odd(t))}" for t in texts if told_odd(Odds.from_json(t)) != told_odd(treed_odd(t))]
         .join("\n\n")
+}
+
+fn told_words(r: Result<Words, Issues>) -> string {
+    match r {
+        .Ok(v) -> "ok ${v.depth} ${v.required} ${v.secret} ${v.at} ${v.got ?? "-"} ${v.made} ${v.d} ${v.s} ${v.o} ${v.entry}",
+        .Err(e) -> "refused ${e.count()}\n${e.report()}",
+    }
+}
+
+fn words_disagreements(texts: List<string>) -> string {
+    ["${t}\n  direct: ${told_words(Words.from_json(t))}\n  tree:   ${told_words(treed_words(t))}" for t in texts if told_words(Words.from_json(t)) != told_words(treed_words(t))]
+        .join("\n\n")
+}
+
+/// A valid payload broken at every byte: that byte dropped, a quote
+/// put before it, a brace in its place.
+fn mutants(text: string) -> List<string> {
+    let dropped = [text.substring(0, i) + text.substring(i + 1, text.length) for i in 0..text.length]
+    let quoted = [text.substring(0, i) + "\"" + text.substring(i, text.length) for i in 0..text.length]
+    let braced = [text.substring(0, i) + "}" + text.substring(i + 1, text.length) for i in 0..text.length]
+    dropped.concat(quoted).concat(braced)
 }
 
 // ── the generator ───────────────────────────────────────────────
@@ -152,7 +193,7 @@ const gen_scalars: List<string> = [
     "{\"a\": 1}",
 ]
 
-/// Tokens the treed refuses as text, so the direct reader must step aside.
+/// Tokens the tree refuses as text, so the direct reader must step aside.
 const gen_broken: List<string> = [
     "9223372036854775808",
     "1.5",
@@ -226,7 +267,7 @@ fn hex_escape(c: int) -> string {
     "00${digits.substring(c / 16, c / 16 + 1)}${digits.substring(c % 16, c % 16 + 1)}"
 }
 
-/// One record gen_payload: most fields, gen_shuffled, some twice, some gone,
+/// One record payload: most fields, shuffled, some twice, some gone,
 /// spaced unevenly.
 fn gen_payload(mut d: Dice) -> string {
     let fields = [f for f in gen_keys if d.roll(8) != 0]
@@ -254,7 +295,7 @@ fn gen_payloads(seed: int, n: int) -> List<string> {
     [gen_payload(d) for _i in 0..n]
 }
 
-/// A valid gen_payload cut at every byte.
+/// A valid payload cut at every byte.
 fn cut_at_every_byte(text: string) -> List<string> {
     [text.substring(0, i) for i in 0..text.length]
 }
@@ -300,6 +341,37 @@ spec "std/validate — the direct reader answers what the tree does" {
                     nested_form(400),
                 ],
                 Limits {},
+            ) == ""
+        }
+    }
+    given "a payload broken at every byte" {
+        then "every mutant agrees" { disagreements(mutants(whole_form), Limits {}) == "" }
+    }
+    given "keys at their edges" {
+        then "an empty key, a key one byte off, an escaped name beside the plain one" {
+            disagreements(
+                [
+                    "{\"\": 1, \"name\": \"ada\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\"}",
+                    "{\"namf\": \"ada\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\"}",
+                    "{\"name\": \"ada\", \"n\\u0061me\": \"bob\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\"}",
+                    "{\"NAME\": \"ada\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\"}",
+                    "{\"日本\": 1, \"name\": \"ada\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\"}",
+                ],
+                Limits {},
+            ) == ""
+        }
+    }
+    given "fields named as the generated code's own words" {
+        then "each reads as itself, a sibling rule before and after its sibling" {
+            words_disagreements(
+                [
+                    "{\"depth\": 1}",
+                    "{\"depth\": 1, \"required\": true, \"secret\": \"xy\", \"at\": 2, \"got\": \"g\", \"made\": 3, \"d\": 4, \"s\": 5, \"o\": 6, \"entry\": \"xy\"}",
+                    "{\"entry\": \"xy\", \"secret\": \"xy\", \"depth\": 1}",
+                    "{\"entry\": \"x\", \"secret\": \"xy\", \"depth\": 1}",
+                    "{\"entry\": \"xz\", \"depth\": 1, \"secret\": \"xy\"}",
+                    "{\"secret\": 5}",
+                ],
             ) == ""
         }
     }

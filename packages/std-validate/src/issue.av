@@ -15,13 +15,16 @@ export enum Step {
 }
 
 /// A place inside a value, from its root: `items[3].qty`,
-/// `payment.Card.exp`, `meta["x-y"]`.
-export type Path = { steps: List<Step> }
+/// `payment.Card.exp`, `meta["x-y"]`. Held nearest-first — `up` walks
+/// from the place back to the root — so a container filing what its
+/// readers found under its own step puts that step on the end, in
+/// place.
+export type Path = { up: List<Step> }
 
 /// The value itself — the path with no steps.
-export fn root() -> Path {
-    Path { steps: [] }
-}
+export fn root() -> Path { the_root }
+
+const the_root: Path = Path { up: [] }
 
 impl Path {
     fn field(name: string) -> Path { self.then(Step.Field(name)) }
@@ -31,19 +34,26 @@ impl Path {
 
     /// This path, read from `prefix` rather than the root.
     fn under(prefix: Path) -> Path {
-        Path { steps: prefix.steps.concat(self.steps) }
+        if prefix.up.is_empty() { return self }
+        Path { up: self.up.concat(prefix.up) }
     }
 
+    /// One step further from the root.
     fn then(s: Step) -> Path {
-        Path { steps: self.steps.concat([s]) }
+        // pinned: `concat` may take its argument's box, and a field of `self` is a place
+        let up = self.up
+        Path { up: [s].concat(up) }
     }
+
+    /// The steps from the root down.
+    fn steps() -> List<Step> { [self.up[self.up.length - 1 - j] for j in 0..self.up.length] }
 
     /// How many steps down from the root.
-    fn depth() -> int { self.steps.length }
+    fn depth() -> int { self.up.length }
 
     /// The path as code spells it; the root is empty.
     fn text() -> string {
-        [spelled(j, s) for j, s in self.steps].join("")
+        [spelled(j, s) for j, s in self.steps()].join("")
     }
 }
 
@@ -109,7 +119,7 @@ fn widest(texts: List<string>) -> int {
 }
 
 fn shown_path(p: Path) -> string {
-    if p.steps.is_empty() { "(value)" } else { p.text() }
+    if p.up.is_empty() { "(value)" } else { p.text() }
 }
 
 // ── voices ──────────────────────────────────────────────────────

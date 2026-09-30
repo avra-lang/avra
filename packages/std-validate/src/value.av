@@ -35,7 +35,7 @@ impl Value {
     /// The value a path reaches from here, when it reaches one.
     fn at(p: Path) -> Value? {
         mut v = self
-        for s in p.steps {
+        for s in p.steps() {
             let next? = v.step(s) else { return null }
             v = next
         }
@@ -79,6 +79,14 @@ fn shown_entry(e: Entry) -> string {
 
 /// Text in double quotes, the quote and the backslash escaped.
 export fn quoted(s: string) -> string {
-    let plain = !s.contains("\\") && !s.contains("\"")
-    "\"${if plain { s } else { s.replace("\\", "\\\\").replace("\"", "\\\"") }}\""
+    "\"${if escapes(s) { s.replace("\\", "\\\\").replace("\"", "\\\"") } else { s }}\""
 }
+
+/// Each text quoted, joined by a comma — one join when none needs an
+/// escape.
+export fn quoted_each(xs: List<string>) -> string {
+    if escapes(xs.join("")) { return [quoted(x) for x in xs].join(", ") }
+    "\"${xs.join("\", \"")}\""
+}
+
+fn escapes(s: string) -> bool { s.contains("\\") || s.contains("\"") }

@@ -24,7 +24,7 @@ use @std.json.{space, plain_end, string_end, text_of, number_end, int_end, int_o
 use @std.text.{parse_float}
 use decode.{Decoding, Decoder, Slot, Coercion, Limits, decode, answered}
 use formats.{from_json, json_value}
-use issue.{Issues, Path, Step, root}
+use issue.{Issue, Issues, Path, Step, root}
 use value.{Value}
 use validate.{Refusal}
 
@@ -85,8 +85,11 @@ impl Decoding {
     /// what an issue shows it received.
     fn value_from(at: int) -> Value {
         let b = self.bytes
-        let plain = if b.at(at) == 34 { plain_end(b, at) } else { -1 }
+        let c = b.at(at)
+        let plain = if c == 34 { plain_end(b, at) } else { -1 }
         if plain >= 0 { return Value.Text(self.text.substring(at + 1, plain - 1)) }
+        let digits = if c == 45 || is_digit(c) { int_end(b, at) } else { -1 }
+        if digits >= 0 { return Value.Int(int_of(self.text, b, at, digits)) }
         json_value(value_at(self.text, at))
     }
 
@@ -264,48 +267,32 @@ impl Decoding {
     /// place `k` in its container's order.
     mut fn stepped(mark: int, k: int, s: Step) {
         for i in mark..self.count() {
-            self.issues[i].path = Path { steps: [s].concat(self.issues[i].path.steps) }
+            if self.issues[i].path.up.is_empty() { self.issues[i].path = Path { up: [s] } } else { self.issues[i].path.up.push(s) }
             self.order.set(i, k)
         }
     }
 
-    /// The issues from `from` on, stably in their record's order.
+    /// The issues from `from` on, stably in their record's order — an
+    /// insertion in place, since only a field read out of turn moves.
     mut fn sorted(from: int) {
-        let n = self.count()
-        if in_order(self.order, from, n) { return }
-        let places = by_order(self.order, from, n)
-        let issues = [self.issues[i] for i in places]
-        let order = [self.order[i] for i in places]
-        for j, i in issues {
-            self.issues.set(from + j, i)
-            self.order.set(from + j, order[j])
+        for i in from + 1..self.count() {
+            let key = self.order[i]
+            let issue = self.issues[i]
+            mut j = i
+            while j > from && self.order[j - 1] > key {
+                self.issues.set(j, self.issues[j - 1])
+                self.order.set(j, self.order[j - 1])
+                j = j - 1
+            }
+            if j < i {
+                self.issues.set(j, issue)
+                self.order.set(j, key)
+            }
         }
     }
 }
 
 fn is_digit(c: int) -> bool { c >= 48 && c <= 57 }
-
-fn in_order(order: List<int>, from: int, n: int) -> bool {
-    mut i = from + 1
-    while i < n && order[i - 1] <= order[i] { i = i + 1 }
-    i >= n
-}
-
-/// The places from `from` to `n`, stably sorted by their order —
-/// insertion, since only a field read out of turn moves.
-fn by_order(order: List<int>, from: int, n: int) -> List<int> {
-    mut places: List<int> = []
-    for i in from..n {
-        mut j = places.length
-        places.push(i)
-        while j > 0 && order[places[j - 1]] > order[i] {
-            places.set(j, places[j - 1])
-            j = j - 1
-        }
-        places.set(j, i)
-    }
-    places
-}
 
 /// A list at the cursor, each item read by `each`. Longer than the
 /// bound steps aside, so the tree path refuses it before an item is
@@ -372,8 +359,12 @@ export fn ruled_json<T, E: Refusal>(
     match verdict {
         .Ok(v) -> v,
         .Err(e) -> {
-            let s = Slot { value: d.value_from(at), at: root(), hidden: secret }
-            for i in e.issues() { d.refused(s, rule, i) }
+            let v = if secret { null } else { d.value_from(at) }
+            let words? = e.said() else {
+                for i in e.issues() { d.refusal(root(), v, secret, rule, i) }
+                return null
+            }
+            d.say(Issue { path: root(), rule: rule, message: words, received: v })
             null
         },
     }

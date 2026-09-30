@@ -110,6 +110,20 @@ fn timed(label: &str, n: u32, f: impl Fn() -> usize) -> usize {
 fn main() {
     let good = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../payloads/valid.json")).unwrap();
     let bad = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../payloads/refused.json")).unwrap();
+    if let Ok(row) = std::env::var("ROW") {
+        let n: u32 = std::env::var("N").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let mut sink = 0;
+        for _ in 0..n {
+            sink += match row.as_str() {
+                "parse" => serde_json::from_str::<serde_json::Value>(black_box(&good)).is_ok() as usize,
+                "valid" => issues::<Signup>(black_box(&good)),
+                "refused" => issues::<SignupOpen>(black_box(&bad)),
+                _ => 0,
+            };
+        }
+        println!("{}", black_box(sink));
+        return;
+    }
     let n = 200_000;
     let mut sink = 0;
     sink += timed("parse only (valid)", n, || serde_json::from_str::<serde_json::Value>(black_box(&good)).is_ok() as usize);
