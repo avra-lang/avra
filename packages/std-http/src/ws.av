@@ -486,10 +486,7 @@ export fn accepted<P>(q: Request<P>, lim: WsLimits, session: fn(Socket) -> void)
     let key = q.header("sec-websocket-key") ?? ""
     if !opening(q) || !base64_of_length(key, 16) { return text(400, "not a WebSocket opening handshake") }
     if q.header("sec-websocket-version") != "13" {
-        return Response {
-            status: 426,
-            headers: [websocket_upgrade, Header { name: "sec-websocket-version", value: "13" }],
-        }
+        return Response { status: 426, headers: [websocket_upgrade, websocket_version] }
     }
     Response {
         status: 101,
@@ -502,6 +499,9 @@ export fn accepted<P>(q: Request<P>, lim: WsLimits, session: fn(Socket) -> void)
 
 /// The `upgrade` field every answer to an opening names.
 const websocket_upgrade: Header = Header { name: "upgrade", value: "websocket" }
+
+/// The protocol version both ends of an opening name (RFC 6455 §4.1).
+const websocket_version: Header = Header { name: "sec-websocket-version", value: "13" }
 
 /// Whether `q` asks to open a WebSocket: a GET of HTTP/1.1 asking to
 /// upgrade to `websocket` through its `connection` field.
@@ -554,7 +554,7 @@ fn opening_fields(key: string) -> List<Header> {
         websocket_upgrade,
         Header { name: "connection", value: "Upgrade" },
         Header { name: "sec-websocket-key", value: key },
-        Header { name: "sec-websocket-version", value: "13" },
+        websocket_version,
     ]
 }
 

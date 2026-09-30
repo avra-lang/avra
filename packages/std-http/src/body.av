@@ -118,7 +118,7 @@ fn inflow(conn: dyn Transport?, buf: Bytes, at: int, left: Left, lim: Limits, pa
         buf: buf,
         at: at,
         left: left,
-        owed: nothing_owed(),
+        owed: nothing(),
         told: false,
         patience: patience,
         limits: lim,
@@ -126,8 +126,6 @@ fn inflow(conn: dyn Transport?, buf: Bytes, at: int, left: Left, lim: Limits, pa
         failure: null,
     }
 }
-
-fn nothing_owed() -> Bytes { "".bytes() }
 
 impl Body {
     /// The next piece, the calling task parked until it arrives; null
@@ -141,13 +139,18 @@ impl Body {
     /// a declared length past it is refused before ANY byte is, and no
     /// `100 Continue` goes out.
     fn gathered() -> Result<Bytes, BodyError> {
-        match self { .Empty -> .Ok(nothing_owed()), .Flowing(flow) -> all_of(flow) }
+        match self { .Empty -> .Ok(nothing()), .Flowing(flow) -> all_of(flow) }
     }
 
     /// The rest of the body as text — absent when it is not text, or
     /// could not be gathered (`gathered` says why).
-    fn text() -> string? {
-        match self.gathered() { .Ok(b) -> b.text(), .Err(_) -> null }
+    fn text() -> string? { self.octets()?.text() }
+
+    /// The rest of the body, whole — absent when it could not be
+    /// gathered (`gathered` says why). A body that broke is answered by
+    /// the server with the law it broke, whatever its handler answers.
+    fn octets() -> Bytes? {
+        match self.gathered() { .Ok(b) -> b, .Err(_) -> null }
     }
 
     /// The failure that ended this body, or absent while it has none.
@@ -190,7 +193,7 @@ impl Body {
     /// What the connection read past this body: the next message's
     /// first octets. Asked once the body is finished.
     fn tail() -> Bytes {
-        match self { .Empty -> nothing_owed(), .Flowing(flow) -> tail_of(flow.get()) }
+        match self { .Empty -> nothing(), .Flowing(flow) -> tail_of(flow.get()) }
     }
 }
 
@@ -293,7 +296,7 @@ fn refill(f: Inflow) -> Inflow {
             .Err(e) -> { return f with { failure: net_error(e) } },
         }
     }
-    let kept = f with { owed: nothing_owed(), told: f.told || !f.owed.is_empty() }
+    let kept = f with { owed: nothing(), told: f.told || !f.owed.is_empty() }
     match listened(c, f.patience) {
         .Ok(b) -> if b == null { ended(kept) } else { rebased(kept, b!) },
         .Err(e) -> kept with { failure: net_error(e) },
@@ -353,7 +356,7 @@ fn net_error(e: WireError) -> BodyError {
 fn all_of(flow: Cell<Inflow>) -> Result<Bytes, BodyError> {
     let f = flow.get()
     if too_long(f) { return too_large(flow) }
-    mut all = nothing_owed()
+    mut all = nothing()
     while true {
         let more? = next_piece(flow)? else { return .Ok(all) }
         if all.length + more.length > f.limits.body { return too_large(flow) }

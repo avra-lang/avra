@@ -16,7 +16,6 @@
 use @std.http.frame.{Method}
 use @std.http.http.{Request, Unrouted, Response, Header, text}
 use @std.http.route.{Route, fixed}
-use @std.http.body.{Body}
 use @std.text.{codepoints, from_codepoints}
 use wire.{ActionInfo, ActionRefusal, line_of}
 use form.{form_fields}
@@ -47,16 +46,10 @@ fn submitted<R>(
     q: Request<Unrouted>,
 ) -> Response {
     if !is_form(q) { return text(415, unsupported()) }
-    let fields? = form_of(q.body) else { return text(400, unreadable_body()) }
+    let octets? = q.body.octets() else { return text(400, unreadable_body()) }
+    let fields? = form_fields(octets) else { return text(400, unreadable_body()) }
     let key = identity(fields)
     remembered(receipts, key) ?? attempted(info, call, receipts, key, fields)
-}
-
-/// The body gathered and read as form fields — absent when it is not a
-/// form, or could not be gathered: a body that broke is answered by the
-/// server with the law it broke, whatever this answers.
-fn form_of(b: Body) -> Map<string, string>? {
-    match b.gathered() { .Ok(octets) -> form_fields(octets), .Err(_) -> null }
 }
 
 /// The submission's identity: its `_idempotency`, absent when it names none.

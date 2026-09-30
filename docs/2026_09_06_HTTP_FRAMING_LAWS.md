@@ -512,6 +512,10 @@ is READ as its handler asks (`body.av`). The laws, each a fixture:
 | A body kept past its handler reads what it had and ends — never another message's socket | `body_test` |
 | An expired event cursor is told (`cursor-expired`) before the live stream, never silently skipped | `sse_test`, `http_sse` |
 | Every WebSocket protocol law is a close code, sent and answered alike | `ws_test`, `http_ws`, Autobahn (`tools/bench/autobahn`) |
+| A socket ended — by the close handshake or a broken law — answers `Closed` to every later call and touches its descriptor no more; the server closes it when the session returns | `ws_test` |
+| A client opening's target and authority are words of the request line: one holding a line end is refused before a byte is sent | `ws_test` |
+| A gathered body is bounded from its first piece on — one chunk past `Limits.body` is 413 | `body_test` |
+| A feed's log is a ring: a publish writes one slot, and a retention of zero or less keeps nothing and still numbers | `sse_test` |
 | A 1xx is interim, never a final answer; the one exception is a 101 that hands the connection over and names its protocol in `upgrade` (9110 §15.2) | `http_adversarial_test` |
 | A switch is made only to what a 1.1 request's `upgrade` field listed — an HTTP/1.0 `upgrade` is ignored — else the answer is the server's 500 and nothing is handed over (9110 §7.8) | `http_adversarial_test`, `ws_test` |
 | A response carrying `upgrade` gets the `upgrade` option in the `connection` field the writer owns; a 426 must carry `upgrade` (9110 §7.8, §15.5.22) | `http_adversarial_test` |
