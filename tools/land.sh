@@ -740,21 +740,58 @@ warm_gate_step() {
     n="${nm%/*}"
     m="${nm#*/}"
 
-    cd "$land_wt"
-    floor_file="$(stage_baseline "$land_wt" land.baseline)"
-    old_floor="$(baseline_get "$floor_file" warm_held_floor)"
-    # `st=$?` AFTER the assignment reads 0 unconditionally (the
-    # assignment itself, once its substitution has run, always
-    # "succeeds" as a shell command) — worse under `set -eu`, a
-    # substitution answering non-zero aborts the whole script right
-    # here, before `st=$?` is ever reached. `|| st=$?` on the
-    # assignment itself is the only safe capture (heavy()'s own note).
     st=0
-    out="$(ratchet_check "$floor_file" warm_held_floor "$n" up "${AVRA_LAND_WARM_OK:-}")" || st=$?
-    word="PASS"
-    [ "$st" -ne 0 ] && word="FAIL"
-    echo "land: warm-reuse: held $n/$m (floor ${old_floor:-none}) — $word ($out)"
+    if [ "$n" -lt $((m - 10)) ]; then
+        echo "land: warm-reuse: held $n/$m after a leaf edit — FAIL (the floor is N-10 = $((m - 10)))"
+        st=1
+    else
+        echo "land: warm-reuse: held $n/$m after a leaf edit — PASS (floor N-10)"
+    fi
+    warm_edit_timed "packages/cli" "$warm_gate_command_path" \
+        '275s/avra: \${path}/avra - ${path}/' || st=1
+    cd "$land_wt"
     return "$st"
+}
+
+# THE WARM EDIT IS TIMED, NOT COUNTED ALONE. A command file's body edit
+# re-settles its `command` const, which once lowered everything its `run`
+# reaches and held nothing; a held count can read fine while the wall
+# time does not. The owner's budget is a warm command in 3 s. THE BOUND
+# IS 45 s WHILE `check` STILL LOWERS EVERY FILE, held or not (~30 s of
+# lowering alone): it catches a cascade, not the budget. Tighten it to 3
+# the day a held file's lowered facts are answered from the store.
+warm_gate_command_path="packages/cli/src/commands/fmt.av"
+
+now_s() { perl -MTime::HiRes=time -e 'printf "%.2f", time'; }
+
+# warm_edit_timed <package> <file> <sed-expr>: warm the package, edit one
+# line of <file>'s body, recheck; fail past AVRA_LAND_WARM_WALL_S (45) wall
+# seconds or below N-10 held. The edit is undone on every path out.
+warm_edit_timed() {
+    pkg="$1"; file="$2"; expr="$3"
+    limit="${AVRA_LAND_WARM_WALL_S:-45}"
+    orig="$scratch/warm-timed-orig"
+    cp "$file" "$orig"
+    build/avra check "$pkg" > /dev/null 2>&1 || true
+    sed "$expr" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+    if cmp -s "$orig" "$file"; then
+        cp "$orig" "$file"
+        echo "land: warm-edit: the scripted edit did not change $file — pick another line" >&2
+        return 1
+    fi
+    t0="$(now_s)"
+    build/avra check --time "$pkg" > "$scratch/warm-timed.out" 2>&1 || true
+    t1="$(now_s)"
+    cp "$orig" "$file"
+    wall="$(perl -e "printf '%.2f', $t1 - $t0")"
+    pair="$(grep -oE 'held [0-9]+/[0-9]+' "$scratch/warm-timed.out" | head -1)"
+    n="${pair#held }"; m="${n#*/}"; n="${n%/*}"
+    ok=1
+    perl -e "exit($wall <= $limit ? 0 : 1)" || ok=0
+    [ -n "$pair" ] && [ "$n" -ge $((m - 10)) ] || ok=0
+    word="PASS"; [ "$ok" -eq 1 ] || word="FAIL"
+    echo "land: warm-edit: $file edited, check $pkg in ${wall}s (limit ${limit}s), ${pair:-no held line} — $word"
+    [ "$ok" -eq 1 ]
 }
 
 # ── THE LINUX GATE (behind AVRA_LAND_LINUX, default 1) ────────────────
@@ -1396,10 +1433,21 @@ report_parallel_failures() {
 idioms_step() {
     wt="$1"
     shift
-    cd "$wt"
+    # THE RATCHET READS A COLD TREE: a warm check reports rule findings
+    # for the files it re-read, never for the ones it held, so a warm
+    # ratchet judges a fraction of the tree. It runs in a side tree with
+    # empty stores, beside the suites, until a held file's findings are
+    # answered from its kept rows. The baseline is the landing tree's,
+    # staged ratchet moves included.
+    baseline="$wt/tools/idioms.baseline"
+    cold="$(cd "$wt/.." && pwd -P)/$(basename "$wt")-idioms"
+    side_tree "$cold" "$wt" "$(git -C "$wt" rev-parse HEAD)" || return 1
+    mkdir -p "$cold/build"
+    cp "$wt/build/avra" "$cold/build/avra"
+    cd "$cold"
     st=0
     for pkg in "$@"; do
-        ./build/avra check "packages/$pkg" --baseline tools/idioms.baseline || st=1
+        ./build/avra check "packages/$pkg" --baseline "$baseline" || st=1
     done
     return "$st"
 }

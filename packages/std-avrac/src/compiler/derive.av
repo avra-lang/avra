@@ -49,7 +49,7 @@ export enum Want { Diagnostics, Binary }
 /// ONE ATTEMPT AT A PROGRAM: what it derives and for what, the files it reads
 /// whatever the store holds, whether it reads the program's instantiation HOMES,
 /// whether it holds anything, and how many times the records moved under it.
-type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0 }
+type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0, turned: int = 0 }
 
 /// WHAT AN ATTEMPT THAT DOES NOT STAND ANSWERS: the attempt to make instead, or
 /// the refusal. It rides the failure channel, so a phase that finds the question
@@ -98,7 +98,7 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 /// lower, and `asked` names what they and every other would lower to: the
 /// program's root asks, and the key of every home it has ever lowered from. The
 /// same `asked` is the same instantiations, whoever lowered them.
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, witnessed: int, files: int, turns: int, spans: List<Phase>, read: List<ReadFile> }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, witnessed: int, files: int, turns: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile> }
 
 /// One file's hold: held, or read with why (null for a file no record
 /// knows), the stored rows a read-for-want-of-rows file lacks, and what
@@ -131,6 +131,7 @@ impl Derived {
             "held ${self.held}/${self.files}",
             "witnessed ${self.witnessed}/${self.files}",
             "attempt ${self.turns}",
+            "discarded ${self.turned}",
         ]
         let spent = joined(
             [ph.shown() for ph in grouped_phases(self.program.phases)]
@@ -403,7 +404,7 @@ impl Workspace {
     fn attempted(at: Attempt) -> Result<Derived, string> {
         match self.tried(at) {
             .Ok(d) -> d,
-            .Err(.Again(next)) -> self.again(next),
+            .Err(.Again(next)) -> self.again(next with { turned: at.turned + 1 }),
             .Err(.Refused(why)) -> { fail why },
         }
     }
@@ -544,6 +545,7 @@ impl Workspace {
             witnessed: self.witness_hits.get(),
             files: self.decls.file_count(),
             turns: at.moved,
+            turned: at.turned,
             spans: spans,
             read: self.hold.read_files.get(),
         }
