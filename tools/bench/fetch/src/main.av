@@ -2,7 +2,7 @@
 //! a raw client writing one request line on one kept connection, then
 //! `fetch` by URL over a pool — the cost of the URL, the pool and the
 //! redirect and retry policy on top of the exchange itself.
-use @std.net.{NetError, listen}
+use @std.net.{Address, NetError, listen}
 use @std.time.{now_ns, secs}
 use @std.http.frame.{limits}
 use @std.http.http.{Header, Response, text}
@@ -46,6 +46,18 @@ fn with_jar(port: int) -> Result<int, ClientError> {
     .Ok(bytes)
 }
 
+/// Fetch by URL under an admission that judges every address — the
+/// loopback admitted by family — so each lent connection's peer is
+/// judged before it is lent.
+fn admitted(port: int) -> Result<int, ClientError> {
+    let o = Options { pool: pool(), admit: .Where((a: Address) -> a.family is .V4) }
+    let url = "http://127.0.0.1:${port}/"
+    mut bytes = 0
+    for i in 0..n { bytes = bytes + (fetch(.Get, url, .Empty, o)?).body.length }
+    o.pool.close_all()
+    .Ok(bytes)
+}
+
 fn timed(what: string, run: fn() -> Result<int, ClientError>) -> string {
     let t0 = now_ns()
     match run() {
@@ -63,6 +75,7 @@ fn benched() -> Result<string, NetError> {
         timed("raw client", () -> raw(port)),
         timed("fetch by URL", () -> by_url(port)),
         timed("fetch with a jar", () -> with_jar(port)),
+        timed("fetch under an admission", () -> admitted(port)),
     ]
     s.stop()
     .Ok(lines.join("\n"))

@@ -11,7 +11,7 @@
 //! receives until the reply, all of it within one deadline.
 use @std.errors.{Error, ErrorInfo, info}
 use @std.url.{UrlError}
-use @std.net.{NetError, connect}
+use @std.net.{Address, NetError, connect}
 use @std.time.{Duration, within}
 use frame.{
     Head,
@@ -129,7 +129,9 @@ impl Error for ClientError {
 /// §9.6) — a request or a reply saying `close`, a reply read to the
 /// close, a switch away from HTTP, a byte past a reply that no request
 /// asked for, a reply refused or cut short, or an exchange abandoned
-/// with its reply still owed, whose framing is lost.
+/// with its reply still owed, whose framing is lost. `address` is the
+/// one it was dialed to, when a dial made it — what an admission
+/// judges before a pool lends it again.
 export type Client = {
     conn: dyn Transport,
     asked: Method,
@@ -140,6 +142,7 @@ export type Client = {
     limits: Limits,
     owing: bool = false,
     persists: bool = true,
+    address: Address? = null,
 }
 
 fn redirect_info(why: Redirected) -> ErrorInfo {

@@ -22,16 +22,19 @@ All of it is in `src/net.av`, imported as `@std.net`.
 
 | Export | What it is |
 |---|---|
-| `NetError` | A failed verb: `verb`, `subject`, `errno`. `timed_out()` says whether a deadline ended it, `closed()` whether the conn was already closed. Implements `Error`. |
+| `NetError` | A failed verb: `verb`, `subject`, `errno`, and `denied`, the address an admission refused. `timed_out()` says whether a deadline ended it, `closed()` whether the conn was already closed. Implements `Error`. |
 | `Listener` | A bound, listening port. `port` is the one the kernel gave. |
 | `Conn` | A nonblocking stream to a peer: its `fd`, and an `open` cell every copy shares. |
 | `Poller` | A readiness queue over descriptors. |
 | `Event` | One readiness report: `fd`, `readable`, `writable`, `hangup`, `failed`. |
 | `Interest` | What a poller watches for: `Read`, `Write`, `Both`, `None`. |
 | `Read` | What `try_read` found: `Data(b)`, `Eof`, `Pending`. |
+| `Address` | A resolved address: `family` (`V4`, `V6`) and its canonical `text`. |
+| `Admission` | Which resolved addresses a connect may dial: `Anywhere`, `Public`, or `Where(admits)`. |
+| `public(a)` | Whether the public internet routes to `a`; any non-canonical spelling is refused. |
 | `listen(host, port)` | A listener on one named interface. Port 0 is the kernel's choice. |
 | `listen_all(port)` | A listener on every interface. |
-| `connect(host, port, timeout)` | A connection made within `timeout`, across every address the host resolves to. |
+| `connect(host, port, timeout, admission)` | A connection made within `timeout`, across every resolved address `admission` admits (default `.Anywhere`). |
 | `poller()` | A new readiness queue. |
 
 Methods:
@@ -49,6 +52,7 @@ Methods:
 | `Conn.close()` | Closes in every copy; answers the descriptor. |
 | `Conn.live(verb)` | The descriptor while open; refused as closed, naming `verb`, once any copy closed it. |
 | `Conn.peer()` | The peer as `ip:port`, v6 in brackets; `""` once gone. |
+| `Conn.address()` | The peer's `Address`, or null once gone. |
 | `Conn.named()` | The connection's name in a refusal. |
 | `Poller.watch(fd, interest)` | Sets interest in `fd`; `.None` stops watching. |
 | `Poller.wait(timeout)` | The descriptors ready now; a null timeout waits until one is. |
@@ -68,6 +72,14 @@ Methods:
   the kernel through `live`, which asks the `open` cell the copies share.
   A verb on a closed conn, through any copy, is refused with `closed()`
   true and never touches the number.
+- **Admission judges the resolved address, never the name.** `connect`
+  resolves, drops every address its `Admission` refuses, and dials the
+  rest by literal — the list judged is the list dialed, so a name that
+  answers differently later cannot slip past. All refused is a
+  `NetError` whose `denied` names the first. `public` withholds the
+  loopback, this network, private, shared, link-local (cloud metadata),
+  unique local, multicast, documentation and reserved blocks, and judges
+  a mapped, NAT64 or 6to4 v6 address as the v4 one it carries.
 - **One interface, or all, asked for by name.** `listen("")` is refused;
   the wildcard is `listen_all`.
 - **The NUL boundary.** A host crosses to the resolver as a C string, so a

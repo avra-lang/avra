@@ -250,6 +250,9 @@ int64_t avra_net_errno_pipe(void) { return EPIPE; }
 // no longer its own.
 int64_t avra_net_errno_closed(void) { return EBADF; }
 
+// The errno a connect answers when admission refused every address.
+int64_t avra_net_errno_denied(void) { return EACCES; }
+
 // A dial's outcome once its descriptor is writable: 0 connected, or
 // the -errno the connect failed with.
 int64_t avra_net_dialed(int64_t fd) {

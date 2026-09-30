@@ -32,10 +32,18 @@
 //! twice means what asking once does. The answer says which URLs it
 //! left (`via`) and how many attempts it took (`attempts`).
 //!
+//! WHERE A REQUEST MAY CONNECT IS ASKED FOR TOO. `admit` judges every
+//! address the host RESOLVES to before one is dialed — `.Public`
+//! refuses loopback, private, link-local and the cloud metadata
+//! address however the URL spelled them — and judges again at every
+//! redirect's hop and every kept connection the pool would lend. The
+//! address judged is the address dialed, so a name that answers
+//! differently the next time is judged the next time.
+//!
 //! COOKIES ARE ASKED FOR: a `jar` in the options keeps what each answer
 //! sets and sends it back where RFC 6265 says (jar.av).
 use @std.url.{Url, UrlError, parse, encoded as percent_encoded, default_port}
-use @std.net.{Conn, connect}
+use @std.net.{Admission, Conn, connect}
 use @std.json.{Json, to_text}
 use @std.time.{Duration, ms, secs, now_ms, sleep, within}
 use frame.{Method, Limits, limits}
@@ -82,7 +90,8 @@ export type Timeouts = {
 /// deadlines, the bounds its reply is framed under, the headers every
 /// request carries, its redirect and retry policy, how an `https`
 /// connection is secured — none here, so a plain program links no TLS;
-/// `@std/https` fills it — and the jar its cookies are kept in, if any.
+/// `@std/https` fills it — the jar its cookies are kept in, if any, and
+/// which resolved addresses it may connect to.
 export type Options = {
     pool: Pool = shared_pool(),
     timeouts: Timeouts = Timeouts {},
@@ -92,6 +101,7 @@ export type Options = {
     retry: Retry = Retry {},
     tls: Securing? = null,
     jar: Jar? = null,
+    admit: Admission = .Anywhere,
 }
 
 /// Whether a redirect is followed: `Stop` answers it as it came,
@@ -343,7 +353,7 @@ fn lent(method: Method, wire: Bytes, aim: Aim, body: Payload, o: Options, deadli
     Answer,
     ClientError,
 > {
-    let carrier = o.pool.take(aim.origin, () -> dialed_for(aim, o))?
+    let carrier = o.pool.take(aim.origin, () -> dialed_for(aim, o), o.admit)?
     mut client = client_of(carrier)
     match exchanged(client, method, wire, body, o, deadline) {
         .Ok(done) -> {
@@ -360,8 +370,8 @@ fn lent(method: Method, wire: Bytes, aim: Aim, body: Payload, o: Options, deadli
 /// A new connection to `aim`: made within the connect deadline, then
 /// secured within the TLS one when the URL asked for it.
 fn dialed_for(aim: Aim, o: Options) -> Result<Carrier, ClientError> {
-    let c = staged(.Connect, netted(connect(aim.host, aim.port, o.timeouts.connect)))?
-    .Ok(.H1(over(secured(c, aim, o)?, o.limits)))
+    let c = staged(.Connect, netted(connect(aim.host, aim.port, o.timeouts.connect, o.admit)))?
+    .Ok(.H1(over(secured(c, aim, o)?, o.limits) with { address: c.address() }))
 }
 
 /// The connection as `aim` asks: plain, or secured by `o.tls` — never
