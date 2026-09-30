@@ -51,7 +51,16 @@ land="$tools_dir/land.sh"
 : "${AVRA_LAND_TRAIN_SPRITES:=avra-idioms-pay avra-comptime}"
 : "${AVRA_LAND_TRAIN_SPRITE_BUILD:=$tools_dir/sprite-build.sh}"
 : "${AVRA_TRAIN_STEP_TIMEOUT:=1200}"
-: "${AVRA_TRAIN_HEARTBEAT:=90}"
+# sprite-build.sh is legitimately SILENT for minutes at a time before
+# the remote command's own first line ever reaches this log: waking a
+# sleeping Sprite (sprite_ready's own retry ceiling is 120s), then the
+# tree sync and file pushes, print nothing of their own. MEASURED
+# against a real Sprite (docs/2026_09_29_LAND_TRAIN.md's proof run):
+# 90s killed a healthy wake-and-sync outright. 420s clears a cold wake
+# plus a real sync with room left, while still catching a step that is
+# ACTUALLY wedged (which stays silent for the rest of the hard
+# timeout, never just a few extra minutes).
+: "${AVRA_TRAIN_HEARTBEAT:=420}"
 : "${AVRA_LAND_TRAIN_RETRIES:=2}"
 : "${AVRA_LAND_TRAIN_MIN_MEM_MB:=512}"
 

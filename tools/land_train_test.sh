@@ -146,6 +146,55 @@ test_train_mid_failure_rebase() {
     unset CULPRIT_MARK AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD AVRA_LAND_TRAIN_SCRATCH
 }
 
+# ══ TWO FAILURES ACROSS TWO SEPARATE WAVES: the ladder keeps re-
+# verifying its tail wave after wave until nothing is left to drop —
+# never stopping at the first drop the way a single-failure fixture
+# alone could not tell apart from "the loop runs exactly once more." ═
+test_train_two_failures_across_waves() {
+    d="$(ladder_repo two-fail a b c e)"
+    stub="$scratch/two-fail-sprite.sh"
+    cat > "$stub" <<'STUB'
+#!/bin/sh
+sprite="$1"
+wt="$2"
+echo "land-train: body started"
+for bad in b e; do
+    if [ -f "$wt/packages/$bad/marker" ]; then
+        echo "land-train: fake-check FAILED (exit 1) 0s"
+        exit 1
+    fi
+done
+echo "land-train: fake-check OK 0s"
+exit 0
+STUB
+    chmod +x "$stub"
+    train_env "$d" "$stub"
+    out="$scratch/two-fail.out"
+    good="$(cd "$d" && sh "$land_train" --call train_ladder a b c e 2>"$out")"
+    if [ "$good" = "a c" ]; then
+        ok "train: two failures in two different waves both drop, a and c still land"
+    else
+        bad "train: expected 'a c' across two dropped waves — got '$good'" "$out"
+    fi
+    n_culprits="$(grep -c '^CULPRIT: ' "$out")"
+    if [ "$n_culprits" -eq 2 ] && grep -q "CULPRIT: b" "$out" && grep -q "CULPRIT: e" "$out"; then
+        ok "train: names both b and e as culprits, one per wave"
+    else
+        bad "train: expected exactly b and e named as culprits — got:" "$out"
+    fi
+    # Wave 1 drops b (leaving tail "c e"); wave 2 drops e (leaving tail
+    # ""), which EMPTIES the tail — so the loop ends after wave 2, not
+    # a third all-green confirmation wave. Two waves is the correct
+    # count, not an early stop: nothing is left to re-verify.
+    n_waves="$(grep -c '^land-train: wave [0-9]* over' "$out")"
+    if [ "$n_waves" -eq 2 ]; then
+        ok "train: two waves ran (drop b, drop e) — the ladder keeps re-verifying until the tail empties"
+    else
+        bad "train: expected 2 waves, got $n_waves" "$out"
+    fi
+    unset AVRA_LAND_TRAIN_SPRITE_BUILD AVRA_LAND_TRAIN_SPRITES AVRA_LAND_TRAIN_MEM_CMD AVRA_LAND_TRAIN_SCRATCH
+}
+
 # ══ THE FIRST CANDIDATE FAILS: it drops, and the tail BEHIND it still
 # gets its own honest verification — b has nothing to do with a's
 # failure, so it lands. (A batch where EVERYTHING traces to the first
@@ -255,6 +304,7 @@ run_test() {
 
 run_test test_train_all_green
 run_test test_train_mid_failure_rebase
+run_test test_train_two_failures_across_waves
 run_test test_train_first_fails
 run_test test_train_tool_failure_retries
 run_test test_train_all_sprites_bad_is_tool_failure

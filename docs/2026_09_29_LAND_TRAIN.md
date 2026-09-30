@@ -47,19 +47,24 @@ about `Ck`'s verdict (see below), never when constructing it. This is
 what makes the concurrency sound: `C7` does not wait for `C1..C6` to
 finish before it starts.
 
-Verdicts arrive out of order (Sprites differ in speed and warmth). The
-train reads them in **candidate order**: it looks for the longest
-green PREFIX `C1..Ck` — every one of `C1..Ck` green — the moment enough
-verdicts are in to know it, and does not wait for `Ck+1..CN` before
-fast-forwarding to `Ck`, EXCEPT that a still-running `Cj` for `j <= k`
-blocks the decision until it answers (you cannot call a prefix green
-while one of its members is still unknown). If `Cj` (the first failure
-in order) turns red, every `Cj+1..CN` is dropped and **rebuilt without
-`bj`**: new candidates `Cj' = (good prefix) + b(j+1)`, `Cj+1' = ... +
-b(j+2)`, etc., re-dispatched in parallel again. This repeats until the
-tail is empty or entirely green. `bj` is reported with land.sh's own
-verdict words, so a session polling `land.sh bj` sees exactly what it
-sees today.
+All N run as one WAVE, bounded by the pool size (a Sprite free's up,
+the next queued candidate starts on it — the same job-slot shape
+`land.sh`'s own `job_launch`/`job_wait_all` already use, one pool per
+wave). The wave is read in **candidate order** once every job in it
+has answered: the longest green PREFIX `C1..Ck` is the wave's verdict.
+If every candidate is green, `Ck` (=`CN`) is the fast-forward target
+and the train is done. If `Cj` is the first failure, `bj` is dropped
+WITH land.sh's own verdict words (the same report a session polling
+`land.sh bj` would read), and a NEW wave is built for the tail:
+`Cj' = (good prefix) + b(j+1)`, `Cj+1' = Cj' + b(j+2)`, ... up to
+`CN'`, dispatched concurrently again. This repeats wave over wave
+until a wave is entirely green (fast-forward to its last candidate) or
+empty (nothing left to land). Deciding wave-by-wave rather than
+cutting a wave short the instant a prefix is known costs at most one
+extra round of Sprite time per failure — simple, and it means a
+verdict is never read from a candidate whose SIBLINGS in the same
+wave haven't finished, which would otherwise need cancelling
+in-flight remote jobs to get the fine-grained version right.
 
 This is bors/marge-bot's "batch build, bisect on failure, restart the
 tail" shape, with the bisection width turned all the way up (every
