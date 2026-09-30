@@ -23,6 +23,7 @@ use @std.time.{now_ns}
 use compiler.backend.{
     emit_object,
     objects_made,
+    inlines_runtime,
     Owned,
     emit_closed,
     home_of,
@@ -201,9 +202,10 @@ fn unnamed_print() -> string {
     "unnamed-${now_ns()}-${next_serial()}"
 }
 
-/// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest, hashed FRESH
-/// every ask. A STAMP-KEYED SHORTCUT STOOD HERE ONCE, trusting a size/time/inode
-/// match to skip the hash — the `compiler_id()` memoization already pays that
+/// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest and the mode
+/// it emits under (`codegen_mode`), since one binary writes two kinds of
+/// object. The digest is hashed FRESH every ask. A STAMP-KEYED SHORTCUT STOOD
+/// HERE ONCE, trusting a size/time/inode match to skip the hash — the `compiler_id()` memoization already pays that
 /// hash at most once a workspace, and the shortcut bought a few milliseconds
 /// against a law it could not keep: a rebuilt binary at the SAME path can land
 /// on a stamp the roll already holds (an adversarial host proves it outright,
@@ -225,7 +227,8 @@ fn compiler_print(ws: Workspace) -> string {
     let at? = ws.host.compiler else { return unnamed_print() }
     let roll = joined_path(stores_dir(ws), "compilers")
     let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
-    let print? = digest_of_binary(at) else { return unnamed_print() }
+    let digest? = digest_of_binary(at) else { return unnamed_print() }
+    let print = digest + codegen_mode()
     rolled(
         ws,
         roll,
@@ -254,6 +257,10 @@ fn links_unchanged(store: Store, key: string) -> bool {
     let files = [line.split("\t")[0] for line in kept.split("\n") if !line.is_empty()]
     links_text(files) == kept
 }
+
+/// HOW THIS PROCESS EMITS, as a suffix on the compiler's print: the runtime's
+/// hot leaves inlined, or kept as calls.
+fn codegen_mode() -> string { if inlines_runtime() { "" } else { "-calls" } }
 
 /// A roll line's print: its first field. A roll holds no empty line.
 fn print_of(line: string) -> string { line.split("\t")[0] }
@@ -346,7 +353,9 @@ impl Workspace {
         let staged = staged_beside(binary)
         if !store.has(Stored.Bin, key) ||
             !links_unchanged(store, key) ||
-            !store.place(Stored.Bin, key, staged) { return null }
+            !store.place(Stored.Bin, key, staged) {
+            return null
+        }
         // a stored binary is bytes, and its mode is not in them
         let _ = avra_spawn_status("chmod", ["+x", staged])
         if !published(staged, binary) { return null }

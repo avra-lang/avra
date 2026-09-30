@@ -851,6 +851,12 @@ static void hot_settled(void) {
     hot_off = v != NULL && strcmp(v, "0") == 0;
 }
 
+// Whether this process's objects carry the hot leaves inlined — a mode of
+// the codegen, so a key over what the compiler emits folds it in.
+int avra_llvm_inlines_runtime(void) {
+    return !hot_off && avra_hot_bc_len != 0;
+}
+
 // NOT EVERY HOT LEAF PAYS FOR ITS OWN INLINING: `hot_linked` runs once
 // per FILE MODULE, so a kept leaf's body is a cost the optimizer and
 // codegen pay again in every module it lands in, not once — the bigger,
