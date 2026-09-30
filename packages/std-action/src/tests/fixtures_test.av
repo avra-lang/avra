@@ -4,6 +4,7 @@
 // its own file only.
 use @std.http.frame.{framed, limits}
 use @std.http.http.{Request, Unrouted, Response}
+use @std.http.body.{Body, whole}
 
 /// A map from a flat `[name, value, name, value…]` list.
 fn sent(xs: List<string>) -> Map<string, string> {
@@ -17,7 +18,7 @@ fn sent(xs: List<string>) -> Map<string, string> {
 fn posted(target: string, content_type: string?, body: Bytes) -> Request<Unrouted>? {
     let raw = "POST ${target} HTTP/1.1\r\nHost: h\r\n${type_line(content_type)}\r\n".bytes()
     match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: body, peer: "t", params: Unrouted {} },
+        .Complete(head) -> Request { raw: raw, head: head, body: whole(body), peer: "t", params: Unrouted {} },
         .Partial or .Refused(_) -> null,
     }
 }
@@ -36,7 +37,7 @@ fn form_post(name: string, body: string) -> Request<Unrouted>? {
 fn asked_get(target: string) -> Request<Unrouted>? {
     let raw = "GET ${target} HTTP/1.1\r\nHost: h\r\n\r\n".bytes()
     match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t", params: Unrouted {} },
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
         .Partial or .Refused(_) -> null,
     }
 }
