@@ -1,0 +1,277 @@
+//! @std.http_compress — CONTENT CODING for an HTTP server, as a layer.
+//! A package of its own so a plain HTTP program links no zlib and no
+//! brotli: `@std/http` knows only its layer seam, and this is where
+//! `@std/compress` is plugged into it.
+//!
+//!     server app { layer { wraps: compressed }  … }
+//!
+//! A RESPONSE is encoded in the coding the client weighs highest among
+//! `br`, `gzip` and `deflate` (RFC 9110 §12.5.3), ties going to that
+//! order — only when it is whole, worth it (`smallest` octets or more,
+//! a media type that compresses), not already coded, not a range, and
+//! not marked `no-transform`; and only when the result is smaller. A
+//! response that COULD have been coded says `Vary: accept-encoding`
+//! either way, so a cache never hands one client's coding to another,
+//! and a strong `ETag` becomes weak once coded, since the octets are
+//! no longer the ones it named.
+//!
+//! A REQUEST BODY sent `Content-Encoding: gzip`, `deflate` or `br` is
+//! decoded before the handler sees it, UNDER A CEILING: a body that
+//! inflates past `inflated` is a 413 with nothing past the ceiling
+//! produced, one that is not what it claims a 400, and a coding this
+//! layer does not read a 415 naming the ones it does.
+use @std.compress.{Format, CompressError, encoded, decoded}
+use @std.http.http.{Request, Unrouted, Response, Handler, Header, text, media_of}
+use @std.http.body.{whole}
+
+/// How a server codes: the smallest body worth coding, the effort of
+/// each format (zlib's 0 to 9, brotli's 0 to 11), and the most a
+/// request body may decode to.
+export type Compression = {
+    smallest: int = 1024,
+    gzip_effort: int = 6,
+    brotli_effort: int = 4,
+    inflated: int = 1048576,
+}
+
+/// The layer under the defaults.
+export fn compressed(q: Request<Unrouted>, next: Handler) -> Response { coded(Compression {}, q, next) }
+
+/// The layer under `c`.
+export fn compressing(c: Compression) -> fn(Request<Unrouted>, Handler) -> Response {
+    (q: Request<Unrouted>, next: Handler) -> coded(c, q, next)
+}
+
+/// `q` decoded, answered by `next`, and the answer encoded.
+fn coded(c: Compression, q: Request<Unrouted>, next: Handler) -> Response {
+    match request_decoded(c, q) {
+        .Ok(plain) -> response_encoded(c, q, next(plain)),
+        .Err(refusal) -> refusal,
+    }
+}
+
+// ── Codings ─────────────────────────────────────────────────────
+
+/// The codings this layer reads and writes, in the order a tie picks.
+fn codings() -> List<Format> { [Format.Brotli, Format.Gzip, Format.Zlib] }
+
+/// HTTP's name for a format. `deflate` is the zlib wrapping (RFC 9110
+/// §8.4.1.2), never raw deflate.
+fn coding_word(f: Format) -> string {
+    match f { .Brotli -> "br", .Gzip -> "gzip", .Zlib -> "deflate" }
+}
+
+/// The format a coding names, `x-gzip` read as `gzip` (RFC 9110
+/// §8.4.1.3); null for any other.
+fn format_named(coding: string) -> Format? {
+    if spells(coding, x_gzip) { return Format.Gzip }
+    codings().find((f) -> spells(coding, coding_word(f).bytes()))
+}
+
+const x_gzip: Bytes = "x-gzip".bytes()
+
+/// Whether `word`, trimmed, is `token`, ASCII-folded — how every
+/// coding, directive and field name in these headers compares.
+fn spells(word: string, token: Bytes) -> bool {
+    let w = word.trim().bytes()
+    w.ieq_at(0, w.length, token)
+}
+
+// ── The request ─────────────────────────────────────────────────
+
+/// `q` with its body decoded, or the response refusing it. A request
+/// with no coding, or `identity`, passes as it came, and an empty body
+/// has nothing to decode; one decoded no longer carries the
+/// `content-encoding` and `content-length` that described the coded
+/// octets. Several `content-encoding` fields are read as the one list
+/// they join into, and a list of codings is one this layer does not
+/// read.
+fn request_decoded(c: Compression, q: Request<Unrouted>) -> Result<Request<Unrouted>, Response> {
+    if q.header("content-encoding") == null { return q }
+    let coding = q.headers("content-encoding").join(",")
+    if spells(coding, identity) { return q }
+    let f? = format_named(coding) else { fail unread_coding() }
+    let packed = q.gathered()?
+    let plain = if packed.is_empty() { packed } else { inflated(packed, f, c.inflated)? }
+    q with { head: q.head with { fields: q.head.fields.without(q.raw, content_encoding).without(q.raw, content_length) }, body: whole(plain) }
+}
+
+/// `packed` decoded from `f` under `ceiling`, or the response refusing it.
+fn inflated(packed: Bytes, f: Format, ceiling: int) -> Result<Bytes, Response> {
+    match decoded(packed, f, ceiling) { .Ok(b) -> b, .Err(e) -> { fail decode_refused(e) } }
+}
+
+const identity: Bytes = "identity".bytes()
+
+const content_encoding: Bytes = "content-encoding".bytes()
+
+const content_length: Bytes = "content-length".bytes()
+
+// ── The response ────────────────────────────────────────────────
+
+/// `r` encoded for `q` when it may be and gains by it; `Vary` added
+/// whenever the choice depended on what `q` accepts.
+fn response_encoded(c: Compression, q: Request<Unrouted>, r: Response) -> Response {
+    if !codable(c, r) { return r }
+    let varied = r with { headers: vary_added(r.headers) }
+    let f? = preferred(q.headers("accept-encoding")) else { return varied }
+    match encoded(r.body, f, effort(c, f)) {
+        .Ok(b) -> if b.length < r.body.length { coded_as(varied, f, b) } else { varied },
+        .Err(_) -> varied,
+    }
+}
+
+/// Whether `r` may be coded at all: a whole body worth coding, of a
+/// media type that compresses, with no coding or range of its own, and
+/// not marked `no-transform`.
+fn codable(c: Compression, r: Response) -> bool {
+    r.stream == null &&
+        r.status >= 200 &&
+        r.status != 204 &&
+        r.status != 206 &&
+        r.status != 304 &&
+        r.body.length >= c.smallest &&
+        r.header("content-encoding") == null &&
+        r.header("content-range") == null &&
+        compressible(r.header("content-type")) &&
+        !forbids_transform(r.header("cache-control"))
+}
+
+/// Whether a `cache-control` carries `no-transform`, case folded.
+fn forbids_transform(cc: string?) -> bool {
+    let directives? = cc else { return false }
+    directives.split(",").any(spells(it, no_transform))
+}
+
+const no_transform: Bytes = "no-transform".bytes()
+
+fn effort(c: Compression, f: Format) -> int {
+    match f { .Brotli -> c.brotli_effort, .Gzip or .Zlib -> c.gzip_effort }
+}
+
+/// `r` carrying `body` in `f`: the coding named, a strong tag weakened.
+fn coded_as(r: Response, f: Format, body: Bytes) -> Response {
+    (r with { headers: [weakened(h) for h in r.headers], body: body })
+        .with_header("content-encoding", coding_word(f))
+}
+
+/// A strong `ETag` made weak; any other header as it was.
+fn weakened(h: Header) -> Header {
+    if !h.named("etag") || h.value.starts_with("W/") { return h }
+    h with { value: "W/" + h.value }
+}
+
+/// `headers` with `accept-encoding` in their `Vary`, added to one that
+/// is there or as a new one — unless it is already named, or `*`.
+fn vary_added(headers: List<Header>) -> List<Header> {
+    if !headers.any(it.named("vary")) { return headers.concat([Header { name: "vary", value: "accept-encoding" }]) }
+    [if h.named("vary") && !varies_on_coding(h.value) { h with { value: h.value + ", accept-encoding" } } else { h } for h in headers]
+}
+
+fn varies_on_coding(value: string) -> bool { value.split(",").any(spells(it, wildcard) || spells(it, accept_encoding)) }
+
+const wildcard: Bytes = "*".bytes()
+
+const accept_encoding: Bytes = "accept-encoding".bytes()
+
+// ── Media types ─────────────────────────────────────────────────
+
+/// Whether a `content-type` names octets worth compressing: any
+/// `text/…`, JSON, JavaScript, XML, SVG or WebAssembly, and any
+/// `…+json` or `…+xml` — parameters aside, case folded. An absent type
+/// is left alone: nothing says what it holds.
+fn compressible(ct: string?) -> bool {
+    let full? = ct else { return false }
+    let m = media_of(full)
+    let n = m.length
+    n > 5 && m.ieq_at(0, 5, text_prefix) ||
+        coded_types.any((t) -> m.ieq_at(0, n, t)) ||
+        n > 5 && (m.ieq_at(n - 5, n, json_suffix) || m.ieq_at(n - 4, n, xml_suffix))
+}
+
+const text_prefix: Bytes = "text/".bytes()
+
+const json_suffix: Bytes = "+json".bytes()
+
+const xml_suffix: Bytes = "+xml".bytes()
+
+const coded_types: List<Bytes> = [
+    "application/json".bytes(),
+    "application/javascript".bytes(),
+    "application/xml".bytes(),
+    "application/wasm".bytes(),
+    "image/svg+xml".bytes(),
+]
+
+// ── Accept-Encoding ─────────────────────────────────────────────
+
+/// The coding the client weighs highest among those this layer
+/// writes, ties to `codings()`'s order — null when it names none with
+/// a weight above zero, or sends no `Accept-Encoding` at all (a client
+/// that says nothing is sent what every client reads).
+fn preferred(fields: List<string>) -> Format? {
+    if fields.is_empty() { return null }
+    let members = fields.join(",").split(",")
+    let weighed = [weight_of(members, f) for f in codings()]
+    let top? = [j for j, w in weighed if w > 0 && weighed.all(it <= w)].first() else { return null }
+    codings()[top]
+}
+
+/// The weight, in thousandths, `members` give `f`: its own member's,
+/// else `*`'s, else none.
+fn weight_of(members: List<string>, f: Format) -> int {
+    let own? = members.find(same_format(format_named(coding_of(it)), f)) else { return star_weight(members) }
+    weight(own)
+}
+
+fn star_weight(members: List<string>) -> int {
+    let any_coding? = members.find(spells(coding_of(it), wildcard)) else { return 0 }
+    weight(any_coding)
+}
+
+fn same_format(named: Format?, f: Format) -> bool {
+    let g? = named else { return false }
+    g == f
+}
+
+/// A member's coding: what precedes its parameters.
+fn coding_of(member: string) -> string { (member.split(";").first() ?? "").trim() }
+
+/// A member's weight in thousandths (RFC 9110 §12.4.2): 1000 when it
+/// carries no parameter, its `q` when that is its one parameter, and 0
+/// — naming nothing — for anything else.
+fn weight(member: string) -> int {
+    let params = member.split(";")
+    if params.length == 1 { return 1000 }
+    let q = params[1].trim()
+    if params.length > 2 || !(q.starts_with("q=") || q.starts_with("Q=")) { return 0 }
+    thousandths(q.substring(2, q.length)) ?? 0
+}
+
+/// A qvalue (RFC 9110 §12.4.2) in thousandths: `0`, `1`, or either
+/// with up to three decimals, `1`'s all zero; null otherwise.
+fn thousandths(s: string) -> int? {
+    let b = s.bytes()
+    if b.is_empty() || b.length > 5 || b.at(0) != 48 && b.at(0) != 49 { return null }
+    if b.length == 1 { return (b.at(0) - 48) * 1000 }
+    if b.at(1) != 46 || ![b.at(i) for i in 2..b.length].all(it >= 48 && it <= 57) { return null }
+    let frac = [b.at(i) - 48 for i in 2..b.length].concat([0, 0, 0]).slice(0, 3)
+    let v = (b.at(0) - 48) * 1000 + frac[0] * 100 + frac[1] * 10 + frac[2]
+    if v > 1000 { return null }
+    v
+}
+
+// ── Voices ──────────────────────────────────────────────────────
+
+fn unread_coding() -> Response {
+    text(415, "the body's content coding is not one this server reads")
+        .with_header("accept-encoding", "br, gzip, deflate")
+}
+
+fn decode_refused(e: CompressError) -> Response {
+    match e {
+        .TooLarge(n) -> text(413, "the body decodes to more than ${n} octets"),
+        .Memory -> text(503, "the body could not be decoded: memory ran out"),
+        .Corrupt or .Truncated -> text(400, "the body is not in the coding it names: ${e.describe().message}"),
+    }
+}

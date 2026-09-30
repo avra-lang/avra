@@ -1,0 +1,116 @@
+//! The app tier per request, in-process and with no socket: each row
+//! frames one request, runs the feature under test, and counts the
+//! octets it answered, so nothing is optimised away. A row reads
+//! `label: ns each (bytes out)`.
+use @std.http.frame.{framed, limits}
+use @std.http.body.{whole}
+use @std.http.http.{Request, Unrouted, Response, Header, Handler, text, json_body}
+use @std.http.route.{compiled, dispatch}
+use @std.http.files.{Files, directory}
+use @std.http_compress.{compressed}
+use @std.json.codec.{json}
+use @std.text.{repeat}
+use @std.time.{now_ns}
+
+@json
+type Vote = { idea: int, up: bool, note: string? }
+
+fn asked(line: string, fields: string, body: Bytes) -> Request<Unrouted> {
+    let raw = "${line}\r\nHost: bench\r\n${fields}\r\n".bytes()
+    let head = match framed(raw, 0, 0, limits()) {
+        .Complete(h) -> h,
+        .Partial or .Refused(_) -> null,
+    }
+    Request { raw: raw, head: head!, body: whole(body), peer: "127.0.0.1:1", params: Unrouted {} }
+}
+
+/// `n` turns of `serve` over a request made fresh each turn, timed.
+fn timed(label: string, n: int, line: string, fields: string, body: Bytes, serve: Handler) -> string {
+    let t0 = now_ns()
+    mut total = 0
+    for _i in 0..n { total = total + serve(asked(line, fields, body)).body.length }
+    "${label}: ${(now_ns() - t0) / n} ns each (${total / n} bytes out)"
+}
+
+fn hello(_q: Request<Unrouted>) -> Response { text(200, "hello") }
+
+fn page(_q: Request<Unrouted>) -> Response {
+    text(200, repeat("<li class=\"idea\">an idea worth voting for</li>\n", 90)) with { headers: [Header { name: "content-type", value: "text/html; charset=utf-8" }] }
+}
+
+fn cookied(q: Request<Unrouted>) -> Response { text(200, q.cookie("session") ?? "none") }
+
+fn voted(q: Request<Unrouted>) -> Response {
+    match json_body(q, (j) -> Vote.from_json(j)) { .Ok(v) -> text(200, "${v.idea}"), .Err(r) -> r }
+}
+
+fn through(inner: Handler) -> Handler { (q: Request<Unrouted>) -> compressed(q, inner) }
+
+let n = 200000
+let get = "GET / HTTP/1.1"
+let files = compiled(directory("/s", Files { root: "packages/std-http/src/tests/files_root" }))
+println(timed("baseline, a 5-octet answer", n, get, "", "".bytes(), hello))
+println(
+    timed(
+        "cookies, the third of three",
+        n,
+        get,
+        "Cookie: a=1; theme=dark; session=abc123def456\r\n",
+        "".bytes(),
+        cookied,
+    ),
+)
+println(
+    timed(
+        "json body, a small record",
+        n,
+        "POST / HTTP/1.1",
+        "Content-Type: application/json\r\n",
+        "{\"idea\": 7, \"up\": true, \"note\": \"yes\"}".bytes(),
+        voted,
+    ),
+)
+println(
+    timed(
+        "static file, whole",
+        n / 10,
+        "GET /s/a.txt HTTP/1.1",
+        "",
+        "".bytes(),
+        (q) -> dispatch(files, q),
+    ),
+)
+println(
+    timed(
+        "static file, 304",
+        n / 10,
+        "GET /s/a.txt HTTP/1.1",
+        "If-None-Match: *\r\n",
+        "".bytes(),
+        (q) -> dispatch(files, q),
+    ),
+)
+println(timed("coding layer, nothing accepted", n, get, "", "".bytes(), through(hello)))
+println(
+    timed(
+        "coding layer, small answer",
+        n,
+        get,
+        "Accept-Encoding: gzip, deflate, br\r\n",
+        "".bytes(),
+        through(hello),
+    ),
+)
+println(timed("4 KB page, identity", n / 10, get, "", "".bytes(), page))
+println(
+    timed("4 KB page, gzip", n / 10, get, "Accept-Encoding: gzip\r\n", "".bytes(), through(page)),
+)
+println(timed("4 KB page, br", n / 10, get, "Accept-Encoding: br\r\n", "".bytes(), through(page)))
+timed(
+    "gzip body decoded",
+    n / 10,
+    "POST / HTTP/1.1",
+    "Content-Encoding: gzip\r\n",
+    compressed(asked(get, "Accept-Encoding: gzip\r\n", "".bytes()), page).body,
+    through(hello),
+)

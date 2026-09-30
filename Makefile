@@ -153,6 +153,21 @@ build/std_tls.a: $(TLS_OBJS)
 	@rm -f $@
 	ar rcs $@ $^
 
+# THE VENDORED zlib AND brotli, one object per upstream unit
+# (packages/std-compress/vendor/import.sh writes the wrappers),
+# ARCHIVED with @std/compress's own C as TLS's are: a program links the
+# members it reaches, and a program that never compresses links none.
+# brotli's units and @std/compress's C read brotli's public headers by
+# their installed name.
+BROTLI_INCLUDE := -Ipackages/std-compress/vendor/brotli/include
+COMPRESS_OBJS := build/std_compress.o $(patsubst packages/std-compress/vendor/%.c,build/%.o,$(wildcard packages/std-compress/vendor/zlib_*.c packages/std-compress/vendor/brotli_*.c))
+$(foreach o,$(filter build/brotli_%,$(COMPRESS_OBJS)),$(eval CFLAGS_$(basename $(notdir $(o))) := $(BROTLI_INCLUDE)))
+CFLAGS_std_compress := -Ipackages/std-compress/vendor $(BROTLI_INCLUDE)
+
+build/std_compress.a: $(COMPRESS_OBJS)
+	@rm -f $@
+	ar rcs $@ $^
+
 # A HEADER IS A SOURCE. cc writes each object's dependency list beside
 # it and the next make reads it back, so editing a .h rebuilds what
 # includes it — without this a package that grows a header links a
@@ -167,7 +182,7 @@ build/%.o: %.c build/%.sha
 	@mkdir -p build
 	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
--include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS))))
+-include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS) $(COMPRESS_OBJS))))
 
 # THE HOT LEAVES AS BYTES THE COMPILER CARRIES (runtime/avra_hot.h):
 # runtime/avra_hot.c compiled to bitcode by the LLVM the compiler links,

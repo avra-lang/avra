@@ -1,0 +1,107 @@
+// The red team's survivors against the layer: hostile Accept-Encoding
+// lists, directives in any case, a layer applied twice, a HEAD, and a
+// coded body that is empty.
+use @std.http.frame.{framed, limits}
+use @std.http.body.{whole}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http_compress.{compressed}
+use @std.compress.{Format, encoded}
+use @std.text.{repeat}
+
+fn asked_as(line: string, fields: string, body: Bytes) -> Request<Unrouted> {
+    let raw = "${line}\r\nHost: h\r\n${fields}\r\n".bytes()
+    let head = match framed(raw, 0, 0, limits()) {
+        .Complete(h) -> h,
+        .Partial or .Refused(_) -> null,
+    }
+    Request { raw: raw, head: head!, body: whole(body), peer: "t", params: Unrouted {} }
+}
+
+fn got(fields: string) -> Request<Unrouted> { asked_as("GET /x HTTP/1.1", fields, "".bytes()) }
+
+fn squeezable() -> Response { text(200, repeat("some words to squeeze, ", 100)) }
+
+fn coding_for(ae: string) -> string { compressed(got("Accept-Encoding: ${ae}\r\n"), (_q) -> squeezable()).header("content-encoding") ?? "none" }
+
+/// The handler's view of a body posted with `fields`, through the layer `times` deep.
+fn seen(fields: string, body: Bytes, times: int) -> string {
+    let inner = (q: Request<Unrouted>) -> text(
+        200,
+        "${q.header("content-encoding") ?? "-"} ${q.body.text() ?? "?"}",
+    )
+    let r = if times == 1 {
+        compressed(asked_as("POST /x HTTP/1.1", fields, body), inner)
+    } else {
+        compressed(asked_as("POST /x HTTP/1.1", fields, body), (q) -> compressed(q, inner))
+    }
+    "${r.status} ${r.body.text() ?? "?"}"
+}
+
+spec "std/http_compress — adversarial" {
+    given "hostile Accept-Encoding lists" {
+        then "empty members around a coding" { coding_for(",, ,gzip,,") == "gzip" }
+        then "a weight spelled with spaces is malformed" { coding_for("br;q = 0.9, gzip;q=0.1") == "gzip" }
+        then "two weights on one member is malformed" { coding_for("br;q=0;q=1, gzip") == "gzip" }
+        then "a star grants what a named zero refuses" { coding_for("*, br;q=0, gzip;q=0") == "deflate" }
+        then "a parameter other than a weight is malformed" { coding_for("br;level=5, gzip;q=0.1") == "gzip" }
+        then "a quoted coding names nothing" { coding_for("\"gzip\"") == "none" }
+        then "a thousand members" { coding_for(["x${k}" for k in 0..1000].join(", ") + ", br") == "br" }
+        then "a negative weight is malformed" { coding_for("br;q=-1, gzip;q=0.001") == "gzip" }
+    }
+    given "directives in any case" {
+        then "No-Transform" {
+            compressed(
+                got("Accept-Encoding: gzip\r\n"),
+                (_q) -> squeezable().with_header("Cache-Control", "No-Transform"),
+            )
+                .header("content-encoding") == null
+        }
+        then "no-transform among others" {
+            compressed(
+                got("Accept-Encoding: gzip\r\n"),
+                (_q) -> squeezable().with_header("cache-control", "max-age=60 ,  no-transform"),
+            )
+                .header("content-encoding") == null
+        }
+        then "a directive that only contains the word" {
+            compressed(
+                got("Accept-Encoding: gzip\r\n"),
+                (_q) -> squeezable().with_header("cache-control", "x-no-transformer"),
+            )
+                .header("content-encoding") == "gzip"
+        }
+    }
+    given "the request" {
+        then "the layer twice decodes once" {
+            seen(
+                "Content-Encoding: gzip\r\n",
+                encoded("twice".bytes(), Format.Gzip) catch "".bytes(),
+                2,
+            ) == "200 - twice"
+        }
+        then "an empty coded body passes as empty" { seen("Content-Encoding: br\r\nContent-Length: 0\r\n", "".bytes(), 1) == "200 - " }
+        then "a coding with a trailing comma is a list" { seen("Content-Encoding: gzip,\r\n", "x".bytes(), 1).starts_with("415 ") }
+        then "an identity among codings is a list" { seen("Content-Encoding: identity, gzip\r\n", "x".bytes(), 1).starts_with("415 ") }
+        then "gzip's octets named as br" {
+            seen(
+                "Content-Encoding: br\r\n",
+                encoded("hello".bytes(), Format.Gzip) catch "".bytes(),
+                1,
+            )
+                .starts_with("400 ")
+        }
+    }
+    given "the response" {
+        then "a HEAD is coded as its GET would be" {
+            let r = compressed(
+                asked_as("HEAD /x HTTP/1.1", "Accept-Encoding: gzip\r\n", "".bytes()),
+                (_q) -> squeezable(),
+            )
+            r.header("content-encoding") == "gzip" && r.header("vary") == "accept-encoding"
+        }
+        then "a 1xx is never coded" {
+            compressed(got("Accept-Encoding: gzip\r\n"), (_q) -> text(103, repeat("x", 2000)))
+                .header("content-encoding") == null
+        }
+    }
+}
