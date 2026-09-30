@@ -4,7 +4,7 @@
 //! absence-of-elements value, adopted by whatever list claims it.
 use core.{ExprId, Type, TypeId, CompClause, flatten, some_list, same_type}
 use features.{TypeCx, this_is, slot_worthy}
-use diagnostics.{refusal, Diag}
+use diagnostics.{refusal, warning, Diag}
 use @std.errors.{Loc}
 
 fn list_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
@@ -175,7 +175,8 @@ fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, clauses: List<CompClause>)
 /// THE PLANNER'S LAWS over each head scanning a relation whole: a
 /// lookup it narrows to must file by the field's own type, and with no
 /// lookup to narrow to, no filter in its region may hand its row to a
-/// call — nothing narrows the set it would run over.
+/// call — nothing narrows the set it would run over. A scan left whole
+/// over a relation its census counts past the floor is warned.
 fn plan_laws(mut cx: TypeCx, clauses: List<CompClause>) {
     for scan in relation_scans(cx.view, cx.names, clauses) { scan_laws(cx, clauses, scan) }
 }
@@ -183,9 +184,8 @@ fn plan_laws(mut cx: TypeCx, clauses: List<CompClause>) {
 /// One scanned head's laws.
 fn scan_laws(mut cx: TypeCx, clauses: List<CompClause>, scan: Scan) {
     let plans = comp_plans(cx.view, cx.names, clauses, scan)
-    let plan? = plans
-        .find((p: Plan) -> !could_be_null(cx.view.types.seen_shape(cx.type_at(p.value)))) else {
-        let rest? = residual(cx.dispatch, cx.view, cx.names, clauses, scan) else { return }
+    let plan? = plans.find((p: Plan) -> !could_be_null(cx.view.types, cx.type_at(p.value))) else {
+        let rest? = residual(cx.dispatch, cx.view, cx.names, clauses, scan) else { return census_law(cx, clauses, scan) }
         return cx.emit(unnarrowed(cx.loc_of(rest), cx.view.decls.decl(scan.relation).name))
     }
     if !lookup_fits(cx, scan, plan) {
@@ -198,6 +198,28 @@ fn scan_laws(mut cx: TypeCx, clauses: List<CompClause>, scan: Scan) {
                 ),
             )
     }
+}
+
+/// THE CENSUS LAW: a whole scan over a relation its census counts past
+/// `scan_floor` rows, filtering on a compare an index would answer,
+/// names the index to add. A value that could be null is in no bucket,
+/// so no index answers it.
+fn census_law(mut cx: TypeCx, clauses: List<CompClause>, scan: Scan) {
+    let rows? = census_rows(cx.view, scan.relation) else { return }
+    if rows <= scan_floor { return }
+    let ask? = unindexed_asks(cx.view, cx.names, clauses, scan)
+        .find((a: Ask) -> !could_be_null(cx.view.types, cx.type_at(a.value))) else {
+        return
+    }
+    cx
+        .emit(
+            scanned_whole(
+                cx.loc_of(ask.at),
+                cx.view.decls.decl(scan.relation).name,
+                ask.field,
+                rows,
+            ),
+        )
 }
 
 /// Whether a lookup's value seat wears the field's type — its element's,
@@ -320,6 +342,16 @@ fn unnarrowed(at: Loc?, relation: string) -> Diag {
         "this filter hands `${relation}`'s rows to a call, and no declared index narrows the scan it would run over",
         "called on every row",
         "narrow first — compare an `@index` field to a value (`r.f == v`) beside it — or read the rows into a list and filter that",
+    )
+}
+
+fn scanned_whole(at: Loc?, relation: string, field: string, rows: int) -> Diag {
+    warning(
+        "type.plan_scan",
+        at,
+        "this filter scans all of `${relation}`, which a census counts at ${rows} rows, and no index answers `${field}`",
+        "compared on every row",
+        "add `@index ${field}` to `${relation}` — a `@plans(\"${field}\")` lookup — and the scan reads it instead",
     )
 }
 
