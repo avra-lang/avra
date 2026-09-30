@@ -47,6 +47,7 @@ use @std.path.{dir_of, joined_path}
 use @std.relation.db.{Db as RelDb, Hooks as RelHooks, hooked_db}
 use features.components.{word_of, instanced, named_instances}
 use features.{
+    takes_receiver,
     Unsettled,
     Settled,
     Settlement,
@@ -1558,15 +1559,16 @@ impl Workspace {
         // name asks the namespace of the file that wrote the quote.
         let elsewhere = self.elsewhere_of(f)
         // A generated body's statement stands in the arena, never in
-        // the parse tree — resolve it after the written bodies.
-        let generated = [self.decls.decl(d).stmt for d in made]
+        // the parse tree — resolve it after the written bodies, a
+        // member under its receiver.
         let resolved = resolve(
             self.lang.dispatch,
             self.lang.keywords,
             file_view(self.lang, p, self.decls, f),
             self.visible(f),
             elsewhere,
-            generated,
+            self.made_stmts(made, false),
+            self.made_stmts(made, true),
         )
         // What the expansions REFUSED speaks with the file's names:
         // generated source that did not parse, homed at its template.
@@ -1578,6 +1580,12 @@ impl Workspace {
                 .relation(Family.Resolved)
                 .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r))),
         )
+    }
+
+    /// The statements of generated declarations that are members, or
+    /// that are not.
+    fn made_stmts(made: List<DeclId>, members: bool) -> List<StmtId> {
+        [self.decls.decl(d).stmt for d in made if takes_receiver(self.decls.decl(d).kind) == members]
     }
 
     /// A generated declaration's id by its NAME, or none — demanded
@@ -1806,7 +1814,7 @@ impl Workspace {
         let of? = self.decls.facts_of(block)?.of else { return null }
         if of == "" { return null }
         self.named_minted(of)
-        let named = [d.id for d in self.decls.decls.get() if d.kind is .Trait && d.name == of]
+        let named = [d.id for d in self.decls.all_decls() if d.kind is .Trait && d.name == of]
         if named.length == 1 { named.first() } else { null }
     }
 

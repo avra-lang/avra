@@ -1,0 +1,256 @@
+//! sse.av — SERVER-SENT EVENTS: a `text/event-stream` response over the
+//! body `Stream` (http.av), so every law of a streamed body holds here
+//! too — one event pulled per write, a slow observer parking its own
+//! connection, a source that fails ending the stream with no second
+//! status.
+//!
+//! An event SOURCE is asked for its next event and told how long it may
+//! wait; one with nothing to say by then answers `Quiet`, and the
+//! writer sends a keep-alive comment, so a proxy never reads an idle
+//! stream as a dead one and a peer that has gone is noticed at the
+//! next write.
+//!
+//! AN EVENT ID IS A CURSOR, NEVER PERSISTENCE. A reconnecting observer
+//! sends the last id it saw (`Last-Event-ID`); the application answers
+//! where to resume — `From` the cursor, or `Expired` when what followed
+//! it is no longer kept. An expired cursor is TOLD, never silently
+//! skipped: the stream opens with a `cursor-expired` event carrying the
+//! stale cursor, and the observer resynchronizes before reading on.
+//! `Feed` is the in-memory retention that answers both.
+use @std.time.{Duration, sleep, ms, now_ms, secs}
+use @std.text.{parse_int, has_nul}
+use http.{Request, Response, Header, Stream, Pulled}
+
+/// One event: its data — any text, lines and all — and the optional
+/// event name, id and reconnection delay.
+export type Event = { data: string, event: string? = null, id: string? = null, retry: Duration? = null }
+
+/// What a source answers when asked: an event, nothing within the wait
+/// it was given, its end, or a failure.
+export enum Next {
+    Event(e: Event)
+    Quiet
+    End
+    Failed
+}
+
+/// A source of events: asked for the next with the longest it may wait,
+/// and told once however the stream stops.
+export type Source = { next: fn(Duration) -> Next, ended: fn() -> void = unheld }
+
+/// Where a stream resumes: from the observer's cursor, or — its cursor
+/// past what is kept — from now, the observer told so first.
+export enum Resume {
+    From(source: Source)
+    Expired(cursor: string, source: Source)
+}
+
+impl Resume {
+    /// The source the stream reads, however it resumes.
+    fn source() -> Source {
+        match self { .From(s) or .Expired(_, s) -> s }
+    }
+}
+
+/// The name of the event an expired cursor opens its stream with.
+export fn expired_event() -> string { "cursor-expired" }
+
+/// How long a quiet event stream waits, by default, before its
+/// keep-alive comment — well inside every proxy's idle limit and the
+/// server's own.
+export fn quiet_default() -> Duration { secs(15) }
+
+/// `q` answered as an event stream resumed where `resume` says from its
+/// `Last-Event-ID`, a keep-alive comment after every `quiet` of silence.
+export fn events<P>(q: Request<P>, quiet: Duration, resume: fn(string?) -> Resume) -> Response {
+    event_stream(resume(q.header("last-event-id")), quiet)
+}
+
+/// A `text/event-stream` response pulling from where `r` resumes.
+export fn event_stream(r: Resume, quiet: Duration) -> Response {
+    Response {
+        headers: [
+            Header { name: "content-type", value: "text/event-stream" },
+            Header { name: "cache-control", value: "no-cache" },
+        ],
+        stream: stream_of_events(r, quiet),
+    }
+}
+
+/// The body stream of `r`: an expired cursor's notice first, then each
+/// event the source answers, encoded, or a keep-alive when it is quiet.
+fn stream_of_events(r: Resume, quiet: Duration) -> Stream {
+    match r {
+        .From(s) -> Stream { pull: () -> pulled_event(s, quiet), ended: s.ended },
+        .Expired(cursor, s) -> expiry_first(cursor, s, quiet),
+    }
+}
+
+fn expiry_first(cursor: string, s: Source, quiet: Duration) -> Stream {
+    let told = Cell.new(false)
+    Stream { pull: () -> told_first(told, cursor, s, quiet), ended: s.ended }
+}
+
+fn told_first(told: Cell<bool>, cursor: string, s: Source, quiet: Duration) -> Pulled {
+    if told.get() { return pulled_event(s, quiet) }
+    told.set(true)
+    as_piece(Event { data: cursor, event: expired_event() })
+}
+
+/// One pull of a source, as a piece of the stream.
+fn pulled_event(s: Source, quiet: Duration) -> Pulled {
+    match s.next(quiet) {
+        .Event(e) -> as_piece(e),
+        .Quiet -> .Data(keep_alive_line),
+        .End -> .End,
+        .Failed -> .Failed,
+    }
+}
+
+/// An event as a piece — or the stream's failure, when it cannot be said.
+fn as_piece(e: Event) -> Pulled {
+    let b? = encoded(e) else { return .Failed }
+    .Data(b)
+}
+
+const keep_alive_line: Bytes = ": keep-alive\n\n".bytes()
+
+// ── The wire (WHATWG HTML §9.2.6) ───────────────────────────────
+
+/// An event on the wire: its fields, one `data:` line per line of its
+/// data, and the blank line that dispatches it — or absent when it
+/// cannot be said. A name or id holding a line end would write a field
+/// of the caller's choosing, an id holding NUL is one an observer
+/// ignores, and a negative retry is no delay at all, so each is refused
+/// rather than repaired; data is split at
+/// every line end, so it can never end the event early.
+export fn encoded(e: Event) -> Bytes? {
+    if !one_line(e.event ?? "") ||
+        !one_line(e.id ?? "") ||
+        has_nul(e.id ?? "") ||
+        e.retry?.ms ?? 0 < 0 {
+        return null
+    }
+    mut w = named("event", e.event)
+    w = w.concat(named("id", e.id))
+    w = w.concat(retried(e.retry))
+    for line in data_lines(e.data) { w = w.concat("data: ${line}\n".bytes()) }
+    w = w.concat(newline)
+    w
+}
+
+/// `name: value` and a line end, or nothing when there is no value.
+fn named(name: string, value: string?) -> Bytes {
+    let v? = value else { return "".bytes() }
+    "${name}: ${v}\n".bytes()
+}
+
+fn retried(d: Duration?) -> Bytes {
+    let r? = d else { return "".bytes() }
+    "retry: ${r.ms}\n".bytes()
+}
+
+/// Every line of `s`, split at CRLF, CR and LF alike, an empty last
+/// line kept — data ending in a line end ends in an empty line, and the
+/// observer's joining gives the line end back. Empty text is one line.
+fn data_lines(s: string) -> List<string> {
+    let b = s.replace("\r\n", "\n").replace("\r", "\n").bytes()
+    mut out: List<string> = []
+    mut at = 0
+    while true {
+        let i = b.index_of(newline, at)
+        if i < 0 {
+            out.push(b.slice(at, b.length).text() ?? "")
+            return out
+        }
+        out.push(b.slice(at, i).text() ?? "")
+        at = i + 1
+    }
+    out
+}
+
+fn one_line(s: string) -> bool { !s.contains("\n") && !s.contains("\r") }
+
+const newline: Bytes = "\n".bytes()
+
+// ── A feed: retention and cursors ───────────────────────────────
+
+/// AN IN-MEMORY FEED: every event published gets the next number as its
+/// id, the last `keep` are retained, and each observer reads from its
+/// own cursor — a BROADCAST, so two observers each see every event,
+/// never a queue that divides them. It lives in a `Cell` and so is its
+/// core's (server.av); a feed shared across cores or kept across a
+/// restart is storage, and belongs to a store above this one.
+///
+/// THE LOG IS A RING: event `id` sits at slot `(id - 1) % keep`, so a
+/// publish writes one slot whatever `keep` is, and the oldest event is
+/// the one overwritten.
+export type Feed = { log: Cell<List<Event>>, next: Cell<int>, keep: int }
+
+/// A feed retaining the last `keep` events — none, when `keep` is not
+/// positive.
+export fn feed(keep: int) -> Feed {
+    let none: List<Event> = []
+    Feed { log: Cell.new(none), next: Cell.new(1), keep: if keep > 0 { keep } else { 0 } }
+}
+
+/// How long a feed's observer sleeps between looks while it waits.
+fn look_again() -> Duration { ms(10) }
+
+impl Feed {
+    /// `e` published under the next id; answers the id.
+    fn publish(e: Event) -> string {
+        let id = self.next.get()
+        let kept = e with { id: "${id}" }
+        if self.log.get().length < self.keep {
+            self.log.push(kept)
+        } else if self.keep > 0 {
+            self.log.set_at(self.slot(id), kept)
+        }
+        self.next.set(id + 1)
+        "${id}"
+    }
+
+    /// The oldest id still retained.
+    fn first() -> int {
+        let from = self.next.get() - self.keep
+        if from < 1 { return 1 }
+        from
+    }
+
+    /// Where event `id` sits in the ring.
+    fn slot(id: int) -> int { (id - 1) % self.keep }
+
+    /// Where an observer with `cursor` resumes: after it, when what
+    /// follows it is kept; from now, told so, when it is not — or when
+    /// it names no event this feed ever published. No cursor reads from
+    /// now.
+    fn resumed(cursor: string?) -> Resume {
+        let next_id = self.next.get()
+        let c? = cursor else { return .From(self.source_from(next_id)) }
+        let seen = parse_int(c) ?? -1
+        if seen < self.first() - 1 || seen >= next_id { return .Expired(c, self.source_from(next_id)) }
+        .From(self.source_from(seen + 1))
+    }
+
+    /// A source reading this feed from id `from` on.
+    fn source_from(from: int) -> Source {
+        let at = Cell.new(from)
+        Source { next: (wait: Duration) -> self.waited(at, wait) }
+    }
+
+    /// The event at `at`, once published — waiting up to `wait` for it.
+    /// An observer overtaken by retention while it waited has lost
+    /// events it was promised, and its stream fails rather than skip.
+    fn waited(at: Cell<int>, wait: Duration) -> Next {
+        let until = now_ms() + wait.ms
+        while at.get() >= self.next.get() {
+            if now_ms() >= until { return .Quiet }
+            sleep(look_again())
+        }
+        let id = at.get()
+        if id < self.first() { return .Failed }
+        at.set(id + 1)
+        .Event(self.log.get()[self.slot(id)])
+    }
+}

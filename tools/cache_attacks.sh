@@ -5,6 +5,10 @@
 # disagreement here. The fixtures are written fresh each run: the steps edit them.
 set -u
 cd "$(dirname "$0")/.."
+# The shim's own lines are no program's output: its `watch:` reports, and the
+# warning a shell with no terminal prints when the watchdog asks for job control.
+unwatched() { grep -v -e '^watch:' -e 'job control turned off'; }
+
 R=build/cache-attacks; fails=0; steps=0; holds=0
 rm -rf "$R" .avra-cache && mkdir -p $R/lib/src/inner $R/a/src $R/b/src $R/c/src
 cat > $R/lib/avra.toml <<'TOML'
@@ -114,7 +118,7 @@ S() { # S <label> <app>
     if [ ! -x "$bin" ]; then fails=$((fails+1)); echo "FAIL  $1 [$2] did not build (status $st): $(printf '%s\n' "$out" | cat - $R/$2.err | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
     # A REFUSED HOLD IS A FINDING HERE: the build is right and the hold was wrong.
     if grep -q "the hold was refused" $R/$2.err; then fails=$((fails+1)); echo "FAIL  $1 [$2] the hold was refused: $(grep -A1 'the hold was refused' $R/$2.err | tail -1 | cut -c1-160)"; return; fi
-    nat=$("$bin" 2>&1); ev=$(./avra run $R/$2 2>/dev/null | grep -v '^watch:')
+    nat=$("$bin" 2>&1); ev=$(./avra run $R/$2 2>/dev/null | unwatched)
     if [ "$nat" = "$ev" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [$2] ($held) -> $nat"; else fails=$((fails+1)); echo "FAIL  $1 [$2] ($held) native='$nat' eval='$ev'"; fi
 }
 ed() { python3 - "$@" <<'PY' || { fails=$((fails+1)); echo "FAIL  a fixture edit found nothing to edit: $1 <- $2"; }
@@ -359,8 +363,8 @@ rm -f build/avra.twin build/avra.other
 
 # CHECK SPEAKS THE SAME under a hold as from the sources
 for app in a b c; do
-    held_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')
-    rm -rf .avra-cache; plain_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')
+    held_says=$(./avra check $R/$app 2>&1 | unwatched)
+    rm -rf .avra-cache; plain_says=$(./avra check $R/$app 2>&1 | unwatched)
     steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || { fails=$((fails+1)); echo "FAIL  check [$app] speaks otherwise under the hold"; }
 done
 
@@ -368,7 +372,7 @@ done
 # decodes back to what a fresh reading of the same file produces, and a run
 # that compared nothing is a failure, never a clean pass.
 steps=$((steps+1)); ./avra check $R/a >/dev/null 2>&1
-vh=$(./avra check $R/a --verify-held 2>&1 | grep -v '^watch:')
+vh=$(./avra check $R/a --verify-held 2>&1 | unwatched)
 case "$vh" in
     *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over a compared nothing" ;;
     *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over a -> clean" ;;
@@ -395,7 +399,7 @@ ed $R/hcl/src/seed.av "{ 41 }" "{ 42 }"
 S "hc: the callee's body moves, the held caller's const must follow" hc
 got=$($R/hc/src/main 2>&1)
 [ "$got" = "hc 42" ] || { fails=$((fails+1)); echo "FAIL  warm hc printed '$got', wanted 'hc 42' — a held const did not follow its callee's body"; }
-vh_hc=$(./avra check $R/hc --verify-held 2>&1 | grep -v '^watch:')
+vh_hc=$(./avra check $R/hc --verify-held 2>&1 | unwatched)
 steps=$((steps+1))
 case "$vh_hc" in
     *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over hc compared nothing" ;;
@@ -466,7 +470,7 @@ export fn describe(c: Command) -> string {
 AV
 S "cold ce: a collect enum in a library module" ce
 S "warm ce: the collect enum's file is held" ce
-vh_ce=$(./avra check $R/ce --verify-held 2>&1 | grep -v '^watch:')
+vh_ce=$(./avra check $R/ce --verify-held 2>&1 | unwatched)
 steps=$((steps+1))
 case "$vh_ce" in
     *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over ce compared nothing" ;;
@@ -498,7 +502,7 @@ export type Sq = { s: int }
 AV
 printf 'use @rt.vtlib.{Sq}\nprintln("vt ${Sq { s: 3 }.s}")\n' > $R/vt/src/main.av
 S "cold vt: a trait/type pair, no impl yet" vt
-vh_vt0=$(./avra check $R/vt --verify-held 2>&1 | grep -v '^watch:')
+vh_vt0=$(./avra check $R/vt --verify-held 2>&1 | unwatched)
 n_vt0=$(printf '%s' "$vh_vt0" | sed -n 's/^verify-held: \([0-9]*\).*/\1/p')
 steps=$((steps+1))
 case "$vh_vt0" in
@@ -513,7 +517,7 @@ println("vt ${Sq { s: 3 }.s}")' 'use @rt.vtlib.{Shape, Sq}
 let sh: dyn Shape = Sq { s: 3 }
 println("vt ${sh.area()}")'
 S "vt: the impl lands in the same held file — a held impl is now present" vt
-vh_vt1=$(./avra check $R/vt --verify-held 2>&1 | grep -v '^watch:')
+vh_vt1=$(./avra check $R/vt --verify-held 2>&1 | unwatched)
 n_vt1=$(printf '%s' "$vh_vt1" | sed -n 's/^verify-held: \([0-9]*\).*/\1/p')
 steps=$((steps+1))
 case "$vh_vt1" in
@@ -575,7 +579,7 @@ fi
 # above, while `wrap/mod.av` was held) against a fresh reading: a wrongly-set
 # `consumed` bit from that run is a MISMATCH here, never a clean pass.
 S "vh2: no-op rebuild — leaf/mod.av is now itself a hold candidate" vh2
-vh_vh2=$(./avra check $R/vh2 --verify-held 2>&1 | grep -v '^watch:')
+vh_vh2=$(./avra check $R/vh2 --verify-held 2>&1 | unwatched)
 steps=$((steps+1))
 case "$vh_vh2" in
     *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over vh2 compared nothing" ;;
@@ -634,20 +638,20 @@ S "vh3: a body-only edit in leaf/mod.av — helper/mod.av stays held" vh3
 mkdir -p $R/rw/src
 printf '[package]\nname = "rt-rw"\nversion = "0.1.0"\n' > $R/rw/avra.toml
 printf 'mut n = 1\nprintln("${n}")\n' > $R/rw/src/main.av
-rm -rf .avra-cache; rw_cold=$(./avra check $R/rw 2>&1 | grep -v '^watch:')
+rm -rf .avra-cache; rw_cold=$(./avra check $R/rw 2>&1 | unwatched)
 steps=$((steps+1)); case "$rw_cold" in *unmutated_mut*) ;; *) fails=$((fails+1)); echo "FAIL  the rule fixture draws no finding cold, so it attacks nothing" ;; esac
 rm -rf .avra-cache; rw_build=$(./avra build $R/rw 2>&1)
 steps=$((steps+1)); case "$rw_build" in *unmutated_mut*) fails=$((fails+1)); echo "FAIL  a build printed a rule finding" ;; esac
-rw_after=$(./avra check $R/rw 2>&1 | grep -v '^watch:')
+rw_after=$(./avra check $R/rw 2>&1 | unwatched)
 steps=$((steps+1)); [ "$rw_after" = "$rw_cold" ] || { fails=$((fails+1)); echo "FAIL  a check after a build speaks otherwise than a cold check"; }
-rw_held=$(./avra check $R/rw 2>&1 | grep -v '^watch:')
+rw_held=$(./avra check $R/rw 2>&1 | unwatched)
 steps=$((steps+1)); [ "$rw_held" = "$rw_cold" ] || { fails=$((fails+1)); echo "FAIL  a check held on a check's rows speaks otherwise than a cold check"; }
 
 # A CHECK THAT HOLDS SOME FILES AND READS OTHERS AFTER A BUILD: the held ones
 # with no rule row are read again (a miss), and the check stands.
-rm -rf .avra-cache; lib_cold=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
+rm -rf .avra-cache; lib_cold=$(./avra check $R/lib 2>&1 | unwatched)
 rm -rf .avra-cache; ./avra build $R/a >/dev/null 2>&1; ./avra check $R/a >/dev/null 2>&1
-lib_after=$(./avra check $R/lib 2>&1 | grep -v '^watch:')
+lib_after=$(./avra check $R/lib 2>&1 | unwatched)
 steps=$((steps+1)); [ "$lib_after" = "$lib_cold" ] || { fails=$((fails+1)); echo "FAIL  a library check after an app's build and check speaks otherwise than a cold one"; }
 
 # `Visible`/`Resolved`/`Typed`/`Folded`/`Analysis`/`Lowered`
@@ -704,10 +708,10 @@ cat > $R/rs/src/main.av <<'AV'
 use bad.{x}
 println("${x}")
 AV
-rm -rf .avra-cache; rs_cold=$(./avra build $R/rs 2>&1 | grep -v '^watch:')
+rm -rf .avra-cache; rs_cold=$(./avra build $R/rs 2>&1 | unwatched)
 steps=$((steps+1)); case "$rs_cold" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  the trap fixture draws no diagnostic cold, so it attacks nothing" ;; esac
 printf '// moved\n' >> $R/rs/src/main.av
-rs_warm=$(./avra build $R/rs 2>&1 | grep -v '^watch:')
+rs_warm=$(./avra build $R/rs 2>&1 | unwatched)
 steps=$((steps+1)); case "$rs_warm" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  a non-structural refusal went silent on a warm build" ;; esac
 
 # A DURABLE WITNESS, PINNED — under AVRA_WITNESS_PIN=1 only: the
@@ -838,6 +842,27 @@ ed $R/lib/src/writeflow.av 'export fn maybe_bump(mut xs: List<int>) {}' 'export 
 S "maybe_bump now writes; relay's flow edge carries it into lib's held record, and the aliased path opens unique" w
 got_w=$($R/w/src/main 2>&1)
 [ "$got_w" = "w 5 6" ] || { fails=$((fails+1)); echo "FAIL  w (relay's inferred write, read back from lib's held record) printed '$got_w', wanted 'w 5 6' — pair[1] must stay unaliased"; }
+
+# `Decls.decl(d)` fetches its row through the pinned row storage, never
+# the relation's own recorded `get` — so it must still call `rows_read(x.file)`, the SAME
+# file-grain edge the hand table's read always fed the kernel. `drm`'s
+# held const `M` reads `drl`'s `seed` — a Const it runs — through a
+# fresh query frame every settle; editing `seed`'s body alone, warm,
+# must still move `M`. A lost edge would leave `drm` reusing the value
+# it settled before the edit.
+mkdir -p $R/drl/src $R/drm/src
+printf '[package]\nname = "@rt/drl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-drl"\npath = "src/lib.av"\n' > $R/drl/avra.toml
+printf 'export fn seed() -> int { 21 }\n' > $R/drl/src/seed.av
+printf 'export const M: int = seed()\n' > $R/drl/src/lib.av
+printf '[package]\nname = "rt-drm"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/drl" = { path = "../drl" }\n' > $R/drm/avra.toml
+printf 'use @rt.drl.{M}\nprintln("drm ${M}")\n' > $R/drm/src/main.av
+S "cold drm: a held const reads its callee's Decl row through the pinned handle" drm
+got_drm1=$($R/drm/src/main 2>&1)
+[ "$got_drm1" = "drm 21" ] || { fails=$((fails+1)); echo "FAIL  cold drm printed '$got_drm1', wanted 'drm 21'"; }
+ed $R/drl/src/seed.av "{ 21 }" "{ 22 }"
+S "drm: the callee's body moves — decl()'s file edge must still force a fresh frame" drm
+got_drm2=$($R/drm/src/main 2>&1)
+[ "$got_drm2" = "drm 22" ] || { fails=$((fails+1)); echo "FAIL  warm drm printed '$got_drm2', wanted 'drm 22' — decl()'s pinned-handle read lost the file-grain edge"; }
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
