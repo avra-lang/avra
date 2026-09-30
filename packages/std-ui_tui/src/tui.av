@@ -60,11 +60,11 @@ export fn cut(s: string, width: int) -> List<string> {
 
 /// Parts laid on lines: single-line parts share a line, `sep`
 /// apart, until the next would pass `w`; a multi-line part takes
-/// its own lines. Parts with no lines are skipped.
+/// its own lines. Parts with no lines, or one blank line, are skipped.
 fn flowed(parts: List<List<string>>, sep: string, w: int) -> List<string> {
     mut out: List<string> = []
     mut cur = ""
-    for ls in parts {
+    for ls in [p for p in parts if !is_blank_line(p)] {
         if ls.length == 1 && cur != "" && cells(cur) + cells(sep) + cells(ls[0]) <= w {
             cur = cur + sep + ls[0]
         } else {
@@ -75,6 +75,8 @@ fn flowed(parts: List<List<string>>, sep: string, w: int) -> List<string> {
     }
     if cur == "" { out } else { out.concat([cur]) }
 }
+
+fn is_blank_line(ls: List<string>) -> bool { ls.length == 1 && ls[0] == "" }
 
 // ── Nodes ───────────────────────────────────────────────────────
 
@@ -88,17 +90,20 @@ fn body(n: Node, w: int) -> List<string> {
     match n.role {
         .Text(c) -> wrap(c, w),
         .Heading(c, depth) -> titled(upper(c), if depth <= 1 { "=" } else { "-" }, w),
-        .Image(_, alt) -> ["[image: ${alt}]"],
-        .Link(label, to) -> ["${label} (${to})"],
-        .Button(label) -> ["[ ${label} ]"],
-        .Toggle(label, on) -> [if on { "[x] ${label}" } else { "[ ] ${label}" }],
-        .Field(label, value) -> ["${label}: ${value}${repeat("_", 12 - cells(value))}"],
+        .Image(_, alt) -> atom("[image: ${alt}]"),
+        .Link(label, to) -> atom("${label} (${to})"),
+        .Button(label) -> atom("[ ${label} ]"),
+        .Toggle(label, on) -> atom(if on { "[x] ${label}" } else { "[ ] ${label}" }),
+        .Field(label, value) -> atom("${label}: ${value}${repeat("_", 12 - cells(value))}"),
         .Column or .Item -> stacked(children(n, w), gap),
         .Row -> flowed(children(n, w), repeat(" ", gap_columns(gap)), w),
         .Section(title) -> titled(title, "-", w).concat(stacked(children(n, w), gap)),
         .List -> stacked([hung(ls) for ls in children(n, w - 2)], gap),
     }
 }
+
+/// A leaf's text as lines, at its own newlines.
+fn atom(s: string) -> List<string> { s.split("\n") }
 
 /// Each child's own lines, the childless ones dropped.
 fn children(n: Node, w: int) -> List<List<string>> {
