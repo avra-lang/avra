@@ -196,7 +196,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+.PHONY: objects census sizes traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -709,6 +709,16 @@ native-check: $(COMPILER_OBJS)
 # The measured curve: the suites' wall time.
 bench: $(COMPILER_OBJS)
 	@sh tools/bench.sh
+
+# Bytes of code per symbol by package: the compiler and a request's
+# server, each against BEFORE / REQUEST_BEFORE when given (a saved
+# binary), as the tables a slice's size delta is read from.
+#   make sizes BEFORE=build/avra.pre
+sizes:
+	@build/avra build tools/bench/request/src/main.av >/dev/null
+	@python3 tools/symsize.py build/avra $(BEFORE)
+	@echo
+	@python3 tools/symsize.py tools/bench/request/src/main $(REQUEST_BEFORE)
 
 # Mutated program tests through `avra check`: diagnose, never crash.
 fuzz: $(COMPILER_OBJS)
