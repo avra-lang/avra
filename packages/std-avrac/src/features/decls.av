@@ -85,7 +85,7 @@ use features.{
     Namespace,
     no_names,
 }
-use @std.meta.{Diagnostic, derive, identity}
+use @std.meta.{Diagnostic, bracket, derive, identity, plain_field}
 use @std.relation.{relation}
 use @std.relation.db.{Db as RelDb, new_db}
 
@@ -323,6 +323,7 @@ export type Ref = { @local @index decl: DeclId, @local @index file: FileId, @loc
 /// type, so a copy of `Decls` still reads and writes the tables the
 /// workspace built.
 @identity
+@plain_field("rows")
 export type Decls = {
     types: TypeRegistry,
     mains: Cell<List<DeclId?>>,
@@ -1627,6 +1628,7 @@ impl Decls {
 
     /// Whether seat `i` is written, declared or found: a method's
     /// receiver by its word, any seat by the pass.
+    @bracket("receivers")
     fn seat_writes_so_far(d: DeclId, i: int) -> bool {
         i == 0 && self.declared_writes.get()[d.index] || self.seat_written_so_far(d, i)
     }
@@ -1654,6 +1656,7 @@ impl Decls {
     }
 
     /// One contribution recorded, unless already present.
+    @bracket("fail_summary")
     fn record_inferred_error(d: DeclId, ty: TypeId) {
         let cur = self.inferred_errors_so_far(d)
         if !cur.any(same_type(it, ty)) { self.inferred_errs.keep(d.index, cur.concat([ty])) }
@@ -1685,6 +1688,7 @@ impl Decls {
     /// A `_`-declared fn's SETTLED error set — asking IS the query:
     /// the hook runs the whole-program fixpoint once, and this table
     /// holds every fn's answer after.
+    @bracket("fail_summary")
     fn inferred_errors(d: DeclId) -> List<TypeId> {
         (self.ensure_failures.get())()
         self.inferred_errors_so_far(d)
@@ -1694,6 +1698,7 @@ impl Decls {
     /// Asking IS the query: the hook runs the pass and records the dependency. Where the
     /// pass cannot run (inside a resolve) the hook answers false and only what was
     /// declared is read, so every answer is a function of what is recorded.
+    @bracket("receivers")
     fn writes_receiver(d: DeclId) -> bool {
         let answered = (self.ensure_writes.get())(d)
         self.declared_writes.get()[d.index] || answered && self.seat_written_so_far(d, 0)
@@ -1701,6 +1706,7 @@ impl Decls {
 
     /// The receiver's bit as the receivers pass found it, or null where the pass could
     /// not be asked: an absence of a finding is no finding of absence.
+    @bracket("receivers")
     fn written_found(d: DeclId) -> bool? {
         if !(self.ensure_writes.get())(d) { return null }
         self.seat_written_so_far(d, 0)
@@ -1708,6 +1714,7 @@ impl Decls {
 
     /// Whether the body writes through seat `i` as the pass found it, false where the
     /// pass could not be asked; the declared `mut` is what the caller's law reads.
+    @bracket("receivers")
     fn seat_written(d: DeclId, i: int) -> bool {
         let answered = (self.ensure_writes.get())(d)
         answered && self.seat_written_so_far(d, i)
@@ -2055,6 +2062,16 @@ impl Decls {
             .find((c) -> self.decl(c).kind is .Default && self.decl(c).name == field)
     }
 
+    /// What a record leaves out on purpose: its `@lacks(field, why)`s.
+    fn lacking(record: DeclId) -> List<Lacked> {
+        let file = self.annotation_home(record)
+        [Lacked { field: a.args[0], why: a.args[1] } for a in self.annotations_of(record) if self.lacks_mark(a, file)]
+    }
+
+    fn lacks_mark(a: AnnotationFact, file: FileId) -> bool {
+        a.args.length == 2 && self.is_meta_annotation(a, file, "lacks")
+    }
+
     /// Each written seat's default body, in seat order — null where
     /// the seat has none.
     fn seat_defaults(d: DeclId) -> List<DeclId?> {
@@ -2177,6 +2194,7 @@ impl Decls {
     }
 
     /// The table as it stands — the registering side's own read.
+    @bracket("methods")
     fn held_method(target: DeclId, name: string) -> DeclId? {
         for m in self.registered_methods(target) {
             if self.decl(m).name == name { return m }
@@ -2184,9 +2202,12 @@ impl Decls {
         null
     }
 
-    /// A type's registered methods, as they stand — the hook-free read of a reader
-    /// that is not making the table. Records the type's `Methods` cell in the open
-    /// query, so a reader depends on the impls it dispatches through.
+    /// A type's registered methods, RECORDED: the door for a reader
+    /// that is not making the table, which records the type's
+    /// `Methods` cell in the open query so it depends on the impls it
+    /// dispatches through, then reads through the table's own raw
+    /// cell.
+    @bracket("methods")
     fn methods_of(target: DeclId) -> List<DeclId> {
         if audit_build && self.auditing.get() { self.audited(Bypassed.Methods(target)) }
         self
@@ -2200,6 +2221,7 @@ impl Decls {
     /// still registering, an impl's file resolving): the table as it stands, and it
     /// records nothing. The table's computation waits on the reader, so an edge to it
     /// would be a cycle.
+    @bracket("methods")
     fn registered_methods(target: DeclId) -> List<DeclId> { self.methods.get()[target.index].get() }
 
     /// Every method a type declares, its table filled first: a CONSUMER read, and
@@ -2216,6 +2238,7 @@ impl Decls {
 
     /// A method registered under its type — the same declaration
     /// again (a recomputed sig) is the same entry.
+    @bracket("methods")
     fn declare_method(target: DeclId, m: DeclId) {
         let prior: DeclId? = self.held_method(target, self.decl(m).name)
         if prior != null && same_decl(prior!, m) { return }
