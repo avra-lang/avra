@@ -4,7 +4,7 @@
 // moves only its own edge. `Failures` is 20 and `Syntax` 25
 // (compiler/workspace.av's `ordinal`).
 use @std.avrac.compiler.{avra, new_workspace}
-use compiler.{Workspace}
+use compiler.{Workspace, ErrorSite}
 use compiler.host.{memory_host}
 use core.{DeclId}
 use query.{Key}
@@ -36,7 +36,7 @@ fn failing_source(a_body: string) -> string {
 
 fn surveyed(main: string) -> Workspace {
     let ws = failing_workspace(main)
-    let _ = ws.items(ws.file_id("/w/src/main.av"))
+    let _ = ws.analyze_file("/w/src/main.av")
     let _ = ws.failures()
     ws
 }
@@ -59,9 +59,16 @@ spec "compiler/failures — one syntax edge per surveyed declaration" {
             let ws = surveyed(failing_source("fail \"a\""))
             reads_syntax_of(ws, "a") && reads_syntax_of(ws, "b")
         }
-        then "`b` is typed as failing with text, read from its `Fail` bucket" {
+        then "`b`'s one `fail` is found in its `Fail` bucket" {
             let ws = surveyed(failing_source("fail \"a\""))
-            ws.decls.inferred_errors_so_far(failing_decl(ws, "b")).length == 1
+            ErrorSite.by_owner(ws.error_sites_db.get(), failing_decl(ws, "b")).length == 1
+        }
+        then "`a`'s two `fail`s, `?` and `catch` are each found in its own buckets" {
+            let ws = surveyed(
+                "fn a() -> Result<int, _> {\n    let v = b() catch e -> { b()? }\n    if v > 1 { fail \"x\" }\n    fail \"y\"\n}\n" +
+                    "fn b() -> Result<int, string> {\n    fail \"b\"\n}\n",
+            )
+            ErrorSite.by_owner(ws.error_sites_db.get(), failing_decl(ws, "a")).length == 4
         }
     }
     given "an edit to `a` alone" {
