@@ -15,6 +15,7 @@ use core.{
     Param,
     filled,
     same_decl,
+    list_eq,
     SpecParts,
     ImplParts,
     no_stmt,
@@ -280,8 +281,8 @@ impl Decls {
         let owners = self.owner_spans(f)
         // -1 until a first expression lands: an ownerless decl's
         // range is the empty 0..0
-        mut lo: List<int> = filled(self.decls.get().length, 0 - 1)
-        mut hi: List<int> = filled(self.decls.get().length, 0)
+        mut lo: List<int> = filled(self.decl_count(), 0 - 1)
+        mut hi: List<int> = filled(self.decl_count(), 0)
         // A SYNTHESIZED NODE HAS NO SPAN, AND A RANGE THAT SKIPS IT
         // STOPS SHORT OF IT. A desugaring is minted where it is used,
         // so source order is ownership order: a span-less expression
@@ -306,7 +307,7 @@ impl Decls {
         }
         for d in [o.d for o in owners].concat([main]) {
             let i = d.index
-            self.decls.set_at(i, self.decl(d) with { lo: started_at(lo[i]), hi: hi[i] })
+            self.set_decl(i, self.decl(d) with { lo: started_at(lo[i]), hi: hi[i] })
         }
     }
 
@@ -387,7 +388,7 @@ impl Decls {
     fn facts_of(d: DeclId) -> DeclFacts? {
         if audit_build && self.auditing.get() { self.audited(Bypassed.Facts(d)) }
         if d.index >= self.faces.get().length { return null }
-        self.rows_read(self.decls.get()[d.index].file)
+        self.rows_read(self.raw_decl(d).file)
         self.faces.get()[d.index]
     }
 
@@ -402,10 +403,10 @@ impl Decls {
         if d.index < self.faces.get().length { self.face(d, f) }
     }
 
-    /// A declaration's facts land, and the seal index follows them: the
-    /// facts they replace leave their buckets first, so a held declaration
-    /// captured from a partial store and then corrected from its record
-    /// ends in exactly the buckets its record names.
+    /// A declaration's facts land, and the seal index and its row's collect
+    /// columns follow them: the facts they replace leave their buckets first,
+    /// so a held declaration captured from a partial store and then corrected
+    /// from its record ends in exactly the buckets its record names.
     fn face(d: DeclId, f: DeclFacts) {
         let old = self.faces.get()[d.index]
         for name in old?.mut_seats ?? [] {
@@ -413,6 +414,15 @@ impl Decls {
         }
         for name in f.mut_seats { self.mut_seat_index.put(name, self.mut_seat_sealers(name).concat([d])) }
         self.faces.set_at(d.index, f)
+        self.filed_under(d, f.word, [a.name for a in f.annotations])
+    }
+
+    /// A row's `word` and `marks` rewritten when its facts name others —
+    /// a row whose collect columns already agree is left as it stands.
+    fn filed_under(d: DeclId, word: string?, marks: List<string>) {
+        let row = self.raw_decl(d)
+        if row.word == word && list_eq(row.marks, marks, (x, y) -> x == y) { return }
+        self.set_decl(d.index, row with { word: word, marks: marks })
     }
 
     /// Whether a declaration's body has no receiver — the fact eight sites used to read
@@ -500,8 +510,8 @@ impl Decls {
 
     /// An id for a key: the existing one (its row refreshed), or the
     /// next; a member joins its parent's children. Every table here is a
-    /// Cell — `keys.put` writes the one shared map in place, so a captured
-    /// hook and a live reader see the same row with no clone either way.
+    /// Cell, so a captured hook and a live reader see the same row with no
+    /// clone either way.
     fn mint(
         key: string,
         f: FileId,
@@ -515,7 +525,7 @@ impl Decls {
         root: ExprId?,
     ) -> DeclId {
         let known: DeclId? = self.known_id(key)
-        let id: DeclId = known ?? DeclId { index: self.decls.get().length }
+        let id: DeclId = known ?? DeclId { index: self.decl_row_rows.get().next_id() }
         let d = Decl {
             id: id,
             file: f,
@@ -529,10 +539,12 @@ impl Decls {
             root: root,
             lo: 0,
             hi: 0,
+            word: null,
+            marks: [],
+            key: key,
         }
         if known == null {
             self.decls.push(d)
-            self.keys.put(key, id)
             self.sigs.push(null)
             self.seat_types.push(null)
             self.provenance.push(null)
@@ -551,7 +563,7 @@ impl Decls {
             self.impls.push(Cell.new(no_is))
             self.faces.push(null)
             if kind is .Impl { self.note_impl(name, id) }
-            let _ = DeclRow
+            let _ = Decl
                 .insert(
                     self.decl_rows.get(),
                     file: f,
@@ -565,9 +577,13 @@ impl Decls {
                     root: root,
                     lo: 0,
                     hi: 0,
+                    word: null,
+                    marks: [],
+                    key: key,
                 )
         } else {
-            self.decls.set_at(id.index, d)
+            let prior = self.raw_decl(id)
+            self.set_decl(id.index, d with { word: prior.word, marks: prior.marks })
         }
         // THE ONE CAPTURE, at the one place a declaration is minted from a parse. Six
         // readers asked the store per pass; they ask this row now, and a held file's row
@@ -593,7 +609,7 @@ impl Decls {
     /// link, not a mint order.
     fn adopt(child: DeclId, parent: DeclId) {
         let d = self.decl(child)
-        self.decls.set_at(child.index, d with { parent: parent })
+        self.set_decl(child.index, d with { parent: parent })
         if !self.children.get()[parent.index].get().any(same_decl(it, child)) {
             self.children.get()[parent.index].push(child)
         }
@@ -601,12 +617,13 @@ impl Decls {
 
     /// A DECLARATION BY ITS IDENTITY — the key `mint` files it under, so the loader finds
     /// it without an ordinal that depend on parse/expand order.
-    fn named_decl(path: string, word: string, name: string) -> DeclId? { self.keys.get().get("${path}::${word}::${name}") }
+    fn named_decl(path: string, word: string, name: string) -> DeclId? { self.known_id("${path}::${word}::${name}") }
 
-    /// The id a key already names.
+    /// The id a key already names, read unrecorded off its bucket.
     fn known_id(key: string) -> DeclId? {
-        let held: DeclId? = self.keys.get().get(key)
-        held
+        let rs = self.decl_row_rows.get()
+        let id? = rs.first_id(rs.bucket_of_text(key_index, key)) else { return null }
+        DeclId { index: id }
     }
 
     // ── generated source, parsed and admitted ──
@@ -696,9 +713,7 @@ impl Decls {
                 null,
             )
         self.note_provenance(d, ann, name, at)
-        self
-            .decls
-            .set_at(d.index, self.decl(d) with { lo: lo, hi: store.const_value(s)!.index + 1 })
+        self.set_decl(d.index, self.decl(d) with { lo: lo, hi: store.const_value(s)!.index + 1 })
         d
     }
 
@@ -735,12 +750,12 @@ impl Decls {
             let mb: ExprId? = declared_body(store, m)
             let hi: int = if mb == null { cursor } else { mb!.index + 1 }
             let md = self.mint_method(member_key(key, store, m, fns), f, store, m, name, d, mb)
-            self.decls.set_at(md.index, self.decl(md) with { lo: cursor, hi: hi })
+            self.set_decl(md.index, self.decl(md) with { lo: cursor, hi: hi })
             members.push(md)
             cursor = hi
         }
         let own_hi: int = if body == null { cursor } else { body!.index + 1 }
-        self.decls.set_at(d.index, self.decl(d) with { lo: lo, hi: own_hi })
+        self.set_decl(d.index, self.decl(d) with { lo: lo, hi: own_hi })
         let fields: List<Param> = store.struct_parts(s)?.fields ?? []
         let seats: List<Param> = store.fn_parts(s)?.params ?? []
         let defaults = self.mint_defaults(key, f, s, fields.concat(seats), name, d)
@@ -755,7 +770,7 @@ impl Decls {
         mut from = lo
         for dd in defaults {
             let hi = (self.decl(dd).root?.index ?? from - 1) + 1
-            self.decls.set_at(dd.index, self.decl(dd) with { lo: from, hi: hi })
+            self.set_decl(dd.index, self.decl(dd) with { lo: from, hi: hi })
             from = hi
         }
     }
@@ -783,7 +798,7 @@ impl Decls {
             let hi: int = if mb == null { cursor } else { mb!.index + 1 }
             let mkey = member_key(key, store, m, block.fns)
             let md = self.mint_method(mkey, f, store, m, block.target, block_decl, mb)
-            self.decls.set_at(md.index, self.decl(md) with { lo: cursor, hi: hi })
+            self.set_decl(md.index, self.decl(md) with { lo: cursor, hi: hi })
             let mname = self.decl(md).name
             let seats: List<Param> = store.fn_parts(m)?.params ?? []
             let defaults = self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md)
@@ -791,7 +806,7 @@ impl Decls {
             methods = methods.concat([md]).concat(defaults)
             cursor = hi
         }
-        self.decls.set_at(block_decl.index, self.decl(block_decl) with { lo: lo, hi: cursor })
+        self.set_decl(block_decl.index, self.decl(block_decl) with { lo: lo, hi: cursor })
         [block_decl].concat(methods)
     }
 
@@ -849,7 +864,7 @@ impl Decls {
         // the arena's edge (nothing after it is another's). Typing,
         // resolution and lowering read it exactly as a written fn.
         let hi = store.exprs.count()
-        self.decls.set_at(d.index, self.decl(d) with { lo: lo, hi: hi })
+        self.set_decl(d.index, self.decl(d) with { lo: lo, hi: hi })
         self.record_generated(f, [d])
         self.note_provenance(d, ann, original, at)
         d
@@ -886,8 +901,7 @@ impl Decls {
         let orig = self.decl(annotated)
         let bd = self.mint_wrap_body(f, orig, ann, original, at)
         self
-            .decls
-            .set_at(
+            .set_decl(
                 annotated.index,
                 self.decl(annotated) with { stmt: wrapper_stmt, root: wrapper_root, lo: wrapper_lo, hi: wrapper_hi },
             )
@@ -933,7 +947,7 @@ impl Decls {
         let name = "${original}\$body"
         let d = self
             .mint(key, f, orig.stmt, name, orig.kind, false, orig.owner, orig.parent, false, orig.root)
-        self.decls.set_at(d.index, self.decl(d) with { lo: orig.lo, hi: orig.hi })
+        self.set_decl(d.index, self.decl(d) with { lo: orig.lo, hi: orig.hi })
         self.record_generated(f, [d])
         self.note_provenance(d, ann, original, at)
         d
