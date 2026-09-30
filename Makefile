@@ -502,9 +502,9 @@ cited:
 
 # DOGFOODING.md's own registry keeps a GENERATED block current
 # against `avra rules --markdown` — a rule's doc changes here or the
-# block does not, and this is what notices.
+# block does not, and the compiler's own renderer is what notices.
 dogfooding-rules:
-	@sh tools/dogfooding_rules.sh
+	@./build/avra rules --check-markdown DOGFOODING.md
 
 idioms:
 	@STATUS=0; CHECKED=0; \

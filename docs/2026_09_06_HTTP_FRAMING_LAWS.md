@@ -491,3 +491,36 @@ every other row (rows 2–3 are the harness that proves it).
 
 Near-miss rule for the harness: rows 12 and 33 both fail on a bare LF — assert the reason
 names line termination, not header parsing; row 37 must fail at the SP, not at the CR.
+
+## 5. Streamed bodies (as built)
+
+A body is either WHOLE (one buffer, written with its length) or a
+STREAM (a producer the connection pulls, `http.av`); an incoming body
+is READ as its handler asks (`body.av`). The laws, each a fixture:
+
+| Law | Fixture |
+|---|---|
+| The next piece is pulled only once the last is written, so a slow peer parks its own connection's task and memory is one piece per stream | `stream_test` (pulls hold still), `http_stream_laws`, `http_stream_download` (16 MiB in the suite; `AVRA_STREAM_PIECES=16384` streams 1 GiB at a 2 MB peak native) |
+| A stalled write is cancelled at the idle deadline; the stream is ended once however the pulling stops | `stream_test`, `http_stream_laws` |
+| A failure after the head ends the stream where it stands — no last chunk, a length never reached — and never writes a second status | `stream_test`, `http_stream_laws` |
+| A pull is given the idle deadline; a producer answering empty pieces is as quiet as one answering nothing; every piece yields the core | `stream_test` (quiet source, spinner) |
+| An empty piece writes nothing: an empty chunk is the last one | `stream_test` |
+| A handler runs once its head is here; a piece is at most one socket read, a chunk of any size arrives in pieces | `body_test`, `http_stream_upload` (16 MiB in the suite; 1 GiB under 1 MB native the same way) |
+| `100 Continue` goes out before the first read and never for a body nobody reads | `body_test` |
+| A body left unread is dropped up to `Limits.body`, else the connection closes behind the answer | `body_test` |
+| A body that broke is answered by its own law (413, 400, 408), never by the handler; a peer gone mid-body is answered nothing | `body_test`, `http_stream_laws` |
+| A body kept past its handler reads what it had and ends — never another message's socket | `body_test` |
+| An expired event cursor is told (`cursor-expired`) before the live stream, never silently skipped | `sse_test`, `http_sse` |
+| Every WebSocket protocol law is a close code, sent and answered alike | `ws_test`, `http_ws`, Autobahn (`tools/bench/autobahn`) |
+| A socket ended — by the close handshake or a broken law — answers `Closed` to every later call and touches its descriptor no more; the server closes it when the session returns | `ws_test` |
+| A client opening's target and authority are words of the request line: one holding a line end is refused before a byte is sent | `ws_test` |
+| A gathered body is bounded from its first piece on — one chunk past `Limits.body` is 413 | `body_test` |
+| A feed's log is a ring: a publish writes one slot, and a retention of zero or less keeps nothing and still numbers | `sse_test` |
+| A 1xx is interim, never a final answer; the one exception is a 101 that hands the connection over and names its protocol in `upgrade` (9110 §15.2) | `http_adversarial_test` |
+| A switch is made only to what a 1.1 request's `upgrade` field listed — an HTTP/1.0 `upgrade` is ignored — else the answer is the server's 500 and nothing is handed over (9110 §7.8) | `http_adversarial_test`, `ws_test` |
+| A response carrying `upgrade` gets the `upgrade` option in the `connection` field the writer owns; a 426 must carry `upgrade` (9110 §7.8, §15.5.22) | `http_adversarial_test` |
+| A `100 Continue` the request asked for goes out before its 101; a switch over a body the server never read is the server's 500 | `ws_test` |
+
+Native programs pass under `AVRA_RC_GUARD=1`; the evaluator cannot run
+under the guard, since the guard also holds the compiler's own freed
+boxes and its const budget runs out before the program starts.

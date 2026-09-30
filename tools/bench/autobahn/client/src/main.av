@@ -1,0 +1,48 @@
+//! The WebSocket client the Autobahn fuzzingserver drives: it asks how
+//! many cases there are, runs each by echoing every message until the
+//! server closes, then asks for the reports.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.time.{secs}
+use @std.http.ws.{Socket, Message, WsLimits, dialed}
+
+fn host() -> string { env_or("AUTOBAHN_HOST", "127.0.0.1") }
+
+fn port() -> int { parse_int(env_or("AUTOBAHN_PORT", "9001")) ?? 9001 }
+
+/// A socket on `target`, or absent when the server would not open one.
+fn opened(target: string) -> Socket? {
+    match dialed(host(), port(), target, secs(10), WsLimits {}) { .Ok(s) -> s, .Err(_) -> null }
+}
+
+/// How many cases the fuzzingserver holds.
+fn case_count() -> int {
+    let s? = opened("/getCaseCount") else { return 0 }
+    match s.receive() {
+        .Ok(m) -> match m { .Text(t) -> parse_int(t) ?? 0, .Binary(_) or .Close(_, _) -> 0 },
+        .Err(_) -> 0,
+    }
+}
+
+/// Case `i` run: every message echoed until the server ends it.
+fn ran(i: int) -> bool {
+    let s? = opened("/runCase?case=${i}&agent=avra") else { return false }
+    while true {
+        match s.receive() {
+            .Ok(m) -> match m {
+                .Text(t) -> { let _ = s.send_text(t) },
+                .Binary(b) -> { let _ = s.send_binary(b) },
+                .Close(_, _) -> { return true },
+            },
+            .Err(_) -> { return true },
+        }
+    }
+    true
+}
+
+let n = case_count()
+println("cases: ${n}")
+for i in 1..n + 1 { let _ = ran(i) }
+let reported = opened("/updateReports?agent=avra")
+if reported != null { let _ = reported!.close(1000, "", secs(10)) }
+println("done")

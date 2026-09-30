@@ -469,7 +469,11 @@ train_ladder() {
 train_ladder_body() {
     resolve_main_wt
     good=""
-    tail="$*"
+    sieve="$scratch/candidates/sieve"
+    rm -rf "$sieve"
+    mkdir -p "$scratch/candidates"
+    git -C "$main_wt" worktree add -q --detach "$sieve" main
+    tail="$(sh "$land" --call conflict_sieve "$sieve" "$@")"
     wave=0
     while [ -n "$(printf '%s' "$tail" | tr -d '[:space:]')" ]; do
         wave=$((wave + 1))

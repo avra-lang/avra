@@ -335,7 +335,7 @@ fn memory_ins(
             .Load(dst, slot) -> {
                 out.push(i)
                 if is_managed(types, reg_types[dst.index]) &&
-                    borrow_outlives(defs, next_barrier, types, reg_types, ins, at, dst, slot) {
+                    borrow_outlives(defs, next_barrier, types, reg_types, ins, at, dst, slot, false) {
                     out.push(Ins.Retain(dst))
                     manages(types, reg_types, open_scopes, i)
                 }
@@ -439,6 +439,7 @@ fn borrow_outlives(
     at: int,
     dst: Reg,
     slot: Reg,
+    identity: bool,
 ) -> bool {
     mut views: List<Reg> = [dst]
     mut last = at
@@ -458,7 +459,7 @@ fn borrow_outlives(
         }
         j = j + 1
     }
-    leaves_or_changes(defs, next_barrier, ins, at, last, slot)
+    leaves_or_changes(defs, next_barrier, ins, at, last, slot, identity)
 }
 
 /// WHETHER THE CELL'S REFERENCE MAY NOT STAND for the whole stretch a borrow is
@@ -481,6 +482,7 @@ fn leaves_or_changes(
     at: int,
     last: int,
     slot: Reg,
+    identity: bool,
 ) -> bool {
     if next_barrier[at + 1] > last { return false }
     mut depth = 0
@@ -488,7 +490,7 @@ fn leaves_or_changes(
     mut k = next_barrier[at + 1]
     while k < ins.length && (k <= last || loops > 0) {
         let i = ins[k]
-        if changes_cell(defs, ins, i, slot) { return true }
+        if changes_cell(defs, ins, i, slot, identity) { return true }
         if opens(i) {
             depth = depth + 1
             if i is .LoopStart { loops = loops + 1 }
@@ -607,11 +609,15 @@ fn region_exit(ins: List<Ins>, k: int) -> int {
 /// box `self`'s own field read did, under a different register, and
 /// only `aliases_arg0` says so (`owns_result` alone stops the trace,
 /// right for an ordinary allocator and wrong for a thaw).
-fn changes_cell(defs: List<int>, ins: List<Ins>, i: Ins, slot: Reg) -> bool {
+///
+/// A user call changes an IDENTITY `slot` (one on a cell's chain,
+/// `read_outlives`) whatever it is handed.
+fn changes_cell(defs: List<int>, ins: List<Ins>, i: Ins, slot: Reg, identity: bool) -> bool {
     if i is .Load { return false }
     match i {
         .CallRt(_, callee, args) -> writes_arg(callee, args, slot),
         .CallRtVoid(callee, args) -> writes_arg(callee, args, slot) || aliased_write(defs, ins, callee, args, slot),
+        .Call(_, _, _) or .CallPtr(_, _, _) -> identity || reads_reg(i, slot),
         rest -> reads_reg(i, slot),
     }
 }
@@ -667,7 +673,12 @@ fn turns(i: Ins) -> bool { i is .ArmEnd || i is .LoopCond }
 /// exact test still runs at every position this reaches; under-inclusive
 /// would skip a real barrier, which `barrier_positions` must never do.
 fn barrier_kind(i: Ins) -> bool {
-    opens(i) || closes(i) || turns(i) || !(i is .Load) && reads_some(i)
+    opens(i) || closes(i) || turns(i) || calls(i) || !(i is .Load) && reads_some(i)
+}
+
+/// Whether `i` runs a user callee, which may reach any `Cell`.
+fn calls(i: Ins) -> bool {
+    match i { .Call(_, _, _) or .CallPtr(_, _, _) -> true, rest -> false }
 }
 
 /// THE NEXT BARRIER AT OR AFTER EACH POSITION, once per function body —
@@ -963,6 +974,12 @@ fn takes_twin(
 /// read asks, with the SUBJECT register standing where the cell
 /// does. Declining the owned twin is what leaves the count at one,
 /// so the write that follows lands IN PLACE instead of cloning.
+///
+/// A `Cell` IS AN IDENTITY: `set` replaces what it holds and `set_at`,
+/// `push` and `put` write the held list or map in place, whatever any
+/// count says — so no reference along the way keeps a borrow below the
+/// cell standing. A borrow whose chain reaches a cell, read past any user
+/// call, owns: the callee may reach that cell, by a seat or a capture.
 fn read_outlives(
     defs: List<int>,
     next_barrier: List<int>,
@@ -973,8 +990,43 @@ fn read_outlives(
     dst: Reg,
     args: List<Reg>,
 ) -> bool {
-    if args.is_empty() { return true }
-    borrow_outlives(defs, next_barrier, types, reg_types, ins, at, dst, args[0])
+    let subject? = args.first() else { return true }
+    borrow_outlives(
+        defs,
+        next_barrier,
+        types,
+        reg_types,
+        ins,
+        at,
+        dst,
+        subject,
+        crosses_cell(defs, ins, types, reg_types, subject),
+    )
+}
+
+/// Whether `r` carries a `Cell`, or is a view taken, at any depth, from one.
+fn crosses_cell(
+    defs: List<int>,
+    ins: List<Ins>,
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    r: Reg,
+) -> bool {
+    if is_cell(types, reg_types[r.index]) { return true }
+    let d = defs[r.index]
+    if d < 0 { return false }
+    let src? = view_source(ins[d]) else { return false }
+    crosses_cell(defs, ins, types, reg_types, src)
+}
+
+/// Whether a value of `ty` carries a `Cell` in its own word: one, a
+/// nullable one, or a flat record with one among its fields.
+fn is_cell(types: TypeRegistry, ty: TypeId) -> bool {
+    match types.shape_of(types.seen_through(ty)) {
+        .Cell(_) -> true,
+        .Opt(inner) -> is_cell(types, inner),
+        rest -> types.flat_fields(ty).any(is_cell(types, it)),
+    }
 }
 
 /// A push's VALUE seat (arg 1) holds a managed type.
@@ -1157,6 +1209,7 @@ impl Lives {
             d,
             r,
             slot,
+            false,
         ) {
             return null
         }

@@ -7,8 +7,8 @@
 //! before the language grew able to say them; a sibling shape not
 //! yet landed is noted at its rule, not silently dropped
 //! (avra-8sb5.25.16).
-use core.{TypeRef}
-use features.{AnnotationFact, ArmInfo, Code, Fix, enclosing_decl, rule, said}
+use core.{TypeRef, flatten}
+use features.{AnnotationFact, ArmBind, ArmInfo, Code, Fix, Scan, Ty, enclosing_decl, rule, said}
 use @std.meta.{name}
 
 /// A refusal assembled from `pointed`/`error_at` by hand — the one
@@ -994,14 +994,15 @@ fn described_field(f: Code) -> string { "${f.name() ?? "?"}: ${f.text()}" }
 /// bind (every one binding the same names at the same types, F2039's
 /// law). GUARDED RULE-SIDE over `Code.arms()` (`Expr.Match` has no
 /// fixed arm count a quote pattern can spell): two sibling arms agree
-/// when neither carries a guard and their VALUE Codes are text-equal
-/// — wider than the retired regex, which read single-line arms only.
+/// when neither carries a guard, their VALUE Codes are text-equal,
+/// and they BIND ALIKE — the same names, each at the type typing gave
+/// it on both arms (`ArmInfo.binds`). `.Text(p)` and `.Heading(p)`
+/// share a body's text while `p` wears two types, and `or` refuses
+/// that join; an arm typing never reached binds nothing it can vouch
+/// for, so it joins only when it binds no name at all.
 ///
-/// THE LAW TRUSTS THE TYPE-CHECK, NEVER THE IR MATCH: whether the
-/// join is SOUND is the alternatives-bind question — do the two
-/// patterns bind the same names at the same types (F2039)? — a
-/// TYPING fact this rule-side text scan does not carry, so the
-/// rewrite does not answer it either. Two arms sharing one body lower
+/// THE LAW TRUSTS THE TYPE-CHECK, NEVER THE IR MATCH: the guard reads
+/// the binds' types, and the rewrite is still held to typing. Two arms sharing one body lower
 /// as TWO copies of it, one per jump-table entry; the merged
 /// `or`-arm lowers as ONE — fewer instructions after every honest
 /// join, so `ir_proved`'s instruction-for-instruction comparison can
@@ -1011,8 +1012,11 @@ fn described_field(f: Code) -> string { "${f.name() ?? "?"}: ${f.text()}" }
 /// exactly as it would have under a full IR match, so the law costs
 /// nothing the proof was ever going to buy — the same door
 /// `modified_copy_literal`'s `with` collapse already stands behind.
-@fixes("match k { .Struct(d, _) -> d, .Enum(d, _) -> d }", "match k { .Struct(d, _) or .Enum(d, _) -> d }")
+@fixes("fn f(k: K) -> int { match k { .Struct(d, _) -> d, .Enum(d, _) -> d } }\nenum K { Struct(n: int, m: int), Enum(n: int, m: int) }", "match k { .Struct(d, _) or .Enum(d, _) -> d }")
+@fixes("match k { .A -> 1, .B -> 1 }", "match k { .A or .B -> 1 }")
 @keeps("match k { .A -> 1, .B -> 2 }")
+@keeps("fn f(k: K) -> int { match k { .A(d) -> 0, .B(d) -> 0 } }\nenum K { A(n: int), B(s: string) }")
+@keeps("match k { .A(d) -> 0, .B(d) -> 0 }")
 @law("two match arms whose bodies are identical text answer the same value whichever pattern matched, so joining the patterns with `or` changes nothing but which arm parses the choice")
 export rule one_body_arms { quote { ${lit} } if merge_index(lit) != null -> one_body_arms_fix(lit) }
 
@@ -1032,31 +1036,24 @@ fn merge_index(lit: Code) -> int? {
         if a.guard == null &&
             b.guard == null &&
             a.value.text() == b.value.text() &&
-            typed_alike(a.value, b.value) {
+            binds_agree(a.binds(), b.binds()) {
             return i
         }
     }
     null
 }
 
-/// Whether two same-text bodies read every node at one type — what an
-/// `or` arm needs, since a name it binds binds at one type: `.A(x) ->
-/// "${x}"` over an `int` and over a `string` spell one body and join
-/// nothing.
-fn typed_alike(a: Code, b: Code) -> bool {
-    let ka = a.kids()
-    let kb = b.kids()
-    one_type(a, b) &&
-        ka.length == kb.length &&
-        [i for i in 0..ka.length].all((i) -> typed_alike(ka[i], kb[i]))
+/// Whether two arms bind the same names at the same types — the
+/// `or`-bind law, which a join must keep.
+fn binds_agree(a: List<ArmBind>, b: List<ArmBind>) -> bool {
+    a.length == b.length && a.all((x) -> bound_alike(b, x))
 }
 
-/// Whether two nodes answer one type — both typeless (a statement, a
-/// pattern) included.
-fn one_type(a: Code, b: Code) -> bool {
-    let ta? = a.type() else { return b.type() == null }
-    let tb? = b.type() else { return false }
-    ta.same(tb)
+/// Whether `others` binds `x`'s name at `x`'s type — never when
+/// either side went untyped.
+fn bound_alike(others: List<ArmBind>, x: ArmBind) -> bool {
+    let t? = x.ty else { return false }
+    others.any(it.name == x.name && it.ty?.same(t) ?? false)
 }
 
 /// The rewrite: every OTHER arm re-spliced as it already reads, the
@@ -1301,6 +1298,90 @@ fn bypass_found(c: Code, verb: string, bracket: string) -> Fix {
                 "a hook-free read lives inside its own bracket — `${verb}` is legal only inside `@bracket(\"${bracket}\")`, and this caller wears no such mark; read it through the recording accessor, or annotate the caller `@bracket(\"${bracket}\")` if it IS a member",
                 "this call",
                 null,
+            ),
+        )
+}
+
+/// A PER-FILE id matched across a WHOLE relation store: a scan over
+/// `T.all(db)` — a comprehension's head, or a `find`/`any`/`all`
+/// call's subject — whose tests read a column typed `ExprId`,
+/// `StmtId`, `PatId` or `At` and no column typed `DeclId` or `FileId`.
+/// An arena id names a node only within its own file, and every file
+/// mints the same small numbers, so the match answers every file's
+/// node at that index. The honest scan narrows by a workspace-global
+/// column first — read through its `by_<column>` index, or test it
+/// beside the id.
+///
+/// A STORE BUILT PER FILE holds one file's rows, so its ids agree: a
+/// `db` reached through a `FileView` or an arena (`view.assign_roots()`)
+/// is exempt. THE ORIGIN IS READ OFF THE `db` EXPRESSION'S OWN TYPES,
+/// so a per-file store bound to a plain local first reads as a
+/// workspace one — license that site. A scan over a list bound from
+/// `T.all(db)` first is not reached: the source must be the call.
+///
+/// NO REWRITE: which global column narrows the rows — and whether the
+/// relation indexes it — is the relation's own design, not this site's.
+@keeps("[s for s in rows if s.at == c]")
+export rule file_id_across_relation {
+    quote { ${lit} } if file_scoped_column(lit) != null -> file_id_across_relation_found(file_scoped_column(lit)!),
+}
+
+/// The first per-file id column `lit`'s scan tests, when `lit` scans a
+/// whole workspace store and tests no global column — absent for
+/// every other shape.
+fn file_scoped_column(lit: Code) -> Code? {
+    let s? = lit.comp_scan() ?? call_scan(lit) else { return null }
+    if s.source.method_name() != "all" { return null }
+    let db? = s.source.call_args().first() else { return null }
+    if db.type()?.name() != "Db" || nodes_under(db).any(per_file_holder) { return null }
+    let row? = s.source.type()?.element() else { return null }
+    let cols = [c for t in s.tests for c in nodes_under(t) if column_of(c, row)]
+    if cols.any((c) -> column_typed(c, global_id_types)) { return null }
+    cols.find((c) -> column_typed(c, file_id_types))
+}
+
+/// A `find`/`any`/`all` call as a scan: its subject, and its predicate.
+fn call_scan(lit: Code) -> Scan? {
+    if !scan_methods.contains(lit.method_name() ?? "") { return null }
+    let src? = lit.kids().first() else { return null }
+    Scan { source: src, tests: lit.call_args() }
+}
+
+const scan_methods: List<string> = ["find", "any", "all"]
+
+/// The ids an arena mints per file.
+const file_id_types: List<string> = ["ExprId", "StmtId", "PatId", "At"]
+
+/// The ids that name one thing across the workspace.
+const global_id_types: List<string> = ["DeclId", "FileId"]
+
+/// The holders whose stores are built from one file.
+const per_file_holders: List<string> = ["FileView", "SyntaxArena", "NodeStore"]
+
+fn nodes_under(c: Code) -> List<Code> { [c].concat(flatten([nodes_under(k) for k in c.kids()])) }
+
+fn per_file_holder(c: Code) -> bool { per_file_holders.contains(c.type()?.name() ?? "") }
+
+/// Whether `c` reads a field off a value typed `row`.
+fn column_of(c: Code, row: Ty) -> bool {
+    if c.prop_name() == null { return false }
+    c.kids().first()?.type()?.same(row) ?? false
+}
+
+/// Whether `c`'s type, through one nullable, is named in `names`.
+fn column_typed(c: Code, names: List<string>) -> bool {
+    let t? = c.type() else { return false }
+    names.contains((t.carried() ?? t).name())
+}
+
+fn file_id_across_relation_found(col: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                col.loc(),
+                "`${col.text()}` is a per-file arena id matched across a whole relation store — an arena id names a node only within its own file",
+                "this column",
+                "narrow the rows by a `DeclId` or `FileId` column first — its `by_` index, or a test beside this one",
             ),
         )
 }
