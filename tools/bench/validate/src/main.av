@@ -1,11 +1,13 @@
-//! WHAT VALIDATION COSTS BESIDE PARSING. One Signup payload, read a
-//! hundred thousand times four ways: `@std/json`'s parse alone, parse
-//! into a `Value`, parse and decode through `@derive(Decode)` with
-//! every rule, and the same over a payload that breaks six rules — the
+//! WHAT VALIDATION COSTS BESIDE PARSING. §11's Signup, read from
+//! `payloads/` (the files the Rust and C references read), two hundred
+//! thousand times each way: `@std/json`'s parse alone, parse into a
+//! `Value`, parse and decode through `@derive(Decode)` with every
+//! rule, and the same over the payload that breaks eight rules — the
 //! refusal path, which builds every issue. Each line is nanoseconds
-//! per payload.
+//! per payload; `run.sh` interleaves the three and takes medians.
 use @std.meta.{derive}
 use @std.time.{now_ns}
+use @std.io.{read_text, env}
 use @std.json.{parse}
 use @std.validate.{
     Decode,
@@ -43,6 +45,10 @@ fn adult_for_pro(s: Signup) -> Result<Signup, Issue> {
 }
 
 @derive(Decode)
+@one_of(["music", "maths", "code"])
+type Interest = string
+
+@derive(Decode)
 @adult_for_pro
 type Signup = {
     @email email: string,
@@ -51,6 +57,8 @@ type Signup = {
     @secret @length(min: 12) password: string,
     @secret @matches(password, "password") confirm: string,
     @one_of(["free", "pro"]) plan: string = "free",
+    interests: List<Interest> = [],
+    referrer: Username? = null,
 }
 
 fn parse_only(text: string, n: int) -> int {
@@ -74,24 +82,19 @@ fn full(text: string, n: int) -> int {
     ok
 }
 
-fn timed(label: string, t0: int, t1: int, n: int) {
-    println("${label}: ${(t1 - t0) / n} ns/payload")
+fn timed(label: string, n: int, run: fn(int) -> int) -> int {
+    let _warm = run(n / 10)
+    let t0 = now_ns()
+    let r = run(n)
+    println("${label}: ${(now_ns() - t0) / n} ns/payload")
+    r
 }
 
-let good = "{\"email\": \"ada@lovelace.dev\", \"age\": 36, \"username\": \"ada-l\", \"password\": \"correct horse battery\", \"confirm\": \"correct horse battery\", \"plan\": \"pro\"}"
-let bad = "{\"email\": \"ada@lovelace\", \"age\": 9, \"username\": \"Ada!\", \"password\": \"correct horse\", \"confirm\": \"correct house\", \"plan\": \"prp\", \"admin\": true}"
-let n = 100000
-let a = now_ns()
-let r1 = parse_only(good, n)
-let b = now_ns()
-let r2 = to_value(good, n)
-let c = now_ns()
-let r3 = full(good, n)
-let e = now_ns()
-let r4 = full(bad, n)
-let f = now_ns()
-timed("std-json parse           (valid)   ", a, b, n)
-timed("from_json -> Value       (valid)   ", b, c, n)
-timed("from_json + decode       (valid)   ", c, e, n)
-timed("from_json + decode       (6 issues)", e, f, n)
+let dir = env("AVRA_BENCH_PAYLOADS") ?? "tools/bench/validate/payloads"
+let good = read_text("${dir}/valid.json") catch ""
+let bad = read_text("${dir}/refused.json") catch ""
+let r1 = timed("parse only (valid)", 200000, (n) -> parse_only(good, n))
+let r2 = timed("to Value (valid)", 200000, (n) -> to_value(good, n))
+let r3 = timed("decode + rules (valid)", 200000, (n) -> full(good, n))
+let r4 = timed("decode + rules (refused, every rule)", 200000, (n) -> full(bad, n))
 "${r1 + r2 + r3 + r4}"

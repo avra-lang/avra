@@ -528,3 +528,29 @@ Recorded as each decision landed on `lane/validate`.
   ```
 - **`@derive(Decode)` is written.** §1's type carries no derive; the
   derive is the visible door (P7), one line.
+
+## 15. Speed
+
+The bar: decode plus every rule at serde_json + garde speed or better,
+and a refusal within 1.5x of an acceptance. `tools/bench/validate/run.sh`
+is the receipt: §11's Signup (eight fields, a list of named strings, a
+nullable named field, a cross-field rule) read from the same two files
+by Avra, by Rust (serde_json straight into the struct, then garde) and
+by C (yyjson, then hand-written rules over views into its document —
+the floor, building no messages). Separate processes, interleaved
+round by round, median of five, ns per payload, on an M-series Mac
+under load.
+
+**Before** (lane/validate 4adfe22):
+
+| row | Avra | Rust | C |
+|---|---|---|---|
+| parse only (valid) | 2865 | 733 | 144 |
+| to `Value` (valid) | 3290 | — | — |
+| decode + rules (valid) | 7615 | 1291 | 244 |
+| decode + rules (refused, every rule) | 12279 | 2060 | 259 |
+
+Rust's "every rule" row reads a copy of the struct without
+`deny_unknown_fields`: serde stops at the first shape error, so the
+strict struct never reaches garde (924 ns, one issue). Avra reports
+all eight issues in both modes.
