@@ -1,5 +1,6 @@
-# The merge queue's check: each train's combined commit, built and tested.
-# Runs on the same Ubuntu and LLVM as the Sprites.
+# The merge queue's check: each train's combined commit, built once, then
+# every affected package's suite on its own runner at once. `test` is the
+# one required check.
 name: checks
 
 on:
@@ -10,44 +11,96 @@ concurrency:
   group: checks-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  LLVM_PREFIX: /usr/lib/llvm-22
+
 jobs:
-  test:
+  compiler:
     runs-on: ubuntu-latest
     container: ubuntu:26.04
-    timeout-minutes: 90
-    env:
-      LLVM_PREFIX: /usr/lib/llvm-22
+    timeout-minutes: 30
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+      packages: ${{ steps.plan.outputs.packages }}
     steps:
-      - name: toolchain
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            ca-certificates git make python3 rsync clang-22 llvm-22-dev
-          ln -sf /usr/lib/llvm-22/bin/clang /usr/local/bin/clang
-          ln -sf /usr/lib/llvm-22/bin/llvm-config /usr/local/bin/llvm-config
-          mkdir -p /opt/homebrew/opt && ln -sfn /usr/lib/llvm-22 /opt/homebrew/opt/llvm
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: compiler key
-        id: key
+        with: { fetch-depth: 0 }
+      - run: sh tools/ci-toolchain.sh
+      - id: key
         run: |
           git config --global --add safe.directory "$PWD"
-          echo "hash=$(sh tools/sources_hash.sh)" >> "$GITHUB_OUTPUT"
+          echo "key=avra-$(sh tools/sources_hash.sh)" >> "$GITHUB_OUTPUT"
+      - id: plan
+        run: |
+          git fetch -q origin main
+          sh tools/affected_packages.sh origin/main HEAD "$PWD" 2>/dev/null \
+            | python3 -c 'import json,sys; print("packages=" + json.dumps([l.strip() for l in sys.stdin if l.strip()]))' \
+            >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v4
         id: cache
         with:
           path: build/avra
-          key: avra-${{ steps.key.outputs.hash }}
+          key: ${{ steps.key.outputs.key }}
           restore-keys: avra-
-      - name: compiler
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
-      - uses: actions/cache/save@v4
-        if: steps.cache.outputs.cache-hit != 'true'
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
         with:
           path: build/avra
-          key: avra-${{ steps.key.outputs.hash }}
-      - name: test
-        run: sh tools/work test
+          key: ${{ steps.key.outputs.key }}
+
+  lint:
+    needs: compiler
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: sh tools/ci-toolchain.sh
+      - uses: actions/cache/restore@v4
+        with:
+          path: build/avra
+          key: ${{ needs.compiler.outputs.key }}
+          fail-on-cache-miss: true
+      - name: fmt
+        run: |
+          git config --global --add safe.directory "$PWD"
+          git fetch -q origin main
+          changed=$(git diff --name-only --diff-filter=d origin/main...HEAD -- '*.av')
+          [ -z "$changed" ] || build/avra fmt --check $changed
+      - name: idioms
+        run: build/avra check packages/std-avrac --baseline tools/idioms.baseline
+
+  suite:
+    needs: compiler
+    if: needs.compiler.outputs.packages != '[]'
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.compiler.outputs.packages) }}
+    name: suite (${{ matrix.package }})
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh tools/ci-toolchain.sh
+      - uses: actions/cache/restore@v4
+        with:
+          path: build/avra
+          key: ${{ needs.compiler.outputs.key }}
+          fail-on-cache-miss: true
+      - run: make -s -o avra objects libs
+      - run: build/avra test ${{ matrix.package }}
+
+  test:
+    needs: [compiler, lint, suite]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for r in "${{ needs.compiler.result }}" "${{ needs.lint.result }}" "${{ needs.suite.result }}"; do
+            case $r in success|skipped) ;; *) echo "a check failed: $r"; exit 1 ;; esac
+          done

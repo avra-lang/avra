@@ -8,8 +8,8 @@
 #   sh tools/work status       every open PR: checks and queue state
 #
 # `test`, `run` and `land` run from inside the worktree. Main moves only through
-# GitHub's merge queue, which runs `work test` on its own runners over each
-# train's combined commit (.github/workflows/checks.yml); nothing here writes main.
+# GitHub's merge queue, which tests each train's combined commit on its own
+# runners (.github/workflows/checks.yml); nothing here writes main.
 set -eu
 
 tools=$(cd "$(dirname "$0")" && pwd)
@@ -52,20 +52,7 @@ test_() {
         set -- "$@" "make -o avra libs >/dev/null && build/avra test $p"
     done
     set -- "$@" "build/avra check packages/std-avrac --baseline tools/idioms.baseline"
-    if [ -n "${CI:-}" ]; then here_all "$@"; else AVRA_SP_TREE=$PWD sh "$tools/sp" -p "$@"; fi
-}
-
-# Runs each check on this machine, every one to the end; fails if any did.
-here_all() {
-    fail=0
-    for c in "$@"; do
-        echo "::group::$c"
-        t=$(date +%s)
-        if sh -c "$c"; then r=ok; else r=FAILED; fail=1; fi
-        echo "::endgroup::"
-        echo "work: $r $(( $(date +%s) - t ))s  $c"
-    done
-    return $fail
+    AVRA_SP_TREE=$PWD sh "$tools/sp" -p "$@"
 }
 
 run() {
