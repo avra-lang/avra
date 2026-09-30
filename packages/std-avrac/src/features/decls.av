@@ -399,6 +399,9 @@ export type Decls = {
     /// pay for an edge the kernel already told. Reachable only inside `Decls` — every
     /// outside reader goes through `decl`/`raw_decl`/`all_decls`/`decl_count`.
     decl_row_rows: Cell<Rows<Decl>>,
+    /// The relation's own row storage, pinned: a hot by-id read is one cell
+    /// and one index, the shape the dense table had.
+    decl_cells: Cell<List<Decl?>>,
     record_items: Cell<int>,
     record_methods: Cell<int>,
     rows_state: Cell<List<int>>,
@@ -593,6 +596,7 @@ export fn new_decls() -> Decls {
         file_rows: Cell.new(File.rows_in(db)),
         module_rows: Cell.new(Module.rows_in(db)),
         decl_row_rows: Cell.new(Decl.rows_in(db)),
+        decl_cells: Decl.rows_in(db).rows,
         record_items: Cell.new(0),
         record_methods: Cell.new(0),
         rows_state: list_cell(),
@@ -704,10 +708,9 @@ impl Decls {
     /// recorder, below, so a second door recording the same edge would
     /// pay for it twice.
     fn decl(d: DeclId) -> Decl {
-        let rows = self.decl_row_rows.get()
-        let x = match rows.row(d.index) {
+        let x = match self.decl_cells.get()[d.index] {
             r? -> r
-            null -> rows.row(d.index)!
+            null -> self.decl_row_rows.get().row(d.index)!
         }
         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
         self.rows_read(x.file)
@@ -718,10 +721,9 @@ impl Decls {
     /// must not themselves record an edge), and a whole-program pass
     /// walking the table by index as it grows.
     fn raw_decl(d: DeclId) -> Decl {
-        let rows = self.decl_row_rows.get()
-        match rows.row(d.index) {
+        match self.decl_cells.get()[d.index] {
             r? -> r
-            null -> rows.row(d.index)!
+            null -> self.decl_row_rows.get().row(d.index)!
         }
     }
 
