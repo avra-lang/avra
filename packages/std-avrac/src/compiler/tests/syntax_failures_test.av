@@ -1,0 +1,75 @@
+// `failures()` reads every `_`-declared fn's body through the `Expr`
+// and `Stmt` kind buckets. Its read of each body records ONE edge on
+// that declaration's `Family.Syntax`, so an edit to one declaration
+// moves only its own edge. `Failures` is 20 and `Syntax` 25
+// (compiler/workspace.av's `ordinal`).
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use core.{DeclId}
+use query.{Key}
+
+fn failures_key() -> Key { Key { family: 20, arg: 0 } }
+
+fn failing_workspace(main: string) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": main,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+fn failing_decl(ws: Workspace, name: string) -> DeclId {
+    [x.id for x in ws.decls.decls.get() if x.name == name][0]
+}
+
+/// Two inferring fns: `a`'s body varies, `b`'s never does.
+fn failing_source(a_body: string) -> string {
+    "fn a() -> Result<int, _> {\n    ${a_body}\n}\nfn b() -> Result<int, _> {\n    fail \"b\"\n}\n"
+}
+
+fn surveyed(main: string) -> Workspace {
+    let ws = failing_workspace(main)
+    let _ = ws.items(ws.file_id("/w/src/main.av"))
+    let _ = ws.failures()
+    ws
+}
+
+/// Whether `failures()` depends on `name`'s own syntax cell.
+fn reads_syntax_of(ws: Workspace, name: string) -> bool {
+    let d = failing_decl(ws, name)
+    ws.db.deps_of(failures_key()).any((k: Key) -> k.family == 25 && k.arg == d.index)
+}
+
+/// The syntax hash `failures()`'s edge on `name` settled on.
+fn edge_on(main: string, name: string) -> int {
+    let ws = surveyed(main)
+    ws.syntax(failing_decl(ws, name))
+}
+
+spec "compiler/failures — one syntax edge per surveyed declaration" {
+    given "two inferring fns in one file" {
+        then "the survey depends on each one's own syntax" {
+            let ws = surveyed(failing_source("fail \"a\""))
+            reads_syntax_of(ws, "a") && reads_syntax_of(ws, "b")
+        }
+        then "`b` is typed as failing with text, read from its `Fail` bucket" {
+            let ws = surveyed(failing_source("fail \"a\""))
+            ws.decls.inferred_errors_so_far(failing_decl(ws, "b")).length == 1
+        }
+    }
+    given "an edit to `a` alone" {
+        then "the edge on `b` holds" {
+            edge_on(failing_source("fail \"a\""), "b") == edge_on(failing_source("fail \"a\" + \"a\""), "b")
+        }
+        then "the edge on `a` moves" {
+            edge_on(failing_source("fail \"a\""), "a") != edge_on(failing_source("fail \"a\" + \"a\""), "a")
+        }
+    }
+}

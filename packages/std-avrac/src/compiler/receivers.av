@@ -10,6 +10,7 @@
 //! by the kernel (ROADMAP: the inout receiver).
 use core.{
     DeclId,
+    Expr,
     ExprId,
     TypeId,
     Type,
@@ -131,7 +132,9 @@ impl Workspace {
             edges: [],
         }
         cx.assigns()
-        for i in x.lo..x.hi { cx.site_evidence(ExprId { index: i }) }
+        for k in call_tags(cx.store) {
+            for e in cx.store.exprs_by_kind(x.lo, x.hi, k) { cx.site_evidence(e) }
+        }
         Summary { own: cx.own, edges: cx.edges }
     }
 }
@@ -362,4 +365,15 @@ impl Workspace {
         let rest? = self.write_chain(edge.callee, edge.to, seen.concat([d])) else { return null }
         [hop].concat(rest)
     }
+}
+
+/// The tags of every call `site_evidence` reads evidence from; each
+/// payload is a placeholder `tag_expr` never reads.
+fn call_tags(store: SyntaxArena) -> List<int> {
+    let at = ExprId { index: 0 }
+    [
+        store.tag_expr(Expr.MethodCall(at, "", [])),
+        store.tag_expr(Expr.Call("", [], [])),
+        store.tag_expr(Expr.CallValue(at, [])),
+    ]
 }
