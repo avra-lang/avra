@@ -5,7 +5,7 @@ and the server-relevant ones of [RFC 9110](https://www.rfc-editor.org/rfc/rfc911
 each with the fixture that pins it or the ticket that owns the gap. Sentences
 were extracted mechanically from the RFC text (87 MUSTs in 9112, all here).
 The framers are also fuzzed (`make fuzz-http`, corpus and every kept
-finding in `packages/std-http/fuzz`) and soaked (`make soak-http`).
+finding in `packages/std-http-fuzz`) and soaked (`make soak-http`).
 A fixture is named `suite › "then"`; every suite lives in
 `packages/std-http/src/tests/`.
 

@@ -723,7 +723,7 @@ fuzz: $(COMPILER_OBJS)
 # THE HTTP FRAMERS FUZZED in bounded time (FUZZ_HTTP_SECONDS, default
 # 180): the corpus and every kept finding replayed, libFuzzer over the
 # C rows, then the seeded mutation fuzzer — a trap bisected to its one
-# mutant and kept in packages/std-http/fuzz/crashes.
+# mutant and kept in packages/std-http-fuzz/crashes.
 fuzz-http: build/libavra_runtime.a
 	@sh tools/fuzz_http.sh
 

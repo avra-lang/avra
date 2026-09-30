@@ -2,7 +2,7 @@
 # THE FRAMERS FUZZED, IN BOUNDED TIME: `make fuzz-http`.
 #
 #   1. every checked-in input replayed — the corpus and every past
-#      finding in packages/std-http/fuzz/crashes, so a finding is
+#      finding in packages/std-http-fuzz/crashes, so a finding is
 #      permanent the moment it is saved;
 #   2. libFuzzer over the C rows the framers stand on (a third of the
 #      budget), each row held to a naive walk;
@@ -18,7 +18,7 @@ cd "$(dirname "$0")/.."
 secs="${FUZZ_HTTP_SECONDS:-180}"
 seed="${FUZZ_HTTP_SEED:-$(date +%j | sed 's/^0*//')}"
 batch="${FUZZ_HTTP_BATCH:-20000}"
-dir=packages/std-http/fuzz
+dir=packages/std-http-fuzz
 bin="$dir/src/main"
 out=build/fuzz-http
 clang="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}/bin/clang"

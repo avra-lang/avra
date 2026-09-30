@@ -1,7 +1,7 @@
 #!/bin/sh
 # THE SERVER UNDER SOAK: `make soak-http`.
 #
-# @std/http on every core (packages/std-http/soak), held open by
+# @std/http on every core (packages/std-http-soak), held open by
 # SOAK_HTTP_CONNECTIONS keep-alive connections (default 10000, oha) for
 # SOAK_HTTP_SECONDS (default 600, ten minutes; SOAK_HTTP_QPS caps the rate, else
 # as fast as the server answers), while the client's reset law is
@@ -23,11 +23,11 @@ loops="${SOAK_HTTP_RESETS:-1000}"
 qps="${SOAK_HTTP_QPS:-}"
 port="${SOAK_HTTP_PORT:-18090}"
 out=build/soak-http
-bin=packages/std-http/soak/src/main
+bin=packages/std-http-soak/src/main
 mkdir -p "$out"
 command -v oha > /dev/null || { echo "soak-http: needs oha (brew install oha)"; exit 1; }
 ulimit -n 30000 2> /dev/null || { echo "soak-http: cannot raise the descriptor limit to 30000"; exit 1; }
-build/avra build packages/std-http/soak > "$out/build.log" 2>&1 || { tail -20 "$out/build.log"; exit 1; }
+build/avra build packages/std-http-soak > "$out/build.log" 2>&1 || { tail -20 "$out/build.log"; exit 1; }
 : > "$out/samples"
 
 # Every process this driver starts dies with it, on any exit: a server
