@@ -726,7 +726,7 @@ census-types:
 # each reach probe carries (tools/bench/reach) — a program pays for
 # what it calls, never for what it imports.
 #   make sizes BEFORE=build/avra.pre
-REACH := plain unreached tls sign
+REACH := hello limits plain unreached tls sign
 sizes:
 	@build/avra build tools/bench/request/src/main.av >/dev/null
 	@python3 tools/symsize.py build/avra $(BEFORE)
