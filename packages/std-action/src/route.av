@@ -1,0 +1,122 @@
+//! An action's HTTP door with no script: `POST /actions/<name>` takes a
+//! form body and answers with a status a browser follows.
+//!
+//!     303  done — to `_next` when it is a path on this origin, else `/`
+//!     409  a destructive action awaits `_confirm=yes`
+//!     415  the body is not a form
+//!     400  the form is unreadable
+//!     422  a refusal per field, one `field: message` line each
+//!
+//! The wire's own fields begin with `_` — `_next`, `_confirm`,
+//! `_idempotency` — and no action seat may (derive.av), so a seat's
+//! field and the protocol's never collide. A repeated `_idempotency`
+//! answers the first receipt again without calling the action.
+use @std.http.frame.{Method}
+use @std.http.http.{Request, Unrouted, Response, Header, Handler, text}
+use @std.http.route.{Route, fixed}
+use @std.text.{codepoints, from_codepoints}
+use wire.{ActionInfo, ActionRefusal, line_of}
+use form.{form_fields}
+
+/// The action's route. `call` is the generated `<name>_from_text`.
+export fn action_route<R>(
+    info: ActionInfo,
+    call: fn(Map<string, string>) -> Result<R, List<ActionRefusal>>,
+) -> Route {
+    let receipts: Cell<Map<string, Response>> = Cell.new({})
+    fixed(
+        Method.Post,
+        "/actions/${info.name}",
+        (q: Request<Unrouted>) -> submitted(info, call, receipts, q),
+    )
+}
+
+/// The whole exchange for one request.
+fn submitted<R>(
+    info: ActionInfo,
+    call: fn(Map<string, string>) -> Result<R, List<ActionRefusal>>,
+    receipts: Cell<Map<string, Response>>,
+    q: Request<Unrouted>,
+) -> Response {
+    if !is_form(q) { return text(415, unsupported()) }
+    let fields? = form_fields(q.body) else { return text(400, unreadable_body()) }
+    let key = fields.get("_idempotency") ?? ""
+    remembered(receipts, key) ?? attempted(info, call, receipts, key, fields)
+}
+
+/// The receipt this identity was first given, absent for a new one.
+fn remembered(receipts: Cell<Map<string, Response>>, key: string) -> Response? {
+    if key == "" { return null }
+    receipts.get().get(key)
+}
+
+/// A submission not seen before: confirmed, then called.
+fn attempted<R>(
+    info: ActionInfo,
+    call: fn(Map<string, string>) -> Result<R, List<ActionRefusal>>,
+    receipts: Cell<Map<string, Response>>,
+    key: string,
+    fields: Map<string, string>,
+) -> Response {
+    if awaiting(info, fields) { return text(409, confirmation(info)) }
+    match call(fields) {
+        .Ok(_) -> receipted(receipts, key, redirect(fields.get("_next"))),
+        .Err(refusals) -> text(422, [line_of(r) for r in refusals].join("\n")),
+    }
+}
+
+/// A destructive action not yet confirmed.
+fn awaiting(info: ActionInfo, fields: Map<string, string>) -> bool {
+    info.impact.presentation is .Pending && fields.get("_confirm") != "yes"
+}
+
+/// The receipt, remembered under the submission's identity when it has one.
+fn receipted(receipts: Cell<Map<string, Response>>, key: string, r: Response) -> Response {
+    if key != "" { receipts.put(key, r) }
+    r
+}
+
+fn redirect(next: string?) -> Response {
+    Response { status: 303, headers: [Header { name: "location", value: local_path(next) }] }
+}
+
+/// The destination when it is a path on this origin, else the root.
+/// `//host` and `/\host` are read by a browser as another origin, and
+/// a control character is removed by one before it reads either.
+fn local_path(next: string?) -> string {
+    let path? = next else { return "/" }
+    if local(path) { path } else { "/" }
+}
+
+fn local(path: string) -> bool {
+    path.starts_with("/") &&
+        !path.starts_with("//") &&
+        !path.starts_with("/\\") &&
+        plain(path.bytes())
+}
+
+/// Every octet is printable ASCII and not a backslash.
+fn plain(b: Bytes) -> bool { [i for i in 0..b.length if !printable(b.at(i))].is_empty() }
+
+fn printable(octet: int) -> bool { octet > 32 && octet < 127 && octet != 92 }
+
+/// Whether the body is declared a form.
+fn is_form(q: Request<Unrouted>) -> bool {
+    let kind? = q.header("content-type") else { return false }
+    folded(kind).starts_with("application/x-www-form-urlencoded")
+}
+
+/// ASCII lowercase: a media type is compared without case.
+fn folded(s: string) -> string {
+    from_codepoints([if c >= 65 && c <= 90 { c + 32 } else { c } for c in codepoints(s)])
+}
+
+// ── The voices ──────────────────────────────────────────────────
+
+fn unsupported() -> string { "an action takes `application/x-www-form-urlencoded`" }
+
+fn unreadable_body() -> string { "the form body is not valid urlencoded UTF-8" }
+
+fn confirmation(info: ActionInfo) -> string {
+    "_confirm: `${info.name}` cannot be taken back — send `_confirm=yes` to go ahead"
+}
