@@ -297,8 +297,20 @@ spec "features/annotations — the compile-time call's laws" {
         }
         then "a const holding an aggregate is refused at the argument" {
             refused_in(
-                packaged(sampled_use() + "const Picks = [1, 2]\n@sampled(Picks)\nfn answer() -> int { 1 }\nanswer()"),
+                packaged(
+                    sampled_use() +
+                        "const Picks = [1, 2]\n@sampled(Picks)\nfn answer() -> int { 1 }\nanswer()",
+                ),
                 "`@sampled` generates declarations, so `Picks` must name a literal",
+            )
+        }
+        then "a declaring annotation's argument that CALLS a fn is refused" {
+            refused_in(
+                packaged(
+                    directive_use() +
+                        "fn label() -> string { \"x\" }\n@traced(label())\nfn sum() -> int { 1 }\nsum()",
+                ),
+                "generates declarations, so its arguments come from the source alone",
             )
         }
         then "a twin naming the annotated fn's OWN name is refused, not silently doubled" {
