@@ -1,0 +1,144 @@
+//! The Avra website. A screen is a fn answering a View; a route
+//! answers a `Screen`; the page is HTML with no script.
+//!
+//!     build/avra run packages/site       # http://127.0.0.1:8788
+use @std.ui.{View, column, row, section, heading, text, link, list, item}
+use @std.ui_web.{Screen, html_response}
+use @std.ui_html.{page}
+use @std.http.http.{Request, Unrouted, Response, Handler}
+use @std.http.route.{get}
+use @std.http.server.{server, layer}
+
+export server site {
+    port: 8788
+    not_found
+    get "/" { _req -> Screen { title: "Avra", body: shell(home()) } }
+    get "/why" { _req -> Screen { title: "Why Avra", body: shell(why()) } }
+    get "/principles" { _req -> Screen { title: "Principles", body: shell(principles()) } }
+}
+
+/// A route nobody declared answers a page, not an empty 404.
+export layer not_found { q, next ->
+    let r = next(q)
+    if r.status == 404 { html_response(404, page("Not found", shell(missing()).node())) } else { r }
+}
+
+// ── Screens ─────────────────────────────────────────────────────
+
+fn home() -> dyn View {
+    column {
+        gap: .L
+        heading "Avra is the language machines write software in, and the one compiler that knows the whole program."
+        text "One program, one compiler, one binary. Infrastructure, docs, schemas, tests and agent tools are projections of one source of truth."
+        proofs()
+        row {
+            gap: .M
+            link "Why Avra" {
+                to: "/why"
+            }
+            link "Principles" {
+                to: "/principles"
+            }
+        }
+    }
+}
+
+fn why() -> dyn View {
+    column {
+        gap: .M
+        heading "Why Avra exists"
+        text "Software is increasingly written by machines. The stacks they write into were built for humans, one layer at a time: eleven languages and forty config files for one system, each keeping its own copy of the truth."
+        text "The glue is where generated code fails. A model writes a good function and then breaks at the seams: the config, the schema, the deploy, the string that was secretly a permission."
+        text "Avra's answer is not another framework. It is a language whose compiler holds the knowledge no other tool has, and makes everything else a consequence of it."
+    }
+}
+
+fn principles() -> dyn View {
+    column {
+        gap: .M
+        heading "What Avra believes"
+        list {
+            rows(beliefs())
+        }
+    }
+}
+
+fn missing() -> dyn View {
+    column {
+        heading "Not found"
+        text "No screen answers this address."
+        link "Home" {
+            to: "/"
+        }
+    }
+}
+
+// ── Pieces ──────────────────────────────────────────────────────
+
+/// Every screen inside the site's chrome: a header of links, then the body.
+fn shell(body: dyn View) -> dyn View {
+    column {
+        gap: .L
+        pad: .M
+        row {
+            gap: .M
+            link "Avra" {
+                to: "/"
+            }
+            link "Why" {
+                to: "/why"
+            }
+            link "Principles" {
+                to: "/principles"
+            }
+        }
+        body
+    }
+}
+
+/// Three receipts, each true today.
+fn proofs() -> dyn View {
+    section "Proof points" {
+        gap: .S
+        text "The compiler is written in Avra and compiles itself, to a fixed point."
+        text "Every program test runs through an interpreter and a native build, and they must agree."
+        text "A warm check of a real package costs 0.36 billion instructions where a cold one costs 251.8 billion."
+    }
+}
+
+type Belief = { name: string, says: string }
+
+fn beliefs() -> List<Belief> {
+    [
+        Belief {
+            name: "Correct on the first try",
+            says: "every choice is judged by whether a model generates it right, first time.",
+        },
+        Belief {
+            name: "Collapse the paradox",
+            says: "binary choices are usually false dichotomies; find the design where both sides win.",
+        },
+        Belief {
+            name: "Visible magic",
+            says: "the compiler does enormous work, and you can always ask what it did.",
+        },
+        Belief {
+            name: "Escape hatches everywhere",
+            says: "every automatic thing has a manual override.",
+        },
+        Belief {
+            name: "One source of truth, many projections",
+            says: "the schema, the API, the docs and the agent's tool derive from one declaration.",
+        },
+    ]
+}
+
+/// The beliefs as list items, keyed by name.
+fn rows(bs: List<Belief>) -> List<dyn View> { [belief_row(b) for b in bs] }
+
+fn belief_row(b: Belief) -> dyn View {
+    item {
+        key: b.name
+        text "${b.name} — ${b.says}"
+    }
+}
