@@ -409,13 +409,21 @@ esac
 # reaches a declaration a cross-package `use` never could. A body-only edit
 # must hold; a signature edit — exported or not — never may, or a sibling
 # keeps compiling against a signature that moved (avra-8sb5.57's
-# perf/module-hold).
-MH() { # MH <label> <path-substr> <want: held|read>
+# perf/module-hold). AND AN IMPORTER IN ANOTHER PACKAGE KEYS ON THE FILES ITS
+# USES REACH, NEVER THE PACKAGE WHOLE: `show.av` names `host` alone, so a
+# signature edit to `pad` holds it and one to `host` never may.
+# AND AN IMPL IS REACHED THROUGH ITS TYPE: `dyn.av` names `Pt` and `Say`, never
+# `pt_say.av`, yet the `dyn Say` box it builds carries that file's impl.
+MH() { # MH <label> <path-substr> <want: held|read> [<path-substr> <want>]...
     steps=$((steps+1))
+    label=$1; shift
     out=$(./avra build --time $R/mh 2>&1)
     case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
-    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
-    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
+    while [ $# -ge 2 ]; do
+        case "$out" in *"read:"*"$1"*) got=read ;; *) got=held ;; esac
+        if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $label: $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $label: $1 wanted $2, got $got: $(printf '%s' "$out" | grep -A6 '^read:' | tr '\n' ' ')"; fi
+        shift 2
+    done
 }
 # `--time`'s own read list is no signal for AN ENTRY FILE: it names the entry
 # unconditionally whenever the build does any work at all — needing to run its
@@ -439,7 +447,18 @@ use pad.{pad}
 export fn host() -> int { pad() + priv() }
 AV
 printf '[package]\nname = "rt-mh"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/mhl" = { path = "../mhl" }\n' > $R/mh/avra.toml
-printf 'use @rt.mhl.{host}\nprintln("mh ${host()}")\n' > $R/mh/src/main.av
+printf 'use @rt.mhl.{host}\nexport fn shown() -> int { host() }\n' > $R/mh/src/show.av
+cat > $R/mhl/src/pt.av <<'AV'
+export trait Say { fn say() -> int }
+export type Pt = { v: int }
+AV
+cat > $R/mhl/src/pt_say.av <<'AV'
+use pt.{Say, Pt}
+fn base() -> int { 1 }
+impl Say for Pt { fn say() -> int { self.v + base() } }
+AV
+printf 'use @rt.mhl.{Say, Pt}\nexport fn said() -> int {\n    let s: dyn Say = Pt { v: 4 }\n    s.say()\n}\n' > $R/mh/src/dyn.av
+printf 'println("mh ${shown()} ${said()}")\n' > $R/mh/src/main.av
 S "cold mh: a sibling reaches one file by use, another by no use at all" mh
 S "mh: warm no-op" mh
 ed $R/mhl/src/pad.av "{ 3 }" "{ 30 }"
@@ -447,13 +466,25 @@ MH "mh: pad's body only moves — lib.av stays held" lib.av held
 ed $R/mhl/src/pad.av "{ 30 }" "{ 3 }"
 MH "mh: and back" lib.av held
 ed $R/mhl/src/pad.av "export fn pad() -> int { 3 }" "export fn pad(n: int = 0) -> int { 3 }"
-MH "mh: pad's EXPORTED signature moves (reached through a use) — lib.av re-reads" lib.av read
+MH "mh: pad's EXPORTED signature moves (reached through a use) — lib.av re-reads, show.av never named it" lib.av read show.av held
 ed $R/mhl/src/pad.av "export fn pad(n: int = 0) -> int { 3 }" "export fn pad() -> int { 3 }"
-MH "mh: and back" lib.av held
+MH "mh: and back" lib.av held show.av held
+ed $R/mhl/src/lib.av "export fn host() -> int" "export fn host(n: int = 0) -> int"
+MH "mh: host's signature moves — show.av names it, and re-reads" show.av read
+ed $R/mhl/src/lib.av "export fn host(n: int = 0) -> int" "export fn host() -> int"
+MH "mh: and back" show.av held
 ed $R/mhl/src/pad.av "fn priv() -> int { 5 }" "fn priv(n: int = 0) -> int { 5 }"
-MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read
+MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read show.av held
 ed $R/mhl/src/pad.av "fn priv(n: int = 0) -> int { 5 }" "fn priv() -> int { 5 }"
 MH "mh: and back, cold no more" lib.av held
+ed $R/mhl/src/pt_say.av "self.v + base() }" "self.v + base() + 1 }"
+MH "mh: the unnamed impl's body only moves — dyn.av stays held" dyn.av held
+ed $R/mhl/src/pt_say.av "self.v + base() + 1 }" "self.v + base() }"
+MH "mh: and back" dyn.av held
+ed $R/mhl/src/pt_say.av "fn base() -> int" "fn base(n: int = 0) -> int"
+MH "mh: the impl's file moves a signature — dyn.av boxes Pt as dyn Say, and re-reads" dyn.av read
+ed $R/mhl/src/pt_say.av "fn base(n: int = 0) -> int" "fn base() -> int"
+MH "mh: and back" dyn.av held
 # CROSS-PACKAGE, NOT MERELY CROSS-MODULE: `main.av` (package `rt-mh`) crosses
 # into `@rt/mhl` only through `use @rt.mhl.{host}`, never naming `pad.av` or
 # `priv` itself. Checked through `cache held`, not `--time` (MH's entry
