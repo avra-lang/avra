@@ -173,6 +173,12 @@ fn shown() -> Result<string, ClientError> {
             "http",
         )[0],
     ]
+    let unagreed = [
+        prefaced(tls_carried(dial("localhost", secure.port, secs(5), h1_config))?),
+        prefaced(
+            tls_carried(dial("localhost", secure.port, secs(5), tls_carried(trusting_localhost())?))?,
+        ),
+    ]
     .Ok(
         rows
             .concat(
@@ -180,10 +186,28 @@ fn shown() -> Result<string, ClientError> {
                     "h2 agreed over TLS: ${agreed}",
                     "https over the clear port: ${crossed[0]}",
                     "http over TLS: ${crossed[1]}",
+                    "a preface over TLS that agreed http/1.1: ${unagreed[0]}",
+                    "a preface over TLS that agreed nothing: ${unagreed[1]}",
                 ],
             )
             .join("\n"),
     )
+}
+
+/// What a TLS link that did not agree `h2` answers a client that speaks
+/// HTTP/2 anyway: the first line of its reply, or `h2` when it answered
+/// with frames.
+fn prefaced(t: TlsConn) -> string {
+    let w = tls_wire(t)
+    if !w
+        .write(
+            preface
+                .concat(frame_bytes(.Settings, 0, 0, no_bytes))
+                .concat(h2_asked(1, asks[0], "https")),
+        ) { return "write failed" }
+    let got = w.read() ?? no_bytes
+    if got.length >= 9 && frames_in(got).any(it.kind is .Settings) { return "h2" }
+    (got.text() ?? "?").split("\r\n").first() ?? "?"
 }
 
 match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

@@ -587,18 +587,24 @@ fn nothing_stepped() {}
 
 // ── HTTP/2 with prior knowledge ─────────────────────────────────
 
-/// Whether a link's first octets are the HTTP/2 preface — only a link
-/// that has served nothing yet may turn out to be one (RFC 9113 §3.3).
-/// A link whose TLS handshake selected `h2` by ALPN enters
-/// `h2_conversed` without asking: its client sends the same preface.
-fn opens_h2(l: Link) -> bool { l.served == 0 && l.buf.length >= preface.length && l.buf.slice(0, preface.length) == preface }
+/// Whether a link's first octets are the HTTP/2 preface — only a
+/// plain link that has served nothing yet may turn out to be one: over
+/// TLS, HTTP/2 is agreed by ALPN or not spoken (RFC 9113 §3.3). A link
+/// whose TLS handshake selected `h2` enters `h2_conversed` without
+/// asking; one that selected anything else, or nothing, is HTTP/1.1,
+/// and a preface on it is a request the 1.1 framer refuses.
+fn opens_h2(l: Link) -> bool { may_open_h2(l) && l.buf.length >= preface.length && l.buf.slice(0, preface.length) == preface }
+
+/// Whether a link may still turn out to be HTTP/2 by prior knowledge:
+/// a plain one, before its first request.
+fn may_open_h2(l: Link) -> bool { l.served == 0 && !l.conn.wire_secured() }
 
 /// Whether a fresh link's octets so far are a proper prefix of the
 /// preface — neither version yet, so the 1.1 framer is not asked: the
 /// preface's first eighteen octets are a whole 1.1 head, which it would
 /// refuse as another major version.
 fn awaits_preface(l: Link) -> bool {
-    l.served == 0 &&
+    may_open_h2(l) &&
         l.buf.length < preface.length &&
         !l.buf.is_empty() &&
         l.buf == preface.slice(0, l.buf.length)
