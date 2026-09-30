@@ -387,7 +387,7 @@ impl Respond for int {
 /// reinterpretation impossible, where escaping would only move it.
 export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
     let sent = as_sent(r)
-    written(sent, .Length(sent.body.length), keep_alive, minor, sent.body)
+    written(sent, whole_delimited(sent), keep_alive, minor, sent.body)
 }
 
 /// THE RESPONSE AS IT WILL BE WRITTEN — `r` when a peer could read
@@ -412,6 +412,8 @@ export fn head_of(r: Response, delim: ReplyBody, keep_alive: bool, minor: int) -
 }
 
 /// The response with `closing` as its last field line, then `body`.
+/// A final answer is dated; an interim one, whose date is optional
+/// (RFC 9110 §6.6.1), is not.
 fn laid_out(r: Response, delim: ReplyBody, closing: string, body: Bytes) -> Bytes {
     mut w = reply_line(r.status)
     for h in r.headers {
@@ -420,7 +422,7 @@ fn laid_out(r: Response, delim: ReplyBody, closing: string, body: Bytes) -> Byte
         w = w.concat(h.value.bytes())
         w = w.concat(crlf)
     }
-    w = w.concat(date_line())
+    if r.status >= 200 { w = w.concat(date_line()) }
     match delim {
         .Length(n) -> {
             w = w.concat(length_field)
@@ -441,11 +443,18 @@ fn laid_out(r: Response, delim: ReplyBody, closing: string, body: Bytes) -> Byte
 /// any other stream by chunks — and, to a 1.0 peer that cannot read
 /// chunks, by the close, which that response's fate must then say.
 export fn delimited(r: Response, minor: int) -> ReplyBody {
-    let s? = r.stream else { return .Length(r.body.length) }
+    let s? = r.stream else { return whole_delimited(r) }
     match s.length {
         n? -> .Length(n)
         null -> if minor == 0 { .UntilClose } else { .Chunked }
     }
+}
+
+/// A whole body's delimiting: its length — stated by no 204 (RFC 9110
+/// §8.6) and no 304, whose length would be the 200's it stands for.
+fn whole_delimited(r: Response) -> ReplyBody {
+    if r.status == 204 || r.status == 304 { return .None }
+    .Length(r.body.length)
 }
 
 /// A body delimited by nothing written: none at all, or the close.
@@ -544,13 +553,15 @@ fn switching() -> string { "connection: upgrade\r\n" }
 /// digits — the status line's own grammar, which is why 1000 and 99
 /// are not statuses — and a FINAL one: a 1xx is interim, never an
 /// answer (RFC 9110 §15.2), save the 101 that hands the connection
-/// over. Every field is one the framer would frame, and a 426 names
+/// over. No content rides a status that forbids it, every field is one
+/// the framer would frame, and a 426 names
 /// the protocols it wants (§15.5.22). Public so a handler can ask
 /// before it answers.
 export fn sendable(r: Response) -> bool {
     r.status >= 100 &&
         r.status <= 999 &&
         fields_writable(r.headers, reply_writes) &&
+        (r.body.is_empty() || !contentless(r.status)) &&
         (whole_answer(r) || streamable(r) && handed_over(r)) &&
         (r.status != 426 || offered(r) != null)
 }
@@ -611,21 +622,16 @@ fn whole_answer(r: Response) -> bool { r.stream == null && r.upgrade == null && 
 
 /// A STREAM STANDS ALONE: a response carrying one carries no whole
 /// body beside it, declares no negative length, and has a status that
-/// may carry a body at all — a 1xx, 204 or 304 never does (RFC 9110
+/// may carry a body at all — a 1xx, 204, 205 or 304 never does (RFC 9110
 /// §15). Two bodies are one the peer cannot read.
 fn streamable(r: Response) -> bool {
     let s? = r.stream else { return true }
-    r.body.is_empty() && s.length ?? 0 >= 0 && r.status >= 200 && r.status != 204 && r.status != 304
+    r.body.is_empty() && s.length ?? 0 >= 0 && r.status >= 200 && !contentless(r.status)
 }
 
 /// A status whose response carries no content (RFC 9110 §15.3.5,
 /// §15.3.6, §15.4.5).
 fn contentless(status: int) -> bool { status == 204 || status == 205 || status == 304 }
-
-/// Whether a response of this status states its length: never for a
-/// 204 (RFC 9110 §8.6), and never for a 304, whose length would be the
-/// 200's it stands for.
-fn measured(status: int) -> bool { status != 204 && status != 304 }
 
 /// EVERY FIELD A WRITER MAY WRITE: each one a field the framer would
 /// frame, and none of the ones the writer writes ITSELF. A second

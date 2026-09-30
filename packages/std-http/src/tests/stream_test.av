@@ -65,13 +65,13 @@ fn streamed(t: Tally, answer: Response, sent: string, expected: int) -> Result<s
     spawn b.s.run(cores: 1)
     defer b.done()
     let got = exchanged(b.c, sent, expected)?
-    .Ok(got.text() ?? "<not text>")
+    .Ok(undated(got.text() ?? "<not text>"))
 }
 
 /// Whether `sent` is answered with exactly `want` — read to its
 /// length, so a reply split across reads is still read whole.
 fn answers(t: Tally, answer: Response, sent: string, want: string) -> Result<bool, NetError> {
-    .Ok(streamed(t, answer, sent, want.length)? == want)
+    .Ok(streamed(t, answer, sent, want.length + date_width)? == want)
 }
 
 fn get_line() -> string { "GET /s HTTP/1.1\r\nHost: a\r\n\r\n" }
@@ -203,7 +203,7 @@ fn keeps_alive_after_a_stream() -> Result<bool, NetError> {
     let b = bed_with((_app: App, q: Request<Unrouted>) -> mixed(t, q), limits(), timing())?
     spawn b.s.run(cores: 1)
     defer b.done()
-    let first = (exchanged(b.c, get_line(), 60)?).text() ?? ""
+    let first = (exchanged(b.c, get_line(), 60 + date_width)?).text() ?? ""
     let second = reply(b.c, "GET /next HTTP/1.1\r\nHost: a\r\n\r\n")?
     .Ok(first.ends_with("3\r\nmid\r\n0\r\n\r\n") && second.ends_with("/next") && t.ends.get() == 1)
 }
@@ -253,7 +253,7 @@ fn quiet_source_is_cut() -> Result<bool, NetError> {
     let b = streaming_bed(t, Response { stream: silent_source(quiet) }, Timing { idle: ms(150) })?
     spawn b.s.run(cores: 1)
     defer b.done()
-    let got = (exchanged(b.c, get_line(), 1000)?).text() ?? ""
+    let got = undated((exchanged(b.c, get_line(), 1000)?).text() ?? "")
     .Ok(
         got == "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n" &&
             settles_to(b.s, 0) &&
@@ -296,7 +296,7 @@ fn spinner_starves_nobody() -> Result<bool, NetError> {
     defer { let _ = other.close() }
     let answered = reply(other, "GET /other HTTP/1.1\r\nHost: a\r\n\r\n")?
     let while_spinning = t.ends.get() == 0
-    let spun = (exchanged(b.c, "", 1000)?).text() ?? ""
+    let spun = undated((exchanged(b.c, "", 1000)?).text() ?? "")
     .Ok(
         answered.ends_with("/other") &&
             while_spinning &&
