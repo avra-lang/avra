@@ -8,6 +8,11 @@
 //! carrying credentials is refused rather than sent or stripped:
 //! credentials travel in a header a caller names.
 //!
+//! `https` IS SECURED BY THE OPTIONS' `tls`, and this package carries
+//! none, so a plain program links no TLS: `@std/https` fills it. An
+//! `https` URL under options without it is refused before a socket
+//! opens — never sent in the clear.
+//!
 //! A BODY IS A SEAT WITH A KIND. Text, JSON, a form and raw octets are
 //! sent whole with their length; a STREAM is pulled a piece at a time
 //! and sent chunked, so its size need not be known. Each names its
@@ -20,6 +25,7 @@
 //! the stage whose deadline passed, and a stage that outran `total`
 //! is named `.Total`.
 use @std.url.{Url, UrlError, parse, encoded, default_port}
+use @std.net.{Conn, connect}
 use @std.json.{Json, to_text}
 use @std.time.{Duration, ms, secs, now_ms, sleep, within}
 use frame.{Method, Limits, limits}
@@ -29,7 +35,7 @@ use client.{
     Answer,
     ClientError,
     Stage,
-    connected,
+    over,
     request,
     chunked_request,
     chunk,
@@ -37,7 +43,9 @@ use client.{
     method_word,
     staged,
     carried,
+    netted,
 }
+use wire.{Transport, Securing, plainly}
 use pool.{Pool, Carrier, pool, origin_of}
 
 /// A request body, by kind.
@@ -63,7 +71,9 @@ export type Timeouts = {
 
 /// How a request is made: the pool its connection comes from, its
 /// deadlines, the bounds its reply is framed under, the headers every
-/// request carries, and its redirect and retry policy.
+/// request carries, its redirect and retry policy, and how an `https`
+/// connection is secured — none here, so a plain program links no TLS;
+/// `@std/https` fills it.
 export type Options = {
     pool: Pool = shared_pool(),
     timeouts: Timeouts = Timeouts {},
@@ -71,6 +81,7 @@ export type Options = {
     headers: List<Header> = [],
     redirects: Redirects = .Follow(5),
     retry: Retry = Retry {},
+    tls: Securing? = null,
 }
 
 /// Whether a redirect is followed: `Stop` answers it as it came,
@@ -105,8 +116,9 @@ export fn patch(url: string, body: Payload) -> Fetched { fetch(.Patch, url, body
 export fn delete(url: string) -> Fetched { fetch(.Delete, url, .Empty, options()) }
 
 /// Where a URL sends a request: its origin, the host and port to
-/// connect to, the `host` field, and the target on the request line.
-export type Aim = { origin: string, host: string, port: int, field: string, target: string }
+/// connect to, whether the connection is secured, the `host` field,
+/// and the target on the request line.
+export type Aim = { origin: string, secure: bool, host: string, port: int, field: string, target: string }
 
 /// `method` to `url` with `body`, under `o`.
 export fn fetch(method: Method, url: string, body: Payload, o: Options) -> Fetched {
@@ -126,6 +138,7 @@ type Hop = { method: Method, url: string, body: Payload, via: List<string> }
 /// (RFC 9110 §15.4).
 fn followed(q: Hop, o: Options, deadline: int) -> Fetched {
     let aim = aimed(q.url)?
+    if aim.secure && o.tls == null { return .Err(.NoTls) }
     let wire = wire_of(q.method, aim, q.body, o)?
     let a = retried(q, wire, aim, o, deadline, Try { n: 1, wait: o.retry.backoff.ms })?
     let max? = following(o.redirects) else { return .Ok(a) }
@@ -259,7 +272,7 @@ fn overran(r: Result<Answer, ClientError>, deadline: int) -> Result<Answer, Clie
 /// can reach.
 export fn aimed(url: string) -> Result<Aim, ClientError> {
     let u = urled(parse(url))?
-    if u.scheme != "http" { return .Err(.Unspoken(u.scheme)) }
+    if !spoken(u.scheme) { return .Err(.Unspoken(u.scheme)) }
     let a? = u.authority else { return .Err(.NoHost) }
     if a.userinfo != null { return .Err(.Userinfo) }
     let host? = u.normalized().hostname() else { return .Err(.NoHost) }
@@ -268,6 +281,7 @@ export fn aimed(url: string) -> Result<Aim, ClientError> {
     .Ok(
         Aim {
             origin: origin_of(u.scheme, host, port),
+            secure: u.scheme == "https",
             host: host,
             port: port,
             field: host_field(u),
@@ -275,6 +289,9 @@ export fn aimed(url: string) -> Result<Aim, ClientError> {
         },
     )
 }
+
+/// The schemes this client speaks.
+fn spoken(scheme: string) -> bool { scheme == "http" || scheme == "https" }
 
 fn urled(r: Result<Url, UrlError>) -> Result<Url, ClientError> {
     match r { .Ok(u) -> .Ok(u), .Err(e) -> .Err(.Url(e)) }
@@ -312,8 +329,22 @@ fn lent(method: Method, wire: Bytes, aim: Aim, body: Payload, o: Options, deadli
     }
 }
 
+/// A new connection to `aim`: made within the connect deadline, then
+/// secured within the TLS one when the URL asked for it.
 fn dialed(aim: Aim, o: Options) -> Result<Carrier, ClientError> {
-    .Ok(.H1(staged(.Connect, connected(aim.host, aim.port, o.timeouts.connect, o.limits))?))
+    let c = staged(.Connect, netted(connect(aim.host, aim.port, o.timeouts.connect)))?
+    .Ok(.H1(over(secured(c, aim, o)?, o.limits)))
+}
+
+/// The connection as `aim` asks: plain, or secured by `o.tls` — never
+/// plain where the URL asked for TLS.
+fn secured(c: Conn, aim: Aim, o: Options) -> Result<dyn Transport, ClientError> {
+    if !aim.secure { return .Ok(plainly(c)) }
+    let tls? = o.tls else {
+        let _ = c.close()
+        return .Err(.NoTls)
+    }
+    staged(.Tls, carried(tls.open(c, aim.host, o.timeouts.tls)))
 }
 
 fn client_of(c: Carrier) -> Client {

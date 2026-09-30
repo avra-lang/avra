@@ -62,6 +62,7 @@ export enum ClientError {
     Exhausted(origin: string, per_host: int)
     Url(e: UrlError)
     Unspoken(scheme: string)
+    NoTls
     NoHost
     Userinfo
     Unwritable
@@ -91,9 +92,10 @@ impl Error for ClientError {
             .TimedOut(stage) -> info("http.timed_out", "${stage_word(stage)} outran its deadline"),
             .Exhausted(origin, n) -> info("http.exhausted", "all ${n} connections to ${origin} are lent"),
             .Url(e) -> e.describe(),
-            .Unspoken(scheme) -> info(
-                "http.scheme",
-                "this client speaks `http`; `${scheme}` needs a transport it does not carry",
+            .Unspoken(scheme) -> info("http.scheme", "this client speaks `http` and `https`; `${scheme}` is neither"),
+            .NoTls -> info(
+                "http.no_tls",
+                "an `https` URL needs TLS, and these options carry none — `@std/https`'s verbs do, or `Options { tls: verified(config) }`",
             ),
             .NoHost -> info("http.no_host", "the URL names no host to connect to"),
             .Userinfo -> info(
@@ -111,7 +113,7 @@ impl Error for ClientError {
             .Net(n) -> n,
             .Secure(t) -> t,
             .Url(u) or .Redirect(.BadLocation(u)) -> u,
-            .Refused(_) or .Closed or .TimedOut(_) or .Exhausted(_, _) or .Unspoken(_) or .NoHost or .Userinfo or .Unwritable or .Redirect(.TooMany(_)) or .Redirect(.Loop(_)) or .Redirect(.NoLocation(_)) or .Redirect(.Unreplayable(_)) -> null,
+            .Refused(_) or .Closed or .TimedOut(_) or .Exhausted(_, _) or .Unspoken(_) or .NoTls or .NoHost or .Userinfo or .Unwritable or .Redirect(.TooMany(_)) or .Redirect(.Loop(_)) or .Redirect(.NoLocation(_)) or .Redirect(.Unreplayable(_)) -> null,
         }
     }
 }
