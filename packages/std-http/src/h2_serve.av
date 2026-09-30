@@ -9,19 +9,9 @@
 //! reaches this file is lowercase, pseudo-fields first, and free of the
 //! connection-specific fields, so the head spelled here is one the 1.1
 //! framer would have read off a wire.
-use frame.{Limits, Method, framed, status_of, no_bytes}
+use frame.{Limits, Method, framed, status_of, no_bytes, admits}
 use hpack.{HeaderField, field}
-use h2.{
-    Exchange,
-    H2Conn,
-    value_named,
-    is_pseudo,
-    method_name,
-    path_name,
-    authority_name,
-    connect_word,
-    connection_specific,
-}
+use h2.{Exchange, H2Conn, pseudo_of, value_at, connect_word, connection_specific}
 use http.{Request, Unrouted, Response, as_sent, status}
 
 /// The 1.1 head a request's fields mean: the method and target — the
@@ -29,39 +19,29 @@ use http.{Request, Unrouted, Response, as_sent, status}
 /// `host` field was sent, the regular fields in order, and the cookie
 /// crumbs joined into one field (RFC 9113 §8.2.3).
 export fn head_text(fs: List<HeaderField>) -> Bytes {
-    let method = value_named(fs, method_name) ?? no_bytes
-    let authority = value_named(fs, authority_name)
-    let target = if method == connect_word { authority ?? no_bytes } else { value_named(fs, path_name) ?? no_bytes }
-    let regular = fs.filter(!is_pseudo(it))
-    let crumbs = [f.value for f in regular if f.name == cookie_name]
-    let lines = [line(f.name, f.value) for f in regular if f.name != cookie_name]
-    [method, space, target, version_line]
-        .concat(host_line(regular, authority))
-        .concat(lines)
-        .concat(cookie_line(crumbs))
-        .concat([crlf])
-        .bytes()
+    let p = pseudo_of(fs)
+    let method = value_at(fs, p.method)
+    mut w = method
+        .concat(space)
+        .concat(value_at(fs, if method == connect_word { p.authority } else { p.path }))
+        .concat(version_line)
+    if p.authority >= 0 && !fs.any(it.name == host_name) { w = field_onto(w, host_name, fs[p.authority].value) }
+    mut crumbs: Bytes? = null
+    for f in fs.slice(p.heads, fs.length) {
+        if f.name == cookie_name {
+            crumbs = crumbs?.concat(crumb_join.concat(f.value)) ?? f.value
+        } else {
+            w = field_onto(w, f.name, f.value)
+        }
+    }
+    let c? = crumbs else { return w.concat(crlf) }
+    field_onto(w, cookie_name, c).concat(crlf)
 }
 
-/// `host` from the authority, unless the request sent its own.
-fn host_line(regular: List<HeaderField>, authority: Bytes?) -> List<Bytes> {
-    let a? = authority else { return [] }
-    if regular.any(it.name == host_name) { return [] }
-    [line(host_name, a)]
+/// A field line appended to `w`.
+fn field_onto(w: Bytes, name: Bytes, value: Bytes) -> Bytes {
+    w.concat(name).concat(colon).concat(value).concat(crlf)
 }
-
-/// The crumbs as one `cookie` field, or nothing when there are none.
-fn cookie_line(crumbs: List<Bytes>) -> List<Bytes> {
-    if crumbs.is_empty() { return [] }
-    [
-        line(
-            cookie_name,
-            [if i == 0 { c } else { crumb_join.concat(c) } for i, c in crumbs].bytes(),
-        ),
-    ]
-}
-
-fn line(name: Bytes, value: Bytes) -> Bytes { [name, colon, value, crlf].bytes() }
 
 /// A stream's request, framed by the 1.1 framer from the head its fields
 /// mean — or the status that framer refuses it with.
@@ -94,8 +74,17 @@ export fn refused_on(mut h: H2Conn, id: int, code: int) { answered_on(h, id, sta
 /// Whether a field names the connection, which HTTP/2 refuses (§8.2.2).
 fn scoped(name: string) -> bool { connection_specific.any(it == folded(name.bytes())) }
 
-/// ASCII letters lowercased; every other octet as it is.
-export fn folded(b: Bytes) -> Bytes { [lower_octet(b.at(i)) for i in 0..b.length].bytes()! }
+/// ASCII letters lowercased; every other octet as it is. A name that
+/// holds no capital — nearly every one a handler writes — is answered
+/// as it came, with nothing built.
+export fn folded(b: Bytes) -> Bytes {
+    if b.run(0, uncapital) == b.length { return b }
+    [lower_octet(b.at(i)) for i in 0..b.length].bytes()!
+}
+
+fn is_uncapital(c: int) -> bool { c < 65 || c > 90 }
+
+const uncapital: Bytes = admits(is_uncapital)
 
 fn lower_octet(c: int) -> int { if c >= 65 && c <= 90 { c + 32 } else { c } }
 

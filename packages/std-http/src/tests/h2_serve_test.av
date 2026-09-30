@@ -13,6 +13,7 @@ use @std.http.h2.{
     end_headers,
     end_stream,
     request_head_kept,
+    frames_in,
 }
 use @std.http.hpack.{HeaderField, Decoder, field, encoder, decoder}
 use @std.http.frame.{limits, Method, no_bytes}
@@ -54,21 +55,10 @@ fn served_one() -> H2Conn {
 
 /// The answer's decoded fields as `name: value` lines, and its DATA.
 fn answer_text(mut h: H2Conn) -> string {
-    let out = h.drained()
-    mut at = 0
+    let fs = frames_in(h.drained())
     mut d = decoder(4096, 65536)
-    mut lines: List<string> = []
-    mut body = no_bytes
-    while at < out.length {
-        match frame_at(out, at, 16777215) {
-            .Whole(f, end) -> {
-                at = end
-                if f.kind is .Headers { lines = lines.concat(field_lines(d, f.payload)) }
-                if f.kind is .Data { body = body.concat(f.payload) }
-            },
-            .Partial or .Oversized -> { at = out.length },
-        }
-    }
+    let lines = [l for f in fs if f.kind is .Headers for l in field_lines(d, f.payload)]
+    let body = [f.payload for f in fs if f.kind is .Data].bytes()
     lines.concat(["body=${body.text() ?? "?"}"]).join("\n")
 }
 

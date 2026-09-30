@@ -122,6 +122,13 @@ const statics: List<HeaderField> = [
     field("www-authenticate", ""),
 ]
 
+/// The static table's positions by name length — the longest static
+/// name is 27 octets — so a search reads only the names that could
+/// match.
+const static_by_length: List<List<int>> = [[i for i, f in statics if f.name.length == n] for n in 0..28]
+
+const no_indices: List<int> = []
+
 /// The dynamic table (§2.3.2), entries OLDEST FIRST: an insert is a
 /// push and an eviction drops a prefix. `size` is the entries' summed
 /// cost and never passes `max`.
@@ -404,15 +411,18 @@ impl Encoder {
     }
 
     /// The index of an entry that is `f` exactly — or 0.
-    fn exact(f: HeaderField) -> int { self.index_where(it.name == f.name && it.value == f.value) }
+    fn exact(f: HeaderField) -> int { self.index_where(f.name, it.name == f.name && it.value == f.value) }
 
     /// The index of an entry named `name` — or 0.
-    fn named(name: Bytes) -> int { self.index_where(it.name == name) }
+    fn named(name: Bytes) -> int { self.index_where(name, it.name == name) }
 
-    /// The index of the first entry `p` admits, static first, the
-    /// order the RFC's own examples encode in — or 0.
-    fn index_where(p: fn(HeaderField) -> bool) -> int {
-        let s? = statics.find_index(p) else { return self.dynamic_index(self.dynamic.entries.find_index(p)) }
+    /// The index of the first entry `p` admits whose name is `name`'s
+    /// length, static first, the order the RFC's own examples encode in
+    /// — or 0. The static table is searched in its bucket of that name
+    /// length alone, a handful of entries rather than sixty-one.
+    fn index_where(name: Bytes, p: fn(HeaderField) -> bool) -> int {
+        let bucket = if name.length < static_by_length.length { static_by_length[name.length] } else { no_indices }
+        let s? = bucket.find(p(statics[it])) else { return self.dynamic_index(self.dynamic.entries.find_index(p)) }
         s + 1
     }
 
@@ -423,10 +433,14 @@ impl Encoder {
     }
 }
 
+/// Every one-octet integer, laid out once: an index is most of what an
+/// encoder writes, and each costs a read of this table, not a build.
+const single_octets: List<Bytes> = [[i].bytes()! for i in 0..256]
+
 /// `v` on a prefix of `bits` bits, the octet's other bits `flags` (§5.1).
 export fn integer(v: int, bits: int, flags: int) -> Bytes {
     let top = (1 << bits) - 1
-    if v < top { return [flags | v].bytes()! }
+    if v < top { return single_octets[flags | v] }
     mut out = [flags | top]
     mut rest = v - top
     while rest >= 128 {
@@ -776,33 +790,67 @@ export fn huffman_encoded(s: Bytes) -> Bytes {
     out.bytes()!
 }
 
-/// A Huffman-coded string's octets (§5.2). The walk ends between
-/// symbols, or inside one on at most seven bits that are all ones — the
-/// EOS code's prefix; EOS itself is never a symbol of a string.
-export fn huffman_decoded(raw: Bytes) -> Result<Bytes, HpackRefusal> {
-    let tree = huff_tree
-    mut out: List<int> = []
-    mut node = 0
-    mut depth = 0
-    mut ones = true
-    for i in 0..raw.length {
-        let b = raw.at(i)
-        for k in 0..8 {
-            let bit = (b >> 7 - k) & 1
-            let next = tree[2 * node + bit]
-            if next >= 0 {
-                node = next
-                depth = depth + 1
-                ones = ones && bit == 1
-            } else {
-                if -1 - next == eos { return .Err(HpackRefusal.Eos) }
-                out.push(-1 - next)
-                node = 0
-                depth = 0
-                ones = true
-            }
+/// How many nodes the code's tree has: every one a state of the
+/// decoder.
+const huff_nodes: int = huff_tree.length / 2
+
+/// The decoder's steps, a nibble at a time: node `state` reading the
+/// four bits of nibble `x` is entry `16 * state + x`, packed as the node
+/// it lands on plus, shifted by nine, the symbol it completes plus one
+/// (0 for none). The shortest code is five bits, so a nibble completes
+/// at most one symbol. Built once, at the first decode: its 4096 walks
+/// are past a const's step budget.
+once fn huff_steps() -> List<int> { [nibble_step(state, x) for state in 0..huff_nodes for x in 0..16] }
+
+fn nibble_step(state: int, x: int) -> int {
+    mut node = state
+    mut completed = 0
+    for k in 0..4 {
+        let next = huff_tree[2 * node + ((x >> 3 - k) & 1)]
+        if next >= 0 {
+            node = next
+        } else {
+            completed = 0 - next
+            node = 0
         }
     }
-    if depth > 7 || !ones { return .Err(HpackRefusal.Padding) }
+    node | (completed << 9)
+}
+
+/// The states a string may end in: the root, or a node reached from it
+/// by at most seven 1-bits — the EOS code's prefix, which is all the
+/// padding may be (§5.2).
+const huff_endings: List<bool> = ending_states()
+
+fn ending_states() -> List<bool> {
+    mut ends = [false for n in 0..huff_nodes]
+    mut node = 0
+    ends[0] = true
+    for depth in 0..7 {
+        node = huff_tree[2 * node + 1]
+        ends[node] = true
+    }
+    ends
+}
+
+/// A Huffman-coded string's octets (§5.2), a nibble per step. The walk
+/// ends between symbols, or inside one on at most seven bits that are
+/// all ones — the EOS code's prefix; EOS itself is never a symbol of a
+/// string.
+export fn huffman_decoded(raw: Bytes) -> Result<Bytes, HpackRefusal> {
+    let steps = huff_steps()
+    mut out: List<int> = []
+    mut state = 0
+    for i in 0..raw.length {
+        let b = raw.at(i)
+        let high = steps[16 * state + (b >> 4)]
+        let low = steps[16 * (high & 511) + (b & 15)]
+        if high >> 9 == eos + 1 || low >> 9 == eos + 1 { return .Err(HpackRefusal.Eos) }
+        if high >> 9 > 0 { out.push((high >> 9) - 1) }
+        if low >> 9 > 0 { out.push((low >> 9) - 1) }
+        state = low & 511
+    }
+    if !huff_endings[state] { return .Err(HpackRefusal.Padding) }
     .Ok(out.bytes()!)
 }
+

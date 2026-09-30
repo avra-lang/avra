@@ -18,6 +18,7 @@ use @std.http.h2.{
     u32_at,
     end_headers,
     end_stream,
+    frames_in,
 }
 use @std.http.hpack.{field, encoder}
 
@@ -60,30 +61,14 @@ fn heard_from(c: Conn) -> Bytes? {
     match within ms(50) { c.read(65536) } { .Ok(b) -> b, .Err(_) -> no_bytes }
 }
 
-fn frames_of(b: Bytes) -> List<Frame> {
-    mut out: List<Frame> = []
-    mut at = 0
-    mut more = true
-    while more {
-        match frame_at(b, at, 16777215) {
-            .Whole(f, end) -> {
-                out.push(f)
-                at = end
-            },
-            .Partial or .Oversized -> { more = false },
-        }
-    }
-    out
-}
-
 fn goaway_code(b: Bytes) -> int {
-    let g? = frames_of(b).find(it.kind is .GoAway) else { return -1 }
+    let g? = frames_in(b).find(it.kind is .GoAway) else { return -1 }
     u32_at(g.payload, 4)
 }
 
 fn data_octets(b: Bytes) -> int {
     mut n = 0
-    for f in frames_of(b) { if f.kind is .Data { n = n + f.payload.length } }
+    for f in frames_in(b) { if f.kind is .Data { n = n + f.payload.length } }
     n
 }
 

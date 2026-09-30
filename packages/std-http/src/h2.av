@@ -138,11 +138,34 @@ export fn frame_at(buf: Bytes, at: int, max: int) -> FrameAt {
 }
 
 /// A frame on the wire.
-export fn frame_bytes(kind: FrameKind, flags: int, stream: int, payload: Bytes) -> Bytes {
+export fn frame_bytes(kind: FrameKind, flags: int, stream: int, payload: Bytes) -> Bytes { frame_onto(no_bytes, kind, flags, stream, payload) }
+
+/// A frame appended to `w`: the nine-octet head — the reserved bit of
+/// the stream id clear — then the payload.
+export fn frame_onto(w: Bytes, kind: FrameKind, flags: int, stream: int, payload: Bytes) -> Bytes {
     let n = payload.length
-    [(n >> 16) & 255, (n >> 8) & 255, n & 255, kind_code(kind), flags].bytes()!
-        .concat(u32_bytes(stream))
+    w
+        .concat([(n >> 16) & 255, (n >> 8) & 255, n & 255, kind_code(kind), flags].bytes()!)
+        .concat(u32_bytes(stream & int_bound))
         .concat(payload)
+}
+
+/// Every whole frame in `b`, in order — a torn tail is left out, and no
+/// length bound is asked, since what reads this is the one that wrote
+/// the octets or a peer answering them.
+export fn frames_in(b: Bytes) -> List<Frame> {
+    mut out: List<Frame> = []
+    mut at = 0
+    while at < b.length {
+        match frame_at(b, at, 16777215) {
+            .Whole(f, end) -> {
+                out.push(f)
+                at = end
+            },
+            .Partial or .Oversized -> { return out },
+        }
+    }
+    out
 }
 
 /// The 32-bit word at `at`, most significant octet first.
@@ -218,6 +241,16 @@ fn setting(s: Settings, id: int, v: int) -> Result<Settings, H2Error> {
 
 /// Where a live stream stands. Idle and closed streams are not held.
 export enum StreamState { Open, HalfClosedRemote, HalfClosedLocal }
+
+/// Whether the peer may still send on a stream in this state.
+fn receiving(st: StreamState) -> bool {
+    match st { .Open or .HalfClosedLocal -> true, .HalfClosedRemote -> false }
+}
+
+/// Whether this end may still send on a stream in this state.
+fn sending(st: StreamState) -> bool {
+    match st { .Open or .HalfClosedRemote -> true, .HalfClosedLocal -> false }
+}
 
 /// A live stream: its state, both windows, the request's head and the
 /// body gathered so far, whether a response head has been written, and
@@ -297,6 +330,7 @@ export type H2Conn = {
     settled: bool,
     streams: List<H2Stream>,
     gone: List<Gone>,
+    closes: int,
     last: int,
     send: int,
     recv: int,
@@ -323,6 +357,7 @@ export fn h2_server(limits: Limits) -> H2Conn {
         settled: false,
         streams: [],
         gone: [],
+        closes: 0,
         last: 0,
         send: 65535,
         recv: 65535,
@@ -424,16 +459,31 @@ impl H2Conn {
         .Closed(self.gone[g].how)
     }
 
-    /// Stream `id` closed, remembered with how it closed.
+    /// Stream `id` closed, remembered with how it closed — in a ring of
+    /// `remembered` slots written in place, so a close costs one write
+    /// however many streams came before it.
     mut fn closed(id: int, how: Closure) {
-        self.streams = [s for s in self.streams if s.id != id]
-        let kept = if self.gone.length >= remembered { self.gone.slice(1, self.gone.length) } else { self.gone }
-        self.gone = kept.concat([Gone { id: id, how: how }])
+        self.dropped_stream(id)
+        let g = Gone { id: id, how: how }
+        if self.gone.length < remembered { self.gone.push(g) } else { self.gone[self.closes % remembered] = g }
+        self.closes = self.closes + 1
+    }
+
+    /// A frame owed the peer, written onto what is already owed.
+    mut fn owe(kind: FrameKind, flags: int, stream: int, payload: Bytes) { self.out = frame_onto(self.out, kind, flags, stream, payload) }
+
+    /// Stream `id` out of the live list: the last stream moved into its
+    /// slot, so a close moves one stream, never the list. Order among
+    /// live streams means nothing.
+    mut fn dropped_stream(id: int) {
+        let at? = self.live_at(id) else { return }
+        let last = self.streams.pop()
+        if at < self.streams.length { self.streams[at] = last }
     }
 
     /// RST_STREAM owed on stream `id`, which closes.
     mut fn reset(id: int, why: H2Error) {
-        self.out = self.out.concat(frame_bytes(.Reset, 0, id, u32_bytes(error_code(why))))
+        self.owe(.Reset, 0, id, u32_bytes(error_code(why)))
         self.closed(id, .Reset)
     }
 
@@ -442,9 +492,7 @@ impl H2Conn {
     /// — the connection they came on broke a law.
     mut fn failed(why: H2Error) {
         if !(why is .NoError) { self.ready = [] }
-        self.out = self
-            .out
-            .concat(frame_bytes(.GoAway, 0, 0, u32_bytes(self.last).concat(u32_bytes(error_code(why)))))
+        self.owe(.GoAway, 0, 0, u32_bytes(self.last).concat(u32_bytes(error_code(why))))
         self.closing = true
     }
 
@@ -471,7 +519,7 @@ impl H2Conn {
     /// the request completed when it ends.
     mut fn data_on(at: int, f: Frame, body: Bytes) -> H2Error? {
         let s = self.streams[at]
-        if s.state is .HalfClosedRemote { return self.stream_error(s.id, .StreamClosed) }
+        if !receiving(s.state) { return self.stream_error(s.id, .StreamClosed) }
         let n = f.payload.length
         if n > s.recv { return self.stream_error(s.id, .FlowControl) }
         if s.body.length + body.length > self.limits.body { return self.refused_with(s.id, 413) }
@@ -491,7 +539,7 @@ impl H2Conn {
     mut fn replenished(stream: int, left: int) {
         let n = self.ours.window - left
         if left * 2 >= self.ours.window || n <= 0 { return }
-        self.out = self.out.concat(frame_bytes(.WindowUpdate, 0, stream, u32_bytes(n)))
+        self.owe(.WindowUpdate, 0, stream, u32_bytes(n))
         if stream == 0 { self.recv = self.recv + n } else { self.refilled(stream, n) }
     }
 
@@ -506,7 +554,7 @@ impl H2Conn {
     mut fn remote_ended(at: int) -> H2Error? {
         let s = self.streams[at]
         if !length_kept(s.fields, s.body.length) { return self.stream_error(s.id, .Protocol) }
-        if s.state is .HalfClosedLocal {
+        if !sending(s.state) {
             self.closed(s.id, .Ended)
             return null
         }
@@ -621,7 +669,7 @@ impl H2Conn {
     /// A second HEADERS on a live stream is its trailers, which must
     /// end it (§8.1).
     fn trailers_of(at: int, f: Frame) -> Purpose {
-        if self.streams[at].state is .HalfClosedRemote { return .Discarded(H2Error.StreamClosed) }
+        if !receiving(self.streams[at].state) { return .Discarded(H2Error.StreamClosed) }
         if !flagged(f.flags, end_stream) { return .Discarded(H2Error.Protocol) }
         .Trailers
     }
@@ -727,7 +775,7 @@ impl H2Conn {
         if next.header_table != self.theirs.header_table { self.encoder.resized(next.header_table) }
         self.theirs = next
         self.settled = true
-        self.out = self.out.concat(frame_bytes(.Settings, ack, 0, no_bytes))
+        self.owe(.Settings, ack, 0, no_bytes)
         self.flushed_all()
         null
     }
@@ -735,7 +783,7 @@ impl H2Conn {
     mut fn ping(f: Frame) -> H2Error? {
         if f.stream != 0 { return .Protocol }
         if f.payload.length != 8 { return .FrameSize }
-        if !flagged(f.flags, ack) { self.out = self.out.concat(frame_bytes(.Ping, ack, 0, f.payload)) }
+        if !flagged(f.flags, ack) { self.owe(.Ping, ack, 0, f.payload) }
         null
     }
 
@@ -794,7 +842,7 @@ impl H2Conn {
         let at? = self.live_at(id) else { return }
         if self.streams[at].answered { return }
         let block = self.encoder.encoded(fields)
-        self.out = self.out.concat(header_frames(id, block, body.is_empty(), self.theirs.frame))
+        self.out = header_frames(self.out, id, block, body.is_empty(), self.theirs.frame)
         self.streams[at].answered = true
         self.answers = self.answers + 1
         self.streams[at].owed = body
@@ -819,16 +867,7 @@ impl H2Conn {
         while sent < room {
             let n = least(room - sent, self.theirs.frame)
             let last = sent + n == s.owed.length
-            self.out = self
-                .out
-                .concat(
-                    frame_bytes(
-                        .Data,
-                        if last { end_stream } else { 0 },
-                        id,
-                        s.owed.slice(sent, sent + n),
-                    ),
-                )
+            self.owe(.Data, if last { end_stream } else { 0 }, id, s.owed.slice(sent, sent + n))
             sent = sent + n
         }
         self.send = self.send - room
@@ -841,7 +880,7 @@ impl H2Conn {
     /// too, and is half closed otherwise.
     mut fn local_ended(id: int) {
         let at? = self.live_at(id) else { return }
-        if self.streams[at].state is .HalfClosedRemote { return self.closed(id, .Ended) }
+        if !receiving(self.streams[at].state) { return self.closed(id, .Ended) }
         self.streams[at].state = .HalfClosedLocal
     }
 
@@ -873,28 +912,31 @@ impl H2Conn {
 
 fn least(a: int, b: int) -> int { if a < b { a } else { b } }
 
-/// A header block as HEADERS then as many CONTINUATIONs as the peer's
-/// frame size needs, END_HEADERS on the last (§4.3).
-fn header_frames(id: int, block: Bytes, ends: bool, max: int) -> Bytes {
+/// A header block appended to `w` as HEADERS then as many CONTINUATIONs
+/// as the peer's frame size needs, END_HEADERS on the last (§4.3).
+fn header_frames(w: Bytes, id: int, block: Bytes, ends: bool, max: int) -> Bytes {
     let first = least(block.length, max)
     let tail = if ends { end_stream } else { 0 }
-    let flags = if first == block.length { tail | end_headers } else { tail }
-    mut w = frame_bytes(.Headers, flags, id, block.slice(0, first))
+    mut out = frame_onto(
+        w,
+        .Headers,
+        if first == block.length { tail | end_headers } else { tail },
+        id,
+        block.slice(0, first),
+    )
     mut at = first
     while at < block.length {
         let n = least(block.length - at, max)
-        w = w
-            .concat(
-                frame_bytes(
-                    .Continuation,
-                    if at + n == block.length { end_headers } else { 0 },
-                    id,
-                    block.slice(at, at + n),
-                ),
-            )
+        out = frame_onto(
+            out,
+            .Continuation,
+            if at + n == block.length { end_headers } else { 0 },
+            id,
+            block.slice(at, at + n),
+        )
         at = at + n
     }
-    w
+    out
 }
 
 /// A DATA or HEADERS payload without its padding, or absent when the
@@ -915,13 +957,41 @@ fn unpadded(f: Frame) -> Bytes? {
 /// a field the 1.1 framer would frame, lowercase, and none of the
 /// connection-specific ones (§8.2.2).
 export fn request_head_kept(fs: List<HeaderField>) -> bool {
-    let pseudo = fs.find_index(!is_pseudo(it)) ?? fs.length
-    let heads = fs.slice(0, pseudo)
-    let rest = fs.slice(pseudo, fs.length)
-    rest.all(!is_pseudo(it) && regular_kept(it)) &&
-        heads.all(pseudo_kept(it)) &&
-        pseudo_shape_kept(heads)
+    let p = pseudo_of(fs)
+    fs.slice(p.heads, fs.length).all(!is_pseudo(it) && regular_kept(it)) && pseudo_shape_kept(fs, p)
 }
+
+/// Where each request pseudo-field sits in its list, -1 when absent,
+/// and how many pseudo-fields open the list — scalars alone, so a head
+/// is read in one pass and reading it allocates nothing.
+export type Pseudo = { method: int = -1, scheme: int = -1, path: int = -1, authority: int = -1, heads: int = 0 }
+
+/// The pseudo-fields that open `fs`, found in one pass; a later one of
+/// the same name moves its position, which `pseudo_shape_kept` counts.
+export fn pseudo_of(fs: List<HeaderField>) -> Pseudo {
+    mut p = Pseudo {}
+    while p.heads < fs.length && is_pseudo(fs[p.heads]) { p = pseudo_at(p, fs[p.heads].name) with { heads: p.heads + 1 } }
+    p
+}
+
+/// `p` with the pseudo-field named `name` placed at `p.heads`.
+fn pseudo_at(p: Pseudo, name: Bytes) -> Pseudo {
+    when {
+        name == method_name -> p with { method: p.heads }
+        name == scheme_name -> p with { scheme: p.heads }
+        name == path_name -> p with { path: p.heads }
+        name == authority_name -> p with { authority: p.heads }
+        _ -> p
+    }
+}
+
+/// How many distinct pseudo-fields `p` found.
+fn found(p: Pseudo) -> int { placed(p.method) + placed(p.scheme) + placed(p.path) + placed(p.authority) }
+
+fn placed(i: int) -> int { if i < 0 { 0 } else { 1 } }
+
+/// The value at position `i`, or the empty octets when absent.
+export fn value_at(fs: List<HeaderField>, i: int) -> Bytes { if i < 0 { no_bytes } else { fs[i].value } }
 
 /// Trailers carry no pseudo-field, and each is a regular field this
 /// server takes.
@@ -930,23 +1000,31 @@ export fn trailers_kept(fs: List<HeaderField>) -> bool { fs.all(!is_pseudo(it) &
 /// Whether a field is a pseudo-field — its name opens with `:`.
 export fn is_pseudo(f: HeaderField) -> bool { f.name.length > 0 && f.name.at(0) == 58 }
 
-/// A known request pseudo-field whose value is non-empty and of its own
-/// grammar: `:method` and `:scheme` a token, `:path` and `:authority`
-/// the octets a 1.1 target admits — so no space in any of them, and the
-/// head they spell for the router reads as the one they mean.
-fn pseudo_kept(f: HeaderField) -> bool {
-    let class = if f.name == method_name || f.name == scheme_name { token_octet } else { target_octet }
-    pseudo_names.any(it == f.name) && !f.value.is_empty() && f.value.run(0, class) == f.value.length
+/// The pseudo-field at `i` is absent, or its value is non-empty and of
+/// its own grammar — `class`: a token for `:method` and `:scheme`, the
+/// octets a 1.1 target admits for `:path` and `:authority` — so no space
+/// in any of them, and the head they spell for the router reads as the
+/// one they mean.
+fn pseudo_value_kept(fs: List<HeaderField>, i: int, class: Bytes) -> bool {
+    i < 0 || !fs[i].value.is_empty() && fs[i].value.run(0, class) == fs[i].value.length
 }
 
-/// Each of the four pseudo-fields once; the method's own shape.
-fn pseudo_shape_kept(heads: List<HeaderField>) -> bool {
-    if pseudo_names.any((n) -> heads.filter(it.name == n).length > 1) { return false }
-    let method? = value_named(heads, method_name) else { return false }
-    let path = value_named(heads, path_name)
-    let scheme = value_named(heads, scheme_name)
-    if method == connect_word { return path == null && scheme == null && value_named(heads, authority_name) != null }
-    scheme != null && path != null && !path!.is_empty()
+/// Each pseudo-field a known one and once — an unknown one places
+/// nothing and a repeat places over its first, so either leaves the
+/// count past the distinct ones — each value of its own grammar, and
+/// the method's own shape.
+fn pseudo_shape_kept(fs: List<HeaderField>, p: Pseudo) -> bool {
+    if p.heads != found(p) || p.method < 0 { return false }
+    if !pseudo_value_kept(fs, p.method, token_octet) ||
+        !pseudo_value_kept(fs, p.scheme, token_octet) {
+        return false
+    }
+    if !pseudo_value_kept(fs, p.path, target_octet) ||
+        !pseudo_value_kept(fs, p.authority, target_octet) {
+        return false
+    }
+    if fs[p.method].value == connect_word { return p.path < 0 && p.scheme < 0 && p.authority >= 0 }
+    p.scheme >= 0 && p.path >= 0
 }
 
 /// A regular field: a lowercase token name, a value of visible octets

@@ -22,6 +22,7 @@ use @std.http.h2.{
     prioritised,
     ack,
     request_head_kept,
+    frames_in,
 }
 use @std.http.hpack.{HeaderField, field, encoder, integer}
 use @std.http.frame.{limits, Limits, no_bytes}
@@ -80,22 +81,6 @@ fn conn_with(l: Limits, frames: List<Bytes>) -> H2Conn {
     let b = hello_bytes().concat(frames.bytes())
     let _ = c.fed(b, 0)
     c
-}
-
-/// Every frame in `b`.
-fn frames_in(b: Bytes) -> List<Frame> {
-    mut out: List<Frame> = []
-    mut at = 0
-    while at < b.length {
-        match frame_at(b, at, 16777215) {
-            .Whole(f, end) -> {
-                out.push(f)
-                at = end
-            },
-            .Partial or .Oversized -> { return out },
-        }
-    }
-    out
 }
 
 /// The code of the GOAWAY the connection owes, or -1.

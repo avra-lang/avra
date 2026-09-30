@@ -18,58 +18,10 @@ use @std.http.h2.{
     end_headers,
     padded,
     prioritised,
+    frames_in,
 }
 use @std.http.hpack.{HeaderField, field, encoder, decoder}
 use @std.http.frame.{limits, Limits, no_bytes}
-
-fn lit_block(fs: List<HeaderField>) -> Bytes {
-    mut e = encoder(false)
-    e.encoded(fs)
-}
-
-fn plain_get(path: string) -> List<HeaderField> {
-    [
-        field(":method", "GET"),
-        field(":scheme", "http"),
-        field(":path", path),
-        field(":authority", "a"),
-    ]
-}
-
-fn opening() -> Bytes { preface.concat(frame_bytes(.Settings, 0, 0, no_bytes)) }
-
-fn fed_all(frames: List<Bytes>) -> H2Conn {
-    mut c = h2_server(limits())
-    let _ = c.fed(opening().concat(frames.bytes()), 0)
-    c
-}
-
-fn all_frames(b: Bytes) -> List<Frame> {
-    mut out: List<Frame> = []
-    mut at = 0
-    while at < b.length {
-        match frame_at(b, at, 16777215) {
-            .Whole(f, end) -> {
-                out.push(f)
-                at = end
-            },
-            .Partial or .Oversized -> { return out },
-        }
-    }
-    out
-}
-
-fn goaway_code(c: H2Conn) -> int {
-    let g? = all_frames(c.out).find(it.kind is .GoAway) else { return -1 }
-    u32_at(g.payload, 4)
-}
-
-fn reset_code(c: H2Conn, id: int) -> int {
-    let r? = all_frames(c.out).find(it.kind is .Reset && it.stream == id) else { return -1 }
-    u32_at(r.payload, 0)
-}
-
-fn ready_paths(c: H2Conn) -> string { [r.fields.find(it.name == ":path".bytes())?.value?.text() ?? "?" for r in c.ready].join(",") }
 
 /// A GET whose block KEEPS `:path: <path>` in the peer's table at index
 /// 62 — a literal with incremental indexing — and names its authority
@@ -81,7 +33,7 @@ fn indexing_get(id: int) -> Bytes { frame_bytes(.Headers, end_headers | end_stre
 
 /// A GET on stream `id`, reset by the client at once.
 fn open_and_reset(id: int) -> Bytes {
-    frame_bytes(.Headers, end_headers | end_stream, id, lit_block(plain_get("/")))
+    frame_bytes(.Headers, end_headers | end_stream, id, block_of(get_head("/")))
         .concat(frame_bytes(.Reset, 0, id, u32_bytes(8)))
 }
 
@@ -115,64 +67,61 @@ fn noise(seed: int, n: int) -> Bytes {
 spec "std.http h2 adversarial" {
     given "HPACK stays in step across every refused stream" {
         then "a block on a stream past the concurrency bound still moves the table" {
-            let open = [frame_bytes(.Headers, end_headers, 2 * i + 1, lit_block(plain_get("/"))) for i in 0..100]
+            let open = [frame_bytes(.Headers, end_headers, 2 * i + 1, block_of(get_head("/"))) for i in 0..100]
             let refused = frame_bytes(
                 .Headers,
                 end_headers | end_stream,
                 201,
                 keeping_block("/refused"),
             )
-            let c = fed_all(open.concat([refused, indexing_get(203)]))
-            let c2 = fed_all(
+            let c = conn_after(open.concat([refused, indexing_get(203)]))
+            let c2 = conn_after(
                 open.concat([refused, frame_bytes(.Reset, 0, 1, u32_bytes(8)), indexing_get(203)]),
             )
-            reset_code(c, 201) == error_code(.RefusedStream) &&
-                goaway_code(c) == -1 &&
-                ready_paths(c2) == "/refused"
+            reset_of(c, 201) == error_code(.RefusedStream) &&
+                goaway_of(c) == -1 &&
+                paths_ready(c2) == "/refused"
         }
         then "a block on a stream that depends on itself still moves the table" {
             let body = u32_bytes(1).concat([15].bytes()!).concat(keeping_block("/self"))
-            let c = fed_all(
+            let c = conn_after(
                 [
                     frame_bytes(.Headers, end_headers | end_stream | prioritised, 1, body),
                     indexing_get(3),
                 ],
             )
-            reset_code(c, 1) == error_code(.Protocol) && ready_paths(c) == "/self"
+            reset_of(c, 1) == error_code(.Protocol) && paths_ready(c) == "/self"
         }
         then "a block on a stream the peer already ended still moves the table" {
             let again = frame_bytes(.Headers, end_headers | end_stream, 1, keeping_block("/again"))
-            let c = fed_all(
+            let c = conn_after(
                 [
-                    frame_bytes(
-                        .Headers,
-                        end_headers | end_stream,
-                        1,
-                        lit_block(plain_get("/first")),
-                    ),
+                    frame_bytes(.Headers, end_headers | end_stream, 1, block_of(get_head("/first"))),
                     again,
                     indexing_get(3),
                 ],
             )
-            reset_code(c, 1) == error_code(.StreamClosed) && ready_paths(c) == "/first,/again"
+            reset_of(c, 1) == error_code(.StreamClosed) && paths_ready(c) == "/first,/again"
         }
         then "a malformed head still moves the table" {
             let bad = [130, 68, 4].bytes()!.concat("/bad".bytes())
-            let c = fed_all(
+            let c = conn_after(
                 [frame_bytes(.Headers, end_headers | end_stream, 1, bad), indexing_get(3)],
             )
-            reset_code(c, 1) == error_code(.Protocol) && ready_paths(c) == "/bad"
+            reset_of(c, 1) == error_code(.Protocol) && paths_ready(c) == "/bad"
         }
     }
     given "malformed frames that could slice past their end" {
         then "a prioritised HEADERS too short for its five octets is a FRAME_SIZE_ERROR, not a trap" {
-            goaway_code(
-                fed_all([frame_bytes(.Headers, end_headers | prioritised, 1, [0, 0, 0].bytes()!)]),
+            goaway_of(
+                conn_after(
+                    [frame_bytes(.Headers, end_headers | prioritised, 1, [0, 0, 0].bytes()!)],
+                ),
             ) == error_code(.FrameSize)
         }
         then "a padded, prioritised HEADERS whose padding leaves too little is a FRAME_SIZE_ERROR" {
-            goaway_code(
-                fed_all(
+            goaway_of(
+                conn_after(
                     [
                         frame_bytes(
                             .Headers,
@@ -185,12 +134,12 @@ spec "std.http h2 adversarial" {
             ) == error_code(.FrameSize)
         }
         then "a padded frame with an empty payload is a PROTOCOL_ERROR" {
-            goaway_code(fed_all([frame_bytes(.Headers, end_headers | padded, 1, no_bytes)])) == error_code(.Protocol)
+            goaway_of(conn_after([frame_bytes(.Headers, end_headers | padded, 1, no_bytes)])) == error_code(.Protocol)
         }
         then "a padded DATA of the pad-length octet alone is an empty body" {
-            let c = fed_all(
+            let c = conn_after(
                 [
-                    frame_bytes(.Headers, end_headers, 1, lit_block(plain_get("/"))),
+                    frame_bytes(.Headers, end_headers, 1, block_of(get_head("/"))),
                     frame_bytes(.Data, padded | end_stream, 1, [0].bytes()!),
                 ],
             )
@@ -199,38 +148,38 @@ spec "std.http h2 adversarial" {
     }
     given "every split of a session" {
         then "a session fed one octet at a time answers as it does whole" {
-            let whole = opening()
+            let whole = hello_bytes()
                 .concat(
                     [frame_bytes(
                         .Headers,
                         end_headers | end_stream,
                         2 * i + 1,
-                        lit_block(plain_get("/p${i}")),
+                        block_of(get_head("/p${i}")),
                     ) for i in 0..3]
                         .bytes(),
                 )
             mut c = h2_server(limits())
             mut at = 0
             for n in 1..whole.length + 1 { at = c.fed(whole.slice(0, n), at) }
-            at == whole.length && ready_paths(c) == "/p0,/p1,/p2" && goaway_code(c) == -1
+            at == whole.length && paths_ready(c) == "/p0,/p1,/p2" && goaway_of(c) == -1
         }
     }
     given "memory under churn" {
         then "rapid reset: open-then-reset past twice the stream bound is ENHANCE_YOUR_CALM, with nothing live" {
             let churn = [open_and_reset(2 * i + 1) for i in 0..1000]
-            let c = fed_all(churn)
-            goaway_code(c) == error_code(.EnhanceYourCalm) &&
+            let c = conn_after(churn)
+            goaway_of(c) == error_code(.EnhanceYourCalm) &&
                 c.churn == 201 &&
                 c.streams.is_empty() &&
                 c.gone.length <= 256 &&
                 c.ready.is_empty()
         }
         then "two hundred resets are within the budget" {
-            let c = fed_all([open_and_reset(2 * i + 1) for i in 0..200])
-            goaway_code(c) == -1 && c.churn == 200 && c.gone.length == 200
+            let c = conn_after([open_and_reset(2 * i + 1) for i in 0..200])
+            goaway_of(c) == -1 && c.churn == 200 && c.gone.length == 200
         }
         then "a client that cancels no more than it lets finish never meets the budget" {
-            mut c = fed_all([])
+            mut c = conn_after([])
             for i in 0..500 {
                 let _ = c
                     .fed(
@@ -238,35 +187,35 @@ spec "std.http h2 adversarial" {
                             .Headers,
                             end_headers | end_stream,
                             4 * i + 1,
-                            lit_block(plain_get("/")),
+                            block_of(get_head("/")),
                         ),
                         0,
                     )
                 c.respond(4 * i + 1, [field(":status", "204")], no_bytes)
                 let _ = c.fed(open_and_reset(4 * i + 3), 0)
             }
-            goaway_code(c) == -1 && c.churn == 500 && c.answers == 500
+            goaway_of(c) == -1 && c.churn == 500 && c.answers == 500
         }
         then "made-you-reset: malformed streams past the budget are ENHANCE_YOUR_CALM" {
             let bad = [frame_bytes(
                 .Headers,
                 end_headers | end_stream,
                 2 * i + 1,
-                lit_block([field(":method", "GET")]),
+                block_of([field(":method", "GET")]),
             ) for i in 0..300]
-            goaway_code(fed_all(bad)) == error_code(.EnhanceYourCalm)
+            goaway_of(conn_after(bad)) == error_code(.EnhanceYourCalm)
         }
         then "a flood of one-octet DATA earns one WINDOW_UPDATE per half window, not one per frame" {
             let head = frame_bytes(
                 .Headers,
                 end_headers,
                 1,
-                lit_block(plain_get("/").concat([field("content-length", "40000")])),
+                block_of(get_head("/").concat([field("content-length", "40000")])),
             )
-            let c = fed_all(
+            let c = conn_after(
                 [head].concat([frame_bytes(.Data, 0, 1, "x".bytes()) for i in 0..40000]),
             )
-            goaway_code(c) == -1 && all_frames(c.out).filter(it.kind is .WindowUpdate).length == 2
+            goaway_of(c) == -1 && frames_in(c.out).filter(it.kind is .WindowUpdate).length == 2
         }
         then "the 413 refusal ignores the DATA the client had in flight" {
             let l = Limits { body: 4 }
@@ -278,25 +227,25 @@ spec "std.http h2 adversarial" {
                 field(":authority", "a"),
             ]
             let frames = [
-                frame_bytes(.Headers, end_headers, 1, lit_block(head)),
+                frame_bytes(.Headers, end_headers, 1, block_of(head)),
                 frame_bytes(.Data, 0, 1, "0123456789".bytes()),
                 frame_bytes(.Data, end_stream, 1, "more".bytes()),
             ]
-            let _ = c.fed(opening().concat(frames.bytes()), 0)
-            goaway_code(c) == -1 && reset_code(c, 1) == error_code(.NoError) && c.streams.is_empty()
+            let _ = c.fed(hello_bytes().concat(frames.bytes()), 0)
+            goaway_of(c) == -1 && reset_of(c, 1) == error_code(.NoError) && c.streams.is_empty()
         }
     }
     given "the peer's table size" {
         then "a SETTINGS that shrinks the peer's table opens the next answer with the size update" {
-            mut c = fed_all(
+            mut c = conn_after(
                 [
                     frame_bytes(.Settings, 0, 0, [0, 1].bytes()!.concat(u32_bytes(0))),
-                    frame_bytes(.Headers, end_headers | end_stream, 1, lit_block(plain_get("/"))),
+                    frame_bytes(.Headers, end_headers | end_stream, 1, block_of(get_head("/"))),
                 ],
             )
             let _ = c.drained()
             c.respond(1, [field(":status", "200")], no_bytes)
-            let hs = all_frames(c.drained())
+            let hs = frames_in(c.drained())
             mut d = decoder(0, 65536)
             hs[0].payload.at(0) == 32 && d.decoded(hs[0].payload) is .Fields
         }
@@ -311,7 +260,7 @@ spec "std.http h2 adversarial" {
 /// One fuzz run: the connection either lives or owes exactly one GOAWAY.
 fn fuzz_run(seed: int) -> bool {
     mut c = h2_server(limits())
-    let _ = c.fed(opening().concat(noise(seed, 40)), 0)
-    let goaways = all_frames(c.out).filter(it.kind is .GoAway).length
+    let _ = c.fed(hello_bytes().concat(noise(seed, 40)), 0)
+    let goaways = frames_in(c.out).filter(it.kind is .GoAway).length
     goaways == 0 && !c.closing || goaways == 1 && c.closing
 }
