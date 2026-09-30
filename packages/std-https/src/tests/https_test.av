@@ -9,11 +9,12 @@
 use @std.net.{Conn, Listener, NetError, listen, connect}
 use @std.time.{Duration, ms, secs, within}
 use @std.http.frame.{limits}
-use @std.http.http.{text}
+use @std.http.http.{Request, Unrouted, Response, text, stream_of}
+use @std.http.ws.{Socket, Message, ws_limits, accepted}
 use @std.http.route.{get}
 use @std.http.server.{Server, server, served, timing}
 use @std.http.client.{Client, ClientError, request, netted}
-use @std.https.{over_tls, secured, tls_carried}
+use @std.https.{over_tls, secured, tls_carried, wss}
 use @std.tls.{TlsConn, TlsError, client_config, dial, handshake, wired}
 use @std.http.wire.{Secure}
 use @std.tls.testing.{trusting_localhost, serving_localhost}
@@ -24,12 +25,101 @@ type Quiet = {}
 /// A TLS server on the loopback answering every request with its
 /// target, one core, the handshake deadline `handshake`.
 fn secure_bed(handshake: Duration) -> Result<Server<Quiet>, ClientError> {
+    secure_bed_with(handshake, (q: Request<Unrouted>) -> text(200, q.target() ?? "?"))
+}
+
+/// A TLS server on the loopback answering every request by `answer`.
+fn secure_bed_with(handshake: Duration, answer: fn(Request<Unrouted>) -> Response) -> Result<
+    Server<Quiet>,
+    ClientError,
+> {
     let l = netted(listen("127.0.0.1", 0))?
     let sc = tls_carried(serving_localhost())?
     let t = timing() with { handshake: handshake }
+    .Ok(served(l, () -> Quiet {}, limits(), t) { _q, q -> answer(q) }.secured(over_tls(sc)))
+}
+
+/// A raw TLS client's `sent`, each piece its own write, and everything
+/// it reads to the server's end.
+fn exchanged_secure(port: int, sent: List<string>) -> Result<string, TlsError> {
+    let c = dial("localhost", port, secs(5), trusting_localhost()?)?
+    for piece in sent { c.write(piece.bytes())? }
+    mut got = ""
+    mut open = true
+    while open {
+        match c.read(65536)? {
+            b? -> { got = got + (b.text() ?? "?") }
+            null -> { open = false }
+        }
+    }
+    c.close()?
+    .Ok(got.replace("\r\n", "|"))
+}
+
+/// A streamed response, pulled piece by piece onto the TLS transport.
+fn stream_rides_tls() -> Result<bool, ClientError> {
+    let s = secure_bed_with(
+        secs(5),
+        (_q: Request<Unrouted>) -> Response { stream: stream_of(["a".bytes(), "bc".bytes()]) },
+    )?
+    spawn s.run(1)
+    defer s.stop()
+    let got = words_of(
+        exchanged_secure(
+            s.listener.port,
+            ["GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"],
+        ),
+    )
+    .Ok(got == "HTTP/1.1 200 OK|transfer-encoding: chunked|connection: close||1|a|2|bc|0||")
+}
+
+/// A request body read by its handler from the TLS transport, the
+/// body arriving in two writes after its head.
+fn body_rides_tls() -> Result<bool, ClientError> {
+    let s = secure_bed_with(secs(5), (q: Request<Unrouted>) -> text(200, q.body.text() ?? "?"))?
+    spawn s.run(1)
+    defer s.stop()
+    let got = words_of(
+        exchanged_secure(
+            s.listener.port,
+            [
+                "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nConnection: close\r\n\r\n",
+                "he",
+                "llo",
+            ],
+        ),
+    )
+    .Ok(got.ends_with("||hello"))
+}
+
+/// Every message echoed until the peer closes.
+fn echoed(s: Socket) {
+    while true {
+        match s.receive() {
+            .Ok(.Text(t)) -> { let _ = s.send_text(t) },
+            .Ok(.Binary(b)) -> { let _ = s.send_binary(b) },
+            .Ok(.Close(_, _)) or .Err(_) -> { return },
+        }
+    }
+}
+
+/// A WebSocket over TLS, both ends: `wss` dials, the server switches on
+/// its TLS transport, a text is echoed and the close handshake runs.
+fn websocket_rides_tls() -> Result<bool, ClientError> {
+    let s = secure_bed_with(secs(5), (q: Request<Unrouted>) -> accepted(q, ws_limits(), echoed))?
+    spawn s.run(1)
+    defer s.stop()
+    let config = tls_carried(trusting_localhost())?
+    let sock = match wss("localhost", s.listener.port, "/chat", secs(5), config, ws_limits()) {
+        .Ok(k) -> k,
+        .Err(_) -> { return .Ok(false) },
+    }
+    let _ = sock.send_text("over tls")
+    let back = sock.receive()
+    let closed = sock.close(1000, "done", secs(2))
     .Ok(
-        served(l, () -> Quiet {}, limits(), t) { _q, q -> text(200, q.target() ?? "?") }
-            .secured(over_tls(sc)),
+        match back { .Ok(.Text(t)) -> t == "over tls", .Ok(_) or .Err(_) -> false } &&
+            match closed { .Ok(code) -> code == 1000, .Err(_) -> false },
     )
 }
 
@@ -243,6 +333,11 @@ spec "std.http over TLS" {
         then "an http target is misdirected" {
             (secure_line_for("http://localhost/x") catch _ -> "") == "HTTP/1.1 421 Misdirected Request <close_notify>"
         }
+    }
+    given "streams over the TLS transport" {
+        then "a streamed response goes out in chunks" { held(stream_rides_tls()) }
+        then "a request body is read as it arrives" { held(body_rides_tls()) }
+        then "a WebSocket opens, echoes and closes over wss" { held(websocket_rides_tls()) }
     }
     given "an HTTPS client at a plain port" {
         then "it fails promptly, never waits out a reply" { held(https_at_a_plain_port()) }

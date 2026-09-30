@@ -58,6 +58,7 @@ w('use @std.http.frame.{framed, limits, Method, Head}')
 w('use @std.http.http.{Request, Unrouted, Response, text, status}')
 w('use @std.http.route.{Route, Table, routed, compiled, dispatch, segments}')
 w('use @std.time.{now_ns}')
+w('use @std.http.body.{Body}')
 w('')
 for tag, pat, _ in SHAPES:
     for i in range(N):
@@ -79,7 +80,7 @@ for tag, pat, _ in SHAPES:
 w('fn asked(line: string) -> Request<Unrouted> {')
 w('    let raw = (line + "\\r\\nHost: h\\r\\n\\r\\n").bytes()')
 w('    match framed(raw, 0, 0, limits()) {')
-w('        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "b", params: Unrouted {} },')
+w('        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "b", params: Unrouted {} },')
 w('        .Partial -> asked(line),')
 w('        .Refused(_) -> asked(line),')
 w('    }')

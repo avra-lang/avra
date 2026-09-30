@@ -214,8 +214,8 @@ impl Workspace {
             self.decls.speak_expansion(f, [wrap_bodiless(ann, w.original, at)])
             return []
         }
-        if !wraps_free(orig.kind) {
-            self.decls.speak_expansion(f, [wrap_method(ann, w.original, at)])
+        if !wraps_kind(orig.kind) {
+            self.decls.speak_expansion(f, [wrap_kind(ann, w.original, at)])
             return []
         }
         let source? = directive.source else {
@@ -791,7 +791,9 @@ impl Workspace {
                     answers: self.answer_kind(d),
                     doc: self.decl_doc_text(d),
                     annotations: self.decl_annotations(v, d),
+                    owner: self.crossed_owner(v, d),
                 },
+                self.decls.loaded_slots("Fn"),
                 heap,
             ),
             .Type -> meta_of_type(
@@ -868,6 +870,14 @@ impl Workspace {
     fn crossed_params(v: FileView, s: StmtId, d: DeclId) -> List<MetaParam> {
         let kinds = self.seat_kinds(d)
         [self.crossed_param(v, p, kind_at(kinds, j)) for j, p in v.store.declared_params(s)]
+    }
+
+    /// The type or trait a member belongs to, as its block spells it —
+    /// a store read, so it answers before the block is signed.
+    fn crossed_owner(v: FileView, d: DeclId) -> string? {
+        let parent? = self.decls.decl(d).parent else { return null }
+        let block = self.decls.decl(parent)
+        v.store.impl_parts(block.stmt)?.target ?? block.name
     }
 
     fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
@@ -978,13 +988,15 @@ fn is_free_fn_named(store: SyntaxArena, s: StmtId, name: string) -> bool {
 }
 
 /// Whether a WRAP directive's wrapper redeclares the annotated fn's
-/// EXACT signature: params word for word (name, spelling, `mut`,
-/// `const`, default PRESENCE) in order, and the answer type's own
-/// spelling. Compared as WRITTEN — expansion runs before typing, so
+/// EXACT signature: its `static`/`mut fn` word, params word for word
+/// (name, spelling, `mut`, `const`, default PRESENCE) in order, and
+/// the answer type's own spelling. Compared as WRITTEN — expansion runs before typing, so
 /// this is the only signature either side has yet.
 fn wrap_signature_matches(store: SyntaxArena, found: StmtId, w: DeclareWork) -> bool {
     let parts? = store.fn_parts(found) else { return false }
-    same_tparams(w.tparams, parts.tparams) &&
+    store.is_static(found) == store.is_static(w.stmt) &&
+        store.is_mutating(found) == store.is_mutating(w.stmt) &&
+        same_tparams(w.tparams, parts.tparams) &&
         same_params(w.params, store.declared_params(found)) &&
         spelled(w.answer) == spelled(parts.ret)
 }
@@ -1010,12 +1022,11 @@ fn param_ty_spelling(p: Param) -> string {
     spelled(ty)
 }
 
-/// Whether WRAP reaches a declaration of this kind: a free fn's
-/// callers reach the wrapper; a method's call dispatch is not yet
-/// taught the repoint.
-fn wraps_free(kind: DeclKind) -> bool {
+/// Whether WRAP reaches a declaration of this kind: a fn's callers
+/// reach the wrapper by its name, a method's through its owner's table.
+fn wraps_kind(kind: DeclKind) -> bool {
     match kind {
-        .Fn -> true,
-        .Method or .Const or .Collect or .CollectEnum or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin -> false,
+        .Fn or .Method -> true,
+        .Const or .Collect or .CollectEnum or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin -> false,
     }
 }

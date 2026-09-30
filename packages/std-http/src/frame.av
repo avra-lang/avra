@@ -51,7 +51,7 @@ export enum Method { Get, Head, Post, Put, Delete, Patch, Options, Connect, Trac
 export enum TargetForm { Origin, Absolute, Asterisk, Authority, Other }
 
 /// How a request body is delimited (RFC 9112 §6.3).
-export enum Body { None, Length(n: int), Chunked }
+export enum RequestBody { None, Length(n: int), Chunked }
 
 /// A framed head. Spans index the buffer it was framed from; `end` is
 /// the first byte past the blank line.
@@ -61,7 +61,7 @@ export type Head = {
     target: Span,
     minor: int,
     fields: Fields,
-    body: Body,
+    body: RequestBody,
     keep_alive: bool,
     expects_continue: bool,
     end: int,
@@ -99,8 +99,21 @@ export enum Framed {
 }
 
 /// The bounds a server names — inspectable, adjustable where they
-/// are owned, never implicit.
-export type Limits = { line: int = 8192, field: int = 8192, head: int = 65536, fields: int = 100, body: int = 1048576, ext: int = 4096, trailers: int = 16 }
+/// are owned, never implicit. `body` bounds a body GATHERED whole into
+/// memory; `stream` bounds a body READ piece by piece, which costs one
+/// piece of memory however long it runs — so a request declaring more
+/// than `stream` is refused at its head, and one declaring more than
+/// `body` is refused only if something asks to gather it.
+export type Limits = {
+    line: int = 8192,
+    field: int = 8192,
+    head: int = 65536,
+    fields: int = 100,
+    body: int = 1048576,
+    stream: int = 1073741824,
+    ext: int = 4096,
+    trailers: int = 16,
+}
 
 /// The default bounds.
 export fn limits() -> Limits { Limits {} }
@@ -409,11 +422,11 @@ fn framing_of(buf: Bytes, fields: Fields) -> Framing {
 /// past the bound is refused before a byte of it arrives. The two
 /// callers keep them in ONE spelling: this file composes its classes
 /// rather than restating them, and its body laws are no different.
-fn body_refusal(fr: Framing, limits: Limits) -> Refusal? {
+fn body_refusal(fr: Framing, bound: int) -> Refusal? {
     when {
         fr.chunked && fr.lengths > 0 -> .TransferEncoding
         fr.codings -> .Coding
-        fr.length > limits.body -> .BodyLength
+        fr.length > bound -> .BodyLength
         _ -> null
     }
 }
@@ -442,9 +455,10 @@ fn settled(
     if fr.why != null { return .Refused(fr.why!) }
     if fr.hosts > 1 || minor == 1 && fr.hosts == 0 { return .Refused(.Host) }
     if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
-    let broken: Refusal? = body_refusal(fr, limits)
+    // a request's body is read piece by piece, so its bound is the stream's
+    let broken: Refusal? = body_refusal(fr, limits.stream)
     if broken != null { return .Refused(broken!) }
-    let body: Body = when {
+    let body: RequestBody = when {
         fr.chunked -> .Chunked
         fr.lengths > 0 -> .Length(fr.length)
         _ -> .None
@@ -624,7 +638,8 @@ fn settled_reply(
     let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
     if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
-    let broken: Refusal? = body_refusal(fr, limits)
+    // a reply's body is gathered whole, so its bound is the gathered one
+    let broken: Refusal? = body_refusal(fr, limits.body)
     if broken != null { return .Refused(broken!) }
     let bodiless = asked is .Head || status < 200 || status == 204 || status == 304
     let body: ReplyBody = when {
@@ -648,88 +663,131 @@ fn settled_reply(
 // ── The chunked body (RFC 9112 §7.1) ────────────────────────────
 
 /// Where a chunked body's decoding stands: at a size line, inside a
-/// chunk owed `n` more bytes and its CRLF, or in the trailers.
+/// chunk still owed `n` octets and then its CRLF (`Data(0)` owes only
+/// the CRLF), or in the trailers.
 export enum Phase {
     Size
     Data(n: int)
     Trailers
 }
 
-/// A chunked body in flight — the decoder's position, phase, and the
-/// chunks it has; fed each read, it walks only what is new. Nothing is
-/// gathered until the body is whole.
+/// A chunked body in flight — the decoder's position in the buffer it
+/// reads, its phase, the octets it has handed out, the pieces a
+/// GATHERING reader keeps (`fed` fills them; a streaming one never
+/// does), and the trailers seen.
 export type Chunker = { at: int, phase: Phase, total: int, parts: List<Bytes>, trailers: int }
 
 /// A decoder starting at `at` — the first byte past the head.
 export fn chunker(at: int) -> Chunker { Chunker { at: at, phase: Phase.Size, total: 0, parts: [], trailers: 0 } }
 
-/// What a fed decoder answers: keep it and feed again, the body
-/// whole with the offset past the trailers, or the law it broke.
+/// What a GATHERING feed answers: keep the decoder and feed again, the
+/// body whole with the offset past the trailers, or the law it broke.
 export enum Chunked {
     More(c: Chunker)
     Done(body: Bytes, end: int)
     Refused(why: Refusal)
 }
 
-enum Step {
-    Again(c: Chunker)
-    Wait(c: Chunker)
-    Done(body: Bytes, end: int)
+/// What one STREAMING step answers: a piece of the body, the decoder
+/// wanting more octets, the body's end with the offset past its
+/// trailers, or the law it broke.
+export enum Decoded {
+    Piece(b: Bytes, c: Chunker)
+    More(c: Chunker)
+    Done(end: int)
     Refused(why: Refusal)
 }
 
-/// The decoder advanced over `buf` as far as its bytes allow: the body
-/// whole with the offset past the trailers' blank line, the decoder to
-/// feed again, or why not. Line ends are CRLF only; a size is 1..16 hex
-/// digits and only an extension may follow it; trailers are field
-/// lines, parsed and dropped — a trailer can never re-frame, route or
-/// authenticate.
-export fn fed(c: Chunker, buf: Bytes, limits: Limits) -> Chunked {
+enum Step {
+    Again(c: Chunker)
+    Piece(b: Bytes, c: Chunker)
+    Wait(c: Chunker)
+    Done(end: int)
+    Refused(why: Refusal)
+}
+
+/// THE CHUNK DECODER, one piece at a time: the next piece of the body
+/// in `buf` — as much of the current chunk as has arrived, so a chunk
+/// of any size costs no more memory than one read — or the decoder
+/// wanting more, or the end, or why not. `bound` is the most the body
+/// may carry. Line ends are CRLF only; a size is 1..16 hex digits and
+/// only an extension may follow it; trailers are field lines, parsed
+/// and dropped — a trailer can never re-frame, route or authenticate.
+export fn unchunked(c: Chunker, buf: Bytes, bound: int, limits: Limits) -> Decoded {
     mut cur = c
     while true {
-        match stepped(cur, buf, limits) {
+        match stepped(cur, buf, bound, limits) {
             .Again(next) -> { cur = next },
+            .Piece(b, next) -> { return .Piece(b, next) },
             .Wait(next) -> { return .More(next) },
-            .Done(body, end) -> { return .Done(body, end) },
+            .Done(end) -> { return .Done(end) },
             .Refused(why) -> { return .Refused(why) },
         }
     }
     .More(cur)
 }
 
-fn stepped(c: Chunker, buf: Bytes, limits: Limits) -> Step {
+/// The decoder advanced over `buf` as far as its bytes allow, every
+/// piece KEPT: the body whole with the offset past the trailers' blank
+/// line, the decoder to feed again, or why not. The gathering reader of
+/// `unchunked`, bounded by `limits.body`.
+export fn fed(c: Chunker, buf: Bytes, limits: Limits) -> Chunked {
+    mut cur = c
+    while true {
+        match unchunked(cur, buf, limits.body, limits) {
+            .Piece(b, next) -> { cur = next with { parts: next.parts.concat([b]) } },
+            .More(next) -> { return .More(next) },
+            .Done(end) -> { return .Done(cur.parts.bytes(), end) },
+            .Refused(why) -> { return .Refused(why) },
+        }
+    }
+    .More(cur)
+}
+
+fn stepped(c: Chunker, buf: Bytes, bound: int, limits: Limits) -> Step {
     match c.phase {
-        .Size -> size_step(c, buf, limits),
+        .Size -> size_step(c, buf, bound, limits),
         .Data(n) -> data_step(c, n, buf),
         .Trailers -> trailer_step(c, buf, limits),
     }
 }
 
-fn size_step(c: Chunker, buf: Bytes, limits: Limits) -> Step {
+fn size_step(c: Chunker, buf: Bytes, bound: int, limits: Limits) -> Step {
     let size_end = buf.run(c.at, hexdigit)
     if size_end - c.at > 16 { return .Refused(.Chunk) }
     if size_end == buf.length { return .Wait(c) }
     if size_end == c.at { return .Refused(.Chunk) }
     if size_end - c.at == 16 { return .Refused(.BodyLength) }
     let size = hex_value(buf, c.at, size_end)
-    if c.total + size > limits.body { return .Refused(.BodyLength) }
+    if c.total + size > bound { return .Refused(.BodyLength) }
     let eol = size_line_end(buf, size_end, limits)
     if eol == -1 { return .Wait(c) }
     if eol < -1 { return .Refused(.Chunk) }
     .Again(c with { at: eol + 2, phase: if size == 0 { Phase.Trailers } else { Phase.Data(size) } })
 }
 
+/// Inside a chunk: what of its `n` owed octets has arrived is a piece;
+/// with none owed, its CRLF closes it.
 fn data_step(c: Chunker, n: int, buf: Bytes) -> Step {
-    if c.at + n + 2 > buf.length { return .Wait(c) }
-    if !buf.eq_at(c.at + n, c.at + n + 2, crlf) { return .Refused(.Chunk) }
-    .Again(
-        c with { at: c.at + n + 2, phase: Phase.Size, total: c.total + n, parts: c.parts.concat([buf.slice(c.at, c.at + n)]) },
+    if n == 0 { return chunk_closed(c, buf) }
+    let here = buf.length - c.at
+    if here <= 0 { return .Wait(c) }
+    let k = if here < n { here } else { n }
+    .Piece(
+        buf.slice(c.at, c.at + k),
+        c with { at: c.at + k, phase: Phase.Data(n - k), total: c.total + k },
     )
+}
+
+fn chunk_closed(c: Chunker, buf: Bytes) -> Step {
+    if c.at + 2 > buf.length { return .Wait(c) }
+    if !buf.eq_at(c.at, c.at + 2, crlf) { return .Refused(.Chunk) }
+    .Again(c with { at: c.at + 2, phase: Phase.Size })
 }
 
 fn trailer_step(c: Chunker, buf: Bytes, limits: Limits) -> Step {
     if c.at + 2 > buf.length { return .Wait(c) }
-    if buf.eq_at(c.at, c.at + 2, crlf) { return .Done(c.parts.bytes(), c.at + 2) }
+    if buf.eq_at(c.at, c.at + 2, crlf) { return .Done(c.at + 2) }
     if c.trailers == limits.trailers { return .Refused(.Chunk) }
     let eol = buf.index_of(crlf, c.at)
     if eol < 0 { return if crlf_only(buf, c.at, buf.length - 1) { .Wait(c) } else { .Refused(.LineEnd) } }

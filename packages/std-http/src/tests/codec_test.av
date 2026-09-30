@@ -1,0 +1,46 @@
+//! The handshake's encodings against their published vectors: SHA-1
+//! (FIPS 180-4 and the long-message case), base64 (RFC 4648 §10), and
+//! RFC 6455's own accept example.
+use @std.http.codec.{sha1, base64, base64_of_length}
+
+/// A digest as lowercase hex, two digits an octet.
+fn hex_of(b: Bytes) -> string { [hex2(b.at(i)) for i in 0..b.length].join("") }
+
+fn hex2(v: int) -> string {
+    "0123456789abcdef".substring(v >> 4, (v >> 4) + 1) +
+        "0123456789abcdef".substring(v & 15, (v & 15) + 1)
+}
+
+fn digest(s: string) -> string { hex_of(sha1(s.bytes())) }
+
+spec "std.http codec" {
+    given "SHA-1" {
+        then "the empty message" { digest("") == "da39a3ee5e6b4b0d3255bfef95601890afd80709" }
+        then "abc" { digest("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d" }
+        then "a message spanning two blocks" {
+            digest("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") == "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
+        }
+        then "every padding boundary: 55, 56, 63 and 64 octets" {
+            digest(["a" for _i in 0..55].join("")) == "c1c8bbdc22796e28c0e15163d20899b65621d65a" &&
+                digest(["a" for _i in 0..56].join("")) == "c2db330f6083854c99d4b5bfb6e8f29f201be699" &&
+                digest(["a" for _i in 0..63].join("")) == "03f09f5b158a7a8cdad920bddc29b81c18a551f5" &&
+                digest(["a" for _i in 0..64].join("")) == "0098ba824b5c16427bd7a1122a5a442a25ec644d"
+        }
+    }
+    given "base64" {
+        then "RFC 4648's vectors, each padding" {
+            ["", "f", "fo", "foo", "foob", "fooba", "foobar"].map(base64(it.bytes())).join(",") == ",Zg==,Zm8=,Zm9v,Zm9vYg==,Zm9vYmE=,Zm9vYmFy"
+        }
+        then "a key of sixteen octets is recognised, and nothing else" {
+            base64_of_length("dGhlIHNhbXBsZSBub25jZQ==", 16) &&
+                !base64_of_length("dGhlIHNhbXBsZSBub25jZQ=", 16) &&
+                !base64_of_length("dGhlIHNhbXBsZSBub25jZQ!=", 16) &&
+                !base64_of_length("dGhlIHNhbXBsZSBub25jZQAA", 16)
+        }
+    }
+    given "the WebSocket accept" {
+        then "RFC 6455's example key accepts as the RFC says" {
+            base64(sha1("dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11".bytes())) == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        }
+    }
+}

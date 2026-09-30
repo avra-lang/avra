@@ -299,8 +299,11 @@ export fn route(tools: List<Tool>) -> Route {
     fixed(Method.Post, "/mcp", (q: Request<Unrouted>) -> posted(tools, q))
 }
 
+/// A body that could not be gathered runs nothing: the server answers
+/// it by the law it broke.
 fn posted(tools: List<Tool>, q: Request<Unrouted>) -> Response {
-    match handle_octets(tools, q.body) {
+    let octets? = q.body.octets() else { return Response { status: 400 } }
+    match handle_octets(tools, octets) {
         answer? -> json_reply(answer)
         null -> Response { status: 202 }
     }

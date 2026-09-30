@@ -101,6 +101,18 @@ fn extra_field() -> string {
         )
 }
 
+/// `@std/meta` as it stood before `Fn` grew its RECENT `owner` — the
+/// package a compiler knowing `owner` meets in an older tree.
+fn predates_owner() -> string { real_meta_source().replace(", owner: string? = null }", " }") }
+/// Older still: `Fn` short a field the row does NOT mark recent.
+fn predates_annotations() -> string {
+    predates_owner()
+        .replace(
+            "doc: string? = null, annotations: List<Annotation> = [] }\n\n/// A MARK",
+            "doc: string? = null }\n\n/// A MARK",
+        )
+}
+
 /// A program that DERIVES — so a refused boundary leaves its
 /// generated method missing and every use of it refusing.
 fn uses_a_derive() -> string {
@@ -163,6 +175,20 @@ spec "features/crossing — the meta boundary" {
         }
         then "a variant that GREW a payload the reader ignores crosses too" {
             refused_n(under(validated("plainly"), widened_variant()), "plainly from `answer`", 1)
+        }
+        then "an OLDER package, predating a RECENT field, crosses and the annotation RUNS" {
+            refused_n(
+                under(validated("seats"), predates_owner()),
+                "1 seats, first `n: int` mut=false const=false, answers `int`",
+                1,
+            )
+        }
+        then "a package short a field the row does not mark recent is still SHRUNK" {
+            refused_n(
+                under(validated("plainly"), predates_annotations()),
+                "`Fn` declares nothing where the crossing reads `annotations`",
+                1,
+            )
         }
         then "every refusal wears the boundary's own words" {
             refused_in(

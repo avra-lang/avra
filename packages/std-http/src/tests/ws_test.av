@@ -1,0 +1,594 @@
+//! WebSocket: the opening handshake judged, frames judged and answered
+//! by their close codes, messages joined across fragments with control
+//! frames between, and a client socket against the server. Every
+//! server reply is compared as exact octets.
+use @std.net.{Conn, Listener, NetError, listen, connect}
+use @std.time.{ms, secs, sleep, within}
+use @std.http.frame.{limits}
+use @std.http.http.{Request, Unrouted, Response, Header, Upgrade, text}
+use @std.http.server.{served, timing}
+use @std.http.wire.{Transport, plainly}
+use @std.http.ws.{
+    Socket,
+    Message,
+    WsError,
+    WsLimits,
+    accepted,
+    accept_of,
+    dialed,
+    opened_over,
+    frame_bytes,
+    masked,
+    ws_limits,
+}
+
+/// Every message echoed back until the peer closes or breaks a law;
+/// each ending noted in `seen`.
+fn echoing(s: Socket, seen: Cell<List<string>>) {
+    while true {
+        match s.receive() {
+            .Ok(m) -> match m {
+                .Text(t) -> { let _ = s.send_text(t) },
+                .Binary(b) -> { let _ = s.send_binary(b) },
+                .Close(code, why) -> {
+                    seen.push("close ${code} ${why}")
+                    return
+                },
+            },
+            .Err(e) -> {
+                seen.push(ws_word(e))
+                return
+            },
+        }
+    }
+}
+
+fn ws_word(e: WsError) -> string {
+    match e {
+        .Protocol(code) -> "protocol ${code}",
+        .Closed -> "closed",
+        .TimedOut -> "timed-out",
+        .Net(_) -> "net",
+        .Secure(_) -> "secure",
+        .Rejected(s) -> "rejected ${s}",
+        .Unverified -> "unverified",
+        .Unsendable -> "unsendable",
+        .NoEntropy -> "no-entropy",
+    }
+}
+
+fn ws_bed(seen: Cell<List<string>>, lim: WsLimits) -> Result<Bed, NetError> {
+    bed_with(
+        (_app: App, q: Request<Unrouted>) -> accepted(q, lim, (s: Socket) -> echoing(s, seen)),
+        limits(),
+        timing(),
+    )
+}
+
+const sample_key: string = "dGhlIHNhbXBsZSBub25jZQ=="
+
+fn opening_line() -> string {
+    "GET /chat HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSec-WebSocket-Key: ${sample_key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+}
+
+fn switching() -> string {
+    "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nsec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nconnection: upgrade\r\n\r\n"
+}
+
+/// A client frame: masked, as a client must send it.
+fn from_client(fin: bool, op: int, payload: Bytes) -> Bytes { frame_bytes(fin, op, payload, [55, 250, 33, 61]) }
+
+/// A server frame: unmasked.
+fn from_server(op: int, payload: Bytes) -> Bytes { frame_bytes(true, op, payload, null) }
+
+fn close_frame(code: int) -> Bytes { from_server(8, [code >> 8, code & 255].bytes()!) }
+
+/// The opening handshake sent, and `frames` after it; everything the
+/// server answered until it closed.
+fn session(seen: Cell<List<string>>, lim: WsLimits, frames: Bytes) -> Result<Bytes, NetError> {
+    let b = ws_bed(seen, lim)?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    exchanged_bytes(b.c, opening_line().bytes().concat(frames), 100000)
+}
+
+fn answers_with(frames: Bytes, want: Bytes) -> Result<bool, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    .Ok(session(seen, ws_limits(), frames)? == switching().bytes().concat(want))
+}
+
+fn refuses_with(frames: Bytes, code: int) -> Result<bool, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    let got = session(seen, ws_limits(), frames)?
+    .Ok(
+        got == switching().bytes().concat(close_frame(code)) &&
+            seen.get().join("|") == "protocol ${code}",
+    )
+}
+
+// ── The opening handshake ───────────────────────────────────────
+
+fn opening_is_switched() -> Result<bool, NetError> { answers_with(from_client(true, 8, "".bytes()), from_server(8, "".bytes())) }
+
+/// The reply's status line to `sent`.
+fn refused_opening(sent: string) -> Result<string, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    let b = ws_bed(seen, ws_limits())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, sent, 1)?).text() ?? ""
+    .Ok(got.substring(0, got.index_of("\r\n")))
+}
+
+/// A 101 to `websocket`, answered whatever was asked; its handover
+/// counts its runs in `ran`.
+fn blind_switch(ran: Cell<int>) -> Response {
+    Response {
+        status: 101,
+        headers: [Header { name: "upgrade", value: "websocket" }],
+        upgrade: Upgrade { run: (_c: dyn Transport, _early: Bytes) -> ran.set(ran.get() + 1) },
+    }
+}
+
+/// Everything the server wrote to `sent` under that blind switch, line
+/// ends shown, and how many handovers ran.
+fn blindly_switched(sent: string) -> Result<string, NetError> {
+    let ran = Cell.new(0)
+    let b = bed_with((_app: App, _q: Request<Unrouted>) -> blind_switch(ran), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, sent, 100000)?).text() ?? ""
+    .Ok("${got.replace("\r\n", "|")}ran=${ran.get()}")
+}
+
+const refused_switch: string = "HTTP/1.1 500 Internal Server Error|content-length: 0|connection: close||ran=0"
+
+fn switches_only_as_asked() -> Result<bool, NetError> {
+    let asked = blindly_switched(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: upgrade\r\n\r\n",
+    )?
+    let other = blindly_switched(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: h2c\r\nConnection: upgrade, close\r\n\r\n",
+    )?
+    let unasked = blindly_switched("GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n")?
+    let old = blindly_switched(
+        "GET / HTTP/1.0\r\nUpgrade: websocket\r\nConnection: upgrade\r\n\r\n",
+    )?
+    .Ok(
+        asked == "HTTP/1.1 101 Switching Protocols|upgrade: websocket|connection: upgrade||ran=1" &&
+            [other, unasked, old].all(it == refused_switch),
+    )
+}
+
+/// A body the server never read would reach the new protocol as its
+/// first octets, so the switch is refused and the connection closed.
+fn no_switch_over_an_unread_body() -> Result<bool, NetError> {
+    let got = blindly_switched(
+        "POST / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: upgrade\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n",
+    )?
+    .Ok(got == refused_switch)
+}
+
+fn continues_before_switching() -> Result<bool, NetError> {
+    let got = blindly_switched(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: upgrade\r\nExpect: 100-continue\r\n\r\n",
+    )?
+    .Ok(
+        got == "HTTP/1.1 100 Continue||HTTP/1.1 101 Switching Protocols|upgrade: websocket|connection: upgrade||ran=1",
+    )
+}
+
+fn bad_openings() -> Result<bool, NetError> {
+    let no_key = refused_opening(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    )?
+    let short_key = refused_opening(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: abc=\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    )?
+    let no_upgrade = refused_opening(
+        "GET / HTTP/1.1\r\nHost: a\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${sample_key}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    )?
+    let posted = refused_opening(
+        "POST / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${sample_key}\r\nSec-WebSocket-Version: 13\r\nContent-Length: 0\r\n\r\n",
+    )?
+    let old = refused_opening(
+        "GET / HTTP/1.0\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${sample_key}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+    )?
+    let version = refused_opening(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${sample_key}\r\nSec-WebSocket-Version: 12\r\n\r\n",
+    )?
+    .Ok(
+        [no_key, short_key, no_upgrade, posted, old].all(it == "HTTP/1.1 400 Bad Request") &&
+            version == "HTTP/1.1 426 Upgrade Required",
+    )
+}
+
+// ── Messages ────────────────────────────────────────────────────
+
+fn text_echoed() -> Result<bool, NetError> {
+    answers_with(
+        from_client(true, 1, octets("hello")).concat(from_client(true, 8, "".bytes())),
+        from_server(1, octets("hello")).concat(from_server(8, "".bytes())),
+    )
+}
+
+fn binary_and_lengths_echoed() -> Result<bool, NetError> {
+    let mid = [7 for _i in 0..300].bytes()!
+    let big = [9 for _i in 0..70000].bytes()!
+    answers_with(
+        from_client(true, 2, mid)
+            .concat(from_client(true, 2, big))
+            .concat(from_client(true, 8, "".bytes())),
+        from_server(2, mid).concat(from_server(2, big)).concat(from_server(8, "".bytes())),
+    )
+}
+
+fn fragments_joined_around_a_ping() -> Result<bool, NetError> {
+    let frames = from_client(false, 1, octets("hel"))
+        .concat(from_client(true, 9, octets("p")))
+        .concat(from_client(false, 0, octets("l")))
+        .concat(from_client(true, 0, octets("o")))
+        .concat(from_client(true, 8, "".bytes()))
+    answers_with(
+        frames,
+        from_server(10, octets("p"))
+            .concat(from_server(1, octets("hello")))
+            .concat(from_server(8, "".bytes())),
+    )
+}
+
+fn a_pong_is_dropped() -> Result<bool, NetError> {
+    answers_with(
+        from_client(true, 10, octets("x"))
+            .concat(from_client(true, 1, octets("y")))
+            .concat(from_client(true, 8, "".bytes())),
+        from_server(1, octets("y")).concat(from_server(8, "".bytes())),
+    )
+}
+
+fn split_at_every_octet() -> Result<bool, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    let b = ws_bed(seen, ws_limits())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    b.c.write(opening_line().bytes())?
+    let frames = from_client(true, 1, octets("torn"))
+        .concat(from_client(true, 8, [3, 232].bytes()!))
+    for i in 0..frames.length {
+        b.c.write(frames.slice(i, i + 1))?
+        sleep(ms(1))
+    }
+    let got = exchanged_bytes(b.c, "".bytes(), 100000)?
+    .Ok(
+        got == switching().bytes().concat(from_server(1, octets("torn"))).concat(close_frame(1000)) &&
+            seen.get().join("|") == "close 1000 ",
+    )
+}
+
+fn a_close_is_echoed() -> Result<bool, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    let got = session(
+        seen,
+        ws_limits(),
+        from_client(true, 8, [3, 232].bytes()!.concat(octets("bye"))),
+    )?
+    .Ok(
+        got == switching().bytes().concat(close_frame(1000)) &&
+            seen.get().join("|") == "close 1000 bye",
+    )
+}
+
+/// Receives until the peer's close, then sends and receives once more,
+/// noting what each later call answered.
+fn lingering(s: Socket, seen: Cell<List<string>>) {
+    while true {
+        match s.receive() {
+            .Ok(.Close(code, _)) -> {
+                seen.push("close ${code}")
+                seen.push(code_word(s.send_text("late")))
+                seen.push(words_of(s.receive()))
+                return
+            },
+            .Ok(_) -> {},
+            .Err(e) -> {
+                seen.push(ws_word(e))
+                return
+            },
+        }
+    }
+}
+
+/// A SOCKET ENDED TOUCHES ITS DESCRIPTOR NO MORE: the number may name
+/// another connection by then, so a send or a receive after the close
+/// answers `Closed` and writes nothing.
+fn ended_socket_is_closed() -> Result<bool, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    let b = bed_with(
+        (_app: App, q: Request<Unrouted>) -> accepted(
+            q,
+            ws_limits(),
+            (s: Socket) -> lingering(s, seen),
+        ),
+        limits(),
+        timing(),
+    )?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged_bytes(
+        b.c,
+        opening_line().bytes().concat(from_client(true, 8, [3, 232].bytes()!)),
+        100000,
+    )?
+    .Ok(
+        got == switching().bytes().concat(close_frame(1000)) &&
+            seen.get().join("|") == "close 1000|closed|closed",
+    )
+}
+
+/// A TARGET IS A WORD OF THE REQUEST LINE: one holding a CRLF would
+/// write fields of its caller's choosing into the opening handshake, so
+/// it is refused before a byte is sent — and so is such an authority.
+fn unsayable_openings_are_refused() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let bad_target = opened_over(
+        plainly(c),
+        "a",
+        "/x HTTP/1.1\r\nx-evil: 1\r\n\r\nGET /y",
+        secs(1),
+        ws_limits(),
+    )
+    let bad_authority = opened_over(plainly(c), "a\r\nx-evil: 1", "/x", secs(1), ws_limits())
+    let empty_target = opened_over(plainly(c), "a", "", secs(1), ws_limits())
+    let _ = c.close()
+    let _ = l.close()
+    .Ok([bad_target, bad_authority, empty_target].all(opening_word(it) == "unsendable"))
+}
+
+fn opening_word(r: Result<Socket, WsError>) -> string {
+    match r { .Ok(_) -> "opened", .Err(e) -> ws_word(e) }
+}
+
+/// The client's socket after its own close handshake: every later call
+/// answers `Closed`.
+fn closed_client_stays_closed() -> Result<bool, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    let b = ws_bed(seen, ws_limits())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    match dialed("127.0.0.1", b.s.listener.port, "/chat", secs(2), ws_limits()) {
+        .Ok(s) -> {
+            let _ = s.close(1000, "done", secs(2))
+            .Ok(
+                code_word(s.send_text("late")) == "closed" &&
+                    words_of(s.receive()) == "closed" &&
+                    code_word(s.close(1000, "again", secs(1))) == "closed",
+            )
+        },
+        .Err(_) -> .Ok(false),
+    }
+}
+
+// ── Laws broken ─────────────────────────────────────────────────
+
+fn unmasked_is_1002() -> Result<bool, NetError> { refuses_with(from_server(1, octets("x")), 1002) }
+
+fn reserved_bits_are_1002() -> Result<bool, NetError> {
+    let f = from_client(true, 1, octets("x"))
+    refuses_with([f.at(0) | 64].bytes()!.concat(f.slice(1, f.length)), 1002)
+}
+
+fn reserved_opcode_is_1002() -> Result<bool, NetError> { refuses_with(from_client(true, 3, octets("x")), 1002) }
+
+fn fragmented_control_is_1002() -> Result<bool, NetError> { refuses_with(from_client(false, 9, octets("x")), 1002) }
+
+fn long_control_is_1002() -> Result<bool, NetError> { refuses_with(from_client(true, 9, [1 for _i in 0..126].bytes()!), 1002) }
+
+fn stray_continuation_is_1002() -> Result<bool, NetError> { refuses_with(from_client(true, 0, octets("x")), 1002) }
+
+fn interrupted_message_is_1002() -> Result<bool, NetError> {
+    refuses_with(from_client(false, 1, octets("a")).concat(from_client(true, 1, octets("b"))), 1002)
+}
+
+fn broken_text_is_1007() -> Result<bool, NetError> { refuses_with(from_client(true, 1, [206, 186, 225, 189].bytes()!), 1007) }
+
+fn broken_fragmented_text_is_1007() -> Result<bool, NetError> {
+    refuses_with(
+        from_client(false, 1, [206].bytes()!).concat(from_client(true, 0, [255].bytes()!)),
+        1007,
+    )
+}
+
+fn bad_closes() -> Result<bool, NetError> {
+    let one = refuses_with(from_client(true, 8, [3].bytes()!), 1002)?
+    let unknown = refuses_with(from_client(true, 8, [3, 231].bytes()!), 1002)?
+    let absent = refuses_with(from_client(true, 8, [3, 237].bytes()!), 1002)?
+    let reason = refuses_with(from_client(true, 8, [3, 232, 255].bytes()!), 1007)?
+    .Ok(one && unknown && absent && reason)
+}
+
+fn too_big_is_1009() -> Result<bool, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    let whole = session(seen, WsLimits { message: 4 }, from_client(true, 1, octets("12345")))?
+    let pieces = session(
+        seen,
+        WsLimits { message: 4 },
+        from_client(false, 1, octets("123")).concat(from_client(true, 0, octets("45"))),
+    )?
+    let want = switching().bytes().concat(close_frame(1009))
+    .Ok(whole == want && pieces == want)
+}
+
+// ── The client ──────────────────────────────────────────────────
+
+fn client_round_trip() -> Result<bool, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    let b = ws_bed(seen, ws_limits())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let port = b.s.listener.port
+    match dialed("127.0.0.1", port, "/chat", secs(2), ws_limits()) {
+        .Ok(s) -> .Ok(talked(s)),
+        .Err(e) -> .Ok(false),
+    }
+}
+
+/// A text and a binary sent and echoed, then the close handshake.
+fn talked(s: Socket) -> bool {
+    let _ = s.send_text("hi")
+    let _ = s.send_binary([1, 2, 3].bytes()!)
+    let first = s.receive()
+    let second = s.receive()
+    let code = s.close(1000, "done", secs(2))
+    words_of(first) == "text hi" && words_of(second) == "binary 3" && code_word(code) == "1000"
+}
+
+fn words_of(r: Result<Message, WsError>) -> string {
+    match r {
+        .Ok(m) -> match m {
+            .Text(t) -> "text ${t}",
+            .Binary(b) -> "binary ${b.length}",
+            .Close(c, _) -> "close ${c}",
+        },
+        .Err(e) -> ws_word(e),
+    }
+}
+
+fn code_word(r: Result<int, WsError>) -> string {
+    match r { .Ok(c) -> "${c}", .Err(e) -> ws_word(e) }
+}
+
+/// A server that answers the handshake with `reply`, whatever was asked.
+fn faking(reply: string) -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let fake = spawn fake_server(l, reply)
+    let got = match dialed("127.0.0.1", l.port, "/", secs(2), ws_limits()) {
+        .Ok(_) -> "open",
+        .Err(e) -> ws_word(e),
+    }
+    let _ = fake.await
+    .Ok(got)
+}
+
+fn fake_server(l: Listener, reply: string) -> int {
+    let c? = match l.accept() { .Ok(c) -> c, .Err(_) -> null } else { return 0 }
+    let _ = c.read(4096)
+    let _ = c.write(reply.bytes())
+    let _ = c.close()
+    let _ = l.close()
+    1
+}
+
+/// A server that accepts the handshake properly, then sends `frames`.
+fn server_sending(frames: Bytes) -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let fake = spawn accepting_then(l, frames)
+    let got = match dialed("127.0.0.1", l.port, "/", secs(2), ws_limits()) {
+        .Ok(s) -> words_of(s.receive()),
+        .Err(e) -> ws_word(e),
+    }
+    let _ = fake.await
+    .Ok(got)
+}
+
+fn accepting_then(l: Listener, frames: Bytes) -> int {
+    let c? = match l.accept() { .Ok(c) -> c, .Err(_) -> null } else { return 0 }
+    let asked = match c.read(4096) { .Ok(b) -> (b ?? "".bytes()).text() ?? "", .Err(_) -> "" }
+    let from = asked.index_of("sec-websocket-key: ") + 19
+    let key = asked.substring(from, from + 24)
+    let reply = "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-accept: ${accept_of(key)}\r\n\r\n"
+    let _ = c.write(reply.bytes().concat(frames))
+    let _ = within quiet() { c.read(4096) }
+    let _ = c.close()
+    let _ = l.close()
+    1
+}
+
+fn client_reads_frames_that_follow_the_101() -> Result<bool, NetError> {
+    .Ok(server_sending(from_server(1, octets("early")))? == "text early")
+}
+
+fn a_masked_server_frame_is_1002() -> Result<bool, NetError> {
+    .Ok(server_sending(from_client(true, 1, octets("x")))? == "protocol 1002")
+}
+
+fn client_verifies() -> Result<bool, NetError> {
+    let refused = faking("HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")?
+    let wrong_accept = faking(
+        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-accept: nope\r\n\r\n",
+    )?
+    let no_upgrade = faking(
+        "HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nsec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n",
+    )?
+    .Ok(refused == "rejected 200" && wrong_accept == "unverified" && no_upgrade == "unverified")
+}
+
+// ── The codec ───────────────────────────────────────────────────
+
+fn frames_in_the_shortest_form() -> bool {
+    frame_bytes(true, 1, octets("hi"), null) == [129, 2, 104, 105].bytes()! &&
+        frame_bytes(true, 2, [0 for _i in 0..126].bytes()!, null).slice(0, 4) == [130, 126, 0, 126].bytes()! &&
+        frame_bytes(true, 2, [0 for _i in 0..65536].bytes()!, null).slice(0, 10) == [130, 127, 0, 0, 0, 0, 0, 1, 0, 0].bytes()! &&
+        frame_bytes(false, 0, octets("a"), [1, 2, 3, 4]) == [0, 129, 1, 2, 3, 4, 96].bytes()!
+}
+
+fn masking_is_its_own_inverse() -> bool {
+    let key = [9, 200, 17, 3]
+    let b = octets("the quick brown fox")
+    masked(masked(b, key), key) == b && masked(b, key) != b
+}
+
+spec "std.http websocket" {
+    given "the opening handshake" {
+        then "a well-formed opening is switched, its key accepted as RFC 6455 says" { passes(opening_is_switched()) }
+        then "no key, a short key, no upgrade, a POST or HTTP/1.0 is 400, another version 426" { passes(bad_openings()) }
+        then "the accept of the RFC's key is the RFC's" { accept_of(sample_key) == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" }
+        then "a 101 goes out only to a 1.1 request that named its protocol, else it is the server's 500, never handed over" {
+            passes(switches_only_as_asked())
+        }
+        then "a 100 Continue asked for goes out before the 101" { passes(continues_before_switching()) }
+        then "a switch over a body the server did not read is the server's 500, never handed over" {
+            passes(no_switch_over_an_unread_body())
+        }
+    }
+    given "messages" {
+        then "a text is echoed" { passes(text_echoed()) }
+        then "binaries of each length form are echoed" { passes(binary_and_lengths_echoed()) }
+        then "fragments are joined, and a ping between them answered first" { passes(fragments_joined_around_a_ping()) }
+        then "an unasked pong is dropped" { passes(a_pong_is_dropped()) }
+        then "frames split at every octet are read whole" { passes(split_at_every_octet()) }
+        then "a close is echoed with its code, and the session told its reason" { passes(a_close_is_echoed()) }
+        then "a socket the peer closed answers Closed to a later send or receive, and writes nothing" {
+            passes(ended_socket_is_closed())
+        }
+    }
+    given "a law broken, answered by its close code" {
+        then "an unmasked client frame is 1002" { passes(unmasked_is_1002()) }
+        then "a reserved bit is 1002" { passes(reserved_bits_are_1002()) }
+        then "a reserved opcode is 1002" { passes(reserved_opcode_is_1002()) }
+        then "a fragmented control frame is 1002" { passes(fragmented_control_is_1002()) }
+        then "a control frame past 125 octets is 1002" { passes(long_control_is_1002()) }
+        then "a continuation with no message is 1002" { passes(stray_continuation_is_1002()) }
+        then "a new message inside a fragmented one is 1002" { passes(interrupted_message_is_1002()) }
+        then "text that is not UTF-8 is 1007" { passes(broken_text_is_1007()) }
+        then "fragmented text that is not UTF-8 is 1007" { passes(broken_fragmented_text_is_1007()) }
+        then "a one-octet close, an unknown or absent code is 1002, a broken reason 1007" { passes(bad_closes()) }
+        then "a message past the bound is 1009, whole or in fragments" { passes(too_big_is_1009()) }
+    }
+    given "the client" {
+        then "a dialed socket sends, receives, and closes with the handshake" { passes(client_round_trip()) }
+        then "a non-101, a wrong accept, or no upgrade is refused" { passes(client_verifies()) }
+        then "frames sent in the same write as the 101 are read" { passes(client_reads_frames_that_follow_the_101()) }
+        then "a target or authority holding a line end, or an empty target, is refused before a byte is sent" {
+            passes(unsayable_openings_are_refused())
+        }
+        then "a socket closed by its own handshake answers Closed to every later call" {
+            passes(closed_client_stays_closed())
+        }
+        then "a masked frame from a server is 1002" { passes(a_masked_server_frame_is_1002()) }
+    }
+    given "the codec" {
+        then "a frame's length takes the shortest form, and a client's is masked" { frames_in_the_shortest_form() }
+        then "masking is its own inverse" { masking_is_its_own_inverse() }
+    }
+}

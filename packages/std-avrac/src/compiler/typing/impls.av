@@ -146,8 +146,18 @@ impl TypeCx {
             let _ = self.view.decls.sig(m)
             if self.registrable(f) { self.view.decls.declare_method(d, m) }
             self.static_shadows(f, d, parts.target)
+            self.register_wrapper(d, m)
         }
         if parts.of != null { self.check_trait_impl(s, parts.of!, d, parts.target, parts.fns) }
+    }
+
+    /// The wrapper a WRAP installed over a member's moved body, signed
+    /// and registered under the same target: callers reach it by the
+    /// written name, and it reaches the body by the mangled one.
+    fn register_wrapper(target: DeclId, body: DeclId) {
+        let w? = self.view.decls.wrapper_of(body) else { return }
+        let _ = self.view.decls.sig(w)
+        self.view.decls.declare_method(target, w)
     }
 
     /// Whether a method's receiver is a place to write through — the ONE

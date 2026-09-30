@@ -24,6 +24,10 @@
 //! carries the OLD rows and refuses the new package while compiling
 //! it, so those land in two commits — one that stops this door
 //! refusing, one that moves the shape and restores it.
+//! A RECENT FIELD IS GROWTH SEEN FROM THE OTHER SIDE: a newer
+//! compiler over an older package. A row names how many of its
+//! trailing fields are recent; a loaded package may predate them, the
+//! reader takes their default, and the writer leaves them unwritten.
 use core.{TypeId, DeclId, DeclKind, TypeRegistry, SeatMark, mark_at, flatten, some_list, wreck}
 use @std.errors.{Loc}
 use @std.meta.{
@@ -48,8 +52,9 @@ use features.{MetaVal, MetaHeap, Decls, Lifted}
 // ── The shapes this compiler was built against ──────────────────
 
 /// One declaration the crossing reads or writes: the package that
-/// exports it, its name, and its fields IN ORDER.
-type MetaShape = { pkg: string, name: string, fields: List<string> }
+/// exports it, its name, its fields IN ORDER, and how many of the
+/// trailing ones are RECENT — a loaded package may predate them.
+type MetaShape = { pkg: string, name: string, fields: List<string>, recent: int = 0 }
 
 /// Every RECORD that crosses. A row here is a slot law: the reader
 /// and the writer below count from it.
@@ -64,7 +69,8 @@ fn meta_records() -> List<MetaShape> {
         MetaShape {
             pkg: "@std.meta",
             name: "Fn",
-            fields: ["name", "params", "answer", "at", "answers", "doc", "annotations"],
+            fields: ["name", "params", "answer", "at", "answers", "doc", "annotations", "owner"],
+            recent: 1,
         },
         MetaShape { pkg: "@std.meta", name: "Mark", fields: ["name", "args", "at"] },
         MetaShape { pkg: "@std.meta", name: "Annotation", fields: ["name", "args", "at"] },
@@ -139,7 +145,15 @@ impl Decls {
     fn record_disagreement(row: MetaShape) -> string? {
         let d? = self.package_decl(row.pkg, row.name) else { return null }
         let sig? = self.fields_of_type(self.self_type_of(d)) else { return null }
-        first_difference(row.name, sig.names, row.fields)
+        first_difference(row.name, sig.names, owed(row, sig.names.length))
+    }
+
+    /// How many slots the LOADED package declares for the record
+    /// `name` — the row's own count where nothing is loaded.
+    fn loaded_slots(name: string) -> int {
+        let row? = meta_records().find(it.name == name) else { return 0 }
+        let d? = self.package_decl(row.pkg, name) else { return row.fields.length }
+        self.fields_of_type(self.self_type_of(d))?.names?.length ?? row.fields.length
     }
 
     /// `Node`'s variants, in order and by payload count.
@@ -150,6 +164,12 @@ impl Decls {
         let named: string? = first_difference("Node", sig.names, [r.name for r in rows])
         named ?? first_arity_difference(sig.payloads, rows)
     }
+}
+
+/// The fields a package declaring `loaded` slots owes the row: every
+/// one but the recent ones it predates.
+fn owed(row: MetaShape, loaded: int) -> List<string> {
+    [x for j, x in row.fields if j < loaded || j < row.fields.length - row.recent]
 }
 
 /// The first place two orders part, in the words the boundary voice
@@ -185,9 +205,15 @@ fn first_arity_difference(loaded: List<List<TypeId>>, rows: List<NodeReader>) ->
 /// PACKAGE and the rows, never the writers. The symptom is a slot
 /// read past the end, an hour away from its cause.
 fn written(name: string, slots: List<MetaVal>, mut heap: MetaHeap) -> MetaVal {
+    written_to(name, slots, slots.length, heap)
+}
+
+/// `written`, as a package declaring `loaded` slots holds it: a
+/// recent field it predates is never written.
+fn written_to(name: string, slots: List<MetaVal>, loaded: int, mut heap: MetaHeap) -> MetaVal {
     let row: MetaShape? = meta_records().find(it.name == name)
     if row != null && slots.length != row!.fields.length { short_write(name, slots.length, row!.fields.length) }
-    heap.node(slots)
+    heap.node([s for j, s in slots if j < loaded])
 }
 
 /// A writer that does not fill its own row — the compiler's defect,
@@ -364,8 +390,8 @@ fn crossed_opt_text(v: MetaVal) -> string? {
 
 /// A declaration as the seat asks for it — the four shapes an
 /// annotation's first parameter may take.
-export fn meta_of_fn(x: MetaFn, mut heap: MetaHeap) -> MetaVal {
-    written(
+export fn meta_of_fn(x: MetaFn, loaded: int, mut heap: MetaHeap) -> MetaVal {
+    written_to(
         "Fn",
         [
             MetaVal.Text(x.name),
@@ -375,7 +401,9 @@ export fn meta_of_fn(x: MetaFn, mut heap: MetaHeap) -> MetaVal {
             meta_of_kind(x.answers, heap),
             meta_of_opt_text(x.doc),
             meta_of_annotations(x.annotations, heap),
+            meta_of_opt_text(x.owner),
         ],
+        loaded,
         heap,
     )
 }

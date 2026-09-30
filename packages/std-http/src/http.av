@@ -7,7 +7,15 @@
 //!            widening MAY refused, each refusal a named law
 //! query.av   the QUERY: what follows the target's `?`, as keyed
 //!            fields over raw octets, and the one decoder
-//! http.av    this file — the values a handler sees and answers
+//! body.av    the BODY READER: an incoming body read piece by piece
+//!            as it arrives, or gathered whole under a bound
+//! sse.av     SERVER-SENT EVENTS: an event stream over a body stream,
+//!            resumed from an observer's cursor, and a retaining feed
+//! ws.av      WEBSOCKET: the upgrade both ways, the frame codec, and a
+//!            socket its connection's task owns
+//! codec.av   SHA-1 and base64, as the WebSocket handshake names them
+//! http.av    this file — the values a handler sees and answers, and
+//!            the STREAM a response's body is pulled from
 //! route.av   the ROUTER: a route is a grammar over the PATH, and
 //!            one table compiled from the declared list
 //! server.av  the LOOP: one poller, every connection a value, a
@@ -18,13 +26,27 @@
 //!
 //! The head's field spans index the buffer they were framed from, so
 //! a `Request` keeps that buffer and slices a value only when asked.
-use frame.{Head, Field, Method, target_form, scheme_end, admits, is_target, is_tchar, is_vchar}
+use frame.{
+    Head,
+    Field,
+    Method,
+    ReplyBody,
+    target_form,
+    scheme_end,
+    admits,
+    is_target,
+    is_tchar,
+    is_vchar,
+}
 use query.{Query, query_of}
+use body.{Body}
+use wire.{Transport}
 
 /// What a handler receives: the raw buffer the head was framed from,
-/// the head, the body (owned, complete), who sent it, and what its
-/// route read of the path — `Unrouted` until a route reads it.
-export type Request<P> = { raw: Bytes, head: Head, body: Bytes, peer: string, params: P }
+/// the head, the body — READ as the handler asks for it, never before
+/// (`body.av`) — who sent it, and what its route read of the path —
+/// `Unrouted` until a route reads it.
+export type Request<P> = { raw: Bytes, head: Head, body: Body, peer: string, params: P }
 
 /// The params of a request no route has read.
 export type Unrouted = {}
@@ -170,10 +192,93 @@ impl Request {
 /// One outgoing field.
 export type Header = { name: string, value: string }
 
-/// What a handler answers. `content-length` is written from the body;
-/// nothing here is chunked.
-export type Response = { status: int = 200, headers: List<Header> = [], body: Bytes = nothing() }
+/// What a handler answers. Its body is WHOLE — `body`, written with
+/// its `content-length` straight into the connection's one buffer — or
+/// a `stream` the connection pulls. Never both: a response carrying a
+/// stream beside a body is one no peer could read, and answers 500.
+///
+/// A `101` hands the connection over: its `upgrade` runs on the
+/// connection's own task once the head is written, holding the socket
+/// and whatever the peer sent past its request, and the connection
+/// ends when it returns. `101` and an upgrade come together or not at
+/// all.
+export type Response = {
+    status: int = 200,
+    headers: List<Header> = [],
+    body: Bytes = nothing(),
+    stream: Stream? = null,
+    upgrade: Upgrade? = null,
+}
 
+/// What a `101` hands the connection to: its transport, and the octets
+/// the peer sent past its request — already the new protocol's.
+export type Upgrade = { run: fn(dyn Transport, Bytes) -> void }
+
+// ── The body stream ─────────────────────────────────────────────
+
+/// A BODY THE CONNECTION PULLS, one piece at a time — the ONE producer
+/// shape every writer of a streamed body reads: HTTP/1.1's connection
+/// here, an HTTP/2 stream's writer next, the event-stream writer
+/// (`sse.av`) on top.
+///
+/// PULLED, NEVER PUSHED. The writer asks for the next piece only once
+/// the last is written, so a peer that reads slowly parks the
+/// connection's OWN task inside its write, and the producer is not
+/// asked again until the peer has taken what it owed. That is the
+/// whole of backpressure: one piece in memory per stream, and no other
+/// connection waits.
+///
+/// `length`, when the producer knows it, frames the body by
+/// `content-length`; absent, a 1.1 peer is sent chunks and a 1.0 peer
+/// reads to the close. A producer whose pieces overrun or fall short of
+/// its own length has broken its framing, and the stream ends as a
+/// failure does.
+///
+/// A FAILURE AFTER THE HEAD NEVER SPEAKS A SECOND STATUS: the head is
+/// already on the wire, so the writer ends the stream where it stands
+/// — no last chunk, a length never reached — and closes, and the peer
+/// reads an incomplete message rather than a false one.
+///
+/// `ended` is called ONCE, however the pulling stops — the end, a
+/// failure, a peer gone, a HEAD that sends no body, a response the
+/// server replaced — so a producer holding a resource releases it.
+export type Stream = { pull: fn() -> Pulled, length: int? = null, ended: fn() -> void = unheld }
+
+/// What one pull answers: the next piece, the end, or a failure. An
+/// EMPTY piece is a piece of nothing and is skipped — never read as the
+/// end, which only `End` says.
+export enum Pulled {
+    Data(b: Bytes)
+    End
+    Failed
+}
+
+/// The release of a stream that holds nothing.
+fn unheld() {}
+
+/// A stream of `parts` in order, then its end. Its length is not
+/// declared, so it goes out in chunks; `with { length: n }` frames it
+/// by length instead.
+export fn stream_of(parts: List<Bytes>) -> Stream {
+    let next = Cell.new(0)
+    Stream { pull: () -> piece_at(parts, next) }
+}
+
+fn piece_at(parts: List<Bytes>, next: Cell<int>) -> Pulled {
+    let i = next.get()
+    if i == parts.length { return .End }
+    next.set(i + 1)
+    .Data(parts[i])
+}
+
+/// A response's stream told it will not be pulled — the response was
+/// replaced, or its request sent no body back.
+export fn released(r: Response) {
+    let s? = r.stream else { return }
+    s.ended()
+}
+
+/// No octets: an empty body, a piece of nothing.
 fn nothing() -> Bytes { "".bytes() }
 
 // ── Segments ────────────────────────────────────────────────────
@@ -262,22 +367,33 @@ impl Respond for int {
 /// that value; refusing at the crossing is what makes the
 /// reinterpretation impossible, where escaping would only move it.
 export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
-    written(as_sent(r), keep_alive, minor)
+    let sent = as_sent(r)
+    written(sent, .Length(sent.body.length), keep_alive, minor, sent.body)
 }
 
 /// THE RESPONSE AS IT WILL BE WRITTEN — `r` when a peer could read
-/// it, the server's own 500 when not. EVERY reader of that wire asks
-/// THIS ONE VERB: `wire` writes it, and a HEAD's answer measures the
-/// body it must not send by it. A second reader that judged the
-/// HANDLER'S response instead would measure a body the wire does not
-/// carry and cut the head mid-field.
+/// it, the server's own 500 when not. `sendable` is the one judgment:
+/// `wire` writes by this, and the server judges each handler's answer
+/// once by the same law, releasing a stream the 500 replaced.
 export fn as_sent(r: Response) -> Response { if sendable(r) { r } else { status(500) } }
 
-/// THE RESPONSE WRITTEN STRAIGHT INTO ONE BUFFER: each piece appended
-/// in place — no list gathered and copied once, since a local `mut`
-/// accumulator grown by `concat` already lands in one box (reuse in
-/// place, `docs/2026_09_23_REUSE_IN_PLACE.md`).
-fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
+/// A RESPONSE ON THE WIRE, WRITTEN STRAIGHT INTO ONE BUFFER: the
+/// status line, its fields, how its body is delimited, the connection's
+/// fate, the blank line, then `body` — a whole body, or nothing for a
+/// head a stream or a HEAD's answer follows. Every piece is appended in
+/// place to one accumulator, never a head box joined to a body (reuse
+/// in place, `docs/2026_09_23_REUSE_IN_PLACE.md`).
+export fn written(r: Response, delim: ReplyBody, keep_alive: bool, minor: int, body: Bytes) -> Bytes {
+    laid_out(r, delim, fate(keep_alive, minor, offered(r) != null), body)
+}
+
+/// A response's HEAD on the wire, its body to follow piece by piece.
+export fn head_of(r: Response, delim: ReplyBody, keep_alive: bool, minor: int) -> Bytes {
+    written(r, delim, keep_alive, minor, nothing())
+}
+
+/// The response with `closing` as its last field line, then `body`.
+fn laid_out(r: Response, delim: ReplyBody, closing: string, body: Bytes) -> Bytes {
     mut w = reply_line(r.status)
     for h in r.headers {
         w = w.concat(h.name.bytes())
@@ -285,14 +401,86 @@ fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
         w = w.concat(h.value.bytes())
         w = w.concat(crlf)
     }
-    w = w.concat(length_field)
-    w = w.concat("${r.body.length}".bytes())
+    match delim {
+        .Length(n) -> {
+            w = w.concat(length_field)
+            w = w.concat("${n}".bytes())
+            w = w.concat(crlf)
+        },
+        .Chunked -> { w = w.concat(chunked_line) },
+        .None or .UntilClose -> undelimited(),
+    }
+    w = w.concat(closing.bytes())
     w = w.concat(crlf)
-    w = w.concat(fate(keep_alive, minor).bytes())
-    w = w.concat(crlf)
-    w = w.concat(r.body)
+    w = w.concat(body)
     w
 }
+
+/// HOW A RESPONSE'S BODY IS DELIMITED ON THE WIRE (RFC 9112 §6): a
+/// whole body and a stream that knows its length by `content-length`,
+/// any other stream by chunks — and, to a 1.0 peer that cannot read
+/// chunks, by the close, which that response's fate must then say.
+export fn delimited(r: Response, minor: int) -> ReplyBody {
+    let s? = r.stream else { return .Length(r.body.length) }
+    match s.length {
+        n? -> .Length(n)
+        null -> if minor == 0 { .UntilClose } else { .Chunked }
+    }
+}
+
+/// A body delimited by nothing written: none at all, or the close.
+fn undelimited() {}
+
+const length_field: Bytes = "content-length: ".bytes()
+
+const chunked_line: Bytes = "transfer-encoding: chunked\r\n".bytes()
+
+/// ONE PIECE OF A STREAMED BODY ON THE WIRE, by the body's delimiting:
+/// a chunk — its size in hex, the octets, a CRLF — or the octets
+/// themselves. AN EMPTY PIECE IS NOTHING ON THE WIRE: an empty chunk is
+/// the LAST chunk, so writing one would end the body a producer meant
+/// only to pause.
+export fn piece_on_wire(b: Bytes, delim: ReplyBody) -> Bytes {
+    if b.is_empty() { return b }
+    match delim { .Chunked -> chunk_of(b), .None or .Length(_) or .UntilClose -> b }
+}
+
+fn chunk_of(b: Bytes) -> Bytes {
+    mut w = hex_text(b.length).bytes()
+    w = w.concat(crlf)
+    w = w.concat(b)
+    w = w.concat(crlf)
+    w
+}
+
+/// What ends a streamed body on the wire: the last chunk and an empty
+/// trailer section, or nothing — a length ends by being reached, and
+/// the close ends itself.
+export fn body_end(delim: ReplyBody) -> Bytes {
+    match delim { .Chunked -> last_chunk, .None or .Length(_) or .UntilClose -> nothing() }
+}
+
+const last_chunk: Bytes = "0\r\n\r\n".bytes()
+
+/// Whether `total` octets so far still fit the delimiting — a length is
+/// never overrun.
+export fn within_length(delim: ReplyBody, total: int) -> bool {
+    match delim { .Length(n) -> total <= n, .None -> total == 0, .Chunked or .UntilClose -> true }
+}
+
+/// Whether a body of `total` octets is complete under the delimiting —
+/// a length is met exactly.
+export fn completes(delim: ReplyBody, total: int) -> bool {
+    match delim { .Length(n) -> total == n, .None -> total == 0, .Chunked or .UntilClose -> true }
+}
+
+/// `n` in lowercase hex, no leading zeros — a chunk's size line.
+export fn hex_text(n: int) -> string {
+    if n < 16 { return hex_digits.substring(n, n + 1) }
+    hex_text(n >> 4) + hex_digits.substring(n & 15, (n & 15) + 1)
+}
+
+const hex_digits: string = "0123456789abcdef"
 
 /// Every status line a response can carry, laid out once in the binary.
 const reply_lines: List<Bytes> = [reply_text(s).bytes() for s in 100..1000]
@@ -307,10 +495,12 @@ fn reply_text(status: int) -> string { "HTTP/1.1 ${status} ${reason(status)}\r\n
 
 const field_colon: Bytes = ": ".bytes()
 
-const length_field: Bytes = "content-length: ".bytes()
-
-/// The connection's fate, when the peer cannot assume it.
-fn fate(keep_alive: bool, minor: int) -> string {
+/// The connection's fate, when the peer cannot assume it — and, when
+/// the response OFFERS an upgrade, the `upgrade` option its sender must
+/// list beside it (RFC 9110 §7.8). The writer owns `connection`, so
+/// this is the only place the option can be written.
+fn fate(keep_alive: bool, minor: int, offers: bool) -> string {
+    if offers { return offering_fate(keep_alive, minor) }
     when {
         !keep_alive -> "connection: close\r\n"
         minor == 0 -> "connection: keep-alive\r\n"
@@ -318,12 +508,94 @@ fn fate(keep_alive: bool, minor: int) -> string {
     }
 }
 
+fn offering_fate(keep_alive: bool, minor: int) -> string {
+    when {
+        !keep_alive -> "connection: close, upgrade\r\n"
+        minor == 0 -> "connection: keep-alive, upgrade\r\n"
+        _ -> switching()
+    }
+}
+
+/// The `connection` field of a response that offers or makes a switch
+/// and says nothing else of its connection.
+fn switching() -> string { "connection: upgrade\r\n" }
+
 /// WHETHER THIS RESPONSE CAN GO ON A WIRE AT ALL: a status of three
 /// digits — the status line's own grammar, which is why 1000 and 99
-/// are not statuses — and every field a field the framer would frame.
-/// Public so a handler can ask before it answers.
+/// are not statuses — and a FINAL one: a 1xx is interim, never an
+/// answer (RFC 9110 §15.2), save the 101 that hands the connection
+/// over. Every field is one the framer would frame, and a 426 names
+/// the protocols it wants (§15.5.22). Public so a handler can ask
+/// before it answers.
 export fn sendable(r: Response) -> bool {
-    r.status >= 100 && r.status <= 999 && fields_writable(r.headers, reply_writes)
+    r.status >= 100 &&
+        r.status <= 999 &&
+        fields_writable(r.headers, reply_writes) &&
+        (whole_answer(r) || streamable(r) && handed_over(r)) &&
+        (r.status != 426 || offered(r) != null)
+}
+
+/// AN UPGRADE AND A 101 COME TOGETHER: a 101 with nothing to hand the
+/// connection to leaves a peer speaking a protocol nobody reads, and
+/// an upgrade under another status hands over a connection the peer
+/// still thinks is HTTP's. A 101 names what it switches to in its
+/// `upgrade` field (RFC 9110 §15.2.2), and the handed-over connection
+/// carries no body.
+fn handed_over(r: Response) -> bool {
+    if r.upgrade == null { return r.status >= 200 }
+    r.status == 101 && offered(r) != null && r.body.is_empty() && r.stream == null
+}
+
+/// The protocols a response's `upgrade` field names — absent when it
+/// carries none, or an empty one.
+export fn offered(r: Response) -> string? {
+    r.headers.find(names_upgrade(it))?.value
+}
+
+/// Whether `h` is a non-blank `upgrade` field — its length asked first,
+/// since every reply's fields are asked on the way to the wire.
+fn names_upgrade(h: Header) -> bool {
+    h.name.length == 7 && names_one_of(h.name, upgrade_field) && !h.value.trim().is_empty()
+}
+
+const upgrade_field: List<Bytes> = ["upgrade".bytes()]
+
+/// A SERVER SWITCHES ONLY TO WHAT IT WAS ASKED FOR (RFC 9110 §7.8):
+/// every protocol a 101 names is one the request's `upgrade` field
+/// listed — and an HTTP/1.0 request's field is ignored, so it asked
+/// for nothing. Any other response switches nothing and passes.
+export fn switch_asked<P>(q: Request<P>, r: Response) -> bool {
+    if r.status != 101 { return true }
+    let named? = offered(r) else { return false }
+    let wanted? = q.header("upgrade") else { return false }
+    q.head.minor >= 1 && named.split(",").all(lists_token(wanted, it.trim()))
+}
+
+/// Whether a comma-separated field value names `token`, ASCII-folded.
+export fn lists_token(value: string, token: string) -> bool {
+    value.split(",").any(same_token(it, token))
+}
+
+fn same_token(item: string, token: string) -> bool {
+    let b = item.trim().bytes()
+    b.ieq_at(0, b.length, token.bytes())
+}
+
+/// A 101's head on the wire: the status line, its fields, and the
+/// `connection: upgrade` its writer owns.
+export fn upgrade_head(r: Response) -> Bytes { laid_out(r, .None, switching(), nothing()) }
+
+/// A response with a whole body and nothing to hand over: the common
+/// one, judged without asking the stream and upgrade laws.
+fn whole_answer(r: Response) -> bool { r.stream == null && r.upgrade == null && r.status >= 200 }
+
+/// A STREAM STANDS ALONE: a response carrying one carries no whole
+/// body beside it, declares no negative length, and has a status that
+/// may carry a body at all — a 1xx, 204 or 304 never does (RFC 9110
+/// §15). Two bodies are one the peer cannot read.
+fn streamable(r: Response) -> bool {
+    let s? = r.stream else { return true }
+    r.body.is_empty() && s.length ?? 0 >= 0 && r.status >= 200 && r.status != 204 && r.status != 304
 }
 
 /// EVERY FIELD A WRITER MAY WRITE: each one a field the framer would
@@ -406,6 +678,7 @@ export fn reason(status: int) -> string {
         417 -> "Expectation Failed",
         421 -> "Misdirected Request",
         422 -> "Unprocessable Content",
+        426 -> "Upgrade Required",
         429 -> "Too Many Requests",
         431 -> "Request Header Fields Too Large",
         500 -> "Internal Server Error",

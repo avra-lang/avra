@@ -1,0 +1,145 @@
+//! proves: the streaming laws of the design's attack table, in both
+//! engines — a slow peer holds its producer still and stalls nobody
+//! else, its stalled write is cancelled at the idle deadline and the
+//! stream ended once; a producer that fails after the head ends the
+//! stream with no second status; a producer parked on a quiet source is
+//! cut; a body gone silent is answered 408
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, sleep, within}
+use @std.http.frame.{limits}
+use @std.http.http.{Request, Unrouted, Response, Stream, Pulled, text}
+use @std.http.server.{Server, Timing, served}
+
+type App = {}
+
+/// What the producers lived through, across the whole run.
+type Tally = { pulls: Cell<int>, ends: Cell<int> }
+
+impl Tally {
+    fn endless() -> Stream { Stream { pull: () -> self.pulled(), ended: () -> self.ended() } }
+
+    fn pulled() -> Pulled {
+        self.pulls.set(self.pulls.get() + 1)
+        .Data(piece())
+    }
+
+    fn ended() { self.ends.set(self.ends.get() + 1) }
+}
+
+once fn piece() -> Bytes { [120 for _i in 0..65536].bytes()! }
+
+/// A producer that says one thing and then fails.
+fn failing() -> Stream {
+    let said = Cell.new(false)
+    Stream { pull: () -> said_once(said) }
+}
+
+fn said_once(said: Cell<bool>) -> Pulled {
+    if said.get() { return .Failed }
+    said.set(true)
+    .Data("a".bytes())
+}
+
+/// A producer waiting on a source nobody writes to.
+fn quiet_on(c: Conn) -> Stream { Stream { pull: () -> heard_from(c) } }
+
+fn heard_from(c: Conn) -> Pulled {
+    match c.read(16) {
+        .Ok(b) -> if b == null { Pulled.End } else { Pulled.Data(b!) },
+        .Err(_) -> Pulled.Failed,
+    }
+}
+
+fn answer(q: Request<Unrouted>, t: Tally, quiet: Conn) -> Response {
+    match q.target() ?? "" {
+        "/endless" -> Response { stream: t.endless() },
+        "/failing" -> Response { stream: failing() },
+        "/quiet" -> Response { stream: quiet_on(quiet) },
+        "/upload" -> text(200, q.body.text() ?? "unread"),
+        _ -> text(200, "other"),
+    }
+}
+
+/// Everything `c` is sent until it ends or goes quiet for `patience`.
+fn read_out(c: Conn, sent: string) -> Result<string, NetError> {
+    c.write(sent.bytes())?
+    mut got = "".bytes()
+    while true {
+        match within secs(3) { c.read(65536) } {
+            .Ok(b) -> {
+                let more? = b else { return .Ok(got.text() ?? "<not text>") }
+                got = got.concat(more)
+            },
+            .Err(_) -> { return .Ok(got.text() ?? "<not text>") },
+        }
+    }
+    .Ok("")
+}
+
+fn line(target: string) -> string { "GET ${target} HTTP/1.1\r\nHost: a\r\n\r\n" }
+
+/// Whether `s`'s open connections fall to `n` within three seconds.
+fn settles(s: Server<App>, n: int) -> bool {
+    mut waited = 0
+    while s.connections() != n && waited < 3000 {
+        sleep(ms(10))
+        waited = waited + 10
+    }
+    s.connections() == n
+}
+
+/// The pull count once it has stopped moving for 100 ms — the socket's
+/// buffers full, the producer held — or after three seconds.
+fn steadied(t: Tally) -> int {
+    mut last = -1
+    mut waited = 0
+    while t.pulls.get() != last && waited < 3000 {
+        last = t.pulls.get()
+        sleep(ms(100))
+        waited = waited + 100
+    }
+    t.pulls.get()
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let side = listen("127.0.0.1", 0)?
+    let quiet = connect("127.0.0.1", side.port, secs(2))?
+    let t = Tally { pulls: Cell.new(0), ends: Cell.new(0) }
+    let s = served(l, () -> App {}, limits(), Timing { idle: ms(400), body: ms(200) }) { _app, q -> answer(q, t, quiet) }
+    spawn s.run(cores: 1)
+    defer s.stop()
+
+    let slow = connect("127.0.0.1", l.port, secs(2))?
+    slow.write(line("/endless").bytes())?
+    let early = steadied(t)
+    let other = read_out(
+        connect("127.0.0.1", l.port, secs(2))?,
+        "GET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+    )?
+    sleep(ms(100))
+    let held = early > 0 && t.pulls.get() == early
+    let cancelled = settles(s, 0) && t.ends.get() == 1
+    let _ = slow.close()
+
+    let failed = read_out(connect("127.0.0.1", l.port, secs(2))?, line("/failing"))?
+    let cut = read_out(connect("127.0.0.1", l.port, secs(2))?, line("/quiet"))?
+    let silent = read_out(
+        connect("127.0.0.1", l.port, secs(2))?,
+        "POST /upload HTTP/1.1\r\nHost: a\r\nContent-Length: 10\r\n\r\nabc",
+    )?
+    let _ = quiet.close()
+    .Ok(
+        [
+            "a slow peer holds its producer still: ${held}",
+            "another connection is answered meanwhile: ${other.ends_with("other")}",
+            "the stalled write is cancelled at the idle deadline, the stream ended once: ${cancelled}",
+            "a failure after the head ends with no last chunk and no second status: ${failed == "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n1\r\na\r\n"}",
+            "a producer on a quiet source is cut at the deadline: ${cut == "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n"}",
+            "a body gone silent is 408: ${silent.starts_with("HTTP/1.1 408 ")}",
+        ]
+            .join("\n"),
+    )
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

@@ -1,26 +1,71 @@
 //! A keep-alive request served in-process, no socket: the bytes a read
 //! brings, framed, the handler called, the response written as bytes —
-//! the user-space work a connection does per request, alone.
-use @std.http.frame.{framed, limits}
-use @std.http.http.{Request, Unrouted, text, wire}
+//! the user-space work a connection does per request, alone. Twice: the
+//! answer as a whole body, then the same octets as a one-piece stream,
+//! pulled and chunked as the connection writes it.
+use @std.http.frame.{Head, ReplyBody, framed, limits}
+use @std.http.http.{
+    Request,
+    Unrouted,
+    Response,
+    Pulled,
+    text,
+    wire,
+    stream_of,
+    delimited,
+    head_of,
+    piece_on_wire,
+    body_end,
+}
+use @std.http.body.{Body}
 use @std.time.{now_ns}
 
-fn served(raw: Bytes) -> int {
+/// The octets one request costs: its answer by `answer`, and what the
+/// read brought past its head.
+fn served(raw: Bytes, answer: fn(Response, Head) -> Bytes) -> int {
     match framed(raw, 0, 0, limits()) {
         .Complete(head) -> {
-            let q = Request { raw: raw, head: head, body: "".bytes(), peer: "127.0.0.1:1", params: Unrouted {} }
-            let r = text(200, "hello")
-            let out = "".bytes().concat(wire(r, head.keep_alive, head.minor))
-            let rest = raw.slice(head.end, raw.length)
-            out.length + rest.length + q.body.length
+            let q = Request {
+                raw: raw,
+                head: head,
+                body: Body.Empty,
+                peer: "127.0.0.1:1",
+                params: Unrouted {},
+            }
+            let out = "".bytes().concat(answer(text(200, "hello"), head))
+            out.length + raw.length - head.end + if q.body.finished() { 0 } else { 1 }
         },
         .Partial or .Refused(_) -> 0,
     }
 }
 
+/// The answer written whole: one buffer, its length in the head.
+fn whole(r: Response, head: Head) -> Bytes { wire(r, head.keep_alive, head.minor) }
+
+/// The same answer streamed: its head, each piece pulled and framed,
+/// then the end — the writes a streamed response makes, gathered.
+fn streamed(r: Response, head: Head) -> Bytes {
+    let s = Response { stream: stream_of([r.body]), headers: r.headers }
+    let delim = delimited(s, head.minor)
+    mut out = head_of(s, delim, head.keep_alive, head.minor)
+    mut more = true
+    while more {
+        match s.stream!.pull() {
+            .Data(b) -> { out = out.concat(piece_on_wire(b, delim)) },
+            .End or .Failed -> { more = false },
+        }
+    }
+    out.concat(body_end(delim))
+}
+
+fn timed(label: string, n: int, raw: Bytes, answer: fn(Response, Head) -> Bytes) -> string {
+    let t0 = now_ns()
+    mut total = 0
+    for i in 0..n { total = total + served("".bytes().concat(raw), answer) }
+    "${label}: ${n} requests, ${(now_ns() - t0) / n} ns each (${total / n} bytes out)"
+}
+
 let raw = "GET / HTTP/1.1\r\nHost: bench\r\nUser-Agent: wrk\r\nAccept: */*\r\n\r\n".bytes()
 let n = 5000000
-let t0 = now_ns()
-mut total = 0
-for i in 0..n { total = total + served("".bytes().concat(raw)) }
-"${n} requests, ${(now_ns() - t0) / n} ns each (${total / n} bytes out)"
+println(timed("whole", n, raw, whole))
+timed("stream", n, raw, streamed)

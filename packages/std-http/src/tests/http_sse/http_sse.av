@@ -1,0 +1,62 @@
+//! proves: an event stream resumes after the observer's cursor — the
+//! events it missed arrive in order, then one published while it
+//! watches — and the client reads the chunked stream with the same
+//! body reader a handler reads a request with
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{Duration, ms, secs, sleep, within}
+use @std.http.frame.{limits}
+use @std.http.body.{Body, chunked_from}
+use @std.http.sse.{Event, Feed, feed, events}
+use @std.http.server.{served, timing}
+
+type App = {}
+
+/// The stream's text, read through the chunk decoder until `mark`.
+fn watched(c: Conn, mark: string) -> Result<string, NetError> {
+    c.write("GET /events HTTP/1.1\r\nHost: a\r\nLast-Event-ID: 1\r\n\r\n".bytes())?
+    mut head = "".bytes()
+    while head.index_of("\r\n\r\n".bytes(), 0) < 0 {
+        let got? = within secs(5) { c.read(4096) }? else { return .Ok("closed in the head") }
+        head = head.concat(got)
+    }
+    let body = chunked_from(
+        c,
+        head,
+        head.index_of("\r\n\r\n".bytes(), 0) + 4,
+        "".bytes(),
+        secs(5),
+        limits(),
+    )
+    mut text = ""
+    while !text.contains(mark) {
+        match body.read() {
+            .Ok(p) -> { text = text + (p?.text() ?? "") },
+            .Err(_) -> { return .Ok("${text}<broken>") },
+        }
+    }
+    .Ok(text)
+}
+
+fn published_after(f: Feed, d: Duration) -> string {
+    sleep(d)
+    f.publish(Event { data: "live", event: "note" })
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let f = feed(16)
+    let _ = f.publish(Event { data: "first" })
+    let _ = f.publish(Event { data: "second\nline" })
+    let _ = f.publish(Event { data: "third" })
+    let s = served(l, () -> App {}, limits(), timing()) { _app, q -> events(q, secs(10), (c: string?) -> f.resumed(c)) }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    defer { let _ = c.close() }
+    let later = spawn published_after(f, ms(50))
+    let text = watched(c, "data: live\n\n")?
+    let _ = later.await
+    .Ok(text)
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

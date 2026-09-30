@@ -11,7 +11,7 @@
 //!
 //! A client: `secured(host, port, timeout, limits, config)` connects,
 //! verifies the server as `host`, and answers a `Client` that fetches
-//! exactly as a plain one does.
+//! exactly as a plain one does; `wss` opens a WebSocket the same way.
 use @std.net.{Conn}
 use @std.time.{Duration, within}
 use @std.tls.{Config, TlsConn, TlsError, dial, handshake_after}
@@ -19,6 +19,7 @@ use @std.http.frame.{Limits}
 use @std.http.http.{Response, text, wire, read_size}
 use @std.http.wire.{Transport, WireError, Secure}
 use @std.http.client.{Client, ClientError, carried, over}
+use @std.http.ws.{Socket, WsError, WsLimits, opened_over, socket_error}
 
 /// Connections secured with TLS under `config`.
 export fn over_tls(config: Config) -> Secure {
@@ -33,6 +34,23 @@ export fn secured(host: string, port: int, timeout: Duration, limits: Limits, co
 > {
     let t = tls_carried(dial(host, port, timeout, config))?
     .Ok(over(Secured { t: t }, limits))
+}
+
+/// A WebSocket to host:port over TLS: the server verified under
+/// `config` as `host`, then `target` asked to upgrade, all within
+/// `timeout`.
+export fn wss(
+    host: string,
+    port: int,
+    target: string,
+    timeout: Duration,
+    config: Config,
+    lim: WsLimits,
+) -> Result<Socket, WsError> {
+    match as_wire(dial(host, port, timeout, config)) {
+        .Ok(t) -> opened_over(Secured { t: t }, "${host}:${port}", target, timeout, lim),
+        .Err(e) -> .Err(socket_error(e)),
+    }
 }
 
 /// A TLS result as the client's: a socket's failure wears `.Net`,
