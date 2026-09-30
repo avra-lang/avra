@@ -187,40 +187,25 @@ test_ticket_scan_survives_an_arriving_waiter() {
 test_lock_fifo() {
     lockdir="$scratch/lock-fifo"
     rm -rf "$lockdir"
+    order="$scratch/lock-order"
+    : > "$order"
     sig_a="$scratch/sig-a"
     sig_c="$scratch/sig-c"
     rm -f "$sig_a" "$sig_c"
+    hold() { ( AVRA_LAND_LOCK="$lockdir" branch="$1" sh "$land" --call hold_lock_for "$2" "$order" ) > "$scratch/lock-$1.out" 2>&1 & }
+    # Each step waits for the EVENT it needs, never a window: the
+    # fixture's own timeout bounds a hang.
+    until_line() { while ! grep -q "$2" "$1" 2>/dev/null; do sleep 0.1; done; }
 
-    ( AVRA_LAND_LOCK="$lockdir" branch=A sh "$land" --call hold_lock_for "$sig_a" ) \
-        > "$scratch/lock-a.out" 2>&1 &
-    a_pid=$!
-    if ! wait_for_line "$scratch/lock-a.out" "^acquired ticket 1$" 150; then
-        bad "lock-fifo: A (first arrival) never acquired ticket 1"
-    else
-        ok "lock-fifo: A, arriving first, acquires ticket 1 immediately"
-    fi
-
-    ( AVRA_LAND_LOCK="$lockdir" branch=B sh "$land" --call hold_lock_for "$scratch/sig-b-never" ) \
-        > "$scratch/lock-b.out" 2>&1 &
-    b_pid=$!
-    if wait_for_line "$scratch/lock-b.out" "^acquired" 10; then
-        bad "lock-fifo: B acquired while A still holds the lock"
-    else
-        ok "lock-fifo: B waits behind A, as arrival order demands"
-    fi
-
+    hold A "$sig_a"; a_pid=$!
+    until_line "$scratch/lock-A.out" "^acquired ticket 1$"
+    hold B "$scratch/sig-b-never"; b_pid=$!
+    until_line "$scratch/lock-B.out" "ticket 2 taken"
     # B dies WHILE WAITING — its ticket (2) is now nobody's.
     kill -9 "$b_pid" 2>/dev/null
     wait "$b_pid" 2>/dev/null
-
-    ( AVRA_LAND_LOCK="$lockdir" branch=C sh "$land" --call hold_lock_for "$sig_c" ) \
-        > "$scratch/lock-c.out" 2>&1 &
-    c_pid=$!
-    if wait_for_line "$scratch/lock-c.out" "^acquired" 10; then
-        bad "lock-fifo: C acquired before A released — order violated"
-    else
-        ok "lock-fifo: C also waits, behind A (not stuck behind dead B)"
-    fi
+    hold C "$sig_c"; c_pid=$!
+    until_line "$scratch/lock-C.out" "ticket 3 taken"
     # A deep queue, with SIGPIPE ignored as a harness's children inherit
     # it: a waiter's scan writes into no pipe, so its log stays a few
     # lines however long it waits.
@@ -229,9 +214,10 @@ test_lock_fifo() {
             > "$scratch/lock-$w.out" 2>&1 &
         eval "${w}_pid=\$!"
     done
+    for w in d e f; do until_line "$scratch/lock-$w.out" "taken"; done
     sleep 3
     grown=0
-    for w in c d e f; do
+    for w in C d e f; do
         [ "$(wc -l < "$scratch/lock-$w.out")" -le 3 ] || grown=1
     done
     if [ "$grown" -eq 0 ]; then
@@ -242,20 +228,20 @@ test_lock_fifo() {
     for w in d e f; do eval "kill -9 \$${w}_pid" 2>/dev/null; done
 
     touch "$sig_a"
-    if ! wait_for_line "$scratch/lock-c.out" "^acquired ticket 3$" 1800; then
-        bad "lock-fifo: C never acquired ticket 3 after A released"
+    until_line "$scratch/lock-C.out" "^acquired ticket 3$"
+    touch "$sig_c"
+    wait "$c_pid" 2>/dev/null
+    wait "$a_pid" 2>/dev/null
+    if [ "$(tr '\n' '|' < "$order")" = "acquired A 1|released A|acquired C 3|released C|" ]; then
+        ok "lock-fifo: the lock is held in arrival order — A, then C; B's dead ticket never held it"
     else
-        ok "lock-fifo: once A releases, C (ticket 3) is served next — B's dead ticket 2 never blocked it"
+        bad "lock-fifo: the order was $(tr '\n' '|' < "$order")"
     fi
-    if grep -q "reclaiming a dead ticket" "$scratch/lock-c.out" 2>/dev/null; then
+    if grep -q "reclaiming a dead ticket" "$scratch/lock-C.out" 2>/dev/null; then
         ok "lock-fifo: B's dead ticket is named as reclaimed"
     else
         bad "lock-fifo: nothing said B's dead ticket was reclaimed"
     fi
-
-    touch "$sig_c"
-    wait "$c_pid" 2>/dev/null
-    wait "$a_pid" 2>/dev/null
     if [ -d "$lockdir/tickets" ] && [ -n "$(ls "$lockdir/tickets" 2>/dev/null)" ]; then
         bad "lock-fifo: a ticket was left behind after every holder released"
     else

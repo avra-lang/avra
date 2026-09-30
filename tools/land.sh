@@ -426,13 +426,12 @@ release_lock_and_exit() {
 # FIFO fixture is the one caller.
 hold_lock_for() {
     signal="$1"
+    order="${2:-/dev/null}"
     acquire_lock
     echo "acquired ticket $ticket"
-    i=0
-    while [ ! -f "$signal" ] && [ "$i" -lt 300 ]; do
-        sleep 0.2
-        i=$((i + 1))
-    done
+    echo "acquired $branch $ticket" >> "$order"
+    while [ ! -f "$signal" ]; do sleep 0.2; done
+    echo "released $branch" >> "$order"
     release_lock
     echo "released ticket $ticket"
 }
