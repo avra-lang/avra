@@ -3,6 +3,7 @@
 // shrinks the length after allocating misfiles the box and the count
 // drifts — every such mint must leave live bytes where they began.
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
