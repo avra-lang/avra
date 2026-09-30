@@ -5,8 +5,9 @@
 use @std.net.{Conn, Listener, NetError, listen, connect}
 use @std.time.{ms, secs, sleep, within}
 use @std.http.frame.{limits}
-use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.http.{Request, Unrouted, Response, Header, Upgrade, text}
 use @std.http.server.{served, timing}
+use @std.http.wire.{Transport, plainly}
 use @std.http.ws.{
     Socket,
     Message,
@@ -15,6 +16,7 @@ use @std.http.ws.{
     accepted,
     accept_of,
     dialed,
+    opened_over,
     ws_frame_bytes,
     masked,
     ws_limits,
@@ -50,6 +52,7 @@ fn ws_word(e: WsError) -> string {
         .Secure(_) -> "secure",
         .Rejected(s) -> "rejected ${s}",
         .Unverified -> "unverified",
+        .Unsendable -> "unsendable",
         .NoEntropy -> "no-entropy",
     }
 }
@@ -117,6 +120,64 @@ fn refused_opening(sent: string) -> Result<string, NetError> {
     .Ok(got.substring(0, got.index_of("\r\n")))
 }
 
+/// A 101 to `websocket`, answered whatever was asked; its handover
+/// counts its runs in `ran`.
+fn blind_switch(ran: Cell<int>) -> Response {
+    Response {
+        status: 101,
+        headers: [Header { name: "upgrade", value: "websocket" }],
+        upgrade: Upgrade { run: (_c: dyn Transport, _early: Bytes) -> ran.set(ran.get() + 1) },
+    }
+}
+
+/// Everything the server wrote to `sent` under that blind switch, line
+/// ends shown, and how many handovers ran.
+fn blindly_switched(sent: string) -> Result<string, NetError> {
+    let ran = Cell.new(0)
+    let b = bed_with((_app: App, _q: Request<Unrouted>) -> blind_switch(ran), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, sent, 100000)?).text() ?? ""
+    .Ok("${got.replace("\r\n", "|")}ran=${ran.get()}")
+}
+
+const refused_switch: string = "HTTP/1.1 500 Internal Server Error|content-length: 0|connection: close||ran=0"
+
+fn switches_only_as_asked() -> Result<bool, NetError> {
+    let asked = blindly_switched(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: upgrade\r\n\r\n",
+    )?
+    let other = blindly_switched(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: h2c\r\nConnection: upgrade, close\r\n\r\n",
+    )?
+    let unasked = blindly_switched("GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n")?
+    let old = blindly_switched(
+        "GET / HTTP/1.0\r\nUpgrade: websocket\r\nConnection: upgrade\r\n\r\n",
+    )?
+    .Ok(
+        asked == "HTTP/1.1 101 Switching Protocols|upgrade: websocket|connection: upgrade||ran=1" &&
+            [other, unasked, old].all(it == refused_switch),
+    )
+}
+
+/// A body the server never read would reach the new protocol as its
+/// first octets, so the switch is refused and the connection closed.
+fn no_switch_over_an_unread_body() -> Result<bool, NetError> {
+    let got = blindly_switched(
+        "POST / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: upgrade\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n",
+    )?
+    .Ok(got == refused_switch)
+}
+
+fn continues_before_switching() -> Result<bool, NetError> {
+    let got = blindly_switched(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: upgrade\r\nExpect: 100-continue\r\n\r\n",
+    )?
+    .Ok(
+        got == "HTTP/1.1 100 Continue||HTTP/1.1 101 Switching Protocols|upgrade: websocket|connection: upgrade||ran=1",
+    )
+}
+
 fn bad_openings() -> Result<bool, NetError> {
     let no_key = refused_opening(
         "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n\r\n",
@@ -138,7 +199,7 @@ fn bad_openings() -> Result<bool, NetError> {
     )?
     .Ok(
         [no_key, short_key, no_upgrade, posted, old].all(it == "HTTP/1.1 400 Bad Request") &&
-            version == "HTTP/1.1 426 Client Error",
+            version == "HTTP/1.1 426 Upgrade Required",
     )
 }
 
@@ -215,6 +276,97 @@ fn a_close_is_echoed() -> Result<bool, NetError> {
         got == switching().bytes().concat(close_frame(1000)) &&
             seen.get().join("|") == "close 1000 bye",
     )
+}
+
+/// Receives until the peer's close, then sends and receives once more,
+/// noting what each later call answered.
+fn lingering(s: Socket, seen: Cell<List<string>>) {
+    while true {
+        match s.receive() {
+            .Ok(.Close(code, _)) -> {
+                seen.push("close ${code}")
+                seen.push(code_word(s.send_text("late")))
+                seen.push(words_of(s.receive()))
+                return
+            },
+            .Ok(_) -> {},
+            .Err(e) -> {
+                seen.push(ws_word(e))
+                return
+            },
+        }
+    }
+}
+
+/// A SOCKET ENDED TOUCHES ITS DESCRIPTOR NO MORE: the number may name
+/// another connection by then, so a send or a receive after the close
+/// answers `Closed` and writes nothing.
+fn ended_socket_is_closed() -> Result<bool, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    let b = bed_with(
+        (_app: App, q: Request<Unrouted>) -> accepted(
+            q,
+            ws_limits(),
+            (s: Socket) -> lingering(s, seen),
+        ),
+        limits(),
+        timing(),
+    )?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged_bytes(
+        b.c,
+        opening_line().bytes().concat(from_client(true, 8, [3, 232].bytes()!)),
+        100000,
+    )?
+    .Ok(
+        got == switching().bytes().concat(close_frame(1000)) &&
+            seen.get().join("|") == "close 1000|closed|closed",
+    )
+}
+
+/// A TARGET IS A WORD OF THE REQUEST LINE: one holding a CRLF would
+/// write fields of its caller's choosing into the opening handshake, so
+/// it is refused before a byte is sent — and so is such an authority.
+fn unsayable_openings_are_refused() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let bad_target = opened_over(
+        plainly(c),
+        "a",
+        "/x HTTP/1.1\r\nx-evil: 1\r\n\r\nGET /y",
+        secs(1),
+        ws_limits(),
+    )
+    let bad_authority = opened_over(plainly(c), "a\r\nx-evil: 1", "/x", secs(1), ws_limits())
+    let empty_target = opened_over(plainly(c), "a", "", secs(1), ws_limits())
+    let _ = c.close()
+    let _ = l.close()
+    .Ok([bad_target, bad_authority, empty_target].all(opening_word(it) == "unsendable"))
+}
+
+fn opening_word(r: Result<Socket, WsError>) -> string {
+    match r { .Ok(_) -> "opened", .Err(e) -> ws_word(e) }
+}
+
+/// The client's socket after its own close handshake: every later call
+/// answers `Closed`.
+fn closed_client_stays_closed() -> Result<bool, NetError> {
+    let seen: Cell<List<string>> = Cell.new([])
+    let b = ws_bed(seen, ws_limits())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    match dialed("127.0.0.1", b.s.listener.port, "/chat", secs(2), ws_limits()) {
+        .Ok(s) -> {
+            let _ = s.close(1000, "done", secs(2))
+            .Ok(
+                code_word(s.send_text("late")) == "closed" &&
+                    words_of(s.receive()) == "closed" &&
+                    code_word(s.close(1000, "again", secs(1))) == "closed",
+            )
+        },
+        .Err(_) -> .Ok(false),
+    }
 }
 
 // ── Laws broken ─────────────────────────────────────────────────
@@ -391,6 +543,13 @@ spec "std.http websocket" {
         then "a well-formed opening is switched, its key accepted as RFC 6455 says" { passes(opening_is_switched()) }
         then "no key, a short key, no upgrade, a POST or HTTP/1.0 is 400, another version 426" { passes(bad_openings()) }
         then "the accept of the RFC's key is the RFC's" { accept_of(sample_key) == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" }
+        then "a 101 goes out only to a 1.1 request that named its protocol, else it is the server's 500, never handed over" {
+            passes(switches_only_as_asked())
+        }
+        then "a 100 Continue asked for goes out before the 101" { passes(continues_before_switching()) }
+        then "a switch over a body the server did not read is the server's 500, never handed over" {
+            passes(no_switch_over_an_unread_body())
+        }
     }
     given "messages" {
         then "a text is echoed" { passes(text_echoed()) }
@@ -399,6 +558,9 @@ spec "std.http websocket" {
         then "an unasked pong is dropped" { passes(a_pong_is_dropped()) }
         then "frames split at every octet are read whole" { passes(split_at_every_octet()) }
         then "a close is echoed with its code, and the session told its reason" { passes(a_close_is_echoed()) }
+        then "a socket the peer closed answers Closed to a later send or receive, and writes nothing" {
+            passes(ended_socket_is_closed())
+        }
     }
     given "a law broken, answered by its close code" {
         then "an unmasked client frame is 1002" { passes(unmasked_is_1002()) }
@@ -417,6 +579,12 @@ spec "std.http websocket" {
         then "a dialed socket sends, receives, and closes with the handshake" { passes(client_round_trip()) }
         then "a non-101, a wrong accept, or no upgrade is refused" { passes(client_verifies()) }
         then "frames sent in the same write as the 101 are read" { passes(client_reads_frames_that_follow_the_101()) }
+        then "a target or authority holding a line end, or an empty target, is refused before a byte is sent" {
+            passes(unsayable_openings_are_refused())
+        }
+        then "a socket closed by its own handshake answers Closed to every later call" {
+            passes(closed_client_stays_closed())
+        }
         then "a masked frame from a server is 1002" { passes(a_masked_server_frame_is_1002()) }
     }
     given "the codec" {

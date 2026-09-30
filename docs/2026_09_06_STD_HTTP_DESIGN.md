@@ -98,6 +98,8 @@ unknown. A pleasant call spelling cannot erase that uncertainty.
 
 ## Foundations and module boundaries
 
+Historical: the source as inspected on 2026-09-06.
+
 Current source inspected: `features/components/mod.av` implements config-only
 record sugar; `std-json/src/json.av` provides a dynamic JSON value with integer
 numbers. Neither is evidence that general expansion or typed codecs exist.

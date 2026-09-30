@@ -88,6 +88,32 @@ fn a_cursor_never_published_is_expired() -> bool {
         resumes_at(f, "-5") == "expired -5"
 }
 
+/// A FEED KEEPING NOTHING STILL NUMBERS: its ids count up, the cursor
+/// of the last event resumes from now, any older one is expired, and a
+/// negative retention keeps nothing as zero does.
+fn a_feed_keeping_nothing() -> bool {
+    [0, 0 - 3].all(keeps_nothing(feed(it)))
+}
+
+fn keeps_nothing(f: Feed) -> bool {
+    let s = f.resumed(null).source()
+    published(f, 3).join(",") == "1,2,3" &&
+        resumes_at(f, "3") == "quiet" &&
+        resumes_at(f, "2") == "expired 2" &&
+        first_of(s) == "failed"
+}
+
+/// Retention past many turns of the log: exactly the last `keep` read
+/// back in order.
+fn retention_wraps_in_order() -> bool {
+    let f = feed(3)
+    let _ = published(f, 10)
+    resumes_at(f, "7") == "8:e7" &&
+        resumes_at(f, "8") == "9:e8" &&
+        resumes_at(f, "9") == "10:e9" &&
+        resumes_at(f, "6") == "expired 6"
+}
+
 fn two_observers_each_see_every_event() -> bool {
     let f = feed(10)
     let a = f.resumed("0").source()
@@ -226,6 +252,8 @@ spec "std.http server-sent events" {
         then "a cursor the feed never published is expired" { a_cursor_never_published_is_expired() }
         then "two observers each see every event" { two_observers_each_see_every_event() }
         then "an observer overtaken by retention fails rather than skip" { an_overtaken_observer_fails() }
+        then "a feed keeping nothing still numbers, and expires every cursor but the last" { a_feed_keeping_nothing() }
+        then "retention past many turns of the log reads the last events in order" { retention_wraps_in_order() }
     }
     given "a live event stream" {
         then "Last-Event-ID resumes after the cursor, chunked as text/event-stream" { passes(resumed_live()) }

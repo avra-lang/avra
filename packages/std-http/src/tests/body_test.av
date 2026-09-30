@@ -267,6 +267,21 @@ fn chunks_past_the_gathered_bound_are_413() -> Result<bool, NetError> {
     .Ok(got.starts_with("HTTP/1.1 413 ") && !got.contains("none") && settles_to(b.s, 0))
 }
 
+/// THE FIRST PIECE IS BOUNDED TOO: one chunk past the gathered bound,
+/// alone, is 413 — the bound is on the octets gathered, not on how many
+/// pieces carried them.
+fn one_chunk_past_the_gathered_bound_is_413() -> Result<bool, NetError> {
+    let b = body_bed(
+        (q: Request<Unrouted>) -> text(200, q.body.text() ?? "none"),
+        Limits { body: 4 },
+        timing(),
+    )?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, chunked_post() + "a\r\n0123456789\r\n0\r\n\r\n", 1000)?).text() ?? ""
+    .Ok(got.starts_with("HTTP/1.1 413 ") && !got.contains("0123456789") && settles_to(b.s, 0))
+}
+
 fn chunks_past_the_stream_bound_are_413() -> Result<bool, NetError> {
     let s = seen()
     let b = body_bed(piecewise(s), Limits { stream: 4 }, timing())?
@@ -372,6 +387,7 @@ spec "std.http request bodies" {
     }
     given "a body that broke" {
         then "chunks gathered past the gathered bound are 413, the handler's answer unsent" { passes(chunks_past_the_gathered_bound_are_413()) }
+        then "one chunk past the gathered bound, alone, is 413" { passes(one_chunk_past_the_gathered_bound_is_413()) }
         then "chunks read past the stream bound are 413" { passes(chunks_past_the_stream_bound_are_413()) }
         then "a length past the stream bound is refused at its head, the handler never run" { passes(a_length_past_the_stream_bound_is_refused_at_its_head()) }
         then "a malformed chunk mid-body is 400" { passes(a_malformed_chunk_is_400()) }

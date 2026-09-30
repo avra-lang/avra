@@ -548,7 +548,8 @@ impl TypeCx {
     mut fn field_member(e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
         let i: int? = sig.slot_of(name)
         if i != null { return sig.types[i!] }
-        self.no_such_field(e, shown, sig, name)
+        let why? = sig.lacked(name) else { return self.no_such_field(e, shown, sig, name) }
+        self.lacked_field(e, shown, sig, name, why)
     }
 
     mut fn no_such_field(e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
@@ -558,6 +559,19 @@ impl TypeCx {
                     "type.unknown_prop",
                     self.loc_of(e),
                     "no field `${name}` on `${shown}`",
+                    "read here",
+                    fields_are(sig),
+                ),
+            )
+    }
+
+    mut fn lacked_field(e: ExprId, shown: string, sig: StructSig, name: string, why: string) -> TypeId {
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    lacks_voice(shown, name, why),
                     "read here",
                     fields_are(sig),
                 ),
@@ -1731,6 +1745,12 @@ impl TypeCx {
             for a in args { self.absorb_hunger(a) }
         }
         answer
+    }
+
+    /// A value its seat refused whole is settled unjudged: nothing
+    /// beneath it stays hungry to speak for the same mistake.
+    mut fn settled_value(v: ExprId) {
+        for h in self.beneath(v) { self.absorb_hunger(h) }
     }
 
     /// An empty literal has no measure until a declared type adopts

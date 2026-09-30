@@ -815,6 +815,30 @@ got_cl1=$($R/cl/src/main 2>&1)
 # directly against compiler/features/enums/idioms.av's `bool_variant_match`
 # itself, not against a synthetic fixture here.
 
+# A HELD RECORD'S SEAT-WRITTEN BIT (interface.av's `record_line`):
+# `relay`'s `mut` seat is written only through a FLOW EDGE —
+# `maybe_bump`'s own body — and a warm build over the edit must answer
+# the write, with `pair[1]`, `pair[0]`'s alias, left unwritten. This
+# asserts the warm answer only: the receivers fixpoint settles before
+# any record is written, so a record reading its table mid-computation
+# cannot be built here, and `record_line` reads the recorded door so it
+# stays right the day that ordering moves.
+printf 'export fn maybe_bump(mut xs: List<int>) {}\nexport fn relay(mut xs: List<int>) -> int {\n    maybe_bump(xs)\n    xs[0]\n}\n' > $R/lib/src/writeflow.av
+mkdir -p $R/w/src
+printf '[package]\nname = "rt-w"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/lib" = { path = "../lib" }\n' > $R/w/avra.toml
+cat > $R/w/src/main.av <<'AV'
+use @rt.lib.{relay}
+mut base = [5]
+mut pair = [base, base]
+let r = relay(pair[0])
+println("w ${pair[1][0]} ${r}")
+AV
+S "cold w: relay's seat is not written yet — no copy owed, both read 5" w
+ed $R/lib/src/writeflow.av 'export fn maybe_bump(mut xs: List<int>) {}' 'export fn maybe_bump(mut xs: List<int>) { xs.set(0, xs[0] + 1) }'
+S "maybe_bump now writes; relay's flow edge carries it into lib's held record, and the aliased path opens unique" w
+got_w=$($R/w/src/main 2>&1)
+[ "$got_w" = "w 5 6" ] || { fails=$((fails+1)); echo "FAIL  w (relay's inferred write, read back from lib's held record) printed '$got_w', wanted 'w 5 6' — pair[1] must stay unaliased"; }
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

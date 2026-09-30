@@ -564,11 +564,33 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
 /// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
 /// rows are lies.
 export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
+    load_named(ws, store, m, ws.module_files(m), entry, want)
+}
+
+/// THE FILES OF `m` A PATH NAMES, met under `m`'s record: the record is loaded once,
+/// each file met once. A `use` may name ONE FILE of a directory module
+/// (`@std.http.frame`) — its record is the directory's, and the file alone is met, as
+/// the resolver meets it.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
+fn load_named(
+    ws: Workspace,
+    store: Store,
+    m: ModulePath,
+    named: List<string>,
+    entry: string?,
+    want: Want,
+) {
     let key = ws.record_key(m)
-    if ws.records.loaded_records.get().get(key) != null { return }
+    let first = ws.records.loaded_records.get().get(key) == null
     ws.records.loaded_records.put(key, true)
+    // A MODULE HELD NOTHING FOR IS READ, and a read file is one the workspace MET:
+    // a module whose importers are all held is met nowhere else, and a file never
+    // met is neither parsed nor linked.
     let text = record_cached(ws, store, m)
-    if text == "" { return }
+    if text == "" {
+        ws.met_all(named)
+        return
+    }
     let fields = record_fields(ws, store, m)
     // FAIL CLOSED: a record the decoder cannot rebuild WHOLE holds NOTHING, and
     // its files parse. A partial hold is how a declaration goes missing — the
@@ -587,18 +609,46 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
     let stray: List<string>? = fields.find((parts) -> declares(parts) && !here.contains(parts[1]))
     if incomplete != null || stray != null {
         let why = incomplete ?? "names `${stray![1]}`, which the module no longer has"
-        ws
-            .hold
-            .read_files
-            .set(
-                ws
-                    .hold
-                    .read_files
-                    .get()
-                    .concat([ReadFile { path: f, why: Reads.Undecodable(why) } for f in here]),
-            )
+        if first {
+            ws
+                .hold
+                .read_files
+                .set(
+                    ws
+                        .hold
+                        .read_files
+                        .get()
+                        .concat([ReadFile { path: f, why: Reads.Undecodable(why) } for f in here]),
+                )
+        }
+        ws.met_all(named)
         return
     }
+    if first { load_imports(ws, store, m, fields, entry, want) }
+    // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
+    // this same module finds it.
+    let places = record_places(ws, store, m)
+    for f in named {
+        if ws.records.met_files.get().get(f) == null {
+            ws.records.met_files.put(f, true)
+            meet_file(ws, store, m, f, places.get(f), entry, want)
+        }
+    }
+    // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
+    // pass only REMEMBERS the module for the shape pass. One parser, one minter.
+}
+
+/// WHAT A MODULE'S RECORD SEES, loaded before its own files are met: the prelude, every
+/// import under the record that keeps it, and where its impls and traits are named.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
+fn load_imports(
+    ws: Workspace,
+    store: Store,
+    m: ModulePath,
+    fields: List<List<string>>,
+    entry: string?,
+    want: Want,
+) {
     // every module sees the prelude and none imports it
     ws.ensure_package(prelude_key)
     load_interface(ws, store, prelude_module(), entry, want)
@@ -608,12 +658,9 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
             let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
             let key = imp.package()
             if key != null { ws.ensure_package(key!) }
-            load_interface(ws, store, imp, entry, want)
+            for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want) }
         }
     }
-    // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
-    // this same module finds it.
-    let places = record_places(ws, store, m)
     // a method table wants EVERY impl of a name, and a held impl names its trait by
     // name: where those live is known before any module is minted
     for parts in fields {
@@ -627,42 +674,42 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
                 )
         }
     }
-    for f in ws.module_files(m) {
-        // EVERY FILE OF THE MODULE IS REGISTERED HERE, held or not: a file the workspace
-        // never met is neither parsed nor linked, and a home no parsed file imports is
-        // met nowhere else.
-        let _ = ws.file_id(f)
-        // a hold is ASKED here and settled once every module is met: a file that
-        // will be read runs bodies at compile time, and those files are read with it
-        let at: Placed? = places.get(f)
-        let is_entry = entry != null && f == entry!
-        let why: Reads? = read_why(ws, store, m, f, at, is_entry, want)
-        if why == null {
-            ws.hold.hold_asked.push(f)
-        } else {
-            ws.hold.read_files.push(ReadFile { path: f, why: why! })
-            let runs = kept_runs(at)
-            ws.hold.read_with.set(ws.hold.read_with.get().concat(runs))
-            // WHY a run's own reads are excluded rides with them from birth,
-            // beside `read_with` rather than inside it: a candidate seeded
-            // straight into `reads` this way never passes through
-            // `settle_holds`'s own worklist, so a reason recorded only there
-            // would never reach it.
-            let carries = Reads.RunBy(relative_path(ws.root, f))
-            ws
-                .hold
-                .read_seeds
-                .set(
-                    ws
-                        .hold
-                        .read_seeds
-                        .get()
-                        .concat([ReadFile { path: p, why: carries } for p in runs]),
-                )
-        }
+}
+
+/// ONE FILE OF A RECORDED MODULE, MET: registered, held or not — a file the workspace
+/// never met is neither parsed nor linked — and its hold ASKED, settled once every
+/// module is met: a file that will be read runs bodies at compile time, and those
+/// files are read with it.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a file in.
+fn meet_file(
+    ws: Workspace,
+    store: Store,
+    m: ModulePath,
+    f: string,
+    at: Placed?,
+    entry: string?,
+    want: Want,
+) {
+    let _ = ws.file_id(f)
+    let is_entry = entry != null && f == entry!
+    let why: Reads? = read_why(ws, store, m, f, at, is_entry, want)
+    if why == null {
+        ws.hold.hold_asked.push(f)
+        return
     }
-    // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
-    // pass only REMEMBERS the module for the shape pass. One parser, one minter.
+    ws.hold.read_files.push(ReadFile { path: f, why: why! })
+    let runs = kept_runs(at)
+    ws.hold.read_with.set(ws.hold.read_with.get().concat(runs))
+    // WHY a run's own reads are excluded rides with them from birth,
+    // beside `read_with` rather than inside it: a candidate seeded
+    // straight into `reads` this way never passes through
+    // `settle_holds`'s own worklist, so a reason recorded only there
+    // would never reach it.
+    let carries = Reads.RunBy(relative_path(ws.root, f))
+    ws
+        .hold
+        .read_seeds
+        .set(ws.hold.read_seeds.get().concat([ReadFile { path: p, why: carries } for p in runs]))
 }
 
 /// WHY A FILE IS READ and not held — a thin hold says so itself under `--time`.

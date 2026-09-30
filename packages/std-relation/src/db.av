@@ -9,6 +9,7 @@
 //! keyed rerun upserts and a keyless one replaces its whole set. A query
 //! never reads a relation it writes, and two queries never own one key.
 use rows.{Rows, rows, Stamp, unowned}
+use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with}
 
 extern fn avra_trap(message: string)
 
@@ -16,7 +17,8 @@ extern fn avra_trap(message: string)
 /// reached in it, the hooks its owner armed it with (quiet when it has no
 /// owner), and the queries it runs — how many writes it has seen, each
 /// query call's dense cell, each owner's run count, the frames open now,
-/// and a frame per query of the OWNER's own that touched it, by its cell.
+/// and a frame per query of the OWNER's own that touched it, by its cell —
+/// and where its owner keeps query answers past the process.
 export type Db = {
     id: int,
     closed: Cell<bool>,
@@ -24,6 +26,7 @@ export type Db = {
     closers: Cell<List<fn() -> void>>,
     sweepers: Cell<List<fn(int, int) -> void>>,
     hooks: Hooks,
+    durable: Durable,
     quiet: bool,
     writes: Cell<int>,
     cells: Cell<Map<string, int>>,
@@ -78,6 +81,22 @@ export fn quiet_hooks() -> Hooks {
 
 fn no_word() {}
 
+/// Where an owner keeps query answers past the process, by a query's
+/// durable name and its arguments' stable hash: `answer` reads a kept
+/// record back, `keep` hands one over. What key a record lives under,
+/// and whether it still stands, is the owner's.
+export type Durable = { answer: fn(string, int) -> Bytes?, keep: fn(string, int, Bytes) -> void }
+
+/// An owner that keeps nothing past the process.
+export fn transient() -> Durable {
+    Durable {
+        answer: (_query: string, _args: int) -> no_bytes(),
+        keep: (_query: string, _args: int, _record: Bytes) -> no_word(),
+    }
+}
+
+fn no_bytes() -> Bytes? { null }
+
 /// A refusal no owner hears ends the program, in its own words.
 fn trapped(words: string) { avra_trap(words) }
 
@@ -95,13 +114,17 @@ fn next_family() -> int {
 once fn minted() -> Cell<int> { Cell.new(0) }
 
 /// A fresh Db under the next dense id, recording nothing.
-export fn new_db() -> Db { made(quiet_hooks(), true) }
+export fn new_db() -> Db { made(quiet_hooks(), true, transient()) }
 
 /// A fresh Db under the next dense id, armed with its owner's hooks.
-export fn hooked_db(hooks: Hooks) -> Db { made(hooks, false) }
+export fn hooked_db(hooks: Hooks) -> Db { made(hooks, false, transient()) }
+
+/// `hooked_db`, its query answers kept past the process where `durable`
+/// keeps them.
+export fn durable_db(hooks: Hooks, durable: Durable) -> Db { made(hooks, false, durable) }
 
 /// A fresh Db under the next dense id; a `quiet` one has no owner to tell.
-fn made(hooks: Hooks, quiet: bool) -> Db {
+fn made(hooks: Hooks, quiet: bool, durable: Durable) -> Db {
     let next = minted()
     let id = next.get()
     next.set(id + 1)
@@ -120,6 +143,7 @@ fn made(hooks: Hooks, quiet: bool) -> Db {
         closers: closers,
         sweepers: sweepers,
         hooks: hooks,
+        durable: durable,
         quiet: quiet,
         writes: Cell.new(0),
         cells: cells,
@@ -236,12 +260,14 @@ impl Db {
     }
 
     /// The running query's run closed: every relation sweeps the rows
-    /// this owner did not write again.
-    fn ended(owner: int) {
+    /// this owner did not write again. Answers whether the run wrote.
+    fn ended(owner: int) -> bool {
         let run = self.runs.get()[owner]
         let open = self.running.get()
         self.running.set(open.slice(0, open.length - 1))
         for s in self.sweepers.get() { s(owner, run) }
+        let top? = open.last() else { return false }
+        !top.wrote.get().is_empty()
     }
 
     /// The owner's verdict on a query cell: 1 reuse, 0 compute, -1 none.
@@ -402,8 +428,9 @@ impl Memo<V> {
     /// A call's cell under `db`, by its arguments' hash.
     fn cell(db: Db, args: int) -> int { db.cell(self.family(db), args) }
 
-    /// The kept answer for `cell`, when it may be reused.
-    fn kept(db: Db, cell: int) -> Kept<V>? {
+    /// The kept answer for a call, when it may be reused.
+    fn kept(db: Db, args: int) -> Kept<V>? {
+        let cell = self.cell(db, args)
         let held? = self.kept.get().get("${db.id}:${cell}") else { return null }
         match db.verdict(self.family(db), cell) {
             1 -> held,
@@ -412,16 +439,69 @@ impl Memo<V> {
         }
     }
 
-    /// `body` run as `cell`'s next run, its rows its own, its answer kept.
-    fn ran(db: Db, cell: int, body: fn() -> V) -> V {
+    /// `kept`, else — for a call this process never answered — the
+    /// owner's record for it read back. A call answered here and gone
+    /// stale was moved by a write in this process, which no record saw.
+    fn lasting(db: Db, args: int, query: string, each: fn(Reader) -> Result<V, CodecFault>) -> Kept<
+        V,
+    >? {
+        if self.answered(db, args) { return self.kept(db, args) }
+        self.restored(db, args, query, each)
+    }
+
+    /// Whether this process holds an answer for the call, stale or not.
+    fn answered(db: Db, args: int) -> bool { self.kept.get().get("${db.id}:${self.cell(db, args)}") != null }
+
+    /// The owner's record for a call, read back and kept here — a record
+    /// that does not read back is recomputed, never guessed at.
+    fn restored(db: Db, args: int, query: string, each: fn(Reader) -> Result<V, CodecFault>) -> Kept<
+        V,
+    >? {
+        let answer = db.durable.answer
+        let record? = answer(query, args) else { return null }
+        match decoded_with(record, each) {
+            .Ok(value) -> self.held(db, self.cell(db, args), value),
+            .Err(_) -> null,
+        }
+    }
+
+    /// `body` run as the call's next run, its rows its own, its answer kept.
+    fn ran(db: Db, args: int, body: fn() -> V) -> V { self.run(db, args, body).value }
+
+    /// `ran`, its answer handed to the owner to outlive the process —
+    /// only from a call's first run here, over what the owner's key
+    /// names, and only from a run that wrote no rows, since a record
+    /// read back brings no rows with it.
+    fn ran_lasting(db: Db, args: int, query: string, body: fn() -> V, each: fn(Writer, V) -> void) -> V {
+        let first = !self.answered(db, args)
+        let done = self.run(db, args, body)
+        if first && !done.wrote {
+            let keep = db.durable.keep
+            keep(query, args, encoded_with(done.value, each))
+        }
+        done.value
+    }
+
+    fn run(db: Db, args: int, body: fn() -> V) -> Run<V> {
+        let cell = self.cell(db, args)
         db.began(cell)
         let value = body()
-        db.ended(cell)
-        self.kept.put("${db.id}:${cell}", Kept { value: value, writes: db.writes.get() })
+        let wrote = db.ended(cell)
+        let _ = self.held(db, cell, value)
+        Run { value: value, wrote: wrote }
+    }
+
+    /// `value` kept as `cell`'s answer, the owner told it settled.
+    fn held(db: Db, cell: int, value: V) -> Kept<V> {
+        let kept = Kept { value: value, writes: db.writes.get() }
+        self.kept.put("${db.id}:${cell}", kept)
         db.settle(self.family(db), cell)
-        value
+        kept
     }
 }
+
+/// A run's answer and whether it wrote rows.
+type Run<V> = { value: V, wrote: bool }
 
 /// A DRIVER-SET value: `@input`'s own store. `read` computes it once, on
 /// the first ask, and holds what it found after — an input is the

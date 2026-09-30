@@ -18,7 +18,7 @@
 //! stale cursor, and the observer resynchronizes before reading on.
 //! `Feed` is the in-memory retention that answers both.
 use @std.time.{Duration, sleep, ms, now_ms, secs}
-use @std.text.{parse_int}
+use @std.text.{parse_int, has_nul}
 use http.{Request, Response, Header, Stream, Pulled}
 
 /// One event: its data — any text, lines and all — and the optional
@@ -171,10 +171,7 @@ fn data_lines(s: string) -> List<string> {
 
 fn one_line(s: string) -> bool { !s.contains("\n") && !s.contains("\r") }
 
-fn has_nul(s: string) -> bool { s.bytes().index_of(nul, 0) >= 0 }
-
 const newline: Bytes = "\n".bytes()
-const nul: Bytes = [0].bytes()!
 
 // ── A feed: retention and cursors ───────────────────────────────
 
@@ -184,12 +181,17 @@ const nul: Bytes = [0].bytes()!
 /// never a queue that divides them. It lives in a `Cell` and so is its
 /// core's (server.av); a feed shared across cores or kept across a
 /// restart is storage, and belongs to a store above this one.
-export type Feed = { log: Cell<List<Event>>, first: Cell<int>, keep: int }
+///
+/// THE LOG IS A RING: event `id` sits at slot `(id - 1) % keep`, so a
+/// publish writes one slot whatever `keep` is, and the oldest event is
+/// the one overwritten.
+export type Feed = { log: Cell<List<Event>>, next: Cell<int>, keep: int }
 
-/// A feed retaining the last `keep` events.
+/// A feed retaining the last `keep` events — none, when `keep` is not
+/// positive.
 export fn feed(keep: int) -> Feed {
     let none: List<Event> = []
-    Feed { log: Cell.new(none), first: Cell.new(1), keep: keep }
+    Feed { log: Cell.new(none), next: Cell.new(1), keep: if keep > 0 { keep } else { 0 } }
 }
 
 /// How long a feed's observer sleeps between looks while it waits.
@@ -198,25 +200,36 @@ fn look_again() -> Duration { ms(10) }
 impl Feed {
     /// `e` published under the next id; answers the id.
     fn publish(e: Event) -> string {
-        let id = self.first.get() + self.log.get().length
-        self.log.push(e with { id: "${id}" })
-        let over = self.log.get().length - self.keep
-        if over > 0 {
-            self.log.set(self.log.get().slice(over, self.log.get().length))
-            self.first.set(self.first.get() + over)
+        let id = self.next.get()
+        let kept = e with { id: "${id}" }
+        if self.log.get().length < self.keep {
+            self.log.push(kept)
+        } else if self.keep > 0 {
+            self.log.set_at(self.slot(id), kept)
         }
+        self.next.set(id + 1)
         "${id}"
     }
+
+    /// The oldest id still retained.
+    fn first() -> int {
+        let from = self.next.get() - self.keep
+        if from < 1 { return 1 }
+        from
+    }
+
+    /// Where event `id` sits in the ring.
+    fn slot(id: int) -> int { (id - 1) % self.keep }
 
     /// Where an observer with `cursor` resumes: after it, when what
     /// follows it is kept; from now, told so, when it is not — or when
     /// it names no event this feed ever published. No cursor reads from
     /// now.
     fn resumed(cursor: string?) -> Resume {
-        let next_id = self.first.get() + self.log.get().length
+        let next_id = self.next.get()
         let c? = cursor else { return .From(self.source_from(next_id)) }
         let seen = parse_int(c) ?? -1
-        if seen < self.first.get() - 1 || seen >= next_id { return .Expired(c, self.source_from(next_id)) }
+        if seen < self.first() - 1 || seen >= next_id { return .Expired(c, self.source_from(next_id)) }
         .From(self.source_from(seen + 1))
     }
 
@@ -231,13 +244,13 @@ impl Feed {
     /// events it was promised, and its stream fails rather than skip.
     fn waited(at: Cell<int>, wait: Duration) -> Next {
         let until = now_ms() + wait.ms
-        while at.get() >= self.first.get() + self.log.get().length {
+        while at.get() >= self.next.get() {
             if now_ms() >= until { return .Quiet }
             sleep(look_again())
         }
-        let i = at.get() - self.first.get()
-        if i < 0 { return .Failed }
-        at.set(at.get() + 1)
-        .Event(self.log.get()[i])
+        let id = at.get()
+        if id < self.first() { return .Failed }
+        at.set(id + 1)
+        .Event(self.log.get()[self.slot(id)])
     }
 }

@@ -59,6 +59,7 @@ w('use @std.http.http.{Request, Unrouted, Response, text, status}')
 w('use @std.http.body.{Body}')
 w('use @std.http.route.{Route, Table, routed, compiled, dispatch, segments}')
 w('use @std.time.{now_ns}')
+w('use @std.http.body.{Body}')
 w('')
 for tag, pat, _ in SHAPES:
     for i in range(N):

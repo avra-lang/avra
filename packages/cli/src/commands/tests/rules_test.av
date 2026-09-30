@@ -1,6 +1,6 @@
 //! `avra rules` — every rule the compiler carries
 //! (compiler/rules_table.av's `rules` collect), by identity and doc.
-use commands.{rules_listing, rules_markdown}
+use commands.{rules_listing, rules_markdown, block_checked}
 use @std.avrac.compiler.{RuleEntry, rules, rule_id, any_root}
 
 /// A minimal `RuleEntry` — `run` answers nothing, since the listing
@@ -86,6 +86,116 @@ spec "commands/rules — the markdown printer (DOGFOODING.md's generated block)"
             !rules_markdown(rules).contains("compiler.arm_end_raw ")
         }
     }
+}
+
+spec "commands/rules — the markdown check (`--check-markdown`)" {
+    given "a doc whose block is the table's own rendering" {
+        then "it passes and counts the documented rules it compared, never the undocumented ones" {
+            verdict(block_doc(one_bullet), pair()) == "passed with 1"
+        }
+    }
+    given "the compiler's own live rule table rendered into a block" {
+        then "it passes with the count of documented rules" {
+            verdict(block_doc(rules_markdown(rules)), rules) == "passed with ${[r for r in rules if r.doc != ""].length}"
+        }
+    }
+    given "a block with one stale bullet" {
+        then "the refusal names the doc's own line number and both spellings" {
+            refusal_of(block_doc("- loops.push_loop an old doc")) == "D.md:3: the generated block is stale — it holds `- loops.push_loop an old doc`, the rule table renders `- loops.push_loop a for-loop that is one push is a MAP`; regenerate it with `avra rules --markdown`"
+        }
+    }
+    given "a documented rule the block has no bullet for yet" {
+        then "the refusal names the line where the block ends and the rule's bullet" {
+            refusal_of("<!-- GENERATED:RULES:START -->\n<!-- GENERATED:RULES:END -->\n") == "D.md:2: the generated block is stale — it holds nothing, the rule table renders `- loops.push_loop a for-loop that is one push is a MAP`; regenerate it with `avra rules --markdown`"
+        }
+    }
+    given "a bullet the table no longer renders, past the last rule" {
+        then "the refusal says the table renders nothing there" {
+            refusal_of(block_doc(one_bullet + "\n- gone.rule a retired doc")) == "D.md:4: the generated block is stale — it holds `- gone.rule a retired doc`, the rule table renders nothing; regenerate it with `avra rules --markdown`"
+        }
+    }
+    given "two rules whose bullets are swapped" {
+        then "the first swapped line is the one named" {
+            let two = pair().concat([entry("m", "z", "zed")])
+            let swapped = block_doc("- m.z zed\n" + one_bullet)
+            verdict(swapped, two)
+                .starts_with("D.md:3: the generated block is stale — it holds `- m.z zed`")
+        }
+    }
+    given "a doc with no block at all" {
+        then "it is refused, never passed as nothing-to-disagree-with" {
+            refusal_of("# a doc\n\nno block here\n") == "D.md: no `<!-- GENERATED:RULES:START -->` line — a doc with no generated block has nothing to compare"
+        }
+    }
+    given "a start marker with its end misspelled" {
+        then "the missing end is named" {
+            refusal_of(
+                "<!-- GENERATED:RULES:START -->\n${one_bullet}\n<!-- GENERATED:RULE:END -->\n",
+            ) == "D.md: no `<!-- GENERATED:RULES:END -->` line — a doc with no generated block has nothing to compare"
+        }
+    }
+    given "a start marker carrying a trailing space" {
+        then "it is not the marker, and the missing start is named" {
+            refusal_of(
+                "<!-- GENERATED:RULES:START --> \n${one_bullet}\n<!-- GENERATED:RULES:END -->\n",
+            ) == "D.md: no `<!-- GENERATED:RULES:START -->` line — a doc with no generated block has nothing to compare"
+        }
+    }
+    given "a rule whose doc spans two lines" {
+        then "its bullet is compared line by line and counted once" {
+            let two_line = [entry("a", "b", "first\nsecond")]
+            verdict(block_doc("- a.b first\nsecond"), two_line) == "passed with 1" &&
+                verdict(block_doc("- a.b first\nsecnod"), two_line)
+                    .starts_with("D.md:4: the generated block is stale")
+        }
+    }
+    given "a start marker written twice" {
+        then "the doubled marker is named with its count" {
+            refusal_of(block_doc(one_bullet) + "<!-- GENERATED:RULES:START -->\n") == "D.md: `<!-- GENERATED:RULES:START -->` stands on 2 lines — the generated block has one start and one end"
+        }
+    }
+    given "the end marker above the start" {
+        then "the reversal is named at the end marker's line" {
+            refusal_of(
+                "<!-- GENERATED:RULES:END -->\n${one_bullet}\n<!-- GENERATED:RULES:START -->\n",
+            ) == "D.md:1: the block's end marker stands above its start (line 3)"
+        }
+    }
+    given "a table with no documented rule" {
+        then "it is refused, even over an empty block that would match" {
+            verdict(block_doc(""), [entry("a", "b", "")]) == "D.md: the rule table renders no documented rule — a block compared against nothing proves nothing"
+        }
+        then "and so is an empty table" {
+            verdict("<!-- GENERATED:RULES:START -->\n<!-- GENERATED:RULES:END -->\n", []) == "D.md: the rule table renders no documented rule — a block compared against nothing proves nothing"
+        }
+    }
+    given "a doc saved with CRLF line ends, whose block otherwise matches" {
+        then "it is refused for the carriage return, never passed or read as a missing marker" {
+            refusal_of(block_doc(one_bullet).replace("\n", "\r\n")) == "D.md: holds a carriage return — the generated block is compared line by line, and a line ends at `\\n` alone"
+        }
+    }
+}
+
+const one_bullet = "- loops.push_loop a for-loop that is one push is a MAP"
+
+/// One documented rule beside an undocumented one.
+fn pair() -> List<RuleEntry> {
+    [
+        entry("loops", "push_loop", "a for-loop that is one push is a MAP"),
+        entry("nullable", "if_null_ternary", ""),
+    ]
+}
+
+/// A doc holding `block` between the markers, a heading above.
+fn block_doc(block: string) -> string {
+    "# Doc\n<!-- GENERATED:RULES:START -->\n${block}\n<!-- GENERATED:RULES:END -->\ntail\n"
+}
+
+fn refusal_of(doc: string) -> string { verdict(doc, pair()) }
+
+/// The check's answer as one line: its refusal, or the count it passed with.
+fn verdict(doc: string, entries: List<RuleEntry>) -> string {
+    match block_checked("D.md", doc, entries) { .Err(why) -> why, .Ok(n) -> "passed with ${n}" }
 }
 
 fn documented_line(r: RuleEntry) -> string { "- ${rule_id(r)} ${r.doc}" }

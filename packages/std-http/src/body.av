@@ -23,7 +23,7 @@ use frame.{Chunker, Limits, Refusal, Decoded, chunker, unchunked, limits}
 
 /// Why a body could not be read on: it holds more than the reader may
 /// gather, it breaks a framing law, the peer ended it short or went
-/// silent past its deadline, or the socket or its secure layer failed.
+/// silent past its deadline, or the socket or the secure layer failed.
 export enum BodyError {
     TooLarge
     Malformed(why: Refusal)
@@ -45,14 +45,16 @@ enum Left {
 /// A body in flight: the connection it arrives on (absent when every
 /// octet is already here), the octets read and not yet handed out from
 /// `at` on, what is still to come, what is owed the peer before the
-/// first read (`100 Continue`), how long a read may wait, the bounds,
-/// how much was handed out, and the failure, once there is one.
+/// first read (`100 Continue`) and whether it went, how long a read may
+/// wait, the bounds, how much was handed out, and the failure, once
+/// there is one.
 type Inflow = {
     conn: dyn Transport?,
     buf: Bytes,
     at: int,
     left: Left,
     owed: Bytes,
+    told: bool,
     patience: Duration?,
     limits: Limits,
     taken: int,
@@ -116,15 +118,14 @@ fn inflow(conn: dyn Transport?, buf: Bytes, at: int, left: Left, lim: Limits, pa
         buf: buf,
         at: at,
         left: left,
-        owed: nothing_owed(),
+        owed: nothing(),
+        told: false,
         patience: patience,
         limits: lim,
         taken: 0,
         failure: null,
     }
 }
-
-fn nothing_owed() -> Bytes { "".bytes() }
 
 impl Body {
     /// The next piece, the calling task parked until it arrives; null
@@ -138,18 +139,28 @@ impl Body {
     /// a declared length past it is refused before ANY byte is, and no
     /// `100 Continue` goes out.
     fn gathered() -> Result<Bytes, BodyError> {
-        match self { .Empty -> .Ok(nothing_owed()), .Flowing(flow) -> all_of(flow) }
+        match self { .Empty -> .Ok(nothing()), .Flowing(flow) -> all_of(flow) }
     }
 
     /// The rest of the body as text — absent when it is not text, or
     /// could not be gathered (`gathered` says why).
-    fn text() -> string? {
-        match self.gathered() { .Ok(b) -> b.text(), .Err(_) -> null }
+    fn text() -> string? { self.octets()?.text() }
+
+    /// The rest of the body, whole — absent when it could not be
+    /// gathered (`gathered` says why). A body that broke is answered by
+    /// the server with the law it broke, whatever its handler answers.
+    fn octets() -> Bytes? {
+        match self.gathered() { .Ok(b) -> b, .Err(_) -> null }
     }
 
     /// The failure that ended this body, or absent while it has none.
     fn failure() -> BodyError? {
         match self { .Empty -> null, .Flowing(flow) -> flow.get().failure }
+    }
+
+    /// Whether a read wrote the peer the `100 Continue` it was owed.
+    fn told() -> bool {
+        match self { .Empty -> false, .Flowing(flow) -> flow.get().told }
     }
 
     /// Whether every octet of the body has been read.
@@ -182,7 +193,7 @@ impl Body {
     /// What the connection read past this body: the next message's
     /// first octets. Asked once the body is finished.
     fn tail() -> Bytes {
-        match self { .Empty -> nothing_owed(), .Flowing(flow) -> tail_of(flow.get()) }
+        match self { .Empty -> nothing(), .Flowing(flow) -> tail_of(flow.get()) }
     }
 }
 
@@ -282,13 +293,13 @@ fn refill(f: Inflow) -> Inflow {
     if !f.owed.is_empty() {
         match wrote(c, f.owed, f.patience) {
             .Ok(_) -> {},
-            .Err(e) -> { return f with { failure: wire_error(e) } },
+            .Err(e) -> { return f with { failure: net_error(e) } },
         }
     }
-    let kept = f with { owed: nothing_owed() }
+    let kept = f with { owed: nothing(), told: f.told || !f.owed.is_empty() }
     match listened(c, f.patience) {
         .Ok(b) -> if b == null { ended(kept) } else { rebased(kept, b!) },
-        .Err(e) -> kept with { failure: wire_error(e) },
+        .Err(e) -> kept with { failure: net_error(e) },
     }
 }
 
@@ -330,36 +341,36 @@ fn unread_from(f: Inflow) -> int {
     match f.left { .Chunked(c) -> c.at, .Length(_) or .UntilClose or .Done -> f.at }
 }
 
-/// A transport's failure as the body's: a socket's deadline is
-/// `TimedOut`, every other failure carried whole.
-fn wire_error(e: WireError) -> BodyError {
+/// A transport's failure as a body's: a deadline passing is `TimedOut`,
+/// a transport cut off before its end `Closed`.
+fn net_error(e: WireError) -> BodyError {
     match e {
-        .Net(n) -> if n.timed_out() { .TimedOut } else { .Net(n) },
-        .Secure(s) -> .Secure(s),
-        .Reset -> .Closed,
+        .Net(n) -> if n.timed_out() { BodyError.TimedOut } else { BodyError.Net(n) },
+        .Secure(s) -> BodyError.Secure(s),
+        .Reset -> BodyError.Closed,
     }
 }
 
 // ── Gathering, skipping, the tail ───────────────────────────────
 
-/// Every piece still to come, in one buffer — bounded by `Limits.body`.
+/// Every piece still to come, in one buffer — bounded by `Limits.body`,
+/// the first piece judged as every later one is, from nothing gathered.
 fn all_of(flow: Cell<Inflow>) -> Result<Bytes, BodyError> {
     let f = flow.get()
-    if too_long(f) {
-        flow.set(f with { failure: BodyError.TooLarge })
-        return .Err(.TooLarge)
-    }
-    let first? = next_piece(flow)? else { return .Ok(nothing_owed()) }
-    mut all = first
+    if too_long(f) { return too_large(flow) }
+    mut all = nothing()
     while true {
         let more? = next_piece(flow)? else { return .Ok(all) }
-        if all.length + more.length > f.limits.body {
-            flow.set(flow.get() with { failure: BodyError.TooLarge })
-            return .Err(.TooLarge)
-        }
+        if all.length + more.length > f.limits.body { return too_large(flow) }
         all = all.concat(more)
     }
     .Ok(all)
+}
+
+/// The body refused as too large to gather, and the failure kept.
+fn too_large(flow: Cell<Inflow>) -> Result<Bytes, BodyError> {
+    flow.set(flow.get() with { failure: BodyError.TooLarge })
+    .Err(.TooLarge)
 }
 
 /// Whether what is still owed already passes the gathered bound.
