@@ -101,6 +101,43 @@ export type FileInfo = { id: FileId, path: string, module_id: ModuleId, test: bo
 /// — a method or a default also names the type it serves.
 export type Decl = { id: DeclId, file: FileId, stmt: StmtId, name: string, kind: DeclKind, exported: bool, owner: string, parent: DeclId?, nested: bool, root: ExprId?, lo: int, hi: int }
 
+/// `Decl` read back off its relation row — the two share every field
+/// by name, `decl_rows.av`'s own design.
+fn decl_of_row(r: DeclRow) -> Decl {
+    Decl {
+        id: r.id,
+        file: r.file,
+        stmt: r.stmt,
+        name: r.name,
+        kind: r.kind,
+        exported: r.exported,
+        owner: r.owner,
+        parent: r.parent,
+        nested: r.nested,
+        root: r.root,
+        lo: r.lo,
+        hi: r.hi,
+    }
+}
+
+/// `decl_of_row`'s mirror: a declaration reseated as its row.
+fn row_of_decl(d: Decl) -> DeclRow {
+    DeclRow {
+        id: d.id,
+        file: d.file,
+        stmt: d.stmt,
+        name: d.name,
+        kind: d.kind,
+        exported: d.exported,
+        owner: d.owner,
+        parent: d.parent,
+        nested: d.nested,
+        root: d.root,
+        lo: d.lo,
+        hi: d.hi,
+    }
+}
+
 /// A range-owning declaration and the source span it holds.
 type OwnerSpan = { d: DeclId, lo: int, hi: int }
 
@@ -378,15 +415,13 @@ export type Decls = {
     /// `rows_state` is dense by FileId: 0 while the file's rows are being minted (the
     /// minter's own reads record nothing), 1 settled, 2 held.
     record_kernel: Cell<Kernel>,
-    /// S6 STEP (a): a shadow `DeclRow` for every WRITTEN declaration, inserted once
-    /// at its first mint. Read by nothing; proves the derive before anything depends on
-    /// it. Keyless, so its own dense id grows in lockstep with `decls`' length —
-    /// numerically the same DeclId, by construction, never by a passed-in value.
-    /// A `Cell`, never a bare `Db`: `Decls` is copied somewhere in the pipeline, and a
-    /// bare `Db` field forked on that copy — `family()`'s registration landed on one
-    /// copy's own state while a later read reached another's, "index 21 is out of
-    /// bounds (length 0)" in the whole-package suite. `record_kernel` above already
-    /// pays this; `decl_rows` pays it the same way.
+    /// THE DECLARATION TABLE'S OWN `Db`: every declaration is a `DeclRow` under it,
+    /// inserted at mint and reseated at every later field write. A `Cell`, never a bare
+    /// `Db`: `Decls` is copied somewhere in the pipeline, and a bare `Db` field forked
+    /// on that copy — `family()`'s registration landed on one copy's own state while a
+    /// later read reached another's, "index 21 is out of bounds (length 0)" in the
+    /// whole-package suite. `record_kernel` above already pays this; `decl_rows` pays
+    /// it the same way.
     decl_rows: Cell<Db>,
     /// `File`/`Module`'s own rows, pinned once at construction — a
     /// `Cell`, `decl_rows`'s own reason: `Rows<T>` is not itself
@@ -400,6 +435,13 @@ export type Decls = {
     /// this replaces recorded nothing either.
     file_rows: Cell<Rows<File>>,
     module_rows: Cell<Rows<Module>>,
+    /// THE DECLARATION TABLE'S REAL STORAGE — pinned the same way, `DeclRow`'s own row
+    /// per DeclId, numerically the same index by construction. `decl(d)` reads it
+    /// raw, through `row(d.index)`, never through the generated (recorded) `get`: the
+    /// kernel is the one recorder (`rows_read`), so a second door recording again would
+    /// pay for an edge the kernel already told. Reachable only inside `Decls` — every
+    /// outside reader goes through `decl`/`raw_decl`/`all_decls`/`decl_count`.
+    decl_row_rows: Cell<Rows<DeclRow>>,
     record_items: Cell<int>,
     record_methods: Cell<int>,
     rows_state: Cell<List<int>>,
@@ -593,6 +635,7 @@ export fn new_decls() -> Decls {
         decl_rows: Cell.new(db),
         file_rows: Cell.new(File.rows_in(db)),
         module_rows: Cell.new(Module.rows_in(db)),
+        decl_row_rows: Cell.new(DeclRow.rows_in(db)),
         record_items: Cell.new(0),
         record_methods: Cell.new(0),
         rows_state: list_cell(),
@@ -698,12 +741,50 @@ export fn kind_word(k: DeclKind) -> string {
 impl Decls {
     // ── files ──
 
-    /// A path's identity — minted at first mention.
+    /// A declaration's row — THE ONE DOOR every pass reads it through.
+    /// Fetched raw off the pinned `Rows<DeclRow>` handle, `row(d.index)`,
+    /// never the generated (recorded) `get`: the kernel is the one
+    /// recorder, below, so a second door recording the same edge would
+    /// pay for it twice.
     fn decl(d: DeclId) -> Decl {
-        let x = self.decls.get()[d.index]
+        let x = decl_of_row(self.decl_row_rows.get().row(d.index)!)
         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
         self.rows_read(x.file)
         x
+    }
+
+    /// The row as it stands, unrecorded — dep_audit's own reads (which
+    /// must not themselves record an edge), and a whole-program pass
+    /// walking the table by index as it grows.
+    fn raw_decl(d: DeclId) -> Decl { decl_of_row(self.decl_row_rows.get().row(d.index)!) }
+
+    /// How many declarations are minted, read unrecorded as `file_count` is.
+    fn decl_count() -> int { self.decl_row_rows.get().count() }
+
+    /// Every declaration, unrecorded — the table's own whole-set read: the
+    /// old hand-table scan recorded nothing, so this does not either.
+    fn all_decls() -> List<Decl> { [decl_of_row(r) for r in self.decl_row_rows.get().all()] }
+
+    /// A declaration's row rewritten in place: the hand table (kept for
+    /// `.8.2`'s parity and, later, deletion) and the relation together, so
+    /// a reader through either door sees the same fields. The row's
+    /// `@local` columns (file, stmt, parent, root, lo, hi) carry no stable
+    /// hash or index, so a write that only moves them takes `put`'s cheap
+    /// path — same hash, same keys, the stored value replaced in place.
+    fn set_decl(idx: int, d: Decl) {
+        self.decls.set_at(idx, d)
+        let row = row_of_decl(d)
+        self
+            .decl_row_rows
+            .get()
+            .put_in(
+                self.decl_rows.get(),
+                DeclRow.relation_name(),
+                idx,
+                row,
+                row.stable_hash(),
+                row.index_keys(),
+            )
     }
 
     /// One audited read, told to the hook — which reads the tables itself, so the
@@ -947,7 +1028,7 @@ impl Decls {
     /// one (`FileInfo.test`) is not the program's own. Admission is
     /// the caller's.
     fn decls_of_kind(k: DeclKind) -> List<Decl> {
-        [d for d in self.decls.get() if d.kind == k && !self.file(d.file).test]
+        [d for d in self.all_decls() if d.kind == k && !self.file(d.file).test]
     }
 
     /// THE COLLECT INDEX: every declaration `collect` can gather, by
@@ -973,13 +1054,13 @@ impl Decls {
 
     fn grown_index() {
         let idx = self.collect_index.get()
-        let all = self.decls.get()
-        if idx.through >= all.length { return }
-        let by_word = self.folded_index(idx.by_word, self.collect_rows(idx.through, all))
-        let by_mark = self.folded_index(idx.by_mark, self.mark_rows(idx.through, all))
+        let through = self.decl_count()
+        if idx.through >= through { return }
+        let by_word = self.folded_index(idx.by_word, self.collect_rows(idx.through, through))
+        let by_mark = self.folded_index(idx.by_mark, self.mark_rows(idx.through, through))
         self
             .collect_index
-            .set(CollectIndex { by_word: by_word, by_mark: by_mark, through: all.length })
+            .set(CollectIndex { by_word: by_word, by_mark: by_mark, through: through })
     }
 
     /// `rows` folded onto `base` — one row per word, appended to
@@ -994,11 +1075,16 @@ impl Decls {
         m
     }
 
-    /// The new rows' own words, `all[from..]` — a row with none (most
-    /// declarations: `collect` gathers by invitation, never by
-    /// default) contributes nothing.
-    fn collect_rows(from: int, all: List<Decl>) -> List<IndexedWord> {
-        flatten([some_list(self.indexed_word(all[i])) for i in from..all.length])
+    /// The new rows' own words, `[from, through)` read by index — a
+    /// row with none (most declarations: `collect` gathers by
+    /// invitation, never by default) contributes nothing. Reads each
+    /// row unrecorded, one at a time: never `all_decls()`, which would
+    /// rebuild the WHOLE table on every growth and turn an O(new rows)
+    /// extension into an O(total rows) rescan.
+    fn collect_rows(from: int, through: int) -> List<IndexedWord> {
+        flatten(
+            [some_list(self.indexed_word(self.raw_decl(DeclId { index: i }))) for i in from..through],
+        )
     }
 
     fn indexed_word(d: Decl) -> IndexedWord? {
@@ -1021,8 +1107,8 @@ impl Decls {
     /// twin — every annotation it wears, of any DeclKind (a `type`,
     /// a `fn`, a `record` may each carry one, unlike a component
     /// instance's one word).
-    fn mark_rows(from: int, all: List<Decl>) -> List<IndexedWord> {
-        flatten([self.marked_words(all[i]) for i in from..all.length])
+    fn mark_rows(from: int, through: int) -> List<IndexedWord> {
+        flatten([self.marked_words(self.raw_decl(DeclId { index: i })) for i in from..through])
     }
 
     fn marked_words(d: Decl) -> List<IndexedWord> {
@@ -1639,7 +1725,7 @@ impl Decls {
         // A HELD FILE'S SETTLED BITS ARE THE INTERFACE'S, not this pass's to clear:
         // the receivers pass never surveys a held body, so wiping them loses the
         // writer a caller's retain decision reads. The pass clears what it owns.
-        for j, x in self.decls.get() {
+        for j, x in self.all_decls() {
             if self.held.get().get(self.file(x.file).path) == null {
                 self
                     .written_seats
@@ -1677,7 +1763,7 @@ impl Decls {
     /// reason `clear_written` exempts them: a held fn's union rode its
     /// interface, never this pass.
     fn clear_inferred() {
-        for j, x in self.decls.get() {
+        for j, x in self.all_decls() {
             if self.held.get().get(self.file(x.file).path) == null {
                 self.inferred_errs.keep(j, [])
                 self.inferred_unresolved.keep(j, false)

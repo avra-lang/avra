@@ -92,8 +92,8 @@ impl Workspace {
     /// them: the scan below asks them only the first time in a revision.
     fn touch_method_tables() {
         mut at = 0
-        while at < self.decls.decls.get().length {
-            let x = self.decls.decls.get()[at]
+        while at < self.decls.decl_count() {
+            let x = self.decls.raw_decl(DeclId { index: at })
             at = at + 1
             if is_type_decl(x) { touch(self.methods(x.id)) }
         }
@@ -107,7 +107,7 @@ impl Workspace {
         if previous != null {
             let held = previous!
             if held.revision == self.db.revision() &&
-                held.decl_count == self.decls.decls.get().length &&
+                held.decl_count == self.decls.decl_count() &&
                 f.index < held.by_file.length {
                 return held
             }
@@ -116,8 +116,8 @@ impl Workspace {
         mut at = 0
         // Signing an impl may admit another declaration, so walk the
         // growing table until every type has had its method query.
-        while at < self.decls.decls.get().length {
-            let x = self.decls.decls.get()[at]
+        while at < self.decls.decl_count() {
+            let x = self.decls.raw_decl(DeclId { index: at })
             at = at + 1
             if is_type_decl(x) {
                 touch(self.methods(x.id))
@@ -133,7 +133,7 @@ impl Workspace {
         while by_file.length < self.decls.file_count() { by_file.push([]) }
         let current = MethodDiagIndex {
             revision: self.db.revision(),
-            decl_count: self.decls.decls.get().length,
+            decl_count: self.decls.decl_count(),
             by_file: by_file,
         }
         if self.method_diags.get().is_empty() { self.method_diags.push(current) } else { self.method_diags.set_at(0, current) }
@@ -228,7 +228,7 @@ impl Workspace {
     /// declaration table — which grows as `use` lines admit packages, and a
     /// compile-time run may lower a unit before the last has been.
     fn extern_symbols() -> List<string> {
-        let known = self.decls.decls.get().length
+        let known = self.decls.decl_count()
         let held: ExternNames? = self.externs.at(0)
         if held != null && held!.decls == known { return held!.names }
         let names = self.decls.extern_names()
