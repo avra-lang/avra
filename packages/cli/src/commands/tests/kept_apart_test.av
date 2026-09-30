@@ -1,0 +1,67 @@
+//! Private names two files of one module declare are each file's own:
+//! a real package, `avra run` and the binary `avra build` makes, both
+//! engines answering the same text — each file's fn, and each file's
+//! type with a method of one name, under symbols of their own.
+use @std.io.{make_dirs, write_text}
+use @std.process.{tool, cmd, Env, Outcome, ProcessError}
+use @std.time.{ms, now_ns}
+
+/// A file's own private `helper`, `Table`, `limit`, `pick<T>`, `Mode`
+/// and `once` value, and an export reading them all — `helper` also as
+/// a value.
+fn own_names(times: int, field: string, export_name: string) -> string {
+    [
+        "fn helper(n: int) -> int {\n    n * ${times}\n}\n",
+        "type Table = { ${field}: int }\n",
+        "impl Table {\n    fn get() -> int {\n        self.${field} + helper(1)\n    }\n}\n",
+        "const limit: int = ${times}\n",
+        "fn pick<T>(a: T, _b: T) -> T {\n    a\n}\n",
+        "enum Mode { On, Off }\n",
+        "impl Mode {\n    fn weight() -> int {\n        match self { .On -> ${times}, .Off -> 0 }\n    }\n}\n",
+        "once fn label() -> string {\n    \"${field}\"\n}\n",
+        "export fn ${export_name}() -> int {\n    let f = helper\n    Table { ${field}: ${times} }.get() + limit + pick(f(0), 1) + Mode.On.weight() + label().length\n}\n",
+    ]
+        .join("")
+}
+
+/// A package minted fresh: an entry and two files keeping `helper` and
+/// `Table` apart. Answers the entry.
+fn apart_package() -> string {
+    let root = "${scratch_dir()}/kept_apart_${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"apart\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/a.av", own_names(2, "n", "from_a"))
+    let _ = write_text("${root}/src/b.av", own_names(30, "m", "from_b"))
+    let _ = write_text("${root}/src/main.av", "println(\"\${from_a()} \${from_b()}\")\n")
+    "${root}/src/main.av"
+}
+
+fn apart_ran(args: List<string>) -> Result<Outcome, ProcessError> {
+    (cmd(tool(avra_bin())?, args) with { env: Env.Inherit, timeout: ms(60000) }).outcome()
+}
+
+/// The stdout of a run that ended clean.
+fn apart_stdout(r: Result<Outcome, ProcessError>) -> string? {
+    match r { .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { null }, .Err(_) -> null }
+}
+
+fn apart_binary(binary: string) -> Result<Outcome, ProcessError> {
+    (cmd(tool(binary)?, []) with { timeout: ms(20000) }).outcome()
+}
+
+/// What the binary `avra build` makes of the entry printed.
+fn apart_built(entry: string) -> string? {
+    let binary? = apart_stdout(apart_ran(["build", entry])) else { return null }
+    apart_stdout(apart_binary(binary.replace("\n", "")))
+}
+
+spec "private names two files keep apart" {
+    given "a package whose two files each declare a private `helper` and `Table`" {
+        then "`run` answers each file's own" {
+            apart_stdout(apart_ran(["run", apart_package()])) == "9 121\n"
+        }
+        then "`build` answers a binary printing the same" {
+            apart_built(apart_package()) == "9 121\n"
+        }
+    }
+}

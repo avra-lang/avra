@@ -2,9 +2,12 @@
 //! name binds once. A MODULE's names are bound once, every file's
 //! declarations in file then declaration order: the first binder of
 //! a name wins and every later binder is a CLASH, filed under the
-//! file whose declaration lost. A file's namespace is those bindings
-//! plus its imports; an import of a name already visible clashes —
-//! unless it is the very declaration, which is redundant, not wrong.
+//! file whose declaration lost — except a PRIVATE name two files each
+//! declare, which is KEPT APART: each file binds its own, and no
+//! sibling binds either. A file's namespace is those bindings plus its
+//! imports; an import of a name already visible clashes — unless it is
+//! the very declaration, which is redundant, not wrong, or a sibling's
+//! private one, which a plain import shadows in its own file.
 //! Fns and types are namespaces apart, as the language keeps them.
 use core.{
     DeclId,
@@ -18,11 +21,13 @@ use core.{
     map_cell,
     list_cell,
     flatten,
+    joined,
 }
 use diagnostics.{Diag, refusal, Voices, no_voices}
 use query.{traced}
 use @std.errors.{Loc}
 use @std.meta.{bracket}
+use @std.path.{file_name}
 
 /// A file's namespace: the bindings, the names in declaration order
 /// (for suggestions), and the diagnostics building it earned.
@@ -70,7 +75,8 @@ export fn new_reads(on: bool) -> NameReads {
 
 export type Namespace = {
     // The module's winners are shared by every file. These fields hold
-    // only imports, prelude exports, and builtins added for this file.
+    // only this file's own private declarations, its imports, prelude
+    // exports, and builtins added for this file.
     base: BoundNames?,
     fns: Map<string, DeclId>,
     types: Map<string, DeclId>,
@@ -78,6 +84,9 @@ export type Namespace = {
     syntax_names: List<string>,
     fn_names: List<string>,
     type_names: List<string>,
+    // the sibling files' private declarations of a name two files keep
+    // apart — what a read of that name here is refused with
+    apart: List<DeclId>,
     voices: Voices,
     reads: NameReads,
 }
@@ -170,14 +179,17 @@ export fn no_names() -> Namespace {
         syntax_names: [],
         fn_names: [],
         type_names: [],
+        apart: [],
         voices: no_voices(),
         reads: new_reads(false),
     }
 }
 
 /// A module's names, bound once: the declarations that won, in
-/// order, and every clash — filed under the losing file.
-export type ModuleNames = { bound: List<DeclId>, clashes: List<Clash>, base: BoundNames }
+/// order, every clash — filed under the losing file — and the
+/// declarations KEPT APART: a private name two files each declare is
+/// each file's own and no sibling's.
+export type ModuleNames = { bound: List<DeclId>, clashes: List<Clash>, base: BoundNames, apart: List<DeclId> }
 
 export type Clash = { file: FileId, diag: Diag }
 
@@ -185,30 +197,47 @@ export type Clash = { file: FileId, diag: Diag }
 /// module it came from.
 export type Import = { decl: DeclId, at: Loc?, renamed: string }
 
+/// Which table a declaration's kind binds in — none for a member, an
+/// impl, a Main and a case.
+export fn table_of(kind: DeclKind) -> NameKind? {
+    match kind {
+        .Fn or .Const or .Collect -> NameKind.Fn,
+        .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> NameKind.Type,
+        .Syntax -> NameKind.Syntax,
+        .Method or .Default or .Impl or .Main or .Case -> null,
+    }
+}
+
+/// A name's holder in one table of a set of bindings.
+fn held_in(names: BoundNames, space: NameKind, name: string) -> DeclId? {
+    match space {
+        .Fn -> names.fns.get(name),
+        .Type -> names.types.get(name),
+        .Syntax -> names.syntaxes.get(name),
+    }
+}
+
 impl Decls {
     /// A module's declarations bound, in the order given. `shown`
     /// renders a path for prose.
     fn module_names(ordered: List<DeclId>, shown: fn(string) -> string) -> ModuleNames {
         mut b = self.binder(shown)
         for d in ordered { b.declare(d) }
-        let names = b.names
+        let shared = [d for d in b.bound if !b.names.apart.any(same_decl(it, d))]
+        mut kept = self.binder(shown)
+        for d in shared { kept.bind_decl(d) }
         ModuleNames {
-            bound: b.bound,
+            bound: shared,
             clashes: b.clashes,
-            base: BoundNames {
-                fns: names.fns,
-                types: names.types,
-                syntaxes: names.syntaxes,
-                fn_names: names.fn_names,
-                type_names: names.type_names,
-                syntax_names: names.syntax_names,
-            },
+            base: kept.bound_names(),
+            apart: b.names.apart,
         }
     }
 
-    /// A file adds imports, prelude exports, and builtins over its
-    /// module's shared winners. The module's clashes remain filed at
-    /// the declaration in this file that lost.
+    /// A file's own kept-apart declarations, its imports, prelude
+    /// exports, and builtins, over its module's shared winners. The
+    /// module's clashes remain filed at the declaration in this file
+    /// that lost.
     fn file_names(
         file: FileId,
         module: ModuleNames,
@@ -217,96 +246,27 @@ impl Decls {
         shown: fn(string) -> string,
         recording: bool,
     ) -> Namespace {
-        mut fns: Map<string, DeclId> = {}
-        mut types: Map<string, DeclId> = {}
-        mut syntaxes: Map<string, DeclId> = {}
-        mut fn_names: List<string> = []
-        mut type_names: List<string> = []
-        mut syntax_names: List<string> = []
-        mut spoken: List<Diag> = []
-        for i in imports {
-            let x = self.decl(i.decl)
-            let name = if i.renamed.is_empty() { x.name } else { i.renamed }
-            let mine: DeclId? = match x.kind {
-                .Fn or .Const or .Collect -> fns.get(name),
-                .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> types.get(name),
-                .Syntax -> syntaxes.get(name),
-                .Method or .Default or .Impl or .Main or .Case -> null,
-            }
-            let shared: DeclId? = match x.kind {
-                .Fn or .Const or .Collect -> module.base.fns.get(name),
-                .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> module.base.types.get(name),
-                .Syntax -> module.base.syntaxes.get(name),
-                .Method or .Default or .Impl or .Main or .Case -> null,
-            }
-            let prior: DeclId? = mine ?? shared
-            if prior == null {
-                match x.kind {
-                    .Fn or .Const or .Collect -> {
-                        fns.set(name, i.decl)
-                        fn_names.push(name)
-                    },
-                    .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> {
-                        types.set(name, i.decl)
-                        type_names.push(name)
-                    },
-                    .Syntax -> {
-                        syntaxes.set(name, i.decl)
-                        syntax_names.push(name)
-                    },
-                    .Method or .Default or .Impl or .Main or .Case -> not_bound(),
-                }
-            } else if !same_decl(prior!, i.decl) { spoken.push(import_clash(i.at, name, self.holder_of(prior!, file, shown))) }
+        mut b = self.binder(shown)
+        for d in module.apart {
+            if self.declared_in(d, file) { b.bind_decl(d) }
         }
-        for i in prelude
-            .concat([Import { decl: d, at: null, renamed: "" } for d in self.builtin_decls()]) {
-            let x = self.decl(i.decl)
-            let prior: DeclId? = match x.kind {
-                .Fn or .Const or .Collect -> fns.get(x.name) ?? module.base.fns.get(x.name),
-                .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> types.get(x.name) ?? module.base.types.get(x.name),
-                .Syntax -> syntaxes.get(x.name) ?? module.base.syntaxes.get(x.name),
-                .Method or .Default or .Impl or .Main or .Case -> null,
-            }
-            if prior == null {
-                match x.kind {
-                    .Fn or .Const or .Collect -> {
-                        fns.set(x.name, i.decl)
-                        fn_names.push(x.name)
-                    },
-                    .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> {
-                        types.set(x.name, i.decl)
-                        type_names.push(x.name)
-                    },
-                    .Syntax -> {
-                        syntaxes.set(x.name, i.decl)
-                        syntax_names.push(x.name)
-                    },
-                    .Method or .Default or .Impl or .Main or .Case -> not_bound(),
-                }
-            }
-        }
-        let own = [c.diag for c in module.clashes if in_file(c, file)]
-        Namespace {
-            base: module.base,
-            fns: fns,
-            types: types,
-            syntaxes: syntaxes,
-            syntax_names: syntax_names,
-            fn_names: fn_names,
-            type_names: type_names,
-            voices: Voices { list: own.concat(spoken) },
-            reads: new_reads(recording),
-        }
+        for i in imports { b.import(i, file, module.base) }
+        for i in prelude { b.bind_weakly(i.decl, module.base) }
+        for d in self.builtin_decls() { b.bind_weakly(d, module.base) }
+        let lost = [c.diag for c in module.clashes if in_file(c, file)]
+        let siblings = [d for d in module.apart if !self.declared_in(d, file)]
+        b.names with { base: module.base, apart: siblings, voices: Voices { list: lost.concat(b.names.voices.list) }, reads: new_reads(recording) }
     }
 
-    /// Who holds a name already: this module (by file), or a module.
-    fn holder_of(prior: DeclId, file: FileId, shown: fn(string) -> string) -> string {
-        let p = self.decl(prior)
-        if self.module_of(prior) == self.module_name(self.file(file).module_id) {
-            return "this module (`${shown(self.file(p.file).path)}`)"
-        }
-        "`${self.module_of(prior)}`"
+    /// The refusal a read of a name kept apart in sibling files earns,
+    /// asked in these tables — none when the name is simply undeclared.
+    fn apart_refusal(names: Namespace, tables: List<NameKind>, name: string, at: Loc?) -> Diag? {
+        let apart = [d for d in names.apart if self.decl(d).name == name && tables.any(it == table_of(self.decl(d).kind))]
+        if apart.is_empty() { return null }
+        kept_apart_read(at, name, [file_name(self.file(self.decl(d).file).path) for d in apart])
     }
+
+    fn declared_in(d: DeclId, f: FileId) -> bool { same_file(self.decl(d).file, f) }
 
     fn binder(shown: fn(string) -> string) -> Binder {
         Binder { decls: self, shown: shown, names: no_names(), bound: [], clashes: [] }
@@ -317,26 +277,56 @@ fn in_file(c: Clash, f: FileId) -> bool {
     same_file(c.file, f)
 }
 
+/// Whether two declarations of one name are each their own file's:
+/// both private, in different files.
+fn kept_apart_pair(a: Decl, b: Decl) -> bool {
+    !a.exported && !b.exported && !same_file(a.file, b.file)
+}
+
+/// Whether two declarations bind one name in one table.
+fn binds_alike(a: Decl, b: Decl) -> bool {
+    a.name == b.name && table_of(a.kind) == table_of(b.kind)
+}
+
 /// A namespace under construction.
 type Binder = { decls: Decls, shown: fn(string) -> string, names: Namespace, bound: List<DeclId>, clashes: List<Clash> }
 
 impl Binder {
-    /// A module declaration binds; a taken name is a clash at the
-    /// LATER declaration, filed under its file.
+    /// A module declaration binds; a taken name is kept apart when
+    /// both are private to different files, and a clash at the LATER
+    /// declaration otherwise, filed under its file.
     fn declare(d: DeclId) {
         let x = self.decls.decl(d)
         if traced() { qtrace("Q\tdeclare\t${x.name}\t${self.decls.file(x.file).path}\n") }
-        let prior: DeclId? = self.held(x.kind, x.name)
-        if prior == null {
+        let prior? = self.held(x.kind, x.name) else {
             self.bind(x.kind, x.name, d)
             self.bound.push(d)
             return
         }
-        if same_decl(prior!, d) { return }
-        let p = self.decls.decl(prior!)
+        if same_decl(prior, d) { return }
+        let p = self.decls.decl(self.own_apart(x) ?? prior)
+        if kept_apart_pair(p, x) { return self.keep_apart(prior, d) }
         let at = self.decls.loc(d)
         let diag = if same_file(p.file, x.file) { defined_twice(at, x.kind, x.name) } else { declared_twice(at, x.name, self.shown(self.decls.file(p.file).path)) }
         self.clashes.push(Clash { file: x.file, diag: diag })
+    }
+
+    /// The declaration of this name its own file already keeps apart.
+    fn own_apart(x: Decl) -> DeclId? {
+        self
+            .names
+            .apart
+            .find(
+                (a) -> same_file(self.decls.decl(a).file, x.file) &&
+                    binds_alike(self.decls.decl(a), x),
+            )
+    }
+
+    /// The first holder and each later file's own declaration, kept
+    /// apart once each.
+    fn keep_apart(prior: DeclId, d: DeclId) {
+        if !self.names.apart.any(same_decl(it, prior)) { self.names.apart.push(prior) }
+        self.names.apart.push(d)
     }
 
     /// A winner bound without a law: the module already applied it.
@@ -345,30 +335,36 @@ impl Binder {
         self.bind(x.kind, x.name, d)
     }
 
-    /// A prelude export binds where nothing else took the name — a
-    /// file's own `println`, or one it imports, wins silently.
-    fn bind_prelude(i: Import) {
-        let x = self.decls.decl(i.decl)
-        if self.held(x.kind, x.name) == null { self.bind(x.kind, x.name, i.decl) }
-    }
-
-    /// The language's own declaration binds where nothing else
-    /// took the name — a program's `Result` wins silently.
-    fn bind_builtin(d: DeclId) {
+    /// A prelude export or the language's own declaration binds where
+    /// nothing else took the name — a file's own `println`, one it
+    /// imports, a program's `Result`, all win silently.
+    fn bind_weakly(d: DeclId, base: BoundNames) {
         let x = self.decls.decl(d)
-        if self.held(x.kind, x.name) == null { self.bind(x.kind, x.name, d) }
+        let space? = table_of(x.kind) else { return }
+        if self.held(x.kind, x.name) == null && held_in(base, space, x.name) == null { self.bind(x.kind, x.name, d) }
     }
 
     /// An import binds in the file's namespace; a name already
-    /// visible refuses — unless it is the very same declaration.
-    fn import(i: Import, file: FileId) {
+    /// visible refuses — unless it is the very same declaration, or a
+    /// sibling file's private one, which an import shadows here.
+    fn import(i: Import, file: FileId, base: BoundNames) {
         let x = self.decls.decl(i.decl)
         // A `use` item's ALIAS is the name it binds under; the empty
         // alias is the declaration's own name.
         let name = if i.renamed.is_empty() { x.name } else { i.renamed }
-        let prior? = self.held(x.kind, name) else { return self.bind(x.kind, name, i.decl) }
+        let prior? = self.held(x.kind, name) ?? self.claimed(base, x.kind, name, file) else { return self.bind(x.kind, name, i.decl) }
         if same_decl(prior, i.decl) { return }
         self.speak(import_clash(i.at, name, self.holder(prior, file)))
+    }
+
+    /// The module's holder of a name as `file` sees it claimed: an
+    /// export, or this file's own — a sibling's private declaration
+    /// claims nothing here.
+    fn claimed(base: BoundNames, kind: DeclKind, name: string, file: FileId) -> DeclId? {
+        let space? = table_of(kind) else { return null }
+        let d? = held_in(base, space, name) else { return null }
+        let x = self.decls.decl(d)
+        if x.exported || same_file(x.file, file) { d } else { null }
     }
 
     /// Who holds a name already: this module (by file), or a module.
@@ -381,22 +377,20 @@ impl Binder {
     }
 
     fn held(kind: DeclKind, name: string) -> DeclId? {
-        let as_fn: DeclId? = self.names.fns.get(name)
-        let as_type: DeclId? = self.names.types.get(name)
-        match kind {
-            .Fn or .Const or .Collect -> as_fn,
-            .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> as_type,
+        let space? = table_of(kind) else { return null }
+        match space {
+            .Fn -> self.names.fns.get(name),
+            .Type -> self.names.types.get(name),
             .Syntax -> self.names.syntaxes.get(name),
-            .Method or .Default or .Impl or .Main or .Case -> null,
         }
     }
 
     fn bind(kind: DeclKind, name: string, d: DeclId) {
-        match kind {
-            .Fn or .Const or .Collect -> self.bind_fn(name, d),
-            .Record or .Named or .Alias or .Enum or .Trait or .Builtin or .CollectEnum -> self.bind_type(name, d),
+        let space? = table_of(kind) else { return }
+        match space {
+            .Fn -> self.bind_fn(name, d),
+            .Type -> self.bind_type(name, d),
             .Syntax -> self.bind_syntax(name, d),
-            .Method or .Default or .Impl or .Main or .Case -> not_bound(),
         }
     }
 
@@ -415,11 +409,20 @@ impl Binder {
         self.names.type_names.push(name)
     }
 
+    /// The bindings made so far.
+    fn bound_names() -> BoundNames {
+        BoundNames {
+            fns: self.names.fns,
+            types: self.names.types,
+            syntaxes: self.names.syntaxes,
+            fn_names: self.names.fn_names,
+            type_names: self.names.type_names,
+            syntax_names: self.names.syntax_names,
+        }
+    }
+
     fn speak(d: Diag) { self.names.voices.speak(d) }
 }
-
-/// A member, an impl and a Main never enter a namespace.
-fn not_bound() {}
 
 // ── voices ──
 
@@ -536,7 +539,17 @@ fn declared_twice(at: Loc?, name: string, other: string) -> Diag {
         at,
         "`${name}` is declared twice in this module — here and in `${other}`",
         "declared here",
-        "a module is its directory, so its files share one namespace — rename one, or move one into a directory of its own",
+        "an exported name is its module's one declaration — rename one, or drop the `export` so each file keeps its own",
+    )
+}
+
+fn kept_apart_read(at: Loc?, name: string, files: List<string>) -> Diag {
+    refusal(
+        "resolve.kept_apart",
+        at,
+        "`${name}` is private to each of ${joined(["`${f}`" for f in files], " and ")} — a private name two files declare is each file's own",
+        "read here",
+        "`export` one declaration to share it across the module, or declare this file's own",
     )
 }
 

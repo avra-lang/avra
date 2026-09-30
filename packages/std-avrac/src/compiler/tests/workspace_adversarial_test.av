@@ -93,25 +93,148 @@ fn vendored_names() -> List<string> {
     ["/w/avra.toml", "/w/src/main.av", "/w/vendor/util/avra.toml", "/w/vendor/util/src/p.av"]
 }
 
+/// A sibling file declaring its own private `helper`, and an export
+/// that calls it.
+fn own_helper(times: int, export_name: string) -> string {
+    "fn helper(n: int) -> int {\n    n * ${times}\n}\nexport fn ${export_name}() -> int {\n    helper(1)\n}\n"
+}
+
+/// A sibling file declaring its own private `Table` with a `get`, and
+/// an export that reads it.
+fn own_table(field: string, value: string, export_name: string) -> string {
+    "type Table = { ${field}: int }\nimpl Table {\n    fn get() -> int {\n        self.${field}\n    }\n}\nexport fn ${export_name}() -> int {\n    Table { ${field}: ${value} }.get()\n}\n"
+}
+
 spec "compiler/workspace (adversarial)" {
+    given "private names two files declare" {
+        then "each file keeps its own — the entry's and a sibling's run side by side" {
+            runs(
+                {
+                    "/w/src/main.av": "fn helper(n: int) -> int {\n    n * 5\n}\nhelper(1) + from_a()\n",
+                    "/w/src/a.av": own_helper(7, "from_a"),
+                },
+                ["/w/src/main.av", "/w/src/a.av"],
+            ) == "12"
+        }
+        then "a third file's read of the name is refused, naming both files" {
+            refuses_once(
+                {
+                    "/w/src/main.av": "helper(1)\n",
+                    "/w/src/a.av": own_helper(2, "from_a"),
+                    "/w/src/b.av": own_helper(3, "from_b"),
+                },
+                ["/w/src/main.av", "/w/src/a.av", "/w/src/b.av"],
+                "`helper` is private to each of `a.av` and `b.av`",
+            )
+        }
+        then "a third file's plain read of the name is refused the same way" {
+            refuses_once(
+                {
+                    "/w/src/main.av": "let f = helper\nf(1)\n",
+                    "/w/src/a.av": own_helper(2, "from_a"),
+                    "/w/src/b.av": own_helper(3, "from_b"),
+                },
+                ["/w/src/main.av", "/w/src/a.av", "/w/src/b.av"],
+                "`helper` is private to each of `a.av` and `b.av`",
+            )
+        }
+        then "two files' private types of one name keep their own methods" {
+            runs(
+                {
+                    "/w/src/main.av": "from_a() + from_b()\n",
+                    "/w/src/a.av": own_table("n", "4", "from_a"),
+                    "/w/src/b.av": own_table("m", "30", "from_b"),
+                },
+                ["/w/src/main.av", "/w/src/a.av", "/w/src/b.av"],
+            ) == "34"
+        }
+        then "a kept-apart type named in a third file's signature is refused as kept apart" {
+            refuses_once(
+                {
+                    "/w/src/main.av": "fn f(t: Table) -> int {\n    1\n}\nf\n",
+                    "/w/src/a.av": own_table("n", "4", "from_a"),
+                    "/w/src/b.av": own_table("m", "30", "from_b"),
+                },
+                ["/w/src/main.av", "/w/src/a.av", "/w/src/b.av"],
+                "`Table` is private to each of `a.av` and `b.av`",
+            )
+        }
+        then "an import shadows a sibling's private name in the importing file alone" {
+            runs(
+                {
+                    "/w/src/main.av": "use util.{twice}\ntwice(2) + from_a()\n",
+                    "/w/src/a.av": "fn twice(n: int) -> int {\n    n\n}\nexport fn from_a() -> int {\n    twice(10)\n}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/a.av", "/w/src/util/m.av"],
+            ) == "14"
+        }
+        then "an import of a name this file keeps apart refuses" {
+            refuses_once(
+                {
+                    "/w/src/main.av": "use util.{twice}\nfn twice(n: int) -> int {\n    n\n}\ntwice(1)\n",
+                    "/w/src/a.av": "fn twice(n: int) -> int {\n    n\n}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/a.av", "/w/src/util/m.av"],
+                "`twice` is imported, but this module (`main.av`) already has it",
+            )
+        }
+        then "a third file's local binding shadows a kept-apart name" {
+            runs(
+                {
+                    "/w/src/main.av": "let helper = 9\nhelper\n",
+                    "/w/src/a.av": own_helper(2, "from_a"),
+                    "/w/src/b.av": own_helper(3, "from_b"),
+                },
+                ["/w/src/main.av", "/w/src/a.av", "/w/src/b.av"],
+            ) == "9"
+        }
+        then "a third file declaring the name keeps its own apart too" {
+            runs(
+                {
+                    "/w/src/main.av": "fn helper(n: int) -> int {\n    n + 100\n}\nhelper(1) + from_a() + from_b()\n",
+                    "/w/src/a.av": own_helper(2, "from_a"),
+                    "/w/src/b.av": own_helper(3, "from_b"),
+                },
+                ["/w/src/main.av", "/w/src/a.av", "/w/src/b.av"],
+            ) == "106"
+        }
+        then "a fn and a type of one name are two tables, so neither is kept apart" {
+            runs(
+                {
+                    "/w/src/main.av": "Table { n: 2 }.n + Table()\n",
+                    "/w/src/a.av": "type Table = { n: int }\n",
+                    "/w/src/b.av": "fn Table() -> int {\n    40\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/a.av", "/w/src/b.av"],
+            ) == "42"
+        }
+        then "a private name declared twice in one file still refuses there" {
+            refuses_once(
+                {
+                    "/w/src/main.av": "fn helper(n: int) -> int {\n    n\n}\nfn helper(n: int) -> int {\n    n\n}\nhelper(1)\n",
+                    "/w/src/a.av": own_helper(2, "from_a"),
+                },
+                ["/w/src/main.av", "/w/src/a.av"],
+                "`helper` is defined more than once",
+            )
+        }
+    }
     given "names against names" {
-        then "a local fn duplicating a sibling's refuses — the sibling named" {
+        then "a private fn duplicating a sibling's exported one refuses — the sibling named" {
             refuses_once(
                 {
                     "/w/src/main.av": "fn helper(n: int) -> int {\n    n * 5\n}\nhelper(1)\n",
-                    "/w/src/a.av": "fn helper(n: int) -> int {\n    n\n}\n",
+                    "/w/src/a.av": "export fn helper(n: int) -> int {\n    n\n}\n",
                 },
                 ["/w/src/main.av", "/w/src/a.av"],
                 "`helper` is declared twice in this module — here and in `a.av`",
             )
         }
-        then "two test files beside each other share their directory's namespace — one refusal, naming the way out" {
-            let a = analysed_at(tested(true), tested_names(true), "/w/src/tests/a_test.av")
-            let b = analysed_at(tested(true), tested_names(true), "/w/src/tests/b_test.av")
-            let said = a.report() + b.report()
-            a.diagnostics.length + b.diagnostics.length == 1 &&
-                said.contains("`make_thing` is declared twice in this module") &&
-                said.contains("move one into a directory of its own")
+        then "two test files beside each other each keep their own private helper" {
+            [analysed_at(tested(true), tested_names(true), at) for at in tested_names(true)]
+                .all(it.diagnostics.is_empty())
         }
         then "a test file in a directory of its own redeclares its siblings' helper with no refusal" {
             [analysed_at(tested(false), tested_names(false), at) for at in tested_names(false)]

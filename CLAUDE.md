@@ -848,7 +848,7 @@ registry is the idiom engine's spec, written by dogfooding.
   It is a PACKAGE the toolchain carries, not a scope the resolver
   injects (P7: a reader can open it, `explain` can point at it, and
   the layering `prelude <- text <- io <- process <- …` has a node at
-  its bottom). It binds WEAKLY (`bind_prelude`, features/
+  its bottom). It binds WEAKLY (`bind_weakly`, features/
   namespace.av): a file's own declaration, an explicit import, a
   local binding all win silently. It DEPENDS ON NOTHING, and the
   compiler refuses a prelude manifest that says otherwise (F4018).
@@ -905,11 +905,12 @@ registry is the idiom engine's spec, written by dogfooding.
   the bomb, holding its own output, ten minutes before anyone else saw
   it.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
-  `tests/` IS A MODULE LIKE ANY DIRECTORY: its files share one
-  namespace (F3017 names the sibling), and fixtures shared across
-  test files lean on exactly that (witness_fixtures.av). A test that
-  wants names of its own takes a directory of its own —
-  `tests/<name>/<name>_test.av` — as a program test does.
+  `tests/` IS A MODULE LIKE ANY DIRECTORY: a private name one of its
+  files declares is its siblings' too, and fixtures shared across test
+  files lean on exactly that (witness_fixtures.av). Two files each
+  declaring one private name KEEP IT APART — each reads its own, and a
+  third file's read is `resolve.kept_apart`, naming both; an EXPORTED
+  name stays the module's one declaration (`resolve.duplicate_in_module`).
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
   suite does not have. "a comment-only line is a blank line" asserts
@@ -1486,8 +1487,8 @@ reserved words (F3002 names the word and its status), a mutating
 method on a non-`mut` binding (F2034), a lambda assigning to a
 capture (F3005: captures are copies), a fn body reading a top-level
 `let` (F3020: the const law), an extra method inside an `impl Trait
-for` (F2032), a duplicate name across a module's files (F3017 names
-both files), a pattern or construction with the wrong payload count
+for` (F2032), an exported name declared twice across a module's
+files (F3017 names both files), a pattern or construction with the wrong payload count
 (F2015), a `DeclId` handed to a `StmtId` seat (F2000) — the
 compiler's help is the note.
 

@@ -27,7 +27,7 @@ use core.{
     FileId,
     Scoped,
 }
-use diagnostics.{refusal}
+use diagnostics.{refusal, Diag}
 use features.{
     TypeCx,
     FnSig,
@@ -48,6 +48,7 @@ use features.{
     written_seats,
     declared_decl,
     Namespace,
+    NameKind,
     AnnotationFact,
 }
 use compiler.{result_infers}
@@ -1093,6 +1094,14 @@ impl TypeCx {
         if decl != null { return self.declared_type(at, decl!, name) }
         if width_named(name) != null { return self.width_off_a_seat(at, name) }
         if traced() { qtrace("Q\tnamed_type_fail\t${name}\t${self.view.decls.file(self.view.file).path}\n") }
+        let apart: Diag? = self
+            .view
+            .decls
+            .apart_refusal(self.names.names, [NameKind.Type], name, at)
+        if apart != null {
+            self.emit(apart!)
+            return self.error_type
+        }
         self
             .emit(
                 refusal(

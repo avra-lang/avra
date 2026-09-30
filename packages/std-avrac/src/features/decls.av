@@ -474,6 +474,9 @@ export type Decls = {
     // the workspace's namespace hook: a file's names resolved, what
     // `annotation_callee` reads a captured fact's callee through
     namespace_of: Cell<fn(FileId) -> Namespace>,
+    // the workspace's kept-apart hook: the declarations a file's
+    // module keeps apart, what a symbol asks whether to carry its file
+    apart_of: Cell<fn(FileId) -> List<DeclId>>,
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
     builtins: Cell<List<DeclId>>,
@@ -533,6 +536,8 @@ fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) 
 
 /// Where no workspace stands behind the table, nothing resolves.
 fn no_namespace(_f: FileId) -> Namespace { no_names() }
+
+fn none_apart(_f: FileId) -> List<DeclId> { [] }
 
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_marks(d: DeclId) {}
@@ -660,6 +665,7 @@ export fn new_decls() -> Decls {
         ensure_consumed: Cell.new(no_ensure),
         lifter: Cell.new(no_lifter),
         namespace_of: Cell.new(no_namespace),
+        apart_of: Cell.new(none_apart),
         refs_db: Cell.new(new_db()),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
@@ -1214,6 +1220,7 @@ impl Decls {
         self.ensure_failures.set(no_failures_ensure)
         self.lifter.set(no_lifter)
         self.namespace_of.set(no_namespace)
+        self.apart_of.set(none_apart)
     }
 
     /// The workspace arms the sig hook once.
@@ -1336,6 +1343,11 @@ impl Decls {
     /// The workspace arms the namespace hook once.
     fn arm_namespace(ns: fn(FileId) -> Namespace) {
         self.namespace_of.set(ns)
+    }
+
+    /// The workspace arms the kept-apart hook once.
+    fn arm_apart(apart: fn(FileId) -> List<DeclId>) {
+        self.apart_of.set(apart)
     }
 
     /// The workspace arms the marks hook once — a declaration's
@@ -2113,7 +2125,32 @@ impl Decls {
             .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
             .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Collect or .CollectEnum -> x.name,
         }
-        module_symbol(self.module_of(d), local_name)
+        module_symbol(
+            self.module_of(d),
+            if self.apart_here(d) { "${stem_of(self.file(x.file).path)}/${local_name}" } else { local_name },
+        )
+    }
+
+    /// Whether a declaration's symbol carries its file: it is kept
+    /// apart in its module, or its owner is — so two files' own share
+    /// no symbol.
+    fn apart_here(d: DeclId) -> bool {
+        let x = self.decl(d)
+        if x.exported { return false }
+        let apart = (self.apart_of.get())(x.file)
+        if apart.is_empty() { return false }
+        match x.kind {
+            .Method or .Default -> apart.any((o) -> self.owns_member(o, x)),
+            .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Case or .Builtin or .Collect or .CollectEnum -> apart.any(same_decl(it, d)),
+        }
+    }
+
+    /// Whether a type declaration is a member's owner in its own file.
+    fn owns_member(owner: DeclId, member: Decl) -> bool {
+        let o = self.decl(owner)
+        o.name == member.owner &&
+            same_file(o.file, member.file) &&
+            table_of(o.kind) == NameKind.Type
     }
 
     /// THE symbol a LIFTED body lowers to. A lambda has no name of
