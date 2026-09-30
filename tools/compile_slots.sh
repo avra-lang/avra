@@ -33,6 +33,8 @@ row() {
 waited() { grep -c "avra: waiting for a compile slot" "$1" | tr -d ' '; }
 
 export AVRA_MAX_COMPILES=1
+# a private slot directory: another session's compile never holds these
+export AVRA_SLOT_DIR="$PWD/$D/slots"
 unset AVRA_COMPILE_SLOT
 
 "$D/holder" > "$D/held.out" &
