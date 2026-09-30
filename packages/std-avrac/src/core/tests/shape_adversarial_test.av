@@ -210,6 +210,22 @@ spec "core/shape adversarial" {
             matched_runs(s, At.Expr(subj), pat) == null
         }
     }
+    given "a node's kind alone" {
+        then "two method calls of different names share a kind, never a shallow fold" {
+            mut s = new_node_store()
+            let x = s.alloc_expr(Expr.Ident("x"))
+            let a = s.alloc_expr(Expr.MethodCall(x, "push", []))
+            let b = s.alloc_expr(Expr.MethodCall(x, "pop", [x]))
+            s.kind_at(At.Expr(a)) == s.kind_at(At.Expr(b)) &&
+                s.shallow_at(At.Expr(a)) != s.shallow_at(At.Expr(b))
+        }
+        then "another variant is another kind" {
+            mut s = new_node_store()
+            let x = s.alloc_expr(Expr.Ident("x"))
+            let call = s.alloc_expr(Expr.MethodCall(x, "push", []))
+            s.kind_at(At.Expr(call)) != s.kind_at(At.Expr(x))
+        }
+    }
 }
 
 /// A right-nested `... + i + (i-1) + ... + 0` chain, `depth` levels
