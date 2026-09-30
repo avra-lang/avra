@@ -42,14 +42,16 @@ enum Left {
 /// A body in flight: the connection it arrives on (absent when every
 /// octet is already here), the octets read and not yet handed out from
 /// `at` on, what is still to come, what is owed the peer before the
-/// first read (`100 Continue`), how long a read may wait, the bounds,
-/// how much was handed out, and the failure, once there is one.
+/// first read (`100 Continue`) and whether it went, how long a read may
+/// wait, the bounds, how much was handed out, and the failure, once
+/// there is one.
 type Inflow = {
     conn: Conn?,
     buf: Bytes,
     at: int,
     left: Left,
     owed: Bytes,
+    told: bool,
     patience: Duration?,
     limits: Limits,
     taken: int,
@@ -114,6 +116,7 @@ fn inflow(conn: Conn?, buf: Bytes, at: int, left: Left, lim: Limits, patience: D
         at: at,
         left: left,
         owed: nothing_owed(),
+        told: false,
         patience: patience,
         limits: lim,
         taken: 0,
@@ -147,6 +150,11 @@ impl Body {
     /// The failure that ended this body, or absent while it has none.
     fn failure() -> BodyError? {
         match self { .Empty -> null, .Flowing(flow) -> flow.get().failure }
+    }
+
+    /// Whether a read wrote the peer the `100 Continue` it was owed.
+    fn told() -> bool {
+        match self { .Empty -> false, .Flowing(flow) -> flow.get().told }
     }
 
     /// Whether every octet of the body has been read.
@@ -282,7 +290,7 @@ fn refill(f: Inflow) -> Inflow {
             .Err(e) -> { return f with { failure: net_error(e) } },
         }
     }
-    let kept = f with { owed: nothing_owed() }
+    let kept = f with { owed: nothing_owed(), told: f.told || !f.owed.is_empty() }
     match listened(c, f.patience) {
         .Ok(b) -> if b == null { ended(kept) } else { rebased(kept, b!) },
         .Err(e) -> kept with { failure: net_error(e) },

@@ -376,7 +376,7 @@ export fn as_sent(r: Response) -> Response { if sendable(r) { r } else { status(
 /// place to one accumulator, never a head box joined to a body (reuse
 /// in place, `docs/2026_09_23_REUSE_IN_PLACE.md`).
 export fn written(r: Response, delim: ReplyBody, keep_alive: bool, minor: int, body: Bytes) -> Bytes {
-    laid_out(r, delim, fate(keep_alive, minor), body)
+    laid_out(r, delim, fate(keep_alive, minor, offered(r) != null), body)
 }
 
 /// A response's HEAD on the wire, its body to follow piece by piece.
@@ -487,8 +487,12 @@ fn reply_text(status: int) -> string { "HTTP/1.1 ${status} ${reason(status)}\r\n
 
 const field_colon: Bytes = ": ".bytes()
 
-/// The connection's fate, when the peer cannot assume it.
-fn fate(keep_alive: bool, minor: int) -> string {
+/// The connection's fate, when the peer cannot assume it — and, when
+/// the response OFFERS an upgrade, the `upgrade` option its sender must
+/// list beside it (RFC 9110 §7.8). The writer owns `connection`, so
+/// this is the only place the option can be written.
+fn fate(keep_alive: bool, minor: int, offers: bool) -> string {
+    if offers { return offering_fate(keep_alive, minor) }
     when {
         !keep_alive -> "connection: close\r\n"
         minor == 0 -> "connection: keep-alive\r\n"
@@ -496,33 +500,86 @@ fn fate(keep_alive: bool, minor: int) -> string {
     }
 }
 
+fn offering_fate(keep_alive: bool, minor: int) -> string {
+    when {
+        !keep_alive -> "connection: close, upgrade\r\n"
+        minor == 0 -> "connection: keep-alive, upgrade\r\n"
+        _ -> switching()
+    }
+}
+
+/// The `connection` field of a response that offers or makes a switch
+/// and says nothing else of its connection.
+fn switching() -> string { "connection: upgrade\r\n" }
+
 /// WHETHER THIS RESPONSE CAN GO ON A WIRE AT ALL: a status of three
 /// digits — the status line's own grammar, which is why 1000 and 99
-/// are not statuses — and every field a field the framer would frame.
-/// Public so a handler can ask before it answers.
+/// are not statuses — and a FINAL one: a 1xx is interim, never an
+/// answer (RFC 9110 §15.2), save the 101 that hands the connection
+/// over. Every field is one the framer would frame, and a 426 names
+/// the protocols it wants (§15.5.22). Public so a handler can ask
+/// before it answers.
 export fn sendable(r: Response) -> bool {
     r.status >= 100 &&
         r.status <= 999 &&
         fields_writable(r.headers, reply_writes) &&
-        (plain(r) || streamable(r) && handed_over(r))
+        (plain(r) || streamable(r) && handed_over(r)) &&
+        (r.status != 426 || offered(r) != null)
 }
 
 /// AN UPGRADE AND A 101 COME TOGETHER: a 101 with nothing to hand the
 /// connection to leaves a peer speaking a protocol nobody reads, and
 /// an upgrade under another status hands over a connection the peer
-/// still thinks is HTTP's. The handed-over connection carries no body.
+/// still thinks is HTTP's. A 101 names what it switches to in its
+/// `upgrade` field (RFC 9110 §15.2.2), and the handed-over connection
+/// carries no body.
 fn handed_over(r: Response) -> bool {
-    if r.upgrade == null { return r.status != 101 }
-    r.status == 101 && r.body.is_empty() && r.stream == null
+    if r.upgrade == null { return r.status >= 200 }
+    r.status == 101 && offered(r) != null && r.body.is_empty() && r.stream == null
+}
+
+/// The protocols a response's `upgrade` field names — absent when it
+/// carries none, or an empty one.
+export fn offered(r: Response) -> string? {
+    r.headers.find(names_upgrade(it))?.value
+}
+
+/// Whether `h` is a non-blank `upgrade` field — its length asked first,
+/// since every reply's fields are asked on the way to the wire.
+fn names_upgrade(h: Header) -> bool {
+    h.name.length == 7 && names_one_of(h.name, upgrade_field) && !h.value.trim().is_empty()
+}
+
+const upgrade_field: List<Bytes> = ["upgrade".bytes()]
+
+/// A SERVER SWITCHES ONLY TO WHAT IT WAS ASKED FOR (RFC 9110 §7.8):
+/// every protocol a 101 names is one the request's `upgrade` field
+/// listed — and an HTTP/1.0 request's field is ignored, so it asked
+/// for nothing. Any other response switches nothing and passes.
+export fn switch_asked<P>(q: Request<P>, r: Response) -> bool {
+    if r.status != 101 { return true }
+    let named? = offered(r) else { return false }
+    let wanted? = q.header("upgrade") else { return false }
+    q.head.minor >= 1 && named.split(",").all(lists_token(wanted, it.trim()))
+}
+
+/// Whether a comma-separated field value names `token`, ASCII-folded.
+export fn lists_token(value: string, token: string) -> bool {
+    value.split(",").any(same_token(it, token))
+}
+
+fn same_token(item: string, token: string) -> bool {
+    let b = item.trim().bytes()
+    b.ieq_at(0, b.length, token.bytes())
 }
 
 /// A 101's head on the wire: the status line, its fields, and the
 /// `connection: upgrade` its writer owns.
-export fn upgrade_head(r: Response) -> Bytes { laid_out(r, .None, "connection: upgrade\r\n", nothing()) }
+export fn upgrade_head(r: Response) -> Bytes { laid_out(r, .None, switching(), nothing()) }
 
 /// A response with a whole body and nothing to hand over: the common
 /// one, judged without asking the stream and upgrade laws.
-fn plain(r: Response) -> bool { r.stream == null && r.upgrade == null && r.status != 101 }
+fn plain(r: Response) -> bool { r.stream == null && r.upgrade == null && r.status >= 200 }
 
 /// A STREAM STANDS ALONE: a response carrying one carries no whole
 /// body beside it, declares no negative length, and has a status that
@@ -612,6 +669,7 @@ export fn reason(status: int) -> string {
         415 -> "Unsupported Media Type",
         417 -> "Expectation Failed",
         422 -> "Unprocessable Content",
+        426 -> "Upgrade Required",
         429 -> "Too Many Requests",
         431 -> "Request Header Fields Too Large",
         500 -> "Internal Server Error",

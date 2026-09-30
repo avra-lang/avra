@@ -20,7 +20,7 @@
 use @std.net.{Conn, NetError, connect, entropy32}
 use @std.time.{Duration, secs, within}
 use frame.{Limits, Method, Reply, framed_reply, limits}
-use http.{Request, Response, Header, Upgrade, text, read_size}
+use http.{Request, Response, Header, Upgrade, text, read_size, lists_token}
 use codec.{sha1, base64, base64_of_length}
 
 // ── Messages and failures ───────────────────────────────────────
@@ -449,7 +449,10 @@ export fn accepted<P>(q: Request<P>, lim: WsLimits, session: fn(Socket) -> void)
     if q.header("sec-websocket-version") != "13" {
         return Response {
             status: 426,
-            headers: [Header { name: "sec-websocket-version", value: "13" }],
+            headers: [
+                Header { name: "upgrade", value: "websocket" },
+                Header { name: "sec-websocket-version", value: "13" },
+            ],
         }
     }
     Response {
@@ -469,16 +472,6 @@ fn opening<P>(q: Request<P>) -> bool {
         q.head.minor == 1 &&
         lists_token(q.header("upgrade") ?? "", "websocket") &&
         lists_token(q.header("connection") ?? "", "upgrade")
-}
-
-/// Whether a comma-separated field value names `token`, ASCII-folded.
-fn lists_token(value: string, token: string) -> bool {
-    value.split(",").any(same_token(it, token))
-}
-
-fn same_token(item: string, token: string) -> bool {
-    let b = item.trim().bytes()
-    b.ieq_at(0, b.length, token.bytes())
 }
 
 /// A client socket: `host:port` dialed within `timeout`, `target`

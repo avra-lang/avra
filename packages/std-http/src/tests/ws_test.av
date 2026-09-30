@@ -5,7 +5,7 @@
 use @std.net.{Conn, Listener, NetError, listen, connect}
 use @std.time.{ms, secs, sleep, within}
 use @std.http.frame.{limits}
-use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.http.{Request, Unrouted, Response, Header, Upgrade, text}
 use @std.http.server.{served, timing}
 use @std.http.ws.{
     Socket,
@@ -116,6 +116,64 @@ fn refused_opening(sent: string) -> Result<string, NetError> {
     .Ok(got.substring(0, got.index_of("\r\n")))
 }
 
+/// A 101 to `websocket`, answered whatever was asked; its handover
+/// counts its runs in `ran`.
+fn blind_switch(ran: Cell<int>) -> Response {
+    Response {
+        status: 101,
+        headers: [Header { name: "upgrade", value: "websocket" }],
+        upgrade: Upgrade { run: (_c: Conn, _early: Bytes) -> ran.set(ran.get() + 1) },
+    }
+}
+
+/// Everything the server wrote to `sent` under that blind switch, line
+/// ends shown, and how many handovers ran.
+fn blindly_switched(sent: string) -> Result<string, NetError> {
+    let ran = Cell.new(0)
+    let b = bed_with((_app: App, _q: Request<Unrouted>) -> blind_switch(ran), limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = (exchanged(b.c, sent, 100000)?).text() ?? ""
+    .Ok("${got.replace("\r\n", "|")}ran=${ran.get()}")
+}
+
+const refused_switch: string = "HTTP/1.1 500 Internal Server Error|content-length: 0|connection: close||ran=0"
+
+fn switches_only_as_asked() -> Result<bool, NetError> {
+    let asked = blindly_switched(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: upgrade\r\n\r\n",
+    )?
+    let other = blindly_switched(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: h2c\r\nConnection: upgrade, close\r\n\r\n",
+    )?
+    let unasked = blindly_switched("GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n")?
+    let old = blindly_switched(
+        "GET / HTTP/1.0\r\nUpgrade: websocket\r\nConnection: upgrade\r\n\r\n",
+    )?
+    .Ok(
+        asked == "HTTP/1.1 101 Switching Protocols|upgrade: websocket|connection: upgrade||ran=1" &&
+            [other, unasked, old].all(it == refused_switch),
+    )
+}
+
+/// A body the server never read would reach the new protocol as its
+/// first octets, so the switch is refused and the connection closed.
+fn no_switch_over_an_unread_body() -> Result<bool, NetError> {
+    let got = blindly_switched(
+        "POST / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: upgrade\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n",
+    )?
+    .Ok(got == refused_switch)
+}
+
+fn continues_before_switching() -> Result<bool, NetError> {
+    let got = blindly_switched(
+        "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: upgrade\r\nExpect: 100-continue\r\n\r\n",
+    )?
+    .Ok(
+        got == "HTTP/1.1 100 Continue||HTTP/1.1 101 Switching Protocols|upgrade: websocket|connection: upgrade||ran=1",
+    )
+}
+
 fn bad_openings() -> Result<bool, NetError> {
     let no_key = refused_opening(
         "GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n\r\n",
@@ -137,7 +195,7 @@ fn bad_openings() -> Result<bool, NetError> {
     )?
     .Ok(
         [no_key, short_key, no_upgrade, posted, old].all(it == "HTTP/1.1 400 Bad Request") &&
-            version == "HTTP/1.1 426 Client Error",
+            version == "HTTP/1.1 426 Upgrade Required",
     )
 }
 
@@ -390,6 +448,13 @@ spec "std.http websocket" {
         then "a well-formed opening is switched, its key accepted as RFC 6455 says" { passes(opening_is_switched()) }
         then "no key, a short key, no upgrade, a POST or HTTP/1.0 is 400, another version 426" { passes(bad_openings()) }
         then "the accept of the RFC's key is the RFC's" { accept_of(sample_key) == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" }
+        then "a 101 goes out only to a 1.1 request that named its protocol, else it is the server's 500, never handed over" {
+            passes(switches_only_as_asked())
+        }
+        then "a 100 Continue asked for goes out before the 101" { passes(continues_before_switching()) }
+        then "a switch over a body the server did not read is the server's 500, never handed over" {
+            passes(no_switch_over_an_unread_body())
+        }
     }
     given "messages" {
         then "a text is echoed" { passes(text_echoed()) }
