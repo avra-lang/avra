@@ -224,6 +224,8 @@ build_candidate_tree() {
 # longer than the quiet window, so bytes alone would call it wedged;
 # a wedged step spends no CPU, so the ticks still stop. Suites run
 # line-buffered, so their own lines reach the log as they are said.
+# The suites are waited for by pid: a bare `wait` also waits for the
+# heartbeat, which never ends, and hung every candidate after its suites.
 # The build lock is the candidate's own: the train's slots are the
 # Sprite's budget, and a step queued behind a neighbour's lock spends
 # no CPU and would read as wedged.
@@ -261,11 +263,13 @@ run_step seed-check-1 make seed-check || { run_step seed-emit make seed; run_ste
 for p in $pkgs; do
     run_step "idioms-\$p" ./build/avra check "packages/\$p" --baseline tools/idioms.baseline
 done
+suites=
 for p in $pkgs; do
     ( t=\$(date +%s); \$lined build/avra test "packages/\$p" > "\$d/\$p.log" 2>&1; echo \$? > "\$d/\$p.st"; \
       echo "land-train: test-\$p \$(( \$(date +%s) - t ))s" > "\$d/\$p.time" ) &
+    suites="\$suites \$!"
 done
-wait
+for s in \$suites; do wait "\$s"; done
 fail=0
 for p in $pkgs; do
     cat "\$d/\$p.time" 2>/dev/null

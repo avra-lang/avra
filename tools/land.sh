@@ -1467,6 +1467,8 @@ report_parallel_failures() {
 # each on its own Sprite through tools/sp -p. The first Sprite builds
 # the tree's compiler (both generations) and the rest copy it, so this
 # runs beside the local builds and replaces the Linux leg.
+# A copied compiler carries no package C, so each suite builds the
+# libraries first (`make -o avra libs`, a no-op once current).
 remote_suites() {
     wt="$1"
     has_av="$2"
@@ -1475,7 +1477,7 @@ remote_suites() {
     n=$#
     for p in "$@"; do
         idioms="$idioms && build/avra check packages/$p --baseline tools/idioms.baseline"
-        set -- "$@" "build/avra test packages/$p"
+        set -- "$@" "make -s -o avra libs && build/avra test packages/$p"
     done
     shift "$n"
     [ "$has_av" -eq 1 ] && set -- "$idioms" "$@"
