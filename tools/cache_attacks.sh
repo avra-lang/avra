@@ -267,6 +267,14 @@ ed $R/t/src/lib.av "{ 4 }" "{ 3 }";                           T "and back" green
 ed $R/t/src/tests/shown/shown.expected "three is 3" "three is 4"; T "the text a program must print moves" red
 ed $R/t/src/tests/shown/shown.expected "three is 4" "three is 3"; T "and back" green
 ed $R/t/src/tests/lib_test.av "three() == 3" "three() == 3 && true"; T "a case's own body moves" green
+# A HOME THE TREE NO LONGER HAS: a case lowers `twice` from twice.av, then stops
+# asking for it and the file goes. The kept home list still names it, and the
+# suite's print must never ask the gone text for a digest.
+printf 'export fn twice<T>(x: T) -> List<T> { [x, x] }\n' > $R/t/src/twice.av
+ed $R/t/src/tests/lib_test.av "use @rt.t.{three}" "use @rt.t.{three, twice}"
+ed $R/t/src/tests/lib_test.av "three() == 3 && true" "twice(three()).length == 2"; T "a case lowers from a new home" green
+ed $R/t/src/tests/lib_test.av "use @rt.t.{three, twice}" "use @rt.t.{three}"
+ed $R/t/src/tests/lib_test.av "twice(three()).length == 2" "three() == 3 && true"; rm $R/t/src/twice.av; T "the home is deleted" green
 
 # ONE FILE'S CASES, WITH EVERY FILE HELD: nothing is read, so no module is minted and
 # no type interned — the entry declares the cases it calls and is built over the
