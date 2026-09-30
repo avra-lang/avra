@@ -23,12 +23,16 @@ jobs:
       key: ${{ steps.key.outputs.key }}
       packages: ${{ steps.plan.outputs.packages }}
     steps:
+      - name: git
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates git >/dev/null
+          git config --system --add safe.directory '*'
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - run: sh tools/ci-toolchain.sh
       - id: key
         run: |
-          git config --global --add safe.directory "$PWD"
           echo "key=avra-$(sh tools/sources_hash.sh)" >> "$GITHUB_OUTPUT"
       - id: plan
         run: |
@@ -56,6 +60,11 @@ jobs:
     container: ubuntu:26.04
     timeout-minutes: 20
     steps:
+      - name: git
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates git >/dev/null
+          git config --system --add safe.directory '*'
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - run: sh tools/ci-toolchain.sh
@@ -66,7 +75,6 @@ jobs:
           fail-on-cache-miss: true
       - name: fmt
         run: |
-          git config --global --add safe.directory "$PWD"
           git fetch -q origin main
           changed=$(git diff --name-only --diff-filter=d origin/main...HEAD -- '*.av')
           [ -z "$changed" ] || build/avra fmt --check $changed
@@ -85,6 +93,11 @@ jobs:
         package: ${{ fromJSON(needs.compiler.outputs.packages) }}
     name: suite (${{ matrix.package }})
     steps:
+      - name: git
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates git >/dev/null
+          git config --system --add safe.directory '*'
       - uses: actions/checkout@v4
       - run: sh tools/ci-toolchain.sh
       - uses: actions/cache/restore@v4
