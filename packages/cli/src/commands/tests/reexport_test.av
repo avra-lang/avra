@@ -3,8 +3,7 @@
 //! build` makes agree, a held facade still re-exports, and a
 //! re-exported declaration nobody calls costs the binary nothing.
 use @std.io.{make_dirs, write_text, read_bytes}
-use @std.process.{tool, cmd, inherited, Outcome, ProcessError}
-use @std.time.{ms, now_ns}
+use @std.time.{now_ns}
 use @std.text.{repeat}
 
 /// The re-exported module: `twice`, and `heavy`, which no program here calls.
@@ -29,27 +28,14 @@ fn facade_package(wide: bool, n: int) -> string {
     root
 }
 
-fn facade_ran(args: List<string>) -> Result<Outcome, ProcessError> {
-    (cmd(tool(avra_bin())?, args) with { env: inherited(), timeout: ms(60000) }).outcome()
-}
-
-/// The stdout of a run that ended clean.
-fn facade_stdout(r: Result<Outcome, ProcessError>) -> string? {
-    match r { .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { null }, .Err(_) -> null }
-}
-
 /// The binary `avra build` made of the package's entry.
 fn facade_binary(root: string) -> string? {
-    facade_stdout(facade_ran(["build", "${root}/src/main.av"]))?.replace("\n", "")
-}
-
-fn facade_program_ran(binary: string) -> Result<Outcome, ProcessError> {
-    (cmd(tool(binary)?, []) with { timeout: ms(20000) }).outcome()
+    clean_stdout(avra_ran(["build", "${root}/src/main.av"]))?.replace("\n", "")
 }
 
 /// What the binary printed.
 fn facade_built(root: string) -> string? {
-    facade_stdout(facade_program_ran(facade_binary(root) ?? ""))
+    clean_stdout(binary_ran(facade_binary(root) ?? ""))
 }
 
 /// The binary's size in bytes.
@@ -68,7 +54,7 @@ fn rebuilt(root: string, n: int) -> string? {
 spec "export use — a facade module over a real package" {
     given "a facade re-exporting `twice` from `util`" {
         then "`run` answers through the facade" {
-            facade_stdout(facade_ran(["run", "${facade_package(false, 3)}/src/main.av"])) == "6\n"
+            clean_stdout(avra_ran(["run", "${facade_package(false, 3)}/src/main.av"])) == "6\n"
         }
         then "`build` answers a binary printing the same" {
             facade_built(facade_package(false, 3)) == "6\n"

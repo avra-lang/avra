@@ -3,8 +3,7 @@
 //! engines answering the same text — each file's fn, and each file's
 //! type with a method of one name, under symbols of their own.
 use @std.io.{make_dirs, write_text}
-use @std.process.{tool, cmd, inherited, Outcome, ProcessError}
-use @std.time.{ms, now_ns}
+use @std.time.{now_ns}
 
 /// A file's own private `helper`, `Table`, `limit`, `pick<T>`, `Mode`
 /// and `once` value, and an export reading them all — `helper` also as
@@ -36,29 +35,16 @@ fn apart_package() -> string {
     "${root}/src/main.av"
 }
 
-fn apart_ran(args: List<string>) -> Result<Outcome, ProcessError> {
-    (cmd(tool(avra_bin())?, args) with { env: inherited(), timeout: ms(60000) }).outcome()
-}
-
-/// The stdout of a run that ended clean.
-fn apart_stdout(r: Result<Outcome, ProcessError>) -> string? {
-    match r { .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { null }, .Err(_) -> null }
-}
-
-fn apart_binary(binary: string) -> Result<Outcome, ProcessError> {
-    (cmd(tool(binary)?, []) with { timeout: ms(20000) }).outcome()
-}
-
 /// What the binary `avra build` makes of the entry printed.
 fn apart_built(entry: string) -> string? {
-    let binary? = apart_stdout(apart_ran(["build", entry])) else { return null }
-    apart_stdout(apart_binary(binary.replace("\n", "")))
+    let binary? = clean_stdout(avra_ran(["build", entry])) else { return null }
+    clean_stdout(binary_ran(binary.replace("\n", "")))
 }
 
 spec "private names two files keep apart" {
     given "a package whose two files each declare a private `helper` and `Table`" {
         then "`run` answers each file's own" {
-            apart_stdout(apart_ran(["run", apart_package()])) == "9 121\n"
+            clean_stdout(avra_ran(["run", apart_package()])) == "9 121\n"
         }
         then "`build` answers a binary printing the same" {
             apart_built(apart_package()) == "9 121\n"

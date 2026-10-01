@@ -1689,3 +1689,15 @@ file), never a time-window read off file-adjacency in the trace —
 found measuring compiler-db-57.18's S3 cut (per-decl warm-check
 reuse), where this cost a wasted first attempt before falling back to
 counting `Typed`/`Lowered` compute events directly.
+
+## A warm edit is timed with text no earlier run checked
+
+`check` keeps its whole answer under the source's bytes, so an edit
+whose text some earlier run already saw is a cache HIT — it examines
+nothing and answers in ~225 ms. A timing loop that alternates one edit
+with its restore measures that hit from the second round on: main and
+a branch both read ~225 ms while the real warm edit took 8 s and 6 s.
+Each round writes text never checked before (`avra $i-$RANDOM: …`) and
+the restore is untimed; only the first round of a toggling loop was
+ever an edit. Measure main and the branch interleaved on one machine,
+each tree with its own compiler, and quote every round, not the best.
