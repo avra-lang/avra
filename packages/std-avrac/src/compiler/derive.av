@@ -13,7 +13,7 @@ use diagnostics.{Diag, render_among, render_facts_among, SourceFile}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
 use compiler.host.{no_source}
-use compiler.findings.{findings_text}
+use compiler.findings.{findings_text, file_findings_text}
 
 /// OFF BY DEFAULT (avra-8sb5.57.55's receipt): an edited recheck does
 /// not yet clear the bar (at or under main's own ~5-6s keep phase).
@@ -163,9 +163,20 @@ fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", okey]) }
 /// them.
 fn rules_key(okey: string) -> string { node_key(Stored.Warn, ["rules", okey]) }
 
+/// Where a file's findings rows live, beside its rendered rule findings.
+fn findings_key(okey: string) -> string { node_key(Stored.Warn, ["findings", okey]) }
+
+/// Whether a file's rule findings were kept, rendered and as rows.
+fn ruled(store: Store, okey: string) -> bool {
+    store.has(Stored.Warn, rules_key(okey)) && store.has(Stored.Warn, findings_key(okey))
+}
+
 /// What a parsed file says now: its `Said`, and its rule findings when
 /// the want asks for them.
-type Spoken = { said: Said, rules: string? }
+type Spoken = { said: Said, rules: Ruled? }
+
+/// A file's rule findings: rendered for what it says, and as findings rows.
+type Ruled = { rendered: string, rows: string }
 
 /// A `Said` as its row: the case count, a line per case, then the warnings.
 fn said_wire(s: Said) -> string {
@@ -253,7 +264,7 @@ impl Workspace {
         let d = self.derived(entry, Want.Diagnostics)?
         let key = d.program.ws.kept_key(under)
         let licenses = stale_license_lines(d.program)
-        let findings = findings_text(d.program)
+        let findings = d.program.ws.all_findings(d.store, d.program)
         self.db.insert_warn(store, key, d.warnings)
         self.db.insert_licenses(store, key, licenses)
         self.db.insert_findings(store, key, findings)
@@ -265,6 +276,14 @@ impl Workspace {
             licenses: licenses,
             findings: findings,
         }
+    }
+
+    /// EVERY RULE FINDING THE PROGRAM HOLDS: a read file's found now, a held
+    /// file's answered by the rows it kept — the hold read every file whose
+    /// rows were missing (`unruled`).
+    fn all_findings(store: Store, p: Program) -> string {
+        let held = [store.get(Stored.Warn, findings_key(self.held_okey(store, fi.path))) ?? "" for fi in self.decls.all_files() if self.is_held(fi.id)]
+        joined([t for t in [findings_text(p)].concat(held) if t != ""], "\n")
     }
 
     /// NOTHING FOR `check` TO EXAMINE: a directory of programs (no `src/` —
@@ -371,10 +390,7 @@ impl Workspace {
                 kept: store.has(Stored.Unit, self.asks_key(okey)),
             },
             match want {
-                .Diagnostics -> StoreRow {
-                    says: "its rule findings",
-                    kept: store.has(Stored.Warn, rules_key(okey)),
-                },
+                .Diagnostics -> StoreRow { says: "its rule findings", kept: ruled(store, okey) },
                 .Binary -> StoreRow { says: "its object", kept: store.has(Stored.Obj, okey) },
             },
         ]
@@ -385,7 +401,7 @@ impl Workspace {
     /// rule findings were never kept, since only a check keeps them.
     fn unruled(store: Store, want: Want) -> List<ReadFile> {
         match want {
-            .Diagnostics -> [ReadFile { path: path, why: Reads.Unruled } for path in held_paths(self) if !store.has(Stored.Warn, rules_key(self.held_okey(store, path)))],
+            .Diagnostics -> [ReadFile { path: path, why: Reads.Unruled } for path in held_paths(self) if !ruled(store, self.held_okey(store, path))],
             .Binary -> [],
         }
     }
@@ -719,7 +735,7 @@ impl Workspace {
                 warnings: p.warned(a.diagnostics),
                 cases: cases,
             }
-            let rules: string? = if want is .Diagnostics { p.warned(rule_findings(analysed(a), a.view.stmts)) } else { null }
+            let rules: Ruled? = if want is .Diagnostics { ruled_now(p, a, rule_findings(analysed(a), a.view.stmts)) } else { null }
             return Spoken { said: said, rules: rules }
         }
         let outcome = self.witnessed_check(a.view.file)
@@ -741,7 +757,10 @@ impl Workspace {
                 warnings: joined([render_facts_among(f, sources) for f in warned], "\n\n"),
                 cases: cases,
             },
-            rules: joined([render_facts_among(f, sources) for f in warned_rules], "\n\n"),
+            rules: Ruled {
+                rendered: joined([render_facts_among(f, sources) for f in warned_rules], "\n\n"),
+                rows: file_findings_text(a, rule_findings(analysed(a), a.view.stmts)),
+            },
         }
     }
 
@@ -790,9 +809,15 @@ impl Workspace {
         let _ = store.keep_once(Stored.Warn, said_key(okey), said_wire(told.said))
         self.keep_parts(store, path)
         let rules? = told.rules else { return told.said }
-        let _ = store.keep_once(Stored.Warn, rules_key(okey), rules)
-        told.said with { warnings: spoken([told.said.warnings, rules]) }
+        let _ = store.keep_once(Stored.Warn, rules_key(okey), rules.rendered)
+        let _ = store.keep_once(Stored.Warn, findings_key(okey), rules.rows)
+        told.said with { warnings: spoken([told.said.warnings, rules.rendered]) }
     }
+}
+
+/// A file's rule findings found now.
+fn ruled_now(p: Program, a: Analysis, found: List<Diag>) -> Ruled {
+    Ruled { rendered: p.warned(found), rows: file_findings_text(a, found) }
 }
 
 /// A `boxed` row's name, when it names `path` — null for every other row.
