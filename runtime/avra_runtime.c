@@ -907,8 +907,11 @@ int64_t avra_streq(const char* a, const char* b) {
 // binary must too. LLVM's sdiv/srem by zero is undefined behaviour —
 // left raw it printed an answer and exited 0, which is a silently
 // wrong program.
+// Division by -1 is negation, which WRAPS on the smallest int as `-`
+// does; C leaves that one quotient undefined, so it is spelled.
 int64_t avra_int_div(int64_t a, int64_t b) {
     if (b == 0) { avra_trap("division by zero"); }
+    if (b == -1) { return (int64_t)((uint64_t)0 - (uint64_t)a); }
     return a / b;
 }
 
@@ -942,6 +945,7 @@ int64_t avra_int_shr(int64_t a, int64_t b) {
 
 int64_t avra_int_mod(int64_t a, int64_t b) {
     if (b == 0) { avra_trap("division by zero"); }
+    if (b == -1) { return 0; }
     return a % b;
 }
 

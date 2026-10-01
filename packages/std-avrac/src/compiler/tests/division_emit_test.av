@@ -1,0 +1,47 @@
+//! A division by a plain constant is the machine's divide; every other
+//! divisor runs the guarded runtime body.
+use @std.io.{make_dirs, read_text}
+use @std.time.{now_ns}
+use @std.avrac.testing.{ir_of, refused_at_run}
+use compiler.backend.{emit_ll}
+
+/// One directory per run, so no earlier run's module answers for this one.
+once fn emit_base() -> string { "/tmp/avra-division-emit-test/${now_ns()}" }
+
+/// The LLVM text of a program whose `f` divides and takes the remainder by `d`.
+fn emitted(d: string, name: string) -> string {
+    let _ = make_dirs(emit_base())
+    let path = "${emit_base()}/${name}.ll"
+    let source = "fn f(x: int) -> int { x / ${d} + x % ${d} }\nf(1000)"
+    if emit_ll(ir_of(source), path) != null { return "" }
+    read_text(path) catch ""
+}
+
+fn guarded(ll: string) -> bool { ll.contains("call i64 @avra_int_div(") && ll.contains("call i64 @avra_int_mod(") }
+
+fn machine(ll: string) -> bool { ll.contains("sdiv i64") && ll.contains("srem i64") }
+
+spec "compiler/backend — division" {
+    given "a constant divisor no division traps on" {
+        then "256 is sdiv and srem, with no runtime call" {
+            let ll = emitted("256", "pos")
+            machine(ll) && !guarded(ll)
+        }
+        then "-7 is sdiv and srem, with no runtime call" {
+            let ll = emitted("-7", "neg")
+            machine(ll) && !guarded(ll)
+        }
+    }
+    given "a divisor a division can trap or overflow on" {
+        then "zero runs the guarded body" { guarded(emitted("0", "zero")) }
+        then "zero still refuses the run" {
+            refused_at_run("fn q(n: int) -> int { n / 0 }\nq(7)", "division by zero") &&
+                refused_at_run("fn r(n: int) -> int { n % 0 }\nr(7)", "division by zero")
+        }
+        then "-1 runs the guarded body" { guarded(emitted("-1", "minus_one")) }
+        then "a computed divisor runs the guarded body" {
+            let ll = emitted("(x - 1)", "computed")
+            guarded(ll) && !machine(ll)
+        }
+    }
+}
