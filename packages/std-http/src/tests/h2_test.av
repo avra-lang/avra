@@ -282,6 +282,24 @@ spec "std.http h2" {
             let _ = c.fed(heads(203, get_head("/"), 0), 0)
             full && reset_of(c, 203) == -1 && alive(c) && c.orphans.length == 98
         }
+        then "a stream closed out of order leaves every other live stream found at its own place" {
+            mut c = conn_after([heads(2 * i + 1, get_head("/"), 0) for i in 0..4])
+            let _ = c
+                .fed(
+                    [
+                        frame_bytes(.Reset, 0, 3, u32_bytes(8)),
+                        frame_bytes(.Reset, 0, 1, u32_bytes(8)),
+                    ]
+                        .bytes(),
+                    0,
+                )
+            ["${s.id}" for s in c.streams].join(",") == ["${i}" for i in c.ids].join(",") &&
+                c.live(5) &&
+                c.live(7) &&
+                !c.live(1) &&
+                !c.live(3) &&
+                c.ids.length == 2
+        }
         then "a malformed header block is a COMPRESSION_ERROR" {
             goaway_of(
                 conn_after([frame_bytes(.Headers, end_headers | end_stream, 1, [128].bytes()!)]),

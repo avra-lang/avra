@@ -149,9 +149,22 @@ export fn frame_bytes(kind: FrameKind, flags: int, stream: int, payload: Bytes) 
 /// the stream id clear — then the payload.
 export fn frame_onto(w: Bytes, kind: FrameKind, flags: int, stream: int, payload: Bytes) -> Bytes {
     let n = payload.length
+    let s = stream & int_bound
     w
-        .concat([(n >> 16) & 255, (n >> 8) & 255, n & 255, kind_code(kind), flags].bytes()!)
-        .concat(u32_bytes(stream & int_bound))
+        .concat(
+            [
+                (n >> 16) & 255,
+                (n >> 8) & 255,
+                n & 255,
+                kind_code(kind),
+                flags,
+                (s >> 24) & 255,
+                (s >> 16) & 255,
+                (s >> 8) & 255,
+                s & 255,
+            ]
+                .bytes()!,
+        )
         .concat(payload)
 }
 
@@ -333,7 +346,9 @@ export enum Arrived {
 // ── The connection ──────────────────────────────────────────────
 
 /// One HTTP/2 connection, server side: the settings each end sent, the
-/// HPACK state, the live streams and the recently closed ones, the
+/// HPACK state, the live streams — each one's id at the same place in
+/// `ids`, so a stream is found by value with nothing built — and the
+/// recently closed ones, the
 /// highest stream the peer opened, both connection windows, the header
 /// block in flight, and the two things `fed` leaves behind — `out`,
 /// what is owed the peer, and `ready`, the requests completed.
@@ -358,6 +373,7 @@ export type H2Conn = {
     prefaced: bool,
     settled: bool,
     streams: List<H2Stream>,
+    ids: List<int>,
     gone: List<Gone>,
     closes: int,
     last: int,
@@ -387,6 +403,7 @@ export fn h2_server(limits: Limits) -> H2Conn {
         prefaced: false,
         settled: false,
         streams: [],
+        ids: [],
         gone: [],
         closes: 0,
         last: 0,
@@ -478,7 +495,10 @@ impl H2Conn {
     // ── H2Stream bookkeeping ──────────────────────────────────────
 
     /// Where live stream `id` sits in `streams`, or absent.
-    fn live_at(id: int) -> int? { self.streams.find_index(it.id == id) }
+    fn live_at(id: int) -> int? {
+        let at = self.ids.index_of(id)
+        if at < 0 { null } else { at }
+    }
 
     /// What stream `id` stands for.
     fn standing(id: int) -> Standing {
@@ -512,7 +532,11 @@ impl H2Conn {
     mut fn dropped_stream(id: int) {
         let at? = self.live_at(id) else { return }
         let last = self.streams.pop()
-        if at < self.streams.length { self.streams[at] = last }
+        let last_id = self.ids.pop()
+        if at < self.streams.length {
+            self.streams[at] = last
+            self.ids[at] = last_id
+        }
     }
 
     /// Live stream `id` reset with `why` — a stream already gone is
@@ -560,15 +584,15 @@ impl H2Conn {
     /// at once. A body is refused the moment it passes its declared
     /// length, and at its end when short of it (§8.1.1).
     mut fn data_on(at: int, f: Frame, body: Bytes) -> H2Error? {
-        let s = self.streams[at]
-        if !receiving(s.state) { return self.stream_error(s.id, .StreamClosed) }
+        let id = self.streams[at].id
+        if !receiving(self.streams[at].state) { return self.stream_error(id, .StreamClosed) }
         let n = f.payload.length
-        if n > s.recv { return self.stream_error(s.id, .FlowControl) }
-        self.streams[at].recv = s.recv - n
-        self.streams[at].received = s.received + body.length
-        if !within_declared(s.declared, s.received + body.length) { return self.stream_error(s.id, .Protocol) }
-        if s.deaf { return null }
-        self.streams[at].inbound = s.inbound.concat(body)
+        if n > self.streams[at].recv { return self.stream_error(id, .FlowControl) }
+        self.streams[at].recv = self.streams[at].recv - n
+        self.streams[at].received = self.streams[at].received + body.length
+        if !within_declared(self.streams[at].declared, self.streams[at].received) { return self.stream_error(id, .Protocol) }
+        if self.streams[at].deaf { return null }
+        self.streams[at].inbound = self.streams[at].inbound.concat(body)
         self.granted(at)
         if !flagged(f.flags, end_stream) { return null }
         self.remote_ended(at)
@@ -590,21 +614,22 @@ impl H2Conn {
     /// the peer never has more in flight than one window's worth of
     /// what nobody has read.
     mut fn granted(at: int) {
-        let s = self.streams[at]
-        let free = self.ours.window - s.recv - s.inbound.length
-        if free * 2 < self.ours.window || !receiving(s.state) || s.deaf { return }
-        self.owe(.WindowUpdate, 0, s.id, u32_bytes(free))
-        self.streams[at].recv = s.recv + free
+        let free = self.ours.window - self.streams[at].recv - self.streams[at].inbound.length
+        if free * 2 < self.ours.window ||
+            !receiving(self.streams[at].state) ||
+            self.streams[at].deaf { return }
+        self.owe(.WindowUpdate, 0, self.streams[at].id, u32_bytes(free))
+        self.streams[at].recv = self.streams[at].recv + free
     }
 
     /// The peer ended the stream at `at`: its declared length kept
     /// (§8.1.1) — and closed, when this end has already ended its
     /// answer.
     mut fn remote_ended(at: int) -> H2Error? {
-        let s = self.streams[at]
-        if short_of(s.declared, s.received) { return self.stream_error(s.id, .Protocol) }
-        if !sending(s.state) {
-            self.closed(s.id, .Ended)
+        let id = self.streams[at].id
+        if short_of(self.streams[at].declared, self.streams[at].received) { return self.stream_error(id, .Protocol) }
+        if !sending(self.streams[at].state) {
+            self.closed(id, .Ended)
             return null
         }
         self.streams[at].state = .HalfClosedRemote
@@ -718,7 +743,8 @@ impl H2Conn {
             declared: null,
             handed: false,
         }
-        self.streams = self.streams.concat([s])
+        self.streams.push(s)
+        self.ids.push(id)
         .Head
     }
 
@@ -883,10 +909,10 @@ impl H2Conn {
     }
 
     mut fn stream_window(at: int, grow: int) -> H2Error? {
-        let s = self.streams[at]
-        if s.send + grow > int_bound { return self.stream_error(s.id, .FlowControl) }
-        self.streams[at].send = s.send + grow
-        self.flushed(s.id)
+        let id = self.streams[at].id
+        if self.streams[at].send + grow > int_bound { return self.stream_error(id, .FlowControl) }
+        self.streams[at].send = self.streams[at].send + grow
+        self.flushed(id)
         null
     }
 
@@ -912,7 +938,7 @@ impl H2Conn {
     mut fn piece(id: int, b: Bytes, last: bool) {
         let at? = self.live_at(id) else { return }
         if !self.streams[at].answered || !self.streams[at].more { return }
-        self.streams[at].owed = self.streams[at].owed.concat(b)
+        self.streams[at].owed = if self.streams[at].owed.is_empty() { b } else { self.streams[at].owed.concat(b) }
         self.streams[at].more = !last
         if last && self.streams[at].owed.is_empty() {
             self.owe(.Data, end_stream, id, no_bytes)
@@ -957,27 +983,16 @@ impl H2Conn {
     /// ends the stream when no more is to come.
     mut fn flushed(id: int) {
         let at? = self.live_at(id) else { return }
-        let s = self.streams[at]
-        if s.owed.is_empty() { return }
-        let room = least(least(self.send, s.send), s.owed.length)
+        let owed = self.streams[at].owed
+        if owed.is_empty() { return }
+        let room = least(least(self.send, self.streams[at].send), owed.length)
         if room <= 0 { return }
-        let ends = room == s.owed.length && !s.more
-        mut sent = 0
-        while sent < room {
-            let n = least(room - sent, self.theirs.frame)
-            self
-                .owe(
-                    .Data,
-                    if ends && sent + n == room { end_stream } else { 0 },
-                    id,
-                    s.owed.slice(sent, sent + n),
-                )
-            sent = sent + n
-        }
+        let ends = room == owed.length && !self.streams[at].more
+        self.out = data_frames(self.out, id, owed, room, ends, self.theirs.frame)
         self.send = self.send - room
         self.delivered = self.delivered + room
-        self.streams[at].send = s.send - room
-        self.streams[at].owed = s.owed.slice(room, s.owed.length)
+        self.streams[at].send = self.streams[at].send - room
+        self.streams[at].owed = if room == owed.length { no_bytes } else { owed.slice(room, owed.length) }
         if ends { self.local_ended(id) }
     }
 
@@ -985,10 +1000,10 @@ impl H2Conn {
     /// for them.
     mut fn arrived(id: int) -> Arrived {
         let at? = self.live_at(id) else { return .Cut }
-        let s = self.streams[at]
+        let got = self.streams[at].inbound
         self.streams[at].inbound = no_bytes
         self.granted(at)
-        if receiving(s.state) { .Flowing(s.inbound) } else { .Whole(s.inbound) }
+        if receiving(self.streams[at].state) { .Flowing(got) } else { .Whole(got) }
     }
 
     /// Stream `id`'s request body no longer heard: what arrives is
@@ -1059,6 +1074,28 @@ impl H2Conn {
 }
 
 fn least(a: int, b: int) -> int { if a < b { a } else { b } }
+
+/// The first `room` octets of `owed` appended to `w` as DATA frames no
+/// longer than `max`, the last ending the stream when `ends` — `owed`
+/// itself, unsliced, when it all fits one frame.
+fn data_frames(w: Bytes, id: int, owed: Bytes, room: int, ends: bool, max: int) -> Bytes {
+    let tail = if ends { end_stream } else { 0 }
+    if room == owed.length && room <= max { return frame_onto(w, .Data, tail, id, owed) }
+    mut out = w
+    mut sent = 0
+    while sent < room {
+        let n = least(room - sent, max)
+        out = frame_onto(
+            out,
+            .Data,
+            if sent + n == room { tail } else { 0 },
+            id,
+            owed.slice(sent, sent + n),
+        )
+        sent = sent + n
+    }
+    out
+}
 
 /// A header block appended to `w` as HEADERS then as many CONTINUATIONs
 /// as the peer's frame size needs, END_HEADERS on the last (§4.3).
@@ -1194,7 +1231,7 @@ fn regular_kept(f: HeaderField) -> bool {
         f.name.run(0, name_octet) == f.name.length &&
         f.value.run(0, value_octet) == f.value.length &&
         !edged(f.value) &&
-        !connection_specific.any(it == f.name) &&
+        !connection_specific.contains(f.name) &&
         (f.name != te_name || f.value == trailers_word)
 }
 

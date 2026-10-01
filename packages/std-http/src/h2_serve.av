@@ -108,7 +108,7 @@ export type Pour = { id: int, stream: Stream, delim: ReplyBody, sent: int }
 export fn answered_on(mut h: H2Conn, id: int, r: Response, asked: Method) -> Pour? {
     let sent = h2_sendable(r)
     let delim = delimited(sent, 1)
-    let fields = [field(":status", "${sent.status}")]
+    let fields = [status_field(sent.status)]
         .concat(
             [answer_field(folded(hd.name.bytes()), hd.value.bytes()) for hd in sent.headers if !scoped(hd.name)],
         )
@@ -130,8 +130,17 @@ export fn answered_on(mut h: H2Conn, id: int, r: Response, asked: Method) -> Pou
 /// no field an attacker sets beside it on the connection can probe it
 /// through the table's compression (RFC 9113 §10.6, RFC 7541 §7.1.3).
 fn answer_field(name: Bytes, value: Bytes) -> HeaderField {
-    HeaderField { name: name, value: value, sensitive: secret_names.any(it == name) }
+    HeaderField { name: name, value: value, sensitive: secret_names.contains(name) }
 }
+
+/// `:status` as a field — laid out once for the codes a status line
+/// names, 100 to 599.
+fn status_field(code: int) -> HeaderField {
+    if code >= 100 && code < 600 { return status_fields[code - 100] }
+    field(":status", "${code}")
+}
+
+const status_fields: List<HeaderField> = [field(":status", "${c}") for c in 100..600]
 
 /// A `content-length` for a body of known length; none for one that
 /// ends when its stream does.
@@ -248,7 +257,7 @@ fn flowing_empty(a: Arrived) -> bool {
 }
 
 /// Whether a field names the connection, which HTTP/2 refuses (§8.2.2).
-fn scoped(name: string) -> bool { connection_specific.any(it == folded(name.bytes())) }
+fn scoped(name: string) -> bool { connection_specific.contains(folded(name.bytes())) }
 
 /// ASCII letters lowercased; every other octet as it is. A name that
 /// holds no capital — nearly every one a handler writes — is answered

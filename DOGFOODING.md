@@ -504,6 +504,17 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       matcher needs the enclosing fn's scope (a read BEFORE the
       write); the read-then-write scan lives in lane C's landing.
 
+- memory.slot_alias_write (unratcheted) A RECORD READ OUT OF A LIST SLOT
+      AND HELD ACROSS A WRITE TO THAT SLOT CLONES IT. `let s =
+      self.streams[at]` then `self.streams[at].state = …` finds the
+      element shared — the binding holds it to the scope's end — and
+      copies the whole record on every such write: two clones of a
+      13-field record per HTTP/2 request in `h2.av` (callgrind,
+      `array_clone`). Read the fields through the slot, or bind the
+      SCALARS the verb needs (`let id = self.streams[at].id`), never
+      the record, in a verb that then writes the slot. The same law as
+      `style.same_scope_borrow`, one level down: the element, not the
+      list.
 - style.unwritable_spelling_key (unratcheted) AN UNWRITABLE SPELLING IS A KEY — a name or a
       key that must never collide with what a program writes is
       spelled with a character the lexer refuses in that position,
