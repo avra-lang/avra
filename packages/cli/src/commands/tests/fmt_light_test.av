@@ -1,0 +1,34 @@
+//! A small package's `fmt --check` is light: the shim runs it where it
+//! stands, never queued behind another step holding the build lock — so
+//! a suite's verdict never waits on whatever else the machine builds.
+//! `avra_bin`, `exit_is_zero` and `provider_package` are the neighbouring
+//! tests' own: this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.process.{tool, cmd, minimal, Ready, Exit, ProcessError}
+use @std.time.{ms}
+
+/// `fmt --check root` under a build lock of this run's own, held by a
+/// sleeping child the way another step holds the machine's.
+fn checked_under_held_lock(root: string) -> Result<Exit, ProcessError> {
+    let lock = "${root}/build-lock"
+    let holder = cmd(tool("sleep")?, ["120"]).start(Ready.Started, ms(5000))?
+    let _ = make_dirs(lock)
+    let _ = write_text("${lock}/pid", "${holder.pid()}\n")
+    let env = minimal().passing(["LLVM_PREFIX"]).with_var("AVRA_BUILD_LOCK", lock)
+    let ran = (cmd(tool(avra_bin())?, ["fmt", "--check", root]) with { env: env, timeout: ms(30000) })
+        .outcome()
+    let _ = holder.stop()
+    (ran?).exit
+}
+
+spec "avra fmt — a small package's check is light" {
+    given "a two-file package, and another step holding the build lock" {
+        then "`fmt --check` over the package answers clean inside the bound" {
+            let p = provider_package("light", "ONE")
+            match checked_under_held_lock(p.root) {
+                .Ok(status) -> exit_is_zero(status),
+                .Err(_) -> false,
+            }
+        }
+    }
+}

@@ -197,22 +197,34 @@ fn loose_groups(files: List<string>) -> List<Group> {
 /// binary at the SAME path inside one process must still disagree;
 /// see compiler/build.av). `shared_id` is a caller's OWN knowledge
 /// that ITS workspaces share one binary, never a general assumption.
-fn fold_groups(groups: List<Group>, write: bool, shared_id: string? = null) -> Tally {
+///
+/// `seen` counts the files every earlier group took, so a run asked to
+/// stay light leaves before the group that would take it past the bound.
+fn fold_groups(groups: List<Group>, write: bool, shared_id: string? = null, seen: int = 0) -> Tally {
     if groups.is_empty() { return empty_tally() }
     let g = groups[0]
     let ws = workspace_for(g.root)
     if shared_id != null { ws.seed_compiler_id(shared_id!) }
+    let files = g.explicit ?? ws.all_files(joined_path(g.root, "src"))
+    light_or_leave(seen + files.length)
     let t0 = now_ns()
     let store = ws.opened_store()
     let store_ns = now_ns() - t0
-    let files = g.explicit ?? ws.all_files(joined_path(g.root, "src"))
     let group = check_files(store, ws, files, write)
     // THE GROUP'S WORKSPACE PHASES ARE READ ONCE, after its files are
     // all checked — `ws.phases` accumulates for the whole workspace,
     // so reading it per file would fold the same early spans in again
     // with every later one.
     let all = group with { phases: group.phases.concat([Phase { name: "store", ns: store_ns }]).concat(ws.phases.get()) }
-    combined(all, fold_groups(groups.slice(1, groups.length), write, shared_id ?? ws.compiler_id()))
+    combined(
+        all,
+        fold_groups(
+            groups.slice(1, groups.length),
+            write,
+            shared_id ?? ws.compiler_id(),
+            seen + files.length,
+        ),
+    )
 }
 
 fn workspace_for(root: string) -> Workspace {
