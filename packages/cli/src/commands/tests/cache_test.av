@@ -1,7 +1,8 @@
 //! `avra cache` — the pack's modes by their words, one spelling each, and
 //! `held` answering a check's hold file by file.
 use @std.io.{make_dirs, write_text}
-use @std.time.{now_ns}
+use @std.time.{ms, now_ns}
+use @std.process.{tool, cmd, Outcome, ProcessError}
 use @std.avrac.compiler.{Want, FileHold, HeldMismatch}
 use commands.{cache_mode, CacheMode, checked_at, root_workspace, disagreement_line}
 
@@ -29,6 +30,23 @@ fn lib_probe(name: string) -> string {
     root
 }
 
+/// `avra cache <words>` run as a shell runs it. `avra_bin` is hang_test.av's,
+/// `exit_code_1` build_report_test.av's: this module shares one namespace.
+fn cache_ran(words: List<string>) -> Result<Outcome, ProcessError> {
+    let t = tool(avra_bin())?
+    (cmd(t, ["cache"].concat(words)) with { timeout: ms(20000) }).outcome()
+}
+
+/// Exit 1, nothing on stdout, and the rebuild named on stderr.
+fn refuses_unwalked(words: List<string>) -> bool {
+    match cache_ran(words) {
+        .Ok(o) -> exit_code_1(o.exit) &&
+            o.out.stdout.is_empty() &&
+            o.out.stderr.contains("is being rebuilt as a lazy walk — not answered yet"),
+        .Err(_) -> false,
+    }
+}
+
 fn main_hold(rows: List<FileHold>) -> FileHold? { rows.find(it.path.ends_with("/src/main.av")) }
 
 spec "commands/cache" {
@@ -41,6 +59,14 @@ spec "commands/cache" {
         }
         then "the retired spellings name no mode" {
             cache_mode("db") == null && cache_mode("explain") == null
+        }
+    }
+    given "a mode the lazy walk does not answer yet" {
+        then "the summary refuses, exit 1, nothing on stdout" {
+            refuses_unwalked([])
+        }
+        then "why, changed and dependents refuse, exit 1, nothing on stdout" {
+            [["why", "main"], ["changed", "main"], ["dependents", "main"]].all(refuses_unwalked(it))
         }
     }
     given "a package a check has just read" {
