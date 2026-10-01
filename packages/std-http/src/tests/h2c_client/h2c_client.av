@@ -1,0 +1,84 @@
+// TWO REQUESTS, ONE CONNECTION, ONE TASK. A client connection mints
+// two odd streams, sends both requests at once, and reads both answers
+// off the one socket — the shape HTTP/2 exists for. Both engines.
+use @std.net.{Conn, NetError, connect}
+use @std.time.{ms, secs, within}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.h2.{H2Conn, h2_client}
+use @std.http.hpack.{HeaderField, header_field}
+
+export server app {
+    port: 0
+    get "/one" { req -> "one" }
+    get "/two" { req -> "two" }
+}
+
+fn fields_for(path: string) -> List<HeaderField> {
+    [
+        header_field(":method", "GET"),
+        header_field(":scheme", "http"),
+        header_field(":path", path),
+        header_field(":authority", "h"),
+    ]
+}
+
+fn text_of(b: Bytes) -> string { b.text() ?? "?" }
+
+/// Both answers over one connection: each body accumulated as it
+/// arrives, so a body is never left to a close that already dropped it.
+fn two_at_once(port: int) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    mut h = h2_client(limits())
+    let one = h.ask(fields_for("/one"), no_bytes)
+    let two = h.ask(fields_for("/two"), no_bytes)
+    c.write(h.drained())?
+    mut buf = no_bytes
+    mut at = 0
+    mut body1 = ""
+    mut body2 = ""
+    mut done1 = false
+    mut done2 = false
+    mut heads = 0
+    mut turns = 0
+    while (heads < 2 || !done1 || !done2) && turns < 60 {
+        turns = turns + 1
+        let got = match within ms(300) { c.read(65536) } { .Ok(b) -> b, .Err(_) -> null }
+        if got == null { break }
+        buf = buf.concat(got!)
+        at = h.fed(buf, at)
+        heads = heads + h.taken().length
+        h.flushed_all()
+        for id in [one, two] {
+            match h.arrived(id) {
+                .Whole(b) -> {
+                    if id == one {
+                        body1 = body1 + text_of(b)
+                        done1 = true
+                    } else {
+                        body2 = body2 + text_of(b)
+                        done2 = true
+                    }
+                },
+                .Flowing(b) -> {
+                    if id == one { body1 = body1 + text_of(b) } else { body2 = body2 + text_of(b) }
+                },
+                .Cut -> if id == one { done1 = true } else { done2 = true },
+            }
+        }
+        let out = h.drained()
+        if !out.is_empty() { c.write(out)? }
+    }
+    .Ok("${heads} heads, streams ${one} and ${two}: ${body1} ${body2}")
+}
+
+fn shown() -> Result<string, NetError> {
+    let s = app.listening()?
+    spawn s.run(1)
+    defer s.stop()
+    two_at_once(s.listener.port)
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

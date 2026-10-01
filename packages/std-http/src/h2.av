@@ -205,9 +205,10 @@ export type Settings = {
     list: int = 4294967295,
 }
 
-/// The settings this server advertises: a hundred streams at once, a
-/// header list no longer than the 1.1 head's bound.
-export fn server_settings(limits: Limits) -> Settings { Settings { push: false, streams: 100, list: limits.head } }
+/// The settings this end advertises: a hundred streams at once, a
+/// header list no longer than the 1.1 head's bound — the same at both
+/// ends, and a client needs push off as much as a server does.
+export fn conn_settings(limits: Limits) -> Settings { Settings { push: false, streams: 100, list: limits.head } }
 
 /// Settings as a SETTINGS payload: every one that differs from the
 /// protocol's default.
@@ -364,7 +365,13 @@ export enum Arrived {
 /// until the server says it is done with it (`released`), so a peer
 /// that resets what it asked cannot make the server answer more at once
 /// than the bound.
+/// Which end of a connection this is: a SERVER reads the peer's
+/// preface and answers its requests; a CLIENT writes the preface and
+/// mints the odd stream ids it asks on.
+export enum Role { Server, Client }
+
 export type H2Conn = {
+    role: Role,
     ours: Settings,
     theirs: Settings,
     limits: Limits,
@@ -393,8 +400,9 @@ export type H2Conn = {
 /// A server connection awaiting the client's preface, its own SETTINGS
 /// already owed (§3.4).
 export fn h2_server(limits: Limits) -> H2Conn {
-    let ours = server_settings(limits)
+    let ours = conn_settings(limits)
     H2Conn {
+        role: Role.Server,
         ours: ours,
         theirs: Settings {},
         limits: limits,
@@ -411,6 +419,38 @@ export fn h2_server(limits: Limits) -> H2Conn {
         recv: 65535,
         assembling: null,
         out: frame_bytes(.Settings, 0, 0, settings_payload(ours)),
+        ready: [],
+        closing: false,
+        parting: false,
+        churn: 0,
+        answers: 0,
+        delivered: 0,
+        orphans: [],
+    }
+}
+
+/// A CLIENT connection: the preface and its SETTINGS already owed
+/// (§3.4) — a server sends no preface, so nothing is awaited first.
+export fn h2_client(limits: Limits) -> H2Conn {
+    let ours = conn_settings(limits)
+    H2Conn {
+        role: Role.Client,
+        ours: ours,
+        theirs: Settings {},
+        limits: limits,
+        decoder: decoder(ours.header_table, ours.list),
+        encoder: encoder(true),
+        prefaced: true,
+        settled: false,
+        streams: [],
+        ids: [],
+        gone: [],
+        closes: 0,
+        last: 0,
+        send: 65535,
+        recv: 65535,
+        assembling: null,
+        out: preface.concat(frame_bytes(.Settings, 0, 0, settings_payload(ours))),
         ready: [],
         closing: false,
         parting: false,
@@ -631,6 +671,13 @@ impl H2Conn {
         let id = self.streams[at].id
         if short_of(self.streams[at].declared, self.streams[at].received) { return self.stream_error(id, .Protocol) }
         if !sending(self.streams[at].state) {
+            // A CLIENT's response body is owed its reader even though
+            // both ends are done: the stream closes when `arrived`
+            // drains it, never before.
+            if self.role is .Client && !self.streams[at].inbound.is_empty() {
+                self.streams[at].state = .HalfClosedRemote
+                return null
+            }
             self.closed(id, .Ended)
             return null
         }
@@ -700,10 +747,18 @@ impl H2Conn {
     mut fn purpose_of(f: Frame, depends: int) -> Result<Purpose, H2Error> {
         match self.standing(f.stream) {
             .Idle -> .Ok(self.opened(f.stream, depends)),
-            .Live(at) -> .Ok(self.trailers_of(at, f)),
+            .Live(at) -> .Ok(self.live_purpose(at, f)),
             .Closed(how) -> self.late_purpose(how),
             .Forgotten -> .Err(H2Error.Protocol),
         }
+    }
+
+    /// A HEADERS on a live stream: a CLIENT's first is its RESPONSE
+    /// head; the server's own streams are opened by the peer, so every
+    /// one it sees is a head or a trailer as before.
+    fn live_purpose(at: int, f: Frame) -> Purpose {
+        if self.role is .Client && self.streams[at].fields.is_empty() { return .Head }
+        self.trailers_of(at, f)
     }
 
     /// A late DATA on a closed stream, answered as its closure says.
@@ -808,7 +863,11 @@ impl H2Conn {
 
     mut fn head_taken(a: Assembly, fs: List<HeaderField>) -> H2Error? {
         let at? = self.live_at(a.stream) else { return null }
-        if !request_head_kept(fs) { return self.stream_error(a.stream, .Protocol) }
+        let kept = if self.role is .Client { response_head_kept(fs) } else { request_head_kept(fs) }
+        if !kept { return self.stream_error(a.stream, .Protocol) }
+        // An INTERIM 1xx head is not the answer: its fields are left
+        // unset so the head that follows is read as the head.
+        if self.role is .Client && interim_status(fs) { return null }
         self.streams[at].fields = fs
         self.streams[at].declared = declared_length(fs)
         self.ready.push(Exchange { stream: a.stream, fields: fs })
@@ -962,6 +1021,47 @@ impl H2Conn {
         if ends { self.local_ended(id) }
     }
 
+    /// A CLIENT's request opened on a fresh odd stream: its head and,
+    /// when it has one, its body — owed for the next drain. Answers the
+    /// stream id it was given.
+    mut fn ask(fields: List<HeaderField>, body: Bytes) -> int {
+        let id = if self.last == 0 { 1 } else { self.last + 2 }
+        self.last = id
+        self
+            .streams
+            .push(
+                H2Stream {
+                    id: id,
+                    state: .Open,
+                    send: self.theirs.window,
+                    recv: self.ours.window,
+                    fields: [],
+                    inbound: no_bytes,
+                    received: 0,
+                    answered: true,
+                    owed: no_bytes,
+                    more: !body.is_empty(),
+                    deaf: false,
+                    declared: null,
+                    handed: false,
+                },
+            )
+        self.ids.push(id)
+        self.out = header_frames(
+            self.out,
+            id,
+            self.encoder.encoded(fields),
+            body.is_empty(),
+            self.theirs.frame,
+        )
+        if body.is_empty() { self.local_ended(id) } else { self.piece(id, body, true) }
+        id
+    }
+
+    /// One frame taken off the wire, for a caller that drives frames
+    /// rather than whole buffers.
+    mut fn take_frame(f: Frame) { self.took(f) }
+
     /// Whether stream `id`'s answer wants its next piece now: more is to
     /// come, nothing is owed, and both windows are open — so a producer
     /// is pulled only as fast as the peer reads, and a piece is the most
@@ -1005,7 +1105,9 @@ impl H2Conn {
         let got = self.streams[at].inbound
         self.streams[at].inbound = no_bytes
         self.granted(at)
-        if receiving(self.streams[at].state) { .Flowing(got) } else { .Whole(got) }
+        if receiving(self.streams[at].state) { return .Flowing(got) }
+        if !sending(self.streams[at].state) { self.closed(id, .Ended) }
+        .Whole(got)
     }
 
     /// Stream `id`'s request body no longer heard: what arrives is
@@ -1142,6 +1244,25 @@ fn unpadded(f: Frame) -> Bytes? {
 /// field the 1.1 framer would frame, lowercase, and none of the
 /// connection-specific ones (§8.2.2); and no `host` naming another
 /// target than `:authority` does (§8.3.1).
+/// A RESPONSE head (§8.3.2): exactly one pseudo-field, `:status`,
+/// opening the list and non-empty; every field after it regular. The
+/// request pseudo-fields are absent by construction.
+export fn response_head_kept(fs: List<HeaderField>) -> bool {
+    let p = pseudo_of(fs)
+    p.heads == 1 &&
+        fs[0].name == status_name &&
+        status_kept(fs[0].value) &&
+        fs.slice(1, fs.length).all(!is_pseudo(it) && regular_kept(it))
+}
+
+/// A status value: three decimal digits (§8.3.2).
+fn status_kept(v: Bytes) -> bool {
+    v.length == 3 && [j for j in 0..3 if v.at(j) < 48 || v.at(j) > 57].is_empty()
+}
+
+/// Whether a response head's status is an interim 1xx.
+fn interim_status(fs: List<HeaderField>) -> bool { fs[0].value.at(0) == 49 }
+
 export fn request_head_kept(fs: List<HeaderField>) -> bool {
     let p = pseudo_of(fs)
     let regular = fs.slice(p.heads, fs.length)
@@ -1268,6 +1389,7 @@ const name_octet: Bytes = admits(is_name_octet)
 const value_octet: Bytes = admits(is_vchar)
 const token_octet: Bytes = admits(is_tchar)
 const target_octet: Bytes = admits(is_target)
+export const status_name: Bytes = ":status".bytes()
 export const method_name: Bytes = ":method".bytes()
 const scheme_name: Bytes = ":scheme".bytes()
 export const path_name: Bytes = ":path".bytes()
