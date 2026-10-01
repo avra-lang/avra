@@ -3,7 +3,9 @@
 # was tested by `work test`); on main, the job builds and caches the compiler
 # every PR and train starts from. `test` is the one required check. The
 # machine is .github/ci/Dockerfile's image; a train is at most ten entries
-# over its base, so twenty commits of history reach it.
+# over main, so twenty commits of history reach it. A train is judged against
+# main itself, never its `base_sha`, which is the train ahead of it: every
+# PR the train carries is tested, so landing it lands only what was tested.
 name: checks
 
 on:
@@ -52,9 +54,12 @@ jobs:
           path: build/avra
           key: ${{ steps.key.outputs.key }}
       - if: github.event_name == 'merge_group'
+        name: main
+        run: git fetch -q --depth=20 origin main
+      - if: github.event_name == 'merge_group'
         name: fmt
         run: |
-          changed=$(git diff --name-only --diff-filter=d ${{ github.event.merge_group.base_sha }} HEAD -- '*.av')
+          changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av')
           [ -z "$changed" ] || build/avra fmt --check $changed
       - if: github.event_name == 'merge_group'
         name: idioms
@@ -62,7 +67,7 @@ jobs:
       - if: github.event_name == 'merge_group'
         name: suites
         run: |
-          pkgs=$(sh tools/affected_packages.sh ${{ github.event.merge_group.base_sha }} HEAD "$PWD" 2>/dev/null)
+          pkgs=$(sh tools/affected_packages.sh origin/main HEAD "$PWD" 2>/dev/null)
           [ -z "$pkgs" ] || make -s -o avra objects libs
           fail=0
           for p in $pkgs; do
