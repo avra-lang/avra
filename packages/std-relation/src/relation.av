@@ -897,7 +897,9 @@ fn hashed(acc: Code, e: Code, k: Kind) -> Code {
         .Named(n, _) -> match named_shape(n) {
             .Record(fs) -> folded_record(acc, e, fs),
             .Over(shape) -> hashed(acc, quote { ${e}.of }, shape),
-            .Tagged(_) or .Dense(_) or .Plain -> quote { ${acc}.text(${tag_of(e, k)}) },
+            .Tagged(_) -> quote { ${acc}.text(${tag_of(e, k)}) },
+            .Dense(field) -> quote { ${acc}.int(${e}.${field}) },
+            .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
@@ -923,7 +925,9 @@ fn hash_each(k: Kind) -> Code {
         .Named(n, _) -> match named_shape(n) {
             .Record(fs) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${folded_record(quote { h }, quote { v }, fs)} },
             .Over(shape) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${hashed(quote { h }, quote { v.of }, shape)} },
-            .Tagged(_) or .Dense(_) or .Plain -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.text(${tag_of(quote { v }, k)}) },
+            .Tagged(_) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.text(${tag_of(quote { v }, k)}) },
+            .Dense(field) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.int(v.${field}) },
+            .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
