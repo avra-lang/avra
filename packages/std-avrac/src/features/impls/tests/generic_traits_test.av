@@ -1,7 +1,7 @@
 // Generic traits, by their laws: a trait's own parameters, an impl at
 // each argument, the call choosing by argument type, and every misuse
 // refused once.
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{shown, refused_with, refusals}
 
 /// A trait with a parameter and two impls of it on one type.
 fn realize() -> string {
@@ -72,6 +72,10 @@ spec "features/impls — generic traits" {
                 "no `Celsius.from` takes these arguments",
             )
         }
+        then "a static declared twice at one argument refuses once" {
+            refusals(doubled()) == 1 &&
+                refused_with(doubled(), "`Celsius.from<int>` is declared twice")
+        }
         then "an impl whose static does not wear the trait's signature refuses" {
             refused_with(
                 made() +
@@ -85,4 +89,10 @@ spec "features/impls — generic traits" {
 /// A generic trait with a static member, implemented at two arguments.
 fn made() -> string {
     "trait From<T> {\n    static fn from(t: T) -> Self\n}\ntype Celsius = { deg: int }\nimpl From<int> for Celsius {\n    static fn from(t: int) -> Celsius { Celsius { deg: t } }\n}\nimpl From<bool> for Celsius {\n    static fn from(t: bool) -> Celsius { Celsius { deg: if t { 100 } else { 0 } } }\n}\n"
+}
+
+/// The static trait above with its `int` member declared a second time.
+fn doubled() -> string {
+    made() +
+        "impl From<int> for Celsius {\n    static fn from(t: int) -> Celsius { Celsius { deg: t + 1 } }\n}\nCelsius.from(1).deg"
 }
