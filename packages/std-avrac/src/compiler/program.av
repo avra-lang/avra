@@ -29,7 +29,7 @@ use core.{
 use @std.path.{joined_path, normalized}
 use @std.errors.{Loc}
 use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
-use features.{Decl, Decls, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
+use features.{Decl, Decls, DocFact, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
 use @std.grammar.{
     Captured,
     RunOutcome,
@@ -402,8 +402,9 @@ impl Program {
         let matches = [keyed_decl(db, k)! for k in named_decls(db, name)]
         if matches.length > 1 { return self.collision_answer(decls, name, matches) }
         let decl? = matches.first() else { return null }
-        let doc = decls.doc_of(decl.id) ?? decls.file_doc_of(decl.file) ?? []
-        let anns = ["@${a.name}(${a.args.join(", ")})" for a in decls.annotations_of(decl.id)]
+        let fact = DocFact.get_db(db, decls.doc_facts, decls.doc_facts_side, decl.id.index)
+        let doc = fact?.doc ?? decls.file_doc_of(decl.file) ?? []
+        let anns = ["@${a.name}(${a.args.join(", ")})" for a in fact?.annotations ?? []]
         let lines = doc.concat(anns)
         let text = if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
         DocAnswer { text: text, files: [decls.file(decl.file).path] }
@@ -439,11 +440,13 @@ impl Program {
     }
 
     fn dump_row(decls: Decls, d: Decl, package: string) -> DocRow {
+        let db = decls.decl_rows.get()
+        let fact = DocFact.get_db(db, decls.doc_facts, decls.doc_facts_side, d.id.index)
         DocRow {
             address: "${decls.module_of(d.id)}.${d.name}",
             kind: kind_word(d.kind),
             signature: self.dump_signature(decls, d),
-            prose_lines: decls.doc_of(d.id) ?? [],
+            prose_lines: fact?.doc ?? [],
             package: package,
         }
     }
