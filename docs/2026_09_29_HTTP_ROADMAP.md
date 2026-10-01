@@ -135,13 +135,56 @@ HTTP/2 except HTTP/2's own client.
 
 ## H7 numbers
 
-Reproduced by `sh tools/bench/public.sh` (`make libs` first; `CORES`,
-`ROUNDS`, `SECS`, `SERVERS`, `PORT` to vary it). Rounds interleave, so
-drift hits every column alike; each cell lists every round. `/json`
-serializes per request in Avra; nginx returns a fixed string and h2o
-serves a static file, so their json rows are a floor-shaped comparison,
-not a like-for-like one. `/db` is Avra only: one random row of a
-10,000-row in-memory SQLite table per request.
+`sh tools/bench/public.sh` produces this table; how it does, and what a
+row means, is the methodology below.
+
+### Methodology
+
+**The command.** `make libs` first — `public.sh` builds the scenarios
+server and the floor, but the package libraries are `make libs`'s on
+purpose, because that target may rebuild a stale compiler and a
+rebuild must not be a benchmark's side effect. Then
+`sh tools/bench/public.sh`. `CORES` is how many cores the server
+serves on, `CONNS` the wrk connections, `ROUNDS` and `SECS` the load,
+`SERVERS` a subset (`SERVERS="avra floor"`), `PORT` when 18080 is
+taken, and `KEEP=1` keeps the work directory (logs, configs) for
+inspection.
+
+**The scenarios.** `/plaintext` is one fixed body; `/json` is a small
+object serialized per request in Avra — nginx answers it with a fixed
+string and h2o serves a static file, so their json rows are
+floor-shaped, never a like-for-like serializer comparison; `/db` is
+Avra only, one random row of a 10,000-row in-memory SQLite table per
+request, each core holding its own table.
+
+**The servers.** `avra` is `tools/bench/scenarios`, the same
+`served(…)` server a program writes, on `CORES` processes that share
+only the listener; `floor` is `tools/bench/floor`, the kernel's floor
+for this workload (epoll/kqueue, no parsing past the request
+terminator, every answer the same bytes the Avra server writes) and
+serves plaintext and json only; `nginx` and `h2o` run when installed,
+under the generated configs, so the comparison is to the shipped
+defaults of two mature servers rather than to tuned ones.
+
+**The machine and pinning.** The header names the commit and the
+machine, because neither is portable. On Linux the server is pinned to
+cores `0..CORES-1` and wrk to the rest; macOS has no pinning, so the
+scheduler places both and the numbers are the noisier for it.
+
+**Rounds are interleaved.** Every server takes its turn before any
+takes a second, so a load that drifts over the run hits every column
+alike instead of penalizing whoever ran last; each cell lists every
+round, and a second generator (oha, when installed) repeats the
+unpipelined rows as an independent word on the same result.
+
+**Read the honesty columns with the speed.** A row whose responses
+were not all 2xx says so, and so do wrk's socket errors: a count of
+fast refusals is not throughput. On a shared machine read the CPU per
+request, not req/s — req/s moves with the load while CPU per request
+moves with the code (this Mac's rounds moved 50% and 20%, at load 30
+to 70). The Linux Sprite rows under "Where it stands" are the
+reference; a Mac table is the same harness on a machine without
+pinning.
 
 Commit 0d3e1ad, 2026-09-30, Apple M1, 8 cores, macOS 26.6.2, load average at the end 70.42 73.60 59.59.
 Server on 1 core(s), wrk -t7 -c256, 5 s x 3 interleaved rounds (each cell: every round).
