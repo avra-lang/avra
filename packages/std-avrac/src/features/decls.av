@@ -1091,6 +1091,9 @@ impl Decls {
     /// vocabulary the compiler shares with the programs it compiles;
     /// null when the program does not load the package.
     ///
+    /// THE NAME'S OWN BUCKET IS READ: every declaration of the name,
+    /// a builtin — no file's, so no package's — never answering.
+    ///
     /// EVERY MODULE OF THE PACKAGE IS SEARCHED, not its first: a
     /// package a `use` reaches through ONE submodule (`@std/avrac`'s
     /// `core`, say) admits every OTHER submodule too, so a name in a
@@ -1119,23 +1122,10 @@ impl Decls {
         let key = "${pkg}.${name}"
         let known: DeclId? = self.meta_ids.get().get(key)
         if known != null { return known }
-        let modules = Module.all(self.decl_rows.get())
-        let ms = [r.id for r in modules if self.package_named(r.name) == pkg]
-        let ds: List<DeclId> = flatten([self.module_decls(m) for m in ms])
-        let found: DeclId? = ds
-            .find(
-                (d: DeclId) -> {
-                    let found_decl = self.decl(d)
-                    found_decl.exported && found_decl.name == name
-                },
-            )
+        let found = [x.id for x in self.named_rows(name) if x.home != null && x.exported && self.package_of(x.id) == pkg]
+            .first()
         if found != null { self.meta_ids.put(key, found!) }
         found
-    }
-
-    /// One module's own declarations, across its files.
-    fn module_decls(m: ModuleId) -> List<DeclId> {
-        flatten([self.decls_so_far(f) for f in self.files_of_module(m)])
     }
 
     /// Whether a declaration IS `@std/meta`'s export of `name` — by
@@ -2057,12 +2047,16 @@ impl Decls {
     fn children_of(d: DeclId) -> List<DeclId> { self.children.get()[d.index].get() }
 
     /// Every impl block naming a type by this name, in id order — an impl
-    /// files under the name it targets, unrecorded, so a method table
-    /// finds its impls before any target resolves.
+    /// files under the name it targets, so a method table finds its impls
+    /// before any target resolves.
+    fn impls_named(name: string) -> List<DeclId> { [x.id for x in self.named_rows(name) if blocks_impl(x.kind)] }
+
+    /// Every declaration of a name, in id order, off the name's bucket,
+    /// unrecorded.
     @bracket("decls")
-    fn impls_named(name: string) -> List<DeclId> {
+    fn named_rows(name: string) -> List<Decl> {
         let rs = self.decl_row_rows.get()
-        [x.id for x in rs.members(rs.bucket_of_text(name_index, name)) if blocks_impl(x.kind)]
+        rs.members(rs.bucket_of_text(name_index, name))
     }
 
     /// A record field's default, when the field declares one.

@@ -28,6 +28,7 @@ use core.{
 }
 use diagnostics.{Diag}
 use features.{generated_key, Decl, DeclAt, no_origins}
+use @std.relation.rows.{dense_key}
 
 /// A `File` row read back as the hand shape every other pass still
 /// wants — the relation and `FileInfo` name `module` differently, and
@@ -325,9 +326,13 @@ impl Decls {
         self.decls_so_far(f)
     }
 
-    /// The same, as the table stands — the minter's own read: the rows
-    /// the file homes, through the relation's own index.
-    fn decls_so_far(f: FileId) -> List<DeclId> { [x.id for x in Decl.by_home(self.decl_rows.get(), f)] }
+    /// The same, as the table stands — the minter's own read: the ids the
+    /// file homes, off the relation's own index, no row read.
+    @bracket("decls")
+    fn decls_so_far(f: FileId) -> List<DeclId> {
+        let rs = self.decl_row_rows.get()
+        [DeclId { index: i } for i in rs.ids_in(rs.bucket_of(home_index, dense_key(f.index)))]
+    }
 
     fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
 

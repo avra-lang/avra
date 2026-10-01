@@ -211,6 +211,13 @@ impl Rows<R> {
         [self.rows.get()[id]! for id in self.buckets.get()[bucket].members.get()]
     }
 
+    /// Every live row's id filed in a bucket, in id order — the bucket's
+    /// own list, no row read; none for -1.
+    fn ids_in(bucket: int) -> List<int> {
+        if bucket < 0 { return [] }
+        self.buckets.get()[bucket].members.get()
+    }
+
     /// The first row's id in a bucket — a key's one row.
     fn first_id(bucket: int) -> int? {
         if bucket < 0 { return null }
@@ -340,19 +347,18 @@ impl Rows<R> {
         let gone = [id for id in live if marks[id].run < run]
         if !gone.is_empty() {
             let now = db.revision()
-            if now >= 0 { self
-                    .late_among(
-                        db,
-                        self.name,
-                        [self.bucket_of(i, k) for id in gone for i, ks in self.filed.get()[id] for k in ks],
-                        now,
-                    ) }
+            if now >= 0 { self.late_among(db, self.name, self.filed_buckets(gone), now) }
             db.counted()
             for id in gone { self.remove(id) }
         }
         let kept = [id for id in live if marks[id].run >= run]
         mine.set(kept)
         self.last_runs.put("${owner}", [self.row(id)! for id in kept])
+    }
+
+    /// Every bucket the rows at `ids` are filed in.
+    fn filed_buckets(ids: List<int>) -> List<int> {
+        [self.bucket_of(i, k) for id in ids for i, ks in self.filed.get()[id] for k in ks]
     }
 
     /// The running query's rows as its previous run left them, recording
