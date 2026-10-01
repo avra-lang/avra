@@ -1,6 +1,8 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
+    ModulePath,
+    module_path,
     SyntaxArena,
     DeclId,
     FileId,
@@ -29,10 +31,8 @@ impl Workspace {
     fn analyze_all() -> List<Analysis> {
         let t0 = self.clock()
         // a held file is not parsed — and asking its items would mint its module for nothing
-        for path in self.root_files() {
-            let f = self.file_id(path)
-            if !self.is_held(f) { let _ = self.items(f) }
-        }
+        for path in self.root_files() { let _ = self.file_id(path) }
+        self.admit_all()
         self.timed("parse", self.clock() - t0)
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
         // MINTED from its record, so every consumer sees the interface it had — and its
@@ -132,9 +132,36 @@ impl Workspace {
         while i < self.decls.file_count() {
             let id = file_at(i)
             // a held file's declarations are minted when something reads them
-            if !self.is_held(id) { let _ = self.items(id) }
+            if !self.is_held(id) {
+                let _ = self.items(id)
+                self.admit_used(id)
+            }
             i = i + 1
         }
+    }
+
+    /// EVERYTHING A FILE REACHES, minted now: its own module's files, each
+    /// module its `use` lines name and each package a `collect` gathers
+    /// from — so no file is first minted inside a query that already read
+    /// the relation.
+    fn admit_used(f: FileId) {
+        if self.lone { return }
+        let p = self.parsed(f)
+        let from = self.packages()[self.holder_of_path(p.source.file)]
+        // a file sees its own module whole: its siblings are reached with it
+        self.admit_module(from, self.module_path_of(p.source.file))
+        for s in p.stmts {
+            let u = p.store.use_parts(s)
+            if u != null { self.admit_module(from, qualified(module_path(u!.path), from)) }
+            let scope = p.store.collect_scope(s)
+            if scope != null { self.decls.admit_scope(scope!, f) }
+        }
+    }
+
+    fn admit_module(from: Package, m: ModulePath) {
+        if m.malformed() { return }
+        if m.package() != null && !self.reaches(from, m.package()!) { return }
+        for path in self.module_files(m) { let _ = self.file_id(path) }
     }
 
     /// ADMIT THE PACKAGE A MODULE NAMES. A held file's `use` lines are never
@@ -420,3 +447,4 @@ fn index_of_file(files: List<Analysis>, path: string) -> int? {
     }
     null
 }
+
