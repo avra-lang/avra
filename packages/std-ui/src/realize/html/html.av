@@ -4,30 +4,36 @@
 //! UI.md §19.2.
 use realize.realizer.{Realizer}
 use realize.html.writer.{HtmlOp, source}
-use components.{text, heading, button}
+use components.{text, heading, button, column, row}
 
 /// The HTML target: one accumulator of ops.
 export type Html = { ops: Cell<List<HtmlOp>> = Cell.new([]) }
 
 /// One inline element around its content.
 fn inline(h: Html, name: string, content: string) {
-    h.ops.push(HtmlOp.Open(name))
+    h.ops.push(HtmlOp.Open(name, null))
     h.ops.push(HtmlOp.Text(content))
     h.ops.push(HtmlOp.Close(name))
 }
 
-/// One block element opened, its children drawn, then closed.
-fn block_begin(h: Html) { h.ops.push(HtmlOp.Open("div")) }
+/// The heading level an outline may carry: 1 through 6.
+fn rank_tag(rank: int) -> string {
+    let within = if rank < 1 { 1 } else if rank > 6 { 6 } else { rank }
+    "h${within}"
+}
+
+/// One block element opened for a component's keyed children.
+fn block(h: Html, key: string?) { h.ops.push(HtmlOp.Open("div", key)) }
 
 fn block_end(h: Html) { h.ops.push(HtmlOp.Close("div")) }
 
 impl Realizer for Html {
     fn text(t: text) { inline(self, "span", t.content) }
-    fn heading(hd: heading) { inline(self, "h${hd.rank}", hd.content) }
+    fn heading(hd: heading) { inline(self, rank_tag(hd.rank), hd.content) }
     fn button(b: button) { inline(self, "button", b.label) }
-    fn column_begin() { block_begin(self) }
+    fn column_begin(c: column) { block(self, c.key) }
     fn column_end() { block_end(self) }
-    fn row_begin() { block_begin(self) }
+    fn row_begin(r: row) { block(self, r.key) }
     fn row_end() { block_end(self) }
 }
 

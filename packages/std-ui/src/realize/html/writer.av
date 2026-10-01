@@ -6,7 +6,7 @@ use @std.text.{codepoints, from_codepoints}
 
 /// One piece of a document, in drawing order.
 export enum HtmlOp {
-    Open(name: string)
+    Open(name: string, key: string?)
     Close(name: string)
     Text(content: string)
 }
@@ -19,6 +19,18 @@ fn entities(s: string) -> string {
         .replace(">", "&gt;")
         .replace("\"", "&quot;")
         .replace("'", "&#39;")
+}
+
+/// An attribute value: escaped and double-quoted, so it cannot end its
+/// attribute.
+fn escape_attr(s: string) -> string { "\"${entities(s)}\"" }
+
+/// A node's key as an attribute, when it has one.
+fn key_attr(key: string?) -> string {
+    match key {
+        k? -> " data-key=${escape_attr(k)}"
+        null -> ""
+    }
 }
 
 /// Whether a character may stand in an element name: letters, digits or
@@ -35,7 +47,7 @@ fn safe_name(name: string) -> string {
 
 fn op_source(op: HtmlOp) -> string {
     match op {
-        .Open(name) -> "<${safe_name(name)}>",
+        .Open(name, key) -> "<${safe_name(name)}${key_attr(key)}>",
         .Close(name) -> "</${safe_name(name)}>",
         .Text(content) -> entities(content),
     }
