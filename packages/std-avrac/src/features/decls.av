@@ -316,6 +316,9 @@ export enum UseKind { Call, MethodCall, Read, Write, Import, TypeUse }
 @relation
 export type Ref = { @local @index decl: DeclId, @local @index file: FileId, @local at: At, kind: UseKind }
 
+/// A file's declarations by kind, owner and name, and how many it held.
+export type WireIndex = { count: int, by: Map<string, List<DeclId>> }
+
 /// ONE IDENTITY: every table is a `Cell`, or itself an `@identity`
 /// type, so a copy of `Decls` still reads and writes the tables the
 /// workspace built.
@@ -343,6 +346,10 @@ export type Decls = {
     /// MINTED and their objects come from the store. Keyed by path.
     held: Cell<Map<string, bool>>,
     held_items: Cell<Map<string, List<DeclId>>>,
+    /// Each file's declarations by kind, owner and name, keyed by file
+    /// index, kept until the file holds more declarations than it was
+    /// indexed with.
+    wire_index: Cell<Map<string, WireIndex>>,
     /// Lazy expression-range reconstruction is once per held file, even
     /// when dozens of specializations ask for bodies from that file.
     /// THE DECLARATION'S PARSE FACTS, captured at admit and loaded for a held file — the
@@ -617,6 +624,7 @@ export fn new_decls() -> Decls {
         decls: Cell.new(no_decls),
         held: map_cell(),
         held_items: map_cell(),
+        wire_index: map_cell(),
         faces: Cell.new(no_faces),
         held_values: map_cell(),
         held_reaches: map_cell(),

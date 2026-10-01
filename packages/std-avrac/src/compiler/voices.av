@@ -542,14 +542,23 @@ fn wrap_mismatch(ann: string, name: string, at: Loc?) -> Diag {
 /// spell the word cannot cost a parse it has no chance of needing.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn module_names_block_word(ws: Workspace, m: ModulePath, files: List<string>, items: List<string>) -> bool {
+    let named? = module_block_names(ws, m) else { return maybe_declares_block(ws, files) }
+    items.any((k) -> named.contains(k))
+}
+
+/// The names `m`'s record marks as block words, read once per build — or
+/// null when there is no record to read them from.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_block_names(ws: Workspace, m: ModulePath) -> List<string>? {
+    let known = ws.records.block_named.get().get(m.text())
+    if known != null { return known! }
     let store = store_at(build_cache_root(ws))
-    let iface? = ws.db.sig(store, ws.record_key(m)) else { return maybe_declares_block(ws, files) }
-    let rec? = ws.record_bodies().body(store, m.text(), iface) else { return maybe_declares_block(ws, files) }
-    for line in rec.split("\n") {
-        let row = read_row(read_fields(line))
-        if row != null && names_block_word(row!) && items.any(it == row!.name) { return true }
-    }
-    false
+    let iface? = ws.db.sig(store, ws.record_key(m)) else { return null }
+    let rec? = ws.record_bodies().body(store, m.text(), iface) else { return null }
+    let rows = [read_row(read_fields(line)) for line in rec.split("\n")]
+    let named = [r!.name for r in rows if r != null && names_block_word(r!)]
+    ws.records.block_named.put(m.text(), named)
+    named
 }
 
 /// A LEX-LEVEL PRE-FILTER, never a parse: the compiler's OWN source
