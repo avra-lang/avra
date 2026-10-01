@@ -227,6 +227,9 @@ spec "compiler/lower" {
         then "a `set_at` of a string through a Cell writes the held list as a VIEW — no reference of its own" {
             !all_ins(ir_of(cell_set_at("string", "\"s\" + \"t\"", "\"a\""))).any(is_owned_get(it))
         }
+        then "a field read past a write of that field through a thawed `self` owns — the thaw answers the same box" {
+            all_ins(ir_of(field_replaced())).any(is_owned_get(it))
+        }
     }
     given "`!` on a niche nullable" {
         then "a foreign pointer's is a null test, never the retaining insist" {
@@ -496,6 +499,11 @@ fn cell_read(between: string) -> string {
 /// with one `seed`.
 fn cell_set_at(elem: string, value: string, seed: string) -> string {
     "fn fill(c: Cell<List<${elem}>>, n: int) {\n    for i in 0..n { c.set_at(i, ${value}) }\n}\nfill(Cell.new([${seed}]), 1)"
+}
+
+/// A method reads a field, replaces it through `self`, then reads the old value.
+fn field_replaced() -> string {
+    "type H = { items: List<string>, tag: int }\nimpl H {\n    mut fn swapped(next: List<string>) -> int {\n        let old = self.items\n        self.items = next\n        old.length\n    }\n}\nmut h = H { items: [\"a\"], tag: 1 }\nh.swapped([\"b\"])"
 }
 
 /// No `@lent` seat of any call in the slice is retained: each stands.

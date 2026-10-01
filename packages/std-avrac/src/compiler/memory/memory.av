@@ -660,12 +660,26 @@ fn aliased_write(defs: List<int>, ins: List<Ins>, callee: string, args: List<Reg
         !held_below(defs, ins, box, slot)
 }
 
-/// Whether `r` is a view taken, at any depth, FROM `from`.
+/// Whether `r` is a box held, at any depth, BELOW `from`: its provenance
+/// reaches `from` through at least one step that reads a PART — an
+/// `Extract` or a lending row. Every other step may answer the box it was
+/// handed (`avra_box_thawed`), so it keeps the depth.
 fn held_below(defs: List<int>, ins: List<Ins>, r: Reg, from: Reg) -> bool {
+    below_from(defs, ins, r, from, false)
+}
+
+fn below_from(defs: List<int>, ins: List<Ins>, r: Reg, from: Reg, deeper: bool) -> bool {
     let d = defs[r.index]
     if d < 0 { return false }
     let src? = view_source(ins[d]) else { return false }
-    same_reg(src, from) || held_below(defs, ins, src, from)
+    let lower = deeper || reads_part(ins[d])
+    if same_reg(src, from) { return lower }
+    below_from(defs, ins, src, from, lower)
+}
+
+/// Whether `i` answers a part of its subject's box, never the box itself.
+fn reads_part(i: Ins) -> bool {
+    match i { .Extract(_, _, _) -> true, .CallRt(_, callee, _) -> rt_lends(callee), rest -> false }
 }
 
 /// THE STABLE IDENTITY `r` WAS ULTIMATELY READ FROM: walked through a
