@@ -155,8 +155,13 @@ impl LitArg {
 /// An argument's literal text, when it has one — a computed expression answers "".
 export fn arg_text(store: SyntaxArena, e: ExprId) -> string {
     let expr = store.expr(e)
-    let t? = expr.text_of() else { return int_text(expr) ?? bool_text(expr) ?? store.ident_name(e) ?? "" }
-    t
+    match expr {
+        .VariantLit(name, _) -> name.of,
+        _ -> {
+            let t? = expr.text_of() else { return int_text(expr) ?? bool_text(expr) ?? store.ident_name(e) ?? "" }
+            t
+        },
+    }
 }
 
 /// `arg_text`'s typed twin, for the facts `by` orders by: the written
@@ -178,7 +183,10 @@ fn bool_lit(e: Expr) -> LitArg? {
 }
 
 fn other_lit(store: SyntaxArena, e: ExprId) -> LitArg {
-    LitArg { text: store.ident_name(e) ?? "", kind: LitKind.Other }
+    match store.expr(e) {
+        .VariantLit(name, _) -> LitArg { text: name.of, kind: LitKind.Other },
+        _ -> LitArg { text: store.ident_name(e) ?? "", kind: LitKind.Other },
+    }
 }
 
 fn int_text(e: Expr) -> string? {
