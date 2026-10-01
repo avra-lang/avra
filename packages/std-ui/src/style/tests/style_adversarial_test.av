@@ -3,12 +3,22 @@
 use @std.ui.style.style.{Style}
 use @std.ui.{Size, Tone, Font}
 use @std.ui.style.theme.{Theme, Scale, default_theme, space_of, radius_of, color_of, face_of}
+use @std.ui.style.tokens.{Level, TypeSize, LineHeight, Tracking}
 
 /// `.None` is a REAL token: present, and not the same as absent.
-fn present_none() -> Style { Style { gap: .None } }
+fn present_none() -> Style { Style { radius: .None } }
 
 fn full() -> Style {
-    Style { gap: .L, pad: .S, radius: .M, fill: .SurfaceRaised, color: .Danger, face: .Mono }
+    Style {
+        radius: .M,
+        fill: .SurfaceRaised,
+        color: .Danger,
+        elevation: .High,
+        face: .Mono,
+        text_size: .Title,
+        line_height: .Tight,
+        tracking: .Wide,
+    }
 }
 
 /// The default theme with its space scale shifted up by one.
@@ -17,17 +27,17 @@ fn shifted() -> Theme {
 }
 
 spec "std/ui style — absence is not the empty value" {
-    given "a gap nobody set" {
+    given "a radius nobody set" {
         then "falls back when a question supplies a default" {
-            empty_style().gap ?? Size.Xs == Size.Xs
+            empty_style().radius ?? Size.Xs == Size.Xs
         }
     }
-    given "a gap set to the empty size" {
+    given "a radius set to the empty size" {
         then "is present — the fallback is never consulted" {
-            present_none().gap ?? Size.Xs == Size.None
+            present_none().radius ?? Size.Xs == Size.None
         }
         then "reads as zero through the theme, not as absent" {
-            space_of(default_theme, present_none().gap ?? Size.M) == 0
+            space_of(default_theme, present_none().radius ?? Size.M) == 0
         }
     }
 }
@@ -44,12 +54,13 @@ spec "std/ui style — a theme is read whole" {
 }
 
 spec "std/ui style — every field present at once" {
-    given "a style with all six fields set" {
-        then "reads back each one it was given" {
-            full().gap ?? Size.None == Size.L && full().pad ?? Size.None == Size.S
+    given "a style with every appearance field set" {
+        then "reads back the shape and type it was given" {
+            full().radius ?? Size.None == Size.M &&
+                full().text_size ?? TypeSize.Body == TypeSize.Title
         }
         then "reads back the face it was given" {
-            full().face == Font.Mono
+            full().face == Font.Mono && full().elevation ?? Level.Flat == Level.High
         }
         then "projects to the tokens the theme names" {
             color_of(default_theme, full().color ?? Tone.Text) == "#b00020" &&

@@ -1,0 +1,34 @@
+//! The shared `Box`, by its law: every component carries a look, a
+//! placement, an announcement and a key, each with the group's default.
+use @std.ui.style.box.{Box}
+use @std.ui.style.style.{Style}
+use @std.ui.{Size, Tone}
+
+type widget = { ..Box, content: string = "" }
+
+fn unset_box() -> Box { Box {} }
+
+fn plain() -> widget { widget {} }
+
+fn badged() -> widget { widget { content: "hi", style: Style { radius: .M, fill: .Danger } } }
+
+spec "std/ui box — the shared groups" {
+    given "a Box nobody set" {
+        then "carries an empty look" { unset_box().style.radius == null && unset_box().style.fill == null }
+        then "carries an empty placement" { unset_box().layout.grow == 0 && unset_box().layout.pad == null }
+        then "carries no key" { unset_box().key == null }
+    }
+}
+
+spec "std/ui box — a component spreading it" {
+    given "a widget nobody set" {
+        then "carries the group defaults" { plain().style.radius == null && plain().key == null }
+    }
+    given "a widget given a look" {
+        then "reads the tokens back" {
+            badged().style.radius ?? Size.None == Size.M &&
+                badged().style.fill ?? Tone.Text == Tone.Danger
+        }
+        then "keeps its own content beside the groups" { badged().content == "hi" }
+    }
+}
