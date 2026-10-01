@@ -18,7 +18,18 @@ use core.{
     ExprId,
     SeatMark,
 }
-use features.{Decl, FnSig, StructSig, EnumSig, NamedSig, Decls, SettleRoot, Settled, kind_word}
+use features.{
+    Decl,
+    FnSig,
+    StructSig,
+    EnumSig,
+    NamedSig,
+    Decls,
+    SettleRoot,
+    Settled,
+    kind_word,
+    WireIndex,
+}
 use compiler.lower.{Body, collect_answer_type}
 use compiler.store.{Store, Stored, node_key}
 
@@ -615,10 +626,26 @@ impl Decls {
 
     /// Every declaration of one file sharing a wire's identity — one, almost
     /// always; more only for a kind the namespace law leaves unpoliced.
+    /// `f`'s declarations of one kind, owner and name, in file order: one
+    /// lookup in the file's index, and one read of its rows for the asker.
     fn wire_siblings(f: FileId, kind: string, owner: string, name: string) -> List<DeclId> {
-        [id for id in self.decls_of_file(f) if kind_word(self.decl(id).kind) == kind &&
-            self.decl(id).owner == owner &&
-            self.decl(id).name == name]
+        let ids = self.decls_of_file(f)
+        let kept = self.wire_index.get().get("${f.index}")
+        let by = if kept != null && kept!.count == ids.length { kept!.by } else { self.wire_indexed(f, ids) }
+        self.rows_read(f)
+        by.get(wire_key(kind, owner, name)) ?? []
+    }
+
+    /// `f`'s declarations indexed by kind, owner and name, kept.
+    fn wire_indexed(f: FileId, ids: List<DeclId>) -> Map<string, List<DeclId>> {
+        mut by: Map<string, List<DeclId>> = {}
+        for id in ids {
+            let x = self.decl(id)
+            let k = wire_key(kind_word(x.kind), x.owner, x.name)
+            by.set(k, (by.get(k) ?? []).concat([id]))
+        }
+        self.wire_index.put("${f.index}", WireIndex { count: ids.length, by: by })
+        by
     }
 
     fn read_type_wire(words: List<string>, at: int) -> WireType? {
@@ -798,6 +825,9 @@ impl Decls {
         WireDeclRef { id: siblings[idx], next: at + 5 }
     }
 }
+
+/// A declaration's place in its file's wire index.
+fn wire_key(kind: string, owner: string, name: string) -> string { "${kind}\t${owner}\t${name}" }
 
 /// `wire_decl`'s answer: the declaration, and where the next field starts.
 type WireDeclRef = { id: DeclId, next: int }
