@@ -1,0 +1,52 @@
+//! A METHOD CHAIN FOLDED INTO ONE PIPELINE — `xs.filter(p).map(f)` is
+//! one loop and no intermediate list. Typing recorded each adapter's
+//! stage (`PipeStage`); lowering walks the chain from its base outward,
+//! lowering the base source FIRST and boxing each fn once in source
+//! order, then runs the whole chain into a push. A subject that is no
+//! adapter (a `concat`, a plain list) is the head the rest folds over.
+use core.{ExprId, Reg}
+use features.{LowerCx, MethodCall, PipeStage, FnBox, Clause, Source, Pipeline}
+
+/// `xs.map(f)` / `xs.filter(p)` — the chain ending here, run once.
+export fn chained(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let clauses? = chain_clauses(cx, mc.e) else { return cx.lower_defect(mc.e, "a chain link without its stage survived typing") }
+    let dst = cx.grown_box(cx.shape_at(mc.e), cx.box_size(0), [])
+    cx.piped(Pipeline { clauses: clauses, sink: .Push(dst) })
+}
+
+/// The chain's clauses, innermost first — the base source lowered
+/// before any fn is boxed, so a receiver's effect runs before them.
+fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
+    let stage? = cx.facts.stage_at(e) else { return null }
+    let subject? = subject_of(cx, e) else { return null }
+    let arg? = arg_of(cx, e) else { return null }
+    mut prefix: List<Clause> = []
+    if cx.facts.stage_at(subject) != null {
+        let inner? = chain_clauses(cx, subject) else { return null }
+        prefix = inner
+    } else {
+        let _ = cx.reg_of(subject)
+        prefix = [.Head(Source { source: subject, hi: null, index: false, lookup: null })]
+    }
+    let f = boxed(cx, arg)
+    prefix.concat([applied(cx, stage, FnBox { box: f.f, code: f.fp }, e)])
+}
+
+/// The receiver a chain link folds over, when it is one.
+fn subject_of(cx: LowerCx, e: ExprId) -> ExprId? {
+    match cx.view.store.expr(e) { .MethodCall(subject, _, _) -> subject, _ -> null }
+}
+
+/// The one argument an adapter takes — the fn it applies.
+fn arg_of(cx: LowerCx, e: ExprId) -> ExprId? {
+    match cx.view.store.expr(e) { .MethodCall(_, _, args) -> args.first(), _ -> null }
+}
+
+/// The clause an adapter contributes: a keep guards the rest, a map
+/// replaces the element in hand with the fn's answer.
+fn applied(cx: LowerCx, stage: PipeStage, f: FnBox, e: ExprId) -> Clause {
+    match stage {
+        .Keep -> .Keep(.Applied(f, bool_ty(cx))),
+        .Map -> .Map(.Applied(f, mapped_to(cx, e))),
+    }
+}

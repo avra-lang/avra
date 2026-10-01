@@ -466,6 +466,15 @@ it narrows `[r for r in rows if r.f == v]`, and `bool_comprehension_*`
 rules retire (a comprehension into `.all` is the same pipeline).
 Short-circuit sinks use the walk's existing `early_exit`.
 
+The stage a chain folds by is a TYPING fact, not a column on
+`MethodRow`: `check_map`/`check_filter` record `PipeStage` in the
+TypeFacts `stages` table (the `alias_copies`/`spreads` pattern —
+checking's one answer, lowering's one read) and lowering walks the
+chain from its base outward. A `MethodRow` stage column would have
+edited ~60 rows across six feature tables for a list-only mechanism.
+The base source lowers BEFORE the adapter fns are boxed (source order),
+fixing the old arg-before-receiver order at `walks.av:123-124`.
+
 **E2. No closure at a verb seat.** A lambda literal binds its parameter
 to the element register and lowers its body in place. A named fn is a
 `call_decl` LLVM can inline. Only a fn-typed *value* keeps `CallPtr`.
