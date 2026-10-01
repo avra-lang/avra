@@ -57,6 +57,15 @@ out="$(AVRA_MEM_STATS=1 AVRA_CENSUS_SITES=1 sh tools/memcap.sh 4000 "$census" "$
     | grep -Ev '^(mem:|memcap:)' || true)"
 printf '%s\n' "$out" | grep -q '^rc:' || { printf '%s\n' "$out" | tail -5; echo "census: the run printed no counts"; exit 1; }
 
+# An unslid address's symbol: `atos` on macOS, `addr2line` elsewhere.
+symbol_at() {
+    if command -v atos > /dev/null 2>&1; then
+        atos -o "$census" "$1" 2>/dev/null | head -1
+    else
+        addr2line -f -e "$census" "$1" 2>/dev/null | head -1 | grep -v '^??$' || true
+    fi
+}
+
 # A SITE IS RESOLVED HERE, while the census binary those addresses
 # belong to is still standing.
 printf '%s\n' "$out" | while IFS= read -r line; do
@@ -64,7 +73,7 @@ printf '%s\n' "$out" | while IFS= read -r line; do
         *": site 0x"*)
             # shellcheck disable=SC2086
             set -- $line
-            name="$(atos -o "$census" "$3" 2>/dev/null | head -1)"
+            name="$(symbol_at "$3")"
             case "$name" in
                 ""|*"0x"*) echo "$line" ;;
                 *) echo "$1 $name $4" ;;
