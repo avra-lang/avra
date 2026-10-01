@@ -1,20 +1,22 @@
 //! `realize/html/html.av` — the HTML target. Its drawing accumulates into
-//! a `Cell` of ops, in place, and `document` serializes them. One complete
-//! impl block; each method draws one primitive through the accumulator.
-//! UI.md §19.2.
+//! a `Cell` of ops, in place, and `document` serializes them. Placement
+//! and appearance become one inline style attribute, from the theme the
+//! environment carries; a logical edge mirrors with the direction. UI.md
+//! §19.2, §4.3.
 use realize.realizer.{Realizer}
-use realize.html.writer.{HtmlOp, source}
+use realize.html.writer.{HtmlOp, Attr, source}
 use components.{text, heading, button, column, row}
+use env.{Env, Direction}
+use style.theme.{Theme, space_of, radius_of, color_of, face_of}
+use style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout}
+use style.style.{Style}
+use ui.{Size, Tone, Font}
 
-/// The HTML target: one accumulator of ops.
-export type Html = { ops: Cell<List<HtmlOp>> = Cell.new([]) }
+/// The HTML target: one accumulator of ops and the environment it draws in.
+export type Html = { ops: Cell<List<HtmlOp>> = Cell.new([]), env: Env = Env {} }
 
-/// One inline element around its content.
-fn inline(h: Html, name: string, content: string) {
-    h.ops.push(HtmlOp.Open(name, null))
-    h.ops.push(HtmlOp.Text(content))
-    h.ops.push(HtmlOp.Close(name))
-}
+/// CSS declarations joined, the absent ones dropped.
+fn decl(parts: List<string>) -> string { [p for p in parts if p != ""].join(";") }
 
 /// The heading level an outline may carry: 1 through 6.
 fn rank_tag(rank: int) -> string {
@@ -22,19 +24,218 @@ fn rank_tag(rank: int) -> string {
     "h${within}"
 }
 
-/// One block element opened for a component's keyed children.
-fn block(h: Html, key: string?) { h.ops.push(HtmlOp.Open("div", key)) }
+// ── appearance ──────────────────────────────────────────────────
 
-fn block_end(h: Html) { h.ops.push(HtmlOp.Close("div")) }
+fn color_decl(c: Tone?, t: Theme) -> string {
+    match c {
+        v? -> "color:${color_of(t, v)}"
+        null -> ""
+    }
+}
+
+fn fill_decl(c: Tone?, t: Theme) -> string {
+    match c {
+        v? -> "background:${color_of(t, v)}"
+        null -> ""
+    }
+}
+
+fn radius_decl(z: Size?, t: Theme) -> string {
+    match z {
+        v? -> "border-radius:${radius_of(t, v)}px"
+        null -> ""
+    }
+}
+
+fn face_decl(f: Font?, t: Theme) -> string {
+    match f {
+        v? -> "font-family:${face_of(t, v)}"
+        null -> ""
+    }
+}
+
+fn appearance_css(s: Style, t: Theme) -> string {
+    decl(
+        [
+            color_decl(s.color, t),
+            fill_decl(s.fill, t),
+            radius_decl(s.radius, t),
+            face_decl(s.face, t),
+        ],
+    )
+}
+
+// ── layout ──────────────────────────────────────────────────────
+
+fn axis_one(a: Axis) -> string {
+    match a {
+        .Row -> "display:flex;flex-direction:row",
+        .Column -> "display:flex;flex-direction:column",
+    }
+}
+
+fn axis_decl(a: Axis?) -> string {
+    match a {
+        v? -> axis_one(v)
+        null -> ""
+    }
+}
+
+fn gap_decl(z: Size?, t: Theme) -> string {
+    match z {
+        v? -> "gap:${space_of(t, v)}px"
+        null -> ""
+    }
+}
+
+fn pad_one(e: Edge, t: Theme, dir: Direction) -> string {
+    let s = e.start ?? Size.None
+    let en = e.end ?? Size.None
+    let top = e.top ?? Size.None
+    let bot = e.bottom ?? Size.None
+    let left = if dir == Direction.Ltr { s } else { en }
+    let right = if dir == Direction.Ltr { en } else { s }
+    "padding:${space_of(t, top)}px ${space_of(t, right)}px ${space_of(t, bot)}px ${space_of(t, left)}px"
+}
+
+fn pad_decl(e: Edge?, t: Theme, dir: Direction) -> string {
+    match e {
+        v? -> pad_one(v, t, dir)
+        null -> ""
+    }
+}
+
+fn align_one(a: Align) -> string {
+    match a {
+        .Start -> "align-items:flex-start",
+        .Center -> "align-items:center",
+        .End -> "align-items:flex-end",
+        .Stretch -> "align-items:stretch",
+        .Baseline -> "align-items:baseline",
+    }
+}
+
+fn align_decl(a: Align?) -> string {
+    match a {
+        v? -> align_one(v)
+        null -> ""
+    }
+}
+
+fn distribute_one(d: Distribute) -> string {
+    match d {
+        .Start -> "justify-content:flex-start",
+        .Center -> "justify-content:center",
+        .End -> "justify-content:flex-end",
+        .SpaceBetween -> "justify-content:space-between",
+        .SpaceAround -> "justify-content:space-around",
+        .SpaceEvenly -> "justify-content:space-evenly",
+    }
+}
+
+fn distribute_decl(d: Distribute?) -> string {
+    match d {
+        v? -> distribute_one(v)
+        null -> ""
+    }
+}
+
+/// A fixed size becomes pixels; `Fill` fills the parent; a fraction is
+/// left to the target's own engine.
+fn sizing_one(prop: string, s: Sizing) -> string {
+    match s {
+        .Hug -> "",
+        .Fill -> "${prop}:100%",
+        .Fixed(n) -> "${prop}:${n}px",
+        .Percent(_) -> "",
+    }
+}
+
+fn sizing_decl(prop: string, s: Sizing?) -> string {
+    match s {
+        v? -> sizing_one(prop, v)
+        null -> ""
+    }
+}
+
+fn grow_decl(n: int) -> string { if n > 0 { "flex-grow:${n}" } else { "" } }
+
+fn layout_css(l: Layout, t: Theme, dir: Direction) -> string {
+    decl(
+        [
+            axis_decl(l.direction),
+            gap_decl(l.gap, t),
+            pad_decl(l.pad, t, dir),
+            align_decl(l.align),
+            distribute_decl(l.distribute),
+            sizing_decl("width", l.width),
+            sizing_decl("height", l.height),
+            grow_decl(l.grow),
+        ],
+    )
+}
+
+/// The whole style attribute for one node: placement then appearance.
+fn css(s: Style, l: Layout, t: Theme, dir: Direction) -> string {
+    decl([layout_css(l, t, dir), appearance_css(s, t)])
+}
+
+// ── drawing ─────────────────────────────────────────────────────
+
+fn attrs(key: string?, css_text: string) -> List<Attr> {
+    let keyed: List<Attr> = match key {
+        k? -> [Attr { name: "data-key", value: k }]
+        null -> []
+    }
+    let styled: List<Attr> = if css_text == "" { [] } else { [Attr { name: "style", value: css_text }] }
+    keyed.concat(styled)
+}
+
+fn inline(h: Html, name: string, content: string, a: List<Attr>) {
+    h.ops.push(HtmlOp.Open(name, a))
+    h.ops.push(HtmlOp.Text(content))
+    h.ops.push(HtmlOp.Close(name))
+}
 
 impl Realizer for Html {
-    fn text(t: text) { inline(self, "span", t.content) }
-    fn heading(hd: heading) { inline(self, rank_tag(hd.rank), hd.content) }
-    fn button(b: button) { inline(self, "button", b.label) }
-    fn column_begin(c: column) { block(self, c.key) }
-    fn column_end() { block_end(self) }
-    fn row_begin(r: row) { block(self, r.key) }
-    fn row_end() { block_end(self) }
+    fn text(t: text) {
+        inline(self, "span", t.content, attrs(t.key, appearance_css(t.style, self.env.theme)))
+    }
+    fn heading(hd: heading) {
+        inline(
+            self,
+            rank_tag(hd.rank),
+            hd.content,
+            attrs(hd.key, appearance_css(hd.style, self.env.theme)),
+        )
+    }
+    fn button(b: button) {
+        inline(self, "button", b.label, attrs(b.key, appearance_css(b.style, self.env.theme)))
+    }
+    fn column_begin(c: column) {
+        self
+            .ops
+            .push(
+                HtmlOp
+                    .Open(
+                        "div",
+                        attrs(c.key, css(c.style, c.layout, self.env.theme, self.env.direction)),
+                    ),
+            )
+    }
+    fn column_end() { self.ops.push(HtmlOp.Close("div")) }
+    fn row_begin(r: row) {
+        self
+            .ops
+            .push(
+                HtmlOp
+                    .Open(
+                        "div",
+                        attrs(r.key, css(r.style, r.layout, self.env.theme, self.env.direction)),
+                    ),
+            )
+    }
+    fn row_end() { self.ops.push(HtmlOp.Close("div")) }
 }
 
 /// The finished document.
