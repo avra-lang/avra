@@ -379,8 +379,11 @@ impl Rows<R> {
     /// unless the owner takes a late write as an input arriving.
     fn late_check(db: Db, relation: string, id: int, keys: List<List<IndexKey>>, now: int) {
         let before: List<List<IndexKey>> = if id < self.next_id() { self.filed.get()[id] } else { [] }
-        self
-            .late_among(db, relation, [self.bucket_of(i, k) for i, ks in before.concat(keys) for k in ks], now)
+        // each key list is per index, so the two are walked apart: numbering
+        // across their concatenation reads an index the relation has not got
+        let touched = [self.bucket_of(i, k) for i, ks in before for k in ks]
+            .concat([self.bucket_of(i, k) for i, ks in keys for k in ks])
+        self.late_among(db, relation, touched, now)
     }
 
     /// `late_check` over the buckets a write touches.
