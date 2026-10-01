@@ -80,6 +80,10 @@ spec "std/json — adversarial" {
         then "a lone high surrogate becomes the replacement character" { a_round("\"\\ud83d\"") == "\"${from_codepoint(65533)}\"" }
         then "a high surrogate followed by a non-low escape stands alone" { a_round("\"\\ud83d\\u0041\"") == "\"${from_codepoint(65533)}A\"" }
         then "the null byte escape writes back as \\u0000" { a_round("\"\\u0000\"") == "\"\\u0000\"" }
+        then "\\b and \\f are one character each, and write back as escapes" {
+            (parse("\"\\b\\f\"") catch Json.Null).text() == from_codepoint(8) + from_codepoint(12) &&
+                a_round("\"\\b\\f\"") == "\"\\b\\f\""
+        }
     }
     given "writing what was never parsed" {
         then "a key needing escapes is escaped" { to_text(Json.Obj([field("a\"b", Json.Int(1))])) == "{\"a\\\"b\":1}" }

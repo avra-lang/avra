@@ -494,10 +494,11 @@ Recorded as each decision landed on `lane/validate`.
 - **The derived entry point is `Signup.decode(v)`.** `decode<Signup>(v)`
   needs a static trait fn reached through a type parameter, which the
   language lacks (sugar backlog).
-- **Bounds are the parser's, not only the decoder's.** `@std/json`
-  now refuses nesting past 128 levels at the opener; before, 200,000
-  nested `[` crashed a native program. The decoder bounds depth and
-  list length again for every other format.
+- **Bounds are the parser's, and the decoder's.** `@std/json` refuses
+  nesting past its `MAX_DEPTH` (512) at the opener, so 200,000 nested
+  `[` is one refusal, never a crash. The decoder bounds its own depth
+  (128 by default, `Limits.depth`) and a list's length again, for
+  every format.
 - **A field written twice is refused**, in both coercion modes: a
   reader that took the other copy would see another value.
 - **A secret stays secret all the way down**: a secret list's
@@ -554,15 +555,15 @@ number no neighbour's load moves, so it is the one to compare.
 
 | row | Avra before | Avra after | Rust | C |
 |---|---|---|---|---|
-| decode + rules, valid (ns) | 10185 | 1494 – 2041 | 1689 – 1756 | 200 – 224 |
-| decode + rules, refused, every rule (ns) | 15294 | 5017 – 6674 | 2139 – 2561 | 197 – 215 |
-| decode + rules, valid (instructions) | — | 20404 | 20057 | 2999 |
-| decode + rules, refused (instructions) | — | 59161 | 23862 | 2990 |
+| decode + rules, valid (ns) | 10185 | 1494 – 2041 | 1689 – 1785 | 200 – 224 |
+| decode + rules, refused, every rule (ns) | 15294 | 5017 – 6674 | 2139 – 2621 | 197 – 215 |
+| decode + rules, valid (instructions) | — | 20554 | 20057 | 2999 |
+| decode + rules, refused (instructions) | — | 59413 | 23862 | 2990 |
 | parse only, valid (ns) | 3869 | 3869 | 600 | 154 |
 | tree path: `Value` + decode, valid (ns) | 10185 | 7821 | — | — |
 
-Two ranges are two Sprites' runs; the ratio to Rust moved between
-0.88x and 1.16x with the machine, while the instruction counts sat at
+The ranges are three runs on two Sprites, the last on main's float-aware
+@std/json; the ratio to Rust moved between 0.88x and 1.16x with the machine, while the instruction counts sat at
 parity. Rust's refused row reads a copy of the struct without
 `deny_unknown_fields`, so serde reaches garde and every rule's issue is
 built (the strict struct stops at the first shape error, ~850 ns, one
