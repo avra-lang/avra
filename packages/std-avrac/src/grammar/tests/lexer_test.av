@@ -1,4 +1,11 @@
-use @std.avrac.grammar.{lex_grammar, lex_source, lex_blocks, TokenKind, LexResult}
+use @std.avrac.grammar.{
+    lex_grammar,
+    lex_source,
+    lex_blocks,
+    byte_string_octets,
+    TokenKind,
+    LexResult,
+}
 
 /// One line-structure fixture: a source and its Break count.
 type BreakCase = { src: string, breaks: int }
@@ -9,6 +16,13 @@ fn count_breaks(r: LexResult) -> int {
 
 fn op_texts(r: LexResult) -> List<string> {
     [t.text for t in r.tokens if t.kind == TokenKind.Op]
+}
+
+/// The texts lexed as a component's word, joined, under one word the
+/// file's own module declares.
+fn own_opened(src: string) -> string {
+    [t.text for t in lex_blocks(src, [], [], ["thing"], ["let", "fn"]).tokens if t.kind == TokenKind.Component]
+        .join(",")
 }
 
 spec "grammar/lexer" {
@@ -255,6 +269,72 @@ spec "grammar/lexer" {
             let r = lex_blocks("quote { \${ sql { a }.relation } }", ["sql"], [])
             let names = [t.text for t in r.tokens if t.kind == TokenKind.Name]
             r.errors.is_empty() && names.contains("relation")
+        }
+    }
+    given "a component its own module declares" {
+        then "its word opens an instance where it names one, body or none" {
+            own_opened("thing add { a -> a }") == "thing" &&
+                own_opened("thing add") == "thing" &&
+                own_opened("export thing add { a -> a }") == "thing"
+        }
+        then "it opens one at the head of a later line and of a block's body" {
+            own_opened("x = y\nthing add { a -> a }") == "thing" &&
+                own_opened("fn f() {\n    thing add\n}") == "thing" &&
+                own_opened("fn f() { thing add }") == "thing"
+        }
+        then "a literal, a type, an argument and a keyword after it stay names" {
+            own_opened("thing { w: 1 }") == "" &&
+                own_opened("let v: thing = thing { w: 1 }") == "" &&
+                own_opened("f(thing)\nthing") == "" &&
+                own_opened("thing let") == ""
+        }
+        then "a line a continuing operator joins is no statement's head" {
+            own_opened("a +\nthing add") == ""
+        }
+    }
+    given "a byte string" {
+        then "`b` touching a quote is one token carrying the spelling" {
+            let r = lex_source("b\"a\\x00\"")
+            r.errors.is_empty() &&
+                r.tokens[0].kind == TokenKind.Octets &&
+                r.tokens[0].text == "a\\x00"
+        }
+        then "a name before a quote stays a name" {
+            let r = lex_source("ab\"x\"")
+            r.tokens[0].kind == TokenKind.Name && r.tokens[1].kind == TokenKind.Str
+        }
+        then "every escape decodes to its octet, and a raw byte is itself" {
+            match byte_string_octets("q\\\"\\\\\\n\\t\\r\\0\\x7f\\xFFé") {
+                .Ok(xs) -> xs.length == 11 &&
+                    xs[0] == 113 &&
+                    xs[1] == 34 &&
+                    xs[2] == 92 &&
+                    xs[3] == 10 &&
+                    xs[4] == 9 &&
+                    xs[5] == 13 &&
+                    xs[6] == 0 &&
+                    xs[7] == 127 &&
+                    xs[8] == 255 &&
+                    xs[9] == 195 &&
+                    xs[10] == 169,
+                .Err(_) -> false,
+            }
+        }
+        then "the empty spelling is no octets" {
+            match byte_string_octets("") { .Ok(xs) -> xs.is_empty(), .Err(_) -> false }
+        }
+        then "a short hex escape and an unknown one are refused, and the token still stands" {
+            let short = lex_source("b\"a\\x4\"")
+            let unknown = lex_source("b\"a\\q\"")
+            short.errors.length == 1 &&
+                short.errors[0].message.contains("two hex digits") &&
+                unknown.errors.length == 1 &&
+                unknown.errors[0].message.contains("spell any other octet") &&
+                short.tokens[0].kind == TokenKind.Octets
+        }
+        then "a byte string that meets its line's end is refused once" {
+            let r = lex_source("b\"abc\\\"\nx")
+            r.errors.length == 1 && r.errors[0].message.contains("closes on its own line")
         }
     }
     given "an integer literal's ceiling" {

@@ -55,7 +55,7 @@ enum Val {
     S(v: string)
     /// Octets, held directly: immutable, so no identity and no handle.
     /// The evaluator's representation, never the language's.
-    Y(v: List<int>)
+    Y(v: Bytes)
     /// An aggregate — a handle into the machine's array table.
     A(id: int)
     /// A mut binding's cell — a handle into the cell table.
@@ -177,7 +177,7 @@ enum Stepped {
 /// the handle, the refusal names the package, and holding them as
 /// parallel lists made the second index one list by the other's
 /// position.
-type OpenLibrary = { name: string, handle: int }
+type OpenLibrary = { name: string, handle: int, externs: List<string> }
 
 /// The program's closure opened, in package order. A handle of 0 is
 /// ORDINARY rather than a failure: a package the compiler's own image
@@ -185,7 +185,7 @@ type OpenLibrary = { name: string, handle: int }
 /// it. The stem carries no suffix, so the platform question stays out
 /// of the compiler and the machine tries the ones it knows.
 fn opened_libraries(l: Lowered) -> List<OpenLibrary> {
-    [OpenLibrary { name: p.name, handle: opened(p.library) } for p in l.libraries]
+    [OpenLibrary { name: p.name, handle: opened(p.library), externs: p.externs } for p in l.libraries]
 }
 
 fn opened(stem: string) -> int {
@@ -527,7 +527,7 @@ impl Machine {
             .F(bits) -> fp(3, [bits]),
             .B(b) -> fp(4, [if b { 1 } else { 0 }]),
             .S(s) -> fp(5, [fp_str(s)]),
-            .Y(data) -> fp(10, data),
+            .Y(data) -> fp(10, octets_of_box(data)),
             .A(id) -> fp(6, [self.value_hash(x) for x in self.arrays[id]]),
             .C(id) -> fp(7, [self.value_hash(self.cells[id])]),
             .M(id) -> fp(
@@ -773,7 +773,7 @@ impl Machine {
             .Absent -> Val.N,
             .Gone -> Val.Gone,
             .Node(id) -> { self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]]) },
-            .Octets(xs) -> Val.Y(xs),
+            .Octets(xs) -> Val.Y(xs.bytes()!),
             .Map(id) -> {
                 let row = heap.maps[id]
                 self
@@ -793,7 +793,7 @@ impl Machine {
             .F(bits) -> MetaVal.Float(bits),
             .B(b) -> MetaVal.Bool(b),
             .S(s) -> MetaVal.Text(s),
-            .Y(data) -> MetaVal.Octets(data),
+            .Y(data) -> MetaVal.Octets(octets_of_box(data)),
             .N -> MetaVal.Absent,
             .Gone -> MetaVal.Gone,
             .A(id) -> { heap.node([self.meta_of(x, heap) for x in self.arrays[id]]) },
@@ -901,7 +901,7 @@ impl Machine {
     /// than through `octets`, which would build the whole sequence
     /// for one question.
     fn byte_at(v: Val, i: int) -> int {
-        match v { .Y(data) -> data[i], rest -> self.text_val(v).char_code(i) }
+        match v { .Y(data) -> data.at(i), rest -> self.text_val(v).char_code(i) }
     }
 
     /// Octets as text. THE DECODE IS LOSSLESS FOR UTF-8 AND ONLY FOR
@@ -909,8 +909,8 @@ impl Machine {
     /// bytes that are not UTF-8 are refused by name, never
     /// approximated — a silent disagreement with the native answer is
     /// the one outcome worse than a refusal.
-    fn decoded(data: List<int>) -> string {
-        utf8_text(data) ?? self.refused_octets()
+    fn decoded(data: Bytes) -> string {
+        data.text() ?? self.refused_octets()
     }
 
     /// The refusal above, spoken: the trap names the fault and the
@@ -1080,7 +1080,7 @@ impl Machine {
     fn box_val(b: StaticBox, built: List<Val>) -> Val {
         match b {
             .Slots(cells) -> self.fresh_array([self.slot_val(c, built) for c in cells]),
-            .Octets(b) -> Val.Y([b.at(j) for j in 0..b.length]),
+            .Octets(b) -> Val.Y(b),
             .Table(keys, values) -> {
                 self
                     .maps
@@ -1246,30 +1246,25 @@ impl Machine {
             .StrParsedInt -> Val.I(text_int(self.text_val(vals[0])) ?? 0),
             .StrConcat -> Val.S(self.text_val(vals[0]) + self.text_val(vals[1])),
             .BytesLen -> Val.I(self.octets(vals[0]).length),
-            .BytesEq -> verdict(same_octets(self.octets(vals[0]), self.octets(vals[1]))),
+            .BytesEq -> verdict(self.octets(vals[0]) == self.octets(vals[1])),
             .BytesAt -> self.bytes_at_val(vals),
             .BytesSlice -> self.bytes_slice_val(vals),
             .BytesConcat -> Val.Y(self.octets(vals[0]).concat(self.octets(vals[1]))),
             .BytesIndexOf -> self.bytes_index_of_val(vals),
+            .BytesIndexIn -> self.bytes_index_in_val(row, callee, vals),
             .BytesOfStr -> Val.Y(self.octets(vals[0])),
             .BytesOfList -> self.bytes_of_list_val(vals[0]),
             .StrOfBytes -> text_of_octets(self.octets(vals[0])),
-            .Utf8BadAt -> Val.I(utf8_bad_at(self.octets(vals[0]))),
+            .Utf8BadAt -> Val.I(avra_utf8_bad_at(self.octets(vals[0]))),
             .BytesRun -> self.bytes_run_val(vals),
+            .BytesRunBack -> self.bytes_run_back_val(row, callee, vals),
             .BytesEqAt -> self.bytes_eq_at_val(vals, false),
             .BytesIeqAt -> self.bytes_eq_at_val(vals, true),
             .BytesGathered -> self.bytes_gathered_val(vals[0]),
             .BytesAdopted -> self.adopted_val(vals),
             .FdRead -> Val.I(avra_fd_read(self.whole(vals[0]), self.whole(vals[1]))),
-            .FdTaken -> Val.Y(octets_of_box(avra_fd_taken(self.whole(vals[0])))),
-            .FdWrite -> Val
-                .I(
-                    avra_fd_write(
-                        self.whole(vals[0]),
-                        self.octets(vals[1]).bytes()!,
-                        self.whole(vals[2]),
-                    ),
-                ),
+            .FdTaken -> Val.Y(avra_fd_taken(self.whole(vals[0]))),
+            .FdWrite -> Val.I(avra_fd_write(self.whole(vals[0]), self.octets(vals[1]), self.whole(vals[2]))),
             .ErrnoText -> Val.S(avra_errno_text(self.whole(vals[0]))),
             .NowNs -> Val.I(avra_now_ns()),
             .HostEnv -> Val.S(avra_host_env(self.text_val(vals[0]))),
@@ -1450,7 +1445,7 @@ impl Machine {
     /// evaluator's own octets, so nothing else holds it: the frame
     /// keeps a raw pointer and the reference must outlive the call.
     fn stage_bytes(at: int, v: Val) -> bool {
-        let b = self.octets(v).bytes()!
+        let b = self.octets(v)
         self.staged.push(b)
         avra_ffi_set_bytes(at, b)
         true
@@ -1523,19 +1518,19 @@ impl Machine {
     fn no_symbol(callee: string) -> Val {
         self
             .trapped(
-                "`${callee}` is extern and this image does not carry it${self.unopened()} — build natively",
+                "`${callee}` is extern and this image does not carry it${self.owner_note(callee)} — build natively",
             )
         Val.I(0)
     }
 
-    /// The packages in this program's closure whose library did not
-    /// open, named for the refusal — so "not found" can say WHERE
-    /// else it would have looked. Empty when every one opened, and
-    /// then the refusal is the plain one.
-    fn unopened() -> string {
-        let missing = [o.name for o in self.libs if o.handle == 0]
-        if missing.is_empty() { return "" }
-        ", and ${joined(missing, ", ")} owns native code whose library is not built — run `make libs`"
+    /// Where a missing symbol should have come from: the package that
+    /// DECLARES it — its library unbuilt, or built without it. Nothing
+    /// when no package of the closure declares it; a package the image
+    /// carries declares nothing it lacks, so it is never named.
+    fn owner_note(callee: string) -> string {
+        let owner? = self.libs.find(it.externs.contains(callee)) else { return "" }
+        if owner.handle == 0 { return unbuilt_library(owner.name) }
+        library_without(owner.name)
     }
 
     /// A declaration wider than one frame. The frame is fully applied
@@ -2028,7 +2023,7 @@ impl Machine {
         let held? = avra_ptr_at(self.whole(vals[0])) else {
             return self.defect_val("an address of zero reached the adoption door")
         }
-        Val.Y(octets_of_box(avra_bytes_adopted(held, self.whole(vals[1]))))
+        Val.Y(avra_bytes_adopted(held, self.whole(vals[1])))
     }
 
     fn streq_val(vals: List<Val>) -> Val {
@@ -2040,4 +2035,16 @@ impl Machine {
 /// null pointer, the word the runtime's slot holds under it.
 fn read_out(v: Val) -> Val {
     if v is .Gone { Val.N } else { v }
+}
+
+// ── The voices ──
+
+/// A declaring package's library that did not open.
+fn unbuilt_library(package: string) -> string {
+    ", and ${package} declares it but has no library built — run `make libs`"
+}
+
+/// A declaring package's library that opened without the symbol.
+fn library_without(package: string) -> string {
+    ", and ${package} declares it but its library does not carry it — rebuild it with `make libs`"
 }

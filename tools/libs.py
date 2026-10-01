@@ -91,17 +91,33 @@ PLATFORMS = {
 
 # THE RUNTIME IS BOUND TO THE HOST AT LOAD. Mach-O refuses an
 # undefined symbol at link time unless told; ELF permits it by
-# default. THE AMNESTY IS THE RUNTIME BAND AND NOTHING ELSE: an
-# `avra_*` left open is held to `nm build/avra`, and a FOREIGN symbol
-# left for dynamic lookup is a `[link] libs` row nobody declared —
-# both are refusals in `tools/stems.sh`, which reads `--undefined`.
+# default. THE AMNESTY IS THE RUNTIME BAND AND NOTHING ELSE, so on
+# darwin it is spelled symbol by symbol: `-U` for each `avra_*` the
+# library's objects leave open that `build/avra` exports, and every
+# other open symbol is the LINKER's refusal — a foreign symbol nobody
+# declared fails the link here, not only a keeper's reading of it. ELF
+# has no such spelling, so `tools/stems.sh` (which reads
+# `--undefined`) stays the keeper there.
 #
 # AND THE FLAG IS NOT WHAT MAKES A PLATFORM LIBRARY RESOLVE. Darwin
 # links libSystem implicitly and libSystem re-exports libm and
-# libpthread, so those bind with or without their `[link]` rows and
-# with or without this flag. Only ELF reads a manifest's promise as
-# written, which is why the promise is kept by a keeper here.
-HOST_BOUND = ["-Wl,-undefined,dynamic_lookup"] if sys.platform == "darwin" else []
+# libpthread, so those bind with or without their `[link]` rows. Only
+# ELF reads a manifest's promise as written, which is why the promise
+# is kept by a keeper there.
+def host_bound(objects, host):
+    """The runtime band a library leaves open, as darwin's per-symbol
+    amnesty: nothing on ELF, which permits every undefined symbol."""
+    if sys.platform != "darwin":
+        return []
+    band = sorted({s for o in objects for s in undefined(o) if s.startswith("avra_") and s in host})
+    return ["-Wl,-U,_" + s for s in band]
+
+
+def undefined(obj):
+    """The symbols an object (or each member of an archive) leaves open."""
+    out = subprocess.run(["nm", "-u", obj], cwd=ROOT, capture_output=True, text=True)
+    return {line.split()[-1].lstrip("_") for line in out.stdout.splitlines()
+            if line.strip() and not line.endswith(":")}
 
 
 def platform():
@@ -291,7 +307,7 @@ def build(name):
               f"{' '.join(missing)}", file=sys.stderr)
         return 1
     _, mode = platform()
-    argv = (["cc"] + mode + HOST_BOUND + ["-o", row["output"]]
+    argv = (["cc"] + mode + host_bound(row["objects"], host_symbols()) + ["-o", row["output"]]
             + [w for o in row["objects"] for w in linked_whole(o)] + row["words"])
     return subprocess.call(argv, cwd=ROOT)
 

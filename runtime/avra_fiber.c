@@ -816,6 +816,12 @@ void avra_fiber_fd_closing(int64_t fd) {
     w->ready = 0;
 }
 
+void avra_fiber_fd_interrupt(int64_t fd) {
+    if (fd < 0 || (size_t)fd >= g_fds_cap) return;
+    FdWaits* w = &g_fds[fd];
+    while (w->readers) unpark(w->readers, 1);
+}
+
 int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms) {
     if (fd < 0 || fd > INT32_MAX) return 1;
     Fiber* self = g_current;

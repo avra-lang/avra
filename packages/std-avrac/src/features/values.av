@@ -27,8 +27,10 @@ use core.{
     Slot,
     StaticBox,
     same_type,
+    is_managed,
 }
 use features.{MetaVal, MetaHeap, TypeFacts, Decls, meta_of_template, new_meta_heap}
+use grammar.{byte_string_octets}
 use @std.meta.{Node}
 
 // ── The source-spelled value ────────────────────────────────────
@@ -65,6 +67,7 @@ export fn literal_meta(
         .MapLit(keys, values) -> literal_map(store, decls, facts, keys, values, heap),
         .StructLit(_, fields, values) -> literal_record(store, decls, facts, e, [t.of for t in fields], values, heap),
         .VariantLit(name, args) -> literal_variant(store, decls, facts, e, name.of, args, heap),
+        .BytesLit(spelled) -> match byte_string_octets(spelled) { .Ok(xs) -> MetaVal.Octets(xs), .Err(_) -> null },
         rest -> null,
     }
 }
@@ -1022,8 +1025,15 @@ impl LowerCx {
         self.boxed_carried(box, self.carried_type(opt))
     }
 
+    /// A NICHE nullable insisted on: a counted box comes back OWNED
+    /// through `avra_insist`, and a foreign pointer — no header, so
+    /// nothing to count — is its own register past a null test, never
+    /// retained.
     mut fn insisted_niche(v: Reg, opt: TypeId) -> Reg {
-        self.insist(self.view.types.shape_of(self.carried_type(opt)), v)
+        let carried = self.carried_type(opt)
+        if is_managed(self.view.types, carried) { return self.insist(self.view.types.shape_of(carried), v) }
+        let _ = self.insist_scalar(Type.Int, self.presence_of(v, opt), self.const_int(0))
+        v
     }
 
     mut fn insisted_pair(v: Reg, opt: TypeId) -> Reg {

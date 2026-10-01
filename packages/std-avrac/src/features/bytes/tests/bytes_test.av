@@ -152,6 +152,59 @@ spec "features/bytes" {
                 "index 2 is out of bounds (length 1)",
             )
         }
+        then "index_in finds the needle inside lo..hi" {
+            shown(
+                "let b = [1, 2, 1, 2].bytes()!\nlet n = [1, 2].bytes()!\n\"\${b.index_in(n, 0, 4)} \${b.index_in(n, 1, 4)} \${b.index_in(n, 1, 3)}\"",
+            ) == "0 2 -1"
+        }
+        then "a needle crossing hi is not found" {
+            shown("[1, 2, 3].bytes()!.index_in([2, 3].bytes()!, 0, 2)") == "-1"
+        }
+        then "a needle ending exactly at hi is found" {
+            shown("[1, 2, 3].bytes()!.index_in([2, 3].bytes()!, 0, 3)") == "1"
+        }
+        then "an empty needle is found at lo, an empty span included" {
+            shown(
+                "let b = [1, 2].bytes()!\n\"\${b.index_in([].bytes()!, 1, 2)} \${b.index_in([].bytes()!, 2, 2)}\"",
+            ) == "1 2"
+        }
+        then "an empty span finds no octet" { shown("[1].bytes()!.index_in([1].bytes()!, 0, 0)") == "-1" }
+        then "a hi past the length is the trap" {
+            refused_at_run(
+                "[1].bytes()!.index_in([1].bytes()!, 0, 2)",
+                "slice 0..2 is out of bounds (length 1)",
+            )
+        }
+        then "a hi below lo is the trap" {
+            refused_at_run(
+                "[1, 2].bytes()!.index_in([1].bytes()!, 2, 1)",
+                "slice 2..1 is out of bounds (length 2)",
+            )
+        }
+        then "a negative lo is the trap" {
+            refused_at_run(
+                "[1, 2].bytes()!.index_in([1].bytes()!, -1, 1)",
+                "slice -1..1 is out of bounds (length 2)",
+            )
+        }
+    }
+    given "a text literal as a pattern over octets" {
+        then "it compares its own UTF-8 octets, the empty text and a non-ASCII one included" {
+            shown(
+                "fn named(r: Bytes) -> string {\n    match r {\n        \"k-1\" -> \"one\"\n        \"\" -> \"empty\"\n        \"é\" -> \"accent\"\n        _ -> \"other\"\n    }\n}\n[named(\"k-1\".bytes()), named(\"\".bytes()), named(\"é\".bytes()), named([107, 45, 49, 0].bytes()!)].join(\" \")",
+            ) == "one empty accent other"
+        }
+        then "it stands beside a format arm over the same octets" {
+            shown(
+                "fn named(r: Bytes) -> string {\n    match r {\n        \"k-1\" -> \"one\"\n        \"k-{n: int}\" -> \"k \${n}\"\n        _ -> \"other\"\n    }\n}\nnamed(\"k-7\".bytes())",
+            ) == "k 7"
+        }
+        then "a nullable subject still refuses it, as a nullable string does" {
+            refused_with(
+                "fn f(r: Bytes?) -> int {\n    match r {\n        \"a\" -> 1\n        _ -> 0\n    }\n}\nf(null)",
+                "never matches `Bytes?`",
+            )
+        }
     }
     given "scans" {
         then "run ends at the first byte the table refuses" {
@@ -175,6 +228,33 @@ spec "features/bytes" {
         then "a table of the wrong length is the trap" {
             refused_at_run(
                 "let b = [1, 2, 3].bytes()!\nb.run(0, b)",
+                "a class table holds 256 bytes (length 3)",
+            )
+        }
+        then "run_back starts at the first admitted byte after the last refused one" {
+            shown(
+                "let d = [if i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!\n\"ab12\".bytes().run_back(4, d)",
+            ) == "2"
+        }
+        then "run_back at a refused byte answers from" {
+            shown(
+                "let d = [if i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!\n\"a12b\".bytes().run_back(4, d)",
+            ) == "4"
+        }
+        then "run_back over admitted bytes to the start answers 0, and from 0 answers 0" {
+            shown(
+                "let d = [1 for i in 0..256].bytes()!\n\"\${\"ab\".bytes().run_back(2, d)} \${\"\".bytes().run_back(0, d)}\"",
+            ) == "0 0"
+        }
+        then "run_back past the end is the trap" {
+            refused_at_run(
+                "let d = [1 for i in 0..256].bytes()!\n\"ab\".bytes().run_back(3, d)",
+                "index 3 is out of bounds (length 2)",
+            )
+        }
+        then "run_back with a table of the wrong length is the trap" {
+            refused_at_run(
+                "let b = [1, 2, 3].bytes()!\nb.run_back(3, b)",
                 "a class table holds 256 bytes (length 3)",
             )
         }
