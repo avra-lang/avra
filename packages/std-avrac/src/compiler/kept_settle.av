@@ -1,0 +1,321 @@
+//! A KEPT SETTLEMENT: a read file's const verdict, remembered across builds
+//! beside everything it is a function of, so an edit that moves none of it
+//! reuses the verdict without lowering or running its reach.
+//!
+//! A settlement's VALUE is a function of the bodies its run ENTERED and of the
+//! consts it READ; its STRUCTURAL verdict is a function of each reached
+//! unit's CALL SHAPE — what the unit asks to be lowered (calls, lifts, a dyn
+//! pack's methods) and whether each body reaches the world — never of a
+//! literal in a body the run never entered. Each kept line names one of those
+//! and how to tell it stands: a unit by its file's key, or, when the file is
+//! read, by the interfaces its module sees and its declaration's syntax —
+//! or, for a unit only reached, by its call shape lowered again; a const by
+//! the verdict it answers now.
+use core.{
+    StmtId,
+    FileId,
+    DeclId,
+    DeclKind,
+    ModulePath,
+    module_path,
+    fp,
+    fp_list,
+    fp_str,
+    distinct,
+    flatten,
+    joined,
+    list_cell,
+    sorted_texts,
+}
+use features.{Unsettled, Settled, Wanted, SettleRoot, SeatValue, Budgets}
+use compiler.backend.{reaches_world}
+use compiler.store.{Store, Stored, node_key}
+use compiler.lower.{Unit}
+
+impl Workspace {
+    /// A read file's const, settled: its kept verdict when everything it is a
+    /// function of stands, else a settlement run, kept when it may be.
+    fn const_settlement(ask: SettleAsk, s: StmtId) -> Result<Settled, Unsettled> {
+        let d = self.decls.decl_of(ask.file, s)
+        let keyed: string? = if d != null && ask.seats.is_empty() { self.kept_settle_key(ask.file, d!) } else { null }
+        if keyed != null {
+            let kept = self.kept_verdict(ask.file, keyed!)
+            if kept != null { return kept! }
+        }
+        let asked = self.hold.body_asks.get().length
+        let fresh: Cell<List<KeptLine>> = list_cell()
+        self.hold.settle_frames.push(fresh)
+        let r = self
+            .settlement_of(ask.file, self.analysis(ask.file).view.store.const_value(s)!, ask.name, ask.seats)
+        let frame = self.popped_settle_frame()
+        if keyed != null && self.hold.body_asks.get().length == asked { self.keep_verdict(keyed!, r, frame) }
+        r
+    }
+
+    /// Where `d`'s kept verdict lives: its file's path and its name.
+    fn kept_settle_key(f: FileId, d: DeclId) -> string { kept_key_for(self.decls.file(f).path, self.decls.decl(d).name) }
+
+    /// The files a read file's runs force read: none when every const its
+    /// record lists has a kept verdict, which answers without running.
+    fn forced_runs(store: Store, path: string) -> List<string> {
+        let m = self.module_path_of(path)
+        let runs = kept_runs(record_places(self, store, m).get(path))
+        let consts = [parts[5] for parts in record_fields(self, store, m) if parts.length > 5 && parts[0] == "const" && parts[1] == path]
+        if !consts.is_empty() && consts.all((n) -> store.has(Stored.Unit, kept_key_for(path, n))) { return [] }
+        runs
+    }
+
+    /// The innermost open settlement's lines, its frame closed.
+    fn popped_settle_frame() -> List<KeptLine> {
+        let frames = self.hold.settle_frames.get()
+        let top = frames.last()!.get()
+        self.hold.settle_frames.set(frames.slice(0, frames.length - 1))
+        top
+    }
+
+    /// One unit a settlement lowers, noted in the open frame.
+    fn logged_unit(w: Wanted) -> Unit {
+        let u = self.lowered_for_eval(self.spec_id(w))
+        let top = self.hold.settle_frames.get().last()
+        if top != null { top!.push(self.kept_unit_line(w, u)) }
+        u
+    }
+
+    /// A unit's kept line: its file and that file's text, its declaration
+    /// and, when its file is read, that declaration's syntax, its shape, and
+    /// the wanted that lowers it again when its name holds no node id.
+    fn kept_unit_line(w: Wanted, u: Unit) -> KeptLine {
+        let path = self.decls.file(w.file).path
+        let d = w.decl ?? self.root_decl(w)
+        KeptLine {
+            line: joined(
+                [
+                    "u",
+                    path,
+                    self.text_digest(path),
+                    self.decl_ref(d),
+                    if d == null || self.is_held(w.file) { "" } else { "${self.syntax(d!)}" },
+                    self.unit_shape(u),
+                ],
+                "\t",
+            ),
+            unit: true,
+            path: path,
+            bodies: [b.name for b in u.bodies],
+            wire: if w.decl != null && w.root == null { self.wanted_list_wire([w]) } else { "" },
+        }
+    }
+
+    /// A const a settlement read, noted in the open frame: by its file and
+    /// name and the verdict it answered — or, when it is no keepable const,
+    /// a mark that the settlement is not kept.
+    fn logged_const_read(
+        f: FileId,
+        root: SettleRoot,
+        seats: List<SeatValue>,
+        r: Result<Settled, Unsettled>,
+    ) {
+        let top? = self.hold.settle_frames.get().last() else { return }
+        let s = const_stmt(root)
+        let d: DeclId? = if s == null || !seats.is_empty() { null } else { self.decls.decl_of(f, s!) }
+        let line = if d == null {
+            "x"
+        } else {
+            joined(
+                ["c", self.decls.file(f).path, self.decls.decl(d!).name, "${verdict_fp(r)}"],
+                "\t",
+            )
+        }
+        top.push(KeptLine { line: line, unit: false, path: "", bodies: [], wire: "" })
+    }
+
+    /// A settlement's verdict and its lines, kept — a value, or a structural
+    /// refusal; a settlement that read what no line can name is not kept.
+    fn keep_verdict(key: string, r: Result<Settled, Unsettled>, frame: List<KeptLine>) {
+        let store? = self.store.get() else { return }
+        if frame.any(it.line == "x") { return }
+        let value: string? = match r {
+            .Ok(v) -> settled_wire(v),
+            .Err(why) -> if why.structural() { reach_wire(why.words()) } else { null },
+        }
+        if value == null { return }
+        let ran = match r { .Ok(v) -> v.ran, .Err(_) -> [] }
+        let modules = self.viewed_modules(distinct([k.path for k in frame if k.unit]))
+        let lines = distinct([finished_line(k, ran) for k in frame])
+            .concat([self.module_line(m) for m in modules])
+            .concat(
+                [self.file_line(path) for path in distinct(flatten([self.module_files(m) for m in modules]))],
+            )
+            .concat([budget_line(self.budgets())])
+        let _ = store.keep(Stored.Unit, key, value!, [])
+        let _ = store.keep(Stored.Unit, "${key}#lines", joined(lines, "\n"), [])
+    }
+
+    /// The kept verdict for `key`, when every line it was kept with stands;
+    /// what its run read is read again, as a run would.
+    fn kept_verdict(f: FileId, key: string) -> Result<Settled, Unsettled>? {
+        let store? = self.store.get() else { return null }
+        let value? = store.get(Stored.Unit, key) else { return null }
+        let lines? = store.get(Stored.Unit, "${key}#lines") else { return null }
+        let rows = [l.split("\t") for l in lines.split("\n") if !l.is_empty()]
+        if !rows.all((r: List<string>) -> self.kept_row_stands(r)) { return null }
+        self.read_by(self.decls.file(f).path, distinct([r[1] for r in rows if r[0] == "u"]))
+        let v = settled_from_wire(value)
+        if v != null { return .Ok(v!) }
+        let words? = reach_from_wire(value) else { return null }
+        .Err(Unsettled.Reach(words))
+    }
+
+    fn kept_row_stands(r: List<string>) -> bool {
+        match r[0] {
+            "u" -> self.kept_unit_stands(r),
+            "c" -> self.kept_const_stands(r),
+            "m" -> r.length == 3 && self.module_files(module_path(r[1].split("."))).join(",") == r[2],
+            "f" -> self.kept_file_stands(r),
+            "b" -> r.length == 2 && budget_line(self.budgets()) == joined(r, "\t"),
+            rest -> false,
+        }
+    }
+
+    /// A unit line stands when its file's text has not moved; or when its
+    /// declaration's syntax has not; or, for a unit the run only reached,
+    /// when it lowers again to its shape. What the unit sees is the file lines'.
+    fn kept_unit_stands(r: List<string>) -> bool {
+        if r.length < 7 { return false }
+        if self.text_digest(r[1]) == r[2] { return true }
+        let d? = self.decl_from_ref(r[3]) else { return false }
+        if self.is_held(self.decls.decl(d).file) { return false }
+        if "${self.syntax(d)}" == r[4] { return true }
+        if r[6] == "1" { return false }
+        let wanted? = self.wanted_list_from_wire(joined(r.slice(7, r.length), "\t")) else { return false }
+        wanted.length == 1 &&
+            self.unit_shape(self.lowered_for_eval(self.spec_id(wanted[0]))) == r[5]
+    }
+
+    /// Every module a unit in `paths` sees a type of: each one's own and the
+    /// closure of its imports — a read file's from its parse, a held one's
+    /// from its kept record.
+    fn viewed_modules(paths: List<string>) -> List<ModulePath> {
+        [module_path(m.split(".")) for m in sorted_texts(self.import_closure(distinct([self.module_of(p) for p in paths])))]
+    }
+
+    /// `seen` and every module it imports, to a fixed point.
+    fn import_closure(seen: List<string>) -> List<string> {
+        let more = distinct(
+            seen.concat(flatten([self.module_imports(module_path(m.split("."))) for m in seen])),
+        )
+        if more.length == seen.length { seen } else { self.import_closure(more) }
+    }
+
+    /// The modules `m` imports: its kept record's, and each read file's own.
+    fn module_imports(m: ModulePath) -> List<string> {
+        let store = self.store.get()
+        let kept = if store == null { [] } else { imports_kept(self, store!, m.text()) }
+        let read = [p for p in self.module_files(m) if self.file_is_read(p)]
+        distinct(kept.concat(flatten([[i.text() for i in self.imported_by(p)] for p in read])))
+    }
+
+    /// Whether `path` is parsed in this build: loaded, and not held.
+    fn file_is_read(path: string) -> bool {
+        let f? = self.decls.known_file_id(path) else { return false }
+        !self.is_held(f)
+    }
+
+    /// A module's kept line: its files, so a file added or removed moves it.
+    fn module_line(m: ModulePath) -> string { joined(["m", m.text(), self.module_files(m).join(",")], "\t") }
+
+    /// A seen file's kept line: its text, and, when it is read, its outline.
+    fn file_line(path: string) -> string {
+        joined(
+            [
+                "f",
+                path,
+                self.text_digest(path),
+                if self.file_is_read(path) { self.outline(path) } else { "" },
+            ],
+            "\t",
+        )
+    }
+
+    /// A file line stands when its text has not moved, or when it is read and
+    /// its outline has not.
+    fn kept_file_stands(r: List<string>) -> bool {
+        if r.length != 4 { return false }
+        if self.text_digest(r[1]) == r[2] { return true }
+        r[3] != "" && self.file_is_read(r[1]) && self.outline(r[1]) == r[3]
+    }
+
+    /// What a file says to a body it does not hold: every declaration but a
+    /// body's own, and every `use` line.
+    fn outline(path: string) -> string {
+        let f? = self.decls.known_file_id(path) else { return "" }
+        let decls = [fp_str("${self.syntax(d)}") for d in self.decls.decls_of_file(f) if outlined(self.decls.decl(d).kind)]
+        let uses = [fp(312, [texts_fp(u.path), texts_fp(u.items), texts_fp(u.aliases)]) for u in use_lines(self.parsed(f))]
+        "${fp(311, [fp_list(decls), fp_list(uses)])}"
+    }
+
+    /// A unit's CALL SHAPE, the same in every process: what it asks to be
+    /// lowered, as the wire a held file's asks are kept in, and whether each
+    /// body reaches the world — what a structural verdict reads, and no literal.
+    fn unit_shape(u: Unit) -> string {
+        "${fp(308, [fp_str(self.wanted_list_wire(u.wants)), fp_list([if reaches_world(b, true) { 1 } else { 0 } for b in u.bodies])])}"
+    }
+
+    /// The declaration whose range holds a root-only unit's expression.
+    fn root_decl(w: Wanted) -> DeclId? {
+        let root? = w.root else { return null }
+        [d for d in self.decls.decls_of_file(w.file) if self.decls.decl(d).lo <= root.index && root.index < self.decls.decl(d).hi]
+            .first()
+    }
+
+    /// A const line stands when the const answers the verdict it answered.
+    fn kept_const_stands(r: List<string>) -> bool {
+        if r.length < 4 { return false }
+        let f? = self.decls.known_file_id(r[1]) else { return false }
+        let d? = [x for x in self.decls.decls_of_file(f) if self.decls.decl(x).name == r[2] && settles(self.decls.decl(x).kind)]
+            .first() else {
+            return false
+        }
+        "${verdict_fp(self.settled(f, SettleRoot.Const(self.decls.decl(d).stmt), []))}" == r[3]
+    }
+}
+
+/// Where a const's kept verdict lives: its file's path and its name.
+fn kept_key_for(path: string, name: string) -> string { node_key(Stored.Unit, ["kept-settle", path, name]) }
+
+/// A frame's line as kept: a unit line marks whether the run entered it, and
+/// carries its wanted last, since a wire may hold a tab.
+fn finished_line(k: KeptLine, ran: List<string>) -> string {
+    if !k.unit { return k.line }
+    let entered = if k.bodies.any((b) -> ran.contains(b)) { "1" } else { "0" }
+    joined([k.line, entered, k.wire], "\t")
+}
+
+/// Whether a declaration of this kind speaks to bodies outside it: all but a
+/// body's own statements, which a unit line answers for.
+fn outlined(k: DeclKind) -> bool {
+    match k {
+        .Fn or .Method or .Main or .Case -> false,
+        .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Collect or .CollectEnum or .Builtin -> true,
+    }
+}
+
+/// A list of texts as one number, each text one value.
+fn texts_fp(xs: List<string>) -> int { fp_list([fp_str(x) for x in xs]) }
+
+/// The budgets a run spends, as a kept line.
+fn budget_line(b: Budgets) -> string { joined(["b", "${b.steps}:${b.bytes}"], "\t") }
+
+/// Whether a declaration of this kind is a const, settled for its value.
+fn settles(k: DeclKind) -> bool {
+    match k {
+        .Const -> true,
+        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Collect or .CollectEnum or .Builtin -> false,
+    }
+}
+
+/// A verdict as one number: a value's own fingerprint, a refusal's words.
+fn verdict_fp(r: Result<Settled, Unsettled>) -> int {
+    match r { .Ok(v) -> fp(309, [v.fingerprint]), .Err(why) -> fp(310, [fp_str(why.words())]) }
+}
+

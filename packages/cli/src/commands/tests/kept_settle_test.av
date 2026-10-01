@@ -1,0 +1,118 @@
+//! A KEPT SETTLEMENT, across two processes: a const in a read file reuses
+//! its verdict when nothing it is a function of moved, and runs again when
+//! anything did. `scratch_dir`, `avra_ran` and `built_printed` are the
+//! neighbouring tests' own: this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
+
+/// A package whose entry settles one const from a body it runs, a body it
+/// only reaches, a held file's body and const, and a dyn call into a third
+/// file's impl. Answers the package's root.
+fn kept_package(name: string) -> string {
+    let root = "${scratch_dir()}/kept_settle_${name}_${now_ns()}"
+    let _ = make_dirs("${root}/src/lib")
+    let _ = make_dirs("${root}/src/shapes")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"kept\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/main.av", main_text("2", "1"))
+    let _ = write_text("${root}/src/lib/lib.av", lib_text("1000", "7"))
+    let _ = write_text("${root}/src/shapes/shapes.av", shapes_text("self.n"))
+    root
+}
+
+fn main_text(base: string, side: string) -> string {
+    [
+        "use lib.{one, maybe, L}",
+        "use shapes.{Count, Box}",
+        "extern fn avra_puts(s: string)",
+        "fn base() -> int { ${base} }",
+        "fn side() -> int {\n    ${side}\n}",
+        "fn pick(b: bool) -> int { if b { side() } else { 0 } }",
+        "fn total(c: dyn Count) -> int { c.count() }",
+        "const K: int = base() * 10 + one() + L + pick(false) + maybe(false) + total(Box { n: 3 })",
+        "println(\"\${K}\")",
+        "",
+    ]
+        .join("\n")
+}
+
+fn lib_text(l: string, quiet: string) -> string {
+    [
+        "extern fn avra_puts(s: string)",
+        "export fn one() -> int { 100 }",
+        "export const L: int = ${l}",
+        "fn quiet() -> int {\n    ${quiet}\n}",
+        "export fn maybe(b: bool) -> int { if b { quiet() } else { 0 } }",
+        "",
+    ]
+        .join("\n")
+}
+
+fn shapes_text(count: string) -> string {
+    [
+        "extern fn avra_puts(s: string)",
+        "export trait Count {\n    fn count() -> int\n}",
+        "export type Box = { n: int }",
+        "impl Count for Box {\n    fn count() -> int {\n        ${count}\n    }\n}",
+        "",
+    ]
+        .join("\n")
+}
+
+/// A world call, as a body's statement before its answer.
+fn loud(answer: string) -> string { "avra_puts(\"x\")\n    ${answer}" }
+
+/// `avra check --time` over the package: everything it printed.
+fn checked_words(root: string) -> string {
+    match avra_ran(["check", "--time", root]) {
+        .Ok(o) -> o.out.stdout + o.out.stderr,
+        .Err(_) -> "",
+    }
+}
+
+/// The package checked once, one file rewritten, then checked again:
+/// everything the second check printed.
+fn rechecked(root: string, file: string, text: string) -> string {
+    let _ = checked_words(root)
+    let _ = write_text("${root}/src/${file}", text)
+    checked_words(root)
+}
+
+/// The package built once, one file rewritten, then built and run again.
+fn settled_after_edit(root: string, file: string, text: string) -> string? {
+    let _ = built_printed("${root}/src/main.av")
+    let _ = write_text("${root}/src/${file}", text)
+    built_printed("${root}/src/main.av")
+}
+
+spec "a kept settlement — reused only while what it read stands" {
+    given "a const settled from run, reached, held and dyn-called bodies" {
+        then "the package builds, and the const answers its sum" {
+            built_printed("${kept_package("sum")}/src/main.av") == "1123\n"
+        }
+        then "a literal edit in a body the run entered answers the new value" {
+            settled_after_edit(kept_package("entered"), "main.av", main_text("3", "1")) == "1133\n"
+        }
+        then "a world call added to a body the run only reached refuses the const" {
+            rechecked(kept_package("reached_world"), "main.av", main_text("2", loud("1")))
+                .contains("reaches `avra_puts`")
+        }
+        then "an edit in a body the run only reached reuses the verdict, and reads no held file" {
+            let root = kept_package("reached_edit")
+            let words = rechecked(root, "main.av", main_text("2", "5"))
+            words.contains("src/main.av — the entry") &&
+                !words.contains("src/lib/lib.av") &&
+                built_printed("${root}/src/main.av") == "1123\n"
+        }
+        then "a world call added to a held file's reached body refuses the const" {
+            rechecked(kept_package("held_world"), "lib/lib.av", lib_text("1000", loud("7")))
+                .contains("reaches `avra_puts`")
+        }
+        then "a const the run read, given a new initializer, answers the new value" {
+            settled_after_edit(kept_package("const_read"), "lib/lib.av", lib_text("2000", "7")) == "2123\n"
+        }
+        then "a world call added to another file's impl the run dispatches to refuses the const" {
+            rechecked(kept_package("impl_world"), "shapes/shapes.av", shapes_text(loud("self.n")))
+                .contains("reaches `avra_puts`")
+        }
+    }
+}

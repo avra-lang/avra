@@ -353,7 +353,9 @@ impl Workspace {
         // a run that reads this const reads its file
         let reader: string? = self.hold.settling.get().last()
         if reader != null { self.read_by(reader!, [self.decls.file(f).path]) }
-        self.settled_at(self.settle_id(f, root, seats))
+        let r = self.settled_at(self.settle_id(f, root, seats))
+        self.logged_const_read(f, root, seats, r)
+        r
     }
 
     /// THE TRUE VERDICT BEHIND A CONST, NEVER `.Spoken`: `settled` collapses a
@@ -394,9 +396,7 @@ impl Workspace {
         let ws = self
         let reader = self.decls.file(f).path
         self.hold.settling.set(self.hold.settling.get().concat([reader]))
-        let l = memory(
-            self.decls.settlement(root, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))),
-        )
+        let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.logged_unit(w)))
         let open = self.hold.settling.get()
         self.hold.settling.set(open.slice(0, open.length - 1))
         l
@@ -494,15 +494,7 @@ impl Workspace {
     fn settle_result(ask: SettleAsk) -> Result<Settled, Unsettled> {
         match ask.root {
             .Const(s) -> {
-                if !self.is_held(ask.file) {
-                    return self
-                        .settlement_of(
-                            ask.file,
-                            self.analysis(ask.file).view.store.const_value(s)!,
-                            ask.name,
-                            ask.seats,
-                        )
-                }
+                if !self.is_held(ask.file) { return self.const_settlement(ask, s) }
                 let d? = self.decls.decl_of(ask.file, s) else { return .Err(Unsettled.Trap("a held const names no declaration")) }
                 self.fill_ensured(d)
                 let v? = self.decls.held_value(d) else {
@@ -562,7 +554,7 @@ impl Workspace {
             .decls
             .settlement_until(
                 entry_wanted(f, root, name, seats),
-                (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w)),
+                (w: Wanted) -> ws.logged_unit(w),
                 (b: Body) -> reaches_world(b, true),
             )
         let open = self.hold.settling.get()
