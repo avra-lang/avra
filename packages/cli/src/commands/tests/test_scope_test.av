@@ -1,0 +1,84 @@
+//! `avra test` on one path proves what stands at or under it, and a path
+//! naming no test refuses — never a green run over nothing. Real
+//! subprocesses over a package minted fresh for each case. `avra_ran`,
+//! `scratch_dir` and `exit_is_zero` are the neighbouring tests' own: this
+//! module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.process.{Exit, Outcome}
+use @std.time.{now_ns}
+
+/// A package minted fresh: a spec file, a module file, two program tests
+/// (one whose `.expected` disagrees with what it prints) and one `.refuses`
+/// test. Answers the package's root.
+fn scoped_package() -> string {
+    let root = "${scratch_dir()}/test_scope_${now_ns()}"
+    let tests = "${root}/src/tests"
+    let _ = make_dirs("${tests}/good")
+    let _ = make_dirs("${tests}/wrong")
+    let _ = make_dirs("${tests}/trap")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"scoped\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/plain.av", "export fn plain() -> int { 1 }\n")
+    let _ = write_text(
+        "${tests}/sum_test.av",
+        "spec \"sum\" { given \"two\" { then \"adds\" { 1 + 2 == 3 } } }\n",
+    )
+    let _ = write_text("${tests}/good/good.av", "println(\"good\")\n")
+    let _ = write_text("${tests}/good/good.expected", "good\n")
+    let _ = write_text("${tests}/wrong/wrong.av", "println(\"right\")\n")
+    let _ = write_text("${tests}/wrong/wrong.expected", "wrong\n")
+    let _ = write_text("${tests}/trap/trap.av", "let missing: int? = null\nmissing!\n")
+    let _ = write_text("${tests}/trap/trap.refuses", "unwrapped an absent value\n")
+    root
+}
+
+fn exit_is_one(e: Exit) -> bool {
+    match e { .Code(n) -> n == 1, .Clean or .Signal(_, _) -> false }
+}
+
+/// `avra test` over a path under a fresh package, as its outcome.
+fn tested(under: string) -> Outcome? {
+    match avra_ran(["test", "${scoped_package()}/${under}"]) { .Ok(o) -> o, .Err(_) -> null }
+}
+
+/// Whether `avra test` passed the path, saying `word` on stdout.
+fn passed_saying(under: string, word: string) -> bool {
+    let o? = tested(under) else { return false }
+    exit_is_zero(o.exit) && o.out.stdout.contains(word)
+}
+
+/// Whether `avra test` failed the path with exit 1, saying `word` on either
+/// channel.
+fn failed_saying(under: string, word: string) -> bool {
+    let o? = tested(under) else { return false }
+    exit_is_one(o.exit) && "${o.out.stdout}${o.out.stderr}".contains(word)
+}
+
+spec "avra test — one path proves what stands at or under it" {
+    given "a program test" {
+        then "its `.expected` agreeing passes, counting one program" {
+            passed_saying("src/tests/good/good.av", "1 program proved")
+        }
+        then "its `.expected` disagreeing fails with exit 1, saying so" {
+            failed_saying("src/tests/wrong/wrong.av", "eval != expected")
+        }
+        then "its directory proves it the same way" {
+            passed_saying("src/tests/good", "1 program proved")
+        }
+    }
+    given "a `.refuses` program test" {
+        then "its trap in its voice passes, counting one refusal" {
+            passed_saying("src/tests/trap/trap.av", "1 refusal proved")
+        }
+    }
+    given "a spec file" {
+        then "its cases run" { passed_saying("src/tests/sum_test.av", "1/1 tests passed") }
+    }
+    given "a path naming no test" {
+        then "a module file refuses with exit 1, naming why" {
+            failed_saying("src/plain.av", "names no test")
+        }
+        then "a path that does not exist refuses with exit 1" {
+            failed_saying("src/absent.av", "no such file")
+        }
+    }
+}
