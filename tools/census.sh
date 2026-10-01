@@ -45,7 +45,8 @@ rm -rf "$stores"
 AVRA_INLINE_RUNTIME=0 AVRA_CENSUS_TYPES=1 build/avra build packages/cli > build/census-build.out 2>&1 || {
     tail -20 build/census-build.out; echo "census: the census compiler did not build"; exit 1; }
 mv packages/cli/src/main "$census"
-nm "$census" | grep -q _note_retain || { echo "census: $census carries no census — refusing to report"; exit 1; }
+# A C symbol wears a leading underscore on macOS and none on Linux.
+nm "$census" | grep -Eq '[ _]note_retain$' || { echo "census: $census carries no census — refusing to report"; exit 1; }
 
 # THE MEASURED RUN STARTS COLD: the census compiler's store is its own
 # and was never filled, and the tree's stores stand aside until exit.
