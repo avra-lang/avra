@@ -1659,3 +1659,33 @@ with a template (`quote { got! }`), whose refusals point into the
 library, and binding the value under the field's own name, which
 shadows a rule of the same name (`@email email`). Not ratcheted: the
 shape is one derive's until a second reader splices calls.
+
+## AVRA_QTRACE's `declare` line is not a typing signal
+
+`Q declare <name> <path>` fires for every declaration in the whole
+program on every run, held files included — it is signature-table
+reconstruction, not evidence that anything was freshly typed. A
+measurement that windows "what did this edit cause" by counting or
+timing `declare` lines near a file's own parse event is counting the
+wrong thing; `declare` answers "the program has this name," not
+"this name's facts were recomputed this run." The signal for "was
+this recomputed" is the family-specific `ask`/`settle` pair
+(`Q ask <family> <arg> compute` then `Q settle <family> <arg> …`),
+read by family ordinal (`family_at`, compiler/workspace.av), never
+by proximity to a `declare` or `parse` line.
+
+## Typing is one later whole-program pass, not per-file
+
+A file's own `parse`/`declare` events cluster together in the trace,
+so it is tempting to assume that file's `Typed`/`Lowered` events
+follow soon after, in the same window. They do not: the window
+immediately after a file's last `declare` line is typically empty of
+`Typed`/`Lowered` activity — typing runs as one pass over the whole
+program's declarations after admission settles, not interleaved
+file-by-file as each one parses. A per-file attribution of typing or
+lowering cost needs a count or a direct per-arg timing (or compiler
+instrumentation that tags a `Typed`/`Lowered` event with its owning
+file), never a time-window read off file-adjacency in the trace —
+found measuring compiler-db-57.18's S3 cut (per-decl warm-check
+reuse), where this cost a wasted first attempt before falling back to
+counting `Typed`/`Lowered` compute events directly.
