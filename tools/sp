@@ -19,7 +19,7 @@
 #                                                owned by <pid>: prints its dir
 #
 # Slots live under AVRA_SP_SLOTS (default /tmp/avra-sp-slots), shared by
-# every caller, so a lease elsewhere (tools/land_train.sh) and an sp job
+# every caller, so two callers' leases and sp jobs
 # never oversubscribe one Sprite. Waiters queue first come, first served
 # PER SPRITE: a free slot goes to the earliest waiter that can use it,
 # so a waiter pinned elsewhere blocks nobody. A Sprite that fails its
@@ -63,17 +63,23 @@ is_dead() {
 mark_dead() { mkdir -p "$dead_dir"; date +%s > "$dead_dir/$1"; }
 living() { for s in "$@"; do is_dead "$s" || printf '%s ' "$s"; done; }
 
+# One Sprite's load, cores and free MB, or nothing within 10 s.
+# AVRA_SP_LOAD_PROBE stands in for it.
+probe() {
+    if [ -n "${AVRA_SP_LOAD_PROBE:-}" ]; then "$AVRA_SP_LOAD_PROBE" "$1"; return; fi
+    timeout -k 1 10 sprite exec -s "$1" -- sh -c 'set -- $(cat /proc/loadavg); echo "$1 $(nproc) $(awk "/^MemAvailable:/ { print int(\$2 / 1024) }" /proc/meminfo)"' 2>/dev/null
+}
+
 # The pool, idlest first; a Sprite that did not answer its probe is dropped.
 ranked() {
-    pool=$(living $(pool))
-    probe_log=$(mktemp -t avra-sp-probe.XXXXXX)
-    order=$(AVRA_SPRITE_PROBE_S=10 AVRA_LAND_SCRATCH="${AVRA_LAND_SCRATCH:-$slots/.land}" \
-        sh "$here/land.sh" --call sprites_by_load $pool 2>"$probe_log")
-    dead=$(sed -n 's/^land-linux: \(.*\) did not answer its load probe$/\1/p' "$probe_log")
-    rm -f "$probe_log"
-    for s in $order; do
-        case " $(echo $dead) " in *" $s "*) ;; *) printf '%s ' "$s" ;; esac
-    done
+    d=$(mktemp -d "${TMPDIR:-/tmp}/avra-sp-load.XXXXXX")
+    for s in $(living $(pool)); do (probe "$s" > "$d/$s" || :) & done
+    wait
+    for f in "$d"/*; do
+        read -r load cores avail < "$f" 2>/dev/null || continue
+        [ -n "$avail" ] && awk -v s="${f##*/}" -v l="$load" -v c="$cores" -v a="$avail" 'BEGIN { printf "%012.4f %012d %s\n", l / c, 999999999 - a, s }'
+    done | sort | awk '{ printf "%s ", $3 }'
+    rm -rf "$d"
 }
 
 # A slot is a directory holding its owner's pid (this process, or $2); a

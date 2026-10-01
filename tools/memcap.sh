@@ -21,10 +21,8 @@
 # to a NESTED watch.sh, whose own `set -m` mints a second process
 # group this cap's pgid filter cannot see — a real cost going
 # uncounted, the same blindness as the reported bug but in the other
-# direction. land.sh sets this var too, for its whole run, and still
-# calls memcap on every one of its own heavy steps: the var suppresses
-# a nested WATCHDOG, never a nested CAP, so memcap never reads it to
-# excuse its own loop.
+# direction. The var suppresses a nested WATCHDOG, never a nested CAP,
+# so memcap never reads it to excuse its own loop.
 tree_pids() {
     awk -v root="$1" '$2 == root { print $1 }'
 }

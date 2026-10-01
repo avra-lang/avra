@@ -1,7 +1,7 @@
 #!/bin/sh
 # FIXTURES FOR tools/sp's queue, leases and liveness cache — never a real
 # Sprite: AVRA_SP_BUILD stands in for sprite-build.sh, AVRA_SP_ALIVE for
-# the liveness probe, AVRA_LAND_SPRITE_PROBE for the load probe, and
+# the liveness probe, AVRA_SP_LOAD_PROBE for the load probe, and
 # AVRA_SP_SLOTS keeps every slot and queue file under this run's scratch.
 #
 # `sh tools/sp_test.sh` prints a summary; a non-zero exit is a failure.
@@ -35,7 +35,7 @@ cat > "$scratch/load.sh" <<'STUB'
 STUB
 chmod +x "$scratch"/*.sh
 export AVRA_SP_BUILD="$scratch/build.sh" AVRA_SP_ALIVE="$scratch/alive.sh"
-export AVRA_LAND_SPRITE_PROBE="$scratch/load.sh"
+export AVRA_SP_LOAD_PROBE="$scratch/load.sh"
 
 fresh() {
     export AVRA_SP_SLOTS="$scratch/$1/slots" RUNS="$scratch/$1/runs" PROBES="$scratch/$1/probes"
@@ -58,6 +58,14 @@ first_of() {
     done
 }
 
+# Stops a process and everything under it.
+kill_tree() {
+    for kid in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$kid"; done
+    kill -TERM "$1" 2>/dev/null || :
+    sleep 1
+    kill -KILL "$1" 2>/dev/null || :
+}
+
 # ══ REAP: a dead waiter's queue entry is removed on sight ═════════════
 fresh reap
 sh -c 'exit 0' &
@@ -67,7 +75,7 @@ queued "$gone" "A"
 AVRA_SPRITES=A sh "$sp" true 2>/dev/null &
 job=$!
 seen="$(first_of 120 A 99)"
-sh "$here/land.sh" --call kill_tree "$job" 2>/dev/null
+kill_tree "$job"
 if [ "$seen" = ran ] && [ ! -e "$AVRA_SP_SLOTS/.queue/1000000000-$gone-1" ]; then
     ok "sp: a dead waiter's queue entry is reaped, and blocks nobody"
 else
@@ -86,7 +94,7 @@ seen="$(first_of 120 B 2)"
 early="$(grep -c '^B ' "$RUNS")"
 kill "$waiter" 2>/dev/null
 [ "$(first_of 120 B 99)" = ran ] && late=1 || late=0
-sh "$here/land.sh" --call kill_tree "$job" 2>/dev/null
+kill_tree "$job"
 if [ "$seen" = queued ] && [ "$early" -eq 0 ] && [ "$late" -eq 1 ]; then
     ok "sp: a newcomer queues behind the live waiter for its Sprite, then runs"
 else
@@ -103,7 +111,7 @@ AVRA_SPRITES="A B" sh "$sp" true 2>/dev/null &
 job=$!
 seen="$(first_of 120 B 99)"
 kill "$pinned" 2>/dev/null
-sh "$here/land.sh" --call kill_tree "$job" 2>/dev/null
+kill_tree "$job"
 if [ "$seen" = ran ]; then
     ok "sp: a waiter pinned to a busy Sprite blocks nobody who can use another"
 else
