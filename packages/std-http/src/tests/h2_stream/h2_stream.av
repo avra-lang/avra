@@ -96,14 +96,13 @@ fn heard(c: Conn, buf: Bytes) -> Result<Heard, NetError> {
     let got? = within secs(20) { c.read(1048576) }? else { return .Ok(Heard { buf: buf, frames: [] }) }
     mut rest = buf.concat(got)
     mut out: List<Frame> = []
-    mut more = true
-    while more {
+    while true {
         match frame_at(rest, 0, 16777215) {
             .Whole(f, end) -> {
                 out.push(f)
                 rest = rest.slice(end, rest.length)
             },
-            .Partial or .Oversized -> { more = false },
+            .Partial or .Oversized -> { break },
         }
     }
     .Ok(Heard { buf: rest, frames: out })

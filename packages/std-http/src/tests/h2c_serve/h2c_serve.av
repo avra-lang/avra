@@ -61,14 +61,13 @@ fn http1_text(a: Ask) -> string {
 /// Everything the peer sends until it closes or goes quiet.
 fn drained_from(c: Conn) -> Bytes {
     mut got = no_bytes
-    mut open = true
-    while open {
+    while true {
         match within ms(300) { c.read(65536) } {
             .Ok(b) -> {
-                open = b != null
                 got = got.concat(b ?? no_bytes)
+                if b == null { break }
             },
-            .Err(_) -> { open = false },
+            .Err(_) -> { break },
         }
     }
     got
