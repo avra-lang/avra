@@ -1,12 +1,15 @@
 //! `realize/html/writer.av` — the typed HTML writer. A document is a list
 //! of OPS — open, close, text — never a format string; `source` serializes
-//! them, escaping every text run and keeping every element name to what a
-//! tag may be. UI.md §19.1.
+//! them, escaping every value and keeping every element and attribute name
+//! to what a name may be. UI.md §19.1.
 use @std.text.{codepoints, from_codepoints}
+
+/// One attribute: a name the library chose, a value it escaped.
+export type Attr = { name: string, value: string }
 
 /// One piece of a document, in drawing order.
 export enum HtmlOp {
-    Open(name: string, key: string?)
+    Open(name: string, attrs: List<Attr>)
     Close(name: string)
     Text(content: string)
 }
@@ -21,33 +24,25 @@ fn entities(s: string) -> string {
         .replace("'", "&#39;")
 }
 
-/// An attribute value: escaped and double-quoted, so it cannot end its
-/// attribute.
-fn escape_attr(s: string) -> string { "\"${entities(s)}\"" }
-
-/// A node's key as an attribute, when it has one.
-fn key_attr(key: string?) -> string {
-    match key {
-        k? -> " data-key=${escape_attr(k)}"
-        null -> ""
-    }
+/// Whether a character may stand in an element or attribute name: letters,
+/// digits, `-` or `_`. Everything else is dropped.
+fn name_char(c: int) -> bool {
+    c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 45 || c == 95
 }
 
-/// Whether a character may stand in an element name: letters, digits or
-/// `-`. Everything else is dropped.
-fn tag_char(c: int) -> bool {
-    c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 45
-}
-
-/// A name kept to what a tag may be, so a name from outside cannot end
-/// the tag or open an attribute.
+/// A name kept to what a tag or attribute may be, so a name from outside
+/// cannot end the tag or open an attribute.
 fn safe_name(name: string) -> string {
-    from_codepoints([c for c in codepoints(name) if tag_char(c)])
+    from_codepoints([c for c in codepoints(name) if name_char(c)])
 }
+
+fn attr_source(a: Attr) -> string { " ${safe_name(a.name)}=\"${entities(a.value)}\"" }
+
+fn attrs_source(attrs: List<Attr>) -> string { [attr_source(a) for a in attrs].join("") }
 
 fn op_source(op: HtmlOp) -> string {
     match op {
-        .Open(name, key) -> "<${safe_name(name)}${key_attr(key)}>",
+        .Open(name, attrs) -> "<${safe_name(name)}${attrs_source(attrs)}>",
         .Close(name) -> "</${safe_name(name)}>",
         .Text(content) -> entities(content),
     }
