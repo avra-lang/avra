@@ -256,11 +256,33 @@ static char** argv_of(const char* file) {
     return out;
 }
 
-static char** envp_of(void) {
-    char** out = (char**)malloc((size_t)(g_nvars + 1) * sizeof(char*));
+/* The length of an entry's NAME: up to its `=`, or the whole entry. */
+static size_t name_len(const char* entry) {
+    const char* eq = strchr(entry, '=');
+    return eq ? (size_t)(eq - entry) : strlen(entry);
+}
+
+/* Whether a staged variable carries the entry's name. */
+static int restaged(const char* entry) {
+    size_t n = name_len(entry);
+    for (int64_t i = 0; i < g_nvars; i++)
+        if (name_len(g_vars[i]) == n && memcmp(g_vars[i], entry, n) == 0) return 1;
+    return 0;
+}
+
+/* The staged variables as C's envp, laid over `base` when there is one:
+   a base entry whose name a staged variable carries gives way, so each
+   name appears once. The caller frees. */
+static char** envp_of(char** base) {
+    int64_t nbase = 0;
+    while (base && base[nbase]) nbase++;
+    char** out = (char**)malloc((size_t)(nbase + g_nvars + 1) * sizeof(char*));
     if (!out) return NULL;
-    for (int64_t i = 0; i < g_nvars; i++) out[i] = g_vars[i];
-    out[g_nvars] = NULL;
+    int64_t k = 0;
+    for (int64_t i = 0; i < nbase; i++)
+        if (!restaged(base[i])) out[k++] = base[i];
+    for (int64_t i = 0; i < g_nvars; i++) out[k++] = g_vars[i];
+    out[k] = NULL;
     return out;
 }
 
@@ -342,7 +364,7 @@ int64_t avra_proc_spawn(int64_t token, const char* file, const char* cwd, int64_
     posix_spawnattr_setflags(&at, af);
 
     char** cargv = argv_of(file);
-    char** cenvp = (flags & PROC_INHERIT_ENV) ? environ : envp_of();
+    char** cenvp = envp_of((flags & PROC_INHERIT_ENV) ? environ : NULL);
     /* what this program printed comes out before the child's words */
     fflush(NULL);
     pid_t pid = -1;
@@ -350,7 +372,7 @@ int64_t avra_proc_spawn(int64_t token, const char* file, const char* cwd, int64_
     posix_spawn_file_actions_destroy(&fa);
     posix_spawnattr_destroy(&at);
     free(cargv);
-    if (cenvp != environ) free(cenvp);
+    free(cenvp);
     avra_proc_unstage(token);
     /* the upstream's read end is the child's now; we stop reading it */
     if (from) { in[0] = -1; close_fd(&from->out_fd); }

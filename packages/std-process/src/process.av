@@ -16,6 +16,7 @@
 use @std.time.{Duration, secs, now_ms}
 use @std.errors.{Error, ErrorInfo, info}
 use @std.text.{nul_at}
+use @std.io.{env}
 
 // THIS PACKAGE'S OWN C (src/c/std_process.c) — the spawn table, the
 // pipes, the signals and the reaping, every one answering an int. A
@@ -116,11 +117,12 @@ export enum Ready {
 
 export type EnvPair = { name: string, value: string }
 
-/// What a child sees in its environment: named pairs, or the invoker's
-/// whole world — the hatch, spelled.
+/// What a child sees in its environment: named pairs alone, or the
+/// invoker's whole world with pairs of ours laid over it — the hatch,
+/// spelled.
 export enum Env {
     Only(pairs: List<EnvPair>)
-    Inherit
+    Inherit(overrides: List<EnvPair>)
 }
 
 /// A tool, its words, and its wiring. A record with defaults: `with`
@@ -377,6 +379,11 @@ export fn developer() -> Env {
         )
 }
 
+/// The invoker's whole environment, as it stands.
+export fn inherited() -> Env {
+    Env.Inherit([])
+}
+
 fn pair(name: string, value: string) -> EnvPair {
     EnvPair { name: name, value: value }
 }
@@ -396,46 +403,40 @@ fn without(pairs: List<EnvPair>, name: string) -> List<EnvPair> {
 }
 
 impl Env {
+    /// The pairs this environment sets: every one under `Only`, the
+    /// overrides under `Inherit`.
+    fn pairs() -> List<EnvPair> {
+        match self { .Only(ps) or .Inherit(ps) -> ps }
+    }
+    /// The same kind of environment, setting `ps`.
+    fn holding(ps: List<EnvPair>) -> Env {
+        match self { .Only(_) -> Env.Only(ps), .Inherit(_) -> Env.Inherit(ps) }
+    }
     /// More of the invoker's variables, by name — each replacing an
-    /// earlier pair of the same name. `.Inherit` already has them all.
+    /// earlier pair of the same name.
     fn passing(names: List<string>) -> Env {
-        match self {
-            .Only(pairs) -> Env.Only(merged(pairs, present(names))),
-            .Inherit -> Env.Inherit,
-        }
+        self.holding(merged(self.pairs(), present(names)))
     }
-    /// One variable set to a value of ours.
+    /// One variable set to a value of ours, replacing any earlier one.
     fn with_var(name: string, value: string) -> Env {
-        match self {
-            .Only(pairs) -> Env.Only(without(pairs, name).concat([pair(name, value)])),
-            .Inherit -> Env.Inherit,
-        }
+        self.holding(without(self.pairs(), name).concat([pair(name, value)]))
     }
-    /// The names alone.
+    /// The names this environment sets.
     fn names() -> List<string> {
-        match self { .Only(pairs) -> [p.name for p in pairs], .Inherit -> [] }
+        [p.name for p in self.pairs()]
     }
     /// The pairs as the host takes them, `NAME=value`.
     fn words() -> List<string> {
-        match self { .Only(pairs) -> ["${p.name}=${p.value}" for p in pairs], .Inherit -> [] }
+        ["${p.name}=${p.value}" for p in self.pairs()]
     }
-    /// One variable's value, when the child would see it — `null` when
-    /// the pair set holds no such name. Under `.Inherit` an unset name
-    /// answers the empty string, never `null`; that is the absence
-    /// `is_set` reads.
-    /// The variable's value, or null. A name holding a NUL names
-    /// nothing and answers null from BOTH variants — one method must
-    /// not read one name two ways because of which variant it holds.
-    /// Only `Inherit` needs the guard, measured by removing it:
-    /// `Only` compares with `==`, which reads the header and refuses
-    /// a holed name on its own, while `Inherit` hands the name to C,
-    /// which stops at the NUL. The guard is what makes the two
-    /// variants agree rather than what makes either one safe.
+    /// The value the child would see, or null when it would see none —
+    /// an empty value is set. A name holding a NUL names nothing under
+    /// either variant: one method never reads one name two ways.
     fn get(name: string) -> string? {
         if nul_at(name) >= 0 { return null }
         match self {
-            .Only(pairs) -> pairs.find(it.name == name)?.value,
-            .Inherit -> avra_host_env(name),
+            .Only(ps) -> ps.find(it.name == name)?.value,
+            .Inherit(ps) -> ps.find(it.name == name)?.value ?? env(name),
         }
     }
 }
@@ -530,7 +531,7 @@ impl Command {
     /// The substrate's flags for this wiring.
     fn flags() -> int {
         let group = if self.own_group { new_pgroup } else { 0 }
-        let world = if self.env is .Inherit { inherit_env } else { 0 }
+        let world = match self.env { .Only(_) -> 0, .Inherit(_) -> inherit_env }
         let out = if self.streams is .Inherited { inherit_out + inherit_err } else { pipe_out + pipe_err }
         stdin_flag(self.stdin) + out + group + world
     }
@@ -892,7 +893,7 @@ fn launched(c: Command, upstream: int) -> Result<Stage, ProcessError> {
     if short != null { fail short! }
     let token = avra_proc_stage()
     for w in c.args { let _ = avra_proc_word(token, w) }
-    for v in words_for(c.env) { let _ = avra_proc_var(token, v) }
+    for v in c.env.words() { let _ = avra_proc_var(token, v) }
     let h = avra_proc_spawn(token, c.tool.path, c.cwd ?? "", c.flags(), upstream)
     if h < 0 { fail spawn_error(c.tool, c.cwd ?? "", 0 - h) }
     let t = timeout_ms(c.timeout)
@@ -907,13 +908,6 @@ fn launched(c: Command, upstream: int) -> Result<Stage, ProcessError> {
         c,
         upstream,
     )
-}
-
-/// An inherited environment stages no variables — the child takes the
-/// world as it stands.
-fn words_for(e: Env) -> List<string> {
-    if e is .Inherit { return [] }
-    e.words()
 }
 
 /// A stage whose stdin the caller will never write again gets it all
