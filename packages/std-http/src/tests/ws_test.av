@@ -17,7 +17,7 @@ use @std.http.ws.{
     accept_of,
     dialed,
     opened_over,
-    frame_bytes,
+    ws_frame_bytes,
     masked,
     ws_limits,
 }
@@ -76,10 +76,10 @@ fn switching() -> string {
 }
 
 /// A client frame: masked, as a client must send it.
-fn from_client(fin: bool, op: int, payload: Bytes) -> Bytes { frame_bytes(fin, op, payload, [55, 250, 33, 61]) }
+fn from_client(fin: bool, op: int, payload: Bytes) -> Bytes { ws_frame_bytes(fin, op, payload, [55, 250, 33, 61]) }
 
 /// A server frame: unmasked.
-fn from_server(op: int, payload: Bytes) -> Bytes { frame_bytes(true, op, payload, null) }
+fn from_server(op: int, payload: Bytes) -> Bytes { ws_frame_bytes(true, op, payload, null) }
 
 fn close_frame(code: int) -> Bytes { from_server(8, [code >> 8, code & 255].bytes()!) }
 
@@ -138,7 +138,7 @@ fn blindly_switched(sent: string) -> Result<string, NetError> {
     spawn b.s.run(cores: 1)
     defer b.done()
     let got = (exchanged(b.c, sent, 100000)?).text() ?? ""
-    .Ok("${got.replace("\r\n", "|")}ran=${ran.get()}")
+    .Ok("${undated(got).replace("\r\n", "|")}ran=${ran.get()}")
 }
 
 const refused_switch: string = "HTTP/1.1 500 Internal Server Error|content-length: 0|connection: close||ran=0"
@@ -526,10 +526,10 @@ fn client_verifies() -> Result<bool, NetError> {
 // ── The codec ───────────────────────────────────────────────────
 
 fn frames_in_the_shortest_form() -> bool {
-    frame_bytes(true, 1, octets("hi"), null) == [129, 2, 104, 105].bytes()! &&
-        frame_bytes(true, 2, [0 for _i in 0..126].bytes()!, null).slice(0, 4) == [130, 126, 0, 126].bytes()! &&
-        frame_bytes(true, 2, [0 for _i in 0..65536].bytes()!, null).slice(0, 10) == [130, 127, 0, 0, 0, 0, 0, 1, 0, 0].bytes()! &&
-        frame_bytes(false, 0, octets("a"), [1, 2, 3, 4]) == [0, 129, 1, 2, 3, 4, 96].bytes()!
+    ws_frame_bytes(true, 1, octets("hi"), null) == [129, 2, 104, 105].bytes()! &&
+        ws_frame_bytes(true, 2, [0 for _i in 0..126].bytes()!, null).slice(0, 4) == [130, 126, 0, 126].bytes()! &&
+        ws_frame_bytes(true, 2, [0 for _i in 0..65536].bytes()!, null).slice(0, 10) == [130, 127, 0, 0, 0, 0, 0, 1, 0, 0].bytes()! &&
+        ws_frame_bytes(false, 0, octets("a"), [1, 2, 3, 4]) == [0, 129, 1, 2, 3, 4, 96].bytes()!
 }
 
 fn masking_is_its_own_inverse() -> bool {

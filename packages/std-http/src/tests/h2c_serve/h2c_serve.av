@@ -1,0 +1,199 @@
+// ONE SERVER, TWO VERSIONS, ONE ANSWER. The same declared routes are
+// asked the same questions over HTTP/1.1 and over HTTP/2 with prior
+// knowledge (h2c): every answer — status, content type, body — must be
+// identical, the 1.1 connection and the h2 one each served by the same
+// router. Both engines, one law.
+use @std.net.{Conn, NetError, connect}
+use @std.time.{ms, secs, within, sleep}
+use @std.http.http.{text}
+use @std.http.route.{get, post}
+use @std.http.server.{server}
+use @std.http.frame.{no_bytes}
+use @std.http.h2.{
+    Frame,
+    FrameAt,
+    preface,
+    frame_bytes,
+    frame_at,
+    end_stream,
+    end_headers,
+    value_named,
+    frames_in,
+}
+use @std.http.hpack.{HeaderField, HpackDecoder, header_field, encoder, decoder}
+
+export server app {
+    port: 0
+    get "/hello/{name}" { req -> "hello " + req.params.name }
+    post "/echo" { req -> text(201, "got " + (req.body.text() ?? "?")) }
+    get "/who" { req -> "${req.header("x-who") ?? "nobody"} at ${req.header("host") ?? "?"} cookie ${req.header("cookie") ?? "-"}" }
+}
+
+/// One question: its method, path, extra fields and body.
+type Ask = { method: string, path: string, fields: List<HeaderField>, body: string }
+
+fn ask(method: string, path: string, fields: List<HeaderField>, body: string) -> Ask {
+    Ask { method: method, path: path, fields: fields, body: body }
+}
+
+const asks: List<Ask> = [
+    ask("GET", "/hello/world", [], ""),
+    ask("POST", "/echo", [], "a body"),
+    ask("GET", "/who", [header_field("x-who", "ana")], ""),
+    ask("GET", "/who", [header_field("cookie", "a=1"), header_field("cookie", "b=2")], ""),
+    ask("GET", "/nope", [], ""),
+    ask("DELETE", "/hello/x", [], ""),
+    ask("HEAD", "/hello/world", [], ""),
+]
+
+// ── HTTP/1.1 ────────────────────────────────────────────────────
+
+/// The question as 1.1 octets on a connection of its own.
+fn http1_text(a: Ask) -> string {
+    let crumbs = [f.value.text() ?? "" for f in a.fields if f.name == "cookie".bytes()]
+    let others = ["${f.name.text() ?? ""}: ${f.value.text() ?? ""}\r\n" for f in a.fields if f.name != "cookie".bytes()]
+        .join("")
+    let cookie = if crumbs.is_empty() { "" } else { "cookie: ${crumbs.join("; ")}\r\n" }
+    let length = if a.body.is_empty() { "" } else { "content-length: ${a.body.length}\r\n" }
+    "${a.method} ${a.path} HTTP/1.1\r\nhost: h\r\nconnection: close\r\n${others}${cookie}${length}\r\n${a.body}"
+}
+
+/// Everything the peer sends until it closes or goes quiet.
+fn drained_from(c: Conn) -> Bytes {
+    mut got = no_bytes
+    mut open = true
+    while open {
+        match within ms(300) { c.read(65536) } {
+            .Ok(b) -> {
+                open = b != null
+                got = got.concat(b ?? no_bytes)
+            },
+            .Err(_) -> { open = false },
+        }
+    }
+    got
+}
+
+/// The 1.1 answer as `status | content type | body`.
+fn http1_answer(port: int, a: Ask) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    c.write(http1_text(a).bytes())?
+    let parts = (drained_from(c).text() ?? "?").split("\r\n\r\n")
+    let lines = parts[0].split("\r\n")
+    let status = (lines.first() ?? "?").split(" ")[1]
+    let kind = lines.find(it.starts_with("content-type: "))?.replace("content-type: ", "") ?? "-"
+    .Ok("${status} | ${kind} | ${if parts.length > 1 { parts[1] } else { "" }}")
+}
+
+// ── HTTP/2 with prior knowledge ─────────────────────────────────
+
+/// Every question at once, stream 1, 3, 5 … on ONE connection, and each
+/// answer as `status | content type | body`, in the questions' order.
+fn h2_answers(port: int) -> Result<List<string>, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    c
+        .write(
+            preface
+                .concat(frame_bytes(.Settings, 0, 0, no_bytes))
+                .concat([h2_asked(2 * i + 1, a) for i, a in asks].bytes()),
+        )?
+    let frames = h2_frames(c)
+    mut d = decoder(4096, 65536)
+    mut heads: List<List<HeaderField>> = [[] for a in asks]
+    for f in frames {
+        if f.kind is .Headers { heads[(f.stream - 1) / 2] = decoded_list(d, f.payload) }
+    }
+    .Ok([h2_line(heads[i], frames, 2 * i + 1) for i, a in asks])
+}
+
+/// A block's fields, or none when it does not decode.
+fn decoded_list(mut d: HpackDecoder, block: Bytes) -> List<HeaderField> {
+    match d.decoded(block) { .Fields(fs) -> fs, .TooLarge or .Refused(_) -> [] }
+}
+
+/// One question as HEADERS — and DATA when it carries a body.
+fn h2_asked(id: int, a: Ask) -> Bytes {
+    mut e = encoder(true)
+    let head = [
+        header_field(":method", a.method),
+        header_field(":scheme", "http"),
+        header_field(":path", a.path),
+        header_field(":authority", "h"),
+    ]
+        .concat(a.fields)
+    let withlength = if a.body.is_empty() { head } else { head.concat([header_field("content-length", "${a.body.length}")]) }
+    let block = e.encoded(withlength)
+    if a.body.is_empty() { return frame_bytes(.Headers, end_headers | end_stream, id, block) }
+    frame_bytes(.Headers, end_headers, id, block)
+        .concat(frame_bytes(.Data, end_stream, id, a.body.bytes()))
+}
+
+/// Frames read until the peer has ended every stream or goes quiet.
+fn h2_frames(c: Conn) -> List<Frame> {
+    mut buf = no_bytes
+    mut open = true
+    while open && ended_streams(frames_in(buf)) < asks.length {
+        let got = heard_from(c)
+        open = got != null
+        buf = buf.concat(got ?? no_bytes)
+    }
+    frames_in(buf)
+}
+
+/// How many streams these frames ended.
+fn ended_streams(fs: List<Frame>) -> int { fs.filter(it.stream > 0 && it.flags & end_stream != 0).length }
+
+/// What one read brought within half a second: absent once the peer
+/// closed, or when it went quiet.
+fn heard_from(c: Conn) -> Bytes? {
+    match within ms(500) { c.read(65536) } { .Ok(b) -> b, .Err(_) -> null }
+}
+
+/// A GET whose preface arrives torn after eighteen octets — the length
+/// of a whole 1.1 head (`PRI * HTTP/2.0` and a blank line) — then the
+/// rest: still HTTP/2, never a refused 1.1 request.
+fn torn_preface(port: int) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    defer { let _ = c.close() }
+    c.write(preface.slice(0, 18))?
+    sleep(ms(100))
+    c
+        .write(
+            preface
+                .slice(18, preface.length)
+                .concat(frame_bytes(.Settings, 0, 0, no_bytes))
+                .concat(h2_asked(1, asks[0])),
+        )?
+    let frames = h2_frames(c)
+    mut d = decoder(4096, 65536)
+    let head = frames.find(it.kind is .Headers && it.stream == 1)
+    let fs = if head == null { [] } else { decoded_list(d, head!.payload) }
+    .Ok(h2_line(fs, frames, 1))
+}
+
+fn h2_line(fs: List<HeaderField>, frames: List<Frame>, id: int) -> string {
+    let body = [f.payload for f in frames if f.stream == id && f.kind is .Data].bytes()
+    let status = value_named(fs, ":status".bytes())?.text() ?? "?"
+    let kind = value_named(fs, "content-type".bytes())?.text() ?? "-"
+    "${status} | ${kind} | ${body.text() ?? "?"}"
+}
+
+fn shown() -> Result<string, NetError> {
+    let s = app.listening()?
+    spawn s.run(1)
+    defer s.stop()
+    let port = s.listener.port
+    let ones = [http1_answer(port, a)? for a in asks]
+    let twos = h2_answers(port)?
+    let rows = ["${a.method} ${a.path}: ${ones[i]}${if ones[i] == twos[i] { "" } else { "  DIFFERS over h2: ${twos[i]}" }}" for i, a in asks]
+    let torn = torn_preface(port)?
+    let verdicts = [
+        "identical over 1.1 and h2c: ${[ones[i] == twos[i] for i, a in asks].all(it)}",
+        "a preface torn at eighteen octets: ${torn}",
+    ]
+    .Ok(rows.concat(verdicts).join("\n"))
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

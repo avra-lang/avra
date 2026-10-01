@@ -18,13 +18,13 @@
 //! `+` IS NOT A SPACE. That is a FORM encoding
 //! (`application/x-www-form-urlencoded`), not a URI one, and a query
 //! is not always a form. When someone asks for forms it arrives as
-//! its own verb beside `decoded`, which will never guess.
+//! its own verb beside `@std/url`'s `decoded`, which will never guess.
 //!
 //! DECODING HAPPENS IN THE HANDLER, on the one value it asked for,
-//! through `decoded`. That is the only place, and it is deliberate: a
-//! decode before the split changes what the split means, and a decode
-//! the reader performs is a decode nobody chose. `decoded` serves a
-//! path capture the same way.
+//! through `@std/url`'s `decoded`. That is the only place, and it is
+//! deliberate: a decode before the split changes what the split
+//! means, and a decode the reader performs is a decode nobody chose.
+//! `decoded` serves a path capture the same way.
 //!
 //! A NAME IS COMPARED EXACTLY, octet for octet and case for case. A
 //! field name folds because RFC 9110 says so; a query name is opaque,
@@ -44,7 +44,7 @@
 //! key asked for as a scalar that came twice — `Asked` keeps all four
 //! apart, because collapsing them is how one layer reads `?id=1` and
 //! the next reads `?id=2` from the same request.
-use frame.{Span, hex_of}
+use frame.{Span}
 
 /// One `name=value` from the query, as spans into the target's
 /// buffer. `value` is ABSENT when the pair carried no `=` at all —
@@ -137,7 +137,6 @@ fn amp_octet() -> int { 38 }
 fn equals_octet() -> int { 61 }
 once fn amp() -> Bytes { "&".bytes() }
 once fn equals() -> Bytes { "=".bytes() }
-once fn percent() -> Bytes { "%".bytes() }
 
 impl Query {
     /// How many pairs the query carries. Zero is an empty query and
@@ -188,48 +187,3 @@ impl Query {
         self.raw.slice(v.lo, v.hi)
     }
 }
-
-/// PERCENT-DECODING, and THE ONLY PLACE IT HAPPENS. `%XY` becomes the
-/// octet those two hex digits name; everything else is copied. A
-/// MALFORMED ESCAPE IS NOT A CHARACTER — a `%` at the end, or one not
-/// followed by two hex digits, answers ABSENCE rather than passing
-/// the `%` through, because a reader that repairs an escape and a
-/// reader that refuses it disagree about what the request said.
-///
-/// `+` IS LEFT ALONE. It is a space only in a form body's encoding,
-/// which this is not.
-///
-/// A value with no `%` is answered as it arrived, allocating nothing.
-export fn decoded(b: Bytes) -> Bytes? {
-    if b.index_of(percent(), 0) < 0 { return b }
-    if malformed(b) { return null }
-    // an escape's two digits are dropped where they sit and spent at its `%`
-    [octet_at(b, i) for i in 0..b.length if !inside_escape(b, i)].bytes()!
-}
-
-/// Whether any `%` here opens no escape.
-fn malformed(b: Bytes) -> bool {
-    ![i for i in 0..b.length if b.at(i) == percent_octet() && !escaped(b, i)].is_empty()
-}
-
-fn percent_octet() -> int { 37 }
-
-/// Whether a `%` at `i` is followed by two hex digits.
-fn escaped(b: Bytes, i: int) -> bool {
-    i + 2 < b.length && hex_of(b.at(i + 1)) != null && hex_of(b.at(i + 2)) != null
-}
-
-/// Whether the octet at `i` is one of the two hex digits of an escape
-/// that opened at `i - 1` or `i - 2`.
-fn inside_escape(b: Bytes, i: int) -> bool {
-    i >= 1 && b.at(i - 1) == percent_octet() || i >= 2 && b.at(i - 2) == percent_octet()
-}
-
-/// The octet position `i` contributes: an escape's value at its `%`,
-/// otherwise the octet itself.
-fn octet_at(b: Bytes, i: int) -> int {
-    let c = b.at(i)
-    if c != percent_octet() { return c }
-    hex_of(b.at(i + 1))! * 16 + hex_of(b.at(i + 2))!
-}
-

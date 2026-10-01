@@ -1,0 +1,116 @@
+// A FETCH CONNECTS ONLY WHERE ITS ADMISSION SAYS: the address the host
+// resolves to is judged before it is dialed, at every redirect's hop,
+// and again before the pool lends a kept connection — so a connection
+// one request made to a private address never serves a request that
+// admits only public ones. The servers count what reached them.
+use @std.net.{Address, Admission, Listener, listen}
+use @std.http.frame.{limits}
+use @std.http.http.{Header, text}
+use @std.http.server.{served, timing}
+use @std.http.client.{Answer, ClientError}
+use @std.http.pool.{Pool, pool}
+use @std.http.fetch.{Options, fetch}
+
+type AdApp = {}
+
+/// What a fetch answered: its status, the address its admission
+/// refused, or the refusal's kind.
+fn ad_shown(r: Result<Answer, ClientError>) -> string {
+    match r {
+        .Ok(a) -> "${a.status}",
+        .Err(.Net(e)) -> if e.denied != null { "denied ${e.denied!.text}" } else { e.describe().kind },
+        .Err(e) -> e.describe().kind,
+    }
+}
+
+fn ad_v4_only() -> Admission { .Where((a: Address) -> a.family is .V4) }
+
+fn ad_v6_only() -> Admission { .Where((a: Address) -> a.family is .V6) }
+
+fn ad_get(url: string, p: Pool, admit: Admission) -> string {
+    ad_shown(fetch(.Get, url, .Empty, Options { pool: p, admit: admit }))
+}
+
+fn ad_listener(host: string, port: int) -> Listener? {
+    match listen(host, port) { .Ok(l) -> l, .Err(_) -> null }
+}
+
+/// A public-only fetch of the loopback is denied at its address, and
+/// the server there sees no connection.
+fn ad_loopback_is_denied() -> string {
+    let l? = ad_listener("127.0.0.1", 0) else { return "no listener" }
+    let s = served(l, () -> AdApp {}, limits(), timing()) { _a, q -> text(200, "inside") }
+    spawn s.run(1)
+    defer s.stop()
+    let p = pool()
+    let by_number = ad_get("http://127.0.0.1:${l.port}/", p, .Public)
+    let by_name = ad_get("http://localhost:${l.port}/", p, .Public)
+    "${by_number}, ${by_name.starts_with("denied ")}, ${s.connections()}"
+}
+
+/// A REDIRECT IS JUDGED AT ITS HOP: the first server is admitted and
+/// sends the fetch to the loopback's v6 address, which is not — and
+/// the server there sees no connection.
+fn ad_redirect_hop_is_judged() -> string {
+    let l4? = ad_listener("127.0.0.1", 0) else { return "no listener" }
+    let l6? = ad_listener("::1", l4.port) else { return "no v6 listener" }
+    let away = "http://[::1]:${l4.port}/inside"
+    let s4 = served(l4, () -> AdApp {}, limits(), timing()) { _a, q ->
+        text(302, "") with { headers: [Header { name: "location", value: away }] }
+    }
+    let s6 = served(l6, () -> AdApp {}, limits(), timing()) { _a, q -> text(200, "inside") }
+    spawn s4.run(1)
+    spawn s6.run(1)
+    defer s4.stop()
+    defer s6.stop()
+    "${ad_get("http://127.0.0.1:${l4.port}/", pool(), ad_v4_only())}, ${s4.connections()}, ${s6.connections()}"
+}
+
+/// A KEPT CONNECTION IS JUDGED BEFORE IT IS LENT: one pool, a
+/// connection kept by a request that admits anything, then a request
+/// that admits no v4 address — refused rather than lent it — then the
+/// first kind again, which is lent the one still kept.
+fn ad_kept_connection_is_judged() -> string {
+    let l? = ad_listener("127.0.0.1", 0) else { return "no listener" }
+    let s = served(l, () -> AdApp {}, limits(), timing()) { _a, q -> text(200, "inside") }
+    spawn s.run(1)
+    defer s.stop()
+    let p = pool()
+    defer p.close_all()
+    let url = "http://127.0.0.1:${l.port}/"
+    let first = ad_get(url, p, .Anywhere)
+    let refused = ad_get(url, p, ad_v6_only())
+    let again = ad_get(url, p, .Anywhere)
+    "${first}, ${refused}, ${again}, ${s.connections()}"
+}
+
+/// A kept connection an admission admits is lent, never dialed anew.
+fn ad_admitted_connection_is_lent() -> string {
+    let l? = ad_listener("127.0.0.1", 0) else { return "no listener" }
+    let s = served(l, () -> AdApp {}, limits(), timing()) { _a, q -> text(200, "inside") }
+    spawn s.run(1)
+    defer s.stop()
+    let p = pool()
+    defer p.close_all()
+    let url = "http://127.0.0.1:${l.port}/"
+    "${ad_get(url, p, ad_v4_only())}, ${ad_get(url, p, ad_v4_only())}, ${s.connections()}"
+}
+
+spec "std.http fetch admission" {
+    given "a fetch that admits only public addresses" {
+        then "the loopback, by number or by name, is denied at its address and never reached" {
+            ad_loopback_is_denied() == "denied 127.0.0.1, true, 0"
+        }
+    }
+    given "a redirect" {
+        then "its hop is judged, and the address it names is never reached" {
+            ad_redirect_hop_is_judged() == "denied 0:0:0:0:0:0:0:1, 1, 0"
+        }
+    }
+    given "a pool shared by requests under different admissions" {
+        then "a kept connection is refused to a request that does not admit its peer, and stays kept" {
+            ad_kept_connection_is_judged() == "200, denied 127.0.0.1, 200, 1"
+        }
+        then "a kept connection a request admits is lent again" { ad_admitted_connection_is_lent() == "200, 200, 1" }
+    }
+}

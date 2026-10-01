@@ -2,7 +2,7 @@
 //! and retention, and a live stream — resumed, expired, kept alive,
 //! and ended when its observer leaves.
 use @std.net.{NetError}
-use @std.time.{Duration, ms, sleep}
+use @std.time.{Duration, ms, sleep, now_ms}
 use @std.http.frame.{limits}
 use @std.http.http.{Request, Unrouted, Response}
 use @std.http.sse.{Event, Next, Source, Resume, Feed, encoded, feed, events, event_stream}
@@ -127,6 +127,37 @@ fn an_overtaken_observer_fails() -> bool {
     let s = f.resumed("0").source()
     let _ = published(f, 5)
     first_of(s) == "failed"
+}
+
+/// Waits up to `limit` ms on a source: the event it heard, or why not.
+fn heard_within(s: Source, limit: int) -> string {
+    match s.next(ms(limit)) {
+        .Event(e) -> "${e.id ?? "?"}:${e.data}",
+        .Quiet -> "quiet",
+        .End -> "end",
+        .Failed -> "failed",
+    }
+}
+
+/// PARKED OBSERVERS ALL HEAR ONE PUBLISH, well before their quiet
+/// deadline: they wait on the feed's bell, never a poll.
+fn parked_observers_all_hear() -> bool {
+    let f = feed(4)
+    let observers = [spawn heard_within(f.resumed(null).source(), 5000) for i in 0..50]
+    let t0 = now_ms()
+    let _ = (spawn published_after(f, ms(50))).await
+    let said = [o.await for o in observers]
+    said.all(it == "1:late") && now_ms() - t0 < 1000 && f.published.heard.get() == -1
+}
+
+/// An observer nobody publishes to is quiet at its deadline, and holds
+/// no descriptor after.
+fn a_parked_observer_goes_quiet() -> bool {
+    let f = feed(4)
+    let t0 = now_ms()
+    heard_within(f.resumed(null).source(), 100) == "quiet" &&
+        now_ms() - t0 >= 90 &&
+        f.published.heard.get() == -1
 }
 
 // ── A live stream ───────────────────────────────────────────────
@@ -254,6 +285,8 @@ spec "std.http server-sent events" {
         then "an observer overtaken by retention fails rather than skip" { an_overtaken_observer_fails() }
         then "a feed keeping nothing still numbers, and expires every cursor but the last" { a_feed_keeping_nothing() }
         then "retention past many turns of the log reads the last events in order" { retention_wraps_in_order() }
+        then "fifty parked observers all hear one publish, long before their quiet deadline" { parked_observers_all_hear() }
+        then "a parked observer nobody publishes to goes quiet at its deadline" { a_parked_observer_goes_quiet() }
     }
     given "a live event stream" {
         then "Last-Event-ID resumes after the cursor, chunked as text/event-stream" { passes(resumed_live()) }

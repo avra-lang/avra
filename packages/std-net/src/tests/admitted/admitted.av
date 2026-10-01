@@ -1,0 +1,26 @@
+//! proves: a public-only connect judges the address a host resolves
+//! to, never its spelling — the loopback as an integer, a short form,
+//! the zero address and a mapped v6 form are each denied at the
+//! address they mean, nothing reaches the listener, and the predicate
+//! reads the same bytes in both engines
+use @std.net.{Address, NetError, listen, connect, public}
+use @std.time.{secs}
+
+fn seen(host: string, port: int) -> string {
+    match connect(host, port, secs(2), .Public) {
+        .Ok(_) -> "connected",
+        .Err(e) -> if e.denied != null { e.denied!.text } else { e.verb },
+    }
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let said = [seen(h, l.port) for h in ["2130706433", "127.1", "0", "::ffff:127.0.0.1"]]
+    let judged = [public(Address { family: .V4, text: t }) for t in ["8.8.8.8", "169.254.169.254", "100.64.0.1", "127.1"]]
+    let reached = l.try_accept()? != null
+    .Ok(
+        "${said.join(" ")} | ${[if j { "public" } else { "withheld" } for j in judged].join(" ")} | reached ${reached}",
+    )
+}
+
+run() catch e -> "failed: ${e.verb} ${e.subject} ${e.errno}"

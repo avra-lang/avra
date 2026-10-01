@@ -1,0 +1,237 @@
+// ADMISSION JUDGES THE RESOLVED ADDRESS, never the name: every
+// spelling a URL filter misreads resolves to the address it means,
+// and that address is what is judged and then dialed. Every listener
+// a denied connect aims at must accept nothing.
+use @std.net.{Address, Conn, NetError, Resolved, listen, connect, public, resolver_for}
+use @std.time.{secs, now_ms}
+use @std.text.{from_codepoint}
+
+fn v4(text: string) -> bool { public(Address { family: .V4, text: text }) }
+
+fn v6(text: string) -> bool { public(Address { family: .V6, text: text }) }
+
+/// What a connect answered: the address it refused, or how else it
+/// ended.
+fn verdict(r: Result<Conn, NetError>) -> string {
+    match r {
+        .Ok(_) -> "connected",
+        .Err(e) -> {
+            let a? = e.denied else { return e.describe().message }
+            "denied ${a.text}"
+        },
+    }
+}
+
+/// Every spelling of the loopback a filter reading text misses — the
+/// integer, the short forms, the zero address, the mapped forms — is
+/// denied at the address it resolved to, and nothing reaches the
+/// listener.
+fn spellings_of_the_loopback_are_denied() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let hosts = [
+        "127.0.0.1",
+        "2130706433",
+        "127.1",
+        "0",
+        "::1",
+        "::ffff:127.0.0.1",
+        "::ffff:7f00:1",
+    ]
+    let said = [verdict(connect(h, l.port, secs(2), .Public)) for h in hosts]
+    .Ok(
+        l.try_accept()? == null &&
+            said.join("|") == "denied 127.0.0.1|denied 127.0.0.1|denied 127.0.0.1|denied 0.0.0.0|denied 0:0:0:0:0:0:0:1|denied 0:0:0:0:0:ffff:7f00:1|denied 0:0:0:0:0:ffff:7f00:1",
+    )
+}
+
+/// The spellings a platform's resolver may or may not read — hex and
+/// octal words, a local name — reach nothing either way: resolved, the
+/// address is judged; unresolved, nothing is dialed.
+fn platform_spellings_reach_nothing() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let hosts = ["localhost", "0x7f000001", "017700000001", "0x7f.1", "0x7f.0.0.1"]
+    let said = [verdict(connect(h, l.port, secs(2), .Public)) for h in hosts]
+    .Ok(l.try_accept()? == null && !said.contains("connected"))
+}
+
+/// The refusal names the address and says why.
+fn the_refusal_names_the_address() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let said = match connect("127.0.0.1", l.port, secs(2), .Public) {
+        .Ok(_) -> "connected",
+        .Err(e) -> e.describe().message,
+    }
+    .Ok(said == "connect 127.0.0.1:${l.port}: 127.0.0.1 is not admitted")
+}
+
+/// A predicate sees each resolved address and only those it admits are
+/// dialed: the loopback's v6 answer admitted, its v4 one never tried.
+fn a_predicate_admits_one_family() -> Result<bool, NetError> {
+    let l4 = listen("127.0.0.1", 0)?
+    let l6 = listen("::1", l4.port)?
+    let r = resolver_for(secs(60))
+    r.held.put("both.test", resolved([loop4(), loop6()]))
+    let c = r.connect("both.test", l4.port, secs(2), .Where((a: Address) -> a.family is .V6))?
+    .Ok(
+        c.address()!.text == "0:0:0:0:0:0:0:1" &&
+            l4.try_accept()? == null &&
+            l6.try_accept()? != null,
+    )
+}
+
+/// An answer held for a name, standing for a minute.
+fn resolved(addresses: List<Address>) -> Resolved { Resolved { addresses: addresses, until: now_ms() + 60000 } }
+
+fn loop4() -> Address { Address { family: .V4, text: "127.0.0.1" } }
+
+fn loop6() -> Address { Address { family: .V6, text: "0:0:0:0:0:0:0:1" } }
+
+/// DNS REBINDING: the name's answer changes WHILE it is judged — the
+/// policy itself rebinds it to the loopback's v4 address — and the dial
+/// still reaches only the address that was judged, since the list
+/// judged is the list dialed.
+fn a_rebind_between_judgment_and_dial_reaches_nothing() -> Result<bool, NetError> {
+    let l4 = listen("127.0.0.1", 0)?
+    let l6 = listen("::1", l4.port)?
+    let r = resolver_for(secs(60))
+    r.held.put("rebind.test", resolved([loop6()]))
+    let rebinding = (a: Address) -> {
+        r.held.put("rebind.test", resolved([loop4()]))
+        a.family is .V6
+    }
+    let c = r.connect("rebind.test", l4.port, secs(2), .Where(rebinding))?
+    let again = verdict(
+        r.connect("rebind.test", l4.port, secs(2), .Where((a: Address) -> a.family is .V6)),
+    )
+    .Ok(
+        c.address()!.text == "0:0:0:0:0:0:0:1" &&
+            l4.try_accept()? == null &&
+            l6.try_accept()? != null &&
+            again == "denied 127.0.0.1",
+    )
+}
+
+/// An answer mixing a denied address with an admitted one dials only
+/// the admitted one — never the loopback a rebinding answer slips in.
+fn a_mixed_answer_dials_the_admitted_alone() -> Result<bool, NetError> {
+    let l4 = listen("127.0.0.1", 0)?
+    let l6 = listen("::1", l4.port)?
+    let r = resolver_for(secs(60))
+    r.held.put("mixed.test", resolved([loop4(), loop6(), loop4()]))
+    let c = r.connect("mixed.test", l4.port, secs(2), .Where((a: Address) -> a.family is .V6))?
+    .Ok(c.address() != null && l4.try_accept()? == null && l6.try_accept()? != null)
+}
+
+spec "std.net admission" {
+    given "the public predicate over v4" {
+        then "the public internet is admitted" { v4("8.8.8.8") && v4("1.1.1.1") && v4("93.184.216.34") }
+        then "the loopback, this network, private, shared, link-local and metadata are not" {
+            !v4("127.0.0.1") &&
+                !v4("127.255.255.254") &&
+                !v4("0.0.0.0") &&
+                !v4("10.1.2.3") &&
+                !v4("192.168.1.1") &&
+                !v4("100.64.0.1") &&
+                !v4("100.100.100.200") &&
+                !v4("169.254.169.254") &&
+                !v4("169.254.0.1")
+        }
+        then "each private block ends where the registry says" {
+            v4("172.15.255.255") &&
+                !v4("172.16.0.0") &&
+                !v4("172.31.255.255") &&
+                v4("172.32.0.0") &&
+                v4("100.63.255.255") &&
+                !v4("100.127.255.255") &&
+                v4("100.128.0.0") &&
+                v4("198.17.255.255") &&
+                !v4("198.19.255.255") &&
+                v4("198.20.0.0")
+        }
+        then "protocol, documentation, multicast, reserved and broadcast are not" {
+            !v4("192.0.0.192") &&
+                !v4("192.0.2.1") &&
+                !v4("198.51.100.1") &&
+                !v4("203.0.113.1") &&
+                !v4("192.88.99.1") &&
+                !v4("224.0.0.1") &&
+                !v4("240.0.0.1") &&
+                !v4("255.255.255.255")
+        }
+        then "a spelling the dial would not read is refused, never guessed" {
+            !v4("127.1") &&
+                !v4("0177.0.0.1") &&
+                !v4("08.8.8.8") &&
+                !v4("0x8.8.8.8") &&
+                !v4("256.8.8.8") &&
+                !v4("8.8.8") &&
+                !v4("8.8.8.8.8") &&
+                !v4("8.8.8.8 ") &&
+                !v4("+8.8.8.8") &&
+                !v4("-8.8.8.8") &&
+                !v4("") &&
+                !v4("8.8.8.8" + from_codepoint(0)) &&
+                !v4("8.8.8.8" + from_codepoint(0) + "127.0.0.1") &&
+                !v6("8.8.8.8")
+        }
+    }
+    given "the public predicate over v6" {
+        then "global unicast is admitted" { v6("2606:4700:0:0:0:0:0:1111") && v6("2a00:1450:4001:0:0:0:0:200e") }
+        then "the loopback, unspecified, unique local, link-local and multicast are not" {
+            !v6("0:0:0:0:0:0:0:1") &&
+                !v6("0:0:0:0:0:0:0:0") &&
+                !v6("fc00:0:0:0:0:0:0:1") &&
+                !v6("fd00:ec2:0:0:0:0:0:254") &&
+                !v6("fe80:0:0:0:0:0:0:1") &&
+                !v6("fec0:0:0:0:0:0:0:1") &&
+                !v6("ff02:0:0:0:0:0:0:1") &&
+                !v6("100:0:0:0:0:0:0:1") &&
+                !v6("64:ff9b:1:0:0:0:0:1")
+        }
+        then "Teredo, protocol assignments and documentation are not" {
+            !v6("2001:0:4136:e378:8000:63bf:3fff:fdd2") &&
+                !v6("2001:1ff:0:0:0:0:0:1") &&
+                v6("2001:200:0:0:0:0:0:1") &&
+                !v6("2001:db8:0:0:0:0:0:1") &&
+                !v6("3fff:0:0:0:0:0:0:1")
+        }
+        then "a mapped, NAT64 or 6to4 address is judged as the v4 address it carries" {
+            !v6("0:0:0:0:0:ffff:7f00:1") &&
+                !v6("0:0:0:0:0:ffff:a9fe:a9fe") &&
+                v6("0:0:0:0:0:ffff:808:808") &&
+                !v6("64:ff9b:0:0:0:0:a00:1") &&
+                v6("64:ff9b:0:0:0:0:808:808") &&
+                !v6("2002:a00:1:0:0:0:0:1") &&
+                !v6("2002:7f00:1:0:0:0:0:1") &&
+                v6("2002:808:808:0:0:0:0:1") &&
+                !v6("0:0:0:0:0:0:7f00:1")
+        }
+        then "a spelling the dial would not read is refused, never guessed" {
+            !v6("::1") &&
+                !v6("2606:4700::1111") &&
+                !v6("2606:4700:0:0:0:0:0:ABCD") &&
+                !v6("2606:4700:0:0:0:0:0:01") &&
+                !v6("2606:4700:0:0:0:0:0:11111") &&
+                !v6("2606:4700:0:0:0:0:1") &&
+                !v6("::ffff:127.0.0.1") &&
+                !v6("2606:4700:0:0:0:0:0:1111" + from_codepoint(0)) &&
+                !v4("2606:4700:0:0:0:0:0:1111")
+        }
+    }
+    given "a connect under admission" {
+        then "every spelling of the loopback is denied at the address it resolved to, and nothing is dialed" {
+            passes(spellings_of_the_loopback_are_denied())
+        }
+        then "the spellings a resolver may or may not read reach nothing either way" { passes(platform_spellings_reach_nothing()) }
+        then "the refusal names the address" { passes(the_refusal_names_the_address()) }
+        then "a predicate admits one family and only that one is dialed" { passes(a_predicate_admits_one_family()) }
+        then "an answer mixing denied and admitted addresses dials the admitted alone" {
+            passes(a_mixed_answer_dials_the_admitted_alone())
+        }
+    }
+    given "an answer that changes" {
+        then "a rebind while the answer is judged never reaches the dial, and the next connect judges the new answer" {
+            passes(a_rebind_between_judgment_and_dial_reaches_nothing())
+        }
+    }
+}

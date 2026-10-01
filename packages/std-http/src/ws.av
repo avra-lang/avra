@@ -23,7 +23,8 @@ use wire.{Transport, WireError, plainly}
 use @std.time.{Duration, secs, within}
 use frame.{Limits, Method, Reply, framed_reply, limits}
 use http.{Request, Response, Header, Upgrade, text, read_size, lists_token}
-use codec.{sha1, base64, base64_of_length}
+use @std.text.{base64}
+use codec.{sha1, base64_of_length}
 use client.{request}
 
 // ── Messages and failures ───────────────────────────────────────
@@ -141,7 +142,7 @@ export fn masked(b: Bytes, key: List<int>) -> Bytes { [b.at(i) ^ key[i & 3] for 
 /// A frame on the wire: its head — the length in the shortest form
 /// that holds it — then the payload, masked by `key` when a client
 /// sends it.
-export fn frame_bytes(fin: bool, op: int, payload: Bytes, key: List<int>?) -> Bytes {
+export fn ws_frame_bytes(fin: bool, op: int, payload: Bytes, key: List<int>?) -> Bytes {
     let n = payload.length
     let first = if fin { 128 } else { 0 } | op
     let mark = if key == null { 0 } else { 128 }
@@ -206,17 +207,13 @@ fn close_fault(p: Bytes) -> int {
 type Pending = { op: int, parts: List<Bytes>, length: int }
 
 /// What a socket knows between calls: the octets read and not framed,
-/// a fragmented message in progress, which closes have gone, and
-/// whether the connection has ended.
-type WsState = { buf: Bytes, pending: Pending?, sent_close: bool, got_close: bool, done: bool }
+/// a fragmented message in progress, and which closes have gone.
+type WsState = { buf: Bytes, pending: Pending?, sent_close: bool, got_close: bool }
 
 /// An open WebSocket: its connection, which end it is, its bounds, and
 /// its state — shared by every copy, since a copy is the same socket.
-///
-/// A SOCKET ENDED TOUCHES ITS CONNECTION NO MORE: once the close
-/// handshake or a broken law ends it, every call answers `Closed`. A
-/// closed descriptor's number is the next accepted connection's, so a
-/// late send would land in a stranger's stream.
+/// Once the close handshake or a broken law ends it, its connection is
+/// closed, so every later call answers `Closed`.
 export type Socket = { conn: dyn Transport, side: Side, limits: WsLimits, state: Cell<WsState> }
 
 /// A socket over `c`, the peer's first octets `early` already read.
@@ -225,16 +222,7 @@ export fn socket_on(c: dyn Transport, early: Bytes, side: Side, lim: WsLimits) -
         conn: c,
         side: side,
         limits: lim,
-        state: Cell
-            .new(
-                WsState {
-                    buf: early,
-                    pending: null,
-                    sent_close: false,
-                    got_close: false,
-                    done: false,
-                },
-            ),
+        state: Cell.new(WsState { buf: early, pending: null, sent_close: false, got_close: false }),
     }
 }
 
@@ -265,9 +253,10 @@ impl Socket {
 
     /// The close handshake: `code` and `reason` sent, the peer's close
     /// awaited within `patience`, then the connection ended. Answers the
-    /// code the peer closed with.
+    /// code the peer closed with; a socket that already said its close
+    /// answers `Closed`.
     fn close(code: int, reason: string, patience: Duration) -> Result<int, WsError> {
-        let _ = self.live()?
+        if self.state.get().sent_close { return .Err(.Closed) }
         if !sendable_code(code) || reason.bytes().length > 123 { return .Err(.Protocol(protocol_error())) }
         let _ = self.said_close(code, reason)
         let answer = within patience { self.awaited_close() }
@@ -280,7 +269,7 @@ impl Socket {
     /// as it spans.
     fn frame() -> Result<WsFrame, WsError> {
         while true {
-            let st = self.live()?
+            let st = self.state.get()
             match head_at(st.buf, 0, self.side, self.limits.message) {
                 .Partial -> { self.state.set(st with { buf: st.buf.concat(read_some(self.conn)?) }) },
                 .Refused(code) -> { return .Err(self.broken(code)) },
@@ -405,39 +394,21 @@ impl Socket {
 
     /// One frame written whole, masked when a client sends it.
     fn sent_frame(fin: bool, op: int, payload: Bytes) -> Result<int, WsError> {
-        let _ = self.live()?
         let key: List<int>? = match self.side { .Client -> mask_key()?, .Server -> null }
-        match self.conn.wire_write(frame_bytes(fin, op, payload, key)) {
+        match self.conn.wire_write(ws_frame_bytes(fin, op, payload, key)) {
             .Ok(n) -> .Ok(n),
             .Err(e) -> .Err(socket_error(e)),
         }
     }
 
-    /// The socket's state while its connection is open; `Closed` once
-    /// it has ended.
-    fn live() -> Result<WsState, WsError> {
-        let st = self.state.get()
-        if st.done { return .Err(.Closed) }
-        .Ok(st)
-    }
-
-    /// The connection ended, once: a server closes first (RFC 6455
-    /// §7.1.1) — its write side shut here, the socket closed by the
-    /// server when the session returns, which owns the descriptor; a
-    /// client shuts its write side and gives the server a moment to
-    /// close before it closes too.
+    /// The connection ended and closed, nothing buffered kept: a server
+    /// closes first (RFC 6455 §7.1.1); a client shuts its write side and
+    /// gives the server a moment to close before it closes too.
     fn ended() {
-        let st = self.state.get()
-        if st.done { return }
-        self.state.set(st with { done: true })
-        match self.side {
-            .Server -> { let _ = self.conn.wire_shutdown() },
-            .Client -> {
-                let _ = self.conn.wire_shutdown()
-                let _ = within secs(2) { drained(self.conn) }
-                let _ = self.conn.wire_close()
-            },
-        }
+        self.state.set(self.state.get() with { buf: "".bytes(), pending: null })
+        let _ = self.conn.wire_shutdown()
+        if self.side is .Client { let _ = within secs(2) { drained(self.conn) } }
+        let _ = self.conn.wire_close()
     }
 }
 
@@ -456,11 +427,18 @@ fn close_code(m: Message) -> int {
     match m { .Close(code, _) -> code, .Text(_) or .Binary(_) -> no_code() }
 }
 
-/// A transport's failure as a socket's: a deadline passing is `TimedOut`.
+/// A transport's failure as a socket's: a deadline passing is `TimedOut`,
+/// a connection already closed, or a transport cut off before its end,
+/// `Closed`.
 export fn socket_error(e: WireError) -> WsError {
     match e {
-        .Net(n) -> if n.timed_out() { WsError.TimedOut } else { WsError.Net(n) },
+        .Net(n) -> when {
+            n.timed_out() -> WsError.TimedOut
+            n.closed() -> WsError.Closed
+            _ -> WsError.Net(n)
+        },
         .Secure(s) -> WsError.Secure(s),
+        .Reset -> WsError.Closed,
     }
 }
 

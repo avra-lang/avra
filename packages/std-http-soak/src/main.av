@@ -1,0 +1,126 @@
+//! THE SOAK'S TWO PROGRAMS, chosen by SOAK_MODE.
+//!
+//! `serve` (the default): @std/http on every core at SOAK_PORT for
+//! SOAK_SECS, then stopped — so each core leaves through `exit` and,
+//! under AVRA_MEM_STATS=1, reports the bytes it still holds. `/mem`
+//! answers the answering core's live bytes; anything else a short 200.
+//!
+//! `reset`: the client's reset law — a peer that closes with the
+//! request unread is the network's verdict, `net.read` — asked
+//! SOAK_LOOPS times, each on a fresh connection, counting what came
+//! back instead.
+use @std.net.{Conn, Listener, NetError, listen, poller}
+use @std.time.{ms, secs, sleep, within}
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.http.frame.{limits}
+use @std.http.http.{Request, Unrouted, Response, text, ok}
+use @std.http.server.{served, Timing}
+use @std.http.client.{Client, Answer, ClientError, connected, request}
+
+extern fn avra_mem_live() -> int
+
+/// An environment number, or `fallback`.
+fn number(name: string, fallback: int) -> int { parse_int(env_or(name, "${fallback}")) ?? fallback }
+
+// ── serve ───────────────────────────────────────────────────────
+
+/// A core's state: how many requests it answered.
+type Soaked = { hits: Cell<int> }
+
+fn answer(app: Soaked, q: Request<Unrouted>) -> Response {
+    app.hits.set(app.hits.get() + 1)
+    if q.target() == "/mem" { return text(200, "${avra_mem_live()}") }
+    ok("soak")
+}
+
+fn serve() -> Result<int, NetError> {
+    let l = listen("127.0.0.1", number("SOAK_PORT", 18080))?
+    let s = served(
+        l,
+        () -> Soaked { hits: Cell.new(0) },
+        limits(),
+        Timing { idle: secs(600) },
+        answer,
+    )
+    let t = spawn s.run()
+    sleep(secs(number("SOAK_SECS", 60)))
+    s.stop()
+    t.await
+}
+
+// ── reset ───────────────────────────────────────────────────────
+
+/// What one reset attempt came back as: `net.read` is the law; a
+/// kind of its own is anything else the client said.
+fn reset_once() -> string {
+    match listen("127.0.0.1", 0) {
+        .Ok(l) -> reset_heard(l),
+        .Err(e) -> "listen ${e.describe().kind}",
+    }
+}
+
+/// One attempt on `l`, which is closed after it.
+fn reset_heard(l: Listener) -> string {
+    defer { let _ = l.close() }
+    match reset_on(l) { .Ok(kind) -> kind, .Err(e) -> "setup ${e.describe().kind}" }
+}
+
+fn reset_on(l: Listener) -> Result<string, ClientError> {
+    mut c = connected("127.0.0.1", l.port, secs(2), limits())?
+    defer { let _ = c.close() }
+    c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
+    let peer = lifted(within ms(500) { l.accept() })?
+    if !arrived(peer)? { return .Ok("unarrived") }
+    let _ = lifted(peer.close())?
+    .Ok(kind_of(waiting_is_null(within ms(100) { awaited(c) })))
+}
+
+/// Whether the peer holds the request unread — the law's precondition.
+fn arrived(peer: Conn) -> Result<bool, ClientError> {
+    let p = lifted(poller())?
+    let _ = lifted(p.watch(peer.fd, .Read))?
+    let events = lifted(p.wait(secs(2)))?
+    let _ = lifted(p.close())?
+    .Ok(events.any(it.fd == peer.fd && it.readable))
+}
+
+/// Reads until the reply is whole.
+fn awaited(mut c: Client) -> Result<Answer?, ClientError> {
+    let got? = c.received()? else { return awaited(c) }
+    .Ok(got)
+}
+
+fn waiting_is_null(r: Result<Answer?, ClientError>) -> Result<Answer?, ClientError> {
+    match r { .Err(.Net(e)) if e.timed_out() -> .Ok(null), .Err(e) -> .Err(e), .Ok(a) -> .Ok(a) }
+}
+
+fn kind_of(r: Result<Answer?, ClientError>) -> string {
+    match r {
+        .Ok(a) -> if a == null { "waiting" } else { "answered" },
+        .Err(e) -> e.describe().kind,
+    }
+}
+
+fn lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
+}
+
+/// SOAK_LOOPS attempts, each outcome counted; the law holds when every
+/// one is `net.read`.
+fn resets() {
+    let loops = number("SOAK_LOOPS", 1000)
+    let kinds = [reset_once() for i in 0..loops]
+    let held = kinds.filter(it == "net.read").length
+    let other = kinds.filter(it != "net.read")
+    println("soak-reset: ${held}/${loops} reset as net.read")
+    for k in other { println("soak-reset: OTHER ${k}") }
+}
+
+match env_or("SOAK_MODE", "serve") {
+    "reset" -> resets(),
+    _ -> match serve() {
+        .Ok(n) -> println("soak-server: stopped after ${n} connection(s)"),
+        .Err(e) -> println("soak-server: ${e.describe().message}"),
+    },
+}

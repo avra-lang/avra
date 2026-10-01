@@ -1,0 +1,68 @@
+//! auth.av — CREDENTIALS ARE HEADERS a caller names, never part of a
+//! URL (a URL carrying them is refused). `bearer` and `basic` build the
+//! `authorization` field, and refuse what would not arrive as written:
+//! a token outside RFC 6750's alphabet, a user holding the `:` that
+//! ends it (RFC 7617 §2), a control octet anywhere.
+use @std.errors.{Error, ErrorInfo, info}
+use @std.text.{base64}
+use frame.{admits}
+use http.{Header}
+
+/// Why a credential cannot be written, and the octet that says so.
+export enum CredentialError {
+    Token(at: int)
+    Colon(at: int)
+    Control(at: int)
+}
+
+impl Error for CredentialError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Token(at) -> info(
+                "http.token",
+                "octet ${at} of the token is outside RFC 6750's alphabet: letters, digits, `-._~+/`, then `=`",
+            ),
+            .Colon(at) -> info("http.user_colon", "octet ${at} of the user is a `:`, which ends a basic user"),
+            .Control(at) -> info("http.control", "octet ${at} of the credential is a control character"),
+        }
+    }
+}
+
+/// `authorization: Bearer <token>` (RFC 6750 §2.1).
+export fn bearer(token: string) -> Result<Header, CredentialError> {
+    let b = token.bytes()
+    let letters = b.run(0, token68_char)
+    let end = b.run(letters, pads)
+    if letters == 0 || end < b.length { return .Err(.Token(if letters == 0 { 0 } else { end })) }
+    .Ok(Header { name: "authorization", value: "Bearer ${token}" })
+}
+
+/// `authorization: Basic <user:password in base64>` (RFC 7617), the
+/// pair as UTF-8.
+export fn basic(user: string, password: string) -> Result<Header, CredentialError> {
+    let u = user.bytes()
+    let colon = u.index_of(colon_octet, 0)
+    if colon >= 0 { return .Err(.Colon(colon)) }
+    let pair = "${user}:${password}".bytes()
+    let visible = pair.run(0, uncontrolled)
+    if visible < pair.length { return .Err(.Control(visible)) }
+    .Ok(Header { name: "authorization", value: "Basic ${base64(pair)}" })
+}
+
+const token68_char: Bytes = admits(is_token68)
+const pads: Bytes = admits(is_pad)
+const uncontrolled: Bytes = admits(is_uncontrolled)
+const colon_octet: Bytes = ":".bytes()
+
+fn is_token68(c: int) -> bool {
+    c >= 65 && c <= 90 ||
+        c >= 97 && c <= 122 ||
+        c >= 48 && c <= 57 ||
+        token68_marks.index_of([c].bytes()!, 0) >= 0
+}
+
+const token68_marks: Bytes = "-._~+/".bytes()
+
+fn is_pad(c: int) -> bool { c == 61 }
+
+fn is_uncontrolled(c: int) -> bool { c >= 32 && c != 127 }

@@ -1,0 +1,152 @@
+// A TAKE PAST `per_host` PARKS UNTIL A SLOT COMES BACK: a give or a
+// drop wakes it at once, the pool's `wait` bounds it, and so does the
+// task's own `within` — each refusal `.Exhausted` by name. The waiter
+// parks on the pool's bell, so it costs nothing while it waits and
+// hears the give without a poll.
+use @std.net.{NetError, listen}
+use @std.time.{ms, secs, sleep, now_ms, within}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Server, served, timing}
+use @std.http.client.{ClientError, connected}
+use @std.http.pool.{Pool, Carrier, origin_of}
+
+type PwApp = {}
+
+fn pw_server() -> Result<Server<PwApp>, ClientError> {
+    let l = match listen("127.0.0.1", 0) { .Ok(l) -> l, .Err(e) -> { return .Err(.Net(e)) } }
+    .Ok(served(l, () -> PwApp {}, limits(), timing()) { _a, q -> text(200, "ok") })
+}
+
+/// A dialer that counts its dials.
+fn pw_dial(port: int, dials: Cell<int>) -> Result<Carrier, ClientError> {
+    dials.set(dials.get() + 1)
+    .Ok(.H1(connected("127.0.0.1", port, secs(2), limits())?))
+}
+
+fn pw_kind(r: Result<Carrier, ClientError>) -> string {
+    match r { .Ok(_) -> "lent", .Err(e) -> e.describe().kind }
+}
+
+/// What a waiting take answered and how long it waited, in tenths of
+/// its bound — so a check reads the shape, not a clock's jitter.
+type PwWaited = { kind: string, ms: int }
+
+fn pw_waited(p: Pool, o: string, port: int, dials: Cell<int>) -> PwWaited {
+    let t0 = now_ms()
+    let r = p.take(o, () -> pw_dial(port, dials))
+    PwWaited { kind: pw_kind(r), ms: now_ms() - t0 }
+}
+
+/// Hands `c` back after `after` ms.
+fn pw_given(p: Pool, o: string, c: Carrier, after: int) -> int {
+    sleep(ms(after))
+    p.give(o, c)
+    0
+}
+
+/// Drops `c` after `after` ms.
+fn pw_dropped(p: Pool, o: string, c: Carrier, after: int) -> int {
+    sleep(ms(after))
+    p.drop(o, c)
+    0
+}
+
+/// A GIVE WAKES THE WAITER, which is lent the connection given back —
+/// no second dial — well before its wait ends.
+fn pw_give_wakes() -> Result<string, ClientError> {
+    let s = pw_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = Pool { per_host: 1, wait: secs(5) }
+    defer p.close_all()
+    let o = origin_of("http", "127.0.0.1", s.listener.port)
+    let dials = Cell.new(0)
+    let held = p.take(o, () -> pw_dial(s.listener.port, dials))?
+    spawn pw_given(p, o, held, 100)
+    let w = pw_waited(p, o, s.listener.port, dials)
+    .Ok("${w.kind} ${w.ms >= 80 && w.ms < 1000} ${dials.get()}")
+}
+
+/// A DROP WAKES THE WAITER too, which dials a connection of its own.
+fn pw_drop_wakes() -> Result<string, ClientError> {
+    let s = pw_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = Pool { per_host: 1, wait: secs(5) }
+    defer p.close_all()
+    let o = origin_of("http", "127.0.0.1", s.listener.port)
+    let dials = Cell.new(0)
+    let held = p.take(o, () -> pw_dial(s.listener.port, dials))?
+    spawn pw_dropped(p, o, held, 100)
+    let w = pw_waited(p, o, s.listener.port, dials)
+    .Ok("${w.kind} ${w.ms < 1000} ${dials.get()}")
+}
+
+/// Nobody gives: the take waits out the pool's `wait` and is refused.
+fn pw_wait_bounds() -> Result<string, ClientError> {
+    let s = pw_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = Pool { per_host: 1, wait: ms(150) }
+    defer p.close_all()
+    let o = origin_of("http", "127.0.0.1", s.listener.port)
+    let dials = Cell.new(0)
+    let _held = p.take(o, () -> pw_dial(s.listener.port, dials))?
+    let w = pw_waited(p, o, s.listener.port, dials)
+    .Ok("${w.kind} ${w.ms >= 140 && w.ms < 1000} ${dials.get()}")
+}
+
+/// THE TASK'S DEADLINE BOUNDS THE WAIT: a take under a `within` shorter
+/// than the pool's `wait` is refused when the `within` ends.
+fn pw_within_bounds() -> Result<string, ClientError> {
+    let s = pw_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = Pool { per_host: 1, wait: secs(10) }
+    defer p.close_all()
+    let o = origin_of("http", "127.0.0.1", s.listener.port)
+    let dials = Cell.new(0)
+    let _held = p.take(o, () -> pw_dial(s.listener.port, dials))?
+    let w = within ms(150) { pw_waited(p, o, s.listener.port, dials) }
+    .Ok("${w.kind} ${w.ms >= 140 && w.ms < 1000} ${dials.get()}")
+}
+
+/// A GIVE FOR ANOTHER ORIGIN wakes the waiter, which looks again and
+/// parks again: it is lent nothing that is not its origin's, and waits
+/// on to its own give.
+fn pw_other_origin() -> Result<string, ClientError> {
+    let s = pw_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = Pool { per_host: 1, wait: secs(5) }
+    defer p.close_all()
+    let port = s.listener.port
+    let o = origin_of("http", "127.0.0.1", port)
+    let other = origin_of("http", "localhost", port)
+    let dials = Cell.new(0)
+    let held = p.take(o, () -> pw_dial(port, dials))?
+    let held_other = p.take(other, () -> pw_dial(port, dials))?
+    spawn pw_given(p, other, held_other, 50)
+    spawn pw_given(p, o, held, 200)
+    let w = pw_waited(p, o, port, dials)
+    .Ok("${w.kind} ${w.ms >= 180 && w.ms < 1000} ${dials.get()} ${p.kept_for(other)}")
+}
+
+fn pw_shown(r: Result<string, ClientError>) -> string {
+    match r { .Ok(s) -> s, .Err(e) -> e.describe().message }
+}
+
+spec "std.http a pool's take waits for a slot" {
+    given "every slot lent" {
+        then "a give wakes the waiter, which is lent the connection given back" { pw_shown(pw_give_wakes()) == "lent true 1" }
+        then "a drop wakes the waiter, which dials its own" { pw_shown(pw_drop_wakes()) == "lent true 2" }
+        then "a give for another origin wakes it to look again and wait on" {
+            pw_shown(pw_other_origin()) == "lent true 2 1"
+        }
+    }
+    given "nobody gives" {
+        then "the pool's wait bounds the take, refused by name" { pw_shown(pw_wait_bounds()) == "http.exhausted true 1" }
+        then "the task's within bounds it sooner" { pw_shown(pw_within_bounds()) == "http.exhausted true 1" }
+    }
+}

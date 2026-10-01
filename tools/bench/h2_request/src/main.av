@@ -1,0 +1,54 @@
+//! One HTTP/2 stream served in-process, no socket — the twin of
+//! `bench/request`: a HEADERS frame fed to a live connection, the
+//! stream's request framed, the handler called, its answer written as
+//! frames. The client's block is at steady state, as a browser's is
+//! after its first request, and its connection window is opened wide
+//! at the start, as curl and browsers open theirs.
+use @std.http.frame.{limits, Method}
+use @std.http.http.{text}
+use @std.http.hpack.{header_field, encoder}
+use @std.http.h2.{h2_server, frame_bytes, preface, end_headers, end_stream, u32_bytes}
+use @std.http.h2_serve.{request_of, answered_on}
+use @std.http.body.{whole}
+use @std.time.{now_ns}
+
+let head = [
+    header_field(":method", "GET"),
+    header_field(":scheme", "http"),
+    header_field(":path", "/"),
+    header_field(":authority", "bench"),
+    header_field("user-agent", "wrk"),
+    header_field("accept", "*/*"),
+]
+mut client = encoder(true)
+let opening = client.encoded(head)
+let block = client.encoded(head)
+mut h = h2_server(limits())
+let open_window = frame_bytes(.WindowUpdate, 0, 0, u32_bytes(2147483647 - 65535))
+let _ = h
+    .fed(
+        preface
+            .concat(frame_bytes(.Settings, 0, 0, "".bytes()))
+            .concat(open_window)
+            .concat(frame_bytes(.Headers, end_headers | end_stream, 1, opening)),
+        0,
+    )
+let _ = h.taken()
+let _ = answered_on(h, 1, text(200, "hello"), Method.Get)
+let _ = h.drained()
+let n = 1000000
+let t0 = now_ns()
+mut total = 0
+for i in 0..n {
+    let id = 2 * i + 3
+    let _ = h.fed(frame_bytes(.Headers, end_headers | end_stream, id, block), 0)
+    for x in h.taken() {
+        let body = match h.arrived(x.stream) { .Whole(b) or .Flowing(b) -> b, .Cut -> "".bytes() }
+        match request_of(x, "127.0.0.1:1", limits(), (_k) -> whole(body)) {
+            .Ok(q) -> { let _ = answered_on(h, x.stream, text(200, "hello"), q.head.method) },
+            .Err(_) -> { total = total - 1 },
+        }
+    }
+    total = total + h.drained().length
+}
+"${n} streams, ${(now_ns() - t0) / n} ns each (${total / n} bytes out), ${h.gone.length} closed remembered"

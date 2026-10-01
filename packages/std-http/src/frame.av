@@ -148,7 +148,9 @@ export fn status_of(why: Refusal) -> int {
 export fn admits(pred: fn(int) -> bool) -> Bytes { [if pred(i) { 1 } else { 0 } for i in 0..256].bytes()! }
 fn is_digit(c: int) -> bool { c >= "0".char_code() && c <= "9".char_code() }
 fn is_alpha(c: int) -> bool { c >= "A".char_code() && c <= "Z".char_code() || c >= "a".char_code() && c <= "z".char_code() }
-fn is_mark(c: int) -> bool { marks.index_of([c].bytes()!, 0) >= 0 }
+fn is_mark(c: int) -> bool { one_of(marks, c) }
+/// Whether octet `c` is one of `set`'s.
+fn one_of(set: Bytes, c: int) -> bool { set.index_of([c].bytes()!, 0) >= 0 }
 /// What octet a TOKEN may carry (RFC 9110 §5.6.2) — a method, a field
 /// name. Exported for the reason `is_target` is: a WRITER that must
 /// not emit what this framer would refuse composes the law rather
@@ -169,6 +171,9 @@ const vchar: Bytes = admits(is_vchar)
 const target_char: Bytes = admits(is_target)
 const digit: Bytes = admits(is_digit)
 const ows: Bytes = admits(is_ows)
+
+/// The empty octets — the one spelling every file of this package uses.
+export const no_bytes: Bytes = "".bytes()
 
 const crlf: Bytes = "\r\n".bytes()
 const blank_line: Bytes = "\r\n\r\n".bytes()
@@ -305,7 +310,7 @@ fn target_form_fits(buf: Bytes, method: Method, lo: int, hi: int) -> bool {
 /// two routes for one resource.
 export fn target_form(buf: Bytes, method: Method, lo: int, hi: int) -> TargetForm {
     when {
-        method == Method.Connect -> connect_form(buf, lo)
+        method == Method.Connect -> connect_form(buf, lo, hi)
         buf.at(lo) == "/".char_code() -> .Origin
         buf.eq_at(lo, hi, star) -> asterisk_form(method)
         schemed(buf, lo, hi) -> .Absolute
@@ -314,8 +319,8 @@ export fn target_form(buf: Bytes, method: Method, lo: int, hi: int) -> TargetFor
 }
 
 /// CONNECT's target is an AUTHORITY and never a path (RFC 9112 §3.2.3).
-fn connect_form(buf: Bytes, lo: int) -> TargetForm {
-    if buf.at(lo) == "/".char_code() { return .Other }
+fn connect_form(buf: Bytes, lo: int, hi: int) -> TargetForm {
+    if !hosted(buf, lo, hi, true) { return .Other }
     .Authority
 }
 
@@ -326,11 +331,101 @@ fn asterisk_form(method: Method) -> TargetForm {
     .Asterisk
 }
 
-/// Whether a scheme opens this target — `://` inside it and not at
-/// its very start.
+/// Whether a scheme opens this target — a letter, then letters,
+/// digits, `+`, `-` or `.` up to `://` (RFC 3986 §3.1) — and a host
+/// follows it: an `http` URI with an empty host is invalid and its
+/// recipient rejects it (RFC 9110 §4.2.1), and the scheme is not the
+/// axis here.
 fn schemed(buf: Bytes, lo: int, hi: int) -> bool {
-    buf.index_in(scheme_end, lo, hi) > lo
+    let at = buf.run(lo, scheme_char)
+    at > lo &&
+        at + 3 <= hi &&
+        is_alpha(buf.at(lo)) &&
+        buf.eq_at(at, at + 3, scheme_end) &&
+        authority_named(buf, at + 3, hi)
 }
+
+const scheme_char: Bytes = admits((c) -> is_digit(c) || is_alpha(c) || one_of(scheme_marks, c))
+const scheme_marks: Bytes = "+-.".bytes()
+
+/// The authority from `at` names a host: userinfo dropped, then the
+/// one host law.
+fn authority_named(buf: Bytes, at: int, hi: int) -> bool {
+    let end = buf.run(at, authority_char)
+    hosted(buf, past_userinfo(buf, at, end), if end < hi { end } else { hi }, false)
+}
+
+/// Where the host begins: past the last `@` before `end`, or `at`.
+fn past_userinfo(buf: Bytes, at: int, end: int) -> int {
+    mut lo = at
+    mut next = buf.run(at, authority_plain)
+    while next < end && buf.at(next) == "@".char_code() {
+        lo = next + 1
+        next = buf.run(lo, authority_plain)
+    }
+    lo
+}
+
+// ── The host (RFC 9110 §7.2, RFC 3986 §3.2.2) ───────────────────
+
+/// Whether `lo..hi` is `uri-host [ ":" port ]` with a host that is not
+/// empty and a port that fits one, owed when `port_owed` — THE ONE HOST LAW: the `Host`
+/// field, an absolute-form authority and CONNECT's target all ask it.
+fn hosted(buf: Bytes, lo: int, hi: int, port_owed: bool) -> bool {
+    let name_end = host_end(buf, lo, hi)
+    if name_end <= lo || name_end > hi { return false }
+    if name_end == hi { return !port_owed }
+    if buf.at(name_end) != ":".char_code() { return false }
+    buf.run(name_end + 1, digit) == hi && port_fits(buf, name_end + 1, hi, port_owed)
+}
+
+/// Whether the digits in `lo..hi` name a port: at most 65535, and —
+/// when one is owed — present and not 0 (RFC 9110 §9.3.6).
+fn port_fits(buf: Bytes, lo: int, hi: int, owed: bool) -> bool {
+    mut n = 0
+    for i in lo..hi {
+        n = n * 10 + buf.at(i) - "0".char_code()
+        if n > 65535 { return false }
+    }
+    !owed || n > 0
+}
+
+/// Where a host ends: past an IP literal's `]`, or where a reg-name
+/// stops — -1 for a literal that never closes.
+fn host_end(buf: Bytes, lo: int, hi: int) -> int {
+    if lo < hi && buf.at(lo) == "[".char_code() { return literal_end(buf, lo + 1, hi) }
+    reg_name_end(buf, lo, hi)
+}
+
+/// Past the `]` closing an IP literal whose octets start at `lo`, or -1.
+fn literal_end(buf: Bytes, lo: int, hi: int) -> int {
+    let close = buf.run(lo, literal_char)
+    if close == lo || close >= hi || buf.at(close) != "]".char_code() { return -1 }
+    close + 1
+}
+
+/// Where a reg-name stops: its plain octets and whole `%HH` escapes;
+/// a broken escape stops it at the `%`.
+fn reg_name_end(buf: Bytes, lo: int, hi: int) -> int {
+    mut at = buf.run(lo, reg_char)
+    while at + 2 < hi &&
+        buf.at(at) == "%".char_code() &&
+        is_hex(buf.at(at + 1)) &&
+        is_hex(buf.at(at + 2)) {
+        at = buf.run(at + 3, reg_char)
+    }
+    at
+}
+
+fn is_reg(c: int) -> bool { is_digit(c) || is_alpha(c) || one_of(unreserved_marks, c) || one_of(sub_delims, c) }
+fn is_authority(c: int) -> bool { is_target(c) && c != "/".char_code() && c != "?".char_code() && c != "#".char_code() }
+
+const unreserved_marks: Bytes = "-._~".bytes()
+const sub_delims: Bytes = "!\$&'()*+,;=".bytes()
+const reg_char: Bytes = admits(is_reg)
+const literal_char: Bytes = admits((c) -> is_reg(c) || c == ":".char_code())
+const authority_char: Bytes = admits(is_authority)
+const authority_plain: Bytes = admits((c) -> is_authority(c) && c != "@".char_code())
 
 /// What separates an absolute-form target's scheme from its
 /// authority — the octets `path()` splits on, so the reader and the
@@ -520,8 +615,10 @@ fn took_codings(buf: Bytes, v: Span, fr: Framing) -> Framing {
     fr with { chunked: true, codings: ts.length > 1 }
 }
 
+/// A `Host` keeps the one host law; an empty one is refused, though
+/// the grammar admits it.
 fn took_host(buf: Bytes, v: Span, fr: Framing) -> Framing {
-    if v.hi == v.lo || buf.run(v.lo, target_char) != v.hi { return broke(fr, .Host) }
+    if !hosted(buf, v.lo, v.hi, false) { return broke(fr, .Host) }
     fr with { hosts: fr.hosts + 1 }
 }
 
@@ -586,6 +683,47 @@ export fn framed_reply(buf: Bytes, from: int, scanned: int, limits: Limits, aske
     status_line(buf, from, mark, limits, asked)
 }
 
+/// The reply's head at `from` with every obs-fold — the whitespace
+/// around a line end that continues the field before it — spelled as
+/// spaces, which a user agent MUST do before it reads a value (RFC 9112
+/// §5.2); the buffer itself while the head is unfinished or folds
+/// nothing. A fold keeps its length, so every offset past it stands. A
+/// request is never unfolded: a server refuses the fold instead.
+export fn unfolded(buf: Bytes, from: int, scanned: int) -> Bytes {
+    let mark = buf.index_of(blank_line, if scanned - 3 > from { scanned - 3 } else { from })
+    if mark < 0 { return buf }
+    let folds = folds_in(buf, from, mark)
+    if folds.is_empty() { return buf }
+    mut out = "".bytes()
+    mut at = 0
+    for f in folds {
+        let lo = if f.lo > at { f.lo } else { at }
+        out = out.concat(buf.slice(at, lo)).concat([32 for i in lo..f.hi].bytes()!)
+        at = f.hi
+    }
+    out.concat(buf.slice(at, buf.length))
+}
+
+/// Every obs-fold in `from..mark` — `OWS CRLF RWS` — as the span it
+/// covers, in order; a run of whitespace is walked by the one fold it
+/// precedes, so the whole head costs one pass.
+fn folds_in(buf: Bytes, from: int, mark: int) -> List<Span> {
+    mut folds: List<Span> = []
+    mut p = buf.index_of(crlf, from)
+    while p >= 0 && p < mark {
+        if is_ows(buf.at(p + 2)) { folds.push(Span { lo: ows_before(buf, p, from), hi: buf.run(p + 2, ows) }) }
+        p = buf.index_of(crlf, p + 2)
+    }
+    folds
+}
+
+/// Where the whitespace ending at `at` begins, no earlier than `from`.
+fn ows_before(buf: Bytes, at: int, from: int) -> int {
+    mut lo = at
+    while lo > from && is_ows(buf.at(lo - 1)) { lo = lo - 1 }
+    lo
+}
+
 fn reply_unfinished(buf: Bytes, from: int, limits: Limits) -> FramedReply {
     match unfinished(buf, from, limits) {
         .Refused(why) -> .Refused(why),
@@ -628,7 +766,8 @@ fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) 
 
 /// A reply's body is delimited by its status and the request's method
 /// before any field (RFC 9112 §6.3): none for a HEAD's answer, a 1xx,
-/// a 204 or a 304; then chunks; then a length; then the close.
+/// a 204, a 304 or a CONNECT's 2xx — a tunnel, whose length fields are
+/// ignored; then chunks; then a length; then the close.
 fn settled_reply(
     buf: Bytes,
     status: int,
@@ -644,7 +783,11 @@ fn settled_reply(
     // a reply's body is gathered whole, so its bound is the gathered one
     let broken: Refusal? = body_refusal(fr, limits.body)
     if broken != null { return .Refused(broken!) }
-    let bodiless = asked is .Head || status < 200 || status == 204 || status == 304
+    let bodiless = asked is .Head ||
+        status < 200 ||
+        status == 204 ||
+        status == 304 ||
+        asked == Method.Connect && status < 300
     let body: ReplyBody = when {
         bodiless -> .None
         fr.chunked -> .Chunked
@@ -804,8 +947,15 @@ fn trailer_step(c: Chunker, buf: Bytes, limits: Limits) -> Step {
 
 /// Where the size line's CRLF begins, past an extension: -1 when the
 /// line has not fully arrived, -2 when it is malformed or too long.
+/// Bad whitespace before an extension's `;` is parsed and dropped
+/// (RFC 9110 §5.6.3); whitespace before anything else is refused.
 fn size_line_end(buf: Bytes, at: int, limits: Limits) -> int {
-    let ext_end = if at < buf.length && buf.at(at) == ";".char_code() { buf.run(at, vchar) } else { at }
+    let semi = buf.run(at, ows)
+    if semi - at > limits.ext { return -2 }
+    if semi == buf.length { return -1 }
+    let opens = buf.at(semi) == ";".char_code()
+    if semi > at && !opens { return -2 }
+    let ext_end = if opens { buf.run(semi, vchar) } else { at }
     if ext_end - at > limits.ext { return -2 }
     if ext_end == buf.length { return -1 }
     if buf.at(ext_end) != "\r".char_code() { return -2 }
@@ -829,7 +979,7 @@ const hexdigit: Bytes = admits(is_hex)
 
 /// The value of 1..15 hex digits — under 2^60, so it fits a signed
 /// word; a sixteenth digit is past any body bound before it is read.
-fn hex_value(buf: Bytes, lo: int, hi: int) -> int {
+export fn hex_value(buf: Bytes, lo: int, hi: int) -> int {
     mut n = 0
     for i in lo..hi { n = n * 16 + hex_of(buf.at(i))! }
     n

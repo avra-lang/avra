@@ -1,0 +1,195 @@
+// The cookie jar by RFC 6265: where a cookie goes (host, domain,
+// address, path, TLS), when it ends (max-age, expires against the
+// answer's own date, in each date form §5.1.1 reads), what replaces
+// it, what is refused, and the bounds a server cannot grow past.
+use @std.http.http.{Header}
+use @std.http.client.{Answer, ClientError}
+use @std.text.{from_codepoint, repeat}
+use @std.http.jar.{Jar, jar}
+use @std.net.{listen}
+use @std.http.frame.{limits}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.server.{served, timing}
+use @std.http.pool.{pool}
+use @std.http.fetch.{Options, fetch}
+
+type JaApp = {}
+
+/// `/in` sets a cookie, `/hop` sets one and redirects to `/echo`, and
+/// `/echo` answers the `cookie` field it was sent.
+fn ja_route(q: Request<Unrouted>) -> Response {
+    match q.target() ?? "" {
+        "/in" -> Response { status: 204, headers: [Header { name: "set-cookie", value: "s=1; Path=/" }] },
+        "/hop" -> Response {
+            status: 302,
+            headers: [
+                Header { name: "set-cookie", value: "h=2" },
+                Header { name: "location", value: "/echo" },
+            ],
+        },
+        _ -> text(200, q.header("cookie") ?? "-"),
+    }
+}
+
+/// The `cookie` field `/echo` saw after each of `paths`, under `o`.
+fn ja_over_fetch(paths: List<string>, headers: List<Header>) -> string {
+    let l? = match listen("127.0.0.1", 0) { .Ok(l) -> l, .Err(_) -> null } else { return "no listener" }
+    let s = served(l, () -> JaApp {}, limits(), timing()) { _a, q -> ja_route(q) }
+    spawn s.run(1)
+    defer s.stop()
+    let o = Options { pool: pool(), jar: jar(), headers: headers }
+    defer o.pool.close_all()
+    [ja_body(fetch(.Get, "http://127.0.0.1:${l.port}${p}", .Empty, o)) for p in paths].join(" ")
+}
+
+fn ja_body(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(a) -> a.body.text() ?? "?", .Err(e) -> e.describe().kind }
+}
+
+/// An answer setting each of `sets`, dated `date` when it is not empty.
+fn ja_answer(sets: List<string>, date: string) -> Answer {
+    let dated = if date.is_empty() { [] } else { [Header { name: "Date", value: date }] }
+    Answer {
+        status: 200,
+        headers: [Header { name: "Set-Cookie", value: s } for s in sets].concat(dated),
+        body: "".bytes(),
+    }
+}
+
+/// A jar that heard `sets` from `host` at `path`.
+fn ja_heard(host: string, path: string, sets: List<string>, date: string) -> Jar {
+    let j = jar()
+    j.heard(host, path, false, ja_answer(sets, date))
+    j
+}
+
+/// The `cookie` value `j` sends to `host` at `path`, or `-`.
+fn ja_sent(j: Jar, host: string, path: string, secure: bool) -> string { j.sent(host, path, secure)?.value ?? "-" }
+
+/// A jar that heard `sets` from `h.test` over TLS.
+fn ja_secured(sets: List<string>) -> Jar {
+    let j = jar()
+    j.heard("h.test", "/", true, ja_answer(sets, ""))
+    j
+}
+
+/// What one plain request to `host` at `path` carries after `sets`
+/// from `from` at `/`.
+fn ja_to(from: string, sets: List<string>, host: string, path: string) -> string {
+    ja_sent(ja_heard(from, "/", sets, ""), host, path, false)
+}
+
+const ja_date: string = "Sun, 06 Nov 1994 08:49:37 GMT"
+
+/// Whether a cookie expiring `expires`, set by an answer dated
+/// `ja_date`, is still sent.
+fn ja_lives(expires: string) -> bool { ja_sent(ja_heard("h.test", "/", ["a=1; Expires=${expires}"], ja_date), "h.test", "/", false) == "a=1" }
+
+/// A cookie set and asked for again under options with no jar.
+fn ja_plain() -> string {
+    let l? = match listen("127.0.0.1", 0) { .Ok(l) -> l, .Err(_) -> null } else { return "no listener" }
+    let s = served(l, () -> JaApp {}, limits(), timing()) { _a, q -> ja_route(q) }
+    spawn s.run(1)
+    defer s.stop()
+    let o = Options { pool: pool() }
+    defer o.pool.close_all()
+    let _ = fetch(.Get, "http://127.0.0.1:${l.port}/in", .Empty, o)
+    ja_body(fetch(.Get, "http://127.0.0.1:${l.port}/echo", .Empty, o))
+}
+
+spec "@std.http the cookie jar" {
+    given "where a cookie goes" {
+        then "an empty jar sends nothing" { ja_sent(jar(), "h.test", "/", false) == "-" }
+        then "a host-only cookie goes back to its host" { ja_to("h.test", ["a=1"], "h.test", "/") == "a=1" }
+        then "and never to a name under it" { ja_to("h.test", ["a=1"], "w.h.test", "/") == "-" }
+        then "a domain cookie goes to every name under its domain" {
+            ja_to("www.ex.test", ["a=1; Domain=.EX.test"], "api.ex.test", "/") == "a=1"
+        }
+        then "and to the domain itself" { ja_to("www.ex.test", ["a=1; Domain=ex.test"], "ex.test", "/") == "a=1" }
+        then "but never to a name that merely ends like it" {
+            ja_to("www.ex.test", ["a=1; Domain=ex.test"], "badex.test", "/") == "-"
+        }
+        then "a domain the host is not in is refused" { ja_to("www.ex.test", ["a=1; Domain=other.test"], "other.test", "/") == "-" }
+        then "a single-label domain is refused" { ja_to("www.ex.test", ["a=1; Domain=test"], "any.test", "/") == "-" }
+        then "an address is only ever itself" { ja_to("127.0.0.1", ["a=1; Domain=0.0.1"], "127.0.0.1", "/") == "-" }
+        then "an address may name itself" { ja_to("127.0.0.1", ["a=1; Domain=127.0.0.1"], "127.0.0.1", "/") == "a=1" }
+        then "a secure cookie set over TLS is sent over TLS" { ja_sent(ja_secured(["a=1; secure"]), "h.test", "/", true) == "a=1" }
+        then "and never in the clear" { ja_sent(ja_secured(["a=1; Secure"]), "h.test", "/", false) == "-" }
+        then "an answer in the clear cannot set a secure cookie" { ja_to("h.test", ["a=1; Secure"], "h.test", "/") == "-" }
+        then "nor overwrite one" {
+            let j = ja_secured(["a=1; Secure"])
+            j.heard("h.test", "/", false, ja_answer(["a=2"], ""))
+            ja_sent(j, "h.test", "/", true) == "a=1"
+        }
+        then "nor shadow one on a deeper path" {
+            let j = ja_secured(["a=1; Secure; Path=/"])
+            j.heard("h.test", "/x/y", false, ja_answer(["a=2; Path=/x"], ""))
+            ja_sent(j, "h.test", "/x", true) == "a=1"
+        }
+    }
+    given "paths" {
+        then "the default path is the request's directory" {
+            ja_sent(ja_heard("h.test", "/a/b", ["a=1"], ""), "h.test", "/a/c", false) == "a=1"
+        }
+        then "and a sibling that shares its prefix is not under it" {
+            ja_sent(ja_heard("h.test", "/a/b", ["a=1"], ""), "h.test", "/ab", false) == "-"
+        }
+        then "a named path from the root wins" { ja_to("h.test", ["a=1; Path=/x"], "h.test", "/x/y") == "a=1" }
+        then "and a path elsewhere is not under it" { ja_to("h.test", ["a=1; Path=/x"], "h.test", "/y") == "-" }
+        then "a path not from the root is the default" {
+            ja_sent(ja_heard("h.test", "/a/b", ["a=1; Path=x"], ""), "h.test", "/a/z", false) == "a=1"
+        }
+        then "two paths are two cookies" { ja_to("h.test", ["a=1; Path=/", "a=2; Path=/x"], "h.test", "/x") == "a=1; a=2" }
+    }
+    given "what a cookie is" {
+        then "a later one replaces its namesake" { ja_to("h.test", ["a=1", "a=2"], "h.test", "/") == "a=2" }
+        then "a pair with no `=` is refused" { ja_to("h.test", ["a"], "h.test", "/") == "-" }
+        then "a pair with no name is refused" { ja_to("h.test", ["=1"], "h.test", "/") == "-" }
+        then "an empty value is a value" { ja_to("h.test", ["a="], "h.test", "/") == "a=" }
+        then "space around the pair is not the pair's" { ja_to("h.test", [" a = 1 ; Path=/"], "h.test", "/") == "a=1" }
+        then "a control octet in the pair is refused" { ja_to("h.test", ["a=1${from_codepoint(1)}"], "h.test", "/") == "-" }
+        then "a tab in the value is refused" { ja_to("h.test", ["a=x${from_codepoint(9)}y"], "h.test", "/") == "-" }
+        then "the last of an attribute wins" { ja_to("h.test", ["a=1; Path=/y; Path=/x"], "h.test", "/x") == "a=1" }
+    }
+    given "when a cookie ends" {
+        then "max-age 0 removes its namesake" {
+            let j = ja_heard("h.test", "/", ["a=1"], "")
+            j.heard("h.test", "/", false, ja_answer(["a=; Max-Age=0"], ""))
+            ja_sent(j, "h.test", "/", false) == "-"
+        }
+        then "a negative max-age is already past" { ja_to("h.test", ["a=1; Max-Age=-5"], "h.test", "/") == "-" }
+        then "a max-age past every clock is held, not wrapped" {
+            ja_to("h.test", ["a=1; Max-Age=99999999999999999"], "h.test", "/") == "a=1"
+        }
+        then "max-age wins over expires" { ja_lives("Sun, 06 Nov 1994 08:49:36 GMT; Max-Age=60") }
+        then "an expires before the answer's date is past" { !ja_lives("Sun, 06 Nov 1994 08:49:36 GMT") }
+        then "an expires at the answer's date is past" { !ja_lives(ja_date) }
+        then "an expires after the answer's date lives" { ja_lives("Sun, 06 Nov 1994 08:49:38 GMT") }
+        then "RFC 850's form is read" { !ja_lives("Sunday, 06-Nov-94 08:49:37 GMT") }
+        then "asctime's form is read" { !ja_lives("Sun Nov  6 08:49:37 1994") }
+        then "the form's words in any order are read" { !ja_lives("1994 Nov 06 08:49:37") }
+        then "an unreadable expires lasts while the jar does" { ja_lives("tomorrow") }
+        then "a year before 1601 is unreadable" { ja_lives("06 Nov 1600 08:49:37") }
+        then "an hour past 23 is unreadable" { ja_lives("06 Nov 1994 24:00:00") }
+        then "an expires with no answer date lasts while the jar does" {
+            ja_to("h.test", ["a=1; Expires=Sun, 06 Nov 1994 08:49:37 GMT"], "h.test", "/") == "a=1"
+        }
+    }
+    given "over fetch" {
+        then "a cookie set by one answer rides the next request" { ja_over_fetch(["/in", "/echo"], []) == " s=1" }
+        then "a cookie set by a redirect rides the hop it asks for" { ja_over_fetch(["/hop"], []) == "h=2" }
+        then "a `cookie` field the caller wrote wins over the jar" {
+            ja_over_fetch(["/in", "/echo"], [Header { name: "Cookie", value: "mine=0" }]) == " mine=0"
+        }
+        then "options with no jar keep nothing" { ja_plain() == "-" }
+    }
+    given "a server that sets too much" {
+        then "a cookie past 4096 octets is refused" {
+            ja_to("h.test", ["a=${repeat("v", 4096)}"], "h.test", "/") == "-"
+        }
+        then "a domain keeps its fifty newest" {
+            let j = ja_heard("h.test", "/", ["c${i}=${i}" for i in 0..60], "")
+            j.cookies.get().length == 50 && ja_sent(j, "h.test", "/", false).starts_with("c10=10;")
+        }
+    }
+}

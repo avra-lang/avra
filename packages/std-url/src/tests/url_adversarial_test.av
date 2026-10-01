@@ -1,0 +1,241 @@
+// THE URL UNDER ATTACK. url_test.av tells the story; this file holds
+// what a red team threw at it: degenerate text, every malformed IPv6
+// literal, every numeric spelling a resolver reads as an address,
+// escapes by the thousand, dot segments past the root, NUL in every
+// component, and the round trip checked against the INPUT — never
+// against a second pass, which is blind to whatever the first one lost.
+use @std.url.{Url, UrlError, Part, parse, encoded, decoded}
+use @std.text.{from_codepoint}
+
+fn ua_ok(r: Result<Url, UrlError>) -> Url? {
+    match r { .Ok(u) -> u, .Err(_) -> null }
+}
+
+fn ua_of(text: string) -> Url { ua_ok(parse(text))! }
+
+/// The parse recomposed, or the refusal's kind and octet.
+fn ua_shown(text: string) -> string {
+    match parse(text) { .Ok(u) -> u.text(), .Err(e) -> ua_refusal(e) }
+}
+
+fn ua_refusal(e: UrlError) -> string {
+    match e {
+        .Relative -> "relative",
+        .Scheme(at) -> "scheme@${at}",
+        .Octet(at, _) -> "octet@${at}",
+        .Escape(at) -> "escape@${at}",
+        .Host(at) -> "host@${at}",
+        .Port(at) -> "port@${at}",
+        .Dots -> "dots",
+    }
+}
+
+fn ua_accepts(text: string) -> bool { parse(text) is .Ok }
+
+fn ua_host(text: string) -> string { ua_of(text).hostname() ?? "-" }
+
+fn ua_norm(text: string) -> string { ua_of(text).normalized().text() }
+
+fn ua_res(base: string, r: string) -> string {
+    match ua_of(base).resolve(r) { .Ok(u) -> u.text(), .Err(e) -> ua_refusal(e) }
+}
+
+fn ua_nul() -> string { from_codepoint(0) }
+
+/// Text that is already canonical, which a round trip must give back
+/// octet for octet.
+const ua_canonical: List<string> = [
+    "http://h/",
+    "https://u:p@h:8443/a/b?x=1&y=%20#f",
+    "http://[::1]:80/",
+    "http://[fe80::1:2]/",
+    "mailto:a@b",
+    "file:///etc/hosts",
+    "urn:isbn:0451450523",
+    "http://h?",
+    "http://h#",
+    "http://h/a//b/",
+    "x:",
+    "http://@h/",
+]
+
+spec "@std.url under attack" {
+    given "degenerate shapes" {
+        then "a colon alone names no scheme" {
+            ua_shown(":") == "scheme@0"
+        }
+        then "a scheme and nothing else is a URL with an empty path" {
+            ua_shown("a:") == "a:" && ua_of("a:").authority == null
+        }
+        then "an authority of nothing is an empty name" {
+            ua_shown("http://") == "http://" && ua_host("http://") == ""
+        }
+        then "three slashes are an empty authority and a rooted path" {
+            ua_of("file:///x").path.text() == "/x"
+        }
+        then "`?` and `#` alone are references, not URLs" {
+            ua_shown("?") == "relative" && ua_shown("#") == "relative"
+        }
+        then "an empty bracket pair is no address" {
+            ua_shown("http://[]/") == "host@7"
+        }
+        then "`::` alone is an address" {
+            ua_host("http://[::]/") == "::"
+        }
+        then "a lone port colon under a bracket is an empty port" {
+            ua_of("http://[::1]:/").authority!.port == null
+        }
+    }
+    given "malformed IPv6 literals" {
+        then "two `::` are refused" { ua_shown("http://[1::2::3]/") == "host@7" }
+        then "a leading single colon is refused" { ua_shown("http://[:1::]/") == "host@7" }
+        then "nine groups are refused" { ua_shown("http://[1:2:3:4:5:6:7:8:9]/") == "host@7" }
+        then "seven groups are refused without `::`" { ua_shown("http://[1:2:3:4:5:6:7]/") == "host@7" }
+        then "eight groups beside `::` are refused" { ua_shown("http://[1:2:3:4:5:6:7:8::]/") == "host@7" }
+        then "seven groups beside `::` are one address" { ua_accepts("http://[1:2:3:4:5:6:7::]/") }
+        then "a five-digit group is refused" { ua_shown("http://[12345::]/") == "host@7" }
+        then "a zone is refused" { ua_shown("http://[::1%25eth0]/") == "host@7" }
+        then "an IPvFuture is refused" { ua_shown("http://[v1.x]/") == "host@7" }
+        then "a bare quad in brackets is refused" { ua_shown("http://[1.2.3.4]/") == "host@7" }
+        then "a short embedded quad is refused" { ua_shown("http://[::ffff:1.2.3]/") == "host@7" }
+        then "an embedded quad before `::` is refused" { ua_shown("http://[1.2.3.4::]/") == "host@7" }
+        then "a quad counts two, so six groups and one fill eight" { ua_accepts("http://[1:2:3:4:5:6:1.2.3.4]/") }
+        then "junk after the bracket is refused where it sits" { ua_shown("http://[::1]x/") == "host@12" }
+        then "a second `]` is refused where it sits" { ua_shown("http://[::1]]/") == "host@12" }
+        then "a port after a port is refused" { ua_shown("http://[::1]:80:90/") == "port@15" }
+        then "a bracket inside a name is refused" { ua_shown("http://a[::1]/") == "octet@8" }
+    }
+    given "numbers the resolver reads as addresses" {
+        then "a short quad is refused" { ua_shown("http://127.1/") == "host@7" }
+        then "a hex label is refused" { ua_shown("http://0x7f.1/") == "host@7" }
+        then "a whole-number host is refused" { ua_shown("http://2130706433/") == "host@7" }
+        then "a leading zero is octal to the resolver, so refused" { ua_shown("http://01.1.1.1/") == "host@7" }
+        then "a quad with a trailing dot is refused" { ua_shown("http://1.2.3.4./") == "host@7" }
+        then "an octet past 255 is refused" { ua_shown("http://256.1.1.1/") == "host@7" }
+        then "a name whose last label is a number is refused" { ua_shown("http://a.b.123/") == "host@7" }
+        then "a name ending in hex after `0x` is refused" { ua_shown("http://ex.0X1f/") == "host@7" }
+        then "a digit escaped into the last label is still a number" { ua_shown("http://127.0.0.%31/") == "host@7" }
+        then "a quad spelled with an escape is refused" { ua_shown("http://%31.0.0.1/") == "host@7" }
+        then "a label that only looks hex is a name" { ua_host("http://1e3.example/") == "1e3.example" }
+        then "a number inside a name is a name" { ua_host("http://123.example.com/") == "123.example.com" }
+        then "the strict quad is an address" { ua_host("http://127.0.0.1/") == "127.0.0.1" }
+    }
+    given "ports at their edges" {
+        then "zero is a port" { ua_of("http://h:0/").port() == 0 }
+        then "65535 is a port" { ua_of("http://h:65535/").port() == 65535 }
+        then "65536 is not" { ua_shown("http://h:65536/") == "port@9" }
+        then "six digits are refused before they are summed" { ua_shown("http://h:000080/") == "port@9" }
+        then "a run long enough to overflow a word is refused" { ua_shown("http://h:99999999999999999999999/") == "port@9" }
+        then "a sign is not a digit" { ua_shown("http://h:-1/") == "port@9" && ua_shown("http://h:+1/") == "port@9" }
+    }
+    given "escapes by the thousand" {
+        then "a run of bare `%` is refused at the first" {
+            ua_shown("http://h/" + ["%" for i in 0..5000].join("")) == "escape@9"
+        }
+        then "a long run of valid escapes decodes whole" {
+            decoded(["%41" for i in 0..5000].join("").bytes())!.length == 5000
+        }
+        then "a valid run ending in a broken escape is refused at its end" {
+            ua_shown("http://h/" + ["%41" for i in 0..1000].join("") + "%4") == "escape@3009"
+        }
+        then "an escape of an escape is data" {
+            decoded("%2541".bytes())!.text() == "%41"
+        }
+        then "the normal form of an escaped `%` stays escaped" {
+            ua_norm("http://h/%25") == "http://h/%25"
+        }
+    }
+    given "dot segments" {
+        then "dots past the root stop at it" {
+            ua_norm("http://h/../../../a") == "http://h/a"
+        }
+        then "escaped dots are dots once normal" {
+            ua_norm("http://h/a/%2e%2E/b") == "http://h/b"
+        }
+        then "an empty segment is a segment `..` can spend" {
+            ua_norm("http://h/a//../b") == "http://h/a/b"
+        }
+        then "empty segments are kept" {
+            ua_norm("http://h//a//b") == "http://h//a//b"
+        }
+        then "three dots are data" {
+            ua_norm("http://h/.../a") == "http://h/.../a"
+        }
+        then "a thousand climbs cost one pass and leave the root" {
+            ua_norm("http://h/" + ["../" for i in 0..1000].join("") + "x") == "http://h/x"
+        }
+        then "a reference climbing past the root lands at it" {
+            ua_res("http://h/a/b", "../../../../x") == "http://h/x"
+        }
+        then "a reference of `//` swaps the authority" {
+            ua_res("http://h/a", "//evil/x") == "http://evil/x"
+        }
+        then "a reference with a colon after a slash is a path" {
+            ua_res("http://h/a/b", "./c:d") == "http://h/a/c:d"
+        }
+        then "a refused reference is refused with its octet" {
+            ua_res("http://h/", "a b") == "octet@1"
+        }
+        then "a joined `..` is refused, and its escape is data" {
+            ua_of("http://h/a").joined("..") is .Err &&
+                ua_ok(ua_of("http://h/a").joined("%2e%2e"))!.text() == "http://h/a/%252e%252e"
+        }
+    }
+    given "NUL in every component" {
+        then "a raw NUL is no octet of a path" { ua_shown("http://h/a" + ua_nul()) == "octet@10" }
+        then "a raw NUL is no octet of a host" { ua_shown("http://h" + ua_nul() + "/") == "octet@8" }
+        then "a raw NUL is no octet of a query" { ua_shown("http://h/?" + ua_nul()) == "octet@10" }
+        then "a raw NUL is no octet of a fragment" { ua_shown("http://h/#" + ua_nul()) == "octet@10" }
+        then "a raw NUL is no octet of a userinfo" { ua_shown("http://" + ua_nul() + "@h/") == "octet@7" }
+        then "a raw NUL is no octet of a scheme" { ua_shown("ht" + ua_nul() + "p://h/") == "scheme@2" }
+        then "an escaped NUL decodes to one octet" { decoded("%00".bytes())!.length == 1 }
+        then "an escaped NUL in a host reaches the resolver's name whole" {
+            ua_host("http://a%00b/").length == 3
+        }
+        then "a NUL param is escaped" {
+            ua_of("http://h/").with_param("k", ua_nul()).text() == "http://h/?k=%00"
+        }
+    }
+    given "injection through the text" {
+        then "a CRLF is no octet of a path" {
+            ua_shown("http://h/a\r\nHost: evil") == "octet@10"
+        }
+        then "a space is no octet of a host" {
+            ua_shown("http://h x/") == "octet@8"
+        }
+        then "non-ASCII is refused, never guessed at" {
+            ua_shown("http://h/café") == "octet@12"
+        }
+        then "a backslash is no separator and no octet" {
+            ua_shown("http://h\\evil/") == "octet@8"
+        }
+        then "a param's separators cannot open a second pair" {
+            ua_of("http://h/").with_param("a", "1&admin=true").text() == "http://h/?a=1%26admin%3Dtrue"
+        }
+        then "a segment cannot open a query" {
+            ua_ok(ua_of("http://h/").joined("x?y#z"))!.text() == "http://h/x%3Fy%23z"
+        }
+    }
+    given "the round trip, judged against the input" {
+        then "canonical text is given back octet for octet" {
+            ua_canonical.all(ua_shown(it) == it)
+        }
+        then "an empty port is not written back — RFC 3986 makes it no port" {
+            ua_shown("http://h:/") == "http://h/"
+        }
+        then "the normal form of a normal form is itself" {
+            ["http://H:80/a/../%7e", "HTTPS://h:443", "http://[::ABC]/%2f"]
+                .all(ua_norm(ua_norm(it)) == ua_norm(it))
+        }
+    }
+    given "a hand-built URL" {
+        then "a stray `%` survives normalizing untouched" {
+            let u = ua_of("http://h/") with { path: "/a%".bytes() }
+            u.normalized().path.text() == "/a%"
+        }
+        then "encoding every octet and decoding it is the identity" {
+            let all = [i for i in 0..256].bytes()!
+            decoded(encoded(all, .Param))! == all
+        }
+    }
+}

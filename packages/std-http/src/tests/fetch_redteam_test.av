@@ -1,0 +1,179 @@
+// THE CLIENT UNDER A HOSTILE PEER AND A HOSTILE URL: a URL that would
+// split the request, an address spelled the way a filter misreads it,
+// a reply head or body past its bound, a reply dribbled a byte at a
+// time, and a pool whose last slot is lent — each refused by name,
+// promptly, and with nothing sent that the caller did not write.
+use @std.net.{Conn, Listener, NetError, listen}
+use @std.time.{ms, secs, now_ms, sleep}
+use @std.text.{repeat}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{served, timing}
+use @std.http.client.{Answer, ClientError}
+use @std.http.pool.{Pool, pool}
+use @std.http.fetch.{Options, Retry, Timeouts, fetch}
+
+type CrApp = {}
+
+/// What a fetch answered: the status and body, or the refusal's kind.
+fn cr_shown(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(a) -> "${a.status} ${a.body.text() ?? "?"}", .Err(e) -> e.describe().kind }
+}
+
+fn cr_listener() -> Listener? {
+    match listen("127.0.0.1", 0) { .Ok(l) -> l, .Err(_) -> null }
+}
+
+/// A URL against a server echoing each target, and how many
+/// connections the server saw.
+fn cr_echoed(path: string) -> string {
+    let l? = cr_listener() else { return "no listener" }
+    let s = served(l, () -> CrApp {}, limits(), timing()) { _a, q -> text(200, q.target() ?? "?") }
+    spawn s.run(1)
+    defer s.stop()
+    let o = Options { pool: pool() }
+    defer o.pool.close_all()
+    "${cr_shown(fetch(.Get, "http://127.0.0.1:${l.port}${path}", .Empty, o))}, ${s.connections()}"
+}
+
+/// A URL refused before any socket: its kind.
+fn cr_refused(url: string) -> string { cr_shown(fetch(.Get, url, .Empty, Options { pool: pool() })) }
+
+/// A peer that reads the request and answers `head` then `body`, a
+/// byte every `gap` when `gap` is positive.
+fn cr_peer(l: Listener, reply: Bytes, gap: int) -> Result<int, NetError> {
+    let c = l.accept()?
+    let _ = c.read(4096)?
+    if gap <= 0 { return cr_written(c, reply) }
+    for i in 0..reply.length {
+        c.write(reply.slice(i, i + 1))?
+        sleep(ms(gap))
+    }
+    c.close()
+}
+
+fn cr_written(c: Conn, reply: Bytes) -> Result<int, NetError> {
+    c.write(reply)?
+    sleep(ms(200))
+    c.close()
+}
+
+type CrTimed = { shown: string, ms: int }
+
+/// A fetch against a peer answering `reply`, under `total`.
+fn cr_against(reply: Bytes, gap: int, total: int) -> CrTimed {
+    let l? = cr_listener() else { return CrTimed { shown: "no listener", ms: 0 } }
+    spawn cr_peer(l, reply, gap)
+    let o = Options { pool: pool(), timeouts: Timeouts { total: ms(total) } }
+    let t0 = now_ms()
+    let r = fetch(.Get, "http://127.0.0.1:${l.port}/", .Empty, o)
+    let took = now_ms() - t0
+    o.pool.close_all()
+    let _ = l.close()
+    CrTimed { shown: cr_shown(r), ms: took }
+}
+
+fn cr_head_of(fields: int) -> Bytes {
+    "HTTP/1.1 200 OK\r\n${["x-f${i}: ${repeat("v", 200)}\r\n" for i in 0..fields].join("")}content-length: 0\r\n\r\n"
+        .bytes()
+}
+
+/// Two requests to a slow server through a pool of one slot: the
+/// second while the first holds it, then a third once it is back.
+fn cr_one_slot(p: Pool) -> string {
+    let l? = cr_listener() else { return "no listener" }
+    let s = served(l, () -> CrApp {}, limits(), timing()) { _a, q ->
+        if q.target() == "/slow" { sleep(ms(300)) }
+        text(200, q.target() ?? "?")
+    }
+    spawn s.run(1)
+    defer s.stop()
+    let o = Options { pool: p }
+    defer o.pool.close_all()
+    let base = "http://127.0.0.1:${l.port}"
+    let first = Cell.new("")
+    spawn cr_into(first, fetch(.Get, "${base}/slow", .Empty, o))
+    sleep(ms(100))
+    let second = cr_shown(fetch(.Get, "${base}/b", .Empty, o))
+    sleep(ms(400))
+    let third = cr_shown(fetch(.Get, "${base}/c", .Empty, o))
+    "${first.get()}, ${second}, ${third}"
+}
+
+fn cr_into(cell: Cell<string>, r: Result<Answer, ClientError>) -> int {
+    cell.set(cr_shown(r))
+    0
+}
+
+/// A peer that drops its first connection unanswered and answers
+/// the second.
+fn cr_drop_then_answer(l: Listener) -> Result<int, NetError> {
+    let first = l.accept()?
+    let _ = first.read(4096)?
+    first.close()?
+    cr_written(l.accept()?, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok".bytes())
+}
+
+/// Through a pool of one slot, a request the peer dropped and then
+/// another: the failure gave its slot back.
+fn cr_failed_frees() -> string {
+    let l? = cr_listener() else { return "no listener" }
+    spawn cr_drop_then_answer(l)
+    let o = Options { pool: Pool { per_host: 1 }, retry: Retry { attempts: 1 } }
+    let url = "http://127.0.0.1:${l.port}/"
+    let first = cr_shown(fetch(.Get, url, .Empty, o))
+    let second = cr_shown(fetch(.Get, url, .Empty, o))
+    o.pool.close_all()
+    let _ = l.close()
+    "${first}, ${second}"
+}
+
+spec "@std.http the client red team" {
+    given "a URL that would split the request" {
+        then "a raw CRLF in the path is refused before a socket" {
+            cr_refused("http://127.0.0.1:1/a\r\nx-evil: 1") == "url.octet"
+        }
+        then "an escaped CRLF in the path is sent as written, one field" {
+            cr_echoed("/a%0d%0ax-evil:%201") == "200 /a%0d%0ax-evil:%201, 1"
+        }
+        then "a space in the path is refused before a socket" { cr_refused("http://127.0.0.1:1/a b") == "url.octet" }
+        then "an escaped CRLF in the host names no host" {
+            cr_refused("http://a%0d%0ab/").starts_with("http.") ||
+                cr_refused("http://a%0d%0ab/").starts_with("net.")
+        }
+    }
+    given "an address spelled the way a filter misreads it" {
+        then "a bare number is no address" { cr_refused("http://2130706433/").starts_with("url.") }
+        then "a hex part is no address" { cr_refused("http://0x7f.0.0.1/").starts_with("url.") }
+        then "a short dotted form is no address" { cr_refused("http://127.1/").starts_with("url.") }
+    }
+    given "a reply past its bounds" {
+        then "a head past the head bound is refused, promptly" {
+            let t = cr_against(cr_head_of(400), 0, 5000)
+            t.shown == "http.refused" && t.ms < 2000
+        }
+        then "a body length past the body bound is refused at the head" {
+            let t = cr_against(
+                "HTTP/1.1 200 OK\r\ncontent-length: 1000000000000\r\n\r\n".bytes(),
+                0,
+                5000,
+            )
+            t.shown == "http.refused" && t.ms < 2000
+        }
+    }
+    given "a reply dribbled a byte at a time" {
+        then "the whole request's deadline ends it" {
+            let t = cr_against(cr_head_of(3), 40, 500)
+            t.shown == "http.timed_out" && t.ms < 1500
+        }
+    }
+    given "a pool whose last slot is lent" {
+        then "with no wait the next request is refused by name, and the slot comes back" {
+            cr_one_slot(Pool { per_host: 1, wait: ms(0) }) == "200 /slow, http.exhausted, 200 /c"
+        }
+        then "by default the next request waits for the slot and is served over the connection given back" {
+            cr_one_slot(Pool { per_host: 1 }) == "200 /slow, 200 /b, 200 /c"
+        }
+        then "a request the peer dropped gives its slot back" { cr_failed_frees() == "http.closed, 200 ok" }
+    }
+}

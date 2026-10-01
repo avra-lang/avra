@@ -1,0 +1,142 @@
+// THE LAWS OF A CONNECTION WHOSE HANDLERS RUN BESIDE ITS READER. A peer
+// that half-closes still gets the answers its handlers are making; a
+// handler slower than the idle deadline is not a silent peer; a link
+// with nothing in flight still ends at the idle deadline; a stream
+// reset mid-body tells its handler, and the connection lives; and a
+// peer gone mid-answer leaves no connection behind once its handler
+// ends. Both engines.
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, within, sleep, now_ms}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.server.{Server, served, Timing}
+use @std.http.h2.{Frame, preface, frame_bytes, frames_in, end_headers, end_stream, u32_bytes}
+use @std.http.hpack.{header_field, encoder}
+
+type App = {}
+
+fn answer(q: Request<Unrouted>) -> Response {
+    let path = q.path()?.text() ?? ""
+    if path == "/slow" {
+        sleep(ms(500))
+        return text(200, "slow")
+    }
+    if path == "/body" { return text(200, if q.body.gathered() is .Ok { "whole" } else { "cut" }) }
+    text(200, "fast")
+}
+
+fn asked(id: int, method: string, path: string, ends: bool) -> Bytes {
+    mut e = encoder(false)
+    let head = [
+        header_field(":method", method),
+        header_field(":scheme", "http"),
+        header_field(":path", path),
+        header_field(":authority", "h"),
+    ]
+    frame_bytes(
+        .Headers,
+        if ends { end_headers | end_stream } else { end_headers },
+        id,
+        e.encoded(head),
+    )
+}
+
+/// What the server sends until it closes or `wait_ms` passes, and
+/// whether it closed.
+type Heard = { frames: List<Frame>, closed: bool, at: int }
+
+fn heard(c: Conn, wait_ms: int) -> Heard {
+    mut buf = no_bytes
+    let start = now_ms()
+    mut closed = false
+    while !closed && now_ms() - start < wait_ms {
+        match within ms(50) { c.read(65536) } {
+            .Ok(b) -> {
+                closed = b == null
+                buf = buf.concat(b ?? no_bytes)
+            },
+            .Err(_) -> { closed = false },
+        }
+    }
+    Heard { frames: frames_in(buf), closed: closed, at: now_ms() - start }
+}
+
+fn body_of(fs: List<Frame>, id: int) -> string { [f.payload for f in fs if f.stream == id && f.kind is .Data].bytes().text() ?? "?" }
+
+fn opened(port: int) -> Result<Conn, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    c.write(preface.concat(frame_bytes(.Settings, 0, 0, no_bytes)))?
+    c
+}
+
+/// A GET to the slow handler, then the peer's write side shut.
+fn half_closed(port: int) -> Result<string, NetError> {
+    let c = opened(port)?
+    defer { let _ = c.close() }
+    c.write(asked(1, "GET", "/slow", true))?
+    c.shutdown_write()?
+    let h = heard(c, 2000)
+    .Ok("a peer that half-closed is answered: ${body_of(h.frames, 1)}, then closed: ${h.closed}")
+}
+
+/// The slow handler on a server whose idle deadline is shorter.
+fn slower_than_idle(port: int) -> Result<string, NetError> {
+    let c = opened(port)?
+    defer { let _ = c.close() }
+    c.write(asked(1, "GET", "/slow", true))?
+    let h = heard(c, 450)
+    let more = heard(c, 1000)
+    .Ok(
+        "a handler slower than the idle deadline is answered: ${body_of(h.frames.concat(more.frames), 1)}",
+    )
+}
+
+/// A link that asks nothing.
+fn idle(port: int) -> Result<string, NetError> {
+    let c = opened(port)?
+    defer { let _ = c.close() }
+    let h = heard(c, 3000)
+    .Ok("a link with nothing in flight closes at the idle deadline: ${h.closed && h.at < 2000}")
+}
+
+/// A body reset mid-way, then a GET on the same link.
+fn reset_mid_body(port: int) -> Result<string, NetError> {
+    let c = opened(port)?
+    defer { let _ = c.close() }
+    c.write(asked(1, "POST", "/body", false).concat(frame_bytes(.Data, 0, 1, "half".bytes())))?
+    sleep(ms(100))
+    c.write(frame_bytes(.Reset, 0, 1, u32_bytes(8)).concat(asked(3, "GET", "/fast", true)))?
+    let h = heard(c, 600)
+    .Ok("a stream reset mid-body leaves the link serving: ${body_of(h.frames, 3)}")
+}
+
+/// A peer gone while its handler runs.
+fn gone(s: Server<App>, port: int) -> Result<string, NetError> {
+    let c = opened(port)?
+    c.write(asked(1, "GET", "/slow", true))?
+    sleep(ms(100))
+    let _ = c.close()
+    sleep(ms(1000))
+    .Ok(
+        "a peer gone mid-answer leaves no connection once its handler ends: ${s.connections() == 0}",
+    )
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App {}, limits(), Timing { idle: ms(300) }) { _a, q -> answer(q) }
+    spawn s.run(1)
+    defer s.stop()
+    .Ok(
+        [
+            half_closed(l.port)?,
+            slower_than_idle(l.port)?,
+            idle(l.port)?,
+            reset_mid_body(l.port)?,
+            gone(s, l.port)?,
+        ]
+            .join("\n"),
+    )
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

@@ -1,0 +1,86 @@
+// A PEER THE SECURE LAYER REFUSES HAS BROKEN THE CONNECTION: an h2 link
+// whose transport's read fails in the secure layer — as a TLS
+// renegotiation does (RFC 9113 §9.2.1) — is ended with GOAWAY
+// PROTOCOL_ERROR, not dropped in silence. The transport here is a socket
+// dressed as a secured h2 link whose second read fails as TLS would;
+// the client reads what the server said before it closed. Both engines.
+use @std.errors.{Error, ErrorInfo, info}
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{Duration, ms, secs, within}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.http.{text}
+use @std.http.server.{served, timing}
+use @std.http.wire.{Transport, WireError, Secure, silent}
+use @std.http.h2.{preface, frame_bytes, frames_in, u32_at}
+
+type App = {}
+
+/// What the secure layer says when it refuses the peer.
+type Refusal = {}
+
+impl Error for Refusal {
+    fn describe() -> ErrorInfo { info("test.renegotiation", "the peer asked to renegotiate, which is refused") }
+}
+
+/// A socket that reads once, then fails in the secure layer.
+type Refusing = { c: Conn, reads: Cell<int> }
+
+impl Transport for Refusing {
+    fn wire_read(max: int) -> Result<Bytes?, WireError> {
+        self.reads.set(self.reads.get() + 1)
+        if self.reads.get() > 1 { return .Err(.Secure(Refusal {})) }
+        match self.c.read(max) { .Ok(b) -> .Ok(b), .Err(e) -> .Err(.Net(e)) }
+    }
+    fn wire_write(bytes: Bytes) -> Result<int, WireError> {
+        match self.c.write(bytes) { .Ok(n) -> .Ok(n), .Err(e) -> .Err(.Net(e)) }
+    }
+    fn wire_shutdown() -> Result<int, WireError> { .Ok(0) }
+    fn wire_unheard() -> Result<int, WireError> {
+        match self.c.shutdown_read() { .Ok(n) -> .Ok(n), .Err(e) -> .Err(.Net(e)) }
+    }
+    fn wire_close() -> Result<int, WireError> {
+        match self.c.close() { .Ok(n) -> .Ok(n), .Err(e) -> .Err(.Net(e)) }
+    }
+    fn wire_peer() -> string { self.c.peer() }
+    fn wire_fd() -> int { self.c.fd }
+    fn wire_secured() -> bool { true }
+    fn wire_protocol() -> string? { "h2" }
+    fn wire_silent() -> bool { silent(self.c) }
+}
+
+fn refusing(c: Conn, _d: Duration) -> dyn Transport? {
+    let t: dyn Transport = Refusing { c: c, reads: Cell.new(0) }
+    t
+}
+
+/// Everything the server sends until it closes or goes quiet.
+fn heard(c: Conn) -> Bytes {
+    mut got = no_bytes
+    mut open = true
+    while open {
+        match within ms(500) { c.read(65536) } {
+            .Ok(b) -> {
+                open = b != null
+                got = got.concat(b ?? no_bytes)
+            },
+            .Err(_) -> { open = false },
+        }
+    }
+    got
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App {}, limits(), timing()) { _app, _q -> text(200, "never") }
+        .secured(Secure { open: refusing })
+    spawn s.run(1)
+    defer s.stop()
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    defer { let _ = c.close() }
+    c.write(preface.concat(frame_bytes(.Settings, 0, 0, no_bytes)))?
+    let got = heard(c)
+    let goaway? = frames_in(got).find(it.kind is .GoAway) else { return .Ok("no GOAWAY") }
+    .Ok("GOAWAY code ${u32_at(goaway.payload, 4)}, last stream ${u32_at(goaway.payload, 0)}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

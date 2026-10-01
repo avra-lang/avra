@@ -76,6 +76,16 @@ fn read_out(c: Conn, sent: string) -> Result<string, NetError> {
     .Ok("")
 }
 
+/// The wire with its `date` line dropped — the second it was written
+/// in is no law's.
+fn undated(t: string) -> string {
+    let b = t.bytes()
+    let at = b.index_of("\r\ndate: ".bytes(), 0)
+    if at < 0 { return t }
+    let end = b.index_of("\r\n".bytes(), at + 2)
+    b.slice(0, at).concat(b.slice(end, b.length)).text() ?? t
+}
+
 fn line(target: string) -> string { "GET ${target} HTTP/1.1\r\nHost: a\r\n\r\n" }
 
 /// Whether `s`'s open connections fall to `n` within three seconds.
@@ -134,8 +144,8 @@ fn shown() -> Result<string, NetError> {
             "a slow peer holds its producer still: ${held}",
             "another connection is answered meanwhile: ${other.ends_with("other")}",
             "the stalled write is cancelled at the idle deadline, the stream ended once: ${cancelled}",
-            "a failure after the head ends with no last chunk and no second status: ${failed == "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n1\r\na\r\n"}",
-            "a producer on a quiet source is cut at the deadline: ${cut == "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n"}",
+            "a failure after the head ends with no last chunk and no second status: ${undated(failed) == "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n1\r\na\r\n"}",
+            "a producer on a quiet source is cut at the deadline: ${undated(cut) == "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n"}",
             "a body gone silent is 408: ${silent.starts_with("HTTP/1.1 408 ")}",
         ]
             .join("\n"),

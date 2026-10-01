@@ -279,7 +279,7 @@ test -f /usr/lib/llvm-22/lib/libLLVM.so || sh tools/sprite-provision.sh >/dev/nu
 
 # THE COMPILER'S OWN OBJECT SET, read from the Makefile's COMPILER_OBJS
 # — the runtime's objects (globbed, one per runtime/*.c, as the
-# Makefile globs them) plus its four named ones — never a wildcard
+# Makefile globs them) plus its five named ones — never a wildcard
 # over build/, which would sweep in unrelated packages' objects too.
 objs="build/avra build/libavra_runtime.a build/avra_hot.bc build/avra_hot.inc"
 for f in runtime/*.c; do
@@ -287,7 +287,7 @@ for f in runtime/*.c; do
     stem=$(basename "$f" .c)
     objs="$objs build/$stem.o build/$stem.sha build/$stem.d"
 done
-for stem in llvm_wrapper ffi std_io std_process; do
+for stem in llvm_wrapper ffi std_io std_process std_time; do
     objs="$objs build/$stem.o build/$stem.sha build/$stem.d"
 done
 

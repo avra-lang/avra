@@ -10,10 +10,13 @@ use @std.net.{Conn, NetError}
 use @std.time.{Duration}
 
 /// Why a transport verb failed: the socket's own failure — a deadline
-/// passing among them — or the secure layer's, carried whole.
+/// passing among them — the secure layer's, carried whole, or the
+/// transport cut off by its peer before it ended — an HTTP/2 stream
+/// reset, the connection under it gone.
 export enum WireError {
     Net(e: NetError)
     Secure(e: dyn Error)
+    Reset
 }
 
 /// A connection's transport. Its verbs wear a `wire_` prefix so a
@@ -29,6 +32,11 @@ export trait Transport {
     /// The write side ended: the peer reads its end after what was
     /// sent.
     fn wire_shutdown() -> Result<int, WireError>
+
+    /// The read side ended: a task parked reading wakes to the end,
+    /// and nothing more is read — the descriptor still this
+    /// transport's until `wire_close`.
+    fn wire_unheard() -> Result<int, WireError>
 
     /// Closed; answers the descriptor.
     fn wire_close() -> Result<int, WireError>
@@ -46,6 +54,11 @@ export trait Transport {
     /// The application protocol the transport agreed (ALPN), or null
     /// when it agreed none — always, for a plain socket.
     fn wire_protocol() -> string?
+
+    /// Whether nothing has arrived and the peer has not ended, asked
+    /// without waiting — what a pool asks of a kept connection before
+    /// it lends it again.
+    fn wire_silent() -> bool
 }
 
 /// A net result as the wire's.
@@ -57,11 +70,20 @@ impl Transport for Conn {
     fn wire_read(max: int) -> Result<Bytes?, WireError> { plain(self.read(max)) }
     fn wire_write(bytes: Bytes) -> Result<int, WireError> { plain(self.write(bytes)) }
     fn wire_shutdown() -> Result<int, WireError> { plain(self.shutdown_write()) }
+    fn wire_unheard() -> Result<int, WireError> { plain(self.shutdown_read()) }
     fn wire_close() -> Result<int, WireError> { plain(self.close()) }
     fn wire_peer() -> string { self.peer() }
     fn wire_fd() -> int { self.fd }
     fn wire_secured() -> bool { false }
     fn wire_protocol() -> string? { null }
+    fn wire_silent() -> bool { silent(self) }
+}
+
+/// Whether `c` has nothing to say: a read that finds data or the end
+/// means the peer moved on. A byte it finds is consumed, so a
+/// connection that is not silent is closed, never read again.
+export fn silent(c: Conn) -> bool {
+    match c.try_read(1) { .Ok(r) -> r is .Pending, .Err(_) -> false }
 }
 
 /// `c` as a transport.
@@ -71,3 +93,9 @@ export fn plainly(c: Conn) -> dyn Transport { c }
 /// transport within the deadline it is handed — a handshake, for TLS —
 /// or answers null, the socket closed.
 export type Secure = { open: fn(Conn, Duration) -> dyn Transport? }
+
+/// How a client secures a connection it made: `open` runs the
+/// handshake within the deadline, the server verified as the host it
+/// is handed, and answers the secured transport — or the failure, the
+/// socket closed.
+export type Securing = { open: fn(Conn, string, Duration) -> Result<dyn Transport, WireError> }

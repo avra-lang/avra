@@ -1,0 +1,206 @@
+//! pool.av — connections kept between requests, one bucket per ORIGIN.
+//!
+//! AN ORIGIN IS (scheme, host, port), spelled once by `origin_of`, so a
+//! connection made for `http://h:80` is never lent to `https://h:443`
+//! nor to another host that resolves to the same address.
+//!
+//! A CONNECTION IS LENT, THEN GIVEN BACK OR DROPPED. `take` answers the
+//! most recently kept connection that is still sound, or dials a new
+//! one; whoever took it hands it back with `give`, which keeps it only
+//! when the reply said it persists and nothing arrived past it, and
+//! closes it otherwise. A kept connection that has turned readable
+//! while idle — the peer closed it, or sent bytes nobody asked for — is
+//! closed at `take`, never lent.
+//!
+//! TWO BOUNDS, BOTH PER ORIGIN. `per_host` caps the connections lent
+//! out at once: the next `take` never dials past it — it PARKS until a
+//! give or a drop frees a slot, for at most `wait` and never past the
+//! task's own deadline, and answers `.Exhausted` if none came. A task
+//! waiting costs nothing until a slot is freed: it parks on the pool's
+//! `freed` bell, rung by the give. `idle_per_host` caps how many are
+//! kept, and `idle` how long one is kept: an expired one is closed the
+//! next time the pool is touched, or by `reap`.
+//!
+//! A KEPT CONNECTION IS JUDGED AGAIN BEFORE IT IS LENT. A pool may be
+//! shared by requests under different admissions, so a connection one
+//! request dialed to a private address is lent to a request that
+//! admits only public ones never: `take` judges the address each kept
+//! carrier was dialed to, and dials anew past one it refuses.
+//!
+//! A CARRIER IS WHAT A POOL HOLDS. Today that is an HTTP/1.1 client,
+//! one request at a time. An HTTP/2 connection carries many at once and
+//! joins `Carrier` as a variant; every match over it then names what a
+//! multiplexed connection does at take, give and close.
+use @std.net.{Address, Admission, Bell}
+use @std.time.{Duration, ms, now_ms, secs}
+use client.{Client, ClientError}
+
+/// What a pool keeps per origin.
+export enum Carrier {
+    H1(client: Client)
+}
+
+/// What makes a new carrier when none is kept.
+export alias Dialer = fn() -> Result<Carrier, ClientError>
+
+/// A kept carrier, its origin, and when it was kept.
+export type Idle = { origin: string, carrier: Carrier, since: int }
+
+/// How many carriers are lent out for one origin; an origin with none
+/// out has no row, so the table holds only origins in use.
+export type Lent = { origin: string, n: int }
+
+/// Connections per origin, lent and kept under bounds a caller names.
+export type Pool = {
+    per_host: int = 16,
+    idle_per_host: int = 4,
+    idle: Duration = secs(60),
+    wait: Duration = secs(10),
+    kept: Cell<List<Idle>> = Cell.new([]),
+    out: Cell<List<Lent>> = Cell.new([]),
+    freed: Bell = Bell {},
+}
+
+/// A pool with the default bounds.
+export fn pool() -> Pool { Pool {} }
+
+/// The one spelling of an origin: the scheme, the host as a resolver
+/// reads it, and the port.
+export fn origin_of(scheme: string, host: string, port: int) -> string { "${scheme}://${host}:${port}" }
+
+impl Pool {
+    /// A carrier for `origin`: the most recently kept one still sound
+    /// and connected to an address `admission` admits, or one `dial`
+    /// makes — parked while `per_host` are out, until one comes back or
+    /// `wait` passes. The slot is held before the dial parks, so tasks
+    /// racing for the last one cannot both win it.
+    fn take(origin: string, dial: Dialer, admission: Admission = .Anywhere) -> Result<
+        Carrier,
+        ClientError,
+    > {
+        self.taken(origin, dial, admission, now_ms() + self.wait.ms)
+    }
+
+    /// A lent carrier handed back: kept when it may carry another
+    /// request and the origin has room, closed otherwise — and whoever
+    /// waits for a slot woken.
+    fn give(origin: string, c: Carrier) {
+        self.lend(origin, -1)
+        if !reusable(c) || self.kept_for(origin) >= self.idle_per_host {
+            closed(c)
+        } else {
+            self.kept.push(Idle { origin: origin, carrier: c, since: now_ms() })
+        }
+        self.freed.ring()
+    }
+
+    /// A lent carrier that failed, closed and its slot freed.
+    fn drop(origin: string, c: Carrier) {
+        self.lend(origin, -1)
+        closed(c)
+        self.freed.ring()
+    }
+
+    /// Every kept carrier past its idle time, closed; answers how many.
+    fn reap() -> int {
+        let now = now_ms()
+        let all = self.kept.get()
+        let stale = [i for i in all if now - i.since >= self.idle.ms]
+        if stale.is_empty() { return 0 }
+        self.kept.set([i for i in all if now - i.since < self.idle.ms])
+        for i in stale { closed(i.carrier) }
+        stale.length
+    }
+
+    /// Every kept carrier closed; answers how many.
+    fn close_all() -> int {
+        let all = self.kept.get()
+        self.kept.set([])
+        for i in all { closed(i.carrier) }
+        all.length
+    }
+
+    /// How many carriers are lent out for `origin`.
+    fn lent(origin: string) -> int { self.out.get().find(it.origin == origin)?.n ?? 0 }
+
+    /// How many carriers are kept for `origin`.
+    fn kept_for(origin: string) -> int { [i for i in self.kept.get() if i.origin == origin].length }
+
+    /// The origin's count moved by `by`, never below zero — a give no
+    /// take preceded must not buy a slot past `per_host` — and its row
+    /// dropped at zero.
+    fn lend(origin: string, by: int) {
+        let n = self.lent(origin) + by
+        let others = [l for l in self.out.get() if l.origin != origin]
+        self.out.set(if n > 0 { others.concat([Lent { origin: origin, n: n }]) } else { others })
+    }
+
+    /// The newest kept carrier for `origin` that `admission` admits and
+    /// that is still sound, taken out of the pool; every unsound one met
+    /// on the way is closed, and one it refuses stays kept.
+    fn reused(origin: string, admission: Admission) -> Carrier? {
+        let all = self.kept.get()
+        let at = [k for k, i in all if i.origin == origin && lendable(i.carrier, admission)].last() ?? -1
+        if at < 0 { return null }
+        let c = all[at].carrier
+        self.kept.set([i for k, i in all if k != at])
+        if sound(c) { return c }
+        closed(c)
+        self.reused(origin, admission)
+    }
+
+    /// `take` until `until`: a kept carrier, a new one, or — every slot
+    /// out — the task parked until one is freed, and the pool looked at
+    /// again.
+    fn taken(origin: string, dial: Dialer, admission: Admission, until: int) -> Result<
+        Carrier,
+        ClientError,
+    > {
+        self.reap()
+        let reused? = self.reused(origin, admission) else {
+            if self.lent(origin) < self.per_host { return self.dialed(origin, dial) }
+            let left = until - now_ms()
+            if left <= 0 || self.freed.waited(ms(left)) is .Err { return .Err(.Exhausted(origin, self.per_host)) }
+            return self.taken(origin, dial, admission, until)
+        }
+        self.lend(origin, 1)
+        .Ok(reused)
+    }
+
+    fn dialed(origin: string, dial: Dialer) -> Result<Carrier, ClientError> {
+        self.lend(origin, 1)
+        match dial() {
+            .Ok(c) -> .Ok(c),
+            .Err(e) -> {
+                self.lend(origin, -1)
+                .Err(e)
+            },
+        }
+    }
+}
+
+fn reusable(c: Carrier) -> bool {
+    match c { .H1(client) -> client.reusable() }
+}
+
+/// Whether a kept carrier can be lent: its socket has nothing to say.
+/// A read that finds data or the end means the peer moved on.
+fn sound(c: Carrier) -> bool {
+    match c { .H1(client) -> client.conn.wire_silent() }
+}
+
+/// Whether a kept carrier may be lent under `admission`: the address
+/// it was dialed to, admitted — a carrier no dial made is not.
+fn lendable(c: Carrier, admission: Admission) -> bool {
+    if !admission.judges() { return true }
+    let a? = address_of(c) else { return false }
+    admission.admits(a)
+}
+
+fn address_of(c: Carrier) -> Address? {
+    match c { .H1(client) -> client.address }
+}
+
+fn closed(c: Carrier) {
+    match c { .H1(client) -> { let _ = client.close() } }
+}

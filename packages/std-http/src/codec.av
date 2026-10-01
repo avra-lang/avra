@@ -1,5 +1,6 @@
-//! codec.av — the two encodings a WebSocket handshake names (RFC 6455
-//! §4.2.2): SHA-1 over the key, and base64 over the digest. SHA-1 here
+//! codec.av — what a WebSocket handshake names (RFC 6455 §4.2.2):
+//! SHA-1 over the key, and base64 over the digest — @std/text's, with
+//! the canonical-length check its key needs here. SHA-1 here
 //! is a PROTOCOL CHECKSUM and nothing else — broken as a signature,
 //! and never to be used as one.
 
@@ -72,23 +73,6 @@ fn round_k(i: int) -> int {
 }
 
 const word_mask: int = 4294967295
-
-/// `b` in base64 (RFC 4648 §4), padded with `=`.
-export fn base64(b: Bytes) -> string {
-    let groups = (b.length + 2) / 3
-    [quad(b, 3 * g) for g in 0..groups].join("")
-}
-
-/// Three octets from `at` as four characters — the missing ones `=`.
-fn quad(b: Bytes, at: int) -> string {
-    let n = b.length - at
-    let v = (b.at(at) << 16) | if n > 1 { b.at(at + 1) << 8 } else { 0 } | if n > 2 { b.at(at + 2) } else { 0 }
-    let c2 = if n > 1 { sextet(v >> 6) } else { "=" }
-    let c3 = if n > 2 { sextet(v) } else { "=" }
-    sextet(v >> 18) + sextet(v >> 12) + c2 + c3
-}
-
-fn sextet(v: int) -> string { alphabet.substring(v & 63, (v & 63) + 1) }
 
 const alphabet: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 

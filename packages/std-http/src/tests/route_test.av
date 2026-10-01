@@ -67,6 +67,18 @@ spec "@std.http route" {
         then "the method is part of the match" {
             answered("POST /ideas/7 HTTP/1.1") == "404 "
         }
+        then "a HEAD no HEAD route answers is answered by its GET route" {
+            answered("HEAD /ideas/7 HTTP/1.1") == "200 idea 7"
+        }
+        then "a HEAD route answers its HEAD before the GET route does, in either order" {
+            let head = fixed(Method.Head, "/ideas/7", (_q: Request<Unrouted>) -> text(200, "head"))
+            answer_of(routes().concat([head]), "HEAD /ideas/7 HTTP/1.1") == "200 head" &&
+                answer_of([head].concat(routes()), "HEAD /ideas/7 HTTP/1.1") == "200 head"
+        }
+        then "a HEAD with no GET route beside it is still a 404" {
+            answered("HEAD /nowhere HTTP/1.1") == "404 " &&
+                answer_of([fixed(Method.Post, "/p", serve_word)], "HEAD /p HTTP/1.1") == "404 "
+        }
     }
     given "a handler's own 404" {
 

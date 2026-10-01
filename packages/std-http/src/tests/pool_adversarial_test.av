@@ -1,0 +1,124 @@
+// THE POOL UNDER ATTACK: a give no take preceded, bounds of zero,
+// hundreds of origins passing through, a connection that must not be
+// kept (it said close, or bytes arrived past its reply), and two tasks
+// racing for the last slot while the first one's dial is parked.
+use @std.net.{NetError, Conn, listen, connect, Listener}
+use @std.time.{secs}
+use @std.http.frame.{limits}
+use @std.http.client.{Client, ClientError, over}
+use @std.http.wire.{plainly}
+use @std.http.pool.{Pool, Carrier, pool}
+
+fn pa_lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
+}
+
+/// A listener and a fresh client to it, both the test's to drive.
+type PaPeer = { l: Listener, client: Client }
+
+fn pa_peer() -> Result<PaPeer, ClientError> {
+    let l = pa_lifted(listen("127.0.0.1", 0))?
+    let c = pa_lifted(connect("127.0.0.1", l.port, secs(2)))?
+    .Ok(PaPeer { l: l, client: over(plainly(c), limits()) })
+}
+
+fn pa_carried(c: Client) -> Result<Carrier, ClientError> { .Ok(.H1(c)) }
+
+fn pa_dial(port: int) -> Result<Carrier, ClientError> {
+    pa_carried(over(plainly(pa_lifted(connect("127.0.0.1", port, secs(2)))?), limits()))
+}
+
+fn pa_give_untaken() -> Result<bool, ClientError> {
+    let peer = pa_peer()?
+    let p = Pool { per_host: 1 }
+    p.give("o", .H1(peer.client))
+    let first = p.take("o", () -> pa_dial(peer.l.port))
+    let second = p.take("o", () -> pa_dial(peer.l.port))
+    p.close_all()
+    let _ = peer.l.close()
+    .Ok(first is .Ok && second is .Err && p.lent("o") == 1)
+}
+
+fn pa_zero_per_host() -> Result<bool, ClientError> {
+    let peer = pa_peer()?
+    let p = Pool { per_host: 0 }
+    let refused = p.take("o", () -> pa_carried(peer.client)) is .Err
+    let _ = peer.client.close()
+    let _ = peer.l.close()
+    .Ok(refused)
+}
+
+fn pa_zero_idle() -> Result<bool, ClientError> {
+    let peer = pa_peer()?
+    let p = Pool { idle_per_host: 0 }
+    let c = p.take("o", () -> pa_carried(peer.client with { persists: true }))?
+    p.give("o", c)
+    let _ = peer.l.close()
+    .Ok(p.kept_for("o") == 0)
+}
+
+fn pa_not_persisting() -> Result<bool, ClientError> {
+    let peer = pa_peer()?
+    let p = pool()
+    let c = p.take("o", () -> pa_carried(peer.client with { persists: false }))?
+    p.give("o", c)
+    let _ = peer.l.close()
+    .Ok(p.kept_for("o") == 0 && p.lent("o") == 0)
+}
+
+fn pa_bytes_past_reply() -> Result<bool, ClientError> {
+    let peer = pa_peer()?
+    let p = pool()
+    let c = p.take("o", () -> pa_carried(peer.client with { persists: true, buf: "H".bytes() }))?
+    p.give("o", c)
+    let _ = peer.l.close()
+    .Ok(p.kept_for("o") == 0)
+}
+
+/// Origins by the hundred, each lent a carrier over no socket at all —
+/// the accounting is under test, not the network — and dropped.
+fn pa_many_origins() -> Result<bool, ClientError> {
+    let p = pool()
+    for i in 0..300 {
+        let o = "o${i}"
+        let c = p.take(o, () -> pa_carried(over(plainly(Conn { fd: -1 }), limits())))?
+        p.drop(o, c)
+    }
+    .Ok(p.out.get().is_empty() && p.kept.get().is_empty())
+}
+
+/// Two tasks after one slot: the first's dial parks on its connect,
+/// the second runs meanwhile and must find the slot already held.
+fn pa_race() -> Result<bool, ClientError> {
+    let l = pa_lifted(listen("127.0.0.1", 0))?
+    let p = Pool { per_host: 1 }
+    let first = spawn pa_taken(p, l.port)
+    let second = spawn pa_taken(p, l.port)
+    let a = first.await
+    let b = second.await
+    p.close_all()
+    let _ = l.close()
+    .Ok(a != b && p.lent("o") == 1)
+}
+
+fn pa_taken(p: Pool, port: int) -> bool { p.take("o", () -> pa_dial(port)) is .Ok }
+
+fn pa_passes(r: Result<bool, ClientError>) -> bool {
+    match r { .Ok(b) -> b, .Err(_) -> false }
+}
+
+spec "@std.http pool under attack" {
+    given "degenerate bounds" {
+        then "a per-host bound of zero refuses every take" { pa_passes(pa_zero_per_host()) }
+        then "an idle bound of zero keeps nothing" { pa_passes(pa_zero_idle()) }
+    }
+    given "accounting" {
+        then "a give no take preceded buys no slot past the bound" { pa_passes(pa_give_untaken()) }
+        then "three hundred origins passing through leave no row behind" { pa_passes(pa_many_origins()) }
+        then "two tasks racing for the last slot: exactly one wins it" { pa_passes(pa_race()) }
+    }
+    given "a connection that must not be kept" {
+        then "one whose reply did not persist is closed at give" { pa_passes(pa_not_persisting()) }
+        then "one holding bytes past its reply is closed at give" { pa_passes(pa_bytes_past_reply()) }
+    }
+}

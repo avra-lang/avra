@@ -1,0 +1,84 @@
+//! Sequential requests to a server in this process, over the loopback:
+//! a raw client writing one request line on one kept connection, then
+//! `fetch` by URL over a pool — the cost of the URL, the pool and the
+//! redirect and retry policy on top of the exchange itself.
+use @std.net.{Address, NetError, listen}
+use @std.time.{now_ns, secs}
+use @std.http.frame.{limits}
+use @std.http.http.{Header, Response, text}
+use @std.http.server.{served, Timing}
+use @std.http.client.{ClientError, connected, request}
+use @std.http.pool.{pool}
+use @std.http.fetch.{Options, fetch}
+use @std.http.jar.{jar}
+
+type App = { name: string }
+
+/// The answer every request gets: a short text and one cookie.
+fn hello() -> Response { text(200, "hello") with { headers: [Header { name: "set-cookie", value: "s=1; Path=/" }] } }
+
+const n = 20000
+
+fn raw(port: int) -> Result<int, ClientError> {
+    mut c = connected("127.0.0.1", port, secs(2), limits())?
+    let req = request("GET", "/", "127.0.0.1", [], "".bytes())!
+    mut bytes = 0
+    for i in 0..n { bytes = bytes + (c.fetched(.Get, req, secs(2))?).body.length }
+    c.close()?
+    .Ok(bytes)
+}
+
+fn by_url(port: int) -> Result<int, ClientError> {
+    let o = Options { pool: pool() }
+    let url = "http://127.0.0.1:${port}/"
+    mut bytes = 0
+    for i in 0..n { bytes = bytes + (fetch(.Get, url, .Empty, o)?).body.length }
+    o.pool.close_all()
+    .Ok(bytes)
+}
+
+fn with_jar(port: int) -> Result<int, ClientError> {
+    let o = Options { pool: pool(), jar: jar() }
+    let url = "http://127.0.0.1:${port}/"
+    mut bytes = 0
+    for i in 0..n { bytes = bytes + (fetch(.Get, url, .Empty, o)?).body.length }
+    o.pool.close_all()
+    .Ok(bytes)
+}
+
+/// Fetch by URL under an admission that judges every address — the
+/// loopback admitted by family — so each lent connection's peer is
+/// judged before it is lent.
+fn admitted(port: int) -> Result<int, ClientError> {
+    let o = Options { pool: pool(), admit: .Where((a: Address) -> a.family is .V4) }
+    let url = "http://127.0.0.1:${port}/"
+    mut bytes = 0
+    for i in 0..n { bytes = bytes + (fetch(.Get, url, .Empty, o)?).body.length }
+    o.pool.close_all()
+    .Ok(bytes)
+}
+
+fn timed(what: string, run: fn() -> Result<int, ClientError>) -> string {
+    let t0 = now_ns()
+    match run() {
+        .Ok(_) -> "${what}: ${(now_ns() - t0) / n} ns per request",
+        .Err(e) -> "${what}: ${e.describe().message}",
+    }
+}
+
+fn benched() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App { name: "bench" }, limits(), Timing { requests: 1000000000 }) { app, q -> hello() }
+    spawn s.run(cores: 1)
+    let port = l.port
+    let lines = [
+        timed("raw client", () -> raw(port)),
+        timed("fetch by URL", () -> by_url(port)),
+        timed("fetch with a jar", () -> with_jar(port)),
+        timed("fetch under an admission", () -> admitted(port)),
+    ]
+    s.stop()
+    .Ok(lines.join("\n"))
+}
+
+match benched() { .Ok(s) -> s, .Err(e) -> "failed: ${e.describe().message}" }

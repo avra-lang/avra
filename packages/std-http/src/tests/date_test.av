@@ -1,0 +1,61 @@
+// HTTP's dates: IMF-fixdate at the calendar's edges, the civil
+// calendar both ways, and the date line a core keeps for its second.
+use @std.time.{wall_secs}
+use @std.http.date.{imf_date, date_line, civil_of, civil_days}
+use @std.http.http.{Header, Response, sendable}
+
+spec "@std.http dates" {
+    given "IMF-fixdate (RFC 9110 §5.6.7)" {
+        then "the RFC's own example" { imf_date(784111777) == "Sun, 06 Nov 1994 08:49:37 GMT" }
+        then "the epoch is a Thursday at midnight" { imf_date(0) == "Thu, 01 Jan 1970 00:00:00 GMT" }
+        then "a century's leap day, and the day after" {
+            imf_date(951782400) == "Tue, 29 Feb 2000 00:00:00 GMT" &&
+                imf_date(951868800) == "Wed, 01 Mar 2000 00:00:00 GMT"
+        }
+        then "2100 is no leap year: February's end is March's eve" {
+            imf_date(4107542399) == "Sun, 28 Feb 2100 23:59:59 GMT" &&
+                imf_date(4107542400) == "Mon, 01 Mar 2100 00:00:00 GMT"
+        }
+        then "a year's last second rolls to the next" {
+            imf_date(1798761599) == "Thu, 31 Dec 2026 23:59:59 GMT" &&
+                imf_date(1798761600) == "Fri, 01 Jan 2027 00:00:00 GMT"
+        }
+        then "the last second four digits can name" { imf_date(253402300799) == "Fri, 31 Dec 9999 23:59:59 GMT" }
+        then "past 9999 and before 1970 there is no IMF-fixdate" {
+            imf_date(253402300800) == null && imf_date(-1) == null
+        }
+    }
+    given "the civil calendar" {
+        then "a day and its date agree both ways, across four centuries" {
+            [d for d in 0..146097 if !round_trips(d)].is_empty()
+        }
+    }
+    given "the date line (RFC 9110 §6.6.1)" {
+        then "it names this second, or the one that turned while it was asked" {
+            let before = wall_secs()
+            let line = date_line().text() ?? ""
+            let after = wall_secs()
+            [imf_date(s) ?? "" for s in before..after + 1].any(line == "date: ${it}\r\n")
+        }
+        then "asked twice within one second it is one line" {
+            let s = wall_secs()
+            let a = date_line()
+            let b = date_line()
+            wall_secs() != s || a == b
+        }
+        then "a handler's own date is the server's to write, so it is not sendable" {
+            !sendable(
+                Response {
+                    status: 200,
+                    headers: [Header { name: "Date", value: "Sun, 06 Nov 1994 08:49:37 GMT" }],
+                },
+            )
+        }
+    }
+}
+
+/// Whether day `d`'s civil date counts back to `d`.
+fn round_trips(d: int) -> bool {
+    let c = civil_of(d)
+    civil_days(c.year, c.month, c.day) == d
+}

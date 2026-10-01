@@ -1,0 +1,94 @@
+// Names to addresses, off the calling core: a literal answered in
+// place, a name looked up on the resolver's thread and remembered for
+// its TTL, a failure typed by why, and a connection RACED across the
+// families a name answers — the first to connect wins.
+use @std.net.{
+    Address,
+    Family,
+    Unresolved,
+    NetError,
+    listen,
+    connect,
+    resolve,
+    resolver_for,
+    interleaved,
+}
+use @std.time.{secs, ms, now_ms}
+
+fn rs_texts(host: string) -> string {
+    match resolve(host, secs(5)) { .Ok(xs) -> [a.text for a in xs].join(","), .Err(_) -> "refused" }
+}
+
+fn rs_why(host: string) -> Unresolved? {
+    match resolve(host, secs(5)) { .Ok(_) -> null, .Err(e) -> e.unresolved }
+}
+
+fn rs_v4(text: string) -> Address { Address { family: .V4, text: text } }
+
+fn rs_v6(text: string) -> Address { Address { family: .V6, text: text } }
+
+fn rs_order(xs: List<Address>) -> string { [a.text for a in interleaved(xs)].join(",") }
+
+fn rs_remembered() -> Result<bool, NetError> {
+    let r = resolver_for(secs(60))
+    let first = r.resolve("localhost", secs(5))?
+    let held = r.held.get().get("localhost")
+    .Ok(held != null && held!.addresses.length == first.length && held!.until > now_ms())
+}
+
+fn rs_stale() -> Result<bool, NetError> {
+    let r = resolver_for(ms(0))
+    r.resolve("localhost", secs(5))?
+    .Ok(r.held.get().get("localhost")!.until <= now_ms())
+}
+
+/// A listener on the v4 loopback reached by NAME: `localhost` may
+/// answer `::1` first, whose refusal lets the v4 attempt start at once.
+fn rs_raced() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("localhost", l.port, secs(2))?
+    let peer = c.peer()
+    c.close()?
+    l.close()?
+    .Ok(peer.starts_with("127.0.0.1:"))
+}
+
+fn rs_passes(r: Result<bool, NetError>) -> bool {
+    match r { .Ok(b) -> b, .Err(_) -> false }
+}
+
+spec "std.net resolution" {
+    given "a literal" {
+        then "a dotted quad answers itself" { rs_texts("127.0.0.1") == "127.0.0.1" }
+        then "a v6 literal answers itself, uncompressed" { rs_texts("::1") == "0:0:0:0:0:0:0:1" }
+    }
+    given "a name" {
+        then "localhost answers a loopback" {
+            let t = rs_texts("localhost")
+            t.contains("127.0.0.1") || t.contains("0:0:0:0:0:0:0:1")
+        }
+        then "a name under `.invalid` resolves to nothing, and says why" {
+            rs_why("nothing-here.invalid") != null
+        }
+        then "a resolution failure names the resolve verb" {
+            match resolve("nothing-here.invalid", secs(5)) {
+                .Ok(_) -> false,
+                .Err(e) -> e.describe().kind == "net.resolve",
+            }
+        }
+    }
+    given "the cache" {
+        then "an answer is held until its TTL" { rs_passes(rs_remembered()) }
+        then "a TTL of zero holds nothing fresh" { rs_passes(rs_stale()) }
+    }
+    given "happy eyeballs" {
+        then "the families alternate, the resolver's first family first" {
+            rs_order([rs_v6("a"), rs_v6("b"), rs_v4("1"), rs_v4("2"), rs_v4("3")]) == "a,1,b,2,3"
+        }
+        then "one family alone keeps its order" {
+            rs_order([rs_v4("1"), rs_v4("2")]) == "1,2"
+        }
+        then "no addresses order to none" { rs_order([]) == "" }
+        then "a name reaches a v4 listener across its families" { rs_passes(rs_raced()) }
+    }
+}

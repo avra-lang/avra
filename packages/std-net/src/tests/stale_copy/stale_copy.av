@@ -1,0 +1,32 @@
+//! proves: a closed conn is closed in every copy — once the kernel
+//! hands its number to the next accepted connection, a stale copy's
+//! write, read, shutdown and close are refused as closed, the stranger's
+//! peer reads nothing of it, and the stranger keeps talking
+use @std.net.{listen, connect, Conn, NetError}
+use @std.time.{secs}
+
+fn seen<T>(r: Result<T, NetError>) -> string {
+    match r { .Ok(_) -> "reached", .Err(e) -> if e.closed() { "closed" } else { e.verb } }
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let _a = connect("127.0.0.1", l.port, secs(2))?
+    let b = connect("127.0.0.1", l.port, secs(2))?
+    let first = l.accept()?
+    let copies = [first, first]
+    first.close()?
+    let second = l.accept()?
+    let stale = copies[1]
+    let verdicts = [
+        seen(stale.write("stranger".bytes())),
+        seen(stale.try_read(8)),
+        seen(stale.shutdown_write()),
+        seen(stale.close()),
+    ]
+    second.write("alive".bytes())?
+    let heard = b.read(64)?!.text() ?? "?"
+    .Ok("reused ${second.fd == stale.fd} | ${verdicts.join(" ")} | ${heard}")
+}
+
+run() catch e -> "failed: ${e.verb} ${e.subject} ${e.errno}"

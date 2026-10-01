@@ -18,7 +18,7 @@ fn wiring(lim: Limits) -> Result<Wire, ClientError> {
     mut c = connected("127.0.0.1", l.port, secs(2), lim)?
     c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
     let peer = lifted(within verdict_bound() { l.accept() })?
-    if !arrived(peer)? { return .Err(.TimedOut) }
+    if !arrived(peer)? { return .Err(.TimedOut(.Total)) }
     .Ok(Wire { c: c, peer: peer, l: l })
 }
 
@@ -145,8 +145,9 @@ fn no_content() -> Result<bool, ClientError> {
 }
 
 fn never_replies() -> Result<bool, ClientError> {
-    mut w = wired()?
-    let r = w.c.fetched(.Get, request("GET", "/", "a", [], "".bytes())!, ms(60))
+    let l = lifted(listen("127.0.0.1", 0))?
+    mut c = connected("127.0.0.1", l.port, secs(2), limits())?
+    let r = c.fetched(.Get, request("GET", "/", "a", [], "".bytes())!, ms(60))
     .Ok(outcome(match r { .Ok(a) -> .Ok(a), .Err(e) -> .Err(e) }) == "http.timed_out")
 }
 
@@ -164,6 +165,104 @@ fn reply_too_large() -> Result<bool, ClientError> {
     .Ok(outcome(settled(w, "HTTP/1.1 200 OK\r\nx-pad: ${filler}\r\n\r\n")) == "http.refused")
 }
 
+/// What the next request on `w`'s connection comes to: its send
+/// refused, or the reply the peer's `said` makes of it.
+fn next_on(mut w: Wire, said: string) -> string {
+    match w.c.sent(.Get, request("GET", "/", "a", [], "".bytes())!) {
+        .Err(e) -> e.describe().kind,
+        .Ok(_) -> outcome(settled(w, said)),
+    }
+}
+
+const evil_reply: string = "HTTP/1.1 200 OK\r\ncontent-length: 4\r\n\r\nevil"
+
+fn interims_passed() -> Result<bool, ClientError> {
+    mut w = wired()?
+    let one = outcome(
+        settled(w, "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\na"),
+    )
+    w.c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
+    let early = outcome(pending(w, "HTTP/1.1 103 Early Hints\r\nlink: </s>\r\n\r\nHTTP/1.1 103 E"))
+    let late = outcome(
+        settled(w, "arly Hints\r\n\r\nHTTP/1.1 201 Created\r\ncontent-length: 1\r\n\r\nb"),
+    )
+    .Ok(one == "200 a" && early == "waiting" && late == "201 b")
+}
+
+fn switching_is_the_answer() -> Result<bool, ClientError> {
+    mut w = wired()?
+    let one = outcome(
+        settled(w, "HTTP/1.1 101 Switching Protocols\r\nupgrade: x\r\nconnection: upgrade\r\n\r\n"),
+    )
+    .Ok(one == "101 " && next_on(w, evil_reply) == "http.spent")
+}
+
+fn folded_field() -> Result<bool, ClientError> {
+    mut w = wired()?
+    let _ = lifted(
+        w.peer.write("HTTP/1.1 200 OK\r\nx: a\r\n b\r\n\t c\r\ncontent-length: 1\r\n\r\nz".bytes()),
+    )?
+    let a? = waiting_is_null(within ms(100) { awaited(w) })? else { return .Ok(false) }
+    .Ok(a.header("x") == "a   b    c" && a.body.text() == "z")
+}
+
+fn folded_close() -> Result<string, ClientError> {
+    mut w = wired()?
+    let one = outcome(
+        settled(
+            w,
+            "HTTP/1.1 200 OK\r\nconnection: keep-alive,\r\n close\r\ncontent-length: 1\r\n\r\na",
+        ),
+    )
+    .Ok("${one} ${next_on(w, "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")}")
+}
+
+fn after_refused() -> Result<string, ClientError> {
+    mut w = wired()?
+    let one = outcome(settled(w, "HTTP/1.1 200 OK\r\ncontent-length: 5, 6\r\n\r\nhello"))
+    .Ok("${one} ${next_on(w, evil_reply)}")
+}
+
+fn after_extra_bytes() -> Result<string, ClientError> {
+    mut w = wired()?
+    let one = outcome(settled(w, "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n" + evil_reply))
+    .Ok("${one} ${next_on(w, "")}")
+}
+
+fn after_their_close() -> Result<string, ClientError> {
+    mut w = wired()?
+    let one = outcome(
+        settled(w, "HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-length: 1\r\n\r\na"),
+    )
+    .Ok("${one} ${next_on(w, evil_reply)}")
+}
+
+fn after_abandoned() -> Result<string, ClientError> {
+    mut w = wired()?
+    let early = outcome(pending(w, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhel"))
+    .Ok("${early} ${next_on(w, "lo")}")
+}
+
+fn after_unanswered() -> Result<string, ClientError> {
+    mut w = wired()?
+    .Ok(next_on(w, evil_reply))
+}
+
+fn after_our_close() -> Result<string, ClientError> {
+    let l = lifted(listen("127.0.0.1", 0))?
+    mut c = connected("127.0.0.1", l.port, secs(2), limits())?
+    c
+        .sent(
+            .Get,
+            request("GET", "/", "a", [Header { name: "connection", value: "close" }], "".bytes())!,
+        )?
+    let peer = lifted(within ms(500) { l.accept() })?
+    let _ = lifted(within ms(500) { peer.read(4096) })?
+    mut w = Wire { c: c, peer: peer, l: l }
+    let one = outcome(settled(w, "HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\na"))
+    .Ok("${one} ${next_on(w, evil_reply)}")
+}
+
 /// What a SERVER makes of the bytes the builder wrote — the oracle
 /// is the framer, a different algorithm, and it counts the field
 /// lines a peer would actually get.
@@ -177,6 +276,25 @@ fn ca_server_reads(req: Bytes?) -> string {
 }
 
 fn ca_nothing() -> Bytes { "".bytes() }
+
+fn unframed_unsent() -> Result<bool, ClientError> {
+    let l = lifted(listen("127.0.0.1", 0))?
+    mut c = connected("127.0.0.1", l.port, secs(2), limits())?
+    let hostless = is_unwritable(c.sent(.Get, "GET / HTTP/1.1\r\n\r\n".bytes()))
+    let bare_lf = is_unwritable(c.sent(.Get, "GET / HTTP/1.1\nhost: a\n\n".bytes()))
+    let unended = is_unwritable(c.sent(.Get, "GET / HTTP/1.1\r\nhost: a\r\n".bytes()))
+    let misnamed = is_unwritable(c.sent(.Get, request("HEAD", "/", "a", [], "".bytes())!))
+    .Ok(hostless && bare_lf && unended && misnamed)
+}
+
+/// Whether `r` is the text `want`.
+fn ca_says(r: Result<string, ClientError>, want: string) -> bool {
+    match r { .Ok(t) -> t == want, .Err(_) -> false }
+}
+
+fn is_unwritable(r: Result<int, ClientError>) -> bool {
+    match r { .Err(.Unwritable) -> true, .Err(_) or .Ok(_) -> false }
+}
 
 spec "std.http client adversarial" {
     given "a request word a peer would reinterpret" {
@@ -274,5 +392,46 @@ spec "std.http client adversarial" {
     given "the reply's rules" {
         then "a 204 has no body and needs none" { passes(no_content()) }
         then "two replies ride one connection" { passes(two_replies_one_connection()) }
+        then "interim replies are read and passed over, torn or whole, to the answer" { passes(interims_passed()) }
+        then "a 101 is the answer, not an interim reply, and the connection is no longer HTTP's" { passes(switching_is_the_answer()) }
+        then "a folded field reads with each fold as spaces" { passes(folded_field()) }
+    }
+    given "a connection an exchange ended carries nothing more" {
+        then "a close hidden in a fold is heard" { ca_says(folded_close(), "200 a http.spent") }
+        then "a refused reply ends it, and its bytes are never the next reply" {
+            ca_says(after_refused(), "http.refused http.spent")
+        }
+        then "a reply past the one asked for is never the next request's" {
+            ca_says(after_extra_bytes(), "200  http.spent")
+        }
+        then "an exchange abandoned mid-reply ends it" { ca_says(after_abandoned(), "waiting http.spent") }
+        then "a request sent before the last one's reply is refused, never paired with that reply" {
+            ca_says(after_unanswered(), "http.spent")
+        }
+        then "a reply saying close ends it" { ca_says(after_their_close(), "200 a http.spent") }
+        then "a request saying close ends it, whatever the reply says" { ca_says(after_our_close(), "200 a http.spent") }
+    }
+    given "the fields the builder owns" {
+        then "a caller's te is refused — chunked most of all" {
+            ca_server_reads(
+                    request(
+                        "GET",
+                        "/",
+                        "h",
+                        [Header { name: "te", value: "chunked" }],
+                        ca_nothing(),
+                    ),
+                ) == "unwritable" &&
+                ca_server_reads(
+                    request(
+                        "GET",
+                        "/",
+                        "h",
+                        [Header { name: "TE", value: "trailers" }],
+                        ca_nothing(),
+                    ),
+                ) == "unwritable"
+        }
+        then "a head the framer refuses, or one whose method is not the one asked, is not sent" { passes(unframed_unsent()) }
     }
 }

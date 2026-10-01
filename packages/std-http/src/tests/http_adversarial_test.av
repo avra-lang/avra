@@ -33,7 +33,7 @@ fn ha_one_field(name: string, value: string) -> Response {
 }
 
 /// The bytes as written, line ends shown.
-fn ha_wired(r: Response) -> string { (wire(r, true, 1).text() ?? "<not text>").replace("\r\n", "|") }
+fn ha_wired(r: Response) -> string { undated(wire(r, true, 1).text() ?? "<not text>").replace("\r\n", "|") }
 
 /// WHAT A PEER GETS: the status and how many field lines it framed,
 /// or the law that refused the reply outright.
@@ -79,7 +79,7 @@ fn ha_wire_status_line(r: Response) -> string {
 spec "@std.http http adversarial" {
     given "a field a peer would reinterpret" {
         then "A CRLF IN A VALUE IS NOT A SECOND FIELD" {
-            ha_peer_reads(ha_one_field("x", "1\r\nevil: 1")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("x", "1\r\nevil: 1")) == "500 fields=2"
         }
         then "and the wire carries no injected line" {
             !ha_wired(ha_one_field("x", "1\r\nevil: 1")).contains("evil")
@@ -88,46 +88,46 @@ spec "@std.http http adversarial" {
             !ha_wired(ha_one_field("x", "1\r\n\r\nHTTP/1.1 200 OK\r\n\r\npwn")).contains("pwn")
         }
         then "a bare LF in a value is refused too" {
-            ha_peer_reads(ha_one_field("x", "1\nevil: 1")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("x", "1\nevil: 1")) == "500 fields=2"
         }
         then "a CRLF in a NAME is not a second field" {
-            ha_peer_reads(ha_one_field("a\r\nevil", "1")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("a\r\nevil", "1")) == "500 fields=2"
         }
         then "a colon in a name is not a second field" {
-            ha_peer_reads(ha_one_field("a: 1\r\nevil", "1")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("a: 1\r\nevil", "1")) == "500 fields=2"
         }
         then "a space in a name is refused" {
-            ha_peer_reads(ha_one_field("a b", "1")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("a b", "1")) == "500 fields=2"
         }
         then "an empty name is refused" {
-            ha_peer_reads(ha_one_field("", "1")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("", "1")) == "500 fields=2"
         }
         then "an empty value is a value, and the framer frames it" {
-            ha_peer_reads(ha_one_field("x", "")) == "200 fields=2"
+            ha_peer_reads(ha_one_field("x", "")) == "200 fields=3"
         }
         then "A NUL IS AN OCTET HERE AND A TERMINATOR THERE, so a value carrying one is refused" {
-            ha_peer_reads(ha_one_field("x", "a" + nul() + "b")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("x", "a" + nul() + "b")) == "500 fields=2"
         }
         then "and a name carrying one is refused" {
-            ha_peer_reads(ha_one_field("a" + nul() + "b", "1")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("a" + nul() + "b", "1")) == "500 fields=2"
         }
         then "a high octet in a value is refused" {
-            ha_peer_reads(ha_one_field("x", "a" + from_codepoint(233) + "b")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("x", "a" + from_codepoint(233) + "b")) == "500 fields=2"
         }
     }
     given "the framing fields the writer owns" {
 
         then "a handler's content-length does not join the writer's" {
-            ha_peer_reads(ha_one_field("content-length", "999")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("content-length", "999")) == "500 fields=2"
         }
         then "and its case does not smuggle it past" {
-            ha_peer_reads(ha_one_field("Content-Length", "999")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("Content-Length", "999")) == "500 fields=2"
         }
         then "a handler's transfer-encoding is refused beside a length" {
-            ha_peer_reads(ha_one_field("transfer-encoding", "chunked")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("transfer-encoding", "chunked")) == "500 fields=2"
         }
         then "a handler's connection contradicts the fate the writer speaks" {
-            ha_peer_reads(ha_one_field("connection", "close")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("connection", "close")) == "500 fields=2"
         }
     }
     given "a status the handler chose" {
@@ -223,7 +223,7 @@ spec "@std.http http adversarial" {
             ha_wired(ha_one_field("x-tag", "t1")) == "HTTP/1.1 200 OK|x-tag: t1|content-length: 1||b"
         }
         then "a value holding a colon, a comma and a space is ordinary" {
-            ha_wired(ha_one_field("date", "Mon, 01 Jan 2035 00:00:00 GMT")) == "HTTP/1.1 200 OK|date: Mon, 01 Jan 2035 00:00:00 GMT|content-length: 1||b"
+            ha_wired(ha_one_field("x-when", "Mon, 01 Jan 2035 00:00:00 GMT")) == "HTTP/1.1 200 OK|x-when: Mon, 01 Jan 2035 00:00:00 GMT|content-length: 1||b"
         }
         then "a name of every token mark is a name" {
             sendable(ha_one_field("!#\$%&'*+-.^_`|~0aZ", "v"))

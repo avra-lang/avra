@@ -1,0 +1,249 @@
+// A stream as a Request: the head its fields spell, framed by the 1.1
+// framer; a Response as a stream's answer.
+use @std.http.h2_serve.{head_text, request_of, answered_on, folded}
+use @std.http.h2.{
+    H2Conn,
+    Exchange,
+    Frame,
+    FrameAt,
+    h2_server,
+    frame_at,
+    frame_bytes,
+    preface,
+    end_headers,
+    end_stream,
+    request_head_kept,
+    frames_in,
+}
+use @std.http.hpack.{HeaderField, HpackDecoder, header_field, encoder, decoder}
+use @std.http.body.{Body, whole}
+use @std.http.frame.{limits, Method, no_bytes}
+use @std.http.http.{Request, Unrouted, Response, Header, text}
+
+fn fields_get(path: string) -> List<HeaderField> {
+    [
+        header_field(":method", "GET"),
+        header_field(":scheme", "http"),
+        header_field(":path", path),
+        header_field(":authority", "example.com"),
+    ]
+}
+
+fn head_of_fields(fs: List<HeaderField>) -> string { head_text(fs).text() ?? "?" }
+
+/// Stream 1's request from `fs`, its body `body` whole.
+fn request_from(fs: List<HeaderField>, body: string) -> Result<Request<Unrouted>, int> {
+    request_of(Exchange { stream: 1, fields: fs }, "p", limits(), (_k) -> whole(body.bytes()))
+}
+
+/// The status a stream's fields are refused with by the 1.1 framer, or 0.
+fn refused_status(fs: List<HeaderField>) -> int {
+    match request_from(fs, "") { .Ok(_) -> 0, .Err(code) -> code }
+}
+
+/// A live connection with stream 1 open, the client's GET taken.
+fn served_one() -> H2Conn {
+    mut h = h2_server(limits())
+    mut e = encoder(false)
+    let hello = preface.concat(frame_bytes(.Settings, 0, 0, no_bytes))
+    let _ = h
+        .fed(
+            hello
+                .concat(frame_bytes(.Headers, end_headers | end_stream, 1, e.encoded(fields_get("/")))),
+            0,
+        )
+    let _ = h.drained()
+    let _ = h.taken()
+    h
+}
+
+/// `h` with stream `id`'s GET taken too.
+fn opened_again(mut h: H2Conn, id: int) {
+    mut e = encoder(false)
+    let _ = h
+        .fed(frame_bytes(.Headers, end_headers | end_stream, id, e.encoded(fields_get("/"))), 0)
+    let _ = h.drained()
+    let _ = h.taken()
+}
+
+/// The names an answer's header blocks mark never-indexed, read by
+/// the client's decoder `d`.
+fn sensitive_names(mut d: HpackDecoder, b: Bytes) -> string {
+    [f.name.text() ?? "?" for fr in frames_in(b) if fr.kind is .Headers for f in fields_of(d, fr.payload) if f.sensitive]
+        .join(",")
+}
+
+fn fields_of(mut d: HpackDecoder, b: Bytes) -> List<HeaderField> {
+    match d.decoded(b) { .Fields(fs) -> fs, .TooLarge or .Refused(_) -> [] }
+}
+
+/// The answer's decoded fields as `name: value` lines, and its DATA.
+fn answer_text(mut h: H2Conn) -> string {
+    let fs = frames_in(h.drained())
+    mut d = decoder(4096, 65536)
+    let lines = [l for f in fs if f.kind is .Headers for l in field_lines(d, f.payload)]
+    let body = [f.payload for f in fs if f.kind is .Data].bytes()
+    lines.concat(["body=${body.text() ?? "?"}"]).join("\n")
+}
+
+fn field_lines(mut d: HpackDecoder, b: Bytes) -> List<string> {
+    match d.decoded(b) {
+        .Fields(fs) -> ["${f.name.text() ?? "?"}: ${f.value.text() ?? "?"}" for f in fs],
+        .TooLarge or .Refused(_) -> ["undecodable"],
+    }
+}
+
+spec "std.http h2 serve" {
+    given "the 1.1 head a stream's fields spell" {
+        then "a GET is its method, path and host, then its fields in order" {
+            head_of_fields(
+                fields_get("/a?b=1")
+                    .concat([header_field("accept", "*/*"), header_field("x-y", "z")]),
+            ) == "GET /a?b=1 HTTP/1.1\r\nhost: example.com\r\naccept: */*\r\nx-y: z\r\n\r\n"
+        }
+        then ":authority names the host, and a host field that agrees with it is not spoken again (§8.3.1)" {
+            head_of_fields(fields_get("/").concat([header_field("host", "EXAMPLE.com")])) == "GET / HTTP/1.1\r\nhost: example.com\r\n\r\n"
+        }
+        then "a host field names the host of a request with no :authority" {
+            head_of_fields(
+                [
+                    header_field(":method", "GET"),
+                    header_field(":scheme", "http"),
+                    header_field(":path", "/"),
+                    header_field("host", "other"),
+                ],
+            ) == "GET / HTTP/1.1\r\nhost: other\r\n\r\n"
+        }
+        then "cookie crumbs are joined into one field (§8.2.3)" {
+            head_of_fields(
+                fields_get("/")
+                    .concat(
+                        [
+                            header_field("cookie", "a=1"),
+                            header_field("x", "1"),
+                            header_field("cookie", "b=2"),
+                        ],
+                    ),
+            ) == "GET / HTTP/1.1\r\nhost: example.com\r\nx: 1\r\ncookie: a=1; b=2\r\n\r\n"
+        }
+        then "CONNECT's target is its authority" {
+            head_of_fields(
+                [header_field(":method", "CONNECT"), header_field(":authority", "h:443")],
+            ) == "CONNECT h:443 HTTP/1.1\r\nhost: h:443\r\n\r\n"
+        }
+    }
+    given "the request the 1.1 framer reads from it" {
+        then "a stream's request carries its path, fields and body" {
+            match request_from(fields_get("/p").concat([header_field("x-who", "ana")]), "hi") {
+                .Ok(q) -> q.path()! == "/p".bytes() &&
+                    q.header("X-Who") == "ana" &&
+                    gathered_text(q.body) == "hi" &&
+                    q.head.method == Method.Get,
+                .Err(_) -> false,
+            }
+        }
+        then "a head the 1.1 framer refuses is refused with its status" {
+            refused_status(fields_get("/").concat([header_field("expect", "nonsense")])) == 417 &&
+                refused_status(
+                    fields_get("/").concat([header_field("content-length", "99999999999")]),
+                ) == 413
+        }
+        then "a pseudo-field value outside its grammar is malformed before any head is spelled" {
+            !request_head_kept(
+                    [
+                        header_field(":method", "GET /evil"),
+                        header_field(":scheme", "http"),
+                        header_field(":path", "/"),
+                    ],
+                ) &&
+                !request_head_kept(
+                    [
+                        header_field(":method", "GET"),
+                        header_field(":scheme", "http"),
+                        header_field(":path", "/a b"),
+                    ],
+                ) &&
+                !request_head_kept(
+                    [
+                        header_field(":method", "GET"),
+                        header_field(":scheme", "ht tp"),
+                        header_field(":path", "/"),
+                    ],
+                ) &&
+                !request_head_kept(
+                    [
+                        header_field(":method", ""),
+                        header_field(":scheme", "http"),
+                        header_field(":path", "/"),
+                    ],
+                )
+        }
+    }
+    given "the answer on the stream" {
+        then "a text answer is :status, its fields lowercased, its length, then its body" {
+            mut h = served_one()
+            let _ = answered_on(
+                h,
+                1,
+                Response {
+                    status: 201,
+                    headers: [Header { name: "X-Made", value: "yes" }],
+                    body: "ok".bytes(),
+                },
+                Method.Get,
+            )
+            answer_text(h) == ":status: 201\nx-made: yes\ncontent-length: 2\nbody=ok"
+        }
+        then "HEAD's answer measures the body and sends none of it" {
+            mut h = served_one()
+            let _ = answered_on(h, 1, text(200, "four"), Method.Head)
+            answer_text(h) == ":status: 200\ncontent-type: text/plain; charset=utf-8\ncontent-length: 4\nbody="
+        }
+        then "a connection-scoped field is dropped; one no wire could carry is the server's 500" {
+            mut h = served_one()
+            let _ = answered_on(
+                h,
+                1,
+                Response {
+                    status: 200,
+                    headers: [Header { name: "keep-alive", value: "timeout=5" }],
+                },
+                Method.Get,
+            )
+            mut g = served_one()
+            let _ = answered_on(
+                g,
+                1,
+                Response { status: 200, headers: [Header { name: "x", value: "a\rb" }] },
+                Method.Get,
+            )
+            answer_text(h) == ":status: 200\ncontent-length: 0\nbody=" &&
+                answer_text(g) == ":status: 500\ncontent-length: 0\nbody="
+        }
+        then "set-cookie goes never-indexed and stays out of the table, answer after answer (RFC 7541 §7.1.3)" {
+            mut h = served_one()
+            let secret = Response {
+                status: 200,
+                headers: [
+                    Header { name: "Set-Cookie", value: "sid=s3cret" },
+                    Header { name: "x-echo", value: "sid=s3cret" },
+                ],
+            }
+            let _ = answered_on(h, 1, secret, Method.Get)
+            let first = h.drained()
+            opened_again(h, 3)
+            let _ = answered_on(h, 3, secret, Method.Get)
+            let second = h.drained()
+            mut d = decoder(4096, 65536)
+            !h.encoder.dynamic.entries.any(it.name == "set-cookie".bytes()) &&
+                sensitive_names(d, first) == "set-cookie" &&
+                sensitive_names(d, second) == "set-cookie"
+        }
+        then "folding lowercases ASCII letters alone" { folded("Content-Type-É".bytes()) == "content-type-É".bytes() }
+    }
+}
+
+/// A body read whole, as text — or `!` when it broke.
+fn gathered_text(b: Body) -> string {
+    match b.gathered() { .Ok(x) -> x.text() ?? "?", .Err(_) -> "!" }
+}

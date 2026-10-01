@@ -1,0 +1,345 @@
+//! jar.av — COOKIES a server set, sent back where RFC 6265 says.
+//!
+//! A JAR IS ASKED FOR: `Options { jar: jar() }`. Without one no
+//! `set-cookie` is kept and no `cookie` is sent. With one, every
+//! answer's `set-cookie` fields are read by §5.2 — the pair before the
+//! first `;`, then `domain`, `path`, `secure`, `max-age` and `expires`
+//! — and each request carries the cookies whose domain its host
+//! matches (the setting host alone when none was named), whose path
+//! its path is under, sent only over TLS when `secure`, until they
+//! expire. A `cookie` field the caller wrote wins: the jar adds none.
+//!
+//! AN ANSWER IN THE CLEAR NEVER REACHES A SECURE COOKIE: it can neither
+//! set one nor overwrite or shadow one already kept. A pair holding a
+//! control octet is refused, since what is kept is sent back as a field.
+//!
+//! A DOMAIN IS NAMED, NEVER WIDENED PAST ONE. A `domain` the setting
+//! host does not match is refused with its cookie, and so is one of a
+//! single label (`com`) — the jar carries no public suffix list, so a
+//! bare top-level name is the one suffix it can tell. An address never
+//! matches a domain but itself.
+//!
+//! EXPIRY RUNS ON THE MONOTONIC CLOCK. `max-age` counts from the
+//! answer; an `expires` date counts from the answer's own `date`, the
+//! server's clock against itself. Without a `date`, `expires` makes a
+//! cookie that lasts while the jar does. A cookie set already expired
+//! removes its namesake.
+//!
+//! A JAR IS BOUNDED, so a server cannot grow it without end: a cookie
+//! over 4096 octets is refused, a domain keeps its 50 newest, the jar
+//! its 3000 newest.
+use @std.time.{now_ms}
+use @std.text.{parse_int, ascii_lower}
+use http.{Header, every_octet}
+use client.{Answer}
+use date.{civil_days}
+
+/// One cookie: its pair, where it is sent, and until when — a
+/// monotonic instant, or null while the jar lasts.
+export type KeptCookie = {
+    name: string,
+    value: string,
+    domain: string,
+    host_only: bool,
+    path: string,
+    secure: bool,
+    expires: int?,
+}
+
+/// The cookies a client keeps between requests.
+export type Jar = { cookies: Cell<List<KeptCookie>> = Cell.new([]) }
+
+/// An empty jar.
+export fn jar() -> Jar { Jar {} }
+
+impl Jar {
+    /// Every `set-cookie` of `a`, the answer to a request for `host`
+    /// and `path`, over TLS when `secure`, kept.
+    fn heard(host: string, path: string, secure: bool, a: Answer) {
+        let at = Heard {
+            host: host,
+            path: path,
+            secure: secure,
+            now: now_ms(),
+            date: date_of(a.header("date") ?? ""),
+        }
+        for h in a.headers {
+            if is_set_cookie(h) { self.set(h.value, at) }
+        }
+    }
+
+    /// The `cookie` field a request to `host` and `path` carries, or
+    /// null when no cookie goes there.
+    fn sent(host: string, path: string, secure: bool) -> Header? {
+        let now = now_ms()
+        let going = [c for c in self.cookies.get() if goes(c, host, path, secure, now)]
+        if going.is_empty() { return null }
+        Header { name: "cookie", value: ["${c.name}=${c.value}" for c in going].join("; ") }
+    }
+
+    /// One `set-cookie` read and kept in place of its namesake — or,
+    /// set already expired, its namesake dropped. An answer in the
+    /// clear neither sets a `secure` cookie nor touches one.
+    fn set(field: string, at: Heard) {
+        let c? = cookie_of(field, at) else { return }
+        let all = self.cookies.get()
+        if !at.secure && (c.secure || all.any(masks_secure(it, c))) { return }
+        let others = [k for k in all if !same_cookie(k, c) && live(k, at.now)]
+        self
+            .cookies
+            .set(capped(if live(c, at.now) { others.concat([c]) } else { others }, c.domain))
+    }
+}
+
+/// Where an answer came from — the request's host and path, and
+/// whether over TLS — when it arrived on the monotonic clock, and what
+/// its `date` said, in seconds since 1970.
+type Heard = { host: string, path: string, secure: bool, now: int, date: int? }
+
+/// One attribute of a `set-cookie`, its name folded.
+type Attribute = { key: string, value: string }
+
+fn is_set_cookie(h: Header) -> bool { h.named("set-cookie") }
+
+/// A `set-cookie` read (§5.2) for the request `at` names, or null when
+/// it is refused — a control octet in its pair among the reasons, since
+/// a pair sent back must be a field the framer writes.
+fn cookie_of(field: string, at: Heard) -> KeptCookie? {
+    let parts = field.split(";")
+    let pair = parts.first() ?? ""
+    let eq = pair.index_of("=")
+    if eq < 0 { return null }
+    let name = pair.substring(0, eq).trim()
+    let value = pair.substring(eq + 1, pair.length).trim()
+    if name.is_empty() ||
+        name.length + value.length > max_cookie ||
+        !every_octet(pair, uncontrolled) {
+        return null
+    }
+    let attrs = [attribute_of(p) for p in parts.slice(1, parts.length)]
+    let domain = named_domain(last_of(attrs, "domain") ?? "")
+    if !domain.is_empty() && !admitted(domain, at.host) { return null }
+    KeptCookie {
+        name: name,
+        value: value,
+        domain: if domain.is_empty() { at.host } else { domain },
+        host_only: domain.is_empty(),
+        path: cookie_path(last_of(attrs, "path") ?? "", at.path),
+        secure: attrs.any(it.key == "secure"),
+        expires: expiry(attrs, at),
+    }
+}
+
+fn attribute_of(part: string) -> Attribute {
+    let eq = part.index_of("=")
+    if eq < 0 { return Attribute { key: ascii_lower(part.trim()), value: "" } }
+    Attribute {
+        key: ascii_lower(part.substring(0, eq).trim()),
+        value: part.substring(eq + 1, part.length).trim(),
+    }
+}
+
+/// The last attribute named `key` — the one that wins (§5.3).
+fn last_of(attrs: List<Attribute>, key: string) -> string? { [a.value for a in attrs if a.key == key].last() }
+
+/// A `domain` attribute as it is matched: a leading `.` dropped, the
+/// case folded.
+fn named_domain(d: string) -> string { ascii_lower(if d.starts_with(".") { d.substring(1, d.length) } else { d }) }
+
+/// Whether a server at `host` may set a cookie for `domain`: it is
+/// `host`, or a name of more than one label that `host` is under.
+fn admitted(domain: string, host: string) -> bool {
+    domain == host || domain_matches(host, domain) && domain.index_of(".") >= 0
+}
+
+/// Whether `host` is `domain` or a name under it (§5.1.3); an address
+/// is only ever itself.
+fn domain_matches(host: string, domain: string) -> bool {
+    host == domain || !is_address(host) && host.ends_with(".${domain}")
+}
+
+fn is_address(host: string) -> bool {
+    let b = host.bytes()
+    b.run(0, dotted) == b.length || b.index_of(colon, 0) >= 0
+}
+
+/// The attribute's path when it names one from the root, else the
+/// request's directory (§5.1.4).
+fn cookie_path(named: string, request: string) -> string {
+    if named.starts_with("/") { return named }
+    let b = request.bytes()
+    let last = [i for i in 0..b.length if b.at(i) == 47].last() ?? 0
+    if !request.starts_with("/") || last == 0 { return "/" }
+    request.substring(0, last)
+}
+
+/// Whether a request's path is under a cookie's (§5.1.4).
+fn path_matches(request: string, path: string) -> bool {
+    request == path ||
+        request.starts_with(path) && (path.ends_with("/") || request.bytes().at(path.length) == 47)
+}
+
+/// When a cookie expires: `max-age` seconds from now, else `expires`
+/// against the answer's `date`, else never while the jar lasts.
+fn expiry(attrs: List<Attribute>, at: Heard) -> int? {
+    let age? = parse_int(last_of(attrs, "max-age") ?? "") else { return dated(last_of(attrs, "expires") ?? "", at) }
+    lasting(at.now, age)
+}
+
+fn dated(expires: string, at: Heard) -> int? {
+    let expires_at? = date_of(expires) else { return null }
+    let date? = at.date else { return null }
+    lasting(at.now, expires_at - date)
+}
+
+/// The instant `secs` from `now`: already past when not positive, and
+/// never past `max_age`.
+fn lasting(now: int, secs: int) -> int {
+    if secs <= 0 { return now - 1 }
+    now + if secs > max_age { max_age } else { secs } * 1000
+}
+
+fn goes(c: KeptCookie, host: string, path: string, secure: bool, now: int) -> bool {
+    live(c, now) && reaches(c, host) && path_matches(path, c.path) && (secure || !c.secure)
+}
+
+/// Whether `c` goes to `host`: its own host, or any name in its domain.
+fn reaches(c: KeptCookie, host: string) -> bool { if c.host_only { host == c.domain } else { domain_matches(host, c.domain) } }
+
+fn live(c: KeptCookie, now: int) -> bool { c.expires ?? now + 1 > now }
+
+fn same_cookie(a: KeptCookie, b: KeptCookie) -> bool { a.name == b.name && a.domain == b.domain && a.path == b.path }
+
+/// Whether a `secure` cookie already kept would be overwritten or
+/// shadowed by `c`: its name, a domain one of them is in, and a path
+/// one is under.
+fn masks_secure(kept: KeptCookie, c: KeptCookie) -> bool {
+    kept.secure &&
+        kept.name == c.name &&
+        (domain_matches(kept.domain, c.domain) || domain_matches(c.domain, kept.domain)) &&
+        (path_matches(kept.path, c.path) || path_matches(c.path, kept.path))
+}
+
+/// `all` with its domain's oldest past `per_domain` dropped, then the
+/// jar's oldest past `per_jar`.
+fn capped(all: List<KeptCookie>, domain: string) -> List<KeptCookie> {
+    let ofs = [i for i, c in all if c.domain == domain]
+    let dropped = ofs.slice(0, if ofs.length > per_domain { ofs.length - per_domain } else { 0 })
+    let kept = [c for i, c in all if !dropped.contains(i)]
+    kept.slice(if kept.length > per_jar { kept.length - per_jar } else { 0 }, kept.length)
+}
+
+const max_cookie: int = 4096
+const per_domain: int = 50
+const per_jar: int = 3000
+/// A cookie's longest life, in seconds: about four hundred years.
+const max_age: int = 12623040000
+const dotted: Bytes = [if i == 46 || i >= 48 && i <= 57 { 1 } else { 0 } for i in 0..256].bytes()!
+const colon: Bytes = ":".bytes()
+
+// ── Dates (§5.1.1) ──────────────────────────────────────────────
+
+/// A cookie date as seconds since 1970, read by RFC 6265's own
+/// algorithm, or null when a part is missing or out of range.
+fn date_of(text: string) -> int? {
+    let b = text.bytes()
+    mut parts = DateParts {}
+    for t in [b.slice(i, b.run(i, date_octet)) for i in 0..b.length if starts_token(b, i)] { parts = parts.took(t) }
+    parts.seconds()
+}
+
+/// What a date's tokens have named so far.
+type DateParts = { time: int? = null, day: int? = null, month: int? = null, year: int? = null }
+
+impl DateParts {
+    /// `t` read as the first of a time, a day, a month and a year that
+    /// it can be and is not found yet.
+    fn took(t: Bytes) -> DateParts {
+        if self.time == null && time_of(t) != null { return self with { time: time_of(t) } }
+        if self.day == null && digits(t, 1, 2) { return self with { day: number(t) } }
+        if self.month == null && month_of(t) != null { return self with { month: month_of(t) } }
+        if self.year == null && digits(t, 2, 4) { return self with { year: full_year(number(t)) } }
+        self
+    }
+
+    /// The instant, when every part was found and in range.
+    fn seconds() -> int? {
+        let time? = self.time else { return null }
+        let day? = self.day else { return null }
+        let month? = self.month else { return null }
+        let year? = self.year else { return null }
+        if day < 1 || day > 31 || year < 1601 { return null }
+        civil_days(year, month, day) * 86400 + time
+    }
+}
+
+/// Whether a token starts at `i`: a date octet after a delimiter.
+fn starts_token(b: Bytes, i: int) -> bool { date_octet.at(b.at(i)) == 1 && (i == 0 || date_octet.at(b.at(i - 1)) == 0) }
+
+/// Whether `t` opens with `lo` to `hi` digits.
+fn digits(t: Bytes, lo: int, hi: int) -> bool {
+    let n = t.run(0, digit)
+    n >= lo && n <= hi
+}
+
+/// The number `t`'s leading digits spell.
+fn number(t: Bytes) -> int { parse_int(t.slice(0, t.run(0, digit)).text() ?? "") ?? 0 }
+
+/// `hh:mm:ss` as seconds into the day, each part one or two digits.
+fn time_of(t: Bytes) -> int? {
+    let h = t.run(0, digit)
+    if !clock_part(h, 0) || h >= t.length || t.at(h) != 58 { return null }
+    let m = t.run(h + 1, digit)
+    if !clock_part(m, h + 1) || m >= t.length || t.at(m) != 58 { return null }
+    let s = t.run(m + 1, digit)
+    if !clock_part(s, m + 1) { return null }
+    let hours = number(t)
+    let mins = number(t.slice(h + 1, m))
+    let secs = number(t.slice(m + 1, s))
+    if hours > 23 || mins > 59 || secs > 59 { return null }
+    hours * 3600 + mins * 60 + secs
+}
+
+/// Whether a clock part from `start` to `end` is one or two digits.
+fn clock_part(end: int, start: int) -> bool { end - start >= 1 && end - start <= 2 }
+
+/// The month a token's first three letters name, 1 to 12.
+fn month_of(t: Bytes) -> int? {
+    if t.length < 3 { return null }
+    let at = months.index_of(ascii_lower(t.slice(0, 3).text() ?? ""))
+    if at < 0 { return null }
+    at + 1
+}
+
+/// A two-digit year in its century (§5.1.1 steps 3 and 4).
+fn full_year(y: int) -> int {
+    when {
+        y >= 70 && y <= 99 -> y + 1900
+        y >= 0 && y <= 69 -> y + 2000
+        _ -> y
+    }
+}
+
+const months: List<string> = [
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "may",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "oct",
+    "nov",
+    "dec",
+]
+
+/// A date's non-delimiter octets (§5.1.1): the delimiters are tab,
+/// space through `/`, `;` through `@`, `[` through the backquote and
+/// `{` through `~`.
+const date_octet: Bytes = [if is_delimiter(i) { 0 } else { 1 } for i in 0..256].bytes()!
+
+fn is_delimiter(c: int) -> bool {
+    c == 9 || c >= 32 && c <= 47 || c >= 59 && c <= 64 || c >= 91 && c <= 96 || c >= 123 && c <= 126
+}

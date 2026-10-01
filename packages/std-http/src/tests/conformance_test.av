@@ -1,0 +1,397 @@
+// THE RFC 9110/9112 CHECKLIST'S OWN ROWS — each `then` a requirement
+// the other suites did not already pin, named after what it asserts.
+// docs/2026_09_29_HTTP_CONFORMANCE.md maps every MUST to its fixture,
+// here or in the suite that held it first.
+use @std.net.{NetError}
+use @std.http.frame.{framed_reply, limits, Refusal, Method, TargetForm, target_form}
+use @std.http.http.{Request, Unrouted, Response, wire, text, ok, sendable}
+use @std.http.route.{Route, fixed}
+use @std.http.server.{timing}
+use @std.http.client.{request}
+use @std.http.fetch.{aimed}
+use @std.text.{parse_int}
+use @std.time.{wall_secs}
+use @std.http.date.{imf_date}
+
+// ── Fixtures ────────────────────────────────────────────────────
+
+/// The target's form as the framer reads it from a request line.
+fn cf_form(method: Method, target: string) -> TargetForm {
+    let b = target.bytes()
+    target_form(b, method, 0, b.length)
+}
+
+/// A request carrying `host` as its one Host line.
+fn cf_hosted(host: string) -> Bytes { "GET / HTTP/1.1\r\nHost: ${host}\r\n\r\n".bytes() }
+
+/// The body a reply to `asked` is framed with.
+fn cf_reply_body(src: string, asked: Method) -> string {
+    match framed_reply(src.bytes(), 0, 0, limits(), asked) {
+        .Complete(r) -> body_word(r.body),
+        .Partial -> "partial",
+        .Refused(_) -> "refused",
+    }
+}
+
+/// The wire as text.
+fn cf_wire(r: Response) -> string { undated(wire(r, true, 1).text() ?? "<not text>") }
+
+fn cf_get(_q: Request<Unrouted>) -> Response { text(200, "got") }
+fn cf_head(_q: Request<Unrouted>) -> Response { text(200, "headed") }
+fn cf_post(_q: Request<Unrouted>) -> Response { text(200, "posted") }
+
+fn cf_no_content(app: App, _q: Request<Unrouted>) -> Response {
+    let _ = bumped(app)
+    Response { status: 204 }
+}
+
+// ── The loop ────────────────────────────────────────────────────
+
+/// A body cut short by the peer's close is incomplete: nothing is
+/// answered and the connection is closed (RFC 9112 §6.3).
+fn cf_mid_body_close() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let _ = b.c.write("POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhel".bytes())?
+    let _ = b.c.shutdown_write()?
+    let got = exchanged(b.c, "", 1)?
+    .Ok(got.is_empty() && settles_to(b.s, 0))
+}
+
+/// A request pipelined behind `connection: close` is never processed
+/// (RFC 9112 §9.6).
+fn cf_nothing_after_close() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged(
+        b.c,
+        "GET /a HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n",
+        100000,
+    )?
+    let t = got.text() ?? ""
+    .Ok(t.contains("true /a  1") && !t.contains("/b") && t.split("HTTP/1.1 ").length == 2)
+}
+
+/// A body is read whole before the request behind it is framed, and
+/// the two are answered in order (RFC 9112 §9.3, §9.3.2).
+fn cf_body_then_pipelined() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged(
+        b.c,
+        "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhelloGET /g HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+        100000,
+    )?
+    let t = got.text() ?? ""
+    let first = t.index_of("false /p hello 1")
+    .Ok(first > 0 && t.index_of("true /g  2") > first)
+}
+
+/// A length beside chunks is answered 400 and the connection closed
+/// (RFC 9112 §6.1).
+fn cf_length_beside_chunks() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged(
+        b.c,
+        "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+        100000,
+    )?
+    let t = got.text() ?? ""
+    .Ok(
+        t.starts_with("HTTP/1.1 400 Bad Request\r\n") &&
+            t.contains("connection: close\r\n") &&
+            settles_to(b.s, 0),
+    )
+}
+
+/// A handler's 2xx to CONNECT is the server's own 500: it would promise
+/// a tunnel this server does not open (RFC 9110 §9.3.6).
+fn cf_connect_answered() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n")?
+    .Ok(r.starts_with("HTTP/1.1 500 Internal Server Error\r\n"))
+}
+
+/// A body sent with its head earns no `100 Continue` — the server may
+/// omit it once content has arrived (RFC 9110 §10.1.1).
+fn cf_continue_skipped() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(
+        b.c,
+        "POST /e HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\nok",
+    )?
+    .Ok(
+        r.starts_with("HTTP/1.1 200 OK\r\n") &&
+            !r.contains("100 Continue") &&
+            r.ends_with("false /e ok 1"),
+    )
+}
+
+/// Whether `r` goes out with one `date` field naming now, give or
+/// take the second that turned while it was written.
+fn cf_dated(r: Response) -> bool {
+    let before = wall_secs()
+    let t = wire(r, true, 1).text() ?? ""
+    let after = wall_secs()
+    let lines = t.split("\r\n")
+    let dates = [l for l in lines if l.starts_with("date: ")]
+    dates.length == 1 &&
+        [imf_date(s) ?? "" for s in before..after + 1].any(dates[0] == "date: " + it)
+}
+
+/// The request line's target and the `host` field a URL aims at, or
+/// the error's kind.
+fn cf_aim(url: string) -> string {
+    match aimed(url) { .Ok(a) -> "${a.target} ${a.field}", .Err(e) -> e.describe().kind }
+}
+
+/// A handler answering the status its `x-s` field names.
+fn cf_status_named(app: App, q: Request<Unrouted>) -> Response {
+    let _ = bumped(app)
+    Response { status: parse_int(q.header("x-s") ?? "") ?? 200 }
+}
+
+/// What a handler's status becomes as the answer to CONNECT.
+fn cf_connect_as(code: int) -> Result<string, NetError> {
+    let b = bed_with(cf_status_named, limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\nX-S: ${code}\r\n\r\n")?
+    .Ok(r.substring(0, 12))
+}
+
+/// A HEAD to a GET route through the loop: the GET's length, none of
+/// its body (RFC 9110 §9.1, §9.3.2).
+fn cf_head_through_the_loop() -> Result<bool, NetError> {
+    let b = bed_with(routed_app, limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "HEAD /notes/7 HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(r.starts_with("HTTP/1.1 200 OK\r\n") && r.ends_with("content-length: 21\r\n\r\n"))
+}
+
+/// A 204 goes out with no length and the connection goes on (RFC 9110
+/// §8.6, §15.3.5).
+fn cf_no_content_persists() -> Result<bool, NetError> {
+    let b = bed_with(cf_no_content, limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let first = reply(b.c, "DELETE /x HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let second = reply(b.c, "DELETE /y HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(
+        undated(first) == "HTTP/1.1 204 No Content\r\n\r\n" &&
+            undated(second) == undated(first) &&
+            b.s.connections() == 1,
+    )
+}
+
+spec "@std.http RFC 9110/9112 conformance" {
+    given "the host law (RFC 9112 §3.2, RFC 9110 §7.2)" {
+        then "a Host with a slash in it is refused" { refuses(cf_hosted("a/b"), Refusal.Host) }
+        then "a Host whose port is not digits is refused" { refuses(cf_hosted("a:b"), Refusal.Host) }
+        then "a Host with two ports is refused" { refuses(cf_hosted("a:1:2"), Refusal.Host) }
+        then "a Host carrying userinfo is refused" { refuses(cf_hosted("u@a"), Refusal.Host) }
+        then "a Host with a broken escape is refused" {
+            refuses(cf_hosted("a%zz"), Refusal.Host) && refuses(cf_hosted("a%4"), Refusal.Host)
+        }
+        then "a Host with a whole escape frames" { head_of(cf_hosted("a%41b")) != null }
+        then "a Host of sub-delims and unreserved octets frames" { head_of(cf_hosted("a-b.c_d~e!f\$g")) != null }
+        then "an IP-literal Host with a port frames" { head_of(cf_hosted("[::1]:8080")) != null }
+        then "an IP-literal that never closes is refused" { refuses(cf_hosted("[::1"), Refusal.Host) }
+        then "an empty port frames — a port is any run of digits" { head_of(cf_hosted("a:")) != null }
+        then "a Host of only a port is refused — an empty host names nothing" { refuses(cf_hosted(":80"), Refusal.Host) }
+        then "an empty Host is refused, where the grammar would admit it" { refuses(cf_hosted(""), Refusal.Host) }
+        then "a port past 65535 is refused" {
+            refuses(cf_hosted("a:65536"), Refusal.Host) &&
+                refuses(cf_hosted("a:99999999999999999999"), Refusal.Host)
+        }
+        then "a port of 65535, and one spelled with leading zeros, frames" {
+            head_of(cf_hosted("a:65535")) != null && head_of(cf_hosted("a:000000000080")) != null
+        }
+    }
+    given "the target's forms (RFC 9112 §3.2, RFC 9110 §4.2.1, §9.3.6)" {
+        then "absolute-form with an empty host is refused" {
+            refuses(req_line("GET http:///p HTTP/1.1"), Refusal.Target) &&
+                refuses(req_line("GET http://:80/p HTTP/1.1"), Refusal.Target) &&
+                refuses(req_line("GET http://u@/p HTTP/1.1"), Refusal.Target)
+        }
+        then "a scheme holding a `?` is no scheme, so the target is refused (fuzz: trap-272-75247)" {
+            cf_form(Method.Get, "http?://0/p?1") == TargetForm.Other &&
+                refuses(req_line("GET http?://0/p?1 HTTP/1.1"), Refusal.Target)
+        }
+        then "a scheme opens with a letter and holds letters, digits, `+`, `-` and `.`" {
+            cf_form(Method.Get, "a+b-c.9://h/p") == TargetForm.Absolute &&
+                cf_form(Method.Get, "9a://h/p") == TargetForm.Other &&
+                cf_form(Method.Get, "a_b://h/p") == TargetForm.Other
+        }
+        then "absolute-form with userinfo before a host is still absolute-form" {
+            cf_form(Method.Get, "http://u@h/p") == TargetForm.Absolute
+        }
+        then "absolute-form over an IP literal is absolute-form" {
+            cf_form(Method.Get, "http://[::1]:8080/p") == TargetForm.Absolute
+        }
+        then "CONNECT with no port is refused" { refuses(req_line("CONNECT h HTTP/1.1"), Refusal.Target) }
+        then "CONNECT with an empty port is refused" { refuses(req_line("CONNECT h: HTTP/1.1"), Refusal.Target) }
+        then "CONNECT with a port that is not digits is refused" {
+            refuses(req_line("CONNECT h:x HTTP/1.1"), Refusal.Target)
+        }
+        then "CONNECT to port 0 or past 65535 is refused" {
+            refuses(req_line("CONNECT h:0 HTTP/1.1"), Refusal.Target) &&
+                refuses(req_line("CONNECT h:65536 HTTP/1.1"), Refusal.Target)
+        }
+        then "CONNECT to port 65535 is authority-form" { cf_form(Method.Connect, "h:65535") == TargetForm.Authority }
+        then "CONNECT with no host is refused" { refuses(req_line("CONNECT :443 HTTP/1.1"), Refusal.Target) }
+        then "CONNECT to an IP literal and port is authority-form" {
+            cf_form(Method.Connect, "[::1]:443") == TargetForm.Authority
+        }
+    }
+    given "lists and bad whitespace (RFC 9110 §5.6.1.2, §5.6.3)" {
+        then "empty list members before chunked are ignored" {
+            length_of(head_of(req("Transfer-Encoding: , ,chunked\r\n"))!) == -2
+        }
+        then "empty list members around close are ignored" {
+            head_of(req("Connection: ,, close ,\r\n"))!.keep_alive == false
+        }
+        then "bad whitespace before a chunk extension is dropped" {
+            body_of("5 ;x=1\r\nhello\r\n0\t;y\r\n\r\n") == "hello"
+        }
+        then "bad whitespace torn from its extension waits for the rest" {
+            body_of("5 ") == "<partial>" && body_of("5 \t") == "<partial>"
+        }
+        then "bad whitespace past the extension bound is refused" {
+            chunk_status("5" + ["  " for i in 0..3000].join("") + ";x\r\nhello\r\n0\r\n\r\n") == 400
+        }
+    }
+    given "a request the client writes (RFC 9112 §2.2, §3.2, §6.3)" {
+        then "a body-less request ends at its blank line — no CRLF before or after" {
+            let q = request("GET", "/", "h", [], "".bytes())!
+            head_of(q)!.end == q.length && q.at(0) == "G".char_code()
+        }
+        then "a request with a body ends where its length says" {
+            let q = request("POST", "/p", "h", [], "hello".bytes())!
+            let h = head_of(q)!
+            length_of(h) == 5 && h.end + 5 == q.length
+        }
+    }
+    given "a reply the client frames (RFC 9112 §6.3, RFC 9110 §9.3.6)" {
+        then "a CONNECT's 2xx is a tunnel, its length ignored" {
+            cf_reply_body("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\n", Method.Connect) == "none"
+        }
+        then "a CONNECT's refusal is still framed by its length" {
+            cf_reply_body("HTTP/1.1 407 No\r\ncontent-length: 5\r\n\r\n", Method.Connect) == "length 5"
+        }
+    }
+    given "what the writer puts on the wire (RFC 9110 §8.6, §15, RFC 9112 §4)" {
+        then "a 204 states no length" { cf_wire(Response { status: 204 }) == "HTTP/1.1 204 No Content\r\n\r\n" }
+        then "a 304 states no length" { cf_wire(Response { status: 304 }) == "HTTP/1.1 304 Not Modified\r\n\r\n" }
+        then "a 200 with no body still states a length of zero" {
+            cf_wire(Response { status: 200 }) == "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n"
+        }
+        then "a 204 carrying content is not sendable" { !sendable(Response { status: 204, body: "x".bytes() }) }
+        then "a 205 carrying content is not sendable" { !sendable(Response { status: 205, body: "x".bytes() }) }
+        then "a 304 carrying content is not sendable" { !sendable(Response { status: 304, body: "x".bytes() }) }
+        then "and each goes out as the server's own 500" {
+            cf_wire(Response { status: 204, body: "x".bytes() }).starts_with("HTTP/1.1 500 ")
+        }
+        then "a 1xx is interim, never an answer, so it is not sendable" {
+            !sendable(Response { status: 100 }) &&
+                !sendable(Response { status: 101 }) &&
+                !sendable(Response { status: 199 })
+        }
+        then "an unregistered status carries its class's reason after the space" {
+            cf_wire(Response { status: 299 }).starts_with("HTTP/1.1 299 Success\r\n") &&
+                cf_wire(Response { status: 599 }).starts_with("HTTP/1.1 599 Server Error\r\n")
+        }
+        then "every response is dated, this second, in IMF-fixdate (RFC 9110 §6.6.1, §5.6.7)" {
+            [ok("x"), Response { status: 204 }, Response { status: 404 }, Response { status: 999 }]
+                .all(cf_dated(it))
+        }
+    }
+    given "a client's target and host, from one URL (RFC 9112 §3.2, RFC 9110 §4.2.4, §7.2)" {
+        then "the path and query are the target, and the authority less userinfo the host" {
+            cf_aim("http://h:8080/a?b") == "/a?b h:8080"
+        }
+        then "an empty path is sent as /" { cf_aim("http://h") == "/ h" && cf_aim("http://h?q") == "/?q h" }
+        then "a fragment is never sent" { cf_aim("http://h/a#f") == "/a h" }
+        then "the scheme's own port is not written" { cf_aim("http://h:80/") == "/ h" && cf_aim("https://h:443/") == "/ h" }
+        then "an IPv6 host keeps its brackets" { cf_aim("http://[::1]:8080/") == "/ [::1]:8080" }
+        then "userinfo is never generated — a URL carrying it is refused" { cf_aim("http://u:p@h/") == "http.userinfo" }
+        then "a URL with no host aims nowhere" { cf_aim("http:///a") == "http.no_host" }
+    }
+    given "the methods every server supports (RFC 9110 §9.1)" {
+        then "a HEAD no HEAD route answers is answered by the GET route" {
+            answer_of([fixed(Method.Get, "/r", cf_get)], "HEAD /r HTTP/1.1") == "200 got"
+        }
+        then "a HEAD route answers before the GET route" {
+            answer_of(
+                [fixed(Method.Get, "/r", cf_get), fixed(Method.Head, "/r", cf_head)],
+                "HEAD /r HTTP/1.1",
+            ) == "200 headed"
+        }
+        then "only a HEAD falls back — a POST is never answered by a GET route" {
+            answer_of([fixed(Method.Get, "/r", cf_get)], "POST /r HTTP/1.1") == "404 "
+        }
+        then "and a HEAD with no GET route either is a 404" {
+            answer_of([fixed(Method.Post, "/r", cf_post)], "HEAD /r HTTP/1.1") == "404 "
+        }
+    }
+    given "the loop (RFC 9112 §6.1, §6.3, §9.3, §9.6)" {
+        then "a body cut short by the peer's close is not answered, and the connection closes" {
+            passes(cf_mid_body_close())
+        }
+        then "a request pipelined behind connection: close is never processed" { passes(cf_nothing_after_close()) }
+        then "a body is read whole before the request behind it, and both answer in order" {
+            passes(cf_body_then_pipelined())
+        }
+        then "a length beside chunks is 400 and the connection closes" { passes(cf_length_beside_chunks()) }
+        then "a HEAD to a GET route carries the GET's length and no body" { passes(cf_head_through_the_loop()) }
+        then "a body sent with its head earns no 100 Continue" { passes(cf_continue_skipped()) }
+        then "a 204 goes out with no length and the connection persists" { passes(cf_no_content_persists()) }
+        then "a handler's 2xx to CONNECT goes out as the server's 500, with no tunnel promised" {
+            passes(cf_connect_answered())
+        }
+    }
+    given "the red team's survivors" {
+        then "bad whitespace before an extension, torn at every cut, resumes to the whole's end" {
+            let whole = "5 \t ;x\r\nhello\r\n0 ;y\r\n\r\n"
+            [resumes(whole, i) for i in 1..whole.length].all(it) && end_of(whole) == whole.length
+        }
+        then "bad whitespace before a last chunk's extension ends the body" { body_of("0 ;x\r\n\r\n") == "" }
+        then "a HEAD with a query is answered by the GET route" {
+            answer_of([fixed(Method.Get, "/r", cf_get)], "HEAD /r?a=1 HTTP/1.1") == "200 got"
+        }
+        then "a HEAD in absolute-form is answered by the GET route" {
+            answer_of([fixed(Method.Get, "/r", cf_get)], "HEAD http://h/r HTTP/1.1") == "200 got"
+        }
+        then "a HEAD whose GET grammar refuses the target is a 404" {
+            answer_of([r_png()], "HEAD /img/a.jpg HTTP/1.1") == "404 " &&
+                answer_of([r_png()], "HEAD /img/a.png HTTP/1.1") == "200 png a"
+        }
+        then "a 204 to an HTTP/1.0 keep-alive says so and states no length" {
+            undated(wire(Response { status: 204 }, true, 0).text() ?? "") == "HTTP/1.1 204 No Content\r\nconnection: keep-alive\r\n\r\n"
+        }
+        then "a CONNECT's 299 reply is a tunnel and its 300 is framed by its length" {
+            cf_reply_body("HTTP/1.1 299 X\r\ncontent-length: 5\r\n\r\n", Method.Connect) == "none" &&
+                cf_reply_body("HTTP/1.1 300 X\r\ncontent-length: 5\r\n\r\n", Method.Connect) == "length 5"
+        }
+        then "a handler's 299 to CONNECT is the server's 500, and its 300 goes out as chosen" {
+            passes_with(cf_connect_as(299), "HTTP/1.1 500") &&
+                passes_with(cf_connect_as(300), "HTTP/1.1 300")
+        }
+        then "a handler's 199 to CONNECT is the server's 500 too — a 1xx answers nothing" {
+            passes_with(cf_connect_as(199), "HTTP/1.1 500")
+        }
+    }
+}
+
+/// A request line with a Host, framed.
+fn req_line(line: string) -> Bytes { (line + "\r\nHost: h\r\n\r\n").bytes() }

@@ -1,13 +1,132 @@
-//! HTTP-DATE (RFC 9110 §5.6.7) — a time as a field carries it, in
-//! IMF-fixdate: `Sun, 06 Nov 1994 08:49:37 GMT`. Written in that form
-//! only; read in that form only, so a field in one of the two obsolete
-//! forms reads as absent and the condition that carried it is skipped
-//! rather than misjudged.
+//! date.av — HTTP's dates: the `date` field an origin server with a
+//! clock writes on every response (RFC 9110 §6.6.1), in IMF-fixdate
+//! (§5.6.7), and the civil calendar both directions of a date share.
+//!
+//! WRITTEN AND READ IN IMF-FIXDATE ONLY (`http_date`,
+//! `http_date_parsed`): a field in one of the two obsolete forms reads
+//! as absent, and the condition that carried it is skipped rather than
+//! misjudged.
+//!
+//! THE FIELD IS FORMATTED WHEN THE SECOND TURNS, never per response:
+//! each core keeps its last line and the second it names, and a
+//! response reads the clock and compares. A clock that steps back
+//! names a different second too, so the line follows it either way.
+//!
+//! A CLOCK THAT CANNOT NAME THE DATE SENDS NONE: IMF-fixdate spells a
+//! year in four digits from 1970's side of the epoch, and a host
+//! outside that is a server with no reasonable clock, which the RFC
+//! says MUST NOT send the field.
+use @std.time.{wall_secs}
 use @std.text.{parse_int}
 
-const week_days: List<string> = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"]
+/// The `date` field line for this second — `date: <IMF-fixdate>` and
+/// its CRLF — or empty when the clock cannot name the date.
+export fn date_line() -> Bytes {
+    let now = wall_secs()
+    let s = stamp()
+    if s.second.get() != now {
+        s.second.set(now)
+        s.line.set(line_at(now))
+    }
+    s.line.get()
+}
 
-const months: List<string> = [
+/// A core's last date line and the second it names.
+type Stamp = { second: Cell<int>, line: Cell<Bytes> }
+
+once fn stamp() -> Stamp {
+    let now = wall_secs()
+    Stamp { second: Cell.new(now), line: Cell.new(line_at(now)) }
+}
+
+fn line_at(secs: int) -> Bytes {
+    let d? = imf_date(secs) else { return "".bytes() }
+    "date: ${d}\r\n".bytes()
+}
+
+/// Seconds since 1970 as an IMF-fixdate — `Sun, 06 Nov 1994 08:49:37
+/// GMT` — or null outside 1970 through 9999.
+export fn imf_date(secs: int) -> string? {
+    if secs < 0 || secs >= last_second { return null }
+    let days = secs / 86400
+    let c = civil_of(days)
+    let t = secs % 86400
+    "${weekdays[(days + 4) % 7]}, ${two(c.day)} ${month_names[c.month - 1]} ${c.year} ${two(t / 3600)}:${two(t / 60 % 60)}:${two(t % 60)} GMT"
+}
+
+/// Seconds since the epoch as an IMF-fixdate, a time outside 1970
+/// through 9999 written as the nearest second inside.
+export fn http_date(secs: int) -> string {
+    imf_date(if secs < 0 { 0 } else if secs >= last_second { last_second - 1 } else { secs })!
+}
+
+/// An IMF-fixdate read back as seconds since the epoch, absent for
+/// any other spelling.
+export fn http_date_parsed(s: string) -> int? {
+    if s.length != 29 || s.substring(3, 5) != ", " || !s.ends_with(" GMT") { return null }
+    if !weekdays.contains(s.substring(0, 3)) { return null }
+    let month = month_names.index_of(s.substring(8, 11))
+    if month < 0 ||
+        s.substring(7, 8) != " " ||
+        s.substring(11, 12) != " " ||
+        s.substring(16, 17) != " " {
+        return null
+    }
+    if s.substring(19, 20) != ":" || s.substring(22, 23) != ":" { return null }
+    let day? = unsigned_in(s, 5, 7) else { return null }
+    let year? = unsigned_in(s, 12, 16) else { return null }
+    let h? = unsigned_in(s, 17, 19) else { return null }
+    let m? = unsigned_in(s, 20, 22) else { return null }
+    let sec? = unsigned_in(s, 23, 25) else { return null }
+    if day < 1 || day > 31 || h > 23 || m > 59 || sec > 60 { return null }
+    civil_days(year, month + 1, day) * 86400 + h * 3600 + m * 60 + sec
+}
+
+/// Only digits, never a sign.
+fn unsigned_in(s: string, lo: int, hi: int) -> int? {
+    let d = s.substring(lo, hi)
+    if d.starts_with("-") { return null }
+    parse_int(d)
+}
+
+/// The first second past 9999-12-31 23:59:59 UTC.
+const last_second: int = 253402300800
+
+/// A number of 0 to 99 in two digits.
+fn two(n: int) -> string { if n < 10 { "0${n}" } else { "${n}" } }
+
+/// A day of the proleptic Gregorian calendar.
+export type Civil = { year: int, month: int, day: int }
+
+/// The civil date `days` after 1970-01-01, for days from 0 on.
+export fn civil_of(days: int) -> Civil {
+    let z = days + 719468
+    let era = z / 146097
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }
+    Civil {
+        year: yoe + era * 400 + if month <= 2 { 1 } else { 0 },
+        month: month,
+        day: doy - (153 * mp + 2) / 5 + 1,
+    }
+}
+
+/// Days from 1970-01-01 to a civil date, for a year from 1601 on.
+export fn civil_days(year: int, month: int, day: int) -> int {
+    let y = if month <= 2 { year - 1 } else { year }
+    let era = y / 400
+    let yoe = y - era * 400
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1
+    era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468
+}
+
+/// The days of the week from Sunday, 1970-01-01 being a Thursday.
+const weekdays: List<string> = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+const month_names: List<string> = [
     "Jan",
     "Feb",
     "Mar",
@@ -21,72 +140,3 @@ const months: List<string> = [
     "Nov",
     "Dec",
 ]
-
-/// Seconds since the epoch as an IMF-fixdate. A time before the epoch
-/// is written as the epoch.
-export fn http_date(secs: int) -> string {
-    let s = if secs < 0 { 0 } else { secs }
-    let days = s / 86400
-    let in_day = s % 86400
-    let c = civil(days)
-    "${week_days[days % 7]}, ${two(c.day)} ${months[c.month - 1]} ${c.year} ${two(in_day / 3600)}:${two(in_day % 3600 / 60)}:${two(in_day % 60)} GMT"
-}
-
-/// An IMF-fixdate read back as seconds since the epoch, absent for
-/// any other spelling.
-export fn http_date_parsed(s: string) -> int? {
-    if s.length != 29 || s.substring(3, 5) != ", " || !s.ends_with(" GMT") { return null }
-    if !week_days.contains(s.substring(0, 3)) { return null }
-    let month = months.index_of(s.substring(8, 11))
-    if month < 0 ||
-        s.substring(7, 8) != " " ||
-        s.substring(11, 12) != " " ||
-        s.substring(16, 17) != " " {
-        return null
-    }
-    if s.substring(19, 20) != ":" || s.substring(22, 23) != ":" { return null }
-    let day? = digits(s, 5, 7) else { return null }
-    let year? = digits(s, 12, 16) else { return null }
-    let h? = digits(s, 17, 19) else { return null }
-    let m? = digits(s, 20, 22) else { return null }
-    let sec? = digits(s, 23, 25) else { return null }
-    if day < 1 || day > 31 || h > 23 || m > 59 || sec > 60 { return null }
-    days_of(year, month + 1, day) * 86400 + h * 3600 + m * 60 + sec
-}
-
-/// Only digits, never a sign.
-fn digits(s: string, lo: int, hi: int) -> int? {
-    let d = s.substring(lo, hi)
-    if d.starts_with("-") { return null }
-    parse_int(d)
-}
-
-fn two(n: int) -> string { if n < 10 { "0${n}" } else { "${n}" } }
-
-type Civil = { year: int, month: int, day: int }
-
-/// The calendar date `days` after 1970-01-01 (Hinnant's
-/// `civil_from_days`).
-fn civil(days: int) -> Civil {
-    let z = days + 719468
-    let era = z / 146097
-    let doe = z - era * 146097
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
-    let mp = (5 * doy + 2) / 153
-    let day = doy - (153 * mp + 2) / 5 + 1
-    let month = if mp < 10 { mp + 3 } else { mp - 9 }
-    Civil { year: yoe + era * 400 + if month <= 2 { 1 } else { 0 }, month: month, day: day }
-}
-
-/// Days from 1970-01-01 to a calendar date (Hinnant's
-/// `days_from_civil`), for years from 1970.
-fn days_of(year: int, month: int, day: int) -> int {
-    let y = if month <= 2 { year - 1 } else { year }
-    let era = y / 400
-    let yoe = y - era * 400
-    let mp = if month > 2 { month - 3 } else { month + 9 }
-    let doy = (153 * mp + 2) / 5 + day - 1
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-    era * 146097 + doe - 719468
-}

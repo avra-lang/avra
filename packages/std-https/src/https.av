@@ -12,12 +12,18 @@
 //! A client: `secured(host, port, timeout, limits, config)` connects,
 //! verifies the server as `host`, and answers a `Client` that fetches
 //! exactly as a plain one does; `wss` opens a WebSocket the same way.
+//!
+//! BY URL: `get(url)?` and its siblings take `http` and `https` alike —
+//! `@std/http`'s own verbs, under options whose `tls` verifies every
+//! server against the system's trust anchors. `verified(config)` is
+//! that seam for a caller's own config, in any `Options`.
 use @std.net.{Conn}
 use @std.time.{Duration, within}
-use @std.tls.{Config, TlsConn, TlsError, dial, handshake_after}
+use @std.tls.{Config, TlsConn, TlsError, client_config, dial, handshake, handshake_after, wired}
 use @std.http.frame.{Limits}
 use @std.http.http.{Response, text, wire, read_size}
-use @std.http.wire.{Transport, WireError, Secure}
+use @std.http.wire.{Transport, WireError, Secure, Securing, silent}
+use @std.http.fetch.{Options, Payload, Fetched, fetch}
 use @std.http.client.{Client, ClientError, carried, over}
 use @std.http.ws.{Socket, WsError, WsLimits, opened_over, socket_error}
 
@@ -35,6 +41,48 @@ export fn secured(host: string, port: int, timeout: Duration, limits: Limits, co
     let t = tls_carried(dial(host, port, timeout, config))?
     .Ok(over(Secured { t: t }, limits))
 }
+
+/// A client's connections secured under `config`: each handshake run
+/// within its deadline, the server verified as the URL's host.
+export fn verified(config: Config) -> Securing {
+    Securing { open: (c: Conn, host: string, d: Duration) -> client_opened(c, config, host, d) }
+}
+
+fn client_opened(c: Conn, config: Config, host: string, d: Duration) -> Result<
+    dyn Transport,
+    WireError,
+> {
+    let t: dyn Transport = Secured { t: as_wire(within d { handshake(c, config, host) })? }
+    .Ok(t)
+}
+
+/// The options this package's verbs use: `@std/http`'s own, every
+/// `https` server verified against the system's trust anchors.
+export fn options() -> Options { Options { tls: trusted() } }
+
+/// The system's anchors, read once; a system without them refuses
+/// every handshake, saying why.
+once fn trusted() -> Securing {
+    match client_config() {
+        .Ok(config) -> verified(config),
+        .Err(e) -> Securing { open: (c: Conn, host: string, d: Duration) -> unanchored(c, e) },
+    }
+}
+
+fn unanchored(c: Conn, e: TlsError) -> Result<dyn Transport, WireError> {
+    let _ = c.close()
+    .Err(.Secure(e))
+}
+
+export fn get(url: string) -> Fetched { fetch(.Get, url, .Empty, options()) }
+
+export fn post(url: string, body: Payload) -> Fetched { fetch(.Post, url, body, options()) }
+
+export fn put(url: string, body: Payload) -> Fetched { fetch(.Put, url, body, options()) }
+
+export fn patch(url: string, body: Payload) -> Fetched { fetch(.Patch, url, body, options()) }
+
+export fn delete(url: string) -> Fetched { fetch(.Delete, url, .Empty, options()) }
 
 /// A WebSocket to host:port over TLS: the server verified under
 /// `config` as `host`, then `target` asked to upgrade, all within
@@ -71,11 +119,13 @@ impl Transport for Secured {
     fn wire_read(max: int) -> Result<Bytes?, WireError> { as_wire(self.t.read(max)) }
     fn wire_write(bytes: Bytes) -> Result<int, WireError> { as_wire(self.t.write(bytes)) }
     fn wire_shutdown() -> Result<int, WireError> { as_wire(self.t.shutdown_write()) }
+    fn wire_unheard() -> Result<int, WireError> { as_wire(wired(self.t.conn.shutdown_read())) }
     fn wire_close() -> Result<int, WireError> { as_wire(self.t.close()) }
     fn wire_peer() -> string { self.t.peer() }
     fn wire_fd() -> int { self.t.fd }
     fn wire_secured() -> bool { true }
     fn wire_protocol() -> string? { self.t.protocol() }
+    fn wire_silent() -> bool { silent(self.t.conn) }
 }
 
 fn opened_within(c: Conn, config: Config, d: Duration) -> dyn Transport? {
