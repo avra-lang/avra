@@ -27,7 +27,7 @@ use core.{
     Scoped,
 }
 use diagnostics.{Diag}
-use features.{generated_key, Decl, no_origins}
+use features.{generated_key, Decl, DeclAt, no_origins}
 
 /// A `File` row read back as the hand shape every other pass still
 /// wants — the relation and `FileInfo` name `module` differently, and
@@ -41,7 +41,7 @@ impl Decls {
             let m = self.module_id(module)
             let id = File.insert(self.decl_rows.get(), path: path, module: m, test: test).id
             self.stores.push(null)
-            self.decl_ids.push(Cell.new(side_table<DeclId?>("decl_ids", 0, 0, null)))
+            self.decl_ids.push(Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
             let no_decls: List<DeclId> = []
             self.file_decls.push(Cell.new(no_decls))
             self.generations.push([])
@@ -124,7 +124,7 @@ impl Decls {
     /// top-level ids, in order.
     fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
         self.stores.set_at(f.index, store)
-        mut by_stmt = side_table<DeclId?>("decl_ids", 0, store.stmts.count(), null)
+        mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
         mut out: List<DeclId> = []
         mut made: List<DeclId> = []
         mut seen: List<string> = []
@@ -149,7 +149,7 @@ impl Decls {
                         false,
                         store.fn_parts(s)?.body,
                     )
-                by_stmt.set(s.index, d)
+                by_stmt.set(s.index, DeclAt { decl: d })
                 out.push(d)
                 made.push(d)
                 self.orphan(d)
@@ -165,7 +165,7 @@ impl Decls {
                             d,
                             declared_body(store, m),
                         )
-                    by_stmt.set(m.index, md)
+                    by_stmt.set(m.index, DeclAt { decl: md })
                     made.push(md)
                 }
                 let fields: List<Param> = store.struct_parts(s)?.fields ?? []
@@ -180,7 +180,7 @@ impl Decls {
                 seen.push(key)
                 let d = self
                     .mint(key, f, s, name, DeclKind.Const, store.is_exported(s), "", null, false, null)
-                by_stmt.set(s.index, d)
+                by_stmt.set(s.index, DeclAt { decl: d })
                 out.push(d)
                 made.push(d)
                 self.orphan(d)
@@ -215,14 +215,14 @@ impl Decls {
                 seen.push(key)
                 let block_decl = self
                     .mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
-                by_stmt.set(s.index, block_decl)
+                by_stmt.set(s.index, DeclAt { decl: block_decl })
                 made.push(block_decl)
                 self.orphan(block_decl)
                 for m in block.fns {
                     let mkey = member_key(key, store, m, block.fns)
                     let md = self
                         .mint_method(mkey, f, store, m, block.target, block_decl, store.fn_parts(m)?.body)
-                    by_stmt.set(m.index, md)
+                    by_stmt.set(m.index, DeclAt { decl: md })
                     made.push(md)
                     let seats: List<Param> = store.fn_parts(m)?.params ?? []
                     let mname = self.decl(md).name
@@ -253,7 +253,7 @@ impl Decls {
         for i in 0..store.stmts.count() {
             let s = StmtId { index: i }
             let nested: DeclKind? = store.declared_kind(s)
-            if by_stmt.get(i) == null && nested != null {
+            if by_stmt.get(i).decl == null && nested != null {
                 let name = store.declared_name(s) ?? ""
                 let nd = self
                     .mint(
@@ -268,7 +268,7 @@ impl Decls {
                         true,
                         null,
                     )
-                by_stmt.set(i, nd)
+                by_stmt.set(i, DeclAt { decl: nd })
                 made.push(nd)
             }
         }
@@ -345,7 +345,7 @@ impl Decls {
     }
 
     /// A file's statement table, written whole.
-    fn keep_stmt_decls(f: FileId, by_stmt: SideTable<DeclId?>) { self.decl_ids.get()[f.index].set(by_stmt) }
+    fn keep_stmt_decls(f: FileId, by_stmt: SideTable<DeclAt>) { self.decl_ids.get()[f.index].set(by_stmt) }
 
     fn remember_held_item(f: FileId, d: DeclId) {
         let path = self.file(f).path
@@ -827,7 +827,7 @@ impl Decls {
     fn record_generated(f: FileId, made: List<DeclId>) {
         mut by_stmt = self.decl_ids.get()[f.index].get()
         by_stmt.grow_to(self.store_of(f).stmts.count())
-        for d in [d for d in made if names_its_stmt(self.decl(d).kind)] { by_stmt.set(self.decl(d).stmt.index, d) }
+        for d in [d for d in made if names_its_stmt(self.decl(d).kind)] { by_stmt.set(self.decl(d).stmt.index, DeclAt { decl: d }) }
         self.decl_ids.get()[f.index].set(by_stmt)
         self.file_decls.get()[f.index].set(self.file_decls.get()[f.index].get().concat(made))
     }
@@ -934,7 +934,7 @@ impl Decls {
     fn reindex_stmt(f: FileId, s: StmtId, d: DeclId) {
         mut by_stmt = self.decl_ids.get()[f.index].get()
         by_stmt.grow_to(self.store_of(f).stmts.count())
-        by_stmt.set(s.index, d)
+        by_stmt.set(s.index, DeclAt { decl: d })
         self.decl_ids.get()[f.index].set(by_stmt)
     }
 
