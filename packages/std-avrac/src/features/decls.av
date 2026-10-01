@@ -1973,12 +1973,31 @@ impl Decls {
 
     fn builtin_decls() -> List<DeclId> { self.builtins.get() }
 
-    /// The declaration a type's impls are filed under: its own, or the
-    /// language's for a scalar — absent for every other shape. A
-    /// GENERIC INSTANTIATION files under its declaration, so one
+    /// The declaration a type's impls are filed under: its own, the
+    /// language's for a scalar or a generic built-in, or — for a user
+    /// GENERIC INSTANTIATION — its declaration, so one
     /// `impl Show for Box<T>` serves every `Box<...>`.
     fn implementor(ty: TypeId) -> DeclId? {
-        declared_decl(self.types.shape_of(ty)) ?? self.scalar_decl(ty) ?? self.app_decl(ty)
+        declared_decl(self.types.shape_of(ty)) ?? self.builtin_generic_decl(ty) ?? self
+            .scalar_decl(ty) ?? self.app_decl(ty)
+    }
+
+    /// The built-in declaration a generic built-in shape files under —
+    /// `Result`, `List`, `Map`, `Cell`, `Task` — by the row's name.
+    /// Absent for every other shape, so a scalar falls through to
+    /// `scalar_decl`.
+    fn builtin_generic_decl(ty: TypeId) -> DeclId? {
+        let name = match self.types.shape_of(ty) {
+            .List(_) -> "List",
+            .Res(_, _) -> "Result",
+            .Map(_, _) -> "Map",
+            .Cell(_) -> "Cell",
+            .Task(_) -> "Task",
+            .Tasks -> "Tasks",
+            .Int or .Float or .Bool or .Str or .Bytes or .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Union(_) or .Error -> "",
+        }
+        if name == "" { return null }
+        self.builtins.get().find((b) -> self.decl(b).name == name)
     }
 
     /// The user generic declaration an `.App` instantiation files

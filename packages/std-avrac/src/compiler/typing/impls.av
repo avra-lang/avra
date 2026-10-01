@@ -256,9 +256,28 @@ impl TypeCx {
     /// answers — one name, one meaning on every path. A refusal is
     /// spoken once and the block still serves its type, so its bodies
     /// and callers say nothing more.
-    fn builtin_target(s: StmtId, d: DeclId, parts: ImplParts, loud: bool) -> DeclId {
+    fn builtin_target(s: StmtId, d: DeclId, parts: ImplParts, loud: bool) -> DeclId? {
         if loud { self.builtin_law(s, d, parts) }
+        // A built-in generic's parameters are ordinal (T1, T2), so a
+        // written argument that NAMES A TYPE (`Result<int, string>`)
+        // is a specific instantiation read as the whole generic.
+        if parts.of != null && !self.free_target_params(s) {
+            if loud { self.concrete_target(s, parts.of!, parts.target, self.view.decls.tparams(d)) }
+            return null
+        }
         d
+    }
+
+    /// Whether every written target parameter is a FREE name — one
+    /// that names no declared or built-in type. A generic target's
+    /// arguments are parameter names, never types.
+    fn free_target_params(s: StmtId) -> bool {
+        let written: List<Plain> = self.view.store.impl_tparams_of(s)?.target ?? []
+        [w for w in written if self.names_a_type(w.of)].is_empty()
+    }
+
+    fn names_a_type(name: string) -> bool {
+        self.type_decl_named(name) != null || builtin_type_name(self.view.lang.types, name)
     }
 
     fn builtin_law(s: StmtId, d: DeclId, parts: ImplParts) {
