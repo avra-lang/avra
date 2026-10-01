@@ -52,7 +52,7 @@ use core.{
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck}
 use @std.relation.db.{Db, new_db}
-use @std.relation.rows.{Rows, bool_key}
+use @std.relation.rows.{Rows, bool_key, SideRows, side_rows}
 use core.{
     Fingerprint,
     Exemplar,
@@ -368,6 +368,10 @@ export type Decls = {
     /// slot as `faces` — a `@side` partition, so a query can reach
     /// it without a `@dense` id ever crossing its boundary (avra-8sb5.57.9.7).
     doc_facts: Cell<SideTable<DocFact>>,
+    /// `doc_facts`'s own family and read marks under a Db — its own
+    /// `Cell`s already make it an identity, so no outer `Cell` wraps it,
+    /// the same reason `Rows<R>` never gets one either.
+    doc_facts_side: SideRows<DocFact>,
     /// Settlements restored for declarations whose files were never parsed.
     held_values: Cell<Map<string, Settled>>,
     /// A held declaration's own const, restored as UNFOLDABLE rather than as
@@ -637,6 +641,7 @@ export fn new_decls() -> Decls {
         wire_index: map_cell(),
         faces: Cell.new(no_faces),
         doc_facts: Cell.new(side_table("doc_facts", 0, 0, DocFact { doc: null, annotations: [] })),
+        doc_facts_side: side_rows(),
         held_values: map_cell(),
         held_reaches: map_cell(),
         sigs: Cell.new(no_sigs),
