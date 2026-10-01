@@ -645,10 +645,8 @@ fn load_named(
     // short, so the refusal names itself instead of reading as "no reason
     // recorded" at every file it would have covered.
     let here = ws.module_files(m)
-    let incomplete: string? = record_complete(fields)
-    let stray: List<string>? = fields.find((parts) -> declares(parts) && !here.contains(parts[1]))
-    if incomplete != null || stray != null {
-        let why = incomplete ?? "names `${stray![1]}`, which the module no longer has"
+    let why = record_fault(ws, key, fields, here)
+    if why != "" {
         if first {
             ws
                 .hold
@@ -810,6 +808,28 @@ fn read_why(
     if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
     if !holdable(rows) { return Reads.Unholdable }
     null
+}
+
+/// A MODULE'S RECORD FAULT — "" when the record is whole, else the one reason
+/// its decoder refused it — read once per build: the scan walks the record's
+/// every line against the module's own files, and a module reached by several
+/// importers would repeat it at each, so the answer is kept under the record's key.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a record key and its fields in.
+fn record_fault(ws: Workspace, key: string, fields: List<List<string>>, here: List<string>) -> string {
+    let known: string? = ws.records.record_fault.get().get(key)
+    if known != null { return known! }
+    let made = record_fault_of(fields, here)
+    ws.records.record_fault.put(key, made)
+    made
+}
+
+/// The reason a record's lines cannot be rebuilt whole, or "" when they can.
+fn record_fault_of(fields: List<List<string>>, here: List<string>) -> string {
+    let incomplete = record_complete(fields)
+    if incomplete != null { return incomplete! }
+    let stray = fields.find((parts) -> declares(parts) && !here.contains(parts[1]))
+    if stray == null { return "" }
+    "names `${stray![1]}`, which the module no longer has"
 }
 
 /// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
