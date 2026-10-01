@@ -1,11 +1,9 @@
-# The merge queue's check: each train's combined commit, built once, then the
-# affected packages' suites in four jobs at once, so trains fit the free
-# runners. `test` is the one required check. The machine is
-# .github/ci/Dockerfile's image; a train is at most ten entries over its base,
-# so twenty commits of history reach it.
-# A PR's own run only admits it to the queue (its branch was tested by
-# `work test`); the train is what gets built and tested. On main, only the
-# compiler job runs: a cache made there is the one every PR and train reads.
+# The merge queue's check: ONE job per train, so ten trains test at once on
+# the ten free workers. A PR's own run only admits it to the queue (its branch
+# was tested by `work test`); on main, the job builds and caches the compiler
+# every PR and train starts from. `test` is the one required check. The
+# machine is .github/ci/Dockerfile's image; a train is at most ten entries
+# over its base, so twenty commits of history reach it.
 name: checks
 
 on:
@@ -23,102 +21,55 @@ permissions:
   packages: read
 
 jobs:
-  compiler:
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
-    timeout-minutes: 30
-    outputs:
-      key: ${{ steps.key.outputs.key }}
-      packages: ${{ steps.plan.outputs.packages }}
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 20 }
-      - id: key
-        run: echo "key=avra-${{ hashFiles('Makefile', 'backend/**', 'runtime/**', 'bootstrap/**', 'packages/**', '!packages/**/tests/**') }}" >> "$GITHUB_OUTPUT"
-      - id: plan
-        run: |
-          base=${{ github.event.merge_group.base_sha || 'HEAD^1' }}
-          sh tools/affected_packages.sh "$base" HEAD "$PWD" 2>/dev/null \
-            | python3 -c 'import json,sys; ps=[l.strip() for l in sys.stdin if l.strip()]; print("packages=" + json.dumps([" ".join(ps[i::4]) for i in range(min(4, len(ps)))]))' \
-            >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
-        id: cache
-        with:
-          path: build/avra
-          key: ${{ steps.key.outputs.key }}
-          restore-keys: avra-
-      - if: steps.cache.outputs.cache-hit != 'true'
-        run: if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
-      - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: build/avra
-          key: ${{ steps.key.outputs.key }}
-
-  lint:
-    needs: compiler
-    if: github.event_name != 'push'
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 20 }
-      - uses: actions/cache/restore@v4
-        with:
-          path: build/avra
-          key: ${{ needs.compiler.outputs.key }}
-          fail-on-cache-miss: true
-      - name: fmt
-        run: |
-          base=${{ github.event.merge_group.base_sha || 'HEAD^1' }}
-          changed=$(git diff --name-only --diff-filter=d "$base" HEAD -- '*.av')
-          [ -z "$changed" ] || build/avra fmt --check $changed
-      - name: idioms
-        run: build/avra check packages/std-avrac --baseline tools/idioms.baseline
-
-  suite:
-    needs: compiler
-    if: github.event_name != 'push' && needs.compiler.outputs.packages != '[]'
+  test:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        package: ${{ fromJSON(needs.compiler.outputs.packages) }}
-    name: suites (${{ matrix.package }})
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache/restore@v4
+      - if: github.event_name == 'pull_request'
+        run: echo "admitted; the train is what gets tested"
+      - if: github.event_name != 'pull_request'
+        uses: actions/checkout@v4
+        with: { fetch-depth: 20 }
+      - if: github.event_name != 'pull_request'
+        id: key
+        run: echo "key=avra-${{ hashFiles('Makefile', 'backend/**', 'runtime/**', 'bootstrap/**', 'packages/**', '!packages/**/tests/**') }}" >> "$GITHUB_OUTPUT"
+      - if: github.event_name != 'pull_request'
+        uses: actions/cache/restore@v4
+        id: cache
         with:
           path: build/avra
-          key: ${{ needs.compiler.outputs.key }}
-          fail-on-cache-miss: true
-      - run: make -s -o avra objects libs
-      - run: |
+          key: ${{ steps.key.outputs.key }}
+          restore-keys: avra-
+      - if: github.event_name != 'pull_request' && steps.cache.outputs.cache-hit != 'true'
+        name: compiler
+        run: if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
+      - if: github.event_name != 'pull_request' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/avra
+          key: ${{ steps.key.outputs.key }}
+      - if: github.event_name == 'merge_group'
+        name: fmt
+        run: |
+          changed=$(git diff --name-only --diff-filter=d ${{ github.event.merge_group.base_sha }} HEAD -- '*.av')
+          [ -z "$changed" ] || build/avra fmt --check $changed
+      - if: github.event_name == 'merge_group'
+        name: idioms
+        run: build/avra check packages/std-avrac --baseline tools/idioms.baseline
+      - if: github.event_name == 'merge_group'
+        name: suites
+        run: |
+          pkgs=$(sh tools/affected_packages.sh ${{ github.event.merge_group.base_sha }} HEAD "$PWD" 2>/dev/null)
+          [ -z "$pkgs" ] || make -s -o avra objects libs
           fail=0
-          for p in ${{ matrix.package }}; do
+          for p in $pkgs; do
             echo "::group::$p"
+            t=$(date +%s)
             build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
+            echo "$p $(( $(date +%s) - t ))s"
           done
           exit $fail
-
-  test:
-    needs: [compiler, lint, suite]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          [ "${{ github.event_name }}" = pull_request ] && exit 0
-          for r in "${{ needs.compiler.result }}" "${{ needs.lint.result }}" "${{ needs.suite.result }}"; do
-            case $r in success|skipped) ;; *) echo "a check failed: $r"; exit 1 ;; esac
-          done
