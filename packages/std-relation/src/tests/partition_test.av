@@ -1,0 +1,34 @@
+// `@arena`/`@side` beside `@relation` — the partitioned storage modes
+// M5b's arena/column relations use. No lookups land in this slice.
+// `marked_field`/`refusals` are this module's own — relation_adversarial_test.av
+// declares them, `tests/` being one namespace.
+use @std.meta.{Type, Field, Annotation}
+
+fn partitioned(mode: string, fields: List<Field>) -> Type {
+    Type {
+        name: "R",
+        fields: fields,
+        variants: [],
+        at: null,
+        doc: null,
+        annotations: [Annotation { name: mode, args: [], at: null }],
+        module: "m",
+    }
+}
+
+spec "a partitioned relation (@arena/@side)" {
+    given "a plain record, no id, no lookups" {
+        then "arena is sound" { refusals(partitioned("arena", [marked_field("n", [])])) == "" }
+        then "side is sound" { refusals(partitioned("side", [marked_field("n", [])])) == "" }
+    }
+    given "an id field" {
+        then "arena refuses it: the partition's own index names the row" {
+            refusals(partitioned("arena", [marked_field("id", [])])) == "partition_has_id"
+        }
+    }
+    given "a lookup mark, not yet landed over a partition" {
+        then "@key is refused" { refusals(partitioned("arena", [marked_field("k", ["key"])])) == "partition_lookup_unsupported" }
+        then "@unique is refused" { refusals(partitioned("arena", [marked_field("k", ["unique"])])) == "partition_lookup_unsupported" }
+        then "@index is refused" { refusals(partitioned("side", [marked_field("k", ["index"])])) == "partition_lookup_unsupported" }
+    }
+}

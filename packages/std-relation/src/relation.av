@@ -50,6 +50,7 @@ use @std.meta.{
     Field,
     Mark,
     Kind,
+    Annotation,
     Directive,
     Diagnostic,
     Declared,
@@ -107,9 +108,48 @@ export fn relation(t: Type) -> Declared {
     Declared { made: RelationRow.derive(t), problems: relation_problems(t) }
 }
 
+/// `@arena` beside `@relation` — the row lives at an existing `Arena<T>`'s
+/// own index, OWNED BY ITS PARTITION (a file's arena), never by a Db.
+/// Generates nothing on its own, the way `@dense` does — `relation`
+/// reads it off the SAME declaration's `annotations` (`storage_mode`).
+export fn arena(_t: Type) {}
+
+/// `@side` beside `@relation` — the row lives at an existing
+/// `SideTable<T>`'s own window index. Same shape as `@arena`,
+/// `SideTable` storage instead.
+export fn side(_t: Type) {}
+
+/// The storage this declaration's OTHER annotations name: `rows` (a
+/// dense Db-owned table, the default) or, when `@arena`/`@side` rides
+/// beside `@relation`, that word — `arena`/`side` are OWNED BY THEIR
+/// PARTITION, never a Db; the caller hands the partition's own value in.
+fn storage_mode(t: Type) -> string {
+    if t.annotations.any((a: Annotation) -> a.name == "arena") { return "arena" }
+    if t.annotations.any((a: Annotation) -> a.name == "side") { return "side" }
+    "rows"
+}
+
 /// Every way a declaration breaks the relation law, each spoken at the
 /// field or type that breaks it.
-export fn relation_problems(t: Type) -> List<Diagnostic> { problems_under(t, named_shape) }
+export fn relation_problems(t: Type) -> List<Diagnostic> {
+    let mode = storage_mode(t)
+    if mode == "rows" { return problems_under(t, named_shape) }
+    partition_problems(t, mode)
+}
+
+/// The partition law for `arena`/`side`: a record, no `id` (the
+/// partition's own index names a row, never a field of it), and no
+/// lookup marks yet — `@key`/`@unique`/`@index` over a partitioned
+/// relation are a later slice (M5b S2 names the per-decl index), so an
+/// early one is refused rather than silently accepted and ignored.
+fn partition_problems(t: Type, mode: string) -> List<Diagnostic> {
+    if t.module.is_empty() { return [no_module(t)] }
+    if !t.variants.is_empty() { return [not_a_record(t)] }
+    if mode != "arena" && mode != "side" { return [unknown_storage_mode(t, mode)] }
+    let ided = [partition_has_id(t) for f in t.fields if f.name == "id"]
+    let marked = [partition_lookup_unsupported(t, f) for f in t.fields if !lookup_marks(f).is_empty()]
+    ided.concat(marked)
+}
 
 /// The relation law, each declared name's shape answered by `shapes`.
 export fn problems_under(t: Type, shapes: fn(string) -> NamedShape) -> List<Diagnostic> {
@@ -460,21 +500,59 @@ fn members(t: Type) -> List<Decls> {
 
 fn generated(t: Type) -> Decls {
     if !shape_ok(t) { return quote { impl ${t} { } } }
+    match storage_mode(t) {
+        "arena" -> arena_generated(t),
+        "side" -> side_generated(t),
+        _ -> quote {
+            ${stores_decl(t)}
+            ${key_record(t)}
+            ${stored_record(t)}
+            impl ${t} {
+                static fn relation_name() -> string { ${literal(stable_name(t))} }
+
+                static fn shape_hash() -> int { ${shape_hash(t)} }
+
+                /// Every content field's stable encoding, in declared order,
+                /// seeded by the relation's name so two relations holding the
+                /// same values never share a hash.
+                fn stable_hash() -> int { ${hash_chain(t)}.finish() }
+
+                ${members(t)}
+            }
+        },
+    }
+}
+
+/// `@relation(arena)`: the row at an `Arena<T>`'s own raw index — the
+/// partition IS the storage, so `get`/`all` read it directly and record
+/// no dependency yet (S3 wires the per-declaration grain).
+fn arena_generated(t: Type) -> Decls {
     quote {
-        ${stores_decl(t)}
-        ${key_record(t)}
-        ${stored_record(t)}
         impl ${t} {
-            static fn relation_name() -> string { ${literal(stable_name(t))} }
+            static fn get(store: Arena<${t}>, id: int) -> ${t}? {
+                if id < 0 || id >= store.count() { return null }
+                store.node_at(id)
+            }
 
-            static fn shape_hash() -> int { ${shape_hash(t)} }
+            static fn all(store: Arena<${t}>) -> List<${t}> {
+                [store.node_at(i) for i in 0..store.count()]
+            }
+        }
+    }
+}
 
-            /// Every content field's stable encoding, in declared order,
-            /// seeded by the relation's name so two relations holding the
-            /// same values never share a hash.
-            fn stable_hash() -> int { ${hash_chain(t)}.finish() }
+/// `@relation(side)`: the row at a `SideTable<T>`'s own window index.
+fn side_generated(t: Type) -> Decls {
+    quote {
+        impl ${t} {
+            static fn get(store: SideTable<${t}>, id: int) -> ${t}? {
+                if !store.holds(id) { return null }
+                store.get(id)
+            }
 
-            ${members(t)}
+            static fn all(store: SideTable<${t}>) -> List<${t}> {
+                [store.get(store.lo + i) for i in 0..store.length()]
+            }
         }
     }
 }
@@ -985,6 +1063,33 @@ fn not_a_record(t: Type) -> Diagnostic {
         t.at,
         "a relation's rows are records — `${t.name}` is an enum",
         "declare the row as a record: `type ${t.name} = { … }`",
+    )
+}
+
+fn unknown_storage_mode(t: Type, mode: string) -> Diagnostic {
+    refuse_as_at(
+        "unknown_storage_mode",
+        t.at,
+        "`@relation(${mode})` names no storage this derive knows — `rows` (the default), `arena` and `side` are the words",
+        "drop the argument for a Db-owned table, or spell `arena`/`side`",
+    )
+}
+
+fn partition_has_id(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "partition_has_id",
+        t.at,
+        "`${t.name}` names its own `id` field, but a partitioned relation's row is addressed by its OWNER's own index — the caller's typed id, never a field the row carries",
+        "drop the `id` field; the generated `get`/`all` take the partition's own index",
+    )
+}
+
+fn partition_lookup_unsupported(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "partition_lookup_unsupported",
+        f.at ?? t.at,
+        "`@${lookup_marks(f).first() ?? "?"}` over a partitioned (`arena`/`side`) relation is not landed yet — `${t.name}.${f.name}` wants one",
+        "drop the mark for this slice; indexed lookups over a partition are a later slice (M5b S2)",
     )
 }
 
