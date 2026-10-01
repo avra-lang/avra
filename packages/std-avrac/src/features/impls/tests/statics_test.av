@@ -59,8 +59,16 @@ spec "features/impls/statics" {
                 "trait Show {\n    fn show() -> string\n    static fn lifted(t: int) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> string { \"p\" }\n    static fn lifted(t: int) -> int { t + 1 }\n}\nP.lifted(3)",
             ) == "4"
         }
-        then "an associated fn's signature names no `Self`" {
-            refused_with("trait T {\n    static fn make() -> Self\n}\n1", "`Self` names no type")
+        then "an abstract associated fn's `Self` is each signatory's own type" {
+            shown(
+                "trait Make {\n    static fn make(n: int) -> Self\n}\ntype P = { x: int }\nimpl Make for P {\n    static fn make(n: int) -> P { P { x: n } }\n}\nP.make(4).x",
+            ) == "4"
+        }
+        then "a bodied associated fn's signature names no `Self`" {
+            refused_with(
+                "trait T {\n    static fn tally(s: Self) -> int { 1 }\n}\n1",
+                "`Self` names no type",
+            )
         }
         then "an unanswered associated fn is the contract's refusal" {
             refused_with(

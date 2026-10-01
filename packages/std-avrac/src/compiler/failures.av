@@ -491,19 +491,19 @@ impl Workspace {
             self.decls.record_seat_types(d, ptypes)
             return
         }
-        // A STATIC SPENDS NO SEAT ON A RECEIVER and reads no target scope —
-        // `Self` is not in scope for it (declare_trait_sig's own law).
-        if store.is_static(x.stmt) {
-            self.decls.record_seat_types(d, t.typed_seats(x.stmt, fp.params, null))
-            return
-        }
-        // A non-static member's target's OWN type params (a trait's `Self`,
+        // A member's target's OWN type params (a trait's `Self`,
         // a generic impl's or record's own Vars) must be in scope here too —
         // `t` is its own fresh context, so `declare_under`'s/`declare_trait_sig`'s
         // enter_target_scope on THEIR TypeCx does not reach it.
+        // a trait's bodied static is one definition for the whole trait: no scope names its `Self`
+        if store.is_static(x.stmt) && self.decls.has_body(d) && self.decls.is_trait(x.parent!) {
+            return self.decls.record_seat_types(d, t.typed_seats(x.stmt, fp.params, null))
+        }
         let target? = self.seated_target(x.parent!, store, t) else { return }
         t.enter_target_scope(target)
-        let ptypes = t.typed_seats(x.stmt, fp.params, self.decls.self_type_of(target))
+        // A STATIC SPENDS NO SEAT ON A RECEIVER
+        let receiver = if store.is_static(x.stmt) { null } else { self.decls.self_type_of(target) }
+        let ptypes = t.typed_seats(x.stmt, fp.params, receiver)
         t.leave_tscope()
         self.decls.record_seat_types(d, ptypes)
     }
