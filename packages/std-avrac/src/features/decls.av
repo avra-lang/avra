@@ -52,7 +52,7 @@ use core.{
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck}
 use @std.relation.db.{Db, new_db}
-use @std.relation.rows.{Rows}
+use @std.relation.rows.{Rows, bool_key}
 use core.{
     Fingerprint,
     Exemplar,
@@ -103,8 +103,8 @@ export type FileInfo = { id: FileId, path: string, module_id: ModuleId, test: bo
 type OwnerSpan = { d: DeclId, lo: int, hi: int }
 
 /// `Decl`'s indexes, numbered in field order: its name, a component
-/// instance's `word`, every `@name` it wears, its interning key and the
-/// file that homes it. `word` and `marks` are TWO INDEXES, never one —
+/// instance's `word`, every `@name` it wears, its interning key, the
+/// file that homes it, and whether it is an `extern fn`. `word` and `marks` are TWO INDEXES, never one —
 /// sharing a bucket would let a component named `rule` and an annotation
 /// `@rule` answer for each other.
 const name_index: int = 0
@@ -112,6 +112,7 @@ const word_index: int = 1
 const marks_index: int = 2
 const key_index: int = 3
 const home_index: int = 4
+const external_index: int = 5
 
 /// `sigs`, `children`, `methods` and `impls` are dense by
 /// DeclId; `stores` and `decl_ids` dense by FileId. The two hooks
@@ -1945,6 +1946,13 @@ impl Decls {
     }
 
     fn is_extern(d: DeclId) -> bool { self.decl(d).kind is .Fn && self.facts_of(d)?.external ?? false }
+
+    /// Every `extern fn`, in id order, off the externs' bucket.
+    @bracket("decls")
+    fn externs() -> List<Decl> {
+        let rs = self.decl_row_rows.get()
+        [x for x in rs.members(rs.bucket_of(external_index, bool_key(true))) if self.is_extern(x.id)]
+    }
 
     /// THE ONE READING DOOR for a declaration's OWN `///` doc — a held
     /// file answers through the same fact `capture_facts` recorded at

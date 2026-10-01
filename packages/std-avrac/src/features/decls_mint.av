@@ -418,7 +418,7 @@ impl Decls {
         self.unfaced(d)
         for name in f.mut_seats { self.mut_seat_index.put(name, self.mut_seat_sealers(name).concat([d])) }
         self.faces.set_at(d.index, f)
-        self.filed_under(d, f.word, [a.name for a in f.annotations])
+        self.filed_under(d, f.word, [a.name for a in f.annotations], f.external)
         mut doc_table = self.doc_facts.get()
         doc_table.grow_to(d.index + 1)
         doc_table.set(d.index, DocFact { doc: f.doc, annotations: f.annotations })
@@ -432,12 +432,15 @@ impl Decls {
         }
     }
 
-    /// A row's `word` and `marks` rewritten when its facts name others —
-    /// a row whose collect columns already agree is left as it stands.
-    fn filed_under(d: DeclId, word: string?, marks: List<string>) {
+    /// A row's fact columns — `word`, `marks`, `external` — rewritten when
+    /// its facts name others; a row whose columns already agree is left as
+    /// it stands.
+    fn filed_under(d: DeclId, word: string?, marks: List<string>, external: bool) {
         let row = self.raw_decl(d)
-        if row.word == word && list_eq(row.marks, marks, (x, y) -> x == y) { return }
-        self.set_decl(d.index, row with { word: word, marks: marks })
+        if row.word == word &&
+            list_eq(row.marks, marks, (x, y) -> x == y) &&
+            row.external == external { return }
+        self.set_decl(d.index, row with { word: word, marks: marks, external: external })
     }
 
     /// Whether a declaration's body has no receiver — the fact eight sites used to read
@@ -559,6 +562,7 @@ impl Decls {
             marks: [],
             key: key,
             home: homed(kind, f),
+            external: false,
         }
         if known == null {
             self.sigs.push(null)
@@ -582,7 +586,11 @@ impl Decls {
             self.set_decl(id.index, d)
         } else {
             let prior = self.raw_decl(id)
-            self.set_decl(id.index, d with { word: prior.word, marks: prior.marks })
+            self
+                .set_decl(
+                    id.index,
+                    d with { word: prior.word, marks: prior.marks, external: prior.external },
+                )
         }
         // THE ONE CAPTURE, at the one place a declaration is minted from a parse. Six
         // readers asked the store per pass; they ask this row now, and a held file's row
