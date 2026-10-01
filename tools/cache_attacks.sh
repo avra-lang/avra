@@ -117,7 +117,7 @@ S() { # S <label> <app>
     case "$held" in "held 0/"*|"") ;; *) holds=$((holds+1)) ;; esac
     if [ ! -x "$bin" ]; then fails=$((fails+1)); echo "FAIL  $1 [$2] did not build (status $st): $(printf '%s\n' "$out" | cat - $R/$2.err | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
     # A REFUSED HOLD IS A FINDING HERE: the build is right and the hold was wrong.
-    if grep -q "the hold was refused" $R/$2.err; then fails=$((fails+1)); echo "FAIL  $1 [$2] the hold was refused: $(grep -A1 'the hold was refused' $R/$2.err | tail -1 | cut -c1-160)"; return; fi
+    if grep -q "the hold was refused" $R/$2.err; then fails=$((fails+1)); echo "FAIL  $1 [$2] the hold was refused: $(grep 'the hold was refused' $R/$2.err | head -1 | cut -c1-200)"; return; fi
     nat=$("$bin" 2>&1); ev=$(./avra run $R/$2 2>/dev/null | unwatched)
     if [ "$nat" = "$ev" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [$2] ($held) -> $nat"; else fails=$((fails+1)); echo "FAIL  $1 [$2] ($held) native='$nat' eval='$ev'"; fi
 }

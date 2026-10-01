@@ -534,6 +534,39 @@ impl Decls {
             cold: cold_bodies(every_body),
         }
     }
+
+    /// A const's initializer lowered only until a body `stops` — the
+    /// bodies reached so far as a program, or null when none stops and
+    /// the whole reach was lowered. What a structural refusal needs
+    /// without lowering everything its initializer reaches.
+    fn settlement_until(root: Wanted, unit_of: fn(Wanted) -> Unit, stops: fn(Body) -> bool) -> Lowered? {
+        let ru = unit_of(root)
+        mut bodies = ru.bodies
+        mut wants = ru.wants
+        mut seen: Map<string, bool> = {}
+        mut hit = ru.bodies.any(stops)
+        // breadth first, so a shallow reach is found before a deep branch is lowered
+        mut at = 0
+        while !hit && at < wants.length {
+            let w = wants[at]
+            at = at + 1
+            if claim_seen(seen, w.name) {
+                let u = unit_of(w)
+                bodies = bodies.concat(u.bodies)
+                wants = wants.concat(u.wants)
+                hit = u.bodies.any(stops)
+            }
+        }
+        if !hit { return null }
+        Lowered {
+            fns: bodies.slice(1, bodies.length),
+            entry: bodies.first() ?? empty_main(self.types).body,
+            types: self.types,
+            diagnostics: [],
+            externs: self.extern_rows(),
+            statics: [],
+        }
+    }
 }
 
 /// The bodies a worklist reaches, each name once, the statics they
