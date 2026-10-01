@@ -46,7 +46,7 @@ h.draw(Text { content: "hi" })          // the Realize<Text> impl, by the argume
 | C2a.3 | resolution: `declared_call` selects among candidates by argument type (the ambiguity and no-impl voices); the choice recorded per call in facts so lowering, failures, receivers and structural types read ONE answer |
 | C2a.4 | bounds with arguments; held (warm) interface carries the trait arguments |
 | C2b | `dyn X<A>` (`Type.Dyn` gains args), dispatch table per trait instance, the completeness law |
-| C2c | `From<T>` in the prelude — the first non-UI consumer |
+| C2c | `From<T>` in `@std/convert` — static members chosen by argument; the first non-UI consumer |
 
 Each slice: program tests eval == native, a golden per voice, red team,
 review round, compiler suite on a Sprite.
@@ -59,6 +59,12 @@ read the TRAIT's member (`Decls.shared_member`) — the signature and
 receiver contract every impl agrees to — never the first impl found.
 
 ## Recorded, not landed
+
+- **A static member called through a type parameter** (`fn made<T, R:
+  From<T>>(t: T) -> R { R.from(t) }`) is `R` "is not defined": a type
+  parameter is not a value receiver. Static members of a generic trait
+  choose by argument on a named type (`Celsius.from(3)`). Fires when a
+  generic fn must MAKE its bound's type rather than receive one.
 
 - **`dyn` over a generic trait** (`dyn Realize<Text>`) does not parse.
   A `dyn` type names its trait alone, so a box has no slot for the

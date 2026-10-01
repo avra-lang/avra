@@ -97,14 +97,26 @@ fn static_call(
     name: string,
     args: List<ExprId>,
 ) -> TypeId {
-    let found? = cx.view.decls.sig(m)?.fn_sig() else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
-    let placed? = cx.placed(e, "${target}.${name}", m, args, found.params) else { return cx.error_type }
+    let many = statics_named(cx, m, name)
+    let picked? = (if distinct_keys(cx, many) > 1 { chosen_member(cx, e, target, name, many, args, 0) } else { m }) else {
+        return cx.error_type
+    }
+    let found? = cx.view.decls.sig(picked)?.fn_sig() else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
+    let placed? = cx.placed(e, "${target}.${name}", picked, args, found.params) else { return cx.error_type }
     if placed.args.length != placed.wants.length { return wrong_static_arity(cx, e, target, name, placed.wants.length, placed.args.length) }
     for j, a in placed.args {
         if !cx.accepts(a, placed.wants[j]) { wrong_method_argument(cx, target, name, j, placed.wants[j], a) }
     }
-    if !cx.seat_contracts(e, "${target}.${name}", m, 0, placed.args, null) { return cx.error_type }
+    if !cx.seat_contracts(e, "${target}.${name}", picked, 0, placed.args, null) { return cx.error_type }
     found.ret
+}
+
+/// The static members of `m`'s type that share its name — one per
+/// impl of a generic trait, or `m` alone.
+fn statics_named(cx: TypeCx, m: DeclId, name: string) -> List<DeclId> {
+    let block? = cx.view.decls.decl(m).parent else { return [m] }
+    let owner? = cx.view.decls.target_of(block) else { return [m] }
+    [s for s in cx.view.decls.methods_named(owner, name) if cx.view.decls.is_static_of(s)]
 }
 
 /// A trait member's sig on THIS receiver: the trait's `Self` is the
@@ -244,10 +256,12 @@ fn chosen_member(
     name: string,
     many: List<DeclId>,
     args: List<ExprId>,
+    at: int = 1,
 ) -> DeclId? {
-    let by_args = [m for m in many if seats_fit(cx, m, args)]
+    let by_args = [m for m in many if seats_fit(cx, m, args, at)]
     if by_args.is_empty() {
-        let d? = dispatch_of(cx, many, args) else {
+        // a run-time choice reads a receiver's members, never a type's statics
+        let d? = (if at == 1 { dispatch_of(cx, many, args) } else { null }) else {
             no_member_fits(cx, e, target, name, [cx.view.decls.method_key(m) for m in many])
             return null
         }
@@ -357,10 +371,10 @@ fn answers_fit(cx: TypeCx, m: DeclId, want: TypeId) -> bool {
 
 /// Whether every argument's type fits the member's seat — seat 0 is
 /// the receiver.
-fn seats_fit(cx: TypeCx, m: DeclId, args: List<ExprId>) -> bool {
+fn seats_fit(cx: TypeCx, m: DeclId, args: List<ExprId>, at: int = 1) -> bool {
     let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
-    sig.params.length == args.length + 1 &&
-        [j for j, a in args if cx.types_disagree(cx.type_at(a), sig.params[j + 1])].is_empty()
+    sig.params.length == args.length + at &&
+        [j for j, a in args if cx.types_disagree(cx.type_at(a), sig.params[j + at])].is_empty()
 }
 
 /// The declared type a receiver answers to, or absence. Generic

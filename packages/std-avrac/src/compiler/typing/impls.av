@@ -30,11 +30,13 @@ impl TypeCx {
         let m = self.decl_of(f)
         let contract: DeclId = self.view.decls.decl(m).parent!
         if self.repeated_member(f, contract) { self.member_twice(f, contract, fp.name) }
-        // AN ASSOCIATED FN spends no receiver seat: `Self` is not in
-        // scope for it, so a signature naming `Self` does not resolve.
+        // AN ASSOCIATED FN spends no receiver seat; its signature
+        // names `Self` and the trait's parameters as any member's does.
         if self.view.store.is_static(f) {
             self.record_receiver_word(f, [])
+            self.enter_target_scope(contract)
             self.seated_answer(f, fp.params, null, fp.name, fp.ret)
+            self.leave_tscope()
             // A BODIED ASSOCIATED FN IS ONE DEFINITION FOR THE WHOLE
             // TRAIT, never per-signatory, so it is a method of the
             // trait's OWN name — `Foo.make(…)`, no implementor in
@@ -335,7 +337,9 @@ impl TypeCx {
         let answered? = own ?? self.view.decls.method(target, mn) else { return self.unanswered(s, of, tname, mn) }
         if same_decl(answered, m) { return }
         let got: FnSig? = self.view.decls.sig(answered)?.fn_sig()
-        if want != null && got != null && !sigs_agree(want!, got!) { self.sig_unworn(s, of, tname, mn) }
+        // A STATIC SPENDS NO SEAT ON A RECEIVER, so its first seat is judged too
+        let from = if self.view.decls.is_static_of(m) { 0 } else { 1 }
+        if want != null && got != null && !sigs_agree(want!, got!, from) { self.sig_unworn(s, of, tname, mn) }
     }
 
     /// A member's signature at the impl's trait arguments; a trait

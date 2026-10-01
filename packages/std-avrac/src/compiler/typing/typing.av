@@ -21,7 +21,7 @@ use core.{
     mut_mark,
     Annotation,
 }
-use core.{SeatMark, FileId}
+use core.{SeatMark, FileId, same_type}
 use diagnostics.{refusal}
 use features.{
     TypeCx,
@@ -681,15 +681,12 @@ fn var_named(types: TypeRegistry, id: TypeId, name: string) -> bool {
 
 /// Two method sigs agree seat by seat past the receiver — the
 /// trait's wears `Self` there, the signatory's its own type.
-fn sigs_agree(want: FnSig, got: FnSig) -> bool {
-    if got.params.length != want.params.length { return false }
-    // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
-    if want.ret.index != got.ret.index { return false }
-    for j, w in want.params {
-        // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
-        if j > 0 && got.params[j].index != w.index { return false }
-    }
-    true
+/// Two signatures agreeing seat by seat from `from` — `1` past a
+/// receiver, `0` for a member that takes none — and in their answer.
+fn sigs_agree(want: FnSig, got: FnSig, from: int = 1) -> bool {
+    got.params.length == want.params.length &&
+        same_type(want.ret, got.ret) &&
+        [j for j, w in want.params if j >= from && !same_type(got.params[j], w)].is_empty()
 }
 
 /// A package's name in prose.
