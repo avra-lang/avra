@@ -577,8 +577,12 @@ impl SideRows<R> {
     fn opened(db: Db, verify: fn(int) -> int) -> int {
         let known = self.family.get()
         if known >= 0 { return known }
-        let register = db.hooks.family
-        let fam = register(verify)
+        let family = self.family
+        let fam = db
+            .registered(
+                verify,
+                (register: fn(fn(int) -> int) -> int) -> family.set(register(verify)),
+            )
         self.family.set(fam)
         let closed = self.closed
         db
