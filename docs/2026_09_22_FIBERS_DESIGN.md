@@ -254,7 +254,13 @@ the cores placement's work.
   CPU-bound handler measured starving a server.
 - M:N: rides atomic retains (Bend doc §4.4–4.5).
 - Growable stacks: the trigger is a measured program overflowing the
-  default reservation on real work.
+  default reservation on real work. PROBED AND NOT MET (2026-10-01,
+  avra-8sb5.1.24.7): the one overflow measured on a real server —
+  `Inbound.wire_read` (h2_serve.av) adding a frame per bell-wake — was
+  unbounded RECURSION, a defect, and is fixed by waiting in place
+  (f5ce1ef), not by a bigger stack. With that fix every h2 program fits
+  `AVRA_FIBER_STACK=65536`, and the default 1 MiB reservation is
+  unchanged. Growable stacks stay unbuilt until real work overflows.
 
 ## 8. One scope algebra, four placements
 
