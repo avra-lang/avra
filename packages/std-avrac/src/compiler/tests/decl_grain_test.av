@@ -1,0 +1,164 @@
+// A use reads the DECLARATION it names, never its file's parse (COMPILER
+// DB townhall §6.11). Two workspaces over one package, `src/lib/a.av`
+// edited in the second, stand in for one process before and after the
+// edit: every query `src/main.av` asks that another file answers is the
+// FRONTIER, and a frontier that fingerprints alike means red-green keeps
+// every one of main's queries. `a_process_over` and `checked` are
+// workspace_fixtures.av's own.
+use @std.avrac.compiler.{avra, new_workspace}
+use @std.avrac.testing.{vendored_meta, vendored_meta_paths}
+use compiler.{Workspace, type_facts_fp}
+use compiler.host.{memory_host}
+use core.{sorted_texts, distinct}
+use query.{Key}
+
+fn grain_main() -> string { "/w/src/main.av" }
+
+fn grain_lib() -> string { "/w/src/lib/a.av" }
+
+/// `caller` names a fn, a record and its method, a trait through a box,
+/// an enum, a const, a defaulted seat and a generic fn — all from `a.av`.
+fn grain_caller() -> string {
+    "use lib.{one, Box, Color, LIMIT, dflt, ident, Shape}\nexport fn caller() -> int {\n    let b = Box { v: 1 }\n    let c = Color.Red\n    let s: dyn Shape = b\n    one() + b.get() + LIMIT + dflt(1) + ident(2) + s.area()\n}\n"
+}
+
+/// `a.av` with `one`'s head, `one`'s body and `two`'s body as given;
+/// `two` is a declaration `caller` never names.
+fn grain_lib_text(note: string, one_head: string, one_body: string, two_body: string) -> string {
+    "${note}export type Box = { v: int }\nimpl Box {\n    fn get() -> int {\n        self.v\n    }\n}\nexport trait Shape {\n    fn area() -> int\n}\nimpl Shape for Box {\n    fn area() -> int {\n        self.v\n    }\n}\nexport enum Color { Red, Green }\nexport const LIMIT: int = 3\nexport fn ${one_head} -> int {\n    ${one_body}\n}\nexport fn two() -> int {\n    ${two_body}\n}\nexport fn dflt(a: int, n: int = 1) -> int {\n    a + n\n}\nexport fn ident<T>(x: T) -> T {\n    x\n}\n"
+}
+
+fn grain_base() -> string { grain_lib_text("", "one()", "1", "2") }
+
+/// The package checked once, `main.av` first.
+fn grain_checked(lib: string) -> Workspace {
+    let ws = a_process_over(
+        {"/w/src/main.av": grain_caller(), "/w/src/lib/a.av": lib},
+        [grain_main(), grain_lib()],
+    )
+    let _ = checked(ws, grain_main())
+    ws
+}
+
+/// `caller` reads a deprecated fn; the note is the only thing it varies.
+fn marked_checked(lead: string, note: string) -> Workspace {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/main.av": "use lib.{old}\nexport fn caller() -> int {\n    old()\n}\n",
+            "/w/src/lib/a.av": "${lead}use @std.meta.{deprecated}\n@deprecated(\"${note}\")\nexport fn old() -> int {\n    1\n}\n",
+        },
+    )
+    let ws = new_workspace(
+        memory_host(
+            files,
+            ["/w/avra.toml", grain_main(), grain_lib()].concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
+    for path in [grain_main(), grain_lib()] { let _ = ws.items(ws.file_id(path)) }
+    let _ = checked(ws, grain_main())
+    ws
+}
+
+fn grain_is_main(ws: Workspace, k: Key) -> bool { ws.key_label(k).contains("src/main.av") }
+
+/// A query another file answers: neither `main.av`'s nor the language's own.
+fn grain_is_foreign(ws: Workspace, k: Key) -> bool {
+    let label = ws.key_label(k)
+    !label.contains("src/main.av") && !label.contains("· builtin")
+}
+
+/// Every edge from one of main's queries to a query another file answers.
+fn grain_crossings(ws: Workspace) -> List<Key> {
+    [d for k in ws.db.settled_keys() if grain_is_main(ws, k) for d in ws.db.deps_of(k) if grain_is_foreign(ws, d)]
+}
+
+/// The frontier as `label=hash`, an unknown hash as -1.
+fn grain_frontier(ws: Workspace) -> List<string> {
+    sorted_texts(
+        distinct(
+            ["${ws.key_label(d)}=${ws.db.value_hash_of(d) ?? -1}" for d in grain_crossings(ws)],
+        ),
+    )
+}
+
+/// A query `main.av` asks that reads `a.av` whole.
+fn grain_reads_whole(ws: Workspace, k: Key) -> bool {
+    let label = ws.key_label(k)
+    ["Parsed", "Plain", "Expanded", "Visible", "Resolved"]
+        .any((w: string) -> label == "${w}(src/lib/a.av)")
+}
+
+fn grain_whole_reads(ws: Workspace) -> List<string> {
+    distinct([ws.key_label(d) for d in grain_crossings(ws) if grain_reads_whole(ws, d)])
+}
+
+fn grain_unknown(entry: string) -> bool { entry.ends_with("=-1") }
+
+/// Every frontier hash known, and the two frontiers alike: red-green keeps main.
+fn grain_kept(before: Workspace, after: Workspace) -> bool {
+    !grain_frontier(before).any(grain_unknown) &&
+        grain_frontier(before).join(";") == grain_frontier(after).join(";")
+}
+
+/// What main answers, its diagnostics and `caller`'s typed facts, alike in both.
+fn grain_same_answer(before: Workspace, after: Workspace) -> bool {
+    before.analysis(before.file_id(grain_main())).report() == after.analysis(after.file_id(grain_main())).report() &&
+        type_facts_fp(before.typed(decl_in_file(before, grain_main(), "caller"))) == type_facts_fp(after.typed(decl_in_file(after, grain_main(), "caller")))
+}
+
+spec "compiler/workspace — a use reads the declaration, never its file" {
+    given "a caller naming eight kinds of declaration from another file" {
+        then "no query of main's reads that file's parse, resolve or namespace" {
+            grain_whole_reads(grain_checked(grain_base())).is_empty()
+        }
+        then "every query it does read there fingerprints eagerly" {
+            let f = grain_frontier(grain_checked(grain_base()))
+            !f.is_empty() && !f.any(grain_unknown)
+        }
+    }
+    given "the other file edited where the caller cannot see" {
+        then "a comment above and inside `one` keeps every query of main's, answering alike" {
+            let before = grain_checked(grain_base())
+            let after = grain_checked(
+                grain_lib_text("// a note\n", "one()", "// inside\n    1", "2"),
+            )
+            grain_kept(before, after) && grain_same_answer(before, after)
+        }
+        then "a new body for `one` keeps them" {
+            let before = grain_checked(grain_base())
+            let after = grain_checked(grain_lib_text("", "one()", "0 + 1", "2"))
+            grain_kept(before, after) && grain_same_answer(before, after)
+        }
+        then "a new body for `two`, which the caller never names, keeps them" {
+            let before = grain_checked(grain_base())
+            let after = grain_checked(grain_lib_text("", "one()", "1", "0 + 2"))
+            grain_kept(before, after) && grain_same_answer(before, after)
+        }
+    }
+    given "the other file edited where the caller reads" {
+        then "a new signature for `one` moves the frontier" {
+            !grain_kept(
+                grain_checked(grain_base()),
+                grain_checked(grain_lib_text("", "one(n: int = 0)", "n", "2")),
+            )
+        }
+    }
+    given "a caller of a deprecated fn in another file" {
+        then "no query of main's reads that file's parse, resolve or namespace" {
+            grain_whole_reads(marked_checked("", "use one")).is_empty()
+        }
+        then "a comment above it keeps every query of main's, answering alike" {
+            let before = marked_checked("", "use one")
+            let after = marked_checked("// a note\n", "use one")
+            grain_kept(before, after) && grain_same_answer(before, after)
+        }
+        then "a new note moves the frontier, and the warning says it" {
+            let after = marked_checked("", "use two")
+            !grain_kept(marked_checked("", "use one"), after) &&
+                after.analysis(after.file_id(grain_main())).report().contains("use two")
+        }
+    }
+}

@@ -451,6 +451,18 @@ impl Kernel {
         self.settled(s, key, deps, kept_since(prior, value_hash) ?? state_revision(s), value_hash)
     }
 
+    /// Closes `key`'s open frame WITHOUT settling it: nothing is kept for
+    /// `key`, and every read the frame made becomes a read of the frame
+    /// around it. A query that learns mid-flight it cannot answer whole
+    /// answers through its reader instead.
+    fn abandon(key: Key) {
+        mut s = self.snapshot()
+        if !same_key(s.open.last() ?? key, key) { abandoned_out_of_order(key) }
+        let deps = self.closed_frame(s)
+        self.replace(s)
+        for d in deps { self.record_dep(d) }
+    }
+
     /// Closes the open query frame: its read deps, with the frame's
     /// restores replayed and its stacks popped.
     fn closed_frame(mut s: KernelState) -> List<Key> {
@@ -616,6 +628,12 @@ extern fn avra_trap(message: string)
 
 fn unregistered_family(family: int) {
     avra_trap("defect: key names family ${family}, no such family is registered")
+}
+
+fn abandoned_out_of_order(key: Key) {
+    avra_trap(
+        "defect: only the innermost open query may be abandoned, and ${key.family}:${key.arg} is not it",
+    )
 }
 
 fn never_verify(arg: int) -> int {

@@ -514,6 +514,10 @@ enum Family {
     /// a body's bindings depends on this, never on the file's whole
     /// `Resolved`
     Names
+    /// a declaration's use-site warnings, keyed by DeclId: what every
+    /// use of it speaks, folded whole — so a use depends on these and
+    /// never on the declaration's whole file
+    Marks
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -570,6 +574,7 @@ fn family_word(f: Family) -> string {
         .LiftLowered -> "LiftLowered",
         .Syntax -> "Syntax",
         .Names -> "Names",
+        .Marks -> "Marks",
     }
 }
 
@@ -608,6 +613,7 @@ fn family_at(i: int) -> Family {
         24 -> Family.LiftLowered,
         25 -> Family.Syntax,
         26 -> Family.Names,
+        27 -> Family.Marks,
         other -> {
             avra_trap(
                 "defect: no Family at ordinal ${other} — family_at answers every place in `Family`'s declaration",
@@ -621,7 +627,7 @@ fn family_at(i: int) -> Family {
 /// walks. Bump it in the SAME edit that adds an arm to `family_at`;
 /// nothing below can notice the day only this number moves alone, or
 /// only stays still alone.
-const family_count: int = 27
+const family_count: int = 28
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
@@ -994,24 +1000,29 @@ impl Workspace {
     /// declaration). Runs inside the armed hook, so a use finds a
     /// later declaration's warnings however the files are ordered.
     fn computed_marks(d: DeclId) -> List<Diagnostic> {
-        let x = self.decls.decl(d)
-        // A HELD DECLARATION WITH NO ANNOTATIONS HAS NO WARNINGS, and asking must not
-        // PARSE its file to learn that: the fact was captured once, at admission. This is
-        // the door that made typing an entry re-parse every held fn it calls.
-        if self.is_held(x.file) && !(self.decls.facts_of(d)?.annotated ?? false) {
+        // A DECLARATION WITH NO ANNOTATIONS HAS NO WARNINGS, a fact captured at admission:
+        // asking never parses its file, and a use of it never reads that file.
+        if !(self.decls.facts_of(d)?.annotated ?? false) {
             self.decls.record_marks(d, [])
             return []
         }
+        let k = key(Family.Marks, d.index)
+        if !(self.db.ask(k) is .Compute) { return self.decls.marks.get()[d.index] ?? [] }
+        self.db.begin(k)
+        let out = self.warnings_of(self.decls.decl(d))
+        self.decls.record_marks(d, out)
+        self.db.settle(k, use_warnings_fp(out))
+        out
+    }
+
+    /// Every annotation's warnings over `x`, read from its file's parse.
+    fn warnings_of(x: Decl) -> List<Diagnostic> {
         let p = self.parsed(x.file)
         // A builtin or synthetic declaration has no statement record;
         // nothing annotates it, so there is nothing to keep.
         if x.stmt.index >= p.store.annotations.get().length { return [] }
         let vis = self.visible(x.file)
-        let out = flatten(
-            [self.annotation_warnings(x, p, vis, a) for a in p.store.annotations_of(x.stmt)],
-        )
-        self.decls.record_marks(d, out)
-        out
+        flatten([self.annotation_warnings(x, p, vis, a) for a in p.store.annotations_of(x.stmt)])
     }
 
     /// One annotation's WARNING diagnostics, empty for an annotation
@@ -1062,6 +1073,7 @@ impl Workspace {
             .MethodDiags -> touch(self.method_diagnostics(file_at(arg))),
             .Syntax -> touch(self.syntax(decl_at_arg(arg))),
             .Names -> touch(self.name_slice(decl_at_arg(arg))),
+            .Marks -> touch(self.computed_marks(decl_at_arg(arg))),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -1716,6 +1728,12 @@ impl Workspace {
     /// answers what stands.
     @bracket("methods")
     fn methods(target: DeclId) -> List<DeclId> {
+        // THE TABLE'S OWN FRAME READS THE FILES IT GATHERS FROM, so a
+        // caller depends on `Methods(target)` and never on the target's
+        // whole resolved file or an impl's namespace.
+        let k = key(Family.Methods, target.index)
+        if !(self.db.ask(k) is .Compute) { return self.decls.registered_methods(target) }
+        self.db.begin(k)
         // A GENERATED IMPL IS MINTED INTO THE TARGET'S OWN FILE, so the
         // table must not be read before that file's expansion has run —
         // or a caller in another file sees a table missing the derived
@@ -1736,11 +1754,15 @@ impl Workspace {
         // not be memoized: an impl still registering, or an impl in a
         // file whose resolve is in flight (a lifted call runs inside
         // one, and the generated impl it is minting is not signed yet).
-        if blocks.any((b) -> self.registering(b)) { return self.decls.registered_methods(target) }
-        if blocks.any((b) -> self.db.active(key(Family.Resolved, self.decls.decl(b).file.index))) { return self.decls.registered_methods(target) }
-        let k = key(Family.Methods, target.index)
-        if !(self.db.ask(k) is .Compute) { return self.decls.registered_methods(target) }
-        self.db.begin(k)
+        // Its reads stay the caller's, which answered from what stands.
+        if blocks
+            .any(
+                (b) -> self.registering(b) ||
+                    self.db.active(key(Family.Resolved, self.decls.decl(b).file.index)),
+            ) {
+            self.db.abandon(k)
+            return self.decls.registered_methods(target)
+        }
         for b in blocks {
             if self.is_held(self.decls.decl(b).file) { self.held_methods(target, b) } else { touch(self.sig(b)) }
         }
