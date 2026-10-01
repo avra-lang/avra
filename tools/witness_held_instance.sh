@@ -14,7 +14,7 @@
 # or links a program whose collect reads a hole.
 #
 # A standalone witness, never a gate step: two whole-package suite builds. It moves
-# one fn body in `compiler/witness.av` and puts the file back on the way out, checked
+# one fn body in `compiler/cache_walk.av` and puts the file back on the way out, checked
 # byte for byte.
 #
 # MEMCAP names the memory-cap wrapper each build runs under (cap 4000 MB).
@@ -24,7 +24,7 @@ memcap="${MEMCAP:?MEMCAP must name the memory-cap wrapper, memcap.sh}"
 suite="${1:-packages/std-avrac/src/compiler/tests/publish_test.av}"
 tree="$(cd "$(dirname "$0")/.." && pwd)"
 logs="$(mktemp -d "${TMPDIR:-/tmp}/avra-witness-held.XXXXXX")"
-moved=packages/std-avrac/src/compiler/witness.av
+moved=packages/std-avrac/src/compiler/cache_walk.av
 
 export LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
 AVRA_WATCH_HELD=1
@@ -33,10 +33,10 @@ export AVRA_WATCH_HELD
 cd "$tree" || exit 1
 
 # The file comes back whatever ends the run: an edit left behind is part of the compiler's source.
-cp "$moved" "$logs/witness.av.orig"
+cp "$moved" "$logs/moved.av.orig"
 back() {
-    cp "$logs/witness.av.orig" "$moved"
-    cmp -s "$logs/witness.av.orig" "$moved" || echo "witness_held_instance: $moved NOT restored — the original is $logs/witness.av.orig" >&2
+    cp "$logs/moved.av.orig" "$moved"
+    cmp -s "$logs/moved.av.orig" "$moved" || echo "witness_held_instance: $moved NOT restored — the original is $logs/moved.av.orig" >&2
 }
 trap back EXIT INT TERM
 
@@ -53,13 +53,13 @@ build() { # build <label>
 
 build cold
 # one fn's body moves; no signature does
-moved_fn='fn absent_hash() -> int { fp_str("absent") }'
+moved_fn='fn module_shown(name: string) -> string { if name == "" { "the root module" } else { name } }'
 python3 - "$moved" "$moved_fn" <<'PY' || { echo "witness_held_instance: the fn to move is gone from $moved" >&2; exit 2; }
 import sys
 path, old = sys.argv[1], sys.argv[2]
 text = open(path).read()
 assert old in text
-open(path, "w").write(text.replace(old, old.replace('"absent"', '"absent, moved"'), 1))
+open(path, "w").write(text.replace(old, old.replace('"the root module"', '"the root module, moved"'), 1))
 PY
 build warm
 
