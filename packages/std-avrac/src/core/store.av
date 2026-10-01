@@ -436,13 +436,6 @@ impl SyntaxArena {
     /// template was copied from.
     fn spanned_elsewhere(e: ExprId) -> bool { self.foreign_of(e)?.spanned_home ?? false }
 
-    /// Whether a statement's span is this file's: it has one, and no
-    /// template copied it here from its origin's offsets.
-    fn spanned_here(s: StmtId) -> bool {
-        self.stmt_span(s) != null &&
-            !self.foreign.get().any(it.spanned_home && it.runs.stmts.holds(s.index))
-    }
-
     /// Every node minted since `since` was written in the file at
     /// `path`, and spanned in this file's offsets.
     fn note_foreign(since: ArenaMarks, path: string) { self.foreign.push(self.minted_since(since, path, false)) }
@@ -520,7 +513,7 @@ impl SyntaxArena {
             .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
             .Ident(name) -> Expr.Call(name, [], blocks),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 
@@ -784,12 +777,11 @@ impl SyntaxArena {
         self.remarks.set(merged_remarks(self.remarks.get(), added))
     }
 
-    /// Every statement spanned in THIS file by where it begins, earliest
-    /// first — equal starts in statement order. A copied template's keep
-    /// their origin's offsets and would land among this file's.
+    /// Every spanned statement by where it begins, earliest first — equal
+    /// starts in statement order.
     fn stmt_starts() -> List<StmtStart> {
         sorted_by(
-            [StmtStart { lo: self.stmt_span(s)!.lo, stmt: s } for s in self.stmt_ids() if self.spanned_here(s)],
+            [StmtStart { lo: self.stmt_span(s)!.lo, stmt: s } for s in self.stmt_ids() if self.stmt_span(s) != null],
             (a: StmtStart, b: StmtStart) -> a.lo < b.lo,
         )
     }
@@ -1064,7 +1056,7 @@ impl SyntaxArena {
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .Force(subject) -> PlaceStep.Unwrap(subject),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 

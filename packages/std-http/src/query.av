@@ -34,10 +34,11 @@
 //! THE SPLIT NEVER SEES A NUL, AND `decoded` CAN MINT ONE. The framer
 //! refuses every CTL in a target, so no NUL reaches the pair reader —
 //! and every scan here reads the header's length anyway. But `%00`
-//! decodes to a real NUL: an ordinary octet to every verb on this
-//! side, and a PREFIX of the value to any C call it crosses into.
-//! `decoded` runs AFTER the split, so what it mints can never change
-//! where a pair began.
+//! decodes to a real NUL, and a value carrying one has a `.length`
+//! that counts it while `==`, `contains`, `index_of` and `split` stop
+//! before it. That is the language's own NUL law arriving through a
+//! URL, and `decoded` is the door: it runs AFTER the split, so what it
+//! mints can never change where a pair began.
 //!
 //! ABSENT, EMPTY AND INVALID ARE THREE ANSWERS. A key that is not
 //! there, a key with no `=` at all, a key whose value is empty, and a
@@ -119,11 +120,10 @@ fn ends(raw: Bytes, at: int) -> int {
 }
 
 /// One pair, split at its FIRST `=`. A later `=` belongs to the
-/// value: `?a=b=c` names `a` and holds `b=c`. The search stops at the
-/// pair's end, so reading every pair walks the query once.
+/// value: `?a=b=c` names `a` and holds `b=c`.
 fn pair_of(raw: Bytes, at: int, end: int) -> Pair {
-    let eq = raw.index_in(equals(), at, end)
-    if eq < 0 { return Pair { name: Span { lo: at, hi: end }, value: null } }
+    let eq = raw.index_of(equals(), at)
+    if eq < 0 || eq >= end { return Pair { name: Span { lo: at, hi: end }, value: null } }
     Pair { name: Span { lo: at, hi: eq }, value: Span { lo: eq + 1, hi: end } }
 }
 

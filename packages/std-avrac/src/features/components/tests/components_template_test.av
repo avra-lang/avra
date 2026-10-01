@@ -1,25 +1,13 @@
 // A template component's instance is its quote, copied where it
 // stands: the head and block in its holes, the template's names and
 // types resolving in the library, the user's in the user's file.
-use @std.avrac.testing.{refused_n, provided, provided_workspace, answered}
+use @std.avrac.testing.{refused_n, provided, answered}
 use @std.avrac.compiler.{Program}
-use @std.text.{repeat}
 
 /// The provider: `limited` narrows a `Span` the way `within` narrows
 /// a deadline — its head is a value of the library's own type.
 fn provider() -> string {
     "export type Span = { n: int }\nexport fn span(n: int) -> Span {\n    Span { n: n }\n}\nexport component limited(limit: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote {\n            {\n                let limit: Span = \${self.limit}\n                let outer = limit.n\n                \${self.body} + outer\n            }\n        }\n    }\n}\n"
-}
-
-/// A program whose `/// documented` group opens `export fn f` with the
-/// copied template's first statement starting, at ITS file's offset,
-/// between this file's `export` and `fn` — where a doc that sought the
-/// statement by offset alone would land on the template's.
-fn doc_over_copy() -> string {
-    let header = "use @x.c.{limited, span}\nlet v = limited span(1) { 1 }\n// "
-    let copied_at = "use @std.meta.{Code}\n".length + provider().index_of("let limit")
-    let pad = copied_at - 3 - header.length - "\n/// documented\n".length
-    "${header}${repeat("x", pad)}\n/// documented\nexport fn f() -> int { 1 }\nv\n"
 }
 
 /// A program over the provider.
@@ -65,16 +53,6 @@ spec "features/components — a template's instance" {
             shown.contains("limited span(1) {") &&
                 shown.contains("// `limited` (from @x.c) expands to:") &&
                 shown.contains("let limit: Span = span(1)")
-        }
-    }
-    given "a doc group beside an instance whose template was copied in" {
-        then "the canonical print keeps the group — a copied statement's origin offset claims no doc here" {
-            let src = doc_over_copy()
-            let ws = provided_workspace(src, provider())
-            match ws.write_checked_source(ws.file_id("/w/src/main.av")) {
-                .Ok(text) -> text.contains("/// documented\nexport fn f()"),
-                .Err(_) -> false,
-            }
         }
     }
 }

@@ -12,7 +12,6 @@
 //! backend.
 use core.{
     Ins,
-    is_managed,
     Reg,
     Level,
     TypeId,
@@ -78,6 +77,43 @@ export fn memory(l: Lowered) -> Lowered {
 
 fn sound_checked() -> bool {
     env("AVRA_SOUND_CHECK") == "1"
+}
+
+/// WHETHER THE RUNTIME COUNTS a value of this type: strings AND the
+/// aggregate shapes — the ownership milestone. `Opt` is INVISIBLE
+/// here: a niche nullable IS its carried value, and the runtime's rc
+/// ops no-op on the null pointer by construction.
+///
+/// NOT `rides_pointer`, which asks what a value travels on — a `Ptr`
+/// and a `Null` ride one and carry no header, so nothing counts them.
+/// The three neighbouring questions are stated at `rides_pointer`.
+export fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
+    match types.shape_of(ty) {
+        .Str or .Bytes -> true,
+        // A FLAT RECORD IS ITS FIELD: a record of words holds no
+        // reference, a NAME over a list holds the list's.
+        .Struct(_, _) -> flat_managed(types, ty),
+        // EmptyList is the one identity widen whose pointer is a
+        // REAL box: the callee's List param releases it, so the
+        // caller must own it too, or the seam frees a live name.
+        // an enum whose variants carry nothing is its tag — a word; a
+        // value enum is counted only when a variant carries a pointer
+        .Enum(_, _) -> !types.is_flat(ty) && !(types.is_valued(ty) && types.counted_mask(ty) == 0),
+        .List(_) or .Cell(_) or .Task(_) or .Tasks or .EmptyList or .Map(_, _) or .EmptyMap or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Union(_) -> true,
+        .Res(_, _) -> !(types.is_valued(ty) && types.counted_mask(ty) == 0),
+        // a FLAT record's nullable is a one-slot BOX — counted,
+        // though the bare record never is; a WORD ENUM's nullable
+        // spends its spare tag instead and never boxes
+        .Opt(inner) -> types.is_flat(inner) && !types.is_word_enum(inner) || is_managed(types, inner),
+        .Ptr or .Int or .Float or .Bool or .TypeName(_, _) or .Var(_, _, _) or .Null or .Error or .Void -> false,
+    }
+}
+
+/// A RECORD's own answer: a flat one IS its fields, so it is managed
+/// exactly when one of them is; a boxed one always counts.
+fn flat_managed(types: TypeRegistry, ty: TypeId) -> bool {
+    if !types.is_flat(ty) { return true }
+    types.flat_fields(ty).any(is_managed(types, it))
 }
 
 /// One body's memory instructions: its params are registers 0..`seats`, and
