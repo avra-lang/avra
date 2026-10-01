@@ -64,6 +64,22 @@ run() {
     AVRA_SP_TREE=$PWD sh "$tools/sp" "$@"
 }
 
+# Queues the branch's PR straight into the merge queue once its own check
+# has passed: an entry that rides auto-merge can wait without its train
+# ever starting.
+queue() {
+    sha=$(git rev-parse HEAD)
+    for _ in $(seq 60); do
+        verdict=$(gh api "repos/{owner}/{repo}/commits/$sha/check-runs" --jq '[.check_runs[] | select(.name == "test") | .conclusion] | first // ""')
+        [ -n "$verdict" ] && break
+        sleep 5
+    done
+    [ "$verdict" = success ] || die "the PR's own test check answered '${verdict:-nothing}'; see it on the PR"
+    id=$(gh pr list --head "$1" --state open --json id --jq '.[0].id')
+    gh api graphql -f query="mutation{enqueuePullRequest(input:{pullRequestId:\"$id\"}){mergeQueueEntry{position}}}" \
+        --jq '"queued at position \(.data.enqueuePullRequest.mergeQueueEntry.position)"'
+}
+
 land() {
     git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "run from inside a worktree"
     branch=$(git branch --show-current)
@@ -78,7 +94,7 @@ land() {
             --title "$(git log --reverse --format=%s origin/main..HEAD | head -1)" \
             --body "$(git log --reverse --format='- %s' origin/main..HEAD)"
     fi
-    gh pr merge "$branch" --auto
+    queue "$branch"
     gh pr list --head "$branch" --state open --json url --jq '.[0].url'
 }
 
