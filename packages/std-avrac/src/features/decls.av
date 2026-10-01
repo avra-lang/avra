@@ -347,6 +347,10 @@ export type Decls = {
     /// Each file's admission owner in the declaration table's `Db`,
     /// dense by FileId: every write of a row the file homes is its run's.
     file_owners: Cell<List<int>>,
+    /// TWO LAYERS SHARED — see `module_files`. Each expression's owning
+    /// declaration, written once per file in `range_bodies` — `expr_owner`'s
+    /// O(1) read, never the linear `innermost` rescan.
+    expr_owners: Cell<List<Cell<SideTable<DeclAt>>>>,
     /// THE FILES ANSWERED FROM A RECORD — never parsed, so their declarations were
     /// MINTED and their objects come from the store. Keyed by path.
     held: Cell<Map<string, bool>>,
@@ -592,6 +596,7 @@ export fn new_decls() -> Decls {
     let no_seat_marks: List<List<SeatMark>> = []
     let no_declared_writes: List<bool> = []
     let no_decl_ids: List<Cell<SideTable<DeclAt>>> = []
+    let no_expr_owners: List<Cell<SideTable<DeclAt>>> = []
     let no_expansion_voices: List<Cell<List<Diag>>> = []
     let no_children: List<Cell<List<DeclId>>> = []
     let no_methods: List<Cell<List<DeclId>>> = []
@@ -622,6 +627,7 @@ export fn new_decls() -> Decls {
         scoped: map_cell(),
         decl_ids: Cell.new(no_decl_ids),
         file_owners: list_cell(),
+        expr_owners: Cell.new(no_expr_owners),
         generations: Cell.new(no_generations),
         origins: Cell.new(no_origins),
         expansion_voices: Cell.new(no_expansion_voices),
@@ -980,6 +986,22 @@ impl Decls {
 
     /// The declaration a statement of a file makes, when it does.
     fn decl_of(f: FileId, s: StmtId) -> DeclId? { self.decl_ids.get()[f.index].get().get(s.index).decl }
+
+    /// The declaration whose range owns an expression — an O(1) read
+    /// of what `range_bodies` already computed, never a rescan.
+    /// `?.decl` is safe to fold here, UNLIKE `decl_ids`: `range_bodies`
+    /// seeds `owner` at Main and only ever reassigns it a REAL decl
+    /// (`innermost(...) ?? main`), never `null` — so a written cell's
+    /// `decl` is never absent, and `null` means only "outside the
+    /// window" (never written: a held file, or growth past it),
+    /// exactly what the caller's `?? enclosing_decl_scanned` fallback
+    /// wants. `decl_ids` cannot fold the same way: an ordinary
+    /// non-declaring statement writes `decl: null` deliberately, a
+    /// DIFFERENT absence than "outside the window" — so it keeps the
+    /// trapping `SideTable.get` to tell the two apart.
+    fn expr_owner(f: FileId, e: ExprId) -> DeclId? {
+        DeclAt.get(self.expr_owners.get()[f.index].get(), e.index)?.decl
+    }
 
     fn store(d: DeclId) -> SyntaxArena { self.store_of(self.decl(d).file) }
 
