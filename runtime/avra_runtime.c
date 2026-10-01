@@ -961,6 +961,58 @@ int64_t avra_str_parsed_int(const char* s) {
     return out;
 }
 
+// TEXT -> FLOAT: `-`? digits, then `.` digits and an exponent
+// (`e`/`E`, a sign, digits) each optional — the spelling `strtod`
+// shares with every number format we read, and NOTHING it adds: no
+// space, no `+` lead, no `inf`/`nan`, no hex. The walk reads the
+// header's length and answers the span it covers, so `strtod` is
+// only ever handed text the walk already read whole.
+static int64_t avra_float_parse_walk(const char* s, int64_t n) {
+    int64_t i = 0;
+    if (i < n && s[i] == '-') i++;
+    int64_t from = i;
+    while (i < n && s[i] >= '0' && s[i] <= '9') i++;
+    if (i == from) return 0;
+    if (i < n && s[i] == '.') {
+        from = ++i;
+        while (i < n && s[i] >= '0' && s[i] <= '9') i++;
+        if (i == from) return 0;
+    }
+    if (i < n && (s[i] == 'e' || s[i] == 'E')) {
+        i++;
+        if (i < n && (s[i] == '+' || s[i] == '-')) i++;
+        from = i;
+        while (i < n && s[i] >= '0' && s[i] <= '9') i++;
+        if (i == from) return 0;
+    }
+    return i == n;
+}
+
+// The double a walked text spells, read from a bounded copy so the
+// terminator `strtod` stops at is one this fn wrote.
+static double avra_float_parse_read(const char* s, int64_t n) {
+    char* t = malloc((size_t)n + 1);
+    memcpy(t, s, (size_t)n);
+    t[n] = '\0';
+    double d = strtod(t, NULL);
+    free(t);
+    return d;
+}
+
+// Whether `s` is exactly a float the type HOLDS: the walk above,
+// and finite — past the largest double is absent, never infinity.
+// Underflow is kept: the nearest double, as a float literal is.
+int64_t avra_str_parses_float(const char* s) {
+    int64_t n = (int64_t)str_len(s);
+    return avra_float_parse_walk(s, n) && isfinite(avra_float_parse_read(s, n));
+}
+
+// The float `s` spells — meaningful only where
+// `avra_str_parses_float` answered true.
+double avra_str_parsed_float(const char* s) {
+    return avra_float_parse_read(s, (int64_t)str_len(s));
+}
+
 // A bool's keyword — static, immortal.
 const char* avra_bool_text(int64_t b) {
     static const char* words[2] = { NULL, NULL };
@@ -2109,17 +2161,62 @@ int64_t avra_float_fits(const char* s) { return isfinite(strtod(s, NULL)); }
 
 /* THE SHORTEST TEXT THAT READS BACK AS THE SAME DOUBLE — `%.17g`
    round-trips every binary64 but prints 0.1 as 0.10000000000000001,
-   so the shortest faithful form is found by trying. A trailing `.0`
-   is added when the text would otherwise read as an integer, because
-   a float that prints as `3` is a float wearing an int's clothes. */
+   so the shortest faithful DIGITS are found by trying. They are then
+   laid out positionally for a decimal exponent in [-6, 21) — `100.0`,
+   never `1e+02` — and as `d.ddde±x` outside it, the range JavaScript
+   and JSON writers share. A `.0` is kept on an integral positional
+   value, because a float that prints as `3` is a float wearing an
+   int's clothes. Infinity and NaN keep `%g`'s words. */
 static const char* float_text(double d) {
-    char buf[40];
-    for (int prec = 1; prec <= 17; prec++) {
-        snprintf(buf, sizeof buf, "%.*g", prec, d);
-        if (strtod(buf, NULL) == d) break;
+    char sci[40];
+    char out[64];
+    if (!isfinite(d)) {
+        snprintf(out, sizeof out, "%g", d);
+        return str_owned(out, strlen(out));
     }
-    if (!strpbrk(buf, ".eEni")) { strncat(buf, ".0", sizeof buf - strlen(buf) - 1); }
-    return str_owned(buf, strlen(buf));
+    for (int prec = 1; prec <= 17; prec++) {
+        snprintf(sci, sizeof sci, "%.*e", prec - 1, d);
+        if (strtod(sci, NULL) == d) break;
+    }
+    char digits[20] = {0};
+    size_t n = 0;
+    const char* c = sci;
+    int negative = *c == '-';
+    if (negative) c++;
+    for (; *c && *c != 'e'; c++) {
+        if (*c != '.') digits[n++] = *c;
+    }
+    int e10 = atoi(c + 1);
+    size_t o = 0;
+    if (negative) out[o++] = '-';
+    if (e10 >= -6 && e10 < 21) {
+        if (e10 < 0) {
+            out[o++] = '0';
+            out[o++] = '.';
+            for (int z = 0; z < -e10 - 1; z++) out[o++] = '0';
+            memcpy(out + o, digits, n);
+            o += n;
+        } else {
+            size_t whole = (size_t)e10 + 1;
+            for (size_t k = 0; k < whole; k++) out[o++] = k < n ? digits[k] : '0';
+            out[o++] = '.';
+            if (n > whole) {
+                memcpy(out + o, digits + whole, n - whole);
+                o += n - whole;
+            } else {
+                out[o++] = '0';
+            }
+        }
+    } else {
+        out[o++] = digits[0];
+        if (n > 1) {
+            out[o++] = '.';
+            memcpy(out + o, digits + 1, n - 1);
+            o += n - 1;
+        }
+        o += (size_t)snprintf(out + o, sizeof out - o, "e%c%d", e10 < 0 ? '-' : '+', e10 < 0 ? -e10 : e10);
+    }
+    return str_owned(out, o);
 }
 const char* avra_float_text(double d) { return float_text(d); }
 const char* avra_float_text_bits(int64_t bits) { return float_text(as_double(bits)); }

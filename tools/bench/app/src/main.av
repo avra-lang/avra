@@ -1,0 +1,203 @@
+//! The app tier per request, in-process and with no socket: each row
+//! frames one request, runs the feature under test, and counts the
+//! octets it answered, so nothing is optimised away. A row reads
+//! `label: ns each (bytes out)`.
+use @std.http.frame.{framed, limits}
+use @std.http.body.{whole}
+use @std.http.http.{Request, Unrouted, Response, Header, Handler, text, json_body}
+use @std.http.route.{compiled, dispatch}
+use @std.http.files.{Files, directory}
+use @std.http.form.{Part, Sink}
+use @std.http.guard.{Cors, cors, hardened}
+use @std.http.observe.{Observe, Served, observing}
+use @std.http.quota.{Rate, rated}
+use @std.time.{secs}
+use @std.http_compress.{compressed}
+use @std.json.{parse}
+use @std.json.codec.{json}
+use @std.text.{repeat}
+use @std.time.{now_ns}
+
+@json
+type Vote = { idea: int, up: bool, note: string? }
+
+fn asked(line: string, fields: string, body: Bytes) -> Request<Unrouted> {
+    let raw = "${line}\r\nHost: bench\r\n${fields}\r\n".bytes()
+    let head = match framed(raw, 0, 0, limits()) {
+        .Complete(h) -> h,
+        .Partial or .Refused(_) -> null,
+    }
+    Request { raw: raw, head: head!, body: whole(body), peer: "127.0.0.1:1", params: Unrouted {} }
+}
+
+/// `n` turns of `serve` over a request made fresh each turn, timed.
+fn timed(label: string, n: int, line: string, fields: string, body: Bytes, serve: Handler) -> string {
+    let t0 = now_ns()
+    mut total = 0
+    for _i in 0..n { total = total + serve(asked(line, fields, body)).body.length }
+    "${label}: ${(now_ns() - t0) / n} ns each (${total / n} bytes out)"
+}
+
+fn hello(_q: Request<Unrouted>) -> Response { text(200, "hello") }
+
+fn page(_q: Request<Unrouted>) -> Response {
+    text(200, repeat("<li class=\"idea\">an idea worth voting for</li>\n", 90)) with { headers: [Header { name: "content-type", value: "text/html; charset=utf-8" }] }
+}
+
+fn cookied(q: Request<Unrouted>) -> Response { text(200, q.cookie("session") ?? "none") }
+
+fn voted(q: Request<Unrouted>) -> Response {
+    match json_body(q, (j) -> Vote.from_json(j)) { .Ok(v) -> text(200, "${v.idea}"), .Err(r) -> r }
+}
+
+fn floats(q: Request<Unrouted>) -> Response {
+    match parse(q.body.text() ?? "") {
+        .Ok(_) -> text(200, "ok"),
+        .Err(e) -> text(400, e.describe().message),
+    }
+}
+
+fn signup(q: Request<Unrouted>) -> Response {
+    match q.urlencoded() { .Ok(f) -> text(200, f.value("email") ?? "-"), .Err(r) -> r }
+}
+
+/// A sink that counts what it is handed and keeps nothing.
+fn counted(_p: Part) -> Sink { Sink { take: (b: Bytes) -> b.length > 0, ended: dropped } }
+
+fn dropped(_whole: bool) {}
+
+fn upload(q: Request<Unrouted>) -> Response {
+    match q.multipart(counted) { .Ok(p) -> text(200, "${p.files[0].size}"), .Err(r) -> r }
+}
+
+/// A log that keeps nothing, so the row times the layer alone.
+fn quiet(_s: Served) {}
+
+fn through(inner: Handler) -> Handler { (q: Request<Unrouted>) -> compressed(q, inner) }
+
+let n = 200000
+let get = "GET / HTTP/1.1"
+let files = compiled(directory("/s", Files { root: "packages/std-http/src/tests/files_root" }))
+println(timed("baseline, a 5-octet answer", n, get, "", "".bytes(), hello))
+println(
+    timed(
+        "cookies, the third of three",
+        n,
+        get,
+        "Cookie: a=1; theme=dark; session=abc123def456\r\n",
+        "".bytes(),
+        cookied,
+    ),
+)
+println(
+    timed(
+        "json body, a small record",
+        n,
+        "POST / HTTP/1.1",
+        "Content-Type: application/json\r\n",
+        "{\"idea\": 7, \"up\": true, \"note\": \"yes\"}".bytes(),
+        voted,
+    ),
+)
+println(
+    timed(
+        "json parse, eight floats",
+        n,
+        "POST / HTTP/1.1",
+        "",
+        "[0.5, 1.25, -3.75e2, 6.02e23, 1e-7, 3.141592653589793, 2.5, 100.0]".bytes(),
+        floats,
+    ),
+)
+println(
+    timed(
+        "urlencoded form, five fields",
+        n,
+        "POST / HTTP/1.1",
+        "Content-Type: application/x-www-form-urlencoded\r\n",
+        "name=Ada+Lovelace&email=ada%40example.com&age=36&plan=pro&agree=on".bytes(),
+        signup,
+    ),
+)
+println(
+    timed(
+        "multipart, a field and a 64 KB file",
+        n / 100,
+        "POST / HTTP/1.1",
+        "Content-Type: multipart/form-data; boundary=----bench\r\n",
+        "------bench\r\nContent-Disposition: form-data; name=\"t\"\r\n\r\nhello\r\n------bench\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.bin\"\r\n\r\n"
+            .bytes()
+            .concat(repeat("0123456789abcdef", 4096).bytes())
+            .concat("\r\n------bench--\r\n".bytes()),
+        upload,
+    ),
+)
+let shared = cors(Cors { origins: ["https://app.example"] })
+println(
+    timed(
+        "cors, a granted origin",
+        n,
+        get,
+        "Origin: https://app.example\r\n",
+        "".bytes(),
+        (q) -> shared(q, hello),
+    ),
+)
+println(timed("security headers", n, get, "", "".bytes(), (q) -> hardened(q, hello)))
+let paced = rated(Rate { requests: 1000000000, per: secs(1) })
+println(timed("rate, a client within it", n, get, "", "".bytes(), (q) -> paced(q, hello)))
+let watched = observing(Observe { log: quiet })
+println(
+    timed(
+        "observed, joining a trace",
+        n,
+        get,
+        "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\r\n",
+        "".bytes(),
+        (q) -> watched(q, hello),
+    ),
+)
+println(
+    timed(
+        "static file, whole",
+        n / 10,
+        "GET /s/a.txt HTTP/1.1",
+        "",
+        "".bytes(),
+        (q) -> dispatch(files, q),
+    ),
+)
+println(
+    timed(
+        "static file, 304",
+        n / 10,
+        "GET /s/a.txt HTTP/1.1",
+        "If-None-Match: *\r\n",
+        "".bytes(),
+        (q) -> dispatch(files, q),
+    ),
+)
+println(timed("coding layer, nothing accepted", n, get, "", "".bytes(), through(hello)))
+println(
+    timed(
+        "coding layer, small answer",
+        n,
+        get,
+        "Accept-Encoding: gzip, deflate, br\r\n",
+        "".bytes(),
+        through(hello),
+    ),
+)
+println(timed("4 KB page, identity", n / 10, get, "", "".bytes(), page))
+println(
+    timed("4 KB page, gzip", n / 10, get, "Accept-Encoding: gzip\r\n", "".bytes(), through(page)),
+)
+println(timed("4 KB page, br", n / 10, get, "Accept-Encoding: br\r\n", "".bytes(), through(page)))
+timed(
+    "gzip body decoded",
+    n / 10,
+    "POST / HTTP/1.1",
+    "Content-Encoding: gzip\r\n",
+    compressed(asked(get, "Accept-Encoding: gzip\r\n", "".bytes()), page).body,
+    through(hello),
+)

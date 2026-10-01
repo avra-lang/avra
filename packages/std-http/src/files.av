@@ -1,0 +1,304 @@
+//! STATIC FILES — a directory served under a prefix.
+//!
+//! THE PATH IS THE ATTACK SURFACE, so it is judged before anything is
+//! opened and then opened in a way that cannot leave the root. The
+//! capture is percent-decoded ONCE (`%2F` becomes a separator and is
+//! judged as one, `%252F` stays a literal `%2F` in a name), then every
+//! segment must be a plain name: no `..`, no `.`, no empty segment, no
+//! `\`, no NUL, and no leading `.` unless `dotfiles` says so. What
+//! passes is opened segment by segment beneath the root without
+//! following a symlink (`@std/io`'s `open_beneath`), so a link planted
+//! inside the root cannot lead out of it. Every refusal is a 404: a
+//! file that may not be served and one that does not exist look the
+//! same from outside.
+//!
+//! A RESPONSE IS VALIDATED AND RANGED: a strong `ETag` from the size
+//! and modification time, `Last-Modified`, `If-None-Match` before
+//! `If-Modified-Since` (RFC 9110 §13.2.2) answering 304, and one byte
+//! range answering 206 — or 416 when it names nothing — unless an
+//! `If-Range` says the file changed. Only the range is read.
+//!
+//! A BODY IS READ WHOLE today, bounded by `largest`: the response
+//! carries `Bytes`. A file past it is served only in ranges until a
+//! streamed body lets it be sent in pieces (and by `sendfile`).
+use @std.io.{Opened, Entry, open_beneath}
+use @std.text.{has_nul, parse_int}
+use frame.{Method}
+use query.{decoded}
+use date.{http_date, http_date_parsed}
+use route.{Route, Reach}
+
+/// A directory to serve: where it is, the file a directory answers
+/// with, whether a name starting with `.` may be served, the
+/// `Cache-Control: max-age` to send, and the largest file sent whole.
+export type Files = {
+    root: string,
+    index: string? = "index.html",
+    dotfiles: bool = false,
+    max_age: int? = null,
+    largest: int = 67108864,
+}
+
+/// The routes serving `files` under `prefix` (`/static`, or `/` for
+/// the whole site): a GET and a HEAD of everything beneath it.
+export fn directory(prefix: string, files: Files) -> List<Route> {
+    let base = if prefix.ends_with("/") { prefix.substring(0, prefix.length - 1) } else { prefix }
+    [served_at(Method.Get, base, files), served_at(Method.Head, base, files)]
+}
+
+fn served_at(method: Method, base: string, files: Files) -> Route {
+    let under = base.bytes()
+    Route {
+        method: method,
+        pattern: "${base}/{path...}",
+        reach: Reach.Rest,
+        serve: (q: Request<Unrouted>, t: Bytes) -> if falls_under(t, under) { files.answer(q, below(t, under.length)) } else { null },
+    }
+}
+
+/// The path past the prefix and its separator.
+fn below(t: Bytes, n: int) -> Bytes {
+    if t.length <= n + 1 { "".bytes() } else { t.slice(n + 1, t.length) }
+}
+
+impl Files {
+    /// The response for `rel`, the path beneath the prefix as sent.
+    fn answer(q: Request<Unrouted>, rel: Bytes) -> Response {
+        let path? = plain_path(rel, self.dotfiles) else { return status(404) }
+        if path.is_empty() { return self.indexed(q, path) }
+        let o? = file_beneath(self.root, path) else { return status(404) }
+        match o.kind {
+            .File -> self.file(q, o),
+            .Dir -> {
+                o.close()
+                self.indexed(q, path)
+            },
+            .Missing or .Other -> {
+                o.close()
+                status(404)
+            },
+        }
+    }
+
+    /// A directory: its index, reached from a path ending in `/`; a
+    /// path without one is sent there first, so the index's relative
+    /// links resolve beneath it.
+    fn indexed(q: Request<Unrouted>, path: string) -> Response {
+        let index? = self.index else { return status(404) }
+        let target? = q.path()?.text() else { return status(404) }
+        if !target.ends_with("/") { return moved(target + "/") }
+        let o? = file_beneath(self.root, if path.is_empty() { index } else { "${path}/${index}" }) else { return status(404) }
+        if !(o.kind is .File) {
+            o.close()
+            return status(404)
+        }
+        self.file(q, o)
+    }
+
+    fn file(q: Request<Unrouted>, o: Opened) -> Response {
+        defer o.close()
+        let tag = etag_of(o)
+        let fields = self.validators(o, tag, content_type(q.path()))
+        if not_modified(q, o, tag) { return Response { status: 304, headers: fields } }
+        match wanted_range(q, o, tag) {
+            .Whole -> self.whole(o, fields),
+            .Span(from, to) -> spanned(o, fields, from, to),
+            .Unsatisfiable -> Response {
+                status: 416,
+                headers: fields.concat([header_pair("content-range", "bytes */${o.size}")]),
+            },
+        }
+    }
+
+    fn whole(o: Opened, fields: List<Header>) -> Response {
+        if o.size > self.largest { return status(500) }
+        match o.span(0, o.size) {
+            .Ok(body) -> Response { headers: fields, body: body },
+            .Err(_) -> status(500),
+        }
+    }
+
+    fn validators(o: Opened, tag: string, ct: string) -> List<Header> {
+        let cache = match self.max_age {
+            s? -> [header_pair("cache-control", "max-age=${s}")]
+            null -> []
+        }
+        [
+            header_pair("content-type", ct),
+            header_pair("etag", tag),
+            header_pair("last-modified", http_date(o.mtime)),
+            header_pair("accept-ranges", "bytes"),
+            header_pair("x-content-type-options", "nosniff"),
+        ]
+            .concat(cache)
+    }
+}
+
+fn spanned(o: Opened, fields: List<Header>, from: int, to: int) -> Response {
+    match o.span(from, to - from + 1) {
+        .Ok(body) -> Response {
+            status: 206,
+            headers: fields.concat([header_pair("content-range", "bytes ${from}-${to}/${o.size}")]),
+            body: body,
+        },
+        .Err(_) -> status(500),
+    }
+}
+
+/// `path` opened beneath `root`, or null for any refusal — every one
+/// answers 404 alike.
+fn file_beneath(root: string, path: string) -> Opened? {
+    match open_beneath(root, path) { .Ok(o) -> o, .Err(_) -> null }
+}
+
+fn moved(to: string) -> Response { Response { status: 301, headers: [header_pair("location", to)] } }
+
+// ── The path ────────────────────────────────────────────────────
+
+/// The capture as a path of plain names joined by `/`, or null when
+/// any segment is not one. A trailing `/` is dropped: it asks for a
+/// directory, which the walk finds.
+fn plain_path(rel: Bytes, dotfiles: bool) -> string? {
+    let raw? = decoded(rel)?.text() else { return null }
+    if has_nul(raw) || raw.contains("\\") { return null }
+    let trimmed = if raw.ends_with("/") { raw.substring(0, raw.length - 1) } else { raw }
+    if trimmed.is_empty() { return "" }
+    let segs = trimmed.split("/")
+    if trimmed.starts_with("/") || trimmed.contains("//") || !segs.all(plain_name(it, dotfiles)) { return null }
+    trimmed
+}
+
+fn plain_name(seg: string, dotfiles: bool) -> bool {
+    !seg.is_empty() && seg != "." && seg != ".." && (dotfiles || !seg.starts_with("."))
+}
+
+// ── Validators ──────────────────────────────────────────────────
+
+/// A strong tag from the size and the modification time.
+fn etag_of(o: Opened) -> string { "\"${o.size}-${o.mtime}\"" }
+
+/// Whether the request's own copy is current: `If-None-Match` decides
+/// when it is present, `If-Modified-Since` only when it is not.
+fn not_modified(q: Request<Unrouted>, o: Opened, tag: string) -> bool {
+    if tag_listed(q.header("if-none-match"), tag) { return true }
+    if q.header("if-none-match") != null { return false }
+    let since? = http_date_parsed(q.header("if-modified-since") ?? "") else { return false }
+    o.mtime <= since
+}
+
+/// Whether an `If-None-Match` list names `tag` — weakly, as the field
+/// compares — or is `*`.
+fn tag_listed(field: string?, tag: string) -> bool {
+    let list? = field else { return false }
+    list.trim() == "*" || list.split(",").any(weak_same(it.trim(), tag))
+}
+
+fn weak_same(listed: string, tag: string) -> bool {
+    let opaque = if listed.starts_with("W/") { listed.substring(2, listed.length) } else { listed }
+    opaque == tag
+}
+
+// ── Ranges ──────────────────────────────────────────────────────
+
+/// What part of the file a request asks for.
+enum Wanted {
+    Whole
+    Span(from: int, to: int)
+    Unsatisfiable
+}
+
+/// ONE `bytes=` range, read against the file's size: `a-b`, `a-` or
+/// `-n`. Several ranges, another unit, a malformed spelling or an
+/// `If-Range` the file no longer matches all serve the whole file,
+/// which RFC 9110 §14.2 allows; a range that starts past the end is
+/// unsatisfiable.
+fn wanted_range(q: Request<Unrouted>, o: Opened, tag: string) -> Wanted {
+    let asked? = q.header("range") else { return .Whole }
+    if !(q.method() is .Get) || !range_current(q.header("if-range"), o, tag) { return .Whole }
+    if !asked.starts_with("bytes=") || asked.contains(",") { return .Whole }
+    let r = asked.substring(6, asked.length).trim()
+    let dash = r.index_of("-")
+    if dash < 0 { return .Whole }
+    let first = r.substring(0, dash)
+    let last = r.substring(dash + 1, r.length)
+    if first.is_empty() { return suffix(count_of(last), o.size) }
+    let from? = count_of(first) else { return .Whole }
+    if from >= o.size { return .Unsatisfiable }
+    if last.is_empty() { return .Span(from, o.size - 1) }
+    let to? = count_of(last) else { return .Whole }
+    if to < from { return .Whole }
+    .Span(from, if to >= o.size { o.size - 1 } else { to })
+}
+
+/// The last `n` octets, all of them when the file is shorter.
+fn suffix(n: int?, size: int) -> Wanted {
+    let k? = n else { return .Whole }
+    if k == 0 || size == 0 { return .Unsatisfiable }
+    .Span(if k >= size { 0 } else { size - k }, size - 1)
+}
+
+/// A count of octets: digits only.
+fn count_of(s: string) -> int? {
+    if s.is_empty() || s.starts_with("-") { return null }
+    parse_int(s)
+}
+
+/// Whether an `If-Range` still names this file: a strong tag equal to
+/// its own, or a date at or after its modification. Absent means yes.
+fn range_current(field: string?, o: Opened, tag: string) -> bool {
+    let v? = field else { return true }
+    if v.starts_with("\"") { return v == tag }
+    let at? = http_date_parsed(v) else { return false }
+    o.mtime <= at
+}
+
+// ── Media types ─────────────────────────────────────────────────
+
+/// The type a path's extension names; octets when it names none.
+fn content_type(path: Bytes?) -> string {
+    let p? = path?.text() else { return octets }
+    let dot = p.split("/").last()?.split(".") ?? []
+    if dot.length < 2 { return octets }
+    media_types.get(dot.last()!) ?? octets
+}
+
+const octets: string = "application/octet-stream"
+
+const html_type: string = "text/html; charset=utf-8"
+
+const script_type: string = "text/javascript; charset=utf-8"
+
+const media_types: Map<string, string> = {
+    "html": html_type,
+    "htm": html_type,
+    "css": "text/css; charset=utf-8",
+    "js": script_type,
+    "mjs": script_type,
+    "json": "application/json",
+    "map": "application/json",
+    "txt": "text/plain; charset=utf-8",
+    "md": "text/markdown; charset=utf-8",
+    "csv": "text/csv; charset=utf-8",
+    "xml": "application/xml",
+    "svg": "image/svg+xml",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "avif": "image/avif",
+    "ico": "image/x-icon",
+    "woff": "font/woff",
+    "woff2": "font/woff2",
+    "ttf": "font/ttf",
+    "otf": "font/otf",
+    "wasm": "application/wasm",
+    "pdf": "application/pdf",
+    "zip": "application/zip",
+    "gz": "application/gzip",
+    "mp4": "video/mp4",
+    "webm": "video/webm",
+    "mp3": "audio/mpeg",
+    "ogg": "audio/ogg",
+    "wav": "audio/wav",
+}

@@ -22,6 +22,11 @@
 //!            handler that writes through app state
 //! client.av  the CLIENT: one connection as a value, the reply
 //!            framed as it arrives, its body by the reply's rule
+//! cookie.av  COOKIES: read from a request, set with the safe
+//!            defaults, signed over a MAC, sessions sealed in one
+//! files.av   STATIC FILES: a directory as routes, never above its
+//!            root, validated, conditional and ranged
+//! date.av    HTTP-DATE: IMF-fixdate written and read
 //! ```
 //!
 //! The head's field spans index the buffer they were framed from, so
@@ -39,14 +44,17 @@ use frame.{
     is_vchar,
 }
 use query.{Query, query_of}
-use body.{Body}
+use @std.json.{Json, Decoder, parse, to_text}
+use body.{Body, BodyError}
 use wire.{Transport}
 
 /// What a handler receives: the raw buffer the head was framed from,
 /// the head, the body — READ as the handler asks for it, never before
-/// (`body.av`) — who sent it, and what its route read of the path —
-/// `Unrouted` until a route reads it.
-export type Request<P> = { raw: Bytes, head: Head, body: Body, peer: string, params: P }
+/// (`body.av`) — who sent it, what its route read of the path —
+/// `Unrouted` until a route reads it — and the fields a layer set in
+/// place of the head's own (`with_field`), which every header read
+/// answers first.
+export type Request<P> = { raw: Bytes, head: Head, body: Body, peer: string, params: P, set: List<Header> = [] }
 
 /// The params of a request no route has read.
 export type Unrouted = {}
@@ -182,12 +190,97 @@ impl Request {
     /// request carries none. Field values are ASCII by framing, so
     /// the text is total.
     fn header(name: string) -> string? {
+        if !self.set.is_empty() && self.set.any(it.named(name)) { return self.set.find(it.named(name))?.value }
         let i = self.head.fields.named(self.raw, name.bytes())
         if i < 0 { return null }
         let v = self.head.fields.value_at(i)
         self.raw.slice(v.lo, v.hi).text()
     }
+
+    /// Every field of this name, ASCII-folded, in the order sent — a
+    /// field a sender may split across lines (`cookie` over HTTP/2)
+    /// is read whole only this way.
+    fn headers(name: string) -> List<string> {
+        if !self.set.is_empty() && self.set.any(it.named(name)) { return [h.value for h in self.set if h.named(name)] }
+        let fs = self.head.fields
+        let wanted = name.bytes()
+        [self.raw.slice(fs.value_at(i).lo, fs.value_at(i).hi).text() ?? "" for i in 0..fs.count() if self.raw.ieq_at(fs.name_at(i).lo, fs.name_at(i).hi, wanted)]
+    }
 }
+
+impl Request {
+    /// THE BODY AS JSON, or the response that refuses it: 415 when the
+    /// request does not say `application/json` (or a `+json` type) — a
+    /// form can post any bytes as `text/plain` across origins, so the
+    /// media type is what a browser will not forge — 400 when the body
+    /// is not UTF-8 or not JSON, naming where.
+    fn json() -> Result<Json, Response> {
+        if !json_typed(self.header("content-type")) { fail text(415, "the body must be `application/json`") }
+        let body? = (self.gathered()?).text() else { fail text(400, "the body is not UTF-8") }
+        match parse(body) {
+            .Ok(j) -> j,
+            .Err(e) -> { fail text(400, "the body is not JSON: ${e.describe().message}") },
+        }
+    }
+
+    /// The body, whole, or the response refusing it: `Body.gathered`'s
+    /// answer with its failure spoken as a status.
+    fn gathered() -> Result<Bytes, Response> {
+        match self.body.gathered() { .Ok(b) -> b, .Err(e) -> { fail body_refused(e) } }
+    }
+}
+
+/// `q` with `name: value` in place of any field of that name it
+/// carries. The head is not touched: every header read answers the
+/// set field first, so a layer hands its handler a request id or a
+/// trace context without copying a buffer.
+export fn with_field<P>(q: Request<P>, name: string, value: string) -> Request<P> {
+    q with { set: [h for h in q.set if !h.named(name)].concat([header_pair(name, value)]) }
+}
+
+/// `q` without any field named `name`, ASCII-folded.
+export fn without_field<P>(q: Request<P>, name: string) -> Request<P> {
+    if q.head.fields.named(q.raw, name.bytes()) < 0 { return q }
+    q with { head: q.head with { fields: q.head.fields.without(q.raw, name.bytes()) } }
+}
+
+/// The response refusing a body that could not be read: 413 past the
+/// bound, 408 past its deadline, 400 for any other break.
+fn body_refused(e: BodyError) -> Response {
+    match e {
+        .TooLarge -> text(413, "the body is larger than this server takes"),
+        .TimedOut -> text(408, "the body did not arrive in time"),
+        .Malformed(_) or .Closed or .Net(_) or .Secure(_) -> text(400, "the body could not be read"),
+    }
+}
+
+/// The request's JSON body read by `decode` — a record's `from_json`
+/// under `@json` — or the response refusing it: `json`'s, or a 400
+/// naming the member that misfit.
+export fn json_body<P, T>(q: Request<P>, decode: Decoder<T>) -> Result<T, Response> {
+    let doc = q.json()?
+    match decode(doc) { .Ok(v) -> v, .Err(e) -> { fail text(400, e.describe().message) } }
+}
+
+/// Whether a `content-type` names JSON: `application/json`, or any
+/// `application/…+json`, parameters after `;` aside, case folded.
+fn json_typed(ct: string?) -> bool {
+    let full? = ct else { return false }
+    let m = media_of(full)
+    let n = m.length
+    m.ieq_at(0, n, json_type) ||
+        n > 17 && m.ieq_at(0, 12, application) && m.ieq_at(n - 5, n, json_suffix)
+}
+
+/// A `content-type`'s media type: what precedes its parameters,
+/// trimmed, as octets to compare case folded.
+export fn media_of(ct: string) -> Bytes { (ct.split(";").first() ?? "").trim().bytes() }
+
+const json_type: Bytes = "application/json".bytes()
+
+const application: Bytes = "application/".bytes()
+
+const json_suffix: Bytes = "+json".bytes()
 
 /// One outgoing field.
 export type Header = { name: string, value: string }
@@ -280,6 +373,47 @@ export fn released(r: Response) {
 
 /// No octets: an empty body, a piece of nothing.
 fn nothing() -> Bytes { "".bytes() }
+
+impl Response {
+    /// A 200 carrying `v` as JSON.
+    static fn json(v: Json) -> Response {
+        Response {
+            headers: [Header { name: "content-type", value: "application/json" }],
+            body: to_text(v).bytes(),
+        }
+    }
+
+    /// The first header of this name, ASCII-folded, or null when the
+    /// response carries none.
+    fn header(name: string) -> string? { self.headers.find(it.named(name))?.value }
+
+    /// This response saying it varies on `field`: added to its first
+    /// `Vary`, or in a `Vary` of its own — unless one already names it,
+    /// or `*`.
+    fn varied(field: string) -> Response {
+        if self
+            .headers
+            .any(it.named("vary") && (lists_token(it.value, "*") || lists_token(it.value, field))) {
+            return self
+        }
+        let first? = self.headers.find_index(it.named("vary")) else { return self.with_header("vary", field) }
+        self with { headers: [if j == first { h with { value: h.value + ", " + field } } else { h } for j, h in self.headers] }
+    }
+
+    /// This response with `name: value` after its other headers.
+    fn with_header(name: string, value: string) -> Response {
+        self with { headers: self.headers.concat([header_pair(name, value)]) }
+    }
+}
+
+/// A field of `name` and `value`.
+export fn header_pair(name: string, value: string) -> Header { Header { name: name, value: value } }
+
+impl Header {
+    /// Whether this header is named `name`, ASCII-folded as field
+    /// names compare.
+    fn named(name: string) -> bool { same_token(self.name, name) }
+}
 
 // ── Segments ────────────────────────────────────────────────────
 
@@ -576,7 +710,9 @@ export fn lists_token(value: string, token: string) -> bool {
     value.split(",").any(same_token(it, token))
 }
 
-fn same_token(item: string, token: string) -> bool {
+/// Whether `item`, trimmed, is `token`, ASCII-folded — how a coding, a
+/// directive, a media type and a parameter's name compare.
+export fn same_token(item: string, token: string) -> bool {
     let b = item.trim().bytes()
     b.ieq_at(0, b.length, token.bytes())
 }

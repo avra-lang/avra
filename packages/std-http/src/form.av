@@ -1,0 +1,556 @@
+//! FORMS — a body an HTML form posted, in either encoding a browser
+//! sends.
+//!
+//! URLENCODED (`application/x-www-form-urlencoded`) is the query's
+//! grammar with ONE difference: `+` is a space. That is this encoding's
+//! law and no other's, so it lives here, beside `decoded`, and a query
+//! never reads it. Names and values are decoded after the split, so an
+//! escaped `&` or `=` can never move where a field begins, and each
+//! must decode to text.
+//!
+//! MULTIPART (`multipart/form-data`, RFC 7578) is READ AS IT ARRIVES,
+//! piece by piece from the request's `Body`. A field's text is kept,
+//! bounded; a FILE's octets go to the sink the caller hands out for
+//! it, so an upload of any size costs one read's worth of memory. The
+//! reader holds back only what might still be the start of a
+//! delimiter. A file's name is the browser's word, never a path: a
+//! sink that writes to disk picks its own name.
+//!
+//! EVERY SHAPE IT CANNOT READ IS REFUSED, never guessed at: a missing
+//! or malformed boundary, a part with no `form-data` name, a
+//! parameter named twice, a head past its bound and a body that ends
+//! before its closing delimiter are each a 400. Past a bound is 413.
+use @std.errors.{Error, ErrorInfo, info}
+use @std.io.{AppendFile, write_bytes, opened_for_append, remove}
+use @std.text.{parse_int, parse_float}
+use query.{decoded}
+
+// ── Urlencoded ──────────────────────────────────────────────────
+
+/// A form's fields, decoded, in the order sent.
+export type Form = { fields: List<FormField> }
+
+/// One field of a form.
+export type FormField = { name: string, value: string }
+
+/// What asking a form for ONE name answers: nothing, one value, or a
+/// name sent more than once, which is not a value (the query's law:
+/// picking a side is how two readers of one request disagree).
+export enum Filled {
+    Absent
+    Value(v: string)
+    Repeated(times: int)
+}
+
+impl Form {
+    /// Every value sent under `name`, in order — a checkbox group's.
+    fn all(name: string) -> List<string> { [f.value for f in self.fields if f.name == name] }
+
+    /// `name` asked for as one value.
+    fn one(name: string) -> Filled {
+        let values = self.all(name)
+        match values.length { 0 -> .Absent, 1 -> .Value(values[0]), _ -> .Repeated(values.length) }
+    }
+
+    /// The value of `name` when it was sent exactly once.
+    fn value(name: string) -> string? {
+        match self.one(name) { .Value(v) -> v, .Absent or .Repeated(_) -> null }
+    }
+}
+
+impl Request {
+    /// THE BODY AS A URLENCODED FORM, or the response refusing it: 415
+    /// when the request does not say `application/x-www-form-urlencoded`,
+    /// 400 when a name or value does not decode to text, and the body's
+    /// own refusal when it cannot be read whole.
+    fn urlencoded() -> Result<Form, Response> {
+        if !media_is(self.header("content-type"), urlencoded_type) { fail not_urlencoded() }
+        match form_of(self.gathered()?) { .Ok(f) -> f, .Err(_) -> { fail not_form_text() } }
+    }
+}
+
+/// `b` read as `application/x-www-form-urlencoded`: split on `&`, each
+/// piece at its first `=`, then each side decoded — `+` a space, `%XX`
+/// an octet — to text. An empty piece is no field; a piece with no `=`
+/// is a name with an empty value.
+export fn form_of(b: Bytes) -> Result<Form, FormFault> {
+    let text? = b.text() else { fail FormFault.NotText }
+    Form { fields: [field_of(p)? for p in text.split("&") if !p.is_empty()] }
+}
+
+fn field_of(piece: string) -> Result<FormField, FormFault> {
+    let eq = piece.index_of("=")
+    if eq < 0 { return FormField { name: form_text(piece)?, value: "" } }
+    FormField {
+        name: form_text(piece.substring(0, eq))?,
+        value: form_text(piece.substring(eq + 1, piece.length))?,
+    }
+}
+
+/// One side of a pair decoded: `+` a space, then every escape.
+fn form_text(s: string) -> Result<string, FormFault> {
+    let plain? = decoded(s.replace("+", " ").bytes())?.text() else { fail FormFault.NotText }
+    plain
+}
+
+// ── Reading a record (`@form`'s vocabulary) ─────────────────────
+
+/// Why a form did not read as a record: the field, and what it wanted.
+export type FormError = { field: string, wanted: string }
+
+impl Error for FormError {
+    fn describe() -> ErrorInfo { info("form.field", "field `${self.field}` wants ${self.wanted}") }
+}
+
+/// The one value `name` was sent, required.
+export fn form_one(f: Form, name: string) -> Result<string, FormError> {
+    match f.one(name) {
+        .Value(v) -> v,
+        .Absent -> { fail missing(name) },
+        .Repeated(_) -> { fail sent_twice(name) },
+    }
+}
+
+/// The value `name` was sent, or null when it was not — or, for a
+/// field that is not text, when it was sent empty, as an empty input
+/// is.
+export fn form_maybe(f: Form, name: string, empty_is_absent: bool) -> Result<string?, FormError> {
+    let values = f.all(name)
+    if values.length > 1 { fail sent_twice(name) }
+    let v? = values.first() else { return .Ok(null) }
+    if empty_is_absent && v.is_empty() { return .Ok(null) }
+    .Ok(v)
+}
+
+/// A checkbox: absent is false, `on`, `true` and `1` true, `off`,
+/// `false` and `0` false.
+export fn form_checked(f: Form, name: string) -> Result<bool, FormError> {
+    let v? = form_maybe(f, name, false)? else { return false }
+    form_bool_of(v, name)
+}
+
+export fn form_int_of(v: string, name: string) -> Result<int, FormError> {
+    let n? = parse_int(v.trim()) else { fail misfit(name, "an integer") }
+    n
+}
+
+export fn form_float_of(v: string, name: string) -> Result<float, FormError> {
+    let x? = parse_float(v.trim()) else { fail misfit(name, "a number") }
+    x
+}
+
+export fn form_bool_of(v: string, name: string) -> Result<bool, FormError> {
+    if ["on", "true", "1"].any(same_token(v, it)) { return true }
+    if ["off", "false", "0"].any(same_token(v, it)) { return false }
+    fail misfit(name, "`on` or `off`")
+}
+
+/// The request's form read by `decode` — a record's `from_form` under
+/// `@form` — or the response refusing it: the body's own, or a 400
+/// naming the field that misfit. Either encoding is read: urlencoded
+/// whole, multipart with its files refused.
+export fn form_body<P, T>(q: Request<P>, decode: fn(Form) -> Result<T, FormError>) -> Result<
+    T,
+    Response,
+> {
+    let f = if media_is(q.header("content-type"), multipart_type) { (q.multipart(no_files)?).form } else { q.urlencoded()? }
+    match decode(f) { .Ok(v) -> v, .Err(e) -> { fail text(400, e.describe().message) } }
+}
+
+/// The sink a form read as a record gives a file: none.
+fn no_files(_p: Part) -> Sink { refusing() }
+
+/// Why a form body could not be read as one.
+export enum FormFault {
+    NotText
+}
+
+impl Error for FormFault {
+    fn describe() -> ErrorInfo {
+        match self { .NotText -> info("form.not_text", "a name or value is not form-encoded text") }
+    }
+}
+
+const urlencoded_type: string = "application/x-www-form-urlencoded"
+
+/// Whether a header value names `media` — a `content-type`'s type, a
+/// disposition's kind — parameters aside, case folded.
+fn media_is(ct: string?, media: string) -> bool {
+    let full? = ct else { return false }
+    same_token(full.split(";").first() ?? "", media)
+}
+
+// ── Multipart ───────────────────────────────────────────────────
+
+/// One part's head: the form field it fills, the file name the
+/// browser sent — its word, never a path — and its media type.
+export type Part = { name: string, filename: string?, content_type: string? }
+
+/// Where a file part's octets go as they arrive: `take` each piece in
+/// order — answering false stops the upload — then `ended` once,
+/// told whether the part arrived whole. A sink that kept a partial
+/// file removes it when told false.
+export type Sink = { take: fn(Bytes) -> bool, ended: fn(bool) -> void }
+
+/// A sink keeping a file part at `path` — a name the server chose,
+/// never the browser's — written as it arrives, and removed when the
+/// part does not arrive whole. A path that cannot be opened takes
+/// nothing, and the upload is refused.
+export fn saved_to(path: string) -> Sink {
+    let _ = write_bytes(path, "".bytes())
+    let f = match opened_for_append(path) { .Ok(f) -> f, .Err(_) -> { return refusing() } }
+    Sink {
+        take: (b: Bytes) -> match f.write(b) { .Ok(_) -> true, .Err(_) -> false },
+        ended: (whole: bool) -> closed_file(f, whole, path),
+    }
+}
+
+/// A file part's end: the file closed, and removed unless it arrived
+/// whole.
+fn closed_file(f: AppendFile, whole: bool, path: string) {
+    let _ = f.closed()
+    if !whole { let _ = remove(path) }
+}
+
+/// A sink that takes nothing.
+fn refusing() -> Sink { Sink { take: (_b: Bytes) -> false, ended: unheld_part } }
+
+/// The end of a sink that holds nothing.
+fn unheld_part(_whole: bool) {}
+
+/// The bounds a multipart body is read under: how many parts, the
+/// longest part head, the longest field and all fields together, and
+/// the largest file.
+export type FormLimits = {
+    parts: int = 100,
+    head: int = 8192,
+    field: int = 65536,
+    fields: int = 1048576,
+    file: int = 104857600,
+}
+
+/// What a multipart body held: its fields' text as a form, and each
+/// file part with the octets its sink took.
+export type Posted = { form: Form, files: List<Uploaded> }
+
+/// A file part delivered whole to its sink.
+export type Uploaded = { part: Part, size: int }
+
+impl Request {
+    /// THE BODY AS `multipart/form-data`, read as it arrives: every
+    /// field's text kept under `bounds`, every file part's octets handed
+    /// to the sink `sink` answers for it. Or the response refusing it —
+    /// 415 for another media type, 400 for a body that breaks the
+    /// grammar, 413 past a bound, 500 when a sink stops taking — and
+    /// every sink already begun is ended, told false.
+    fn multipart(sink: fn(Part) -> Sink, bounds: FormLimits = FormLimits {}) -> Result<
+        Posted,
+        Response,
+    > {
+        if !media_is(self.header("content-type"), multipart_type) { fail not_multipart() }
+        let boundary? = boundary_of(self.header("content-type")!) else { fail no_boundary() }
+        mut r = Reader {
+            body: self.body,
+            delim: "\r\n--${boundary}".bytes(),
+            bounds: bounds,
+            sink: sink,
+            buf: "\r\n".bytes(),
+            done: false,
+            fields: [],
+            size: 0,
+            files: [],
+        }
+        r.opened()?
+        while r.part()? {}
+        Posted { form: Form { fields: r.fields }, files: r.files }
+    }
+}
+
+const multipart_type: string = "multipart/form-data"
+
+/// The boundary a `multipart/form-data` type declares: 1 to 70 of RFC
+/// 2046's `bchars`, not ending in a space — null for anything else.
+fn boundary_of(ct: string) -> string? {
+    let params? = params_of(ct.substring(ct.index_of(";") + 1, ct.length)) else { return null }
+    let b? = param(params, "boundary") else { return null }
+    if b.is_empty() || b.bytes().length > 70 || b.ends_with(" ") || !every_octet(b, boundary_char) { return null }
+    b
+}
+
+/// RFC 2046 §5.1.1's `bchars`: a digit, a letter, a space, or one of
+/// `'()+_,-./:=?`.
+const boundary_char: Bytes = admits(
+    (c) -> is_digit(c) || is_alpha(c) || " '()+_,-./:=?".bytes().index_of([c].bytes()!, 0) >= 0,
+)
+
+/// A multipart body being read: the body it reads, the delimiter that
+/// ends each part, the bounds, the sink maker, the octets read and not
+/// yet consumed, whether the body has ended, and what it has gathered.
+type Reader = {
+    body: Body,
+    delim: Bytes,
+    bounds: FormLimits,
+    sink: fn(Part) -> Sink,
+    buf: Bytes,
+    done: bool,
+    fields: List<FormField>,
+    size: int,
+    files: List<Uploaded>,
+}
+
+/// A piece of a part's body: more to come, or the last before its
+/// delimiter.
+enum Piece {
+    More(b: Bytes)
+    Last(b: Bytes)
+}
+
+impl Reader {
+    /// Past the preamble and the first delimiter. The buffer began with
+    /// the CRLF a delimiter opens with, so a body that starts at its
+    /// delimiter is found the way every later one is.
+    mut fn opened() -> Result<int, Response> {
+        let at = self.found(self.delim, self.bounds.head, preamble_too_large)?
+        self.buf = self.buf.slice(at + self.delim.length, self.buf.length)
+        .Ok(at)
+    }
+
+    /// One part read, after a delimiter: false at the closing one.
+    mut fn part() -> Result<bool, Response> {
+        self.fill(2)?
+        if self.buf.length < 2 { fail cut_short() }
+        if self.buf.slice(0, 2) == dashes { return .Ok(false) }
+        if self.buf.slice(0, 2) != crlf { fail after_delimiter() }
+        if self.fields.length + self.files.length == self.bounds.parts { fail too_many_parts(self.bounds.parts) }
+        let end = self.found(blank_line, self.bounds.head, head_too_large)?
+        let part = part_of(self.buf.slice(if end < 2 { end } else { 2 }, end))?
+        self.buf = self.buf.slice(end + blank_line.length, self.buf.length)
+        if part.filename == null { self.field(part)? } else { self.file(part)? }
+        .Ok(true)
+    }
+
+    /// A field part's text, kept under its bounds.
+    mut fn field(part: Part) -> Result<int, Response> {
+        mut got = "".bytes()
+        mut last = false
+        while !last {
+            match self.piece()? {
+                .More(b) -> { got = got.concat(b) },
+                .Last(b) -> {
+                    got = got.concat(b)
+                    last = true
+                },
+            }
+            if got.length > self.bounds.field { fail field_too_large(part.name, self.bounds.field) }
+        }
+        self.size = self.size + got.length
+        if self.size > self.bounds.fields { fail fields_too_large(self.bounds.fields) }
+        let text? = got.text() else { fail field_not_text(part.name) }
+        self.fields = self.fields.concat([FormField { name: part.name, value: text }])
+        .Ok(got.length)
+    }
+
+    /// A file part streamed to the sink made for it, which is told at
+    /// its end whether the part arrived whole.
+    mut fn file(part: Part) -> Result<int, Response> {
+        let s = (self.sink)(part)
+        match self.fed(s) {
+            .Ok(n) -> {
+                (s.ended)(true)
+                self.files = self.files.concat([Uploaded { part: part, size: n }])
+                .Ok(n)
+            },
+            .Err(refusal) -> {
+                (s.ended)(false)
+                .Err(refusal)
+            },
+        }
+    }
+
+    /// The part's body handed to `s` piece by piece, under the file
+    /// bound; its size.
+    mut fn fed(s: Sink) -> Result<int, Response> {
+        mut size = 0
+        mut last = false
+        while !last {
+            let b = match self.piece()? {
+                .More(b) -> b,
+                .Last(b) -> {
+                    last = true
+                    b
+                },
+            }
+            size = size + b.length
+            if size > self.bounds.file { fail file_too_large(self.bounds.file) }
+            if !b.is_empty() && !(s.take)(b) { fail sink_stopped() }
+        }
+        .Ok(size)
+    }
+
+    /// The next piece of the part's body. What might still begin a
+    /// delimiter is held back until the next read says whether it does.
+    mut fn piece() -> Result<Piece, Response> {
+        while true {
+            let at = self.buf.index_of(self.delim, 0)
+            if at >= 0 { return .Ok(Piece.Last(self.taken(at, self.delim.length))) }
+            let safe = self.buf.length - (self.delim.length - 1)
+            if safe > 0 { return .Ok(Piece.More(self.taken(safe, 0))) }
+            if self.done { fail cut_short() }
+            self.more()?
+        }
+        fail cut_short()
+    }
+
+    /// The first `n` octets handed out and `skip` more dropped.
+    mut fn taken(n: int, skip: int) -> Bytes {
+        let out = self.buf.slice(0, n)
+        self.buf = self.buf.slice(n + skip, self.buf.length)
+        out
+    }
+
+    /// Where `needle` starts in the buffer, read on for until found —
+    /// refused in `past`'s words once `bound` octets are held without it.
+    mut fn found(needle: Bytes, bound: int, past: fn(int) -> Response) -> Result<int, Response> {
+        while true {
+            let at = self.buf.index_of(needle, 0)
+            if at >= 0 { return .Ok(at) }
+            if self.buf.length > bound + needle.length { fail past(bound) }
+            if self.done { fail cut_short() }
+            self.more()?
+        }
+        fail cut_short()
+    }
+
+    /// At least `n` octets held, or the body ended first.
+    mut fn fill(n: int) -> Result<int, Response> {
+        while self.buf.length < n && !self.done { self.more()? }
+        .Ok(self.buf.length)
+    }
+
+    /// One more piece of the body onto the buffer; the end noted.
+    mut fn more() -> Result<int, Response> {
+        let got = match self.body.read() { .Ok(b) -> b, .Err(e) -> { fail body_refused(e) } }
+        let piece? = got else {
+            self.done = true
+            return .Ok(self.buf.length)
+        }
+        self.buf = self.buf.concat(piece)
+        .Ok(self.buf.length)
+    }
+}
+
+const dashes: Bytes = "--".bytes()
+
+// ── A part's head ───────────────────────────────────────────────
+
+/// One `key=value` parameter of a header value.
+type Param = { key: string, value: string }
+
+/// A part's head read: its `Content-Disposition` (`form-data`, with a
+/// `name`) once, its `Content-Type` at most once, any other field
+/// passed over.
+fn part_of(head: Bytes) -> Result<Part, Response> {
+    let text? = head.text() else { fail bad_head() }
+    let lines = if text.is_empty() { [] } else { text.split("\r\n") }
+    let dispositions = [value_of(l) for l in lines if names(l, content_disposition)]
+    let types = [value_of(l) for l in lines if names(l, content_type_field)]
+    if dispositions.length != 1 || types.length > 1 || !lines.all(it.contains(":")) { fail bad_head() }
+    let d = dispositions[0]
+    let semi = d.index_of(";")
+    if semi < 0 || !media_is(d.substring(0, semi), form_data) { fail bad_head() }
+    let params? = params_of(d.substring(semi + 1, d.length)) else { fail bad_head() }
+    let name? = param(params, "name") else { fail bad_head() }
+    Part { name: name, filename: param(params, "filename"), content_type: types.first() }
+}
+
+/// Whether a head line is the field `field`, its name folded.
+fn names(line: string, field: Bytes) -> bool {
+    let b = line.bytes()
+    let colon = b.index_of(colon_octets, 0)
+    colon > 0 && b.ieq_at(0, colon, field)
+}
+
+const colon_octets: Bytes = ":".bytes()
+
+/// A head line's value, past its colon, trimmed.
+fn value_of(line: string) -> string { line.substring(line.index_of(":") + 1, line.length).trim() }
+
+/// The value of parameter `key`, its name folded; null when absent.
+fn param(params: List<Param>, key: string) -> string? {
+    params.find(same_token(it.key, key))?.value
+}
+
+/// A header value's `; key=value` parameters — a value a token or a
+/// quoted string, read to its closing quote as browsers write it —
+/// or null when any is malformed or a key comes twice.
+fn params_of(s: string) -> List<Param>? {
+    mut out: List<Param> = []
+    mut rest = s.trim()
+    while !rest.is_empty() {
+        let eq = rest.index_of("=")
+        if eq <= 0 { return null }
+        let key = rest.substring(0, eq).trim()
+        if !every_octet(key, token_char) || param(out, key) != null { return null }
+        let after = rest.substring(eq + 1, rest.length).trim()
+        let quoted = after.starts_with("\"")
+        let close = if quoted { after.substring(1, after.length).index_of("\"") + 1 } else { rest_end(after) }
+        if close <= 0 && quoted { return null }
+        let value = if quoted { after.substring(1, close) } else { after.substring(0, close).trim() }
+        if !quoted && (value.is_empty() || !every_octet(value, token_char)) { return null }
+        out = out.concat([Param { key: key, value: value }])
+        let tail = after.substring(if quoted { close + 1 } else { close }, after.length).trim()
+        if !tail.is_empty() && !tail.starts_with(";") { return null }
+        rest = if tail.is_empty() { tail } else { tail.substring(1, tail.length).trim() }
+    }
+    out
+}
+
+/// Where an unquoted value ends: its `;`, or the end.
+fn rest_end(s: string) -> int {
+    let semi = s.index_of(";")
+    if semi < 0 { s.length } else { semi }
+}
+
+const content_disposition: Bytes = "content-disposition".bytes()
+
+const content_type_field: Bytes = "content-type".bytes()
+
+const form_data: string = "form-data"
+
+// ── Voices ──────────────────────────────────────────────────────
+
+fn not_urlencoded() -> Response { text(415, "the body must be `application/x-www-form-urlencoded`") }
+
+fn not_form_text() -> Response { text(400, "a name or value in the form is not form-encoded text") }
+
+fn not_multipart() -> Response { text(415, "the body must be `multipart/form-data`") }
+
+fn no_boundary() -> Response { text(400, "the multipart type names no boundary, or one of more than 70 plain characters") }
+
+fn cut_short() -> Response { text(400, "the multipart body ends before its closing delimiter") }
+
+fn after_delimiter() -> Response { text(400, "a multipart delimiter is followed by neither a line end nor `--`") }
+
+fn bad_head() -> Response { text(400, "a part's head is not one `form-data` disposition with a name") }
+
+fn preamble_too_large(bound: int) -> Response { text(413, "the multipart body runs past ${bound} octets before its first delimiter") }
+
+fn head_too_large(bound: int) -> Response { text(413, "a part's head runs past ${bound} octets") }
+
+fn too_many_parts(bound: int) -> Response { text(413, "the form has more than ${bound} parts") }
+
+fn field_too_large(name: string, bound: int) -> Response { text(413, "field `${name}` is longer than ${bound} octets") }
+
+fn fields_too_large(bound: int) -> Response { text(413, "the form's fields run past ${bound} octets together") }
+
+fn field_not_text(name: string) -> Response { text(400, "field `${name}` is not text") }
+
+fn file_too_large(bound: int) -> Response { text(413, "a file is larger than ${bound} octets") }
+
+fn sink_stopped() -> Response { text(500, "an uploaded file could not be kept") }
+
+fn missing(name: string) -> FormError { FormError { field: name, wanted: "a value" } }
+
+fn sent_twice(name: string) -> FormError { FormError { field: name, wanted: "one value, not several" } }
+
+fn misfit(name: string, wanted: string) -> FormError { FormError { field: name, wanted: wanted } }

@@ -1,0 +1,114 @@
+//! @std.compress — octets encoded as gzip, zlib or brotli, and
+//! decoded back UNDER A CEILING. A compressed input is a promise about
+//! its own size that only decoding checks, so every decode names the
+//! most it will produce: a few kilobytes that inflate to gigabytes (a
+//! decompression bomb) stop at the ceiling as `TooLarge`, having
+//! produced one octet past it and no more. The work is the vendored
+//! zlib 1.3.1 and brotli 1.1.0, one shot per call.
+use @std.errors.{Error, ErrorInfo, info}
+
+extern fn avra_cz_encode(format: int, level: int, input: Bytes, n: int) -> int
+extern fn avra_cz_decode(format: int, input: Bytes, n: int, ceiling: int) -> int
+extern fn avra_cz_failure(job: int) -> int
+extern fn avra_cz_len(job: int) -> int
+extern fn avra_cz_at(job: int) -> ptr?
+extern fn avra_cz_free(job: int) -> int
+extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
+
+/// A compressed format: gzip (RFC 1952), zlib (RFC 1950 — what HTTP's
+/// `deflate` names), or brotli (RFC 7932).
+export enum Format {
+    Gzip
+    Zlib
+    Brotli
+}
+
+/// Why octets could not be encoded or decoded.
+export enum CompressError {
+    Corrupt
+    TooLarge(ceiling: int)
+    Truncated
+    Memory
+}
+
+impl Error for CompressError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Corrupt -> info("compress.corrupt", "the input is not in the format it was read as"),
+            .TooLarge(c) -> info("compress.too_large", "the input decodes to more than ${c} octets"),
+            .Truncated -> info("compress.truncated", "the input ends before its stream does"),
+            .Memory -> info("compress.memory", "memory ran out"),
+        }
+    }
+}
+
+/// `b` encoded in `f`. `effort` is zlib's 0 to 9 or brotli's 0 to 11,
+/// clamped; absent is each format's balance of speed and size.
+export fn encoded(b: Bytes, f: Format, effort: int? = null) -> Result<Bytes, CompressError> {
+    finished(
+        avra_cz_encode(
+            format_code(f),
+            clamped(effort ?? default_level(f), 0, top_level(f)),
+            b,
+            b.length,
+        ),
+        0,
+    )
+}
+
+/// `b` decoded from `f`, producing at most `ceiling` octets — none at
+/// all under a ceiling below zero.
+export fn decoded(b: Bytes, f: Format, ceiling: int) -> Result<Bytes, CompressError> {
+    if ceiling < 0 { fail CompressError.TooLarge(ceiling) }
+    finished(avra_cz_decode(format_code(f), b, b.length, ceiling), ceiling)
+}
+
+/// A job's octets as a value, or why it holds none — the job freed
+/// either way. No job at all (0) is memory that ran out.
+fn finished(job: int, ceiling: int) -> Result<Bytes, CompressError> {
+    if job == 0 { fail CompressError.Memory }
+    let why = avra_cz_failure(job)
+    let out = adopted(avra_cz_at(job), avra_cz_len(job))
+    let _ = avra_cz_free(job)
+    if why != 0 { fail failure_of(why, ceiling) }
+    out
+}
+
+/// `n` octets the job holds at `at`, copied into a value of ours. The
+/// pointer is foreign, so it is tested, never insisted on — an empty
+/// job answers none.
+fn adopted(at: ptr?, n: int) -> Bytes {
+    let p? = at else { return "".bytes() }
+    avra_bytes_adopted(p, n)
+}
+
+/// The C's failure codes, as the error each names.
+fn failure_of(code: int, ceiling: int) -> CompressError {
+    match code {
+        2 -> CompressError.TooLarge(ceiling),
+        3 -> CompressError.Truncated,
+        4 -> CompressError.Memory,
+        _ -> CompressError.Corrupt,
+    }
+}
+
+/// A REGISTRY over the formats, spelled whole: the code the C reads.
+fn format_code(f: Format) -> int {
+    match f { .Gzip -> 1, .Zlib -> 2, .Brotli -> 3 }
+}
+
+fn default_level(f: Format) -> int {
+    match f { .Gzip or .Zlib -> 6, .Brotli -> 5 }
+}
+
+fn top_level(f: Format) -> int {
+    match f { .Gzip or .Zlib -> 9, .Brotli -> 11 }
+}
+
+fn clamped(v: int, lo: int, hi: int) -> int {
+    when {
+        v < lo -> lo
+        v > hi -> hi
+        _ -> v
+    }
+}

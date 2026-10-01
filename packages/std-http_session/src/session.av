@@ -1,0 +1,85 @@
+//! @std.http_session — SIGNED COOKIES and the sessions they carry. A
+//! package of its own so a plain HTTP program links no MAC: signing is
+//! HMAC-SHA256 from `@std/tls`'s `mac`, which links no handshake.
+//!
+//! A signed cookie carries its value and a MAC over its NAME and value,
+//! so a value cannot be moved to another cookie, and a tag is compared
+//! in constant time. A session holds its data and its expiry under one
+//! tag, so neither can be changed or extended by the client.
+use @std.text.{base64url, from_base64url, parse_int}
+use @std.tls.mac.{hmac_sha256, same_mac}
+use @std.http.cookie.{SetCookie, removed}
+
+// ── Signing ─────────────────────────────────────────────────────
+
+/// A message authentication code: the tag of a message under a key.
+export alias Mac = fn(Bytes, Bytes) -> Bytes
+
+/// What signs and opens cookie values: a secret key — 32 random
+/// octets or more — and its MAC.
+export type Signer = { key: Bytes, mac: Mac = hmac_sha256 }
+
+impl Signer {
+    /// `value` carrying its tag over the cookie's name and value, as
+    /// `value.tag` — every character a cookie-octet when `value` is.
+    fn signed(name: string, value: string) -> string {
+        "${value}.${base64url(self.tag(name, value))}"
+    }
+
+    /// The value a signed cookie carries, when its tag is this
+    /// signer's for this name; absent for anything else.
+    fn opened(name: string, sealed: string?) -> string? {
+        let s? = sealed else { return null }
+        let dot = last_dot(s)
+        if dot < 0 { return null }
+        let value = s.substring(0, dot)
+        let carried? = from_base64url(s.substring(dot + 1, s.length)) else { return null }
+        if !same_mac(carried, self.tag(name, value)) { return null }
+        value
+    }
+
+    fn tag(name: string, value: string) -> Bytes {
+        (self.mac)(self.key, "${name}=${value}".bytes())
+    }
+}
+
+/// Where the last `.` is, or -1 — the tag carries none, so it ends
+/// the value.
+fn last_dot(s: string) -> int {
+    mut i = s.length - 1
+    while i >= 0 && s.char_code(i) != 46 { i = i - 1 }
+    i
+}
+
+// ── Sessions ────────────────────────────────────────────────────
+
+/// A session held in a signed cookie: its data and when it expires.
+/// The data is the caller's text, carried base64url.
+export type Session = { signer: Signer, name: string = "__Host-session", max_age: int = 86400 }
+
+impl Session {
+    /// The cookie that starts a session holding `data`, at `now` in
+    /// seconds since the epoch.
+    fn issued(data: string, now: int) -> SetCookie {
+        let payload = "${now + self.max_age}.${base64url(data.bytes())}"
+        SetCookie {
+            name: self.name,
+            value: self.signer.signed(self.name, payload),
+            max_age: self.max_age,
+        }
+    }
+
+    /// The session's data, when `sealed` (the request's cookie of
+    /// this name) is this signer's and has not expired at `now`.
+    fn opened(sealed: string?, now: int) -> string? {
+        let payload? = self.signer.opened(self.name, sealed) else { return null }
+        let dot = payload.index_of(".")
+        if dot < 0 { return null }
+        let until? = parse_int(payload.substring(0, dot)) else { return null }
+        if now >= until { return null }
+        from_base64url(payload.substring(dot + 1, payload.length))?.text()
+    }
+
+    /// The cookie that ends the session.
+    fn ended() -> SetCookie { removed(self.name) }
+}

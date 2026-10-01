@@ -1572,6 +1572,26 @@ path), and before trusting a keeper built on stubs, run it once
 through the real thing — one real branch through the real pipeline
 is the receipt a green fixture cannot be.
 
+## A layer's constant work is spelled once, in its closure
+
+A layer is a fn made once and called per request, so whatever does
+not depend on the request belongs in the maker, captured by the
+lambda it answers: `hardening(h)` spells its fixed headers there,
+`rated(r)` holds its bucket table there, and `served_at(path, api)`
+writes its document there. The smell is a layer body rebuilding the
+same list or text on every call. Measured: spelling the security
+headers once took that layer from 1.0 to 0.8 µs a request.
+
+## A layer hands its handler a field through `Request.set`, never the buffer
+
+A request's head is spans into the connection's read buffer (up to
+16 KB), so appending a field line to `raw` copies that buffer once
+per field. `with_field` records the field in `Request.set`, which
+every header read answers first, and costs no copy. The observe layer
+paid 1.7 µs a request for the append before this form existed.
+Anything that rebuilds a Request from another carries `set` along
+(route.av's dispatch does).
+
 ## Proven but awaiting their first honest use
 
 - **Pipe `|>`** — first real pipeline, not two-arg call rewrites.

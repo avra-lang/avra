@@ -1,0 +1,244 @@
+// Content coding as a layer: what a client accepts decides the coding,
+// only what is worth coding is coded, and a coded request body is
+// decoded under a ceiling.
+use @std.http.frame.{framed, limits}
+use @std.http.body.{Body, whole}
+use @std.http.http.{Request, Unrouted, Response, Header, text}
+use @std.http_compress.{Compression, compressed, compressing}
+use @std.compress.{Format, encoded, decoded}
+use @std.text.{repeat}
+
+/// A request framed from its fields, carrying `body`.
+fn asked(fields: string, body: Bytes) -> Request<Unrouted> {
+    let raw = "POST /x HTTP/1.1\r\nHost: h\r\n${fields}\r\n".bytes()
+    let head = match framed(raw, 0, 0, limits()) {
+        .Complete(h) -> h,
+        .Partial or .Refused(_) -> null,
+    }
+    Request { raw: raw, head: head!, body: whole(body), peer: "t", params: Unrouted {} }
+}
+
+fn nothing() -> Bytes { "".bytes() }
+
+/// `2^k` octets of `0`, doubled up — a bomb's worth of input without a
+/// push per octet.
+fn zeros(k: int) -> Bytes {
+    mut b = "0".bytes()
+    for _i in 0..k {
+        b = b.concat(b)
+    }
+    b
+}
+
+/// A page of text long enough to be worth coding.
+fn page() -> string { repeat("the quick brown fox jumps over the lazy dog. ", 100) }
+
+fn page_of(ct: string) -> Response { text(200, page()) with { headers: [Header { name: "content-type", value: ct }] } }
+
+/// What the layer answers for a GET accepting `ae`, over `r`.
+fn answered(ae: string, r: Response) -> Response { compressed(asked(ae, nothing()), (_q) -> r) }
+
+/// The coding the layer chose for a client sending `accept-encoding: <ae>`.
+fn chose(ae: string) -> string { answered("Accept-Encoding: ${ae}\r\n", text(200, page())).header("content-encoding") ?? "none" }
+
+/// What the handler saw of a posted body, or the refusal.
+fn posted(fields: string, body: Bytes) -> string {
+    let r = compressed(
+        asked(fields, body),
+        (q) -> text(
+            200,
+            "${q.header("content-encoding") ?? "-"} ${q.header("content-length") ?? "-"} ${q.body.text() ?? "?"}",
+        ),
+    )
+    "${r.status} ${r.body.text() ?? "?"}"
+}
+
+fn gzipped(s: string) -> Bytes { encoded(s.bytes(), Format.Gzip) catch nothing() }
+
+fn back(r: Response, f: Format) -> string { (decoded(r.body, f, 1000000) catch nothing()).text() ?? "?" }
+
+spec "std/http_compress — Accept-Encoding" {
+    given "the empty cases, written first" {
+        then "no accept-encoding is sent as it is" { answered("", text(200, page())).header("content-encoding") == null }
+        then "an empty one names nothing" { chose("") == "none" }
+        then "identity alone" { chose("identity") == "none" }
+    }
+    given "one coding" {
+        then "gzip" { chose("gzip") == "gzip" }
+        then "deflate" { chose("deflate") == "deflate" }
+        then "br" { chose("br") == "br" }
+        then "x-gzip is gzip" { chose("x-gzip") == "gzip" }
+        then "case folds" { chose("GZIP") == "gzip" }
+        then "an unknown coding is none" { chose("compress, zstd") == "none" }
+    }
+    given "weights" {
+        then "a tie goes to br" { chose("gzip, deflate, br") == "br" }
+        then "the heavier wins" { chose("br;q=0.5, gzip") == "gzip" }
+        then "three decimals" { chose("br;q=0.501, gzip;q=0.5") == "br" }
+        then "a space before the weight" { chose("br ; q=0.2, gzip ;q=0.9") == "gzip" }
+        then "zero refuses" { chose("gzip;q=0") == "none" }
+        then "zero with decimals refuses" { chose("gzip;q=0.000") == "none" }
+        then "a star grants the rest" { chose("*") == "br" }
+        then "a star refused, one named" { chose("*;q=0, gzip") == "gzip" }
+        then "a named refusal beats a star" { chose("br;q=0, *") == "gzip" }
+        then "a malformed weight names nothing" { chose("br;q=1.5, gzip;q=0.1") == "gzip" }
+        then "four decimals is malformed" { chose("br;q=0.5555, gzip;q=0.1") == "gzip" }
+        then "one past one is malformed" { chose("br;q=1.001, gzip;q=0.1") == "gzip" }
+        then "a weight that is not a number" { chose("br;q=x, gzip;q=0.1") == "gzip" }
+        then "split across fields" {
+            answered("Accept-Encoding: gzip;q=0.1\r\nAccept-Encoding: br\r\n", text(200, page()))
+                .header("content-encoding") == "br"
+        }
+    }
+}
+
+spec "std/http_compress — the response" {
+    given "what is coded" {
+        then "every format reads back" {
+            back(answered("Accept-Encoding: br\r\n", text(200, page())), Format.Brotli) == page() &&
+                back(answered("Accept-Encoding: gzip\r\n", text(200, page())), Format.Gzip) == page() &&
+                back(answered("Accept-Encoding: deflate\r\n", text(200, page())), Format.Zlib) == page()
+        }
+        then "it shrank" { answered("Accept-Encoding: gzip\r\n", text(200, page())).body.length < 400 }
+        then "vary is added" { answered("Accept-Encoding: gzip\r\n", text(200, page())).header("vary") == "accept-encoding" }
+        then "json" {
+            answered("Accept-Encoding: gzip\r\n", page_of("application/json"))
+                .header("content-encoding") == "gzip"
+        }
+        then "a +json type" {
+            answered("Accept-Encoding: gzip\r\n", page_of("application/problem+json"))
+                .header("content-encoding") == "gzip"
+        }
+        then "svg" {
+            answered("Accept-Encoding: gzip\r\n", page_of("image/svg+xml"))
+                .header("content-encoding") == "gzip"
+        }
+        then "a media type folds" {
+            answered("Accept-Encoding: gzip\r\n", page_of("TEXT/HTML; charset=utf-8"))
+                .header("content-encoding") == "gzip"
+        }
+        then "a strong tag weakens" {
+            answered("Accept-Encoding: gzip\r\n", text(200, page()).with_header("ETag", "\"7\""))
+                .header("etag") == "W/\"7\""
+        }
+        then "a weak tag stays" {
+            answered("Accept-Encoding: gzip\r\n", text(200, page()).with_header("etag", "W/\"7\""))
+                .header("etag") == "W/\"7\""
+        }
+        then "an existing vary gains the field" {
+            answered("Accept-Encoding: gzip\r\n", text(200, page()).with_header("Vary", "origin"))
+                .header("vary") == "origin, accept-encoding"
+        }
+        then "a vary already naming it is left" {
+            answered(
+                "Accept-Encoding: gzip\r\n",
+                text(200, page()).with_header("vary", "Accept-Encoding"),
+            )
+                .headers
+                .length == 3
+        }
+        then "a vary of star is left" {
+            answered("Accept-Encoding: gzip\r\n", text(200, page()).with_header("vary", "*"))
+                .header("vary") == "*"
+        }
+    }
+    given "what is not" {
+        then "a small body is left whole" {
+            let r = answered("Accept-Encoding: gzip\r\n", text(200, "short"))
+            r.header("content-encoding") == null &&
+                r.header("vary") == null &&
+                r.body.text() == "short"
+        }
+        then "not accepted, still varied" {
+            let r = answered("Accept-Encoding: identity\r\n", text(200, page()))
+            r.header("content-encoding") == null && r.header("vary") == "accept-encoding"
+        }
+        then "an image" { answered("Accept-Encoding: gzip\r\n", page_of("image/png")).header("vary") == null }
+        then "no content type" {
+            answered("Accept-Encoding: gzip\r\n", Response { body: page().bytes() })
+                .header("content-encoding") == null
+        }
+        then "already coded" {
+            answered(
+                "Accept-Encoding: gzip\r\n",
+                text(200, page()).with_header("content-encoding", "br"),
+            )
+                .header("content-encoding") == "br"
+        }
+        then "a range" { answered("Accept-Encoding: gzip\r\n", text(206, page())).header("content-encoding") == null }
+        then "a 304" { answered("Accept-Encoding: gzip\r\n", text(304, page())).header("content-encoding") == null }
+        then "no-transform" {
+            answered(
+                "Accept-Encoding: gzip\r\n",
+                text(200, page()).with_header("cache-control", "public, no-transform"),
+            )
+                .header("content-encoding") == null
+        }
+        then "octets that do not shrink" {
+            let noise = encoded(["${k * k}" for k in 0..3000].join(",").bytes(), Format.Brotli) catch nothing()
+            let r = answered(
+                "Accept-Encoding: gzip\r\n",
+                Response {
+                    headers: [Header { name: "content-type", value: "text/plain" }],
+                    body: noise,
+                },
+            )
+            r.header("content-encoding") == null && r.body == noise
+        }
+        then "a smaller floor codes a small body" {
+            (compressing(Compression { smallest: 1 }))(
+                asked("Accept-Encoding: gzip\r\n", nothing()),
+                (_q) -> text(200, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            )
+                .header("content-encoding") == "gzip"
+        }
+    }
+}
+
+spec "std/http_compress — the request" {
+    given "the empty cases, written first" {
+        then "no coding passes" { posted("Content-Length: 2\r\n", "hi".bytes()) == "200 - 2 hi" }
+        then "identity passes" { posted("Content-Encoding: identity\r\nContent-Length: 2\r\n", "hi".bytes()) == "200 identity 2 hi" }
+        then "an empty coded body has nothing to decode" { posted("Content-Encoding: gzip\r\nContent-Length: 0\r\n", nothing()) == "200 - - " }
+    }
+    given "a coded body" {
+        then "gzip is decoded and its fields dropped" { posted("Content-Encoding: gzip\r\nContent-Length: 32\r\n", gzipped("hello")) == "200 - - hello" }
+        then "br" {
+            posted(
+                "Content-Encoding: br\r\n",
+                encoded("hello".bytes(), Format.Brotli) catch nothing(),
+            ) == "200 - - hello"
+        }
+        then "deflate" {
+            posted(
+                "Content-Encoding: Deflate\r\n",
+                encoded("hello".bytes(), Format.Zlib) catch nothing(),
+            ) == "200 - - hello"
+        }
+    }
+    given "refusals" {
+        then "a bomb" {
+            posted("Content-Encoding: gzip\r\n", encoded(zeros(21), Format.Gzip) catch nothing()) == "413 the body decodes to more than 1048576 octets"
+        }
+        then "a lower ceiling" {
+            let r = (compressing(Compression { inflated: 4 }))(
+                asked("Content-Encoding: gzip\r\n", gzipped("hello")),
+                (_q) -> text(200, "reached"),
+            )
+            r.status == 413
+        }
+        then "not what it names" { posted("Content-Encoding: gzip\r\n", "hello".bytes()).starts_with("400 ") }
+        then "an unknown coding" {
+            let r = compressed(
+                asked("Content-Encoding: compress\r\n", "x".bytes()),
+                (_q) -> text(200, "reached"),
+            )
+            r.status == 415 && r.header("accept-encoding") == "br, gzip, deflate"
+        }
+        then "two codings" { posted("Content-Encoding: gzip, br\r\n", "x".bytes()).starts_with("415 ") }
+        then "two fields" {
+            posted("Content-Encoding: gzip\r\nContent-Encoding: gzip\r\n", gzipped("x"))
+                .starts_with("415 ")
+        }
+    }
+}

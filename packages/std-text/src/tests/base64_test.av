@@ -1,0 +1,57 @@
+// RFC 4648 base64, both alphabets: its own test vectors, and one
+// spelling per value read back — anything else absent.
+use @std.text.{base64, base64url, from_base64, from_base64url, from_codepoint}
+
+fn b64(s: string) -> string { base64(s.bytes()) }
+
+fn back(s: string) -> string {
+    let b? = from_base64(s) else { return "absent" }
+    b.text() ?? "not text"
+}
+
+fn back_url(s: string) -> string {
+    let b? = from_base64url(s) else { return "absent" }
+    b.text() ?? "not text"
+}
+
+spec "std/text — base64" {
+    given "the empty case, written first" {
+        then "nothing encodes as nothing" { b64("") == "" && base64url("".bytes()) == "" }
+        then "nothing decodes as nothing" { back("") == "" && back_url("") == "" }
+    }
+    given "RFC 4648 §10's vectors" {
+        then "f" { b64("f") == "Zg==" }
+        then "fo" { b64("fo") == "Zm8=" }
+        then "foo" { b64("foo") == "Zm9v" }
+        then "foob" { b64("foob") == "Zm9vYg==" }
+        then "fooba" { b64("fooba") == "Zm9vYmE=" }
+        then "foobar" { b64("foobar") == "Zm9vYmFy" }
+        then "each reads back" {
+            back("Zg==") == "f" &&
+                back("Zm8=") == "fo" &&
+                back("Zm9v") == "foo" &&
+                back("Zm9vYg==") == "foob" &&
+                back("Zm9vYmE=") == "fooba" &&
+                back("Zm9vYmFy") == "foobar"
+        }
+    }
+    given "the URL-safe alphabet" {
+        then "unpadded" { base64url("f".bytes()) == "Zg" && base64url("fo".bytes()) == "Zm8" }
+        then "`-` and `_` where `+` and `/` stand" { base64([251, 255].bytes()!) == "+/8=" && base64url([251, 255].bytes()!) == "-_8" }
+        then "reads back" { from_base64url("-_8") == [251, 255].bytes() }
+        then "every octet round-trips" {
+            let all = [k for k in 0..256].bytes()!
+            from_base64url(base64url(all)) == all && from_base64(base64(all)) == all
+        }
+    }
+    given "one spelling per value" {
+        then "a wrong length" { back("Zm9") == "absent" && back("Z") == "absent" && back_url("Z") == "absent" }
+        then "padding inside" { back("Zg==Zg==") == "absent" && back("Z=g=") == "absent" }
+        then "three pads" { back("Z===") == "absent" }
+        then "padding on the URL form" { back_url("Zg==") == "absent" }
+        then "the other alphabet" { back("-_8=") == "absent" && back_url("+/8") == "absent" }
+        then "bits past the last octet that are not zero" { back("Zh==") == "absent" && back_url("Zh") == "absent" }
+        then "space and newline" { back("Zm9v Zm9v") == "absent" && back("Zm9v\nZm9v") == "absent" }
+        then "a NUL" { back("Zm9v" + from_codepoint(0)) == "absent" }
+    }
+}

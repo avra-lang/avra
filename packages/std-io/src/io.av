@@ -31,6 +31,11 @@ extern fn avra_io_env_set(name: string) -> int
 extern fn avra_io_open_append(path: string) -> int
 extern fn avra_fd_sync(fd: int) -> int
 extern fn avra_io_truncate(path: string, len: int) -> int
+extern fn avra_io_open_beneath(root: string, rel: string) -> int
+extern fn avra_io_fd_kind(fd: int) -> int
+extern fn avra_io_fd_size(fd: int) -> int
+extern fn avra_io_fd_mtime(fd: int) -> int
+extern fn avra_io_seek(fd: int, at: int) -> int
 
 // THE RUNTIME'S OWN, which mint or answer immortal text — the only
 // doors through which bytes become a value. `avra_io_list` is the one
@@ -204,6 +209,47 @@ fn drained(path: string, fd: int) -> Result<Bytes, IoError> {
     }
     parts.bytes()
 }
+
+// ── Beneath a root ──────────────────────────────────────────────
+
+/// A descriptor opened for reading, and what stood there when it was
+/// opened: its kind, its size in octets and its modification time in
+/// seconds. Close it with `close`.
+export type Opened = { fd: int, kind: Entry, size: int, mtime: int }
+
+/// `rel` opened for reading BENEATH the directory `root`, never above
+/// it: `rel` is `/`-separated segments walked one at a time without
+/// following a symlink, so `..`, `.`, an empty segment, a leading `/`
+/// and a symlink anywhere below the root all refuse — a caller handing
+/// in a path from a request cannot name a file the root does not hold.
+/// A FIFO opens without blocking; ask `kind` what was opened.
+export fn open_beneath(root: string, rel: string) -> Result<Opened, IoError> {
+    let fd = done(rel, avra_io_open_beneath(one_path(root)?, one_path(rel)?))?
+    let kind = entry_of(done(rel, avra_io_fd_kind(fd)) catch 3)
+    Opened { fd: fd, kind: kind, size: avra_io_fd_size(fd), mtime: avra_io_fd_mtime(fd) }
+}
+
+impl Opened {
+    /// At most `n` octets from offset `from` — fewer only at the file's
+    /// end.
+    fn span(from: int, n: int) -> Result<Bytes, IoError> {
+        done("", avra_io_seek(self.fd, from))?
+        mut parts: List<Bytes> = []
+        mut left = n
+        while left > 0 {
+            let token = done("", avra_fd_read(self.fd, min_of(left, chunk())))?
+            if token == 0 { return parts.bytes() }
+            let got = avra_fd_taken(token)
+            left = left - got.length
+            parts.push(got)
+        }
+        parts.bytes()
+    }
+
+    fn close() { let _ = avra_io_close(self.fd) }
+}
+
+fn min_of(a: int, b: int) -> int { if a < b { a } else { b } }
 
 /// A file's bytes as text. TEXT THAT IS NOT TEXT IS A REFUSAL, and
 /// the refusal CARRIES THE OFFSET: `at` is the first byte that is not

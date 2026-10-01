@@ -1,7 +1,7 @@
 // The red team's record for @std/json: the degenerate texts, every odd
 // token, deep nesting, and the escapes at their edges.
-use @std.json.{Json, field, parse, to_text, pretty}
-use @std.text.{from_codepoint}
+use @std.json.{Json, field, parse, to_text, pretty, MAX_DEPTH}
+use @std.text.{from_codepoint, repeat}
 
 fn a_round(text: string) -> string {
     match parse(text) { .Ok(j) -> to_text(j), .Err(e) -> e.describe().message }
@@ -25,10 +25,14 @@ spec "std/json — adversarial" {
         then "whitespace alone is the end of the text" { a_round("  \n\t ") == "unexpected the end of the text at byte 5" }
         then "a lone minus wants a digit" { a_round("-") == "unexpected the end of the text, wanting a digit at byte 1" }
         then "a minus before a word wants a digit" { a_round("-x") == "unexpected \"x\", wanting a digit at byte 1" }
-        then "zero, negative zero and leading zeros are integers" { a_round("0") == "0" && a_round("-0") == "0" && a_round("007") == "7" }
+        then "zero and negative zero are the integer zero" { a_round("0") == "0" && a_round("-0") == "0" }
+        then "a leading zero is refused, as RFC 8259 says" {
+            a_round("007") == "the number at byte 0 has a leading zero" &&
+                a_round("-01") == "the number at byte 0 has a leading zero"
+        }
         then "past the ceiling on either side is a refusal, not a silent wrap" {
-            a_round("9223372036854775808") == "the number at byte 0 does not fit an int" &&
-                a_round("-9223372036854775809") == "the number at byte 0 does not fit an int"
+            a_round("9223372036854775808") == "the integer at byte 0 does not fit an int" &&
+                a_round("-9223372036854775809") == "the integer at byte 0 does not fit an int"
         }
         then "an empty key is a key" { a_round("{\"\":1}") == "{\"\":1}" }
         then "a duplicate key is kept twice, in order — the reader does not judge" { a_round("{\"a\":1,\"a\":2}") == "{\"a\":1,\"a\":2}" }
@@ -54,6 +58,18 @@ spec "std/json — adversarial" {
     }
     given "nesting" {
         then "sixty levels deep reads and writes back" { a_round(deep(60)) == deep(60) }
+        then "the deepest nesting reads" { a_round(deep(MAX_DEPTH)) == deep(MAX_DEPTH) }
+        then "one level past it is refused, naming where" {
+            a_round(deep(MAX_DEPTH + 1)) == "the value at byte ${MAX_DEPTH} nests deeper than ${MAX_DEPTH} arrays and objects"
+        }
+        then "a hundred thousand levels is a refusal, not a blown stack" {
+            a_round(repeat("[", 100000) + repeat("]", 100000))
+                .starts_with("the value at byte 512 nests deeper")
+        }
+        then "objects count toward the same depth" {
+            a_round(repeat("{\"a\":", MAX_DEPTH + 1) + "1" + repeat("}", MAX_DEPTH + 1))
+                .contains("nests deeper")
+        }
         then "an object in an array in an object" { a_round("{\"a\":[{\"b\":[]}]}") == "{\"a\":[{\"b\":[]}]}" }
     }
     given "escapes at their edges" {

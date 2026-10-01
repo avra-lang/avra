@@ -14,8 +14,8 @@
 //!
 //! ARGUMENTS ARE CHECKED WHOLE BEFORE A TOOL RUNS: an undeclared
 //! name, a repeated name, a missing required one and a value of the
-//! wrong kind are each `-32602` naming the param. Numbers are
-//! integers, as in `@std/json`.
+//! wrong kind are each `-32602` naming the param. A `number` takes an
+//! integer or a fraction, an `integer` an integer alone.
 use @std.json.{Json, Field, field, parse, to_text}
 use @std.action.{Impact, faults as impact_faults}
 use @std.errors.{Error}
@@ -154,8 +154,14 @@ fn read_call(request: Json) -> Result<Call, Json> {
     Call { id: echoed, method: method, params: request.member("params"), notification: id == null }
 }
 
+/// Whether `id` is one this server echoes: a string, an integer or
+/// null. JSON-RPC 2.0 says a fractional id SHOULD NOT be sent, and a
+/// float cannot be echoed as the octets it arrived as, so it is refused.
 fn id_fits(id: Json) -> bool {
-    match id { .Null or .Int(_) or .Str(_) -> true, .Bool(_) or .Arr(_) or .Obj(_) -> false }
+    match id {
+        .Null or .Int(_) or .Str(_) -> true,
+        .Float(_) or .Bool(_) or .Arr(_) or .Obj(_) -> false,
+    }
 }
 
 fn method_of(name: string) -> Verb? {
@@ -237,7 +243,12 @@ fn mistyped(p: ToolParam, args: Json) -> bool {
 }
 
 fn fits(k: ParamKind, v: Json) -> bool {
-    match k { .Text -> v is .Str, .Integer or .Number -> v is .Int, .Boolean -> v is .Bool }
+    match k {
+        .Text -> v is .Str,
+        .Integer -> v is .Int,
+        .Number -> v is .Int || v is .Float,
+        .Boolean -> v is .Bool,
+    }
 }
 
 /// A tool's answer as MCP content.

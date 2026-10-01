@@ -28,13 +28,21 @@ impl Fields {
 
     fn field(i: int) -> Field { Field { name: self.name_at(i), value: self.value_at(i) } }
 
+    /// These fields but every one named `unwanted`, ASCII-folded.
+    fn without(buf: Bytes, unwanted: Bytes) -> Fields {
+        Fields([self.of[k] for k in 0..self.of.length if !self.names(buf, k / 4, unwanted)])
+    }
+
     /// The first field named `wanted`, ASCII-folded, by index — or -1.
     fn named(buf: Bytes, wanted: Bytes) -> int {
         for i in 0..self.count() {
-            if buf.ieq_at(self.of[4 * i], self.of[4 * i + 1], wanted) { return i }
+            if self.names(buf, i, wanted) { return i }
         }
         -1
     }
+
+    /// Whether field `i` is named `wanted`, ASCII-folded.
+    fn names(buf: Bytes, i: int, wanted: Bytes) -> bool { buf.ieq_at(self.of[4 * i], self.of[4 * i + 1], wanted) }
 }
 
 /// The nine methods RFC 9110 registers, and `Other` for a token this

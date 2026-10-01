@@ -1,0 +1,92 @@
+// JSON's numbers past the integers: RFC 8259's grammar is the door,
+// a fraction or an exponent makes a `Float`, and what is written
+// reads back as the same value.
+use @std.json.{Json, parse, to_text, pretty}
+use @std.text.{repeat, from_codepoint, parse_float}
+
+fn written(text: string) -> string {
+    match parse(text) { .Ok(j) -> to_text(j), .Err(e) -> e.describe().message }
+}
+
+fn read(text: string) -> Json {
+    parse(text) catch Json.Null
+}
+
+fn float_of(text: string) -> float? {
+    read(text).float()
+}
+
+/// The value written and read again is the value.
+fn stable(text: string) -> bool {
+    let first = written(text)
+    written(first) == first
+}
+
+spec "std/json — floats" {
+    given "the empty cases, written first" {
+        then "a lone point wants a value" { written(".") == "unexpected \".\" at byte 0" }
+        then "a point with no digits after it" { written("1.") == "unexpected the end of the text, wanting a digit after the point at byte 2" }
+        then "an exponent with no digits" { written("1e") == "unexpected the end of the text, wanting a digit in the exponent at byte 2" }
+        then "an exponent sign with no digits" { written("1e+") == "unexpected the end of the text, wanting a digit in the exponent at byte 3" }
+    }
+    given "the kinds a number reads as" {
+        then "an integer spelling is an Int" { read("3").int() == 3 }
+        then "a fraction is a Float" { float_of("1.5") == 1.5 }
+        then "an exponent alone is a Float" { float_of("1e3") == 1000.0 }
+        then "a Float is not an Int" { read("1.0").int() == null }
+        then "an Int is not a Float" { float_of("1") == null }
+        then "every exponent spelling" { float_of("25E-1") == 2.5 && float_of("25e+1") == 250.0 && float_of("2E1") == 20.0 }
+    }
+    given "writing and reading back" {
+        then "a fraction writes as its shortest text" { written("0.1") == "0.1" }
+        then "an integral float keeps its point" { written("1.0") == "1.0" && written("1e2") == "100.0" }
+        then "a float under 1e21 writes positionally" { written("1e20") == "100000000000000000000.0" && written("1e-6") == "0.000001" }
+        then "a float from 1e21 up writes its exponent" { written("1.5e300") == "1.5e+300" }
+        then "a float under 1e-6 writes its exponent" { written("1e-7") == "1e-7" }
+        then "negative zero keeps its sign as a float" { written("-0.0") == "-0.0" }
+        then "every written float reads back the same" {
+            stable("0.1") &&
+                stable("1e-7") &&
+                stable("1.5e300") &&
+                stable("-0.0") &&
+                stable("123.456") &&
+                stable("5e-324") &&
+                stable("1.7976931348623157e308")
+        }
+        then "pretty writes a float the compact way" { pretty(Json.Arr([Json.Float(2.5)])) == "[\n  2.5\n]" }
+    }
+    given "the edges of what a float holds" {
+        then "past the largest float is refused by name" { written("1e400") == "the number at byte 0 is past the largest float" }
+        then "past it negatively too" { written("-1e400") == "the number at byte 0 is past the largest float" }
+        then "the largest float is kept" { written("1.7976931348623157e308") == "1.7976931348623157e+308" }
+        then "too small to hold is zero" { written("1e-400") == "0.0" }
+        then "the smallest subnormal is kept" { written("5e-324") == "5e-324" }
+        then "a huge mantissa rounds, never refuses" { written("1" + repeat("0", 400) + ".0e-400") == "1.0" }
+        then "an exponent past any int is past the largest float" { written("1e99999999999999999999") == "the number at byte 0 is past the largest float" }
+        then "an exponent below any int is zero" { written("1e-99999999999999999999") == "0.0" }
+        then "a zero exponent on zero keeps the sign" { written("0e0") == "0.0" && written("-0e-0") == "-0.0" }
+        then "a huge integer spelling is refused, not read as a float" {
+            written(repeat("9", 30)) == "the integer at byte 0 does not fit an int"
+        }
+    }
+    given "what RFC 8259 refuses" {
+        then "a leading zero before a fraction's point is fine" { float_of("0.5") == 0.5 && float_of("-0.5") == 0.0 - 0.5 }
+        then "a leading zero before more digits is refused" { written("00.5") == "the number at byte 0 has a leading zero" }
+        then "a leading `+`" { written("+1") == "unexpected \"+\" at byte 0" }
+        then "a bare point first" { written(".5") == "unexpected \".\" at byte 0" }
+        then "a word for infinity or nan" {
+            written("Infinity") == "unexpected \"I\" at byte 0" &&
+                written("nan") == "unexpected `nan` at byte 0"
+        }
+        then "a hex float" { written("0x1p3") == "text goes on past the value, at byte 1" }
+        then "a NUL after the digits" { written("1.5" + from_codepoint(0)) == "text goes on past the value, at byte 3" }
+    }
+    given "a value no JSON text spells" {
+        then "infinity writes null" { to_text(Json.Float(parse_float("1e308")! * 10.0)) == "null" }
+        then "nan writes null" { to_text(Json.Float(0.0 / 0.0)) == "null" }
+    }
+    given "inside a document" {
+        then "a float among fields" { written("{\"min\": 0.0, \"max\": 1e3, \"n\": 2}") == "{\"min\":0.0,\"max\":1000.0,\"n\":2}" }
+        then "a float read by path" { read("{\"a\":[1, 2.5]}").member("a").item(1).float() == 2.5 }
+    }
+}

@@ -1,0 +1,160 @@
+// Quotas: a client held to its rate and told when to come back, a
+// route's body bound met before and while it is read, a deadline on
+// its I/O, and the probes an orchestrator asks.
+use @std.time.{secs, ms}
+use @std.http.body.{whole}
+use @std.http.http.{Request, Unrouted, Response, Handler, text}
+use @std.http.quota.{Rate, Bounds, Readiness, rated, held_to, probes, peer_address}
+use @std.http.route.{compiled, dispatch}
+
+fn asked_by(peer: string, line: string, fields: string) -> Request<Unrouted> {
+    framed_from("${line}\r\nHost: h\r\n${fields}\r\n".bytes())! with { peer: peer }
+}
+
+fn ok_handler(_q: Request<Unrouted>) -> Response { text(200, "ok") }
+
+/// The statuses `n` requests from `peer` got through `layer`.
+fn statuses_of(layer: fn(Request<Unrouted>, Handler) -> Response, peer: string, n: int) -> string {
+    [layer(asked_by(peer, "GET /api/x HTTP/1.1", ""), ok_handler).status for _i in 0..n]
+        .map("${it}")
+        .join(",")
+}
+
+fn quota_said(r: Response) -> string { "${r.status} ${r.body.text() ?? "?"}" }
+
+fn read_whole(q: Request<Unrouted>) -> Response {
+    match q.gathered() { .Ok(b) -> text(200, "${b.length}"), .Err(r) -> r }
+}
+
+spec "std/http — rates" {
+    given "the empty cases, written first" {
+        then "a rate of none holds nothing back" { statuses_of(rated(Rate { requests: 0, per: secs(60) }), "1.2.3.4:5", 3) == "200,200,200" }
+    }
+    given "a client" {
+        then "is held to its rate" { statuses_of(rated(Rate { requests: 2, per: secs(60) }), "1.2.3.4:5", 4) == "200,200,429,429" }
+        then "is told when to come back" {
+            let layer = rated(Rate { requests: 1, per: secs(60) })
+            let _ = layer(asked_by("9.9.9.9:1", "GET / HTTP/1.1", ""), ok_handler)
+            layer(asked_by("9.9.9.9:1", "GET / HTTP/1.1", ""), ok_handler).header("retry-after") == "60"
+        }
+        then "another port is the same client" {
+            let layer = rated(Rate { requests: 1, per: secs(60) })
+            let _ = layer(asked_by("7.7.7.7:1", "GET / HTTP/1.1", ""), ok_handler)
+            layer(asked_by("7.7.7.7:2", "GET / HTTP/1.1", ""), ok_handler).status == 429
+        }
+        then "another client has its own bucket" {
+            let layer = rated(Rate { requests: 1, per: secs(60) })
+            let _ = layer(asked_by("7.7.7.7:1", "GET / HTTP/1.1", ""), ok_handler)
+            layer(asked_by("8.8.8.8:1", "GET / HTTP/1.1", ""), ok_handler).status == 200
+        }
+        then "a route outside the rate is not counted" {
+            let layer = rated(Rate { requests: 1, per: secs(60), under: "/api" })
+            [layer(asked_by("6.6.6.6:1", "GET /other HTTP/1.1", ""), ok_handler).status for _i in 0..3]
+                .all(it == 200)
+        }
+        then "the key is the caller's to name" {
+            let layer = rated(
+                Rate { requests: 1, per: secs(60), key: (q) -> q.header("x-key") ?? "-" },
+            )
+            let _ = layer(asked_by("1.1.1.1:1", "GET / HTTP/1.1", "X-Key: a\r\n"), ok_handler)
+            layer(asked_by("2.2.2.2:1", "GET / HTTP/1.1", "X-Key: a\r\n"), ok_handler).status == 429
+        }
+        then "the table starts over past its bound" {
+            let layer = rated(Rate { requests: 1, per: secs(60), clients: 2 })
+            let _ = layer(asked_by("1.0.0.1:1", "GET / HTTP/1.1", ""), ok_handler)
+            let _ = layer(asked_by("1.0.0.2:1", "GET / HTTP/1.1", ""), ok_handler)
+            let _ = layer(asked_by("1.0.0.3:1", "GET / HTTP/1.1", ""), ok_handler)
+            layer(asked_by("1.0.0.1:1", "GET / HTTP/1.1", ""), ok_handler).status == 200
+        }
+    }
+    given "the peer's address" {
+        then "IPv4" { peer_address(asked_by("1.2.3.4:80", "GET / HTTP/1.1", "")) == "1.2.3.4" }
+        then "IPv6" { peer_address(asked_by("[::1]:80", "GET / HTTP/1.1", "")) == "[::1]" }
+        then "none" { peer_address(asked_by("", "GET / HTTP/1.1", "")) == "" }
+    }
+}
+
+spec "std/http — bounds" {
+    given "a body bound" {
+        then "a declared length past it is refused before the handler" {
+            quota_said(
+                (held_to(Bounds { body: 4 }))(
+                    asked_by("p", "POST /u HTTP/1.1", "Content-Length: 5\r\n"),
+                    (_q) -> text(200, "reached"),
+                ),
+            ) == "413 the body is larger than this route takes (4 octets)"
+        }
+        then "a body within it is read" {
+            quota_said(
+                (held_to(Bounds { body: 4 }))(
+                    asked_by("p", "POST /u HTTP/1.1", "Content-Length: 4\r\n") with { body: whole("abcd".bytes()) },
+                    read_whole,
+                ),
+            ) == "200 4"
+        }
+        then "a body past it that declared nothing is refused as it is read" {
+            (held_to(Bounds { body: 4 }))(
+                asked_by("p", "POST /u HTTP/1.1", "") with { body: whole("abcdef".bytes()) },
+                read_whole,
+            )
+                .status == 413
+        }
+        then "a route outside the bound is not held" {
+            quota_said(
+                (held_to(Bounds { under: "/upload", body: 1 }))(
+                    asked_by("p", "POST /u HTTP/1.1", "Content-Length: 5\r\n"),
+                    (_q) -> text(200, "reached"),
+                ),
+            ) == "200 reached"
+        }
+    }
+    given "a deadline" {
+        then "a handler within it answers" {
+            (held_to(Bounds { deadline: ms(500) }))(asked_by("p", "GET / HTTP/1.1", ""), ok_handler)
+                .status == 200
+        }
+    }
+}
+
+spec "std/http — probes" {
+    given "readiness" {
+        then "live answers" {
+            quota_said(
+                dispatch(
+                    compiled(probes(() -> Readiness.Ready)),
+                    asked_by("p", "GET /livez HTTP/1.1", ""),
+                ),
+            ) == "200 ok"
+        }
+        then "ready when the check says so" {
+            quota_said(
+                dispatch(
+                    compiled(probes(() -> Readiness.Ready)),
+                    asked_by("p", "GET /readyz HTTP/1.1", ""),
+                ),
+            ) == "200 ready"
+        }
+        then "not ready says why" {
+            quota_said(
+                dispatch(
+                    compiled(probes(() -> Readiness.NotReady("the database is down"))),
+                    asked_by("p", "GET /readyz HTTP/1.1", ""),
+                ),
+            ) == "503 not ready: the database is down"
+        }
+        then "HEAD too" {
+            dispatch(
+                compiled(probes(() -> Readiness.Ready)),
+                asked_by("p", "HEAD /livez HTTP/1.1", ""),
+            )
+                .status == 200
+        }
+        then "paths of the caller's choosing" {
+            dispatch(
+                compiled(probes(() -> Readiness.Ready, "/health")),
+                asked_by("p", "GET /health HTTP/1.1", ""),
+            )
+                .status == 200
+        }
+    }
+}

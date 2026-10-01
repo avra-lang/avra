@@ -1,0 +1,381 @@
+// Forms both ways a browser posts them: urlencoded read whole and
+// decoded after the split, and multipart read as it arrives — fields
+// kept, files handed to their sinks — the same at every read size.
+use @std.http.frame.{limits}
+use @std.http.body.{Body, whole, measured}
+use @std.http.wire.{Transport, WireError}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.form.{Form, Filled, Part, Sink, FormLimits, Posted, FormError, form_of, form_body}
+use @std.http.form_codec.{form}
+
+@form
+type Signup = { email: string, age: int, height: float?, plan: string?, agree: bool, tags: List<string>, scores: List<int> }
+
+/// What a urlencoded body read as a `Signup` answered.
+fn signed_up(body: string) -> string {
+    match form_body(urlencoded(body), (f) -> Signup.from_form(f)) {
+        .Ok(s) -> "${s.email} ${s.age} ${s.height ?? 0.0 - 1.0} ${s.plan ?? "-"} ${s.agree} ${s.tags.join(",")} ${s.scores.length}",
+        .Err(r) -> "${r.status} ${r.body.text() ?? "?"}",
+    }
+}
+
+/// A transport handing a body over `k` octets per read.
+type Trickle = { body: Bytes, k: int, at: Cell<int> }
+
+impl Transport for Trickle {
+    fn wire_read(max: int) -> Result<Bytes?, WireError> {
+        let from = self.at.get()
+        if from >= self.body.length { return .Ok(null) }
+        let to = if from + self.k > self.body.length { self.body.length } else { from + self.k }
+        self.at.set(to)
+        .Ok(self.body.slice(from, to))
+    }
+    fn wire_write(bytes: Bytes) -> Result<int, WireError> { .Ok(bytes.length) }
+    fn wire_shutdown() -> Result<int, WireError> { .Ok(0) }
+    fn wire_close() -> Result<int, WireError> { .Ok(0) }
+    fn wire_peer() -> string { "t" }
+    fn wire_fd() -> int { 0 - 1 }
+    fn wire_secured() -> bool { false }
+    fn wire_protocol() -> string? { null }
+}
+
+/// `body` arriving `k` octets per read.
+fn trickled(body: Bytes, k: int) -> Body {
+    measured(
+        Trickle { body: body, k: k, at: Cell.new(0) },
+        "".bytes(),
+        0,
+        body.length,
+        "".bytes(),
+        null,
+        limits(),
+    )
+}
+
+/// A POST of `body` under `ct`, arriving `k` octets per read.
+fn posted_as(ct: string, body: Bytes, k: int) -> Request<Unrouted> {
+    framed_from("POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: ${ct}\r\n\r\n".bytes())! with { body: trickled(body, k) }
+}
+
+fn urlencoded(body: string) -> Request<Unrouted> {
+    posted_as("application/x-www-form-urlencoded", body.bytes(), 1000000)
+}
+
+fn form_said(q: Request<Unrouted>) -> string {
+    match q.urlencoded() {
+        .Ok(f) -> [x.name + "=" + x.value for x in f.fields].join("|"),
+        .Err(r) -> "${r.status} ${r.body.text() ?? "?"}",
+    }
+}
+
+/// A sink per part, each logging in `log`, once its part ends, what it
+/// took and whether the part arrived whole — the same at every read
+/// size, since the pieces are joined before they are logged.
+fn kept(log: Cell<List<string>>) -> fn(Part) -> Sink { (p: Part) -> held(log, p, Cell.new("".bytes())) }
+
+fn held(log: Cell<List<string>>, p: Part, got: Cell<Bytes>) -> Sink {
+    Sink {
+        take: (b: Bytes) -> joined(got, b),
+        ended: (whole: bool) -> log
+            .set(
+                log
+                    .get()
+                    .concat(
+                        [
+                            "${p.name}<${got.get().text() ?? "?"}:${if whole { "whole" } else { "cut" }}",
+                        ],
+                    ),
+            ),
+    }
+}
+
+fn joined(got: Cell<Bytes>, b: Bytes) -> bool {
+    got.set(got.get().concat(b))
+    true
+}
+
+/// A sink that stops taking after its first piece.
+fn stubborn(_p: Part) -> Sink { Sink { take: (_b: Bytes) -> false, ended: nothing_held } }
+
+fn nothing_held(_whole: bool) {}
+
+/// What reading `body` as multipart under `boundary` answered, `k`
+/// octets per read: the fields, each file's size, and the sink's log.
+fn multi(ct: string, body: string, k: int, bounds: FormLimits) -> string {
+    let log: Cell<List<string>> = Cell.new([])
+    let q = posted_as(ct, body.bytes(), k)
+    match q.multipart(kept(log), bounds) {
+        .Ok(p) -> "${[x.name + "=" + x.value for x in p.form.fields].join("|")} ${[u.part.name + "/" + (u.part.filename ?? "-") + "/" + (u.part.content_type ?? "-") + "#${u.size}" for u in p.files].join("|")} ${log.get().join(",")}",
+        .Err(r) -> "${r.status} ${r.body.text() ?? "?"} ${log.get().join(",")}",
+    }
+}
+
+fn mp() -> string { "multipart/form-data; boundary=XyZ" }
+
+/// A form of one field and one file.
+fn two_parts() -> string {
+    "--XyZ\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nhello\r\n--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\nline one\r\nline two\r\n--XyZ--\r\n"
+}
+
+fn two_parts_said() -> string { "title=hello doc/a.txt/text/plain#18 doc<line one\r\nline two:whole" }
+
+/// Whether `body` reads the same at every read size from 1 to 40.
+fn same_at_every_size(body: string, want: string) -> bool {
+    [k for k in 1..41].all((k) -> multi(mp(), body, k, FormLimits {}) == want)
+}
+
+spec "std/http — urlencoded forms" {
+    given "the empty cases, written first" {
+        then "an empty body is no fields" { form_said(urlencoded("")) == "" }
+        then "empty pieces are no fields" { form_said(urlencoded("&&a=1&&")) == "a=1" }
+        then "a name with no `=` has an empty value" { form_said(urlencoded("flag&a=")) == "flag=|a=" }
+    }
+    given "decoding" {
+        then "fields in order" { form_said(urlencoded("a=1&b=2&c=3")) == "a=1|b=2|c=3" }
+        then "`+` is a space" { form_said(urlencoded("q=cats+and+dogs")) == "q=cats and dogs" }
+        then "an escaped `+` is a plus" { form_said(urlencoded("q=1%2B1")) == "q=1+1" }
+        then "an escaped `&` stays in its value" { form_said(urlencoded("q=a%26b=c&d=1")) == "q=a&b=c|d=1" }
+        then "an escaped `=` stays in its name" { form_said(urlencoded("a%3Db=c")) == "a=b=c" }
+        then "names decode too" { form_said(urlencoded("first+name=Ada")) == "first name=Ada" }
+        then "UTF-8 escapes" { form_said(urlencoded("n=%C3%A9")) == "n=é" }
+        then "a value keeps its later `=`" { form_said(urlencoded("t=a=b")) == "t=a=b" }
+    }
+    given "asking for a name" {
+        then "one value" { (form_of("a=1&b=2".bytes()) catch Form { fields: [] }).value("b") == "2" }
+        then "a name sent twice is no value" { (form_of("a=1&a=2".bytes()) catch Form { fields: [] }).value("a") == null }
+        then "and says how often" {
+            match (form_of("a=1&a=2&a=3".bytes()) catch Form { fields: [] }).one("a") {
+                .Repeated(n) -> n == 3,
+                .Absent or .Value(_) -> false,
+            }
+        }
+        then "every value, in order" { (form_of("c=x&c=y".bytes()) catch Form { fields: [] }).all("c").join(",") == "x,y" }
+        then "absent" { (form_of("a=1".bytes()) catch Form { fields: [] }).one("b") is .Absent }
+    }
+    given "refusals" {
+        then "another media type" { form_said(posted_as("text/plain", "a=1".bytes(), 99)) == "415 the body must be `application/x-www-form-urlencoded`" }
+        then "a charset parameter is fine" {
+            form_said(
+                posted_as("Application/X-WWW-Form-Urlencoded; charset=UTF-8", "a=1".bytes(), 99),
+            ) == "a=1"
+        }
+        then "a malformed escape" { form_said(urlencoded("a=%zz")) == "400 a name or value in the form is not form-encoded text" }
+        then "an escape that is not UTF-8" { form_said(urlencoded("a=%ff")) == "400 a name or value in the form is not form-encoded text" }
+        then "a cut escape" { form_said(urlencoded("a=%4")) == "400 a name or value in the form is not form-encoded text" }
+    }
+}
+
+spec "std/http — multipart forms" {
+    given "the empty cases, written first" {
+        then "no parts at all" { multi(mp(), "--XyZ--\r\n", 99, FormLimits {}) == "  " }
+        then "an empty field" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; name=\"e\"\r\n\r\n\r\n--XyZ--",
+                99,
+                FormLimits {},
+            ) == "e=  "
+        }
+        then "an empty file" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; name=\"f\"; filename=\"\"\r\n\r\n\r\n--XyZ--",
+                99,
+                FormLimits {},
+            ) == " f//-#0 f<:whole"
+        }
+    }
+    given "reading" {
+        then "a field and a file" { multi(mp(), two_parts(), 99999, FormLimits {}) == two_parts_said() }
+        then "the same at every read size" { same_at_every_size(two_parts(), two_parts_said()) }
+        then "a preamble and an epilogue are passed over" {
+            multi(
+                mp(),
+                "ignored\r\n--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--XyZ--\r\nafter",
+                3,
+                FormLimits {},
+            ) == "a=1  "
+        }
+        then "a quoted boundary" { multi("multipart/form-data; boundary=\"XyZ\"", two_parts(), 7, FormLimits {}) == two_parts_said() }
+        then "a boundary's own prefix inside a file is data" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x\"\r\n\r\n--Xy\r\n-XyZ\r--XyZ\r\n--XyZ--",
+                2,
+                FormLimits {},
+            ) == " f/x/-#16 f<--Xy\r\n-XyZ\r--XyZ:whole"
+        }
+        then "a filename carrying `;` and spaces" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a; b.txt\"\r\n\r\nx\r\n--XyZ--",
+                99,
+                FormLimits {},
+            ) == " f/a; b.txt/-#1 f<x:whole"
+        }
+        then "header names and the kind fold" {
+            multi(
+                mp(),
+                "--XyZ\r\ncontent-disposition: Form-Data; NAME=\"a\"\r\n\r\n1\r\n--XyZ--",
+                99,
+                FormLimits {},
+            ) == "a=1  "
+        }
+        then "another header is passed over" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\nX-Other: y\r\n\r\n1\r\n--XyZ--",
+                99,
+                FormLimits {},
+            ) == "a=1  "
+        }
+    }
+    given "malformed bodies" {
+        then "another media type" { multi("text/plain", two_parts(), 99, FormLimits {}).starts_with("415 ") }
+        then "no boundary" {
+            multi("multipart/form-data", two_parts(), 99, FormLimits {})
+                .starts_with("400 the multipart type names no boundary")
+        }
+        then "a boundary of 71 characters" {
+            multi(
+                "multipart/form-data; boundary=" + ["b" for _i in 0..71].join(""),
+                two_parts(),
+                99,
+                FormLimits {},
+            )
+                .starts_with("400 the multipart type names no boundary")
+        }
+        then "a boundary with a character outside bchars" {
+            multi("multipart/form-data; boundary=a<b", two_parts(), 99, FormLimits {})
+                .starts_with("400 the multipart type")
+        }
+        then "no closing delimiter" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1",
+                99,
+                FormLimits {},
+            ) == "400 the multipart body ends before its closing delimiter "
+        }
+        then "no delimiter at all" { multi(mp(), "just text", 99, FormLimits {}) == "400 the multipart body ends before its closing delimiter " }
+        then "a part with no disposition" {
+            multi(mp(), "--XyZ\r\nContent-Type: text/plain\r\n\r\n1\r\n--XyZ--", 99, FormLimits {})
+                .starts_with("400 a part's head")
+        }
+        then "a disposition with no name" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; filename=\"x\"\r\n\r\n1\r\n--XyZ--",
+                99,
+                FormLimits {},
+            )
+                .starts_with("400 a part's head")
+        }
+        then "a name given twice" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; name=\"a\"; name=\"b\"\r\n\r\n1\r\n--XyZ--",
+                99,
+                FormLimits {},
+            )
+                .starts_with("400 a part's head")
+        }
+        then "two dispositions" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\nContent-Disposition: form-data; name=\"b\"\r\n\r\n1\r\n--XyZ--",
+                99,
+                FormLimits {},
+            )
+                .starts_with("400 a part's head")
+        }
+        then "a disposition that is not form-data" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: attachment; name=\"a\"\r\n\r\n1\r\n--XyZ--",
+                99,
+                FormLimits {},
+            )
+                .starts_with("400 a part's head")
+        }
+        then "an unclosed quote" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; name=\"a\r\n\r\n1\r\n--XyZ--",
+                99,
+                FormLimits {},
+            )
+                .starts_with("400 a part's head")
+        }
+        then "a delimiter followed by neither" { multi(mp(), "--XyZxx", 99, FormLimits {}).starts_with("400 a multipart delimiter") }
+    }
+    given "bounds" {
+        then "too many parts" {
+            multi(mp(), two_parts(), 99, FormLimits { parts: 1 }) == "413 the form has more than 1 parts "
+        }
+        then "a field past its bound" {
+            multi(mp(), two_parts(), 3, FormLimits { field: 4 }) == "413 field `title` is longer than 4 octets "
+        }
+        then "fields past their total" { multi(mp(), two_parts(), 99, FormLimits { fields: 4 }) == "413 the form's fields run past 4 octets together " }
+        then "a file past its bound is cut and its sink told" {
+            let said = multi(mp(), two_parts(), 5, FormLimits { file: 10 })
+            said.starts_with("413 a file is larger than 10 octets doc<") && said.ends_with(":cut")
+        }
+        then "a head past its bound" {
+            multi(
+                mp(),
+                "--XyZ\r\nContent-Disposition: form-data; name=\"" +
+                    ["n" for _i in 0..200].join("") +
+                    "\"\r\n\r\n1\r\n--XyZ--",
+                16,
+                FormLimits { head: 64 },
+            ) == "413 a part's head runs past 64 octets "
+        }
+    }
+    given "a sink that stops" {
+        then "the upload is refused" {
+            match posted_as(mp(), two_parts().bytes(), 99).multipart(stubborn) {
+                .Ok(_) -> false,
+                .Err(r) -> r.status == 500,
+            }
+        }
+    }
+}
+
+spec "std/http — a form read as a record" {
+    given "the fields" {
+        then "every kind" {
+            signed_up(
+                "email=a%40b.c&age=36&height=1.8&plan=pro&agree=on&tags=x&tags=y&scores=1&scores=2&scores=3",
+            ) == "a@b.c 36 1.8 pro true x,y 3"
+        }
+        then "what may be absent is" { signed_up("email=e&age=1") == "e 1 -1.0 - false  0" }
+        then "an empty number is absent, an empty text is text" { signed_up("email=e&age=1&height=&plan=") == "e 1 -1.0  false  0" }
+        then "a checkbox's other spellings" {
+            signed_up("email=e&age=1&agree=TRUE") == "e 1 -1.0 - true  0" &&
+                signed_up("email=e&age=1&agree=0") == "e 1 -1.0 - false  0"
+        }
+        then "a multipart body reads alike" {
+            let body = "--XyZ\r\nContent-Disposition: form-data; name=\"email\"\r\n\r\nm\r\n--XyZ\r\nContent-Disposition: form-data; name=\"age\"\r\n\r\n9\r\n--XyZ--"
+            match form_body(posted_as(mp(), body.bytes(), 5), (f) -> Signup.from_form(f)) {
+                .Ok(s) -> s.email == "m" && s.age == 9,
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "refusals name the field" {
+        then "a missing field" { signed_up("age=1") == "400 field `email` wants a value" }
+        then "a field sent twice" { signed_up("email=a&email=b&age=1") == "400 field `email` wants one value, not several" }
+        then "not an integer" { signed_up("email=e&age=old") == "400 field `age` wants an integer" }
+        then "not a number" { signed_up("email=e&age=1&height=tall") == "400 field `height` wants a number" }
+        then "not a checkbox" { signed_up("email=e&age=1&agree=maybe") == "400 field `agree` wants `on` or `off`" }
+        then "a list element" { signed_up("email=e&age=1&scores=1&scores=x") == "400 field `scores` wants an integer" }
+        then "a file in a form read as a record" {
+            let body = "--XyZ\r\nContent-Disposition: form-data; name=\"email\"; filename=\"f\"\r\n\r\nm\r\n--XyZ--"
+            match form_body(posted_as(mp(), body.bytes(), 5), (f) -> Signup.from_form(f)) {
+                .Ok(_) -> false,
+                .Err(r) -> r.status == 500,
+            }
+        }
+    }
+}
