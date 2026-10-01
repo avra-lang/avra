@@ -666,9 +666,9 @@ export fn family_gap_probe() -> string { family_gap_voice(Family.Raised, 99) }
 /// refusal here TRAPS: nothing outside the compiler's own process
 /// could be listening for it, so a hit is the compiler's own defect,
 /// not a program's.
-fn relation_hooks(kernel: Kernel) -> RelHooks {
+export fn relation_hooks(kernel: Kernel) -> RelHooks {
     RelHooks {
-        family: (verify: fn(int) -> int) -> kernel.family(verify),
+        family: (verify: fn(int) -> int) -> kernel.family(revision_of_hash(kernel, verify)),
         record: (fam: int, cell: int) -> {
             kernel.record_dep(Key { family: fam, arg: cell })
             kernel.reader()
@@ -680,6 +680,45 @@ fn relation_hooks(kernel: Kernel) -> RelHooks {
         settled: (_fam: int, _cell: int) -> no_relation_settle_word(),
         running: () -> kernel.reader(),
     }
+}
+
+/// `avra-8sb5.57.152`: `Kernel.changed_after` reads a dep's verifier as
+/// `verify(dep.arg) > since`, where `since` is a REVISION — but a
+/// `@std/relation` family's own verifier answers a CONTENT HASH (an
+/// arbitrary int with no ordering relation to a revision). A hash that
+/// happens to land below `since` after a real change would read as
+/// unchanged. This wraps `@std/relation`'s hash in the currency the
+/// kernel actually compares: the revision at which the hash was last
+/// OBSERVED to move, one table per family, so every relation and every
+/// `@side` column is correct through this one door.
+fn revision_of_hash(kernel: Kernel, verify: fn(int) -> int) -> fn(int) -> int {
+    let hashes: Cell<Map<string, int>> = Cell.new({})
+    let moved_at: Cell<Map<string, int>> = Cell.new({})
+    (cell: int) -> {
+        let key = "${cell}"
+        let h = verify(cell)
+        let seen = hashes.get().get(key)
+        if seen != null && seen! == h {
+            moved_at.get().get(key) ?? kernel.revision()
+        } else {
+            moved(kernel, hashes, moved_at, key, h)
+        }
+    }
+}
+
+/// `key`'s hash just moved to `h`: remembered, stamped with the
+/// revision it moved at, which is also the honest answer for THIS ask.
+fn moved(
+    kernel: Kernel,
+    hashes: Cell<Map<string, int>>,
+    moved_at: Cell<Map<string, int>>,
+    key: string,
+    h: int,
+) -> int {
+    hashes.put(key, h)
+    let now = kernel.revision()
+    moved_at.put(key, now)
+    now
 }
 
 /// `Hooks.settled` answers `void`: this Db leans on `@std/relation`'s

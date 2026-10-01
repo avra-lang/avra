@@ -2,6 +2,7 @@
 // owner, through the same shape `Workspace.relation_hooks` builds —
 // proves the ownership law fires when a REAL kernel frame is open,
 // and stays quiet with none, independent of failures_db.
+use compiler.{relation_hooks}
 use query.{Kernel, new_kernel, Key}
 use @std.relation.{relation}
 use @std.relation.db.{Db, hooked_db, Hooks}
@@ -10,6 +11,23 @@ use @std.relation.db.{Db, hooked_db, Hooks}
 type Fact = { @key name: string, n: int }
 
 fn none() {}
+
+/// A query reading `Fact`'s whole relation under the REAL bridge, its
+/// own runs counted so a wrongly-reused answer is observable as a
+/// stuck count rather than a value a stable hash might coincidentally
+/// repeat.
+fn read_facts(kernel: Kernel, db: Db, outer: Key, runs: Cell<int>) -> int {
+    match kernel.ask(outer) {
+        .Compute -> {
+            kernel.begin(outer)
+            let _ = Fact.all(db)
+            runs.set(runs.get() + 1)
+            kernel.settle(outer, runs.get())
+            runs.get()
+        },
+        rest -> runs.get(),
+    }
+}
 
 /// The exact bridge `Workspace.relation_hooks` builds, over a REAL
 /// kernel — `refused` records into `heard`, its own fresh cell,
@@ -65,5 +83,47 @@ spec "compiler/workspace — a real kernel frame arms the ownership law" {
         let seen = Fact.all(db).length
         kernel.settle(reader, 0)
         seen == 1 && heard.get().is_empty()
+    }
+}
+
+spec "compiler/workspace — a relation's verify answers a revision, not a hash (avra-8sb5.57.152)" {
+    then "a query reading Fact's whole relation reruns after a real edit, through the REAL bridge" {
+        let kernel = new_kernel()
+        let db = hooked_db(relation_hooks(kernel))
+        let runs: Cell<int> = Cell.new(0)
+        let outer = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        let bump = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        // A fresh key's own first set_input settles at the current
+        // revision rather than advancing it — seed one before anything
+        // reads, so the LATER call below has a prior to move away from.
+        kernel.set_input(bump, 0)
+        let _ = Fact.insert(db, name: "a", n: 1)
+        let first = read_facts(kernel, db, outer, runs)
+        // A revision bump before the next write, the write-once-after-
+        // read law's own requirement — a real compile advances this
+        // through whatever file edit triggered the re-derive.
+        kernel.set_input(bump, 1)
+        let _ = Fact.insert(db, name: "b", n: 2)
+        let second = read_facts(kernel, db, outer, runs)
+        first == 1 && second == 2
+    }
+    then "repeated edits each move the hash enough to cross zero at least once, and every one reruns" {
+        let kernel = new_kernel()
+        let db = hooked_db(relation_hooks(kernel))
+        let runs: Cell<int> = Cell.new(0)
+        let outer = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        let bump = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        kernel.set_input(bump, 0 - 1)
+        mut seen: List<int> = []
+        for i in 0..40 {
+            if i > 0 { kernel.set_input(bump, i) }
+            let _ = Fact.insert(db, name: "n${i}", n: i * 104729 - 2000000)
+            seen.push(read_facts(kernel, db, outer, runs))
+        }
+        // Every one of the 40 edits actually reran (1..40, no repeats) —
+        // the hostile case would show the count sticking somewhere
+        // instead, the moment the relation's set hash first lands at or
+        // below whatever revision the query was last verified at.
+        ["${v}" for v in seen].join(",") == ["${i + 1}" for i in 0..40].join(",")
     }
 }
