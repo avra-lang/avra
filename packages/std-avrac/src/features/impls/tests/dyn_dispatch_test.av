@@ -1,0 +1,54 @@
+// Dispatch on a `dyn` argument, the completeness law, a generic trait's
+// defaults, and a generic member's name owned at its declaration.
+use @std.avrac.testing.{shown, refused_with}
+
+/// Two views, two drawers, and a third view with none.
+fn views() -> string {
+    "trait View {\n    fn name() -> string\n}\ntype Text = { content: string }\ntype Button = { label: string }\nimpl View for Text {\n    fn name() -> string { \"t\" }\n}\nimpl View for Button {\n    fn name() -> string { \"b\" }\n}\ntype Html = { tag: string = \"\" }\ntrait Realize<T> {\n    fn draw(t: T) -> string\n}\nimpl Realize<Text> for Html {\n    fn draw(t: Text) -> string { t.content }\n}\nimpl Realize<Button> for Html {\n    fn draw(t: Button) -> string { t.label }\n}\n"
+}
+
+/// A trait with a default, implemented at `int` alone.
+fn echo() -> string {
+    "type H = { n: int = 0 }\ntrait Echo<T> {\n    fn show(t: T) -> string\n    fn twice(t: T) -> string { self.show(t) + self.show(t) }\n}\nimpl Echo<int> for H {\n    fn show(t: int) -> string { \"i\${t}\" }\n}\n"
+}
+
+spec "features/impls — dyn dispatch and generic defaults" {
+    given "a call whose argument is a `dyn`" {
+        then "each value is drawn by the member its type chooses" {
+            shown(
+                views() +
+                    "let a: dyn View = Text { content: \"x\" }\nlet b: dyn View = Button { label: \"y\" }\n[Html {}.draw(v) for v in [a, b]].join(\"\")",
+            ) == "xy"
+        }
+        then "a type that implements the trait with no member refuses the call" {
+            refused_with(
+                views() +
+                    "type Link = { to: string }\nimpl View for Link {\n    fn name() -> string { \"l\" }\n}\nfn go(v: dyn View) -> string { Html {}.draw(v) }\n1",
+                "`Html.draw` is chosen by a `dyn` argument's type, and no member takes Link",
+            )
+        }
+    }
+    given "a generic trait's default" {
+        then "its parameters are read off the call" { shown(echo() + "H {}.twice(7)") == "i7i7" }
+        then "a call at an argument the type does not implement refuses" {
+            refused_with(
+                echo() + "fn f() -> string { H {}.twice(true) }\n1",
+                "`H` does not implement `Echo<bool>`",
+            )
+        }
+    }
+    given "names" {
+        then "a method of its own may not share a generic member's name" {
+            refused_with(
+                views() + "impl Html {\n    fn draw(t: string) -> string { t }\n}\n1",
+                "`Html.draw` is a generic trait's member and a method of its own",
+            )
+        }
+        then "a spread written with three dots refuses in words" {
+            refused_with(
+                "type C = { a: int }\ntype A = { ...C, x: int }\n1",
+                "a spread is written `..R`",
+            )
+        }
+    }
+}

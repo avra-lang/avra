@@ -432,13 +432,19 @@ impl Decls {
     fn method_clashes(target: DeclId) -> List<Clash> {
         mut out: List<Clash> = []
         mut taken: List<string> = []
+        mut plain: List<string> = []
+        mut instanced: List<string> = []
         for m in self.by_declaration(self.registered_methods(target)) {
             let x = self.decl(m)
             let key = self.method_key(m)
+            let generic = self.impl_trait_args(m).length > 0
             if taken.contains(key) {
                 out.push(Clash { file: x.file, diag: method_taken(self.loc(m), x.owner, key) })
+            } else if generic && plain.contains(x.name) || !generic && instanced.contains(x.name) {
+                out.push(Clash { file: x.file, diag: method_shared(self.loc(m), x.owner, x.name) })
             }
             taken.push(key)
+            if generic { instanced.push(x.name) } else { plain.push(x.name) }
         }
         out
     }
@@ -492,6 +498,16 @@ fn method_taken(at: Loc?, target: string, name: string) -> Diag {
         "`${target}.${name}` is declared twice",
         "declared again here",
         "one `impl` block owns each method name — rename or merge",
+    )
+}
+
+fn method_shared(at: Loc?, target: string, name: string) -> Diag {
+    refusal(
+        "type.impl",
+        at,
+        "`${target}.${name}` is a generic trait's member and a method of its own",
+        "declared again here",
+        "a generic trait's members own their name on a type — rename the other method",
     )
 }
 
