@@ -31,6 +31,9 @@
 // evaluator's refusal — and exits 1. The divergence registry pins
 // both sides.
 
+#ifndef __APPLE__
+#define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +44,7 @@
 #include <mach-o/dyld.h>
 #include <malloc/malloc.h>
 #else
+#include <link.h>
 #include <malloc.h>
 #endif
 #include "avra_box.h"
@@ -134,6 +138,26 @@ static Site* site_in(Site* tbl, int64_t* slots, void* site) {
 }
 
 static Site* site_of(void* site) { return site_in(g_sites, &g_site_slots, site); }
+
+#ifndef __APPLE__
+static int main_image_bias(struct dl_phdr_info* info, size_t size, void* out) {
+    (void)size;
+    *(uintptr_t*)out = (uintptr_t)info->dlpi_addr;
+    return 1;
+}
+#endif
+
+// The main image's load slide: a live code address minus it is the
+// address the binary files its symbols under (`atos`, `addr2line`).
+static intptr_t image_slide(void) {
+#ifdef __APPLE__
+    return _dyld_get_image_vmaddr_slide(0);
+#else
+    uintptr_t bias = 0;
+    dl_iterate_phdr(main_image_bias, &bias);
+    return (intptr_t)bias;
+#endif
+}
 
 // THE CENSUS (build with -DAVRA_CENSUS; `make census`): exact call
 // counts, not a sample. Refcount traffic is the compiler's largest
@@ -300,10 +324,7 @@ static void acc_report(void) {
         fprintf(stderr, "mem:   %-13s peak %6lld MB, now %6lld MB\n", g_acc_name[k],
                 (long long)(g_acc_peak[k] >> 20), (long long)(g_acc_live[k] >> 20));
     }
-    intptr_t slide = 0;
-#ifdef __APPLE__
-    slide = _dyld_get_image_vmaddr_slide(0);
-#endif
+    intptr_t slide = image_slide();
 #ifdef AVRA_CENSUS
     if (g_sites_census) {
         report_made("copy", g_copy_sites, 12, slide);
@@ -621,10 +642,7 @@ static void rc_history(void* p) {
     if (g_log_len == RC_LOG_BUDGET) fputs("    (history truncated at the log's budget)\n", stderr);
     for (size_t i = 0; i < g_log_len; i++) {
         if (g_log[i].ptr == p) {
-            intptr_t sl = 0;
-#ifdef __APPLE__
-            sl = _dyld_get_image_vmaddr_slide(0);
-#endif
+            intptr_t sl = image_slide();
             fprintf(stderr, "    %s from 0x%llx -> rc %lld\n",
                     g_log[i].delta > 0 ? "retain" : "release", (unsigned long long)((uintptr_t)g_log[i].at - (uintptr_t)sl), (long long)g_log[i].rc);
         }
@@ -1666,10 +1684,7 @@ static void alias_log_clone(void* site, void* box) {
     // UNSLID: `atos -o <binary> <addr>` reads a file offset, not a
     // live ASLR address — subtract the image's own slide so the
     // printed address is directly symbolicatable after the fact.
-    intptr_t slide = 0;
-#ifdef __APPLE__
-    slide = _dyld_get_image_vmaddr_slide(0);
-#endif
+    intptr_t slide = image_slide();
     fprintf(stderr, "ALIAS_CLONE site=%p kind=%d n=%lld\n", (void*)((char*)site - slide), h ? (int)KIND_SHAPE(h->kind) : -999, (long long)n);
 }
 
