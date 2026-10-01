@@ -50,9 +50,9 @@ use core.{
     Annotation,
     At,
 }
-use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
+use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck}
 use @std.relation.db.{Db, new_db}
-use @std.relation.rows.{Rows}
+use @std.relation.rows.{Rows, bool_key}
 use core.{
     Fingerprint,
     Exemplar,
@@ -102,15 +102,19 @@ export type FileInfo = { id: FileId, path: string, module_id: ModuleId, test: bo
 /// A range-owning declaration and the source span it holds.
 type OwnerSpan = { d: DeclId, lo: int, hi: int }
 
-/// `Decl`'s indexes, numbered in field order after `name`'s: a component
-/// instance's `word`, every `@name` it wears, and its interning key. `word`
-/// and `marks` are TWO INDEXES, never one — sharing a bucket would let a
-/// component named `rule` and an annotation `@rule` answer for each other.
+/// `Decl`'s indexes, numbered in field order: its name, a component
+/// instance's `word`, every `@name` it wears, its interning key, the
+/// file that homes it, and whether it is an `extern fn`. `word` and `marks` are TWO INDEXES, never one —
+/// sharing a bucket would let a component named `rule` and an annotation
+/// `@rule` answer for each other.
+const name_index: int = 0
 const word_index: int = 1
 const marks_index: int = 2
 const key_index: int = 3
+const home_index: int = 4
+const external_index: int = 5
 
-/// `decls`, `sigs`, `children`, `methods` and `impls` are dense by
+/// `sigs`, `children`, `methods` and `impls` are dense by
 /// DeclId; `stores` and `decl_ids` dense by FileId. The two hooks
 /// make the table's reads queries: `ensure` computes a sig on first
 /// ask, `ensure_methods` fills a type's method table.
@@ -340,9 +344,9 @@ export type Decls = {
     scoped: Cell<Map<string, bool>>,
     /// TWO LAYERS SHARED — see `module_files`.
     decl_ids: Cell<List<Cell<SideTable<DeclAt>>>>,
-    /// TWO LAYERS SHARED — see `module_files`.
-    file_decls: Cell<List<Cell<List<DeclId>>>>,
-    decls: Cell<List<Decl>>,
+    /// Each file's admission owner in the declaration table's `Db`,
+    /// dense by FileId: every write of a row the file homes is its run's.
+    file_owners: Cell<List<int>>,
     /// THE FILES ANSWERED FROM A RECORD — never parsed, so their declarations were
     /// MINTED and their objects come from the store. Keyed by path.
     held: Cell<Map<string, bool>>,
@@ -357,7 +361,7 @@ export type Decls = {
     /// ONE place a pass reads them, so no pass reaches into a store after admission.
     faces: Cell<List<DeclFacts?>>,
     /// A declaration's doc and annotations, addressed by the same dense
-    /// slot as `decls`/`faces` — a `@side` partition, so a query can reach
+    /// slot as `faces` — a `@side` partition, so a query can reach
     /// it without a `@dense` id ever crossing its boundary (avra-8sb5.57.9.7).
     doc_facts: Cell<SideTable<DocFact>>,
     /// Settlements restored for declarations whose files were never parsed.
@@ -455,12 +459,6 @@ export type Decls = {
     methods: Cell<List<Cell<List<DeclId>>>>,
     /// TWO LAYERS SHARED — see `children`.
     impls: Cell<List<Cell<List<DeclId>>>>,
-    // every impl block under the NAME it targets — filled at mint,
-    // before any target resolves, so a method table finds its impls
-    // without walking every declaration in the workspace
-    // OUTER-TABLE GROWTH, SHARED — see `files` above: `note_impl` runs
-    // inside `mint`, behind the same captured hooks.
-    impls_by_name: Cell<Map<string, List<DeclId>>>,
     ensure: Cell<fn(DeclId) -> void>,
     // the workspace's held-row hook: fills a held declaration's own
     // record row before a fact it fills (an impl's target among them)
@@ -584,7 +582,6 @@ export fn new_decls() -> Decls {
     let no_stores: List<SyntaxArena?> = []
     let no_generations: List<List<Generation>> = []
     let no_origins: List<Origins> = []
-    let no_decls: List<Decl> = []
     let no_faces: List<DeclFacts?> = []
     let no_sigs: List<DeclSig?> = []
     let no_seat_types: List<List<TypeId>?> = []
@@ -595,14 +592,12 @@ export fn new_decls() -> Decls {
     let no_seat_marks: List<List<SeatMark>> = []
     let no_declared_writes: List<bool> = []
     let no_decl_ids: List<Cell<SideTable<DeclAt>>> = []
-    let no_file_decls: List<Cell<List<DeclId>>> = []
     let no_expansion_voices: List<Cell<List<Diag>>> = []
     let no_children: List<Cell<List<DeclId>>> = []
     let no_methods: List<Cell<List<DeclId>>> = []
     let no_impls: List<Cell<List<DeclId>>> = []
     let no_written_seats: List<Cell<List<bool>>> = []
     let empty_consumed: List<List<bool>?> = []
-    let no_impls_by_name: Map<string, List<DeclId>> = {}
     let db = new_db()
     let d = Decls {
         types: new_type_registry(),
@@ -626,12 +621,11 @@ export fn new_decls() -> Decls {
         ensure_package: Cell.new(no_store),
         scoped: map_cell(),
         decl_ids: Cell.new(no_decl_ids),
-        file_decls: Cell.new(no_file_decls),
+        file_owners: list_cell(),
         generations: Cell.new(no_generations),
         origins: Cell.new(no_origins),
         expansion_voices: Cell.new(no_expansion_voices),
         meta_ids: map_cell(),
-        decls: Cell.new(no_decls),
         held: map_cell(),
         held_items: map_cell(),
         wire_index: map_cell(),
@@ -651,7 +645,6 @@ export fn new_decls() -> Decls {
         children: Cell.new(no_children),
         methods: Cell.new(no_methods),
         impls: Cell.new(no_impls),
-        impls_by_name: Cell.new(no_impls_by_name),
         ensure: Cell.new(no_ensure),
         ensure_target: Cell.new(no_ensure),
         ensure_const: Cell.new(no_const_ensure),
@@ -731,10 +724,7 @@ impl Decls {
     /// pay for it twice.
     @bracket("decls")
     fn decl(d: DeclId) -> Decl {
-        let x = match self.decl_cells.get()[d.index] {
-            r? -> r
-            null -> self.decl_row_rows.get().row(d.index)!
-        }
+        let x = self.decl_cells.get()[d.index] ?? self.removed(d)
         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
         self.rows_read(x.file)
         x
@@ -744,35 +734,54 @@ impl Decls {
     /// must not themselves record an edge), and a whole-program pass
     /// walking the table by index as it grows.
     @bracket("decls")
-    fn raw_decl(d: DeclId) -> Decl {
-        match self.decl_cells.get()[d.index] {
-            r? -> r
-            null -> self.decl_row_rows.get().row(d.index)!
-        }
+    fn raw_decl(d: DeclId) -> Decl { self.decl_cells.get()[d.index] ?? self.removed(d) }
+
+    /// The row an id names, unrecorded — absent where its file's
+    /// re-admission removed it. A walk by index over `decl_count` reads
+    /// through here.
+    @bracket("decls")
+    fn row_at(at: int) -> Decl? { self.decl_cells.get()[at] }
+
+    /// A removed declaration read by id: the compiler's defect, spoken.
+    @bracket("decls")
+    fn removed(d: DeclId) -> Decl {
+        gone_decl(d)
+        self.decl_cells.get()[d.index]!
     }
 
-    /// How many declarations are minted, read unrecorded as `file_count` is.
+    /// How many declaration ids are minted, a removed one's tombstone
+    /// among them — the bound a walk by index runs to. Read unrecorded
+    /// as `file_count` is.
     @bracket("decls")
-    fn decl_count() -> int { self.decl_row_rows.get().count() }
+    fn decl_count() -> int { self.decl_row_rows.get().next_id() }
 
-    /// Every declaration, unrecorded, as the dense list `set_decl` keeps in
-    /// step with the relation — a whole-table scan reads it in place, never a
-    /// copy of the rows.
-    fn all_decls() -> List<Decl> { self.decls.get() }
+    /// Every live declaration in id order, unrecorded: the relation's own
+    /// rows, a removed one never among them.
+    fn all_decls() -> List<Decl> { Decl.all(self.decl_rows.get()) }
 
-    /// A declaration's row rewritten in place: the dense list and the
-    /// relation together, so
-    /// a reader through either door sees the same fields. The row's
-    /// `@local` columns (file, stmt, parent, root, lo, hi) carry no stable
-    /// hash or index, so a write that only moves them takes `put`'s cheap
-    /// path — same hash, same keys, the stored value replaced in place.
+    /// A declaration's row rewritten in place, its write its file's run's.
+    /// The row's `@local` columns (file, stmt, parent, root, lo, hi)
+    /// carry no stable hash or index, so a write that only moves them
+    /// takes `put`'s cheap path — same hash, same keys, the stored value
+    /// replaced in place.
     @bracket("decls")
     fn set_decl(idx: int, d: Decl) {
-        self.decls.set_at(idx, d)
-        self
-            .decl_row_rows
-            .get()
-            .put_in(self.decl_rows.get(), Decl.relation_name(), idx, d, d.stable_hash(), d.index_keys())
+        let rs = self.decl_row_rows.get()
+        let db = self.decl_rows.get()
+        let home? = d.home else {
+            rs.put_in(db, Decl.relation_name(), idx, d, d.stable_hash(), d.index_keys())
+            return
+        }
+        rs
+            .put_owned(
+                db,
+                Decl.relation_name(),
+                idx,
+                d,
+                d.stable_hash(),
+                d.index_keys(),
+                self.file_owners.get()[home.index],
+            )
     }
 
     /// One audited read, told to the hook — which reads the tables itself, so the
@@ -1083,6 +1092,9 @@ impl Decls {
     /// vocabulary the compiler shares with the programs it compiles;
     /// null when the program does not load the package.
     ///
+    /// THE NAME'S OWN BUCKET IS READ: every declaration of the name,
+    /// a builtin — no file's, so no package's — never answering.
+    ///
     /// EVERY MODULE OF THE PACKAGE IS SEARCHED, not its first: a
     /// package a `use` reaches through ONE submodule (`@std/avrac`'s
     /// `core`, say) admits every OTHER submodule too, so a name in a
@@ -1111,23 +1123,10 @@ impl Decls {
         let key = "${pkg}.${name}"
         let known: DeclId? = self.meta_ids.get().get(key)
         if known != null { return known }
-        let modules = Module.all(self.decl_rows.get())
-        let ms = [r.id for r in modules if self.package_named(r.name) == pkg]
-        let ds: List<DeclId> = flatten([self.module_decls(m) for m in ms])
-        let found: DeclId? = ds
-            .find(
-                (d: DeclId) -> {
-                    let found_decl = self.decl(d)
-                    found_decl.exported && found_decl.name == name
-                },
-            )
+        let found = [x.id for x in self.named_rows(name) if x.home != null && x.exported && self.package_of(x.id) == pkg]
+            .first()
         if found != null { self.meta_ids.put(key, found!) }
         found
-    }
-
-    /// One module's own declarations, across its files.
-    fn module_decls(m: ModuleId) -> List<DeclId> {
-        flatten([self.file_decls.get()[f.index].get() for f in self.files_of_module(m)])
     }
 
     /// Whether a declaration IS `@std/meta`'s export of `name` — by
@@ -1643,7 +1642,8 @@ impl Decls {
         // A HELD FILE'S SETTLED BITS ARE THE INTERFACE'S, not this pass's to clear:
         // the receivers pass never surveys a held body, so wiping them loses the
         // writer a caller's retain decision reads. The pass clears what it owns.
-        for j, x in self.all_decls() {
+        for x in self.all_decls() {
+            let j = x.id.index
             if self.held.get().get(self.file(x.file).path) == null {
                 self
                     .written_seats
@@ -1681,10 +1681,10 @@ impl Decls {
     /// reason `clear_written` exempts them: a held fn's union rode its
     /// interface, never this pass.
     fn clear_inferred() {
-        for j, x in self.all_decls() {
+        for x in self.all_decls() {
             if self.held.get().get(self.file(x.file).path) == null {
-                self.inferred_errs.keep(j, [])
-                self.inferred_unresolved.keep(j, false)
+                self.inferred_errs.keep(x.id.index, [])
+                self.inferred_unresolved.keep(x.id.index, false)
             }
         }
     }
@@ -1947,6 +1947,13 @@ impl Decls {
 
     fn is_extern(d: DeclId) -> bool { self.decl(d).kind is .Fn && self.facts_of(d)?.external ?? false }
 
+    /// Every `extern fn`, in id order, off the externs' bucket.
+    @bracket("decls")
+    fn externs() -> List<Decl> {
+        let rs = self.decl_row_rows.get()
+        [x for x in rs.members(rs.bucket_of(external_index, bool_key(true))) if self.is_extern(x.id)]
+    }
+
     /// THE ONE READING DOOR for a declaration's OWN `///` doc — a held
     /// file answers through the same fact `capture_facts` recorded at
     /// admit. A declaration's doc is its own `///` or nothing; a
@@ -2047,16 +2054,17 @@ impl Decls {
     /// impl's methods, a record's defaults.
     fn children_of(d: DeclId) -> List<DeclId> { self.children.get()[d.index].get() }
 
-    /// An impl block filed under the name it targets.
-    fn note_impl(name: string, id: DeclId) {
-        mut under = self.impls_by_name.get().get(name) ?? []
-        under.push(id)
-        self.impls_by_name.put(name, under)
-    }
+    /// Every impl block naming a type by this name, in id order — an impl
+    /// files under the name it targets, so a method table finds its impls
+    /// before any target resolves.
+    fn impls_named(name: string) -> List<DeclId> { [x.id for x in self.named_rows(name) if blocks_impl(x.kind)] }
 
-    /// Every impl block naming a type by this name, in mint order.
-    fn impls_named(name: string) -> List<DeclId> {
-        self.impls_by_name.get().get(name) ?? []
+    /// Every declaration of a name, in id order, off the name's bucket,
+    /// unrecorded.
+    @bracket("decls")
+    fn named_rows(name: string) -> List<Decl> {
+        let rs = self.decl_row_rows.get()
+        rs.members(rs.bucket_of_text(name_index, name))
     }
 
     /// A record field's default, when the field declares one.
@@ -2186,7 +2194,7 @@ impl Decls {
     /// enums, named types and builtins, each asked through the hook, so
     /// a held module answers from its interface.
     fn implementors_of(tr: DeclId) -> List<DeclId> {
-        [DeclId { index: j } for j, x in self.decls.get() if implements_kind(x.kind) && self.implements(DeclId { index: j }, tr)]
+        [x.id for x in self.all_decls() if implements_kind(x.kind) && self.implements(x.id, tr)]
     }
 
     /// Whether a type answers a generic trait at these arguments: a
@@ -2425,4 +2433,20 @@ fn implements_kind(k: DeclKind) -> bool {
 /// Two type lists naming the same types, place by place.
 fn same_types(a: List<TypeId>, b: List<TypeId>) -> bool {
     a.length == b.length && [j for j, t in a if !same_type(t, b[j])].is_empty()
+}
+
+/// Whether a declaration of this kind is an impl block.
+fn blocks_impl(k: DeclKind) -> bool {
+    match k {
+        .Impl -> true,
+        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Main or .Case or .Const or .Collect or .CollectEnum or .Builtin -> false,
+    }
+}
+
+// ── voices ──
+
+fn gone_decl(d: DeclId) {
+    wreck(
+        "declaration ${d.index} was read after its file was admitted again without it — a DeclId lives only as long as the admission that mints it",
+    )
 }

@@ -105,8 +105,9 @@ impl Workspace {
     fn touch_method_tables() {
         mut at = 0
         while at < self.decls.decl_count() {
-            let x = self.decls.raw_decl(DeclId { index: at })
+            let held = self.decls.row_at(at)
             at = at + 1
+            let x? = held else { continue }
             if is_type_decl(x) { touch(self.methods(x.id)) }
         }
     }
@@ -129,8 +130,9 @@ impl Workspace {
         // Signing an impl may admit another declaration, so walk the
         // growing table until every type has had its method query.
         while at < self.decls.decl_count() {
-            let x = self.decls.raw_decl(DeclId { index: at })
+            let row = self.decls.row_at(at)
             at = at + 1
+            let x? = row else { continue }
             if is_type_decl(x) {
                 touch(self.methods(x.id))
                 let held: List<Clash> = self.method_clashes.at(x.id.index) ?? []

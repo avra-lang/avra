@@ -295,7 +295,7 @@ impl Decls {
     /// struct wears it (a fn, an enum and a named alias all answer null
     /// here too; each has its own signature shape, not a struct's).
     fn struct_type_ref(name: string) -> TypeId? {
-        let decl? = self.all_decls().find(it.name == name) else { return null }
+        let decl? = self.named_rows(name).first() else { return null }
         let _sig? = self.sig(decl.id)?.record_sig() else { return null }
         self.record_type(decl.id)
     }
@@ -374,9 +374,7 @@ impl Program {
     /// once carried — `explain_doc` shares the same door.
     fn explain_annotation(name: string) -> string? {
         let decls = self.ws.decls
-        let decl? = decls
-            .all_decls()
-            .find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null) else {
+        let decl? = decls.named_rows(name).find((d: Decl) -> decls.fn_name(d.id) != null) else {
             return null
         }
         let sig? = decls.sig(decl.id)?.fn_sig() else { return null }
@@ -489,13 +487,11 @@ impl Program {
     /// diagnostic. THE LOOKUP IS BY BARE NAME, the same door
     /// `explain_annotation` already opens this way: two types
     /// declaring a same-named method answer for whichever one
-    /// `all_decls()` holds first — a name, not a binding, the same
+    /// the name's bucket holds first — a name, not a binding, the same
     /// sharp edge `explain @name` already carries.
     fn explain_writes(fn_name: string) -> string? {
         let decls = self.ws.decls
-        let decl? = decls
-            .all_decls()
-            .find((d: Decl) -> d.name == fn_name && decls.fn_name(d.id) != null) else {
+        let decl? = decls.named_rows(fn_name).find((d: Decl) -> decls.fn_name(d.id) != null) else {
             return null
         }
         if decls.seat_count(decl.id) == 0 { return null }

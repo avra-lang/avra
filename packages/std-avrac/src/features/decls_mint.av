@@ -28,6 +28,7 @@ use core.{
 }
 use diagnostics.{Diag}
 use features.{generated_key, Decl, DeclAt, no_origins}
+use @std.relation.rows.{dense_key}
 
 /// A `File` row read back as the hand shape every other pass still
 /// wants — the relation and `FileInfo` name `module` differently, and
@@ -42,8 +43,7 @@ impl Decls {
             let id = File.insert(self.decl_rows.get(), path: path, module: m, test: test).id
             self.stores.push(null)
             self.decl_ids.push(Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
-            let no_decls: List<DeclId> = []
-            self.file_decls.push(Cell.new(no_decls))
+            self.file_owners.push(self.decl_rows.get().owner_named("file ${id.index}"))
             self.generations.push([])
             self.origins.push(no_origins())
             let no_voices: List<Diag> = []
@@ -120,13 +120,16 @@ impl Decls {
 
     /// A file admitted with its parse: which statements declare, and
     /// every declaration minted — the top-level ones, then each
-    /// trait's and impl's methods under their owner. Answers the
-    /// top-level ids, in order.
+    /// trait's and impl's methods under their owner. ONE RUN of the
+    /// file's owner: what it held before and did not mint again is
+    /// removed in the same step. Answers the top-level ids, in order.
     fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
+        let before = self.decls_so_far(f)
+        let owner = self.file_owners.get()[f.index]
+        let _ = self.decl_rows.get().opened_run(owner)
         self.stores.set_at(f.index, store)
         mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
         mut out: List<DeclId> = []
-        mut made: List<DeclId> = []
         mut seen: List<string> = []
         let path = self.file(f).path
         for s in stmts {
@@ -151,7 +154,6 @@ impl Decls {
                     )
                 by_stmt.set(s.index, DeclAt { decl: d })
                 out.push(d)
-                made.push(d)
                 self.orphan(d)
                 let members = store.member_fns(s)
                 for m in members {
@@ -166,11 +168,10 @@ impl Decls {
                             declared_body(store, m),
                         )
                     by_stmt.set(m.index, DeclAt { decl: md })
-                    made.push(md)
                 }
                 let fields: List<Param> = store.struct_parts(s)?.fields ?? []
                 let seats: List<Param> = store.fn_parts(s)?.params ?? []
-                made = made.concat(self.mint_defaults(key, f, s, fields.concat(seats), name, d))
+                let _ = self.mint_defaults(key, f, s, fields.concat(seats), name, d)
             }
             // a top-level `const` is a declaration like a fn: module-wide,
             // order-free, exported only when it says so.
@@ -182,29 +183,24 @@ impl Decls {
                     .mint(key, f, s, name, DeclKind.Const, store.is_exported(s), "", null, false, null)
                 by_stmt.set(s.index, DeclAt { decl: d })
                 out.push(d)
-                made.push(d)
                 self.orphan(d)
             }
             let sp: SpecParts? = store.spec_parts(s)
             if sp != null {
                 let suite = sp!
-                // LICENSED loops.push_loop: the pass's OUTPUT accumulates — every branch of this walk pushes into the same list
                 for k, c in suite.cases {
-                    made
-                        .push(
-                            self
-                                .mint(
-                                    "${path}::case ${s.index}.${k}",
-                                    f,
-                                    s,
-                                    c.name,
-                                    DeclKind.Case,
-                                    false,
-                                    suite.name,
-                                    null,
-                                    false,
-                                    c.body,
-                                ),
+                    let _ = self
+                        .mint(
+                            "${path}::case ${s.index}.${k}",
+                            f,
+                            s,
+                            c.name,
+                            DeclKind.Case,
+                            false,
+                            suite.name,
+                            null,
+                            false,
+                            c.body,
                         )
                 }
             }
@@ -216,18 +212,15 @@ impl Decls {
                 let block_decl = self
                     .mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
                 by_stmt.set(s.index, DeclAt { decl: block_decl })
-                made.push(block_decl)
                 self.orphan(block_decl)
                 for m in block.fns {
                     let mkey = member_key(key, store, m, block.fns)
                     let md = self
                         .mint_method(mkey, f, store, m, block.target, block_decl, store.fn_parts(m)?.body)
                     by_stmt.set(m.index, DeclAt { decl: md })
-                    made.push(md)
                     let seats: List<Param> = store.fn_parts(m)?.params ?? []
                     let mname = self.decl(md).name
-                    made = made
-                        .concat(self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md))
+                    let _ = self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md)
                 }
             }
         }
@@ -244,7 +237,6 @@ impl Decls {
                 false,
                 null,
             )
-        made.push(main)
         self.mains.set_at(f.index, main)
         // A declaration NESTED in a body is refused by its feature, but
         // typing still walks it: it gets an identity under a key no
@@ -269,13 +261,23 @@ impl Decls {
                         null,
                     )
                 by_stmt.set(i, DeclAt { decl: nd })
-                made.push(nd)
             }
         }
         self.decl_ids.set_at(f.index, Cell.new(by_stmt))
-        self.file_decls.set_at(f.index, Cell.new(made))
+        self.decl_rows.get().closed_run(owner)
+        self.forget([d for d in before if self.row_at(d.index) == null])
         self.range_bodies(f, store, main)
         out
+    }
+
+    /// Declarations a re-admission removed, let go by every table that
+    /// files them by hand: the sealers they joined and the caches that
+    /// may name them.
+    fn forget(gone: List<DeclId>) {
+        if gone.is_empty() { return }
+        for d in gone { self.unfaced(d) }
+        self.meta_ids.set({})
+        self.wire_index.set({})
     }
 
     /// Every declaration's expression range: each expression belongs
@@ -315,16 +317,22 @@ impl Decls {
         }
     }
 
-    /// This file's declarations, every kind, in the order admitted:
-    /// each top-level one with its members, then Main, then the
-    /// nested ones.
+    /// This file's declarations, every kind, in id order — the order a
+    /// first admission mints them: each top-level one with its members,
+    /// then Main, then the nested ones, then what generation added. A
+    /// re-admission keeps a surviving declaration's id and place.
     fn decls_of_file(f: FileId) -> List<DeclId> {
         (self.ensure_file.get())(f)
-        self.file_decls.get()[f.index].get()
+        self.decls_so_far(f)
     }
 
-    /// The same, as the table stands — the minter's own read.
-    fn decls_so_far(f: FileId) -> List<DeclId> { self.file_decls.get()[f.index].get() }
+    /// The same, as the table stands — the minter's own read: the ids the
+    /// file homes, off the relation's own index, no row read.
+    @bracket("decls")
+    fn decls_so_far(f: FileId) -> List<DeclId> {
+        let rs = self.decl_row_rows.get()
+        [DeclId { index: i } for i in rs.ids_in(rs.bucket_of(home_index, dense_key(f.index)))]
+    }
 
     fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
 
@@ -333,13 +341,9 @@ impl Decls {
         self.held_items.get().get(self.file(f).path) ?? []
     }
 
-    /// A held declaration joins its file: the list once, the main's seat, the
-    /// items. `file_decls`/`mains` are Cells now — a write to THEM lands in
-    /// the one shared slot; `held_items` (below) is not one of this slice's
-    /// fields and still needs the receiver mut.
-    fn held_joins(f: FileId, d: DeclId, ordinal: int, main: bool, item: bool) {
-        let mine = self.decls_so_far(f)
-        if mine.length == ordinal || !mine.any(same_decl(it, d)) { self.file_decls.get()[f.index].push(d) }
+    /// A held declaration joins its file: the main's seat, the items — its
+    /// row files under the file on its own.
+    fn held_joins(f: FileId, d: DeclId, main: bool, item: bool) {
         if main { self.mains.set_at(f.index, d) }
         if item { self.remember_held_item(f, d) }
     }
@@ -411,25 +415,34 @@ impl Decls {
     /// so a held declaration captured from a partial store and then corrected
     /// from its record ends in exactly the buckets its record names.
     fn face(d: DeclId, f: DeclFacts) {
-        let old = self.faces.get()[d.index]
-        for name in old?.mut_seats ?? [] {
-            self.mut_seat_index.put(name, [x for x in self.mut_seat_sealers(name) if x != d])
-        }
+        self.unfaced(d)
         for name in f.mut_seats { self.mut_seat_index.put(name, self.mut_seat_sealers(name).concat([d])) }
         self.faces.set_at(d.index, f)
-        self.filed_under(d, f.word, [a.name for a in f.annotations])
+        self.filed_under(d, f.word, [a.name for a in f.annotations], f.external)
         mut doc_table = self.doc_facts.get()
         doc_table.grow_to(d.index + 1)
         doc_table.set(d.index, DocFact { doc: f.doc, annotations: f.annotations })
         self.doc_facts.set(doc_table)
     }
 
-    /// A row's `word` and `marks` rewritten when its facts name others —
-    /// a row whose collect columns already agree is left as it stands.
-    fn filed_under(d: DeclId, word: string?, marks: List<string>) {
+    /// A declaration's standing facts leave the seal index.
+    fn unfaced(d: DeclId) {
+        for name in self.faces.get()[d.index]?.mut_seats ?? [] {
+            self.mut_seat_index.put(name, [x for x in self.mut_seat_sealers(name) if x != d])
+        }
+    }
+
+    /// A row's fact columns — `word`, `marks`, `external` — rewritten when
+    /// its facts name others; a row whose columns already agree is left as
+    /// it stands.
+    fn filed_under(d: DeclId, word: string?, marks: List<string>, external: bool) {
         let row = self.raw_decl(d)
-        if row.word == word && list_eq(row.marks, marks, (x, y) -> x == y) { return }
-        self.set_decl(d.index, row with { word: word, marks: marks })
+        if row.word == word &&
+            list_eq(row.marks, marks, (x, y) -> x == y) &&
+            row.external == external {
+            return
+        }
+        self.set_decl(d.index, row with { word: word, marks: marks, external: external })
     }
 
     /// Whether a declaration's body has no receiver — the fact eight sites used to read
@@ -550,9 +563,10 @@ impl Decls {
             word: null,
             marks: [],
             key: key,
+            home: homed(kind, f),
+            external: false,
         }
         if known == null {
-            self.decls.push(d)
             self.sigs.push(null)
             self.seat_types.push(null)
             self.bound_types.push(null)
@@ -571,28 +585,14 @@ impl Decls {
             let no_is: List<DeclId> = []
             self.impls.push(Cell.new(no_is))
             self.faces.push(null)
-            if kind is .Impl { self.note_impl(name, id) }
-            let _ = Decl
-                .insert(
-                    self.decl_rows.get(),
-                    file: f,
-                    stmt: s,
-                    name: name,
-                    kind: kind,
-                    exported: exported,
-                    owner: owner,
-                    parent: parent,
-                    nested: nested,
-                    root: root,
-                    lo: 0,
-                    hi: 0,
-                    word: null,
-                    marks: [],
-                    key: key,
-                )
+            self.set_decl(id.index, d)
         } else {
             let prior = self.raw_decl(id)
-            self.set_decl(id.index, d with { word: prior.word, marks: prior.marks })
+            self
+                .set_decl(
+                    id.index,
+                    d with { word: prior.word, marks: prior.marks, external: prior.external },
+                )
         }
         // THE ONE CAPTURE, at the one place a declaration is minted from a parse. Six
         // readers asked the store per pass; they ask this row now, and a held file's row
@@ -820,16 +820,15 @@ impl Decls {
         [block_decl].concat(methods)
     }
 
-    /// A generated declaration joins the file's LIST and its statement
-    /// table, so `items`, the namespace, resolve and lowering read it
-    /// as written. The statement table is grown to the arena first —
+    /// A generated declaration joins the file's statement table (its row
+    /// files under the file on its own), so `items`, the namespace,
+    /// resolve and lowering read it as written. The statement table is grown to the arena first —
     /// `decl_of` reads it by statement, and a miss reads past its end.
     fn record_generated(f: FileId, made: List<DeclId>) {
         mut by_stmt = self.decl_ids.get()[f.index].get()
         by_stmt.grow_to(self.store_of(f).stmts.count())
         for d in [d for d in made if names_its_stmt(self.decl(d).kind)] { by_stmt.set(self.decl(d).stmt.index, DeclAt { decl: d }) }
         self.decl_ids.get()[f.index].set(by_stmt)
-        self.file_decls.get()[f.index].set(self.file_decls.get()[f.index].get().concat(made))
     }
 
     /// A GENERATED declaration — an annotation's traced twin — minted
@@ -929,8 +928,8 @@ impl Decls {
     }
 
     /// One statement reindexed to the declaration that now reads it —
-    /// `record_generated`'s write, without its `file_decls` append
-    /// (the declaration already stands there).
+    /// `record_generated`'s write, for one statement whose declaration
+    /// already stands.
     fn reindex_stmt(f: FileId, s: StmtId, d: DeclId) {
         mut by_stmt = self.decl_ids.get()[f.index].get()
         by_stmt.grow_to(self.store_of(f).stmts.count())
@@ -1015,4 +1014,13 @@ fn member_key(owner_key: string, store: SyntaxArena, m: StmtId, siblings: List<S
     let name = store.fn_parts(m)?.name ?? ""
     let key = "${owner_key}#${name}"
     if siblings.any((s) -> s.index < m.index && store.fn_parts(s)?.name == name) { "${key}#${m.index}" } else { key }
+}
+
+/// The file a declaration of this kind is homed in: its own, or none
+/// for a builtin, which the language declares and no file admits.
+fn homed(kind: DeclKind, f: FileId) -> FileId? {
+    match kind {
+        .Builtin -> null,
+        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> f,
+    }
 }
