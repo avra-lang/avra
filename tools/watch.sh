@@ -72,8 +72,22 @@ tree_kill() {
 tree_rss() {
     ps -eo pid=,pgid=,rss= | awk -v root="$1" '$2 == root { s += $3 } END { print int(s/1024) }'
 }
+# THE GUARDED COMMAND BECOMES A PROCESS-GROUP LEADER, WITH OR WITHOUT A
+# TTY: its own pgid, equal to its own pid, is what the tree walkers
+# above key on — never a ppid chain. `setsid` is preferred, because it
+# gives the child a group with no terminal at all; job control is the
+# fallback for macOS (no `setsid`), and its stderr is shut because dash
+# without a tty answers `set -m` with "can't access tty; job control
+# turned off" and leaves it off — a line a caller's output diff reads
+# as content, which is how this cost cache-attacks 2/117 on a Sprite.
+if command -v setsid >/dev/null 2>&1; then
+    leader() { setsid "$@" & }
+else
+    set -m 2>/dev/null
+    leader() { "$@" & }
+fi
 
-# THREE FIXTURES. Fixtures 1 and 2 each take a LOCK OF THEIR OWN
+# FOUR FIXTURES. Fixtures 1 and 2 each take a LOCK OF THEIR OWN
 # (AVRA_BUILD_LOCK), so a self-test never contends the real
 # machine-wide queue every other session on this box is standing in.
 # Fixture 1 proves a QUEUED waiter's ticket is dropped and the process
@@ -83,7 +97,10 @@ tree_rss() {
 # unwatched. Fixture 3 takes no lock at all — it feeds `tree_pids` a
 # hand-built snapshot and proves a decoy sharing a coincidental pid or
 # ppid with the watched tree is never counted, by construction rather
-# than by winning a real pid-reuse race.
+# than by winning a real pid-reuse race. Fixture 4 needs no lock
+# either: it proves the GUARDED TREE GETS A PROCESS GROUP OF ITS OWN
+# with no tty, the property the memory cap and both TERM traps rest on,
+# by launching a leader with a grandchild and tree-killing it.
 self_test() {
     # A self-test run FROM INSIDE a held lock (`make gate` under this
     # very watchdog) inherits AVRA_WATCH_HELD, and the re-entrancy
@@ -175,7 +192,34 @@ self_test() {
         echo "watch: self-test: fixture 3 wanted 3 MB, the decoy's rss leaked in as $rss MB"
         return 1
     fi
-    echo "watch: self-test passed — 3 fixtures"
+
+    # Fixture 4: a leader and the grandchild it spawns share one pgid,
+    # and tree_kill on the leader's pid takes both. Without a group of
+    # its own the root pgid matches no process, so tree_kill reaches
+    # nothing and the cap never fires — the exact weakening dash's
+    # refused `set -m` left behind.
+    leader sh -c 'sleep 30 & wait' >/dev/null 2>&1
+    lead=$!
+    i=0
+    n=0
+    while [ $i -lt 40 ]; do
+        n=$(ps -eo pid=,pgid= | tree_pids "$lead" | wc -l | tr -d ' ')
+        [ "$n" -ge 2 ] && break
+        sleep 0.25; i=$((i + 1))
+    done
+    if [ "$n" -lt 2 ]; then
+        echo "watch: self-test: fixture 4 — the guarded tree has no process group of its own (pgid $lead holds $n pid(s))"
+        tree_kill "$lead"; kill -9 "$lead" 2>/dev/null
+        return 1
+    fi
+    tree_kill "$lead"
+    sleep 0.3
+    if ps -eo pid=,pgid= | awk -v root="$lead" '$2 == root { found=1 } END { exit !found }'; then
+        echo "watch: self-test: fixture 4 — tree_kill left the guarded tree alive"
+        kill -9 "$lead" 2>/dev/null
+        return 1
+    fi
+    echo "watch: self-test passed — 4 fixtures"
 }
 if [ "$1" = "--self-test" ]; then
     self_test
@@ -185,11 +229,9 @@ cap_mb="$1"; shift
 if [ -n "$AVRA_WATCH_HELD" ]; then
     exec "$@"
 fi
-# THE GUARDED COMMAND BECOMES A PROCESS-GROUP LEADER: job control
-# gives a background job its own pgid, equal to its own pid, that
-# every descendant inherits. The tree walkers above key on that pgid,
-# never on a ppid chain.
-set -m
+# The guarded command becomes a process-group leader through `leader`,
+# defined with the tree walkers above; the tree walkers key on that
+# pgid, never on a ppid chain.
 slots="${AVRA_BUILD_SLOTS:-1}"
 lock="${AVRA_BUILD_LOCK:-/tmp/avra-build.lock}"
 floor="${AVRA_MEM_FLOOR:-20}"
@@ -330,7 +372,7 @@ while :; do
 done
 AVRA_WATCH_HELD=$$
 export AVRA_WATCH_HELD
-"$@" &
+leader "$@"
 pid=$!
 if [ -n "$AVRA_SAMPLE" ]; then
     mkdir -p build
