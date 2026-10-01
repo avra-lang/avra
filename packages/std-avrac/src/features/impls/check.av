@@ -2,7 +2,7 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, StmtId, TypeId, DeclId, DeclKind, same_type}
+use core.{ExprId, StmtId, TypeId, DeclId, DeclKind, same_type, counted}
 use features.{TypeCx, FnSig, this_is, MethodCall, RunChoice}
 use diagnostics.{refusal}
 use @std.errors.{Loc}
@@ -28,7 +28,7 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
     match callee {
         .Variant(decl, tname) -> if cx.view.store.is_type_lit(e) { no_interned(cx, e, tname) } else { cx.construct_variant(e, decl, tname, name, args) },
         .Static(m, tname) -> static_call(cx, e, m, tname, name, args),
-        .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, decl, tname, cx.bound_name(decl, j), name, args),
+        .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, decl, j, tname, name, args),
         .Contract(tdecl, tname) -> dyn_call(cx, e, subject, tdecl, tname, name, args),
         .FnField(_, fty) -> fielded_call(cx, e, name, fty, args),
         .Row(r) -> r.check(cx, MethodCall { e: e, subject: subject, args: args }),
@@ -157,7 +157,7 @@ fn generic_default_at(
     }
     let trait_args = [b! for b in binds]
     let recv = cx.type_at(subject)
-    if !implements_at_args(cx, contract, recv, trait_args) {
+    if !cx.view.decls.implements_at(recv, contract, trait_args) {
         default_unimplemented(
             cx,
             e,
@@ -214,27 +214,6 @@ fn bound(cx: TypeCx, g: DeclId, param: TypeId, arg: TypeId, binds: List<TypeId?>
         },
         _ -> binds,
     }
-}
-
-/// Whether the receiver answers the trait at these arguments: each
-/// member the trait leaves to its impls has a method whose seats are
-/// the trait's, instantiated there.
-fn implements_at_args(cx: TypeCx, g: DeclId, recv: TypeId, trait_args: List<TypeId>) -> bool {
-    let d? = cx.view.decls.implementor(recv) else { return false }
-    let at = [recv].concat(trait_args)
-    cx.view.decls.trait_fns(g).all((r) -> cx.view.decls.has_body(r) || answered_at(cx, d, r, g, at))
-}
-
-fn answered_at(cx: TypeCx, d: DeclId, r: DeclId, g: DeclId, at: List<TypeId>) -> bool {
-    let want? = cx.view.decls.sig(r)?.fn_sig() else { return false }
-    let seats = [cx.view.types.substituted(p, g, at) for p in want.params]
-    cx.view.decls.methods_named(d, cx.view.decls.decl(r).name).any((m) -> same_seats(cx, m, seats))
-}
-
-fn same_seats(cx: TypeCx, m: DeclId, seats: List<TypeId>) -> bool {
-    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
-    sig.params.length == seats.length &&
-        [j for j, p in sig.params if j > 0 && !same_type(p, seats[j])].is_empty()
 }
 
 /// THE INOUT LAWS at a call: a writing callee needs a `mut` place
@@ -479,7 +458,7 @@ fn wrong_method_arity(
             refusal(
                 "type.method",
                 cx.loc_of(e),
-                "`${target}.${name}` takes ${wants} arguments beside `self`, found ${found}",
+                "`${target}.${name}` takes ${counted(wants, "argument")} beside `self`, found ${found}",
                 "this call",
                 null,
             ),
@@ -579,11 +558,12 @@ fn bounded_call(
     e: ExprId,
     subject: ExprId,
     decl: DeclId,
+    j: int,
     tname: string,
-    trait_name: string,
     name: string,
     args: List<ExprId>,
 ) -> TypeId {
+    let trait_name = cx.bound_name(decl, j)
     if trait_name == "" {
         return cx
             .spoken(
@@ -596,7 +576,7 @@ fn bounded_call(
                 ),
             )
     }
-    trait_judged(cx, e, subject, trait_name, name, args) ?? no_trait_method(
+    trait_judged(cx, e, subject, trait_name, name, args, cx.view.decls.bound_args(decl, j)) ?? no_trait_method(
         cx,
         e,
         trait_name,
@@ -642,6 +622,7 @@ fn contract_judged(
     name: string,
     args: List<ExprId>,
     member: DeclId,
+    trait_args: List<TypeId> = [],
 ) -> TypeId {
     let found? = cx.view.decls.sig(member)?.fn_sig() else { return cx.error_type }
     let writes = cx.view.decls.declares_writing(member)
@@ -650,7 +631,14 @@ fn contract_judged(
         .seat_contracts(e, "${trait_name}.${name}", member, 1, args, if writes { subject } else { null }) {
         return cx.error_type
     }
-    sig_judged(cx, e, trait_name, name, args, seats_of(selfed_sig(cx, subject, member, found)))
+    sig_judged(
+        cx,
+        e,
+        trait_name,
+        name,
+        args,
+        seats_of(selfed_sig(cx, subject, member, found, trait_args)),
+    )
 }
 
 /// A method sig past its receiver — what the arguments fill.
@@ -668,10 +656,11 @@ fn trait_judged(
     trait_name: string,
     name: string,
     args: List<ExprId>,
+    trait_args: List<TypeId> = [],
 ) -> TypeId? {
     let tdecl? = cx.view.decls.trait_named(cx.names, trait_name) else { return null }
     let member? = cx.view.decls.trait_member(tdecl, name) else { return null }
-    contract_judged(cx, e, subject, trait_name, name, args, member)
+    contract_judged(cx, e, subject, trait_name, name, args, member, trait_args)
 }
 
 /// A method sig's judgment — its seats past the receiver — over the

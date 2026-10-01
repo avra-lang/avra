@@ -489,10 +489,17 @@ impl TypeCx {
     /// Whether `ty` meets a declaration's bound — the trait read in the
     /// file that WROTE the bound, never the caller's: a caller need not
     /// import the trait a callee is bounded by.
-    fn meets_bound(decl: DeclId, tname: string, ty: TypeId) -> bool {
+    fn meets_bound(decl: DeclId, tname: string, ty: TypeId, at: List<TypeId> = []) -> bool {
+        let tr = self.bound_trait(decl, tname)
+        if at.is_empty() { return implements_named(self.view.types, self.view.decls, ty, tname, tr) }
+        let g? = tr else { return false }
+        self.view.decls.implements_at(ty, g, at)
+    }
+    /// The trait a declaration's bound names — read in the file that
+    /// WROTE the bound, then where the asking file stands.
+    fn bound_trait(decl: DeclId, tname: string) -> DeclId? {
         let written: DeclId? = self.written_in(self.view.decls.decl(decl).file).type_decl(tname)
-        let tr: DeclId? = if written != null && self.view.decls.is_trait(written!) { written } else { self.view.decls.trait_named(self.names, tname) }
-        implements_named(self.view.types, self.view.decls, ty, tname, tr)
+        if written != null && self.view.decls.is_trait(written!) { written } else { self.view.decls.trait_named(self.names, tname) }
     }
     fn implements_decl(ty: TypeId, tr: DeclId) -> bool { implements_trait(self.view.types, self.view.decls, ty, tr) }
     /// A `mut` binding: a `mut` local, a receiver, a `mut` seat — or
