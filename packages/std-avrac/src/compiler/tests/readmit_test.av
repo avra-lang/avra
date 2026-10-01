@@ -30,22 +30,20 @@ fn admitted(text: string) -> Workspace {
 }
 
 /// `path` in `ws` admitted again from `text`'s own parse.
-fn admit_again(ws: Workspace, path: string, files: Map<string, string>, text: string) {
-    mut moved = files
-    moved.set(path, text)
-    let again = readmit_files(moved, [path])
+fn admit_again(ws: Workspace, path: string, text: string) {
+    mut files: Map<string, string> = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    }
+    files.set(path, text)
+    let again = readmit_files(files, [path])
     let p = again.parsed(again.file_id(path))
     let _ = ws.decls.admit(ws.file_id(path), p.store, p.stmts)
-}
-
-fn one_file(text: string) -> Map<string, string> {
-    {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": text}
 }
 
 /// `before` admitted, then admitted again as `after`.
 fn readmitted(before: string, after: string) -> Workspace {
     let ws = admitted(before)
-    admit_again(ws, readmit_path(), one_file(before), after)
+    admit_again(ws, readmit_path(), after)
     ws
 }
 
@@ -117,7 +115,7 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
                 .decls
                 .mint_generated(f, "kept\$\$twin", no_params, no_params, named_ref("int"), "kept", "traced", null)
             let held = ws.decls.all_decls().any(it.name == "kept\$\$twin")
-            admit_again(ws, readmit_path(), one_file(readmit_before()), readmit_after())
+            admit_again(ws, readmit_path(), readmit_after())
             held &&
                 !ws.decls.all_decls().any(it.name == "kept\$\$twin") &&
                 !readmit_names(ws).split(",").contains("kept\$\$twin")
@@ -127,7 +125,7 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
         then "a kept declaration keeps its id" {
             let ws = admitted(readmit_before())
             let first = named_here(ws, "kept")
-            admit_again(ws, readmit_path(), one_file(readmit_before()), readmit_after())
+            admit_again(ws, readmit_path(), readmit_after())
             first != null && named_here(ws, "kept")?.index ?? -1 == first!.index
         }
         then "the file's list is what one admission of the new text makes" {
@@ -167,7 +165,7 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
             let ws = admitted(readmit_before())
             let f = ws.file_id(readmit_path())
             let settled = ws.db.value_hash_of(Key { family: items_ordinal(), arg: f.index })
-            admit_again(ws, readmit_path(), one_file(readmit_before()), readmit_after())
+            admit_again(ws, readmit_path(), readmit_after())
             settled != null &&
                 settled! == rows_print(admitted(readmit_before())) &&
                 settled! != rows_print(ws)
@@ -185,13 +183,8 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
             let b = ws.file_id("/w/src/b.av")
             let _ = ws.items(a)
             let _ = ws.items(b)
-            admit_again(ws, "/w/src/a.av", files, "fn y() -> int {\n    2\n}\n")
-            admit_again(
-                ws,
-                "/w/src/b.av",
-                files,
-                "fn z() -> int {\n    3\n}\nfn x() -> int {\n    1\n}\n",
-            )
+            admit_again(ws, "/w/src/a.av", "fn y() -> int {\n    2\n}\n")
+            admit_again(ws, "/w/src/b.av", "fn z() -> int {\n    3\n}\nfn x() -> int {\n    1\n}\n")
             let xs = Decl.by_name(ws.decls.decl_rows.get(), "x")
             xs.length == 1 && same_file(xs[0].file, b) && !same_file(xs[0].file, a)
         }
