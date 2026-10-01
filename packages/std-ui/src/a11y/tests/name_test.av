@@ -1,0 +1,64 @@
+//! The accessible-name contract, by its laws: a node is named by its
+//! own words unless given a label, and a description is never a name.
+use @std.ui.a11y.name.{Name, announced, named}
+
+fn label_only() -> Name { Name { label: "Confirm" } }
+
+fn description_only() -> Name { Name { describe: "the longer story" } }
+
+fn decorative() -> Name { Name { hidden: true } }
+
+fn computed() -> string { "item ${3 + 4}" }
+
+spec "std/ui a11y — a node is named by its own words" {
+    given "a node with no explicit name" {
+        then "is announced with its own words" {
+            announced(Name {}, "Buy") == "Buy"
+        }
+        then "is visible unless it says hidden" {
+            Name {}.hidden == false
+        }
+    }
+    given "a node given a label" {
+        then "announces the label instead of its own words" {
+            announced(label_only(), "Buy") == "Confirm"
+        }
+    }
+    given "a node whose own words are computed" {
+        then "is announced with the computed words" {
+            announced(Name {}, computed()) == "item 7"
+        }
+    }
+}
+
+spec "std/ui a11y — a description is not a name" {
+    given "a node with only a description" {
+        then "has nothing to announce" {
+            !named(description_only(), "")
+        }
+        then "still announces the description's node by its own words" {
+            announced(description_only(), "Buy") == "Buy"
+        }
+    }
+    given "a node with a label" {
+        then "has a name" {
+            named(label_only(), "")
+        }
+    }
+    given "a node with a label of the empty text" {
+        then "has no name — presence is not enough" {
+            !named(Name { label: "" }, "own")
+        }
+    }
+}
+
+spec "std/ui a11y — a decorative node" {
+    given "a node marked hidden" {
+        then "is hidden from the announced tree" {
+            decorative().hidden
+        }
+        then "is not named by a description it may still carry" {
+            !named(Name { describe: "decoration", hidden: true }, "")
+        }
+    }
+}
