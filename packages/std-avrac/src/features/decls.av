@@ -1172,7 +1172,10 @@ impl Decls {
     /// The hooks capture the workspace that holds this table — a
     /// cycle counting never frees. A one-shot workspace disarms them
     /// once every declaration it will ever ask about is signed; a
-    /// sig asked after that is held or, loudly, absent.
+    /// sig asked after that is held or, loudly, absent. `ensure_consumed`
+    /// stays armed, as `ensure_refs` already does: consumption is asked
+    /// at LOWERING, after a one-shot's own disarm, so zeroing this hook
+    /// here would make every seat read unconsumed forever.
     fn disarm() {
         self.auditing.set(false)
         self.held_rows.set(no_store)
@@ -1182,7 +1185,6 @@ impl Decls {
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
         self.ensure_writes.set(no_answer)
-        self.ensure_consumed.set(no_ensure)
         self.ensure_marks.set(no_marks)
         self.ensure_store.set(no_store)
         self.ensure_file.set(no_store)
