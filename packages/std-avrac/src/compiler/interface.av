@@ -443,20 +443,19 @@ impl Workspace {
             [line for line in prior_lines if line.starts_with("import\t")]
                 .concat(["import\t${d.text()}" for d in fresh]),
         )
-        // A FRESH FILE'S OWN OUTGOING REFERENCES, kept beside its
+        // EVERY FILE'S OWN OUTGOING REFERENCES, kept beside its
         // declarations — never inside `iface_digest`'s own fold, since a
         // dependent needs to know only that this attempt's `references()`
         // can still answer for this file once it is held, not WHAT it
-        // referenced. A held file's own `ref` lines ride forward through
-        // `kept`/`f.lines` untouched, exactly as its declaration lines do.
-        let refs = flatten(
-            [self.ref_lines(path, self.file_refs(self.file_id(path))) for path in files if !self.is_held(self.file_id(path))],
-        )
+        // referenced. A held file's `ref` lines ride forward from `kept`,
+        // in the same place a fresh file's stand, so where they stand never
+        // says which it was.
+        let refs = flatten([self.file_ref_lines(path, kept) for path in files])
         let parts = [self.file_lines(store, m, path, kept) for path in files]
         // what a file's lines were read from, what its runs read and its own interface
         // stand on its `file` line; the module's interface is its files', in name order
         let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${joined(self.ran_by(store, f.path), "|")}\t${f.iface}" for f in parts]
-        let iface = digest_of(joined(sorted_texts([f.iface for f in parts]), "\n"))
+        let iface = ifaces_digest([f.iface for f in parts])
         joined(
             ["iface\t${iface}"]
                 .concat(here)
@@ -475,13 +474,19 @@ impl Workspace {
             let lines = self.lines_of(path)
             return FileLines { path: path, lines: lines, iface: iface_digest(lines) }
         }
-        let lines = kept.get(path) ?? []
+        let lines = [line for line in kept.get(path) ?? [] if !line.starts_with("ref\t")]
         let at: Placed? = record_places(self, store, m).get(path)
         FileLines {
             path: path,
             lines: lines,
             iface: if at != null && at!.file.length > 4 { at!.file[4] } else { iface_digest(lines) },
         }
+    }
+
+    /// A file's `ref` lines: a held file's as its record kept them, a read one's fresh.
+    fn file_ref_lines(path: string, kept: Map<string, List<string>>) -> List<string> {
+        if self.is_held(self.file_id(path)) { return [line for line in kept.get(path) ?? [] if line.starts_with("ref\t")] }
+        self.ref_lines(path, self.file_refs(self.file_id(path)))
     }
 
     /// A parsed file's record lines, one per declaration.
