@@ -1,7 +1,7 @@
 //! What every spec file needs to ask of a program, in one place.
 //! Test files are separate compilation units, so each used to carry
 //! its own copy of these — 26 of them, byte-identical.
-use compiler.{analyze_source, parse_source, Program, Workspace, avra, new_workspace}
+use compiler.{analyze_source, parse_source, Program, avra, new_workspace}
 use compiler.host.{memory_host}
 use @std.avrac.diagnostics.{Diag}
 use @std.avrac.core.{flatten}
@@ -140,11 +140,6 @@ export fn vendored_meta_paths() -> List<string> {
 /// component test compiles. Each of `modules` is one more module of
 /// the program's own, a file under `src/<name>/`.
 export fn provided(main: string, provider: string, modules: List<Module> = []) -> Program {
-    provided_workspace(main, provider, modules).program("/w/src/main.av")
-}
-
-/// `provided`'s workspace, before a program is asked of it.
-export fn provided_workspace(main: string, provider: string, modules: List<Module> = []) -> Workspace {
     mut files = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n",
@@ -156,7 +151,8 @@ export fn provided_workspace(main: string, provider: string, modules: List<Modul
     for m in modules { files.set(m.path(), m.text) }
     let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/c/avra.toml", "/w/vendor/c/src/c.av"]
         .concat([m.path() for m in modules])
-    new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    ws.program("/w/src/main.av")
 }
 
 /// One module of a test program: its name and its one file's text.

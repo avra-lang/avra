@@ -221,8 +221,8 @@ fn crlf_only(buf: Bytes, lo: int, hi: int) -> bool {
     let feed = lf
     mut at = lo
     while at < hi {
-        let cr = buf.index_in(carriage, at, hi)
-        let lf = buf.index_in(feed, at, hi)
+        let cr = bounded(buf.index_of(carriage, at), hi)
+        let lf = bounded(buf.index_of(feed, at), hi)
         if cr < 0 && lf < 0 { return true }
         if cr >= 0 && (cr + 1 >= buf.length || buf.at(cr + 1) != "\n".char_code()) { return false }
         if lf >= 0 && (lf == 0 || buf.at(lf - 1) != "\r".char_code()) { return false }
@@ -230,6 +230,9 @@ fn crlf_only(buf: Bytes, lo: int, hi: int) -> bool {
     }
     true
 }
+
+/// An index below `hi`, or -1.
+fn bounded(i: int, hi: int) -> int { if i < hi { i } else { -1 } }
 
 const cr: Bytes = "\r".bytes()
 const lf: Bytes = "\n".bytes()
@@ -289,7 +292,7 @@ fn versioned(buf: Bytes, at: int, eol: int) -> bool {
 /// refuses, and the catch-all is the honest direction: a form the RFC
 /// grows is a form, and this law admits it.
 fn target_form_fits(buf: Bytes, method: Method, lo: int, hi: int) -> bool {
-    if buf.index_in(hash, lo, hi) >= 0 { return false }
+    if bounded(buf.index_of(hash, lo), hi) >= 0 { return false }
     !(target_form(buf, method, lo, hi) is .Other)
 }
 
@@ -329,7 +332,8 @@ fn asterisk_form(method: Method) -> TargetForm {
 /// Whether a scheme opens this target — `://` inside it and not at
 /// its very start.
 fn schemed(buf: Bytes, lo: int, hi: int) -> bool {
-    buf.index_in(scheme_end, lo, hi) > lo
+    let at = buf.index_of(scheme_end, lo)
+    at > lo && at < hi
 }
 
 /// What separates an absolute-form target's scheme from its
@@ -393,11 +397,12 @@ fn past_ows(buf: Bytes, at: int) -> int {
     buf.run(at, ows)
 }
 
-/// The end of the value once trailing OWS is dropped — one backward
-/// class-table scan, never below `lo`.
+/// The end of the value once trailing OWS is dropped — a walk, never
+/// a recursion, for the same reason.
 fn before_ows(buf: Bytes, lo: int, hi: int) -> int {
-    let end = buf.run_back(hi, ows)
-    if end < lo { lo } else { end }
+    mut end = hi
+    while end > lo && is_ows(buf.at(end - 1)) { end = end - 1 }
+    end
 }
 
 // ── The framing fields (RFC 9112 §6, 9110 §7.2, §10.1.1) ────────
@@ -549,7 +554,7 @@ fn tokens(buf: Bytes, v: Span) -> List<Span> {
     mut out: List<Span> = []
     mut at = v.lo
     while at <= v.hi {
-        let comma_at = buf.index_in(comma_mark, at, v.hi)
+        let comma_at = bounded(buf.index_of(comma_mark, at), v.hi)
         let cut = if comma_at < 0 { v.hi } else { comma_at }
         let lo = past_ows(buf, at)
         let hi = before_ows(buf, lo, cut)
