@@ -120,6 +120,16 @@ LLVMValueRef avra_llvm_const_int(LLVMTypeRef ty, int64_t value, int sign_extend)
     return LLVMConstInt(ty, (unsigned long long)value, sign_extend);
 }
 
+// Whether a value is an integer constant, and that constant read
+// sign-extended — two questions, so presence never spends a value.
+int64_t avra_llvm_is_const_int(LLVMValueRef v) {
+    return LLVMIsAConstantInt(v) != NULL;
+}
+
+int64_t avra_llvm_const_int_sext(LLVMValueRef v) {
+    return LLVMConstIntGetSExtValue(v);
+}
+
 LLVMValueRef avra_llvm_const_pointer_null(LLVMTypeRef ty) {
     return LLVMConstPointerNull(ty);
 }

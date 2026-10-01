@@ -216,10 +216,11 @@ impl Emit {
             .Add -> avra_llvm_build_add(self.b, a, b, "add"),
             .Sub -> avra_llvm_build_sub(self.b, a, b, "sub"),
             .Mul -> avra_llvm_build_mul(self.b, a, b, "mul"),
-            // Guarded: sdiv/srem by zero is undefined, and the
-            // interpreter refuses, so the two engines must agree.
-            .Div -> self.call("avra_int_div", [a, b]),
-            .Mod -> self.call("avra_int_mod", [a, b]),
+            // Guarded unless the divisor is plain: sdiv/srem by zero is
+            // undefined, and the interpreter refuses, so the two engines
+            // must agree.
+            .Div -> if plain_divisor(b) { avra_llvm_build_sdiv(self.b, a, b, "sdiv") } else { self.call("avra_int_div", [a, b]) },
+            .Mod -> if plain_divisor(b) { avra_llvm_build_srem(self.b, a, b, "srem") } else { self.call("avra_int_mod", [a, b]) },
             .Eq -> avra_llvm_build_icmp(self.b, 32, a, b, "cmp"),
             .Ne -> avra_llvm_build_icmp(self.b, 33, a, b, "cmp"),
             .Lt -> avra_llvm_build_icmp(self.b, 40, a, b, "cmp"),
@@ -722,6 +723,14 @@ impl Emit {
         for j, bb in ended { avra_llvm_add_incoming(phi, self.vals[gs[j].index], bb) }
         self.define(phi)
     }
+}
+
+/// A divisor no division traps or overflows on: a constant other than
+/// zero, which traps, and -1, which overflows the smallest int.
+fn plain_divisor(v: ptr) -> bool {
+    if avra_llvm_is_const_int(v) == 0 { return false }
+    let d = avra_llvm_const_int_sext(v)
+    d != 0 && d != -1
 }
 
 /// The rows that count a value enum's word by its tag.
