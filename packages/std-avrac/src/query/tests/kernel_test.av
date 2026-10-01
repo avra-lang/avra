@@ -1,6 +1,6 @@
 // The kernel's laws, over a toy family: an input `n` and a derived
 // `double` that reads it. Runs are counted so reuse is observable.
-use @std.avrac.query.{Kernel, new_kernel, Key, new_memo}
+use @std.avrac.query.{Kernel, new_kernel, Key, new_memo, same_key}
 
 /// A derived family over the kernel: computes 2n, counting runs.
 /// The tally and values are explicit shared cells, so the verifier's
@@ -442,5 +442,48 @@ spec "query/kernel — a family registers without disturbing cells already writt
         }
         let late = new_memo<int>(db, db.family((arg: int) -> 0))
         late.demand(3, () -> 999, (v: int) -> v) == 999
+    }
+}
+
+spec "query/kernel — an abandoned frame" {
+    given "an inner query abandoned inside an outer one" {
+        then "keeps no cell for the inner key, and its reads are the outer's" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let read = Key { family: fam, arg: 0 }
+            db.set_input(read, 1)
+            let outer = Key { family: fam, arg: 1 }
+            let inner = Key { family: fam, arg: 2 }
+            db.begin(outer)
+            db.begin(inner)
+            db.record_dep(read)
+            db.abandon(inner)
+            db.settle(outer, 1)
+            db.cell(inner) == null && db.deps_of(outer).any((k: Key) -> same_key(k, read))
+        }
+        then "a read the outer already made is still one dep" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let read = Key { family: fam, arg: 0 }
+            db.set_input(read, 1)
+            let outer = Key { family: fam, arg: 1 }
+            let inner = Key { family: fam, arg: 2 }
+            db.begin(outer)
+            db.record_dep(read)
+            db.begin(inner)
+            db.record_dep(read)
+            db.abandon(inner)
+            db.record_dep(read)
+            db.settle(outer, 1)
+            db.deps_of(outer).length == 1
+        }
+        then "asked again, the abandoned key computes" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let inner = Key { family: fam, arg: 2 }
+            db.begin(inner)
+            db.abandon(inner)
+            db.ask(inner) is .Compute
+        }
     }
 }
