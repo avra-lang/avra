@@ -16,12 +16,13 @@ use core.{
     is_kind_word,
     key_spelled,
 }
-use @std.path.{under_dir, joined_path, normalized}
+use @std.path.{under_dir, joined_path, normalized, dir_of}
 use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
 use compiler.lower.{LinkedPackage}
 use compiler.host.{library_stem}
+use compiler.backend.{embed_resolved}
 
 impl Workspace {
 
@@ -65,7 +66,7 @@ impl Workspace {
         mut i = 0
         while i < self.decls.file_count() {
             let fi = self.decls.file(file_at(i))
-            if !self.is_held(fi.id) {
+            if !self.is_held(fi.id) && reads_as_source(fi.path) {
                 act(fi.id)
                 out.push(fi.id)
             }
@@ -132,7 +133,7 @@ impl Workspace {
         while i < self.decls.file_count() {
             let id = file_at(i)
             // a held file's declarations are minted when something reads them
-            if !self.is_held(id) {
+            if !self.is_held(id) && reads_as_source(self.decls.file(id).path) {
                 let _ = self.items(id)
                 self.admit_used(id)
             }
@@ -152,6 +153,21 @@ impl Workspace {
             if u != null { self.admit_module(from, qualified(module_path(u!.path), from)) }
             let scope = p.store.collect_scope(s)
             if scope != null { self.decls.admit_scope(scope!, f) }
+        }
+        self.admit_embeds(p)
+    }
+
+    /// `embed("literal")` names a file at compile time — the same
+    /// declared reach a `use` line names. Minted here, before anything
+    /// reads the File relation this revision, so a const's own
+    /// Settled-family query never mints a late row mid-read. A
+    /// computed path cannot be found this way; `embed_literal_only`
+    /// refuses it at typing instead.
+    fn admit_embeds(p: Parsed) {
+        let base = dir_of(p.source.file)
+        for e in p.store.stmts_exprs(p.stmts) {
+            let rel = embed_literal_at(p.store, e)
+            if rel != null { let _ = self.minted_file(embed_resolved(base, rel!)) }
         }
     }
 
@@ -335,6 +351,20 @@ fn use_lines(p: Parsed) -> List<UseParts> {
 /// What one `use` line brought in, and what it earned.
 type Imported = { imports: List<Import>, diagnostics: List<Diag> }
 
+/// A call to a name spelled `embed`, with one string-literal argument
+/// — the path it names, or null for any other call, arity, or a
+/// computed argument (`embed_literal_only` is where a computed one
+/// gets its refusal, at typing, where the callee is resolved).
+fn embed_literal_at(store: SyntaxArena, e: ExprId) -> string? {
+    match store.expr(e) {
+        .Call(callee, _, args) -> {
+            if callee.of != "embed" || args.length != 1 { return null }
+            store.expr(args[0]).text_of()
+        },
+        _ -> null,
+    }
+}
+
 fn segments_of(dotted_text: string) -> List<string> {
     if dotted_text.is_empty() { return [] }
     dotted_text.split(".")
@@ -445,3 +475,6 @@ fn index_of_file(files: List<Analysis>, path: string) -> int? {
     null
 }
 
+/// Whether a file is Avra source. A `FileId` an `embed` admits names data,
+/// with no module to reach, resolve, sign or analyze.
+fn reads_as_source(path: string) -> bool { path.ends_with(".av") }

@@ -335,6 +335,17 @@ impl Machine {
 /// A run nobody budgets: a program runs to its end.
 const unbudgeted: int = 1000000000000000
 
+/// An `embed` argument's path, resolved against its settlement's base
+/// directory exactly as `Machine.embedded` resolves it at run time —
+/// the one definition, so an admit-time mint and a settle-time read
+/// never name two different files. NORMALIZED: an unfolded `..`
+/// names the same file under a second spelling, minting it a second
+/// FileId — the same file parsed and admitted twice under two
+/// identities.
+export fn embed_resolved(base: string, rel: string) -> string {
+    normalized(if rel.starts_with("/") { rel } else { joined_path(base, rel) })
+}
+
 /// A const's initializer run to its compiler-owned value tree.
 /// Refused BEFORE running when any body reaches the world, DURING
 /// it when the budget runs out or a body traps, and AFTER it when
@@ -839,10 +850,7 @@ impl Machine {
                 )
             return Val.S("")
         }
-        // NORMALIZED: an unfolded `..` names the same file under a second
-        // spelling, minting it a second FileId — the same file parsed and
-        // admitted twice under two identities.
-        let path = normalized(if rel.starts_with("/") { rel } else { joined_path(self.base!, rel) })
+        let path = embed_resolved(self.base!, rel)
         if avra_selfhost_file_exists(path) == 0 {
             self.trapped("`embed` finds no `${rel}` beside the source")
             return Val.S("")
