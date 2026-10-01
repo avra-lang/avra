@@ -1,7 +1,8 @@
-# The merge queue's check: each train's combined commit, built once, then
-# every affected package's suite on its own runner at once. `test` is the
-# one required check. The machine is .github/ci/Dockerfile's image; a train
-# is at most ten entries over its base, so twenty commits of history reach it.
+# The merge queue's check: each train's combined commit, built once, then the
+# affected packages' suites in four jobs at once, so trains fit the free
+# runners. `test` is the one required check. The machine is
+# .github/ci/Dockerfile's image; a train is at most ten entries over its base,
+# so twenty commits of history reach it.
 # A PR's own run only admits it to the queue (its branch was tested by
 # `work test`); the train is what gets built and tested. On main, only the
 # compiler job runs: a cache made there is the one every PR and train reads.
@@ -41,7 +42,7 @@ jobs:
         run: |
           base=${{ github.event.merge_group.base_sha || 'HEAD^1' }}
           sh tools/affected_packages.sh "$base" HEAD "$PWD" 2>/dev/null \
-            | python3 -c 'import json,sys; print("packages=" + json.dumps([l.strip() for l in sys.stdin if l.strip()]))' \
+            | python3 -c 'import json,sys; ps=[l.strip() for l in sys.stdin if l.strip()]; print("packages=" + json.dumps([" ".join(ps[i::4]) for i in range(min(4, len(ps)))]))' \
             >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v4
         id: cache
@@ -93,7 +94,7 @@ jobs:
       fail-fast: false
       matrix:
         package: ${{ fromJSON(needs.compiler.outputs.packages) }}
-    name: suite (${{ matrix.package }})
+    name: suites (${{ matrix.package }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache/restore@v4
@@ -102,7 +103,14 @@ jobs:
           key: ${{ needs.compiler.outputs.key }}
           fail-on-cache-miss: true
       - run: make -s -o avra objects libs
-      - run: build/avra test packages/${{ matrix.package }}
+      - run: |
+          fail=0
+          for p in ${{ matrix.package }}; do
+            echo "::group::$p"
+            build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
+            echo "::endgroup::"
+          done
+          exit $fail
 
   test:
     needs: [compiler, lint, suite]
