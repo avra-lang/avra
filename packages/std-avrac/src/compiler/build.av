@@ -32,8 +32,9 @@ use compiler.backend.{
 }
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.store.{Store, Stored, node_key, store_at}
-use compiler.host.{Host, no_target}
+use compiler.host.{Host, no_target, read_manifest}
 use @std.errors.{Error, ErrorInfo, info}
+use diagnostics.{new_source_file}
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 
 /// A BUILD'S OWN DEFECT: what the compiler itself could not do to turn an
@@ -403,21 +404,55 @@ impl Workspace {
     /// binary is this generation's object code and a kept `Warn` row is this
     /// generation's diagnostic wording, so both are keyed by the compiler
     /// that made them, not only by the store root they happen to sit under.
+    /// EVERY REACHED PACKAGE'S OWN OBJECTS JOIN LAST: a package's `.av`
+    /// files name its C externs, never their bodies, so a C-only edit moves
+    /// no `.av` digest — the object's own bytes are the only witness a
+    /// kept binary that linked them is still the one these bytes would
+    /// produce.
     fn program_key(named: string, beside: List<string>) -> string {
         let named_inputs = self.build_inputs(named).concat(beside)
         let inputs = joined([self.input_line(f) for f in named_inputs], "\n")
+        let objects = joined([self.object_line(o) for o in self.reached_objects(named)], "\n")
         digest_key(
             digest_text(
                 digest_text(
-                    digest_text(new_digest(), self.compiler_id()),
-                    relative_path(self.root, named),
+                    digest_text(
+                        digest_text(new_digest(), self.compiler_id()),
+                        relative_path(self.root, named),
+                    ),
+                    inputs,
                 ),
-                inputs,
+                objects,
             ),
         )
     }
 
     fn input_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.text_digest(path)}" }
+
+    /// Every object every reached package's manifest names — a C-only edit
+    /// moves this list's digests though it moves no `.av` file's. Read over
+    /// `closure(named)`, never `packages()`: this runs BEFORE the program is
+    /// analysed, where nothing has admitted a package yet — `closure` is
+    /// what already survives that (its own remembered half), `packages()`
+    /// here would answer empty every first ask.
+    fn reached_objects(named: string) -> List<string> {
+        let roots = [at[1] for at in [line.split("\t") for line in self.closure(named)] if at.length > 1]
+        distinct(flatten([self.manifest_objects(root) for root in roots]))
+    }
+
+    /// A root's own manifest, read fresh and not through `manifest(i)`'s
+    /// ordinal — a closure root has no ordinal before analysis admits it.
+    fn manifest_objects(root: string) -> List<string> {
+        let path = joined_path(root, "avra.toml")
+        if !self.host.exists(path) { return [] }
+        let m = read_manifest(new_source_file(path, self.host.read(path)))
+        [joined_path(root, o) for o in filled_words(m.objects)]
+    }
+
+    /// An object's path paired with its CURRENT bytes' digest, read fresh —
+    /// `digest_of_binary`, never `text_digest`: an object is bytes, not text,
+    /// and nothing here keeps a memo across the one key this answers.
+    fn object_line(path: string) -> string { "${relative_path(self.root, path)}\t${digest_of_binary(path) ?? "-"}" }
 
     /// A file's bytes as one digest, memoized in memory for the build — always
     /// read and hashed fresh. A DURABLE STAMP-KEYED SHORTCUT STOOD HERE ONCE,
