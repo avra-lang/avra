@@ -1,0 +1,41 @@
+//! C8: group 1M ints by their remainder mod 1000, keyed by text.
+//! Today, two spellings: a map from key to a slot in a list of groups
+//! (C8), and a map of lists rebuilt with `concat` (C8m). Target:
+//! `xs.group_by(it % 1000)`.
+use @bench.input.{SEED, fold_all, folded, ints, report}
+use @std.time.{now_ns}
+
+/// Every group in key order, folded into one checksum.
+fn fold_groups(group: fn(string) -> List<int>) -> int {
+    mut h = 0
+    // LICENSED loops.push_loop: a checksum fold, it builds no list
+    for k in 0..1000 { h = folded(h, fold_all(group("${k}"))) }
+    h
+}
+
+let xs = ints(SEED, 1000000, 1048576)
+
+let t0 = now_ns()
+mut slot: Map<string, int> = {}
+mut groups: List<List<int>> = []
+for x in xs {
+    let k = "${x % 1000}"
+    match slot.get(k) {
+        i? -> groups[i].push(x)
+        null -> {
+            slot.set(k, groups.length)
+            groups.push([x])
+        }
+    }
+}
+let t1 = now_ns()
+report("C8", fold_groups((k) -> groups[slot.get(k) ?? 0]), t0, t1)
+
+let t2 = now_ns()
+mut m: Map<string, List<int>> = {}
+for x in xs {
+    let k = "${x % 1000}"
+    m.set(k, (m.get(k) ?? []).concat([x]))
+}
+let t3 = now_ns()
+report("C8m", fold_groups((k) -> m.get(k) ?? []), t2, t3)

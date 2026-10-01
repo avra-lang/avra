@@ -1,0 +1,21 @@
+//! C10: 100k adversarial text keys into a fresh map — keys sharing a
+//! prefix that ends in a NUL (C10n), and keys whose FNV-1a hashes share
+//! their low 18 bits (C10f). Read per key against C9i.
+//! Today: `Map.set`. Target: unchanged.
+use @bench.input.{fnv_colliding, fold_bytes, folded, report}
+use @std.text.{from_codepoint}
+use @std.time.{now_ns}
+
+/// Every key into a fresh map, timed, reported as `row`.
+fn insert_row(row: string, keys: List<string>) {
+    let t0 = now_ns()
+    mut m: Map<string, int> = {}
+    // LICENSED loops.push_loop: a timed loop writes a map, it builds no list
+    for i, k in keys { m.set(k, i) }
+    let t1 = now_ns()
+    report(row, folded(m.length, fold_bytes(keys)), t0, t1)
+}
+
+let prefix = "k" + from_codepoint(0)
+insert_row("C10n", [prefix + "${i}" for i in 0..100000])
+insert_row("C10f", fnv_colliding(10, 5))

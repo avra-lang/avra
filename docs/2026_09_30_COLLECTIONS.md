@@ -564,6 +564,61 @@ interleaved, median of 5, `make bench-collections` prints the table.
 Also held: `make census` counts on `check packages/cli` before and
 after each slice (same source, CLAUDE.md), and `AVRA_MEM_STATS` peak.
 
+#### 3.8.1 Baseline
+
+`make bench-collections` at `d249615` (main `755a1fc` plus the
+harness), Sprite `avra-comptime` (8 cores, x86_64, load 2.8 after the
+runs), rustc 1.90 `-C target-cpu=native`, LTO. Median of 5, Avra and
+Rust interleaved; seconds are the timed kernel only, input built
+before the clock. Sizes are §3.8's, none reduced.
+
+| id | workload | Avra s | Rust s | ratio | target | verdict |
+|---|---|---:|---:|---:|---|---|
+| C1 | `filter(p).map(f).sum()`, 10M ints | 0.0879 | 0.0127 | 6.94x | ≤1.2x | over |
+| C2 | `map(f)` to a list, 10M ints, source kept | 0.103 | 0.0381 | 2.71x | ≤1.3x | over |
+| C3 | `map(f)` to a list, 10M ints, source dying | 0.0747 | 0.00813 | 9.18x | ≤1.2x | over |
+| C4 | `flat_map`, 1M ints × 4 | 0.0537 | 0.0144 | 3.74x | ≤1.5x | over |
+| C5r | `sorted()`, 1M ints, random | 0.677 | 0.0221 | 30.64x | ≤1.3x | over |
+| C5s | `sorted()`, 1M ints, sorted | 0.483 | 0.000856 | 564.17x | ≤1.3x | over |
+| C5v | `sorted()`, 1M ints, reversed | 0.479 | 0.00089 | 538.35x | ≤1.3x | over |
+| C5u | `sorted()`, 1M ints, 16 values | 0.57 | 0.00467 | 122.03x | ≤1.3x | over |
+| C6 | `sorted()`, 200k strings | 0.363 | 0.0368 | 9.86x | ≤1.5x | over |
+| C7 | `sorted_by(it.key)`, 500k records | 1.05 | 0.029 | 36.19x | ≤1.5x | over |
+| C8 | `group_by`, 1M ints to 1k keys: key to slot | 0.0827 | 0.0482 | 1.71x | ≤1.5x | over |
+| C8m | `group_by`, 1M ints to 1k keys: map of lists, `concat` | 2.7 | 0.0482 | 56.07x | ≤1.5x | over |
+| C9 | map, 1M inserts + 1M hits + 1M misses | 0.355 | 0.357 | 0.99x | ≤1.5x | met |
+| C9i | map, 1M inserts alone | 0.192 | 0.261 | 0.73x | — | reference |
+| C10n | map, 100k inserts sharing a NUL prefix | 0.013 | 0.00787 | 1.65x | ≤2x C9i per key | met (0.68x) |
+| C10f | map, 100k inserts colliding under FNV-1a | 0.0118 | 0.00878 | 1.35x | ≤2x C9i per key | met (0.62x) |
+| C11 | `join`, 1M strings | 0.043 | 0.011 | 3.91x | ≤1.2x | over |
+| C12l | `(0..n).find(p)`, early hit, ×10, n = 10M: loop | 3.9e-06 | 4.09e-06 | 0.95x | constant | constant (10M/1M 1.0x) |
+| C12c | `(0..n).find(p)`, early hit, ×10, n = 10M: comprehension | 0.856 | 3.94e-06 | 217045x | constant | linear (10M/1M 19.4x) |
+
+What each row spells today (each program's header names its target):
+
+- C1: a comprehension, then a `for` sum. C2/C3: a comprehension; C3's
+  source dies at it. C4: a nested comprehension over a list literal.
+- C5–C7: core's `sorted_by` (a stable merge sort over `slice`s) with a
+  comparator, imported from `@std.avrac.core`; C6 compares with core's
+  `text_before`. The Rust twins: `sort_unstable`, `sort`, `sort_by_key`.
+  No sort is cheaper on sorted or reversed input today (C5s/C5v).
+- C8: the fastest spelling found, a `Map<string, int>` to a slot in a
+  `List<List<int>>`; C8m is the obvious one, `m.set(k, (m.get(k) ??
+  []).concat([x]))`, which copies every group on every insert. Keys are
+  text (`Map<int, …>` is refused). Rust has one spelling, so C8m's Rust
+  time is C8's.
+- C9: Rust is `foldhash` over borrowed `&str` keys, no pre-size; it
+  re-reads key text when the table grows, where Avra's index word
+  keeps the hash.
+- C10: the keyed hash (#53) makes both adversarial sets ordinary, so
+  both run cheaper per key than C9i — a 100k map fits cache better than
+  a 1M one. The FNV-1a set (10 four-byte blocks per stage, 5 stages)
+  shares its low 18 bits under the old unkeyed hash; the Rust twin
+  asserts that.
+- C12: a range takes no methods, so the idiom bar's scan is a
+  comprehension (C12c), which builds the whole list; C12l is a loop
+  with an early `return`.
+
 ### 3.9 Migration
 
 Every old spelling becomes a `rule` in `features/lists/idioms.av`
