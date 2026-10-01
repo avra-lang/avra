@@ -120,15 +120,35 @@ HTTP/2 except HTTP/2's own client.
   soak flat.
 - One doc set: this roadmap, the framing laws, the typed-routes design.
 
-## The other HTTP documents
+## The HTTP doc set
 
-- `docs/2026_09_06_HTTP_FRAMING_LAWS.md` — law; stays. §5 is the HTTP/2
-  section (H4): framing, streams and their caps, SETTINGS, flow control,
-  churn/rapid reset, HPACK, and rows H1–H30, each with its RFC 9113/7541
-  section and a named fixture. §7 is the server hardening reference.
-- `docs/2026_09_06_STD_HTTP_TYPED_ROUTES.md` — design; stays.
-- `docs/2026_09_06_STD_HTTP_DESIGN.md` — the original design; its
-  "current source inspected" section is historical.
+Three documents are the source of truth; everything else below is
+marked for what it is — design, checklist, or history.
+
+- **This roadmap** — the plan and the ledger of what landed.
+- `docs/2026_09_06_HTTP_FRAMING_LAWS.md` — law. §1–§4 the HTTP/1.1
+  framer and its attack table; §5 the HTTP/2 section (H4): framing,
+  streams and their caps, SETTINGS, flow control, churn/rapid reset,
+  HPACK, and rows H1–H30, each with its RFC 9113/7541 section and a
+  named fixture; §6 streamed bodies; §7 the server hardening reference.
+- `docs/2026_09_06_STD_HTTP_TYPED_ROUTES.md` — the design for H10, the
+  one HTTP document that is still a design rather than law.
+
+Marked, not folded:
+
+- `docs/2026_09_06_STD_HTTP_DESIGN.md` — the original design, on a
+  discovery base of `85e6344`; the API it proposes is not the one that
+  landed, and its "current source inspected" section is historical.
+- `docs/2026_09_29_HTTP_CONFORMANCE.md` — the RFC 9110/9112/9113 MUST
+  checklist, each MUST with the fixture that pins it or the ticket that
+  owns the gap; H8 keeps it current.
+- `docs/2026_09_30_HTTP_ROUTES_DX.md` — the DX design under H10, not
+  scheduled.
+- `docs/2026_10_01_HTTP_TOUR.md` — the user-facing tour; every snippet
+  is a program test under `packages/`.
+- `packages/std-http/README.md`, `packages/std-net/README.md`,
+  `packages/std-tls/README.md`, `packages/std-url/README.md` — the
+  per-package surfaces.
 - `docs/HTTP_WORKING.md` — the campaign ledger (1932 lines), closed
   2026-09-08; history, not a plan.
 - `docs/2026_09_22_FIBERS_DESIGN.md` §10–13, `docs/2026_09_23_REUSE_IN_PLACE.md`

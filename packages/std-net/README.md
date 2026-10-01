@@ -29,9 +29,16 @@ All of it is in `src/net.av`, imported as `@std.net`.
 | `Event` | One readiness report: `fd`, `readable`, `writable`, `hangup`, `failed`. |
 | `Interest` | What a poller watches for: `Read`, `Write`, `Both`, `None`. |
 | `Read` | What `try_read` found: `Data(b)`, `Eof`, `Pending`. |
-| `Address` | A resolved address: `family` (`V4`, `V6`) and its canonical `text`. |
+| `Address` | A resolved address: `family` and its canonical `text`. |
+| `Family` | An address's family: `V4` or `V6`. |
+| `Unresolved` | Why a name resolved to no address: `NoSuchName`, `NoAddress`, `TryAgain`, `Failed`. |
+| `Resolver`, `resolver_for(ttl)` | Names remembered for a ttl; a failure is never remembered. `connect` shares the process's own. |
+| `Resolved` | A remembered answer and the clock reading it stands until. |
+| `resolve(host, timeout)` | The addresses a name has, from the process's resolver. |
+| `interleaved(xs)` | Addresses in RFC 8305's order: the families alternate, the resolver's first family first. |
 | `Admission` | Which resolved addresses a connect may dial: `Anywhere`, `Public`, or `Where(admits)`. |
 | `public(a)` | Whether the public internet routes to `a`; any non-canonical spelling is refused. |
+| `entropy32()` | 32 bits from the system's entropy, or null. |
 | `Bell`, `bell()` | A doorbell tasks park on: `bell()` opens one its owner holds until `close`; `Bell {}` opens with its first waiter and closes behind its last. |
 | `listen(host, port)` | A listener on one named interface. Port 0 is the kernel's choice. |
 | `listen_all(port)` | A listener on every interface. |
@@ -64,6 +71,8 @@ Methods:
 | `Bell.rings()` | How many times it has rung. |
 | `Bell.waited_since(seen, timeout)` | `waited`, unless it has rung since `seen` rings — then at once. |
 | `Bell.close()` | Closes its pipe and lets go of it; a parked task wakes. |
+| `Resolver.resolve(host, timeout)` | The addresses `host` names: remembered while fresh, else looked up with the calling task parked. |
+| `Resolver.connect(host, port, timeout, admission)` | A connection to `host` through this resolver's cache. |
 
 ## Laws
 
