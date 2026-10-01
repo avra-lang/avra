@@ -1118,8 +1118,8 @@ registry is the idiom engine's spec, written by dogfooding.
   hole when emitted, and the closer never passes through it. Line
   comments inside a raw body are the generated program's — a `}` in
   one ends nothing.
-- A NAME-KEYED TABLE CROSSES MODULES. `impls_by_name` files every
-  `impl` under its NAME, so asking `@std.meta.Code`'s methods signed
+- A NAME-KEYED TABLE CROSSES MODULES. `impls_named` answers every
+  `impl` filed under a NAME (the Decl relation's name bucket), so asking `@std.meta.Code`'s methods signed
   the compiler's own `impl Code` and dragged `features` into a
   derive's resolve. A consumer of such a table filters by what the
   impl's FILE can name (`aims_at`: `visible(file).types`), which
@@ -1970,7 +1970,8 @@ Runtime facts, ours to ratify:
   every `Memo.ask` (family, arg, reuse/compute/cycle) and
   `Memo.settle` (family, arg, fingerprint) in query/memo.av, every
   `Binder.declare` (name, file) in features/namespace.av, every
-  failed `named_type` lookup in compiler/typing/declare.av — behind
+  failed `named_type` lookup in compiler/typing/declare.av, every
+  file a check PARSES (`Q parse <path>`, compiler/program.av) — behind
   `avra_qtrace` (runtime/avra_runtime.c), inert without the flag.
   Run both binaries on the SAME input with `AVRA_QTRACE=1`, confirm
   each is deterministic against itself (diff two runs of the same
