@@ -1018,6 +1018,16 @@ fn seat_declared(of: Analysed, at: At, i: int) -> Ty? {
 /// to nothing, its own uses invisible to `Code`'s whole vocabulary
 /// (`is_unwritten_mut()` among them).
 export fn enclosing_decl(view: FileView, at: At) -> DeclId? {
+    match at {
+        .Expr(e) -> view.decls.expr_owner(view.file, e) ?? enclosing_decl_scanned(view, at),
+        rest -> enclosing_decl_scanned(view, at),
+    }
+}
+
+/// `enclosing_decl`'s own fallback: the linear innermost-span rescan,
+/// for every `At` shape `expr_owner`'s column does not cover (a held
+/// file `range_bodies` never ran over, or a Stmt/Pat/Field/Param).
+fn enclosing_decl_scanned(view: FileView, at: At) -> DeclId? {
     let sp? = view.store.span_at(at) else { return null }
     view.decls.innermost(view.owner_spans(), sp) ?? view.decls.main_of(view.file)
 }

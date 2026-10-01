@@ -3,7 +3,7 @@
 // `binding`, `declared`, `pure`, `answering`/`is_registry`, `text`,
 // `kids`, `name`, and `Ty`'s own projections.
 use @std.avrac.compiler.{analyze_source, Analysis}
-use @std.avrac.features.{Code}
+use @std.avrac.features.{Code, enclosing_decl}
 use @std.avrac.core.{At, ExprId, flatten}
 
 /// The last statement's own expression — every subject here is a
@@ -179,6 +179,26 @@ spec "features/code — the analysed handle" {
             )
             let ks = c.kids()
             ks.length == 2 && ks[0].text() == "pick(1)" && ks[1].text() == "2"
+        }
+    }
+    given "enclosing_decl() over a nested declaration" {
+        then "a nested fn owns no range of its own — a node inside it still names the enclosing decl" {
+            let a = analyze_source(
+                "fn outer() -> int {\n    fn nested() -> int { 420 }\n    nested() + 7\n}\nouter()",
+            )
+            let inside_nested = find_text(a, "420")
+            let inside_outer = find_text(a, "7")
+            let nested_owner? = enclosing_decl(a.view, inside_nested.at) else { return false }
+            let outer_owner? = enclosing_decl(a.view, inside_outer.at) else { return false }
+            nested_owner == outer_owner
+        }
+        then "two SIBLING top-level fns each own only their own range" {
+            let a = analyze_source("fn a() -> int { 111 }\nfn b() -> int { 222 }\na() + b()")
+            let inside_a = find_text(a, "111")
+            let inside_b = find_text(a, "222")
+            let a_owner? = enclosing_decl(a.view, inside_a.at) else { return false }
+            let b_owner? = enclosing_decl(a.view, inside_b.at) else { return false }
+            a_owner != b_owner
         }
     }
 }

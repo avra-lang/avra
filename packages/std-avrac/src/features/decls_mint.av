@@ -44,6 +44,9 @@ impl Decls {
             self.stores.push(null)
             self.decl_ids.push(Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
             self.file_owners.push(self.decl_rows.get().owner_named("file ${id.index}"))
+            self
+                .expr_owners
+                .push(Cell.new(side_table<DeclAt>("expr_owners", 0, 0, DeclAt { decl: null })))
             self.generations.push([])
             self.origins.push(no_origins())
             let no_voices: List<Diag> = []
@@ -289,6 +292,7 @@ impl Decls {
         // range is the empty 0..0
         mut lo: List<int> = filled(self.decl_count(), 0 - 1)
         mut hi: List<int> = filled(self.decl_count(), 0)
+        mut exprs = side_table<DeclAt>("expr_owners", 0, store.exprs.count(), DeclAt { decl: null })
         // A SYNTHESIZED NODE HAS NO SPAN, AND A RANGE THAT SKIPS IT
         // STOPS SHORT OF IT. A desugaring is minted where it is used,
         // so source order is ownership order: a span-less expression
@@ -310,11 +314,13 @@ impl Decls {
             if sp != null { owner = self.innermost(owners, sp!) ?? main }
             if lo[owner.index] < 0 { lo.set(owner.index, i) }
             hi.set(owner.index, i + 1)
+            exprs.set(i, DeclAt { decl: owner })
         }
         for d in [o.d for o in owners].concat([main]) {
             let i = d.index
             self.set_decl(i, self.decl(d) with { lo: started_at(lo[i]), hi: hi[i] })
         }
+        self.expr_owners.set_at(f.index, Cell.new(exprs))
     }
 
     /// This file's declarations, every kind, in id order — the order a
