@@ -18,12 +18,9 @@
 //!
 //! A pack from another compiler, or another format version, is never
 //! read — it answers as empty, and the next write starts a fresh log
-//! over it. The whole file is read through `@std/io`'s `read_bytes`
-//! (chunked straight into `Bytes` — `drained`'s own doc), never
-//! word-at-a-time into a `List<int>`: that shape spends one 8-byte
-//! `int` PER BYTE, an 8x-16x blowup measured turning a leaf-edit
-//! recheck's pack read into 2.3 GB of the run's 2.9 GB peak
-//! (avra-8sb5.57.55's OOM).
+//! over it. The whole file is read through `@std/io`'s `read_bytes`,
+//! straight into `Bytes` — never word-at-a-time into a `List<int>`,
+//! which spends one 8-byte `int` per byte.
 use core.{list_cell}
 use @std.io.{read_bytes, write_bytes, truncate_to, AppendFile, opened_for_append}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, stable_hasher, written_list}
@@ -630,14 +627,8 @@ impl Pack {
 }
 
 /// The bytes a slot's CURRENT on-disk form would free if it dies —
-/// `OnDisk`'s own length, or `Loaded`'s length AS RECORDED AT
-/// MATERIALIZATION, never re-derived: re-deriving it from a `Loaded`
-/// entry means resolving every edge's name back to an id through
-/// `map_find`, the same cost `interned` already paid once to mint
-/// them. `put`'s dead-byte accounting hit exactly this — a file's
-/// witness read once for `reused_check`'s validation, materializing
-/// its slot, then overwritten by the recompute `put` that follows,
-/// paying a full re-encode just to measure a length it already knew.
+/// `OnDisk`'s own length, or `Loaded`'s length as recorded when it was
+/// decoded, never re-derived by re-encoding the entry.
 fn dead_frame_len(slot: Slot) -> int {
     match slot { .OnDisk(body) -> framed_len(entry_tag(), body), .Loaded(_, len) -> len }
 }

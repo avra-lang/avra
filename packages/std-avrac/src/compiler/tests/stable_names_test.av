@@ -1,0 +1,118 @@
+// A query's stable name is the same in every process, and re-asking it answers the
+// subject's hash as it stands now — or nothing, when the subject is gone.
+// `a_process_over`, `package_files` and the ordinals are workspace_fixtures.av's own.
+use compiler.{Workspace, name_parts}
+use query.{Key}
+use features.{Decl}
+
+/// Two files each declaring `f`, in either admission order.
+fn twin_files() -> Map<string, string> {
+    {
+        "/w/src/a.av": "export fn f() -> int {\n    1\n}\n",
+        "/w/src/b.av": "export fn f() -> int {\n    2\n}\n",
+    }
+}
+
+/// The family word a key's stable name carries.
+fn family_named(ws: Workspace, family: int, arg: int) -> string {
+    name_parts(ws.stable_key_name(Key { family: family, arg: arg }))?.family ?? ""
+}
+
+/// A key's stable name, re-asked in the process that named it.
+fn reasked(ws: Workspace, family: int, arg: int) -> int? { ws.edge_current_hash(ws.stable_key_name(Key { family: family, arg: arg })) }
+
+/// A type and its impl, one name in one file.
+fn type_and_impl() -> Map<string, string> {
+    {
+        "/w/src/x.av": "export type T = { v: int }\nimpl T {\n    fn show() -> int {\n        1\n    }\n}\n",
+    }
+}
+
+spec "compiler/stable_names — the ordinals the fixtures use" {
+    then "each names the family it means" {
+        let ws = a_process_over(package_files(), package_names())
+        let f = decl_in_file(ws, "/w/src/a.av", "f").index
+        family_named(ws, parsed_ordinal(), ws.file_id("/w/src/a.av").index) == "Parsed" &&
+            family_named(ws, manifest_ordinal(), 0) == "Manifest" &&
+            family_named(ws, namespace_ordinal(), 0) == "Namespace" &&
+            family_named(ws, sig_ordinal(), f) == "Sig" &&
+            family_named(ws, methods_ordinal(), f) == "Methods"
+    }
+}
+
+spec "compiler/stable_names — a name does not depend on admission order" {
+    then "the same name in two files keeps each file's own name, whichever file was admitted first" {
+        let ab = a_process_over(twin_files(), ["/w/src/a.av", "/w/src/b.av"])
+        let ba = a_process_over(twin_files(), ["/w/src/b.av", "/w/src/a.av"])
+        let a_in_ab = ab.decls.stable_decl_name(decl_in_file(ab, "/w/src/a.av", "f"))
+        let b_in_ab = ab.decls.stable_decl_name(decl_in_file(ab, "/w/src/b.av", "f"))
+        let a_in_ba = ba.decls.stable_decl_name(decl_in_file(ba, "/w/src/a.av", "f"))
+        let b_in_ba = ba.decls.stable_decl_name(decl_in_file(ba, "/w/src/b.av", "f"))
+        a_in_ab == a_in_ba && b_in_ab == b_in_ba && a_in_ab != b_in_ab
+    }
+    then "a type and its impl, one name in one file, keep two names" {
+        let ws = a_process_over(type_and_impl(), ["/w/src/x.av"])
+        let named = [d for d in ws.decls.all_decls() if d.name == "T" && ws.decls.file(d.file).path == "/w/src/x.av"]
+        named.length == 2 &&
+            ws.decls.stable_decl_name(named[0].id) != ws.decls.stable_decl_name(named[1].id)
+    }
+    then "a builtin's name is the same though the first file admitted differs" {
+        let ab = a_process_over(twin_files(), ["/w/src/a.av", "/w/src/b.av"])
+        let ba = a_process_over(twin_files(), ["/w/src/b.av", "/w/src/a.av"])
+        let list_in_ab = ab
+            .decls
+            .stable_decl_name([d.id for d in ab.decls.all_decls() if d.name == "List"][0])
+        let list_in_ba = ba
+            .decls
+            .stable_decl_name([d.id for d in ba.decls.all_decls() if d.name == "List"][0])
+        list_in_ab == list_in_ba
+    }
+}
+
+spec "compiler/stable_names — a name re-asked answers its subject now" {
+    then "every declaration of a file answers its Sig, the type and the impl included" {
+        let ws = a_process_over(type_and_impl(), ["/w/src/x.av"])
+        let own = [d for d in ws.decls.all_decls() if ws.decls.file(d.file).path == "/w/src/x.av" && (d.name == "T" || d.name == "show")]
+        own.length == 3 && own.all((d: Decl) -> reasked(ws, sig_ordinal(), d.id.index) != null)
+    }
+    then "the root module's Namespace, whose name is empty, answers a hash" {
+        let ws = a_process_over(package_files(), package_names())
+        reasked(ws, namespace_ordinal(), ws.decls.module_id("").index) != null
+    }
+    then "a file the host never had answers nothing, not the empty program's hash" {
+        let ws = a_process_over(package_files(), package_names())
+        reasked(ws, parsed_ordinal(), ws.file_id("/w/src/gone.av").index) == null
+    }
+    then "an emptied file still answers a hash of its own" {
+        let empty: Map<string, string> = {"/w/src/e.av": ""}
+        let ws = a_process_over(empty, ["/w/src/e.av"])
+        reasked(ws, parsed_ordinal(), ws.file_id("/w/src/e.av").index) != null
+    }
+    then "a removed declaration's Sig answers nothing in the next process" {
+        let before: Map<string, string> = {
+            "/w/src/a.av": "export fn f() -> int {\n    1\n}\nexport fn k() -> int {\n    3\n}\n",
+        }
+        let after: Map<string, string> = {"/w/src/a.av": "export fn k() -> int {\n    3\n}\n"}
+        let first = a_process_over(before, ["/w/src/a.av"])
+        let name = first
+            .stable_key_name(Key { family: sig_ordinal(), arg: decl_in_file(first, "/w/src/a.av", "f").index })
+        let second = a_process_over(after, ["/w/src/a.av"])
+        first.edge_current_hash(name) != null && second.edge_current_hash(name) == null
+    }
+    then "a removed type's Methods answers nothing in the next process" {
+        let t = "export type T = { v: int }\n"
+        let z = "export fn h() -> int {\n    2\n}\n"
+        let before: Map<string, string> = {"/w/src/other/z.av": z, "/w/src/t.av": t}
+        let after: Map<string, string> = {"/w/src/other/z.av": z}
+        let first = a_process_over(before, ["/w/src/other/z.av", "/w/src/t.av"])
+        let name = first
+            .stable_key_name(
+                Key {
+                    family: methods_ordinal(),
+                    arg: decl_in_file(first, "/w/src/t.av", "T").index,
+                },
+            )
+        let second = a_process_over(after, ["/w/src/other/z.av"])
+        first.edge_current_hash(name) != null && second.edge_current_hash(name) == null
+    }
+}

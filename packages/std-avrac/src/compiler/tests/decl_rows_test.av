@@ -2,8 +2,8 @@
 // rows — name, kind, owner, visibility, parse facts — so a body, a comment or a reindent
 // moves nothing, and a rename, a kind change, a moved annotation or a new declaration moves
 // it. A reader of a foreign declaration records that cell; the file's own minter, which
-// reads its rows while they are made, never records itself. `witness_fixtures.av`'s
-// `a_process_over`, `fresh_pack_path` and `decl_in_file` are the neighbouring files' own.
+// reads its rows while they are made, never records itself. `a_process_over`, `checked`
+// and `decl_in_file` are workspace_fixtures.av's own.
 use query.{Key}
 use compiler.{Workspace}
 
@@ -12,9 +12,9 @@ fn items_ordinal() -> int { 2 }
 fn typed_ordinal() -> int { 8 }
 
 /// `b`'s `Items` cell as it settles over `text`, the only file that varies.
-fn items_hash(text: string, tag: string) -> int? {
+fn items_hash(text: string) -> int? {
     let files: Map<string, string> = {"/w/src/b.av": text}
-    let ws = a_process_over(files, ["/w/src/b.av"], fresh_pack_path("rows_${tag}"))
+    let ws = a_process_over(files, ["/w/src/b.av"])
     let b = ws.file_id("/w/src/b.av")
     let _ = ws.items(b)
     ws.db.value_hash_of(Key { family: items_ordinal(), arg: b.index })
@@ -25,56 +25,54 @@ fn base_b() -> string {
 }
 
 /// `text` is the same row set as `base_b`.
-fn same_rows(text: string, tag: string) -> bool {
-    let before = items_hash(base_b(), "base_${tag}")
-    before != null && before == items_hash(text, tag)
+fn same_rows(text: string) -> bool {
+    let before = items_hash(base_b())
+    before != null && before == items_hash(text)
 }
 
 /// `text` is another row set.
-fn other_rows(text: string, tag: string) -> bool {
-    let before = items_hash(base_b(), "base_${tag}")
-    let after = items_hash(text, tag)
+fn other_rows(text: string) -> bool {
+    let before = items_hash(base_b())
+    let after = items_hash(text)
     before != null && after != null && before != after
 }
 
 spec "compiler/rows — a file's items hash the stable rows" {
     then "fixture: the rows settle a hash" {
-        items_hash(base_b(), "fixture") != null
+        items_hash(base_b()) != null
     }
     then "a body edit moves nothing" {
-        same_rows(base_b().replace("n + 1", "n + 2"), "body")
+        same_rows(base_b().replace("n + 1", "n + 2"))
     }
     then "a comment moves nothing" {
-        same_rows("// what helper does\n${base_b()}", "comment")
+        same_rows("// what helper does\n${base_b()}")
     }
     then "blank lines move nothing" {
-        same_rows("\n\n${base_b()}", "blank")
+        same_rows("\n\n${base_b()}")
     }
     then "a signature's TYPE moves nothing: the signature is Sig's" {
         same_rows(
             base_b().replace("(n: int) -> int", "(n: int) -> string").replace("n + 1", "\"s\""),
-            "sigtype",
         )
     }
     then "a rename moves it" {
-        other_rows(base_b().replace("helper", "helper2"), "rename")
+        other_rows(base_b().replace("helper", "helper2"))
     }
     then "visibility moves it" {
-        other_rows(base_b().replace("export fn helper", "fn helper"), "visible")
+        other_rows(base_b().replace("export fn helper", "fn helper"))
     }
     then "a kind change moves it" {
         other_rows(
             base_b()
                 .replace("export type Box = { v: int }", "export enum Box {\n    A\n}")
                 .replace("self.v", "1"),
-            "kind",
         )
     }
     then "a new declaration moves it" {
-        other_rows("${base_b()}export fn extra() -> int {\n    3\n}\n", "added")
+        other_rows("${base_b()}export fn extra() -> int {\n    3\n}\n")
     }
     then "a parameter NAME moves it: the seats are a fact of the row" {
-        other_rows(base_b().replace("(n: int)", "(m: int)").replace("n + 1", "m + 1"), "seatname")
+        other_rows(base_b().replace("(n: int)", "(m: int)").replace("n + 1", "m + 1"))
     }
     then "swapping two methods between two impls moves it" {
         other_rows(
@@ -82,7 +80,6 @@ spec "compiler/rows — a file's items hash the stable rows" {
                 .replace("fn get()", "fn tmp()")
                 .replace("fn peek()", "fn get()")
                 .replace("fn tmp()", "fn peek()"),
-            "owner",
         )
     }
     then "declaration order moves it" {
@@ -92,11 +89,10 @@ spec "compiler/rows — a file's items hash the stable rows" {
                     "export type Box = { v: int }\nexport type Other = { w: int }\n",
                     "export type Other = { w: int }\nexport type Box = { v: int }\n",
                 ),
-            "order",
         )
     }
     then "a `///` doc line moves it" {
-        other_rows(base_b().replace("export fn helper", "/// adds one\nexport fn helper"), "doc")
+        other_rows(base_b().replace("export fn helper", "/// adds one\nexport fn helper"))
     }
 }
 
@@ -114,14 +110,14 @@ fn reads_items(ws: Workspace, frame: Key, file: string) -> bool {
 spec "compiler/rows — a foreign read records the file's items" {
     then "a caller's typing lists its callee file's Items, and not a file it never reads" {
         let names = ["/w/src/a.av", "/w/src/b.av"]
-        let ws = a_process_over(caller_files(), names, fresh_pack_path("rows_read"))
+        let ws = a_process_over(caller_files(), names)
         let _ = checked(ws, "/w/src/a.av")
         let g = decl_in_file(ws, "/w/src/a.av", "g")
         reads_items(ws, Key { family: typed_ordinal(), arg: g.index }, "/w/src/b.av")
     }
     then "no file's Items lists itself" {
         let names = ["/w/src/a.av", "/w/src/b.av"]
-        let ws = a_process_over(caller_files(), names, fresh_pack_path("rows_self"))
+        let ws = a_process_over(caller_files(), names)
         let _ = checked(ws, "/w/src/a.av")
         let a = ws.file_id("/w/src/a.av")
         let b = ws.file_id("/w/src/b.av")
