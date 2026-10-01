@@ -1,0 +1,89 @@
+// The consumes pass infers a seat CONSUMED only when every path to an
+// answer keeps it whole; a keep on some paths leaves it borrowed.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+
+const shapes: string = "type P = { n: int, items: List<int> }\n" +
+    "fn always(p: P) -> List<P> { [p] }\n" +
+    "fn bumped(p: P) -> P { p with { n: 2 } }\n" +
+    "fn cold(p: P, c: bool) -> List<P> {\n    if c { return [p] }\n    []\n}\n" +
+    "fn arms(p: P, c: bool) -> List<P> { if c { [p] } else { [p, p] } }\n" +
+    "fn handed(p: P, c: bool) -> P {\n    if c { return p }\n    p with { n: 1 }\n}\n" +
+    "fn guarded(p: P) -> P {\n    if p.n <= 0 { return P { n: 0, items: [] } }\n    p with { n: p.n - 1 }\n}\n" +
+    "fn failing(p: P, c: bool) -> Result<List<P>, string> {\n    if c { fail \"no\" }\n    .Ok([p])\n}\n" +
+    "fn short(p: P, c: bool) -> bool { c && [p].length > 0 }\n" +
+    "fn looped(p: P, n: int) -> int {\n    mut t = 0\n    for _i in 0..n { t = t + [p].length }\n    t\n}\n" +
+    "fn captured(p: P) -> fn() -> int { () -> p.n }\n" +
+    "fn matched(p: P, k: int) -> List<P> { match k { 0 -> [p], _ -> [p, p] } }\n" +
+    "fn coalesced(p: P, q: List<P>?) -> List<P> { q ?? [p] }\n" +
+    "fn only_fails(n: int, p: P) -> Result<List<P>, string> { fail \"no\" }\n" +
+    "let q = P { n: 1, items: [1] }\n" +
+    "let _ = always(q)\n" +
+    "let _ = bumped(q)\n" +
+    "let _ = cold(q, true)\n" +
+    "let _ = arms(q, true)\n" +
+    "let _ = handed(q, true)\n" +
+    "let _ = guarded(q)\n" +
+    "let _ = failing(q, false)\n" +
+    "let _ = short(q, true)\n" +
+    "let _ = looped(q, 2)\n" +
+    "let _ = captured(q)\n" +
+    "let _ = matched(q, 0)\n" +
+    "let _ = coalesced(q, null)\n" +
+    "let _ = only_fails(1, q)\n" +
+    "1"
+
+/// The shapes as a package, analyzed: the consumes pass is read off the
+/// workspace's own table, never off a one-shot analysis's lowering, whose
+/// workspace is disarmed before it lowers.
+fn shaped() -> Workspace {
+    let ws = new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": shapes,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+    let _ = ws.analyze_file("/w/src/main.av")
+    ws
+}
+
+/// Whether the one fn named `name` consumes its seat `j`.
+fn consumes(ws: Workspace, name: string, j: int) -> bool {
+    let fns = [x.id for x in ws.decls.all_decls() if x.name == name]
+    fns.length == 1 && ws.decls.consumed_seat(fns[0], j)
+}
+
+/// Whether the one fn named `name` exists and borrows its seat `j`.
+fn borrows(ws: Workspace, name: string, j: int) -> bool {
+    let fns = [x.id for x in ws.decls.all_decls() if x.name == name]
+    fns.length == 1 && !ws.decls.consumed_seat(fns[0], j)
+}
+
+spec "compiler/consumes" {
+    given "a seat kept on every path to an answer" {
+        then "an unconditional store consumes it" { consumes(shaped(), "always", 0) }
+        then "an unconditional `with` consumes it" { consumes(shaped(), "bumped", 0) }
+        then "a keep in every arm of an `if` consumes it" { consumes(shaped(), "arms", 0) }
+        then "a keep in every arm of a `match` consumes it" { consumes(shaped(), "matched", 0) }
+        then "an early `return` of the seat is a keep on its own path" { consumes(shaped(), "handed", 0) }
+        then "a path that fails is not asked" { consumes(shaped(), "failing", 0) }
+    }
+    given "a seat kept on some paths only" {
+        then "a keep on a cold arm leaves it borrowed" { borrows(shaped(), "cold", 0) }
+        then "an early `return` that drops it leaves it borrowed" { borrows(shaped(), "guarded", 0) }
+        then "a short-circuited right side leaves it borrowed" { borrows(shaped(), "short", 0) }
+        then "a loop body leaves it borrowed" { borrows(shaped(), "looped", 0) }
+        then "a `??` right side leaves it borrowed" { borrows(shaped(), "coalesced", 0) }
+        then "a lambda's capture is no keep" { borrows(shaped(), "captured", 0) }
+    }
+    given "a body whose every path fails" {
+        then "an unmanaged seat is never consumed" { borrows(shaped(), "only_fails", 0) }
+        then "a managed seat is kept, as a failing path asks nothing" { consumes(shaped(), "only_fails", 1) }
+    }
+}
