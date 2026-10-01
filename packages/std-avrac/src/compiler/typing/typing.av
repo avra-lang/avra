@@ -27,6 +27,7 @@ use features.{
     TypeCx,
     NarrowFrame,
     Gathering,
+    OpenLoop,
     Dispatch,
     semantics_of,
     stmt_semantics_of,
@@ -278,10 +279,10 @@ impl TypeCx {
     }
 
     /// A block with no value: the fn's promise when its last
-    /// statement LEAVES (nothing reads the tail), void otherwise.
+    /// statement LEAVES THE FN (nothing reads the tail), void otherwise.
     fn valueless_type(stmts: List<StmtId>) -> TypeId {
         let last: StmtId? = stmts.last()
-        if last != null && self.view.store.diverges(last!) { return self.fn_ret.last() ?? self.error_type }
+        if last != null && self.view.store.leaves_fn(last!) { return self.fn_ret.last() ?? self.error_type }
         self.view.decls.types.type(void)
     }
 
@@ -296,6 +297,24 @@ impl TypeCx {
         let ret = self.walk_type(body)
         let _ = self.lam_bar.pop()
         ret
+    }
+
+    /// A loop's statements, typed as ONE TURN — what a `break` among
+    /// them ends.
+    mut fn turn_stmts(owner: StmtId, stmts: List<StmtId>) {
+        let outer = self.loops
+        self.loops = outer.concat([OpenLoop { owner: owner, bars: self.lam_bar.length }])
+        self.type_stmts(stmts)
+        self.loops = outer
+    }
+
+    /// A comprehension typed as a walk no jump ends — its answer.
+    mut fn sealed_walk(body: fn(mut TypeCx) -> TypeId) -> TypeId {
+        let outer = self.loops
+        self.loops = outer.concat([OpenLoop { owner: null, bars: self.lam_bar.length }])
+        let ty = body(self)
+        self.loops = outer
+        ty
     }
 
     /// A `collect`'s body walked under its own frame: the values its

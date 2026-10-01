@@ -84,7 +84,7 @@ spec "features/loops" {
 ret 0"""
             render_ir(ir_of("mut x = 0\nwhile x < 3 {\n    x = x + 1\n}\nx")) == expected
         }
-        then "a for is mut+while in costume — cell, re-run cond, step store" {
+        then "a for is mut+while in costume — a count cell stepped in the condition, the name's cell per turn" {
             let expected = """scope application {
   r0 = int 0
   r1 = slot
@@ -92,26 +92,30 @@ ret 0"""
   r2 = int 0
   r3 = slot
   store r3 <- r2
+  r4 = slot
+  store r4 <- r2
   loop {
-    r4 = load r3
-    r5 = int 2
-    r6 = r4 < r5
-    while r6
+    r5 = load r3
+    store r4 <- r5
+    r6 = load r4
+    r7 = int 2
+    r8 = r6 < r7
+    r9 = load r4
+    r10 = int 1
+    r11 = r9 + r10
+    store r3 <- r11
+    while r8
     scope application {
-      r7 = load r1
-      r8 = load r3
-      r9 = r7 + r8
-      store r1 <- r9
-      r10 = load r3
-      r11 = int 1
-      r12 = r10 + r11
-      store r3 <- r12
+      r12 = load r1
+      r13 = load r4
+      r14 = r12 + r13
+      store r1 <- r14
     }
   }
-  r13 = load r1
-  r14 = call avra_int_text(r13)
-  call avra_puts(r14)
-  release r14
+  r15 = load r1
+  r16 = call avra_int_text(r15)
+  call avra_puts(r16)
+  release r16
 }
 ret 0"""
             render_ir(ir_of("mut t = 0\nfor i in 0..2 {\n    t = t + i\n}\nt")) == expected
@@ -145,6 +149,83 @@ ret 0"""
         }
         then "the index name obeys the naming law" {
             refused_with("for fn, x in [1] {\n    2\n}\n2", "`fn` is a keyword")
+        }
+    }
+    given "break and continue" {
+        then "`break` ends the innermost loop where it stands" {
+            shown("mut t = 0\nfor i in 0..10 {\n    if i == 4 { break }\n    t = t + i\n}\nt") == "6"
+        }
+        then "`continue` ends the turn and the next one begins" {
+            shown("mut t = 0\nfor i in 0..5 {\n    if i == 2 { continue }\n    t = t + i\n}\nt") == "8"
+        }
+        then "a `while` re-reads its condition after `continue`" {
+            shown(
+                "mut i = 0\nmut hits = 0\nwhile i < 6 {\n    i = i + 1\n    if i < 4 { continue }\n    hits = hits + 1\n}\ni * 10 + hits",
+            ) == "63"
+        }
+        then "a label ends the `for` whose name it reads" {
+            shown(
+                "mut t = 0\nfor a in [1, 2, 3] {\n    for b in [10, 20] {\n        if a == 2 { break a }\n        t = t + a * b\n    }\n}\nt",
+            ) == "30"
+        }
+        then "an index names its loop as well as the element" {
+            shown(
+                "mut t = 0\nfor i, a in [1, 2, 3] {\n    for b in [10, 20] {\n        if b == 20 { continue i }\n        t = t + a\n    }\n}\nt",
+            ) == "6"
+        }
+        then "a jump from a `match` arm ends the loop around the match" {
+            shown(
+                "mut n = 0\nfor w in [\"a\", \"b\", \"stop\", \"c\"] {\n    match w {\n        \"stop\" -> { break },\n        _ -> { n = n + 1 },\n    }\n}\nn",
+            ) == "2"
+        }
+        then "a `let … else` may leave by `continue`" {
+            shown(
+                "mut s = 0\nfor x in [1, null, 3] {\n    let v? = x else { continue }\n    s = s + v\n}\ns",
+            ) == "4"
+        }
+        then "a jump outside every loop refuses" {
+            refused_with(
+                "break",
+                "`break` ends the turn of a loop around it, and no loop encloses it",
+            )
+        }
+        then "a jump inside a lambda refuses — the lambda runs apart" {
+            refused_with(
+                "for x in [1] {\n    let f = () -> {\n        break\n    }\n}\n1",
+                "a lambda's body runs apart from any loop outside it",
+            )
+        }
+        then "a jump inside a comprehension refuses" {
+            refused_with(
+                "for x in [1] {\n    let ys = [if y > 1 { continue } else { y } for y in [1, 2]]\n}\n1",
+                "a comprehension's walk builds its whole list",
+            )
+        }
+        then "a label that names no `for` refuses at the label" {
+            refused_with(
+                "for x in [1] {\n    let y = x\n    break y\n}\n1",
+                "`y` is no enclosing `for`'s name here",
+            )
+        }
+        then "a `while` has no name to label" {
+            refused_with(
+                "mut i = 0\nwhile i < 1 {\n    continue i\n}\n1",
+                "`i` is no enclosing `for`'s name here",
+            )
+        }
+        then "a jump in a `while` condition ends the loop OUTSIDE it" {
+            shown(
+                "mut n = 0\nfor x in [1, 2, 3] {\n    while if x == 2 { break } else { false } {\n        n = n + 100\n    }\n    n = n + x\n}\nn",
+            ) == "1"
+        }
+        then "a jump in a condition with no outer loop refuses" {
+            refused_with(
+                "while if true { break } else { false } {\n    1\n}\n1",
+                "no loop encloses it",
+            )
+        }
+        then "`break` and `continue` are words — neither is a name" {
+            refused_with("let break = 1\n1", "`break` is a keyword")
         }
     }
 }

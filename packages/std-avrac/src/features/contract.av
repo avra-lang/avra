@@ -267,6 +267,9 @@ export type TypeCx = {
     task_bodies: List<ExprId>,
     // the open `collect`s, innermost last — what each has gathered
     gathers: List<Gathering> = [],
+    // the loops whose turn is being typed, innermost last — what a
+    // `break` may end
+    loops: List<OpenLoop> = [],
     // the enclosing fn's seats' promises, by seat — what a parameter
     // passed on still promises
     scope_marks: List<SeatMark> = [],
@@ -276,6 +279,12 @@ export type TypeCx = {
     // it is the tell, later ones on the same local repeat nothing new.
     aliased_warned: List<int>,
 }
+
+/// One loop whose turn is being typed: the statement that wrote it —
+/// none for a comprehension, whose walk no jump ends — and the lambda
+/// barriers standing when it opened, so a jump behind a later one is
+/// a lambda's, never its.
+export type OpenLoop = { owner: StmtId?, bars: int }
 
 /// One open `collect`: the lambda barriers standing when it opened —
 /// a statement behind another is a lambda's, never its — and the
@@ -333,7 +342,15 @@ export type LowerCx = {
     // the open `collect`s' lists, innermost last — a lambda's body is
     // its own context, so none reaches through one
     gathers: List<Reg> = [],
+    // the open loops, innermost last — what a `break` aims at
+    loops: List<LoopMark> = [],
 }
+
+/// One open loop: the statement that wrote it — none for a loop the
+/// compiler spells (a walk, a comprehension) — and the depth of the
+/// frame its turn opens, where an early end of the turn stops running
+/// `defer`s.
+export type LoopMark = { owner: StmtId?, frame: int }
 
 /// One registered `defer`: the fn box to call, the depth of the
 /// frame that registered it, and whether only a failing exit runs it.

@@ -5,6 +5,7 @@
 //! renderer.
 use core.{
     SyntaxArena,
+    jump_word,
     Remark,
     Trivia,
     Span,
@@ -602,11 +603,18 @@ impl SourceText {
                 ),
             ],
             .CollectEnum(name, kind, scope, order) -> [source_line(depth, self.collect_enum_decl(exported, name.of, kind, scope, order))],
+            .Jump(label, again) -> [source_line(depth, jump_line(again, self.written_label(label)))],
             .Error -> [source_line(depth, "__error")],
         }
     }
 
     fn stmt_end(s: StmtId) -> int { end_of(self.store.stmt_span(s)) }
+
+    /// A jump's label as written — the name its `for` binds.
+    fn written_label(label: ExprId?) -> string? {
+        if label == null { return null }
+        self.expression(label!, loosest_tier, 0)
+    }
 
     /// A LET-ELSE'S SUBJECT, guarded against the one ambiguity this
     /// statement's own trailing `else` creates: printed at
@@ -2422,3 +2430,8 @@ fn hole_source(h: Hole) -> string {
 
 /// One printed entry of a field list and the offset it began at.
 type FieldEntry = { lo: int, text: string }
+
+/// `break` or `continue`, and its label when it names one.
+fn jump_line(again: bool, label: string?) -> string {
+    if label == null { jump_word(again) } else { "${jump_word(again)} ${label!}" }
+}

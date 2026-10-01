@@ -1543,16 +1543,6 @@ Syntax the grammar lacks:
           2  | "b"
       }
 - The pipe `|>`: "expected BREAK while parsing `stmt`".
-- `continue` AND `break` ARE NOT WORDS: `continue` inside a `for` is
-  F3000 "`continue` is not defined", reported as an undefined NAME
-  rather than a missing construct — neither is reserved, so the
-  refusal does not say the loop has no such word. A skip is spelled as
-  a guard folded into the body's `if`, or a named predicate. In the
-  sugar backlog, asked by the owner, with the wanting sites
-  (`innermost_holding`, `first_start_after` in compiler/source_text.av —
-  both DELETED since, when the trivia cursor replaced the scans they
-  lived in, so the ask now wants a site; each name is licensed in
-  `tools/cited.allow` as historical).
 - A SEMICOLON between statements (`let a = 1; a + 1`): F0001
   "unexpected character" at the `;` — a statement ends at a line
   break, and a one-line body is `{ a }` with one statement. A

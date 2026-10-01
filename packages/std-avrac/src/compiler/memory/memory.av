@@ -188,6 +188,9 @@ fn memory_ins(
 ) -> List<Ins> {
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
+    // each open loop's FLOOR: the scope depth its turn opens at, known
+    // from its `LoopCond` on
+    mut floors: List<int> = []
     let last = last_reads(reg_types.length, ins)
     let defs = def_sites(reg_types.length, ins)
     let next_barrier = barrier_positions(ins)
@@ -296,8 +299,14 @@ fn memory_ins(
                 // an answer no scope owns is the caller's to keep: its own reference, first
                 if is_managed(types, reg_types[gives.index]) && !owned_open(open_scopes, gives) { out.push(Ins.Retain(gives)) }
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
-                for c in exit_cells(open_scopes) { out.push(cell_settle(c)) }
-                for r in exit_releases(open_scopes, gives) { out.push(Ins.Release(r)) }
+                for s in owed_from(open_scopes, 0, gives) { out.push(s) }
+                out.push(i)
+            },
+            // AN EARLY END OF A TURN settles what the turn's own close
+            // would: every scope opened since its loop's `LoopCond`.
+            .LoopJump(outward, _) -> {
+                // LICENSED loops.push_loop: the pass's OUTPUT accumulates
+                for s in owed_from(open_scopes, floors[floors.length - 1 - outward], null) { out.push(s) }
                 out.push(i)
             },
             // THE MUT-CELL PROTOCOL: the cell owns ONE reference.
@@ -349,12 +358,18 @@ fn memory_ins(
             .LoopStart -> {
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes))
+                floors.push(0)
                 out.push(i)
             },
             .LoopCond(_) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for s in scope.settled(null) { out.push(s) }
+                floors.set(floors.length - 1, open_scopes.depth())
+                out.push(i)
+            },
+            .LoopEnd -> {
+                let _ = floors.pop()
                 out.push(i)
             },
             // A FLAT RECORD'S PACK IS IDENTITY, so the destination is
@@ -395,7 +410,7 @@ fn memory_ins(
                     out.push(Ins.CallRtVoid(moving!, args))
                 }
             },
-            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Release(_) or .Extract(_, _, _) or .LoopEnd or .Retain(_) or .RetVal(_) or .Ret(_) -> {
+            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Release(_) or .Extract(_, _, _) or .Retain(_) or .RetVal(_) or .Ret(_) -> {
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
             },
@@ -792,13 +807,21 @@ fn root_handed(life: Lives, i: Ins, ar: Reg) -> bool {
     lent_args(i).any(same_reg(it, root))
 }
 
-/// Everything EVERY open scope owes at an early exit, innermost
-/// first — the returned value excluded in every open scope.
-fn exit_releases(open_scopes: Stack<Scope>, kept: Reg) -> List<Reg> {
+/// What each open scope from `floor` in owes at an early exit: its
+/// cells settled, then its releases, innermost first — `kept`, the
+/// value the exit answers, excluded.
+fn owed_from(open_scopes: Stack<Scope>, floor: int, kept: Reg?) -> List<Ins> {
+    [cell_settle(c) for c in exit_cells(open_scopes, floor)]
+        .concat([Ins.Release(r) for r in exit_releases(open_scopes, floor, kept)])
+}
+
+/// Everything each open scope from `floor` in owes at an early exit,
+/// innermost first — the answered value excluded in every one.
+fn exit_releases(open_scopes: Stack<Scope>, floor: int, kept: Reg?) -> List<Reg> {
     mut out: List<Reg> = []
     // LICENSED loops.index_walk: a REVERSE walk — innermost debts settle first
     mut j = open_scopes.depth() - 1
-    while j >= 0 {
+    while j >= floor {
         let scope: Scope = open_scopes.at(j)
         out = out.concat(scope.releases_for(kept))
         j = j - 1
@@ -1047,12 +1070,13 @@ fn cell_forget(slot: Reg) -> Ins {
     Ins.CallRtVoid("avra_cell_forget", [slot])
 }
 
-/// Every open scope's cells at an early exit, innermost first.
-fn exit_cells(open_scopes: Stack<Scope>) -> List<Reg> {
+/// The cells of each open scope from `floor` in, at an early exit,
+/// innermost first.
+fn exit_cells(open_scopes: Stack<Scope>, floor: int) -> List<Reg> {
     mut out: List<Reg> = []
     // LICENSED loops.index_walk: a REVERSE walk — innermost debts settle first
     mut j = open_scopes.depth() - 1
-    while j >= 0 {
+    while j >= floor {
         let scope: Scope = open_scopes.at(j)
         out = out.concat(reversed(scope.cells))
         j = j - 1
@@ -1237,7 +1261,7 @@ impl Lives {
         mut k = at + 1
         while k < self.ins.length {
             let i = self.ins[k]
-            if opens(i) || closes(i) || turns(i) || i is .FnExit { return false }
+            if opens(i) || closes(i) || turns(i) || i is .FnExit || i is .LoopJump { return false }
             if reads_reg(i, slot) { return stores_into(i, slot) }
             k = k + 1
         }

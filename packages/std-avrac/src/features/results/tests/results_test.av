@@ -254,11 +254,10 @@ spec "features/results" {
                 "${halver}fn f(id: int) -> int {\n    let got = if let v? = half(id) {\n        v\n    } else {\n        return 0 - 1\n    }\n    got * 10\n}\nf(8) + f(3)",
             ) == "39"
         }
-        then "a leaving arm whose promise type does NOT fit refuses at the join" {
-            refused_with(
-                "enum E {\n    boom\n}\nfn f(b: bool) -> Result<int, E> {\n    let s = if b {\n        \"word\"\n    } else {\n        fail E.boom\n    }\n    s.length\n}\n2",
-                "branches disagree: `string` vs `Result<int, E>`",
-            )
+        then "a leaving arm joins with anything — the other arm answers for both, as a `match` arm's does" {
+            shown(
+                "enum E {\n    boom\n}\nfn f(b: bool) -> Result<int, E> {\n    let s = if b {\n        \"word\"\n    } else {\n        fail E.boom\n    }\n    s.length\n}\n\"\${(f(true) catch _ -> 0)} \${(f(false) catch _ -> 9)}\"",
+            ) == "4 9"
         }
         then "a block with no value is void when nothing leaves — the declared return refuses it" {
             refused_with(

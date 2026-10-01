@@ -212,9 +212,8 @@ impl LowerCx {
     mut fn spread(into: Reg, v: ExprId) {
         let elem? = self.view.types.element(self.type_at(v)) else { return }
         let w = self.opened(v, elem)
-        self.turn_open(w)
-        self.push_slot(into, self.turn_elem(w, self.turn_index(w)))
-        self.turn_close(w)
+        self.push_slot(into, self.turn_elem(w, self.turn_open(w)))
+        self.loop_end()
     }
 
     /// A TASK IS JOINED WHERE ITS LAST OWNER ENDS: a statement holding a
@@ -397,7 +396,22 @@ impl LowerCx {
     /// entries run, innermost first — an `errdefer` behind the
     /// answer's tag. Nothing closes — other paths continue.
     mut fn leaving(answer: Reg?) {
-        for d in reversed(self.deferred) { self.run_entry(d, answer) }
+        self.run_from(0, answer)
+    }
+
+    /// The entries of every frame from `floor` in run, innermost
+    /// first — an `errdefer` behind `answer`'s tag.
+    mut fn run_from(floor: int, answer: Reg?) {
+        for d in reversed([d for d in self.deferred if d.depth >= floor]) { self.run_entry(d, answer) }
+    }
+
+    /// An EARLY END OF A TURN — the loop at `at` among the open ones:
+    /// every frame its turn opened runs its entries, innermost first,
+    /// as the turn's own close would; `again` starts its next turn, and
+    /// otherwise the loop ends. Nothing closes — other paths continue.
+    mut fn jumped(at: int, again: bool) {
+        self.run_from(self.loops[at].frame, null)
+        self.out.give(Ins.LoopJump(self.loops.length - 1 - at, again))
     }
 
     /// An early exit that FAILS: every open frame's `defer`s AND

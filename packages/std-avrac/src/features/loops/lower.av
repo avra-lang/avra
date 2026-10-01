@@ -1,21 +1,21 @@
 //! The loops in the IR: the condition's instructions live between
 //! LoopStart and LoopCond and re-run each turn; each body is a
-//! scope per turn. A for adds its counter CELL before the brackets
-//! and its step store after the body — nothing the IR does not
-//! already say.
+//! scope per turn. A step belongs to the CONDITION, never after the
+//! body, so a turn ends at its back edge — which is all `continue`
+//! is. A `break` or `continue` ends a turn early (`Ins.LoopJump`).
 use core.{StmtId, ExprId, Ins, TypeId}
-use features.{LowerCx}
+use features.{LowerCx, LoopMark}
 
-export fn lower_while(mut cx: LowerCx, cond: ExprId, stmts: List<StmtId>) {
+export fn lower_while(mut cx: LowerCx, s: StmtId, cond: ExprId, stmts: List<StmtId>) {
     cx.loop_start()
-    cx.loop_cond(cx.reg_of(cond))
+    cx.loop_cond(cx.reg_of(cond), s)
     cx.lower_stmts(stmts)
     cx.loop_end()
 }
 
-/// The counter is born before the loop, read through its cell each
-/// turn, and stepped after the body — bind_slot BEFORE the cond
-/// lowers, so the counter's ident loads through the cell.
+/// Two cells: the COUNT, stepped in the condition each turn, and the
+/// NAME, which holds the turn's own value for every read in the body
+/// — bound BEFORE the condition lowers, which reads it.
 export fn lower_for(
     mut cx: LowerCx,
     s: StmtId,
@@ -24,12 +24,17 @@ export fn lower_for(
     step: ExprId,
     stmts: List<StmtId>,
 ) {
-    let slot = cx.seeded_cell(cx.type_at(from), cx.reg_of(from))
+    let ty = cx.type_at(from)
+    let lo = cx.reg_of(from)
+    let count = cx.seeded_cell(ty, lo)
+    let slot = cx.seeded_cell(ty, lo)
     cx.bind_slot(s, slot)
     cx.loop_start()
-    cx.loop_cond(cx.reg_of(cond))
+    cx.stored(slot, cx.loaded_as(ty, count))
+    let more = cx.reg_of(cond)
+    cx.stored(count, cx.reg_of(step))
+    cx.loop_cond(more, s)
     cx.lower_stmts(stmts)
-    cx.emit(Ins.Store(slot, cx.reg_of(step)))
     cx.loop_end()
 }
 
@@ -41,12 +46,11 @@ export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: Lis
     let cell = cx.mint_ty(w.elem)
     cx.emit(Ins.Alloca(cell))
     cx.bind_slot(s, cell)
-    cx.turn_open(w)
-    let here = cx.turn_index(w)
+    let here = cx.turn_open(w, s)
     cx.bind_index(s, here)
     cx.emit(Ins.Store(cell, cx.turn_elem(w, here)))
     cx.lower_stmts(stmts)
-    cx.turn_close(w)
+    cx.loop_end()
 }
 
 /// The subject's element type — typing proved it a List, and the
@@ -54,4 +58,20 @@ export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: Lis
 fn elem_of(ex: LowerCx, subject: ExprId) -> TypeId {
     let elem: TypeId? = ex.view.types.element(ex.type_at(subject))
     elem ?? ex.type_at(subject)
+}
+
+/// `break`/`continue`: the loop its label binds, or the innermost one
+/// the program wrote.
+export fn lower_jump(mut cx: LowerCx, label: ExprId?, again: bool) {
+    let aimed: StmtId? = if label == null { null } else { label_loop(cx.names, cx.view.store, label!) }
+    let at? = [j for j, m in cx.loops if aims_at(m, aimed)].last() else {
+        return cx.defect("a `break` with no loop to end survived typing")
+    }
+    cx.jumped(at, again)
+}
+
+/// Whether a jump aimed at `aimed` — or at no name — lands on this
+/// open loop: one the program wrote.
+fn aims_at(m: LoopMark, aimed: StmtId?) -> bool {
+    m.owner != null && (aimed == null || m.owner! == aimed!)
 }

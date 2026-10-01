@@ -36,3 +36,26 @@ fn build_for(b: Builder) -> Result<LangNode, string> {
     let step = b.store.alloc_expr(Expr.Binary(BinOp.Add, step_ref, one))
     b.make_stmt(Stmt.For(Scoped(n.text), lo, hi, cond, step, stmts))
 }
+
+fn build_break(b: Builder) -> Result<LangNode, string> {
+    labelled(b, false)
+}
+
+fn build_continue(b: Builder) -> Result<LangNode, string> {
+    labelled(b, true)
+}
+
+fn build_bare_break(b: Builder) -> Result<LangNode, string> {
+    b.make_stmt(Stmt.Jump(null, false))
+}
+
+fn build_bare_continue(b: Builder) -> Result<LangNode, string> {
+    b.make_stmt(Stmt.Jump(null, true))
+}
+
+/// A jump naming its loop: the label a READ of the name the `for`
+/// binds, at the name's own span, where a refusal about it points.
+fn labelled(b: Builder, again: bool) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    b.make_stmt(Stmt.Jump(b.store.alloc_expr(Expr.Ident(Scoped(n.text)), n.span), again))
+}

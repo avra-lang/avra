@@ -2,24 +2,40 @@
 //! { statements }`. Statements, no value; each body is a statement
 //! list under its own scope. `for` is mut+while in costume: the
 //! BUILDER synthesizes its condition (`name < hi`) and step
-//! (`name + 1`) as real nodes, so every pass just walks them and
-//! the IR gains nothing.
+//! (`name + 1`) as real nodes, so every pass just walks them.
+//! `break` and `continue` end a turn early — the innermost loop's,
+//! or the `for` whose name follows the word (`break row`).
 use features.{LanguageFeature, BuilderRow}
 use features.loops.{push_loop, index_walk, branched_push_loop}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
 
 export fn loops() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name         | build
-        "while_stmt" | build_while
-        "for_each"   | build_for_each
-        "for_stmt"   | build_for
+        name            | build
+        "while_stmt"    | build_while
+        "for_each"      | build_for_each
+        "for_stmt"      | build_for
+        "break_stmt"    | build_break
+        "bare_break"    | build_bare_break
+        "continue_stmt" | build_continue
+        "bare_continue" | build_bare_continue
+    }
+    let codes = table<DiagCode> {
+        kind         | summary
+        "loop.jump"  | "`break` and `continue` end a loop's turn, so a loop must enclose them"
+        "loop.label" | "a `break` or `continue` label is the name a `for` binds"
     }
     LanguageFeature loops {
         gram: grammar {
             stmt = "while" c:expression "{" ( s:stmt | BREAK )* "}" END @recover(sync_to: "END") -> while_stmt(c, s) @head(c) | "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" exs:expression "{" ( es:stmt | BREAK )* "}" END -> for_each(ix, en, exs, es) @head(exs) | "for" n:NAME "in" lo:expression ".." hi:expression "{" ( s:stmt | BREAK )* "}" END @recover(sync_to: "END") -> for_stmt(n, lo, hi, s) @head(lo) @head(hi)
+            stmt = "break" l:NAME END -> break_stmt(l)
+            stmt = "break" END @expect("END", "`break` ends its line, or names its loop — `break row`") @recover(sync_to: "END") -> bare_break()
+            stmt = "continue" l:NAME END -> continue_stmt(l)
+            stmt = "continue" END @expect("END", "`continue` ends its line, or names its loop — `continue row`") @recover(sync_to: "END") -> bare_continue()
         }
         builders: rows
+        diags: codes
     }
     loops
 }
