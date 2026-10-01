@@ -1077,15 +1077,44 @@ impl Workspace {
     }
 
     /// The modules a module's files see, each with its interface key and file
-    /// count — memoized for the build, since every file of a module sees the same ones.
+    /// count — memoized for the build, since every file of a module sees the same ones,
+    /// and kept under its `view_print`, since an unchanged closure reads the same records.
     /// Its own module is seen whole; another only through the files it reaches.
     fn view_parts(store: Store, m: ModulePath) -> List<SeenPart> {
         let known: List<SeenPart>? = self.keys.view_parts.get().get(m.text())
         if known != null { return known! }
-        let r = self.reach(store, m)
-        let made = [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, r.files_of(dep)) } for dep in sorted_texts([m.text()].concat(r.mods))]
+        let key = node_key(Stored.Unit, ["view", m.text(), self.view_print(store, m)])
+        let kept = store.get(Stored.Unit, key)
+        let made = if kept == null { null } else { seen_of(kept!) } ?? self.reached_view(store, m)
+        if kept == null { let _ = store.keep(Stored.Unit, key, seen_wire(made), []) }
         self.keys.view_parts.put(m.text(), made)
         made
+    }
+
+    /// `view_parts`, walked: the module's own interface, and each reached module's
+    /// through the files it reaches.
+    fn reached_view(store: Store, m: ModulePath) -> List<SeenPart> {
+        let r = self.reach(store, m)
+        [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, r.files_of(dep)) } for dep in sorted_texts([m.text()].concat(r.mods))]
+    }
+
+    /// What a module's view is a function of, as one key: every module it sees a type
+    /// of, with each one's interface and imports as its record keeps them, and its files
+    /// and their texts. A record absent reads differently from one its texts wrote, and
+    /// a body edit moves no view, as `keep_interfaces` already holds.
+    fn view_print(store: Store, m: ModulePath) -> string {
+        mut d = new_digest()
+        for n in sorted_texts(self.seen_names(store, m)) {
+            let at = module_path(n.split("."))
+            let imports = imports_kept(self, store, n)
+            let files = self.module_files(at)
+            d = digest_text(digest_text(d, n), self.db.sig(store, self.record_key(at)) ?? "")
+            d = digest_text(d, "${imports.length}")
+            for i in imports { d = digest_text(d, i) }
+            d = digest_text(d, "${files.length}")
+            for f in files { d = digest_text(digest_text(d, f), self.text_digest(f)) }
+        }
+        digest_key(d)
     }
 
     /// EVERY OTHER MODULE'S FILE A MODULE'S OBJECTS CAN DEPEND ON: each file its own
@@ -1135,10 +1164,17 @@ impl Workspace {
     /// its own: its own module's, its imports' closure, the prelude's, and each one's
     /// enclosing modules', since a file-level module's record is its directory's.
     fn sees_records(store: Store, m: ModulePath) -> List<string> {
-        let names = seen_modules(self, store, m).concat([prelude_module().text()])
-        let sees = distinct([e for n in names for e in enclosings(n)])
+        let sees = self.seen_names(store, m)
         for n in sees { self.place_files(store, n) }
         sees
+    }
+
+    /// Every module `m`'s files can see a type of: its imports' closure, the prelude,
+    /// and each one's enclosings.
+    fn seen_names(store: Store, m: ModulePath) -> List<string> {
+        distinct(
+            [e for n in seen_modules(self, store, m).concat([prelude_module().text()]) for e in enclosings(n)],
+        )
     }
 
     /// Files each `file` line of a module's record as that module's own — once per
