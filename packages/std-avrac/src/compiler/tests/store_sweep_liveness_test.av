@@ -1,0 +1,75 @@
+// A store sweep must never remove one a live process still has open
+// (avra-8sb5.57.132): `compiler_print`'s roll is a read-modify-write with
+// no exclusion, so a concurrent compiler's store can fall out of the
+// "kept" list the sweep computes while that compiler still reads or
+// writes under it. `has_live_user` asks `avra_pid_alive` of the marks
+// `mark_user` drops under `.users/` rather than guessing from a clock —
+// this reuses `source_stamp_adversarial_test.av`'s `real_disk_host`
+// pieces, same module, with `compiler` set so `compiler_id()` resolves a
+// real digest from a real file instead of the null-compiler fallback.
+use @std.avrac.compiler.{avra, new_workspace, build_cache_root}
+use compiler.host.{Host}
+use @std.io.{exists, read_text, write_text, list_dir, is_dir, make_dirs}
+use @std.path.{dir_of}
+use @std.time.{now_ns}
+
+fn rollrace_root(name: string) -> string {
+    let root = "/tmp/avra-rollrace-test/${name}-${now_ns()}"
+    let _ = make_dirs(root)
+    root
+}
+
+fn host_at(compiler: string) -> Host {
+    Host {
+        exists: (p: string) -> exists(p),
+        read: (p: string) -> read_text(p) catch "",
+        write: (p: string, t: string) -> write_file_safe(p, t),
+        list: (dir: string) -> list_dir(dir) catch [],
+        is_dir: (dir: string) -> is_dir(dir),
+        stamp: fixed_stamp,
+        reads_ahead: no_read_ahead,
+        cwd: "",
+        compiler: compiler,
+    }
+}
+
+fn orphan_marked(root: string, pid: string) -> string {
+    let orphan = "${root}/.avra-cache/orphan-store"
+    let _ = write_file_safe("${orphan}/.users/${pid}", "")
+    orphan
+}
+
+spec "compiler/build — a store sweep is gated by liveness, not only by the roll" {
+    given "an unlisted store directory marked by pid 1, always running" {
+        then "it survives the sweep" {
+            let root = rollrace_root("live")
+            let compiler_path = "${root}/fake-avra"
+            let _ = write_file_safe(compiler_path, "fake-binary-bytes-live")
+            let orphan = orphan_marked(root, "1")
+            let ws = new_workspace(host_at(compiler_path), root, avra())
+            let _ = ws.compiler_id()
+            is_dir(orphan)
+        }
+    }
+    given "an unlisted store directory marked by a pid no process can hold" {
+        then "it is swept" {
+            let root = rollrace_root("dead")
+            let compiler_path = "${root}/fake-avra"
+            let _ = write_file_safe(compiler_path, "fake-binary-bytes-dead")
+            let orphan = orphan_marked(root, "999999999")
+            let ws = new_workspace(host_at(compiler_path), root, avra())
+            let _ = ws.compiler_id()
+            !is_dir(orphan)
+        }
+    }
+    given "a workspace naming its own store" {
+        then "it marks itself a live user under its own root" {
+            let root = rollrace_root("self")
+            let compiler_path = "${root}/fake-avra"
+            let _ = write_file_safe(compiler_path, "fake-binary-bytes-self")
+            let ws = new_workspace(host_at(compiler_path), root, avra())
+            let store = build_cache_root(ws)
+            is_dir("${store}/.users")
+        }
+    }
+}

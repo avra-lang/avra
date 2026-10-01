@@ -19,6 +19,7 @@ use core.{
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes, make_dirs, remove}
+use @std.text.{parse_int}
 use @std.time.{now_ns}
 use compiler.backend.{
     emit_object,
@@ -36,6 +37,8 @@ use compiler.host.{Host, no_target, read_manifest}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+extern fn avra_pid_alive(pid: int) -> int
+extern fn avra_own_pid() -> int
 
 /// A BUILD'S OWN DEFECT: what the compiler itself could not do to turn an
 /// otherwise-analysed program into a binary. `Diagnosed` is the one variant
@@ -146,8 +149,26 @@ impl Workspace {
 /// compiles every body with it.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its store's directory out.
 export fn build_cache_root(ws: Workspace) -> string {
-    if ws.keys.store_root.get() == "" { ws.keys.store_root.set(joined_path(stores_dir(ws), ws.compiler_id())) }
+    if ws.keys.store_root.get() == "" {
+        let root = joined_path(stores_dir(ws), ws.compiler_id())
+        ws.keys.store_root.set(root)
+        mark_user(ws, root)
+    }
     ws.keys.store_root.get()
+}
+
+/// THIS PROCESS REGISTERS ITS OWN USE OF A STORE, once, the moment it is
+/// first named — a file under `.users/`, named by this process's own pid
+/// (`avra_own_pid`), so a sweep elsewhere can ask `avra_pid_alive` of it
+/// rather than guess from a clock how long a build might still run.
+/// NOTHING REMOVES IT ON EXIT: a crash would leave it anyway, so the only
+/// honest test is liveness, checked where the mark is READ (`has_live_user`)
+/// — which is also where a dead one is pruned, since nothing else ever
+/// revisits a mark once it is written.
+// LICENSED compiler.free_state_verb: a pure PROJECTION's write-back — a workspace and its store root in.
+fn mark_user(ws: Workspace, root: string) {
+    let _ = make_dirs(joined_path(root, ".users"))
+    let _ = ws.host.write(joined_path(joined_path(root, ".users"), "${avra_own_pid()}"), "")
 }
 
 /// Where a tree's stores stand, one a compiler.
@@ -274,16 +295,51 @@ fn digest_of_binary(at: string) -> string? {
     }
 }
 
+/// WHETHER A PID'S OWN MARK NAMES A PROCESS STILL RUNNING — a non-pid name
+/// under `.users/` answers false rather than refusing the sweep over it.
+fn user_pid_alive(name: string) -> bool {
+    let pid? = parse_int(name) else { return false }
+    avra_pid_alive(pid) == 1
+}
+
+/// WHETHER A STORE STILL HAS A LIVE USER, pruning every dead pid's mark
+/// first — the only place a mark is ever read again, so a crash's leftover
+/// is cleaned the first time this asks rather than kept forever. Asked of
+/// every store the sweep visits, kept or not, since a KEPT store is asked
+/// about on every future run too and its `.users/` would otherwise grow
+/// for as long as that compiler stays current.
+// LICENSED compiler.free_state_verb: a pure PROJECTION's write-back — a workspace and a store directory in.
+fn has_live_user(ws: Workspace, store: string) -> bool {
+    let users = joined_path(store, ".users")
+    if !ws.host.is_dir(users) { return false }
+    let names = ws.host.list(users)
+    for name in names {
+        if !user_pid_alive(name) { let _ = remove(joined_path(users, name)) }
+    }
+    names.any(user_pid_alive(it))
+}
+
 /// The roll written back, cut to the newest stores — and everything else under
-/// the stores' directory swept: a store no roll line names is no compiler's.
+/// the stores' directory swept: a store no roll line names is no compiler's,
+/// UNLESS a live process still has it open. THE WRITE-BACK IS STAGED AND
+/// RENAMED, never written in place — `staged_beside`/`published`, the same
+/// pair a kept binary crosses by, so a reader of `roll` meets the old lines
+/// or the new ones, never a half-written line a concurrent write left behind.
+/// A LOST UPDATE BETWEEN TWO WRITERS costs at most one roll entry, re-added
+/// the next time that compiler runs — harmless, and cheaper than a lock that
+/// could outlive a crashed holder.
 // LICENSED compiler.free_state_verb: a pure PROJECTION's write-back — a workspace, a path and the lines in.
 fn rolled(ws: Workspace, roll: string, lines: List<string>) {
     let kept = lines
         .slice(if lines.length > STORES_KEPT { lines.length - STORES_KEPT } else { 0 }, lines.length)
-    let _ = ws.host.write(roll, joined(kept, "\n"))
+    let staged = staged_beside(roll)
+    let _ = ws.host.write(staged, joined(kept, "\n"))
+    let _ = published(staged, roll)
     let named = [print_of(line) for line in kept].concat(["compilers", LEGACY_UNNAMED_STORE])
     for name in ws.host.list(stores_dir(ws)) {
-        if !named.contains(name) { let _ = avra_spawn_status("rm", ["-rf", joined_path(stores_dir(ws), name)]) }
+        let dir = joined_path(stores_dir(ws), name)
+        let live = has_live_user(ws, dir)
+        if !named.contains(name) && !live { let _ = avra_spawn_status("rm", ["-rf", dir]) }
     }
 }
 
