@@ -38,8 +38,9 @@ that order, the train builds candidates:
 Each `Ck` is a real merge (`merge_ref_in`, land.sh's own function,
 reused) into its own throwaway branch `land/train-C<k>-<run-id>`, in
 its own worktree, so ten candidates never share a tree. All N
-candidates are dispatched **in parallel**, one Sprite each (round-robin
-over the pool, least-loaded first), running the same portable gate
+candidates are dispatched **in parallel**, up to
+`AVRA_LAND_TRAIN_SLOTS` (default 2) per Sprite (least-loaded first,
+slots filled level by level so a wave spreads before it stacks), running the same portable gate
 subset land.sh runs today. `Ck`'s tree is really `main + b1..bk`, not
 a diff against `Ck-1` — nothing here assumes `Ck-1` passed before `Ck`
 is built; that assumption is only made when deciding what to *believe*
@@ -253,6 +254,32 @@ land_pool` — a one-line accessor for `land_sprite_pool` added beside
 `sprites_by_load`, so growing the pool from here on is a ONE-LINE
 change to that ONE variable in land.sh, read by the Linux gate and
 the train alike, never a second list to keep in sync.
+
+SUPERSEDED FOR THE TRAIN: unset, `pool_list` now answers `tools/sp
+--pool` — every awake Sprite but `avra-bench` and `web-terminal`, and
+sleepers only while the org's cap of 10 running has room — asked once
+per run, falling back to `land_pool` when the Sprites API answers
+nothing. A lease is one of `sp`'s own slots (`sp --lease <n> <pid>
+<sprites…>`, under `/tmp/avra-sp-slots`), so train candidates and `sp`
+jobs count against one per-Sprite budget. Each candidate syncs into its
+own remote tree: sprite-build.sh keys the tree by the candidate
+worktree's name, which carries the run, wave and candidate. A
+candidate's step logs live in its own temporary directory on the
+Sprite, never a fixed `/tmp` name two candidates would share.
+
+PROGRESS IS WORK, NOT ONLY WORDS: a package suite prints nothing while it
+builds its suite binary — measured on a shared Sprite, `avra test
+packages/std-avrac` said one line after eight minutes and then nothing
+for fourteen more, line-buffered, and wrote no cache file in that time. A
+byte count alone called that wedged at the 420 s quiet window. The
+heartbeat now also reports the CPU ticks the body's process tree has
+spent (`/proc/<pid>/stat`, the heartbeat's own subtree excluded), and
+`train_progress` reads both, plus every line that is NOT a heartbeat: a
+busy quiet step keeps moving, a blocked one spends nothing and is cut
+off. A heartbeat line alone never counted as progress should — it
+only says the heartbeat beat, so counting it (as the line count did)
+kept a wedged step alive for the whole cap. Suites run under `stdbuf -oL`
+so the lines they do print arrive as they are said.
 
 Placement is main's own `sprites_by_load` — load per core, then free
 memory, unreachable last — never a scheme of this file's own.

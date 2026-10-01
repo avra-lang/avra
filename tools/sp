@@ -13,14 +13,29 @@
 # web-terminal and avra-bench, or AVRA_SPRITES. AVRA_SP_TREE names another tree. Slots per Sprite:
 # AVRA_SP_JOBS_PER_SPRITE (default 3). A Sprite that misses its probe is skipped.
 # With no slot to be had, a command waits its turn, saying where it stands.
+#
+#   sh tools/sp --pool                           the living pool, one line
+#   sh tools/sp --lease <n> <pid> <sprite...>    a free slot among slots 1..n,
+#                                                owned by <pid>: prints its dir
+#
+# Slots live under AVRA_SP_SLOTS (default /tmp/avra-sp-slots), shared by
+# every caller, so a lease elsewhere (tools/land_train.sh) and an sp job
+# never oversubscribe one Sprite. Waiters queue first come, first served
+# PER SPRITE: a free slot goes to the earliest waiter that can use it,
+# so a waiter pinned elsewhere blocks nobody. A Sprite that fails its
+# liveness probe is skipped by every caller for AVRA_SP_DEAD_S (300).
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 worktree=$(cd "${AVRA_SP_TREE:-$here/..}" && pwd)
 slug=$(basename "$worktree")
 jobs=${AVRA_SP_JOBS_PER_SPRITE:-3}
-slots=/tmp/avra-sp-slots
+slots=${AVRA_SP_SLOTS:-/tmp/avra-sp-slots}
 llvm=/usr/lib/llvm-22
+queue=$slots/.queue
+dead_dir=$slots/.dead
+dead_s=${AVRA_SP_DEAD_S:-300}
+build=${AVRA_SP_BUILD:-$here/sprite-build.sh}
 
 # The pool: awake Sprites first, and a sleeping one only while the org's
 # cap of running Sprites (AVRA_SP_MAX_RUNNING, default 10) has room, since
@@ -39,11 +54,21 @@ if len(up) < cap:
 print(" ".join(names))' "${AVRA_SP_MAX_RUNNING:-10}"
 }
 
+# A Sprite that failed its liveness probe within the last dead_s seconds.
+is_dead() {
+    at=$(cat "$dead_dir/$1" 2>/dev/null) || return 1
+    case $at in '' | *[!0-9]*) return 1 ;; esac
+    [ $(( $(date +%s) - at )) -lt "$dead_s" ]
+}
+mark_dead() { mkdir -p "$dead_dir"; date +%s > "$dead_dir/$1"; }
+living() { for s in "$@"; do is_dead "$s" || printf '%s ' "$s"; done; }
+
 # The pool, idlest first; a Sprite that did not answer its probe is dropped.
 ranked() {
-    pool=$(pool)
+    pool=$(living $(pool))
     probe_log=$(mktemp -t avra-sp-probe.XXXXXX)
-    order=$(AVRA_SPRITE_PROBE_S=10 sh "$here/land.sh" --call sprites_by_load $pool 2>"$probe_log")
+    order=$(AVRA_SPRITE_PROBE_S=10 AVRA_LAND_SCRATCH="${AVRA_LAND_SCRATCH:-$slots/.land}" \
+        sh "$here/land.sh" --call sprites_by_load $pool 2>"$probe_log")
     dead=$(sed -n 's/^land-linux: \(.*\) did not answer its load probe$/\1/p' "$probe_log")
     rm -f "$probe_log"
     for s in $order; do
@@ -51,15 +76,36 @@ ranked() {
     done
 }
 
-# A slot is a directory holding its owner's pid; a dead owner's slot is free.
-# The tree lock keeps one run per (Sprite, worktree), since both share a tree.
+# A slot is a directory holding its owner's pid (this process, or $2); a
+# dead owner's slot is free. The tree lock keeps one run per (Sprite,
+# worktree), since both share a tree.
 take() {
     d=$1
-    mkdir "$d" 2>/dev/null && { echo $$ > "$d/pid"; return 0; }
+    o=${2:-$$}
+    mkdir "$d" 2>/dev/null && { echo "$o" > "$d/pid"; return 0; }
     p=$(cat "$d/pid" 2>/dev/null || echo)
     [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 1
     rm -rf "$d"
-    mkdir "$d" 2>/dev/null && { echo $$ > "$d/pid"; return 0; }
+    mkdir "$d" 2>/dev/null && { echo "$o" > "$d/pid"; return 0; }
+    return 1
+}
+
+# A lease for another process: slot level by level across the living
+# Sprites in their given order that no queued waiter wants, so work
+# spreads before it stacks. Prints the slot dir.
+lease() {
+    max=$1 owner=$2
+    shift 2
+    reap
+    set -- $(unwanted "" $(living "$@"))
+    n=1
+    while [ "$n" -le "$max" ]; do
+        for s in "$@"; do
+            mkdir -p "$slots/$s"
+            take "$slots/$s/slot-$n" "$owner" && { echo "$slots/$s/slot-$n"; return 0; }
+        done
+        n=$((n + 1))
+    done
     return 1
 }
 
@@ -85,44 +131,81 @@ claim() {
     return 1
 }
 
-alive() { timeout -k 1 5 sprite -s "$1" exec --no-port-forward -- true >/dev/null 2>&1; }
+probe_alive() { timeout -k 1 5 sprite -s "$1" exec --no-port-forward -- true >/dev/null 2>&1; }
+alive() {
+    "${AVRA_SP_ALIVE:-probe_alive}" "$1" && return 0
+    mark_dead "$1"
+    return 1
+}
 
-# A waiter's place: a file named by when it began waiting; a dead
-# waiter's file does not count.
-queue=$slots/.queue
+# A waiter's place: a file named by when it began waiting, holding its
+# pid and the Sprites it can use. A dead waiter's file is removed on sight.
+reap() {
+    for f in "$queue"/*; do
+        [ -f "$f" ] || continue
+        kill -0 "$(sed -n 1p "$f")" 2>/dev/null || rm -f "$f"
+    done
+}
 position() {
     n=0
     for f in "$queue"/*; do
         [ -f "$f" ] || continue
-        kill -0 "$(cat "$f")" 2>/dev/null || continue
         n=$((n + 1))
         [ "$f" = "$1" ] && break
     done
     echo "$n"
 }
 
+# The Sprites among $2.. that no waiter queued ahead of $1 can use (ahead
+# of everyone, when $1 is empty).
+unwanted() {
+    me=$1
+    shift
+    wanted=" $(for f in "$queue"/*; do
+        [ -f "$f" ] || continue
+        [ "$f" = "$me" ] && break
+        sed -n 2p "$f"
+    done | tr '\n' ' ') "
+    for s in "$@"; do
+        case $wanted in *" $s "*) ;; *) printf '%s ' "$s" ;; esac
+    done
+}
+
+# The Sprites among $@ whose tree for this worktree is free.
+usable() {
+    for s in "$@"; do
+        p=$(cat "$slots/$s/tree-$slug/pid" 2>/dev/null || echo)
+        [ -n "$p" ] && kill -0 "$p" 2>/dev/null && continue
+        printf '%s ' "$s"
+    done
+}
+
 # A live claim: a Sprite that fails its liveness probe is released and
-# dropped for this run. With no slot anywhere it waits, saying so once and
-# then once a minute with its place in the queue.
+# marked dead for everyone. With no slot to be had it queues, saying so
+# once and then once a minute with its place in the queue.
 claim_waiting() {
     mine=
     said=0
     while :; do
-        if claimed=$(claim "$1" "$2"); then
+        kill -0 $$ 2>/dev/null || exit 1
+        reap
+        can=$(usable $(living $1))
+        if claimed=$(claim "$(unwanted "$mine" $can)" "$2"); then
             s=${claimed%% *}
             alive "$s" && { [ -z "$mine" ] || rm -f "$mine"; echo "$claimed"; return 0; }
             r=${claimed#* }
             rm -rf "${r%% *}" "${r#* }"
-            echo "sp: $s failed its 5s liveness probe — trying the next" >&2
+            echo "sp: $s failed its 5s liveness probe — skipped by everyone for ${dead_s}s" >&2
             set -- "$(echo " $1 " | sed "s/ $s / /")" "$2"
             continue
         fi
         if [ -z "$mine" ]; then
             mkdir -p "$queue"
             mine="$queue/$(date +%s)-$$-$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
-            echo "$$" > "$mine"
-            trap 'rm -f "$mine"' EXIT
+            draft="$queue/.$(basename "$mine")"
+            trap 'rm -f "$mine" "$draft"' EXIT
         fi
+        printf '%s\n%s\n' "$$" "$(echo $can)" > "$draft" && mv "$draft" "$mine"
         now=$(date +%s)
         if [ $((now - said)) -ge 60 ]; then
             echo "sp: every Sprite slot is taken — waiting, number $(position "$mine") in the queue" >&2
@@ -134,11 +217,12 @@ claim_waiting() {
 
 # Runs one command string on a claimed Sprite; its status is the command's.
 run_on() {
-    sh "$here/sprite-build.sh" "$1" "$worktree" -- bash -lc "export LLVM_PREFIX=$llvm; $2"
+    sh "$build" "$1" "$worktree" -- bash -lc "export LLVM_PREFIX=$llvm; $2"
 }
 
-[ "$#" -gt 0 ] || { sed -n '2,16p' "$0" >&2; exit 2; }
-[ "$1" != --pool ] || { pool; exit 0; }
+[ "$#" -gt 0 ] || { sed -n '2,26p' "$0" >&2; exit 2; }
+[ "$1" != --pool ] || { echo $(living $(pool)); exit 0; }
+[ "$1" != --lease ] || { shift; lease "$@"; exit $?; }
 sprites=$(ranked)
 [ -n "$sprites" ] || echo "sp: no Sprite answered its probe" >&2
 
