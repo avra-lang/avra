@@ -911,6 +911,10 @@ registry is the idiom engine's spec, written by dogfooding.
   declaring one private name KEEP IT APART — each reads its own, and a
   third file's read is `resolve.kept_apart`, naming both; an EXPORTED
   name stays the module's one declaration (`resolve.duplicate_in_module`).
+  A helper a package's suites AND its program tests share is EXPORTED
+  from `tests/support/` and read as `use tests.support.{…}` — a program
+  test is a module like the rest, so it reaches the same file
+  (packages/std-http/src/tests/support).
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
   suite does not have. "a comment-only line is a blank line" asserts
