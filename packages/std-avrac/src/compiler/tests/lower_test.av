@@ -21,7 +21,7 @@ use @std.avrac.core.{
 }
 
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
-use @std.avrac.testing.{ir_of, halver, shown}
+use @std.avrac.testing.{ir_of, halver, shown, provided}
 use compiler.backend.{render_ir}
 use compiler.lower.{Body, Lowered, minted_pointers}
 
@@ -753,4 +753,216 @@ spec "a parameter's consumed mark, read off ir_of's own lowering" {
             always != null && consumed_mark(always!.marks, 0)
         }
     }
+}
+
+/// A comprehension's IR, pinned whole: its heads nest, its filters
+/// guard, and its element is pushed at the innermost turn.
+spec "a comprehension lowers as one nest of walks" {
+    given "an indexed head, a filter, a list head and a range head reading earlier binders" {
+        then "each head opens inside the one before it, each filter guards the rest" {
+            let expected = """fn f(r0: List<int>, r1: List<string>) -> List<string>
+scope application {
+  r2 = int 0
+  r3 = call avra_array_sized(r2)
+  r4 = call avra_array_len(r0)
+  r5 = int 0
+  r6 = slot
+  store r6 <- r5
+  loop {
+    r7 = load r6
+    r8 = r7 < r4
+    while r8
+    scope application {
+      r9 = load r6
+      r10 = call avra_array_get(r0, r9)
+      r11 = int 1
+      r12 = r10 > r11
+      if r12 {
+        r13 = call avra_array_len(r1)
+        r14 = int 0
+        r15 = slot
+        store r15 <- r14
+        loop {
+          r16 = load r15
+          r17 = r16 < r13
+          while r17
+          scope application {
+            r18 = load r15
+            r19 = call avra_array_get(r1, r18)
+            r20 = int 0
+            r21 = slot
+            store r21 <- r20
+            loop {
+              r22 = load r21
+              r23 = r22 < r10
+              while r23
+              scope application {
+                r24 = load r21
+                r25 = r24 != r9
+                if r25 {
+                  r26 = r9 * r10
+                  r27 = call avra_int_text(r26)
+                  r28 = call avra_str_concat(r19, r27)
+                  release r27
+                  call avra_array_push_moved(r3, r28)
+                  r29 = int 0
+                  yield r29
+                } else {
+                  r30 = int 0
+                  yield r30
+                } -> r31
+                r32 = load r21
+                r33 = int 1
+                r34 = r32 + r33
+                store r21 <- r34
+              }
+            }
+            r35 = load r15
+            r36 = int 1
+            r37 = r35 + r36
+            store r15 <- r37
+          }
+        }
+        r38 = int 0
+        yield r38
+      } else {
+        r39 = int 0
+        yield r39
+      } -> r40
+      r41 = load r6
+      r42 = int 1
+      r43 = r41 + r42
+      store r6 <- r43
+    }
+  }
+  yield r3
+}"""
+            body_of(render_ir(ir_of(heads())), "f") == expected
+        }
+    }
+    given "one head and a filter" {
+        then "the filter guards the push" {
+            let expected = """fn f(r0: List<int>) -> List<int>
+scope application {
+  r1 = int 0
+  r2 = call avra_array_sized(r1)
+  r3 = call avra_array_len(r0)
+  r4 = int 0
+  r5 = slot
+  store r5 <- r4
+  loop {
+    r6 = load r5
+    r7 = r6 < r3
+    while r7
+    scope application {
+      r8 = load r5
+      r9 = call avra_array_get(r0, r8)
+      r10 = int 1
+      r11 = r9 > r10
+      if r11 {
+        r12 = int 2
+        r13 = r9 * r12
+        call avra_array_push(r2, r13)
+        r14 = int 0
+        yield r14
+      } else {
+        r15 = int 0
+        yield r15
+      } -> r16
+      r17 = load r5
+      r18 = int 1
+      r19 = r17 + r18
+      store r5 <- r19
+    }
+  }
+  yield r2
+}"""
+            body_of(render_ir(ir_of(filtered())), "f") == expected
+        }
+    }
+    given "a relation head the planner narrows" {
+        then "the lookup is read where the head's turn opens, under the outer turn" {
+            let expected = """fn f(r0: string) -> List<int>
+scope application {
+  r1 = int 0
+  r2 = call avra_array_sized(r1)
+  r3 = int 2
+  r4 = int 0
+  r5 = slot
+  store r5 <- r4
+  loop {
+    r6 = load r5
+    r7 = r6 < r3
+    while r7
+    scope application {
+      r8 = load r5
+      r9 = int 1
+      r10 = call @x.c.Row.by_tag(r9, r0)
+      r11 = call avra_array_len(r10)
+      r12 = int 0
+      r13 = slot
+      store r13 <- r12
+      loop {
+        r14 = load r13
+        r15 = r14 < r11
+        while r15
+        scope application {
+          r16 = load r13
+          r17 = call avra_array_get(r10, r16)
+          r18 = int 1
+          r19 = call avra_slot_get(r17, r18)
+          r20 = call avra_streq(r19, r0)
+          if r20 {
+            r21 = int 0
+            r22 = call avra_slot_get(r17, r21)
+            r23 = r22 + r8
+            call avra_array_push(r2, r23)
+            r24 = int 0
+            yield r24
+          } else {
+            r25 = int 0
+            yield r25
+          } -> r26
+          r27 = load r13
+          r28 = int 1
+          r29 = r27 + r28
+          store r13 <- r29
+        }
+      }
+      r30 = load r5
+      r31 = int 1
+      r32 = r30 + r31
+      store r5 <- r32
+      release r10
+    }
+  }
+  yield r2
+}"""
+            body_of(render_ir(provided(narrowed_head(), relation()).lowered()), "f") == expected
+        }
+    }
+}
+
+fn heads() -> string {
+    "fn f(xs: List<int>, ys: List<string>) -> List<string> {\n    [y + \"\${i * x}\" for i, x in xs if x > 1 for y in ys for k in 0..x if k != i]\n}\nf([1, 2, 3], [\"a\", \"b\"]).length"
+}
+
+fn filtered() -> string {
+    "fn f(xs: List<int>) -> List<int> {\n    [x * 2 for x in xs if x > 1]\n}\nf([1, 2, 3]).length"
+}
+
+fn narrowed_head() -> string {
+    "use @x.c.{Row}\nfn f(t: string) -> List<int> {\n    [r.n + k for k in 0..2 for r in Row.all(1) if r.tag == t]\n}\nf(\"a\").length"
+}
+
+/// A relation whose `tag` lookup the planner narrows to.
+fn relation() -> string {
+    "use @std.meta.{plans, plans_all}\n" +
+        "export type Row = { n: int, tag: string }\n" +
+        "impl Row {\n" +
+        "    @plans_all\n" +
+        "    static fn all(db: int) -> List<Row> { [Row { n: db, tag: \"a\" }] }\n" +
+        "    @plans(\"tag\")\n" +
+        "    static fn by_tag(db: int, v: string) -> List<Row> { [] }\n" +
+        "}\n"
 }
