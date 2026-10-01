@@ -372,6 +372,8 @@ export type Workspace = {
     /// A module's files and its exported names, each remembered for one size of
     /// the package table — what every `use` line of the program asks again.
     files_of: Cell<Map<string, List<string>>>,
+    // the paths an `embed` admitted: data, never source
+    embedded: Cell<Map<string, bool>>,
     surfaces: Cell<Map<string, Map<string, DeclId>>>,
     import_lists: Cell<Map<string, List<string>>>,
     /// WHAT IS HELD THIS BUILD.
@@ -824,6 +826,7 @@ fn built(
     let no_method_diags: List<MethodDiagIndex> = []
     let no_module_names_of: Map<string, string> = {}
     let no_files_of: Map<string, List<string>> = {}
+    let no_embedded: Map<string, bool> = {}
     let no_surfaces: Map<string, Map<string, DeclId>> = {}
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
@@ -867,6 +870,7 @@ fn built(
         keys: new_keys(),
         module_names_of: Cell.new(no_module_names_of),
         files_of: Cell.new(no_files_of),
+        embedded: Cell.new(no_embedded),
         surfaces: Cell.new(no_surfaces),
         import_lists: Cell.new(no_import_lists),
         hold: new_hold(),
@@ -1127,7 +1131,7 @@ impl Workspace {
     fn file_id(path: string) -> FileId {
         let known? = self.decls.known_file_id(path) else {
             let f = self.minted_file(path)
-            if !self.lone && !self.is_held(f) && reads_as_source(path) {
+            if !self.lone && !self.is_held(f) && self.reads_as_source(path) {
                 // listed, not `module_files`: its cache would answer the query that
                 // later reads the module, which then records no edge on the manifest
                 for sibling in self.listed_files(self.module_path_of(path)) { let _ = self.minted_file(sibling) }

@@ -66,7 +66,7 @@ impl Workspace {
         mut i = 0
         while i < self.decls.file_count() {
             let fi = self.decls.file(file_at(i))
-            if !self.is_held(fi.id) && reads_as_source(fi.path) {
+            if !self.is_held(fi.id) && self.reads_as_source(fi.path) {
                 act(fi.id)
                 out.push(fi.id)
             }
@@ -133,7 +133,7 @@ impl Workspace {
         while i < self.decls.file_count() {
             let id = file_at(i)
             // a held file's declarations are minted when something reads them
-            if !self.is_held(id) && reads_as_source(self.decls.file(id).path) {
+            if !self.is_held(id) && self.reads_as_source(self.decls.file(id).path) {
                 let _ = self.items(id)
                 self.admit_used(id)
             }
@@ -167,8 +167,18 @@ impl Workspace {
         let base = dir_of(p.source.file)
         for e in p.store.stmts_exprs(p.stmts) {
             let rel = embed_literal_at(p.store, e)
-            if rel != null { let _ = self.minted_file(embed_resolved(base, rel!)) }
+            if rel != null { let _ = self.embedded_file(embed_resolved(base, rel!)) }
         }
+    }
+
+    /// Whether a file is Avra source — every file but one an `embed` named,
+    /// which is data with no module to reach, resolve, sign or analyze.
+    fn reads_as_source(path: string) -> bool { self.embedded.get().get(path) == null }
+
+    /// A file an `embed` names: minted as data, never as source.
+    fn embedded_file(path: string) -> FileId {
+        self.embedded.put(path, true)
+        self.minted_file(path)
     }
 
     fn admit_module(from: Package, m: ModulePath) {
@@ -475,7 +485,3 @@ fn index_of_file(files: List<Analysis>, path: string) -> int? {
     }
     null
 }
-
-/// Whether a file is Avra source. A `FileId` an `embed` admits names data,
-/// with no module to reach, resolve, sign or analyze.
-fn reads_as_source(path: string) -> bool { path.ends_with(".av") }
