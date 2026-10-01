@@ -310,15 +310,6 @@ export type Workspace = {
     /// held unit can contribute them without a body; outside a build there is none and
     /// lowering runs whole, as before.
     store: Cell<Store?>,
-    /// The Kernel revision the stable-name memos below were filled at: a
-    /// later revision clears them before they answer.
-    stable_memo_revision: Cell<int>,
-    /// A declaration by its stable name, memoized as each is asked
-    /// (compiler/witness.av's `decl_at_stable`).
-    decl_by_stable: Cell<Map<string, DeclId>>,
-    /// A signature's content hash (`stable_sig_hash`, witness.av), memoized
-    /// by `"sig:${d.index}"`.
-    stable_hash_memo: Cell<Map<string, int>>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<ExternNames>,
@@ -764,8 +755,6 @@ fn built(
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
     let no_store: Store? = null
-    let no_decls_by_stable: Map<string, DeclId> = {}
-    let no_stable_hashes: Map<string, int> = {}
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
     // below (`ws.decls.arm(...)`, the family loop) and every holder of
     // this workspace write the same tables.
@@ -776,9 +765,6 @@ fn built(
         db: new_db(kernel),
         decls: language_decls(lang, kernel),
         store: Cell.new(no_store),
-        stable_memo_revision: Cell.new(-1),
-        decl_by_stable: Cell.new(no_decls_by_stable),
-        stable_hash_memo: Cell.new(no_stable_hashes),
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),

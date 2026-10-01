@@ -1119,6 +1119,28 @@ case "$vh_nd" in
     *) fails=$((fails+1)); echo "FAIL  verify-held over nd: $(printf '%s' "$vh_nd" | tail -5 | tr '\n' ' ')" ;;
 esac
 
+# `avra cache` IS ITS OWN PROCESS, reading what an earlier check kept. A check, then
+# an edit, then each mode in a process of its own: every answer names the edited
+# input, never an empty one. Each mode is a check's reading, so before each the
+# signature moves again — a parameter renamed — and the reader is read again too.
+mkdir -p $R/cw/src/lib
+printf '[package]\nname = "rt-cw"\nversion = "0.1.0"\n' > $R/cw/avra.toml
+printf 'use lib.{one}\none()\n' > $R/cw/src/main.av
+printf 'export fn one() -> int { 1 }\n' > $R/cw/src/lib/a.av
+./avra check $R/cw >/dev/null 2>&1
+tree=$(pwd); cw=0
+cache_names() { # cache_names <a line the answer holds> <mode words...>
+    steps=$((steps+1)); want=$1; shift; cw=$((cw+1))
+    printf 'export fn one(p%s: int = 0) -> int { 1 }\n' $cw > $R/cw/src/lib/a.av
+    said=$(cd $R/cw && "$tree/avra" cache "$@" 2>&1); st=$?
+    if [ $st -ne 0 ] || ! printf '%s\n' "$said" | grep -qF "$want"; then
+        fails=$((fails+1)); echo "FAIL  avra cache $* (status $st) never said '$want': $(printf '%s\n' "$said" | head -4 | tr '\n' ' ')"
+    fi
+}
+cache_names "cache:   src/lib/a.av"
+cache_names "changed:   src/lib/a.av: its text " changed
+cache_names "why:   down to src/lib/a.av, whose text moved:" why src/main.av
+cache_names "dependents:     src/main.av" dependents src/lib/a.av
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

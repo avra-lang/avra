@@ -382,12 +382,15 @@ impl Kernel {
 
     fn cell(key: Key) -> QueryCell? { state_cell(self.snapshot(), key) }
 
-    /// The keys a settled cell reads, for a caller translating them
-    /// into a durable witness's edges — the only reason to look inside
-    /// a `QueryCell` from outside this file.
+    /// The keys a settled cell reads, in the order it first read them.
     fn deps_of(key: Key) -> List<Key> {
         let none: List<Key> = []
         state_cell(self.snapshot(), key)?.deps ?? none
+    }
+
+    /// Every key a cell stands for, family by family, in arg order.
+    fn settled_keys() -> List<Key> {
+        [Key { family: f, arg: a } for f, row in self.snapshot().cells for a, held in row.get() if held != null]
     }
 
     /// A settled cell's own value hash — an edge's other half, read

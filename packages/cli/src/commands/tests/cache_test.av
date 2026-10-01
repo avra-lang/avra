@@ -1,10 +1,10 @@
-//! `avra cache` — the pack's modes by their words, one spelling each, and
-//! `held` answering a check's hold file by file.
+//! `avra cache` — its modes by their words, one spelling each, `held`
+//! answering a check's hold file by file, and every mode naming the input an
+//! edit moved.
 use @std.io.{make_dirs, write_text}
-use @std.time.{ms, now_ns}
-use @std.process.{tool, cmd, Outcome, ProcessError}
+use @std.time.{now_ns}
 use @std.avrac.compiler.{Want, FileHold, HeldMismatch}
-use commands.{cache_mode, CacheMode, checked_at, root_workspace, disagreement_line}
+use commands.{cache_mode, cache_answer, CacheMode, checked_at, root_workspace, disagreement_line}
 
 /// A package root of one file under `src/`, holding `text` — its own path
 /// each run, so nothing an earlier run kept answers for it.
@@ -30,21 +30,23 @@ fn lib_probe(name: string) -> string {
     root
 }
 
-/// `avra cache <words>` run as a shell runs it. `avra_bin` is hang_test.av's,
-/// `exit_code_1` build_report_test.av's: this module shares one namespace.
-fn cache_ran(words: List<string>) -> Result<Outcome, ProcessError> {
-    let t = tool(avra_bin())?
-    (cmd(t, ["cache"].concat(words)) with { timeout: ms(20000) }).outcome()
+/// A lib probe checked, then its module's one file given a new signature —
+/// the input every mode must name.
+fn edited_lib(name: string) -> string {
+    let root = lib_probe(name)
+    let _ = holds_after_check(root)
+    let _ = write_text("${root}/src/lib/a.av", "export fn one(n: int = 0) -> int { 1 }\n")
+    root
 }
 
-/// Exit 1, nothing on stdout, and the rebuild named on stderr.
-fn refuses_unwalked(words: List<string>) -> bool {
-    match cache_ran(words) {
-        .Ok(o) -> exit_code_1(o.exit) &&
-            o.out.stdout.is_empty() &&
-            o.out.stderr.contains("is being rebuilt as a lazy walk — not answered yet"),
-        .Err(_) -> false,
-    }
+/// A mode's printed lines, or none when it refused.
+fn mode_lines(mode: CacheMode, root: string, target: string) -> List<string> {
+    match cache_answer(mode, root, target) { .Ok(lines) -> lines, .Err(_) -> [] }
+}
+
+/// A mode's refusal, or nothing when it answered.
+fn mode_refusal(mode: CacheMode, root: string, target: string) -> List<string> {
+    match cache_answer(mode, root, target) { .Ok(_) -> [], .Err(lines) -> lines }
 }
 
 fn main_hold(rows: List<FileHold>) -> FileHold? { rows.find(it.path.ends_with("/src/main.av")) }
@@ -59,14 +61,6 @@ spec "commands/cache" {
         }
         then "the retired spellings name no mode" {
             cache_mode("db") == null && cache_mode("explain") == null
-        }
-    }
-    given "a mode the lazy walk does not answer yet" {
-        then "the summary refuses, exit 1, nothing on stdout" {
-            refuses_unwalked([])
-        }
-        then "why, changed and dependents refuse, exit 1, nothing on stdout" {
-            [["why", "main"], ["changed", "main"], ["dependents", "main"]].all(refuses_unwalked(it))
         }
     }
     given "a package a check has just read" {
@@ -98,7 +92,7 @@ spec "commands/cache" {
             )
             let moved = main_hold(root_workspace(root).hold_report(Want.Diagnostics) catch [])?.moved ?? []
             moved.length == 1 &&
-                moved[0].part.ends_with("lib's interface") &&
+                moved[0].part.says().ends_with("lib's interface") &&
                 moved[0].was.ends_with(", 1 file") &&
                 moved[0].now.ends_with(", 2 files")
         }
@@ -112,7 +106,8 @@ spec "commands/cache" {
             let _ = write_text("${root}/src/lib/a.av", "export fn one(n: int = 0) -> int { 1 }\n")
             let rows = root_workspace(root).hold_report(Want.Diagnostics) catch []
             let readers = rows.filter(!it.path.contains("/src/lib/"))
-            readers.length == 2 && readers.all(it.moved.any(it.part.ends_with("lib's interface")))
+            readers.length == 2 &&
+                readers.all(it.moved.any(it.part.says().ends_with("lib's interface")))
         }
         then "a seat's consumed mark moving names the one contract line it changed, then and now" {
             let root = cache_probe("consumed", "use lib.{kept}\nkept([1]).length\n")
@@ -127,7 +122,7 @@ spec "commands/cache" {
                 "export fn kept(xs: List<int>) -> List<List<int>> { [[xs.length]] }\n",
             )
             let moved = main_hold(root_workspace(root).hold_report(Want.Diagnostics) catch [])?.moved ?? []
-            let lines = moved.find(it.part.ends_with("lib's interface"))?.lines ?? []
+            let lines = moved.find(it.part.says().ends_with("lib's interface"))?.lines ?? []
             lines.length == 2 &&
                 lines[0].starts_with("- ") &&
                 lines[1].starts_with("+ ") &&
@@ -138,6 +133,49 @@ spec "commands/cache" {
             let _ = holds_after_check(root)
             let h = main_hold(root_workspace(root).hold_report(Want.Diagnostics) catch [])
             h != null && h!.held && h!.moved.is_empty()
+        }
+    }
+    given "a package checked, then a module's file edited" {
+        then "the summary counts the edited file as the one input whose text moved" {
+            let lines = mode_lines(CacheMode.Summary, edited_lib("summary_edit"), "")
+            lines.any(it == "cache: 1 input whose text moved since the kept state") &&
+                lines.any(it == "cache:   src/lib/a.av")
+        }
+        then "changed names the moved input, then the file read again because of it" {
+            let lines = mode_lines(CacheMode.Changed, edited_lib("changed_edit"), "")
+            lines.any(it.starts_with("changed:   src/lib/a.av: its text ")) &&
+                lines.any(it.starts_with("changed: src/main.av — read"))
+        }
+        then "why of the reader runs from its analysis down to the moved input's text" {
+            let lines = mode_lines(CacheMode.Why, edited_lib("why_edit"), "src/main.av")
+            lines.any(it == "why:   down to src/lib/a.av, whose text moved:") &&
+                lines.any(it == "why:     Analysis(src/main.av)") &&
+                lines.any(it.ends_with("reads Source(src/lib/a.av)"))
+        }
+        then "why of a query names the moved input it reads" {
+            let lines = mode_lines(
+                CacheMode.Why,
+                edited_lib("why_query"),
+                "Sig(one · src/lib/a.av)",
+            )
+            lines.first() ?? "" == "why: Sig(one · src/lib/a.av)" &&
+                lines.any(it == "why:   down to src/lib/a.av, whose text moved:")
+        }
+        then "dependents of the edited file names the file a check analyses that reads it" {
+            let lines = mode_lines(
+                CacheMode.Dependents,
+                edited_lib("dependents_edit"),
+                "src/lib/a.av",
+            )
+            lines.first() ?? "" == "dependents: Source(src/lib/a.av)" &&
+                lines.any(it == "dependents:     src/main.av")
+        }
+        then "a query naming nothing is refused, never answered empty" {
+            let lines = mode_refusal(CacheMode.Why, edited_lib("why_nothing"), "no-such-thing")
+            lines.length == 1 && lines[0].contains("matches `no-such-thing`")
+        }
+        then "changed refuses a target, since it answers for the whole package" {
+            mode_refusal(CacheMode.Changed, edited_lib("changed_target"), "main").length == 1
         }
     }
     given "a held file a fresh reading disagrees with" {

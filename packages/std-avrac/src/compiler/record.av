@@ -1319,20 +1319,42 @@ fn seen_row(r: List<string>) -> SeenPart? {
 
 /// ONE PART OF A KEY THAT MOVED: what it is, how it read then and reads now, and
 /// for a module's interface the contract lines it lost (`- `) and gained (`+ `).
-export type PartMoved = { part: string, was: string, now: string, lines: List<string> }
+export type PartMoved = { part: KeyPart, was: string, now: string, lines: List<string> }
+
+/// Which part of a key moved: the file's own text, what its compile-time runs
+/// read, or a module it sees — one it came to see, one it no longer sees, or one
+/// whose interface moved.
+export enum KeyPart {
+    Text
+    Runs
+    Came(module: string)
+    Went(module: string)
+    Interface(module: string)
+}
+
+impl KeyPart {
+    fn says() -> string {
+        match self {
+            .Text -> "its text",
+            .Runs -> "what its compile-time runs read",
+            .Came(m) or .Went(m) -> "module ${m}",
+            .Interface(m) -> "module ${m}'s interface",
+        }
+    }
+}
 
 /// What moved between a key's parts then and now — its text, what its runs read,
 /// and each module it sees whose interface moved, came or went.
 export fn parts_moved(store: Store, bodies: RecordBodies, was: KeyParts, now: KeyParts) -> List<
     PartMoved,
 > {
-    let text = if was.text == now.text { [] } else { [PartMoved { part: "its text", was: was.text, now: now.text, lines: [] }] }
+    let text = if was.text == now.text { [] } else { [PartMoved { part: KeyPart.Text, was: was.text, now: now.text, lines: [] }] }
     let runs = if joined(was.runs, ",") == joined(now.runs, ",") {
         []
     } else {
         [
             PartMoved {
-                part: "what its compile-time runs read",
+                part: KeyPart.Runs,
                 was: joined(was.runs, ","),
                 now: joined(now.runs, ","),
                 lines: [],
@@ -1354,7 +1376,7 @@ export fn seen_list_moved(
     seen
         .concat(
             [PartMoved {
-                part: "module ${s.module}",
+                part: KeyPart.Went(s.module),
                 was: seen_words(s),
                 now: "no longer seen",
                 lines: [],
@@ -1366,7 +1388,7 @@ fn seen_moved(store: Store, bodies: RecordBodies, was: SeenPart?, now: SeenPart)
     let prior? = was else {
         return [
             PartMoved {
-                part: "module ${now.module}",
+                part: KeyPart.Came(now.module),
                 was: "not seen",
                 now: seen_words(now),
                 lines: [],
@@ -1376,7 +1398,7 @@ fn seen_moved(store: Store, bodies: RecordBodies, was: SeenPart?, now: SeenPart)
     if prior.bytes_key == now.bytes_key && prior.files == now.files { return [] }
     [
         PartMoved {
-            part: "module ${now.module}'s interface",
+            part: KeyPart.Interface(now.module),
             was: seen_words(prior),
             now: seen_words(now),
             lines: forms_moved(forms_at(store, bodies, prior), forms_at(store, bodies, now)),
