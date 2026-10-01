@@ -21,6 +21,7 @@ use core.{
     joined,
     sorted_texts,
     distinct,
+    flatten,
     same_decl,
     module_path,
     ModulePath,
@@ -1093,6 +1094,9 @@ impl Workspace {
         }
         for d in sees { r.sees.set(d, true) }
         for p in record_fields(self, store, m) { if is_ref_row(p) && !names_builtin(p) { r.add(ref_target(p)) } }
+        // a name reached through a re-export references its original's file, so the
+        // file that re-exports it is reached too: re-pointing the name moves that file
+        r.add_all(flatten([self.reexporting_files(store, d) for d in sees]))
         r.indexes = [self.typed_named(store, d) for d in r.mods]
         r.late = []
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
@@ -1130,6 +1134,13 @@ impl Workspace {
         for p in record_fields(self, store, module_path(name.split("."))) {
             if p.length >= 3 && p[0] == "file" { self.keys.file_owners.put(p[1], name) }
         }
+    }
+
+    /// The files of a seen module's record that re-export a name.
+    fn reexporting_files(store: Store, name: string) -> List<string> {
+        distinct(
+            [p[1] for p in record_fields(self, store, module_path(name.split("."))) if p.length >= 5 && p[0] == "reexport"],
+        )
     }
 
     /// `typed_index` by the module's name.
