@@ -1,7 +1,8 @@
 # The merge queue's check: ONE job per train, so ten trains test at once on
 # the ten free workers. A PR's own run only admits it to the queue (its branch
 # was tested by `work test`); on main, the job builds and caches the compiler
-# every PR and train starts from. `test` is the one required check. The
+# every PR and train starts from. `test` is the one required check. A
+# dispatched run builds and runs the static keepers alone. The
 # machine is .github/ci/Dockerfile's image; a train is at most ten entries
 # over main, so twenty commits of history reach it. A train is judged against
 # main itself, never its `base_sha`, which is the train ahead of it: every
@@ -13,6 +14,7 @@ on:
   merge_group:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: checks-${{ github.ref }}
@@ -56,6 +58,16 @@ jobs:
       - if: github.event_name == 'merge_group'
         name: main
         run: git fetch -q --depth=20 origin main
+      - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+        name: keepers
+        run: |
+          fail=0
+          for k in fingerprints vocab cited externs dogfooding-rules; do
+            echo "::group::$k"
+            make -s -o avra "$k" || { fail=1; echo "::error::keeper $k refused"; }
+            echo "::endgroup::"
+          done
+          exit $fail
       - if: github.event_name == 'merge_group'
         name: fmt
         run: |
