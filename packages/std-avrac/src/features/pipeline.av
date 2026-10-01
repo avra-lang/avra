@@ -1,0 +1,113 @@
+//! THE PIPELINE — a walk described as a value, then run through the
+//! walk's own verbs. Its clauses run in order: a head opens a walk
+//! inside every walk before it, a keep guards every clause after it, a
+//! map replaces the element in hand; past the last clause the element
+//! reaches the sink. A comprehension is a pipeline whose sink pushes.
+use core.{ExprId, DeclId, Reg, TypeId}
+
+/// A head's source: a list, or the range `source..hi`. `index` binds
+/// the position before the element; a `lookup` is read in the
+/// source's place.
+export type Source = { source: ExprId, hi: ExprId?, index: bool, lookup: Lookup? }
+
+/// A relation's narrower read: `lookup(db, value)`, the value written
+/// in the filter `cond`.
+export type Lookup = { lookup: DeclId, db: ExprId, value: ExprId, cond: ExprId }
+
+/// How a clause computes: an expression written over the heads'
+/// binders.
+export enum Step {
+    Written(e: ExprId)
+}
+
+export enum Clause {
+    Head(s: Source)
+    Keep(s: Step)
+    Map(s: Step)
+}
+
+/// Where each element that passes every clause goes.
+export enum Sink {
+    Push(dst: Reg)
+}
+
+export type Pipeline = { clauses: List<Clause>, sink: Sink }
+
+/// Every head's registers so far, which a written step binds, and the
+/// element in hand — a pipeline opens with a head, so a sink has one.
+type Turn = { regs: List<Reg>, value: Reg? }
+
+impl LowerCx {
+    /// The pipeline run, answering its sink's value.
+    mut fn piped(p: Pipeline) -> Reg {
+        self.staged(p, 0, Turn { regs: [], value: null })
+        self.sink_answer(p.sink)
+    }
+
+    /// The clause at `at`, every later one inside it.
+    mut fn staged(p: Pipeline, at: int, t: Turn) {
+        if at >= p.clauses.length { return self.sunk(p.sink, t) }
+        match p.clauses[at] {
+            .Head(s) -> self.headed(p, at, t, s),
+            .Keep(s) -> self.void_region(self.stepped(s, t)) { cx -> cx.staged(p, at + 1, t) },
+            .Map(s) -> self.staged(p, at + 1, t with { value: self.stepped(s, t) }),
+        }
+    }
+
+    /// A head binds its source under the earlier heads' registers — its
+    /// range bound shares that anchor — reads its lookup, and opens its
+    /// walk with every later clause inside the turn.
+    mut fn headed(p: Pipeline, at: int, t: Turn, s: Source) {
+        self.bind_patterns(s.source, t.regs)
+        self.narrowed(s.source, t.regs, s.lookup)
+        let w = if s.hi == null { self.opened(s.source, self.elem_of(s.source)) } else { self.counted(s.source, s.hi!) }
+        self.turn_open(w)
+        let here = self.turn_index(w)
+        let v = if s.hi == null { self.turn_elem(w, here) } else { here }
+        self
+            .staged(
+                p,
+                at + 1,
+                Turn { regs: t.regs.concat(if s.index { [here, v] } else { [v] }), value: v },
+            )
+        self.turn_close(w)
+    }
+
+    /// The head's source read through its lookup, when one narrows it:
+    /// the value, written in a filter, reads only earlier heads'
+    /// binders, bound here.
+    mut fn narrowed(source: ExprId, regs: List<Reg>, lookup: Lookup?) {
+        let l? = lookup else { return }
+        self.bind_patterns(l.cond, regs)
+        let rows = self
+            .call_decl_at(
+                source,
+                self.method_symbol(l.lookup, source, self.type_at(source)),
+                [self.reg_of(l.db), self.reg_of(l.value)],
+            )
+        self.body.set_reg(source, rows)
+    }
+
+    mut fn stepped(s: Step, t: Turn) -> Reg {
+        match s {
+            .Written(e) -> {
+                self.bind_patterns(e, t.regs)
+                self.reg_of(e)
+            },
+        }
+    }
+
+    mut fn sunk(s: Sink, t: Turn) {
+        match s { .Push(dst) -> self.push_slot(dst, t.value!) }
+    }
+
+    fn sink_answer(s: Sink) -> Reg {
+        match s { .Push(dst) -> dst }
+    }
+
+    /// The source's element type — typing proved it a list.
+    fn elem_of(source: ExprId) -> TypeId {
+        let held: TypeId? = self.view.types.element(self.type_at(source))
+        held ?? self.type_at(source)
+    }
+}
