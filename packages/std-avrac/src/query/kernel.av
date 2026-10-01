@@ -80,6 +80,11 @@ type KernelState = {
     // that resumes sees its own stamp again and its next read is the
     // one-compare fast path, same as if nothing had nested at all.
     restore: List<Cell<List<Restore>>?>,
+    // The revision each open query BEGAN at, parallel to `open`: a query
+    // settles as verified at that revision, never a later one, so a write
+    // that moved its input while it ran (a late write bumps the revision)
+    // leaves it re-verified on its next ask rather than certified fresh.
+    began: List<int>,
     next_reader: int,
 }
 
@@ -145,6 +150,7 @@ export fn new_kernel() -> Kernel {
         pending: [],
         open: [],
         restore: [],
+        began: [],
         next_reader: 0,
     }
     Kernel {
@@ -410,12 +416,14 @@ impl Kernel {
         s.restore.push(no_restore)
         s.open.push(key)
         s.next_reader = s.next_reader + 1
+        s.began.push(s.rev)
         self.replace(s)
         self.readers.push(s.next_reader)
     }
 
     fn settle(key: Key, value_hash: int) {
         mut s = self.snapshot()
+        let began = s.began.last() ?? state_revision(s)
         let deps = self.closed_frame(s)
         self
             .settled(
@@ -424,6 +432,7 @@ impl Kernel {
                 deps,
                 kept_since(state_cell(s, key), value_hash) ?? state_revision(s),
                 value_hash,
+                began,
             )
     }
 
@@ -439,19 +448,22 @@ impl Kernel {
     /// comparison after it is exact.
     fn settle_lazy(key: Key, fingerprint: fn() -> int) {
         mut s = self.snapshot()
+        let began = s.began.last() ?? state_revision(s)
         let deps = self.closed_frame(s)
         let prior? = state_cell(s, key) else {
-            self.settled(s, key, deps, state_revision(s), null)
+            self.settled(s, key, deps, state_revision(s), null, began)
             return
         }
         let value_hash = fingerprint()
-        self.settled(s, key, deps, kept_since(prior, value_hash) ?? state_revision(s), value_hash)
+        self
+            .settled(s, key, deps, kept_since(prior, value_hash) ?? state_revision(s), value_hash, began)
     }
 
     /// Closes the open query frame: its read deps, with the frame's
     /// restores replayed and its stacks popped.
     fn closed_frame(mut s: KernelState) -> List<Key> {
         let deps: List<Key> = s.pending.pop().get()
+        let _ = s.began.pop()
         let restored: Cell<List<Restore>>? = s.restore.pop()
         let _ = s.open.pop()
         mut open_readers = self.readers.get()
@@ -462,14 +474,21 @@ impl Kernel {
     }
 
     /// Writes a settled cell, verified this revision, and publishes it.
-    fn settled(mut s: KernelState, key: Key, deps: List<Key>, changed: int, value_hash: int?) {
+    fn settled(
+        mut s: KernelState,
+        key: Key,
+        deps: List<Key>,
+        changed: int,
+        value_hash: int?,
+        verified: int,
+    ) {
         write_cell(
             s,
             key,
             QueryCell {
                 deps: deps,
                 changed_at: changed,
-                verified_at: state_revision(s),
+                verified_at: verified,
                 value_hash: value_hash,
             },
         )
