@@ -20,9 +20,20 @@ repo=avra-lang/avra
 state="${AVRA_KEEPER_STATE:-$HOME/.avra-queue-keeper}"
 mkdir -p "$state"
 
-queued() {
-    gh api graphql -f query='{repository(owner:"avra-lang",name:"avra"){mergeQueue(branch:"main"){entries(first:100){nodes{pullRequest{number}}}}}}' \
-        --jq '.data.repository.mergeQueue.entries.nodes[].pullRequest.number'
+# Each queued PR as "<number> <state> <id>".
+entries() {
+    gh api graphql -f query='{repository(owner:"avra-lang",name:"avra"){mergeQueue(branch:"main"){entries(first:100){nodes{state pullRequest{number id}}}}}}' \
+        --jq '.data.repository.mergeQueue.entries.nodes[] | "\(.pullRequest.number) \(.state) \(.pullRequest.id)"'
+}
+
+# An entry GitHub marked UNMERGEABLE stalls every train behind it, so it
+# leaves the queue; the pass below treats it like any dropped PR.
+unstick() {
+    entries | while read -r n st id; do
+        [ "$st" = UNMERGEABLE ] || continue
+        gh api graphql -f query="mutation{dequeuePullRequest(input:{id:\"$id\"}){clientMutationId}}" >/dev/null 2>&1 \
+            && echo "queue-keeper: #$n stalled the queue as UNMERGEABLE — taken out"
+    done
 }
 
 # The failing lines of PR $1's newest train, or nothing.
@@ -45,18 +56,20 @@ say_once() {
     gh pr comment "$1" -R "$repo" --body "$2" >/dev/null && : > "$mark"
 }
 
-# Puts PR $1 in the queue. A PR whose own check is missing or stale gets
-# it run again first (closing and reopening re-runs it), then is queued.
+# Puts PR $1 in the queue. A PR whose own check is missing cannot be
+# queued, and a check this token starts would wait for approval, so its
+# owner is asked to re-land it.
 enqueue() {
     id=$(gh pr view "$1" -R "$repo" --json id --jq .id)
     q="mutation{enqueuePullRequest(input:{pullRequestId:\"$id\"}){mergeQueueEntry{position}}}"
     gh api graphql -f query="$q" >/dev/null 2>&1 && return 0
-    gh pr close "$1" -R "$repo" >/dev/null 2>&1 && gh pr reopen "$1" -R "$repo" >/dev/null 2>&1
-    gh pr merge "$1" -R "$repo" --auto >/dev/null 2>&1
+    say_once "$1" "queue keeper: this PR cannot rejoin the queue because its own \`test\` check is missing. Run \`sh tools/work land\` from its worktree." nocheck
+    return 1
 }
 
 pass() {
-    inq=" $(queued | tr '\n' ' ') "
+    unstick
+    inq=" $(entries | cut -d' ' -f1 | tr '\n' ' ') "
     gh pr list -R "$repo" --state open --json number,mergeable,isDraft,headRefOid \
         --jq '.[] | select(.isDraft | not) | "\(.number) \(.mergeable) \(.headRefOid)"' |
     while read -r n mergeable head; do
