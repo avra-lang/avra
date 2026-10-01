@@ -75,7 +75,13 @@ jobs:
           [ -z "$changed" ] || build/avra fmt --check $changed
       - if: github.event_name == 'merge_group'
         name: idioms
-        run: build/avra check packages/std-avrac --baseline tools/idioms.baseline
+        run: |
+          fail=0
+          for p in $(sh tools/affected_packages.sh origin/main HEAD "$PWD" 2>/dev/null); do
+            [ -d "packages/$p/src" ] || continue
+            build/avra check "packages/$p" --baseline tools/idioms.baseline || { fail=1; echo "::error::idioms $p"; }
+          done
+          exit $fail
       - if: github.event_name == 'merge_group'
         name: suites
         run: |
