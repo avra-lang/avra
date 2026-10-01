@@ -3,7 +3,16 @@
 //! and their types (or values) arrive as parallel capture lists and
 //! zip.
 use core.{Expr, Stmt, Nominal, Plain, Scoped}
-use features.{LangNode, Builder, zip_defect, marks_at, spread_name, spread_named, record_spreads}
+use features.{
+    LangNode,
+    Builder,
+    zip_defect,
+    marks_at,
+    spread_name,
+    spread_named,
+    record_spreads,
+    three_dots,
+}
 use grammar.{Token}
 
 /// THE ONE `type` BUILDER: the grammar's ordered choice captures a
@@ -20,6 +29,7 @@ fn build_type_decl(b: Builder) -> Result<LangNode, string> {
     if !nt.is_empty() { return b.make_stmt(Stmt.NamedType(Scoped(n.text), [Plain(t) for t in names], nt[0])) }
     let spreads = b.tokens(7)?
     let fields = b.fields_zipped(fs, ft, fds, marks_at(b.args, 6))?
+    if !(b.tokens(10)?).is_empty() { return .Err(three_dots()) }
     let records = record_spreads(fs, b.tokens(8)?, b.type_refs(9)?)?
     let s = b
         .store

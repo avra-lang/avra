@@ -1,0 +1,43 @@
+// A tree of `dyn View` parts, each drawn by the member its run-time
+// type chooses; a default shared by every instantiation of a trait.
+trait View {
+    fn name() -> string
+}
+
+type Text = { content: string }
+
+type Button = { label: string }
+
+impl View for Text {
+    fn name() -> string { "text" }
+}
+
+impl View for Button {
+    fn name() -> string { "button" }
+}
+
+type Html = { tag: string = "" }
+
+trait Realize<T> {
+    fn draw(t: T) -> string
+    fn framed(t: T) -> string { "[" + self.draw(t) + "]" }
+}
+
+impl Realize<Text> for Html {
+    fn draw(t: Text) -> string { "<p>${t.content}</p>" }
+}
+
+impl Realize<Button> for Html {
+    fn draw(t: Button) -> string { "<button>${t.label}</button>" }
+}
+
+fn page() -> List<dyn View> {
+    let a: dyn View = Text { content: "hi" }
+    let b: dyn View = Button { label: "go" }
+    [a, b]
+}
+
+let h = Html {}
+[h.draw(v) for v in page()].join("") +
+    h.framed(Text { content: "f" }) +
+    h.framed(Button { label: "b" })

@@ -237,6 +237,11 @@ export type Asked = { subject: ExprId, on_present: bool }
 @derive(Fingerprint)
 export type ParamScope = { params: List<TypeId> }
 
+/// A dot-call whose member is chosen at RUN: argument `seat` is a
+/// `dyn` value, and its type's tag picks among `members`.
+@derive(Fingerprint)
+export type RunChoice = { seat: int, members: List<DeclId> }
+
 export type TypeFacts = {
     of_expr: SideTable<TypeId>,
     widens: SideTable<TypeId?>,
@@ -287,6 +292,8 @@ export type TypeFacts = {
     null_tails: SideTable<bool>,
     // the method a dot-call chose among a generic trait's impls
     chosen: SideTable<DeclId?>,
+    // the members a dot-call dispatches among at run, by one `dyn` argument
+    dispatches: SideTable<RunChoice?>,
     voices: Voices,
 }
 
@@ -317,6 +324,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         spreads: side_table("spreads", lo, hi, false),
         null_tails: side_table("null_tails", lo, hi, false),
         chosen: side_table<DeclId?>("chosen", lo, hi, null),
+        dispatches: side_table<RunChoice?>("dispatches", lo, hi, null),
         starved: side_table<TypeId?>("starved", lo, hi, null),
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
@@ -375,6 +383,10 @@ impl TypeFacts {
     fn record_chosen(e: ExprId, m: DeclId) { self.chosen.set(e.index, m) }
 
     fn chosen_at(e: ExprId) -> DeclId? { self.chosen.get(e.index) }
+
+    fn record_dispatch(e: ExprId, d: RunChoice) { self.dispatches.set(e.index, d) }
+
+    fn dispatch_at(e: ExprId) -> RunChoice? { self.dispatches.get(e.index) }
 
     fn set_want(e: ExprId, ty: TypeId) {
         self.wants.set(e.index, ty)
@@ -518,6 +530,7 @@ impl TypeFacts {
         self.spreads.lay(other.spreads)
         self.null_tails.lay(other.null_tails)
         self.chosen.lay(other.chosen)
+        self.dispatches.lay(other.dispatches)
         self.binding_types.lay_named(other.binding_types, is_typed)
         // a WHOLE-FILE column: a named lay, never plain, keeps one
         // declaration's `true` from being stomped by another's

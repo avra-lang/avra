@@ -2,8 +2,8 @@
 //! the QUALIFIED name, the subject riding the self seat. The name
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
-use core.{ExprId, Reg, DeclId, TypeId}
-use features.{LowerCx, MethodCall}
+use core.{ExprId, Reg, DeclId, TypeId, Type, BinOp, same_type}
+use features.{LowerCx, MethodCall, RunChoice}
 
 /// The receiver's value: seat 0 of the body, as its binding says.
 fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -123,12 +123,113 @@ fn declared_dispatch(
     name: string,
     args: List<ExprId>,
 ) -> Reg {
+    let run? = cx.facts.dispatch_at(e) else { return chosen_dispatch(cx, e, subject, decl, name, args) }
+    dispatched(cx, e, subject, decl, name, args, run)
+}
+
+/// A member fixed at compile time — the name's one, or the one typing chose.
+fn chosen_dispatch(
+    mut cx: LowerCx,
+    e: ExprId,
+    subject: ExprId,
+    decl: DeclId,
+    name: string,
+    args: List<ExprId>,
+) -> Reg {
     let s = seated(cx, subject, args)
-    let m? = cx.facts.chosen_at(e) ?? cx.view.decls.method(decl, name) else {
+    let m? = cx.facts.chosen_at(e) ?? concrete_choice(cx, decl, name, args) ?? cx
+        .view
+        .decls
+        .method(decl, name) else {
         return cx.lower_defect(e, "a method with no symbol survived typing")
     }
     let seats = [s.recv].concat(cx.seated_regs(e, m, args, s.args))
     cx.call_decl_at(e, cx.method_symbol(m, e, cx.type_at(subject)), seats)
+}
+
+/// Inside a body typed over a type parameter, typing could not choose
+/// among a generic trait's members; under mono the arguments' types are
+/// concrete, and the ONE member whose seats they are is the callee.
+fn concrete_choice(cx: LowerCx, decl: DeclId, name: string, args: List<ExprId>) -> DeclId? {
+    let many = cx.view.decls.methods_named(decl, name)
+    if many.length < 2 { return null }
+    let fits = [m for m in many if seats_are(cx, m, args)]
+    if fits.length == 1 { fits[0] } else { null }
+}
+
+/// Whether the arguments' types are exactly the member's seats.
+fn seats_are(cx: LowerCx, m: DeclId, args: List<ExprId>) -> bool {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
+    sig.params.length == args.length + 1 &&
+        [j for j, a in args if !same_type(cx.type_at(a), sig.params[j + 1])].is_empty()
+}
+
+/// A member chosen at RUN: the `dyn` argument's tag is tested against
+/// each member's in turn; the last is called only once its tag is
+/// proved, and a value no member takes traps in the call's words.
+fn dispatched(
+    mut cx: LowerCx,
+    e: ExprId,
+    subject: ExprId,
+    decl: DeclId,
+    name: string,
+    args: List<ExprId>,
+    d: RunChoice,
+) -> Reg {
+    let s = seated(cx, subject, args)
+    let arg = args[d.seat]
+    let tr? = dyn_decl(cx, cx.type_at(arg)) else { return cx.lower_defect(e, "a dispatch over no `dyn` survived typing") }
+    let int_ty = cx.view.decls.types.type(int)
+    let tag = cx.slot_read(s.args[d.seat], 1 + cx.view.decls.trait_method_names(tr).length, int_ty)
+    let value = boxed_value(cx, arg, s.args[d.seat], false)
+    let run = Run {
+        e: e,
+        recv_ty: cx.type_at(subject),
+        seated: s,
+        seat: d.seat,
+        tag: tag,
+        value: value,
+        words: "`${cx.view.decls.decl(decl).name}.${name}` has no member for this `dyn` value's type",
+    }
+    member_arm(cx, run, d.members, 0)
+}
+
+/// One `dyn`-dispatched call's parts, shared by every arm.
+type Run = { e: ExprId, recv_ty: TypeId, seated: Seated, seat: int, tag: Reg, value: Reg, words: string }
+
+fn member_arm(mut cx: LowerCx, run: Run, members: List<DeclId>, i: int) -> Reg {
+    let m = members[i]
+    if i == members.length - 1 {
+        let misses = tag_test(cx, run, m, BinOp.Ne)
+        cx.void_region(misses) { cx -> cx.trap(cx.const_str(run.words)) }
+        return member_called(cx, run, m)
+    }
+    let hits = tag_test(cx, run, m, BinOp.Eq)
+    cx
+        .region(hits, run.e) { cx -> member_called(cx, run, m) } else { cx -> member_arm(cx, run, members, i + 1) }
+}
+
+/// The run-time tag compared with the type a member takes at the seat.
+fn tag_test(mut cx: LowerCx, run: Run, m: DeclId, op: BinOp) -> Reg {
+    let want = cx.const_int(member_tag(cx, m, run.seat))
+    cx.bin(Type.Bool, op, run.tag, want)
+}
+
+/// The tag of the type a member takes at the dispatched seat.
+fn member_tag(cx: LowerCx, m: DeclId, seat: int) -> int {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return 0 }
+    let d? = cx.view.decls.implementor(sig.params[seat + 1]) else { return 0 }
+    cx.view.decls.type_tag(d)
+}
+
+fn member_called(mut cx: LowerCx, run: Run, m: DeclId) -> Reg {
+    let seats = [if j == run.seat { run.value } else { r } for j, r in run.seated.args]
+    cx.call_decl_at(run.e, cx.method_symbol(m, run.e, run.recv_ty), [run.seated.recv].concat(seats))
+}
+
+/// The trait a `dyn` type is over, or none.
+fn dyn_decl(cx: LowerCx, ty: TypeId) -> DeclId? {
+    match cx.view.decls.types.shape_of(ty) { .Dyn(d, _) -> d, _ -> null }
 }
 
 /// A STATIC's dispatch: a direct Call to the method's qualified

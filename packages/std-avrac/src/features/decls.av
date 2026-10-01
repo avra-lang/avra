@@ -27,6 +27,7 @@ use core.{
     Param,
     FnParts,
     spelled,
+    fp_str,
     module_symbol,
     filled,
     flatten,
@@ -2114,6 +2115,17 @@ impl Decls {
         [self.decl(m).name for m in self.trait_fns(d)]
     }
 
+    /// Every type in the program that implements `tr` — its records,
+    /// enums, named types and builtins, each asked through the hook, so
+    /// a held module answers from its interface.
+    fn implementors_of(tr: DeclId) -> List<DeclId> {
+        [DeclId { index: j } for j, x in self.decls.get() if implements_kind(x.kind) && self.implements(DeclId { index: j }, tr)]
+    }
+
+    /// A type's runtime tag in a `dyn` box: its symbol's fingerprint —
+    /// the same in every unit and every run, so a held object agrees.
+    fn type_tag(d: DeclId) -> int { fp_str(self.symbol(d)) }
+
     /// A trait's associated `derive` member, or none — the ONE name
     /// the compiler runs for `@derive`.
     fn trait_derive(d: DeclId) -> DeclId? {
@@ -2154,9 +2166,23 @@ impl Decls {
         null
     }
 
+    /// The GENERIC trait member a type answers `name` through at several
+    /// arguments — the contract every impl of it agrees to — or none.
+    fn shared_member(target: DeclId, name: string) -> DeclId? {
+        if self.methods_named(target, name).length < 2 { return null }
+        for tr in self.impls.get()[target.index].get() {
+            if self.tparams(tr).length > 1 {
+                let m: DeclId? = self.trait_member(tr, name)
+                if m != null { return m }
+            }
+        }
+        null
+    }
+
     /// Every registered method of one name — several only where a
     /// generic trait is implemented at several arguments.
     fn methods_named(target: DeclId, name: string) -> List<DeclId> {
+        (self.ensure_methods.get())(target)
         [m for m in self.methods_of(target) if self.decl(m).name == name]
     }
 
@@ -2289,4 +2315,12 @@ fn nothing_asked() {}
 
 fn enum_parts(sig: DeclSig) -> EnumSig? {
     match sig { .Enum(e) -> e, _ -> null }
+}
+
+/// Whether a declaration of this kind may implement a trait.
+fn implements_kind(k: DeclKind) -> bool {
+    match k {
+        .Record or .Enum or .CollectEnum or .Named or .Builtin -> true,
+        .Fn or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
+    }
 }

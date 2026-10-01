@@ -128,10 +128,26 @@ impl LowerCx {
             let seats: List<SeatValue> = self.call_seats(m, call)
             if !self.seats_complete(m, call, seats) { return self.wanted(m) }
             return self
-                .wanted(m, Sub { target: contract, args: [recv], consts: [sv.fp for sv in seats] }, seats)
+                .wanted(
+                    m,
+                    Sub {
+                        target: contract,
+                        args: self.trait_args_at(call, contract, recv),
+                        consts: [sv.fp for sv in seats],
+                    },
+                    seats,
+                )
         }
         if at == null { return self.wanted(m) }
         self.symbol_at(m, at!)
+    }
+
+    /// A trait member's instantiation at a call: `Self` and, for a
+    /// generic trait's default, the arguments typing read off the call.
+    fn trait_args_at(call: ExprId, contract: DeclId, recv: TypeId) -> List<TypeId> {
+        let sub? = self.facts.subst_at(call) else { return [recv] }
+        // LICENSED structs.index_compared: DECLARATION identity — whose instantiation this is
+        if sub.target.index == contract.index { sub.args } else { [recv] }
     }
 
     /// A declaration's body under an instantiation, as the symbol a
