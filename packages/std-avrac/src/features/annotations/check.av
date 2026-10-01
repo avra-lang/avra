@@ -18,7 +18,7 @@ use core.{
     user_kind,
     is_kind_word,
 }
-use features.{TypeCx, kind_word, Unsettled, unsettled_label, nothing}
+use features.{TypeCx, kind_word, Unsettled, unsettled_label, nothing, fills_type_seat}
 use @std.meta.{Diagnostic}
 use diagnostics.{refusal, loc_at}
 use @std.errors.{Loc}
@@ -38,6 +38,9 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     let found_sig? = cx.view.decls.sig(d)?.fn_sig() else { return }
     let sig = found_sig
     let seats = sig.params
+    // A RULE takes the VALUE a type holds, never the declaration: it
+    // is data a reader splices where it reads that value, typed there.
+    if is_rule(cx, seats, s) { return }
     // THE ARGUMENT POSITION: a declaration's NAME is its meta value,
     // typed as the seat; every other argument types as an expression.
     // A genuinely failed argument is absorbed here, its cause spoken.
@@ -121,6 +124,21 @@ fn declared_kind(cx: TypeCx, s: StmtId) -> DeclKind? {
         return null
     }
     cx.view.decls.decl(d).kind
+}
+
+/// A rule annotation: on a record, an enum or a named type, its first
+/// seat takes neither a declaration nor a counterfeit of one.
+fn is_rule(cx: TypeCx, seats: List<TypeId>, s: StmtId) -> bool {
+    let first? = seats.first() else { return false }
+    let kind? = declared_kind(cx, s) else { return false }
+    fills_type_seat(kind) && !cx.view.decls.takes_a_decl(first) && !counterfeit_meta(cx, first)
+}
+
+/// A seat naming `Fn`, `Type` or `Named` from a module that is not
+/// `@std/meta`.
+fn counterfeit_meta(cx: TypeCx, seat: TypeId) -> bool {
+    let took = cx.view.types.name_of(seat)
+    ["Fn", "Type", "Named"].contains(took) && !cx.view.decls.meta_type(seat, took)
 }
 
 /// `Fn` takes a fn; `Type` takes a record or an enum; `Named` takes
@@ -221,7 +239,7 @@ fn takes_no_declaration(mut cx: TypeCx, a: Annotation) {
 
 fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
     let took = cx.view.types.name_of(seat)
-    let found = if ["Fn", "Type", "Named"].contains(took) && !cx.view.decls.meta_type(seat, took) {
+    let found = if counterfeit_meta(cx, seat) {
         "`${a.name}` takes `${took}` from another module, not `@std.meta.${took}`"
     } else {
         "`${a.name}` takes `${took}`, and this is ${a_kind(kind)}"

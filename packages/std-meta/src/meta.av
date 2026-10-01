@@ -160,12 +160,26 @@ export type Mark = { name: string, args: List<string>, at: Loc? }
 
 /// `@name(args)` as a DECLARATION's own annotation, never a member's
 /// mark — `Mark`'s twin at the `Fn`/`Type` level: the call's name,
-/// each argument's literal text, and where it was written.
-export type Annotation = { name: string, args: List<string>, at: Loc? }
+/// each argument's literal text, and where it was written. `call` is
+/// the annotation as the template `name(${value}, args)`: `applied`
+/// fills the value, and the call is typed where it is spliced, its
+/// refusals pointing here.
+export type Annotation = { name: string, args: List<string>, at: Loc?, call: Code? = null }
+
+/// The annotation called over a value — `@range(13, 130)` over `v`
+/// is `range(v, 13, 130)`. Absent when the compiler handed no call.
+export fn applied(a: Annotation, value: Code) -> Code? {
+    let call? = a.call else { return null }
+    match call.node {
+        .Template(file, at, parts, _) -> Code { node: Node.Template(file, at, parts, [value.node]) },
+        rest -> null,
+    }
+}
 
 /// A record's field: its name, its type's spelling, its shape, and
 /// the marks written before it. `doc`/`annotations` read as `Fn`'s.
-export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [] }
+/// `defaulted` says it declares a default a literal may leave out.
+export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], defaulted: bool = false }
 
 /// An enum's variant: its name, its payload's spellings, and the
 /// payload as FIELDS — each carrying the name a grammar rule's

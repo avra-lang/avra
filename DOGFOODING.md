@@ -742,6 +742,19 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       while runs repeat, and a poller that read nothing is no witness.
       Not ratcheted: no grep tells a path others read from one nobody does.
 
+## A scan that ACCEPTS beside a parser that EXPLAINS
+
+A hot reader over a grammar answers a position, or -1 where the text
+is not the grammar, and never words a refusal: on -1 it steps aside
+and the ONE parser that explains says why. The two agree on which
+texts are accepted — a boolean a differential test pins over
+generated and mutated input — and never on messages, which would be
+a second copy of every voice. @std/json's scans (`skip`, `string_end`,
+`int_end`) beside `parse`; @std/validate's `T.from_json` beside the
+tree path (`from_json` then `T.decode`), which answers every refusal
+the direct reader meets. Smell: a fast path carrying its own error
+enum that mirrors the slow path's.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is
@@ -1630,3 +1643,18 @@ Anything that rebuilds a Request from another carries `set` along
 
 - THE ROOTS GREW 2026-09-05: the ratchet reads every std package (`packages/std-time`, `std-process`, `std-io`, `std-cli`), not the compiler and the cli alone — the first sweep found 13 sites in packages written under the bar but outside the tool's eye, all paid; a new `packages/std-<name>/src` joins SRC in tools/idioms.py with its first slice.
 - style.refusal_uncounted_contains/style.wrong_payload_count_pattern GREW 2026-09-03: a counted refusal also spells `voices.length == n` (a Program's package voices are diagnostics); the ratchet's roots now include packages/std-toml/src, so a standalone package is held to the same bar; style.wrong_payload_count_pattern reads one variant per line (CLAUDE.md records the one-line-enum blind spot).
+
+## A spliced call reads its value by a binder no program spells
+
+A derive that splices a caller's own expression over a value it read
+(`@range(13, 130)` → `range(v, 13, 130)`, `@std/validate`'s `Decode`)
+binds that value where the call lands, under a name with a `$` in it
+(`judged$`), and fills the call's hole with the NAME
+(`applied(a, name(judged))`). Two things follow: the call reads the
+value at the splice site, beside the siblings it may name, and a
+refusal about the value points at the annotation — a spanless fill
+stands where its hole does. The smell it replaces: filling the hole
+with a template (`quote { got! }`), whose refusals point into the
+library, and binding the value under the field's own name, which
+shadows a rule of the same name (`@email email`). Not ratcheted: the
+shape is one derive's until a second reader splices calls.

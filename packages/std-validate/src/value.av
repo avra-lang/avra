@@ -1,0 +1,92 @@
+//! The neutral data model every format reads into. A JSON body, a TOML
+//! file, a query string and an env var all become one `Value`, so a
+//! decoder written once reads them all. A map keeps its entries in
+//! written order — a list of `Entry`, never a `Map` — so an issue list
+//! reads in the order the input was written.
+use issue.{Path, Step}
+
+export type Entry = { key: string, value: Value }
+
+export enum Value {
+    Null
+    Bool(truth: bool)
+    Int(n: int)
+    Float(x: float)
+    Text(s: string)
+    List(items: List<Value>)
+    Map(entries: List<Entry>)
+}
+
+impl Value {
+    /// The value as a person reads it in a report: JSON's spelling,
+    /// compact.
+    fn shown() -> string {
+        match self {
+            .Null -> "null",
+            .Bool(b) -> "${b}",
+            .Int(n) -> "${n}",
+            .Float(x) -> "${x}",
+            .Text(s) -> quoted(s),
+            .List(items) -> "[${[i.shown() for i in items].join(", ")}]",
+            .Map(entries) -> "{${[shown_entry(e) for e in entries].join(", ")}}",
+        }
+    }
+
+    /// The value a path reaches from here, when it reaches one.
+    fn at(p: Path) -> Value? {
+        mut v = self
+        for s in p.steps() {
+            let next? = v.step(s) else { return null }
+            v = next
+        }
+        v
+    }
+
+    /// One step down: a field or key of a map, an item of a list.
+    fn step(s: Step) -> Value? {
+        match s {
+            .Field(k) or .Key(k) -> self.entries().find(it.key == k)?.value,
+            .Index(i) -> if i >= 0 && i < self.items().length { self.items()[i] } else { null },
+            .Variant(_) -> null,
+        }
+    }
+
+    fn entries() -> List<Entry> {
+        match self { .Map(entries) -> entries, rest -> [] }
+    }
+
+    fn items() -> List<Value> {
+        match self { .List(items) -> items, rest -> [] }
+    }
+
+    /// What kind of value this is, as a report names it.
+    fn kind() -> string {
+        match self {
+            .Null -> "null",
+            .Bool(_) -> "a boolean",
+            .Int(_) -> "an integer",
+            .Float(_) -> "a number",
+            .Text(_) -> "text",
+            .List(_) -> "a list",
+            .Map(_) -> "an object",
+        }
+    }
+}
+
+fn shown_entry(e: Entry) -> string {
+    "${quoted(e.key)}: ${e.value.shown()}"
+}
+
+/// Text in double quotes, the quote and the backslash escaped.
+export fn quoted(s: string) -> string {
+    "\"${if escapes(s) { s.replace("\\", "\\\\").replace("\"", "\\\"") } else { s }}\""
+}
+
+/// Each text quoted, joined by a comma — one join when none needs an
+/// escape.
+export fn quoted_each(xs: List<string>) -> string {
+    if escapes(xs.join("")) { return [quoted(x) for x in xs].join(", ") }
+    "\"${xs.join("\", \"")}\""
+}
+
+fn escapes(s: string) -> bool { s.contains("\\") || s.contains("\"") }

@@ -19,6 +19,7 @@ use core.{
     BinOp,
     Param,
     Spread,
+    Mark,
     Plain,
     Variant,
     Case,
@@ -36,7 +37,6 @@ use core.{
     flatten,
     filled,
     mark_prefixed,
-    marks_prefixed,
     body_behavior,
     same_expr,
     some_list,
@@ -742,7 +742,20 @@ impl SourceText {
     mut fn param(p: Param, depth: int) -> string {
         let name = if p.name.is_empty() { "" } else { "${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
         let ty = if p.ty == null { "" } else { spelled(p.ty!) }
-        "${marks_prefixed(p.marks)}${mark_prefixed(p.promises, name)}${ty}${self.default_value(p.default, depth)}"
+        "${self.marks(p.marks, depth)}${mark_prefixed(p.promises, name)}${ty}${self.default_value(p.default, depth)}"
+    }
+
+    /// A member's marks as written, each with a trailing space — ""
+    /// when it carries none — every argument printed as the expression
+    /// it is.
+    mut fn marks(ms: List<Mark>, depth: int) -> string {
+        joined([self.mark(m, depth) + " " for m in ms], "")
+    }
+
+    mut fn mark(m: Mark, depth: int) -> string {
+        let args = self.store.mark_args(m)
+        if args.is_empty() { return "@${m.name}" }
+        "@${m.name}(${joined([self.expression(a, loosest_tier, depth) for a in args], ", ")})"
     }
 
     mut fn default_value(value: ExprId?, depth: int) -> string {
@@ -1116,8 +1129,8 @@ impl SourceText {
     }
 
     mut fn variant(v: Variant, depth: int) -> string {
-        if v.payloads.is_empty() { return "${marks_prefixed(v.marks)}${source_name(v.name.of)}" }
-        let head = "${marks_prefixed(v.marks)}${source_name(v.name.of)}"
+        let head = "${self.marks(v.marks, depth)}${source_name(v.name.of)}"
+        if v.payloads.is_empty() { return head }
         "${head}${self.params_wrapped(v.payloads, depth, col_after(head, depth * 4))}"
     }
 

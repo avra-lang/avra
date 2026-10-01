@@ -50,7 +50,14 @@ use features.{
     SeatValue,
 }
 use features.{no_kind}
-use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind, Annotation as MetaAnnotation}
+use @std.meta.{
+    Node,
+    Field as MetaField,
+    Mark as MetaMark,
+    Kind,
+    Annotation as MetaAnnotation,
+    Code as MetaCode,
+}
 use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of}
 use @std.grammar.{ready}
 use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
@@ -206,6 +213,7 @@ fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
         marks: crossed_marks(v, p.marks),
         doc: null,
         annotations: crossed_annotations(v, p.marks),
+        defaulted: p.default != null,
     }
 }
 
@@ -221,7 +229,19 @@ fn crossed_marks(v: FileView, ms: List<Mark>) -> List<MetaMark> {
 /// one. A field or a variant has no `///` of its own yet — no grammar
 /// attaches one — so its `doc` reads null until one does.
 fn crossed_annotations(v: FileView, ms: List<Mark>) -> List<MetaAnnotation> {
-    [MetaAnnotation { name: m.name, args: m.args, at: placed(v, m.span) } for m in ms]
+    [MetaAnnotation {
+        name: m.name,
+        args: m.args,
+        at: placed(v, m.span),
+        call: call_at(v, m.name, m.span),
+    } for m in ms]
+}
+
+/// The annotation written at `sp` as the template of its call — the
+/// quote its builder marked where the `@` stands.
+export fn call_at(v: FileView, name: string, sp: Span?) -> MetaCode? {
+    if sp == null { return null }
+    MetaCode { node: Node.Template(v.source.file, sp!.lo, ["${name}(", ")"], []) }
 }
 
 /// A source span as the place a meta value names.

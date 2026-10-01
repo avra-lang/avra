@@ -1026,6 +1026,8 @@ impl SyntaxArena {
     fn expr(id: ExprId) -> Expr { self.exprs.node_at(id.index) }
     fn stmt(id: StmtId) -> Stmt { self.stmts.node_at(id.index) }
     fn expr_span(id: ExprId) -> Span? { self.exprs.span_at(id.index) }
+    /// Gives a node minted with no span the place it stands for.
+    fn place_expr(id: ExprId, at: Span) { self.exprs.place(id.index, at) }
     fn stmt_span(id: StmtId) -> Span? { self.stmts.span_at(id.index) }
     /// Whether `id` is the `null` literal.
     fn null_literal(id: ExprId) -> bool { self.expr(id) is .NullLit }
@@ -1168,6 +1170,25 @@ impl SyntaxArena {
     /// block that leaves instead of answering, a comprehension with
     /// no guard, a field with no default. Fixed arity, so it stands
     /// in a parts list directly, as `type_fp` does for a type.
+    /// A mark's arguments as written: its call's, past the value.
+    fn mark_args(m: Mark) -> List<ExprId> {
+        let q? = m.call else { return [] }
+        let body? = self.expr(q).body_of() else { return [] }
+        let stmts: List<StmtId> = match body.view {
+            .Verbatim(ss, _) -> ss,
+            .None or .Expanded(_) -> [],
+        }
+        let first? = stmts.first() else { return [] }
+        let call? = self.answer_of(first) else { return [] }
+        match self.expr(call) { .Call(_, _, args) -> args.slice(1, args.length), _ -> [] }
+    }
+
+    /// A mark list's fingerprint parts: its word, its arguments' words
+    /// and the call they make — `@m([1])` and `@m([2])` share words.
+    fn mark_fps(marks: List<Mark>) -> List<int> {
+        [fp(131, [fp_str(m.name), fp_list(str_fps(m.args)), self.opt_fp(m.call)]) for m in marks]
+    }
+
     fn opt_fp(value: ExprId?) -> int {
         if value == null { return 0 }
         fp(128, [self.expr_fingerprint(value!)])
@@ -1210,7 +1231,7 @@ impl SyntaxArena {
                 type_fp(p.ty),
                 mark_fp(p.promises),
                 self.opt_fp(p.default),
-                fp_list(mark_fps(p.marks)),
+                fp_list(self.mark_fps(p.marks)),
             ],
         ) for p in params]
     }
@@ -1221,7 +1242,11 @@ impl SyntaxArena {
     fn variant_fps(variants: List<Variant>) -> List<int> {
         [fp(
             124,
-            [fp_str(v.name.of), fp_list(self.param_fps(v.payloads)), fp_list(mark_fps(v.marks))],
+            [
+                fp_str(v.name.of),
+                fp_list(self.param_fps(v.payloads)),
+                fp_list(self.mark_fps(v.marks)),
+            ],
         ) for v in variants]
     }
 

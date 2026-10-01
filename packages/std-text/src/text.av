@@ -158,9 +158,26 @@ export fn chars(s: string) -> List<string> {
     [s.substring(st.at, st.at + st.width) for st in steps(s)]
 }
 
+/// Characters, counted without a step each: an ASCII run is its own
+/// length, and anything else is walked by its lead bytes.
 export fn codepoint_count(s: string) -> int {
-    steps(s).length
+    let b = s.bytes()
+    mut i = b.run(0, ascii)
+    mut n = i
+    while i < b.length {
+        let next = i + width_at(s, i, b.length)
+        i = b.run(next, ascii)
+        n = n + 1 + i - next
+    }
+    n
 }
+
+/// The bytes below 128, each a character by itself.
+const ascii: Bytes = admits((c) -> c < 128)
+
+/// A class table: a byte for each of the 256, nonzero where `pred`
+/// admits it — what `Bytes.run` scans by.
+export fn admits(pred: fn(int) -> bool) -> Bytes { [if pred(c) { 1 } else { 0 } for c in 0..256].bytes()! }
 
 /// The text one code point spells — U+FFFD for one no sequence can
 /// carry (negative, past U+10FFFF, or a surrogate).
@@ -190,18 +207,25 @@ fn steps(s: string) -> List<Step> {
 /// plain numbers here.
 fn step_at(s: string, i: int, n: int) -> Step {
     let b = s.char_code(i)
-    let width = lead_width(b)
-    if width == 1 || i + width > n { return lone_byte(i, b) }
+    let width = width_at(s, i, n)
+    if width == 1 { return lone_byte(i, b) }
     mut code = b - lead_mark(width)
-    mut k = 1
-    while k < width {
-        let tail = s.char_code(i + k)
-        if tail < 128 || tail >= 192 { return lone_byte(i, b) }
-        code = code * 64 + (tail - 128)
-        k = k + 1
-    }
+    for k in 1..width { code = code * 64 + (s.char_code(i + k) - 128) }
     Step { at: i, width: width, code: code }
 }
+
+/// How many bytes the sequence at `i` takes: what its lead byte
+/// announces when every tail is there and is a tail, else one — a
+/// byte standing for itself.
+fn width_at(s: string, i: int, n: int) -> int {
+    let width = lead_width(s.char_code(i))
+    if width == 1 || i + width > n { return 1 }
+    mut k = 1
+    while k < width && is_tail(s.char_code(i + k)) { k = k + 1 }
+    if k == width { width } else { 1 }
+}
+
+fn is_tail(b: int) -> bool { b >= 128 && b < 192 }
 
 /// A byte standing for itself — ASCII, or one that leads nothing.
 fn lone_byte(i: int, b: int) -> Step {

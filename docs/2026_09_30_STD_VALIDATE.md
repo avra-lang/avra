@@ -473,3 +473,128 @@ The basics, and nothing past them until the owner has seen it run:
 5. Annotations on record fields and named types, type-checked against
    the field, and a derive that makes §11's `Signup` work as written.
 6. `check(t)` for cross-field rules, without a context.
+
+## 14. What the first build chose
+
+Recorded as each decision landed on `lane/validate`.
+
+- **Rules are plain fns answering `Result`** (the owner's shape). The
+  framework reads a `string` or an `Issue` refusal through one trait,
+  `Refusal`, so `ruled(d, slot, "range", range(v, 13, 130))` takes
+  either. `Rule<T>` as a fn-type alias was built first and retired;
+  it needed no F2031 either way.
+- **Within one field, rules run in order and stop at the first
+  refusal**, because each reads what the last one answered. Across
+  fields, every issue is kept.
+- **`length` is `length<T: Counted>`.** `string` is `Counted` today.
+  A list is not: `impl Counted for List<T>` is F2031, so `@length` on
+  a list waits on it (ticketed). A field of any type without a length
+  is refused where the rule is used: "`int` does not implement
+  `Counted`".
+- **The derived entry point is `Signup.decode(v)`.** `decode<Signup>(v)`
+  needs a static trait fn reached through a type parameter, which the
+  language lacks (sugar backlog).
+- **Bounds are the parser's, and the decoder's.** `@std/json` refuses
+  nesting past its `MAX_DEPTH` (512) at the opener, so 200,000 nested
+  `[` is one refusal, never a crash. The decoder bounds its own depth
+  (128 by default, `Limits.depth`) and a list's length again, for
+  every format.
+- **A field written twice is refused**, in both coercion modes: a
+  reader that took the other copy would see another value.
+- **A secret stays secret all the way down**: a secret list's
+  elements and a secret object's fields never show what they received.
+- **An annotation's arguments are expressions, and a reader splices
+  the call.** `@range(13, 130)` on a field is recorded as the template
+  `range(${value}, 13, 130)`, marked where the `@` stands; `@std/meta`'s
+  `Annotation.call` carries it and `applied(a, value)` fills it. The
+  `Decode` derive splices it over the value it read, so the ordinary
+  typer checks it there and every refusal points at the annotation:
+  a rule on the wrong type, a misspelled rule, a sibling name that
+  does not exist. No second typing law exists for rules.
+- **A rule on a declaration is data, not a call.** An annotation whose
+  first parameter takes a VALUE rather than a declaration (`Fn`,
+  `Type`, `Named`) is not run at compile time; on a named type it
+  checks the value the type wraps, and on a record it is a
+  **cross-field rule** over the whole value, run once every field has
+  passed — the `check(t)` of §4, spelled as one more plain fn:
+
+  ```avra
+  fn adult_for_pro(s: Signup) -> Result<Signup, Issue> {
+      if s.plan == "pro" && s.age < 18 { fail issue("plan", "pro needs an adult") }
+      s
+  }
+
+  @derive(Decode) @adult_for_pro
+  type Signup = { … }
+  ```
+- **`@derive(Decode)` is written.** §1's type carries no derive; the
+  derive is the visible door (P7), one line.
+- **JSON has a direct path, and the tree path explains it.**
+  `T.from_json(text)` walks the bytes into the record, one pass, no
+  tree; where the text is not JSON, a bound is passed or the coercion
+  is `Lax`, it steps aside and `T.decode(from_json(text)?)` answers —
+  so every refusal of malformed input is the tree's, word for word. A
+  differential test holds the two to the same answer over generated,
+  truncated and mutated payloads.
+- **A field's rules run where it is read**, up to the first that names
+  a sibling; that one, and the rules after it, run once every field is
+  read, so a sibling reads what its own rules answered.
+
+## 15. Speed
+
+The bar: decode plus every rule at serde_json + garde speed or better,
+and a refusal within 1.5x of an acceptance. `tools/bench/validate/run.sh`
+is the receipt: §11's Signup (eight fields, a list of named strings, a
+nullable named field, a cross-field rule) read from the same two files
+by Avra, by Rust (serde_json straight into the struct, then garde) and
+by C (yyjson, then hand-written rules over views into its document —
+the floor, building no messages). Separate processes on one Sprite
+(x86_64 Linux), interleaved round by round, median of five, ns per
+payload. `instructions.sh` counts the same rows under callgrind — the
+number no neighbour's load moves, so it is the one to compare.
+
+| row | Avra before | Avra after | Rust | C |
+|---|---|---|---|---|
+| decode + rules, valid (ns) | 10185 | 1494 – 2041 | 1689 – 1785 | 200 – 224 |
+| decode + rules, refused, every rule (ns) | 15294 | 5017 – 6674 | 2139 – 2621 | 197 – 215 |
+| decode + rules, valid (instructions) | — | 20554 | 20057 | 2999 |
+| decode + rules, refused (instructions) | — | 59413 | 23862 | 2990 |
+| parse only, valid (ns) | 3869 | 3869 | 600 | 154 |
+| tree path: `Value` + decode, valid (ns) | 10185 | 7821 | — | — |
+
+The ranges are three runs on two Sprites, the last on main's float-aware
+@std/json; the ratio to Rust moved between 0.88x and 1.16x with the machine, while the instruction counts sat at
+parity. Rust's refused row reads a copy of the struct without
+`deny_unknown_fields`, so serde reaches garde and every rule's issue is
+built (the strict struct stops at the first shape error, ~850 ns, one
+issue); Avra reports all eight issues, each with its path, received
+value and did-you-mean fix.
+
+**What each lever bought** (instructions per accepted decode unless
+said):
+
+- *The derived direct decoder* (`T.from_json`, json.av): no `Json` and
+  no `Value` tree; keys matched by length then bytes; values read where
+  they stand. 10185 -> ~3700 ns.
+- *Allocation-free hot rules*: `codepoint_count` stopped allocating a
+  step per character (a `length` rule on a 21-character password was
+  938 ns alone), the email check became one class-table scan, a record
+  is built once instead of copied per present default. -> ~1900 ns.
+- *One scan per plain string* (`plain_end`) and no allocating sort
+  check: 20368 -> 15536 instructions without rules.
+- *The refusal*: rules run where a field is read (so a payload in
+  declaration order sorts nothing), paths held nearest-first and filed
+  in place, the root path static, a words-only refusal built as one
+  issue, bounded did-you-mean: 132470 -> 59161 instructions.
+
+**What blocks the rest.** The accepted path meets Rust. The refused
+path does not meet 1.5x (it is 2.9x): each issue costs ~5000
+instructions against garde's ~550, of which roughly a third is freeing
+what it allocated (105 boxes refused, 14 accepted) and the rest is
+boxes, reference counts and calls around small work — interpolating a
+message alone is ~1100. The asks that close it are filed under the
+survey epic: an arena per decode (freed in one step), the Bytes rows as
+inlined hot leaves with cross-file inlining for release builds, a text
+view that shares its parent's box, interpolation without a parts list,
+and one-word payload enums unboxed. The plain `parse` is its own
+follow-up: the scans it could stand on now exist.

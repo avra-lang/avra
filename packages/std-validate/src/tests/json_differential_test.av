@@ -1,0 +1,397 @@
+// The direct reader against the tree path: `T.from_json(text)` must
+// answer what `T.decode(from_json(text)?)` answers — the value, or
+// every issue with its path, rule, message, what was received and the
+// fix, in the same order — over generated payloads: every field shape,
+// out of order, missing, repeated, unknown, escaped, mistyped, null,
+// deep, truncated at every byte, and text that is not JSON at all.
+use @std.meta.{derive}
+use @std.validate.{
+    Decode,
+    Issue,
+    Issues,
+    Coercion,
+    Limits,
+    from_json,
+    range,
+    length,
+    matches,
+    one_of,
+    issue,
+}
+
+@derive(Decode)
+@length(min: 2, max: 8)
+type Nick = string
+
+@derive(Decode)
+@one_of(["red", "green", "blue"])
+type Hue = string
+
+@derive(Decode)
+type Core = {
+    @range(0, 9) x: int,
+    flag: bool = false,
+}
+
+fn sane_form(r: Form) -> Result<Form, Issue> {
+    if r.age < 18 && r.tags.length > 2 { fail issue("tags", "too many for a minor") }
+    r
+}
+
+@derive(Decode)
+@sane_form
+type Form = {
+    name: Nick,
+    @range(13, 130) age: int,
+    tags: List<Hue> = [],
+    inner: Core,
+    rows: List<Core> = [],
+    note: string? = null,
+    @secret @length(min: 4) pin: string,
+    @secret @matches(pin, "pin") pin2: string,
+    ratio: float = 0.5,
+    grid: List<List<int>> = [],
+}
+
+/// Fields named for the words the derive's generated code speaks.
+@derive(Decode)
+type Words = {
+    depth: int,
+    required: bool = false,
+    secret: string = "",
+    at: int = 0,
+    got: string? = null,
+    made: int = 0,
+    d: int = 0,
+    s: int = 0,
+    o: int = 0,
+    @length(min: 2) @matches(secret, "secret") entry: string = "",
+}
+
+@derive(Decode)
+enum Sort {
+    A
+    B
+}
+
+@derive(Decode)
+type Odds = {
+    kind: Sort? = null,
+    meta: Map<string, int>? = null,
+    names: List<Nick?> = [],
+}
+
+/// A decode as text: the value's fields, or the whole report.
+fn told(r: Result<Form, Issues>) -> string {
+    match r {
+        .Ok(v) -> "ok ${v.name} ${v.age} ${v.tags.length} ${v.inner.x} ${v.inner.flag} ${v.rows.length} ${v.note ?? "-"} ${v.pin} ${v.pin2} ${v.ratio} ${v.grid.length}",
+        .Err(e) -> "refused ${e.count()}\n${e.report()}",
+    }
+}
+
+fn told_odd(r: Result<Odds, Issues>) -> string {
+    match r { .Ok(v) -> "ok ${v.names.length}", .Err(e) -> "refused ${e.count()}\n${e.report()}" }
+}
+
+fn treed(text: string, limits: Limits) -> Result<Form, Issues> {
+    let v = from_json(text)?
+    Form.decode(v, Coercion.Strict, limits)
+}
+
+fn treed_words(text: string) -> Result<Words, Issues> {
+    let v = from_json(text)?
+    Words.decode(v)
+}
+
+fn treed_odd(text: string) -> Result<Odds, Issues> {
+    let v = from_json(text)?
+    Odds.decode(v)
+}
+
+/// The payloads where the two paths disagree, each with both answers.
+fn disagreements(texts: List<string>, limits: Limits) -> string {
+    ["${t}\n  direct: ${told(Form.from_json(t, Coercion.Strict, limits))}\n  tree:   ${told(treed(t, limits))}" for t in texts if told(Form.from_json(t, Coercion.Strict, limits)) != told(treed(t, limits))]
+        .join("\n\n")
+}
+
+fn odd_disagreements(texts: List<string>) -> string {
+    ["${t}\n  direct: ${told_odd(Odds.from_json(t))}\n  tree:   ${told_odd(treed_odd(t))}" for t in texts if told_odd(Odds.from_json(t)) != told_odd(treed_odd(t))]
+        .join("\n\n")
+}
+
+fn told_words(r: Result<Words, Issues>) -> string {
+    match r {
+        .Ok(v) -> "ok ${v.depth} ${v.required} ${v.secret} ${v.at} ${v.got ?? "-"} ${v.made} ${v.d} ${v.s} ${v.o} ${v.entry}",
+        .Err(e) -> "refused ${e.count()}\n${e.report()}",
+    }
+}
+
+fn words_disagreements(texts: List<string>) -> string {
+    ["${t}\n  direct: ${told_words(Words.from_json(t))}\n  tree:   ${told_words(treed_words(t))}" for t in texts if told_words(Words.from_json(t)) != told_words(treed_words(t))]
+        .join("\n\n")
+}
+
+/// A valid payload broken at every byte: that byte dropped, a quote
+/// put before it, a brace in its place.
+fn mutants(text: string) -> List<string> {
+    let dropped = [text.substring(0, i) + text.substring(i + 1, text.length) for i in 0..text.length]
+    let quoted = [text.substring(0, i) + "\"" + text.substring(i, text.length) for i in 0..text.length]
+    let braced = [text.substring(0, i) + "}" + text.substring(i + 1, text.length) for i in 0..text.length]
+    dropped.concat(quoted).concat(braced)
+}
+
+// ── the generator ───────────────────────────────────────────────
+
+/// A deterministic stream of choices.
+type Dice = { seed: int }
+
+impl Dice {
+    /// The next roll below `n`, and the dice rolled on.
+    mut fn roll(n: int) -> int {
+        self.seed = (self.seed * 1103515245 + 12345) % 2147483648
+        self.seed / 65536 % n
+    }
+
+    mut fn pick(xs: List<string>) -> string { xs[self.roll(xs.length)] }
+}
+
+const gen_strings: List<string> = [
+    "\"ada\"",
+    "\"a\\u0062c\"",
+    "\"日本語\"",
+    "\"\\ud83d\\ude00x\"",
+    "\"\"",
+    "\"-x\"",
+    "\"Ada!\"",
+    "\"a\\\"b\"",
+    "\"x\\\\y\"",
+    "\"\\n\\t\"",
+    "\"toolongname\"",
+    "\"red\"",
+    "\"gren\"",
+    "\"blue\"",
+    "\"1234\"",
+    "\"12\"",
+]
+
+const gen_scalars: List<string> = [
+    "0",
+    "-0",
+    "12",
+    "13",
+    "130",
+    "131",
+    "9223372036854775807",
+    "-9223372036854775808",
+    "null",
+    "true",
+    "false",
+    "[]",
+    "{}",
+    "[1, 2]",
+    "{\"a\": 1}",
+]
+
+/// Tokens the tree refuses as text, so the direct reader must step aside.
+const gen_broken: List<string> = [
+    "9223372036854775808",
+    "1.5",
+    "1e3",
+    "-",
+    "nul",
+    "tru",
+    "\"bad\\q\"",
+    "\"open",
+    "[1,]",
+    "{\"a\" 1}",
+    "\"\\u12\"",
+    "01x",
+    "007",
+    "-01.5",
+    "1.",
+    ".5",
+    "1e",
+    "1e+",
+]
+
+const gen_keys: List<string> = [
+    "name",
+    "age",
+    "tags",
+    "inner",
+    "rows",
+    "note",
+    "pin",
+    "pin2",
+    "ratio",
+    "grid",
+]
+
+/// A value for field `key`: mostly the right shape, sometimes not,
+/// rarely not JSON at all.
+fn gen_value(mut d: Dice, key: string, depth: int) -> string {
+    let r = d.roll(20)
+    if r == 0 { return d.pick(gen_broken) }
+    if r < 4 { return d.pick(gen_scalars) }
+    if r < 6 { return d.pick(gen_strings) }
+    when {
+        key == "tags" -> listed(d, (mut e: Dice) -> e.pick(gen_strings))
+        key == "inner" -> core_text(d, depth)
+        key == "rows" -> listed(d, (mut e: Dice) -> core_text(e, depth + 1))
+        key == "grid" -> listed(d, (mut e: Dice) -> listed(e, (mut f: Dice) -> f.pick(gen_scalars)))
+        key == "age" -> d.pick(["13", "36", "12", "131", "130"])
+        key == "note" -> d.pick(["null", "\"hi\""])
+        key == "ratio" -> d.pick(["0", "null", "0.25", "-1.5e3", "2E-2", "1e400"])
+        _ -> d.pick(gen_strings)
+    }
+}
+
+fn listed(mut d: Dice, each: fn(mut Dice) -> string) -> string {
+    let n = d.roll(4)
+    "[${[each(d) for _i in 0..n].join(", ")}]"
+}
+
+fn core_text(mut d: Dice, depth: int) -> string {
+    if depth > 3 { return "{\"x\": 1}" }
+    let x = d.pick(["1", "9", "10", "-1", "\"1\"", "null"])
+    let tail = d.pick(["", ", \"flag\": true", ", \"flag\": 1", ", \"y\": 2", ", \"x\": 3"])
+    "{\"x\": ${x}${tail}}"
+}
+
+/// A key as the text may spell it: itself, escaped, misspelled.
+fn gen_key(mut d: Dice, key: string) -> string {
+    let r = d.roll(12)
+    if r == 0 { return "\"\\u${hex_escape(key.char_code(0))}${key.substring(1, key.length)}\"" }
+    if r == 1 { return "\"${key.substring(0, key.length - 1)}\"" }
+    if r == 2 { return "\"admin\"" }
+    "\"${key}\""
+}
+
+fn hex_escape(c: int) -> string {
+    let digits = "0123456789abcdef"
+    "00${digits.substring(c / 16, c / 16 + 1)}${digits.substring(c % 16, c % 16 + 1)}"
+}
+
+/// One record payload: most fields, shuffled, some twice, some gone,
+/// spaced unevenly.
+fn gen_payload(mut d: Dice) -> string {
+    let fields = [f for f in gen_keys if d.roll(8) != 0]
+    let order = gen_shuffled(d, fields)
+    let twice = if d.roll(6) == 0 { order.concat([order.first() ?? "name"]) } else { order }
+    let gaps = ["", " ", "\n  ", "\t"]
+    let entries = ["${gen_key(d, k)}${d.pick(gaps)}:${d.pick(gaps)}${gen_value(d, k, 0)}" for k in twice]
+    "${d.pick(gaps)}{${entries.join(",${d.pick(gaps)}")}}${d.pick(gaps)}"
+}
+
+fn gen_shuffled(mut d: Dice, xs: List<string>) -> List<string> {
+    mut out = [x for x in xs]
+    // LICENSED loops.index_walk: a shuffle swaps by position
+    for i in 0..out.length {
+        let j = d.roll(out.length)
+        let a = out[i]
+        out.set(i, out[j])
+        out.set(j, a)
+    }
+    out
+}
+
+fn gen_payloads(seed: int, n: int) -> List<string> {
+    mut d = Dice { seed: seed }
+    [gen_payload(d) for _i in 0..n]
+}
+
+/// A valid payload cut at every byte.
+fn cut_at_every_byte(text: string) -> List<string> {
+    [text.substring(0, i) for i in 0..text.length]
+}
+
+const whole_form: string = "{\"name\": \"ada\", \"age\": 36, \"tags\": [\"red\"], \"inner\": {\"x\": 1, \"flag\": true}, \"rows\": [{\"x\": 2}], \"note\": \"hi\", \"pin\": \"1234\", \"pin2\": \"1234\", \"grid\": [[1, 2], []]}"
+
+fn nested_form(n: int) -> string {
+    let open = ["[" for _i in 0..n].join("")
+    let close = ["]" for _i in 0..n].join("")
+    "{\"name\": \"ada\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\", \"grid\": ${open}${close}}"
+}
+
+spec "std/validate — the direct reader answers what the tree does" {
+    given "a payload every field of which passes" {
+        then "both accept it, with the same value" {
+            told(Form.from_json(whole_form)) == told(treed(whole_form, Limits {})) &&
+                told(Form.from_json(whole_form)).starts_with("ok")
+        }
+    }
+    given "generated payloads" {
+        then "two thousand agree" { disagreements(gen_payloads(7, 2000), Limits {}) == "" }
+        then "under tight bounds too" { disagreements(gen_payloads(11, 400), Limits { depth: 2, items: 2 }) == "" }
+    }
+    given "a payload cut short" {
+        then "every prefix agrees" { disagreements(cut_at_every_byte(whole_form), Limits {}) == "" }
+    }
+    given "text that is not one value" {
+        then "the empty text, whitespace, a scalar, two values, trailing junk" {
+            disagreements(
+                ["", "   ", "5", "\"x\"", "null", "[]", "{} {}", "{}x", "{\"name\": \"ada\"} ,"],
+                Limits {},
+            ) == ""
+        }
+    }
+    given "nesting" {
+        then "at the bound, one past it, and far past it" {
+            disagreements(
+                [
+                    nested_form(125),
+                    nested_form(126),
+                    nested_form(127),
+                    nested_form(128),
+                    nested_form(400),
+                ],
+                Limits {},
+            ) == ""
+        }
+    }
+    given "a payload broken at every byte" {
+        then "every mutant agrees" { disagreements(mutants(whole_form), Limits {}) == "" }
+    }
+    given "keys at their edges" {
+        then "an empty key, a key one byte off, an escaped name beside the plain one" {
+            disagreements(
+                [
+                    "{\"\": 1, \"name\": \"ada\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\"}",
+                    "{\"namf\": \"ada\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\"}",
+                    "{\"name\": \"ada\", \"n\\u0061me\": \"bob\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\"}",
+                    "{\"NAME\": \"ada\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\"}",
+                    "{\"日本\": 1, \"name\": \"ada\", \"age\": 36, \"inner\": {\"x\": 1}, \"pin\": \"1234\", \"pin2\": \"1234\"}",
+                ],
+                Limits {},
+            ) == ""
+        }
+    }
+    given "fields named as the generated code's own words" {
+        then "each reads as itself, a sibling rule before and after its sibling" {
+            words_disagreements(
+                [
+                    "{\"depth\": 1}",
+                    "{\"depth\": 1, \"required\": true, \"secret\": \"xy\", \"at\": 2, \"got\": \"g\", \"made\": 3, \"d\": 4, \"s\": 5, \"o\": 6, \"entry\": \"xy\"}",
+                    "{\"entry\": \"xy\", \"secret\": \"xy\", \"depth\": 1}",
+                    "{\"entry\": \"x\", \"secret\": \"xy\", \"depth\": 1}",
+                    "{\"entry\": \"xz\", \"depth\": 1, \"secret\": \"xy\"}",
+                    "{\"secret\": 5}",
+                ],
+            ) == ""
+        }
+    }
+    given "shapes no direct reader takes" {
+        then "an enum, a map, a list of nullables — read the tree's way" {
+            odd_disagreements(
+                [
+                    "{}",
+                    "{\"kind\": \"A\"}",
+                    "{\"meta\": {\"a\": 1}}",
+                    "{\"names\": [\"ab\", null, \"x\"]}",
+                    "{\"names\": 5}",
+                    "{\"kind\": 1.5}",
+                ],
+            ) == ""
+        }
+    }
+}
