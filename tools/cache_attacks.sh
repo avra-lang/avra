@@ -647,6 +647,21 @@ steps=$((steps+1)); [ "$rw_after" = "$rw_cold" ] || { fails=$((fails+1)); echo "
 rw_held=$(./avra check $R/rw 2>&1 | unwatched)
 steps=$((steps+1)); [ "$rw_held" = "$rw_cold" ] || { fails=$((fails+1)); echo "FAIL  a check held on a check's rows speaks otherwise than a cold check"; }
 
+# THE RATCHET JUDGES EVERY FILE, HELD OR READ: an edit to module `y` alone
+# holds module `x`, and `x/a.av`'s site — new against an empty baseline — must
+# still refuse the warm check, or a held file's new site slips the gate.
+mkdir -p $R/rf/src/x $R/rf/src/y
+printf '[package]\nname = "rt-rf"\nversion = "0.1.0"\n' > $R/rf/avra.toml
+printf 'export fn a() -> int {\n    mut n = 1\n    n\n}\n' > $R/rf/src/x/a.av
+printf 'export fn b() -> int { 2 }\n' > $R/rf/src/y/b.av
+printf 'use x.{a}\nuse y.{b}\nprintln("${a()} ${b()}")\n' > $R/rf/src/main.av
+: > $R/rf.baseline
+rm -rf .avra-cache; rf_cold=$(./avra check $R/rf --baseline $R/rf.baseline 2>&1 | unwatched)
+steps=$((steps+1)); case "$rf_cold" in *"NEW violation"*"x/a.av"*) ;; *) fails=$((fails+1)); echo "FAIL  the ratchet fixture draws no new site cold, so it attacks nothing" ;; esac
+ed $R/rf/src/y/b.av "{ 2 }" "{ 3 }"
+rf_st=0; rf_warm=$(./avra check $R/rf --baseline $R/rf.baseline 2>&1) || rf_st=$?
+steps=$((steps+1)); case "$rf_st:$rf_warm" in 1:*"NEW violation"*"x/a.av"*) ;; *) fails=$((fails+1)); echo "FAIL  a warm check after an edit elsewhere let a held file's new site through the ratchet (exit $rf_st)" ;; esac
+
 # A CHECK THAT HOLDS SOME FILES AND READS OTHERS AFTER A BUILD: the held ones
 # with no rule row are read again (a miss), and the check stands.
 rm -rf .avra-cache; lib_cold=$(./avra check $R/lib 2>&1 | unwatched)
