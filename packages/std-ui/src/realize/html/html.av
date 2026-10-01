@@ -1,23 +1,40 @@
 //! `realize/html/html.av` — the HTML target. Its drawing accumulates into
 //! a `Cell` of ops, in place, and `document` serializes them. One complete
-//! impl block; each method draws one component through the accumulator.
+//! impl block; each method draws one primitive through the accumulator.
 //! UI.md §19.2.
 use realize.realizer.{Realizer}
 use realize.html.writer.{HtmlOp, source}
-use components.text.{text}
+use components.{text, heading, button, column, row}
 
 /// The HTML target: one accumulator of ops.
 export type Html = { ops: Cell<List<HtmlOp>> = Cell.new([]) }
 
 /// One inline element around its content.
 fn inline(h: Html, name: string, content: string) {
-    h.ops.push(HtmlOp.Open(name))
+    h.ops.push(HtmlOp.Open(name, null))
     h.ops.push(HtmlOp.Text(content))
     h.ops.push(HtmlOp.Close(name))
 }
 
+/// The heading level an outline may carry: 1 through 6.
+fn rank_tag(rank: int) -> string {
+    let within = if rank < 1 { 1 } else if rank > 6 { 6 } else { rank }
+    "h${within}"
+}
+
+/// One block element opened for a component's keyed children.
+fn block(h: Html, key: string?) { h.ops.push(HtmlOp.Open("div", key)) }
+
+fn block_end(h: Html) { h.ops.push(HtmlOp.Close("div")) }
+
 impl Realizer for Html {
     fn text(t: text) { inline(self, "span", t.content) }
+    fn heading(hd: heading) { inline(self, rank_tag(hd.rank), hd.content) }
+    fn button(b: button) { inline(self, "button", b.label) }
+    fn column_begin(c: column) { block(self, c.key) }
+    fn column_end() { block_end(self) }
+    fn row_begin(r: row) { block(self, r.key) }
+    fn row_end() { block_end(self) }
 }
 
 /// The finished document.
