@@ -3,8 +3,8 @@
 //! mode is a projection of one walk (compiler/cache_walk.av): the summary,
 //! `changed` and `held` read the hold against its kept parts, and `why` and
 //! `dependents` walk the in-process graph beside it. Each mode reads as a
-//! check would and keeps what it read, as a check does, so it answers what
-//! moved since the last reading. This file is wiring and text alone.
+//! check would and keeps NOTHING, so it answers what moved since the last
+//! check however often it is asked. This file is wiring and text alone.
 use @std.cli.{CliResult, Runnable, command, arg}
 use @std.avrac.compiler.{Workspace, CacheWalk, Trail, FileHold, PartMoved, HeldMismatch}
 use @std.avrac.core.{distinct, some_list}
@@ -61,7 +61,7 @@ export fn cache_answer(mode: CacheMode, root: string, target: string) -> Result<
         .Why -> why_lines(ws, walk, target),
         .Dependents -> dependents_lines(ws, walk, target),
         .Changed -> changed_lines(walk, target),
-        .Held -> held_lines(walk, target),
+        .Held -> held_lines(ws, walk, target),
     }
 }
 
@@ -151,7 +151,7 @@ fn text_moved(walk: CacheWalk, h: FileHold) -> List<string> {
 
 // ── `avra cache held` ──
 
-fn held_lines(walk: CacheWalk, query: string) -> Result<List<string>, List<string>> {
+fn held_lines(ws: Workspace, walk: CacheWalk, query: string) -> Result<List<string>, List<string>> {
     if query == "" { return held_summary(walk) }
     let named = files_named(walk, query)
     if named.length != 1 {
@@ -160,13 +160,14 @@ fn held_lines(walk: CacheWalk, query: string) -> Result<List<string>, List<strin
         return .Err([many_match(matched.length, query)].concat(listing("held:   ", matched)))
     }
     let h = named[0]
-    hold_lines("held", walk, h).concat(if h.held { disagreements(walk, h.path) } else { [] })
+    hold_lines("held", walk, h).concat(if h.held { disagreements(ws, walk, h.path) } else { [] })
 }
 
 /// Where a held file's declarations read differently from a fresh reading —
-/// `check --verify-held`'s comparison, for this one file.
-fn disagreements(walk: CacheWalk, path: string) -> List<string> {
-    match root_workspace(walk.root).verify_held(null) {
+/// `check --verify-held`'s comparison, for this one file, read as the walk's
+/// inspection reads.
+fn disagreements(ws: Workspace, walk: CacheWalk, path: string) -> List<string> {
+    match ws.anew().verify_held(null) {
         .Ok(v) -> [disagreement_line(m) for m in v.mismatches if m.file == path],
         .Err(why) -> ["held:   no fresh reading to compare: ${why}"],
     }
@@ -267,7 +268,7 @@ fn dependents_lines(ws: Workspace, walk: CacheWalk, query: string) -> Result<
 }
 
 export command cache {
-    description: "The compiler's cache, made visible: with no mode, how many files a check holds and which inputs moved since the kept state; `why <file|query>` for why a file was read and the path down to each moved input it reads, `dependents <file|query>` for every query that reads it, `changed` for the inputs that moved and what they read again, `held [<file>]` for whether a check holds each file and why not. Each mode reads as a check does and keeps what it read, so it answers what moved since the last reading"
+    description: "The compiler's cache, made visible: with no mode, how many files a check holds and which inputs moved since the kept state; `why <file|query>` for why a file was read and the path down to each moved input it reads, `dependents <file|query>` for every query that reads it, `changed` for the inputs that moved and what they read again, `held [<file>]` for whether a check holds each file and why not. Each mode reads as a check does and keeps nothing, so it answers what moved since the last check however often it is asked"
     arg mode {
         description: "none for the summary, or `why`, `dependents`, `changed` or `held`"
     }
