@@ -71,7 +71,7 @@ fn declared_call(
     // a member chosen at run answers what every member answers; its
     // arguments are judged as any call's, the `dyn` one as itself
     let run = if choosing { cx.facts.dispatch_at(e) } else { null }
-    if run != null { return dispatched_answer(cx, e, target, name, run!, found, args) }
+    if run != null { return dispatched_answer(cx, target, name, run!, found, args) }
     let at = generic_default_at(cx, e, subject, m, found, args)
     if at.refused { return cx.error_type }
     let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found), at.args)
@@ -128,13 +128,26 @@ fn selfed_sig(cx: TypeCx, subject: ExprId, m: DeclId?, sig: FnSig, trait_args: L
 /// call's arguments (then the wanted answer), and the receiver shown to
 /// implement the trait there — the instantiation recorded for lowering.
 /// Any other callee passes through with no arguments.
-fn generic_default_at(mut cx: TypeCx, e: ExprId, subject: ExprId, m: DeclId, sig: FnSig, args: List<ExprId>) -> DefaultAt {
+fn generic_default_at(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    m: DeclId,
+    sig: FnSig,
+    args: List<ExprId>,
+) -> DefaultAt {
     let contract? = cx.view.decls.decl(m).parent else { return plain_at() }
     if !cx.view.decls.is_trait(contract) { return plain_at() }
     let takes = cx.view.decls.tparams(contract).length - 1
     if takes == 0 { return plain_at() }
     let unbound: List<TypeId?> = [null for _j in 0..takes]
-    let by_seats = folded_binds(cx, contract, [sig.params[j + 1] for j, _a in args if j + 1 < sig.params.length], [cx.type_at(a) for a in args], unbound)
+    let by_seats = folded_binds(
+        cx,
+        contract,
+        [sig.params[j + 1] for j, _a in args if j + 1 < sig.params.length],
+        [cx.type_at(a) for a in args],
+        unbound,
+    )
     let want = cx.want_at(e)
     let binds = if want == null { by_seats } else { bound(cx, contract, sig.ret, want!, by_seats) }
     let name = cx.view.decls.decl(contract).name
@@ -145,7 +158,13 @@ fn generic_default_at(mut cx: TypeCx, e: ExprId, subject: ExprId, m: DeclId, sig
     let trait_args = [b! for b in binds]
     let recv = cx.type_at(subject)
     if !implements_at_args(cx, contract, recv, trait_args) {
-        default_unimplemented(cx, e, name, cx.view.types.name_of(recv), [cx.view.types.name_of(t) for t in trait_args])
+        default_unimplemented(
+            cx,
+            e,
+            name,
+            cx.view.types.name_of(recv),
+            [cx.view.types.name_of(t) for t in trait_args],
+        )
         return refused_at()
     }
     cx.record_subst(e, contract, [recv].concat(trait_args), [])
@@ -160,7 +179,13 @@ fn plain_at() -> DefaultAt { DefaultAt { args: [], refused: false } }
 fn refused_at() -> DefaultAt { DefaultAt { args: [], refused: true } }
 
 /// Each seat's type bound against its argument's, in order.
-fn folded_binds(cx: TypeCx, g: DeclId, params: List<TypeId>, got: List<TypeId>, binds: List<TypeId?>) -> List<TypeId?> {
+fn folded_binds(
+    cx: TypeCx,
+    g: DeclId,
+    params: List<TypeId>,
+    got: List<TypeId>,
+    binds: List<TypeId?>,
+) -> List<TypeId?> {
     mut out = binds
     for j, p in params { out = bound(cx, g, p, got[j], out) }
     out
@@ -172,13 +197,22 @@ fn bound(cx: TypeCx, g: DeclId, param: TypeId, arg: TypeId, binds: List<TypeId?>
     let types = cx.view.types
     match types.shape_of(param) {
         // LICENSED structs.index_compared: DECLARATION identity — whose Var this is
-        .Var(d, j, _) -> if d.index == g.index && j > 0 && binds[j - 1] == null { [if k == j - 1 { arg } else { b } for k, b in binds] } else { binds }
-        .List(p) -> match types.shape_of(arg) { .List(a) -> bound(cx, g, p, a, binds), _ -> binds }
-        .Opt(p) -> match types.shape_of(arg) { .Opt(a) -> bound(cx, g, p, a, binds), _ -> bound(cx, g, p, arg, binds) }
-        .Cell(p) -> match types.shape_of(arg) { .Cell(a) -> bound(cx, g, p, a, binds), _ -> binds }
-        .Map(pk, pv) -> match types.shape_of(arg) { .Map(ak, av) -> bound(cx, g, pv, av, bound(cx, g, pk, ak, binds)), _ -> binds }
-        .Res(po, pe) -> match types.shape_of(arg) { .Res(ao, ae) -> bound(cx, g, pe, ae, bound(cx, g, po, ao, binds)), _ -> binds }
-        _ -> binds
+        .Var(d, j, _) -> if d.index == g.index && j > 0 && binds[j - 1] == null { [if k == j - 1 { arg } else { b } for k, b in binds] } else { binds },
+        .List(p) -> match types.shape_of(arg) { .List(a) -> bound(cx, g, p, a, binds), _ -> binds },
+        .Opt(p) -> match types.shape_of(arg) {
+            .Opt(a) -> bound(cx, g, p, a, binds),
+            _ -> bound(cx, g, p, arg, binds),
+        },
+        .Cell(p) -> match types.shape_of(arg) { .Cell(a) -> bound(cx, g, p, a, binds), _ -> binds },
+        .Map(pk, pv) -> match types.shape_of(arg) {
+            .Map(ak, av) -> bound(cx, g, pv, av, bound(cx, g, pk, ak, binds)),
+            _ -> binds,
+        },
+        .Res(po, pe) -> match types.shape_of(arg) {
+            .Res(ao, ae) -> bound(cx, g, pe, ae, bound(cx, g, po, ao, binds)),
+            _ -> binds,
+        },
+        _ -> binds,
     }
 }
 
@@ -199,8 +233,9 @@ fn answered_at(cx: TypeCx, d: DeclId, r: DeclId, g: DeclId, at: List<TypeId>) ->
 
 fn same_seats(cx: TypeCx, m: DeclId, seats: List<TypeId>) -> bool {
     let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
-    // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
-    sig.params.length == seats.length && [j for j, p in sig.params if j > 0 && p.index != seats[j].index].is_empty()
+    sig.params.length == seats.length &&
+        // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
+        [j for j, p in sig.params if j > 0 && p.index != seats[j].index].is_empty()
 }
 
 /// THE INOUT LAWS at a call: a writing callee needs a `mut` place
@@ -261,7 +296,6 @@ fn chosen_member(
 /// one fills its seat; the `dyn` one is accepted as what it is.
 fn dispatched_answer(
     mut cx: TypeCx,
-    e: ExprId,
     target: string,
     name: string,
     run: RunChoice,
@@ -287,7 +321,7 @@ fn dispatch_of(cx: TypeCx, many: List<DeclId>, args: List<ExprId>) -> RunChoice?
     if !sigs.all((s) -> s != null && takes_dispatched(cx, s!, args, k, tr)) { return null }
     let answer = sigs[0]!.ret
     // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
-    if sigs.any((s) -> s!.ret.index != answer.index) { return null }
+    if sigs.any(it!.ret.index != answer.index) { return null }
     RunChoice { seat: k, members: many }
 }
 
@@ -781,7 +815,13 @@ fn default_unbound(mut cx: TypeCx, e: ExprId, trait_name: string) {
         )
 }
 
-fn default_unimplemented(mut cx: TypeCx, e: ExprId, trait_name: string, recv: string, args: List<string>) {
+fn default_unimplemented(
+    mut cx: TypeCx,
+    e: ExprId,
+    trait_name: string,
+    recv: string,
+    args: List<string>,
+) {
     cx
         .emit(
             refusal(
