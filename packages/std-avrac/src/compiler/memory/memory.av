@@ -544,19 +544,15 @@ fn arm_exit(ins: List<Ins>, from: int) -> ArmExit {
     mut depth = 0
     mut diverges = false
     mut j = from
-    mut found = 0 - 1
-    while found < 0 {
+    while true {
         let step = ins[j]
-        if depth == 0 && (step is .ArmEnd || step is .RegionEnd) {
-            found = j
-        } else {
-            if depth == 0 && step is .FnExit { diverges = true }
-            if opens(step) { depth = depth + 1 }
-            if closes(step) { depth = depth - 1 }
-            j = j + 1
-        }
+        if depth == 0 && (step is .ArmEnd || step is .RegionEnd) { break }
+        if depth == 0 && step is .FnExit { diverges = true }
+        if opens(step) { depth = depth + 1 }
+        if closes(step) { depth = depth - 1 }
+        j = j + 1
     }
-    ArmExit { diverges: diverges, boundary: found }
+    ArmExit { diverges: diverges, boundary: j }
 }
 
 /// `k` just opened a region (`IfStart`/`SwitchStart`) or closed one arm
@@ -587,12 +583,11 @@ fn skip_diverging_arm(ins: List<Ins>, k: int, last: int) -> int? {
 /// held in another, sibling arm.
 fn region_exit(ins: List<Ins>, k: int) -> int {
     mut at = k
-    mut found = 0 - 1
-    while found < 0 {
-        let exit = arm_exit(ins, at + 1)
-        if ins[exit.boundary] is .RegionEnd { found = exit.boundary } else { at = exit.boundary }
+    while true {
+        at = arm_exit(ins, at + 1).boundary
+        if ins[at] is .RegionEnd { break }
     }
-    found
+    at
 }
 
 /// A step that could CHANGE what the cell holds: a store to it, a

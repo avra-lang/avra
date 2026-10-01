@@ -11,14 +11,13 @@ type App = { hits: Cell<int> }
 fn exchanged(c: Conn, sent: string, expected: int) -> Result<string, NetError> {
     c.write(sent.bytes())?
     mut got = "".bytes()
-    mut open = true
-    while open && got.length < expected {
+    while got.length < expected {
         match within ms(300) { c.read(65536) } {
             .Ok(b) -> {
-                open = b != null
-                got = got.concat(b ?? "".bytes())
+                let more? = b else { break }
+                got = got.concat(more)
             },
-            .Err(_) -> { open = false },
+            .Err(_) -> { break },
         }
     }
     .Ok(undated(got.text() ?? "?").replace("\r\n", "/"))

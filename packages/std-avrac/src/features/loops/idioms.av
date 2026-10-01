@@ -126,3 +126,32 @@ fn subscript_read_bare(text: string, needle: string) -> string {
 fn is_subscript_ident_char(c: int) -> bool {
     c == 95 || c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122
 }
+
+/// A `while` over a flag that only ever turns FALSE to stop it is a
+/// loop written around `break`: `mut open = true` / `while open { …
+/// open = false … }` is `while true { … break … }`, and the flag, its
+/// declaration and the turn it wastes re-reading itself all go. A
+/// flag assigned a COMPUTED value is still a condition and stays.
+@keeps("mut open = true\nwhile open {\n    open = step()\n}")
+export rule flag_loop {
+    quote {
+        {
+            ${..head}
+            mut ${f} = true
+            while ${cond} { ${..body} }
+            ${..rest}
+        }
+    } if cond.text() == f && body.any(it.text().contains(f + " = false")) -> flag_loop_found(cond),
+}
+
+fn flag_loop_found(flag: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                flag.loc(),
+                "`${flag.text()}` only ever turns false to stop its loop — that is `break`: `while true { … break … }`",
+                "this flag",
+                null,
+            ),
+        )
+}

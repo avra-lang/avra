@@ -730,8 +730,7 @@ fn match_repetition<T, N>(
     mut diagnostics: List<Diagnostic> = []
     mut farthest: FarthestFailure? = null
     mut count = 0
-    mut going = true
-    while going {
+    while true {
         let r = match_prim<T, N>(cx, rule_name, member, cursor, bindings, true, capped)
         farthest = far_merge(farthest, r.farthest)
         // A repetition is a speculation boundary: a failed iteration
@@ -746,19 +745,17 @@ fn match_repetition<T, N>(
                 farthest,
             )
         }
-        if r.status != MatchStatus.Hit {
-            going = false
-        } else if r.cursor == cursor {
+        if r.status != MatchStatus.Hit { break }
+        if r.cursor == cursor {
             diagnostics
                 .push(defect(rule_name, "repetition matched without consuming input; stopped"))
-            going = false
-        } else {
-            diagnostics = diagnostics.concat(r.diagnostics)
-            collected.push(r.value)
-            bindings = r.bindings
-            cursor = r.cursor
-            count = count + 1
+            break
         }
+        diagnostics = diagnostics.concat(r.diagnostics)
+        collected.push(r.value)
+        bindings = r.bindings
+        cursor = r.cursor
+        count = count + 1
     }
     if count < min { return missed<T, N>(cx, entry, entry_bindings, diagnostics, farthest) }
     matched<T, N>(

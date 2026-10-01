@@ -28,14 +28,13 @@ fn plain_at(port: int) -> Result<string, NetError> {
     let c = connect("127.0.0.1", port, secs(2))?
     c.write("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n".bytes())?
     mut got = "".bytes()
-    mut open = true
-    while open {
+    while true {
         match within ms(2000) { c.read(65536) } {
             .Ok(b) -> {
-                open = b != null
-                got = got.concat(b ?? "".bytes())
+                let more? = b else { break }
+                got = got.concat(more)
             },
-            .Err(_) -> { open = false },
+            .Err(_) -> { break },
         }
     }
     let _ = c.close()

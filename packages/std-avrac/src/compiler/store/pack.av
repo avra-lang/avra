@@ -276,15 +276,10 @@ fn empty_loaded() -> Loaded {
 /// point — a torn tail is bytes this pack no longer carries at all.
 fn walked(r: Reader, raw: Bytes) -> Loaded {
     mut s = empty_scan(r.at.get())
-    mut going = true
-    while going && !r.done() {
-        match read_frame(r) {
-            f? -> {
-                s = applied(s, f, r.at.get())
-                going = !s.broken
-            }
-            null -> { going = false }
-        }
+    while !r.done() {
+        let f? = read_frame(r) else { break }
+        s = applied(s, f, r.at.get())
+        if s.broken { break }
     }
     Loaded {
         raw: raw.slice(0, s.committed_len),

@@ -45,12 +45,9 @@ fn exchanged_secure(port: int, sent: List<string>) -> Result<string, TlsError> {
     let c = dial("localhost", port, secs(5), trusting_localhost()?)?
     for piece in sent { c.write(piece.bytes())? }
     mut got = ""
-    mut open = true
-    while open {
-        match c.read(65536)? {
-            b? -> { got = got + (b.text() ?? "?") }
-            null -> { open = false }
-        }
+    while true {
+        let b? = c.read(65536)? else { break }
+        got = got + (b.text() ?? "?")
     }
     c.close()?
     .Ok(got.replace("\r\n", "|"))
@@ -144,14 +141,13 @@ fn heard_after(port: int, sent: Bytes) -> Result<Bytes, NetError> {
     let c = connect("127.0.0.1", port, secs(2))?
     c.write(sent)?
     mut got = "".bytes()
-    mut open = true
-    while open {
+    while true {
         match within secs(2) { c.read(65536) } {
             .Ok(b) -> {
-                open = b != null
-                got = got.concat(b ?? "".bytes())
+                let more? = b else { break }
+                got = got.concat(more)
             },
-            .Err(_) -> { open = false },
+            .Err(_) -> { break },
         }
     }
     let _ = c.close()
@@ -244,12 +240,9 @@ fn read_to_the_end(port: int, sent: string) -> Result<string, TlsError> {
     let c = dial("localhost", port, secs(5), trusting_localhost()?)?
     c.write(sent.bytes())?
     mut got = ""
-    mut open = true
-    while open {
-        match c.read(65536)? {
-            b? -> { got = got + (b.text() ?? "?") }
-            null -> { open = false }
-        }
+    while true {
+        let b? = c.read(65536)? else { break }
+        got = got + (b.text() ?? "?")
     }
     c.close()?
     .Ok("${got.split("\r\n").first() ?? ""} <close_notify>")
