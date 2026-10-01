@@ -64,6 +64,15 @@ Echoing Avra's, with library teeth:
    control; a generic clickable surface is visibly expensive.
 8. **Idiomatic or it waits.** When the idiomatic form does not compile
    we file the language ask and design it — never ship the workaround.
+9. **A fixed substrate, an open surface.** The data — component
+   records, `Style`/`Layout`/`Name`, the environment, a component
+   block's settings — is fixed and machine-readable; the surface a
+   person writes (chaining, `if` values, slots, environment, sugar) is
+   open. One substrate, many projections.
+10. **Settings ARE the surface.** A component's `key: value` settings
+    are its style, layout and a11y, and chaining is their projection:
+    `text("hi").pad(.S)` and `text("hi") { pad: .S }` are the same
+    fields, never a second mechanism.
 
 ## 2. The layers and their seams
 
@@ -148,22 +157,33 @@ token-valued. Absent means "not given" — never "given the default"
 
 ```avra
 export type Style = {
-    gap: Size? = null
-    pad: Size? = null
-    margin: Edge? = null
     radius: Size? = null
     fill: Tone? = null
     color: Tone? = null
     border: Border? = null
     elevation: Level? = null
     face: Font? = null
-    size: TypeSize? = null
-    width: int? = null        // a weight, not a pixel
+    text_size: TypeSize? = null
+    line_height: LineHeight? = null
+    tracking: Tracking? = null
+    opacity: Percent? = null
 }
 ```
 
+Geometry (gap, padding, width, grow, alignment) is `Layout`'s, never
+`Style`'s — one home per idea.
+
 A `Style` merges by field; a component's default style is a const it
 can name. Style never holds a color or a length — only a token.
+
+**Settings are the surface.** A component's shared settings are the
+`style`/`layout`/`a11y` records; a flat body key (`color: .Muted`) and
+a chain (`text("hi").color(.Muted)`) are sugar over those same fields,
+so there is one representation and no drift. **State and capability
+are VALUES**, read by `if`: `fill: if pressed { .SurfaceSunk } else {
+.Surface }`, `if hovered`, `if compact`, `if platform is .ios`
+(UI.md §15), lowered to CSS or traits where the target can — never a
+hidden style layer a target cannot see.
 
 ## 5. Layout
 
@@ -255,6 +275,67 @@ Rules of the contract:
 - **The doc is in the component**: each component's doc states its
   semantics, its a11y contract, its states, and what each target does
   — the doc IS the catalogue entry.
+
+### 6.1 Settings, chaining, values
+
+A component's shared settings live in three records — `style`,
+`layout`, `a11y` — beside its own content props. The records are the
+substrate (data a tool reads, a value you can name and reuse); the
+flat and chained forms are sugar over the same fields, so there is
+one representation and no drift:
+
+```avra
+// the substrate — grouped records, machine-readable
+text("hi") {
+    style: Style { color: .Muted, face: .Mono }
+    layout: Layout { pad: Edge.around(.M) }
+}
+
+// sugar A — a flat setting in the body routes to its group
+// (a component-grammar ask; wantingsite: every component)
+text("hi") { color: .Muted, pad: .M }
+
+// sugar B — chaining projects the same fields
+text("hi").color(.Muted).pad(.M)
+
+// a named, reusable setting
+export const card = Style { pad: Edge.around(.M), radius: .M, fill: .SurfaceRaised }
+
+// state and capability are values, not modifier stacks
+row {
+    style: Style { fill: if pressed { .SurfaceSunk } else { .SurfaceRaised } }
+    if compact { text "…" }
+}
+```
+
+The three sugars (flat keys, chaining, value spread) are language
+asks in the ROADMAP backlog, each named by its wanting site; the
+substrate is what ships first, so the sugar never becomes a second
+mechanism.
+
+### 6.2 Environment — context that flows down
+
+What a subtree shares is provided once and read below, never threaded
+through every level (WEB_UI §5.3):
+
+```avra
+provide theme: Theme = brand
+view toolbar() {
+    let t = env Theme
+    row { text("Hi").color(t.color.muted) }
+}
+```
+
+A `provide`/`env` pair carries VALUES and ACTIONS (`dismiss`,
+`open_url`, `refresh`, a focus handle); a missing provider is a
+compile error in the static case, a listed runtime lookup where
+composition is dynamic. The library provides its own defaults —
+theme, density, direction, locale, size class — so `env Theme` always
+resolves, and a user key is declared once and typed.
+
+Because the environment is inherited, theming, density, direction,
+locale and size class stay flexible without prop-drilling, and a
+target reads the same environment the library does.
 
 ## 7. The component taxonomy
 
@@ -449,27 +530,42 @@ Phase 0's existing `std-ui*` packages are **migrated then deleted**
 
 ## 17. Open decisions
 
-1. **Associated types** (`trait X { type Out }`) vs a second type
-   parameter. Associated types make a painter's output type clean;
-   proposed as a small language slice. Recommend yes.
-2. **Tonal palette** (HCT-class) — build our own or import a table?
-   It is the difference between "Material-class theming" and
-   "hand-tuned light/dark". Recommend our own, small and tested.
-3. **`dyn Realize<T>` (C2b)** — no longer a blocker (the visitor is
-   the tree mechanism); land only for library ergonomics when a site
-   wants it.
-4. **Slots and templates** — the L4 sugar (`@template`, default slot,
+Owner steer, 2026-10-01, on the first four:
+
+1. **Associated types** (`trait X { type Out }`) — **YES**, as its own
+   small language slice (epic child .31). A painter, a codec, a
+   transport each declare their own answer type; callers stop naming
+   it. Design doc first, then the seed dance.
+2. **Tonal palette from a seed** — **OUT of v1**, but the `Theme`'s
+   shape must accept it later without changing. Ship a hand-tuned
+   default + dark + high-contrast now; L5 drops the generator in.
+3. **Name freezing** — no hard freeze. Internal records grow by
+   appending (the crossing/ growth laws); user-facing variant enums
+   grow by appending; keep names descriptive, never clever. A rename
+   later is a two-step move, not a rewrite.
+4. **Scope discipline** (§18) — **agreed**: charts, maps, rich-text
+   and data-grid virtualization are companion packages, not core.
+
+Still open:
+
+5. **Modifiers: pure sugar vs a composable axis.** Owner likes both
+   chaining and direct property passing; the recommendation is sugar
+   over the shared groups (`text("hi").pad(.S)` ≡ `text("hi") {
+   pad: .S }`) — one mechanism. A separate composable axis (SwiftUI's
+   wrapping modifiers) is more powerful but adds a second mechanism
+   and a wrapper node; revisit only if a real component wants it.
+6. **Slots and templates** — the L4 sugar (`@template`, default slot,
    builder syntax). Design when a real component wants it.
-5. **Capability matrix enforcement** — compile-time refusal per target
-   is the design; the mechanism (an annotation on each target, a
-   check pass) is open.
-6. **`foreign`/`canvas` typing** — how a platform view is typed and
+7. **Capability matrix enforcement** — compile-time refusal per target
+   is the design; the mechanism (an annotation per target, a check
+   pass) is open.
+8. **`foreign`/`canvas` typing** — how a platform view is typed and
    kept honest across targets; a design of its own (far shelf).
-7. **The op stream vs the visitor** — today the visitor is the
+9. **The op stream vs the visitor** — today the visitor is the
    source-level spelling and the op stream is its compiled output; the
    exact IR is open when `dom` lands.
-8. **Naming** — `Tone`/`Role`/`Kind`/`ControlSize`/`Level`; freeze
-   names before L2 so components do not churn.
+10. **`dyn Realize<T>` (C2b)** — no longer a blocker; land only for
+    library ergonomics when a site wants it.
 
 ## 18. Scope discipline — what is NOT core
 
@@ -483,3 +579,17 @@ built on the escapes:
 
 Keeping them out is what keeps the core small enough to be drawn by
 every target and proven on every engine.
+
+## 19. Prior art — what we take, what we refuse
+
+| Library | Take | Refuse |
+|---|---|---|
+| **SwiftUI** | modifiers + environment, composition over configuration, builders, state as a parameter | opaque-type erasure, the property-wrapper zoo, ownership confusion |
+| **Material 3** | tonal palettes and semantic colour roles, the type scale, elevation, motion, a full component set with states | platform lock-in, JS-only interaction, a fixed visual language no brand can leave |
+| **Fluent 2** | tokens as the contract, density, restrained motion, accessibility defaults | a single vendor's look |
+| **Radix / Headless** | semantics first, accessibility as the primitive, unstyled by default | React binding, an a11y checklist instead of obligations |
+| **Flutter** | one widget contract, layout primitives, an explicit constraint model | everything-is-a-widget, a runtime framework |
+
+What none of them have and we do: one tree for every target, static
+completeness (a target missing a component is refused), provenance on
+every node, and the same source proving layout across two engines.
