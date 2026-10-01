@@ -1255,6 +1255,7 @@ impl Machine {
             .BytesEq -> verdict(self.octets(vals[0]) == self.octets(vals[1])),
             .BytesAt -> self.bytes_at_val(vals),
             .BytesSlice -> self.bytes_slice_val(vals),
+            .BytesWithRoom -> self.with_room_val(vals),
             .BytesConcat -> Val.Y(self.octets(vals[0]).concat(self.octets(vals[1]))),
             .BytesIndexOf -> self.bytes_index_of_val(vals),
             .BytesIndexIn -> self.bytes_index_in_val(row, callee, vals),
@@ -2043,6 +2044,16 @@ impl Machine {
     /// A ZERO ADDRESS CANNOT ARRIVE: the row's seat takes no absence
     /// (F2088), so a caller holding a nullable pointer decided what
     /// nothing means before it got here.
+    /// An empty buffer — its room is the native allocator's, and the
+    /// evaluator's octets have none to keep. A room the runtime cannot
+    /// give traps here in the C body's words.
+    fn with_room_val(vals: List<Val>) -> Val {
+        let n = self.whole(vals[0])
+        if n < 0 { return self.trapped_val("a buffer's room is less than nothing") }
+        if n >= header_length_ceiling { return self.trapped_val("a Bytes value is longer than its header can carry") }
+        Val.Y("".bytes())
+    }
+
     fn adopted_val(vals: List<Val>) -> Val {
         let held? = avra_ptr_at(self.whole(vals[0])) else {
             return self.defect_val("an address of zero reached the adoption door")
@@ -2060,6 +2071,9 @@ impl Machine {
 fn read_out(v: Val) -> Val {
     if v is .Gone { Val.N } else { v }
 }
+
+/// The first octet count a box's 32-bit header length cannot carry.
+const header_length_ceiling = 4294967295
 
 // ── The voices ──
 

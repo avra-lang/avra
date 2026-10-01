@@ -2615,6 +2615,16 @@ const char* avra_bytes_adopted(const void* p, int64_t n) {
     return bytes_owned(p, (size_t)n);
 }
 
+// AN EMPTY BUFFER WITH ROOM: its block sized for `n` octets and its
+// length zero, so appends fill the block in place until the room is
+// spent — `sized_moved` asks the block before it moves anything.
+const char* avra_bytes_with_room(int64_t n) {
+    if (n < 0) avra_trap("a buffer's room is less than nothing");
+    char* b = bytes_box((size_t)n);
+    sized_resized((Header*)b - 1, 0);
+    return b;
+}
+
 int64_t avra_bytes_len(const char* b) { return (int64_t)bytes_len(b); }
 
 // Equality is the reason the kind exists: lengths, then every byte.
