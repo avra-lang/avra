@@ -137,15 +137,19 @@ export fn relation_problems(t: Type) -> List<Diagnostic> {
     partition_problems(t, mode)
 }
 
-/// The partition law for `arena`/`side`: a record, no `id` (the
-/// partition's own index names a row, never a field of it), and no
-/// lookup marks yet — `@key`/`@unique`/`@index` over a partitioned
-/// relation are a later slice (M5b S2 names the per-decl index), so an
-/// early one is refused rather than silently accepted and ignored.
+/// The partition law for `arena`/`side`: no `id` (the partition's own
+/// index names a row, never a field of it), and no lookup marks yet —
+/// `@key`/`@unique`/`@index` over a partitioned relation are a later
+/// slice (M5b S2 names the per-decl index), so an early one is refused
+/// rather than silently accepted and ignored. `arena` ALONE answers
+/// for an enum too: dense storage reads a slot's VALUE, never a
+/// field's, so a tagged node (`Expr`, `Stmt`) names its own arena the
+/// same way a record does — `side` stays record-only until a site
+/// needs an enum column.
 fn partition_problems(t: Type, mode: string) -> List<Diagnostic> {
     if t.module.is_empty() { return [no_module(t)] }
-    if !t.variants.is_empty() { return [not_a_record(t)] }
     if mode != "arena" && mode != "side" { return [unknown_storage_mode(t, mode)] }
+    if !t.variants.is_empty() && mode != "arena" { return [not_a_record(t)] }
     let ided = [partition_has_id(t) for f in t.fields if f.name == "id"]
     let marked = [partition_lookup_unsupported(t, f) for f in t.fields if !lookup_marks(f).is_empty()]
     ided.concat(marked)
@@ -524,21 +528,14 @@ fn generated(t: Type) -> Decls {
 }
 
 /// `@relation(arena)`: the row at an `Arena<T>`'s own raw index — the
-/// partition IS the storage, so `get`/`all` read it directly and record
-/// no dependency yet (S3 wires the per-declaration grain).
+/// partition IS the storage, and `Arena<N>` (core/arena.av) already
+/// reads it: `node_at`/`count`/`of_kind`. A second door here would be
+/// the third-copy rule's own instance, so this derive generates
+/// NOTHING — `@arena` is a checked mark (partition_problems still
+/// refuses an `id` field, lookup marks, an unknown mode), never a
+/// second accessor set to keep in step with `Arena<N>`'s.
 fn arena_generated(t: Type) -> Decls {
-    quote {
-        impl ${t} {
-            static fn get(store: Arena<${t}>, id: int) -> ${t}? {
-                if id < 0 || id >= store.count() { return null }
-                store.node_at(id)
-            }
-
-            static fn all(store: Arena<${t}>) -> List<${t}> {
-                [store.node_at(i) for i in 0..store.count()]
-            }
-        }
-    }
+    quote { impl ${t} { } }
 }
 
 /// `@relation(side)`: the row at a `SideTable<T>`'s own window index.
