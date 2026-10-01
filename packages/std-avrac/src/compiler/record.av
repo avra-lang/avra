@@ -32,7 +32,7 @@ use core.{
     SeatMark,
     Span,
 }
-use features.{DeclSig, DeclFacts, AnnotationFact}
+use features.{DeclSig, DeclFacts, AnnotationFact, LitArg, LitKind}
 use compiler.lower.{Body, program_symbol}
 use compiler.store.{Store, Stored, node_key}
 use @std.path.{relative_path}
@@ -457,21 +457,44 @@ fn doc_of_wire(wire: string) -> List<string>? {
 }
 
 /// One `AnnotationFact` as a 4-item `packed` record: its escaped name, its arguments
-/// (each escaped, then packed again — an argument's text is exactly as free), and its
-/// span's two wires.
+/// (each its escaped text and its kind, packed again — an argument's text is exactly as
+/// free), and its span's two wires.
 fn annotation_wire(a: AnnotationFact) -> string {
     let slo = a.span?.lo ?? 0 - 1
     let shi = a.span?.hi ?? 0 - 1
-    packed([field_text(a.name), packed([field_text(x) for x in a.args]), "${slo}", "${shi}"])
+    packed(
+        [
+            field_text(a.name),
+            packed([packed([field_text(x.text), lit_kind_word(x.kind)]) for x in a.args]),
+            "${slo}",
+            "${shi}",
+        ],
+    )
 }
 
 fn annotation_of_wire(wire: string) -> AnnotationFact {
     let p = unpacked(wire)
     let name = if p.length > 0 { text_of_field(p[0]) } else { "" }
-    let args = if p.length > 1 { [text_of_field(x) for x in unpacked(p[1])] } else { [] }
+    let args = if p.length > 1 { [lit_arg_of_wire(x) for x in unpacked(p[1])] } else { [] }
     let slo = if p.length > 2 { wire_number(p[2]) ?? 0 - 1 } else { 0 - 1 }
     let shi = if p.length > 3 { wire_number(p[3]) ?? 0 - 1 } else { 0 - 1 }
     AnnotationFact { name: name, args: args, span: span_of(slo, shi) }
+}
+
+/// One literal argument on the wire: its text, then its kind's word.
+fn lit_arg_of_wire(item: string) -> LitArg {
+    let q = unpacked(item)
+    let text = if q.length > 0 { text_of_field(q[0]) } else { "" }
+    let kind = if q.length > 1 { lit_kind_of(text_of_field(q[1])) } else { LitKind.Text }
+    LitArg { text: text, kind: kind }
+}
+
+fn lit_kind_word(k: LitKind) -> string {
+    match k { .Int -> "int", .Text -> "text", .Bool -> "bool", .Other -> "other" }
+}
+
+fn lit_kind_of(w: string) -> LitKind {
+    match w { "int" -> .Int, "text" -> .Text, "bool" -> .Bool, rest -> .Other }
 }
 
 /// A span from its two wire ints — the decoder `facts_unblocked` and

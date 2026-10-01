@@ -27,14 +27,17 @@ fn build_collect_decl(b: Builder) -> Result<LangNode, string> {
     let fps = b.tokens(7)?
     let bws = b.tokens(8)?
     let biws = b.tokens(9)?
-    let bks = b.tokens(10)?
-    let bad_it? = iws.concat(biws).find(not_word("it")) else { return bad_by(b, bws, n, t, k, sc, pt, fns, fps, bks, ends) }
+    let bp = b.tokens(10)?
+    let bidx = b.tokens(11)?
+    let dn = b.tokens(12)?
+    let bad_it? = iws.concat(biws).find(not_word("it")) else { return collect_decl_node(b, bws, biws, n, t, k, sc, pt, fns, fps, bp, bidx, dn, ends) }
     .Err("a collect's projection reads its declaration through `it` — found `${bad_it.text}`")
 }
 
-fn bad_by(
+fn collect_decl_node(
     b: Builder,
     bws: List<Token>,
+    biws: List<Token>,
     n: Token,
     t: TypeRef,
     k: Token,
@@ -42,12 +45,15 @@ fn bad_by(
     pt: Token,
     fns: List<Token>,
     fps: List<Token>,
-    bks: List<Token>,
+    bp: List<Token>,
+    bidx: List<Token>,
+    dn: List<Token>,
     ends: int,
 ) -> Result<LangNode, string> {
     let bad? = bws.find(not_word("by")) else {
+        let dense? = dense_flag(dn) else { return .Err(dense_error(dn)) }
         let proj = Projection { ty: named_ref(pt.text), fields: proj_fields(fns, fps, ends) }
-        return b
+        let made = b
             .make_stmt(
                 Stmt
                     .Collect(
@@ -56,9 +62,12 @@ fn bad_by(
                         kind_of(b, k),
                         scope_of(sc),
                         proj,
-                        [Plain(bk.text) for bk in bks],
+                        order_paths(biws, bp, bidx, ends),
                     ),
-            )
+            )?
+        let s? = match made { .NStmt(id) -> id, rest -> null } else { return .Ok(made) }
+        b.store.mark_collect_dense(s, dense)
+        return .Ok(made)
     }
     .Err("a collect's order is declared with `by` — found `${bad.text}`")
 }
@@ -69,25 +78,79 @@ fn build_collect_enum_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let k = b.token(1)?
     let sc = b.token(2)?
+    let ends? = b.span_end() else {
+        return .Err("defect: a collect enum without a span — the arena and the grammar disagree")
+    }
     let bws = b.tokens(3)?
     let biws = b.tokens(4)?
-    let bks = b.tokens(5)?
-    let bad_it? = biws.find(not_word("it")) else { return bad_enum_by(b, bws, n, k, sc, bks) }
+    let bp = b.tokens(5)?
+    let bidx = b.tokens(6)?
+    let dn = b.tokens(7)?
+    let bad_it? = biws.find(not_word("it")) else { return collect_enum_node(b, bws, biws, n, k, sc, bp, bidx, dn, ends) }
     .Err("a collect enum's order reads its declaration through `it` — found `${bad_it.text}`")
 }
 
-fn bad_enum_by(b: Builder, bws: List<Token>, n: Token, k: Token, sc: Token, bks: List<Token>) -> Result<
-    LangNode,
-    string,
-> {
+fn collect_enum_node(
+    b: Builder,
+    bws: List<Token>,
+    biws: List<Token>,
+    n: Token,
+    k: Token,
+    sc: Token,
+    bp: List<Token>,
+    bidx: List<Token>,
+    dn: List<Token>,
+    ends: int,
+) -> Result<LangNode, string> {
     let bad? = bws.find(not_word("by")) else {
-        return b
+        let dense? = dense_flag(dn) else { return .Err(dense_error(dn)) }
+        let made = b
             .make_stmt(
                 Stmt
-                    .CollectEnum(Scoped(n.text), kind_of(b, k), scope_of(sc), [Plain(bk.text) for bk in bks]),
-            )
+                    .CollectEnum(Scoped(n.text), kind_of(b, k), scope_of(sc), order_paths(biws, bp, bidx, ends)),
+            )?
+        let s? = match made { .NStmt(id) -> id, rest -> null } else { return .Ok(made) }
+        b.store.mark_collect_dense(s, dense)
+        return .Ok(made)
     }
     .Err("a collect enum's order is declared with `by` — found `${bad.text}`")
+}
+
+/// Whether the trailing word is `dense` — `null` when it is neither
+/// absent nor `dense`, so the caller names the offending word.
+fn dense_flag(dn: List<Token>) -> bool? {
+    let word? = dn.first() else { return false }
+    if word.text == "dense" { return true }
+    null
+}
+
+fn dense_error(dn: List<Token>) -> string {
+    let word? = dn.first() else { return "expected the line to end after the collect" }
+    "expected the line to end after the collect — `${word.text}` is not `dense`"
+}
+
+/// Each order entry's `it` path, encoded as ONE text: its segments
+/// joined by `.`, and its `[i]` element when one was written. The
+/// boundary between entries is the `it` anchor's own position, the
+/// same window `aligned_binds` reads for a projection field.
+fn order_paths(biws: List<Token>, segs: List<Token>, idxs: List<Token>, ends: int) -> List<Plain> {
+    [order_key(biws, segs, idxs, j, ends) for j in 0..biws.length]
+}
+
+fn order_key(biws: List<Token>, segs: List<Token>, idxs: List<Token>, j: int, ends: int) -> Plain {
+    let lo = biws[j].span.hi
+    let hi = if j + 1 < biws.length { biws[j + 1].span.lo } else { ends }
+    let mine = [t for t in segs if t.span.lo >= lo && t.span.lo < hi]
+    let idx = [t for t in idxs if t.span.lo >= lo && t.span.lo < hi].first()
+    Plain(order_key_text(mine, idx))
+}
+
+fn order_key_text(segs: List<Token>, idx: Token?) -> string {
+    let path = [t.text for t in segs].join(".")
+    match idx {
+        t? -> "${path}[${t.text}]"
+        null -> path
+    }
 }
 
 fn not_word(word: string) -> fn(Token) -> bool {

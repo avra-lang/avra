@@ -5,7 +5,7 @@
 // tab, a backslash), so the round trip must survive all of it, not
 // merely the type spellings and digits the other facts carry.
 use compiler.{facts_block, facts_unblocked}
-use @std.avrac.features.{DeclFacts, AnnotationFact}
+use @std.avrac.features.{DeclFacts, AnnotationFact, LitArg, LitKind}
 use @std.avrac.core.{Span}
 
 fn sample() -> DeclFacts {
@@ -26,7 +26,11 @@ fn sample() -> DeclFacts {
         annotations: [
             AnnotationFact {
                 name: "m",
-                args: ["a\tb", "x;y~z:w|v", "plain"],
+                args: [
+                    LitArg { text: "a\tb", kind: LitKind.Text },
+                    LitArg { text: "x;y~z:w|v", kind: LitKind.Int },
+                    LitArg { text: "plain", kind: LitKind.Other },
+                ],
                 span: Span { lo: 1, hi: 2 },
             },
             AnnotationFact { name: "n", args: [], span: null },
@@ -36,7 +40,7 @@ fn sample() -> DeclFacts {
 
 fn doc_text(d: List<string>?) -> string { (d ?? []).join("\n") }
 
-fn ann_text(a: AnnotationFact) -> string { "${a.name}|${a.args.join(",")}|${a.span?.lo ?? 0 - 1}|${a.span?.hi ?? 0 - 1}" }
+fn ann_text(a: AnnotationFact) -> string { "${a.name}|${[x.text for x in a.args].join(",")}|${a.span?.lo ?? 0 - 1}|${a.span?.hi ?? 0 - 1}" }
 
 fn anns_text(xs: List<AnnotationFact>) -> string { [ann_text(a) for a in xs].join(";") }
 
@@ -135,7 +139,13 @@ spec "a declaration's facts survive their record" {
     given "only an annotation's argument text changes" {
         then "the fingerprint moves" {
             let a = sample()
-            let b = sample() with { annotations: [AnnotationFact { name: "m", args: ["different"], span: null }] }
+            let b = sample() with { annotations: [
+                AnnotationFact {
+                    name: "m",
+                    args: [LitArg { text: "different", kind: LitKind.Text }],
+                    span: null,
+                },
+            ] }
             a.fingerprint() != b.fingerprint()
         }
     }

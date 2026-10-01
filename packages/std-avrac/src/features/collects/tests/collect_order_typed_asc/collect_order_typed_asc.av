@@ -1,0 +1,23 @@
+// `by it.mark.args[0]` orders by the annotation literal's OWN value,
+// never the text it was written as: declared 2, 9, 10 comes out
+// 2, 9, 10 — and `collect_order_typed_desc`'s file, declared
+// 10, 2, 9, comes out the same, so the order is the DATA, not the
+// declaration order.
+use @std.meta.{Named}
+
+fn migration(_what: Named, _id: int) {}
+
+@migration(2)
+fn add_users() {}
+
+@migration(9)
+fn add_posts() {}
+
+@migration(10)
+fn add_tags() {}
+
+type MarkInfo = { name: string, args: List<string> }
+type Entry = { name: string, mark: MarkInfo }
+collect steps: List<Entry> = @migration in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0]
+
+[step.mark.args[0] for step in steps].join(" ")

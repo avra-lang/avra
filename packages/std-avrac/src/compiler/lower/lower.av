@@ -23,8 +23,6 @@ use core.{
     joined,
     flatten,
     sorted_by,
-    tuple_before,
-    doc_first_paragraph,
     root_kind_of,
     SyntaxArena,
     DeclId,
@@ -69,7 +67,14 @@ use features.{
     MetaVal,
     new_meta_heap,
 }
-use features.collects.{generic_words, gathered_members}
+use features.collects.{
+    generic_words,
+    gathered_members,
+    collect_field_text,
+    sort_value,
+    sort_key_before,
+    SortValue,
+}
 use compiler.{Analysis, any_root}
 
 /// One lowered body: instructions in order and each register's type
@@ -1023,9 +1028,9 @@ fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts, 
     lo.grown_box(lo.view.types.shape_of(rt), size, regs)
 }
 
-/// A member beside its `by` key — one text per `by` field, a TUPLE, so
-/// two different keys never read as one and a tie keeps both members.
-type SortedMember = { key: List<string>, decl: Decl }
+/// A member beside its `by` key — one TYPED value per `by` field, a
+/// TUPLE, so two different keys never read as one and a tie keeps both.
+type SortedMember = { key: List<SortValue>, decl: Decl }
 
 /// Every matching declaration, in `by` order — shared by both collect
 /// flavors (a value's rows, an enum's variants); only `Decls` is
@@ -1039,15 +1044,11 @@ export fn ordered_collect_members(
     owner: FileId,
 ) -> List<Decl> {
     let found = gathered_members(decls, kind, scope, owner)
-    let keyed = [SortedMember { key: collect_sort_key(decls, order, d), decl: d } for d in found]
+    let keyed = [SortedMember { key: [sort_value(decls, kind, k, d) for k in order], decl: d } for d in found]
     [m.decl for m in sorted_by(keyed, member_before)]
 }
 
-fn member_before(x: SortedMember, y: SortedMember) -> bool { tuple_before(x.key, y.key) }
-
-export fn collect_sort_key(decls: Decls, order: List<Plain>, d: Decl) -> List<string> {
-    [collect_field_text(decls, d, [k]) for k in order]
-}
+fn member_before(x: SortedMember, y: SortedMember) -> bool { sort_key_before(x.key, y.key) }
 
 /// One entry: its fields read by NAME off the projected type's own
 /// signature, filled from `p.proj.fields` — so their declared order
@@ -1170,7 +1171,7 @@ fn mark_field_reg(
 /// silence an unhandled generic path already reads as
 /// (`collect_field_text`).
 fn mark_part_reg(mut lo: LowerCx, m: AnnotationFact, part: string) -> Reg {
-    if part == "args" { return string_list_box(lo, m.args) }
+    if part == "args" { return string_list_box(lo, [a.text for a in m.args]) }
     if part == "name" { return lo.const_str(m.name) }
     lo.const_str("")
 }
@@ -1216,26 +1217,6 @@ fn component_field_reg(
     if lo.unseen(unit.name) { lo.jobs.pending.push(unit) }
     let inst = lo.call_decl(inst_ty, unit.name, [])
     lo.field_named(inst, inst_ty, word, field_ty)
-}
-
-/// A path's TEXT projection — the generic fields every kind answers:
-/// name, module, file, the `///` doc's first paragraph joined. `doc_of`
-/// (features/decls.av) carries no file fallback, which is what this
-/// wants: a collect gathers many declarations from one file, so the
-/// file's `//!` is not any single one's doc to inherit — an
-/// UNDOCUMENTED entry answers "", not the file header every sibling
-/// would then share.
-export fn collect_field_text(decls: Decls, d: Decl, path: List<Plain>) -> string {
-    if path.length != 1 { return "" }
-    let word = path[0].of
-    if word == "name" { return d.name }
-    if word == "module" { return decls.short_module_of(d.id) }
-    if word == "file" { return decls.file(d.file).path }
-    if word == "doc" { return joined(doc_first_paragraph(decls.doc_of(d.id) ?? []), " ") }
-    // `root_kind` answers a LIST now (every kind its patterns narrow
-    // to), which has no single scalar worth sorting text by — the
-    // generic silence every other non-text field already answers.
-    ""
 }
 
 /// A NAMED fn as a value, at the reference's own site — `fn_value_reg`'s

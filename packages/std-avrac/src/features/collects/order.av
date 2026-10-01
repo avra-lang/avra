@@ -1,0 +1,114 @@
+//! A `by` key's own currency: the `it` path it reads, the comparable
+//! value each member answers for it, and the order those values fold
+//! to. `by it.mark.args[i]` compares the annotation argument's OWN
+//! type — an int as an int, a string as a string — never the text it
+//! was written as; a key the compiler cannot compare is refused at
+//! check (features/collects/check.av), never sorted by file order.
+use core.{Plain, CollectKind, joined, doc_first_paragraph, text_before}
+use features.{Decls, Decl, LitKind, LitArg, AnnotationFact}
+use @std.text.{parse_int}
+
+/// A decoded `by` key: its `it` path segments and the `[i]` element
+/// when one was written. The node keeps the key as ONE text (its
+/// entry boundary is the `it` anchor), and this is the one decoder.
+export type OrderPath = { segs: List<string>, index: int? }
+
+export fn order_path(text: Plain) -> OrderPath {
+    let t = text.of
+    let open = t.index_of("[")
+    if open < 0 { return OrderPath { segs: t.split("."), index: null } }
+    let close = t.index_of("]")
+    let inner = if close > open { t.substring(open + 1, close) } else { "" }
+    OrderPath { segs: t.substring(0, open).split("."), index: parse_int(inner) }
+}
+
+/// One value in a `by` column. `Other` is a key no comparison may
+/// use: a whole mark, a list, a `Name`/`Bool` literal — the check
+/// refuses it, and this variant only keeps the fold total.
+export enum SortValue { Int(int), Text(string), Other(string) }
+
+/// The value `d` answers for the `by` key `text`, with no regard for
+/// whether the column is comparable — the check rules that; this
+/// reads the one member.
+export fn sort_value(decls: Decls, kind: CollectKind, text: Plain, d: Decl) -> SortValue {
+    let path = order_path(text)
+    if path.segs.length == 1 && generic_words.contains(path.segs[0]) {
+        return SortValue.Text(collect_field_text(decls, d, [Plain(path.segs[0])]))
+    }
+    match kind {
+        .Annotated(word) -> annotated_value(decls, word, path, d),
+        .Component(_) or .UnknownKind(_) -> SortValue.Other("it.${text.of}"),
+    }
+}
+
+fn annotated_value(decls: Decls, word: string, path: OrderPath, d: Decl) -> SortValue {
+    if path.segs.length != 2 || path.segs[0] != "mark" { return SortValue.Other("it.${order_path_word(path)}") }
+    if path.segs[1] == "name" { return SortValue.Text(word) }
+    if path.segs[1] != "args" { return SortValue.Other("it.${order_path_word(path)}") }
+    let index? = path.index else { return SortValue.Other("it.mark.args") }
+    let fact? = matched_mark(decls, word, d) else { return SortValue.Other("it.mark.args[${index}]") }
+    if index < 0 || index >= fact.args.length { return SortValue.Other("it.mark.args[${index}]") }
+    lit_value(fact.args[index])
+}
+
+fn matched_mark(decls: Decls, word: string, d: Decl) -> AnnotationFact? {
+    decls.annotations_of(d.id).find(it.name == word)
+}
+
+fn lit_value(a: LitArg) -> SortValue {
+    match a.kind {
+        .Int -> SortValue.Int(parse_int(a.text) ?? 0),
+        .Text -> SortValue.Text(a.text),
+        .Bool or .Other -> SortValue.Other(a.text),
+    }
+}
+
+fn order_path_word(path: OrderPath) -> string {
+    let base = path.segs.join(".")
+    match path.index {
+        n? -> "${base}[${n}]"
+        null -> base
+    }
+}
+
+/// A path's TEXT projection — the generic fields every kind answers:
+/// name, module, file, the `///` doc's first paragraph joined.
+export fn collect_field_text(decls: Decls, d: Decl, path: List<Plain>) -> string {
+    if path.length != 1 { return "" }
+    let word = path[0].of
+    if word == "name" { return d.name }
+    if word == "module" { return decls.short_module_of(d.id) }
+    if word == "file" { return decls.file(d.file).path }
+    if word == "doc" { return joined(doc_first_paragraph(decls.doc_of(d.id) ?? []), " ") }
+    ""
+}
+
+/// Ascending order for one value — `Int` before `Text` before the
+/// uncomparable `Other`, each by its own value. A column the check
+/// refuses is still ordered DETERMINISTICALLY, so the refusal is the
+/// only thing a reader has to act on.
+export fn sort_value_before(a: SortValue, b: SortValue) -> bool {
+    match a {
+        .Int(x) -> match b { .Int(y) -> x < y, .Text(_) or .Other(_) -> true },
+        .Text(x) -> match b { .Text(y) -> text_before(x, y), .Int(_) -> false, .Other(_) -> true },
+        .Other(x) -> match b { .Other(y) -> text_before(x, y), .Int(_) or .Text(_) -> false },
+    }
+}
+
+/// A whole key's order: field by field, the first difference decides.
+export fn sort_key_before(a: List<SortValue>, b: List<SortValue>) -> bool {
+    let n = if a.length < b.length { a.length } else { b.length }
+    let first = [j for j in 0..n if !sort_value_equal(a[j], b[j])].first()
+    match first {
+        j? -> sort_value_before(a[j], b[j])
+        null -> a.length < b.length
+    }
+}
+
+fn sort_value_equal(a: SortValue, b: SortValue) -> bool {
+    match a {
+        .Int(x) -> match b { .Int(y) -> x == y, rest -> false },
+        .Text(x) -> match b { .Text(y) -> x == y, rest -> false },
+        .Other(x) -> match b { .Other(y) -> x == y, rest -> false },
+    }
+}
