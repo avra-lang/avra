@@ -68,8 +68,10 @@ fn declared_call(
     let found? = cx.view.decls.sig(m)?.fn_sig() else {
         return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name)
     }
-    // a member chosen at run answers what every member answers
-    if choosing && cx.facts.dispatch_at(e) != null { return found.ret }
+    // a member chosen at run answers what every member answers; its
+    // arguments are judged as any call's, the `dyn` one as itself
+    let run = if choosing { cx.facts.dispatch_at(e) } else { null }
+    if run != null { return dispatched_answer(cx, e, target, name, run!, found, args) }
     let at = generic_default_at(cx, e, subject, m, found, args)
     if at.refused { return cx.error_type }
     let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found), at.args)
@@ -253,6 +255,24 @@ fn chosen_member(
     let keys = (ms: List<DeclId>) -> [cx.view.decls.method_key(m) for m in ms]
     if fits.is_empty() { no_member_fits(cx, e, target, name, keys(many)) } else { members_ambiguous(cx, e, target, name, keys(fits)) }
     null
+}
+
+/// A run-time-chosen call's judgment: every argument but the `dyn`
+/// one fills its seat; the `dyn` one is accepted as what it is.
+fn dispatched_answer(
+    mut cx: TypeCx,
+    e: ExprId,
+    target: string,
+    name: string,
+    run: RunChoice,
+    found: FnSig,
+    args: List<ExprId>,
+) -> TypeId {
+    for j, a in args {
+        let want = if j == run.seat { cx.type_at(a) } else { found.params[j + 1] }
+        if !cx.accepts(a, want) { wrong_method_argument(cx, target, name, j, want, a) }
+    }
+    found.ret
 }
 
 /// The members one `dyn` argument's run-time type chooses among: that
