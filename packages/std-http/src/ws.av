@@ -142,7 +142,7 @@ export fn masked(b: Bytes, key: List<int>) -> Bytes { [b.at(i) ^ key[i & 3] for 
 /// A frame on the wire: its head — the length in the shortest form
 /// that holds it — then the payload, masked by `key` when a client
 /// sends it.
-export fn frame_bytes(fin: bool, op: int, payload: Bytes, key: List<int>?) -> Bytes {
+export fn ws_frame_bytes(fin: bool, op: int, payload: Bytes, key: List<int>?) -> Bytes {
     let n = payload.length
     let first = if fin { 128 } else { 0 } | op
     let mark = if key == null { 0 } else { 128 }
@@ -395,7 +395,7 @@ impl Socket {
     /// One frame written whole, masked when a client sends it.
     fn sent_frame(fin: bool, op: int, payload: Bytes) -> Result<int, WsError> {
         let key: List<int>? = match self.side { .Client -> mask_key()?, .Server -> null }
-        match self.conn.wire_write(frame_bytes(fin, op, payload, key)) {
+        match self.conn.wire_write(ws_frame_bytes(fin, op, payload, key)) {
             .Ok(n) -> .Ok(n),
             .Err(e) -> .Err(socket_error(e)),
         }
@@ -428,7 +428,8 @@ fn close_code(m: Message) -> int {
 }
 
 /// A transport's failure as a socket's: a deadline passing is `TimedOut`,
-/// a connection already closed `Closed`.
+/// a connection already closed, or a transport cut off before its end,
+/// `Closed`.
 export fn socket_error(e: WireError) -> WsError {
     match e {
         .Net(n) -> when {
@@ -437,6 +438,7 @@ export fn socket_error(e: WireError) -> WsError {
             _ -> WsError.Net(n)
         },
         .Secure(s) -> WsError.Secure(s),
+        .Reset -> WsError.Closed,
     }
 }
 
