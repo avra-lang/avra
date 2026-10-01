@@ -300,3 +300,7 @@ int64_t avra_io_seek(int64_t fd, int64_t at) {
     off_t o = lseek((int)fd, (off_t)at, SEEK_SET);
     return o < 0 ? -errno : (int64_t)o;
 }
+
+int64_t avra_io_witness_139(void) {
+    return 139;
+}
