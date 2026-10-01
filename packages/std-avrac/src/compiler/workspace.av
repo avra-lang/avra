@@ -500,8 +500,9 @@ export fn phase_total(phases: List<Phase>, name: string) -> int {
 /// THE FAMILIES — the compiler's query vocabulary, in pipeline
 /// order. Keys by FileId (`Source` … `Resolved`, `Folded`,
 /// `Analysis`), ModuleId (`Namespace`), DeclId (`Sig`, `Methods`,
-/// `Typed`), unit (`Lowered`, `LiftLowered`) or annotation call (`Lifted`). `ordinal` is the kernel's number
-/// for each; `refetched` re-asks any of them — both exhaustive, so
+/// `Typed`), unit (`Lowered`, `LiftLowered`) or annotation call (`Lifted`). `.ordinal` — its place in THIS
+/// declaration, so a family is APPENDED, never inserted — is the kernel's
+/// number for each; `refetched` re-asks any of them — both exhaustive, so
 /// a new family cannot ship half-registered.
 enum Family {
     Source
@@ -522,12 +523,6 @@ enum Family {
     Manifest
     Receivers
     Expanded
-    /// A compile-time run's own units — a lift, an argument crossing,
-    /// a const's settlement — keyed the same way as `Lowered` but in
-    /// a SEPARATE space: the two never share a cache row, so a
-    /// symbol reached by both a comptime run and the real program
-    /// never has one context's answer stand in for the other's.
-    LiftLowered
     /// a file parsed under NO sublanguage words — what the block
     /// pre-scan reads of a provider, depending on its source alone
     Plain
@@ -549,6 +544,12 @@ enum Family {
     /// asked in ITS bracket, so every file's `Analysis` depends on them
     /// whichever file ran the scan first
     MethodDiags
+    /// A compile-time run's own units — a lift, an argument crossing,
+    /// a const's settlement — keyed the same way as `Lowered` but in
+    /// a SEPARATE space: the two never share a cache row, so a
+    /// symbol reached by both a comptime run and the real program
+    /// never has one context's answer stand in for the other's.
+    LiftLowered
     /// a declaration's own syntax (COMPILER DB townhall §6.11): the
     /// fold of its expr/stmt range's fingerprints, keyed by DeclId so
     /// an edit to one declaration in a file cuts off before a
@@ -572,7 +573,7 @@ fn parsed_fingerprint(s: DbRow) -> int {
 }
 
 fn key(f: Family, arg: int) -> Key {
-    Key { family: ordinal(f), arg: arg }
+    Key { family: f.ordinal, arg: arg }
 }
 
 /// `Family.Syntax`'s own fold: the declaration's expr range and its
@@ -586,39 +587,7 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
     fp_list([mix_final(store.stmt_fingerprint(x.stmt))].concat(exprs))
 }
 
-fn ordinal(f: Family) -> int {
-    match f {
-        .Source -> 0,
-        .Parsed -> 1,
-        .Items -> 2,
-        .Namespace -> 3,
-        .Visible -> 4,
-        .Resolved -> 5,
-        .Sig -> 6,
-        .Methods -> 7,
-        .Typed -> 8,
-        .ConstTyped -> 9,
-        .Folded -> 10,
-        .Analysis -> 11,
-        .Settled -> 12,
-        .Lowered -> 13,
-        .Lifted -> 14,
-        .Manifest -> 15,
-        .Receivers -> 16,
-        .Expanded -> 17,
-        .Plain -> 18,
-        .References -> 19,
-        .Failures -> 20,
-        .HeldSig -> 21,
-        .Raised -> 22,
-        .MethodDiags -> 23,
-        .LiftLowered -> 24,
-        .Syntax -> 25,
-        .Names -> 26,
-    }
-}
-
-/// `ordinal`'s other sibling: the variant's own word, for a voice that
+/// `.ordinal`'s other sibling: the variant's own word, for a voice that
 /// must name it — a reader recognizes `Family.Raised`, never `22`.
 fn family_word(f: Family) -> string {
     match f {
@@ -652,20 +621,12 @@ fn family_word(f: Family) -> string {
     }
 }
 
-/// `ordinal`'s own inverse, a MIRROR of it (same order, same numbers)
-/// so the two are one glance apart rather than one a hand-list forty
-/// lines away. `families()` derives its list from this, never from an
-/// independent literal: a REORDERED or DUPLICATED entry here fails
-/// the registration loop's own `!= ordinal(f)` check the moment it
-/// walks past it (`built`, below), the same check that already caught
-/// those two mistakes before this fix. What this canNOT catch: a
-/// variant added to `Family` and given an arm in `ordinal` (forced —
-/// `ordinal` is exhaustive over `Family`) but never given one here —
-/// nothing today enumerates `Family`'s own variant set to notice a gap
-/// that both hand matches share; that needs `collect enum` (N3,
-/// ROADMAP sugar backlog), not yet built. Until then, `family_count`
-/// below is the one number that must move with every new arm in BOTH
-/// this match and `ordinal`'s.
+/// `.ordinal`'s own inverse: the variant at each place in `Family`'s
+/// declaration. `families()` derives its list from this, and the
+/// registration loop's `!= f.ordinal` check (`built`, below) catches a
+/// REORDERED or DUPLICATED entry here. What it canNOT catch is a
+/// variant added to `Family` and never given an arm here —
+/// `family_count` is the number that moves with every new arm.
 fn family_at(i: int) -> Family {
     match i {
         0 -> Family.Source,
@@ -697,7 +658,7 @@ fn family_at(i: int) -> Family {
         26 -> Family.Names,
         other -> {
             avra_trap(
-                "defect: no Family at ordinal ${other} — family_at and ordinal must list the same set",
+                "defect: no Family at ordinal ${other} — family_at answers every place in `Family`'s declaration",
             )
             Family.Source
         },
@@ -705,9 +666,9 @@ fn family_at(i: int) -> Family {
 }
 
 /// How many ordinals `family_at` answers — the domain `families()`
-/// walks. Bump it in the SAME edit that adds an arm to `family_at`
-/// and to `ordinal`; nothing below can notice the day only this
-/// number moves alone, or only stays still alone.
+/// walks. Bump it in the SAME edit that adds an arm to `family_at`;
+/// nothing below can notice the day only this number moves alone, or
+/// only stays still alone.
 const family_count: int = 27
 
 /// The families in ordinal order — the kernel registers them so.
@@ -718,10 +679,9 @@ fn families() -> List<Family> {
 // ── Voices ──
 
 /// THE LAW: every registered family has a slot in `Db.families`,
-/// addressed by `ordinal`. A `Family` whose ordinal reaches past
+/// addressed by `.ordinal`. A `Family` whose ordinal reaches past
 /// `family_count` has no slot — `family_at` (and `family_count`) were
-/// not extended the day the variant was added to `Family` and to
-/// `ordinal`. States the fix, not just the symptom, because a bare
+/// not extended the day the variant was added to `Family`. States the fix, not just the symptom, because a bare
 /// index trap would say "217 is out of bounds" and send the reader
 /// looking at `Db.families` instead of here.
 fn family_gap_voice(fam: Family, i: int) -> string {
@@ -896,15 +856,15 @@ fn built(
         clock: clock,
         phases: list_cell(),
         failures_db: Cell.new(hooked_db(relation_hooks(kernel))),
-        raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, ordinal(Family.Raised), [], raised_join, raised_fp),
+        raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
     }
-    // This is also `family_at`'s and `ordinal`'s cross-check: `f` at
+    // This is also `family_at`'s and `.ordinal`'s cross-check: `f` at
     // position `i` is `family_at(i)`, so a mismatch here means the two
     // matches disagree about which family owns that ordinal — a
     // transposed pair or a wrong number in either one, not only a
     // registration-order bug.
     for f in families() {
-        if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
+        if ws.db.family((arg: int) -> ws.refetched(f, arg)) != f.ordinal { ws.defect("defect: the families registered out of ordinal order") }
     }
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
@@ -931,7 +891,7 @@ fn built(
     ws.decls.arm_lifter(lift)
     ws
         .decls
-        .arm_recording(ordinal(Family.Items), ordinal(Family.Methods), (f: FileId) -> ws.held_sig_dep(f))
+        .arm_recording(Family.Items.ordinal, Family.Methods.ordinal, (f: FileId) -> ws.held_sig_dep(f))
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
     ws.arm_audit()
@@ -944,11 +904,11 @@ impl Workspace {
     /// ordinal — one list index, never a name and never a scan. Every
     /// call site that once held its own `Memo<DbRow>` field reaches its
     /// family's table through this one door instead. Guarded, not a
-    /// bare index into `Db.families`: a gap between `ordinal` and
+    /// bare index into `Db.families`: a gap between `.ordinal` and
     /// `family_at` (see `family_gap_voice`) must name the variant it
     /// forgot, not report a number nobody can place.
     fn relation(fam: Family) -> Relation<DbRow> {
-        let i = ordinal(fam)
+        let i = fam.ordinal
         if i >= family_count { avra_trap(family_gap_voice(fam, i)) }
         self.db.relation(i)
     }
@@ -1028,7 +988,7 @@ impl Workspace {
     /// Runs the receivers pass and says so, or says it cannot: a whole-program pass never
     /// runs inside a resolve.
     fn writes_ensured() -> bool {
-        if self.db.family_active(ordinal(Family.Resolved)) { return false }
+        if self.db.family_active(Family.Resolved.ordinal) { return false }
         let _ = self.receivers()
         true
     }
