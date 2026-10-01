@@ -829,58 +829,148 @@ printf '// moved\n' >> $R/rs/src/main.av
 rs_warm=$(./avra build $R/rs 2>&1 | unwatched)
 steps=$((steps+1)); case "$rs_warm" in *const.trap*) ;; *) fails=$((fails+1)); echo "FAIL  a non-structural refusal went silent on a warm build" ;; esac
 
-# A DURABLE WITNESS, PINNED — under AVRA_WITNESS_PIN=1 only: the
-# `--time` field reads `witnessed 0/N` BOTH when the compile-time
-# switch is off (nothing ever attempted) and when it is on and the
-# Sig-hash bug makes every attempt fail, so the text alone cannot
-# tell vacuous apart from broken. AVRA_WITNESS_PIN names which this
-# binary is — set it only when `build/avra` was built with
-# `witness_enabled: bool = true` — and unset (the gate's own runs)
-# it skips the step outright rather than guess from the count.
-# A LEAF edit — one file nothing else imports — must not cost every
-# OTHER file its witness: `witnessed` must cover every file but the
-# one edited. A `Sig`/`Methods` edge hashed from a `TypeId`/`DeclId`'s
-# raw registry index (core/types.av's and core/nodes.av's own "means
-# nothing outside this process") drifts between processes though the
-# declaration's own text never changed, refusing every unrelated
-# file's witness; a `rules_key` no witnessed path ever writes
-# collapses `held` the same way.
-mkdir -p $R/wr/src
-printf '[package]\nname = "rt-wr"\nversion = "0.1.0"\n' > $R/wr/avra.toml
-cat > $R/wr/src/leaf.av <<'AV'
-export fn leaf_only() -> int { 1 }
-AV
-for n in 1 2 3 4 5 6; do
-cat > $R/wr/src/other$n.av <<AV
-export fn other_fn_$n() -> int { $n }
-AV
-done
-cat > $R/wr/src/main.av <<'AV'
-use other1.{other_fn_1}
-use other2.{other_fn_2}
-use other3.{other_fn_3}
-use other4.{other_fn_4}
-use other5.{other_fn_5}
-use other6.{other_fn_6}
-export fn two(a: int) -> int { a + other_fn_1() + other_fn_2() + other_fn_3() + other_fn_4() + other_fn_5() + other_fn_6() }
-println("${two(1)}")
-AV
-if [ "${AVRA_WITNESS_PIN:-}" = "1" ]; then
-    rm -rf .avra-cache
-    ./avra check $R/wr >$R/wr.first.log 2>&1
-    printf '\nexport fn leaf_only_added() -> int { 2 }\n' >> $R/wr/src/leaf.av
-    wr_line=$(./avra check --time $R/wr 2>&1 | grep '^time:')
+# THE DURABLE WITNESS IS THE HOLD'S KEY: a file's text and the interface digest of
+# every module it sees. HR runs one command over a package and judges it: its exit,
+# and for each named file whether the run read it or held it.
+HR() { # HR <label> <build|check> <pkg> <exit> [<path-substr> <held|read>]...
     steps=$((steps+1))
-    wn=$(printf '%s\n' "$wr_line" | grep -oE 'witnessed [0-9]+/[0-9]+' | head -1)
-    got=$(printf '%s\n' "$wn" | sed -E 's#witnessed ([0-9]+)/([0-9]+)#\1#')
-    total=$(printf '%s\n' "$wn" | sed -E 's#witnessed ([0-9]+)/([0-9]+)#\2#')
-    # N-2: the edited leaf (its own Parsed edge legitimately moved) and
-    # `main.av` (the entry) are the only files this fixture's shape
-    # ever costs a witness — six unrelated files and the prelude must
-    # all still answer `Reused`.
-    want=$((total - 2))
-    [ "$got" -ge "$want" ] || { fails=$((fails+1)); echo "FAIL  a leaf edit did not reuse every unrelated file's witness: $wn (wanted >= $want)"; }
-fi
+    label=$1; verb=$2; pkg=$3; want_st=$4; shift 4
+    out=$(./avra $verb --time $R/$pkg 2>&1); st=$?
+    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
+    if [ $st -ne "$want_st" ]; then fails=$((fails+1)); echo "FAIL  $label: exit $st, wanted $want_st: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    read_list=$(printf '%s\n' "$out" | sed -n '/^read:/,$p' | grep '^  ')
+    while [ $# -ge 2 ]; do
+        case "$read_list" in *"$1"*) got=read ;; *) got=held ;; esac
+        if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $label: $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $label: $1 wanted $2, got $got: $(printf '%s' "$read_list" | tr '\n' ' ')"; fi
+        shift 2
+    done
+}
+
+# A HELD FILE IS NEVER PARSED: every parse a warm check makes names a file it read.
+# A body edit to `m1` reads `m1` and the entry; `m2`, `m3` and the prelude are held,
+# and AVRA_QTRACE's parse lines must name exactly the two read files.
+mkdir -p $R/zp/src/m1 $R/zp/src/m2 $R/zp/src/m3
+printf '[package]\nname = "rt-zp"\nversion = "0.1.0"\n' > $R/zp/avra.toml
+printf 'export fn f1() -> int { 1 }\n' > $R/zp/src/m1/mod.av
+printf 'use m1.{f1}\nexport fn f2() -> int { f1() + 1 }\n' > $R/zp/src/m2/mod.av
+printf 'use m2.{f2}\nexport fn f3() -> int { f2() + 1 }\n' > $R/zp/src/m3/mod.av
+printf 'use m3.{f3}\nprintln("${f3()}")\n' > $R/zp/src/main.av
+HR "cold zp" check zp 0
+ed $R/zp/src/m1/mod.av "{ 1 }" "{ 10 }"
+steps=$((steps+1))
+zp_out=$(AVRA_QTRACE=1 ./avra check --time $R/zp 2>&1)
+zp_held=$(printf '%s\n' "$zp_out" | grep -oE 'held [0-9]+/[0-9]+' | tail -1)
+zp_parsed=$(printf '%s\n' "$zp_out" | grep "$(printf '^Q\tparse\t')" | cut -f3 | grep '/cache-attacks/zp/' | sed 's|.*/cache-attacks/zp/||' | sort -u | tr '\n' ' ')
+case "$zp_held" in "held 0/"*|"") fails=$((fails+1)); echo "FAIL  zp: a body edit held nothing ($zp_held), so the parse count attacks nothing" ;; *) holds=$((holds+1)) ;; esac
+[ "$zp_parsed" = "src/m1/mod.av src/main.av " ] || { fails=$((fails+1)); echo "FAIL  zp: a warm check parsed '$zp_parsed' ($zp_held), wanted m1/mod.av and main.av alone"; }
+
+# A DELETED IMPORT TARGET NEVER READS AS HELD: the store still keeps `leaf`'s record,
+# and a record that places a file the host no longer has keys on the module's bytes,
+# so `mid` re-reads and refuses the `use` a cold check refuses.
+mkdir -p $R/dt/src/mid $R/dt/src/leaf
+printf '[package]\nname = "rt-dt"\nversion = "0.1.0"\n' > $R/dt/avra.toml
+printf 'export fn f() -> int { 1 }\n' > $R/dt/src/leaf/mod.av
+printf 'use leaf.{f}\nexport fn g() -> int { f() + 1 }\n' > $R/dt/src/mid/mod.av
+printf 'use mid.{g}\nprintln("${g()}")\n' > $R/dt/src/main.av
+HR "cold dt" check dt 0
+printf '// moved\n' >> $R/dt/src/main.av
+HR "dt: an entry edit holds mid" check dt 0 mid/mod.av held
+rm $R/dt/src/leaf/mod.av; rmdir $R/dt/src/leaf
+steps=$((steps+1)); dt_out=$(./avra check $R/dt 2>&1)
+case "$dt_out" in *"resolve.no_module"*"mid/mod.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    dt: the import target gone -> refused" ;; *) fails=$((fails+1)); echo "FAIL  dt: mid's import target is gone and the check did not refuse it: $(printf '%s' "$dt_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+
+# A DELETED HELD SIBLING NEVER READS AS HELD: `a` calls `b`'s `h` by no `use`, and
+# with `b` gone its module's record names a file the module no longer has.
+mkdir -p $R/ds/src/mid
+printf '[package]\nname = "rt-ds"\nversion = "0.1.0"\n' > $R/ds/avra.toml
+printf 'export fn h() -> int { 2 }\n' > $R/ds/src/mid/b.av
+printf 'export fn g() -> int { h() + 1 }\n' > $R/ds/src/mid/a.av
+printf 'use mid.{g}\nprintln("${g()}")\n' > $R/ds/src/main.av
+HR "cold ds" check ds 0
+printf '// moved\n' >> $R/ds/src/main.av
+HR "ds: an entry edit holds both siblings" check ds 0 mid/a.av held mid/b.av held
+rm $R/ds/src/mid/b.av
+steps=$((steps+1)); ds_out=$(./avra check $R/ds 2>&1)
+case "$ds_out" in *"resolve.unresolved"*"mid/a.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    ds: the sibling gone -> refused" ;; *) fails=$((fails+1)); echo "FAIL  ds: a's sibling is gone and the check did not refuse h(): $(printf '%s' "$ds_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+
+# A MODULE WITH NO RECORD KEYS ON ITS BYTES, NEVER ON NOTHING: `nrl`'s record body is
+# taken from the store, so `user`'s key reads `nrl`'s bytes where it read its
+# interface — a different key, and `user` re-reads. The next run holds it again.
+mkdir -p $R/nrl/src $R/nr/src
+printf '[package]\nname = "@rt/nrl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-nrl"\npath = "src/lib.av"\n' > $R/nrl/avra.toml
+printf 'export fn lf() -> int { 3 }\n' > $R/nrl/src/lib.av
+printf '[package]\nname = "rt-nr"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/nrl" = { path = "../nrl" }\n' > $R/nr/avra.toml
+printf 'use @rt.nrl.{lf}\nexport fn u() -> int { lf() + 1 }\n' > $R/nr/src/user.av
+printf 'use user.{u}\nprintln("${u()}")\n' > $R/nr/src/main.av
+HR "cold nr" check nr 0
+printf '// moved\n' >> $R/nr/src/main.av
+HR "nr: an entry edit holds user" check nr 0 user.av held
+nr_rows=$(grep -rlE "$(printf 'file\t[^\t]*/cache-attacks/nrl/src/lib[.]av\t')" .avra-cache/*/rows 2>/dev/null)
+steps=$((steps+1)); [ -n "$nr_rows" ] || { fails=$((fails+1)); echo "FAIL  nr: no record row places nrl's file, so the removal attacks nothing"; }
+for f in $nr_rows; do rm -f "$f" "$f.deps"; done
+printf '// moved again\n' >> $R/nr/src/main.av
+HR "nr: nrl's record is gone — user keys on nrl's bytes and re-reads" check nr 0 user.av read
+printf '// and again\n' >> $R/nr/src/main.av
+HR "nr: and the run after holds user again" check nr 0 user.av held
+
+# A CALLEE'S ERROR TYPE IS PART OF ITS INTERFACE, ACROSS TWO PROCESSES: `user` reads
+# `e.code` from `errs`' `risky` and `inferred`, whose `E` moves under it. Every move
+# re-reads `user` and the binary follows the new `E` (`code` turns from a number to
+# text, one flat field either way, so only the interface can tell); a body edit that
+# leaves `E` alone holds `user`; an `E` with no `code` is refused where it is read.
+mkdir -p $R/ee/src/errs $R/ee/src/user
+printf '[package]\nname = "rt-ee"\nversion = "0.1.0"\n' > $R/ee/avra.toml
+cat > $R/ee/src/errs/mod.av <<'AV'
+export type Bad = { code: int }
+export type Said = { code: string }
+export type Other = { why: string }
+export fn risky(n: int) -> Result<int, Bad> {
+    if n < 0 { fail Bad { code: n } }
+    n
+}
+export fn inferred(n: int) -> Result<int, _> {
+    if n < 0 { fail Bad { code: n * 10 } }
+    n
+}
+AV
+cat > $R/ee/src/user/mod.av <<'AV'
+use errs.{risky, inferred}
+export fn shown(n: int) -> string {
+    match risky(n) {
+        .Ok(v) -> "ok ${v}",
+        .Err(e) -> "err ${e.code}",
+    }
+}
+export fn shown2(n: int) -> string {
+    match inferred(n) {
+        .Ok(v) -> "ok ${v}",
+        .Err(e) -> "err ${e.code}",
+    }
+}
+AV
+printf 'use user.{shown, shown2}\nprintln("ee ${shown(1)} ${shown(-2)} ${shown2(-3)}")\n' > $R/ee/src/main.av
+S "cold ee" ee
+printf '// moved\n' >> $R/ee/src/main.av
+HR "ee: an entry edit holds user" build ee 0 user/mod.av held
+ed $R/ee/src/errs/mod.av "fail Bad { code: n } }" "fail Bad { code: n - 1 } }"
+HR "ee: risky's body moves, its E does not — user stays held" build ee 0 user/mod.av held
+ed $R/ee/src/errs/mod.av "Result<int, Bad> {
+    if n < 0 { fail Bad { code: n - 1 } }" "Result<int, Said> {
+    if n < 0 { fail Said { code: \"neg\" } }"
+HR "ee: risky's written E moves — user's stale row is refused" build ee 0 user/mod.av read
+S "ee: and the binary reads the new E" ee
+ee_got=$($R/ee/src/main 2>&1); steps=$((steps+1))
+[ "$ee_got" = "ee ok 1 err neg err -30" ] || { fails=$((fails+1)); echo "FAIL  ee printed '$ee_got', wanted 'ee ok 1 err neg err -30'"; }
+ed $R/ee/src/errs/mod.av "fail Bad { code: n * 10 } }" "fail Said { code: \"inferred\" } }"
+HR "ee: what inferred fails moves its inferred E — user's stale row is refused" build ee 0 user/mod.av read
+S "ee: and the binary reads the inferred E" ee
+ee_got=$($R/ee/src/main 2>&1); steps=$((steps+1))
+[ "$ee_got" = "ee ok 1 err neg err inferred" ] || { fails=$((fails+1)); echo "FAIL  ee printed '$ee_got', wanted 'ee ok 1 err neg err inferred'"; }
+ed $R/ee/src/errs/mod.av "Result<int, Said> {
+    if n < 0 { fail Said { code: \"neg\" } }" "Result<int, Other> {
+    if n < 0 { fail Other { why: \"neg\" } }"
+steps=$((steps+1)); ee_out=$(./avra check $R/ee 2>&1)
+case "$ee_out" in *"type.unknown_prop"*"user/mod.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    ee: an E with no code -> refused in user" ;; *) fails=$((fails+1)); echo "FAIL  ee: risky's E has no code and the check did not refuse user's e.code: $(printf '%s' "$ee_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
 # A COLLECT'S FRESH BODY REFERENCES A HELD MEMBER'S CLOSURE AS AN EXTERN,
 # NEVER AS A GAP: `members.av` declares two exported named
 # instances of `widget` (a component whose one field is `run: fn(int) ->

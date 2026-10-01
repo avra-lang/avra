@@ -18,8 +18,6 @@ use core.{
     text_before,
     inserted,
     qtrace,
-    map_cell,
-    list_cell,
     flatten,
     joined,
 }
@@ -53,26 +51,6 @@ export fn name_kind_of(word: string) -> NameKind? {
     [NameKind.Fn, NameKind.Type, NameKind.Syntax].find((k: NameKind) -> name_kind_word(k) == word)
 }
 
-/// One name a namespace was asked: what, the name, and the declaration
-/// that answered it — none when nothing did, which is a read too: an
-/// absent name resolves differently the day a file defines it.
-export type NameRead = { kind: NameKind, name: string, answer: DeclId? }
-
-/// What a namespace was asked, kept only while a durable witness is being
-/// made (`on`). `suggested` holds once the name lists were read to
-/// suggest — then the WHOLE scope is a dependency, since a suggestion
-/// reads every name.
-export type NameReads = {
-    on: bool,
-    asked: Cell<Map<string, bool>>,
-    found: Cell<List<NameRead>>,
-    suggested: Cell<bool>,
-}
-
-export fn new_reads(on: bool) -> NameReads {
-    NameReads { on: on, asked: map_cell(), found: list_cell(), suggested: Cell.new(false) }
-}
-
 export type Namespace = {
     // The module's winners are shared by every file. These fields hold
     // only this file's own private declarations, its imports, prelude
@@ -88,63 +66,30 @@ export type Namespace = {
     // apart — what a read of that name here is refused with
     apart: List<DeclId>,
     voices: Voices,
-    reads: NameReads,
 }
 
 impl Namespace {
     fn fn_decl(name: string) -> DeclId? {
         let local: DeclId? = self.fns.get(name)
-        let answer: DeclId? = if local != null || self.base == null { local } else { self.base!.fns.get(name) }
-        self.noted(NameKind.Fn, name, answer)
-        answer
+        if local != null || self.base == null { local } else { self.base!.fns.get(name) }
     }
 
     fn type_decl(name: string) -> DeclId? {
         let local: DeclId? = self.types.get(name)
-        let answer: DeclId? = if local != null || self.base == null { local } else { self.base!.types.get(name) }
-        self.noted(NameKind.Type, name, answer)
-        answer
+        if local != null || self.base == null { local } else { self.base!.types.get(name) }
     }
 
     fn syntax_decl(name: string) -> DeclId? {
         let local: DeclId? = self.syntaxes.get(name)
-        let answer: DeclId? = if local != null || self.base == null { local } else { self.base!.syntaxes.get(name) }
-        self.noted(NameKind.Syntax, name, answer)
-        answer
-    }
-
-    /// Whether `key` was already asked — its own fn, ended before
-    /// `noted` may go on to WRITE `reads.asked`: a read held across
-    /// that write finds the Cell's box shared, and `avra_cell_unique`
-    /// clones the whole map (with no index, so the next lookup
-    /// rebuilds it) — once per DISTINCT name this namespace resolves,
-    /// which is every name resolution in the file while a pack is
-    /// attached (CLAUDE.md: "A READ-MODIFY-WRITE THROUGH get IS A
-    /// COPY").
-    fn already_asked(key: string) -> bool { self.reads.asked.get().get(key) != null }
-
-    /// Keeps one ask for a durable witness, a name once.
-    fn noted(kind: NameKind, name: string, answer: DeclId?) {
-        if !self.reads.on { return }
-        let key = "${name_kind_word(kind)}\n${name}"
-        if self.already_asked(key) { return }
-        self.reads.asked.put(key, true)
-        self.reads.found.push(NameRead { kind: kind, name: name, answer: answer })
-    }
-
-    /// Reading the name lists is reading every name in scope.
-    fn suggested() {
-        if self.reads.on { self.reads.suggested.set(true) }
+        if local != null || self.base == null { local } else { self.base!.syntaxes.get(name) }
     }
 
     fn fn_suggestions() -> List<string> {
-        self.suggested()
         if self.base == null { return self.fn_names }
         self.base!.fn_names.concat(self.fn_names)
     }
 
     fn type_suggestions() -> List<string> {
-        self.suggested()
         if self.base == null { return self.type_names }
         self.base!.type_names.concat(self.type_names)
     }
@@ -181,7 +126,6 @@ export fn no_names() -> Namespace {
         type_names: [],
         apart: [],
         voices: no_voices(),
-        reads: new_reads(false),
     }
 }
 
@@ -245,7 +189,6 @@ impl Decls {
         imports: List<Import>,
         prelude: List<Import>,
         shown: fn(string) -> string,
-        recording: bool,
     ) -> Namespace {
         mut b = self.binder(shown)
         for d in module.apart {
@@ -256,7 +199,7 @@ impl Decls {
         for d in self.builtin_decls() { b.bind_weakly(d, module.base) }
         let lost = [c.diag for c in module.clashes if in_file(c, file)]
         let siblings = [d for d in module.apart if !self.declared_in(d, file)]
-        b.names with { base: module.base, apart: siblings, voices: Voices { list: lost.concat(b.names.voices.list) }, reads: new_reads(recording) }
+        b.names with { base: module.base, apart: siblings, voices: Voices { list: lost.concat(b.names.voices.list) } }
     }
 
     /// The refusal a read of a name kept apart in sibling files earns,

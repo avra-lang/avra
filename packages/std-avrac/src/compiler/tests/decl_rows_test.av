@@ -2,8 +2,8 @@
 // rows — name, kind, owner, visibility, parse facts — so a body, a comment or a reindent
 // moves nothing, and a rename, a kind change, a moved annotation or a new declaration moves
 // it. A reader of a foreign declaration records that cell; the file's own minter, which
-// reads its rows while they are made, never records itself. `witness_fixtures.av`'s
-// `a_process_over`, `fresh_pack_path` and `decl_in_file` are the neighbouring files' own.
+// reads its rows while they are made, never records itself. `a_process_over`, `checked`
+// and `decl_in_file` are workspace_fixtures.av's own.
 use query.{Key}
 use compiler.{Workspace}
 
@@ -14,7 +14,7 @@ fn typed_ordinal() -> int { 8 }
 /// `b`'s `Items` cell as it settles over `text`, the only file that varies.
 fn items_hash(text: string, tag: string) -> int? {
     let files: Map<string, string> = {"/w/src/b.av": text}
-    let ws = a_process_over(files, ["/w/src/b.av"], fresh_pack_path("rows_${tag}"))
+    let ws = a_process_over(files, ["/w/src/b.av"])
     let b = ws.file_id("/w/src/b.av")
     let _ = ws.items(b)
     ws.db.value_hash_of(Key { family: items_ordinal(), arg: b.index })
@@ -114,14 +114,14 @@ fn reads_items(ws: Workspace, frame: Key, file: string) -> bool {
 spec "compiler/rows — a foreign read records the file's items" {
     then "a caller's typing lists its callee file's Items, and not a file it never reads" {
         let names = ["/w/src/a.av", "/w/src/b.av"]
-        let ws = a_process_over(caller_files(), names, fresh_pack_path("rows_read"))
+        let ws = a_process_over(caller_files(), names)
         let _ = checked(ws, "/w/src/a.av")
         let g = decl_in_file(ws, "/w/src/a.av", "g")
         reads_items(ws, Key { family: typed_ordinal(), arg: g.index }, "/w/src/b.av")
     }
     then "no file's Items lists itself" {
         let names = ["/w/src/a.av", "/w/src/b.av"]
-        let ws = a_process_over(caller_files(), names, fresh_pack_path("rows_self"))
+        let ws = a_process_over(caller_files(), names)
         let _ = checked(ws, "/w/src/a.av")
         let a = ws.file_id("/w/src/a.av")
         let b = ws.file_id("/w/src/b.av")

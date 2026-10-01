@@ -1,0 +1,53 @@
+// Fixtures shared by the tests that stand a workspace over memory files: one
+// process's own workspace with every file admitted, a file checked in it, and the
+// family ordinals a test builds a `Key` from.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace, rule_findings, analysed}
+use compiler.host.{memory_host}
+use core.{DeclId}
+
+/// `Family.Parsed`'s, `Family.Namespace`'s, `Family.Sig`'s, `Family.Methods`'s and
+/// `Family.Manifest`'s ordinals (workspace.av's `ordinal`), the one way a test builds
+/// a `Key` without reaching a `compiler`-private enum. Pinned by name in
+/// stable_names_test.av, so a moved ordinal fails there.
+fn parsed_ordinal() -> int { 1 }
+
+fn namespace_ordinal() -> int { 3 }
+
+fn sig_ordinal() -> int { 6 }
+
+fn methods_ordinal() -> int { 7 }
+
+fn manifest_ordinal() -> int { 15 }
+
+/// `a` declares `f`; `b` calls it; `c` lives in a module of its own and names neither.
+fn package_files() -> Map<string, string> {
+    {
+        "/w/src/a.av": "export fn f() -> int {\n    1\n}\n",
+        "/w/src/b.av": "export fn g() -> int {\n    f() + 1\n}\n",
+        "/w/src/other/c.av": "export fn h() -> int {\n    2\n}\n",
+    }
+}
+
+fn package_names() -> List<string> { ["/w/src/a.av", "/w/src/b.av", "/w/src/other/c.av"] }
+
+/// One process's own workspace over the given files, each admitted up front, so a
+/// cross-file signature always finds its callee's declaration minted.
+fn a_process_over(files: Map<string, string>, names: List<string>) -> Workspace {
+    let ws = new_workspace(memory_host(files, names), "/w", avra())
+    for path in names { let _ = ws.items(ws.file_id(path)) }
+    ws
+}
+
+/// A file checked in `ws` as `avra check` checks it — its analysis and its rule
+/// findings — answering whether it is clean.
+fn checked(ws: Workspace, path: string) -> bool {
+    let a = ws.analysis(ws.file_id(path))
+    let _ = rule_findings(analysed(a), a.view.stmts)
+    a.clean()
+}
+
+/// The declaration named `name` that `file` declares.
+fn decl_in_file(ws: Workspace, file: string, name: string) -> DeclId {
+    [d.id for d in ws.decls.all_decls() if d.name == name && ws.decls.file(d.file).path == file][0]
+}

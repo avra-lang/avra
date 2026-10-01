@@ -1,84 +1,32 @@
-//! DURABLE WITNESSES (COMPILER DB townhall §6.4, §6.5) — `Family.Analysis`
-//! made durable end to end, the first of the 23 in-kernel families to
-//! cross a process boundary. A dense `Key{family,arg}` means nothing in
-//! another process (§2.5 limit 3), so a settled query's stable name and
-//! its deps' (stable name, value hash) pairs go into the package's
-//! `Pack` (compiler/store/pack.av) beside its answer. A later process
-//! asking the same query reads the entry, asks each edge's CURRENT hash
-//! by re-running the ordinary in-process query it names, and reuses the
-//! stored answer only when every one still matches — red-green, down to
-//! `Parsed`'s and `Sig`'s own inputs, never a name it cannot resolve.
+//! STABLE NAMES — a query's identity across processes. A dense `Key` means
+//! nothing in another process, so `avra cache` names a pack entry and its
+//! edges by stable name, and re-asks each edge's CURRENT hash by running the
+//! ordinary in-process query that name denotes. A name this file cannot
+//! re-ask answers nothing, which reads as a mismatch, never a match.
 //!
-//! `Parsed`, `Namespace`, `Sig`, `Manifest` and `Methods` are the
-//! families this file can re-validate — the shapes `Family.Analysis`
-//! actually depends on: the file's own parse, a module's names and file
-//! list, a cross-file callee's signature (`sig_diagnostics`, `folded`'s
-//! type-checking), the package's own `avra.toml` (every file's
-//! namespace resolution reads it), and a type's method table
-//! (`method_diagnostics` scans every type declaration, builtins
-//! included, for every file). A dep in any other family answers
-//! unresolvable, which is a MISMATCH, never "nothing to check" — the
-//! safe direction, never a wrongly-trusted reuse. Widening it to the
-//! rest of the 23 is the next slice's work, family by family.
-//!
-//! THREE LAWS an edge's hash keeps. A `Parsed` edge is the parse's
-//! STRUCTURE, which is all a file that reads another's declarations
-//! reads of it: a comment or a reindent in a callee moves no caller. A
-//! file's TEXT is its own edge (`Source`), held for the file itself and
-//! for every file a frame of its report points into — a report renders
-//! its positions and source lines, which the structure does not carry.
-//! A `Namespace` edge covers the module's file list and bound names,
-//! because a witness records what was read and an ADDED file is a read
-//! that returned nothing. A dep whose subject is gone — a file the host
-//! no longer has, a package ordinal past the packages — answers
-//! unresolvable.
-//!
-//! A FILE'S NAMESPACE is read by NAME. `Visible(f)`, the witnessed file's
-//! or any file it reaches, stands for the names that namespace was asked,
-//! each with the declaration that answered it or the fact that none did
-//! (`NameRead`), the diagnostics the namespace itself spoke
-//! (`VisibleVoices`: import errors, clashes filed at the file), and — only
-//! when the name lists were read to suggest — the whole scope
-//! (`VisibleScope`). So an edit elsewhere in a module moves a witness only
-//! when it moves a name that was read. Everything else `Visible(f)` reads
-//! (the manifest, the file's own text) is read as anywhere.
+//! An edge's hash keeps three laws. A `Parsed` edge is the parse's STRUCTURE,
+//! so a comment or a reindent in a callee moves no caller; a file's TEXT is its
+//! own `Source` edge. A `Namespace` edge covers the module's file list and bound
+//! names, so an ADDED file moves it. A dep whose subject is gone — a file the
+//! host no longer has, a package ordinal past the packages — answers nothing.
 use core.{
     wire_fields,
     DeclId,
     FileId,
     ModuleId,
     joined,
-    list_cell,
-    map_cell,
     wire_escape,
     wire_unescape,
     fp_str,
     fp_list,
-    flatten,
     module_path,
-    same_file,
     sorted_texts,
-    Exemplar,
-    list_eq,
-    opt_eq,
 }
 use query.{Key}
-use diagnostics.{Diag, located_files, DiagFacts, diag_facts_of, Severity}
-use features.{Decls, Decl, NameKind, name_kind_word, name_kind_of, Namespace}
-use compiler.store.{Pack, Entry as PackEntry, Edge, pack_at}
-use @std.errors.{Frame, Loc}
+use features.{Decls, Decl, NameKind, name_kind_of, Namespace}
 use @std.path.{joined_path}
-use @std.relation.stable.{
-    writer as stable_writer,
-    reader as stable_reader,
-    Writer,
-    Reader,
-    CodecFault,
-    written_list,
-    text_hash,
-}
+use @std.relation.stable.{text_hash}
 use @std.text.{parse_int}
-use @std.meta.{derive}
 
 // ── Stable names: a dense id means nothing in the next process ──
 
@@ -126,11 +74,6 @@ fn file_key(word: string, path: string) -> string { stable_line("key", [word, st
 
 export fn stable_module_name(name: string) -> string { stable_line("module", [name]) }
 
-/// A `Key`'s own dense identity, for a visited set during ONE
-/// process's own expansion — never persisted, never compared across
-/// processes (that is exactly what `Workspace.stable_key_name` is for).
-fn depkey_string(k: Key) -> string { "${k.family}:${k.arg}" }
-
 impl Decls {
     /// How many EARLIER declarations of the SAME FILE share this one's
     /// (owner, name) — the disambiguator a name alone cannot carry
@@ -174,40 +117,8 @@ impl Decls {
 /// is named here the day it is registered.
 fn family_from_word(w: string) -> Family? { families().find((f: Family) -> family_word(f) == w) }
 
-// ── How a dependency reads into a witness's edges ──
-
-/// `Itself`: the family's own hash is the edge and nothing below it
-/// is read. `ItselfAndBelow`: the same, and what it read besides.
-/// `Below`: a relay point, whose own deps stand in for it (kept as
-/// itself only when it read nothing). `Replaced`: a file's `Visible`, whose
-/// module-content deps stand aside for the names it was asked. `Nothing`: a
-/// dep that stands aside there.
-enum Reading { Itself, ItselfAndBelow, Below, Replaced, Nothing }
-
-/// A REGISTRY over every family, spelled by arm, so a new family cannot
-/// be read into a witness without someone deciding how.
-fn reading_of(fam: Family) -> Reading {
-    match fam {
-        .Parsed or .Sig or .MethodDiags or .Syntax -> Reading.Itself,
-        .Namespace -> Reading.ItselfAndBelow,
-        .Visible -> Reading.Replaced,
-        .Source or .Items or .Resolved or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Settled or .Lowered or .LiftLowered or .Lifted or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .Names -> Reading.Below,
-    }
-}
-
 /// Every name a namespace holds, by content: what an absent name depends on.
 fn scope_digest(ns: Namespace) -> int { fp_str(joined(sorted_texts(ns.scope_words()), "\n")) }
-
-/// How a family reads INSIDE a `Visible`: the module's text stands aside
-/// for the names asked of it, and the module's own file list is a relay to
-/// the manifest that shapes it; everything else reads as it does anywhere.
-fn reading_inside_visible(fam: Family) -> Reading {
-    match fam {
-        .Items or .Parsed -> Reading.Nothing,
-        .Namespace -> Reading.Below,
-        rest -> reading_of(fam),
-    }
-}
 
 /// The hash of a name that answered nothing.
 fn absent_hash() -> int { fp_str("absent") }
@@ -233,197 +144,6 @@ fn asked_word(a: Asked) -> string {
 
 fn asked_from_word(w: string) -> Asked? {
     [Asked.NameRead, Asked.VisibleVoices, Asked.VisibleScope].find((a: Asked) -> asked_word(a) == w)
-}
-
-fn asked_name(a: Asked, arg: string) -> string { stable_line("key", [asked_word(a), arg]) }
-
-/// One expansion's state: the keys it has walked (per context: a key met
-/// inside a `Visible` and outside one is read twice), the keys it has kept,
-/// the files whose namespaces it read by name, and whether it is inside one.
-type Walk = {
-    visited: Cell<Map<string, bool>>,
-    emitted: Cell<Map<string, bool>>,
-    named: Cell<List<FileId>>,
-    inside: Cell<bool>,
-}
-
-fn new_walk() -> Walk {
-    Walk { visited: map_cell(), emitted: map_cell(), named: list_cell(), inside: Cell.new(false) }
-}
-
-impl Walk {
-    /// How a family reads here: inside a `Visible` the module's names stand
-    /// aside.
-    fn reading(fam: Family) -> Reading {
-        if self.inside.get() { reading_inside_visible(fam) } else { reading_of(fam) }
-    }
-
-    /// Whether `vk` was already emitted — its own fn, ended before any
-    /// caller goes on to WRITE `emitted`: a read held across that write
-    /// finds the Cell's box shared, and `avra_cell_unique` clones the
-    /// whole map (with no index, so the next lookup rebuilds it) — once
-    /// per key this walk visits, quadratic in the walk's own size (a
-    /// file with tens of thousands of edges pays it once per edge;
-    /// measured turning std-avrac's "keep" phase from ~10s to over ten
-    /// minutes).
-    fn already_emitted(vk: string) -> bool { self.emitted.get().get(vk) != null }
-
-    /// The key once, then nothing: a leaf reached by two paths is one edge.
-    fn once(k: Key) -> List<Key> {
-        let vk = depkey_string(k)
-        if self.already_emitted(vk) { return [] }
-        self.emitted.put(vk, true)
-        [k]
-    }
-
-    /// The walk's key, told apart by whether it is inside a `Visible`.
-    fn walked(k: Key) -> string { "${depkey_string(k)}|${self.inside.get()}" }
-
-    /// Whether `vk` was already visited — `already_emitted`'s own twin,
-    /// for `visited` rather than `emitted`.
-    fn already_visited(vk: string) -> bool { self.visited.get().get(vk) != null }
-
-    /// Whether `f` is already among the named files — its own fn for the
-    /// same reason `already_emitted` is: `name` may go on to WRITE
-    /// `named`.
-    fn is_named(f: FileId) -> bool { self.named.get().any((n: FileId) -> same_file(n, f)) }
-
-    /// Notes that `f`'s namespace is read by name.
-    fn name(f: FileId) {
-        if !self.is_named(f) { self.named.push(f) }
-    }
-}
-
-// ── The row this file makes durable: one file's rendered check ──
-
-/// What `Family.Analysis` is worth keeping across a process: whether
-/// the file is clean, and its diagnostics AND rule findings — the
-/// full answer `avra check` prints per file (derive.av's `says`) —
-/// as STRUCTURED FACTS, never a rendered string: a `Diag`'s render
-/// picks its window from the sources the READING process has loaded,
-/// so a row rendered once and cached as text would carry whichever
-/// process happened to write it. `render_facts_among`
-/// (diagnostics/render.av) renders these fresh, every time, the same
-/// way a live diagnostic does. Not the full `Analysis` struct: that
-/// carries a `SyntaxArena` arena and a `program: fn() -> Program`
-/// closure, neither of which a durable row can hold (M5b's own future
-/// slice, COMPILER DB townhall §6.11).
-/// `diagnostics` and `rules` stay TWO lists, never one merged run:
-/// `says` (derive.av) renders each into its own store key
-/// (`said_key`/`rules_key`) so the OLDER hold mechanism's `unruled`
-/// check — "does this file's rules_key exist" — sees the same fact
-/// whichever path produced the answer. A merged single list answers
-/// `says`'s `rules` field with nothing to write, so `rules_key` is
-/// never kept and no hold candidate is ever ruled.
-export type WitnessedCheck = { clean: bool, diagnostics: List<DiagFacts>, rules: List<DiagFacts> }
-
-impl WitnessedCheck {
-    /// Hand-written, not `@derive(Exemplar)`: a `DiagFacts` nests
-    /// `@std/errors`' `Frame`/`Suggestion`, foreign shapes no derive
-    /// reaches (core/exemplar_derive.av's own doc — a named field
-    /// "must derive `Exemplar` too, or hand-write both").
-    static fn codec_zero() -> WitnessedCheck { WitnessedCheck { clean: false, diagnostics: [], rules: [] } }
-
-    static fn exemplars() -> List<WitnessedCheck> {
-        [
-            WitnessedCheck.codec_zero(),
-            WitnessedCheck.codec_zero() with { clean: true },
-            WitnessedCheck.codec_zero() with { diagnostics: [sample_diag_facts()] },
-            WitnessedCheck.codec_zero() with { rules: [sample_diag_facts()] },
-        ]
-    }
-
-    static fn exemplar_labels() -> List<string> {
-        ["baseline", "field clean", "field diagnostics", "field rules"]
-    }
-
-    fn codec_same(other: WitnessedCheck) -> bool {
-        self.clean == other.clean &&
-            list_eq(self.diagnostics, other.diagnostics, diag_facts_same) &&
-            list_eq(self.rules, other.rules, diag_facts_same)
-    }
-}
-
-/// One non-zero `DiagFacts`, for `WitnessedCheck`'s own exemplar —
-/// every field at a value a dropped-field decode cannot produce.
-fn sample_diag_facts() -> DiagFacts {
-    DiagFacts {
-        kind: "x.y",
-        severity: Severity.Warning,
-        primary: Frame { label: "l", loc: null },
-        secondary: [],
-        cause_lines: ["c"],
-        message: "m",
-        help: "h",
-        suggestions: [],
-    }
-}
-
-/// Field by field, the same law `@derive(Exemplar)` would state —
-/// hand-written since `DiagFacts` nests foreign shapes.
-fn diag_facts_same(a: DiagFacts, b: DiagFacts) -> bool {
-    a.kind == b.kind &&
-        severity_same(a.severity, b.severity) &&
-        frame_same(a.primary, b.primary) &&
-        list_eq(a.secondary, b.secondary, frame_same) &&
-        list_eq(a.cause_lines, b.cause_lines, (x, y) -> x == y) &&
-        a.message == b.message &&
-        a.help == b.help &&
-        a.suggestions.length == b.suggestions.length
-}
-
-fn severity_same(a: Severity, b: Severity) -> bool {
-    match a { .Error -> b is .Error, .Warning -> b is .Warning }
-}
-
-fn frame_same(a: Frame, b: Frame) -> bool { a.label == b.label && opt_eq(a.loc, b.loc, loc_same) }
-
-fn loc_same(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi == b.hi }
-
-/// The record-shape stamp a stored check carries (§6.6's record header
-/// fingerprint): bumped when `WitnessedCheck`'s encoding changes, so an
-/// entry written in another shape is refused rather than decoded.
-/// 2: `report: string` became `diagnostics: List<DiagFacts>`. 3: a
-/// merged `diagnostics` split into `diagnostics`/`rules` — `says`
-/// needs them apart to write `rules_key` (avra-8sb5.57.55).
-fn witnessed_check_shape() -> int { 3 }
-
-fn encoded_witnessed_check(c: WitnessedCheck) -> Bytes {
-    let w = stable_writer()
-    w.bool(c.clean)
-    written_list(w, c.diagnostics, written_diag_facts)
-    written_list(w, c.rules, written_diag_facts)
-    w.bytes()
-}
-
-fn codec_ok<T>(r: Result<T, CodecFault>) -> T? {
-    match r { .Ok(v) -> v, .Err(_) -> null }
-}
-
-fn read_diag_facts_list(r: Reader) -> Result<List<DiagFacts>, CodecFault> {
-    let n = r.count()?
-    [read_diag_facts(r)? for _k in 0..n]
-}
-
-fn decoded_witnessed_check(b: Bytes) -> WitnessedCheck? {
-    let r = stable_reader(b)
-    let clean? = codec_ok(r.bool()) else { return null }
-    let diagnostics? = codec_ok(read_diag_facts_list(r)) else { return null }
-    let rules? = codec_ok(read_diag_facts_list(r)) else { return null }
-    WitnessedCheck { clean: clean, diagnostics: diagnostics, rules: rules }
-}
-
-/// Whether this call reused a durable answer or paid for a fresh one
-/// — the receipt a caller (and a test) can count without scraping a
-/// trace log.
-export enum WitnessedOutcome { Reused(WitnessedCheck), Recomputed(WitnessedCheck) }
-
-impl WitnessedOutcome {
-    fn value() -> WitnessedCheck {
-        match self { .Reused(c) or .Recomputed(c) -> c }
-    }
-
-    fn reused() -> bool { self is .Reused }
 }
 
 impl Workspace {
@@ -473,20 +193,10 @@ impl Workspace {
         cached
     }
 
-    /// One (path, owner, name, sibling) tuple's answer, memoized LAZILY
-    /// by the tuple actually asked — never a whole-table build, which
-    /// would eagerly resolve every declaration in the package (test
-    /// suite included) whether or not any edge ever names it. WITHOUT
-    /// this, resolving one Sig or Methods edge scanned its file's
-    /// WHOLE declaration list (`decls_of_file(f).find`), and
-    /// `stable_match`'s own `sibling_index` scanned it AGAIN per
-    /// candidate tried — paid by every such edge, on every file a
-    /// process validates (measured: about half of an edited recheck's
-    /// wall time). Only HITS are cached: a miss (the declaration is
-    /// gone, or moved) is uncommon and its own witness edge is about
-    /// to be refused as stale regardless, so caching it buys nothing.
+    /// One (path, owner, name, sibling) tuple's answer, memoized by the
+    /// tuple asked. Only hits are kept: a miss answers a refused edge.
     fn decl_lookup_memo(key: string) -> DeclId? {
-        if self.leaf_memo_stale() { return null }
+        if self.stable_memo_stale() { return null }
         self.decl_by_stable.get().get(key)
     }
 
@@ -495,54 +205,13 @@ impl Workspace {
         self.decl_by_stable.put(key, d)
     }
 
-    /// Opens (or re-opens) this workspace's own witness pack, over one
-    /// file per package (COMPILER DB townhall §6.6's disk shape) —
-    /// today, one file for the workspace's own root package, since
-    /// nothing here yet witnesses a dependency's rows.
-    fn attach_pack(p: Pack) { self.pack.set(p) }
-
-    /// WHERE THIS WORKSPACE'S PACK LIVES — one verb, so every opener
-    /// (`checked`'s own hold, `avra explain`) names the same file.
+    /// Where this workspace's pack lives — one verb, so every reader names
+    /// the same file.
     export fn pack_path() -> string { joined_path(build_cache_root(self), "pack.bin") }
 
-    fn open_pack(path: string) -> Pack {
-        let p = pack_at(path, self.compiler_id())
-        self.attach_pack(p)
-        p
-    }
-
-    /// `Family.Analysis(f)`, durable: a stored, still-valid witness
-    /// answers without touching `resolved`/`folded` at all; otherwise
-    /// the ordinary pipeline runs (`self.analysis(f)`) and the fresh
-    /// answer is committed with its witness before it is handed back.
-    fn witnessed_check(f: FileId) -> WitnessedOutcome {
-        let name = self.witness_name(f)
-        let reused? = self.reused_check(name) else { return WitnessedOutcome.Recomputed(self.settled_check(f, name)) }
-        WitnessedOutcome.Reused(reused)
-    }
-
-    /// The stable name a file's checked answer is kept under.
-    fn witness_name(f: FileId) -> string { self.stable_key_name(key(Family.Analysis, f.index)) }
-
-    fn reused_check(name: string) -> WitnessedCheck? {
-        let pack? = self.pack.get() else { return null }
-        let entry? = pack.get(name) else { return null }
-        if entry.fingerprint != witnessed_check_shape() { return null }
-        if !entry.edges.all((e: Edge) -> self.edge_current(e)) { return null }
-        decoded_witnessed_check(entry.payload)
-    }
-
-    fn edge_current(e: Edge) -> bool {
-        let h? = self.edge_current_hash(e.name) else { return false }
-        h == e.hash
-    }
-
-    /// An edge's CURRENT hash, by re-running the ordinary in-process
-    /// query it names — never by decoding a stored value, since
-    /// validating never materializes (§6.5). Only `Parsed`, `Sig` and
-    /// `Manifest` are wired (this file's own doc comment says why);
-    /// anything else answers null, which `edge_current` reads as a
-    /// mismatch — the safe direction, never a wrongly-trusted reuse.
+    /// An edge's CURRENT hash, by re-running the in-process query it
+    /// names — never by decoding a stored value. A name no arm re-asks
+    /// answers null: a mismatch.
     fn edge_current_hash(name: string) -> int? {
         let parts? = name_parts(name) else { return null }
         let inner = parsed_stable(parts.arg)
@@ -596,22 +265,6 @@ impl Workspace {
         self.db.value_hash_of(key(Family.Source, f.index))
     }
 
-    /// The text `f`'s answer reads: its own, and that of every other file
-    /// a frame of its diagnostics locates into — a rendering shows source
-    /// lines at those offsets. A file the host lacks holds no hash, so its
-    /// edge refuses.
-    fn text_edges(f: FileId, ds: List<Diag>) -> List<Edge> {
-        let own = self.decls.file(f).path
-        let named = flatten([located_files(d) for d in ds])
-        let paths = [own].concat([p for p in named if p != own])
-        [Edge { name: file_key(family_word(Family.Source), p), hash: self.text_hash_at(p) } for i, p in paths if paths.index_of(p) == i]
-    }
-
-    fn text_hash_at(path: string) -> int {
-        if !self.host.exists(path) { return 0 }
-        self.source_hash_of(self.file_id(path)) ?? 0
-    }
-
     /// A file's own namespace as it stands now, or null for a file the
     /// host lacks.
     fn namespace_at_path(path: string) -> Namespace? {
@@ -655,76 +308,6 @@ impl Workspace {
         if inner.kind != "file" || inner.parts.length < 1 { return null }
         let ns? = self.namespace_at_path(inner.parts[0]) else { return null }
         scope_digest(ns)
-    }
-
-    /// `f`'s whole `Visible` edge list, as ids into `edge_table` —
-    /// memoized per file: every witnessed file that imports `f`'s
-    /// module would otherwise rebuild this same list (one entry per
-    /// name `f`'s namespace answered) from scratch.
-    fn visible_edge_ids(f: FileId) -> List<int> {
-        let vk = "${f.index}"
-        let cached? = self.visible_memo(vk) else {
-            let built = self.built_visible_edge_ids(f)
-            self.visible_remember(vk, built)
-            return built
-        }
-        cached
-    }
-
-    fn visible_edges(f: FileId) -> List<Edge> {
-        [self.edge_at(id) for id in self.visible_edge_ids(f)]
-    }
-
-    fn visible_memo(vk: string) -> List<int>? {
-        if self.leaf_memo_stale() { return null }
-        self.visible_memo_sets.get().get(vk)
-    }
-
-    fn visible_remember(vk: string, ids: List<int>) {
-        self.ensure_memo_fresh()
-        self.visible_memo_sets.put(vk, ids)
-    }
-
-    /// What `f`'s own namespace was asked and said, as edges: the
-    /// diagnostics it spoke, the whole scope when anything went unanswered
-    /// or suggested, and each name it answered — each interned once.
-    fn built_visible_edge_ids(f: FileId) -> List<int> {
-        let ns = self.visible(f)
-        let path = self.decls.file(f).path
-        let voices = self
-            .interned_edge(
-                Edge {
-                    name: asked_name(Asked.VisibleVoices, stable_file_name(path)),
-                    hash: diags_fingerprint(ns.voices.list),
-                },
-            )
-        let scope = if ns.reads.suggested.get() {
-            [
-                self
-                    .interned_edge(
-                        Edge {
-                            name: asked_name(Asked.VisibleScope, stable_file_name(path)),
-                            hash: scope_digest(ns),
-                        },
-                    ),
-            ]
-        } else {
-            []
-        }
-        [voices]
-            .concat(scope)
-            .concat(
-                [self
-                    .interned_edge(
-                        Edge {
-                            name: asked_name(
-                                Asked.NameRead,
-                                stable_line("name", [path, name_kind_word(r.kind), r.name]),
-                            ),
-                            hash: self.read_hash(r.answer),
-                        },
-                    ) for r in ns.reads.found.get()],
-            )
     }
 
     /// A file's clash diagnostics as they stand now: asking is the query.
@@ -775,18 +358,6 @@ impl Workspace {
         )
     }
 
-    /// An edge's hash as it stands now: `edge_current_hash` answers a
-    /// stored name with the same reading.
-    fn edge_hash_of(k: Key) -> int {
-        match family_at(k.family) {
-            .Parsed -> self.parsed_edge_hash(FileId { index: k.arg }) ?? 0,
-            .Namespace -> self.namespace_digest(ModuleId { index: k.arg }),
-            .Sig -> self.stable_sig_hash(DeclId { index: k.arg }),
-            .Methods -> self.stable_methods_hash(DeclId { index: k.arg }),
-            rest -> self.db.value_hash_of(k) ?? 0,
-        }
-    }
-
     /// A signature's hash BY CONTENT, never `value_hash_of`'s generic
     /// `@derive(Fingerprint)` answer — that answer folds every `TypeId`
     /// it holds through the type's OWN fingerprint, which is its raw
@@ -799,9 +370,7 @@ impl Workspace {
     /// (`shape_line`, record.av) is what `iface_digest` already
     /// trusts across processes for this exact reason — a type's
     /// SHAPE, not its slot.
-    /// MEMOIZED — `shape_line` walks a whole signature's type wire
-    /// fresh on every call, and many files' witnesses ask the SAME
-    /// frequently used declaration's Sig edge.
+    /// Memoized: `shape_line` walks the signature's whole type wire.
     fn stable_sig_hash(d: DeclId) -> int {
         let mkey = "sig:${d.index}"
         let cached? = self.stable_hash_memo_at(mkey) else {
@@ -823,7 +392,7 @@ impl Workspace {
     /// for the reason `decl_lookup_memo` is: a read held across
     /// `stable_hash_memo_remember`'s write clones the whole map.
     fn stable_hash_memo_at(mkey: string) -> int? {
-        if self.leaf_memo_stale() { return null }
+        if self.stable_memo_stale() { return null }
         self.stable_hash_memo.get().get(mkey)
     }
 
@@ -869,199 +438,17 @@ impl Workspace {
         text_hash(joined(sorted_texts([self.decls.decl_wire(m) for m in self.methods(d)]), "\n"))
     }
 
-    /// `root`'s deps, expanded to the families this file can
-    /// revalidate, as (stable name, current value hash) edges — ids
-    /// collected first, resolved to `Edge` records only here at the
-    /// end, so the walk and its per-file concat move ints, never
-    /// the records themselves.
-    fn expanded_edges(root: Key) -> List<Edge> {
-        let walk = new_walk()
-        walk.visited.put(walk.walked(root), true)
-        let leaves = flatten([self.leaf_keys(d, walk) for d in self.db.deps_of(root)])
-        let ids = [self.edge_id_of_key(k) for k in leaves]
-            .concat(flatten([self.visible_edge_ids(f) for f in walk.named.get()]))
-        [self.edge_at(id) for id in ids]
-    }
+    /// Whether the memos still belong to the Kernel's current revision.
+    fn stable_memo_stale() -> bool { self.stable_memo_revision.get() != self.db.revision() }
 
-    /// The process-wide edge table: every distinct edge is interned
-    /// once and answered everywhere else as a small int id, so
-    /// `edge_id_by_key`, `visible_memo_sets` and every caller's own
-    /// list hold ints — never `Edge` records or the strings that
-    /// build them. Memory is O(distinct edges), not O(keys that
-    /// reach them).
-    fn edge_at(id: int) -> Edge { self.edge_table.get()[id] }
-
-    /// Inserts `e` as a fresh entry and remembers it under `dk`,
-    /// answering its new id. Callers check `edge_id_memo(dk)` first
-    /// — this never re-checks, so it never runs on a hit.
-    fn interned_edge_at(dk: string, e: Edge) -> int {
-        // `ensure_memo_fresh` FIRST, always: it may CLEAR `edge_table`
-        // (a stale revision), and reading `.length` or pushing before
-        // that clear lands the push in a table the clear then wipes —
-        // the id answered points at an empty slot, and the edge this
-        // call was meant to intern is gone. `edge_id_remember`
-        // (below) ALSO calls it, too late to save a push already made.
-        self.ensure_memo_fresh()
-        let id = self.edge_table.get().length
-        self.edge_table.push(e)
-        self.edge_id_remember(dk, id)
-        id
-    }
-
-    /// One leaf key's edge id — memoized by the key's own string
-    /// (`depkey_string`): `stable_key_name` folds a sibling-index
-    /// SCAN per decl edge (`Decls.sibling_index`), so a leaf shared
-    /// by every file in the package paid that scan once per file
-    /// without this memo.
-    fn edge_id_of_key(k: Key) -> int {
-        let dk = depkey_string(k)
-        let cached? = self.edge_id_memo(dk) else {
-            return self
-                .interned_edge_at(dk, Edge { name: self.stable_key_name(k), hash: self.edge_hash_of(k) })
-        }
-        cached
-    }
-
-    /// An edge built directly (no `Key` behind it — a Visible's own
-    /// synthesized names), interned under its own `name`.
-    fn interned_edge(e: Edge) -> int {
-        let cached? = self.edge_id_memo(e.name) else {
-            return self.interned_edge_at(e.name, e)
-        }
-        cached
-    }
-
-    fn edge_id_memo(dk: string) -> int? {
-        if self.leaf_memo_stale() { return null }
-        self.edge_id_by_key.get().get(dk)
-    }
-
-    /// Records ONLY — the caller (`interned_edge_at`) already paid
-    /// `ensure_memo_fresh` before touching `edge_table`, and paying it
-    /// again here would be too late to undo a push already made.
-    fn edge_id_remember(dk: string, id: int) {
-        self.edge_id_by_key.put(dk, id)
-    }
-
-    /// One dependency, read into edges by its family's `Reading`. A
-    /// relay point (`Resolved`, `Folded`, …) is not an answer a witness
-    /// names, so its OWN deps are walked through instead. A genuine dead
-    /// end (no further deps) is kept AS ITSELF: `Manifest` and `Methods`
-    /// reach here this way (both INPUTS or leaves with nothing recorded
-    /// under them), and `edge_current_hash` knows how to revalidate those
-    /// too — an opaque edge for anything it does not is the fallback,
-    /// never a dependency silently dropped.
-    fn leaf_keys(k: Key, walk: Walk) -> List<Key> {
-        let vk = walk.walked(k)
-        if walk.already_visited(vk) { return [] }
-        walk.visited.put(vk, true)
-        match walk.reading(family_at(k.family)) {
-            .Itself -> walk.once(k),
-            .ItselfAndBelow -> walk.once(k).concat(self.leaves_below(k, walk)),
-            .Below -> self.below_or_itself(k, walk),
-            .Replaced -> self.replaced_or_below(k, walk),
-            .Nothing -> [],
-        }
-    }
-
-    fn below_or_itself(k: Key, walk: Walk) -> List<Key> {
-        if self.db.deps_of(k).is_empty() { walk.once(k) } else { self.leaves_below(k, walk) }
-    }
-
-    /// A file's `Visible` stands aside for the names it was asked; what else
-    /// it read is walked as anywhere.
-    fn replaced_or_below(k: Key, walk: Walk) -> List<Key> {
-        walk.name(FileId { index: k.arg })
-        let was = walk.inside.get()
-        walk.inside.set(true)
-        let kept = self.leaves_below(k, walk)
-        walk.inside.set(was)
-        kept
-    }
-
-    /// `k`'s own deps, flattened to leaves — a plain per-walk DFS,
-    /// no cross-file cache of its own. `leaf_keys`'s visited set
-    /// already dedups within one file's walk, and the expensive
-    /// part (turning a leaf `Key` into its edge) is memoized
-    /// separately, by key, in `edge_id_of_key` — so a repeat visit
-    /// here costs a hashmap check, never a re-scan.
-    /// CACHING THE FULL TRANSITIVE LEAF SET PER KEY WAS TRIED AND
-    /// REVERTED: it is O(keys × leaves), since a deep graph repeats
-    /// every leaf in every ancestor's own cached set — 4 GB on the
-    /// full package where the unmemoized walk holds under 1.3 GB.
-    fn leaves_below(k: Key, walk: Walk) -> List<Key> {
-        flatten([self.leaf_keys(d, walk) for d in self.db.deps_of(k)])
-    }
-
-    /// Whether the memo still belongs to the Kernel's current revision.
-    fn leaf_memo_stale() -> bool { self.leaf_memo_revision.get() != self.db.revision() }
-
-    /// Both memos share one revision stamp, so they clear TOGETHER on
-    /// staleness: reset through only one (the other left standing)
-    /// would answer a later read as fresh — the revision alone
-    /// matching — while it still held an earlier revision's entries.
+    /// Both memos share one revision stamp, so they clear together.
     fn ensure_memo_fresh() {
-        if self.leaf_memo_stale() {
-            let no_table: List<Edge> = []
-            let no_ids: Map<string, int> = {}
-            let no_visible: Map<string, List<int>> = {}
+        if self.stable_memo_stale() {
             let no_decls: Map<string, DeclId> = {}
             let no_hashes: Map<string, int> = {}
-            self.edge_table.set(no_table)
-            self.edge_id_by_key.set(no_ids)
-            self.visible_memo_sets.set(no_visible)
             self.decl_by_stable.set(no_decls)
             self.stable_hash_memo.set(no_hashes)
-            self.leaf_memo_revision.set(self.db.revision())
+            self.stable_memo_revision.set(self.db.revision())
         }
-    }
-
-    /// The file's whole checked answer: its own diagnostics AND its
-    /// rule findings (`says`'s own read, derive.av), kept APART —
-    /// `rule_findings` reads only the file's own `Analysed` facts, so
-    /// nothing here widens the edges `record_witness` already expands.
-    fn settled_check(f: FileId, name: string) -> WitnessedCheck {
-        let a = self.analysis(f)
-        let rules = rule_findings(analysed(a), a.view.stmts)
-        let out = WitnessedCheck {
-            clean: a.clean(),
-            diagnostics: [diag_facts_of(d) for d in a.diagnostics],
-            rules: [diag_facts_of(d) for d in rules],
-        }
-        self.record_witness(f, name, out)
-        out
-    }
-
-    /// The just-settled `Analysis(f)` cell's own deps, EXPANDED down to
-    /// the families this file can revalidate (`Parsed`, `Sig`) —
-    /// `Analysis` nests `Resolved`/`Folded`/… under their own begin/
-    /// settle brackets, so their reads land on THEIR OWN cells, not
-    /// directly on `Analysis`'s (`Kernel.record_dep`'s nesting law) —
-    /// translated to (stable name, current value hash) edges and
-    /// STAGED beside the row's answer (`Pack.put`), visible to `get`
-    /// at once. The caller (derive.av's `says`) commits right after —
-    /// `Pack.commit` APPENDS the stage (store/pack.av), so this no
-    /// longer costs a whole-pack rewrite per file the way it once did.
-    fn record_witness(f: FileId, name: string, out: WitnessedCheck) {
-        let pack? = self.pack.get() else { return }
-        let edges = self
-            .expanded_edges(key(Family.Analysis, f.index))
-            .concat(self.text_edges(f, self.analysis(f).diagnostics))
-        pack
-            .put(
-                PackEntry {
-                    fingerprint: witnessed_check_shape(),
-                    name: name,
-                    hash: fp_str(
-                        joined(
-                            [d.kind for d in out.diagnostics.concat(out.rules)]
-                                .concat([d.message for d in out.diagnostics.concat(out.rules)]),
-                            "\n",
-                        ),
-                    ),
-                    edges: edges,
-                    payload: encoded_witnessed_check(out),
-                },
-            )
     }
 }
