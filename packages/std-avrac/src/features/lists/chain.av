@@ -20,17 +20,16 @@ fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
     let stage? = cx.facts.stage_at(e) else { return null }
     let subject? = subject_of(cx, e) else { return null }
     let arg? = arg_of(cx, e) else { return null }
+    mut prefix: List<Clause> = []
     if cx.facts.stage_at(subject) != null {
         let inner? = chain_clauses(cx, subject) else { return null }
-        let f = boxed(cx, arg)
-        return inner.concat([applied(cx, stage, FnBox { box: f.f, code: f.fp }, e)])
+        prefix = inner
+    } else {
+        let _ = cx.reg_of(subject)
+        prefix = [.Head(Source { source: subject, hi: null, index: false, lookup: null })]
     }
-    let _ = cx.reg_of(subject)
     let f = boxed(cx, arg)
-    let head: List<Clause> = [
-        .Head(Source { source: subject, hi: null, index: false, lookup: null }),
-    ]
-    head.concat([applied(cx, stage, FnBox { box: f.f, code: f.fp }, e)])
+    prefix.concat([applied(cx, stage, FnBox { box: f.f, code: f.fp }, e)])
 }
 
 /// The receiver a chain link folds over, when it is one.
