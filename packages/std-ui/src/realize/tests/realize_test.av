@@ -5,6 +5,9 @@ use @std.ui.realize.realizer.{drawn}
 use @std.ui.components.{text, heading, button, column, row}
 use @std.ui.realize.html.html.{Html, document}
 use @std.ui.realize.tui.tui.{Tui, frame}
+use @std.ui.style.layout.{Layout, around}
+use @std.ui.style.style.{Style}
+use @std.ui.{Tone}
 
 fn two() -> List<dyn View> { [text "a", text "b"] }
 
@@ -75,6 +78,22 @@ fn html_keyed() -> string {
     document(h)
 }
 
+fn html_padded() -> string {
+    let h = Html {}
+    let c = column {
+        layout: Layout { direction: .Column, gap: .M, pad: around(.S) }
+        items: [text "x"]
+    }
+    drawn([c], h)
+    document(h)
+}
+
+fn html_themed() -> string {
+    let h = Html {}
+    drawn([text "hi" { style: Style { color: .Danger } }], h)
+    document(h)
+}
+
 spec "std/ui realize — one tree, every target" {
     given "two texts drawn through html" {
         then "each is a span, in order" {
@@ -115,6 +134,16 @@ spec "std/ui realize — a container of mixed components" {
     given "a container with a key" {
         then "carries it as an escaped attribute" {
             html_keyed() == "<div data-key=\"cart\"><span>x</span></div>"
+        }
+    }
+    given "a column with a gap and a pad" {
+        then "becomes one flex style attribute" {
+            html_padded() == "<div style=\"display:flex;flex-direction:column;gap:16px;padding:8px 8px 8px 8px\"><span>x</span></div>"
+        }
+    }
+    given "a text in the danger tone" {
+        then "resolves the token through the theme" {
+            html_themed() == "<span style=\"color:#b00020\">hi</span>"
         }
     }
 }
