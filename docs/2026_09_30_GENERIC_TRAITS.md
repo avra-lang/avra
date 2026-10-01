@@ -1,0 +1,75 @@
+# Generic traits — `trait X<T>`, impl chosen by its argument
+
+> 2026-09-30. Decided with the owner (UI.md §19.3, C2; Rust's model).
+> Branch lane/gtraits. Map of the machinery: the research pass in
+> this conversation (every file named below).
+
+## What a user writes
+
+```avra
+trait Realize<T> {
+    fn draw(t: T) -> string
+}
+
+impl Realize<Text> for Html {
+    fn draw(t: Text) -> string { "<p>${t.content}</p>" }
+}
+
+impl Realize<Button> for Html {
+    fn draw(t: Button) -> string { "<button>${t.label}</button>" }
+}
+
+let h = Html {}
+h.draw(Text { content: "hi" })          // the Realize<Text> impl, by the argument's type
+```
+
+## Laws
+
+- A trait may declare type parameters. Its members read them.
+- One type may implement one generic trait at several arguments. Their
+  same-named methods coexist; nothing else may share a method name.
+- A call picks the ONE impl whose instantiated member accepts the
+  arguments (static: a direct call to that impl, no lookup at run).
+  None → "`Html` implements `Realize` for `Text` and `Button` — not
+  for `Link`". Two → refused, naming both (no silent preference).
+- Two impls of one trait at one argument on one type → refused.
+- A bound names its argument: `fn f<R: Realize<Text>>(r: R)`.
+- `dyn Realize<Text>` is C2b; the completeness law (every component a
+  program uses is realized by every target it builds) is C2b too.
+
+## Slices
+
+| | Delivers |
+|---|---|
+| C2a.1 | grammar + nodes: `trait X<T, …>`, `impl X<A, …> for Y`; printer; a trait's tparams are Vars its member sigs read |
+| C2a.2 | declaration: methods filed per impl INSTANCE (`method_clashes` exempts same-name members of distinct instantiations of one generic trait; `declare_method`/`method` answer every candidate); overlap refused |
+| C2a.3 | resolution: `declared_call` selects among candidates by argument type (the ambiguity and no-impl voices); the choice recorded per call in facts so lowering, failures, receivers and structural types read ONE answer |
+| C2a.4 | bounds with arguments; held (warm) interface carries the trait arguments |
+| C2b | `dyn X<A>` (`Type.Dyn` gains args), dispatch table per trait instance, the completeness law |
+| C2c | `From<T>` in the prelude — the first non-UI consumer |
+
+Each slice: program tests eval == native, a golden per voice, red team,
+review round, compiler suite on a Sprite.
+
+## Deadline (recorded, per CLAUDE.md's safety-property law)
+
+The pre-typing passes (failures, receivers, structural types) resolve
+a dot-call by NAME and read the first same-named member. Sound while
+every member of one generic trait on one type agrees on its answer's
+type and its receiver contract — conformance already forces the
+receiver contract; the answer agrees while the trait member's answer
+does not mention the trait's own parameters. C2a.4 routes those passes
+through the chosen member, or refuses a generic trait member whose
+answer names `T` until it does.
+
+## Recorded, not landed
+
+- **A default in a generic trait** is refused (`type.trait`). A default's
+  body is lowered once per signatory with `Self` substituted; its `T`
+  needs the arguments of the impl it is reached through. Fires when the
+  first site wants one (the likely first: `Realize<T>`'s shared helpers).
+- **A bound or `dyn` with trait arguments** (`<R: Realize<Text>>`,
+  `dyn Realize<Text>`) parses as an error today — C2a.4 and C2b.
+- **An inherent method sharing a generic trait member's name** is
+  refused at the call as ambiguous; the refusal belongs at the
+  declaration. With C2a.4.

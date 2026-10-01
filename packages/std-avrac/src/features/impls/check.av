@@ -58,8 +58,16 @@ fn declared_call(
     name: string,
     args: List<ExprId>,
 ) -> TypeId {
-    let found? = cx.method_sig(decl, name) else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
-    let m: DeclId? = cx.view.decls.method(decl, name)
+    let many = cx.view.decls.methods_named(decl, name)
+    let choosing = distinct_keys(cx, many) > 1
+    let picked = if choosing { chosen_member(cx, e, target, name, many, args) } else { cx.view.decls.method(decl, name) }
+    let m? = picked else {
+        if choosing { return cx.error_type }
+        return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name)
+    }
+    let found? = cx.view.decls.sig(m)?.fn_sig() else {
+        return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name)
+    }
     let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found))
     let placed? = cx.placed(e, "${target}.${name}", m, args, seats_of(sig).params) else { return cx.error_type }
     if placed.args.length != placed.wants.length {
@@ -68,7 +76,7 @@ fn declared_call(
     for j, a in placed.args {
         if !cx.accepts(a, placed.wants[j]) { wrong_method_argument(cx, target, name, j, placed.wants[j], a) }
     }
-    if m != null && !seat_laws(cx, e, subject, "${target}.${name}", name, m!, placed.args, 1) { return cx.error_type }
+    if !seat_laws(cx, e, subject, "${target}.${name}", name, m, placed.args, 1) { return cx.error_type }
     sig.ret
 }
 
@@ -123,6 +131,50 @@ fn seat_laws(
     let writes = cx.view.decls.writes_receiver(m)
     cx.receiver_law(e, subject, name, writes)
     cx.seat_contracts(e, callee, m, base, args, if writes { subject } else { null })
+}
+
+/// Among a type's same-named members — one generic trait implemented
+/// at several arguments — the ONE whose seats fit the arguments,
+/// recorded for lowering. None, or several, is refused.
+fn chosen_member(
+    mut cx: TypeCx,
+    e: ExprId,
+    target: string,
+    name: string,
+    many: List<DeclId>,
+    args: List<ExprId>,
+) -> DeclId? {
+    let by_args = [m for m in many if seats_fit(cx, m, args)]
+    let want = cx.want_at(e)
+    let fits = if by_args.length > 1 && want != null { [m for m in by_args if answers_fit(cx, m, want!)] } else { by_args }
+    if fits.length == 1 {
+        cx.record_chosen(e, fits[0])
+        return fits[0]
+    }
+    let keys = (ms: List<DeclId>) -> [cx.view.decls.method_key(m) for m in ms]
+    if fits.is_empty() { no_member_fits(cx, e, target, name, keys(many)) } else { members_ambiguous(cx, e, target, name, keys(fits)) }
+    null
+}
+
+/// How many members the names share, a generic trait's arguments
+/// telling them apart — one when a name is simply declared twice.
+fn distinct_keys(cx: TypeCx, many: List<DeclId>) -> int {
+    let keys = [cx.view.decls.method_key(m) for m in many]
+    [k for j, k in keys if keys.index_of(k) == j].length
+}
+
+/// Whether the member's answer fits what the call's seat wants.
+fn answers_fit(cx: TypeCx, m: DeclId, want: TypeId) -> bool {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
+    !cx.types_disagree(sig.ret, want)
+}
+
+/// Whether every argument's type fits the member's seat — seat 0 is
+/// the receiver.
+fn seats_fit(cx: TypeCx, m: DeclId, args: List<ExprId>) -> bool {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
+    sig.params.length == args.length + 1 &&
+        [j for j, a in args if cx.types_disagree(cx.type_at(a), sig.params[j + 1])].is_empty()
 }
 
 /// The declared type a receiver answers to, or absence. Generic
@@ -500,4 +552,30 @@ fn marks_shape(mut cx: TypeCx, m: DeclId) {
 
 fn member_loc(cx: TypeCx, m: DeclId) -> Loc? {
     cx.view.stmt_loc(cx.view.decls.decl(m).stmt)
+}
+
+fn no_member_fits(mut cx: TypeCx, e: ExprId, target: string, name: string, keys: List<string>) {
+    cx
+        .emit(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "no `${target}.${name}` takes these arguments",
+                "called here",
+                "`${target}` declares ${keys.join(", ")} — pass an argument one of them takes",
+            ),
+        )
+}
+
+fn members_ambiguous(mut cx: TypeCx, e: ExprId, target: string, name: string, keys: List<string>) {
+    cx
+        .emit(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "`${target}.${name}` fits these arguments as ${keys.join(" and as ")}",
+                "called here",
+                "a call names one member — make an argument's type, or the answer's wanted type, say which",
+            ),
+        )
 }

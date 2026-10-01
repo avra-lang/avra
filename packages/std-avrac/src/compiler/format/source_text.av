@@ -17,6 +17,7 @@ use core.{
     CompClause,
     BinOp,
     Param,
+    Spread,
     Plain,
     Variant,
     Case,
@@ -460,7 +461,18 @@ impl SourceText {
                         ),
                 ]
             },
-            .TraitDecl(name, fns) -> [self.trait_decl(exported, name.of, fns, self.stmt_end(s), self.stmt_flat(s), depth)],
+            .TraitDecl(name, fns) -> [
+                self
+                    .trait_decl(
+                        exported,
+                        name.of,
+                        self.store.trait_tparams_of(s),
+                        fns,
+                        self.stmt_end(s),
+                        self.stmt_flat(s),
+                        depth,
+                    ),
+            ],
             .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.of)} {${text}}")],
             .Setting(name, value) -> {
                 let prefix = "${source_name(name.of)}: "
@@ -471,7 +483,18 @@ impl SourceText {
                     ),
                 ]
             },
-            .ComponentDecl(name, head, fields, fns) -> [self.component_decl(exported, name.of, head, fields, fns, self.stmt_end(s), depth)],
+            .ComponentDecl(name, head, fields, fns) -> [
+                self
+                    .component_decl(
+                        exported,
+                        name.of,
+                        head,
+                        self.entries(fields, self.store.spreads_of(s), depth + 1),
+                        fns,
+                        self.stmt_end(s),
+                        depth,
+                    ),
+            ],
             .LetElse(name, subject, stmts) -> {
                 let prefix = "let ${source_name(name.of)}? = "
                 [
@@ -690,6 +713,24 @@ impl SourceText {
         joined([self.param(p, depth) for p in params], ", ")
     }
 
+    /// A record's field entries as written: each `..R` ahead of the
+    /// field it was written before, every entry with where it began.
+    mut fn entries(fields: List<Param>, spreads: List<Spread>, depth: int) -> List<FieldEntry> {
+        let spread_at = (k: int) -> [FieldEntry { lo: x.lo, text: "..${spelled(x.of)}" } for x in spreads if x.at == k]
+        flatten(
+            [spread_at(j)
+                .concat(
+                    [
+                        FieldEntry {
+                            lo: start_of(self.store.param_id_span(f.id)),
+                            text: self.param(f, depth),
+                        },
+                    ],
+                ) for j, f in fields],
+        )
+            .concat(spread_at(fields.length))
+    }
+
     mut fn param(p: Param, depth: int) -> string {
         let name = if p.name.is_empty() { "" } else { "${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
         let ty = if p.ty == null { "" } else { spelled(p.ty!) }
@@ -874,6 +915,7 @@ impl SourceText {
     mut fn trait_decl(
         exported: string,
         name: string,
+        tparams: List<string>,
         fns: List<StmtId>,
         end: int,
         one_line: bool,
@@ -881,14 +923,17 @@ impl SourceText {
     ) -> string {
         let body = flatten([self.trait_member(s, depth + 1) for s in fns])
             .concat(self.trivia_before(end, depth + 1))
-        if body.is_empty() { return source_line(depth, "${exported}trait ${source_name(name)} {}") }
+        if body.is_empty() { return source_line(
+                depth,
+                "${exported}trait ${source_name(name)}${self.named_type_params(tparams)} {}",
+            ) }
         if one_line && body.length == 1 {
             return source_line(
                 depth,
-                "${exported}trait ${source_name(name)} { ${unpadded(body[0], depth + 1)} }",
+                "${exported}trait ${source_name(name)}${self.named_type_params(tparams)} { ${unpadded(body[0], depth + 1)} }",
             )
         }
-        "${source_line(depth, "${exported}trait ${source_name(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+        "${source_line(depth, "${exported}trait ${source_name(name)}${self.named_type_params(tparams)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
     /// A trait member is a declaration head WITHOUT a statement of its
@@ -939,7 +984,18 @@ impl SourceText {
         one_line: bool,
         depth: int,
     ) -> string {
-        let g? = self.store.grammar_of(s) else { return self.struct_decl(exported, name, tparams, fields, end, one_line, depth) }
+        let g? = self.store.grammar_of(s) else {
+            return self
+                .struct_decl(
+                    exported,
+                    name,
+                    tparams,
+                    self.entries(fields, self.store.spreads_of(s), depth + 1),
+                    end,
+                    one_line,
+                    depth,
+                )
+        }
         source_line(depth, "grammar ${source_name(name)} = ${format_source(g.head, g.parts)}")
     }
 
@@ -949,7 +1005,7 @@ impl SourceText {
         exported: string,
         name: string,
         head: List<Param>,
-        fields: List<Param>,
+        fields: List<FieldEntry>,
         fns: List<StmtId>,
         end: int,
         depth: int,
@@ -957,9 +1013,7 @@ impl SourceText {
         let sig = "${exported}component ${source_name(name)}"
         let opened = "${sig}${if head.is_empty() { "" } else { self.params_wrapped(head, depth, col_after(sig, depth * 4)) }}"
         let lines = flatten(
-            [self
-                .trivia_before(start_of(self.store.param_id_span(f.id)), depth + 1)
-                .concat([source_line(depth + 1, self.param(f, depth + 1))]) for f in fields],
+            [self.trivia_before(f.lo, depth + 1).concat([source_line(depth + 1, f.text)]) for f in fields],
         )
         let body = lines
             .concat(flatten([self.statement(s, depth + 1) for s in fns]))
@@ -1010,23 +1064,16 @@ impl SourceText {
         exported: string,
         name: string,
         tparams: List<string>,
-        fields: List<Param>,
+        fields: List<FieldEntry>,
         end: int,
         one_line: bool,
         depth: int,
     ) -> string {
         let head = "${exported}type ${source_name(name)}${self.named_type_params(tparams)}"
         if fields.is_empty() { return source_line(depth, "${head} = {}") }
-        if one_line {
-            return source_line(
-                depth,
-                "${head} = { ${joined([self.param(f, depth) for f in fields], ", ")} }",
-            )
-        }
+        if one_line { return source_line(depth, "${head} = { ${joined([f.text for f in fields], ", ")} }") }
         let body = flatten(
-            [self
-                .trivia_before(start_of(self.store.param_id_span(f.id)), depth + 1)
-                .concat([source_line(depth + 1, "${self.param(f, depth + 1)},")]) for f in fields],
+            [self.trivia_before(f.lo, depth + 1).concat([source_line(depth + 1, "${f.text},")]) for f in fields],
         )
             .concat(self.trivia_before(end, depth + 1))
         "${source_line(depth, "${head} = {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
@@ -2370,3 +2417,6 @@ fn hole_source(h: Hole) -> string {
     let ty: TypeRef? = h.ty
     "{${h.name}${if h.greedy { "..." } else { "" }}${if ty == null { "" } else { ": ${spelled(ty!)}" }}}"
 }
+
+/// One printed entry of a field list and the offset it began at.
+type FieldEntry = { lo: int, text: string }

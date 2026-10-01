@@ -1,0 +1,93 @@
+// How field spread breaks, by attack class. Accepted programs agree
+// eval == native (red team at ded9b88); these pin what each answers.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/structs — field spread, adversarial" {
+    given "degenerate shapes" {
+        then "an empty record spreads nothing" {
+            shown("type E = {}\ntype A = { ..E, x: int }\nA { x: 1 }.x") == "1"
+        }
+        then "a record of one spread is that record's fields" {
+            shown("type C = { a: int = 3 }\ntype A = { ..C }\nA {}.a") == "3"
+        }
+        then "three spreads and a field keep every default" {
+            shown(
+                "type C1 = { a: int = 1 }\ntype C2 = { b: int = 2 }\ntype C3 = { c: int = 3 }\ntype A = { ..C1, ..C2, ..C3, d: int = 4 }\nlet a = A {}\na.a + a.b + a.c + a.d",
+            ) == "10"
+        }
+        then "spreads nest four deep" {
+            shown(
+                "type L1 = { a: int = 1 }\ntype L2 = { ..L1, b: int = 2 }\ntype L3 = { ..L2, c: int = 3 }\ntype L4 = { ..L3, d: int = 4 }\nlet x = L4 {}\nx.a * 1000 + x.b * 100 + x.c * 10 + x.d",
+            ) == "1234"
+        }
+        then "one record spread twice is a duplicate" {
+            refused_with(
+                "type C = { a: int = 1 }\ntype A = { ..C, ..C }\n1",
+                "`A` declares `a` more than once",
+            )
+        }
+    }
+    given "wrong types in the slot" {
+        then "a list is no record" { refused_with("type A = { ..List<int> }\n1", "`..List<int>` spreads no record") }
+        then "a nullable record is no record" {
+            refused_with("type C = { a: int }\ntype A = { ..C? }\n1", "`..C?` spreads no record")
+        }
+        then "a dyn is no record" {
+            refused_with(
+                "trait T {\n    fn m() -> int\n}\ntype A = { ..dyn T }\n1",
+                "`..dyn T` spreads no record",
+            )
+        }
+        then "a type parameter is no record" {
+            refused_with("type P<T> = { ..T, x: int }\n1", "`..T` spreads no record")
+        }
+        then "a fn is no type" { refused_with("fn f() -> int { 1 }\ntype A = { ..f }\n1", "`f` names no type") }
+        then "a generic record takes its own arity" {
+            refused_with(
+                "type P<T> = { v: T }\ntype A = { ..P<int, int> }\n1",
+                "`P` is applied to 2 types; it takes 1",
+            )
+        }
+    }
+    given "crossing other features" {
+        then "a generic spread passes its own parameter through" {
+            shown(
+                "type P<T> = { v: T }\ntype Q<T> = { ..P<T>, n: int }\nlet q: Q<string> = Q { v: \"s\", n: 1 }\nq.v",
+            ) == "s"
+        }
+        then "a spread field is written by `with`" {
+            shown(
+                "type C = { a: int = 1 }\ntype A = { ..C, b: int = 2 }\nlet x = A {} with { a: 9 }\nx.a + x.b",
+            ) == "11"
+        }
+        then "a spread field is written through a mut binding" {
+            shown("type C = { a: int = 1 }\ntype A = { ..C }\nmut x = A {}\nx.a = 7\nx.a") == "7"
+        }
+        then "a spreader compares by value" { shown("type C = { a: int = 1 }\ntype A = { ..C }\nA {} == A { a: 1 }") == "true" }
+        then "a spreader holds a list of itself" {
+            shown(
+                "type C = { a: int = 1 }\ntype Tree = { ..C, kids: List<Tree> = [] }\nTree { kids: [Tree {}] }.kids.length",
+            ) == "1"
+        }
+        then "a spreader's method reads a spread field" {
+            shown(
+                "type C = { a: int = 1 }\ntype A = { ..C }\nimpl A {\n    fn twice() -> int { self.a * 2 }\n}\nA { a: 4 }.twice()",
+            ) == "8"
+        }
+    }
+    given "names against names" {
+        then "a record may spread one declared after it" {
+            shown("type A = { ..C, x: int = 0 }\ntype C = { a: int = 6 }\nA {}.a") == "6"
+        }
+        then "a value named like the spread record does not shadow the type" {
+            shown("type C = { a: int = 6 }\ntype A = { ..C }\nlet C = 3\nA {}.a + C") == "9"
+        }
+    }
+    given "ownership" {
+        then "managed defaults survive a spread and a `with`" {
+            shown(
+                "type C = { s: string = \"x\" + \"y\", l: List<string> = [\"a\"] }\ntype A = { ..C, t: string }\nlet a = A { t: \"z\" }\nlet b = a with { s: \"w\" }\n\"\${a.s}\${a.l.length}\${a.t}\${b.s}\"",
+            ) == "xy1zw"
+        }
+    }
+}

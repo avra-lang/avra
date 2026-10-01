@@ -26,6 +26,7 @@ use core.{
     new_type_registry,
     Param,
     FnParts,
+    spelled,
     module_symbol,
     filled,
     flatten,
@@ -196,6 +197,9 @@ export type DeclFacts = {
     /// type's layout, read from the parse at admission and from the record for a
     /// held file, so the seal index never reaches into a store the hold skipped.
     mut_seats: List<string> = [],
+    /// THE ARGUMENTS AN `impl X<A> for Y` GIVES ITS TRAIT, as written — two impls
+    /// of one generic trait on one type are told apart by them.
+    trait_args: List<string> = [],
 }
 
 impl DeclFacts {
@@ -218,6 +222,7 @@ impl DeclFacts {
             doc: null,
             annotations: [],
             mut_seats: [],
+            trait_args: [],
         }
     }
 }
@@ -263,6 +268,7 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         doc: if readable { store.doc_comment(x.stmt) } else { null },
         annotations: if readable { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
         mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },
+        trait_args: if readable && x.kind is .Impl { [spelled(a) for a in store.trait_args_of(x.stmt)] } else { [] },
     }
 }
 
@@ -1495,7 +1501,7 @@ impl Decls {
         // A TRAIT DECLARES ONE TYPE PARAMETER, `Self` — its
         // implementor — and its members wear it: a default body is
         // a generic method over `Self`, lowered per signatory.
-        if x.kind is .Trait { return [self_word] }
+        if x.kind is .Trait { return [self_word].concat(self.facts_of(d)?.tparams ?? []) }
         self.facts_of(d)?.tparams ?? []
     }
 
@@ -2077,7 +2083,7 @@ impl Decls {
         let x = self.decl(d)
         if self.is_extern(d) { return x.name }
         let local_name = match x.kind {
-            .Method -> "${x.owner}.${x.name}",
+            .Method -> "${x.owner}.${self.method_key(d)}",
             .Default -> "${x.owner}.${x.name}\$default",
             .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
             .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Collect or .CollectEnum -> x.name,
@@ -2146,6 +2152,12 @@ impl Decls {
             if self.decl(m).name == name && self.has_body(m) { return m }
         }
         null
+    }
+
+    /// Every registered method of one name — several only where a
+    /// generic trait is implemented at several arguments.
+    fn methods_named(target: DeclId, name: string) -> List<DeclId> {
+        [m for m in self.methods_of(target) if self.decl(m).name == name]
     }
 
     /// The table as it stands — the registering side's own read.
