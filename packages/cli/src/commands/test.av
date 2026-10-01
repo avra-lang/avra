@@ -1,9 +1,10 @@
 //! `avra test` — EVERY PROOF A PACKAGE CARRIES: its spec cases and its
 //! program tests, one binary a suite, linked through the store a build
 //! links through — so a file nothing moved is not read, compiled or
-//! evaluated again. The binaries run in a fresh image of this program.
+//! evaluated again. The binaries run in a fresh image of this program. A
+//! package's root proves everything; any other path the proofs at or under it.
 use @std.cli.{CliResult, Runnable, command}
-use @std.avrac.compiler.{BuildOutcome, Toolchain}
+use @std.avrac.compiler.{BuildOutcome, Toolchain, Workspace}
 use @std.avrac.core.{flatten}
 use @std.io.{is_dir}
 
@@ -11,12 +12,13 @@ type TestCmd = {}
 
 impl Runnable for TestCmd {
     fn run(args: CliResult) -> int {
-        let path? = slotted_path(args) else { return 2 }
+        let path? = slotted_path(args) else { return 1 }
         let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
-        let ws = build_workspace(path)
+        let ws = proving_workspace(path)
         let tools = Toolchain { opt: "-O1", runtime: runtime_library(), linker: tool.path }
-        match ws.suites(if is_dir(path) { null } else { path }, here(), tools) {
-            .Ok(made) -> proved(args, path, made, tools),
+        let scope = scope_of(path)
+        match ws.suites(scope, here(), tools) {
+            .Ok(made) -> proved(args, path, scope, made, tools),
             .Err(report) -> {
                 println(report)
                 1
@@ -25,14 +27,29 @@ impl Runnable for TestCmd {
     }
 }
 
+/// The root a directory is proved under: the package holding it, else itself.
+fn dir_root(dir: string) -> string { package_root(dir) ?? dir }
+
+/// The workspace a test path is proved in: a file's package, or the root a
+/// directory stands under.
+fn proving_workspace(path: string) -> Workspace {
+    if is_dir(path) { root_workspace(dir_root(path)) } else { file_workspace(path) }
+}
+
+/// What a path scopes the run to: nothing for a root, which proves all it
+/// carries; else the proofs at or under the path.
+fn scope_of(path: string) -> string? {
+    if is_dir(path) && dir_root(path) == path { null } else { path }
+}
+
 /// The suites said, their `.refuses` tests held to their voice, then run
 /// by a fresh image — or the voice for none.
-fn proved(args: CliResult, path: string, made: List<BuildOutcome>, tools: Toolchain) -> int {
+fn proved(args: CliResult, path: string, scope: string?, made: List<BuildOutcome>, tools: Toolchain) -> int {
     for b in made {
         if !b.warnings.is_empty() { eprintln(b.warnings) }
         if timed(args) { eprintln(if b.reused { "time: suite · cache hit" } else { "time: ${b.phases}" }) }
     }
-    if made.is_empty() { return nothing_to_prove(path) }
+    if made.is_empty() { return nothing_to_prove(path, scope) }
     let refuses = flatten([b.refuses for b in made])
     if !refuses.is_empty() {
         let wrong = checked_refuses(own_binary(), tools, refuses)
@@ -48,17 +65,29 @@ export command test {
     run: TestCmd {}
 }
 
+/// ZERO PROOFS FOR A SCOPED PATH IS A REFUSAL, not a green run: the whole job
+/// of `test` is the verdict, and a path that yields none has none to give. A
+/// root with none says so and stands.
+fn nothing_to_prove(path: string, scope: string?) -> int {
+    if scope == null { return no_tests_here() }
+    if is_dir(path) { names_no_test_under(path) } else { names_no_test(path) }
+}
+
 // ── The voices ──
 
-/// ZERO CASES FOR A NAMED FILE IS A REFUSAL, not a green run: the whole job
-/// of `test` is the verdict, and a file that yields none has none to give.
-fn nothing_to_prove(path: string) -> int {
-    if is_dir(path) {
-        println("no spec cases here")
-        return 0
-    }
+fn no_tests_here() -> int {
+    println("no spec cases here")
+    0
+}
+
+fn names_no_test(path: string) -> int {
     eprintln(
-        "avra: ${path} holds no spec cases — a file named to `test` carries `spec`/`given`/`then` blocks",
+        "avra: ${path} names no test — not a spec file, and no `.expected` or `.refuses` beside it",
     )
+    1
+}
+
+fn names_no_test_under(path: string) -> int {
+    eprintln("avra: ${path} holds no test — no spec file and no program test at or under it")
     1
 }

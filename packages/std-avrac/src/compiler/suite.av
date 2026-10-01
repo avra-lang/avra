@@ -4,7 +4,7 @@
 //! evaluator has not agreed with since anything it can see last moved runs
 //! there first, and a disagreement stops the run before a binary exists.
 use core.{sorted_texts, joined, flatten, module_path, TypeRegistry, counted, FileId}
-use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized}
+use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized, under_dir}
 use @std.io.{make_dirs}
 use compiler.backend.{run_program}
 use compiler.store.{Store, Stored, node_key}
@@ -18,16 +18,16 @@ export type RefusesCall = { path: string, voice: string }
 impl Workspace {
     /// EVERY SUITE THE PACKAGE CARRIES: its own, and one per package nested under
     /// its sources — a module tree, a vendored dependency, a test that reaches
-    /// past the library's own dependencies — each proved on its own. `only` is
-    /// one file's cases and nothing else; labels are told from `told_from`.
+    /// past the library's own dependencies — each proved on its own. `only`
+    /// scopes the run to the proofs at or under one path; labels are told from
+    /// `told_from`.
     fn suites(only: string?, told_from: string, tools: Toolchain) -> Result<
         List<BuildOutcome>,
         string,
     > {
         let own: BuildOutcome? = self.suite(only, told_from, tools)?
         mut out: List<BuildOutcome> = if own == null { [] } else { [own!] }
-        if only != null { return out }
-        for root in nested_roots(self.host, joined_path(self.root, "src")) {
+        for root in [r for r in nested_roots(self.host, joined_path(self.root, "src")) if in_scope(only, r)] {
             let inner = self.nested_at(root)
             let made: BuildOutcome? = inner.suite(null, told_from, tools)?
             if made != null { out.push(made!) }
@@ -57,8 +57,8 @@ impl Workspace {
             if !missed.is_empty() { fail joined([rule_example_missed(l) for l in missed], "\n") }
             println("${counted(results.length, "rule example")} proved")
         }
-        let refuses = self.refuses_tests()
-        let programs = if only == null { self.program_tests() } else { [] }
+        let refuses = [r for r in self.refuses_tests() if in_scope(only, r.path)]
+        let programs = [path for path in self.program_tests() if in_scope(only, path)]
         let under = Keyed {
             named: "suite:${only ?? ""}",
             beside: [beside(path, "expected") for path in programs],
@@ -69,7 +69,7 @@ impl Workspace {
         let store = self.opened_store()
         let owed = [path for path in programs if !self.native_only(path) && !store.has(Stored.Unit, self.proved_key(store, path))]
         let d = self.evaluated(store, owed, told_from)?
-        let told = [s for s in d.said if only == null || normalized(s.path) == normalized(only!)]
+        let told = [s for s in d.said if in_scope(only, s.path)]
         let cases = flatten([s.cases for s in told])
         if cases.is_empty() && programs.is_empty() && refuses.is_empty() { return .Ok(null) }
         let _ = make_dirs(dir_of(binary))
@@ -192,6 +192,15 @@ impl Workspace {
 
 /// The file beside a program that wears its stem and this extension.
 fn beside(path: string, extension: string) -> string { joined_path(dir_of(path), "${stem_of(path)}.${extension}") }
+
+/// Whether a run scoped to `only` reaches `path`: every path when unscoped,
+/// else the path itself and what lies under it.
+fn in_scope(only: string?, path: string) -> bool {
+    let scope? = only else { return true }
+    let at = normalized(path)
+    let top = normalized(scope)
+    at == top || under_dir(at, top)
+}
 
 /// Every nested package under a directory: one holding its own manifest is a
 /// package, and nothing under it is asked again.
