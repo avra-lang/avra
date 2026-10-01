@@ -51,6 +51,8 @@ type Emit = {
     externs: List<RtSig>,
     // the runtime's rows by name, built once per module
     rt: Map<string, RtSig>,
+    // whether each box a row mints is counted by its type (AVRA_CENSUS_TYPES)
+    census: bool,
 }
 
 /// One open loop: where the back edge returns and where false exits.
@@ -177,6 +179,12 @@ const EMIT_WIDTH: int = 4
 /// clang's level — BY A WORKER: the module is built here and handed over, and
 /// `objects_made` waits for every one handed.
 export fn emit_object(l: Lowered, path: string, which: Owned, opt: int) -> string? { emit_mode(l, path, which, Written.Object(opt)) }
+
+/// The link option that drops code nothing reaches: Mach-O drops by
+/// atom, ELF by section — and every definition is emitted in one of its own.
+export fn unreached_dropped() -> string {
+    if avra_llvm_drops_by_atom() != 0 { "-Wl,-dead_strip" } else { "-Wl,--gc-sections" }
+}
 
 /// Every object handed to a worker, written — null — or the refusal.
 export fn objects_made() -> string? {
@@ -404,6 +412,7 @@ fn emit_body(
         loops: [],
         externs: externs,
         rt: rt,
+        census: avra_llvm_census_types() != 0,
     }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     for i in bd.ins { em.emit_ins(i) }

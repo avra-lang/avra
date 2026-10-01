@@ -1,0 +1,93 @@
+#!/bin/sh
+# The whole path from new work to main, in five commands:
+#
+#   sh tools/work new <name>   worktree ../avra-<name> on branch <name>, off main, compiler seeded
+#   sh tools/work test         build and test what the branch touches, on Sprites
+#   sh tools/work run <cmd>    run any command in this worktree, on a Sprite
+#   sh tools/work land         push the branch, open its PR, queue it to merge
+#   sh tools/work status       every open PR: checks and queue state
+#
+# `test`, `run` and `land` run from inside the worktree. Main moves only through
+# GitHub's merge queue; nothing here writes main.
+set -eu
+
+tools=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$tools/.." && pwd)
+
+die() { echo "work: $*" >&2; exit 1; }
+
+# The main checkout, wherever this copy of the script lives.
+main_tree() {
+    git -C "$repo" worktree list --porcelain | awk '/^worktree /{w=$2} $0=="branch refs/heads/main"{print w}'
+}
+
+new() {
+    [ $# -eq 1 ] || die "usage: work new <name>"
+    name=$1
+    main=$(main_tree)
+    wt="$(dirname "$main")/avra-$(echo "$name" | tr / -)"
+    [ -e "$wt" ] && die "$wt already exists"
+    git -C "$main" fetch -q origin main
+    git -C "$main" worktree add -q -b "$name" "$wt" origin/main
+    mkdir -p "$wt/build"
+    for f in avra libavra_runtime.a; do
+        [ -f "$main/build/$f" ] && cp "$main/build/$f" "$wt/build/$f"
+    done
+    echo "$wt"
+}
+
+# Packages the branch touches, plus everything that reaches them.
+affected() {
+    sh "$tools/affected_packages.sh" origin/main HEAD "$PWD" 2>/dev/null
+}
+
+test_() {
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "run from inside a worktree"
+    git fetch -q origin main
+    changed=$(git diff --name-only origin/main...HEAD -- '*.av')
+    [ -z "$changed" ] || build/avra fmt --check $changed
+    set --
+    for p in $(affected); do
+        set -- "$@" "make -o avra libs >/dev/null && build/avra test $p"
+    done
+    set -- "$@" "build/avra check packages/std-avrac --baseline tools/idioms.baseline"
+    AVRA_SP_TREE=$PWD sh "$tools/sp" -p "$@"
+}
+
+run() {
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "run from inside a worktree"
+    [ $# -gt 0 ] || die "usage: work run <command…>"
+    AVRA_SP_TREE=$PWD sh "$tools/sp" "$*"
+}
+
+land() {
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "run from inside a worktree"
+    branch=$(git branch --show-current)
+    [ "$branch" != main ] || die "land a branch, never main"
+    [ -z "$(git status --porcelain --untracked-files=no)" ] || die "commit or drop your changes first"
+    git fetch -q origin main
+    git rebase -q origin/main || die "rebase onto main conflicted; resolve, then run land again"
+    [ -n "$(git log --format=%h origin/main..HEAD)" ] || die "nothing to land"
+    git push -q --force-with-lease -u origin "$branch"
+    if ! gh pr view "$branch" >/dev/null 2>&1; then
+        gh pr create --base main --head "$branch" \
+            --title "$(git log --reverse --format=%s origin/main..HEAD | head -1)" \
+            --body "$(git log --reverse --format='- %s' origin/main..HEAD)"
+    fi
+    gh pr merge "$branch" --squash --auto
+    gh pr view "$branch" --json url --jq .url
+}
+
+status() {
+    gh pr list --state open --json number,headRefName,title,statusCheckRollup,autoMergeRequest \
+        --jq '.[] | "#\(.number)  \(.headRefName)  \(if .autoMergeRequest then "queued" else "open" end)  checks: \([.statusCheckRollup[]?.conclusion // "pending"] | unique | join(","))  \(.title)"'
+}
+
+case "${1:-}" in
+    new) shift; new "$@" ;;
+    test) test_ ;;
+    run) shift; run "$@" ;;
+    land) land ;;
+    status) status ;;
+    *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

@@ -44,7 +44,7 @@ use core.{
     DeclKind,
 }
 use @std.path.{dir_of, joined_path}
-use @std.relation.db.{Db as RelDb, new_db as new_error_sites_db}
+use @std.relation.db.{Db as RelDb, Hooks as RelHooks, hooked_db}
 use features.components.{word_of, instanced, named_instances}
 use features.{
     takes_receiver,
@@ -380,11 +380,12 @@ export type Workspace = {
     // plain for its identity: the injected clock fn, set once at construction
     clock: fn() -> int,
     phases: Cell<List<Phase>>,
-    /// One `ErrorSite` row per fail/propagate/catch site, filed by
-    /// `fail_summary` (failures.av). `avra-8sb5.57.9.1`.
-    error_sites_db: Cell<RelDb>,
-    /// The whole-program raised-error fixpoint, over `error_sites_db`
-    /// — `raised_by`'s own table.
+    /// The failures pass's relations (failures.av): one `ErrorSite` row
+    /// per fail/propagate/catch site, filed by `fail_summary`, and one
+    /// `Raised` row per inferring fn, owned by the fixpoint's solve.
+    failures_db: Cell<RelDb>,
+    /// The whole-program raised-error fixpoint over `ErrorSite` — its
+    /// members' in-flight answers; everyone else reads `Raised`.
     raised_fixpoint: Fixpoint<List<TypeId>>,
 }
 
@@ -525,6 +526,12 @@ enum Family {
     /// neighbour's reader — a query reading another declaration's
     /// nodes depends on this, never on the file's whole `Parsed`
     Syntax
+    /// a declaration's own slice of its file's names (COMPILER DB
+    /// townhall §6.11): the fold of the name columns over its expr
+    /// range and the namespace, keyed by DeclId — a foreign reader of
+    /// a body's bindings depends on this, never on the file's whole
+    /// `Resolved`
+    Names
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -578,6 +585,7 @@ fn ordinal(f: Family) -> int {
         .MethodDiags -> 23,
         .LiftLowered -> 24,
         .Syntax -> 25,
+        .Names -> 26,
     }
 }
 
@@ -611,6 +619,7 @@ fn family_word(f: Family) -> string {
         .MethodDiags -> "MethodDiags",
         .LiftLowered -> "LiftLowered",
         .Syntax -> "Syntax",
+        .Names -> "Names",
     }
 }
 
@@ -656,6 +665,7 @@ fn family_at(i: int) -> Family {
         23 -> Family.MethodDiags,
         24 -> Family.LiftLowered,
         25 -> Family.Syntax,
+        26 -> Family.Names,
         other -> {
             avra_trap(
                 "defect: no Family at ordinal ${other} — family_at and ordinal must list the same set",
@@ -669,7 +679,7 @@ fn family_at(i: int) -> Family {
 /// walks. Bump it in the SAME edit that adds an arm to `family_at`
 /// and to `ordinal`; nothing below can notice the day only this
 /// number moves alone, or only stays still alone.
-const family_count: int = 26
+const family_count: int = 27
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
@@ -695,6 +705,39 @@ fn family_gap_voice(fam: Family, i: int) -> string {
 /// exporting `Family` itself. The 99 is fabricated; `Family.Raised`'s
 /// real ordinal is 22.
 export fn family_gap_probe() -> string { family_gap_voice(Family.Raised, 99) }
+
+/// A `@std/relation` `Db`'s owner, worn over this workspace's OWN
+/// kernel — never a fixed `Family` variant, since a relation mints its
+/// family dynamically, on first reach, through the same door
+/// `kernel.family` already answers any caller. A read or write outside
+/// a `@query` lands in the frame of whichever kernel query is open —
+/// `kernel.reader()`, stable for that query's own run and distinct from
+/// every other's — so a query reading a relation it just wrote is
+/// refused, and its own words say to read `prior(db)` instead. A
+/// refusal here TRAPS: nothing outside the compiler's own process
+/// could be listening for it, so a hit is the compiler's own defect,
+/// not a program's.
+fn relation_hooks(kernel: Kernel) -> RelHooks {
+    RelHooks {
+        family: (verify: fn(int) -> int) -> kernel.family(verify),
+        record: (fam: int, cell: int) -> {
+            kernel.record_dep(Key { family: fam, arg: cell })
+            kernel.reader()
+        },
+        revision: () -> kernel.revision(),
+        reader: (token: int) -> "a compiler query (reader ${token})",
+        refused: (words: string) -> avra_trap(words),
+        opened: (_fam: int, _cell: int) -> 0 - 1,
+        settled: (_fam: int, _cell: int) -> no_relation_settle_word(),
+        running: () -> kernel.reader(),
+    }
+}
+
+/// `Hooks.settled` answers `void`: this Db leans on `@std/relation`'s
+/// OWN write-count reuse check (`opened`'s `-1`, "no opinion") rather
+/// than the kernel's early-cutoff fingerprint, so nothing needs telling
+/// when a cell settles.
+fn no_relation_settle_word() {}
 
 export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
     timed_workspace(host, root, lang, () -> 0)
@@ -822,7 +865,7 @@ fn built(
         closed: Cell.new(false),
         clock: clock,
         phases: list_cell(),
-        error_sites_db: Cell.new(new_error_sites_db()),
+        failures_db: Cell.new(hooked_db(relation_hooks(kernel))),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, ordinal(Family.Raised), [], raised_join, raised_fp),
     }
     // This is also `family_at`'s and `ordinal`'s cross-check: `f` at
@@ -1047,6 +1090,7 @@ impl Workspace {
             .Raised -> touch(self.raised_by(decl_at_arg(arg))),
             .MethodDiags -> touch(self.method_diagnostics(file_at(arg))),
             .Syntax -> touch(self.syntax(decl_at_arg(arg))),
+            .Names -> touch(self.name_slice(decl_at_arg(arg))),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -1706,6 +1750,35 @@ impl Workspace {
         h
     }
 
+    /// A declaration's own slice of its file's names, DECLARATION-GRAIN
+    /// (COMPILER DB townhall §6.11): `name_slice_fp` over its expr
+    /// range. Recomputed with the file's `Resolved`, and cut off by
+    /// `settle` for every declaration whose slice folds the same.
+    fn name_slice(d: DeclId) -> int {
+        let k = key(Family.Names, d.index)
+        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
+        self.db.begin(k)
+        let x = self.decls.decl(d)
+        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi)
+        self.db.settle(k, h)
+        h
+    }
+
+    /// A FOREIGN reader's door to `d`'s names: one edge on `d`'s own
+    /// `Names`, then the file's table read unrecorded. The reader holds
+    /// the slice's contract — cells in `d`'s range and the namespace,
+    /// never the voices. The file's own passes ask `resolved`; so does
+    /// a reader inside that resolve, whose view is still in flight.
+    fn names_of(d: DeclId) -> NameFacts {
+        let f = self.decls.decl(d).file
+        if self.relation(Family.Resolved).open(f.index) { return self.resolved(f) }
+        touch(self.name_slice(d))
+        match self.relation(Family.Resolved).values.entry(f.index) {
+            .Present(r) -> resolved_of(r),
+            .Missing -> self.resolved(f),
+        }
+    }
+
     /// Whether an impl block written under the target's NAME can mean
     /// the target: its file's namespace must name that declaration. A
     /// like-named type in another module is not this one, and signing
@@ -1742,7 +1815,7 @@ impl Workspace {
         let of? = self.decls.facts_of(block)?.of else { return null }
         if of == "" { return null }
         self.named_minted(of)
-        let named = [d.id for d in self.decls.decls.get() if d.kind is .Trait && d.name == of]
+        let named = [d.id for d in self.decls.all_decls() if d.kind is .Trait && d.name == of]
         if named.length == 1 { named.first() } else { null }
     }
 

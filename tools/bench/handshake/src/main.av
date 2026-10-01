@@ -1,0 +1,59 @@
+//! TLS handshakes in one process, both sides — the CPU a connection's
+//! handshake costs, alone: P-256 ECDSA for the localhost leaf, the key
+//! exchange, the key schedule. Full handshakes give each a fresh client;
+//! resumed ones reuse one client, which offers the server's ticket.
+use @std.tls.{Config, Session, TlsError, session}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+use @std.time.{now_ns}
+
+/// Both sides stepped, each flight moved to the other, until both are done.
+fn shaken(c: Session, s: Session, turn: int) -> Result<int, TlsError> {
+    let cs = c.step()?
+    s.fed(c.outgoing()?)?
+    let ss = s.step()?
+    c.fed(s.outgoing()?)?
+    if cs is .Done && ss is .Done { return turn }
+    if turn == 10 { fail TlsError.Engine("handshake", "bench", -1) }
+    shaken(c, s, turn + 1)
+}
+
+/// One handshake under `cc` and `sc`, then the server's ticket read by
+/// the client, so the next handshake under `cc` can resume.
+fn handshake(cc: Config, sc: Config) -> Result<int, TlsError> {
+    let c = session(cc, "localhost")?
+    let s = session(sc, "")?
+    shaken(c, s, 1)?
+    s.sealed("k".bytes(), 0)?
+    c.fed(s.outgoing()?)?
+    let _ = c.opened(8)?
+    c.end()?
+    s.end()?
+    1
+}
+
+/// A fresh client's config, used for one handshake — or for none — and
+/// returned to the engine.
+fn fresh(sc: Config, shaking: bool) -> Result<int, TlsError> {
+    let cc = trusting_localhost()?
+    if shaking { handshake(cc, sc)? }
+    cc.free()
+}
+
+/// Nanoseconds each of `n` turns of `turn` took.
+fn each(n: int, turn: fn() -> Result<int, TlsError>) -> Result<int, TlsError> {
+    let t0 = now_ns()
+    for i in 0..n { turn()? }
+    (now_ns() - t0) / n
+}
+
+fn run(n: int) -> Result<string, TlsError> {
+    let sc = serving_localhost()?
+    let made = each(n) { fresh(sc, false) }?
+    let full = each(n) { fresh(sc, true) }? - made
+    let cc = trusting_localhost()?
+    handshake(cc, sc)?
+    let resumed = each(n) { handshake(cc, sc) }?
+    "${n} handshakes each, both sides: full ${full / 1000} us, resumed ${resumed / 1000} us (server resumed ${sc.resumed()}; a client config ${made / 1000} us, not counted)"
+}
+
+run(400) catch e -> e.describe().message

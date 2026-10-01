@@ -1924,27 +1924,46 @@ Runtime facts, ours to ratify:
 
 ## How work lands
 
-- WORK IN A SIBLING WORKTREE (`git worktree add -b <branch> ../avra-<name>
-  refs/heads/main`), never in `avra/` itself and never nested under
-  `.claude/worktrees/` (a nested tree shares the outer cache). Start its
-  compiler from main's standing one (`cp ../avra/build/avra build/avra`
-  and `build/libavra_runtime.a`, then `make avra` twice), not a gen-1
-  bootstrap from the seed.
-- MAIN MOVES ONLY THROUGH `sh tools/land.sh <branch>`. A
+- ALL WORK MOVES THROUGH FIVE COMMANDS, and nothing else touches main:
+
+      sh tools/work new <name>   # worktree ../avra-<name>, off main, compiler seeded
+      sh tools/work test         # what the branch touches, built and tested on Sprites
+      sh tools/work run <cmd>    # any command in this worktree, on a Sprite
+      sh tools/work land         # push, open the PR, queue it to merge
+      sh tools/work status       # every open PR, its checks and queue state
+
+  Main lives on GitHub (avra-lang/avra) and moves only through its merge
+  queue: squash merges, linear history, no direct pushes. A local
   reference-transaction hook refuses every other update of
-  `refs/heads/main` (a commit, merge, reset or update-ref, from any
-  worktree); a deliberate repair sets `AVRA_MAIN_OVERRIDE="<reason>"`,
-  which is printed. A landing gates speed (+1% instructions, +10% peak
-  footprint, same input), warm reuse, a Linux leg on a Sprite, every
-  affected suite, idioms, fmt and seed-check. Exit 0 means LANDED; exit
-  3 is a tool failure, never the branch's.
+  `refs/heads/main`; a deliberate repair sets
+  `AVRA_MAIN_OVERRIDE="<reason>"`, which is printed.
 - A PRE-COMMIT HOOK refuses staged `.av` that is not canonical; the fix
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
-- HEAVY RUNS GO ON SPRITES (`sh tools/sprite-build.sh <sprite>
-  <worktree> -- bash -lc '…'`): bootstraps, whole suites, censuses. The
-  Mac keeps quick targeted checks and anything macOS-only. Each session
-  uses its own Sprites (avra-db-gantt/SPRITES.md); the landing pool is
-  land.sh's alone.
+- HEAVY RUNS GO ON SPRITES: `AVRA_SP_TREE=$PWD sh tools/sp <cmd>`, or
+  `sh tools/sp -p "a" "b"` for parallel. Bootstraps, whole suites and
+  censuses run there; the Mac keeps quick targeted checks and anything
+  macOS-only (the speed gate's instruction count). sp picks an awake
+  Sprite, syncs by rsync, copies a built compiler, and waits for a slot
+  rather than falling back to the Mac.
+- A BRANCH ARRIVES AT THE QUEUE ALREADY MERGED ONTO CURRENT MAIN AND
+  GREEN THERE. Rebase onto `main` only, never onto another unlanded
+  branch: that lands the other branch's work unverified.
+- A BATCH IS FIVE BRANCHES OR FEWER. Every checked group costs ~12
+  minutes, and one interaction splits the batch again; a large mixed
+  batch ran past its wall cap three times in one night and landed
+  nothing. Queue proven branches together and new ones apart.
+- A LANDING IS NEVER KILLED MID-RUN. Stopping one skips its refresh of
+  main's compiler, and the stale `build/avra` then fails correct
+  branches. If one must die, rebuild main's compiler to its fixed point
+  in a spare worktree and `mv` it into place.
+- A PID IS CHECKED BEFORE IT IS KILLED. A ticket's recorded pid is
+  reused once its process exits; read `ps -o command= -p <pid>` first.
+- A TOOL IS RUN FOR REAL ONCE BEFORE IT BECOMES A DEFAULT. Fixtures
+  prove the logic; a live run proves the path (a 62 MB upload hit a
+  30 s client timeout that no fixture could reach).
+- A GATE FLOOR IS RELATIVE (N − k), NEVER AN ABSOLUTE COUNT: the total
+  moves when a branch deletes files, and an absolute floor then fails
+  correct work.
 - A CHANGE THE COMPILER CHECKS ABOUT ITS OWN SOURCE (a renamed type, a
   new license form) lands as a BRIDGE first: main's compiler must build
   the branch, because the speed gate and the seed both use it.

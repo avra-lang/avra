@@ -40,7 +40,7 @@ use core.{
     same_type as same_type_id,
     touch,
 }
-use features.{Decls, Decl, TypeCx, bound_decl_of, written_seats}
+use features.{Decls, Decl, TypeCx, bound_decl_of}
 use @std.meta.{bracket}
 use @std.relation.{relation}
 use @std.relation.db.{Db as RelDb}
@@ -87,14 +87,12 @@ fn edge_callee(c: Contribution) -> DeclId? {
 
 fn is_unresolved(c: Contribution) -> bool { c is .Unresolved }
 
-/// One row per fail/propagate/catch site (avra-8sb5.57.9.1). Keyless:
-/// a site has no name of its own, only a position. `errors` is the
-/// site's own DIRECT contribution only, never the fixpoint's
-/// transitive answer — that lives separately, in `raised_by`, never
-/// folded back into a site. `Raised` (.9.2, over `Decl`'s own stable
-/// key) waits on M5's `DeclKey` — a typed id can key a relation only
-/// through its target's own stable key, and `Decl` has none yet.
-/// `owner`, not `fn`: `fn` is a keyword, refused as a field name.
+/// One row per fail/propagate/catch site. Keyless: a site has no name
+/// of its own, only a position. `errors` is the site's own DIRECT
+/// contribution only, never the fixpoint's transitive answer — that
+/// is `Raised`, a second relation with its own owner, never folded
+/// back into a site. `owner`, not `fn`: `fn` is a keyword, refused as
+/// a field name.
 /// `callee` is nullable: a site files under it only when it has one,
 /// so the reverse edge `chain` walks up is a lookup. `within` is an
 /// `ExprId`, which no index files, so its reader scans.
@@ -109,6 +107,15 @@ export type ErrorSite = {
     @local within: ExprId?,
     @local errors: List<TypeId>,
 }
+
+/// One inferring fn's settled error set, written by the fixpoint's
+/// solve alone — one row per `owner` per solve, the last solve's rows
+/// swept. `@index`, never `@key`: a `DeclId` is dense, so it is
+/// `@local`, and a key is never local. Read inside the solve it is
+/// refused: a member reads a fellow's in-flight answer through the
+/// fixpoint, never through this.
+@relation
+export type Raised = { @local @index owner: DeclId, @local errors: List<TypeId> }
 
 /// A site's own answer, once resolved: `sig()` on a still-pending
 /// `_`-declared callee is never asked — `via_callee` intercepts first.
@@ -447,20 +454,11 @@ impl Workspace {
         let k = key(Family.Failures, 0)
         if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)
-        let fns = [x.id for x in self.decls.decls.get() if !self.is_held(x.file) && self.decls.inferring(x)]
+        let fns = [x.id for x in self.decls.all_decls() if !self.is_held(x.file) && self.decls.inferring(x)]
         self.decls.clear_inferred()
         let sums = [self.fail_summary(d) for d in fns]
         self.decls.settle_failures(fns, sums)
-        // M6 PREP: the same per-site facts `fail_summary` just built
-        // into `self.error_sites` feed a SECOND, additive answer — the
-        // same fixpoint math, as a `Fixpoint<T>` solve instead of
-        // `Decls`' own Kleene loop. Both run; only the OLD one is read
-        // by typing today, so this cannot regress it.
-        let raised_result = self
-            .raised_fixpoint
-            .solve([f.index for f in fns], (arg: int) -> self.raised_compute(arg))
-        let refusal = refusal_of(raised_result)
-        if refusal != null { self.defect("defect: ${fixpoint_spoken(refusal!)}") }
+        self.solve_raised(fns)
         self
             .db
             .settle(
@@ -485,12 +483,10 @@ impl Workspace {
         let fp? = store.fn_parts(x.stmt) else { return }
         mut t = self.sign_cx_for(x)
         // A free fn's OWN type params must be in scope for its seats to
-        // resolve, and a `mut` seat's record type seals boxed here exactly
-        // as `declare_sig` does around this same fold (typing/declare.av).
+        // resolve.
         if x.parent == null {
             t.enter_tscope(x.stmt)
             let ptypes = t.typed_seats(x.stmt, fp.params, null)
-            t.keep_boxed(written_seats(t.keywords, fp.params), ptypes)
             t.leave_tscope()
             self.decls.record_seat_types(d, ptypes)
             return
@@ -558,7 +554,7 @@ impl Workspace {
                 ws: self,
                 decls: self.decls,
                 store: store,
-                names: self.resolved(x.file),
+                names: self.names_of(d),
                 receiver: receiver,
                 seats: seats,
             },
@@ -570,7 +566,7 @@ impl Workspace {
         let all = fails.concat(props)
         if all.any(is_unresolved) { self.decls.mark_inferred_unresolved(d) }
         let new_sites = built_error_sites(fs, self.decls, d, store, x.lo, x.hi)
-        let db = self.error_sites_db.get()
+        let db = self.failures_db.get()
         let _ = [ErrorSite
             .insert(
                 db,
@@ -595,7 +591,7 @@ impl Workspace {
     /// re-raise inside its arm is already its OWN Fail/Propagate row
     /// (with `within` set), counted on its own turn.
     fn raised_compute(arg: int) -> List<TypeId> {
-        let rows = ErrorSite.by_owner(self.error_sites_db.get(), DeclId { index: arg })
+        let rows = ErrorSite.by_owner(self.failures_db.get(), DeclId { index: arg })
         let sites = [s for s in rows if s.how is .Fail || s.how is .Propagate]
         flatten([s.errors.concat(self.raised_via_callee(s.callee)) for s in sites])
     }
@@ -607,18 +603,36 @@ impl Workspace {
         self.raised_fixpoint.value_at(c.index)
     }
 
-    /// The whole-program fixpoint's per-fn answer — every error type
-    /// `d` can actually raise, direct or through a call into another
-    /// `_`-declared fn. `self.failures()` is idempotent per revision,
-    /// so asking this never re-solves what is already settled.
+    /// The raised-set fixpoint over `ErrorSite`, solved as ONE run of
+    /// `Raised`'s owner: the solve and the rows it settles share one
+    /// frame of `failures_db`, so a member reading `Raised` mid-solve is
+    /// refused, and the last solve's rows are swept when this one ends.
+    /// Beside `Decls`' own Kleene loop, which typing reads.
+    fn solve_raised(fns: List<DeclId>) {
+        let db = self.failures_db.get()
+        let owner = db.cell(self.raised_fixpoint.family, 0)
+        db.began(owner)
+        let solved = self
+            .raised_fixpoint
+            .solve([f.index for f in fns], (arg: int) -> self.raised_compute(arg))
+        for f in fns { let _ = Raised.insert(db, owner: f, errors: self.raised_fixpoint.value_at(f.index)) }
+        db.ended(owner)
+        let refusal? = refusal_of(solved) else { return }
+        self.defect("defect: ${fixpoint_spoken(refusal)}")
+    }
+
+    /// Every error type `d` can actually raise, direct or through a call
+    /// into another `_`-declared fn — its `Raised` row, empty for a fn
+    /// the fixpoint does not hold. `self.failures()` is idempotent per
+    /// revision, so asking this never re-solves what is already settled.
     fn raised_by(d: DeclId) -> List<TypeId> {
         let _ = self.failures()
-        self.raised_fixpoint.value_at(d.index)
+        Raised.by_owner(self.failures_db.get(), d).first()?.errors ?? []
     }
 
     /// Every site whose `callee` is `f` — the reverse edge `chain`
     /// walks up through.
-    fn error_sites_by_callee(f: DeclId) -> List<ErrorSite> { ErrorSite.by_callee(self.error_sites_db.get(), f) }
+    fn error_sites_by_callee(f: DeclId) -> List<ErrorSite> { ErrorSite.by_callee(self.failures_db.get(), f) }
 
     /// Every site lexically within catch `c`'s own arm — `chain`'s
     /// downward step when it reaches a `Catch`. Scoped by `owner`
@@ -629,7 +643,7 @@ impl Workspace {
     /// fix, since it would index across files by a number that means
     /// nothing outside one).
     fn error_sites_within(owner: DeclId, c: ExprId) -> List<ErrorSite> {
-        [x for x in ErrorSite.by_owner(self.error_sites_db.get(), owner) if within_is(x.within, c)]
+        [x for x in ErrorSite.by_owner(self.failures_db.get(), owner) if within_is(x.within, c)]
     }
 
     /// The error topology's own worked example (design doc §6.7,

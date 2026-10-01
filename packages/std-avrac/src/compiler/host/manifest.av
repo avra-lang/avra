@@ -36,7 +36,7 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// `budgets` is what a settlement may spend — `[lifted]`'s `steps` in
 /// instructions and `memory` in MiB of the compiler's heap, resolved
 /// to the measured defaults where the manifest writes none.
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, search: List<string>, libs: List<string>, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, voices: List<Diag> }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, search: List<string>, libs: List<string>, dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, voices: List<Diag> }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -89,6 +89,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
         objects: r.linked("objects"),
         search: r.linked("search"),
         libs: r.linked("libs"),
+        dynamic_symbols: r.link_flag("dynamic_symbols"),
         raw: r.words_of("link.raw", "flags"),
         deps: r
             .dependencies("dependencies", false, name)
@@ -169,7 +170,7 @@ fn known_key(section: string, key: string) -> bool {
             .contains(key)
     }
     if section == "bin" || section == "lib" { return key == "path" || key == "name" }
-    if section == "link" { return key == "objects" || key == "search" || key == "libs" }
+    if section == "link" { return ["objects", "search", "libs", "dynamic_symbols"].contains(key) }
     if section == "link.raw" { return key == "flags" }
     if section == "lifted" { return key == "steps" || key == "memory" }
     if section.starts_with("profile.") { return ["opt_level", "debug", "overflow_checks", "incremental", "coverage"].contains(key) }
@@ -501,6 +502,19 @@ impl Reader {
         words
     }
 
+    /// A `[link]` flag: `true` or `false`, absent read as `false`; any
+    /// other value is refused and read as `false`.
+    fn link_flag(key: string) -> bool {
+        let e? = self.doc.entry("link", key) else { return false }
+        match e.value {
+            .Bool(b) -> b,
+            .Int(_) or .Str(_) or .Strs(_) or .Table(_) -> {
+                self.speak(self.not_a_flag(e))
+                false
+            },
+        }
+    }
+
     fn words_of(section: string, key: string) -> List<string> {
         let e? = self.doc.entry(section, key) else { return [] }
         match e.value { .Strs(items) -> items, _ -> [] }
@@ -553,6 +567,16 @@ impl Reader {
             "`${key}` takes ${link_shape(key)}, and `${word}` spells a linker option",
             "here",
             "${link_help(key)} — `[link.raw]` carries an option, and only in the program's own manifest",
+        )
+    }
+
+    fn not_a_flag(e: TomlEntry) -> Diag {
+        refusal(
+            "manifest.link_flag",
+            self.entry_at(e),
+            "`${e.key}` under `[link]` is `true` or `false`",
+            "here",
+            "write `${e.key} = true`",
         )
     }
 

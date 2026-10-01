@@ -40,7 +40,9 @@ rm -rf "$stores"
 [ -d .avra-cache ] && mv .avra-cache "$stores"
 # THE COUNTED LEAVES STAY CALLS: the bitcode the compiler inlines was
 # built without the census, so an inlined retain would count nothing.
-AVRA_INLINE_RUNTIME=0 build/avra build packages/cli > build/census-build.out 2>&1 || {
+# THE MINTED BOXES ARE NAMED: each box a runtime row makes is counted by
+# its type (AVRA_CENSUS_TYPES), the `type:` table.
+AVRA_INLINE_RUNTIME=0 AVRA_CENSUS_TYPES=1 build/avra build packages/cli > build/census-build.out 2>&1 || {
     tail -20 build/census-build.out; echo "census: the census compiler did not build"; exit 1; }
 mv packages/cli/src/main "$census"
 nm "$census" | grep -q _note_retain || { echo "census: $census carries no census — refusing to report"; exit 1; }

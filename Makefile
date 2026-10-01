@@ -144,6 +144,9 @@ MBEDTLS_FLAGS := -I$(MBEDTLS_DIR)/include -I$(MBEDTLS_DIR)/tf-psa-crypto/include
   -I$(MBEDTLS_DIR)/tf-psa-crypto/core -I$(MBEDTLS_DIR)/tf-psa-crypto/dispatch \
   -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/builtin/src -I$(MBEDTLS_DIR)/tf-psa-crypto/extras \
   -I$(MBEDTLS_DIR)/tf-psa-crypto/platform -I$(MBEDTLS_DIR)/tf-psa-crypto/utilities \
+  -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/everest/include \
+  -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/everest/include/tf-psa-crypto/private/everest \
+  -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/everest/include/tf-psa-crypto/private/everest/kremlib \
   -Ipackages/std-tls/src/c '-DTF_PSA_CRYPTO_CONFIG_FILE="std_tls_crypto_config.h"' \
   '-DMBEDTLS_CONFIG_FILE="std_tls_ssl_config.h"'
 TLS_OBJS := $(patsubst packages/std-tls/src/c/%.c,build/%.o,$(wildcard packages/std-tls/src/c/*.c)) $(MBEDTLS_OBJS)
@@ -162,10 +165,13 @@ build/std_tls.a: $(TLS_OBJS)
 # probes a frame wider than a page, a page at a time. Apple's clang
 # does so by default (___chkstk_darwin); elsewhere it is asked for.
 STACK_PROBES := $(if $(filter Darwin,$(shell uname -s)),,-fstack-clash-protection)
+# A PROGRAM CARRIES WHAT IT REACHES: every C function and datum stands in a
+# section of its own, so a link that drops unreached sections drops it.
+SECTIONS := -ffunction-sections -fdata-sections
 
 build/%.o: %.c build/%.sha
 	@mkdir -p build
-	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
+	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(SECTIONS) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
 -include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS))))
 
@@ -196,7 +202,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: h2spec objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+.PHONY: h2spec objects census census-types sizes traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -360,7 +366,7 @@ build/ffi.sha: SHA_SRC := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
 
 build/%.sha: %.c FORCE
 	@mkdir -p build
-	@{ shasum -a 256 $(if $(SHA_SRC),$(SHA_SRC),$<); echo 'flags: $(CFLAGS_$*)'; } | shasum -a 256 | cut -d' ' -f1 > $@.tmp
+	@{ shasum -a 256 $(if $(SHA_SRC),$(SHA_SRC),$<); echo 'flags: $(SECTIONS) $(CFLAGS_$*)'; } | shasum -a 256 | cut -d' ' -f1 > $@.tmp
 	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
 	@rm -f $@.tmp
 
@@ -720,6 +726,31 @@ bench: $(COMPILER_OBJS)
 # skipped, with a word, when h2spec is not installed.
 h2spec: $(COMPILER_OBJS)
 	@sh tools/h2spec.sh
+
+# Boxes a program's runtime rows answer, by type, ranked — the
+# representation-selection opportunity list.
+#   make census-types PROGRAM=tools/bench/request/src/main.av
+PROGRAM ?= tools/bench/request/src/main.av
+census-types:
+	@sh tools/census_types.sh $(PROGRAM)
+
+# Bytes of code per symbol by package: the compiler and a request's
+# server, each against BEFORE / REQUEST_BEFORE when given (a saved
+# binary), as the tables a slice's size delta is read from; then what
+# each reach probe carries (tools/bench/reach) — a program pays for
+# what it calls, never for what it imports.
+#   make sizes BEFORE=build/avra.pre
+REACH := hello limits plain unreached tls sign
+sizes:
+	@build/avra build tools/bench/request/src/main.av >/dev/null
+	@python3 tools/symsize.py build/avra $(BEFORE)
+	@echo
+	@python3 tools/symsize.py tools/bench/request/src/main $(REQUEST_BEFORE)
+	@echo
+	@echo '| reach probe | bytes |'
+	@echo '|---|---:|'
+	@for p in $(REACH); do build/avra build tools/bench/reach/$$p >/dev/null && \
+	    echo "| $$p | $$(wc -c < tools/bench/reach/$$p/src/main | tr -d ' ') |"; done
 
 # Mutated program tests through `avra check`: diagnose, never crash.
 fuzz: $(COMPILER_OBJS)
