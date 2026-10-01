@@ -94,7 +94,7 @@ use query.{Kernel, new_kernel, Key, Relation, Fixpoint, new_fixpoint}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
-use compiler.store.{Store, Pack, Edge}
+use compiler.store.{Store}
 use compiler.lower.{Unit}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
@@ -310,54 +310,14 @@ export type Workspace = {
     /// held unit can contribute them without a body; outside a build there is none and
     /// lowering runs whole, as before.
     store: Cell<Store?>,
-    /// THE PACKAGE'S DURABLE WITNESS PACK, when a caller opened one
-    /// (`Workspace.attach_pack`, compiler/witness.av). Absent by
-    /// default, exactly as `store` is: nothing durable is asked for
-    /// unless something asks.
-    pack: Cell<Pack?>,
-    /// HOW MANY FILES THIS DERIVATION'S `says` (derive.av) ANSWERED FROM
-    /// A WITNESS, never recomputing — `Derived.witnessed`'s own count,
-    /// the way `Hold`'s tables answer `Derived.held`.
-    witness_hits: Cell<int>,
-    /// A WITNESS EDGE-WALK'S OWN INTERN TABLE, MEMOIZED FOR THE WHOLE
-    /// PROCESS (compiler/witness.av's `interned_edge`/`edge_id_of_key`/
-    /// `visible_edge_ids`) — every distinct edge lives ONCE, in
-    /// `edge_table`, referenced everywhere else by its small int id,
-    /// never by the `Edge` record or its stable-name string: a flat
-    /// per-key LEAF SET (files x graph_size, kept whole) is what a
-    /// deep graph turns into O(keys x leaves) of retained memory — the
-    /// walk itself stays a plain per-file DFS (`leaf_keys`, no cross-
-    /// file cache), cheap once each leaf's OWN id is a memoized O(1)
-    /// lookup. Stamped with the Kernel's own revision so a value from
-    /// an earlier revision (a long-lived process re-checking after an
-    /// edit) is never reused past it.
-    leaf_memo_revision: Cell<int>,
-    edge_table: Cell<List<Edge>>,
-    edge_id_by_key: Cell<Map<string, int>>,
-    /// A FILE'S `Visible` EDGES, as ids into `edge_table` — every
-    /// witnessed file that imports the same module rebuilt its whole
-    /// NameRead edge list (one entry per name that module answered)
-    /// from scratch otherwise.
-    visible_memo_sets: Cell<Map<string, List<int>>>,
-    /// EVERY DECLARATION'S STABLE NAME, MEMOIZED ONCE FOR THE WHOLE
-    /// PROCESS (compiler/witness.av's `decl_at_stable`) — built the
-    /// first time a validation asks for one, keyed the same way
-    /// `Decls.stable_decl_name` spells it. Without this, resolving
-    /// one Sig or Methods edge back to a `DeclId` scanned its file's
-    /// whole declaration list, and `stable_match`'s own
-    /// `sibling_index` scanned it AGAIN per candidate — paid by every
-    /// such edge, on every file a process validates. Shares
-    /// `leaf_memo_revision`'s staleness stamp.
+    /// The Kernel revision the stable-name memos below were filled at: a
+    /// later revision clears them before they answer.
+    stable_memo_revision: Cell<int>,
+    /// A declaration by its stable name, memoized as each is asked
+    /// (compiler/witness.av's `decl_at_stable`).
     decl_by_stable: Cell<Map<string, DeclId>>,
-    /// A DECLARATION'S CONTENT HASH (`stable_sig_hash`/
-    /// `stable_methods_hash`, witness.av), MEMOIZED — `shape_line`
-    /// walks a signature's whole type wire and `stable_methods_hash`
-    /// sorts every method's own wire, neither cheap, and a process
-    /// validating many files' witnesses asks the SAME frequently-used
-    /// declaration's Sig or Methods edge over and over. Keyed
-    /// `"sig:${d.index}"`/`"methods:${d.index}"` — the tag keeps the
-    /// two families in one table without colliding. Shares
-    /// `leaf_memo_revision`'s staleness stamp.
+    /// A signature's content hash (`stable_sig_hash`, witness.av), memoized
+    /// by `"sig:${d.index}"`.
     stable_hash_memo: Cell<Map<string, int>>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
@@ -804,10 +764,6 @@ fn built(
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
     let no_store: Store? = null
-    let no_pack: Pack? = null
-    let no_edge_table: List<Edge> = []
-    let no_edge_ids: Map<string, int> = {}
-    let no_visible: Map<string, List<int>> = {}
     let no_decls_by_stable: Map<string, DeclId> = {}
     let no_stable_hashes: Map<string, int> = {}
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
@@ -820,12 +776,7 @@ fn built(
         db: new_db(kernel),
         decls: language_decls(lang, kernel),
         store: Cell.new(no_store),
-        pack: Cell.new(no_pack),
-        witness_hits: Cell.new(0),
-        leaf_memo_revision: Cell.new(-1),
-        edge_table: Cell.new(no_edge_table),
-        edge_id_by_key: Cell.new(no_edge_ids),
-        visible_memo_sets: Cell.new(no_visible),
+        stable_memo_revision: Cell.new(-1),
         decl_by_stable: Cell.new(no_decls_by_stable),
         stable_hash_memo: Cell.new(no_stable_hashes),
         externs: new_table<ExternNames>(),
@@ -1540,7 +1491,6 @@ impl Workspace {
                 imports,
                 self.prelude_imports(f),
                 (path: string) -> self.shown(path),
-                self.pack.get() != null,
             )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
         visible_of(

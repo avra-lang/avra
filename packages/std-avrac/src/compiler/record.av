@@ -102,7 +102,7 @@ fn record_places(ws: Workspace, store: Store, m: ModulePath) -> Map<string, Plac
 fn places_of(fields: List<List<string>>) -> Map<string, Placed> {
     mut out: Map<string, Placed> = {}
     for j, parts in fields {
-        if parts.length >= 3 && parts[0] == "file" {
+        if places_file(parts) {
             out.set(parts[1], Placed { file: parts, lo: 0, hi: 0 })
         } else if declares(parts) && parts.length > 1 {
             let at = out.get(parts[1]) ?? Placed { file: [], lo: 0, hi: 0 }
@@ -983,12 +983,24 @@ export fn module_bytes(ws: Workspace, m: ModulePath) -> string {
 /// WHAT A DEPENDENT KEYS ON: a module's interface digest, from its record. A record's
 /// declaration TEXT is no interface — it carries the receivers pass's written bits,
 /// which move without a contract moving.
+/// A record that places a file the host no longer has is a previous tree's, and
+/// keys on the module's bytes like no record at all.
 export fn bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string {
+    if !record_stands(ws, store, m) { return module_bytes(ws, m) }
     iface_of(record_cached(ws, store, m)) ?? sub_module_bytes_key(ws, store, m) ?? module_bytes(
         ws,
         m,
     )
 }
+
+/// Whether every file a module's record places is one the host still has.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION's guard — a workspace, a store and a module in.
+fn record_stands(ws: Workspace, store: Store, m: ModulePath) -> bool {
+    record_fields(ws, store, m).all((p) -> !places_file(p) || ws.host.exists(p[1]))
+}
+
+/// Whether a record line is a `file` line naming a path.
+fn places_file(parts: List<string>) -> bool { parts.length >= 3 && parts[0] == "file" }
 
 /// A file-level module within a package (a bare intra-package `use`'s
 /// target) has no record of its own — only the PACKAGE ROOT's record
@@ -1009,12 +1021,13 @@ fn sub_module_bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string? {
 
 /// SOME OF A MODULE'S FILES' INTERFACE, as one digest: each file's own interface
 /// digest from the module's record — every file of it is the record's own `iface`.
-/// Null when none is asked or the record places one nowhere.
+/// Null when none is asked, one is gone, or the record places one nowhere.
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a module and its files in, their interface digest out.
 fn files_iface(ws: Workspace, store: Store, m: ModulePath, paths: List<string>) -> string? {
+    if paths.is_empty() || paths.any((f) -> !ws.host.exists(f)) { return null }
     let places = record_places(ws, store, m)
     let ats = [places.get(f) for f in paths]
-    if ats.is_empty() || ats.any((at: Placed?) -> at == null || at!.file.length <= 4) { return null }
+    if ats.any((at: Placed?) -> at == null || at!.file.length <= 4) { return null }
     ifaces_digest([at!.file[4] for at in ats])
 }
 
@@ -1132,7 +1145,7 @@ impl Workspace {
         if self.keys.placed_from.get().get(name) != null { return }
         self.keys.placed_from.put(name, true)
         for p in record_fields(self, store, module_path(name.split("."))) {
-            if p.length >= 3 && p[0] == "file" { self.keys.file_owners.put(p[1], name) }
+            if places_file(p) { self.keys.file_owners.put(p[1], name) }
         }
     }
 

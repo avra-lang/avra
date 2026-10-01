@@ -9,15 +9,26 @@ use compiler.{Workspace}
 
 fn resolve_ordinal() -> int { 5 }
 
+/// A `bump` that writes through `self` without saying `mut`.
+fn writer_body() -> string {
+    "export type Box = { v: int }\nimpl Box {\n    fn bump() {\n        self.v = self.v + 1\n    }\n}\n"
+}
+
+/// `a` calls `bump` on a binding that is not `mut`; the callee sits in a module of its own.
+fn written_files(callee: string) -> Map<string, string> {
+    {
+        "/w/src/a.av": "use other.{Box}\n\nexport fn g() -> int {\n    let b = Box { v: 1 }\n    b.bump()\n    b.v\n}\n",
+        "/w/src/other/b.av": callee,
+    }
+}
+
+fn written_names() -> List<string> { ["/w/src/a.av", "/w/src/other/b.av"] }
+
 fn bump_of(ws: Workspace) -> DeclId { [d.id for d in ws.decls.all_decls() if d.name == "bump"][0] }
 
 /// A workspace whose receivers pass has settled over the writing `bump`.
 fn settled_over_writer(tag: string) -> Workspace {
-    let ws = a_process_over(
-        written_files(writer_body()),
-        written_names(),
-        fresh_pack_path("where_${tag}"),
-    )
+    let ws = a_process_over(written_files(writer_body()), written_names())
     let _ = checked(ws, "/w/src/a.av")
     ws
 }
