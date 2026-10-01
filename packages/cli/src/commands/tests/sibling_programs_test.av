@@ -5,8 +5,7 @@
 //! `exit_is_zero` are the neighbouring tests' own: this module shares
 //! one namespace.
 use @std.io.{make_dirs, write_text}
-use @std.process.{tool, cmd, inherited, Outcome, ProcessError}
-use @std.time.{ms, now_ns}
+use @std.time.{now_ns}
 
 /// A package minted fresh: two program tests, each with its proof beside
 /// it — and, when asked, one more file that runs a statement and has no
@@ -28,20 +27,6 @@ fn sibling_package(stray: bool) -> string {
 }
 
 fn program_at(root: string, name: string) -> string { "${root}/src/${name}/${name}.av" }
-
-fn avra_ran(args: List<string>) -> Result<Outcome, ProcessError> {
-    let t = tool(avra_bin())?
-    (cmd(t, args) with { env: inherited(), timeout: ms(60000) }).outcome()
-}
-
-fn binary_ran(binary: string) -> Result<Outcome, ProcessError> {
-    (cmd(tool(binary)?, []) with { timeout: ms(20000) }).outcome()
-}
-
-/// The stdout of a run that ended clean.
-fn clean_stdout(r: Result<Outcome, ProcessError>) -> string? {
-    match r { .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { null }, .Err(_) -> null }
-}
 
 /// What `avra run` printed for a program, when it ran clean.
 fn run_printed(path: string) -> string? { clean_stdout(avra_ran(["run", path])) }
