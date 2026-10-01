@@ -1,8 +1,8 @@
 //! A list lowers as the runtime aggregate: one `avra_array_new`,
 //! then a push per element — the CallRt escape hatch carrying the
 //! whole feature, zero new instructions.
-use core.{ExprId, Reg, TypeId, CompClause}
-use features.{LowerCx}
+use core.{ExprId, Reg, CompClause}
+use features.{LowerCx, Pipeline, Clause, Source, Lookup}
 
 fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
     let regs = [cx.reg_of(k) for k in elems]
@@ -10,60 +10,35 @@ fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
     cx.grown_box(cx.shape_at(e), size, regs)
 }
 
-/// THE COMPREHENSION LOWERED: a fresh box, then one nested walk per
-/// `for` head — over its source list, or counting its range — each
-/// turn opened inside the one before it, straight from the emission
-/// vocabulary's loop verbs; a filter wraps the rest in a void region
-/// guarded by its condition. The innermost turn pushes the element
-/// straight into the box — no intermediate list per outer element. A
-/// head the planner narrows reads its lookup where its turn opens.
+/// THE COMPREHENSION LOWERED: a fresh box, and the comprehension run
+/// as a pipeline pushing into it — each head a walk nested in the one
+/// before, each filter a keep, the element mapped last. A head the
+/// planner narrows reads its lookup where its turn opens.
 fn comp_reg(mut cx: LowerCx, e: ExprId, elem: ExprId, clauses: List<CompClause>) -> Reg {
-    let size = cx.box_size(0)
-    let dst = cx.grown_box(cx.shape_at(e), size, [])
-    lower_clauses(cx, dst, elem, clauses, 0, [], narrowings(cx, clauses))
-    dst
+    let dst = cx.grown_box(cx.shape_at(e), cx.box_size(0), [])
+    let plans = narrowings(cx, clauses)
+    cx
+        .piped(
+            Pipeline {
+                clauses: [stage(c, j, plans) for j, c in clauses].concat([.Map(.Written(elem))]),
+                sink: .Push(dst),
+            },
+        )
 }
 
-/// One clause at a time: a head binds its source under every earlier
-/// head's registers first (which covers its range bound too, the same
-/// anchor), opens its turn and recurses under it before closing; a
-/// filter binds its condition the same way and guards the recursion in
-/// a void region. Past the last clause, the element binds every
-/// head's registers and is pushed.
-fn lower_clauses(
-    mut cx: LowerCx,
-    dst: Reg,
-    elem: ExprId,
-    clauses: List<CompClause>,
-    at: int,
-    regs: List<Reg>,
-    plans: List<Plan>,
-) {
-    if at >= clauses.length {
-        cx.bind_patterns(elem, regs)
-        cx.push_slot(dst, cx.reg_of(elem))
-        return
+/// A written clause as a pipeline's: a head keyed by its SOURCE alone —
+/// the one anchor resolve bound its names to, range bound included.
+fn stage(c: CompClause, at: int, plans: List<Plan>) -> Clause {
+    match c {
+        .Head(index, _, source, hi) -> .Head(Source { source: source, hi: hi, index: index != null, lookup: lookup_at(plans, at) }),
+        .Filter(cond) -> .Keep(.Written(cond)),
     }
-    match clauses[at] {
-        .Head(index, _, source, hi) -> {
-            // Keyed by the SOURCE alone — the one anchor resolve bound
-            // this clause's names to, range bound included.
-            cx.bind_patterns(source, regs)
-            let plan: Plan? = plans.find(it.head == at)
-            if plan != null { narrowed(cx, source, regs, plan!) }
-            let w = if hi == null { cx.opened(source, elem_type(cx, source)) } else { cx.counted(source, hi!) }
-            let here = cx.turn_open(w)
-            let v = if hi == null { cx.turn_elem(w, here) } else { here }
-            let next_regs = if index == null { regs.concat([v]) } else { regs.concat([here, v]) }
-            lower_clauses(cx, dst, elem, clauses, at + 1, next_regs, plans)
-            cx.loop_end()
-        },
-        .Filter(cond) -> {
-            cx.bind_patterns(cond, regs)
-            cx
-                .void_region(cx.reg_of(cond)) { cx -> lower_clauses(cx, dst, elem, clauses, at + 1, regs, plans) }
-        },
-    }
+}
+
+/// The lookup narrowing the head at `at`, if one does.
+fn lookup_at(plans: List<Plan>, at: int) -> Lookup? {
+    let p? = plans.find(it.head == at) else { return null }
+    Lookup { lookup: p.lookup, db: p.db, value: p.value, cond: p.cond }
 }
 
 /// The lookup each head scanning a relation narrows to, where one
@@ -77,27 +52,10 @@ fn narrowing(cx: LowerCx, clauses: List<CompClause>, scan: Scan) -> List<Plan> {
         .slice(0, 1)
 }
 
-/// The head's source read through its lookup: the value, written in a
-/// filter, reads only earlier heads' binders, bound here.
-fn narrowed(mut cx: LowerCx, source: ExprId, regs: List<Reg>, plan: Plan) {
-    cx.bind_patterns(plan.cond, regs)
-    let db = cx.reg_of(plan.db)
-    let value = cx.reg_of(plan.value)
-    let rows = cx
-        .call_decl_at(source, cx.method_symbol(plan.lookup, source, cx.type_at(source)), [db, value])
-    cx.body.set_reg(source, rows)
-}
-
 /// A `collect`: an empty list, grown by each kept value as its
 /// statements run.
 fn collect_reg(mut cx: LowerCx, e: ExprId, body: ExprId) -> Reg {
     let dst = cx.grown_box(cx.shape_at(e), cx.box_size(0), [])
     cx.gathering(dst, body)
     dst
-}
-
-/// The source's element type — typing proved it a list.
-fn elem_type(cx: LowerCx, source: ExprId) -> TypeId {
-    let held: TypeId? = cx.view.types.element(cx.type_at(source))
-    held ?? cx.type_at(source)
 }
