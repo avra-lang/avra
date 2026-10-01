@@ -2698,6 +2698,16 @@ void avra_mmap_close(void* h) {
     free(m);
 }
 
+// Whether a process by this id is running, by asking the process table
+// (signal 0 sends nothing) rather than trusting a cached liveness the
+// process itself could never update. A permission-denied answer (a pid
+// reused by another user) still means something stands there.
+#include <signal.h>
+int64_t avra_pid_alive(int64_t pid) {
+    if (kill((pid_t)pid, 0) == 0) return 1;
+    return errno == EPERM ? 1 : 0;
+}
+
 // ── Descriptors ──────────────────────────────────────────────────
 // THE ONE DOOR THROUGH WHICH FOREIGN BYTES BECOME A VALUE. A package's
 // own C opens files and sockets and answers descriptors; what flows
