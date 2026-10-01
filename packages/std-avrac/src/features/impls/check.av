@@ -234,8 +234,7 @@ fn answered_at(cx: TypeCx, d: DeclId, r: DeclId, g: DeclId, at: List<TypeId>) ->
 fn same_seats(cx: TypeCx, m: DeclId, seats: List<TypeId>) -> bool {
     let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
     sig.params.length == seats.length &&
-        // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
-        [j for j, p in sig.params if j > 0 && p.index != seats[j].index].is_empty()
+        [j for j, p in sig.params if j > 0 && !same_type(p, seats[j])].is_empty()
 }
 
 /// THE INOUT LAWS at a call: a writing callee needs a `mut` place
@@ -320,8 +319,7 @@ fn dispatch_of(cx: TypeCx, many: List<DeclId>, args: List<ExprId>) -> RunChoice?
     let sigs = [cx.view.decls.sig(m)?.fn_sig() for m in many]
     if !sigs.all((s) -> s != null && takes_dispatched(cx, s!, args, k, tr)) { return null }
     let answer = sigs[0]!.ret
-    // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
-    if sigs.any(it!.ret.index != answer.index) { return null }
+    if sigs.any(!same_type(it!.ret, answer)) { return null }
     RunChoice { seat: k, members: many }
 }
 

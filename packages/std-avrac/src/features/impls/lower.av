@@ -2,7 +2,7 @@
 //! the QUALIFIED name, the subject riding the self seat. The name
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
-use core.{ExprId, Reg, DeclId, TypeId, Type, BinOp}
+use core.{ExprId, Reg, DeclId, TypeId, Type, BinOp, same_type}
 use features.{LowerCx, MethodCall, RunChoice}
 
 /// The receiver's value: seat 0 of the body, as its binding says.
@@ -161,8 +161,7 @@ fn concrete_choice(cx: LowerCx, decl: DeclId, name: string, args: List<ExprId>) 
 fn seats_are(cx: LowerCx, m: DeclId, args: List<ExprId>) -> bool {
     let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
     sig.params.length == args.length + 1 &&
-        // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
-        [j for j, a in args if cx.type_at(a).index != sig.params[j + 1].index].is_empty()
+        [j for j, a in args if !same_type(cx.type_at(a), sig.params[j + 1])].is_empty()
 }
 
 /// A member chosen at RUN: the `dyn` argument's tag is tested against
