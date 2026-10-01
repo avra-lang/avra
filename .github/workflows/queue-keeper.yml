@@ -1,0 +1,36 @@
+# Puts PRs a failed train dropped back into the merge queue, and tells the
+# owner on the PR when a PR conflicts or keeps failing (tools/queue_keeper.sh).
+name: queue-keeper
+
+on:
+  workflow_run:
+    workflows: [checks]
+    types: [completed]
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: queue-keeper
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  keep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: tools/queue_keeper.sh }
+      - uses: actions/cache@v4
+        with:
+          path: ~/.avra-queue-keeper
+          key: queue-keeper-${{ github.run_id }}
+          restore-keys: queue-keeper-
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: sh tools/queue_keeper.sh
