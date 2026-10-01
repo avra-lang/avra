@@ -1,0 +1,24 @@
+//! `realize/html/html.av` — the HTML target. Its drawing accumulates into
+//! a `Cell` of ops, in place, and `document` serializes them. One complete
+//! impl block; each method draws one component through the accumulator.
+//! UI.md §19.2.
+use realize.realizer.{Realizer}
+use realize.html.writer.{HtmlOp, source}
+use components.text.{text}
+
+/// The HTML target: one accumulator of ops.
+export type Html = { ops: Cell<List<HtmlOp>> = Cell.new([]) }
+
+/// One inline element around its content.
+fn inline(h: Html, name: string, content: string) {
+    h.ops.push(HtmlOp.Open(name))
+    h.ops.push(HtmlOp.Text(content))
+    h.ops.push(HtmlOp.Close(name))
+}
+
+impl Realizer for Html {
+    fn text(t: text) { inline(self, "span", t.content) }
+}
+
+/// The finished document.
+export fn document(h: Html) -> string { source(h.ops.get()) }

@@ -1,0 +1,54 @@
+//! One component tree drawn through two realizers, by its laws: order is
+//! kept, and the HTML target escapes what it prints.
+use @std.ui.realize.view.{View}
+use @std.ui.realize.realizer.{drawn}
+use @std.ui.components.text.{text}
+use @std.ui.realize.html.html.{Html, document}
+use @std.ui.realize.tui.tui.{Tui, frame}
+
+fn two() -> List<dyn View> { [text "a", text "b"] }
+
+fn html_two() -> string {
+    let h = Html {}
+    drawn(two(), h)
+    document(h)
+}
+
+fn terminal_two() -> string {
+    let t = Tui {}
+    drawn(two(), t)
+    frame(t)
+}
+
+fn html_markup() -> string {
+    let h = Html {}
+    drawn([text "<b> & 'x'"], h)
+    document(h)
+}
+
+fn terminal_markup() -> string {
+    let t = Tui {}
+    drawn([text "<b> & 'x'"], t)
+    frame(t)
+}
+
+spec "std/ui realize — one tree, every target" {
+    given "two texts drawn through html" {
+        then "each is a span, in order" {
+            html_two() == "<span>a</span><span>b</span>"
+        }
+    }
+    given "the same two texts through the terminal" {
+        then "each is a line, in order" {
+            terminal_two() == "a\nb"
+        }
+    }
+    given "text that looks like markup" {
+        then "is escaped in html" {
+            html_markup() == "<span>&lt;b&gt; &amp; &#39;x&#39;</span>"
+        }
+        then "is left alone in the terminal" {
+            terminal_markup() == "<b> & 'x'"
+        }
+    }
+}
