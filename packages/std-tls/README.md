@@ -12,6 +12,9 @@ peer's ciphertext and drained of its own, so it runs over any wire.
   the value in the upstream release notes.
 - `vendor/import.sh <tarball>` makes `vendor/` from the tarball and
   nothing else; upgrading is re-running it.
+- The X25519 key agreement is Everest's formally verified HACL* code,
+  shipped in the same tarball (Apache-2.0 only, which is how the engine
+  is taken): `tools/bench/handshake` measures what it buys.
 
 Each upstream unit compiles as its own object through a one-line
 wrapper (`vendor/mbedtls_<unit>.c`), and the objects are archived as

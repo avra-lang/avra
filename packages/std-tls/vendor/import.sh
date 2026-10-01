@@ -77,6 +77,8 @@ units="
     tf-psa-crypto/drivers/builtin/src/rsa.c
     tf-psa-crypto/drivers/builtin/src/sha256.c
     tf-psa-crypto/drivers/builtin/src/sha512.c
+    tf-psa-crypto/drivers/everest/library/Hacl_Curve25519_joined.c
+    tf-psa-crypto/drivers/everest/library/x25519.c
     tf-psa-crypto/extras/md.c
     tf-psa-crypto/extras/pk_ecc.c
     tf-psa-crypto/extras/pk_rsa.c
@@ -112,6 +114,14 @@ for d in library tf-psa-crypto/core tf-psa-crypto/dispatch tf-psa-crypto/drivers
     mkdir -p "$out/$d"
     cp "$src/$d"/*.h "$out/$d/"
 done
+# EVEREST'S X25519: its headers, and the sources its joined unit
+# includes by path — never units of their own.
+e=tf-psa-crypto/drivers/everest
+mkdir -p "$out/$e/library/kremlib" "$out/$e/library/legacy"
+cp -R "$src/$e/include" "$out/$e/include"
+cp "$src/$e/library/Hacl_Curve25519.c" "$out/$e/library/"
+cp "$src/$e/library/kremlib"/*.c "$out/$e/library/kremlib/"
+cp "$src/$e/library/legacy"/*.c "$out/$e/library/legacy/"
 for u in $units; do
     cp "$src/$u" "$out/$u"
     printf '#include "mbedtls/%s"\n' "$u" > "$here/mbedtls_$(basename "$u")"
