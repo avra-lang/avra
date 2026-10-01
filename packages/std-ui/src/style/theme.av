@@ -1,0 +1,105 @@
+//! `style/theme.av` — the token TABLES, as data. A token is a name; a
+//! theme is what each name means on a target. Values are
+//! target-neutral (a scale in whole units, a colour as text, a face as
+//! a family list): the HTML writer appends a unit, the terminal reads
+//! the number as cells. One default theme ships; a user replaces it
+//! whole. UI.md §19.1.
+use ui.{Size, Tone, Font}
+
+/// A spacing or radius scale, in whole units: 0 is none, `.M` is the
+/// base step. The target gives the unit.
+export type Scale = {
+    none: int,
+    xs: int,
+    s: int,
+    m: int,
+    l: int,
+    xl: int,
+}
+
+/// A colour for every `Tone`, as the target writes it (a CSS colour
+/// today; a terminal ignores it).
+export type Palette = {
+    text: string,
+    muted: string,
+    danger: string,
+    surface: string,
+    surface_raised: string,
+    surface_sunk: string,
+    surface_hover: string,
+}
+
+/// A family list for every `Font`.
+export type Faces = {
+    body: string,
+    heading: string,
+    footnote: string,
+    mono: string,
+}
+
+/// Every token family one target needs, together.
+export type Theme = {
+    space: Scale,
+    radius: Scale,
+    color: Palette,
+    face: Faces,
+}
+
+/// The default theme: one base step of 16, a quiet light palette and
+/// the system faces. Replaced whole, never patched.
+const system_ui = "system-ui, sans-serif"
+
+export const default_theme = Theme {
+    space: Scale { none: 0, xs: 4, s: 8, m: 16, l: 32, xl: 48 },
+    radius: Scale { none: 0, xs: 2, s: 4, m: 8, l: 16, xl: 24 },
+    color: Palette {
+        text: "#111111",
+        muted: "#666666",
+        danger: "#b00020",
+        surface: "#ffffff",
+        surface_raised: "#f7f7f7",
+        surface_sunk: "#ececec",
+        surface_hover: "#f0f0f0",
+    },
+    face: Faces {
+        body: system_ui,
+        heading: system_ui,
+        footnote: system_ui,
+        mono: "ui-monospace, monospace",
+    },
+}
+
+/// The step a `Size` names in one scale. Both scales answer through
+/// here, so a new `Size` variant lands once.
+export fn scale_at(s: Scale, z: Size) -> int {
+    match z { .None -> s.none, .Xs -> s.xs, .S -> s.s, .M -> s.m, .L -> s.l, .Xl -> s.xl }
+}
+
+/// The spacing step a `Size` names.
+export fn space_of(t: Theme, z: Size) -> int { scale_at(t.space, z) }
+
+/// The corner step a `Size` names.
+export fn radius_of(t: Theme, z: Size) -> int { scale_at(t.radius, z) }
+
+/// The colour a `Tone` names.
+export fn color_of(t: Theme, c: Tone) -> string {
+    match c {
+        .Text -> t.color.text,
+        .Muted -> t.color.muted,
+        .Danger -> t.color.danger,
+        .Surface -> t.color.surface,
+        .SurfaceRaised -> t.color.surface_raised,
+        .SurfaceSunk -> t.color.surface_sunk,
+        .SurfaceHover -> t.color.surface_hover,
+    }
+}
+
+/// The family list a `Font` names.
+export fn face_of(t: Theme, f: Font) -> string {
+    match f {
+        .Body -> t.face.body,
+        .Heading -> t.face.heading,
+        .Footnote -> t.face.footnote,
+        .Mono -> t.face.mono,
+    }
+}
