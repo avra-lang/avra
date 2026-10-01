@@ -434,12 +434,28 @@ impl Decls {
         mut taken: List<string> = []
         for m in self.by_declaration(self.registered_methods(target)) {
             let x = self.decl(m)
-            if taken.contains(x.name) {
-                out.push(Clash { file: x.file, diag: method_taken(self.loc(m), x.owner, x.name) })
+            let key = self.method_key(m)
+            if taken.contains(key) {
+                out.push(Clash { file: x.file, diag: method_taken(self.loc(m), x.owner, key) })
             }
-            taken.push(x.name)
+            taken.push(key)
         }
         out
+    }
+
+    /// What a method's name owns in its type's namespace: the name, or,
+    /// for a member of a generic trait's impl, the name AT the trait's
+    /// arguments — `draw<Text>` and `draw<Button>` are two members.
+    fn method_key(m: DeclId) -> string {
+        let x = self.decl(m)
+        let args = self.impl_trait_args(m)
+        if args.is_empty() { x.name } else { "${x.name}<${args.join(", ")}>" }
+    }
+
+    /// The trait arguments of the impl a method was declared in.
+    fn impl_trait_args(m: DeclId) -> List<string> {
+        let block? = self.decl(m).parent else { return [] }
+        self.facts_of(block)?.trait_args ?? []
     }
 
     /// Methods in declaration order — file, then statement — whatever

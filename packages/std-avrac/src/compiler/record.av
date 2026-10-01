@@ -313,7 +313,7 @@ fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> s
 /// named `Runnable`). Neither `;` nor `|` is in the type grammar.
 fn shape_line(ws: Workspace, s: DeclSig, layout: string) -> string {
     match s {
-        .Record(r) -> "${layout}\t${joined([r.names[i] + ":" + ws.decls.type_wire(r.types[i]) for i in 0..r.names.length], ";")}",
+        .Record(r) -> "${layout}\t${joined([r.names[i] + ":" + ws.decls.type_wire(r.types[i]) for i in 0..r.names.length], ";")}\t${joined([ws.decl_ref(d) for d in r.defaults], ";")}",
         .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([ws.decls.type_wire(t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
         .Named(n) -> "named\t${ws.decls.type_wire(n.of)}",
         .Alias(of) -> "alias\t${ws.decls.type_wire(of)}",
@@ -387,7 +387,7 @@ fn named_file(line: string) -> string {
 export fn facts_block(f: DeclFacts) -> string {
     let slo = f.span?.lo ?? 0 - 1
     let shi = f.span?.hi ?? 0 - 1
-    let head = "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${if f.is_component { "1" } else { "0" }};${if f.instance { "1" } else { "0" }};${list_field(f.mut_seats)};${list_field(some_list(f.word))};${f.fingerprint()}"
+    let head = "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${if f.is_component { "1" } else { "0" }};${if f.instance { "1" } else { "0" }};${list_field(f.mut_seats)};${list_field(some_list(f.word))};${list_field(f.trait_args)};${f.fingerprint()}"
     packed([head, doc_wire(f.doc), annotations_wire(f.annotations)])
 }
 
@@ -499,7 +499,7 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
     let top = unpacked(block)
     if top.length < 3 { return null }
     let p = wire_fields(top[0], ";")
-    if p.length < 16 { return null }
+    if p.length < 17 { return null }
     let slo? = wire_number(p[3]) else { return null }
     let shi? = wire_number(p[4]) else { return null }
     let facts = DeclFacts {
@@ -517,10 +517,11 @@ export fn facts_unblocked(block: string) -> DeclFacts? {
         instance: p[12] == "1",
         mut_seats: read_list(p[13]),
         word: read_list(p[14]).first(),
+        trait_args: read_list(p[15]),
         doc: doc_of_wire(top[1]),
         annotations: annotations_of_wire(top[2]),
     }
-    if "${facts.fingerprint()}" != p[15] { return null }
+    if "${facts.fingerprint()}" != p[16] { return null }
     facts
 }
 

@@ -1,0 +1,62 @@
+// Generic traits, by their laws: a trait's own parameters, an impl at
+// each argument, the call choosing by argument type, and every misuse
+// refused once.
+use @std.avrac.testing.{shown, refused_with}
+
+/// A trait with a parameter and two impls of it on one type.
+fn realize() -> string {
+    "type Text = { content: string }\ntype Button = { label: string }\ntype Html = { tag: string = \"\" }\ntrait Realize<T> {\n    fn draw(t: T) -> string\n}\nimpl Realize<Text> for Html {\n    fn draw(t: Text) -> string { t.content }\n}\nimpl Realize<Button> for Html {\n    fn draw(t: Button) -> string { t.label }\n}\n"
+}
+
+spec "features/impls — generic traits" {
+    given "a type implementing one generic trait at two arguments" {
+        then "a call picks the member its argument fits" {
+            shown(
+                realize() +
+                    "let h = Html {}\nh.draw(Text { content: \"a\" }) + h.draw(Button { label: \"b\" })",
+            ) == "ab"
+        }
+        then "a plain trait still resolves by name" {
+            shown(
+                "trait Show {\n    fn show() -> string\n}\ntype P = { n: int }\nimpl Show for P {\n    fn show() -> string { \"p\" }\n}\nP { n: 1 }.show()",
+            ) == "p"
+        }
+    }
+    given "refusals" {
+        then "an argument no member takes" {
+            refused_with(
+                realize() +
+                    "type Link = { to: string }\nfn f() -> string { Html {}.draw(Link { to: \"x\" }) }\n1",
+                "no `Html.draw` takes these arguments",
+            )
+        }
+        then "one argument implemented twice" {
+            refused_with(
+                realize() +
+                    "impl Realize<Text> for Html {\n    fn draw(t: Text) -> string { \"again\" }\n}\n1",
+                "`Html.draw<Text>` is declared twice",
+            )
+        }
+        then "an impl that names no argument" {
+            refused_with(
+                realize() +
+                    "type Tui = { w: int = 0 }\nimpl Realize for Tui {\n    fn draw(t: Text) -> string { t.content }\n}\n1",
+                "`Realize` takes 1 type argument, and this impl gives 0",
+            )
+        }
+        then "an impl that names too many" {
+            refused_with(
+                realize() +
+                    "type Tui = { w: int = 0 }\nimpl Realize<Text, Text> for Tui {\n    fn draw(t: Text) -> string { t.content }\n}\n1",
+                "`Realize` takes 1 type argument, and this impl gives 2",
+            )
+        }
+        then "a member that does not wear the trait at its argument" {
+            refused_with(
+                realize() +
+                    "type Tui = { w: int = 0 }\nimpl Realize<Text> for Tui {\n    fn draw(t: Button) -> string { t.label }\n}\n1",
+                "`Tui.draw` does not wear `Realize.draw`'s signature",
+            )
+        }
+    }
+}

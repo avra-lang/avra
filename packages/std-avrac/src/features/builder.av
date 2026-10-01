@@ -2,6 +2,7 @@
 //! world, and its methods are the whole vocabulary a feature needs.
 use core.{
     SyntaxArena,
+    Spread,
     found_at,
     Expr,
     Stmt,
@@ -522,6 +523,18 @@ export fn spread_name(f: Token, spreads: List<Token>, all: List<Token>) -> strin
 /// written before it.
 fn spread_before(s: Token, f: Token, all: List<Token>) -> bool {
     s.span.lo < f.span.lo && !all.any((g: Token) -> g.span.lo > s.span.lo && g.span.lo < f.span.lo)
+}
+
+/// A field list's `..R` entries: each record, placed after the field
+/// entries written before it.
+export fn record_spreads(fs: List<Token>, rs: List<Token>, rt: List<TypeRef>) -> Result<
+    List<Spread>,
+    string,
+> {
+    if rs.length != rt.length { return .Err(zip_defect_of("spreads and their records")) }
+    .Ok(
+        [Spread { at: [f for f in fs if f.span.lo < r.span.lo].length, of: rt[j], lo: r.span.lo } for j, r in rs],
+    )
 }
 
 /// Fields or seats renamed as written, a spread run keeping its `..`.

@@ -16,6 +16,7 @@ use core.{
     Nominal,
     Scoped,
     Plain,
+    spelled,
 }
 use features.{
     LangNode,
@@ -114,7 +115,8 @@ fn build_static_fn(b: Builder) -> Result<LangNode, string> {
 /// they land in a side table (`mark_impl_tparams`), printing only.
 fn build_impl(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
-    let tp = b.tokens(1)?
+    let written = b.type_refs(1)?
+    let tp = [Plain(spelled(w)) for w in written]
     let ib = b.tokens(2)?
     let tp2 = b.tokens(3)?
     let fns = b.stmts(4)?
@@ -129,14 +131,15 @@ fn build_impl(b: Builder) -> Result<LangNode, string> {
         return .Ok(LangNode.NStmt(s))
     }
     let s = b.store.alloc_stmt(Stmt.ImplDecl(Nominal(t.text), Nominal(forred.text), fns), b.span)
-    mark_written_tparams(b, s, tp, tp2)
+    mark_written_tparams(b, s, tp, [Plain(t.text) for t in tp2])
+    if !written.is_empty() { b.store.mark_trait_args(s, written) }
     .Ok(LangNode.NStmt(s))
 }
 
 /// Skipped on a plain impl, so only a generic one carries the mark.
-fn mark_written_tparams(b: Builder, s: StmtId, of: List<Token>, target: List<Token>) {
+fn mark_written_tparams(b: Builder, s: StmtId, of: List<Plain>, target: List<Plain>) {
     if of.is_empty() && target.is_empty() { return }
-    b.store.mark_impl_tparams(s, [Plain(t.text) for t in of], [Plain(t.text) for t in target])
+    b.store.mark_impl_tparams(s, of, target)
 }
 
 fn is_fn(b: Builder, s: StmtId) -> bool {
@@ -177,7 +180,10 @@ fn build_trait(b: Builder) -> Result<LangNode, string> {
         if statics.any(between(it.span.lo, since, m.span.lo)) { b.store.mark_static(sig) }
         fns.push(sig)
     }
-    b.make_stmt(Stmt.TraitDecl(Scoped(n.text), fns))
+    let s = b.store.alloc_stmt(Stmt.TraitDecl(Scoped(n.text), fns), b.span)
+    let own = b.tokens(10)?
+    if !own.is_empty() { b.store.mark_trait_tparams(s, [t.text for t in own]) }
+    .Ok(LangNode.NStmt(s))
 }
 
 /// One sig's params — the names inside the window, each typed by

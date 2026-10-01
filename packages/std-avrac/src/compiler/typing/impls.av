@@ -15,6 +15,7 @@ use core.{
     filled,
     same_decl,
     Param,
+    counted,
 }
 use core.{SeatMark, plain_mark}
 use diagnostics.{refusal, warning}
@@ -29,6 +30,9 @@ impl TypeCx {
         let m = self.decl_of(f)
         let contract: DeclId = self.view.decls.decl(m).parent!
         if self.repeated_member(f, contract) { self.member_twice(f, contract, fp.name) }
+        if self.view.decls.has_body(m) && self.view.decls.tparams(contract).length > 1 {
+            self.generic_default(f, fp.name)
+        }
         // AN ASSOCIATED FN spends no receiver seat: `Self` is not in
         // scope for it, so a signature naming `Self` does not resolve.
         if self.view.store.is_static(f) {
@@ -300,12 +304,16 @@ impl TypeCx {
     /// (the recorded bs2 law, now ours).
     fn check_trait_impl(s: StmtId, of: string, target: DeclId, tname: string, fns: List<StmtId>) {
         let tdecl? = self.trait_decl_named(of) else { return self.no_such_trait(s, of) }
+        let args = [self.full_type(self.stmt_loc(s), a) for a in self.view.store.trait_args_of(s)]
+        let takes = self.view.decls.tparams(tdecl).length - 1
+        if args.length != takes { return self.trait_args_miscounted(s, of, takes, args.length) }
         let members = self.view.decls.trait_fns(tdecl)
         let wanted = [self.view.decls.fn_name(m) ?? "" for m in members]
         // the impl is recorded FIRST: a member the signatory never
         // wrote is answered by the trait's default through it
         self.view.decls.record_impl(target, tdecl)
-        for m in members { self.check_trait_member(s, of, target, tname, m) }
+        let at = TraitAt { decl: tdecl, args: [self.impl_self_type(target)].concat(args) }
+        for m in members { self.check_trait_member(s, of, target, tname, m, at, fns) }
         for f in fns {
             let mn = self.fn_named(f)
             if !wanted.contains(mn) { self.beyond_the_trait(f, of, tname, mn) }
@@ -314,13 +322,31 @@ impl TypeCx {
 
     /// A member is answered by the signatory's own method, or by
     /// the trait's DEFAULT — which agrees with itself.
-    fn check_trait_member(s: StmtId, of: string, target: DeclId, tname: string, m: DeclId) {
+    fn check_trait_member(
+        s: StmtId,
+        of: string,
+        target: DeclId,
+        tname: string,
+        m: DeclId,
+        at: TraitAt,
+        fns: List<StmtId>,
+    ) {
         let mn = self.view.decls.fn_name(m) ?? ""
-        let want: FnSig? = self.view.decls.sig(m)?.fn_sig()
-        let answered? = self.view.decls.method(target, mn) else { return self.unanswered(s, of, tname, mn) }
+        let declared: FnSig? = self.view.decls.sig(m)?.fn_sig()
+        let want = if declared == null { null } else { self.at_trait_args(declared!, at) }
+        let own = [self.decl_of(f) for f in fns if self.fn_named(f) == mn].first()
+        let answered? = own ?? self.view.decls.method(target, mn) else { return self.unanswered(s, of, tname, mn) }
         if same_decl(answered, m) { return }
         let got: FnSig? = self.view.decls.sig(answered)?.fn_sig()
         if want != null && got != null && !sigs_agree(want!, got!) { self.sig_unworn(s, of, tname, mn) }
+    }
+
+    /// A member's signature at the impl's trait arguments; a trait
+    /// with no parameters of its own is read as declared.
+    fn at_trait_args(sig: FnSig, at: TraitAt) -> FnSig {
+        if at.args.length < 2 { return sig }
+        let sub = (t: TypeId) -> self.view.types.substituted(t, at.decl, at.args)
+        FnSig { params: [sub(p) for p in sig.params], ret: sub(sig.ret) }
     }
 
     /// A fn's typed seats recorded, then its answer typed and the whole signature
@@ -483,6 +509,32 @@ impl TypeCx {
             )
     }
 
+    fn generic_default(f: StmtId, name: string) {
+        self
+            .emit(
+                refusal(
+                    "type.trait",
+                    self.stmt_loc(f),
+                    "`${name}` is a default in a trait with type parameters, which is recorded, not landed",
+                    "declared here",
+                    "write the member without a body, and give each impl its own",
+                ),
+            )
+    }
+
+    fn trait_args_miscounted(s: StmtId, of: string, takes: int, gave: int) {
+        self
+            .emit(
+                refusal(
+                    "type.trait",
+                    self.stmt_loc(s),
+                    "`${of}` takes ${counted(takes, "type argument")}, and this impl gives ${gave}",
+                    "this impl",
+                    "an impl names its trait at every parameter the trait declares",
+                ),
+            )
+    }
+
     fn sig_unworn(s: StmtId, of: string, target: string, mn: string) {
         self
             .emit(
@@ -631,3 +683,6 @@ fn impl_heading(of: string?, target: string) -> string {
     "${of!} for ${target}"
 }
 
+/// A trait at the arguments one impl gives it: `Self` first, then the
+/// trait's own parameters, by ordinal.
+type TraitAt = { decl: DeclId, args: List<TypeId> }
