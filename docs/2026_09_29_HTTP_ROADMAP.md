@@ -122,7 +122,10 @@ HTTP/2 except HTTP/2's own client.
 
 ## The other HTTP documents
 
-- `docs/2026_09_06_HTTP_FRAMING_LAWS.md` — law; stays, gains an H2 section.
+- `docs/2026_09_06_HTTP_FRAMING_LAWS.md` — law; stays. §5 is the HTTP/2
+  section (H4): framing, streams and their caps, SETTINGS, flow control,
+  churn/rapid reset, HPACK, and rows H1–H30, each with its RFC 9113/7541
+  section and a named fixture. §7 is the server hardening reference.
 - `docs/2026_09_06_STD_HTTP_TYPED_ROUTES.md` — design; stays.
 - `docs/2026_09_06_STD_HTTP_DESIGN.md` — the original design; its
   "current source inspected" section is historical.
