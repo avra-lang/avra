@@ -15,14 +15,13 @@ type App = {}
 /// Everything the peer sends until its end, or `quiet` of silence.
 fn drained(c: Conn, quiet: Duration) -> string {
     mut got = "".bytes()
-    mut open = true
-    while open {
+    while true {
         match within quiet { c.read(65536) } {
             .Ok(b) -> {
-                open = b != null
-                got = got.concat(b ?? "".bytes())
+                let more? = b else { break }
+                got = got.concat(more)
             },
-            .Err(_) -> { open = false },
+            .Err(_) -> { break },
         }
     }
     (got.text() ?? "?").replace("\r\n", "/")

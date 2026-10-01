@@ -1,6 +1,6 @@
 //! The loops in the IR: the condition's instructions live between
 //! LoopStart and LoopCond and re-run each turn; each body is a
-//! scope per turn. A step belongs to the CONDITION, never after the
+//! scope per turn. A step runs as the turn BEGINS, never after the
 //! body, so a turn ends at its back edge — which is all `continue`
 //! is. A `break` or `continue` ends a turn early (`Ins.LoopJump`).
 use core.{StmtId, ExprId, Ins, TypeId}
@@ -13,9 +13,9 @@ export fn lower_while(mut cx: LowerCx, s: StmtId, cond: ExprId, stmts: List<Stmt
     cx.loop_end()
 }
 
-/// Two cells: the COUNT, stepped in the condition each turn, and the
-/// NAME, which holds the turn's own value for every read in the body
-/// — bound BEFORE the condition lowers, which reads it.
+/// Two cells: the COUNT, stepped as each turn begins, and the NAME,
+/// which holds the turn's own value for every read in the body —
+/// bound BEFORE the condition lowers, which reads it.
 export fn lower_for(
     mut cx: LowerCx,
     s: StmtId,
@@ -31,9 +31,8 @@ export fn lower_for(
     cx.bind_slot(s, slot)
     cx.loop_start()
     cx.stored(slot, cx.loaded_as(ty, count))
-    let more = cx.reg_of(cond)
+    cx.loop_cond(cx.reg_of(cond), s)
     cx.stored(count, cx.reg_of(step))
-    cx.loop_cond(more, s)
     cx.lower_stmts(stmts)
     cx.loop_end()
 }

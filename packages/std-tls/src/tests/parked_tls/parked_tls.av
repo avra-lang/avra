@@ -12,12 +12,9 @@ use @std.tls.testing.{trusting_localhost, serving_localhost}
 fn echo(l: Listener) -> Result<int, TlsError> {
     let c = handshake(wired(l.accept())?, (serving_localhost()?).offering(["h2", "http/1.1"])?, "")?
     mut total = 0
-    mut open = true
-    while open {
-        match c.read(64)? {
-            b? -> { total = total + c.write(b)? }
-            null -> { open = false }
-        }
+    while true {
+        let b? = c.read(64)? else { break }
+        total = total + c.write(b)?
     }
     c.shutdown_write()?
     c.close()?
@@ -26,12 +23,9 @@ fn echo(l: Listener) -> Result<int, TlsError> {
 
 fn drained(c: TlsConn) -> Result<string, TlsError> {
     mut got = ""
-    mut open = true
-    while open {
-        match c.read(5)? {
-            b? -> { got = got + (b.text() ?? "?") }
-            null -> { open = false }
-        }
+    while true {
+        let b? = c.read(5)? else { break }
+        got = got + (b.text() ?? "?")
     }
     .Ok(got)
 }

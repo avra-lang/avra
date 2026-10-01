@@ -41,14 +41,13 @@ export layer guarded { q, next ->
 fn exchanged(c: Conn, sent: string) -> Result<string, NetError> {
     c.write(sent.bytes())?
     mut got = "".bytes()
-    mut open = true
-    while open {
+    while true {
         match within ms(300) { c.read(65536) } {
             .Ok(b) -> {
-                open = b != null
-                got = got.concat(b ?? "".bytes())
+                let more? = b else { break }
+                got = got.concat(more)
             },
-            .Err(_) -> { open = false },
+            .Err(_) -> { break },
         }
     }
     let parts = (got.text() ?? "?").split("\r\n\r\n")

@@ -48,11 +48,10 @@ fn streamed(r: Response, head: Head) -> Bytes {
     let s = Response { stream: stream_of([r.body]), headers: r.headers }
     let delim = delimited(s, head.minor)
     mut out = head_of(s, delim, head.keep_alive, head.minor)
-    mut more = true
-    while more {
+    while true {
         match s.stream!.pull() {
             .Data(b) -> { out = out.concat(piece_on_wire(b, delim)) },
-            .End or .Failed -> { more = false },
+            .End or .Failed -> { break },
         }
     }
     out.concat(body_end(delim))

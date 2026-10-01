@@ -423,9 +423,9 @@ impl LowerCx {
         }
     }
 
-    /// LoopStart, the condition, the STEP — the count moves on before
-    /// the body, so the back edge is the whole of a turn's end and a
-    /// `continue` needs no latch — and the turn's scope. Answers this
+    /// LoopStart, the condition, the turn's scope, then the STEP — the
+    /// count moves on as the turn BEGINS, so the back edge is the whole
+    /// of a turn's end and a `continue` needs no latch. Answers this
     /// turn's count.
     mut fn turn_open(w: Walk, owner: StmtId? = null) -> Reg {
         self.loop_start()
@@ -433,11 +433,11 @@ impl LowerCx {
         self.emit(Ins.Load(at, w.idx))
         let more = self.mint_shape(Type.Bool)
         self.emit(Ins.Bin(more, BinOp.Lt, at, w.len))
+        self.loop_cond(more, owner)
         let one = self.const_int(1)
         let next = self.mint_shape(Type.Int)
         self.emit(Ins.Bin(next, BinOp.Add, at, one))
         self.emit(Ins.Store(w.idx, next))
-        self.loop_cond(more, owner)
         at
     }
 
