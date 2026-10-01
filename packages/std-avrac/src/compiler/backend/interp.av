@@ -146,6 +146,10 @@ type Machine = {
     // the files it read; null outside a settlement, where embed traps
     base: string?,
     embeds: List<string>,
+    // the bodies a settlement entered, each once, in order — what its
+    // value is a function of
+    ran: List<string>,
+    ran_seen: Map<string, bool>,
     // `type_named`'s door back to the workspace, from where THIS run
     // stands — an ordinary program run carries the one that always
     // answers absent, since it has no workspace to stand in
@@ -224,6 +228,8 @@ fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type) -> Mac
         exhausted: null,
         base: null,
         embeds: [],
+        ran: [],
+        ran_seen: {},
         staged: [],
         libs: opened_libraries(l),
         symbols: {},
@@ -353,7 +359,15 @@ export fn run_settle(
     if answer == null { return .Err(Unsettled.Trap("answered nothing")) }
     mut heap = new_meta_heap()
     let crossed = m.meta_of(answer!, heap)
-    .Ok(Settled { answer: crossed, heap: heap, embeds: m.embeds, fingerprint: fingerprint })
+    .Ok(
+        Settled {
+            answer: crossed,
+            heap: heap,
+            embeds: m.embeds,
+            fingerprint: fingerprint,
+            ran: [l.entry.name].concat(m.ran),
+        },
+    )
 }
 
 /// What a lifted call answered, with the heap its records live in.
@@ -663,6 +677,10 @@ impl Machine {
         if self.callers.length >= call_limit {
             self.trapped("recursion too deep — ${call_limit} nested calls")
             return false
+        }
+        if self.base != null && self.ran_seen.get(target.name) == null {
+            self.ran_seen.set(target.name, true)
+            self.ran.push(target.name)
         }
         let vals = [self.value(r) for r in args]
         self.callers.push(caller)

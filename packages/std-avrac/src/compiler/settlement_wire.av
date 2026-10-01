@@ -1,7 +1,7 @@
 //! The disk form of a settled const. Fields carry their byte length, so text,
 //! including newlines and NULs, can round trip without an escape language.
 use features.{Settled, MetaVal, MetaHeap, MetaMap}
-use core.{is_digit}
+use core.{is_digit, joined}
 
 fn wire_field(s: string) -> string { "${s.length}:${s}" }
 
@@ -29,16 +29,22 @@ fn wire_map(row: MetaMap) -> string {
     out
 }
 
-/// A unit row contains the answer, its heap, embed dependencies, and the value
-/// fingerprint that specialization keys use. Heap handles remain indices into
+/// A unit row contains the answer, its heap, embed dependencies, the bodies its
+/// run entered, and the value fingerprint that specialization keys use. Heap handles remain indices into
 /// these serialized arrays; no process-local type or AST id crosses the disk.
 fn settled_wire(s: Settled) -> string {
-    mut out = "S1" + wire_field("${s.fingerprint}") + wire_field("${s.embeds.length}")
-    for path in s.embeds { out = out + wire_field(path) }
-    out + heap_wire(s.heap) + wire_value(s.answer)
+    "S2" +
+        wire_field("${s.fingerprint}") +
+        fields_wire(s.embeds) +
+        fields_wire(s.ran) +
+        heap_wire(s.heap) +
+        wire_value(s.answer)
 }
 
 type WireReader = { raw: string, pos: int }
+
+/// A counted run of fields: its length, then each one.
+fn fields_wire(xs: List<string>) -> string { wire_field("${xs.length}") + joined([wire_field(x) for x in xs], "") }
 
 /// A reader at the head of a wire payload — every wire starts two bytes in.
 fn wire_reader(raw: string) -> WireReader { WireReader { raw: raw, pos: 2 } }
@@ -75,6 +81,19 @@ impl WireReader {
         self.raw.substring(begin, self.pos)
     }
 
+    /// A counted run of fields, as `fields_wire` writes it.
+    mut fn fields() -> List<string>? {
+        let count? = self.number() else { return null }
+        if count < 0 { return null }
+        mut out: List<string> = []
+        // LICENSED loops.push_loop: a parse that refuses at the first missing field
+        for i in 0..count {
+            let f? = self.field() else { return null }
+            out.push(f)
+        }
+        out
+    }
+
     mut fn number() -> int? {
         let s? = self.field() else { return null }
         wire_number(s)
@@ -100,20 +119,15 @@ impl WireReader {
 }
 
 fn settled_from_wire(raw: string) -> Settled? {
-    if !raw.starts_with("S1") { return null }
+    if !raw.starts_with("S2") { return null }
     mut r = wire_reader(raw)
     let fp? = r.number() else { return null }
-    let embed_count? = r.number() else { return null }
-    if embed_count < 0 { return null }
-    mut embeds: List<string> = []
-    for i in 0..embed_count {
-        let path? = r.field() else { return null }
-        embeds.push(path)
-    }
+    let embeds? = r.fields() else { return null }
+    let ran? = r.fields() else { return null }
     let heap? = heap_from_wire(r) else { return null }
     let answer? = r.value() else { return null }
     if r.pos != raw.length { return null }
-    Settled { answer: answer, heap: heap, embeds: embeds, fingerprint: fp }
+    Settled { answer: answer, heap: heap, embeds: embeds, fingerprint: fp, ran: ran }
 }
 
 /// A CONST THAT STRUCTURALLY REACHES THE WORLD, kept under the same key a

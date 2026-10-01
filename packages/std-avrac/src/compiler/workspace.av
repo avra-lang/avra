@@ -170,8 +170,9 @@ fn new_keys() -> Keys {
 /// row on the ask that names it, so a row that names another still
 /// unfilled in the same module can fill it first (`row_filled`); and what
 /// moved in each file's key when this build replaced its kept parts
-/// (`moved`); each file's module (`file_module`), and the revision each
-/// module's `HeldSig` was last asked at (`sig_asked`).
+/// (`moved`); each file's module (`file_module`), the revision each
+/// module's `HeldSig` was last asked at (`sig_asked`), and each open
+/// settlement's kept lines, innermost last (`settle_frames`).
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
@@ -194,7 +195,14 @@ type Hold = {
     sig_asked: Table<int>,
     // each held file's re-exports, read off its record as its module mints
     reexports: Cell<Map<string, List<Reexport>>>,
+    settle_frames: Cell<List<Cell<List<KeptLine>>>>,
 }
+
+/// One line a settlement keeps: what it says, the unit's file when it names
+/// a unit, the bodies it covers, so the run's entered set can mark it when
+/// the settlement ends, and the wanted that lowers it again (empty when its
+/// name holds a node id, which an edit moves).
+type KeptLine = { line: string, unit: bool, path: string, bodies: List<string>, wire: string }
 
 fn new_hold() -> Hold {
     let no_forced: Map<string, Reads> = {}
@@ -228,6 +236,7 @@ fn new_hold() -> Hold {
         file_module: new_table<int>(),
         sig_asked: new_table<int>(),
         reexports: Cell.new(no_reexports),
+        settle_frames: list_cell(),
     }
 }
 
