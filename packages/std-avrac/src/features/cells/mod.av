@@ -1,7 +1,7 @@
 //! `Cell<T>` — one explicit shared slot. Copies of a cell share its
 //! referent; `get` copies the held value and `set` replaces it without
 //! requiring the cell binding itself to be `mut`.
-use core.{Type, TypeId, ExprId, Reg, is_managed}
+use core.{Type, TypeId, ExprId, Reg}
 use features.{
     LanguageFeature,
     MethodRow,
@@ -93,7 +93,7 @@ fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.type(void)
 }
 
-/// A new cell OWNS what it holds: a counted seed some binding still
+/// A new cell OWNS what it holds: a list or map seed some binding still
 /// holds is copied into it here, so the cell's in-place writes (`push`,
 /// `set_at`, `put`) never reach the binding it was made from.
 fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
@@ -101,10 +101,17 @@ fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let value = cx.reg_of(mc.args[0])
     let size = cx.box_size(1)
     let cell = cx.grown_box(cx.shape_at(mc.e), size, [value])
-    if is_managed(cx.view.types, cx.type_at(mc.args[0])) {
+    if written_in_place(cx.view.types.seen_shape(cx.type_at(mc.args[0]))) {
         let _ = cx.owned_slot_unique(cx.shape_at(mc.args[0]), cell, cx.const_int(0))
     }
     cell
+}
+
+/// Whether a cell writes this shape in place — the list `push` and
+/// `set_at` grow and the map `put` fills. No other held value is ever
+/// written through the cell, so no other seed needs opening.
+fn written_in_place(t: Type) -> bool {
+    match t { .List(_) or .Map(_, _) -> true, _ -> false }
 }
 
 fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {

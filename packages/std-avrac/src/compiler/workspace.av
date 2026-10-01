@@ -1374,13 +1374,25 @@ impl Workspace {
     /// read off its PLAIN parse — a declaration's words stand under no
     /// block word, and a full parse of a sibling would re-enter this one.
     fn module_components(f: FileId, p: Parsed) -> List<ComponentWord> {
-        let siblings = [self.file_id(s) for s in self.module_files(self.module_path_of(p.source.file)) if file_declares_component(self, s)]
+        let siblings = [self.file_id(s) for s in self.declaring_siblings(p.source.file)]
         declared_components(p)
             .concat(
                 flatten(
                     [declared_components(self.plain_parsed(s)) for s in siblings if !same_file(s, f)],
                 ),
             )
+    }
+
+    /// The source files beside `path` in its module that declare a
+    /// component — its directory's, unless every file is its own module.
+    /// THE MANIFEST IS ASKED ONLY OF A FILE THAT DECLARES ONE: a parse
+    /// that reads the manifest depends on it, and a module with no
+    /// component of its own must parse exactly as it did without them.
+    fn declaring_siblings(path: string) -> List<string> {
+        if self.per_file { return [] }
+        let dir = dir_of(path)
+        let declaring = [joined_path(dir, f) for f in self.host.list(dir) if is_source(f, dir) && file_declares_component(self, joined_path(dir, f))]
+        [s for s in declaring if !self.excluded(s)]
     }
 
     /// One `use` line's block words — none from a module that is not
