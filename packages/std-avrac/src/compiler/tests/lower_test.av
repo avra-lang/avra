@@ -7,6 +7,7 @@ use @std.avrac.core.{
     RtSig,
     Reg,
     TypeId,
+    SeatMark,
     dst_of,
     reads_of,
     same_reg,
@@ -16,6 +17,7 @@ use @std.avrac.core.{
     some_list,
     new_type_registry,
     static_code_syms,
+    consumed_mark,
 }
 
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
@@ -739,4 +741,16 @@ spec "a region arm that leaves the function" {
 /// read from — once by a branch that RETURNS, once by one that REJOINS.
 fn early_exit_borrow() -> string {
     "type Bag = { rows: List<string> }\nfn touched(mut b: Bag, xs: List<string>) -> int {\n    b.rows = []\n    xs.length\n}\nfn skips(mut b: Bag, guard: bool) -> int {\n    let xs = b.rows\n    let row = xs[0]\n    if guard {\n        touched(b, xs)\n        return 0 - 1\n    }\n    row.length\n}\nfn stays(mut b: Bag, guard: bool) -> int {\n    let xs = b.rows\n    let row = xs[0]\n    if guard {\n        touched(b, xs)\n    }\n    row.length\n}\nmut a = Bag { rows: [\"kept-a\"] }\nmut c = Bag { rows: [\"kept-b\"] }\nskips(a, false) + stays(c, true)"
+}
+
+spec "a parameter's consumed mark, read off ir_of's own lowering" {
+    given "a seat stored whole on every path to the answer" {
+        then "the body's own lowered marks say so — a one-shot workspace must still ask R3 at lowering" {
+            let l = ir_of(
+                "type P = { n: int, items: List<int> }\nfn always(p: P) -> List<P> { [p] }\nalways(P { n: 1, items: [] })",
+            )
+            let always: Body? = l.fns.find(it.name == "always")
+            always != null && consumed_mark(always!.marks, 0)
+        }
+    }
 }
