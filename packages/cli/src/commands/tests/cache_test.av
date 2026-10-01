@@ -55,10 +55,21 @@ spec "commands/cache" {
             let h = main_hold(root_workspace(root).hold_report(Want.Diagnostics) catch [])
             h != null && !h!.held && h!.why != null && h!.why!.says() == "its text moved"
         }
-        then "a file added to a module it reads names that module's interface, one file then and two now" {
-            let root = lib_probe("grown_lib")
+        then "a file added to a module it reads, which no use reaches, holds it" {
+            let root = lib_probe("grown_unreached")
             let _ = holds_after_check(root)
             let _ = write_text("${root}/src/lib/b.av", "export fn two() -> int { 2 }\n")
+            let h = main_hold(root_workspace(root).hold_report(Want.Diagnostics) catch [])
+            h != null && h!.held && h!.moved.is_empty()
+        }
+        then "a file a reached signature comes to name joins that module's interface, one file then and two now" {
+            let root = lib_probe("grown_lib")
+            let _ = holds_after_check(root)
+            let _ = write_text("${root}/src/lib/b.av", "export type N = { v: int }\n")
+            let _ = write_text(
+                "${root}/src/lib/a.av",
+                "export fn one() -> int { made().v }\nfn made() -> N { N { v: 1 } }\n",
+            )
             let moved = main_hold(root_workspace(root).hold_report(Want.Diagnostics) catch [])?.moved ?? []
             moved.length == 1 &&
                 moved[0].part.ends_with("lib's interface") &&
@@ -72,7 +83,7 @@ spec "commands/cache" {
                 "use lib.{one}\nexport fn other() -> int { one() }\n",
             )
             let _ = holds_after_check(root)
-            let _ = write_text("${root}/src/lib/b.av", "export fn two() -> int { 2 }\n")
+            let _ = write_text("${root}/src/lib/a.av", "export fn one(n: int = 0) -> int { 1 }\n")
             let rows = root_workspace(root).hold_report(Want.Diagnostics) catch []
             let readers = rows.filter(!it.path.contains("/src/lib/"))
             readers.length == 2 && readers.all(it.moved.any(it.part.ends_with("lib's interface")))
