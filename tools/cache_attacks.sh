@@ -429,8 +429,10 @@ esac
 MH() { # MH <label> <path-substr> <want: held|read> [<path-substr> <want>]...
     steps=$((steps+1))
     label=$1; shift
-    out=$(./avra build --time $R/mh 2>&1)
+    out=$(./avra build --time $R/mh 2>&1); st=$?
     case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
+    # a build that failed read nothing, and says nothing a hold could be judged by
+    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $label did not build (status $st): $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
     while [ $# -ge 2 ]; do
         case "$out" in *"read:"*"$1"*) got=read ;; *) got=held ;; esac
         if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $label: $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $label: $1 wanted $2, got $got: $(printf '%s' "$out" | grep -A6 '^read:' | tr '\n' ' ')"; fi
@@ -447,7 +449,16 @@ cat > $R/mhl/src/lib.av <<'AV'
 use pad.{pad}
 export fn host() -> int { pad() + priv() }
 AV
-printf '[package]\nname = "rt-mh"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/mhl" = { path = "../mhl" }\n' > $R/mh/avra.toml
+printf '[package]\nname = "rt-mh"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/mhl" = { path = "../mhl" }\n"@rt/mht" = { path = "../mht" }\n' > $R/mh/avra.toml
+mkdir -p $R/mht/src
+printf '[package]\nname = "@rt/mht"\nversion = "0.1.0"\n\n[lib]\nname = "rt-mht"\npath = "src/lib.av"\n\n[dependencies]\n"@rt/mhl" = { path = "../mhl" }\n' > $R/mht/avra.toml
+printf 'export trait Tell { fn tell() -> int }\n' > $R/mht/src/lib.av
+cat > $R/mht/src/tell_pt.av <<'AV'
+use @rt.mhl.{Pt}
+fn tbase() -> int { 100 }
+impl Tell for Pt { fn tell() -> int { self.v + tbase() } }
+AV
+printf 'use @rt.mht.{Tell}\nuse @rt.mhl.{Pt}\nexport fn told() -> int {\n    let s: dyn Tell = Pt { v: 5 }\n    s.tell()\n}\n' > $R/mh/src/third.av
 printf 'use @rt.mhl.{host}\nexport fn shown() -> int { host() }\n' > $R/mh/src/show.av
 cat > $R/mhl/src/pt.av <<'AV'
 export trait Say { fn say() -> int }
@@ -459,7 +470,7 @@ fn base() -> int { 1 }
 impl Say for Pt { fn say() -> int { self.v + base() } }
 AV
 printf 'use @rt.mhl.{Say, Pt}\nexport fn said() -> int {\n    let s: dyn Say = Pt { v: 4 }\n    s.say()\n}\n' > $R/mh/src/dyn.av
-printf 'println("mh ${shown()} ${said()}")\n' > $R/mh/src/main.av
+printf 'println("mh ${shown()} ${said()} ${told()}")\n' > $R/mh/src/main.av
 S "cold mh: a sibling reaches one file by use, another by no use at all" mh
 S "mh: warm no-op" mh
 ed $R/mhl/src/pad.av "{ 3 }" "{ 30 }"
@@ -486,6 +497,23 @@ ed $R/mhl/src/pt_say.av "fn base() -> int" "fn base(n: int = 0) -> int"
 MH "mh: the impl's file moves a signature — dyn.av boxes Pt as dyn Say, and re-reads" dyn.av read
 ed $R/mhl/src/pt_say.av "fn base(n: int = 0) -> int" "fn base() -> int"
 MH "mh: and back" dyn.av held
+# AN IMPL IN THE TRAIT'S PACKAGE IS REACHED THROUGH THE TYPE IT AIMS AT, in another.
+ed $R/mht/src/tell_pt.av "fn tbase() -> int" "fn tbase(n: int = 0) -> int"
+MH "mh: the trait's package moves its impl's file — third.av re-reads" third.av read
+ed $R/mht/src/tell_pt.av "fn tbase(n: int = 0) -> int" "fn tbase() -> int"
+MH "mh: and back" third.av held
+# THE IMPL LEAVES A FILE THAT STAYS FOR ONE NOBODY NAMES: dyn.av re-reads, and dispatches to it.
+ed $R/mhl/src/pt_say.av "impl Say for Pt { fn say() -> int { self.v + base() } }" ""
+printf 'use pt.{Say, Pt}\nfn tag() -> int { 0 }\nimpl Say for Pt { fn say() -> int { self.v * 1000 + tag() } }\n' > $R/mhl/src/pt_moved.av
+MH "mh: the impl moves to a new file — dyn.av re-reads" dyn.av read
+S "mh: and the box dispatches to the moved impl" mh
+# AND GONE, A BOX OF Pt HAS NO VTABLE: the importer is refused by typing, never held into a link.
+rm $R/mhl/src/pt_moved.av
+steps=$((steps+1)); out=$(./avra build $R/mh 2>&1)
+case "$out" in *"error[type."*) [ -n "${VERBOSE:-}" ] && echo "ok    mh: an impl gone -> refused" ;; *) fails=$((fails+1)); echo "FAIL  mh: an impl gone must refuse the box at typing: $(printf '%s' "$out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+ed $R/mhl/src/pt_say.av "fn base() -> int { 1 }" "fn base() -> int { 1 }
+impl Say for Pt { fn say() -> int { self.v + base() } }"
+S "mh: the impl back home" mh
 
 # `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
 # shape is `enum`, and its KIND column is what says a collect made it — read the
