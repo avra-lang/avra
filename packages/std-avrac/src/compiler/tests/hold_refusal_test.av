@@ -1,25 +1,24 @@
-// The voice a refused hold speaks (compiler/derive.av): the law on one
-// line, the held attempt's own words set apart under it — so a fallback
-// that WORKED does not read as a crash.
+// The voice a refused hold speaks (compiler/derive.av): one line naming
+// the law, the held attempt's first word of why and where the rest is
+// kept — so a fallback that WORKED does not read as a crash.
 use compiler.{hold_refusal}
-
-fn law_line() -> string {
-    "avra: the hold was refused — the kept results for this program are stale, so it is built from its sources instead. Under the hold it said:"
-}
 
 spec "compiler/derive — the refused hold's voice" {
     given "a held attempt that said something under the hold" {
-        then "the law leads on one line, and the attempt's words follow indented" {
-            hold_refusal("error[x]: boom\n  detail") == "${law_line()}\n    error[x]: boom\n      detail"
+        then "it is one line" {
+            !hold_refusal("error[x]: boom\n  detail", "/s/hold-refused.log").contains("\n")
         }
-        then "a blank line inside the detail stays blank, with no trailing spaces" {
-            hold_refusal("a\n\nb").contains("    a\n\n    b")
+        then "it carries the phrase tools/cache_attacks.sh and tools/hold_sweep.sh grep for" {
+            hold_refusal("x", "/s/l").starts_with("avra: the hold was refused")
         }
-        then "the first line carries the phrase tools/cache_attacks.sh and tools/hold_sweep.sh grep for" {
-            hold_refusal("x").starts_with("avra: the hold was refused")
+        then "the cause is the attempt's first line that says anything" {
+            hold_refusal("\n  \nerror[x]: boom\n  detail", "/s/l").contains("(error[x]: boom)")
         }
-        then "the line right after the phrase is the attempt's first line, which cache_attacks.sh quotes" {
-            hold_refusal("first\nsecond").split("\n")[1] == "    first"
+        then "it names where the attempt's words are kept" {
+            hold_refusal("error[x]: boom", "/s/hold-refused.log").ends_with("/s/hold-refused.log")
+        }
+        then "an attempt that said nothing still names a cause" {
+            hold_refusal("", "/s/l").contains("(it said nothing)")
         }
     }
 }

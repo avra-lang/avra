@@ -8,7 +8,7 @@
 //! hold is answered again from the sources alone.
 use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
 use features.{SettleRoot, Wanted, Analysed}
-use @std.path.{relative_path}
+use @std.path.{relative_path, joined_path}
 use diagnostics.{Diag, render_among, render_facts_among, SourceFile}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
@@ -49,7 +49,7 @@ export enum Want { Diagnostics, Binary }
 /// ONE ATTEMPT AT A PROGRAM: what it derives and for what, the files it reads
 /// whatever the store holds, whether it reads the program's instantiation HOMES,
 /// whether it holds anything, and how many times the records moved under it.
-type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0 }
+type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0, turned: int = 0 }
 
 /// WHAT AN ATTEMPT THAT DOES NOT STAND ANSWERS: the attempt to make instead, or
 /// the refusal. It rides the failure channel, so a phase that finds the question
@@ -98,7 +98,7 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 /// lower, and `asked` names what they and every other would lower to: the
 /// program's root asks, and the key of every home it has ever lowered from. The
 /// same `asked` is the same instantiations, whoever lowered them.
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, witnessed: int, files: int, turns: int, spans: List<Phase>, read: List<ReadFile> }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, witnessed: int, files: int, turns: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0 }
 
 /// One file's hold: held, or read with why (null for a file no record
 /// knows), the stored rows a read-for-want-of-rows file lacks, and what
@@ -131,6 +131,8 @@ impl Derived {
             "held ${self.held}/${self.files}",
             "witnessed ${self.witnessed}/${self.files}",
             "attempt ${self.turns}",
+            "discarded ${self.turned}",
+            "refused ${self.refused}",
         ]
         let spent = joined(
             [ph.shown() for ph in grouped_phases(self.program.phases)]
@@ -318,8 +320,23 @@ impl Workspace {
         if held is .Ok { return self.checked_whole(held?) }
         if held_paths(self).is_empty() { return held }
         let plain = self.from_sources(entry, want)
-        if plain is .Ok { eprintln(hold_refused(held)) }
-        plain
+        match plain {
+            .Ok(d) -> {
+                eprintln(self.refusal_noted(held))
+                .Ok(d with { refused: 1 })
+            },
+            .Err(_) -> plain,
+        }
+    }
+
+    /// A REFUSED HOLD IS A CONDITION THE COMPILER HANDLES, so it says so on one
+    /// line and keeps the held attempt's words in the store, never on stderr,
+    /// where they read as this run's diagnostics.
+    fn refusal_noted(held: Result<Derived, string>) -> string {
+        let why = match held { .Ok(_) -> "", .Err(w) -> w }
+        let at = joined_path(build_cache_root(self), "hold-refused.log")
+        let _ = self.host.write(at, why)
+        hold_refusal(why, at)
     }
 
     /// A derivation that only SPEAKS owes its instantiations' verdict: lowered now,
@@ -419,7 +436,7 @@ impl Workspace {
     fn attempted(at: Attempt) -> Result<Derived, string> {
         match self.tried(at) {
             .Ok(d) -> d,
-            .Err(.Again(next)) -> self.again(next),
+            .Err(.Again(next)) -> self.again(next with { turned: at.turned + 1 }),
             .Err(.Refused(why)) -> { fail why },
         }
     }
@@ -560,6 +577,7 @@ impl Workspace {
             witnessed: self.witness_hits.get(),
             files: self.decls.file_count(),
             turns: at.moved,
+            turned: at.turned,
             spans: spans,
             read: self.hold.read_files.get(),
         }
@@ -840,24 +858,16 @@ fn held_said(store: Store, okey: string, said: Said, want: Want) -> Said? {
 
 // ── The voices ──
 
-/// What the hold said before the sources overruled it.
-fn hold_refused(held: Result<Derived, string>) -> string {
-    match held { .Ok(_) -> "", .Err(why) -> hold_refusal(why) }
+/// The law on one line: the phrase the cache-attack and hold-sweep tools
+/// read, the held attempt's first word of why, and where the rest is kept.
+export fn hold_refusal(why: string, at: string) -> string {
+    "avra: the hold was refused (${refusal_cause(why)}); built from its sources — the held attempt's words are in ${at}"
 }
 
-/// The law on one line, then the held attempt's own words set apart under
-/// it — they describe a derivation the sources overruled, not this run's
-/// outcome. The first line keeps "the hold was refused": the cache-attack
-/// and hold-sweep tools read that phrase.
-export fn hold_refusal(why: string) -> string {
-    "avra: the hold was refused — the kept results for this program are stale, so it is built from its sources instead. Under the hold it said:\n${set_apart(why)}"
+/// The held attempt's first line that says anything.
+fn refusal_cause(why: string) -> string {
+    why.split("\n").find(!it.trim().is_empty())?.trim() ?? "it said nothing"
 }
-
-fn set_apart(text: string) -> string {
-    [indented_line(line) for line in text.split("\n")].join("\n")
-}
-
-fn indented_line(line: string) -> string { if line.is_empty() { "" } else { "    ${line}" } }
 
 fn nothing_held(why: string) -> string {
     "internal compiler error: ${why}, and nothing was held"

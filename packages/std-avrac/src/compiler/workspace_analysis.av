@@ -41,7 +41,14 @@ use features.{
 }
 use core.{StmtId}
 use diagnostics.{Diag, no_voices, has_errors}
-use compiler.backend.{run_crossed, run_lifted, run_settle, world_witness}
+use compiler.backend.{
+    run_crossed,
+    run_lifted,
+    run_settle,
+    world_witness,
+    world_reached,
+    reaches_world,
+}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, Body, Unit, lower_unit}
 use compiler.memory.{memory}
@@ -66,6 +73,11 @@ fn interned(index: Cell<Map<string, int>>, name: string, next: int) -> Interned 
 /// cell settles on, and the hash a witness edge holds.
 fn diags_fingerprint(out: List<Diag>) -> int {
     fp_str(joined(["${d.kind}: ${d.message}" for d in out], "\n"))
+}
+
+/// One expression of file `f` wanted as a program's entry.
+fn entry_wanted(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Wanted {
+    Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }
 }
 
 impl Workspace {
@@ -511,6 +523,16 @@ impl Workspace {
         // const unit are different IR under different symbols. The
         // Lowered memo keys by symbol, so sharing one would make query
         // order choose which body survives.
+        // A STRUCTURAL REFUSAL IS DECIDED BY ONE PATH: lower only until a
+        // body reaches the world, and nothing past it is lowered or read.
+        // Every body the probe lowered is a read, on the chain or not: a
+        // held file it asked a body of must be read BEFORE the next
+        // derivation starts, or that derivation turns and runs twice.
+        let early: Lowered? = self.reach_probe(f, root, "settling\$${name}", seats)
+        if early != null {
+            self.recorded_reads(f, early!, null)
+            return .Err(Unsettled.Reach(world_reached(early!, true) ?? "reaches the world"))
+        }
         let l = self.standalone(f, root, "settling\$${name}", seats)
         if has_errors(l.diagnostics) {
             self.recorded_reads(f, l, null)
@@ -528,11 +550,28 @@ impl Workspace {
         r
     }
 
+    /// The initializer lowered only until a body reaches the world:
+    /// those bodies as a program, or null when none does.
+    fn reach_probe(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered? {
+        let ws = self
+        let reader = self.decls.file(f).path
+        self.hold.settling.set(self.hold.settling.get().concat([reader]))
+        let l = self
+            .decls
+            .settlement_until(
+                entry_wanted(f, root, name, seats),
+                (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w)),
+                (b: Body) -> reaches_world(b, true),
+            )
+        let open = self.hold.settling.get()
+        self.hold.settling.set(open.slice(0, open.length - 1))
+        l
+    }
+
     /// One expression lowered as a program of its own, while every
     /// body it reaches remains a shared `Lowered` query.
     fn standalone(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered {
-        self
-            .run_lowered_for(f, Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root })
+        self.run_lowered_for(f, entry_wanted(f, root, name, seats))
     }
 
     /// An annotation argument evaluated directly into the crossing
