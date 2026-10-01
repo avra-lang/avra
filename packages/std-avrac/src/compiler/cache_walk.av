@@ -3,7 +3,9 @@
 //! the durable witness, and the files whose own text moved since are the
 //! walk's moved inputs. Fine-grained edges are never kept: a mode that asks
 //! why or who reads derives the program in-process with nothing held, and
-//! walks the kernel's own dependencies there. Nothing here runs in a check.
+//! walks the kernel's own dependencies there. Nothing here runs in a check,
+//! and nothing here keeps: the walk inspects (`inspecting`), so its store
+//! sets every write aside and a second walk answers what the first did.
 use core.{FileId, ModuleId, DeclId, reversed}
 use query.{Key, same_key, KeyMarks, no_key_marks}
 use @std.path.{relative_path}
@@ -41,8 +43,10 @@ const READS: int = 2
 const READS_NOT: int = 3
 
 impl Workspace {
-    /// THE WALK'S FIRST HALF: the hold's report under a check's want.
+    /// THE WALK'S FIRST HALF: the hold's report under a check's want, this
+    /// workspace an inspection from here on.
     fn cache_walk() -> Result<CacheWalk, string> {
+        self.inspecting()
         let holds = self.hold_report(Want.Diagnostics)?
         CacheWalk {
             root: self.root,

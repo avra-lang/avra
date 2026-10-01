@@ -1,6 +1,6 @@
 //! `avra cache` — its modes by their words, one spelling each, `held`
 //! answering a check's hold file by file, and every mode naming the input an
-//! edit moved.
+//! edit moved — however often it is asked, since a mode keeps nothing.
 use @std.io.{make_dirs, write_text}
 use @std.time.{now_ns}
 use @std.avrac.compiler.{Want, FileHold, HeldMismatch}
@@ -173,6 +173,25 @@ spec "commands/cache" {
         then "a query naming nothing is refused, never answered empty" {
             let lines = mode_refusal(CacheMode.Why, edited_lib("why_nothing"), "no-such-thing")
             lines.length == 1 && lines[0].contains("matches `no-such-thing`")
+        }
+        then "changed asked twice answers the same move both times" {
+            let root = edited_lib("changed_twice")
+            let first = mode_lines(CacheMode.Changed, root, "")
+            first.any(it.starts_with("changed:   src/lib/a.av: its text ")) &&
+                first.join("\n") == mode_lines(CacheMode.Changed, root, "").join("\n")
+        }
+        then "held after changed still reads the edited file" {
+            let root = edited_lib("held_after_changed")
+            let _ = mode_lines(CacheMode.Changed, root, "")
+            mode_lines(CacheMode.Held, root, "").any(it.starts_with("held: src/lib/a.av — read"))
+        }
+        then "a check after the modes keeps the edit, and only then has nothing moved" {
+            let root = edited_lib("checked_after_modes")
+            let _ = mode_lines(CacheMode.Changed, root, "")
+            let _ = mode_lines(CacheMode.Why, root, "src/main.av")
+            let _ = checked_at(root)
+            mode_lines(CacheMode.Changed, root, "")
+                .any(it == "changed: no input's text moved since the kept state")
         }
         then "changed refuses a target, since it answers for the whole package" {
             mode_refusal(CacheMode.Changed, edited_lib("changed_target"), "main").length == 1

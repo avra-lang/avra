@@ -65,7 +65,7 @@ use diagnostics.{defect_at}
 use diagnostics.{Diag, refusal, Severity, DiagFacts, diag_facts_of, Voices}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use @std.testing.{words}
-use compiler.store.{Store, Stored, store_at}
+use compiler.store.{Store, Stored}
 use compiler.lower.{Unit}
 
 // ── voices ──
@@ -582,7 +582,7 @@ fn module_names_block_word(ws: Workspace, m: ModulePath, files: List<string>, it
 fn module_block_names(ws: Workspace, m: ModulePath) -> List<string>? {
     let known = ws.records.block_named.get().get(m.text())
     if known != null { return known! }
-    let store = store_at(build_cache_root(ws))
+    let store = ws.opened_store()
     let iface? = ws.db.sig(store, ws.record_key(m)) else { return null }
     let rec? = ws.record_bodies().body(store, m.text(), iface) else { return null }
     let rows = [read_row(read_fields(line)) for line in rec.split("\n")]
@@ -613,7 +613,7 @@ fn file_lexes_block(ws: Workspace, path: string) -> bool {
     // but the VERDICT also depends on which keywords THIS compiler's
     // assembled grammar opens a block with, so the compiler's own print
     // joins the key too.
-    let store = store_at(build_cache_root(ws))
+    let store = ws.opened_store()
     let key = digest_of("scan\n${ws.compiler_id()}\n${text}")
     let kept = ws.db.scan(store, key)
     let found = if kept != null { kept! == "1" } else { text_opens_block(text, ws.lang.keywords) }

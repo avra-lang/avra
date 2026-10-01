@@ -1,7 +1,7 @@
 // The voice a refused hold speaks (compiler/derive.av): one line naming
 // the law, the held attempt's first word of why and where the rest is
 // kept — so a fallback that WORKED does not read as a crash.
-use compiler.{hold_refusal}
+use compiler.{hold_refusal, hold_refusal_unkept}
 
 spec "compiler/derive — the refused hold's voice" {
     given "a held attempt that said something under the hold" {
@@ -19,6 +19,18 @@ spec "compiler/derive — the refused hold's voice" {
         }
         then "an attempt that said nothing still names a cause" {
             hold_refusal("", "/s/l").contains("(it said nothing)")
+        }
+    }
+    given "an inspection, which keeps no words" {
+        then "it is one line carrying the phrase, and the cause" {
+            let said = hold_refusal_unkept("error[x]: boom\n  detail")
+            !said.contains("\n") &&
+                said.starts_with("avra: the hold was refused") &&
+                said.contains("(error[x]: boom)")
+        }
+        then "it names the command that keeps the words, never a file" {
+            !hold_refusal_unkept("x").contains("hold-refused.log") &&
+                hold_refusal_unkept("x").contains("`avra check`")
         }
     }
 }

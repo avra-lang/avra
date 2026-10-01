@@ -57,11 +57,19 @@ impl Stored {
     }
 }
 
-/// THE STORE — one root, every family under it.
-export type Store = { root: string }
+/// WHERE A STORE'S WRITES LAND: on disk, or SET ASIDE in this process — read
+/// back before the disk and never written to it, so an inspection derives as a
+/// check does and leaves the store exactly as it found it (P7).
+export enum Keeping {
+    Disk
+    Aside(Cell<Map<string, string>>)
+}
+
+/// THE STORE — one root, every family under it, and where its writes land.
+export type Store = { root: string, keeping: Keeping }
 
 // LICENSED compiler.free_state_verb: a CONSTRUCTOR — the root in, the store out, like `new_kernel`.
-export fn store_at(root: string) -> Store { Store { root: root } }
+export fn store_at(root: string) -> Store { Store { root: root, keeping: Keeping.Disk } }
 
 /// A KEY OVER A PROJECTION — the one derivation every family shares, so no family can
 /// key itself differently from its neighbours. The family's name is folded first, so two
@@ -92,20 +100,42 @@ impl Store {
         match remove(edge) { .Ok(_) -> true, .Err(_) -> false }
     }
 
-    /// HAS THIS CHANGED? Two `exists` calls, NOTHING read.
+    /// HAS THIS CHANGED? A row set aside, or two `exists` calls — NOTHING read.
     fn has(family: Stored, key: string) -> bool {
+        self.aside_row(family, key) != null || self.on_disk(family, key)
+    }
+
+    fn on_disk(family: Stored, key: string) -> bool {
         exists(self.path(family, key)) && exists(self.edge_path(family, key))
     }
 
+    /// The row this process set aside under a key — none on a store that keeps to disk.
+    fn aside_row(family: Stored, key: string) -> string? {
+        match self.keeping { .Disk -> null, .Aside(rows) -> rows.get().get(self.path(family, key)) }
+    }
+
     /// The bytes a key names, or nothing when the row is not committed.
-    fn get(family: Stored, key: string) -> string? {
-        if !self.has(family, key) { return null }
+    fn get(family: Stored, key: string) -> string? { self.aside_row(family, key) ?? self.read_disk(family, key) }
+
+    fn read_disk(family: Stored, key: string) -> string? {
+        if !self.on_disk(family, key) { return null }
         match read_text(self.path(family, key)) { .Ok(text) -> text, .Err(why) -> null }
     }
 
-    /// REMEMBER A ROW: the DATA first, then the EDGES, so the second write is what makes
-    /// the row visible and a crash between them leaves nothing rather than half.
+    /// REMEMBER A ROW — on disk, or set aside where the store keeps none.
     fn keep(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
+        match self.keeping {
+            .Disk -> self.written(family, key, bytes, read),
+            .Aside(rows) -> {
+                rows.put(self.path(family, key), bytes)
+                true
+            },
+        }
+    }
+
+    /// A row on disk: the DATA first, then the EDGES, so the second write is what makes
+    /// the row visible and a crash between them leaves nothing rather than half.
+    fn written(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
         match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
         if !self.uncommit(family, key) { return false }
         match write_text(self.path(family, key), bytes) {
@@ -131,8 +161,16 @@ impl Store {
     ///
     /// REMEMBER A ROW WHOSE BYTES ARE A FILE — the twinned half of `keep`, because a
     /// linked binary is BYTES and reading it as text is the thing that loses them. The
-    /// edges are the commit here too.
+    /// edges are the commit here too. A store that keeps aside keeps no file: only a
+    /// build makes one, and an inspection builds nothing.
     fn keep_file(family: Stored, key: string, from: string, read: List<string>) -> bool {
+        match self.keeping {
+            .Disk -> self.file_written(family, key, from, read),
+            .Aside(_) -> false,
+        }
+    }
+
+    fn file_written(family: Stored, key: string, from: string, read: List<string>) -> bool {
         match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
         let bytes = match read_bytes(from) { .Ok(b) -> b, .Err(why) -> { return false } }
         if !self.uncommit(family, key) { return false }

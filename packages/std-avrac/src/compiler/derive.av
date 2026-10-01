@@ -10,7 +10,7 @@ use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, Fil
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path, joined_path}
 use diagnostics.{Diag, render_among}
-use compiler.store.{Store, Stored, node_key, store_at}
+use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered}
 use compiler.host.{no_source}
 use compiler.findings.{findings_text, file_findings_text}
@@ -219,7 +219,7 @@ impl Workspace {
     /// refusal is never kept.
     fn checked(entry: string?) -> Result<Checked, string> {
         if self.nothing_to_check() { fail self.rendered_shape([no_source(self.root)]) }
-        let store = store_at(build_cache_root(self))
+        let store = self.opened_store()
         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
         let key0 = self.program_key(under.named, under.beside)
         let kept: string? = self.db.warn(store, key0)
@@ -303,12 +303,18 @@ impl Workspace {
 
     /// A REFUSED HOLD IS A CONDITION THE COMPILER HANDLES, so it says so on one
     /// line and keeps the held attempt's words in the store, never on stderr,
-    /// where they read as this run's diagnostics.
+    /// where they read as this run's diagnostics. An inspection keeps nothing,
+    /// so it says where the words are kept instead.
     fn refusal_noted(held: Result<Derived, string>) -> string {
         let why = match held { .Ok(_) -> "", .Err(w) -> w }
-        let at = joined_path(build_cache_root(self), "hold-refused.log")
-        let _ = self.host.write(at, why)
-        hold_refusal(why, at)
+        match self.keys.keeping.get() {
+            .Disk -> {
+                let at = joined_path(build_cache_root(self), "hold-refused.log")
+                let _ = self.host.write(at, why)
+                hold_refusal(why, at)
+            },
+            .Aside(_) -> hold_refusal_unkept(why),
+        }
     }
 
     /// A derivation that only SPEAKS owes its instantiations' verdict: lowered now,
@@ -436,7 +442,7 @@ impl Workspace {
     /// must not do heavy work where it stands leaves there, having done none.
     /// From here a held file's declarations are minted when something reads them.
     fn holding(at: Attempt) -> Result<Store, Turn> {
-        let store = store_at(build_cache_root(self))
+        let store = self.opened_store()
         self.attach_store(store)
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
@@ -769,6 +775,11 @@ fn held_said(store: Store, okey: string, said: Said, want: Want) -> Said? {
 /// read, the held attempt's first word of why, and where the rest is kept.
 export fn hold_refusal(why: string, at: string) -> string {
     "avra: the hold was refused (${refusal_cause(why)}); built from its sources — the held attempt's words are in ${at}"
+}
+
+/// `hold_refusal` for an inspection, which keeps no words: a check keeps them.
+export fn hold_refusal_unkept(why: string) -> string {
+    "avra: the hold was refused (${refusal_cause(why)}); built from its sources — an inspection keeps nothing, and `avra check` keeps the held attempt's words"
 }
 
 /// The held attempt's first line that says anything.

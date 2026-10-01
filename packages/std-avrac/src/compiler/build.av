@@ -15,6 +15,7 @@ use core.{
     fp_list,
     RtSig,
     TypeRegistry,
+    map_cell,
 }
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
@@ -32,7 +33,7 @@ use compiler.backend.{
     program_closed,
 }
 use compiler.lower.{Body, Lowered, program_symbol}
-use compiler.store.{Store, Stored, node_key, store_at}
+use compiler.store.{Store, Stored, Keeping, node_key}
 use compiler.host.{Host, no_target, read_manifest}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
@@ -139,6 +140,14 @@ impl Workspace {
     fn seed_compiler_id(id: string) {
         if self.keys.compiler_id.get() == "" { self.keys.compiler_id.set(id) }
     }
+
+    /// THE STORE THIS WORKSPACE READS AND KEEPS IN — the one door every derivation
+    /// opens it by, so where its writes land is decided once.
+    fn opened_store() -> Store { Store { root: build_cache_root(self), keeping: self.keys.keeping.get() } }
+
+    /// FROM HERE ON, AN INSPECTION: this workspace and every restart of it derive
+    /// as a check does and keep what they learn in this process alone.
+    fn inspecting() { self.keys.keeping.set(Keeping.Aside(map_cell())) }
 }
 
 /// WHERE A TREE'S ARTIFACTS LIVE — one place for the whole checkout, so a
@@ -406,7 +415,7 @@ impl Workspace {
     /// A binary these exact inputs linked before, placed where a fresh one would
     /// be — with the warnings that build spoke.
     fn kept_binary(key: string, binary: string) -> BuildOutcome? {
-        let store = store_at(build_cache_root(self))
+        let store = self.opened_store()
         let staged = staged_beside(binary)
         if !store.has(Stored.Bin, key) ||
             !links_unchanged(store, key) ||
@@ -426,7 +435,7 @@ impl Workspace {
     /// rebuild, under-covering is a silently wrong binary. A `use` that reaches a
     /// package the row has not met is an edit to a file the row covers.
     fn closure(named: string) -> List<string> {
-        let kept = remembered(store_at(build_cache_root(self)), self.closure_key(named))
+        let kept = remembered(self.opened_store(), self.closure_key(named))
         sorted_texts(
             distinct(
                 ["${p.src}\t${p.root}" for p in self.packages()]
@@ -441,7 +450,7 @@ impl Workspace {
     /// The closure as it stands now, remembered for the next key.
     fn keep_closure(named: string) {
         remember(
-            store_at(build_cache_root(self)),
+            self.opened_store(),
             self.closure_key(named),
             ["${p.src}\t${p.root}" for p in self.packages()],
         )
