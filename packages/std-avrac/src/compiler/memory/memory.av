@@ -191,6 +191,7 @@ fn memory_ins(
     let last = last_reads(reg_types.length, ins)
     let defs = def_sites(reg_types.length, ins)
     let next_barrier = barrier_positions(ins)
+    let twins = twin_table(defs, next_barrier, types, reg_types, ins)
     let life = Lives {
         types: types,
         reg_types: reg_types,
@@ -198,11 +199,12 @@ fn memory_ins(
         last: last,
         defs: defs,
         next_barrier: next_barrier,
+        twins: twins,
         viewed: viewed_regs(types, reg_types, ins),
-        death: death_points(defs, next_barrier, types, reg_types, ins, last),
+        death: death_points(twins, ins, last),
     }
     for at, raw in ins {
-        let i = owned_form(defs, next_barrier, types, reg_types, ins, at, raw)
+        let i = owned_form(twins, types, reg_types, at, raw)
         match i {
             .ScopeEnter(tier) -> {
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
@@ -335,7 +337,18 @@ fn memory_ins(
             .Load(dst, slot) -> {
                 out.push(i)
                 if is_managed(types, reg_types[dst.index]) &&
-                    borrow_outlives(defs, next_barrier, types, reg_types, ins, at, dst, slot, false) {
+                    borrow_outlives(
+                        twins,
+                        defs,
+                        next_barrier,
+                        types,
+                        reg_types,
+                        ins,
+                        at,
+                        dst,
+                        slot,
+                        false,
+                    ) {
                     out.push(Ins.Retain(dst))
                     manages(types, reg_types, open_scopes, i)
                 }
@@ -431,6 +444,7 @@ fn memory_ins(
 /// before this pass counted uses. A row that keeps without
 /// retaining is a dangling store whether the read owns or not.
 fn borrow_outlives(
+    twins: List<bool>,
     defs: List<int>,
     next_barrier: List<int>,
     types: TypeRegistry,
@@ -451,9 +465,7 @@ fn borrow_outlives(
             last = j
             let d: Reg? = view_of(i)
             // a child that takes its OWN reference rides nobody's
-            if d != null &&
-                is_managed(types, reg_types[d!.index]) &&
-                !takes_twin(defs, next_barrier, types, reg_types, ins, j, i) {
+            if d != null && is_managed(types, reg_types[d!.index]) && !twins[j] {
                 views.push(d!)
             }
         }
@@ -943,15 +955,7 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
 /// managed becomes an owned +1 read — each by the registry's OWNED
 /// TWIN column. Lowering never chooses; ownership stays this
 /// pass's one concern, and no runtime name is spelled here.
-fn owned_form(
-    defs: List<int>,
-    next_barrier: List<int>,
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
-    ins: List<Ins>,
-    at: int,
-    i: Ins,
-) -> Ins {
+fn owned_form(twins: List<bool>, types: TypeRegistry, reg_types: List<TypeId>, at: int, i: Ins) -> Ins {
     // a pre-filter — the caller's dispatch is exhaustive
     // over Ins; this rewrite touches only the runtime call shapes
     match i {
@@ -959,15 +963,37 @@ fn owned_form(
             let twin: string? = rt_owned_twin(callee)
             if twin != null && pushes_managed(types, reg_types, args) { Ins.CallRtVoid(twin!, args) } else { i }
         },
-        .CallRt(dst, callee, args) if takes_twin(defs, next_barrier, types, reg_types, ins, at, i) -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
+        .CallRt(dst, callee, args) if twins[at] -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
         rest -> i,
     }
 }
 
+/// WHETHER EACH READ TAKES ITS OWNED TWIN, by position, once per body. A
+/// read's answer asks only about the reads AFTER it, so a reverse walk has
+/// every answer it needs in hand.
+fn twin_table(
+    defs: List<int>,
+    next_barrier: List<int>,
+    types: TypeRegistry,
+    reg_types: List<TypeId>,
+    ins: List<Ins>,
+) -> List<bool> {
+    mut out = [false for j in 0..ins.length]
+    // LICENSED loops.index_walk: a REVERSE walk — a read's answer reads the answers after it
+    mut k = ins.length - 1
+    while k >= 0 {
+        if takes_twin(out, defs, next_barrier, types, reg_types, ins, k, ins[k]) { out.set(k, true) }
+        k = k - 1
+    }
+    out
+}
+
 /// WHETHER A READ TAKES ITS OWNED TWIN — its answer its own +1, riding nobody's
 /// reference: a managed answer of a row that has a twin, which a LENDING row
-/// declines only while the child stays a borrow.
+/// declines only while the child stays a borrow. `twins` answers every
+/// position after `at`.
 fn takes_twin(
+    twins: List<bool>,
     defs: List<int>,
     next_barrier: List<int>,
     types: TypeRegistry,
@@ -980,7 +1006,7 @@ fn takes_twin(
         .CallRt(dst, callee, args) -> rt_owned_twin(callee) != null &&
             is_managed(types, reg_types[dst.index]) &&
             (!rt_lends(callee) ||
-                read_outlives(defs, next_barrier, types, reg_types, ins, at, dst, args)),
+                read_outlives(twins, defs, next_barrier, types, reg_types, ins, at, dst, args)),
         rest -> false,
     }
 }
@@ -997,6 +1023,7 @@ fn takes_twin(
 /// cell standing. A borrow whose chain reaches a cell, read past any user
 /// call, owns: the callee may reach that cell, by a seat or a capture.
 fn read_outlives(
+    twins: List<bool>,
     defs: List<int>,
     next_barrier: List<int>,
     types: TypeRegistry,
@@ -1008,6 +1035,7 @@ fn read_outlives(
 ) -> bool {
     let subject? = args.first() else { return true }
     borrow_outlives(
+        twins,
         defs,
         next_barrier,
         types,
@@ -1108,6 +1136,7 @@ type Lives = {
     last: List<int>,
     defs: List<int>,
     next_barrier: List<int>,
+    twins: List<bool>,
     viewed: List<bool>,
     death: List<int>,
 }
@@ -1174,15 +1203,7 @@ impl Lives {
             if d != null &&
                 family.any(reads_reg(i, it)) &&
                 is_managed(self.types, self.reg_types[d!.index]) &&
-                !takes_twin(
-                    self.defs,
-                    self.next_barrier,
-                    self.types,
-                    self.reg_types,
-                    self.ins,
-                    j,
-                    i,
-                ) {
+                !self.twins[j] {
                 family.push(d!)
             }
             j = j + 1
@@ -1217,6 +1238,7 @@ impl Lives {
         if d < 0 { return null }
         let slot? = loaded_slot(self.ins[d]) else { return null }
         if borrow_outlives(
+            self.twins,
             self.defs,
             self.next_barrier,
             self.types,
@@ -1362,21 +1384,14 @@ fn last_reads(count: int, ins: List<Ins>) -> List<int> {
 /// reverse walk has folded the view's own riders in before it. A view
 /// of ANY type rides: an enum's payload word is typed as a scalar and
 /// may still point into the box.
-fn death_points(
-    defs: List<int>,
-    next_barrier: List<int>,
-    types: TypeRegistry,
-    reg_types: List<TypeId>,
-    ins: List<Ins>,
-    last: List<int>,
-) -> List<int> {
+fn death_points(twins: List<bool>, ins: List<Ins>, last: List<int>) -> List<int> {
     mut out = [t for t in last]
     // LICENSED loops.index_walk: a REVERSE walk — a view's riders fold in before it does
     mut j = ins.length - 1
     while j >= 0 {
         let i = ins[j]
         let d: Reg? = view_of(i)
-        if d != null && !takes_twin(defs, next_barrier, types, reg_types, ins, j, i) {
+        if d != null && !twins[j] {
             let dies = out[d!.index]
             for r in reads_of(i) {
                 if dies > out[r.index] { out.set(r.index, dies) }
