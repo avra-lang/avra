@@ -5,6 +5,9 @@
 #   sh tools/queue_keeper.sh          one pass
 #   sh tools/queue_keeper.sh --loop   a pass every 2 minutes, until stopped
 #
+# GitHub runs it after every train and every 5 minutes (.github/workflows/
+# queue-keeper.yml); a pass by hand is never needed.
+#
 # A PR GitHub dropped from the queue is put back, at most twice per head
 # commit: a train fails every PR it carries, so most drops are someone
 # else's failure. A PR that conflicts with main, or that failed its third
