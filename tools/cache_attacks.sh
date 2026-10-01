@@ -1072,6 +1072,53 @@ S "drm: the callee's body moves — decl()'s file edge must still force a fresh 
 got_drm2=$($R/drm/src/main 2>&1)
 [ "$got_drm2" = "drm 22" ] || { fails=$((fails+1)); echo "FAIL  warm drm printed '$got_drm2', wanted 'drm 22' — decl()'s pinned-handle read lost the file-grain edge"; }
 
+# A DECLARATION ADDED, INSERTED OR REMOVED MOVES ITS MODULE'S INTERFACE, AND THE
+# HOLD TAKES IT: `b` names `a` and a collect in `coll`, so an interface move in
+# `a` re-reads `b` while `coll` stays held — and `b` types `entries.length`
+# against the held collect's recorded type. ND judges one warm check (held,
+# never refused, `coll` held and `b` read) and holds its words to a cold one.
+mkdir -p $R/nd/src/a $R/nd/src/b $R/nd/src/coll
+printf '[package]\nname = "rt-nd"\nversion = "0.1.0"\n' > $R/nd/avra.toml
+printf 'export fn fa() -> int { 1 }\nexport fn fz() -> int { 2 }\n' > $R/nd/src/a/mod.av
+printf 'export component widget {\n    run: fn(int) -> int\n}\n' > $R/nd/src/coll/widget.av
+printf 'export widget one { n -> n + 1 }\nexport widget two { n -> n + 2 }\n' > $R/nd/src/coll/members.av
+printf 'type Entry = { name: string, ran: fn(int) -> int }\nexport collect entries: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name\n' > $R/nd/src/coll/table.av
+printf 'use a.{fa}\nuse coll.{entries}\nexport fn fb() -> int { entries.length + fa() }\n' > $R/nd/src/b/mod.av
+printf 'use b.{fb}\nprintln("nd ${fb()}")\n' > $R/nd/src/main.av
+ND() { # ND <label>
+    steps=$((steps+1))
+    rm -rf $R/nd.warm; cp -R .avra-cache $R/nd.warm
+    out=$(./avra check --time $R/nd 2>&1); st=$?
+    read_list=$(printf '%s\n' "$out" | sed -n '/^read:/,$p' | grep '^  ')
+    case "$out" in
+        *"the hold was refused"*) fails=$((fails+1)); echo "FAIL  $1: the hold was refused: $(printf '%s\n' "$out" | grep -m1 'the hold was refused' | cut -c1-200)" ;;
+        *"held "[1-9]*"/"*) holds=$((holds+1)) ;;
+        *) fails=$((fails+1)); echo "FAIL  $1: held nothing (exit $st)" ;;
+    esac
+    case "$read_list" in *coll/*) fails=$((fails+1)); echo "FAIL  $1: coll was read, wanted held: $(printf '%s' "$read_list" | tr '\n' ' ')" ;; esac
+    case "$read_list" in *b/mod.av*) ;; *) fails=$((fails+1)); echo "FAIL  $1: b was held, wanted read: $(printf '%s' "$read_list" | tr '\n' ' ')" ;; esac
+    rm -rf .avra-cache; cp -R $R/nd.warm .avra-cache
+    held_says=$(./avra check $R/nd 2>&1 | unwatched)
+    rm -rf .avra-cache; plain_says=$(./avra check $R/nd 2>&1 | unwatched)
+    steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || { fails=$((fails+1)); echo "FAIL  $1: a warm check speaks otherwise than a cold one: $(printf '%s' "$held_says" | head -3 | tr '\n' ' ')"; }
+}
+rm -rf .avra-cache; ./avra check $R/nd >/dev/null 2>&1
+printf 'export fn fnew() -> int { 3 }\n' >> $R/nd/src/a/mod.av
+ND "nd: a declaration appended to a"
+ed $R/nd/src/a/mod.av 'export fn fz()' 'fn fmid() -> int { 4 }
+export fn fz()'
+ND "nd: a declaration inserted between two in a"
+ed $R/nd/src/a/mod.av 'export fn fnew() -> int { 3 }
+' ''
+ND "nd: a declaration nobody uses removed from a"
+vh_nd=$(./avra check $R/nd --verify-held 2>&1 | unwatched)
+steps=$((steps+1))
+case "$vh_nd" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  verify-held over nd compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    verify-held over nd -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  verify-held over nd: $(printf '%s' "$vh_nd" | tail -5 | tr '\n' ' ')" ;;
+esac
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

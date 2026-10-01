@@ -124,6 +124,7 @@ impl Workspace {
         let d = self.decls.decl(id)
         match row.shape {
             .Const -> self.fill_const(store, m, row, d.file, d.stmt, id),
+            .Collect -> self.decls.record_const_type(d.file, d.stmt, self.interface_type(row.of_wire())),
             .Aims -> self.fill_aims(row, id),
             .Named -> self.fill_named(row, id),
             .Alias -> self.decls.declare(id, .Alias(self.interface_type(row.of_wire()))),
@@ -380,45 +381,7 @@ impl Workspace {
     }
 
     fn record_line(d: Decl, ordinal: int, item: bool) -> string {
-        let sig = if d.kind is .Const { null } else { self.sig(d.id) }
-        let shape = if d.kind is .Const {
-            let ty = self.decls.type_of_const(d.file, d.stmt) ?? self.decls.types.intern(Type.Error)
-            // a reader bakes the VALUE in, so the value is the interface
-            "const\t${self.decls.type_wire(ty)};${self.const_print(d)}"
-        } else if d.kind is .Impl {
-            // an impl is filed under its target's NAME, and a held one has no namespace to
-            // ask which declaration of that name it means
-            "aims\t${self.decl_ref(self.decls.target_of(d.id))}"
-        } else if sig == null {
-            "opaque"
-        } else if d.kind is .Fn || d.kind is .Method {
-            // THE SEATS' CONTRACTS AND WHAT THE BODY WROTE are parse facts a held file
-            // cannot answer, and a caller's `mut`/retain decision reads them. They ride
-            // the fn's payload: one word per seat, then one bit per seat.
-            // `seat_mark` alone is the DECLARED promises only — `consumed` (R3) is a
-            // separate, whole-program inference merged in at lowering (`Body.marks`,
-            // compiler/lower/lower.av) and never written back into `Decls`'
-            // own table. A held reader has no lowering to merge it at, so the
-            // record is the only place `consumed` can ever reach it: write it here.
-            let n = self.decls.seat_count(d.id)
-            let marks = joined(
-                [mark_word(
-                    self.decls.seat_mark(d.id, j) with { consumed: self.decls.consumed_seat(d.id, j) },
-                ) for j in 0..n],
-                ";",
-            )
-            let writes = joined(
-                [if self.decls.seat_written(d.id, j) { "1" } else { "0" } for j in 0..n],
-                "",
-            )
-            "${shape_line(self, sig!, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}"
-        } else {
-            shape_line(
-                self,
-                sig!,
-                if d.kind is .Record && self.decls.types.boxed_flat(self.decls.record_type(d.id)) { "boxed" } else { "struct" },
-            )
-        }
+        let shape = self.record_shape(d)
         let at = shape.index_of("\t")
         let visibility = if d.exported { "1" } else { "0" }
         // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
@@ -443,6 +406,63 @@ impl Workspace {
         // back is a defect said now, never a check every reader pays
         if facts_unblocked(block)?.fingerprint() != facts.fingerprint() { self.defect("`${d.name}`'s facts do not survive their record") }
         "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${if d.nested { "1" } else { "0" }}\t${root}\t${if item { "1" } else { "0" }}\t${block}\t${payload}"
+    }
+
+    /// The shape word and payload a declaration's record line carries.
+    fn record_shape(d: Decl) -> string {
+        match d.kind {
+            // a reader bakes the VALUE in, so the value is the interface
+            .Const -> "const\t${self.const_type_wire(d)};${self.const_print(d)}",
+            // a reader calls the gathered list's own symbol, so its type is the interface
+            .Collect -> "collect\t${self.const_type_wire(d)}",
+            // an impl is filed under its target's NAME, and a held one has no namespace to
+            // ask which declaration of that name it means
+            .Impl -> "aims\t${self.decl_ref(self.decls.target_of(d.id))}",
+            .Fn or .Method -> self.fn_shape(d),
+            .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Main or .Case or .CollectEnum -> self.signed_shape(d),
+        }
+    }
+
+    /// A const's or a collect's type as a wire — the error type for one that has none.
+    fn const_type_wire(d: Decl) -> string {
+        self
+            .decls
+            .type_wire(self.decls.type_of_const(d.file, d.stmt) ?? self.decls.types.intern(Type.Error))
+    }
+
+    /// A fn's or a method's shape: its signature, then its seats' contracts and written bits.
+    fn fn_shape(d: Decl) -> string {
+        let sig? = self.sig(d.id) else { return "opaque" }
+        // THE SEATS' CONTRACTS AND WHAT THE BODY WROTE are parse facts a held file
+        // cannot answer, and a caller's `mut`/retain decision reads them. They ride
+        // the fn's payload: one word per seat, then one bit per seat.
+        // `seat_mark` alone is the DECLARED promises only — `consumed` (R3) is a
+        // separate, whole-program inference merged in at lowering (`Body.marks`,
+        // compiler/lower/lower.av) and never written back into `Decls`'
+        // own table. A held reader has no lowering to merge it at, so the
+        // record is the only place `consumed` can ever reach it: write it here.
+        let n = self.decls.seat_count(d.id)
+        let marks = joined(
+            [mark_word(
+                self.decls.seat_mark(d.id, j) with { consumed: self.decls.consumed_seat(d.id, j) },
+            ) for j in 0..n],
+            ";",
+        )
+        let writes = joined(
+            [if self.decls.seat_written(d.id, j) { "1" } else { "0" } for j in 0..n],
+            "",
+        )
+        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}"
+    }
+
+    /// A type's shape from its signature — `opaque` for a declaration that has none.
+    fn signed_shape(d: Decl) -> string {
+        let sig? = self.sig(d.id) else { return "opaque" }
+        shape_line(
+            self,
+            sig,
+            if d.kind is .Record && self.decls.types.boxed_flat(self.decls.record_type(d.id)) { "boxed" } else { "struct" },
+        )
     }
 
     fn record_of(store: Store, m: ModulePath) -> string {
