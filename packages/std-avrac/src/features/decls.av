@@ -1974,9 +1974,17 @@ impl Decls {
     fn builtin_decls() -> List<DeclId> { self.builtins.get() }
 
     /// The declaration a type's impls are filed under: its own, or the
-    /// language's for a scalar — absent for every other shape.
+    /// language's for a scalar — absent for every other shape. A
+    /// GENERIC INSTANTIATION files under its declaration, so one
+    /// `impl Show for Box<T>` serves every `Box<...>`.
     fn implementor(ty: TypeId) -> DeclId? {
-        declared_decl(self.types.shape_of(ty)) ?? self.scalar_decl(ty)
+        declared_decl(self.types.shape_of(ty)) ?? self.scalar_decl(ty) ?? self.app_decl(ty)
+    }
+
+    /// The user generic declaration an `.App` instantiation files
+    /// under — absent for every other shape.
+    fn app_decl(ty: TypeId) -> DeclId? {
+        match self.types.shape_of(ty) { .App(d, _, _) -> d, _ -> null }
     }
 
     /// A scalar's builtin declaration: the one that builds it bare.
