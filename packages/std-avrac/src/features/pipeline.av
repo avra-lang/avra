@@ -14,10 +14,15 @@ export type Source = { source: ExprId, hi: ExprId?, index: bool, lookup: Lookup?
 /// in the filter `cond`.
 export type Lookup = { lookup: DeclId, db: ExprId, value: ExprId, cond: ExprId }
 
+/// A fn box asked per element: the box, and the code pointer read
+/// from it once — a method chain's adapter, boxed before the loop.
+export type FnBox = { box: Reg, code: Reg }
+
 /// How a clause computes: an expression written over the heads'
-/// binders.
+/// binders, or a fn box applied to the element in hand.
 export enum Step {
     Written(e: ExprId)
+    Applied(f: FnBox, ret: TypeId)
 }
 
 export enum Clause {
@@ -93,6 +98,7 @@ impl LowerCx {
                 self.bind_patterns(e, t.regs)
                 self.reg_of(e)
             },
+            .Applied(f, ret) -> self.call_ptr(ret, f.code, [f.box, t.value!]),
         }
     }
 

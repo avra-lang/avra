@@ -1,5 +1,6 @@
-//! The list vocabulary's LOWERING — the five walks (map, filter,
-//! find, any, all: one loop skeleton, five aftermaths), the scans
+//! The list vocabulary's LOWERING — the walks (find, any, all: one
+//! loop skeleton, three aftermaths; `map`/`filter` fold through
+//! `chain.av` and the pipeline instead), the scans
 //! (contains, index_of: the same skeleton, no fn box), the growth
 //! words (push, pop, set), the edges (first, last), the measure
 //! (is_empty) and the copies (concat, slice, join — one runtime
@@ -14,15 +15,9 @@ use features.{LowerCx, MethodCall}
 
 // ── The rows' rules ──
 
-export fn lower_map(mut cx: LowerCx, mc: MethodCall) -> Reg {
-    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
-    mapped(cx, mc, seat)
-}
+export fn lower_map(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
 
-export fn lower_filter(mut cx: LowerCx, mc: MethodCall) -> Reg {
-    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
-    kept(cx, mc, seat)
-}
+export fn lower_filter(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
 
 export fn lower_find(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
@@ -115,30 +110,6 @@ fn seatless(mut cx: LowerCx, mc: MethodCall) -> Reg {
 /// A walk's fn: the box and its code pointer (read once —
 /// loop-invariant).
 type Box = { f: Reg, fp: Reg }
-
-/// `xs.map(f)` — a fresh box, one pushed answer per element.
-fn mapped(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
-    let size = cx.box_size(0)
-    let out = cx.grown_box(cx.shape_at(mc.e), size, [])
-    let f = boxed(cx, s.arg)
-    let w = cx.opened(mc.subject, s.elem)
-    let v = cx.turn_elem(w, cx.turn_open(w))
-    cx.push_slot(out, turn_call(cx, f, v, mapped_to(cx, mc.e)))
-    cx.loop_end()
-    out
-}
-
-/// `xs.filter(p)` — the same box, the elements the predicate keeps.
-fn kept(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
-    let size = cx.box_size(0)
-    let out = cx.grown_box(cx.shape_at(mc.e), size, [])
-    let f = boxed(cx, s.arg)
-    let w = cx.opened(mc.subject, s.elem)
-    let v = cx.turn_elem(w, cx.turn_open(w))
-    cx.void_region(turn_call(cx, f, v, bool_ty(cx))) { cx -> cx.push_slot(out, v) }
-    cx.loop_end()
-    out
-}
 
 /// `xs.find(p)` — an Opt cell, absent until the first hit, which
 /// also ends the walk.

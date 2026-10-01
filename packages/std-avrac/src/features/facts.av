@@ -242,6 +242,15 @@ export type ParamScope = { params: List<TypeId> }
 @derive(Fingerprint)
 export type RunChoice = { seat: int, members: List<DeclId> }
 
+/// How a list method participates in a chain: an adapter the lowering
+/// folds into one pipeline. Written by typing (`check_map` /
+/// `check_filter`), read by lowering — checking's one answer, lowering's
+/// one read.
+export enum PipeStage {
+    Keep
+    Map
+}
+
 export type TypeFacts = {
     of_expr: SideTable<TypeId>,
     widens: SideTable<TypeId?>,
@@ -294,6 +303,9 @@ export type TypeFacts = {
     chosen: SideTable<DeclId?>,
     // the members a dot-call dispatches among at run, by one `dyn` argument
     dispatches: SideTable<RunChoice?>,
+    // an adapter's place in a method chain — checking's one answer,
+    // lowering's one read
+    stages: SideTable<PipeStage?>,
     voices: Voices,
 }
 
@@ -325,6 +337,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         null_tails: side_table("null_tails", lo, hi, false),
         chosen: side_table<DeclId?>("chosen", lo, hi, null),
         dispatches: side_table<RunChoice?>("dispatches", lo, hi, null),
+        stages: side_table<PipeStage?>("stages", lo, hi, null),
         starved: side_table<TypeId?>("starved", lo, hi, null),
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
@@ -387,6 +400,11 @@ impl TypeFacts {
     fn record_dispatch(e: ExprId, d: RunChoice) { self.dispatches.set(e.index, d) }
 
     fn dispatch_at(e: ExprId) -> RunChoice? { self.dispatches.get(e.index) }
+
+    /// An adapter's place in a method chain, when typing seated one.
+    fn stage_at(e: ExprId) -> PipeStage? { self.stages.get(e.index) }
+
+    fn mark_stage(e: ExprId, s: PipeStage) { self.stages.set(e.index, s) }
 
     fn set_want(e: ExprId, ty: TypeId) {
         self.wants.set(e.index, ty)
@@ -531,6 +549,7 @@ impl TypeFacts {
         self.null_tails.lay(other.null_tails)
         self.chosen.lay(other.chosen)
         self.dispatches.lay(other.dispatches)
+        self.stages.lay(other.stages)
         self.binding_types.lay_named(other.binding_types, is_typed)
         // a WHOLE-FILE column: a named lay, never plain, keeps one
         // declaration's `true` from being stomped by another's
