@@ -1,8 +1,8 @@
 // `Family.Names` (COMPILER DB townhall §6.11): a foreign reader of a
 // body's names depends on that declaration's own slice, never on the
 // file's whole `Resolved`. `Family` is compiler-internal, so this file
-// names the stable, append-only ordinals: `Receivers` is 16, `Names`
-// is 26 (compiler/workspace.av's `ordinal`).
+// names the stable, append-only ordinals: `Visible` is 4, `Receivers`
+// is 16, `Names` is 26 (compiler/workspace.av's `ordinal`).
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
@@ -12,6 +12,8 @@ use query.{Key}
 fn names_receivers_key() -> Key { Key { family: 16, arg: 0 } }
 
 fn names_key(d: DeclId) -> Key { Key { family: 26, arg: d.index } }
+
+fn names_visible_key(ws: Workspace) -> Key { Key { family: 4, arg: ws.file_id("/w/src/main.av").index } }
 
 fn names_workspace(main: string) -> Workspace {
     new_workspace(
@@ -53,6 +55,16 @@ spec "compiler/workspace — Family.Names is declaration-grain" {
                 .db
                 .deps_of(names_receivers_key())
                 .any((k: Key) -> k.family == names_key(b).family && k.arg == names_key(b).arg)
+        }
+        then "and names the file's Visible, which carries the namespace the slice leaves out" {
+            let ws = names_workspace(names_source("1", "2"))
+            let _ = ws.items(ws.file_id("/w/src/main.av"))
+            let _ = ws.receivers()
+            let v = names_visible_key(ws)
+            ws
+                .db
+                .deps_of(names_receivers_key())
+                .any((k: Key) -> k.family == v.family && k.arg == v.arg)
         }
     }
     given "`b`'s slice in a file where `a` is edited" {
