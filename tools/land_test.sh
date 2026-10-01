@@ -2563,13 +2563,13 @@ EOF
         fi
     done
     AVRA_LAND_SP="$sp_stub" sh "$land" --call remote_suites "$d" 1 pa cli > /dev/null 2>&1
-    want="-p|true && build/avra check packages/pa --baseline tools/idioms.baseline && build/avra check packages/cli --baseline tools/idioms.baseline|build/avra test packages/pa|build/avra test packages/cli|"
+    want="-p|true && build/avra check packages/pa --baseline tools/idioms.baseline && build/avra check packages/cli --baseline tools/idioms.baseline|make -s -o avra libs && build/avra test packages/pa|make -s -o avra libs && build/avra test packages/cli|"
     got="$(tr '\n' '|' < "$scratch/remote-suites-argv" 2>/dev/null)"
-    if [ "$got" = "$want" ]; then ok "remote-suites: sp -p gets idioms, then one suite per package"
+    if [ "$got" = "$want" ]; then ok "remote-suites: sp -p gets idioms, then one suite per package, each building the libraries first"
     else bad "remote-suites: sp -p got [$got]"; fi
     AVRA_LAND_SP="$sp_stub" sh "$land" --call remote_suites "$d" 0 pa > /dev/null 2>&1
     got="$(tr '\n' '|' < "$scratch/remote-suites-argv" 2>/dev/null)"
-    if [ "$got" = "-p|build/avra test packages/pa|" ]; then ok "remote-suites: no .av change sends no idioms"
+    if [ "$got" = "-p|make -s -o avra libs && build/avra test packages/pa|" ]; then ok "remote-suites: no .av change sends no idioms"
     else bad "remote-suites: without .av, sp -p got [$got]"; fi
 }
 
