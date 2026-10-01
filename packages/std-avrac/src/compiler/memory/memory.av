@@ -635,9 +635,25 @@ fn writes_arg(callee: string, args: List<Reg>, slot: Reg) -> bool {
 /// argument, but this call's OWN first seat traces back to the SAME
 /// box `slot` does. Every writing row in the registry names its
 /// subject at seat 0, so that is the one seat this asks about.
+///
+/// A WRITE INTO A BOX HELD BELOW `slot` changes that box, never `slot`'s
+/// own slots: `c.set_at(i, v)` writes the list the cell holds, and the
+/// cell's reference to that list stands through it. What the write
+/// releases is the box's OLD ELEMENT, which reaches `slot` only by a
+/// cycle — and the chain above `slot` still holds it then.
 fn aliased_write(defs: List<int>, ins: List<Ins>, callee: string, args: List<Reg>, slot: Reg) -> bool {
     let box? = args.first() else { return false }
-    rt_writes(callee, 0) && same_reg(cell_root(defs, ins, slot), cell_root(defs, ins, box))
+    rt_writes(callee, 0) &&
+        same_reg(cell_root(defs, ins, slot), cell_root(defs, ins, box)) &&
+        !held_below(defs, ins, box, slot)
+}
+
+/// Whether `r` is a view taken, at any depth, FROM `from`.
+fn held_below(defs: List<int>, ins: List<Ins>, r: Reg, from: Reg) -> bool {
+    let d = defs[r.index]
+    if d < 0 { return false }
+    let src? = view_source(ins[d]) else { return false }
+    same_reg(src, from) || held_below(defs, ins, src, from)
 }
 
 /// THE STABLE IDENTITY `r` WAS ULTIMATELY READ FROM: walked through a

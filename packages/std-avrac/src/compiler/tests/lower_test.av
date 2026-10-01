@@ -221,6 +221,12 @@ spec "compiler/lower" {
         then "a Cell's content read past ANY user call owns — the callee may replace it" {
             all_ins(ir_of(cell_read("clear()"))).any(is_owned_get(it))
         }
+        then "a `set_at` of an int through a Cell writes the held list as a VIEW — no reference of its own" {
+            !all_ins(ir_of(cell_set_at("int", "i * 2", "0"))).any(is_owned_get(it))
+        }
+        then "a `set_at` of a string through a Cell writes the held list as a VIEW — no reference of its own" {
+            !all_ins(ir_of(cell_set_at("string", "\"s\" + \"t\"", "\"a\""))).any(is_owned_get(it))
+        }
     }
     given "`!` on a niche nullable" {
         then "a foreign pointer's is a null test, never the retaining insist" {
@@ -484,6 +490,12 @@ fn cross_branch_call() -> string {
 /// `clear` reaches the cell through no argument at all.
 fn cell_read(between: string) -> string {
     "once fn shared() -> Cell<List<string>> { Cell.new([\"a\" + \"b\"]) }\nfn clear() { shared().set([]) }\nfn at(i: int) -> int {\n    let xs = shared().get()\n    ${between}\n    xs[i].length\n}\nat(0)"
+}
+
+/// `n` writes of `value` into the list of `elem` a Cell holds, seeded
+/// with one `seed`.
+fn cell_set_at(elem: string, value: string, seed: string) -> string {
+    "fn fill(c: Cell<List<${elem}>>, n: int) {\n    for i in 0..n { c.set_at(i, ${value}) }\n}\nfill(Cell.new([${seed}]), 1)"
 }
 
 /// No `@lent` seat of any call in the slice is retained: each stands.
