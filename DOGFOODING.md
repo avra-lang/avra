@@ -478,8 +478,8 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       the few with one key — `[x.id for x in ws.decls.decls if
       is_impl_of(x, name)]`, asked per method dispatch — is a
       quadratic hiding as a comprehension. The idiomatic form is an
-      INDEX filled where the rows are minted (`Decls.impls_by_name`,
-      one lookup), or a memo per key (`Workspace.sources`: one read
+      INDEX filled where the rows are minted (`Decl`'s `@index name`,
+      read by `Decls.impls_named` — one bucket), or a memo per key (`Workspace.sources`: one read
       and one line index per file per run, where `source(ws, f)` had
       re-read and re-indexed the file for every declaration typed).
       Found by a `sample`, not by reading: the two frames were the

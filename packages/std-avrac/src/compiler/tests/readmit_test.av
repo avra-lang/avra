@@ -1,0 +1,199 @@
+// A FILE ADMITTED AGAIN REPLACES ITS ROWS IN ONE STEP. The second
+// admission reads another parse of the same path — a workspace over the
+// new text parses it — and what the file no longer declares is gone
+// from every read the table answers: the whole table, the file's own
+// list, each index, the interning key, the impls a target names. A
+// declaration that survives keeps its id, and every hash agrees with a
+// table that only ever admitted the new text.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use core.{DeclId, Param, named_ref, fp_list, same_file}
+use features.{Decl}
+use query.{Key}
+
+fn readmit_path() -> string { "/w/src/main.av" }
+
+fn readmit_files(files: Map<string, string>, paths: List<string>) -> Workspace {
+    new_workspace(memory_host(files, ["/w/avra.toml"].concat(paths)), "/w", avra())
+}
+
+/// A workspace over one file holding `text`, its declarations admitted.
+fn admitted(text: string) -> Workspace {
+    let files: Map<string, string> = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        "/w/src/main.av": text,
+    }
+    let ws = readmit_files(files, [readmit_path()])
+    let _ = ws.items(ws.file_id(readmit_path()))
+    ws
+}
+
+/// `path` in `ws` admitted again from `text`'s own parse.
+fn admit_again(ws: Workspace, path: string, files: Map<string, string>, text: string) {
+    mut moved = files
+    moved.set(path, text)
+    let again = readmit_files(moved, [path])
+    let p = again.parsed(again.file_id(path))
+    let _ = ws.decls.admit(ws.file_id(path), p.store, p.stmts)
+}
+
+fn one_file(text: string) -> Map<string, string> {
+    {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": text}
+}
+
+/// `before` admitted, then admitted again as `after`.
+fn readmitted(before: string, after: string) -> Workspace {
+    let ws = admitted(before)
+    admit_again(ws, readmit_path(), one_file(before), after)
+    ws
+}
+
+fn readmit_before() -> string {
+    "export type Box = { v: int }\n@traced\nfn gone() -> int {\n    1\n}\nfn kept() -> int {\n    2\n}\nimpl Box {\n    fn m() -> int {\n        3\n    }\n}\n"
+}
+
+fn readmit_after() -> string { "export type Box = { v: int }\nfn kept() -> int {\n    2\n}\n" }
+
+/// The file's declarations' names, in the order it lists them.
+fn readmit_names(ws: Workspace) -> string {
+    [ws.decls.decl(d).name for d in ws.decls.decls_of_file(ws.file_id(readmit_path()))].join(",")
+}
+
+fn named_here(ws: Workspace, name: string) -> DeclId? {
+    ws.decls.named_decl(readmit_path(), "fn", name)
+}
+
+fn decl_set(ws: Workspace) -> int { Decl.rows_in(ws.decls.decl_rows.get()).set_hash() }
+
+fn name_bucket(ws: Workspace, name: string) -> int {
+    let rs = Decl.rows_in(ws.decls.decl_rows.get())
+    rs.bucket_hash(rs.bucket_of_text(0, name))
+}
+
+/// The fold `Items` settles a file's rows to, over the rows as they stand.
+fn rows_print(ws: Workspace) -> int {
+    fp_list([ws.row_print(d) for d in ws.decls.decls_so_far(ws.file_id(readmit_path()))])
+}
+
+spec "compiler/readmit — a file admitted again replaces its rows" {
+    given "a declaration the file no longer makes" {
+        then "fixture: the first admission holds it everywhere" {
+            let ws = admitted(readmit_before())
+            readmit_names(ws).split(",").contains("gone") &&
+                ws.decls.all_decls().any(it.name == "gone") &&
+                named_here(ws, "gone") != null &&
+                !ws.decls.impls_named("Box").is_empty()
+        }
+        then "it leaves the whole table" {
+            !readmitted(readmit_before(), readmit_after()).decls.all_decls().any(it.name == "gone")
+        }
+        then "it leaves the file's own list" {
+            !readmit_names(readmitted(readmit_before(), readmit_after()))
+                .split(",")
+                .contains("gone")
+        }
+        then "it leaves its name's bucket" {
+            let ws = readmitted(readmit_before(), readmit_after())
+            Decl.by_name(ws.decls.decl_rows.get(), "gone").is_empty()
+        }
+        then "it leaves the bucket of every mark it wore" {
+            !readmitted(readmit_before(), readmit_after())
+                .decls
+                .indexed_by_mark("traced")
+                .any(it.name == "gone")
+        }
+        then "its key names nothing" {
+            named_here(readmitted(readmit_before(), readmit_after()), "gone") == null
+        }
+        then "an impl it no longer declares leaves the impls its target names" {
+            readmitted(readmit_before(), readmit_after()).decls.impls_named("Box").is_empty()
+        }
+        then "a declaration generated over the old parse goes with it" {
+            let ws = admitted(readmit_before())
+            let f = ws.file_id(readmit_path())
+            let no_params: List<Param> = []
+            let _ = ws
+                .decls
+                .mint_generated(f, "kept\$\$twin", no_params, no_params, named_ref("int"), "kept", "traced", null)
+            let held = ws.decls.all_decls().any(it.name == "kept\$\$twin")
+            admit_again(ws, readmit_path(), one_file(readmit_before()), readmit_after())
+            held &&
+                !ws.decls.all_decls().any(it.name == "kept\$\$twin") &&
+                !readmit_names(ws).split(",").contains("kept\$\$twin")
+        }
+    }
+    given "what survives" {
+        then "a kept declaration keeps its id" {
+            let ws = admitted(readmit_before())
+            let first = named_here(ws, "kept")
+            admit_again(ws, readmit_path(), one_file(readmit_before()), readmit_after())
+            first != null && named_here(ws, "kept")?.index ?? -1 == first!.index
+        }
+        then "the file's list is what one admission of the new text makes" {
+            readmit_names(readmitted(readmit_before(), readmit_after())) == readmit_names(admitted(readmit_after()))
+        }
+        then "the set hash is the hash of the rows the new text makes" {
+            decl_set(readmitted(readmit_before(), readmit_after())) == decl_set(admitted(readmit_after()))
+        }
+        then "a name's bucket hash is the new text's" {
+            let ws = readmitted(readmit_before(), readmit_after())
+            let fresh = admitted(readmit_after())
+            name_bucket(ws, "kept") == name_bucket(fresh, "kept") &&
+                name_bucket(ws, "gone") == name_bucket(fresh, "gone")
+        }
+        then "a renamed declaration is a new one, the old name gone" {
+            let ws = readmitted(
+                readmit_before(),
+                readmit_before().replace("fn kept()", "fn renamed()"),
+            )
+            named_here(ws, "kept") == null &&
+                named_here(ws, "renamed") != null &&
+                readmit_names(ws).split(",").contains("renamed")
+        }
+    }
+    given "a file admitted again with nothing" {
+        then "its Main alone is left" {
+            readmit_names(readmitted(readmit_before(), "")) == "main"
+        }
+        then "nothing it held answers any lookup" {
+            let ws = readmitted(readmit_before(), "")
+            !ws.decls.all_decls().any((d: Decl) -> d.name == "kept" || d.name == "Box") &&
+                ws.decls.impls_named("Box").is_empty()
+        }
+    }
+    given "a reader of the old rows" {
+        then "the rows it recorded fold to another print" {
+            let ws = admitted(readmit_before())
+            let f = ws.file_id(readmit_path())
+            let settled = ws.db.value_hash_of(Key { family: items_ordinal(), arg: f.index })
+            admit_again(ws, readmit_path(), one_file(readmit_before()), readmit_after())
+            settled != null &&
+                settled! == rows_print(admitted(readmit_before())) &&
+                settled! != rows_print(ws)
+        }
+    }
+    given "a declaration moved between two files of one module" {
+        then "one row answers its name, homed in the file it moved to" {
+            let files: Map<string, string> = {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/a.av": "fn x() -> int {\n    1\n}\nfn y() -> int {\n    2\n}\n",
+                "/w/src/b.av": "fn z() -> int {\n    3\n}\n",
+            }
+            let ws = readmit_files(files, ["/w/src/a.av", "/w/src/b.av"])
+            let a = ws.file_id("/w/src/a.av")
+            let b = ws.file_id("/w/src/b.av")
+            let _ = ws.items(a)
+            let _ = ws.items(b)
+            admit_again(ws, "/w/src/a.av", files, "fn y() -> int {\n    2\n}\n")
+            admit_again(
+                ws,
+                "/w/src/b.av",
+                files,
+                "fn z() -> int {\n    3\n}\nfn x() -> int {\n    1\n}\n",
+            )
+            let xs = Decl.by_name(ws.decls.decl_rows.get(), "x")
+            xs.length == 1 && same_file(xs[0].file, b) && !same_file(xs[0].file, a)
+        }
+    }
+}

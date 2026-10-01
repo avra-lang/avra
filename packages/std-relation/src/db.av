@@ -8,7 +8,10 @@
 //! with the run, and a rerun sweeps what it did not write again — so a
 //! keyed rerun upserts and a keyless one replaces its whole set. A query
 //! never reads a relation it writes, and two queries never own one key.
-use rows.{Rows, rows, Stamp, unowned}
+//! A NAMED OWNER runs the same way with no frame: a writer outside every
+//! query names its rows' owner itself (`put_owned`), and its run's close
+//! sweeps exactly as a query's does.
+use rows.{Rows, named_rows, Stamp, unowned}
 use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with}
 
 extern fn avra_trap(message: string)
@@ -24,7 +27,7 @@ export type Db = {
     closed: Cell<bool>,
     hashes: Cell<List<fn() -> int>>,
     closers: Cell<List<fn() -> void>>,
-    sweepers: Cell<List<fn(int, int) -> void>>,
+    sweepers: Cell<List<fn(Db, int, int) -> void>>,
     hooks: Hooks,
     durable: Durable,
     quiet: bool,
@@ -130,7 +133,7 @@ fn made(hooks: Hooks, quiet: bool, durable: Durable) -> Db {
     next.set(id + 1)
     let hashes: Cell<List<fn() -> int>> = Cell.new([])
     let closers: Cell<List<fn() -> void>> = Cell.new([])
-    let sweepers: Cell<List<fn(int, int) -> void>> = Cell.new([])
+    let sweepers: Cell<List<fn(Db, int, int) -> void>> = Cell.new([])
     let cells: Cell<Map<string, int>> = Cell.new({})
     let runs: Cell<List<int>> = Cell.new([0])
     let running: Cell<List<Frame>> = Cell.new([])
@@ -158,7 +161,7 @@ fn made(hooks: Hooks, quiet: bool, durable: Durable) -> Db {
 impl Db {
     /// A relation reached here for the first time: its set hash and its
     /// close, each already bound to this Db.
-    fn joined(hash: fn() -> int, close: fn() -> void, sweep: fn(int, int) -> void) {
+    fn joined(hash: fn() -> int, close: fn() -> void, sweep: fn(Db, int, int) -> void) {
         self.hashes.push(hash)
         self.closers.push(close)
         self.sweepers.push(sweep)
@@ -184,17 +187,26 @@ impl Db {
     /// A write into `family`, counted — refused when the running query
     /// read that relation.
     fn wrote(family: int) {
-        self.writes.set(self.writes.get() + 1)
+        self.counted()
         let top? = self.frame() else { return }
         if top.read.get().contains(family) { self.refuse(self_read()) }
         if !top.wrote.get().contains(family) { top.wrote.push(family) }
     }
+
+    /// A write counted: what a kept answer settled at moves on.
+    fn counted() { self.writes.set(self.writes.get() + 1) }
 
     /// Who a write belongs to: the running query's run, or no one.
     fn stamp() -> Stamp {
         let top? = self.frame() else { return unowned }
         Stamp { owner: top.owner, run: top.run }
     }
+
+    /// A write `owner` makes in the run it has open.
+    fn stamp_of(owner: int) -> Stamp { Stamp { owner: owner, run: self.runs.get()[owner] } }
+
+    /// An owner named by the writer, never a query: its dense cell.
+    fn owner_named(key: string) -> int { self.interned("named:${key}") }
 
     /// The running query's owner cell, when one runs.
     fn running_owner() -> int? { self.frame()?.owner }
@@ -248,10 +260,23 @@ impl Db {
         known
     }
 
-    /// A query cell's run opened: the next run of that owner, in a frame.
-    fn began(owner: int) {
+    /// The next run of `owner` opened, with no frame: answers the run.
+    fn opened_run(owner: int) -> int {
         let run = self.runs.get()[owner] + 1
         self.runs.set_at(owner, run)
+        run
+    }
+
+    /// `owner`'s open run closed: every relation sweeps the rows it did
+    /// not write again in that run.
+    fn closed_run(owner: int) {
+        let run = self.runs.get()[owner]
+        for s in self.sweepers.get() { s(self, owner, run) }
+    }
+
+    /// A query cell's run opened: the next run of that owner, in a frame.
+    fn began(owner: int) {
+        let run = self.opened_run(owner)
         let wrote: List<int> = []
         let read: List<int> = []
         self
@@ -262,10 +287,9 @@ impl Db {
     /// The running query's run closed: every relation sweeps the rows
     /// this owner did not write again. Answers whether the run wrote.
     fn ended(owner: int) -> bool {
-        let run = self.runs.get()[owner]
         let open = self.running.get()
         self.running.set(open.slice(0, open.length - 1))
-        for s in self.sweepers.get() { s(owner, run) }
+        self.closed_run(owner)
         let top? = open.last() else { return false }
         !top.wrote.get().is_empty()
     }
@@ -320,13 +344,13 @@ enum Slot<R> {
 }
 
 /// One relation's rows under every Db, indexed by the Db's id, each
-/// opened with the relation's own indexes: how many, and a bit per index
-/// set where it hashes in order.
-export type Stores<R> = { slots: Cell<List<Slot<R>>>, indexes: int, ordered: int }
+/// opened with the relation's own name and indexes: how many, and a bit
+/// per index set where it hashes in order.
+export type Stores<R> = { slots: Cell<List<Slot<R>>>, name: string, indexes: int, ordered: int }
 
-export fn stores<R>(indexes: int, ordered: int) -> Stores<R> {
+export fn stores<R>(name: string, indexes: int, ordered: int) -> Stores<R> {
     let none: List<Slot<R>> = []
-    Stores { slots: Cell.new(none), indexes: indexes, ordered: ordered }
+    Stores { slots: Cell.new(none), name: name, indexes: indexes, ordered: ordered }
 }
 
 impl Stores<R> {
@@ -365,7 +389,7 @@ impl Stores<R> {
             .joined(
                 () -> open_hash(slots.get()[id]),
                 () -> slots.set_at(id, Slot.Closed),
-                (owner: int, run: int) -> swept(slots.get()[id], owner, run),
+                (on: Db, owner: int, run: int) -> swept(slots.get()[id], on, owner, run),
             )
         made
     }
@@ -375,7 +399,7 @@ impl Stores<R> {
         self.fresh()
     }
 
-    fn fresh() -> Rows<R> { rows([(self.ordered >> i) & 1 == 1 for i in 0..self.indexes]) }
+    fn fresh() -> Rows<R> { named_rows(self.name, [(self.ordered >> i) & 1 == 1 for i in 0..self.indexes]) }
 }
 
 /// A cell's live hash: cell 0 the relation's set, cell `b + 1` bucket
@@ -388,8 +412,8 @@ fn cell_hash<R>(s: Slot<R>, cell: int) -> int {
 }
 
 /// A slot's rows swept of what `owner` did not write in `run`.
-fn swept<R>(s: Slot<R>, owner: int, run: int) {
-    match s { .Open(held) -> held.sweep(owner, run), .Unreached or .Closed -> no_word() }
+fn swept<R>(s: Slot<R>, db: Db, owner: int, run: int) {
+    match s { .Open(held) -> held.sweep(db, owner, run), .Unreached or .Closed -> no_word() }
 }
 
 /// A slot's set hash: its rows', none while unreached or closed.
