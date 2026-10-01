@@ -1,0 +1,76 @@
+// A BODY READER WAITS IN PLACE, however long and however often it is
+// woken. A handler reading its body parks until the connection hands
+// it more. Here the peer sends half a body, waits a second, pings two
+// thousand times — each ping answered before the next is sent, so each
+// is a turn of its own that wakes the reader — then sends the rest. The
+// reader's stack is no deeper for the wait or the pings (one that woke
+// itself and recursed per wake overflowed in the second alone), and
+// the link answers every ping on the way. Both engines.
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, within, sleep}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.server.{served, timing}
+use @std.http.h2.{Frame, preface, frame_bytes, frames_in, end_headers, end_stream, ack}
+use @std.http.hpack.{header_field, encoder}
+
+type App = {}
+
+fn answer(q: Request<Unrouted>) -> Response { text(200, q.body.text() ?? "?") }
+
+fn posted() -> Bytes {
+    mut e = encoder(false)
+    let head = [
+        header_field(":method", "POST"),
+        header_field(":scheme", "http"),
+        header_field(":path", "/"),
+        header_field(":authority", "h"),
+        header_field("content-length", "8"),
+    ]
+    frame_bytes(.Headers, end_headers, 1, e.encoded(head))
+}
+
+/// Frames read until `done` holds or the peer is quiet for a second.
+fn heard_until(c: Conn, done: fn(List<Frame>) -> bool) -> List<Frame> {
+    mut buf = no_bytes
+    while !done(frames_in(buf)) {
+        let read = match within secs(1) { c.read(65536) } { .Ok(b) -> b, .Err(_) -> null }
+        let got? = read else { return frames_in(buf) }
+        buf = buf.concat(got)
+    }
+    frames_in(buf)
+}
+
+fn pinged(c: Conn, n: int) -> Result<int, NetError> {
+    mut answered = 0
+    for i in 0..n {
+        c.write(frame_bytes(.Ping, 0, 0, [0, 0, 0, 0, 0, 0, i / 256 % 256, i % 256].bytes()!))?
+        let fs = heard_until(c, (fs) -> fs.any(it.kind is .Ping && it.flags & ack != 0))
+        if fs.any(it.kind is .Ping && it.flags & ack != 0) { answered = answered + 1 }
+    }
+    .Ok(answered)
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App {}, limits(), timing()) { _a, q -> answer(q) }
+    spawn s.run(1)
+    defer s.stop()
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    defer { let _ = c.close() }
+    c
+        .write(
+            preface
+                .concat(frame_bytes(.Settings, 0, 0, no_bytes))
+                .concat(posted())
+                .concat(frame_bytes(.Data, 0, 1, "half".bytes())),
+        )?
+    sleep(ms(1000))
+    let pings = pinged(c, 2000)?
+    c.write(frame_bytes(.Data, end_stream, 1, "done".bytes()))?
+    let fs = heard_until(c, (fs) -> fs.any(it.stream == 1 && it.flags & end_stream != 0))
+    let body = [f.payload for f in fs if f.stream == 1 && f.kind is .Data].bytes().text() ?? "?"
+    .Ok("pings answered while the body waited: ${pings}\nthe body read whole: ${body}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

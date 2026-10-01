@@ -185,21 +185,24 @@ export fn stream_body(
 }
 
 /// One stream of a connection read as a transport: a read takes what
-/// the connection has handed the stream, and while that is nothing it
-/// rings the bell — so the connection hands on what it holds — and
-/// waits on it. The connection's own task reads the link; a stream is
-/// not the link's to read, write or close — its answer goes out through
-/// the connection.
+/// the connection has handed the stream, waiting on the bell while that
+/// is nothing — in place, however often the bell wakes it, since every
+/// frame the connection reads may — and rings it once the take leaves
+/// the stream empty, so the connection hands on what it holds. It never
+/// rings while it waits: that would wake itself. The connection's own
+/// task reads the link; a stream is not the link's to read, write or
+/// close — its answer goes out through the connection.
 type Inbound = { handed: Cell<Arrived>, bell: Bell, link: dyn Transport }
 
 impl Transport for Inbound {
-    fn wire_read(max: int) -> Result<Bytes?, WireError> {
-        let took? = taken(self.handed) else {
-            self.bell.ring()
+    fn wire_read(_max: int) -> Result<Bytes?, WireError> {
+        mut took = taken(self.handed)
+        while took == null {
             waited_on(self.bell)?
-            return self.wire_read(max)
+            took = taken(self.handed)
         }
-        took
+        if self.wire_silent() { self.bell.ring() }
+        took ?? .Err(.Reset)
     }
     fn wire_write(_bytes: Bytes) -> Result<int, WireError> { .Ok(0) }
     fn wire_shutdown() -> Result<int, WireError> { .Ok(0) }
