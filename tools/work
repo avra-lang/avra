@@ -73,13 +73,13 @@ land() {
     git rebase -q origin/main || die "rebase onto main conflicted; resolve, then run land again"
     [ -n "$(git log --format=%h origin/main..HEAD)" ] || die "nothing to land"
     git push -q --force-with-lease -u origin "$branch"
-    if ! gh pr view "$branch" >/dev/null 2>&1; then
+    if [ "$(gh pr list --head "$branch" --state open --json number --jq length)" = 0 ]; then
         gh pr create --base main --head "$branch" \
             --title "$(git log --reverse --format=%s origin/main..HEAD | head -1)" \
             --body "$(git log --reverse --format='- %s' origin/main..HEAD)"
     fi
     gh pr merge "$branch" --auto
-    gh pr view "$branch" --json url --jq .url
+    gh pr list --head "$branch" --state open --json url --jq '.[0].url'
 }
 
 status() {
