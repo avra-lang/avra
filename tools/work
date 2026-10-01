@@ -48,8 +48,11 @@ test_() {
     changed=$(git diff --name-only --diff-filter=d origin/main...HEAD -- '*.av' | tr '\n' ' ')
     set --
     [ -z "$changed" ] || set -- "build/avra fmt --check $changed"
-    for p in $(affected); do
-        set -- "$@" "make -o avra libs >/dev/null && build/avra test packages/$p"
+    # Suites ride three Sprite jobs, each building the compiler once.
+    pkgs=$(affected)
+    for i in 0 1 2; do
+        group=$(echo "$pkgs" | awk -v i=$i 'NR % 3 == i' | tr '\n' ' ')
+        [ -z "$group" ] || set -- "$@" "make -o avra libs >/dev/null && s=0; for p in $group; do build/avra test packages/\$p || s=1; done; exit \$s"
     done
     set -- "$@" "build/avra check packages/std-avrac --baseline tools/idioms.baseline"
     AVRA_SP_TREE=$PWD sh "$tools/sp" -p "$@"
