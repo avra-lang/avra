@@ -780,3 +780,64 @@ Suite letters as `docs/2026_09_29_HTTP_CONFORMANCE.md` names them
 | 56 | none — a reply coded without chunked is REFUSED (`.Coding`), not read to the close |
 | 57 | C › "a CONNECT's 2xx is a tunnel, its length ignored" |
 | 58 | R › "chunked beside a length is refused" — refused rather than taken as chunked |
+
+## 7. Server hardening reference — every bound and deadline
+
+Every bound is a field of an inspectable value with a default, built at the server and
+read by the framer: `served(l, make, limits, timing, handle)`. `Limits {}` and `Timing {}`
+are the defaults, and a literal overrides one field at a time (`Limits { head: 16384 }`,
+`Timing { idle: secs(30) }`). Read from `frame.av` and `server.av`, not from memory.
+
+### 7.1 The framer's bounds (`Limits`)
+
+| Bound | Default | Refused as | What it bounds, and the attack it answers |
+|---|---|---|---|
+| `line` | 8 KiB | `.LineLength` → 414 | One request/status line, before a line can grow without bound. |
+| `field` | 8 KiB | `.FieldLength` → 431 | One field line. |
+| `head` | 64 KiB | `.HeadLength` → 431 | The whole head (line, fields, blank line). |
+| `fields` | 100 | `.FieldCount` → 431 | How many field lines one head carries. |
+| `body` | 1 MiB | `.BodyLength` → 413 | A body GATHERED whole into memory; refused only when something asks to gather it. |
+| `stream` | 1 GiB | `.BodyLength` → 413 | A body READ piece by piece; refused at the head. One piece of memory however long it runs. |
+| `ext` | 4 KiB | `.Chunk` → 400 | Total chunk extensions on a body. |
+| `trailers` | 16 | `.Chunk` → 400 | Trailer field count after the last chunk. |
+
+A refusal's status is `status_of(why)`; the body limit answers 413, a line 414, a head or
+field 431, and every other framing break 400.
+
+### 7.2 The server's deadlines (`Timing`)
+
+| Bound / deadline | Default | What it ends | Attack it bounds |
+|---|---|---|---|
+| `handshake` | 10 s | A TLS handshake, measured from the accept. | A peer that opens TLS and stalls. |
+| `handshakes` | 1024 at once | How many handshakes run on one core. | A handshake flood across connections. |
+| `head` | 10 s | A head since its last byte. | Slowloris: a head dribbled one byte at a time. |
+| `body` | 60 s | A body since its last byte. | A slow or stalled body. |
+| `idle` | 75 s | An idle keep-alive connection — and a peer that takes no output. | A connection parked forever. |
+| `requests` | 1000 | How many requests one connection serves. | Connection reuse without end. |
+| `drain` | 30 s | Every wait, once `stop` is called. | A shutdown held open by a parked reader. |
+
+Every deadline is per connection and ends the wait it bounds; a deadline that passes
+closes the connection. `handshakes` and `requests` are counts, not clocks.
+
+### 7.3 HTTP/2's windows and caps
+
+HTTP/2's own bounds are advertised in the server's SETTINGS, built by
+`server_settings(limits)` from the same `Limits` the 1.1 framer uses.
+
+| Setting (§6.5) | Value | Where it comes from |
+|---|---|---|
+| `SETTINGS_MAX_CONCURRENT_STREAMS` | 100 | `server_settings`, fixed. |
+| `SETTINGS_MAX_HEADER_LIST_SIZE` | `limits.head` (64 KiB) | `server_settings(limits)`. |
+| `SETTINGS_MAX_FRAME_SIZE` | 16384 | Protocol default; not raised. |
+| `SETTINGS_INITIAL_WINDOW_SIZE` | 65535 | Protocol default; grown by WINDOW_UPDATE. |
+| `SETTINGS_HEADER_TABLE_SIZE` | 4096 | Protocol default; HPACK's dynamic-table bound (`hpack.default_table`, RFC 9113 §6.5.2). |
+
+A head whose decoded list passes the header-list bound is answered 431 and the stream reset
+with NO_ERROR; a chunk of decoded list is bounded before it allocates, so an HPACK bomb
+meets the list bound rather than the allocator. Churn — streams reset by the peer or by a
+broken stream law this end resets — is counted, and past `2 × streams + answered` the
+connection ends with GOAWAY ENHANCE_YOUR_CALM (rapid reset, CVE-2023-44487); a client that
+only opens and resets meets it after 201 streams of bounded work.
+
+To change an h2 cap that is not a `Limits` field yet, edit `server_settings`; the stream
+cap and the frame/window defaults are protocol facts and are not caller knobs.
