@@ -56,14 +56,13 @@ fn refusing(c: Conn, _d: Duration) -> dyn Transport? {
 /// Everything the server sends until it closes or goes quiet.
 fn heard(c: Conn) -> Bytes {
     mut got = no_bytes
-    mut open = true
-    while open {
+    while true {
         match within ms(500) { c.read(65536) } {
             .Ok(b) -> {
-                open = b != null
                 got = got.concat(b ?? no_bytes)
+                if b == null { break }
             },
-            .Err(_) -> { open = false },
+            .Err(_) -> { break },
         }
     }
     got

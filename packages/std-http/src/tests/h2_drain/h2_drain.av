@@ -35,15 +35,16 @@ type Heard = { frames: List<Frame>, ended: bool }
 fn heard_to_end(c: Conn, quiet: Duration) -> Heard {
     mut got = no_bytes
     mut ended = false
-    mut open = true
-    while open {
+    while true {
         match within quiet { c.read(65536) } {
             .Ok(b) -> {
-                ended = b == null
-                open = !ended
                 got = got.concat(b ?? no_bytes)
+                if b == null {
+                    ended = true
+                    break
+                }
             },
-            .Err(_) -> { open = false },
+            .Err(_) -> { break },
         }
     }
     Heard { frames: frames_in(got), ended: ended }
