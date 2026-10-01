@@ -369,6 +369,9 @@ fn dispatched_call(
 ) -> TypeId {
     let placed? = cx.placed(e, callee, cx.bound_decl(e), args, s.params) else { return cx.error_type }
     let d? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args) }
+    if cx.view.decls.is_meta_fn(d, "embed") && cx.view.store.expr(placed.args[0]).text_of() == null {
+        return embed_computed_path(cx, e)
+    }
     if !cx.seat_contracts(e, callee, d, 0, placed.args, null) { return cx.error_type }
     if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, d, placed.args) }
     let tp: List<string> = cx.tparams(d)
@@ -638,6 +641,25 @@ fn value_takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
                 "`${callee}` is a fn VALUE — it takes no type arguments",
                 "pinned here",
                 null,
+            ),
+        )
+}
+
+/// `embed`'s path is read before any analysis runs over the file it
+/// names — a declared reach, like a `use` line's — so a computed
+/// path can never be found at admit time, and the file it would have
+/// named could change invisibly between one compile and the next.
+const embed_literal_law: string = "`embed` reads a file named in the source — its path is a literal"
+
+fn embed_computed_path(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "fns.embed_literal",
+                cx.loc_of(e),
+                embed_literal_law,
+                "this path is computed, not written here",
+                "name the file directly, as a string literal",
             ),
         )
 }
