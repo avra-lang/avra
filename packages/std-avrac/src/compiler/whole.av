@@ -169,22 +169,14 @@ impl Workspace {
         let base = dir_of(p.source.file)
         for e in p.store.stmts_exprs(p.stmts) {
             let rel = embed_literal_at(p.store, e)
-            if rel != null { let _ = self.embedded_file(embed_resolved(base, rel!)) }
+            if rel != null { let _ = self.minted_file(embed_resolved(base, rel!)) }
         }
     }
 
-    /// Whether a file is Avra source: source-shaped (`is_source` — a lone
-    /// program's own name included) and never a file an `embed` named, which
-    /// is data with no module to reach, resolve, sign or analyze.
-    fn reads_as_source(path: string) -> bool {
-        is_source(path, dir_of(path)) && self.embedded.get().get(path) == null
-    }
-
-    /// A file an `embed` names: minted as data, never as source.
-    fn embedded_file(path: string) -> FileId {
-        self.embedded.put(path, true)
-        self.minted_file(path)
-    }
+    /// Whether a file is Avra source, by its shape alone (`is_source` — a lone
+    /// program's own name included). An `embed` of a `.av` file names source
+    /// still; an embedded data file has no module to reach, resolve or analyze.
+    fn reads_as_source(path: string) -> bool { is_source(path, dir_of(path)) }
 
     fn admit_module(from: Package, m: ModulePath) {
         if m.malformed() { return }
