@@ -1125,9 +1125,9 @@ impl Workspace {
 
     // ── The families ──
     /// A path's identity — the table mints it at first mention.
-    /// A file's identity — and a file READ reaches its module whole, so its
-    /// siblings stand the moment it does; a held file reaches only itself,
-    /// its module's record answering for the rest.
+    /// A file's identity — and a file READ reaches its module whole and every
+    /// component its directory declares, so those stand the moment it does; a
+    /// held file reaches only itself, its module's record answering for the rest.
     fn file_id(path: string) -> FileId {
         let known? = self.decls.known_file_id(path) else {
             let f = self.minted_file(path)
@@ -1135,6 +1135,8 @@ impl Workspace {
                 // listed, not `module_files`: its cache would answer the query that
                 // later reads the module, which then records no edge on the manifest
                 for sibling in self.listed_files(self.module_path_of(path)) { let _ = self.minted_file(sibling) }
+                // its parse reads every component its directory declares
+                for sibling in self.declaring_siblings(path) { let _ = self.minted_file(sibling) }
             }
             return f
         }
