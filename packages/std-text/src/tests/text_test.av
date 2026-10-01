@@ -17,6 +17,7 @@ use @std.text.{
     from_codepoints,
     nul_at,
     has_nul,
+    with_room,
 }
 
 /// A text's code points as decimal words.
@@ -129,6 +130,21 @@ spec "std/text" {
         }
         then "a NUL is an ordinary needle — absent where it is not" {
             !"abc".contains(from_codepoint(0))
+        }
+    }
+    given "a buffer with room" {
+        then "it is empty, whatever its room" {
+            with_room(0).length == 0 && with_room(4096).length == 0 && with_room(4096) == "".bytes()
+        }
+        then "what is appended reads back whole, past the room as well as within it" {
+            let within = with_room(8).concat("abc".bytes()).concat("de".bytes())
+            let past = with_room(2).concat("abc".bytes()).concat("defgh".bytes())
+            within == "abcde".bytes() && past == "abcdefgh".bytes()
+        }
+        then "a mut buffer grown in a loop holds every piece in order" {
+            mut out = with_room(64)
+            for i in 0..20 { out = out.concat("${i},".bytes()) }
+            out.text() ?? "?" == ["${i}," for i in 0..20].join("")
         }
     }
 }
