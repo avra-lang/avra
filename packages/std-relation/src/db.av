@@ -18,16 +18,19 @@ extern fn avra_trap(message: string)
 /// owner), and the queries it runs — how many writes it has seen, each
 /// query call's dense cell, each owner's run count, the frames open now,
 /// and a frame per query of the OWNER's own that touched it, by its cell —
-/// and where its owner keeps query answers past the process.
+/// and where its owner keeps query answers past the process. The hooks can
+/// be swapped (`armed`, `quieted`): each family registered here is
+/// re-registered through the new ones (`registrars`).
 export type Db = {
     id: int,
     closed: Cell<bool>,
     hashes: Cell<List<fn() -> int>>,
     closers: Cell<List<fn() -> void>>,
     sweepers: Cell<List<fn(int, int) -> void>>,
-    hooks: Hooks,
+    hooks: Cell<Hooks>,
     durable: Durable,
-    quiet: bool,
+    quiet: Cell<bool>,
+    registrars: Cell<List<fn(fn(fn(int) -> int) -> int) -> void>>,
     writes: Cell<int>,
     cells: Cell<Map<string, int>>,
     runs: Cell<List<int>>,
@@ -51,7 +54,9 @@ type Frame = { owner: int, run: int, wrote: Cell<List<int>>, read: Cell<List<int
 /// query cell — 1 reuse, 0 compute, -1 no opinion, the Db's own count of
 /// writes deciding — `settled` hears the cell settle, and `running` names
 /// the owner's own query running now, -1 when none: asked only when a row
-/// is read or written outside a `@query`, never per query.
+/// is read or written outside a `@query`, never per query. `moved` hears
+/// each cell a write moves, `late` when a reader saw it this revision, and
+/// answers whether the owner takes it — false refuses a late write.
 export type Hooks = {
     family: fn(fn(int) -> int) -> int,
     record: fn(int, int) -> int,
@@ -61,6 +66,7 @@ export type Hooks = {
     opened: fn(int, int) -> int,
     settled: fn(int, int) -> void,
     running: fn() -> int,
+    moved: fn(int, int, bool) -> bool,
 }
 
 /// A Db nothing records: families counted in this process, no reader,
@@ -76,6 +82,7 @@ export fn quiet_hooks() -> Hooks {
         opened: (_family: int, _cell: int) -> -1,
         settled: (_family: int, _cell: int) -> no_word(),
         running: () -> 0 - 1,
+        moved: (_family: int, _cell: int, late: bool) -> !late,
     }
 }
 
@@ -136,15 +143,17 @@ fn made(hooks: Hooks, quiet: bool, durable: Durable) -> Db {
     let running: Cell<List<Frame>> = Cell.new([])
     let owner_frames: Cell<Map<string, Frame>> = Cell.new({})
     let no_frame: Frame? = null
+    let registrars: Cell<List<fn(fn(fn(int) -> int) -> int) -> void>> = Cell.new([])
     Db {
         id: id,
         closed: Cell.new(false),
         hashes: hashes,
         closers: closers,
         sweepers: sweepers,
-        hooks: hooks,
+        hooks: Cell.new(hooks),
         durable: durable,
-        quiet: quiet,
+        quiet: Cell.new(quiet),
+        registrars: registrars,
         writes: Cell.new(0),
         cells: cells,
         runs: runs,
@@ -165,7 +174,30 @@ impl Db {
     }
 
     /// Whether a read here is heard by no one: no owner, no query running.
-    fn unheard() -> bool { self.quiet && self.running.get().is_empty() }
+    fn unheard() -> bool { self.quiet.get() && self.running.get().is_empty() }
+
+    /// A family registered through this Db's hooks now, and again through
+    /// any hooks it is armed with later — `again` receives the register fn,
+    /// so it never holds the Db itself.
+    fn registered(verify: fn(int) -> int, again: fn(fn(fn(int) -> int) -> int) -> void) -> int {
+        self.registrars.push(again)
+        let register = self.hooks.get().family
+        register(verify)
+    }
+
+    /// The Db handed to an owner: its hooks swapped, every family registered
+    /// here told to the owner.
+    fn armed(hooks: Hooks) { self.rearmed(hooks, false) }
+
+    /// The Db let go by its owner — back to the hooks no one hears.
+    fn quieted() { self.rearmed(quiet_hooks(), true) }
+
+    fn rearmed(hooks: Hooks, quiet: bool) {
+        self.hooks.set(hooks)
+        self.quiet.set(quiet)
+        let register = hooks.family
+        for again in self.registrars.get() { again(register) }
+    }
 
     /// A read of `cell` in `family` recorded, answering the reader's token
     /// — refused when the running query wrote that relation.
@@ -177,7 +209,7 @@ impl Db {
     }
 
     fn recorded(family: int, cell: int) -> int {
-        let record = self.hooks.record
+        let record = self.hooks.get().record
         record(family, cell)
     }
 
@@ -204,7 +236,7 @@ impl Db {
     fn frame() -> Frame? {
         let top = self.running.get().last()
         if top != null { return top }
-        let ask = self.hooks.running
+        let ask = self.hooks.get().running
         let query = ask()
         if query < 0 { return null }
         // the owner query read last is the one reading again, almost always
@@ -272,31 +304,37 @@ impl Db {
 
     /// The owner's verdict on a query cell: 1 reuse, 0 compute, -1 none.
     fn verdict(family: int, cell: int) -> int {
-        let opened = self.hooks.opened
+        let opened = self.hooks.get().opened
         opened(family, cell)
     }
 
     /// A query cell settled, told to the owner.
     fn settle(family: int, cell: int) {
-        let settled = self.hooks.settled
+        let settled = self.hooks.get().settled
         settled(family, cell)
+    }
+
+    /// A cell a write moves, told to the owner: whether it takes the write.
+    fn moved(family: int, cell: int, late: bool) -> bool {
+        let heard = self.hooks.get().moved
+        heard(family, cell, late)
     }
 
     /// The owner's revision, -1 when nothing is recorded.
     fn revision() -> int {
-        let now = self.hooks.revision
+        let now = self.hooks.get().revision
         now()
     }
 
     /// The name a reader's token stands for.
     fn reader(token: int) -> string {
-        let named = self.hooks.reader
+        let named = self.hooks.get().reader
         named(token)
     }
 
     /// A write the law refuses, told to the owner.
     fn refuse(words: string) {
-        let heard = self.hooks.refused
+        let heard = self.hooks.get().refused
         heard(words)
     }
 
@@ -359,8 +397,16 @@ impl Stores<R> {
         self.slots.set_at(db.id, Slot.Open(made))
         let slots = self.slots
         let id = db.id
-        let register = db.hooks.family
-        made.family.set(register((cell: int) -> cell_hash(slots.get()[id], cell)))
+        let verify = (cell: int) -> cell_hash(slots.get()[id], cell)
+        made
+            .family
+            .set(
+                db
+                    .registered(
+                        verify,
+                        (register: fn(fn(int) -> int) -> int) -> made.family.set(register(verify)),
+                    ),
+            )
         db
             .joined(
                 () -> open_hash(slots.get()[id]),
@@ -413,13 +459,22 @@ export fn memo<V>() -> Memo<V> {
     Memo { kept: kept, families: families }
 }
 
+/// A query's or an input's family verifies nothing: its answer is kept by
+/// the Db, not re-derived by the owner.
+fn no_verify(_cell: int) -> int { 0 }
+
 impl Memo<V> {
     /// This query's family under `db`, registered on first ask.
     fn family(db: Db) -> int {
-        let known? = self.families.get().get("${db.id}") else {
-            let register = db.hooks.family
-            let made = register((_cell: int) -> 0)
-            self.families.put("${db.id}", made)
+        let key = "${db.id}"
+        let known? = self.families.get().get(key) else {
+            let families = self.families
+            let made = db
+                .registered(
+                    no_verify,
+                    (register: fn(fn(int) -> int) -> int) -> families.put(key, register(no_verify)),
+                )
+            self.families.put(key, made)
             return made
         }
         known
@@ -524,10 +579,15 @@ impl InputSlot<V> {
     /// This input's family under `db`, registered on first ask — the
     /// same door `Memo.family` uses.
     fn family(db: Db) -> int {
-        let known? = self.families.get().get("${db.id}") else {
-            let register = db.hooks.family
-            let made = register((_cell: int) -> 0)
-            self.families.put("${db.id}", made)
+        let key = "${db.id}"
+        let known? = self.families.get().get(key) else {
+            let families = self.families
+            let made = db
+                .registered(
+                    no_verify,
+                    (register: fn(fn(int) -> int) -> int) -> families.put(key, register(no_verify)),
+                )
+            self.families.put(key, made)
             return made
         }
         known
