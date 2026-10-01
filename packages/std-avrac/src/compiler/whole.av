@@ -1,6 +1,8 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
+    ModulePath,
+    module_path,
     SyntaxArena,
     DeclId,
     FileId,
@@ -14,12 +16,13 @@ use core.{
     is_kind_word,
     key_spelled,
 }
-use @std.path.{under_dir, joined_path, normalized}
+use @std.path.{under_dir, joined_path, normalized, dir_of}
 use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
 use compiler.lower.{LinkedPackage}
 use compiler.host.{library_stem}
+use compiler.backend.{embed_resolved}
 
 impl Workspace {
 
@@ -29,10 +32,8 @@ impl Workspace {
     fn analyze_all() -> List<Analysis> {
         let t0 = self.clock()
         // a held file is not parsed — and asking its items would mint its module for nothing
-        for path in self.root_files() {
-            let f = self.file_id(path)
-            if !self.is_held(f) { let _ = self.items(f) }
-        }
+        for path in self.root_files() { let _ = self.file_id(path) }
+        self.admit_all()
         self.timed("parse", self.clock() - t0)
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
         // MINTED from its record, so every consumer sees the interface it had — and its
@@ -65,7 +66,7 @@ impl Workspace {
         mut i = 0
         while i < self.decls.file_count() {
             let fi = self.decls.file(file_at(i))
-            if !self.is_held(fi.id) {
+            if !self.is_held(fi.id) && self.reads_as_source(fi.path) {
                 act(fi.id)
                 out.push(fi.id)
             }
@@ -109,7 +110,9 @@ impl Workspace {
 
     /// Every case of every file, in file and declaration order.
     fn cases() -> List<TestCase> {
-        flatten([self.file_cases(fi.id) for fi in self.decls.all_files()])
+        flatten(
+            [self.file_cases(fi.id) for fi in self.decls.all_files() if self.reads_as_source(fi.path)],
+        )
     }
 
     /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
@@ -132,9 +135,54 @@ impl Workspace {
         while i < self.decls.file_count() {
             let id = file_at(i)
             // a held file's declarations are minted when something reads them
-            if !self.is_held(id) { let _ = self.items(id) }
+            if !self.is_held(id) && self.reads_as_source(self.decls.file(id).path) {
+                let _ = self.items(id)
+                self.admit_used(id)
+            }
             i = i + 1
         }
+    }
+
+    /// EVERYTHING A FILE REACHES, minted now: each module its `use` lines
+    /// name and each package a `collect` gathers from — so no file is first
+    /// minted inside a query that already read the relation.
+    fn admit_used(f: FileId) {
+        if self.lone { return }
+        let p = self.parsed(f)
+        let from = self.packages()[self.holder_of_path(p.source.file)]
+        for s in p.stmts {
+            let u = p.store.use_parts(s)
+            if u != null { self.admit_module(from, qualified(module_path(u!.path), from)) }
+            let scope = p.store.collect_scope(s)
+            if scope != null { self.decls.admit_scope(scope!, f) }
+        }
+        self.admit_embeds(p)
+    }
+
+    /// `embed("literal")` names a file at compile time — the same
+    /// declared reach a `use` line names. Minted here, before anything
+    /// reads the File relation this revision, so a const's own
+    /// Settled-family query never mints a late row mid-read. A
+    /// computed path cannot be found this way; `embed_literal_only`
+    /// refuses it at typing instead.
+    fn admit_embeds(p: Parsed) {
+        let base = dir_of(p.source.file)
+        for e in p.store.stmts_exprs(p.stmts) {
+            let rel = embed_literal_at(p.store, e)
+            if rel != null { let _ = self.minted_file(embed_resolved(base, rel!)) }
+        }
+    }
+
+    /// Whether a file is Avra source, by its shape alone (`is_source` — a lone
+    /// program's own name included). An `embed` of a `.av` file names source
+    /// still; an embedded data file has no module to reach, resolve or analyze.
+    fn reads_as_source(path: string) -> bool { is_source(path, dir_of(path)) }
+
+    fn admit_module(from: Package, m: ModulePath) {
+        if m.malformed() { return }
+        if m.package() != null && !self.reaches(from, m.package()!) { return }
+        // listed, not `module_files`, for the reason `file_id`'s siblings are
+        for path in self.listed_files(m) { let _ = self.file_id(path) }
     }
 
     /// ADMIT THE PACKAGE A MODULE NAMES. A held file's `use` lines are never
@@ -310,6 +358,20 @@ fn use_lines(p: Parsed) -> List<UseParts> {
 
 /// What one `use` line brought in, and what it earned.
 type Imported = { imports: List<Import>, diagnostics: List<Diag> }
+
+/// A call to a name spelled `embed`, with one string-literal argument
+/// — the path it names, or null for any other call, arity, or a
+/// computed argument (`embed_literal_only` is where a computed one
+/// gets its refusal, at typing, where the callee is resolved).
+fn embed_literal_at(store: SyntaxArena, e: ExprId) -> string? {
+    match store.expr(e) {
+        .Call(callee, _, args) -> {
+            if callee.of != "embed" || args.length != 1 { return null }
+            store.expr(args[0]).text_of()
+        },
+        _ -> null,
+    }
+}
 
 fn segments_of(dotted_text: string) -> List<string> {
     if dotted_text.is_empty() { return [] }

@@ -693,6 +693,7 @@ export fn relation_hooks(kernel: Kernel) -> RelHooks {
         opened: (_fam: int, _cell: int) -> 0 - 1,
         settled: (_fam: int, _cell: int) -> no_relation_settle_word(),
         running: () -> kernel.reader(),
+        moved: (_fam: int, _cell: int, late: bool) -> !late,
     }
 }
 
@@ -1107,9 +1108,25 @@ impl Workspace {
 
     // ── The families ──
     /// A path's identity — the table mints it at first mention.
+    /// A file's identity — and a file READ reaches its module whole and every
+    /// component its directory declares, so those stand the moment it does; a
+    /// held file reaches only itself, its module's record answering for the rest.
     fn file_id(path: string) -> FileId {
-        self.decls.file_id(path, self.module_of(path), self.is_test_path(path))
+        let known? = self.decls.known_file_id(path) else {
+            let f = self.minted_file(path)
+            if !self.lone && !self.is_held(f) && self.reads_as_source(path) {
+                // listed, not `module_files`: its cache would answer the query that
+                // later reads the module, which then records no edge on the manifest
+                for sibling in self.listed_files(self.module_path_of(path)) { let _ = self.minted_file(sibling) }
+                // its parse reads every component its directory declares
+                for sibling in self.declaring_siblings(path) { let _ = self.minted_file(sibling) }
+            }
+            return f
+        }
+        known
     }
+
+    fn minted_file(path: string) -> FileId { self.decls.file_id(path, self.module_of(path), self.is_test_path(path)) }
 
     /// THE FILE AS WRITTEN, canonically printed — from a PARSE, never
     /// an analysis.
@@ -1500,7 +1517,7 @@ impl Workspace {
             .Reuse(value) -> { return namespace_of(value) },
             .Compute -> nothing(),
         }
-        let paths = self.module_files(module_path(segments_of(self.decls.module_name(m))))
+        let paths = self.met_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
         namespace_of(

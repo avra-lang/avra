@@ -4,7 +4,7 @@
 // count at the call, none at the exit, and a param answered takes its own.
 use @std.avrac.core.{RtKind, joined}
 use @std.avrac.compiler.{analyze_source, avra}
-use @std.avrac.testing.{refused_with, shown, ir_of, refused_at_run, refusals}
+use @std.avrac.testing.{refused_with, shown, ir_of, refused_at_run, refusals, provided}
 use compiler.backend.{render_ir}
 
 spec "features/fns" {
@@ -767,6 +767,24 @@ ret r1"""
             shown(
                 "type C = { n: int }\nimpl C {\n    static fn m(const p: int) -> int {\n        const y = p * 2\n        y\n    }\n}\nC.m(4)",
             ) == "8"
+        }
+    }
+    given "`embed` — a declared reach, so its path must be written, not computed" {
+        // `embed` resolves to @std/meta's OWN declaration (is_meta_fn), so
+        // these need the real package vendored — analyze_source's lone,
+        // dependency-free file never reaches it.
+        then "a computed path refuses — the file can't be found before any analysis runs" {
+            provided(
+                "use @std.meta.{embed}\nfn name() -> string { \"hello.txt\" }\nconst text = embed(name())\ntext",
+                "",
+            )
+                .report()
+                .contains("`embed` reads a file named in the source — its path is a literal")
+        }
+        then "a concatenated path refuses the same way" {
+            provided("use @std.meta.{embed}\nconst text = embed(\"hello\" + \".txt\")\ntext", "")
+                .report()
+                .contains("`embed` reads a file named in the source — its path is a literal")
         }
     }
 }

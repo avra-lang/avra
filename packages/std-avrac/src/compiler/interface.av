@@ -261,7 +261,7 @@ impl Workspace {
 
     fn interface_decls(m: ModulePath) -> List<Decl> {
         mut ids: List<DeclId> = []
-        for path in self.module_files(m) {
+        for path in self.met_files(m) {
             let f = self.file_id(path)
             let _ = self.items(f)
             ids = ids.concat(self.decls.decls_of_file(f))
@@ -465,13 +465,18 @@ impl Workspace {
         )
     }
 
+    /// Whether this attempt READ the file: met and not held. A file nothing
+    /// met has no row, and its record lines carry forward as a held one's do.
+    fn read_here(path: string) -> bool {
+        let f? = self.decls.known_file_id(path) else { return false }
+        !self.is_held(f)
+    }
+
     fn record_of(store: Store, m: ModulePath) -> string {
         let prior_lines = record_cached(self, store, m).split("\n")
         let files = self.module_files(m)
         let kept = lines_by_file(prior_lines)
-        let fresh = flatten(
-            [self.imported_by(path) for path in files if !self.is_held(self.file_id(path))],
-        )
+        let fresh = flatten([self.imported_by(path) for path in files if self.read_here(path)])
         let here = distinct(
             [line for line in prior_lines if line.starts_with("import\t")]
                 .concat(["import\t${d.text()}" for d in fresh]),
@@ -503,7 +508,7 @@ impl Workspace {
     /// verbatim — it is held against them — and its interface digest with them, so a
     /// body edit elsewhere in the module reads no held line.
     fn file_lines(store: Store, m: ModulePath, path: string, kept: Map<string, List<string>>) -> FileLines {
-        if !self.is_held(self.file_id(path)) {
+        if self.read_here(path) {
             let lines = self.lines_of(path)
             return FileLines { path: path, lines: lines, iface: iface_digest(lines) }
         }
@@ -518,7 +523,7 @@ impl Workspace {
 
     /// A file's `ref` lines: a held file's as its record kept them, a read one's fresh.
     fn file_ref_lines(path: string, kept: Map<string, List<string>>) -> List<string> {
-        if self.is_held(self.file_id(path)) { return [line for line in kept.get(path) ?? [] if line.starts_with("ref\t")] }
+        if !self.read_here(path) { return [line for line in kept.get(path) ?? [] if line.starts_with("ref\t")] }
         self.ref_lines(path, self.file_refs(self.file_id(path)))
     }
 
@@ -556,7 +561,7 @@ impl Workspace {
     /// What one file's runs read: as this build met them, or, for a held file, as
     /// its module's last record kept them.
     fn ran_directly(store: Store, path: string) -> List<string> {
-        if !self.is_held(self.file_id(path)) { return self.hold.runs.get().get(path) ?? [] }
+        if self.read_here(path) { return self.hold.runs.get().get(path) ?? [] }
         kept_runs(record_places(self, store, self.module_path_of(path)).get(path))
     }
 
