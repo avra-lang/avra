@@ -6,11 +6,10 @@
 # test`), and its reasoning on stderr.
 #
 # THE ROOT IS AN ARGUMENT, NEVER THIS SCRIPT'S OWN LOCATION: a caller
-# lands a DIFFERENT worktree than the one this copy of the script
-# happens to live in (land.sh's own tools/ is not the branch's), so a
-# root guessed from `$0` would read the wrong tree's packages. Omitted,
-# it falls back to the git repo standing at the CURRENT directory —
-# convenient run by hand, wrong for land.sh to rely on.
+# tests a DIFFERENT tree than the one this copy of the script happens to
+# live in, so a root guessed from `$0` would read the wrong tree's
+# packages. Omitted, it falls back to the git repo standing at the
+# CURRENT directory.
 #
 # THE RULE: every package the diff touched, plus every package that
 # REACHES one of them — a `use @std.<x>` in its own source, or an

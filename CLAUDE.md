@@ -1926,38 +1926,38 @@ Runtime facts, ours to ratify:
 
 - ALL WORK MOVES THROUGH FIVE COMMANDS, and nothing else touches main:
 
-      sh tools/work new <name>   # worktree ../avra-<name>, off main, compiler seeded
+      sh tools/work new <name>   # worktree ../avra-<name>, off GitHub's main, compiler seeded
       sh tools/work test         # what the branch touches, built and tested on Sprites
       sh tools/work run <cmd>    # any command in this worktree, on a Sprite
-      sh tools/work land         # push, open the PR, queue it to merge
+      sh tools/work land         # rebase on origin/main, push, open the PR, queue it
       sh tools/work status       # every open PR, its checks and queue state
 
   Main lives on GitHub (avra-lang/avra) and moves only through its merge
-  queue: squash merges, linear history, no direct pushes. A local
-  reference-transaction hook refuses every other update of
-  `refs/heads/main`; a deliberate repair sets
-  `AVRA_MAIN_OVERRIDE="<reason>"`, which is printed.
+  queue: squash merges, linear history, no direct pushes. A local main
+  only follows `origin/main` (the reference-transaction hook refuses any
+  other update; a deliberate repair sets `AVRA_MAIN_OVERRIDE="<reason>"`).
+- THE QUEUE TESTS TRAINS, NOT PRS. A PR's own `test` check only admits
+  it; the queue builds main plus every PR ahead of it plus this one, and
+  `.github/workflows/checks.yml` builds and tests that commit in ONE job
+  on GitHub's runners (Ubuntu 26.04, LLVM 22, the image in
+  `.github/ci/`). Ten trains test at once; when one passes, it and every
+  PR ahead of it land together (HEADGREEN). A failing train drops its PR
+  with the log on the PR. Main's own push run caches the compiler every
+  train starts from.
 - A PRE-COMMIT HOOK refuses staged `.av` that is not canonical; the fix
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
 - HEAVY RUNS GO ON SPRITES: `AVRA_SP_TREE=$PWD sh tools/sp <cmd>`, or
   `sh tools/sp -p "a" "b"` for parallel. Bootstraps, whole suites and
   censuses run there; the Mac keeps quick targeted checks and anything
-  macOS-only (the speed gate's instruction count). sp picks an awake
-  Sprite, syncs by rsync, copies a built compiler, and waits for a slot
-  rather than falling back to the Mac.
-- A BRANCH ARRIVES AT THE QUEUE ALREADY MERGED ONTO CURRENT MAIN AND
-  GREEN THERE. Rebase onto `main` only, never onto another unlanded
-  branch: that lands the other branch's work unverified.
-- A BATCH IS FIVE BRANCHES OR FEWER. Every checked group costs ~12
-  minutes, and one interaction splits the batch again; a large mixed
-  batch ran past its wall cap three times in one night and landed
-  nothing. Queue proven branches together and new ones apart.
-- A LANDING IS NEVER KILLED MID-RUN. Stopping one skips its refresh of
-  main's compiler, and the stale `build/avra` then fails correct
-  branches. If one must die, rebuild main's compiler to its fixed point
-  in a spare worktree and `mv` it into place.
-- A PID IS CHECKED BEFORE IT IS KILLED. A ticket's recorded pid is
-  reused once its process exits; read `ps -o command= -p <pid>` first.
+  macOS-only. sp picks the idlest awake Sprite, syncs by rsync, copies a
+  built compiler, and waits for a slot rather than falling back to the
+  Mac.
+- A BRANCH IS REBASED ONTO `origin/main` ONLY, never onto another
+  unlanded branch: that lands the other branch's work unverified. A
+  branch built on a stale local main moves with `git rebase --onto
+  origin/main main <branch>`, which carries only its own commits.
+- A PID IS CHECKED BEFORE IT IS KILLED. A recorded pid is reused once
+  its process exits; read `ps -o command= -p <pid>` first.
 - A TOOL IS RUN FOR REAL ONCE BEFORE IT BECOMES A DEFAULT. Fixtures
   prove the logic; a live run proves the path (a 62 MB upload hit a
   30 s client timeout that no fixture could reach).
@@ -1966,7 +1966,7 @@ Runtime facts, ours to ratify:
   correct work.
 - A CHANGE THE COMPILER CHECKS ABOUT ITS OWN SOURCE (a renamed type, a
   new license form) lands as a BRIDGE first: main's compiler must build
-  the branch, because the speed gate and the seed both use it.
+  the branch, because the seed and the train's own build both use it.
 
 ## Working discipline
 
