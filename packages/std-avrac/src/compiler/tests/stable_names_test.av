@@ -1,7 +1,7 @@
 // A query's stable name is the same in every process, and re-asking it answers the
 // subject's hash as it stands now — or nothing, when the subject is gone.
 // `a_process_over`, `package_files` and the ordinals are workspace_fixtures.av's own.
-use compiler.{name_parts}
+use compiler.{Workspace, name_parts}
 use query.{Key}
 use features.{Decl}
 
@@ -13,6 +13,14 @@ fn twin_files() -> Map<string, string> {
     }
 }
 
+/// The family word a key's stable name carries.
+fn family_named(ws: Workspace, family: int, arg: int) -> string {
+    name_parts(ws.stable_key_name(Key { family: family, arg: arg }))?.family ?? ""
+}
+
+/// A key's stable name, re-asked in the process that named it.
+fn reasked(ws: Workspace, family: int, arg: int) -> int? { ws.edge_current_hash(ws.stable_key_name(Key { family: family, arg: arg })) }
+
 /// A type and its impl, one name in one file.
 fn type_and_impl() -> Map<string, string> {
     {
@@ -23,30 +31,12 @@ fn type_and_impl() -> Map<string, string> {
 spec "compiler/stable_names — the ordinals the fixtures use" {
     then "each names the family it means" {
         let ws = a_process_over(package_files(), package_names())
-        let parsed = name_parts(
-            ws
-                .stable_key_name(Key { family: parsed_ordinal(), arg: ws.file_id("/w/src/a.av").index }),
-        )
-        let manifest = name_parts(ws.stable_key_name(Key { family: manifest_ordinal(), arg: 0 }))
-        let namespace = name_parts(ws.stable_key_name(Key { family: namespace_ordinal(), arg: 0 }))
-        let sig = name_parts(
-            ws
-                .stable_key_name(Key { family: sig_ordinal(), arg: decl_in_file(ws, "/w/src/a.av", "f").index }),
-        )
-        let methods = name_parts(
-            ws
-                .stable_key_name(
-                    Key {
-                        family: methods_ordinal(),
-                        arg: decl_in_file(ws, "/w/src/a.av", "f").index,
-                    },
-                ),
-        )
-        parsed?.family ?? "" == "Parsed" &&
-            manifest?.family ?? "" == "Manifest" &&
-            namespace?.family ?? "" == "Namespace" &&
-            sig?.family ?? "" == "Sig" &&
-            methods?.family ?? "" == "Methods"
+        let f = decl_in_file(ws, "/w/src/a.av", "f").index
+        family_named(ws, parsed_ordinal(), ws.file_id("/w/src/a.av").index) == "Parsed" &&
+            family_named(ws, manifest_ordinal(), 0) == "Manifest" &&
+            family_named(ws, namespace_ordinal(), 0) == "Namespace" &&
+            family_named(ws, sig_ordinal(), f) == "Sig" &&
+            family_named(ws, methods_ordinal(), f) == "Methods"
     }
 }
 
@@ -83,29 +73,20 @@ spec "compiler/stable_names — a name re-asked answers its subject now" {
     then "every declaration of a file answers its Sig, the type and the impl included" {
         let ws = a_process_over(type_and_impl(), ["/w/src/x.av"])
         let own = [d for d in ws.decls.all_decls() if ws.decls.file(d.file).path == "/w/src/x.av" && (d.name == "T" || d.name == "show")]
-        own.length == 3 &&
-            own
-                .all(
-                    (d: Decl) -> ws
-                        .edge_current_hash(ws.stable_key_name(Key { family: sig_ordinal(), arg: d.id.index })) != null,
-                )
+        own.length == 3 && own.all((d: Decl) -> reasked(ws, sig_ordinal(), d.id.index) != null)
     }
     then "the root module's Namespace, whose name is empty, answers a hash" {
         let ws = a_process_over(package_files(), package_names())
-        let root = ws.decls.module_id("")
-        ws
-            .edge_current_hash(ws.stable_key_name(Key { family: namespace_ordinal(), arg: root.index })) != null
+        reasked(ws, namespace_ordinal(), ws.decls.module_id("").index) != null
     }
     then "a file the host never had answers nothing, not the empty program's hash" {
         let ws = a_process_over(package_files(), package_names())
-        let gone = ws.file_id("/w/src/gone.av")
-        ws.edge_current_hash(ws.stable_key_name(Key { family: parsed_ordinal(), arg: gone.index })) == null
+        reasked(ws, parsed_ordinal(), ws.file_id("/w/src/gone.av").index) == null
     }
     then "an emptied file still answers a hash of its own" {
         let empty: Map<string, string> = {"/w/src/e.av": ""}
         let ws = a_process_over(empty, ["/w/src/e.av"])
-        let f = ws.file_id("/w/src/e.av")
-        ws.edge_current_hash(ws.stable_key_name(Key { family: parsed_ordinal(), arg: f.index })) != null
+        reasked(ws, parsed_ordinal(), ws.file_id("/w/src/e.av").index) != null
     }
     then "a removed declaration's Sig answers nothing in the next process" {
         let before: Map<string, string> = {
