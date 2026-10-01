@@ -85,6 +85,9 @@ export type SyntaxArena = {
     run_holes: Cell<List<bool>>,
     // a record's `..R` entries, by its statement
     spreads: Cell<List<List<Spread>>>,
+    // a collect's `dense` mark, by its statement: its order is data,
+    // unique and gap-free from 0
+    collect_dense: Cell<List<bool>>,
     // a string written `"""raw"""`, never `"escaped"` — the printer's
     // only way to tell them apart once both are one StrLit
     raw_strings: Cell<List<bool>>,
@@ -151,6 +154,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         holes: list_cell(),
         run_holes: list_cell(),
         spreads: list_cell(),
+        collect_dense: list_cell(),
         raw_strings: list_cell(),
         sugar_matches: list_cell(),
         instance_owners: list_cell(),
@@ -373,6 +377,17 @@ impl SyntaxArena {
     }
 
     fn spreads_of(s: StmtId) -> List<Spread> { self.spreads.get()[s.index] }
+
+    /// A collect's `dense` mark — part of the statement's identity, so
+    /// two collects differing only in it do not share a fingerprint.
+    fn mark_collect_dense(s: StmtId, on: bool) {
+        self.collect_dense.set_at(s.index, on)
+        if on {
+            self.stmt_fingerprints.set_at(s.index, fp(187, [self.stmt_fingerprints.get()[s.index]]))
+        }
+    }
+
+    fn is_collect_dense(s: StmtId) -> bool { self.collect_dense.get()[s.index] }
 
     fn is_run_hole(e: ExprId) -> bool {
         self.run_holes.get()[e.index]
@@ -730,6 +745,7 @@ impl SyntaxArena {
         self.docs.push(null)
         self.doc_ats.push(-1)
         self.spreads.push([])
+        self.collect_dense.push(false)
         StmtId { index: self.stmts.add(s, span) }
     }
 

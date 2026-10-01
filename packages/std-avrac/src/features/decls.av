@@ -123,15 +123,33 @@ const external_index: int = 5
 /// a file a HELD build never parsed; this is the ONE place that knowledge lives, so a held
 /// file is loaded by filling these rows and NOTHING reaches into a store after admission.
 /// `@name(args)` recorded as a declaration's own fact: its callee's name, each
-/// argument's literal text (a string/int/bool/identifier — anything else reads ""),
-/// and where it was written.
+/// argument's literal value (its written text AND the kind it was written as —
+/// a `by` key compares the kind, never the text), and where it was written.
 @derive(Fingerprint)
 @derive(Exemplar)
-export type AnnotationFact = { name: string, args: List<string>, span: Span? }
+export type AnnotationFact = { name: string, args: List<LitArg>, span: Span? }
 
 impl AnnotationFact {
     /// `@derive(Exemplar)`'s seed.
     static fn codec_zero() -> AnnotationFact { AnnotationFact { name: "", args: [], span: null } }
+}
+
+/// The kind a literal annotation argument was WRITTEN as — what a
+/// `by it.mark.args[i]` key compares by. `Other` is a computed
+/// expression, a float or an identifier: no `by` key may compare it.
+@derive(Fingerprint)
+@derive(Exemplar)
+export enum LitKind { Int, Text, Bool, Other }
+
+/// One literal annotation argument: the text the user-facing
+/// `mark.args` projects, and the kind that orders it.
+@derive(Fingerprint)
+@derive(Exemplar)
+export type LitArg = { text: string, kind: LitKind }
+
+impl LitArg {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> LitArg { LitArg { text: "", kind: LitKind.Text } }
 }
 
 /// An argument's literal text, when it has one — a computed expression answers "".
@@ -139,6 +157,28 @@ export fn arg_text(store: SyntaxArena, e: ExprId) -> string {
     let expr = store.expr(e)
     let t? = expr.text_of() else { return int_text(expr) ?? bool_text(expr) ?? store.ident_name(e) ?? "" }
     t
+}
+
+/// `arg_text`'s typed twin, for the facts `by` orders by: the written
+/// text beside the kind it was written as.
+export fn arg_lit(store: SyntaxArena, e: ExprId) -> LitArg {
+    let expr = store.expr(e)
+    let t? = expr.text_of() else { return int_lit(expr) ?? bool_lit(expr) ?? other_lit(store, e) }
+    LitArg { text: t, kind: LitKind.Text }
+}
+
+fn int_lit(e: Expr) -> LitArg? {
+    let n? = e.int_of() else { return null }
+    LitArg { text: "${n}", kind: LitKind.Int }
+}
+
+fn bool_lit(e: Expr) -> LitArg? {
+    let b? = e.bool_of() else { return null }
+    LitArg { text: "${b}", kind: LitKind.Bool }
+}
+
+fn other_lit(store: SyntaxArena, e: ExprId) -> LitArg {
+    LitArg { text: store.ident_name(e) ?? "", kind: LitKind.Other }
 }
 
 fn int_text(e: Expr) -> string? {
@@ -152,9 +192,9 @@ fn bool_text(e: Expr) -> string? {
 }
 
 /// A parsed `Annotation` as the fact a declaration keeps: its callee's args
-/// re-read as literal text, since the fact outlives the store a held file has none of.
+/// re-read as typed literals, since the fact outlives the store a held file has none of.
 fn annotation_fact(store: SyntaxArena, a: Annotation) -> AnnotationFact {
-    AnnotationFact { name: a.name, args: [arg_text(store, e) for e in a.args], span: a.span }
+    AnnotationFact { name: a.name, args: [arg_lit(store, e) for e in a.args], span: a.span }
 }
 
 /// THE FINGERPRINT IS THE CODEC'S CHECKSUM: the derived fold covers EVERY field, so the
@@ -2104,7 +2144,7 @@ impl Decls {
     /// What a record leaves out on purpose: its `@lacks(field, why)`s.
     fn lacking(record: DeclId) -> List<Lacked> {
         let file = self.annotation_home(record)
-        [Lacked { field: a.args[0], why: a.args[1] } for a in self.annotations_of(record) if self.lacks_mark(a, file)]
+        [Lacked { field: a.args[0].text, why: a.args[1].text } for a in self.annotations_of(record) if self.lacks_mark(a, file)]
     }
 
     fn lacks_mark(a: AnnotationFact, file: FileId) -> bool {

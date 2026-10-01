@@ -599,10 +599,26 @@ impl SourceText {
             .Collect(name, ty, kind, scope, proj, order) -> [
                 source_line(
                     depth,
-                    self.collect_decl(exported, name.of, ty, kind, scope, proj, order),
+                    self
+                        .collect_decl(
+                            exported,
+                            name.of,
+                            ty,
+                            kind,
+                            scope,
+                            proj,
+                            order,
+                            self.store.is_collect_dense(s),
+                        ),
                 ),
             ],
-            .CollectEnum(name, kind, scope, order) -> [source_line(depth, self.collect_enum_decl(exported, name.of, kind, scope, order))],
+            .CollectEnum(name, kind, scope, order) -> [
+                source_line(
+                    depth,
+                    self
+                        .collect_enum_decl(exported, name.of, kind, scope, order, self.store.is_collect_dense(s)),
+                ),
+            ],
             .Jump(label, again) -> [source_line(depth, jump_line(again, self.written_label(label)))],
             .Error -> [source_line(depth, "__error")],
         }
@@ -1158,10 +1174,19 @@ impl SourceText {
         scope: CollectScope,
         proj: Projection,
         order: List<Plain>,
+        dense: bool,
     ) -> string {
         let fields = joined([self.collect_field(f.field.of, f.path) for f in proj.fields], ", ")
-        let by = if order.is_empty() { "" } else { " by ${joined(["it.${k.of}" for k in order], ", ")}" }
+        let by = self.collect_order_text(order, dense)
         "${exported}collect ${source_name(name)}: ${spelled(ty)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)} as ${proj.ty.name} { ${fields} }${by}"
+    }
+
+    /// The `by …` tail a collect prints, `dense` included — the same
+    /// spelling its own grammar reads back.
+    fn collect_order_text(order: List<Plain>, dense: bool) -> string {
+        if order.is_empty() { return "" }
+        let tail = if dense { " dense" } else { "" }
+        " by ${joined(["it.${k.of}" for k in order], ", ")}${tail}"
     }
 
     /// `collect enum Name = kind in scope by …` — `collect_decl`'s
@@ -1172,8 +1197,9 @@ impl SourceText {
         kind: CollectKind,
         scope: CollectScope,
         order: List<Plain>,
+        dense: bool,
     ) -> string {
-        let by = if order.is_empty() { "" } else { " by ${joined(["it.${k.of}" for k in order], ", ")}" }
+        let by = self.collect_order_text(order, dense)
         "${exported}collect enum ${source_name(name)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)}${by}"
     }
 

@@ -7,7 +7,7 @@
 // held declaration (no store at all) answers identically.
 use @std.avrac.compiler.{analyze_source, Analysis, avra, new_workspace, Program}
 use @std.avrac.compiler.host.{memory_host}
-use @std.avrac.features.{Decl, Decls, new_decls, DeclFacts, AnnotationFact}
+use @std.avrac.features.{Decl, Decls, new_decls, DeclFacts, AnnotationFact, LitArg, LitKind}
 use @std.avrac.core.{DeclId, ExprId, FileId, DeclKind, no_stmt, At}
 
 fn decl_named(a: Analysis, name: string) -> DeclId {
@@ -60,7 +60,9 @@ spec "declaration facts — one door, every declaration" {
                 "fn tag(s: string, n: int) { }\n@tag(\"x\", 3)\nfn f() -> int {\n    1\n}\nf()",
             )
             let anns = annotations_of(a, "f")
-            anns.length == 1 && anns[0].name == "tag" && anns[0].args.join(",") == "x,3"
+            anns.length == 1 &&
+                anns[0].name == "tag" &&
+                [x.text for x in anns[0].args].join(",") == "x,3"
         }
         then "no annotation at all reads an empty list" {
             let a = analyze_source("fn f() -> int {\n    1\n}\nf()")
@@ -133,14 +135,20 @@ spec "declaration facts — one door, every declaration" {
                 annotated: true,
                 of: "",
                 doc: ["a held const"],
-                annotations: [AnnotationFact { name: "kept", args: ["x"], span: null }],
+                annotations: [
+                    AnnotationFact {
+                        name: "kept",
+                        args: [LitArg { text: "x", kind: LitKind.Text }],
+                        span: null,
+                    },
+                ],
             }
             decls.adopt_facts(d, facts)
             let anns = decls.annotations_of(d)
             (decls.doc_of(d) ?? []).join("\n") == "a held const" &&
                 anns.length == 1 &&
                 anns[0].name == "kept" &&
-                anns[0].args.join(",") == "x"
+                [x.text for x in anns[0].args].join(",") == "x"
         }
         then "a declaration minted with no facts at all reads null doc and no annotations, never a crash" {
             mut decls = new_decls()

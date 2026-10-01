@@ -15,24 +15,28 @@ export fn collects() -> LanguageFeature {
         "collect_enum_decl" | build_collect_enum_decl
     }
     let codes = table<DiagCode> {
-        kind                   | summary
-        "collect.kind"         | "a collect names a declaration kind it does not gather"
-        "collect.scope"        | "a collect names an unknown scope"
-        "collect.order"        | "a collection declares its order — `by …`"
-        "collect.not_a_list"   | "a collect's declared type is not a `List<T>`"
-        "collect.not_a_record" | "a collect's projected type has no fields"
-        "collect.proj_type"    | "a collect's projection disagrees with its declared element"
-        "collect.fields"       | "a collect's projection does not fill its type's fields exactly once"
-        "collect.path"         | "a collect's `it` path is not in its kind's vocabulary"
-        "collect.closure_fold" | "a library folds a closure collection at compile time"
-        "collect.self_read"    | "a member reads its own collection while compiling"
-        "collect_enum.variant" | "two collected members would name the same variant"
+        kind                         | summary
+        "collect.kind"               | "a collect names a declaration kind it does not gather"
+        "collect.scope"              | "a collect names an unknown scope"
+        "collect.order"              | "a collection declares its order — `by …`"
+        "collect.not_a_list"         | "a collect's declared type is not a `List<T>`"
+        "collect.not_a_record"       | "a collect's projected type has no fields"
+        "collect.proj_type"          | "a collect's projection disagrees with its declared element"
+        "collect.fields"             | "a collect's projection does not fill its type's fields exactly once"
+        "collect.path"               | "a collect's `it` path is not in its kind's vocabulary"
+        "collect.order_key"          | "a collect's `by` key names no field its kind answers"
+        "collect.order_uncomparable" | "a collect's `by` key is not a value a comparison can read"
+        "collect.order_mixed"        | "a collect's `by` column mixes int and string kinds"
+        "collect.dense"              | "a `dense` order is not unique and gap-free from 0"
+        "collect.closure_fold"       | "a library folds a closure collection at compile time"
+        "collect.self_read"          | "a member reads its own collection while compiling"
+        "collect_enum.variant"       | "two collected members would name the same variant"
     }
     LanguageFeature collects {
         gram: grammar {
             stmt = "collect" n:NAME ":" t:type "=" ( k:PKG | k:NAME ) "in" sc:NAME "as" pt:NAME
                 "{" BREAK? ( fn:NAME ":" iw:NAME ( "." fp:NAME )? ( "," BREAK? fn:NAME ":" iw:NAME ( "." fp:NAME )? @expect(":", "expected `:` after a projection field's name — `name: it.name`") )* ","? BREAK? @expect(":", "expected `:` after a projection field's name — `name: it.name`") )? "}"
-                ( bw:NAME BREAK? biw:NAME "." bk:NAME ( "," BREAK? biw:NAME "." bk:NAME )* ","? )?
+                ( bw:NAME BREAK? biw:NAME ( "." bp:NAME )+ ( "[" bidx:NUMBER "]" )? ( "," BREAK? biw:NAME ( "." bp:NAME )+ ( "[" bidx:NUMBER "]" )? )* ","? ( dn:NAME )? )?
                 END
                 @expect("=", "expected `=` after a collect's type")
                 @expect("in", "expected `in` and a scope — `widget in closure`")
@@ -40,15 +44,15 @@ export fn collects() -> LanguageFeature {
                 @expect("{", "expected `{` to open the projection — `as Entry { name: it.name }`")
                 @expect("}", "expected `}` to close the projection — each field is `name: it.path`")
                 @expect("END", "expected the line to end after the collect's order — `by it.field, …`")
-                -> collect_decl(n, t, k, sc, pt, fn, iw, fp, bw, biw, bk)
+                -> collect_decl(n, t, k, sc, pt, fn, iw, fp, bw, biw, bp, bidx, dn)
             stmt = "collect" "enum" n:NAME "=" ( k:PKG | k:NAME ) "in" sc:NAME
-                ( bw:NAME BREAK? biw:NAME "." bk:NAME ( "," BREAK? biw:NAME "." bk:NAME )* ","? )?
+                ( bw:NAME BREAK? biw:NAME ( "." bp:NAME )+ ( "[" bidx:NUMBER "]" )? ( "," BREAK? biw:NAME ( "." bp:NAME )+ ( "[" bidx:NUMBER "]" )? )* ","? ( dn:NAME )? )?
                 END
                 @expect("NAME", "expected the collected enum's name — `collect enum Kind = …`")
                 @expect("=", "expected `=` after the collected enum's name")
                 @expect("in", "expected `in` and a scope — `widget in closure`")
                 @expect("END", "expected the line to end after the collect's order — `by it.field, …`")
-                -> collect_enum_decl(n, k, sc, bw, biw, bk)
+                -> collect_enum_decl(n, k, sc, bw, biw, bp, bidx, dn)
         }
         builders: rows
         diags: codes

@@ -43,6 +43,19 @@ fn orm_decl() -> string {
     "use @std.meta.{Type}\nfn model_shape(what: Type) -> void {}\nfn model(what: Type) -> void {}\n"
 }
 
+/// An int-taking annotation: `@numbered(n)` carries an ordinal a
+/// `by it.mark.args[0]` key reads, and `dense` checks for uniqueness
+/// and gaplessness.
+fn numbered_decl() -> string {
+    "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n"
+}
+
+/// An annotation whose seat takes ANY implementor of a local trait, so
+/// ONE column may carry an int and a string — the mixed-kind witness.
+fn mark_decl() -> string {
+    "use @std.meta.{Named}\ntrait Mark {\n    fn label() -> string\n}\nimpl Mark for int {\n    fn label() -> string { \"i\" }\n}\nimpl Mark for string {\n    fn label() -> string { self }\n}\nfn mark(what: Named, label: dyn Mark) -> void {}\n"
+}
+
 fn ui2() -> string {
     "export component widget {\n    run: fn(int) -> int?\n}\nexport component gadget {\n    run: fn(int) -> int?\n}\n"
 }
@@ -591,6 +604,92 @@ spec "collect's own laws" {
                     ],
                 ),
             ) == "build other"
+        }
+    }
+    given "the order's currency law" {
+        // The `by` key's own TYPE is its currency: a literal read at
+        // its value (never lexed), a whole mark/list/field refused at
+        // check — never a silent fall back to file order.
+        then "a `by` key reads the int literal's own value, so source order does not decide" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(9)\nfn a() {}\n@numbered(2)\nfn b() {}\n" +
+                        "type MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0]\n[x.mark.args[0] for x in xs].join(\" \")",
+                    ui(),
+                ),
+            ) == "2 9"
+        }
+        then "a duplicate ordinal under `dense` refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\nfn a() {}\n@numbered(0)\nfn b() {}\n" +
+                        "type MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "not unique and gap-free from 0",
+            )
+        }
+        then "a gap under `dense` refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\nfn a() {}\n@numbered(2)\nfn b() {}\n" +
+                        "type MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "not unique and gap-free from 0",
+            )
+        }
+        then "a column mixing an int and a string refuses — never lexed as text" {
+            refused_in(
+                provided(
+                    mark_decl() +
+                        "@mark(\"a\")\nfn alpha() {}\n@mark(1)\nfn beta() {}\n" +
+                        "type Entry = { name: string }\ncollect xs: List<Entry> = @mark in self as Entry { name: it.name } by it.mark.args[0]\n1",
+                    ui(),
+                ),
+                "mixes int and string",
+            )
+        }
+        then "a whole mark is not comparable — the path must reach a literal" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"a\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark\n1",
+                    ui(),
+                ),
+                "is not a value a `by` key can compare",
+            )
+        }
+        then "a whole args list is not comparable" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"a\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark.args\n1",
+                    ui(),
+                ),
+                "is not a value a `by` key can compare",
+            )
+        }
+        then "`it.mark.name` is comparable — the annotation's own name" {
+            !refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"a\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark.name\n1",
+                    ui(),
+                ),
+                "is not a value a `by` key can compare",
+            )
+        }
+        then "a component's own field is not comparable — only its generic words are" {
+            refused_in(
+                built(
+                    "type Entry = { name: string, ran: fn(int) -> int? }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.run\n1",
+                ),
+                "is not a value a `by` key can compare",
+            )
         }
     }
     given "a malformed declaration names the missing part" {

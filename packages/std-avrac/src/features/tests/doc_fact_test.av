@@ -6,7 +6,7 @@
 // the column alone; the renderer still reads `doc_of`/`annotations_of`
 // (decl_facts_test.av) until the second slice moves it inside the query.
 use @std.avrac.compiler.{analyze_source, Analysis}
-use @std.avrac.features.{DocFact, Decl, new_decls, DeclFacts, AnnotationFact}
+use @std.avrac.features.{DocFact, Decl, new_decls, DeclFacts, AnnotationFact, LitArg, LitKind}
 use @std.avrac.core.{DeclId, FileId, DeclKind, no_stmt}
 
 fn doc_fact_of(a: Analysis, name: string) -> DocFact? {
@@ -24,7 +24,7 @@ spec "DocFact — a declaration's doc and annotations, as a @side column" {
             (row.doc ?? []).join("\n") == "line one\nline two" &&
                 row.annotations.length == 1 &&
                 row.annotations[0].name == "tag" &&
-                row.annotations[0].args.join(",") == "x"
+                [x.text for x in row.annotations[0].args].join(",") == "x"
         }
     }
     given "a plain fn with neither" {
@@ -53,7 +53,13 @@ spec "DocFact — a declaration's doc and annotations, as a @side column" {
                 annotated: true,
                 of: "",
                 doc: ["a held const"],
-                annotations: [AnnotationFact { name: "kept", args: ["x"], span: null }],
+                annotations: [
+                    AnnotationFact {
+                        name: "kept",
+                        args: [LitArg { text: "x", kind: LitKind.Text }],
+                        span: null,
+                    },
+                ],
             }
             decls.adopt_facts(d, facts)
             let row = DocFact.get(decls.doc_facts.get(), d.index)!
