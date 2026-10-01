@@ -553,6 +553,42 @@ fn side_generated(t: Type) -> Decls {
             static fn all(store: SideTable<${t}>) -> List<${t}> {
                 [store.get(store.lo + i) for i in 0..store.length()]
             }
+
+            /// Every content field's stable encoding — the same currency
+            /// `stable_hash` means for a Db-owned relation, so a `@side`
+            /// column's family can verify a slot the same way.
+            fn stable_hash() -> int { ${hash_chain(t)}.finish() }
+
+            /// `get`, through a Db: the slot's read is recorded against
+            /// `side`'s family, so a query that reads slot `id` reruns
+            /// only when slot `id`'s own hash moves — never on an edit
+            /// anywhere else in the column. An id outside the window
+            /// records the whole column instead, since no slot there
+            /// exists yet to blame a future write on.
+            ///
+            /// `store` IS A `Cell` HERE, NEVER A BARE `SideTable`: the
+            /// family registers once, the first call, and every later
+            /// read goes through the SAME verify closure — a closure
+            /// over a bare table would answer that first call's snapshot
+            /// forever, the read-through-`get`-is-a-copy law in the
+            /// shape a long-lived closure hits it.
+            static fn get_db(db: Db, store: Cell<SideTable<${t}>>, side: SideRows<${t}>, id: int) -> ${t}? {
+                let verify = (cell: int) -> {
+                    let held = store.get()
+                    if cell == 0 {
+                        held.folded((r: ${t}) -> r.stable_hash())
+                    } else {
+                        held.get(cell - 1 + held.lo).stable_hash()
+                    }
+                }
+                let held = store.get()
+                if !held.holds(id) {
+                    side.mark_whole(db, verify)
+                    return null
+                }
+                side.mark_read(db, verify, id)
+                held.get(id)
+            }
         }
     }
 }

@@ -15,6 +15,7 @@
 //! counting twice, and no swap between rows' fields able to cancel. An
 //! ORDERED index's bucket folds its members in id order instead, so the
 //! order rows were declared in is part of what a reader saw.
+use @std.meta.{identity}
 
 /// Where a row files under one index: its text, or a dense slot (a
 /// bool's tag, a typed id's index).
@@ -525,6 +526,85 @@ impl Rows<R> {
         b
     }
 }
+
+// ── side columns ──
+
+/// A `@side` column's reads under a Db — never `Rows<R>`: a side column
+/// has no index and no bucket, just slots over a `SideTable<R>` kept
+/// elsewhere. `family` registers once, lazily, the Db that first reaches
+/// it — one `SideRows` is never shared between two owners the way a
+/// relation's process-wide `Stores<R>` is, since the `SideTable` it rides
+/// beside is already per-owner.
+///
+/// NO SWEEP: a column holds no query-owned rows, so a query's run leaves
+/// nothing behind to remove — a re-admit that rewrites a slot moves that
+/// slot's own hash instead, and `verify` tells every reader so.
+@identity
+export type SideRows<R> = { family: Cell<int>, marks: Cell<List<ReadMark>>, whole: Cell<ReadMark>, closed: Cell<bool> }
+
+export fn side_rows<R>() -> SideRows<R> {
+    let no_marks: List<ReadMark> = []
+    SideRows {
+        family: Cell.new(-1),
+        marks: Cell.new(no_marks),
+        whole: Cell.new(unread()),
+        closed: Cell.new(false),
+    }
+}
+
+impl SideRows<R> {
+    /// Every slot up to `count` holds a mark — grown lazily, beside the
+    /// `SideTable` it reads.
+    fn grow_to(count: int) {
+        while self.marks.get().length < count { self.marks.push(unread()) }
+    }
+
+    /// This column's family under `db`, registered on first reach.
+    /// `verify` answers a cell's live hash — 0 the whole column, slot
+    /// `s`'s read as cell `s + 1`.
+    fn opened(db: Db, verify: fn(int) -> int) -> int {
+        let known = self.family.get()
+        if known >= 0 { return known }
+        let register = db.hooks.family
+        let fam = register(verify)
+        self.family.set(fam)
+        let closed = self.closed
+        db.joined(() -> verify(0), () -> closed.set(true), (owner: int, run: int) -> no_sweep())
+        fam
+    }
+
+    /// `cell` recorded under `db` once per frame per revision through
+    /// `mark` — the shared half of `mark_read`/`mark_whole`.
+    fn recorded(db: Db, fam: int, cell: int, mark: ReadMark) {
+        if db.unheard() { return }
+        let now = db.revision()
+        let f = db.frame()
+        let owner = f?.owner ?? 0
+        let run = f?.run ?? 0
+        if mark.read_by(now, owner, run) { return }
+        mark.mark(now, db.read(fam, cell), owner, run)
+    }
+
+    /// Slot `id` read under `db`, recorded as cell `id + 1` — a closed Db
+    /// answers no read through this column, the same refusal a closed
+    /// relation's rows give.
+    fn mark_read(db: Db, verify: fn(int) -> int, id: int) {
+        if self.closed.get() { avra_trap(closed_db(db.id)) }
+        let fam = self.opened(db, verify)
+        self.grow_to(id + 1)
+        self.recorded(db, fam, id + 1, self.marks.get()[id])
+    }
+
+    /// The whole column read under `db` — for an id outside the window,
+    /// where no specific slot exists yet to blame a future write on.
+    fn mark_whole(db: Db, verify: fn(int) -> int) {
+        if self.closed.get() { avra_trap(closed_db(db.id)) }
+        let fam = self.opened(db, verify)
+        self.recorded(db, fam, 0, self.whole.get())
+    }
+}
+
+fn no_sweep() {}
 
 // ── voices ──
 
