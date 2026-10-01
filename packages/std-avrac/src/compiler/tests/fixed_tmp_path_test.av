@@ -1,0 +1,50 @@
+//! `compiler.fixed_tmp_path`: a test file's `/tmp/…` literal is
+//! refused unless the file names a per-run base.
+use compiler.{avra, new_workspace, findings_of, Finding}
+use compiler.host.{memory_host}
+
+fn tmp_hits_in_test(main: string) -> int {
+    let ws = new_workspace(
+        memory_host({"/w/src/tests/t_test.av": main}, ["/w/src/tests/t_test.av"]),
+        "/w",
+        avra(),
+    )
+    tmp_hits(findings_of(ws.program("/w/src/tests/t_test.av")))
+}
+
+fn tmp_hits_in_product(main: string) -> int {
+    let ws = new_workspace(memory_host({"/w/src/main.av": main}, ["/w/src/main.av"]), "/w", avra())
+    tmp_hits(findings_of(ws.program("/w/src/main.av")))
+}
+
+fn tmp_hits(fs: List<Finding>) -> int { [f for f in fs if f.rule == "compiler.fixed_tmp_path"].length }
+
+spec "compiler/idioms (fixed_tmp_path)" {
+    given "a test file with a fixed /tmp/ path" {
+        then "a plain literal fires" { tmp_hits_in_test("fn dir() -> string { \"/tmp/avra-x\" }\ndir()\n") == 1 }
+        then "an interpolated one fires" {
+            tmp_hits_in_test("fn dir(n: string) -> string { \"/tmp/avra-x/\${n}\" }\ndir(\"a\")\n") == 1
+        }
+    }
+    given "a test file that names a per-run base" {
+        then "a `now_ns()` call clears the file" {
+            tmp_hits_in_test(
+                "fn now_ns() -> int { 1 }\nfn dir() -> string { \"/tmp/avra-x/\${now_ns()}\" }\ndir()\n",
+            ) == 0
+        }
+        then "a `*_base()` helper clears the file" {
+            tmp_hits_in_test(
+                "fn run_base() -> string { \"/tmp/avra-x\" }\nfn dir() -> string { \"\${run_base()}/y\" }\ndir()\n",
+            ) == 0
+        }
+    }
+    given "anything else" {
+        then "a product file is not a test" { tmp_hits_in_product("fn dir() -> string { \"/tmp/avra-x\" }\ndir()\n") == 0 }
+        then "a path elsewhere is not /tmp/" { tmp_hits_in_test("fn dir() -> string { \"/var/avra-x\" }\ndir()\n") == 0 }
+        then "a site license clears it" {
+            tmp_hits_in_test(
+                "fn dir() -> string {\n    // LICENSED compiler.fixed_tmp_path: a path the test never opens\n    \"/tmp/avra-x\"\n}\ndir()\n",
+            ) == 0
+        }
+    }
+}

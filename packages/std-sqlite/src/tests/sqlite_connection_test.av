@@ -5,11 +5,12 @@
 // under read-only fails rather than being created, and closing answers
 // zero. What it CANNOT assert is that the file is a database — that is
 // T127, opening is lazy, and the check needs a statement.
-use @std.io.{exists, write_text, remove}
+use @std.io.{exists, write_text, remove, make_dirs}
 use @std.sqlite.open.{Db, Mode, OpenConfig}
 use @std.sqlite.stmt.{Stmt}
 use @std.sqlite.sql.{sql, Sql}
 use @std.sqlite.error.{SqlError}
+use @std.time.{now_ns}
 
 /// A fresh in-memory database handed to `work`, or the kind the OPEN
 /// itself failed with. FOURTEEN COPIES OF THIS SHAPE stood across six
@@ -59,9 +60,16 @@ fn opens_and_closes_twice(r: Result<Db, SqlError>) -> bool {
     match r { .Ok(db) -> closed_twice(db), .Err(_) -> false }
 }
 
-fn a_path() -> string { "/tmp/avra-sqlite-conn-test.db" }
-fn absent() -> string { "/tmp/avra-sqlite-absent-conn.db" }
-fn not_a_db() -> string { "/tmp/avra-sqlite-notadb-conn.db" }
+/// One directory per run, so no earlier run's files answer for this one.
+once fn conn_base() -> string {
+    let d = "/tmp/avra-sqlite-conn-test/${now_ns()}"
+    let _ = make_dirs(d)
+    d
+}
+
+fn a_path() -> string { "${conn_base()}/conn.db" }
+fn absent() -> string { "${conn_base()}/absent.db" }
+fn not_a_db() -> string { "${conn_base()}/notadb.db" }
 
 /// The fixture files, made and removed by the cases that need them.
 fn made(path: string, text: string) -> bool { (write_text(path, text) catch "") != "" }

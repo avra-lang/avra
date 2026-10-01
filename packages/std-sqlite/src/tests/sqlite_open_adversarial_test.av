@@ -19,6 +19,7 @@ use @std.sqlite.open.{OpenConfig, Mode, Threading}
 use @std.sqlite.error.{SqlError}
 
 // ── The fixtures, so each case shows only its attack ────────────
+// `a_db` is sqlite_open_test.av's own: this module shares one namespace.
 
 /// The kind a path is refused with, or the word for acceptance.
 fn door(path: string) -> string { verdict(OpenConfig.config_at(path).path_fault()) }
@@ -35,7 +36,7 @@ fn nul() -> string { from_codepoint(0) }
 
 /// All 48 configurations: three modes times four flags.
 fn conf(n: int) -> OpenConfig {
-    OpenConfig.config_at("/tmp/a.db") with { mode: mode_at(n % 3), uri: bit(n, 3), shared_cache: bit(n, 6), threading: if bit(n, 12) { Threading.Unshared } else { Threading.Serialized }, no_follow: bit(n, 24) }
+    OpenConfig.config_at(a_db()) with { mode: mode_at(n % 3), uri: bit(n, 3), shared_cache: bit(n, 6), threading: if bit(n, 12) { Threading.Unshared } else { Threading.Serialized }, no_follow: bit(n, 24) }
 }
 fn mode_at(i: int) -> Mode {
     match i { 0 -> Mode.ReadWrite, 1 -> Mode.OpenExisting, _ -> Mode.ReadOnly }
@@ -62,13 +63,13 @@ spec "std/sqlite open adversarial" {
         // empty-path trap exactly.
         then "a lone NUL is refused" { door(nul()) == "sqlite.holds_nul" }
         then "a NUL first is refused" { door(from_codepoints([0, 120])) == "sqlite.holds_nul" }
-        then "a NUL in the middle is refused" { door("/tmp/a.db${nul()}/../../etc/x") == "sqlite.holds_nul" }
-        then "a NUL last is refused" { door("/tmp/a.db${nul()}") == "sqlite.holds_nul" }
+        then "a NUL in the middle is refused" { door("${a_db()}${nul()}/../../etc/x") == "sqlite.holds_nul" }
+        then "a NUL last is refused" { door("${a_db()}${nul()}") == "sqlite.holds_nul" }
         then "`:memory:` with a NUL glued on is refused" { door(":memory:${nul()}x") == "sqlite.holds_nul" }
         then "a `file:` path with a NUL is refused for the NUL first" { door("file:/tmp/a.db${nul()}") == "sqlite.holds_nul" }
         // The guard must SEE it — the length is the witness the C
         // primitives do not have.
-        then "Avra measured every byte all along" { "/tmp/a.db${nul()}x".length == 11 }
+        then "Avra measured every byte all along" { "${a_db()}${nul()}x".length == 11 }
         then "and a NUL path is refused even when URIs were asked for" { door_uri("file:${nul()}") == "sqlite.holds_nul" }
     }
     given "the near misses, which must be ACCEPTED" {
@@ -82,6 +83,7 @@ spec "std/sqlite open adversarial" {
         then "`:memory` without its tail is a filename" { door(":memory") == "ACCEPTED" }
         then "`memory:` is a filename" { door("memory:") == "ACCEPTED" }
         then "`file` without a colon is a filename" { door("file") == "ACCEPTED" }
+        // LICENSED compiler.fixed_tmp_path: a path the door judges and never opens
         then "a path CONTAINING `file:` is a filename" { door("/tmp/file:x.db") == "ACCEPTED" }
         // With URI parsing off at the library, `FILE:` is a literal
         // directory that does not exist — SQLite answers CANTOPEN
@@ -94,7 +96,7 @@ spec "std/sqlite open adversarial" {
         then "`file:` exactly is refused as a URI" { door("file:") == "sqlite.uri_path" }
         then "a URI path is refused by default" { door("file:/tmp/a.db?mode=ro") == "sqlite.uri_path" }
         then "and accepted once the caller asked for URIs" { door_uri("file:/tmp/a.db?mode=ro") == "ACCEPTED" }
-        then "an ordinary path is unaffected by that field" { door_uri("/tmp/a.db") == "ACCEPTED" }
+        then "an ordinary path is unaffected by that field" { door_uri(a_db()) == "ACCEPTED" }
     }
     given "a URI whose path component is empty — the THIRD spelling" {
 
@@ -140,7 +142,7 @@ spec "std/sqlite open adversarial" {
         // The two words open.av records as measured against the
         // library. A number in a doc comment is a claim; here it is a
         // check that fails when a contributor moves.
-        then "the default joins READWRITE, CREATE, PRIVATECACHE, FULLMUTEX and EXRESCODE" { OpenConfig.config_at("/tmp/a.db").flags_of() == 33882118 }
-        then "read-only swaps those two write bits for one, and touches nothing else" { (OpenConfig.config_at("/tmp/a.db") with { mode: Mode.ReadOnly }).flags_of() == 33882113 }
+        then "the default joins READWRITE, CREATE, PRIVATECACHE, FULLMUTEX and EXRESCODE" { OpenConfig.config_at(a_db()).flags_of() == 33882118 }
+        then "read-only swaps those two write bits for one, and touches nothing else" { (OpenConfig.config_at(a_db()) with { mode: Mode.ReadOnly }).flags_of() == 33882113 }
     }
 }

@@ -5,9 +5,11 @@
 // that many arbitrary bytes: never a real pack, so every one must
 // answer absent, and never a trap.
 use @std.io.{make_dirs, write_bytes}
+use @std.time.{now_ns}
 use compiler.store.{pack_at}
 
-fn dir() -> string { "/tmp/avra-pack-mmap-boundary" }
+/// One directory per run, so no earlier run's files answer for this one.
+once fn dir_base() -> string { "/tmp/avra-pack-mmap-boundary/${now_ns()}" }
 
 fn junk(n: int) -> Bytes {
     mut out: List<int> = []
@@ -16,10 +18,10 @@ fn junk(n: int) -> Bytes {
 }
 
 fn absent_at(len: int) -> string {
-    let path = "${dir()}/n${len}.bin"
+    let path = "${dir_base()}/n${len}.bin"
     let _ = write_bytes(path, junk(len))
     "${len}:${pack_at(path, "cid").get("x") == null}"
 }
 
-let _ = make_dirs(dir())
+let _ = make_dirs(dir_base())
 [absent_at(l) for l in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 17]].join(" ")

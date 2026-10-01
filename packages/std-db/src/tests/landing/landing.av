@@ -4,7 +4,8 @@
 // read back through the new connection to prove it survived the close
 // — then the row deleted and its absence confirmed. Native only:
 // sqlite is FFI.
-use @std.io.{remove}
+use @std.io.{remove, make_dirs}
+use @std.time.{now_ns}
 use @std.db.{model}
 use @std.db.error.{ModelError, modeled}
 use @std.sqlite.{Db, sql}
@@ -16,7 +17,14 @@ type Account = {
     balance: int,
 }
 
-fn path() -> string { "/tmp/avra-db-landing-test.db" }
+/// One directory per run, so no earlier run's database answers for this one.
+once fn landing_base() -> string {
+    let d = "/tmp/avra-db-landing-test/${now_ns()}"
+    let _ = make_dirs(d)
+    d
+}
+
+fn path() -> string { "${landing_base()}/landing.db" }
 
 fn word(f: Account?) -> string {
     match f {

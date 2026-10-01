@@ -1,9 +1,10 @@
-use @std.io.{remove}
+use @std.io.{remove, make_dirs}
 use @std.text.{repeat, from_codepoint}
 use @std.db.{model}
 use @std.db.error.{ModelError, modeled}
 use @std.sqlite.{Db, sql}
 use @std.sqlite.error.{SqlError}
+use @std.time.{now_ns}
 
 @model
 type Solo = {
@@ -603,7 +604,14 @@ spec "std/db @model reading a SQL NULL in a column the type declares non-nullabl
 // failure kind, not only the one kind that happens to be tested
 // elsewhere. SQLITE_BUSY from a second connection holding the write
 // lock is a failure with nothing to do with a constraint at all.
-fn busy_probe_path() -> string { "/tmp/avra-db-busy-adversarial-test.db" }
+/// One directory per run, so no earlier run's database answers for this one.
+once fn busy_base() -> string {
+    let d = "/tmp/avra-db-busy-adversarial-test/${now_ns()}"
+    let _ = make_dirs(d)
+    d
+}
+
+fn busy_probe_path() -> string { "${busy_base()}/busy.db" }
 
 fn user_version_of(db: Db, id: int) -> Result<int, SqlError> {
     (db.scalar(sql("select \"__avra_version__\" from User where id = ?").args([.Int(id)]))?).int()

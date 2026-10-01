@@ -23,13 +23,16 @@ fn exrescode() -> int { 33554432 }
 /// powers of two, so integer division and a parity test read it.
 fn has(word: int, bit: int) -> bool { word / bit % 2 == 1 }
 
-fn plain() -> int { OpenConfig.config_at("/tmp/a.db").flags_of() }
-fn read_only() -> int { (OpenConfig.config_at("/tmp/a.db") with { mode: Mode.ReadOnly }).flags_of() }
-fn open_existing() -> int { (OpenConfig.config_at("/tmp/a.db") with { mode: Mode.OpenExisting }).flags_of() }
-fn with_uri() -> int { (OpenConfig.config_at("/tmp/a.db") with { uri: true }).flags_of() }
-fn shared() -> int { (OpenConfig.config_at("/tmp/a.db") with { shared_cache: true }).flags_of() }
-fn unshared() -> int { (OpenConfig.config_at("/tmp/a.db") with { threading: Threading.Unshared }).flags_of() }
-fn following() -> int { (OpenConfig.config_at("/tmp/a.db") with { no_follow: true }).flags_of() }
+// LICENSED compiler.fixed_tmp_path: a path the test hands to a config and never opens
+fn a_db() -> string { "/tmp/a.db" }
+
+fn plain() -> int { OpenConfig.config_at(a_db()).flags_of() }
+fn read_only() -> int { (OpenConfig.config_at(a_db()) with { mode: Mode.ReadOnly }).flags_of() }
+fn open_existing() -> int { (OpenConfig.config_at(a_db()) with { mode: Mode.OpenExisting }).flags_of() }
+fn with_uri() -> int { (OpenConfig.config_at(a_db()) with { uri: true }).flags_of() }
+fn shared() -> int { (OpenConfig.config_at(a_db()) with { shared_cache: true }).flags_of() }
+fn unshared() -> int { (OpenConfig.config_at(a_db()) with { threading: Threading.Unshared }).flags_of() }
+fn following() -> int { (OpenConfig.config_at(a_db()) with { no_follow: true }).flags_of() }
 
 /// How many of the three access bits a word carries. The header allows
 /// exactly one of READONLY, READWRITE, or READWRITE|CREATE — so
@@ -108,8 +111,9 @@ spec "std/sqlite open" {
         then "a `file:` path is refused as a URI" { fault_kind("file:/tmp/a.db?mode=ro") == "sqlite.uri_path" }
         then "the refusal quotes the path back" { fault_message("file:/tmp/a.db").contains("file:/tmp/a.db") }
         then "and it is ACCEPTED when the caller asked for URIs" { fault_kind_uri("file:/tmp/a.db?mode=ro") == "" }
-        then "an ordinary path is accepted" { fault_kind("/tmp/a.db") == "" }
+        then "an ordinary path is accepted" { fault_kind(a_db()) == "" }
         then "a relative path is accepted" { fault_kind("data.db") == "" }
+        // LICENSED compiler.fixed_tmp_path: a path the door judges and never opens
         then "a path merely CONTAINING `file:` is accepted" { fault_kind("/tmp/file:weird.db") == "" }
     }
 }

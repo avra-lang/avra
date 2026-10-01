@@ -17,9 +17,10 @@
 // CLOSING ITSELF IS NOT HERE: `close` nulls its receiver and the
 // connection suite asks it both ways. This file is about the one value
 // that arrives by being WRITTEN THROUGH.
-use @std.io.{remove}
+use @std.io.{remove, make_dirs}
 use @std.sqlite.open.{Mode, OpenConfig}
 use @std.sqlite.c.{sqlite3_open_v2, sqlite3_close_v2}
+use @std.time.{now_ns}
 
 /// One open at the wall, reported as its code and whether a handle
 /// came back. The handle is closed either way, which is the law under
@@ -36,7 +37,14 @@ fn present(p: ptr?) -> string { if p == null { "absent" } else { "present" } }
 
 /// The one fixture this suite makes: a real file, so the seat is asked
 /// about a VFS path and not only the memory VFS.
-fn a_file() -> string { "/tmp/avra-sqlite-handle-ok.db" }
+fn a_file() -> string { "${handle_base()}/handle-ok.db" }
+
+/// One directory per run, so no earlier run's file answers for this one.
+once fn handle_base() -> string {
+    let d = "/tmp/avra-sqlite-handle-test/${now_ns()}"
+    let _ = make_dirs(d)
+    d
+}
 
 fn swept() -> bool { (remove(a_file()) catch "") != "" }
 

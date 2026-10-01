@@ -1396,3 +1396,33 @@ fn file_id_across_relation_found(col: Code) -> Fix {
             ),
         )
 }
+
+/// A test's fixed `/tmp/` path: two runs on one machine share it, so
+/// the second reads what the first left behind — a cache, a database,
+/// a built program. A test file that names a per-run base (a
+/// `now_ns()` call, or a `*_base()` helper) owns its directory.
+///
+/// NO REWRITE: the base is a new declaration the file must name.
+@keeps("let d = \"/tmp/avra-x\"")
+export rule fixed_tmp_path { quote { ${lit} } if is_fixed_tmp_path(lit) -> fixed_tmp_path_found(lit) }
+
+fn is_fixed_tmp_path(lit: Code) -> bool {
+    let f = lit.of.view.source.file
+    if !f.contains("/src/") || !f.contains("/tests/") { return false }
+    let v? = lit.text_head() else { return false }
+    v.starts_with("/tmp/") && !lit.file_callees().any(names_run_base)
+}
+
+fn names_run_base(callee: string) -> bool { callee == "now_ns" || callee.ends_with("_base") }
+
+fn fixed_tmp_path_found(lit: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                lit.loc(),
+                "a test's fixed `/tmp/` path is shared by every run on the machine — the next run reads what this one left",
+                "this path",
+                "root it at a per-run base: `once fn run_base() -> string { \"/tmp/…/\${now_ns()}\" }`, then `\"\${run_base()}/…\"`",
+            ),
+        )
+}

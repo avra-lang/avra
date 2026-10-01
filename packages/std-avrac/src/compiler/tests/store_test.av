@@ -8,10 +8,14 @@
 //     same parts stay apart.
 
 use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
 use compiler.store.{Store, Stored, node_key, store_at}
 
+/// One directory per run, so no earlier run's rows answer for this one.
+once fn store_base() -> string { "/tmp/avra-store-test/${now_ns()}" }
+
 /// A store of one spec's own, so two specs cannot see each other's rows.
-fn at(name: string) -> Store { store_at("/tmp/avra-store-test/${name}") }
+fn at(name: string) -> Store { store_at("${store_base()}/${name}") }
 
 spec "store" {
     given "a key names content, and the family separates" {
@@ -51,7 +55,7 @@ spec "store" {
             // THE DATA IS REALLY THERE — directories made, bytes written — and only the
             // EDGES are missing. A fixture that failed to write would pass this for the
             // wrong reason, which is the fixture that cannot exhibit the defect.
-            let shard = "/tmp/avra-store-test/uncommitted/obj/${k.substring(0, 2)}"
+            let shard = "${store_base()}/uncommitted/obj/${k.substring(0, 2)}"
             let _ = make_dirs(shard)
             let _ = write_text("${shard}/${k}", "the data landed")
             !s.has(Stored.Obj, k) && s.get(Stored.Obj, k) == null
