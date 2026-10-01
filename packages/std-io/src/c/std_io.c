@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -299,4 +300,43 @@ int64_t avra_io_fd_mtime(int64_t fd) {
 int64_t avra_io_seek(int64_t fd, int64_t at) {
     off_t o = lseek((int)fd, (off_t)at, SEEK_SET);
     return o < 0 ? -errno : (int64_t)o;
+}
+/* ── The compile slot ─────────────────────────────────────────────
+   One of AVRA_MAX_COMPILES machine-wide slots (default 3; 0 = off),
+   each a flock on <AVRA_SLOT_DIR, default /tmp/avra-slots>/<i>, held
+   until the process ends.
+   A process whose parent already holds one (AVRA_COMPILE_SLOT set, and
+   inherited) takes none, so a compile's own children never wait on
+   the slot their parent holds. Waits when every slot is taken, saying
+   so once. Answers the slot taken, or -1 when none is taken. */
+int64_t avra_io_compile_slot(void) {
+    const char* held = getenv("AVRA_COMPILE_SLOT");
+    if (held && *held) return -1;
+    const char* max = getenv("AVRA_MAX_COMPILES");
+    long n = (max && *max) ? strtol(max, NULL, 10) : 3;
+    if (n <= 0) return -1;
+    const char* dir = getenv("AVRA_SLOT_DIR");
+    if (!dir || !*dir) dir = "/tmp/avra-slots";
+    mkdir(dir, 0777);
+    int said = 0;
+    for (;;) {
+        for (long i = 0; i < n; i++) {
+            char path[1024];
+            snprintf(path, sizeof path, "%s/%ld", dir, i);
+            int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+            if (fd < 0) continue;
+            if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+                char slot[24];
+                snprintf(slot, sizeof slot, "%ld", i);
+                setenv("AVRA_COMPILE_SLOT", slot, 1);
+                return (int64_t)i;
+            }
+            close(fd);
+        }
+        if (!said) {
+            fprintf(stderr, "avra: waiting for a compile slot (AVRA_MAX_COMPILES=%ld)\n", n);
+            said = 1;
+        }
+        usleep(200000);
+    }
 }

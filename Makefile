@@ -217,7 +217,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: objects census census-types sizes traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+.PHONY: objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -405,6 +405,11 @@ runtime-tests: $(RUNTIME_TESTS)
 # else's defect.
 traps: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/traps.sh
+
+# THE COMPILE SLOT: a package-scale compile waits for one of
+# AVRA_MAX_COMPILES slots, a single file never does.
+compile-slots: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/compile_slots.sh
 
 # THE BUILD CACHE, ATTACKED: two programs and a library through ONE store, every edit
 # kind a hold must survive, each binary held to the evaluator — and a kept binary held
@@ -707,7 +712,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here exactly as sprite-build.sh's call does.
-gate: seed-check stems vocab fingerprints codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps witness cache-attacks
+gate: seed-check stems vocab fingerprints codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
 	@sh tools/memcap.sh --self-test

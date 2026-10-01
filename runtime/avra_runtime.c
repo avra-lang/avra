@@ -353,12 +353,17 @@ static void acc_report(void) {
     }
 }
 
+static int64_t g_mem_ceiling;
+static int64_t g_mem_next;
+
 // Settled at load, for the reason `rc_guard_init` gives: a lazy
 // getenv inside this carries into every allocation's fast path.
 __attribute__((constructor))
 static void acc_settled(void) {
     g_acc_on = getenv("AVRA_MEM_STATS") != NULL;
     if (g_acc_on) atexit(acc_report);
+    const char* ceiling = getenv("AVRA_MEM_CEILING_MB");
+    if (ceiling && *ceiling) g_mem_ceiling = g_mem_next = strtoll(ceiling, NULL, 10) << 20;
     CENSUS(g_sites_census = getenv("AVRA_CENSUS_SITES") != NULL);
 }
 
@@ -384,6 +389,53 @@ void avra_census_box(const char* label) {
 static int64_t g_live_bytes = 0;
 
 int64_t avra_mem_live(void) { return g_live_bytes; }
+
+// THE MEMORY CEILING: memory in use past AVRA_MEM_CEILING_MB traps, so
+// a runaway program ends as a wreck instead of taking the machine. The
+// default suits a 16 GB machine; 0 turns it off. Read only where fresh
+// memory is taken from the system, never on a recycled box.
+// THE LEDGER ONLY SAYS WHEN TO LOOK; THE ALLOCATOR DECIDES. The live
+// ledger is cheap and can drift from what is really held, so crossing
+// `g_mem_next` measures the allocator's own bytes in use: past the
+// ceiling it traps, and under it the next look waits for the ledger to
+// grow by the headroom that measurement left.
+static int64_t g_mem_ceiling = (int64_t)6000 << 20;
+static int64_t g_mem_next = (int64_t)6000 << 20;
+
+static int64_t mem_in_use(void) {
+#ifdef __APPLE__
+    malloc_statistics_t st;
+    malloc_zone_statistics(NULL, &st);
+    return (int64_t)st.size_in_use;
+#else
+    struct mallinfo2 mi = mallinfo2();
+    return (int64_t)(mi.uordblks + mi.hblkhd);
+#endif
+}
+
+__attribute__((noinline, cold))
+static void mem_ceiling_measure(void) {
+    int64_t used = mem_in_use();
+    if (used > g_mem_ceiling) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "memory ceiling exceeded: %lld MB (AVRA_MEM_CEILING_MB)",
+                 (long long)(g_mem_ceiling >> 20));
+        avra_trap(msg);
+    }
+    g_mem_next = g_live_bytes + (g_mem_ceiling - used);
+}
+
+static inline void mem_ceiling_check(void) {
+    if (__builtin_expect(g_mem_ceiling > 0 && g_live_bytes > g_mem_next, 0)) mem_ceiling_measure();
+}
+
+// Fresh memory from the system, past the ceiling's check: one call in
+// the caller either way, so the check adds nothing to a caller's size.
+__attribute__((noinline))
+static void* fresh(size_t n) {
+    mem_ceiling_check();
+    return malloc(n);
+}
 
 // THE MORTAL LEDGER: every byte a box or buffer holds that a normal
 // release path would eventually free. A box `avra_once_set` makes
@@ -459,7 +511,7 @@ static void* box_alloc(size_t size, int32_t kind) {
         g_free[cls] = *(Header**)(h + 1);
         g_free_len[cls]--;
     } else {
-        h = (Header*)malloc(sizeof(Header) + (cls ? cls * CLASS_BYTES : bytes));
+        h = (Header*)fresh(sizeof(Header) + (cls ? cls * CLASS_BYTES : bytes));
     }
     h->tag = AVRA_TAG;
     h->kind = kind;
@@ -759,6 +811,7 @@ static char* sized_moved(char* p, size_t need) {
         }
         return out;
     }
+    mem_ceiling_check();
     Header* moved = (Header*)realloc(h, sizeof(Header) + room + 1);
     if (moved == NULL) avra_trap("out of memory growing a value in place");
     return (char*)(moved + 1);
@@ -1059,7 +1112,7 @@ static int64_t* buf_alloc(int64_t cap) {
         g_buf_free_len[cls]--;
         return buf;
     }
-    return (int64_t*)malloc(buf_bytes(cap));
+    return (int64_t*)fresh(buf_bytes(cap));
 }
 
 static void buf_free(int64_t* buf, int64_t cap) {
@@ -1203,6 +1256,7 @@ static void array_grow(AvraArray* a) {
         memcpy((uint8_t*)(buf + cap), a->marks, (size_t)old_cap);
         if (!fixed) buf_free(a->data, old_cap);
     } else {
+        mem_ceiling_check();
         buf = (int64_t*)realloc(a->data, buf_bytes(cap));
         acc_add(ACC_BUF, (int64_t)(buf_bytes(cap) - buf_bytes(old_cap)));
         if (g_acc_on > 0) { acc_buf(old_cap, -(int64_t)buf_bytes(old_cap), -1); acc_buf(cap, (int64_t)buf_bytes(cap), 1); }
@@ -1808,6 +1862,7 @@ static void map_index_rebuild(AvraMap* m, int64_t icap) {
     acc_add(ACC_INDEX, (int64_t)((icap - m->icap) * (int64_t)sizeof(int64_t)));
     free(m->index);
     m->icap = icap;
+    mem_ceiling_check();
     m->index = (int64_t*)calloc((size_t)icap, sizeof(int64_t));
     for (int64_t s = 0; s < m->keys->len; s++) {
         const char* k = (const char*)(uintptr_t)m->keys->data[s];
