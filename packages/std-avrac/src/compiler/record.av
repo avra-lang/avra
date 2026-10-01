@@ -264,13 +264,9 @@ fn record_known(ws: Workspace, m: ModulePath, text: string) {
 
 /// What OTHER modules' keys read of a record: its interface digest, its imports and
 /// its references — the files an importer reaches through it.
-/// In name order: a held file's references stand among its own lines, a read one's
-/// ahead of them, and which it was moves no importer.
 fn seen_part(text: string) -> string {
     joined(
-        sorted_texts(
-            [line for line in text.split("\n") if line.starts_with("iface\t") || line.starts_with("import\t") || line.starts_with("ref\t")],
-        ),
+        [line for line in text.split("\n") if line.starts_with("iface\t") || line.starts_with("import\t") || line.starts_with("ref\t")],
         "\n",
     )
 }
@@ -564,6 +560,8 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         let no_typed: Map<string, Map<string, List<string>>> = {}
         ws.keys.typed_files.set(no_typed)
         ws.keys.file_owners.set(no_bytes)
+        let no_placed: Map<string, bool> = {}
+        ws.keys.placed_from.set(no_placed)
         let no_imports: Map<string, List<string>> = {}
         ws.import_lists.set(no_imports)
     }
@@ -1086,20 +1084,23 @@ impl Workspace {
             owners: [],
             walked: {},
             mods: [],
+            indexes: [],
             late: [],
         }
         for d in sees { r.sees.set(d, true) }
         for p in record_fields(self, store, m) { if is_ref_row(p) && !names_builtin(p) { r.add(ref_target(p)) } }
+        r.indexes = [self.typed_named(store, d) for d in r.mods]
         r.late = []
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
         mut at = 0
         while at < r.files.length {
             let f = r.files[at]
-            for d in r.mods { r.add_all(self.typed_named(store, d).get(f) ?? []) }
+            for index in r.indexes { r.add_all(index.get(f) ?? []) }
             at = at + 1
             // a module that joins late is asked of every file already walked
             while !r.late.is_empty() {
                 let index = self.typed_named(store, r.late[0])
+                r.indexes.push(index)
                 r.late = r.late.slice(1, r.late.length)
                 for g in r.files.slice(0, at) { r.add_all(index.get(g) ?? []) }
             }
@@ -1113,8 +1114,18 @@ impl Workspace {
     fn sees_records(store: Store, m: ModulePath) -> List<string> {
         let names = seen_modules(self, store, m).concat([prelude_module().text()])
         let sees = distinct([e for n in names for e in enclosings(n)])
-        for n in sees { let _ = self.typed_named(store, n) }
+        for n in sees { self.place_files(store, n) }
         sees
+    }
+
+    /// Files each `file` line of a module's record as that module's own — once per
+    /// record for the build.
+    fn place_files(store: Store, name: string) {
+        if self.keys.placed_from.get().get(name) != null { return }
+        self.keys.placed_from.put(name, true)
+        for p in record_fields(self, store, module_path(name.split("."))) {
+            if p.length >= 3 && p[0] == "file" { self.keys.file_owners.put(p[1], name) }
+        }
     }
 
     /// `typed_index` by the module's name.
@@ -1125,13 +1136,12 @@ impl Workspace {
 
     /// Each file of a module's record with the files its types name — its type uses',
     /// and its declarations' wires' — and each type's file with the files its impls
-    /// sit in, memoized for the build. Each file it places is filed as its own.
+    /// sit in, memoized for the build.
     fn typed_index(store: Store, m: ModulePath) -> Map<string, List<string>> {
         let known: Map<string, List<string>>? = self.keys.typed_files.get().get(m.text())
         if known != null { return known! }
         mut made: Map<string, List<string>> = {}
         for p in record_fields(self, store, m) {
-            if p.length >= 3 && p[0] == "file" { self.keys.file_owners.put(p[1], m.text()) }
             let named = when {
                 is_ref_row(p) && shapes_signature(p[3]) && !names_builtin(p) -> [ref_target(p)]
                 p.length > 13 && declares(p) -> wired_files(p)
@@ -1166,8 +1176,8 @@ impl Workspace {
 }
 
 /// A MODULE'S REACH, as it is walked: the files reached, each beside the module whose
-/// record places it, and those modules in the order they joined — `late` holds the
-/// ones not yet asked of the files already walked.
+/// record places it, and those modules in the order they joined with each one's
+/// index — `late` holds the ones not yet asked of the files already walked.
 type Reach = {
     home: string,
     sees: Map<string, bool>,
@@ -1176,6 +1186,7 @@ type Reach = {
     owners: List<string>,
     walked: Map<string, bool>,
     mods: List<string>,
+    indexes: List<Map<string, List<string>>>,
     late: List<string>,
 }
 
