@@ -2,7 +2,7 @@
 // M5b's arena/column relations use. No lookups land in this slice.
 // `marked_field`/`refusals` are this module's own — relation_adversarial_test.av
 // declares them, `tests/` being one namespace.
-use @std.meta.{Type, Field, Annotation}
+use @std.meta.{Type, Field, Annotation, Variant}
 
 fn partitioned(mode: string, fields: List<Field>) -> Type {
     Type {
@@ -15,6 +15,8 @@ fn partitioned(mode: string, fields: List<Field>) -> Type {
         module: "m",
     }
 }
+
+fn one_variant() -> Variant { Variant { name: "V", payload: [], at: null } }
 
 spec "a partitioned relation (@arena/@side)" {
     given "a plain record, no id, no lookups" {
@@ -30,5 +32,15 @@ spec "a partitioned relation (@arena/@side)" {
         then "@key is refused" { refusals(partitioned("arena", [marked_field("k", ["key"])])) == "partition_lookup_unsupported" }
         then "@unique is refused" { refusals(partitioned("arena", [marked_field("k", ["unique"])])) == "partition_lookup_unsupported" }
         then "@index is refused" { refusals(partitioned("side", [marked_field("k", ["index"])])) == "partition_lookup_unsupported" }
+    }
+    given "an enum — a tagged node's own arena, dense storage over its value" {
+        then "arena is sound over an enum: a slot reads the value, never a field" {
+            let t = partitioned("arena", []) with { variants: [one_variant()] }
+            refusals(t) == ""
+        }
+        then "side still refuses an enum: a column reads one named field" {
+            let t = partitioned("side", []) with { variants: [one_variant()] }
+            refusals(t) == "not_a_record"
+        }
     }
 }
