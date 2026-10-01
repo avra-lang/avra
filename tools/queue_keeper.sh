@@ -10,9 +10,10 @@
 #
 # A PR GitHub dropped from the queue is put back, at most twice per head
 # commit: a train fails every PR it carries, so most drops are someone
-# else's failure. A PR that conflicts with main, or that failed its third
-# train, gets ONE comment on the PR saying why — its failing lines, or
-# "rebase onto origin/main" — and is left for its owner.
+# else's failure. A PR that conflicts with main gets ONE comment saying
+# "rebase onto origin/main"; one that failed its third train is held as a
+# DRAFT, since every PR behind it rides its failure, with its failing
+# lines on the PR. Either is left for its owner.
 set -eu
 
 repo=avra-lang/avra
@@ -68,8 +69,9 @@ pass() {
         tries="$state/$n-$head.tries"
         t=$(cat "$tries" 2>/dev/null || echo 0)
         if [ "$t" -ge 2 ]; then
-            say_once "$n" "$(printf 'queue keeper: three trains have failed with this PR in them. Its newest failure:\n\n```\n%s\n```\nFix it, then `sh tools/work land`.' "$(train_failure "$n")")" failed
-            echo "queue-keeper: #$n failed three trains — owner told"
+            say_once "$n" "$(printf 'queue keeper: three trains have failed with this PR in them, so it is held as a DRAFT — every PR behind it rode its failure. Its newest failure:\n\n```\n%s\n```\nFix it, then `gh pr ready %s` and `sh tools/work land`.' "$(train_failure "$n")" "$n")" failed
+            gh pr ready "$n" -R "$repo" --undo >/dev/null 2>&1 || :
+            echo "queue-keeper: #$n failed three trains — held as a draft, owner told"
             continue
         fi
         if enqueue "$n"; then
