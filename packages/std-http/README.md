@@ -18,18 +18,37 @@ let _ = app.run()
 
 ## Modules
 
-Each module is imported by its own path:
-`use @std.http.frame.{…}`, `@std.http.http`, `@std.http.query`,
-`@std.http.route`, `@std.http.server`, `@std.http.client`.
+Each module is imported by its own path, `use @std.http.<module>.{…}`.
+The six the sections below detail are `frame`, `http`, `query`, `route`,
+`server` and `client`; the rest are named here, each in its own file.
 
 | Module | Owns |
 |---|---|
 | `frame` | The framer: a head over `Bytes`, stateless and strict. |
 | `http` | The values a handler sees and answers. |
+| `body` | An incoming body, read as it arrives: the one reader a streamed request, a chunked reply and an SSE stream share. |
 | `query` | What follows the target's `?`, as keyed fields over raw octets. |
 | `route` | The router: a route is a grammar over the path. |
 | `server` | The loop: a listener, a handler, one task per connection. |
+| `wire` | The transport a connection rides; every verb parks where `@std/net`'s `Conn` would. |
 | `client` | One connection as a value, the reply framed as it arrives. |
+| `pool` | Connections kept between requests, one bucket per origin. |
+| `fetch` | One request by URL — `get(url)?` — over a pool, every stage timed. |
+| `auth` | Credentials as headers a caller names. |
+| `cookie` | Cookies read from a request, set on a response, signed. |
+| `jar` | Cookies a server set, sent back where RFC 6265 says. |
+| `files` | A directory served under a prefix. |
+| `form` | A body an HTML form posted, in either encoding. |
+| `codec` | What a WebSocket handshake names (RFC 6455 §4.2.2). |
+| `date` | HTTP's dates and the `date` field. |
+| `sse` | Server-sent events: a `text/event-stream` response. |
+| `ws` | WebSocket (RFC 6455): the upgrade on both sides and the frame codec. |
+| `guard` | The stock guards a browser-facing server wants. |
+| `observe` | Every request given an id, a trace place and timings. |
+| `quota` | What a route may take: per-client rate, concurrency, body size. |
+| `h2` | HTTP/2 — the framer and the connection (RFC 9113), over `Bytes`. |
+| `hpack` | HPACK — header compression for HTTP/2 (RFC 7541), over `Bytes`. |
+| `h2_serve` | A stream is a request: the fields a stream carried, spelled as one. |
 
 ### `frame`
 
