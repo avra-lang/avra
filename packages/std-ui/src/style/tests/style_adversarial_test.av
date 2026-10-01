@@ -1,0 +1,59 @@
+//! Attacks on the style data: absence against the empty value, a theme
+//! replaced whole, and every field present at once.
+use @std.ui.style.style.{Style}
+use @std.ui.{Size, Tone, Font}
+use @std.ui.style.theme.{Theme, Scale, default_theme, space_of, radius_of, color_of, face_of}
+
+/// `.None` is a REAL token: present, and not the same as absent.
+fn present_none() -> Style { Style { gap: .None } }
+
+fn full() -> Style {
+    Style { gap: .L, pad: .S, radius: .M, fill: .SurfaceRaised, color: .Danger, face: .Mono }
+}
+
+/// The default theme with its space scale shifted up by one.
+fn shifted() -> Theme {
+    default_theme with { space: Scale { none: 1, xs: 2, s: 3, m: 4, l: 5, xl: 6 } }
+}
+
+spec "std/ui style — absence is not the empty value" {
+    given "a gap nobody set" {
+        then "falls back when a question supplies a default" {
+            empty_style().gap ?? Size.Xs == Size.Xs
+        }
+    }
+    given "a gap set to the empty size" {
+        then "is present — the fallback is never consulted" {
+            present_none().gap ?? Size.Xs == Size.None
+        }
+        then "reads as zero through the theme, not as absent" {
+            space_of(default_theme, present_none().gap ?? Size.M) == 0
+        }
+    }
+}
+
+spec "std/ui style — a theme is read whole" {
+    given "a theme whose space scale shifted by one" {
+        then "every step reads from the replaced table" {
+            space_of(shifted(), Size.None) == 1 && space_of(shifted(), Size.Xl) == 6
+        }
+        then "a table it kept reads its own value" {
+            radius_of(shifted(), Size.M) == 8
+        }
+    }
+}
+
+spec "std/ui style — every field present at once" {
+    given "a style with all six fields set" {
+        then "reads back each one it was given" {
+            full().gap ?? Size.None == Size.L && full().pad ?? Size.None == Size.S
+        }
+        then "reads back the face it was given" {
+            full().face == Font.Mono
+        }
+        then "projects to the tokens the theme names" {
+            color_of(default_theme, full().color ?? Tone.Text) == "#b00020" &&
+                face_of(default_theme, full().face ?? Font.Body) == "ui-monospace, monospace"
+        }
+    }
+}

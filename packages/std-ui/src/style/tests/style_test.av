@@ -1,0 +1,83 @@
+//! The style vocabulary and the default theme, by their laws: a style
+//! is optional data, a theme answers every token, and a replaced theme
+//! is read whole.
+use @std.ui.style.style.{Style}
+use @std.ui.{Size, Tone, Font}
+use @std.ui.style.theme.{Theme, default_theme, space_of, radius_of, color_of, face_of}
+
+fn empty_style() -> Style { Style {} }
+
+fn given_style() -> Style { Style { gap: .M, fill: .Danger } }
+
+/// The default theme with one colour replaced — never patched in place.
+fn dark() -> Theme {
+    default_theme with { color: default_theme.color with { text: "#eeeeee" } }
+}
+
+/// Every space step, in `Size` order.
+fn spaces(t: Theme) -> string {
+    ["${space_of(t, z)}" for z in [Size.None, Size.Xs, Size.S, Size.M, Size.L, Size.Xl]].join(",")
+}
+
+/// Every radius step, in `Size` order.
+fn radii(t: Theme) -> string {
+    ["${radius_of(t, z)}" for z in [Size.None, Size.Xs, Size.S, Size.M, Size.L, Size.Xl]].join(",")
+}
+
+/// Three tones, in order.
+fn tones(t: Theme) -> string {
+    [color_of(t, c) for c in [Tone.Text, Tone.Muted, Tone.Danger]].join(",")
+}
+
+spec "std/ui style — a look is optional data" {
+    given "a style nobody set" {
+        then "asks for nothing" {
+            empty_style().gap == null && empty_style().pad == null && empty_style().radius == null
+        }
+        then "asks for no colour" {
+            empty_style().fill == null && empty_style().color == null && empty_style().face == null
+        }
+    }
+    given "a style with two tokens" {
+        then "carries the gap it was given" {
+            given_style().gap ?? Size.None == Size.M
+        }
+        then "carries the fill it was given" {
+            given_style().fill ?? Tone.Text == Tone.Danger
+        }
+        then "still asks for what it was not given" {
+            given_style().color == null
+        }
+    }
+}
+
+spec "std/ui style — the default theme answers every token" {
+    given "the space scale" {
+        then "each size names its step" {
+            spaces(default_theme) == "0,4,8,16,32,48"
+        }
+    }
+    given "the radius scale" {
+        then "each size names its corner" {
+            radii(default_theme) == "0,2,4,8,16,24"
+        }
+    }
+    given "the palette" {
+        then "each tone names a colour" {
+            tones(default_theme) == "#111111,#666666,#b00020"
+        }
+    }
+    given "the faces" {
+        then "each font names a family list" {
+            face_of(default_theme, Font.Mono) == "ui-monospace, monospace"
+        }
+    }
+    given "a theme a user replaced" {
+        then "the projection reads the theme handed in, not the default" {
+            color_of(dark(), Tone.Text) == "#eeeeee"
+        }
+        then "a family the user did not touch keeps its default" {
+            space_of(dark(), Size.M) == 16
+        }
+    }
+}
