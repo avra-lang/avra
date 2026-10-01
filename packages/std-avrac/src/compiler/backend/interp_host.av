@@ -79,14 +79,26 @@ impl Body {
 
     /// From a false LoopCond: the pc just past the matching LoopEnd.
     fn past_loop(from: int) -> int {
-        self
-                .ahead(
-                    from,
-                    (i: Ins) -> i is .LoopStart,
-                    (i: Ins) -> i is .LoopEnd,
-                    (i: Ins) -> i is .LoopEnd,
-                ) +
-            1
+        self.loop_close(from, 0) + 1
+    }
+
+    /// From a `LoopJump`: the target loop's own `LoopEnd`, whose back
+    /// edge starts the next turn, or the pc just past it.
+    fn jumped(from: int, outward: int, again: bool) -> int {
+        let end = self.loop_close(from, outward)
+        if again { end } else { end + 1 }
+    }
+
+    /// The `LoopEnd` closing the loop `outward` brackets out of `from`.
+    fn loop_close(from: int, outward: int) -> int {
+        let end = self
+            .ahead(
+                from,
+                (i: Ins) -> i is .LoopStart,
+                (i: Ins) -> i is .LoopEnd,
+                (i: Ins) -> i is .LoopEnd,
+            )
+        if outward == 0 { end } else { self.loop_close(end, outward - 1) }
     }
 
     /// From a LoopEnd: its matching LoopStart — the back edge. The

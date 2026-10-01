@@ -9,8 +9,8 @@
 //! -> … } else { cx -> … }`), so a site cannot open a bracket it
 //! does not close; the open/arm/close verbs remain for the folds and
 //! switches whose arms are not two.
-use core.{Reg, Ins, Type, TypeId, ExprId, BinOp, UnOp, RtSig, same_type}
-use features.{MethodCall}
+use core.{Reg, Ins, Type, TypeId, ExprId, StmtId, BinOp, UnOp, RtSig, same_type}
+use features.{MethodCall, LoopMark}
 
 // ── Constants ───────────────────────────────────────────────────
 
@@ -381,21 +381,28 @@ impl LowerCx {
 
     // ── Loops ───────────────────────────────────────────────────────
     // `loop_start`, the condition's instructions, `more.loop_cond()` —
-    // which opens the turn's scope — the body, then `loop_end`.
+    // which opens the turn's scope — the body, then `loop_end`. Every
+    // open loop holds a mark, so a jump counts the brackets it crosses;
+    // a loop the program wrote names its statement at its condition,
+    // where its turn begins and a `break` may first aim at it.
     mut fn loop_start() {
+        self.loops.push(LoopMark { owner: null, frame: 0 })
         self.emit(Ins.LoopStart)
     }
 
     /// The condition, then the turn's scope — a `defer` frame, so the
-    /// turn's deferred work runs as the turn ends.
-    mut fn loop_cond(more: Reg) {
+    /// turn's deferred work runs as the turn ends, and the frame an
+    /// early end of the turn runs down to.
+    mut fn loop_cond(more: Reg, owner: StmtId? = null) {
         self.emit(Ins.LoopCond(more))
         self.scope_enter()
+        self.loops.set(self.loops.length - 1, LoopMark { owner: owner, frame: self.depth })
     }
 
     mut fn loop_end() {
         self.scope_exit(null)
         self.emit(Ins.LoopEnd)
+        let _ = self.loops.pop()
     }
 
     mut fn opened(subject: ExprId, elem: TypeId) -> Walk {
@@ -416,21 +423,22 @@ impl LowerCx {
         }
     }
 
-    /// LoopStart, the condition, and the turn's scope.
-    mut fn turn_open(w: Walk) {
+    /// LoopStart, the condition, the STEP — the count moves on before
+    /// the body, so the back edge is the whole of a turn's end and a
+    /// `continue` needs no latch — and the turn's scope. Answers this
+    /// turn's count.
+    mut fn turn_open(w: Walk, owner: StmtId? = null) -> Reg {
         self.loop_start()
         let at = self.mint_shape(Type.Int)
         self.emit(Ins.Load(at, w.idx))
         let more = self.mint_shape(Type.Bool)
         self.emit(Ins.Bin(more, BinOp.Lt, at, w.len))
-        self.loop_cond(more)
-    }
-
-    /// This turn's count, read out of the cell.
-    mut fn turn_index(w: Walk) -> Reg {
-        let here = self.mint_shape(Type.Int)
-        self.emit(Ins.Load(here, w.idx))
-        here
+        let one = self.const_int(1)
+        let next = self.mint_shape(Type.Int)
+        self.emit(Ins.Bin(next, BinOp.Add, at, one))
+        self.emit(Ins.Store(w.idx, next))
+        self.loop_cond(more, owner)
+        at
     }
 
     /// This turn's element — a RUNTIME index, so the read stays raw.
@@ -439,20 +447,9 @@ impl LowerCx {
         self.elem_read(w.xs!, here, w.elem)
     }
 
-    /// The step, and the turn's close.
-    mut fn turn_close(w: Walk) {
-        let again = self.mint_shape(Type.Int)
-        self.emit(Ins.Load(again, w.idx))
-        let one = self.const_int(1)
-        let next = self.mint_shape(Type.Int)
-        self.emit(Ins.Bin(next, BinOp.Add, again, one))
-        self.emit(Ins.Store(w.idx, next))
-        self.loop_end()
-    }
-
-    /// The BREAK idiom: an index past the length ends the walk.
-    mut fn early_exit(w: Walk) {
-        self.emit(Ins.Store(w.idx, w.len))
+    /// The walk ends here: its answer is in hand.
+    mut fn walk_done() {
+        self.jumped(self.loops.length - 1, false)
     }
 
     /// The length of a register already in hand, as a scratch int — the
@@ -493,9 +490,9 @@ export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
 
 // ── The walk ────────────────────────────────────────────────────
 // One counting loop for every `for` and every list verb: `opened`
-// over a list or `counted` over a range, then per turn `turn_open`,
-// `turn_index`, `turn_elem` (a list's walk only), the body,
-// `turn_close`. Both engines read one stream for a comprehension, a
+// over a list or `counted` over a range, then per turn `turn_open`
+// (which answers the count), `turn_elem` (a list's walk only), the
+// body, `loop_end`. Both engines read one stream for a comprehension, a
 // `for x in xs` and an `xs.map(f)` because there is one skeleton.
 
 /// A walk counts `idx` up to `len`; over a list, `xs` is the box each

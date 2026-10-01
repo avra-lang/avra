@@ -122,10 +122,9 @@ fn mapped(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let out = cx.grown_box(cx.shape_at(mc.e), size, [])
     let f = boxed(cx, s.arg)
     let w = cx.opened(mc.subject, s.elem)
-    cx.turn_open(w)
-    let v = cx.turn_elem(w, cx.turn_index(w))
+    let v = cx.turn_elem(w, cx.turn_open(w))
     cx.push_slot(out, turn_call(cx, f, v, mapped_to(cx, mc.e)))
-    cx.turn_close(w)
+    cx.loop_end()
     out
 }
 
@@ -135,10 +134,9 @@ fn kept(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let out = cx.grown_box(cx.shape_at(mc.e), size, [])
     let f = boxed(cx, s.arg)
     let w = cx.opened(mc.subject, s.elem)
-    cx.turn_open(w)
-    let v = cx.turn_elem(w, cx.turn_index(w))
+    let v = cx.turn_elem(w, cx.turn_open(w))
     cx.void_region(turn_call(cx, f, v, bool_ty(cx))) { cx -> cx.push_slot(out, v) }
-    cx.turn_close(w)
+    cx.loop_end()
     out
 }
 
@@ -149,14 +147,13 @@ fn found(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let cell = absent_cell(cx, opt)
     let f = boxed(cx, s.arg)
     let w = cx.opened(mc.subject, s.elem)
-    cx.turn_open(w)
-    let v = cx.turn_elem(w, cx.turn_index(w))
+    let v = cx.turn_elem(w, cx.turn_open(w))
     cx
         .void_region(turn_call(cx, f, v, bool_ty(cx))) { cx ->
             cx.emit(Ins.Store(cell, cx.adopted(opt, false, v)))
-            cx.early_exit(w)
+            cx.walk_done()
         }
-    cx.turn_close(w)
+    cx.loop_end()
     cx.loaded(mc.e, cell)
 }
 
@@ -167,15 +164,14 @@ fn found_at(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let cell = absent_cell(cx, opt)
     let f = boxed(cx, s.arg)
     let w = cx.opened(mc.subject, s.elem)
-    cx.turn_open(w)
-    let here = cx.turn_index(w)
+    let here = cx.turn_open(w)
     let v = cx.turn_elem(w, here)
     cx
         .void_region(turn_call(cx, f, v, bool_ty(cx))) { cx ->
             cx.emit(Ins.Store(cell, cx.adopted(opt, false, here)))
-            cx.early_exit(w)
+            cx.walk_done()
         }
-    cx.turn_close(w)
+    cx.loop_end()
     cx.loaded(mc.e, cell)
 }
 
@@ -186,15 +182,14 @@ fn judged(mut cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> Reg {
     let cell = bool_cell(cx, all)
     let f = boxed(cx, s.arg)
     let w = cx.opened(mc.subject, s.elem)
-    cx.turn_open(w)
-    let v = cx.turn_elem(w, cx.turn_index(w))
+    let v = cx.turn_elem(w, cx.turn_open(w))
     let p = turn_call(cx, f, v, bool_ty(cx))
     cx
         .void_region(flipping(cx, p, all)) { cx ->
             store_bool(cx, cell, !all)
-            cx.early_exit(w)
+            cx.walk_done()
         }
-    cx.turn_close(w)
+    cx.loop_end()
     cx.loaded(mc.e, cell)
 }
 
@@ -204,14 +199,13 @@ fn held(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let cell = bool_cell(cx, false)
     let needle = cx.reg_of(s.arg)
     let w = cx.opened(mc.subject, s.elem)
-    cx.turn_open(w)
-    let v = cx.turn_elem(w, cx.turn_index(w))
+    let v = cx.turn_elem(w, cx.turn_open(w))
     cx
         .void_region(cx.same_value(v, needle, s.elem)) { cx ->
             store_bool(cx, cell, true)
-            cx.early_exit(w)
+            cx.walk_done()
         }
-    cx.turn_close(w)
+    cx.loop_end()
     cx.loaded(mc.e, cell)
 }
 
@@ -221,15 +215,14 @@ fn position(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let cell = cx.seeded_cell(cx.type(int), cx.const_int(-1))
     let needle = cx.reg_of(s.arg)
     let w = cx.opened(mc.subject, s.elem)
-    cx.turn_open(w)
-    let here = cx.turn_index(w)
+    let here = cx.turn_open(w)
     let v = cx.turn_elem(w, here)
     cx
         .void_region(cx.same_value(v, needle, s.elem)) { cx ->
             cx.emit(Ins.Store(cell, here))
-            cx.early_exit(w)
+            cx.walk_done()
         }
-    cx.turn_close(w)
+    cx.loop_end()
     cx.loaded(mc.e, cell)
 }
 

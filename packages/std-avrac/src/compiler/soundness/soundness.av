@@ -442,18 +442,26 @@ fn dispatch(
                 next: last_arm.hi + 1,
             }
         },
+        // THE BODY IS ITS OWN SPAN: a `break` ends its path and never the
+        // loop's, so control stands past `LoopEnd` as the condition
+        // left it — a turn settles everything it opened.
         .LoopStart -> {
             let bounds = loop_bounds(ctx.ins, i)
-            let w = walk(ctx, i + 1, bounds.cond_at, sim, null, check_end, outer.concat(born))
+            let held = outer.concat(born)
+            let cond = walk(ctx, i + 1, bounds.cond_at, sim, null, check_end, held)
+            let body = walk(ctx, bounds.cond_at + 1, bounds.end_at, cond.sim, null, check_end, held)
             Stepped {
-                sim: w.sim,
-                diags: w.diags,
+                sim: cond.sim,
+                diags: cond.diags.concat(body.diags),
                 born: born,
-                diverges: w.diverges,
-                next: bounds.cond_at + 1,
+                diverges: cond.diverges,
+                next: bounds.end_at + 1,
             }
         },
         .FnExit(gives) or .RetVal(gives) -> exited(ctx, sim, outer.concat(born), gives, i),
+        // an early end of a turn: this span's own births settle here, and
+        // nothing after it on this path runs
+        .LoopJump(_, _) -> exited(ctx, sim, born, null, i),
         .Ret(_) -> exited(ctx, sim, outer.concat(born), null, i),
         // Closers, and the loop's own turn: consumed by the opener
         // that matched them above — reached here only under a

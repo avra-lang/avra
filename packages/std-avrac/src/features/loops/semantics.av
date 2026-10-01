@@ -2,8 +2,8 @@
 //! one-liners. The rule bodies live beside this file, by concern:
 //! check.av for the typing laws, lower.av — the MEANING — for the
 //! brackets.
-use core.{StmtId, Reg}
-use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use core.{StmtId, ExprId, Reg, SyntaxArena}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, NameFacts, nothing}
 
 export type WhileSemantics = {}
 
@@ -25,7 +25,7 @@ impl StmtSemantics for WhileSemantics {
     fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
         match cx.view.store.stmt(s) {
             .While(cond, stmts) -> {
-                lower_while(cx, cond, stmts)
+                lower_while(cx, s, cond, stmts)
                 null
             },
             _ -> null,
@@ -92,4 +92,47 @@ impl StmtSemantics for ForEachSemantics {
             _ -> null,
         }
     }
+}
+
+export type JumpSemantics = {}
+
+impl StmtSemantics for JumpSemantics {
+    /// A label resolves as a read of the name it spells — the binding
+    /// in hand, never the name, says which loop it is.
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        let label? = jump_label(cx.view.store, s) else { return }
+        cx.walk(label)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_jump(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        match cx.view.store.stmt(s) {
+            .Jump(label, again) -> lower_jump(cx, label, again),
+            _ -> nothing(),
+        }
+        null
+    }
+}
+
+/// A jump's label, when it writes one.
+fn jump_label(store: SyntaxArena, s: StmtId) -> ExprId? {
+    // a feature matching its own variants
+    match store.stmt(s) { .Jump(label, _) -> label, rest -> null }
+}
+
+/// The loop a label names: the `for` whose element or index it binds.
+fn label_loop(names: NameFacts, store: SyntaxArena, label: ExprId) -> StmtId? {
+    match names.binding(label)? {
+        .Def(s) or .Index(s) -> if is_for(store, s) { s } else { null },
+        rest -> null,
+    }
+}
+
+/// Whether the statement is a `for`, which a label may name.
+fn is_for(store: SyntaxArena, s: StmtId) -> bool {
+    // a feature matching its own variants
+    match store.stmt(s) { .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) -> true, rest -> false }
 }

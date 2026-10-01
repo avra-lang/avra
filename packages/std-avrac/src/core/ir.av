@@ -162,6 +162,14 @@ export enum Ins {
     LoopStart
     LoopCond(c: Reg)
     LoopEnd
+    /// An EARLY end of a loop's turn — `break` and `continue`. The
+    /// target is the loop `outward` brackets out (0 the innermost);
+    /// `again` starts its next turn at its condition, and otherwise
+    /// control stands just past its `LoopEnd`. The memory pass settles
+    /// every scope opened since that loop's `LoopCond` at the site,
+    /// exactly as the turn's own close would; the backend branches and
+    /// opens a dead continuation, as `FnExit` does.
+    LoopJump(outward: int, again: bool)
 
     // Memory: inserted by the memory pass, never by lowering.
     Retain(r: Reg)
@@ -253,6 +261,7 @@ impl Ins {
             .LoopStart -> derived([fp_str("Ins"), 25]),
             .LoopCond(c) -> derived([fp_str("Ins"), 26, c.fingerprint()]),
             .LoopEnd -> derived([fp_str("Ins"), 27]),
+            .LoopJump(outward, again) -> derived([fp_str("Ins"), 33, outward, if again { 1 } else { 0 }]),
             .Retain(r) -> derived([fp_str("Ins"), 28, r.fingerprint()]),
             .Release(r) -> derived([fp_str("Ins"), 29, r.fingerprint()]),
             .Ret(code) -> derived([fp_str("Ins"), 30, code]),
@@ -300,6 +309,7 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
         .LoopStart -> Ins.LoopStart,
         .LoopCond(c) -> Ins.LoopCond(m(c)),
         .LoopEnd -> Ins.LoopEnd,
+        .LoopJump(outward, again) -> Ins.LoopJump(outward, again),
         .Retain(r) -> Ins.Retain(m(r)),
         .Release(r) -> Ins.Release(m(r)),
         .Ret(code) -> Ins.Ret(code),
@@ -660,6 +670,7 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
         .LoopStart -> match b { .LoopStart -> true, rest -> false },
         .LoopCond(c1) -> match b { .LoopCond(c2) -> same_reg(c1, c2), rest -> false },
         .LoopEnd -> match b { .LoopEnd -> true, rest -> false },
+        .LoopJump(o1, a1) -> match b { .LoopJump(o2, a2) -> o1 == o2 && a1 == a2, rest -> false },
         .Retain(r1) -> match b { .Retain(r2) -> same_reg(r1, r2), rest -> false },
         .Release(r1) -> match b { .Release(r2) -> same_reg(r1, r2), rest -> false },
         .Ret(c1) -> match b { .Ret(c2) -> c1 == c2, rest -> false },
@@ -770,6 +781,8 @@ export enum RtHost {
     /// The one door a FOREIGN buffer enters by: an address the program
     /// supplied and a length, copied into a box of ours.
     BytesAdopted
+    /// An empty buffer with room: the evaluator's octets carry no room.
+    BytesWithRoom
     FdRead
     FdTaken
     FdWrite

@@ -108,6 +108,7 @@ impl Emit {
             .LoopStart -> self.loop_start(),
             .LoopCond(c) -> self.loop_cond(c),
             .LoopEnd -> self.loop_end(),
+            .LoopJump(outward, again) -> self.loop_jump(outward, again),
             .ScopeEnter(_) or .ScopeExit(_) -> nothing(),
         }
     }
@@ -655,6 +656,15 @@ impl Emit {
         let f = self.loops.pop()
         let _ = avra_llvm_build_br(self.b, f.header)
         avra_llvm_position_at_end(self.b, f.exit)
+    }
+
+    /// An early end of a turn: branch to the target loop's header or
+    /// exit, then open a dead block for the arm's unreachable tail.
+    fn loop_jump(outward: int, again: bool) {
+        let f = self.loops[self.loops.length - 1 - outward]
+        let _ = avra_llvm_build_br(self.b, if again { f.header } else { f.exit })
+        let dead = avra_llvm_append_basic_block(self.lc, self.fn_val, "postjump")
+        avra_llvm_position_at_end(self.b, dead)
     }
 
     /// Open a two-arm region: branch on the condition, build into the
