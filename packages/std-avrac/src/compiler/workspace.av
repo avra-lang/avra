@@ -42,6 +42,7 @@ use core.{
     touch,
     Annotation,
     DeclKind,
+    qtrace,
 }
 use @std.path.{dir_of, joined_path}
 use @std.relation.db.{Db as RelDb, Hooks as RelHooks, hooked_db}
@@ -1308,6 +1309,7 @@ impl Workspace {
     }
 
     fn parsed_under_blocks(f: FileId) -> Parsed {
+        qtrace("Q\tparsing\tid=${f.index}\t${self.decls.file(f).path}\n")
         let first = self.plain_parsed(f)
         let t0 = self.clock()
         let words = self.block_words(f, first)
@@ -1317,6 +1319,7 @@ impl Workspace {
         let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words), words)
         self.timed("ast", self.clock() - t1)
         for r in p.store.foreign.get() {
+            qtrace("Q\tforeign\tfrom_id=${f.index}\t${r.path}\n")
             let origin = self.file_id(r.path)
             if !same_file(origin, f) { self.decls.note_runs(f, r.runs, origin) }
         }
