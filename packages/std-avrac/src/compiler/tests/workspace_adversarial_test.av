@@ -221,6 +221,198 @@ spec "compiler/workspace (adversarial)" {
             )
         }
     }
+    given "re-exports" {
+        then "a re-exported name reaches an importer of the re-exporting module" {
+            runs(
+                {
+                    "/w/src/main.av": "use facade.{twice}\ntwice(3)\n",
+                    "/w/src/facade/f.av": "export use util.{twice}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/facade/f.av", "/w/src/util/m.av"],
+            ) == "6"
+        }
+        then "a re-export under `as` is exported under its alias" {
+            runs(
+                {
+                    "/w/src/main.av": "use facade.{double}\ndouble(3)\n",
+                    "/w/src/facade/f.av": "export use util.{twice as double}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/facade/f.av", "/w/src/util/m.av"],
+            ) == "6"
+        }
+        then "a chain of re-exports reaches the declaration" {
+            runs(
+                {
+                    "/w/src/main.av": "use outer.{twice}\ntwice(4)\n",
+                    "/w/src/outer/o.av": "export use facade.{twice}\n",
+                    "/w/src/facade/f.av": "export use util.{twice}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/outer/o.av", "/w/src/facade/f.av", "/w/src/util/m.av"],
+            ) == "8"
+        }
+        then "a re-exported type builds and reads like its original" {
+            runs(
+                {
+                    "/w/src/main.av": "use facade.{Pair}\nlet p = Pair { a: 2, b: 5 }\np.a + p.b\n",
+                    "/w/src/facade/f.av": "export use util.{Pair}\n",
+                    "/w/src/util/m.av": pair(),
+                },
+                ["/w/src/main.av", "/w/src/facade/f.av", "/w/src/util/m.av"],
+            ) == "7"
+        }
+        then "an importer's own declaration of a re-exported name refuses" {
+            refuses_once(
+                {
+                    "/w/src/main.av": "use facade.{twice}\nfn twice(n: int) -> int {\n    n\n}\ntwice(1)\n",
+                    "/w/src/facade/f.av": "export use util.{twice}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/facade/f.av", "/w/src/util/m.av"],
+                "`twice` is imported, but this module (`main.av`) already has it",
+            )
+        }
+        then "the re-exporting file reads the name itself" {
+            runs(
+                {
+                    "/w/src/main.av": "use facade.{quad}\nquad(2)\n",
+                    "/w/src/facade/f.av": "export use util.{twice}\nexport fn quad(n: int) -> int {\n    twice(twice(n))\n}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/facade/f.av", "/w/src/util/m.av"],
+            ) == "8"
+        }
+        then "a re-export cycle is refused as reaching no declaration" {
+            analysed_at(
+                {
+                    "/w/src/main.av": "use a.{x}\nx()\n",
+                    "/w/src/a/a.av": "export use b.{x}\n",
+                    "/w/src/b/b.av": "export use a.{x}\n",
+                },
+                ["/w/src/main.av", "/w/src/a/a.av", "/w/src/b/b.av"],
+                "/w/src/main.av",
+            )
+                .report()
+                .contains("`a` re-exports `x`, and no declaration stands behind it")
+        }
+        then "a re-export of an item its module does not export refuses as not exported" {
+            refuses_once(
+                {
+                    "/w/src/main.av": "export use util.{hidden}\n1\n",
+                    "/w/src/util/m.av": "fn hidden() -> int {\n    1\n}\n",
+                },
+                ["/w/src/main.av", "/w/src/util/m.av"],
+                "`util` does not export `hidden`",
+            )
+        }
+        then "two files re-exporting two declarations under one name: the later is refused" {
+            let a = analysed_at(
+                {
+                    "/w/src/main.av": "1\n",
+                    "/w/src/facade/a.av": "export use util.{twice}\n",
+                    "/w/src/facade/b.av": "export use other.{twice}\n",
+                    "/w/src/util/m.av": twice(),
+                    "/w/src/other/m.av": twice(),
+                },
+                [
+                    "/w/src/main.av",
+                    "/w/src/facade/a.av",
+                    "/w/src/facade/b.av",
+                    "/w/src/util/m.av",
+                    "/w/src/other/m.av",
+                ],
+                "/w/src/facade/b.av",
+            )
+            a.diagnostics.length == 1 &&
+                a.report().contains("`twice` is already on this module's surface")
+        }
+        then "two files re-exporting one declaration agree" {
+            let a = analysed_at(
+                {
+                    "/w/src/main.av": "1\n",
+                    "/w/src/facade/a.av": "export use util.{twice}\n",
+                    "/w/src/facade/b.av": "export use util.{twice}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/facade/a.av", "/w/src/facade/b.av", "/w/src/util/m.av"],
+                "/w/src/facade/b.av",
+            )
+            a.diagnostics.is_empty()
+        }
+        then "a re-export claims its name against a sibling's private declaration" {
+            let a = analysed_at(
+                {
+                    "/w/src/main.av": "1\n",
+                    "/w/src/facade/a.av": "fn twice(n: int) -> int {\n    n\n}\n",
+                    "/w/src/facade/b.av": "export use util.{twice}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/facade/a.av", "/w/src/facade/b.av", "/w/src/util/m.av"],
+                "/w/src/facade/b.av",
+            )
+            a.diagnostics.length == 1 &&
+                a
+                    .report()
+                    .contains("`twice` is imported, but this module (`facade/a.av`) already has it")
+        }
+        then "a re-export of a name its own file declares refuses" {
+            let a = analysed_at(
+                {
+                    "/w/src/main.av": "1\n",
+                    "/w/src/facade/a.av": "export use util.{twice}\nexport fn twice(n: int) -> int {\n    n\n}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/facade/a.av", "/w/src/util/m.av"],
+                "/w/src/facade/a.av",
+            )
+            a.diagnostics.length == 1 &&
+                a.report().contains("`twice` is already on this module's surface")
+        }
+        then "a re-export from a package that already uses this one is refused as a cycle" {
+            let files = {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "use @std.low.{g}\ng()\n",
+                "/std/std-low/avra.toml": "[package]\nname = \"@std/low\"\nversion = \"0.1.0\"\n",
+                "/std/std-low/src/low.av": "export fn g() -> int {\n    1\n}\nexport use @std.high.{h}\n",
+                "/std/std-high/avra.toml": "[package]\nname = \"@std/high\"\nversion = \"0.1.0\"\n",
+                "/std/std-high/src/high.av": "use @std.low.{g}\nexport fn h() -> int {\n    g() + 1\n}\n",
+            }
+            let a = new_workspace(
+                memory_host(
+                    files,
+                    [
+                        "/w/avra.toml",
+                        "/w/src/main.av",
+                        "/std/std-low/avra.toml",
+                        "/std/std-low/src/low.av",
+                        "/std/std-high/avra.toml",
+                        "/std/std-high/src/high.av",
+                    ],
+                ) with { std_root: "/std" },
+                "/std/std-low",
+                avra(),
+            )
+                .analyze_file("/std/std-low/src/low.av")
+            a
+                .report()
+                .contains(
+                    "`@std/high` already uses `@std/low`, so re-exporting from it here would close a package cycle",
+                )
+        }
+        then "a mistyped item's help names the re-exported ones" {
+            refuses_once(
+                {
+                    "/w/src/main.av": "use facade.{twicee}\n1\n",
+                    "/w/src/facade/f.av": "export use util.{twice}\n",
+                    "/w/src/util/m.av": twice(),
+                },
+                ["/w/src/main.av", "/w/src/facade/f.av", "/w/src/util/m.av"],
+                "twice",
+            )
+        }
+    }
     given "names against names" {
         then "a private fn duplicating a sibling's exported one refuses — the sibling named" {
             refuses_once(
@@ -316,16 +508,6 @@ spec "compiler/workspace (adversarial)" {
                 },
                 ["/w/src/main.av"],
                 "an impl is not exported — its methods travel with their type",
-            )
-        }
-        then "on a use — the re-export waits for 15c" {
-            refuses_once(
-                {
-                    "/w/src/main.av": "export use util.{twice}\ntwice(1)\n",
-                    "/w/src/util/m.av": twice(),
-                },
-                ["/w/src/main.av", "/w/src/util/m.av"],
-                "`export use` — a re-export — arrives with a later slice",
             )
         }
         then "written twice" {

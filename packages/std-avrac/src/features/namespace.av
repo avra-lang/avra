@@ -193,9 +193,10 @@ export type ModuleNames = { bound: List<DeclId>, clashes: List<Clash>, base: Bou
 
 export type Clash = { file: FileId, diag: Diag }
 
-/// One imported declaration: what, where the `use` stands, and the
-/// module it came from.
-export type Import = { decl: DeclId, at: Loc?, renamed: string }
+/// One imported declaration: what, where the `use` stands, the name it
+/// binds under (empty for its own), and whether an `export use` makes
+/// that name the module's own claim.
+export type Import = { decl: DeclId, at: Loc?, renamed: string, shared: bool }
 
 /// Which table a declaration's kind binds in — none for a member, an
 /// impl, a Main and a case.
@@ -346,25 +347,26 @@ impl Binder {
 
     /// An import binds in the file's namespace; a name already
     /// visible refuses — unless it is the very same declaration, or a
-    /// sibling file's private one, which an import shadows here.
+    /// sibling file's private one, which a plain import shadows here
+    /// and a re-export, claiming the name for the module, does not.
     fn import(i: Import, file: FileId, base: BoundNames) {
         let x = self.decls.decl(i.decl)
         // A `use` item's ALIAS is the name it binds under; the empty
         // alias is the declaration's own name.
         let name = if i.renamed.is_empty() { x.name } else { i.renamed }
-        let prior? = self.held(x.kind, name) ?? self.claimed(base, x.kind, name, file) else { return self.bind(x.kind, name, i.decl) }
+        let prior? = self.held(x.kind, name) ?? self.claimed(base, x.kind, name, file, i.shared) else { return self.bind(x.kind, name, i.decl) }
         if same_decl(prior, i.decl) { return }
         self.speak(import_clash(i.at, name, self.holder(prior, file)))
     }
 
     /// The module's holder of a name as `file` sees it claimed: an
     /// export, or this file's own — a sibling's private declaration
-    /// claims nothing here.
-    fn claimed(base: BoundNames, kind: DeclKind, name: string, file: FileId) -> DeclId? {
+    /// claims nothing here, unless the import claims the name itself.
+    fn claimed(base: BoundNames, kind: DeclKind, name: string, file: FileId, shared: bool) -> DeclId? {
         let space? = table_of(kind) else { return null }
         let d? = held_in(base, space, name) else { return null }
         let x = self.decls.decl(d)
-        if x.exported || same_file(x.file, file) { d } else { null }
+        if shared || x.exported || same_file(x.file, file) { d } else { null }
     }
 
     /// Who holds a name already: this module (by file), or a module.

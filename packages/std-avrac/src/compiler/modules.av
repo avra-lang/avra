@@ -11,6 +11,8 @@ use core.{
     flatten,
     sorted_texts,
     distinct,
+    same_decl,
+    touch,
 }
 use @std.path.{dir_of, under_dir, joined_path, normalized}
 use features.{Decl, Import, nothing}
@@ -281,6 +283,49 @@ impl Workspace {
         out
     }
 
+    /// What a module exports under a name: a written export, a generated
+    /// one, then a re-export — each asked only once the one before missed.
+    fn export_of(m: ModulePath, name: string) -> DeclId? {
+        self.surface(m).get(name) ?? self.generated_export(m, name) ?? self.reexport_of(m, name)
+    }
+
+    /// The declaration a module's first re-export of a name stands for. A
+    /// re-export cycle asks a name already in flight, which answers none.
+    fn reexport_of(m: ModulePath, name: string) -> DeclId? {
+        let r? = self.reexports(m).find(it.name == name) else { return null }
+        let key = "${m.text()}\t${name}"
+        if self.reexporting.get().get(key) ?? false { return null }
+        self.reexporting.put(key, true)
+        let found = self.export_of(r.from, r.item)
+        self.reexporting.put(key, false)
+        found
+    }
+
+    /// A module's re-exports, in file order.
+    fn reexports(m: ModulePath) -> List<Reexport> {
+        flatten([self.file_reexports(path) for path in self.module_files(m)])
+    }
+
+    /// One file's re-exports: a read file's `export use` items, a held
+    /// file's `reexport` record lines.
+    fn file_reexports(path: string) -> List<Reexport> {
+        let f = self.file_id(path)
+        if self.is_held(f) {
+            // read as its module mints, which its items ask for
+            touch(self.items(f))
+            return self.hold.reexports.get().get(path) ?? []
+        }
+        let p = self.parsed(f)
+        let from = self.packages()[self.holder_of_path(path)]
+        flatten([self.use_reexports(u, from) for u in use_lines(p) if p.store.is_exported(u.stmt)])
+    }
+
+    /// An `export use` line's items, each under the name it binds.
+    fn use_reexports(u: UseParts, from: Package) -> List<Reexport> {
+        let m = self.canonical(qualified(module_path(u.path), from))
+        [Reexport { name: u.bound_as(j), from: m, item: item } for j, item in u.items]
+    }
+
     /// A GENERATED export, asked only once the written surface has
     /// missed: a derive's own top-level type or fn (`${t}Key`) is
     /// invisible to `items` (`expanded` mints it under its own family,
@@ -329,18 +374,25 @@ impl Workspace {
         }
         if self.ambiguous_module(m) { return Imported { imports: [], diagnostics: [module_ambiguous(at, m)] } }
         if self.module_files(m).is_empty() { return Imported { imports: [], diagnostics: [no_module(at, m)] } }
-        let surf = self.surface(m)
+        let shared = p.store.is_exported(u.stmt)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
         mut listed: List<string> = []
         for j, item in u.items {
-            let id: DeclId? = surf.get(item) ?? self.generated_export(m, item)
+            let id: DeclId? = self.export_of(m, item)
+            let claimed: DeclId? = if shared && id != null { self.export_of(self.module_path_of(p.source.file), u.bound_as(j)) } else { null }
             if listed.contains(item) {
                 diags.push(listed_twice(at, item))
+            } else if id == null && self.reexports(m).any(it.name == item) {
+                diags.push(reexport_unreached(at, m, item))
             } else if id == null {
                 diags.push(not_exported(at, m, item, self.exported_names(m)))
+            } else if shared && self.closes_cycle(from, m) {
+                diags.push(reexport_cycle(at, from.key, m.package() ?? ""))
+            } else if claimed != null && !same_decl(claimed!, id!) {
+                diags.push(reexport_twice(at, u.bound_as(j)))
             } else {
-                imports.push(Import { decl: id!, at: at, renamed: u.alias_at(j) })
+                imports.push(Import { decl: id!, at: at, renamed: u.bound_as(j), shared: shared })
             }
             listed.push(item)
         }
@@ -361,5 +413,48 @@ impl Workspace {
     fn exported_names(m: ModulePath) -> List<string> {
         [d.name for d in self.exported_decls(m)]
             .concat([d.name for d in self.generated_exported_decls(m)])
+            .concat([r.name for r in self.reexports(m)])
     }
+
+    /// Whether re-exporting from `m` would close a package cycle: `m`'s
+    /// package reaches back into `from` through its own `use` lines.
+    fn closes_cycle(from: Package, m: ModulePath) -> bool {
+        let k? = m.package() else { return false }
+        k != from.key && self.packages_reached([k]).contains(from.key)
+    }
+
+    /// The packages a set reaches through their `use` lines, the set
+    /// included — widened until a step adds none.
+    fn packages_reached(keys: List<string>) -> List<string> {
+        let wider = distinct(keys.concat(flatten([self.used_packages(k) for k in keys])))
+        if wider.length == keys.length { keys } else { self.packages_reached(wider) }
+    }
+
+    /// The packages one package's files `use`, itself aside — a module
+    /// path with no package head is the root package's own.
+    fn used_packages(k: string) -> List<string> {
+        let pkg? = self.packages().find(it.key == k) else { return [] }
+        let root = self.packages()[0].key
+        let used = [m.package() ?? root for m in flatten([self.imported_by(path) for path in self.all_files(pkg.src)])]
+        distinct([u for u in used if u != k])
+    }
+}
+
+/// One name a module re-exports: what it is exported as, the module it
+/// is reached in, and the item named there.
+type Reexport = { name: string, from: ModulePath, item: string }
+
+/// A re-export as its record line.
+fn reexport_line(path: string, r: Reexport) -> string {
+    "reexport\t${path}\t${r.name}\t${r.from.text()}\t${r.item}"
+}
+
+/// A record's re-export lines for one file, read back.
+fn reexports_in(fields: List<List<string>>, path: string) -> List<Reexport> {
+    [held_reexport(p) for p in fields if p.length >= 5 && p[0] == "reexport" && p[1] == path]
+}
+
+/// `reexport_line`'s inverse.
+fn held_reexport(p: List<string>) -> Reexport {
+    Reexport { name: p[2], from: module_path(p[3].split(".")), item: p[4] }
 }

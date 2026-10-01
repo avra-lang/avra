@@ -1554,12 +1554,6 @@ Syntax the grammar lacks:
   with `any`/`find`" reaches a range only THROUGH a comprehension
   (`[f(i) for i in 0..n].any(…)`), which is worth knowing because
   the doctrine sends you at a form the parser refuses.
-- `export use`, a re-export: F3014 "`export use` — a re-export —
-  arrives with a later slice". Without it a package's FILE LAYOUT is
-  its public API, so moving a type between files breaks every
-  caller. A loose scratch file DOES reproduce it: F3015 "this file is
-  not in a package — `use` needs a root" fires first and F3014
-  follows six lines down — read the whole output, both are there.
 - A `once fn` with TYPE PARAMETERS (`once fn f<T>() -> List<T>`):
   "expected `(` while parsing `stmt`" — the once grammar takes a
   name and a parameter list only, and a `T` no argument can pin has

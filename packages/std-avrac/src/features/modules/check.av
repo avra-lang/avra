@@ -1,4 +1,5 @@
-//! The module law: what `export` may mark.
+//! The module law: what `export` may mark — a declaration, or a `use`
+//! line, whose items then join the module's surface.
 use core.{SyntaxArena, StmtId, flatten}
 use diagnostics.{Diag, loc_at, refusal}
 use @std.errors.{Loc}
@@ -10,22 +11,18 @@ export fn module_laws(store: SyntaxArena, file: string?, stmts: List<StmtId>) ->
 
 fn law_of(store: SyntaxArena, file: string?, s: StmtId) -> List<Diag> {
     let at = loc_at(file, store.stmt_span(s))
-    if store.is_exported(s) && store.declared_kind(s) == null && store.const_value(s) == null { return [unexportable(at, store, s)] }
+    if store.is_exported(s) &&
+        store.declared_kind(s) == null &&
+        store.const_value(s) == null &&
+        store.use_parts(s) == null {
+        return [unexportable(at, store, s)]
+    }
     []
 }
 
 // ── voices ──
 
 fn unexportable(at: Loc?, store: SyntaxArena, s: StmtId) -> Diag {
-    if store.use_parts(s) != null {
-        return refusal(
-            "resolve.export_kind",
-            at,
-            "`export use` — a re-export — arrives with a later slice",
-            "this line",
-            null,
-        )
-    }
     if store.impl_parts(s) != null {
         return refusal(
             "resolve.export_kind",
