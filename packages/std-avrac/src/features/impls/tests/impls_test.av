@@ -91,10 +91,31 @@ spec "features/impls" {
                 "`Q` names no type",
             )
         }
-        then "a trait impl over a generic type is still recorded" {
+        then "a trait impl over a generic type lands, one body per instantiation" {
+            shown(
+                "trait Show {\n    fn show() -> int\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show() -> int { 1 }\n}\nBox { v: 0 }.show()",
+            ) == "1"
+        }
+        then "a specific instantiation is refused, never read as the whole generic" {
             refused_with(
-                "trait Show {\n    fn show() -> int\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show() -> int { 1 }\n}\n2",
-                "a trait impl over a generic type is recorded, not landed",
+                "trait Show {\n    fn show() -> int\n}\ntype Box<T> = { v: T }\nimpl Show for Box<int> {\n    fn show() -> int { 1 }\n}\n2",
+                "names a specific instantiation",
+            )
+        }
+        then "a `dyn` over a generic implementor lifts" {
+            shown(
+                "trait Show {\n    fn show() -> string\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show() -> string { \"b\" }\n}\nlet d: dyn Show = Box { v: 1 }\nd.show()",
+            ) == "b"
+        }
+        then "a bound is met by a generic implementor" {
+            shown(
+                "trait Show {\n    fn show() -> string\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show() -> string { \"b\" }\n}\nfn f<T: Show>(x: T) -> string { x.show() }\nf(Box { v: 1 })",
+            ) == "b"
+        }
+        then "an unrelated generic is still refused — the impl does not leak" {
+            refused_with(
+                "trait Show {\n    fn show() -> string\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show() -> string { \"b\" }\n}\ntype Other<T> = { v: T }\nOther { v: 1 }.show()\n2",
+                "no method `show`",
             )
         }
     }

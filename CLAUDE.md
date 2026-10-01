@@ -1731,9 +1731,13 @@ Wants the typer does not carry yet:
   this entry on a hunch) while writing `std-errors`' `Traced<E>`:
   `cause() -> dyn Error? { match self { .A(x) -> x, .B(y) -> y } }`
   over two different concrete Error types compiled clean.
-- A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
-  "`Box` is generic — a trait impl over a generic type is recorded,
-  not landed". Inherent generic impls (`impl Box<T>`) land.
+- A trait impl over a USER generic type (`impl Show for Box<T>`) LANDS,
+  one body per instantiation, and so does an inherent generic impl
+  (`impl Box<T>`); `impl Respond for Created<T>` and `Stream<T>` work.
+  A trait impl over a BUILTIN generic (`impl Respond for Result<T, E>`,
+  `List<T>`, `Opt`, `Map`) is ACCEPTED but does not DISPATCH — the call
+  refuses (`Result<int, string>` has no method), because no builtin
+  aggregate shape maps to a builtin declaration yet (avra-8sb5.1.33.2.1).
   NOT EVERY GENERIC TYPE WANTS THIS, though — `@std/errors`'
   `Traced<E>` (the `? context` propagation carrier) LOOKS like an
   instance and is not: its `cause()` deliberately answers the

@@ -15,6 +15,7 @@ use core.{
     filled,
     same_decl,
     Param,
+    Plain,
     counted,
 }
 use core.{SeatMark, plain_mark}
@@ -226,14 +227,28 @@ impl TypeCx {
             return null
         }
         if self.view.decls.is_builtin(d) { return self.builtin_target(s, d, parts, loud) }
-        // a generic target lands for an INHERENT impl; a trait impl
-        // over one is recorded
-        if parts.of != null && !self.view.decls.tparams(d).is_empty() {
-            if loud { self.generic_target(s, target) }
+        // A TRAIT impl lands for the WHOLE generic: a written target
+        // argument must be the type's OWN parameter name, or the impl
+        // would silently serve an instantiation it does not name.
+        if parts.of != null && !self.worn_params(s, d) {
+            if loud { self.concrete_target(s, parts.of!, target, self.view.decls.tparams(d)) }
             return null
         }
         self.orphan_law(s, d, parts.of, target, loud)
         d
+    }
+
+    /// Whether an impl's written target parameters agree with the
+    /// type's own — absent parameters (the bare `impl Trait for Box`
+    /// spelling) and a spelling that repeats the declared names both
+    /// mean the whole generic; a concrete argument (`Box<int>`) does
+    /// not.
+    fn worn_params(s: StmtId, d: DeclId) -> bool {
+        let written: List<Plain> = self.view.store.impl_tparams_of(s)?.target ?? []
+        let declared = self.view.decls.tparams(d)
+        written.is_empty() ||
+            written.length == declared.length &&
+                [j for j, w in written if w.of != declared[j]].is_empty()
     }
 
     /// THE LANGUAGE OWNS ITS BUILTIN TYPES: an impl on one implements
@@ -460,15 +475,16 @@ impl TypeCx {
             )
     }
 
-    fn generic_target(s: StmtId, target: string) {
+    fn concrete_target(s: StmtId, of: string, target: string, params: List<string>) {
+        let written = params.join(", ")
         self
             .emit(
                 refusal(
                     "type.impl",
                     self.stmt_loc(s),
-                    "`${target}` is generic — a trait impl over a generic type is recorded, not landed",
+                    "`impl ${of} for ${target}<...>` names a specific instantiation — a trait impl lands for the WHOLE generic",
                     "this impl",
-                    null,
+                    "write `impl ${of} for ${target}<${written}>`",
                 ),
             )
     }
