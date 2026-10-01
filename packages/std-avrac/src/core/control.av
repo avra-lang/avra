@@ -1,0 +1,86 @@
+//! CONTROL FLOW AS DATA — how control runs through one node's
+//! children, the shape a must-analysis (what EVERY path does) reads
+//! instead of matching nodes itself.
+
+/// How control runs through one node's children.
+export enum Control {
+    /// Every step runs, in order.
+    Seq(steps: List<At>)
+    /// `head` runs, then exactly one arm's steps, in order. An empty
+    /// arm is the path that runs none of the others.
+    Branch(head: List<At>, arms: List<List<At>>)
+    /// The value runs, then control leaves the fn with it as the answer.
+    Returns(value: ExprId?)
+    /// The value runs, then control leaves through the failure channel.
+    /// A `?` leaves only on failure and is a `Seq`.
+    Fails(value: ExprId)
+    /// The children run elsewhere or never here: a lambda's or a
+    /// task's body, a deferred block, a component's expansion, a
+    /// nested declaration.
+    Apart
+}
+
+fn exprs_at(es: List<ExprId>) -> List<At> { [At.Expr(e) for e in es] }
+
+fn stmts_at(ss: List<StmtId>) -> List<At> { [At.Stmt(s) for s in ss] }
+
+/// A choice between running `rest` and running nothing.
+fn maybe(head: List<ExprId>, rest: List<At>) -> Control { Control.Branch(exprs_at(head), [[], rest]) }
+
+impl SyntaxArena {
+    /// How control runs through an expression's children.
+    fn expr_control(e: ExprId) -> Control {
+        match self.expr(e) {
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .NullLit or .Error -> Control.Seq([]),
+            .Binary(op, l, r) -> binary_control(op, l, r),
+            .Not(v) or .Force(v) or .Propagate(v) or .Named(_, v) or .Collect(v) -> Control.Seq(exprs_at([v])),
+            .Is(s, _) or .Prop(s, _) or .Chain(s, _) -> Control.Seq(exprs_at([s])),
+            .ListLit(es) or .Call(_, _, es) or .StructLit(_, _, es) or .VariantLit(_, es) or .Body(_, _, es, _) -> Control.Seq(exprs_at(es)),
+            .MapLit(ks, vs) -> Control.Seq(exprs_at(flatten([[k, vs[i]] for i, k in ks]))),
+            .Index(s, i) -> Control.Seq(exprs_at([s, i])),
+            .With(s, _, es) or .CallValue(s, es) or .MethodCall(s, _, es) -> Control.Seq(exprs_at([s].concat(es))),
+            .Block(stmts, value) -> Control.Seq(stmts_at(stmts).concat(exprs_at(some_list(value)))),
+            .Comp(elem, clauses) -> comp_control(elem, clauses),
+            .If(c, t, f) -> Control.Branch(exprs_at([c]), [exprs_at([t]), exprs_at([f])]),
+            .When(conds, values, fallback) -> Control
+                .Branch(exprs_at(conds.slice(0, 1)), [exprs_at([v]) for v in values.concat([fallback])]),
+            .Match(s, arms) -> Control
+                .Branch(exprs_at([s]), [exprs_at(some_list(a.guard).concat([a.value])) for a in arms]),
+            .MatchOpt(s, _, p, a) -> Control.Branch(exprs_at([s]), [exprs_at([p]), exprs_at([a])]),
+            .Coalesce(l, r) -> maybe([l], exprs_at([r])),
+            .Catch(s, _, _, vs) -> Control.Branch(exprs_at([s]), [exprs_at([])].concat([exprs_at([v]) for v in vs])),
+            .Lambda(_, _) or .Spawn(_) or .Component(_, _, _, _, _) -> Control.Apart,
+        }
+    }
+
+    /// How control runs through a statement's children.
+    fn stmt_control(s: StmtId) -> Control {
+        match self.stmt(s) {
+            .Let(_, _, v) or .MutLet(_, _, v) or .ExprStmt(v) or .Discard(v) -> Control.Seq(exprs_at([v])),
+            .Assign(t, v) -> Control.Seq(exprs_at([v, t])),
+            .Return(v) -> Control.Returns(v),
+            .Fail(v) -> Control.Fails(v),
+            .IfStmt(c, t, e) -> Control.Branch(exprs_at([c]), [stmts_at(t), stmts_at(e)]),
+            .While(c, ss) or .LetElse(_, c, ss) or .ForEach(_, _, c, ss) -> maybe([c], stmts_at(ss)),
+            .For(_, from, to, cond, step, ss) -> maybe([from, to, cond], stmts_at(ss).concat(exprs_at([step]))),
+            .Defer(_, _) or .ConstDecl(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .Use(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _) or .Error -> Control.Apart,
+        }
+    }
+}
+
+/// `&&` and `||` run their right side only when the left does not
+/// decide; every other operator runs both.
+fn binary_control(op: BinOp, l: ExprId, r: ExprId) -> Control {
+    match op {
+        .And or .Or -> maybe([l], exprs_at([r])),
+        .Add or .Sub or .Mul or .Div or .Mod or .Eq or .Ne or .Lt or .Le or .Gt or .Ge or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> Control.Seq(exprs_at([l, r])),
+    }
+}
+
+/// A comprehension's first source always runs; the rest of its heads,
+/// its filters and its element run once per element, or never.
+fn comp_control(elem: ExprId, clauses: List<CompClause>) -> Control {
+    let first = flatten([comp_clause_reach(c) for c in clauses.slice(0, 1)])
+    let rest = flatten([comp_clause_reach(c) for c in clauses.slice(1, clauses.length)])
+    maybe(first, exprs_at(rest.concat([elem])))
+}

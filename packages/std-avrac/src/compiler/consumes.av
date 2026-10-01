@@ -1,25 +1,28 @@
 //! THE CONSUMES PASS — which of a fn's own param seats the body
-//! CONSUMES: the bare subject of a `with` or a method call, a bare
-//! value stored into a fresh list or struct, or an early `return` —
-//! the evidence a caller can hand a dying argument over for instead
-//! of retaining across the call (R3, docs/2026_09_23_REUSE_IN_PLACE.md
+//! CONSUMES: keeps whole on EVERY path to an answer — the bare subject
+//! of a `with` or a method call, a bare value stored into a fresh list
+//! or struct, or a `return` — the evidence a caller can hand a dying
+//! argument over for instead of retaining across the call. A seat kept
+//! on SOME paths stays borrowed and the keeping path takes its own
+//! reference, so a cold keep never charges every call a count. A path
+//! that fails is not an answer and is not asked (R3, docs/2026_09_23_REUSE_IN_PLACE.md
 //! §31). Unlike the seats pass (receivers.av), this asks nothing of
 //! any OTHER declaration: a seat's evidence lives wholly in its own
 //! body, so declarations settle independently, one seat's answer
 //! never depends on a fixpoint, and a recursive callee needs no
 //! special case.
 use core.{
+    At,
     DeclId,
-    Expr,
     ExprId,
-    Stmt,
-    StmtId,
+    Control,
     TypeId,
     SyntaxArena,
     MethodParts,
     WithParts,
     filled,
     is_managed,
+    some_list,
 }
 use features.{NameFacts, Decls, Decl, Ref}
 
@@ -58,14 +61,12 @@ impl Workspace {
         mut cx = Consumed {
             store: self.decls.store(d),
             names: self.names_of(d),
-            lo: x.lo,
-            hi: x.hi,
             eligible: [self.eligible_seat(x, i, seats) for i in 0..n],
-            out: filled(n, false),
+            returned: filled(n, true),
         }
-        cx.scan()
-        self.decls.record_consumed(d, cx.out)
-        cx.out
+        let out = cx.scan(x.root!)
+        self.decls.record_consumed(d, out)
+        out
     }
 
     /// A seat is a candidate at all only as an ordinary BY-VALUE
@@ -119,23 +120,71 @@ impl Workspace {
     }
 }
 
-/// What one body's survey reads and gathers: its file's parts, the
-/// expression range its declaration owns, which seats are still
-/// candidates, and the evidence as it accrues.
-type Consumed = { store: SyntaxArena, names: NameFacts, lo: int, hi: int, eligible: List<bool>, out: List<bool> }
+/// What one body's survey reads and gathers: its file's parts, which
+/// seats are still candidates, and the seats every path that RETURNS
+/// has kept.
+type Consumed = { store: SyntaxArena, names: NameFacts, eligible: List<bool>, returned: List<bool> }
 
 impl Consumed {
-    /// Reads only the kinds that can hold evidence: their `Expr` buckets
-    /// in the declaration's range, and the file's `Return` bucket.
-    mut fn scan() {
-        for k in evidence_tags(self.store) {
-            for e in self.store.exprs_by_kind(self.lo, self.hi, k) { self.site_evidence(e) }
-        }
-        for s in self.store.stmts_by_kind(0, self.store.stmts.count(), return_tag(self.store)) { self.return_evidence(s) }
+    /// The ELIGIBLE seats every path through the body keeps: at its end
+    /// and at every `return`. A path that FAILS is not an answer and keeps
+    /// nothing it owes, so a body that only fails keeps every seat it may.
+    mut fn scan(root: ExprId) -> List<bool> {
+        let tail = self.through(At.Expr(root), filled(self.eligible.length, false))
+        [k && self.returned[i] && self.eligible[i] for i, k in tail]
     }
 
-    fn in_range(e: ExprId) -> bool {
-        e.index >= self.lo && e.index < self.hi
+    /// The seats kept by the time control falls through `at`, entered
+    /// with `kept` — every seat, when it never falls through.
+    mut fn through(at: At, kept: List<bool>) -> List<bool> {
+        match at {
+            .Expr(e) -> self.keeping(self.flowed(self.store.expr_control(e), kept), self.kept_values(e)),
+            .Stmt(s) -> self.flowed(self.store.stmt_control(s), kept),
+            .Pat(_) or .Field(_, _) or .Param(_, _) -> kept,
+        }
+    }
+
+    mut fn flowed(f: Control, kept: List<bool>) -> List<bool> {
+        match f {
+            .Seq(steps) -> self.run(steps, kept),
+            .Branch(head, arms) -> self.branched(self.run(head, kept), arms),
+            .Returns(v) -> self.returns(some_list(v), kept),
+            .Fails(v) -> self.left(self.run([At.Expr(v)], kept)),
+            .Apart -> kept,
+        }
+    }
+
+    mut fn run(steps: List<At>, kept: List<bool>) -> List<bool> {
+        mut k = kept
+        for s in steps { k = self.through(s, k) }
+        k
+    }
+
+    /// The seats every arm keeps, each entered with `kept`.
+    mut fn branched(kept: List<bool>, arms: List<List<At>>) -> List<bool> {
+        if arms.length == 0 { return kept }
+        mut met = self.left(kept)
+        for a in arms { met = both(met, self.run(a, kept)) }
+        met
+    }
+
+    /// A return path's seats — a bare returned seat among them — meet
+    /// every other return's; control does not fall through.
+    mut fn returns(values: List<ExprId>, kept: List<bool>) -> List<bool> {
+        self.returned = both(
+            self.returned,
+            self.keeping(self.run([At.Expr(v) for v in values], kept), values),
+        )
+        self.left(kept)
+    }
+
+    /// Every seat: what a path that never falls through keeps there.
+    fn left(kept: List<bool>) -> List<bool> { filled(kept.length, true) }
+
+    /// `kept` with every seat among `values` added.
+    fn keeping(kept: List<bool>, values: List<ExprId>) -> List<bool> {
+        let seats = [self.seat_of(v) for v in values]
+        [k || seats.contains(i) for i, k in kept]
     }
 
     /// The seat a BARE occurrence names — null for anything else,
@@ -146,62 +195,21 @@ impl Consumed {
         match b { .Param(i) if i < self.eligible.length && self.eligible[i] -> i, _ -> null }
     }
 
-    mut fn mark(seat: int?) {
-        if seat != null { self.out.set(seat!, true) }
-    }
-
-    /// One expression's evidence: a `with`'s or a method call's bare
-    /// subject (the same shape a reusing row's first seat takes,
-    /// memory.av's `handed_seat`), or a bare value stored into a
+    /// The values an expression KEEPS whole: a `with`'s or a method
+    /// call's bare subject (the same shape a reusing row's first seat
+    /// takes, memory.av's `handed_seat`), or a value stored into a
     /// fresh list or struct literal (the same shape a pushing row's
-    /// owned twin takes, memory.av's `pushes_managed`). Either way
-    /// the memory pass ALREADY owns what happens next once the seat
-    /// is scope-owned — this pass only says where looking pays off.
-    mut fn site_evidence(e: ExprId) {
+    /// owned twin takes, memory.av's `pushes_managed`). Either way the
+    /// memory pass ALREADY owns what happens next once the seat is
+    /// scope-owned — this pass only says where looking pays off.
+    fn kept_values(e: ExprId) -> List<ExprId> {
         let w: WithParts? = self.store.with_parts(e)
-        if w != null {
-            self.mark(self.seat_of(w!.subject))
-            for v in w!.values { self.mark(self.seat_of(v)) }
-            return
-        }
+        if w != null { return [w!.subject].concat(w!.values) }
         let mp: MethodParts? = self.store.method_parts(e)
-        if mp != null { return self.mark(self.seat_of(mp!.subject)) }
-        let sv: List<ExprId>? = self.store.struct_lit_parts(e)?.values
-        if sv != null {
-            for v in sv! { self.mark(self.seat_of(v)) }
-            return
-        }
-        let lv: List<ExprId>? = self.store.list_lit_values(e)
-        if lv != null { for v in lv! { self.mark(self.seat_of(v)) } }
-    }
-
-    /// An EXPLICIT `return p` — the one tail shape that costs nothing
-    /// regardless of how many scopes it exits, because `Ins.FnExit`
-    /// asks every OPEN scope, not only the closing one
-    /// (memory.av's `owned_open`). The IMPLICIT tail through a nested
-    /// block is not this: a value the block's OWN scope does not
-    /// itself own mints a retain on its way out (`moved_out`) and the
-    /// outer seats scope — already owning the seed this pass would
-    /// have planted — releases the spare: one instruction WORSE than
-    /// leaving the seat borrowed. Excluded on that arithmetic, not by
-    /// oversight.
-    mut fn return_evidence(s: StmtId) {
-        let v? = self.store.return_value(s) else { return }
-        if self.in_range(v) { self.mark(self.seat_of(v)) }
+        if mp != null { return [mp!.subject] }
+        self.store.struct_lit_parts(e)?.values ?? self.store.list_lit_values(e) ?? []
     }
 }
 
-/// The tags of every expression `site_evidence` reads; each payload is a
-/// placeholder `tag_expr` never reads.
-fn evidence_tags(store: SyntaxArena) -> List<int> {
-    let at = ExprId { index: 0 }
-    [
-        store.tag_expr(Expr.With(at, [], [])),
-        store.tag_expr(Expr.MethodCall(at, "", [])),
-        store.tag_expr(Expr.StructLit("", [], [])),
-        store.tag_expr(Expr.ListLit([])),
-    ]
-}
-
-/// `Return`'s own tag; the payload is a placeholder `tag_stmt` never reads.
-fn return_tag(store: SyntaxArena) -> int { store.tag_stmt(Stmt.Return(null)) }
+/// The seats both sides keep.
+fn both(a: List<bool>, b: List<bool>) -> List<bool> { [x && b[i] for i, x in a] }
