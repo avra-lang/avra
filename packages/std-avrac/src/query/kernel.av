@@ -81,8 +81,6 @@ type KernelState = {
     // one-compare fast path, same as if nothing had nested at all.
     restore: List<Cell<List<Restore>>?>,
     next_reader: int,
-    hits: int,
-    misses: int,
 }
 
 /// A read that skipped `ask`, held for the outermost open query: which verb read
@@ -116,6 +114,10 @@ export type Audit = {
 @identity
 export type Kernel = {
     state: Cell<KernelState>,
+    /// The ask counters, apart from `state`: counting one writes an int,
+    /// never a copy of the state.
+    hits: Cell<int>,
+    misses: Cell<int>,
     /// The open queries' own reader ids, innermost last, parallel to
     /// the state's `pending`/`open`. Held apart from `state`, as
     /// `stamps` is, so a repeat read never snapshots `KernelState`.
@@ -144,11 +146,11 @@ export fn new_kernel() -> Kernel {
         open: [],
         restore: [],
         next_reader: 0,
-        hits: 0,
-        misses: 0,
     }
     Kernel {
         state: Cell.new(state),
+        hits: Cell.new(0),
+        misses: Cell.new(0),
         readers: list_cell(),
         stamps: list_cell(),
         audit: Audit {
@@ -560,22 +562,17 @@ impl Kernel {
     }
 
     fn hit() -> Verdict {
-        mut s = self.snapshot()
-        s.hits = s.hits + 1
-        self.replace(s)
+        self.hits.set(self.hits.get() + 1)
         Verdict.Reuse
     }
 
     fn miss() -> Verdict {
-        mut s = self.snapshot()
-        s.misses = s.misses + 1
-        self.replace(s)
+        self.misses.set(self.misses.get() + 1)
         Verdict.Compute
     }
 
     fn stats() -> string {
-        let s = self.snapshot()
-        "rev ${state_revision(s)}: ${s.hits} hits, ${s.misses} misses"
+        "rev ${state_revision(self.snapshot())}: ${self.hits.get()} hits, ${self.misses.get()} misses"
     }
 }
 
