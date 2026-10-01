@@ -70,13 +70,15 @@ impl Workspace {
     /// relation.
     fn references() -> int {
         if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        // THE RELATION SETTLES AFTER TYPING. Asked while a file is
+        let k = key(Family.References, 0)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        // THE RELATION SETTLES AFTER TYPING. Computed while a file is
         // still typing, or while a compile-time run is lowering, its
         // walk would read `folded`'s smaller recursive view for that
         // file and settle the whole program's rows on an incomplete
         // one — permanently, since a settled answer is never redone.
-        // `computed_consumed` no longer reaches here from a lift; a
-        // caller that still does is the defect this names.
+        // An ask that reuses the settled rows reads nothing new, so only
+        // a COMPUTE there is the defect this names.
         if self.db.family_active(Family.Typed.ordinal) ||
             self.db.family_active(Family.Folded.ordinal) ||
             self.comptime_active() {
@@ -84,8 +86,6 @@ impl Workspace {
                 "defect: the references relation settles after typing, and something asked for it while a file was still typing",
             )
         }
-        let k = key(Family.References, 0)
-        if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)
         let all_files = self.decls.all_files()
         let files = [x.id for x in all_files if !self.is_held(x.id)]
@@ -133,9 +133,9 @@ impl Workspace {
         [p for p in record_fields(self, store, self.module_path_of(path)) if is_ref_row(p) && p[1] == path]
     }
 
-    /// Every file of `m` with its declarations standing.
+    /// Every file of `m` the program met, with its declarations standing.
     fn module_stands(m: ModulePath) {
-        for path in self.module_files(m) {
+        for path in self.met_files(m) {
             let g = self.file_id(path)
             let _ = self.items(g)
             let _ = self.decls.decls_of_file(g)

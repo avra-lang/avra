@@ -93,9 +93,11 @@ fn unread() -> ReadMark { ReadMark { revision: Cell.new(-1), reader: Cell.new(0)
 
 impl ReadMark {
     /// A read in `revision` by `reader`, written in place — and only
-    /// while a revision is live, the one time the late-write law asks.
+    /// while a revision is live and the read has a reader, the one time
+    /// the late-write law asks.
     fn mark(revision: int, reader: int, owner: int, run: int) {
-        if revision < 0 { return }
+        // no reader: the owner recorded nothing, so no one's answer can go stale
+        if revision < 0 || reader < 0 { return }
         self.revision.set(revision)
         self.reader.set(reader)
         self.owner.set(owner)
@@ -372,8 +374,9 @@ impl Rows<R> {
         self.last_runs.get().get("${owner}") ?? []
     }
 
-    /// A write read before it lands, told to the owner: the first cell it
-    /// moves that a reader saw in revision `now`, else the whole relation.
+    /// A write's cells told to the owner — each bucket it moves, then the
+    /// whole relation — and the first one read in revision `now` refused
+    /// unless the owner takes a late write as an input arriving.
     fn late_check(db: Db, relation: string, id: int, keys: List<List<IndexKey>>, now: int) {
         let before: List<List<IndexKey>> = if id < self.next_id() { self.filed.get()[id] } else { [] }
         self
@@ -382,19 +385,28 @@ impl Rows<R> {
 
     /// `late_check` over the buckets a write touches.
     fn late_among(db: Db, relation: string, touched: List<int>, now: int) {
-        let late? = touched.find(it >= 0 && self.buckets.get()[it].read.revision.get() == now) else {
-            let whole = self.read
-            if whole.revision.get() == now { db.refuse(late_write(relation, "the whole relation", db.reader(whole.reader.get()))) }
-            return
+        for b in touched {
+            if b >= 0 && !self.moved_cell(db, b + 1, self.buckets.get()[b].read, now) {
+                db
+                    .refuse(
+                        late_write(
+                            relation,
+                            "bucket ${b}",
+                            db.reader(self.buckets.get()[b].read.reader.get()),
+                        ),
+                    )
+                return
+            }
         }
-        db
-            .refuse(
-                late_write(
-                    relation,
-                    "bucket ${late}",
-                    db.reader(self.buckets.get()[late].read.reader.get()),
-                ),
-            )
+        if !self.moved_cell(db, 0, self.read, now) {
+            db.refuse(late_write(relation, "the whole relation", db.reader(self.read.reader.get())))
+        }
+    }
+
+    /// A cell this write moves, told to the owner with whether a reader saw
+    /// it this revision — false when the owner refuses the late write.
+    fn moved_cell(db: Db, cell: int, mark: ReadMark, now: int) -> bool {
+        db.moved(self.family.get(), cell, mark.revision.get() == now)
     }
 
     /// The row other than `own` filed under `key` in one index, if any.

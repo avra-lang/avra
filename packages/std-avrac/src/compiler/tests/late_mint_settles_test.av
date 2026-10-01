@@ -1,0 +1,50 @@
+// A MODULE IS MINTED BEFORE ANY QUERY READS THE RELATION: a file's `use`
+// lines admit the modules they name while files are admitted, so no row
+// arrives late and nothing is analysed twice.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+
+fn used_files() -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"w\"\nversion = \"0.1.0\"\n",
+        "/w/src/a.av": "use other.{h}\nexport fn f() -> int {\n    h()\n}\n",
+        "/w/src/other/c.av": "export fn h() -> int {\n    2\n}\n",
+    }
+}
+
+fn used_workspace() -> Workspace {
+    new_workspace(
+        memory_host(used_files(), ["/w/avra.toml", "/w/src/a.av", "/w/src/other/c.av"]),
+        "/w",
+        avra(),
+    )
+}
+
+spec "compiler/admit — a used module stands before resolution" {
+    given "a root file whose `use` names another module" {
+        then "admitting files mints the used module's file too" {
+            let ws = used_workspace()
+            let _ = ws.file_id("/w/src/a.av")
+            ws.admit_all()
+            ws.decls.file_count() == 2
+        }
+        then "the whole program resolves it with no late row, and the revision stands still" {
+            let ws = used_workspace()
+            let before = ws.db.revision()
+            let p = ws.program(null)
+            p.report() == "" && ws.db.revision() == before
+        }
+    }
+    given "an armed relation read, then a revision in which nothing moved" {
+        then "the query re-verifies as unchanged and reuses — a cell answers when it MOVED, never its hash" {
+            let ws = used_workspace()
+            let a = ws.file_id("/w/src/a.av")
+            let _ = ws.program(null)
+            ws.db.kernel.bump()
+            let before = ws.db.kernel.misses.get()
+            let _ = ws.analysis(a)
+            ws.db.kernel.misses.get() == before
+        }
+    }
+}

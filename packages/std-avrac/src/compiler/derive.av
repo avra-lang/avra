@@ -652,7 +652,14 @@ impl Workspace {
             }
             at = at + 1
         }
-        for path in self.hold.hold_asked.get() { if !reads.contains(path) { self.hold_only(path) } }
+        // a held file's row exists before any query reads the relation — minting it
+        // parses nothing, and a module walk inside a query then only finds it
+        for path in self.hold.hold_asked.get() {
+            if !reads.contains(path) {
+                self.hold_only(path)
+                let _ = self.file_id(path)
+            }
+        }
     }
 
     /// WHAT THE PROGRAM'S INSTANTIATIONS ARE A FUNCTION OF: its root asks, and the
