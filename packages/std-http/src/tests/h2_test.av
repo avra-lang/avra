@@ -43,7 +43,7 @@ fn get_head(path: string) -> List<HeaderField> {
     ]
 }
 
-fn post_head(n: int) -> List<HeaderField> {
+fn h2_posted(n: int) -> List<HeaderField> {
     [
         field(":method", "POST"),
         field(":scheme", "http"),
@@ -357,7 +357,7 @@ spec "std.http h2" {
     given "DATA and the body (§6.1, §8.1.1)" {
         then "a POST's DATA is its body, charged to the connection's window" {
             mut c = conn_after(
-                [heads(1, post_head(5), 0), data_on(1, "hel", 0), data_on(1, "lo", end_stream)],
+                [heads(1, h2_posted(5), 0), data_on(1, "hel", 0), data_on(1, "lo", end_stream)],
             )
             c.ready.length == 1 &&
                 kinds_owed(c, .WindowUpdate) == 0 &&
@@ -373,7 +373,7 @@ spec "std.http h2" {
         then "DATA on a stream the peer reset is STREAM_CLOSED on the stream" {
             let c = conn_after(
                 [
-                    heads(1, post_head(1), 0),
+                    heads(1, h2_posted(1), 0),
                     frame_bytes(.Reset, 0, 1, u32_bytes(8)),
                     data_on(1, "x", 0),
                 ],
@@ -391,7 +391,7 @@ spec "std.http h2" {
         }
         then "HEADERS on a stream the peer reset is STREAM_CLOSED on the stream" {
             let c = conn_after(
-                [heads(1, post_head(1), 0), frame_bytes(.Reset, 0, 1, u32_bytes(8)), get_on(1)],
+                [heads(1, h2_posted(1), 0), frame_bytes(.Reset, 0, 1, u32_bytes(8)), get_on(1)],
             )
             reset_of(c, 1) == code(.StreamClosed) && alive(c)
         }
@@ -409,7 +409,7 @@ spec "std.http h2" {
             goaway_of(
                 conn_after(
                     [
-                        heads(1, post_head(1), 0),
+                        heads(1, h2_posted(1), 0),
                         frame_bytes(.Data, padded, 1, [4, 1, 2, 3].bytes()!),
                     ],
                 ),
@@ -418,22 +418,22 @@ spec "std.http h2" {
         then "padded DATA is gathered without its padding" {
             mut c = conn_after(
                 [
-                    heads(1, post_head(2), 0),
+                    heads(1, h2_posted(2), 0),
                     frame_bytes(.Data, padded | end_stream, 1, [2, 104, 105, 0, 0].bytes()!),
                 ],
             )
             taken_text(c, 1) == "hi ended"
         }
         then "a body shorter or longer than its content-length resets the stream" {
-            reset_of(conn_after([heads(1, post_head(5), 0), data_on(1, "abc", end_stream)]), 1) == code(.Protocol) &&
-                reset_of(conn_after([heads(1, post_head(1), 0), data_on(1, "abc", end_stream)]), 1) == code(.Protocol)
+            reset_of(conn_after([heads(1, h2_posted(5), 0), data_on(1, "abc", end_stream)]), 1) == code(.Protocol) &&
+                reset_of(conn_after([heads(1, h2_posted(1), 0), data_on(1, "abc", end_stream)]), 1) == code(.Protocol)
         }
         then "the request is ready once its head is here, before any of its body" {
-            conn_after([heads(1, post_head(5), 0)]).ready.length == 1
+            conn_after([heads(1, h2_posted(5), 0)]).ready.length == 1
         }
         then "octets nobody took hold the stream's window shut; taking them gives it back" {
             let frame = frame_bytes(.Data, 0, 1, [97 for i in 0..16384].bytes()!)
-            mut c = conn_after([heads(1, post_head(81920), 0)].concat([frame for i in 0..3]))
+            mut c = conn_after([heads(1, h2_posted(81920), 0)].concat([frame for i in 0..3]))
             let before = stream_updates(c, 1)
             let _ = c.drained()
             let took = c.arrived(1)
@@ -444,12 +444,12 @@ spec "std.http h2" {
         }
         then "a stream sent past the window nobody gave back is FLOW_CONTROL_ERROR on the stream" {
             let frame = frame_bytes(.Data, 0, 1, [97 for i in 0..16384].bytes()!)
-            let c = conn_after([heads(1, post_head(81920), 0)].concat([frame for i in 0..5]))
+            let c = conn_after([heads(1, h2_posted(81920), 0)].concat([frame for i in 0..5]))
             reset_of(c, 1) == code(.FlowControl) && alive(c)
         }
         then "a long body read as it arrives never shuts either window" {
             let frame = frame_bytes(.Data, 0, 1, [97 for i in 0..16384].bytes()!)
-            mut c = conn_after([heads(1, post_head(163840), 0)])
+            mut c = conn_after([heads(1, h2_posted(163840), 0)])
             mut taken = 0
             for i in 0..10 {
                 let _ = c.fed(frame, 0)
@@ -458,7 +458,7 @@ spec "std.http h2" {
             alive(c) && taken == 163840 && c.recv * 2 >= 65535 && c.streams[0].recv * 2 >= 65535
         }
         then "a stream whose body is no longer heard drops what arrives and is reset once answered" {
-            mut c = conn_after([heads(1, post_head(10), 0), data_on(1, "01234", 0)])
+            mut c = conn_after([heads(1, h2_posted(10), 0), data_on(1, "01234", 0)])
             c.unheard(1)
             let _ = c.fed(data_on(1, "56789", 0), 0)
             let held = c.streams[0].inbound.length
@@ -467,7 +467,7 @@ spec "std.http h2" {
         }
         then "a body taken from a stream the peer reset is cut" {
             mut c = conn_after(
-                [heads(1, post_head(10), 0), frame_bytes(.Reset, 0, 1, u32_bytes(8))],
+                [heads(1, h2_posted(10), 0), frame_bytes(.Reset, 0, 1, u32_bytes(8))],
             )
             c.arrived(1) is .Cut
         }
@@ -610,7 +610,7 @@ spec "std.http h2" {
         then "trailers end the request and keep its head" {
             mut c = conn_after(
                 [
-                    heads(1, post_head(2), 0),
+                    heads(1, h2_posted(2), 0),
                     data_on(1, "ok", 0),
                     heads(1, [field("x-sum", "1")], end_stream),
                 ],
@@ -618,10 +618,10 @@ spec "std.http h2" {
             c.ready.length == 1 && taken_text(c, 1) == "ok ended"
         }
         then "trailers that do not end the stream, or carry a pseudo-field, reset it" {
-            reset_of(conn_after([heads(1, post_head(0), 0), heads(1, [field("x", "1")], 0)]), 1) == code(.Protocol) &&
+            reset_of(conn_after([heads(1, h2_posted(0), 0), heads(1, [field("x", "1")], 0)]), 1) == code(.Protocol) &&
                 reset_of(
                     conn_after(
-                        [heads(1, post_head(0), 0), heads(1, [field(":path", "/")], end_stream)],
+                        [heads(1, h2_posted(0), 0), heads(1, [field(":path", "/")], end_stream)],
                     ),
                     1,
                 ) == code(.Protocol)

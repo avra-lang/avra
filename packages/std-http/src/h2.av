@@ -302,7 +302,7 @@ enum Closure { Reset, PeerReset, Ended }
 type Gone = { id: int, how: Closure }
 
 /// How many closed streams are remembered.
-const remembered: int = 256
+const gone_kept: int = 256
 
 /// What a stream id stands for right now.
 enum Standing {
@@ -513,13 +513,13 @@ impl H2Conn {
     }
 
     /// Stream `id` closed, remembered with how it closed — in a ring of
-    /// `remembered` slots written in place, so a close costs one write
+    /// `gone_kept` slots written in place, so a close costs one write
     /// however many streams came before it.
     mut fn closed(id: int, how: Closure) {
         if self.answering(id) { self.orphans.push(id) }
         self.dropped_stream(id)
         let g = Gone { id: id, how: how }
-        if self.gone.length < remembered { self.gone.push(g) } else { self.gone[self.closes % remembered] = g }
+        if self.gone.length < gone_kept { self.gone.push(g) } else { self.gone[self.closes % gone_kept] = g }
         self.closes = self.closes + 1
     }
 

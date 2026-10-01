@@ -284,7 +284,7 @@ fn wire_of(method: Method, aim: Aim, body: Payload, fields: List<Header>) -> Res
     ClientError,
 > {
     let word? = method_word(method) else { return .Err(.Unwritable) }
-    let headers = fields.concat(kind_of(body, fields))
+    let headers = fields.concat(kind_named(body, fields))
     let wire = match body {
         .Stream(_, _) -> chunked_request(word, aim.target, aim.field, headers),
         .Empty or .Text(_) or .Json(_) or .Form(_) or .Octets(_, _) -> request(word, aim.target, aim.field, headers, octets_of(body)),
@@ -469,7 +469,7 @@ fn form_pair(f: FormField) -> string {
 
 /// The `content-type` a body names, unless the caller's headers name
 /// one already.
-fn kind_of(body: Payload, headers: List<Header>) -> List<Header> {
+fn kind_named(body: Payload, headers: List<Header>) -> List<Header> {
     if headers.any(it.named(content_type_name)) { return [] }
     let kind? = content_type(body) else { return [] }
     [Header { name: "content-type", value: kind }]
