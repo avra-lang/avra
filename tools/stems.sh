@@ -169,9 +169,10 @@ done
 # second copy would duplicate state the language promises is single
 # (`g_once` above all: a `once fn` reachable from two copies settles
 # TWICE, and since those answers are immortal, neither ever dies).
-# Mach-O needs `-undefined dynamic_lookup` to permit that, and the
-# flag also permits a TYPO — `avra_traap` links clean and fails at
-# first call. So the amnesty is bounded, in THREE bands:
+# Mach-O permits that only symbol by symbol (`-U`, tools/libs.py), so
+# a TYPO there fails the link; ELF permits every open symbol, where
+# `avra_traap` links clean and fails at first call. So the amnesty is
+# bounded, in THREE bands:
 #
 #   OURS      an `avra_*` the host exports — bound at load, correct.
 #   MISSING   an `avra_*` the host does NOT export — the typo band,
@@ -260,7 +261,7 @@ if bad:
 # libSystem is linked implicitly and re-exports libm and libpthread,
 # so libstd-sqlite links CLEAN with both rows missing and `nm -m`
 # shows every one of those symbols already bound. Measured: the
-# library links with neither `-lm` nor `-undefined dynamic_lookup`.
+# library links with neither `-lm` nor any amnesty.
 # ELF is where a dropped row bites, and no local run would ever say so.
 #
 # BY WORD WHERE A ROW IS LITERAL, BY COUNT WHERE IT CARRIES A `${}`
@@ -330,8 +331,8 @@ def declared_link():
     return out
 
 
-# WHAT NOTHING ON THE LINK LINE ANSWERS. `-undefined dynamic_lookup`
-# is the amnesty that lets the RUNTIME bind to the host at load, and
+# WHAT NOTHING ON THE LINK LINE ANSWERS. The per-symbol `-U` is the
+# amnesty that lets the RUNTIME bind to the host at load, and
 # `nm -u` cannot tell that band from a symbol the loader will answer:
 # it lists a symbol bound to a named library too. `nm -m` splits them,
 # so "the platform's" stops being a claim and becomes a count. A

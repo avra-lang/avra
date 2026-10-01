@@ -392,10 +392,12 @@ traps: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/traps.sh
 
 # THE BUILD CACHE, ATTACKED: two programs and a library through ONE store, every edit
-# kind a hold must survive, each binary held to the evaluator. It CLEARS the store, so
-# it runs last, and it refuses a run in which no step held.
+# kind a hold must survive, each binary held to the evaluator — and a kept binary held
+# to the archive and objects it linked. It CLEARS the store, so it runs last, and it
+# refuses a run in which no step held.
 cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cache_attacks.sh
+	@sh tools/link_cache_attack.sh
 
 # Exact refcount and list-write counts; the shipping runtime is put
 # back on every exit.   make census CMD="check packages/std-avrac"

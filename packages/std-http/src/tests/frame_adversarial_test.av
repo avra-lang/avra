@@ -36,7 +36,7 @@ spec "@std.http frame adversarial" {
         then "one octet of a method is partial" { fa_partial("G") }
         then "a lone CR is partial, because its LF may be the next read" { fa_partial("\r") }
         then "a lone LF is partial for the same reason" { fa_partial("\n") }
-        then "a lone NUL is partial" { fa_verdict(nul().bytes()) == "partial" }
+        then "a lone NUL is partial" { fa_verdict(b"\0") == "partial" }
         then "a blank line alone is partial — one empty line before the request line is ignored" {
             fa_partial("\r\n\r\n")
         }
@@ -83,7 +83,7 @@ spec "@std.http frame adversarial" {
             fa_refuses("GET /a?b=c#d HTTP/1.1\r\nHost: a\r\n\r\n", .Target)
         }
         then "a NUL is not a target octet, so the line ends where it sits" {
-            why(("GET /a" + nul() + "b HTTP/1.1\r\nHost: a\r\n\r\n").bytes()) == Refusal.RequestLine
+            why(b"GET /a\0b HTTP/1.1\r\nHost: a\r\n\r\n") == Refusal.RequestLine
         }
     }
     given "line ends, each torn" {
@@ -111,10 +111,10 @@ spec "@std.http frame adversarial" {
             fa_refuses(req_text("X: 1\r\n  cont\r\n"), .FieldName)
         }
         then "a NUL in a value is not visible ASCII" {
-            why(("GET / HTTP/1.1\r\nHost: a\r\nX: a" + nul() + "b\r\n\r\n").bytes()) == Refusal.FieldValue
+            why(b"GET / HTTP/1.1\r\nHost: a\r\nX: a\0b\r\n\r\n") == Refusal.FieldValue
         }
         then "a NUL in a name is not a token octet" {
-            why(("GET / HTTP/1.1\r\nHost: a\r\nX" + nul() + "Y: 1\r\n\r\n").bytes()) == Refusal.FieldName
+            why(b"GET / HTTP/1.1\r\nHost: a\r\nX\0Y: 1\r\n\r\n") == Refusal.FieldName
         }
         then "A COLON AFTER THE FIRST BELONGS TO THE VALUE" {
             fa_verdict(req_text("X:Y: 1\r\n").bytes()) == "complete 2 35"
@@ -173,6 +173,19 @@ spec "@std.http frame adversarial" {
                 "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding:\r\n\r\n",
                 .TransferEncoding,
             )
+        }
+        then "A LIST'S LAST MEMBER ENDS AT ITS OWN VALUE, so `,chunked` in the body frames nothing" {
+            fa_refuses(
+                "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: identity\r\n\r\n,chunked",
+                .Coding,
+            )
+        }
+        then "and `,close` in the body closes nothing" {
+            head_of(
+                "POST / HTTP/1.1\r\nHost: a\r\nConnection: x\r\nContent-Length: 6\r\n\r\n,close"
+                    .bytes(),
+            )!
+                .keep_alive
         }
     }
     given "OWS around a value, attacked by length and by kind" {

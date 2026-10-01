@@ -56,6 +56,10 @@ int64_t avra_fiber_fd_ready(int64_t fd, int64_t writing);
 // and the number's next tenant inherits none.
 void avra_fiber_fd_closing(int64_t fd);
 
+// Every task parked reading `fd` wakes as if its `within` ran out; the
+// descriptor stays open, registered, and unread.
+void avra_fiber_fd_interrupt(int64_t fd);
+
 // The caller is a FORKED CHILD, and the calling task is all it keeps:
 // no other task runs again, and the poller — the parent's own under
 // epoll, not inherited under kqueue — opens afresh at the next park.

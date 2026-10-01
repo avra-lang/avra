@@ -76,9 +76,36 @@ avra_ffi_symbol("sqlite3_libversion") == 0
 #    and the refusal names the symbol. This row does NOT test the
 #    flag — nothing opened the library in this process either way —
 #    it tests that the image fallback did not quietly widen.
-scoped undeclared "\`sqlite3_libversion\` is extern and this image does not carry it — build natively" "" 'extern fn sqlite3_libversion() -> string
+scoped undeclared "avra: \`sqlite3_libversion\` is extern and this image does not carry it — build natively" "" 'extern fn sqlite3_libversion() -> string
 sqlite3_libversion().length > 0
 '
+
+# 4. A SYMBOL WHOSE LIBRARY WAS NEVER BUILT IS BLAMED ON THE PACKAGE THAT
+#    DECLARES IT — never on another package of the closure with no
+#    library of its own (one the image carries has none), which would
+#    send the reader to rebuild the wrong one.
+mkdir -p "$ROOT/owner/src"
+printf '[package]\nname    = "@zz/owner"\nversion = "0.0.1"\n\n[link]\nobjects = ["never_built.o"]\n' > "$ROOT/owner/avra.toml"
+printf 'extern fn zz_owned() -> int\nexport fn held() -> int { zz_owned() }\n' > "$ROOT/owner/src/owner.av"
+scoped blamed "avra: \`zz_owned\` is extern and this image does not carry it, and @zz/owner declares it but has no library built — run \`make libs\` — build natively" '
+[dependencies]
+"@zz/owner" = { path = "../owner" }
+' 'use @zz.owner.{held}
+held()
+'
+
+# 5. AND A LIBRARY BUILT WITHOUT IT IS NAMED AS THAT: the package's own
+#    library opened and lacks the symbol, so the rebuild it asks for is
+#    that package's.
+printf 'int zz_unrelated(void) { return 0; }\n' > "$ROOT/owner/empty.c"
+cc -dynamiclib -o build/libzz-owner.dylib "$ROOT/owner/empty.c" 2>/dev/null || cc -shared -fPIC -o build/libzz-owner.so "$ROOT/owner/empty.c"
+scoped without "avra: \`zz_owned\` is extern and this image does not carry it, and @zz/owner declares it but its library does not carry it — rebuild it with \`make libs\` — build natively" '
+[dependencies]
+"@zz/owner" = { path = "../owner" }
+' 'use @zz.owner.{held}
+held()
+'
+rm -f build/libzz-owner.dylib build/libzz-owner.so
 
 if [ "$fails" != 0 ]; then
     echo "libscope: $fails of $rows rows failed"

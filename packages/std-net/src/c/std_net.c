@@ -51,6 +51,8 @@ void avra_trap(const char* msg);
 // The scheduler's word that `fd` is closing: whoever is parked on it
 // wakes to find it gone.
 void avra_fiber_fd_closing(int64_t fd);
+// Its word that every task parked reading `fd` has run out of time.
+void avra_fiber_fd_interrupt(int64_t fd);
 
 __attribute__((noinline, cold, noreturn))
 static void net_trap_bounds(int64_t i, int64_t len) {
@@ -286,6 +288,12 @@ int64_t avra_net_close(int64_t fd) {
     avra_fiber_fd_closing(fd);
     if (close((int)fd) == 0 || errno == EINTR) return 0;
     return -errno;
+}
+
+// Every task parked reading `fd` answers timed out; `fd` stays open.
+int64_t avra_net_interrupt(int64_t fd) {
+    avra_fiber_fd_interrupt(fd);
+    return 0;
 }
 
 // One direction or both shut: 0 read, 1 write, 2 both; 0 or -errno.

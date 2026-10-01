@@ -12,6 +12,7 @@ use core.{
     spelled,
     user_kind,
     is_kind_word,
+    key_spelled,
 }
 use @std.path.{under_dir, joined_path, normalized}
 use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
@@ -207,10 +208,23 @@ impl Workspace {
 
     fn package_link(pkg: Package) -> List<string> {
         let m = self.manifest(pkg.ordinal)
-        [joined_path(pkg.root, o) for o in filled_words(m.objects)]
+        self
+            .package_objects(pkg)
             .concat(["-L${d}" for d in filled_words(m.search)])
             .concat(["-l${l}" for l in filled_words(m.libs)])
             .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
+    }
+
+    /// The objects a package's manifest links into every program that
+    /// reaches it.
+    fn package_objects(pkg: Package) -> List<string> {
+        [joined_path(pkg.root, o) for o in filled_words(self.manifest(pkg.ordinal).objects)]
+    }
+
+    /// Every file a link reads besides the program's own objects: the
+    /// runtime archive, and each reached package's objects.
+    fn linked_files(runtime: string) -> List<string> {
+        [runtime].concat(flatten([self.package_objects(pkg) for pkg in self.packages()]))
     }
 
     /// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —
@@ -235,7 +249,16 @@ impl Workspace {
 
     fn linked_of(pkg: Package) -> LinkedPackage {
         let named = self.manifest(pkg.ordinal).name
-        LinkedPackage { name: named, library: "build/lib${library_stem(named)}" }
+        LinkedPackage {
+            name: named,
+            library: "build/lib${library_stem(named)}",
+            externs: self.externs_of(named),
+        }
+    }
+
+    /// The extern fns a package declares, by name.
+    fn externs_of(package: string) -> List<string> {
+        [d.name for d in self.decls.decls.get() if self.decls.is_extern(d.id) && self.decls.package_of(d.id) == key_spelled(package)]
     }
 
     /// The root package's entry file: its `[bin]` path, else
