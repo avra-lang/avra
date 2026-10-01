@@ -353,6 +353,8 @@ advance_and_cache() {
         store_result=built
     else
         store_result=unverified
+        echo "sprite-build: this tree's compiler does not build:" >&2
+        grep -aE 'error|Error' "/tmp/.avra-adv-$$" | head -20 >&2
     fi
     rm -f "/tmp/.avra-adv-$$"
 }
@@ -365,6 +367,12 @@ advance_and_cache() {
 store_result=none
 if [ "$do_store" = 1 ]; then
     advance_and_cache
+    # A source that does not build gets no command: an older compiler
+    # standing in for it answers about a different program.
+    if [ "$store_result" != built ]; then
+        printf 'STORE:%s\n' "$store_result" > build/.avra-run-info
+        exit 3
+    fi
 fi
 
 if [ "$do_prebuild" = 1 ]; then
