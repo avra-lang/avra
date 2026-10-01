@@ -1,7 +1,7 @@
 //! The reply framer: a status line's forms, a reply's body rules by
 //! status and by the request's method, and the refusals it shares
 //! with the request framer.
-use @std.http.frame.{framed_reply, limits, ReplyBody, Reply, Refusal, Method}
+use @std.http.frame.{framed_reply, unfolded, limits, ReplyBody, Reply, Refusal, Method}
 
 fn reply_of(text: string, asked: Method) -> Reply? {
     match framed_reply(text.bytes(), 0, 0, limits(), asked) {
@@ -38,7 +38,41 @@ fn shape(text: string, asked: Method) -> string {
     "${r.status} 1.${r.minor} ${body_word(r.body)} ${r.keep_alive} ${r.fields.count()} ${r.end}"
 }
 
+/// A reply's head as a user agent reads it: unfolded, then framed.
+fn unfolded_shape(text: string) -> string {
+    let b = unfolded(text.bytes(), 0, 0)
+    match framed_reply(b, 0, 0, limits(), Method.Get) {
+        .Complete(r) -> "${r.status} ${r.fields.count()} ${r.end} ${b.text() ?? "?"}",
+        .Partial -> "partial",
+        .Refused(_) -> "refused",
+    }
+}
+
 spec "std.http reply framer" {
+    given "an obs-fold, which a user agent reads as spaces (RFC 9112 §5.2)" {
+        then "a fold by space or tab keeps its length and joins its field" {
+            unfolded_shape("HTTP/1.1 200 OK\r\nx: a \r\n b\r\n\t c\r\n\r\n") == "200 1 35 HTTP/1.1 200 OK\r\nx: a    b    c\r\n\r\n"
+        }
+        then "a fold before the first field is the reason's, consumed and never read" {
+            unfolded_shape("HTTP/1.1 200 OK\r\n x: 1\r\n\r\n") == "200 0 26 HTTP/1.1 200 OK   x: 1\r\n\r\n"
+        }
+        then "a head with no fold is the buffer itself" {
+            let b = "HTTP/1.1 200 OK\r\nx: 1\r\n\r\n".bytes()
+            unfolded(b, 0, 0) == b
+        }
+        then "an unfinished head is left for the next read" {
+            unfolded("HTTP/1.1 200 OK\r\nx: a\r\n b".bytes(), 0, 0).text() == "HTTP/1.1 200 OK\r\nx: a\r\n b"
+        }
+        then "a bare CR before a space is no fold, and is still refused" {
+            unfolded_shape("HTTP/1.1 200 OK\r\nx: a\r b\r\n\r\n") == "refused"
+        }
+        then "the body's line ends are the body's" {
+            unfolded("HTTP/1.1 200 OK\r\n\r\na\r\n b".bytes(), 0, 0).text() == "HTTP/1.1 200 OK\r\n\r\na\r\n b"
+        }
+        then "folds back to back are one run of spaces" {
+            unfolded_shape("HTTP/1.1 200 OK\r\nx: a\r\n \r\n\tb\r\n\r\n") == "200 1 32 HTTP/1.1 200 OK\r\nx: a      b\r\n\r\n"
+        }
+    }
     given "the status line" {
         then "a plain reply with a length" {
             shape("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello", Method.Get) == "200 1.1 length 5 true 1 38"

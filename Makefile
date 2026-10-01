@@ -112,7 +112,7 @@ RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c))
 RUNTIME_LIB = build/libavra_runtime.a
 
 COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrapper.o \
-                build/ffi.o build/std_io.o build/std_process.o
+                build/ffi.o build/std_io.o build/std_process.o build/std_time.o
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
@@ -217,7 +217,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
+.PHONY: h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -526,6 +526,12 @@ suites:
 cited:
 	@python3 tools/cited.py
 
+# THE HTTP DOCS' FIXTURE CITATIONS RESOLVE: every `<suite> › "<then>"`
+# in the framing laws and the conformance checklist names a test that
+# exists, or the checklist claims coverage the tree does not have.
+http-cites:
+	@python3 tools/http_cites.py
+
 # DOGFOODING.md's own registry keeps a GENERATED block current
 # against `avra rules --markdown` — a rule's doc changes here or the
 # block does not, and the compiler's own renderer is what notices.
@@ -738,6 +744,11 @@ native-check: $(COMPILER_OBJS)
 bench: $(COMPILER_OBJS)
 	@sh tools/bench.sh
 
+# h2spec over std-http's HTTP/2 server, in the clear and over TLS;
+# skipped, with a word, when h2spec is not installed.
+h2spec: $(COMPILER_OBJS)
+	@sh tools/h2spec.sh
+
 # Boxes a program's runtime rows answer, by type, ranked — the
 # representation-selection opportunity list.
 #   make census-types PROGRAM=tools/bench/request/src/main.av
@@ -766,6 +777,19 @@ sizes:
 # Mutated program tests through `avra check`: diagnose, never crash.
 fuzz: $(COMPILER_OBJS)
 	@sh tools/fuzz.sh
+
+# THE HTTP FRAMERS FUZZED in bounded time (FUZZ_HTTP_SECONDS, default
+# 180): the corpus and every kept finding replayed, libFuzzer over the
+# C rows, then the seeded mutation fuzzer — a trap bisected to its one
+# mutant and kept in packages/std-http-fuzz/crashes.
+fuzz-http: build/libavra_runtime.a
+	@sh tools/fuzz_http.sh
+
+# THE HTTP SERVER SOAKED: 10k keep-alive connections on every core for
+# SOAK_HTTP_SECONDS (default 600, ten minutes), the reset law looped 1000x
+# under that load; prints the load, memory, descriptors and resets it saw.
+soak-http: build/libavra_runtime.a
+	@sh tools/soak_http.sh
 
 # The scaffolder's templates must stay compilable: scaffold a
 # throwaway feature, run the suite with it in the tree, remove it.

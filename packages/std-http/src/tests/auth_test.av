@@ -1,0 +1,37 @@
+// Credentials as headers: RFC 7617's and RFC 6750's own examples, the
+// empty cases first, and each refusal at the octet that earns it.
+use @std.errors.{Error}
+use @std.text.{from_codepoint}
+use @std.http.http.{Header}
+use @std.http.auth.{CredentialError, bearer, basic}
+
+fn au_value(r: Result<Header, CredentialError>) -> string {
+    match r { .Ok(h) -> "${h.name}: ${h.value}", .Err(e) -> e.describe().kind }
+}
+
+fn au_at(r: Result<Header, CredentialError>) -> int {
+    match r { .Ok(_) -> -1, .Err(.Token(at)) or .Err(.Colon(at)) or .Err(.Control(at)) -> at }
+}
+
+spec "@std.http credentials" {
+    given "basic" {
+        then "RFC 7617's example" {
+            au_value(basic("Aladdin", "open sesame")) == "authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="
+        }
+        then "an empty user and password is a colon alone" { au_value(basic("", "")) == "authorization: Basic Og==" }
+        then "a colon in the password is the password's" { au_value(basic("a", "b:c")) == "authorization: Basic YTpiOmM=" }
+        then "a user is UTF-8" { au_value(basic("é", "x")) == "authorization: Basic w6k6eA==" }
+        then "a colon in the user is refused where it stands" { au_at(basic("ab:c", "x")) == 2 }
+        then "a CR in the password is refused where it stands in the pair" { au_at(basic("ab", "x\r")) == 4 }
+        then "a DEL is a control character" { au_value(basic("a${from_codepoint(127)}", "x")) == "http.control" }
+    }
+    given "bearer" {
+        then "RFC 6750's example" { au_value(bearer("mF_9.B5f-4.1JqM")) == "authorization: Bearer mF_9.B5f-4.1JqM" }
+        then "trailing `=` is the token's" { au_value(bearer("abc==")) == "authorization: Bearer abc==" }
+        then "an empty token is refused" { au_at(bearer("")) == 0 }
+        then "a token of `=` alone is refused" { au_at(bearer("==")) == 0 }
+        then "an `=` inside is refused where the letters resume" { au_at(bearer("a=b")) == 2 }
+        then "a space is refused" { au_at(bearer("a b")) == 1 }
+        then "a CRLF never reaches a field" { au_at(bearer("a\r\nx: y")) == 1 }
+    }
+}

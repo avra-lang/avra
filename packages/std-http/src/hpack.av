@@ -1,0 +1,856 @@
+//! HPACK — header compression for HTTP/2 (RFC 7541), over `Bytes`.
+//!
+//! A header block is a run of REPRESENTATIONS: an index into the one
+//! index space (the static table, then the dynamic one), a literal that
+//! may enter the dynamic table, or a resize of it. Both ends keep the
+//! dynamic table in step, so a `HpackDecoder` and an `HpackEncoder` are values a
+//! connection holds and every block moves.
+//!
+//! EVERY QUANTITY A PEER NAMES MEETS A BOUND BEFORE IT IS USED. An
+//! integer is bounded before it can overflow, a string before it is
+//! sliced, a resize by the size this end advertised, and a block's
+//! decoded list by the list bound — an HPACK bomb is a small block that
+//! expands, and it meets that bound, never the allocator. A block over
+//! the list bound is still decoded whole, so the table stays in step
+//! with the peer's and only that stream is refused.
+use frame.{hex_value, no_bytes}
+
+/// One header field as octets. `sensitive` is the never-indexed mark
+/// (§7.1.3): a decoder reports it, an encoder honours it, and a field
+/// wearing it never enters a dynamic table.
+export type HeaderField = { name: Bytes, value: Bytes, sensitive: bool = false }
+
+/// A field spelled as text.
+export fn header_field(name: string, value: string) -> HeaderField { HeaderField { name: name.bytes(), value: value.bytes() } }
+
+/// What a field costs a table: its name, its value, and 32 (§4.1).
+export fn cost(f: HeaderField) -> int { f.name.length + f.value.length + 32 }
+
+/// Why a block was refused — every arm a COMPRESSION_ERROR to HTTP/2,
+/// which ends the connection: a decoder that refused a block no longer
+/// knows the peer's table.
+export enum HpackRefusal {
+    /// An index of zero, or past both tables.
+    Index
+    /// An integer past `int_bound`, or longer than it could need.
+    Integer
+    /// The block ended inside a representation.
+    Truncated
+    /// A Huffman string that decodes to the end-of-string symbol.
+    Eos
+    /// Huffman padding longer than seven bits, or not all ones.
+    Padding
+    /// A resize past the size this end advertised.
+    TableSize
+    /// A resize after a field — it may only open a block.
+    Placement
+    /// A block that did not open with the resize this end asked for.
+    Unresized
+}
+
+/// The largest integer a representation may carry: an index, a length
+/// and a table size all fit in 31 bits.
+export const int_bound: int = 2147483647
+
+/// The table size both ends start from (RFC 9113 §6.5.2).
+export const default_table: int = 4096
+
+// ── The tables ──────────────────────────────────────────────────
+
+/// The static table (Appendix A): index 1 is the first entry.
+const statics: List<HeaderField> = [
+    header_field(":authority", ""),
+    header_field(":method", "GET"),
+    header_field(":method", "POST"),
+    header_field(":path", "/"),
+    header_field(":path", "/index.html"),
+    header_field(":scheme", "http"),
+    header_field(":scheme", "https"),
+    header_field(":status", "200"),
+    header_field(":status", "204"),
+    header_field(":status", "206"),
+    header_field(":status", "304"),
+    header_field(":status", "400"),
+    header_field(":status", "404"),
+    header_field(":status", "500"),
+    header_field("accept-charset", ""),
+    header_field("accept-encoding", "gzip, deflate"),
+    header_field("accept-language", ""),
+    header_field("accept-ranges", ""),
+    header_field("accept", ""),
+    header_field("access-control-allow-origin", ""),
+    header_field("age", ""),
+    header_field("allow", ""),
+    header_field("authorization", ""),
+    header_field("cache-control", ""),
+    header_field("content-disposition", ""),
+    header_field("content-encoding", ""),
+    header_field("content-language", ""),
+    header_field("content-length", ""),
+    header_field("content-location", ""),
+    header_field("content-range", ""),
+    header_field("content-type", ""),
+    header_field("cookie", ""),
+    header_field("date", ""),
+    header_field("etag", ""),
+    header_field("expect", ""),
+    header_field("expires", ""),
+    header_field("from", ""),
+    header_field("host", ""),
+    header_field("if-match", ""),
+    header_field("if-modified-since", ""),
+    header_field("if-none-match", ""),
+    header_field("if-range", ""),
+    header_field("if-unmodified-since", ""),
+    header_field("last-modified", ""),
+    header_field("link", ""),
+    header_field("location", ""),
+    header_field("max-forwards", ""),
+    header_field("proxy-authenticate", ""),
+    header_field("proxy-authorization", ""),
+    header_field("range", ""),
+    header_field("referer", ""),
+    header_field("refresh", ""),
+    header_field("retry-after", ""),
+    header_field("server", ""),
+    header_field("set-cookie", ""),
+    header_field("strict-transport-security", ""),
+    header_field("transfer-encoding", ""),
+    header_field("user-agent", ""),
+    header_field("vary", ""),
+    header_field("via", ""),
+    header_field("www-authenticate", ""),
+]
+
+/// The static table's positions by name length — the longest static
+/// name is 27 octets — so a search reads only the names that could
+/// match.
+const static_by_length: List<List<int>> = [[i for i, f in statics if f.name.length == n] for n in 0..28]
+
+const no_indices: List<int> = []
+
+/// The dynamic table (§2.3.2), entries OLDEST FIRST: an insert is a
+/// push and an eviction drops a prefix. `size` is the entries' summed
+/// cost and never passes `max`.
+export type HeaderTable = { entries: List<HeaderField>, size: int, max: int }
+
+/// An empty dynamic table of `max` octets.
+export fn dynamic_table(max: int) -> HeaderTable { HeaderTable { entries: [], size: 0, max: max } }
+
+impl HeaderTable {
+    /// The entry at dynamic index `i`, 1 the newest — or absent.
+    fn at(i: int) -> HeaderField? {
+        if i < 1 || i > self.entries.length { return null }
+        self.entries[self.entries.length - i]
+    }
+
+    /// The field at index `i` of the one index space: the static
+    /// table's 61, then this table newest first (§2.3.3).
+    fn indexed(i: int) -> HeaderField? {
+        if i >= 1 && i <= statics.length { return statics[i - 1] }
+        self.at(i - statics.length)
+    }
+
+    /// `f` added, the oldest entries evicted until it fits. An entry
+    /// larger than the whole table empties it and is not kept (§4.4).
+    mut fn inserted(f: HeaderField) {
+        self.evicted(self.max - cost(f))
+        if cost(f) > self.max { return }
+        self.entries.push(f)
+        self.size = self.size + cost(f)
+    }
+
+    /// The table at a new `max`, the oldest evicted until it fits.
+    mut fn resized(max: int) {
+        self.max = max
+        self.evicted(max)
+    }
+
+    /// The oldest entries dropped until the rest cost at most `room`.
+    mut fn evicted(room: int) {
+        mut dropped = 0
+        mut size = self.size
+        while size > room && dropped < self.entries.length {
+            size = size - cost(self.entries[dropped])
+            dropped = dropped + 1
+        }
+        if dropped == 0 { return }
+        self.entries = self.entries.slice(dropped, self.entries.length)
+        self.size = size
+    }
+}
+
+// ── Reading a block ─────────────────────────────────────────────
+
+/// A block and how far into it the reading stands.
+export type BlockCursor = { buf: Bytes, at: int }
+
+/// A cursor at the start of `buf`.
+export fn cursor(buf: Bytes) -> BlockCursor { BlockCursor { buf: buf, at: 0 } }
+
+impl BlockCursor {
+    fn done() -> bool { self.at >= self.buf.length }
+
+    /// The octet under the cursor, taken.
+    mut fn octet() -> Result<int, HpackRefusal> {
+        if self.done() { return .Err(HpackRefusal.Truncated) }
+        self.at = self.at + 1
+        .Ok(self.buf.at(self.at - 1))
+    }
+
+    /// An integer on a prefix of `bits` bits (§5.1). Past `int_bound`
+    /// it is refused, and so is a sixth continuation octet — a run of
+    /// `0x80`s adds nothing and would otherwise never end.
+    mut fn int(bits: int) -> Result<int, HpackRefusal> {
+        let top = (1 << bits) - 1
+        let first = self.octet()? & top
+        if first < top { return .Ok(first) }
+        mut value = top
+        mut shift = 0
+        while shift <= 28 {
+            let b = self.octet()?
+            value = value + ((b & 127) << shift)
+            if value > int_bound { return .Err(HpackRefusal.Integer) }
+            if b < 128 { return .Ok(value) }
+            shift = shift + 7
+        }
+        .Err(HpackRefusal.Integer)
+    }
+
+    /// A string literal (§5.2): its length, then its octets, raw or
+    /// Huffman-coded as the length's top bit says.
+    mut fn string() -> Result<Bytes, HpackRefusal> {
+        if self.done() { return .Err(HpackRefusal.Truncated) }
+        let coded = self.buf.at(self.at) >= 128
+        let n = self.int(7)?
+        if n > self.buf.length - self.at { return .Err(HpackRefusal.Truncated) }
+        let raw = self.buf.slice(self.at, self.at + n)
+        self.at = self.at + n
+        if coded { return huffman_decoded(raw) }
+        .Ok(raw)
+    }
+}
+
+/// What a representation answers: the field it names — absent for a
+/// resize — or the law it broke.
+alias Represented = Result<HeaderField?, HpackRefusal>
+
+/// What a decoded block answers: its fields; `TooLarge` when their
+/// list passed the bound — decoded whole all the same, so the table is
+/// in step and only the stream is refused; or the law it broke.
+export enum Unpacked {
+    Fields(list: List<HeaderField>)
+    TooLarge
+    Refused(why: HpackRefusal)
+}
+
+/// One end's decoding state: the dynamic table; `limit`, the most a
+/// resize may name — the SETTINGS_HEADER_TABLE_SIZE this end sent;
+/// `owed`, whether the next block must open with a resize; `list`, the
+/// bound on a block's decoded list, costed as the table costs a field.
+export type HpackDecoder = { dynamic: HeaderTable, limit: int, owed: bool, list: int }
+
+/// A decoder that advertised `limit` octets of table and takes blocks
+/// whose list costs at most `list`.
+export fn decoder(limit: int, list: int) -> HpackDecoder { HpackDecoder { dynamic: dynamic_table(limit), limit: limit, owed: false, list: list } }
+
+impl HpackDecoder {
+    /// This end now advertises `n`: a smaller limit is owed a resize
+    /// at the next block's start (§4.2).
+    mut fn limited(n: int) {
+        if n < self.dynamic.max { self.owed = true }
+        self.limit = n
+    }
+
+    /// One header block decoded against the table, which it moves.
+    mut fn decoded(block: Bytes) -> Unpacked {
+        mut c = cursor(block)
+        mut fields: List<HeaderField> = []
+        mut listed = 0
+        while !c.done() {
+            match self.represented(c, listed == 0) {
+                .Ok(got) -> { listed = listed_with(fields, got, listed, self.list) },
+                .Err(why) -> { return .Refused(why) },
+            }
+        }
+        if self.owed { return .Refused(HpackRefusal.Unresized) }
+        if listed > self.list { return .TooLarge }
+        .Fields(fields)
+    }
+
+    /// The representation under the cursor (§6), taken: the field it
+    /// names, or absent for a resize — which only an `opening` block,
+    /// one with no field yet, may carry.
+    mut fn represented(mut c: BlockCursor, opening: bool) -> Represented {
+        let b = c.buf.at(c.at)
+        if b >= 32 && b < 64 { return self.resize(c, opening) }
+        if self.owed { return .Err(HpackRefusal.Unresized) }
+        when {
+            b >= 128 -> self.indexed(c)
+            b >= 64 -> self.literal(c, 6, true, false)
+            b >= 16 -> self.literal(c, 4, false, true)
+            _ -> self.literal(c, 4, false, false)
+        }
+    }
+
+    /// An indexed field (§6.1): the entry, whole.
+    fn indexed(mut c: BlockCursor) -> Represented {
+        let f? = self.dynamic.indexed(c.int(7)?) else { return .Err(HpackRefusal.Index) }
+        .Ok(f)
+    }
+
+    /// A literal field (§6.2): a name by index or as a string, then a
+    /// value; `kept` enters the table, `sensitive` is never indexed.
+    /// The name is read BEFORE the insert, which may evict the entry
+    /// it came from (§4.4).
+    mut fn literal(mut c: BlockCursor, bits: int, kept: bool, sensitive: bool) -> Represented {
+        let name = self.name_at(c, c.int(bits)?)?
+        let f = HeaderField { name: name, value: c.string()?, sensitive: sensitive }
+        if kept { self.dynamic.inserted(f) }
+        .Ok(f)
+    }
+
+    /// A literal's name: the indexed entry's, or a string when the
+    /// index is zero.
+    fn name_at(mut c: BlockCursor, i: int) -> Result<Bytes, HpackRefusal> {
+        if i == 0 { return c.string() }
+        let f? = self.dynamic.indexed(i) else { return .Err(HpackRefusal.Index) }
+        .Ok(f.name)
+    }
+
+    /// A dynamic table size update (§6.3): at most the advertised
+    /// limit, and only before the block's first field.
+    mut fn resize(mut c: BlockCursor, opening: bool) -> Represented {
+        if !opening { return .Err(HpackRefusal.Placement) }
+        let n = c.int(5)?
+        if n > self.limit { return .Err(HpackRefusal.TableSize) }
+        self.dynamic.resized(n)
+        self.owed = false
+        .Ok(null)
+    }
+}
+
+/// The list's cost once `got` joins it — a resize joins as nothing —
+/// and `got` pushed while that cost is within `bound`.
+fn listed_with(mut fields: List<HeaderField>, got: HeaderField?, listed: int, bound: int) -> int {
+    let f? = got else { return listed }
+    if listed + cost(f) <= bound { fields.push(f) }
+    listed + cost(f)
+}
+
+// ── Writing a block ─────────────────────────────────────────────
+
+/// One end's encoding state: the dynamic table; `huffman`, whether a
+/// string is Huffman-coded when that is no longer; `cap`, the most
+/// table this end will keep whatever the peer allows; `least`, the
+/// smallest size since the last block, and `announce`, whether the
+/// next block opens by saying so (§4.2).
+export type HpackEncoder = { dynamic: HeaderTable, huffman: bool, cap: int, least: int, announce: bool }
+
+/// An encoder at the default table size.
+export fn encoder(huffman: bool) -> HpackEncoder {
+    HpackEncoder {
+        dynamic: dynamic_table(default_table),
+        huffman: huffman,
+        cap: default_table,
+        least: default_table,
+        announce: false,
+    }
+}
+
+impl HpackEncoder {
+    /// The peer allows `n` octets of table: the table takes the lesser
+    /// of that and `cap` at once, and the next block announces it.
+    mut fn resized(n: int) {
+        let max = if n < self.cap { n } else { self.cap }
+        if max < self.least { self.least = max }
+        self.dynamic.resized(max)
+        self.announce = true
+    }
+
+    /// `fields` as one header block, the table moved as the peer's
+    /// decoder will move its own.
+    mut fn encoded(fields: List<HeaderField>) -> Bytes {
+        mut w = self.announced()
+        for f in fields { w = w.concat(self.represented(f)) }
+        w
+    }
+
+    /// The owed resizes: the least size since the last block, then
+    /// the final one when they differ.
+    mut fn announced() -> Bytes {
+        if !self.announce { return no_bytes }
+        self.announce = false
+        let least = self.least
+        self.least = self.dynamic.max
+        if least == self.dynamic.max { return integer(least, 5, 32) }
+        integer(least, 5, 32).concat(integer(self.dynamic.max, 5, 32))
+    }
+
+    /// One field's representation: its index when an entry is exactly
+    /// it, else a literal — never indexed when sensitive, kept unless
+    /// it would not fit the table at all.
+    mut fn represented(f: HeaderField) -> Bytes {
+        let exact = self.exact(f)
+        if exact > 0 && !f.sensitive { return integer(exact, 7, 128) }
+        let named = self.named(f.name)
+        if f.sensitive { return self.literal(f, named, 4, 16) }
+        if cost(f) > self.dynamic.max { return self.literal(f, named, 4, 0) }
+        let w = self.literal(f, named, 6, 64)
+        self.dynamic.inserted(f)
+        w
+    }
+
+    /// A literal: the name's index on a prefix of `bits` under `flags`
+    /// — or zero and the name — then the value.
+    fn literal(f: HeaderField, named: int, bits: int, flags: int) -> Bytes {
+        let head = integer(named, bits, flags)
+        let value = string_literal(f.value, self.huffman)
+        if named > 0 { return head.concat(value) }
+        head.concat(string_literal(f.name, self.huffman)).concat(value)
+    }
+
+    /// The index of an entry that is `f` exactly — or 0.
+    fn exact(f: HeaderField) -> int { self.index_where(f.name, it.name == f.name && it.value == f.value) }
+
+    /// The index of an entry named `name` — or 0.
+    fn named(name: Bytes) -> int { self.index_where(name, it.name == name) }
+
+    /// The index of the first entry `p` admits whose name is `name`'s
+    /// length, static first, the order the RFC's own examples encode in
+    /// — or 0. The static table is searched in its bucket of that name
+    /// length alone, a handful of entries rather than sixty-one.
+    fn index_where(name: Bytes, p: fn(HeaderField) -> bool) -> int {
+        let bucket = if name.length < static_by_length.length { static_by_length[name.length] } else { no_indices }
+        let s? = bucket.find(p(statics[it])) else { return self.dynamic_index(self.dynamic.entries.find_index(p)) }
+        s + 1
+    }
+
+    /// Where the entry at list position `p` stands in the index space.
+    fn dynamic_index(p: int?) -> int {
+        let at? = p else { return 0 }
+        statics.length + self.dynamic.entries.length - at
+    }
+}
+
+/// Every one-octet integer, laid out once: an index is most of what an
+/// encoder writes, and each costs a read of this table, not a build.
+const single_octets: List<Bytes> = [[i].bytes()! for i in 0..256]
+
+/// `v` on a prefix of `bits` bits, the octet's other bits `flags` (§5.1).
+export fn integer(v: int, bits: int, flags: int) -> Bytes {
+    let top = (1 << bits) - 1
+    if v < top { return single_octets[flags | v] }
+    mut out = [flags | top]
+    mut rest = v - top
+    while rest >= 128 {
+        out.push(rest % 128 + 128)
+        rest = rest / 128
+    }
+    out.push(rest)
+    out.bytes()!
+}
+
+/// A string literal (§5.2): Huffman-coded when `huffman` and that is
+/// no longer than the octets, which the RFC's own examples do.
+export fn string_literal(s: Bytes, huffman: bool) -> Bytes {
+    let coded = huffman_length(s)
+    if huffman && coded <= s.length { return integer(coded, 7, 128).concat(huffman_encoded(s)) }
+    integer(s.length, 7, 0).concat(s)
+}
+
+// ── Huffman (Appendix B) ────────────────────────────────────────
+
+/// One row of Appendix B: a symbol, its code as the RFC spells it in
+/// hex, and the code's length in bits. Symbol 256 is EOS.
+export type CodeRow = { sym: int, code: string, bits: int }
+
+/// Appendix B, row for row.
+export const huffman_rows: List<CodeRow> = table<CodeRow> {
+    sym | code       | bits
+    0   | "1ff8"     | 13
+    1   | "7fffd8"   | 23
+    2   | "fffffe2"  | 28
+    3   | "fffffe3"  | 28
+    4   | "fffffe4"  | 28
+    5   | "fffffe5"  | 28
+    6   | "fffffe6"  | 28
+    7   | "fffffe7"  | 28
+    8   | "fffffe8"  | 28
+    9   | "ffffea"   | 24
+    10  | "3ffffffc" | 30
+    11  | "fffffe9"  | 28
+    12  | "fffffea"  | 28
+    13  | "3ffffffd" | 30
+    14  | "fffffeb"  | 28
+    15  | "fffffec"  | 28
+    16  | "fffffed"  | 28
+    17  | "fffffee"  | 28
+    18  | "fffffef"  | 28
+    19  | "ffffff0"  | 28
+    20  | "ffffff1"  | 28
+    21  | "ffffff2"  | 28
+    22  | "3ffffffe" | 30
+    23  | "ffffff3"  | 28
+    24  | "ffffff4"  | 28
+    25  | "ffffff5"  | 28
+    26  | "ffffff6"  | 28
+    27  | "ffffff7"  | 28
+    28  | "ffffff8"  | 28
+    29  | "ffffff9"  | 28
+    30  | "ffffffa"  | 28
+    31  | "ffffffb"  | 28
+    32  | "14"       | 6
+    33  | "3f8"      | 10
+    34  | "3f9"      | 10
+    35  | "ffa"      | 12
+    36  | "1ff9"     | 13
+    37  | "15"       | 6
+    38  | "f8"       | 8
+    39  | "7fa"      | 11
+    40  | "3fa"      | 10
+    41  | "3fb"      | 10
+    42  | "f9"       | 8
+    43  | "7fb"      | 11
+    44  | "fa"       | 8
+    45  | "16"       | 6
+    46  | "17"       | 6
+    47  | "18"       | 6
+    48  | "0"        | 5
+    49  | "1"        | 5
+    50  | "2"        | 5
+    51  | "19"       | 6
+    52  | "1a"       | 6
+    53  | "1b"       | 6
+    54  | "1c"       | 6
+    55  | "1d"       | 6
+    56  | "1e"       | 6
+    57  | "1f"       | 6
+    58  | "5c"       | 7
+    59  | "fb"       | 8
+    60  | "7ffc"     | 15
+    61  | "20"       | 6
+    62  | "ffb"      | 12
+    63  | "3fc"      | 10
+    64  | "1ffa"     | 13
+    65  | "21"       | 6
+    66  | "5d"       | 7
+    67  | "5e"       | 7
+    68  | "5f"       | 7
+    69  | "60"       | 7
+    70  | "61"       | 7
+    71  | "62"       | 7
+    72  | "63"       | 7
+    73  | "64"       | 7
+    74  | "65"       | 7
+    75  | "66"       | 7
+    76  | "67"       | 7
+    77  | "68"       | 7
+    78  | "69"       | 7
+    79  | "6a"       | 7
+    80  | "6b"       | 7
+    81  | "6c"       | 7
+    82  | "6d"       | 7
+    83  | "6e"       | 7
+    84  | "6f"       | 7
+    85  | "70"       | 7
+    86  | "71"       | 7
+    87  | "72"       | 7
+    88  | "fc"       | 8
+    89  | "73"       | 7
+    90  | "fd"       | 8
+    91  | "1ffb"     | 13
+    92  | "7fff0"    | 19
+    93  | "1ffc"     | 13
+    94  | "3ffc"     | 14
+    95  | "22"       | 6
+    96  | "7ffd"     | 15
+    97  | "3"        | 5
+    98  | "23"       | 6
+    99  | "4"        | 5
+    100 | "24"       | 6
+    101 | "5"        | 5
+    102 | "25"       | 6
+    103 | "26"       | 6
+    104 | "27"       | 6
+    105 | "6"        | 5
+    106 | "74"       | 7
+    107 | "75"       | 7
+    108 | "28"       | 6
+    109 | "29"       | 6
+    110 | "2a"       | 6
+    111 | "7"        | 5
+    112 | "2b"       | 6
+    113 | "76"       | 7
+    114 | "2c"       | 6
+    115 | "8"        | 5
+    116 | "9"        | 5
+    117 | "2d"       | 6
+    118 | "77"       | 7
+    119 | "78"       | 7
+    120 | "79"       | 7
+    121 | "7a"       | 7
+    122 | "7b"       | 7
+    123 | "7ffe"     | 15
+    124 | "7fc"      | 11
+    125 | "3ffd"     | 14
+    126 | "1ffd"     | 13
+    127 | "ffffffc"  | 28
+    128 | "fffe6"    | 20
+    129 | "3fffd2"   | 22
+    130 | "fffe7"    | 20
+    131 | "fffe8"    | 20
+    132 | "3fffd3"   | 22
+    133 | "3fffd4"   | 22
+    134 | "3fffd5"   | 22
+    135 | "7fffd9"   | 23
+    136 | "3fffd6"   | 22
+    137 | "7fffda"   | 23
+    138 | "7fffdb"   | 23
+    139 | "7fffdc"   | 23
+    140 | "7fffdd"   | 23
+    141 | "7fffde"   | 23
+    142 | "ffffeb"   | 24
+    143 | "7fffdf"   | 23
+    144 | "ffffec"   | 24
+    145 | "ffffed"   | 24
+    146 | "3fffd7"   | 22
+    147 | "7fffe0"   | 23
+    148 | "ffffee"   | 24
+    149 | "7fffe1"   | 23
+    150 | "7fffe2"   | 23
+    151 | "7fffe3"   | 23
+    152 | "7fffe4"   | 23
+    153 | "1fffdc"   | 21
+    154 | "3fffd8"   | 22
+    155 | "7fffe5"   | 23
+    156 | "3fffd9"   | 22
+    157 | "7fffe6"   | 23
+    158 | "7fffe7"   | 23
+    159 | "ffffef"   | 24
+    160 | "3fffda"   | 22
+    161 | "1fffdd"   | 21
+    162 | "fffe9"    | 20
+    163 | "3fffdb"   | 22
+    164 | "3fffdc"   | 22
+    165 | "7fffe8"   | 23
+    166 | "7fffe9"   | 23
+    167 | "1fffde"   | 21
+    168 | "7fffea"   | 23
+    169 | "3fffdd"   | 22
+    170 | "3fffde"   | 22
+    171 | "fffff0"   | 24
+    172 | "1fffdf"   | 21
+    173 | "3fffdf"   | 22
+    174 | "7fffeb"   | 23
+    175 | "7fffec"   | 23
+    176 | "1fffe0"   | 21
+    177 | "1fffe1"   | 21
+    178 | "3fffe0"   | 22
+    179 | "1fffe2"   | 21
+    180 | "7fffed"   | 23
+    181 | "3fffe1"   | 22
+    182 | "7fffee"   | 23
+    183 | "7fffef"   | 23
+    184 | "fffea"    | 20
+    185 | "3fffe2"   | 22
+    186 | "3fffe3"   | 22
+    187 | "3fffe4"   | 22
+    188 | "7ffff0"   | 23
+    189 | "3fffe5"   | 22
+    190 | "3fffe6"   | 22
+    191 | "7ffff1"   | 23
+    192 | "3ffffe0"  | 26
+    193 | "3ffffe1"  | 26
+    194 | "fffeb"    | 20
+    195 | "7fff1"    | 19
+    196 | "3fffe7"   | 22
+    197 | "7ffff2"   | 23
+    198 | "3fffe8"   | 22
+    199 | "1ffffec"  | 25
+    200 | "3ffffe2"  | 26
+    201 | "3ffffe3"  | 26
+    202 | "3ffffe4"  | 26
+    203 | "7ffffde"  | 27
+    204 | "7ffffdf"  | 27
+    205 | "3ffffe5"  | 26
+    206 | "fffff1"   | 24
+    207 | "1ffffed"  | 25
+    208 | "7fff2"    | 19
+    209 | "1fffe3"   | 21
+    210 | "3ffffe6"  | 26
+    211 | "7ffffe0"  | 27
+    212 | "7ffffe1"  | 27
+    213 | "3ffffe7"  | 26
+    214 | "7ffffe2"  | 27
+    215 | "fffff2"   | 24
+    216 | "1fffe4"   | 21
+    217 | "1fffe5"   | 21
+    218 | "3ffffe8"  | 26
+    219 | "3ffffe9"  | 26
+    220 | "ffffffd"  | 28
+    221 | "7ffffe3"  | 27
+    222 | "7ffffe4"  | 27
+    223 | "7ffffe5"  | 27
+    224 | "fffec"    | 20
+    225 | "fffff3"   | 24
+    226 | "fffed"    | 20
+    227 | "1fffe6"   | 21
+    228 | "3fffe9"   | 22
+    229 | "1fffe7"   | 21
+    230 | "1fffe8"   | 21
+    231 | "7ffff3"   | 23
+    232 | "3fffea"   | 22
+    233 | "3fffeb"   | 22
+    234 | "1ffffee"  | 25
+    235 | "1ffffef"  | 25
+    236 | "fffff4"   | 24
+    237 | "fffff5"   | 24
+    238 | "3ffffea"  | 26
+    239 | "7ffff4"   | 23
+    240 | "3ffffeb"  | 26
+    241 | "7ffffe6"  | 27
+    242 | "3ffffec"  | 26
+    243 | "3ffffed"  | 26
+    244 | "7ffffe7"  | 27
+    245 | "7ffffe8"  | 27
+    246 | "7ffffe9"  | 27
+    247 | "7ffffea"  | 27
+    248 | "7ffffeb"  | 27
+    249 | "ffffffe"  | 28
+    250 | "7ffffec"  | 27
+    251 | "7ffffed"  | 27
+    252 | "7ffffee"  | 27
+    253 | "7ffffef"  | 27
+    254 | "7fffff0"  | 27
+    255 | "3ffffee"  | 26
+    256 | "3fffffff" | 30
+}
+
+/// Each symbol's code.
+const huff_code: List<int> = [hex_value(r.code.bytes(), 0, r.code.length) for r in huffman_rows]
+
+/// Each symbol's code length in bits.
+const huff_len: List<int> = [r.bits for r in huffman_rows]
+
+/// The code as a binary tree, two slots per node: a slot holds its
+/// child's node, or `-1 - symbol` at a leaf. Node 0 is the root, which
+/// no slot names, so 0 is never a child. The code is complete, so no
+/// slot is left 0.
+const huff_tree: List<int> = grown_tree()
+
+fn grown_tree() -> List<int> {
+    mut kids = [0, 0]
+    for sym in 0..257 {
+        let n = huff_len[sym]
+        mut node = 0
+        for k in 0..n - 1 {
+            let slot = 2 * node + code_bit(sym, k)
+            if kids[slot] == 0 {
+                kids[slot] = kids.length / 2
+                kids.push(0)
+                kids.push(0)
+            }
+            node = kids[slot]
+        }
+        kids[2 * node + code_bit(sym, n - 1)] = -1 - sym
+    }
+    kids
+}
+
+/// Bit `k` of a symbol's code, the most significant first.
+fn code_bit(sym: int, k: int) -> int { (huff_code[sym] >> huff_len[sym] - 1 - k) & 1 }
+
+const eos: int = 256
+
+/// How many octets `s` takes Huffman-coded.
+export fn huffman_length(s: Bytes) -> int {
+    mut bits = 0
+    for i in 0..s.length { bits = bits + huff_len[s.at(i)] }
+    (bits + 7) / 8
+}
+
+/// `s` Huffman-coded, the last octet padded with the EOS code's
+/// leading ones.
+export fn huffman_encoded(s: Bytes) -> Bytes {
+    mut out: List<int> = []
+    mut acc = 0
+    mut bits = 0
+    for i in 0..s.length {
+        let sym = s.at(i)
+        acc = (acc << huff_len[sym]) | huff_code[sym]
+        bits = bits + huff_len[sym]
+        while bits >= 8 {
+            bits = bits - 8
+            out.push((acc >> bits) & 255)
+        }
+        acc = acc & (1 << bits) - 1
+    }
+    if bits > 0 { out.push(((acc << 8 - bits) | (1 << 8 - bits) - 1) & 255) }
+    out.bytes()!
+}
+
+/// How many nodes the code's tree has: every one a state of the
+/// decoder.
+const huff_nodes: int = huff_tree.length / 2
+
+/// The decoder's steps, a nibble at a time: node `state` reading the
+/// four bits of nibble `x` is entry `16 * state + x`, packed as the node
+/// it lands on plus, shifted by nine, the symbol it completes plus one
+/// (0 for none). The shortest code is five bits, so a nibble completes
+/// at most one symbol. Built once, at the first decode: its 4096 walks
+/// are past a const's step budget.
+once fn huff_steps() -> List<int> { [nibble_step(state, x) for state in 0..huff_nodes for x in 0..16] }
+
+fn nibble_step(state: int, x: int) -> int {
+    mut node = state
+    mut completed = 0
+    for k in 0..4 {
+        let next = huff_tree[2 * node + ((x >> 3 - k) & 1)]
+        if next >= 0 {
+            node = next
+        } else {
+            completed = 0 - next
+            node = 0
+        }
+    }
+    node | (completed << 9)
+}
+
+/// The states a string may end in: the root, or a node reached from it
+/// by at most seven 1-bits — the EOS code's prefix, which is all the
+/// padding may be (§5.2).
+const huff_endings: List<bool> = ending_states()
+
+fn ending_states() -> List<bool> {
+    mut ends = [false for n in 0..huff_nodes]
+    mut node = 0
+    ends[0] = true
+    for depth in 0..7 {
+        node = huff_tree[2 * node + 1]
+        ends[node] = true
+    }
+    ends
+}
+
+/// A Huffman-coded string's octets (§5.2), a nibble per step. The walk
+/// ends between symbols, or inside one on at most seven bits that are
+/// all ones — the EOS code's prefix; EOS itself is never a symbol of a
+/// string.
+export fn huffman_decoded(raw: Bytes) -> Result<Bytes, HpackRefusal> {
+    let steps = huff_steps()
+    mut out: List<int> = []
+    mut state = 0
+    for i in 0..raw.length {
+        let b = raw.at(i)
+        let high = steps[16 * state + (b >> 4)]
+        let low = steps[16 * (high & 511) + (b & 15)]
+        if high >> 9 == eos + 1 || low >> 9 == eos + 1 { return .Err(HpackRefusal.Eos) }
+        if high >> 9 > 0 { out.push((high >> 9) - 1) }
+        if low >> 9 > 0 { out.push((low >> 9) - 1) }
+        state = low & 511
+    }
+    if !huff_endings[state] { return .Err(HpackRefusal.Padding) }
+    .Ok(out.bytes()!)
+}
+

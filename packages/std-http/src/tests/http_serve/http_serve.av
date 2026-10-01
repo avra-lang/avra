@@ -21,7 +21,15 @@ fn exchanged(c: Conn, sent: string, expected: int) -> Result<string, NetError> {
             .Err(_) -> { open = false },
         }
     }
-    .Ok((got.text() ?? "?").replace("\r\n", "/"))
+    .Ok(undated(got.text() ?? "?").replace("\r\n", "/"))
+}
+
+/// The wire with each `date` value — the second it was written in —
+/// shown as `<now>`: an IMF-fixdate is 29 characters, always.
+fn undated(t: string) -> string {
+    let at = t.index_of("date: ")
+    if at < 0 { return t }
+    t.substring(0, at) + "date: <now>" + undated(t.substring(at + 35, t.length))
 }
 
 fn shown() -> Result<string, NetError> {

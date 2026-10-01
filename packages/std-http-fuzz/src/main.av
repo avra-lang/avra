@@ -1,0 +1,472 @@
+//! THE FRAMERS' FUZZER — a seeded generator mutating the checked-in
+//! corpus, each mutant handed to every framer and held to its oracles.
+//! A mutant is a pure function of (seed, index), so any one of them is
+//! rebuilt from two numbers.
+//!
+//! A TRAP ENDS THE PROCESS (exit 2) and `tools/fuzz_http.sh` bisects
+//! the batch down to the one mutant; an oracle's breach prints
+//! `FAIL <index> <what>` and the run goes on.
+//!
+//! THE ORACLES ARE PROPERTIES, never a second parser: a verdict is the
+//! same however the bytes arrived (the split law every read obeys), a
+//! complete head does not depend on the bytes after it, every span
+//! lies inside what was framed, and a query splits the way a plain
+//! walk over its separators says.
+//!
+//! Environment: FUZZ_SEED, FUZZ_FROM, FUZZ_COUNT, FUZZ_CORPUS (the
+//! corpus directory); FUZZ_DUMP=<index> writes that one mutant to
+//! FUZZ_OUT and checks nothing; FUZZ_REPLAY=<dir> checks every file
+//! in it as it stands.
+use @std.io.{read_bytes, write_bytes, list_dir, env_or, env}
+use @std.text.{parse_int}
+use @std.http.frame.{
+    framed,
+    framed_reply,
+    fed,
+    chunker,
+    limits,
+    Limits,
+    Framed,
+    FramedReply,
+    Chunked,
+    Head,
+    RequestBody,
+    ReplyBody,
+    Method,
+    target_form,
+    hex_of,
+}
+use @std.http.query.{Query, query_of}
+use @std.url.{decoded}
+use @std.http.http.{Request, Unrouted}
+use @std.http.body.{whole}
+
+// ── The generator ───────────────────────────────────────────────
+
+/// A linear congruential generator under 2^31, so no product overflows.
+type Rng = { s: int }
+
+impl Rng {
+    /// A roll in `0..n`; `n` is at least 1.
+    mut fn roll(n: int) -> int {
+        self.s = (self.s * 1103515245 + 12345) % 2147483648
+        self.s / 7 % n
+    }
+}
+
+/// The generator for mutant `i` of `seed`.
+fn rng_for(seed: int, i: int) -> Rng {
+    mut r = Rng { s: (seed % 65536 * 65537 + i % 2147483648) % 2147483648 }
+    let _ = r.roll(2)
+    let _ = r.roll(2)
+    r
+}
+
+/// The octets a framer argues about, each a token a mutation splices.
+const tokens: List<Bytes> = [t.bytes() for t in [
+    "\r\n",
+    "\r",
+    "\n",
+    " ",
+    "\t",
+    ":",
+    ";",
+    ",",
+    "%",
+    "0",
+    "9",
+    "F",
+    "chunked",
+    "Content-Length: ",
+    "Transfer-Encoding: ",
+    "Host: ",
+    "Connection: close",
+    "Expect: 100-continue",
+    "\r\n\r\n",
+    "HTTP/1.1",
+    "HTTP/1.0",
+    "?",
+    "&",
+    "=",
+    "@",
+    "[",
+    "]",
+    "/",
+    "*",
+    "://",
+    "18446744073709551616",
+    "ffffffffffffffff",
+]]
+    .concat([[0].bytes()!, [127].bytes()!, [128].bytes()!, [255].bytes()!])
+
+/// One mutation of `b`.
+fn mutated(b: Bytes, corpus: List<Bytes>, mut r: Rng) -> Bytes {
+    let at = r.roll(b.length + 1)
+    match r.roll(7) {
+        0 -> spliced(b, at, 1, [r.roll(256)].bytes()!),
+        1 -> spliced(b, at, 0, [r.roll(256)].bytes()!),
+        2 -> spliced(b, at, 1 + r.roll(8), "".bytes()),
+        3 -> spliced(b, at, 0, b.slice(at, at + r.roll(b.length - at + 1))),
+        4 -> spliced(b, at, 0, tokens[r.roll(tokens.length)]),
+        5 -> crossed(b, at, corpus[r.roll(corpus.length)], r),
+        _ -> b.slice(0, at),
+    }
+}
+
+/// `b` with `cut` octets at `at` replaced by `put` — the cut clipped
+/// to what is there.
+fn spliced(b: Bytes, at: int, cut: int, put: Bytes) -> Bytes {
+    let end = if at + cut > b.length { b.length } else { at + cut }
+    b.slice(0, at).concat(put).concat(b.slice(end, b.length))
+}
+
+/// `b` up to `at`, then another seed's tail.
+fn crossed(b: Bytes, at: int, other: Bytes, mut r: Rng) -> Bytes {
+    b.slice(0, at).concat(other.slice(r.roll(other.length + 1), other.length))
+}
+
+/// Mutant `i` of `seed`: a corpus seed under one to four mutations,
+/// held under the largest bound a framer names.
+fn mutant(corpus: List<Bytes>, seed: int, i: int) -> Bytes {
+    mut r = rng_for(seed, i)
+    mut b = corpus[r.roll(corpus.length)]
+    let times = 1 + r.roll(4)
+    for _k in 0..times { b = mutated(b, corpus, r) }
+    if b.length > 70000 { return b.slice(0, 70000) }
+    b
+}
+
+// ── The oracles ─────────────────────────────────────────────────
+
+/// Tight bounds, so a mutant reaches every bound's arm cheaply.
+fn tight() -> Limits { Limits { line: 64, field: 48, head: 256, fields: 4, body: 64, ext: 16, trailers: 2 } }
+
+/// The bounds this mutant is framed under.
+fn bounds_for(mut r: Rng) -> Limits { if r.roll(2) == 0 { limits() } else { tight() } }
+
+/// A cut inside `b`: 1 up to its length, 0 when it has none.
+fn cut_in(b: Bytes, mut r: Rng) -> int { if b.length > 1 { 1 + r.roll(b.length - 1) } else { 0 } }
+
+/// Every breach of the request framer's laws on `b`.
+fn request_breaches(b: Bytes, lim: Limits, k: int) -> List<string> {
+    let whole = framed(b, 0, 0, lim)
+    split_breach(b, lim, k, whole).concat(head_breaches(b, lim, whole))
+}
+
+/// A verdict is the same however the bytes arrived: a prefix that is
+/// partial, rescanned from where it stopped, agrees with the whole.
+fn split_breach(b: Bytes, lim: Limits, k: int, whole: Framed) -> List<string> {
+    if !(framed(b.slice(0, k), 0, 0, lim) is .Partial) { return [] }
+    if same_framed(framed(b, 0, k, lim), whole) { return [] }
+    ["request: split at ${k} disagrees with the whole"]
+}
+
+/// A complete head: its spans inside it, its bounds kept, the same
+/// head framed from its own octets alone, and every reader of it
+/// total.
+fn head_breaches(b: Bytes, lim: Limits, f: Framed) -> List<string> {
+    let h? = complete_head(f) else { return [] }
+    [why for why in [
+        breach(h.end <= b.length, "request: end past the buffer"),
+        breach(
+            inside(h.verb.lo, h.verb.hi, h.end) && inside(h.target.lo, h.target.hi, h.end),
+            "request: a word outside the head",
+        ),
+        breach(fields_inside(h, h.end), "request: a field outside the head"),
+        breach(h.fields.count() <= lim.fields, "request: more fields than the bound"),
+        breach(
+            same_framed(framed(b.slice(0, h.end), 0, 0, lim), f),
+            "request: the head depends on bytes after it",
+        ),
+        breach(path_rooted(b, h), "request: a path that does not open with /"),
+    ] if why != ""]
+}
+
+fn complete_head(f: Framed) -> Head? { match f { .Complete(h) -> h, .Partial or .Refused(_) -> null } }
+
+/// `what` when the law does not hold, else nothing.
+fn breach(holds: bool, what: string) -> string { if holds { "" } else { what } }
+
+fn inside(lo: int, hi: int, end: int) -> bool { 0 <= lo && lo <= hi && hi <= end }
+
+fn fields_inside(h: Head, end: int) -> bool {
+    for i in 0..h.fields.count() {
+        let f = h.fields.field(i)
+        if !inside(f.name.lo, f.name.hi, end) || !inside(f.value.lo, f.value.hi, end) { return false }
+    }
+    true
+}
+
+/// Every reader a handler has, asked of the head: none may trap, and a
+/// path, when there is one, opens with `/`.
+fn path_rooted(b: Bytes, h: Head) -> bool {
+    let q = Request { raw: b, head: h, body: whole("".bytes()), peer: "", params: Unrouted {} }
+    let _ = q.target()
+    let _ = q.authority()
+    let _ = q.queried()
+    let _ = q.header("host")
+    let _ = q.query().names()
+    let p? = q.path() else { return true }
+    p.length > 0 && p.at(0) == 47
+}
+
+fn same_framed(a: Framed, b: Framed) -> bool {
+    match a {
+        .Complete(h) -> match b {
+            .Complete(g) -> h.end == g.end &&
+                h.fields.count() == g.fields.count() &&
+                body_word(h.body) == body_word(g.body),
+            .Partial or .Refused(_) -> false,
+        },
+        .Partial -> match b { .Partial -> true, .Complete(_) or .Refused(_) -> false },
+        .Refused(w) -> match b { .Refused(v) -> w == v, .Partial or .Complete(_) -> false },
+    }
+}
+
+fn body_word(b: RequestBody) -> string {
+    match b { .None -> "none", .Length(n) -> "length ${n}", .Chunked -> "chunked" }
+}
+
+fn reply_word(b: ReplyBody) -> string {
+    match b {
+        .None -> "none",
+        .Length(n) -> "length ${n}",
+        .Chunked -> "chunked",
+        .UntilClose -> "close",
+    }
+}
+
+/// Every breach of the reply framer's laws on `b`, asked for `asked`.
+fn reply_breaches(b: Bytes, lim: Limits, k: int, asked: Method) -> List<string> {
+    let whole = framed_reply(b, 0, 0, lim, asked)
+    let split = if framed_reply(b.slice(0, k), 0, 0, lim, asked) is .Partial {
+        breach(
+            same_reply(framed_reply(b, 0, k, lim, asked), whole),
+            "reply: split at ${k} disagrees with the whole",
+        )
+    } else {
+        ""
+    }
+    let own = match whole {
+        .Complete(r) -> breach(
+            r.end <= b.length &&
+                same_reply(framed_reply(b.slice(0, r.end), 0, 0, lim, asked), whole),
+            "reply: the head depends on bytes after it",
+        ),
+        .Partial or .Refused(_) -> "",
+    }
+    [why for why in [split, own] if why != ""]
+}
+
+fn same_reply(a: FramedReply, b: FramedReply) -> bool {
+    match a {
+        .Complete(r) -> match b {
+            .Complete(s) -> r.end == s.end && r.status == s.status && reply_word(r.body) == reply_word(s.body),
+            .Partial or .Refused(_) -> false,
+        },
+        .Partial -> match b { .Partial -> true, .Complete(_) or .Refused(_) -> false },
+        .Refused(w) -> match b { .Refused(v) -> w == v, .Partial or .Complete(_) -> false },
+    }
+}
+
+/// Every breach of the chunked decoder's laws on `b`: fed a prefix
+/// then the whole, it answers what the whole answers at once; a body
+/// keeps its bound and ends inside the buffer.
+fn chunked_breaches(b: Bytes, lim: Limits, k: int) -> List<string> {
+    let whole = fed(chunker(0), b, lim)
+    let resumed = match fed(chunker(0), b.slice(0, k), lim) {
+        .More(c) -> fed(c, b, lim),
+        .Done(body, end) -> Chunked.Done(body, end),
+        .Refused(why) -> Chunked.Refused(why),
+    }
+    let bounded = match whole {
+        .Done(body, end) -> breach(
+            body.length <= lim.body && end <= b.length,
+            "chunked: a body past its bound or its buffer",
+        ),
+        .More(_) or .Refused(_) -> "",
+    }
+    [why for why in [
+        breach(same_chunked(resumed, whole), "chunked: fed in two at ${k} disagrees with the whole"),
+        bounded,
+    ] if why != ""]
+}
+
+fn same_chunked(a: Chunked, b: Chunked) -> bool {
+    match a {
+        .Done(body, end) -> match b { .Done(g, e) -> body == g && end == e, .More(_) or .Refused(_) -> false },
+        .More(c) -> match b {
+            .More(d) -> c.at == d.at && c.total == d.total,
+            .Done(_, _) or .Refused(_) -> false,
+        },
+        .Refused(w) -> match b { .Refused(v) -> w == v, .Done(_, _) or .More(_) -> false },
+    }
+}
+
+/// The query over `lo..hi` against a plain walk of its separators: as
+/// many pairs as segments naming a key, no separator inside a name or
+/// a value, and every value decoded as a plain escape walk decodes it.
+fn query_breaches(b: Bytes, lo: int, hi: int) -> List<string> {
+    let q = query_of(b, lo, hi)
+    let raw = b.slice(lo, hi)
+    let counted = breach(
+        q.length() == keyed_segments(raw),
+        "query: pairs disagree with a walk of its separators",
+    )
+    let clean = breach(
+        q.names().all(!it.is_empty() && it.index_of(amp, 0) < 0),
+        "query: a name that is empty or holds a separator",
+    )
+    let decodes = breach(decodes_alike(q), "query: decoded disagrees with a plain escape walk")
+    [why for why in [counted, clean, decodes] if why != ""]
+}
+
+fn decodes_alike(q: Query) -> bool {
+    for j in 0..q.length() {
+        let v = q.value_at(j) ?? empty
+        if !same_bytes(decoded(v), walked(v)) { return false }
+    }
+    true
+}
+
+/// The segments between `&` that open with neither `&` nor `=`.
+fn keyed_segments(raw: Bytes) -> int {
+    mut n = 0
+    mut opens = true
+    for i in 0..raw.length {
+        let c = raw.at(i)
+        if opens && c != 38 && c != 61 { n = n + 1 }
+        opens = c == 38
+    }
+    n
+}
+
+fn same_bytes(a: Bytes?, b: Bytes?) -> bool {
+    match a {
+        x? -> b != null && x == b!
+        null -> b == null
+    }
+}
+
+/// Percent-decoding as a walk: `%` and two hex digits become their
+/// octet, anything else is itself, and a `%` without two digits is
+/// absence.
+fn walked(b: Bytes) -> Bytes? {
+    mut out: List<int> = []
+    mut i = 0
+    while i < b.length {
+        let c = b.at(i)
+        if c != 37 {
+            out.push(c)
+            i = i + 1
+        } else {
+            if i + 2 >= b.length { return null }
+            let hi? = hex_of(b.at(i + 1)) else { return null }
+            let lo? = hex_of(b.at(i + 2)) else { return null }
+            out.push(hi * 16 + lo)
+            i = i + 3
+        }
+    }
+    out.bytes()!
+}
+
+const amp: Bytes = "&".bytes()
+const empty: Bytes = "".bytes()
+const methods: List<Method> = [Method.Get, Method.Head, Method.Post, Method.Connect, Method.Options]
+
+/// Every breach any framer shows on `b`, the choices drawn from `r`.
+fn breaches(b: Bytes, mut r: Rng) -> List<string> {
+    let lim = bounds_for(r)
+    let k = cut_in(b, r)
+    let lo = r.roll(b.length + 1)
+    let hi = lo + r.roll(b.length - lo + 1)
+    let m = methods[r.roll(methods.length)]
+    if hi > lo { let _ = target_form(b, m, lo, hi) }
+    request_breaches(b, lim, k)
+        .concat(reply_breaches(b, lim, k, m))
+        .concat(chunked_breaches(b, lim, k))
+        .concat(query_breaches(b, lo, hi))
+}
+
+// ── The run ─────────────────────────────────────────────────────
+
+/// Every file in `dir`, read whole — a file that will not read is
+/// skipped, and so is the directory when it is not one.
+fn read_all(dir: string) -> List<Bytes> {
+    let names = list_dir(dir) catch _ -> []
+    [b for n in names for b in [read_bytes("${dir}/${n}") catch _ -> empty] if b.length > 0]
+}
+
+/// An environment number, or `fallback`.
+fn number(name: string, fallback: int) -> int { parse_int(env_or(name, "${fallback}")) ?? fallback }
+
+/// The breaches of one input, printed; how many there were.
+fn reported(label: string, b: Bytes, mut r: Rng) -> int {
+    let found = breaches(b, r)
+    for why in found { println("FAIL ${label} ${why}") }
+    found.length
+}
+
+/// Every file in `dir` checked as it stands, under as many draws as
+/// it has cuts (up to 256), so a finding kept at one cut and one bound
+/// is found again at it.
+fn replayed(dir: string, seed: int) {
+    let names = list_dir(dir) catch _ -> []
+    mut failed = 0
+    for n in names {
+        let b = read_bytes("${dir}/${n}") catch _ -> empty
+        let tries = if b.length < 256 { b.length + 1 } else { 256 }
+        for t in 0..tries {
+            mut r = rng_for(seed + t, t)
+            failed = failed + reported(n, b, r)
+        }
+    }
+    println("fuzz-http: replayed ${names.length} input(s) from ${dir}, ${failed} breach(es)")
+}
+
+/// FUZZ_COUNT mutants from FUZZ_FROM checked, or FUZZ_DUMP's one
+/// written out.
+fn fuzzed(corpus: List<Bytes>, seed: int) {
+    let dump? = env("FUZZ_DUMP") else { return checked_all(corpus, seed) }
+    let _ = write_bytes(
+        env_or("FUZZ_OUT", "fuzz-mutant.bin"),
+        mutant(corpus, seed, parse_int(dump) ?? 0),
+    ) catch _ -> ""
+}
+
+/// Every mutant in the batch checked, then what was looked at: the
+/// request framer's verdicts and the chunked bodies decoded whole, so
+/// a run that reached nothing says so.
+fn checked_all(corpus: List<Bytes>, seed: int) {
+    let from = number("FUZZ_FROM", 0)
+    let count = number("FUZZ_COUNT", 1000)
+    mut failed = 0
+    mut seen = [0, 0, 0, 0]
+    for i in from..from + count {
+        let b = mutant(corpus, seed, i)
+        mut r = rng_for(seed + 1, i)
+        failed = failed + reported("${i}", b, r)
+        let k = kind_of(b)
+        seen[k] = seen[k] + 1
+        if fed(chunker(0), b, limits()) is .Done { seen[3] = seen[3] + 1 }
+    }
+    println(
+        "fuzz-http: ${count} mutant(s) of ${corpus.length} seed(s), seed ${seed} from ${from}, ${failed} breach(es)",
+    )
+    println(
+        "fuzz-http: requests ${seen[0]} complete, ${seen[1]} partial, ${seen[2]} refused; ${seen[3]} chunked bodies whole",
+    )
+}
+
+/// Which verdict the request framer gives: 0 complete, 1 partial, 2 refused.
+fn kind_of(b: Bytes) -> int {
+    match framed(b, 0, 0, limits()) { .Complete(_) -> 0, .Partial -> 1, .Refused(_) -> 2 }
+}
+
+let seed = number("FUZZ_SEED", 1)
+let corpus_dir = env_or("FUZZ_CORPUS", "packages/std-http-fuzz/corpus")
+let corpus = read_all(corpus_dir)
+match env("FUZZ_REPLAY") {
+    dir? -> replayed(dir, seed)
+    null -> if corpus.is_empty() { println("fuzz-http: no corpus at ${corpus_dir}") } else { fuzzed(corpus, seed) }
+}

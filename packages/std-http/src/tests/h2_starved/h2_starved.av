@@ -1,0 +1,92 @@
+// WINDOW STARVATION: a client shuts its window (INITIAL_WINDOW_SIZE 0),
+// asks for a body, and keeps the link warm with PINGs it never stops
+// sending. The answer's owed octets never move, so once the idle
+// deadline passes the server ends the link with GOAWAY — the PINGs buy
+// it nothing. Both engines.
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, within, now_ms, sleep}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.http.{text}
+use @std.http.server.{served, Timing}
+use @std.http.h2.{
+    Frame,
+    FrameAt,
+    preface,
+    frame_bytes,
+    frame_at,
+    u32_bytes,
+    u32_at,
+    end_headers,
+    end_stream,
+    frames_in,
+}
+use @std.http.hpack.{header_field, encoder}
+
+type App = {}
+
+fn get_block() -> Bytes {
+    mut e = encoder(false)
+    e
+        .encoded(
+            [
+                header_field(":method", "GET"),
+                header_field(":scheme", "http"),
+                header_field(":path", "/"),
+                header_field(":authority", "h"),
+            ],
+        )
+}
+
+/// PINGs every 50 ms until the server closes the link or 3 s pass;
+/// answers the GOAWAY code it sent (-1 for none) and whether the link
+/// closed.
+fn starved(c: Conn) -> string {
+    mut buf = no_bytes
+    mut open = true
+    let start = now_ms()
+    while open && now_ms() - start < 3000 {
+        let _ = c.write(frame_bytes(.Ping, 0, 0, u32_bytes(1).concat(u32_bytes(2))))
+        let got = heard_from(c)
+        open = got != null
+        buf = buf.concat(got ?? no_bytes)
+    }
+    let code = goaway_code(buf)
+    let data = data_octets(buf)
+    "closed: ${!open}, goaway: ${code}, body octets sent: ${data}, within 3 s: ${now_ms() - start < 3000}"
+}
+
+/// What one short read brought: absent once the peer closed, empty when
+/// nothing came in time.
+fn heard_from(c: Conn) -> Bytes? {
+    match within ms(50) { c.read(65536) } { .Ok(b) -> b, .Err(_) -> no_bytes }
+}
+
+fn goaway_code(b: Bytes) -> int {
+    let g? = frames_in(b).find(it.kind is .GoAway) else { return -1 }
+    u32_at(g.payload, 4)
+}
+
+fn data_octets(b: Bytes) -> int {
+    mut n = 0
+    for f in frames_in(b) { if f.kind is .Data { n = n + f.payload.length } }
+    n
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App {}, limits(), Timing { idle: ms(300) }) { _app, _q -> text(200, ["x" for i in 0..1000].join("")) }
+    spawn s.run(1)
+    defer s.stop()
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    defer { let _ = c.close() }
+    let shut = frame_bytes(.Settings, 0, 0, [0, 4].bytes()!.concat(u32_bytes(0)))
+    c
+        .write(
+            preface
+                .concat(shut)
+                .concat(frame_bytes(.Headers, end_headers | end_stream, 1, get_block())),
+        )?
+    .Ok(starved(c))
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

@@ -1,0 +1,161 @@
+// A CLOSED CONN IS CLOSED IN EVERY COPY. The kernel hands a closed
+// descriptor's number to the next connection it makes, so a copy that
+// still believed the number was its own would read, write, shut or
+// close a stranger's stream. Every case here reuses the number on
+// purpose and asserts that it did, so none can pass by the kernel
+// choosing another.
+use @std.net.{listen, connect, Listener, Conn, Read, NetError}
+use @std.time.{secs, ms, within}
+
+/// A listener, two clients queued on it, and the first accepted.
+type Queued = { l: Listener, a: Conn, b: Conn, first: Conn }
+
+fn queued() -> Result<Queued, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let a = connect("127.0.0.1", l.port, secs(2))?
+    let b = connect("127.0.0.1", l.port, secs(2))?
+    .Ok(Queued { l: l, a: a, b: b, first: l.accept()? })
+}
+
+fn closed_by<T>(r: Result<T, NetError>) -> bool {
+    match r { .Err(e) -> e.closed(), .Ok(_) -> false }
+}
+
+fn pending(r: Result<Read, NetError>) -> bool {
+    match r { .Ok(got) -> got is .Pending, .Err(_) -> false }
+}
+
+/// A STALE COPY WRITES TO NOBODY: its number is the next accepted
+/// connection's, and that connection's peer reads nothing.
+fn a_stale_write_reaches_nobody() -> Result<bool, NetError> {
+    let q = queued()?
+    let stale = q.first
+    q.first.close()?
+    let second = q.l.accept()?
+    let wrote = stale.try_write("stranger".bytes(), 0)
+    let wrote_all = stale.write("stranger".bytes())
+    .Ok(
+        second.fd == stale.fd &&
+            closed_by(wrote) &&
+            closed_by(wrote_all) &&
+            pending(q.b.try_read(64)),
+    )
+}
+
+/// A STALE COPY READS NOTHING: the stranger's bytes stay on the wire
+/// for the connection they were sent to.
+fn a_stale_read_takes_nothing() -> Result<bool, NetError> {
+    let q = queued()?
+    let stale = q.first
+    q.first.close()?
+    let second = q.l.accept()?
+    q.b.write("mine".bytes())?
+    let peeked = stale.try_read(64)
+    let parked = within ms(200) { stale.read(64) }
+    .Ok(
+        second.fd == stale.fd &&
+            closed_by(peeked) &&
+            closed_by(parked) &&
+            second.read(64)? == "mine".bytes(),
+    )
+}
+
+/// A STALE COPY CLOSES NOTHING AND SHUTS NOTHING: the connection that
+/// holds the number keeps talking.
+fn a_stale_close_leaves_the_stranger_open() -> Result<bool, NetError> {
+    let q = queued()?
+    let stale = q.first
+    q.first.close()?
+    let second = q.l.accept()?
+    let shut = stale.shutdown_write()
+    let again = stale.close()
+    second.write("alive".bytes())?
+    .Ok(
+        second.fd == stale.fd &&
+            closed_by(shut) &&
+            closed_by(again) &&
+            q.b.read(64)? == "alive".bytes(),
+    )
+}
+
+/// A copy held in a list and one in a record see one close: the flag
+/// lives beside the number in every copy, never in one of them.
+type Holder = { conn: Conn }
+
+fn every_holder_sees_one_close() -> Result<bool, NetError> {
+    let q = queued()?
+    let held = [q.first]
+    let boxed = Holder { conn: q.first }
+    boxed.conn.close()?
+    .Ok(
+        closed_by(held[0].try_write("x".bytes(), 0)) &&
+            closed_by(q.first.try_read(8)) &&
+            closed_by(boxed.conn.close()) &&
+            held[0].peer() == "",
+    )
+}
+
+/// A copy captured by a lambda and one handed to another task see the
+/// close too: neither is a copy of the flag, both share its cell.
+fn a_captured_copy_and_a_task_see_the_close() -> Result<bool, NetError> {
+    let q = queued()?
+    let captured = () -> q.first.try_write("x".bytes(), 0)
+    let elsewhere = spawn q.first.write("y".bytes())
+    q.first.close()?
+    let second = q.l.accept()?
+    .Ok(
+        second.fd == q.first.fd &&
+            closed_by(captured()) &&
+            closed_by(elsewhere.await) &&
+            pending(q.b.try_read(8)),
+    )
+}
+
+/// Conns made by hand hold a cell each: closing one leaves another
+/// open, even where both name no descriptor at all.
+fn a_hand_made_conn_holds_its_own_cell() -> Result<bool, NetError> {
+    let twin = Conn { fd: 999998 }
+    let other = Conn { fd: 999999 }
+    let _ = twin.close()
+    .Ok(closed_by(twin.live("read")) && (other.live("read") catch _ -> -1) == 999999)
+}
+
+/// An empty write and a zero read on a closed conn are refused too: the
+/// door is asked before any size is.
+fn the_empty_verbs_are_refused_closed() -> Result<bool, NetError> {
+    let q = queued()?
+    q.first.close()?
+    .Ok(
+        closed_by(q.first.try_write("".bytes(), 0)) &&
+            closed_by(q.first.try_read(0)) &&
+            q.first.named() == "fd ${q.first.fd}",
+    )
+}
+
+/// A closed conn's refusal names its verb and the number it held.
+fn the_refusal_names_the_number() -> Result<bool, NetError> {
+    let q = queued()?
+    q.first.close()?
+    .Ok(words(q.first.try_write("x".bytes(), 0)).starts_with("write fd ${q.first.fd}: "))
+}
+
+spec "std.net a closed conn" {
+    given "a copy made before the close, the number since handed to another connection" {
+        then "a write through the copy is refused, and the stranger's peer reads nothing" { passes(a_stale_write_reaches_nobody()) }
+        then "a read through the copy is refused, parked or not, and the bytes wait for their owner" { passes(a_stale_read_takes_nothing()) }
+        then "a shutdown and a close through the copy are refused, and the stranger still talks" { passes(a_stale_close_leaves_the_stranger_open()) }
+    }
+    given "copies held in a list and a record" {
+        then "one close is seen by every holder" { passes(every_holder_sees_one_close()) }
+    }
+    given "copies across a capture, a task and a hand-made conn" {
+        then "a lambda's copy and another task's are refused once the conn closes" { passes(a_captured_copy_and_a_task_see_the_close()) }
+        then "a conn made by hand holds its own cell, so closing a twin closes only the twin's copies" { passes(a_hand_made_conn_holds_its_own_cell()) }
+    }
+    given "the degenerate verbs" {
+        then "an empty write and a read of zero on a closed conn are refused as closed" { passes(the_empty_verbs_are_refused_closed()) }
+    }
+    given "the refusal" {
+        then "names the verb and the number the conn held" { passes(the_refusal_names_the_number()) }
+    }
+}

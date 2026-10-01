@@ -1,0 +1,312 @@
+// HTTP/2 under attack: HPACK kept in step across every refused stream,
+// every split of a session, bounded memory under stream churn, and a
+// deterministic fuzz that must never trap.
+use @std.http.h2.{
+    H2Conn,
+    Frame,
+    FrameAt,
+    FrameKind,
+    H2Error,
+    h2_server,
+    frame_at,
+    frame_bytes,
+    error_code,
+    preface,
+    u32_bytes,
+    u32_at,
+    end_stream,
+    end_headers,
+    padded,
+    prioritised,
+    frames_in,
+    value_named,
+}
+use @std.http.hpack.{HeaderField, header_field, encoder, decoder}
+use @std.http.frame.{limits, Limits, no_bytes}
+
+/// A GET whose block KEEPS `:path: <path>` in the peer's table at index
+/// 62 — a literal with incremental indexing — and names its authority
+/// without indexing, so nothing else enters.
+fn keeping_block(path: string) -> Bytes { [130, 134, 68, path.length].bytes()!.concat(path.bytes()).concat([1, 1, 97].bytes()!) }
+
+/// A GET whose `:path` is index 62 — whatever the last kept block kept.
+fn indexing_get(id: int) -> Bytes { frame_bytes(.Headers, end_headers | end_stream, id, [130, 134, 190, 1, 1, 97].bytes()!) }
+
+/// A GET on stream `id`, reset by the client at once.
+fn open_and_reset(id: int) -> Bytes {
+    frame_bytes(.Headers, end_headers | end_stream, id, block_of(get_head("/")))
+        .concat(frame_bytes(.Reset, 0, id, u32_bytes(8)))
+}
+
+/// The next value of a linear congruential sequence.
+fn next_rand(x: int) -> int { (x * 1103515245 + 12345) % 2147483648 }
+
+/// A deterministic run of `n` frames of random kind, flags, stream and
+/// payload, from seed `seed`.
+fn noise(seed: int, n: int) -> Bytes {
+    mut x = seed
+    mut out: List<Bytes> = []
+    for i in 0..n {
+        x = next_rand(x)
+        let kind = x % 11
+        x = next_rand(x)
+        let flags = x % 256
+        x = next_rand(x)
+        let stream = x % 8
+        x = next_rand(x)
+        let len = x % 24
+        mut p: List<int> = []
+        for j in 0..len {
+            x = next_rand(x)
+            p.push(x % 256)
+        }
+        out.push([0, 0, len, kind, flags, 0, 0, 0, stream].bytes()!.concat(p.bytes()!))
+    }
+    out.bytes()
+}
+
+spec "std.http h2 adversarial" {
+    given "HPACK stays in step across every refused stream" {
+        then "a block on a stream past the concurrency bound still moves the table" {
+            let open = [frame_bytes(.Headers, end_headers, 2 * i + 1, block_of(get_head("/"))) for i in 0..100]
+            let refused = frame_bytes(
+                .Headers,
+                end_headers | end_stream,
+                201,
+                keeping_block("/refused"),
+            )
+            let c = conn_after(open.concat([refused, indexing_get(203)]))
+            let c2 = conn_after(
+                open.concat([refused, frame_bytes(.Reset, 0, 1, u32_bytes(8)), indexing_get(203)]),
+            )
+            reset_of(c, 201) == error_code(.RefusedStream) &&
+                goaway_of(c) == -1 &&
+                ready_path(c2, 203) == "/refused"
+        }
+        then "a block on a stream that depends on itself still moves the table" {
+            let body = u32_bytes(1).concat([15].bytes()!).concat(keeping_block("/self"))
+            let c = conn_after(
+                [
+                    frame_bytes(.Headers, end_headers | end_stream | prioritised, 1, body),
+                    indexing_get(3),
+                ],
+            )
+            reset_of(c, 1) == error_code(.Protocol) && paths_ready(c) == "/self"
+        }
+        then "a block on a stream the peer already ended still moves the table" {
+            let again = frame_bytes(.Headers, end_headers | end_stream, 1, keeping_block("/again"))
+            let c = conn_after(
+                [
+                    frame_bytes(.Headers, end_headers | end_stream, 1, block_of(get_head("/first"))),
+                    again,
+                    indexing_get(3),
+                ],
+            )
+            reset_of(c, 1) == error_code(.StreamClosed) && paths_ready(c) == "/first,/again"
+        }
+        then "a malformed head still moves the table" {
+            let bad = [130, 68, 4].bytes()!.concat("/bad".bytes())
+            let c = conn_after(
+                [frame_bytes(.Headers, end_headers | end_stream, 1, bad), indexing_get(3)],
+            )
+            reset_of(c, 1) == error_code(.Protocol) && paths_ready(c) == "/bad"
+        }
+    }
+    given "malformed frames that could slice past their end" {
+        then "a prioritised HEADERS too short for its five octets is a FRAME_SIZE_ERROR, not a trap" {
+            goaway_of(
+                conn_after(
+                    [frame_bytes(.Headers, end_headers | prioritised, 1, [0, 0, 0].bytes()!)],
+                ),
+            ) == error_code(.FrameSize)
+        }
+        then "a padded, prioritised HEADERS whose padding leaves too little is a FRAME_SIZE_ERROR" {
+            goaway_of(
+                conn_after(
+                    [
+                        frame_bytes(
+                            .Headers,
+                            end_headers | prioritised | padded,
+                            1,
+                            [2, 0, 0, 0, 0].bytes()!,
+                        ),
+                    ],
+                ),
+            ) == error_code(.FrameSize)
+        }
+        then "a padded frame with an empty payload is a PROTOCOL_ERROR" {
+            goaway_of(conn_after([frame_bytes(.Headers, end_headers | padded, 1, no_bytes)])) == error_code(.Protocol)
+        }
+        then "a padded DATA of the pad-length octet alone is an empty body" {
+            mut c = conn_after(
+                [
+                    frame_bytes(.Headers, end_headers, 1, block_of(get_head("/"))),
+                    frame_bytes(.Data, padded | end_stream, 1, [0].bytes()!),
+                ],
+            )
+            c.ready.length == 1 && taken_text(c, 1) == " ended"
+        }
+    }
+    given "every split of a session" {
+        then "a session fed one octet at a time answers as it does whole" {
+            let whole = hello_bytes()
+                .concat(
+                    [frame_bytes(
+                        .Headers,
+                        end_headers | end_stream,
+                        2 * i + 1,
+                        block_of(get_head("/p${i}")),
+                    ) for i in 0..3]
+                        .bytes(),
+                )
+            mut c = h2_server(limits())
+            mut at = 0
+            for n in 1..whole.length + 1 { at = c.fed(whole.slice(0, n), at) }
+            at == whole.length && paths_ready(c) == "/p0,/p1,/p2" && goaway_of(c) == -1
+        }
+    }
+    given "memory under churn" {
+        then "rapid reset: open-then-reset past twice the stream bound is ENHANCE_YOUR_CALM, with nothing live" {
+            let churn = [open_and_reset(2 * i + 1) for i in 0..1000]
+            let c = conn_after(churn)
+            goaway_of(c) == error_code(.EnhanceYourCalm) &&
+                c.churn == 201 &&
+                c.streams.is_empty() &&
+                c.gone.length <= 256 &&
+                c.ready.is_empty()
+        }
+        then "two hundred resets are within the budget" {
+            let c = conn_after([open_and_reset(2 * i + 1) for i in 0..200])
+            goaway_of(c) == -1 && c.churn == 200 && c.gone.length == 200
+        }
+        then "a client that cancels no more than it lets finish never meets the budget" {
+            mut c = conn_after([])
+            for i in 0..500 {
+                let _ = c
+                    .fed(
+                        frame_bytes(
+                            .Headers,
+                            end_headers | end_stream,
+                            4 * i + 1,
+                            block_of(get_head("/")),
+                        ),
+                        0,
+                    )
+                c.respond(4 * i + 1, [header_field(":status", "204")], no_bytes)
+                let _ = c.fed(open_and_reset(4 * i + 3), 0)
+            }
+            goaway_of(c) == -1 && c.churn == 500 && c.answers == 500
+        }
+        then "made-you-reset: malformed streams past the budget are ENHANCE_YOUR_CALM" {
+            let bad = [frame_bytes(
+                .Headers,
+                end_headers | end_stream,
+                2 * i + 1,
+                block_of([header_field(":method", "GET")]),
+            ) for i in 0..300]
+            goaway_of(conn_after(bad)) == error_code(.EnhanceYourCalm)
+        }
+        then "a flood of one-octet DATA nobody reads earns one connection WINDOW_UPDATE per half window and none on the stream" {
+            let head = frame_bytes(
+                .Headers,
+                end_headers,
+                1,
+                block_of(get_head("/").concat([header_field("content-length", "40000")])),
+            )
+            let c = conn_after(
+                [head].concat([frame_bytes(.Data, 0, 1, "x".bytes()) for i in 0..40000]),
+            )
+            goaway_of(c) == -1 &&
+                frames_in(c.out).filter(it.kind is .WindowUpdate).length == 1 &&
+                stream_updates(c, 1) == 0
+        }
+        then "a refusal sent while the body flows ignores the DATA the client had in flight" {
+            mut c = conn_after([frame_bytes(.Headers, end_headers, 1, block_of(h2_posted(14)))])
+            c.respond(1, [header_field(":status", "413")], no_bytes)
+            c.unheard(1)
+            let _ = c
+                .fed(
+                    frame_bytes(.Data, 0, 1, "0123456789".bytes())
+                        .concat(frame_bytes(.Data, end_stream, 1, "more".bytes())),
+                    0,
+                )
+            goaway_of(c) == -1 && reset_of(c, 1) == error_code(.NoError) && c.streams.is_empty()
+        }
+    }
+    given "an answer in pieces" {
+        then "a piece on a stream nothing answered yet sends nothing" {
+            mut c = conn_after([get_on(1)])
+            let _ = c.drained()
+            c.piece(1, "x".bytes(), true)
+            c.drained().is_empty()
+        }
+        then "a last piece with nothing owed is an empty DATA that ends the stream" {
+            mut c = conn_after([get_on(1)])
+            let _ = c.drained()
+            c.began(1, [header_field(":status", "200")])
+            c.piece(1, no_bytes, true)
+            let fs = frames_in(c.drained())
+            fs.length == 2 &&
+                fs[1].kind is .Data &&
+                fs[1].payload.is_empty() &&
+                fs[1].flags & end_stream != 0 &&
+                c.streams.is_empty()
+        }
+        then "a stream whose window is shut is not hungry, and its piece waits owed" {
+            mut c = conn_after(
+                [frame_bytes(.Settings, 0, 0, [0, 4].bytes()!.concat(u32_bytes(0))), get_on(1)],
+            )
+            c.began(1, [header_field(":status", "200")])
+            let wanted = c.hungry(1)
+            c.piece(1, "abc".bytes(), false)
+            !wanted && !c.hungry(1) && c.owing() == 3 && c.delivered == 0
+        }
+        then "a stream the peer reset is never hungry, and cancelling it says nothing more" {
+            mut c = conn_after([get_on(1)])
+            c.began(1, [header_field(":status", "200")])
+            let _ = c.fed(frame_bytes(.Reset, 0, 1, u32_bytes(8)), 0)
+            let _ = c.drained()
+            c.cancelled(1, .Internal)
+            !c.hungry(1) && c.drained().is_empty()
+        }
+        then "delivered counts the answer octets sent" {
+            mut c = conn_after([get_on(1)])
+            c.respond(1, [header_field(":status", "200")], "hello".bytes())
+            c.delivered == 5
+        }
+    }
+    given "the peer's table size" {
+        then "a SETTINGS that shrinks the peer's table opens the next answer with the size update" {
+            mut c = conn_after(
+                [
+                    frame_bytes(.Settings, 0, 0, [0, 1].bytes()!.concat(u32_bytes(0))),
+                    frame_bytes(.Headers, end_headers | end_stream, 1, block_of(get_head("/"))),
+                ],
+            )
+            let _ = c.drained()
+            c.respond(1, [header_field(":status", "200")], no_bytes)
+            let hs = frames_in(c.drained())
+            mut d = decoder(0, 65536)
+            hs[0].payload.at(0) == 32 && d.decoded(hs[0].payload) is .Fields
+        }
+    }
+    given "a deterministic fuzz" {
+        then "two hundred runs of random frames never trap, and every run ends alive or with GOAWAY" {
+            [fuzz_run(seed) for seed in 1..201].all(it)
+        }
+    }
+}
+
+/// One fuzz run: the connection either lives or owes exactly one GOAWAY.
+fn fuzz_run(seed: int) -> bool {
+    mut c = h2_server(limits())
+    let _ = c.fed(hello_bytes().concat(noise(seed, 40)), 0)
+    let goaways = frames_in(c.out).filter(it.kind is .GoAway).length
+    goaways == 0 && !c.closing || goaways == 1 && c.closing
+}
+
+/// The `:path` of stream `id`'s ready request, or `?`.
+fn ready_path(c: H2Conn, id: int) -> string {
+    let x? = c.ready.find(it.stream == id) else { return "?" }
+    value_named(x.fields, ":path".bytes())?.text() ?? "?"
+}

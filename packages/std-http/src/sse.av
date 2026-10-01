@@ -17,7 +17,8 @@
 //! skipped: the stream opens with a `cursor-expired` event carrying the
 //! stale cursor, and the observer resynchronizes before reading on.
 //! `Feed` is the in-memory retention that answers both.
-use @std.time.{Duration, sleep, ms, now_ms, secs}
+use @std.net.{Bell}
+use @std.time.{Duration, ms, now_ms, secs}
 use @std.text.{parse_int, has_nul}
 use http.{Request, Response, Header, Stream, Pulled}
 
@@ -185,7 +186,11 @@ const newline: Bytes = "\n".bytes()
 /// THE LOG IS A RING: event `id` sits at slot `(id - 1) % keep`, so a
 /// publish writes one slot whatever `keep` is, and the oldest event is
 /// the one overwritten.
-export type Feed = { log: Cell<List<Event>>, next: Cell<int>, keep: int }
+///
+/// AN OBSERVER WAITING PARKS on the feed's `published` bell and costs
+/// nothing until a publish wakes it: no poll, no timer but its own
+/// quiet deadline.
+export type Feed = { log: Cell<List<Event>>, next: Cell<int>, keep: int, published: Bell = Bell {} }
 
 /// A feed retaining the last `keep` events — none, when `keep` is not
 /// positive.
@@ -193,9 +198,6 @@ export fn feed(keep: int) -> Feed {
     let none: List<Event> = []
     Feed { log: Cell.new(none), next: Cell.new(1), keep: if keep > 0 { keep } else { 0 } }
 }
-
-/// How long a feed's observer sleeps between looks while it waits.
-fn look_again() -> Duration { ms(10) }
 
 impl Feed {
     /// `e` published under the next id; answers the id.
@@ -208,6 +210,7 @@ impl Feed {
             self.log.set_at(self.slot(id), kept)
         }
         self.next.set(id + 1)
+        self.published.ring()
         "${id}"
     }
 
@@ -245,8 +248,8 @@ impl Feed {
     fn waited(at: Cell<int>, wait: Duration) -> Next {
         let until = now_ms() + wait.ms
         while at.get() >= self.next.get() {
-            if now_ms() >= until { return .Quiet }
-            sleep(look_again())
+            let left = until - now_ms()
+            if left <= 0 || self.published.waited(ms(left)) is .Err { return .Quiet }
         }
         let id = at.get()
         if id < self.first() { return .Failed }

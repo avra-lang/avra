@@ -122,7 +122,29 @@ fn closed_twice() -> Result<bool, TlsError> {
     let first = c.close()?
     let second = words(c.close())
     let _ = server.await
-    first == c.fd && second.ends_with("a TLS handle that names nothing live")
+    first == c.fd && second == "close fd ${c.fd}: Bad file descriptor"
+}
+
+fn net_closed<T>(r: Result<T, TlsError>) -> bool {
+    match r { .Err(.Net(e)) -> e.closed(), .Ok(_) or .Err(_) -> false }
+}
+
+/// A COPY OF A CLOSED TLS CONNECTION IS CLOSED: every verb asks the
+/// socket's cell before the engine or the descriptor is touched, so a
+/// copy answers the net's closed refusal whichever verb it tries.
+fn a_copy_of_a_closed_tls_conn_is_closed() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn served_words(l)
+    let c = dial("localhost", l.port, secs(5), trusting_localhost()?)?
+    let copy = c
+    c.close()?
+    let _ = server.await
+    .Ok(
+        net_closed(copy.write("x".bytes())) &&
+            net_closed(copy.read(8)) &&
+            net_closed(copy.shutdown_write()) &&
+            net_closed(copy.close()),
+    )
 }
 
 fn wrong_host_refused_by_the_client() -> Result<bool, TlsError> {
@@ -145,6 +167,7 @@ spec "std.tls TlsConn" {
     given "a loopback server and a verifying client" {
         then "a megabyte crosses in records, every write parked until taken" { passes(large_transfer()) }
         then "a close is answered once, and a second never reaches the socket" { passes(closed_twice()) }
+        then "a copy of a closed connection is refused as closed by every verb" { passes(a_copy_of_a_closed_tls_conn_is_closed()) }
         then "a dial to a closed port fails in the net's words" { passes(nobody_listening()) }
         then "a client naming a host the certificate does not carry refuses it" {
             passes(wrong_host_refused_by_the_client())

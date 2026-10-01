@@ -39,6 +39,8 @@
 #include <sys/random.h>
 #endif
 
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -241,36 +243,17 @@ static int64_t net_dialed_to(const struct addrinfo* ai) {
     return fd;
 }
 
-// How many addresses host:port resolves to, or -errno. A caller
-// dials them by index, in the resolver's order.
-int64_t avra_net_addresses(const char* host, int64_t port) {
-    net_armed();
-    if (host[0] == 0) return -EINVAL;
-    struct addrinfo* list;
-    int64_t r = net_resolved(host, port, 0, &list);
-    if (r < 0) return r;
-    int64_t n = 0;
-    for (const struct addrinfo* ai = list; ai; ai = ai->ai_next) n++;
-    freeaddrinfo(list);
-    return n;
-}
+// The errnos a peer answers when it drops a connection under the
+// caller: a reset, and a write into a connection it closed.
+int64_t avra_net_errno_reset(void) { return ECONNRESET; }
+int64_t avra_net_errno_pipe(void) { return EPIPE; }
 
-// A nonblocking, CLOEXEC, NODELAY socket whose connect to the `i`th
-// address of host:port has STARTED — it may already be connected, and
-// is settled once writable (`avra_net_dialed`) — or -errno. Nothing
-// here waits: the caller parks on the descriptor.
-int64_t avra_net_dial(const char* host, int64_t port, int64_t i) {
-    net_armed();
-    if (host[0] == 0 || i < 0) return -EINVAL;
-    struct addrinfo* list;
-    int64_t r = net_resolved(host, port, 0, &list);
-    if (r < 0) return r;
-    const struct addrinfo* ai = list;
-    for (int64_t k = 0; ai && k < i; k++) ai = ai->ai_next;
-    r = ai ? net_dialed_to(ai) : -EINVAL;
-    freeaddrinfo(list);
-    return r;
-}
+// The errno a verb on a closed connection answers: its descriptor is
+// no longer its own.
+int64_t avra_net_errno_closed(void) { return EBADF; }
+
+// The errno a connect answers when admission refused every address.
+int64_t avra_net_errno_denied(void) { return EACCES; }
 
 // A dial's outcome once its descriptor is writable: 0 connected, or
 // the -errno the connect failed with.
@@ -301,6 +284,45 @@ int64_t avra_net_shutdown(int64_t fd, int64_t how) {
     int h = how == NET_SHUT_READ ? SHUT_RD : how == NET_SHUT_WRITE ? SHUT_WR : how == NET_SHUT_BOTH ? SHUT_RDWR : -1;
     if (h < 0) return -EINVAL;
     return shutdown((int)fd, h) == 0 ? 0 : -errno;
+}
+
+// ── A bell ──────────────────────────────────────────────────────
+// A bell is a pipe between tasks: one parks on its heard end until
+// another writes an octet into its rung end. Both ends are nonblocking
+// and CLOEXEC. A row answers one int, so the rung end of the bell last
+// opened is answered by a second row, asked before any task can run.
+
+static int64_t g_bell_rung = -1;
+
+// A bell's heard end, its rung end kept for `avra_net_bell_rung`; or
+// -errno.
+int64_t avra_net_bell(void) {
+    int p[2];
+    if (pipe(p) != 0) return -errno;
+    int64_t err = net_prepared(p[0]);
+    if (err == 0) err = net_prepared(p[1]);
+    if (err != 0) {
+        close(p[0]);
+        close(p[1]);
+        return err;
+    }
+    g_bell_rung = p[1];
+    return p[0];
+}
+
+// The rung end of the bell last opened.
+int64_t avra_net_bell_rung(void) { return g_bell_rung; }
+
+// A bell rung: what its pipe holds read away, then one octet written,
+// so the pipe holds one octet at most and every ring is a fresh edge —
+// never swallowed by a drain before the poller reports it, since the
+// drain and the write are one step no task runs between. 0, or -errno.
+int64_t avra_net_ring(int64_t heard, int64_t rung) {
+    char buf[64];
+    while (read((int)heard, buf, sizeof buf) > 0) {}
+    if (errno != EAGAIN && errno != EWOULDBLOCK) return -errno;
+    char c = 1;
+    return write((int)rung, &c, 1) == 1 ? 0 : -errno;
 }
 
 // A readiness queue, as a CLOEXEC descriptor or -errno.
@@ -422,19 +444,24 @@ int64_t avra_net_peer_port(int64_t fd) {
     return 0;
 }
 
-// Word `i` of the peer's address, big-endian sixteen bits: two words
-// for v4, eight for v6; -EINVAL past them, -errno with no peer.
+// Word `i` of an address, big-endian sixteen bits: two words for
+// v4, eight for v6; -EINVAL past them or for another family.
+static int64_t net_word(const struct sockaddr_storage* ss, int64_t i) {
+    const unsigned char* p;
+    int64_t words;
+    if (ss->ss_family == AF_INET) { p = (const unsigned char*)&((const struct sockaddr_in*)ss)->sin_addr; words = 2; }
+    else if (ss->ss_family == AF_INET6) { p = (const unsigned char*)&((const struct sockaddr_in6*)ss)->sin6_addr; words = 8; }
+    else return -EINVAL;
+    if (i < 0 || i >= words) return -EINVAL;
+    return (p[2 * i] << 8) | p[2 * i + 1];
+}
+
+// Word `i` of the peer's address; -errno with no peer.
 int64_t avra_net_peer_word(int64_t fd, int64_t i) {
     struct sockaddr_storage ss;
     int64_t r = net_peer(fd, &ss);
     if (r < 0) return r;
-    const unsigned char* p;
-    int64_t words;
-    if (ss.ss_family == AF_INET) { p = (const unsigned char*)&((struct sockaddr_in*)&ss)->sin_addr; words = 2; }
-    else if (ss.ss_family == AF_INET6) { p = (const unsigned char*)&((struct sockaddr_in6*)&ss)->sin6_addr; words = 8; }
-    else return -EINVAL;
-    if (i < 0 || i >= words) return -EINVAL;
-    return (p[2 * i] << 8) | p[2 * i + 1];
+    return net_word(&ss, i);
 }
 
 // The port the descriptor is bound to — what a listener on port 0
@@ -454,6 +481,284 @@ int64_t avra_net_local_port(int64_t fd) {
         return ntohs(a.sin6_port);
     }
     return -EAFNOSUPPORT;
+}
+
+// A LOOKUP resolves a name on a HELPER THREAD, so the core keeps
+// running its tasks while the resolver takes its time: getaddrinfo
+// blocks for as long as the network makes it, and a blocked core
+// blocks every connection it holds. The caller gets a descriptor that
+// turns readable when the answer is in, and parks on it like any
+// other; the answer is then read out of the lookup, which never
+// re-resolves — the addresses counted are the addresses dialed.
+//
+// THE THREAD TOUCHES NO BOX AND NO TABLE. It owns one `NetLookup` of
+// plain memory, fills it, publishes it with a release store, writes
+// one byte to wake the caller and drops its hold. The table of
+// lookups is the main thread's alone. Whoever lets go LAST frees the
+// lookup, so a caller that times out and closes costs nothing: the
+// thread finishes into a pipe nobody reads (SIGPIPE is ignored by
+// the first socket verb) and frees what it held.
+//
+// A NUMERIC HOST NEVER STARTS A THREAD: an address literal is read
+// in place with AI_NUMERICHOST and the lookup is born answered.
+enum { NET_LOOKUP_MAX = 16 };
+// Why a name resolved to nothing, beside the errno: the kinds
+// getaddrinfo tells apart that a caller acts on differently.
+enum { NET_UNRESOLVED_NONE = 0, NET_NO_SUCH_NAME = 1, NET_NO_ADDRESS = 2, NET_TRY_AGAIN = 3, NET_RESOLVER_FAILED = 4 };
+
+typedef struct NetLookup {
+    _Atomic int holders;
+    _Atomic int done;
+    char* host;
+    int wake;
+    int64_t status;
+    int failure;
+    int count;
+    struct sockaddr_storage addrs[NET_LOOKUP_MAX];
+} NetLookup;
+
+static NetLookup** g_lookups = NULL;
+static int64_t g_lookups_cap = 0;
+
+static void lookup_let_go(NetLookup* l) {
+    if (atomic_fetch_sub_explicit(&l->holders, 1, memory_order_acq_rel) != 1) return;
+    free(l->host);
+    free(l);
+}
+
+static int lookup_failure(int rc) {
+    if (rc == EAI_NONAME) return NET_NO_SUCH_NAME;
+#ifdef EAI_NODATA
+    if (rc == EAI_NODATA) return NET_NO_ADDRESS;
+#endif
+#ifdef EAI_ADDRFAMILY
+    if (rc == EAI_ADDRFAMILY) return NET_NO_ADDRESS;
+#endif
+    if (rc == EAI_AGAIN) return NET_TRY_AGAIN;
+    return NET_RESOLVER_FAILED;
+}
+
+// The stream addresses `host` names, copied out of the resolver's
+// list, a duplicate kept once; `flags` adds AI_NUMERICHOST for the
+// literal pass.
+static void lookup_fill(NetLookup* l, int flags) {
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = flags;
+    struct addrinfo* list = NULL;
+    int rc = getaddrinfo(l->host, NULL, &hints, &list);
+    if (rc != 0) {
+        l->status = gai_errno(rc);
+        l->failure = lookup_failure(rc);
+        return;
+    }
+    for (const struct addrinfo* ai = list; ai && l->count < NET_LOOKUP_MAX; ai = ai->ai_next) {
+        if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6) continue;
+        struct sockaddr_storage ss;
+        memset(&ss, 0, sizeof ss);
+        memcpy(&ss, ai->ai_addr, ai->ai_addrlen);
+        int seen = 0;
+        for (int k = 0; k < l->count && !seen; k++) seen = memcmp(&l->addrs[k], &ss, sizeof ss) == 0;
+        if (!seen) l->addrs[l->count++] = ss;
+    }
+    freeaddrinfo(list);
+    if (l->count == 0) {
+        l->status = -EINVAL;
+        l->failure = NET_NO_ADDRESS;
+    }
+}
+
+// The answer published, the caller woken, the thread's hold let go.
+static void lookup_answered(NetLookup* l) {
+    atomic_store_explicit(&l->done, 1, memory_order_release);
+    char one = 1;
+    ssize_t w;
+    do { w = write(l->wake, &one, 1); } while (w < 0 && errno == EINTR);
+    close(l->wake);
+    lookup_let_go(l);
+}
+
+static void* lookup_thread(void* arg) {
+    NetLookup* l = arg;
+    lookup_fill(l, 0);
+    lookup_answered(l);
+    return NULL;
+}
+
+// Room in the table for descriptor `fd`, or false when memory ran out.
+static int lookups_reach(int64_t fd) {
+    if (fd < g_lookups_cap) return 1;
+    int64_t cap = g_lookups_cap ? g_lookups_cap : 64;
+    while (cap <= fd) cap *= 2;
+    NetLookup** grown = realloc(g_lookups, (size_t)cap * sizeof *grown);
+    if (!grown) return 0;
+    memset(grown + g_lookups_cap, 0, (size_t)(cap - g_lookups_cap) * sizeof *grown);
+    g_lookups = grown;
+    g_lookups_cap = cap;
+    return 1;
+}
+
+static NetLookup* lookup_at(int64_t h) {
+    return h >= 0 && h < g_lookups_cap ? g_lookups[h] : NULL;
+}
+
+// A FORK KEEPS THE TABLE AND LOSES THE THREADS: a lookup in flight
+// when a core forks would stay unanswered in the child forever, its
+// descriptor readable once the parent's thread writes. The child
+// answers each such lookup as one to try again, and closes the wake
+// end no thread of its will write.
+static void lookups_forked(void) {
+    for (int64_t h = 0; h < g_lookups_cap; h++) {
+        NetLookup* l = g_lookups[h];
+        if (!l || atomic_load_explicit(&l->done, memory_order_acquire)) continue;
+        close(l->wake);
+        l->status = -EAGAIN;
+        l->failure = NET_TRY_AGAIN;
+        atomic_store_explicit(&l->done, 1, memory_order_release);
+        atomic_fetch_sub_explicit(&l->holders, 1, memory_order_acq_rel);
+    }
+}
+
+static int g_lookups_armed = 0;
+static void lookups_armed(void) {
+    if (g_lookups_armed) return;
+    pthread_atfork(NULL, NULL, lookups_forked);
+    g_lookups_armed = 1;
+}
+
+// A thread started with every signal blocked, so no handler the
+// program installed ever runs on it; the caller's mask is restored.
+static int lookup_spawned(NetLookup* l) {
+    sigset_t all, was;
+    sigfillset(&all);
+    pthread_sigmask(SIG_SETMASK, &all, &was);
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t t;
+    int rc = pthread_create(&t, &attr, lookup_thread, l);
+    pthread_attr_destroy(&attr);
+    pthread_sigmask(SIG_SETMASK, &was, NULL);
+    return rc;
+}
+
+// A lookup of `host` started: a descriptor that turns readable once
+// the answer is in, or -errno. Every lookup is closed by
+// `avra_net_lookup_close`, answered or not.
+int64_t avra_net_lookup(const char* host) {
+    net_armed();
+    lookups_armed();
+    if (host[0] == 0) return -EINVAL;
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) return -errno;
+    if (!lookups_reach(pipe_fds[0])) { close(pipe_fds[0]); close(pipe_fds[1]); return -ENOMEM; }
+    fcntl(pipe_fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(pipe_fds[1], F_SETFD, FD_CLOEXEC);
+    NetLookup* l = calloc(1, sizeof *l);
+    char* copy = strdup(host);
+    if (!l || !copy) { free(l); free(copy); close(pipe_fds[0]); close(pipe_fds[1]); return -ENOMEM; }
+    l->host = copy;
+    l->wake = pipe_fds[1];
+    atomic_init(&l->holders, 2);
+    g_lookups[pipe_fds[0]] = l;
+    lookup_fill(l, AI_NUMERICHOST);
+    if (l->status == 0 || l->failure != NET_NO_SUCH_NAME) { lookup_answered(l); return pipe_fds[0]; }
+    l->status = 0;
+    l->failure = NET_UNRESOLVED_NONE;
+    int rc = lookup_spawned(l);
+    if (rc != 0) {
+        l->status = -rc;
+        l->failure = NET_RESOLVER_FAILED;
+        lookup_answered(l);
+    }
+    return pipe_fds[0];
+}
+
+// Whether the lookup has answered: 1, or 0 while its thread runs.
+int64_t avra_net_lookup_ready(int64_t h) {
+    NetLookup* l = lookup_at(h);
+    return l && atomic_load_explicit(&l->done, memory_order_acquire) ? 1 : 0;
+}
+
+// How many addresses the lookup found once answered, -EINPROGRESS
+// while it is not, or the -errno it failed with.
+int64_t avra_net_lookup_count(int64_t h) {
+    NetLookup* l = lookup_at(h);
+    if (!l) return -EBADF;
+    if (!atomic_load_explicit(&l->done, memory_order_acquire)) return -EINPROGRESS;
+    return l->status < 0 ? l->status : l->count;
+}
+
+// Why an answered lookup found nothing: one of NET_NO_SUCH_NAME and
+// its siblings, or 0.
+int64_t avra_net_lookup_failure(int64_t h) {
+    NetLookup* l = lookup_at(h);
+    if (!l || !atomic_load_explicit(&l->done, memory_order_acquire)) return 0;
+    return l->failure;
+}
+
+static const struct sockaddr_storage* lookup_addr(int64_t h, int64_t i) {
+    NetLookup* l = lookup_at(h);
+    if (!l || !atomic_load_explicit(&l->done, memory_order_acquire) || l->status < 0) return NULL;
+    if (i < 0 || i >= l->count) net_trap_bounds(i, l->count);
+    return &l->addrs[i];
+}
+
+// Address `i`'s family, 4 or 6, or -EBADF for a lookup not answered.
+int64_t avra_net_lookup_family(int64_t h, int64_t i) {
+    const struct sockaddr_storage* ss = lookup_addr(h, i);
+    if (!ss) return -EBADF;
+    return ss->ss_family == AF_INET6 ? 6 : 4;
+}
+
+// Address `i`'s 16-bit word `w` — 0..1 for v4, 0..7 for v6.
+int64_t avra_net_lookup_word(int64_t h, int64_t i, int64_t w) {
+    const struct sockaddr_storage* ss = lookup_addr(h, i);
+    if (!ss) return -EBADF;
+    return net_word(ss, w);
+}
+
+// The lookup let go and its descriptor closed; 0, or -EBADF for one
+// that is not open.
+int64_t avra_net_lookup_close(int64_t h) {
+    NetLookup* l = lookup_at(h);
+    if (!l) return -EBADF;
+    g_lookups[h] = NULL;
+    avra_fiber_fd_closing(h);
+    close((int)h);
+    lookup_let_go(l);
+    return 0;
+}
+
+// A nonblocking connect to an address LITERAL started, never resolved
+// — a name is refused — or -errno.
+int64_t avra_net_dial_address(const char* address, int64_t port) {
+    net_armed();
+    if (port < 0 || port > 65535) return -EINVAL;
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof ss);
+    struct addrinfo ai;
+    memset(&ai, 0, sizeof ai);
+    ai.ai_socktype = SOCK_STREAM;
+    ai.ai_addr = (struct sockaddr*)&ss;
+    struct sockaddr_in* v4 = (struct sockaddr_in*)&ss;
+    struct sockaddr_in6* v6 = (struct sockaddr_in6*)&ss;
+    if (inet_pton(AF_INET, address, &v4->sin_addr) == 1) {
+        v4->sin_family = AF_INET;
+        v4->sin_port = htons((uint16_t)port);
+        ai.ai_family = AF_INET;
+        ai.ai_addrlen = sizeof *v4;
+    } else if (inet_pton(AF_INET6, address, &v6->sin6_addr) == 1) {
+        v6->sin6_family = AF_INET6;
+        v6->sin6_port = htons((uint16_t)port);
+        ai.ai_family = AF_INET6;
+        ai.ai_addrlen = sizeof *v6;
+    } else {
+        return -EINVAL;
+    }
+    return net_dialed_to(&ai);
 }
 
 // 32 bits of the kernel's entropy, unpredictable to any peer: what a

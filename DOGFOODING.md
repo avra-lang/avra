@@ -519,6 +519,17 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       matcher needs the enclosing fn's scope (a read BEFORE the
       write); the read-then-write scan lives in lane C's landing.
 
+- memory.slot_alias_write (unratcheted) A RECORD READ OUT OF A LIST SLOT
+      AND HELD ACROSS A WRITE TO THAT SLOT CLONES IT. `let s =
+      self.streams[at]` then `self.streams[at].state = …` finds the
+      element shared — the binding holds it to the scope's end — and
+      copies the whole record on every such write: two clones of a
+      13-field record per HTTP/2 request in `h2.av` (callgrind,
+      `array_clone`). Read the fields through the slot, or bind the
+      SCALARS the verb needs (`let id = self.streams[at].id`), never
+      the record, in a verb that then writes the slot. The same law as
+      `style.same_scope_borrow`, one level down: the element, not the
+      list.
 - style.unwritable_spelling_key (unratcheted) AN UNWRITABLE SPELLING IS A KEY — a name or a
       key that must never collide with what a program writes is
       spelled with a character the lexer refuses in that position,
@@ -1572,6 +1583,26 @@ real tree's absences (an ignored `build/`, an empty cache, a physical
 path), and before trusting a keeper built on stubs, run it once
 through the real thing — one real branch through the real pipeline
 is the receipt a green fixture cannot be.
+
+## A rewrite that keeps its length keeps every span
+
+When a value must be normalized before it is read, and spans already
+index it, rewrite it OCTET FOR OCTET: the replacement is exactly as
+long as what it replaces, so every offset taken before or after still
+points where it did and no span map is needed. `frame.av`'s `unfolded`
+spells a reply's obs-fold — `OWS CRLF RWS` — as that many spaces, and
+the framer, the field spans and the client's field reads run unchanged
+over the result. The smell it replaces is a second, shifted coordinate
+system for one buffer.
+
+## A per-core cache is a `once fn` of Cells
+
+State one process keeps for all its requests is a `once fn` answering
+a record whose FIELDS are Cells (`date.av`'s `stamp()`): each read is a
+Cell read, never a copy of the record. A `Cell<Record>` there copies
+the record on every `get` (spec 11.5), which on a request path is an
+allocation per request. Seed it as the update computes it — the first
+second's line is formatted by the same `line_at` every later one is.
 
 ## A layer's constant work is spelled once, in its closure
 

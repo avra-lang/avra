@@ -1,0 +1,96 @@
+// A STREAM WHOSE HANDLER STILL RUNS COUNTS AGAINST THE CONCURRENCY
+// BOUND, reset or not. Each stream is answered on a task of its own, and
+// a peer that resets a stream does not stop its handler — so a peer that
+// opens a hundred streams to a slow handler and resets them all would,
+// were only live streams counted, open a hundred more, and a hundred
+// more: the rapid-reset attack with the handlers as its amplifier. The
+// stream past the bound is refused (REFUSED_STREAM) until those tasks
+// end, and the connection lives. Both engines.
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, within, sleep, now_ms}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.http.{text}
+use @std.http.server.{served, timing}
+use @std.http.h2.{
+    Frame,
+    preface,
+    frame_bytes,
+    frames_in,
+    end_headers,
+    end_stream,
+    u32_at,
+    u32_bytes,
+}
+use @std.http.hpack.{header_field, encoder}
+
+type App = {}
+
+/// How many handlers run now, and the most that ever ran at once —
+/// the process's own, so every connection's copy of the app reads one.
+once fn running() -> Cell<int> { Cell.new(0) }
+
+once fn most() -> Cell<int> { Cell.new(0) }
+
+fn asked(id: int) -> Bytes {
+    mut e = encoder(false)
+    let head = [
+        header_field(":method", "GET"),
+        header_field(":scheme", "http"),
+        header_field(":path", "/slow"),
+        header_field(":authority", "h"),
+    ]
+    frame_bytes(.Headers, end_headers | end_stream, id, e.encoded(head))
+}
+
+/// Frames the server sends within `wait_ms`.
+fn heard(c: Conn, wait_ms: int) -> List<Frame> {
+    mut buf = no_bytes
+    let start = now_ms()
+    while now_ms() - start < wait_ms {
+        let got = match within ms(50) { c.read(65536) } {
+            .Ok(b) -> b ?? no_bytes,
+            .Err(_) -> no_bytes,
+        }
+        buf = buf.concat(got)
+    }
+    frames_in(buf)
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App {}, limits(), timing()) { _a, _q ->
+        running().set(running().get() + 1)
+        if running().get() > most().get() { most().set(running().get()) }
+        sleep(ms(700))
+        running().set(running().get() - 1)
+        text(200, "slow")
+    }
+    spawn s.run(1)
+    defer s.stop()
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    defer { let _ = c.close() }
+    let ids = [2 * i + 1 for i in 0..100]
+    c
+        .write(
+            preface
+                .concat(frame_bytes(.Settings, 0, 0, no_bytes))
+                .concat([asked(id) for id in ids].bytes()),
+        )?
+    sleep(ms(100))
+    c.write([frame_bytes(.Reset, 0, id, u32_bytes(8)) for id in ids].bytes())?
+    sleep(ms(100))
+    c.write(asked(201))?
+    let fs = heard(c, 1500)
+    let refused = fs.find(it.kind is .Reset && it.stream == 201)
+    let goaway = fs.find(it.kind is .GoAway)
+    .Ok(
+        [
+            "the stream past the bound: ${if refused == null { "not refused" } else { "RST_STREAM ${u32_at(refused!.payload, 0)}" }}",
+            "the connection lives: ${goaway == null}",
+            "handlers ever running at once: ${most().get()}",
+        ]
+            .join("\n"),
+    )
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

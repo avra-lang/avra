@@ -1,0 +1,170 @@
+// A request by URL against a live server: every verb, every body seat
+// as the handler receives it, the pool shared across calls, the
+// refusals a URL earns before a socket opens, and each deadline named
+// by the stage it bounded.
+use @std.net.{NetError, listen}
+use @std.time.{ms, secs, sleep}
+use @std.json.{Json, field}
+use @std.http.frame.{limits}
+use @std.http.http.{Header, text}
+use @std.http.server.{Server, served, timing}
+use @std.http.client.{Answer, ClientError, Stage, method_word}
+use @std.http.pool.{pool}
+use @std.http.form.{FormField}
+use @std.http.fetch.{Payload, Options, Timeouts, get, post, put, patch, delete, fetch, options}
+
+fn ft_lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
+}
+
+/// A server that shows what it was asked: the method, the target, the
+/// body, its `content-type` and the `host` it was sent; `/slow` sleeps
+/// first.
+fn ft_server() -> Result<Server<App>, ClientError> {
+    let l = ft_lifted(listen("127.0.0.1", 0))?
+    .Ok(
+        served(l, () -> App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
+            if q.target() == "/slow" { sleep(ms(300)) }
+            text(
+                200,
+                "${method_word(q.method()) ?? "?"}|${q.target() ?? "?"}|${q.body.text() ?? "?"}|${q.header("content-type") ?? "-"}|${q.header("host") ?? "-"}",
+            )
+        },
+    )
+}
+
+fn ft_url(s: Server<App>, path: string) -> string { "http://127.0.0.1:${s.listener.port}${path}" }
+
+fn ft_body(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(a) -> a.body.text() ?? "?", .Err(e) -> "refused" }
+}
+
+/// The body the server saw, from `call` made against a fresh server.
+fn ft_seen(path: string, call: fn(string) -> Result<Answer, ClientError>) -> string {
+    let s? = ft_ok(ft_server()) else { return "no server" }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    defer options().pool.close_all()
+    ft_body(call(ft_url(s, path)))
+}
+
+fn ft_ok(r: Result<Server<App>, ClientError>) -> Server<App>? {
+    match r { .Ok(s) -> s, .Err(_) -> null }
+}
+
+/// Every piece a stream holds, then its end.
+fn ft_streamed(url: string) -> Result<Answer, ClientError> {
+    let left = Cell.new(3)
+    let next = () -> ft_piece(left)
+    post(url, .Stream(next, "text/plain"))
+}
+
+fn ft_piece(left: Cell<int>) -> Bytes? {
+    if left.get() == 0 { return null }
+    left.set(left.get() - 1)
+    "ab".bytes()
+}
+
+fn ft_why(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(_) -> "answered", .Err(e) -> e.describe().kind }
+}
+
+fn ft_stage(r: Result<Answer, ClientError>) -> Stage? {
+    match r { .Err(.TimedOut(s)) -> s, .Err(_) or .Ok(_) -> null }
+}
+
+fn ft_shared_pool() -> Result<bool, ClientError> {
+    let s = ft_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let o = Options { pool: pool() }
+    let a = fetch(.Get, ft_url(s, "/1"), .Empty, o)?
+    let b = fetch(.Get, ft_url(s, "/2"), .Empty, o)?
+    let kept = o.pool.kept_for("http://127.0.0.1:${s.listener.port}")
+    o.pool.close_all()
+    .Ok(a.status == 200 && b.status == 200 && kept == 1)
+}
+
+fn ft_timed(path: string, t: Timeouts) -> Stage? {
+    let s? = ft_ok(ft_server()) else { return null }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let o = Options { pool: pool(), timeouts: t }
+    defer o.pool.close_all()
+    ft_stage(fetch(.Get, ft_url(s, path), .Empty, o))
+}
+
+spec "@std.http fetch" {
+    given "every verb" {
+        then "get sends the path and query, never the fragment" {
+            ft_seen("/p?q=1#frag", get).starts_with("GET|/p?q=1||-|127.0.0.1:")
+        }
+        then "delete sends no body" { ft_seen("/d", delete).starts_with("DELETE|/d||-|") }
+        then "put sends its body" {
+            ft_seen("/u", (u) -> put(u, .Text("x")))
+                .starts_with("PUT|/u|x|text/plain; charset=utf-8|")
+        }
+        then "patch sends its body" {
+            ft_seen("/u", (u) -> patch(u, .Text("y"))).starts_with("PATCH|/u|y|")
+        }
+    }
+    given "every body seat" {
+        then "text names its charset" {
+            ft_seen("/t", (u) -> post(u, .Text("héllo")))
+                .starts_with("POST|/t|héllo|text/plain; charset=utf-8|")
+        }
+        then "json is written as JSON" {
+            ft_seen("/j", (u) -> post(u, .Json(.Obj([field("a", .Int(1))]))))
+                .starts_with("POST|/j|{\"a\":1}|application/json|")
+        }
+        then "a form encodes its separators and spaces" {
+            ft_seen(
+                "/f",
+                (u) -> post(
+                    u,
+                    .Form(
+                        [
+                            FormField { name: "a b", value: "1&2" },
+                            FormField { name: "c", value: "=" },
+                        ],
+                    ),
+                ),
+            )
+                .starts_with("POST|/f|a%20b=1%262&c=%3D|application/x-www-form-urlencoded|")
+        }
+        then "octets carry the kind they name" {
+            ft_seen("/o", (u) -> post(u, .Octets("raw".bytes(), "application/octet-stream")))
+                .starts_with("POST|/o|raw|application/octet-stream|")
+        }
+        then "a stream is sent chunked and arrives whole" {
+            ft_seen("/s", ft_streamed).starts_with("POST|/s|ababab|text/plain|")
+        }
+    }
+    given "the pool" {
+        then "two requests to one origin share one kept connection" {
+            match ft_shared_pool() { .Ok(b) -> b, .Err(_) -> false }
+        }
+    }
+    given "a URL refused before a socket opens" {
+        then "https without TLS in the options is refused before a socket, and says so" {
+            ft_why(get("https://example.com/")) == "http.no_tls"
+        }
+        then "another scheme is refused by name" { ft_why(get("ftp://h/")) == "http.scheme" }
+        then "a URL with no scheme is refused by the URL's own law" { ft_why(get("/relative")) == "url.relative" }
+        then "credentials in a URL are refused, never sent" { ft_why(get("http://u:p@127.0.0.1/")) == "http.userinfo" }
+        then "an authority with no host is refused" { ft_why(get("http:///x")) == "http.no_host" }
+        then "a URL with no authority is refused" { ft_why(get("http:x")) == "http.no_host" }
+        then "a numeric spelling of an address is refused by the URL" { ft_why(get("http://127.1/")) == "url.host" }
+    }
+    given "each deadline, by its stage" {
+        then "a slow reply outruns first_byte" {
+            ft_timed("/slow", Timeouts { first_byte: ms(50) }) == Stage.FirstByte
+        }
+        then "a slow reply outruns total before first_byte" {
+            ft_timed("/slow", Timeouts { total: ms(50) }) == Stage.Total
+        }
+        then "a prompt reply outruns neither" {
+            ft_timed("/fast", Timeouts { first_byte: ms(2000) }) == null
+        }
+    }
+}

@@ -130,7 +130,7 @@ Each module is imported by its own path:
 |---|---|
 | `server` | Component: `server app { port: 8080  get "/" { … } }`. `listening()` binds it, `run()` serves it. |
 | `layer` | Component: `layer auth { req, next -> … }`, a fn every request passes through. |
-| `Timing` | The deadlines: `head`, `body`, `idle`, `requests`. |
+| `Timing` | The deadlines: `handshake`, `head`, `body`, `idle`, `requests`; and `handshakes`, the TLS handshakes a core runs at once (past them a connection is closed before its opener runs). |
 | `timing()` | The default deadlines. |
 | `Server<A>` | A listener, the maker of each core's app, and the handler. |
 | `served(…)` | A server on a listener, each core's app made by `make`. |

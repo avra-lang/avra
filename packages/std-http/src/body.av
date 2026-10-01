@@ -354,11 +354,13 @@ fn unread_from(f: Inflow) -> int {
     match f.left { .Chunked(c) -> c.at, .Length(_) or .UntilClose or .Done -> f.at }
 }
 
-/// A transport's failure as a body's: a deadline passing is `TimedOut`.
+/// A transport's failure as a body's: a deadline passing is `TimedOut`,
+/// a transport cut off before its end `Closed`.
 fn net_error(e: WireError) -> BodyError {
     match e {
         .Net(n) -> if n.timed_out() { BodyError.TimedOut } else { BodyError.Net(n) },
         .Secure(s) -> BodyError.Secure(s),
+        .Reset -> BodyError.Closed,
     }
 }
 

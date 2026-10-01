@@ -3,9 +3,14 @@
 //! else; the clock is monotonic milliseconds, what a deadline is
 //! made of. Two readings differ by the time between them and mean
 //! nothing alone. `within d { … }` gives a block a deadline.
+//!
+//! TWO CLOCKS, NEVER CROSSED: `now_ms` bounds things and `wall_secs`
+//! dates them. The wall clock is the host's, and it may step either
+//! way, so no deadline is ever read from it.
 use @std.meta.{Code}
 
 extern fn avra_now_ns() -> int
+extern fn avra_time_wall_s() -> int
 extern fn avra_fiber_sleep(ms: int)
 extern fn avra_fiber_within(ms: int) -> int
 extern fn avra_fiber_within_end(outer: int)
@@ -35,6 +40,12 @@ export fn now_ms() -> int {
 /// too fine a grain for a deadline.
 export fn now_ns() -> int {
     avra_now_ns()
+}
+
+/// The wall clock: whole seconds since 1970-01-01 UTC, as the host
+/// says — what a date is made of.
+export fn wall_secs() -> int {
+    avra_time_wall_s()
 }
 
 /// The calling task parked for `d` while the others run; a program

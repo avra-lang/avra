@@ -1,6 +1,6 @@
 // RFC 4648 base64, both alphabets: its own test vectors, and one
 // spelling per value read back — anything else absent.
-use @std.text.{base64, base64url, from_base64, from_base64url, from_codepoint}
+use @std.text.{base64, base64url, from_base64, from_base64url, from_codepoint, from_codepoints}
 
 fn b64(s: string) -> string { base64(s.bytes()) }
 
@@ -42,6 +42,14 @@ spec "std/text — base64" {
         then "every octet round-trips" {
             let all = [k for k in 0..256].bytes()!
             from_base64url(base64url(all)) == all && from_base64(base64(all)) == all
+        }
+    }
+    given "octets text cannot spell" {
+        then "a NUL is a letter like any" { base64(from_codepoints([0]).bytes()) == "AA==" }
+        then "the high octets reach the alphabet's end" { base64([255, 255, 255].bytes()!) == "////" }
+        then "every octet encodes to its known length and tail" {
+            let e = base64([i for i in 0..256].bytes()!)
+            e.length == 344 && e.ends_with("/P3+/w==")
         }
     }
     given "one spelling per value" {

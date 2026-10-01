@@ -406,6 +406,7 @@ impl TlsConn {
     /// arrives; null once the peer sent close_notify. A peer that
     /// hangs up without it is `.Cut`.
     fn read(max: int) -> Result<Bytes?, TlsError> {
+        wired(self.conn.live("read"))?
         let opened = self.session.opened(max)?
         self.flushed()?
         match opened {
@@ -421,6 +422,7 @@ impl TlsConn {
     /// All of `bytes`, sealed into records and written, the calling
     /// task parked whenever the socket is full; answers how many.
     fn write(bytes: Bytes) -> Result<int, TlsError> {
+        wired(self.conn.live("write"))?
         mut at = 0
         while at < bytes.length { at = at + self.session.sealed(bytes, at)? }
         self.flushed()?
@@ -430,6 +432,7 @@ impl TlsConn {
     /// close_notify sent and the write side shut: the peer reads the
     /// end after what was sent.
     fn shutdown_write() -> Result<int, TlsError> {
+        wired(self.conn.live("shutdown"))?
         self.session.closing()?
         self.flushed()?
         wired(self.conn.shutdown_write())
@@ -437,9 +440,10 @@ impl TlsConn {
 
     /// Closed: close_notify offered without waiting, the engine's
     /// state returned, the socket closed. Answers the descriptor. A
-    /// second close is refused before it reaches the socket, whose
-    /// number may by then be another connection's.
+    /// connection any copy has closed is refused before its engine or
+    /// its socket is touched: every verb asks the socket first.
     fn close() -> Result<int, TlsError> {
+        wired(self.conn.live("close"))?
         let _ = self.session.closing()
         self.abandoned()
     }

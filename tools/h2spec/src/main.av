@@ -1,0 +1,38 @@
+//! The server `make h2spec` points h2spec at: every request's body read
+//! whole, then answered with 100 KB — more than a default window, so the
+//! flow-control cases have an answer to hold back. It serves on
+//! `H2SPEC_PORT`: in the clear, or over TLS offering `h2` alone when
+//! `H2SPEC_TLS` is set (the test authority's certificate; h2spec runs
+//! with `-k`).
+use @std.io.{env, env_or}
+use @std.text.{parse_int}
+use @std.net.{listen}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{served, timing}
+use @std.https.{over_tls, tls_carried}
+use @std.http.client.{ClientError, netted}
+use @std.tls.testing.{serving_localhost}
+
+type App = {}
+
+/// 100 KB of one letter.
+once fn answer_text() -> string { ["x" for _i in 0..102400].join("") }
+
+fn serving() -> Result<int, ClientError> {
+    let l = netted(listen("127.0.0.1", parse_int(env_or("H2SPEC_PORT", "0")) ?? 0))?
+    let plain = served(l, () -> App {}, limits(), timing()) { _app, q ->
+        let _ = q.body.gathered()
+        text(200, answer_text())
+    }
+    if env("H2SPEC_TLS") == null {
+        plain.run(1)
+        return .Ok(0)
+    }
+    plain
+        .secured(over_tls(tls_carried((tls_carried(serving_localhost())?).offering(["h2"]))?))
+        .run(1)
+    .Ok(0)
+}
+
+match serving() { .Ok(_) -> "", .Err(e) -> "failed: ${e.describe().message}" }

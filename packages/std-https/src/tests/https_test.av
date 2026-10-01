@@ -70,7 +70,9 @@ fn stream_rides_tls() -> Result<bool, ClientError> {
             ["GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"],
         ),
     )
-    .Ok(got == "HTTP/1.1 200 OK|transfer-encoding: chunked|connection: close||1|a|2|bc|0||")
+    .Ok(
+        undated(got) == "HTTP/1.1 200 OK|transfer-encoding: chunked|connection: close||1|a|2|bc|0||",
+    )
 }
 
 /// A request body read by its handler from the TLS transport, the
@@ -254,6 +256,16 @@ fn read_to_the_end(port: int, sent: string) -> Result<string, TlsError> {
 }
 
 fn words_of(r: Result<string, TlsError>) -> string { r catch e -> e.describe().message }
+
+/// Lines shown with `|` for each line end, the `date` line — the
+/// second it was written in — dropped.
+fn undated(t: string) -> string {
+    let b = t.bytes()
+    let at = b.index_of("|date: ".bytes(), 0)
+    if at < 0 { return t }
+    let end = b.index_of("|".bytes(), at + 1)
+    b.slice(0, at).concat(b.slice(end, b.length)).text() ?? t
+}
 
 fn server_sends_close_notify() -> Result<bool, ClientError> {
     let s = secure_bed(secs(5))?

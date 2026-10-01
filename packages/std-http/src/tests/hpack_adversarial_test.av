@@ -1,0 +1,250 @@
+// HPACK under attack: every quantity a peer names meets its bound —
+// integers, lengths, resizes, the decoded list — and every malformed
+// representation names its law. A `then` asserts one arm.
+use @std.http.hpack.{
+    HeaderField,
+    HpackDecoder,
+    HpackRefusal,
+    header_field,
+    cost,
+    decoder,
+    encoder,
+    cursor,
+    integer,
+    int_bound,
+    string_literal,
+    huffman_encoded,
+    huffman_decoded,
+}
+
+/// A block of these octets.
+fn octets_of(xs: List<int>) -> Bytes { xs.bytes()! }
+
+/// The law a block broke, against a fresh default decoder — or null.
+fn refusal_of(block: Bytes) -> HpackRefusal? {
+    mut d = decoder(4096, 65536)
+    refused_by(d, block)
+}
+
+/// The law a block broke against `d`, which it moves — or null.
+fn refused_by(mut d: HpackDecoder, block: Bytes) -> HpackRefusal? {
+    match d.decoded(block) { .Refused(why) -> why, .Fields(_) or .TooLarge -> null }
+}
+
+/// The fields a block decodes to against `d`, or null.
+fn fields_by(mut d: HpackDecoder, block: Bytes) -> List<HeaderField>? {
+    match d.decoded(block) { .Fields(fs) -> fs, .TooLarge or .Refused(_) -> null }
+}
+
+/// The law an integer broke on a prefix of `bits`, or null.
+fn int_refusal(buf: Bytes, bits: int) -> HpackRefusal? {
+    mut c = cursor(buf)
+    match c.int(bits) { .Err(why) -> why, .Ok(_) -> null }
+}
+
+fn int_value(buf: Bytes, bits: int) -> int {
+    mut c = cursor(buf)
+    match c.int(bits) { .Ok(n) -> n, .Err(_) -> -1 }
+}
+
+fn huffman_refusal(b: Bytes) -> HpackRefusal? {
+    match huffman_decoded(b) { .Err(why) -> why, .Ok(_) -> null }
+}
+
+/// A literal with incremental indexing, new name `name`, raw value of
+/// `n` copies of `a`.
+fn kept_literal(name: string, n: int) -> Bytes {
+    octets_of([64])
+        .concat(string_literal(name.bytes(), false))
+        .concat(string_literal([97 for i in 0..n].bytes()!, false))
+}
+
+spec "std.http hpack adversarial" {
+    given "integers" {
+        then "the largest integer is taken and one past it refused" {
+            int_value(integer(int_bound, 7, 0), 7) == int_bound &&
+                int_refusal(integer(int_bound + 1, 7, 0), 7) == HpackRefusal.Integer
+        }
+        then "a 64-bit overflow is refused, not wrapped" {
+            int_refusal(octets_of([127, 255, 255, 255, 255, 255, 255, 255, 255, 255, 1]), 7) == HpackRefusal.Integer
+        }
+        then "a flood of zero continuations is refused at the sixth" {
+            int_refusal(octets_of([127, 128, 128, 128, 128, 128, 0]), 7) == HpackRefusal.Integer &&
+                int_value(octets_of([127, 128, 128, 128, 128, 0]), 7) == 127
+        }
+        then "an integer the block ends inside is truncated" {
+            int_refusal(octets_of([127]), 7) == HpackRefusal.Truncated &&
+                int_refusal(octets_of([127, 200]), 7) == HpackRefusal.Truncated &&
+                int_refusal(octets_of([]), 7) == HpackRefusal.Truncated
+        }
+    }
+    given "indices" {
+        then "index zero is refused" { refusal_of(octets_of([128])) == HpackRefusal.Index }
+        then "the first index past an empty dynamic table is refused" {
+            refusal_of(octets_of([190])) == HpackRefusal.Index &&
+                refusal_of(octets_of([189])) == null
+        }
+        then "a literal naming a missing index is refused" {
+            refusal_of(octets_of([126, 1, 97])) == HpackRefusal.Index &&
+                refusal_of(octets_of([15, 47, 1, 97])) == HpackRefusal.Index
+        }
+        then "an index past int_bound is an integer refusal, not an index one" {
+            refusal_of(octets_of([255, 255, 255, 255, 255, 255, 1])) == HpackRefusal.Integer
+        }
+    }
+    given "strings" {
+        then "a length past the block's end is truncated" {
+            refusal_of(octets_of([64, 10, 97, 98])) == HpackRefusal.Truncated &&
+                refusal_of(octets_of([4, 5, 97])) == HpackRefusal.Truncated
+        }
+        then "a block ending after a literal's name is truncated" {
+            refusal_of(octets_of([64, 1, 97])) == HpackRefusal.Truncated
+        }
+        then "an empty name and an empty value decode" {
+            mut d = decoder(4096, 65536)
+            let fs = fields_by(d, octets_of([64, 0, 0]))!
+            fs.length == 1 && fs[0].name.length == 0 && d.dynamic.size == 32
+        }
+    }
+    given "Huffman" {
+        then "the EOS symbol inside a string is refused" {
+            huffman_refusal(octets_of([255, 255, 255, 255])) == HpackRefusal.Eos
+        }
+        then "padding of zeros is refused" {
+            huffman_encoded("a".bytes()) == octets_of([31]) &&
+                huffman_refusal(octets_of([24])) == HpackRefusal.Padding
+        }
+        then "eight bits of padding are refused" { huffman_refusal(octets_of([31, 255])) == HpackRefusal.Padding }
+        then "seven bits of padding are taken" { huffman_refusal(octets_of([31])) == null }
+        then "a Huffman literal with bad padding refuses the block" {
+            refusal_of(octets_of([64, 129, 24, 0])) == HpackRefusal.Padding
+        }
+    }
+    given "table size updates" {
+        then "a resize past the advertised limit is refused, not allocated" {
+            refusal_of(integer(4097, 5, 32)) == HpackRefusal.TableSize &&
+                refusal_of(integer(int_bound, 5, 32)) == HpackRefusal.TableSize &&
+                refusal_of(integer(4096, 5, 32)) == null
+        }
+        then "a resize after a field is refused" { refusal_of(octets_of([130, 32])) == HpackRefusal.Placement }
+        then "two resizes may open a block" {
+            mut d = decoder(4096, 65536)
+            fields_by(d, octets_of([32, 63, 225, 31, 130])) != null && d.dynamic.max == 4096
+        }
+        then "a resize to zero empties the table" {
+            mut d = decoder(4096, 65536)
+            let first = fields_by(d, kept_literal("k", 10))
+            let second = fields_by(d, octets_of([32]))
+            first != null && second != null && d.dynamic.entries.length == 0 && d.dynamic.size == 0
+        }
+        then "a lowered limit is owed a resize: a field first is refused" {
+            mut d = decoder(4096, 65536)
+            d.limited(100)
+            refused_by(d, octets_of([130])) == HpackRefusal.Unresized
+        }
+        then "a lowered limit takes a resize under it, then fields" {
+            mut d = decoder(4096, 65536)
+            d.limited(100)
+            fields_by(d, octets_of([63, 69, 130])) != null && d.dynamic.max == 100 && !d.owed
+        }
+        then "a lowered limit refuses a resize over it" {
+            mut d = decoder(4096, 65536)
+            d.limited(100)
+            refused_by(d, integer(101, 5, 32)) == HpackRefusal.TableSize
+        }
+    }
+    given "the table's bound" {
+        then "the table never passes its size as entries evict" {
+            mut d = decoder(4096, 65536)
+            let block = [kept_literal("k${i}", 100) for i in 0..100].bytes()
+            fields_by(d, block) != null && d.dynamic.size <= 4096 && d.dynamic.entries.length == 30
+        }
+        then "an entry larger than the table empties it and is not kept" {
+            mut d = decoder(4096, 65536)
+            let fs = fields_by(d, kept_literal("a", 10).concat(kept_literal("big", 5000)))
+            fs!.length == 2 && d.dynamic.entries.length == 0 && d.dynamic.size == 0
+        }
+        then "a literal may name the entry its own insert evicts" {
+            mut d = decoder(4096, 65536)
+            let first = kept_literal("n", 4000)
+            let named = octets_of([126])
+                .concat(string_literal([98 for i in 0..4000].bytes()!, false))
+            let fs = fields_by(d, first.concat(named))!
+            fs[1].name == "n".bytes() &&
+                d.dynamic.entries.length == 1 &&
+                d.dynamic.at(1)!.value.at(0) == 98
+        }
+    }
+    given "the decoded list's bound (the HPACK bomb)" {
+        then "one kept entry indexed a thousand times is too large, not a gigabyte" {
+            mut d = decoder(4096, 65536)
+            let bomb = kept_literal("x", 4000).concat([190 for i in 0..1000].bytes()!)
+            d.decoded(bomb) is .TooLarge
+        }
+        then "a too-large block still moves the table, so the next block reads it" {
+            mut d = decoder(4096, 65536)
+            let bomb = kept_literal("x", 4000).concat([190 for i in 0..1000].bytes()!)
+            let _ = d.decoded(bomb)
+            fields_by(d, octets_of([190]))![0].value.length == 4000
+        }
+        then "a list exactly at the bound is taken" {
+            mut d = decoder(4096, cost(header_field(":method", "GET")) * 2)
+            fields_by(d, octets_of([130, 130]))!.length == 2 &&
+                d.decoded(octets_of([130, 130, 130])) is .TooLarge
+        }
+    }
+    given "the encoder" {
+        then "a sensitive field is never indexed and decodes sensitive" {
+            mut e = encoder(true)
+            let f = HeaderField {
+                name: "authorization".bytes(),
+                value: "Bearer s3cret".bytes(),
+                sensitive: true,
+            }
+            let block = e.encoded([f, f])
+            mut d = decoder(4096, 65536)
+            let fs = fields_by(d, block)!
+            block.at(0) == 16 + 15 &&
+                block.at(1) == 23 - 15 &&
+                e.dynamic.entries.length == 0 &&
+                fs[0].sensitive &&
+                fs[1].value == f.value
+        }
+        then "a field larger than the table is written without indexing" {
+            mut e = encoder(false)
+            let block = e.encoded([header_field("big", ["a" for i in 0..5000].join(""))])
+            block.at(0) == 0 && e.dynamic.entries.length == 0
+        }
+        then "a resize is announced at the next block's start, least then final" {
+            mut e = encoder(false)
+            e.resized(100)
+            e.resized(200)
+            let block = e.encoded([header_field(":method", "GET")])
+            block == integer(100, 5, 32).concat(integer(200, 5, 32)).concat(octets_of([130])) &&
+                e.encoded([header_field(":method", "GET")]) == octets_of([130])
+        }
+        then "a peer allowing a huge table gets the encoder's own cap" {
+            mut e = encoder(false)
+            e.resized(int_bound)
+            e.encoded([]) == integer(4096, 5, 32) && e.dynamic.max == 4096
+        }
+        then "the decoder takes the encoder's announced resize" {
+            mut e = encoder(true)
+            e.resized(0)
+            mut d = decoder(4096, 65536)
+            fields_by(d, e.encoded([header_field("a", "b")])) != null &&
+                d.dynamic.max == 0 &&
+                d.dynamic.entries.length == 0
+        }
+        then "a thousand fields round-trip with the tables in step" {
+            mut e = encoder(true)
+            mut d = decoder(4096, 1048576)
+            let fs = [header_field("x-${i % 37}", "v${i % 53}") for i in 0..1000]
+            let back = fields_by(d, e.encoded(fs))!
+            back.length == 1000 &&
+                [back[i].name == fs[i].name && back[i].value == fs[i].value for i in 0..1000]
+                    .all(it) &&
+                d.dynamic.size == e.dynamic.size
+        }
+    }
+}

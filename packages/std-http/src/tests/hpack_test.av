@@ -1,0 +1,297 @@
+// HPACK against RFC 7541 Appendix C: every vector decoded AND encoded,
+// the dynamic table's size and length checked after each block.
+use @std.http.hpack.{
+    HeaderField,
+    HpackDecoder,
+    HpackEncoder,
+    Unpacked,
+    header_field,
+    decoder,
+    encoder,
+    dynamic_table,
+    cursor,
+    integer,
+    huffman_encoded,
+    huffman_decoded,
+    huffman_rows,
+}
+use @std.http.frame.{hex_of}
+
+/// Octets spelled as hex, as the RFC's dumps are.
+fn hex_octets(s: string) -> Bytes {
+    let b = s.bytes()
+    [hex_of(b.at(2 * i))! * 16 + hex_of(b.at(2 * i + 1))! for i in 0..b.length / 2].bytes()!
+}
+
+/// A list as `name: value` lines, the RFC's own spelling of one.
+fn list_text(fs: List<HeaderField>) -> string { [(f.name.text() ?? "?") + ": " + (f.value.text() ?? "?") for f in fs].join("\n") }
+
+/// The fields a block decodes to, shown — or the arm it answered.
+fn block_text(mut d: HpackDecoder, block: string) -> string {
+    match d.decoded(hex_octets(block)) {
+        .Fields(fs) -> list_text(fs),
+        .TooLarge -> "too large",
+        .Refused(_) -> "refused",
+    }
+}
+
+/// `block` decodes to `want`, and leaves the table at `size` octets in
+/// `n` entries.
+fn decodes(mut d: HpackDecoder, block: string, want: List<HeaderField>, size: int, n: int) -> bool {
+    block_text(d, block) == list_text(want) &&
+        d.dynamic.size == size &&
+        d.dynamic.entries.length == n
+}
+
+/// `want` encodes to `block`, and leaves the table at `size` octets.
+fn encodes(mut e: HpackEncoder, want: List<HeaderField>, block: string, size: int) -> bool {
+    e.encoded(want) == hex_octets(block) && e.dynamic.size == size
+}
+
+/// A decoder and an encoder whose tables start at `max` octets with
+/// nothing owed — the RFC's examples assume both ends began there.
+fn decoder_at(max: int) -> HpackDecoder { HpackDecoder { dynamic: dynamic_table(max), limit: max, owed: false, list: 65536 } }
+fn encoder_at(max: int, huffman: bool) -> HpackEncoder {
+    HpackEncoder {
+        dynamic: dynamic_table(max),
+        huffman: huffman,
+        cap: max,
+        least: max,
+        announce: false,
+    }
+}
+
+fn request_1() -> List<HeaderField> {
+    [
+        header_field(":method", "GET"),
+        header_field(":scheme", "http"),
+        header_field(":path", "/"),
+        header_field(":authority", "www.example.com"),
+    ]
+}
+
+fn request_2() -> List<HeaderField> { request_1().concat([header_field("cache-control", "no-cache")]) }
+
+fn request_3() -> List<HeaderField> {
+    [
+        header_field(":method", "GET"),
+        header_field(":scheme", "https"),
+        header_field(":path", "/index.html"),
+        header_field(":authority", "www.example.com"),
+        header_field("custom-key", "custom-value"),
+    ]
+}
+
+fn response(status: string, date: string) -> List<HeaderField> {
+    [
+        header_field(":status", status),
+        header_field("cache-control", "private"),
+        header_field("date", "Mon, 21 Oct 2013 20:13:${date} GMT"),
+        header_field("location", "https://www.example.com"),
+    ]
+}
+
+fn response_3() -> List<HeaderField> {
+    [
+        header_field(":status", "200"),
+        header_field("cache-control", "private"),
+        header_field("date", "Mon, 21 Oct 2013 20:13:22 GMT"),
+        header_field("location", "https://www.example.com"),
+        header_field("content-encoding", "gzip"),
+        header_field("set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1"),
+    ]
+}
+
+const c3_1: string = "828684410f7777772e6578616d706c652e636f6d"
+const c3_2: string = "828684be58086e6f2d6361636865"
+const c3_3: string = "828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565"
+const c4_1: string = "828684418cf1e3c2e5f23a6ba0ab90f4ff"
+const c4_2: string = "828684be5886a8eb10649cbf"
+const c4_3: string = "828785bf408825a849e95ba97d7f8925a849e95bb8e8b4bf"
+const c5_1: string = "4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d706c652e636f6d"
+const c5_2: string = "4803333037c1c0bf"
+const c5_3: string = "88c1611d4d6f6e2c203231204f637420323031332032303a31333a323220474d54c05a04677a69707738666f6f3d4153444a4b48514b425a584f5157454f50495541585157454f49553b206d61782d6167653d333630303b2076657273696f6e3d31"
+const c6_1: string = "488264025885aec3771a4b6196d07abe941054d444a8200595040b8166e082a62d1bff6e919d29ad171863c78f0b97c8e9ae82ae43d3"
+const c6_2: string = "4883640effc1c0bf"
+const c6_3: string = "88c16196d07abe941054d444a8200595040b8166e084a62d1bffc05a839bd9ab77ad94e7821dd7f2e6c7b335dfdfcd5b3960d5af27087f3672c1ab270fb5291f9587316065c003ed4ee5b1063d5007"
+
+/// The integer `buf` holds on a prefix of `bits`, or -1.
+fn int_read(buf: Bytes, bits: int) -> int {
+    mut c = cursor(buf)
+    match c.int(bits) { .Ok(n) -> n, .Err(_) -> -1 }
+}
+
+/// A Huffman string's octets, or none when it is refused.
+fn unhuffed(b: Bytes) -> Bytes? {
+    match huffman_decoded(b) { .Ok(o) -> o, .Err(_) -> null }
+}
+
+spec "std.http hpack" {
+    given "integers (C.1)" {
+        then "10 on a 5-bit prefix is one octet" { integer(10, 5, 0) == hex_octets("0a") && int_read(hex_octets("0a"), 5) == 10 }
+        then "1337 on a 5-bit prefix is three octets" {
+            integer(1337, 5, 0) == hex_octets("1f9a0a") && int_read(hex_octets("1f9a0a"), 5) == 1337
+        }
+        then "42 on an 8-bit prefix is one octet" { integer(42, 8, 0) == hex_octets("2a") && int_read(hex_octets("2a"), 8) == 42 }
+        then "the flag bits above the prefix are the caller's and are not read" {
+            integer(10, 5, 224) == hex_octets("ea") && int_read(hex_octets("ea"), 5) == 10
+        }
+        then "a value one below the prefix's top fits it, the top itself continues" {
+            integer(30, 5, 0) == hex_octets("1e") &&
+                integer(31, 5, 0) == hex_octets("1f00") &&
+                int_read(hex_octets("1f00"), 5) == 31
+        }
+    }
+    given "field representations (C.2)" {
+        then "a literal with indexing enters the table (C.2.1)" {
+            mut d = decoder_at(4096)
+            decodes(
+                d,
+                "400a637573746f6d2d6b65790d637573746f6d2d686561646572",
+                [header_field("custom-key", "custom-header")],
+                55,
+                1,
+            )
+        }
+        then "a literal without indexing leaves the table empty (C.2.2)" {
+            mut d = decoder_at(4096)
+            decodes(
+                d,
+                "040c2f73616d706c652f70617468",
+                [header_field(":path", "/sample/path")],
+                0,
+                0,
+            )
+        }
+        then "a never-indexed literal is marked sensitive and not kept (C.2.3)" {
+            mut d = decoder_at(4096)
+            match d.decoded(hex_octets("100870617373776f726406736563726574")) {
+                .Fields(fs) -> list_text(fs) == "password: secret" &&
+                    fs[0].sensitive &&
+                    d.dynamic.entries.length == 0,
+                .TooLarge or .Refused(_) -> false,
+            }
+        }
+        then "an indexed field reads the static table (C.2.4)" {
+            mut d = decoder_at(4096)
+            decodes(d, "82", [header_field(":method", "GET")], 0, 0)
+        }
+        then "each C.2 representation is what the encoder writes for its case" {
+            mut e = encoder_at(4096, false)
+            let kept = e.encoded([header_field("custom-key", "custom-header")])
+            let secret = e
+                .encoded(
+                    [
+                        HeaderField {
+                            name: "password".bytes(),
+                            value: "secret".bytes(),
+                            sensitive: true,
+                        },
+                    ],
+                )
+            kept == hex_octets("400a637573746f6d2d6b65790d637573746f6d2d686561646572") &&
+                secret == hex_octets("100870617373776f726406736563726574") &&
+                e.encoded([header_field(":method", "GET")]) == hex_octets("82")
+        }
+    }
+    given "requests without Huffman coding (C.3)" {
+        then "three requests decode in turn, the table growing 57, 110, 164" {
+            mut d = decoder_at(4096)
+            decodes(d, c3_1, request_1(), 57, 1) &&
+                decodes(d, c3_2, request_2(), 110, 2) &&
+                decodes(d, c3_3, request_3(), 164, 3)
+        }
+        then "three requests encode to the RFC's octets" {
+            mut e = encoder_at(4096, false)
+            encodes(e, request_1(), c3_1, 57) &&
+                encodes(e, request_2(), c3_2, 110) &&
+                encodes(e, request_3(), c3_3, 164)
+        }
+    }
+    given "requests with Huffman coding (C.4)" {
+        then "three requests decode in turn" {
+            mut d = decoder_at(4096)
+            decodes(d, c4_1, request_1(), 57, 1) &&
+                decodes(d, c4_2, request_2(), 110, 2) &&
+                decodes(d, c4_3, request_3(), 164, 3)
+        }
+        then "three requests encode to the RFC's octets" {
+            mut e = encoder_at(4096, true)
+            encodes(e, request_1(), c4_1, 57) &&
+                encodes(e, request_2(), c4_2, 110) &&
+                encodes(e, request_3(), c4_3, 164)
+        }
+    }
+    given "responses without Huffman coding, a 256-octet table (C.5)" {
+        then "three responses decode, the third evicting down to 215" {
+            mut d = decoder_at(256)
+            decodes(d, c5_1, response("302", "21"), 222, 4) &&
+                decodes(d, c5_2, response("307", "21"), 222, 4) &&
+                decodes(d, c5_3, response_3(), 215, 3)
+        }
+        then "three responses encode to the RFC's octets" {
+            mut e = encoder_at(256, false)
+            encodes(e, response("302", "21"), c5_1, 222) &&
+                encodes(e, response("307", "21"), c5_2, 222) &&
+                encodes(e, response_3(), c5_3, 215)
+        }
+        then "the evicted table holds the RFC's three entries, newest first" {
+            mut d = decoder_at(256)
+            block_text(d, c5_1) != "refused" &&
+                block_text(d, c5_2) != "refused" &&
+                block_text(d, c5_3) != "refused" &&
+                list_text([d.dynamic.at(1)!, d.dynamic.at(2)!, d.dynamic.at(3)!]) == "set-cookie: foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1\ncontent-encoding: gzip\ndate: Mon, 21 Oct 2013 20:13:22 GMT"
+        }
+    }
+    given "responses with Huffman coding (C.6)" {
+        then "three responses decode" {
+            mut d = decoder_at(256)
+            decodes(d, c6_1, response("302", "21"), 222, 4) &&
+                decodes(d, c6_2, response("307", "21"), 222, 4) &&
+                decodes(d, c6_3, response_3(), 215, 3)
+        }
+        then "three responses encode to the RFC's octets" {
+            mut e = encoder_at(256, true)
+            encodes(e, response("302", "21"), c6_1, 222) &&
+                encodes(e, response("307", "21"), c6_2, 222) &&
+                encodes(e, response_3(), c6_3, 215)
+        }
+    }
+    given "Huffman coding" {
+        then "every octet round-trips" {
+            let all = [i for i in 0..256].bytes()!
+            unhuffed(huffman_encoded(all)) == all
+        }
+        then "the empty string is zero octets both ways" {
+            huffman_encoded("".bytes()).length == 0 && unhuffed("".bytes()) == "".bytes()
+        }
+        then "the table is Appendix B's 257 rows in symbol order" {
+            huffman_rows.length == 257 && [huffman_rows[i].sym == i for i in 0..257].all(it)
+        }
+        then "the code is complete: its lengths fill the code space exactly" {
+            mut space = 0
+            for r in huffman_rows { space = space + (1 << 30 - r.bits) }
+            space == 1 << 30
+        }
+        then "www.example.com is the RFC's twelve octets" {
+            huffman_encoded("www.example.com".bytes()) == hex_octets("f1e3c2e5f23a6ba0ab90f4ff")
+        }
+    }
+    given "the defaults" {
+        then "a fresh decoder takes a fresh encoder's blocks, table in step" {
+            mut e = encoder(true)
+            mut d = decoder(4096, 65536)
+            let first = e.encoded(request_1())
+            let second = e.encoded(request_2())
+            match d.decoded(first) {
+                .Fields(a) -> match d.decoded(second) {
+                    .Fields(b) -> list_text(a) == list_text(request_1()) &&
+                        list_text(b) == list_text(request_2()) &&
+                        d.dynamic.size == e.dynamic.size,
+                    .TooLarge or .Refused(_) -> false,
+                },
+                .TooLarge or .Refused(_) -> false,
+            }
+        }
+    }
+}

@@ -1,0 +1,182 @@
+// The pool against a live server: a connection given back is lent
+// again, an origin never borrows another's, the per-host bound never
+// dials past itself, an idle one expires, and a kept one
+// the peer closed or wrote into is dropped at take, never lent.
+use @std.net.{NetError, listen, connect, Listener}
+use @std.time.{secs, ms}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Server, served, timing}
+use @std.http.client.{Client, ClientError, connected, over, request}
+use @std.http.wire.{plainly}
+use @std.http.pool.{Pool, Carrier, pool, origin_of}
+
+fn pl_lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
+}
+
+fn pl_server() -> Result<Server<App>, ClientError> {
+    let l = pl_lifted(listen("127.0.0.1", 0))?
+    .Ok(
+        served(l, () -> App { hits: Cell.new(0) }, limits(), timing()) { app, q -> text(200, "${bumped(app)}") },
+    )
+}
+
+fn pl_dial(port: int) -> Result<Carrier, ClientError> {
+    .Ok(.H1(connected("127.0.0.1", port, secs(2), limits())?))
+}
+
+fn pl_client(c: Carrier) -> Client {
+    match c { .H1(client) -> client }
+}
+
+/// One GET over a lent carrier, answered; the carrier as it now stands.
+fn pl_asked(c: Carrier) -> Result<Carrier, ClientError> {
+    mut client = pl_client(c)
+    client.fetched(.Get, request("GET", "/", "h", [], "".bytes())!, secs(2))?
+    .Ok(.H1(client))
+}
+
+fn pl_reused() -> Result<bool, ClientError> {
+    let s = pl_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = pool()
+    let o = origin_of("http", "127.0.0.1", s.listener.port)
+    let dial = () -> pl_dial(s.listener.port)
+    p.give(o, pl_asked(p.take(o, dial)?)?)
+    p.give(o, pl_asked(p.take(o, dial)?)?)
+    let kept = p.kept_for(o)
+    p.close_all()
+    .Ok(s.connections() == 1 && kept == 1 && p.lent(o) == 0)
+}
+
+fn pl_origins_apart() -> Result<bool, ClientError> {
+    let s = pl_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = pool()
+    let a = origin_of("http", "127.0.0.1", s.listener.port)
+    let b = origin_of("http", "localhost", s.listener.port)
+    p.give(a, pl_asked(p.take(a, () -> pl_dial(s.listener.port))?)?)
+    p.give(b, pl_asked(p.take(b, () -> pl_dial(s.listener.port))?)?)
+    p.close_all()
+    .Ok(s.connections() == 2)
+}
+
+fn pl_exhausted() -> Result<bool, ClientError> {
+    let s = pl_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = Pool { per_host: 1, wait: ms(0) }
+    let o = origin_of("http", "127.0.0.1", s.listener.port)
+    let dial = () -> pl_dial(s.listener.port)
+    let first = pl_asked(p.take(o, dial)?)?
+    let second = p.take(o, dial)
+    p.give(o, first)
+    let third = p.take(o, dial)
+    let refused = match second {
+        .Err(.Exhausted(origin, n)) -> origin == o && n == 1,
+        .Err(_) or .Ok(_) -> false,
+    }
+    let after = third is .Ok
+    p.close_all()
+    .Ok(refused && after)
+}
+
+fn pl_expired() -> Result<bool, ClientError> {
+    let s = pl_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = Pool { idle: ms(0) }
+    let o = origin_of("http", "127.0.0.1", s.listener.port)
+    let dial = () -> pl_dial(s.listener.port)
+    p.give(o, pl_asked(p.take(o, dial)?)?)
+    let kept = p.kept_for(o)
+    let reaped = p.reap()
+    .Ok(kept == 1 && reaped == 1 && p.kept_for(o) == 0)
+}
+
+fn pl_idle_bound() -> Result<bool, ClientError> {
+    let s = pl_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = Pool { idle_per_host: 2 }
+    let o = origin_of("http", "127.0.0.1", s.listener.port)
+    let dial = () -> pl_dial(s.listener.port)
+    let lent = [pl_asked(p.take(o, dial)?)? for i in 0..3]
+    for c in lent { p.give(o, c) }
+    let kept = p.kept_for(o)
+    p.close_all()
+    .Ok(kept == 2 && p.lent(o) == 0)
+}
+
+/// A raw peer: a listener whose accepted side the test drives by hand,
+/// and a client marked as persisting, as an answered one would be.
+type PlRaw = { l: Listener, client: Client }
+
+fn pl_raw() -> Result<PlRaw, ClientError> {
+    let l = pl_lifted(listen("127.0.0.1", 0))?
+    let c = pl_lifted(connect("127.0.0.1", l.port, secs(2)))?
+    .Ok(PlRaw { l: l, client: over(plainly(c), limits()) with { persists: true } })
+}
+
+fn pl_peer_closed() -> Result<bool, ClientError> {
+    let raw = pl_raw()?
+    let p = pool()
+    let o = "raw"
+    let _ = p.take(o, () -> pl_carried(raw.client))?
+    p.give(o, .H1(raw.client))
+    let server_side = pl_lifted(raw.l.accept())?
+    pl_lifted(server_side.close())?
+    let fresh = pl_lifted(connect("127.0.0.1", raw.l.port, secs(2)))?
+    let got = pl_client(p.take(o, () -> pl_carried(over(plainly(fresh), limits())))?)
+    let _ = raw.l.close()
+    .Ok(got.conn.wire_fd() == fresh.fd && p.kept_for(o) == 0)
+}
+
+fn pl_peer_wrote() -> Result<bool, ClientError> {
+    let raw = pl_raw()?
+    let p = pool()
+    let o = "raw"
+    let _ = p.take(o, () -> pl_carried(raw.client))?
+    p.give(o, .H1(raw.client))
+    let server_side = pl_lifted(raw.l.accept())?
+    pl_lifted(server_side.write("HTTP/1.1 200 OK\r\n".bytes()))?
+    let fresh = pl_lifted(connect("127.0.0.1", raw.l.port, secs(2)))?
+    let got = pl_client(p.take(o, () -> pl_carried(over(plainly(fresh), limits())))?)
+    let _ = raw.l.close()
+    .Ok(got.conn.wire_fd() == fresh.fd)
+}
+
+fn pl_carried(c: Client) -> Result<Carrier, ClientError> { .Ok(.H1(c)) }
+
+fn pl_dial_failed_frees() -> Result<bool, ClientError> {
+    let l = pl_lifted(listen("127.0.0.1", 0))?
+    let port = pl_lifted(l.close())?
+    let p = Pool { per_host: 1 }
+    let o = "gone"
+    let failed = p.take(o, () -> pl_dial(port)) is .Err
+    .Ok(failed && p.lent(o) == 0)
+}
+
+fn pl_passes(r: Result<bool, ClientError>) -> bool {
+    match r { .Ok(b) -> b, .Err(_) -> false }
+}
+
+spec "@std.http pool" {
+    given "lending and giving back" {
+        then "a connection given back is lent again, so two requests make one connection" { pl_passes(pl_reused()) }
+        then "an origin never borrows another's connection" { pl_passes(pl_origins_apart()) }
+        then "no more are kept for an origin than `idle_per_host`" { pl_passes(pl_idle_bound()) }
+    }
+    given "the bounds" {
+        then "past `per_host` with no wait a take refuses by name, and a give frees the slot" { pl_passes(pl_exhausted()) }
+        then "a dial that fails frees its slot" { pl_passes(pl_dial_failed_frees()) }
+        then "an idle connection past its time is closed by the reaper" { pl_passes(pl_expired()) }
+    }
+    given "a kept connection the peer moved on from" {
+        then "one the peer closed is dropped at take and a fresh one dialed" { pl_passes(pl_peer_closed()) }
+        then "one the peer wrote into is dropped at take and a fresh one dialed" { pl_passes(pl_peer_wrote()) }
+    }
+}

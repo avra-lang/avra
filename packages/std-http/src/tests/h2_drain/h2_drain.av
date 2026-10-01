@@ -1,0 +1,87 @@
+//! proves: a stop DRAINS an HTTP/2 connection as it does a 1.1 one — an
+//! idle one is sent GOAWAY and ends at once; one with a stream in flight
+//! answers that stream, then sends GOAWAY and ends; and `run` answers
+//! within the drain, never the idle deadline
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{Duration, ms, secs, sleep, within, now_ms}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.http.{text}
+use @std.http.server.{Timing, served}
+use @std.http.h2.{Frame, preface, frame_bytes, frames_in, end_stream, end_headers}
+use @std.http.hpack.{header_field, encoder}
+
+type App = {}
+
+/// An h2c conversation opened, and `path` asked on stream 1 unless it
+/// is empty.
+fn opened(port: int, path: string) -> Result<Conn, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    mut e = encoder(true)
+    let head = [
+        header_field(":method", "GET"),
+        header_field(":scheme", "http"),
+        header_field(":path", path),
+        header_field(":authority", "a"),
+    ]
+    let asked = if path.is_empty() { no_bytes } else { frame_bytes(.Headers, end_headers | end_stream, 1, e.encoded(head)) }
+    let _ = c.write(preface.concat(frame_bytes(.Settings, 0, 0, no_bytes)).concat(asked))?
+    .Ok(c)
+}
+
+/// What a peer sent until its end or `quiet` of silence, and whether it
+/// ended.
+type Heard = { frames: List<Frame>, ended: bool }
+
+fn heard_to_end(c: Conn, quiet: Duration) -> Heard {
+    mut got = no_bytes
+    mut ended = false
+    mut open = true
+    while open {
+        match within quiet { c.read(65536) } {
+            .Ok(b) -> {
+                ended = b == null
+                open = !ended
+                got = got.concat(b ?? no_bytes)
+            },
+            .Err(_) -> { open = false },
+        }
+    }
+    Heard { frames: frames_in(got), ended: ended }
+}
+
+/// Whether stream 1 was answered, a GOAWAY came, and the connection
+/// then ended.
+fn drained_after(h: Heard) -> string {
+    "answered ${h.frames.any(it.stream == 1 && it.kind is .Headers)}, goaway ${h.frames.any(it.kind is .GoAway)}, ended ${h.ended}"
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App {}, limits(), Timing { drain: ms(400) }) { _app, q ->
+        if q.target() == "/slow" { sleep(ms(200)) }
+        text(200, "ok")
+    }
+    let run = spawn s.run(cores: 1)
+    let idle = opened(l.port, "")?
+    defer { let _ = idle.close() }
+    let slow = opened(l.port, "/slow")?
+    defer { let _ = slow.close() }
+    sleep(ms(50))
+    let asked = now_ms()
+    s.stop()
+    let idle_end = heard_to_end(idle, secs(2))
+    let idle_ms = now_ms() - asked
+    let slow_end = heard_to_end(slow, secs(2))
+    let _ = run.await?
+    let run_ms = now_ms() - asked
+    .Ok(
+        [
+            "idle: goaway ${idle_end.frames.any(it.kind is .GoAway)}, ended ${idle_end.ended} within the drain ${idle_ms < 1000}",
+            "in flight: ${drained_after(slow_end)}",
+            "run answered within the drain: ${run_ms < 2000}",
+        ]
+            .join("\n"),
+    )
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

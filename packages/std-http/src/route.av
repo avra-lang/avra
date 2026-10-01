@@ -33,7 +33,7 @@
 //! A CAPTURE HOLDS RAW OCTETS. Nothing is percent-decoded, so `%2F`
 //! is not a separator and `/ideas/{id}` binds `a%2Fb` whole. A
 //! handler that means to use a capture as a path decodes it itself,
-//! through `query.av`'s `decoded`, and judges what comes out — the
+//! through `@std/url`'s `decoded`, and judges what comes out — the
 //! router hands over what was sent.
 //!
 //! THE QUERY IS THE REQUEST'S, NOT THE ROUTE'S. A grammar is
@@ -436,18 +436,34 @@ once fn open_brace() -> Bytes { "{".bytes() }
 /// A TARGET WITH NO PATH IS THE SAME 404, and the table is not walked
 /// at all: `OPTIONS *` and CONNECT's authority name no resource, so
 /// there is nothing to match them against.
+///
+/// A HEAD NO HEAD ROUTE ANSWERS IS ITS GET (RFC 9110 §9.3.2): the GET
+/// route answers it, and the server writes that answer's head alone.
 export fn dispatch(t: Table, q: Request<Unrouted>) -> Response {
     let target? = q.path() else { return status(404) }
     let node = landed(t, target)
     if node < 0 { return status(404) }
+    served_as(t, node, q, target, q.head.method) ?? as_get(t, node, q, target) ?? status(404)
+}
+
+/// The first route at `node` declared for `m` that answers.
+fn served_as(t: Table, node: int, q: Request<Unrouted>, target: Bytes, m: Method) -> Response? {
     for i in t.nodes[node].rows {
         let r = t.routes[i]
-        if r.method == q.head.method {
+        if r.method == m {
             let answer: Response? = r.serve(q, target)
-            if answer != null { return answer! }
+            if answer != null { return answer }
         }
     }
-    status(404)
+    null
+}
+
+/// A HEAD that no HEAD route answers is answered as its GET: every
+/// general-purpose server supports both (RFC 9110 §9.1), and the loop
+/// sends the length and none of the body.
+fn as_get(t: Table, node: int, q: Request<Unrouted>, target: Bytes) -> Response? {
+    if q.head.method != Method.Head { return null }
+    served_as(t, node, q, target, Method.Get)
 }
 
 /// The node a target lands on, or -1 when the walk falls off the

@@ -92,6 +92,12 @@ spec "std.tls ALPN and resumption" {
         then "a name longer than 255 bytes is refused" {
             offered_words([["x" for i in 0..256].join("")]).ends_with("eight at most")
         }
+        then "h2c is refused, beside h2 or alone: it is HTTP/2 over cleartext TCP, never over TLS (RFC 9113 §3.2)" {
+            offered_words(["h2", "h2c"]) == "protocol h2c: h2c is HTTP/2 over cleartext TCP, which TLS never agrees (RFC 9113 §3.2)" &&
+                offered_words(["h2c"]).starts_with("protocol h2c: ") &&
+                offered_words(["h2", "http/1.1"]) == "<ok>" &&
+                offered_words(["H2C"]) == "<ok>"
+        }
         then "a ninth name is refused" {
             offered_words(["a", "b", "c", "d", "e", "f", "g", "h", "i"]).starts_with("protocol i: ")
         }

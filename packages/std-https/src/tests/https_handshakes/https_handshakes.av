@@ -1,0 +1,44 @@
+//! proves: a core allowed one TLS handshake at a time refuses a second
+//! client at once while a silent peer holds the slot, and serves the
+//! next once the handshake deadline frees it — the refusal and the
+//! answer alike in both engines
+use @std.net.{connect, listen}
+use @std.time.{ms, secs, sleep, now_ms}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Timing, served}
+use @std.http.client.{ClientError, Answer, netted}
+use @std.http.pool.{pool}
+use @std.http.fetch.{Options, fetch}
+use @std.https.{over_tls, tls_carried, verified}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+type App = {}
+
+/// A status, or "refused" however the closed socket reached the
+/// client — a reset or an end, by which side's segment raced first.
+fn shown(r: Result<Answer, ClientError>) -> string {
+    match r { .Ok(a) -> "${a.status}", .Err(_) -> "refused" }
+}
+
+fn run() -> Result<string, ClientError> {
+    let l = netted(listen("127.0.0.1", 0))?
+    let s = served(l, () -> App {}, limits(), Timing { handshake: ms(400), handshakes: 1 }) { _a, q -> text(200, "ok") }
+        .secured(over_tls(tls_carried(serving_localhost())?))
+    spawn s.run(1)
+    defer s.stop()
+    let silent = netted(connect("127.0.0.1", l.port, secs(2)))?
+    sleep(ms(50))
+    let url = "https://localhost:${l.port}/"
+    let o = Options { pool: pool(), tls: verified(tls_carried(trusting_localhost())?) }
+    defer o.pool.close_all()
+    let t0 = now_ms()
+    let refused = shown(fetch(.Get, url, .Empty, o))
+    let prompt = now_ms() - t0 < 200
+    sleep(ms(500))
+    let after = shown(fetch(.Get, url, .Empty, o))
+    let _ = silent.close()
+    .Ok("${refused} at once ${prompt} | then ${after}")
+}
+
+run() catch e -> "failed: ${e.describe().message}"
