@@ -38,6 +38,25 @@ export fn side_table_of<V>(name: string, lo: int, cells: List<V>, seed: V) -> Si
     SideTable { name: name, lo: lo, cells: cells, seed: seed }
 }
 
+/// `v` at `k` in the table `c` holds, grown to hold it, WRITTEN IN PLACE:
+/// the table leaves the cell while it is written, so no other holder
+/// shares the box a write would otherwise copy whole.
+export fn side_put<V>(c: Cell<SideTable<V>>, k: int, v: V) {
+    mut t = c.get()
+    c.set(t with { cells: [] })
+    t.grow_to(k + 1)
+    t.set(k, v)
+    c.set(t)
+}
+
+/// The table `c` holds grown to `count`, WRITTEN IN PLACE as `side_put` is.
+export fn side_grow<V>(c: Cell<SideTable<V>>, count: int) {
+    mut t = c.get()
+    c.set(t with { cells: [] })
+    t.grow_to(count)
+    c.set(t)
+}
+
 impl SideTable {
     fn get(k: int) -> V {
         if !self.holds(k) { self.outside(k) }
