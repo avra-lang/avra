@@ -1,0 +1,35 @@
+//! The layout vocabulary, by its laws: steps not pixels, edges logical.
+use @std.ui.style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout, around}
+use @std.ui.{Size}
+
+fn unset() -> Layout { Layout {} }
+
+fn boxed() -> Layout {
+    Layout { direction: .Column, gap: .M, pad: around(.S), align: .Center, width: .Fill }
+}
+
+fn padded_start() -> Size? { around(.S).start }
+
+/// A `Sizing` carries a payload, so a variant is read by a match.
+fn width_kind(w: Sizing) -> string {
+    match w { .Hug -> "hug", .Fill -> "fill", .Fixed(_) -> "fixed", .Percent(_) -> "percent" }
+}
+
+spec "std/ui layout — a placement nobody set" {
+    given "an empty layout" {
+        then "names no direction" { unset().direction == null }
+        then "grows by zero" { unset().grow == 0 }
+        then "asks for no edge" { unset().pad == null }
+    }
+}
+
+spec "std/ui layout — a placement set" {
+    given "a column with a gap and a pad" {
+        then "names its direction" { boxed().direction ?? Axis.Row == Axis.Column }
+        then "names its step" { boxed().gap ?? Size.None == Size.M }
+        then "fills its width" { width_kind(boxed().width ?? Sizing.Hug) == "fill" }
+    }
+    given "a pad around every edge" {
+        then "gives each logical edge the same step" { padded_start() ?? Size.None == Size.S }
+    }
+}
