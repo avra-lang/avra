@@ -18,6 +18,7 @@ use core.{
     Table,
     new_table,
     list_cell,
+    map_cell,
     SyntaxArena,
     StmtId,
     same_decl,
@@ -190,6 +191,8 @@ type Hold = {
     moved: Cell<Map<string, List<PartMoved>>>,
     file_module: Table<int>,
     sig_asked: Table<int>,
+    // each held file's re-exports, read off its record as its module mints
+    reexports: Cell<Map<string, List<Reexport>>>,
 }
 
 fn new_hold() -> Hold {
@@ -203,6 +206,7 @@ fn new_hold() -> Hold {
     let no_named_in: Map<string, List<string>> = {}
     let no_flat: List<TypeId> = []
     let no_moved: Map<string, List<PartMoved>> = {}
+    let no_reexports: Map<string, List<Reexport>> = {}
     Hold {
         forced: Cell.new(no_forced),
         held_wants: Cell.new(no_wants),
@@ -222,6 +226,7 @@ fn new_hold() -> Hold {
         moved: Cell.new(no_moved),
         file_module: new_table<int>(),
         sig_asked: new_table<int>(),
+        reexports: Cell.new(no_reexports),
     }
 }
 
@@ -383,6 +388,8 @@ export type Workspace = {
     /// the package table — what every `use` line of the program asks again.
     files_of: Cell<Map<string, List<string>>>,
     surfaces: Cell<Map<string, Map<string, DeclId>>>,
+    // the re-exported names a lookup is following now, by module and name
+    reexporting: Cell<Map<string, bool>>,
     import_lists: Cell<Map<string, List<string>>>,
     /// WHAT IS HELD THIS BUILD.
     hold: Hold,
@@ -877,6 +884,7 @@ fn built(
         module_names_of: Cell.new(no_module_names_of),
         files_of: Cell.new(no_files_of),
         surfaces: Cell.new(no_surfaces),
+        reexporting: map_cell(),
         import_lists: Cell.new(no_import_lists),
         hold: new_hold(),
         defects: Cell.new(no_defects),
@@ -925,6 +933,7 @@ fn built(
         .decls
         .arm_recording(ordinal(Family.Items), ordinal(Family.Methods), (f: FileId) -> ws.held_sig_dep(f))
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
+    ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
     ws.arm_audit()
     ws.load_packages(src)
     ws
@@ -1532,7 +1541,14 @@ impl Workspace {
                 .finish(
                     m.index,
                     DbRow.Namespace(names),
-                    fp(3, [fp_list([d.index for d in names.bound]), names.clashes.length]),
+                    fp(
+                        3,
+                        [
+                            fp_list([d.index for d in names.bound]),
+                            fp_list([d.index for d in names.apart]),
+                            names.clashes.length,
+                        ],
+                    ),
                 ),
         )
     }
@@ -1581,7 +1597,7 @@ impl Workspace {
     fn prelude_imports(f: FileId) -> List<Import> {
         let from = self.packages()[self.holder_of_path(self.decls.file(f).path)]
         if from.key == prelude_key || !self.std_admitted(prelude_key) { return [] }
-        [Import { decl: d.id, at: null, renamed: "" } for d in self.exported_decls(prelude_module())]
+        [Import { decl: d.id, at: null, renamed: "", shared: false } for d in self.exported_decls(prelude_module())]
     }
 
     /// A file's names resolved. RECURSIVE: a whole-program pass asks

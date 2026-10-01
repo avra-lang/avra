@@ -4,7 +4,7 @@ use core.{StmtId, ExprId, FileId, Param, closest, some_list, DeclId, Binding, fo
 use core.{binds_type, binds_name}
 use core.{SeatMark}
 use diagnostics.{Diag, error_at, pointed, refusal}
-use features.{ResolveCx, SelfSeat, self_word, Cap, Namespace, remedy_for, nothing, Bound}
+use features.{ResolveCx, SelfSeat, self_word, Cap, Namespace, NameKind, remedy_for, nothing, Bound}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 use compiler.typing.{builtin_type_name}
 
@@ -131,6 +131,7 @@ impl ResolveCx {
                 )
             return
         }
+        if self.apart_refused(self.names_in(origin), [NameKind.Type, NameKind.Fn], name, at) { return }
         self
             .emit(
                 self
@@ -266,6 +267,7 @@ impl ResolveCx {
             self.bind_use(e, Binding.Decl(here!))
             return
         }
+        if self.apart_refused(names, [NameKind.Type], name, self.loc_of(e)) { return }
         if names.fn_decl(name) != null {
             return self
                 .emit(
@@ -343,6 +345,7 @@ impl ResolveCx {
             return
         }
         if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, self.loc_of(e)) }
+        if self.apart_refused(names, [NameKind.Fn, NameKind.Type], name, self.loc_of(e)) { return }
         self
             .emit(
                 self
@@ -359,6 +362,14 @@ impl ResolveCx {
                         names.fn_suggestions(),
                     ),
             )
+    }
+
+    /// A name sibling files each keep privately is refused as that,
+    /// never as undeclared.
+    fn apart_refused(names: Namespace, tables: List<NameKind>, name: string, at: Loc?) -> bool {
+        let refused? = self.view.decls.apart_refusal(names, tables, name, at) else { return false }
+        self.emit(refused)
+        true
     }
 
     fn names_in(origin: FileId?) -> Namespace {

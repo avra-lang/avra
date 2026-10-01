@@ -21,6 +21,7 @@ use core.{
     joined,
     sorted_texts,
     distinct,
+    flatten,
     same_decl,
     module_path,
     ModulePath,
@@ -351,6 +352,8 @@ export fn iface_digest(items: List<string>) -> string {
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a record line in, its contract out.
 fn interface_form(line: string) -> string {
     let p = line.split("\t")
+    // a re-export's contract is the name it exports and what it names — never its path
+    if p[0] == "reexport" { return p.slice(2, p.length).join("\t") }
     if p.length < 13 { return "" }
     let top = unpacked(p[12])
     let facts = if top.is_empty() { [] } else { top[0].split(";") }
@@ -794,13 +797,15 @@ fn written_from(at: Placed?, print: string) -> bool {
 }
 
 /// Whether a record line is a DECLARATION's — the rest say what the module imports and
-/// digests to, or (`ref`) what a held file's own body once referenced.
+/// digests to, (`ref`) what a held file's own body once referenced, or (`reexport`)
+/// a name its `export use` lines put on the module's surface.
 fn declares(parts: List<string>) -> bool {
     parts[0] != "import" &&
         parts[0] != "bytes" &&
         parts[0] != "iface" &&
         parts[0] != "file" &&
-        parts[0] != "ref"
+        parts[0] != "ref" &&
+        parts[0] != "reexport"
 }
 
 /// WHETHER A RECORD CAN BE REBUILT WHOLE — a total check, run BEFORE any file is
@@ -1089,6 +1094,9 @@ impl Workspace {
         }
         for d in sees { r.sees.set(d, true) }
         for p in record_fields(self, store, m) { if is_ref_row(p) && !names_builtin(p) { r.add(ref_target(p)) } }
+        // a name reached through a re-export references its original's file, so the
+        // file that re-exports it is reached too: re-pointing the name moves that file
+        r.add_all(flatten([self.reexporting_files(store, d) for d in sees]))
         r.indexes = [self.typed_named(store, d) for d in r.mods]
         r.late = []
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
@@ -1126,6 +1134,13 @@ impl Workspace {
         for p in record_fields(self, store, module_path(name.split("."))) {
             if p.length >= 3 && p[0] == "file" { self.keys.file_owners.put(p[1], name) }
         }
+    }
+
+    /// The files of a seen module's record that re-export a name.
+    fn reexporting_files(store: Store, name: string) -> List<string> {
+        distinct(
+            [p[1] for p in record_fields(self, store, module_path(name.split("."))) if p.length >= 5 && p[0] == "reexport"],
+        )
     }
 
     /// `typed_index` by the module's name.

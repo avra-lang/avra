@@ -1,0 +1,20 @@
+//! What every std-http suite and program test shares: `use
+//! tests.support.{…}`. A response's `date` line is the one field a
+//! test cannot know ahead of the second it runs in.
+
+/// The wire with its `date` line dropped.
+export fn dateless(t: string) -> string {
+    let b = t.bytes()
+    let at = b.index_of("\r\ndate: ".bytes(), 0)
+    if at < 0 { return t }
+    let end = b.index_of("\r\n".bytes(), at + 2)
+    b.slice(0, at).concat(b.slice(end, b.length)).text() ?? t
+}
+
+/// The wire with each `date` value shown as `<now>` — an IMF-fixdate is
+/// 29 characters, always.
+export fn undated(t: string) -> string {
+    let at = t.index_of("date: ")
+    if at < 0 { return t }
+    t.substring(0, at) + "date: <now>" + undated(t.substring(at + 35, t.length))
+}

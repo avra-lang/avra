@@ -1,0 +1,87 @@
+//! `export use` across a real package: a facade module re-exports
+//! another module's declarations, `avra run` and the binary `avra
+//! build` makes agree, a held facade still re-exports, and a
+//! re-exported declaration nobody calls costs the binary nothing.
+use @std.io.{make_dirs, write_text, read_bytes}
+use @std.process.{tool, cmd, Env, Outcome, ProcessError}
+use @std.time.{ms, now_ns}
+use @std.text.{repeat}
+
+/// The re-exported module: `twice`, and `heavy`, which no program here calls.
+fn util_text() -> string {
+    "export fn twice(n: int) -> int {\n    n * 2\n}\nexport fn heavy() -> string {\n    \"${repeat("x", 4000)}\"\n}\n"
+}
+
+/// A package minted fresh: `util`, a facade re-exporting from it
+/// (`heavy` too, when `wide`), and an entry printing `twice(n)` through
+/// the facade. Answers the package's root.
+fn facade_package(wide: bool, n: int) -> string {
+    let root = "${scratch_dir()}/reexport_${now_ns()}"
+    let _ = make_dirs("${root}/src/util")
+    let _ = make_dirs("${root}/src/facade")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"facade\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/util/m.av", util_text())
+    let _ = write_text(
+        "${root}/src/facade/f.av",
+        if wide { "export use util.{twice, heavy}\n" } else { "export use util.{twice}\n" },
+    )
+    let _ = write_text("${root}/src/main.av", "use facade.{twice}\nprintln(\"\${twice(${n})}\")\n")
+    root
+}
+
+fn facade_ran(args: List<string>) -> Result<Outcome, ProcessError> {
+    (cmd(tool(avra_bin())?, args) with { env: Env.Inherit, timeout: ms(60000) }).outcome()
+}
+
+/// The stdout of a run that ended clean.
+fn facade_stdout(r: Result<Outcome, ProcessError>) -> string? {
+    match r { .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { null }, .Err(_) -> null }
+}
+
+/// The binary `avra build` made of the package's entry.
+fn facade_binary(root: string) -> string? {
+    facade_stdout(facade_ran(["build", "${root}/src/main.av"]))?.replace("\n", "")
+}
+
+fn facade_program_ran(binary: string) -> Result<Outcome, ProcessError> {
+    (cmd(tool(binary)?, []) with { timeout: ms(20000) }).outcome()
+}
+
+/// What the binary printed.
+fn facade_built(root: string) -> string? {
+    facade_stdout(facade_program_ran(facade_binary(root) ?? ""))
+}
+
+/// The binary's size in bytes.
+fn binary_size(root: string) -> int? {
+    let at? = facade_binary(root) else { return null }
+    match read_bytes(at) { .Ok(b) -> b.length, .Err(_) -> null }
+}
+
+/// The entry rewritten to print `twice(n)`, then built again — the
+/// facade module, unchanged, answered from its record.
+fn rebuilt(root: string, n: int) -> string? {
+    let _ = write_text("${root}/src/main.av", "use facade.{twice}\nprintln(\"\${twice(${n})}\")\n")
+    facade_built(root)
+}
+
+spec "export use — a facade module over a real package" {
+    given "a facade re-exporting `twice` from `util`" {
+        then "`run` answers through the facade" {
+            facade_stdout(facade_ran(["run", "${facade_package(false, 3)}/src/main.av"])) == "6\n"
+        }
+        then "`build` answers a binary printing the same" {
+            facade_built(facade_package(false, 3)) == "6\n"
+        }
+        then "a rebuild after an entry edit reads the held facade's re-export" {
+            let root = facade_package(false, 3)
+            facade_built(root) == "6\n" && rebuilt(root, 21) == "42\n"
+        }
+    }
+    given "a facade that also re-exports `heavy`, which nothing calls" {
+        then "the binary is no larger than the narrow facade's" {
+            let wide = binary_size(facade_package(true, 3))
+            wide != null && wide == binary_size(facade_package(false, 3))
+        }
+    }
+}

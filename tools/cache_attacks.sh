@@ -515,6 +515,39 @@ ed $R/mhl/src/pt_say.av "fn base() -> int { 1 }" "fn base() -> int { 1 }
 impl Say for Pt { fn say() -> int { self.v + base() } }"
 S "mh: the impl back home" mh
 
+# A NAME REACHED THROUGH A RE-EXPORT KEYS ON THE RE-EXPORTING FILE TOO: `show.av`
+# names `twice` from `@rt/rxl`, whose `lib.av` re-exports it, so the importer's
+# reference lands on the ORIGINAL declaration's file. Re-pointing the re-export at
+# another declaration never moves that file, and must still re-read `show.av` —
+# or it stays held against a name that now means something else. A body edit to
+# the original holds it (avra-8sb5.64.10.1).
+RX() { # RX <label> <path-substr> <want: held|read> <printed>
+    steps=$((steps+1))
+    out=$(./avra build --time $R/rx 2>&1)
+    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
+    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
+    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
+    printed=$("$(printf '%s\n' "$out" | tail -1)" 2>&1)
+    [ "$printed" = "$4" ] || { fails=$((fails+1)); echo "FAIL  $1 printed '$printed', wanted '$4'"; }
+}
+mkdir -p $R/rxl/src/util $R/rxl/src/other $R/rx/src
+printf '[package]\nname = "@rt/rxl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-rxl"\npath = "src/lib.av"\n' > $R/rxl/avra.toml
+printf 'export fn twice() -> int { 2 }\n' > $R/rxl/src/util/u.av
+printf 'export fn twice() -> int { 20 }\n' > $R/rxl/src/other/o.av
+printf 'export use util.{twice}\n' > $R/rxl/src/lib.av
+printf '[package]\nname = "rt-rx"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/rxl" = { path = "../rxl" }\n' > $R/rx/avra.toml
+printf 'use @rt.rxl.{twice}\nexport fn shown() -> int { twice() }\n' > $R/rx/src/show.av
+printf 'println("rx ${shown()}")\n' > $R/rx/src/main.av
+S "cold rx: an importer reaches a name through a re-export" rx
+ed $R/rxl/src/util/u.av "{ 2 }" "{ 4 }"
+RX "rx: the original's body only moves — show.av stays held" show.av held "rx 4"
+ed $R/rxl/src/util/u.av "{ 4 }" "{ 2 }"
+RX "rx: and back" show.av held "rx 2"
+ed $R/rxl/src/lib.av "util.{twice}" "other.{twice}"
+RX "rx: the re-export is re-pointed — show.av re-reads" show.av read "rx 20"
+ed $R/rxl/src/lib.av "other.{twice}" "util.{twice}"
+RX "rx: and back — the store still keeps the first build's importer" show.av held "rx 2"
+
 # `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
 # shape is `enum`, and its KIND column is what says a collect made it — read the
 # shape alone and the held declaration is a plain enum, so the decl wire naming

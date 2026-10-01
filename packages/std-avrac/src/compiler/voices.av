@@ -103,6 +103,36 @@ fn no_module(at: Loc?, m: ModulePath) -> Diag {
     )
 }
 
+fn reexport_unreached(at: Loc?, m: ModulePath, item: string) -> Diag {
+    refusal(
+        "resolve.reexport_unreached",
+        at,
+        "`${m.text()}` re-exports `${item}`, and no declaration stands behind it",
+        "in this use",
+        "a re-export names a declaration — import `${item}` from the module that declares it, or break the re-export cycle",
+    )
+}
+
+fn reexport_cycle(at: Loc?, home: string, other: string) -> Diag {
+    refusal(
+        "resolve.reexport_cycle",
+        at,
+        "`${other}` already uses `${home}`, so re-exporting from it here would close a package cycle",
+        "in this use",
+        "packages never depend in a cycle — re-export both from a FACADE package above them, one made of `export use` lines",
+    )
+}
+
+fn reexport_twice(at: Loc?, name: string) -> Diag {
+    refusal(
+        "resolve.reexport_twice",
+        at,
+        "`${name}` is already on this module's surface",
+        "re-exported here",
+        "a module exports each name once — re-export this one under another name with `as`",
+    )
+}
+
 fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>) -> Diag {
     refusal(
         "resolve.not_exported",
@@ -860,6 +890,7 @@ export fn namespace_fp(ns: Namespace) -> int {
                     type_names: ns.type_names,
                 },
             ),
+            fp_list([d.index for d in ns.apart]),
             voices_fp(ns.voices),
         ],
     )

@@ -326,6 +326,7 @@ impl Workspace {
         let places = record_places(self, store, m)
         let held = [path for path in self.module_files(m) if self.decls.held.get().get(path) != null]
         for path in held { self.mint_file(path, file_rows(fields, places.get(path))) }
+        for path in held { self.hold.reexports.put(path, reexports_in(fields, path)) }
         for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
     }
 
@@ -505,6 +506,7 @@ impl Workspace {
         let f = self.file_id(path)
         let top = self.items(f)
         [self.record_line(self.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in self.decls.decls_of_file(f)]
+            .concat([reexport_line(path, r) for r in self.file_reexports(path)])
     }
 
     /// A settled const's value as one number — 0 for one that did not settle.
