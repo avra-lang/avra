@@ -17,7 +17,7 @@
 //! give or a drop frees a slot, for at most `wait` and never past the
 //! task's own deadline, and answers `.Exhausted` if none came. A task
 //! waiting costs nothing until a slot is freed: it parks on the pool's
-//! `freed` signal, woken by the give. `idle_per_host` caps how many are
+//! `freed` bell, rung by the give. `idle_per_host` caps how many are
 //! kept, and `idle` how long one is kept: an expired one is closed the
 //! next time the pool is touched, or by `reap`.
 //!
@@ -31,7 +31,7 @@
 //! one request at a time. An HTTP/2 connection carries many at once and
 //! joins `Carrier` as a variant; every match over it then names what a
 //! multiplexed connection does at take, give and close.
-use @std.net.{Address, Admission, Signal, signal}
+use @std.net.{Address, Admission, Bell}
 use @std.time.{Duration, ms, now_ms, secs}
 use client.{Client, ClientError}
 
@@ -58,7 +58,7 @@ export type Pool = {
     wait: Duration = secs(10),
     kept: Cell<List<Idle>> = Cell.new([]),
     out: Cell<List<Lent>> = Cell.new([]),
-    freed: Signal = signal(),
+    freed: Bell = Bell {},
 }
 
 /// A pool with the default bounds.
@@ -91,14 +91,14 @@ impl Pool {
         } else {
             self.kept.push(Idle { origin: origin, carrier: c, since: now_ms() })
         }
-        let _ = self.freed.wake()
+        self.freed.ring()
     }
 
     /// A lent carrier that failed, closed and its slot freed.
     fn drop(origin: string, c: Carrier) {
         self.lend(origin, -1)
         closed(c)
-        let _ = self.freed.wake()
+        self.freed.ring()
     }
 
     /// Every kept carrier past its idle time, closed; answers how many.
@@ -160,7 +160,7 @@ impl Pool {
         let reused? = self.reused(origin, admission) else {
             if self.lent(origin) < self.per_host { return self.dialed(origin, dial) }
             let left = until - now_ms()
-            if left <= 0 || !self.freed.wait(ms(left)) { return .Err(.Exhausted(origin, self.per_host)) }
+            if left <= 0 || self.freed.waited(ms(left)) is .Err { return .Err(.Exhausted(origin, self.per_host)) }
             return self.taken(origin, dial, admission, until)
         }
         self.lend(origin, 1)

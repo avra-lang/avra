@@ -55,10 +55,6 @@ extern fn avra_net_errno_pipe() -> int
 extern fn avra_net_errno_closed() -> int
 extern fn avra_net_errno_denied() -> int
 extern fn avra_net_entropy32() -> int
-extern fn avra_net_signal_open() -> int
-extern fn avra_net_signal_ring(s: int) -> int
-extern fn avra_net_signal_drain(s: int) -> int
-extern fn avra_net_signal_close(s: int) -> int
 extern fn avra_net_bell() -> int
 extern fn avra_net_bell_rung() -> int
 extern fn avra_net_ring(heard: int, rung: int) -> int
@@ -864,86 +860,6 @@ const nat64_v6: Block = Block { net: v6_words("64:ff9b:0:0:0:0:0:0")!, bits: 96 
 
 const six_to_four_v6: Block = Block { net: v6_words("2002:0:0:0:0:0:0:0")!, bits: 16 }
 
-// ── Signals ─────────────────────────────────────────────────────
-
-/// A WAKE TASKS PARK ON, broadcast: `wait` parks the calling task until
-/// the next `wake`, its `within` or its own timeout, and `wake` readies
-/// every task waiting, each to look again at what it waits for. A wake
-/// nobody waits for is kept by nobody, so a waiter looks BEFORE it
-/// waits — no task runs between its look and its park, so no wake falls
-/// between them. The descriptor it parks on exists only while someone
-/// waits: the first waiter opens it and the last to leave closes it, so
-/// an idle signal holds nothing and a fork inherits none.
-export type Signal = {
-    fd: Cell<int> = Cell.new(-1),
-    waiting: Cell<int> = Cell.new(0),
-    rung: Cell<bool> = Cell.new(false),
-}
-
-/// A signal nobody waits on yet.
-export fn signal() -> Signal { Signal {} }
-
-impl Signal {
-    /// Parked until a wake, the task's deadline or `timeout` — null is
-    /// no timeout of its own, and a negative one is spent — answering
-    /// whether a wake came.
-    fn wait(timeout: Duration?) -> bool {
-        let budget = timeout?.ms
-        if spent(budget) { return false }
-        let fd = self.opened()
-        if fd < 0 { return unsignalled(budget) }
-        self.waiting.set(self.waiting.get() + 1)
-        let woken = avra_fiber_park_fd(fd, 0, budget ?? -1) != 0
-        self.left(fd)
-        woken
-    }
-
-    /// Every waiting task woken; answers how many were waiting. A wake
-    /// already on its way rings nothing more.
-    fn wake() -> int {
-        let n = self.waiting.get()
-        if n == 0 || self.rung.get() { return n }
-        self.rung.set(true)
-        let _ = avra_net_signal_ring(self.fd.get())
-        n
-    }
-
-    /// The descriptor waiters park on, opened by the first; -errno when
-    /// none could be.
-    fn opened() -> int {
-        if self.fd.get() >= 0 { return self.fd.get() }
-        let fd = avra_net_signal_open()
-        if fd >= 0 { self.fd.set(fd) }
-        fd
-    }
-
-    /// A waiter gone: a ring it heard emptied, so the next wake is a
-    /// fresh edge, and the descriptor closed behind the last.
-    fn left(fd: int) {
-        let n = self.waiting.get() - 1
-        self.waiting.set(n)
-        if self.rung.get() {
-            let _ = avra_net_signal_drain(fd)
-            self.rung.set(false)
-        }
-        if n > 0 { return }
-        let _ = avra_net_signal_close(fd)
-        self.fd.set(-1)
-    }
-}
-
-/// A wait with no descriptor to park on — the process has none to give
-/// — pauses and answers no wake, never at once, so a waiting loop
-/// cannot spin; never past the budget it was given.
-fn unsignalled(budget: int?) -> bool {
-    let pause = unsignalled_pause().ms
-    let b = budget ?? pause
-    sleep(ms(if b < pause { b } else { pause }))
-    false
-}
-
-fn unsignalled_pause() -> Duration { ms(10) }
-
 // ── A bell ──────────────────────────────────────────────────────
 
 /// A DOORBELL BETWEEN TASKS: one parks on it until another rings. A
@@ -953,22 +869,28 @@ fn unsignalled_pause() -> Duration { ms(10) }
 /// may pause between its test and its park counts the rings first
 /// (`rings`) and parks only if none came since (`waited_since`); it
 /// wakes the others with `rouse`, which is no news to itself and is
-/// not counted. A ring with nobody parked costs no write. Close it once
-/// no task can ring it.
-export type Bell = { heard: int, rung: int, parked: Cell<bool>, count: Cell<int> }
+/// not counted. A ring with nobody parked costs no write.
+///
+/// Its pipe exists only while it is needed: `bell()` opens one its
+/// owner holds until `close`, and a bell nobody holds (`Bell {}`) opens
+/// with its first waiter and closes behind its last — so an idle one
+/// holds nothing and a fork inherits none. Every copy is the same bell.
+export type Bell = {
+    heard: Cell<int> = Cell.new(-1),
+    rung: Cell<int> = Cell.new(-1),
+    held: Cell<bool> = Cell.new(false),
+    waiting: Cell<int> = Cell.new(0),
+    parked: Cell<bool> = Cell.new(false),
+    count: Cell<int> = Cell.new(0),
+}
 
-/// A bell, or the errno opening its pipe answered.
+/// A bell whose pipe is open and held until `close`, or the errno
+/// opening it answered.
 export fn bell() -> Result<Bell, NetError> {
-    let heard = avra_net_bell()
+    let b = Bell { held: Cell.new(true) }
+    let heard = b.opened()
     if heard < 0 { return failed("open", "a bell", heard) }
-    .Ok(
-        Bell {
-            heard: heard,
-            rung: avra_net_bell_rung(),
-            parked: Cell.new(false),
-            count: Cell.new(0),
-        },
-    )
+    .Ok(b)
 }
 
 impl Bell {
@@ -982,17 +904,24 @@ impl Bell {
     fn rouse() {
         if !self.parked.get() { return }
         self.parked.set(false)
-        let _ = avra_net_ring(self.heard, self.rung)
+        let _ = avra_net_ring(self.heard.get(), self.rung.get())
     }
 
-    /// The calling task parked until the bell rings, or until
-    /// `timeout_ms` passes — a negative one never — or the deadline of a
-    /// `within` around it, which fails the wait `timed_out()`, as every
-    /// parking verb here does.
-    fn waited(timeout_ms: int) -> Result<int, NetError> {
+    /// The calling task parked until the bell rings, `timeout` passes —
+    /// null is none of its own, a negative one is spent and opens
+    /// nothing — or the deadline of a `within` around it; the last two
+    /// fail the wait `timed_out()`, as every parking verb here does.
+    fn waited(timeout: Duration?) -> Result<int, NetError> {
+        let budget = timeout?.ms
+        if spent(budget) { return timed_out("wait", "a bell") }
+        let heard = self.opened()
+        if heard < 0 { return unopened(heard, budget) }
+        self.waiting.set(self.waiting.get() + 1)
         self.parked.set(true)
-        if avra_fiber_park_fd(self.heard, 0, timeout_ms) == 0 { return timed_out("wait", "a bell") }
-        .Ok(self.heard)
+        let woken = avra_fiber_park_fd(heard, 0, budget ?? -1) != 0
+        self.left()
+        if !woken { return timed_out("wait", "a bell") }
+        .Ok(heard)
     }
 
     /// How many times the bell has rung.
@@ -1000,14 +929,54 @@ impl Bell {
 
     /// `waited`, unless the bell has rung since it had rung `seen`
     /// times — then at once.
-    fn waited_since(seen: int, timeout_ms: int) -> Result<int, NetError> {
-        if self.count.get() != seen { return .Ok(self.heard) }
-        self.waited(timeout_ms)
+    fn waited_since(seen: int, timeout: Duration?) -> Result<int, NetError> {
+        if self.count.get() != seen { return .Ok(self.heard.get()) }
+        self.waited(timeout)
     }
 
-    /// Both ends closed.
+    /// Its pipe closed and no longer held; a task parked on it wakes.
     fn close() {
-        let _ = avra_net_close(self.heard)
-        let _ = avra_net_close(self.rung)
+        self.held.set(false)
+        self.shut()
+    }
+
+    /// The end tasks park on, the pipe opened when it is not; -errno
+    /// when none could be.
+    fn opened() -> int {
+        if self.heard.get() >= 0 { return self.heard.get() }
+        let heard = avra_net_bell()
+        if heard < 0 { return heard }
+        self.rung.set(avra_net_bell_rung())
+        self.heard.set(heard)
+        heard
+    }
+
+    /// A waiter gone: the pipe closed behind the last, unless held.
+    fn left() {
+        self.waiting.set(self.waiting.get() - 1)
+        if self.waiting.get() == 0 && !self.held.get() { self.shut() }
+    }
+
+    /// Both ends closed, the scheduler told first, and nothing left for
+    /// a ring to write to.
+    fn shut() {
+        if self.heard.get() < 0 { return }
+        let _ = avra_net_close(self.heard.get())
+        let _ = avra_net_close(self.rung.get())
+        self.heard.set(-1)
+        self.rung.set(-1)
+        self.parked.set(false)
     }
 }
+
+/// A wait with no pipe to park on — the process has none to give —
+/// pauses before it answers the errno, never at once, so a waiting loop
+/// cannot spin; never past the budget it was given.
+fn unopened(errno: int, budget: int?) -> Result<int, NetError> {
+    let pause = unopened_pause().ms
+    let b = budget ?? pause
+    sleep(ms(if b < pause { b } else { pause }))
+    failed("open", "a bell", errno)
+}
+
+fn unopened_pause() -> Duration { ms(10) }

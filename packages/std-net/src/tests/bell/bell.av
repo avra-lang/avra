@@ -10,7 +10,7 @@ use @std.time.{ms, sleep, now_ms}
 
 /// Parks on `b` until it rings — or 2 s pass — and counts itself woken.
 fn wakes(b: Bell, woke: Cell<int>) {
-    if b.waited(2000) is .Ok { woke.set(woke.get() + 1) }
+    if b.waited(ms(2000)) is .Ok { woke.set(woke.get() + 1) }
 }
 
 fn shown() -> string {
@@ -26,7 +26,7 @@ fn shown() -> string {
     let all_three = woke.get() == 3 && now_ms() - start < 1000
     b.ring()
     let t0 = now_ms()
-    let unheard = b.waited(100)
+    let unheard = b.waited(ms(100))
     let early_ring_kept = unheard is .Ok
     let timed = match unheard { .Ok(_) -> false, .Err(e) -> e.timed_out() }
     let waited_out = now_ms() - t0 >= 90
@@ -41,10 +41,10 @@ fn shown() -> string {
     let seen = b.rings()
     b.rouse()
     let t1 = now_ms()
-    let roused_waits = b.waited_since(seen, 100) is .Err && now_ms() - t1 >= 90
+    let roused_waits = b.waited_since(seen, ms(100)) is .Err && now_ms() - t1 >= 90
     b.ring()
     let t2 = now_ms()
-    let rung_answers = b.waited_since(seen, 2000) is .Ok && now_ms() - t2 < 50
+    let rung_answers = b.waited_since(seen, ms(2000)) is .Ok && now_ms() - t2 < 50
     b.close()
     [
         "a ring wakes every parked task: ${all_three}",

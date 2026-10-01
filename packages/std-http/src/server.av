@@ -768,10 +768,10 @@ impl Serving {
     /// is still within its deadline.
     fn waited_on(t: Talk, b: Bell, seen: int) -> bool {
         if t.pours.any((p) -> t.h.hungry(p.id)) {
-            let _ = b.waited(0)
+            let _ = b.waited(ms(0))
             return true
         }
-        let stall = if t.h.owing() > 0 || !t.pours.is_empty() { self.timing.idle.ms - (now_ms() - t.moved) } else { -1 }
+        let stall = self.stall_left(t)
         if !t.lines.is_empty() {
             let _ = b.waited_since(seen, stall)
             return true
@@ -779,8 +779,18 @@ impl Serving {
         let deadline = if t.h.streams.is_empty() { self.timing.idle } else { self.timing.body }
         let silence = deadline.ms - (now_ms() - t.heard)
         if silence <= 0 { return false }
-        let _ = b.waited_since(seen, if stall >= 0 && stall < silence { stall } else { silence })
+        let _ = b.waited_since(seen, ms(least(stall?.ms ?? silence, silence)))
         true
+    }
+
+    /// How long an answer held behind a shut window may still wait for
+    /// it to move — absent while none is held, or once its time is up
+    /// and the connection's end is already owed.
+    fn stall_left(t: Talk) -> Duration? {
+        if t.h.owing() <= 0 && t.pours.is_empty() { return null }
+        let left = self.timing.idle.ms - (now_ms() - t.moved)
+        if left < 0 { return null }
+        ms(left)
     }
 
     /// Stream `x`'s request answered by the handler, its body what
@@ -922,7 +932,7 @@ const inbox_room: int = 262144
 fn read_beside(c: dyn Transport, inbox: Cell<Inbox>, b: Bell) -> int {
     while !inbox.get().closed && inbox.get().failed == null {
         if inbox.get().got.length >= inbox_room {
-            let _ = b.waited(-1)
+            let _ = b.waited(null)
         } else {
             let r = c.wire_read(read_size())
             inbox.set(heard_into(inbox.get(), r))
@@ -976,7 +986,7 @@ fn lingered(l: Link, inbox: Cell<Inbox>, b: Bell) {
     while !inbox.get().closed && inbox.get().failed == null && now_ms() < until {
         inbox.set(inbox.get() with { got: no_bytes })
         b.rouse()
-        let _ = b.waited(until - now_ms())
+        let _ = b.waited(ms(until - now_ms()))
     }
 }
 

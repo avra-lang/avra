@@ -140,14 +140,14 @@ fn heard_within(s: Source, limit: int) -> string {
 }
 
 /// PARKED OBSERVERS ALL HEAR ONE PUBLISH, well before their quiet
-/// deadline: they wait on the feed's signal, never a poll.
+/// deadline: they wait on the feed's bell, never a poll.
 fn parked_observers_all_hear() -> bool {
     let f = feed(4)
     let observers = [spawn heard_within(f.resumed(null).source(), 5000) for i in 0..50]
     let t0 = now_ms()
     let _ = (spawn published_after(f, ms(50))).await
     let said = [o.await for o in observers]
-    said.all(it == "1:late") && now_ms() - t0 < 1000 && f.published.fd.get() == -1
+    said.all(it == "1:late") && now_ms() - t0 < 1000 && f.published.heard.get() == -1
 }
 
 /// An observer nobody publishes to is quiet at its deadline, and holds
@@ -157,7 +157,7 @@ fn a_parked_observer_goes_quiet() -> bool {
     let t0 = now_ms()
     heard_within(f.resumed(null).source(), 100) == "quiet" &&
         now_ms() - t0 >= 90 &&
-        f.published.fd.get() == -1
+        f.published.heard.get() == -1
 }
 
 // ── A live stream ───────────────────────────────────────────────

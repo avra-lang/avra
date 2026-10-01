@@ -17,7 +17,7 @@
 //! skipped: the stream opens with a `cursor-expired` event carrying the
 //! stale cursor, and the observer resynchronizes before reading on.
 //! `Feed` is the in-memory retention that answers both.
-use @std.net.{Signal, signal}
+use @std.net.{Bell}
 use @std.time.{Duration, ms, now_ms, secs}
 use @std.text.{parse_int, has_nul}
 use http.{Request, Response, Header, Stream, Pulled}
@@ -187,10 +187,10 @@ const newline: Bytes = "\n".bytes()
 /// publish writes one slot whatever `keep` is, and the oldest event is
 /// the one overwritten.
 ///
-/// AN OBSERVER WAITING PARKS on the feed's `published` signal and costs
+/// AN OBSERVER WAITING PARKS on the feed's `published` bell and costs
 /// nothing until a publish wakes it: no poll, no timer but its own
 /// quiet deadline.
-export type Feed = { log: Cell<List<Event>>, next: Cell<int>, keep: int, published: Signal = signal() }
+export type Feed = { log: Cell<List<Event>>, next: Cell<int>, keep: int, published: Bell = Bell {} }
 
 /// A feed retaining the last `keep` events — none, when `keep` is not
 /// positive.
@@ -210,7 +210,7 @@ impl Feed {
             self.log.set_at(self.slot(id), kept)
         }
         self.next.set(id + 1)
-        let _ = self.published.wake()
+        self.published.ring()
         "${id}"
     }
 
@@ -249,7 +249,7 @@ impl Feed {
         let until = now_ms() + wait.ms
         while at.get() >= self.next.get() {
             let left = until - now_ms()
-            if left <= 0 || !self.published.wait(ms(left)) { return .Quiet }
+            if left <= 0 || self.published.waited(ms(left)) is .Err { return .Quiet }
         }
         let id = at.get()
         if id < self.first() { return .Failed }
