@@ -2958,6 +2958,11 @@ int64_t avra_pid_alive(int64_t pid) {
     return errno == EPERM ? 1 : 0;
 }
 
+// This process's own id, OS-assigned at birth.
+int64_t avra_own_pid(void) {
+    return (int64_t)getpid();
+}
+
 // ── Descriptors ──────────────────────────────────────────────────
 // THE ONE DOOR THROUGH WHICH FOREIGN BYTES BECOME A VALUE. A package's
 // own C opens files and sockets and answers descriptors; what flows
