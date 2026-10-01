@@ -54,6 +54,118 @@ fn quadratic_growth(s: Code, piece: Code) -> Fix {
         )
 }
 
+/// A `Cell` read out, written through, then stored back — `mut t =
+/// c.get()`, a write through `t` (`push`, `set_at`, `set`, `put`,
+/// `grow_to`, `pop`, a field write), then `c.set(t)` — copies what the
+/// cell holds on EVERY turn (spec 11.5: `get` answers a COPY). `Cell`
+/// exists to make mutation through sharing cheap, and when the loop is
+/// hot the copy is quadratic. Write in place through the cell's own
+/// verbs (`push`, `set_at`, `put`), or for a `SideTable` through
+/// core's `side_put`/`side_grow`, which DETACH the cell first
+/// (`c.set(t with { … })`) so nothing shares the box the write would
+/// copy whole. That detach is what the guard reads: a body storing the
+/// same cell with a `with` form is the in-place written shape, never
+/// this smell, and a store of any value but the very one `t` names
+/// never fires.
+///
+/// NO REWRITE: the in-place verb is the cell's own, and which one a
+/// site wants depends on what it holds — `push`/`set_at`/`put` for a
+/// list or a map, `side_put`/`side_grow` for a `SideTable` — a
+/// judgement this pattern's two bound expressions do not carry.
+@keeps("{\n    mut t = c.get()\n    c.set(t with { cells: [] })\n    t.grow_to(3)\n    t.set(2, 9)\n    c.set(t)\n}")
+@keeps("{\n    mut t = c.get()\n    c.set(t)\n}")
+@keeps("{\n    mut t = a.get()\n    t.push(1)\n    b.set(t)\n}")
+@keeps("{\n    c.push(1)\n}")
+export rule cell_get_copy {
+    quote {
+        {
+            ${..head}
+            mut ${t} = ${c}.get()
+            ${..body}
+            ${c}.set(${v})
+            ${..rest}
+        }
+    } if v.text() == t && writes_through(body, t) && !detaches(body, c) -> cell_get_copy_found(c, t),
+    quote {
+        {
+            ${..head}
+            mut ${t}: ${T} = ${c}.get()
+            ${..body}
+            ${c}.set(${v})
+            ${..rest}
+        }
+    } if v.text() == t && writes_through(body, t) && !detaches(body, c) -> cell_get_copy_found(c, t),
+    quote {
+        {
+            ${..head}
+            mut ${t} = ${c}.get()
+            ${..body}
+            ${c}.set(${v})
+        }
+    } if v.text() == t && writes_through(body, t) && !detaches(body, c) -> cell_get_copy_found(c, t),
+    quote {
+        {
+            ${..head}
+            mut ${t}: ${T} = ${c}.get()
+            ${..body}
+            ${c}.set(${v})
+        }
+    } if v.text() == t && writes_through(body, t) && !detaches(body, c) -> cell_get_copy_found(c, t),
+}
+
+/// The in-place verbs a value copied out of a cell is written through —
+/// the cell's own (`push`, `set_at`, `put`) and the aggregate's (`set`,
+/// `grow`, `grow_to`, `pop`, `keep`).
+const cell_write_verbs: List<string> = [
+    "push",
+    "set_at",
+    "set",
+    "put",
+    "grow",
+    "grow_to",
+    "pop",
+    "keep",
+]
+
+/// Whether any of `body`'s statements writes through the name `t`: a call
+/// of an in-place verb ON `t`, or a field write `t.field = …`.
+fn writes_through(body: List<Code>, t: string) -> bool {
+    flatten([nodes_under(s) for s in body]).any((c: Code) -> is_write_call(c, t)) ||
+        body.any((s: Code) -> s.text().starts_with(t + ".") && s.text().contains(" = "))
+}
+
+fn is_write_call(c: Code, t: string) -> bool {
+    c.is_method_call() &&
+        cell_write_verbs.contains(c.method_name() ?? "") &&
+        c.kids().first()?.text() ?? "" == t
+}
+
+/// Whether `body` detaches the cell first — a `c.set(<with …>)` that
+/// EMPTIES what the cell holds (`side_put`/`side_grow`), which is the
+/// in-place written form, never this smell.
+fn detaches(body: List<Code>, c: Code) -> bool {
+    flatten([nodes_under(s) for s in body]).any((n: Code) -> is_detach(n, c.text()))
+}
+
+fn is_detach(n: Code, recv: string) -> bool {
+    n.is_method_call() &&
+        n.method_name() == "set" &&
+        n.kids().first()?.text() ?? "" == recv &&
+        (n.call_args().first()?.text() ?? "").contains(" with ")
+}
+
+fn cell_get_copy_found(c: Code, t: string) -> Fix {
+    Fix
+        .Say(
+            said(
+                c.loc(),
+                "`${c.text()}.get()` read out, written through `${t}`, and stored back copies the whole value every turn — write in place through the cell (`push`, `set_at`, `put`) or, for a `SideTable`, through core's `side_put`/`side_grow`",
+                "this read-modify-write",
+                null,
+            ),
+        )
+}
+
 /// A payload the value-protocol dispatch GUARANTEES, papered over
 /// with a `??` default — absence here is a DEFECT the caller should
 /// speak (`cx.lower_defect(e, ...)`), never a plausible fallback.
