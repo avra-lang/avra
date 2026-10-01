@@ -1,0 +1,65 @@
+// avra-8sb5.57.9.7: `DocFact` is a `@side` partition over the same dense
+// slot `Decls.decls`/`faces` already use — `decls.doc_facts` set beside
+// `self.face` (features/decls_mint.av), the one place a live parse's
+// capture and a held record's `adopt_facts` converge, so no declaration
+// updates `DeclFacts` without `DocFact` agreeing. This is the witness for
+// the column alone; the renderer still reads `doc_of`/`annotations_of`
+// (decl_facts_test.av) until the second slice moves it inside the query.
+use @std.avrac.compiler.{analyze_source, Analysis}
+use @std.avrac.features.{DocFact, Decl, new_decls, DeclFacts, AnnotationFact}
+use @std.avrac.core.{DeclId, FileId, DeclKind, no_stmt}
+
+fn doc_fact_of(a: Analysis, name: string) -> DocFact? {
+    let d = decl_named(a, name)
+    DocFact.get(a.view.decls.doc_facts.get(), d.index)
+}
+
+spec "DocFact — a declaration's doc and annotations, as a @side column" {
+    given "a documented, annotated fn" {
+        then "its DocFact agrees with Decls.doc_of/annotations_of" {
+            let a = analyze_source(
+                "fn tag(s: string) { }\n/// line one\n/// line two\n@tag(\"x\")\nfn f() -> int {\n    1\n}\nf()",
+            )
+            let row = doc_fact_of(a, "f")!
+            (row.doc ?? []).join("\n") == "line one\nline two" &&
+                row.annotations.length == 1 &&
+                row.annotations[0].name == "tag" &&
+                row.annotations[0].args.join(",") == "x"
+        }
+    }
+    given "a plain fn with neither" {
+        then "its DocFact reads the empty seed, not absent" {
+            let a = analyze_source("fn f() -> int {\n    1\n}\nf()")
+            let row = doc_fact_of(a, "f")!
+            row.doc == null && row.annotations.is_empty()
+        }
+    }
+    given "a held declaration, adopted straight from a record" {
+        then "its DocFact reflects what was adopted — the same door `face` writes through" {
+            mut decls = new_decls()
+            let f: FileId = decls.file_id("/held/src/lib.av", "lib", false)
+            let d: DeclId = decls
+                .mint("held::lib::K", f, no_stmt, "K", DeclKind.Const, true, "", null, false, null)
+            let facts = DeclFacts {
+                external: false,
+                stat: true,
+                is_grammar: false,
+                is_component: false,
+                span: null,
+                tparams: [],
+                bounds: [],
+                seats: [],
+                host: [],
+                annotated: true,
+                of: "",
+                doc: ["a held const"],
+                annotations: [AnnotationFact { name: "kept", args: ["x"], span: null }],
+            }
+            decls.adopt_facts(d, facts)
+            let row = DocFact.get(decls.doc_facts.get(), d.index)!
+            (row.doc ?? []).join("\n") == "a held const" &&
+                row.annotations.length == 1 &&
+                row.annotations[0].name == "kept"
+        }
+    }
+}
