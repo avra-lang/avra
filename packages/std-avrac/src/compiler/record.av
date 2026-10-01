@@ -166,7 +166,7 @@ fn read_fields(line: string) -> List<string> {
 
 /// THE SHAPE WORD — a declaration line's first column. A header line
 /// ("file"/"import"/"iface"/"bytes") is not a declaration and has none.
-enum Shape { Struct, Boxed, Enum, Named, Alias, Const, Aims, Opaque, Fn, Extern }
+enum Shape { Struct, Boxed, Enum, Named, Alias, Const, Aims, Opaque, Fn, Extern, Collect }
 
 fn shape_of(word: string) -> Shape? {
     match word {
@@ -180,6 +180,7 @@ fn shape_of(word: string) -> Shape? {
         "opaque" -> .Opaque,
         "fn" -> .Fn,
         "extern" -> .Extern,
+        "collect" -> .Collect,
         _ -> null,
     }
 }
@@ -233,7 +234,7 @@ impl Row {
     /// shapes whose payload opens with a `;`-joined list.
     fn items() -> List<string> { self.list_at(0) }
 
-    /// `Named`'s underlying type, `Alias`'s, `Const`'s type — the shapes whose payload
+    /// `Named`'s underlying type, `Alias`'s, `Const`'s and `Collect`'s type — the shapes whose payload
     /// opens with one wire (a `Const`'s carries its settled value's
     /// fingerprint after a `;`, dropped here).
     fn of_wire() -> string { self.field(0).split(";").first() ?? "" }
@@ -931,6 +932,7 @@ fn declared_kind(shape: Shape, word: string) -> DeclKind? {
         .Named -> .Named,
         .Alias -> .Alias,
         .Const -> .Const,
+        .Collect -> .Collect,
         .Aims -> .Impl,
         .Fn or .Extern or .Opaque -> kind_of_word(word),
     }
