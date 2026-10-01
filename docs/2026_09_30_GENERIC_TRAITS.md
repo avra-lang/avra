@@ -60,12 +60,8 @@ receiver contract every impl agrees to — never the first impl found.
 
 ## Recorded, not landed
 
-- **A default in a generic trait** is refused (`type.trait`). A default's
-  body is lowered once per signatory with `Self` substituted; its `T`
-  needs the arguments of the impl it is reached through. Fires when the
-  first site wants one (the likely first: `Realize<T>`'s shared helpers).
-- **A bound or `dyn` with trait arguments** (`<R: Realize<Text>>`,
-  `dyn Realize<Text>`) parses as an error today — C2a.4 and C2b.
-- **An inherent method sharing a generic trait member's name** is
-  refused at the call as ambiguous; the refusal belongs at the
-  declaration. With C2a.4.
+- **`dyn` over a generic trait** (`dyn Realize<Text>`) does not parse.
+  A `dyn` type names its trait alone, so a box has no slot for the
+  trait's arguments. Fires when a value must hold "something that draws
+  `Text`" without naming its type; a bound (`<R: Realize<Text>>`)
+  covers every case where the type is known at the call.

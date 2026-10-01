@@ -1,13 +1,11 @@
 //! Parse-time lowering: captured tokens and expressions -> the
 //! FnDecl statement and the Call node. Param names and their WRITTEN
 //! types arrive as two parallel captures and zip into Params.
-use core.{Expr, Stmt, Param, TypeRef, plain_mark, Scoped}
-use grammar.{Token}
+use core.{Expr, Stmt, Param, plain_mark, Scoped}
 use features.{
     LangNode,
     Builder,
     spread_named,
-    aligned_binds,
     aligned_param_types,
     expr_id_at,
     seats,
@@ -31,10 +29,10 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
     // a tparam's BOUND and a param's TYPE are optional in the
     // PARSE; spans re-align both (only `self` may go bare — the
     // declare law enforces it).
-    let bounds = aligned_binds(tp, b.tokens(2)?, ends)
+    let bounds = aligned_param_types(tp, b.type_refs(2)?, ends)
     let tparams = [Param {
         name: Scoped(t.text),
-        ty: bound_ref(bounds[j], t),
+        ty: bounds[j],
         default: null,
         promises: plain_mark,
         id: b.store.alloc_param_id(t.span),
@@ -94,11 +92,6 @@ fn build_once_fn(b: Builder) -> Result<LangNode, string> {
 }
 
 /// A bound as a written type — the trait's bare name.
-fn bound_ref(bound: string, at: Token) -> TypeRef? {
-    if bound == "" { return null }
-    TypeRef { name: bound, args: [], optional: false, dynamic: false, arrow: false, span: at.span }
-}
-
 fn build_call(b: Builder) -> Result<LangNode, string> {
     let c = b.token(0)?
     let args = b.exprs(1)?

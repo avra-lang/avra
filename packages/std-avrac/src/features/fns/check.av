@@ -524,10 +524,16 @@ export fn check_return(mut cx: TypeCx, s: StmtId) {
 }
 
 /// One bound, one binding: implemented, or refused with the remedy.
-fn bound_held(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, ty: TypeId) -> bool {
-    if cx.meets_bound(decl, tname, ty) { return true }
-    bound_unheld(cx, e, tname, ty)
+fn bound_held(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, ty: TypeId, at: List<TypeId>) -> bool {
+    // a bound naming no trait was refused where it was written
+    if cx.bound_trait(decl, tname) == null || cx.meets_bound(decl, tname, ty, at) { return true }
+    bound_unheld(cx, e, bound_spelled(cx, tname, at), ty)
     false
+}
+
+/// A bound as written: the trait, then its arguments at this call.
+fn bound_spelled(cx: TypeCx, tname: string, at: List<TypeId>) -> string {
+    if at.is_empty() { tname } else { "${tname}<${[cx.view.types.name_of(t) for t in at].join(", ")}>" }
 }
 
 /// Every bounded tparam's binding must IMPLEMENT its trait — the
@@ -535,9 +541,8 @@ fn bound_held(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, ty: TypeId
 fn bounds_hold(mut cx: TypeCx, e: ExprId, decl: DeclId, concrete: List<TypeId>) -> bool {
     for j in 0..cx.tbounds(decl).length {
         let name = cx.bound_name(decl, j)
-        if name != "" {
-            if !bound_held(cx, e, decl, name, concrete[j]) { return false }
-        }
+        let at = [cx.view.types.substituted(a, decl, concrete) for a in cx.view.decls.bound_args(decl, j)]
+        if name != "" && !bound_held(cx, e, decl, name, concrete[j], at) { return false }
     }
     true
 }

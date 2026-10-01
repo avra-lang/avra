@@ -28,6 +28,7 @@ use core.{
     FnParts,
     spelled,
     fp_str,
+    same_type,
     module_symbol,
     filled,
     flatten,
@@ -360,6 +361,8 @@ export type Decls = {
     /// types them through the one real signing context; every later ask reuses
     /// the answer.
     seat_types: Cell<List<List<TypeId>?>>,
+    /// Each type parameter's bound's trait arguments, per declaration.
+    bound_types: Cell<List<List<List<TypeId>>?>>,
     seat_ensure: Cell<fn(DeclId) -> void>,
     /// THE DEPENDENCY AUDIT, in a compiler built with `audit_build`: the hook the workspace
     /// arms hears each read that skipped the Kernel, while `auditing` is on.
@@ -568,6 +571,7 @@ export fn new_decls() -> Decls {
     let no_faces: List<DeclFacts?> = []
     let no_sigs: List<DeclSig?> = []
     let no_seat_types: List<List<TypeId>?> = []
+    let no_bound_types: List<List<List<TypeId>>?> = []
     let no_provenance: List<Provenance?> = []
     let empty_marks: List<List<Diagnostic>?> = []
     let no_targets: List<DeclId?> = []
@@ -618,6 +622,7 @@ export fn new_decls() -> Decls {
         held_reaches: map_cell(),
         sigs: Cell.new(no_sigs),
         seat_types: Cell.new(no_seat_types),
+        bound_types: Cell.new(no_bound_types),
         seat_ensure: Cell.new(no_ensure),
         provenance: Cell.new(no_provenance),
         marks: Cell.new(empty_marks),
@@ -1168,6 +1173,15 @@ impl Decls {
     /// natural `declare_sig`/`declare_method`/`declare_trait_sig`) records
     /// here, and the other finds it already settled.
     fn record_seat_types(d: DeclId, ts: List<TypeId>) { self.seat_types.set_at(d.index, ts) }
+
+    /// The trait arguments seat `j`'s bound names — `[]` for a bound that takes none.
+    fn bound_args(d: DeclId, j: int) -> List<TypeId> {
+        let all? = self.bound_types.get()[d.index] else { return [] }
+        if j < 0 || j >= all.length { [] } else { all[j] }
+    }
+
+    /// Records every type parameter's bound's trait arguments, in seat order.
+    fn record_bound_args(d: DeclId, args: List<List<TypeId>>) { self.bound_types.set_at(d.index, args) }
 
     /// The hooks capture the workspace that holds this table — a
     /// cycle counting never frees. A one-shot workspace disarms them
@@ -2124,6 +2138,35 @@ impl Decls {
         [DeclId { index: j } for j, x in self.decls.get() if implements_kind(x.kind) && self.implements(DeclId { index: j }, tr)]
     }
 
+    /// Whether a type answers a generic trait at these arguments: a
+    /// parameter by a bound naming the trait there, any other type by a
+    /// member for each one the trait leaves to its impls.
+    fn implements_at(recv: TypeId, g: DeclId, args: List<TypeId>) -> bool {
+        match self.types.shape_of(recv) {
+            .Var(d, j, _) -> self.bound_name(d, j) == self.decl(g).name && same_types(self.bound_args(d, j), args),
+            _ -> self.implemented_at(recv, g, [recv].concat(args)),
+        }
+    }
+
+    fn implemented_at(recv: TypeId, g: DeclId, at: List<TypeId>) -> bool {
+        let d? = self.implementor(recv) else { return false }
+        self.trait_fns(g).all((r) -> self.has_body(r) || self.answered_at(d, r, g, at))
+    }
+
+    /// Whether `d` has a method answering trait member `r` at `at`.
+    fn answered_at(d: DeclId, r: DeclId, g: DeclId, at: List<TypeId>) -> bool {
+        let want? = self.sig(r)?.fn_sig() else { return false }
+        let seats = [self.types.substituted(p, g, at) for p in want.params]
+        self.methods_named(d, self.decl(r).name).any((m) -> self.same_seats(m, seats))
+    }
+
+    /// Whether a method's seats past its receiver are exactly these.
+    fn same_seats(m: DeclId, seats: List<TypeId>) -> bool {
+        let sig? = self.sig(m)?.fn_sig() else { return false }
+        sig.params.length == seats.length &&
+            same_types(sig.params.slice(1, seats.length), seats.slice(1, seats.length))
+    }
+
     /// A type's runtime tag in a `dyn` box: its symbol's fingerprint —
     /// the same in every unit and every run, so a held object agrees.
     fn type_tag(d: DeclId) -> int { fp_str(self.symbol(d)) }
@@ -2325,4 +2368,9 @@ fn implements_kind(k: DeclKind) -> bool {
         .Record or .Enum or .CollectEnum or .Named or .Builtin -> true,
         .Fn or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect -> false,
     }
+}
+
+/// Two type lists naming the same types, place by place.
+fn same_types(a: List<TypeId>, b: List<TypeId>) -> bool {
+    a.length == b.length && [j for j, t in a if !same_type(t, b[j])].is_empty()
 }

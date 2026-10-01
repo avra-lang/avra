@@ -218,6 +218,28 @@ impl Workspace {
             )
         let bits = row.writes()
         for j in 0..bits.length { if bits.char_code(j) == 49 { self.decls.record_seat_written(id, j) } }
+        self.decls.record_bound_args(id, self.bounds_read(id, row.bounds()))
+    }
+
+    /// Each bounded seat's trait arguments as `seat=wire|wire`, `;`-joined —
+    /// a seat whose bound takes none is not written, so an empty column is
+    /// no arguments anywhere.
+    fn bounds_wire(d: DeclId) -> string {
+        let n = self.decls.tparams(d).length
+        joined(
+            [bound_entry(j, [self.decls.type_wire(t) for t in self.decls.bound_args(d, j)]) for j in 0..n if !self.decls.bound_args(d, j).is_empty()],
+            ";",
+        )
+    }
+
+    /// The column `bounds_wire` wrote, back as one argument list per seat.
+    fn bounds_read(d: DeclId, entries: List<string>) -> List<List<TypeId>> {
+        [self.bound_at(entries, j) for j in 0..self.decls.tparams(d).length]
+    }
+
+    fn bound_at(entries: List<string>, j: int) -> List<TypeId> {
+        let hit? = entries.find(it.starts_with("${j}=")) else { return [] }
+        [self.interface_type(w) for w in hit.substring("${j}=".length, hit.length).split("|")]
     }
 
     /// A `trait`/`syntax`/`default`/`main`/`case`/`builtin` declaration has no
@@ -376,7 +398,7 @@ impl Workspace {
                 [if self.decls.seat_written(d.id, j) { "1" } else { "0" } for j in 0..n],
                 "",
             )
-            "${shape_line(self, sig!, "")}\t${marks}\t${writes}"
+            "${shape_line(self, sig!, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}"
         } else {
             shape_line(
                 self,
@@ -775,3 +797,5 @@ impl Decls {
 /// `wire_decl`'s answer: the declaration, and where the next field starts.
 type WireDeclRef = { id: DeclId, next: int }
 
+/// One bounded seat in the fn row's bounds column.
+fn bound_entry(j: int, wires: List<string>) -> string { "${j}=${joined(wires, "|")}" }

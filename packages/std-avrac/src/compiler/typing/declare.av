@@ -460,6 +460,10 @@ impl TypeCx {
         self.refuse_taken_tparams(s, owner)
         self.enter_tscope(s)
         let d = self.decl_of(s)
+        self
+            .view
+            .decls
+            .record_bound_args(d, [self.bound_typed(s, p.ty) for p in self.view.store.decl_tbounds(s)])
         // `seat_types_so_far`, never `seats`: this IS the natural signing —
         // triggering the hook here would ask it of an extern too (declare_fn
         // routes both through this one fn), and the hook derives params by
@@ -552,6 +556,26 @@ impl TypeCx {
     /// Parameters declare their types; the receiver is never among
     /// them (`self` is a keyword, and the impl gives seat 0 its
     /// type — a bare keyword written as a parameter has no seat).
+    /// A bound's trait arguments, typed in the fn's own scope — a bound
+    /// that is not a trait's bare name, or that names it at the wrong
+    /// count, refused.
+    fn bound_typed(s: StmtId, bound: TypeRef?) -> List<TypeId> {
+        let b? = bound else { return [] }
+        if b.optional || b.dynamic || b.arrow {
+            self.bound_not_a_trait(s, spelled(b))
+            return []
+        }
+        let args = [self.annotated(s, a) for a in b.args]
+        let tr? = self.bound_trait(self.decl_of(s), b.name) else {
+            self.bound_not_a_trait(s, spelled(b))
+            return []
+        }
+        let takes = self.view.decls.tparams(tr).length - 1
+        if args.length == takes { return args }
+        self.bound_miscounted(s, b.name, takes, args.length)
+        []
+    }
+
     fn param_type(s: StmtId, pp: Param) -> TypeId {
         if pp.ty != null { return self.annotated(s, pp.ty) }
         self.typeless_param(s, pp.name.of)
@@ -1217,3 +1241,33 @@ fn joined_tables(ts: List<StructSig>) -> StructSig {
 }
 
 fn no_fields() -> StructSig { StructSig { names: [], types: [], defaults: [] } }
+
+// ── The bound voices ──
+
+impl TypeCx {
+    fn bound_not_a_trait(s: StmtId, written: string) {
+        self
+            .emit(
+                refusal(
+                    "type.trait",
+                    self.stmt_loc(s),
+                    "a bound names a trait, and `${written}` is not one",
+                    "this bound",
+                    "write the trait's name, and its arguments when it takes them",
+                ),
+            )
+    }
+
+    fn bound_miscounted(s: StmtId, of: string, takes: int, gave: int) {
+        self
+            .emit(
+                refusal(
+                    "type.trait",
+                    self.stmt_loc(s),
+                    "`${of}` takes ${counted(takes, "type argument")}, and this bound gives ${gave}",
+                    "this bound",
+                    "a bound names its trait at every parameter the trait declares",
+                ),
+            )
+    }
+}
