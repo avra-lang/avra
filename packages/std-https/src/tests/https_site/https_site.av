@@ -1,0 +1,35 @@
+//! proves: the HTTPS tour — one `server` declaration with a `tls` seat,
+//! its route served and fetched over TLS with verification on.
+use @std.time.{secs}
+use @std.http.frame.{limits}
+use @std.http.route.{get}
+use @std.http.server.{server}
+use @std.http.client.{ClientError, request, netted}
+use @std.http.wire.{Secure}
+use @std.https.{over_tls, secured, tls_carried}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+/// The site's TLS identity. A real deployment loads PEM instead:
+/// `(server_config()?).presenting(chain, key)`.
+fn identity() -> Secure? {
+    match serving_localhost() { .Ok(c) -> over_tls(c), .Err(_) -> null }
+}
+
+export server site {
+    port: 0
+    tls: identity()
+    get "/" { _req -> "hello over TLS" }
+}
+
+fn shown() -> Result<string, ClientError> {
+    let s = netted(site.listening())?
+    spawn s.run(1)
+    defer s.stop()
+    let cc = tls_carried(trusting_localhost())?
+    mut c = secured("localhost", s.listener.port, secs(5), limits(), cc)?
+    let a = c.fetched(.Get, request("GET", "/", "localhost", [], "".bytes())!, secs(5))?
+    c.close()?
+    .Ok("${a.status} ${a.body.text() ?? "?"}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
