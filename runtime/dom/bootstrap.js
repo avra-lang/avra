@@ -127,8 +127,9 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
 // Load the module and run it in a page. The host supplies `rt` (its own
 // rows for module `avra:rt`) and `wasi` (preview1). An import NO host row
 // answers REFUSES by name — a missing row must never be a silent no-op.
-export async function instantiate(url, host) {
-  const bytes = await (await fetch(url)).arrayBuffer();
+export async function instantiate(source, host) {
+  // A URL in a page, the bytes themselves in a test or a node harness.
+  const bytes = source instanceof Uint8Array ? source : await (await fetch(source)).arrayBuffer();
   const module = await WebAssembly.compile(bytes);
   const imports = {};
   const unknown = [];
