@@ -1009,12 +1009,14 @@ registry is the idiom engine's spec, written by dogfooding.
   apart. PAYING IT WAS THE PROOF: turning the compiler's identities
   into Cells took std-avrac from 165 sites to 4 and the cli from 60 to
   1 (deduped by file:line), and nothing that fired was a false alarm.
-- Map iteration order never reaches output — iterate an ordered
-  source. AND A MAP CANNOT BE ITERATED AT ALL: `for k in m` is F2000
-  "`for … in` walks a `List`, this is `Map<K, V>`" and `.keys()` is
-  F2030 "and `Map<K, V>` has none". Its whole vocabulary is
-  `get`/`set`/`length`. The rule above is the LAW an ordered source
-  obeys, not a description of a walk you can write today.
+- A MAP'S ORDER IS ITS INSERTION ORDER, and that order is the only
+  one a map's output may use: `m.keys()` and `m.values()` read back in
+  written order, an overwrite keeps a key's place, and a snapshot
+  keeps the order it had. The hash seed never reaches output (tests
+  pin it with `AVRA_HASH_SEED`). AND A MAP CANNOT BE WALKED WITH
+  `for` YET: `for k in m` is F2000 "`for … in` walks a `List`, this
+  is `Map<K, V>`" — walk `m.keys()` instead. Its vocabulary is
+  `get`/`set`/`has`/`keys`/`values`/`length`.
 - Grammar authoring: EVERY COMMA LIST TAKES A TRAILING COMMA — a
   repeated `( "," x )*` ends `","?` before its closer, in every
   rule (params, type params and args, payload declarations, lambda

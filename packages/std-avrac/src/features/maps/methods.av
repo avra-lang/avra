@@ -29,6 +29,45 @@ export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
     set_reg(cx, mc.e, mc.subject, mc.args[0], mc.args[1])
 }
 
+export fn check_has(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let _held? = value_held(cx, mc, "has") else { return cx.error_type }
+    if mc.args.length != 1 {
+        cx.wrong_arity(mc.e, "has", 1, mc.args.length)
+        return cx.error_type
+    }
+    let key = cx.type(string)
+    if !cx.accepts(mc.args[0], key) { cx.wrong_argument("has", 0, key, mc.args[0]) }
+    cx.type(bool)
+}
+
+export fn check_keys(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let _held? = value_held(cx, mc, "keys") else { return cx.error_type }
+    if !cx.seated(mc, "keys", []) { return cx.error_type }
+    cx.type(List<string>)
+}
+
+export fn check_values(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let value? = value_held(cx, mc, "values") else { return cx.error_type }
+    if !cx.seated(mc, "values", []) { return cx.error_type }
+    cx.type(List<value>)
+}
+
+export fn lower_has(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let m = cx.reg_of(mc.subject)
+    let key = cx.reg_of(mc.args[0])
+    cx.map_has(Type.Bool, m, key)
+}
+
+export fn lower_keys(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let m = cx.reg_of(mc.subject)
+    cx.map_keys(cx.shape_at(mc.e), m)
+}
+
+export fn lower_values(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let m = cx.reg_of(mc.subject)
+    cx.map_vals(cx.shape_at(mc.e), m)
+}
+
 /// THE PRELUDE both rows share: the value type the receiver holds.
 /// The empty literal refuses in the row's words and absorbs. A ROW
 /// READS ITS RECEIVER THROUGH THE READ DOOR — a NAMED type reached
