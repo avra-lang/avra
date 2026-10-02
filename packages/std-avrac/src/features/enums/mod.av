@@ -12,7 +12,7 @@
 //! guarded arm covers nothing towards coverage.
 //! Typing proves coverage — every variant, or a catch-all — and
 //! warns when a hole sits under two or more answering arms.
-use features.{LanguageFeature, BuilderRow, PropertyRow}
+use features.{LanguageFeature, BuilderRow, MethodRow, PropertyRow, ReceiverEffect, unknown_answer}
 use features.enums.{bool_variant_match, bool_variant_match_negated}
 use core.{Type}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
@@ -49,6 +49,10 @@ export fn enums() -> LanguageFeature {
         name      | takes   | check         | lower
         "ordinal" | on_enum | check_ordinal | lower_ordinal
     }
+    let methods = table<MethodRow> {
+        name  | takes         | check          | lower          | effect              | answers
+        "all" | on_plain_enum | check_enum_all | lower_enum_all | ReceiverEffect.Read | unknown_answer
+    }
     LanguageFeature enums {
         gram: grammar {
             stmt = "enum" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "{" ( BREAK | "," | ( vm:mark )* vs:NAME ( po:"(" ( pm:mark )* ( pn:NAME ":" )? pt:type ( "," ( pm:mark )* ( pn:NAME ":" )? pt:type )* ","? ")" )? )* "}" END @recover(sync_to: "END") -> enum_decl(n, tp, vs, po, pn, pt, vm, pm)
@@ -61,8 +65,18 @@ export fn enums() -> LanguageFeature {
         builders: rows
         diags: codes
         properties: properties
+        methods: methods
     }
     enums
+}
+
+/// The `all` method row's receiver: a PLAIN enum VALUE. `.App` is a
+/// generic instance that is a struct OR an enum, and `takes` reads a
+/// shape alone, so the row is offered to plain enums only; the static
+/// gate (features/impls/callee.av) passes this shape for a
+/// non-generic enum's TYPE NAME too.
+fn on_plain_enum(t: Type) -> bool {
+    match t { .Enum(_, _) -> true, rest -> false }
 }
 
 /// The property row's receiver: an enum value, plain or instantiated.

@@ -89,8 +89,25 @@ fn type_receiver(view: FileView, decl: DeclId, tname: string, name: string) -> C
     if names_a_variant(view, decl, name) { return Callee.Variant(decl, tname) }
     let door: MethodRow? = grammar_door(view, decl, tname, name)
     if door != null { return Callee.Row(door!) }
-    let m? = static_method(view, decl, name) else { return Callee.Variant(decl, tname) }
-    Callee.Static(m, tname)
+    let m: DeclId? = static_method(view, decl, name)
+    if m != null { return Callee.Static(m!, tname) }
+    let enum_door: MethodRow? = enum_static_door(view, decl, tname, name)
+    if enum_door != null { return Callee.Row(enum_door!) }
+    Callee.Variant(decl, tname)
+}
+
+/// A payload-free enum type NAME's static vocabulary — the methods
+/// table's rows over the enum's VALUE shape. Looked up with `.Enum` on
+/// purpose: a built-in or grammar type name is looked up by its own
+/// name shape above, so it can never reach these rows. A VARIANT wins
+/// first (a variant spelled `all` is the type's own), a static fn
+/// next, and a generic enum is refused — `all` has no argument to pin
+/// its Vars.
+fn enum_static_door(view: FileView, decl: DeclId, tname: string, name: string) -> MethodRow? {
+    let sig? = view.decls.sig(decl)?.enum_sig() else { return null }
+    if sig.payloads.any(it.length > 0) { return null }
+    if !view.decls.tparams(decl).is_empty() { return null }
+    method_row(view.lang.methods, name, Type.Enum(decl, tname))
 }
 
 /// A `grammar`-declared type's vocabulary door of this name —
