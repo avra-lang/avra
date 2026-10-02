@@ -78,6 +78,7 @@ fn not_a_walk(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let sh: Type = cx.seen_at(subject)
     if sh is .Error { return cx.error_type }
     if sh is .EmptyList { return nothing_to_walk(cx, subject) }
+    if sh is .Str { return not_walkable_string(cx, subject) }
     not_walkable(cx, subject)
 }
 
@@ -180,6 +181,21 @@ fn not_walkable(mut cx: TypeCx, subject: ExprId) -> TypeId {
                 "`for … in` walks a `List`, this is `${n}`",
                 this_is(n),
                 "ranges spell `for i in lo..hi`",
+            ),
+        )
+}
+
+/// A `string` has no element of its own — a byte, a code point, a
+/// grapheme — so the walk names its view.
+fn not_walkable_string(mut cx: TypeCx, subject: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(subject),
+                "`for … in` walks a `List`, and a `string` names no element without a view",
+                "this is `string`",
+                "iterate its octets with `s.bytes()`",
             ),
         )
 }
