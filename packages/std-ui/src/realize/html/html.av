@@ -4,6 +4,7 @@
 //! walker is the same for every tree; the class set is deduped per
 //! document and the one stylesheet is emitted beside it. UI.md §19.2.
 use realize.render.{Node, Prim, Attribute, content_of, level_of}
+use realize.sink.{Sink, draw}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
 use realize.html.writer.{HtmlOp, document}
 use realize.html.css.{CssRule, rules_of, distinct_rules, stylesheet}
@@ -114,14 +115,14 @@ fn node_attrs(n: Node) -> List<HtmlAttr> {
 
 // ── the walker ──────────────────────────────────────────────────
 
-fn draw(n: Node, h: Html) {
-    // LICENSED loops.push_loop: the rules ride a shared Cell; a concat assignment would rebind a copy
-    for r in distinct_rules(rules_of(n.box)) { h.rules.push(r) }
-    let tag = tag_of(n.prim, n.attrs)
-    h.ops.push(HtmlOp.Open(tag, attrs_of(n.attrs).concat(node_attrs(n))))
-    h.ops.push(HtmlOp.Text(content_of(n.attrs)))
-    for c in n.children { draw(c, h) }
-    h.ops.push(HtmlOp.Close(tag))
+impl Sink for Html {
+    fn opened(n: Node) {
+        // LICENSED loops.push_loop: the rules ride a shared Cell; a concat assignment would rebind a copy
+        for r in distinct_rules(rules_of(n.box)) { self.rules.push(r) }
+        self.ops.push(HtmlOp.Open(tag_of(n.prim, n.attrs), attrs_of(n.attrs).concat(node_attrs(n))))
+    }
+    fn words(s: string) { self.ops.push(HtmlOp.Text(s)) }
+    fn closed(n: Node) { self.ops.push(HtmlOp.Close(tag_of(n.prim, n.attrs))) }
 }
 
 /// The finished document for one tree: its one stylesheet, then its body.
