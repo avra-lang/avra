@@ -16,6 +16,7 @@ use core.{
     Binding,
     SyntaxArena,
     SeatMark,
+    same_expr,
     is_literal,
     settled_mark,
     Static,
@@ -40,6 +41,8 @@ use features.{
     const_symbol,
     settled_symbol,
     seat_symbol,
+    semantics_of,
+    InlineSeat,
     nothing,
     MetaVal,
     new_meta_heap,
@@ -329,8 +332,10 @@ impl LowerCx {
             .Receiver -> first_seat,
             .Def(s) -> self.defined_reg(e, s, ty),
             .Pattern(v, j) -> self.body.pattern_reg(v, j),
-            // valid only inside the LIFTED body: env rides seat 0
-            .LambdaParam(lam, i) -> if self.facts.takes_by_name(lam) { self.offered_reg(lam, i, ty) } else { Reg { index: i + 1 } },
+            // valid only inside the LIFTED body: env rides seat 0 —
+            // unless the body is INLINED here, where the site's
+            // registers take the seats
+            .LambdaParam(lam, i) -> self.inline_seat(lam, i) ?? if self.facts.takes_by_name(lam) { self.offered_reg(lam, i, ty) } else { Reg { index: i + 1 } },
             .Capture(_, j) -> self.env_read(j, ty),
             .Index(s) -> self.body.index_reg(s),
             .Decl(d) -> when {
@@ -348,6 +353,75 @@ impl LowerCx {
         let record = self.view.types.arrow_parts(self.concrete(self.facts.type_at(lam)))!.seats[0]
         let name = self.view.store.lambda_parts(lam)!.params[i].name.of
         self.field_named(Reg { index: 1 }, record, name, ty)
+    }
+
+    /// The register an INLINED lambda's Nth param resolves to, when
+    /// this body is the site that lowered it.
+    fn inline_seat(lam: ExprId, i: int) -> Reg? {
+        let held = self.inline_seats.find((s: InlineSeat) -> same_expr(s.lam, lam))
+        if held == null || i >= held!.regs.length { return null }
+        held!.regs[i]
+    }
+
+    /// Whether `f` is a lambda literal meant to be lowered IN PLACE:
+    /// no captures (its reads are its own params and program-wide
+    /// names), one positional seat, and a body with no frame of its
+    /// own — a `?`, a `catch` or a block of statements acts on the
+    /// CALLER's frame once the body is inlined.
+    fn can_inline(f: ExprId) -> bool {
+        let parts? = self.view.store.lambda_parts(f) else { return false }
+        if !(self.names.capture(f)?.names ?? []).is_empty() { return false }
+        if self.facts.takes_by_name(f) || parts.params.length != 1 { return false }
+        let body? = self.inline_body(f) else { return false }
+        self.inline_safe(body)
+    }
+
+    /// The body an inline site lowers: a lambda's, unwrapped from the
+    /// one-expression scope a trailing block parses to. Null for a
+    /// body that holds statements.
+    fn inline_body(f: ExprId) -> ExprId? {
+        let parts? = self.view.store.lambda_parts(f) else { return null }
+        match self.view.store.expr(parts.body) {
+            .Block(_, _) -> self.view.store.lone_value(parts.body),
+            rest -> parts.body,
+        }
+    }
+
+    /// Whether a body lowered in place keeps every construct in the
+    /// caller's frame: a `Block` with statements, a `?` or a `catch`
+    /// would act on the fn that ENCLOSES the verb seat.
+    fn inline_safe(e: ExprId) -> bool {
+        let node = self.view.store.expr(e)
+        match node {
+            .Block(stmts, value) -> stmts.is_empty() && value != null && self.inline_safe(value!),
+            .Propagate(_) or .Catch(_, _, _, _) -> false,
+            .Lambda(_, _) -> true,
+            rest -> semantics_of(self.dispatch, node).kids(node).all((k: ExprId) -> self.inline_safe(k)),
+        }
+    }
+
+    /// The lambda `lam` lowered where its seat stands: its param bound
+    /// to `elem`, its body lowered in THIS context, so no box is minted
+    /// and no code pointer is called per element. `ret` is the lambda's
+    /// answer, read by the site that makes the seat.
+    mut fn inlined(lam: ExprId, _ret: TypeId, elem: Reg) -> Reg {
+        let body? = self.inline_body(lam) else { return self.lower_defect(lam, "an inline seat without an inlinable lambda") }
+        self.inline_enter(InlineSeat { lam: lam, regs: [elem] })
+        let r = self.reg_of(body)
+        self.inline_exit()
+        r
+    }
+
+    /// The inline bracket opens: `seat` is what the body about to
+    /// lower resolves its own params to.
+    mut fn inline_enter(seat: InlineSeat) {
+        self.inline_seats.push(seat)
+    }
+
+    /// The inline bracket closes: the body lowered under `inline_enter`
+    /// is done, and its seat drops.
+    mut fn inline_exit() {
+        let _ = self.inline_seats.pop()
     }
 
     /// A DEFINITION read: a const IS its value, so the READ emits
