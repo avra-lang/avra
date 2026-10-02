@@ -4,7 +4,8 @@
 //! stable for a stable shape, so a re-render needs no keys yet.
 use realize.render.{Node}
 use realize.html.tags.{tag_of}
-use realize.html.css.{class_names}
+use realize.html.css.{CssRule, distinct_rules, class_names, stylesheet}
+use style.theme.{Theme}
 use realize.lists.{union}
 
 /// A value with the three separators escaped, so an op is one line.
@@ -30,3 +31,14 @@ fn ops_of(n: Node, path: string) -> List<string> {
 
 /// The whole tree as one frame.
 export fn frame(root: Node) -> string { ops_of(root, "0").join("\n") }
+
+/// Every rule any node in the tree names.
+fn all_rules(n: Node) -> List<CssRule> {
+    n.box.rules().concat(union([all_rules(c) for c in n.children]))
+}
+
+/// The tree's one stylesheet — the classes the frame hands the live tree,
+/// each declared once. The page carries this in its `<style>`.
+export fn sheet(root: Node, theme: Theme) -> string {
+    stylesheet(distinct_rules(all_rules(root)), theme)
+}
