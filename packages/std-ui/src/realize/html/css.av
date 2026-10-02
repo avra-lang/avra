@@ -216,12 +216,14 @@ fn appearance_rules(s: Style, state: Interaction?) -> List<CssRule> {
 
 // ── the rules a box names ───────────────────────────────────────
 
-/// Every atomic rule a `Box` names: its layout and appearance, then one
-/// group per interaction state.
-export fn rules_of(box: Box) -> List<CssRule> {
-    mut out = layout_rules(box.layout, null).concat(appearance_rules(box.style, null))
-    for ss in box.style.states { out = out.concat(appearance_rules(ss.style, ss.state)) }
-    out
+impl Box {
+    /// Every atomic rule this box names: its layout and appearance, then
+    /// one group per interaction state.
+    fn rules(self) -> List<CssRule> {
+        mut out = layout_rules(self.layout, null).concat(appearance_rules(self.style, null))
+        for ss in self.style.states { out = out.concat(appearance_rules(ss.style, ss.state)) }
+        out
+    }
 }
 
 /// Rules with each class name kept once, order intact; two nodes that
@@ -241,19 +243,19 @@ export fn distinct_rules(rules: List<CssRule>) -> List<CssRule> {
 // ── the stylesheet ──────────────────────────────────────────────
 
 fn space_vars(t: Theme) -> string {
-    ["--space-${z.word()}:${space_of(t, z)}px;" for z in sizes].join("")
+    ["--space-${z.word()}:${t.space_of(z)}px;" for z in sizes].join("")
 }
 
 fn radius_vars(t: Theme) -> string {
-    ["--radius-${z.word()}:${radius_of(t, z)}px;" for z in sizes].join("")
+    ["--radius-${z.word()}:${t.radius_of(z)}px;" for z in sizes].join("")
 }
 
 fn tone_vars(t: Theme) -> string {
-    ["--tone-${c.word()}:${color_of(t, c)};" for c in tones].join("")
+    ["--tone-${c.word()}:${t.color_of(c)};" for c in tones].join("")
 }
 
 fn face_vars(t: Theme) -> string {
-    ["--face-${f.word()}:${face_of(t, f)};" for f in fonts].join("")
+    ["--face-${f.word()}:${t.face_of(f)};" for f in fonts].join("")
 }
 
 /// The theme as the variables every class reads. A mode is a whole
