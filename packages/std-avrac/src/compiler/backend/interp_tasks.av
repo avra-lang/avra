@@ -68,6 +68,9 @@ impl Machine {
         self.rooted()
         let box? = array_id(vals[0]) else { return self.closureless() }
         let target? = self.addressed_val(self.arrays[box].first() ?? Val.N) else { return self.closureless() }
+        // the C body keeps the closure for the task's life; the
+        // spawner's own reference is settled by its own scope
+        self.retains(vals[0])
         let vt = avra_vtask_new()
         avra_vtask_within_end(vt, avra_vtask_deadline(self.tasks[self.running].vt))
         self
@@ -94,7 +97,9 @@ impl Machine {
         let id = self.whole(vals[0])
         if id == self.running { return self.trapped_val("a task joined itself — deadlock") }
         if !self.tasks[id].done { return self.waited_on(id) }
-        self.tasks[id].answer ?? Val.N
+        let answer = self.tasks[id].answer ?? Val.N
+        self.retains(answer)
+        answer
     }
 
     /// The running task waits for `id`: filed among its waiters — never
