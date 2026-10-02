@@ -4,7 +4,7 @@
 // close a stranger's stream. Every case here reuses the number on
 // purpose and asserts that it did, so none can pass by the kernel
 // choosing another.
-use @std.net.{listen, connect, Listener, Conn, Read, NetError}
+use @std.net.{listen, connect, Listener, Poller, poller, Interest, Conn, Read, NetError}
 use @std.time.{secs, ms, within}
 
 /// A listener, two clients queued on it, and the first accepted.
@@ -139,6 +139,70 @@ fn the_refusal_names_the_number() -> Result<bool, NetError> {
     .Ok(words(q.first.try_write("x".bytes(), 0)).starts_with("write fd ${q.first.fd}: "))
 }
 
+/// A CLOSED LISTENER'S NUMBER IS THE NEXT LISTENER'S: a copy that still
+/// believed the number was its own would accept a stranger's
+/// connection, or close the stranger's port. The number is reused on
+/// purpose and asserted, as the conn cases are.
+fn a_stale_listener_accepts_nothing() -> Result<bool, NetError> {
+    let first = listen("127.0.0.1", 0)?
+    let stale = first
+    first.close()?
+    let second = listen("127.0.0.1", 0)?
+    let again = stale.close()
+    let tried = stale.try_accept()
+    let c = connect("127.0.0.1", second.port, secs(2))?
+    let served = second.accept()?
+    .Ok(second.fd == stale.fd && closed_by(again) && closed_by(tried) && c.fd != served.fd)
+}
+
+/// One close is seen by every holder of a listener: the flag lives
+/// beside the number in every copy, never in one of them.
+type ListenHolder = { l: Listener }
+
+fn every_listener_holder_sees_one_close() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let held = [l]
+    let boxed = ListenHolder { l: l }
+    l.close()?
+    .Ok(closed_by(held[0].try_accept()) && closed_by(boxed.l.close()) && closed_by(l.try_accept()))
+}
+
+/// Listeners made by hand hold a cell each, as conns do.
+fn a_hand_made_listener_holds_its_own_cell() -> Result<bool, NetError> {
+    let twin = Listener { fd: 999998, port: 0 }
+    let other = Listener { fd: 999999, port: 0 }
+    let _ = twin.close()
+    .Ok(closed_by(twin.live("accept")) && (other.live("accept") catch _ -> -1) == 999999)
+}
+
+/// A closed listener's refusal names its verb and the port it held.
+fn the_listener_refusal_names_its_port() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    l.close()?
+    .Ok(words(l.try_accept()).starts_with("accept port ${l.port}: "))
+}
+
+/// A CLOSED POLLER'S NUMBER IS THE NEXT POLLER'S: a stale watch or wait
+/// would reach a stranger's readiness queue.
+fn a_stale_poller_watches_nothing() -> Result<bool, NetError> {
+    let first = poller()?
+    let stale = first
+    first.close()?
+    let second = poller()?
+    let again = stale.close()
+    let watched = stale.watch(0, .Read)
+    let waited = stale.wait(ms(1))
+    .Ok(second.fd == stale.fd && closed_by(again) && closed_by(watched) && closed_by(waited))
+}
+
+/// Pollers made by hand hold a cell each, as conns do.
+fn a_hand_made_poller_holds_its_own_cell() -> Result<bool, NetError> {
+    let twin = Poller { fd: 999998 }
+    let other = Poller { fd: 999999 }
+    let _ = twin.close()
+    .Ok(closed_by(twin.live("wait")) && (other.live("wait") catch _ -> -1) == 999999)
+}
+
 spec "std.net a closed conn" {
     given "a copy made before the close, the number since handed to another connection" {
         then "a write through the copy is refused, and the stranger's peer reads nothing" { passes(a_stale_write_reaches_nobody()) }
@@ -157,5 +221,30 @@ spec "std.net a closed conn" {
     }
     given "the refusal" {
         then "names the verb and the number the conn held" { passes(the_refusal_names_the_number()) }
+    }
+}
+
+spec "std.net a closed listener and poller" {
+    given "a listener copy whose number the kernel gave to another listener" {
+        then "accept and close through the copy are refused, and the new listener still serves" {
+            passes(a_stale_listener_accepts_nothing())
+        }
+    }
+    given "a listener held in a list and a record" {
+        then "one close is seen by every holder" { passes(every_listener_holder_sees_one_close()) }
+    }
+    given "a listener made by hand" {
+        then "holds its own cell, so closing a twin closes only the twin's copies" {
+            passes(a_hand_made_listener_holds_its_own_cell())
+        }
+    }
+    given "the listener refusal" {
+        then "names the verb and the port it held" { passes(the_listener_refusal_names_its_port()) }
+    }
+    given "a poller copy whose number the kernel gave to another poller" {
+        then "watch, wait and close through the copy are refused" { passes(a_stale_poller_watches_nothing()) }
+    }
+    given "a poller made by hand" {
+        then "holds its own cell" { passes(a_hand_made_poller_holds_its_own_cell()) }
     }
 }

@@ -125,8 +125,11 @@ fn failed<T>(verb: string, subject: string, code: int) -> Result<T, NetError> {
 fn would_block(code: int) -> bool { code == 0 - avra_errno_again() }
 
 /// A bound, listening port. `port` is the one the kernel gave, so a
-/// listener asked for port 0 knows where it is.
-export type Listener = { fd: int, port: int }
+/// listener asked for port 0 knows where it is. `open` is held in a
+/// cell every copy shares, as `Conn`'s is: a closed descriptor's number
+/// is the next connection's, so every verb asks the cell before the
+/// number reaches the kernel.
+export type Listener = { fd: int, port: int, open: Cell<bool> = Cell.new(true) }
 
 /// A nonblocking stream to a peer: the descriptor it was given, and
 /// whether it is still open — held in a cell every copy shares, since
@@ -134,8 +137,9 @@ export type Listener = { fd: int, port: int }
 /// asks the cell before the number reaches the kernel.
 export type Conn = { fd: int, open: Cell<bool> = Cell.new(true) }
 
-/// A readiness queue over descriptors.
-export type Poller = { fd: int }
+/// A readiness queue over descriptors. `open` is held in a cell every
+/// copy shares, as `Conn`'s is.
+export type Poller = { fd: int, open: Cell<bool> = Cell.new(true) }
 
 /// One readiness report: what the descriptor is ready for, and
 /// whether its peer hung up or the socket holds an error.
@@ -205,7 +209,11 @@ fn timed_out<T>(verb: string, subject: string) -> Result<T, NetError> {
 }
 
 fn gone<T>(verb: string, fd: int) -> Result<T, NetError> {
-    failed(verb, "fd ${fd}", 0 - avra_net_errno_closed())
+    gone_where(verb, "fd ${fd}")
+}
+
+fn gone_where<T>(verb: string, subject: string) -> Result<T, NetError> {
+    failed(verb, subject, 0 - avra_net_errno_closed())
 }
 
 /// Whether text names a host at all: not empty, and holding no NUL —
@@ -244,7 +252,7 @@ impl Listener {
     /// The next connection, the calling task parked until one arrives.
     fn accept() -> Result<Conn, NetError> {
         let c? = self.try_accept()? else {
-            if !parked(self.fd, false) { return timed_out("accept", "port ${self.port}") }
+            if !parked(self.live("accept")?, false) { return timed_out("accept", "port ${self.port}") }
             return self.accept()
         }
         .Ok(c)
@@ -252,17 +260,29 @@ impl Listener {
 
     /// The next pending connection, or null when none is waiting.
     fn try_accept() -> Result<Conn?, NetError> {
-        let fd = avra_net_accept(self.fd)
+        let fd = avra_net_accept(self.live("accept")?)
         if would_block(fd) { return .Ok(null) }
         let c = streamed(fd, "accept", "port ${self.port}")?
         .Ok(c)
     }
 
-    /// Closed; answers the port it held.
+    /// Closed in every copy; answers the port it held. The cell empties
+    /// before the descriptor goes, so no copy reaches the number after
+    /// the kernel may have handed it on.
     fn close() -> Result<int, NetError> {
-        let r = avra_net_close(self.fd)
+        let fd = self.live("close")?
+        self.open.set(false)
+        let r = avra_net_close(fd)
         if r < 0 { return failed("close", "port ${self.port}", r) }
         .Ok(self.port)
+    }
+
+    /// The descriptor while the listener is open — the one door every
+    /// verb reaches the kernel through; refused as closed, naming
+    /// `verb`, once any copy has closed it.
+    fn live(verb: string) -> Result<int, NetError> {
+        if !self.open.get() { return gone_where(verb, "port ${self.port}") }
+        .Ok(self.fd)
     }
 }
 
@@ -395,7 +415,7 @@ impl Poller {
     /// Interest in `fd`; `.None` stops watching it. Answers the
     /// descriptor.
     fn watch(fd: int, interest: Interest) -> Result<int, NetError> {
-        let r = avra_net_watch(self.fd, fd, bits_of(interest))
+        let r = avra_net_watch(self.live("watch")?, fd, bits_of(interest))
         if r < 0 { return failed("watch", "fd ${fd}", r) }
         .Ok(fd)
     }
@@ -408,14 +428,26 @@ impl Poller {
     fn wait(timeout: Duration?) -> Result<List<Event>, NetError> {
         let budget = timeout?.ms
         if spent(budget) { return no_budget(budget!) }
-        let n = avra_net_wait(self.fd, budget ?? -1)
+        let n = avra_net_wait(self.live("wait")?, budget ?? -1)
         if n < 0 { return failed("wait", "poller", n) }
         .Ok([event_at(i) for i in 0..n])
     }
 
+    /// Closed in every copy; answers the descriptor it held. The cell
+    /// empties before the descriptor goes.
     fn close() -> Result<int, NetError> {
-        let r = avra_net_close(self.fd)
+        let fd = self.live("close")?
+        self.open.set(false)
+        let r = avra_net_close(fd)
         if r < 0 { return failed("close", "poller", r) }
+        .Ok(fd)
+    }
+
+    /// The descriptor while the queue is open — the one door every verb
+    /// reaches the kernel through; refused as closed, naming `verb`,
+    /// once any copy has closed it.
+    fn live(verb: string) -> Result<int, NetError> {
+        if !self.open.get() { return gone_where(verb, "poller") }
         .Ok(self.fd)
     }
 }
