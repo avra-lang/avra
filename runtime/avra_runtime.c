@@ -2160,6 +2160,31 @@ void* avra_map_vals(void* map) {
     return array_clone(((AvraMap*)map)->vals);
 }
 
+// The slot at `at` dropped: an owned element released, the rest
+// moved down, the length one shorter.
+static void array_drop(AvraArray* a, int64_t at) {
+    if (a->marks[at] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[at]);
+    int64_t n = a->len - at - 1;
+    if (n > 0) {
+        memmove(a->data + at, a->data + at + 1, (size_t)n * sizeof(int64_t));
+        memmove(a->marks + at, a->marks + at + 1, (size_t)n);
+    }
+    a->len--;
+    a->marks[a->len] = 0;
+}
+
+// A key removed: its key and value drop, the rest keep their
+// insertion order, and the index is rebuilt since every later slot
+// moved. A key that is not there removes nothing.
+void avra_map_remove(void* map, const char* key) {
+    AvraMap* m = (AvraMap*)map;
+    int64_t s = map_find(m, key);
+    if (s < 0) return;
+    array_drop(m->keys, s);
+    array_drop(m->vals, s);
+    map_index_rebuild(m, m->icap, map_keyed(m));
+}
+
 int64_t avra_map_has(void* map, const char* key) {
     return map_find((AvraMap*)map, key) >= 0;
 }

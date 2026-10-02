@@ -102,6 +102,35 @@ spec "features/maps" {
             refused_with("let m = {}\nm.keys()\n0", "`{}.keys` cannot know its values")
         }
     }
+    given "remove and is_empty — a key drops and the rest keep order" {
+        then "remove answers the value and drops the key" {
+            shown(
+                "mut m: Map<string, int> = {}\nm.set(\"a\", 1)\nm.set(\"b\", 2)\nm.set(\"c\", 3)\nlet gone = m.remove(\"b\")\n\"" +
+                    "\${m.length} " +
+                    "\${gone ?? 0} " +
+                    "\${m.has(\"b\")} " +
+                    "\${m.keys()[0]} " +
+                    "\${m.keys()[1]}\"",
+            ) == "2 2 false a c"
+        }
+        then "removing a missing key answers absence" {
+            shown(
+                "mut m: Map<string, int> = { \"a\": 1 }\nlet gone = m.remove(\"z\")\n\"\${m.length} \${gone != null}\"",
+            ) == "1 false"
+        }
+        then "is_empty measures" {
+            shown("mut m: Map<string, int> = {}\n\"\${m.is_empty()} \${m.length}\"") == "true 0"
+        }
+        then "is_empty is false with a pair" {
+            shown("let m = { \"a\": 1 }\nm.is_empty()") == "false"
+        }
+        then "a `let` map refuses — remove mutates it" {
+            refused_with(
+                "let m = { \"a\": 1 }\nm.remove(\"a\")\n2",
+                "`m` is not `mut` — `remove` mutates it",
+            )
+        }
+    }
     given "the refusals" {
         then "a non-string key in a literal" {
             refused_with("let m = { 1: 5 }\n2", "a map's keys are strings, this is `int`")
