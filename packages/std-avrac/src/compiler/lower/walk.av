@@ -291,23 +291,27 @@ impl LowerCx {
         match self.view.store.expr(root) { .Block(_, value) -> value ?? root, rest -> root }
     }
 
-    /// Both sides of the failed comparison, or the note when a side
-    /// has no text projection. The renders happen BEFORE the branch
-    /// reads them, so neither side's liveness ends at the compare.
+    /// Both sides of the failed comparison, rendered INSIDE the
+    /// failure arm alone, so a passing case pays nothing. The
+    /// operands' liveness reaches this read, so neither is released
+    /// at the compare.
     mut fn show_diff(l: ExprId, r: ExprId, ok: Reg) {
+        self
+            .void_region(self.un(ok)) { cx ->
+                cx.report_diff(l, r)
+            }
+    }
+
+    /// The two sides, or the note when a side has no text projection.
+    mut fn report_diff(l: ExprId, r: ExprId) {
         let left = self.text_of_node(l)
         let right = self.text_of_node(r)
         if left == null || right == null {
-            self.show_note(ok)
+            self.puts(self.const_str(case_note_text))
             return
         }
-        let lt: Reg = left!
-        let rt: Reg = right!
-        self
-            .void_region(self.un(ok)) { cx ->
-                cx.emit_side("        actual:   ", lt)
-                cx.emit_side("        expected: ", rt)
-            }
+        self.emit_side("        actual:   ", left!)
+        self.emit_side("        expected: ", right!)
     }
 
     /// One `label value` line — the value's own text projection.
