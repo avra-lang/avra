@@ -3215,3 +3215,23 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 ## Sugar Backlog — Feature Requests and Language Asks
 
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
+
+### Interim record — the tasks server was unreachable at landing
+
+The two asks of `docs/2026_10_01_FIRST_OF_AND_IS_BINDING.md`
+landed on branch `ui-findis`; this stands in until the tickets can be
+filed. Both carry an `Example:` and a `Callsite:`.
+
+- **`find_map` on `List`** — LANDED.
+  `Example: attrs.find_map(match it { .Level(r) -> r, rest -> null }) ?? 1`.
+  `Callsite:` `std-http/src/jar.av`'s `last_of`/`expiry` first-match
+  reads. Evidence: `features/lists/tests/find_map` (eval == native,
+  the short-circuit trap witness) and `find_map_adversarial_test.av`.
+- **Payload-binding `is`** — LANDED for an `if` condition (parse-time
+  desugar to the match machinery).
+  `Example: if a is .Level(r) { return r }`.
+  `Callsite:` the `level_of` scan in the design note.
+  FOLLOW-UP still owed: the same binding in a `when` arm —
+  `Example: when { a is .V(r) -> r, _ -> 0 }`; `Callsite:` any scan
+  that would rather choose than branch. To be filed as its own ask
+  when the tasks server returns.

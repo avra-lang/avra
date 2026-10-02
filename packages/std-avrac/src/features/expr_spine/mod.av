@@ -36,6 +36,8 @@ export fn expr_spine() -> LanguageFeature {
         "catch_any"     | build_catch
         "trailing"      | build_trailing
         "named_arg"     | build_named_arg
+        "asked_bind"    | build_asked_bind
+        "asked_wild"    | build_asked_wild
     }
     let codes = table<DiagCode> {
         kind                | summary
@@ -50,7 +52,8 @@ export fn expr_spine() -> LanguageFeature {
             trailing = "{" ( ( tc:"const" )? ( tm:"mut" )? tp:NAME ( "," ( tc:"const" )? ( tm:"mut" )? tp:NAME )* ","? "->" )? ( ts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the trailing block") -> trailing(tc, tm, tp, ts)
             disjunction = l:conjunction ( op:"||" r:conjunction )* -> fold_binary(l, op, r)
             conjunction = l:comparison ( op:"&&" r:comparison )* -> fold_binary(l, op, r)
-            comparison = l:coalescing ( op:( "==" | "!=" | "<=" | ">=" | "<" | ">" ) r:coalescing | "is" "." iv:NAME )? -> fold_cmp(l, op, r, iv)
+            comparison = l:coalescing ( op:( "==" | "!=" | "<=" | ">=" | "<" | ">" ) r:coalescing | "is" "." iv:NAME ( "(" ( ip:asked_payload ( "," ip:asked_payload )* ","? )? ")" )? )? -> fold_cmp(l, op, r, iv, ip)
+            asked_payload = "_" -> asked_wild() | n:NAME -> asked_bind(n)
             coalescing = l:bitwise ( "??" r:bitwise )* -> fold_coalesce(l, r)
             bitwise = l:additive ( op:( "|" | "^" | "&" | "<<" ) r:additive | op:">" ">" r:additive )* -> fold_bitwise(l, op, r)
             additive = l:multiplicative ( op:( "+" | "-" ) r:multiplicative )* -> fold_binary(l, op, r)

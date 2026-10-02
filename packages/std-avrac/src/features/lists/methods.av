@@ -38,6 +38,16 @@ export fn check_find(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.view.types.intern(Type.Opt(seat.elem))
 }
 
+/// `xs.find_map(f)` — the value of the first element `f` answers
+/// PRESENT, or absence: `find`'s question through `map`'s projection.
+/// The fn's answer must itself be nullable, and that same nullable is
+/// the row's.
+export fn check_find_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let seat? = walk_seat(cx, mc, "find_map") else { return cx.error_type }
+    if cx.view.types.carried(seat.answer) == null { return unprojected(cx, mc.e, seat.answer) }
+    seat.answer
+}
+
 /// `xs.find_index(p)` — where the first element `p` blesses stands, or
 /// absence: `find`'s question, answered with the place.
 export fn check_find_index(mut cx: TypeCx, mc: MethodCall) -> TypeId {
@@ -395,6 +405,21 @@ fn seat_not_element(mut cx: TypeCx, e: ExprId, name: string, elem: TypeId, fnty:
                 "`${name}`'s fn takes the element `${cx.view.types.name_of(elem)}` — this one is `${cx.view.types.name_of(fnty)}`",
                 "this call",
                 null,
+            ),
+        )
+}
+
+/// `find_map`'s fn must answer a nullable — there is no absence to
+/// answer otherwise.
+fn unprojected(mut cx: TypeCx, e: ExprId, got: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(e),
+                "`find_map` seeks the value its fn answers, nullable — this answers `${cx.view.types.name_of(got)}`",
+                "this call",
+                "answer `null` when there is nothing to seek",
             ),
         )
 }
