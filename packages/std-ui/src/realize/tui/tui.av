@@ -1,21 +1,32 @@
-//! `realize/tui/tui.av` — the terminal target: the same tree as lines of
-//! plain text. One complete impl block; each method draws one primitive
-//! through the accumulator. UI.md §19.2.
-use realize.realizer.{Realizer}
-use components.{text, heading, button, column, row}
+//! `realize/tui/tui.av` — the terminal target. The same Node, the same
+//! vocabulary, drawn as lines. A second target is a table and a walker,
+//! never a component list. UI.md §19.2.
+use realize.render.{Node, Prim, Attribute, content_of}
+use env.{Env}
 
 /// The terminal target: one accumulator of lines.
 export type Tui = { lines: Cell<List<string>> = Cell.new([]) }
 
-impl Realizer for Tui {
-    fn text(t: text) { self.lines.push(t.content) }
-    fn heading(hd: heading) { self.lines.push(hd.content) }
-    fn button(b: button) { self.lines.push("[${b.label}]") }
-    fn column_begin(_c: column) {}
-    fn column_end() {}
-    fn row_begin(_r: row) {}
-    fn row_end() {}
+/// The one line a primitive draws for itself; a container draws none.
+fn line_of(p: Prim, attrs: List<Attribute>) -> string {
+    match p {
+        .Text or .Heading or .Link or .Image -> content_of(attrs),
+        .Button -> "[${content_of(attrs)}]",
+        .Field -> content_of(attrs),
+        .Checkbox -> "[ ] ${content_of(attrs)}",
+        .Row or .Column or .Dialog -> "",
+    }
 }
 
-/// The finished frame.
-export fn frame(t: Tui) -> string { t.lines.get().join("\n") }
+fn draw(n: Node, t: Tui) {
+    let line = line_of(n.prim, n.attrs)
+    if line != "" { t.lines.push(line) }
+    for c in n.children { draw(c, t) }
+}
+
+/// The finished frame for one tree.
+export fn render(root: Node, _env: Env) -> string {
+    let t = Tui {}
+    draw(root, t)
+    t.lines.get().join("\n")
+}

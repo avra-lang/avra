@@ -1,30 +1,63 @@
-//! `realize/html/html.av` — the HTML target. Its drawing accumulates into
-//! a `Cell` of ops, in place, and `document` serializes them. Placement
-//! and appearance become one inline style attribute, from the theme the
-//! environment carries; a logical edge mirrors with the direction. UI.md
-//! §19.2, §4.3.
-use realize.realizer.{Realizer}
-use realize.html.writer.{HtmlOp, Attr, source}
-use components.{text, heading, button, column, row}
+//! `realize/html/html.av` — the HTML adapter. It enumerates the VOCABULARY,
+//! never components: a table from `Prim` to a tag, a table from `Attribute`
+//! to an attribute, and `Box` to one style declaration list. The walker is
+//! the same for every tree. UI.md §19.2.
+use realize.render.{Node, Prim, Attribute, content_of, level_of}
+use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
+use realize.html.writer.{HtmlOp, source}
 use env.{Env, Direction}
+use style.box.{Box}
 use style.theme.{Theme, space_of, radius_of, color_of, face_of}
 use style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout}
 use style.style.{Style}
 use ui.{Size, Tone, Font}
 
-/// The HTML target: one accumulator of ops and the environment it draws in.
+/// The HTML target: an accumulator of ops and the environment it draws in.
 export type Html = { ops: Cell<List<HtmlOp>> = Cell.new([]), env: Env = Env {} }
 
-/// CSS declarations joined, the absent ones dropped.
-fn decl(parts: List<string>) -> string { [p for p in parts if p != ""].join(";") }
+// ── the primitive table ─────────────────────────────────────────
 
-/// The heading level an outline may carry: 1 through 6.
-fn rank_tag(rank: int) -> string {
-    let within = if rank < 1 { 1 } else if rank > 6 { 6 } else { rank }
-    "h${within}"
+fn heading_tag(rank: int) -> HtmlTag {
+    let r = if rank < 1 { 1 } else if rank > 6 { 6 } else { rank }
+    let tags: List<HtmlTag> = [.H1, .H2, .H3, .H4, .H5, .H6]
+    tags[r - 1]
 }
 
-// ── appearance ──────────────────────────────────────────────────
+fn tag_of(p: Prim, attrs: List<Attribute>) -> HtmlTag {
+    match p {
+        .Text -> .Span,
+        .Heading -> heading_tag(level_of(attrs)),
+        .Button -> .Button,
+        .Link -> .A,
+        .Image -> .Img,
+        .Field or .Checkbox -> .Input,
+        .Row or .Column -> .Div,
+        .Dialog -> .Dialog,
+    }
+}
+
+// ── the attribute table ─────────────────────────────────────────
+
+/// A component property as an HTML attribute, or nothing (content and
+/// levels are drawn, not attached). Every arm spelled.
+fn attr_list(a: Attribute) -> List<HtmlAttr> {
+    match a {
+        .Value(v) -> [HtmlAttr { name: .Value, value: v }],
+        .Placeholder(t) -> [HtmlAttr { name: .Placeholder, value: t }],
+        .Src(u) -> [HtmlAttr { name: .Src, value: u }],
+        .Disabled(flag) -> if flag { [HtmlAttr { name: .Disabled, value: "" }] } else { [] },
+        .Checked(flag) -> if flag { [HtmlAttr { name: .Checked, value: "" }] } else { [] },
+        .Text(_) or .Label(_) or .Level(_) or .Alt(_) -> [],
+    }
+}
+
+fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {
+    [h for a in attrs for h in attr_list(a)]
+}
+
+// ── the box table ───────────────────────────────────────────────
+
+fn decl(parts: List<string>) -> string { [p for p in parts if p != ""].join(";") }
 
 fn color_decl(c: Tone?, t: Theme) -> string {
     match c {
@@ -54,30 +87,17 @@ fn face_decl(f: Font?, t: Theme) -> string {
     }
 }
 
-fn appearance_css(s: Style, t: Theme) -> string {
-    decl(
-        [
-            color_decl(s.color, t),
-            fill_decl(s.fill, t),
-            radius_decl(s.radius, t),
-            face_decl(s.face, t),
-        ],
-    )
+fn axis_decl(a: Axis?) -> string {
+    match a {
+        v? -> axis_one(v)
+        null -> ""
+    }
 }
-
-// ── layout ──────────────────────────────────────────────────────
 
 fn axis_one(a: Axis) -> string {
     match a {
         .Row -> "display:flex;flex-direction:row",
         .Column -> "display:flex;flex-direction:column",
-    }
-}
-
-fn axis_decl(a: Axis?) -> string {
-    match a {
-        v? -> axis_one(v)
-        null -> ""
     }
 }
 
@@ -140,8 +160,6 @@ fn distribute_decl(d: Distribute?) -> string {
     }
 }
 
-/// A fixed size becomes pixels; `Fill` fills the parent; a fraction is
-/// left to the target's own engine.
 fn sizing_one(prop: string, s: Sizing) -> string {
     match s {
         .Hug -> "",
@@ -175,68 +193,41 @@ fn layout_css(l: Layout, t: Theme, dir: Direction) -> string {
     )
 }
 
-/// The whole style attribute for one node: placement then appearance.
-fn css(s: Style, l: Layout, t: Theme, dir: Direction) -> string {
-    decl([layout_css(l, t, dir), appearance_css(s, t)])
+fn appearance_css(s: Style, t: Theme) -> string {
+    decl(
+        [
+            color_decl(s.color, t),
+            fill_decl(s.fill, t),
+            radius_decl(s.radius, t),
+            face_decl(s.face, t),
+        ],
+    )
 }
 
-// ── drawing ─────────────────────────────────────────────────────
-
-fn attrs(key: string?, css_text: string) -> List<Attr> {
-    let keyed: List<Attr> = match key {
-        k? -> [Attr { name: "data-key", value: k }]
+fn box_attrs(n: Node, env: Env) -> List<HtmlAttr> {
+    let css_text = decl(
+        [layout_css(n.box.layout, env.theme, env.direction), appearance_css(n.box.style, env.theme)],
+    )
+    let keyed: List<HtmlAttr> = match n.box.key {
+        k? -> [HtmlAttr { name: .DataKey, value: k }]
         null -> []
     }
-    let styled: List<Attr> = if css_text == "" { [] } else { [Attr { name: "style", value: css_text }] }
-    keyed.concat(styled)
+    if css_text == "" { keyed } else { keyed.concat([HtmlAttr { name: .Style, value: css_text }]) }
 }
 
-fn inline(h: Html, name: string, content: string, a: List<Attr>) {
-    h.ops.push(HtmlOp.Open(name, a))
-    h.ops.push(HtmlOp.Text(content))
-    h.ops.push(HtmlOp.Close(name))
+// ── the walker ──────────────────────────────────────────────────
+
+fn draw(n: Node, h: Html) {
+    let tag = tag_of(n.prim, n.attrs)
+    h.ops.push(HtmlOp.Open(tag, attrs_of(n.attrs).concat(box_attrs(n, h.env))))
+    h.ops.push(HtmlOp.Text(content_of(n.attrs)))
+    for c in n.children { draw(c, h) }
+    h.ops.push(HtmlOp.Close(tag))
 }
 
-impl Realizer for Html {
-    fn text(t: text) {
-        inline(self, "span", t.content, attrs(t.key, appearance_css(t.style, self.env.theme)))
-    }
-    fn heading(hd: heading) {
-        inline(
-            self,
-            rank_tag(hd.rank),
-            hd.content,
-            attrs(hd.key, appearance_css(hd.style, self.env.theme)),
-        )
-    }
-    fn button(b: button) {
-        inline(self, "button", b.label, attrs(b.key, appearance_css(b.style, self.env.theme)))
-    }
-    fn column_begin(c: column) {
-        self
-            .ops
-            .push(
-                HtmlOp
-                    .Open(
-                        "div",
-                        attrs(c.key, css(c.style, c.layout, self.env.theme, self.env.direction)),
-                    ),
-            )
-    }
-    fn column_end() { self.ops.push(HtmlOp.Close("div")) }
-    fn row_begin(r: row) {
-        self
-            .ops
-            .push(
-                HtmlOp
-                    .Open(
-                        "div",
-                        attrs(r.key, css(r.style, r.layout, self.env.theme, self.env.direction)),
-                    ),
-            )
-    }
-    fn row_end() { self.ops.push(HtmlOp.Close("div")) }
+/// The finished document for one tree, in one environment.
+export fn render(root: Node, env: Env) -> string {
+    let h = Html { env: env }
+    draw(root, h)
+    source(h.ops.get())
 }
-
-/// The finished document.
-export fn document(h: Html) -> string { source(h.ops.get()) }
