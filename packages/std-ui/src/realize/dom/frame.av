@@ -8,9 +8,10 @@
 //!   op 2  K       id, key(len+bytes)      data-key: identity for a reorder
 //!   op 3  A       id, class(len+bytes)
 //!   op 4  T       id, words(len+bytes)
+//!   op 5  E       id, event kind — the host SUBSCRIBES and calls back
 //!   op 0  N       nothing changed
 //! Every int is four little-endian bytes.
-use realize.render.{Node}
+use realize.render.{Node, EventKind, Binding}
 use realize.html.tags.{tag_of}
 use realize.html.css.{CssRule, distinct_rules, class_names, stylesheet}
 use realize.dom.buf.{Buf, buf}
@@ -19,6 +20,12 @@ use style.theme.{Theme}
 
 /// The wire's version.
 const version = 3
+
+/// The host's own code for an event kind — the wire's currency, not the
+/// enum's order. ONE arm per kind.
+fn kind_code(k: EventKind) -> int {
+    match k { .Click -> 1, .Input -> 2, .Change -> 3, .Submit -> 4 }
+}
 
 /// This node and its subtree, as wire records. `id` is the pre-order
 /// counter — the host addresses a node by it, never by a path string.
@@ -47,6 +54,11 @@ fn emit(n: Node, parent: int, index: int, b: Buf, next: Cell<int>) {
         b.push_byte(4)
         b.push_int(id)
         b.push_str(words)
+    }
+    for ev in n.events {
+        b.push_byte(5)
+        b.push_int(id)
+        b.push_int(kind_code(ev.kind))
     }
     for i, c in n.children { emit(c, id, i, b, next) }
 }
@@ -102,6 +114,27 @@ fn walk_text(n: Node, path: string) -> List<string> {
 
 /// The same tree as readable lines — for tests and `explain`, never the wire.
 export fn frame_text(root: Node) -> string { "V3\n${walk_text(root, "0").join("\n")}" }
+
+// ── dispatch: the host echoes what the frame told it ────────────
+
+/// The action at pre-order `id` for `kind`. The walk is the SAME one the
+/// frame made, so a handler needs no registry: the host echoes the id and
+/// kind the frame gave it, and the program finds the action that wrote it.
+export fn action_at(root: Node, id: int, kind: int) -> Binding? {
+    let at = Cell.new(0)
+    seek(root, id, kind, at)
+}
+
+fn seek(n: Node, want: int, kind: int, at: Cell<int>) -> Binding? {
+    let here = at.get()
+    at.set(here + 1)
+    if here == want { return n.events.find(kind_code(it.kind) == kind) }
+    for c in n.children {
+        let hit = seek(c, want, kind, at)
+        if hit != null { return hit }
+    }
+    null
+}
 
 /// Every rule any node in the tree names.
 fn all_rules(n: Node) -> List<CssRule> {

@@ -1,12 +1,12 @@
-//! M1 — the board, as a wasm app. `main` paints once; every event repaints
-//! only what changed. The host applies each frame to the live tree.
+//! M1 — the board, as a wasm app. `main` paints once; an event repaints only
+//! what changed. The host applies each frame to the live tree.
 //!
-//! The frame row is a HOST import (`avra:rt.avra_dom_frame`), and its seat
-//! is a `Bytes` — the pointer names its box, so the glue reads the length
-//! from the header and there is no (ptr,len) pair to keep in step.
+//! The frame row is a HOST import (`avra:rt.avra_dom_frame`); its seat is a
+//! `Bytes`, so the pointer names its box and the glue reads the length from
+//! the header — no (ptr,len) pair to keep in step.
 use @std.meta.{derive}
 use @std.ui.components.{heading, item, button}
-use @std.ui.realize.dom.frame.{live}
+use @std.ui.realize.dom.frame.{live, action_at}
 use @std.ui.realize.prim.{prim}
 use @std.ui.realize.view.{View}
 use @std.ui.style.box.{Box}
@@ -18,16 +18,45 @@ extern fn avra_dom_frame(frame: Bytes)
 component board {
     ..Box
     show: Cell<string> = Cell.new("all")
+    on_click: fn() -> void = idle
     items: List<dyn View> = []
 }
 
-/// State is a PLACE, so the app is an identity its handlers can write.
-const app = board { items: [heading "Tasks" { rank: 1 }, item { button "Add" }] }
+fn idle() {}
+
+/// THE STATE the screen is a function of. A `Cell` is an identity, so a
+/// handler writes it in place and every copy reads the same place.
+const filter = Cell.new("all")
 
 /// The last frame sent — an unchanged paint costs two bytes.
 const painted = live()
 
-fn paint() { avra_dom_frame(painted.diff(app.describe())) }
+fn toggle() {
+    when {
+        filter.get() == "all" -> filter.set("done")
+        _ -> filter.set("all")
+    }
+}
+
+/// The screen: state in, tree out. Called again on every event, so its ids
+/// are the ids the host was last told.
+fn view() -> board {
+    board {
+        show: filter,
+        on_click: toggle,
+        items: [heading "Tasks — ${filter.get()}" { rank: 1 }, item { button "Toggle" }],
+    }
+}
+
+fn paint() { avra_dom_frame(painted.diff(view().describe())) }
+
+/// The host's call: `who` is the id the frame named, `what` the kind. The
+/// action is found by the SAME walk the frame made.
+export fn avra_event(who: int, what: int) {
+    let a? = action_at(view().describe(), who, what) else { return }
+    a.handler()
+    paint()
+}
 
 fn main() { paint() }
 

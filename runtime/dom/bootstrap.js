@@ -30,7 +30,7 @@ export function parseFrame(bytes) {
       const index = dv.getInt32(i, true); i += 4;
       const len = dv.getInt32(i, true); i += 4;
       const tag = str(i, len); i += len;
-      const r = { id, parent, index, tag, key: null, cls: null, text: null };
+      const r = { id, parent, index, tag, key: null, cls: null, text: null, events: [] };
       records.push(r);
       byId.set(id, r);
     } else if (op === 2 || op === 3 || op === 4) {
@@ -39,6 +39,11 @@ export function parseFrame(bytes) {
       const val = str(i, len); i += len;
       const r = byId.get(id);
       if (r) { if (op === 2) r.key = val; else if (op === 3) r.cls = val; else r.text = val; }
+    } else if (op === 5) {
+      const id = dv.getInt32(i, true); i += 4;
+      const kind = dv.getInt32(i, true); i += 4;
+      const r = byId.get(id);
+      if (r) { if (!r.events) r.events = []; r.events.push(kind); }
     } else if (op === 0) {
       break;
     } else {
@@ -50,7 +55,9 @@ export function parseFrame(bytes) {
 
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element.
-export function createApplier(doc, mount) {
+const EVENT_NAME = { 1: "click", 2: "input", 3: "change", 4: "submit" };
+
+export function createApplier(doc, mount, send = () => {}) {
   // LICENSED loops.push_loop: these maps ride the closure as the applier's table
   const byKey = new Map();
   let byId = new Map();
@@ -85,6 +92,27 @@ export function createApplier(doc, mount) {
       });
       while (host.childNodes.length > kids.length) {
         host.removeChild(host.childNodes[host.childNodes.length - 1]);
+      }
+    }
+    // SUBSCRIBE: each event a frame names is a listener; one it drops is
+    // removed. The host calls back with the ID and KIND the frame gave.
+    for (const r of records) {
+      const el = next.get(r.id);
+      if (!el) continue;
+      const attached = el.__avra_events || (el.__avra_events = new Map());
+      const want = new Set(r.events || []);
+      for (const [kind, handler] of [...attached]) {
+        if (want.has(kind)) continue;
+        el.removeEventListener(EVENT_NAME[kind], handler);
+        attached.delete(kind);
+      }
+      for (const kind of want) {
+        if (attached.has(kind)) continue;
+        const name = EVENT_NAME[kind];
+        if (!name) continue;
+        const handler = () => send(r.id, kind);
+        el.addEventListener(name, handler);
+        attached.set(kind, handler);
       }
     }
     for (const [key] of [...byKey]) if (!keys.has(key)) byKey.delete(key);

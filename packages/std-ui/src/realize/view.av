@@ -4,7 +4,7 @@
 //! so every foreign name it writes is a static `quote`; a generated hole
 //! resolves in the annotated file, so fields are read as `self.<field>`.
 use @std.meta.{Type, Field, Directive, Code, list_of}
-use realize.render.{Node, Prim, Attribute}
+use realize.render.{Node, Prim, Attribute, EventKind, Binding}
 use style.box.{Box}
 
 /// A component that projects to a neutral `Node`.
@@ -21,6 +21,7 @@ export trait View {
                 // LICENSED compiler.modified_copy_literal: the Box is projected from the component's fields
                 box: Box { style: ${style_code(t)}, layout: self.layout, a11y: self.a11y, key: self.key },
                 children: ${children_code(t)},
+                events: ${events_code(t)},
             }
         }
         [
@@ -127,6 +128,37 @@ fn attr_quote(f: Field) -> Code {
         "Name" -> quote { Attribute.Name(self.${f}) },
         rest -> quote { Attribute.Text(self.${f}) },
     }
+}
+
+// ── actions: what a node does when it speaks ────────────────────
+
+/// The event a component field binds — `on_click: fn() -> void`. The
+/// field's name IS the kind; a field that binds no event answers nothing
+/// and projects to nothing else either.
+fn event_kind(name: string) -> string? {
+    match name {
+        "on_click" -> "Click",
+        "on_input" -> "Input",
+        "on_change" -> "Change",
+        "on_submit" -> "Submit",
+        rest -> null,
+    }
+}
+
+/// ONE arm per `EventKind`, so a new kind lands here beside its variant.
+fn event_quote(f: Field) -> Code {
+    match event_kind(f.name) ?? "" {
+        "Click" -> quote { Binding { kind: EventKind.Click, handler: self.${f} } },
+        "Input" -> quote { Binding { kind: EventKind.Input, handler: self.${f} } },
+        "Change" -> quote { Binding { kind: EventKind.Change, handler: self.${f} } },
+        "Submit" -> quote { Binding { kind: EventKind.Submit, handler: self.${f} } },
+        rest -> quote { Binding { kind: EventKind.Click, handler: self.${f} } },
+    }
+}
+
+/// Every action the component binds, in field order.
+fn events_code(t: Type) -> Code {
+    list_of([event_quote(f) for f in t.fields if event_kind(f.name) != null])
 }
 
 /// A component's `items` field, drawn by its children's own `describe`.
