@@ -87,8 +87,11 @@ fn one_case(body: string) -> string {
 
 /// A case run for its PRINTED words — what a failing `then` shows
 /// before the suite entry names it.
-fn ran_case(body: string) -> string {
-    let p = package_of(one_case(body))
+fn ran_case(body: string) -> string { ran_full(one_case(body)) }
+
+/// A whole spec source run for its printed words.
+fn ran_full(text: string) -> string {
+    let p = package_of(text)
     match p.every_body_checked() {
         .Ok(lo) -> match run_program(lo, p.cases()[0].symbol) { .Ok(out) -> out, .Err(why) -> why },
         .Err(why) -> why,
@@ -171,6 +174,10 @@ spec "features/specs" {
         }
         then "a body that is not one equality says why" {
             ran_case("2 < 1").contains("only for one `a == b`")
+        }
+        then "a comparison with no text projection says why" {
+            let body = "P { n: 1 } == P { n: 2 }"
+            ran_full("type P = { n: int }\n${one_case(body)}").contains("only for one `a == b`")
         }
     }
     given "the laws" {
