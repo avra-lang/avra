@@ -75,6 +75,7 @@ use features.collects.{
     sort_key_before,
     SortValue,
 }
+use features.specs.{show_case_failure}
 use compiler.{Analysis, any_root}
 
 /// One lowered body: instructions in order and each register's type
@@ -836,6 +837,11 @@ fn lower_fn(
     lo.seats_enter()
     let memoized = a.view.store.is_once(x.stmt)
     let r = if memoized { lo.once_body(fname, root, rt) } else { lo.reg_of(root) }
+    // A `then` case is a body like any fn's, but a FAILURE shows its
+    // two sides when its answer is one equality — the driver knows
+    // the case kind, as typing's `case_body` does, and the rule lives
+    // with the feature.
+    if x.kind is .Case { show_case_failure(lo, root, r) }
     lo.seats_exit(r)
     lo.emit(Ins.RetVal(r))
     LoweredBody {

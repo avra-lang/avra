@@ -3,7 +3,7 @@
 // each by its symbol, and the laws refuse in their own words.
 use @std.avrac.compiler.{avra, new_workspace, Program, TestCase, case_words}
 use @std.avrac.testing.{shown, refused_with}
-use compiler.backend.{run_symbol}
+use compiler.backend.{run_program, run_symbol}
 use compiler.lower.{Lowered}
 use compiler.host.{memory_host}
 
@@ -85,6 +85,19 @@ fn one_case(body: string) -> string {
     "spec \"s\" {\n    given \"g\" {\n        then \"t\" { ${body} }\n    }\n}\n"
 }
 
+/// A case run for its PRINTED words — what a failing `then` shows
+/// before the suite entry names it.
+fn ran_case(body: string) -> string { ran_full(one_case(body)) }
+
+/// A whole spec source run for its printed words.
+fn ran_full(text: string) -> string {
+    let p = package_of(text)
+    match p.every_body_checked() {
+        .Ok(lo) -> match run_program(lo, p.cases()[0].symbol) { .Ok(out) -> out, .Err(why) -> why },
+        .Err(why) -> why,
+    }
+}
+
 spec "features/specs" {
     given "the declaration" {
         then "a spec lists its cases in written order, each knowing its suite, group and line" {
@@ -138,6 +151,33 @@ spec "features/specs" {
         }
         then "a trap inside a case is its note" {
             note_of(one_case("[1][5] == 1")).contains("out of bounds")
+        }
+    }
+    given "the failure shows both sides" {
+        then "a failing equality prints actual and expected" {
+            let out = ran_case("\"x\" == \"y\"")
+            out.contains("actual:   x") && out.contains("expected: y")
+        }
+        then "a passing case prints neither side" {
+            !ran_case("\"x\" == \"x\"").contains("actual")
+        }
+        then "an int comparison renders both numbers" {
+            let out = ran_case("2 + 1 == 4")
+            out.contains("actual:   3") && out.contains("expected: 4")
+        }
+        then "an owned answer stays live into the failure note" {
+            ran_case("\"x\" + \"!\" == \"y\"").contains("actual:   x!")
+        }
+        then "a body block reads through to its value" {
+            let out = ran_case("let a = 2\n            a == 3")
+            out.contains("actual:   2") && out.contains("expected: 3")
+        }
+        then "a body that is not one equality says why" {
+            ran_case("2 < 1").contains("only for one `a == b`")
+        }
+        then "a comparison with no text projection says why" {
+            let body = "P { n: 1 } == P { n: 2 }"
+            ran_full("type P = { n: int }\n${one_case(body)}").contains("only for one `a == b`")
         }
     }
     given "the laws" {
