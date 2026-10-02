@@ -53,6 +53,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "avra_box.h"
+#include "avra_platform.h"
 #include "avra_runtime.h"
 #include "avra_hot.h"
 

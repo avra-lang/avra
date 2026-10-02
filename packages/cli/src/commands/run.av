@@ -5,7 +5,12 @@ use @std.avrac.compiler.{Program}
 type RunCmd = {}
 
 impl Runnable for RunCmd {
-    fn run(args: CliResult) -> int { phased(args, "lower+run", ran) }
+    fn run(args: CliResult) -> int {
+        // a wasm run builds the module and hands it to the host runner; the
+        // evaluator answers every other target
+        if canonical_target(args.option("target")) != "" { return run_wasm_command(args) }
+        phased(args, "lower+run", ran)
+    }
 }
 
 /// A trap speaks as a native binary's does: `avra: <words>` on stderr,
@@ -23,7 +28,8 @@ fn ran(p: Program) -> Result<int, string> {
 
 export command run {
     description: "Run a program and print its value"
-    flags: [time]
+    flags: [time, wasm_reactor]
+    options: [target]
     args: [file]
     run: RunCmd {}
 }

@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include "avra_box.h"
+#include "avra_platform.h"
 
 #ifdef AVRA_CENSUS
 #define CENSUS(x) x

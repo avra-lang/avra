@@ -358,6 +358,36 @@ export fn run_binary(binary: string) -> Result<Exit, ProcessError> {
     (at_the_terminal(cmd(tool(binary)?, [])).outcome()?).exit
 }
 
+/// The wasm host runner beside the compiler: `wasm-node.mjs`, in a checkout
+/// or under `lib/avra/` in an install. Null when the toolchain is not installed.
+fn wasm_runner() -> string? {
+    toolchain_files(["wasm-node.mjs", "../tools/wasm-node.mjs", "../lib/avra/wasm-node.mjs"])
+        .find(exists(it))
+}
+
+/// `avra run --target wasm`: build the module, then hand it to `node` at the
+/// terminal, streaming the program's output exactly as a native run does.
+export fn run_wasm_command(args: CliResult) -> int {
+    let wasm = match built_binary(args) { .Ok(w) -> w, .Err(code) -> { return code } }
+    let runner? = wasm_runner() else {
+        eprintln("avra: the wasm runner is not beside the compiler — expected wasm-node.mjs")
+        return 2
+    }
+    let node = match tool_from_env("NODE", "node") {
+        .Ok(t) -> t,
+        .Err(e) -> { return refused_by_host(e) },
+    }
+    match at_the_terminal(cmd(node, ["--no-warnings", runner, wasm])).outcome() {
+        .Ok(x) -> status_of_exit(x.exit),
+        .Err(e) -> refused_by_host(e),
+    }
+}
+
+/// A child's exit as our own: a trap is not a normal finish.
+fn status_of_exit(e: Exit) -> int {
+    match e { .Clean -> 0, .Code(n) -> n, .Signal(_, _) -> 2 }
+}
+
 // -- THE BUILD CACHE ------------------------------------------------------------------
 // The cache is @std.avrac's; what a COMMAND owes it is an argued path, a host that
 // can write, and clang run over the words it answers.
@@ -451,20 +481,20 @@ fn build_report(e: BuildError) -> string {
     }
 }
 
-/// `avra build`: a program's module reused when these exact inputs were built before,
-/// else analyzed, lowered and emitted. The cache is the library's; the link is the
-/// command's.
-fn cached_build(args: CliResult) -> int {
-    let path? = slotted_path(args) else { return 2 }
+/// The binary an argued build writes — or the exit code its refusal spoke.
+/// The cache is the library's; the link and the print are the caller's.
+export fn built_binary(args: CliResult) -> Result<string, int> {
+    let path? = slotted_path(args) else { return .Err(2) }
     let ws = build_workspace(path)
     let entry = build_entry(ws, path)
     if entry == null {
         eprintln("avra: ${ws.root} declares no entry point")
-        return 1
+        return .Err(1)
     }
-    let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
+    let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return .Err(refused_by_host(e)) } }
     let target = canonical_target(args.option("target"))
     let runtime = if target == "" { runtime_library() } else { wasm_runtime_library() }
+    let wasm_opt = match tool_from_env("WASM_OPT", "wasm-opt") { .Ok(t) -> t.path, .Err(_) -> "" }
     match build_program(
         ws,
         entry!,
@@ -474,11 +504,12 @@ fn cached_build(args: CliResult) -> int {
             linker: tool.path,
             target: target,
             reactor: args.has_flag("wasm_reactor"),
+            wasm_opt: wasm_opt,
         },
     ) {
         .Err(e) -> {
             println(build_report(e))
-            1
+            .Err(1)
         },
         .Ok(b) -> {
             if b.warnings != "" { eprintln(b.warnings) }
@@ -486,9 +517,19 @@ fn cached_build(args: CliResult) -> int {
                 eprintln(hit_line(b.reused))
                 if b.phases != "" { eprintln("time: ${b.phases}") }
             }
-            println(b.binary)
+            .Ok(b.binary)
+        },
+    }
+}
+
+/// `avra build`: the binary's path on stdout, or the refusal.
+fn cached_build(args: CliResult) -> int {
+    match built_binary(args) {
+        .Ok(binary) -> {
+            println(binary)
             0
         },
+        .Err(code) -> code,
     }
 }
 

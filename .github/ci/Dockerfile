@@ -3,7 +3,7 @@ FROM ubuntu:26.04
 RUN apt-get update -qq \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
       ca-certificates git make python3 clang-22 llvm-22-dev \
-      lld-22 wasi-libc libclang-rt-22-dev-wasm32 wabt \
+      lld-22 wasi-libc libclang-rt-22-dev-wasm32 wabt binaryen \
  && rm -rf /var/lib/apt/lists/* \
  && ln -sf /usr/lib/llvm-22/bin/clang /usr/local/bin/clang \
  && ln -sf /usr/lib/llvm-22/bin/clang /usr/local/bin/cc \
