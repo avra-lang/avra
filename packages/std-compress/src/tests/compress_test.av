@@ -1,6 +1,6 @@
 // gzip, zlib and brotli: other implementations' output read, our own
 // read back, and every decode held to its ceiling.
-use @std.compress.{Format, CompressError, encoded, decoded}
+use @std.compress.{Format, CompressError, Encoder, encoded, encoding, decoded}
 use @std.text.{from_base64, repeat}
 
 /// Vectors written by `gzip -n -9`, Python's `zlib.compress` and the
@@ -116,5 +116,32 @@ spec "std/compress" {
             said(decoded(bad, Format.Gzip, 100)) == "the input is not in the format it was read as"
         }
         then "plain text in every format" { formats().all(said(decoded("hello".bytes(), it, 100)) != "hello") }
+    }
+}
+
+/// `f`'s encoding fed three pieces and finished once, decoded back.
+fn incremental(f: Format) -> string {
+    match encoding(f, 4) {
+        .Ok(enc) -> {
+            let head = pushed(enc, "hello, ")
+            let middle = pushed(enc, "beautiful ")
+            let tail = pushed(enc, "world")
+            let end = match enc.finish() { .Ok(b) -> b, .Err(_) -> "".bytes() }
+            enc.free()
+            said(decoded(head.concat(middle).concat(tail).concat(end), f, 1000000))
+        },
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn pushed(enc: Encoder, s: string) -> Bytes {
+    match enc.push(s.bytes()) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+}
+
+spec "std.compress — an incremental encoder" {
+    given "a stream fed in pieces and finished once" {
+        then "decodes to the whole input, in every format" {
+            [incremental(f) for f in formats()].all(it == "hello, beautiful world")
+        }
     }
 }

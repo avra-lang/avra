@@ -167,6 +167,121 @@ static Job* brotli_decode(const unsigned char* in, size_t n, size_t ceiling) {
     return why == DONE ? j : failed(j, why);
 }
 
+/* ── Incremental encoding ─────────────────────────────────────────
+   A coder holds ONE stream's state and the octets it has produced
+   since the caller last took them: `push` each piece with a flush,
+   take what came out, `finish` for the trailer. Unlike a Job, a coder
+   outlives a call — its state is the point — and is freed once. */
+
+typedef struct {
+    int format;
+    z_stream zs;
+    BrotliEncoderState* bs;
+    unsigned char* data;
+    size_t len, cap;
+    int failure;
+} Coder;
+
+static int coder_room(Coder* c, size_t want) {
+    if (c->len + want <= c->cap) return 1;
+    size_t cap = c->cap ? c->cap : 4096;
+    while (cap < c->len + want) cap *= 2;
+    unsigned char* d = realloc(c->data, cap);
+    if (!d) { c->failure = FAIL_MEMORY; return 0; }
+    c->data = d;
+    c->cap = cap;
+    return 1;
+}
+
+static Coder* coder_new(int64_t format, int64_t level) {
+    Coder* c = calloc(1, sizeof *c);
+    if (!c) return NULL;
+    c->format = (int)format;
+    if (format == FORMAT_BROTLI) {
+        c->bs = BrotliEncoderCreateInstance(NULL, NULL, NULL);
+        if (!c->bs) { free(c); return NULL; }
+        BrotliEncoderSetParameter(c->bs, BROTLI_PARAM_QUALITY, (uint32_t)level);
+    } else if (deflateInit2(&c->zs, (int)level, Z_DEFLATED, format == FORMAT_GZIP ? 31 : 15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        free(c);
+        return NULL;
+    }
+    return c;
+}
+
+static void coder_free(Coder* c) {
+    if (!c) return;
+    if (c->format == FORMAT_BROTLI) { if (c->bs) BrotliEncoderDestroyInstance(c->bs); }
+    else deflateEnd(&c->zs);
+    free(c->data);
+    free(c);
+}
+
+/* One run of the stream: `op` is zlib's flush (NO/SYNC/FINISH). 1 while
+   the run holds or the stream ended, 0 on a failure.
+   A BROTLI FLUSH IS AN OPERATION, NOT A ZLIB ONE. */
+static int coder_run(Coder* c, const unsigned char* in, size_t n, int op) {
+    if (c->format == FORMAT_BROTLI) {
+        BrotliEncoderOperation bop = op == Z_FINISH ? BROTLI_OPERATION_FINISH : BROTLI_OPERATION_FLUSH;
+        const uint8_t* next_in = in;
+        size_t avail_in = n;
+        for (;;) {
+            if (!coder_room(c, 4096)) return 0;
+            uint8_t* next_out = c->data + c->len;
+            size_t avail_out = c->cap - c->len;
+            if (!BrotliEncoderCompressStream(c->bs, bop, &avail_in, &next_in, &avail_out, &next_out, NULL)) {
+                c->failure = FAIL_MEMORY;
+                return 0;
+            }
+            c->len = c->cap - avail_out;
+            if (BrotliEncoderIsFinished(c->bs)) return 1;
+            if (avail_in == 0 && !BrotliEncoderHasMoreOutput(c->bs)) return 1;
+        }
+    }
+    c->zs.next_in = (Bytef*)in;
+    size_t left = n;
+    for (;;) {
+        c->zs.avail_in = window32(left);
+        left -= c->zs.avail_in;
+        if (!coder_room(c, 4096)) return 0;
+        c->zs.next_out = c->data + c->len;
+        c->zs.avail_out = window32(c->cap - c->len);
+        int r = deflate(&c->zs, left ? Z_NO_FLUSH : op);
+        c->len = (size_t)((unsigned char*)c->zs.next_out - c->data);
+        left += c->zs.avail_in;
+        if (r == Z_STREAM_END) return 1;
+        if (r != Z_OK) { c->failure = r == Z_MEM_ERROR ? FAIL_MEMORY : FAIL_CORRUPT; return 0; }
+        if (left == 0 && c->zs.avail_out != 0) return 1;
+    }
+}
+
+/* A coder crosses as an int, as a Job does. */
+static int64_t coder_handed(Coder* c) { return (int64_t)(intptr_t)c; }
+static Coder* coder_held(int64_t c) { return (Coder*)(intptr_t)c; }
+
+/* One stream's encoder for `format` at `level`. */
+int64_t avra_cz_stream(int64_t format, int64_t level) { return coder_handed(coder_new(format, level)); }
+
+/* `n` octets of `in` fed with a flush; 0 taken, else why. */
+int64_t avra_cz_push(int64_t coder, const unsigned char* in, int64_t n) {
+    if (n < 0) return FAIL_CORRUPT;
+    Coder* c = coder_held(coder);
+    return coder_run(c, in, (size_t)n, Z_SYNC_FLUSH) ? 0 : c->failure;
+}
+
+/* The stream ended: the trailer's octets, appended; 0 taken, else why. */
+int64_t avra_cz_finish(int64_t coder) {
+    Coder* c = coder_held(coder);
+    return coder_run(c, NULL, 0, Z_FINISH) ? 0 : c->failure;
+}
+
+int64_t avra_cz_stream_len(int64_t coder) { return (int64_t)coder_held(coder)->len; }
+void* avra_cz_stream_at(int64_t coder) { Coder* c = coder_held(coder); return c->len ? c->data : NULL; }
+
+/* The octets taken: the buffer emptied, the stream's state untouched. */
+int64_t avra_cz_stream_clear(int64_t coder) { coder_held(coder)->len = 0; return 0; }
+
+int64_t avra_cz_stream_free(int64_t coder) { coder_free(coder_held(coder)); return 0; }
+
 /* A job crosses as an int — its address, 0 for none — so Avra never
    holds a pointer that carries no header of ours. */
 static int64_t handed(Job* j) { return (int64_t)(intptr_t)j; }

@@ -13,6 +13,13 @@ extern fn avra_cz_failure(job: int) -> int
 extern fn avra_cz_len(job: int) -> int
 extern fn avra_cz_at(job: int) -> ptr?
 extern fn avra_cz_free(job: int) -> int
+extern fn avra_cz_stream(format: int, level: int) -> int
+extern fn avra_cz_push(job: int, input: Bytes, n: int) -> int
+extern fn avra_cz_finish(job: int) -> int
+extern fn avra_cz_stream_len(job: int) -> int
+extern fn avra_cz_stream_at(job: int) -> ptr?
+extern fn avra_cz_stream_clear(job: int) -> int
+extern fn avra_cz_stream_free(job: int) -> int
 extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
 
 /// A compressed format: gzip (RFC 1952), zlib (RFC 1950 — what HTTP's
@@ -61,6 +68,42 @@ export fn encoded(b: Bytes, f: Format, effort: int? = null) -> Result<Bytes, Com
 export fn decoded(b: Bytes, f: Format, ceiling: int) -> Result<Bytes, CompressError> {
     if ceiling < 0 { fail CompressError.TooLarge(ceiling) }
     finished(avra_cz_decode(format_code(f), b, b.length, ceiling), ceiling)
+}
+
+/// An incremental encoder: one stream's state, fed a piece at a time
+/// and finished once. `push` answers the octets produced so far, and
+/// `finish` the trailer. Free it once — the state is not a value.
+export type Encoder = { job: int }
+
+/// An encoder for `f` at `effort`, clamped as `encoded` clamps it.
+export fn encoding(f: Format, effort: int? = null) -> Result<Encoder, CompressError> {
+    let job = avra_cz_stream(format_code(f), clamped(effort ?? default_level(f), 0, top_level(f)))
+    if job == 0 { fail CompressError.Memory }
+    .Ok(Encoder { job: job })
+}
+
+impl Encoder {
+    /// `b` fed to the stream with a flush; the octets it produced.
+    fn push(b: Bytes) -> Result<Bytes, CompressError> {
+        self.taken(avra_cz_push(self.job, b, b.length))
+    }
+
+    /// The stream ended; the trailer's octets. A second `finish` is a
+    /// corrupt stream, since the first ended it.
+    fn finish() -> Result<Bytes, CompressError> {
+        self.taken(avra_cz_finish(self.job))
+    }
+
+    /// The state returned to the allocator; the encoder is spent after.
+    fn free() { let _ = avra_cz_stream_free(self.job) }
+
+    /// The octets produced since the last take, or why there are none.
+    fn taken(why: int) -> Result<Bytes, CompressError> {
+        let out = adopted(avra_cz_stream_at(self.job), avra_cz_stream_len(self.job))
+        let _ = avra_cz_stream_clear(self.job)
+        if why != 0 { fail failure_of(why, 0) }
+        .Ok(out)
+    }
 }
 
 /// A job's octets as a value, or why it holds none — the job freed
