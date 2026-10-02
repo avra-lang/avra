@@ -658,28 +658,55 @@ LLVMValueRef avra_llvm_build_text(LLVMBuilderRef b, const char* s, int64_t len, 
 // time would write. The
 // buffer is addressed from the global itself, so one global is the
 // whole box.
+// ONE 64-BIT CELL AS TWO 32-BIT WORDS, for a target whose pointers are four
+// bytes wide. A cell is `{low, high}` little-endian, so the runtime's
+// `int64_t` view reads the same word either way; a pointer cell is its own
+// 32-bit address in the low half, which is the only encoding a wasm data
+// relocation can carry — `ptrtoint ptr to i64` in a static initializer has
+// none, because the relocation is 32 bits wide.
+static LLVMValueRef cell_word32(LLVMContextRef ctx, LLVMValueRef v, int pointer) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+    LLVMValueRef lo, hi;
+    if (pointer) {
+        lo = LLVMConstPtrToInt(v, i32);
+        hi = LLVMConstInt(i32, 0, 0);
+    } else {
+        unsigned long long w = (unsigned long long)LLVMConstIntGetZExtValue(v);
+        lo = LLVMConstInt(i32, w & 0xffffffffull, 0);
+        hi = LLVMConstInt(i32, w >> 32, 0);
+    }
+    return LLVMConstStructInContext(ctx, (LLVMValueRef[]){ lo, hi }, 2, 0);
+}
+
 LLVMValueRef avra_llvm_static_array(LLVMModuleRef m, const char* name, LLVMValueRef* cells, LLVMValueRef* given_marks, int n) {
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
+    // THE TARGET'S POINTER WIDTH decides the cell encoding, read from the
+    // module's own data layout, never the compiler's `sizeof`
+    LLVMTargetDataRef td = LLVMGetModuleDataLayout(m);
+    int ptr32 = td != NULL && LLVMPointerSize(td) == 4;
+    LLVMTypeRef cell_ty = ptr32 ? LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ i32, i32 }, 2, 0) : i64;
     LLVMValueRef* words = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (size_t)(n > 0 ? n : 1));
     LLVMValueRef* marks = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (size_t)(n > 0 ? n : 1));
     // each cell's mark is the compiler's (`slot_mark`), never guessed
     // from the constant's type: an absent nullable int is a plain zero
     for (int i = 0; i < n; i++) {
         int pointer = LLVMGetTypeKind(LLVMTypeOf(cells[i])) == LLVMPointerTypeKind;
-        words[i] = pointer ? LLVMConstPtrToInt(cells[i], i64) : cells[i];
+        if (ptr32) words[i] = cell_word32(ctx, cells[i], pointer);
+        else words[i] = pointer ? LLVMConstPtrToInt(cells[i], i64) : cells[i];
         marks[i] = given_marks[i];
     }
-    LLVMTypeRef cells_ty = LLVMArrayType2(i64, (uint64_t)n);
+    LLVMTypeRef cells_ty = LLVMArrayType2(cell_ty, (uint64_t)n);
     LLVMTypeRef marks_ty = LLVMArrayType2(i8, (uint64_t)n);
     LLVMTypeRef box_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ i64, i64, ptr, ptr, ptr }, 5, 0);
     LLVMTypeRef whole_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ LLVMTypeOf(header_const(ctx, 0, 0)), box_ty, cells_ty, marks_ty }, 4, 0);
     LLVMValueRef g = LLVMAddGlobal(m, whole_ty, name);
-    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, 0);
-    LLVMValueRef at_cells[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(ctx), 2, 0) };
-    LLVMValueRef at_marks[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(ctx), 3, 0) };
+    LLVMValueRef zero = LLVMConstInt(i32, 0, 0);
+    LLVMValueRef at_cells[2] = { zero, LLVMConstInt(i32, 2, 0) };
+    LLVMValueRef at_marks[2] = { zero, LLVMConstInt(i32, 3, 0) };
     LLVMValueRef box_fields[5] = {
         LLVMConstInt(i64, (unsigned long long)n, 0),
         LLVMConstInt(i64, (unsigned long long)n, 0),
@@ -687,10 +714,11 @@ LLVMValueRef avra_llvm_static_array(LLVMModuleRef m, const char* name, LLVMValue
         LLVMConstInBoundsGEP2(whole_ty, g, at_marks, 2),
         LLVMConstPointerNull(ptr),
     };
+    uint32_t box_bytes = ptr32 ? (uint32_t)LLVMABISizeOfType(td, box_ty) : (uint32_t)sizeof(AvraArray);
     LLVMValueRef fields[4] = {
-        header_const(ctx, KIND_IMMORTAL(KIND_ARRAY), (uint32_t)sizeof(AvraArray)),
+        header_const(ctx, KIND_IMMORTAL(KIND_ARRAY), box_bytes),
         LLVMConstStructInContext(ctx, box_fields, 5, 0),
-        LLVMConstArray2(i64, words, (uint64_t)n),
+        LLVMConstArray2(cell_ty, words, (uint64_t)n),
         LLVMConstArray2(i8, marks, (uint64_t)n),
     };
     LLVMSetInitializer(g, LLVMConstStructInContext(ctx, fields, 4, 0));
@@ -709,8 +737,12 @@ LLVMValueRef avra_llvm_static_map(LLVMModuleRef m, const char* name, LLVMValueRe
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
     LLVMValueRef map_fields[4] = { keys, vals, LLVMConstPointerNull(ptr), LLVMConstInt(i64, 0, 0) };
+    // the target's own size, not the compiler's: a wasm32 AvraMap is 24 bytes
+    LLVMTypeRef map_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ ptr, ptr, ptr, i64 }, 4, 0);
+    LLVMTargetDataRef td = LLVMGetModuleDataLayout(m);
+    uint32_t map_bytes = td != NULL && LLVMPointerSize(td) == 4 ? (uint32_t)LLVMABISizeOfType(td, map_ty) : (uint32_t)sizeof(AvraMap);
     LLVMValueRef fields[2] = {
-        header_const(ctx, KIND_IMMORTAL(KIND_MAP), (uint32_t)sizeof(AvraMap)),
+        header_const(ctx, KIND_IMMORTAL(KIND_MAP), map_bytes),
         LLVMConstStructInContext(ctx, map_fields, 4, 0),
     };
     return headered_global(m, LLVMConstStructInContext(ctx, fields, 2, 0), name, 0);
@@ -866,6 +898,45 @@ static int native_target_ready(void) {
     return ready ? 0 : 1;
 }
 
+/* Whether a triple names WebAssembly. `wasm32` and `wasm64` share the
+   spelling's first four characters. */
+static int target_is_wasm(const char* triple) {
+    return triple != NULL && strncmp(triple, "wasm", 4) == 0;
+}
+
+/* The WebAssembly target, registered once, so a module can be built for it
+   from a compiler whose OWN target is something else. */
+static void wasm_target_ready(void) {
+    static int ready = 0;
+    if (ready) return;
+    LLVMInitializeWebAssemblyTargetInfo();
+    LLVMInitializeWebAssemblyTarget();
+    LLVMInitializeWebAssemblyTargetMC();
+    LLVMInitializeWebAssemblyAsmPrinter();
+    ready = 1;
+}
+
+/* THE TARGET IS A PROPERTY OF THE MODULE: its triple and data layout decide
+   pointer width and every layout below, and they are written into the text a
+   reader inspects. Set before anything is emitted, so a body is built for the
+   target it will run on. */
+void avra_llvm_set_module_target(LLVMModuleRef m, const char* triple) {
+    if (!triple || !*triple) return;
+    if (target_is_wasm(triple)) wasm_target_ready();
+    LLVMSetTarget(m, triple);
+    char* error = NULL;
+    LLVMTargetRef target;
+    if (LLVMGetTargetFromTriple(triple, &target, &error)) {
+        if (error) LLVMDisposeMessage(error);
+        return;
+    }
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), "", LLVMCodeGenLevelNone, LLVMRelocPIC, LLVMCodeModelDefault);
+    LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);
+    LLVMSetModuleDataLayout(m, layout);
+    LLVMDisposeTargetData(layout);
+    LLVMDisposeTargetMachine(tm);
+}
+
 // THE HOT LEAVES, INLINABLE (runtime/avra_hot.h): the bitcode this
 // compiler carries is linked into a module before its passes, every
 // KEPT definition AVAILABLE EXTERNALLY — the optimizer may inline it and
@@ -1010,16 +1081,25 @@ static void sectioned_by_definition(LLVMModuleRef m) {
 // Atomic as the writers above — a temp, then rename. Answers 0, or 1 with the
 // reason on stderr. It touches its module's context and nothing shared, so a
 // worker runs it.
-static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
+// the targeted hand-off, defined below, is declared here for the bridge above it
+int64_t avra_llvm_emit_object_later_targeted(LLVMModuleRef m, LLVMContextRef lc, const char* path, int64_t level, int64_t workers, const char* target);
+
+static int object_written(LLVMModuleRef m, const char* path, int64_t level, const char* wanted) {
     char tmp[4096];
     if (snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid()) >= (int)sizeof(tmp)) return 1;
-    char* triple = LLVMGetDefaultTargetTriple();
+    // THE CALLER'S TARGET WINS: it is what the module was built for, so the
+    // code generator must agree with the layout those bodies were built
+    // under. Only a caller that names none falls back to the host's.
+    char* default_triple = NULL;
+    const char* triple = (wanted && *wanted) ? wanted : LLVMGetTarget(m);
+    if (!triple || !*triple) { default_triple = LLVMGetDefaultTargetTriple(); triple = default_triple; }
+    if (target_is_wasm(triple)) wasm_target_ready();
     char* error = NULL;
     LLVMTargetRef target;
     if (LLVMGetTargetFromTriple(triple, &target, &error)) {
-        fprintf(stderr, "avra: no native target for %s — %s\n", triple, error ? error : "");
+        fprintf(stderr, "avra: no target for %s — %s\n", triple, error ? error : "");
         if (error) LLVMDisposeMessage(error);
-        LLVMDisposeMessage(triple);
+        if (default_triple) LLVMDisposeMessage(default_triple);
         return 1;
     }
     LLVMCodeGenOptLevel cg = level <= 0 ? LLVMCodeGenLevelNone : level == 1 ? LLVMCodeGenLevelLess
@@ -1029,15 +1109,22 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
     LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);
     LLVMSetModuleDataLayout(m, layout);
     int failed = 0;
+    int off_host = target_is_wasm(triple);
     if (level > 0) {
-        hot_linked(m);
+        // THE HOT LEAVES' BITCODE IS THE HOST'S, so it is linked into a
+        // host-targeted module alone: its 64-bit pointer layout would
+        // contradict a wasm32 module's. A wasm build takes the leaves as
+        // ordinary calls into the runtime library instead.
+        if (!off_host) hot_linked(m);
         char passes[32];
         snprintf(passes, sizeof(passes), "default<O%d>", level > 3 ? 3 : (int)level);
         LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
         // Structural duplicates (a pointer-shaped generic's instantiations)
         // fold into thunks. Sound while no fn is `unnamed_addr`: the pass
-        // then merges bodies, never addresses.
-        LLVMPassBuilderOptionsSetMergeFunctions(opts, 1);
+        // then merges bodies, never addresses. OFF-HOST it stays off: the
+        // pass marks its merges with a COMDAT, and WebAssembly accepts only
+        // SelectionKind::Any — lowering refuses the module outright.
+        if (!off_host) LLVMPassBuilderOptionsSetMergeFunctions(opts, 1);
         LLVMErrorRef ran = LLVMRunPasses(m, passes, tm, opts);
         LLVMDisposePassBuilderOptions(opts);
         if (ran) {
@@ -1047,7 +1134,9 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
             failed = 1;
         }
     }
-    if (!failed) sectioned_by_definition(m);
+    // wasm-ld garbage-collects functions itself; the ELF section discipline
+    // is the host linker's and names sections wasm has no use for.
+    if (!failed && !off_host) sectioned_by_definition(m);
     if (!failed && LLVMTargetMachineEmitToFile(tm, m, tmp, LLVMObjectFile, &error)) {
         fprintf(stderr, "avra: no object for %s — %s\n", path, error ? error : "");
         if (error) LLVMDisposeMessage(error);
@@ -1055,7 +1144,7 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
     }
     LLVMDisposeTargetData(layout);
     LLVMDisposeTargetMachine(tm);
-    LLVMDisposeMessage(triple);
+    if (default_triple) LLVMDisposeMessage(default_triple);
     if (failed || rename(tmp, path) != 0) { remove(tmp); return 1; }
     return 0;
 }
@@ -1067,7 +1156,7 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
 // its own. The queue is BOUNDED: a builder that outruns the workers waits, so
 // the modules alive are the workers' and a few more.
 
-typedef struct EmitJob { LLVMModuleRef m; LLVMContextRef lc; char* path; int64_t level; struct EmitJob* next; } EmitJob;
+typedef struct EmitJob { LLVMModuleRef m; LLVMContextRef lc; char* path; int64_t level; char* target; struct EmitJob* next; } EmitJob;
 
 static pthread_mutex_t emit_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t emit_work = PTHREAD_COND_INITIALIZER;
@@ -1089,9 +1178,10 @@ static void* emit_worker(void* unused) {
         emit_active++;
         pthread_cond_signal(&emit_room);
         pthread_mutex_unlock(&emit_mu);
-        int bad = object_written(j->m, j->path, j->level);
+        int bad = object_written(j->m, j->path, j->level, j->target);
         LLVMContextDispose(j->lc);
         free(j->path);
+        free(j->target);
         free(j);
         pthread_mutex_lock(&emit_mu);
         emit_active--;
@@ -1105,12 +1195,25 @@ static void* emit_worker(void* unused) {
 // THE MODULE AND ITS CONTEXT ARE THE WORKERS' FROM HERE: the caller touches
 // neither again. `workers` is how many may run at once, heard the first time.
 // Answers 0, or 1 when the module could not be handed over — it is disposed
-// all the same.
+// all the same. `target` names the triple this module was built for, and
+// overrides the module's own only when it names none.
+// THE BRIDGE: the committed seed predates the target argument and calls this
+// five-argument spelling. Changing the symbol's arity would make the seed's
+// call read a sixth argument that is not there; the target rides a NEW symbol
+// and the old one delegates, so the seed keeps linking while the source moves.
 int64_t avra_llvm_emit_object_later(LLVMModuleRef m, LLVMContextRef lc, const char* path, int64_t level, int64_t workers) {
+    return avra_llvm_emit_object_later_targeted(m, lc, path, level, workers, NULL);
+}
+
+int64_t avra_llvm_emit_object_later_targeted(LLVMModuleRef m, LLVMContextRef lc, const char* path, int64_t level, int64_t workers, const char* target) {
+    // the module carries its target already; the argument lets a caller name
+    // one for a module that does not, and never overrides what is set
+    if (target && *target && (!LLVMGetTarget(m) || !*LLVMGetTarget(m))) avra_llvm_set_module_target(m, target);
     EmitJob* j = native_target_ready() ? NULL : (EmitJob*)malloc(sizeof(EmitJob));
     char* kept = j ? strdup(path) : NULL;
-    if (!kept) { free(j); LLVMContextDispose(lc); return 1; }
-    *j = (EmitJob){ m, lc, kept, level, NULL };
+    char* held = (j && target && *target) ? strdup(target) : NULL;
+    if (!kept || (target && *target && !held)) { free(kept); free(held); free(j); LLVMContextDispose(lc); return 1; }
+    *j = (EmitJob){ m, lc, kept, level, held, NULL };
     pthread_mutex_lock(&emit_mu);
     while (emit_workers < workers) {
         pthread_t t;
@@ -1120,9 +1223,10 @@ int64_t avra_llvm_emit_object_later(LLVMModuleRef m, LLVMContextRef lc, const ch
     }
     if (emit_workers == 0) {
         pthread_mutex_unlock(&emit_mu);
-        int bad = object_written(m, kept, level);
+        int bad = object_written(m, kept, level, target);
         LLVMContextDispose(lc);
         free(kept);
+        free(held);
         free(j);
         return bad;
     }

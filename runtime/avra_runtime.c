@@ -43,6 +43,8 @@
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #include <malloc/malloc.h>
+#elif defined(__wasm32__)
+#include <malloc.h>
 #else
 #include <link.h>
 #include <malloc.h>
@@ -142,7 +144,7 @@ static Site* site_in(Site* tbl, int64_t* slots, void* site) {
 
 static Site* site_of(void* site) { return site_in(g_sites, &g_site_slots, site); }
 
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(__wasm32__)
 static int main_image_bias(struct dl_phdr_info* info, size_t size, void* out) {
     (void)size;
     *(uintptr_t*)out = (uintptr_t)info->dlpi_addr;
@@ -155,6 +157,9 @@ static int main_image_bias(struct dl_phdr_info* info, size_t size, void* out) {
 static intptr_t image_slide(void) {
 #ifdef __APPLE__
     return _dyld_get_image_vmaddr_slide(0);
+#elif defined(__wasm32__)
+    // a wasm module carries no loader slide: every address is its own
+    return 0;
 #else
     uintptr_t bias = 0;
     dl_iterate_phdr(main_image_bias, &bias);
@@ -431,6 +436,10 @@ static int64_t mem_in_use(void) {
     malloc_statistics_t st;
     malloc_zone_statistics(NULL, &st);
     return (int64_t)st.size_in_use;
+#elif defined(__wasm32__)
+    // no portable allocator introspection under wasi-libc; the ledger
+    // still bounds what the runtime knows it holds
+    return 0;
 #else
     struct mallinfo2 mi = mallinfo2();
     return (int64_t)(mi.uordblks + mi.hblkhd);
@@ -696,7 +705,7 @@ void avra_rc_dead_check(void* p, const char* what) {
 __attribute__((noinline, cold))
 void avra_retain_noted(void* p, Header* h) {
     h->rc++;
-    rc_note(p, 1, __builtin_return_address(0), h->rc);
+    rc_note(p, 1, AVRA_CALLER(), h->rc);
 }
 
 
@@ -706,7 +715,7 @@ __attribute__((noinline, cold))
 void avra_release_guarded(void* p, Header* h) {
     if (h->kind == KIND_DEAD) {
         fprintf(stderr, "avra: released an already-dead box %p (len %lld)\n", p, (long long)guard_len(p));
-        fprintf(stderr, "  this one from %p\n", __builtin_return_address(0));
+        fprintf(stderr, "  this one from %p\n", AVRA_CALLER());
         rc_history(p);
         for (int k = g_chain_len - 1; k >= 0; k--) {
             fprintf(stderr, "  reclaiming %p (len %lld)\n", g_chain[k], (long long)guard_len(g_chain[k]));
@@ -715,7 +724,7 @@ void avra_release_guarded(void* p, Header* h) {
     }
     if (h->kind < 0) return;
     h->rc--;
-    rc_note(p, -1, __builtin_return_address(0), h->rc);
+    rc_note(p, -1, AVRA_CALLER(), h->rc);
     if (h->rc > 0) return;
     int32_t kind = h->kind;
     guard_kept(p, h);
@@ -894,15 +903,10 @@ void avra_trap(const char* msg) {
    NUL, so a line holding one was printed truncated with nothing said —
    and the seam's trap does not govern this seat, because writing bytes
    RESOLVES nothing and a correct answer exists: write all of them.
-   Making it correct is what lets its row be marked `inert` honestly.
-   THE LINE IS ON ITS STREAM WHEN THIS RETURNS: stdout is fully
-   buffered when it is not a terminal, so a live run flush is what
-   lets a server's line be heard and what keeps a trap from taking
-   the lines before it along. */
+   Making it correct is what lets its row be marked `inert` honestly. */
 static void put_line(const char* s) {
     if (s) fwrite(s, 1, str_len(s), stdout);
     fputc('\n', stdout);
-    fflush(stdout);
 }
 
 void avra_puts(const char* s) {
@@ -1209,9 +1213,9 @@ static AvraArray* array_made(int64_t cap, void* ra) {
     return a;
 }
 
-void* avra_array_sized(int64_t n) { return array_made(n, __builtin_return_address(0)); }
+void* avra_array_sized(int64_t n) { return array_made(n, AVRA_CALLER()); }
 
-void* avra_array_new(void) { return array_made(0, __builtin_return_address(0)); }
+void* avra_array_new(void) { return array_made(0, AVRA_CALLER()); }
 
 // The guard's reclaim: children released as usual, the box kept and
 // its cells poisoned, so a stale reader trips instead of finding a
@@ -1321,7 +1325,7 @@ void avra_array_reserve(void* arr, int64_t spare) {
 
 void avra_array_push(void* arr, int64_t v) {
     CENSUS(g_list_pushes++);
-    CENSUS(note_push(__builtin_return_address(0)));
+    CENSUS(note_push(AVRA_CALLER()));
     AvraArray* a = (AvraArray*)arr;
     if (__builtin_expect(a->len == a->cap, 0)) { push_grown(a, v); return; }
     a->data[a->len] = v;
@@ -1333,7 +1337,7 @@ void avra_array_push(void* arr, int64_t v) {
 // value and remembers the slot, so reclaim releases it.
 void avra_array_push_owned(void* arr, void* v) {
     CENSUS(g_list_pushes++);
-    CENSUS(note_push(__builtin_return_address(0)));
+    CENSUS(note_push(AVRA_CALLER()));
     avra_array_push(arr, (int64_t)(uintptr_t)v);
     AvraArray* a = (AvraArray*)arr;
     a->marks[a->len - 1] = MARK_OWNED;
@@ -1344,7 +1348,7 @@ void avra_array_push_owned(void* arr, void* v) {
 // into the new slot.
 void avra_array_push_moved(void* arr, void* v) {
     CENSUS(g_list_pushes++);
-    CENSUS(note_push(__builtin_return_address(0)));
+    CENSUS(note_push(AVRA_CALLER()));
     avra_array_push(arr, (int64_t)(uintptr_t)v);
     AvraArray* a = (AvraArray*)arr;
     a->marks[a->len - 1] = MARK_OWNED;
@@ -1710,8 +1714,8 @@ void avra_cell_forget(void* slot) {
 void* avra_cell_unique(void* slot) {
     void* p = *(void**)slot;
     if (!is_shared(p)) return p;
-    CENSUS(note_copy(__builtin_return_address(0)));
-    g_clone_site = __builtin_return_address(0);
+    CENSUS(note_copy(AVRA_CALLER()));
+    g_clone_site = AVRA_CALLER();
     void* c = box_clone(p);
     alias_log_clone(g_clone_site, c);
     g_clone_site = NULL;
@@ -1750,7 +1754,7 @@ void* avra_box_thawed_cloned(void* p, void* ra) {
 // A nullable's absent tag (-1) is the null pointer.
 void* avra_enum_boxed(int64_t tag, int64_t word, int64_t counted) {
     if (tag < 0) return NULL;
-    void* box = array_made(2, __builtin_return_address(0));
+    void* box = array_made(2, AVRA_CALLER());
     avra_array_push(box, tag);
     if ((counted >> tag) & 1) avra_array_push_owned(box, (void*)(uintptr_t)word);
     else avra_array_push(box, word);
@@ -1774,7 +1778,7 @@ void* avra_slot_unique(void* arr, int64_t i) {
     void* p = (void*)(uintptr_t)avra_array_get(arr, i);
     if (!is_shared(p)) return p;
     AvraArray* a = (AvraArray*)arr;
-    g_clone_site = __builtin_return_address(0);
+    g_clone_site = AVRA_CALLER();
     void* c = box_clone(p);
     alias_log_clone(g_clone_site, c);
     g_clone_site = NULL;
@@ -1917,6 +1921,11 @@ static uint64_t splitmix(uint64_t* x) {
 static void os_entropy(uint64_t* w, size_t n) {
 #ifdef __APPLE__
     arc4random_buf(w, n * sizeof *w);
+#elif defined(__wasm32__)
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    uint64_t x = (uint64_t)t.tv_nsec ^ ((uint64_t)t.tv_sec << 32) ^ (uint64_t)(uintptr_t)&t ^ (uint64_t)getpid();
+    for (size_t i = 0; i < n; i++) w[i] = splitmix(&x);
 #else
     size_t got = 0;
     while (got < n * sizeof *w) {
@@ -2276,7 +2285,7 @@ static void* map_clone(AvraMap* m) {
 
 // The clone a place opens — by the box's kind.
 static void* box_clone(void* p) {
-    CENSUS(note_copy(__builtin_return_address(0)));
+    CENSUS(note_copy(AVRA_CALLER()));
     Header* h = hdr(p);
     return (h && KIND_SHAPE(h->kind) == KIND_MAP) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
 }
@@ -2386,8 +2395,8 @@ static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
 
 // A fresh list: `a`'s slots, then `b`'s. Owned.
 void* avra_array_concat(void* a, void* b) {
-    CENSUS(note_copy(__builtin_return_address(0)));
-    void* site = g_clone_site ? g_clone_site : __builtin_return_address(0);
+    CENSUS(note_copy(AVRA_CALLER()));
+    void* site = g_clone_site ? g_clone_site : AVRA_CALLER();
     g_clone_site = site;
     void* out = avra_array_new();
     g_clone_site = NULL;
@@ -2402,7 +2411,7 @@ void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
     AvraArray* a = (AvraArray*)arr;
     if (lo < 0) lo = 0;
     if (hi > a->len) hi = a->len;
-    void* out = array_made(lo < hi ? hi - lo : 0, g_clone_site ? g_clone_site : __builtin_return_address(0));
+    void* out = array_made(lo < hi ? hi - lo : 0, g_clone_site ? g_clone_site : AVRA_CALLER());
     if (lo < hi) array_append(out, a, lo, hi);
     return out;
 }
@@ -2417,7 +2426,7 @@ static inline int sole_array(void* p) {
 // alone: the slots cut away released, the kept ones moved down.
 void* avra_array_slice_reusing(void* arr, int64_t lo, int64_t hi) {
     if (!sole_array(arr)) {
-        g_clone_site = __builtin_return_address(0);
+        g_clone_site = AVRA_CALLER();
         void* out = avra_array_slice(arr, lo, hi);
         g_clone_site = NULL;
         avra_rc_release(arr);
@@ -2443,7 +2452,7 @@ void* avra_array_slice_reusing(void* arr, int64_t lo, int64_t hi) {
 // `a`'s slots then `b`'s, onto `a` when it is held alone.
 void* avra_array_concat_reusing(void* a, void* b) {
     if (a == b || !sole_array(a)) {
-        g_clone_site = __builtin_return_address(0);
+        g_clone_site = AVRA_CALLER();
         void* out = avra_array_concat(a, b);
         g_clone_site = NULL;
         avra_rc_release(a);
@@ -2968,10 +2977,14 @@ void avra_mmap_close(void* h) {
 // process itself could never update. A permission-denied answer (a pid
 // reused by another user) still means something stands there.
 #include <signal.h>
+#if defined(__wasm32__)
+int64_t avra_pid_alive(int64_t pid) { return 0; }
+#else
 int64_t avra_pid_alive(int64_t pid) {
     if (kill((pid_t)pid, 0) == 0) return 1;
     return errno == EPERM ? 1 : 0;
 }
+#endif
 
 // This process's own id, OS-assigned at birth.
 int64_t avra_own_pid(void) {
@@ -3302,12 +3315,15 @@ const char* avra_str_concat_reusing(const char* a, const char* b) {
 // verdicts and statuses as words, listings as newline-joined names.
 
 #include <sys/stat.h>
+#if !defined(__wasm32__)
 #include <sys/wait.h>
 #include <spawn.h>
+#endif
 #include <poll.h>
 #include <signal.h>
 #include <fcntl.h>
 
+#if !defined(__wasm32__)
 // A child's cwd bound through a file action: POSIX-2024's name where
 // the SDK has it (macOS 26), the `_np` spelling before (Darwin
 // 10.15, glibc 2.29); elsewhere a cwd is refused as unsupported.
@@ -3324,6 +3340,7 @@ const char* avra_str_concat_reusing(const char* a, const char* b) {
 #endif
 #endif
 extern char** environ;
+#endif
 #include <dirent.h>
 #include <time.h>
 #include <unistd.h>
@@ -3455,7 +3472,6 @@ void avra_eputs(const char* s) {
     fflush(stdout);
     if (s) fwrite(s, 1, str_len(s), stderr);
     fputc('\n', stderr);
-    fflush(stderr);
 }
 
 // A DEBUG LINE, only under AVRA_DEBUG — the compiler's own instrument.
@@ -3593,6 +3609,18 @@ const char* avra_errno_text(int64_t err) {
     return str_static(strerror((int)(err < 0 ? -err : err)));
 }
 
+#if defined(__wasm32__)
+
+// A WebAssembly module has no processes: spawning, replacing the
+// image and capturing a child are refused the way a refused cwd is,
+// rather than linked.
+int64_t avra_spawn_status(const char* prog, void* args) { return 127; }
+int64_t avra_spawn_in(const char* dir, const char* prog, void* args) { return 127; }
+const char* avra_self_dir(void) { return str_static(""); }
+int64_t avra_exec_self(void* args) { return 127; }
+
+#else
+
 // THE SEED'S SHIM: the seed that predates @std/process links this;
 // nothing in Avra declares it. Deleted once a refreshed seed has
 // landed (ROADMAP, lane B slice C).
@@ -3697,6 +3725,8 @@ int64_t avra_exec_self(void* args) {
     return 127;
 }
 
+#endif
+
 // Every directory along the path made, 1 when the whole path stands.
 int64_t avra_mkdir_p(const char* path) {
     return mkdir_all(path) == 0;
@@ -3724,6 +3754,14 @@ const char* avra_host_list_dir(const char* path) {
 // the end answers the text written, its final newline dropped.
 static int g_cap_saved = -1;
 static int g_cap_file = -1;
+
+#if defined(__wasm32__)
+
+// A wasm module has one process and no descriptor table to redirect.
+void avra_capture_begin(void) { avra_trap("capture is not available on wasm32"); }
+const char* avra_capture_end(void) { avra_trap("capture is not available on wasm32"); }
+
+#else
 
 void avra_capture_begin(void) {
     if (g_cap_file >= 0) avra_trap("capture: begun twice");
@@ -3758,6 +3796,8 @@ const char* avra_capture_end(void) {
     free(buf);
     return out;
 }
+
+#endif
 
 // THE ROWS CLAIM THE RUNTIME. `runtime/avra_rt.h` is generated from
 // `rt_sigs()` and asserts, in the C compiler, that every body answers
