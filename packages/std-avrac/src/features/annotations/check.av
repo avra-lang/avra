@@ -193,11 +193,21 @@ const effect_census: List<Effect> = [
 
 /// The written arguments: a DECLARATION'S NAME in a meta seat is its
 /// meta value, typed as the seat; anything else is an expression.
+/// A bare variant literal (`@prim(.Button)`) is the one argument that
+/// needs its seat's type to infer. Every other argument is typed by its
+/// own expression, and a declaring annotation's arguments are refused
+/// BEFORE they run — so only a variant is walked against its seat.
+fn writes_a_variant(cx: TypeCx, e: ExprId) -> bool {
+    match cx.view.store.expr(e) { .VariantLit(_, _) -> true, _ -> false }
+}
+
 fn type_arguments(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) {
     for i, e in a.args {
         let want: TypeId = if i + 1 < seats.length { seats[i + 1] } else { cx.error_type }
         if cx.view.decls.takes_a_decl(want) && cx.bound_decl(e) != null {
             cx.facts.set_type(e, want)
+        } else if want != cx.error_type && writes_a_variant(cx, e) {
+            let _ = cx.accepts(e, want)
         } else {
             cx.walk(e)
         }
