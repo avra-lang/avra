@@ -1,0 +1,70 @@
+//! A `then` case's failure, shown: the two sides when its answer is
+//! one equality, or a note saying why they are not. The body is a
+//! declaration lowered like any fn's, so the driver reaches this
+//! rule with the case's root and answer in hand.
+use core.{ExprId, Reg, BinOp, Type}
+use features.{LowerCx}
+
+/// A case that is one equality shows BOTH SIDES when it fails, so no
+/// reader round-trips for two values. Only a body whose answer is
+/// `a == b` over shapes with a text projection can; every other body
+/// keeps its name and says why.
+export fn show_case_failure(mut cx: LowerCx, root: ExprId, ok: Reg) {
+    let subject = case_subject(cx, root)
+    match cx.view.store.expr(subject) {
+        .Binary(op, l, r) -> if op == BinOp.Eq { show_diff(cx, l, r, ok) } else { show_note(cx, ok) },
+        rest -> show_note(cx, ok),
+    }
+}
+
+/// The expression a case answers with: a body block reads through to
+/// its value, so `{ let a = … \n a == b }` shows its sides too.
+fn case_subject(cx: LowerCx, root: ExprId) -> ExprId {
+    match cx.view.store.expr(root) { .Block(_, value) -> value ?? root, rest -> root }
+}
+
+/// Both sides of the failed comparison, rendered INSIDE the failure
+/// arm alone, so a passing case pays nothing. The operands' liveness
+/// reaches this read, so neither is released at the compare.
+fn show_diff(mut cx: LowerCx, l: ExprId, r: ExprId, ok: Reg) {
+    cx
+        .void_region(cx.un(ok)) { c ->
+            report_diff(c, l, r)
+        }
+}
+
+/// The two sides, or the note when a side has no text projection.
+fn report_diff(mut cx: LowerCx, l: ExprId, r: ExprId) {
+    let left = text_of_node(cx, l)
+    let right = text_of_node(cx, r)
+    if left == null || right == null {
+        cx.puts(cx.const_str(case_note_text))
+        return
+    }
+    emit_side(cx, "        actual:   ", left!)
+    emit_side(cx, "        expected: ", right!)
+}
+
+/// One `label value` line — the value's own text projection.
+fn emit_side(mut cx: LowerCx, prefix: string, text: Reg) {
+    cx.puts(cx.str_concat(Type.Str, cx.const_str(prefix), text))
+}
+
+/// A failing case whose body is not one equality says so; its name is
+/// the suite entry's to print.
+fn show_note(mut cx: LowerCx, ok: Reg) {
+    cx
+        .void_region(cx.un(ok)) { c ->
+            c.puts(c.const_str(case_note_text))
+        }
+}
+
+/// The text projection of one compared value, or null.
+fn text_of_node(mut cx: LowerCx, e: ExprId) -> Reg? {
+    let r = cx.reg_of(e)
+    cx.text_projection(cx.view.types.seen_shape(cx.out.type_of_reg(r)), r)
+}
+
+/// The note a failing case prints when its body is not one equality
+/// over printable values — the suite entry names the case.
+const case_note_text: string = "        (a `then` shows both sides only for one `a == b` over printable values)"

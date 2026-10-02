@@ -3,7 +3,7 @@
 //! every expression passes through, the dyn lift, the statement
 //! loop, a block's scope with its `defer` frame, and the entry's
 //! printed answer.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, BinOp, reversed}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
 use features.{LowerCx, Deferred, Deferral, DirectCall, semantics_of, stmt_semantics_of}
 
@@ -273,67 +273,6 @@ impl LowerCx {
         }
     }
 
-    /// A `then` case that is one equality shows BOTH SIDES when it
-    /// fails, so no reader round-trips for two values. Only a body
-    /// whose answer is `a == b` over shapes with a text projection
-    /// can; every other body keeps its name and says why.
-    mut fn case_diff(root: ExprId, ok: Reg) {
-        let subject = self.case_subject(root)
-        match self.view.store.expr(subject) {
-            .Binary(op, l, r) -> if op == BinOp.Eq { self.show_diff(l, r, ok) } else { self.show_note(ok) },
-            rest -> self.show_note(ok),
-        }
-    }
-
-    /// The expression a case answers with: a body block reads through
-    /// to its value, so `{ let a = … \n a == b }` shows its sides too.
-    fn case_subject(root: ExprId) -> ExprId {
-        match self.view.store.expr(root) { .Block(_, value) -> value ?? root, rest -> root }
-    }
-
-    /// Both sides of the failed comparison, rendered INSIDE the
-    /// failure arm alone, so a passing case pays nothing. The
-    /// operands' liveness reaches this read, so neither is released
-    /// at the compare.
-    mut fn show_diff(l: ExprId, r: ExprId, ok: Reg) {
-        self
-            .void_region(self.un(ok)) { cx ->
-                cx.report_diff(l, r)
-            }
-    }
-
-    /// The two sides, or the note when a side has no text projection.
-    mut fn report_diff(l: ExprId, r: ExprId) {
-        let left = self.text_of_node(l)
-        let right = self.text_of_node(r)
-        if left == null || right == null {
-            self.puts(self.const_str(case_note_text))
-            return
-        }
-        self.emit_side("        actual:   ", left!)
-        self.emit_side("        expected: ", right!)
-    }
-
-    /// One `label value` line — the value's own text projection.
-    mut fn emit_side(prefix: string, text: Reg) {
-        self.puts(self.str_concat(Type.Str, self.const_str(prefix), text))
-    }
-
-    /// A failing case whose body is not one equality says so; its
-    /// name is the suite entry's to print.
-    mut fn show_note(ok: Reg) {
-        self
-            .void_region(self.un(ok)) { cx ->
-                cx.puts(cx.const_str(case_note_text))
-            }
-    }
-
-    /// The text projection of one compared value, or null.
-    mut fn text_of_node(e: ExprId) -> Reg? {
-        let r = self.reg_of(e)
-        self.text_projection(self.view.types.seen_shape(self.out.type_of_reg(r)), r)
-    }
-
     /// The refusal: an answer without a text projection names its
     /// type and the remedy.
     fn no_projection(tname: string) -> Diag {
@@ -537,7 +476,3 @@ impl LowerCx {
         self.out.give(Ins.CallPtr(dst, fp, [box]))
     }
 }
-
-/// The note a failing case prints when its body is not one equality
-/// over printable values — the suite entry names the case.
-const case_note_text: string = "        (a `then` shows both sides only for one `a == b` over printable values)"
