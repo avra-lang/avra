@@ -621,3 +621,27 @@ every target and proven on every engine.
 What none of them have and we do: one tree for every target, static
 completeness (a target missing a component is refused), provenance on
 every node, and the same source proving layout across two engines.
+
+## 20. Runtime — deferred, with triggers
+
+The patch loop is NOT a VDOM. The read set is compiler-known and
+identity is `OriginId` — its source location — so a static node is
+addressed, not matched, and one expression changing emits one op.
+Fine-grained where reads are provable; coarse across a `dyn` boundary.
+
+NOT designed yet (fires when the `dom` target / op stream is built):
+
+- **Keys for dynamic lists.** Origin identity covers static structure; a
+  reordered or inserted item needs `key` or a move degrades to rebuild.
+- **`dyn` stability.** A node whose concrete primitive changes cannot
+  patch in place; where the compiler cannot prove stability it must emit
+  a runtime check.
+- **Subscription budgets.** Per-node signals are cheap to update and
+  expensive to hold; per-view is the reverse. Measure, never assume.
+- **Hydration.** The server's HTML and the client's tree must agree;
+  `OriginId` makes the ids derivable on both sides, but a mismatch is
+  still a failure mode.
+
+FORWARD-COMPAT NOW: the `Node` keeps `Box.key`, and the compiler keeps
+`OriginId`; both are the identity the runtime will need.
+
