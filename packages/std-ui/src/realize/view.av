@@ -4,7 +4,7 @@
 //! so every foreign name it writes is a static `quote`; a generated hole
 //! resolves in the annotated file, so fields are read as `self.<field>`.
 use @std.meta.{Type, Field, Directive, Code, list_of}
-use realize.render.{Node, Prim, Attribute, EventKind, Binding}
+use realize.render.{Node, Prim, Attribute, EventKind, Event}
 use style.box.{Box}
 
 /// A component that projects to a neutral `Node`.
@@ -132,9 +132,9 @@ fn attr_quote(f: Field) -> Code {
 
 // ── actions: what a node does when it speaks ────────────────────
 
-/// The event a component field binds — `on_click: fn() -> void`. The
-/// field's name IS the kind; a field that binds no event answers nothing
-/// and projects to nothing else either.
+/// The event a component field binds — `on_click: string`, the NAME of the
+/// action it asks for. The field's name IS the kind; a field that binds no
+/// event answers nothing and projects to nothing else either.
 fn event_kind(name: string) -> string? {
     match name {
         "on_click" -> "Click",
@@ -148,11 +148,11 @@ fn event_kind(name: string) -> string? {
 /// ONE arm per `EventKind`, so a new kind lands here beside its variant.
 fn event_quote(f: Field) -> Code {
     match event_kind(f.name) ?? "" {
-        "Click" -> quote { Binding { kind: EventKind.Click, handler: self.${f} } },
-        "Input" -> quote { Binding { kind: EventKind.Input, handler: self.${f} } },
-        "Change" -> quote { Binding { kind: EventKind.Change, handler: self.${f} } },
-        "Submit" -> quote { Binding { kind: EventKind.Submit, handler: self.${f} } },
-        rest -> quote { Binding { kind: EventKind.Click, handler: self.${f} } },
+        "Click" -> quote { Event { kind: EventKind.Click, name: self.${f} } },
+        "Input" -> quote { Event { kind: EventKind.Input, name: self.${f} } },
+        "Change" -> quote { Event { kind: EventKind.Change, name: self.${f} } },
+        "Submit" -> quote { Event { kind: EventKind.Submit, name: self.${f} } },
+        rest -> quote { Event { kind: EventKind.Click, name: self.${f} } },
     }
 }
 
