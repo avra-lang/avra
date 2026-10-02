@@ -9,6 +9,7 @@
 use core.{FileId, ModuleId, DeclId, reversed}
 use query.{Key, same_key, KeyMarks, no_key_marks}
 use @std.path.{relative_path}
+use compiler.families.{Family}
 
 /// The hold against the kept state: every file a check reads, each held or
 /// read with why, and the files whose text moved since they were kept.
@@ -92,8 +93,9 @@ impl Workspace {
 
     /// A query's family by its word — a relation's minted family by its place.
     fn key_family_word(k: Key) -> string {
-        if k.family >= family_count { return "Relation ${k.family}" }
-        family_word(family_at(k.family))
+        let all = Family.all()
+        if k.family >= all.length { return "Relation ${k.family}" }
+        family_word(all[k.family])
     }
 
     /// The file a query analyses, for a file's analysis alone.
@@ -105,8 +107,9 @@ impl Workspace {
     /// What a family keys by, named: a file, a module, a declaration, a
     /// package, the whole program, a name, or a unit known only by its number.
     fn key_subject(k: Key) -> string {
-        if k.family >= family_count { return "${k.arg}" }
-        match family_at(k.family) {
+        let all = Family.all()
+        if k.family >= all.length { return "${k.arg}" }
+        match all[k.family] {
             .Source or .Parsed or .Items or .Admitted or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> self.shown_path(self.decls.file(FileId { index: k.arg }).path),
             .Namespace or .HeldSig -> module_shown(self.decls.module_name(ModuleId { index: k.arg })),
             .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Marks -> self.decl_shown(DeclId { index: k.arg }),
