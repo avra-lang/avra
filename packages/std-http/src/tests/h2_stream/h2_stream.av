@@ -6,23 +6,14 @@
 //! back only for what was read. So neither end ever holds more than a
 //! window and a piece, however large the body.
 use @std.net.{Conn, NetError, listen, connect}
-use @std.time.{secs, within}
+use @std.time.{secs, ms}
 use @std.http.frame.{limits, no_bytes}
 use @std.http.http.{Request, Unrouted, Response, Stream, Pulled, text}
 use @std.http.body.{Body}
 use @std.http.server.{served, timing}
-use @std.http.h2.{
-    Frame,
-    FrameAt,
-    preface,
-    frame_bytes,
-    frame_at,
-    u32_at,
-    u32_bytes,
-    end_stream,
-    end_headers,
-}
-use @std.http.hpack.{header_field, encoder}
+use @std.http.h2.{Frame, end_stream}
+use @std.http.h2_client_drive.{H2Client, h2_conversing, h2_request}
+use @std.http.wire.{plainly}
 
 type App = { pulled: Cell<int> }
 
@@ -69,149 +60,64 @@ fn answer(app: App, q: Request<Unrouted>) -> Response {
 
 // ── The client ──────────────────────────────────────────────────
 
-/// A request head as HEADERS on stream `id`.
-fn asked(id: int, method: string, path: string, ends: bool, length: int) -> Bytes {
-    mut e = encoder(false)
-    let head = [
-        header_field(":method", method),
-        header_field(":scheme", "http"),
-        header_field(":path", path),
-        header_field(":authority", "a"),
-    ]
-    let fields = if length < 0 { head } else { head.concat([header_field("content-length", "${length}")]) }
-    frame_bytes(
-        .Headers,
-        if ends { end_headers | end_stream } else { end_headers },
-        id,
-        e.encoded(fields),
-    )
-}
-
-/// What a client holds between reads: the octets not yet framed, and
-/// the frames the last read completed.
-type Heard = { buf: Bytes, frames: List<Frame> }
-
-/// One read's frames, framed after what was left.
-fn heard(c: Conn, buf: Bytes) -> Result<Heard, NetError> {
-    let got? = within secs(20) { c.read(1048576) }? else { return .Ok(Heard { buf: buf, frames: [] }) }
-    mut rest = buf.concat(got)
-    mut out: List<Frame> = []
-    while true {
-        match frame_at(rest, 0, 16777215) {
-            .Whole(f, end) -> {
-                out.push(f)
-                rest = rest.slice(end, rest.length)
-            },
-            .Partial or .Oversized -> { break },
-        }
-    }
-    .Ok(Heard { buf: rest, frames: out })
+/// A driver failure as the net error this suite reports.
+fn driven<T>(r: Result<T, string>) -> Result<T, NetError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(NetError { verb: "h2", subject: e, errno: 0 }) }
 }
 
 /// The download on stream 1, under the stream's first window alone:
 /// the client reads that window's worth and gives nothing back, asks on
-/// stream 5 how many pieces the server has pulled, then opens the
-/// window wide and reads the rest.
-fn downloaded(c: Conn) -> Result<string, NetError> {
-    c
-        .write(
-            frame_bytes(.WindowUpdate, 0, 0, u32_bytes(1073741824))
-                .concat(asked(1, "GET", "/big", true, -1)),
-        )?
-    let first = frames_until(c, no_bytes, (fs) -> data_octets(fs, 1) >= 65535)?
-    c.write(asked(5, "GET", "/pulled", true, -1))?
-    let asked_pulled = frames_until(c, first.buf, (fs) -> ended(fs, 5))?
-    c.write(frame_bytes(.WindowUpdate, 0, 1, u32_bytes(1073741824)))?
-    let held = data_octets(first.frames, 1) + data_octets(asked_pulled.frames, 1)
-    let total = held + counted_until(c, asked_pulled.buf, 1, total_size() - held)?
-    let pulled = answered(asked_pulled.frames, 5)
+/// another stream how many pieces the server has pulled, then gives the
+/// window back and reads the rest.
+fn downloaded(mut cl: H2Client) -> Result<string, NetError> {
+    let one = driven(cl.ask(h2_request("GET", "http", "a", "/big", [], no_bytes)))?
+    let first = driven(cl.frames_until((fs) -> data_octets(fs, one) >= 65535, ms(500)))?
+    let asked = driven(cl.ask(h2_request("GET", "http", "a", "/pulled", [], no_bytes)))?
+    let second = driven(
+        cl.frames_until((fs) -> fs.any(it.stream == asked && it.flags & end_stream != 0), ms(500)),
+    )?
+    let held = data_octets(first.concat(second), one)
+    let pulled = answered(second, asked)
+    mut total = drain(cl, one, 0)
+    while total < total_size() {
+        let seen = driven(cl.advance(1048576, ms(500)))?
+        if seen == null { break }
+        total = drain(cl, one, total)
+    }
     .Ok(
         "downloaded ${total} octets; with its window held shut after ${held}, the server had pulled ${pulled} piece(s)",
     )
 }
 
-/// Frames read after `buf` until `done` says they are enough, or the
-/// peer goes quiet.
-fn frames_until(c: Conn, buf: Bytes, done: fn(List<Frame>) -> bool) -> Result<Heard, NetError> {
-    mut rest = buf
-    mut all: List<Frame> = []
-    while !done(all) {
-        let h = heard(c, rest)?
-        if h.frames.is_empty() && h.buf.length == rest.length { return .Ok(Heard { buf: rest, frames: all }) }
-        rest = h.buf
-        all = all.concat(h.frames)
-    }
-    .Ok(Heard { buf: rest, frames: all })
+/// Stream `id`'s arrived body taken, added to `n` — the window given
+/// back for it, so the server sends its next piece.
+fn drain(mut cl: H2Client, id: int, n: int) -> int {
+    match cl.body(id) { .Whole(b) or .Flowing(b) -> n + b.length, .Cut -> n }
 }
 
-/// Stream `id`'s DATA octets read after `buf` and counted, never kept,
-/// until `want` have arrived or the peer goes quiet.
-fn counted_until(c: Conn, buf: Bytes, id: int, want: int) -> Result<int, NetError> {
-    mut rest = buf
-    mut n = 0
-    while n < want {
-        let h = heard(c, rest)?
-        if h.frames.is_empty() && h.buf.length == rest.length { return .Ok(n) }
-        rest = h.buf
-        n = n + data_octets(h.frames, id)
-    }
-    .Ok(n)
+/// The upload on stream 5: a whole request body, sent only as the
+/// server's windows allow — the window updates read between sends — and
+/// then the answer's body.
+fn uploaded(mut cl: H2Client) -> Result<string, NetError> {
+    let id = driven(cl.ask(h2_request("POST", "http", "a", "/count", [], upload_body())))?
+    let frames = driven(
+        cl.frames_until((fs) -> fs.any(it.stream == id && it.flags & end_stream != 0), ms(500)),
+    )?
+    .Ok("uploaded ${total_size()} octets: ${answered(frames, id)}")
 }
+
+/// The whole upload body: `pieces()` pieces woven into one.
+fn upload_body() -> Bytes { [piece() for _i in 0..pieces()].bytes() }
 
 /// Whether these frames end stream `id`.
-fn ended(fs: List<Frame>, id: int) -> bool { fs.any(it.stream == id && it.flags & end_stream != 0) }
-
-/// Stream `id`'s DATA, as text.
-fn answered(fs: List<Frame>, id: int) -> string { [f.payload for f in fs if f.stream == id && f.kind is .Data].bytes().text() ?? "?" }
-
-/// The upload on stream 7: DATA sent only as the server's windows
-/// allow, the windows it gives back read between sends, then the
-/// answer's body.
-fn uploaded(c: Conn) -> Result<string, NetError> {
-    c.write(asked(7, "POST", "/count", false, total_size()))?
-    mut buf = no_bytes
-    mut sent = 0
-    mut window = 65535
-    mut conn_window = 65535
-    mut answer = no_bytes
-    mut done = false
-    while !done {
-        while sent < total_size() && window > 0 && conn_window > 0 {
-            let n = least(least(16384, least(window, conn_window)), total_size() - sent)
-            c
-                .write(
-                    frame_bytes(
-                        .Data,
-                        if sent + n == total_size() { end_stream } else { 0 },
-                        7,
-                        piece().slice(0, n),
-                    ),
-                )?
-            sent = sent + n
-            window = window - n
-            conn_window = conn_window - n
-        }
-        let h = heard(c, buf)?
-        if h.frames.is_empty() && h.buf.length == buf.length { return .Ok("stalled having sent ${sent}") }
-        buf = h.buf
-        for f in h.frames {
-            if f.kind is .WindowUpdate && f.stream == 7 { window = window + u32_at(f.payload, 0) }
-            if f.kind is .WindowUpdate && f.stream == 0 { conn_window = conn_window + u32_at(f.payload, 0) }
-            if f.kind is .Data && f.stream == 7 { answer = answer.concat(f.payload) }
-            if f.stream == 7 && f.flags & end_stream != 0 { done = true }
-        }
-    }
-    .Ok("uploaded ${sent} octets: ${answer.text() ?? "?"}")
-}
-
-/// How many DATA octets these frames carry on stream `id`.
 fn data_octets(fs: List<Frame>, id: int) -> int {
     mut n = 0
     for f in fs { if f.kind is .Data && f.stream == id { n = n + f.payload.length } }
     n
 }
 
-fn least(a: int, b: int) -> int { if a < b { a } else { b } }
+/// Stream `id`'s DATA, as text.
+fn answered(fs: List<Frame>, id: int) -> string { [f.payload for f in fs if f.stream == id && f.kind is .Data].bytes().text() ?? "?" }
 
 fn shown() -> Result<string, NetError> {
     let l = listen("127.0.0.1", 0)?
@@ -220,9 +126,9 @@ fn shown() -> Result<string, NetError> {
     defer s.stop()
     let c = connect("127.0.0.1", l.port, secs(2))?
     defer { let _ = c.close() }
-    c.write(preface.concat(frame_bytes(.Settings, 0, 0, no_bytes)))?
-    let down = downloaded(c)?
-    let up = uploaded(c)?
+    mut cl = h2_conversing(limits(), plainly(c))
+    let down = downloaded(cl)?
+    let up = uploaded(cl)?
     .Ok("${down}\n${up}")
 }
 
