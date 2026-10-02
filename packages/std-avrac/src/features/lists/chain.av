@@ -64,12 +64,15 @@ export fn index_of_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
 fn subject_clauses(mut cx: LowerCx, subject: ExprId) -> List<Clause> {
     let inner? = chain_clauses(cx, subject) else {
         let _ = cx.reg_of(subject)
-        let head: List<Clause> = [
-            .Head(Source { source: subject, hi: null, index: false, lookup: null }),
-        ]
+        let head: List<Clause> = [head_clause(subject)]
         return head
     }
     inner
+}
+
+/// A receiver as a chain's opening head.
+fn head_clause(subject: ExprId) -> Clause {
+    .Head(Source { source: subject, hi: null, index: false, lookup: null })
 }
 
 /// A receiver's fn boxed, as the pipeline's own seat.
@@ -90,7 +93,7 @@ fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
         prefix = inner
     } else {
         let _ = cx.reg_of(subject)
-        prefix = [.Head(Source { source: subject, hi: null, index: false, lookup: null })]
+        prefix = [head_clause(subject)]
     }
     let f = boxed(cx, arg)
     prefix.concat([applied(cx, stage, FnBox { box: f.f, code: f.fp }, e)])
