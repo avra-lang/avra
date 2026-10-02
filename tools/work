@@ -121,8 +121,22 @@ gate_preflight() {
         git diff --quiet origin/main HEAD && return 0
     fi
     echo "work: enqueue preflight — the branch's own compiler over the changed .av and affected packages" >&2
-    AVRA_SP_TREE=$PWD sh "$tools/sp" sh tools/gate_changed.sh --files $changed --packages $packages \
-        || die "the enqueue gate refused the branch — the train would too"
+    # A GATE refusal is the preflight's one job, and dies. ANYTHING ELSE IS
+    # INFRASTRUCTURE: a Sprite cold-building the compiler peaks past its 4 GB
+    # and is OOM-killed before a single check runs, and the preflight must not
+    # be the failure — warn, push, and let the PR check re-prove on GitHub's
+    # larger runner (the branch's own compiler still gates there).
+    if out=$(AVRA_SP_TREE=$PWD sh "$tools/sp" sh tools/gate_changed.sh --files $changed --packages $packages 2>&1); then
+        st=0
+    else
+        st=$?
+    fi
+    [ -n "$out" ] && printf '%s\n' "$out" >&2
+    [ "$st" -eq 0 ] && return 0
+    case "$out" in
+        *refused* | *"NEW violation"*) die "the enqueue gate refused the branch — the train would too" ;;
+    esac
+    echo "work: the preflight could not run (exit $st) — pushing anyway; the PR check re-proves on GitHub" >&2
 }
 
 status() {
