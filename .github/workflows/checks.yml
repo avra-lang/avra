@@ -32,10 +32,13 @@ jobs:
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 60
     steps:
-      - if: github.event_name == 'pull_request'
-        run: echo "admitted; the train is what gets tested"
-      - if: github.event_name != 'pull_request'
-        uses: actions/checkout@v4
+      # A pull_request runs the SAME gate and affected suites as the train, on
+      # its own tree. The PR step used to be a stub ("admitted; the train is
+      # what gets tested"), so a PR entered the queue untested and the train
+      # was the FIRST check — one bad PR failed a ten-PR train and the queue
+      # churned. The train's job keeps testing the COMBINATION, which is where
+      # cross-PR interactions live; a PR now proves itself before it enqueues.
+      - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
       - if: github.event_name != 'pull_request'
         id: key
@@ -47,7 +50,11 @@ jobs:
           path: build/avra
           key: ${{ steps.key.outputs.key }}
           restore-keys: avra-
-      - if: github.event_name != 'pull_request' && steps.cache.outputs.cache-hit != 'true'
+      # A PR has no cached binary, so it BOOTSTRAPS from the committed seed.
+      # A PR that ADDS SYNTAX cannot be bootstrapped by its base's seed (the
+      # generation law) — those still land by the refresh-after rule on main;
+      # every other PR proves itself here, before it can enqueue.
+      - if: steps.cache.outputs.cache-hit != 'true'
         name: compiler
         run: if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
       - if: github.event_name != 'pull_request' && steps.cache.outputs.cache-hit != 'true'
@@ -55,6 +62,11 @@ jobs:
         with:
           path: build/avra
           key: ${{ steps.key.outputs.key }}
+      # A PR diffs against its base, `origin/main`; the train's own `main` step
+      # stays merge_group-only.
+      - if: github.event_name == 'pull_request'
+        name: base
+        run: git fetch -q --depth=20 origin main
       - if: github.event_name == 'merge_group'
         name: main
         run: git fetch -q --depth=20 origin main
@@ -68,10 +80,15 @@ jobs:
             echo "::endgroup::"
           done
           exit $fail
-      - if: github.event_name == 'merge_group'
+      # A pull_request runs the keepers INSIDE the gate (it has no keepers step);
+      # the train already ran them above, so it passes --no-keepers.
+      - if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
         name: gate
-        run: sh tools/gate_changed.sh --refs origin/main HEAD --no-keepers
-      - if: github.event_name == 'merge_group'
+        run: |
+          extra=""
+          if [ "${{ github.event_name }}" = merge_group ]; then extra=--no-keepers; fi
+          sh tools/gate_changed.sh --refs origin/main HEAD $extra
+      - if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
         name: suites
         run: |
           pkgs=$(sh tools/affected_packages.sh origin/main HEAD "$PWD" 2>/dev/null)
