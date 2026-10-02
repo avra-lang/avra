@@ -224,7 +224,7 @@ const credential_names: List<Bytes> = [n.bytes() for n in ["authorization", "pro
 /// The request over a lent connection, tried again by `o.retry` when
 /// the peer dropped it; the answer records how many attempts it took.
 fn tried(q: Hop, wire: Bytes, aim: Aim, o: Options, deadline: int, t: Try) -> Fetched {
-    let r = lent(q.method, wire, aim, q.body, o, deadline)
+    let r = lent(wire, aim, q.body, o, deadline)
     if !again(r, q, o.retry, t.n) || now_ms() + t.wait >= deadline { return attempted(r, q, t.n) }
     if t.wait > 0 { sleep(ms(t.wait)) }
     tried(
@@ -346,13 +346,13 @@ fn host_field(u: Url) -> string {
 /// A connection lent by the pool, the exchange made over it, and the
 /// connection handed back — kept when the reply lets it be, dropped
 /// on any failure.
-fn lent(method: Method, wire: Bytes, aim: Aim, body: Payload, o: Options, deadline: int) -> Result<
+fn lent(wire: Bytes, aim: Aim, body: Payload, o: Options, deadline: int) -> Result<
     Answer,
     ClientError,
 > {
     let carrier = o.pool.take(aim.origin, () -> dialed_for(aim, o), o.admit)?
     mut client = client_of(carrier)
-    match exchanged(client, method, wire, body, o, deadline) {
+    match exchanged(client, wire, body, o, deadline) {
         .Ok(done) -> {
             o.pool.give(aim.origin, .H1(done.client))
             .Ok(done.answer)
@@ -390,11 +390,11 @@ fn client_of(c: Carrier) -> Client {
 /// answer it carried.
 type Exchanged = { client: Client, answer: Answer }
 
-fn exchanged(mut c: Client, method: Method, wire: Bytes, body: Payload, o: Options, deadline: int) -> Result<
+fn exchanged(mut c: Client, wire: Bytes, body: Payload, o: Options, deadline: int) -> Result<
     Exchanged,
     ClientError,
 > {
-    sent(c, method, wire, body, deadline)?
+    sent(c, wire, body, deadline)?
     let first = staged(.FirstByte, within o.timeouts.first_byte { c.received() })?
     let answer = first ?? received_whole(c)?
     .Ok(Exchanged { client: c, answer: answer })
@@ -409,11 +409,8 @@ fn received_whole(mut c: Client) -> Result<Answer, ClientError> {
 
 /// The request sent: whole, or a stream's head followed by each piece
 /// as a chunk and the last chunk.
-fn sent(mut c: Client, method: Method, wire: Bytes, body: Payload, deadline: int) -> Result<
-    int,
-    ClientError,
-> {
-    let n = c.sent(method, wire)?
+fn sent(mut c: Client, wire: Bytes, body: Payload, deadline: int) -> Result<int, ClientError> {
+    let n = c.sent(wire)?
     match body {
         .Stream(next, _) -> poured(c, next, deadline),
         .Empty or .Text(_) or .Json(_) or .Form(_) or .Octets(_, _) -> .Ok(n),
