@@ -1,0 +1,37 @@
+//! `realize/facets.av` — `@derive(Facets)`: an `Attribute` variant carries
+//! its ROLE as a `@facet(role)` mark, so every target reads one fact
+//! instead of re-deciding which attribute is content, level or attached.
+use @std.meta.{Type, Variant, Directive, Code, literal}
+
+/// What an attribute IS to a target: its node's own words, a heading's
+/// level, a live region's urgency, or a value attached to the element.
+export enum Facet { Content, Level, Urgency, Attached }
+
+/// An enum whose variants name their facet.
+export trait Facets {
+    fn facet() -> Facet
+
+    static fn derive(t: Type) -> List<Directive> {
+        let arms = [quote { .${v} -> ${facet_code(v)} } for v in t.variants]
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote { impl ${t} { fn facet(self) -> Facet { match self { ${arms} } } } },
+            },
+        ]
+    }
+
+    static fn marks(t: Type) -> List<string> { ["facet"] }
+}
+
+fn facet_code(v: Variant) -> Code {
+    let m? = v.marks.find(it.name == "facet") else { return quote { Facet.Attached } }
+    match m.args.first() ?? "" {
+        "content" -> quote { Facet.Content },
+        "level" -> quote { Facet.Level },
+        "urgency" -> quote { Facet.Urgency },
+        rest -> quote { Facet.Attached },
+    }
+}
