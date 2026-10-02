@@ -82,11 +82,21 @@ export fn conversed(limits: Limits, link: dyn Transport, asks: List<H2Ask>, budg
     if asks.is_empty() { return .Ok([]) }
     mut c = h2_conversing(limits, link)
     let ids = [c.ask(a)? for a in asks]
+    h2_pumped(c, ids, budget)
+}
+
+/// Every stream in `ids` answered on `c` — the i-th answer to the i-th
+/// stream, whichever way the ids were minted — read within `budget` for
+/// the whole conversation.
+export fn h2_pumped(mut c: H2Client, ids: List<int>, budget: Duration) -> Result<
+    List<H2Answer>,
+    string,
+> {
     let deadline = now_ms() + budget.ms
-    mut heads: List<List<HeaderField>> = [[] for a in asks]
-    mut bodies: List<Bytes> = [no_bytes for a in asks]
-    mut done: List<bool> = [false for a in asks]
-    mut left = asks.length
+    mut heads: List<List<HeaderField>> = [[] for id in ids]
+    mut bodies: List<Bytes> = [no_bytes for id in ids]
+    mut done: List<bool> = [false for id in ids]
+    mut left = ids.length
     while left > 0 {
         let wait = deadline - now_ms()
         if wait <= 0 { return .Err("h2: the answers timed out") }
@@ -114,7 +124,7 @@ export fn conversed(limits: Limits, link: dyn Transport, asks: List<H2Ask>, budg
         }
         let _ = c.flush()
     }
-    .Ok([H2Answer { fields: heads[i], body: bodies[i] } for i in 0..asks.length])
+    .Ok([H2Answer { fields: heads[i], body: bodies[i] } for i in 0..ids.length])
 }
 
 /// A conversation opened on `link`: the connection, the octets read and

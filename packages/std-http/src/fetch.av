@@ -49,7 +49,8 @@ use @std.text.{parse_int}
 use @std.time.{Duration, ms, secs, now_ms, sleep, within}
 use frame.{Method, Limits, limits}
 use hpack.{HeaderField, header_field}
-use h2.{h2_client, is_pseudo, status_name}
+use h2.{is_pseudo, status_name}
+use h2_client_drive.{H2Ask, h2_conversing, h2_pumped}
 use h2_serve.{folded}
 use http.{Header, names_one_of, piece_on_wire, body_end}
 use client.{
@@ -394,7 +395,7 @@ fn dialed_for(aim: Aim, o: Options) -> Result<Carrier, ClientError> {
     // ALPN carries the choice: an `h2` server is spoken to in HTTP/2,
     // anything else falls back to HTTP/1.1 over the same transport.
     if link.wire_protocol() == h2_name {
-        return .Ok(.H2(H2Carrier { conn: h2_client(o.limits), link: link, address: c.address() }))
+        return .Ok(.H2(H2Carrier { client: h2_conversing(o.limits, link), address: c.address() }))
     }
     .Ok(.H1(over(link, o.limits) with { address: c.address() }))
 }
@@ -438,9 +439,15 @@ fn h2_exchanged(mut h: H2Carrier, wire: Bytes, aim: Aim, body: Payload, o: Optio
 > {
     if body is .Stream { return .Err(.Unwritable) }
     let head? = own_head(wire, o.limits) else { return .Err(.Unwritable) }
-    let id = h.conn.ask(h2_fields(head.method, aim, body, o), octets_of(body))
-    let answer = h2_answered(h, id, deadline)?
-    .Ok(H2Done { h2: h, answer: answer })
+    let ask = H2Ask { fields: h2_fields(head.method, aim, body, o), body: octets_of(body) }
+    let id = match h.client.ask(ask) { .Ok(id) -> id, .Err(_) -> { return .Err(.Closed) } }
+    match h2_pumped(h.client, [id], ms(deadline - now_ms())) {
+        .Ok(answers) -> {
+            let a? = answers.first() else { return .Err(.Closed) }
+            .Ok(H2Done { h2: h, answer: h2_answer(a.fields, a.body) })
+        },
+        .Err(_) -> if now_ms() >= deadline { .Err(.TimedOut(.Total)) } else { .Err(.Closed) },
+    }
 }
 
 /// The request's pseudo-fields and headers, HTTP/2's own spelling:
@@ -476,44 +483,6 @@ const h2_forbidden: List<string> = [
 ]
 
 fn lowered(name: string) -> string { folded(name.bytes()).text() ?? name }
-
-/// The answer on stream `id`, pumped until its body ends: what is owed
-/// written, what arrives fed, the answer's head and body taken as they
-/// land. A whole reply read this way survives the stream's close.
-fn h2_answered(mut h: H2Carrier, id: int, deadline: int) -> Result<Answer, ClientError> {
-    let opening = h.conn.drained()
-    if !opening.is_empty() { carried(h.link.wire_write(opening))? }
-    mut buf = no_bytes
-    mut at = 0
-    mut head: List<HeaderField> = []
-    mut body_bytes = no_bytes
-    mut done = false
-    while !done {
-        let left = deadline - now_ms()
-        if left <= 0 { return .Err(.TimedOut(.Total)) }
-        let heard = within ms(left) { carried(h.link.wire_read(65536)) }?
-        if heard == null { return .Err(.Closed) }
-        buf = buf.concat(heard ?? no_bytes)
-        at = h.conn.fed(buf, at)
-        h.conn.flushed_all()
-        let heads = h.conn.taken()
-        if !heads.is_empty() { head = heads.last()!.fields }
-        match h.conn.arrived(id) {
-            .Whole(b) -> {
-                body_bytes = body_bytes.concat(b)
-                done = true
-            },
-            .Flowing(b) -> { body_bytes = body_bytes.concat(b) },
-            .Cut -> {
-                if head.is_empty() { return .Err(.Closed) }
-                done = true
-            },
-        }
-        let owed = h.conn.drained()
-        if !owed.is_empty() { carried(h.link.wire_write(owed))? }
-    }
-    .Ok(h2_answer(head, body_bytes))
-}
 
 /// A response head and body as the client's answer: the status, the
 /// regular fields as headers, the body whole.
