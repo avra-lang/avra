@@ -9,7 +9,7 @@ use @std.http.http.{text}
 use @std.http.server.{Server, served, timing}
 use @std.http.client.{Client, ClientError, connected, over, request}
 use @std.http.wire.{plainly}
-use @std.http.pool.{Pool, Carrier, pool, origin_of}
+use @std.http.pool.{Pool, Carrier, as_client, pool, origin_of}
 
 fn pl_lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
     match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
@@ -26,9 +26,7 @@ fn pl_dial(port: int) -> Result<Carrier, ClientError> {
     .Ok(.H1(connected("127.0.0.1", port, secs(2), limits())?))
 }
 
-fn pl_client(c: Carrier) -> Client {
-    match c { .H1(client) -> client }
-}
+fn pl_client(c: Carrier) -> Client { as_client(c)! }
 
 /// One GET over a lent carrier, answered; the carrier as it now stands.
 fn pl_asked(c: Carrier) -> Result<Carrier, ClientError> {

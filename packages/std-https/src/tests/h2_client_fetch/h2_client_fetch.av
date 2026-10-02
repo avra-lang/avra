@@ -1,0 +1,55 @@
+//! proves: the client picks HTTP/2 by ALPN and falls back to HTTP/1.1
+//! when the server will not agree to it. A server offering ONLY `h2`
+//! answers an unmodified `fetch`, so the client really spoke HTTP/2;
+//! a server offering only `http/1.1` answers the same fetch over 1.1;
+//! and a second fetch on the same origin reuses the kept carrier.
+use @std.net.{listen}
+use @std.time.{ms}
+use @std.http.frame.{limits}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.server.{Timing, served}
+use @std.http.client.{Answer, ClientError, netted}
+use @std.http.pool.{pool}
+use @std.http.fetch.{Options, fetch}
+use @std.https.{over_tls, tls_carried, verified}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+type App = {}
+
+fn answer(q: Request<Unrouted>) -> Response { text(200, "hello " + (q.path()?.text() ?? "/")) }
+
+fn shown(r: Result<Answer, ClientError>) -> string {
+    match r {
+        .Ok(a) -> "${a.status} ${a.body.text() ?? "?"}",
+        .Err(e) -> "failed: ${e.describe().message}",
+    }
+}
+
+/// A server whose ALPN list is `offered`, asked `/hello` twice on one
+/// client — so a kept carrier is exercised too.
+fn served_over(offered: List<string>) -> Result<string, ClientError> {
+    let l = netted(listen("127.0.0.1", 0))?
+    let sc = tls_carried((tls_carried(serving_localhost())?).offering(offered))?
+    let s = served(l, () -> App {}, limits(), Timing { handshake: ms(400), handshakes: 4 }) { _a, q -> answer(q) }
+        .secured(over_tls(sc))
+    spawn s.run(1)
+    defer s.stop()
+    let o = Options {
+        pool: pool(),
+        tls: verified(tls_carried((tls_carried(trusting_localhost())?).offering(["h2", "http/1.1"]))?),
+    }
+    defer o.pool.close_all()
+    let url = "https://localhost:${l.port}/hello"
+    .Ok("${shown(fetch(.Get, url, .Empty, o))}, then ${shown(fetch(.Get, url, .Empty, o))}")
+}
+
+fn shown_over(offered: List<string>) -> string {
+    match served_over(offered) { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
+}
+
+[
+    "an h2-only server: ${shown_over(["h2"])}",
+    "an http/1.1-only server: ${shown_over(["http/1.1"])}",
+    "a server preferring h2: ${shown_over(["h2", "http/1.1"])}",
+]
+    .join("\n")

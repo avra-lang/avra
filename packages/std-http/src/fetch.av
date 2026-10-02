@@ -45,8 +45,12 @@
 use @std.url.{Url, UrlError, parse, encoded as percent_encoded, default_port}
 use @std.net.{Admission, Conn, connect}
 use @std.json.{Json, to_text}
+use @std.text.{parse_int}
 use @std.time.{Duration, ms, secs, now_ms, sleep, within}
 use frame.{Method, Limits, limits}
+use hpack.{HeaderField, header_field}
+use h2.{h2_client, is_pseudo, status_name}
+use h2_serve.{folded}
 use http.{Header, names_one_of, piece_on_wire, body_end}
 use client.{
     Client,
@@ -57,13 +61,14 @@ use client.{
     request,
     chunked_request,
     method_word,
+    own_head,
     staged,
     carried,
     netted,
 }
 use wire.{Transport, Securing, plainly}
 use jar.{Jar}
-use pool.{Pool, Carrier, pool, origin_of}
+use pool.{Pool, Carrier, H2Carrier, pool, origin_of}
 
 /// A request body, by kind.
 export enum Payload {
@@ -351,15 +356,32 @@ fn lent(wire: Bytes, aim: Aim, body: Payload, o: Options, deadline: int) -> Resu
     ClientError,
 > {
     let carrier = o.pool.take(aim.origin, () -> dialed_for(aim, o), o.admit)?
-    mut client = client_of(carrier)
-    match exchanged(client, wire, body, o, deadline) {
-        .Ok(done) -> {
-            o.pool.give(aim.origin, .H1(done.client))
-            .Ok(done.answer)
+    match carrier {
+        .H1(client) -> {
+            mut c = client
+            match exchanged(c, wire, body, o, deadline) {
+                .Ok(done) -> {
+                    o.pool.give(aim.origin, .H1(done.client))
+                    .Ok(done.answer)
+                },
+                .Err(e) -> {
+                    o.pool.drop(aim.origin, .H1(c))
+                    .Err(e)
+                },
+            }
         },
-        .Err(e) -> {
-            o.pool.drop(aim.origin, carrier)
-            .Err(e)
+        .H2(carried_h2) -> {
+            mut h = carried_h2
+            match h2_exchanged(h, wire, aim, body, o, deadline) {
+                .Ok(done) -> {
+                    o.pool.give(aim.origin, .H2(done.h2))
+                    .Ok(done.answer)
+                },
+                .Err(e) -> {
+                    o.pool.drop(aim.origin, .H2(h))
+                    .Err(e)
+                },
+            }
         },
     }
 }
@@ -368,8 +390,17 @@ fn lent(wire: Bytes, aim: Aim, body: Payload, o: Options, deadline: int) -> Resu
 /// secured within the TLS one when the URL asked for it.
 fn dialed_for(aim: Aim, o: Options) -> Result<Carrier, ClientError> {
     let c = staged(.Connect, netted(connect(aim.host, aim.port, o.timeouts.connect, o.admit)))?
-    .Ok(.H1(over(secured(c, aim, o)?, o.limits) with { address: c.address() }))
+    let link = secured(c, aim, o)?
+    // ALPN carries the choice: an `h2` server is spoken to in HTTP/2,
+    // anything else falls back to HTTP/1.1 over the same transport.
+    if link.wire_protocol() == h2_name {
+        return .Ok(.H2(H2Carrier { conn: h2_client(o.limits), link: link, address: c.address() }))
+    }
+    .Ok(.H1(over(link, o.limits) with { address: c.address() }))
 }
+
+/// The ALPN name HTTP/2 is agreed by.
+const h2_name: string = "h2"
 
 /// The connection as `aim` asks: plain, or secured by `o.tls` — never
 /// plain where the URL asked for TLS.
@@ -380,10 +411,6 @@ fn secured(c: Conn, aim: Aim, o: Options) -> Result<dyn Transport, ClientError> 
         return .Err(.NoTls)
     }
     staged(.Tls, carried(tls.open(c, aim.host, o.timeouts.tls)))
-}
-
-fn client_of(c: Carrier) -> Client {
-    match c { .H1(client) -> client }
 }
 
 /// A finished exchange: the connection as it now stands, and the
@@ -398,6 +425,109 @@ fn exchanged(mut c: Client, wire: Bytes, body: Payload, o: Options, deadline: in
     let first = staged(.FirstByte, within o.timeouts.first_byte { c.received() })?
     let answer = first ?? received_whole(c)?
     .Ok(Exchanged { client: c, answer: answer })
+}
+
+/// An exchange over a multiplexed carrier: the request asked on a
+/// fresh stream, its answer read off the same socket, and the carrier
+/// handed back.
+type H2Done = { h2: H2Carrier, answer: Answer }
+
+fn h2_exchanged(mut h: H2Carrier, wire: Bytes, aim: Aim, body: Payload, o: Options, deadline: int) -> Result<
+    H2Done,
+    ClientError,
+> {
+    if body is .Stream { return .Err(.Unwritable) }
+    let head? = own_head(wire, o.limits) else { return .Err(.Unwritable) }
+    let id = h.conn.ask(h2_fields(head.method, aim, body, o), octets_of(body))
+    let answer = h2_answered(h, id, deadline)?
+    .Ok(H2Done { h2: h, answer: answer })
+}
+
+/// The request's pseudo-fields and headers, HTTP/2's own spelling:
+/// lower-case names, the target as sent, the authority the URL named.
+fn h2_fields(method: Method, aim: Aim, body: Payload, o: Options) -> List<HeaderField> {
+    let word = method_word(method) ?? "GET"
+    let headers = o.headers.concat(jarred(o, aim)).concat(kind_named(body, o.headers))
+    [
+        header_field(":method", word),
+        header_field(":scheme", if aim.secure { "https" } else { "http" }),
+        header_field(":path", aim.target),
+        header_field(":authority", aim.field),
+    ]
+        .concat([header_field(lowered(h.name), h.value) for h in headers if h2_headerable(h)])
+}
+
+/// Whether a caller's header may cross as an HTTP/2 regular field: the
+/// connection-specific fields are FORBIDDEN (§8.1.2.2) and `host`
+/// gives way to `:authority`.
+fn h2_headerable(h: Header) -> bool {
+    let name = lowered(h.name)
+    if h2_forbidden.contains(name) { return false }
+    name != "te" || h.value == "trailers"
+}
+
+const h2_forbidden: List<string> = [
+    "connection",
+    "keep-alive",
+    "host",
+    "proxy-connection",
+    "transfer-encoding",
+    "upgrade",
+]
+
+fn lowered(name: string) -> string { folded(name.bytes()).text() ?? name }
+
+/// The answer on stream `id`, pumped until its body ends: what is owed
+/// written, what arrives fed, the answer's head and body taken as they
+/// land. A whole reply read this way survives the stream's close.
+fn h2_answered(mut h: H2Carrier, id: int, deadline: int) -> Result<Answer, ClientError> {
+    let opening = h.conn.drained()
+    if !opening.is_empty() { carried(h.link.wire_write(opening))? }
+    mut buf = no_bytes
+    mut at = 0
+    mut head: List<HeaderField> = []
+    mut body_bytes = no_bytes
+    mut done = false
+    while !done {
+        let left = deadline - now_ms()
+        if left <= 0 { return .Err(.TimedOut(.Total)) }
+        let heard = within ms(left) { carried(h.link.wire_read(65536)) }?
+        if heard == null { return .Err(.Closed) }
+        buf = buf.concat(heard ?? no_bytes)
+        at = h.conn.fed(buf, at)
+        h.conn.flushed_all()
+        let heads = h.conn.taken()
+        if !heads.is_empty() { head = heads.last()!.fields }
+        match h.conn.arrived(id) {
+            .Whole(b) -> {
+                body_bytes = body_bytes.concat(b)
+                done = true
+            },
+            .Flowing(b) -> { body_bytes = body_bytes.concat(b) },
+            .Cut -> {
+                if head.is_empty() { return .Err(.Closed) }
+                done = true
+            },
+        }
+        let owed = h.conn.drained()
+        if !owed.is_empty() { carried(h.link.wire_write(owed))? }
+    }
+    .Ok(h2_answer(head, body_bytes))
+}
+
+/// A response head and body as the client's answer: the status, the
+/// regular fields as headers, the body whole.
+fn h2_answer(fields: List<HeaderField>, body: Bytes) -> Answer {
+    Answer {
+        status: status_in(fields),
+        headers: [Header { name: f.name.text() ?? "", value: f.value.text() ?? "" } for f in fields if !is_pseudo(f)],
+        body: body,
+    }
+}
+
+fn status_in(fields: List<HeaderField>) -> int {
+    let v = fields.find(it.name == status_name)?.value ?? empty_octets
+    parse_int(v.text() ?? "") ?? 0
 }
 
 /// Reads until the reply is whole; the request's own deadline bounds

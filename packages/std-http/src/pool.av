@@ -34,10 +34,23 @@
 use @std.net.{Address, Admission, Bell}
 use @std.time.{Duration, ms, now_ms, secs}
 use client.{Client, ClientError}
+use wire.{Transport}
+use h2.{H2Conn}
+
+/// An HTTP/2 carrier: the connection the pool keeps, the socket it
+/// reads and writes, and the address it was dialed to. Lent to one
+/// caller at a time; the caller multiplexes its own requests on it.
+export type H2Carrier = { conn: H2Conn, link: dyn Transport, address: Address? }
 
 /// What a pool keeps per origin.
 export enum Carrier {
     H1(client: Client)
+    H2(h2: H2Carrier)
+}
+
+/// The H1 client a carrier holds, or null for a multiplexed one.
+export fn as_client(c: Carrier) -> Client? {
+    match c { .H1(client) -> client, .H2(_) -> null }
 }
 
 /// What makes a new carrier when none is kept.
@@ -180,13 +193,13 @@ impl Pool {
 }
 
 fn reusable(c: Carrier) -> bool {
-    match c { .H1(client) -> client.reusable() }
+    match c { .H1(client) -> client.reusable(), .H2(h) -> h.conn.reusable() }
 }
 
 /// Whether a kept carrier can be lent: its socket has nothing to say.
 /// A read that finds data or the end means the peer moved on.
 fn sound(c: Carrier) -> bool {
-    match c { .H1(client) -> client.conn.wire_silent() }
+    match c { .H1(client) -> client.conn.wire_silent(), .H2(h) -> h.link.wire_silent() }
 }
 
 /// Whether a kept carrier may be lent under `admission`: the address
@@ -198,9 +211,9 @@ fn lendable(c: Carrier, admission: Admission) -> bool {
 }
 
 fn address_of(c: Carrier) -> Address? {
-    match c { .H1(client) -> client.address }
+    match c { .H1(client) -> client.address, .H2(h) -> h.address }
 }
 
 fn closed(c: Carrier) {
-    match c { .H1(client) -> { let _ = client.close() } }
+    match c { .H1(client) -> { let _ = client.close() }, .H2(h) -> { let _ = h.link.wire_close() } }
 }

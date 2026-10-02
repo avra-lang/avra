@@ -1087,6 +1087,13 @@ impl H2Conn {
     /// Whether stream `id` is still live.
     fn live(id: int) -> bool { self.live_at(id) != null }
 
+    /// Whether another request may be asked on this connection: it is
+    /// neither closing nor being parted with, and the peer still allows
+    /// another stream.
+    fn reusable() -> bool {
+        !self.closing && !self.parting && self.streams.length < self.theirs.streams
+    }
+
     /// Every stream's owed body sent as far as the windows allow.
     mut fn flushed_all() {
         for id in [s.id for s in self.streams if !s.owed.is_empty()] { self.flushed(id) }

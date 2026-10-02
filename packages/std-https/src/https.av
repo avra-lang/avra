@@ -64,9 +64,16 @@ export fn options() -> Options { Options { tls: trusted() } }
 /// every handshake, saying why.
 once fn trusted() -> Securing {
     match client_config() {
-        .Ok(config) -> verified(config),
+        .Ok(config) -> verified(offered(config)),
         .Err(e) -> Securing { open: (c: Conn, host: string, d: Duration) -> unanchored(c, e) },
     }
+}
+
+/// A client config offering HTTP/2 first, then HTTP/1.1 — the ALPN
+/// list that lets an h2 server be spoken to and an h1-only one fall
+/// back. A config whose names are already set is left as it is.
+fn offered(config: Config) -> Config {
+    match config.offering(["h2", "http/1.1"]) { .Ok(agreed) -> agreed, .Err(_) -> config }
 }
 
 fn unanchored(c: Conn, e: TlsError) -> Result<dyn Transport, WireError> {
