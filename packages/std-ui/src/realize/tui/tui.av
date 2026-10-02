@@ -1,7 +1,7 @@
 //! `realize/tui/tui.av` — the terminal target. The same Node, the same
 //! vocabulary, drawn as lines. A second target is a table and a walker,
 //! never a component list. UI.md §19.2.
-use realize.render.{Node, Prim, Attribute, content_of}
+use realize.render.{Node, Prim, Attribute}
 use realize.sink.{Sink, draw}
 use env.{Env}
 
@@ -41,11 +41,11 @@ const line_rows: List<LineRow> = table<LineRow> {
     .Form     | LineForm.Blank
 }
 
-fn line_of(p: Prim, attrs: List<Attribute>) -> string {
-    match line_rows.find(it.prim == p)?.form ?? LineForm.Blank {
-        .Content -> content_of(attrs),
-        .Bracketed -> "[${content_of(attrs)}]",
-        .Checkbox -> "[ ] ${content_of(attrs)}",
+fn line_of(n: Node) -> string {
+    match line_rows.find(it.prim == n.prim)?.form ?? LineForm.Blank {
+        .Content -> n.words(),
+        .Bracketed -> "[${n.words()}]",
+        .Checkbox -> "[ ] ${n.words()}",
         .Rule -> "----",
         .Blank -> "",
     }
@@ -53,7 +53,7 @@ fn line_of(p: Prim, attrs: List<Attribute>) -> string {
 
 impl Sink for Tui {
     fn opened(n: Node) {
-        let line = line_of(n.prim, n.attrs)
+        let line = line_of(n)
         if line != "" { self.lines.push(line) }
     }
     fn words(_s: string) {}
