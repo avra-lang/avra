@@ -421,7 +421,13 @@ impl LowerCx {
     mut fn opened_reg(e: ExprId, xs: Reg, ty: TypeId, elem: TypeId) -> Walk {
         let len = self.measure_of(e, xs, ty)
         let idx = self.seeded_cell(self.type(int), self.const_int(0))
-        Walk { xs: xs, len: len, idx: idx, elem: elem, kind: walk_kind(self, ty) }
+        Walk { xs: xs, len: len, idx: idx, elem: elem, kind: self.walk_kind(ty) }
+    }
+
+    /// The kind a source of `ty` walks: a `Bytes` reads octets, anything
+    /// else (a list, a range) reads elements.
+    fn walk_kind(ty: TypeId) -> WalkKind {
+        match self.view.types.seen_shape(ty) { .Bytes -> .Bytes, _ -> .List }
     }
 
     /// `lo..hi` — the count starts at `lo` and stops before `hi`.
@@ -525,9 +531,6 @@ export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId, kind: WalkKind 
 
 /// The kind a source of `ty` walks: a `Bytes` reads octets, anything
 /// else (a list, a range) reads elements.
-fn walk_kind(cx: LowerCx, ty: TypeId) -> WalkKind {
-    match cx.view.types.seen_shape(ty) { .Bytes -> .Bytes, _ -> .List }
-}
 
 // ── Measures ────────────────────────────────────────────────────
 
