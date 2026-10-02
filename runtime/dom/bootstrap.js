@@ -142,7 +142,9 @@ export async function instantiate(url, host) {
   if (unknown.length > 0) {
     throw new Error(`the module needs host rows this page does not answer: ${unknown.join(", ")}`);
   }
-  const { instance } = await WebAssembly.instantiate(module, imports);
+  // A COMPILED module instantiates to the instance itself; only the bytes
+  // form answers { module, instance }.
+  const instance = await WebAssembly.instantiate(module, imports);
   return instance.exports;
 }
 
