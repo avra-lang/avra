@@ -995,6 +995,53 @@ scope application {
 }
 
 spec "a method chain folds into one pipeline" {
+    given "a filter, a map, then a sum" {
+        then "one loop, no list, the accumulator carried across turns" {
+            let expected = """fn f(r0: List<int>) -> int
+scope application {
+  r1 = int 0
+  r2 = slot
+  store r2 <- r1
+  r3 = static fn$<source>$l4
+  r4 = int 0
+  r5 = call avra_array_get(r3, r4)
+  r6 = static fn$<source>$l8
+  r7 = int 0
+  r8 = call avra_array_get(r6, r7)
+  r9 = call avra_array_len(r0)
+  r10 = int 0
+  r11 = slot
+  store r11 <- r10
+  loop {
+    r12 = load r11
+    r13 = r12 < r9
+    while r13
+    scope application {
+      r14 = int 1
+      r15 = r12 + r14
+      store r11 <- r15
+      r16 = call avra_array_get(r0, r12)
+      r17 = callptr r5(r3, r16)
+      if r17 {
+        r18 = callptr r8(r6, r16)
+        r19 = load r2
+        r20 = r19 + r18
+        store r2 <- r20
+        r21 = int 0
+        yield r21
+      } else {
+        r22 = int 0
+        yield r22
+      } -> r23
+    }
+  }
+  r24 = load r2
+  release r0
+  yield r24
+}"""
+            body_of(render_ir(ir_of(sum_chain())), "f") == expected
+        }
+    }
     given "a filter then a terminal" {
         then "one loop, no list, the verdict ended on its first hit" {
             let expected = """fn f(r0: List<int>) -> bool
@@ -1096,6 +1143,10 @@ scope application {
 
 fn chain() -> string {
     "fn f(xs: List<int>) -> List<int> {\n    xs.filter((x: int) -> x > 1).map((x: int) -> x * 2)\n}\nf([1, 2, 3]).length"
+}
+
+fn sum_chain() -> string {
+    "fn f(xs: List<int>) -> int {\n    xs.filter((x: int) -> x > 1).map((x: int) -> x * 2).sum()\n}\nf([1, 2, 3])"
 }
 
 fn any_chain() -> string {

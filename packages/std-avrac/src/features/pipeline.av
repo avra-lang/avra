@@ -4,7 +4,7 @@
 //! inside every walk before it, a keep guards every clause after it, a
 //! map replaces the element in hand; past the last clause the element
 //! reaches the sink. A comprehension is a pipeline whose sink pushes.
-use core.{ExprId, DeclId, Reg, TypeId, Ins}
+use core.{ExprId, DeclId, Reg, TypeId, Ins, Type, BinOp}
 
 /// A head's source: a list, or the range `source..hi`. `index` binds
 /// the position before the element; a `lookup` is read in the
@@ -43,6 +43,8 @@ export enum Sink {
     FindIndex(ret: TypeId, cell: Reg, pred: FnBox)
     Contains(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
     IndexOf(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
+    Count(ret: TypeId, cell: Reg)
+    Sum(ret: TypeId, cell: Reg)
 }
 
 export type Pipeline = { clauses: List<Clause>, sink: Sink }
@@ -155,7 +157,16 @@ impl LowerCx {
                         cx.store_hit(cell, t.at!)
                     }
             },
+            .Count(_, cell) -> self.accumulate(cell, self.const_int(1)),
+            .Sum(_, cell) -> self.accumulate(cell, t.value!),
         }
+    }
+
+    /// One more into an accumulator cell — `count` adds one, `sum` adds
+    /// the element; the walk runs whole, nothing ends early.
+    mut fn accumulate(cell: Reg, v: Reg) {
+        let next = self.bin(Type.Int, BinOp.Add, self.loaded_as(self.type(int), cell), v)
+        self.emit(Ins.Store(cell, next))
     }
 
     /// The predicate asked about this element — one CallPtr per turn.
@@ -172,7 +183,7 @@ impl LowerCx {
     mut fn sink_answer(s: Sink) -> Reg {
         match s {
             .Push(dst) -> dst,
-            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindIndex(ret, cell, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _) -> self.loaded_as(ret, cell),
+            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindIndex(ret, cell, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
         }
     }
 
