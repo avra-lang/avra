@@ -1,17 +1,81 @@
+
 //! A METHOD CHAIN FOLDED INTO ONE PIPELINE — `xs.filter(p).map(f)` is
 //! one loop and no intermediate list. Typing recorded each adapter's
 //! stage (`PipeStage`); lowering walks the chain from its base outward,
 //! lowering the base source FIRST and boxing each fn once in source
 //! order, then runs the whole chain into a push. A subject that is no
 //! adapter (a `concat`, a plain list) is the head the rest folds over.
-use core.{ExprId, Reg}
-use features.{LowerCx, MethodCall, PipeStage, FnBox, Clause, Source, Pipeline}
+use core.{ExprId, Reg, TypeId}
+use features.{LowerCx, MethodCall, PipeStage, FnBox, Clause, Sink, Source, Pipeline}
 
 /// `xs.map(f)` / `xs.filter(p)` — the chain ending here, run once.
 export fn chained(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let clauses? = chain_clauses(cx, mc.e) else { return cx.lower_defect(mc.e, "a chain link without its stage survived typing") }
     let dst = cx.grown_box(cx.shape_at(mc.e), cx.box_size(0), [])
     cx.piped(Pipeline { clauses: clauses, sink: .Push(dst) })
+}
+
+/// `xs.find(p)` over a chain — no list, the first hit's cell.
+export fn found_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+    let clauses = subject_clauses(cx, mc.subject)
+    let opt = cx.type_at(mc.e)
+    let cell = absent_cell(cx, opt)
+    cx.piped(Pipeline { clauses: clauses, sink: .Find(opt, cell, box_of(cx, s.arg)) })
+}
+
+/// `xs.find_index(p)` — the first hit's place, absent until one.
+export fn found_at_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+    let clauses = subject_clauses(cx, mc.subject)
+    let opt = cx.type_at(mc.e)
+    let cell = absent_cell(cx, opt)
+    cx.piped(Pipeline { clauses: clauses, sink: .FindIndex(opt, cell, box_of(cx, s.arg)) })
+}
+
+/// `xs.any(p)` / `xs.all(p)` — a verdict, the walk ended on the first
+/// counterexample (`all`) or the first hit (`any`).
+export fn judged_chain(mut cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> Reg {
+    let clauses = subject_clauses(cx, mc.subject)
+    let ret = cx.type(bool)
+    let cell = bool_cell(cx, all)
+    let pred = box_of(cx, s.arg)
+    if all { return cx.piped(Pipeline { clauses: clauses, sink: .All(ret, cell, pred) }) }
+    cx.piped(Pipeline { clauses: clauses, sink: .Any(ret, cell, pred) })
+}
+
+/// `xs.contains(v)` over a chain — the first equal element's verdict.
+export fn contains_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+    let clauses = subject_clauses(cx, mc.subject)
+    let ret = cx.type(bool)
+    let cell = bool_cell(cx, false)
+    cx.piped(Pipeline { clauses: clauses, sink: .Contains(ret, cell, cx.reg_of(s.arg), s.elem) })
+}
+
+/// `xs.index_of(v)` over a chain — the first equal element's place, -1
+/// until one.
+export fn index_of_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+    let clauses = subject_clauses(cx, mc.subject)
+    let ret = cx.type(int)
+    let cell = cx.seeded_cell(ret, cx.const_int(-1))
+    cx.piped(Pipeline { clauses: clauses, sink: .IndexOf(ret, cell, cx.reg_of(s.arg), s.elem) })
+}
+
+/// The clauses a terminal runs over its receiver — the receiver lowered
+/// before the terminal's fn is boxed, so a receiver's effect runs first.
+fn subject_clauses(mut cx: LowerCx, subject: ExprId) -> List<Clause> {
+    let inner? = chain_clauses(cx, subject) else {
+        let _ = cx.reg_of(subject)
+        let head: List<Clause> = [
+            .Head(Source { source: subject, hi: null, index: false, lookup: null }),
+        ]
+        return head
+    }
+    inner
+}
+
+/// A receiver's fn boxed, as the pipeline's own seat.
+fn box_of(mut cx: LowerCx, f: ExprId) -> FnBox {
+    let b = boxed(cx, f)
+    FnBox { box: b.f, code: b.fp }
 }
 
 /// The chain's clauses, innermost first — the base source lowered

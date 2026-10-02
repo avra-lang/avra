@@ -1,9 +1,10 @@
+
 //! THE PIPELINE — a walk described as a value, then run through the
 //! walk's own verbs. Its clauses run in order: a head opens a walk
 //! inside every walk before it, a keep guards every clause after it, a
 //! map replaces the element in hand; past the last clause the element
 //! reaches the sink. A comprehension is a pipeline whose sink pushes.
-use core.{ExprId, DeclId, Reg, TypeId}
+use core.{ExprId, DeclId, Reg, TypeId, Ins}
 
 /// A head's source: a list, or the range `source..hi`. `index` binds
 /// the position before the element; a `lookup` is read in the
@@ -31,21 +32,30 @@ export enum Clause {
     Map(s: Step)
 }
 
-/// Where each element that passes every clause goes.
+/// Where each element that passes every clause goes: a pushed list, or
+/// a terminal's answer cell — a verdict, the first hit, its place. `ret`
+/// is the sink's own answer type; `cell` was seeded before the loop.
 export enum Sink {
     Push(dst: Reg)
+    Any(ret: TypeId, cell: Reg, pred: FnBox)
+    All(ret: TypeId, cell: Reg, pred: FnBox)
+    Find(ret: TypeId, cell: Reg, pred: FnBox)
+    FindIndex(ret: TypeId, cell: Reg, pred: FnBox)
+    Contains(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
+    IndexOf(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
 }
 
 export type Pipeline = { clauses: List<Clause>, sink: Sink }
 
-/// Every head's registers so far, which a written step binds, and the
-/// element in hand — a pipeline opens with a head, so a sink has one.
-type Turn = { regs: List<Reg>, value: Reg? }
+/// Every head's registers so far, which a written step binds, the
+/// element in hand, and this turn's place — a pipeline opens with a
+/// head, so a sink has both.
+type Turn = { regs: List<Reg>, at: Reg?, value: Reg? }
 
 impl LowerCx {
     /// The pipeline run, answering its sink's value.
     mut fn piped(p: Pipeline) -> Reg {
-        self.staged(p, 0, Turn { regs: [], value: null })
+        self.staged(p, 0, Turn { regs: [], at: null, value: null })
         self.sink_answer(p.sink)
     }
 
@@ -72,7 +82,11 @@ impl LowerCx {
             .staged(
                 p,
                 at + 1,
-                Turn { regs: t.regs.concat(if s.index { [here, v] } else { [v] }), value: v },
+                Turn {
+                    regs: t.regs.concat(if s.index { [here, v] } else { [v] }),
+                    at: here,
+                    value: v,
+                },
             )
         self.loop_end()
     }
@@ -102,12 +116,69 @@ impl LowerCx {
         }
     }
 
+    /// An element reaches the sink: push it, or answer the terminal —
+    /// each terminal stores into its cell and ends the walk on its hit.
     mut fn sunk(s: Sink, t: Turn) {
-        match s { .Push(dst) -> self.push_slot(dst, t.value!) }
+        match s {
+            .Push(dst) -> self.push_slot(dst, t.value!),
+            .Any(_, cell, pred) -> {
+                self
+                    .void_region(self.pred_call(pred, t)) { cx -> cx.store_hit(cell, cx.const_bool(true)) }
+            },
+            .All(_, cell, pred) -> {
+                self
+                    .void_region(self.un(self.pred_call(pred, t))) { cx ->
+                        cx.store_hit(cell, cx.const_bool(false))
+                    }
+            },
+            .Find(ret, cell, pred) -> {
+                self
+                    .void_region(self.pred_call(pred, t)) { cx ->
+                        cx.store_hit(cell, cx.adopted(ret, false, t.value!))
+                    }
+            },
+            .FindIndex(ret, cell, pred) -> {
+                self
+                    .void_region(self.pred_call(pred, t)) { cx ->
+                        cx.store_hit(cell, cx.adopted(ret, false, t.at!))
+                    }
+            },
+            .Contains(_, cell, needle, elem) -> {
+                self
+                    .void_region(self.same_value(t.value!, needle, elem)) { cx ->
+                        cx.store_hit(cell, cx.const_bool(true))
+                    }
+            },
+            .IndexOf(_, cell, needle, elem) -> {
+                self
+                    .void_region(self.same_value(t.value!, needle, elem)) { cx ->
+                        cx.store_hit(cell, t.at!)
+                    }
+            },
+        }
     }
 
-    fn sink_answer(s: Sink) -> Reg {
-        match s { .Push(dst) -> dst }
+    /// The predicate asked about this element — one CallPtr per turn.
+    mut fn pred_call(pred: FnBox, t: Turn) -> Reg {
+        self.call_ptr(self.type(bool), pred.code, [pred.box, t.value!])
+    }
+
+    /// The terminal's hit: write its cell and end the walk.
+    mut fn store_hit(cell: Reg, v: Reg) {
+        self.emit(Ins.Store(cell, v))
+        self.walk_done()
+    }
+
+    mut fn sink_answer(s: Sink) -> Reg {
+        match s {
+            .Push(dst) -> dst,
+            .Any(ret, cell, _) -> self.loaded_as(ret, cell),
+            .All(ret, cell, _) -> self.loaded_as(ret, cell),
+            .Find(ret, cell, _) -> self.loaded_as(ret, cell),
+            .FindIndex(ret, cell, _) -> self.loaded_as(ret, cell),
+            .Contains(ret, cell, _, _) -> self.loaded_as(ret, cell),
+            .IndexOf(ret, cell, _, _) -> self.loaded_as(ret, cell),
+        }
     }
 
     /// The source's element type — typing proved it a list.
