@@ -447,6 +447,16 @@ fn wreck(m: ptr, path: string, failure: string) -> string {
 /// runtime_api.av is the one definition, runtime/avra_runtime.c
 /// its implementation twin. A split module declares the rows it
 /// calls; a whole-program module declares every row.
+/// RUNTIME ROWS A NON-HOST HOST READS DIRECTLY. The browser glue reads a
+/// frame's LENGTH through this row rather than a second copy of avra_box.h's
+/// header offsets, so the layout stays one definition. It is EXPORTED BY THE
+/// LINKER: the row lives in the runtime archive, and an export attribute on a
+/// mere declaration does not reach across a member.
+const HOST_VISIBLE_ROWS: List<string> = ["avra_bytes_len"]
+
+/// The linker's words that export those rows, one list every consumer reads.
+export fn host_export_words() -> List<string> { ["-Wl,--export=${n}" for n in HOST_VISIBLE_ROWS] }
+
 fn declare_runtime(lc: ptr, m: ptr) {
     // EVERY RUNTIME ROW, in every module, and NOT filtered to the names the
     // program's instructions mention. `emit_body` emits runtime calls of its own
