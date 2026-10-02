@@ -3,12 +3,7 @@
 //! fields and its `@prim`. A derive's template text resolves in THIS file,
 //! so every foreign name it writes is a static `quote`; a generated hole
 //! resolves in the annotated file, so fields are read as `self.<field>`.
-//!
-//! A field projects to an `Attribute` by its name, or by the explicit
-//! `@attribute(.Label)` mark when it carries one — the mark wins. A field
-//! that projects to nothing, and a control that needs an accessible name
-//! and has none, are refused where the component is declared.
-use @std.meta.{Type, Field, Directive, Diagnostic, Declared, Code, list_of, refuse_at}
+use @std.meta.{Type, Field, Directive, Code, list_of}
 use realize.render.{Node, Prim, Attribute}
 use style.box.{Box}
 
@@ -16,35 +11,29 @@ use style.box.{Box}
 export trait View {
     fn describe() -> Node
 
-    static fn derive(t: Type) -> Declared {
-        let named = prim_name(t)
-        let prim = prim_quote(named)
-        let attrs = list_of([attr_quote(f) for f in t.fields if attr_of(f) != null])
+    static fn derive(t: Type) -> List<Directive> {
+        let prim = prim_quote(prim_name(t))
+        let attrs = list_of([attr_quote(f) for f in t.fields if attr_variant(f.name) != null])
         let node = quote {
             Node {
                 prim: ${prim},
                 attrs: ${attrs},
-                // LICENSED compiler.modified_copy_literal: the Box is projected from the component's fields, never a copy of it
+                // LICENSED compiler.modified_copy_literal: the Box is projected from the component's fields
                 box: Box { style: ${style_code(t)}, layout: self.layout, a11y: self.a11y, key: self.key },
                 children: ${children_code(t)},
             }
         }
-        Declared {
-            made: [
-                Directive {
-                    twin: "",
-                    name: t.name,
-                    at: t.at,
-                    source: quote { impl View for ${t} { fn describe() -> Node { ${node} } } },
-                },
-            ],
-            problems: derive_problems(t, named),
-        }
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote { impl View for ${t} { fn describe() -> Node { ${node} } } },
+            },
+        ]
     }
 
-    /// The marks this derive READS, so `@attribute` is a reader's, never
-    /// an unclaimed word.
-    static fn marks(t: Type) -> List<string> { ["attribute"] }
+    static fn marks(t: Type) -> List<string> { [] }
 }
 
 /// The primitive a component named with `@prim`, as its written text.
@@ -69,115 +58,38 @@ fn prim_quote(text: string) -> Code {
         "Row" -> quote { Prim.Row },
         "Column" -> quote { Prim.Column },
         "Dialog" -> quote { Prim.Dialog },
-        "Divider" -> quote { Prim.Divider },
-        "Icon" -> quote { Prim.Icon },
-        "Surface" -> quote { Prim.Surface },
-        "List" -> quote { Prim.List },
-        "Item" -> quote { Prim.Item },
-        "Card" -> quote { Prim.Card },
-        "Progress" -> quote { Prim.Progress },
-        "Alert" -> quote { Prim.Alert },
-        "Spinner" -> quote { Prim.Spinner },
-        "Form" -> quote { Prim.Form },
-        "Switch" -> quote { Prim.Switch },
-        "Slider" -> quote { Prim.Slider },
         rest -> quote { Prim.Text },
     }
-}
-
-/// The `Attribute` a component field projects to: its explicit
-/// `@attribute(.X)` mark first, else the naming convention. Absence means
-/// the field projects to nothing, which the derive refuses.
-export fn attr_of(f: Field) -> string? {
-    let marked = explicit_attribute(f)
-    marked ?? attr_variant(f.name)
-}
-
-/// The variant an `@attribute(.X)` mark names, or absence.
-fn explicit_attribute(f: Field) -> string? {
-    let m? = f.marks.find(it.name == "attribute") else { return null }
-    m.args.first()
 }
 
 /// The `Attribute` a component field projects to — the naming convention.
 fn attr_variant(name: string) -> string? {
     match name {
-        "content" or "message" -> "Text",
+        "content" -> "Text",
         "label" -> "Label",
         "rank" -> "Level",
         "value" -> "Value",
-        "amount" -> "Amount",
         "placeholder" -> "Placeholder",
         "src" -> "Src",
         "alt" -> "Alt",
-        "href" -> "Href",
-        "min" -> "Min",
-        "max" -> "Max",
         "disabled" -> "Disabled",
         "checked" -> "Checked",
-        "selected" -> "Selected",
-        "open" -> "Open",
-        "invalid" -> "Invalid",
-        "loading" -> "Loading",
-        "urgency" -> "Urgency",
-        "title" -> "Title",
-        "name" -> "Name",
         rest -> null,
     }
 }
 
-/// The attribute NAMES this derive can write — one place, beside
-/// `attr_quote`'s arms, so an unknown `@attribute(.X)` is refused rather
-/// than silently becoming a `Text`.
-fn attribute_names() -> List<string> {
-    [
-        "Text",
-        "Label",
-        "Level",
-        "Value",
-        "Amount",
-        "Placeholder",
-        "Src",
-        "Alt",
-        "Href",
-        "Min",
-        "Max",
-        "Disabled",
-        "Checked",
-        "Selected",
-        "Open",
-        "Invalid",
-        "Loading",
-        "Urgency",
-        "Title",
-        "Name",
-    ]
-}
-
-/// `self.content` → the code `Attribute.Text(self.content)`. ONE arm per
-/// `Attribute` variant, so a new one lands here.
+/// `self.content` → the code `Attribute.Text(self.content)`.
 fn attr_quote(f: Field) -> Code {
-    match attr_of(f) ?? "" {
+    match attr_variant(f.name) ?? "" {
         "Text" -> quote { Attribute.Text(self.${f}) },
         "Label" -> quote { Attribute.Label(self.${f}) },
         "Level" -> quote { Attribute.Level(self.${f}) },
         "Value" -> quote { Attribute.Value(self.${f}) },
-        "Amount" -> quote { Attribute.Amount(self.${f}) },
         "Placeholder" -> quote { Attribute.Placeholder(self.${f}) },
         "Src" -> quote { Attribute.Src(self.${f}) },
         "Alt" -> quote { Attribute.Alt(self.${f}) },
-        "Href" -> quote { Attribute.Href(self.${f}) },
-        "Min" -> quote { Attribute.Min(self.${f}) },
-        "Max" -> quote { Attribute.Max(self.${f}) },
         "Disabled" -> quote { Attribute.Disabled(self.${f}) },
         "Checked" -> quote { Attribute.Checked(self.${f}) },
-        "Selected" -> quote { Attribute.Selected(self.${f}) },
-        "Open" -> quote { Attribute.Open(self.${f}) },
-        "Invalid" -> quote { Attribute.Invalid(self.${f}) },
-        "Loading" -> quote { Attribute.Loading(self.${f}) },
-        "Urgency" -> quote { Attribute.Urgency(self.${f}) },
-        "Title" -> quote { Attribute.Title(self.${f}) },
-        "Name" -> quote { Attribute.Name(self.${f}) },
         rest -> quote { Attribute.Text(self.${f}) },
     }
 }
@@ -196,7 +108,7 @@ fn children_code(t: Type) -> Code {
 /// A field whose value is a visual variant, not an attribute: its value
 /// is merged into the node's `Style`, so a component names a role and
 /// the caller can still override it through `style`.
-fn is_style_field(f: Field) -> bool { f.name == "tone" && explicit_attribute(f) == null }
+fn is_style_field(f: Field) -> bool { f.name == "tone" }
 
 /// The component's style: its own `style` field, with the variant field
 /// laid over it.
@@ -205,98 +117,3 @@ fn style_code(t: Type) -> Code {
     quote { self.style with { color: self.tone } }
 }
 
-// ── the derive's refusals ────────────────────────────────────────
-
-/// What the component's shape owes and does not pay: a primitive, a
-/// mapping for every field that is not its children, and a name for a
-/// control that needs one.
-export fn derive_problems(t: Type, prim: string) -> List<Diagnostic> {
-    primitive_problem(t, prim).concat(field_problems(t)).concat(name_problems(t, prim))
-}
-
-fn primitive_problem(t: Type, prim: string) -> List<Diagnostic> {
-    if prim != "" { return [] }
-    [
-        refuse_at(
-            t.at,
-            "`${t.name}` declares no primitive",
-            "name the interaction contract with `@prim(.Text)`",
-        ),
-    ]
-}
-
-/// Every field that is not the children slot projects to an attribute,
-/// named by the convention or an `@attribute` mark that names one.
-fn field_problems(t: Type) -> List<Diagnostic> {
-    mut out: List<Diagnostic> = []
-    for f in t.fields { out = out.concat(field_problem(t, f)) }
-    out
-}
-
-fn field_problem(t: Type, f: Field) -> List<Diagnostic> {
-    if f.name == "items" { return [] }
-    if is_style_field(f) { return [] }
-    let named? = attr_of(f) else {
-        return [
-            refuse_at(
-                f.at,
-                "`${t.name}`'s field `${f.name}` projects to no attribute",
-                "mark it `@attribute(.Label)`, or name it after the attribute it carries",
-            ),
-        ]
-    }
-    if attribute_names().contains(named) { return [] }
-    [
-        refuse_at(
-            f.at,
-            "`@attribute(.${named})` names no attribute",
-            "spell one the targets draw: ${attribute_names().join(", ")}",
-        ),
-    ]
-}
-
-/// A control whose meaning is its name must write one; the derive names
-/// the field to add.
-fn name_problems(t: Type, prim: string) -> List<Diagnostic> {
-    if !needs_name(prim) { return [] }
-    if t.fields.any((f: Field) -> names_it(attr_of(f))) { return [] }
-    [
-        refuse_at(
-            t.at,
-            "`${t.name}` is a `${prim}` and nothing names it",
-            "add a `${name_field(prim)}: string` field",
-        ),
-    ]
-}
-
-/// Whether a control cannot be announced without a name.
-fn needs_name(prim: string) -> bool {
-    [
-        "Button",
-        "Link",
-        "Image",
-        "Icon",
-        "Field",
-        "Checkbox",
-        "Switch",
-        "Slider",
-        "Dialog",
-        "Progress",
-    ]
-        .contains(prim)
-}
-
-/// The field a nameless control of this primitive should add.
-fn name_field(prim: string) -> string {
-    when {
-        prim == "Image" -> "alt"
-        prim == "Icon" -> "name"
-        _ -> "label"
-    }
-}
-
-/// Whether a projected attribute names its control.
-fn names_it(attr: string?) -> bool {
-    let word = attr ?? ""
-    word == "Label" || word == "Text" || word == "Alt" || word == "Name"
-}

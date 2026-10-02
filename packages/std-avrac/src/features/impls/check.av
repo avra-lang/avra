@@ -703,8 +703,7 @@ fn sig_judged(
 // ── The derive contract, where a trait declares it ──
 
 /// A TRAIT'S `derive` IS HELD TO ITS CONTRACT WHERE IT IS WRITTEN —
-/// `static fn derive(t: Type) -> List<Directive>` (or `Declared`,
-/// the same effect with problems to speak), and a `marks`
+/// `static fn derive(t: Type) -> List<Directive>`, and a `marks`
 /// beside it `static fn marks(t: Type) -> List<string>` — so the
 /// library's author hears it at their own build, never first at a
 /// user's `@derive`. `Fn` or `Named` may stand for `Type`.
@@ -712,7 +711,7 @@ export fn derive_contract(mut cx: TypeCx, s: StmtId) {
     let tr? = cx.view.decls.decl_of(cx.view.file, s) else { return }
     if !(cx.view.decls.decl(tr).kind is .Trait) { return }
     let derive? = cx.view.decls.trait_derive(tr) else { return }
-    if !member_fits(cx, derive, (ret: TypeId) -> derive_answer(cx, ret)) { derive_shape(cx, derive) }
+    if !member_fits(cx, derive, (ret: TypeId) -> directives(cx, ret)) { derive_shape(cx, derive) }
     let marks? = cx.view.decls.trait_marks(tr) else { return }
     if !member_fits(cx, marks, (ret: TypeId) -> same_type(ret, cx.type(List<string>))) { marks_shape(cx, marks) }
 }
@@ -728,13 +727,10 @@ fn member_fits(cx: TypeCx, m: DeclId, answers: fn(TypeId) -> bool) -> bool {
         answers(sig.ret)
 }
 
-/// Whether an answer makes declarations — `@std.meta`'s
-/// `List<Directive>`, or its `Declared`, the same effect with room
-/// to speak problems about the shape it generated from.
-fn derive_answer(cx: TypeCx, ret: TypeId) -> bool {
+/// Whether an answer is `@std.meta`'s `List<Directive>`.
+fn directives(cx: TypeCx, ret: TypeId) -> bool {
     match cx.view.types.shape_of(ret) {
         .List(e) -> cx.view.decls.meta_type(e, "Directive"),
-        .Struct(_, _) -> cx.view.decls.meta_type(ret, "Declared"),
         _ -> false,
     }
 }
@@ -745,9 +741,9 @@ fn derive_shape(mut cx: TypeCx, m: DeclId) {
             refusal(
                 "type.derive_contract",
                 member_loc(cx, m),
-                "a trait's `derive` answers the declarations it makes",
+                "a trait's `derive` is `static fn derive(t: Type) -> List<Directive>`",
                 "declared here",
-                "take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>`, or `Declared` when it also has problems to speak, as a `static fn`",
+                "take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>` from `@std.meta`, as a `static fn`",
             ),
         )
 }
