@@ -53,7 +53,12 @@ fn pinged(c: Conn, n: int) -> Result<int, NetError> {
 
 fn shown() -> Result<string, NetError> {
     let l = listen("127.0.0.1", 0)?
-    let s = served(l, () -> App {}, limits(), timing()) { _a, q -> answer(q) }
+    // The body reader's park budget is a WALL-CLOCK constant, and the
+    // same program runs native and evaluated: one spelling of the
+    // budget fits one engine's speed, not both. The evaluator is an
+    // interpreter, so it gets the wider budget; native never
+    // approaches it.
+    let s = served(l, () -> App {}, limits(), timing() with { body: secs(300), idle: secs(300) }) { _a, q -> answer(q) }
     spawn s.run(1)
     defer s.stop()
     let c = connect("127.0.0.1", l.port, secs(2))?

@@ -1701,9 +1701,29 @@ impl Machine {
 
     fn reclaimed(id: int) {
         if !self.freeing { return }
+        // A LIVE TASK NAMES ITS BOXES: a task's stack holds its
+        // expression's values while it waits or runs, and a register
+        // may carry a borrow whose owner is released elsewhere — a
+        // fact the memory pass cannot see across a park or a task's
+        // frame. So a box any live task names is not reclaimed.
+        if self.named_by_task(id) { return }
         let kids = self.arrays[id]
         self.arrays.set(id, [Val.Gone])
         for e in kids { self.releases_val(e) }
+    }
+
+    /// Whether any live task's stack or answer names box `id`.
+    fn named_by_task(id: int) -> bool {
+        for fr in self.frames {
+            for v in fr { if names_box(v, id) { return true } }
+        }
+        for t in self.tasks {
+            for fr in t.frames {
+                for v in fr { if names_box(v, id) { return true } }
+            }
+            if names_box(t.answer, id) { return true }
+        }
+        false
     }
 
     fn retains(v: Val) {

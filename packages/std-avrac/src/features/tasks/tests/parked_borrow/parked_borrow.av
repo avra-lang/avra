@@ -1,0 +1,22 @@
+// proves: a task parked with a box in its stack keeps that box — the
+// cell may replace what it holds while the task waits, and the parked
+// reader still reads what it borrowed
+use @std.time.{ms, sleep}
+
+type Holder = { tag: int, items: List<int> }
+
+fn reader(c: Cell<Holder>) -> int {
+    let h = c.get()
+    sleep(ms(40))
+    h.tag + (h.items.first() ?? 0)
+}
+
+fn shown() -> int {
+    let c = Cell.new(Holder { tag: 5, items: [7, 8] })
+    let t = spawn reader(c)
+    sleep(ms(5))
+    c.set(Holder { tag: 1, items: [] })
+    t.await
+}
+
+"${shown()}"
