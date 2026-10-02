@@ -5,7 +5,7 @@
 //! lowering the base source FIRST and boxing each fn once in source
 //! order, then runs the whole chain into a push. A subject that is no
 //! adapter (a `concat`, a plain list) is the head the rest folds over.
-use core.{ExprId, Reg, TypeId, Type}
+use core.{ExprId, Reg, TypeId, Type, Arrow}
 use features.{LowerCx, MethodCall, PipeStage, FnBox, Clause, Sink, Source, Pipeline}
 
 /// `xs.map(f)` / `xs.filter(p)` — the chain ending here, run once.
@@ -120,6 +120,12 @@ fn box_of(mut cx: LowerCx, f: ExprId) -> FnBox {
     FnBox { box: b.f, code: b.fp }
 }
 
+/// A fn's answer type — `filter_map`'s optional, read off the arrow.
+fn fn_answer(cx: LowerCx, f: ExprId) -> TypeId {
+    let held: Arrow? = cx.view.decls.types.arrow_parts(cx.type_at(f))
+    held?.answer ?? cx.view.types.intern(Type.Error)
+}
+
 /// The chain's clauses, innermost first — the base source lowered
 /// before any fn is boxed, so a receiver's effect runs before them.
 fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
@@ -158,6 +164,6 @@ fn link_clause(mut cx: LowerCx, stage: PipeStage, arg: ExprId, e: ExprId) -> Cla
         .Drop -> .Drop(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg)),
         .TakeWhile -> .TakeWhile(box_of(cx, arg)),
         .DropWhile -> .DropWhile(box_of(cx, arg), cx.seeded_cell(cx.type(bool), cx.const_bool(false))),
-        .FilterMap -> .FilterMap(box_of(cx, arg), cx.view.types.intern(Type.Opt(mapped_to(cx, e)))),
+        .FilterMap -> .FilterMap(box_of(cx, arg), fn_answer(cx, arg)),
     }
 }
