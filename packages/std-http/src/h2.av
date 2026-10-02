@@ -900,7 +900,10 @@ impl H2Conn {
             .Closed(_) or .Forgotten -> null,
             .Live(_) -> {
                 self.churn = self.churn + 1
-                self.ready = [r for r in self.ready if r.stream != f.stream]
+                // A SERVER's reset cancels the request it had not
+                // answered; a CLIENT keeps the response head it
+                // already received, its body cut short.
+                if self.role is .Server { self.ready = [r for r in self.ready if r.stream != f.stream] }
                 self.closed(f.stream, .PeerReset)
                 self.churned()
             },
@@ -1021,10 +1024,10 @@ impl H2Conn {
         if ends { self.local_ended(id) }
     }
 
-    /// A CLIENT's request opened on a fresh odd stream: its head and,
-    /// when it has one, its body — owed for the next drain. Answers the
-    /// stream id it was given.
-    mut fn ask(fields: List<HeaderField>, body: Bytes) -> int {
+    /// A CLIENT's request opened on a fresh odd stream: its head owed,
+    /// and `ends` when no body follows. Answers the stream id it was
+    /// given.
+    mut fn begin(fields: List<HeaderField>, ends: bool) -> int {
         let id = if self.last == 0 { 1 } else { self.last + 2 }
         self.last = id
         self
@@ -1040,7 +1043,7 @@ impl H2Conn {
                     received: 0,
                     answered: true,
                     owed: no_bytes,
-                    more: !body.is_empty(),
+                    more: !ends,
                     deaf: false,
                     declared: null,
                     handed: false,
@@ -1051,10 +1054,19 @@ impl H2Conn {
             self.out,
             id,
             self.encoder.encoded(fields),
-            body.is_empty(),
+            ends,
             self.theirs.frame,
         )
-        if body.is_empty() { self.local_ended(id) } else { self.piece(id, body, true) }
+        if ends { self.local_ended(id) }
+        id
+    }
+
+    /// A CLIENT's request opened on a fresh odd stream: its head and,
+    /// when it has one, its body — owed for the next drain. Answers the
+    /// stream id it was given.
+    mut fn ask(fields: List<HeaderField>, body: Bytes) -> int {
+        let id = self.begin(fields, body.is_empty())
+        if !body.is_empty() { self.piece(id, body, true) }
         id
     }
 

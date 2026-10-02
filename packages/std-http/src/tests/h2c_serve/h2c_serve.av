@@ -8,19 +8,11 @@ use @std.time.{ms, secs, within, sleep}
 use @std.http.http.{text}
 use @std.http.route.{get, post}
 use @std.http.server.{server}
-use @std.http.frame.{no_bytes}
-use @std.http.h2.{
-    Frame,
-    FrameAt,
-    preface,
-    frame_bytes,
-    frame_at,
-    end_stream,
-    end_headers,
-    value_named,
-    frames_in,
-}
-use @std.http.hpack.{HeaderField, HpackDecoder, header_field, encoder, decoder}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.h2.{Frame, end_stream, value_named}
+use @std.http.h2_client_drive.{H2Ask, h2_answer_line, h2_conversing, h2_request, conversed}
+use @std.http.hpack.{HeaderField, header_field}
+use @std.http.wire.{plainly}
 
 export server app {
     port: 0
@@ -45,6 +37,9 @@ const asks: List<Ask> = [
     ask("DELETE", "/hello/x", [], ""),
     ask("HEAD", "/hello/world", [], ""),
 ]
+
+/// A question as the client driver sends it.
+fn as_h2(a: Ask) -> H2Ask { h2_request(a.method, "http", "h", a.path, a.fields, a.body.bytes()) }
 
 // ── HTTP/1.1 ────────────────────────────────────────────────────
 
@@ -92,62 +87,15 @@ fn http1_answer(port: int, a: Ask) -> Result<string, NetError> {
 fn h2_answers(port: int) -> Result<List<string>, NetError> {
     let c = connect("127.0.0.1", port, secs(2))?
     defer { let _ = c.close() }
-    c
-        .write(
-            preface
-                .concat(frame_bytes(.Settings, 0, 0, no_bytes))
-                .concat([h2_asked(2 * i + 1, a) for i, a in asks].bytes()),
-        )?
-    let frames = h2_frames(c)
-    mut d = decoder(4096, 65536)
-    mut heads: List<List<HeaderField>> = [[] for a in asks]
-    for f in frames {
-        if f.kind is .Headers { heads[(f.stream - 1) / 2] = decoded_list(d, f.payload) }
+    match conversed(limits(), plainly(c), [as_h2(a) for a in asks], secs(2)) {
+        .Ok(answers) -> .Ok([h2_answer_line(a) for a in answers]),
+        .Err(e) -> h2_failed(e),
     }
-    .Ok([h2_line(heads[i], frames, 2 * i + 1) for i, a in asks])
 }
 
-/// A block's fields, or none when it does not decode.
-fn decoded_list(mut d: HpackDecoder, block: Bytes) -> List<HeaderField> {
-    match d.decoded(block) { .Fields(fs) -> fs, .TooLarge or .Refused(_) -> [] }
-}
-
-/// One question as HEADERS — and DATA when it carries a body.
-fn h2_asked(id: int, a: Ask) -> Bytes {
-    mut e = encoder(true)
-    let head = [
-        header_field(":method", a.method),
-        header_field(":scheme", "http"),
-        header_field(":path", a.path),
-        header_field(":authority", "h"),
-    ]
-        .concat(a.fields)
-    let withlength = if a.body.is_empty() { head } else { head.concat([header_field("content-length", "${a.body.length}")]) }
-    let block = e.encoded(withlength)
-    if a.body.is_empty() { return frame_bytes(.Headers, end_headers | end_stream, id, block) }
-    frame_bytes(.Headers, end_headers, id, block)
-        .concat(frame_bytes(.Data, end_stream, id, a.body.bytes()))
-}
-
-/// Frames read until the peer has ended every stream or goes quiet.
-fn h2_frames(c: Conn) -> List<Frame> {
-    mut buf = no_bytes
-    mut open = true
-    while open && ended_streams(frames_in(buf)) < asks.length {
-        let got = heard_from(c)
-        open = got != null
-        buf = buf.concat(got ?? no_bytes)
-    }
-    frames_in(buf)
-}
-
-/// How many streams these frames ended.
-fn ended_streams(fs: List<Frame>) -> int { fs.filter(it.stream > 0 && it.flags & end_stream != 0).length }
-
-/// What one read brought within half a second: absent once the peer
-/// closed, or when it went quiet.
-fn heard_from(c: Conn) -> Bytes? {
-    match within ms(500) { c.read(65536) } { .Ok(b) -> b, .Err(_) -> null }
+/// A driver failure as the net error this suite reports.
+fn h2_failed<T>(e: string) -> Result<T, NetError> {
+    .Err(NetError { verb: "h2", subject: e, errno: 0 })
 }
 
 /// A GET whose preface arrives torn after eighteen octets — the length
@@ -156,20 +104,24 @@ fn heard_from(c: Conn) -> Bytes? {
 fn torn_preface(port: int) -> Result<string, NetError> {
     let c = connect("127.0.0.1", port, secs(2))?
     defer { let _ = c.close() }
-    c.write(preface.slice(0, 18))?
+    mut cl = h2_conversing(limits(), plainly(c))
+    let hello = cl.opening()
+    c.write(hello.slice(0, 18))?
     sleep(ms(100))
-    c
-        .write(
-            preface
-                .slice(18, preface.length)
-                .concat(frame_bytes(.Settings, 0, 0, no_bytes))
-                .concat(h2_asked(1, asks[0])),
-        )?
-    let frames = h2_frames(c)
-    mut d = decoder(4096, 65536)
-    let head = frames.find(it.kind is .Headers && it.stream == 1)
-    let fs = if head == null { [] } else { decoded_list(d, head!.payload) }
-    .Ok(h2_line(fs, frames, 1))
+    c.write(hello.slice(18, hello.length))?
+    match cl.ask(as_h2(asks[0])) {
+        .Ok(id) -> {
+            match cl
+                .frames_until((fs) -> fs.any(it.stream == id && it.flags & end_stream != 0), ms(500)) {
+                .Ok(frames) -> {
+                    let head = cl.heads().find(it.stream == id)?.fields ?? []
+                    .Ok(h2_line(head, frames, id))
+                },
+                .Err(e) -> h2_failed(e),
+            }
+        },
+        .Err(e) -> h2_failed(e),
+    }
 }
 
 fn h2_line(fs: List<HeaderField>, frames: List<Frame>, id: int) -> string {

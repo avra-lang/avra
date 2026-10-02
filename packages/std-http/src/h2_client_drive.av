@@ -1,0 +1,203 @@
+//! h2_client_drive — the ONE client driver for an HTTP/2 conversation.
+//!
+//! It owns the client half of the connection state machine (h2_client)
+//! and the pump around it: what the connection owes is written, what
+//! arrives is fed, its response heads are taken and each stream's body
+//! drained as the frames say. `conversed` is the whole-answer entry —
+//! requests asked on one connection, their answers in the same order;
+//! `H2Client` is the same conversation open for a caller that speaks
+//! frames itself (a held window, a hostile peer). No caller hand-rolls
+//! HPACK or framing: a request head is `h2_request`'s or the
+//! connection's own, and a response head is the connection's.
+use @std.text.{parse_int}
+use @std.time.{Duration, ms, now_ms, within}
+use @std.http.frame.{Limits, no_bytes}
+use @std.http.h2.{Arrived, Exchange, Frame, H2Conn, frames_in, h2_client, value_named}
+use @std.http.hpack.{HeaderField, header_field}
+use @std.http.wire.{Transport}
+
+/// One request as a client sends it: its head fields — pseudo-fields
+/// first — and the body owed as DATA.
+export type H2Ask = { fields: List<HeaderField>, body: Bytes }
+
+/// One answer as a client reads it: the response head's fields and the
+/// whole body.
+export type H2Answer = { fields: List<HeaderField>, body: Bytes }
+
+/// A request head's fields from its parts: the four pseudo-fields,
+/// `extra` after them, and a `content-length` when `length` is not
+/// negative.
+fn drive_fields(
+    method: string,
+    scheme: string,
+    authority: string,
+    path: string,
+    extra: List<HeaderField>,
+    length: int,
+) -> List<HeaderField> {
+    let head = [
+        header_field(":method", method),
+        header_field(":scheme", scheme),
+        header_field(":path", path),
+        header_field(":authority", authority),
+    ]
+        .concat(extra)
+    if length < 0 { head } else { head.concat([header_field("content-length", "${length}")]) }
+}
+
+/// A whole request from its parts.
+export fn h2_request(
+    method: string,
+    scheme: string,
+    authority: string,
+    path: string,
+    extra: List<HeaderField>,
+    body: Bytes,
+) -> H2Ask {
+    let length = if body.is_empty() { -1 } else { body.length }
+    H2Ask { fields: drive_fields(method, scheme, authority, path, extra, length), body: body }
+}
+
+/// The status an answer names, or 0 when it names none.
+export fn h2_answer_status(a: H2Answer) -> int { parse_int(h2_field_text(a.fields, ":status") ?? "") ?? 0 }
+
+/// A named regular field's text, or "-".
+export fn h2_answer_text(a: H2Answer, name: string) -> string { h2_field_text(a.fields, name) ?? "-" }
+
+/// An answer as `status | content-type | body`, the shape every
+/// client's proof reads.
+export fn h2_answer_line(a: H2Answer) -> string {
+    "${h2_answer_status(a)} | ${h2_answer_text(a, "content-type")} | ${a.body.text() ?? "?"}"
+}
+
+fn h2_field_text(fields: List<HeaderField>, name: string) -> string? { value_named(fields, name.bytes())?.text() }
+
+/// Every request asked on ONE connection of `link`, and its answer —
+/// the i-th answer to the i-th ask, streams 1, 3, 5 … — read within
+/// `budget` for the whole conversation.
+export fn conversed(limits: Limits, link: dyn Transport, asks: List<H2Ask>, budget: Duration) -> Result<
+    List<H2Answer>,
+    string,
+> {
+    if asks.is_empty() { return .Ok([]) }
+    mut c = h2_conversing(limits, link)
+    let ids = [c.ask(a)? for a in asks]
+    let deadline = now_ms() + budget.ms
+    mut heads: List<List<HeaderField>> = [[] for a in asks]
+    mut bodies: List<Bytes> = [no_bytes for a in asks]
+    mut done: List<bool> = [false for a in asks]
+    mut left = asks.length
+    while left > 0 {
+        let wait = deadline - now_ms()
+        if wait <= 0 { return .Err("h2: the answers timed out") }
+        let more = c.advance(65536, ms(wait))?
+        if more == null { return .Err("h2: the peer ended before its answers") }
+        for x in c.heads() {
+            let i = ids.index_of(x.stream)
+            if i >= 0 { heads[i] = x.fields }
+        }
+        for i, id in ids {
+            if done[i] { continue }
+            match c.body(id) {
+                .Whole(b) -> {
+                    bodies[i] = bodies[i].concat(b)
+                    done[i] = true
+                    left = left - 1
+                },
+                .Flowing(b) -> { bodies[i] = bodies[i].concat(b) },
+                .Cut -> {
+                    if heads[i].is_empty() { return .Err("h2: stream ${id} was cut before its head") }
+                    done[i] = true
+                    left = left - 1
+                },
+            }
+        }
+        let _ = c.flush()
+    }
+    .Ok([H2Answer { fields: heads[i], body: bodies[i] } for i in 0..asks.length])
+}
+
+/// A conversation opened on `link`: the connection, the octets read and
+/// not yet framed, and where the next feed starts.
+export type H2Client = { conn: H2Conn, link: dyn Transport, buf: Bytes, at: int }
+
+/// An HTTP/2 client connection over `link`.
+export fn h2_conversing(limits: Limits, link: dyn Transport) -> H2Client {
+    H2Client { conn: h2_client(limits), link: link, buf: no_bytes, at: 0 }
+}
+
+impl H2Client {
+    /// One request asked on a fresh odd stream; its frames written.
+    mut fn ask(a: H2Ask) -> Result<int, string> {
+        let id = self.conn.ask(a.fields, a.body)
+        self.flush()?
+        .Ok(id)
+    }
+
+    /// A request head opened on a fresh odd stream, `ends` when no body
+    /// follows — a body the caller sends itself.
+    mut fn begin(fields: List<HeaderField>, ends: bool) -> Result<int, string> {
+        let id = self.conn.begin(fields, ends)
+        self.flush()?
+        .Ok(id)
+    }
+
+    /// What the connection owes the peer, taken unwritten — a caller
+    /// that tears a write.
+    mut fn opening() -> Bytes { self.conn.drained() }
+
+    /// What the connection owes the peer, written.
+    mut fn flush() -> Result<int, string> {
+        let owed = self.conn.drained()
+        if owed.is_empty() { return .Ok(0) }
+        link_wrote(self.link, owed)
+    }
+
+    /// Raw octets written, for a peer that speaks frames itself.
+    fn say(b: Bytes) -> Result<int, string> { link_wrote(self.link, b) }
+
+    /// One read fed to the connection, and the frames it held — `null`
+    /// when the peer ended or `wait` passed, so a caller may stop. What
+    /// the connection owes is written FIRST, so a window it was given
+    /// back reaches the peer before this parks.
+    mut fn advance(max: int, wait: Duration) -> Result<List<Frame>?, string> {
+        let _ = self.flush()?
+        let heard = within wait { self.link.wire_read(max) }
+        let seen = match heard { .Ok(b) -> b, .Err(_) -> { return .Ok(null) } }
+        let got? = seen else { return .Ok(null) }
+        let from = self.at
+        self.buf = self.buf.concat(got)
+        let next = self.conn.fed(self.buf, self.at)
+        let frames = frames_in(self.buf.slice(from, next))
+        self.buf = self.buf.slice(next, self.buf.length)
+        self.at = 0
+        self.conn.flushed_all()
+        let _ = self.flush()?
+        .Ok(frames)
+    }
+
+    /// Frames read until `done` says they are enough, or the peer goes
+    /// quiet — everything read so far, in order.
+    mut fn frames_until(done: fn(List<Frame>) -> bool, wait: Duration) -> Result<
+        List<Frame>,
+        string,
+    > {
+        mut all: List<Frame> = []
+        while !done(all) {
+            let seen = self.advance(65536, wait)?
+            let more? = seen else { return .Ok(all) }
+            all = all.concat(more)
+        }
+        .Ok(all)
+    }
+
+    /// Response heads taken since the last take, in arrival order.
+    mut fn heads() -> List<Exchange> { self.conn.taken() }
+
+    /// What stream `id` holds, taken.
+    mut fn body(id: int) -> Arrived { self.conn.arrived(id) }
+}
+
+fn link_wrote(link: dyn Transport, b: Bytes) -> Result<int, string> {
+    match link.wire_write(b) { .Ok(n) -> .Ok(n), .Err(_) -> .Err("h2: the link refused a write") }
+}
