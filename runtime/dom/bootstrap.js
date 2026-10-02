@@ -149,6 +149,11 @@ export async function instantiate(source, host) {
   return instance.exports;
 }
 
+// The program's `avra_event(who: int, what: int)` crosses as two i64
+// seats, so the host hands it BigInts. ONE door for both the page and a
+// test harness.
+export function sendEvent(mod, who, what) { mod.avra_event(BigInt(who), BigInt(what)); }
+
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length
 // reader (`avra_bytes_len`, an exported row) — never a second copy of the
 // header layout that could drift from runtime/avra_box.h.
