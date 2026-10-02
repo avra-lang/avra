@@ -68,6 +68,47 @@ export fn lower_values(mut cx: LowerCx, mc: MethodCall) -> Reg {
     cx.map_vals(cx.shape_at(mc.e), m)
 }
 
+export fn check_remove(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let value? = value_held(cx, mc, "remove") else { return cx.error_type }
+    let root? = cx.view.store.place_root(mc.subject) else { return cx.not_a_place_call(mc.e, "remove") }
+    if !cx.is_mut(root) { return cx.not_mut_call(mc.e, "remove", cx.view.store.ident_name(root) ?? "this name") }
+    cx.alias_copy_law(mc.e, mc.subject, root)
+    if mc.args.length != 1 {
+        cx.wrong_arity(mc.e, "remove", 1, mc.args.length)
+        return cx.error_type
+    }
+    let key = cx.type(string)
+    if !cx.accepts(mc.args[0], key) { cx.wrong_argument("remove", 0, key, mc.args[0]) }
+    cx.type(value?)
+}
+
+export fn check_is_empty(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if cx.seen_at(mc.subject) is .EmptyMap { return cx.unmeasurable_empty(mc.e, "{}", "Map<string, int>") }
+    if !cx.seated(mc, "is_empty", []) { return cx.error_type }
+    cx.type(bool)
+}
+
+/// `m.remove(k)`: the value read before the key drops, so a managed
+/// value keeps a reference of its own past the map's release.
+fn removed_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
+    let opt = cx.type_at(e)
+    let box = cx.unique_box(subject)
+    let k = cx.reg_of(key)
+    let cell = cx.seeded_cell(opt, cx.absent_of(opt))
+    let slot = cx.map_slot(Type.Int, box, k)
+    cx
+        .void_region(cx.bin(Type.Bool, BinOp.Ge, slot, cx.const_int(0))) { cx ->
+            let raw = cx.map_value(box, slot, cx.carried_type(opt))
+            cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
+        }
+    cx.map_remove(box, k)
+    cx.loaded(e, cell)
+}
+
+export fn lower_remove(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    removed_reg(cx, mc.e, mc.subject, mc.args[0])
+}
+
 /// THE PRELUDE both rows share: the value type the receiver holds.
 /// The empty literal refuses in the row's words and absorbs. A ROW
 /// READS ITS RECEIVER THROUGH THE READ DOOR — a NAMED type reached
