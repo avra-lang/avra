@@ -320,6 +320,13 @@ fi
 # not a stronger check.
 advance_and_cache() {
     set +e
+    # THE SHIM'S 4 GB WRECK-CAP IS TOO TIGHT FOR A LARGE COMPILER BUILD:
+    # `./avra build packages/cli` peaked 4003 MB and was killed at 4000, so
+    # the gate's cold build never finished. The BUILD alone gets a higher
+    # ceiling here; general runs on the shared Mac keep the tighter default
+    # (two compilers beside a desktop panicked a 16 GB box). The Sprite has
+    # 8 GB; `AVRA_BUILD_CAP_MB` overrides.
+    export AVRA_CAP_MB="${AVRA_BUILD_CAP_MB:-7000}"
     if [ -x build/avra ]; then
         make -s avra > "/tmp/.avra-adv-$$" 2>&1
         a1=$?

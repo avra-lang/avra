@@ -133,8 +133,12 @@ gate_preflight() {
     fi
     [ -n "$out" ] && printf '%s\n' "$out" >&2
     [ "$st" -eq 0 ] && return 0
+    # Gate refusals name themselves; a bare `refused` anywhere (a build
+    # diagnostic that happens to say it) is infrastructure, not the gate.
     case "$out" in
-        *refused* | *"NEW violation"*) die "the enqueue gate refused the branch — the train would too" ;;
+        *"gate_changed: keeper "* | *"fmt --check:"*refused* | *"idioms refused"*)
+            die "the enqueue gate refused the branch — the train would too"
+            ;;
     esac
     echo "work: the preflight could not run (exit $st) — pushing anyway; the PR check re-proves on GitHub" >&2
 }

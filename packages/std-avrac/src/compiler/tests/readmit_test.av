@@ -8,7 +8,7 @@
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
-use core.{DeclId, Param, named_ref, fp_list, same_file}
+use core.{DeclId, DeclKind, Param, named_ref, fp_list, same_file}
 use features.{Decl}
 use query.{Key}
 
@@ -70,6 +70,11 @@ fn name_bucket(ws: Workspace, name: string) -> int {
 }
 
 /// The fold `Items` settles a file's rows to, over the rows as they stand.
+/// The rows the admitted file holds.
+fn ws_rows(ws: Workspace) -> int {
+    ws.decls.decls_so_far(ws.file_id(readmit_path())).length
+}
+
 fn rows_print(ws: Workspace) -> int {
     fp_list([ws.row_print(d) for d in ws.decls.decls_so_far(ws.file_id(readmit_path()))])
 }
@@ -187,6 +192,37 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
             admit_again(ws, "/w/src/b.av", "fn z() -> int {\n    3\n}\nfn x() -> int {\n    1\n}\n")
             let xs = Decl.by_name(ws.decls.decl_rows.get(), "x")
             xs.length == 1 && same_file(xs[0].file, b) && !same_file(xs[0].file, a)
+        }
+    }
+}
+
+spec "compiler/readmit — a file un-admitted keeps nothing" {
+    given "a file admitted, then withdrawn" {
+        then "every row it held is gone from the whole table" {
+            let ws = admitted(readmit_before())
+            let f = ws.file_id(readmit_path())
+            let before = ws.decls.decls_so_far(f)
+            let _ = ws.decls.unadmit(f)
+            !before.is_empty() &&
+                before.all((d: DeclId) -> ws.decls.row_at(d.index) == null) &&
+                !ws
+                    .decls
+                    .all_decls()
+                    .any((d: Decl) -> d.kind != DeclKind.Builtin && same_file(d.file, f))
+        }
+        then "its own list and its name index answer nothing" {
+            let ws = admitted(readmit_before())
+            let f = ws.file_id(readmit_path())
+            let _ = ws.decls.unadmit(f)
+            ws.decls.decls_so_far(f).is_empty() &&
+                ws.decls.named("kept").is_empty() &&
+                ws.decls.named("Box").is_empty()
+        }
+        then "its own seats are cleared — Main included" {
+            let ws = admitted(readmit_before())
+            let f = ws.file_id(readmit_path())
+            let _ = ws.decls.unadmit(f)
+            ws.decls.mains.get()[f.index] == null
         }
     }
 }
