@@ -42,7 +42,7 @@ impl TypeCx {
             .App(wd, _, wa) -> self.app_unifies(wd, wa, got, target, bound),
             .Fn(wp, _, wr) -> self.fn_unifies(wp, wr, got, target, bound),
             // LICENSED structs.index_compared: type identity — interned ids ARE the agreement
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void or .Tasks or .Union(_) -> want.index == got.index,
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void or .Tasks or .Union(_) or .Range -> want.index == got.index,
         }
     }
 
@@ -94,7 +94,7 @@ impl TypeCx {
         match self.view.types.shape_of(got) {
             .List(g) -> self.unify(w, g, target, bound),
             .EmptyList -> true,
-            .Opt(_) or .Null or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .EmptyMap or .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Union(_) or .Error or .Void -> false,
+            .Opt(_) or .Null or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .EmptyMap or .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Union(_) or .Error or .Void or .Range -> false,
         }
     }
 
@@ -103,7 +103,7 @@ impl TypeCx {
         match self.view.types.shape_of(got) {
             .Map(_, g) -> self.unify(w, g, target, bound),
             .EmptyMap -> true,
-            .Opt(_) or .Null or .Cell(_) or .Task(_) or .Tasks or .List(_) or .EmptyList or .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Union(_) or .Error or .Void -> false,
+            .Opt(_) or .Null or .Cell(_) or .Task(_) or .Tasks or .List(_) or .EmptyList or .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Union(_) or .Error or .Void or .Range -> false,
         }
     }
 
@@ -117,7 +117,7 @@ impl TypeCx {
         match self.view.types.shape_of(got) {
             .Opt(g) -> self.unify(w, g, target, bound),
             .Null -> !(self.view.types.shape_of(w) is .Var),
-            .List(_) or .Cell(_) or .Task(_) or .Tasks or .EmptyList or .Map(_, _) or .EmptyMap or .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Union(_) or .Error or .Void -> !(self.view.types.shape_of(w) is .Var) && self.unify(w, got, target, bound),
+            .List(_) or .Cell(_) or .Task(_) or .Tasks or .EmptyList or .Map(_, _) or .EmptyMap or .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Union(_) or .Error or .Void or .Range -> !(self.view.types.shape_of(w) is .Var) && self.unify(w, got, target, bound),
         }
     }
 
@@ -139,7 +139,7 @@ impl TypeCx {
             .EmptyMap -> null,
             .App(_, _, args) -> args.find((a) -> self.unlawful_side(a) != null),
             .Union(members) -> members.find((m) -> self.unlawful_side(m) != null),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .Tasks -> null,
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .Tasks or .Range -> null,
         }
     }
 
@@ -166,7 +166,7 @@ impl TypeCx {
             .Fn(ps, _, ret) -> ps.all((p) -> self.fully_bound(p, target, bound)) &&
                 self.fully_bound(ret, target, bound),
             .Union(members) -> members.all((m) -> self.fully_bound(m, target, bound)),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .Tasks -> true,
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .Tasks or .Range -> true,
         }
     }
 
@@ -216,7 +216,7 @@ export fn slot_worthy(sh: Type) -> bool {
         // a nullable POINTER is its own nullable — the slot holds the
         // pointer, absence the null one (the niche); a nullable SCALAR
         // is its word, its absence the cell's mark (runtime/avra_box.h)
-        .Ptr or .Int or .Float or .Bytes or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Var(_, _, _) or .Fn(_, _, _) or .Map(_, _) or .Union(_) or .Opt(_) -> true,
+        .Ptr or .Int or .Float or .Bytes or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Var(_, _, _) or .Fn(_, _, _) or .Map(_, _) or .Union(_) or .Opt(_) or .Range -> true,
         .Null or .EmptyList or .Error or .Void or .EmptyMap -> false,
     }
 }

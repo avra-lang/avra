@@ -126,6 +126,10 @@ export enum Type {
 
     /// The absorber: laws already spoke; downstream stays quiet.
     Error
+    /// `(lo..hi)` — a counting range of ints: its two bounds in one
+    /// box. Its own identity so a method row can name a range
+    /// receiver without a string tag.
+    Range
 }
 
 /// A type as a program SPELLS it — what `v.type(List<string?>)`
@@ -213,7 +217,7 @@ fn nothing_declared(_t: TypeId) {}
 /// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap or .Union(_) -> true,
+        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap or .Union(_) or .Range -> true,
         .Int or .Float or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
     }
 }
@@ -248,6 +252,7 @@ impl TypeRegistry {
             .Dyn(decl, _) -> "14:${decl.index}",
             .Fn(params, marks, ret) -> "15:${joined(["${a.index}" for a in params], ".")}:${mark_words(marks)}:${ret.index}",
             .Void -> "16",
+            .Range -> "20",
             // members arrive pre-sorted from `union_of`, the only door
             .Union(members) -> "20:${joined(["${m.index}" for m in members], ".")}",
         }
@@ -569,6 +574,7 @@ impl TypeRegistry {
             .Opt(inner) -> if self.valued_carrier(inner) || !self.opt_rides_pointer(inner) { null } else { 1 },
             .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Dyn(_, _) or .Fn(_, _, _) or .App(_, _, _) -> 1,
             .Ptr or .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void or .Union(_) -> null,
+            .Range -> 1,
         }
     }
 
@@ -926,7 +932,7 @@ impl TypeRegistry {
                         ),
                 ),
             .Union(members) -> self.union_of([self.substituted(m, target, args) for m in members]),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks -> ty,
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks or .Range -> ty,
         }
     }
 
@@ -939,7 +945,7 @@ impl TypeRegistry {
             .App(_, _, aa) -> [a for a in aa if self.open(a)].length > 0,
             .Fn(ps, _, ret) -> self.open(ret) || [p for p in ps if self.open(p)].length > 0,
             .Union(members) -> members.any((m) -> self.open(m)),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks -> false,
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks or .Range -> false,
         }
     }
 
@@ -968,6 +974,7 @@ impl TypeRegistry {
             .App(_, name, args) -> "${name}<${joined([self.name_of(a) for a in args], ", ")}>",
             .Null -> "null",
             .EmptyList -> "[]",
+            .Range -> "Range",
             .Map(k, v) -> "Map<${self.name_of(k)}, ${self.name_of(v)}>",
             .EmptyMap -> "{}",
             .Union(members) -> joined([self.name_of(m) for m in members], " or "),
@@ -1011,7 +1018,7 @@ impl TypeRegistry {
             .List(t) or .Cell(t) or .Task(t) -> [t],
             .Map(k, v) -> [k, v],
             .Opt(t) -> [t],
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks or .Union(_) -> [],
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks or .Union(_) or .Range -> [],
         }
     }
 
@@ -1229,7 +1236,7 @@ export fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
         // an enum whose variants carry nothing is its tag — a word; a
         // value enum is counted only when a variant carries a pointer
         .Enum(_, _) -> !types.is_flat(ty) && !(types.is_valued(ty) && types.counted_mask(ty) == 0),
-        .List(_) or .Cell(_) or .Task(_) or .Tasks or .EmptyList or .Map(_, _) or .EmptyMap or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Union(_) -> true,
+        .List(_) or .Cell(_) or .Task(_) or .Tasks or .EmptyList or .Map(_, _) or .EmptyMap or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Union(_) or .Range -> true,
         .Res(_, _) -> !(types.is_valued(ty) && types.counted_mask(ty) == 0),
         // a FLAT record's nullable is a one-slot BOX — counted,
         // though the bare record never is; a WORD ENUM's nullable
