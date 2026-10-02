@@ -8,12 +8,27 @@ export function unesc(s) {
   return s.replace(/%0a/g, "\n").replace(/%20/g, " ").replace(/%25/g, "%");
 }
 
+// The wire's version. A frame from another version REFUSES — a stale
+// bootstrap that guessed would misapply a whole tree.
+export const FRAME_VERSION = "V1";
+
+// A frame's ops, one per line, after the version line.
+export function splitFrame(text) {
+  const lines = text.split("\n");
+  const version = lines[0];
+  if (version !== FRAME_VERSION) {
+    throw new Error(`unsupported frame version ${JSON.stringify(version)} — this host speaks ${FRAME_VERSION}`);
+  }
+  return lines.slice(1);
+}
+
 // Parse a frame into node records in frame order. A record starts at a `C`
 // op; `K`/`A`/`T` beside it fill key, class and words.
 export function parseFrame(text) {
-  if (text === "") return [];
+  const lines = splitFrame(text);
+  if (lines.length === 1 && lines[0] === "N") return null;
   const records = [];
-  for (const line of text.split("\n")) {
+  for (const line of lines) {
     const i = line.indexOf(" ");
     const op = i < 0 ? line : line.slice(0, i);
     const rest = i < 0 ? "" : line.slice(i + 1);
@@ -51,6 +66,7 @@ export function createApplier(doc, mount) {
 
   return function apply(text) {
     const records = parseFrame(text);
+    if (records === null) return; // no change
     const next = new Map();
     const keys = new Set();
     for (const r of records) {
