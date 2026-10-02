@@ -44,6 +44,21 @@ export fn frame(root: Node) -> string { "${frame_version}\n${ops_of(root, "0").j
 /// Nothing changed: one op, so an unchanged render costs one line.
 export fn no_change() -> string { "${frame_version}\nN\n" }
 
+/// The last frame sent — a render that changes nothing costs one line.
+export type Live = { last: Cell<string> }
+
+export fn live() -> Live { Live { last: Cell.new("") } }
+
+/// `root`'s frame, or `no_change()` when it is the frame last sent. A
+/// string compare is a memcmp; a host call, a parse and a reconcile are
+/// not, and most renders change nothing the last one did not say.
+export fn diff(l: Live, root: Node) -> string {
+    let next = frame(root)
+    if next == l.last.get() { return no_change() }
+    l.last.set(next)
+    next
+}
+
 /// Every rule any node in the tree names.
 fn all_rules(n: Node) -> List<CssRule> {
     n.box.rules().concat(union([all_rules(c) for c in n.children]))
