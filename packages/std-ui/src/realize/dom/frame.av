@@ -13,7 +13,7 @@
 use realize.render.{Node}
 use realize.html.tags.{tag_of}
 use realize.html.css.{CssRule, distinct_rules, class_names, stylesheet}
-use realize.dom.buf.{Buf, buf, push_byte, push_int, push_str, take}
+use realize.dom.buf.{Buf, buf}
 use realize.lists.{union}
 use style.theme.{Theme}
 
@@ -25,28 +25,28 @@ const version = 3
 fn emit(n: Node, parent: int, index: int, b: Buf, next: Cell<int>) {
     let id = next.get()
     next.set(id + 1)
-    push_byte(b, 1)
-    push_int(b, id)
-    push_int(b, parent)
-    push_int(b, index)
-    push_str(b, tag_of(n).text())
+    b.push_byte(1)
+    b.push_int(id)
+    b.push_int(parent)
+    b.push_int(index)
+    b.push_str(tag_of(n).text())
     let key = n.box.key ?? ""
     if key != "" {
-        push_byte(b, 2)
-        push_int(b, id)
-        push_str(b, key)
+        b.push_byte(2)
+        b.push_int(id)
+        b.push_str(key)
     }
     let names = class_names(n)
     if !names.is_empty() {
-        push_byte(b, 3)
-        push_int(b, id)
-        push_str(b, names.join(" "))
+        b.push_byte(3)
+        b.push_int(id)
+        b.push_str(names.join(" "))
     }
     let words = n.words()
     if words != "" {
-        push_byte(b, 4)
-        push_int(b, id)
-        push_str(b, words)
+        b.push_byte(4)
+        b.push_int(id)
+        b.push_str(words)
     }
     for i, c in n.children { emit(c, id, i, b, next) }
 }
@@ -54,18 +54,18 @@ fn emit(n: Node, parent: int, index: int, b: Buf, next: Cell<int>) {
 /// The whole tree as one wire frame.
 export fn frame(root: Node) -> Bytes {
     let b = buf()
-    push_byte(b, version)
+    b.push_byte(version)
     let next = Cell.new(0)
     emit(root, -1, 0, b, next)
-    take(b)
+    b.take()
 }
 
 /// Nothing changed: a version and the no-op code, two bytes.
 export fn no_change() -> Bytes {
     let b = buf()
-    push_byte(b, version)
-    push_byte(b, 0)
-    take(b)
+    b.push_byte(version)
+    b.push_byte(0)
+    b.take()
 }
 
 /// The last frame sent — a render that changes nothing costs two bytes.
@@ -73,12 +73,14 @@ export type Live = { last: Cell<Bytes> }
 
 export fn live() -> Live { Live { last: Cell.new("".bytes()) } }
 
-/// `root`'s frame, or `no_change()` when it is the frame last sent.
-export fn diff(l: Live, root: Node) -> Bytes {
-    let next = frame(root)
-    if next == l.last.get() { return no_change() }
-    l.last.set(next)
-    next
+impl Live {
+    /// `root`'s frame, or `no_change()` when it is the frame last sent.
+    fn diff(root: Node) -> Bytes {
+        let next = frame(root)
+        if next == self.last.get() { return no_change() }
+        self.last.set(next)
+        next
+    }
 }
 
 // ── the debug projection ────────────────────────────────────────
