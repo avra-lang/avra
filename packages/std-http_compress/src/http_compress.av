@@ -7,10 +7,11 @@
 //!
 //! A RESPONSE is encoded in the coding the client weighs highest among
 //! `br`, `gzip` and `deflate` (RFC 9110 §12.5.3), ties going to that
-//! order — only when it is whole, worth it (`smallest` octets or more,
-//! a media type that compresses), not already coded, not a range, and
-//! not marked `no-transform`; and only when the result is smaller. A
-//! response that COULD have been coded says `Vary: accept-encoding`
+//! order — only when it is worth it (a whole body of `smallest` octets
+//! or more, or a STREAM, coded incrementally a piece at a time), of a
+//! media type that compresses, not already coded, not a range, and not
+//! marked `no-transform`; a whole body only when the result is smaller.
+//! A response that COULD have been coded says `Vary: accept-encoding`
 //! either way, so a cache never hands one client's coding to another,
 //! and a strong `ETag` becomes weak once coded, since the octets are
 //! no longer the ones it named.
@@ -20,13 +21,15 @@
 //! inflates past `inflated` is a 413 with nothing past the ceiling
 //! produced, one that is not what it claims a 400, and a coding this
 //! layer does not read a 415 naming the ones it does.
-use @std.compress.{Format, CompressError, encoded, decoded}
+use @std.compress.{Format, CompressError, Encoder, encoded, encoding, decoded}
 use @std.http.http.{
     Request,
     Unrouted,
     Response,
     Handler,
     Header,
+    Stream,
+    Pulled,
     text,
     media_of,
     same_token,
@@ -111,22 +114,73 @@ fn response_encoded(c: Compression, q: Request<Unrouted>, r: Response) -> Respon
     if !codable(c, r) { return r }
     let varied = r.varied("accept-encoding")
     let f? = preferred(q.headers("accept-encoding")) else { return varied }
-    match encoded(r.body, f, effort(c, f)) {
-        .Ok(b) -> if b.length < r.body.length { coded_as(varied, f, b) } else { varied },
-        .Err(_) -> varied,
+    match r.stream {
+        s? -> coded_stream(varied, f, s, effort(c, f))
+        null -> match encoded(r.body, f, effort(c, f)) {
+            .Ok(b) -> if b.length < r.body.length { coded_as(varied, f, b) } else { varied },
+            .Err(_) -> varied,
+        }
     }
 }
 
-/// Whether `r` may be coded at all: a whole body worth coding, of a
-/// media type that compresses, with no coding or range of its own, and
-/// not marked `no-transform`.
+/// `r`'s stream coded in `f`: plaintext pulled through an incremental
+/// encoder, the trailer written when the stream ends, and the encoder
+/// freed with the plaintext stream. Its length is unknown, so the
+/// connection delimits it by chunks.
+fn coded_stream(r: Response, f: Format, s: Stream, effort: int) -> Response {
+    match encoding(f, effort) {
+        .Err(_) -> r,
+        .Ok(enc) -> {
+            let done = Cell.new(false)
+            let wrapped = Stream {
+                pull: () -> coded_piece(enc, s, done),
+                ended: () -> {
+                    s.ended()
+                    enc.free()
+                },
+            }
+            (r with { headers: [weakened(h) for h in r.headers] })
+                .with_header("content-encoding", coding_word(f)) with { stream: wrapped }
+        },
+    }
+}
+
+/// One coded piece, or the trailer once the plaintext ends. `done`
+/// marks the stream spent, so the encoder is finished once however
+/// many times the connection asks.
+fn coded_piece(enc: Encoder, s: Stream, done: Cell<bool>) -> Pulled {
+    if done.get() { return .End }
+    match s.pull() {
+        .Data(b) -> match enc.push(b) {
+            .Ok(out) -> if out.is_empty() { .Data("".bytes()) } else { .Data(out) },
+            .Err(_) -> {
+                done.set(true)
+                return .Failed
+            },
+        },
+        .End -> {
+            done.set(true)
+            match enc.finish() {
+                .Ok(out) -> if out.is_empty() { .End } else { .Data(out) },
+                .Err(_) -> .Failed,
+            }
+        },
+        .Failed -> {
+            done.set(true)
+            return .Failed
+        },
+    }
+}
+
+/// Whether `r` may be coded at all: a whole body of `smallest` octets
+/// or more, or a stream, of a media type that compresses, with no
+/// coding or range of its own, and not marked `no-transform`.
 fn codable(c: Compression, r: Response) -> bool {
-    r.stream == null &&
+    (r.stream != null || r.body.length >= c.smallest) &&
         r.status >= 200 &&
         r.status != 204 &&
         r.status != 206 &&
         r.status != 304 &&
-        r.body.length >= c.smallest &&
         r.header("content-encoding") == null &&
         r.header("content-range") == null &&
         compressible(r.header("content-type")) &&

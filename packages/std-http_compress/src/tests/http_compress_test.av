@@ -3,7 +3,7 @@
 // decoded under a ceiling.
 use @std.http.frame.{framed, limits}
 use @std.http.body.{Body, whole}
-use @std.http.http.{Request, Unrouted, Response, Header, text}
+use @std.http.http.{Request, Unrouted, Response, Header, Stream, text, stream_of}
 use @std.http_compress.{Compression, compressed, compressing}
 use @std.compress.{Format, encoded, decoded}
 use @std.text.{repeat}
@@ -239,6 +239,49 @@ spec "std/http_compress — the request" {
         then "two fields" {
             posted("Content-Encoding: gzip\r\nContent-Encoding: gzip\r\n", gzipped("x"))
                 .starts_with("415 ")
+        }
+    }
+}
+
+/// The page as a pull-stream in three pieces.
+fn streamed() -> Response {
+    let whole = page().bytes()
+    let third = whole.length / 3
+    text(200, "") with { headers: [Header { name: "content-type", value: "text/plain" }], stream: stream_of(
+        [whole.slice(0, third), whole.slice(third, third * 2), whole.slice(third * 2, whole.length)],
+    ) }
+}
+
+/// The coded stream drained and decoded back, or a word about the wreck.
+fn coded_read(f: Format) -> string {
+    let r = answered("Accept-Encoding: br, gzip\r\n", streamed())
+    match r.stream {
+        s? -> {
+            mut packed = nothing()
+            while true {
+                match s.pull() {
+                    .Data(b) -> { packed = packed.concat(b) },
+                    .End or .Failed -> { break },
+                }
+            }
+            s.ended()
+            (decoded(packed, f, 1000000) catch nothing()).text() ?? "?"
+        }
+        null -> "no stream"
+    }
+}
+
+spec "std/http_compress — a streamed response" {
+    given "a stream is coded incrementally" {
+        then "the body reads back through the decoder" { coded_read(Format.Brotli) == page() }
+        then "the coding is named" {
+            answered("Accept-Encoding: gzip\r\n", streamed()).header("content-encoding") == "gzip"
+        }
+        then "its length is unknown, so it is chunked" {
+            match answered("Accept-Encoding: gzip\r\n", streamed()).stream {
+                s? -> s.length == null
+                null -> false
+            }
         }
     }
 }
