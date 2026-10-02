@@ -93,5 +93,23 @@ spec "core/types: Union" {
             r.mark_settled(a)
             settled && r.drain_stale().is_empty()
         }
+        then "a read while the type's OWN declaration is in flight is its provisional state, never a decision — the settle it triggers stands clean" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            r.begin_declare(a)
+            let _ = r.is_settled(a)
+            r.mark_settled(a)
+            r.end_declare(a)
+            r.drain_stale().is_empty() && r.is_settled(a)
+        }
+        then "a read AFTER the declaration still records: a settle that moves it after that is still refused" {
+            let r = new_type_registry()
+            let a = r.intern(Type.Struct(decl(0), "A"))
+            r.begin_declare(a)
+            r.end_declare(a)
+            let _ = r.is_settled(a)
+            r.mark_settled(a)
+            !r.drain_stale().is_empty()
+        }
     }
 }

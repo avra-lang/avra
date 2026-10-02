@@ -186,7 +186,7 @@ export type LayoutStale = { id: TypeId, fact: LayoutFact, cause: string }
 /// ONE IDENTITY: every table is a `Cell`, so a copy of the registry
 /// shares its tables and an intern through any copy reaches them all.
 @identity
-export type TypeRegistry = { shapes: Cell<List<Type>>, ids: Cell<Map<string, TypeId>>, named: Cell<Map<string, TypeId>>, indexed: Cell<bool>, reps: Cell<List<RepRow>>, stale: Cell<List<LayoutStale>>, declare_hook: Cell<fn(TypeId) -> void> }
+export type TypeRegistry = { shapes: Cell<List<Type>>, ids: Cell<Map<string, TypeId>>, named: Cell<Map<string, TypeId>>, indexed: Cell<bool>, reps: Cell<List<RepRow>>, stale: Cell<List<LayoutStale>>, declare_hook: Cell<fn(TypeId) -> void>, declaring: Cell<List<int>> }
 
 export fn new_type_registry() -> TypeRegistry {
     TypeRegistry {
@@ -197,6 +197,7 @@ export fn new_type_registry() -> TypeRegistry {
         reps: list_cell(),
         stale: list_cell(),
         declare_hook: Cell.new(nothing_declared),
+        declaring: list_cell(),
     }
 }
 
@@ -469,6 +470,13 @@ impl TypeRegistry {
     fn note(id: TypeId, fact: LayoutFact) {
         if self.was_read(id, fact) { return }
         (self.declare_hook.get())(id)
+        // A READ WHILE THE TYPE'S OWN DECLARATION IS IN FLIGHT answers the
+        // declaration's PROVISIONAL state, and the declaration is itself what
+        // settles it: recording the read would flag that settle as a move after a
+        // decision nobody made. A read that lands after the declaration records as
+        // before. (The seal law's own sealer-sig forcing reads a return type it is
+        // mid-declaring — avra-8sb5.34.21's warm-hold defect.)
+        if self.declaring(id) { return }
         let r = self.reps.get()[id.index]
         match fact {
             .Flat -> self.reps.set_at(id.index, r with { read_flat: true }),
@@ -477,6 +485,20 @@ impl TypeRegistry {
             .Named -> self.reps.set_at(id.index, r with { read_named: true }),
         }
     }
+
+    /// Brackets a type's OWN declaration: a fact read while it is in flight is the
+    /// declaration's provisional state, never a decision (see `note`).
+    fn begin_declare(id: TypeId) {
+        mut held = self.declaring.get()
+        if !held.contains(id.index) {
+            held.push(id.index)
+            self.declaring.set(held)
+        }
+    }
+
+    fn end_declare(id: TypeId) { self.declaring.set([i for i in self.declaring.get() if i != id.index]) }
+
+    fn declaring(id: TypeId) -> bool { self.declaring.get().contains(id.index) }
 
     fn was_read(id: TypeId, fact: LayoutFact) -> bool {
         let r = self.reps.get()[id.index]
