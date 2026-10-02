@@ -226,15 +226,30 @@ run_on() {
     sh "$build" "$1" "$worktree" -- bash -lc "export LLVM_PREFIX=$llvm; $2"
 }
 
+# ONE COMMAND STRING, from either ONE command arg (a shell string, run as
+# written) or a many-word argv (each word quoted). A single quoted
+# multi-word command must NOT become one shell word — `work run "build/avra
+# test pkg"` once ran a FILENAME `build/avra test pkg` and died with "No such
+# file or directory".
+assemble() {
+    if [ "$#" -eq 1 ]; then
+        printf '%s' "$1"
+    else
+        printf '%s' "$(for a in "$@"; do printf "'%s' " "$(printf '%s' "$a" | sed "s/'/'\\\\''/g")"; done)"
+    fi
+}
+
 [ "$#" -gt 0 ] || { sed -n '2,26p' "$0" >&2; exit 2; }
 [ "$1" != --pool ] || { echo $(living $(pool)); exit 0; }
 [ "$1" != --lease ] || { shift; lease "$@"; exit $?; }
+# `--command` prints the command a run would assemble, and needs no Sprite —
+# the seam `tools/witness_work_run.sh` holds the two forms to one another.
+[ "$1" != --command ] || { shift; assemble "$@"; echo; exit 0; }
 sprites=$(ranked)
 [ -n "$sprites" ] || echo "sp: no Sprite answered its probe" >&2
 
 if [ "$1" != -p ]; then
-    set -- "$(for a in "$@"; do printf "'%s' " "$(printf '%s' "$a" | sed "s/'/'\\\\''/g")"; done)"
-    cmd=$1
+    cmd=$(assemble "$@")
     claimed=$(claim_waiting "$sprites" "")
     sprite=${claimed%% *}; rest=${claimed#* }
     slot=${rest%% *}; tree=${rest#* }
