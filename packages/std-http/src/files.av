@@ -18,9 +18,12 @@
 //! range answering 206 — or 416 when it names nothing — unless an
 //! `If-Range` says the file changed. Only the range is read.
 //!
-//! A BODY IS READ WHOLE today, bounded by `largest`: the response
-//! carries `Bytes`. A file past it is served only in ranges until a
-//! streamed body lets it be sent in pieces (and by `sendfile`).
+//! A BODY IS READ WHOLE UP TO `largest`, then STREAMED: a file past it
+//! is pulled a chunk at a time, so it is never held whole, and the
+//! descriptor closes when the connection is done with the body. A
+//! range past `largest` streams the same way. Each chunk read is still
+//! synchronous on the event loop — `sendfile` is the row that removes
+//! the copy, not the read.
 use @std.io.{Opened, Entry, open_beneath}
 use @std.text.{has_nul, parse_int}
 use frame.{Method}
@@ -96,13 +99,19 @@ impl Files {
     }
 
     fn file(q: Request<Unrouted>, o: Opened) -> Response {
-        defer o.close()
+        let r = self.answering(q, o)
+        // a streamed body owns the descriptor; its `ended` closes it
+        if r.stream == null { let _ = o.close() }
+        r
+    }
+
+    fn answering(q: Request<Unrouted>, o: Opened) -> Response {
         let tag = etag_of(o)
         let fields = self.validators(o, tag, content_type(q.path()))
         if not_modified(q, o, tag) { return Response { status: 304, headers: fields } }
         match wanted_range(q, o, tag) {
             .Whole -> self.whole(o, fields),
-            .Span(from, to) -> spanned(o, fields, from, to),
+            .Span(from, to) -> spanned(o, fields, from, to, self.largest),
             .Unsatisfiable -> Response {
                 status: 416,
                 headers: fields.concat([header_pair("content-range", "bytes */${o.size}")]),
@@ -111,7 +120,7 @@ impl Files {
     }
 
     fn whole(o: Opened, fields: List<Header>) -> Response {
-        if o.size > self.largest { return status(500) }
+        if o.size > self.largest { return Response { headers: fields, stream: file_stream(o, 0, o.size) } }
         match o.span(0, o.size) {
             .Ok(body) -> Response { headers: fields, body: body },
             .Err(_) -> status(500),
@@ -134,16 +143,45 @@ impl Files {
     }
 }
 
-fn spanned(o: Opened, fields: List<Header>, from: int, to: int) -> Response {
-    match o.span(from, to - from + 1) {
-        .Ok(body) -> Response {
-            status: 206,
-            headers: fields.concat([header_pair("content-range", "bytes ${from}-${to}/${o.size}")]),
-            body: body,
-        },
+fn spanned(o: Opened, fields: List<Header>, from: int, to: int, largest: int) -> Response {
+    let n = to - from + 1
+    let headers = fields.concat([header_pair("content-range", "bytes ${from}-${to}/${o.size}")])
+    if n > largest { return Response { status: 206, headers: headers, stream: file_stream(o, from, n) } }
+    match o.span(from, n) {
+        .Ok(body) -> Response { status: 206, headers: headers, body: body },
         .Err(_) -> status(500),
     }
 }
+
+/// A file's bytes pulled one chunk at a time, so a body past `largest`
+/// is never held whole: each pull reads `file_chunk` octets (or what is
+/// left), and the descriptor closes when the connection is done.
+fn file_stream(o: Opened, from: int, count: int) -> Stream {
+    let at = Cell.new(from)
+    let left = Cell.new(count)
+    Stream {
+        length: count,
+        pull: () -> file_piece(o, at, left),
+        ended: () -> { let _ = o.close() },
+    }
+}
+
+fn file_piece(o: Opened, at: Cell<int>, left: Cell<int>) -> Pulled {
+    if left.get() <= 0 { return .End }
+    let n = if left.get() > file_chunk { file_chunk } else { left.get() }
+    match o.span(at.get(), n) {
+        .Ok(b) -> {
+            if b.is_empty() { return .End }
+            at.set(at.get() + b.length)
+            left.set(left.get() - b.length)
+            .Data(b)
+        },
+        .Err(_) -> .Failed,
+    }
+}
+
+/// How much of a streamed file one pull reads.
+const file_chunk: int = 65536
 
 /// `path` opened beneath `root`, or null for any refusal — every one
 /// answers 404 alike.

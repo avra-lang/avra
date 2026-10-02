@@ -80,18 +80,21 @@ spec "std/http — static files" {
                 "cache-control",
             ) == "max-age=60"
         }
-        then "past `largest` it is not read whole" {
-            served_by(Files { root: site().root, largest: 4 }, "GET /static/a.txt HTTP/1.1", "")
-                .status == 500
+        then "past `largest` it streams, never read whole" {
+            let r = served_by(
+                Files { root: site().root, largest: 4 },
+                "GET /static/a.txt HTTP/1.1",
+                "",
+            )
+            r.status == 200 && r.body.is_empty() && r.stream != null
         }
-        then "past `largest` a range still reads" {
-            said(
-                served_by(
-                    Files { root: site().root, largest: 4 },
-                    "GET /static/a.txt HTTP/1.1",
-                    "Range: bytes=0-4\r\n",
-                ),
-            ) == "206 hello"
+        then "past `largest` a range streams too" {
+            let r = served_by(
+                Files { root: site().root, largest: 4 },
+                "GET /static/a.txt HTTP/1.1",
+                "Range: bytes=0-4\r\n",
+            )
+            r.status == 206 && r.stream != null
         }
     }
     given "a directory" {
