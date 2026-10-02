@@ -105,18 +105,32 @@ export fn check_count(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 export fn check_sum(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, "sum")
     if elem == null || !cx.seated(mc, "sum", []) { return cx.error_type }
-    if !(cx.view.types.seen_shape(elem!) is .Int) { return sums_ints(cx, mc.e, elem!) }
+    if !(cx.view.types.seen_shape(elem!) is .Int) { return ints_only(cx, mc.e, elem!, "sum") }
     cx.type(int)
 }
 
-fn sums_ints(mut cx: TypeCx, e: ExprId, elem: TypeId) -> TypeId {
+/// `xs.min()` / `xs.max()` — the extreme of the int elements, absent
+/// when nothing arrived.
+export fn check_min(mut cx: TypeCx, mc: MethodCall) -> TypeId { extremes(cx, mc, "min") }
+export fn check_max(mut cx: TypeCx, mc: MethodCall) -> TypeId { extremes(cx, mc, "max") }
+
+fn extremes(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
+    let elem: TypeId? = elem_held(cx, mc, name)
+    if elem == null || !cx.seated(mc, name, []) { return cx.error_type }
+    if !(cx.view.types.seen_shape(elem!) is .Int) { return ints_only(cx, mc.e, elem!, name) }
+    cx.type(int?)
+}
+
+/// A verb that adds or ranks numbers, refused on a list of something
+/// else in its own words.
+fn ints_only(mut cx: TypeCx, e: ExprId, elem: TypeId, name: string) -> TypeId {
     cx
         .spoken(
             refusal(
                 "type.list_element",
                 cx.loc_of(e),
-                "`sum` adds numbers, and this list holds `${cx.view.types.name_of(elem)}`",
-                "summed here",
+                "`${name}` needs numbers, and this list holds `${cx.view.types.name_of(elem)}`",
+                "${name} here",
                 "map to `int` first",
             ),
         )

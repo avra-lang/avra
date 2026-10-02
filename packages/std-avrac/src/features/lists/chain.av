@@ -74,6 +74,21 @@ export fn sum_chain(mut cx: LowerCx, mc: MethodCall) -> Reg {
     cx.piped(Pipeline { clauses: subject_clauses(cx, mc.subject), sink: .Sum(ret, cell) })
 }
 
+/// `xs.min()` / `xs.max()` over a chain — the extreme seen so far,
+/// absent when nothing arrived.
+export fn extreme_chain(mut cx: LowerCx, mc: MethodCall, less: bool) -> Reg {
+    let ret = cx.type(int?)
+    let has = bool_cell(cx, false)
+    let best = cx.seeded_cell(cx.type(int), cx.const_int(0))
+    cx
+        .piped(
+            Pipeline {
+                clauses: subject_clauses(cx, mc.subject),
+                sink: .MinMax(ret, has, best, less),
+            },
+        )
+}
+
 /// The clauses a terminal runs over its receiver — the receiver lowered
 /// before the terminal's fn is boxed, so a receiver's effect runs first.
 fn subject_clauses(mut cx: LowerCx, subject: ExprId) -> List<Clause> {

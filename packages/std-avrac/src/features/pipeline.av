@@ -45,6 +45,7 @@ export enum Sink {
     IndexOf(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
     Count(ret: TypeId, cell: Reg)
     Sum(ret: TypeId, cell: Reg)
+    MinMax(ret: TypeId, has: Reg, best: Reg, less: bool)
 }
 
 export type Pipeline = { clauses: List<Clause>, sink: Sink }
@@ -159,6 +160,20 @@ impl LowerCx {
             },
             .Count(_, cell) -> self.accumulate(cell, self.const_int(1)),
             .Sum(_, cell) -> self.accumulate(cell, t.value!),
+            .MinMax(_, has, best, less) -> {
+                let value = t.value!
+                let held = self.loaded_as(self.type(int), best)
+                let op: BinOp = if less { BinOp.Lt } else { BinOp.Gt }
+                let beats = self.bin(Type.Bool, op, value, held)
+                let have = self.loaded_as(self.type(bool), has)
+                let better = self
+                    .region_as(have, self.type(bool)) { _cx -> beats } else { cx -> cx.const_bool(true) }
+                self
+                    .void_region(better) { cx ->
+                        cx.emit(Ins.Store(has, cx.const_bool(true)))
+                        cx.emit(Ins.Store(best, value))
+                    }
+            },
         }
     }
 
@@ -184,6 +199,10 @@ impl LowerCx {
         match s {
             .Push(dst) -> dst,
             .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindIndex(ret, cell, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
+            .MinMax(ret, has, best, _) -> self
+                .region_as(self.loaded_as(self.type(bool), has), ret) { cx ->
+                    cx.adopted(ret, false, cx.loaded_as(self.type(int), best))
+                } else { cx -> cx.absent_of(ret) },
         }
     }
 
