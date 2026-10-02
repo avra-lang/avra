@@ -77,6 +77,33 @@ fn flat_map_needs_list(mut cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
         )
 }
 
+/// `xs.flatten()` — a list of lists becomes their elements, walked in
+/// one inner loop.
+export fn check_flatten(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let outer: TypeId? = elem_held(cx, mc, "flatten")
+    if outer == null { return cx.error_type }
+    let held: TypeId? = cx.view.types.element(outer!)
+    if held == null { return flatten_needs_list(cx, mc.e, outer!) }
+    let inner = held!
+    if !cx.seated(mc, "flatten", []) { return cx.error_type }
+    if !slot_worthy(cx.view.types.shape_of(inner)) { return uncollectable(cx, mc.e, inner) }
+    cx.facts.mark_stage(mc.e, .Flatten)
+    cx.type(List<inner>)
+}
+
+fn flatten_needs_list(mut cx: TypeCx, e: ExprId, outer: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.list_element",
+                cx.loc_of(e),
+                "`flatten` needs a list of lists, and this holds `${cx.view.types.name_of(outer)}`",
+                "flatten here",
+                "map to a list first, or use `flat_map`",
+            ),
+        )
+}
+
 /// `xs.filter(p)` — the receiver's own type.
 export fn check_filter(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let seat: WalkSeat? = predicate_seat(cx, mc, "filter")

@@ -131,7 +131,7 @@ fn fn_answer(cx: LowerCx, f: ExprId) -> TypeId {
 fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
     let stage? = cx.facts.stage_at(e) else { return null }
     let subject? = subject_of(cx, e) else { return null }
-    let arg? = arg_of(cx, e) else { return null }
+    let arg = arg_of(cx, e)
     mut prefix: List<Clause> = []
     if cx.facts.stage_at(subject) != null {
         let inner? = chain_clauses(cx, subject) else { return null }
@@ -140,7 +140,8 @@ fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
         let _ = cx.reg_of(subject)
         prefix = [head_clause(subject)]
     }
-    prefix.concat([link_clause(cx, stage, arg, e)])
+    let clause? = link_clause(cx, stage, arg, subject, e) else { return null }
+    prefix.concat([clause])
 }
 
 /// The receiver a chain link folds over, when it is one.
@@ -155,19 +156,22 @@ fn arg_of(cx: LowerCx, e: ExprId) -> ExprId? {
 
 /// The clause one link contributes: a keep guards the rest, a map
 /// replaces the element in hand with the fn's answer, `take`/`drop`
-/// read their bound and let the turn pass or end.
-fn link_clause(mut cx: LowerCx, stage: PipeStage, arg: ExprId, e: ExprId) -> Clause {
+/// read their bound and let the turn pass or end, `flatten` walks the
+/// element in hand (itself a list). A link that needs an argument and
+/// has none is no chain — `null`.
+fn link_clause(mut cx: LowerCx, stage: PipeStage, arg: ExprId?, subject: ExprId, e: ExprId) -> Clause? {
     match stage {
-        .Keep -> .Keep(.Applied(box_of(cx, arg), bool_ty(cx))),
-        .Map -> .Map(.Applied(box_of(cx, arg), mapped_to(cx, e))),
-        .Take -> .Take(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg)),
-        .Drop -> .Drop(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg)),
-        .TakeWhile -> .TakeWhile(box_of(cx, arg)),
-        .DropWhile -> .DropWhile(box_of(cx, arg), cx.seeded_cell(cx.type(bool), cx.const_bool(false))),
-        .FilterMap -> .FilterMap(box_of(cx, arg), fn_answer(cx, arg)),
+        .Flatten -> .Flatten(e, mapped_to(cx, subject), mapped_to(cx, e)),
+        .Keep -> .Keep(.Applied(box_of(cx, arg!), bool_ty(cx))),
+        .Map -> .Map(.Applied(box_of(cx, arg!), mapped_to(cx, e))),
+        .Take -> .Take(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg!)),
+        .Drop -> .Drop(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg!)),
+        .TakeWhile -> .TakeWhile(box_of(cx, arg!)),
+        .DropWhile -> .DropWhile(box_of(cx, arg!), cx.seeded_cell(cx.type(bool), cx.const_bool(false))),
+        .FilterMap -> .FilterMap(box_of(cx, arg!), fn_answer(cx, arg!)),
         .FlatMap -> {
-            let list = fn_answer(cx, arg)
-            .FlatMap(box_of(cx, arg), e, list, mapped_to(cx, e))
+            let list = fn_answer(cx, arg!)
+            .FlatMap(box_of(cx, arg!), e, list, mapped_to(cx, e))
         },
     }
 }
