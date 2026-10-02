@@ -3,7 +3,7 @@
 //! scans, the growth words and the copies, each a row's rule; the
 //! receiver is always a list because the row's `takes` said so.
 use core.{ExprId, TypeId, Type, Arrow, LambdaParts, no_marks}
-use features.{TypeCx, MethodCall, this_is, slot_worthy, TypeArgs}
+use features.{TypeCx, MethodCall, this_is, slot_worthy, TypeArgs, PipeStage}
 use diagnostics.{refusal}
 
 /// The empty literal takes the rows too — each rule refuses it in
@@ -29,6 +29,17 @@ export fn check_filter(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let seat: WalkSeat? = predicate_seat(cx, mc, "filter")
     if seat == null { return cx.error_type }
     cx.facts.mark_stage(mc.e, .Keep)
+    cx.type_at(mc.subject)
+}
+
+/// `xs.take(n)` / `xs.drop(n)` — the receiver's own type; the bound
+/// is an int, read once before the walk.
+export fn check_take(mut cx: TypeCx, mc: MethodCall) -> TypeId { limited(cx, mc, "take", .Take) }
+export fn check_drop(mut cx: TypeCx, mc: MethodCall) -> TypeId { limited(cx, mc, "drop", .Drop) }
+
+fn limited(mut cx: TypeCx, mc: MethodCall, name: string, stage: PipeStage) -> TypeId {
+    if elem_held(cx, mc, name) == null || !cx.seated(mc, name, [int_type(cx)]) { return cx.error_type }
+    cx.facts.mark_stage(mc.e, stage)
     cx.type_at(mc.subject)
 }
 

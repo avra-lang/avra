@@ -134,8 +134,7 @@ fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
         let _ = cx.reg_of(subject)
         prefix = [head_clause(subject)]
     }
-    let f = boxed(cx, arg)
-    prefix.concat([applied(cx, stage, FnBox { box: f.f, code: f.fp }, e)])
+    prefix.concat([link_clause(cx, stage, arg, e)])
 }
 
 /// The receiver a chain link folds over, when it is one.
@@ -148,11 +147,14 @@ fn arg_of(cx: LowerCx, e: ExprId) -> ExprId? {
     match cx.view.store.expr(e) { .MethodCall(_, _, args) -> args.first(), _ -> null }
 }
 
-/// The clause an adapter contributes: a keep guards the rest, a map
-/// replaces the element in hand with the fn's answer.
-fn applied(cx: LowerCx, stage: PipeStage, f: FnBox, e: ExprId) -> Clause {
+/// The clause one link contributes: a keep guards the rest, a map
+/// replaces the element in hand with the fn's answer, `take`/`drop`
+/// read their bound and let the turn pass or end.
+fn link_clause(mut cx: LowerCx, stage: PipeStage, arg: ExprId, e: ExprId) -> Clause {
     match stage {
-        .Keep -> .Keep(.Applied(f, bool_ty(cx))),
-        .Map -> .Map(.Applied(f, mapped_to(cx, e))),
+        .Keep -> .Keep(.Applied(box_of(cx, arg), bool_ty(cx))),
+        .Map -> .Map(.Applied(box_of(cx, arg), mapped_to(cx, e))),
+        .Take -> .Take(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg)),
+        .Drop -> .Drop(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg)),
     }
 }

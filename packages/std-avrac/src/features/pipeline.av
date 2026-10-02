@@ -30,6 +30,8 @@ export enum Clause {
     Head(s: Source)
     Keep(s: Step)
     Map(s: Step)
+    Take(count: Reg, n: Reg)
+    Drop(count: Reg, n: Reg)
 }
 
 /// Where each element that passes every clause goes: a pushed list, or
@@ -70,6 +72,22 @@ impl LowerCx {
             .Head(s) -> self.headed(p, at, t, s),
             .Keep(s) -> self.void_region(self.stepped(s, t)) { cx -> cx.staged(p, at + 1, t) },
             .Map(s) -> self.staged(p, at + 1, t with { value: self.stepped(s, t) }),
+            .Take(count, n) -> {
+                let seen = self.loaded_as(self.type(int), count)
+                let keep = self.bin(Type.Bool, BinOp.Lt, seen, n)
+                self
+                    .void_region(keep) { cx ->
+                        cx.count_past(count, seen)
+                        cx.staged(p, at + 1, t)
+                    }
+                self.void_region(self.un(keep)) { cx -> cx.walk_done() }
+            },
+            .Drop(count, n) -> {
+                let seen = self.loaded_as(self.type(int), count)
+                self.count_past(count, seen)
+                let past = self.bin(Type.Bool, BinOp.Ge, seen, n)
+                self.void_region(past) { cx -> cx.staged(p, at + 1, t) }
+            },
         }
     }
 
@@ -183,6 +201,12 @@ impl LowerCx {
                     }
             },
         }
+    }
+
+    /// `take`/`drop` count the elements that REACH them — one more past
+    /// this one, kept or dropped.
+    mut fn count_past(cell: Reg, seen: Reg) {
+        self.emit(Ins.Store(cell, self.bin(Type.Int, BinOp.Add, seen, self.const_int(1))))
     }
 
     /// One more into an accumulator cell — `count` adds one, `sum` adds
