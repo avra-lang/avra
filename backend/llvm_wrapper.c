@@ -671,6 +671,11 @@ static LLVMValueRef cell_word32(LLVMContextRef ctx, LLVMValueRef v, int pointer)
         lo = LLVMConstPtrToInt(v, i32);
         hi = LLVMConstInt(i32, 0, 0);
     } else {
+        // the split reads a CONSTANT's bits; a non-constant here is a defect,
+        // not a value to reinterpret
+        if (LLVMGetTypeKind(LLVMTypeOf(v)) != LLVMIntegerTypeKind) {
+            avra_trap("a static cell is neither a pointer constant nor an integer constant");
+        }
         unsigned long long w = (unsigned long long)LLVMConstIntGetZExtValue(v);
         lo = LLVMConstInt(i32, w & 0xffffffffull, 0);
         hi = LLVMConstInt(i32, w >> 32, 0);
@@ -905,15 +910,41 @@ static int target_is_wasm(const char* triple) {
 }
 
 /* The WebAssembly target, registered once, so a module can be built for it
-   from a compiler whose OWN target is something else. */
-static void wasm_target_ready(void) {
-    static int ready = 0;
-    if (ready) return;
+   from a compiler whose OWN target is something else. Guarded by pthread_once:
+   every module set-up and every worker may reach it, and unguarded the
+   registry could be written twice. */
+static pthread_once_t wasm_registry = PTHREAD_ONCE_INIT;
+static void wasm_registry_open(void) {
     LLVMInitializeWebAssemblyTargetInfo();
     LLVMInitializeWebAssemblyTarget();
     LLVMInitializeWebAssemblyTargetMC();
     LLVMInitializeWebAssemblyAsmPrinter();
-    ready = 1;
+}
+static void wasm_target_ready(void) { pthread_once(&wasm_registry, wasm_registry_open); }
+
+/* A target machine per triple, kept for the process — `set_module_target`
+   wants one ONLY for its data layout, and building one per module is the same
+   layout computed again. They are never disposed: a handful of triples live
+   for the run. */
+#define AVRA_TARGET_CACHE 8
+static struct { char* triple; LLVMTargetMachineRef tm; } g_target_cache[AVRA_TARGET_CACHE];
+static int g_target_cache_n = 0;
+
+static LLVMTargetMachineRef target_machine_for(const char* triple) {
+    for (int i = 0; i < g_target_cache_n; i++)
+        if (strcmp(g_target_cache[i].triple, triple) == 0) return g_target_cache[i].tm;
+    if (g_target_cache_n >= AVRA_TARGET_CACHE) return NULL;
+    LLVMTargetRef target;
+    char* error = NULL;
+    if (LLVMGetTargetFromTriple(triple, &target, &error)) {
+        if (error) LLVMDisposeMessage(error);
+        return NULL;
+    }
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), "", LLVMCodeGenLevelNone, LLVMRelocPIC, LLVMCodeModelDefault);
+    g_target_cache[g_target_cache_n].triple = strdup(triple);
+    g_target_cache[g_target_cache_n].tm = tm;
+    g_target_cache_n++;
+    return tm;
 }
 
 /* THE TARGET IS A PROPERTY OF THE MODULE: its triple and data layout decide
@@ -924,17 +955,11 @@ void avra_llvm_set_module_target(LLVMModuleRef m, const char* triple) {
     if (!triple || !*triple) return;
     if (target_is_wasm(triple)) wasm_target_ready();
     LLVMSetTarget(m, triple);
-    char* error = NULL;
-    LLVMTargetRef target;
-    if (LLVMGetTargetFromTriple(triple, &target, &error)) {
-        if (error) LLVMDisposeMessage(error);
-        return;
-    }
-    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), "", LLVMCodeGenLevelNone, LLVMRelocPIC, LLVMCodeModelDefault);
+    LLVMTargetMachineRef tm = target_machine_for(triple);
+    if (tm == NULL) return;
     LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);
     LLVMSetModuleDataLayout(m, layout);
     LLVMDisposeTargetData(layout);
-    LLVMDisposeTargetMachine(tm);
 }
 
 // A HOST IMPORT: a declared function with no body, brought in from a named
