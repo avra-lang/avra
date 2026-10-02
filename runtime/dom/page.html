@@ -9,14 +9,19 @@
 <body>
 <div id="app"></div>
 <script type="module">
-import { createApplier, instantiate } from "./bootstrap.js";
+import { createApplier, instantiate, frameOf } from "./bootstrap.js";
+import { wasiPreview1 } from "./wasi.js";
 
 const mount = document.getElementById("app");
 let mod = null;
-const applier = createApplier(document, mount, (who, what) => mod && mod.avra_event(who, what));
+const applier = createApplier(document, mount, (who, what) => mod.avra_event(who, what));
+
 mod = await instantiate("./app.wasm", {
-  "avra:rt": {
-    avra_dom_frame: (frame) => { applier(frame.bytes()); frame.release(); },
+  wasi: wasiPreview1(() => mod.memory, (code) => { throw new Error(`the program exited ${code}`); }),
+  rt: {
+    // The seat is a Bytes: the pointer names its box, and the LENGTH comes
+    // from the runtime's own reader, exported by the module.
+    avra_dom_frame: (ptr) => applier(frameOf(mod.memory, ptr, mod.avra_bytes_len)),
   },
 });
 </script>

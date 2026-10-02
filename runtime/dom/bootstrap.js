@@ -120,13 +120,33 @@ export function createApplier(doc, mount, send = () => {}) {
   };
 }
 
-// Load the module and run it in a page. `imports` is the host's own table for
-// module `avra:rt`; WASI's preview1 comes from the shim beside it.
-export async function start(url, mount, wasi, hostImports) {
+// Load the module and run it in a page. The host supplies `rt` (its own
+// rows for module `avra:rt`) and `wasi` (preview1). An import NO host row
+// answers REFUSES by name — a missing row must never be a silent no-op.
+export async function instantiate(url, host) {
   const bytes = await (await fetch(url)).arrayBuffer();
-  const { instance } = await WebAssembly.instantiate(bytes, {
-    wasi_snapshot_preview1: wasi,
-    "avra:rt": hostImports,
-  });
+  const module = await WebAssembly.compile(bytes);
+  const imports = {};
+  const unknown = [];
+  for (const im of WebAssembly.Module.imports(module)) {
+    const table = im.module === "avra:rt" ? host.rt : im.module === "wasi_snapshot_preview1" ? host.wasi : null;
+    const fn = table ? table[im.name] : undefined;
+    if (typeof fn !== "function") { unknown.push(`${im.module}.${im.name}`); continue; }
+    imports[im.module] = imports[im.module] || {};
+    imports[im.module][im.name] = (...args) => fn(...args);
+  }
+  if (unknown.length > 0) {
+    throw new Error(`the module needs host rows this page does not answer: ${unknown.join(", ")}`);
+  }
+  const { instance } = await WebAssembly.instantiate(module, imports);
   return instance.exports;
+}
+
+// The bytes a frame seat points at, read through the RUNTIME'S OWN length
+// reader (`avra_bytes_len`, an exported row) — never a second copy of the
+// header layout that could drift from runtime/avra_box.h.
+export function frameOf(memory, ptr, lenOf) {
+  const len = lenOf(ptr);
+  if (len < 0) throw new Error("avra_dom_frame: the length reader answered a negative length");
+  return new Uint8Array(memory.buffer, ptr, len);
 }
