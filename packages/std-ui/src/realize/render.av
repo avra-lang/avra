@@ -1,0 +1,44 @@
+//! `render.av` — the neutral vocabulary a component PROJECTS to and every
+//! target consumes. Closed and versioned: a primitive is a semantic
+//! interaction contract, an attribute is a component property, a Node is
+//! the eager tree. No user writes these; they are a component's machine
+//! projection, the component being the one source of truth.
+use style.box.{Box}
+
+/// The interaction contract a component IS. Every target answers every
+/// one, or the build names the target.
+export enum Prim { Text, Heading, Button, Link, Image, Field, Checkbox, Row, Column, Dialog }
+
+/// A component property, projected from the component's own fields.
+export enum Attribute {
+    Text(content: string)
+    Label(text: string)
+    Level(rank: int)
+    Value(text: string)
+    Placeholder(text: string)
+    Src(url: string)
+    Alt(text: string)
+    Disabled(flag: bool)
+    Checked(flag: bool)
+}
+
+/// A drawn node: its primitive, its attributes, its shared Box and its
+/// children, eager — so the tree IS data a tool can read.
+export type Node = {
+    prim: Prim,
+    attrs: List<Attribute>,
+    box: Box,
+    children: List<Node>,
+}
+
+// ── neutral projections every target reads ──────────────────────
+
+/// A node's words: its `Text`, else its `Label`.
+export fn content_of(attrs: List<Attribute>) -> string {
+    attrs.find_map(match it { .Text(t) or .Label(t) -> t, rest -> null }) ?? ""
+}
+
+/// A heading's level, defaulting to one.
+export fn level_of(attrs: List<Attribute>) -> int {
+    attrs.find_map(match it { .Level(r) -> r, rest -> null }) ?? 1
+}

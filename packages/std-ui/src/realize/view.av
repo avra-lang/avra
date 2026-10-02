@@ -1,10 +1,103 @@
-//! `view.av` — what users meet: a `View` is a component any realizer can
-//! draw. A tree is a `List<dyn View>`; only the realizer knows a target,
-//! so one component answers every surface. UI.md §19.1–19.2.
-use realize.realizer.{Realizer}
+//! `view.av` — `View` is what a component implements (its `describe`), and
+//! the `@derive(View)` annotation that WRITES that impl from the component's
+//! fields and its `@prim`. A derive's template text resolves in THIS file,
+//! so every foreign name it writes is a static `quote`; a generated hole
+//! resolves in the annotated file, so fields are read as `self.<field>`.
+use @std.meta.{Type, Field, Directive, Code, list_of}
+use realize.render.{Node, Prim, Attribute}
+use style.box.{Box}
 
-/// A component a realizer can draw. The component IS the node: its
-/// fields are its props, and this method hands it to the target.
+/// A component that projects to a neutral `Node`.
 export trait View {
-    fn realize(r: dyn Realizer)
+    fn describe() -> Node
+
+    static fn derive(t: Type) -> List<Directive> {
+        let prim = prim_quote(prim_name(t))
+        let attrs = list_of([attr_quote(f) for f in t.fields if attr_variant(f.name) != null])
+        let node = quote {
+            Node {
+                prim: ${prim},
+                attrs: ${attrs},
+                box: Box { style: self.style, layout: self.layout, a11y: self.a11y, key: self.key },
+                children: ${children_code(t)},
+            }
+        }
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote { impl View for ${t} { fn describe() -> Node { ${node} } } },
+            },
+        ]
+    }
+
+    static fn marks(t: Type) -> List<string> { [] }
+}
+
+/// The primitive a component named with `@prim`, as its written text.
+fn prim_name(t: Type) -> string {
+    for a in t.annotations {
+        if a.name == "prim" { return a.args.first() ?? "" }
+    }
+    ""
+}
+
+/// `@prim(Prim.Heading)` → the code `Prim.Heading`. ONE arm per primitive,
+/// so a new primitive lands here beside its `Prim` variant.
+fn prim_quote(text: string) -> Code {
+    match text {
+        "Text" -> quote { Prim.Text },
+        "Heading" -> quote { Prim.Heading },
+        "Button" -> quote { Prim.Button },
+        "Link" -> quote { Prim.Link },
+        "Image" -> quote { Prim.Image },
+        "Field" -> quote { Prim.Field },
+        "Checkbox" -> quote { Prim.Checkbox },
+        "Row" -> quote { Prim.Row },
+        "Column" -> quote { Prim.Column },
+        "Dialog" -> quote { Prim.Dialog },
+        rest -> quote { Prim.Text },
+    }
+}
+
+/// The `Attribute` a component field projects to — the naming convention.
+fn attr_variant(name: string) -> string? {
+    match name {
+        "content" -> "Text",
+        "label" -> "Label",
+        "rank" -> "Level",
+        "value" -> "Value",
+        "placeholder" -> "Placeholder",
+        "src" -> "Src",
+        "alt" -> "Alt",
+        "disabled" -> "Disabled",
+        "checked" -> "Checked",
+        rest -> null,
+    }
+}
+
+/// `self.content` → the code `Attribute.Text(self.content)`.
+fn attr_quote(f: Field) -> Code {
+    match attr_variant(f.name) ?? "" {
+        "Text" -> quote { Attribute.Text(self.${f}) },
+        "Label" -> quote { Attribute.Label(self.${f}) },
+        "Level" -> quote { Attribute.Level(self.${f}) },
+        "Value" -> quote { Attribute.Value(self.${f}) },
+        "Placeholder" -> quote { Attribute.Placeholder(self.${f}) },
+        "Src" -> quote { Attribute.Src(self.${f}) },
+        "Alt" -> quote { Attribute.Alt(self.${f}) },
+        "Disabled" -> quote { Attribute.Disabled(self.${f}) },
+        "Checked" -> quote { Attribute.Checked(self.${f}) },
+        rest -> quote { Attribute.Text(self.${f}) },
+    }
+}
+
+/// A component's `items` field, drawn by its children's own `describe`.
+fn children_code(t: Type) -> Code {
+    if t.fields.any(it.name == "items") {
+        quote { [v.describe() for v in self.items] }
+    } else {
+        quote { [] }
+    }
 }
