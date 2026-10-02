@@ -282,6 +282,35 @@ impl Decls {
         out
     }
 
+    /// A FILE WITHDRAWN FROM THE TABLE — a deleted file, or one whose
+    /// text left the workspace. The file's owner runs and closes with
+    /// NOTHING minted, so every relation sweeps the rows that owner
+    /// wrote (the declaration rows, their name and home buckets, every
+    /// side table) and the file's own seats are cleared: a withdrawn
+    /// file keeps no declaration, Main included. Answers the ids let go.
+    @bracket("decls")
+    fn unadmit(f: FileId) -> List<DeclId> {
+        let gone = self.decls_so_far(f)
+        let owner = self.file_owners.get()[f.index]
+        let _ = self.decl_rows.get().opened_run(owner)
+        self.decl_rows.get().closed_run(owner)
+        self.forget([d for d in gone if self.row_at(d.index) == null])
+        self.clear_file_seats(f)
+        gone
+    }
+
+    /// The per-file seats an empty run leaves standing, cleared by hand:
+    /// the file's store, its Main, its statement and expression tables.
+    fn clear_file_seats(f: FileId) {
+        self.stores.set_at(f.index, null)
+        self.mains.set_at(f.index, null)
+        self.decl_ids.set_at(f.index, Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
+        self
+            .expr_owners
+            .set_at(f.index, Cell.new(side_table("expr_owners", 0, 0, DeclAt { decl: null })))
+        self.note_rows(f, 0)
+    }
+
     /// Declarations a re-admission removed, let go by every table that
     /// files them by hand: the sealers they joined and the caches that
     /// may name them.
