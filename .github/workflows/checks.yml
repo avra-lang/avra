@@ -1,12 +1,17 @@
-# The merge queue's check: ONE job per train, so ten trains test at once on
-# the ten free workers. A PR's own run only admits it to the queue (its branch
-# was tested by `work test`); on main, the job builds and caches the compiler
-# every PR and train starts from. `test` is the one required check. A
-# dispatched run builds and runs the static keepers alone. The
-# machine is .github/ci/Dockerfile's image; a train is at most ten entries
-# over main, so twenty commits of history reach it. A train is judged against
-# main itself, never its `base_sha`, which is the train ahead of it: every
-# PR the train carries is tested, so landing it lands only what was tested.
+# THE MERGE QUEUE'S CHECK, SHARDED. A train used to be ONE serial job (~17
+# minutes: build, keepers, gate, then every affected package's suite one after
+# another). Now:
+#   prepare  builds the compiler ONCE, computes the affected packages, splits
+#            them into shards, and hands the binary down as an artifact.
+#   suites   one matrix job PER SHARD, in parallel on their own runners.
+#   keepers  the static keepers, on the prepared compiler.
+#   gate     the changed-file fmt and the affected packages' idioms.
+#   test     the ONE required check name: an aggregate that passes iff every
+#            needed job succeeded or was skipped.
+# A PR runs the same gate and sharded suites on its own tree, so it cannot
+# enqueue untested; the train still runs the COMBINATION, where cross-PR
+# interactions live. The shard count trades runner slots (the queue has ten)
+# against wall time: four shards leaves room for two trains at once.
 name: checks
 
 on:
@@ -25,19 +30,17 @@ permissions:
   packages: read
 
 jobs:
-  test:
+  prepare:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 60
+    outputs:
+      shards: ${{ steps.shards.outputs.shards }}
+      changed: ${{ steps.shards.outputs.changed }}
+      packages: ${{ steps.shards.outputs.packages }}
     steps:
-      # A pull_request runs the SAME gate and affected suites as the train, on
-      # its own tree. The PR step used to be a stub ("admitted; the train is
-      # what gets tested"), so a PR entered the queue untested and the train
-      # was the FIRST check — one bad PR failed a ten-PR train and the queue
-      # churned. The train's job keeps testing the COMBINATION, which is where
-      # cross-PR interactions live; a PR now proves itself before it enqueues.
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
       - if: github.event_name != 'pull_request'
@@ -62,16 +65,46 @@ jobs:
         with:
           path: build/avra
           key: ${{ steps.key.outputs.key }}
-      # A PR diffs against its base, `origin/main`; the train's own `main` step
-      # stays merge_group-only.
-      - if: github.event_name == 'pull_request'
+      # A PR diffs against its base, `origin/main`; so does the train.
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         name: base
         run: git fetch -q --depth=20 origin main
-      - if: github.event_name == 'merge_group'
-        name: main
-        run: git fetch -q --depth=20 origin main
-      - if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
-        name: keepers
+      - id: shards
+        name: shards
+        run: |
+          changed=""
+          pkgs=""
+          if [ "${{ github.event_name }}" = pull_request ] || [ "${{ github.event_name }}" = merge_group ]; then
+            changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
+            pkgs=$(sh tools/affected_packages.sh origin/main HEAD "$PWD" 2>/dev/null)
+          fi
+          {
+            echo "changed=${changed}"
+            echo "packages=$(echo $pkgs)"
+            echo "shards<<EOF"
+            printf '%s\n' "$pkgs" | python3 -c 'import json,sys; xs=[l.strip() for l in sys.stdin if l.strip()]; n=4; print(json.dumps([xs[i::n] for i in range(n)] if xs else [[]]))'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avra-compiler
+          path: build/avra
+          retention-days: 1
+
+  keepers:
+    needs: [prepare]
+    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - run: chmod +x build/avra
+      - name: keepers
         run: |
           fail=0
           for k in fingerprints vocab families cited externs dogfooding-rules; do
@@ -80,21 +113,51 @@ jobs:
             echo "::endgroup::"
           done
           exit $fail
-      # A pull_request runs the keepers INSIDE the gate (it has no keepers step);
+
+  gate:
+    needs: [prepare]
+    if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - run: chmod +x build/avra
+      # A pull_request runs the keepers INSIDE the gate (it has no keepers job);
       # the train already ran them above, so it passes --no-keepers.
-      - if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
-        name: gate
+      - name: gate
         run: |
           extra=""
           if [ "${{ github.event_name }}" = merge_group ]; then extra=--no-keepers; fi
-          sh tools/gate_changed.sh --refs origin/main HEAD $extra
-      - if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
-        name: suites
+          sh tools/gate_changed.sh --files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} $extra
+
+  suites:
+    needs: [prepare]
+    if: github.event_name == 'merge_group' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - run: chmod +x build/avra
+      - run: make -s -o avra objects libs
+      - name: suites
         run: |
-          pkgs=$(sh tools/affected_packages.sh origin/main HEAD "$PWD" 2>/dev/null)
-          [ -z "$pkgs" ] || make -s -o avra objects libs
           fail=0
-          for p in $pkgs; do
+          for p in ${{ join(matrix.shard, ' ') }}; do
+            [ -d "packages/$p/src" ] || continue
             echo "::group::$p"
             t=$(date +%s)
             build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
@@ -102,3 +165,17 @@ jobs:
             echo "$p $(( $(date +%s) - t ))s"
           done
           exit $fail
+
+  # THE ONE REQUIRED CHECK. Every other job is a shard or a step; this passes
+  # iff each of them succeeded or was skipped (`always()` so it still reports
+  # when a needed job failed, rather than being skipped itself).
+  test:
+    needs: [prepare, keepers, gate, suites]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: verdict
+        run: |
+          echo '${{ toJSON(needs) }}' > needs.json
+          python3 -c "import json,sys; n=json.load(open('needs.json')); print(json.dumps(n, indent=2)); bad=[k for k,v in n.items() if v['result'] not in ('success','skipped')]; print('test: PASSED' if not bad else 'test: FAILED — '+', '.join(bad)); sys.exit(1 if bad else 0)"
