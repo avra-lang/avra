@@ -1,5 +1,6 @@
 // proves: a directory served, evaluated and native alike — a file, a
-// range, a 304, and a traversal and a symlink refused.
+// range, a 304, a traversal and a symlink refused, and a file past
+// `largest` pulled as a stream rather than held whole.
 use @std.http.frame.{framed, limits}
 use @std.http.body.{Body}
 use @std.http.http.{Request, Unrouted, Response}
@@ -20,9 +21,43 @@ fn served(line: string, fields: string) -> Response {
 
 fn said(r: Response) -> string { "${r.status} ${(r.body.text() ?? "?").trim()}" }
 
+/// A response with `largest` below the file's size, so every whole and
+/// range body streams.
+fn thin(line: string, fields: string) -> Response {
+    let raw = "${line}\r\nHost: h\r\n${fields}\r\n".bytes()
+    let q = match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+    dispatch(
+        compiled(
+            directory("/s", Files { root: "packages/std-http/src/tests/files_root", largest: 4 }),
+        ),
+        q!,
+    )
+}
+
+/// The body either spelled whole, or pulled from its stream the way the
+/// connection would and closed.
+fn drained(r: Response) -> string {
+    match r.stream {
+        s? -> {
+            mut got = "".bytes()
+            while true {
+                match s.pull() { .Data(b) -> { got = got.concat(b) }, .End or .Failed -> { break } }
+            }
+            s.ended()
+            "${r.status} ${(got.text() ?? "?").trim()}"
+        }
+        null -> said(r)
+    }
+}
+
 println(said(served("GET /s/a.txt HTTP/1.1", "")))
 println(said(served("GET /s/a.txt HTTP/1.1", "Range: bytes=6-\r\n")))
 println(said(served("GET /s/a.txt HTTP/1.1", "If-None-Match: *\r\n")))
+println(drained(thin("GET /s/a.txt HTTP/1.1", "")))
+println(drained(thin("GET /s/a.txt HTTP/1.1", "Range: bytes=2-\r\n")))
 println(said(served("GET /s/%2e%2e/files_outside.txt HTTP/1.1", "")))
 println(said(served("GET /s/escape.txt HTTP/1.1", "")))
 said(served("GET /s/ HTTP/1.1", ""))
