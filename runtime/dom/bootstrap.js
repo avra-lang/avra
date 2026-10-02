@@ -1,52 +1,51 @@
 // The live target's fixed bootstrap — the ONLY JavaScript an Avra web app
-// ships. The program (wasm) emits a frame; this reconciles it into the live
-// tree. A node with a KEY is matched by key (identity moves with it); a node
-// without one is matched by its PATH. Same file for every app.
+// ships. The program (wasm) emits a BYTE frame; this reconciles it into the
+// live tree. A node with a KEY is matched by key (identity moves with it);
+// otherwise it is matched by its ID from the previous frame. Same file for
+// every app.
 //
-// Wire V2: values are LENGTH-PREFIXED and carried raw, so nothing is escaped
-// on either side and nothing can drift. See realize/dom/frame.av.
+// Wire V3: a version byte, then records of little-endian ints with values
+// carried raw (length-prefixed). Nothing is escaped; see realize/dom/frame.av.
 
-export const FRAME_VERSION = "V2";
+export const FRAME_VERSION = 3;
 
-// A frame's records, in frame order. A `C` line opens a record; `K`/`A`/`T`
-// beside it fill key, class and words — each with its byte length, the bytes
-// themselves on the following line. Null means NOTHING CHANGED.
-export function parseFrame(text) {
-  const head = FRAME_VERSION + "\n";
-  if (!text.startsWith(head)) {
-    const seen = JSON.stringify(text.slice(0, text.indexOf("\n")));
+// A frame's records, in frame order. `C` opens a record; `K`/`A`/`T` fill
+// key, class and words. Null means NOTHING CHANGED.
+export function parseFrame(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let i = 0;
+  const seen = bytes[i++];
+  if (seen !== FRAME_VERSION) {
     throw new Error(`unsupported frame version ${seen} — this host speaks ${FRAME_VERSION}`);
   }
-  let i = head.length;
-  if (text.slice(i, i + 2) === "N\n") return null;
+  if (bytes[i] === 0) return null;
   const records = [];
-  while (i < text.length) {
-    const nl = text.indexOf("\n", i);
-    if (nl < 0) break;
-    const line = text.slice(i, nl);
-    i = nl + 1;
-    if (line === "") continue;
-    const op = line[0];
-    const body = line.slice(2);
-    const sp = body.indexOf(" ");
-    if (op === "C") {
-      records.push({ path: body.slice(0, sp), tag: body.slice(sp + 1), key: null, cls: null, text: null });
-    } else if (op === "K" || op === "A" || op === "T") {
-      const len = parseInt(body.slice(sp + 1), 10);
-      const val = text.substr(i, len);
-      i += len + 1; // the value, then its newline
-      const r = records[records.length - 1];
-      if (op === "K") r.key = val;
-      else if (op === "A") r.cls = val;
-      else r.text = val;
+  const byId = new Map();
+  const str = (at, len) => new TextDecoder().decode(bytes.subarray(at, at + len));
+  while (i < bytes.length) {
+    const op = bytes[i++];
+    if (op === 1) {
+      const id = dv.getInt32(i, true); i += 4;
+      const parent = dv.getInt32(i, true); i += 4;
+      const index = dv.getInt32(i, true); i += 4;
+      const len = dv.getInt32(i, true); i += 4;
+      const tag = str(i, len); i += len;
+      const r = { id, parent, index, tag, key: null, cls: null, text: null };
+      records.push(r);
+      byId.set(id, r);
+    } else if (op === 2 || op === 3 || op === 4) {
+      const id = dv.getInt32(i, true); i += 4;
+      const len = dv.getInt32(i, true); i += 4;
+      const val = str(i, len); i += len;
+      const r = byId.get(id);
+      if (r) { if (op === 2) r.key = val; else if (op === 3) r.cls = val; else r.text = val; }
+    } else if (op === 0) {
+      break;
+    } else {
+      throw new Error(`unknown frame op ${op}`);
     }
   }
   return records;
-}
-
-function parentPath(path) {
-  const i = path.lastIndexOf("/");
-  return i < 0 ? null : path.slice(0, i);
 }
 
 // Build the applier over one document (a real one in a browser, a stub in a
@@ -54,38 +53,34 @@ function parentPath(path) {
 export function createApplier(doc, mount) {
   // LICENSED loops.push_loop: these maps ride the closure as the applier's table
   const byKey = new Map();
-  let byPath = new Map();
+  let byId = new Map();
 
-  return function apply(text) {
-    const records = parseFrame(text);
+  return function apply(bytes) {
+    const records = parseFrame(bytes);
     if (records === null) return; // nothing changed — touch nothing
     const next = new Map();
     const keys = new Set();
     for (const r of records) {
       const keyed = r.key !== null && byKey.has(r.key);
-      const el = keyed ? byKey.get(r.key) : byPath.get(r.path) || doc.createElement(r.tag);
-      if (r.key !== null) {
-        el.setAttribute("data-key", r.key);
-        byKey.set(r.key, el);
-        keys.add(r.key);
-      }
+      const el = keyed ? byKey.get(r.key) : byId.get(r.id) || doc.createElement(r.tag);
+      if (r.key !== null) { el.setAttribute("data-key", r.key); byKey.set(r.key, el); keys.add(r.key); }
       if (r.cls !== null) el.setAttribute("class", r.cls);
       if (r.text !== null && el.textContent !== r.text) el.textContent = r.text;
-      next.set(r.path, el);
+      next.set(r.id, el);
     }
-    // Order each parent's children by the frame's own order.
+    // Order each parent's children by the frame's own index.
     const order = new Map();
     for (const r of records) {
-      const p = parentPath(r.path);
-      if (!order.has(p)) order.set(p, []);
-      order.get(p).push(r.path);
+      if (!order.has(r.parent)) order.set(r.parent, []);
+      order.get(r.parent).push(r);
     }
-    if (!order.has(null)) order.set(null, []);
-    for (const [p, kids] of order) {
-      const host = p === null ? mount : next.get(p);
+    if (!order.has(-1)) order.set(-1, []);
+    for (const [parent, kids] of order) {
+      const host = parent === -1 ? mount : next.get(parent);
       if (!host) continue;
-      kids.forEach((path, i) => {
-        const el = next.get(path);
+      kids.sort((a, b) => a.index - b.index);
+      kids.forEach((r, i) => {
+        const el = next.get(r.id);
         if (host.childNodes[i] !== el) host.insertBefore(el, host.childNodes[i] || null);
       });
       while (host.childNodes.length > kids.length) {
@@ -93,7 +88,7 @@ export function createApplier(doc, mount) {
       }
     }
     for (const [key] of [...byKey]) if (!keys.has(key)) byKey.delete(key);
-    byPath = next;
+    byId = next;
   };
 }
 
