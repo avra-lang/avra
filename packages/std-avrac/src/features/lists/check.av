@@ -314,6 +314,7 @@ fn binders(cx: TypeCx, index: string?, elem: TypeId) -> List<TypeId> {
 }
 
 fn not_walkable(mut cx: TypeCx, source: ExprId) -> TypeId {
+    if cx.seen_at(source) is .Str { return not_walkable_string(cx, source) }
     let n = cx.name_at(source)
     cx
         .spoken(
@@ -323,6 +324,21 @@ fn not_walkable(mut cx: TypeCx, source: ExprId) -> TypeId {
                 "a comprehension walks a list, found `${n}`",
                 this_is(n),
                 "`for x in xs` needs a `List<T>` — an empty `[]` has no element yet; `for i in lo..hi` counts",
+            ),
+        )
+}
+
+/// A `string` has no element of its own — a byte, a code point, a
+/// grapheme — so the comprehension names its view.
+fn not_walkable_string(mut cx: TypeCx, source: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.list",
+                cx.loc_of(source),
+                "a comprehension walks a list, and a `string` names no element without a view",
+                "this is `string`",
+                "iterate its octets with `s.bytes()`",
             ),
         )
 }
