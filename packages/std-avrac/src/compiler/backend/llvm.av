@@ -219,10 +219,11 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
+    let wasm = target.starts_with("wasm")
     declare_runtime(lc, m)
-    declare_externs(lc, m, l.externs, refs)
+    declare_externs(lc, m, l.externs, refs, wasm)
     for bd in l.fns {
-        if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd) }
+        if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd, wasm) }
     }
     for st in l.statics {
         if carries(refs, refs.statics, st.name) { emit_static(lc, m, st) }
@@ -460,11 +461,15 @@ fn declare_runtime(lc: ptr, m: ptr) {
     }
 }
 
-/// The program's own host fns, declared like the runtime's rows.
-fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>, refs: Refs) {
+/// The program's own host fns, declared like the runtime's rows. ON A NON-HOST
+/// TARGET they are the HOST IMPORTS: a wasm module has no package C to define
+/// one, so each crosses as an import from `avra:rt` under its own symbol — the
+/// module the browser host implements beside WASI.
+fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>, refs: Refs, wasm: bool) {
     for s in rows {
         if carries(refs, refs.hosted, s.name) {
             declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+            if wasm { avra_llvm_set_import(avra_llvm_get_named_function(m, s.name), "avra:rt", s.name) }
         }
     }
 }
@@ -483,8 +488,10 @@ fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
     }
 }
 
-/// One user fn's declaration, typed from its signature's shapes.
-fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
+/// One user fn's declaration, typed from its signature's shapes. An `export fn`
+/// on a non-host target exports it under its WRITTEN name (the LLVM symbol
+/// stays mangled), so a host reaches `avra_event`, never `av_avra_event`.
+fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body, wasm: bool) {
     declare(
         m,
         mangled(bd.name),
@@ -492,6 +499,9 @@ fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
         [ll_type_of(lc, types, pt) for pt in bd.params],
         false,
     )
+    if wasm && bd.exported {
+        avra_llvm_set_export(avra_llvm_get_named_function(m, mangled(bd.name)), bd.name)
+    }
 }
 
 fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {

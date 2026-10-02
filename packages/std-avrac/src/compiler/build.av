@@ -259,7 +259,7 @@ fn compiler_print(ws: Workspace) -> string {
     let roll = joined_path(stores_dir(ws), "compilers")
     let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
     let digest? = digest_of_binary(at) else { return unnamed_print() }
-    let print = digest + codegen_mode()
+    let print = "${digest}${codegen_mode()}${target_mode(ws)}"
     rolled(
         ws,
         roll,
@@ -292,6 +292,12 @@ fn links_unchanged(store: Store, key: string) -> bool {
 /// HOW THIS PROCESS EMITS, as a suffix on the compiler's print: the runtime's
 /// hot leaves inlined, or kept as calls.
 fn codegen_mode() -> string { if inlines_runtime() { "" } else { "-calls" } }
+
+/// A build's target, as a suffix on the compiler's print — empty for the host.
+fn target_mode(ws: Workspace) -> string {
+    let t = ws.keys.target.get()
+    if t == "" { "" } else { "@${t}" }
+}
 
 /// A roll line's print: its first field. A roll holds no empty line.
 fn print_of(line: string) -> string { line.split("\t")[0] }
@@ -396,9 +402,13 @@ impl Workspace {
     /// re-read it and its object would never be made for this target. A store
     /// of its own starts cold, so every file is read and its object built for
     /// the target. The host's own spelling is untouched.
-    fn targeted(target: string) {
-        if target != "" { self.keys.compiler_id.set("${compiler_print(self)}@${target}") }
-    }
+    /// A NON-HOST TARGET IS PART OF THE COMPILER'S OWN IDENTITY. A held row is
+    /// the host's object code, so a wasm build must read from a store of its
+    /// own — one that starts cold, reads every file, and builds each object for
+    /// the target. Folding the target into the compiler's print (and so into
+    /// `compiler_id`, the store root and the roll's own name for it) makes that
+    /// ONE mechanism, so no key needs a second target spelling.
+    fn targeted(target: string) { self.keys.target.set(target) }
 }
 
 /// A build's output path: a wasm module carries `.wasm`, so a native and a
@@ -414,7 +424,7 @@ impl Workspace {
         BuildOutcome,
         BuildError,
     > {
-        let kept = self.kept_binary(self.program_key(entry, [], tools.target), binary)
+        let kept = self.kept_binary(self.program_key(entry, []), binary)
         if kept != null { return .Ok(kept!) }
         let d = diagnosed(self.derived(entry, Want.Binary))?
         let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(self.root)])) }
@@ -477,9 +487,9 @@ impl Workspace {
 
     /// The key a finished derivation keeps under: its closure remembered first,
     /// so the next ask — before anything is read — names the same inputs.
-    fn kept_key(under: Keyed, target: string) -> string {
+    fn kept_key(under: Keyed) -> string {
         self.keep_closure(under.named)
-        self.program_key(under.named, under.beside, target)
+        self.program_key(under.named, under.beside)
     }
 
     /// THE PROGRAM'S KEY — every input's path, length and digest, under what
@@ -493,14 +503,9 @@ impl Workspace {
     /// no `.av` digest — the object's own bytes are the only witness a
     /// kept binary that linked them is still the one these bytes would
     /// produce.
-    fn program_key(named: string, beside: List<string>, target: string) -> string {
+    fn program_key(named: string, beside: List<string>) -> string {
         let named_inputs = self.build_inputs(named).concat(beside)
-        // the target rides the key as a line of its own: a binary a build
-        // linked for wasm is not the native one these sources produced
-        let inputs = joined(
-            [self.input_line(f) for f in named_inputs].concat(["target\t${target}"]),
-            "\n",
-        )
+        let inputs = joined([self.input_line(f) for f in named_inputs], "\n")
         let objects = joined([self.object_line(o) for o in self.reached_objects(named)], "\n")
         digest_key(
             digest_text(
@@ -608,7 +613,6 @@ impl Workspace {
                         digest_key(digest_bytes(new_digest(), bytes)),
                         tools.opt,
                         tools.runtime,
-                        tools.target,
                     ],
                 ),
             ),
@@ -633,12 +637,12 @@ impl Workspace {
         mut clock = self.marking()
         let full = closed(self.homed(d.lowered, m, main, d.unlowered))?
         let program = self.program_object(d, full, asked, tools)?
-        let read = [self.object_of(d.store, a, tools.target) for a in d.program.files]
+        let read = [self.object_of(d.store, a) for a in d.program.files]
         self.objects_kept(d, full, read.concat([program]), tools)?
         // the program's module stands under what it is a function of, too
         if !d.store.has(Stored.Obj, asked) { let _ = d.store.keep_file(Stored.Obj, asked, program.obj, []) }
         clock.mark("emit")
-        let held = self.held_objects(d.store, tools.target)?
+        let held = self.held_objects(d.store)?
         clock.mark("place")
         let staged = staged_beside(binary)
         let code = avra_spawn_status(
@@ -653,7 +657,7 @@ impl Workspace {
         )
         if code != 0 { fail BuildError.LinkFailed(code) }
         clock.mark("link")
-        let key = self.kept_key(under, tools.target)
+        let key = self.kept_key(under)
         let _ = d
             .store
             .keep(Stored.Unit, links_key(key), links_text(self.linked_files(tools.runtime)), [key])
@@ -671,9 +675,9 @@ impl Workspace {
     /// A read file's object: kept under the file's key, standing beside the store's
     /// for the link. Its scratch path is named by that same content key, so two
     /// builds of one tree share a file only when they would write the same bytes.
-    fn object_of(store: Store, a: Analysis, target: string) -> Made {
+    fn object_of(store: Store, a: Analysis) -> Made {
         let path = a.view.source.file
-        let key = target_key(self.held_okey(store, path), target)
+        let key = self.held_okey(store, path)
         Made {
             which: Owned.File(a.view.file),
             key: key,
@@ -720,15 +724,15 @@ impl Workspace {
     }
 
     /// Every held file's object, where the store keeps it: it links in place.
-    fn held_objects(store: Store, target: string) -> Result<List<Made>, BuildError> {
-        let held = [self.held_object(store, path, target) for path in held_paths(self)]
+    fn held_objects(store: Store) -> Result<List<Made>, BuildError> {
+        let held = [self.held_object(store, path) for path in held_paths(self)]
         let gone = held.find((o: Made) -> !store.has(Stored.Obj, o.key))
         if gone != null { fail BuildError.ObjectGone(gone!.source) }
         held
     }
 
-    fn held_object(store: Store, path: string, target: string) -> Made {
-        let key = target_key(self.held_okey(store, path), target)
+    fn held_object(store: Store, path: string) -> Made {
+        let key = self.held_okey(store, path)
         Made {
             which: Owned.File(self.file_id(path)),
             key: key,
@@ -749,14 +753,9 @@ fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string 
             "${fp_list([i.fingerprint() for i in main.body.ins])}",
             tools.opt,
             tools.runtime,
-            tools.target,
         ],
     )
 }
-
-/// An artifact key qualified by the target it was made for; the host's own
-/// spelling is unchanged, so a native cache row reads exactly as before.
-fn target_key(base: string, target: string) -> string { if target == "" { base } else { "${base}@${target}" } }
 
 /// The declarations a program's module brings that nothing standing makes — each once.
 fn undeclared(brought: List<Body>, stand: List<Body>) -> List<Body> {
