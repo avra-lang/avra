@@ -114,7 +114,7 @@ export type CaseHome = { call: CaseCall, path: string }
 
 /// What one build links with: the optimisation level, the runtime object and
 /// the linker the host found.
-export type Toolchain = { opt: string, runtime: string, linker: string }
+export type Toolchain = { opt: string, runtime: string, linker: string, target: string = "", reactor: bool = false }
 
 impl Workspace {
     /// THE PRODUCING COMPILER'S OWN IDENTITY — memoized once a workspace, so
@@ -259,7 +259,7 @@ fn compiler_print(ws: Workspace) -> string {
     let roll = joined_path(stores_dir(ws), "compilers")
     let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
     let digest? = digest_of_binary(at) else { return unnamed_print() }
-    let print = digest + codegen_mode()
+    let print = "${digest}${codegen_mode()}${build_mode_suffix(ws)}"
     rolled(
         ws,
         roll,
@@ -292,6 +292,12 @@ fn links_unchanged(store: Store, key: string) -> bool {
 /// HOW THIS PROCESS EMITS, as a suffix on the compiler's print: the runtime's
 /// hot leaves inlined, or kept as calls.
 fn codegen_mode() -> string { if inlines_runtime() { "" } else { "-calls" } }
+
+/// A build's mode, as a suffix on the compiler's print — empty for the host.
+fn build_mode_suffix(ws: Workspace) -> string {
+    let m = ws.keys.build_mode.get()
+    if m == "" { "" } else { "@${m}" }
+}
 
 /// A roll line's print: its first field. A roll holds no empty line.
 fn print_of(line: string) -> string { line.split("\t")[0] }
@@ -385,7 +391,35 @@ export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Resul
     BuildOutcome,
     BuildError,
 > {
-    ws.linked_program(entry, binary_name(entry), tools)
+    ws.built_for(tools.target, tools.reactor)
+    ws.linked_program(entry, target_binary(entry, tools.target), tools)
+}
+
+impl Workspace {
+    /// A NON-HOST TARGET READS FROM ITS OWN STORE. A held row is the host's
+    /// object code, and a wasm build cannot reuse one — the held file's rows
+    /// are already kept (target-independent analysis), so nothing would ever
+    /// re-read it and its object would never be made for this target. A store
+    /// of its own starts cold, so every file is read and its object built for
+    /// the target. The host's own spelling is untouched.
+    /// WHAT A BUILD IS FOR IS PART OF THE COMPILER'S OWN IDENTITY. A held row
+    /// is the host's object code, and a reactor links a different start-up, so
+    /// a non-native build reads from a store of its own — cold once, then warm.
+    /// Folding the mode into the compiler's print (and so into `compiler_id`,
+    /// the store root and the roll's name for it) is ONE mechanism: no key
+    /// needs a second spelling of the target or the reactor.
+    fn built_for(target: string, reactor: bool) {
+        self
+            .keys
+            .build_mode
+            .set(if target == "" { "" } else if reactor { "${target}+reactor" } else { target })
+    }
+}
+
+/// A build's output path: a wasm module carries `.wasm`, so a native and a
+/// wasm build of one source never stand at one path.
+fn target_binary(entry: string, target: string) -> string {
+    if target == "" { binary_name(entry) } else { "${binary_name(entry)}.wasm" }
 }
 
 impl Workspace {
@@ -573,7 +607,7 @@ impl Workspace {
     /// what compiles them. A module that cannot be read back has no key: an empty
     /// read would key every program alike.
     fn bytes_keyed(full: Lowered, bc: string, tools: Toolchain) -> Result<string, BuildError> {
-        let broke = emit_closed(full, bc, Owned.Program)
+        let broke = emit_closed(full, bc, Owned.Program, tools.target)
         if broke != null { fail BuildError.EmitFailed(broke!) }
         match read_bytes(bc) {
             .Ok(bytes) -> .Ok(
@@ -623,6 +657,8 @@ impl Workspace {
                 self,
                 tools.runtime,
                 staged,
+                tools.target,
+                tools.reactor,
             ),
         )
         if code != 0 { fail BuildError.LinkFailed(code) }
@@ -686,7 +722,7 @@ impl Workspace {
         let owed = [o for o in objects if !d.store.place(Stored.Obj, o.key, o.obj)]
         let gone = owed.find(it.which is .Program)
         if gone != null && !d.unlowered.is_empty() { fail BuildError.ObjectGone(gone!.obj) }
-        let broke = handed(full, owed, opt_level(tools.opt))
+        let broke = handed(full, owed, opt_level(tools.opt), tools.target)
         let unwritten = objects_made()
         if broke != null || unwritten != null { fail BuildError.EmitFailed(broke ?? unwritten!) }
         for o in owed { let _ = d.store.keep_file(Stored.Obj, o.key, o.obj, []) }
@@ -763,9 +799,9 @@ fn digest_of_file(text: string) -> string { "${text.length}.${digest_of(text)}" 
 
 /// Every owed object's module built and handed to a worker — the first
 /// refusal, or null. `objects_made` waits for them.
-fn handed(full: Lowered, owed: List<Made>, opt: int) -> string? {
+fn handed(full: Lowered, owed: List<Made>, opt: int, target: string) -> string? {
     for o in owed {
-        let broke = emit_object(full, o.obj, o.which, opt)
+        let broke = emit_object(full, o.obj, o.which, opt, target)
         if broke != null { return broke }
     }
     null

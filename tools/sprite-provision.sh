@@ -23,7 +23,8 @@ prefix="/usr/lib/llvm-$major"
 if ! dpkg -s "llvm-$major-dev" >/dev/null 2>&1; then
     sudo apt-get update -qq
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-        "llvm-$major-dev" "clang-$major"
+        "llvm-$major-dev" "clang-$major" \
+        "lld-$major" wasi-libc "libclang-rt-$major-dev-wasm32" wabt
 fi
 
 # THE TREE SPELLS ITS LLVM ROOT AS ${LLVM_PREFIX} and defaults it to the

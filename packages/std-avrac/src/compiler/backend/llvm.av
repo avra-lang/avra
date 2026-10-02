@@ -162,13 +162,13 @@ fn carries(r: Refs, named: Map<string, bool>, name: string) -> bool { r.whole ||
 
 /// The whole program as verified `.ll` text; null means written, a string is
 /// the failure.
-export fn emit_ll(l: Lowered, path: string) -> string? { emit_mode(l, path, Owned.Whole, Written.Text) }
+export fn emit_ll(l: Lowered, path: string, target: string) -> string? { emit_mode(l, path, Owned.Whole, Written.Text, target) }
 
 /// ONE MODULE OF A SPLIT PROGRAM, as bitcode. It declares what its own bodies
 /// NAME — LLVM wants a called symbol declared where it is called — and lays out
 /// the statics they read: private linkage, so each module's copy is its own.
 /// The caller has asked `program_closed`, a whole-program scan with one answer.
-export fn emit_closed(l: Lowered, path: string, which: Owned) -> string? { emit_mode(l, path, which, Written.Bitcode) }
+export fn emit_closed(l: Lowered, path: string, which: Owned, target: string) -> string? { emit_mode(l, path, which, Written.Bitcode, target) }
 
 /// How many objects are made at once: a worker is a thread of this process and
 /// holds one module, and the machine is shared — four buys the wall without
@@ -178,7 +178,7 @@ const EMIT_WIDTH: int = 4
 /// The same module as an OBJECT, optimized and generated in this process at
 /// clang's level — BY A WORKER: the module is built here and handed over, and
 /// `objects_made` waits for every one handed.
-export fn emit_object(l: Lowered, path: string, which: Owned, opt: int) -> string? { emit_mode(l, path, which, Written.Object(opt)) }
+export fn emit_object(l: Lowered, path: string, which: Owned, opt: int, target: string) -> string? { emit_mode(l, path, which, Written.Object(opt), target) }
 
 /// The link option that drops code nothing reaches: Mach-O drops by
 /// atom, ELF by section — and every definition is emitted in one of its own.
@@ -205,9 +205,13 @@ export fn not_closed(missing: string) -> string {
     "internal compiler error: nothing declares `${missing}` — the program is not closed"
 }
 
-fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
+fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: string) -> string? {
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
+    // the target IS part of the module, not of the code generator that runs
+    // later: it decides pointer width, the data layout and, for wasm, the
+    // entry symbol — and it is written into the text a reader inspects
+    if target != "" { avra_llvm_set_module_target(m, target) }
     let b = avra_llvm_create_builder(lc)
     let own = [bd for bd in l.fns if which.defines(bd)]
     // the entry is carried beside `l.fns`, and it names what it calls
@@ -215,10 +219,11 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
     let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
+    let wasm = target.starts_with("wasm")
     declare_runtime(lc, m)
-    declare_externs(lc, m, l.externs, refs)
+    declare_externs(lc, m, l.externs, refs, wasm)
     for bd in l.fns {
-        if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd) }
+        if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd, wasm) }
     }
     for st in l.statics {
         if carries(refs, refs.statics, st.name) { emit_static(lc, m, st) }
@@ -234,14 +239,14 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
         }
     }
     if which.carries_entry() {
-        let failure: string? = emit_entry(lc, m, b, l, rt)
+        let failure: string? = emit_entry(lc, m, b, l, rt, target)
         if failure != null { return wreck(m, path, failure!) }
     }
     avra_llvm_dispose_builder(b)
     let written = match form {
         .Text -> avra_llvm_print_module_to_file(m, path),
         .Bitcode -> avra_llvm_write_bitcode_to_file(m, path),
-        .Object(opt) -> avra_llvm_emit_object_later(m, lc, path, opt, EMIT_WIDTH),
+        .Object(opt) -> avra_llvm_emit_object_later_targeted(m, lc, path, opt, EMIT_WIDTH, target),
     }
     // a handed module's context is its worker's
     if !(form is .Object) { avra_llvm_context_dispose(lc) }
@@ -342,7 +347,7 @@ export fn program_closed(l: Lowered) -> string? {
 /// `main` hands the runtime its arguments and answers what the
 /// entry answered. The argument pair crosses the seam exactly here
 /// — a program reads it through the host from then on.
-fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> string? {
+fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, target: string) -> string? {
     declare(
         m,
         "avra_args_init",
@@ -354,20 +359,24 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> st
     let entry = avra_llvm_get_named_function(m, "av_entry")
     let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
     if failure != null { return failure }
-    open_main(lc, m, b, entry)
+    open_main(lc, m, b, entry, entry_symbol(target))
 }
+
+/// The C entry symbol a target's crt calls: wasi-libc's `crt1-command`
+/// hands control to `__main_argc_argv`, clang's own renaming of `main`.
+fn entry_symbol(target: string) -> string { if target.starts_with("wasm") { "__main_argc_argv" } else { "main" } }
 
 /// `int main(int argc, char** argv)`: the arguments handed over,
 /// then the entry.
-fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
+fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr, symbol: string) -> string? {
     declare(
         m,
-        "main",
+        symbol,
         avra_llvm_int32_type(lc),
         [avra_llvm_int32_type(lc), avra_llvm_pointer_type(lc)],
         false,
     )
-    let f = avra_llvm_get_named_function(m, "main")
+    let f = avra_llvm_get_named_function(m, symbol)
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     let init = avra_llvm_get_named_function(m, "avra_args_init")
     let args = avra_llvm_value_array_new(2)
@@ -438,6 +447,16 @@ fn wreck(m: ptr, path: string, failure: string) -> string {
 /// runtime_api.av is the one definition, runtime/avra_runtime.c
 /// its implementation twin. A split module declares the rows it
 /// calls; a whole-program module declares every row.
+/// RUNTIME ROWS A NON-HOST HOST READS DIRECTLY. The browser glue reads a
+/// frame's LENGTH through this row rather than a second copy of avra_box.h's
+/// header offsets, so the layout stays one definition. It is EXPORTED BY THE
+/// LINKER: the row lives in the runtime archive, and an export attribute on a
+/// mere declaration does not reach across a member.
+const HOST_VISIBLE_ROWS: List<string> = ["avra_bytes_len"]
+
+/// The linker's words that export those rows, one list every consumer reads.
+export fn host_export_words() -> List<string> { ["-Wl,--export=${n}" for n in HOST_VISIBLE_ROWS] }
+
 fn declare_runtime(lc: ptr, m: ptr) {
     // EVERY RUNTIME ROW, in every module, and NOT filtered to the names the
     // program's instructions mention. `emit_body` emits runtime calls of its own
@@ -452,11 +471,15 @@ fn declare_runtime(lc: ptr, m: ptr) {
     }
 }
 
-/// The program's own host fns, declared like the runtime's rows.
-fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>, refs: Refs) {
+/// The program's own host fns, declared like the runtime's rows. ON A NON-HOST
+/// TARGET they are the HOST IMPORTS: a wasm module has no package C to define
+/// one, so each crosses as an import from `avra:rt` under its own symbol — the
+/// module the browser host implements beside WASI.
+fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>, refs: Refs, wasm: bool) {
     for s in rows {
         if carries(refs, refs.hosted, s.name) {
             declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+            if wasm { avra_llvm_set_import(avra_llvm_get_named_function(m, s.name), "avra:rt", s.name) }
         }
     }
 }
@@ -475,8 +498,10 @@ fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
     }
 }
 
-/// One user fn's declaration, typed from its signature's shapes.
-fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
+/// One user fn's declaration, typed from its signature's shapes. An `export fn`
+/// on a non-host target exports it under its WRITTEN name (the LLVM symbol
+/// stays mangled), so a host reaches `avra_event`, never `av_avra_event`.
+fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body, wasm: bool) {
     declare(
         m,
         mangled(bd.name),
@@ -484,6 +509,9 @@ fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
         [ll_type_of(lc, types, pt) for pt in bd.params],
         false,
     )
+    if wasm && bd.exported {
+        avra_llvm_set_export(avra_llvm_get_named_function(m, mangled(bd.name)), bd.name)
+    }
 }
 
 fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {

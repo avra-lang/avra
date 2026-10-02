@@ -211,6 +211,44 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 	@rm -f $@
 	@ar rcs $@ $^
 
+# THE RUNTIME AS WEBASSEMBLY, one object per file, MINUS the two that have no
+# wasm body: a fiber switches stacks and a core forks, and wasm can do neither
+# without the stack-switching proposal. Excluding them HERE makes the law — a
+# DOM app must never link them — structural rather than a hope, and a program
+# links only the members it reaches in any case.
+WASM_TARGET ?= wasm32-unknown-wasi
+WASM_CC ?= clang
+WASM_AR ?= ar
+WASI_SYSROOT ?=
+WASM_EMULATED := -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_GETPID
+WASM_RUNTIME_SRCS := $(filter-out runtime/avra_fiber.c runtime/avra_cores.c,$(wildcard runtime/*.c))
+WASM_RUNTIME_OBJS := $(patsubst runtime/%.c,build/wasm32/%.o,$(WASM_RUNTIME_SRCS))
+WASM_RUNTIME_LIB := build/wasm32/libavra_runtime.a
+
+build/wasm32/%.o: runtime/%.c
+	@mkdir -p build/wasm32
+	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
+
+$(WASM_RUNTIME_LIB): $(WASM_RUNTIME_OBJS)
+	@mkdir -p build/wasm32
+	@rm -f $@
+	@$(WASM_AR) rcs $@ $^
+
+wasm-runtime: $(WASM_RUNTIME_LIB)
+
+# THE WASM PROOF: build the fixtures native and for wasm32 and require
+# identical stdout. Skips, spoken, where the wasm toolchain or node is absent.
+wasm-check:
+	sh tools/wasm-check.sh
+
+# THE HOST SEAM: the avra:rt import and the avra_event export, inspected.
+wasm-seam:
+	sh tools/wasm-seam-check.sh
+
+# THE ARCHIVE'S LAW: never carries a fiber or a core.
+wasm-archive:
+	sh tools/wasm-archive.sh
+
 # Every package that carries tests, in dependency order — DERIVED from
 # the manifests (tools/suites.py), never listed: a hand-kept list is a
 # registry that forgets its next member, and the gate would report
@@ -218,7 +256,7 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-check wasm-seam wasm-archive
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.

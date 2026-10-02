@@ -33,6 +33,15 @@ enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MA
 enum { MARK_OWNED = 1, MARK_ABSENT = 2 };
 
 // "AVRA" — the bytes that say a header is this runtime's.
+// The caller's own address, where the accounting names a site. A
+// WebAssembly module has no return-address read, so the instruments
+// that use it carry no site there rather than fail to compile.
+#if defined(__wasm32__)
+#define AVRA_CALLER() ((void*)0)
+#else
+#define AVRA_CALLER() __builtin_return_address(0)
+#endif
+
 #define AVRA_TAG 0x41565241u
 
 // Sixteen bytes before every payload: the tag, the kind, the count,
