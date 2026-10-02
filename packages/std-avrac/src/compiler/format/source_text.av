@@ -1344,7 +1344,12 @@ impl SourceText {
                 self.skip_trivia_within(end_of(self.store.expr_span(id)))
                 grouped(text, atom_tier, parent)
             },
-            .Component(word, heads, block, _, _) -> grouped(self.instance(word, heads, block, depth), atom_tier, parent),
+            // A COMPONENT INSTANCE BINDS LOOSEST: its HEAD is an
+            // expression, so a following `.` chain or binary operator is
+            // swallowed into the head — `text "hi".describe()` reads as
+            // `text ("hi".describe())`. Loosest tier forces the group
+            // wherever anything follows it.
+            .Component(word, heads, block, _, _) -> grouped(self.instance(word, heads, block, depth), loosest_tier, parent),
             .If(cond, yes, no) -> grouped(self.if_group(cond, yes, no, id, depth, c), atom_tier, parent),
             .When(conds, values, fallback) -> grouped(
                 self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth),
@@ -1352,7 +1357,7 @@ impl SourceText {
                 parent,
             ),
             .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
-            .Collect(body) -> grouped(self.instance("collect", [body], null, depth), atom_tier, parent),
+            .Collect(body) -> grouped(self.instance("collect", [body], null, depth), loosest_tier, parent),
             .Call(callee, pins, args) -> {
                 let head = "${source_name(callee.of)}${self.pins(pins)}"
                 grouped(
