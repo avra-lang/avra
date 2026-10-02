@@ -408,8 +408,14 @@ impl Decls {
     /// held, since its object holds the body already.
     fn instance_unit(d: DeclId) -> Wanted {
         let x = self.decl(d)
-        let store = self.store_of(x.file)
-        let root: ExprId? = if x.stmt.index < store.stmts.count() { store.stmt_value(x.stmt) } else { null }
+        // A HELD FILE'S ROOT IS ABSENT: its object holds the body already, so the
+        // arena is never read for it — reading it would parse the whole held file.
+        let root: ExprId? = if self.held.get().get(self.file(x.file).path) != null {
+            null
+        } else {
+            let store = self.store_of(x.file)
+            if x.stmt.index < store.stmts.count() { store.stmt_value(x.stmt) } else { null }
+        }
         Wanted { file: x.file, decl: d, name: self.symbol(d), sub: null, root: root }
     }
 
