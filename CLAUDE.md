@@ -1971,6 +1971,12 @@ Runtime facts, ours to ratify:
   patience. (Owner rule, 2026-10-02: an 18-minute `sleep` loop waiting on
   `main` deadlocked the merge queue — main could not move because that
   lane's own PR was failing the train.)
+
+- A PR'S OWN `test` CHECK ONLY ADMITS IT — checks.yml's PR step is
+  "admitted; the train is what gets tested" — so a branch's keepers,
+  fmt and idioms run in `tools/work land`'s preflight
+  (`tools/gate_changed.sh`) with the branch's own compiler: the only
+  place a slip dies before it is enqueued.
 - MEASURE, THEN CHANGE. `make census CMD="check <pkg>"` gives EXACT
   retain/release/list-write counts and, with the per-caller tables,
   who causes them; `AVRA_SAMPLE=<secs> sh tools/watch.sh 4000 ./avra

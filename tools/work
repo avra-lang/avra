@@ -95,7 +95,7 @@ land() {
     git fetch -q origin main
     git rebase -q origin/main || die "rebase onto main conflicted; resolve, then run land again"
     [ -n "$(git log --format=%h origin/main..HEAD)" ] || die "nothing to land"
-    fmt_preflight
+    gate_preflight
     git push -q --force-with-lease -u origin "$branch"
     if [ "$(gh pr list --head "$branch" --state open --json number --jq length)" = 0 ]; then
         gh pr create --base main --head "$branch" \
@@ -106,18 +106,23 @@ land() {
     gh pr list --head "$branch" --state open --json url --jq '.[0].url'
 }
 
-# THE LOCAL FMT PREFLIGHT — the SAME check the train runs, on the SAME
-# changed files, with a compiler BUILT FROM THIS BRANCH. A stale standing
-# binary is BLIND here: it refuses syntax the branch added and cannot
-# report the canonical diff, so it would certify a file the train then
-# refuses. `tools/sp` syncs this tree and builds `build/avra` from it, so
-# the byte-for-byte instrument is the branch's own.
-fmt_preflight() {
+# THE LOCAL ENQUEUE GATE — the SAME checks the train runs (keepers, the
+# changed-file fmt, the affected packages' idioms), with a compiler BUILT
+# FROM THIS BRANCH. A stale standing binary is BLIND here: it refuses syntax
+# the branch added and cannot report the canonical diff, so it would certify
+# a file the train then refuses. A PR's own `test` check only ADMITS it —
+# the train is what gets tested — so this preflight is the only place a slip
+# can die before it is enqueued. `tools/sp` syncs this tree and builds
+# `build/avra` from it; `tools/gate_changed.sh` is the one instrument.
+gate_preflight() {
     changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
-    [ -z "$changed" ] && return 0
-    echo "work: fmt preflight — the branch's own compiler over the changed .av" >&2
-    AVRA_SP_TREE=$PWD sh "$tools/sp" sh tools/fmt_changed.sh --files $changed \
-        || die "fmt --check refused the branch's changed .av — the train would too; run: build/avra fmt --write$(echo " $changed")"
+    packages=$(sh "$tools/affected_packages.sh" origin/main HEAD "$PWD" 2>/dev/null | tr '\n' ' ')
+    if [ -z "$changed" ] && [ -z "$packages" ]; then
+        git diff --quiet origin/main HEAD && return 0
+    fi
+    echo "work: enqueue preflight — the branch's own compiler over the changed .av and affected packages" >&2
+    AVRA_SP_TREE=$PWD sh "$tools/sp" sh tools/gate_changed.sh --files $changed --packages $packages \
+        || die "the enqueue gate refused the branch — the train would too"
 }
 
 status() {
@@ -128,13 +133,13 @@ status() {
 # Wait for a branch's PR to merge. THE ORACLE IS THE PR'S STATE, asked of
 # `gh`, never `main` — see the header. `MERGED` is the only success; a closed
 # PR is a failure; anything else is still riding the queue. The deadline
-# (`AVRA_WAIT_SECONDS`, default one hour) and the poll (`AVRA_WAIT_POLL`,
-# default 15s) are the caller's.
+# (`AVRA_WAIT_SECONDS`, default 120s — nothing blocks for long) and the poll
+# (`AVRA_WAIT_POLL`, default 15s) are the caller's.
 wait_landed() {
     [ "$#" -eq 1 ] || die "usage: work wait <branch>"
     branch=$1
     poll=${AVRA_WAIT_POLL:-15}
-    limit=${AVRA_WAIT_SECONDS:-3600}
+    limit=${AVRA_WAIT_SECONDS:-120}
     deadline=$(( $(date +%s) + limit ))
     while :; do
         state=$(gh pr view "$branch" --json state --jq .state 2>/dev/null || true)
