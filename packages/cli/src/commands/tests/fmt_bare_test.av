@@ -84,3 +84,30 @@ spec "avra fmt — a bare run says it only printed" {
         }
     }
 }
+
+spec "avra fmt --check — a refused file is never certified canonical" {
+    given "a file the formatter cannot parse" {
+        then "--check fails and reports the refusal" {
+            let path = fmt_fixture("fmt_refuse_check", broken())
+            match fmt_ran(["fmt", "--check", path]) {
+                .Ok(o) -> !exit_is_zero(o.exit) && o.out.stdout.contains("refused"),
+                .Err(_) -> false,
+            }
+        }
+        then "--write refuses and leaves the file exactly as it stood" {
+            let path = fmt_fixture("fmt_refuse_write", broken())
+            match fmt_ran(["fmt", "--write", path]) {
+                .Ok(o) -> !exit_is_zero(o.exit) && on_disk(path) == broken(),
+                .Err(_) -> false,
+            }
+        }
+        then "a second --check still refuses — the refusal was never remembered as canonical" {
+            let path = fmt_fixture("fmt_refuse_twice", broken())
+            let _ = fmt_ran(["fmt", "--check", path])
+            match fmt_ran(["fmt", "--check", path]) {
+                .Ok(o) -> !exit_is_zero(o.exit) && o.out.stdout.contains("refused"),
+                .Err(_) -> false,
+            }
+        }
+    }
+}
