@@ -36,6 +36,7 @@ export enum Clause {
     DropWhile(pred: FnBox, started: Reg)
     FilterMap(f: FnBox, opt: TypeId)
     FlatMap(f: FnBox, e: ExprId, list: TypeId, elem: TypeId)
+    Flatten(e: ExprId, list: TypeId, elem: TypeId)
 }
 
 /// Where each element that passes every clause goes: a pushed list, or
@@ -109,6 +110,7 @@ impl LowerCx {
                 let xs = self.call_ptr(list, f.code, [f.box, t.value!])
                 self.inner_walk(p, at, xs, e, list, elem)
             },
+            .Flatten(e, list, elem) -> self.inner_walk(p, at, t.value!, e, list, elem),
             .DropWhile(pred, started) -> {
                 let began = self.loaded_as(self.type(bool), started)
                 self.void_region(began) { cx -> cx.staged(p, at + 1, t) }

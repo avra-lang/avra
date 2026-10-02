@@ -421,7 +421,13 @@ impl LowerCx {
     mut fn opened_reg(e: ExprId, xs: Reg, ty: TypeId, elem: TypeId) -> Walk {
         let len = self.measure_of(e, xs, ty)
         let idx = self.seeded_cell(self.type(int), self.const_int(0))
-        Walk { xs: xs, len: len, idx: idx, elem: elem }
+        Walk { xs: xs, len: len, idx: idx, elem: elem, kind: self.walk_kind(ty) }
+    }
+
+    /// The kind a source of `ty` walks: a `Bytes` reads octets, anything
+    /// else (a list, a range) reads elements.
+    fn walk_kind(ty: TypeId) -> WalkKind {
+        match self.view.types.seen_shape(ty) { .Bytes -> .Bytes, _ -> .List }
     }
 
     /// `lo..hi` — the count starts at `lo` and stops before `hi`.
@@ -432,6 +438,7 @@ impl LowerCx {
             len: self.reg_of(hi),
             idx: self.seeded_cell(int, self.reg_of(lo)),
             elem: int,
+            kind: .List,
         }
     }
 
@@ -456,7 +463,10 @@ impl LowerCx {
     /// This turn's element — a RUNTIME index, so the read stays raw.
     /// Asked of a list's walk only; a range's has no box.
     mut fn turn_elem(w: Walk, here: Reg) -> Reg {
-        self.elem_read(w.xs!, here, w.elem)
+        match w.kind {
+            .List -> self.elem_read(w.xs!, here, w.elem),
+            .Bytes -> self.bytes_at(Type.Int, w.xs!, here),
+        }
     }
 
     /// The walk ends here: its answer is in hand.
@@ -509,7 +519,18 @@ export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
 
 /// A walk counts `idx` up to `len`; over a list, `xs` is the box each
 /// turn reads at the count, and a range has no box to read.
-export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId }
+/// What a walk source reads per turn: a list's element, or a byte of a
+/// `Bytes`. The kind is DERIVED from the source's shape (`walk_kind`),
+/// so a walk over `s.bytes()` reads octets without a second spelling.
+export enum WalkKind {
+    List
+    Bytes
+}
+
+export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId, kind: WalkKind }
+
+/// The kind a source of `ty` walks: a `Bytes` reads octets, anything
+/// else (a list, a range) reads elements.
 
 // ── Measures ────────────────────────────────────────────────────
 
