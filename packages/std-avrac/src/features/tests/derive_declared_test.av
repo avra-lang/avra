@@ -1,0 +1,45 @@
+// A DERIVE MAY ANSWER `Declared` — the same effect as `List<Directive>`
+// with room to speak problems about the shape it generated from. `made`
+// is admitted beside the annotated declaration and each problem is
+// spoken exactly where a Declares annotation's own answer is.
+use @std.avrac.compiler.{Program}
+use @std.avrac.testing.{provided, answered, said, refused_in}
+
+/// A provider whose `derive` generates one impl and refuses a field it
+/// cannot name.
+fn stamp_provider() -> string {
+    "use @std.meta.{Type, Directive, Declared, refuse}\n" +
+        "export trait Stamp {\n" +
+        "    static fn derive(t: Type) -> Declared {\n" +
+        "        let made = [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn stamp() -> string { \"ok\" } } } }]\n" +
+        "        let problems = [refuse(\"\${t.name} carries a field named `bad`, which nothing can name\") for f in t.fields if f.name == \"bad\"]\n" +
+        "        Declared { made: made, problems: problems }\n" +
+        "    }\n" +
+        "    static fn marks(t: Type) -> List<string> { [] }\n" +
+        "}\n"
+}
+
+fn stamped(main: string) -> Program {
+    provided(main, stamp_provider())
+}
+
+spec "features/tests — a derive answering `Declared`" {
+    given "a derive whose `Declared` carries only `made`" {
+        then "its declarations are admitted and run" {
+            let p = stamped(
+                "use @std.meta.{derive}\nuse @x.c.{Stamp}\n@derive(Stamp)\ntype Good = { a: int }\n\"\${Good { a: 1 }.stamp()}\"",
+            )
+            said(p).length == 0 && answered(p) == "ok"
+        }
+    }
+    given "a derive whose `Declared` carries `problems`" {
+        then "the generated declarations stand AND each problem is spoken" {
+            refused_in(
+                stamped(
+                    "use @std.meta.{derive}\nuse @x.c.{Stamp}\n@derive(Stamp)\ntype Bad = { bad: int }\n\"\${Bad { bad: 1 }.stamp()}\"",
+                ),
+                "Bad carries a field named `bad`, which nothing can name",
+            )
+        }
+    }
+}
