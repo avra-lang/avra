@@ -52,8 +52,17 @@ check("children follow the frame's order", shape(first).kids.map((k) => k.text),
 apply("C 0 div\nC 0/0 span\nT 0/0 b");
 check("a dropped child leaves", shape(first).kids.length, 1);
 
+apply("C 0 ul\nC 0/0 li\nK 0/0 a\nT 0/0 A\nC 0/1 li\nK 0/1 b\nT 0/1 B");
+const li = mount.childNodes[0];
+const bEl = li.childNodes[1];
+check("a keyed list builds in order", shape(li).kids.map((k) => k.text), ["A", "B"]);
+
+apply("C 0 ul\nC 0/0 li\nK 0/0 b\nT 0/0 B\nC 0/1 li\nK 0/1 a\nT 0/1 A");
+check("a KEYED reorder moves the element itself, not its text", li.childNodes[0] === bEl, true);
+check("and the order follows the keys", shape(li).kids.map((k) => k.key), ["b", "a"]);
+
 apply("");
 check("an empty frame empties the mount", mount.childNodes.length, 0);
 
-console.log(fails === 0 ? "bootstrap: 5/5" : `bootstrap: ${fails} FAILED`);
+console.log(fails === 0 ? "bootstrap: 7/7" : `bootstrap: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

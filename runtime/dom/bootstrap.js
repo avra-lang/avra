@@ -1,27 +1,40 @@
 // The live target's fixed bootstrap — the ONLY JavaScript an Avra web app
-// ships. The program (wasm) emits a text frame; this applies it to the
-// live tree, keyed by PATH. Paths are stable for a stable shape, so a
-// re-render moves nothing it need not. Same file for every app.
+// ships. The program (wasm) emits a text frame; this reconciles it into the
+// live tree. A node with a KEY is matched by key (identity moves with it);
+// a node without one is matched by its PATH. Same file for every app.
 
-// The three separators the compiler escapes in a value.
+// The separators the compiler escapes in a value.
 export function unesc(s) {
   return s.replace(/%0a/g, "\n").replace(/%20/g, " ").replace(/%25/g, "%");
 }
 
-// Parse a frame's text into ops. Unknown opcodes are ignored, not guessed.
+// Parse a frame into node records in frame order. A record starts at a `C`
+// op; `K`/`A`/`T` beside it fill key, class and words.
 export function parseFrame(text) {
   if (text === "") return [];
-  return text.split("\n").map((line) => {
+  const records = [];
+  for (const line of text.split("\n")) {
     const i = line.indexOf(" ");
     const op = i < 0 ? line : line.slice(0, i);
-    return { op, rest: i < 0 ? "" : line.slice(i + 1) };
-  });
-}
-
-function split2(rest) {
-  const i = rest.indexOf(" ");
-  if (i < 0) return [rest, ""];
-  return [rest.slice(0, i), rest.slice(i + 1)];
+    const rest = i < 0 ? "" : line.slice(i + 1);
+    if (op === "C") {
+      const j = rest.indexOf(" ");
+      records.push({ path: rest.slice(0, j), tag: rest.slice(j + 1), key: null, cls: null, text: null });
+    } else if (op === "K") {
+      const r = records[records.length - 1];
+      const j = rest.indexOf(" ");
+      r.key = unesc(rest.slice(j + 1));
+    } else if (op === "A") {
+      const r = records[records.length - 1];
+      const j = rest.indexOf(" ");
+      r.cls = unesc(rest.slice(j + 1));
+    } else if (op === "T") {
+      const r = records[records.length - 1];
+      const j = rest.indexOf(" ");
+      r.text = unesc(rest.slice(j + 1));
+    }
+  }
+  return records;
 }
 
 function parentPath(path) {
@@ -29,71 +42,55 @@ function parentPath(path) {
   return i < 0 ? null : path.slice(0, i);
 }
 
-// Build the applier over one document (a real one in a browser, a stub in
-// a test). One mount element holds the tree; each frame reconciles it.
+// Build the applier over one document (a real one in a browser, a stub in a
+// test) and one mount element.
 export function createApplier(doc, mount) {
-  // LICENSED loops.push_loop: the map rides the closure as the applier's one table
-  const nodes = new Map();
-
-  function element(path, tag) {
-    const had = nodes.get(path);
-    if (had && (tag === undefined || had.tagName.toLowerCase() === tag)) return had;
-    const el = doc.createElement(tag);
-    nodes.set(path, el);
-    return el;
-  }
+  // LICENSED loops.push_loop: these maps ride the closure as the applier's table
+  const byKey = new Map();
+  let byPath = new Map();
 
   return function apply(text) {
-    const live = [];
-    const seen = new Set();
-    for (const { op, rest } of parseFrame(text)) {
-      if (op === "C") {
-        const [path, tag] = split2(rest);
-        element(path, tag);
-        live.push(path);
-        seen.add(path);
-      } else if (op === "K") {
-        const [path, key] = split2(rest);
-        element(path).setAttribute("data-key", unesc(key));
-      } else if (op === "T") {
-        const [path, words] = split2(rest);
-        const el = element(path);
-        if (el.textContent !== unesc(words)) el.textContent = unesc(words);
+    const records = parseFrame(text);
+    const next = new Map();
+    const keys = new Set();
+    for (const r of records) {
+      const keyed = r.key !== null && byKey.has(r.key);
+      let el = keyed ? byKey.get(r.key) : byPath.get(r.path) || doc.createElement(r.tag);
+      if (r.key !== null) {
+        el.setAttribute("data-key", r.key);
+        byKey.set(r.key, el);
+        keys.add(r.key);
       }
+      if (r.cls !== null) el.setAttribute("class", r.cls);
+      if (r.text !== null && el.textContent !== r.text) el.textContent = r.text;
+      next.set(r.path, el);
     }
-    // Anything this frame no longer names leaves its parent and the table.
-    for (const [path, el] of [...nodes]) {
-      if (seen.has(path)) continue;
-      if (el.parentNode) el.parentNode.removeChild(el);
-      nodes.delete(path);
-    }
-    // Every LIVE node's children are exactly the frame's, in its order.
+    // Order each parent's children by the frame's own order.
     const order = new Map();
-    for (const path of live) if (!order.has(path)) order.set(path, []);
-    order.set(null, []);
-    for (const path of live) {
-      const p = parentPath(path);
+    for (const r of records) {
+      const p = parentPath(r.path);
       if (!order.has(p)) order.set(p, []);
-      order.get(p).push(path);
+      order.get(p).push(r.path);
     }
+    if (!order.has(null)) order.set(null, []);
     for (const [p, kids] of order) {
-      const host = p === null ? mount : nodes.get(p);
+      const host = p === null ? mount : next.get(p);
       if (!host) continue;
       kids.forEach((path, i) => {
-        const el = nodes.get(path);
+        const el = next.get(path);
         if (host.childNodes[i] !== el) host.insertBefore(el, host.childNodes[i] || null);
       });
       while (host.childNodes.length > kids.length) {
         host.removeChild(host.childNodes[host.childNodes.length - 1]);
       }
     }
-    return seen;
-
+    for (const [key, el] of [...byKey]) if (!keys.has(key)) byKey.delete(key);
+    byPath = next;
   };
 }
 
 // Load the module and run it in a page. `imports` is the host's own table
-// for module `avra:rt`; WASI's preview1 is supplied by the shim beside it.
+// for module `avra:rt`; WASI's preview1 comes from the shim beside it.
 export async function start(url, mount, wasi, hostImports) {
   const bytes = await (await fetch(url)).arrayBuffer();
   const { instance } = await WebAssembly.instantiate(bytes, {
