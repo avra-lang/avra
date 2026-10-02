@@ -1,52 +1,44 @@
 // The live target's fixed bootstrap — the ONLY JavaScript an Avra web app
-// ships. The program (wasm) emits a text frame; this reconciles it into the
-// live tree. A node with a KEY is matched by key (identity moves with it);
-// a node without one is matched by its PATH. Same file for every app.
+// ships. The program (wasm) emits a frame; this reconciles it into the live
+// tree. A node with a KEY is matched by key (identity moves with it); a node
+// without one is matched by its PATH. Same file for every app.
+//
+// Wire V2: values are LENGTH-PREFIXED and carried raw, so nothing is escaped
+// on either side and nothing can drift. See realize/dom/frame.av.
 
-// The separators the compiler escapes in a value.
-export function unesc(s) {
-  return s.replace(/%0a/g, "\n").replace(/%20/g, " ").replace(/%25/g, "%");
-}
+export const FRAME_VERSION = "V2";
 
-// The wire's version. A frame from another version REFUSES — a stale
-// bootstrap that guessed would misapply a whole tree.
-export const FRAME_VERSION = "V1";
-
-// A frame's ops, one per line, after the version line.
-export function splitFrame(text) {
-  const lines = text.split("\n");
-  const version = lines[0];
-  if (version !== FRAME_VERSION) {
-    throw new Error(`unsupported frame version ${JSON.stringify(version)} — this host speaks ${FRAME_VERSION}`);
-  }
-  return lines.slice(1);
-}
-
-// Parse a frame into node records in frame order. A record starts at a `C`
-// op; `K`/`A`/`T` beside it fill key, class and words.
+// A frame's records, in frame order. A `C` line opens a record; `K`/`A`/`T`
+// beside it fill key, class and words — each with its byte length, the bytes
+// themselves on the following line. Null means NOTHING CHANGED.
 export function parseFrame(text) {
-  const lines = splitFrame(text);
-  if (lines.length === 1 && lines[0] === "N") return null;
+  const head = FRAME_VERSION + "\n";
+  if (!text.startsWith(head)) {
+    const seen = JSON.stringify(text.slice(0, text.indexOf("\n")));
+    throw new Error(`unsupported frame version ${seen} — this host speaks ${FRAME_VERSION}`);
+  }
+  let i = head.length;
+  if (text.slice(i, i + 2) === "N\n") return null;
   const records = [];
-  for (const line of lines) {
-    const i = line.indexOf(" ");
-    const op = i < 0 ? line : line.slice(0, i);
-    const rest = i < 0 ? "" : line.slice(i + 1);
+  while (i < text.length) {
+    const nl = text.indexOf("\n", i);
+    if (nl < 0) break;
+    const line = text.slice(i, nl);
+    i = nl + 1;
+    if (line === "") continue;
+    const op = line[0];
+    const body = line.slice(2);
+    const sp = body.indexOf(" ");
     if (op === "C") {
-      const j = rest.indexOf(" ");
-      records.push({ path: rest.slice(0, j), tag: rest.slice(j + 1), key: null, cls: null, text: null });
-    } else if (op === "K") {
+      records.push({ path: body.slice(0, sp), tag: body.slice(sp + 1), key: null, cls: null, text: null });
+    } else if (op === "K" || op === "A" || op === "T") {
+      const len = parseInt(body.slice(sp + 1), 10);
+      const val = text.substr(i, len);
+      i += len + 1; // the value, then its newline
       const r = records[records.length - 1];
-      const j = rest.indexOf(" ");
-      r.key = unesc(rest.slice(j + 1));
-    } else if (op === "A") {
-      const r = records[records.length - 1];
-      const j = rest.indexOf(" ");
-      r.cls = unesc(rest.slice(j + 1));
-    } else if (op === "T") {
-      const r = records[records.length - 1];
-      const j = rest.indexOf(" ");
-      r.text = unesc(rest.slice(j + 1));
+      if (op === "K") r.key = val;
+      else if (op === "A") r.cls = val;
+      else r.text = val;
     }
   }
   return records;
@@ -66,12 +58,12 @@ export function createApplier(doc, mount) {
 
   return function apply(text) {
     const records = parseFrame(text);
-    if (records === null) return; // no change
+    if (records === null) return; // nothing changed — touch nothing
     const next = new Map();
     const keys = new Set();
     for (const r of records) {
       const keyed = r.key !== null && byKey.has(r.key);
-      let el = keyed ? byKey.get(r.key) : byPath.get(r.path) || doc.createElement(r.tag);
+      const el = keyed ? byKey.get(r.key) : byPath.get(r.path) || doc.createElement(r.tag);
       if (r.key !== null) {
         el.setAttribute("data-key", r.key);
         byKey.set(r.key, el);
@@ -100,13 +92,13 @@ export function createApplier(doc, mount) {
         host.removeChild(host.childNodes[host.childNodes.length - 1]);
       }
     }
-    for (const [key, el] of [...byKey]) if (!keys.has(key)) byKey.delete(key);
+    for (const [key] of [...byKey]) if (!keys.has(key)) byKey.delete(key);
     byPath = next;
   };
 }
 
-// Load the module and run it in a page. `imports` is the host's own table
-// for module `avra:rt`; WASI's preview1 comes from the shim beside it.
+// Load the module and run it in a page. `imports` is the host's own table for
+// module `avra:rt`; WASI's preview1 comes from the shim beside it.
 export async function start(url, mount, wasi, hostImports) {
   const bytes = await (await fetch(url)).arrayBuffer();
   const { instance } = await WebAssembly.instantiate(bytes, {

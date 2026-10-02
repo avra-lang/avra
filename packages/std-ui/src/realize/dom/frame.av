@@ -1,27 +1,36 @@
 //! `realize/dom/frame.av` — the live target's op frame. One render emits a
-//! TEXT frame, one op per line; the program hands it to the runtime, which
-//! hands it to the host, which applies it to the live tree. Paths are
-//! stable for a stable shape, so a re-render needs no keys yet.
+//! frame; the program hands it to the runtime, which hands it to the host,
+//! which reconciles it into the live tree. Values are LENGTH-PREFIXED, so
+//! they are carried raw — no escaping on either side to drift apart.
+//!
+//!   V2                       the wire's version; a stale host REFUSES
+//!   C <path> <tag>           create element <tag> at <path>
+//!   K <path> <len>           data-key, identity for a keyed reorder
+//!   A <path> <len>           the class attribute
+//!   T <path> <len>           the node's words
+//!   N                        nothing changed
+//! A value op's bytes follow its line, then a newline.
 use realize.render.{Node}
 use realize.html.tags.{tag_of}
 use realize.html.css.{CssRule, distinct_rules, class_names, stylesheet}
-use style.theme.{Theme}
 use realize.lists.{union}
+use style.theme.{Theme}
 
-/// A value with the three separators escaped, so an op is one line.
-fn esc(s: string) -> string {
-    s.replace("%", "%25").replace(" ", "%20").replace("\n", "%0a")
-}
+/// The wire's version — a stale bootstrap must REFUSE, never misapply.
+const frame_version = "V2"
 
-/// This node's own ops: its element, its key, its words.
+/// An op's line, then its value raw with the length that reads it back.
+fn valued(line: string, v: string) -> string { "${line} ${v.length}\n${v}\n" }
+
+/// This node's own ops: its element, its key, its classes, its words.
 fn own_ops(n: Node, path: string) -> List<string> {
     let key = n.box.key ?? ""
-    let key_ops: List<string> = if key == "" { [] } else { ["K ${path} ${esc(key)}"] }
-    let words = n.words()
-    let word_ops: List<string> = if words == "" { [] } else { ["T ${path} ${esc(words)}"] }
+    let key_ops: List<string> = if key == "" { [] } else { [valued("K ${path}", key)] }
     let names = class_names(n)
-    let class_ops: List<string> = if names.is_empty() { [] } else { ["A ${path} class ${esc(names.join(" "))}"] }
-    ["C ${path} ${tag_of(n).text()}"].concat(key_ops).concat(class_ops).concat(word_ops)
+    let class_ops: List<string> = if names.is_empty() { [] } else { [valued("A ${path}", names.join(" "))] }
+    let words = n.words()
+    let word_ops: List<string> = if words == "" { [] } else { [valued("T ${path}", words)] }
+    ["C ${path} ${tag_of(n).text()}\n"].concat(key_ops).concat(class_ops).concat(word_ops)
 }
 
 /// The ops for one node and its subtree — this node's, then each child's.
@@ -29,14 +38,11 @@ fn ops_of(n: Node, path: string) -> List<string> {
     own_ops(n, path).concat(union([ops_of(c, "${path}/${i}") for i, c in n.children]))
 }
 
-/// The wire's version — a stale bootstrap must REFUSE, never misapply.
-const frame_version = "V1"
-
 /// The whole tree as one frame.
-export fn frame(root: Node) -> string { "${frame_version}\n${ops_of(root, "0").join("\n")}" }
+export fn frame(root: Node) -> string { "${frame_version}\n${ops_of(root, "0").join("")}" }
 
 /// Nothing changed: one op, so an unchanged render costs one line.
-export fn no_change() -> string { "${frame_version}\nN" }
+export fn no_change() -> string { "${frame_version}\nN\n" }
 
 /// Every rule any node in the tree names.
 fn all_rules(n: Node) -> List<CssRule> {
