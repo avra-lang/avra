@@ -1312,6 +1312,8 @@ impl Machine {
             .MapSlot -> self.map_slot_val(vals),
             .MapValueAt -> self.map_value_at_val(vals),
             .MapPresentAt -> self.map_present_at_val(vals),
+            .MapKeys -> self.map_keys_val(vals),
+            .MapVals -> self.map_vals_val(vals),
             .SlotSetMaybe -> self.set_maybe_val(vals),
             .SlotPresent -> self.present_val(vals),
             .ArrayLastPresent -> self.last_present_val(vals),
@@ -1900,6 +1902,16 @@ impl Machine {
     fn map_present_at_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.unlooked() }
         Val.I(if self.maps[id].vals[self.whole(vals[1])] is .Gone { 0 } else { 1 })
+    }
+
+    fn map_keys_val(vals: List<Val>) -> Val {
+        let id? = map_id(vals[0]) else { return self.unlooked() }
+        self.fresh_array([Val.S(k) for k in self.maps[id].keys])
+    }
+
+    fn map_vals_val(vals: List<Val>) -> Val {
+        let id? = map_id(vals[0]) else { return self.unlooked() }
+        self.fresh_array([read_out(x) for x in self.maps[id].vals])
     }
 
     fn unread_presence() -> Val { self.defect_val("a presence read of a non-array") }

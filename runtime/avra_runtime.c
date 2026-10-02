@@ -2149,6 +2149,17 @@ int64_t avra_map_len(void* map) {
     return ((AvraMap*)map)->keys->len;
 }
 
+// The map's keys in insertion order, as a fresh list — the map keeps
+// its own reference to each, so the copy retains them.
+void* avra_map_keys(void* map) {
+    return array_clone(((AvraMap*)map)->keys);
+}
+
+// The map's values in insertion order, as a fresh list.
+void* avra_map_vals(void* map) {
+    return array_clone(((AvraMap*)map)->vals);
+}
+
 int64_t avra_map_has(void* map, const char* key) {
     return map_find((AvraMap*)map, key) >= 0;
 }
