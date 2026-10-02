@@ -1,0 +1,54 @@
+//! The data-driven renderer, by its laws: one tree, a vocabulary of
+//! primitives and attributes, a table per target.
+use @std.ui.components.{text, heading, button, column, row}
+use @std.ui.realize.view.{View}
+use @std.ui.realize.html.html.{render}
+use @std.ui.realize.tui.tui.{render as tui_render}
+use @std.ui.env.{Env}
+
+fn html(v: dyn View) -> string { render(v.describe(), Env {}) }
+
+fn term(v: dyn View) -> string { tui_render(v.describe(), Env {}) }
+
+spec "std/ui render — the HTML target" {
+    given "a text" {
+        then "is a span holding its words" { html(text "hi") == "<span>hi</span>" }
+    }
+    given "a heading with a rank" {
+        then "becomes that level" { html(heading "T" { rank: 2 }) == "<h2>T</h2>" }
+    }
+    given "a button" {
+        then "is a button holding its label" { html(button "Buy") == "<button>Buy</button>" }
+    }
+    given "a column of two leaves" {
+        then "nests them in a div" {
+            html(column { items: [text "a", button "b"] }) == "<div><span>a</span><button>b</button></div>"
+        }
+        then "takes its children from its body, into items" {
+            html(
+                column {
+                    text "a"
+                    button "b"
+                },
+            ) == "<div><span>a</span><button>b</button></div>"
+        }
+    }
+    given "text that looks like markup" {
+        then "is escaped" { html(text "<b>") == "<span>&lt;b&gt;</span>" }
+    }
+    given "a row of two texts" {
+        then "is a div too" { html(row { items: [text "a", text "b"] }) == "<div><span>a</span><span>b</span></div>" }
+    }
+}
+
+spec "std/ui render — the terminal target" {
+    given "a text" {
+        then "is the words themselves" { term(text "hi") == "hi" }
+    }
+    given "a button" {
+        then "brackets its label" { term(button "Buy") == "[Buy]" }
+    }
+    given "a column of a text and a button" {
+        then "stacks one line each" { term(column { items: [text "a", button "b"] }) == "a\n[b]" }
+    }
+}
