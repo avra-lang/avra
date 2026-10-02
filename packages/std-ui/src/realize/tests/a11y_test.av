@@ -1,0 +1,137 @@
+//! The a11y obligations of the first component tranche, asserted where a
+//! target draws them: every control carries the name it is announced by,
+//! every state crosses as an attribute, and an image has its alternative.
+//! UI.md §19.2, charter §10.
+use @std.ui.components.{
+    text,
+    heading,
+    image,
+    icon,
+    divider,
+    button,
+    link,
+    field,
+    checkbox,
+    switch,
+    slider,
+    surface,
+    list,
+    item,
+    card,
+    dialog,
+    alert,
+    progress,
+    spinner,
+    form,
+    error_text,
+}
+use @std.ui.realize.view.{View}
+use @std.ui.realize.html.html.{render}
+use @std.ui.env.{Env}
+
+fn html(v: dyn View) -> string { render(v.describe(), Env {}) }
+
+spec "std/ui a11y — every control is named" {
+    given "an image" {
+        then "carries its alternative as a real attribute" {
+            html(image "cat.png" { alt: "A cat" }).contains("alt=\"A cat\"")
+        }
+    }
+    given "an icon" {
+        then "is announced by its name, never silent" { html(icon "x.svg" { name: "Close" }).contains("aria-label=\"Close\"") }
+    }
+    given "a button, link, field, checkbox, switch and slider" {
+        then "each is announced by its label" {
+            html(button "Buy").contains("aria-label=\"Buy\"") &&
+                html(link "Home" { href: "/" }).contains("aria-label=\"Home\"") &&
+                html(field "Name").contains("aria-label=\"Name\"") &&
+                html(checkbox "Done").contains("aria-label=\"Done\"") &&
+                html(switch "On").contains("aria-label=\"On\"") &&
+                html(slider "Volume").contains("aria-label=\"Volume\"")
+        }
+    }
+    given "a dialog" {
+        then "is named by its label" { html(dialog "Confirm" { open: true }).contains("aria-label=\"Confirm\"") }
+    }
+}
+
+spec "std/ui a11y — semantic state crosses as an attribute" {
+    given "a disabled and loading button" {
+        then "says both in the markup" {
+            let out = html(
+                button "Save" {
+                    disabled: true
+                    loading: true
+                },
+            )
+            out.contains("disabled") && out.contains("aria-busy=\"true\"")
+        }
+    }
+    given "an invalid field" {
+        then "says so for the reader" { html(field "Email" { invalid: true }).contains("aria-invalid=\"true\"") }
+    }
+    given "a selected item" {
+        then "says so for the reader" { html(item { selected: true }).contains("aria-selected=\"true\"") }
+    }
+    given "a slider with bounds" {
+        then "carries its min, max and value" {
+            let out = html(
+                slider "Volume" {
+                    amount: 40
+                    min: 5
+                    max: 90
+                },
+            )
+            out.contains("min=\"5\"") && out.contains("max=\"90\"") && out.contains("value=\"40\"")
+        }
+    }
+    given "an alert" {
+        then "announces at its urgency" { html(alert "Saved").contains("aria-live=\"polite\"") }
+    }
+}
+
+spec "std/ui a11y — content and structure" {
+    given "a card with a title" {
+        then "carries the title as an attribute" { html(card "Report").contains("title=\"Report\"") }
+    }
+    given "a link" {
+        then "carries its target" { html(link "Home" { href: "/home" }).contains("href=\"/home\"") }
+    }
+    given "an error text" {
+        then "resolves its visual variant to the danger role" {
+            html(error_text { message: "Bad" }).contains("color-danger")
+        }
+    }
+    given "a progress" {
+        then "shows its label and its bounds" {
+            let out = html(
+                progress "Loading" {
+                    amount: 30
+                    max: 60
+                },
+            )
+            out.contains("Loading") && out.contains("value=\"30\"") && out.contains("max=\"60\"")
+        }
+    }
+    given "the whole first tranche, side by side" {
+        then "renders without a refusal" {
+            html(
+                surface {
+                    divider {}
+                    list {
+                        item {
+                            text "one"
+                            heading "Two" { rank: 2 }
+                        }
+                    }
+                    form {
+                        field "Email"
+                        error_text { message: "Required" }
+                    }
+                    spinner "Wait"
+                },
+            )
+                .contains("<body>")
+        }
+    }
+}

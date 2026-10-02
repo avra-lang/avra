@@ -3,7 +3,7 @@
 //! to an attribute, and `Box` to the atomic classes its rules name. The
 //! walker is the same for every tree; the class set is deduped per
 //! document and the one stylesheet is emitted beside it. UI.md §19.2.
-use realize.render.{Node, Prim, Attribute, content_of, level_of}
+use realize.render.{Node, Prim, Attribute, content_of, level_of, urgency_word}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
 use realize.html.writer.{HtmlOp, document}
 use realize.html.css.{CssRule, rules_of, distinct_rules, stylesheet}
@@ -31,10 +31,17 @@ fn tag_of(p: Prim, attrs: List<Attribute>) -> HtmlTag {
         .Heading -> heading_tag(level_of(attrs)),
         .Button -> .Button,
         .Link -> .A,
-        .Image -> .Img,
-        .Field or .Checkbox -> .Input,
-        .Row or .Column -> .Div,
+        .Image or .Icon -> .Img,
+        .Field or .Checkbox or .Switch or .Slider -> .Input,
+        .Row or .Column or .Surface -> .Div,
+        .List -> .Ul,
+        .Item -> .Li,
+        .Card -> .Article,
         .Dialog -> .Dialog,
+        .Divider -> .Hr,
+        .Progress -> .Progress,
+        .Alert or .Spinner -> .Div,
+        .Form -> .Form,
     }
 }
 
@@ -45,12 +52,23 @@ fn tag_of(p: Prim, attrs: List<Attribute>) -> HtmlTag {
 fn attr_list(a: Attribute) -> List<HtmlAttr> {
     match a {
         .Value(v) -> [HtmlAttr { name: .Value, value: v }],
+        .Amount(n) -> [HtmlAttr { name: .Value, value: "${n}" }],
         .Placeholder(t) -> [HtmlAttr { name: .Placeholder, value: t }],
         .Src(u) -> [HtmlAttr { name: .Src, value: u }],
         .Alt(t) -> [HtmlAttr { name: .Alt, value: t }],
+        .Href(u) -> [HtmlAttr { name: .Href, value: u }],
+        .Min(n) -> [HtmlAttr { name: .Min, value: "${n}" }],
+        .Max(n) -> [HtmlAttr { name: .Max, value: "${n}" }],
         .Disabled(flag) -> if flag { [HtmlAttr { name: .Disabled, value: "" }] } else { [] },
         .Checked(flag) -> if flag { [HtmlAttr { name: .Checked, value: "" }] } else { [] },
-        .Text(_) or .Label(_) or .Level(_) -> [],
+        .Selected(flag) -> if flag { [HtmlAttr { name: .AriaSelected, value: "true" }] } else { [] },
+        .Open(flag) -> if flag { [HtmlAttr { name: .Open, value: "" }] } else { [] },
+        .Invalid(flag) -> if flag { [HtmlAttr { name: .AriaInvalid, value: "true" }] } else { [] },
+        .Loading(flag) -> if flag { [HtmlAttr { name: .AriaBusy, value: "true" }] } else { [] },
+        .Urgency(u) -> [HtmlAttr { name: .AriaLive, value: urgency_word(u) }],
+        .Title(t) -> [HtmlAttr { name: .Title, value: t }],
+        .Name(t) or .Label(t) -> [HtmlAttr { name: .AriaLabel, value: t }],
+        .Text(_) or .Level(_) -> [],
     }
 }
 

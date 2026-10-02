@@ -7,19 +7,58 @@ use style.box.{Box}
 
 /// The interaction contract a component IS. Every target answers every
 /// one, or the build names the target.
-export enum Prim { Text, Heading, Button, Link, Image, Field, Checkbox, Row, Column, Dialog }
+export enum Prim {
+    Text
+    Heading
+    Button
+    Link
+    Image
+    Field
+    Checkbox
+    Row
+    Column
+    Dialog
+    Divider
+    Icon
+    Surface
+    List
+    Item
+    Card
+    Progress
+    Alert
+    Spinner
+    Form
+    Switch
+    Slider
+}
+
+/// How urgently a live region speaks.
+export enum Urgency { Polite, Assertive }
 
 /// A component property, projected from the component's own fields.
+/// Semantic STATE crosses as an attribute (`Disabled`, `Open`, `Invalid`);
+/// a visual variant resolves to `Style` at the component.
 export enum Attribute {
     Text(content: string)
     Label(text: string)
     Level(rank: int)
     Value(text: string)
+    Amount(n: int)
     Placeholder(text: string)
     Src(url: string)
     Alt(text: string)
+    Href(url: string)
+    Min(n: int)
+    Max(n: int)
     Disabled(flag: bool)
     Checked(flag: bool)
+    Selected(flag: bool)
+    Open(flag: bool)
+    Invalid(flag: bool)
+    Loading(flag: bool)
+    Urgency(level: Urgency)
+    Title(text: string)
+    Name(text: string)
 }
 
 /// A drawn node: its primitive, its attributes, its shared Box and its
@@ -36,33 +75,26 @@ export type Node = {
 /// A node's words: its `Text`, else its `Label`.
 export fn content_of(attrs: List<Attribute>) -> string {
     let found? = attrs.find(is_words) else { return "" }
-    match found {
-        .Text(t) or .Label(t) -> t,
-        .Level(_) or .Value(_) or .Placeholder(_) or .Src(_) or .Alt(_) or .Disabled(_) or .Checked(_) -> "",
-    }
+    match found { .Text(t) or .Label(t) -> t, rest -> "" }
 }
 
 /// Whether an attribute carries a node's own words.
 fn is_words(a: Attribute) -> bool {
-    match a {
-        .Text(_) or .Label(_) -> true,
-        .Level(_) or .Value(_) or .Placeholder(_) or .Src(_) or .Alt(_) or .Disabled(_) or .Checked(_) -> false,
-    }
+    match a { .Text(_) or .Label(_) -> true, rest -> false }
 }
 
 /// A heading's level, defaulting to one.
 export fn level_of(attrs: List<Attribute>) -> int {
     let found? = attrs.find(is_level) else { return 1 }
-    match found {
-        .Level(r) -> r,
-        .Text(_) or .Label(_) or .Value(_) or .Placeholder(_) or .Src(_) or .Alt(_) or .Disabled(_) or .Checked(_) -> 1,
-    }
+    match found { .Level(r) -> r, rest -> 1 }
 }
 
 /// Whether an attribute is a heading's level.
 fn is_level(a: Attribute) -> bool {
-    match a {
-        .Level(_) -> true,
-        .Text(_) or .Label(_) or .Value(_) or .Placeholder(_) or .Src(_) or .Alt(_) or .Disabled(_) or .Checked(_) -> false,
-    }
+    match a { .Level(_) -> true, rest -> false }
+}
+
+/// The word a live region announces urgency with.
+export fn urgency_word(u: Urgency) -> string {
+    match u { .Polite -> "polite", .Assertive -> "assertive" }
 }

@@ -24,7 +24,8 @@ export trait View {
             Node {
                 prim: ${prim},
                 attrs: ${attrs},
-                box: Box { style: self.style, layout: self.layout, a11y: self.a11y, key: self.key },
+                // LICENSED compiler.modified_copy_literal: the Box is projected from the component's fields, never a copy of it
+                box: Box { style: ${style_code(t)}, layout: self.layout, a11y: self.a11y, key: self.key },
                 children: ${children_code(t)},
             }
         }
@@ -68,6 +69,18 @@ fn prim_quote(text: string) -> Code {
         "Row" -> quote { Prim.Row },
         "Column" -> quote { Prim.Column },
         "Dialog" -> quote { Prim.Dialog },
+        "Divider" -> quote { Prim.Divider },
+        "Icon" -> quote { Prim.Icon },
+        "Surface" -> quote { Prim.Surface },
+        "List" -> quote { Prim.List },
+        "Item" -> quote { Prim.Item },
+        "Card" -> quote { Prim.Card },
+        "Progress" -> quote { Prim.Progress },
+        "Alert" -> quote { Prim.Alert },
+        "Spinner" -> quote { Prim.Spinner },
+        "Form" -> quote { Prim.Form },
+        "Switch" -> quote { Prim.Switch },
+        "Slider" -> quote { Prim.Slider },
         rest -> quote { Prim.Text },
     }
 }
@@ -89,15 +102,26 @@ fn explicit_attribute(f: Field) -> string? {
 /// The `Attribute` a component field projects to — the naming convention.
 fn attr_variant(name: string) -> string? {
     match name {
-        "content" -> "Text",
+        "content" or "message" -> "Text",
         "label" -> "Label",
         "rank" -> "Level",
         "value" -> "Value",
+        "amount" -> "Amount",
         "placeholder" -> "Placeholder",
         "src" -> "Src",
         "alt" -> "Alt",
+        "href" -> "Href",
+        "min" -> "Min",
+        "max" -> "Max",
         "disabled" -> "Disabled",
         "checked" -> "Checked",
+        "selected" -> "Selected",
+        "open" -> "Open",
+        "invalid" -> "Invalid",
+        "loading" -> "Loading",
+        "urgency" -> "Urgency",
+        "title" -> "Title",
+        "name" -> "Name",
         rest -> null,
     }
 }
@@ -106,7 +130,28 @@ fn attr_variant(name: string) -> string? {
 /// `attr_quote`'s arms, so an unknown `@attribute(.X)` is refused rather
 /// than silently becoming a `Text`.
 fn attribute_names() -> List<string> {
-    ["Text", "Label", "Level", "Value", "Placeholder", "Src", "Alt", "Disabled", "Checked"]
+    [
+        "Text",
+        "Label",
+        "Level",
+        "Value",
+        "Amount",
+        "Placeholder",
+        "Src",
+        "Alt",
+        "Href",
+        "Min",
+        "Max",
+        "Disabled",
+        "Checked",
+        "Selected",
+        "Open",
+        "Invalid",
+        "Loading",
+        "Urgency",
+        "Title",
+        "Name",
+    ]
 }
 
 /// `self.content` → the code `Attribute.Text(self.content)`. ONE arm per
@@ -117,11 +162,22 @@ fn attr_quote(f: Field) -> Code {
         "Label" -> quote { Attribute.Label(self.${f}) },
         "Level" -> quote { Attribute.Level(self.${f}) },
         "Value" -> quote { Attribute.Value(self.${f}) },
+        "Amount" -> quote { Attribute.Amount(self.${f}) },
         "Placeholder" -> quote { Attribute.Placeholder(self.${f}) },
         "Src" -> quote { Attribute.Src(self.${f}) },
         "Alt" -> quote { Attribute.Alt(self.${f}) },
+        "Href" -> quote { Attribute.Href(self.${f}) },
+        "Min" -> quote { Attribute.Min(self.${f}) },
+        "Max" -> quote { Attribute.Max(self.${f}) },
         "Disabled" -> quote { Attribute.Disabled(self.${f}) },
         "Checked" -> quote { Attribute.Checked(self.${f}) },
+        "Selected" -> quote { Attribute.Selected(self.${f}) },
+        "Open" -> quote { Attribute.Open(self.${f}) },
+        "Invalid" -> quote { Attribute.Invalid(self.${f}) },
+        "Loading" -> quote { Attribute.Loading(self.${f}) },
+        "Urgency" -> quote { Attribute.Urgency(self.${f}) },
+        "Title" -> quote { Attribute.Title(self.${f}) },
+        "Name" -> quote { Attribute.Name(self.${f}) },
         rest -> quote { Attribute.Text(self.${f}) },
     }
 }
@@ -133,6 +189,20 @@ fn children_code(t: Type) -> Code {
     } else {
         quote { [] }
     }
+}
+
+// ── visual variants resolve to Style ────────────────────────────
+
+/// A field whose value is a visual variant, not an attribute: its value
+/// is merged into the node's `Style`, so a component names a role and
+/// the caller can still override it through `style`.
+fn is_style_field(f: Field) -> bool { f.name == "tone" && explicit_attribute(f) == null }
+
+/// The component's style: its own `style` field, with the variant field
+/// laid over it.
+fn style_code(t: Type) -> Code {
+    let tone? = t.fields.find(is_style_field) else { return quote { self.style } }
+    quote { self.style with { color: self.tone } }
 }
 
 // ── the derive's refusals ────────────────────────────────────────
@@ -165,6 +235,7 @@ fn field_problems(t: Type) -> List<Diagnostic> {
 
 fn field_problem(t: Type, f: Field) -> List<Diagnostic> {
     if f.name == "items" { return [] }
+    if is_style_field(f) { return [] }
     let named? = attr_of(f) else {
         return [
             refuse_at(
@@ -200,14 +271,32 @@ fn name_problems(t: Type, prim: string) -> List<Diagnostic> {
 
 /// Whether a control cannot be announced without a name.
 fn needs_name(prim: string) -> bool {
-    ["Button", "Link", "Image", "Field", "Checkbox"].contains(prim)
+    [
+        "Button",
+        "Link",
+        "Image",
+        "Icon",
+        "Field",
+        "Checkbox",
+        "Switch",
+        "Slider",
+        "Dialog",
+        "Progress",
+    ]
+        .contains(prim)
 }
 
 /// The field a nameless control of this primitive should add.
-fn name_field(prim: string) -> string { if prim == "Image" { "alt" } else { "label" } }
+fn name_field(prim: string) -> string {
+    when {
+        prim == "Image" -> "alt"
+        prim == "Icon" -> "name"
+        _ -> "label"
+    }
+}
 
 /// Whether a projected attribute names its control.
 fn names_it(attr: string?) -> bool {
     let word = attr ?? ""
-    word == "Label" || word == "Text" || word == "Alt"
+    word == "Label" || word == "Text" || word == "Alt" || word == "Name"
 }
