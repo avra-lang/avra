@@ -3,7 +3,7 @@
 //! scans, the growth words and the copies, each a row's rule; the
 //! receiver is always a list because the row's `takes` said so.
 use core.{ExprId, TypeId, Type, Arrow, LambdaParts, no_marks}
-use features.{TypeCx, MethodCall, this_is, slot_worthy, TypeArgs}
+use features.{TypeCx, MethodCall, this_is, slot_worthy, TypeArgs, PipeStage}
 use diagnostics.{refusal}
 
 /// The empty literal takes the rows too — each rule refuses it in
@@ -24,11 +24,62 @@ export fn check_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.type(List<answer>)
 }
 
+/// `xs.filter_map(f)` — the fn answers `T?`; present answers join the
+/// list, absent ones drop.
+export fn check_filter_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let seat? = walk_seat(cx, mc, "filter_map") else { return cx.error_type }
+    let held: TypeId? = match cx.view.types.seen_shape(seat.answer) {
+        .Opt(inner) -> inner,
+        _ -> null,
+    }
+    if held == null { return filter_map_needs_opt(cx, mc.e, seat.answer) }
+    let inner = held!
+    if !slot_worthy(cx.view.types.shape_of(inner)) { return uncollectable(cx, mc.e, inner) }
+    cx.facts.mark_stage(mc.e, .FilterMap)
+    cx.type(List<inner>)
+}
+
+fn filter_map_needs_opt(mut cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.list_element",
+                cx.loc_of(e),
+                "`filter_map`'s fn answers an optional, and this one answers `${cx.view.types.name_of(answer)}`",
+                "filter_map here",
+                "answer `T?` — null drops the element",
+            ),
+        )
+}
+
 /// `xs.filter(p)` — the receiver's own type.
 export fn check_filter(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let seat: WalkSeat? = predicate_seat(cx, mc, "filter")
     if seat == null { return cx.error_type }
     cx.facts.mark_stage(mc.e, .Keep)
+    cx.type_at(mc.subject)
+}
+
+/// `xs.take(n)` / `xs.drop(n)` — the receiver's own type; the bound
+/// is an int, read once before the walk.
+export fn check_take(mut cx: TypeCx, mc: MethodCall) -> TypeId { limited(cx, mc, "take", .Take) }
+export fn check_drop(mut cx: TypeCx, mc: MethodCall) -> TypeId { limited(cx, mc, "drop", .Drop) }
+
+fn limited(mut cx: TypeCx, mc: MethodCall, name: string, stage: PipeStage) -> TypeId {
+    if elem_held(cx, mc, name) == null || !cx.seated(mc, name, [int_type(cx)]) { return cx.error_type }
+    cx.facts.mark_stage(mc.e, stage)
+    cx.type_at(mc.subject)
+}
+
+/// `xs.take_while(p)` / `xs.drop_while(p)` — the receiver's own type;
+/// the predicate is judged by `filter`'s own seat law.
+export fn check_take_while(mut cx: TypeCx, mc: MethodCall) -> TypeId { while_seat(cx, mc, "take_while", .TakeWhile) }
+export fn check_drop_while(mut cx: TypeCx, mc: MethodCall) -> TypeId { while_seat(cx, mc, "drop_while", .DropWhile) }
+
+fn while_seat(mut cx: TypeCx, mc: MethodCall, name: string, stage: PipeStage) -> TypeId {
+    let seat: WalkSeat? = predicate_seat(cx, mc, name)
+    if seat == null { return cx.error_type }
+    cx.facts.mark_stage(mc.e, stage)
     cx.type_at(mc.subject)
 }
 
