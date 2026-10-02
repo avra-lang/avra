@@ -115,7 +115,11 @@ impl TypeCx {
     /// An enum's variant table — the index IS the runtime tag, and
     /// the payloads ride slots 1.. of the value, in order.
     fn declare_enum_sig(s: StmtId, variants: List<Variant>) {
-        if !self.view.decls.lacking(self.decl_of(s)).is_empty() { self.enum_lacks(s) }
+        let record = self.decl_of(s)
+        let ty = self.view.types.intern(Type.Enum(record, self.view.decls.decl(record).name))
+        self.view.types.begin_declare(ty)
+        defer { self.view.types.end_declare(ty) }
+        if !self.view.decls.lacking(record).is_empty() { self.enum_lacks(s) }
         let sig = EnumSig {
             names: [v.name.of for v in variants],
             payloads: [self.payload_types(s, v) for v in variants],
@@ -176,6 +180,11 @@ impl TypeCx {
     fn declare_struct_sig(s: StmtId, fields: List<Param>, spreads: List<Spread>) {
         let owner: string = self.view.store.type_decl_name(s) ?? "this type"
         let record = self.decl_of(s)
+        // THE DECLARATION IS IN FLIGHT while its own fields type: a fact read here
+        // answers this declaration's provisional state (see `TypeRegistry.note`).
+        let ty = self.view.decls.record_type(record)
+        self.view.types.begin_declare(ty)
+        defer { self.view.types.end_declare(ty) }
         let lacking = self.view.decls.lacking(record)
         let own = StructSig {
             names: [f.name.of for f in fields],
