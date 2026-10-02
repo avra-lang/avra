@@ -1,0 +1,45 @@
+//! The ranges semantics: dispatch only. A range's bounds are ordinary
+//! expressions walked in place; the value wears the prelude's `Range`
+//! record, so typing resolves the name and lowering packs the two
+//! slots like any record literal.
+use core.{Expr, ExprId, Type, TypeId, Reg}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, type_named, nothing}
+
+export type RangesSemantics = {}
+
+impl NodeSemantics for RangesSemantics {
+    fn kids(e: Expr) -> List<ExprId> {
+        match e { .Range(lo, hi) -> [lo, hi], rest -> [] }
+    }
+
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        match cx.view.store.expr(e) {
+            .Range(lo, hi) -> {
+                cx.walk(lo)
+                cx.walk(hi)
+            },
+            rest -> nothing(),
+        }
+    }
+
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        let bound? = type_named(cx.names, "Range") else { return cx.error_type }
+        let target? = cx.view.decls.named_by(bound) else { return cx.error_type }
+        let int = cx.type(int)
+        match cx.view.store.expr(e) {
+            .Range(lo, hi) -> {
+                if !cx.accepts(lo, int) { return cx.error_type }
+                if !cx.accepts(hi, int) { return cx.error_type }
+            },
+            rest -> nothing(),
+        }
+        cx.view.types.intern(Type.Struct(target, "Range"))
+    }
+
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        match cx.view.store.expr(e) {
+            .Range(lo, hi) -> cx.packed_struct(cx.type_at(e), [cx.reg_of(lo), cx.reg_of(hi)]),
+            rest -> cx.foreign_node(e),
+        }
+    }
+}
