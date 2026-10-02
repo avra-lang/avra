@@ -11,7 +11,7 @@ void avra_rc_retain(void* p) {
     Header* h = avra_hdr(p);
     if (h == 0 || h->kind < 0) return;
     CENSUS(g_rc_retains++);
-    CENSUS(note_retain(__builtin_return_address(0)));
+    CENSUS(note_retain(AVRA_CALLER()));
     if (__builtin_expect(avra_rc_guard_on, 0)) { avra_retain_noted(p, h); return; }
     h->rc++;
 }
@@ -101,7 +101,7 @@ int64_t avra_array_len(void* arr) {
 void* avra_box_thawed(void* p) {
     Header* h = avra_hdr(p);
     if (__builtin_expect(h != 0 && IS_IMMORTAL(h->kind), 0))
-        return avra_box_thawed_cloned(p, __builtin_return_address(0));
+        return avra_box_thawed_cloned(p, AVRA_CALLER());
     avra_rc_retain(p);
     return p;
 }

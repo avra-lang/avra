@@ -103,6 +103,19 @@ fn runtime_library() -> string {
     toolchain_files(["libavra_runtime.a", "../lib/avra/libavra_runtime.a"]).find(exists(it)) ?? "build/libavra_runtime.a"
 }
 
+/// The wasm runtime archive, under the native one's own directory.
+fn wasm_runtime_library() -> string {
+    let at = joined_path(dir_of(runtime_library()), "wasm32/libavra_runtime.a")
+    if exists(at) { at } else { joined_path("build", "wasm32/libavra_runtime.a") }
+}
+
+/// A target's one spelling. `wasm32` and `wasm32-wasi` name the toolchain's
+/// own triple; anything else passes through and a backend that knows no such
+/// target refuses it by name.
+fn canonical_target(spelled: string) -> string {
+    if spelled == "wasm32" || spelled == "wasm32-wasi" { "wasm32-unknown-wasi" } else { spelled }
+}
+
 /// Paths under the binary's directory, normalized.
 fn toolchain_files(rels: List<string>) -> List<string> {
     [normalized(joined_path(avra_self_dir(), r)) for r in rels]
@@ -257,7 +270,7 @@ fn lowered_or_report(p: Program) -> Result<string, string> {
     let lo = p.lowered_checked()?
     let path = joined_path(joined_path(p.ws.root, "build"), "${stem_of(entry.view.source.file)}.ll")
     let _ = make_dirs(dir_of(path))
-    let failure: string? = emit_ll(lo, path)
+    let failure: string? = emit_ll(lo, path, "")
     if failure != null { return .Err(failure!) }
     .Ok(path)
 }
@@ -450,10 +463,12 @@ fn cached_build(args: CliResult) -> int {
         return 1
     }
     let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
+    let target = canonical_target(args.option("target"))
+    let runtime = if target == "" { runtime_library() } else { wasm_runtime_library() }
     match build_program(
         ws,
         entry!,
-        Toolchain { opt: "-O1", runtime: runtime_library(), linker: tool.path },
+        Toolchain { opt: "-O1", runtime: runtime, linker: tool.path, target: target },
     ) {
         .Err(e) -> {
             println(build_report(e))
