@@ -40,6 +40,7 @@ export enum Sink {
     Any(ret: TypeId, cell: Reg, pred: FnBox)
     All(ret: TypeId, cell: Reg, pred: FnBox)
     Find(ret: TypeId, cell: Reg, pred: FnBox)
+    FindMap(ret: TypeId, cell: Reg, pred: FnBox)
     FindIndex(ret: TypeId, cell: Reg, pred: FnBox)
     Contains(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
     IndexOf(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
@@ -140,6 +141,13 @@ impl LowerCx {
                         cx.store_hit(cell, cx.adopted(ret, false, t.value!))
                     }
             },
+            .FindMap(ret, cell, pred) -> {
+                let ans = self.call_ptr(ret, pred.code, [pred.box, t.value!])
+                self
+                    .void_region(self.presence_of(ans, ret)) { cx ->
+                        cx.store_hit(cell, ans)
+                    }
+            },
             .FindIndex(ret, cell, pred) -> {
                 self
                     .void_region(self.pred_call(pred, t)) { cx ->
@@ -198,7 +206,7 @@ impl LowerCx {
     mut fn sink_answer(s: Sink) -> Reg {
         match s {
             .Push(dst) -> dst,
-            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindIndex(ret, cell, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
+            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindMap(ret, cell, _) or .FindIndex(ret, cell, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
             .MinMax(ret, has, best, _) -> self
                 .region_as(self.loaded_as(self.type(bool), has), ret) { cx ->
                     cx.adopted(ret, false, cx.loaded_as(self.type(int), best))

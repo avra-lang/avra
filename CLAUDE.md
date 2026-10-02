@@ -1657,9 +1657,6 @@ Syntax the grammar lacks:
   this statement", help "drop the `export`, or declare the value as a
   fn". `export const` LANDED — a constant crosses as a const, and the
   help's "as a fn" reaches a `let` alone.
-- `is` with a PAYLOAD pattern (`p is .Bind(_)`): "expected BREAK
-  while parsing `stmt`" — `is` takes a BARE variant. A one-arm
-  match is the projection (`.Bind(_) -> true, _ -> false`).
 - `Result<void, E>` as a fn's answer: F2019 "a `Result` side cannot
   hold `void` yet" (help: "a verb that answers nothing but may fail
   is recorded — answer what it wrote"). A writing verb answers what
@@ -1776,12 +1773,6 @@ Wants the typer does not carry yet:
   F2033 "`it` has no element here — this seat takes `int`, not a
   fn" — `it` binds to the NEAREST call; write `(k) ->
   self.rides(k)`. `it is .A` binds fine.
-- `is` takes a BARE variant, never a payload pattern: `e is
-  .TimedOut(_, _)` refuses at the `(`, and the wording follows the
-  context ("expected BREAK while parsing `stmt`", "expected `}` to
-  close the `match`", "expected EOF while parsing `program`").
-  `e is .TimedOut` is the test; a payload question is a two-arm
-  `match` hoisted into a named predicate.
 - `join` over a list that is not text: `[1, 2].join(",")` is F2005
   "`join` reads a list of text, this one holds `int`" — map to text
   first.

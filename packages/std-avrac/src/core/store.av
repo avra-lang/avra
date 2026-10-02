@@ -21,6 +21,11 @@ fn no_stmt_marks() -> StmtMarks {
 /// back what was written.
 export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
 
+/// A payload `is`: the variant pattern it names (`.V(p, q)`), and — on
+/// the Match an `if` desugared it into — whether the source wrote an
+/// `else`, so the printer can spell an elseless guard back.
+export type PayloadIs = { pat: PatId, has_else: bool }
+
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 @identity
@@ -96,6 +101,12 @@ export type SyntaxArena = {
     // `null` instead of refusing; the mark is the ONE way the checker
     // tells the two apart
     sugar_matches: Cell<List<bool>>,
+    // the variant pattern a payload `is` names (`.V(p, q)`), by the
+    // Is node and by the Match an `if` desugared it into — the binder
+    // list a match arm would take, kept beside the node so the `if`
+    // that binds can desugar it, enums can refuse it everywhere else,
+    // and the printer can spell the `if` back
+    is_payloads: Cell<List<PayloadIs?>>,
     // a component instance's WRAPPING STATEMENT — where its `///`
     // and `@name(args)` annotations live, attached from OUTSIDE once
     // the instance's own expression already stands; absent for an
@@ -157,6 +168,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         collect_dense: list_cell(),
         raw_strings: list_cell(),
         sugar_matches: list_cell(),
+        is_payloads: list_cell(),
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
         tables: list_cell(),
@@ -224,6 +236,7 @@ impl SyntaxArena {
         self.run_holes.push(false)
         self.raw_strings.push(false)
         self.sugar_matches.push(false)
+        self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
         self.tables.push(null)
@@ -404,6 +417,23 @@ impl SyntaxArena {
 
     fn is_sugar_match(e: ExprId) -> bool {
         self.sugar_matches.get()[e.index]
+    }
+
+    /// `x is .V(p, q)` — the variant pattern the payload list names,
+    /// or null for a bare `is` and for every other node. One question
+    /// answered here so the `if` that BINDS, the enum law that REFUSES
+    /// and the printer that spells the `if` back read the same fact.
+    fn mark_is_payload(e: ExprId, p: PatId, has_else: bool) {
+        self.is_payloads.set_at(e.index, PayloadIs { pat: p, has_else: has_else })
+    }
+
+    fn is_payload(e: ExprId) -> PayloadIs? {
+        self.is_payloads.get()[e.index]
+    }
+
+    /// The subject of any `is` — the tag test's left side.
+    fn is_subject(e: ExprId) -> ExprId? {
+        match self.expr(e) { .Is(s, _) -> s, _ -> null }
     }
 
     /// The statement a component instance's expression is bound

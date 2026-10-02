@@ -15,6 +15,7 @@ use core.{
     Expr,
     Stmt,
     Arm,
+    PayloadIs,
     CompClause,
     BinOp,
     Param,
@@ -1374,7 +1375,7 @@ impl SourceText {
                 10,
                 parent,
             ),
-            .Match(subject, arms) -> grouped(self.match_expr(subject, arms, id, depth, c), atom_tier, parent),
+            .Match(subject, arms) -> grouped(self.match_or_payload_if(subject, arms, id, depth, c), atom_tier, parent),
             .NullLit -> grouped("null", atom_tier, parent),
             .Coalesce(left, right) -> {
                 let l = self.expression(left, 5, depth, c)
@@ -1426,11 +1427,22 @@ impl SourceText {
                 parent,
             ),
             .Force(value) -> grouped("${self.expression(value, postfix_tier, depth, c)}!", postfix_tier, parent),
-            .Is(subject, variant) -> grouped(
-                "${self.expression(subject, 5, depth, c)} is .${source_name(variant.of)}",
-                4,
-                parent,
-            ),
+            .Is(subject, variant) -> {
+                let payload: PayloadIs? = self.store.is_payload(id)
+                if payload != null {
+                    grouped(
+                        "${self.expression(subject, 5, depth, c)} is ${self.pattern(payload!.pat, depth)}",
+                        4,
+                        parent,
+                    )
+                } else {
+                    grouped(
+                        "${self.expression(subject, 5, depth, c)} is .${source_name(variant.of)}",
+                        4,
+                        parent,
+                    )
+                }
+            },
             .VariantLit(name, args) -> {
                 let head = ".${source_name(name.of)}"
                 grouped(
@@ -1737,6 +1749,44 @@ impl SourceText {
         if self.store.is_raw_string(id) { "\"\"\"${value}\"\"\"" } else { quoted_text(value) }
     }
 
+    /// A Match an `if` desugared, or a plain `match` — the mark is the
+    /// only difference, and the printer never drops it.
+    mut fn match_or_payload_if(
+        subject: ExprId,
+        arms: List<Arm>,
+        id: ExprId,
+        depth: int,
+        col: int = -1,
+    ) -> string {
+        let payload? = self.store.is_payload(id) else { return self.match_expr(subject, arms, id, depth, col) }
+        self.payload_if(subject, arms, payload, id, depth, col)
+    }
+
+    /// The `if x is .V(p) { A } else { B }` the Match desugared from.
+    /// The arm values ARE blocks (the branches as written), so `block`
+    /// renders them whole; an elseless guard omits the `else`.
+    mut fn payload_if(
+        subject: ExprId,
+        arms: List<Arm>,
+        payload: PayloadIs,
+        id: ExprId,
+        depth: int,
+        col: int = -1,
+    ) -> string {
+        let one = self.span_flat(self.store.expr_span(id))
+        let cond = "${self.expression(subject, 5, depth, resolved_col(col, depth) + 3)} is ${self.pattern(payload.pat, depth)}"
+        let yes = self.block(arms[0].value, one, depth)
+        if !payload.has_else { return "if ${cond} ${yes}" }
+        "if ${cond} ${yes} else ${self.if_group_else(arms[1].value, one, depth)}"
+    }
+
+    /// The chained form of `payload_if` — a marked Match in an else
+    /// position prints `else if …`, never `else { match … }`.
+    mut fn chained_payload_if(subject: ExprId, arms: List<Arm>, id: ExprId, depth: int) -> string? {
+        let payload? = self.store.is_payload(id) else { return null }
+        self.payload_if(subject, arms, payload, id, depth)
+    }
+
     /// An if EXPRESSION's branches, one-line when the whole form was.
     mut fn if_group(cond: ExprId, yes: ExprId, no: ExprId, id: ExprId, depth: int, col: int = -1) -> string {
         let one = self.span_flat(self.store.expr_span(id))
@@ -1765,6 +1815,9 @@ impl SourceText {
         if self.pending_before(start_of(self.store.expr_span(no))) { return null }
         match self.store.expr(no) {
             .If(c2, y2, n2) -> self.if_group(c2, y2, n2, no, depth),
+            // a payload `if` desugared into a marked Match chains as the
+            // `if` it was, exactly as a nested `Expr.If` does
+            .Match(subject, arms) -> self.chained_payload_if(subject, arms, no, depth),
             // A NESTED "else if" (its own if a STATEMENT, chain_value's
             // promotion) answers through `tail_scoped`'s lone-tail wrap
             // (core/store.av), so the chain link this sees is

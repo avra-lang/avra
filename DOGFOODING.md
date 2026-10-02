@@ -811,7 +811,9 @@ that spells, a comprehension spells too.
 `length`, indexing, `push`, `set(i, v)`, `pop` (-> `T`, never
 `T?`), `concat(ys)`, `slice(lo, hi)`, `join(sep)`, `map`, `filter`,
 `contains(v)` (-> bool), `index_of(v)`, `find(pred)` (-> `T?`),
-`any(pred)`, `all(pred)`, `first()`/`last()` (-> `T?`),
+`find_map(f)` (-> `U?` for `f: fn(T) -> U?` — the first PRESENT
+projection, and the walk stops there), `any(pred)`, `all(pred)`,
+`first()`/`last()` (-> `T?`),
 `is_empty()` — all native, and native closures are mono-safe
 (unlike fn args through OUR generics). They work in `<N>`-generic
 bodies too (`bindings.find(it.label == label)`). The list is

@@ -37,8 +37,12 @@ fn enums_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 }
 
 /// `subject is .variant` — the subject is an enum that names the
-/// variant; the answer is a bool either way once the subject is.
+/// variant; the answer is a bool either way once the subject is. A
+/// payload list binds, and binding is an `if` condition's privilege
+/// alone: the `if` desugars a payload `is` into a match before
+/// typing, so one arriving here is everywhere else.
 fn asked_type(mut cx: TypeCx, e: ExprId, subject: ExprId, variant: string) -> TypeId {
+    if cx.view.store.is_payload(e) != null { return bound_outside_if(cx, e) }
     let sh: Type = cx.shape_at(subject)
     if sh is .Error { return cx.error_type }
     let declared? = cx.variants_of(cx.type_at(subject)) else { return not_askable(cx, subject) }
@@ -478,6 +482,19 @@ fn no_variants(mut cx: TypeCx, s: StmtId, name: string) {
                 "`${name}` declares no variants",
                 "this enum is empty",
                 "an enum names at least one variant",
+            ),
+        )
+}
+
+fn bound_outside_if(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.is_bind",
+                cx.loc_of(e),
+                "a payload `is` binds only in an `if` condition",
+                "this `is`",
+                "write the `match`, or test the variant bare and extract under it — `if a is .V(r) { … }`",
             ),
         )
 }
