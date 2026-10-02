@@ -35,10 +35,34 @@ export type Node = {
 
 /// A node's words: its `Text`, else its `Label`.
 export fn content_of(attrs: List<Attribute>) -> string {
-    attrs.find_map(match it { .Text(t) or .Label(t) -> t, rest -> null }) ?? ""
+    let found? = attrs.find(is_words) else { return "" }
+    match found {
+        .Text(t) or .Label(t) -> t,
+        .Level(_) or .Value(_) or .Placeholder(_) or .Src(_) or .Alt(_) or .Disabled(_) or .Checked(_) -> "",
+    }
+}
+
+/// Whether an attribute carries a node's own words.
+fn is_words(a: Attribute) -> bool {
+    match a {
+        .Text(_) or .Label(_) -> true,
+        .Level(_) or .Value(_) or .Placeholder(_) or .Src(_) or .Alt(_) or .Disabled(_) or .Checked(_) -> false,
+    }
 }
 
 /// A heading's level, defaulting to one.
 export fn level_of(attrs: List<Attribute>) -> int {
-    attrs.find_map(match it { .Level(r) -> r, rest -> null }) ?? 1
+    let found? = attrs.find(is_level) else { return 1 }
+    match found {
+        .Level(r) -> r,
+        .Text(_) or .Label(_) or .Value(_) or .Placeholder(_) or .Src(_) or .Alt(_) or .Disabled(_) or .Checked(_) -> 1,
+    }
+}
+
+/// Whether an attribute is a heading's level.
+fn is_level(a: Attribute) -> bool {
+    match a {
+        .Level(_) -> true,
+        .Text(_) or .Label(_) or .Value(_) or .Placeholder(_) or .Src(_) or .Alt(_) or .Disabled(_) or .Checked(_) -> false,
+    }
 }
