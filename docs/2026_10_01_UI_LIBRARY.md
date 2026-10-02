@@ -185,6 +185,34 @@ are VALUES**, read by `if`: `fill: if pressed { .SurfaceSunk } else {
 (UI.md §15), lowered to CSS or traits where the target can — never a
 hidden style layer a target cannot see.
 
+## 4a. Interaction states
+
+A component may look different while a platform interaction state holds:
+`Hover`, `Focus`, `Pressed`, `Disabled`. The override is DATA on the
+`Style` in the node (`Style.states: List<StateStyle>`), and each target
+maps it to its own mechanism — CSS `:hover`/`:focus-visible`/`:active` on
+web (no script), native highlight/focus state elsewhere. A state is never
+written back to app state; the realizer tracks it.
+
+The first spelling is the data form:
+
+```avra
+button("Buy") {
+    style: Style {
+        fill: .Primary,
+        states: [
+            StateStyle { state: .Hover, style: Style { fill: .PrimaryHover } },
+            StateStyle { state: .Pressed, style: Style { fill: .PrimaryPressed } },
+        ],
+    }
+}
+```
+
+A `hover { … }` block is SUGAR over the same list and is filed in the
+sugar backlog (epic `avra-8sb5.10`) with the component state-style
+spelling as its wanting site; it lands only if the data form proves
+insufficient.
+
 ## 5. Layout
 
 One semantics, two engines (UI.md §4.3): the browser's flex/grid on
