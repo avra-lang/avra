@@ -34,6 +34,7 @@ export enum Clause {
     Drop(count: Reg, n: Reg)
     TakeWhile(pred: FnBox)
     DropWhile(pred: FnBox, started: Reg)
+    FilterMap(f: FnBox, opt: TypeId)
 }
 
 /// Where each element that passes every clause goes: a pushed list, or
@@ -94,6 +95,14 @@ impl LowerCx {
                 let ok = self.pred_call(pred, t)
                 self.void_region(ok) { cx -> cx.staged(p, at + 1, t) }
                 self.void_region(self.un(ok)) { cx -> cx.walk_done() }
+            },
+            .FilterMap(f, opt) -> {
+                let v = self.call_ptr(opt, f.code, [f.box, t.value!])
+                let has = self.presence_of(v, opt)
+                self
+                    .void_region(has) { cx ->
+                        cx.staged(p, at + 1, t with { value: cx.carried_of(v, opt) })
+                    }
             },
             .DropWhile(pred, started) -> {
                 let began = self.loaded_as(self.type(bool), started)

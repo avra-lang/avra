@@ -5,7 +5,7 @@
 //! lowering the base source FIRST and boxing each fn once in source
 //! order, then runs the whole chain into a push. A subject that is no
 //! adapter (a `concat`, a plain list) is the head the rest folds over.
-use core.{ExprId, Reg, TypeId}
+use core.{ExprId, Reg, TypeId, Type}
 use features.{LowerCx, MethodCall, PipeStage, FnBox, Clause, Sink, Source, Pipeline}
 
 /// `xs.map(f)` / `xs.filter(p)` — the chain ending here, run once.
@@ -158,5 +158,6 @@ fn link_clause(mut cx: LowerCx, stage: PipeStage, arg: ExprId, e: ExprId) -> Cla
         .Drop -> .Drop(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg)),
         .TakeWhile -> .TakeWhile(box_of(cx, arg)),
         .DropWhile -> .DropWhile(box_of(cx, arg), cx.seeded_cell(cx.type(bool), cx.const_bool(false))),
+        .FilterMap -> .FilterMap(box_of(cx, arg), cx.view.types.intern(Type.Opt(mapped_to(cx, e)))),
     }
 }

@@ -24,6 +24,34 @@ export fn check_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.type(List<answer>)
 }
 
+/// `xs.filter_map(f)` — the fn answers `T?`; present answers join the
+/// list, absent ones drop.
+export fn check_filter_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let seat? = walk_seat(cx, mc, "filter_map") else { return cx.error_type }
+    let held: TypeId? = match cx.view.types.seen_shape(seat.answer) {
+        .Opt(inner) -> inner,
+        _ -> null,
+    }
+    if held == null { return filter_map_needs_opt(cx, mc.e, seat.answer) }
+    let inner = held!
+    if !slot_worthy(cx.view.types.shape_of(inner)) { return uncollectable(cx, mc.e, inner) }
+    cx.facts.mark_stage(mc.e, .FilterMap)
+    cx.type(List<inner>)
+}
+
+fn filter_map_needs_opt(mut cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.list_element",
+                cx.loc_of(e),
+                "`filter_map`'s fn answers an optional, and this one answers `${cx.view.types.name_of(answer)}`",
+                "filter_map here",
+                "answer `T?` — null drops the element",
+            ),
+        )
+}
+
 /// `xs.filter(p)` — the receiver's own type.
 export fn check_filter(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let seat: WalkSeat? = predicate_seat(cx, mc, "filter")
