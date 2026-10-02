@@ -73,16 +73,6 @@ fn rule(name: string, state: Interaction?, decl: string) -> List<CssRule> {
 /// the name and the declaration of a variant are written together.
 type CssWord = { name: string, decl: string }
 
-fn axis_rule(a: Axis?, state: Interaction?) -> List<CssRule> {
-    match a {
-        v? -> {
-            let w = axis_word(v)
-            rule(w.name, state, w.decl)
-        }
-        null -> []
-    }
-}
-
 fn axis_word(a: Axis) -> CssWord {
     match a {
         .Row -> CssWord { name: "dir-row", decl: "display:flex;flex-direction:row" },
@@ -90,11 +80,67 @@ fn axis_word(a: Axis) -> CssWord {
     }
 }
 
-fn gap_rule(z: Size?, state: Interaction?) -> List<CssRule> {
-    match z {
-        v? -> rule("gap-${size_word(v)}", state, "gap:var(--space-${size_word(v)})")
+/// One value's rule, or nothing when the field was not given — the one
+/// shape every optional token shares.
+fn opted<T>(x: T?, state: Interaction?, mk: fn(T) -> CssWord) -> List<CssRule> {
+    match x {
+        v? -> {
+            let w = mk(v)
+            rule(w.name, state, w.decl)
+        }
         null -> []
     }
+}
+
+fn gap_word(z: Size) -> CssWord {
+    CssWord { name: "gap-${size_word(z)}", decl: "gap:var(--space-${size_word(z)})" }
+}
+
+fn color_word(c: Tone) -> CssWord {
+    CssWord { name: "color-${tone_word(c)}", decl: "color:var(--tone-${tone_word(c)})" }
+}
+
+fn fill_word(c: Tone) -> CssWord {
+    CssWord { name: "fill-${tone_word(c)}", decl: "background:var(--tone-${tone_word(c)})" }
+}
+
+fn radius_word(z: Size) -> CssWord {
+    CssWord { name: "radius-${size_word(z)}", decl: "border-radius:var(--radius-${size_word(z)})" }
+}
+
+fn face_word(f: Font) -> CssWord {
+    CssWord { name: "face-${font_word(f)}", decl: "font-family:var(--face-${font_word(f)})" }
+}
+
+/// A sizing token's class and declaration; `Hug`/`Percent` draw none.
+fn size_word_of(prefix: string, prop: string, s: Sizing) -> CssWord {
+    match s {
+        .Hug -> CssWord { name: "", decl: "" },
+        .Fill -> CssWord { name: "${prefix}-fill", decl: "${prop}:100%" },
+        .Fixed(n) -> CssWord { name: "${prefix}-${n}", decl: "${prop}:${n}px" },
+        .Percent(_) -> CssWord { name: "", decl: "" },
+    }
+}
+
+/// The wrappers: a token, its state and its word.
+fn axis_rule(a: Axis?, state: Interaction?) -> List<CssRule> { opted(a, state, axis_word) }
+
+fn gap_rule(z: Size?, state: Interaction?) -> List<CssRule> { opted(z, state, gap_word) }
+
+fn align_rule(a: Align?, state: Interaction?) -> List<CssRule> { opted(a, state, align_word) }
+
+fn distribute_rule(d: Distribute?, state: Interaction?) -> List<CssRule> { opted(d, state, distribute_word) }
+
+fn color_rule(c: Tone?, state: Interaction?) -> List<CssRule> { opted(c, state, color_word) }
+
+fn fill_rule(c: Tone?, state: Interaction?) -> List<CssRule> { opted(c, state, fill_word) }
+
+fn radius_rule(z: Size?, state: Interaction?) -> List<CssRule> { opted(z, state, radius_word) }
+
+fn face_rule(f: Font?, state: Interaction?) -> List<CssRule> { opted(f, state, face_word) }
+
+fn sizing_rule(prefix: string, prop: string, s: Sizing?, state: Interaction?) -> List<CssRule> {
+    opted(s, state, (v) -> size_word_of(prefix, prop, v))
 }
 
 fn edge_rule(prefix: string, prop: string, z: Size?, state: Interaction?) -> List<CssRule> {
@@ -114,16 +160,6 @@ fn pad_rules(e: Edge?, state: Interaction?) -> List<CssRule> {
     }
 }
 
-fn align_rule(a: Align?, state: Interaction?) -> List<CssRule> {
-    match a {
-        v? -> {
-            let w = align_word(v)
-            rule(w.name, state, w.decl)
-        }
-        null -> []
-    }
-}
-
 fn align_word(a: Align) -> CssWord {
     match a {
         .Start -> CssWord { name: "ai-start", decl: "align-items:flex-start" },
@@ -131,16 +167,6 @@ fn align_word(a: Align) -> CssWord {
         .End -> CssWord { name: "ai-end", decl: "align-items:flex-end" },
         .Stretch -> CssWord { name: "ai-stretch", decl: "align-items:stretch" },
         .Baseline -> CssWord { name: "ai-baseline", decl: "align-items:baseline" },
-    }
-}
-
-fn distribute_rule(d: Distribute?, state: Interaction?) -> List<CssRule> {
-    match d {
-        v? -> {
-            let w = distribute_word(v)
-            rule(w.name, state, w.decl)
-        }
-        null -> []
     }
 }
 
@@ -156,30 +182,6 @@ fn distribute_word(d: Distribute) -> CssWord {
 }
 
 /// A sizing token's class name, or nothing when it draws no rule.
-fn size_class(prefix: string, s: Sizing) -> string {
-    match s {
-        .Hug -> "",
-        .Fill -> "${prefix}-fill",
-        .Fixed(n) -> "${prefix}-${n}",
-        .Percent(_) -> "",
-    }
-}
-
-fn size_decl(prop: string, s: Sizing) -> string {
-    match s {
-        .Hug -> "",
-        .Fill -> "${prop}:100%",
-        .Fixed(n) -> "${prop}:${n}px",
-        .Percent(_) -> "",
-    }
-}
-
-fn sizing_rule(prefix: string, prop: string, s: Sizing?, state: Interaction?) -> List<CssRule> {
-    match s {
-        v? -> rule(size_class(prefix, v), state, size_decl(prop, v))
-        null -> []
-    }
-}
 
 fn grow_rule(n: int, state: Interaction?) -> List<CssRule> {
     if n > 0 { rule("grow-${n}", state, "flex-grow:${n}") } else { [] }
@@ -197,34 +199,6 @@ fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
 }
 
 // ── appearance ──────────────────────────────────────────────────
-
-fn color_rule(c: Tone?, state: Interaction?) -> List<CssRule> {
-    match c {
-        v? -> rule("color-${tone_word(v)}", state, "color:var(--tone-${tone_word(v)})")
-        null -> []
-    }
-}
-
-fn fill_rule(c: Tone?, state: Interaction?) -> List<CssRule> {
-    match c {
-        v? -> rule("fill-${tone_word(v)}", state, "background:var(--tone-${tone_word(v)})")
-        null -> []
-    }
-}
-
-fn radius_rule(z: Size?, state: Interaction?) -> List<CssRule> {
-    match z {
-        v? -> rule("radius-${size_word(v)}", state, "border-radius:var(--radius-${size_word(v)})")
-        null -> []
-    }
-}
-
-fn face_rule(f: Font?, state: Interaction?) -> List<CssRule> {
-    match f {
-        v? -> rule("face-${font_word(v)}", state, "font-family:var(--face-${font_word(v)})")
-        null -> []
-    }
-}
 
 fn appearance_rules(s: Style, state: Interaction?) -> List<CssRule> {
     color_rule(s.color, state)
