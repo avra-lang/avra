@@ -6,10 +6,11 @@
 //! reaches the sink. A comprehension is a pipeline whose sink pushes.
 use core.{ExprId, DeclId, Reg, TypeId, Ins, Type, BinOp}
 
-/// A head's source: a list, or the range `source..hi`. `index` binds
-/// the position before the element; a `lookup` is read in the
-/// source's place.
-export type Source = { source: ExprId, hi: ExprId?, index: bool, lookup: Lookup? }
+/// A head's source: a list (or a string, walked as codepoints), or the
+/// range `source..hi`. `index` binds the position before the element; a
+/// `lookup` is read in the source's place; `elem` overrides the element
+/// the source's own type yields (a string walks `int` codepoints).
+export type Source = { source: ExprId, hi: ExprId?, index: bool, lookup: Lookup?, elem: TypeId? }
 
 /// A relation's narrower read: `lookup(db, value)`, the value written
 /// in the filter `cond`.
@@ -133,7 +134,7 @@ impl LowerCx {
     mut fn headed(p: Pipeline, at: int, t: Turn, s: Source) {
         self.bind_patterns(s.source, t.regs)
         self.looked_up(s.source, t.regs, s.lookup)
-        let w = if s.hi == null { self.opened(s.source, self.elem_of(s.source)) } else { self.counted(s.source, s.hi!) }
+        let w = if s.hi == null { self.opened(s.source, s.elem ?? self.elem_of(s.source)) } else { self.counted(s.source, s.hi!) }
         let here = self.turn_open(w)
         let v = if s.hi == null { self.turn_elem(w, here) } else { here }
         self
