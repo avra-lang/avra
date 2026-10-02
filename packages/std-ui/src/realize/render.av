@@ -4,22 +4,70 @@
 //! the eager tree. No user writes these; they are a component's machine
 //! projection, the component being the one source of truth.
 use style.box.{Box}
+use @std.meta.{derive}
+use style.words.{Words}
+use realize.facets.{Facets, Facet}
 
 /// The interaction contract a component IS. Every target answers every
 /// one, or the build names the target.
-export enum Prim { Text, Heading, Button, Link, Image, Field, Checkbox, Row, Column, Dialog }
+@derive(Words)
+export enum Prim {
+    @word(text) Text
+    @word(heading) Heading
+    @word(button) Button
+    @word(link) Link
+    @word(image) Image
+    @word(field) Field
+    @word(checkbox) Checkbox
+    @word(row) Row
+    @word(column) Column
+    @word(dialog) Dialog
+    @word(divider) Divider
+    @word(icon) Icon
+    @word(surface) Surface
+    @word(list) List
+    @word(item) Item
+    @word(card) Card
+    @word(progress) Progress
+    @word(alert) Alert
+    @word(spinner) Spinner
+    @word(form) Form
+    @word(switch) Switch
+    @word(slider) Slider
+}
+
+/// How urgently a live region speaks.
+@derive(Words)
+export enum Urgency {
+    @word(polite) Polite
+    @word(assertive) Assertive
+}
 
 /// A component property, projected from the component's own fields.
+/// Semantic STATE crosses as an attribute (`Disabled`, `Open`, `Invalid`);
+/// a visual variant resolves to `Style` at the component.
+@derive(Facets)
 export enum Attribute {
-    Text(content: string)
-    Label(text: string)
-    Level(rank: int)
+    @facet(content) Text(content: string)
+    @facet(content) Label(text: string)
+    @facet(level) Level(rank: int)
     Value(text: string)
+    Amount(n: int)
     Placeholder(text: string)
     Src(url: string)
     Alt(text: string)
+    Href(url: string)
+    Min(n: int)
+    Max(n: int)
     Disabled(flag: bool)
     Checked(flag: bool)
+    Selected(flag: bool)
+    Open(flag: bool)
+    Invalid(flag: bool)
+    Loading(flag: bool)
+    @facet(urgency) Urgency(level: Urgency)
+    Title(text: string)
+    Name(text: string)
 }
 
 /// A drawn node: its primitive, its attributes, its shared Box and its
@@ -33,12 +81,29 @@ export type Node = {
 
 // ── neutral projections every target reads ──────────────────────
 
+impl Node {
+    /// This node's words: its `Text`, else its `Label`.
+    fn words() -> string { content_of(self.attrs) }
+
+    /// This node's heading level, defaulting to one.
+    fn level() -> int { level_of(self.attrs) }
+}
+
 /// A node's words: its `Text`, else its `Label`.
 export fn content_of(attrs: List<Attribute>) -> string {
-    attrs.find_map(match it { .Text(t) or .Label(t) -> t, rest -> null }) ?? ""
+    let found? = attrs.find(is_words) else { return "" }
+    match found { .Text(t) or .Label(t) -> t, rest -> "" }
 }
+
+/// Whether an attribute carries a node's own words.
+fn is_words(a: Attribute) -> bool { a.facet() == Facet.Content }
 
 /// A heading's level, defaulting to one.
 export fn level_of(attrs: List<Attribute>) -> int {
-    attrs.find_map(match it { .Level(r) -> r, rest -> null }) ?? 1
+    let found? = attrs.find(is_level) else { return 1 }
+    match found { .Level(r) -> r, rest -> 1 }
 }
+
+/// Whether an attribute is a heading's level.
+fn is_level(a: Attribute) -> bool { a.facet() == Facet.Level }
+

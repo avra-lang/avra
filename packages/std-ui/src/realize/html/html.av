@@ -1,19 +1,22 @@
 //! `realize/html/html.av` — the HTML adapter. It enumerates the VOCABULARY,
 //! never components: a table from `Prim` to a tag, a table from `Attribute`
-//! to an attribute, and `Box` to one style declaration list. The walker is
-//! the same for every tree. UI.md §19.2.
-use realize.render.{Node, Prim, Attribute, content_of, level_of}
+//! to an attribute, and `Box` to the atomic classes its rules name. The
+//! walker is the same for every tree; the class set is deduped per
+//! document and the one stylesheet is emitted beside it. UI.md §19.2.
+use realize.render.{Node, Prim, Attribute}
+use realize.sink.{Sink, draw}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
-use realize.html.writer.{HtmlOp, source}
-use env.{Env, Direction}
-use style.box.{Box}
-use style.theme.{Theme, space_of, radius_of, color_of, face_of}
-use style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout}
-use style.style.{Style}
-use ui.{Size, Tone, Font}
+use realize.html.writer.{HtmlOp, document}
+use realize.html.css.{CssRule, distinct_rules, stylesheet}
+use env.{Env}
 
-/// The HTML target: an accumulator of ops and the environment it draws in.
-export type Html = { ops: Cell<List<HtmlOp>> = Cell.new([]), env: Env = Env {} }
+/// The HTML target: an accumulator of ops, the rules the tree named, and
+/// the environment it draws in.
+export type Html = {
+    ops: Cell<List<HtmlOp>> = Cell.new([]),
+    env: Env = Env {},
+    rules: Cell<List<CssRule>> = Cell.new([]),
+}
 
 // ── the primitive table ─────────────────────────────────────────
 
@@ -23,17 +26,39 @@ fn heading_tag(rank: int) -> HtmlTag {
     tags[r - 1]
 }
 
-fn tag_of(p: Prim, attrs: List<Attribute>) -> HtmlTag {
-    match p {
-        .Text -> .Span,
-        .Heading -> heading_tag(level_of(attrs)),
-        .Button -> .Button,
-        .Link -> .A,
-        .Image -> .Img,
-        .Field or .Checkbox -> .Input,
-        .Row or .Column -> .Div,
-        .Dialog -> .Dialog,
-    }
+/// Every primitive's element — DATA. `Heading` is the one row a
+/// level overrides, so it is read before the table.
+export type PrimTag = { prim: Prim, tag: HtmlTag }
+
+const prim_tags: List<PrimTag> = table<PrimTag> {
+    prim      | tag
+    .Text     | .Span
+    .Button   | .Button
+    .Link     | .A
+    .Image    | .Img
+    .Icon     | .Img
+    .Field    | .Input
+    .Checkbox | .Input
+    .Switch   | .Input
+    .Slider   | .Input
+    .Row      | .Div
+    .Column   | .Div
+    .Surface  | .Div
+    .List     | .Ul
+    .Item     | .Li
+    .Card     | .Article
+    .Dialog   | .Dialog
+    .Divider  | .Hr
+    .Progress | .Progress
+    .Alert    | .Div
+    .Spinner  | .Div
+    .Form     | .Form
+    .Heading  | .H1
+}
+
+fn tag_of(n: Node) -> HtmlTag {
+    if n.prim is .Heading { return heading_tag(n.level()) }
+    prim_tags.find(it.prim == n.prim)?.tag ?? .Div
 }
 
 // ── the attribute table ─────────────────────────────────────────
@@ -43,11 +68,23 @@ fn tag_of(p: Prim, attrs: List<Attribute>) -> HtmlTag {
 fn attr_list(a: Attribute) -> List<HtmlAttr> {
     match a {
         .Value(v) -> [HtmlAttr { name: .Value, value: v }],
+        .Amount(n) -> [HtmlAttr { name: .Value, value: "${n}" }],
         .Placeholder(t) -> [HtmlAttr { name: .Placeholder, value: t }],
         .Src(u) -> [HtmlAttr { name: .Src, value: u }],
+        .Alt(t) -> [HtmlAttr { name: .Alt, value: t }],
+        .Href(u) -> [HtmlAttr { name: .Href, value: u }],
+        .Min(n) -> [HtmlAttr { name: .Min, value: "${n}" }],
+        .Max(n) -> [HtmlAttr { name: .Max, value: "${n}" }],
         .Disabled(flag) -> if flag { [HtmlAttr { name: .Disabled, value: "" }] } else { [] },
         .Checked(flag) -> if flag { [HtmlAttr { name: .Checked, value: "" }] } else { [] },
-        .Text(_) or .Label(_) or .Level(_) or .Alt(_) -> [],
+        .Selected(flag) -> if flag { [HtmlAttr { name: .AriaSelected, value: "true" }] } else { [] },
+        .Open(flag) -> if flag { [HtmlAttr { name: .Open, value: "" }] } else { [] },
+        .Invalid(flag) -> if flag { [HtmlAttr { name: .AriaInvalid, value: "true" }] } else { [] },
+        .Loading(flag) -> if flag { [HtmlAttr { name: .AriaBusy, value: "true" }] } else { [] },
+        .Urgency(u) -> [HtmlAttr { name: .AriaLive, value: u.word() }],
+        .Title(t) -> [HtmlAttr { name: .Title, value: t }],
+        .Name(t) or .Label(t) -> [HtmlAttr { name: .AriaLabel, value: t }],
+        .Text(_) or .Level(_) -> [],
     }
 }
 
@@ -55,179 +92,42 @@ fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {
     [h for a in attrs for h in attr_list(a)]
 }
 
-// ── the box table ───────────────────────────────────────────────
+// ── the class attribute ─────────────────────────────────────────
 
-fn decl(parts: List<string>) -> string { [p for p in parts if p != ""].join(";") }
-
-fn color_decl(c: Tone?, t: Theme) -> string {
-    match c {
-        v? -> "color:${color_of(t, v)}"
-        null -> ""
-    }
+/// Every class a node names, once, in rule order.
+fn class_names(n: Node) -> List<string> {
+    [r.name for r in distinct_rules(n.box.rules())]
 }
 
-fn fill_decl(c: Tone?, t: Theme) -> string {
-    match c {
-        v? -> "background:${color_of(t, v)}"
-        null -> ""
-    }
+fn class_attrs(n: Node) -> List<HtmlAttr> {
+    let names = class_names(n)
+    if names.is_empty() { [] } else { [HtmlAttr { name: .Class, value: names.join(" ") }] }
 }
 
-fn radius_decl(z: Size?, t: Theme) -> string {
-    match z {
-        v? -> "border-radius:${radius_of(t, v)}px"
-        null -> ""
-    }
-}
-
-fn face_decl(f: Font?, t: Theme) -> string {
-    match f {
-        v? -> "font-family:${face_of(t, v)}"
-        null -> ""
-    }
-}
-
-fn axis_decl(a: Axis?) -> string {
-    match a {
-        v? -> axis_one(v)
-        null -> ""
-    }
-}
-
-fn axis_one(a: Axis) -> string {
-    match a {
-        .Row -> "display:flex;flex-direction:row",
-        .Column -> "display:flex;flex-direction:column",
-    }
-}
-
-fn gap_decl(z: Size?, t: Theme) -> string {
-    match z {
-        v? -> "gap:${space_of(t, v)}px"
-        null -> ""
-    }
-}
-
-fn pad_one(e: Edge, t: Theme, dir: Direction) -> string {
-    let s = e.start ?? Size.None
-    let en = e.end ?? Size.None
-    let top = e.top ?? Size.None
-    let bot = e.bottom ?? Size.None
-    let left = if dir == Direction.Ltr { s } else { en }
-    let right = if dir == Direction.Ltr { en } else { s }
-    "padding:${space_of(t, top)}px ${space_of(t, right)}px ${space_of(t, bot)}px ${space_of(t, left)}px"
-}
-
-fn pad_decl(e: Edge?, t: Theme, dir: Direction) -> string {
-    match e {
-        v? -> pad_one(v, t, dir)
-        null -> ""
-    }
-}
-
-fn align_one(a: Align) -> string {
-    match a {
-        .Start -> "align-items:flex-start",
-        .Center -> "align-items:center",
-        .End -> "align-items:flex-end",
-        .Stretch -> "align-items:stretch",
-        .Baseline -> "align-items:baseline",
-    }
-}
-
-fn align_decl(a: Align?) -> string {
-    match a {
-        v? -> align_one(v)
-        null -> ""
-    }
-}
-
-fn distribute_one(d: Distribute) -> string {
-    match d {
-        .Start -> "justify-content:flex-start",
-        .Center -> "justify-content:center",
-        .End -> "justify-content:flex-end",
-        .SpaceBetween -> "justify-content:space-between",
-        .SpaceAround -> "justify-content:space-around",
-        .SpaceEvenly -> "justify-content:space-evenly",
-    }
-}
-
-fn distribute_decl(d: Distribute?) -> string {
-    match d {
-        v? -> distribute_one(v)
-        null -> ""
-    }
-}
-
-fn sizing_one(prop: string, s: Sizing) -> string {
-    match s {
-        .Hug -> "",
-        .Fill -> "${prop}:100%",
-        .Fixed(n) -> "${prop}:${n}px",
-        .Percent(_) -> "",
-    }
-}
-
-fn sizing_decl(prop: string, s: Sizing?) -> string {
-    match s {
-        v? -> sizing_one(prop, v)
-        null -> ""
-    }
-}
-
-fn grow_decl(n: int) -> string { if n > 0 { "flex-grow:${n}" } else { "" } }
-
-fn layout_css(l: Layout, t: Theme, dir: Direction) -> string {
-    decl(
-        [
-            axis_decl(l.direction),
-            gap_decl(l.gap, t),
-            pad_decl(l.pad, t, dir),
-            align_decl(l.align),
-            distribute_decl(l.distribute),
-            sizing_decl("width", l.width),
-            sizing_decl("height", l.height),
-            grow_decl(l.grow),
-        ],
-    )
-}
-
-fn appearance_css(s: Style, t: Theme) -> string {
-    decl(
-        [
-            color_decl(s.color, t),
-            fill_decl(s.fill, t),
-            radius_decl(s.radius, t),
-            face_decl(s.face, t),
-        ],
-    )
-}
-
-fn box_attrs(n: Node, env: Env) -> List<HtmlAttr> {
-    let css_text = decl(
-        [layout_css(n.box.layout, env.theme, env.direction), appearance_css(n.box.style, env.theme)],
-    )
+/// A node's own attributes: its identity, its classes, its box.
+fn node_attrs(n: Node) -> List<HtmlAttr> {
     let keyed: List<HtmlAttr> = match n.box.key {
         k? -> [HtmlAttr { name: .DataKey, value: k }]
         null -> []
     }
-    if css_text == "" { keyed } else { keyed.concat([HtmlAttr { name: .Style, value: css_text }]) }
+    keyed.concat(class_attrs(n))
 }
 
 // ── the walker ──────────────────────────────────────────────────
 
-fn draw(n: Node, h: Html) {
-    let tag = tag_of(n.prim, n.attrs)
-    h.ops.push(HtmlOp.Open(tag, attrs_of(n.attrs).concat(box_attrs(n, h.env))))
-    h.ops.push(HtmlOp.Text(content_of(n.attrs)))
-    for c in n.children { draw(c, h) }
-    h.ops.push(HtmlOp.Close(tag))
+impl Sink for Html {
+    fn opened(n: Node) {
+        // LICENSED loops.push_loop: the rules ride a shared Cell; a concat assignment would rebind a copy
+        for r in distinct_rules(n.box.rules()) { self.rules.push(r) }
+        self.ops.push(HtmlOp.Open(tag_of(n), attrs_of(n.attrs).concat(node_attrs(n))))
+    }
+    fn words(s: string) { self.ops.push(HtmlOp.Text(s)) }
+    fn closed(n: Node) { self.ops.push(HtmlOp.Close(tag_of(n))) }
 }
 
-/// The finished document for one tree, in one environment.
+/// The finished document for one tree: its one stylesheet, then its body.
 export fn render(root: Node, env: Env) -> string {
     let h = Html { env: env }
     draw(root, h)
-    source(h.ops.get())
+    document(stylesheet(distinct_rules(h.rules.get()), env.theme), h.ops.get())
 }

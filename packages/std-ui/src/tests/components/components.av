@@ -1,0 +1,131 @@
+// proves: the first component tranche end to end, evaluated and native
+// alike — every component projects to its primitive and carries its own
+// words through `describe`.
+use @std.ui.components.{
+    text,
+    heading,
+    image,
+    icon,
+    divider,
+    button,
+    link,
+    field,
+    checkbox,
+    switch,
+    slider,
+    surface,
+    list,
+    item,
+    card,
+    dialog,
+    alert,
+    progress,
+    spinner,
+    form,
+    error_text,
+}
+use @std.ui.realize.view.{View}
+use @std.ui.realize.render.{Prim, Attribute}
+
+fn prim_word(p: Prim) -> string {
+    match p {
+        .Text -> "text",
+        .Heading -> "heading",
+        .Button -> "button",
+        .Link -> "link",
+        .Image -> "image",
+        .Field -> "field",
+        .Checkbox -> "checkbox",
+        .Row -> "row",
+        .Column -> "column",
+        .Dialog -> "dialog",
+        .Divider -> "divider",
+        .Icon -> "icon",
+        .Surface -> "surface",
+        .List -> "list",
+        .Item -> "item",
+        .Card -> "card",
+        .Progress -> "progress",
+        .Alert -> "alert",
+        .Spinner -> "spinner",
+        .Form -> "form",
+        .Switch -> "switch",
+        .Slider -> "slider",
+    }
+}
+
+fn show(name: string, v: dyn View) -> string {
+    let n = v.describe()
+    "${name}|${prim_word(n.prim)}|${n.words()}"
+}
+
+fn has_flag(v: dyn View, want: string) -> bool {
+    v.describe().attrs.any((a: Attribute) -> flag_word(a) == want)
+}
+
+fn flag_word(a: Attribute) -> string {
+    match a {
+        .Disabled(_) -> "disabled",
+        .Checked(_) -> "checked",
+        .Selected(_) -> "selected",
+        .Open(_) -> "open",
+        .Invalid(_) -> "invalid",
+        .Loading(_) -> "loading",
+        rest -> "",
+    }
+}
+
+let buy = button "Buy" {
+    disabled: true
+    loading: true
+}
+
+let email = field "Email" {
+    value: "a@b"
+    placeholder: "you"
+    invalid: true
+}
+
+let volume = slider "Volume" {
+    amount: 40
+    min: 5
+    max: 90
+}
+
+let row = item {
+    selected: true
+    text "row"
+}
+
+let confirm = dialog "Confirm" {
+    open: true
+    text "sure?"
+}
+
+let loading = progress "Loading" {
+    amount: 30
+    max: 60
+}
+
+println(show("text", text "hi"))
+println(show("heading", heading "H" { rank: 3 }))
+println(show("image", image "cat.png" { alt: "A cat" }))
+println(show("icon", icon "x.svg" { name: "Close" }))
+println(show("divider", divider {}))
+println(show("button", buy))
+println(show("link", link "Home" { href: "/home" }))
+println(show("field", email))
+println(show("checkbox", checkbox "Done" { checked: true }))
+println(show("switch", switch "On" { checked: true }))
+println(show("slider", volume))
+println(show("surface", surface { text "in" }))
+println(show("list", list { item { text "one" } }))
+println(show("item", row))
+println(show("card", card "Report" { text "body" }))
+println(show("dialog", confirm))
+println(show("alert", alert "Saved"))
+println(show("progress", loading))
+println(show("spinner", spinner "Wait"))
+println(show("form", form { field "Email" }))
+println(show("error_text", error_text { message: "Bad" }))
+"state: ${has_flag(buy, "loading")} ${has_flag(row, "selected")} ${has_flag(confirm, "open")}"

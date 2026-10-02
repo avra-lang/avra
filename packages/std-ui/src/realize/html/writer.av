@@ -1,6 +1,6 @@
 //! `realize/html/writer.av` — the typed HTML writer. A document is a list
 //! of OPS; `source` serializes them, escaping every value.
-use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, tag_text, attr_text}
+use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
 
 /// One piece of a document, in drawing order.
 export enum HtmlOp {
@@ -19,15 +19,24 @@ fn entities(s: string) -> string {
         .replace("'", "&#39;")
 }
 
-fn attr_source(a: HtmlAttr) -> string { " ${attr_text(a.name)}=\"${entities(a.value)}\"" }
+fn attr_source(a: HtmlAttr) -> string { " ${a.name.text()}=\"${entities(a.value)}\"" }
 
 fn op_source(op: HtmlOp) -> string {
     match op {
-        .Open(tag, attrs) -> "<${tag_text(tag)}${[attr_source(a) for a in attrs].join("")}>",
-        .Close(tag) -> "</${tag_text(tag)}>",
+        .Open(tag, attrs) -> "<${tag.text()}${[attr_source(a) for a in attrs].join("")}>",
+        .Close(tag) -> "</${tag.text()}>",
         .Text(content) -> entities(content),
     }
 }
 
 /// A document's ops as HTML source.
 export fn source(ops: List<HtmlOp>) -> string { [op_source(o) for o in ops].join("") }
+
+/// A `<` in a declaration would end the `style` element, so CSS text is
+/// written with the CSS escape for every one; the value is unchanged.
+fn css_safe(css: string) -> string { css.replace("<", "\\3c ") }
+
+/// The stylesheet, then the tree in a body.
+export fn document(css: string, ops: List<HtmlOp>) -> string {
+    "<style>${css_safe(css)}</style><body>${source(ops)}</body>"
+}

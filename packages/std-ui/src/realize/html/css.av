@@ -1,0 +1,284 @@
+//! `realize/html/css.av` — the atomic class vocabulary and the one
+//! stylesheet. A `Box` field becomes a class named for its token
+//! (`fill-surface`, `gap-m`), and the class carries the value through a
+//! CSS variable the theme fills; an interaction override prefixes its
+//! classes with the state (`hover:fill-surface-hover`) and the
+//! stylesheet appends the pseudo-class. The class set is deduped per
+//! document, so two nodes that share a look share one rule, and no
+//! value ever reaches a class name.
+use style.box.{Box}
+use style.style.{Style, StateStyle, Interaction}
+use style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout}
+use style.theme.{Theme}
+use ui.{Size, Tone, Font}
+
+/// One atomic rule: its class name (already state-prefixed), the state
+/// it applies in, and the declaration it carries.
+export type CssRule = { name: string, state: Interaction?, decl: string }
+
+const sizes = [Size.None, .Xs, .S, .M, .L, .Xl]
+const tones = [Tone.Text, .Muted, .Danger, .Surface, .SurfaceRaised, .SurfaceSunk, .SurfaceHover]
+const fonts = [Font.Body, .Heading, .Footnote, .Mono]
+
+/// The pseudo-class a state maps to on the web.
+/// Every state and its pseudo-class — DATA.
+export type PseudoRow = { state: Interaction, pseudo: string }
+
+const pseudo_rows: List<PseudoRow> = table<PseudoRow> {
+    state     | pseudo
+    .Hover    | ":hover"
+    .Focus    | ":focus-visible"
+    .Pressed  | ":active"
+    .Disabled | ":disabled"
+}
+
+fn pseudo_class(s: Interaction) -> string { pseudo_rows.find(it.state == s)?.pseudo ?? "" }
+
+fn prefixed(name: string, state: Interaction?) -> string {
+    match state {
+        s? -> "${s.word()}:${name}"
+        null -> name
+    }
+}
+
+/// One rule, or nothing when the field was not given.
+fn rule(name: string, state: Interaction?, decl: string) -> List<CssRule> {
+    if name == "" { return [] }
+    [CssRule { name: prefixed(name, state), state: state, decl: decl }]
+}
+
+// ── layout ──────────────────────────────────────────────────────
+
+/// A token's class name and the declaration it carries — ONE value, so
+/// the name and the declaration of a variant are written together.
+type CssWord = { name: string, decl: string }
+
+/// The empty word — a token with no CSS of its own.
+const no_word = CssWord { name: "", decl: "" }
+/// Every axis and its class+declaration — DATA.
+export type AxisWord = { axis: Axis, word: CssWord }
+
+const axis_words: List<AxisWord> = table<AxisWord> {
+    axis    | word
+    .Row    | CssWord { name: "dir-row", decl: "display:flex;flex-direction:row" }
+    .Column | CssWord { name: "dir-col", decl: "display:flex;flex-direction:column" }
+}
+
+fn axis_word(a: Axis) -> CssWord { axis_words.find(it.axis == a)?.word ?? no_word }
+
+/// One value's rule, or nothing when the field was not given — the one
+/// shape every optional token shares.
+fn opted<T>(x: T?, state: Interaction?, mk: fn(T) -> CssWord) -> List<CssRule> {
+    match x {
+        v? -> {
+            let w = mk(v)
+            rule(w.name, state, w.decl)
+        }
+        null -> []
+    }
+}
+
+fn gap_word(z: Size) -> CssWord {
+    CssWord { name: "gap-${z.word()}", decl: "gap:var(--space-${z.word()})" }
+}
+
+fn color_word(c: Tone) -> CssWord {
+    CssWord { name: "color-${c.word()}", decl: "color:var(--tone-${c.word()})" }
+}
+
+fn fill_word(c: Tone) -> CssWord {
+    CssWord { name: "fill-${c.word()}", decl: "background:var(--tone-${c.word()})" }
+}
+
+fn radius_word(z: Size) -> CssWord {
+    CssWord { name: "radius-${z.word()}", decl: "border-radius:var(--radius-${z.word()})" }
+}
+
+fn face_word(f: Font) -> CssWord {
+    CssWord { name: "face-${f.word()}", decl: "font-family:var(--face-${f.word()})" }
+}
+
+/// A sizing token's class and declaration; `Hug`/`Percent` draw none.
+fn size_word_of(prefix: string, prop: string, s: Sizing) -> CssWord {
+    match s {
+        .Hug -> no_word,
+        .Fill -> CssWord { name: "${prefix}-fill", decl: "${prop}:100%" },
+        .Fixed(n) -> CssWord { name: "${prefix}-${n}", decl: "${prop}:${n}px" },
+        .Percent(_) -> no_word,
+    }
+}
+
+/// The wrappers: a token, its state and its word.
+fn axis_rule(a: Axis?, state: Interaction?) -> List<CssRule> { opted(a, state, axis_word) }
+
+fn gap_rule(z: Size?, state: Interaction?) -> List<CssRule> { opted(z, state, gap_word) }
+
+fn align_rule(a: Align?, state: Interaction?) -> List<CssRule> { opted(a, state, align_word) }
+
+fn distribute_rule(d: Distribute?, state: Interaction?) -> List<CssRule> { opted(d, state, distribute_word) }
+
+fn color_rule(c: Tone?, state: Interaction?) -> List<CssRule> { opted(c, state, color_word) }
+
+fn fill_rule(c: Tone?, state: Interaction?) -> List<CssRule> { opted(c, state, fill_word) }
+
+fn radius_rule(z: Size?, state: Interaction?) -> List<CssRule> { opted(z, state, radius_word) }
+
+fn face_rule(f: Font?, state: Interaction?) -> List<CssRule> { opted(f, state, face_word) }
+
+fn sizing_rule(prefix: string, prop: string, s: Sizing?, state: Interaction?) -> List<CssRule> {
+    opted(s, state, (v) -> size_word_of(prefix, prop, v))
+}
+
+fn edge_rule(prefix: string, prop: string, z: Size?, state: Interaction?) -> List<CssRule> {
+    match z {
+        v? -> rule("${prefix}-${v.word()}", state, "${prop}:var(--space-${v.word()})")
+        null -> []
+    }
+}
+
+fn pad_rules(e: Edge?, state: Interaction?) -> List<CssRule> {
+    match e {
+        v? -> edge_rule("pis", "padding-inline-start", v.start, state)
+            .concat(edge_rule("pie", "padding-inline-end", v.end, state))
+            .concat(edge_rule("pt", "padding-top", v.top, state))
+            .concat(edge_rule("pb", "padding-bottom", v.bottom, state))
+        null -> []
+    }
+}
+
+/// Every alignment and its class+declaration — DATA.
+export type AlignWord = { align: Align, word: CssWord }
+
+const align_words: List<AlignWord> = table<AlignWord> {
+    align     | word
+    .Start    | CssWord { name: "ai-start", decl: "align-items:flex-start" }
+    .Center   | CssWord { name: "ai-center", decl: "align-items:center" }
+    .End      | CssWord { name: "ai-end", decl: "align-items:flex-end" }
+    .Stretch  | CssWord { name: "ai-stretch", decl: "align-items:stretch" }
+    .Baseline | CssWord { name: "ai-baseline", decl: "align-items:baseline" }
+}
+
+fn align_word(a: Align) -> CssWord { align_words.find(it.align == a)?.word ?? no_word }
+
+/// Every distribution and its class+declaration — DATA.
+export type DistWord = { dist: Distribute, word: CssWord }
+
+const dist_words: List<DistWord> = table<DistWord> {
+    dist          | word
+    .Start        | CssWord { name: "jc-start", decl: "justify-content:flex-start" }
+    .Center       | CssWord { name: "jc-center", decl: "justify-content:center" }
+    .End          | CssWord { name: "jc-end", decl: "justify-content:flex-end" }
+    .SpaceBetween | CssWord { name: "jc-between", decl: "justify-content:space-between" }
+    .SpaceAround  | CssWord { name: "jc-around", decl: "justify-content:space-around" }
+    .SpaceEvenly  | CssWord { name: "jc-evenly", decl: "justify-content:space-evenly" }
+}
+
+fn distribute_word(d: Distribute) -> CssWord { dist_words.find(it.dist == d)?.word ?? no_word }
+
+/// A sizing token's class name, or nothing when it draws no rule.
+
+fn grow_rule(n: int, state: Interaction?) -> List<CssRule> {
+    if n > 0 { rule("grow-${n}", state, "flex-grow:${n}") } else { [] }
+}
+
+/// One list from many — a field list reads as a single list literal.
+fn union<T>(xs: List<List<T>>) -> List<T> {
+    mut out: List<T> = []
+    for x in xs { out = out.concat(x) }
+    out
+}
+
+fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
+    union(
+        [
+            axis_rule(l.direction, state),
+            gap_rule(l.gap, state),
+            pad_rules(l.pad, state),
+            align_rule(l.align, state),
+            distribute_rule(l.distribute, state),
+            sizing_rule("w", "width", l.width, state),
+            sizing_rule("h", "height", l.height, state),
+            grow_rule(l.grow, state),
+        ],
+    )
+}
+
+// ── appearance ──────────────────────────────────────────────────
+
+fn appearance_rules(s: Style, state: Interaction?) -> List<CssRule> {
+    union(
+        [
+            color_rule(s.color, state),
+            fill_rule(s.fill, state),
+            radius_rule(s.radius, state),
+            face_rule(s.face, state),
+        ],
+    )
+}
+
+// ── the rules a box names ───────────────────────────────────────
+
+impl Box {
+    /// Every atomic rule this box names: its layout and appearance, then
+    /// one group per interaction state.
+    fn rules() -> List<CssRule> {
+        mut out = layout_rules(self.layout, null).concat(appearance_rules(self.style, null))
+        for ss in self.style.states { out = out.concat(appearance_rules(ss.style, ss.state)) }
+        out
+    }
+}
+
+/// Rules with each class name kept once, order intact; two nodes that
+/// share a look share the rule.
+export fn distinct_rules(rules: List<CssRule>) -> List<CssRule> {
+    mut seen: List<string> = []
+    mut out: List<CssRule> = []
+    for r in rules {
+        if !seen.contains(r.name) {
+            seen = seen.concat([r.name])
+            out = out.concat([r])
+        }
+    }
+    out
+}
+
+// ── the stylesheet ──────────────────────────────────────────────
+
+fn space_vars(t: Theme) -> string {
+    ["--space-${z.word()}:${t.space_of(z)}px;" for z in sizes].join("")
+}
+
+fn radius_vars(t: Theme) -> string {
+    ["--radius-${z.word()}:${t.radius_of(z)}px;" for z in sizes].join("")
+}
+
+fn tone_vars(t: Theme) -> string {
+    ["--tone-${c.word()}:${t.color_of(c)};" for c in tones].join("")
+}
+
+fn face_vars(t: Theme) -> string {
+    ["--face-${f.word()}:${t.face_of(f)};" for f in fonts].join("")
+}
+
+/// The theme as the variables every class reads. A mode is a whole
+/// theme, so a mode change rewrites these and moves no class.
+fn root_vars(t: Theme) -> string {
+    ":root{${space_vars(t)}${radius_vars(t)}${tone_vars(t)}${face_vars(t)} }"
+}
+
+/// A class name as a selector; `:` in a state prefix is escaped.
+fn selector(name: string) -> string { ".${name.replace(":", "\\:")}" }
+
+fn pseudo_of(s: Interaction?) -> string {
+    match s {
+        v? -> pseudo_class(v)
+        null -> ""
+    }
+}
+
+fn rule_source(r: CssRule) -> string { "${selector(r.name)}${pseudo_of(r.state)}{${r.decl}}" }
+
+/// The one stylesheet every class in the document names.
+export fn stylesheet(rules: List<CssRule>, t: Theme) -> string {
+    [root_vars(t)].concat([rule_source(r) for r in rules]).join("\n")
+}

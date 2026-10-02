@@ -18,7 +18,8 @@ export trait View {
             Node {
                 prim: ${prim},
                 attrs: ${attrs},
-                box: Box { style: self.style, layout: self.layout, a11y: self.a11y, key: self.key },
+                // LICENSED compiler.modified_copy_literal: the Box is projected from the component's fields
+                box: Box { style: ${style_code(t)}, layout: self.layout, a11y: self.a11y, key: self.key },
                 children: ${children_code(t)},
             }
         }
@@ -57,6 +58,18 @@ fn prim_quote(text: string) -> Code {
         "Row" -> quote { Prim.Row },
         "Column" -> quote { Prim.Column },
         "Dialog" -> quote { Prim.Dialog },
+        "Divider" -> quote { Prim.Divider },
+        "Icon" -> quote { Prim.Icon },
+        "Surface" -> quote { Prim.Surface },
+        "List" -> quote { Prim.List },
+        "Item" -> quote { Prim.Item },
+        "Card" -> quote { Prim.Card },
+        "Progress" -> quote { Prim.Progress },
+        "Alert" -> quote { Prim.Alert },
+        "Spinner" -> quote { Prim.Spinner },
+        "Form" -> quote { Prim.Form },
+        "Switch" -> quote { Prim.Switch },
+        "Slider" -> quote { Prim.Slider },
         rest -> quote { Prim.Text },
     }
 }
@@ -73,6 +86,18 @@ fn attr_variant(name: string) -> string? {
         "alt" -> "Alt",
         "disabled" -> "Disabled",
         "checked" -> "Checked",
+        "message" -> "Text",
+        "href" -> "Href",
+        "amount" -> "Amount",
+        "min" -> "Min",
+        "max" -> "Max",
+        "selected" -> "Selected",
+        "open" -> "Open",
+        "invalid" -> "Invalid",
+        "loading" -> "Loading",
+        "urgency" -> "Urgency",
+        "title" -> "Title",
+        "name" -> "Name",
         rest -> null,
     }
 }
@@ -89,6 +114,17 @@ fn attr_quote(f: Field) -> Code {
         "Alt" -> quote { Attribute.Alt(self.${f}) },
         "Disabled" -> quote { Attribute.Disabled(self.${f}) },
         "Checked" -> quote { Attribute.Checked(self.${f}) },
+        "Amount" -> quote { Attribute.Amount(self.${f}) },
+        "Href" -> quote { Attribute.Href(self.${f}) },
+        "Min" -> quote { Attribute.Min(self.${f}) },
+        "Max" -> quote { Attribute.Max(self.${f}) },
+        "Selected" -> quote { Attribute.Selected(self.${f}) },
+        "Open" -> quote { Attribute.Open(self.${f}) },
+        "Invalid" -> quote { Attribute.Invalid(self.${f}) },
+        "Loading" -> quote { Attribute.Loading(self.${f}) },
+        "Urgency" -> quote { Attribute.Urgency(self.${f}) },
+        "Title" -> quote { Attribute.Title(self.${f}) },
+        "Name" -> quote { Attribute.Name(self.${f}) },
         rest -> quote { Attribute.Text(self.${f}) },
     }
 }
@@ -101,3 +137,18 @@ fn children_code(t: Type) -> Code {
         quote { [] }
     }
 }
+
+// ── visual variants resolve to Style ────────────────────────────
+
+/// A field whose value is a visual variant, not an attribute: its value
+/// is merged into the node's `Style`, so a component names a role and
+/// the caller can still override it through `style`.
+fn is_style_field(f: Field) -> bool { f.name == "tone" }
+
+/// The component's style: its own `style` field, with the variant field
+/// laid over it.
+fn style_code(t: Type) -> Code {
+    let tone? = t.fields.find(is_style_field) else { return quote { self.style } }
+    quote { self.style with { color: self.tone } }
+}
+

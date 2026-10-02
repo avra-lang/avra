@@ -1,27 +1,63 @@
 //! `realize/tui/tui.av` — the terminal target. The same Node, the same
 //! vocabulary, drawn as lines. A second target is a table and a walker,
 //! never a component list. UI.md §19.2.
-use realize.render.{Node, Prim, Attribute, content_of}
+use realize.render.{Node, Prim, Attribute}
+use realize.sink.{Sink, draw}
 use env.{Env}
 
 /// The terminal target: one accumulator of lines.
 export type Tui = { lines: Cell<List<string>> = Cell.new([]) }
 
 /// The one line a primitive draws for itself; a container draws none.
-fn line_of(p: Prim, attrs: List<Attribute>) -> string {
-    match p {
-        .Text or .Heading or .Link or .Image -> content_of(attrs),
-        .Button -> "[${content_of(attrs)}]",
-        .Field -> content_of(attrs),
-        .Checkbox -> "[ ] ${content_of(attrs)}",
-        .Row or .Column or .Dialog -> "",
+/// How a primitive draws its line: its content, bracketed, a checkbox,
+/// a rule, or nothing. DATA, keyed by the primitive.
+export enum LineForm { Content, Bracketed, Checkbox, Rule, Blank }
+
+export type LineRow = { prim: Prim, form: LineForm }
+
+const line_rows: List<LineRow> = table<LineRow> {
+    prim      | form
+    .Text     | LineForm.Content
+    .Heading  | LineForm.Content
+    .Link     | LineForm.Content
+    .Image    | LineForm.Content
+    .Field    | LineForm.Content
+    .Slider   | LineForm.Content
+    .Icon     | LineForm.Content
+    .Button   | LineForm.Bracketed
+    .Checkbox | LineForm.Checkbox
+    .Switch   | LineForm.Checkbox
+    .Progress | LineForm.Content
+    .Alert    | LineForm.Content
+    .Spinner  | LineForm.Content
+    .Divider  | LineForm.Rule
+    .Row      | LineForm.Blank
+    .Column   | LineForm.Blank
+    .Dialog   | LineForm.Blank
+    .Surface  | LineForm.Blank
+    .List     | LineForm.Blank
+    .Item     | LineForm.Blank
+    .Card     | LineForm.Blank
+    .Form     | LineForm.Blank
+}
+
+fn line_of(n: Node) -> string {
+    match line_rows.find(it.prim == n.prim)?.form ?? LineForm.Blank {
+        .Content -> n.words(),
+        .Bracketed -> "[${n.words()}]",
+        .Checkbox -> "[ ] ${n.words()}",
+        .Rule -> "----",
+        .Blank -> "",
     }
 }
 
-fn draw(n: Node, t: Tui) {
-    let line = line_of(n.prim, n.attrs)
-    if line != "" { t.lines.push(line) }
-    for c in n.children { draw(c, t) }
+impl Sink for Tui {
+    fn opened(n: Node) {
+        let line = line_of(n)
+        if line != "" { self.lines.push(line) }
+    }
+    fn words(_s: string) {}
+    fn closed(_n: Node) {}
 }
 
 /// The finished frame for one tree.
