@@ -1,0 +1,28 @@
+//! `realize/dom/frame.av` — the live target's op frame. One render emits a
+//! TEXT frame, one op per line; the program hands it to the runtime, which
+//! hands it to the host, which applies it to the live tree. Paths are
+//! stable for a stable shape, so a re-render needs no keys yet.
+use realize.render.{Node}
+use realize.html.tags.{tag_of}
+
+/// A value with the three separators escaped, so an op is one line.
+fn esc(s: string) -> string {
+    s.replace("%", "%25").replace(" ", "%20").replace("\n", "%0a")
+}
+
+/// The ops for one node and its subtree, at `path`.
+fn ops_of(n: Node, path: string, mut out: List<string>) {
+    out = out.concat(["C ${path} ${tag_of(n).text()}"])
+    let k = n.box.key ?? ""
+    if k != "" { out = out.concat(["K ${path} ${esc(k)}"]) }
+    let words = n.words()
+    if words != "" { out = out.concat(["T ${path} ${esc(words)}"]) }
+    for i, c in n.children { ops_of(c, "${path}/${i}", out) }
+}
+
+/// The whole tree as one frame.
+export fn frame(root: Node) -> string {
+    mut out: List<string> = []
+    ops_of(root, "0", out)
+    out.join("\n")
+}
