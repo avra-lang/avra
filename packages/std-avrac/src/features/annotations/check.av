@@ -18,7 +18,7 @@ use core.{
     user_kind,
     is_kind_word,
 }
-use features.{TypeCx, kind_word, Unsettled, unsettled_label, nothing, fills_type_seat}
+use features.{TypeCx, kind_word, Unsettled, unsettled_label, nothing, fills_type_seat, Lifted}
 use @std.meta.{Diagnostic}
 use diagnostics.{refusal, loc_at}
 use @std.errors.{Loc}
@@ -367,7 +367,7 @@ fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId) -> bool {
             // asking again hits the memo, and a run that failed is
             // spoken here — silence would leave "no method `show`".
             match cx.view.decls.lifted(m, cx.view.file, s, a.callee, []) {
-                .Ok(_) -> nothing(),
+                .Ok(crossed) -> spoke_declared_problems(cx, a, m, s, crossed),
                 .Err(why) -> {
                     unsettled(cx, a, why)
                     return true
@@ -383,6 +383,21 @@ fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId) -> bool {
 fn derive_seat(cx: TypeCx, member: DeclId) -> TypeId? {
     let sig? = cx.view.decls.sig(member)?.fn_sig() else { return null }
     sig.params.first()
+}
+
+/// A trait's `derive` answering `Declared` speaks its `problems`
+/// exactly where a Declares annotation's own answer is spoken — at
+/// the annotated declaration, namespaced under the trait's package.
+fn spoke_declared_problems(
+    mut cx: TypeCx,
+    a: Annotation,
+    trait_derive: DeclId,
+    s: StmtId,
+    crossed: Lifted,
+) {
+    let sig? = cx.view.decls.sig(trait_derive)?.fn_sig() else { return }
+    if !cx.view.decls.meta_type(sig.ret, "Declared") { return }
+    speak_saids(cx, a, trait_derive, s, crossed.declared_problems())
 }
 
 /// A trait whose `derive` takes another kind of declaration than the

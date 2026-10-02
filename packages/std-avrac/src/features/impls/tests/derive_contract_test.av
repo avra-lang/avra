@@ -5,7 +5,10 @@ use @std.avrac.testing.{provided, said, refused_with}
 
 /// A program whose main file declares `traits` over `@std.meta`.
 fn declaring(traits: string) -> string {
-    let p = provided("use @std.meta.{Type, Fn, Named, Directive}\n\n" + traits + "\n1\n", "")
+    let p = provided(
+        "use @std.meta.{Type, Fn, Named, Directive, Declared}\n\n" + traits + "\n1\n",
+        "",
+    )
     if said(p).is_empty() { "clean" } else { p.report() }
 }
 
@@ -20,15 +23,20 @@ spec "features/impls — the derive contract" {
             declaring("trait A {\n    fn derive(t: Type) -> List<Directive>\n}")
                 .contains("type.derive_contract")
         }
+        then "`Declared` is the same effect with problems to speak, so it is clean" {
+            declaring(
+                "trait A {\n    static fn derive(t: Type) -> Declared { Declared { made: [] } }\n}",
+            ) == "clean"
+        }
         then "one taking no declaration is refused, with no `@std.meta` in sight" {
             refused_with(
                 "trait T {\n    static fn derive(n: int) -> int { n }\n}\n1",
-                "a trait's `derive` is `static fn derive(t: Type) -> List<Directive>`",
+                "a trait's `derive` answers the declarations it makes",
             )
         }
-        then "one answering anything but `List<Directive>` is refused" {
+        then "one answering anything but declarations is refused" {
             declaring("trait A {\n    static fn derive(t: Type) -> int { 1 }\n}")
-                .contains("a trait's `derive` is `static fn derive(t: Type) -> List<Directive>`")
+                .contains("a trait's `derive` answers the declarations it makes")
         }
         then "a `marks` answering anything but `List<string>` is refused" {
             declaring(
@@ -39,7 +47,7 @@ spec "features/impls — the derive contract" {
         then "a trait that declares no `derive` owes nothing" {
             refused_with(
                 "trait T {\n    fn f() -> int\n}\ntrait U {\n    static fn derive(n: int) -> int { n }\n}\n1",
-                "`derive` is `static fn derive",
+                "a trait's `derive` answers the declarations it makes",
             )
         }
     }
