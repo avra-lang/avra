@@ -1,7 +1,7 @@
 // A derivable trait is held to its contract WHERE IT IS DECLARED, so a
 // library's author hears a broken `derive` at their own build, never
 // first at a user's `@derive`.
-use @std.avrac.testing.{provided, said, refused_with}
+use @std.avrac.testing.{provided, said, answered, refused_with}
 
 /// A program whose main file declares `traits` over `@std.meta`.
 fn declaring(traits: string) -> string {
@@ -23,12 +23,12 @@ spec "features/impls — the derive contract" {
         then "one taking no declaration is refused, with no `@std.meta` in sight" {
             refused_with(
                 "trait T {\n    static fn derive(n: int) -> int { n }\n}\n1",
-                "a trait's `derive` is `static fn derive(t: Type) -> List<Directive>`",
+                "a trait's `derive` answers the declarations it makes",
             )
         }
         then "one answering anything but `List<Directive>` is refused" {
             declaring("trait A {\n    static fn derive(t: Type) -> int { 1 }\n}")
-                .contains("a trait's `derive` is `static fn derive(t: Type) -> List<Directive>`")
+                .contains("a trait's `derive` answers the declarations it makes")
         }
         then "a `marks` answering anything but `List<string>` is refused" {
             declaring(
@@ -36,10 +36,23 @@ spec "features/impls — the derive contract" {
             )
                 .contains("a trait's `marks` is `static fn marks(t: Type) -> List<string>`")
         }
+        then "one answering `Declared` is clean too" {
+            declaring(
+                "use @std.meta.{derive, Declared}\ntrait A {\n    static fn derive(t: Type) -> Declared { Declared { made: [] } }\n    static fn marks(t: Type) -> List<string> { [] }\n}",
+            ) == "clean"
+        }
+        then "a `Declared` derive's `made` reaches the program" {
+            answered(
+                provided(
+                    "use @x.c.{Marked}\nuse @std.meta.{derive}\n\n@derive(Marked)\ntype Thing = { x: int }\nmarked\n",
+                    "use @std.meta.{derive, Type, Directive, Declared}\nexport trait Marked {\n    static fn derive(t: Type) -> Declared {\n        Declared { made: [Directive { twin: \"\", name: t.name, at: t.at, source: quote { const marked = \"m\" } }] }\n    }\n    static fn marks(t: Type) -> List<string> { [] }\n}\n",
+                ),
+            ) == "m"
+        }
         then "a trait that declares no `derive` owes nothing" {
             refused_with(
                 "trait T {\n    fn f() -> int\n}\ntrait U {\n    static fn derive(n: int) -> int { n }\n}\n1",
-                "`derive` is `static fn derive",
+                "`derive` answers the declarations",
             )
         }
     }

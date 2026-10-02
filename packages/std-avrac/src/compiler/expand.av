@@ -755,8 +755,14 @@ impl Workspace {
         // The provider guard: a same-file derive would need this file's
         // names while they are still being made. `check_annotation` speaks.
         if same_file(self.decls.decl(m).file, f) { return [] }
-        if self.decls.sig(m)?.fn_sig() == null { return [] }
-        self.lifted_directives(m, f, w.stmt, w.callee, [], w.at)
+        let sig? = self.decls.sig(m)?.fn_sig() else { return [] }
+        // A `Declared` answer makes its declarations in `made`, beside
+        // the problems the annotation law speaks — the SAME lift, read
+        // through the other field. Both shapes generate.
+        when {
+            self.is_declared(sig.ret) -> self.declared_directives(m, f, w.stmt, w.callee, [], w.at)
+            _ -> self.lifted_directives(m, f, w.stmt, w.callee, [], w.at)
+        }
     }
 
     /// The declaration at `s` as the value the fn's first seat asks
