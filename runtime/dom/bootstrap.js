@@ -44,6 +44,9 @@ export function parseFrame(bytes) {
       const kind = dv.getInt32(i, true); i += 4;
       const r = byId.get(id);
       if (r) { if (!r.events) r.events = []; r.events.push(kind); }
+    } else if (op === 6) {
+      const len = dv.getInt32(i, true); i += 4;
+      records.stylesheet = str(i, len); i += len;
     } else if (op === 0) {
       break;
     } else {
@@ -57,7 +60,7 @@ export function parseFrame(bytes) {
 // test) and one mount element.
 const EVENT_NAME = { 1: "click", 2: "input", 3: "change", 4: "submit" };
 
-export function createApplier(doc, mount, send = () => {}) {
+export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   // LICENSED loops.push_loop: these maps ride the closure as the applier's table
   const byKey = new Map();
   let byId = new Map();
@@ -65,6 +68,7 @@ export function createApplier(doc, mount, send = () => {}) {
   return function apply(bytes) {
     const records = parseFrame(bytes);
     if (records === null) return; // nothing changed — touch nothing
+    if (records.stylesheet !== undefined && styleEl) styleEl.textContent = records.stylesheet;
     const next = new Map();
     const keys = new Set();
     for (const r of records) {

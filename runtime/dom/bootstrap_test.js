@@ -12,6 +12,7 @@ const C = (id, parent, index, tag) => [1, ...i32(id), ...i32(parent), ...i32(ind
 const K = (id, s) => [2, ...i32(id), ...i32(s.length), ...utf8(s)];
 const A = (id, s) => [3, ...i32(id), ...i32(s.length), ...utf8(s)];
 const T = (id, s) => [4, ...i32(id), ...i32(s.length), ...utf8(s)];
+const S = (s) => [6, ...i32(s.length), ...utf8(s)];
 const frame = (...recs) => Uint8Array.from([3, ...recs.flat()]);
 
 function el(doc, tag) {
@@ -74,9 +75,14 @@ const kept = mount.childNodes[0];
 apply(Uint8Array.from([3, 0]));
 check("a no-change frame touches nothing", mount.childNodes[0] === kept && kept.childNodes[0].textContent === "hi", true);
 
+const styleEl = { textContent: "" };
+const styled = createApplier(doc, el(doc, "root2"), () => {}, styleEl);
+styled(frame(S("a{color:red}"), C(0, -1, 0, "div")));
+check("a stylesheet op fills the style element", styleEl.textContent, "a{color:red}");
+
 let refused = false;
 try { parseFrame(Uint8Array.from([2])); } catch { refused = true; }
 check("a frame of another VERSION refuses", refused, true);
 
-console.log(fails === 0 ? "bootstrap: 12/12" : `bootstrap: ${fails} FAILED`);
+console.log(fails === 0 ? "bootstrap: 13/13" : `bootstrap: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

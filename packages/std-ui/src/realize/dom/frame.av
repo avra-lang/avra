@@ -9,6 +9,7 @@
 //!   op 3  A       id, class(len+bytes)
 //!   op 4  T       id, words(len+bytes)
 //!   op 5  E       id, event kind — the host SUBSCRIBES and calls back
+//!   op 6  S       css(len+bytes) — the stylesheet, sent ONCE
 //!   op 0  N       nothing changed
 //! Every int is four little-endian bytes.
 use realize.render.{Node, EventKind, Binding}
@@ -72,6 +73,17 @@ export fn frame(root: Node) -> Bytes {
     b.take()
 }
 
+/// The tree's first frame: the stylesheet the classes need, then the tree.
+/// The sheet is sent ONCE — later frames carry only what changed.
+fn styled_frame(root: Node, theme: Theme) -> Bytes {
+    let b = buf()
+    b.push_byte(version)
+    b.push_byte(6)
+    b.push_str(sheet(root, theme))
+    emit(root, -1, 0, b, Cell.new(0))
+    b.take()
+}
+
 /// Nothing changed: a version and the no-op code, two bytes.
 export fn no_change() -> Bytes {
     let b = buf()
@@ -80,17 +92,21 @@ export fn no_change() -> Bytes {
     b.take()
 }
 
-/// The last frame sent — a render that changes nothing costs two bytes.
-export type Live = { last: Cell<Bytes> }
+/// The last frame sent, and whether the stylesheet has gone with it.
+export type Live = { last: Cell<Bytes>, styled: Cell<bool> }
 
-export fn live() -> Live { Live { last: Cell.new("".bytes()) } }
+export fn live() -> Live { Live { last: Cell.new("".bytes()), styled: Cell.new(false) } }
 
 impl Live {
-    /// `root`'s frame, or `no_change()` when it is the frame last sent.
-    fn diff(root: Node) -> Bytes {
-        let next = frame(root)
-        if next == self.last.get() { return no_change() }
+    /// `root`'s frame, or `no_change()` when it is the frame last sent. The
+    /// FIRST frame carries the stylesheet, so a page styles itself from the
+    /// program's own classes.
+    fn diff(root: Node, theme: Theme) -> Bytes {
+        let first = !self.styled.get()
+        let next = if first { styled_frame(root, theme) } else { frame(root) }
+        if !first && next == self.last.get() { return no_change() }
         self.last.set(next)
+        self.styled.set(true)
         next
     }
 }
