@@ -23,6 +23,7 @@ use core.{
     FileId,
     same_file,
     static_code_syms,
+    distinct,
 }
 use features.{nothing}
 use compiler.lower.{Body, Lowered}
@@ -322,6 +323,18 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
         // `avra_llvm_static_array` ptrtoints any pointer-shaped cell
         .Code(sym) -> avra_llvm_get_named_function(m, mangled(sym)),
     }
+}
+
+/// WHAT A NON-HOST TARGET HAS NO BODY FOR, by NAME: a runtime row that
+/// declares no wasm body (a fiber, a core), and a closure package that owns C
+/// (the wasm link carries none). The build speaks which one — never a linker's
+/// "undefined symbol", which accuses the innocent.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names it cannot carry out.
+export fn unsupported_on_wasm(l: Lowered) -> List<string> {
+    let absent = [s.name for s in rt_sigs() if !s.wasm]
+    let called = [n for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null]
+    distinct([n! for n in called if absent.contains(n!)])
+        .concat(distinct([p.name for p in l.libraries if p.library != ""]))
 }
 
 /// THE CLOSURE LAW: every name a program's steps call is one the

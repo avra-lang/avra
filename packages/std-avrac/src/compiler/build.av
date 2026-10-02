@@ -31,6 +31,7 @@ use compiler.backend.{
     home_of,
     not_closed,
     program_closed,
+    unsupported_on_wasm,
 }
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.store.{Store, Stored, Keeping, node_key}
@@ -61,6 +62,8 @@ export enum BuildError {
     ObjectGone(path: string)
     /// A body calls a symbol nothing in the program declares.
     NotClosed(missing: string)
+    /// The program reaches a row or package this target has no body for.
+    UnsupportedOnWasm(names: List<string>)
     /// The program's own analysis, or a workspace-level refusal, already
     /// rendered this.
     Diagnosed(report: string)
@@ -77,6 +80,7 @@ impl Error for BuildError {
             .LinkFailed(code) -> info("build.link_failed", clang_link_failed(code)),
             .ObjectGone(p) -> info("build.object_gone", object_gone(p)),
             .NotClosed(missing) -> info("build.not_closed", not_closed(missing)),
+            .UnsupportedOnWasm(names) -> info("build.wasm_unsupported", wasm_unsupported(names)),
             .Diagnosed(report) -> info("build.diagnosed", report),
             .Unpublished(p) -> info("build.unpublished", unpublished(p)),
         }
@@ -641,6 +645,10 @@ impl Workspace {
         }
         mut clock = self.marking()
         let full = closed(self.homed(d.lowered, m, main, d.unlowered))?
+        if tools.target != "" {
+            let missing = unsupported_on_wasm(full)
+            if !missing.is_empty() { fail BuildError.UnsupportedOnWasm(missing) }
+        }
         let program = self.program_object(d, full, asked, tools)?
         let read = [self.object_of(d.store, a) for a in d.program.files]
         self.objects_kept(d, full, read.concat([program]), tools)?
@@ -819,4 +827,8 @@ fn unpublished(path: string) -> string {
 
 fn module_unreadable(path: string) -> string {
     "avra: the entry's module could not be read back — ${path}"
+}
+
+fn wasm_unsupported(names: List<string>) -> string {
+    "avra: a wasm module has no body for ${names.join(", ")} — a fiber, a core and a package's C are not available on this target"
 }
