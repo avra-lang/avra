@@ -1,7 +1,7 @@
-// A declaration row is read at its FILE's grain. The file's `Items` cell hashes the STABLE
-// rows — name, kind, owner, visibility, parse facts — so a body, a comment or a reindent
-// moves nothing, and a rename, a kind change, a moved annotation or a new declaration moves
-// it. A reader of a foreign declaration records that cell; the file's own minter, which
+// A file's `Items` cell hashes its STABLE rows — name, kind, owner, visibility, parse
+// facts — so a body, a comment or a reindent moves nothing, and a rename, a kind change, a
+// moved annotation or a new declaration moves it. A reader of one foreign declaration
+// records its NAME's bucket instead, never that whole file; the file's own minter, which
 // reads its rows while they are made, never records itself. `a_process_over`, `checked`
 // and `decl_in_file` are workspace_fixtures.av's own.
 use query.{Key}
@@ -107,13 +107,20 @@ fn reads_items(ws: Workspace, frame: Key, file: string) -> bool {
     ws.db.deps_of(frame).any((k: Key) -> k.family == items_ordinal() && k.arg == f.index)
 }
 
-spec "compiler/rows — a foreign read records the file's items" {
-    then "a caller's typing lists its callee file's Items, and not a file it never reads" {
+/// Whether `frame`'s cell lists the dep a label names.
+fn lists(ws: Workspace, frame: Key, label: string) -> bool {
+    ws.db.deps_of(frame).any((k: Key) -> ws.key_label(k) == label)
+}
+
+spec "compiler/rows — a foreign read records its name's bucket" {
+    then "a caller's typing lists its callee's name, and neither the callee's file nor a name it never reads" {
         let names = ["/w/src/a.av", "/w/src/b.av"]
         let ws = a_process_over(caller_files(), names)
         let _ = checked(ws, "/w/src/a.av")
-        let g = decl_in_file(ws, "/w/src/a.av", "g")
-        reads_items(ws, Key { family: typed_ordinal(), arg: g.index }, "/w/src/b.av")
+        let g = Key { family: typed_ordinal(), arg: decl_in_file(ws, "/w/src/a.av", "g").index }
+        lists(ws, g, "Named(helper)") &&
+            !reads_items(ws, g, "/w/src/b.av") &&
+            !lists(ws, g, "Named(peek)")
     }
     then "no file's Items lists itself" {
         let names = ["/w/src/a.av", "/w/src/b.av"]

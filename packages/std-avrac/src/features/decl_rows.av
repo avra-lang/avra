@@ -5,12 +5,18 @@
 //! files that use `Decl` are still registering.
 //!
 //! `id` is `@dense`, so it names a slot in this process alone. `file`,
-//! `stmt`, `parent`, `root`, `lo`, `hi`, `home` and `external` are
+//! `stmt`, `parent`, `root`, `lo`, `hi`, `home`, `external`, `bucket` and
+//! `standing` are
 //! process-local (`@dense` ids, arena indexes, offsets, a fact a record
 //! carries elsewhere) and `@local`, so none enters the stable hash, and so
 //! is `key`, the process's own interning text. `name`, `word`, `marks`,
 //! `key`, `home` and `external` are indexed, each index numbered in field
 //! order: a lookup reads a bucket, never a hand-kept table.
+//!
+//! A READ OF A ROW IS A READ OF ITS NAME'S BUCKET (`Decls.decl`): the
+//! bucket's hash folds every same-named row's stable hash, `told`
+//! included, so a reader re-runs when a row it read moves or a sibling
+//! under its name appears, and never for a row of another name.
 //!
 //! A FILE'S ADMISSION OWNS ITS ROWS: every write of a homed row is stamped
 //! with that file's run, so admitting the file again replaces them in one
@@ -56,6 +62,17 @@ export type Decl = {
     /// Whether its facts call it an `extern fn`, filed so the externs are
     /// one bucket.
     @local @index external: bool,
+    /// Its bucket in the name index — the cell a read of the row records.
+    @local bucket: int,
+    /// Where its file's rows stand, as `Decls.rows_state` says — minting (0),
+    /// settled (1), held (2) — carried so a read asks the row, never a file
+    /// table. A builtin's stays 0: the language's own rows are constants no
+    /// reader records.
+    @local standing: int,
+    /// What a reader can tell of it past the columns above: its parse
+    /// facts with every position nulled, and its home's path. Stable, so
+    /// its name's bucket moves whenever a reader's answer could.
+    told: int,
 }
 
 /// A node's declaration, in its file's own partition at the node's

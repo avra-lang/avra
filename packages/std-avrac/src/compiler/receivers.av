@@ -18,6 +18,8 @@ use core.{
     MethodParts,
     fp,
     fp_list,
+    fp_str,
+    mix_final,
     touch,
     filled,
     SeatMark,
@@ -57,8 +59,23 @@ impl Workspace {
         self.decls.clear_written()
         let sums = [self.summary(d) for d in fns]
         self.decls.settle_writers(fns, sums)
-        self.db.settle(k, fp(17, [fp_list(self.decls.written_bits(d)) for d in fns]))
+        self.db.settle(k, self.writers_print(fns))
         fns.length
+    }
+
+    /// The pass's answer as a reader can tell it, order-free: each WRITER's bits under
+    /// its own key. A fn that writes no seat reads as one never declared, so a
+    /// bystander added, renamed or removed moves nothing.
+    fn writers_print(fns: List<DeclId>) -> int {
+        mut total = 0
+        for d in fns {
+            let bits = self.decls.written_bits(d)
+            if bits.any(it == 1) {
+                total = total +
+                    mix_final(fp_list([fp_str(self.decls.raw_decl(d).key), fp_list(bits)]))
+            }
+        }
+        fp(17, [total])
     }
 }
 

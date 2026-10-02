@@ -12,6 +12,7 @@ use core.{
     sorted_texts,
     distinct,
     same_decl,
+    same_file,
     touch,
 }
 use @std.path.{dir_of, under_dir, joined_path, normalized}
@@ -64,7 +65,7 @@ impl Workspace {
         // a listing is the host's to give, and a `use` line asks it of the same
         // module a hundred times: remembered for ONE size of the package table,
         // since a package admitted later answers for modules it holds
-        let key = "${self.packages().length}\t${m.text()}"
+        let key = self.module_slot(m)
         let known: List<string>? = self.files_of.get().get(key)
         if known != null { return known! }
         let made = self.listed_files(m)
@@ -76,6 +77,21 @@ impl Workspace {
     /// reached (a held module named by one of its files) is never read.
     fn met_files(m: ModulePath) -> List<string> {
         [path for path in self.module_files(m) if self.decls.known_file_id(path) != null]
+    }
+
+    /// Where a module's files are remembered: for one size of the package table, since
+    /// a package admitted later answers for modules it holds.
+    fn module_slot(m: ModulePath) -> string { "${self.packages().length}\t${m.text()}" }
+
+    /// `module_files`' ids, remembered alike.
+    fn module_file_ids(m: ModulePath) -> List<FileId> {
+        let key = self.module_slot(m)
+        let known? = self.file_ids_of.get().get(key) else {
+            let made = [self.file_id(path) for path in self.module_files(m)]
+            self.file_ids_of.put(key, made)
+            return made
+        }
+        known
     }
 
     fn listed_files(m: ModulePath) -> List<string> {
@@ -266,9 +282,8 @@ impl Workspace {
     /// A module's WRITTEN exported declarations, in file and declaration
     /// order — `items`, never `expanded`: eagerly expanding every
     /// annotated file of every module a `use` line ever names would pay
-    /// each derive's comptime run again on every cache miss `surface`'s
-    /// own coarse key (by `packages().length`) invites, for a name
-    /// nothing ever asks for. `surface`'s map is this alone.
+    /// each derive's comptime run again, for a name nothing ever asks
+    /// for. The `not_exported` help and the prelude read every one.
     fn exported_decls(m: ModulePath) -> List<Decl> {
         [self.decl_at(id) for id in flatten([self.items(self.file_id(f)) for f in self.module_files(m)]) if self.is_exported(id)]
     }
@@ -277,22 +292,30 @@ impl Workspace {
         self.decl_at(id).exported
     }
 
-    /// A module's exported names, WRITTEN ones only — the fast, eager
-    /// map every `use` line reads first.
-    fn surface(m: ModulePath) -> Map<string, DeclId> {
-        let slot = "${self.packages().length}\t${m.text()}"
-        let known: Map<string, DeclId>? = self.surfaces.get().get(slot)
-        if known != null { return known! }
-        mut out: Map<string, DeclId> = {}
-        for d in self.exported_decls(m) { out.set(d.name, d.id) }
-        self.surfaces.put(slot, out)
-        out
+    /// The WRITTEN export a module answers under one name — the last in file then
+    /// declaration order. A NAME IS READ THROUGH ITS BUCKET: the asker depends on the
+    /// declarations of that name, never on the module's whole surface, so a declaration
+    /// of another name moves nothing it read.
+    fn written_export(m: ModulePath, name: string) -> DeclId? {
+        let files = self.module_file_ids(m)
+        for f in files { self.admission(f) }
+        let named = self.decls.named(name)
+        [x.id for f in files for x in named if self.written_export_in(x, f)].last()
+    }
+
+    /// Whether a row is one of `f`'s own written top-level exports.
+    fn written_export_in(x: Decl, f: FileId) -> bool {
+        same_file(x.file, f) &&
+            x.exported &&
+            x.parent == null &&
+            !x.nested &&
+            self.decls.provenance_of(x.id) == null
     }
 
     /// What a module exports under a name: a written export, a generated
     /// one, then a re-export — each asked only once the one before missed.
     fn export_of(m: ModulePath, name: string) -> DeclId? {
-        self.surface(m).get(name) ?? self.generated_export(m, name) ?? self.reexport_of(m, name)
+        self.written_export(m, name) ?? self.generated_export(m, name) ?? self.reexport_of(m, name)
     }
 
     /// The declaration a module's first re-export of a name stands for. A

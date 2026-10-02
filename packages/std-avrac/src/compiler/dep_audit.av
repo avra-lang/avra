@@ -80,13 +80,14 @@ impl Workspace {
     fn audit_known(f: FileId) -> bool { f.index < self.decls.file_count() }
 
     /// What would have recorded the read, per verb: a declaration's row and facts are a
-    /// function of its file's parse and items (or its module's held record); a
+    /// function of its name's bucket, its file's parse and items (or its module's held
+    /// record); a
     /// signature only of its own `Sig`; a type's method table of its own `Methods` —
     /// other files' impls move it, so the file does not cover it; a node store of the
     /// file's parse; and what a whole-program pass computes of that pass.
     fn audit_covers(r: Bypassed) -> List<Key> {
         match r {
-            .Decl(d) or .Facts(d) -> self.file_covers(self.decls.raw_decl(d).file, true),
+            .Decl(d) or .Facts(d) -> self.file_covers(self.decls.raw_decl(d).file, true).concat([self.decls.name_key(d)]),
             .SigSoFar(d) -> [key(Family.Sig, d.index)],
             .Methods(d) -> [key(Family.Methods, d.index)],
             .Store(f) -> self.file_covers(f, false),

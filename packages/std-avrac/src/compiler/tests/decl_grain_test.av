@@ -40,6 +40,29 @@ fn grain_checked(lib: string) -> Workspace {
     ws
 }
 
+/// The package with a second file in `a.av`'s module, checked once.
+fn grain_beside(sibling: string) -> Workspace {
+    let ws = a_process_over(
+        {
+            "/w/src/main.av": grain_caller(),
+            "/w/src/lib/a.av": grain_base(),
+            "/w/src/lib/b.av": sibling,
+        },
+        [grain_main(), grain_lib(), "/w/src/lib/b.av"],
+    )
+    let _ = checked(ws, grain_main())
+    ws
+}
+
+/// `a.av` with one more declaration at its end.
+fn grain_grown(extra: string) -> string { grain_base() + extra }
+
+/// `a.av` with one declaration's name changed.
+fn grain_renamed(from: string, to: string) -> string { grain_base().replace("fn ${from}()", "fn ${to}()") }
+
+/// Whether main's own analysis is clean.
+fn grain_clean(ws: Workspace) -> bool { ws.analysis(ws.file_id(grain_main())).clean() }
+
 /// `caller` reads a deprecated fn; the note is the only thing it varies.
 fn marked_checked(lead: string, note: string) -> Workspace {
     let files = vendored_meta(
@@ -143,6 +166,38 @@ spec "compiler/workspace — a use reads the declaration, never its file" {
             !grain_kept(
                 grain_checked(grain_base()),
                 grain_checked(grain_lib_text("", "one(n: int = 0)", "n", "2")),
+            )
+        }
+    }
+    given "the other file's declarations added or renamed where the caller does not read" {
+        then "a declaration added keeps every query of main's, answering alike" {
+            let before = grain_checked(grain_base())
+            let after = grain_checked(grain_grown("export fn three() -> int {\n    3\n}\n"))
+            grain_kept(before, after) && grain_same_answer(before, after)
+        }
+        then "`two`, which the caller never names, renamed keeps them" {
+            let before = grain_checked(grain_base())
+            let after = grain_checked(grain_renamed("two", "deux"))
+            grain_kept(before, after) && grain_same_answer(before, after)
+        }
+    }
+    given "the other file's declarations added or renamed where the caller reads" {
+        then "`one` renamed moves the frontier, and main is refused" {
+            let after = grain_checked(grain_renamed("one", "uno"))
+            !grain_kept(grain_checked(grain_base()), after) && !grain_clean(after)
+        }
+        then "a method `one` beside the fn `one` moves it" {
+            !grain_kept(
+                grain_checked(grain_base()),
+                grain_checked(
+                    grain_grown("impl Box {\n    fn one() -> int {\n        2\n    }\n}\n"),
+                ),
+            )
+        }
+        then "a second `one` in `a.av`'s module moves it" {
+            !grain_kept(
+                grain_beside("export fn other() -> int {\n    4\n}\n"),
+                grain_beside("export fn one() -> int {\n    4\n}\n"),
             )
         }
     }

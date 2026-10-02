@@ -119,6 +119,13 @@ impl Decls {
         self.stores.get()[f.index]!
     }
 
+    /// A file's store as its admission left it — absent before its parse, and for a
+    /// file minted with none.
+    fn admitted_store(f: FileId) -> SyntaxArena? {
+        if f.index >= self.stores.get().length { return null }
+        self.stores.get()[f.index]
+    }
+
     fn arm_store(ensure: fn(FileId) -> void) { self.ensure_store.set(ensure) }
 
     fn remember_store(f: FileId, store: SyntaxArena) { self.stores.set_at(f.index, store) }
@@ -280,7 +287,10 @@ impl Decls {
     /// may name them.
     fn forget(gone: List<DeclId>) {
         if gone.is_empty() { return }
-        for d in gone { self.unfaced(d) }
+        for d in gone {
+            self.unfaced(d)
+            self.bucket_moved(self.name_buckets.get()[d.index])
+        }
         self.meta_ids.set({})
         self.wire_index.set({})
     }
@@ -328,9 +338,12 @@ impl Decls {
     /// This file's declarations, every kind, in id order — the order a
     /// first admission mints them: each top-level one with its members,
     /// then Main, then the nested ones, then what generation added. A
-    /// re-admission keeps a surviving declaration's id and place.
+    /// re-admission keeps a surviving declaration's id and place. A WALK
+    /// READS THE FILE WHOLE, so it records the file's own rows — a row read
+    /// by id records its name alone, which a row arriving later never moves.
     fn decls_of_file(f: FileId) -> List<DeclId> {
         (self.ensure_file.get())(f)
+        self.rows_read(f)
         self.decls_so_far(f)
     }
 
@@ -403,7 +416,7 @@ impl Decls {
     fn facts_of(d: DeclId) -> DeclFacts? {
         if audit_build && self.auditing.get() { self.audited(Bypassed.Facts(d)) }
         if d.index >= self.faces.get().length { return null }
-        self.rows_read(self.raw_decl(d).file)
+        self.row_read(self.raw_decl(d))
         self.faces.get()[d.index]
     }
 
@@ -423,10 +436,16 @@ impl Decls {
     /// so a held declaration captured from a partial store and then corrected
     /// from its record ends in exactly the buckets its record names.
     fn face(d: DeclId, f: DeclFacts) {
+        self.filed_under(d, f)
+        self.faced(d, f)
+    }
+
+    /// A declaration's facts land beside a row already filed under them: the seal index,
+    /// the facts table and the docs.
+    fn faced(d: DeclId, f: DeclFacts) {
         self.unfaced(d)
         for name in f.mut_seats { self.mut_seat_index.put(name, self.mut_seat_sealers(name).concat([d])) }
         self.faces.set_at(d.index, f)
-        self.filed_under(d, f.word, [a.name for a in f.annotations], f.external)
         side_put(self.doc_facts, d.index, DocFact { doc: f.doc, annotations: f.annotations })
     }
 
@@ -440,14 +459,40 @@ impl Decls {
     /// A row's fact columns — `word`, `marks`, `external` — rewritten when
     /// its facts name others; a row whose columns already agree is left as
     /// it stands.
-    fn filed_under(d: DeclId, word: string?, marks: List<string>, external: bool) {
+    fn filed_under(d: DeclId, f: DeclFacts) {
         let row = self.raw_decl(d)
-        if row.word == word &&
-            list_eq(row.marks, marks, (x, y) -> x == y) &&
-            row.external == external {
+        let faced = self.with_facts(row, f)
+        if row.word == faced.word &&
+            list_eq(row.marks, faced.marks, (x, y) -> x == y) &&
+            row.external == faced.external &&
+            row.told == faced.told {
             return
         }
-        self.set_decl(d.index, row with { word: word, marks: marks, external: external })
+        self.set_decl(d.index, faced)
+    }
+
+    /// A row as its facts file it: under the word and marks they name, the externs'
+    /// bucket when they say `extern`, and what they tell a reader.
+    fn with_facts(row: Decl, f: DeclFacts) -> Decl {
+        row with { word: f.word, marks: [a.name for a in f.annotations], external: f.external, told: told_of(f, self.file(row.file).path) }
+    }
+
+    /// A minted row filed, and its facts landing beside it when it has them.
+    fn file_minted(d: Decl, facts: DeclFacts?, known: DeclId?) {
+        self.set_decl(d.id.index, self.faced_row(d, facts, known))
+        let found? = facts else { return }
+        self.faced(d.id, found)
+    }
+
+    /// A minted row's first filing: as its facts file it, as its prior self did where
+    /// the facts are yet to land, and bare for a new one with none.
+    fn faced_row(d: Decl, facts: DeclFacts?, known: DeclId?) -> Decl {
+        let f? = facts else {
+            let prior? = known else { return d }
+            let was = self.raw_decl(prior)
+            return d with { word: was.word, marks: was.marks, external: was.external, told: was.told }
+        }
+        self.with_facts(d, f)
     }
 
     /// Whether a declaration's body has no receiver — the fact eight sites used to read
@@ -552,6 +597,7 @@ impl Decls {
     ) -> DeclId {
         let known: DeclId? = self.known_id(key)
         let id: DeclId = known ?? DeclId { index: self.decl_row_rows.get().next_id() }
+        let home = homed(kind, f)
         let d = Decl {
             id: id,
             file: f,
@@ -568,8 +614,18 @@ impl Decls {
             word: null,
             marks: [],
             key: key,
-            home: homed(kind, f),
+            home: home,
             external: false,
+            bucket: 0 - 1,
+            standing: self.home_stand(home),
+            told: 0,
+        }
+        // THE ONE CAPTURE, at the one place a declaration is minted from a parse. Six
+        // readers asked the store per pass; they ask this row now, and a held file's row
+        // comes from its record instead of a store it does not have.
+        let facts: DeclFacts? = match self.admitted_store(f) {
+            st? -> { capture_facts(st, d) }
+            null -> { null }
         }
         if known == null {
             self.sigs.push(null)
@@ -590,22 +646,8 @@ impl Decls {
             let no_is: List<DeclId> = []
             self.impls.push(Cell.new(no_is))
             self.faces.push(null)
-            self.set_decl(id.index, d)
-        } else {
-            let prior = self.raw_decl(id)
-            self
-                .set_decl(
-                    id.index,
-                    d with { word: prior.word, marks: prior.marks, external: prior.external },
-                )
         }
-        // THE ONE CAPTURE, at the one place a declaration is minted from a parse. Six
-        // readers asked the store per pass; they ask this row now, and a held file's row
-        // comes from its record instead of a store it does not have.
-        if f.index < self.stores.get().length {
-            let st: SyntaxArena? = self.stores.get()[f.index]
-            if st != null { self.face(id, capture_facts(st!, d)) }
-        }
+        self.file_minted(d, facts, known)
         // A DECLARATION'S NOMINAL NAME IS INTERNED AT MINT — not at typing. A held file's
         // sigs are rebuilt from a record before anything is typed, and a field naming a
         // PARSED module's type needs that name in the registry by then. One place registers

@@ -216,6 +216,28 @@ spec "query/db" {
             t.db.changed_at(Key { family: t.double_family, arg: 9999 }) == t.db.revision()
         }
     }
+    given "an input set again before any reader read it" {
+        then "it holds the new hash, and no revision moves" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let key = Key { family: fam, arg: 0 }
+            db.input_unread(key, 1)
+            db.input_unread(key, 2)
+            db.value_hash_of(key) == 2 && db.revision() == 1
+        }
+        then "once read, it keeps the hash its reader saw" {
+            mut db = new_kernel()
+            let fam = db.family((arg: int) -> 0)
+            let key = Key { family: fam, arg: 0 }
+            db.input_unread(key, 1)
+            let reader = Key { family: fam, arg: 1 }
+            db.begin(reader)
+            db.record_dep(key)
+            db.settle(reader, 1)
+            db.input_unread(key, 2)
+            db.value_hash_of(key) == 1 && db.revision() == 1
+        }
+    }
     given "the last-reader stamp" {
         then "repeat reads of one key within one query record one dep, not N" {
             mut db = new_kernel()

@@ -352,10 +352,14 @@ export type Workspace = {
     keys: Keys,
     /// A path's module, asked once: the answer walks every package.
     module_names_of: Cell<Map<string, string>>,
-    /// A module's files and its exported names, each remembered for one size of
-    /// the package table — what every `use` line of the program asks again.
+    /// A module's files, remembered for one size of the package table — what
+    /// every `use` line of the program asks again.
     files_of: Cell<Map<string, List<string>>>,
-    surfaces: Cell<Map<string, Map<string, DeclId>>>,
+    /// The same files' ids, remembered alike.
+    file_ids_of: Cell<Map<string, List<FileId>>>,
+    /// The revision each file's `Admitted` cell was last asked at, dense by FileId:
+    /// after the revision's first ask, a reader records the edge and nothing more.
+    admission_asked: Table<int>,
     // the re-exported names a lookup is following now, by module and name
     reexporting: Cell<Map<string, bool>>,
     import_lists: Cell<Map<string, List<string>>>,
@@ -534,6 +538,14 @@ enum Family {
     /// use of it speaks, folded whole — so a use depends on these and
     /// never on the declaration's whole file
     Marks
+    /// a file's rows standing: one constant hash, so a reader that reads
+    /// them through their buckets is ordered after the admission without
+    /// depending on what it made — re-asking it re-admits the file
+    Admitted
+    /// every declaration filed under one name, keyed by its bucket in `Decl`'s
+    /// name index: what a read of one row depends on — its own fields, and every
+    /// sibling under its name — never its whole file
+    Named
 }
 
 /// `Parsed`'s fingerprint over a `DbRow` value — the words a block
@@ -557,6 +569,16 @@ fn key(f: Family, arg: int) -> Key {
 fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
     let exprs = [mix_final(store.expr_fingerprint(ExprId { index: i })) for i in x.lo..x.hi]
     fp_list([mix_final(store.stmt_fingerprint(x.stmt))].concat(exprs))
+}
+
+/// Whether a family's queries read declaration rows WHOLE — one edge per file,
+/// never one per name. Lowering and the compile-time runs come after typing and
+/// re-run with it, so what they read needs no finer edge than its file.
+fn reads_rows_whole(f: Family) -> bool {
+    match f {
+        .Lowered or .LiftLowered or .Lifted or .Settled -> true,
+        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named -> false,
+    }
 }
 
 /// `.ordinal`'s other sibling: the variant's own word, for a voice that
@@ -591,6 +613,8 @@ fn family_word(f: Family) -> string {
         .Syntax -> "Syntax",
         .Names -> "Names",
         .Marks -> "Marks",
+        .Admitted -> "Admitted",
+        .Named -> "Named",
     }
 }
 
@@ -630,6 +654,8 @@ fn family_at(i: int) -> Family {
         25 -> Family.Syntax,
         26 -> Family.Names,
         27 -> Family.Marks,
+        28 -> Family.Admitted,
+        29 -> Family.Named,
         other -> {
             avra_trap(
                 "defect: no Family at ordinal ${other} — family_at answers every place in `Family`'s declaration",
@@ -643,7 +669,7 @@ fn family_at(i: int) -> Family {
 /// walks. Bump it in the SAME edit that adds an arm to `family_at`;
 /// nothing below can notice the day only this number moves alone, or
 /// only stays still alone.
-const family_count: int = 28
+const family_count: int = 30
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
@@ -684,7 +710,7 @@ export fn relation_hooks(kernel: Kernel) -> RelHooks {
     RelHooks {
         family: (verify: fn(int) -> int) -> kernel.family(revision_of_hash(kernel, verify)),
         record: (fam: int, cell: int) -> {
-            kernel.record_dep(Key { family: fam, arg: cell })
+            kernel.record_at(fam, cell)
             kernel.reader()
         },
         revision: () -> kernel.revision(),
@@ -817,7 +843,7 @@ fn built(
     let no_method_diags: List<MethodDiagIndex> = []
     let no_module_names_of: Map<string, string> = {}
     let no_files_of: Map<string, List<string>> = {}
-    let no_surfaces: Map<string, Map<string, DeclId>> = {}
+    let no_file_ids_of: Map<string, List<FileId>> = {}
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
     let no_store: Store? = null
@@ -846,7 +872,8 @@ fn built(
         keys: new_keys(),
         module_names_of: Cell.new(no_module_names_of),
         files_of: Cell.new(no_files_of),
-        surfaces: Cell.new(no_surfaces),
+        file_ids_of: Cell.new(no_file_ids_of),
+        admission_asked: new_table<int>(),
         reexporting: map_cell(),
         import_lists: Cell.new(no_import_lists),
         hold: new_hold(),
@@ -868,6 +895,7 @@ fn built(
     // registration-order bug.
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != f.ordinal { ws.defect("defect: the families registered out of ordinal order") }
+        if reads_rows_whole(f) { ws.db.kernel.reads_whole(f.ordinal) }
     }
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
@@ -894,7 +922,12 @@ fn built(
     ws.decls.arm_lifter(lift)
     ws
         .decls
-        .arm_recording(Family.Items.ordinal, Family.Methods.ordinal, (f: FileId) -> ws.held_sig_dep(f))
+        .arm_recording(
+            Family.Items.ordinal,
+            Family.Methods.ordinal,
+            Family.Named.ordinal,
+            (f: FileId) -> ws.held_sig_dep(f),
+        )
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
     ws.arm_audit()
@@ -1091,6 +1124,8 @@ impl Workspace {
             .Syntax -> touch(self.syntax(decl_at_arg(arg))),
             .Names -> touch(self.name_slice(decl_at_arg(arg))),
             .Marks -> touch(self.computed_marks(decl_at_arg(arg))),
+            .Admitted -> self.admission(file_at(arg)),
+            .Named -> self.decls.named_now(arg),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -1476,14 +1511,30 @@ impl Workspace {
         out
     }
 
+    /// A file's rows standing before a reader reads them through their buckets: its
+    /// admission asked under a cell whose hash never moves.
+    fn admission(f: FileId) {
+        let k = key(Family.Admitted, f.index)
+        let rev = self.db.revision()
+        if self.admission_asked.at(f.index) ?? 0 == rev {
+            self.db.record_dep(k)
+            return
+        }
+        self.admission_asked.keep(f.index, rev)
+        if !(self.db.ask(k) is .Compute) { return }
+        self.db.begin(k)
+        touch(self.items(f))
+        self.db.settle(k, 0)
+    }
+
     /// The declaration behind an id.
     fn decl_at(d: DeclId) -> Decl {
         self.decls.decl(d)
     }
 
     /// A declaration's STABLE row, as a reader of it can tell: its name, kind, owner,
-    /// visibility and parse facts — never a dense id, a span or a body, so an edit that
-    /// moves none of them moves nothing.
+    /// visibility and what its parse facts tell (`Decl.told`) — never a dense id, a span
+    /// or a body, so an edit that moves none of them moves nothing.
     fn row_print(d: DeclId) -> int {
         let x = self.decls.decl(d)
         fp_list(
@@ -1493,17 +1544,9 @@ impl Workspace {
                 fp_str("${x.exported}"),
                 fp_str(x.owner),
                 fp_str("${x.nested}"),
-                self.facts_print(d),
+                x.told,
             ],
         )
-    }
-
-    /// The facts' derived fingerprint over every field but the positional ones, which
-    /// are nulled: a field added later is folded until someone says it is a position.
-    fn facts_print(d: DeclId) -> int {
-        let facts? = self.decls.facts_of(d) else { return 0 }
-        (facts with { span: null, annotations: [a with { span: null } for a in facts.annotations] })
-            .fingerprint()
     }
 
     /// A module's names, bound ONCE: every file's declarations in file
