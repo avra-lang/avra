@@ -427,7 +427,7 @@ impl LowerCx {
     /// The kind a source of `ty` walks: a `Bytes` reads octets, anything
     /// else (a list, a range) reads elements.
     fn walk_kind(ty: TypeId) -> WalkKind {
-        match self.view.types.seen_shape(ty) { .Bytes -> .Bytes, _ -> .List }
+        match self.view.types.seen_shape(ty) { .Bytes -> .Bytes, .Str -> .Codepoints, _ -> .List }
     }
 
     /// `lo..hi` — the count starts at `lo` and stops before `hi`.
@@ -453,9 +453,9 @@ impl LowerCx {
         let more = self.mint_shape(Type.Bool)
         self.emit(Ins.Bin(more, BinOp.Lt, at, w.len))
         self.loop_cond(more, owner)
-        let one = self.const_int(1)
+        let step = self.walk_step(w, at)
         let next = self.mint_shape(Type.Int)
-        self.emit(Ins.Bin(next, BinOp.Add, at, one))
+        self.emit(Ins.Bin(next, BinOp.Add, at, step))
         self.emit(Ins.Store(w.idx, next))
         at
     }
@@ -463,10 +463,103 @@ impl LowerCx {
     /// This turn's element — a RUNTIME index, so the read stays raw.
     /// Asked of a list's walk only; a range's has no box.
     mut fn turn_elem(w: Walk, here: Reg) -> Reg {
+        self.walk_elem(w, here)
+    }
+
+    /// This turn's element, by the source's kind.
+    mut fn walk_elem(w: Walk, here: Reg) -> Reg {
         match w.kind {
             .List -> self.elem_read(w.xs!, here, w.elem),
             .Bytes -> self.bytes_at(Type.Int, w.xs!, here),
+            .Codepoints -> self.walk_code(w.xs!, here, w.len),
         }
+    }
+
+    /// How far this turn advances the byte offset: one byte, or the
+    /// codepoint's UTF-8 width.
+    mut fn walk_step(w: Walk, at: Reg) -> Reg {
+        match w.kind {
+            .Codepoints -> self.walk_width(w.xs!, at, w.len),
+            .List or .Bytes -> self.const_int(1),
+        }
+    }
+
+    /// A UTF-8 lead byte's width, 1..4 — a malformed lead, or a scalar
+    /// whose bytes run past the text, is 1, so the walk never overruns.
+    mut fn walk_width(s: Reg, at: Reg, len: Reg) -> Reg {
+        let w = self.lead_width(self.str_char_code(Type.Int, s, at))
+        let past = self.bin(Type.Bool, BinOp.Gt, self.bin(Type.Int, BinOp.Add, at, w), len)
+        self.region_as(past, self.type(int)) { cx -> cx.const_int(1) } else { _cx -> w }
+    }
+
+    /// The width a lead byte declares — `b` and `b+1` are one byte wide.
+    mut fn lead_width(b: Reg) -> Reg {
+        self
+            .region_as(self.between(b, 240, 247), self.type(int)) { cx ->
+                cx.const_int(4)
+            } else { cx ->
+                cx
+                    .region_as(cx.between(b, 224, 239), cx.type(int)) { cx ->
+                        cx.const_int(3)
+                    } else { cx ->
+                        cx
+                            .region_as(cx.between(b, 192, 223), cx.type(int)) { cx ->
+                                cx.const_int(2)
+                            } else { _cx -> cx.const_int(1) }
+                    }
+            }
+    }
+
+    /// The scalar a lead byte and its tails decode to: strip the lead's
+    /// mark, then six bits per tail, high to low.
+    mut fn walk_code(s: Reg, at: Reg, len: Reg) -> Reg {
+        let w = self.walk_width(s, at, len)
+        let lead = self.str_char_code(Type.Int, s, at)
+        let mark = self.lead_mark(w)
+        self.byte_joined(self.bin(Type.Int, BinOp.Sub, lead, mark), s, at, w)
+    }
+
+    /// `code` with the tails at `at+1..at+w` folded in — six bits each.
+    mut fn byte_joined(code: Reg, s: Reg, at: Reg, w: Reg) -> Reg {
+        self.byte_tail(code, s, at, 1, w)
+    }
+
+    mut fn byte_tail(code: Reg, s: Reg, at: Reg, k: int, w: Reg) -> Reg {
+        if k > 3 { return code }
+        let more = self.bin(Type.Bool, BinOp.Ge, w, self.const_int(k + 1))
+        let next = self
+            .region_as(more, self.type(int)) { cx ->
+                let b = cx
+                    .str_char_code(Type.Int, s, cx.bin(Type.Int, BinOp.Add, at, cx.const_int(k)))
+                let six = cx.bin(Type.Int, BinOp.Mul, code, cx.const_int(64))
+                cx.bin(Type.Int, BinOp.Add, six, cx.bin(Type.Int, BinOp.Sub, b, cx.const_int(128)))
+            } else { _cx -> code }
+        self.byte_tail(next, s, at, k + 1, w)
+    }
+
+    /// The byte a lead's mark subtracts: 240/224/192 for 4/3/2, else 0.
+    mut fn lead_mark(w: Reg) -> Reg {
+        self
+            .region_as(self.bin(Type.Bool, BinOp.Eq, w, self.const_int(4)), self.type(int)) { cx ->
+                cx.const_int(240)
+            } else { cx ->
+                cx
+                    .region_as(cx.bin(Type.Bool, BinOp.Eq, w, cx.const_int(3)), cx.type(int)) { cx ->
+                        cx.const_int(224)
+                    } else { cx ->
+                        cx
+                            .region_as(cx.bin(Type.Bool, BinOp.Eq, w, cx.const_int(2)), cx.type(int)) { cx ->
+                                cx.const_int(192)
+                            } else { _cx -> cx.const_int(0) }
+                    }
+            }
+    }
+
+    /// `b` within `[lo, hi]` — a lazy `&&`, so the upper read is guarded.
+    mut fn between(b: Reg, lo: int, hi: int) -> Reg {
+        let ge = self.bin(Type.Bool, BinOp.Ge, b, self.const_int(lo))
+        let le = self.bin(Type.Bool, BinOp.Le, b, self.const_int(hi))
+        self.region_as(ge, self.type(bool)) { _cx -> le } else { cx -> cx.const_bool(false) }
     }
 
     /// The walk ends here: its answer is in hand.
@@ -525,6 +618,7 @@ export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
 export enum WalkKind {
     List
     Bytes
+    Codepoints
 }
 
 export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId, kind: WalkKind }

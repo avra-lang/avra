@@ -103,15 +103,16 @@ export fn extreme_chain(mut cx: LowerCx, mc: MethodCall, less: bool) -> Reg {
 fn subject_clauses(mut cx: LowerCx, subject: ExprId) -> List<Clause> {
     let inner? = chain_clauses(cx, subject) else {
         let _ = cx.reg_of(subject)
-        let head: List<Clause> = [head_clause(subject)]
+        let head: List<Clause> = [head_clause(subject, null)]
         return head
     }
     inner
 }
 
-/// A receiver as a chain's opening head.
-fn head_clause(subject: ExprId) -> Clause {
-    .Head(Source { source: subject, hi: null, index: false, lookup: null })
+/// A receiver as a chain's opening head; `elem` overrides the element
+/// its own type yields (a string walks `int` codepoints).
+fn head_clause(subject: ExprId, elem: TypeId?) -> Clause {
+    .Head(Source { source: subject, hi: null, index: false, lookup: null, elem: elem })
 }
 
 /// A receiver's fn boxed, as the pipeline's own seat.
@@ -131,6 +132,10 @@ fn fn_answer(cx: LowerCx, f: ExprId) -> TypeId {
 fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
     let stage? = cx.facts.stage_at(e) else { return null }
     let subject? = subject_of(cx, e) else { return null }
+    if stage is .Chars {
+        let _ = cx.reg_of(subject)
+        return [head_clause(subject, cx.type(int))]
+    }
     let arg = arg_of(cx, e)
     mut prefix: List<Clause> = []
     if cx.facts.stage_at(subject) != null {
@@ -138,7 +143,7 @@ fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
         prefix = inner
     } else {
         let _ = cx.reg_of(subject)
-        prefix = [head_clause(subject)]
+        prefix = [head_clause(subject, null)]
     }
     let clause? = link_clause(cx, stage, arg, subject, e) else { return null }
     prefix.concat([clause])
@@ -173,5 +178,7 @@ fn link_clause(mut cx: LowerCx, stage: PipeStage, arg: ExprId?, subject: ExprId,
             let list = fn_answer(cx, arg!)
             .FlatMap(box_of(cx, arg!), e, list, mapped_to(cx, e))
         },
+        // a `.Chars` link is its chain's HEAD, built in `chain_clauses` — it never reaches here
+        .Chars -> null,
     }
 }
