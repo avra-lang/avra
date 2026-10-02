@@ -3,7 +3,7 @@
 //! every expression passes through, the dyn lift, the statement
 //! loop, a block's scope with its `defer` frame, and the entry's
 //! printed answer.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, BinOp, reversed}
 use diagnostics.{Diag, refusal}
 use features.{LowerCx, Deferred, Deferral, DirectCall, semantics_of, stmt_semantics_of}
 
@@ -253,16 +253,81 @@ impl LowerCx {
             .Int or .Float or .Str or .Bool or .List(_) or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
         if unprintable != null { return self.no_projection(unprintable!) }
-        let text: Reg? = match sh {
-            .Str -> last,
-            .Int -> self.int_text(Type.Str, last),
-            .Float -> self.float_text(Type.Str, last),
-            .Bool -> self.bool_text(Type.Str, last),
-            .List(elem) -> self.list_texted(elem, last),
-            .Ptr or .Bytes or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Union(_) or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-        }
+        let text = self.text_projection(sh, last)
         if text != null { self.puts(text!) }
         null
+    }
+
+    /// The text projection for a shape, or null when it has none —
+    /// ONE definition for the program's printed answer and for a
+    /// test case's compared sides. A name is transparent at a read,
+    /// so `seen_shape` is already in `sh`.
+    mut fn text_projection(sh: Type, v: Reg) -> Reg? {
+        match sh {
+            .Str -> v,
+            .Int -> self.int_text(Type.Str, v),
+            .Float -> self.float_text(Type.Str, v),
+            .Bool -> self.bool_text(Type.Str, v),
+            .List(elem) -> self.list_texted(elem, v),
+            .Ptr or .Bytes or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Union(_) or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+        }
+    }
+
+    /// A `then` case that is one equality shows BOTH SIDES when it
+    /// fails, so no reader round-trips for two values. Only a body
+    /// whose answer is `a == b` over shapes with a text projection
+    /// can; every other body keeps its name and says why.
+    mut fn case_diff(root: ExprId, ok: Reg) {
+        let subject = self.case_subject(root)
+        match self.view.store.expr(subject) {
+            .Binary(op, l, r) -> if op == BinOp.Eq { self.show_diff(l, r, ok) } else { self.show_note(ok) },
+            rest -> self.show_note(ok),
+        }
+    }
+
+    /// The expression a case answers with: a body block reads through
+    /// to its value, so `{ let a = … \n a == b }` shows its sides too.
+    fn case_subject(root: ExprId) -> ExprId {
+        match self.view.store.expr(root) { .Block(_, value) -> value ?? root, rest -> root }
+    }
+
+    /// Both sides of the failed comparison, or the note when a side
+    /// has no text projection. The renders happen BEFORE the branch
+    /// reads them, so neither side's liveness ends at the compare.
+    mut fn show_diff(l: ExprId, r: ExprId, ok: Reg) {
+        let left = self.text_of_node(l)
+        let right = self.text_of_node(r)
+        if left == null || right == null {
+            self.show_note(ok)
+            return
+        }
+        let lt: Reg = left!
+        let rt: Reg = right!
+        self
+            .void_region(self.un(ok)) { cx ->
+                cx.emit_side("        actual:   ", lt)
+                cx.emit_side("        expected: ", rt)
+            }
+    }
+
+    /// One `label value` line — the value's own text projection.
+    mut fn emit_side(prefix: string, text: Reg) {
+        self.puts(self.str_concat(Type.Str, self.const_str(prefix), text))
+    }
+
+    /// A failing case whose body is not one equality says so; its
+    /// name is the suite entry's to print.
+    mut fn show_note(ok: Reg) {
+        self
+            .void_region(self.un(ok)) { cx ->
+                cx.puts(cx.const_str(case_note_text))
+            }
+    }
+
+    /// The text projection of one compared value, or null.
+    mut fn text_of_node(e: ExprId) -> Reg? {
+        let r = self.reg_of(e)
+        self.text_projection(self.view.types.seen_shape(self.out.type_of_reg(r)), r)
     }
 
     /// The refusal: an answer without a text projection names its
@@ -468,3 +533,7 @@ impl LowerCx {
         self.out.give(Ins.CallPtr(dst, fp, [box]))
     }
 }
+
+/// The note a failing case prints when its body is not one equality
+/// over printable values — the suite entry names the case.
+const case_note_text: string = "        (a `then` shows both sides only for one `a == b` over printable values)"

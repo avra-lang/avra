@@ -22,6 +22,10 @@ fn scoped_package() -> string {
         "${tests}/sum_test.av",
         "spec \"sum\" { given \"two\" { then \"adds\" { 1 + 2 == 3 } } }\n",
     )
+    let _ = write_text(
+        "${tests}/fail_test.av",
+        "spec \"failing\" { given \"two\" { then \"shows sides\" { \"x\" == \"y\" } } }\n",
+    )
     let _ = write_text("${tests}/good/good.av", "println(\"good\")\n")
     let _ = write_text("${tests}/good/good.expected", "good\n")
     let _ = write_text("${tests}/wrong/wrong.av", "println(\"right\")\n")
@@ -72,6 +76,13 @@ spec "avra test — one path proves what stands at or under it" {
     }
     given "a spec file" {
         then "its cases run" { passed_saying("src/tests/sum_test.av", "1/1 tests passed") }
+        then "a failing case still names itself" {
+            failed_saying("src/tests/fail_test.av", "✗ failing / two / shows sides")
+        }
+        then "a failing equality shows its two sides" {
+            failed_saying("src/tests/fail_test.av", "actual:   x") &&
+                failed_saying("src/tests/fail_test.av", "expected: y")
+        }
     }
     given "a path naming no test" {
         then "a module file refuses with exit 1, naming why" {
