@@ -1,28 +1,44 @@
 //! The data-driven renderer, by its laws: one tree, a vocabulary of
-//! primitives and attributes, a table per target.
+//! primitives and attributes, a table per target, and one atomic
+//! stylesheet whose classes name theme tokens.
 use @std.ui.components.{text, heading, button, column, row}
 use @std.ui.realize.view.{View}
 use @std.ui.realize.html.html.{render}
 use @std.ui.realize.tui.tui.{render as tui_render}
 use @std.ui.env.{Env}
+use @std.ui.style.style.{Style, StateStyle, Interaction}
+use @std.ui.style.theme.{dark_theme}
 
 fn html(v: dyn View) -> string { render(v.describe(), Env {}) }
 
+fn html_in(v: dyn View, env: Env) -> string { render(v.describe(), env) }
+
 fn term(v: dyn View) -> string { tui_render(v.describe(), Env {}) }
+
+fn occurrences(hay: string, needle: string) -> int { hay.split(needle).length - 1 }
+
+const sunk = Style { fill: .SurfaceSunk }
+
+fn sunk_button(label: string) -> dyn View { button label { style: sunk } }
 
 spec "std/ui render — the HTML target" {
     given "a text" {
-        then "is a span holding its words" { html(text "hi") == "<span>hi</span>" }
+        then "is a span holding its words, inside the body" {
+            html(text "hi").contains("<body><span>hi</span></body>")
+        }
+        then "ships one stylesheet from the theme" { html(text "hi").contains(":root{") }
+        then "carries no inline style attribute" { !html(text "hi").contains("style=\"") }
     }
     given "a heading with a rank" {
-        then "becomes that level" { html(heading "T" { rank: 2 }) == "<h2>T</h2>" }
+        then "becomes that level" { html(heading "T" { rank: 2 }).contains("<body><h2>T</h2></body>") }
     }
     given "a button" {
-        then "is a button holding its label" { html(button "Buy") == "<button>Buy</button>" }
+        then "is a button holding its label" { html(button "Buy").contains("<body><button>Buy</button></body>") }
     }
     given "a column of two leaves" {
         then "nests them in a div" {
-            html(column { items: [text "a", button "b"] }) == "<div><span>a</span><button>b</button></div>"
+            html(column { items: [text "a", button "b"] })
+                .contains("<div><span>a</span><button>b</button></div>")
         }
         then "takes its children from its body, into items" {
             html(
@@ -30,14 +46,73 @@ spec "std/ui render — the HTML target" {
                     text "a"
                     button "b"
                 },
-            ) == "<div><span>a</span><button>b</button></div>"
+            )
+                .contains("<div><span>a</span><button>b</button></div>")
         }
     }
     given "text that looks like markup" {
-        then "is escaped" { html(text "<b>") == "<span>&lt;b&gt;</span>" }
+        then "is escaped" { html(text "<b>").contains("<span>&lt;b&gt;</span>") }
     }
     given "a row of two texts" {
-        then "is a div too" { html(row { items: [text "a", text "b"] }) == "<div><span>a</span><span>b</span></div>" }
+        then "is a div too" { html(row { items: [text "a", text "b"] })
+                .contains("<div><span>a</span><span>b</span></div>") }
+    }
+}
+
+spec "std/ui render — atomic classes" {
+    given "a component with a fill" {
+        then "names a token class, never a value" {
+            let out = html(button "Buy" { style: Style { fill: .Surface } })
+            out.contains("fill-surface") &&
+                out.contains(".fill-surface{background:var(--tone-surface)}")
+        }
+    }
+    given "two nodes that share a look" {
+        then "share one rule in the stylesheet" {
+            let a = sunk_button("a")
+            let b = sunk_button("b")
+            let out = html(column { items: [a, b] })
+            occurrences(out, ".fill-surface-sunk{") == 1
+        }
+    }
+    given "a dark mode theme" {
+        then "rewrites the root variables, moving no class" {
+            let out = html_in(text "hi", Env { theme: dark_theme })
+            out.contains("--tone-surface:#121212") && out.contains("--tone-text:#eeeeee")
+        }
+    }
+}
+
+spec "std/ui render — interaction states" {
+    given "a button that looks different while hovered and pressed" {
+        then "names a state-prefixed class and a pseudo-class rule" {
+            let out = html(
+                button "Buy" {
+                    style: Style {
+                        fill: .Surface,
+                        states: [
+                            StateStyle { state: .Hover, style: Style { fill: .SurfaceHover } },
+                            StateStyle { state: .Pressed, style: Style { fill: .SurfaceSunk } },
+                        ],
+                    }
+                },
+            )
+            out.contains("hover:fill-surface-hover") &&
+                out.contains(".hover\\:fill-surface-hover:hover") &&
+                out.contains(".pressed\\:fill-surface-sunk:active")
+        }
+    }
+    given "a disabled override" {
+        then "maps to the disabled pseudo-class" {
+            html(
+                button "Buy" {
+                    style: Style {
+                        states: [StateStyle { state: .Disabled, style: Style { color: .Muted } }],
+                    }
+                },
+            )
+                .contains(".disabled\\:color-muted:disabled")
+        }
     }
 }
 

@@ -1,0 +1,311 @@
+//! `realize/html/css.av` — the atomic class vocabulary and the one
+//! stylesheet. A `Box` field becomes a class named for its token
+//! (`fill-surface`, `gap-m`), and the class carries the value through a
+//! CSS variable the theme fills; an interaction override prefixes its
+//! classes with the state (`hover:fill-surface-hover`) and the
+//! stylesheet appends the pseudo-class. The class set is deduped per
+//! document, so two nodes that share a look share one rule, and no
+//! value ever reaches a class name.
+use style.box.{Box}
+use style.style.{Style, StateStyle, Interaction}
+use style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout}
+use style.theme.{Theme, space_of, radius_of, color_of, face_of}
+use ui.{Size, Tone, Font}
+
+/// One atomic rule: its class name (already state-prefixed), the state
+/// it applies in, and the declaration it carries.
+export type CssRule = { name: string, state: Interaction?, decl: string }
+
+const sizes = [Size.None, .Xs, .S, .M, .L, .Xl]
+const tones = [Tone.Text, .Muted, .Danger, .Surface, .SurfaceRaised, .SurfaceSunk, .SurfaceHover]
+const fonts = [Font.Body, .Heading, .Footnote, .Mono]
+
+fn size_word(z: Size) -> string {
+    match z { .None -> "none", .Xs -> "xs", .S -> "s", .M -> "m", .L -> "l", .Xl -> "xl" }
+}
+
+fn tone_word(t: Tone) -> string {
+    match t {
+        .Text -> "text",
+        .Muted -> "muted",
+        .Danger -> "danger",
+        .Surface -> "surface",
+        .SurfaceRaised -> "surface-raised",
+        .SurfaceSunk -> "surface-sunk",
+        .SurfaceHover -> "surface-hover",
+    }
+}
+
+fn font_word(f: Font) -> string {
+    match f { .Body -> "body", .Heading -> "heading", .Footnote -> "footnote", .Mono -> "mono" }
+}
+
+fn state_word(s: Interaction) -> string {
+    match s { .Hover -> "hover", .Focus -> "focus", .Pressed -> "pressed", .Disabled -> "disabled" }
+}
+
+/// The pseudo-class a state maps to on the web.
+fn pseudo_class(s: Interaction) -> string {
+    match s {
+        .Hover -> ":hover",
+        .Focus -> ":focus-visible",
+        .Pressed -> ":active",
+        .Disabled -> ":disabled",
+    }
+}
+
+fn prefixed(name: string, state: Interaction?) -> string {
+    match state {
+        s? -> "${state_word(s)}:${name}"
+        null -> name
+    }
+}
+
+/// One rule, or nothing when the field was not given.
+fn rule(name: string, state: Interaction?, decl: string) -> List<CssRule> {
+    if name == "" { return [] }
+    [CssRule { name: prefixed(name, state), state: state, decl: decl }]
+}
+
+// ── layout ──────────────────────────────────────────────────────
+
+fn axis_rule(a: Axis?, state: Interaction?) -> List<CssRule> {
+    match a {
+        v? -> rule(axis_name(v), state, axis_decl(v))
+        null -> []
+    }
+}
+
+fn axis_name(a: Axis) -> string {
+    match a { .Row -> "dir-row", .Column -> "dir-col" }
+}
+
+fn axis_decl(a: Axis) -> string {
+    match a {
+        .Row -> "display:flex;flex-direction:row",
+        .Column -> "display:flex;flex-direction:column",
+    }
+}
+
+fn gap_rule(z: Size?, state: Interaction?) -> List<CssRule> {
+    match z {
+        v? -> rule("gap-${size_word(v)}", state, "gap:var(--space-${size_word(v)})")
+        null -> []
+    }
+}
+
+fn edge_rule(prefix: string, prop: string, z: Size?, state: Interaction?) -> List<CssRule> {
+    match z {
+        v? -> rule("${prefix}-${size_word(v)}", state, "${prop}:var(--space-${size_word(v)})")
+        null -> []
+    }
+}
+
+fn pad_rules(e: Edge?, state: Interaction?) -> List<CssRule> {
+    match e {
+        v? -> edge_rule("pis", "padding-inline-start", v.start, state)
+            .concat(edge_rule("pie", "padding-inline-end", v.end, state))
+            .concat(edge_rule("pt", "padding-top", v.top, state))
+            .concat(edge_rule("pb", "padding-bottom", v.bottom, state))
+        null -> []
+    }
+}
+
+fn align_rule(a: Align?, state: Interaction?) -> List<CssRule> {
+    match a {
+        v? -> rule(align_name(v), state, align_decl(v))
+        null -> []
+    }
+}
+
+fn align_name(a: Align) -> string {
+    match a {
+        .Start -> "ai-start",
+        .Center -> "ai-center",
+        .End -> "ai-end",
+        .Stretch -> "ai-stretch",
+        .Baseline -> "ai-baseline",
+    }
+}
+
+fn align_decl(a: Align) -> string {
+    match a {
+        .Start -> "align-items:flex-start",
+        .Center -> "align-items:center",
+        .End -> "align-items:flex-end",
+        .Stretch -> "align-items:stretch",
+        .Baseline -> "align-items:baseline",
+    }
+}
+
+fn distribute_rule(d: Distribute?, state: Interaction?) -> List<CssRule> {
+    match d {
+        v? -> rule(distribute_name(v), state, distribute_decl(v))
+        null -> []
+    }
+}
+
+fn distribute_name(d: Distribute) -> string {
+    match d {
+        .Start -> "jc-start",
+        .Center -> "jc-center",
+        .End -> "jc-end",
+        .SpaceBetween -> "jc-between",
+        .SpaceAround -> "jc-around",
+        .SpaceEvenly -> "jc-evenly",
+    }
+}
+
+fn distribute_decl(d: Distribute) -> string {
+    match d {
+        .Start -> "justify-content:flex-start",
+        .Center -> "justify-content:center",
+        .End -> "justify-content:flex-end",
+        .SpaceBetween -> "justify-content:space-between",
+        .SpaceAround -> "justify-content:space-around",
+        .SpaceEvenly -> "justify-content:space-evenly",
+    }
+}
+
+/// A sizing token's class name, or nothing when it draws no rule.
+fn size_class(prefix: string, s: Sizing) -> string {
+    match s {
+        .Hug -> "",
+        .Fill -> "${prefix}-fill",
+        .Fixed(n) -> "${prefix}-${n}",
+        .Percent(_) -> "",
+    }
+}
+
+fn size_decl(prop: string, s: Sizing) -> string {
+    match s {
+        .Hug -> "",
+        .Fill -> "${prop}:100%",
+        .Fixed(n) -> "${prop}:${n}px",
+        .Percent(_) -> "",
+    }
+}
+
+fn sizing_rule(prefix: string, prop: string, s: Sizing?, state: Interaction?) -> List<CssRule> {
+    match s {
+        v? -> rule(size_class(prefix, v), state, size_decl(prop, v))
+        null -> []
+    }
+}
+
+fn grow_rule(n: int, state: Interaction?) -> List<CssRule> {
+    if n > 0 { rule("grow-${n}", state, "flex-grow:${n}") } else { [] }
+}
+
+fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
+    axis_rule(l.direction, state)
+        .concat(gap_rule(l.gap, state))
+        .concat(pad_rules(l.pad, state))
+        .concat(align_rule(l.align, state))
+        .concat(distribute_rule(l.distribute, state))
+        .concat(sizing_rule("w", "width", l.width, state))
+        .concat(sizing_rule("h", "height", l.height, state))
+        .concat(grow_rule(l.grow, state))
+}
+
+// ── appearance ──────────────────────────────────────────────────
+
+fn color_rule(c: Tone?, state: Interaction?) -> List<CssRule> {
+    match c {
+        v? -> rule("color-${tone_word(v)}", state, "color:var(--tone-${tone_word(v)})")
+        null -> []
+    }
+}
+
+fn fill_rule(c: Tone?, state: Interaction?) -> List<CssRule> {
+    match c {
+        v? -> rule("fill-${tone_word(v)}", state, "background:var(--tone-${tone_word(v)})")
+        null -> []
+    }
+}
+
+fn radius_rule(z: Size?, state: Interaction?) -> List<CssRule> {
+    match z {
+        v? -> rule("radius-${size_word(v)}", state, "border-radius:var(--radius-${size_word(v)})")
+        null -> []
+    }
+}
+
+fn face_rule(f: Font?, state: Interaction?) -> List<CssRule> {
+    match f {
+        v? -> rule("face-${font_word(v)}", state, "font-family:var(--face-${font_word(v)})")
+        null -> []
+    }
+}
+
+fn appearance_rules(s: Style, state: Interaction?) -> List<CssRule> {
+    color_rule(s.color, state)
+        .concat(fill_rule(s.fill, state))
+        .concat(radius_rule(s.radius, state))
+        .concat(face_rule(s.face, state))
+}
+
+// ── the rules a box names ───────────────────────────────────────
+
+/// Every atomic rule a `Box` names: its layout and appearance, then one
+/// group per interaction state.
+export fn rules_of(box: Box) -> List<CssRule> {
+    mut out = layout_rules(box.layout, null).concat(appearance_rules(box.style, null))
+    for ss in box.style.states { out = out.concat(appearance_rules(ss.style, ss.state)) }
+    out
+}
+
+/// Rules with each class name kept once, order intact; two nodes that
+/// share a look share the rule.
+export fn distinct_rules(rules: List<CssRule>) -> List<CssRule> {
+    mut seen: List<string> = []
+    mut out: List<CssRule> = []
+    for r in rules {
+        if !seen.contains(r.name) {
+            seen = seen.concat([r.name])
+            out = out.concat([r])
+        }
+    }
+    out
+}
+
+// ── the stylesheet ──────────────────────────────────────────────
+
+fn space_vars(t: Theme) -> string {
+    ["--space-${size_word(z)}:${space_of(t, z)}px;" for z in sizes].join("")
+}
+
+fn radius_vars(t: Theme) -> string {
+    ["--radius-${size_word(z)}:${radius_of(t, z)}px;" for z in sizes].join("")
+}
+
+fn tone_vars(t: Theme) -> string {
+    ["--tone-${tone_word(c)}:${color_of(t, c)};" for c in tones].join("")
+}
+
+fn face_vars(t: Theme) -> string {
+    ["--face-${font_word(f)}:${face_of(t, f)};" for f in fonts].join("")
+}
+
+/// The theme as the variables every class reads. A mode is a whole
+/// theme, so a mode change rewrites these and moves no class.
+fn root_vars(t: Theme) -> string {
+    ":root{${space_vars(t)}${radius_vars(t)}${tone_vars(t)}${face_vars(t)} }"
+}
+
+/// A class name as a selector; `:` in a state prefix is escaped.
+fn selector(name: string) -> string { ".${name.replace(":", "\\:")}" }
+
+fn pseudo_of(s: Interaction?) -> string {
+    match s {
+        v? -> pseudo_class(v)
+        null -> ""
+    }
+}
+
+fn rule_source(r: CssRule) -> string { "${selector(r.name)}${pseudo_of(r.state)}{${r.decl}}" }
+
+/// The one stylesheet every class in the document names.
+export fn stylesheet(rules: List<CssRule>, t: Theme) -> string {
+    [root_vars(t)].concat([rule_source(r) for r in rules]).join("\n")
+}
