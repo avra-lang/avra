@@ -52,6 +52,31 @@ fn filter_map_needs_opt(mut cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
         )
 }
 
+/// `xs.flat_map(f)` — the fn answers a LIST per element; every inner
+/// element carries on, so the answer is the list of them.
+export fn check_flat_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let seat? = walk_seat(cx, mc, "flat_map") else { return cx.error_type }
+    let inner: TypeId? = match cx.view.types.seen_shape(seat.answer) { .List(i) -> i, _ -> null }
+    if inner == null { return flat_map_needs_list(cx, mc.e, seat.answer) }
+    let held = inner!
+    if !slot_worthy(cx.view.types.shape_of(held)) { return uncollectable(cx, mc.e, held) }
+    cx.facts.mark_stage(mc.e, .FlatMap)
+    cx.type(List<held>)
+}
+
+fn flat_map_needs_list(mut cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.list_element",
+                cx.loc_of(e),
+                "`flat_map`'s fn answers a list, and this one answers `${cx.view.types.name_of(answer)}`",
+                "flat_map here",
+                "answer `List<T>` — each inner element carries on",
+            ),
+        )
+}
+
 /// `xs.filter(p)` — the receiver's own type.
 export fn check_filter(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let seat: WalkSeat? = predicate_seat(cx, mc, "filter")
