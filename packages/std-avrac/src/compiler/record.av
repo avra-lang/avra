@@ -31,7 +31,9 @@ use core.{
     DeclKind,
     SeatMark,
     Span,
+    qtrace,
 }
+use query.{traced}
 use features.{DeclSig, DeclFacts, AnnotationFact, LitArg, LitKind}
 use compiler.lower.{Body, program_symbol}
 use compiler.store.{Store, Stored, node_key}
@@ -1125,10 +1127,31 @@ impl Workspace {
     fn view_parts(store: Store, m: ModulePath) -> List<SeenPart> {
         let known: List<SeenPart>? = self.keys.view_parts.get().get(m.text())
         if known != null { return known! }
-        let r = self.reach(store, m)
-        let made = [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, r.files_of(dep)) } for dep in sorted_texts([m.text()].concat(r.mods))]
+        let made = self.witnessed_view(store, m) ?? self.walked_view(store, m)
         self.keys.view_parts.put(m.text(), made)
         made
+    }
+
+    /// The reach a previous build kept, when every record it read still stands — the
+    /// walk's own answer, never a second derivation of it.
+    fn witnessed_view(store: Store, m: ModulePath) -> List<SeenPart>? {
+        let raw? = store.get(Stored.Unit, reach_key(m.text())) else { return null }
+        let w? = reach_witness_of(raw) else { return null }
+        if !w.seen.all((s: WitnessMod) -> s.digest == record_digest(self, store, s.module)) { return null }
+        if !w.deps.all((d: WitnessDep) -> d.files.all((p: string) -> self.host.exists(p))) { return null }
+        if traced() { qtrace("Q\tviewHIT\t${m.text()}\n") }
+        seen_parts_of(self, store, m, w.deps)
+    }
+
+    /// The reach, walked — and kept beside the records it read, so the next build
+    /// answers `view_parts` without walking.
+    fn walked_view(store: Store, m: ModulePath) -> List<SeenPart> {
+        if traced() { qtrace("Q\tviewWALK\t${m.text()}\n") }
+        let r = self.reach(store, m)
+        let deps = [WitnessDep { dep: d, files: r.files_of(d) } for d in sorted_texts(r.mods)]
+        let seen = [WitnessMod { module: n, digest: record_digest(self, store, n) } for n in sorted_texts(distinct(r.sees_names.concat([m.text()])))]
+        let _ = store.keep(Stored.Unit, reach_key(m.text()), reach_witness_wire(ReachWitness { seen: seen, deps: deps }), [])
+        seen_parts_of(self, store, m, deps)
     }
 
     /// EVERY OTHER MODULE'S FILE A MODULE'S OBJECTS CAN DEPEND ON: each file its own
@@ -1142,6 +1165,7 @@ impl Workspace {
         mut r = Reach {
             home: m.text(),
             sees: {},
+            sees_names: sees,
             placed: self.keys.file_owners.get(),
             files: [],
             owners: [],
@@ -1254,6 +1278,8 @@ impl Workspace {
 type Reach = {
     home: string,
     sees: Map<string, bool>,
+    /// The modules whose records the walk read, in the order `sees_records` named them.
+    sees_names: List<string>,
     placed: Map<string, string>,
     files: List<string>,
     owners: List<string>,
@@ -1317,6 +1343,58 @@ export fn parts_wire(k: KeyParts) -> string {
 }
 
 /// Where a module's seen interfaces are kept: one row a module's files share.
+/// WHAT A MODULE'S REACH READ, AS A ROW: each record the walk read with its digest,
+/// and each module it reached with the files that module places — so the next build
+/// answers `view_parts` from the walk's own answer, never a second derivation.
+type ReachWitness = { seen: List<WitnessMod>, deps: List<WitnessDep> }
+
+/// A record the walk read, and its digest then.
+type WitnessMod = { module: string, digest: string }
+
+/// A module the walk reached, and the files it places that the walk kept.
+type WitnessDep = { dep: string, files: List<string> }
+
+/// Where a module's reach is kept.
+fn reach_key(module: string) -> string { node_key(Stored.Unit, ["reach", module]) }
+
+/// A module's own record digest — what a kept reach checks before it is trusted. The
+/// WHOLE record, never its interface alone: the walk closes over typed and impl rows,
+/// which the interface digest never folds.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+fn record_digest(ws: Workspace, store: Store, name: string) -> string {
+    let known = ws.keys.record_digests.get().get(name)
+    if known != null { return known! }
+    let made = digest_of(record_cached(ws, store, module_path(name.split("."))))
+    ws.keys.record_digests.put(name, made)
+    made
+}
+
+/// The files a kept reach found for one module.
+fn files_of_dep(mods: List<WitnessDep>, n: string) -> List<string> { mods.find(it.dep == n)?.files ?? [] }
+
+/// The reach a witness names, as the parts a file's key folds.
+fn seen_parts_of(ws: Workspace, store: Store, m: ModulePath, mods: List<WitnessDep>) -> List<SeenPart> {
+    [if n == m.text() { ws.seen_part_of(store, m) } else { ws.reached_part(store, n, files_of_dep(mods, n)) } for n in sorted_texts([m.text()].concat([d.dep for d in mods]))]
+}
+
+fn reach_witness_wire(w: ReachWitness) -> string {
+    joined(
+        ["h\t${s.module}\t${s.digest}" for s in w.seen]
+            .concat(["d\t${d.dep}" for d in w.deps])
+            .concat(flatten([["f\t${d.dep}\t${f}" for f in d.files] for d in w.deps])),
+        "\n",
+    )
+}
+
+fn reach_witness_of(raw: string) -> ReachWitness? {
+    if raw.is_empty() { return null }
+    let rows = [wire_fields(line, "\t") for line in wire_fields(raw, "\n")]
+    if rows.any((r: List<string>) -> !(r[0] == "h" || r[0] == "d" || r[0] == "f")) { return null }
+    let seen = [WitnessMod { module: r[1], digest: r[2] } for r in rows if r.length == 3 && r[0] == "h"]
+    let deps = [WitnessDep { dep: r[1], files: [f[2] for f in rows if f.length == 3 && f[0] == "f" && f[1] == r[1]] } for r in rows if r.length == 2 && r[0] == "d"]
+    ReachWitness { seen: seen, deps: deps }
+}
+
 export fn seen_key(module: string) -> string { node_key(Stored.Unit, ["seen", module]) }
 
 /// The modules a module's files see, as a row: a line each.
