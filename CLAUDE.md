@@ -1731,13 +1731,9 @@ Wants the typer does not carry yet:
   this entry on a hunch) while writing `std-errors`' `Traced<E>`:
   `cause() -> dyn Error? { match self { .A(x) -> x, .B(y) -> y } }`
   over two different concrete Error types compiled clean.
-- A trait impl over a GENERIC type LANDS — user (`impl Show for
-  Box<T>`, `Respond for Created<T>`) and built-in (`Respond for
-  Result<T, E>`, `List<T>`, `Map`) alike — one body per instantiation;
-  an inherent generic impl (`impl Box<T>`) lands too. A written target
-  argument names a PARAMETER, never a type: `impl Show for Box<int>`
-  (and `Result<int, string>`) is REFUSED in its own words, so an impl
-  can never silently serve an instantiation it does not name.
+- A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
+  "`Box` is generic — a trait impl over a generic type is recorded,
+  not landed". Inherent generic impls (`impl Box<T>`) land.
   NOT EVERY GENERIC TYPE WANTS THIS, though — `@std/errors`'
   `Traced<E>` (the `? context` propagation carrier) LOOKS like an
   instance and is not: its `cause()` deliberately answers the
@@ -1963,6 +1959,18 @@ Runtime facts, ours to ratify:
 
 ## Working discipline
 
+- NOTHING WE RUN TAKES MORE THAN A COUPLE OF MINUTES. Every command,
+  build, wait and poll is bounded to ~2 minutes; the ONE exception is a
+  full test run, which is ~5 minutes and runs on a Sprite. No `sleep`
+  chains, no 10–60 minute timeouts, no loop that polls `main` or a build
+  to infer progress. Break work into bounded steps: kick a long job off
+  as ONE bounded background command, do useful work, then check ONCE. A
+  `work wait` for a landing is bounded to a couple of minutes per call,
+  never an hour, and it reads the PR's merge-queue state, never `main`.
+  A lane that blocks for minutes waiting is a defect in the lane, not
+  patience. (Owner rule, 2026-10-02: an 18-minute `sleep` loop waiting on
+  `main` deadlocked the merge queue — main could not move because that
+  lane's own PR was failing the train.)
 - MEASURE, THEN CHANGE. `make census CMD="check <pkg>"` gives EXACT
   retain/release/list-write counts and, with the per-caller tables,
   who causes them; `AVRA_SAMPLE=<secs> sh tools/watch.sh 4000 ./avra
