@@ -1,6 +1,6 @@
 //! The vocabulary a build links with: clang's words for a link, and the binary
 //! a source names.
-use compiler.backend.{unreached_dropped}
+use compiler.backend.{unreached_dropped, host_export_words}
 
 /// clang's words for a link: the objects, the packages' own objects and
 /// flags, the runtime, then the binary's path.
@@ -13,16 +13,25 @@ use compiler.backend.{unreached_dropped}
 /// THE RUNTIME IS LAST because it is an archive: an ELF linker takes from it
 /// only what the words BEFORE it name, so a member only a package object
 /// reaches — a row the compiler's host table names — is otherwise dropped.
-fn link_objects(objs: List<string>, ws: Workspace, runtime: string, out: string, target: string) -> List<
-    string,
-> {
+fn link_objects(
+    objs: List<string>,
+    ws: Workspace,
+    runtime: string,
+    out: string,
+    target: string,
+    reactor: bool,
+) -> List<string> {
     if target != "" {
         // A WASM LINK: the driver's own target names crt1 and a libc, and the
         // runtime archive is the wasm one. A package's native C is NOT linked:
         // the socket, process and thread rows have no wasm body there and are
         // host imports on this target, so an unreached one costs nothing and a
         // reached one refuses rather than links foreign code.
+        // A REACTOR does not run `main` and does not exit: the host calls
+        // `_initialize` once and then the program's exported fns per event.
         ["-w", "--target=${target}", "-Wno-deprecated"]
+            .concat(if reactor { ["-mexec-model=reactor"] } else { [] })
+            .concat(host_export_words())
             .concat(objs)
             .concat(
                 [
