@@ -1916,14 +1916,22 @@ Runtime facts, ours to ratify:
   queue: squash merges, linear history, no direct pushes. A local main
   only follows `origin/main` (the reference-transaction hook refuses any
   other update; a deliberate repair sets `AVRA_MAIN_OVERRIDE="<reason>"`).
-- THE QUEUE TESTS TRAINS, NOT PRS. A PR's own `test` check only admits
-  it; the queue builds main plus every PR ahead of it plus this one, and
-  `.github/workflows/checks.yml` builds and tests that commit in ONE job
-  on GitHub's runners (Ubuntu 26.04, LLVM 22, the image in
-  `.github/ci/`). Ten trains test at once; when one passes, it and every
-  PR ahead of it land together (HEADGREEN). A failing train drops its PR
-  with the log on the PR. Main's own push run caches the compiler every
-  train starts from.
+- A PR TESTS ITSELF FIRST, AND THE QUEUE STILL TESTS THE TRAIN. A PR's
+  own `test` check runs the SAME keepers, fmt, idioms and affected
+  suites as the train, on the PR's own tree (`.github/workflows/
+  checks.yml`). A PR has no cached compiler, so it BOOTSTRAPS from the
+  committed seed — a derived cache never does (the generation law); a PR
+  that ADDS SYNTAX cannot be bootstrapped by its base's seed, so it
+  proves itself with the branch-local compiler and lands by the
+  refresh-after rule. So a green PR check is the pre-enqueue proof, and
+  a slip dies before the queue. The queue then builds main plus every PR
+  ahead of it plus this one and tests that COMBINATION in ONE job on
+  GitHub's runners (Ubuntu 26.04, LLVM 22, the image in `.github/ci/`) —
+  the only place a CROSS-PR interaction (two individually-green PRs
+  colliding on a latent bug) can be seen. Ten trains test at once; when
+  one passes, it and every PR ahead of it land together (HEADGREEN). A
+  failing train drops its PR with the log on the PR. Main's own push run
+  caches the compiler every train starts from.
 - A PRE-COMMIT HOOK refuses staged `.av` that is not canonical; the fix
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
 - HEAVY RUNS GO ON SPRITES: `AVRA_SP_TREE=$PWD sh tools/sp <cmd>`, or
@@ -1963,11 +1971,13 @@ Runtime facts, ours to ratify:
   `main` deadlocked the merge queue — main could not move because that
   lane's own PR was failing the train.)
 
-- A PR'S OWN `test` CHECK ONLY ADMITS IT — checks.yml's PR step is
-  "admitted; the train is what gets tested" — so a branch's keepers,
-  fmt and idioms run in `tools/work land`'s preflight
-  (`tools/gate_changed.sh`) with the branch's own compiler: the only
-  place a slip dies before it is enqueued.
+- THE ENQUEUE GATE IS ONE INSTRUMENT. `tools/gate_changed.sh` runs the
+  static keepers, `fmt --check` on the changed `.av`, and
+  `check --baseline` on every affected package. `tools/work land` runs it
+  as a LOCAL preflight with the branch's own compiler, and checks.yml's
+  `gate` step runs the same script on the PR and on the train — one
+  definition, so the preflight and CI can never be two instruments, and
+  a slip dies at the gate rather than in the merge queue.
 - MEASURE, THEN CHANGE. `make census CMD="check <pkg>"` gives EXACT
   retain/release/list-write counts and, with the per-caller tables,
   who causes them; `AVRA_SAMPLE=<secs> sh tools/watch.sh 4000 ./avra
