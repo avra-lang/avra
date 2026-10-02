@@ -1,15 +1,21 @@
 #!/bin/sh
-# The whole path from new work to main, in five commands:
+# The whole path from new work to main, in six commands:
 #
 #   sh tools/work new <name>   worktree ../avra-<name> on branch <name>, off main, compiler seeded
 #   sh tools/work test         build and test what the branch touches, on Sprites
 #   sh tools/work run <cmd>    run any command in this worktree, on a Sprite
 #   sh tools/work land         push the branch, open its PR, queue it to merge
 #   sh tools/work status       every open PR: checks and queue state
+#   sh tools/work wait <branch> wait until the branch's PR merges
 #
-# `test`, `run` and `land` run from inside the worktree. Main moves only through
-# GitHub's merge queue, which tests each train's combined commit on its own
-# runners (.github/workflows/checks.yml); nothing here writes main.
+# `test`, `run`, `land` and `wait` run from inside the worktree. Main moves only
+# through GitHub's merge queue, which tests each train's combined commit on its
+# own runners (.github/workflows/checks.yml); nothing here writes main.
+#
+# A LANDING IS READ FROM THE PR'S MERGE-QUEUE STATE, NEVER FROM `main`. `main`
+# only moves when a train passes, so polling it to infer a landing waits on the
+# wrong clock — and it deadlocked the queue once, with lanes watching a ref that
+# could not move. `wait` asks `gh` for the PR, and never fetches or reads main.
 set -eu
 
 tools=$(cd "$(dirname "$0")" && pwd)
@@ -119,11 +125,38 @@ status() {
         --jq '.[] | "#\(.number)  \(.headRefName)  \(if .autoMergeRequest then "queued" else "open" end)  checks: \([.statusCheckRollup[]?.conclusion // "pending"] | unique | join(","))  \(.title)"'
 }
 
+# Wait for a branch's PR to merge. THE ORACLE IS THE PR'S STATE, asked of
+# `gh`, never `main` — see the header. `MERGED` is the only success; a closed
+# PR is a failure; anything else is still riding the queue. The deadline
+# (`AVRA_WAIT_SECONDS`, default one hour) and the poll (`AVRA_WAIT_POLL`,
+# default 15s) are the caller's.
+wait_landed() {
+    [ "$#" -eq 1 ] || die "usage: work wait <branch>"
+    branch=$1
+    poll=${AVRA_WAIT_POLL:-15}
+    limit=${AVRA_WAIT_SECONDS:-3600}
+    deadline=$(( $(date +%s) + limit ))
+    while :; do
+        state=$(gh pr view "$branch" --json state --jq .state 2>/dev/null || true)
+        case "$state" in
+            MERGED) echo "work: $branch merged"; return 0 ;;
+            CLOSED) echo "work: $branch's PR closed without merging" >&2; return 1 ;;
+            "")
+                echo "work: no PR for $branch yet — the merge queue is the oracle, never main" >&2
+                ;;
+            *) echo "work: $branch is $state — still riding the queue" >&2 ;;
+        esac
+        [ "$(date +%s)" -ge "$deadline" ] && { echo "work: $branch did not land within ${limit}s" >&2; return 1; }
+        sleep "$poll"
+    done
+}
+
 case "${1:-}" in
     new) shift; new "$@" ;;
     test) test_ ;;
     run) shift; run "$@" ;;
     land) land ;;
     status) status ;;
-    *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    wait) shift; wait_landed "$@" ;;
+    *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
