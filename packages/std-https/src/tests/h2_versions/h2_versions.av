@@ -6,7 +6,7 @@
 //! one over TLS are both misdirected, whichever version carried them.
 use @std.net.{NetError, listen, connect}
 use @std.time.{secs, within}
-use @std.http.frame.{Method, limits, no_bytes}
+use @std.http.frame.{limits, no_bytes}
 use @std.http.http.{Request, Unrouted, Response, Header, text, status, stream_of}
 use @std.http.server.{served, timing}
 use @std.http.client.{Client, ClientError, request, netted}
@@ -139,10 +139,8 @@ fn tls_wire(t: TlsConn) -> Wire {
 // ── HTTP/1.1 over TLS ───────────────────────────────────────────
 
 fn h1_line(mut c: Client, a: Ask) -> Result<string, ClientError> {
-    let method = match a.method { "POST" -> Method.Post, "HEAD" -> Method.Head, _ -> Method.Get }
     let headers = [Header { name: f.name.text() ?? "", value: f.value.text() ?? "" } for f in a.fields]
-    let r = c
-        .fetched(method, request(a.method, a.path, "localhost", headers, a.body.bytes())!, secs(5))?
+    let r = c.fetched(request(a.method, a.path, "localhost", headers, a.body.bytes())!, secs(5))?
     .Ok("${r.status} | ${r.header("content-type") ?? "-"} | ${r.body.text() ?? "?"}")
 }
 

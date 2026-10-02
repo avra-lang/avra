@@ -3,7 +3,7 @@
 //! handler's.
 use @std.net.{NetError, listen}
 use @std.time.{secs}
-use @std.http.frame.{limits, Method}
+use @std.http.frame.{limits}
 use @std.http.http.{Header, text}
 use @std.http.server.{Server, served, timing}
 use @std.http.client.{Client, Answer, ClientError, connected, request}
@@ -37,8 +37,8 @@ impl Duo {
 }
 
 /// The request fetched, within two seconds.
-fn answered_by(mut d: Duo, method: Method, req: Bytes) -> Result<Answer, ClientError> {
-    d.c.fetched(method, req, secs(2))
+fn answered_by(mut d: Duo, req: Bytes) -> Result<Answer, ClientError> {
+    d.c.fetched(req, secs(2))
 }
 
 fn get_answer() -> Result<bool, ClientError> {
@@ -47,7 +47,6 @@ fn get_answer() -> Result<bool, ClientError> {
     defer d.done()
     let a = answered_by(
         d,
-        .Get,
         request("GET", "/g", "a", [Header { name: "x-tag", value: "t1" }], "".bytes())!,
     )?
     .Ok(
@@ -62,7 +61,7 @@ fn post_answer() -> Result<bool, ClientError> {
     mut d = duo()?
     spawn d.s.run(cores: 1)
     defer d.done()
-    let a = answered_by(d, .Post, request("POST", "/p", "a", [], "hello".bytes())!)?
+    let a = answered_by(d, request("POST", "/p", "a", [], "hello".bytes())!)?
     .Ok(a.status == 200 && a.body.text() ?? "" == "/p|hello|-|1")
 }
 
@@ -70,8 +69,8 @@ fn two_on_one_connection() -> Result<bool, ClientError> {
     mut d = duo()?
     spawn d.s.run(cores: 1)
     defer d.done()
-    let one = answered_by(d, .Get, request("GET", "/1", "a", [], "".bytes())!)?
-    let two = answered_by(d, .Get, request("GET", "/2", "a", [], "".bytes())!)?
+    let one = answered_by(d, request("GET", "/1", "a", [], "".bytes())!)?
+    let two = answered_by(d, request("GET", "/2", "a", [], "".bytes())!)?
     .Ok(
         (one.body.text() ?? "").ends_with("|1") &&
             (two.body.text() ?? "").ends_with("|2") &&
@@ -83,8 +82,8 @@ fn head_answer() -> Result<bool, ClientError> {
     mut d = duo()?
     spawn d.s.run(cores: 1)
     defer d.done()
-    let a = answered_by(d, .Head, request("HEAD", "/h", "a", [], "".bytes())!)?
-    let after = answered_by(d, .Get, request("GET", "/g", "a", [], "".bytes())!)?
+    let a = answered_by(d, request("HEAD", "/h", "a", [], "".bytes())!)?
+    let after = answered_by(d, request("GET", "/g", "a", [], "".bytes())!)?
     .Ok(
         a.status == 200 &&
             a.body.length == 0 &&
@@ -97,7 +96,7 @@ fn bad_reply_is_refused() -> Result<bool, ClientError> {
     mut d = duo()?
     spawn d.s.run(cores: 1)
     defer d.done()
-    let a = answered_by(d, .Get, request("GET", "/x", "a", [], "".bytes())!)
+    let a = answered_by(d, request("GET", "/x", "a", [], "".bytes())!)
     .Ok(passes_client(a))
 }
 

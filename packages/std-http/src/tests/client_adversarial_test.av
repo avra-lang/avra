@@ -16,7 +16,7 @@ type Wire = { c: Client, peer: Conn, l: Listener }
 fn wiring(lim: Limits) -> Result<Wire, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), lim)?
-    c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
+    c.sent(request("GET", "/", "a", [], "".bytes())!)?
     let peer = lifted(within verdict_bound() { l.accept() })?
     if !arrived(peer)? { return .Err(.TimedOut(.Total)) }
     .Ok(Wire { c: c, peer: peer, l: l })
@@ -147,14 +147,14 @@ fn no_content() -> Result<bool, ClientError> {
 fn never_replies() -> Result<bool, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), limits())?
-    let r = c.fetched(.Get, request("GET", "/", "a", [], "".bytes())!, ms(60))
+    let r = c.fetched(request("GET", "/", "a", [], "".bytes())!, ms(60))
     .Ok(outcome(match r { .Ok(a) -> .Ok(a), .Err(e) -> .Err(e) }) == "http.timed_out")
 }
 
 fn two_replies_one_connection() -> Result<bool, ClientError> {
     mut w = wired()?
     let one = outcome(settled(w, "HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\na"))
-    w.c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
+    w.c.sent(request("GET", "/", "a", [], "".bytes())!)?
     let two = outcome(settled(w, "HTTP/1.1 201 Created\r\ncontent-length: 1\r\n\r\nb"))
     .Ok(one == "200 a" && two == "201 b")
 }
@@ -168,7 +168,7 @@ fn reply_too_large() -> Result<bool, ClientError> {
 /// What the next request on `w`'s connection comes to: its send
 /// refused, or the reply the peer's `said` makes of it.
 fn next_on(mut w: Wire, said: string) -> string {
-    match w.c.sent(.Get, request("GET", "/", "a", [], "".bytes())!) {
+    match w.c.sent(request("GET", "/", "a", [], "".bytes())!) {
         .Err(e) -> e.describe().kind,
         .Ok(_) -> outcome(settled(w, said)),
     }
@@ -181,7 +181,7 @@ fn interims_passed() -> Result<bool, ClientError> {
     let one = outcome(
         settled(w, "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\na"),
     )
-    w.c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
+    w.c.sent(request("GET", "/", "a", [], "".bytes())!)?
     let early = outcome(pending(w, "HTTP/1.1 103 Early Hints\r\nlink: </s>\r\n\r\nHTTP/1.1 103 E"))
     let late = outcome(
         settled(w, "arly Hints\r\n\r\nHTTP/1.1 201 Created\r\ncontent-length: 1\r\n\r\nb"),
@@ -251,11 +251,7 @@ fn after_unanswered() -> Result<string, ClientError> {
 fn after_our_close() -> Result<string, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), limits())?
-    c
-        .sent(
-            .Get,
-            request("GET", "/", "a", [Header { name: "connection", value: "close" }], "".bytes())!,
-        )?
+    c.sent(request("GET", "/", "a", [Header { name: "connection", value: "close" }], "".bytes())!)?
     let peer = lifted(within ms(500) { l.accept() })?
     let _ = lifted(within ms(500) { peer.read(4096) })?
     mut w = Wire { c: c, peer: peer, l: l }
@@ -280,11 +276,10 @@ fn ca_nothing() -> Bytes { "".bytes() }
 fn unframed_unsent() -> Result<bool, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), limits())?
-    let hostless = is_unwritable(c.sent(.Get, "GET / HTTP/1.1\r\n\r\n".bytes()))
-    let bare_lf = is_unwritable(c.sent(.Get, "GET / HTTP/1.1\nhost: a\n\n".bytes()))
-    let unended = is_unwritable(c.sent(.Get, "GET / HTTP/1.1\r\nhost: a\r\n".bytes()))
-    let misnamed = is_unwritable(c.sent(.Get, request("HEAD", "/", "a", [], "".bytes())!))
-    .Ok(hostless && bare_lf && unended && misnamed)
+    let hostless = is_unwritable(c.sent("GET / HTTP/1.1\r\n\r\n".bytes()))
+    let bare_lf = is_unwritable(c.sent("GET / HTTP/1.1\nhost: a\n\n".bytes()))
+    let unended = is_unwritable(c.sent("GET / HTTP/1.1\r\nhost: a\r\n".bytes()))
+    .Ok(hostless && bare_lf && unended)
 }
 
 /// Whether `r` is the text `want`.
