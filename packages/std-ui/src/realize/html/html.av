@@ -25,24 +25,39 @@ fn heading_tag(rank: int) -> HtmlTag {
     tags[r - 1]
 }
 
+/// Every primitive's element — DATA. `Heading` is the one row a
+/// level overrides, so it is read before the table.
+export type PrimTag = { prim: Prim, tag: HtmlTag }
+
+const prim_tags: List<PrimTag> = table<PrimTag> {
+    prim      | tag
+    .Text     | .Span
+    .Button   | .Button
+    .Link     | .A
+    .Image    | .Img
+    .Icon     | .Img
+    .Field    | .Input
+    .Checkbox | .Input
+    .Switch   | .Input
+    .Slider   | .Input
+    .Row      | .Div
+    .Column   | .Div
+    .Surface  | .Div
+    .List     | .Ul
+    .Item     | .Li
+    .Card     | .Article
+    .Dialog   | .Dialog
+    .Divider  | .Hr
+    .Progress | .Progress
+    .Alert    | .Div
+    .Spinner  | .Div
+    .Form     | .Form
+    .Heading  | .H1
+}
+
 fn tag_of(p: Prim, attrs: List<Attribute>) -> HtmlTag {
-    match p {
-        .Text -> .Span,
-        .Heading -> heading_tag(level_of(attrs)),
-        .Button -> .Button,
-        .Link -> .A,
-        .Image or .Icon -> .Img,
-        .Field or .Checkbox or .Switch or .Slider -> .Input,
-        .Row or .Column or .Surface -> .Div,
-        .List -> .Ul,
-        .Item -> .Li,
-        .Card -> .Article,
-        .Dialog -> .Dialog,
-        .Divider -> .Hr,
-        .Progress -> .Progress,
-        .Alert or .Spinner -> .Div,
-        .Form -> .Form,
-    }
+    if p is .Heading { return heading_tag(level_of(attrs)) }
+    prim_tags.find(it.prim == p)?.tag ?? .Div
 }
 
 // ── the attribute table ─────────────────────────────────────────
