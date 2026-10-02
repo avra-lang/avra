@@ -995,6 +995,60 @@ scope application {
 }
 
 spec "a method chain folds into one pipeline" {
+    given "a filter then a terminal" {
+        then "one loop, no list, the verdict ended on its first hit" {
+            let expected = """fn f(r0: List<int>) -> bool
+scope application {
+  r1 = static fn$<source>$l4
+  r2 = int 0
+  r3 = call avra_array_get(r1, r2)
+  r4 = bool false
+  r5 = slot
+  store r5 <- r4
+  r6 = static fn$<source>$l8
+  r7 = int 0
+  r8 = call avra_array_get(r6, r7)
+  r9 = call avra_array_len(r0)
+  r10 = int 0
+  r11 = slot
+  store r11 <- r10
+  loop {
+    r12 = load r11
+    r13 = r12 < r9
+    while r13
+    scope application {
+      r14 = int 1
+      r15 = r12 + r14
+      store r11 <- r15
+      r16 = call avra_array_get(r0, r12)
+      r17 = callptr r3(r1, r16)
+      if r17 {
+        r18 = callptr r8(r6, r16)
+        if r18 {
+          r19 = bool true
+          store r5 <- r19
+          break 0
+          r20 = int 0
+          yield r20
+        } else {
+          r21 = int 0
+          yield r21
+        } -> r22
+        r23 = int 0
+        yield r23
+      } else {
+        r24 = int 0
+        yield r24
+      } -> r25
+    }
+  }
+  r26 = load r5
+  release r0
+  yield r26
+}"""
+            body_of(render_ir(ir_of(any_chain())), "f") == expected
+        }
+    }
     given "a filter then a map" {
         then "one loop, both fn boxes read before it, the element pushed once" {
             let expected = """fn f(r0: List<int>) -> List<int>
@@ -1042,6 +1096,10 @@ scope application {
 
 fn chain() -> string {
     "fn f(xs: List<int>) -> List<int> {\n    xs.filter((x: int) -> x > 1).map((x: int) -> x * 2)\n}\nf([1, 2, 3]).length"
+}
+
+fn any_chain() -> string {
+    "fn f(xs: List<int>) -> bool {\n    xs.filter((x: int) -> x > 1).any((x: int) -> x > 2)\n}\nf([1, 2, 3])"
 }
 
 fn heads() -> string {

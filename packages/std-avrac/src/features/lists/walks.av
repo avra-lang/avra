@@ -21,32 +21,32 @@ export fn lower_filter(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc)
 
 export fn lower_find(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
-    found(cx, mc, seat)
+    found_chain(cx, mc, seat)
 }
 
 export fn lower_find_index(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
-    found_at(cx, mc, seat)
+    found_at_chain(cx, mc, seat)
 }
 
 export fn lower_any(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
-    judged(cx, mc, seat, false)
+    judged_chain(cx, mc, seat, false)
 }
 
 export fn lower_all(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
-    judged(cx, mc, seat, true)
+    judged_chain(cx, mc, seat, true)
 }
 
 export fn lower_contains(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
-    held(cx, mc, seat)
+    contains_chain(cx, mc, seat)
 }
 
 export fn lower_index_of(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
-    position(cx, mc, seat)
+    index_of_chain(cx, mc, seat)
 }
 
 export fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
@@ -111,92 +111,6 @@ fn seatless(mut cx: LowerCx, mc: MethodCall) -> Reg {
 /// loop-invariant).
 type Box = { f: Reg, fp: Reg }
 
-/// `xs.find(p)` — an Opt cell, absent until the first hit, which
-/// also ends the walk.
-fn found(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
-    let opt = cx.type_at(mc.e)
-    let cell = absent_cell(cx, opt)
-    let f = boxed(cx, s.arg)
-    let w = cx.opened(mc.subject, s.elem)
-    let v = cx.turn_elem(w, cx.turn_open(w))
-    cx
-        .void_region(turn_call(cx, f, v, bool_ty(cx))) { cx ->
-            cx.emit(Ins.Store(cell, cx.adopted(opt, false, v)))
-            cx.walk_done()
-        }
-    cx.loop_end()
-    cx.loaded(mc.e, cell)
-}
-
-/// `xs.find_index(p)` — an `int?` cell seeded absent; the first element
-/// `p` blesses writes its index there and ends the walk.
-fn found_at(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
-    let opt = cx.type_at(mc.e)
-    let cell = absent_cell(cx, opt)
-    let f = boxed(cx, s.arg)
-    let w = cx.opened(mc.subject, s.elem)
-    let here = cx.turn_open(w)
-    let v = cx.turn_elem(w, here)
-    cx
-        .void_region(turn_call(cx, f, v, bool_ty(cx))) { cx ->
-            cx.emit(Ins.Store(cell, cx.adopted(opt, false, here)))
-            cx.walk_done()
-        }
-    cx.loop_end()
-    cx.loaded(mc.e, cell)
-}
-
-/// `xs.any(p)` / `xs.all(p)` — a bool cell seeded with the verdict
-/// an EMPTY walk gives; the first counterexample flips it and ends
-/// the walk.
-fn judged(mut cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> Reg {
-    let cell = bool_cell(cx, all)
-    let f = boxed(cx, s.arg)
-    let w = cx.opened(mc.subject, s.elem)
-    let v = cx.turn_elem(w, cx.turn_open(w))
-    let p = turn_call(cx, f, v, bool_ty(cx))
-    cx
-        .void_region(flipping(cx, p, all)) { cx ->
-            store_bool(cx, cell, !all)
-            cx.walk_done()
-        }
-    cx.loop_end()
-    cx.loaded(mc.e, cell)
-}
-
-/// `xs.contains(v)` — a bool cell seeded false; the first equal
-/// element flips it and ends the walk.
-fn held(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
-    let cell = bool_cell(cx, false)
-    let needle = cx.reg_of(s.arg)
-    let w = cx.opened(mc.subject, s.elem)
-    let v = cx.turn_elem(w, cx.turn_open(w))
-    cx
-        .void_region(cx.same_value(v, needle, s.elem)) { cx ->
-            store_bool(cx, cell, true)
-            cx.walk_done()
-        }
-    cx.loop_end()
-    cx.loaded(mc.e, cell)
-}
-
-/// `xs.index_of(v)` — an int cell seeded -1; the first equal
-/// element stores its index and ends the walk.
-fn position(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
-    let cell = cx.seeded_cell(cx.type(int), cx.const_int(-1))
-    let needle = cx.reg_of(s.arg)
-    let w = cx.opened(mc.subject, s.elem)
-    let here = cx.turn_open(w)
-    let v = cx.turn_elem(w, here)
-    cx
-        .void_region(cx.same_value(v, needle, s.elem)) { cx ->
-            cx.emit(Ins.Store(cell, here))
-            cx.walk_done()
-        }
-    cx.loop_end()
-    cx.loaded(mc.e, cell)
-}
-
 /// `xs.first()` / `xs.last()` — an Opt cell seeded absent, the edge
 /// slot adopted when the list has one.
 fn edge(mut cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
@@ -222,18 +136,6 @@ fn boxed(mut cx: LowerCx, f: ExprId) -> Box {
     Box { f: box, fp: cx.slot_read(box, 0, null) }
 }
 
-/// The fn box asked about this element.
-fn turn_call(mut cx: LowerCx, f: Box, v: Reg, ret: TypeId) -> Reg {
-    cx.call_ptr(ret, f.fp, [f.f, v])
-}
-
-/// Step, settle the turn's scope, close the back edge.
-/// `any` fires ON the predicate; `all` fires on its failure.
-fn flipping(mut cx: LowerCx, p: Reg, all: bool) -> Reg {
-    if !all { return p }
-    cx.un(p)
-}
-
 /// What `map` answers per element — the result list's own element,
 /// or the node's own type on the absorbing path.
 fn mapped_to(cx: LowerCx, e: ExprId) -> TypeId {
@@ -253,10 +155,6 @@ fn decremented(mut cx: LowerCx, n: Reg) -> Reg {
 
 fn bool_cell(mut cx: LowerCx, seed: bool) -> Reg {
     cx.seeded_cell(bool_ty(cx), cx.const_bool(seed))
-}
-
-fn store_bool(mut cx: LowerCx, cell: Reg, b: bool) {
-    cx.emit(Ins.Store(cell, cx.const_bool(b)))
 }
 
 fn absent_cell(mut cx: LowerCx, opt: TypeId) -> Reg {
