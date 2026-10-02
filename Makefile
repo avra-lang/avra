@@ -227,7 +227,7 @@ WASM_RUNTIME_LIB := build/wasm32/libavra_runtime.a
 
 build/wasm32/%.o: runtime/%.c
 	@mkdir -p build/wasm32
-	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -ffunction-sections -fdata-sections -O2 -c -o $@ $<
+	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
 
 $(WASM_RUNTIME_LIB): $(WASM_RUNTIME_OBJS)
 	@mkdir -p build/wasm32
@@ -245,6 +245,10 @@ wasm-check:
 wasm-seam:
 	sh tools/wasm-seam-check.sh
 
+# THE ARCHIVE'S LAW: never carries a fiber or a core.
+wasm-archive:
+	sh tools/wasm-archive.sh
+
 # Every package that carries tests, in dependency order — DERIVED from
 # the manifests (tools/suites.py), never listed: a hand-kept list is a
 # registry that forgets its next member, and the gate would report
@@ -252,7 +256,7 @@ wasm-seam:
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-check wasm-seam
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-check wasm-seam wasm-archive
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
