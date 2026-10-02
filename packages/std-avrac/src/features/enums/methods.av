@@ -1,0 +1,38 @@
+//! `E.all` — every variant of a payload-free enum, as one list in
+//! declaration order. The variants are the DECLARATION's, so the list
+//! is generated from the enum's own signature; nothing re-lists them.
+//!
+//! The receiver is the enum's TYPE NAME (`Family.all()`), reached
+//! through `type_receiver` (features/impls/callee.av), which looks the
+//! row up by the enum's VALUE shape so a built-in or grammar type name
+//! cannot reach it. A value of the same enum reaches the row too, and
+//! answers the same list — one rule, two spellings of the receiver.
+use core.{Reg, Type, TypeId, TypeRegistry}
+use features.{LowerCx, MethodCall, TypeCx}
+
+/// `E.all` — `List<E>`, every variant in declaration order.
+export fn check_enum_all(cx: TypeCx, mc: MethodCall) -> TypeId {
+    let elem? = enum_all_element(cx.view.types, cx.type_at(mc.subject)) else { return cx.error_type }
+    cx.type(List<elem>)
+}
+
+/// The enum a receiver names: a TYPE NAME's value shape, or a value's
+/// own. Absent for anything else — the row's `takes` already excluded
+/// a non-enum, so the absence is a defect, never a refusal.
+fn enum_all_element(types: TypeRegistry, recv: TypeId) -> TypeId? {
+    match types.shape_of(recv) {
+        .TypeName(decl, tname) -> types.intern(Type.Enum(decl, tname)),
+        .Enum(_, _) or .App(_, _, _) -> recv,
+        rest -> null,
+    }
+}
+
+/// The list itself: one payload-free value per variant, packed by the
+/// answer's own element type.
+export fn lower_enum_all(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let elem: TypeId = cx.view.types.element(cx.type_at(mc.e)) ?? cx.type_at(mc.subject)
+    let sig? = cx.variants_of(elem) else { return cx.lower_defect(mc.e, "an `all` without an enum survived typing") }
+    let shape = cx.view.types.shape_of(elem)
+    let regs = [cx.tagged_value(shape, j, []) for j in 0..sig.names.length]
+    cx.grown_box(cx.shape_at(mc.e), cx.box_size(regs.length), regs)
+}
