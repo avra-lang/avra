@@ -4,7 +4,7 @@
 //! inside every walk before it, a keep guards every clause after it, a
 //! map replaces the element in hand; past the last clause the element
 //! reaches the sink. A comprehension is a pipeline whose sink pushes.
-use core.{ExprId, DeclId, Reg, TypeId, Ins}
+use core.{ExprId, DeclId, Reg, TypeId, Ins, Type, BinOp}
 
 /// A head's source: a list, or the range `source..hi`. `index` binds
 /// the position before the element; a `lookup` is read in the
@@ -43,6 +43,9 @@ export enum Sink {
     FindIndex(ret: TypeId, cell: Reg, pred: FnBox)
     Contains(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
     IndexOf(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
+    Count(ret: TypeId, cell: Reg)
+    Sum(ret: TypeId, cell: Reg)
+    MinMax(ret: TypeId, has: Reg, best: Reg, less: bool)
 }
 
 export type Pipeline = { clauses: List<Clause>, sink: Sink }
@@ -155,7 +158,30 @@ impl LowerCx {
                         cx.store_hit(cell, t.at!)
                     }
             },
+            .Count(_, cell) -> self.accumulate(cell, self.const_int(1)),
+            .Sum(_, cell) -> self.accumulate(cell, t.value!),
+            .MinMax(_, has, best, less) -> {
+                let value = t.value!
+                let held = self.loaded_as(self.type(int), best)
+                let op: BinOp = if less { BinOp.Lt } else { BinOp.Gt }
+                let beats = self.bin(Type.Bool, op, value, held)
+                let have = self.loaded_as(self.type(bool), has)
+                let better = self
+                    .region_as(have, self.type(bool)) { _cx -> beats } else { cx -> cx.const_bool(true) }
+                self
+                    .void_region(better) { cx ->
+                        cx.emit(Ins.Store(has, cx.const_bool(true)))
+                        cx.emit(Ins.Store(best, value))
+                    }
+            },
         }
+    }
+
+    /// One more into an accumulator cell — `count` adds one, `sum` adds
+    /// the element; the walk runs whole, nothing ends early.
+    mut fn accumulate(cell: Reg, v: Reg) {
+        let next = self.bin(Type.Int, BinOp.Add, self.loaded_as(self.type(int), cell), v)
+        self.emit(Ins.Store(cell, next))
     }
 
     /// The predicate asked about this element — one CallPtr per turn.
@@ -172,7 +198,11 @@ impl LowerCx {
     mut fn sink_answer(s: Sink) -> Reg {
         match s {
             .Push(dst) -> dst,
-            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindIndex(ret, cell, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _) -> self.loaded_as(ret, cell),
+            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindIndex(ret, cell, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
+            .MinMax(ret, has, best, _) -> self
+                .region_as(self.loaded_as(self.type(bool), has), ret) { cx ->
+                    cx.adopted(ret, false, cx.loaded_as(self.type(int), best))
+                } else { cx -> cx.absent_of(ret) },
         }
     }
 

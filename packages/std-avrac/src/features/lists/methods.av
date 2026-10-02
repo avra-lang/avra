@@ -94,6 +94,48 @@ export fn check_index_of(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     int_type(cx)
 }
 
+/// `xs.count()` — how many elements reach it, no list minted.
+export fn check_count(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if elem_held(cx, mc, "count") == null || !cx.seated(mc, "count", []) { return cx.error_type }
+    cx.type(int)
+}
+
+/// `xs.sum()` — the int elements added; a non-int element is refused
+/// in `sum`'s own words.
+export fn check_sum(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let elem: TypeId? = elem_held(cx, mc, "sum")
+    if elem == null || !cx.seated(mc, "sum", []) { return cx.error_type }
+    if !(cx.view.types.seen_shape(elem!) is .Int) { return ints_only(cx, mc.e, elem!, "sum") }
+    cx.type(int)
+}
+
+/// `xs.min()` / `xs.max()` — the extreme of the int elements, absent
+/// when nothing arrived.
+export fn check_min(mut cx: TypeCx, mc: MethodCall) -> TypeId { extremes(cx, mc, "min") }
+export fn check_max(mut cx: TypeCx, mc: MethodCall) -> TypeId { extremes(cx, mc, "max") }
+
+fn extremes(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
+    let elem: TypeId? = elem_held(cx, mc, name)
+    if elem == null || !cx.seated(mc, name, []) { return cx.error_type }
+    if !(cx.view.types.seen_shape(elem!) is .Int) { return ints_only(cx, mc.e, elem!, name) }
+    cx.type(int?)
+}
+
+/// A verb that adds or ranks numbers, refused on a list of something
+/// else in its own words.
+fn ints_only(mut cx: TypeCx, e: ExprId, elem: TypeId, name: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.list_element",
+                cx.loc_of(e),
+                "`${name}` needs numbers, and this list holds `${cx.view.types.name_of(elem)}`",
+                "${name} here",
+                "map to `int` first",
+            ),
+        )
+}
+
 /// A scan's element: held, and tested by value — the `==` law.
 fn scanned(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
     let elem: TypeId? = elem_held(cx, mc, name)
