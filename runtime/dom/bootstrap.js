@@ -146,7 +146,10 @@ export async function instantiate(url, host) {
 // reader (`avra_bytes_len`, an exported row) — never a second copy of the
 // header layout that could drift from runtime/avra_box.h.
 export function frameOf(memory, ptr, lenOf) {
-  const len = lenOf(ptr);
-  if (len < 0) throw new Error("avra_dom_frame: the length reader answered a negative length");
+  // `avra_bytes_len` answers i64 on wasm, so read it as a BigInt.
+  const len = Number(lenOf(ptr));
+  if (!Number.isFinite(len) || len < 0) {
+    throw new Error(`avra_dom_frame: the length reader answered ${len}`);
+  }
   return new Uint8Array(memory.buffer, ptr, len);
 }

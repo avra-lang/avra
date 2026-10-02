@@ -45,6 +45,10 @@ export function wasiPreview1(memory, exit) {
       return 0;
     },
     random_get(buf, len) { crypto.getRandomValues(bytes().subarray(buf, buf + len)); return 0; },
+    // The preopen scan: EBADF (8) is how libc learns there are no preopens.
+    // A browser program has no filesystem, so it opens nothing.
+    fd_prestat_get() { return 8; },
+    fd_prestat_dir_name() { return 8; },
     sched_yield() { return 0; },
     proc_exit(code) { exit(code); },
   };
