@@ -8,14 +8,45 @@ use env.{Env}
 export type Tui = { lines: Cell<List<string>> = Cell.new([]) }
 
 /// The one line a primitive draws for itself; a container draws none.
+/// How a primitive draws its line: its content, bracketed, a checkbox,
+/// a rule, or nothing. DATA, keyed by the primitive.
+export enum LineForm { Content, Bracketed, Checkbox, Rule, Blank }
+
+export type LineRow = { prim: Prim, form: LineForm }
+
+const line_rows: List<LineRow> = table<LineRow> {
+    prim      | form
+    .Text     | LineForm.Content
+    .Heading  | LineForm.Content
+    .Link     | LineForm.Content
+    .Image    | LineForm.Content
+    .Field    | LineForm.Content
+    .Slider   | LineForm.Content
+    .Icon     | LineForm.Content
+    .Button   | LineForm.Bracketed
+    .Checkbox | LineForm.Checkbox
+    .Switch   | LineForm.Checkbox
+    .Progress | LineForm.Content
+    .Alert    | LineForm.Content
+    .Spinner  | LineForm.Content
+    .Divider  | LineForm.Rule
+    .Row      | LineForm.Blank
+    .Column   | LineForm.Blank
+    .Dialog   | LineForm.Blank
+    .Surface  | LineForm.Blank
+    .List     | LineForm.Blank
+    .Item     | LineForm.Blank
+    .Card     | LineForm.Blank
+    .Form     | LineForm.Blank
+}
+
 fn line_of(p: Prim, attrs: List<Attribute>) -> string {
-    match p {
-        .Text or .Heading or .Link or .Image or .Field or .Slider -> content_of(attrs),
-        .Button -> "[${content_of(attrs)}]",
-        .Checkbox or .Switch -> "[ ] ${content_of(attrs)}",
-        .Progress or .Alert or .Spinner or .Icon -> content_of(attrs),
-        .Divider -> "----",
-        .Row or .Column or .Dialog or .Surface or .List or .Item or .Card or .Form -> "",
+    match line_rows.find(it.prim == p)?.form ?? LineForm.Blank {
+        .Content -> content_of(attrs),
+        .Bracketed -> "[${content_of(attrs)}]",
+        .Checkbox -> "[ ] ${content_of(attrs)}",
+        .Rule -> "----",
+        .Blank -> "",
     }
 }
 
