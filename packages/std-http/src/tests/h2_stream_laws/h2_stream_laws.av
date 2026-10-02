@@ -15,8 +15,8 @@ use @std.http.http.{Request, Unrouted, Response, Stream, Pulled, Upgrade, text, 
 use @std.http.server.{served, timing}
 use @std.http.wire.{Transport, plainly}
 use @std.http.h2.{Frame, end_stream, frame_bytes, u32_at, u32_bytes, value_named}
-use @std.http.hpack.{HeaderField}
-use @std.http.h2_client_drive.{H2Client, h2_conversing, h2_fields, h2_request}
+use @std.http.hpack.{HeaderField, header_field}
+use @std.http.h2_client_drive.{H2Client, h2_conversing, h2_request}
 
 /// What the application counts: the producers released, and what the
 /// last upload's handler read.
@@ -111,6 +111,17 @@ fn read_until(mut p: Peer, done: fn(List<Frame>) -> bool) -> List<Frame> {
 /// An answer head's status, as the driver decoded it.
 fn head_status(fields: List<HeaderField>) -> string { value_named(fields, ":status".bytes())?.text() ?? "?" }
 
+/// A streaming upload's head: POST with a declared length, no ending.
+fn upload_head(path: string, length: int) -> List<HeaderField> {
+    [
+        header_field(":method", "POST"),
+        header_field(":scheme", "http"),
+        header_field(":path", path),
+        header_field(":authority", "a"),
+        header_field("content-length", "${length}"),
+    ]
+}
+
 fn ended(fs: List<Frame>, id: int) -> bool { fs.any(it.stream == id && (it.kind is .Reset || it.flags & end_stream != 0)) }
 
 /// Stream `id`'s outcome: `status body`, `reset <code> after <n> DATA`,
@@ -134,7 +145,7 @@ fn answered(p: Peer, id: int, body: Bytes) -> string {
 fn behind_a_body(port: int) -> Result<string, NetError> {
     mut p = opened(port)?
     defer { let _ = p.c.close() }
-    let one = driven(p.cl.begin(h2_fields("POST", "http", "a", "/upload", [], 10), false))?
+    let one = driven(p.cl.begin(upload_head("/upload", 10), false))?
     p.c.write(frame_bytes(.Data, 0, one, "01234".bytes()))?
     sleep(ms(50))
     let three = driven(p.cl.ask(h2_request("GET", "http", "a", "/", [], no_bytes)))?
@@ -173,7 +184,7 @@ fn one(port: int, path: string, method: string) -> Result<string, NetError> {
 fn ignored_upload(port: int) -> Result<string, NetError> {
     mut p = opened(port)?
     defer { let _ = p.c.close() }
-    let one = driven(p.cl.begin(h2_fields("POST", "http", "a", "/ignore", [], 65535), false))?
+    let one = driven(p.cl.begin(upload_head("/ignore", 65535), false))?
     p.c.write(frame_bytes(.Data, 0, one, ["z" for _i in 0..16384].join("").bytes()))?
     let _ = read_until(p, (fs) -> ended(fs, one) && fs.any(it.stream == one && it.kind is .Reset))
     let three = driven(p.cl.ask(h2_request("GET", "http", "a", "/", [], no_bytes)))?
@@ -186,7 +197,7 @@ fn ignored_upload(port: int) -> Result<string, NetError> {
 fn reset_upload(port: int) -> Result<string, NetError> {
     mut p = opened(port)?
     defer { let _ = p.c.close() }
-    let one = driven(p.cl.begin(h2_fields("POST", "http", "a", "/upload", [], 10), false))?
+    let one = driven(p.cl.begin(upload_head("/upload", 10), false))?
     p.c.write(frame_bytes(.Data, 0, one, "01234".bytes()))?
     sleep(ms(50))
     p.c.write(frame_bytes(.Reset, 0, one, u32_bytes(8)))?
