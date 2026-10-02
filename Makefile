@@ -241,6 +241,10 @@ wasm-runtime: $(WASM_RUNTIME_LIB)
 wasm-check:
 	sh tools/wasm-check.sh
 
+# THE HOST SEAM: the avra:rt import and the avra_event export, inspected.
+wasm-seam:
+	sh tools/wasm-seam-check.sh
+
 # Every package that carries tests, in dependency order — DERIVED from
 # the manifests (tools/suites.py), never listed: a hand-kept list is a
 # registry that forgets its next member, and the gate would report
@@ -248,7 +252,7 @@ wasm-check:
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-check
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-check wasm-seam
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.

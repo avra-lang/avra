@@ -937,6 +937,25 @@ void avra_llvm_set_module_target(LLVMModuleRef m, const char* triple) {
     LLVMDisposeTargetMachine(tm);
 }
 
+// A HOST IMPORT: a declared function with no body, brought in from a named
+// wasm module under a named symbol. The browser host implements `avra:rt`
+// beside WASI's own imports.
+void avra_llvm_set_import(LLVMValueRef fn, const char* module, const char* name) {
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
+    LLVMAttributeRef m = LLVMCreateStringAttribute(ctx, "wasm-import-module", 18, module, (unsigned)strlen(module));
+    LLVMAttributeRef n = LLVMCreateStringAttribute(ctx, "wasm-import-name", 16, name, (unsigned)strlen(name));
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, m);
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, n);
+}
+
+// AN EXPORT: the function keeps its mangled LLVM symbol and the wasm module
+// exports it under the name the program wrote.
+void avra_llvm_set_export(LLVMValueRef fn, const char* name) {
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
+    LLVMAttributeRef e = LLVMCreateStringAttribute(ctx, "wasm-export-name", 16, name, (unsigned)strlen(name));
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, e);
+}
+
 // THE HOT LEAVES, INLINABLE (runtime/avra_hot.h): the bitcode this
 // compiler carries is linked into a module before its passes, every
 // KEPT definition AVAILABLE EXTERNALLY — the optimizer may inline it and
