@@ -40,18 +40,27 @@ build=${AVRA_SP_BUILD:-$here/sprite-build.sh}
 # The pool: awake Sprites first, and a sleeping one only while the org's
 # cap of running Sprites (AVRA_SP_MAX_RUNNING, default 10) has room, since
 # waking one past it fails.
+#
+# AVRA_SP_EXCLUDE names Sprites no run may claim. `web-terminal` and
+# `avra-bench` are not build hosts; `avra-unions-p2` carries a PERSISTENT
+# disk fault — `sprite file push` opens /home/sprite/.avra-provision.sh with
+# "input/output error" (shell writes to it succeed; the file push path does
+# not, even after a remove), so every run pays three failed provisioning
+# retries before moving on. Its ssh probe still passes, which is why the
+# liveness check alone does not drop it.
 pool() {
     if [ -n "${AVRA_SPRITES:-}" ]; then echo "$AVRA_SPRITES"; return 0; fi
     timeout -k 1 15 sprite api /sprites 2>/dev/null | python3 -c '
 import json, sys
 cap = int(sys.argv[1])
+skip = set(sys.argv[2].split())
 rows = json.load(sys.stdin)["data"]
 up = [r["name"] for r in rows if r["status"] == "running"]
-mine = lambda n: n not in ("web-terminal", "avra-bench")
+mine = lambda n: n not in skip
 names = [n for n in up if mine(n)]
 if len(up) < cap:
     names += [r["name"] for r in rows if r["status"] != "running" and mine(r["name"])]
-print(" ".join(names))' "${AVRA_SP_MAX_RUNNING:-10}"
+print(" ".join(names))' "${AVRA_SP_MAX_RUNNING:-10}" "${AVRA_SP_EXCLUDE:-web-terminal avra-bench avra-unions-p2}"
 }
 
 # A Sprite that failed its liveness probe within the last dead_s seconds.
