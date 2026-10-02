@@ -1,0 +1,91 @@
+// Payload-binding `is` under attack: binding is an `if` condition's
+// privilege, so every other home refuses BY NAME; the binding itself
+// keeps every pattern law (arity, unknown variant, non-enum subject,
+// one name bound once), and a binder is a fresh immutable shadow, not
+// a retype of the outer name.
+use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.compiler.{avra}
+use @std.avrac.diagnostics.{new_source_file}
+
+spec "features/if_expr — a payload `is` binds only under an `if`" {
+    given "the refusal, rendered whole" {
+        then "the named voice, its bracket and its help" {
+            let expected = """error[type.is_bind]: a payload `is` binds only in an `if` condition
+  ╭─[app.av:6:5]
+6 │     s is .A(r)
+  ·     ┬
+  ·     ╰── this `is`
+──╯
+help: write the `match`, or test the variant bare and extract under it — `if a is .V(r) { … }`"""
+            let lang = avra()
+            let src = "enum S {\n    A(int)\n    B\n}\nfn f(s: S) -> bool {\n    s is .A(r)\n}\nf(S.B)"
+            lang.check(new_source_file("app.av", src)) == expected
+        }
+    }
+    given "every other home refuses by name" {
+        then "a fn tail (a general expression)" {
+            refused_with(
+                "enum S {\n    A(int)\n    B\n}\nfn f(s: S) -> bool {\n    s is .A(r)\n}\nf(S.B)",
+                "a payload `is` binds only in an `if` condition",
+            )
+        }
+        then "a `while` condition" {
+            refused_with(
+                "enum S {\n    A(int)\n    B\n}\nfn f(s: S) -> int {\n    while s is .A(r) { return 1 }\n    0\n}\nf(S.B)",
+                "a payload `is` binds only in an `if` condition",
+            )
+        }
+        then "an operand of `&&`" {
+            refused_with(
+                "enum S {\n    A(int)\n    B\n}\nfn f(s: S) -> int {\n    if s is .A(r) && true { 1 } else { 0 }\n}\nf(S.B)",
+                "a payload `is` binds only in an `if` condition",
+            )
+        }
+        then "a `when` arm" {
+            refused_with(
+                "enum S {\n    A(int)\n    B\n}\nfn f(s: S) -> int {\n    when { s is .A(r) -> 1, _ -> 0 }\n}\nf(S.B)",
+                "a payload `is` binds only in an `if` condition",
+            )
+        }
+    }
+    given "the binding keeps every pattern law" {
+        then "the wrong payload count" {
+            refused_with(
+                "enum S {\n    A(int, int)\n    B\n}\nfn f(s: S) -> int {\n    if s is .A(r) { 1 } else { 0 }\n}\nf(S.B)",
+                "`.A` carries 2, the pattern names 1",
+            )
+        }
+        then "an unknown variant" {
+            refused_with(
+                "enum S {\n    A(int)\n    B\n}\nfn f(s: S) -> int {\n    if s is .Nope(r) { 1 } else { 0 }\n}\nf(S.B)",
+                "`S` has no variant `Nope`",
+            )
+        }
+        then "a non-enum subject" {
+            refused_with(
+                "fn f(n: int) -> int {\n    if n is .A(r) { 1 } else { 0 }\n}\nf(1)",
+                "`match` chooses over an enum, found `int`",
+            )
+        }
+        then "a name bound twice in one pattern" {
+            refused_with(
+                "enum S {\n    A(int, int)\n    B\n}\nfn f(s: S) -> int {\n    if s is .A(w, w) { 1 } else { 0 }\n}\nf(S.B)",
+                "this pattern binds `w` twice",
+            )
+        }
+    }
+    given "the binding is fresh and scoped" {
+        then "a binder shadows an outer name, then-branch alone" {
+            shown(
+                "enum S {\n    A(int)\n    B\n}\nfn f(s: S, r: int) -> int {\n    if s is .A(r) { r } else { r }\n}\n\"" +
+                    "\${f(S.A(9), 100)} \${f(S.B, 100)}\"",
+            ) == "9 100"
+        }
+        then "the binder does not leak past its arm" {
+            refused_with(
+                "enum S {\n    A(int)\n    B\n}\nfn f(s: S) -> int {\n    if s is .A(r) { r } else { r }\n}\nf(S.B)",
+                "`r` is not defined",
+            )
+        }
+    }
+}

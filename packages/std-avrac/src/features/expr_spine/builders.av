@@ -3,6 +3,8 @@ use core.{
     Expr,
     ExprId,
     BinOp,
+    Pat,
+    PatId,
     want,
     op_symbol,
     all_binops,
@@ -16,6 +18,7 @@ use features.{
     LangNode,
     Builder,
     token_at,
+    pat_ids_at,
     zip_defect,
     aligned_binds,
     between,
@@ -116,11 +119,39 @@ fn build_bitnot(b: Builder) -> Result<LangNode, string> {
 fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
     let asked: Token? = token_at(b.args, 3)
-    if asked != null { return b.make_expr(Expr.Is(l, Plain(asked!.text))) }
+    if asked != null { return asked_expr(b, l, asked!, pat_ids_at(b.args, 4)) }
     let op_tok? = token_at(b.args, 1) else { return b.wrap_expr(l) }
     let r = b.expr(2)?
     let op = want(binop_of(op_tok.text), "a comparison operator")?
     b.make_expr(Expr.Binary(op, l, r))
+}
+
+/// One seat of a payload `is` — a bare name or `_`, spelled here so a
+/// partial assembly of the spine parses the form without enums. The
+/// spellings a match's payload gives special meaning keep it here too,
+/// so `is .V(rest)` and `match .V(rest)` mean one thing.
+fn build_asked_bind(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    if n.text == "rest" { return b.make_pat(Pat.Rest) }
+    if n.text == "null" { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.NullLit, b.span))) }
+    b.make_pat(Pat.Bind(Scoped(n.text)))
+}
+
+fn build_asked_wild(b: Builder) -> Result<LangNode, string> {
+    b.make_pat(Pat.Wild)
+}
+
+/// `l is .V` — the tag test — and, when a payload list is written,
+/// the variant PATTERN that list names, kept beside the node. The
+/// `if` that means to bind reads the pattern and desugars to a match;
+/// a payload `is` anywhere else has enums name it and refuse.
+fn asked_expr(b: Builder, l: ExprId, asked: Token, payload: List<PatId>) -> Result<LangNode, string> {
+    let id = b.expr_node(Expr.Is(l, Plain(asked.text)))
+    if !payload.is_empty() {
+        let pat = b.store.alloc_pat(Pat.Variant(Plain(asked.text), payload), b.span)
+        b.store.mark_is_payload(id, pat, true)
+    }
+    b.wrap_expr(id)
 }
 
 fn build_not(b: Builder) -> Result<LangNode, string> {
