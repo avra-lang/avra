@@ -1,0 +1,66 @@
+//! `@attribute(.X)` overrides the naming convention on a component field,
+//! and the `View` derive refuses a field that projects to nothing and a
+//! control nothing names. UI.md §6, charter §10. The GRAMMAR that records
+//! a component field's mark is proved in std-avrac's marks suite.
+use @std.meta.{Type, Field, Mark}
+use @std.ui.realize.view.{attr_of, derive_problems}
+
+fn field_of(name: string, marks: List<Mark>) -> Field {
+    Field { name: name, ty: "string", at: null, marks: marks }
+}
+
+fn marked(variant: string) -> List<Mark> {
+    [Mark { name: "attribute", args: [variant], at: null }]
+}
+
+fn component_of(name: string, fields: List<Field>) -> Type {
+    Type { name: name, fields: fields, variants: [], at: null }
+}
+
+fn messages(t: Type, prim: string) -> string {
+    ["${d.message} — ${d.help ?? ""}" for d in derive_problems(t, prim)].join(" | ")
+}
+
+spec "std/ui — @attribute overrides the convention" {
+    given "a field whose name maps to one attribute" {
+        then "an explicit `@attribute` mark wins over the convention" {
+            attr_of(field_of("content", marked("Label"))) ?? "" == "Label"
+        }
+        then "the convention answers when no mark is present" {
+            attr_of(field_of("content", [])) ?? "" == "Text"
+        }
+        then "a field with neither projects to nothing" {
+            attr_of(field_of("caption", [])) ?? "none" == "none"
+        }
+    }
+}
+
+spec "std/ui — the View derive's refusals" {
+    given "a field that projects to nothing" {
+        then "is refused, naming the field" {
+            messages(component_of("widget", [field_of("caption", [])]), "Text")
+                .contains("`caption` projects to no attribute")
+        }
+        then "is admitted once an `@attribute` mark names its attribute" {
+            messages(component_of("widget", [field_of("caption", marked("Label"))]), "Text") == ""
+        }
+    }
+    given "a control whose meaning is its name" {
+        then "is refused when nothing names it, naming the field to add" {
+            messages(component_of("widget", [field_of("value", [])]), "Button")
+                .contains("add a `label: string` field")
+        }
+        then "is admitted when a field names it" {
+            messages(component_of("widget", [field_of("label", [])]), "Button") == ""
+        }
+    }
+    given "an `@attribute` naming no attribute" {
+        then "is refused" {
+            messages(component_of("widget", [field_of("x", marked("Bogus"))]), "Text")
+                .contains("names no attribute")
+        }
+    }
+    given "a component with no primitive" {
+        then "is refused" { messages(component_of("widget", []), "").contains("declares no primitive") }
+    }
+}
