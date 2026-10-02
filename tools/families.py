@@ -7,77 +7,58 @@ that number. So the enum's declared order is a contract, not a
 layout choice — the same law as "A NODE VARIANT IS APPENDED, NEVER
 INSERTED" (CLAUDE.md), one ordinal space over.
 
-`family_gap_voice` (compiler/workspace.av) catches a variant that was
-ADDED without extending `family_at`/`family_count` — a MISSING
-registration. It does NOT catch one that was MOVED: insert a variant
-mid-enum and every later ordinal shifts, while `family_at` and
-`ordinal` are hand matches that move together and stay consistent
-with each other. The runtime self-check therefore passes, and only
-records written under the OLD ordinals read the wrong family.
+THE MECHANISM MOVED TO THE COLLECT (.148): `Family` is a `collect
+enum` over the `@family(rank, …)` markers, so a MISSING variant or a
+rank gap is refused by the compiler itself (`dense` demands exactly
+0..N, and every match over `Family` must spell the new variant). This
+keeper still holds the order against `tools/families.order`: the
+markers' RANK order must be that list plus appends at the end, so a
+rank EDIT that shifts every later ordinal is refused before it
+compiles — the move the old hand matches stayed consistent with, and
+only kept-cache records noticed.
 
 This keeper holds the order against `tools/families.order`: the live
 enum must be exactly that list, plus appends at the end. An inserted,
 moved, removed or renamed variant breaks the prefix and is refused
 BEFORE it compiles.
 
-THE SEAM FOR .148: when `Family` becomes a derived `@query` enum,
-`live_family_order` reads the derived order instead — one function
-body, and every check below is unchanged.
+THE LIVE ORDER IS THE MARKERS' RANKS. `Family` is a `collect enum`
+over the `@family(rank, …)` markers in compiler/families/families.av
+(.148 landed); the collect orders by each marker's rank, so sorting
+the markers by rank IS the enum's order.
 """
 import os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WORKSPACE = "packages/std-avrac/src/compiler/workspace.av"
+FAMILIES = "packages/std-avrac/src/compiler/families/families.av"
 ORDER_FILE = "tools/families.order"
 
 def read(path):
     return open(os.path.join(ROOT, path)).read()
 
 
-def enum_variants(text, name):
-    """A `enum <name> { … }` block's variant names, in declared order.
+MARKER = re.compile(
+    r'@family\(\s*(\d+)\s*,\s*"[^"]*"\s*,\s*"[^"]*"\s*\)\s*\n\s*type\s+([A-Za-z_][A-Za-z0-9_]*)'
+)
 
-    Comment content is dropped before reading, so a `}` inside a doc
-    line cannot end the block early. A variant is the leading
-    `UpperCamel` word of a line, so a payload variant keeps its
-    position. Answers None when the enum is absent — a reader that
-    found nothing must say so, never pass vacuously.
+
+def marker_order(text):
+    """The `@family(rank, …)` markers' names, in RANK order.
+
+    `Family` is the collect over these markers by `it.mark.args[0]`,
+    so sorting the markers by their rank IS the collected enum's
+    order. Answers None when no marker is found — a reader that
+    examined nothing must say so, never pass vacuously.
     """
-    m = re.search(rf"\benum\s+{re.escape(name)}\s*\{{", text)
-    if not m:
+    found = [(int(rank), name) for rank, name in MARKER.findall(text)]
+    if not found:
         return None
-    depth = 1
-    body = []
-    i = m.end()
-    while i < len(text) and depth > 0:
-        if text[i] == "/" and i + 1 < len(text) and text[i + 1] == "/":
-            j = text.find("\n", i)
-            i = len(text) if j < 0 else j
-            continue
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                break
-        body.append(text[i])
-        i += 1
-    out = []
-    for line in "".join(body).split("\n"):
-        vm = re.match(r"\s*([A-Z][A-Za-z0-9_]*)", line)
-        if vm:
-            out.append(vm.group(1))
-    return out
+    return [name for _, name in sorted(found)]
 
 
 def live_family_order():
-    """The live `Family` order — THE ONE SEAM .148 moves.
-
-    Today the enum is hand-written in workspace.av. Once .148 derives
-    `Family` as a `@query` enum, read that declaration's order here
-    instead; `check` and `main` need no change.
-    """
-    return enum_variants(read(WORKSPACE), "Family")
+    """The live `Family` order — the markers' rank order."""
+    return marker_order(read(FAMILIES))
 
 
 def committed_order():
@@ -111,16 +92,20 @@ def check(committed, live):
 
 # ── Fixtures: what the reader REFUSES and what it ACCEPTS ──
 
-ENUM_CASE = """enum Family {
-    Alpha
-    /// a doc line with a } brace
-    Beta
-    Gamma
-}"""
+MARKER_CASE = """@family(2, "FileId", "Parsed")
+type Parsed = {}
+
+/// a doc line with a } brace
+@family(0, "FileId", "SourceFile")
+type Source = {}
+
+@family(1, "int", "Manifest")
+type Manifest = {}
+"""
 
 PARSE_CASES = [
-    (ENUM_CASE, ["Alpha", "Beta", "Gamma"]),
-    ("enum Other {\n    X\n}", None),               # absent enum -> None
+    (MARKER_CASE, ["Source", "Manifest", "Parsed"]),
+    ("type Other = {}\n", None),               # no marker -> None
 ]
 
 # (committed, live, refused?) — both surfaces of the same rule.
@@ -135,7 +120,7 @@ CHECK_CASES = [
 
 def selftest():
     for text, want in PARSE_CASES:
-        got = enum_variants(text, "Family")
+        got = marker_order(text)
         if got != want:
             sys.exit(f"families: parse self-test failed: {got!r} != {want!r}")
     for committed, live, refused in CHECK_CASES:
@@ -149,8 +134,7 @@ def main():
     selftest()
     live = live_family_order()
     if live is None:
-        print(f"families: no `enum Family` in {WORKSPACE} — the reader examined nothing. "
-              f"If .148 moved it to a derived @query enum, point live_family_order at that.")
+        print(f"families: no `@family` marker in {FAMILIES} — the reader examined nothing.")
         return 1
     committed = committed_order()
     if not committed:

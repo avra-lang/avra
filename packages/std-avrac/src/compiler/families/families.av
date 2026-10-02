@@ -1,19 +1,16 @@
 //! The kernel's families as declarations. Each is a PRIVATE marker in
 //! this module (so its name never collides with a same-named type
 //! elsewhere in the compiler), carrying its RANK — the real ordinal
-//! `Family` (compiler/workspace.av) declares it at — and the key and
-//! answer it names.
+//! `Family` declares it at — and the key and answer it names.
 //!
-//! `FamilyProbe` is the proof: this module's own markers ARE the family
-//! set, all 28 of them, minted as variants. The hand-written `Family`
-//! enum stays AUTHORITATIVE until .12.4 flips it to this collect; this
-//! file changes no behaviour.
+//! `Family` IS this collect: the markers are its variant set, minted in
+//! rank order, so a family is APPENDED (it takes the next rank) and the
+//! earlier ordinals do not move. The collect stands in the SAME FILE as
+//! the markers, so they are registered by the time it is declared.
 //!
-//! ORDER: the collect orders by the RANK each declaration carries
-//! (`by it.mark.args[0] dense`), so the members are APPEND-STABLE —
-//! a new family takes the next rank and the earlier ordinals do not
-//! move. `dense` demands the ranks are exactly 0..27, so a gap
-//! refuses.
+//! ORDER: `by it.mark.args[0] dense` — the rank each declaration
+//! carries. `dense` demands the ranks are exactly 0..N with no gap, so
+//! a forgotten family refuses at compile time.
 use compiler.families.family_derive.{family}
 
 /// The Source family — an INPUT: the driver sets a file's own bytes.
@@ -128,4 +125,14 @@ type Names = {}
 @family(27, "DeclId", "List<Diag>")
 type Marks = {}
 
-export collect enum FamilyProbe = @family in self by it.mark.args[0] dense
+/// A file's rows standing: one constant hash, so a reader that reads
+/// them through their buckets is ordered after the admission.
+@family(28, "FileId", "Unit")
+type Admitted = {}
+
+/// Every declaration filed under one name, keyed by its bucket in
+/// `Decl`'s name index.
+@family(29, "int", "Unit")
+type Named = {}
+
+export collect enum Family = @family in self by it.mark.args[0] dense
