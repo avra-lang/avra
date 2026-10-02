@@ -4,25 +4,26 @@
 //! stable for a stable shape, so a re-render needs no keys yet.
 use realize.render.{Node}
 use realize.html.tags.{tag_of}
+use realize.lists.{union}
 
 /// A value with the three separators escaped, so an op is one line.
 fn esc(s: string) -> string {
     s.replace("%", "%25").replace(" ", "%20").replace("\n", "%0a")
 }
 
-/// The ops for one node and its subtree, at `path`.
-fn ops_of(n: Node, path: string, mut out: List<string>) {
-    out = out.concat(["C ${path} ${tag_of(n).text()}"])
-    let k = n.box.key ?? ""
-    if k != "" { out = out.concat(["K ${path} ${esc(k)}"]) }
+/// This node's own ops: its element, its key, its words.
+fn own_ops(n: Node, path: string) -> List<string> {
+    let key = n.box.key ?? ""
+    let key_ops: List<string> = if key == "" { [] } else { ["K ${path} ${esc(key)}"] }
     let words = n.words()
-    if words != "" { out = out.concat(["T ${path} ${esc(words)}"]) }
-    for i, c in n.children { ops_of(c, "${path}/${i}", out) }
+    let word_ops: List<string> = if words == "" { [] } else { ["T ${path} ${esc(words)}"] }
+    ["C ${path} ${tag_of(n).text()}"].concat(key_ops).concat(word_ops)
+}
+
+/// The ops for one node and its subtree — this node's, then each child's.
+fn ops_of(n: Node, path: string) -> List<string> {
+    own_ops(n, path).concat(union([ops_of(c, "${path}/${i}") for i, c in n.children]))
 }
 
 /// The whole tree as one frame.
-export fn frame(root: Node) -> string {
-    mut out: List<string> = []
-    ops_of(root, "0", out)
-    out.join("\n")
-}
+export fn frame(root: Node) -> string { ops_of(root, "0").join("\n") }
