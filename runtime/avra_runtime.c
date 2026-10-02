@@ -894,10 +894,15 @@ void avra_trap(const char* msg) {
    NUL, so a line holding one was printed truncated with nothing said —
    and the seam's trap does not govern this seat, because writing bytes
    RESOLVES nothing and a correct answer exists: write all of them.
-   Making it correct is what lets its row be marked `inert` honestly. */
+   Making it correct is what lets its row be marked `inert` honestly.
+   THE LINE IS ON ITS STREAM WHEN THIS RETURNS: stdout is fully
+   buffered when it is not a terminal, so a live run flush is what
+   lets a server's line be heard and what keeps a trap from taking
+   the lines before it along. */
 static void put_line(const char* s) {
     if (s) fwrite(s, 1, str_len(s), stdout);
     fputc('\n', stdout);
+    fflush(stdout);
 }
 
 void avra_puts(const char* s) {
@@ -3450,6 +3455,7 @@ void avra_eputs(const char* s) {
     fflush(stdout);
     if (s) fwrite(s, 1, str_len(s), stderr);
     fputc('\n', stderr);
+    fflush(stderr);
 }
 
 // A DEBUG LINE, only under AVRA_DEBUG — the compiler's own instrument.
