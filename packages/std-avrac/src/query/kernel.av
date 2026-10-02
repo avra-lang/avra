@@ -133,6 +133,10 @@ export type Kernel = {
     /// repeat read is one indexed compare and never retains a
     /// `QueryCell`; a row grows only when stamped.
     stamps: Cell<List<Cell<List<int>>>>,
+    /// Each family's GRAIN — whether its queries read rows whole — and the innermost
+    /// open query's, kept apart so a hot read asks one cell.
+    whole_families: Cell<List<bool>>,
+    whole: Cell<bool>,
     audit: Audit,
 }
 
@@ -159,6 +163,8 @@ export fn new_kernel() -> Kernel {
         misses: Cell.new(0),
         readers: list_cell(),
         stamps: list_cell(),
+        whole_families: list_cell(),
+        whole: Cell.new(false),
         audit: Audit {
             on: Cell.new(false),
             width: Cell.new(1),
@@ -332,6 +338,18 @@ impl Kernel {
         self.replace(s)
     }
 
+    /// An input set again before any reader read it: no reader can have seen the
+    /// value it replaces, so no revision moves. Once read, it keeps what its readers
+    /// saw, and a later change is `set_input`'s.
+    fn input_unread(key: Key, value_hash: int) {
+        let stamps = self.stamp_row(key.family).get()
+        if key.arg < stamps.length && stamps[key.arg] != 0 { return }
+        mut s = self.snapshot()
+        if state_cell(s, key)?.value_hash == value_hash { return }
+        write_cell(s, key, input_cell(state_revision(s), value_hash))
+        self.replace(s)
+    }
+
     fn ask(key: Key) -> Verdict {
         self.record_dep(key)
         let seen = self.snapshot()
@@ -422,7 +440,25 @@ impl Kernel {
         s.began.push(s.rev)
         self.replace(s)
         self.readers.push(s.next_reader)
+        self.whole.set(self.family_whole(key.family))
     }
+
+    /// Whether `family`'s queries read rows whole.
+    fn family_whole(family: int) -> bool {
+        family >= 0 &&
+            family < self.whole_families.get().length &&
+            self.whole_families.get()[family]
+    }
+
+    /// Queries of `family` read rows WHOLE: a reader offered a fine edge and a
+    /// coarse one records the coarse one inside them.
+    fn reads_whole(family: int) {
+        while self.whole_families.get().length <= family { self.whole_families.push(false) }
+        self.whole_families.set_at(family, true)
+    }
+
+    /// Whether the innermost open query reads rows whole.
+    fn reading_whole() -> bool { self.whole.get() }
 
     fn settle(key: Key, value_hash: int) {
         mut s = self.snapshot()
@@ -485,6 +521,7 @@ impl Kernel {
         mut open_readers = self.readers.get()
         let _ = open_readers.pop()
         self.readers.set(open_readers)
+        self.whole.set(self.family_whole(s.open.last()?.family ?? 0 - 1))
         if restored != null { for r in restored!.get() { self.stamped(r.key, r.previous) } }
         deps
     }
@@ -521,11 +558,24 @@ impl Kernel {
     /// apart.
     fn record_dep(key: Key) {
         let reader? = self.readers.get().last() else { return }
-        let row = self.stamp_row(key.family)
-        let stamps = row.get()
-        let stamp = if key.arg >= 0 && key.arg < stamps.length { stamps[key.arg] } else { 0 }
+        let stamp = self.stamp_of(key.family, key.arg)
         if stamp == reader { return }
         self.newly_read(key, stamp, reader)
+    }
+
+    /// `record_dep` over a key's two parts, the key minted only for a new read — a
+    /// repeat allocates nothing.
+    fn record_at(family: int, arg: int) {
+        let reader? = self.readers.get().last() else { return }
+        let stamp = self.stamp_of(family, arg)
+        if stamp == reader { return }
+        self.newly_read(Key { family: family, arg: arg }, stamp, reader)
+    }
+
+    /// The reader that last recorded a key, 0 for none.
+    fn stamp_of(family: int, arg: int) -> int {
+        let stamps = self.stamp_row(family).get()
+        if arg >= 0 && arg < stamps.length { stamps[arg] } else { 0 }
     }
 
     /// Records `key` as a dep of the innermost open query. When the

@@ -52,11 +52,12 @@ use core.{
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck}
 use @std.relation.db.{Db, new_db, Hooks as RelHooks, quiet_hooks}
-use @std.relation.rows.{Rows, bool_key, SideRows, side_rows}
+use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
 use core.{
     Fingerprint,
     Exemplar,
     fp,
+    fp_list,
     list_cell,
     map_cell,
     same_type,
@@ -327,6 +328,18 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
     }
 }
 
+/// What a reader can tell of a declaration past its row's columns — `Decl.told`:
+/// its facts with every position nulled, and its home's path.
+fn told_of(f: DeclFacts, path: string) -> int {
+    fp_list(
+        [
+            (f with { span: null, annotations: [a with { span: null } for a in f.annotations] })
+                .fingerprint(),
+            fp_str(path),
+        ],
+    )
+}
+
 /// The type names a fn's own `mut` parameters write, from its parse.
 fn mut_seat_names(store: SyntaxArena, s: StmtId) -> List<string> {
     [pp.ty!.name for pp in store.fn_parts(s)?.params ?? [] if pp.promises.mutable && pp.ty != null]
@@ -440,9 +453,10 @@ export type Decls = {
     /// arms hears each read that skipped the Kernel, while `auditing` is on.
     auditing: Cell<bool>,
     audit_hook: Cell<fn(Bypassed) -> void>,
-    /// A DECLARATION ROW'S READS RECORD AT ITS FILE'S GRAIN: reading a declaration of a
-    /// file settled below records that file's `Items` cell (a held file's module
-    /// record) in the open query — once per query, by the Kernel's own stamp.
+    /// A DECLARATION ROW'S READ RECORDS ITS NAME'S BUCKET: reading a declaration of a
+    /// file settled below records the `Named` cell its name files under (a held file's
+    /// module record) in the open query — once per query, by the Kernel's own stamp. A
+    /// walk of one file's rows records the file's `Items` cell instead.
     /// `rows_state` is dense by FileId: 0 while the file's rows are being minted (the
     /// minter's own reads record nothing), 1 settled, 2 held. The kernel is the
     /// workspace's own, fixed at construction: never a `Cell`, so no callee can
@@ -479,6 +493,15 @@ export type Decls = {
     decl_cells: Cell<List<Decl?>>,
     record_items: Cell<int>,
     record_methods: Cell<int>,
+    record_names: Cell<int>,
+    /// Whether the workspace armed the recording: the rows minted before it — the
+    /// language's own — are filed under their cells when it does.
+    recording: Cell<bool>,
+    /// Each declaration's bucket in the name index, dense by DeclId — what a
+    /// re-filing or a removal moves.
+    name_buckets: Cell<List<int>>,
+    /// The name each name bucket files, dense by bucket — its `Named` cell's label.
+    cell_names: Cell<List<string>>,
     rows_state: Cell<List<int>>,
     held_rows: Cell<fn(FileId) -> void>,
     /// The revision each armed relation cell last moved at, by family.
@@ -734,6 +757,10 @@ export fn new_decls() -> Decls {
         decl_cells: Decl.rows_in(db).rows,
         record_items: Cell.new(0),
         record_methods: Cell.new(0),
+        record_names: Cell.new(0),
+        recording: Cell.new(false),
+        name_buckets: list_cell(),
+        cell_names: list_cell(),
         rows_state: list_cell(),
         held_rows: Cell.new(no_store),
         move_stamps: map_cell(),
@@ -849,7 +876,7 @@ impl Decls {
     fn decl(d: DeclId) -> Decl {
         let x = self.decl_cells.get()[d.index] ?? self.removed(d)
         if audit_build && self.auditing.get() { self.audited(Bypassed.Decl(d)) }
-        self.rows_read(x.file)
+        self.row_read(x)
         x
     }
 
@@ -886,13 +913,17 @@ impl Decls {
     /// The row's `@local` columns (file, stmt, parent, root, lo, hi)
     /// carry no stable hash or index, so a write that only moves them
     /// takes `put`'s cheap path — same hash, same keys, the stored value
-    /// replaced in place.
+    /// replaced in place. The row carries the bucket its name files under,
+    /// and that bucket's cell follows the write.
     @bracket("decls")
-    fn set_decl(idx: int, d: Decl) {
+    fn set_decl(idx: int, row: Decl) {
         let rs = self.decl_row_rows.get()
         let db = self.decl_rows.get()
+        let b = self.name_bucket(row.name)
+        let d = if row.bucket == b { row } else { row with { bucket: b } }
         let home? = d.home else {
             rs.put_in(db, Decl.relation_name(), idx, d, d.stable_hash(), d.index_keys())
+            self.filed_by_name(idx, d.name, b)
             return
         }
         rs
@@ -905,6 +936,27 @@ impl Decls {
                 d.index_keys(),
                 self.file_owners.get()[home.index],
             )
+        self.filed_by_name(idx, d.name, b)
+    }
+
+    /// The bucket a name files under in the name index, opened when it is the first.
+    @bracket("decls")
+    fn name_bucket(name: string) -> int {
+        let rs = self.decl_row_rows.get()
+        let found = rs.bucket_of_text(name_index, name)
+        if found >= 0 { found } else { rs.opened_bucket(name_index, text_key(name)) }
+    }
+
+    /// Row `idx` filed under bucket `b`: that bucket's cell, and the one it left, follow.
+    fn filed_by_name(idx: int, name: string, b: int) {
+        while self.name_buckets.get().length <= idx { self.name_buckets.push(0 - 1) }
+        let was = self.name_buckets.get()[idx]
+        if was != b {
+            self.name_buckets.set_at(idx, b)
+            self.room_for_cell(b, name)
+            if was >= 0 { self.bucket_moved(was) }
+        }
+        self.bucket_moved(b)
     }
 
     /// One audited read, told to the hook — which reads the tables itself, so the
@@ -921,14 +973,78 @@ impl Decls {
         self.auditing.set(true)
     }
 
-    /// A read of a row of file `f` records what the row is a function of in the open
+    /// A read of one row records what the row is a function of in the open query: its
+    /// name's bucket when its file's rows are settled — its file's, inside a query that
+    /// reads rows whole — its module's record when the file is held, nothing while the
+    /// rows are being minted.
+    fn row_read(x: Decl) {
+        if x.standing == 1 {
+            if self.record_kernel.reading_whole() {
+                self.record_kernel.record_at(self.record_items.get(), x.file.index)
+            } else {
+                self.record_kernel.record_at(self.record_names.get(), x.bucket)
+            }
+        } else if x.standing == 2 {
+            (self.held_rows.get())(x.file)
+        }
+    }
+
+    /// Name bucket `b`'s cell kept at the bucket's hash until a reader reads it — from
+    /// then on it holds what its readers saw, and a later write is the verifier's to find.
+    @bracket("decls")
+    fn bucket_moved(b: int) {
+        if !self.recording.get() { return }
+        self
+            .record_kernel
+            .input_unread(self.name_key_at(b), self.decl_row_rows.get().bucket_hash(b))
+    }
+
+    /// The `Named` key of a bucket.
+    fn name_key_at(b: int) -> Key { Key { family: self.record_names.get(), arg: b } }
+
+    /// The `Named` key of `d`'s bucket.
+    fn name_key(d: DeclId) -> Key { self.name_key_at(self.name_buckets.get()[d.index]) }
+
+    /// Every declaration of a name, in id order, its bucket recorded as read — opened
+    /// when nothing files there yet, so a declaration of that name arriving later moves
+    /// what this read saw.
+    @bracket("decls")
+    fn named(name: string) -> List<Decl> {
+        let b = self.name_bucket(name)
+        if b >= self.cell_names.get().length { self.room_for_cell(b, name) }
+        self.bucket_moved(b)
+        self.record_kernel.record_at(self.record_names.get(), b)
+        self.decl_row_rows.get().members(b)
+    }
+
+    /// Room for name bucket `b`'s label in the dense table.
+    fn room_for_cell(b: int, name: string) {
+        while self.cell_names.get().length <= b { self.cell_names.push("") }
+        self.cell_names.set_at(b, name)
+    }
+
+    /// A name bucket's cell against the bucket as it stands now: its hash moves the
+    /// cell, and every reader of it re-runs.
+    @bracket("decls")
+    fn named_now(b: int) {
+        self.record_kernel.set_input(self.name_key_at(b), self.decl_row_rows.get().bucket_hash(b))
+    }
+
+    /// How many name buckets stand, emptied ones among them.
+    @bracket("decls")
+    fn name_bucket_count() -> int { self.decl_row_rows.get().buckets.get().length }
+
+    /// The name a bucket files.
+    fn cell_name(b: int) -> string { self.cell_names.get()[b] }
+
+    /// A walk of file `f`'s rows records what they are a function of in the open
     /// query: the file's `Items` cell when its rows are settled, its module's record
     /// when the file is held, nothing while the rows are being minted.
     fn rows_read(f: FileId) {
         let state = self.rows_state.get()
         if f.index >= state.length { return }
         if state[f.index] == 1 {
-            self.record_kernel.record_dep(Key { family: self.record_items.get(), arg: f.index })
+            self.record_kernel.record_at(self.record_items.get(), f.index)
         } else if state[f.index] == 2 {
             (self.held_rows.get())(f)
         }
@@ -936,9 +1052,12 @@ impl Decls {
 
     /// The workspace arms the recording once: the family a file's rows settle under,
     /// and what a held file's rows read instead.
-    fn arm_recording(items: int, methods: int, held: fn(FileId) -> void) {
+    fn arm_recording(items: int, methods: int, names: int, held: fn(FileId) -> void) {
         self.record_items.set(items)
         self.record_methods.set(methods)
+        self.record_names.set(names)
+        self.recording.set(true)
+        for b in 0..self.name_bucket_count() { self.bucket_moved(b) }
         self.held_rows.set(held)
         self.decl_rows.get().armed(kernel_hooks(self.record_kernel, self.move_stamps))
     }
@@ -947,6 +1066,22 @@ impl Decls {
     fn note_rows(f: FileId, state: int) {
         while self.rows_state.get().length <= f.index { self.rows_state.push(0) }
         self.rows_state.set_at(f.index, state)
+        for d in self.decls_so_far(f) { self.restood(d, state) }
+    }
+
+    /// Where a home's rows stand now — 0 for no home, and for a file no admission
+    /// reached.
+    fn home_stand(home: FileId?) -> int {
+        let f? = home else { return 0 }
+        let state = self.rows_state.get()
+        if f.index < state.length { state[f.index] } else { 0 }
+    }
+
+    /// A row's own copy of where its file's rows stand, rewritten when it moved.
+    @bracket("decls")
+    fn restood(d: DeclId, state: int) {
+        let x = self.raw_decl(d)
+        if x.standing != state { self.decl_row_rows.get().reseat(d.index, x with { standing: state }) }
     }
 
     /// Every file of a module, once its held rows are minted.
@@ -2136,10 +2271,7 @@ impl Decls {
     /// A file's `//!` header when it has a real store, null for a held
     /// file (its record carries no file-level doc) or an out-of-range
     /// one (a declaration minted with no file behind it at all).
-    fn file_doc_of(f: FileId) -> List<string>? {
-        if f.index >= self.stores.get().length { return null }
-        self.stores.get()[f.index]?.file_doc()
-    }
+    fn file_doc_of(f: FileId) -> List<string>? { self.admitted_store(f)?.file_doc() }
 
     /// THE ONE READING DOOR for a declaration's `@name(args)` annotations, in
     /// written order — the fact `avra docs`, the formatter's `Code` and
@@ -2476,7 +2608,7 @@ impl Decls {
     @bracket("methods")
     fn methods_of(target: DeclId) -> List<DeclId> {
         if audit_build && self.auditing.get() { self.audited(Bypassed.Methods(target)) }
-        self.record_kernel.record_dep(Key { family: self.record_methods.get(), arg: target.index })
+        self.record_kernel.record_at(self.record_methods.get(), target.index)
         self.registered_methods(target)
     }
 
