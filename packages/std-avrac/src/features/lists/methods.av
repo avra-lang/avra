@@ -43,6 +43,18 @@ fn limited(mut cx: TypeCx, mc: MethodCall, name: string, stage: PipeStage) -> Ty
     cx.type_at(mc.subject)
 }
 
+/// `xs.take_while(p)` / `xs.drop_while(p)` — the receiver's own type;
+/// the predicate is judged by `filter`'s own seat law.
+export fn check_take_while(mut cx: TypeCx, mc: MethodCall) -> TypeId { while_seat(cx, mc, "take_while", .TakeWhile) }
+export fn check_drop_while(mut cx: TypeCx, mc: MethodCall) -> TypeId { while_seat(cx, mc, "drop_while", .DropWhile) }
+
+fn while_seat(mut cx: TypeCx, mc: MethodCall, name: string, stage: PipeStage) -> TypeId {
+    let seat: WalkSeat? = predicate_seat(cx, mc, name)
+    if seat == null { return cx.error_type }
+    cx.facts.mark_stage(mc.e, stage)
+    cx.type_at(mc.subject)
+}
+
 /// `xs.find(p)` — the element, nullable.
 export fn check_find(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let seat? = predicate_seat(cx, mc, "find") else { return cx.error_type }

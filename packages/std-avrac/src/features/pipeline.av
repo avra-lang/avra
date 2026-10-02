@@ -32,6 +32,8 @@ export enum Clause {
     Map(s: Step)
     Take(count: Reg, n: Reg)
     Drop(count: Reg, n: Reg)
+    TakeWhile(pred: FnBox)
+    DropWhile(pred: FnBox, started: Reg)
 }
 
 /// Where each element that passes every clause goes: a pushed list, or
@@ -87,6 +89,24 @@ impl LowerCx {
                 self.count_past(count, seen)
                 let past = self.bin(Type.Bool, BinOp.Ge, seen, n)
                 self.void_region(past) { cx -> cx.staged(p, at + 1, t) }
+            },
+            .TakeWhile(pred) -> {
+                let ok = self.pred_call(pred, t)
+                self.void_region(ok) { cx -> cx.staged(p, at + 1, t) }
+                self.void_region(self.un(ok)) { cx -> cx.walk_done() }
+            },
+            .DropWhile(pred, started) -> {
+                let began = self.loaded_as(self.type(bool), started)
+                self.void_region(began) { cx -> cx.staged(p, at + 1, t) }
+                self
+                    .void_region(self.un(began)) { cx ->
+                        let ok = cx.pred_call(pred, t)
+                        cx
+                            .void_region(cx.un(ok)) { c2 ->
+                                c2.emit(Ins.Store(started, c2.const_bool(true)))
+                                c2.staged(p, at + 1, t)
+                            }
+                    }
             },
         }
     }
