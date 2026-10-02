@@ -1,0 +1,51 @@
+//! `avra run` STREAMS: a printed line is on stdout the moment it is
+//! printed, not when the program ends. A program that prints, sleeps,
+//! then prints again is the witness — a run whose stdout is only
+//! flushed at exit shows the first line after the child has exited,
+//! and this test reads it while the child still runs.
+use @std.io.{env, make_dirs, write_text}
+use @std.process.{tool, cmd, Ready, ProcessError}
+use @std.time.{secs}
+
+fn stream_bin() -> string { "${env("PWD") ?? "."}/avra" }
+
+/// A package of its own under scratch, so the fixture may `use` the
+/// clock; a lone file under `build/` is in no package and refuses.
+fn stream_fixture(name: string) -> string {
+    let dir = "${env("PWD") ?? "."}/build/scratch/${name}"
+    let _ = make_dirs("${dir}/src")
+    let _ = write_text(
+        "${dir}/avra.toml",
+        "[package]\nname        = \"${name}\"\nversion     = \"0.1.0\"\n\n[bin]\nname = \"${name}\"\npath = \"src/main.av\"\n",
+    )
+    let path = "${dir}/src/main.av"
+    let _ = write_text(
+        path,
+        "use @std.time.{sleep, ms}\nprintln(\"STREAM-FIRST\")\nsleep(ms(4000))\nprintln(\"STREAM-SECOND\")\n",
+    )
+    path
+}
+
+/// Whether the first line reached a pipe reader while the program was
+/// still running. A refused start — the line never came — is false.
+fn streamed(name: string) -> bool {
+    match stream_child(name) { .Ok(alive) -> alive, .Err(_) -> false }
+}
+
+fn stream_child(name: string) -> Result<bool, ProcessError> {
+    let c = cmd(tool(stream_bin())?, ["run", stream_fixture(name)])
+    mut child = c.start(Ready.Line("STREAM-FIRST"), secs(20))?
+    // A run that buffers its stdout delivers the line only at exit, so
+    // a settled pump answers done. A streaming run is still asleep.
+    let ended = child.pump(200)
+    let _ = child.stop()
+    .Ok(!ended)
+}
+
+spec "avra run streams a line as it is printed" {
+    given "a program that prints, waits, then prints again" {
+        then "the first line reaches a pipe reader while the child is still alive" {
+            streamed("run_stream")
+        }
+    }
+}
