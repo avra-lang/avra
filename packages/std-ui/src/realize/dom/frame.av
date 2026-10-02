@@ -12,7 +12,7 @@
 //!   op 6  S       css(len+bytes) — the stylesheet, sent ONCE
 //!   op 0  N       nothing changed
 //! Every int is four little-endian bytes.
-use realize.render.{Node, EventKind, Event}
+use realize.render.{Node, EventKind, Action}
 use realize.html.tags.{tag_of}
 use realize.html.css.{CssRule, distinct_rules, class_names, stylesheet}
 use realize.dom.buf.{Buf, buf}
@@ -136,15 +136,18 @@ export fn frame_text(root: Node) -> string { "V3\n${walk_text(root, "0").join("\
 /// The event at pre-order `id` for `kind`. The walk is the SAME one the
 /// frame made, so an app needs no registry: the host echoes the id and kind
 /// the frame gave it, and the program finds the NAME the tree asked for.
-export fn event_at(root: Node, id: int, kind: int) -> Event? {
+export fn event_at(root: Node, id: int, kind: int) -> Action? {
     let at = Cell.new(0)
     seek(root, id, kind, at)
 }
 
-fn seek(n: Node, want: int, kind: int, at: Cell<int>) -> Event? {
+fn seek(n: Node, want: int, kind: int, at: Cell<int>) -> Action? {
     let here = at.get()
     at.set(here + 1)
-    if here == want { return n.events.find(kind_code(it.kind) == kind) }
+    if here == want {
+        let asked = n.events.find(kind_code(it.kind) == kind)
+        return asked
+    }
     for c in n.children {
         let hit = seek(c, want, kind, at)
         if hit != null { return hit }
