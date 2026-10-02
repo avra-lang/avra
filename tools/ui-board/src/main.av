@@ -1,0 +1,34 @@
+//! M1 — the board, as a wasm app. `main` paints once; every event repaints
+//! only what changed. The host applies each frame to the live tree.
+//!
+//! The frame row is a HOST import (`avra:rt.avra_dom_frame`), and its seat
+//! is a `Bytes` — the pointer names its box, so the glue reads the length
+//! from the header and there is no (ptr,len) pair to keep in step.
+use @std.meta.{derive}
+use @std.ui.components.{heading, item, button}
+use @std.ui.realize.dom.frame.{live}
+use @std.ui.realize.prim.{prim}
+use @std.ui.realize.view.{View}
+use @std.ui.style.box.{Box}
+
+extern fn avra_dom_frame(frame: Bytes)
+
+@derive(View)
+@prim(.Surface)
+component board {
+    ..Box
+    show: Cell<string> = Cell.new("all")
+    items: List<dyn View> = []
+}
+
+/// State is a PLACE, so the app is an identity its handlers can write.
+const app = board { items: [heading "Tasks" { rank: 1 }, item { button "Add" }] }
+
+/// The last frame sent — an unchanged paint costs two bytes.
+const painted = live()
+
+fn paint() { avra_dom_frame(painted.diff(app.describe())) }
+
+fn main() { paint() }
+
+main()
