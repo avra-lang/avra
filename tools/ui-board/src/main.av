@@ -14,45 +14,45 @@ use @std.ui.style.theme.{default_theme}
 
 extern fn avra_dom_frame(frame: Bytes)
 
+/// The screen's own place, spread into the board: a `state` field holds a
+/// Cell, so a read answers the value and a write lands in the one slot.
+type BoardState = {
+    state show: string = "all",
+}
+
 @derive(View)
 @prim(.Surface)
 component board {
     ..Box
-    show: Cell<string> = Cell.new("all")
+    ..BoardState
     on_click: string = ""
     items: List<dyn View> = []
 }
 
-/// THE STATE the screen is a function of. A `Cell` is an identity, so a
-/// handler writes it in place and every copy reads the same place — and a
-/// `once fn` is how a process-wide identity is minted, since a `const` is
-/// static data and a Cell is not.
-once fn filter() -> Cell<string> { Cell.new("all") }
+/// THE STATE the screen is a function of: module `state` is one place every
+/// reader shares, read by name and assigned in place.
+state filter: string = "all"
 
 /// The last frame sent — an unchanged paint costs two bytes.
 once fn painted() -> Live { live() }
 
 /// The app's behaviour is CODE, dispatched by the name the tree asked for —
 /// a value slot never holds a fn, so an action is data (its name) plus a
-/// `when` here.
+/// `when` here. `on_click`/`run_action` stay string-keyed until avra-xubk.8
+/// makes them one typed Msg with an exhaustive update.
 fn run_action(name: string) {
     if name == "toggle" { toggle() }
 }
 
-fn toggle() {
-    when {
-        filter().get() == "all" -> filter().set("done")
-        _ -> filter().set("all")
-    }
-}
+fn toggle() { filter = if filter == "all" { "done" } else { "all" } }
 
 /// The screen: state in, tree out. Called again on every event, so its ids
 /// are the ids the host was last told.
 fn view() -> board {
     board {
-        show: filter(),
+        show: filter,
         on_click: "toggle",
-        items: [heading "Tasks — ${filter().get()}" { rank: 1 }, item { button "Toggle" }],
+        items: [heading "Tasks — ${filter}" { rank: 1 }, item { button "Toggle" }],
     }
 }
 
