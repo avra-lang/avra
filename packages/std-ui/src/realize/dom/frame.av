@@ -98,16 +98,22 @@ export type Live = { last: Cell<Bytes>, styled: Cell<bool> }
 export fn live() -> Live { Live { last: Cell.new("".bytes()), styled: Cell.new(false) } }
 
 impl Live {
-    /// `root`'s frame, or `no_change()` when it is the frame last sent. The
-    /// FIRST frame carries the stylesheet, so a page styles itself from the
-    /// program's own classes.
+    /// `root`'s frame, or `no_change()` when the tree is the one last sent.
+    /// The FIRST frame carries the stylesheet, so a page styles itself from
+    /// the program's own classes; every later frame is the tree alone.
+    ///
+    /// The remembered value is ALWAYS the bare tree, never the styled frame:
+    /// remembering the styled one would make every later comparison fail (the
+    /// stylesheet is not in them) and `no_change` could never fire.
     fn diff(root: Node, theme: Theme) -> Bytes {
-        let first = !self.styled.get()
-        let next = if first { styled_frame(root, theme) } else { frame(root) }
-        if !first && next == self.last.get() { return no_change() }
-        self.last.set(next)
-        self.styled.set(true)
-        next
+        let plain = frame(root)
+        if self.styled.get() && plain == self.last.get() { return no_change() }
+        self.last.set(plain)
+        if !self.styled.get() {
+            self.styled.set(true)
+            return styled_frame(root, theme)
+        }
+        plain
     }
 }
 
