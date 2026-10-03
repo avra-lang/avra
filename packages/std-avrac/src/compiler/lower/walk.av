@@ -5,7 +5,7 @@
 //! printed answer.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, Deferral, DirectCall, semantics_of, stmt_semantics_of}
+use features.{LowerCx, Deferred, Deferral, DirectCall, ProviderReg, semantics_of, stmt_semantics_of}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -175,7 +175,8 @@ impl LowerCx {
     /// Statements in order, each through its own StmtSemantics — the
     /// ONE statement loop, top level and blocks alike. The driver
     /// owns slots and the running last register.
-    mut fn lower_stmts(stmts: List<StmtId>) {
+    mut fn lower_stmts(stmts: List<StmtId>, value: ExprId? = null) -> Reg? {
+        let base = self.providers.length
         for s in stmts {
             let got: Reg? = stmt_semantics_of(self.dispatch, self.view.store.stmt(s))
                 .lower_stmt(self, s)
@@ -185,7 +186,25 @@ impl LowerCx {
             let r: Reg? = if boxes { self.boxed_seed(s, got!) } else { got }
             if r != null && self.body.slot_of(s) == null { self.body.set_slot(s, r!) }
             self.owns_tasks(s, r)
+            self.open_provider(s, r)
         }
+        // A BLOCK'S VALUE IS INSIDE ITS PROVIDER SCOPE: a tail `ambient`
+        // reads a sibling `provide` of the same block.
+        let got = if value == null { null } else { self.reg_of(value!) }
+        self.providers = self.providers.slice(0, base)
+        got
+    }
+
+    /// A `provide` statement's value enters the open list, for the rest
+    /// of its statement list — the mirror of typing's, closed by
+    /// `lower_stmts`.
+    mut fn open_provider(s: StmtId, r: Reg?) {
+        if !self.view.store.is_provide_stmt(s) { return }
+        let v? = self.view.store.stmt_value(s) else { return }
+        let held? = self.body.slot_of(s) ?? r else { return }
+        self
+            .providers
+            .push(ProviderReg { ty: self.facts.declared_binding(s) ?? self.type_at(v), reg: held })
     }
 
     /// A `collect`'s body lowered into `into`, the list its kept
@@ -305,8 +324,8 @@ impl LowerCx {
         // (the printer keeps its braces) and the IR owes it no scope.
         if stmts.is_empty() && value != null { return self.reg_of(value!) }
         self.scope_enter()
-        self.lower_stmts(stmts)
-        let r = if value == null { self.hollow_of(ty) } else { self.reg_of(value!) }
+        let vreg = self.lower_stmts(stmts, value)
+        let r = if value == null { self.hollow_of(ty) } else { vreg! }
         self.scope_exit(r)
         r
     }
