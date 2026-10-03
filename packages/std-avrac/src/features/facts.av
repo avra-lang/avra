@@ -168,7 +168,7 @@ export type Cap = { names: List<string>, sources: List<Binding> }
 /// FOREIGN reader's, one edge on `(Names, d)` — `d`'s range and the
 /// namespace, cut off per declaration. Once held, a field read
 /// (`.binding(e)`) is one load and records nothing.
-export type NameFacts = { bindings: SideTable<Binding?>, captures: SideTable<Cap?>, mut_reads: SideTable<bool>, settled_reads: SideTable<bool>, names: Namespace, voices: Voices }
+export type NameFacts = { bindings: SideTable<Binding?>, captures: SideTable<Cap?>, mut_reads: SideTable<bool>, state_reads: SideTable<bool>, settled_reads: SideTable<bool>, names: Namespace, voices: Voices }
 
 /// Born total over the file's expressions: nothing bound, nothing
 /// captured, no seat read yet.
@@ -177,6 +177,7 @@ export fn new_name_facts(exprs: int, names: Namespace) -> NameFacts {
         bindings: side_table<Binding?>("bindings", 0, exprs, null),
         captures: side_table<Cap?>("captures", 0, exprs, null),
         mut_reads: side_table("mut_reads", 0, exprs, false),
+        state_reads: side_table("state_reads", 0, exprs, false),
         settled_reads: side_table("settled_reads", 0, exprs, false),
         names: names,
         voices: no_voices(),
@@ -192,6 +193,14 @@ impl NameFacts {
 
     fn mark_mut_read(e: ExprId) {
         self.mut_reads.set(e.index, true)
+    }
+
+    /// Whether this parameter read names a `state` seat — a place the
+    /// whole-assignment law exempts, marked the way `mut` is.
+    fn reads_state_seat(e: ExprId) -> bool { self.state_reads.get(e.index) }
+
+    fn mark_state_read(e: ExprId) {
+        self.state_reads.set(e.index, true)
     }
 
     /// Whether this parameter read names a `const` (settled) seat —
