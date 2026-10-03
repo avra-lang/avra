@@ -1146,7 +1146,8 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
         if (default_triple) LLVMDisposeMessage(default_triple);
         return 1;
     }
-    LLVMCodeGenOptLevel cg = level <= 0 ? LLVMCodeGenLevelNone : level == 1 ? LLVMCodeGenLevelLess
+    LLVMCodeGenOptLevel cg = level < 0 ? LLVMCodeGenLevelDefault : level == 0 ? LLVMCodeGenLevelNone
+                           : level == 1 ? LLVMCodeGenLevelLess
                            : level == 2 ? LLVMCodeGenLevelDefault : LLVMCodeGenLevelAggressive;
     LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), "", cg, LLVMRelocPIC, LLVMCodeModelDefault);
     LLVMSetTarget(m, triple);
@@ -1161,7 +1162,8 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
         // ordinary calls into the runtime library instead.
         if (!off_host) hot_linked(m);
         char passes[32];
-        snprintf(passes, sizeof(passes), "default<O%d>", level > 3 ? 3 : (int)level);
+        if (level < 0) snprintf(passes, sizeof(passes), "default<Oz>");
+        else snprintf(passes, sizeof(passes), "default<O%d>", level > 3 ? 3 : (int)level);
         LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
         // Structural duplicates (a pointer-shaped generic's instantiations)
         // fold into thunks. Sound while no fn is `unnamed_addr`: the pass
