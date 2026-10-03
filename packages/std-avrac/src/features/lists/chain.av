@@ -98,6 +98,22 @@ export fn extreme_chain(mut cx: LowerCx, mc: MethodCall, less: bool) -> Reg {
         )
 }
 
+/// `xs.min_by(k)` / `xs.max_by(k)` — the int element whose key is the
+/// extreme, absent when nothing arrived.
+export fn keyed_extreme_chain(mut cx: LowerCx, mc: MethodCall, less: bool) -> Reg {
+    let ret = cx.type(int?)
+    let has = bool_cell(cx, false)
+    let best = cx.seeded_cell(cx.type(int), cx.const_int(0))
+    let key = cx.seeded_cell(cx.type(int), cx.const_int(0))
+    cx
+        .piped(
+            Pipeline {
+                clauses: subject_clauses(cx, mc.subject),
+                sink: .MinBy(ret, has, best, key, box_of(cx, mc.args.first()!), cx.type(int), less),
+            },
+        )
+}
+
 /// The clauses a terminal runs over its receiver — the receiver lowered
 /// before the terminal's fn is boxed, so a receiver's effect runs first.
 fn subject_clauses(mut cx: LowerCx, subject: ExprId) -> List<Clause> {
