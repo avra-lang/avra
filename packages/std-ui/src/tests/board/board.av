@@ -1,15 +1,23 @@
 // proves: the board is a COMPONENT whose state is a `state` field (a record
-// spread in), so a read answers the value and a write lands in the one cell;
-// one render emits the live target's op frame, classes included.
+// spread in) and whose action is a TYPED message. The tree carries the
+// message's content-addressed site (never a name), `update` is ONE exhaustive
+// match, and the host echo resolves back through `from_site` — so one
+// differential run covers both the ergonomics and the emitter.
 use @std.meta.{derive}
 use @std.ui.components.{heading, item, button}
-use @std.ui.realize.dom.frame.{frame_text, sheet, live, no_change}
+use @std.ui.realize.dom.frame.{frame_text, sheet, live, no_change, event_at}
 use @std.ui.realize.html.css.{class_names}
+use @std.ui.realize.messages.{Messages}
 use @std.ui.realize.prim.{prim}
 use @std.ui.realize.view.{View}
 use @std.ui.style.box.{Box}
 use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{default_theme}
+
+@derive(Messages)
+enum Msg {
+    Toggle
+}
 
 /// The board's own place, spread into the component: a `state` field holds a
 /// Cell, so a read answers the value and a write lands in the one slot.
@@ -22,12 +30,21 @@ type BoardState = {
 component board {
     ..Box
     ..BoardState
+    on_click: Msg = Msg.Toggle
     items: List<dyn View> = []
 }
 
 const sunk = Style { fill: .SurfaceSunk }
 
-mut b = board { style: sunk, items: [heading "Tasks" { rank: 1 }, item { button "Add" }] }
+fn update(m: Msg) -> string {
+    match m { .Toggle -> "toggled" }
+}
+
+mut b = board {
+    style: sunk,
+    on_click: Msg.Toggle,
+    items: [heading "Tasks" { rank: 1 }, item { button "Add" }],
+}
 b.show = "open"
 println(frame_text(b.describe()))
 println(b.show)
@@ -41,3 +58,11 @@ println("${first_sent.length > 2 && second_sent == no_change()}")
 println(
     "${l.diff(board { items: [heading "Other" { rank: 2 }] }.describe(), default_theme) != no_change()}",
 )
+let ev = b.describe().events.first()
+let site = match ev {
+    a? -> a.site
+    null -> 0
+}
+println("${event_at(b.describe(), site, 1) != null}")
+println("${Msg.from_site(site) != null}")
+println(update(Msg.Toggle))

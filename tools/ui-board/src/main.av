@@ -7,12 +7,21 @@
 use @std.meta.{derive}
 use @std.ui.components.{heading, item, button}
 use @std.ui.realize.dom.frame.{Live, live, event_at}
+use @std.ui.realize.messages.{Messages}
 use @std.ui.realize.prim.{prim}
 use @std.ui.realize.view.{View}
 use @std.ui.style.box.{Box}
 use @std.ui.style.theme.{default_theme}
 
 extern fn avra_dom_frame(frame: Bytes)
+
+/// The app's messages. `@derive(Messages)` mints each one's content-addressed
+/// site, so the tree carries a typed message and `update` is the ONE
+/// exhaustive dispatch.
+@derive(Messages)
+enum Msg {
+    Toggle
+}
 
 /// The screen's own place, spread into the board: a `state` field holds a
 /// Cell, so a read answers the value and a write lands in the one slot.
@@ -25,7 +34,7 @@ type BoardState = {
 component board {
     ..Box
     ..BoardState
-    on_click: string = ""
+    on_click: Msg = Msg.Toggle
     items: List<dyn View> = []
 }
 
@@ -36,12 +45,10 @@ state filter: string = "all"
 /// The last frame sent — an unchanged paint costs two bytes.
 once fn painted() -> Live { live() }
 
-/// The app's behaviour is CODE, dispatched by the name the tree asked for —
-/// a value slot never holds a fn, so an action is data (its name) plus a
-/// `when` here. `on_click`/`run_action` stay string-keyed until avra-xubk.8
-/// makes them one typed Msg with an exhaustive update.
-fn run_action(name: string) {
-    if name == "toggle" { toggle() }
+/// The app's behaviour: ONE match, every message. Adding a `Msg` breaks the
+/// build here, on purpose — the tree can only name a message that dispatches.
+fn update(m: Msg) {
+    match m { .Toggle -> toggle() }
 }
 
 fn toggle() { filter = if filter == "all" { "done" } else { "all" } }
@@ -51,7 +58,7 @@ fn toggle() { filter = if filter == "all" { "done" } else { "all" } }
 fn view() -> board {
     board {
         show: filter,
-        on_click: "toggle",
+        on_click: Msg.Toggle,
         items: [heading "Tasks — ${filter}" { rank: 1 }, item { button "Toggle" }],
     }
 }
@@ -59,11 +66,13 @@ fn view() -> board {
 fn paint() { avra_dom_frame(painted().diff(view().describe(), default_theme)) }
 
 /// The host's call: `site` is the content hash the frame named (never the
-/// id it subscribed along), `what` the kind. The action is found by the
-/// site alone, so a node inserted above moves nothing.
+/// id it subscribed along), `what` the kind. The message is resolved from
+/// the typed enum — the site is the message's identity — and `update`
+/// dispatches it. A node inserted above moves nothing.
 export fn avra_event(site: int, what: int) {
     let e? = event_at(view().describe(), site, what) else { return }
-    run_action(e.name)
+    let m? = Msg.from_site(e.site) else { return }
+    update(m)
     paint()
 }
 

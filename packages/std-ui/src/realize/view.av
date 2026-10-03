@@ -3,7 +3,7 @@
 //! fields and its `@prim`. A derive's template text resolves in THIS file,
 //! so every foreign name it writes is a static `quote`; a generated hole
 //! resolves in the annotated file, so fields are read as `self.<field>`.
-use @std.meta.{Type, Field, Directive, Code, list_of, literal}
+use @std.meta.{Type, Field, Directive, Code, list_of}
 use realize.render.{Node, Prim, Attribute, EventKind, Action}
 use realize.lists.{union}
 use style.box.{Box}
@@ -133,9 +133,9 @@ fn attr_quote(f: Field) -> Code {
 
 // ── actions: what a node does when it speaks ────────────────────
 
-/// The event a component field binds — `on_click: string` names an action,
-/// and the field's name IS the kind. A field that binds no event answers
-/// nothing and projects to nothing else either.
+/// The event a component field binds — `on_click: Msg` carries a typed
+/// message, and the field's name IS the kind. A field that binds no event
+/// answers nothing and projects to nothing else either.
 fn event_kind(name: string) -> EventKind? {
     match name {
         "on_click" -> .Click,
@@ -147,45 +147,25 @@ fn event_kind(name: string) -> EventKind? {
 }
 
 /// ONE arm per `EventKind`, so a new kind lands here beside its variant.
-fn action_quote(t: Type, f: Field, kind: EventKind) -> Code {
+/// The field's value is an app MESSAGE, and the message's own content-
+/// addressed site is what the tree carries.
+fn action_quote(f: Field, kind: EventKind) -> Code {
     match kind {
-        .Click -> quote { Action { kind: EventKind.Click, name: self.${f}, site: ${site_code(t, f)} } },
-        .Input -> quote { Action { kind: EventKind.Input, name: self.${f}, site: ${site_code(t, f)} } },
-        .Change -> quote { Action { kind: EventKind.Change, name: self.${f}, site: ${site_code(t, f)} } },
-        .Submit -> quote { Action { kind: EventKind.Submit, name: self.${f}, site: ${site_code(t, f)} } },
+        .Click -> quote { Action { kind: EventKind.Click, site: self.${f}.site() } },
+        .Input -> quote { Action { kind: EventKind.Input, site: self.${f}.site() } },
+        .Change -> quote { Action { kind: EventKind.Change, site: self.${f}.site() } },
+        .Submit -> quote { Action { kind: EventKind.Submit, site: self.${f}.site() } },
     }
-}
-
-/// The site an event field names, as generated code: the declaration folded
-/// with the action the instance set (a runtime value). The same declaration
-/// and action always hash alike, wherever the node stands in the tree.
-fn site_code(t: Type, f: Field) -> Code {
-    quote { event_site(${literal("${t.module}.${t.name}")}, self.${f}) }
-}
-
-/// A site's identity: a 31-bit content hash of the declaration and the action
-/// it names. Deterministic across runs and renders, so a host echo resolves
-/// the SAME place no matter what moved above it.
-fn event_site(declaration: string, action: string) -> int {
-    let text = "${declaration}#${action}"
-    let bs = text.bytes()
-    mut h = 0 - 3750763034362895579
-    mut i = 0
-    while i < bs.length {
-        h = (h ^ bs.at(i)) * 1099511628211
-        i = i + 1
-    }
-    h & 2147483647
 }
 
 /// The action one field binds: one, or none when it binds no event.
-fn field_actions(t: Type, f: Field) -> List<Code> {
+fn field_actions(f: Field) -> List<Code> {
     let kind? = event_kind(f.name) else { return [] }
-    [action_quote(t, f, kind)]
+    [action_quote(f, kind)]
 }
 
 /// Every action the component binds, in field order.
-fn events_code(t: Type) -> Code { list_of(union([field_actions(t, f) for f in t.fields])) }
+fn events_code(t: Type) -> Code { list_of(union([field_actions(f) for f in t.fields])) }
 
 /// A component's `items` field, drawn by its children's own `describe`.
 fn children_code(t: Type) -> Code {
