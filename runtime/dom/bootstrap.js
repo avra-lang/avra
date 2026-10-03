@@ -4,10 +4,10 @@
 // otherwise it is matched by its ID from the previous frame. Same file for
 // every app.
 //
-// Wire V3: a version byte, then records of little-endian ints with values
+// Wire V4: a version byte, then records of little-endian ints with values
 // carried raw (length-prefixed). Nothing is escaped; see realize/dom/frame.av.
 
-export const FRAME_VERSION = 3;
+export const FRAME_VERSION = 4;
 
 // A frame's records, in frame order. `C` opens a record; `K`/`A`/`T` fill
 // key, class and words. Null means NOTHING CHANGED.
@@ -42,8 +42,9 @@ export function parseFrame(bytes) {
     } else if (op === 5) {
       const id = dv.getInt32(i, true); i += 4;
       const kind = dv.getInt32(i, true); i += 4;
+      const site = dv.getInt32(i, true); i += 4;
       const r = byId.get(id);
-      if (r) { if (!r.events) r.events = []; r.events.push(kind); }
+      if (r) { if (!r.events) r.events = []; r.events.push({ kind, site }); }
     } else if (op === 6) {
       const len = dv.getInt32(i, true); i += 4;
       records.stylesheet = str(i, len); i += len;
@@ -104,17 +105,17 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
       const el = next.get(r.id);
       if (!el) continue;
       const attached = el.__avra_events || (el.__avra_events = new Map());
-      const want = new Set(r.events || []);
+      const want = new Map((r.events || []).map((e) => [e.kind, e.site]));
       for (const [kind, handler] of [...attached]) {
         if (want.has(kind)) continue;
         el.removeEventListener(EVENT_NAME[kind], handler);
         attached.delete(kind);
       }
-      for (const kind of want) {
+      for (const [kind, site] of want) {
         if (attached.has(kind)) continue;
         const name = EVENT_NAME[kind];
         if (!name) continue;
-        const handler = () => send(r.id, kind);
+        const handler = () => send(site, kind);
         el.addEventListener(name, handler);
         attached.set(kind, handler);
       }
@@ -149,10 +150,11 @@ export async function instantiate(source, host) {
   return instance.exports;
 }
 
-// The program's `avra_event(who: int, what: int)` crosses as two i64
-// seats, so the host hands it BigInts. ONE door for both the page and a
-// test harness.
-export function sendEvent(mod, who, what) { mod.avra_event(BigInt(who), BigInt(what)); }
+// The program's `avra_event(site: int, what: int)` crosses as two i64
+// seats, so the host hands it BigInts. `site` is the content hash the frame
+// named, never the node id it subscribed along. ONE door for both the page
+// and a test harness.
+export function sendEvent(mod, site, what) { mod.avra_event(BigInt(site), BigInt(what)); }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length
 // reader (`avra_bytes_len`, an exported row) — never a second copy of the

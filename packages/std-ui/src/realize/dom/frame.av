@@ -5,12 +5,13 @@
 //! same graph as readable lines, the debug projection tests and `explain`
 //! read.
 //!
-//!   byte 0        version 3 — a stale host REFUSES, never misapplies
+//!   byte 0        version 4 — a stale host REFUSES, never misapplies
 //!   op 1  C       id, parent(-1 root), index, tag(len+bytes)
 //!   op 2  K       id, key(len+bytes)      data-key: identity for a reorder
 //!   op 3  A       id, class(len+bytes)
 //!   op 4  T       id, words(len+bytes)
-//!   op 5  E       id, event kind — the host SUBSCRIBES and calls back
+//!   op 5  E       id, event kind, site — the host SUBSCRIBES and echoes the
+//!                 SITE (a content hash), never the id it subscribed along
 //!   op 6  S       css(len+bytes) — the stylesheet, sent ONCE
 //!   op 0  N       nothing changed
 //! Every int is four little-endian bytes.
@@ -23,7 +24,7 @@ use realize.lists.{union}
 use style.theme.{Theme}
 
 /// The wire's version.
-const version = 3
+const version = 4
 
 /// The host's own code for an event kind — the wire's currency, not the
 /// enum's order. ONE arm per kind.
@@ -74,6 +75,7 @@ fn wire_op(op: Op, b: Buf) {
             b.push_byte(5)
             b.push_int(id)
             b.push_int(kind_code(action.kind))
+            b.push_int(action.site)
         },
     }
 }
@@ -160,31 +162,28 @@ export fn frame_text(root: Node) -> string {
             },
         }
     }
-    "V3\n${lines.get().join("\n")}"
+    "V4\n${lines.get().join("\n")}"
 }
 
 // ── dispatch: the host echoes what the frame told it ────────────
 
-/// The event at pre-order `id` for `kind`. The walk is the SAME one the
-/// frame made, so an app needs no registry: the host echoes the id and kind
-/// the frame gave it, and the program finds the NAME the tree asked for.
-export fn event_at(root: Node, id: int, kind: int) -> Action? {
-    let at = Cell.new(0)
-    seek(root, id, kind, at)
+/// The event at content-addressed `site` for `kind`. The host echoes the
+/// site the frame gave it, and the program finds the action the tree asked
+/// for — no ordinal, so a node inserted above moves nothing.
+export fn event_at(root: Node, site: int, kind: int) -> Action? {
+    find_event(plan(root), site, kind)
 }
 
-fn seek(n: Node, want: int, kind: int, at: Cell<int>) -> Action? {
-    let here = at.get()
-    at.set(here + 1)
-    if here == want {
-        let asked = n.events.find(kind_code(it.kind) == kind)
-        return asked
+fn has_event(site: int, kind: int, op: Op) -> bool {
+    match op {
+        .Event(_, action) -> action.site == site && kind_code(action.kind) == kind,
+        .Mount(_) or .Words(_, _) -> false,
     }
-    for c in n.children {
-        let hit = seek(c, want, kind, at)
-        if hit != null { return hit }
-    }
-    null
+}
+
+fn find_event(ops: List<Op>, site: int, kind: int) -> Action? {
+    let found? = ops.find(has_event(site, kind, it)) else { return null }
+    match found { .Event(_, action) -> action, .Mount(_) or .Words(_, _) -> null }
 }
 
 // ── the stylesheet ──────────────────────────────────────────────
