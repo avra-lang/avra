@@ -127,8 +127,9 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
 // Load the module and run it in a page. The host supplies `rt` (its own
 // rows for module `avra:rt`) and `wasi` (preview1). An import NO host row
 // answers REFUSES by name — a missing row must never be a silent no-op.
-export async function instantiate(url, host) {
-  const bytes = await (await fetch(url)).arrayBuffer();
+export async function instantiate(source, host) {
+  // A URL in a page, the bytes themselves in a test or a node harness.
+  const bytes = source instanceof Uint8Array ? source : await (await fetch(source)).arrayBuffer();
   const module = await WebAssembly.compile(bytes);
   const imports = {};
   const unknown = [];
@@ -142,9 +143,16 @@ export async function instantiate(url, host) {
   if (unknown.length > 0) {
     throw new Error(`the module needs host rows this page does not answer: ${unknown.join(", ")}`);
   }
-  const { instance } = await WebAssembly.instantiate(module, imports);
+  // A COMPILED module instantiates to the instance itself; only the bytes
+  // form answers { module, instance }.
+  const instance = await WebAssembly.instantiate(module, imports);
   return instance.exports;
 }
+
+// The program's `avra_event(who: int, what: int)` crosses as two i64
+// seats, so the host hands it BigInts. ONE door for both the page and a
+// test harness.
+export function sendEvent(mod, who, what) { mod.avra_event(BigInt(who), BigInt(what)); }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length
 // reader (`avra_bytes_len`, an exported row) — never a second copy of the

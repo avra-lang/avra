@@ -6,7 +6,7 @@
 //! the header — no (ptr,len) pair to keep in step.
 use @std.meta.{derive}
 use @std.ui.components.{heading, item, button}
-use @std.ui.realize.dom.frame.{live, event_at}
+use @std.ui.realize.dom.frame.{Live, live, event_at}
 use @std.ui.realize.prim.{prim}
 use @std.ui.realize.view.{View}
 use @std.ui.style.box.{Box}
@@ -24,11 +24,13 @@ component board {
 }
 
 /// THE STATE the screen is a function of. A `Cell` is an identity, so a
-/// handler writes it in place and every copy reads the same place.
-const filter = Cell.new("all")
+/// handler writes it in place and every copy reads the same place — and a
+/// `once fn` is how a process-wide identity is minted, since a `const` is
+/// static data and a Cell is not.
+once fn filter() -> Cell<string> { Cell.new("all") }
 
 /// The last frame sent — an unchanged paint costs two bytes.
-const painted = live()
+once fn painted() -> Live { live() }
 
 /// The app's behaviour is CODE, dispatched by the name the tree asked for —
 /// a value slot never holds a fn, so an action is data (its name) plus a
@@ -39,8 +41,8 @@ fn run_action(name: string) {
 
 fn toggle() {
     when {
-        filter.get() == "all" -> filter.set("done")
-        _ -> filter.set("all")
+        filter().get() == "all" -> filter().set("done")
+        _ -> filter().set("all")
     }
 }
 
@@ -48,13 +50,13 @@ fn toggle() {
 /// are the ids the host was last told.
 fn view() -> board {
     board {
-        show: filter,
+        show: filter(),
         on_click: "toggle",
-        items: [heading "Tasks — ${filter.get()}" { rank: 1 }, item { button "Toggle" }],
+        items: [heading "Tasks — ${filter().get()}" { rank: 1 }, item { button "Toggle" }],
     }
 }
 
-fn paint() { avra_dom_frame(painted.diff(view().describe(), default_theme)) }
+fn paint() { avra_dom_frame(painted().diff(view().describe(), default_theme)) }
 
 /// The host's call: `who` is the id the frame named, `what` the kind. The
 /// action is found by the SAME walk the frame made.
