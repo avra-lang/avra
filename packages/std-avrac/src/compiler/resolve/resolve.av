@@ -12,7 +12,20 @@
 //! the file that wrote its text, so a template's `let tmp` and a
 //! hole's `tmp` never meet, and a template's module names resolve in
 //! the namespace of the file that wrote the quote.
-use core.{StmtId, ExprId, FileId, Param, flatten, Binding, found_at, SyntaxArena, Annotation}
+use core.{
+    StmtId,
+    ExprId,
+    FileId,
+    Param,
+    flatten,
+    Binding,
+    found_at,
+    SyntaxArena,
+    Annotation,
+    TypeRef,
+    env_key,
+    spelled,
+}
 use core.{side_table, Binder}
 use diagnostics.{refusal, Voices}
 use features.modules.{module_laws}
@@ -33,6 +46,7 @@ use features.{
     Elsewhere,
     Bound,
     example_marks,
+    nothing,
 }
 
 /// Words the spec reserves for future levels, memory, and
@@ -293,6 +307,43 @@ impl ResolveCx {
         self.scope = outer
         let _ = self.marks.pop()
         let _ = self.floors.pop()
+    }
+
+    /// A `provide` ALSO binds its TYPE's key, in the same scope its
+    /// own name takes: `env T` reads the nearest provider of `T`
+    /// lexically above it, and the written name is only local
+    /// spelling. The key is bound exactly where a local is, so
+    /// nearest-wins and scope-exit are the overlay machinery's own.
+    mut fn bind_provider(s: StmtId) {
+        match self.view.store.stmt(s) {
+            .Let(_, ty, _) -> {
+                if ty != null { self.bind(env_key(ty!), Binding.Def(s)) }
+            },
+            rest -> nothing(),
+        }
+    }
+
+    /// `env T` — the nearest provider of type `T` above this read. A
+    /// normal name lookup under the type's canonical key; a MISS
+    /// refuses HERE, naming the type and the form that supplies it,
+    /// so no absent provider can become a run-time lookup.
+    mut fn use_env(e: ExprId, ty: TypeRef) {
+        if self.met(e) { return }
+        let found = self.value_binding(env_key(ty), self.view.origin_of(e))
+        if found != null {
+            self.bind_use(e, found!)
+            return
+        }
+        self
+            .emit(
+                refusal(
+                    "resolve.no_provider",
+                    self.loc_of(e),
+                    "no `${spelled(ty)}` is provided above this `env`",
+                    "read here",
+                    "add `provide name: ${spelled(ty)} = …` above it",
+                ),
+            )
     }
 }
 

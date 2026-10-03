@@ -474,6 +474,10 @@ export enum Expr {
     /// for. The type is the KEY: typing refuses where no provider of
     /// it is above, so an effect's requirement is a compile error
     /// before it runs.
+    /// `env T` — the nearest lexically enclosing provider of type
+    /// `T`. Resolution binds it to the `provide`'s own statement, so
+    /// typing and lowering read it exactly as a local; a missing
+    /// provider refuses at resolve time, never a run-time lookup.
     Env(ty: TypeRef)
 }
 /// Whether the parse tree already HOLDS this value — an int, float,
@@ -506,6 +510,7 @@ export fn literal_form(e: Expr) -> bool {
         .Body(word, _, _, _) -> body_literal(word),
         .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) or .Lambda(_, _) or .Range(_, _) -> true,
         .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error or .Env(_) -> false,
+        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Env(_) or .Error -> false,
     }
 }
 
@@ -670,6 +675,13 @@ fn spelled_arrow(t: TypeRef) -> string {
     let seats = [mark_prefixed(mark_at(t.marks, j), spelled(a)) for j, a in t.args.slice(0, n - 1)]
     "fn(${joined(seats, ", ")}) -> ${spelled(t.args[n - 1])}"
 }
+
+/// The binding key a `provide` and an `env` of the same written type
+/// share. The key is the TYPE, spelled canonically, so a provider
+/// needs no global name; the `$` prefix can never open an identifier
+/// (it opens an interpolation), so a provider key and a user name can
+/// never collide.
+export fn env_key(t: TypeRef) -> string { "\$env\$" + spelled(t) }
 
 /// The pronoun's own seat — what an implicit `it` lambda declares.
 export const pronoun_param: Param = Param {

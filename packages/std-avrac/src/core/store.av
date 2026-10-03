@@ -10,6 +10,7 @@ use @std.meta.{identity, plain_field}
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
 export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool }
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provided: bool }
 
 fn no_stmt_marks() -> StmtMarks {
     StmtMarks {
@@ -20,6 +21,7 @@ fn no_stmt_marks() -> StmtMarks {
         is_state: false,
         is_provide: false,
         is_module_state: false,
+        is_provided: false,
     }
 }
 
@@ -574,6 +576,7 @@ impl SyntaxArena {
             .Ident(name) -> Expr.Call(name, [], blocks),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
             .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Env(_) or .Range(_, _) -> null,
         }
     }
 
@@ -967,6 +970,17 @@ impl SyntaxArena {
 
     fn is_module_state(s: StmtId) -> bool {
         if s.index < self.marks.get().length { self.marks_at(s).is_module_state } else { false }
+    /// A `provide` is a `Let` MARKED: its written name is local
+    /// spelling, and it ALSO binds its type's key for a matching
+    /// `env` to find. The mark changes nothing about how the binding
+    /// holds its value; it only says a provider key is owed.
+    fn mark_provided(s: StmtId) {
+        self.update_marks(s, (m) -> m with { is_provided: true })
+        self.restamp(s, 156)
+    }
+
+    fn is_provided(s: StmtId) -> bool {
+        if s.index < self.marks.get().length { self.marks_at(s).is_provided } else { false }
     }
 
     /// `grammar Name = "…"` declared this record — the format it
@@ -1155,6 +1169,7 @@ impl SyntaxArena {
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .Force(subject) -> PlaceStep.Unwrap(subject),
             .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Env(_) or .Range(_, _) -> null,
         }
     }
 

@@ -1,0 +1,22 @@
+//! The provider semantics: dispatch only. An `env` read RESOLVES to
+//! the nearest `provide`'s statement, so its type and its register
+//! are the binding's own — typing and lowering never know a provider
+//! from a local.
+use core.{Expr, ExprId, TypeId, Reg}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+
+export type ProvideSemantics = {}
+
+impl NodeSemantics for ProvideSemantics {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        match cx.view.store.expr(e) { .Env(ty) -> cx.use_env(e, ty), rest -> nothing() }
+    }
+
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        cx.target_type(e)
+    }
+
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        cx.def_reg(e) ?? cx.lower_defect(e, "an unresolved `env` survived a clean analysis")
+    }
+}

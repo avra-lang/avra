@@ -1,0 +1,29 @@
+//! `provide` / `env` — context that flows DOWN a lexical subtree.
+//! `provide x: T = v` is a statement: it evaluates `v` in its scope
+//! and makes it the nearest provider of type `T` for the block it
+//! stands in and everything nested. `env T` is the expression that
+//! reads that provider. The key is the TYPE, never a name, so a
+//! provider needs no global spelling; a missing provider is a
+//! COMPILE error (resolution is lexical — no run-time stack, no
+//! global store), and a nested provider shadows an outer one for its
+//! own subtree. `env` is a SOFT keyword (the lexer marks it only
+//! before a written type), so a binding, a field or a call spelled
+//! `env` stays an ordinary name.
+use features.{LanguageFeature, BuilderRow}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+
+export fn provide() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name           | build
+        "provide_stmt" | build_provide
+        "env_expr"     | build_env
+    }
+    LanguageFeature provide {
+        gram: grammar {
+            stmt = w:PROVIDE n:NAME ":" t:type "=" v:expression END @recover(sync_to: "END") -> provide_stmt(n, t, v)
+            primary = e:ENV t:type -> env_expr(t)
+        }
+        builders: rows
+    }
+    provide
+}

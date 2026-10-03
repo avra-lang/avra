@@ -1,0 +1,19 @@
+//! Parse-time lowering: `provide` -> a marked `Let`, `env T` -> an
+//! `Env` read. The provider's own name is ordinary local spelling;
+//! the mark is what raises a type-keyed binding beside it, so a
+//! provider reaches typing and lowering as the let it is.
+use core.{Stmt, Scoped, Expr}
+use features.{LangNode, Builder}
+
+fn build_provide(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let ty = b.type_ref(1)?
+    let v = b.expr(2)?
+    let s = b.store.alloc_stmt(Stmt.Let(Scoped(n.text), ty, v), b.span)
+    b.store.mark_provided(s)
+    .Ok(LangNode.NStmt(s))
+}
+
+fn build_env(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.Env(b.type_ref(0)?))
+}
