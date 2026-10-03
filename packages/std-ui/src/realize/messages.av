@@ -1,0 +1,59 @@
+//! `realize/messages.av` — `@derive(Messages)`: an app's message enum gets a
+//! content-addressed SITE and the site-to-message lookup, so a `View`
+//! component binds a typed message and the app dispatches with ONE
+//! exhaustive `update`. The site is the message's identity: a 31-bit FNV-1a
+//! of its declaring module and variant, so the host echoes the same place
+//! however the tree moved — an ordinal would renumber when a sibling lands.
+use @std.meta.{Type, Directive, Code, Stmts, literal, name, int_node, as_code}
+
+/// A content-addressed message site. Deterministic across runs and renders.
+export fn event_site(declaration: string, action: string) -> int {
+    let text = "${declaration}#${action}"
+    let bs = text.bytes()
+    mut h = 0 - 3750763034362895579
+    mut i = 0
+    while i < bs.length {
+        h = (h ^ bs.at(i)) * 1099511628211
+        i = i + 1
+    }
+    h & 2147483647
+}
+
+/// A message enum: each variant's word and its content-addressed site, and
+/// the one lookup a host echo resolves through. `from_site` covers the
+/// variants that carry no payload; a message with captures resolves through
+/// the tree it was written in, which is a later slice.
+export trait Messages {
+    fn word() -> string
+    fn site() -> int
+
+    static fn derive(t: Type) -> List<Directive> {
+        let decl = "${t.module}.${t.name}"
+        let words = [quote { .${v} -> ${literal(v.name)} } for v in t.variants]
+        let sites = [quote { .${v} -> ${int_lit(event_site(decl, v.name))} } for v in t.variants]
+        let plain = [v for v in t.variants if v.fields.is_empty()]
+        let checks: List<Stmts> = [quote { if site == ${int_lit(event_site(decl, v.name))} { return ${name(t.name)}.${v} } } for v in plain]
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl ${t} {
+                        fn word() -> string { match self { ${words} } }
+                        fn site() -> int { match self { ${sites} } }
+                        static fn from_site(site: int) -> ${t}? {
+                            ${..checks}
+                            null
+                        }
+                    }
+                },
+            },
+        ]
+    }
+
+    static fn marks(t: Type) -> List<string> { [] }
+}
+
+/// An int as generated code, in any seat — expression or pattern.
+fn int_lit(v: int) -> Code { as_code(int_node(v)) }
