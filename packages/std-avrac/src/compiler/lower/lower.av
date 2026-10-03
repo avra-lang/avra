@@ -33,6 +33,7 @@ use core.{
     extern_kind_name,
     inout_row,
     no_marks,
+    state_mark,
     Param,
     SeatMark,
     Static,
@@ -874,8 +875,15 @@ fn lower_fn(
         sub,
         sig?.ret ?? a.view.decls.types.intern(Type.Error),
     )
-    let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
     let seat_marks: List<SeatMark> = a.view.decls.marks_of(x.id, raw.length)
+    // A `state` seat's register IS the caller's cell: the body reads
+    // and writes what it holds, so the seat wears `Cell<T>` even
+    // though its declared type is `T`.
+    let ptypes = [if state_mark(seat_marks, j) {
+        a.view.decls.types.intern(Type.Cell(viewed(a.view.decls.types, sub, pt)))
+    } else {
+        viewed(a.view.decls.types, sub, pt)
+    } for j, pt in raw]
     // R3's `consumed` rides only the BODY's own marks, read directly
     // (features/decls.av's `seat_mark` never merges it) — never
     // `seat_marks` above, which stays the currency a fn VALUE's TYPE

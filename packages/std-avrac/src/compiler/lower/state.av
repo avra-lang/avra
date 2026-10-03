@@ -18,6 +18,7 @@ use core.{
     SeatMark,
     same_expr,
     is_literal,
+    state_mark,
     settled_mark,
     Static,
     StaticBox,
@@ -328,7 +329,7 @@ impl LowerCx {
     /// the read mints — a boxed slot's load, a capture lane.
     fn read_wearing(e: ExprId, b: Binding, ty: TypeId) -> Reg? {
         match b {
-            .Param(i) -> if i < self.seat_regs.length { self.seat_regs[i] } else { Reg { index: i } },
+            .Param(i) -> if self.state_seat(i) { self.state_param_read(i, ty) } else { self.param_reg(i) },
             .Receiver -> first_seat,
             .Def(s) -> if self.view.store.is_state_stmt(s) { self.state_read(e, s, ty) } else { self.defined_reg(e, s, ty) },
             .Pattern(v, j) -> self.body.pattern_reg(v, j),
@@ -448,6 +449,35 @@ impl LowerCx {
         let s? = self.state_capture(l, j) else { return self.env_read(j, ty) }
         let cell? = self.env_read(j, self.def_ty(s)) else { return null }
         self.proven_read(cell, 0, ty)
+    /// Whether seat `i` of the body is a `state` seat — a place the
+    /// caller owns, so the seat register holds its CELL.
+    fn state_seat(i: int) -> bool {
+        state_mark(self.seat_marks, i)
+    }
+
+    /// A parameter's own register — the seat itself, or the site's
+    /// register when the body was lowered at a call.
+    fn param_reg(i: int) -> Reg {
+        if i < self.seat_regs.length { self.seat_regs[i] } else { Reg { index: i } }
+    }
+
+    /// A `state` seat's read: the seat register IS the caller's cell,
+    /// so the name answers what it holds — the seat is a place, the
+    /// read a value.
+    fn state_param_read(i: int, ty: TypeId) -> Reg? {
+        self.proven_read(self.param_reg(i), 0, ty)
+    }
+
+    /// The CELL an argument hands a `state` seat: a `state` binding's
+    /// cell, or the cell a `state` seat forwards. Null for any other
+    /// argument, whose value is the caller's own.
+    fn state_arg_cell(a: ExprId) -> Reg? {
+        let b? = self.names.binding(a) else { return null }
+        match b {
+            .Def(s) if self.view.store.is_state_stmt(s) -> self.defined_reg(a, s, self.def_ty(s)),
+            .Param(i) if self.state_seat(i) -> self.param_reg(i),
+            _ -> null,
+        }
     }
 
     /// A `state` binding's seed, boxed into the Cell the binding holds:
