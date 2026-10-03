@@ -908,6 +908,10 @@ void avra_trap(const char* msg) {
 static void put_line(const char* s) {
     if (s) fwrite(s, 1, str_len(s), stdout);
     fputc('\n', stdout);
+    // THE LINE IS ON ITS STREAM WHEN THIS RETURNS: stdout is fully buffered
+    // when it is not a terminal, so a live-run flush is what lets a server's
+    // line be heard and what keeps a trap from taking the lines before it.
+    fflush(stdout);
 }
 
 void avra_puts(const char* s) {
@@ -3473,6 +3477,7 @@ void avra_eputs(const char* s) {
     fflush(stdout);
     if (s) fwrite(s, 1, str_len(s), stderr);
     fputc('\n', stderr);
+    fflush(stderr);
 }
 
 // A DEBUG LINE, only under AVRA_DEBUG — the compiler's own instrument.
