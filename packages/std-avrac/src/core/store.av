@@ -9,7 +9,7 @@ use @std.meta.{identity, plain_field}
 /// `grammar` declaration read), so it stays its own side table — a
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
-export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool }
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool }
 
 fn no_stmt_marks() -> StmtMarks {
     StmtMarks {
@@ -19,6 +19,7 @@ fn no_stmt_marks() -> StmtMarks {
         is_static: false,
         is_state: false,
         is_provide: false,
+        is_module_state: false,
     }
 }
 
@@ -954,6 +955,18 @@ impl SyntaxArena {
 
     fn is_provide_stmt(s: StmtId) -> bool {
         if s.index < self.marks.get().length { self.marks_at(s).is_provide } else { false }
+    }
+
+    /// A `state` at the top level of a file: a DECLARATION whose one
+    /// cell the whole module shares. Admission marks it, so a body
+    /// ever sees only the top-level spelling as a declaration.
+    fn mark_module_state(s: StmtId) {
+        self.update_marks(s, (m) -> m with { is_module_state: true })
+        self.restamp(s, 157)
+    }
+
+    fn is_module_state(s: StmtId) -> bool {
+        if s.index < self.marks.get().length { self.marks_at(s).is_module_state } else { false }
     }
 
     /// `grammar Name = "…"` declared this record — the format it

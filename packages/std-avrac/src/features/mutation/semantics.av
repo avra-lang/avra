@@ -18,6 +18,10 @@ impl StmtSemantics for MutLetSemantics {
     }
 
     fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        // A MODULE-LEVEL state is a DECLARATION: its own unit builds
+        // the shared cell when first read, so nothing runs here — the
+        // initializer must not run in the entry as well.
+        if cx.view.store.is_module_state(s) { return null }
         let v? = cx.view.store.stmt_value(s) else { return null }
         lower_mut(cx, s, cx.reg_of(v))
     }
