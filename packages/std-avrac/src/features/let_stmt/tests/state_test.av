@@ -28,9 +28,24 @@ spec "let_stmt — state" {
             ) == "2"
         }
     }
+    given "a `state` parameter" {
+        then "is a PLACE the caller owns: the callee's write reaches the caller" {
+            shown(
+                "fn stepper(state n: int) {\n    n = n + 1\n}\nfn run() -> int {\n    state c: int = 0\n    stepper(c)\n    stepper(c)\n    stepper(c)\n    c\n}\nrun()",
+            ) == "3"
+        }
+        then "forwards through another state seat — the cell, never a copy" {
+            shown(
+                "fn stepper(state n: int) {\n    n = n + 1\n}\nfn twice(state n: int) {\n    stepper(n)\n    stepper(n)\n}\nfn run() -> int {\n    state c: int = 0\n    twice(c)\n    c\n}\nrun()",
+            ) == "2"
+        }
+    }
     given "the word state" {
         then "is an ordinary name where no binding follows it" {
             shown("let state: int = 3\nstate") == "3"
+        }
+        then "stays an ordinary parameter name" {
+            shown("fn note(state: int) -> int { state + 1 }\nnote(3)") == "4"
         }
     }
 }

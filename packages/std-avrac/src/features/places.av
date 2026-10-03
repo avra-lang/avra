@@ -137,6 +137,7 @@ impl LowerCx {
             .Def(s) if self.view.store.is_state_stmt(s) -> self.state_place(e, s),
             .Capture(l, j) -> if self.state_capture(l, j) != null { self.state_capture_place(l, j) } else { self.cell_place(e) },
             .Decl(d) if self.view.decls.decl(d).kind is .State -> self.state_decl_place(d),
+            .Param(i) if self.state_seat(i) -> self.state_param_place(i),
             rest -> self.cell_place(e),
         }
     }
@@ -152,6 +153,11 @@ impl LowerCx {
     /// write lands where every other reader's read looks.
     fn state_decl_place(d: DeclId) -> Place? {
         Place.Slot(self.state_decl_cell(d), self.const_int(0))
+    }
+    /// A `state` seat's place: the seat register IS the caller's cell,
+    /// so a whole assignment lands in what it holds.
+    fn state_param_place(i: int) -> Place? {
+        Place.Slot(self.param_reg(i), self.const_int(0))
     }
 
     fn state_place(e: ExprId, s: StmtId) -> Place? {

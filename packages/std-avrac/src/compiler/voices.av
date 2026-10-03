@@ -862,6 +862,7 @@ export fn name_facts_fp(n: NameFacts) -> int {
             n.bindings.folded(opt_binding_fp),
             n.captures.folded(opt_cap_fp),
             n.mut_reads.folded(bool_fp),
+            n.state_reads.folded(bool_fp),
             n.settled_reads.folded(bool_fp),
             namespace_fp(n.names),
             voices_fp(n.voices),
@@ -870,26 +871,27 @@ export fn name_facts_fp(n: NameFacts) -> int {
 }
 
 /// One declaration's slice of a file's names: every expression in
-/// [lo, hi) over its four columns, ONE linear fold end to end (order
+/// [lo, hi) over its five columns, ONE linear fold end to end (order
 /// alone tells two expressions' columns apart — the columns never
 /// repeat a value across expressions the way two SEQUENCES could),
 /// avalanched once. The cells alone: the namespace is the file's, and
 /// `Visible` fingerprints it once per file — never the file's voices,
 /// never a neighbour's cells.
 export fn name_slice_fp(n: NameFacts, lo: int, hi: int) -> int {
-    fp(181, [mix_final(fp(182, [name_cell_col(n, lo, j) for j in 0..(hi - lo) * 4]))])
+    fp(181, [mix_final(fp(182, [name_cell_col(n, lo, j) for j in 0..(hi - lo) * 5]))])
 }
 
-/// The `j`th of a slice's `4 * (hi - lo)` raw columns, `j`'s own low
-/// two bits naming which — ONE flat comprehension over every
-/// expression's four columns, never a list per expression concat'd
+/// The `j`th of a slice's `5 * (hi - lo)` raw columns, `j`'s own low
+/// bits naming which — ONE flat comprehension over every
+/// expression's five columns, never a list per expression concat'd
 /// into it: a sub-list per cell paid for a flatten pass that cost
 /// more than the finalizer calls it was buying back.
 fn name_cell_col(n: NameFacts, lo: int, j: int) -> int {
-    let i = lo + j / 4
-    if j % 4 == 0 { return opt_binding_fp(n.bindings.get(i)) }
-    if j % 4 == 1 { return opt_cap_fp(n.captures.get(i)) }
-    if j % 4 == 2 { return bool_fp(n.mut_reads.get(i)) }
+    let i = lo + j / 5
+    if j % 5 == 0 { return opt_binding_fp(n.bindings.get(i)) }
+    if j % 5 == 1 { return opt_cap_fp(n.captures.get(i)) }
+    if j % 5 == 2 { return bool_fp(n.mut_reads.get(i)) }
+    if j % 5 == 3 { return bool_fp(n.state_reads.get(i)) }
     bool_fp(n.settled_reads.get(i))
 }
 
