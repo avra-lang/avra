@@ -62,4 +62,13 @@ for p in $packages; do
     "$avra" check "packages/$p" --baseline tools/idioms.baseline \
         || { echo "gate_changed: idioms refused packages/$p" >&2; exit 1; }
 done
+# THE WASM TARGET'S OWN PROOF, where its toolchain stands: the import/export
+# seam, the refusals, and eval == native == wasm. Each SKIPS, spoken, when the
+# toolchain is absent, so a machine without it is not falsely green.
+if command -v clang >/dev/null 2>&1 && clang --print-targets 2>/dev/null | grep -q wasm32; then
+    make -s -o avra wasm-runtime wasm-packages >/dev/null 2>&1 || true
+    sh tools/wasm-check.sh || { echo "gate_changed: wasm-check refused" >&2; exit 1; }
+    sh tools/wasm-seam-check.sh || { echo "gate_changed: wasm-seam refused" >&2; exit 1; }
+    sh tools/wasm-refuses.sh || { echo "gate_changed: wasm-refuses refused" >&2; exit 1; }
+fi
 echo "gate_changed: clean — changed .av and affected idioms hold"
