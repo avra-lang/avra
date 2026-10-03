@@ -32,7 +32,7 @@ use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
 /// text between the braces, holes as placeholders. `Component` is an
 /// imported component's word, which opens an instance. `Octets` is a
 /// byte string `b"…"`, its `text` the spelling between the quotes.
-export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component, State, Octets }
+export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component, State, Octets, Env, Provide }
 
 /// One DSL token. For Str and the IStr kinds, `text` is the
 /// unquoted, unescaped contents; the span covers the delimiters. A
@@ -1467,13 +1467,44 @@ export fn lex_blocks(
 ) -> LexResult {
     let lexed = lex_words(src, line_boundary, true, words, false)
     let ts = lexed.tokens
-    lexed with { tokens: [if opens_state(ts, i) {
-        t with { kind: TokenKind.State }
-    } else if opens_instance(ts, i, components, named, keywords) {
+    lexed with { tokens: [if opens_instance(ts, i, components, named, keywords) {
         t with { kind: TokenKind.Component }
+    } else if opens_env(ts, i, keywords) {
+        t with { kind: TokenKind.Env }
+    } else if opens_state(ts, i) {
+        t with { kind: TokenKind.State }
+    } else if opens_provide(ts, i) {
+        t with { kind: TokenKind.Provide }
     } else {
         t
     } for i, t in ts] }
+}
+
+/// Whether the token at `i` is `provide` opening a provider — a SOFT
+/// keyword: it means `provide` only in `provide NAME :`, at a
+/// statement's start, so a fn, a package or a binding spelled
+/// `provide` stays an ordinary name.
+fn opens_provide(ts: List<Token>, i: int) -> bool {
+    let t = ts[i]
+    if t.kind != TokenKind.Name || t.text != "provide" { return false }
+    if !starts_statement(ts, i) { return false }
+    if i + 1 >= ts.length || ts[i + 1].kind != TokenKind.Name { return false }
+    i + 2 < ts.length && ts[i + 2].lit_matches(":")
+}
+
+/// Whether the token at `i` is `env` reading the environment — a
+/// SOFT keyword: it means `env` only before a WRITTEN TYPE, so a
+/// binding, a field, a parameter or a call spelled `env` stays an
+/// ordinary name. `env NAME` is the shape it claims, and the name
+/// must not be a keyword, so `use @std.io.{env as e}` still imports
+/// a binding called `env`; an instance head (`env Foo { … }`) is
+/// claimed first, so a component word spelled `env` still opens its
+/// instance.
+fn opens_env(ts: List<Token>, i: int, keywords: List<string>) -> bool {
+    let t = ts[i]
+    if t.kind != TokenKind.Name || t.text != "env" { return false }
+    if i + 1 >= ts.length || ts[i + 1].kind != TokenKind.Name { return false }
+    !keywords.contains(ts[i + 1].text)
 }
 
 /// Whether the token at `i` is `state` opening a state declaration — a
