@@ -4,7 +4,8 @@
 //! so every foreign name it writes is a static `quote`; a generated hole
 //! resolves in the annotated file, so fields are read as `self.<field>`.
 use @std.meta.{Type, Field, Directive, Code, list_of}
-use realize.render.{Node, Prim, Attribute}
+use realize.render.{Node, Prim, Attribute, EventKind, Action}
+use realize.lists.{union}
 use style.box.{Box}
 
 /// A component that projects to a neutral `Node`.
@@ -21,6 +22,7 @@ export trait View {
                 // LICENSED compiler.modified_copy_literal: the Box is projected from the component's fields
                 box: Box { style: ${style_code(t)}, layout: self.layout, a11y: self.a11y, key: self.key },
                 children: ${children_code(t)},
+                events: ${events_code(t)},
             }
         }
         [
@@ -128,6 +130,40 @@ fn attr_quote(f: Field) -> Code {
         rest -> quote { Attribute.Text(self.${f}) },
     }
 }
+
+// ── actions: what a node does when it speaks ────────────────────
+
+/// The event a component field binds — `on_click: string` names an action,
+/// and the field's name IS the kind. A field that binds no event answers
+/// nothing and projects to nothing else either.
+fn event_kind(name: string) -> EventKind? {
+    match name {
+        "on_click" -> .Click,
+        "on_input" -> .Input,
+        "on_change" -> .Change,
+        "on_submit" -> .Submit,
+        rest -> null,
+    }
+}
+
+/// ONE arm per `EventKind`, so a new kind lands here beside its variant.
+fn action_quote(f: Field, kind: EventKind) -> Code {
+    match kind {
+        .Click -> quote { Action { kind: EventKind.Click, name: self.${f} } },
+        .Input -> quote { Action { kind: EventKind.Input, name: self.${f} } },
+        .Change -> quote { Action { kind: EventKind.Change, name: self.${f} } },
+        .Submit -> quote { Action { kind: EventKind.Submit, name: self.${f} } },
+    }
+}
+
+/// The action one field binds: one, or none when it binds no event.
+fn field_actions(f: Field) -> List<Code> {
+    let kind? = event_kind(f.name) else { return [] }
+    [action_quote(f, kind)]
+}
+
+/// Every action the component binds, in field order.
+fn events_code(t: Type) -> Code { list_of(union([field_actions(f) for f in t.fields])) }
 
 /// A component's `items` field, drawn by its children's own `describe`.
 fn children_code(t: Type) -> Code {

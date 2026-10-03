@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title><!--TITLE--></title>
+<style id="avra-style"></style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { createApplier, instantiate, frameOf, sendEvent } from "./bootstrap.js";
+import { wasiPreview1 } from "./wasi.js";
+
+const mount = document.getElementById("app");
+let mod = null;
+const style = document.getElementById("avra-style");
+const applier = createApplier(document, mount, (who, what) => sendEvent(mod, who, what), style);
+
+mod = await instantiate("./app.wasm", {
+  wasi: wasiPreview1(() => mod.memory, (code) => { throw new Error(`the program exited ${code}`); }),
+  rt: {
+    // The seat is a Bytes: the pointer names its box, and the LENGTH comes
+    // from the runtime's own reader, exported by the module.
+    avra_dom_frame: (ptr) => applier(frameOf(mod.memory, ptr, mod.avra_bytes_len)),
+  },
+});
+
+// A REACTOR module: initialize the C runtime once, then the program paints
+// its first frame through an export of its own — never a `main` that exits.
+mod._initialize();
+mod.avra_start();
+</script>
+</body>
+</html>

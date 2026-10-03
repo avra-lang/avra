@@ -1,0 +1,37 @@
+//! `realize/dom/buf.av` — the wire's byte builder. A `Cell` HOLDS the list
+//! and `Cell.push` appends IN PLACE (it writes the list the cell owns), so
+//! building a frame costs one growing buffer, not a copy per append; the
+//! list becomes `Bytes` once, at the end.
+export type Buf = { bytes: Cell<List<int>> }
+
+export fn buf() -> Buf {
+    let empty: List<int> = []
+    Buf { bytes: Cell.new(empty) }
+}
+
+impl Buf {
+    /// One byte, 0..255. A value outside it is masked — the caller's own law.
+    fn push_byte(v: int) { self.bytes.push(v & 255) }
+
+    /// One int as four little-endian bytes.
+    fn push_int(v: int) {
+        self.push_byte(v)
+        self.push_byte(v >> 8)
+        self.push_byte(v >> 16)
+        self.push_byte(v >> 24)
+    }
+
+    /// A length-prefixed value: its byte length, then its bytes.
+    fn push_str(s: string) {
+        let bs = s.bytes()
+        self.push_int(bs.length)
+        mut i = 0
+        while i < bs.length {
+            self.push_byte(bs.at(i))
+            i = i + 1
+        }
+    }
+
+    /// The bytes built so far. `Bytes` gathers the list once.
+    fn take() -> Bytes { self.bytes.get().bytes() ?? "".bytes() }
+}

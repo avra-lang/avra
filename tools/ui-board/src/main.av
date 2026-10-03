@@ -1,0 +1,70 @@
+//! M1 — the board, as a wasm app. `main` paints once; an event repaints only
+//! what changed. The host applies each frame to the live tree.
+//!
+//! The frame row is a HOST import (`avra:rt.avra_dom_frame`); its seat is a
+//! `Bytes`, so the pointer names its box and the glue reads the length from
+//! the header — no (ptr,len) pair to keep in step.
+use @std.meta.{derive}
+use @std.ui.components.{heading, item, button}
+use @std.ui.realize.dom.frame.{Live, live, event_at}
+use @std.ui.realize.prim.{prim}
+use @std.ui.realize.view.{View}
+use @std.ui.style.box.{Box}
+use @std.ui.style.theme.{default_theme}
+
+extern fn avra_dom_frame(frame: Bytes)
+
+@derive(View)
+@prim(.Surface)
+component board {
+    ..Box
+    show: Cell<string> = Cell.new("all")
+    on_click: string = ""
+    items: List<dyn View> = []
+}
+
+/// THE STATE the screen is a function of. A `Cell` is an identity, so a
+/// handler writes it in place and every copy reads the same place — and a
+/// `once fn` is how a process-wide identity is minted, since a `const` is
+/// static data and a Cell is not.
+once fn filter() -> Cell<string> { Cell.new("all") }
+
+/// The last frame sent — an unchanged paint costs two bytes.
+once fn painted() -> Live { live() }
+
+/// The app's behaviour is CODE, dispatched by the name the tree asked for —
+/// a value slot never holds a fn, so an action is data (its name) plus a
+/// `when` here.
+fn run_action(name: string) {
+    if name == "toggle" { toggle() }
+}
+
+fn toggle() {
+    when {
+        filter().get() == "all" -> filter().set("done")
+        _ -> filter().set("all")
+    }
+}
+
+/// The screen: state in, tree out. Called again on every event, so its ids
+/// are the ids the host was last told.
+fn view() -> board {
+    board {
+        show: filter(),
+        on_click: "toggle",
+        items: [heading "Tasks — ${filter().get()}" { rank: 1 }, item { button "Toggle" }],
+    }
+}
+
+fn paint() { avra_dom_frame(painted().diff(view().describe(), default_theme)) }
+
+/// The host's call: `who` is the id the frame named, `what` the kind. The
+/// action is found by the SAME walk the frame made.
+export fn avra_event(who: int, what: int) {
+    let e? = event_at(view().describe(), who, what) else { return }
+    run_action(e.name)
+    paint()
+}
+
+/// The host's first call, after the reactor is initialized: one paint.
+export fn avra_start() { paint() }

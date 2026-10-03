@@ -1,0 +1,37 @@
+// proves: the board is a COMPONENT whose state is an explicit Cell field;
+// one render emits the live target's op frame, classes included. No state
+// keyword, no compiler change — identity is the Cell that already exists.
+use @std.meta.{derive}
+use @std.ui.components.{heading, item, button}
+use @std.ui.realize.dom.frame.{frame_text, sheet, live, no_change}
+use @std.ui.realize.html.css.{class_names}
+use @std.ui.realize.prim.{prim}
+use @std.ui.realize.view.{View}
+use @std.ui.style.box.{Box}
+use @std.ui.style.style.{Style}
+use @std.ui.style.theme.{default_theme}
+
+@derive(View)
+@prim(.Surface)
+component board {
+    ..Box
+    show: Cell<string> = Cell.new("all")
+    items: List<dyn View> = []
+}
+
+const sunk = Style { fill: .SurfaceSunk }
+
+let b = board { style: sunk, items: [heading "Tasks" { rank: 1 }, item { button "Add" }] }
+b.show.set("open")
+println(frame_text(b.describe()))
+println(b.show.get())
+println(class_names(b.describe()).join(","))
+let has_class = sheet(b.describe(), default_theme).contains(".fill-surface-sunk{")
+println("${has_class}")
+let l = live()
+let first_sent = l.diff(b.describe(), default_theme)
+let second_sent = l.diff(b.describe(), default_theme)
+println("${first_sent.length > 2 && second_sent == no_change()}")
+println(
+    "${l.diff(board { items: [heading "Other" { rank: 2 }] }.describe(), default_theme) != no_change()}",
+)
