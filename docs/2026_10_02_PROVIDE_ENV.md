@@ -1,7 +1,12 @@
 # `provide` / `env` — context that flows down
 
-Status: design, not built. Written while scoping the UI library's
-environment. Deferred until a component names a wanting site (see §6).
+Status: built. `provide`/`env` are soft keywords (the lexer marks each
+only in the shape it declares), the provider table is a lexical scope
+in typing, and a missing provider is a compile error (F2xxx
+`type.provider`). The reader was spelled `ambient` for one release,
+because a HARD keyword `env` would have refused `@std/io`'s `env` fn
+and `Tool`'s `env` field; the soft form removes that objection, so the
+reader is `env` now — the spelling this note always specified.
 
 ## 1. The want
 
