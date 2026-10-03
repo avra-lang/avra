@@ -1,0 +1,129 @@
+//! `@std/ui.sched` — the frame boundary. A write does not paint: it is
+//! DATA recorded here, coalesced with its siblings, and drained once per
+//! frame in PRIORITY order. The lowering produces updates; this batches and
+//! orders them; the emitter applies them. Nothing here is a closure — the
+//! queue must stay comparable, serializable and inspectable.
+//!
+//! High-frequency writes (pointer move, drag, scroll) are a KIND on the
+//! same queue, never a side door: `Hot` names a direct transform the
+//! emitter applies without the tree, so a drag at 60fps coalesces to one
+//! transform per frame and re-renders nothing. `Frame.renders()` says
+//! whether a boundary touches the tree at all.
+
+/// How urgently a write runs. A boundary drains the MOST urgent lane that
+/// has work; every later lane waits for its own boundary. Input is the
+/// user's own act and is never held behind rendered work.
+export enum Priority { Input, Transition, Background }
+
+/// A direct write the tree never sees: the emitter applies it to the
+/// target's live node.
+export enum Move {
+    Translate(x: float, y: float)
+    Scroll(x: float, y: float)
+    Scale(factor: float)
+    Opacity(amount: float)
+}
+
+/// What a write asks for, and its payload.
+export enum What {
+    /// The region at the site changed: re-render it.
+    Structure
+    /// The node's words changed.
+    Text(text: string)
+    /// A boolean attribute changed.
+    Flag(flag: bool)
+    /// A direct write that never enters the tree.
+    Hot(move: Move)
+}
+
+/// One write, addressed by its lexical SITE and its KEY inside a loop.
+export type Update = { site: int, key: string, what: What }
+
+/// A write's identity for coalescing: its site, key and kind.
+export enum UpdateKind { Structure, Text, Flag, Hot }
+
+/// Work waiting for a boundary.
+type Pending = { priority: Priority, update: Update }
+
+/// A drained boundary: the lane it ran, and its coalesced writes.
+export type Frame = { priority: Priority, updates: List<Update> }
+
+/// The scheduler: pending writes in arrival order.
+export type Sched = { pending: Cell<List<Pending>> }
+
+export fn sched() -> Sched {
+    let none: List<Pending> = []
+    Sched { pending: Cell.new(none) }
+}
+
+impl Priority {
+    /// Lower is more urgent.
+    fn rank() -> int {
+        match self { .Input -> 0, .Transition -> 1, .Background -> 2 }
+    }
+}
+
+impl What {
+    fn kind() -> UpdateKind {
+        match self {
+            .Structure -> .Structure,
+            .Text(_) -> .Text,
+            .Flag(_) -> .Flag,
+            .Hot(_) -> .Hot,
+        }
+    }
+}
+
+impl Frame {
+    /// The writes that touch the tree.
+    fn tree_work() -> List<Update> { [u for u in self.updates if u.what.kind() != UpdateKind.Hot] }
+
+    /// The direct writes the emitter applies without the tree.
+    fn hot_work() -> List<Update> { [u for u in self.updates if u.what.kind() == UpdateKind.Hot] }
+
+    /// Whether applying this frame re-renders any region.
+    fn renders() -> bool { self.tree_work().length > 0 }
+}
+
+impl Sched {
+    /// Record a write for the next boundary.
+    fn request(update: Update, priority: Priority) {
+        self.pending.push(Pending { priority: priority, update: update })
+    }
+
+    /// A high-frequency write: the same queue, a kind that skips the tree.
+    fn hot(site: int, key: string, motion: Move, priority: Priority) {
+        self.request(Update { site: site, key: key, what: .Hot(motion) }, priority)
+    }
+
+    /// Whether any write waits.
+    fn owed() -> bool { !self.pending.get().is_empty() }
+
+    /// The next boundary: the most urgent lane's writes, coalesced by
+    /// identity; every later lane waits. Nothing pending answers null.
+    fn frame() -> Frame? {
+        let all = self.pending.get()
+        let lane? = most_urgent(all) else { return null }
+        let here = [p for p in all if p.priority == lane]
+        self.pending.set([p for p in all if p.priority != lane])
+        Frame { priority: lane, updates: coalesce([p.update for p in here]) }
+    }
+}
+
+/// The most urgent priority present, or null when nothing waits.
+fn most_urgent(ps: List<Pending>) -> Priority? {
+    if ps.any((p: Pending) -> p.priority == Priority.Input) { return Priority.Input }
+    if ps.any((p: Pending) -> p.priority == Priority.Transition) { return Priority.Transition }
+    if ps.is_empty() { return null }
+    Priority.Background
+}
+
+/// Keep the LAST write for each identity, in first-seen order: a turn's
+/// writes to one place are one write.
+fn coalesce(us: List<Update>) -> List<Update> {
+    [u for i, u in us if !us.drop(i + 1).any((later: Update) -> same_identity(later, u))]
+}
+
+fn same_identity(a: Update, b: Update) -> bool {
+    a.site == b.site && a.key == b.key && a.what.kind() == b.what.kind()
+}
