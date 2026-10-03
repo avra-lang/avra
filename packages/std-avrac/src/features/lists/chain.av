@@ -6,7 +6,7 @@
 //! order, then runs the whole chain into a push. A subject that is no
 //! adapter (a `concat`, a plain list) is the head the rest folds over.
 use core.{ExprId, Reg, TypeId, Type, Arrow}
-use features.{LowerCx, MethodCall, PipeStage, FnBox, Clause, Sink, Source, Pipeline}
+use features.{LowerCx, MethodCall, PipeStage, FnBox, Step, Clause, Sink, Source, Pipeline}
 
 /// `xs.map(f)` / `xs.filter(p)` — the chain ending here, run once.
 export fn chained(mut cx: LowerCx, mc: MethodCall) -> Reg {
@@ -121,6 +121,13 @@ fn box_of(mut cx: LowerCx, f: ExprId) -> FnBox {
     FnBox { box: b.f, code: b.fp }
 }
 
+/// The step a fn-arg keeps or maps by: an inlined lambda body when the
+/// argument is a literal the lowering can bind in place, else a boxed
+/// fn (a fn VALUE, or a lambda with captures).
+fn step_of(mut cx: LowerCx, arg: ExprId, ret: TypeId) -> Step {
+    if cx.can_inline(arg) { .Inline(arg, ret) } else { .Applied(box_of(cx, arg), ret) }
+}
+
 /// A fn's answer type — `filter_map`'s optional, read off the arrow.
 fn fn_answer(cx: LowerCx, f: ExprId) -> TypeId {
     let held: Arrow? = cx.view.decls.types.arrow_parts(cx.type_at(f))
@@ -167,8 +174,8 @@ fn arg_of(cx: LowerCx, e: ExprId) -> ExprId? {
 fn link_clause(mut cx: LowerCx, stage: PipeStage, arg: ExprId?, subject: ExprId, e: ExprId) -> Clause? {
     match stage {
         .Flatten -> .Flatten(e, mapped_to(cx, subject), mapped_to(cx, e)),
-        .Keep -> .Keep(.Applied(box_of(cx, arg!), bool_ty(cx))),
-        .Map -> .Map(.Applied(box_of(cx, arg!), mapped_to(cx, e))),
+        .Keep -> .Keep(step_of(cx, arg!, bool_ty(cx))),
+        .Map -> .Map(step_of(cx, arg!, mapped_to(cx, e))),
         .Take -> .Take(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg!)),
         .Drop -> .Drop(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg!)),
         .TakeWhile -> .TakeWhile(box_of(cx, arg!)),
