@@ -785,28 +785,27 @@ export fn program_symbol(path: string) -> string {
 
 fn declared(a: Analysis) -> List<Wanted> {
     let own = a.view.decls.decls_of_file(a.view.file)
-    let bodies = [Wanted {
-        file: a.view.file,
-        decl: d,
-        name: a.view.decls.symbol(d),
-        sub: null,
-        seats: [],
-        root: null,
-    } for d in own if lowers_plain(a, d)]
+    let bodies = [wanted_of(a, d) for d in own if lowers_plain(a, d)]
     bodies.concat([a.view.decls.instance_unit(d) for d in own if a.view.decls.is_instance(d)])
 }
 
 /// The declared `export fn`s of one file, as roots — a program's interface.
 fn exported_wants(a: Analysis) -> List<Wanted> {
     let own = a.view.decls.decls_of_file(a.view.file)
-    [Wanted {
+    [wanted_of(a, d) for d in own if a.view.decls.decl(d).exported && lowers_plain(a, d)]
+}
+
+/// One declared body of `a`'s file, as a want — the plain root every caller
+/// that lowers a file's declarations reads.
+fn wanted_of(a: Analysis, d: DeclId) -> Wanted {
+    Wanted {
         file: a.view.file,
         decl: d,
         name: a.view.decls.symbol(d),
         sub: null,
         seats: [],
         root: null,
-    } for d in own if a.view.decls.decl(d).exported && lowers_plain(a, d)]
+    }
 }
 
 /// A body lowered without an instantiation: one that has no type

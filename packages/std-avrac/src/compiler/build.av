@@ -263,7 +263,8 @@ fn compiler_print(ws: Workspace) -> string {
     let roll = joined_path(stores_dir(ws), "compilers")
     let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
     let digest? = digest_of_binary(at) else { return unnamed_print() }
-    let print = "${digest}${codegen_mode()}${build_mode_suffix(ws)}"
+    let mode = ws.keys.build_mode.get()
+    let print = "${digest}${codegen_mode()}${if mode == "" { "" } else { "@${mode}" }}"
     rolled(
         ws,
         roll,
@@ -296,12 +297,6 @@ fn links_unchanged(store: Store, key: string) -> bool {
 /// HOW THIS PROCESS EMITS, as a suffix on the compiler's print: the runtime's
 /// hot leaves inlined, or kept as calls.
 fn codegen_mode() -> string { if inlines_runtime() { "" } else { "-calls" } }
-
-/// A build's mode, as a suffix on the compiler's print — empty for the host.
-fn build_mode_suffix(ws: Workspace) -> string {
-    let m = ws.keys.build_mode.get()
-    if m == "" { "" } else { "@${m}" }
-}
 
 /// A roll line's print: its first field. A roll holds no empty line.
 fn print_of(line: string) -> string { line.split("\t")[0] }
