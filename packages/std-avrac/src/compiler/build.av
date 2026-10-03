@@ -395,7 +395,7 @@ export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Resul
     BuildOutcome,
     BuildError,
 > {
-    ws.built_for(tools.target, tools.reactor)
+    ws.built_for(tools.target, tools.reactor, tools.wasm_opt != "")
     ws.linked_program(entry, target_binary(entry, tools.target), tools)
 }
 
@@ -412,11 +412,12 @@ impl Workspace {
     /// Folding the mode into the compiler's print (and so into `compiler_id`,
     /// the store root and the roll's name for it) is ONE mechanism: no key
     /// needs a second spelling of the target or the reactor.
-    fn built_for(target: string, reactor: bool) {
+    fn built_for(target: string, reactor: bool, shrinking: bool) {
+        let mode = if reactor { "${target}+reactor" } else { target }
         self
             .keys
             .build_mode
-            .set(if target == "" { "" } else if reactor { "${target}+reactor" } else { target })
+            .set(if target == "" { "" } else if shrinking { "${mode}+opt" } else { mode })
     }
 }
 
