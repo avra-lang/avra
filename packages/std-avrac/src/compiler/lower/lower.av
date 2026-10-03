@@ -113,6 +113,11 @@ export type Body = {
     /// its default is the empty list every plain seat already reads
     /// as.
     marks: List<SeatMark> = [],
+    /// A DECLARED `export fn` — part of the unit's interface. A non-host
+    /// target exports it under its written name (`wasm-export-name`), and
+    /// it is lowered as a root even when nothing inside the program calls
+    /// it. A GROWTH: every synthetic body answers false.
+    exported: bool = false,
 }
 
 /// An instantiation `want`, demanded by a body `by` declares.
@@ -387,7 +392,14 @@ impl Decls {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
         let at: int = entry ?? 0
-        let bodies: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { [] }
+        // AN EXPORTED FN IS A ROOT: it is part of the unit's interface, so a
+        // program lowers it even when nothing inside calls it — a non-host
+        // target exports it under its written name for a host to reach.
+        let bodies: List<Wanted> = if entry == null || every {
+            flatten([declared(a) for a in files])
+        } else {
+            flatten([exported_wants(a) for a in files])
+        }
         // EVERY FILE A PROGRAM: each file's run-time statements lower as
         // a body under the program's own symbol, for a runner's entry to
         // call in turn — every program in one binary
@@ -773,15 +785,27 @@ export fn program_symbol(path: string) -> string {
 
 fn declared(a: Analysis) -> List<Wanted> {
     let own = a.view.decls.decls_of_file(a.view.file)
-    let bodies = [Wanted {
+    let bodies = [wanted_of(a, d) for d in own if lowers_plain(a, d)]
+    bodies.concat([a.view.decls.instance_unit(d) for d in own if a.view.decls.is_instance(d)])
+}
+
+/// The declared `export fn`s of one file, as roots — a program's interface.
+fn exported_wants(a: Analysis) -> List<Wanted> {
+    let own = a.view.decls.decls_of_file(a.view.file)
+    [wanted_of(a, d) for d in own if a.view.decls.decl(d).exported && lowers_plain(a, d)]
+}
+
+/// One declared body of `a`'s file, as a want — the plain root every caller
+/// that lowers a file's declarations reads.
+fn wanted_of(a: Analysis, d: DeclId) -> Wanted {
+    Wanted {
         file: a.view.file,
         decl: d,
         name: a.view.decls.symbol(d),
         sub: null,
         seats: [],
         root: null,
-    } for d in own if lowers_plain(a, d)]
-    bodies.concat([a.view.decls.instance_unit(d) for d in own if a.view.decls.is_instance(d)])
+    }
 }
 
 /// A body lowered without an instantiation: one that has no type
@@ -856,6 +880,7 @@ fn lower_fn(
             weak: sub != null,
             memoized: memoized,
             marks: body_marks,
+            exported: a.view.decls.decl(x.id).exported,
         },
         voices: lo.out.voices,
         jobs: lo.jobs,
