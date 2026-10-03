@@ -1,0 +1,19 @@
+// `state` on a record FIELD: the slot holds a Cell, a read answers the
+// value it holds, and a write lands in the cell's one slot — no Cell
+// ever reaches the reader.
+use @std.avrac.testing.{shown}
+
+spec "structs — a state field" {
+    given "a state field" {
+        then "reads as its value and writes through its cell" {
+            shown(
+                "type Registry = {\n    state shapes: List<int> = []\n}\nfn add(r: Registry, v: int) -> int {\n    r.shapes.push(v)\n    r.shapes.length\n}\nlet r = Registry { }\nadd(r, 7) + add(r, 8)",
+            ) == "3"
+        }
+        then "assigns the cell's slot from a writing method" {
+            shown(
+                "type Counter = {\n    state n: int = 0\n}\nimpl Counter {\n    mut fn bump() { self.n = self.n + 1 }\n    fn count() -> int { self.n }\n}\nmut c = Counter { }\nc.bump()\nc.bump()\nc.count()",
+            ) == "2"
+        }
+    }
+}

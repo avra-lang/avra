@@ -32,6 +32,7 @@ use features.{
     TypeCx,
     FnSig,
     StructSig,
+    slot_want,
     Lacked,
     EnumSig,
     NamedSig,
@@ -188,9 +189,10 @@ impl TypeCx {
         let lacking = self.view.decls.lacking(record)
         let own = StructSig {
             names: [f.name.of for f in fields],
-            types: [self.field_type(s, f) for f in fields],
+            types: [self.field_slot(s, f) for f in fields],
             defaults: [self.view.decls.default_named(record, f.name.of) for f in fields],
             lacking: lacking,
+            states: [f.state for f in fields],
         }
         let sig = if spreads.is_empty() { own } else { self.spread_into(s, owner, own, spreads) }
         for d in duplicate_names("type.duplicate_field", owner, sig.names, self.stmt_loc(s)) {
@@ -378,7 +380,7 @@ impl TypeCx {
         let rs: StructSig? = sig.record_sig()
         if rs != null {
             let slot? = rs!.slot_of(name) else { return null }
-            return rs!.types[slot]
+            return slot_want(self.view.types, rs!, slot)
         }
         let fs? = sig.fn_sig() else { return null }
         let seats: List<string> = self.view.decls.facts_of(owner)?.seats ?? []
@@ -408,6 +410,15 @@ impl TypeCx {
                 "field `${f.name}` is `${spelled(f.ty!)}`",
                 f.ty!,
             )
+    }
+
+    /// The type a field's SLOT holds: a plain field's declared type, a
+    /// `state` field's `Cell<T>` — its reads answer the `T` the cell
+    /// holds.
+    fn field_slot(s: StmtId, f: Param) -> TypeId {
+        let ty = self.field_type(s, f)
+        if !f.state { return ty }
+        self.view.types.intern(Type.Cell(ty))
     }
 
     /// THE declared-slot law: a slot inside an aggregate holds a value
@@ -1246,7 +1257,12 @@ fn widthless_seats(ps: List<Param>) -> List<Param> {
 
 /// The `j`th field of a table, as a table of one.
 fn one_field(sig: StructSig, j: int) -> StructSig {
-    StructSig { names: [sig.names[j]], types: [sig.types[j]], defaults: [sig.defaults[j]] }
+    StructSig {
+        names: [sig.names[j]],
+        types: [sig.types[j]],
+        defaults: [sig.defaults[j]],
+        states: [sig.state_at(j)],
+    }
 }
 
 /// Tables laid end to end, in order.
@@ -1255,10 +1271,11 @@ fn joined_tables(ts: List<StructSig>) -> StructSig {
         names: [n for t in ts for n in t.names],
         types: [x for t in ts for x in t.types],
         defaults: [d for t in ts for d in t.defaults],
+        states: [s for t in ts for s in t.states],
     }
 }
 
-fn no_fields() -> StructSig { StructSig { names: [], types: [], defaults: [] } }
+fn no_fields() -> StructSig { StructSig { names: [], types: [], defaults: [], states: [] } }
 
 // ── The bound voices ──
 

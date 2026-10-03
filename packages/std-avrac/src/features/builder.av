@@ -452,10 +452,13 @@ impl Builder {
     /// Field names, their types, and the DEFAULTS some carry, zipped —
     /// captures arrive per slot, so a default finds its field by
     /// POSITION: the last name that starts before it.
-    fn fields_zipped(fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>, marks: List<Mark>) -> Result<
-        List<Param>,
-        string,
-    > {
+    fn fields_zipped(
+        fs: List<Token>,
+        ft: List<TypeRef>,
+        fds: List<ExprId>,
+        marks: List<Mark>,
+        states: List<Token> = [],
+    ) -> Result<List<Param>, string> {
         let typed = [self.type_after(fs, ft, j) for j, f in fs]
         if [t for t in typed if t != null].length != ft.length {
             return .Err(zip_defect_of("field names and types"))
@@ -473,6 +476,7 @@ impl Builder {
                 promises: plain_mark,
                 id: self.store.alloc_param_id(f.span),
                 marks: w.at(f.span.lo),
+                state: state_before(fs, states, j, self.span?.lo ?? 0),
             } for j, f in fs],
         )
     }
@@ -550,6 +554,14 @@ export fn spread_named(entries: List<Param>, names: List<Token>, spreads: List<T
 /// Strictly inside the window `after..before`.
 export fn between(at: int, after: int, before: int) -> bool {
     at > after && at < before
+}
+
+/// Whether the `state` word stands immediately before field `j` — the
+/// optional token is captured per field, so it finds its field by
+/// POSITION the way a default does.
+fn state_before(fs: List<Token>, states: List<Token>, j: int, from: int) -> bool {
+    let lo = if j == 0 { from } else { fs[j - 1].span.lo }
+    states.any((s) -> between(s.span.lo, lo, fs[j].span.lo))
 }
 
 /// Parameter seats from two parallel captures — the names and the

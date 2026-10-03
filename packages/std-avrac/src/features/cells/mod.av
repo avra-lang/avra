@@ -99,10 +99,21 @@ fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
     if mc.args.length != 1 { return cx.lower_defect(mc.e, "a Cell.new without one value survived typing") }
     let value = cx.reg_of(mc.args[0])
+    let held? = cx.view.types.cell_inner(cx.type_at(mc.e)) else {
+        return cx.lower_defect(mc.e, "a Cell.new whose cell has no held type survived typing")
+    }
+    cell_holding(cx, held, value)
+}
+
+/// A fresh cell holding `value` — the ONE way a `Cell<T>` is minted,
+/// shared by `Cell.new` and a `state` field's default or written slot.
+/// The cell OWNS what it holds: a list or map value is opened unique,
+/// so the cell's in-place writes never reach a binding it was made from.
+export fn cell_holding(mut cx: LowerCx, held: TypeId, value: Reg) -> Reg {
     let size = cx.box_size(1)
-    let cell = cx.grown_box(cx.shape_at(mc.e), size, [value])
-    if written_in_place(cx.view.types.seen_shape(cx.type_at(mc.args[0]))) {
-        let _ = cx.owned_slot_unique(cx.shape_at(mc.args[0]), cell, cx.const_int(0))
+    let cell = cx.grown_box(Type.Cell(held), size, [value])
+    if written_in_place(cx.view.types.seen_shape(held)) {
+        let _ = cx.owned_slot_unique(cx.view.types.shape_of(held), cell, cx.const_int(0))
     }
     cell
 }

@@ -11,6 +11,7 @@ use features.{
     fields_are,
     lacks_voice,
     slot_worthy,
+    slot_want,
     tparams_refused,
     unpinned_of,
 }
@@ -97,7 +98,7 @@ fn generic_field(
     mut bound: Pins,
 ) -> bool {
     let slot? = field_slot(cx, name, sig, f, v, w) else { return false }
-    let want = sig.types[slot]
+    let want = slot_want(cx.view.types, sig, slot)
     if cx.agreed(v, want, decl, bound) { return true }
     wrong_field_type(cx, v, f, want)
     false
@@ -189,7 +190,8 @@ fn field_check(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprI
     if slot == null { return }
     // the ONE assignment door — a field slot lifts like any other
     // (auto-Ok, dyn boxing), and the lift is recorded for lowering
-    if !cx.accepts(v, sig.types[slot!]) { wrong_field_type(cx, v, f, sig.types[slot!]) }
+    let want = slot_want(cx.view.types, sig, slot!)
+    if !cx.accepts(v, want) { wrong_field_type(cx, v, f, want) }
 }
 
 // ── The field-law voices, worded once for both paths ──
