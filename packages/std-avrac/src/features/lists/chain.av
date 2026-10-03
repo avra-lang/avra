@@ -103,7 +103,7 @@ export fn extreme_chain(mut cx: LowerCx, mc: MethodCall, less: bool) -> Reg {
 fn subject_clauses(mut cx: LowerCx, subject: ExprId) -> List<Clause> {
     let inner? = chain_clauses(cx, subject) else {
         let _ = cx.reg_of(subject)
-        let head: List<Clause> = [head_clause(subject, null)]
+        let head: List<Clause> = [head_of(cx, subject)]
         return head
     }
     inner
@@ -113,6 +113,15 @@ fn subject_clauses(mut cx: LowerCx, subject: ExprId) -> List<Clause> {
 /// its own type yields (a string walks `int` codepoints).
 fn head_clause(subject: ExprId, elem: TypeId?) -> Clause {
     .Head(Source { source: subject, hi: null, index: false, lookup: null, elem: elem })
+}
+
+/// The head a base receiver opens: a `(lo..hi)` range walks its bounds
+/// (a `counted` walk), anything else walks itself.
+fn head_of(cx: LowerCx, subject: ExprId) -> Clause {
+    match cx.view.store.expr(subject) {
+        .Range(lo, hi) -> .Head(Source { source: lo, hi: hi, index: false, lookup: null, elem: null }),
+        _ -> head_clause(subject, null),
+    }
 }
 
 /// A receiver's fn boxed, as the pipeline's own seat.
@@ -150,7 +159,7 @@ fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
         prefix = inner
     } else {
         let _ = cx.reg_of(subject)
-        prefix = [head_clause(subject, null)]
+        prefix = [head_of(cx, subject)]
     }
     let clause? = link_clause(cx, stage, arg, subject, e) else { return null }
     prefix.concat([clause])

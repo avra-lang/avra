@@ -12,6 +12,12 @@ export fn on_list(t: Type) -> bool {
     t is .List || t is .EmptyList
 }
 
+/// The pipeline verbs' receivers: a list (or the empty literal), or a
+/// `(lo..hi)` range, which walks as its own counter.
+export fn on_walk(t: Type) -> bool {
+    t is .List || t is .EmptyList || t is .Range
+}
+
 // ── The rows' rules ──
 
 /// `xs.map(f)` — a list of what the fn answers, which must fit a
@@ -307,7 +313,10 @@ export fn check_join(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 /// THE PRELUDE the plain rows share: the element the receiver
 /// holds. The empty literal refuses in the row's words and absorbs.
 fn elem_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
-    let elem: TypeId? = cx.view.types.element(cx.type_at(mc.subject))
+    let elem: TypeId? = match cx.view.types.seen_shape(cx.type_at(mc.subject)) {
+        .Range -> cx.type(int),
+        _ -> cx.view.types.element(cx.type_at(mc.subject)),
+    }
     if elem == null && cx.seen_at(mc.subject) is .EmptyList { let _ = unknowable_walk(cx, mc.e, name) }
     elem
 }
