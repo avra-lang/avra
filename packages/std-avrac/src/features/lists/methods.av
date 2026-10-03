@@ -240,6 +240,18 @@ fn extremes(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
     cx.type(int?)
 }
 
+/// `xs.min_by(k)` / `xs.max_by(k)` — the element whose int key is the
+/// extreme, absent when nothing arrived.
+export fn check_min_by(mut cx: TypeCx, mc: MethodCall) -> TypeId { keyed_extreme(cx, mc, "min_by") }
+export fn check_max_by(mut cx: TypeCx, mc: MethodCall) -> TypeId { keyed_extreme(cx, mc, "max_by") }
+
+fn keyed_extreme(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
+    let seat? = walk_seat(cx, mc, name) else { return cx.error_type }
+    if !(cx.view.types.seen_shape(seat.elem) is .Int) { return ints_only(cx, mc.e, seat.elem, name) }
+    if !(cx.view.types.seen_shape(seat.answer) is .Int) { return ints_only(cx, mc.e, seat.answer, name) }
+    cx.type(int?)
+}
+
 /// A verb that adds or ranks numbers, refused on a list of something
 /// else in its own words.
 fn ints_only(mut cx: TypeCx, e: ExprId, elem: TypeId, name: string) -> TypeId {
