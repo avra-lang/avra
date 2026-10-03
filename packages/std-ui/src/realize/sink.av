@@ -1,18 +1,27 @@
 //! `realize/sink.av` — ONE walk, every target. A target answers three
-//! operations; the tree is walked here and nowhere else.
+//! operations; the tree is walked here and nowhere else. The walk owns
+//! each node's IDENTITY (its id, parent and index), so no target
+//! recomputes where a node sits.
 use realize.render.{Node}
 
-/// What a target answers while a tree is walked.
+/// What a target answers while a tree is walked. `opened` is handed the
+/// node's identity, `words` its own words under that identity, and
+/// `closed` the node's end.
 export trait Sink {
-    fn opened(n: Node)
-    fn words(s: string)
+    fn opened(id: int, parent: int, index: int, n: Node)
+    fn words(id: int, s: string)
     fn closed(n: Node)
 }
 
-/// The walk: a node opened, its words, its children, then closed.
-export fn draw(n: Node, sink: dyn Sink) {
-    sink.opened(n)
-    sink.words(n.words())
-    for c in n.children { draw(c, sink) }
+/// The walk: a node opened, its words, its children, then closed. The
+/// root's parent is -1 and its index 0.
+export fn draw(n: Node, sink: dyn Sink) { walk(n, -1, 0, Cell.new(0), sink) }
+
+fn walk(n: Node, parent: int, index: int, next: Cell<int>, sink: dyn Sink) {
+    let id = next.get()
+    next.set(id + 1)
+    sink.opened(id, parent, index, n)
+    sink.words(id, n.words())
+    for i, c in n.children { walk(c, id, i, next, sink) }
     sink.closed(n)
 }

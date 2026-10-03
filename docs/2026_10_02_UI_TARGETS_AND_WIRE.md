@@ -20,6 +20,25 @@
   attribute/text set;
 - themes and tokens, interaction states, accessible names.
 
+## The one update graph, many emitters
+
+`realize/update.av` is the ONE update graph. The `Sink` walk owns each
+node's identity (id, parent, index) and collects a stream of NEUTRAL ops:
+`Mount(prim, attrs, box)`, `Words`, `Event`. No target's currency is in
+it — a TAG, a CLASS, a BYTE op and a drawn LINE are an emitter's.
+
+- `realize/dom/frame.av` SERIALIZES the graph: `frame`, `frame_text` and
+  `sheet` all read `plan(root)`. The DOM names its own tag, class and
+  byte op; the graph never does.
+- `realize/canvas/canvas.av` is the second emitter over the SAME graph:
+  a flow layout in whole theme steps, so the ops become draw calls
+  (`Fill`/`Text`/`Rule`/`Block`) with coordinates.
+- `realize/html` and `realize/tui` stream the same walk to a string.
+
+"Across all platforms" is one graph with different backends, never a
+lowest common denominator: the canvas has no tags, the DOM has no
+geometry, and both read the same ops.
+
 ## Native projection (Swift / iOS / macOS)
 
 | neutral | SwiftUI / UIKit |
