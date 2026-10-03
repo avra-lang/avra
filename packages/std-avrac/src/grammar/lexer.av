@@ -32,7 +32,7 @@ use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
 /// text between the braces, holes as placeholders. `Component` is an
 /// imported component's word, which opens an instance. `Octets` is a
 /// byte string `b"…"`, its `text` the spelling between the quotes.
-export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component, Octets }
+export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component, State, Octets }
 
 /// One DSL token. For Str and the IStr kinds, `text` is the
 /// unquoted, unescaped contents; the span covers the delimiters. A
@@ -1466,9 +1466,32 @@ export fn lex_blocks(
     keywords: List<string> = [],
 ) -> LexResult {
     let lexed = lex_words(src, line_boundary, true, words, false)
-    if components.is_empty() && named.is_empty() { return lexed }
     let ts = lexed.tokens
-    lexed with { tokens: [if opens_instance(ts, i, components, named, keywords) { t with { kind: TokenKind.Component } } else { t } for i, t in ts] }
+    lexed
+        with {
+            tokens: [
+                if opens_state(ts, i) {
+                    t with { kind: TokenKind.State }
+                } else if opens_instance(ts, i, components, named, keywords) {
+                    t with { kind: TokenKind.Component }
+                } else {
+                    t
+                }
+                for i, t in ts
+            ],
+        }
+}
+
+/// Whether the token at `i` is `state` opening a state declaration — a
+/// SOFT keyword: it means `state` only where a binding follows, so a
+/// binding, a field or a property called `state` stays an ordinary name.
+/// `state NAME :` and `state NAME =` are the two shapes it claims.
+fn opens_state(ts: List<Token>, i: int) -> bool {
+    let t = ts[i]
+    if t.kind != TokenKind.Name || t.text != "state" { return false }
+    if !starts_statement(ts, i) { return false }
+    if i + 1 >= ts.length || ts[i + 1].kind != TokenKind.Name { return false }
+    i + 2 < ts.length && (ts[i + 2].lit_matches(":") || ts[i + 2].lit_matches("="))
 }
 
 /// Whether the token at `i` is a component's word opening an instance.

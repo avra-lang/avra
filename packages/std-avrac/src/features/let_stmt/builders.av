@@ -8,6 +8,19 @@ fn build_discard(b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.Discard(b.expr(0)?))
 }
 
+/// `state n: T = v` — a PLACE: the binding holds a Cell the body owns, a
+/// read answers the `T` it holds, and a write assigns it. The builder
+/// spells the LET and MARKS it; typing gives the binding its Cell and
+/// lowering mints it, so reads and writes go through the one place.
+fn build_state(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(1)?
+    let t = b.type_refs(2)?
+    let v = b.expr(3)?
+    let s = b.store.alloc_stmt(Stmt.Let(Scoped(n.text), t.first(), v), b.span)
+    b.store.mark_state(s)
+    .Ok(LangNode.NStmt(s))
+}
+
 fn build_let(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let t = b.type_refs(1)?
