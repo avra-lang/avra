@@ -336,7 +336,7 @@ impl LowerCx {
             // unless the body is INLINED here, where the site's
             // registers take the seats
             .LambdaParam(lam, i) -> self.inline_seat(lam, i) ?? if self.facts.takes_by_name(lam) { self.offered_reg(lam, i, ty) } else { Reg { index: i + 1 } },
-            .Capture(_, j) -> self.env_read(j, ty),
+            .Capture(l, j) -> self.capture_read(l, j, ty),
             .Index(s) -> self.body.index_reg(s),
             .Decl(d) -> when {
                 self.view.decls.fn_name(d) != null -> self.fn_value_reg(e, self.wanted(d))
@@ -428,6 +428,27 @@ impl LowerCx {
     /// that value — a literal as written, else what the evaluator
     /// SETTLED — minted in THIS body. Every other binding reads the
     /// slot it was bound to.
+    /// Whether a capture's source is a `state` binding, and that stmt.
+    fn state_capture(l: ExprId, j: int) -> StmtId? {
+        let cap? = self.names.capture(l) else { return null }
+        if j >= cap.sources.length { return null }
+        match cap.sources[j] { .Def(s) if self.view.store.is_state_stmt(s) -> s, rest -> null }
+    }
+
+    /// The cell a `state` capture's env slot holds.
+    fn state_capture_cell(l: ExprId, j: int) -> Reg? {
+        let s? = self.state_capture(l, j) else { return null }
+        self.env_read(j, self.def_ty(s))
+    }
+
+    /// A `state` capture's read: the env holds the CELL, so the name
+    /// reads the value it holds — the capture SHARES the place.
+    mut fn capture_read(l: ExprId, j: int, ty: TypeId) -> Reg? {
+        let s? = self.state_capture(l, j) else { return self.env_read(j, ty) }
+        let cell? = self.env_read(j, self.def_ty(s)) else { return null }
+        self.proven_read(cell, 0, ty)
+    }
+
     /// A `state` binding's seed, boxed into the Cell the binding holds:
     /// the place IS the cell, so every later read and write finds it.
     mut fn state_cell(s: StmtId, v: Reg) -> Reg {

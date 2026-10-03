@@ -34,9 +34,17 @@ export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
         .Index(_) -> immutable_index(cx, n, at),
         .Def(s) -> mut_or_refused(cx, s, n, at),
         .Pattern(_, _) -> immutable_bind(cx, n, at),
-        .Capture(_, _) -> captured_copy(cx, n, at),
+        .Capture(l, j) -> if captures_state(cx, l, j) { nothing() } else { captured_copy(cx, n, at) },
         .Decl(d) -> declared_place(cx, d, n, at),
     }
+}
+
+/// Whether a capture's source is a `state` binding — a PLACE the lambda
+/// shares, so assigning through it reaches the cell, never a copy.
+fn captures_state(cx: ResolveCx, l: ExprId, j: int) -> bool {
+    let cap? = cx.facts.capture(l) else { return false }
+    if j >= cap.sources.length { return false }
+    match cap.sources[j] { .Def(s) -> cx.view.store.is_state_stmt(s), rest -> false }
 }
 
 /// A declaration is never a place: a fn and a const each refuse in
