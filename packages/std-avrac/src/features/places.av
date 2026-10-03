@@ -66,7 +66,7 @@ impl LowerCx {
     mut fn opened_place(e: ExprId) -> Place? {
         let step? = self.view.store.place_step(e) else { return null }
         match step {
-            .Root(_) -> self.cell_place(e),
+            .Root(_) -> self.root_place(e),
             .Field(subject, name) -> self.field_place(subject, name.of),
             .At(subject, index) -> Place.Slot(self.unique_box(subject), self.reg_of(index)),
             .Unwrap(subject) -> self.unwrapped_place(e, subject),
@@ -98,6 +98,22 @@ impl LowerCx {
     mut fn field_place(subject: ExprId, name: string) -> Place? {
         if self.flat_at(subject) { return self.opened_place(subject) }
         Place.Slot(self.unique_box(subject), self.field_slot(subject, name))
+    }
+
+    /// A root's place: a `state` root is the value its cell HOLDS, so a
+    /// write lands in the cell's one slot; every other root writes its
+    /// own box whole.
+    fn root_place(e: ExprId) -> Place? {
+        let b? = self.names.binding(e) else { return self.cell_place(e) }
+        match b {
+            .Def(s) if self.view.store.is_state_stmt(s) -> self.state_place(e, s),
+            rest -> self.cell_place(e),
+        }
+    }
+
+    fn state_place(e: ExprId, s: StmtId) -> Place? {
+        let cell? = self.defined_reg(e, s, self.def_ty(s)) else { return null }
+        Place.Slot(cell, self.const_int(0))
     }
 
     fn cell_place(e: ExprId) -> Place? {

@@ -484,7 +484,7 @@ impl TypeCx {
             .Param(i) -> self.narrowed_param(e, i) ?? self.seat_type(i),
             // the receiver rides seat 0 of a method's sig
             .Receiver -> self.seat_type(0),
-            .Def(s) -> self.narrowed_def(e, s) ?? self.def_type(s),
+            .Def(s) -> self.state_held(s) ?? self.narrowed_def(e, s) ?? self.def_type(s),
             // The arm's OWNER spoke this type before the arm was
             // walked; an absent one means the bind was refused.
             .Pattern(v, j) -> self.facts.pattern_type(v, j) ?? self.error_type,
@@ -641,8 +641,22 @@ impl TypeCx {
     /// An annotated binding's DECLARED type: interned once, recorded
     /// so every later read of the name answers it, and returned for
     /// the value's acceptance check.
+    /// A `state` binding's READ answers what its cell HOLDS, never the
+    /// cell: the binding is the place, the name is the value.
+    fn state_held(s: StmtId) -> TypeId? {
+        if !self.view.store.is_state_stmt(s) { return null }
+        self.view.types.cell_inner(self.def_type(s))
+    }
+
     mut fn bind_declared(s: StmtId, ann: TypeRef) -> TypeId {
         let ty = self.annotated(s, ann)
+        // A `state` binding's PLACE is a Cell; its VALUE is the T it
+        // holds. The binding records the Cell so reads and writes go
+        // through it, and answers T so the seed is checked as T.
+        if self.view.store.is_state_stmt(s) {
+            self.record_binding(s, self.view.types.intern(Type.Cell(ty)))
+            return ty
+        }
         self.record_binding(s, ty)
         ty
     }
