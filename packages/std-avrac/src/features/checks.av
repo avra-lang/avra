@@ -17,6 +17,7 @@ use core.{
     Binding,
     SeatMark,
     mut_mark,
+    state_mark,
     settled_mark,
     isolated_mark,
     is_literal,
@@ -148,6 +149,7 @@ impl TypeCx {
             if mut_mark(g.marks, j) && !mut_mark(w.marks, j) { fits = false }
             if settled_mark(g.marks, j) && !settled_mark(w.marks, j) { fits = false }
             if isolated_mark(g.marks, j) && !isolated_mark(w.marks, j) { fits = false }
+            if state_mark(g.marks, j) && !state_mark(w.marks, j) { fits = false }
         }
         fits
     }
@@ -1493,6 +1495,40 @@ impl TypeCx {
         }
     }
 
+    /// THE STATE SEAT'S LAW: a `state` seat is a PLACE the caller
+    /// owns, so its argument is a `state` binding (or a `state` seat
+    /// it forwards) — never a value, a plain place, or an explicit
+    /// `Cell` the callee would have to mint.
+    mut fn state_seats_law(callee: string, marks: List<SeatMark>, args: List<ExprId>) {
+        for j, a in args {
+            if state_mark(marks, j) && !self.state_seat_arg(a) { self.value_in_state_seat(a, callee, j) }
+        }
+    }
+
+    /// Whether the argument hands a `state` seat the place it wants:
+    /// a `state` binding, or a `state` seat the caller forwards.
+    fn state_seat_arg(a: ExprId) -> bool {
+        let b? = self.names.binding(a) else { return false }
+        match b {
+            .Def(s) -> self.view.store.is_state_stmt(s),
+            .Param(i) -> state_mark(self.scope_marks, i),
+            _ -> false,
+        }
+    }
+
+    mut fn value_in_state_seat(a: ExprId, callee: string, j: int) {
+        self
+            .emit(
+                refusal(
+                    "type.seat",
+                    self.loc_of(a),
+                    "seat ${j + 1} of `${callee}` is `state`, and this has no place to write",
+                    "a value",
+                    "pass the `state` binding it reads",
+                ),
+            )
+    }
+
     /// A DECLARATION'S marks for the seats its ARGUMENTS fill — from
     /// `base`, which is 1 past a method's own receiver. The law itself
     /// reads MARKS, so a declared callee and a fn-typed value are one
@@ -1525,6 +1561,7 @@ impl TypeCx {
     ) -> bool {
         let marks = self.declared_marks(d, base, args.length)
         self.mut_seats_law(e, callee, marks, args, receiver)
+        self.state_seats_law(callee, marks, args)
         self.isolated_seats_law(callee, self.seat_names(d), marks, args)
         let fps? = self.const_seats(callee, self.seat_names(d), marks, args) else { return false }
         if !fps.is_empty() { self.record_subst(e, d, [], fps) }

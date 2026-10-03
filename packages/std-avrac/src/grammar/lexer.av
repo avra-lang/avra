@@ -1479,13 +1479,21 @@ export fn lex_blocks(
 /// Whether the token at `i` is `state` opening a state declaration — a
 /// SOFT keyword: it means `state` only where a binding follows, so a
 /// binding, a field or a property called `state` stays an ordinary name.
-/// `state NAME :` and `state NAME =` are the two shapes it claims.
+/// `state NAME :` and `state NAME =` are the two shapes it claims, at a
+/// statement's start or a parameter's own mark position.
 fn opens_state(ts: List<Token>, i: int) -> bool {
     let t = ts[i]
     if t.kind != TokenKind.Name || t.text != "state" { return false }
-    if !starts_statement(ts, i) { return false }
+    if !starts_statement(ts, i) && !after_param_sep(ts, i) { return false }
     if i + 1 >= ts.length || ts[i + 1].kind != TokenKind.Name { return false }
     i + 2 < ts.length && (ts[i + 2].lit_matches(":") || ts[i + 2].lit_matches("="))
+}
+
+/// Whether `i` stands where a parameter's mark does: right after the
+/// list's `(` or a `,`. A parameter NAMED `state` writes `state :`,
+/// so this shape claims only a mark before a binding.
+fn after_param_sep(ts: List<Token>, i: int) -> bool {
+    i > 0 && (ts[i - 1].lit_matches("(") || ts[i - 1].lit_matches(","))
 }
 
 /// Whether the token at `i` is a component's word opening an instance.

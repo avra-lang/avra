@@ -1062,7 +1062,7 @@ export type Arrow = { seats: List<TypeId>, marks: List<SeatMark>, answer: TypeId
 /// never through this derive.
 @derive(Fingerprint)
 @derive(Exemplar)
-export type SeatMark = { mutable: bool, settled: bool, unshared: bool = false, consumed: bool = false }
+export type SeatMark = { mutable: bool, settled: bool, state: bool = false, unshared: bool = false, consumed: bool = false }
 
 /// The unmarked seat — a lambda's, a wrapper's, a trailing seat's.
 export const plain_mark: SeatMark = SeatMark { mutable: false, settled: false }
@@ -1096,6 +1096,13 @@ export fn mut_mark(marks: List<SeatMark>, j: int) -> bool {
     mark_at(marks, j).mutable
 }
 
+/// Whether seat `j` is a `state` seat — a PLACE the caller owns: the
+/// callee reads `T` and writes the caller's cell, so its argument is
+/// the place, never a value.
+export fn state_mark(marks: List<SeatMark>, j: int) -> bool {
+    mark_at(marks, j).state
+}
+
 /// Whether seat `j` demands compile-time settlement.
 export fn settled_mark(marks: List<SeatMark>, j: int) -> bool {
     mark_at(marks, j).settled
@@ -1116,9 +1123,10 @@ export fn consumed_mark(marks: List<SeatMark>, j: int) -> bool {
 /// order the grammar takes them.
 export fn mark_prefixed(m: SeatMark, word: string) -> string {
     let inner = if m.unshared { "isolated ${word}" } else { word }
-    if m.settled { return if m.mutable { "const mut ${inner}" } else { "const ${inner}" } }
-    if m.mutable { return "mut ${inner}" }
-    inner
+    let stated = if m.state { "state ${inner}" } else { inner }
+    if m.settled { return if m.mutable { "const mut ${stated}" } else { "const ${stated}" } }
+    if m.mutable { return "mut ${stated}" }
+    stated
 }
 
 /// The canonical word for a mark set — ONE spelling in the
@@ -1126,14 +1134,15 @@ export fn mark_prefixed(m: SeatMark, word: string) -> string {
 /// words agree. FIXED WIDTH PER SEAT: a splice with no separator over
 /// a variable-width element moves its own boundary (CLAUDE.md, "a
 /// flat concatenation of two sequences has a boundary that moves"),
-/// so `owned` rides a SECOND character alongside the first rather
-/// than an optional trailing one — every seat spends exactly two.
+/// so `owned` and `state` ride LATER characters alongside the first
+/// rather than optional trailing ones — every seat spends exactly
+/// the same width.
 fn mark_words(marks: List<SeatMark>) -> string {
     joined([mark_word(m) for m in marks], "")
 }
 
 fn mark_word(m: SeatMark) -> string {
-    "${mark_letter(m)}${if m.consumed { "o" } else { "_" }}"
+    "${mark_letter(m)}${if m.consumed { "o" } else { "_" }}${if m.state { "s" } else { "_" }}"
 }
 
 fn mark_letter(m: SeatMark) -> string {
@@ -1159,7 +1168,7 @@ fn trimmed_marks(t: Type) -> Type {
 }
 
 fn is_plain(m: SeatMark) -> bool {
-    !m.mutable && !m.settled && !m.unshared && !m.consumed
+    !m.mutable && !m.settled && !m.unshared && !m.consumed && !m.state
 }
 
 fn trimmed(marks: List<SeatMark>) -> List<SeatMark> {

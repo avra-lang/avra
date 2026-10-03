@@ -1,6 +1,6 @@
 //! The call's lowering rule: argument registers, then one Call —
 //! the memory pass owns the retains the ABI demands.
-use core.{ExprId, Reg, Ins, StmtId, DeclId, SeatMark, mut_mark}
+use core.{ExprId, Reg, Ins, StmtId, DeclId, SeatMark, mut_mark, state_mark}
 use features.{LowerCx, bound_decl_of}
 
 fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -9,7 +9,7 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
         .Call(callee, _, args) -> {
             let host: string? = cx.extern_callee(e)
             if host != null { return extern_call_reg(cx, e, host!, host_regs(cx, e, args)) }
-            let regs = [cx.reg_of(a) for a in args]
+            let regs = call_arg_regs(cx, e, args)
             let made: Reg? = named_reg(cx, e, regs)
             if made != null { return made! }
             let through: Reg? = cx.indirect_callee(e)
@@ -20,6 +20,14 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
         },
         rest -> cx.foreign_node(e),
     }
+}
+
+/// A direct call's argument registers, a `state` seat handed its
+/// caller's CELL where every other seat is handed a value.
+fn call_arg_regs(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> List<Reg> {
+    let d? = bound_decl_of(cx.names, e) else { return [cx.reg_of(a) for a in args] }
+    let marks = cx.view.decls.marks_of(d, args.length)
+    [if state_mark(marks, j) { cx.state_arg_cell(a) ?? cx.reg_of(a) } else { cx.reg_of(a) } for j, a in args]
 }
 
 /// A direct call's registers in its callee's seat order.
