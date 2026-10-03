@@ -650,6 +650,40 @@ LLVMValueRef avra_llvm_build_text(LLVMBuilderRef b, const char* s, int64_t len, 
     return avra_llvm_global_text(LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(b))), s, len, name);
 }
 
+// ONE GLOBAL PER DISTINCT TEXT where only its ADDRESS is read. The name is the
+// bytes in hex, so distinct text never collides and identical text is ONE box;
+// the name is stripped from the artifact, so its length costs nothing a program
+// downloads. A `.Octets` BOX is NOT interned — its siblings reference it BY the
+// static's own name, so that name must stand.
+LLVMValueRef avra_llvm_intern_text(LLVMModuleRef m, const char* s, int64_t len) {
+    size_t n = (size_t)(len > 0 ? len : 0);
+    char* name = (char*)malloc(6 + n * 2 + 1);
+    if (!name) avra_trap("compiler defect: no room for an interned text name");
+    memcpy(name, ".istr.", 6);
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        unsigned char b = (unsigned char)s[i];
+        name[6 + i * 2] = hex[b >> 4];
+        name[7 + i * 2] = hex[b & 15];
+    }
+    name[6 + n * 2] = 0;
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    LLVMValueRef payload;
+    if (g) {
+        LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(ctx), 16, 0);
+        payload = LLVMConstInBoundsGEP2(LLVMInt8TypeInContext(ctx), g, &offset, 1);
+    } else {
+        payload = avra_llvm_global_text(m, s, len, name);
+    }
+    free(name);
+    return payload;
+}
+
+LLVMValueRef avra_llvm_build_interned_text(LLVMBuilderRef b, const char* s, int64_t len) {
+    return avra_llvm_intern_text(LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(b))), s, len);
+}
+
 // A slot array laid out whole: the header, the AvraArray, then its
 // cells and their marks in one buffer, the way the runtime
 // allocates one. A cell arrives as an i64 or as a POINTER constant
