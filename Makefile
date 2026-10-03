@@ -229,12 +229,24 @@ build/wasm32/%.o: runtime/%.c
 	@mkdir -p build/wasm32
 	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
 
+# A PACKAGE'S C FOR WASM, from the paths its manifest's `wasm_objects` names.
+# A package opts in by naming its wasm objects; one that names none is refused
+# by the build, never compiled here.
+WASM_PACKAGE_OBJS := $(sort $(foreach o,$(shell sed -n 's/.*wasm_objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml 2>/dev/null | tr ',' '\n' | tr -d ' "'),build/wasm32/$(notdir $(o))))
+
+build/wasm32/%.o: %.c
+	@mkdir -p build/wasm32
+	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -I$(dir $<) -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
+
 $(WASM_RUNTIME_LIB): $(WASM_RUNTIME_OBJS)
 	@mkdir -p build/wasm32
 	@rm -f $@
 	@$(WASM_AR) rcs $@ $^
 
 wasm-runtime: $(WASM_RUNTIME_LIB)
+
+# The package objects every wasm build may link — the manifests declare them.
+wasm-packages: $(WASM_PACKAGE_OBJS)
 
 # THE WASM PROOF: build the fixtures native and for wasm32 and require
 # identical stdout. Skips, spoken, where the wasm toolchain or node is absent.
@@ -264,7 +276,7 @@ wasm-archive:
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-check wasm-seam wasm-archive wasm-refuses wasm-size
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-size
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.

@@ -23,10 +23,9 @@ fn link_objects(
 ) -> List<string> {
     if target != "" {
         // A WASM LINK: the driver's own target names crt1 and a libc, and the
-        // runtime archive is the wasm one. A package's native C is NOT linked:
-        // the socket, process and thread rows have no wasm body there and are
-        // host imports on this target, so an unreached one costs nothing and a
-        // reached one refuses rather than links foreign code.
+        // runtime archive is the wasm one. A package's WASM objects are linked
+        // where its manifest names them; a package whose C has no wasm body is
+        // refused by the build, never handed to the linker.
         // A REACTOR does not run `main` and does not exit: the host calls
         // `_initialize` once and then the program's exported fns per event.
         // `--strip-all` drops the DWARF and name sections the C toolchain
@@ -36,6 +35,7 @@ fn link_objects(
             .concat(if reactor { ["-mexec-model=reactor"] } else { [] })
             .concat(host_export_words())
             .concat(objs)
+            .concat(ws.link_words(target))
             .concat(
                 [
                     runtime,
@@ -49,7 +49,7 @@ fn link_objects(
     } else {
         ["-w", if ws.names_its_symbols() { "-rdynamic" } else { unreached_dropped() }]
             .concat(objs)
-            .concat(ws.link_words())
+            .concat(ws.link_words(""))
             .concat([runtime, "-o", out])
     }
 }
