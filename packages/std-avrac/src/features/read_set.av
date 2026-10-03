@@ -1,0 +1,126 @@
+//! THE READ SET — which `state` places an expression reads, the one
+//! analysis invalidation and lowering share. From it the compiler
+//! picks a site's mechanism instead of one runtime diff for everyone:
+//! a subtree that reads no state is CONSTANT, so it hoists into the
+//! binary and the frame never mentions it; a leaf reading exactly one
+//! place is a DIRECT WRITE to its node; anything else — several
+//! places, or a call whose callee's reads are another body's — stays
+//! on the CONSERVATIVE tree path, the reference semantics every
+//! lowering must match.
+//!
+//! TWO BOUNDARIES DELIMIT A SITE, both because a reader of `state`
+//! that is not this frame is not this site's:
+//!
+//! - A CLOSURE's body is its own frame, so a site reads the places it
+//!   CAPTURES (chained through nested closures) and never what the
+//!   body binds. Its own `state` locals belong to the closure.
+//! - A CALL's callee is another body, so its reads are not folded in
+//!   here: the site is conservative and never hoists.
+//!
+//! The complete child walk (`SyntaxArena.expr_children`) reaches
+//! hidden branches and statement bodies alike, so an `if`'s arm or a
+//! block's statement contributes its reads as any expression does.
+use core.{ExprId, StmtId, Binding, SyntaxArena, flatten, some_list, same_stmt}
+use features.{FileView, NameFacts}
+
+/// The `state` statement a binding names, when it names one — a
+/// capture chased through the closures between a name's home and the
+/// use, since a nested closure captures a place its parent captured.
+fn place_of(store: SyntaxArena, names: NameFacts, b: Binding) -> StmtId? {
+    match b {
+        .Def(s) if store.is_state_stmt(s) -> s,
+        .Capture(l, j) -> capture_place(store, names, l, j),
+        rest -> null,
+    }
+}
+
+/// The place a capture's SOURCE names — chained through the closures a
+/// nested capture passes through.
+fn capture_place(store: SyntaxArena, names: NameFacts, l: ExprId, j: int) -> StmtId? {
+    let cap? = names.capture(l) else { return null }
+    if j >= cap.sources.length { return null }
+    place_of(store, names, cap.sources[j])
+}
+
+/// The places a closure node CAPTURES.
+fn captured_places(store: SyntaxArena, names: NameFacts, e: ExprId) -> List<StmtId> {
+    let cap? = names.capture(e) else { return [] }
+    [p for src in cap.sources for p in some_list(place_of(store, names, src))]
+}
+
+/// The places THIS expression names directly — its own binding, and
+/// the captures a closure node carries.
+fn here(store: SyntaxArena, names: NameFacts, e: ExprId) -> List<StmtId> {
+    let caps = captured_places(store, names, e)
+    let b? = names.binding(e) else { return caps }
+    some_list(place_of(store, names, b)).concat(caps)
+}
+
+/// Every place `root`'s subtree names, children first — a closure is a
+/// leaf that yields its captures, never a branch into its body.
+fn reads_of(store: SyntaxArena, names: NameFacts, root: ExprId) -> List<StmtId> {
+    let own = here(store, names, root)
+    if store.expr_is_closure(root) { return own }
+    flatten([reads_of(store, names, k) for k in store.expr_children(root)]).concat(own)
+}
+
+/// Whether any expression in the subtree APPLIES a fn.
+fn holds_call(store: SyntaxArena, root: ExprId) -> bool {
+    if store.expr_is_call(root) { return true }
+    if store.expr_is_closure(root) { return false }
+    store.expr_children(root).any((k) -> holds_call(store, k))
+}
+
+/// Each place once, in first-read order.
+fn deduped(places: List<StmtId>) -> List<StmtId> {
+    mut out: List<StmtId> = []
+    for p in places {
+        if !out.any(same_stmt(it, p)) { out.push(p) }
+    }
+    out
+}
+
+/// The `state` places `root`'s subtree reads, deduped. A call is a
+/// boundary: the callee's reads are the callee's body's, never folded
+/// in here.
+export fn read_set_of(view: FileView, names: NameFacts, root: ExprId) -> List<StmtId> {
+    deduped(reads_of(view.store, names, root))
+}
+
+/// Whether the subtree reads any state at all.
+export fn reads_state_of(view: FileView, names: NameFacts, root: ExprId) -> bool {
+    !read_set_of(view, names, root).is_empty()
+}
+
+/// Whether the subtree is CONSTANT — it reads no state and holds no
+/// call, so it hoists into the binary and the frame never mentions it.
+/// A call is a boundary, not a guarantee, so it refuses the hoist
+/// until the callee's own read set is folded in.
+export fn hoistable_of(view: FileView, names: NameFacts, root: ExprId) -> bool {
+    read_set_of(view, names, root).is_empty() && !holds_call(view.store, root)
+}
+
+/// How a site lowers, from its read set — the compiler's per-site
+/// choice. `Direct` is the one-read leaf; several places, or an
+/// opaque call, stay on the tree path. The KEYED list joins this
+/// registry with the `list … by` construct and content-addressed
+/// site ids.
+export enum SiteLowering {
+    /// reads no state: the subtree is constant and hoists into the
+    /// binary — the frame never mentions it
+    Hoist
+    /// reads exactly one state place: a direct write to its node
+    Direct(place: StmtId)
+    /// several places, or a call whose callee's reads are unknown —
+    /// the conservative tree path
+    Tree
+}
+
+/// The lowering a site earns: `Hoist`, `Direct`, or `Tree`.
+export fn site_lowering_of(view: FileView, names: NameFacts, root: ExprId) -> SiteLowering {
+    if holds_call(view.store, root) { return .Tree }
+    let places = read_set_of(view, names, root)
+    if places.is_empty() { return .Hoist }
+    if places.length == 1 { return .Direct(places[0]) }
+    .Tree
+}

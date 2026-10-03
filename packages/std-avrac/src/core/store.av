@@ -1186,6 +1186,21 @@ impl SyntaxArena {
         match self.expr(e) { .Call(callee, _, _) -> callee.of, _ -> null }
     }
 
+    /// Whether an expression APPLIES a fn — a direct call, or a fn
+    /// value applied. Its callee's reads are the callee's body's, so
+    /// a site holding one never hoists here.
+    fn expr_is_call(e: ExprId) -> bool {
+        match self.expr(e) { .Call(_, _, _) or .CallValue(_, _) -> true, rest -> false }
+    }
+
+    /// Whether an expression is a CLOSURE — its body is a frame of its
+    /// own, so a visitor reads the places it CAPTURES and never walks
+    /// in. `spawn`'s body is the lambda it wraps, so it is no boundary
+    /// itself.
+    fn expr_is_closure(e: ExprId) -> bool {
+        match self.expr(e) { .Lambda(_, _) -> true, rest -> false }
+    }
+
     /// Does the PRONOUN ride this subtree unbound? `it` belongs to
     /// the nearest enclosing METHOD call or trailing block, so six
     /// nodes answer for themselves and every other asks the children
