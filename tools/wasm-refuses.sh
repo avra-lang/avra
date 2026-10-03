@@ -12,6 +12,9 @@ work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-refuses.XXXXXX")}
 
 say() { echo "wasm-refuses: $*" >&2; }
 [ -x "$avra" ] || { say "no compiler at $avra"; exit 1; }
+command -v clang >/dev/null 2>&1 || { say "clang not on PATH — skipped"; exit 0; }
+clang --print-targets 2>/dev/null | grep -q wasm32 || { say "clang has no wasm32 target — skipped"; exit 0; }
+command -v wasm-opt >/dev/null 2>&1 || { say "wasm-opt (binaryen) not on PATH — skipped"; exit 0; }
 ( cd "$tree" && make -s wasm-runtime wasm-packages ) || { say "the package wasm objects did not build"; exit 1; }
 
 # fixture name -> the symbol the refusal must name

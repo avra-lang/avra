@@ -22,6 +22,7 @@ skip() { say "$* — skipped"; exit 0; }
 command -v "$node" >/dev/null 2>&1 || skip "node not on PATH"
 command -v clang >/dev/null 2>&1 || skip "clang not on PATH"
 clang --print-targets 2>/dev/null | grep -q wasm32 || skip "clang has no wasm32 target"
+command -v wasm-opt >/dev/null 2>&1 || skip "wasm-opt (binaryen) not on PATH"
 
 if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
     ( cd "$tree" && make -s wasm-runtime ) || skip "the wasm runtime archive did not build"
