@@ -243,8 +243,15 @@ impl Workspace {
     /// verbatim and is heard from the program's own manifest alone.
     /// Each word is ONE argv element, so nothing in any of them means
     /// anything to a shell.
-    fn link_words() -> List<string> {
-        flatten([self.package_link(pkg) for pkg in self.packages()])
+    fn link_words(target: string) -> List<string> {
+        if target != "" {
+            // A non-host link carries the package C that TARGET can build —
+            // the `wasm_objects` a manifest names — and never a native `-L`,
+            // `-l` or `[link.raw]`. A package with none is refused, not linked.
+            flatten([self.package_wasm_objects(pkg) for pkg in self.packages()])
+        } else {
+            flatten([self.package_link(pkg) for pkg in self.packages()])
+        }
     }
 
     /// Whether a package's C resolves the program's own symbols by name
@@ -257,7 +264,7 @@ impl Workspace {
     fn package_link(pkg: Package) -> List<string> {
         let m = self.manifest(pkg.ordinal)
         self
-            .package_objects(pkg)
+            .package_objects(pkg, "")
             .concat(["-L${d}" for d in filled_words(m.search)])
             .concat(["-l${l}" for l in filled_words(m.libs)])
             .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
@@ -265,14 +272,19 @@ impl Workspace {
 
     /// The objects a package's manifest links into every program that
     /// reaches it.
-    fn package_objects(pkg: Package) -> List<string> {
-        [joined_path(pkg.root, o) for o in filled_words(self.manifest(pkg.ordinal).objects)]
+    fn package_objects(pkg: Package, target: string) -> List<string> {
+        let named = if target != "" { self.manifest(pkg.ordinal).wasm_objects } else { self.manifest(pkg.ordinal).objects }
+        [joined_path(pkg.root, o) for o in filled_words(named)]
+    }
+
+    fn package_wasm_objects(pkg: Package) -> List<string> {
+        [joined_path(pkg.root, o) for o in filled_words(self.manifest(pkg.ordinal).wasm_objects)]
     }
 
     /// Every file a link reads besides the program's own objects: the
     /// runtime archive, and each reached package's objects.
-    fn linked_files(runtime: string) -> List<string> {
-        [runtime].concat(flatten([self.package_objects(pkg) for pkg in self.packages()]))
+    fn linked_files(runtime: string, target: string) -> List<string> {
+        [runtime].concat(flatten([self.package_objects(pkg, target) for pkg in self.packages()]))
     }
 
     /// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —
@@ -301,6 +313,7 @@ impl Workspace {
             name: named,
             library: "build/lib${library_stem(named)}",
             externs: self.externs_of(named),
+            wasm: !self.manifest(pkg.ordinal).wasm_objects.is_empty(),
         }
     }
 

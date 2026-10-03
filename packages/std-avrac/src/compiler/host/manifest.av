@@ -36,7 +36,7 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// `budgets` is what a settlement may spend — `[lifted]`'s `steps` in
 /// instructions and `memory` in MiB of the compiler's heap, resolved
 /// to the measured defaults where the manifest writes none.
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, search: List<string>, libs: List<string>, dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, voices: List<Diag> }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, voices: List<Diag> }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -66,6 +66,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
             deps_at: null,
             excludes: [],
             objects: [],
+            wasm_objects: [],
             search: [],
             libs: [],
             raw: [],
@@ -87,6 +88,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
         lib: r.target("lib", "src/lib.av"),
         excludes: r.excludes(),
         objects: r.linked("objects"),
+        wasm_objects: r.linked("wasm_objects"),
         search: r.linked("search"),
         libs: r.linked("libs"),
         dynamic_symbols: r.link_flag("dynamic_symbols"),
@@ -170,7 +172,7 @@ fn known_key(section: string, key: string) -> bool {
             .contains(key)
     }
     if section == "bin" || section == "lib" { return key == "path" || key == "name" }
-    if section == "link" { return ["objects", "search", "libs", "dynamic_symbols"].contains(key) }
+    if section == "link" { return ["objects", "wasm_objects", "search", "libs", "dynamic_symbols"].contains(key) }
     if section == "link.raw" { return key == "flags" }
     if section == "lifted" { return key == "steps" || key == "memory" }
     if section.starts_with("profile.") { return ["opt_level", "debug", "overflow_checks", "incremental", "coverage"].contains(key) }
@@ -190,6 +192,7 @@ fn known_key(section: string, key: string) -> bool {
 fn link_shape(key: string) -> string {
     match key {
         "objects" -> "object files, by path from the package root",
+        "wasm_objects" -> "object files a wasm target links, by the same paths",
         "search" -> "directories",
         rest -> "library names",
     }
@@ -198,6 +201,7 @@ fn link_shape(key: string) -> string {
 fn link_help(key: string) -> string {
     match key {
         "objects" -> "write the path alone",
+        "wasm_objects" -> "write the path alone, as `objects`",
         "search" -> "write the directory alone — the `-L` is ours to add",
         rest -> "write the name alone — `m`, not `-lm`",
     }

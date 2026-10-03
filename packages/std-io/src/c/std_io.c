@@ -310,6 +310,11 @@ int64_t avra_io_seek(int64_t fd, int64_t at) {
    the slot their parent holds. Waits when every slot is taken, saying
    so once. Answers the slot taken, or -1 when none is taken. */
 int64_t avra_io_compile_slot(void) {
+#if defined(__wasm32__)
+    // WASI has no flock and no machine-wide compile slots; only the compiler's
+    // own tools take one, and a wasm program is never one of them.
+    return -1;
+#else
     const char* held = getenv("AVRA_COMPILE_SLOT");
     if (held && *held) return -1;
     const char* max = getenv("AVRA_MAX_COMPILES");
@@ -339,4 +344,5 @@ int64_t avra_io_compile_slot(void) {
         }
         usleep(200000);
     }
+#endif
 }
