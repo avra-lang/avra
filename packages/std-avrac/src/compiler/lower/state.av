@@ -340,6 +340,7 @@ impl LowerCx {
             .Index(s) -> self.body.index_reg(s),
             .Decl(d) -> when {
                 self.view.decls.fn_name(d) != null -> self.fn_value_reg(e, self.wanted(d))
+                self.view.decls.decl(d).kind is .State -> self.state_decl_read(d, ty)
                 self.view.decls.decl(d).kind is .Const -> self.const_decl_reg(e, d, ty)
                 self.view.decls.decl(d).kind is .Collect -> self.collect_value_reg(e, d)
                 _ -> null
@@ -463,6 +464,24 @@ impl LowerCx {
     fn state_read(e: ExprId, s: StmtId, ty: TypeId) -> Reg? {
         let cell? = self.defined_reg(e, s, self.def_ty(s)) else { return null }
         self.proven_read(cell, 0, ty)
+    }
+
+    /// A MODULE-LEVEL state's cell: its unit builds the one Cell the
+    /// module shares, once per run — the declaration's own symbol is
+    /// the once slot. A read and a write reach the same register.
+    fn state_decl_cell(d: DeclId) -> Reg {
+        let x = self.view.decls.decl(d)
+        let unit = self.view.decls.state_unit(d)
+        if self.unseen(unit.name) { self.jobs.pending.push(unit) }
+        let read_ty: TypeId = self.view.decls.type_of_const(x.file, x.stmt) ?? self
+            .shaped_ty(Type.Error)
+        self.call_decl(self.view.decls.types.intern(Type.Cell(read_ty)), unit.name, [])
+    }
+
+    /// A module-level state read: the shared cell, then the value it
+    /// holds — the name answers the VALUE, never the place.
+    fn state_decl_read(d: DeclId, ty: TypeId) -> Reg? {
+        self.proven_read(self.state_decl_cell(d), 0, ty)
     }
 
     fn defined_reg(e: ExprId, s: StmtId, ty: TypeId) -> Reg? {

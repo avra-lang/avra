@@ -311,12 +311,21 @@ export fn lower_unit(
     if w.root == null &&
         w.decl != null &&
         !a.view.decls.has_body(w.decl!) &&
-        !is_collect_decl(a, w.decl!) {
+        !is_collect_decl(a, w.decl!) &&
+        !is_state_decl(a, w.decl!) {
         mut out = new_emitter(externs, a.view.decls)
         out.defect("a unit without a body was asked for — `${w.name}`")
         return Unit { bodies: [], wants: [], voices: out.voices, statics: [] }
     }
     let first = when {
+        w.decl != null && is_state_decl(a, w.decl!) -> lower_state_root(
+            a,
+            a.view.decls.decl(w.decl!),
+            w,
+            externs,
+            settle,
+            cross,
+        )
         w.root != null -> lower_root(
             a,
             w.root!,
@@ -468,6 +477,7 @@ impl Decls {
         match self.decl(d).kind {
             .Fn or .Method or .Default -> self.fn_stub(w, d),
             .Collect -> self.collect_stub(w, d),
+            .State -> self.state_stub(w, d),
             .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Case or .Const or .CollectEnum -> null,
         }
     }
@@ -489,6 +499,23 @@ impl Decls {
             reg_types: [],
             weak: true,
             marks: self.marks_of(d, sig.params.length),
+        }
+    }
+
+    /// A held state's stub: no parameters, its answer the shared
+    /// `Cell<T>` a fresh unit builds — the object answers for the
+    /// build, and a weak empty body lets the linker prefer it.
+    fn state_stub(w: Wanted, d: DeclId) -> Body {
+        let x = self.decl(d)
+        let read_ty: TypeId = self.type_of_const(x.file, x.stmt) ?? self.types.intern(Type.Error)
+        Body {
+            name: w.name,
+            params: [],
+            ret: self.types.intern(Type.Cell(read_ty)),
+            gives: null,
+            ins: [],
+            reg_types: [],
+            weak: true,
         }
     }
 
@@ -1315,6 +1342,76 @@ fn lower_root(
             ins: lo.out.ins,
             reg_types: lo.out.reg_types,
             file: home,
+        },
+        voices: lo.out.voices,
+        jobs: lo.jobs,
+    }
+}
+
+/// Whether `d` is a module-level `state` — its unit builds the one
+/// Cell the module shares rather than a plain value.
+fn is_state_decl(a: Analysis, d: DeclId) -> bool {
+    a.view.decls.decl(d).kind is .State
+}
+
+/// A module-level `state`'s unit: the ONE Cell the module shares,
+/// built once per run under the declaration's own symbol. Its answer
+/// is a `Cell<T>`, so a read loads the value and a write stores it —
+/// both reach the same box. A HELD state's object holds the build,
+/// so its name is declared weak and nothing is emitted here.
+fn lower_state_root(
+    a: Analysis,
+    x: Decl,
+    w: Wanted,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+) -> LoweredBody {
+    let read_ty: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a
+        .view
+        .decls
+        .types
+        .intern(Type.Error)
+    let cell_ty: TypeId = a.view.decls.types.intern(Type.Cell(read_ty))
+    let root? = w.root else {
+        return LoweredBody {
+            body: Body {
+                name: w.name,
+                params: [],
+                ret: cell_ty,
+                gives: null,
+                ins: [],
+                reg_types: [],
+                file: null,
+                weak: true,
+            },
+            voices: no_voices(),
+            jobs: new_jobs(externs, settle, cross),
+        }
+    }
+    let init = root
+    let maybe: TypeId = a.view.decls.types.type(cell_ty?)
+    mut lo = new_lower_cx(a, cell_ty, null, [], [], new_jobs(externs, settle, cross))
+    lo.seeded()
+    lo.seats_enter()
+    let held = lo.once_read(lo.view.decls.types.shape_of(maybe), w.name)
+    let r = lo
+        .region_as(lo.presence_of(held, maybe), cell_ty) { cx -> cx.carried_of(held, maybe) } else { cx ->
+            let made = cx.state_cell(x.stmt, cx.reg_of(init))
+            cx.once_commit(w.name, made)
+            made
+        }
+    lo.seats_exit(r)
+    lo.emit(Ins.RetVal(r))
+    LoweredBody {
+        body: Body {
+            name: w.name,
+            params: [],
+            ret: cell_ty,
+            gives: r,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: a.view.file,
         },
         voices: lo.out.voices,
         jobs: lo.jobs,

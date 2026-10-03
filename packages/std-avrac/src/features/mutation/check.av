@@ -2,7 +2,7 @@
 //! `let` (the want the channel plants); an assignment lands on a
 //! PLACE whose type — read off the target — is the slot's law, the
 //! value ACCEPTED by it with widening recorded like every slot's.
-use core.{StmtId, ExprId, TypeId, TypeRef}
+use core.{StmtId, ExprId, TypeId, TypeRef, Type}
 use features.{TypeCx, this_is}
 use diagnostics.{refusal}
 
@@ -20,6 +20,22 @@ export fn check_mut(mut cx: TypeCx, s: StmtId) {
     if declared != null {
         cx.declared_binding(v, cx.view.store.let_name(s) ?? "this binding", declared!)
     }
+    publish_state(cx, s, v, declared)
+}
+
+/// A MODULE-LEVEL state's read type is a declaration's answer every
+/// body reads, so it lands where a const's does — the one table
+/// `decl_type_of` and the lowerer share. A body-local state has no
+/// declaration and stays its own body's fact.
+fn publish_state(mut cx: TypeCx, s: StmtId, v: ExprId, declared: TypeId?) {
+    if !cx.view.store.is_state_stmt(s) { return }
+    let d? = cx.view.decls.decl_of(cx.view.file, s) else { return }
+    let read_ty: TypeId = declared ?? cx.type_at(v)
+    if cx.errored_ty(read_ty) { return }
+    // an UNANNOTATED module state still holds a Cell, so its binding
+    // wears one every read and write reaches through
+    if declared == null { cx.record_binding(s, cx.view.types.intern(Type.Cell(read_ty))) }
+    cx.view.decls.record_const_type(cx.view.file, s, read_ty)
 }
 
 /// THE PLACE LAW's typing half: the target types as a READ — its

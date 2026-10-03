@@ -144,6 +144,13 @@ impl Decls {
         mut out: List<DeclId> = []
         mut seen: List<string> = []
         let path = self.file(f).path
+        // A `state` at the top level is a DECLARATION: the mark lands
+        // before `declared_kind` reads it, so this statement mints a
+        // State row and a body ever sees it in the namespace. A state
+        // inside a body keeps its statement mark alone.
+        for s in stmts {
+            if store.is_state_stmt(s) { store.mark_module_state(s) }
+        }
         for s in stmts {
             let kind: DeclKind? = store.declared_kind(s)
             if kind != null {
@@ -431,14 +438,14 @@ impl Decls {
         self.facts_of(d)?.instance ?? false
     }
 
-    /// A declared instance's unit: named by its DECLARATION's symbol —
-    /// stable across builds, so a held file's object answers the name a
-    /// reader asks for — its root the instance, absent where the file is
-    /// held, since its object holds the body already.
-    fn instance_unit(d: DeclId) -> Wanted {
+    /// THE unit a declaration's own body lowers as: named by its
+    /// DECLARATION's symbol — stable across builds, so a held file's
+    /// object answers the name a reader asks for — its root the
+    /// declaration's value. A HELD FILE'S ROOT IS ABSENT: its object
+    /// holds the body already, so the arena is never read for it —
+    /// reading it would parse the whole held file.
+    fn declared_unit(d: DeclId) -> Wanted {
         let x = self.decl(d)
-        // A HELD FILE'S ROOT IS ABSENT: its object holds the body already, so the
-        // arena is never read for it — reading it would parse the whole held file.
         let root: ExprId? = if self.held.get().get(self.file(x.file).path) != null {
             null
         } else {
@@ -447,6 +454,14 @@ impl Decls {
         }
         Wanted { file: x.file, decl: d, name: self.symbol(d), sub: null, root: root }
     }
+
+    /// A declared instance's unit.
+    fn instance_unit(d: DeclId) -> Wanted { self.declared_unit(d) }
+
+    /// A module-level `state`'s unit — the once slot every read and
+    /// write reaches through, its root the initializer
+    /// `lower_state_root` boxes into the one Cell the module shares.
+    fn state_unit(d: DeclId) -> Wanted { self.declared_unit(d) }
 
     fn facts_of(d: DeclId) -> DeclFacts? {
         if audit_build && self.auditing.get() { self.audited(Bypassed.Facts(d)) }
@@ -1083,7 +1098,7 @@ fn wrap_body_key(f: FileId, owner: string, original: string) -> string {
 fn names_its_stmt(kind: DeclKind) -> bool {
     match kind {
         .Default -> false,
-        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> true,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> true,
     }
 }
 
@@ -1101,6 +1116,6 @@ fn member_key(owner_key: string, store: SyntaxArena, m: StmtId, siblings: List<S
 fn homed(kind: DeclKind, f: FileId) -> FileId? {
     match kind {
         .Builtin -> null,
-        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> f,
+        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> f,
     }
 }

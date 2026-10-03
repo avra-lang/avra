@@ -776,7 +776,11 @@ impl Code {
     fn is_unwritten_mut() -> bool {
         match self.at {
             .Stmt(id) -> match self.of.view.store.stmt(id) {
-                .MutLet(_, _, _) -> self.writes().is_empty() && !self.reachable_by_hole(),
+                // a MODULE-LEVEL state is a declaration, and other
+                // bodies write it: its own range says nothing
+                .MutLet(_, _, _) -> !self.of.view.store.is_module_state(id) &&
+                    self.writes().is_empty() &&
+                    !self.reachable_by_hole(),
                 rest -> false,
             },
             .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
@@ -882,7 +886,7 @@ fn seat_base_of(view: FileView, owner: StmtId) -> int {
 export fn takes_receiver(kind: DeclKind) -> bool {
     match kind {
         .Method -> true,
-        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum -> false,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> false,
     }
 }
 

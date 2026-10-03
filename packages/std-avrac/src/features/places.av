@@ -6,7 +6,7 @@
 //! observed. The runtime clones by its own owned-map; the
 //! interpreter clones every time (the executable spec). Mutation
 //! and the list vocabulary's `push` both land here.
-use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
+use core.{ExprId, StmtId, TypeId, DeclId, Reg, Ins, Type}
 
 /// An opened place: a cell (a bare mut name) or a slot of a box
 /// already made unique.
@@ -108,6 +108,7 @@ impl LowerCx {
         match b {
             .Def(s) if self.view.store.is_state_stmt(s) -> self.state_place(e, s),
             .Capture(l, j) -> if self.state_capture(l, j) != null { self.state_capture_place(l, j) } else { self.cell_place(e) },
+            .Decl(d) if self.view.decls.decl(d).kind is .State -> self.state_decl_place(d),
             rest -> self.cell_place(e),
         }
     }
@@ -117,6 +118,12 @@ impl LowerCx {
     fn state_capture_place(l: ExprId, j: int) -> Place? {
         let cell? = self.state_capture_cell(l, j) else { return null }
         Place.Slot(cell, self.const_int(0))
+    }
+
+    /// A module-level state's place: the shared cell's one slot, so a
+    /// write lands where every other reader's read looks.
+    fn state_decl_place(d: DeclId) -> Place? {
+        Place.Slot(self.state_decl_cell(d), self.const_int(0))
     }
 
     fn state_place(e: ExprId, s: StmtId) -> Place? {
