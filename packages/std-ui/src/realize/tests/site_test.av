@@ -1,0 +1,74 @@
+//! Event identity is a content-addressed SITE, never a pre-order ordinal:
+//! one declaration and one action hash alike wherever the node stands, a
+//! different action or type hashes apart, and `event_at` resolves the action
+//! by that site alone.
+use @std.meta.{derive}
+use @std.ui.components.{column, text}
+use @std.ui.realize.view.{View}
+use @std.ui.realize.prim.{prim}
+use @std.ui.realize.render.{Node}
+use @std.ui.realize.dom.frame.{event_at}
+use @std.ui.style.box.{Box}
+
+@derive(View)
+@prim(.Button)
+component toggle_button {
+    ..Box
+    on_click: string = ""
+}
+
+@derive(View)
+@prim(.Button)
+component other_button {
+    ..Box
+    on_click: string = ""
+}
+
+fn toggle() -> toggle_button { toggle_button { on_click: "toggle" } }
+
+fn site_of(v: dyn View) -> int {
+    let first = v.describe().events.first()
+    match first {
+        a? -> a.site
+        null -> 0
+    }
+}
+
+fn action_name(root: Node, site: int) -> string {
+    let found = event_at(root, site, 1)
+    match found {
+        a? -> a.name
+        null -> "none"
+    }
+}
+
+spec "std/ui sites — content, never an ordinal" {
+    given "one declaration and one action" {
+        then "hashes alike in every instance" {
+            site_of(toggle()) == site_of(toggle_button { on_click: "toggle" })
+        }
+    }
+    given "two actions on one declaration" {
+        then "hash apart" {
+            site_of(toggle_button { on_click: "toggle" }) != site_of(toggle_button { on_click: "open" })
+        }
+    }
+    given "one action on two declarations" {
+        then "hash apart too" {
+            site_of(toggle_button { on_click: "toggle" }) != site_of(other_button { on_click: "toggle" })
+        }
+    }
+    given "a node that moves down the tree" {
+        then "keeps its site and its action" {
+            let forward = column { items: [toggle(), text "x"] }
+            let backward = column { items: [text "x", toggle()] }
+            action_name(forward.describe(), site_of(toggle())) == "toggle" &&
+                action_name(backward.describe(), site_of(toggle())) == "toggle"
+        }
+    }
+    given "a site the tree does not carry" {
+        then "resolves nothing" {
+            event_at(toggle().describe(), site_of(toggle()) + 1, 1) == null
+        }
+    }
+}

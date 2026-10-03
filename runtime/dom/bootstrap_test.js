@@ -1,4 +1,4 @@
-// Proves the bootstrap's law over the V3 BYTE wire: a frame builds the tree,
+// Proves the bootstrap's law over the V4 BYTE wire: a frame builds the tree,
 // a second frame REUSES the elements, order follows the frame's index, keys
 // move identity on a reorder, a dropped node leaves, a no-change frame
 // touches nothing, and a frame of ANOTHER VERSION refuses.
@@ -13,7 +13,7 @@ const K = (id, s) => [2, ...i32(id), ...i32(s.length), ...utf8(s)];
 const A = (id, s) => [3, ...i32(id), ...i32(s.length), ...utf8(s)];
 const T = (id, s) => [4, ...i32(id), ...i32(s.length), ...utf8(s)];
 const S = (s) => [6, ...i32(s.length), ...utf8(s)];
-const frame = (...recs) => Uint8Array.from([3, ...recs.flat()]);
+const frame = (...recs) => Uint8Array.from([4, ...recs.flat()]);
 
 function el(doc, tag) {
   return {
@@ -72,7 +72,7 @@ check("an empty frame empties the mount", mount.childNodes.length, 0);
 
 apply(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), T(1, "hi")));
 const kept = mount.childNodes[0];
-apply(Uint8Array.from([3, 0]));
+apply(Uint8Array.from([4, 0]));
 check("a no-change frame touches nothing", mount.childNodes[0] === kept && kept.childNodes[0].textContent === "hi", true);
 
 const styleEl = { textContent: "" };
