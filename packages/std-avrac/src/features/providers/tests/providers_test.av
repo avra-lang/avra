@@ -1,0 +1,48 @@
+// Provider requirements, vertically: a `provide` makes its declared
+// type readable by `ambient` for the rest of its statement list; the
+// nearest provider wins; a body opens none of its own; and a read
+// with no provider above it is a compile error naming the type.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+spec "features/providers" {
+    given "a provider in scope" {
+        then "ambient reads the nearest provider of its type" {
+            shown(
+                "type Database = { rows: List<string> }\nprovide db: Database = Database { rows: [\"a\", \"bb\"] }\nambient Database.rows.length",
+            ) == "2"
+        }
+        then "the name reads the same value the type-keyed read does" {
+            shown("type D = { n: int }\nprovide d: D = D { n: 7 }\n(ambient D).n + d.n") == "14"
+        }
+    }
+    given "no provider" {
+        then "a missing requirement names the type and the site" {
+            refused_with(
+                "type Database = { n: int }\nambient Database",
+                "no `Database` is provided above this `ambient`",
+            )
+        }
+    }
+    given "the scope is the statement list" {
+        then "a later sibling reads it; an earlier one does not" {
+            refusals("ambient D\ntype D = { n: int }\nprovide d: D = D { n: 1 }") == 1 &&
+                shown("type D = { n: int }\nprovide d: D = D { n: 1 }\nambient D.n") == "1"
+        }
+        then "a body is its own floor — an enclosing provider is not read across a fn" {
+            refused_with(
+                "type D = { n: int }\nprovide d: D = D { n: 1 }\nfn read() -> int { ambient D.n }\n1",
+                "no `D` is provided above this `ambient`",
+            )
+        }
+        then "a nested block reads its enclosing provider" {
+            shown(
+                "type D = { n: int }\nprovide d: D = D { n: 5 }\nif true { ambient D.n } else { 0 }",
+            ) == "5"
+        }
+        then "an inner provide shadows the outer — nearest wins" {
+            shown(
+                "type D = { n: int }\nprovide d: D = D { n: 1 }\nif true { provide e: D = D { n: 9 }\nambient D.n } else { 0 }",
+            ) == "9"
+        }
+    }
+}
