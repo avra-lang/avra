@@ -2,7 +2,7 @@
 //! every pass's facts, every diagnostic, and every question —
 //! report, run, lower — as methods. Pass order lives in the query
 //! graph (workspace.av); this is its snapshot.
-use core.{ExprId, TypeId, At, joined, FileId, Binding}
+use core.{ExprId, StmtId, TypeId, At, joined, FileId, Binding}
 use diagnostics.{Diag, SourceFile, render, has_errors}
 use features.{
     Decls,
@@ -13,6 +13,11 @@ use features.{
     Analysed,
     no_owner_spans,
     no_assign_roots,
+    SiteLowering,
+    read_set_of,
+    reads_state_of,
+    hoistable_of,
+    site_lowering_of,
 }
 use compiler.lower.{Lowered}
 
@@ -49,6 +54,20 @@ impl Analysis {
 
     /// An expression's type — total: every expression has one.
     fn type_at(e: ExprId) -> TypeId { self.facts.type_at(e) }
+
+    /// The `state` places an expression's subtree reads — the read set
+    /// invalidation and lowering share (`features/read_set.av`).
+    fn state_reads(e: ExprId) -> List<StmtId> { read_set_of(self.view, self.names, e) }
+
+    /// Whether the subtree reads any state at all.
+    fn reads_state(e: ExprId) -> bool { reads_state_of(self.view, self.names, e) }
+
+    /// A subtree that reads no state and holds no call — constant, so
+    /// it hoists into the binary and the frame never mentions it.
+    fn hoistable(e: ExprId) -> bool { hoistable_of(self.view, self.names, e) }
+
+    /// How a site lowers, from its read set.
+    fn site_lowering(e: ExprId) -> SiteLowering { site_lowering_of(self.view, self.names, e) }
 
     /// An expression's type as text (the printing projection).
     fn type_name(e: ExprId) -> string {

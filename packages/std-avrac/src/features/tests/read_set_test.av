@@ -1,0 +1,93 @@
+// The read set: which `state` places a subtree reads, and the site
+// lowering it earns. A closure is a boundary (its captures are the
+// read, never its body), a call is a boundary (the callee's reads are
+// another body's), and a subtree reading nothing and holding no call
+// is constant.
+use @std.avrac.compiler.{analyze_source, Analysis}
+use @std.avrac.core.{ExprId, StmtId, same_stmt}
+use @std.avrac.features.{SiteLowering}
+
+/// The body of the fn named `name`.
+fn body_of(a: Analysis, name: string) -> ExprId? {
+    let s? = a
+        .view
+        .store
+        .stmt_ids()
+        .find(
+            (k: StmtId) -> match a.view.store.stmt(k) {
+                .FnDecl(n, _, _, _, _) -> n.of == name,
+                rest -> false,
+            },
+        ) else {
+        return null
+    }
+    match a.view.store.stmt(s) { .FnDecl(_, _, _, _, body) -> body, rest -> null }
+}
+
+/// Every `state` binding in the file, in statement order.
+fn places(a: Analysis) -> List<StmtId> {
+    a.view.store.stmt_ids().filter((s: StmtId) -> a.view.store.is_state_stmt(s))
+}
+
+fn is_hoist(l: SiteLowering) -> bool { match l { .Hoist -> true, rest -> false } }
+
+fn is_tree(l: SiteLowering) -> bool { match l { .Tree -> true, rest -> false } }
+
+fn directs_at(l: SiteLowering, p: StmtId) -> bool {
+    match l { .Direct(q) -> same_stmt(q, p), rest -> false }
+}
+
+spec "features/read_set" {
+    given "a body reading one state directly" {
+        then "the read set holds exactly that place" {
+            let a = analyze_source("fn f() -> int {\n    state n: int = 0\n    n + 1\n}")
+            let body = body_of(a, "f")!
+            let set = a.state_reads(body)
+            set.length == 1 && set[0].index == places(a)[0].index
+        }
+        then "the site lowers DIRECT to its one place" {
+            let a = analyze_source("fn f() -> int {\n    state n: int = 0\n    n + 1\n}")
+            let body = body_of(a, "f")!
+            directs_at(a.site_lowering(body), places(a)[0])
+        }
+    }
+    given "a body reading no state" {
+        then "the read set is empty and the site hoists" {
+            let a = analyze_source("fn f() -> int { 1 + 2 }")
+            let body = body_of(a, "f")!
+            a.state_reads(body).is_empty() && a.hoistable(body) && is_hoist(a.site_lowering(body))
+        }
+    }
+    given "a closure capturing a state place" {
+        then "the capture is the read" {
+            let a = analyze_source(
+                "fn f() -> fn() -> int {\n    state n: int = 0\n    () -> n + 1\n}",
+            )
+            let body = body_of(a, "f")!
+            a.reads_state(body) && a.state_reads(body).length == 1
+        }
+        then "a state the closure BINDS itself is not the site's read" {
+            let a = analyze_source(
+                "fn f() -> fn() -> int {\n    () -> {\n        state m: int = 0\n        m + 1\n    }\n}",
+            )
+            let body = body_of(a, "f")!
+            a.state_reads(body).is_empty() && a.hoistable(body)
+        }
+    }
+    given "a body calling a fn" {
+        then "the call is a boundary — never hoistable" {
+            let a = analyze_source("fn g() -> int { 1 }\nfn f() -> int { g() + 1 }")
+            let body = body_of(a, "f")!
+            !a.hoistable(body) && is_tree(a.site_lowering(body))
+        }
+    }
+    given "a body reading two state places" {
+        then "the site stays on the tree path" {
+            let a = analyze_source(
+                "fn f() -> int {\n    state x: int = 1\n    state y: int = 2\n    x + y\n}",
+            )
+            let body = body_of(a, "f")!
+            a.state_reads(body).length == 2 && is_tree(a.site_lowering(body))
+        }
+    }
+}
