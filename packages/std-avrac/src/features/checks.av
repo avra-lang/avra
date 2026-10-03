@@ -546,10 +546,14 @@ impl TypeCx {
     /// A record's property IS a declared field; a miss names the
     /// fields that exist.
     mut fn field_member(e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
-        let i: int? = sig.slot_of(name)
-        if i != null { return sig.types[i!] }
-        let why? = sig.lacked(name) else { return self.no_such_field(e, shown, sig, name) }
-        self.lacked_field(e, shown, sig, name, why)
+        let slot? = sig.slot_of(name) else {
+            let why? = sig.lacked(name) else { return self.no_such_field(e, shown, sig, name) }
+            return self.lacked_field(e, shown, sig, name, why)
+        }
+        // A `state` field's slot holds a `Cell<T>`; its read answers
+        // the `T` the cell holds.
+        if sig.state_at(slot) { return self.view.types.cell_inner(sig.types[slot]) ?? sig.types[slot] }
+        sig.types[slot]
     }
 
     mut fn no_such_field(e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
@@ -853,6 +857,17 @@ impl TypeCx {
         if sig != null && sig!.slot_of(name) != null { return true }
         if self.errored(subject) { return false }
         self.measured_not_stored(e, name, self.name_at(subject))
+    }
+
+    /// The slot of the `state` field a place expression names — null
+    /// for a plain field or a non-place. A `state` field's cell owns
+    /// what it holds, so a write through it needs no `mut` root.
+    mut fn state_field_slot(e: ExprId) -> int? {
+        let step? = self.view.store.place_step(e) else { return null }
+        match step {
+            .Field(subject, name) -> state_slot(self.fields_of(self.type_at(subject)), name.of),
+            rest -> null,
+        }
     }
 
     /// THE VOID LAW: a value that is nothing cannot be bound. True

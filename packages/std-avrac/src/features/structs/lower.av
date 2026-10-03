@@ -8,7 +8,8 @@
 //! slot read at the field's compile-time index) — zero new
 //! instructions anywhere.
 use core.{ExprId, Reg, TypeId, filled}
-use features.{LowerCx, StructSig}
+use features.{LowerCx, StructSig, slot_want}
+use features.cells.{cell_holding}
 
 fn structs_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
@@ -24,13 +25,13 @@ fn structs_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 /// one sliced and rewritten. No holder of the subject sees it change.
 fn with_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
     let src = cx.reg_of(subject)
-    let regs = [cx.reg_of(v) for v in values]
     let held: StructSig? = cx.fields_at(e)
     if held == null {
         cx.defect("a `with` on a non-struct survived typing")
         return cx.result(e)
     }
     let sig = held!
+    let regs = [slot_written(cx, sig, fields[j], cx.reg_of(v)) for j, v in values]
     let subject_ty = cx.type_at(subject)
     if cx.view.types.is_flat(cx.type_at(e)) {
         let parts = [if fields.contains(n) { regs[fields.index_of(n)] } else { cx.field_read(src, subject_ty, slot, sig.types[slot]) } for slot, n in sig.names]
@@ -70,14 +71,32 @@ fn lit_reg(mut cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId
             by_slot.set(slot!, r)
         }
     }
-    cx.packed_struct(cx.type_at(e), [r ?? defaulted_reg(cx, e, sig, slot) for slot, r in by_slot])
+    cx.packed_struct(cx.type_at(e), [slot_filled(cx, e, sig, slot, r) for slot, r in by_slot])
 }
 
 /// The default an omitted slot lowers to — typing guaranteed one:
 /// a call to the field's own body, as instantiated at this literal.
 export fn defaulted_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
     let d? = sig.defaults[slot] else { return cx.lower_defect(e, "a literal missing a field without a default survived typing") }
-    cx.call_decl(cx.viewed(sig.types[slot]), cx.symbol_at(d, e), [])
+    cx.call_decl(cx.viewed(slot_want(cx.view.types, sig, slot)), cx.symbol_at(d, e), [])
+}
+
+/// A value written to slot `slot`: unchanged for a plain field, the
+/// cell that holds it for a `state` field, or the field's default when
+/// nothing was written. THE one wrap a state slot's seed takes —
+/// `defaulted_reg` answers the raw value.
+fn slot_filled(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int, held: Reg?) -> Reg {
+    let v: Reg = held ?? defaulted_reg(cx, e, sig, slot)
+    if !sig.state_at(slot) { return v }
+    cell_holding(cx, slot_want(cx.view.types, sig, slot), v)
+}
+
+/// A value written to the field named `name` by a `with`: unchanged for
+/// a plain field, the cell that holds it for a `state` field.
+fn slot_written(mut cx: LowerCx, sig: StructSig, name: string, v: Reg) -> Reg {
+    let j? = sig.slot_of(name) else { return v }
+    if !sig.state_at(j) { return v }
+    cell_holding(cx, slot_want(cx.view.types, sig, j), v)
 }
 
 /// `x.of` — the shape a name stands over. A named value IS its

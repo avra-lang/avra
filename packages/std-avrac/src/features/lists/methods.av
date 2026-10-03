@@ -333,8 +333,10 @@ fn elem_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
     elem
 }
 
-/// The mutation prelude: the receiver is a mut place.
+/// The mutation prelude: the receiver is a mut place — or a `state`
+/// field, whose cell owns what it holds and writes with no `mut` root.
 fn opened_place(mut cx: TypeCx, mc: MethodCall, name: string) -> bool {
+    if cx.state_field_slot(mc.subject) != null { return true }
     let root? = cx.view.store.place_root(mc.subject) else {
         let _ = cx.not_a_place_call(mc.e, name)
         return false

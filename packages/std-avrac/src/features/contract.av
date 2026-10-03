@@ -120,7 +120,7 @@ export type Sub = { target: DeclId, args: List<TypeId>, consts: List<string> = [
 /// IS the runtime slot; a default is the declaration whose body
 /// fills it. `lacking` names what it leaves out ON PURPOSE (`@lacks`).
 @derive(Fingerprint)
-export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?>, lacking: List<Lacked> = [] }
+export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?>, lacking: List<Lacked> = [], states: List<bool> = [] }
 
 /// A field a record leaves out on purpose, and the reason a read hears.
 @derive(Fingerprint)
@@ -152,6 +152,18 @@ impl StructSig {
     /// The fields, listed for help text.
     fn listed() -> string {
         named_list(self.names)
+    }
+
+    /// Whether slot `j` is a `state` field — its slot holds a `Cell`
+    /// while its reads answer what the cell holds.
+    fn state_at(j: int) -> bool {
+        if j < self.states.length { self.states[j] } else { false }
+    }
+
+    /// Whether the field named `name` is a `state` field.
+    fn state_named(name: string) -> bool {
+        let j? = self.slot_of(name) else { return false }
+        self.state_at(j)
     }
 
     /// Why the record leaves `name` out, when it does so on purpose.
@@ -616,5 +628,22 @@ export fn subbed_fields(types: TypeRegistry, sig: StructSig?, decl: DeclId, args
     if sig == null { return null }
     let held = sig!
     held with { types: [types.substituted(t, decl, args) for t in held.types] }
+}
+
+/// The type a written value must be accepted by at slot `j`: a plain
+/// field's declared type, a `state` field's HELD type — the slot holds
+/// the cell, the writer writes what the cell holds.
+export fn slot_want(types: TypeRegistry, sig: StructSig, j: int) -> TypeId {
+    let ty = sig.types[j]
+    if !sig.state_at(j) { return ty }
+    types.cell_inner(ty) ?? ty
+}
+
+/// The slot of a `state` field named `name` — null for an absent field
+/// or a plain one. THE lookup every write path shares.
+export fn state_slot(sig: StructSig?, name: string) -> int? {
+    let s? = sig else { return null }
+    let j? = s.slot_of(name) else { return null }
+    if s.state_at(j) { j } else { null }
 }
 

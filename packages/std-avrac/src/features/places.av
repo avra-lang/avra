@@ -7,6 +7,7 @@
 //! interpreter clones every time (the executable spec). Mutation
 //! and the list vocabulary's `push` both land here.
 use core.{ExprId, StmtId, TypeId, DeclId, Reg, Ins, Type}
+use features.{state_slot}
 
 /// An opened place: a cell (a bare mut name) or a slot of a box
 /// already made unique.
@@ -23,8 +24,16 @@ impl LowerCx {
     mut fn written_to(target: ExprId, v: Reg) {
         let step? = self.view.store.place_step(target) else { return self.defect(non_place()) }
         match step {
-            .Field(subject, name) if self.view.types.is_wide(self.type_at(subject)) -> self.repacked(subject, name.of, v),
-            .Field(subject, name) if !self.flat_at(subject) -> self.boxed_written(subject, name.of, v),
+            .Field(subject, name) -> {
+                // A `state` field's slot IS its cell's one slot.
+                let cell = self.state_field_cell(subject, name.of)
+                if cell != null { return self.slot_write(cell!, self.const_int(0), v) }
+                if self.view.types.is_wide(self.type_at(subject)) {
+                    return self.repacked(subject, name.of, v)
+                }
+                if !self.flat_at(subject) { return self.boxed_written(subject, name.of, v) }
+                self.opened_write(target, v)
+            },
             rest -> self.opened_write(target, v),
         }
     }
@@ -96,8 +105,27 @@ impl LowerCx {
     /// field writes the RECORD — the subject's own place, not a slot in
     /// a box the record does not have.
     mut fn field_place(subject: ExprId, name: string) -> Place? {
-        if self.flat_at(subject) { return self.opened_place(subject) }
-        Place.Slot(self.unique_box(subject), self.field_slot(subject, name))
+        // A `state` field's slot IS the cell's one slot.
+        let cell? = self.state_field_cell(subject, name) else {
+            if self.flat_at(subject) { return self.opened_place(subject) }
+            return Place.Slot(self.unique_box(subject), self.field_slot(subject, name))
+        }
+        Place.Slot(cell, self.const_int(0))
+    }
+
+    /// The `Cell` a `state` field holds, read from its record — null for
+    /// any other field. THE read every write path shares.
+    mut fn state_field_cell(subject: ExprId, name: string) -> Reg? {
+        let sig? = self.fields_at(subject) else { return null }
+        let slot? = state_slot(sig, name) else { return null }
+        self.field_read(self.reg_of(subject), self.type_at(subject), slot, sig.types[slot])
+    }
+
+    /// What a `state` field's cell holds — null for any other field.
+    fn state_field_held(subject: ExprId, name: string) -> TypeId? {
+        let sig? = self.fields_at(subject) else { return null }
+        let slot? = state_slot(sig, name) else { return null }
+        self.view.types.cell_inner(sig.types[slot])
     }
 
     /// A root's place: a `state` root is the value its cell HOLDS, so a
@@ -167,7 +195,16 @@ impl LowerCx {
                 if cell != null { return self.cell_unique(self.shape_at(s), cell!) }
                 self.captured_box(s) ?? self.borrowed_box(s)
             },
-            .Field(subject, name) -> self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name.of)),
+            .Field(subject, name) -> {
+                // A `state` field's cell OWNS the value it holds, so a
+                // write through it is the held value's, never a clone.
+                let held = self.state_field_held(subject, name.of)
+                if held != null {
+                    let cell = self.state_field_cell(subject, name.of)
+                    return self.proven_read(cell!, 0, held!)
+                }
+                self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name.of))
+            },
             .At(subject, index) -> self.slot_opened(s, self.unique_box(subject), self.reg_of(index)),
             .Unwrap(subject) -> self.unwrapped_box(s, subject),
         }

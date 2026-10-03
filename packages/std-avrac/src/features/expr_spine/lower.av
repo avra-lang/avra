@@ -69,13 +69,18 @@ fn prop_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
     // the shape's — so the SHAPE's layout decides, never the name's.
     let sty = cx.seen(cx.type_at(s))
     let sig? = cx.fields_of(sty) else { return property_reg(cx, e, s, name) }
-    let slot: int? = sig.slot_of(name)
-    if slot == null {
+    let slot? = sig.slot_of(name) else {
         return cx.lower_defect(e, "a fieldless property on a struct survived typing")
+    }
+    // A `state` field's slot holds the cell; the read is the value
+    // the cell holds, so a `Cell` never reaches the reader.
+    if sig.state_at(slot) {
+        let cell = cx.field_read(cx.reg_of(s), sty, slot, sig.types[slot])
+        return cx.proven_read(cell, 0, cx.type_at(e))
     }
     // THE one slot read: a boxed record reads through its box, a
     // flat one extracts from registers, and this site knows neither.
-    cx.field_read(cx.reg_of(s), sty, slot!, cx.type_at(e))
+    cx.field_read(cx.reg_of(s), sty, slot, cx.type_at(e))
 }
 
 /// Constructing a variant: ONE array carrying the tag at slot 0.
