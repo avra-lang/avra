@@ -11,6 +11,7 @@ use features.{
     seats,
     marked_seats,
     isolating,
+    stating,
 }
 
 fn build_fn(b: Builder) -> Result<LangNode, string> {
@@ -18,9 +19,10 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
     let tp = b.tokens(1)?
     let consts = b.tokens(3)?
     let muts = b.tokens(4)?
-    let ps = b.tokens(5)?
-    let r = b.answer(8)
-    let body = b.expr(9)?
+    let states = b.tokens(5)?
+    let ps = b.tokens(6)?
+    let r = b.answer(9)
+    let body = b.expr(10)?
     let ends? = b.span_end() else {
         return .Err(
             "defect: a fn declaration without a span — the arena and the grammar disagree",
@@ -40,23 +42,28 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
     let params = b
         .defaulted(
             ps,
-            isolating(
-                marked_seats(
-                    b.store,
+            stating(
+                isolating(
+                    marked_seats(
+                        b.store,
+                        ps,
+                        aligned_param_types(ps, b.type_refs(7)?, ends),
+                        muts,
+                        consts,
+                        n.span.lo,
+                    ),
                     ps,
-                    aligned_param_types(ps, b.type_refs(6)?, ends),
-                    muts,
-                    consts,
+                    b.tokens(11)?,
                     n.span.lo,
                 ),
                 ps,
-                b.tokens(10)?,
+                states,
                 n.span.lo,
             ),
-            b.exprs(7)?,
+            b.exprs(8)?,
         )
     b
-        .make_stmt(Stmt.FnDecl(Scoped(n.text), tparams, spread_named(params, ps, b.tokens(11)?), r, body))
+        .make_stmt(Stmt.FnDecl(Scoped(n.text), tparams, spread_named(params, ps, b.tokens(12)?), r, body))
 }
 
 /// `once fn` — a fn plus the mark. Its laws (no arguments, an

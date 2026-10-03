@@ -181,9 +181,12 @@ impl ResolveCx {
     }
 
     /// A parameter read of a `mut` seat is marked as one — the
-    /// place law asks the read, never the name.
+    /// place law asks the read, never the name. A `state` read is
+    /// marked too: it is a place the whole-assignment law exempts.
     fn note_mut_seat(e: ExprId, b: Binding) {
-        if self.seat_written_mut(b) { self.facts.mark_mut_read(e) }
+        if !self.seat_written_mut(b) { return }
+        self.facts.mark_mut_read(e)
+        if self.seat_is_state(b) { self.facts.mark_state_read(e) }
     }
 
     /// A parameter read of a `const` seat is marked too — the settled
@@ -214,7 +217,13 @@ impl ResolveCx {
     }
 
     fn seat_is_mut(i: int) -> bool {
-        self.at_seat(i, (m: SeatMark) -> m.mutable)
+        self.at_seat(i, (m: SeatMark) -> m.mutable || m.state)
+    }
+
+    /// Whether the binding is a `state` seat — a place whose whole
+    /// assignment writes the caller's cell.
+    fn seat_is_state(b: Binding) -> bool {
+        match b { .Param(i) -> self.at_seat(i, (m: SeatMark) -> m.state), rest -> false }
     }
 
     fn seat_is_settled(i: int) -> bool {

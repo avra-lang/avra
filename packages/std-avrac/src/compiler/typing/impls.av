@@ -58,12 +58,31 @@ impl TypeCx {
 
     /// The seats a fn-shaped declaration declared `mut` — a method's
     /// receiver seat first, never declared — and its `mut fn` word.
+    /// A `state` seat is a free fn's: a method has no caller's cell
+    /// to reach, so it is refused here.
     fn record_receiver_word(f: StmtId, receiver: List<SeatMark>) {
         let d = self.decl_of(f)
         let parts: FnParts? = self.view.store.fn_parts(f)
-        let marks = [pp.promises for pp in written_seats(self.keywords, parts?.params ?? [])]
+        let written = written_seats(self.keywords, parts?.params ?? [])
+        for pp in written {
+            if pp.promises.state { self.state_seat_on_a_method(f, pp.name.of) }
+        }
+        let marks = [pp.promises for pp in written]
         self.view.decls.record_seats(d, receiver.concat(marks))
         if self.view.store.is_mutating(f) { self.view.decls.record_declared_writing(d) }
+    }
+
+    fn state_seat_on_a_method(f: StmtId, name: string) {
+        self
+            .emit(
+                refusal(
+                    "type.state_seat",
+                    self.stmt_loc(f),
+                    "`state ${name}` is a free fn's seat — a method has no caller's cell to reach",
+                    "declared here",
+                    "move `${name}` onto the free fn the method runs inside",
+                ),
+            )
     }
 
     /// The written params, annotated — a trait sig's whole seat
