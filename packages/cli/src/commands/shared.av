@@ -495,6 +495,12 @@ export fn built_binary(args: CliResult) -> Result<string, int> {
     let target = canonical_target(args.option("target"))
     let runtime = if target == "" { runtime_library() } else { wasm_runtime_library() }
     let wasm_opt = match tool_from_env("WASM_OPT", "wasm-opt") { .Ok(t) -> t.path, .Err(_) -> "" }
+    if target != "" && wasm_opt == "" {
+        eprintln(
+            "avra: a wasm build needs `wasm-opt` (binaryen) — set `WASM_OPT` or install it; the artifact must not depend on which machine built it",
+        )
+        return .Err(2)
+    }
     match build_program(
         ws,
         entry!,
@@ -504,6 +510,7 @@ export fn built_binary(args: CliResult) -> Result<string, int> {
             linker: tool.path,
             target: target,
             reactor: args.has_flag("wasm_reactor"),
+            debug: args.has_flag("wasm_debug"),
             wasm_opt: wasm_opt,
         },
     ) {
