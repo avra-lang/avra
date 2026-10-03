@@ -360,7 +360,10 @@ impl SourceText {
         match self.store.stmt(s) {
             .Let(name, ty, value) -> [self.let_or_component_inst(s, name.of, ty, value, depth)],
             .MutLet(name, ty, value) -> {
-                let name_part = "mut ${source_name(name.of)}"
+                // A `state` binding IS a mut binding's place: it prints
+                // the word it was written with, so the sugar round-trips.
+                let word = if self.store.is_state_stmt(s) { "state" } else { "mut" }
+                let name_part = "${word} ${source_name(name.of)}"
                 let prefix = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))} = "
                 [
                     source_line(

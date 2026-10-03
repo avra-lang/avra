@@ -11,10 +11,11 @@ use features.{LowerCx}
 /// widen is identity), and a cell typed as null is one the memory
 /// pass never settles — whatever it held at the scope's end leaked.
 export fn lower_mut(mut cx: LowerCx, s: StmtId, v: Reg) -> Reg {
+    let held: Reg = if cx.view.store.is_state_stmt(s) { cx.state_cell(s, v) } else { v }
     let declared: TypeId? = cx.facts.declared_binding(s)
-    let slot = if declared == null { cx.mint_like(v) } else { cx.mint_ty(cx.concrete(declared!)) }
+    let slot = if declared == null { cx.mint_like(held) } else { cx.mint_ty(cx.concrete(declared!)) }
     cx.emit(Ins.Alloca(slot))
-    cx.emit(Ins.Store(slot, v))
+    cx.emit(Ins.Store(slot, held))
     cx.bind_slot(s, slot)
     v
 }

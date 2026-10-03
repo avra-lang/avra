@@ -9,10 +9,16 @@ use @std.meta.{identity, plain_field}
 /// `grammar` declaration read), so it stays its own side table — a
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
-export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool }
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool }
 
 fn no_stmt_marks() -> StmtMarks {
-    StmtMarks { is_exported: false, is_mutating: false, is_once: false, is_static: false }
+    StmtMarks {
+        is_exported: false,
+        is_mutating: false,
+        is_once: false,
+        is_static: false,
+        is_state: false,
+    }
 }
 
 /// An impl's OWN written type-parameter lists (`impl Traced<E>`,
@@ -926,6 +932,17 @@ impl SyntaxArena {
     }
 
     fn is_static(s: StmtId) -> bool { if s.index < self.marks.get().length { self.marks_at(s).is_static } else { true } }
+
+    /// `state n: T = v` — the binding is a PLACE with identity: it holds a
+    /// `Cell<T>` a read answers as `T` and a write assigns.
+    fn mark_state(s: StmtId) {
+        self.update_marks(s, (m) -> m with { is_state: true })
+        self.restamp(s, 155)
+    }
+
+    fn is_state_stmt(s: StmtId) -> bool {
+        if s.index < self.marks.get().length { self.marks_at(s).is_state } else { false }
+    }
 
     /// `grammar Name = "…"` declared this record — the format it
     /// reads, which the record's fields cannot spell. The mark's code

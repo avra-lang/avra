@@ -330,7 +330,7 @@ impl LowerCx {
         match b {
             .Param(i) -> if i < self.seat_regs.length { self.seat_regs[i] } else { Reg { index: i } },
             .Receiver -> first_seat,
-            .Def(s) -> self.defined_reg(e, s, ty),
+            .Def(s) -> if self.view.store.is_state_stmt(s) { self.state_read(e, s, ty) } else { self.defined_reg(e, s, ty) },
             .Pattern(v, j) -> self.body.pattern_reg(v, j),
             // valid only inside the LIFTED body: env rides seat 0 —
             // unless the body is INLINED here, where the site's
@@ -428,6 +428,22 @@ impl LowerCx {
     /// that value — a literal as written, else what the evaluator
     /// SETTLED — minted in THIS body. Every other binding reads the
     /// slot it was bound to.
+    /// A `state` binding's seed, boxed into the Cell the binding holds:
+    /// the place IS the cell, so every later read and write finds it.
+    mut fn state_cell(s: StmtId, v: Reg) -> Reg {
+        let declared? = self.facts.declared_binding(s) else { return v }
+        let sh = self.view.types.shape_of(declared)
+        let size = self.box_size(1)
+        self.grown_box(sh, size, [v])
+    }
+
+    /// A `state` binding's read: the binding's cell, then the value it
+    /// holds — the Surface name answers the VALUE, never the place.
+    fn state_read(e: ExprId, s: StmtId, ty: TypeId) -> Reg? {
+        let cell? = self.defined_reg(e, s, self.def_ty(s)) else { return null }
+        self.proven_read(cell, 0, ty)
+    }
+
     fn defined_reg(e: ExprId, s: StmtId, ty: TypeId) -> Reg? {
         let value: ExprId? = self.view.store.const_value(s)
         if value == null { return self.slot_reg(s, ty) }
@@ -739,7 +755,13 @@ impl LowerCx {
         let cap? = self.names.capture(e) else { return [] }
         mut out: List<Reg> = []
         for j, b in cap.sources {
-            let r: Reg? = self.read_wearing(e, b, self.capture_ty(e, j))
+            // A `state` source packs its CELL, never the value the name
+            // reads: a capture is a copy, and a Cell's copy SHARES the
+            // place — that is what lets the lambda outlive the frame.
+            let r: Reg? = match b {
+                .Def(s) if self.view.store.is_state_stmt(s) -> self.defined_reg(e, s, self.def_ty(s)),
+                rest -> self.read_wearing(e, b, self.capture_ty(e, j)),
+            }
             if r == null {
                 self.out.defect("a capture without a value survived resolve")
             } else {

@@ -1,0 +1,24 @@
+// `state n: T = v` — a PLACE: a read answers the value the cell holds, a
+// write assigns it, and a capture shares it. The word `state` is a SOFT
+// keyword: it means a declaration only where a binding follows it.
+use @std.avrac.testing.{shown}
+
+spec "let_stmt — state" {
+    given "a state binding" {
+        then "reads as its value and assigns, with no Cell in sight" {
+            shown(
+                "fn f() -> int {\n    state n: int = 0\n    n = n + 1\n    n = n + 1\n    n\n}\nf()",
+            ) == "2"
+        }
+        then "is SHARED by what captures it — the place outlives the call" {
+            shown(
+                "fn counter() -> fn() -> int {\n    state n: int = 0\n    () -> {\n        n.set(n.get() + 1)\n        n.get()\n    }\n}\nlet c = counter()\nc() + c() + c()",
+            ) == "6"
+        }
+    }
+    given "the word state" {
+        then "is an ordinary name where no binding follows it" {
+            shown("let state: int = 3\nstate") == "3"
+        }
+    }
+}
