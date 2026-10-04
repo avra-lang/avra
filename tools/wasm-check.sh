@@ -60,4 +60,5 @@ for src in "$fixtures"/*/; do
 done
 
 [ "$fail" -eq 0 ] || exit 1
+sh "$here/wasm-size-guard.sh"
 say "all fixtures agree"
