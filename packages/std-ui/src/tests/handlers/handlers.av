@@ -1,0 +1,78 @@
+// proves: a std control carries a typed event field — `button.on_click`,
+// `checkbox.on_change`, `field.on_input` — typed as `dyn Messages?`, so the
+// app names its own `Msg` and the control projects ONE Action with the kind
+// its field name says, the message's content-addressed site, and its typed
+// payload. An absent handler is the option's own null: the control emits NO
+// action, never a sentinel site — so a handlerless control is inert.
+use @std.meta.{derive}
+use @std.ui.components.{button, checkbox, field, row}
+use @std.ui.realize.view.{View}
+use @std.ui.realize.messages.{Messages}
+use @std.ui.realize.payload.{Payload}
+use @std.ui.realize.render.{Node, Action, EventKind}
+
+@derive(Messages)
+enum Msg {
+    Add
+    Toggle(on: bool)
+    Draft(text: string)
+}
+
+fn label(m: Msg) -> string {
+    match m { .Add -> "add", .Toggle(on) -> "toggle:${on}", .Draft(text) -> "draft:${text}" }
+}
+
+fn first(view: dyn View) -> Action? { view.describe().events.first() }
+
+fn rebuilt(view: dyn View) -> string {
+    let a? = first(view) else { return "none" }
+    let m? = Msg.from_site(a.site, a.payload) else { return "unresolved" }
+    label(m)
+}
+
+fn kind(view: dyn View) -> string {
+    let a? = first(view) else { return "none" }
+    match a.kind { .Click -> "click", .Input -> "input", .Change -> "change", .Submit -> "submit" }
+}
+
+fn count(view: dyn View) -> int { view.describe().events.length }
+
+fn payload(view: dyn View) -> string {
+    let a? = first(view) else { return "none" }
+    let p? = a.payload else { return "null" }
+    match p { .Text(t) -> t, .Int(n) -> "${n}", .Bool(b) -> "${b}" }
+}
+
+fn total(n: Node) -> int {
+    mut t = n.events.length
+    for c in n.children { t = t + total(c) }
+    t
+}
+
+fn total_view(view: dyn View) -> int { total(view.describe()) }
+
+let add = button "x" { on_click: Msg.Add }
+let inert = button "x"
+let empty_field = field "n"
+let drafted = field "n" { on_input: Msg.Draft("hi") }
+let changed = checkbox "c" { on_change: Msg.Toggle(true) }
+let toggled = button "x" { on_click: Msg.Toggle(false) }
+let mixed = row {
+    button "x" { on_click: Msg.Add }
+    field "n" { on_input: Msg.Draft("hi") }
+}
+
+println("add=${rebuilt(add)}")
+println("add_kind=${kind(add)}")
+println("absent=${count(inert)}")
+println("absent_first=${rebuilt(inert)}")
+println("absent_field=${count(empty_field)}")
+println("input=${rebuilt(drafted)}")
+println("input_kind=${kind(drafted)}")
+println("input_text=${payload(drafted)}")
+println("change=${rebuilt(changed)}")
+println("change_kind=${kind(changed)}")
+println("change_bool=${payload(changed)}")
+println("mixed=${total_view(mixed)}")
+// the derived site is stable across a render and a bool payload round-trips.
+println("round=${rebuilt(toggled)}")

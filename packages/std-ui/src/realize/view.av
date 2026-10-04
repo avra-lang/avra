@@ -5,6 +5,7 @@
 //! resolves in the annotated file, so fields are read as `self.<field>`.
 use @std.meta.{Type, Field, Directive, Code, list_of}
 use realize.render.{Node, Prim, Attribute, EventKind, Action}
+use realize.messages.{Messages}
 use realize.lists.{union}
 use style.box.{Box}
 
@@ -147,25 +148,42 @@ fn event_kind(name: string) -> EventKind? {
 }
 
 /// ONE arm per `EventKind`, so a new kind lands here beside its variant.
-/// The field's value is an app MESSAGE, and the message's own content-
-/// addressed site is what the tree carries.
-fn action_quote(f: Field, kind: EventKind) -> Code {
+fn kind_code(kind: EventKind) -> Code {
     match kind {
-        .Click -> quote { Action { kind: EventKind.Click, site: self.${f}.site(), payload: self.${f}.payload() } },
-        .Input -> quote { Action { kind: EventKind.Input, site: self.${f}.site(), payload: self.${f}.payload() } },
-        .Change -> quote { Action { kind: EventKind.Change, site: self.${f}.site(), payload: self.${f}.payload() } },
-        .Submit -> quote { Action { kind: EventKind.Submit, site: self.${f}.site(), payload: self.${f}.payload() } },
+        .Click -> quote { EventKind.Click },
+        .Input -> quote { EventKind.Input },
+        .Change -> quote { EventKind.Change },
+        .Submit -> quote { EventKind.Submit },
     }
 }
 
-/// The action one field binds: one, or none when it binds no event.
-fn field_actions(f: Field) -> List<Code> {
-    let kind? = event_kind(f.name) else { return [] }
-    [action_quote(f, kind)]
+/// The actions one field binds: its name picks the `EventKind`, and its
+/// value is the app's message as a `dyn Messages`. ABSENCE IS THE
+/// OPTION'S OWN NULL — a nullable handler that is null binds no action
+/// at all, never a sentinel site, so a control that binds nothing emits
+/// nothing. A concrete message field is always present and binds one.
+fn field_events(f: Field) -> Code {
+    let kind? = event_kind(f.name) else { return quote { [] } }
+    if f.ty.ends_with("?") {
+        quote {
+            match self.${f} {
+                m? -> [Action { kind: ${kind_code(kind)}, site: m.site(), payload: m.payload() }]
+                null -> []
+            }
+        }
+    } else {
+        quote {
+            [Action { kind: ${kind_code(kind)}, site: self.${f}.site(), payload: self.${f}.payload() }]
+        }
+    }
 }
 
 /// Every action the component binds, in field order.
-fn events_code(t: Type) -> Code { list_of(union([field_actions(f) for f in t.fields])) }
+fn events_code(t: Type) -> Code {
+    let parts = [field_events(f) for f in t.fields if event_kind(f.name) != null]
+    if parts.is_empty() { return quote { [] } }
+    quote { union([${..parts}]) }
+}
 
 /// A component's `items` field, drawn by its children's own `describe`.
 fn children_code(t: Type) -> Code {
