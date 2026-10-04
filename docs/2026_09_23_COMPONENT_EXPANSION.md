@@ -241,6 +241,21 @@ computing `expand()` is refused per instance ("is not one `quote` over
 its own fields"). The bridge is a synthesized `Messages` implementor
 plus a per-file dispatcher — an expansion stage AFTER typing (S6),
 which the body-declaration spelling reaches at no earlier point.
+CORRECTED by ui-libtype (2026-10-04, docs/2026_10_04_INLINE_HANDLER_
+DISPATCH_REACHABILITY.md): the message VALUE is NOT the wall. A
+hand-written library `impl Messages` DOES coerce into `dyn Messages?`,
+proved in `std-ui/src/tests/inline` (probe 1), and its site plus a
+NARROWED capture build inside a keyed element body and dispatch to the
+right row — in both engines (probe 2). The wall is DISPATCH
+REACHABILITY: the site-to-code table IS expressible at lowering
+(`LowerCx.jobs.lifts` names every lifted handler), but a lowering-time
+body has no NAME the typed program can call. `from_site` is reachable
+only because the derive mints it from the enum's SHAPE before typing;
+the board's `avra_event` and #251's `inline_event` are hand-written
+typed edges. So the library-type angle removes type generation but
+RELOCATES the wall from "a type must exist at typing" to "a call edge
+must exist at typing" — the S6 stage (or a new fixed-symbol entry both
+engines carry) is still required.
 S3a AS BUILT: a component with no `expand` is `Instancing.Record`; its
 instance is an `Expr.Component` whose view is the record literal (so
 the printer keeps the written form and `avra expand` shows the

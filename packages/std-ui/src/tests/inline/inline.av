@@ -8,11 +8,11 @@
 // A handler's captures ride as the message's typed payload (already on the
 // wire), the tree carries only the site and the payload, and no enum names
 // the dispatch: the site IS the identity and the match IS the dispatch.
-use @std.ui.components.{button, row}
+use @std.ui.components.{button, item, list, row}
 use @std.ui.realize.view.{View}
 use @std.ui.realize.messages.{Messages}
 use @std.ui.realize.payload.{Payload}
-use @std.ui.realize.render.{Action}
+use @std.ui.realize.render.{Action, Node}
 
 /// The event value an inline handler becomes: a content-addressed `site`
 /// and its captures as a `Payload?`. Data, never a fn — the tree stays
@@ -42,6 +42,23 @@ fn h_add(n: int) {
     last = "add:${n}"
 }
 
+/// the keyed-list witness: one handler SOURCE SPOT serves every row, so the
+/// site is shared and the ROW rides the payload. This is what
+/// `on click { remove_row(it.id) }` inside a keyed element body must become.
+type Row = { id: string, label: string }
+
+state rows: List<Row> = [
+    Row { id: "r1", label: "one" },
+    Row { id: "r2", label: "two" },
+    Row { id: "r3", label: "three" },
+]
+state removed: string = ""
+
+fn h_remove(id: string) {
+    rows = [r for r in rows if r.id != id]
+    removed = id
+}
+
 // ── the generated table (what the compiler would synthesize) ──
 // a jump table on a compile-time-constant site; the backend lowers a dense
 // int match to `SwitchStart`. ONE site -> fn.
@@ -57,6 +74,16 @@ fn inline_event(site: int, payload: Payload?) -> bool {
             match n {
                 .Int(v) -> {
                     h_add(v)
+                    true
+                },
+                rest -> false,
+            }
+        },
+        1301 -> {
+            let q? = payload else { return false }
+            match q {
+                .Text(id) -> {
+                    h_remove(id)
                     true
                 },
                 rest -> false,
@@ -89,6 +116,10 @@ fn site_text(v: dyn View) -> string {
 
 fn pay_text(v: dyn View) -> string {
     let a? = first(v) else { return "none" }
+    pay_text_of(a)
+}
+
+fn pay_text_of(a: Action) -> string {
     let p? = a.payload else { return "null" }
     match p { .Int(n) -> "${n}", .Text(t) -> t, .Bool(b) -> "${b}" }
 }
@@ -96,6 +127,36 @@ fn pay_text(v: dyn View) -> string {
 // a capture-free handler's event value is CONSTANT across renders — the
 // same site, no payload — so the control is a hoistable subtree.
 let rerender = button "add one" { on_click: Inline { site: 1201 } }
+
+// ── PROBE 2: the acceptance shape, hand-written ──
+// The `Inline` value is built INSIDE the keyed element body, where the row
+// binder is in scope, and its payload is the NARROWED capture (`r.id` — the
+// one scalar the handler needs). The site is one constant for the source
+// spot; the payload names the row.
+fn row_list() -> list {
+    list rows by it.id { r ->
+        item { items: [button "Remove" { on_click: Inline { site: 1301, value: Payload.Text(r.id) } }] }
+    }
+}
+
+/// Every action a tree carries, in walk order.
+fn collect_actions(n: Node) -> List<Action> {
+    mut out = n.events
+    for c in n.children { out = out.concat(collect_actions(c)) }
+    out
+}
+
+/// Whether an action's payload is this row's id.
+fn payload_is(id: string, a: Action) -> bool {
+    let p? = a.payload else { return false }
+    match p { .Text(t) -> t == id, rest -> false }
+}
+
+/// The host echo: carry the row's OWN payload back through the shared site.
+fn fire_row(id: string) -> bool {
+    let found? = collect_actions(row_list().describe()).find(payload_is(id, it)) else { return false }
+    inline_event(found.site, found.payload)
+}
 
 println("inc_site=${site_text(inc_btn)}")
 println("add_site=${site_text(add_btn)}")
@@ -107,3 +168,13 @@ println("fire_inc=${fire(inc_btn)}")
 println("count_after_inc=${count} last=${last}")
 println("fire_add=${fire(add_btn)}")
 println("count_after_add=${count} last=${last}")
+
+// the keyed probe: one site, three payloads, and the fired row is the one
+// the payload names — a sibling's row is untouched.
+let row_actions = collect_actions(row_list().describe())
+println("row_actions=${row_actions.length} row_sites_shared=${row_actions.all(it.site == 1301)}")
+println("row_payloads=${[pay_text_of(a) for a in row_actions].join(",")}")
+println("fire_r3=${fire_row("r3")}")
+println("rows_after=[${[r.id for r in rows].join(",")}] removed=${removed}")
+println("fire_r1=${fire_row("r1")}")
+println("rows_after2=[${[r.id for r in rows].join(",")}] removed=${removed}")
