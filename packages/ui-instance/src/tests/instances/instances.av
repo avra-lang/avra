@@ -1,0 +1,161 @@
+// proves: TWO instances of ONE component on one page hold INDEPENDENT state
+// reached by KEY (never a pointer), through the real event channel — a
+// content-addressed SITE plus the echoed typed PAYLOAD — and the table
+// honors the TWO lifetimes: a MODEL-KEYED entry survives a filter that hides
+// its row and leaves only when the row is deleted; an INSTANCE entry is swept
+// when its instance is unmounted. A pointer never crosses: the key does.
+use @std.meta.{derive}
+use @std.ui.components.{button, column, row}
+use @std.ui.realize.dom.frame.{event_at}
+use @std.ui.realize.messages.{Messages}
+use @std.ui.realize.payload.{Payload}
+use @std.ui.realize.prim.{prim}
+use @std.ui.realize.view.{View}
+use @std.ui.style.box.{Box}
+use ui_instance.{Store, at, ensure, forget, held, opening, put, sweep, opened, touched}
+
+/// The MODEL: a task row. Its id keys both the row and its state.
+type Todo = { id: string, board: string, title: string }
+
+/// The MODEL-KEYED state: lives exactly as long as the task row.
+type TaskState = { done: bool, note: string }
+
+/// The INSTANCE state: lives while its board is mounted.
+type Panel = { open: bool, focused: int }
+
+state todos: List<Todo> = [
+    Todo { id: "a1", board: "a", title: "alpha" },
+    Todo { id: "b1", board: "b", title: "beta" },
+    Todo { id: "a2", board: "a", title: "gamma" },
+]
+
+/// The keyed tables. The app declares them; the key is the model row's id
+/// or the mounted instance's key, never an ordinal a sibling would renumber.
+state tasks: Store<TaskState> = opened<TaskState>()
+state panels: Store<Panel> = opened<Panel>()
+state filter: string = "all"
+state mounted: List<string> = ["a", "b"]
+
+/// Every action names its target by KEY — a row by its id, a board by its
+/// key. ONE serialisable string each, because the payload is one scalar.
+@derive(Messages)
+enum Msg {
+    Toggle(rid: string)
+    Remove(rid: string)
+    ToggleFilter
+    Unmount(which: string)
+    Remount(which: string)
+}
+
+/// The extracted handler: a top-level fn reaching the place by NAME plus
+/// the key the payload carried.
+fn update(m: Msg) {
+    match m {
+        .Toggle(rid) -> {
+            let s? = at(tasks, rid) else { return }
+            put(tasks, rid, true, s with { done: !s.done })
+        },
+        .Remove(rid) -> {
+            todos = [t for t in todos if t.id != rid]
+            forget(tasks, rid)
+        },
+        .ToggleFilter -> { filter = if filter == "all" { "open" } else { "all" } },
+        .Unmount(which) -> { mounted = [b for b in mounted if b != which] },
+        .Remount(which) -> { mounted = mounted.concat([which]) },
+    }
+}
+
+fn done_of(id: string) -> bool {
+    let s? = at(tasks, id) else { return false }
+    s.done
+}
+
+fn admits(t: Todo) -> bool { if filter == "open" { !done_of(t.id) } else { true } }
+
+/// The REUSABLE component: no state of its own, its instance key a plain
+/// field, its children handed in. Its state is its table entry.
+@derive(View)
+@prim(.Card)
+component board {
+    ..Box
+    items: List<dyn View> = []
+}
+
+fn task_row(t: Todo) -> row {
+    let s = ensure(tasks, t.id, true, TaskState { done: false, note: "" })
+    row {
+        items: [
+            button "${t.title}:${if s.done { "+" } else { "-" }}" { on_click: Msg.Toggle(t.id) },
+            button "x" { on_click: Msg.Remove(t.id) },
+        ]
+    }
+}
+
+/// One board instance: its MODEL state is each visible task's entry; its
+/// INSTANCE state is the panel, keyed by its own key and touched so the
+/// frame keeps it while the board is mounted.
+fn board_view(b: string) -> board {
+    let _ = ensure(panels, "${b}:panel", false, Panel { open: true, focused: 0 })
+    touched(panels, "${b}:panel")
+    let rows: List<dyn View> = [task_row(t) for t in todos if t.board == b && admits(t)]
+    let hide: List<dyn View> = [button "hide ${b}" { on_click: Msg.Unmount(b) }]
+    board { key: b, items: rows.concat(hide) }
+}
+
+fn view() -> column {
+    let panels_view: List<dyn View> = [board_view(b) for b in mounted]
+    let controls: List<dyn View> = [
+        button "filter" { on_click: Msg.ToggleFilter },
+        button "show b" { on_click: Msg.Remount("b") },
+    ]
+    column { items: panels_view.concat(controls) }
+}
+
+/// The host's echo, the real channel's two doors.
+fn from_wire(site: int, payload: Payload?) {
+    let e? = event_at(view().describe(), site, 1) else { return }
+    let m? = Msg.from_site(e.site, payload) else { return }
+    update(m)
+    let _ = paint()
+}
+
+/// One paint: open the frame's seen sets, build the tree (each mounted
+/// instance touches its key), then sweep. The sweep runs AFTER the frame
+/// is built and no event is in flight, so a key it drops is one the frame
+/// did not name — an event naming a live key can never reach a dead place.
+fn paint() -> int {
+    opening(tasks)
+    opening(panels)
+    let _ = view().describe()
+    sweep(tasks) + sweep(panels)
+}
+
+fn mark(done: bool) -> string { if done { "+" } else { "-" } }
+
+fn state_text() -> string {
+    [t.id + mark(done_of(t.id)) for t in todos].join(" ")
+}
+
+paint()
+println("start ${state_text()} tasks=${held(tasks)} panels=${held(panels)}")
+
+from_wire(Msg.Toggle("a1").site(), Msg.Toggle("a1").payload())
+println("toggle a1 ${state_text()}")
+
+from_wire(Msg.Toggle("b1").site(), Msg.Toggle("b1").payload())
+println("toggle b1 ${state_text()}")
+
+// the filter hides a1 (done) — its MODEL entry must NOT be swept.
+from_wire(Msg.ToggleFilter.site(), Msg.ToggleFilter.payload())
+println("filter ${filter} ${state_text()} held=${held(tasks)}")
+
+// deleting the row frees its state; nothing else may.
+from_wire(Msg.Remove("b1").site(), Msg.Remove("b1").payload())
+println("remove b1 ${state_text()} held=${held(tasks)}")
+
+// unmounting b sweeps b's INSTANCE panel; a's panel and every MODEL entry stay.
+from_wire(Msg.Unmount("b").site(), Msg.Unmount("b").payload())
+println("unmount b panels=${held(panels)} tasks=${held(tasks)}")
+
+from_wire(Msg.Remount("b").site(), Msg.Remount("b").payload())
+println("remount b panels=${held(panels)}")

@@ -139,8 +139,23 @@ state filter: string = "all"
 // a `state` SEAT: the CALLER's place (landed, #234)
 fn stepper(state n: int) { n = n + 1 }
 
-// component scope: one place per INSTANCE (the component body seeds it)
+// component scope: one place per INSTANCE — NOT landed (see the correction)
 ```
+
+> **Probe correction (2026-10-05, `982c405` + the ui-instance branch).** A
+> component body cannot seed a place: `component C { state n: int = 0 }` is
+> `error[build.failed]` "a component holds its fields and its `fn`s, and
+> nothing else", and a component head takes no seat mark
+> (`component C(state n: int)` is a parse error at the `(`). Per-instance
+> state in a PLAIN `type` record DOES land (`type R = { state n: int = 0 }`;
+> two `R {}` copies are independent), and a plain component field is
+> independent per instance but is a VALUE, so a handler capture copies it.
+> AND a `state` SEAT is not SHARED into a closure: a lambda capturing a
+> state seat is `error[resolve.immutable]` "captured by value", because
+> `capture_regs` packs a `state` BINDING's Cell and never a `.Param`'s. So a
+> shared top-level handler driven by a serialised event reaches a
+> per-instance place only through a serialisable KEY (see
+> `2026_10_05_INSTANCE_STATE.md`), never by capturing it.
 
 ### 1.4 `once` stays, untouched: a different axis (LIFETIME).
 
