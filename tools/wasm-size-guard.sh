@@ -1,9 +1,14 @@
 #!/bin/sh
 # THE SIZE RECEIPT, on every wasm-check: what the target carries, section by
-# section, printed UNCONDITIONALLY — a rise is visible before it is fatal —
-# against a RELATIVE cap a legitimate change cannot trip. A number offered once
-# by hand is a claim that decays; this counts what it looked at and says so,
-# and it names the base it counted.
+# section, printed UNCONDITIONALLY — a rise is visible before it is fatal.
+#
+# TWO QUANTITIES, TWO LAWS:
+#   THE FLOOR (the minimal program) is the compiler's SHARED cost and must not
+#   creep; it is capped TIGHTLY and a floor rise is the loud regression.
+#   THE BOARD (tools/ui-board) is the UI library's SHOWCASE and is SUPPOSED to
+#   grow with every component; it is REPORTED with its move against the last
+#   accepted value, NEVER capped — a cap there would train a re-baseline on
+#   every feature, which is how a guard dies.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
@@ -58,34 +63,43 @@ else
 fi
 
 baseline=${WASM_SIZE_BASELINE:-$here/wasm-size.baseline}
+want() { sed -n "s/^$1 //p" "$baseline" | head -1; }
 if [ "${1:-}" = --accept ]; then
     {
-        echo "# THE LAST ACCEPTED WASM FOOTPRINT ..."
+        echo "# THE LAST ACCEPTED WASM FOOTPRINT, written by \`make wasm-size-accept\`."
         echo "floor_bytes $fb"
         echo "floor_globals $fg"
         [ -n "$board" ] && echo "board_bytes $bb"
         [ -n "$board" ] && echo "board_globals $bg"
+        echo "accepted_base $base"
     } > "$baseline"
     say "accepted base=$base floor=${fb}B/${fg}g"
     exit 0
 fi
 [ -f "$baseline" ] || { say "no baseline file — nothing to compare"; exit 0; }
-want() { sed -n "s/^$1 //p" "$baseline" | head -1; }
+
 fail=0
-check() { # label measured baseline
-    b=$3
-    [ -n "$b" ] || return 0
-    cap=$(( b + b / 12 + 2048 ))
-    if [ "$2" -gt "$cap" ]; then
-        say "$1 grew: $2 > cap $cap (baseline $b)"
+# THE FLOOR IS THE GUARD: tight, and a rise here is the loud one.
+fb_base=$(want floor_bytes)
+if [ -n "$fb_base" ]; then
+    cap=$(( fb_base + fb_base / 50 + 1024 ))
+    if [ "$fb" -gt "$cap" ]; then
+        say "FLOOR grew: ${fb} > cap ${cap} (accepted ${fb_base}) — this is the shared cost; it must not creep"
         fail=1
     fi
-}
-check floor_bytes "$fb" "$(want floor_bytes)"
-check floor_globals "$fg" "$(want floor_globals)"
-if [ -n "$board" ]; then
-    check board_bytes "$bb" "$(want board_bytes)"
-    check board_globals "$bg" "$(want board_globals)"
 fi
-[ "$fail" -eq 0 ] || { say "REGRESSED — the wasm footprint rose past the cap"; exit 1; }
-say "within the cap"
+fg_base=$(want floor_globals)
+if [ -n "$fg_base" ] && [ "$fg" -gt "$(( fg_base + 4 ))" ]; then
+    say "FLOOR globals grew: ${fg} > $(( fg_base + 4 )) (accepted ${fg_base})"
+    fail=1
+fi
+# THE BOARD IS REPORTED, NOT CAPPED — it is supposed to grow.
+if [ -n "$board" ]; then
+    bb_base=$(want board_bytes)
+    bg_base=$(want board_globals)
+    if [ -n "$bb_base" ]; then
+        say "board move: $(( bb - bb_base )) B, $(( bg - bg_base )) globals vs last accepted (reported, never capped)"
+    fi
+fi
+[ "$fail" -eq 0 ] || { say "REGRESSED — the floor rose past the cap"; exit 1; }
+say "the floor is within its cap"
