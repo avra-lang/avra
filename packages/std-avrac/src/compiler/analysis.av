@@ -2,7 +2,7 @@
 //! every pass's facts, every diagnostic, and every question —
 //! report, run, lower — as methods. Pass order lives in the query
 //! graph (workspace.av); this is its snapshot.
-use core.{ExprId, StmtId, TypeId, At, joined, FileId, Binding}
+use core.{ExprId, StmtId, DeclId, TypeId, At, joined, FileId, Binding}
 use diagnostics.{Diag, SourceFile, render, has_errors}
 use features.{
     Decls,
@@ -30,6 +30,10 @@ export type Analysis = {
     view: FileView,
     names: NameFacts,
     facts: TypeFacts,
+    /// Whether a DECLARATION reads state, transitively through the
+    /// calls its body makes — the program-level query a call site in
+    /// any body or package asks, never a pass fact of one file.
+    decl_reads: fn(DeclId) -> bool,
     lang: Language,
     diagnostics: List<Diag>,
     program: fn() -> Program,
@@ -64,17 +68,23 @@ impl Analysis {
     /// Whether the subtree reads any state at all.
     fn reads_state(e: ExprId) -> bool { reads_state_of(self.view, self.names, e) }
 
-    /// A subtree that reads no state and holds no call — constant, so
-    /// it hoists into the binary and the frame never mentions it.
-    fn hoistable(e: ExprId) -> bool { hoistable_of(self.view, self.names, e) }
+    /// A subtree that reads no state and holds no call that reaches
+    /// state — constant, so it hoists into the binary and the frame
+    /// never mentions it.
+    fn hoistable(e: ExprId) -> bool { hoistable_of(self.view, self.names, e, self.decl_reads) }
+
+    /// Whether a DECLARATION reads state, directly or through any call
+    /// its body makes — the interprocedural read set, keyed by the
+    /// declaration, that a call site folds in.
+    fn decl_reads_state(d: DeclId) -> bool { self.decl_reads(d) }
 
     /// How a site lowers, from its read set.
-    fn site_lowering(e: ExprId) -> SiteLowering { site_lowering_of(self.view, self.names, e) }
+    fn site_lowering(e: ExprId) -> SiteLowering { site_lowering_of(self.view, self.names, e, self.decl_reads) }
 
     /// A view's whole lowering plan, in walk order — the compiler's
     /// per-site mechanism chosen once and carried as data
     /// (`features/read_set.av`).
-    fn lowering_plan(e: ExprId) -> List<SitePlan> { lowering_plan_of(self.view, self.names, e) }
+    fn lowering_plan(e: ExprId) -> List<SitePlan> { lowering_plan_of(self.view, self.names, e, self.decl_reads) }
 
     /// An expression's type as text (the printing projection).
     fn type_name(e: ExprId) -> string {

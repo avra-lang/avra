@@ -1,0 +1,130 @@
+// The interprocedural read set (`Family.ReadReach`/`Family.DeclReads`):
+// a whole-program growing-set fixpoint over the declarations' call
+// graph, so a call site in any body or package can ask whether a
+// declaration reads `state`. Its inputs are the parse and the resolve
+// alone, so it is computable BEFORE TypeFacts — the probe this suite
+// pins by asking it while no `Typed` cell stands.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.families.{Family}
+use compiler.host.{memory_host}
+use core.{DeclId}
+use query.{Key}
+
+fn pure_workspace(main: string) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": main,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+fn pure_decl_named(ws: Workspace, name: string) -> DeclId {
+    [x.id for x in ws.decls.all_decls() if x.name == name][0]
+}
+
+/// Whether a `Typed` cell stands for `d` — null on a resolve-only tree.
+fn typed_cell(ws: Workspace, d: DeclId) -> int? {
+    ws.db.value_hash_of(Key { family: Family.Typed.ordinal, arg: d.index })
+}
+
+/// Parse and resolve the lone file, nothing further.
+fn prepared(ws: Workspace) {
+    prepared_at(ws, "/w/src/main.av")
+}
+
+fn prepared_at(ws: Workspace, path: string) {
+    let f = ws.file_id(path)
+    let _ = ws.items(f)
+    let _ = ws.resolved(f)
+}
+
+spec "compiler/workspace — the read-reach fixpoint is transitive" {
+    given "a fn reading state, a caller of it, and a pure fn" {
+        then "the caller's answer chains to the callee's" {
+            let ws = pure_workspace(
+                "fn h() -> int {\n    state n: int = 0\n    n\n}\nfn g() -> int { h() }\nfn p() -> int { 1 }\n",
+            )
+            prepared(ws)
+            ws.decl_reads_state(pure_decl_named(ws, "h")) &&
+                ws.decl_reads_state(pure_decl_named(ws, "g")) &&
+                !ws.decl_reads_state(pure_decl_named(ws, "p"))
+        }
+        then "the fact is computable BEFORE TypeFacts — no `Typed` cell is forced" {
+            let ws = pure_workspace(
+                "fn h() -> int {\n    state n: int = 0\n    n\n}\nfn g() -> int { h() }\n",
+            )
+            prepared(ws)
+            let g = pure_decl_named(ws, "g")
+            let _ = ws.decl_reads_state(g)
+            typed_cell(ws, g) == null
+        }
+    }
+    given "mutual recursion" {
+        then "the fixpoint settles: a cycle with no state read is pure" {
+            let ws = pure_workspace("fn a() -> int { b() }\nfn b() -> int { a() }\n")
+            prepared(ws)
+            !ws.decl_reads_state(pure_decl_named(ws, "a")) &&
+                !ws.decl_reads_state(pure_decl_named(ws, "b"))
+        }
+        then "a cycle that reaches a state read is impure" {
+            let ws = pure_workspace(
+                "fn a() -> int { b() }\nfn b() -> int { c() }\nfn c() -> int {\n    state n: int = 0\n    a() + n\n}\n",
+            )
+            prepared(ws)
+            ws.decl_reads_state(pure_decl_named(ws, "a")) &&
+                ws.decl_reads_state(pure_decl_named(ws, "b")) &&
+                ws.decl_reads_state(pure_decl_named(ws, "c"))
+        }
+    }
+    given "an `extern` fn has no body here" {
+        then "it MAY read state — never pure" {
+            let ws = pure_workspace("extern fn c_read() -> int\nfn f() -> int { c_read() }\n")
+            prepared(ws)
+            ws.decl_reads_state(pure_decl_named(ws, "f"))
+        }
+    }
+    given "a callee in ANOTHER file of the package" {
+        then "a pure callee folds: the caller is pure" {
+            let ws = cross_workspace(
+                "fn mk(n: int) -> int { n + 1 }\n",
+                "fn f() -> int { mk(1) }\n",
+            )
+            prepared_at(ws, "/w/src/a.av")
+            prepared_at(ws, "/w/src/b.av")
+            !ws.decl_reads_state(pure_decl_named(ws, "f"))
+        }
+        then "a state-reading callee folds: the caller reads state" {
+            let ws = cross_workspace(
+                "fn g() -> int {\n    state n: int = 0\n    n\n}\n",
+                "fn f() -> int { g() }\n",
+            )
+            prepared_at(ws, "/w/src/a.av")
+            prepared_at(ws, "/w/src/b.av")
+            ws.decl_reads_state(pure_decl_named(ws, "f"))
+        }
+    }
+}
+
+/// A two-file package, so a callee's body lives in a file the caller's
+/// own analysis never parses.
+fn cross_workspace(a: string, b: string) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/a.av": a,
+                "/w/src/b.av": b,
+            },
+            ["/w/avra.toml", "/w/src/a.av", "/w/src/b.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
