@@ -27,7 +27,7 @@ const doc = { createElement: (t) => el(t) };
 const mount = el("root");
 const style = { textContent: "" };
 let mod = null;
-const applier = createApplier(doc, mount, (who, what) => sendEvent(mod, who, what), style);
+const applier = createApplier(doc, mount, (who, what, payload) => sendEvent(mod, who, what, payload), style);
 
 mod = await instantiate(new Uint8Array(fs.readFileSync(process.argv[2])), {
   wasi: wasiPreview1(() => mod.memory, (code) => { throw new Error(`the program exited ${code}`); }),
@@ -45,6 +45,16 @@ const findClick = (n) => {
   for (const c of n.childNodes) { const hit = findClick(c); if (hit) return hit; }
   return null;
 };
+const findByKey = (n, key) => {
+  if (n.attrs && n.attrs["data-key"] === key) return n;
+  for (const c of n.childNodes) { const hit = findByKey(c, key); if (hit) return hit; }
+  return null;
+};
+const findWords = (n, words) => {
+  if (n.textContent === words && n.listeners.has("click")) return n;
+  for (const c of n.childNodes) { const hit = findWords(c, words); if (hit) return hit; }
+  return null;
+};
 
 mod._initialize();
 mod.avra_start();
@@ -52,7 +62,17 @@ console.log("STYLE:", style.textContent.includes(":root{") ? "sent (theme vars p
 console.log("AFTER START:", shape(mount));
 const clickable = findClick(mount);
 console.log("CLICKABLE:", clickable ? clickable.tagName : "none");
-if (clickable) {
-  clickable.listeners.get("click")();
-  console.log("AFTER CLICK:", shape(mount));
+
+const remove3 = findByKey(mount, "t3") && findWords(findByKey(mount, "t3"), "Remove");
+console.log("ROW3 REMOVE:", remove3 ? "found" : "missing");
+if (remove3) {
+  remove3.listeners.get("click")();
+  console.log("AFTER REMOVE t3:", shape(mount));
+  console.log("t3 gone:", findByKey(mount, "t3") === null, " t2 kept:", findByKey(mount, "t2") !== null);
+}
+const toggle3 = findByKey(mount, "t2") && findWords(findByKey(mount, "t2"), "Wire the event channel");
+if (toggle3) {
+  toggle3.listeners.get("click")();
+  const row2 = findByKey(mount, "t2");
+  console.log("AFTER TOGGLE t2:", shape(row2));
 }

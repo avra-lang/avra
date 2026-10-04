@@ -4,9 +4,7 @@
 // byte-exact in both engines, so a change to the view changes THIS receipt.
 use @std.meta.{derive}
 use @std.ui.components.{
-    button,
     card,
-    checkbox,
     column,
     dialog,
     divider,
@@ -21,6 +19,7 @@ use @std.ui.components.{
 }
 use @std.ui.realize.dom.frame.{event_at, frame_text, sheet}
 use @std.ui.realize.messages.{Messages}
+use @std.ui.realize.payload.{Payload}
 use @std.ui.realize.prim.{prim}
 use @std.ui.realize.view.{View}
 use @std.ui.style.box.{Box}
@@ -28,9 +27,11 @@ use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{dark_theme, default_theme}
 
-/// Every action carries no payload, so `from_site` resolves it and `update`
-/// is ONE exhaustive match. A per-item action needs `Msg.Toggle(id)`, and the
-/// event channel does not yet carry the value that would resolve it.
+/// Every action carries a typed message: a control with no payload carries
+/// its site alone, and a per-item action names its row by id. The host echoes
+/// the payload the frame named back, so `host_event` below is the app's own
+/// door exactly as `avra_event` uses it — site plus payload, never the first
+/// row's.
 @derive(Messages)
 enum Msg {
     ShowAll
@@ -40,6 +41,8 @@ enum Msg {
     ToggleTheme
     OpenDialog
     CloseDialog
+    Toggle(id: string)
+    Remove(id: string)
 }
 
 type Todo = { id: string, title: string, done: bool }
@@ -51,6 +54,15 @@ component board_action {
     label: string
     on_click: Msg
     disabled: bool = false
+}
+
+@derive(View)
+@prim(.Checkbox)
+component task_toggle {
+    ..Box
+    label: string
+    checked: bool
+    on_click: Msg
 }
 
 state filter: string = "all"
@@ -96,7 +108,25 @@ fn update(m: Msg) {
         .ToggleTheme -> { dark = !dark },
         .OpenDialog -> { dialog_open = true },
         .CloseDialog -> { dialog_open = false },
+        .Toggle(id) -> { tasks = [flipped(t, id) for t in tasks] },
+        .Remove(id) -> { tasks = [t for t in tasks if t.id != id] },
     }
+}
+
+/// This task with its state flipped when it is the named one, unchanged
+/// otherwise.
+fn flipped(t: Todo, id: string) -> Todo {
+    if t.id == id { t with { done: !t.done } } else { t }
+}
+
+/// The host's echo, without the wire: rebuild the typed message from the
+/// SITE the frame named and the PAYLOAD the host carried back, then
+/// dispatch it. This is the one door `avra_event` uses. The two arrive
+/// separately, so row t3's payload builds `Remove("t3")` even though t2's
+/// Remove shares the same site.
+fn host_event(site: int, payload: Payload?) {
+    let rebuilt? = Msg.from_site(site, payload) else { return }
+    update(rebuilt)
 }
 
 fn tab(label: string, m: Msg, on: bool) -> board_action {
@@ -143,11 +173,13 @@ fn task_item(t: Todo) -> item {
         key: t.id
         layout: Layout { gap: .S, align: .Center, pad: around(.S) }
         items: [
-            checkbox t.title {
-                checked: t.done
-                style: title_style(t.done)
+            task_toggle {
+                label: t.title,
+                checked: t.done,
+                on_click: Msg.Toggle(t.id),
+                style: title_style(t.done),
             },
-            button "Remove" { disabled: true },
+            board_action { label: "Remove", on_click: Msg.Remove(t.id), style: sunk_style() },
         ]
     }
 }
@@ -237,3 +269,11 @@ println(
 )
 println("dark=${sheet(view().describe(), dark_theme).contains("--tone-text:#eeeeee")}")
 println("event=${event_at(view().describe(), Msg.OpenDialog.site(), 1) != null}")
+
+// THE PER-ITEM WITNESS: the host echoes row t3's Remove payload, and only t3
+// leaves. The id is read from `tasks`, so a wrong row (t1) or none at all
+// would show here.
+host_event(Msg.Remove("t3").site(), Msg.Remove("t3").payload())
+println("after_remove_t3=[${[t.id for t in tasks].join(",")}]")
+host_event(Msg.Toggle("t2").site(), Msg.Toggle("t2").payload())
+println("after_toggle_t2=${[t.title for t in tasks if t.done].join(",")}")

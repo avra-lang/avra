@@ -174,6 +174,22 @@ fn text_ops(m: Mount, path: string) -> List<string> {
     ["C ${path} ${tag_for(m.prim, level_of(m.attrs)).word()}"].concat(key_ops).concat(class_ops)
 }
 
+/// One event as a readable line: its path, kind, and — when present — its
+/// typed payload. Absent carries no suffix, so a capture-free action reads
+/// exactly as it did before the payload channel existed.
+fn event_line(path: string, action: Action) -> string {
+    let base = "E ${path} ${kind_word(action.kind)}"
+    match action.payload {
+        p? -> "${base} ${payload_word(p)}"
+        null -> base
+    }
+}
+
+/// A typed payload as a readable word — one arm per kind.
+fn payload_word(p: Payload) -> string {
+    match p { .Text(t) -> "text:${t}", .Int(n) -> "int:${n}", .Bool(b) -> "bool:${b}" }
+}
+
 /// The same graph as readable lines, addressed by lexical path — for tests
 /// and `explain`, never the wire. The first node's path is "0".
 export fn frame_text(root: Node) -> string {
@@ -186,7 +202,7 @@ export fn frame_text(root: Node) -> string {
                 paths.push(path)
                 lines.set(lines.get().concat(text_ops(m, path)))
             },
-            .Event(id, action) -> lines.push("E ${paths.get()[id]} ${kind_word(action.kind)}"),
+            .Event(id, action) -> lines.push(event_line(paths.get()[id], action)),
             .Words(id, text) -> {
                 if text != "" { lines.push("T ${paths.get()[id]} ${text}") }
             },
