@@ -44,6 +44,10 @@ int64_t avra_array_get(void* arr, int64_t i);
 void* avra_array_get_owned(void* arr, int64_t i);
 int64_t avra_slot_get(void* box, int64_t i);
 void* avra_slot_get_owned(void* box, int64_t i);
+// A FLAT ROW's cell: a settled static's scalar row laid out as bare cells,
+// no header and no descriptor. The index is proven by the layout, so there
+// is no bounds test and no header to read — the address names the cells.
+int64_t avra_flat_get(void* cells, int64_t i);
 int64_t avra_array_len(void* arr);
 void* avra_box_thawed(void* p);
 

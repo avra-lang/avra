@@ -259,16 +259,22 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
 /// Boxes are laid out child-first, as the fold pushed them, so each
 /// slot's box already stands when the slot names it.
 fn emit_static(lc: ptr, m: ptr, st: Static) {
-    for j, b in st.boxes { emit_box(lc, m, box_name(st, j), st, b) }
+    for j, b in st.boxes { emit_box(lc, m, box_name(st, j), st, j, b) }
 }
 
 fn box_name(st: Static, j: int) -> string {
     if j == st.boxes.length - 1 { mangled(st.name) } else { "${mangled(st.name)}\$${j}" }
 }
 
-fn emit_box(lc: ptr, m: ptr, name: string, st: Static, b: StaticBox) {
+fn emit_box(lc: ptr, m: ptr, name: string, st: Static, j: int, b: StaticBox) {
     match b {
-        .Slots(cells) -> { let _ = static_array(lc, m, name, st, cells) },
+        .Slots(cells) -> {
+            if st.flat.contains(j) {
+                let _ = flat_array(lc, m, name, st, cells)
+            } else {
+                let _ = static_array(lc, m, name, st, cells)
+            }
+        },
         .Octets(b) -> { let _ = avra_llvm_global_text(m, b, b.length, name) },
         .Table(keys, values) -> {
             let k = static_array(lc, m, "${name}\$k", st, [Slot.Text(key) for key in keys])
@@ -276,6 +282,17 @@ fn emit_box(lc: ptr, m: ptr, name: string, st: Static, b: StaticBox) {
             let _ = avra_llvm_static_map(m, name, k, v)
         },
     }
+}
+
+/// A flat row's global: its scalar cells and nothing else, so one load
+/// against the address reaches a cell. The address of this global IS the
+/// cells, which is what a container's cell holds.
+fn flat_array(lc: ptr, m: ptr, name: string, st: Static, cells: List<Slot>) -> ptr {
+    let arr = avra_llvm_value_array_new(cells.length)
+    for j, c in cells { avra_llvm_value_array_set(arr, j, slot_value(lc, m, st, c)) }
+    let g = avra_llvm_flat_array(m, name, arr, cells.length)
+    avra_llvm_value_array_free(arr)
+    g
 }
 
 /// A slot array laid out whole; answers its payload's address.
@@ -287,7 +304,7 @@ fn static_array(lc: ptr, m: ptr, name: string, st: Static, cells: List<Slot>) ->
         avra_llvm_value_array_set(
             marks,
             j,
-            avra_llvm_const_int(avra_llvm_int8_type(lc), slot_mark(c), 0),
+            avra_llvm_const_int(avra_llvm_int8_type(lc), slot_mark(st, c), 0),
         )
     }
     let payload = avra_llvm_static_array(m, name, arr, marks, cells.length)
@@ -297,10 +314,13 @@ fn static_array(lc: ptr, m: ptr, name: string, st: Static, cells: List<Slot>) ->
 }
 
 /// A cell's mark (runtime/avra_box.h): owned for a pointer the layout
-/// holds, absent for a nullable scalar that is not there.
-fn slot_mark(c: Slot) -> int {
+/// holds, absent for a nullable scalar that is not there. A cell that
+/// points at a FLAT row is unowned: the row has no header, so a release
+/// that walked it would read cells as one.
+fn slot_mark(st: Static, c: Slot) -> int {
     match c {
-        .Text(_) or .Box(_) or .Null -> 1,
+        .Box(at) -> if st.flat.contains(at) { 0 } else { 1 },
+        .Text(_) or .Null -> 1,
         .Absent -> 2,
         // a code address is a raw word, never a header — `push_slot`
         // treats a dynamic closure's own code slot the same way
@@ -316,7 +336,7 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
         .Float(bits) -> avra_llvm_const_int(avra_llvm_int64_type(lc), bits, 1),
         .Bool(b) -> avra_llvm_const_int(avra_llvm_int64_type(lc), if b { 1 } else { 0 }, 0),
         .Text(s) -> avra_llvm_intern_text(m, s.bytes(), s.length),
-        .Box(at) -> avra_llvm_global_payload(m, box_name(st, at)),
+        .Box(at) -> if st.flat.contains(at) { avra_llvm_global_cells(m, box_name(st, at)) } else { avra_llvm_global_payload(m, box_name(st, at)) },
         .Null -> avra_llvm_const_pointer_null(avra_llvm_pointer_type(lc)),
         .Absent -> avra_llvm_const_int(avra_llvm_int64_type(lc), 0, 0),
         // the function's own address, a pointer constant like `.Box` —

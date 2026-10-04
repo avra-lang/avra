@@ -1,0 +1,28 @@
+//! A settled static's flat child row is a BARE cells array, and the
+//! container's cell that points at it is UNOWNED — a flat row has no
+//! header, so a release that walked the cell would read cells as one.
+use @std.io.{make_dirs, read_text}
+use @std.time.{now_ns}
+use @std.avrac.testing.{ir_of}
+use compiler.backend.{emit_ll}
+
+once fn flat_base() -> string { "/tmp/avra-flat-mark-test/${now_ns()}" }
+
+fn emitted(name: string) -> string {
+    let _ = make_dirs(flat_base())
+    let path = "${flat_base()}/${name}.ll"
+    let source = "type Pair = { a: int, b: int }\nconst P: List<Pair> = [Pair { a: 1, b: 2 }]\nfn t() -> int {\n    mut s = 0\n    for r in P { s = s + r.a }\n    s\n}\nt()"
+    if emit_ll(ir_of(source), path, "") != null { return "" }
+    read_text(path) catch ""
+}
+
+spec "compiler/backend — a flat row's mark" {
+    given "a settled const list of scalar rows read in place" {
+        then "the row is read flat and the container's cell is unowned (mark 0)" {
+            let ll = emitted("flat")
+            ll.contains("avra_flat_get") &&
+                ll.contains("[2 x i64]") &&
+                ll.contains("[1 x i8] zeroinitializer")
+        }
+    }
+}

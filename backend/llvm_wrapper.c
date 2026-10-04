@@ -796,6 +796,43 @@ LLVMValueRef avra_llvm_global_payload(LLVMModuleRef m, const char* name) {
     return LLVMConstInBoundsGEP2(LLVMInt8TypeInContext(ctx), g, &offset, 1);
 }
 
+// A FLAT ROW: a settled static's scalar cells as the WHOLE global — no
+// header, no descriptor, no marks. The address of the global IS the
+// cells, which is what a container's cell holds and what `avra_flat_get`
+// indexes. The cell encoding follows the target's pointer width exactly
+// as `avra_llvm_static_array`'s does.
+LLVMValueRef avra_llvm_flat_array(LLVMModuleRef m, const char* name, LLVMValueRef* cells, int n) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTargetDataRef td = LLVMGetModuleDataLayout(m);
+    int ptr32 = td != NULL && LLVMPointerSize(td) == 4;
+    LLVMTypeRef cell_ty = ptr32 ? LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ i32, i32 }, 2, 0) : i64;
+    LLVMValueRef* words = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (size_t)(n > 0 ? n : 1));
+    for (int i = 0; i < n; i++) {
+        int pointer = LLVMGetTypeKind(LLVMTypeOf(cells[i])) == LLVMPointerTypeKind;
+        if (ptr32) words[i] = cell_word32(ctx, cells[i], pointer);
+        else words[i] = pointer ? LLVMConstPtrToInt(cells[i], i64) : cells[i];
+    }
+    LLVMTypeRef cells_ty = LLVMArrayType2(cell_ty, (uint64_t)n);
+    LLVMValueRef g = LLVMAddGlobal(m, cells_ty, name);
+    LLVMSetInitializer(g, LLVMConstArray2(cell_ty, words, (uint64_t)n));
+    LLVMSetLinkage(g, LLVMPrivateLinkage);
+    LLVMSetUnnamedAddress(g, LLVMGlobalUnnamedAddr);
+    LLVMSetAlignment(g, 16);
+    free(words);
+    return g;
+}
+
+// The address of a flat row's global — the cells themselves, which is
+// what a container's cell holds. The same value `avra_llvm_flat_array`
+// laid, so a read and its container never disagree.
+LLVMValueRef avra_llvm_global_cells(LLVMModuleRef m, const char* name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    if (!g) { avra_trap("compiler defect: a flat row read names no data"); }
+    return g;
+}
+
 // A `once fn`'s OWN SLOT: one raw pointer word, null-initialized,
 // private to this module — UNHEADERED, unlike every other global
 // here, because nothing walks it as a box; it holds the ADDRESS

@@ -89,6 +89,14 @@ void* avra_slot_get_owned(void* box, int64_t i) {
     return v;
 }
 
+// A flat row's cell: the compiler proved the index and the layout, so the
+// read is one load against the address the container's cell holds. No
+// header, no descriptor, no bounds test.
+int64_t avra_flat_get(void* cells, int64_t i) {
+    CENSUS(g_list_gets++);
+    return ((int64_t*)cells)[i];
+}
+
 int64_t avra_array_len(void* arr) {
     return ((AvraArray*)arr)->len;
 }

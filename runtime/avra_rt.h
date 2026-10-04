@@ -76,6 +76,7 @@ extern const char avra_rt_held_avra_array_get __asm__(AVRA_RT_LABEL(avra_array_g
 extern const char avra_rt_held_avra_array_get_owned __asm__(AVRA_RT_LABEL(avra_array_get_owned));
 extern const char avra_rt_held_avra_slot_get __asm__(AVRA_RT_LABEL(avra_slot_get));
 extern const char avra_rt_held_avra_slot_get_owned __asm__(AVRA_RT_LABEL(avra_slot_get_owned));
+extern const char avra_rt_held_avra_flat_get __asm__(AVRA_RT_LABEL(avra_flat_get));
 extern const char avra_rt_held_avra_cell_release __asm__(AVRA_RT_LABEL(avra_cell_release));
 extern const char avra_rt_held_avra_cell_unique __asm__(AVRA_RT_LABEL(avra_cell_unique));
 extern const char avra_rt_held_avra_cell_thawed __asm__(AVRA_RT_LABEL(avra_cell_thawed));
@@ -243,6 +244,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_array_get_owned,
     &avra_rt_held_avra_slot_get,
     &avra_rt_held_avra_slot_get_owned,
+    &avra_rt_held_avra_flat_get,
     &avra_rt_held_avra_cell_release,
     &avra_rt_held_avra_cell_unique,
     &avra_rt_held_avra_cell_thawed,
@@ -425,6 +427,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_slot_get(AVRA_RT_PTR
     "avra_slot_get: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_slot_get_owned(AVRA_RT_PTR, AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_slot_get_owned: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_flat_get(AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
+    "avra_flat_get: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_cell_release(AVRA_RT_PTR)), void),
     "avra_cell_release: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_cell_unique(AVRA_RT_PTR)) == AVRA_RT_POINTER,

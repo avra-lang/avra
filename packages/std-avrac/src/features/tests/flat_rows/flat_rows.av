@@ -1,0 +1,37 @@
+//! A settled const list of scalar rows is read FLAT — its child rows
+//! are bare cells — while a runtime list of the same row type stays
+//! boxed. Two settled containers, a boxed sibling, and a COPY of a
+//! settled container must all agree.
+type Pair = { a: int, b: int }
+
+const FIRST: List<Pair> = [Pair { a: 1, b: 2 }, Pair { a: 3, b: 4 }]
+const SECOND: List<Pair> = [Pair { a: 5, b: 6 }, Pair { a: 7, b: 8 }]
+const COPIED: List<Pair> = [Pair { a: 1, b: 1 }, Pair { a: 2, b: 2 }]
+
+fn base() -> int { 9 }
+
+fn settled_total() -> int {
+    mut t = 0
+    for row in FIRST { t = t + row.a * 10 + row.b }
+    for row in SECOND { t = t + row.a * 10 + row.b }
+    t
+}
+
+fn live_total() -> int {
+    let rows: List<Pair> = [
+        Pair { a: base(), b: base() + 1 },
+        Pair { a: base() + 2, b: base() + 3 },
+    ]
+    mut t = 0
+    for row in rows { t = t + row.a * 10 + row.b }
+    t
+}
+
+fn copied_total() -> int {
+    let copy = COPIED
+    mut t = 0
+    for row in copy { t = t + row.a * 10 + row.b }
+    t
+}
+
+"${settled_total()} ${live_total()} ${copied_total()}"

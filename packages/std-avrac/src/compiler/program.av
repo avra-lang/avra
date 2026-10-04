@@ -89,7 +89,7 @@ use features.formats.{FormatPatSemantics}
 use features.collects.{CollectStmtSemantics, CollectEnumStmtSemantics}
 use diagnostics.{SourceFile, Voices}
 use compiler.backend.{run_lowered, run_live, Ended}
-use compiler.lower.{Lowered}
+use compiler.lower.{Lowered, flatten_rows}
 use compiler.memory.{memory}
 use compiler.host.{no_target}
 use compiler.format.{render_statement, render_expression}
@@ -697,20 +697,22 @@ impl Program {
         // reads it below as an ordinary dependency rather than
         // computing it lazily mid-lower.
         touch(ws.references())
-        memory(
-            self
-                .ws
-                .decls
-                .union(
-                    self.files,
-                    entry,
-                    every,
-                    programs,
-                    ws.hold.held_wants.get(),
-                    (w: Wanted) -> ws.lowered(ws.spec_id(w)),
-                    (f: FileId) -> ws.is_held(f),
-                    (f: FileId) -> ws.is_program_file(f),
-                ),
+        flatten_rows(
+            memory(
+                self
+                    .ws
+                    .decls
+                    .union(
+                        self.files,
+                        entry,
+                        every,
+                        programs,
+                        ws.hold.held_wants.get(),
+                        (w: Wanted) -> ws.lowered(ws.spec_id(w)),
+                        (f: FileId) -> ws.is_held(f),
+                        (f: FileId) -> ws.is_program_file(f),
+                    ),
+            ),
         ) with { libraries: ws.linked_packages() }
     }
 

@@ -1,0 +1,195 @@
+//! FLAT CHILD ROWS: a settled static's scalar row laid out as bare
+//! cells — no header, no descriptor — when the whole program proves
+//! its address never escapes as a box.
+//!
+//! A static's root is a box (it is read at a computed index), but a
+//! child row reached through the root's cells may be flat: the only
+//! way to obtain its address is reading the root, and if every such
+//! read is immediately a CONSTANT-index cell read the address never
+//! reaches a verb that expects a box. The pass decides per static
+//! from the whole program, so one escaping use (a store, a call, a
+//! length read, a managed read) keeps the row a box. The rewrite is
+//! the same walk that decides: the element registers it proves safe
+//! have their cell reads turned into `avra_flat_get`.
+use core.{Ins, Reg, Slot, Static, StaticBox, filled, reads_of}
+
+/// The whole program's flat decision: each static's flat boxes marked,
+/// and every body's safe cell reads rewritten.
+export fn flatten_rows(l: Lowered) -> Lowered {
+    let candidates = flat_candidates(l.statics)
+    let escaped = escaped_statics(l, candidates)
+    mut safe: Map<string, bool> = {}
+    for st in l.statics {
+        if candidates.get(st.name) != null && escaped.get(st.name) == null { safe.set(st.name, true) }
+    }
+    l with { fns: [flat_body(b, candidates, safe) for b in l.fns], entry: flat_body(l.entry, candidates, safe), statics: [flat_static(s, candidates, safe) for s in l.statics] }
+}
+
+/// A static's flat boxes, or none. A static is a candidate only when
+/// EVERY element a root read can produce is a scalar row — the root's
+/// cells all point at children, and every child is a non-empty row of
+/// scalar cells. A uniform list is what makes one rewrite right for
+/// every runtime index; a static with any other child stays a box.
+fn flat_candidates(statics: List<Static>) -> Map<string, List<int>> {
+    mut out: Map<string, List<int>> = {}
+    for st in statics {
+        let flat = flat_static_boxes(st)
+        if flat != null { out.set(st.name, flat!) }
+    }
+    out
+}
+
+fn flat_static_boxes(st: Static) -> List<int>? {
+    if st.boxes.length < 2 { return null }
+    let root = st.boxes.length - 1
+    let children = [j for j, b in st.boxes if j != root]
+    if !children.all(scalar_row(st.boxes[it])) { return null }
+    if !root_points_at_children(st.boxes[root]) { return null }
+    children
+}
+
+/// Whether a root's every cell is a pointer at a child box — a LIST of
+/// rows, never a record whose cells are read in place.
+fn root_points_at_children(b: StaticBox) -> bool {
+    match b {
+        .Slots(cells) -> !cells.is_empty() && cells.all(is_box_cell(it)),
+        .Table(_, _) or .Octets(_) -> false,
+    }
+}
+
+fn scalar_row(b: StaticBox) -> bool {
+    match b {
+        .Slots(cells) -> !cells.is_empty() && cells.all(is_scalar_cell(it)),
+        .Table(_, _) or .Octets(_) -> false,
+    }
+}
+
+fn is_scalar_cell(c: Slot) -> bool {
+    match c {
+        .Int(_) or .Float(_) or .Bool(_) -> true,
+        .Text(_) or .Box(_) or .Null or .Absent or .Code(_) -> false,
+    }
+}
+
+fn is_box_cell(c: Slot) -> bool {
+    match c {
+        .Box(_) -> true,
+        .Int(_) or .Float(_) or .Bool(_) or .Text(_) or .Null or .Absent or .Code(_) -> false,
+    }
+}
+
+/// Every static some body's read escapes — the rows that must stay
+/// boxes. The walk rewrites nothing (`safe` is empty), so it only
+/// answers which candidates are reached as boxes.
+fn escaped_statics(l: Lowered, candidates: Map<string, List<int>>) -> Map<string, bool> {
+    mut escaped: Map<string, bool> = {}
+    for b in l.fns.concat([l.entry]) {
+        let w = walk_ins(b.ins, b.reg_types.length, candidates, {})
+        for st in l.statics {
+            if w.escaped.get(st.name) != null { escaped.set(st.name, true) }
+        }
+    }
+    escaped
+}
+
+fn flat_body(b: Body, candidates: Map<string, List<int>>, safe: Map<string, bool>) -> Body {
+    b with { ins: walk_ins(b.ins, b.reg_types.length, candidates, safe).ins }
+}
+
+fn flat_static(s: Static, candidates: Map<string, List<int>>, safe: Map<string, bool>) -> Static {
+    if safe.get(s.name) == null { return s }
+    s with { flat: candidates.get(s.name) ?? [] }
+}
+
+type FlatWalk = { ins: List<Ins>, escaped: Map<string, bool> }
+
+/// ONE walk over a body that both decides and rewrites. `roots[i]` names
+/// the static whose address register `i` holds; `elems[i]` names the
+/// child row a root's cell read produced; `consts[i]` says register `i`
+/// is an `int` literal. A read of a tainted register that is not one of
+/// the allowed forms marks that row escaped.
+fn walk_ins(ins: List<Ins>, nregs: int, candidates: Map<string, List<int>>, safe: Map<string, bool>) -> FlatWalk {
+    mut roots: List<string?> = filled<string?>(nregs, null)
+    mut elems: List<string?> = filled<string?>(nregs, null)
+    mut consts: List<bool> = filled<bool>(nregs, false)
+    mut escaped: Map<string, bool> = {}
+    mut out: List<Ins> = []
+    for i in ins {
+        let step = match i {
+            .StaticAddr(d, name) -> {
+                if candidates.get(name) != null { roots.set(d.index, name) }
+                i
+            },
+            .ConstInt(d, _) -> {
+                consts.set(d.index, true)
+                i
+            },
+            // The registry's names are what a runtime call wears; matching
+            // one is reading the registry, as `rt_sig_of` does. Every other
+            // row's operands go through `reads_of` below.
+            .CallRt(d, callee, args) -> {
+                if args.length == 2 && (callee == "avra_array_get" || callee == "avra_slot_get") {
+                    cell_step(i, d, args, roots, elems, consts, safe, escaped)
+                } else if callee == "avra_array_len" && args.length == 1 {
+                    if elems[args[0].index] != null { escaped.set(elems[args[0].index]!, true) }
+                    i
+                } else {
+                    // An OWNED read of a tainted register is an escape: it
+                    // would retain a headerless row. So does any other row.
+                    escape_reads(i, roots, elems, escaped)
+                    i
+                }
+            },
+            // The remainder delegates to `reads_of`, the exhaustive operand projection.
+            rest -> {
+                escape_reads(i, roots, elems, escaped)
+                i
+            },
+        }
+        out.push(step)
+    }
+    FlatWalk { ins: out, escaped: escaped }
+}
+
+/// One cell read: the root's `avra_array_get` mints an element row; an
+/// element row's `avra_array_get`/`avra_slot_get` cell read must be a
+/// CONSTANT index (a flat row has no length to bound a computed one)
+/// and is rewritten when the row is safe; anything else escapes.
+fn cell_step(
+    i: Ins,
+    d: Reg,
+    args: List<Reg>,
+    roots: List<string?>,
+    mut elems: List<string?>,
+    consts: List<bool>,
+    safe: Map<string, bool>,
+    mut escaped: Map<string, bool>,
+) -> Ins {
+    let root: string? = roots[args[0].index]
+    if root != null {
+        elems.set(d.index, root!)
+        return i
+    }
+    let elem: string? = elems[args[0].index]
+    if elem == null { return i }
+    if !consts[args[1].index] {
+        escaped.set(elem!, true)
+        return i
+    }
+    if safe.get(elem!) != null {
+        // LICENSED compiler.raw_rt_call: the pass rewrites a lowered row name, as memory.av's owned-twin substitution does.
+        return Ins.CallRt(d, "avra_flat_get", args)
+    }
+    i
+}
+
+/// Every read of a tainted register, for an instruction none of the
+/// allowed forms covers.
+fn escape_reads(i: Ins, roots: List<string?>, elems: List<string?>, mut escaped: Map<string, bool>) {
+    for r in reads_of(i) {
+        let root: string? = roots[r.index]
+        if root != null { escaped.set(root!, true) }
+        let elem: string? = elems[r.index]
+        if elem != null { escaped.set(elem!, true) }
+    }
+}
