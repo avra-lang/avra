@@ -32,7 +32,7 @@ use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
 /// text between the braces, holes as placeholders. `Component` is an
 /// imported component's word, which opens an instance. `Octets` is a
 /// byte string `b"…"`, its `text` the spelling between the quotes.
-export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component, State, Octets, Env, Provide }
+export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component, State, Octets, Env, Provide, On }
 
 /// One DSL token. For Str and the IStr kinds, `text` is the
 /// unquoted, unescaped contents; the span covers the delimiters. A
@@ -1475,6 +1475,8 @@ export fn lex_blocks(
         t with { kind: TokenKind.State }
     } else if opens_provide(ts, i) {
         t with { kind: TokenKind.Provide }
+    } else if opens_on(ts, i) {
+        t with { kind: TokenKind.On }
     } else {
         t
     } for i, t in ts] }
@@ -1525,6 +1527,18 @@ fn opens_state(ts: List<Token>, i: int) -> bool {
 /// so this shape claims only a mark before a binding.
 fn after_param_sep(ts: List<Token>, i: int) -> bool {
     i > 0 && (ts[i - 1].lit_matches("(") || ts[i - 1].lit_matches(","))
+}
+
+/// Whether the token at `i` is `on` opening an instance's handler — a
+/// SOFT keyword: it means `on` only before a NAME and a block, at a
+/// statement's start, so `fn maybe(on: bool)` and `Row { on: true }`
+/// stay ordinary names.
+fn opens_on(ts: List<Token>, i: int) -> bool {
+    let t = ts[i]
+    if t.kind != TokenKind.Name || t.text != "on" { return false }
+    if !starts_statement(ts, i) { return false }
+    if i + 1 >= ts.length || ts[i + 1].kind != TokenKind.Name { return false }
+    i + 2 < ts.length && ts[i + 2].lit_matches("{")
 }
 
 /// Whether the token at `i` is a component's word opening an instance.

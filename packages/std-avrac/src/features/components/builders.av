@@ -220,6 +220,16 @@ fn build_setting(b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.Setting(Plain((b.token(0)?).text), b.expr(1)?))
 }
 
+/// `on <kind> { … }` — a handler written where the control is. Its
+/// captures must lift into a typed payload, and the per-instance site
+/// and per-file dispatcher are declarations minted AFTER the body is
+/// typed; the parse cannot see bindings, so the form is not landed.
+/// `on` is a SOFT keyword, tagged by the lexer only before a NAME and
+/// a block — never a reserved word.
+fn build_on_handler(b: Builder) -> Result<LangNode, string> {
+    .Err(on_gap((b.token(1)?).text))
+}
+
 impl Builder {
     /// The imported component the word at `args[i]` opens.
     fn word_at(i: int) -> Result<ComponentWord, string> {
@@ -621,4 +631,8 @@ fn fn_body_setting() -> string {
 
 fn record_fn_body(word: string) -> string {
     "`${word}` builds a record with no one fn field, so its body lists settings and children — a `name ->` head makes a fn, which fills a record's only fn field or a template's block"
+}
+
+fn on_gap(kind: string) -> string {
+    "`on ${kind} { … }` writes its handler where the control is — lifting its captures into a typed payload is the expand stage (docs/2026_09_23_COMPONENT_EXPANSION.md §11), not landed"
 }
