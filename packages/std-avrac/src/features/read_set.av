@@ -127,9 +127,9 @@ export fn hoistable_of(view: FileView, names: NameFacts, root: ExprId, reads: fn
 
 /// How a site lowers, from its read set — the compiler's per-site
 /// choice. `Direct` is the one-read leaf; several places, or an
-/// opaque call, stay on the tree path. The KEYED list joins this
-/// registry with the `list … by` construct and content-addressed
-/// site ids.
+/// opaque call, stay on the tree path. A KEYED list reconciles by
+/// the element accessor its `list … by` head states — identity,
+/// never position.
 export enum SiteLowering {
     /// reads no state: the subtree is constant and hoists into the
     /// binary — the frame never mentions it
@@ -139,20 +139,26 @@ export enum SiteLowering {
     /// several places, or a call whose callee's reads are unknown —
     /// the conservative tree path
     Tree
+    /// a list that states its key: reconcile its children by the
+    /// element accessor, so a reorder or insert keeps every node
+    Keyed(key: ExprId)
 }
 
-/// The lowering a site earns: `Hoist`, `Direct`, or `Tree`.
+/// The lowering a site earns: `Hoist`, `Keyed`, `Direct`, or `Tree`.
 export fn site_lowering_of(
     view: FileView,
     names: NameFacts,
     root: ExprId,
     reads: fn(DeclId) -> bool,
 ) -> SiteLowering {
-    if calls_read_state(view, names, root, reads) { return .Tree }
-    let places = read_set_of(view, names, root)
-    if places.is_empty() { return .Hoist }
-    if places.length == 1 { return .Direct(places[0]) }
-    .Tree
+    let key? = view.store.keyed_list_key(root) else {
+        if calls_read_state(view, names, root, reads) { return .Tree }
+        let places = read_set_of(view, names, root)
+        if places.is_empty() { return .Hoist }
+        if places.length == 1 { return .Direct(places[0]) }
+        return .Tree
+    }
+    .Keyed(key)
 }
 
 /// One entry in a view's planning: the content address of an
@@ -182,7 +188,7 @@ export fn lowering_plan_of(
     if view.store.expr_is_closure(root) { return [here] }
     match here.lowering {
         .Hoist or .Direct(_) -> [here],
-        .Tree -> [here]
+        .Tree or .Keyed(_) -> [here]
             .concat(
                 flatten(
                     [lowering_plan_of(view, names, k, reads) for k in view.store.expr_children(root)],

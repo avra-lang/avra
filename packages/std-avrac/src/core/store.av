@@ -142,6 +142,11 @@ export type SyntaxArena = {
     body_starts: Cell<Map<string, int>>,
     block_voices: Cell<List<BlockVoice>>,
     foreign: Cell<List<ForeignRange>>,
+    // a keyed list's reconciliation key, by the component instance
+    // that carries it — the `by it.<field>` accessor read on each
+    // element, the one fact that makes a list reconcile by identity
+    // rather than by position
+    keyed_lists: Cell<List<ExprId?>>,
 }
 
 export fn new_node_store(file: string = "") -> SyntaxArena {
@@ -186,6 +191,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         body_starts: map_cell(),
         block_voices: list_cell(),
         foreign: list_cell(),
+        keyed_lists: list_cell(),
     }
 }
 
@@ -249,6 +255,7 @@ impl SyntaxArena {
         self.grammar_lits.push(null)
         self.tables.push(null)
         self.written_close.push(null)
+        self.keyed_lists.push(null)
         ExprId { index: self.exprs.add(e, span) }
     }
 
@@ -454,6 +461,17 @@ impl SyntaxArena {
 
     fn instance_owner(e: ExprId) -> StmtId? {
         self.instance_owners.get()[e.index]
+    }
+
+    /// A keyed list's reconciliation key, by its component instance —
+    /// the element accessor the `by it.<field>` clause names. Absent
+    /// on every list that states no key, so `Tree` stays its lowering.
+    fn mark_keyed_list(e: ExprId, key: ExprId) {
+        self.keyed_lists.set_at(e.index, key)
+    }
+
+    fn keyed_list_key(e: ExprId) -> ExprId? {
+        self.keyed_lists.get()[e.index]
     }
 
     /// Where a quote's runs of text start in the source, one per part.

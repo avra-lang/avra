@@ -20,6 +20,7 @@ use core.{
     HoleKind,
     Filled,
     SettingParts,
+    Span,
     TypeRef,
     pronoun_param,
     copier,
@@ -68,6 +69,83 @@ fn holds_a_member(store: SyntaxArena, s: StmtId) -> bool {
 fn build_component_value(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
     b.wrap_expr(b.instance(word, [b.expr(1)?], b.expr(2)?, null)?)
+}
+
+/// `list visible() by it.id { t -> item { … } }` — a KEYED list. The
+/// `by` clause states the element accessor ONCE, and the body maps
+/// each element to its child. It desugars to the body the explicit
+/// form writes (`list { for t in visible() { item { … } } }`), with
+/// the key spliced into the child — so the tree, and the frame, are
+/// unchanged — and the instance marked with its key, the fact
+/// `read_set`'s `SiteLowering.Keyed` reads.
+fn build_component_keyed(b: Builder) -> Result<LangNode, string> {
+    let word = b.word_at(0)?
+    let source = b.expr(1)?
+    let kw = b.token(2)?
+    let iw = b.token(3)?
+    let field = b.token(4)?
+    let body = b.expr(5)?
+    if kw.text != "by" { return .Err(keyed_clause(word.word, kw.text)) }
+    if iw.text != "it" { return .Err(keyed_pronoun(word.word, iw.text)) }
+    let parts? = b.store.lambda_parts(body) else { return .Err(keyed_body(word.word)) }
+    let seat? = parts.params.first() else { return .Err(keyed_binder(word.word)) }
+    let binder = seat.name.of
+    let subject = b.store.alloc_expr(Expr.Ident(Scoped(binder)), b.span)
+    let key = b.store.alloc_expr(Expr.Prop(subject, Plain(field.text)), b.span)
+    let stmts = keyed_loop_body(b.store, parts.body, key, b.span)
+    let loop_stmt = b.store.alloc_stmt(Stmt.ForEach(null, Scoped(binder), source, stmts), b.span)
+    let loop_block = b.store.alloc_expr(Expr.Block([loop_stmt], null), b.span)
+    let built = b.instance(word, [], loop_block, null)?
+    match b.store.expr(built) {
+        .Component(_, _, _, .Expanded(lit), check) -> {
+            let inst = b
+                .store
+                .alloc_expr(Expr.Component(word.word, [source], body, BodyView.Expanded(lit), check), b.span)
+            b.store.mark_keyed_list(inst, key)
+            b.wrap_expr(inst)
+        },
+        rest -> b.wrap_expr(built),
+    }
+}
+
+/// The loop the keyed head desugars to: the body's leading statements,
+/// its tail child carrying the key. A body that is one value is one
+/// statement.
+fn keyed_loop_body(store: SyntaxArena, body: ExprId, key: ExprId, at: Span?) -> List<StmtId> {
+    match store.expr(body) {
+        .Block(stmts, held) -> {
+            if held == null { return stmts }
+            stmts.concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held!, key)), at)])
+        },
+        rest -> [store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, body, key)), at)],
+    }
+}
+
+/// A child the key rides: its expansion literal grows one `key` field.
+/// A body that builds no component (a call's answer) keeps its key in
+/// the marker alone — the renderer's key is that component's own field.
+fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
+    match store.expr(value) {
+        .Component(w, heads, block, .Expanded(lit), check) -> {
+            match store.expr(lit) {
+                .StructLit(name, fields, values) -> {
+                    let grown = store
+                        .alloc_expr(
+                            Expr
+                                .StructLit(name, fields.concat([Plain("key")]), values.concat([key])),
+                            store.expr_span(lit),
+                        )
+                    store
+                        .alloc_expr(
+                            Expr.Component(w, heads, block, BodyView.Expanded(grown), check),
+                            store.expr_span(value),
+                        )
+                },
+                rest -> value,
+            }
+        },
+        rest -> value,
+    }
 }
 
 /// `row { … }` — an instance with no head value.
@@ -473,6 +551,22 @@ fn field_fill(
 
 fn unimported(word: string) -> string {
     "the lexer opened an instance with `${word}`, which no import names as a component"
+}
+
+fn keyed_clause(word: string, kw: string) -> string {
+    "`${word}`'s keyed head is `by it.<field>` — this clause reads `${kw}`"
+}
+
+fn keyed_pronoun(word: string, iw: string) -> string {
+    "a keyed `${word}` reads its key on `it` — `by it.<field>`, this reads `${iw}`"
+}
+
+fn keyed_body(word: string) -> string {
+    "a keyed `${word}` writes its element body as `name -> …` — the binder its key reads"
+}
+
+fn keyed_binder(word: string) -> string {
+    "a keyed `${word}`'s body binds its element — write `name -> …`"
 }
 
 fn head_count(word: string, n: int) -> string {

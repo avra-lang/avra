@@ -1361,7 +1361,7 @@ impl SourceText {
             // swallowed into the head — `text "hi".describe()` reads as
             // `text ("hi".describe())`. Loosest tier forces the group
             // wherever anything follows it.
-            .Component(word, heads, block, _, _) -> grouped(self.instance(word, heads, block, depth), loosest_tier, parent),
+            .Component(word, heads, block, _, _) -> grouped(self.keyed_instance(id, word, heads, block, depth), loosest_tier, parent),
             .If(cond, yes, no) -> grouped(self.if_group(cond, yes, no, id, depth, c), atom_tier, parent),
             .When(conds, values, fallback) -> grouped(
                 self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth),
@@ -1926,6 +1926,25 @@ impl SourceText {
             .Lambda(params, body) -> self.trailing_lambda(params, body, b, depth),
             rest -> self.expression(b, loosest_tier, depth),
         }
+    }
+
+    /// A component instance as written: a keyed list states its `by`
+    /// head between its source and its block, every other instance its
+    /// word, head values and block.
+    mut fn keyed_instance(id: ExprId, word: string, heads: List<ExprId>, block: ExprId?, depth: int) -> string {
+        let key? = self.store.keyed_list_key(id) else { return self.instance(word, heads, block, depth) }
+        joined(
+            [source_name(word)]
+                .concat([self.expression(e, loosest_tier, depth) for e in heads])
+                .concat(["by it.${self.keyed_field(key)}"])
+                .concat([self.instance_body(b, depth) for b in some_list(block)]),
+            " ",
+        )
+    }
+
+    /// The field a keyed list's `by it.<field>` clause names.
+    fn keyed_field(key: ExprId) -> string {
+        match self.store.expr(key) { .Prop(_, name) -> name.of, rest -> "" }
     }
 
     mut fn body_text(word: string, parts: List<string>, holes: List<ExprId>, depth: int) -> string {
