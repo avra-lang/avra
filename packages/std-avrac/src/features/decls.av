@@ -2486,9 +2486,14 @@ impl Decls {
         [m for m in self.children_of(d) if self.decl(m).kind is .Method]
     }
 
-    /// A trait's method names — the vtable's order.
+    /// A trait's method names — the vtable's order. A `static fn` has no
+    /// receiver, so it rides NO lane: the dyn box's table holds a value's
+    /// methods, and a lane for a static would hand the dispatcher a seat
+    /// its method does not take (a shim unboxing a receiver that is not
+    /// there). Static members stay in `trait_fns` for the checks that
+    /// read every member; only the vtable skips them.
     fn trait_method_names(d: DeclId) -> List<string> {
-        [self.decl(m).name for m in self.trait_fns(d)]
+        [self.decl(m).name for m in self.trait_fns(d) if !self.is_static_of(m)]
     }
 
     /// Every type in the program that implements `tr` — its records,

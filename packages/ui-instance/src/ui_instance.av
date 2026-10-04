@@ -1,0 +1,82 @@
+//! `instances` — per-instance state reached by KEY, never by pointer. An
+//! event crosses a serialisation boundary, so a handler is a top-level
+//! function and the only thing that can ride with it is a serialisable
+//! key. This module is the TABLE the key resolves against: key -> that
+//! instance's places.
+//!
+//! LIFETIME IS THE IDENTITY'S, never the render's, and that gives TWO
+//! kinds which must not share one rule:
+//!
+//! - a MODEL-KEYED entry (`model: true`) lives as long as the MODEL row
+//!   it is keyed by. Deleting the row releases it (`forget`); nothing
+//!   else may. A filter that merely HIDES the row must not free it — a
+//!   hidden row's state is exactly what un-hiding it reads back.
+//! - an INSTANCE entry (`model: false`) lives while its instance is
+//!   MOUNTED. The render is its owner: `opening` clears the frame's
+//!   seen set, each rendered instance `touch`es its key, and `sweep`
+//!   after the frame drops every unseen instance entry.
+//!
+//! One mechanism for both would lose a filtered row's state the moment
+//! anyone filtered, and it would look like it worked until they did.
+
+/// One entry: its key, whether a MODEL owns its life, and its value.
+export type Entry<T> = { key: string, model: bool, value: T }
+
+/// The table: the entries that stand, plus the keys this frame touched.
+export type Store<T> = { slots: Cell<List<Entry<T>>>, seen: Cell<List<string>> }
+
+/// An empty table — a generic empty cell takes its type from a bound
+/// local, the same seed `core`'s `list_cell` writes.
+export fn opened<T>() -> Store<T> {
+    let slots: List<Entry<T>> = []
+    let seen: List<string> = []
+    Store { slots: Cell.new(slots), seen: Cell.new(seen) }
+}
+
+/// This key's value, absent while no entry stands.
+export fn at<T>(t: Store<T>, key: string) -> T? {
+    let hit? = t.slots.get().find(it.key == key) else { return null }
+    hit.value
+}
+
+/// Get-or-seed: a key with no entry takes `seed`; a key that stands keeps
+/// what it holds, so a re-render never resets an instance's place.
+export fn ensure<T>(t: Store<T>, key: string, model: bool, seed: T) -> T {
+    let held? = at(t, key) else {
+        put(t, key, model, seed)
+        return seed
+    }
+    held
+}
+
+/// Write this key's value, replacing or inserting.
+export fn put<T>(t: Store<T>, key: string, model: bool, value: T) {
+    let kept = [s for s in t.slots.get() if s.key != key]
+    t.slots.set(kept.concat([Entry { key: key, model: model, value: value }]))
+}
+
+/// A MODEL row left: its state leaves with it, and nothing sweeps it
+/// later. This is the ONLY door that frees a model-keyed entry.
+export fn forget<T>(t: Store<T>, key: string) {
+    t.slots.set([s for s in t.slots.get() if s.key != key])
+}
+
+/// A frame opens: the seen set empties.
+export fn opening<T>(t: Store<T>) { t.seen.set([]) }
+
+/// The frame built this instance: its key is live this frame.
+export fn touched<T>(t: Store<T>, key: string) {
+    if !t.seen.get().any(it == key) { t.seen.set(t.seen.get().concat([key])) }
+}
+
+/// The frame is done: an INSTANCE entry nothing touched is gone; a MODEL
+/// entry survives, because a filter hides a row the row still lives.
+export fn sweep<T>(t: Store<T>) -> int {
+    let before = t.slots.get().length
+    let seen = t.seen.get()
+    t.slots.set([s for s in t.slots.get() if s.model || seen.contains(s.key)])
+    before - t.slots.get().length
+}
+
+/// How many entries stand — the lifetime witness.
+export fn held<T>(t: Store<T>) -> int { t.slots.get().length }
