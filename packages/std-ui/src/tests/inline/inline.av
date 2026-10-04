@@ -1,0 +1,109 @@
+// proves: the DEFUNCTIONALIZED inline-handler shape — a per-instance
+// content-addressed site plus a typed payload, dispatched by a static
+// `match` over the site to generated handler fns — works end to end over
+// the real event channel. Hand-written here because the compiler does not
+// yet generate the `on <kind> { … }` code slot; this pins the destination
+// the generator must reach.
+//
+// A handler's captures ride as the message's typed payload (already on the
+// wire), the tree carries only the site and the payload, and no enum names
+// the dispatch: the site IS the identity and the match IS the dispatch.
+use @std.ui.components.{button, row}
+use @std.ui.realize.view.{View}
+use @std.ui.realize.messages.{Messages}
+use @std.ui.realize.payload.{Payload}
+use @std.ui.realize.render.{Action}
+
+/// The event value an inline handler becomes: a content-addressed `site`
+/// and its captures as a `Payload?`. Data, never a fn — the tree stays
+/// comparable and serializable.
+type Inline = { site: int = 0, value: Payload? = null }
+
+impl Messages for Inline {
+    fn word() -> string { "inline" }
+    fn site() -> int { self.site }
+    fn payload() -> Payload? { self.value }
+}
+
+// ── the generated handlers (what `on click { … }` bodies become) ──
+// one fn per handler, its captures re-bound from the payload; each writes
+// module state exactly as a hand-written `update` arm would.
+
+state count: int = 0
+state last: string = ""
+
+fn h_inc() {
+    count = count + 1
+    last = "inc"
+}
+
+fn h_add(n: int) {
+    count = count + n
+    last = "add:${n}"
+}
+
+// ── the generated table (what the compiler would synthesize) ──
+// a jump table on a compile-time-constant site; the backend lowers a dense
+// int match to `SwitchStart`. ONE site -> fn.
+
+fn inline_event(site: int, payload: Payload?) -> bool {
+    match site {
+        1201 -> {
+            h_inc()
+            true
+        },
+        1202 -> {
+            let n? = payload else { return false }
+            match n {
+                .Int(v) -> {
+                    h_add(v)
+                    true
+                },
+                rest -> false,
+            }
+        },
+        rest -> false,
+    }
+}
+
+// ── the tree: sites, not names ──
+
+let inc_btn = button "add one" { on_click: Inline { site: 1201 } }
+let add_btn = button "add five" { on_click: Inline { site: 1202, value: Payload.Int(5) } }
+let plain = row {}
+
+/// The single action a node carries. A handlerless control carries none.
+fn first(v: dyn View) -> Action? { v.describe().events.first() }
+
+/// Dispatch whatever action a node carries, exactly as the app's event
+/// entry would after `event_at` resolves the host's echo back to it.
+fn fire(v: dyn View) -> bool {
+    let a? = first(v) else { return false }
+    inline_event(a.site, a.payload)
+}
+
+fn site_text(v: dyn View) -> string {
+    let a? = first(v) else { return "none" }
+    "${a.site}"
+}
+
+fn pay_text(v: dyn View) -> string {
+    let a? = first(v) else { return "none" }
+    let p? = a.payload else { return "null" }
+    match p { .Int(n) -> "${n}", .Text(t) -> t, .Bool(b) -> "${b}" }
+}
+
+// a capture-free handler's event value is CONSTANT across renders — the
+// same site, no payload — so the control is a hoistable subtree.
+let rerender = button "add one" { on_click: Inline { site: 1201 } }
+
+println("inc_site=${site_text(inc_btn)}")
+println("add_site=${site_text(add_btn)}")
+println("distinct_site=${site_text(inc_btn) != site_text(add_btn)}")
+println("constant_site=${site_text(inc_btn) == site_text(rerender)}")
+println("absent_event=${site_text(plain)}")
+println("add_payload=${pay_text(add_btn)}")
+println("fire_inc=${fire(inc_btn)}")
+println("count_after_inc=${count} last=${last}")
+println("fire_add=${fire(add_btn)}")
+println("count_after_add=${count} last=${last}")
