@@ -397,6 +397,9 @@ export type Workspace = {
     /// The whole-program raised-error fixpoint over `ErrorSite` — its
     /// members' in-flight answers; everyone else reads `Raised`.
     raised_fixpoint: Fixpoint<List<TypeId>>,
+    /// The whole-program read-reach fixpoint over the declarations' call
+    /// graph — whether each declaration reads `state`, transitively.
+    read_fixpoint: Fixpoint<bool>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
@@ -507,7 +510,7 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
 fn reads_rows_whole(f: Family) -> bool {
     match f {
         .Lowered or .LiftLowered or .Lifted or .Settled -> true,
-        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named -> false,
+        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads -> false,
     }
 }
 
@@ -545,6 +548,8 @@ fn family_word(f: Family) -> string {
         .Marks -> "Marks",
         .Admitted -> "Admitted",
         .Named -> "Named",
+        .ReadReach -> "ReadReach",
+        .DeclReads -> "DeclReads",
     }
 }
 
@@ -740,6 +745,7 @@ fn built(
         phases: list_cell(),
         failures_db: Cell.new(hooked_db(relation_hooks(kernel))),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
+        read_fixpoint: new_fixpoint<bool>(kernel, Family.DeclReads.ordinal, false, read_reach_join, read_reach_fp),
     }
     // The registration IS `Family`'s declaration order: `Family.all()`
     // answers the variants in ordinal order, so `db.family`'s minted index
@@ -974,6 +980,8 @@ impl Workspace {
             .Marks -> touch(self.computed_marks(decl_at_arg(arg))),
             .Admitted -> self.admission(file_at(arg)),
             .Named -> self.decls.named_now(arg),
+            .ReadReach -> touch(self.read_reach()),
+            .DeclReads -> touch(self.decl_reads_state(decl_at_arg(arg))),
         }
         self.db.changed_at(key(f, arg))
     }
