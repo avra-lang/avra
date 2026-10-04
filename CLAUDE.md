@@ -1554,12 +1554,16 @@ Syntax the grammar lacks:
   "unexpected character" at the `;` — a statement ends at a line
   break, and a one-line body is `{ a }` with one statement. A
   TEMPLATE that spells `;` is refused at its own line (S4r homing).
-- A RANGE TAKES NO METHODS: `(0..n).any(it == 2)` is "expected `)`
-  to close the group", AT the `..`. A range is a `for`-head and a
-  comprehension's iterable, nothing more — so the idiom bar's "scan
-  with `any`/`find`" reaches a range only THROUGH a comprehension
-  (`[f(i) for i in 0..n].any(…)`), which is worth knowing because
-  the doctrine sends you at a form the parser refuses.
+- A RANGE TAKES METHODS NOW — the grammar parses `(0..n).any(it ==
+  2)`, and `(0..3).map((i) -> i * 2)` answers a list — but the SCAN
+  verbs fault: `.any`, `.find` and `.all` die with
+  `language.defect: a row without its seat survived typing` (then
+  mint-order defects), and `.length` is `no property `length` on
+  `Range``. Probe at 48e8e62; the earlier entry here quoted
+  "expected `)` to close the group", stale since ranges became
+  values (avra-8sb5.65.3.4). The idiom bar's "scan with
+  `any`/`find`" still reaches a range only through a comprehension
+  (`[f(i) for i in 0..n].any(…)`).
 - A `once fn` with TYPE PARAMETERS (`once fn f<T>() -> List<T>`):
   "expected `(` while parsing `stmt`" — the once grammar takes a
   name and a parameter list only, and a `T` no argument can pin has
@@ -1696,6 +1700,33 @@ Syntax the grammar lacks:
   has none of its own" — `{"a": null}` and `Cell.new(null)` alike.
   Any sibling with a type names it (`[null, 7]` is a `List<int?>`),
   and a declared want fills it (`let c: Cell<int?> = Cell.new(null)`).
+- THE INSTANCE-BODY EVENT SPELLING (`on click { done = !done }`):
+  "expected BREAK while parsing `stmt`" at `click` — a component
+  instance body takes settings and statements, and `on <kind>` is not
+  a production. Bind the event with a component field (`on_click:
+  Msg`) and dispatch a payload-free message today; captures and
+  per-instance sites are avra-xubk.2's remainder. (Probed for the
+  declarative board, docs/2026_10_04_DECLARATIVE_BOARD.md.)
+- A KEYED LIST (`list xs by it.id { x -> … }`): "`list` takes no head
+  value — name it at a statement (`list name { … }`), or write `list
+  { … }`". Write `list { for x in xs { item { key: "${x.id}" … } }
+  }` — the key rides the tree, but `SiteLowering` has no `Keyed` arm,
+  so reconciliation is positional (avra-xubk.3).
+- A PAYLOAD-CARRYING message (`enum Msg { Toggle(id: int) }`)
+  COMPILES CLEAN and is SILENTLY BROKEN: `event_site` hashes the
+  variant's NAME, so `Msg.Toggle(1)` and `Msg.Toggle(2)` answer ONE
+  site, and `from_site` covers payload-free variants alone
+  (`messages.av`'s `plain`) — a per-item click resolves to null.
+  Dispatch a payload-free `Msg` until captures land (avra-xubk.2).
+- `derived x = …` and `query x = …`: "expected BREAK while parsing
+  `stmt`" at the name — recompute in a `fn`, or hold a `state`
+  (avra-8sb5.59.27).
+- `@model type`: "`model` is not defined" — a plain `type` until the
+  derive exists (docs/2026_09_24_DOCUMENTATION.md §4.0).
+- A BUILT-IN TYPE NAME IS NOT A DOMAIN TYPE: `type Task = { … }` is
+  "`Task` is a built-in type", help "choose another name — `int`,
+  `string` and `bool` are the language's" — though `Task` is not
+  among the three it names.
 
 Wants the typer does not carry yet:
 - A DECLARES ANNOTATION'S ARGUMENT IS A LITERAL. `@traced([1, 2])`
@@ -1802,20 +1833,13 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   (and a copy: nothing here mutates in place).
 - `m["k"]` on a map: F2000 "`[...]` indexes a `List`, found
   `Map<string, int>`" — `.get(k)`, which answers `T?`.
-- An EMPTY LITERAL does not adopt a NULLABLE aggregate want: `let
-  xs: List<int>? = []` is F2024 "`xs` declares `List<int>?`, this is
-  `[]`", `{}` under a `Map<K, V>?` reads alike, and a fn tail is
-  F2000 "the body answers `[]` but `f` declares `List<int>?`". Bind the
-  empty at its own type first (`let none: List<int> = []`). An
-  empty STRING adopts `string?` fine.
-  THE WANT IS WHAT DECIDES, NOT THE NEIGHBOUR — and this entry reads
-  as forbidding more than it does. `parts(k)?.params ?? []` COMPILES
-  at a `List<P>` seat, and so does a chain (`a()?.xs ?? b()?.xs ??
-  []`): a `??`'s want is its NON-nullable answer type, so the literal
-  has an ordinary want to adopt. Probed at phase/c, both engines,
-  answering `1 0 0`. Worth stating because the sentence above sends a
-  reader at a defensive two-arm match for a shape that needs none —
-  which is the trap-fear the probe discipline exists to shrink.
+- AN EMPTY LITERAL ADOPTS A NULLABLE AGGREGATE WANT NOW: `let xs:
+  List<int>? = []`, `let m: Map<string, int>? = {}` and a `->
+  List<int>? { [] }` tail all compile at 48e8e62 (probed). This
+  entry is DELETED — it quoted F2024, stale since the want began
+  deciding the literal. An empty STRING adopted `string?` before it.
+  (`??`'s want is its NON-nullable answer type, so `parts(k)?.params
+  ?? []` always compiled, unrelated.)
 
 Runtime facts, ours to ratify:
 - `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is
