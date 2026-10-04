@@ -728,12 +728,15 @@ impl TypeCx {
     ) -> TypeId {
         if !self.seats_fit(e, callee, args, ps) { return self.error_type }
         // A FN TYPE CARRIES ITS SEATS' CONTRACT, so an INDIRECT call is
-        // judged by the same law a direct one is: a marked seat is
-        // filled by a `mut` place, and a settled seat by a value that
-        // settles at compile time. No declaration stands behind a fn
-        // VALUE, so the fingerprints are judged and dropped — a call
-        // through a box does not specialize.
+        // judged by the SAME laws a direct one is: a marked seat is
+        // filled by a `mut` place, a `state` seat by a place the caller
+        // owns, an `isolated` seat by a value that shares nothing, and a
+        // settled seat by a value that settles at compile time. No
+        // declaration stands behind a fn VALUE, so the fingerprints are
+        // judged and dropped — a call through a box does not specialize.
         self.mut_seats_law(e, callee, marks, args, null)
+        self.state_seats_law(callee, marks, args)
+        self.isolated_seats_law(callee, [], marks, args)
         if self.const_seats(callee, [], marks, args) == null { return self.error_type }
         ret
     }

@@ -1,7 +1,7 @@
 // `state n: T = v` — a PLACE: a read answers the value the cell holds, a
 // write assigns it, and a capture shares it. The word `state` is a SOFT
 // keyword: it means a declaration only where a binding follows it.
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_with}
 
 spec "let_stmt — state" {
     given "a state binding" {
@@ -38,6 +38,12 @@ spec "let_stmt — state" {
             shown(
                 "fn stepper(state n: int) {\n    n = n + 1\n}\nfn twice(state n: int) {\n    stepper(n)\n    stepper(n)\n}\nfn run() -> int {\n    state c: int = 0\n    twice(c)\n    c\n}\nrun()",
             ) == "2"
+        }
+        then "a VALUE handed to the seat through a fn value is refused" {
+            refused_with(
+                "fn stepper(state n: int) {\n    n = n + 1\n}\nfn run() -> int {\n    let f = stepper\n    f(3)\n    0\n}\nrun()",
+                "seat 1 of `f` is `state`",
+            )
         }
     }
     given "the word state" {
