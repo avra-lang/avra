@@ -21,7 +21,7 @@ const frame = (...recs) => Uint8Array.from([4, ...recs.flat()]);
 
 function el(doc, tag) {
   return {
-    tagName: tag, childNodes: [], attrs: {}, textContent: "", parentNode: null, listeners: new Map(),
+    tagName: tag, childNodes: [], attrs: {}, textContent: "", value: "", parentNode: null, listeners: new Map(),
     setAttribute(k, v) { this.attrs[k] = v; },
     appendChild(c) { c.parentNode = this; this.childNodes.push(c); },
     insertBefore(c, at) {
@@ -106,6 +106,17 @@ app(frame(C(0, -1, 0, "button"), E(0, 1, 99), PText(0, "x")));
 root3.childNodes[0].listeners.get("click")();
 check("the applier hands its payload to send", sent[0], [99, 1, { tag: "text", value: "x" }]);
 
+// AN INPUT'S PAYLOAD IS ITS OWN TEXT, never the message the frame named:
+// the field's message carries a capture placeholder, and the page's own
+// value is what the user typed.
+const typed = [];
+const root5 = el(doc, "root5");
+const app5 = createApplier(doc, root5, (site, kind, payload) => typed.push([site, kind, payload]));
+app5(frame(C(0, -1, 0, "input"), E(0, 2, 100), PText(0, "")));
+root5.childNodes[0].value = "typed here";
+root5.childNodes[0].listeners.get("input")();
+check("an input sends the element's own text", typed[0], [100, 2, { tag: "text", value: "typed here" }]);
+
 const calls = [];
 const fakeMod = {
   memory: { buffer: new ArrayBuffer(64) },
@@ -130,5 +141,5 @@ app4(frame(C(0, -1, 0, "div"), C(1, 0, 0, "ul"), C(2, 1, 0, "li"), C(3, 0, 1, "p
 const shifted = root4.childNodes[0].childNodes[1];
 check("a shifted id does not reuse another tag", { tag: shifted.tagName, text: shifted.textContent }, { tag: "p", text: "footer" });
 
-console.log(fails === 0 ? "bootstrap: 22/22" : `bootstrap: ${fails} FAILED`);
+console.log(fails === 0 ? "bootstrap: 23/23" : `bootstrap: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

@@ -152,7 +152,12 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
         if (attached.has(kind)) continue;
         const name = EVENT_NAME[kind];
         if (!name) continue;
-        const handler = () => send(ev.site, kind, ev.payload);
+        // AN INPUT'S PAYLOAD IS ITS OWN TEXT: a field's message is named
+        // once at the frame, but the text the user typed lives in the page,
+        // so an input event carries the element's value. Every other kind
+        // echoes the payload the frame named.
+        const handler = () =>
+          send(ev.site, kind, kind === 2 && el.value !== undefined ? { tag: "text", value: String(el.value) } : ev.payload);
         el.addEventListener(name, handler);
         attached.set(kind, handler);
       }
