@@ -724,3 +724,68 @@ component × every state".
 5. **G + H + K + L + M** — the compiler-reactivity surface, after the
    read set reaches the frame (`avra-xubk.3`'s follow-on); K, L and M
    are dev tooling that reads the same analysis.
+
+---
+
+## Machinery gaps — what a serious cross-platform framework still needs
+
+> 2026-10-04. The derivations above are *compiler* wins. This is the
+> other ledger: machinery a framework needs that the compiler cannot
+> conjure. Filed under `avra-8sb5.59`.
+
+**The core is strong and rare.** The compiler owns a read set and a
+per-site lowering plan (`features/read_set.av`, #227/#238); the tree is
+data; events are typed with payloads (#237/#249/#250); one vocabulary
+realizes several targets (#222); and state has an identity with a
+proven lifetime (#217–#234, #257). Those are the hard parts and they
+exist. **The gaps are the periphery — and a framework is judged on its
+periphery.** No user sees the read set; they see a long list scroll, a
+field they can type into, a device rotation survive.
+
+| # | gap | why it blocks | task | depends on |
+|---|---|---|---|---|
+| 1 | Virtualization | a 10,000-row list builds, walks and diffs 10,000 nodes every paint; no mechanism fixes a list that should not have been built | `.35` | L1 scroll + `.36` text metrics + keyed `list … by` (#248, landed) |
+| 2 | Text measurement / font metrics | every text-dependent size is a guess — wrapping, ellipsis, intrinsic min/max, baselines, variable row heights | `.36` | nothing to start; unblocks L1 and `.35` |
+| 3 | Gestures | input is click/change/input — no drag, pinch, fling, long-press; composition (the gesture arena) is the hard half | `.37` | payload widening `avra-4a34`; scheduler #223 (landed); source-backed state `.34.4` |
+| 4 | App lifecycle | one entry exists (`avra_start`) and no background/resume/terminate, which native shells all need | `.38` | routing `.34.1`; the wasm entry that exists |
+| 5 | Platform abstraction | density, safe areas, native input methods and per-platform a11y decide whether "cross-platform" is true | `.39` | native targets L6 (`.29`); ambient `avra-xubk.6.2` |
+| 6 | Internationalization | RTL, plurals, date/number formats, collation, text expansion — cheap now, expensive later | `.40` | ambient `avra-xubk.6.2`; text measurement `.36` |
+| 7 | Dev server / hot reload | the edit loop decides adoption, and today it is manual | `.41` | nothing blocking; pairs with the dev HUD `.34.11` |
+| 8 | Real text editing | a `field` is not a text input without IME composition, selection, caret and undo | `.42` | `avra-9zav` (value attribute); payload widening `avra-4a34`; gestures `.37` |
+
+**The order that matters.** (1) **The emitter** (`avra-xubk.3`, in
+flight) — nothing is faster until it lands, because the per-site plan is
+inert until a frame consumes it. (2) **The native targets** (`.29`, L6)
+— until uikit/appkit/android exist, "cross-platform" is half true.
+(3) **Layout + text measurement** (`.24`, L1 + `.36`) — the layout
+engine computes sizing with no metrics, so text is a guess.
+(4) **Virtualization** (`.35`) — table stakes for any real list.
+(5) **Gestures + focus/keyboard** (`.37` + `.26`, L3) — the interaction
+floor every platform expects.
+
+**The honest note about wanting sites.** Doctrine here is that sugar
+arrives when a wanting site appears. Measured against the tree:
+
+| gap | wanting site on main |
+|---|---|
+| text measurement | yes — `style/layout.av`; canvas/tui |
+| text editing | yes — `components/field.av`; the board's add-field |
+| virtualization | weak — the board's task list is short |
+| platform abstraction | partial — `realize/dom/frame.av`, `a11y/` |
+| **gestures** | **none — the board does not drag** |
+| **app lifecycle** | **none beyond `avra_start`** |
+| **internationalization** | **none — nothing is localized** |
+| **dev server / hot reload** | **weak — `tools/ui-board/` is reloaded by hand** |
+
+A gap with no wanting site is exactly the one that gets forgotten until
+it is expensive. Said here rather than hidden.
+
+**Cross-references.**
+`2026_10_01_UI_LIBRARY.md` — §11 realizers and targets (the capability
+matrix), §7 the taxonomy, §15 the definition of done.
+`2026_09_30_STD_VALIDATE.md` — §5 projections, §10 route validation
+(the forms work).
+`2026_10_04_SHARING_MODEL.md` — §4 outside the UI (the place wrapper
+behind source-backed state).
+`2026_10_02_COMPILED_UI.md` — "the compiler picks the mechanism per
+site" (the update graph the emitter must reach).
