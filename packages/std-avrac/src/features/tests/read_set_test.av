@@ -5,7 +5,7 @@
 // is constant.
 use @std.avrac.compiler.{analyze_source, Analysis}
 use @std.avrac.core.{ExprId, StmtId, same_stmt}
-use @std.avrac.features.{SiteLowering}
+use @std.avrac.features.{SiteLowering, SitePlan}
 
 /// The body of the fn named `name`.
 fn body_of(a: Analysis, name: string) -> ExprId? {
@@ -32,6 +32,19 @@ fn places(a: Analysis) -> List<StmtId> {
 fn is_hoist(l: SiteLowering) -> bool { match l { .Hoist -> true, rest -> false } }
 
 fn is_tree(l: SiteLowering) -> bool { match l { .Tree -> true, rest -> false } }
+
+/// How many DIRECT entries the plan holds, and whether each names
+/// `places` in order.
+fn directs_in(plan: List<SitePlan>, ps: List<StmtId>) -> bool {
+    let ds = [s for s in plan if is_direct(s.lowering)]
+    ds.length == ps.length && ds.all((s: SitePlan) -> answers_one_of(ps, s.lowering))
+}
+
+fn is_direct(l: SiteLowering) -> bool { match l { .Direct(_) -> true, rest -> false } }
+
+fn answers_one_of(ps: List<StmtId>, l: SiteLowering) -> bool {
+    ps.any((p: StmtId) -> directs_at(l, p))
+}
 
 fn directs_at(l: SiteLowering, p: StmtId) -> bool {
     match l { .Direct(q) -> same_stmt(q, p), rest -> false }
@@ -88,6 +101,24 @@ spec "features/read_set" {
             )
             let body = body_of(a, "f")!
             a.state_reads(body).length == 2 && is_tree(a.site_lowering(body))
+        }
+    }
+    given "a constant subtree" {
+        then "the plan names it once and does not descend" {
+            let a = analyze_source("fn f() -> int { 1 + 2 }")
+            let body = body_of(a, "f")!
+            let plan = a.lowering_plan(body)
+            plan.length == 1 && is_hoist(plan[0].lowering)
+        }
+    }
+    given "a body reading two state places" {
+        then "the plan descends the tree and names each place DIRECT" {
+            let a = analyze_source(
+                "fn f() -> int {\n    state x: int = 1\n    state y: int = 2\n    x + y\n}",
+            )
+            let body = body_of(a, "f")!
+            let plan = a.lowering_plan(body)
+            is_tree(plan[0].lowering) && directs_in(plan, places(a))
         }
     }
 }

@@ -124,3 +124,30 @@ export fn site_lowering_of(view: FileView, names: NameFacts, root: ExprId) -> Si
     if places.length == 1 { return .Direct(places[0]) }
     .Tree
 }
+
+/// One entry in a view's planning: the content address of an
+/// expression, and the mechanism `SiteLowering` chose for it. The
+/// address is the compiler's expression fingerprint — the same
+/// content identity every fact table keys on, never an ordinal that
+/// renumbers when a sibling lands above.
+export type SitePlan = { site: int, lowering: SiteLowering }
+
+/// A view's whole lowering plan, in walk order. The walk STOPS at a
+/// `Hoist` or a `Direct` site: a settled subtree is named once and
+/// never re-planned, and a one-place leaf is one write, so neither
+/// descends into children. A CLOSURE is a frame of its own, so it is
+/// a leaf too — its captures are the read, never its body. A `Tree`
+/// site is the conservative path and its children each earn their own
+/// mechanism.
+export fn lowering_plan_of(view: FileView, names: NameFacts, root: ExprId) -> List<SitePlan> {
+    let here = SitePlan {
+        site: view.store.expr_fingerprint(root),
+        lowering: site_lowering_of(view, names, root),
+    }
+    if view.store.expr_is_closure(root) { return [here] }
+    match here.lowering {
+        .Hoist or .Direct(_) -> [here],
+        .Tree -> [here]
+            .concat(flatten([lowering_plan_of(view, names, k) for k in view.store.expr_children(root)])),
+    }
+}
