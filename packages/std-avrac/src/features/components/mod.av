@@ -25,6 +25,7 @@ export fn components() -> LanguageFeature {
         "component_named"      | build_component_named
         "component_named_bare" | build_component_named_bare
         "setting"              | build_setting
+        "on_handler"           | build_on_handler
         "instance_body"        | build_instance_body
         "instance_arms_body"   | build_instance_arms_body
     }
@@ -40,7 +41,7 @@ export fn components() -> LanguageFeature {
         gram: grammar {
             stmt = "component" n:NAME ( "(" ( hs:NAME ":" ht:type ( "," hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( fs:NAME ":" ft:type ( "=" fd:expression )? | rs:".." ( dd:"." )? rt:type | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m, rs, rt, dd)
             stmt = w:COMPONENT n:NAME b:named_inst_body END -> component_named(w, n, b) | w:COMPONENT n:NAME END -> component_named_bare(w, n)
-            setting = k:NAME ":" v:expression END -> setting(k, v)
+            setting = k:NAME ":" v:expression END -> setting(k, v) | w:ON kw:NAME "{" ( s:stmt | BREAK )* "}" -> on_handler(w, kw, s)
             named_inst_body = "{" BREAK* hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> instance_arms_body(hp, hg, hv, a)
                 | b:instance_body -> b
             instance_body = "{" BREAK* ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
