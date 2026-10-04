@@ -147,6 +147,11 @@ export type SyntaxArena = {
     // element, the one fact that makes a list reconcile by identity
     // rather than by position
     keyed_lists: Cell<List<ExprId?>>,
+    // an `on <kind> { … }` handler's KIND, by the nullary lambda the
+    // instance-body sugar built — the word the handler was written
+    // with, so the printer spells the sugar back rather than the
+    // setting and closure it lowers to
+    on_handlers: Cell<List<string?>>,
 }
 
 export fn new_node_store(file: string = "") -> SyntaxArena {
@@ -192,6 +197,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         block_voices: list_cell(),
         foreign: list_cell(),
         keyed_lists: list_cell(),
+        on_handlers: list_cell(),
     }
 }
 
@@ -256,6 +262,7 @@ impl SyntaxArena {
         self.tables.push(null)
         self.written_close.push(null)
         self.keyed_lists.push(null)
+        self.on_handlers.push(null)
         ExprId { index: self.exprs.add(e, span) }
     }
 
@@ -472,6 +479,17 @@ impl SyntaxArena {
 
     fn keyed_list_key(e: ExprId) -> ExprId? {
         self.keyed_lists.get()[e.index]
+    }
+
+    /// The kind word an `on <kind> { … }` handler was written with,
+    /// by the lambda the sugar built for it. Absent on every closure a
+    /// program wrote as a closure.
+    fn mark_on_handler(e: ExprId, kind: string) {
+        self.on_handlers.set_at(e.index, kind)
+    }
+
+    fn on_handler_kind(e: ExprId) -> string? {
+        self.on_handlers.get()[e.index]
     }
 
     /// Where a quote's runs of text start in the source, one per part.

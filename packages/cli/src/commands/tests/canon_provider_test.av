@@ -36,6 +36,34 @@ fn fmt_checked(root: string) -> Result<Exit, ProcessError> {
     match avra_ran(["fmt", "--check", root]) { .Ok(o) -> .Ok(o.exit), .Err(e) -> .Err(e) }
 }
 
+/// A package whose one file writes an `on <kind> { … }` handler. The
+/// handler lowers to a setting + nullary lambda, so only a MARK on the
+/// lambda tells the printer the sugar from the closure it builds.
+fn on_handler_package() -> string {
+    let root = "${scratch_dir()}/on_handler_${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"on_handler\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text(
+        "${root}/src/main.av",
+        "use @std.ui.components.{button}\n\nfn v() -> int {\n    let x = 5\n    let b = button \"hi\" { on click { x + 1 } }\n    0\n}\n",
+    )
+    root
+}
+
+spec "avra fmt — an `on <kind> { … }` handler is canonical" {
+    given "a component instance whose handler was written with the sugar" {
+        then "the file already stands canonical — the sugar round-trips, not the closure it builds" {
+            match fmt_checked(on_handler_package()) {
+                .Ok(status) -> exit_is_zero(status),
+                .Err(_) -> false,
+            }
+        }
+    }
+}
+
 spec "avra fmt — Canon's key follows a provider's block words" {
     given "a file whose parse depends on a grammar another module exports" {
         then "the importer checks clean before the provider changes its keyword" {
