@@ -1,6 +1,6 @@
 //! The call's lowering rule: argument registers, then one Call —
 //! the memory pass owns the retains the ABI demands.
-use core.{ExprId, Reg, Ins, StmtId, DeclId, SeatMark, mut_mark, state_mark}
+use core.{ExprId, Reg, Ins, StmtId, DeclId, SeatMark, TypeId, Arrow, mut_mark, state_mark, no_marks}
 use features.{LowerCx, bound_decl_of}
 
 fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -22,12 +22,43 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     }
 }
 
-/// A direct call's argument registers, a `state` seat handed its
-/// caller's CELL where every other seat is handed a value.
+/// A call's argument registers, a `state` seat handed its caller's
+/// CELL where every other seat is handed a value. The marks come
+/// from the DECLARATION when one stands behind the callee, and from
+/// the fn value's own type otherwise — the same seats typing judged.
 fn call_arg_regs(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> List<Reg> {
-    let d? = bound_decl_of(cx.names, e) else { return [cx.reg_of(a) for a in args] }
-    let marks = cx.view.decls.marks_of(d, args.length)
-    [if state_mark(marks, j) { cx.state_arg_cell(a) ?? cx.reg_of(a) } else { cx.reg_of(a) } for j, a in args]
+    let marks = call_marks(cx, e, args.length)
+    [if state_mark(marks, j) { state_seat_reg(cx, a) } else { cx.reg_of(a) } for j, a in args]
+}
+
+/// A `state` seat's argument register: the caller's cell. Typing held
+/// the seat to a `state` place, so absence here is a DEFECT — never a
+/// value default, which hands the callee a register its body reads as
+/// a Cell.
+fn state_seat_reg(mut cx: LowerCx, a: ExprId) -> Reg {
+    let cell? = cx.state_arg_cell(a) else { return cx.lower_defect(a, "a `state` seat without a place survived typing") }
+    cell
+}
+
+/// The seat marks a call judges: a declared callee's own, or the fn
+/// value's type where none stands behind it.
+fn call_marks(cx: LowerCx, e: ExprId, n: int) -> List<SeatMark> {
+    let d? = bound_decl_of(cx.names, e) else { return indirect_marks(cx, e, n) }
+    cx.view.decls.marks_of(d, n)
+}
+
+/// A fn value's marks — the arrow its binding wears. A binding with no
+/// arrow has no marked seats.
+fn indirect_marks(cx: LowerCx, e: ExprId, n: int) -> List<SeatMark> {
+    let b? = cx.names.binding(e) else { return no_marks(n) }
+    let fnty: TypeId? = match b {
+        .Def(s) -> cx.def_ty(s),
+        .Capture(lam, j) -> cx.capture_ty(lam, j),
+        .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .Decl(_) -> null,
+    }
+    if fnty == null { return no_marks(n) }
+    let held: Arrow? = cx.view.decls.types.arrow_parts(fnty!)
+    held?.marks ?? no_marks(n)
 }
 
 /// A direct call's registers in its callee's seat order.
