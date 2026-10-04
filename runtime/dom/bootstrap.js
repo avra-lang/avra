@@ -75,9 +75,12 @@ function readPayload(dv, bytes, i) {
     return { value: { tag: "text", value }, next: i };
   }
   if (tag === 2) {
-    const lo = dv.getInt32(i, true); i += 4;
+    const lo = dv.getUint32(i, true); i += 4;
     const hi = dv.getInt32(i, true); i += 4;
-    return { value: { tag: "int", value: lo + hi * 4294967296 }, next: i };
+    // Two 32-bit halves as one 64-bit word, kept exact: a JS number loses
+    // precision past 2^53, and an int payload must go back whole.
+    const value = (BigInt(hi) << 32n) | BigInt(lo);
+    return { value: { tag: "int", value }, next: i };
   }
   if (tag === 3) {
     return { value: { tag: "bool", value: bytes[i++] !== 0 }, next: i };
@@ -178,11 +181,31 @@ export async function instantiate(source, host) {
   return instance.exports;
 }
 
-// The program's `avra_event(site: int, what: int)` crosses as two i64
-// seats, so the host hands it BigInts. `site` is the content hash the frame
-// named, never the node id it subscribed along. ONE door for both the page
-// and a test harness.
-export function sendEvent(mod, site, what) { mod.avra_event(BigInt(site), BigInt(what)); }
+// The program's `avra_event(site: int, what: int, tag: int, num: int, len:
+// int)` crosses as five i64 seats, so the host hands it BigInts. `site` is
+// the content hash the frame named, never the node id it subscribed along.
+// A typed payload crosses as a TAG and its value: tag 0 is ABSENT — a tag of
+// its own, so a present zero or empty text is never mistaken for no payload
+// — 1 is an int in `num`, 2 a bool, and 3 text whose UTF-8 octets the host
+// writes into the program's own seat (`avra_payload_seat`) and adopts by
+// pointer. ONE door for both the page and a test harness.
+const PAYLOAD_TAG = { text: 3, int: 1, bool: 2 };
+const seats = new WeakMap();
+
+export function sendEvent(mod, site, what, payload) {
+  if (!payload) { mod.avra_event(BigInt(site), BigInt(what), 0n, 0n, 0n); return; }
+  const tag = PAYLOAD_TAG[payload.tag];
+  if (tag === 3) {
+    const bytes = new TextEncoder().encode(payload.value);
+    let seat = seats.get(mod);
+    if (seat === undefined) { seat = Number(mod.avra_payload_seat()); seats.set(mod, seat); }
+    new Uint8Array(mod.memory.buffer, seat, bytes.length).set(bytes);
+    mod.avra_event(BigInt(site), BigInt(what), BigInt(tag), 0n, BigInt(bytes.length));
+    return;
+  }
+  const num = payload.tag === "bool" ? (payload.value ? 1 : 0) : payload.value;
+  mod.avra_event(BigInt(site), BigInt(what), BigInt(tag), BigInt(num), 0n);
+}
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length
 // reader (`avra_bytes_len`, an exported row) — never a second copy of the

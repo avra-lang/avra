@@ -1,18 +1,16 @@
 //! The task board — the UI library's showcase, as a wasm app. `view` is a
 //! function of module `state`: tasks with done-state, three filters, a
 //! derived count and progress, a dialog and a theme mode. `update` is ONE
-//! exhaustive match over a payload-free `Msg`, so a new message breaks the
-//! build right here.
+//! exhaustive match over `Msg`, so a new message breaks the build here.
 //!
-//! Interaction today is GLOBAL: every control carries a whole `Msg`, and the
-//! tree addresses it by content-addressed site. Per-item actions (a row's own
-//! toggle and remove) and a task added from the `field` need a payload that
-//! reaches the program; those controls are rendered but not wired.
+//! Interaction is global AND per-item: a whole `Msg` addresses a control by
+//! content-addressed site, and a per-item message carries its row's id as a
+//! typed payload. The host echoes the payload the frame named back across
+//! the ABI (`avra_event`'s tag/value seats), so a click on row 3's Remove
+//! rebuilds `Msg.Remove("t3")`, never the first row's.
 use @std.meta.{derive}
 use @std.ui.components.{
-    button,
     card,
-    checkbox,
     column,
     dialog,
     divider,
@@ -27,6 +25,7 @@ use @std.ui.components.{
 }
 use @std.ui.realize.dom.frame.{Live, event_at, live}
 use @std.ui.realize.messages.{Messages}
+use @std.ui.realize.payload.{Payload}
 use @std.ui.realize.prim.{prim}
 use @std.ui.realize.view.{View}
 use @std.ui.style.box.{Box}
@@ -35,11 +34,13 @@ use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{Theme, dark_theme, default_theme}
 
 extern fn avra_dom_frame(frame: Bytes)
+extern fn avra_bytes_with_room(n: int) -> Bytes
+extern fn avra_bytes_adopted(p: Bytes, n: int) -> Bytes
 
-/// The screen's actions: every one carries no payload, so `from_site`
-/// resolves it and `update` dispatches it. A per-item action or a typed input
-/// needs a payload-carrying variant (`ToggleTask(id)`, `SetDraft(text)`),
-/// which the event channel does not yet carry back to the program.
+/// The screen's actions: a control with no payload carries its site alone,
+/// and a per-item action names its row by id. A message's captures ride the
+/// frame as a typed `Payload` and the host echoes them back, so `Toggle("t3")`
+/// and `Toggle("t1")` stay distinct however the tree moved.
 @derive(Messages)
 enum Msg {
     ShowAll
@@ -49,6 +50,8 @@ enum Msg {
     ToggleTheme
     OpenDialog
     CloseDialog
+    Toggle(id: string)
+    Remove(id: string)
 }
 
 /// One task. `id` is the item key; `done` is its state.
@@ -63,6 +66,18 @@ component board_action {
     label: string
     on_click: Msg
     disabled: bool = false
+}
+
+/// A per-item checkbox: the label names the task and the click carries its
+/// id. The library's `checkbox` binds no event, so the board spells the
+/// component that does.
+@derive(View)
+@prim(.Checkbox)
+component task_toggle {
+    ..Box
+    label: string
+    checked: bool
+    on_click: Msg
 }
 
 // ── state ───────────────────────────────────────────────────────
@@ -110,7 +125,15 @@ fn update(m: Msg) {
         },
         .OpenDialog -> { dialog_open = true },
         .CloseDialog -> { dialog_open = false },
+        .Toggle(id) -> { tasks = [flipped(t, id) for t in tasks] },
+        .Remove(id) -> { tasks = [t for t in tasks if t.id != id] },
     }
+}
+
+/// This task with its state flipped when it is the named one, unchanged
+/// otherwise.
+fn flipped(t: Todo, id: string) -> Todo {
+    if t.id == id { t with { done: !t.done } } else { t }
 }
 
 // ── view: state in, tree out ────────────────────────────────────
@@ -177,11 +200,13 @@ fn task_item(t: Todo) -> item {
         key: t.id
         layout: Layout { gap: .S, align: .Center, pad: around(.S) }
         items: [
-            checkbox t.title {
-                checked: t.done
-                style: title_style(t.done)
+            task_toggle {
+                label: t.title,
+                checked: t.done,
+                on_click: Msg.Toggle(t.id),
+                style: title_style(t.done),
             },
-            button "Remove" { disabled: true },
+            board_action { label: "Remove", on_click: Msg.Remove(t.id), style: sunk_style() },
         ]
     }
 }
@@ -255,11 +280,43 @@ fn view() -> surface {
 
 fn paint() { avra_dom_frame(painted().diff(view().describe(), theme())) }
 
-/// The host's call: the site is the message's identity, `update` dispatches
-/// it, and the frame follows.
-export fn avra_event(site: int, what: int) {
+// ── the host's event seam ───────────────────────────────────────
+
+/// The room a frame's text payload is written into by the host, and the
+/// address it hands the host once. The host fills it and the program adopts
+/// the octets — the one door a foreign buffer enters by.
+const payload_room = 4096
+
+once fn payload_box() -> Bytes { avra_bytes_with_room(payload_room) }
+
+/// The host reads this once, then writes a text payload's UTF-8 octets at
+/// the address before calling `avra_event` with their length.
+export fn avra_payload_seat() -> Bytes { payload_box() }
+
+/// A payload as the host's own TAGS: 0 is ABSENT, and `num`/`len` carry the
+/// value. A dedicated absent tag, never a value, so a present zero or empty
+/// text is never mistaken for no payload.
+fn payload_of(tag: int, num: int, len: int) -> Payload? {
+    when {
+        tag == 1 -> Payload.Int(num)
+        tag == 2 -> Payload.Bool(num != 0)
+        tag == 3 -> payload_text(len)
+        _ -> null
+    }
+}
+
+/// The host-written octets as text. A payload that cannot be read as UTF-8
+/// is a malformed frame: absent, never a wrong message.
+fn payload_text(len: int) -> Payload? {
+    let body? = avra_bytes_adopted(payload_box(), len).text() else { return null }
+    Payload.Text(body)
+}
+
+/// The host's call: the site is the message's identity, the tag and value
+/// are the payload it echoed, `update` dispatches, and the frame follows.
+export fn avra_event(site: int, what: int, tag: int, num: int, len: int) {
     let e? = event_at(view().describe(), site, what) else { return }
-    let m? = Msg.from_site(e.site, e.payload) else { return }
+    let m? = Msg.from_site(e.site, payload_of(tag, num, len)) else { return }
     update(m)
     paint()
 }
