@@ -4,6 +4,7 @@
 use core.{
     StmtId,
     DeclId,
+    DeclKind,
     FileId,
     ExprId,
     flatten,
@@ -34,6 +35,8 @@ use features.{
     nothing,
     Lifted,
     bound_decl_of,
+    read_set_of,
+    calls_read_state,
     SeatValue,
     settled_symbol,
     quote_meta,
@@ -53,6 +56,7 @@ use compiler.backend.{
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, Body, Unit, lower_unit}
 use compiler.memory.{memory}
+use query.{FixpointRefusal, spoken as fixpoint_spoken}
 
 /// An interned table's answer for one name: already there, or freshly
 /// minted at `next` (the table's own current length) — registered in
@@ -199,6 +203,99 @@ impl Workspace {
         )
     }
 
+    /// THE INTERPROCEDURAL READ SET, as ONE whole-program growing-set
+    /// fixpoint (`query/fixpoint.av`) over the declarations' call
+    /// graph — the shape `failures()` rides for raised errors. Each
+    /// declaration's own DIRECT reads and call edges are its
+    /// contribution; a callee's settled answer is read through
+    /// `value_at`, which records the edge the worklist propagates on.
+    /// The lattice is monotone — `bottom` is pure, `join` is `||`, so a
+    /// declaration that reads state never stops. Settled once per
+    /// program state, keyed by `Family.ReadReach`.
+    fn read_reach() -> int {
+        // A pass that ran inside a resolve would read a half-built
+        // namespace: the caller's own real answer comes from the
+        // normal analysis, exactly as `failures()` guards.
+        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
+        let k = key(Family.ReadReach, 0)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
+        // The plan is asked after typing, so every file is already
+        // resolved and a declaration a `@derive` generated stands —
+        // the same completeness `failures()` leans on. A pass that ran
+        // earlier is refused above.
+        let fns = [x.id for x in self.decls.all_decls() if self.read_member(x.kind, x.external, x.file, x.root)]
+        let solved = self
+            .read_fixpoint
+            .solve([d.index for d in fns], (arg: int) -> self.read_contribution(DeclId { index: arg }))
+        self
+            .db
+            .settle(
+                k,
+                fp(
+                    2,
+                    [
+                        fp_list(
+                            [if self.read_fixpoint.value_at(d.index) { 1 } else { 0 } for d in fns],
+                        ),
+                    ],
+                ),
+            )
+        let refusal? = refusal_of(solved) else { return fns.length }
+        self.defect("defect: ${fixpoint_spoken(refusal)}")
+        fns.length
+    }
+
+    /// Whether a declaration's evaluation reads `state` — directly, or
+    /// through any call its body makes. A call site in another body or
+    /// another package asks THIS, never the pass facts of the body it
+    /// stands in.
+    fn decl_reads_state(d: DeclId) -> bool {
+        let x = self.decls.decl(d)
+        if x.external || self.is_held(x.file) { return true }
+        match x.kind {
+            .State -> true,
+            .Fn or .Method or .Default or .Main or .Case -> {
+                if x.root == null { return true }
+                let _ = self.read_reach()
+                // A pass that could not run (asked mid-resolve) has no
+                // settled cell, and an unsettled member reads as
+                // `bottom` — pure. Answer conservatively instead.
+                if self.db.value_hash_of(key(Family.ReadReach, 0)) == null { return true }
+                self.read_fixpoint.value_at(d.index)
+            },
+            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .Builtin -> false,
+        }
+    }
+
+    /// A declaration the read-reach fixpoint holds: a body it can walk.
+    fn read_member(kind: DeclKind, external: bool, file: FileId, root: ExprId?) -> bool {
+        if external || self.is_held(file) || root == null { return false }
+        match kind { .Fn or .Method or .Default or .Main or .Case -> true, rest -> false }
+    }
+
+    /// One declaration's raw contribution to the fixpoint: its own
+    /// direct state read, or any call that reaches state — a resolved
+    /// callee through the fixpoint, an unnameable one (a fn value, a
+    /// method, an `extern` row) conservatively.
+    fn read_contribution(d: DeclId) -> bool {
+        let x = self.decls.decl(d)
+        let root? = x.root else { return true }
+        let names = self.names_of(d)
+        let view = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
+        !read_set_of(view, names, root).is_empty() ||
+            calls_read_state(view, names, root, (g) -> self.callee_reads(g))
+    }
+
+    /// What a callee answers the read-reach walk: a body this compile
+    /// cannot see MAY read state, as does a `state` declaration read
+    /// directly; every other declaration answers through the fixpoint.
+    fn callee_reads(g: DeclId) -> bool {
+        let x = self.decls.decl(g)
+        if x.external || self.is_held(x.file) { return true }
+        match x.kind { .State -> true, rest -> self.read_fixpoint.value_at(g.index) }
+    }
+
     /// The record itself: every pass's facts for the file, and the way
     /// to its program.
     fn analyzed(f: FileId) -> Analysis {
@@ -210,6 +307,7 @@ impl Workspace {
             view: file_view(self.lang, p, self.decls, f),
             names: names,
             facts: facts,
+            decl_reads: (d: DeclId) -> self.decl_reads_state(d),
             lang: self.lang,
             diagnostics: flatten(
                 [
@@ -713,3 +811,10 @@ impl Workspace {
 
 }
 
+// ── The read-reach lattice ──
+
+/// `Fixpoint`'s join for read-reach: a declaration reads state when
+/// ANY of its sites does, so the lattice grows by disjunction.
+fn read_reach_join(a: bool, b: bool) -> bool { a || b }
+
+fn read_reach_fp(v: bool) -> int { if v { 1 } else { 0 } }
