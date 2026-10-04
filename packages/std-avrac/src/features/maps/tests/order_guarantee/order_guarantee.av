@@ -1,0 +1,21 @@
+// proves: a map's order is its insertion order and nothing else. Two
+// thousand keys are written — half share a NUL prefix, which drives
+// the keyed hash's fallback — and `keys()` reads back in exactly the
+// written order. An overwrite keeps its place; a removal drops one
+// slot and leaves the rest in order.
+use @std.text.{from_codepoint}
+
+fn nul() -> string { from_codepoint(0) }
+
+mut m: Map<string, int> = {}
+for i in 0..1000 { m.set("k" + nul() + "${i}", i) }
+for i in 0..1000 { m.set("plain${i}", i) }
+let expected = ["k" + nul() + "${i}" for i in 0..1000].concat(["plain${i}" for i in 0..1000])
+m.set("k" + nul() + "7", 7000)
+let got = m.keys()
+let ordered = got.join(",") == expected.join(",")
+let overwrote = m.get("k" + nul() + "7") ?? 0
+m.remove("k" + nul() + "7")
+let after = m.keys()
+let kept = after.join(",") == expected.slice(0, 7).concat(expected.slice(8, expected.length)).join(",")
+"${got.length} ${ordered} ${overwrote} ${after.length} ${kept}"
