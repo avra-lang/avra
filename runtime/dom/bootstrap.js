@@ -104,8 +104,14 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     const next = new Map();
     const keys = new Set();
     for (const r of records) {
+      // REUSE ONLY A MATCHING ELEMENT. A pre-order id shifts when a node is
+      // added or removed, so the element byId holds for this id may be a
+      // DIFFERENT node now — a tag test refuses to wear it, and the reorder
+      // below trims the stale one. Without it a list whose size changed
+      // rewrote every later node into the element of a node that moved.
       const keyed = r.key !== null && byKey.has(r.key);
-      const el = keyed ? byKey.get(r.key) : byId.get(r.id) || doc.createElement(r.tag);
+      const reused = byId.get(r.id);
+      const el = keyed ? byKey.get(r.key) : reused && reused.tagName === r.tag ? reused : doc.createElement(r.tag);
       if (r.key !== null) { el.setAttribute("data-key", r.key); byKey.set(r.key, el); keys.add(r.key); }
       if (r.cls !== null) el.setAttribute("class", r.cls);
       if (r.text !== null && el.textContent !== r.text) el.textContent = r.text;

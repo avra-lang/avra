@@ -120,5 +120,15 @@ sendEvent(fakeMod, 7, 1, { tag: "text", value: "hi" });
 check("text is written into the program's seat", new TextDecoder().decode(new Uint8Array(fakeMod.memory.buffer, 16, 2)), "hi");
 check("text sends its length", calls[2].map(String), ["7", "1", "3", "0", "2"]);
 
-console.log(fails === 0 ? "bootstrap: 21/21" : `bootstrap: ${fails} FAILED`);
+// A pre-order id shifts when the list above a node changes size: reuse must
+// not wear an element of another tag, or a footer becomes the node it moved
+// past. Without the tag guard this p is the old second li.
+const root4 = el(doc, "root4");
+const app4 = createApplier(doc, root4);
+app4(frame(C(0, -1, 0, "div"), C(1, 0, 0, "ul"), C(2, 1, 0, "li"), C(3, 1, 1, "li"), C(4, 0, 1, "p"), T(4, "footer")));
+app4(frame(C(0, -1, 0, "div"), C(1, 0, 0, "ul"), C(2, 1, 0, "li"), C(3, 0, 1, "p"), T(3, "footer")));
+const shifted = root4.childNodes[0].childNodes[1];
+check("a shifted id does not reuse another tag", { tag: shifted.tagName, text: shifted.textContent }, { tag: "p", text: "footer" });
+
+console.log(fails === 0 ? "bootstrap: 22/22" : `bootstrap: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);
