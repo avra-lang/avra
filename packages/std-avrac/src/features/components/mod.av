@@ -19,6 +19,7 @@ export fn components() -> LanguageFeature {
         name                   | build
         "component_decl"       | build_component_decl
         "component_value"      | build_component_value
+        "component_keyed"      | build_component_keyed
         "component_headless"   | build_component_headless
         "component_blockless"  | build_component_blockless
         "component_named"      | build_component_named
@@ -42,8 +43,8 @@ export fn components() -> LanguageFeature {
             setting = k:NAME ":" v:expression END -> setting(k, v)
             named_inst_body = "{" BREAK* hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> instance_arms_body(hp, hg, hv, a)
                 | b:instance_body -> b
-            instance_body = "{" ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
-            primary = w:COMPONENT b:instance_body -> component_headless(w, b) | w:COMPONENT h:expression b:instance_body -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
+            instance_body = "{" BREAK* ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
+            primary = w:COMPONENT b:instance_body -> component_headless(w, b) | w:COMPONENT h:expression b:instance_body -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression kw:NAME iw:NAME "." fp:NAME b:instance_body -> component_keyed(w, h, kw, iw, fp, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
         }
         builders: rows
         diags: codes

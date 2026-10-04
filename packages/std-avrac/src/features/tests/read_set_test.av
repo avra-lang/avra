@@ -3,9 +3,10 @@
 // read, never its body), a call is a boundary (the callee's reads are
 // another body's), and a subtree reading nothing and holding no call
 // is constant.
-use @std.avrac.compiler.{analyze_source, Analysis}
+use @std.avrac.compiler.{analyze_source, Analysis, Program}
 use @std.avrac.core.{ExprId, StmtId, DeclId, same_stmt}
 use @std.avrac.features.{SiteLowering, SitePlan}
+use @std.avrac.testing.{provided}
 
 /// The body of the fn named `name`.
 fn body_of(a: Analysis, name: string) -> ExprId? {
@@ -53,6 +54,31 @@ fn answers_one_of(ps: List<StmtId>, l: SiteLowering) -> bool {
 
 fn directs_at(l: SiteLowering, p: StmtId) -> bool {
     match l { .Direct(q) -> same_stmt(q, p), rest -> false }
+}
+
+fn is_keyed(l: SiteLowering) -> bool { match l { .Keyed(_) -> true, rest -> false } }
+
+/// The `list` and `item` a keyed-list source needs — enough to state a
+/// key, no rendering.
+fn keyed_provider() -> string {
+    "export component list {\n    items: List<int> = []\n}\nexport component item {\n    key: string = \"\"\n    items: List<int> = []\n}\n"
+}
+
+/// `list rows by it.id { r -> 1 }` — the keyed head, and the plain
+/// `list { items: [1] }` it must differ from.
+fn keyed_source(keyed: bool = true) -> string {
+    "use @x.c.{list, item}\ntype Row = { id: string }\nfn rows() -> List<Row> { [Row { id: \"a\" }] }\nfn f() -> list {\n    " +
+        if keyed { "list rows by it.id {\n        r -> 1\n    }" } else { "list { items: [1] }" } +
+        "\n}\n"
+}
+
+fn main_analysis(p: Program) -> Analysis {
+    [a for a in p.files if a.view.store.file == "/w/src/main.av"][0]
+}
+
+/// The keyed list expression in `f` — the node the marker rides.
+fn keyed_expr(a: Analysis) -> ExprId {
+    [e for e in a.view.store.every_expr(body_of(a, "f")!) if a.view.store.keyed_list_key(e) != null][0]
 }
 
 spec "features/read_set" {
@@ -172,6 +198,14 @@ spec "features/read_set" {
             let body = body_of(a, "f")!
             let plan = a.lowering_plan(body)
             plan.length == 1 && is_hoist(plan[0].lowering)
+        }
+    }
+    given "a list that states its key" {
+        then "its site lowers KEYED, and an unkeyed list does not" {
+            let keyed = main_analysis(provided(keyed_source(true), keyed_provider()))
+            let plain = main_analysis(provided(keyed_source(false), keyed_provider()))
+            is_keyed(keyed.site_lowering(keyed_expr(keyed))) &&
+                !is_keyed(plain.site_lowering(body_of(plain, "f")!))
         }
     }
     given "a body reading two state places" {
