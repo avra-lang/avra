@@ -102,6 +102,34 @@ spec "features/read_set" {
             a.state_reads(body).is_empty() && a.hoistable(body) && is_hoist(a.site_lowering(body))
         }
     }
+    given "a subtree reading a parameter" {
+        then "it reads no state yet stays on the tree — a parameter is not constant" {
+            let a = analyze_source("fn f(x: int) -> int { x + 1 }")
+            let body = body_of(a, "f")!
+            a.state_reads(body).is_empty() && !a.hoistable(body) && is_tree(a.site_lowering(body))
+        }
+    }
+    given "a subtree reading an outer local" {
+        then "the local is an input the site does not bind, so it stays on the tree" {
+            let a = analyze_source("fn f(x: int) -> int {\n    let y = x\n    y + 1\n}")
+            let body = body_of(a, "f")!
+            a.state_reads(body).is_empty() && !a.hoistable(body) && is_tree(a.site_lowering(body))
+        }
+    }
+    given "a subtree binding its own local" {
+        then "a binding the site makes itself keeps it constant" {
+            let a = analyze_source("fn f() -> int {\n    let y = 1\n    y + 2\n}")
+            let body = body_of(a, "f")!
+            a.hoistable(body) && is_hoist(a.site_lowering(body))
+        }
+    }
+    given "a leaf reading a state place and a parameter" {
+        then "a direct write would miss the parameter, so it stays on the tree" {
+            let a = analyze_source("fn f(x: int) -> int {\n    state n: int = 0\n    n + x\n}")
+            let body = body_of(a, "f")!
+            a.state_reads(body).length == 1 && !a.hoistable(body) && is_tree(a.site_lowering(body))
+        }
+    }
     given "a closure capturing a state place" {
         then "the capture is the read" {
             let a = analyze_source(
