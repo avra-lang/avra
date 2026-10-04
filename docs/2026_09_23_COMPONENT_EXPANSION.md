@@ -226,9 +226,21 @@ position and fills a declared `name` field; as a member of another
 instance it is a child and binds nothing. A block is optional
 (`secret stripe_key`). `c from base { key: v }` is `base with { … }`:
 settings only — a child there refuses, its children are its base's.
-DEFERRED to APPS, with the reason: `on click { }` — a contextual word
-the grammar DSL cannot spell without reserving `on`; a data component
-needs no events.
+`on click { }` — DEFERRED to APPS, the reason corrected by probe
+(ui-onflag): the grammar LANDED (`on` is a soft keyword, #253) and the
+body becomes a nullary lambda whose captures resolve and lift (#254),
+so the wall is neither the spelling nor capture EXTRACTION. It is the
+message VALUE: the event field is `dyn Messages?`, a lambda is no
+implementor, and making `on` a body DECLARATION does not change that.
+A body declaration is a `collect` of record VALUES built at the parse
+(`command`'s flags expand to `flags: collect { flag json { … } }`), not
+a declaration-minting stage; the only declaration generator
+(`compiler/expand.av`) is driven by an annotation on a DECLARATION and
+reads a `Type`'s shape, never an expression's captures, and a
+computing `expand()` is refused per instance ("is not one `quote` over
+its own fields"). The bridge is a synthesized `Messages` implementor
+plus a per-file dispatcher — an expansion stage AFTER typing (S6),
+which the body-declaration spelling reaches at no earlier point.
 S3a AS BUILT: a component with no `expand` is `Instancing.Record`; its
 instance is an `Expr.Component` whose view is the record literal (so
 the printer keeps the written form and `avra expand` shows the
