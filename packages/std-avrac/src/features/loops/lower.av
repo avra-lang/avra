@@ -41,6 +41,13 @@ export fn lower_for(
 /// through — stored fresh each turn, read wherever the body says the
 /// name.
 export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
+    match cx.seen_at(subject) {
+        .Map(_, v) -> lower_map_each(cx, s, subject, stmts, v),
+        _ -> lower_list_each(cx, s, subject, stmts),
+    }
+}
+
+fn lower_list_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
     let w = cx.opened(subject, elem_of(cx, subject))
     let cell = cx.mint_ty(w.elem)
     cx.emit(Ins.Alloca(cell))
@@ -48,6 +55,24 @@ export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: Lis
     let here = cx.turn_open(w, s)
     cx.bind_index(s, here)
     cx.emit(Ins.Store(cell, cx.turn_elem(w, here)))
+    cx.lower_stmts(stmts)
+    cx.loop_end()
+}
+
+/// `for k, v in m`: both arrays snapshot in insertion order, so the
+/// body reads a key and its value that agree even when it writes the
+/// map. The key rides the index binder, the value the element cell.
+fn lower_map_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>, vty: TypeId) {
+    let m = cx.reg_of(subject)
+    let keys = cx.map_keys(cx.view.types.shape_of(cx.type(List<string>)), m)
+    let vals = cx.map_vals(cx.view.types.shape_of(cx.type(List<vty>)), m)
+    let w = cx.opened_reg(subject, keys, cx.type(List<string>), cx.type(string))
+    let cell = cx.mint_ty(vty)
+    cx.emit(Ins.Alloca(cell))
+    cx.bind_slot(s, cell)
+    let here = cx.turn_open(w, s)
+    cx.bind_index(s, cx.turn_elem(w, here))
+    cx.emit(Ins.Store(cell, cx.elem_read(vals, here, vty)))
     cx.lower_stmts(stmts)
     cx.loop_end()
 }

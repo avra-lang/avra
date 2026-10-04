@@ -519,7 +519,7 @@ impl TypeCx {
             .LambdaParam(l, i) -> self.lambda_param_ty(l, i),
             // captures never narrow — the box holds the wide value
             .Capture(l, j) -> self.capture_ty(l, j),
-            .Index(_) -> self.type(int),
+            .Index(s) -> self.index_binding_ty(s),
             .Decl(d) -> self.decl_type_read(e, d),
         }
     }
@@ -661,10 +661,14 @@ impl TypeCx {
             .Pattern(v, j) -> self.facts.pattern_type(v, j) ?? self.error_type,
             .LambdaParam(l, i) -> self.lambda_param_ty(l, i),
             .Capture(l, j) -> self.capture_ty(l, j),
-            .Index(_) -> self.type(int),
+            .Index(s) -> self.index_binding_ty(s),
             .Decl(d) -> self.decl_type(d),
         }
     }
+
+    /// A paired head's INDEX binder: the loop counter's `int`, or the
+    /// key's own type when the head walks a map — checking records it.
+    fn index_binding_ty(s: StmtId) -> TypeId { self.facts.index_type(s) ?? self.type(int) }
 
     /// An annotated binding's DECLARED type: interned once, recorded
     /// so every later read of the name answers it, and returned for
