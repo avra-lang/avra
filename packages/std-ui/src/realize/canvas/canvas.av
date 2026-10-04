@@ -26,38 +26,21 @@ export enum Draw {
 }
 
 /// How a primitive draws: words, bracketed words, a checkbox, a rule, an
-/// opaque block, or a flow container. DATA, keyed by the primitive.
+/// opaque block, or a flow container.
 export enum Form { Words, Bracketed, Checkbox, Rule, Block, Flow }
 
-export type FormRow = { prim: Prim, form: Form }
-
-const form_rows: List<FormRow> = table<FormRow> {
-    prim      | form
-    .Text     | Form.Words
-    .Heading  | Form.Words
-    .Button   | Form.Bracketed
-    .Link     | Form.Words
-    .Image    | Form.Block
-    .Field    | Form.Words
-    .Checkbox | Form.Checkbox
-    .Row      | Form.Flow
-    .Column   | Form.Flow
-    .Dialog   | Form.Flow
-    .Divider  | Form.Rule
-    .Icon     | Form.Block
-    .Surface  | Form.Flow
-    .List     | Form.Flow
-    .Item     | Form.Flow
-    .Card     | Form.Flow
-    .Progress | Form.Words
-    .Alert    | Form.Words
-    .Spinner  | Form.Words
-    .Form     | Form.Flow
-    .Switch   | Form.Checkbox
-    .Slider   | Form.Words
+/// How a primitive draws — ONE match, so no per-row aggregate settles:
+/// the mapping is code, not data.
+fn form_of(p: Prim) -> Form {
+    match p {
+        .Text or .Heading or .Link or .Field or .Progress or .Alert or .Spinner or .Slider -> .Words,
+        .Button -> .Bracketed,
+        .Image or .Icon -> .Block,
+        .Checkbox or .Switch -> .Checkbox,
+        .Row or .Column or .Dialog or .Surface or .List or .Item or .Card or .Form -> .Flow,
+        .Divider -> .Rule,
+    }
 }
-
-fn form_of(p: Prim) -> Form { form_rows.find(it.prim == p)?.form ?? Form.Words }
 
 /// A node in the flat graph: its mount, its words and its child ids.
 type Frame = { mount: Mount, words: string, kids: List<int> }

@@ -22,19 +22,16 @@ const sizes = [Size.None, .Xs, .S, .M, .L, .Xl]
 const tones = [Tone.Text, .Muted, .Danger, .Surface, .SurfaceRaised, .SurfaceSunk, .SurfaceHover]
 const fonts = [Font.Body, .Heading, .Footnote, .Mono]
 
-/// The pseudo-class a state maps to on the web.
-/// Every state and its pseudo-class — DATA.
-export type PseudoRow = { state: Interaction, pseudo: string }
-
-const pseudo_rows: List<PseudoRow> = table<PseudoRow> {
-    state     | pseudo
-    .Hover    | ":hover"
-    .Focus    | ":focus-visible"
-    .Pressed  | ":active"
-    .Disabled | ":disabled"
+/// The pseudo-class a state maps to on the web — ONE match, so no
+/// per-row aggregate settles.
+fn pseudo_class(s: Interaction) -> string {
+    match s {
+        .Hover -> ":hover",
+        .Focus -> ":focus-visible",
+        .Pressed -> ":active",
+        .Disabled -> ":disabled",
+    }
 }
-
-fn pseudo_class(s: Interaction) -> string { pseudo_rows.find(it.state == s)?.pseudo ?? "" }
 
 fn prefixed(name: string, state: Interaction?) -> string {
     match state {
@@ -57,16 +54,13 @@ type CssWord = { name: string, decl: string }
 
 /// The empty word — a token with no CSS of its own.
 const no_word = CssWord { name: "", decl: "" }
-/// Every axis and its class+declaration — DATA.
-export type AxisWord = { axis: Axis, word: CssWord }
-
-const axis_words: List<AxisWord> = table<AxisWord> {
-    axis    | word
-    .Row    | CssWord { name: "dir-row", decl: "display:flex;flex-direction:row" }
-    .Column | CssWord { name: "dir-col", decl: "display:flex;flex-direction:column" }
+/// Every axis and its class+declaration — ONE match.
+fn axis_word(a: Axis) -> CssWord {
+    match a {
+        .Row -> CssWord { name: "dir-row", decl: "display:flex;flex-direction:row" },
+        .Column -> CssWord { name: "dir-col", decl: "display:flex;flex-direction:column" },
+    }
 }
-
-fn axis_word(a: Axis) -> CssWord { axis_words.find(it.axis == a)?.word ?? no_word }
 
 /// One value's rule, or nothing when the field was not given — the one
 /// shape every optional token shares.
@@ -148,34 +142,28 @@ fn pad_rules(e: Edge?, state: Interaction?) -> List<CssRule> {
     }
 }
 
-/// Every alignment and its class+declaration — DATA.
-export type AlignWord = { align: Align, word: CssWord }
-
-const align_words: List<AlignWord> = table<AlignWord> {
-    align     | word
-    .Start    | CssWord { name: "ai-start", decl: "align-items:flex-start" }
-    .Center   | CssWord { name: "ai-center", decl: "align-items:center" }
-    .End      | CssWord { name: "ai-end", decl: "align-items:flex-end" }
-    .Stretch  | CssWord { name: "ai-stretch", decl: "align-items:stretch" }
-    .Baseline | CssWord { name: "ai-baseline", decl: "align-items:baseline" }
+/// Every alignment and its class+declaration — ONE match.
+fn align_word(a: Align) -> CssWord {
+    match a {
+        .Start -> CssWord { name: "ai-start", decl: "align-items:flex-start" },
+        .Center -> CssWord { name: "ai-center", decl: "align-items:center" },
+        .End -> CssWord { name: "ai-end", decl: "align-items:flex-end" },
+        .Stretch -> CssWord { name: "ai-stretch", decl: "align-items:stretch" },
+        .Baseline -> CssWord { name: "ai-baseline", decl: "align-items:baseline" },
+    }
 }
 
-fn align_word(a: Align) -> CssWord { align_words.find(it.align == a)?.word ?? no_word }
-
-/// Every distribution and its class+declaration — DATA.
-export type DistWord = { dist: Distribute, word: CssWord }
-
-const dist_words: List<DistWord> = table<DistWord> {
-    dist          | word
-    .Start        | CssWord { name: "jc-start", decl: "justify-content:flex-start" }
-    .Center       | CssWord { name: "jc-center", decl: "justify-content:center" }
-    .End          | CssWord { name: "jc-end", decl: "justify-content:flex-end" }
-    .SpaceBetween | CssWord { name: "jc-between", decl: "justify-content:space-between" }
-    .SpaceAround  | CssWord { name: "jc-around", decl: "justify-content:space-around" }
-    .SpaceEvenly  | CssWord { name: "jc-evenly", decl: "justify-content:space-evenly" }
+/// Every distribution and its class+declaration — ONE match.
+fn distribute_word(d: Distribute) -> CssWord {
+    match d {
+        .Start -> CssWord { name: "jc-start", decl: "justify-content:flex-start" },
+        .Center -> CssWord { name: "jc-center", decl: "justify-content:center" },
+        .End -> CssWord { name: "jc-end", decl: "justify-content:flex-end" },
+        .SpaceBetween -> CssWord { name: "jc-between", decl: "justify-content:space-between" },
+        .SpaceAround -> CssWord { name: "jc-around", decl: "justify-content:space-around" },
+        .SpaceEvenly -> CssWord { name: "jc-evenly", decl: "justify-content:space-evenly" },
+    }
 }
-
-fn distribute_word(d: Distribute) -> CssWord { dist_words.find(it.dist == d)?.word ?? no_word }
 
 /// A sizing token's class name, or nothing when it draws no rule.
 
