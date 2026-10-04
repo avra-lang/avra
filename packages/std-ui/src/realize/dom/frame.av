@@ -12,10 +12,14 @@
 //!   op 4  T       id, words(len+bytes)
 //!   op 5  E       id, event kind, site — the host SUBSCRIBES and echoes the
 //!                 SITE (a content hash), never the id it subscribed along
+//!   op 7  P       id, payload — the event's typed captures, following its
+//!                 op 5. Emitted only when a payload is present, so a
+//!                 capture-free action's frame is byte-identical to before
 //!   op 6  S       css(len+bytes) — the stylesheet, sent ONCE
 //!   op 0  N       nothing changed
 //! Every int is four little-endian bytes.
 use realize.render.{Node, EventKind, Action, level_of}
+use realize.payload.{Payload}
 use realize.update.{Op, Mount, plan}
 use realize.html.tags.{tag_for}
 use realize.html.css.{CssRule, distinct_rules, class_names_of, stylesheet}
@@ -76,6 +80,32 @@ fn wire_op(op: Op, b: Buf) {
             b.push_int(id)
             b.push_int(kind_code(action.kind))
             b.push_int(action.site)
+            if action.payload != null {
+                b.push_byte(7)
+                b.push_int(id)
+                payload_wire(action.payload!, b)
+            }
+        },
+    }
+}
+
+/// A typed payload's own records: a one-byte tag, then its value. The
+/// host reads the tag; nothing is escaped. Absent is a frame with no op
+/// 7 at all — never a tag, so the empty value stays the option's own.
+fn payload_wire(p: Payload, b: Buf) {
+    match p {
+        .Text(t) -> {
+            b.push_byte(1)
+            b.push_str(t)
+        },
+        .Int(v) -> {
+            b.push_byte(2)
+            b.push_int(v)
+            b.push_int(v >> 32)
+        },
+        .Bool(f) -> {
+            b.push_byte(3)
+            b.push_byte(if f { 1 } else { 0 })
         },
     }
 }

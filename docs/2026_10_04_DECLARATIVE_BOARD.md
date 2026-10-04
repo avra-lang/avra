@@ -162,53 +162,53 @@ does not carry.
 
 ---
 
-## Gap 1 — a message variant carries no payload
+## Gap 1 — a message variant carries no payload (PAID for scalars)
 
 **Ideal lines.** `enum Msg { Toggle(id: int) … }`, and every
 `on_click: Msg.Toggle(t.id)` / `Msg.SetFilter(.All)`.
 
-**Probed refusal.** `@derive(Messages)` compiles a payload-carrying
-variant cleanly — no diagnostic. The defect is silent and shows at the
-wire. A program at `build/scratch/probe/src/tests/pay/pay.av`:
+**State.** `@derive(Messages)` now lifts a variant's one scalar field
+(`int`, `string`, `bool`) into a typed `Payload`; the site stays the
+variant's identity and `from_site(site, payload)` rebuilds the message.
+`Action` carries `payload: Payload?` (`realize/render.av`) and the DOM
+frame's new op 7 carries it (`realize/dom/frame.av`); a variant with no
+field carries no payload. Witness:
+`packages/std-ui/src/tests/payload/payload.av`.
 
-```avra
-@derive(Messages)
-enum Pay { Toggle(id: int) }
+What is still REFUSED, at the field: a payload the channel has no arm
+for — a declaration type, a record, or more than one field. The voices:
 
-let one = Pay.Toggle(1)
-let two = Pay.Toggle(2)
-println("sites_equal=${one.site() == two.site()}")
-println("resolved=${Pay.from_site(one.site()) != null}")
+```
+error[annotation.said]: `Pay.Set` carries `Kind`, which the event channel has no payload arm for
+error[annotation.said]: `Pay.Pair` carries 2 fields — the event channel carries one payload value today
 ```
 
-answers `sites_equal=true`, `resolved=false`. Two different messages
-hash to one site (the site is `event_site(decl, variant.name)`, the
-payload is not in it), and `from_site` covers only payload-free
-variants (`messages.av`'s `let plain = [v for v in t.variants if
-v.fields.is_empty()]`). The host echoes a site the app cannot resolve,
-so a per-item click does nothing and nobody is told.
+The earlier entry here read "compiles a payload-carrying variant cleanly
+— no diagnostic"; that held until `@derive(Messages)` learned to refuse,
+and it now refuses everything it cannot rebuild. A compute-and-carry
+probe (`build/scratch/probe/src/tests/pay/pay.av`, `48e8e62`) answered
+`sites_equal=true, resolved=false`; that is impossible today — the
+refusal fires at the declaration.
 
 **What the author meant.** `Msg.Toggle(2)` is a distinct fact from
 `Msg.Toggle(1)`; the site is the *variant's* identity and the payload
 is the *value*. `docs/2026_10_02_COMPILED_UI.md` says the action is
 lifted into "a typed variant carrying its captures".
 
-**Smallest spelling that compiles today.** A payload-free `Msg`
-(`enum Msg { Toggle }`) with one global action, as the floor board
-does — there is no per-item spelling for a dynamic list, because a
-payload-free variant has one site for every instance.
+**Smallest spelling that compiles today.** `enum Msg { Toggle(id: int) }`
+with `on_click: Msg` and `from_site(site, payload)`. A per-item action
+whose capture is a declared type (`SetFilter(which: Filter)`) still has
+no spelling until `Payload` grows that arm.
 
-**Upstream half, probed too.** The tree's `Action` is
-`{ kind: EventKind, site: int }` (`realize/render.av`) — there is no
-payload channel on the wire at all, so even a resolved `from_site`
-would have nothing to rebuild the payload from.
-
-**Ask.** Generated `Msg` variants carry their captures as TYPED
-payloads; the site stays the variant's identity and the payload rides
-the frame; `from_site` rebuilds a variant from `(site, payload)`.
-Callsite: `packages/std-ui/src/realize/messages.av` (`derive`, the
-`plain` filter), `packages/std-ui/src/realize/render.av` (`Action`),
-`tools/ui-board/src/main.av:74`. Parent `avra-xubk.2`.
+**Still open (avra-xubk.2.1's remainder).** The host decodes op 7 but
+does not yet echo the payload back across the wasm ABI — `avra_event`
+takes `(site, kind)` — so a live per-item click needs the seam widened.
+The `on_click: Msg.Toggle(t.id)` line still needs `Msg.Toggle` to be
+reachable from the board's `update` (it is) and the seam (it is not).
+Callsite: `packages/std-ui/src/realize/messages.av`,
+`packages/std-ui/src/realize/render.av` (`Action`),
+`runtime/dom/bootstrap.js`, `packages/std-ui/src/realize/dom/frame.av`.
+Parent `avra-xubk.2`.
 
 ## Gap 2 — the instance-body event spelling
 
@@ -418,7 +418,7 @@ obvious word is sent to rename. Filed as its own ask below.
 
 | # | construct | refusal | ask home |
 |---|---|---|---|
-| 1 | `Msg.Variant(payload)` | silent: identical sites, `from_site` null | avra-xubk.2 |
+| 1 | `Msg.Variant(payload)` | scalar fields round-trip; a named/record or multi-field payload refused | paid (avra-xubk.2.1) |
 | 2 | `on click { … }` | `expected BREAK` at `click` | avra-xubk.2 |
 | 3 | `field { on_input: Msg.Draft(it) }` | `field` has no field `on_input` | avra-xubk.2 |
 | 4 | `list xs by it.id { … }` | ``list`` takes no head value | avra-xubk.3 |

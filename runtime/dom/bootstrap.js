@@ -5,7 +5,9 @@
 // every app.
 //
 // Wire V4: a version byte, then records of little-endian ints with values
-// carried raw (length-prefixed). Nothing is escaped; see realize/dom/frame.av.
+// carried raw (length-prefixed). An event's typed captures follow as op 7
+// (absent when the action carries no payload). Nothing is escaped; see
+// realize/dom/frame.av.
 
 export const FRAME_VERSION = 4;
 
@@ -44,7 +46,13 @@ export function parseFrame(bytes) {
       const kind = dv.getInt32(i, true); i += 4;
       const site = dv.getInt32(i, true); i += 4;
       const r = byId.get(id);
-      if (r) { if (!r.events) r.events = []; r.events.push({ kind, site }); }
+      if (r) { if (!r.events) r.events = []; r.events.push({ kind, site, payload: null }); }
+    } else if (op === 7) {
+      const id = dv.getInt32(i, true); i += 4;
+      const read = readPayload(dv, bytes, i); i = read.next;
+      const r = byId.get(id);
+      const last = r && r.events && r.events[r.events.length - 1];
+      if (last) last.payload = read.value;
     } else if (op === 6) {
       const len = dv.getInt32(i, true); i += 4;
       records.stylesheet = str(i, len); i += len;
@@ -55,6 +63,26 @@ export function parseFrame(bytes) {
     }
   }
   return records;
+}
+
+// One typed payload record: a tag, then its value. Absent is no op 7 at
+// all; a frame never encodes a payload the program did not write.
+function readPayload(dv, bytes, i) {
+  const tag = bytes[i++];
+  if (tag === 1) {
+    const len = dv.getInt32(i, true); i += 4;
+    const value = new TextDecoder().decode(bytes.subarray(i, i + len)); i += len;
+    return { value: { tag: "text", value }, next: i };
+  }
+  if (tag === 2) {
+    const lo = dv.getInt32(i, true); i += 4;
+    const hi = dv.getInt32(i, true); i += 4;
+    return { value: { tag: "int", value: lo + hi * 4294967296 }, next: i };
+  }
+  if (tag === 3) {
+    return { value: { tag: "bool", value: bytes[i++] !== 0 }, next: i };
+  }
+  throw new Error(`unknown payload tag ${tag}`);
 }
 
 // Build the applier over one document (a real one in a browser, a stub in a
@@ -105,17 +133,17 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
       const el = next.get(r.id);
       if (!el) continue;
       const attached = el.__avra_events || (el.__avra_events = new Map());
-      const want = new Map((r.events || []).map((e) => [e.kind, e.site]));
+      const want = new Map((r.events || []).map((e) => [e.kind, e]));
       for (const [kind, handler] of [...attached]) {
         if (want.has(kind)) continue;
         el.removeEventListener(EVENT_NAME[kind], handler);
         attached.delete(kind);
       }
-      for (const [kind, site] of want) {
+      for (const [kind, ev] of want) {
         if (attached.has(kind)) continue;
         const name = EVENT_NAME[kind];
         if (!name) continue;
-        const handler = () => send(site, kind);
+        const handler = () => send(ev.site, kind, ev.payload);
         el.addEventListener(name, handler);
         attached.set(kind, handler);
       }
