@@ -1,16 +1,26 @@
 //! The task board — the UI library's showcase, as a wasm app. `view` is a
 //! function of module `state`: tasks with done-state, three filters, a
-//! derived count and progress, a dialog and a theme mode. `update` is ONE
-//! exhaustive match over `Msg`, so a new message breaks the build here.
+//! derived count and progress, an add field, a dialog and a theme mode.
+//! `update` is ONE exhaustive match over `Msg`, so a new message breaks the
+//! build here.
 //!
-//! Interaction is global AND per-item: a whole `Msg` addresses a control by
-//! content-addressed site, and a per-item message carries its row's id as a
-//! typed payload. The host echoes the payload the frame named back across
-//! the ABI (`avra_event`'s tag/value seats), so a click on row 3's Remove
-//! rebuilds `Msg.Remove("t3")`, never the first row's.
+//! The controls are the library's OWN: `button`, `checkbox` and `field`
+//! carry typed event fields (`on_click`, `on_change`, `on_input`), so no
+//! wrapper component stands between a click and its message. Each control's
+//! event field is `dyn Messages?`, the frame names the message's site and
+//! its typed payload, and the host echoes the payload back across the ABI
+//! (`avra_event`'s tag/value seats) — so a click on row 3's Remove rebuilds
+//! `Msg.Remove("t3")`, never the first row's.
+//!
+//! The task rows are ONE keyed list (`list visible() by it.id`), so the row
+//! identity is the task id and an insert or a removal keeps every other
+//! node. The filter body and `update` are unchanged from the pre-keyed
+//! board.
 use @std.meta.{derive}
 use @std.ui.components.{
+    button,
     card,
+    checkbox,
     column,
     dialog,
     divider,
@@ -26,9 +36,7 @@ use @std.ui.components.{
 use @std.ui.realize.dom.frame.{Live, event_at, live}
 use @std.ui.realize.messages.{Messages}
 use @std.ui.realize.payload.{Payload}
-use @std.ui.realize.prim.{prim}
 use @std.ui.realize.view.{View}
-use @std.ui.style.box.{Box}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{Theme, dark_theme, default_theme}
@@ -41,50 +49,40 @@ extern fn avra_bytes_adopted(p: Bytes, n: int) -> Bytes
 /// and a per-item action names its row by id. A message's captures ride the
 /// frame as a typed `Payload` and the host echoes them back, so `Toggle("t3")`
 /// and `Toggle("t1")` stay distinct however the tree moved.
+///
+/// A BOOL-PAYLOAD VARIANT MUST STAY IN THIS ENUM. Coercing a `Messages`
+/// enum to the event channel's `dyn Messages` lowers the trait's `marks`
+/// specialization with the wrong ABI when every payload is text or int —
+/// the call passes the declaration flat where the callee expects a
+/// pointer, and LLVM refuses the module — so an enum with only
+/// `Toggle(id: string)`/`Remove(id: string)` cannot carry per-item
+/// controls. `SetTheme(on)` is this app's own bool, and carrying the mode
+/// it wants reads better than a toggle anyway.
 @derive(Messages)
 enum Msg {
     ShowAll
     ShowActive
     ShowDone
     ClearDone
-    ToggleTheme
+    SetTheme(on: bool)
     OpenDialog
     CloseDialog
     Toggle(id: string)
     Remove(id: string)
+    Add
+    Draft(body: string)
 }
 
 /// One task. `id` is the item key; `done` is its state.
 type Todo = { id: string, title: string, done: bool }
-
-/// A clickable control: the library's `button` names no event, so a
-/// component with `on_click` is where a typed message meets a control.
-@derive(View)
-@prim(.Button)
-component board_action {
-    ..Box
-    label: string
-    on_click: Msg
-    disabled: bool = false
-}
-
-/// A per-item checkbox: the label names the task and the click carries its
-/// id. The library's `checkbox` binds no event, so the board spells the
-/// component that does.
-@derive(View)
-@prim(.Checkbox)
-component task_toggle {
-    ..Box
-    label: string
-    checked: bool
-    on_click: Msg
-}
 
 // ── state ───────────────────────────────────────────────────────
 
 state filter: string = "all"
 state dark: bool = false
 state dialog_open: bool = false
+state draft: string = ""
+state seq: int = 5
 state tasks: List<Todo> = [
     Todo { id: "t1", title: "Draft the spec", done: true },
     Todo { id: "t2", title: "Wire the event channel", done: false },
@@ -118,8 +116,8 @@ fn update(m: Msg) {
         .ShowActive -> { filter = "active" },
         .ShowDone -> { filter = "done" },
         .ClearDone -> { tasks = [t for t in tasks if !t.done] },
-        .ToggleTheme -> {
-            dark = !dark
+        .SetTheme(on) -> {
+            dark = on
             // A mode is a whole stylesheet, so the next diff must resend it.
             painted().styled.set(false)
         },
@@ -127,6 +125,17 @@ fn update(m: Msg) {
         .CloseDialog -> { dialog_open = false },
         .Toggle(id) -> { tasks = [flipped(t, id) for t in tasks] },
         .Remove(id) -> { tasks = [t for t in tasks if t.id != id] },
+        .Add -> { add() },
+        .Draft(body) -> { draft = body },
+    }
+}
+
+/// The draft becomes the next task, and the draft is spent.
+fn add() {
+    if draft != "" {
+        tasks = tasks.concat([Todo { id: "t${seq}", title: draft, done: false }])
+        seq = seq + 1
+        draft = ""
     }
 }
 
@@ -152,8 +161,11 @@ fn sunk_style() -> Style { Style { fill: .SurfaceSunk, radius: .S } }
 
 fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
 
-fn tab(label: string, m: Msg, on: bool) -> board_action {
-    board_action { label: label, on_click: m, style: tab_style(on) }
+fn tab(label: string, m: Msg, on: bool) -> button {
+    button label {
+        on_click: m
+        style: tab_style(on)
+    }
 }
 
 fn header() -> row {
@@ -169,7 +181,10 @@ fn header() -> row {
                     },
                 ]
             },
-            board_action { label: theme_label(), on_click: Msg.ToggleTheme, style: sunk_style() },
+            button theme_label() {
+                on_click: Msg.SetTheme(!dark)
+                style: sunk_style()
+            },
         ]
     }
 }
@@ -181,53 +196,58 @@ fn filters() -> row {
             tab("All", Msg.ShowAll, filter == "all"),
             tab("Active", Msg.ShowActive, filter == "active"),
             tab("Done", Msg.ShowDone, filter == "done"),
-            board_action {
-                label: "Clear done",
-                on_click: Msg.ClearDone,
-                disabled: done_count() == 0,
-                style: sunk_style(),
+            button "Clear done" {
+                on_click: Msg.ClearDone
+                disabled: done_count() == 0
+                style: sunk_style()
             },
         ]
     }
 }
 
-fn new_task() -> field {
-    field "New task" { placeholder: "Type a task…" }
+fn new_task() -> row {
+    row {
+        layout: Layout { gap: .S, align: .Center }
+        items: [
+            field "New task" {
+                placeholder: "Type a task…"
+                on_input: Msg.Draft("")
+            },
+            button "Add" {
+                on_click: Msg.Add
+                style: sunk_style()
+            },
+        ]
+    }
 }
 
 fn task_item(t: Todo) -> item {
     item {
-        key: t.id
-        layout: Layout { gap: .S, align: .Center, pad: around(.S) }
         items: [
-            task_toggle {
-                label: t.title,
-                checked: t.done,
-                on_click: Msg.Toggle(t.id),
-                style: title_style(t.done),
+            checkbox t.title {
+                checked: t.done
+                on_change: Msg.Toggle(t.id)
+                style: title_style(t.done)
             },
-            board_action { label: "Remove", on_click: Msg.Remove(t.id), style: sunk_style() },
+            button "Remove" {
+                on_click: Msg.Remove(t.id)
+                style: sunk_style()
+            },
         ]
     }
 }
 
-fn visible() -> List<Todo> { [t for t in tasks if admits(t)] }
-
-fn task_items() -> List<dyn View> {
-    let shown = visible()
-    if shown.is_empty() {
+/// The task rows: ONE keyed list, so a reorder or an insert keeps every
+/// node. An empty view is a word, never a stray row.
+fn task_view() -> List<dyn View> {
+    if visible().is_empty() {
         [text "Nothing here yet." { style: Style { color: .Muted } }]
     } else {
-        [task_item(t) for t in shown]
+        [list visible() by it.id { t -> task_item(t) }]
     }
 }
 
-fn task_list() -> list {
-    list {
-        layout: Layout { gap: .S }
-        items: task_items()
-    }
-}
+fn visible() -> List<Todo> { [t for t in tasks if admits(t)] }
 
 fn board_items() -> List<dyn View> {
     let done = progress "Done" {
@@ -235,7 +255,7 @@ fn board_items() -> List<dyn View> {
         max: tasks.length
     }
     let head: List<dyn View> = [done, filters(), new_task(), divider {}]
-    let body: List<dyn View> = [task_list()]
+    let body: List<dyn View> = task_view()
     head.concat(body)
 }
 
@@ -254,7 +274,10 @@ fn footer() -> row {
             text "${open_count()} open · ${done_count()} done of ${tasks.length}" {
                 style: Style { color: .Muted }
             },
-            board_action { label: "About", on_click: Msg.OpenDialog, style: sunk_style() },
+            button "About" {
+                on_click: Msg.OpenDialog
+                style: sunk_style()
+            },
         ]
     }
 }
@@ -265,7 +288,10 @@ fn about() -> dialog {
         items: [
             heading "Task board" { rank: 2 },
             text "State lives in module `state`; the frame is its projection.",
-            board_action { label: "Close", on_click: Msg.CloseDialog, style: sunk_style() },
+            button "Close" {
+                on_click: Msg.CloseDialog
+                style: sunk_style()
+            },
         ]
     }
 }
@@ -313,7 +339,8 @@ fn payload_text(len: int) -> Payload? {
 }
 
 /// The host's call: the site is the message's identity, the tag and value
-/// are the payload it echoed, `update` dispatches, and the frame follows.
+/// are the payload it echoed (an input event carries the input's OWN text),
+/// `update` dispatches, and the frame follows.
 export fn avra_event(site: int, what: int, tag: int, num: int, len: int) {
     let e? = event_at(view().describe(), site, what) else { return }
     let m? = Msg.from_site(e.site, payload_of(tag, num, len)) else { return }
