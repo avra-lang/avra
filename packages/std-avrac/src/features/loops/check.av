@@ -52,7 +52,7 @@ fn range_bound(mut cx: TypeCx, e: ExprId, verb: string) -> bool {
     false
 }
 
-/// `for x in xs` — the subject is a LIST; the name binds its
+/// `for x in xs` — the subject is a walk source; the name binds its
 /// element type for every read in the body.
 export fn check_for_each(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
@@ -96,12 +96,18 @@ fn map_needs_pair(mut cx: TypeCx, subject: ExprId) -> TypeId {
 
 /// The element type the walk hands out — or the refusal.
 fn walked_elem(mut cx: TypeCx, subject: ExprId) -> TypeId {
-    let elem: TypeId? = cx.view.types.element(cx.type_at(subject))
+    let elem: TypeId? = walk_elem_type(cx, cx.type_at(subject))
     elem ?? not_a_walk(cx, subject)
 }
 
-/// Not a list: Error absorbs; the empty literal and every other
-/// shape refuse, each in its own words.
+/// The element a walk source yields: a list's element, or a `Bytes`'s
+/// octet (an int).
+fn walk_elem_type(mut cx: TypeCx, st: TypeId) -> TypeId? {
+    match cx.view.types.seen_shape(st) { .Bytes -> cx.type(int), _ -> cx.view.types.element(st) }
+}
+
+/// Not a walk source: Error absorbs; the empty literal and every
+/// other shape refuse, each in its own words.
 fn not_a_walk(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let sh: Type = cx.seen_at(subject)
     if sh is .Error { return cx.error_type }
