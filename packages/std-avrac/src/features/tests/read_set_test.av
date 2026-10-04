@@ -4,7 +4,7 @@
 // another body's), and a subtree reading nothing and holding no call
 // is constant.
 use @std.avrac.compiler.{analyze_source, Analysis}
-use @std.avrac.core.{ExprId, StmtId, same_stmt}
+use @std.avrac.core.{ExprId, StmtId, DeclId, same_stmt}
 use @std.avrac.features.{SiteLowering, SitePlan}
 
 /// The body of the fn named `name`.
@@ -22,6 +22,11 @@ fn body_of(a: Analysis, name: string) -> ExprId? {
         return null
     }
     match a.view.store.stmt(s) { .FnDecl(_, _, _, _, body) -> body, rest -> null }
+}
+
+/// The declaration named `name`.
+fn decl_of(a: Analysis, name: string) -> DeclId {
+    [x.id for x in a.view.decls.all_decls() if x.name == name][0]
 }
 
 /// Every `state` binding in the file, in statement order.
@@ -87,9 +92,58 @@ spec "features/read_set" {
             a.state_reads(body).is_empty() && a.hoistable(body)
         }
     }
-    given "a body calling a fn" {
-        then "the call is a boundary — never hoistable" {
+    given "a body calling a fn whose body reads no state" {
+        then "the callee's reads fold in, so the site hoists" {
             let a = analyze_source("fn g() -> int { 1 }\nfn f() -> int { g() + 1 }")
+            let body = body_of(a, "f")!
+            a.hoistable(body) && is_hoist(a.site_lowering(body))
+        }
+        then "the callee's own answer is a declaration-keyed fact" {
+            let a = analyze_source("fn g() -> int { 1 }\nfn f() -> int { g() + 1 }")
+            !a.decl_reads_state(decl_of(a, "g"))
+        }
+    }
+    given "a body calling a fn that reads state" {
+        then "the callee's read keeps the site on the tree" {
+            let a = analyze_source(
+                "fn g() -> int {\n    state n: int = 0\n    n\n}\nfn f() -> int { g() + 1 }",
+            )
+            let body = body_of(a, "f")!
+            a.decl_reads_state(decl_of(a, "g")) &&
+                !a.hoistable(body) &&
+                is_tree(a.site_lowering(body))
+        }
+    }
+    given "a call that chains two declarations deep to a state read" {
+        then "the answer is TRANSITIVE — the outer site never hoists" {
+            let a = analyze_source(
+                "fn h() -> int {\n    state n: int = 0\n    n\n}\nfn g() -> int { h() }\nfn f() -> int { g() }",
+            )
+            let body = body_of(a, "f")!
+            a.decl_reads_state(decl_of(a, "h")) &&
+                a.decl_reads_state(decl_of(a, "g")) &&
+                !a.hoistable(body)
+        }
+    }
+    given "mutual recursion with no state read" {
+        then "the fixpoint settles: the cycle is pure and the site hoists" {
+            let a = analyze_source("fn a() -> int { b() }\nfn b() -> int { a() }")
+            let body = body_of(a, "a")!
+            !a.decl_reads_state(decl_of(a, "a")) && a.hoistable(body)
+        }
+    }
+    given "mutual recursion that reaches a state read" {
+        then "the cycle is impure — never hoistable" {
+            let a = analyze_source(
+                "fn a() -> int { b() }\nfn b() -> int {\n    state n: int = 0\n    a() + n\n}",
+            )
+            let body = body_of(a, "a")!
+            a.decl_reads_state(decl_of(a, "a")) && !a.hoistable(body)
+        }
+    }
+    given "a call whose callee is a fn VALUE, not a declaration" {
+        then "an unnameable body may read state — never hoistable" {
+            let a = analyze_source("fn f() -> int {\n    let g = (x: int) -> x\n    g(1)\n}")
             let body = body_of(a, "f")!
             !a.hoistable(body) && is_tree(a.site_lowering(body))
         }

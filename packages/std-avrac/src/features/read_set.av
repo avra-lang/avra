@@ -3,10 +3,9 @@
 //! picks a site's mechanism instead of one runtime diff for everyone:
 //! a subtree that reads no state is CONSTANT, so it hoists into the
 //! binary and the frame never mentions it; a leaf reading exactly one
-//! place is a DIRECT WRITE to its node; anything else — several
-//! places, or a call whose callee's reads are another body's — stays
-//! on the CONSERVATIVE tree path, the reference semantics every
-//! lowering must match.
+//! place is a DIRECT WRITE to its node; anything else stays on the
+//! CONSERVATIVE tree path, the reference semantics every lowering must
+//! match.
 //!
 //! TWO BOUNDARIES DELIMIT A SITE, both because a reader of `state`
 //! that is not this frame is not this site's:
@@ -14,14 +13,18 @@
 //! - A CLOSURE's body is its own frame, so a site reads the places it
 //!   CAPTURES (chained through nested closures) and never what the
 //!   body binds. Its own `state` locals belong to the closure.
-//! - A CALL's callee is another body, so its reads are not folded in
-//!   here: the site is conservative and never hoists.
+//! - A CALL's callee is another body, so its reads are folded in
+//!   through `reads` — a declaration-keyed query the caller supplies,
+//!   which chains through the callee's own calls. A callee this
+//!   compile cannot name (a fn value applied, a method dispatched on a
+//!   runtime value, an `extern` row), or one in a recursion cycle,
+//!   answers conservatively: the site never hoists.
 //!
 //! The complete child walk (`SyntaxArena.expr_children`) reaches
 //! hidden branches and statement bodies alike, so an `if`'s arm or a
 //! block's statement contributes its reads as any expression does.
-use core.{ExprId, StmtId, Binding, SyntaxArena, flatten, some_list, same_stmt}
-use features.{FileView, NameFacts}
+use core.{ExprId, StmtId, DeclId, Binding, SyntaxArena, flatten, some_list, same_stmt}
+use features.{FileView, NameFacts, bound_decl_of}
 
 /// The `state` statement a binding names, when it names one — a
 /// capture chased through the closures between a name's home and the
@@ -64,11 +67,33 @@ fn reads_of(store: SyntaxArena, names: NameFacts, root: ExprId) -> List<StmtId> 
     flatten([reads_of(store, names, k) for k in store.expr_children(root)]).concat(own)
 }
 
-/// Whether any expression in the subtree APPLIES a fn.
-fn holds_call(store: SyntaxArena, root: ExprId) -> bool {
-    if store.expr_is_call(root) { return true }
-    if store.expr_is_closure(root) { return false }
-    store.expr_children(root).any((k) -> holds_call(store, k))
+/// Whether any call the subtree makes reads state — its callee's own
+/// transitive read set, when the callee is a declaration this compile
+/// can name — or one whose body it cannot see (a fn value applied, a
+/// method dispatched on a runtime value, an `extern` row), which MAY
+/// read state. A cycle is such a boundary too: a fn that reaches
+/// itself answers conservatively and never flips the read false.
+/// A CLOSURE is a frame of its own: its captures are the read, so its
+/// body is not walked, exactly as `reads_of` stops there.
+export fn calls_read_state(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    reads: fn(DeclId) -> bool,
+) -> bool {
+    if view.store.expr_is_call(root) {
+        let d? = bound_decl_of(names, root) else { return true }
+        if reads(d) { return true }
+    }
+    if applies_method(view.store, root) { return true }
+    if view.store.expr_is_closure(root) { return false }
+    view.store.expr_children(root).any((k) -> calls_read_state(view, names, k, reads))
+}
+
+/// Whether the expression APPLIES a method on a runtime value — the
+/// implementations are chosen at runtime, so a visitor cannot see one.
+fn applies_method(store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) { .MethodCall(_, _, _) -> true, rest -> false }
 }
 
 /// Each place once, in first-read order.
@@ -93,11 +118,13 @@ export fn reads_state_of(view: FileView, names: NameFacts, root: ExprId) -> bool
 }
 
 /// Whether the subtree is CONSTANT — it reads no state and holds no
-/// call, so it hoists into the binary and the frame never mentions it.
-/// A call is a boundary, not a guarantee, so it refuses the hoist
-/// until the callee's own read set is folded in.
-export fn hoistable_of(view: FileView, names: NameFacts, root: ExprId) -> bool {
-    read_set_of(view, names, root).is_empty() && !holds_call(view.store, root)
+/// call that reaches state, so it hoists into the binary and the frame
+/// never mentions it. A call is a boundary, not a guarantee: its
+/// callee's own transitive read set is folded in through `reads`, so a
+/// component constructor whose body is a pure projection hoists, and
+/// one that reaches state keeps the tree.
+export fn hoistable_of(view: FileView, names: NameFacts, root: ExprId, reads: fn(DeclId) -> bool) -> bool {
+    read_set_of(view, names, root).is_empty() && !calls_read_state(view, names, root, reads)
 }
 
 /// How a site lowers, from its read set — the compiler's per-site
@@ -117,8 +144,13 @@ export enum SiteLowering {
 }
 
 /// The lowering a site earns: `Hoist`, `Direct`, or `Tree`.
-export fn site_lowering_of(view: FileView, names: NameFacts, root: ExprId) -> SiteLowering {
-    if holds_call(view.store, root) { return .Tree }
+export fn site_lowering_of(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    reads: fn(DeclId) -> bool,
+) -> SiteLowering {
+    if calls_read_state(view, names, root, reads) { return .Tree }
     let places = read_set_of(view, names, root)
     if places.is_empty() { return .Hoist }
     if places.length == 1 { return .Direct(places[0]) }
@@ -139,15 +171,24 @@ export type SitePlan = { site: int, lowering: SiteLowering }
 /// a leaf too — its captures are the read, never its body. A `Tree`
 /// site is the conservative path and its children each earn their own
 /// mechanism.
-export fn lowering_plan_of(view: FileView, names: NameFacts, root: ExprId) -> List<SitePlan> {
+export fn lowering_plan_of(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    reads: fn(DeclId) -> bool,
+) -> List<SitePlan> {
     let here = SitePlan {
         site: view.store.expr_fingerprint(root),
-        lowering: site_lowering_of(view, names, root),
+        lowering: site_lowering_of(view, names, root, reads),
     }
     if view.store.expr_is_closure(root) { return [here] }
     match here.lowering {
         .Hoist or .Direct(_) -> [here],
         .Tree -> [here]
-            .concat(flatten([lowering_plan_of(view, names, k) for k in view.store.expr_children(root)])),
+            .concat(
+                flatten(
+                    [lowering_plan_of(view, names, k, reads) for k in view.store.expr_children(root)],
+                ),
+            ),
     }
 }
