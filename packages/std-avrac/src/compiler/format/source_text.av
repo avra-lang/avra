@@ -479,15 +479,7 @@ impl SourceText {
                     ),
             ],
             .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.of)} {${text}}")],
-            .Setting(name, value) -> {
-                let prefix = "${source_name(name.of)}: "
-                [
-                    source_line(
-                        depth,
-                        "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
-                    ),
-                ]
-            },
+            .Setting(name, value) -> self.setting(name.of, value, depth),
             .ComponentDecl(name, head, fields, fns) -> [
                 self
                     .component_decl(
@@ -1859,6 +1851,26 @@ impl SourceText {
     mut fn block_expr(stmts: List<StmtId>, value: ExprId?, id: ExprId, depth: int) -> string {
         self
             .braced("", stmts, value, self.block_end(id), self.span_flat(self.store.expr_span(id)), depth)
+    }
+
+    /// A setting as written: the `on <kind> { … }` sugar when the
+    /// value is the nullary lambda the instance-body handler built,
+    /// else `name: value`. The mark is the ONE way the printer tells a
+    /// handler from an ordinary closure, so the sugar round-trips.
+    mut fn setting(name: string, value: ExprId, depth: int) -> List<string> {
+        let kind? = self.store.on_handler_kind(value) else {
+            let prefix = "${source_name(name)}: "
+            return [
+                source_line(
+                    depth,
+                    "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                ),
+            ]
+        }
+        match self.store.expr(value) {
+            .Lambda(_, body) -> [source_line(depth, "on ${kind} ${self.expression(body, loosest_tier, depth)}")],
+            rest -> [],
+        }
     }
 
     mut fn binary(op: BinOp, left: ExprId, right: ExprId, parent: int, depth: int, col: int = -1) -> string {
