@@ -104,7 +104,13 @@ export type BuildOutcome = {
 type Made = { which: Owned, key: string, obj: string, source: string }
 
 /// clang's `-O<n>` as its number.
-fn opt_level(opt: string) -> int { if opt.starts_with("-O") && opt.length == 3 { opt.char_code(2) - 48 } else { 0 } }
+/// clang's `-O<n>` as its number, and `-Oz` as the SIZE level — negative, so
+/// the object's pipeline is `default<Oz>`.
+fn opt_level(opt: string) -> int {
+    if opt == "-Oz" { return -1 }
+    if opt.starts_with("-O") && opt.length == 3 { return opt.char_code(2) - 48 }
+    0
+}
 
 /// THE PROGRAM'S OWN MODULE: its entry, and the runtime rows the entry names.
 /// WHAT A PROGRAM ADDS TO ITS FILES. `main` is a RECIPE, never a body: a link asked
@@ -118,7 +124,7 @@ export type CaseHome = { call: CaseCall, path: string }
 
 /// What one build links with: the optimisation level, the runtime object and
 /// the linker the host found.
-export type Toolchain = { opt: string, runtime: string, linker: string, target: string = "", reactor: bool = false, wasm_opt: string = "" }
+export type Toolchain = { opt: string, runtime: string, linker: string, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false }
 
 impl Workspace {
     /// THE PRODUCING COMPILER'S OWN IDENTITY — memoized once a workspace, so
@@ -663,6 +669,7 @@ impl Workspace {
                 staged,
                 tools.target,
                 tools.reactor,
+                tools.debug,
             ),
         )
         if code != 0 { fail BuildError.LinkFailed(code) }
@@ -672,7 +679,7 @@ impl Workspace {
         mut ready = staged
         if tools.target != "" && tools.wasm_opt != "" {
             let shrunk = staged_beside(staged)
-            if avra_spawn_status(tools.wasm_opt, ["-Oz", staged, "-o", shrunk]) == 0 { ready = shrunk }
+            if avra_spawn_status(tools.wasm_opt, ["--all-features", "-Oz", staged, "-o", shrunk]) == 0 { ready = shrunk }
         }
         let key = self.kept_key(under)
         let _ = d
