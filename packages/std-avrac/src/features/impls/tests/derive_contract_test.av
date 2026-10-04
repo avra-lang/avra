@@ -1,7 +1,7 @@
 // A derivable trait is held to its contract WHERE IT IS DECLARED, so a
 // library's author hears a broken `derive` at their own build, never
 // first at a user's `@derive`.
-use @std.avrac.testing.{provided, said, answered, refused_with}
+use @std.avrac.testing.{provided, refused_in, said, answered, refused_with}
 
 /// A program whose main file declares `traits` over `@std.meta`.
 fn declaring(traits: string) -> string {
@@ -48,6 +48,15 @@ spec "features/impls — the derive contract" {
                     "use @std.meta.{derive, Type, Directive, Declared}\nexport trait Marked {\n    static fn derive(t: Type) -> Declared {\n        Declared { made: [Directive { twin: \"\", name: t.name, at: t.at, source: quote { const marked = \"m\" } }] }\n    }\n    static fn marks(t: Type) -> List<string> { [] }\n}\n",
                 ),
             ) == "m"
+        }
+        then "a `Declared` derive's `problems` are spoken at the annotation" {
+            refused_in(
+                provided(
+                    "use @x.c.{Marked}\nuse @std.meta.{derive}\n\n@derive(Marked)\ntype Thing = { x: int }\nThing { x: 1 }\n",
+                    "use @std.meta.{derive, Type, Directive, Declared, refuse_at}\nexport trait Marked {\n    static fn derive(t: Type) -> Declared {\n        Declared { made: [], problems: [refuse_at(t.at, \"a payload the wire cannot carry\", \"none\")] }\n    }\n    static fn marks(t: Type) -> List<string> { [] }\n}\n",
+                ),
+                "a payload the wire cannot carry",
+            )
         }
         then "a trait that declares no `derive` owes nothing" {
             refused_with(

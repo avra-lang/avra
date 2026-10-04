@@ -4,7 +4,20 @@
 //! exhaustive `update`. The site is the message's identity: a 31-bit FNV-1a
 //! of its declaring module and variant, so the host echoes the same place
 //! however the tree moved — an ordinal would renumber when a sibling lands.
-use @std.meta.{Type, Directive, Code, Stmts, literal, name, int_node, as_code}
+use @std.meta.{
+    Type,
+    Variant,
+    Diagnostic,
+    Directive,
+    Declared,
+    Code,
+    Stmts,
+    literal,
+    name,
+    int_node,
+    as_code,
+    refuse_at,
+}
 
 /// A content-addressed message site. Deterministic across runs and renders.
 export fn event_site(declaration: string, action: string) -> int {
@@ -20,39 +33,55 @@ export fn event_site(declaration: string, action: string) -> int {
 }
 
 /// A message enum: each variant's word and its content-addressed site, and
-/// the one lookup a host echo resolves through. `from_site` covers the
-/// variants that carry no payload; a message with captures resolves through
-/// the tree it was written in, which is a later slice.
+/// the one lookup a host echo resolves through. The event wire carries a
+/// SITE and no payload, so only the variants that carry nothing resolve:
+/// a payload-carrying variant has no value to rebuild from, and the derive
+/// refuses it at the declaration rather than minting a site nothing
+/// answers.
 export trait Messages {
     fn word() -> string
     fn site() -> int
 
-    static fn derive(t: Type) -> List<Directive> {
+    static fn derive(t: Type) -> Declared {
         let decl = "${t.module}.${t.name}"
         let words = [quote { .${v} -> ${literal(v.name)} } for v in t.variants]
         let sites = [quote { .${v} -> ${int_lit(event_site(decl, v.name))} } for v in t.variants]
         let plain = [v for v in t.variants if v.fields.is_empty()]
         let checks: List<Stmts> = [quote { if site == ${int_lit(event_site(decl, v.name))} { return ${name(t.name)}.${v} } } for v in plain]
-        [
-            Directive {
-                twin: "",
-                name: t.name,
-                at: t.at,
-                source: quote {
-                    impl ${t} {
-                        fn word() -> string { match self { ${words} } }
-                        fn site() -> int { match self { ${sites} } }
-                        static fn from_site(site: int) -> ${t}? {
-                            ${..checks}
-                            null
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote {
+                        impl ${t} {
+                            fn word() -> string { match self { ${words} } }
+                            fn site() -> int { match self { ${sites} } }
+                            static fn from_site(site: int) -> ${t}? {
+                                ${..checks}
+                                null
+                            }
                         }
-                    }
+                    },
                 },
-            },
-        ]
+            ],
+            problems: [payload_refusal(t, v) for v in t.variants if !v.fields.is_empty()],
+        }
     }
 
     static fn marks(t: Type) -> List<string> { [] }
+}
+
+/// A variant whose payload the event channel cannot carry back: the
+/// site is the variant's identity and the payload its value, and the
+/// wire rebuilds only the identity.
+fn payload_refusal(t: Type, v: Variant) -> Diagnostic {
+    refuse_at(
+        v.at,
+        "`${t.name}.${v.name}` carries a payload — the event channel sends a site and no payload, so this message could never resolve",
+        "declare the variant without fields, or keep the value in app state until the wire has a payload channel",
+    )
 }
 
 /// An int as generated code, in any seat — expression or pattern.
