@@ -4,9 +4,16 @@
 //! exhaustive `update`. The site is the message's identity: a 31-bit FNV-1a
 //! of its declaring module and variant, so the host echoes the same place
 //! however the tree moved — an ordinal would renumber when a sibling lands.
+//!
+//! A variant's CAPTURES ride the frame as a typed `Payload`: `payload()`
+//! lifts the one field into a scalar, and `from_site(site, payload)`
+//! rebuilds the message from the identity plus the value. A variant with
+//! no field carries no payload — its site alone resolves it.
 use @std.meta.{
     Type,
     Variant,
+    Field,
+    Arms,
     Diagnostic,
     Directive,
     Declared,
@@ -18,6 +25,7 @@ use @std.meta.{
     as_code,
     refuse_at,
 }
+use realize.payload.{Payload}
 
 /// A content-addressed message site. Deterministic across runs and renders.
 export fn event_site(declaration: string, action: string) -> int {
@@ -32,22 +40,21 @@ export fn event_site(declaration: string, action: string) -> int {
     h & 2147483647
 }
 
-/// A message enum: each variant's word and its content-addressed site, and
-/// the one lookup a host echo resolves through. The event wire carries a
-/// SITE and no payload, so only the variants that carry nothing resolve:
-/// a payload-carrying variant has no value to rebuild from, and the derive
-/// refuses it at the declaration rather than minting a site nothing
-/// answers.
+/// A message enum: each variant's word and its content-addressed site, the
+/// payload its captures make, and the one lookup a host echo resolves
+/// through. The event wire carries a SITE and a typed PAYLOAD, so a
+/// payload-carrying variant whose field is a scalar resolves too: the site
+/// is the variant's identity and the payload its value.
 export trait Messages {
     fn word() -> string
     fn site() -> int
 
     static fn derive(t: Type) -> Declared {
         let decl = "${t.module}.${t.name}"
-        let words = [quote { .${v} -> ${literal(v.name)} } for v in t.variants]
-        let sites = [quote { .${v} -> ${int_lit(event_site(decl, v.name))} } for v in t.variants]
-        let plain = [v for v in t.variants if v.fields.is_empty()]
-        let checks: List<Stmts> = [quote { if site == ${int_lit(event_site(decl, v.name))} { return ${name(t.name)}.${v} } } for v in plain]
+        let words = [word_arm(v) for v in t.variants]
+        let sites = [site_arm(decl, v) for v in t.variants]
+        let payloads = [payload_arm(v) for v in t.variants]
+        let checks: List<Stmts> = [decode_check(t, decl, v) for v in t.variants if carries(v)]
         Declared {
             made: [
                 Directive {
@@ -58,7 +65,8 @@ export trait Messages {
                         impl ${t} {
                             fn word() -> string { match self { ${words} } }
                             fn site() -> int { match self { ${sites} } }
-                            static fn from_site(site: int) -> ${t}? {
+                            fn payload() -> Payload? { match self { ${payloads} } }
+                            static fn from_site(site: int, payload: Payload?) -> ${t}? {
                                 ${..checks}
                                 null
                             }
@@ -66,21 +74,111 @@ export trait Messages {
                     },
                 },
             ],
-            problems: [payload_refusal(t, v) for v in t.variants if !v.fields.is_empty()],
+            problems: [variant_refusal(t, v) for v in t.variants if !carries(v)],
         }
     }
 
     static fn marks(t: Type) -> List<string> { [] }
 }
 
-/// A variant whose payload the event channel cannot carry back: the
-/// site is the variant's identity and the payload its value, and the
-/// wire rebuilds only the identity.
-fn payload_refusal(t: Type, v: Variant) -> Diagnostic {
+// ── the generated arms, one per projection ──────────────────────
+
+/// A variant pattern `.Toggle` / `.Toggle(id)` / `.Toggle(a, b)`, binding
+/// every field — so an unsupported variant's generated arm is still
+/// well-arity even though its refusal stands.
+fn word_arm(v: Variant) -> Arms {
+    if v.fields.is_empty() {
+        quote { .${v} -> ${literal(v.name)} }
+    } else {
+        quote { .${v}(${[f.name for f in v.fields]}) -> ${literal(v.name)} }
+    }
+}
+
+fn site_arm(decl: string, v: Variant) -> Arms {
+    let at = int_lit(event_site(decl, v.name))
+    if v.fields.is_empty() {
+        quote { .${v} -> ${at} }
+    } else {
+        quote { .${v}(${[f.name for f in v.fields]}) -> ${at} }
+    }
+}
+
+/// The variant's captures as a payload: nothing, its one scalar field, or
+/// nothing when the refusal already stands for it.
+fn payload_arm(v: Variant) -> Arms {
+    when {
+        v.fields.is_empty() -> quote { .${v} -> null }
+        v.fields.length == 1 -> quote { .${v}(${[f.name for f in v.fields]}) -> ${scalar(v.fields[0])} }
+        _ -> quote { .${v}(${[f.name for f in v.fields]}) -> null }
+    }
+}
+
+/// One variant's rebuild: its site, then the field decoded from the
+/// payload. A site alone resolves a variant with no field. A payload of
+/// the wrong shape is a malformed frame: absence, never a wrong message.
+fn decode_check(t: Type, decl: string, v: Variant) -> Stmts {
+    let at = int_lit(event_site(decl, v.name))
+    if v.fields.is_empty() {
+        return quote { if site == ${at} { return ${name(t.name)}.${v} } }
+    }
+    quote {
+        if site == ${at} {
+            let q? = payload else { return null }
+            let value? = ${field_read(v)} else { return null }
+            return ${name(t.name)}.${v}(value)
+        }
+    }
+}
+
+/// The one field read out of the payload, absent on a wrong shape.
+fn field_read(v: Variant) -> Code {
+    match v.fields[0].ty {
+        "int" -> quote { match q { .Int(x) -> x, rest -> null } },
+        "string" -> quote { match q { .Text(x) -> x, rest -> null } },
+        "bool" -> quote { match q { .Bool(x) -> x, rest -> null } },
+        rest -> quote { match q { rest -> null } },
+    }
+}
+
+/// A field read as a payload scalar.
+fn scalar(f: Field) -> Code {
+    match f.ty {
+        "int" -> quote { Payload.Int(${name(f.name)}) },
+        "string" -> quote { Payload.Text(${name(f.name)}) },
+        "bool" -> quote { Payload.Bool(${name(f.name)}) },
+        rest -> quote { Payload.Int(0) },
+    }
+}
+
+/// Whether the derive can lift this variant's captures: no field, or one
+/// whose type has a `Payload` arm today.
+fn carries(v: Variant) -> bool {
+    v.fields.length <= 1 && (v.fields.is_empty() || scalar_name(v.fields[0].ty) != null)
+}
+
+fn scalar_name(ty: string) -> string? {
+    match ty { "int" -> "int", "string" -> "string", "bool" -> "bool", rest -> null }
+}
+
+// ── voices ──
+
+/// A variant the payload channel cannot carry back. The site is the
+/// variant's identity and the payload its value; a field type with no
+/// payload arm has no rebuild, so the derive refuses it at the
+/// declaration rather than minting a site nothing answers.
+fn variant_refusal(t: Type, v: Variant) -> Diagnostic {
+    if v.fields.length > 1 {
+        return refuse_at(
+            v.at,
+            "`${t.name}.${v.name}` carries ${v.fields.length} fields — the event channel carries one payload value today",
+            "lift the one value, or keep the rest in app state until the channel grows",
+        )
+    }
+    let f = v.fields[0]
     refuse_at(
-        v.at,
-        "`${t.name}.${v.name}` carries a payload — the event channel sends a site and no payload, so this message could never resolve",
-        "declare the variant without fields, or keep the value in app state until the wire has a payload channel",
+        f.at,
+        "`${t.name}.${v.name}` carries `${f.ty}`, which the event channel has no payload arm for",
+        "payloads are `int`, `string` and `bool` today; keep the value in app state until the channel grows",
     )
 }
 
