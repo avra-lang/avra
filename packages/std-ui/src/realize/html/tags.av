@@ -55,36 +55,6 @@ export enum HtmlAttrName {
 /// One attribute: a typed name, an escaped value.
 export type HtmlAttr = { name: HtmlAttrName, value: string }
 
-/// Every primitive's element — DATA. `Heading` is the one row a level
-/// overrides, so it is read before the table.
-export type PrimTag = { prim: Prim, tag: HtmlTag }
-
-export const prim_tags: List<PrimTag> = table<PrimTag> {
-    prim      | tag
-    .Text     | .Span
-    .Button   | .Button
-    .Link     | .A
-    .Image    | .Img
-    .Icon     | .Img
-    .Field    | .Input
-    .Checkbox | .Input
-    .Switch   | .Input
-    .Slider   | .Input
-    .Row      | .Div
-    .Column   | .Div
-    .Surface  | .Div
-    .List     | .Ul
-    .Item     | .Li
-    .Card     | .Article
-    .Dialog   | .Dialog
-    .Divider  | .Hr
-    .Progress | .Progress
-    .Alert    | .Div
-    .Spinner  | .Div
-    .Form     | .Form
-    .Heading  | .H1
-}
-
 export fn heading_tag(rank: int) -> HtmlTag {
     let r = if rank < 1 { 1 } else if rank > 6 { 6 } else { rank }
     let tags: List<HtmlTag> = [.H1, .H2, .H3, .H4, .H5, .H6]
@@ -92,10 +62,26 @@ export fn heading_tag(rank: int) -> HtmlTag {
 }
 
 /// The element a primitive draws as, given a heading's level. The ONE
-/// projection; a node read is this over the node's own parts.
+/// projection, and ONE match: the mapping is code, so no per-row
+/// aggregate settles. A heading's level overrides its default element.
 export fn tag_for(prim: Prim, rank: int) -> HtmlTag {
     if prim is .Heading { return heading_tag(rank) }
-    prim_tags.find(it.prim == prim)?.tag ?? .Div
+    match prim {
+        .Text -> .Span,
+        .Button -> .Button,
+        .Link -> .A,
+        .Image or .Icon -> .Img,
+        .Field or .Checkbox or .Switch or .Slider -> .Input,
+        .Row or .Column or .Surface or .Alert or .Spinner -> .Div,
+        .List -> .Ul,
+        .Item -> .Li,
+        .Card -> .Article,
+        .Dialog -> .Dialog,
+        .Divider -> .Hr,
+        .Progress -> .Progress,
+        .Form -> .Form,
+        .Heading -> .H1,
+    }
 }
 
 export fn tag_of(n: Node) -> HtmlTag { tag_for(n.prim, n.level()) }
