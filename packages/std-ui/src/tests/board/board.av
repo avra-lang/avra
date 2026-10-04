@@ -1,68 +1,239 @@
-// proves: the board is a COMPONENT whose state is a `state` field (a record
-// spread in) and whose action is a TYPED message. The tree carries the
-// message's content-addressed site (never a name), `update` is ONE exhaustive
-// match, and the host echo resolves back through `from_site` — so one
-// differential run covers both the ergonomics and the emitter.
+// proves: the board is a REAL screen — tasks with done-state, three filters,
+// a derived count and progress, a card/row/column/item layout, a dialog and a
+// theme — and its frame is a function of module `state`. The frame is printed
+// byte-exact in both engines, so a change to the view changes THIS receipt.
 use @std.meta.{derive}
-use @std.ui.components.{heading, item, button}
-use @std.ui.realize.dom.frame.{frame_text, sheet, live, no_change, event_at}
-use @std.ui.realize.html.css.{class_names}
+use @std.ui.components.{
+    button,
+    card,
+    checkbox,
+    column,
+    dialog,
+    divider,
+    field,
+    heading,
+    item,
+    list,
+    progress,
+    row,
+    surface,
+    text,
+}
+use @std.ui.realize.dom.frame.{event_at, frame_text, sheet}
 use @std.ui.realize.messages.{Messages}
 use @std.ui.realize.prim.{prim}
 use @std.ui.realize.view.{View}
 use @std.ui.style.box.{Box}
+use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
-use @std.ui.style.theme.{default_theme}
+use @std.ui.style.theme.{dark_theme, default_theme}
 
+/// Every action carries no payload, so `from_site` resolves it and `update`
+/// is ONE exhaustive match. A per-item action needs `Msg.Toggle(id)`, and the
+/// event channel does not yet carry the value that would resolve it.
 @derive(Messages)
 enum Msg {
-    Toggle
+    ShowAll
+    ShowActive
+    ShowDone
+    ClearDone
+    ToggleTheme
+    OpenDialog
+    CloseDialog
 }
 
-/// The board's own place, spread into the component: a `state` field holds a
-/// Cell, so a read answers the value and a write lands in the one slot.
-type BoardState = {
-    state show: string = "all",
-}
+type Todo = { id: string, title: string, done: bool }
 
 @derive(View)
-@prim(.Surface)
-component board {
+@prim(.Button)
+component board_action {
     ..Box
-    ..BoardState
-    on_click: Msg = Msg.Toggle
-    items: List<dyn View> = []
+    label: string
+    on_click: Msg
+    disabled: bool = false
 }
 
-const sunk = Style { fill: .SurfaceSunk }
+state filter: string = "all"
+state dark: bool = false
+state dialog_open: bool = false
+state tasks: List<Todo> = [
+    Todo { id: "t1", title: "Draft the spec", done: true },
+    Todo { id: "t2", title: "Wire the event channel", done: false },
+    Todo { id: "t3", title: "Land the wasm board", done: false },
+    Todo { id: "t4", title: "Write the tour", done: true },
+]
 
-fn update(m: Msg) -> string {
-    match m { .Toggle -> "toggled" }
+fn done_count() -> int { [t for t in tasks if t.done].length }
+
+fn admits(t: Todo) -> bool {
+    when {
+        filter == "active" -> !t.done
+        filter == "done" -> t.done
+        _ -> true
+    }
 }
 
-mut b = board {
-    style: sunk,
-    on_click: Msg.Toggle,
-    items: [heading "Tasks" { rank: 1 }, item { button "Add" }],
+fn theme_label() -> string { if dark { "Light mode" } else { "Dark mode" } }
+
+fn tab_style(on: bool) -> Style {
+    if on { sunk_style() } else { Style { radius: .S } }
 }
-b.show = "open"
-println(frame_text(b.describe()))
-println(b.show)
-println(class_names(b.describe()).join(","))
-let has_class = sheet(b.describe(), default_theme).contains(".fill-surface-sunk{")
-println("${has_class}")
-let l = live()
-let first_sent = l.diff(b.describe(), default_theme)
-let second_sent = l.diff(b.describe(), default_theme)
-println("${first_sent.length > 2 && second_sent == no_change()}")
+
+fn title_style(done: bool) -> Style {
+    if done { Style { color: .Muted } } else { Style { color: .Text } }
+}
+
+fn sunk_style() -> Style { Style { fill: .SurfaceSunk, radius: .S } }
+
+fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
+
+fn update(m: Msg) {
+    match m {
+        .ShowAll -> { filter = "all" },
+        .ShowActive -> { filter = "active" },
+        .ShowDone -> { filter = "done" },
+        .ClearDone -> { tasks = [t for t in tasks if !t.done] },
+        .ToggleTheme -> { dark = !dark },
+        .OpenDialog -> { dialog_open = true },
+        .CloseDialog -> { dialog_open = false },
+    }
+}
+
+fn tab(label: string, m: Msg, on: bool) -> board_action {
+    board_action { label: label, on_click: m, style: tab_style(on) }
+}
+
+fn header() -> row {
+    row {
+        layout: spread_layout()
+        items: [
+            column {
+                layout: Layout { gap: .Xs }
+                items: [
+                    heading "Tasks" { rank: 1 },
+                    text "Every task is a value; the screen is a function of state." {
+                        style: Style { color: .Muted }
+                    },
+                ]
+            },
+            board_action { label: theme_label(), on_click: Msg.ToggleTheme, style: sunk_style() },
+        ]
+    }
+}
+
+fn filters() -> row {
+    row {
+        layout: Layout { gap: .S, align: .Center }
+        items: [
+            tab("All", Msg.ShowAll, filter == "all"),
+            tab("Active", Msg.ShowActive, filter == "active"),
+            tab("Done", Msg.ShowDone, filter == "done"),
+            board_action {
+                label: "Clear done",
+                on_click: Msg.ClearDone,
+                disabled: done_count() == 0,
+                style: sunk_style(),
+            },
+        ]
+    }
+}
+
+fn task_item(t: Todo) -> item {
+    item {
+        key: t.id
+        layout: Layout { gap: .S, align: .Center, pad: around(.S) }
+        items: [
+            checkbox t.title {
+                checked: t.done
+                style: title_style(t.done)
+            },
+            button "Remove" { disabled: true },
+        ]
+    }
+}
+
+fn task_items() -> List<dyn View> {
+    let shown = [t for t in tasks if admits(t)]
+    if shown.is_empty() {
+        [text "Nothing here yet." { style: Style { color: .Muted } }]
+    } else {
+        [task_item(t) for t in shown]
+    }
+}
+
+fn task_list() -> list {
+    list {
+        layout: Layout { gap: .S }
+        items: task_items()
+    }
+}
+
+fn board_items() -> List<dyn View> {
+    let done = progress "Done" {
+        amount: done_count()
+        max: tasks.length
+    }
+    let head: List<dyn View> = [
+        done,
+        filters(),
+        field "New task" { placeholder: "Type a task…" },
+        divider {},
+    ]
+    let body: List<dyn View> = [task_list()]
+    head.concat(body)
+}
+
+fn board() -> card {
+    card "Board" {
+        style: Style { fill: .SurfaceRaised, radius: .M }
+        layout: Layout { gap: .M, pad: around(.M) }
+        items: board_items()
+    }
+}
+
+fn footer() -> row {
+    row {
+        layout: spread_layout()
+        items: [
+            text "${[t for t in tasks if !t.done].length} open · ${done_count()} done of ${tasks.length}" {
+                style: Style { color: .Muted }
+            },
+            board_action { label: "About", on_click: Msg.OpenDialog, style: sunk_style() },
+        ]
+    }
+}
+
+fn about() -> dialog {
+    dialog "About" {
+        open: dialog_open
+        items: [
+            heading "Task board" { rank: 2 },
+            text "State lives in module `state`; the frame is its projection.",
+            board_action { label: "Close", on_click: Msg.CloseDialog, style: sunk_style() },
+        ]
+    }
+}
+
+fn view() -> surface {
+    surface {
+        style: Style { fill: .Surface, radius: .M }
+        layout: Layout { gap: .M, pad: around(.L) }
+        items: [header(), board(), footer(), about()]
+    }
+}
+
+println(frame_text(view().describe()))
+update(Msg.ShowActive)
+println(frame_text(view().describe()))
+update(Msg.ClearDone)
+println(frame_text(view().describe()))
+update(Msg.OpenDialog)
+println(frame_text(view().describe()))
 println(
-    "${l.diff(board { items: [heading "Other" { rank: 2 }] }.describe(), default_theme) != no_change()}",
+    "all=${filter} open=${[t for t in tasks if !t.done].length} done=${done_count()} total=${tasks.length}",
 )
-let ev = b.describe().events.first()
-let site = match ev {
-    a? -> a.site
-    null -> 0
-}
-println("${event_at(b.describe(), site, 1) != null}")
-println("${Msg.from_site(site) != null}")
-println(update(Msg.Toggle))
+println(
+    "from_site=${Msg.from_site(Msg.ShowAll.site()) != null} distinct=${Msg.ShowAll.site() != Msg.ShowActive.site()}",
+)
+println("dark=${sheet(view().describe(), dark_theme).contains("--tone-text:#eeeeee")}")
+println("event=${event_at(view().describe(), Msg.OpenDialog.site(), 1) != null}")

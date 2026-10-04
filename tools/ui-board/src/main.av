@@ -1,74 +1,262 @@
-//! M1 — the board, as a wasm app. `main` paints once; an event repaints only
-//! what changed. The host applies each frame to the live tree.
+//! The task board — the UI library's showcase, as a wasm app. `view` is a
+//! function of module `state`: tasks with done-state, three filters, a
+//! derived count and progress, a dialog and a theme mode. `update` is ONE
+//! exhaustive match over a payload-free `Msg`, so a new message breaks the
+//! build right here.
 //!
-//! The frame row is a HOST import (`avra:rt.avra_dom_frame`); its seat is a
-//! `Bytes`, so the pointer names its box and the glue reads the length from
-//! the header — no (ptr,len) pair to keep in step.
+//! Interaction today is GLOBAL: every control carries a whole `Msg`, and the
+//! tree addresses it by content-addressed site. Per-item actions (a row's own
+//! toggle and remove) and a task added from the `field` need a payload that
+//! reaches the program; those controls are rendered but not wired.
 use @std.meta.{derive}
-use @std.ui.components.{heading, item, button}
-use @std.ui.realize.dom.frame.{Live, live, event_at}
+use @std.ui.components.{
+    button,
+    card,
+    checkbox,
+    column,
+    dialog,
+    divider,
+    field,
+    heading,
+    item,
+    list,
+    progress,
+    row,
+    surface,
+    text,
+}
+use @std.ui.realize.dom.frame.{Live, event_at, live}
 use @std.ui.realize.messages.{Messages}
 use @std.ui.realize.prim.{prim}
 use @std.ui.realize.view.{View}
 use @std.ui.style.box.{Box}
-use @std.ui.style.theme.{default_theme}
+use @std.ui.style.layout.{Layout, around}
+use @std.ui.style.style.{Style}
+use @std.ui.style.theme.{Theme, dark_theme, default_theme}
 
 extern fn avra_dom_frame(frame: Bytes)
 
-/// The app's messages. `@derive(Messages)` mints each one's content-addressed
-/// site, so the tree carries a typed message and `update` is the ONE
-/// exhaustive dispatch.
+/// The screen's actions: every one carries no payload, so `from_site`
+/// resolves it and `update` dispatches it. A per-item action or a typed input
+/// needs a payload-carrying variant (`ToggleTask(id)`, `SetDraft(text)`),
+/// which the event channel does not yet carry back to the program.
 @derive(Messages)
 enum Msg {
-    Toggle
+    ShowAll
+    ShowActive
+    ShowDone
+    ClearDone
+    ToggleTheme
+    OpenDialog
+    CloseDialog
 }
 
-/// The screen's own place, spread into the board: a `state` field holds a
-/// Cell, so a read answers the value and a write lands in the one slot.
-type BoardState = {
-    state show: string = "all",
-}
+/// One task. `id` is the item key; `done` is its state.
+type Todo = { id: string, title: string, done: bool }
 
+/// A clickable control: the library's `button` names no event, so a
+/// component with `on_click` is where a typed message meets a control.
 @derive(View)
-@prim(.Surface)
-component board {
+@prim(.Button)
+component board_action {
     ..Box
-    ..BoardState
-    on_click: Msg = Msg.Toggle
-    items: List<dyn View> = []
+    label: string
+    on_click: Msg
+    disabled: bool = false
 }
 
-/// THE STATE the screen is a function of: module `state` is one place every
-/// reader shares, read by name and assigned in place.
+// ── state ───────────────────────────────────────────────────────
+
 state filter: string = "all"
+state dark: bool = false
+state dialog_open: bool = false
+state tasks: List<Todo> = [
+    Todo { id: "t1", title: "Draft the spec", done: true },
+    Todo { id: "t2", title: "Wire the event channel", done: false },
+    Todo { id: "t3", title: "Land the wasm board", done: false },
+    Todo { id: "t4", title: "Write the tour", done: true },
+]
+
+/// The counts are DERIVED from the list, never stored beside it.
+fn done_count() -> int { [t for t in tasks if t.done].length }
+
+fn open_count() -> int { [t for t in tasks if !t.done].length }
+
+fn admits(t: Todo) -> bool {
+    when {
+        filter == "active" -> !t.done
+        filter == "done" -> t.done
+        _ -> true
+    }
+}
+
+fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
 
 /// The last frame sent — an unchanged paint costs two bytes.
 once fn painted() -> Live { live() }
 
-/// The app's behaviour: ONE match, every message. Adding a `Msg` breaks the
-/// build here, on purpose — the tree can only name a message that dispatches.
+// ── update: ONE match, every message ────────────────────────────
+
 fn update(m: Msg) {
-    match m { .Toggle -> toggle() }
-}
-
-fn toggle() { filter = if filter == "all" { "done" } else { "all" } }
-
-/// The screen: state in, tree out. Called again on every event, so its ids
-/// are the ids the host was last told.
-fn view() -> board {
-    board {
-        show: filter,
-        on_click: Msg.Toggle,
-        items: [heading "Tasks — ${filter}" { rank: 1 }, item { button "Toggle" }],
+    match m {
+        .ShowAll -> { filter = "all" },
+        .ShowActive -> { filter = "active" },
+        .ShowDone -> { filter = "done" },
+        .ClearDone -> { tasks = [t for t in tasks if !t.done] },
+        .ToggleTheme -> {
+            dark = !dark
+            // A mode is a whole stylesheet, so the next diff must resend it.
+            painted().styled.set(false)
+        },
+        .OpenDialog -> { dialog_open = true },
+        .CloseDialog -> { dialog_open = false },
     }
 }
 
-fn paint() { avra_dom_frame(painted().diff(view().describe(), default_theme)) }
+// ── view: state in, tree out ────────────────────────────────────
 
-/// The host's call: `site` is the content hash the frame named (never the
-/// id it subscribed along), `what` the kind. The message is resolved from
-/// the typed enum — the site is the message's identity — and `update`
-/// dispatches it. A node inserted above moves nothing.
+fn theme_label() -> string { if dark { "Light mode" } else { "Dark mode" } }
+
+fn tab_style(on: bool) -> Style {
+    if on { sunk_style() } else { Style { radius: .S } }
+}
+
+fn title_style(done: bool) -> Style {
+    if done { Style { color: .Muted } } else { Style { color: .Text } }
+}
+
+fn sunk_style() -> Style { Style { fill: .SurfaceSunk, radius: .S } }
+
+fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
+
+fn tab(label: string, m: Msg, on: bool) -> board_action {
+    board_action { label: label, on_click: m, style: tab_style(on) }
+}
+
+fn header() -> row {
+    row {
+        layout: spread_layout()
+        items: [
+            column {
+                layout: Layout { gap: .Xs }
+                items: [
+                    heading "Tasks" { rank: 1 },
+                    text "Every task is a value; the screen is a function of state." {
+                        style: Style { color: .Muted }
+                    },
+                ]
+            },
+            board_action { label: theme_label(), on_click: Msg.ToggleTheme, style: sunk_style() },
+        ]
+    }
+}
+
+fn filters() -> row {
+    row {
+        layout: Layout { gap: .S, align: .Center }
+        items: [
+            tab("All", Msg.ShowAll, filter == "all"),
+            tab("Active", Msg.ShowActive, filter == "active"),
+            tab("Done", Msg.ShowDone, filter == "done"),
+            board_action {
+                label: "Clear done",
+                on_click: Msg.ClearDone,
+                disabled: done_count() == 0,
+                style: sunk_style(),
+            },
+        ]
+    }
+}
+
+fn new_task() -> field {
+    field "New task" { placeholder: "Type a task…" }
+}
+
+fn task_item(t: Todo) -> item {
+    item {
+        key: t.id
+        layout: Layout { gap: .S, align: .Center, pad: around(.S) }
+        items: [
+            checkbox t.title {
+                checked: t.done
+                style: title_style(t.done)
+            },
+            button "Remove" { disabled: true },
+        ]
+    }
+}
+
+fn visible() -> List<Todo> { [t for t in tasks if admits(t)] }
+
+fn task_items() -> List<dyn View> {
+    let shown = visible()
+    if shown.is_empty() {
+        [text "Nothing here yet." { style: Style { color: .Muted } }]
+    } else {
+        [task_item(t) for t in shown]
+    }
+}
+
+fn task_list() -> list {
+    list {
+        layout: Layout { gap: .S }
+        items: task_items()
+    }
+}
+
+fn board_items() -> List<dyn View> {
+    let done = progress "Done" {
+        amount: done_count()
+        max: tasks.length
+    }
+    let head: List<dyn View> = [done, filters(), new_task(), divider {}]
+    let body: List<dyn View> = [task_list()]
+    head.concat(body)
+}
+
+fn board() -> card {
+    card "Board" {
+        style: Style { fill: .SurfaceRaised, radius: .M }
+        layout: Layout { gap: .M, pad: around(.M) }
+        items: board_items()
+    }
+}
+
+fn footer() -> row {
+    row {
+        layout: spread_layout()
+        items: [
+            text "${open_count()} open · ${done_count()} done of ${tasks.length}" {
+                style: Style { color: .Muted }
+            },
+            board_action { label: "About", on_click: Msg.OpenDialog, style: sunk_style() },
+        ]
+    }
+}
+
+fn about() -> dialog {
+    dialog "About" {
+        open: dialog_open
+        items: [
+            heading "Task board" { rank: 2 },
+            text "State lives in module `state`; the frame is its projection.",
+            board_action { label: "Close", on_click: Msg.CloseDialog, style: sunk_style() },
+        ]
+    }
+}
+
+fn view() -> surface {
+    surface {
+        style: Style { fill: .Surface, radius: .M }
+        layout: Layout { gap: .M, pad: around(.L) }
+        items: [header(), board(), footer(), about()]
+    }
+}
+
+fn paint() { avra_dom_frame(painted().diff(view().describe(), theme())) }
+
+/// The host's call: the site is the message's identity, `update` dispatches
+/// it, and the frame follows.
 export fn avra_event(site: int, what: int) {
     let e? = event_at(view().describe(), site, what) else { return }
     let m? = Msg.from_site(e.site) else { return }
