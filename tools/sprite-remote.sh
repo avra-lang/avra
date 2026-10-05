@@ -203,9 +203,18 @@ advance_and_cache() {
     # A build's cap leaves the machine its floor; the shim's default is the laptop's.
     export AVRA_CAP_MB="${AVRA_BUILD_CAP_MB:-$(awk '/^MemTotal:/ { print int($2 / 1024) - 1200 }' /proc/meminfo)}"
     ok=0
-    if [ -x build/avra ] && make -s avra > "$log" 2>&1 && make -s avra >> "$log" 2>&1; then
+    # Each step says how long it took: a build's time is read, never guessed.
+    step() {
+        s0=$(date +%s)
+        "$@" >> "$log" 2>&1
+        s1=$?
+        echo "sprite-run: $* — $(($(date +%s) - s0))s$([ "$s1" = 0 ] || echo ", FAILED")" >&2
+        return "$s1"
+    }
+    : > "$log"
+    if [ -x build/avra ] && step make -s avra && step make -s avra; then
         ok=1
-    elif make bootstrap >> "$log" 2>&1; then
+    elif step make bootstrap; then
         ok=1
     fi
     if [ "$ok" = 1 ] && [ -x build/avra ]; then

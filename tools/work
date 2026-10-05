@@ -9,9 +9,9 @@
 #   sh tools/work sprites      every Sprite at a glance; `--fix [name]` repairs
 #   sh tools/work done         remove this lane, free its Sprite
 #
-# Also: `bind [sprite]` gives a worktree that has none a Sprite, `wait
-# <branch>` waits for a PR to merge, `run --for <minutes>` raises the
-# command's bound.
+# Also: `bind [sprite]` gives a worktree a Sprite, or moves it to the one
+# named; `wait <branch>` waits for a PR to merge; `run --for <minutes>`
+# raises the command's bound.
 #
 # ONE SPRITE PER LANE, ONE RUN PER SPRITE. A worktree's Sprite is named in
 # its own git dir (`avra-sprite`); a Sprite belongs to one worktree until
@@ -45,6 +45,7 @@ tools=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$tools/.." && pwd)
 here=$tools
 . "$tools/sprite-lib.sh"
+gh_=${AVRA_GH:-gh}
 
 die() { echo "work: $*" >&2; exit 1; }
 
@@ -101,12 +102,18 @@ bind() {
         lockf -k -t 60 "$lock" sh "$tools/work" bind-locked "$@"
     fi
 }
+# With a name on a lane that holds another Sprite, the lane MOVES: the
+# old one is free the moment the new one is held, and never while this
+# lane has a run going on it.
 bind_locked() {
     mine=$(bound)
-    [ -z "$mine" ] || { echo "work: this lane holds $mine"; return 0; }
+    if [ -n "$mine" ]; then
+        [ -n "${1:-}" ] && [ "$1" != "$mine" ] || { echo "work: this lane holds $mine"; return 0; }
+        ! running_here . || { echo "work: this lane has a run going on $mine — it moves when that ends" >&2; return 1; }
+    fi
     held=$(lanes)
     free=$(for s in ${1:-$(pool)}; do echo "$held" | grep -q "^$s " || printf '%s ' "$s"; done)
-    [ -n "$free" ] || { echo "work: every Sprite is bound:" >&2; echo "$held" | sed 's/^/  /' >&2; return 1; }
+    [ -n "$free" ] || { echo "work: ${1:-every Sprite} is bound:" >&2; echo "$held" | sed 's/^/  /' >&2; return 1; }
     # The first free one that answers; a silent one is left for later.
     d=$(mktemp -d "${TMPDIR:-/tmp}/avra-bind.XXXXXX")
     for s in $free; do (sx "$s" 20 true >/dev/null 2>&1 && : > "$d/$s") & done
@@ -116,14 +123,14 @@ bind_locked() {
     rm -rf "$d"
     [ -n "$pick" ] || { echo "work: no free Sprite answered in 20s (free: $free) — \`work sprites\` shows them" >&2; return 1; }
     echo "$pick" > "$(binding)"
-    echo "work: this lane holds $pick"
+    echo "work: this lane holds $pick${mine:+ — $mine is free}"
 }
 
 # THE COMPILER'S SOURCE, hashed by content: packages/cli plus every std
 # package its `use @std.x` graph reaches, the runtime, the backend, the
 # seed and the Makefile — never a package's tests/, which a build never
 # reads. A tree whose hash moved gets its compiler rebuilt on its Sprite.
-compiler_hash() {
+compiler_paths() {
     (
         cd "$1"
         pending="cli"
@@ -141,7 +148,13 @@ compiler_hash() {
         {
             for d in $seen; do [ ! -d "packages/$d/src" ] || echo "packages/$d"; done
             printf '%s\n' Makefile backend runtime bootstrap packages/std-prelude
-        } | sort -u | while IFS= read -r p; do
+        } | sort -u
+    )
+}
+compiler_hash() {
+    (
+        cd "$1"
+        compiler_paths "$1" | while IFS= read -r p; do
             find "$p" -type f ! -path '*/build/*' ! -path '*/.avra-cache/*' ! -path '*/.claude/*' ! -path '*/tests/*' 2>/dev/null
         done | LC_ALL=C sort -u | xargs shasum -a 256
     ) | shasum -a 256 | cut -d' ' -f1
@@ -171,7 +184,7 @@ affected() {
 # the last libraries it built.
 libs_step='k=$(find packages runtime backend Makefile tools/libs.py -type f \( -name "*.[ch]" -o -name "*.toml" -o -name Makefile -o -name libs.py \) ! -path "*/build/*" -printf "%T@ %s %p\n" | sort | sha256sum)
 if [ "$k" != "$(cat build/.avra-libs-key 2>/dev/null)" ]; then
-    { make -s -j$(nproc) -o avra libs >/dev/null || make -s -o avra libs >/dev/null; } && echo "$k" > build/.avra-libs-key || s=1
+    { make -s -j$(nproc) -o avra objects libs >/dev/null || make -s -o avra objects libs >/dev/null; } && echo "$k" > build/.avra-libs-key || s=1
 fi'
 
 test_() {
@@ -189,6 +202,56 @@ for p in $pkgs; do
     [ ! -d packages/\$p/src ] || build/avra check packages/\$p --baseline tools/idioms.baseline || s=1
 done
 exit \$s"
+}
+
+# A LANE'S FIRST BUILD STARTS FROM A BUILT COMPILER, never from the seed
+# when one can be had: main's own checks run uploads its compiler (the
+# `avra-compiler` artifact, kept a day), fetched here and handed to the
+# Sprite; failing that, the newest compiler another free Sprite holds;
+# failing that, nothing — and the Sprite bootstraps. WHEN THIS TREE'S
+# COMPILER SOURCES ARE THAT RUN'S, its compiler IS this tree's and nothing
+# is built. Otherwise the seeded binary only has to BUILD this tree
+# (`make avra`, twice); one too old to read it fails that build and the
+# Sprite bootstraps after all, so a seed costs time and never
+# correctness. $1 Sprite, $2 its tree there, $3 this tree, $4 its hash.
+seed() {
+    sd=$(mktemp -d "${TMPDIR:-/tmp}/avra-seed.XXXXXX")
+    put="cat > '$2/build/avra' && chmod +x '$2/build/avra'"
+    from=
+    ci=$(timeout -k 2 30 $gh_ run list --workflow checks --branch main --event push --status success --limit 1 \
+        --json databaseId,headSha --jq '.[0] | "\(.databaseId) \(.headSha)"' 2>/dev/null) || ci=
+    id=${ci%% *}
+    sha=${ci#* }
+    if [ -n "$id" ] && timeout -k 2 120 $gh_ run download "$id" -n avra-compiler -D "$sd" >/dev/null 2>&1 && [ -s "$sd/avra" ]; then
+        if git -C "$3" cat-file -e "$sha^{commit}" 2>/dev/null &&
+            git -C "$3" diff --quiet "$sha" -- $(compiler_paths "$3") ':(exclude,glob)**/tests/**' 2>/dev/null &&
+            [ -z "$(git -C "$3" ls-files --others --exclude-standard -- $(compiler_paths "$3") ':(exclude,glob)**/tests/**' 2>/dev/null)" ]; then
+            put="$put && printf %s '$4' > '$2/build/.avra-compiler-hash'"
+            from="main's compiler at ${sha%"${sha#???????}"}, which is this tree's — nothing to build"
+        else
+            from="main's compiler at ${sha%"${sha#???????}"}"
+        fi
+        timeout -k 2 120 "$sprite_cli" -s "$1" exec --no-port-forward -- sh -c "$put" < "$sd/avra" >/dev/null 2>&1 || from=
+    fi
+    if [ -z "$from" ]; then
+        held=$(lanes)
+        for s in $(pool); do
+            [ "$s" != "$1" ] || continue
+            echo "$held" | grep -q "^$s " && continue
+            c=$(sx "$s" 10 sh -c 'ls -t /home/sprite/avra-compilers/*/avra 2>/dev/null | head -n 1' 2>/dev/null) || continue
+            [ -n "$c" ] || continue
+            if sx "$s" 120 cat "$c" 2>/dev/null | timeout -k 2 120 "$sprite_cli" -s "$1" exec --no-port-forward -- sh -c "$put" >/dev/null 2>&1; then
+                from="$s's newest compiler"
+                break
+            fi
+        done
+    fi
+    rm -rf "$sd"
+    if [ -n "$from" ]; then
+        echo "work: $1 — first build here starts from $from" >&2
+    else
+        echo "work: $1 — first build here: no built compiler to start from, bootstrapping from the seed" >&2
+    fi
 }
 
 # The lane's run: wake, provision, sync, then the command on the Sprite,
@@ -258,6 +321,9 @@ run() {
         sleep 2
     done
     [ -n "$synced" ] || { echo "work: the tree did not sync to $sprite" >&2; exit 75; }
+    if printf '%s\n' "$info" | grep -q '^holds=no' && ! sx "$sprite" 20 test -x "$remote_tree/build/avra" 2>/dev/null; then
+        seed "$sprite" "$remote_tree" "$tree" "$hash"
+    fi
 
     echo "work: $sprite — run ($(since)s): $(printf '%s' "$cmd" | head -n 1 | cut -c1-100)" >&2
     run_id="$(hostname -s)-$$-$t0"
@@ -315,6 +381,19 @@ print(ids[-1] if ids else "")' 2>/dev/null || :
 ready_info() { woken "$1" "$2" ready - $ci_packages 2>/dev/null; }
 unwell() { [ -z "$1" ] || printf '%s\n' "$1" | grep -q '^unprovisioned=\|^home=no'; }
 
+# Whether the lane standing at $1 has a run of its own going.
+running_here() {
+    { read -r rp rb < "$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null)/avra-run"; } 2>/dev/null && owner_live "$rp" "$rb"
+}
+api_state() {
+    timeout -k 1 15 "$sprite_cli" api /sprites 2>/dev/null | python3 -c '
+import json, sys
+for r in json.load(sys.stdin)["data"]: print(r["name"], r["status"])' 2>/dev/null || :
+}
+
+# A SPRITE A LANE HOLDS IS THAT LANE'S: an unnamed fix passes it by and
+# says so, a named one says whose it is first, and none touches one whose
+# lane has a run going.
 # Repairs the named Sprites, or all: forgets worktrees that are gone,
 # installs what the checks' toolchain lacks, stops runs this machine
 # began and no longer owns, prunes old compilers, trees and scratch. One
@@ -324,8 +403,20 @@ unwell() { [ -z "$1" ] || printf '%s\n' "$1" | grep -q '^unprovisioned=\|^home=n
 fix() {
     git -C "$repo" worktree prune
     named=$*
+    held=$(lanes)
     for s in ${named:-$(pool)}; do
         (
+            wt=$(echo "$held" | sed -n "s|^$s ||p" | head -n 1)
+            if [ -n "$wt" ]; then
+                if running_here "$wt"; then
+                    echo "fix: $s is running something for lane ${wt##*/} — left alone"
+                    exit 0
+                elif [ -z "$named" ]; then
+                    echo "fix: $s is held by lane ${wt##*/} — left alone; \`sh tools/work sprites --fix $s\` repairs it"
+                    exit 0
+                fi
+                echo "fix: $s is held by lane ${wt##*/} — repairing it as asked"
+            fi
             said=
             info=$(ready_info "$s" "${AVRA_WAKE_S:-150}") || info=
             if [ -n "$info" ] && unwell "$info" && id=$(clean_id "$s") && [ -n "$id" ]; then
@@ -365,6 +456,7 @@ sprites() {
     [ "${1:-}" != --fix ] || { shift; fix "$@"; }
     d=$(mktemp -d "${TMPDIR:-/tmp}/avra-sprites.XXXXXX")
     held=$(lanes)
+    states=$(api_state)
     for s in $(pool); do
         (t=$(date +%s); remote "$s" "${AVRA_HEALTH_S:-25}" status - $ci_packages > "$d/$s" 2>/dev/null && echo $(($(date +%s) - t)) > "$d/$s.s") &
     done
@@ -374,8 +466,15 @@ sprites() {
     for s in $(pool); do
         lane=$(echo "$held" | sed -n "s|^$s .*/||p" | head -n 1)
         if [ ! -f "$d/$s.s" ]; then
-            printf '%-18s %-9s %-26s\n' "$s" "NO" "${lane:--}"
-            unwell=1
+            # BUSY IS NOT UNREACHABLE: a Sprite deep in a build can miss the
+            # question, and one read as gone gets "fixed" while it works.
+            wt=$(echo "$held" | sed -n "s|^$s ||p" | head -n 1)
+            if { [ -n "$wt" ] && running_here "$wt"; } || [ "$(echo "$states" | sed -n "s/^$s //p")" = running ]; then
+                printf '%-18s %-9s %-26s %s\n' "$s" "BUSY" "${lane:--}" "running something; too loaded to answer in ${AVRA_HEALTH_S:-25}s — leave it be"
+            else
+                printf '%-18s %-9s %-26s %s\n' "$s" "NO" "${lane:--}" "sh tools/work sprites --fix $s"
+                unwell=1
+            fi
             continue
         fi
         v() { sed -n "s/^$1=//p" "$d/$s" | head -n 1; }
@@ -404,7 +503,6 @@ done_() {
 }
 
 # ── Landing: GitHub's runners are the only gate ───────────────────────
-gh_=${AVRA_GH:-gh}
 
 # "<position> <seconds queued>" for PR number $1, or nothing when it is
 # not in the merge queue.
@@ -552,6 +650,7 @@ case "${1:-}" in
     sprites) shift; sprites "$@" ;;
     done) done_ ;;
     command) shift; assemble "$@"; echo ;;
+    seed) shift; seed "$@" ;;
     libs-step) printf '%s\n' "$libs_step" ;;
     land) land ;;
     status) status ;;
