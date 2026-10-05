@@ -1,0 +1,206 @@
+//! Every component answers one exact node; containers collect their
+//! children in the order written. `outline` prints a tree whole: what
+//! each node is, its words, its key and what its attributes say.
+use @std.ui.components.{
+    button,
+    card,
+    column,
+    field,
+    heading,
+    image,
+    item,
+    link,
+    list,
+    row,
+    switch,
+    text,
+}
+use @std.ui.realize.outline.{outline}
+use @std.ui.realize.render.{Node}
+use @std.ui.realize.shows.{Shows, rows}
+use @std.ui.realize.url.{local}
+use @std.ui.realize.view.{View}
+use @std.ui.style.layout.{Layout, around}
+use @std.ui.style.style.{Style}
+use @std.ui.style.tokens.{Size, Tone, Font}
+
+fn shown(v: dyn View) -> string { outline(v.describe()) }
+
+type Chore = { title: string, done: bool }
+
+impl Shows for Chore {
+    fn view() -> dyn View { switch self.title { checked: self.done } }
+}
+
+fn tasks() -> List<dyn Shows> { [Chore { title: "milk", done: true }, Chore { title: "eggs", done: false }] }
+
+fn everything() -> column {
+    column {
+        layout: Layout { gap: .M }
+        heading "Shop" { rank: 2 }
+        card "Basket" {
+            list {
+                item {
+                    key: "a"
+                    text "apples"
+                    link "more" { href: local("/apples") }
+                }
+            }
+            image local("a.png") { alt: "apples" }
+        }
+        row {
+            field "qty" { value: "3" }
+            switch "gift"
+            button "Buy"
+        }
+    }
+}
+
+spec "the components answer exact nodes" {
+    given "text" {
+        then "names no colour and no face unless it is given one" {
+            let n = (text "hi").describe()
+            shown(text "hi") == "text \"hi\"" &&
+                n.box.style.color == null &&
+                n.box.style.face == null
+        }
+        then "carries the colour and face it is given" {
+            let n = (text "hi" { style: Style { color: .Danger, face: .Mono } }).describe()
+            n.box.style.color == Tone.Danger && n.box.style.face == Font.Mono
+        }
+    }
+    given "a heading" {
+        then "takes rank 1 by default" { shown(heading "T") == "heading \"T\" level=1" }
+        then "its rank and colour are settings" {
+            let h = heading "T" {
+                rank: 3
+                style: Style { color: .Muted }
+            }
+            shown(h) == "heading \"T\" level=3" && h.describe().box.style.color == Tone.Muted
+        }
+        then "a rank outside the usual range is the node's rank, unclamped" {
+            shown(heading "T" { rank: 0 }) == "heading \"T\" level=0"
+        }
+    }
+    given "the controls" {
+        then "an image carries its source and its alt" {
+            shown(image local("a.png") { alt: "apples" }) == "image src=a.png alt=\"apples\""
+        }
+        then "an empty alt is still an image, described as nothing" {
+            shown(image local("a.png") { alt: "" }) == "image src=a.png alt=\"\""
+        }
+        then "a link carries its label and destination" {
+            shown(link "more" { href: local("/x") }) == "link \"more\" href=/x"
+        }
+        then "a button is its label alone" { shown(button "Go") == "button \"Go\"" }
+        then "a switch is off unless it says on" {
+            shown(switch "a") == "switch \"a\"" &&
+                shown(switch "a" { checked: true }) == "switch \"a\" checked"
+        }
+        then "a field is empty unless it has a value" {
+            shown(field "n") == "field \"n\" value=\"\" placeholder=\"\"" &&
+                shown(field "n" { value: "v" }) == "field \"n\" value=\"v\" placeholder=\"\""
+        }
+        then "markup, quotes, newlines and unicode ride through a label untouched" {
+            (button "<b>\"x\"</b>\né 😀").describe().words() == "<b>\"x\"</b>\né 😀"
+        }
+        then "an empty label is a control with no words" { shown(column { items: [button "", text "a"] }) == "column\n  button\n  text \"a\"" }
+    }
+    given "the containers" {
+        then "a column names no gap, pad, fill or radius unless given" {
+            let n = (column {}).describe()
+            n.box.layout.gap == null &&
+                n.box.layout.pad == null &&
+                n.box.style.fill == null &&
+                n.box.style.radius == null
+        }
+        then "a row carries the look it is given" {
+            let n = (row {
+                layout: Layout { gap: .L, pad: around(.Xs) }
+                style: Style { fill: .SurfaceSunk, radius: .M }
+            })
+                .describe()
+            n.box.layout.gap == Size.L &&
+                n.box.layout.pad?.start == Size.Xs &&
+                n.box.style.fill == Tone.SurfaceSunk &&
+                n.box.style.radius == Size.M
+        }
+        then "a card carries its title" { shown(card "S" {}) == "card title=\"S\"" }
+        then "a list has no key" { shown(list {}) == "list" && (list {}).describe().box.key == null }
+        then "an item's key lands in the node's key" { shown(item { key: "k1" }) == "item key=k1" }
+        then "an empty key is a key, not an absence" { (item { key: "" }).describe().box.key == "" }
+        then "a container with no children has none, at every container" {
+            (card "S" {}).describe().children.length +
+                (row {}).describe().children.length +
+                (list {}).describe().children.length == 0
+        }
+    }
+    given "a nested tree of every kind" {
+        then "the whole tree is exactly the written one, read in order" {
+            shown(everything()) == "column\n  heading \"Shop\" level=2\n  card title=\"Basket\"\n    list\n      item key=a\n        text \"apples\"\n        link \"more\" href=/apples\n    image src=a.png alt=\"apples\"\n  row\n    field \"qty\" value=\"3\" placeholder=\"\"\n    switch \"gift\"\n    button \"Buy\""
+        }
+    }
+}
+
+spec "children are written with control flow" {
+    given "a for statement" {
+        then "it contributes a child per turn" {
+            let c = column {
+                for i in 0..3 { text "n${i}" }
+            }
+            shown(c) == "column\n  text \"n0\"\n  text \"n1\"\n  text \"n2\""
+        }
+        then "inside an item it keeps the item's key" {
+            let keyed = item {
+                key: "k"
+                for i in 0..2 { text "t${i}" }
+            }
+            shown(keyed) == "item key=k\n  text \"t0\"\n  text \"t1\""
+        }
+    }
+    given "an if statement" {
+        then "it contributes a child only when it holds" {
+            let seen = false
+            let c = column {
+                text "a"
+                if seen { text "b" }
+                text "c"
+            }
+            shown(c) == "column\n  text \"a\"\n  text \"c\""
+        }
+    }
+    given "a comprehension" {
+        then "it spreads its views among their siblings" {
+            let c = row {
+                button "x"
+                [button "n${i}" for i in 0..2]
+                button "y"
+            }
+            shown(c) == "row\n  button \"x\"\n  button \"n0\"\n  button \"n1\"\n  button \"y\""
+        }
+    }
+}
+
+spec "values show themselves where they are listed" {
+    given "a list of values" {
+        then "each is listed through its Shows, twice over" {
+            let l = list {
+                rows(tasks())
+                rows(tasks())
+            }
+            shown(l) == "list\n  switch \"milk\" checked\n  switch \"eggs\"\n  switch \"milk\" checked\n  switch \"eggs\""
+        }
+        then "listed values share the list with written children, in order" {
+            let l = list {
+                text "head"
+                rows(tasks())
+                text "tail"
+            }
+            shown(l) == "list\n  text \"head\"\n  switch \"milk\" checked\n  switch \"eggs\"\n  text \"tail\""
+        }
+        then "no values is no children" {
+            let none: List<dyn Shows> = []
+            (list { rows(none) }).describe().children.length == 0
+        }
+    }
+}

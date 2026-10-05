@@ -2,17 +2,21 @@
 //! a view's name and its `Case`s (the conventional four are empty,
 //! one, many, pathological; the author supplies them). The gallery is
 //! one page for the web, one listing for the terminal, and a list of
-//! semantic `Snapshot`s: what a case says (its HTML, what it speaks)
-//! and a digest of both, never pixels. `changed` compares two
+//! semantic `Snapshot`s: what a case says (its HTML, its outline) and a
+//! digest of both, never pixels. `changed` compares two
 //! snapshot lists by digest, so only what differs is looked at.
 //!
 //!     let entries = [Entry { view: "greeting", cases: [Case { name: "one", view: hello("Ada") }] }]
-//!     gallery(entries)                // a View: a section per entry
+//!     gallery(entries)                // a View: a card per entry
 //!     changed(snapshots(old), snapshots(entries))
-use @std.ui.{View, column, section, heading, spoken}
-use @std.ui_html.{html}
-use @std.ui_tui.{render}
 use @std.text.{chars}
+use @std.ui.components.{card, column, heading}
+use @std.ui.env.{Env}
+use @std.ui.realize.html.html.{fragment}
+use @std.ui.realize.outline.{outline}
+use @std.ui.realize.tui.tui.{render}
+use @std.ui.realize.view.{View}
+use @std.ui.style.layout.{Layout, around}
 
 /// One named state of a view.
 export type Case = { name: string, view: dyn View }
@@ -21,7 +25,7 @@ export type Case = { name: string, view: dyn View }
 export type Entry = { view: string, cases: List<Case> }
 
 /// What a case says, and the digest of it.
-export type Snapshot = { view: string, case: string, html: string, spoken: string, digest: string }
+export type Snapshot = { view: string, case: string, html: string, outline: string, digest: string }
 
 export enum ChangeKind { Added, Removed, Changed }
 
@@ -30,27 +34,22 @@ export type Change = { view: string, case: string, kind: ChangeKind }
 
 // ── The page ────────────────────────────────────────────────────
 
-/// A section per view, a heading per case, and the case's view under it.
+/// A card per view, a heading per case, and the case's view under it.
 export fn gallery(entries: List<Entry>) -> dyn View {
     column {
-        gap: .L
+        layout: Layout { gap: .L }
         [entry_view(e) for e in entries]
     }
 }
 
 fn entry_view(e: Entry) -> dyn View {
-    section e.view {
-        gap: .M
-        pad: .M
+    card e.view {
+        layout: Layout { gap: .M, pad: around(.M) }
         [v for c in e.cases for v in [case_title(c), c.view]]
     }
 }
 
-fn case_title(c: Case) -> dyn View {
-    heading c.name {
-        rank: 3
-    }
-}
+fn case_title(c: Case) -> dyn View { heading c.name { rank: 3 } }
 
 // ── Snapshots ───────────────────────────────────────────────────
 
@@ -60,10 +59,10 @@ export fn snapshots(entries: List<Entry>) -> List<Snapshot> {
 }
 
 fn snapshot(view: string, c: Case) -> Snapshot {
-    let n = c.view.node()
-    let h = html(n)
-    let s = spoken(n)
-    Snapshot { view: view, case: c.name, html: h, spoken: s, digest: digest_of(h, s) }
+    let n = c.view.describe()
+    let h = fragment(n)
+    let s = outline(n)
+    Snapshot { view: view, case: c.name, html: h, outline: s, digest: digest_of(h, s) }
 }
 
 /// The digest of a snapshot's two texts; the first's length leads so
@@ -113,10 +112,10 @@ fn holds(snaps: List<Snapshot>, s: Snapshot) -> bool { snaps.any(same_case(it, s
 
 // ── The terminal ────────────────────────────────────────────────
 
-/// Every case drawn by the terminal realizer, each under a rule line
+/// Every case drawn by the terminal target, each under a rule line
 /// naming its view and case.
 export fn gallery_text(entries: List<Entry>, width: int) -> string {
-    [part for e in entries for c in e.cases for part in [rule(e.view, c.name), render(c.view.node(), width)]]
+    [part for e in entries for c in e.cases for part in [rule(e.view, c.name), render(c.view.describe(), Env {}, width)]]
         .join("\n")
 }
 

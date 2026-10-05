@@ -111,8 +111,14 @@ Five attempts to lift a handler into a generated message failed.
    input — whole lines in a terminal left in its usual mode — so no row
    of the runtime was added. The board (`tools/ui-board`) is one view
    with two entries: `web/` mounts it on a page, `term/` in a terminal.
-10. **One library.** The `Role`/`Setting` model and its packages move
-    to this one. URL sanitising (`safe_url`) comes across.
+10. **One library.** One `View`, one `Node`. The `Role`/`Setting`
+    model is deleted with the packages that drew it (`@std/ui_html`,
+    `@std/ui_tui`); `@std/ui_http` answers a `Screen` from a route as
+    the page `realize/html` draws, and `@std/ui_gallery` and the site
+    stand on the one model. The tokens a look names (`Size`, `Tone`,
+    `Font`) are `style/tokens.av`'s; a value that shows itself where it
+    is listed is `realize/shows.av`'s `Shows`. The old node's `spoken`
+    is `realize/outline.av`'s `outline`.
 
 ## Kept
 
