@@ -74,9 +74,13 @@ one exhaustive match per target over the primitives.
 5. terminal events (9)
 6. the old library deleted, its packages ported (10)
 
+## Decided (owner, 2026-10-05)
+
+- THE NEUTRAL WORD IS `press`, never `click`: a mouse word names one
+  platform. `on press { … }`.
+- A URL IN THE TREE IS CHECKED: `href` and `src` carry a URL type an
+  unsafe value cannot construct, so no target can forget to sanitise.
+
 ## Open
 
-- `click` is a mouse word; `press` is the neutral one. `click` stands
-  until decided.
-- The object cache is not keyed by target (a wasm link is handed native
-  objects). Separate from this work.
+- The object cache across targets: PR #272, `avra-8sb5.67`.
