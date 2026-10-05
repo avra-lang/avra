@@ -1,916 +1,1083 @@
-# Build-time sources — files, folders and specs as typed values
+# Build-time sources — files, folders and specs as typed values (v2)
 
 > 2026-10-05. Design only; no compiler code. Branch `sources-design`, base `bd36bf7`.
-> Every claim about today's compiler is **PROBED** (command and output in Appendix C),
-> **READ** (file:line), **READ(agent)** (a survey agent read it; I did not open it), or **ASSUMED**.
-> Probes ran `avra-ui-assets-design/build/avra` (built 2026-10-05 10:44 at `0b5bd64` = `0718345` + two doc commits,
-> one PR behind this base). Main's own `build/avra` is from 09-30 and refuses main's `@std/text` (PROBED), so it was not used.
-> All code using `@std/source` is design code: the package does not exist. Every language form in it was probed or exists in the tree.
-> Replaces the surface of `avra-ui-assets-design/docs/2026_10_05_UI_ASSETS.md` (§9 says what survives).
+> v2 answers the independent review of `ba901e2`/`4082312`. Every blocking flaw is FIXED, CUT or DISPUTED in §13.
+> Labels: **PROBED** (I ran it; Appendix C), **READ** (I opened it, file:line), **READ(agent)** (a survey agent opened it), **ASSUMED**.
+> Probes ran `avra-ui-assets-design/build/avra` (0b5bd64, one PR behind this base). Scratch: `/tmp/sources-probe/`.
+> **Nothing under `@std/source` exists.** §14 lists every NEW name this design introduces. Code that uses one is design code.
 
-## 0. The idea
+## 0. Page one
 
-Three small things, no new declaration kind:
+The owner's sketch, as written:
+
+```avra
+use @std.source.{dir, file}
+use @std.image.{resize, webp}
+use @std.openapi.{openapi}
+
+const photos = dir("./photos") |> resize(width: 320) |> webp(quality: 80)
+const api    = file("./petstore.yaml") |> openapi
+
+image(photos.hero)             // photos.heor is a compile error listing the members
+api.pets.get(id: 3)?           // typed request, typed errors
+icon(icons.close, color: .red)
+```
+
+**What it is made of — nothing new as a declaration kind:**
 
 | | what | built on |
 |---|---|---|
-| **A source is an input** | `file("…")`, `dir("…")`, `url("…")` name bytes outside the program. Each is a compiler input keyed by content. The value is a small handle. | `embed`, generalized and fixed |
-| **A step is a pure fn** | A transform is an ordinary fn. A fn marked `@step` answers a `Blob` *lazily*: its key is known at once, its bytes are made when read. | `const` settlement, `const` seats |
-| **A value can declare** | A folder is a `Set<T>` whose members are read as fields (`icons.close`). A spec is a *provider*: a `const` whose value also declares types beside it. | Declares annotations, `quote` |
+| a source is an input | `file("…")`, `dir("…")`, `url("…")` name bytes outside the program; each read is a compiler input with a content digest | `embed`, generalized and fixed |
+| a transform is a fn | `x \|> f(a)` is `f(x, a)`. `resize` takes a file, a folder, a picture or a set of pictures | generic traits (landed) |
+| heavy work runs native | a fn marked `@step` runs in its package's tool: a child process built once, handed only bytes | `avra build`; `@query`'s wrapper shape |
+| a folder is a set | `photos.hero` is a member read, settled at compile time | `const` settlement |
+| a spec declares | a `const` whose provider answers declarations beside it | Declares annotations |
 
-`|>` is application: `x |> f(a)` is `f(x, a)`. A pipeline is a fn.
+**What makes line 5 run exactly as written:** one typing rule that does not exist yet (§12, C8). Today it needs one more stage, `dir("./photos") |> pictures |> resize(…)`, and that form is PROBED to run (C.14).
 
-**What already exists (PROBED):** an annotation that mints a typed record from a list of names works today, in 0.14 s, with the right typo error (`no field 'clsoe' on 'IconsSet' — the fields are 'close', 'menu'`) and `avra expand` showing the generated code and the template line it came from. A compile-time-checked member lookup works today through `const` seats. The one thing an annotation cannot do is read a file: `this compile-time call cannot return build inputs`.
+**The order (§11):** the two infrastructure doors first (§1), because every law and every cost below stands on them. `|>` is an independent track.
 
-So this is mostly **opening one door (inputs) and persisting one family (settlements)**, not a new system.
+---
 
-## 1. What an author writes
+## 1. The infrastructure answer
+
+The owner asked: is there ONE general, lovely DB mechanism for a consumer like this? **No. There are two half-doors and five persistence paths. This section says what the one input door and the one persisted-fact door are, what each replaces, and where that agrees with the DB campaign.**
+
+### 1.1 What exists (opened first-hand)
+
+**Inputs — seven ways to read the outside:**
+
+| # | reader | where | tracked how |
+|---|---|---|---|
+| 1 | `Source` family: a `.av` file's text | `workspace.av:1123–1136`, via `host.read` | kernel input, `fp_str(text)` |
+| 2 | `Manifest` family: `avra.toml` | `packages.av:48–71` (READ(agent)) | kernel input |
+| 3 | `text_digest(path)` | `build.av:608` | read and hashed fresh, memoized per process; what `KeyParts` and kept lines compare |
+| 4 | `digest_of_binary` — the compiler, linked objects | `build.av:296–304, 598` | fresh; names the store root |
+| 5 | `current_listing_digest`, `current_file_digest` | `db.av:660–680` | hand witness of the durable `Decl` row |
+| 6 | `@input fn file_text`, `env_value` (N7, landed) | `inputs.av:21–31`, reading `@std.io` directly | relation input; one caller, none |
+| 7 | `embed` | `interp.av:845–859`: `avra_selfhost_read_file`, bypassing `Host` | pushed to `embeds`, then `touch(self.source(self.file_id(path)))` — a `FileId` minted in the SOURCE table (`workspace_analysis.av:576–581`) |
+
+**Persisted facts — five paths:**
+
+| # | path | key / witness | where |
+|---|---|---|---|
+| P1 | **the hold**: a file's record, object, warnings, asks | `KeyParts = { module, path, text, runs, seen }` — the file's text, "the digest of each text its compile-time runs read", each module it sees | `record.av:1092–1113` |
+| P2 | **named rows** through `Db.insert` (`Decl`, `Sig`, `Warn`, `Scan`, `Canon`, `Licenses`, `Findings`, `Answer`) | validity "in the caller's key", except `Decl`'s hand listing + file witness | `db.av:590–662` |
+| P3 | **`Db.answers`**: a `@query` answer under a file's `KeyParts` | built and tested; **no caller outside tests** (PROBED grep) | `answers.av:12–20` |
+| P4 | **kept settlements**: a const's verdict + a `#lines` row of `u`/`c`/`m`/`f`/`b` lines, each with its own "stands" check | hand-written per-run witness; unseated consts only (`ask.seats.is_empty()`) | `kept_settle.av:38–41, 137–179` |
+| P5 | **kept binary / check verdict / suite**: "path, length, digest of every input in the closure" | `build_inputs`: `.av` files, manifests, engine sources | `build.av:475`, `modules.av:275–289` |
+
+18 direct `Store.keep*` call sites (PROBED grep: 6 `Unit`, 4 `Warn`, 2 `Obj`, 1 `Bin`, 1 `Rows`, 4 multi-line). `Db.insert` (`db.av:593`) is one of them and the funnel for P2. Keys share `node_key` (`store.av:78`). What differs per site is the wire and the validity rule.
+
+**Never persisted:** `Lifted` and `Expanded` — every annotation and derive (READ `expand.av:93–116`). A seated settlement.
+
+**A correctness defect found on the way (PROBED, C.23):** `const TEXT: string = embed("x.txt")`, build, edit `x.txt`, build again → the binary still prints the old length. `avra run` prints the new one. It stays stale after an edit to the `.av` file too. Cause, READ: `build_inputs` lists no embedded file (P5), and a kept settlement has no line for one (P4). "A hold bug costs time, never a wrong answer" (COMPILER.md §2 law 6) does not hold for an embedded file today.
+
+### 1.2 Where the DB campaign already decided to go
+
+READ in `2026_09_26_COMPILER_DB_TOWNHALL.md`, `2026_09_21_COMPILER.md` and the tickets.
+
+| decision | text | this design |
+|---|---|---|
+| townhall §4.3 | "A durable row's witness covers everything it read, plus the producing compiler's digest." | follows |
+| §4.5 | "A witness is a list of (stable name, value hash). Never a dense id." | follows — it is the shape of door 2 |
+| §4.7 | "A row and its witness settle in one step." | follows; P4 breaks it today (two `store.keep` calls, `kept_settle.av:150–151`) |
+| §6.5a | "kernel grain cannot persist… The durable witness is the hold path's `KeyParts`… Kernel-grain deps stay in-process." Measured: 2.54 M keys, 51.6 M direct deps on one `check`. | follows: nothing here persists a kernel edge |
+| avra-8sb5.57.6 | CLOSED 2026-10-01; M3's flattened witness was a library, never wired, then deleted | v1 cited it as the door. **Wrong.** Removed. |
+| avra-8sb5.57.101.12 | OPEN, unowned: "write a cell's deps as (stable name, hash) into a durable row… validity is re-ask+compare" — for a COARSE thing (a module's view) | door 2 is that layer, for runs. Same ticket, or its sibling. |
+| N7 `@input` (avra-8sb5.57.15) | landed; its comment: "`Memo.input` reads the host ONCE per file per Workspace" | door 1 is `@input`, moved onto `Host` |
+| avra-8sb5.57.4.7 | CLOSED: `File`/`Module`/`Decl` relations armed through the kernel; a late write is REFUSED (`moved: !late`, `workspace.av:580`) | door 1 keeps inputs OUT of the `File` relation — that late write is `embed`'s compiler trap (C.5) |
+| COMPILER.md §2 | "A store is ONE compiler's." | follows for every row. Departs for raw bytes (§1.5). |
+| `build.av:275–294, 600–608` | a stamp-keyed digest shortcut was tried twice and removed: "A stamp match is a claim about the bytes, never the bytes" (avra-8sb5.57.25, .57.19) | follows. **v1 proposed an mtime fast path. Removed.** |
+| COMPILER.md §8 | "A resident compiler — no daemon; the owner's word." | follows (§8.4). v1's dev server contradicted it. Removed. |
+| avra-8sb5.57.12 (N3) | `Family` as a `collect enum`; landed for the language, "apply to Family/DbKind" remains | cited, not re-ticketed |
+
+### 1.3 Door 1 — ONE way an outside thing becomes an input
 
 ```avra
-use @std.source.{file, dir, each}
+// compiler/inputs.av — the only readers of the outside, all through Host
+export enum InputKind { Text, Bytes, Range, Listing, Pin, Tool, Target }
+/// What a read WAS: the kind, a stable name, and the digest of exactly what was read.
+export type Part = { kind: InputKind, name: string, hash: string }
+
+@input fn input_text(db: Db, at: Place) -> Text          // a .av file, avra.toml, a spec
+@input fn input_bytes(db: Db, at: Place) -> Bytes
+@input fn input_range(db: Db, at: Place, lo: int, hi: int) -> Bytes
+@input fn input_listing(db: Db, at: Place) -> List<Entry>   // names and kinds, recursive, sorted; no content
+@input fn input_pin(db: Db, address: string) -> Bytes       // from the lock, never the network
+@input fn input_tool(db: Db, name: string) -> string        // a binary's digest: the compiler, clang, wasm-opt
+@input fn input_target(db: Db) -> Target
+```
+
+| rule | why |
+|---|---|
+| A name is STABLE: `package-name:relative/path`, a URL, a tool's manifest name. Never absolute, never a `FileId`. | §4.5; two machines agree |
+| The hash is of exactly what was read. A header read is a `Range` part; the whole file is hashed only when the whole file is read. | a 10 GB video folder with 64-byte header reads hashes 64 bytes per file |
+| A listing's hash covers entry NAMES and KINDS only. Content rides each file's own part. | add a file → the listing moves; edit a file → only its part moves |
+| Read and hashed fresh in each process, memoized per process. No stamp shortcut. | the standing law (§1.2) |
+| Every read goes through `Host` (`read_bytes` and a typed `list` are NEW on it; `host.av:8` has only `read: fn(string) -> string`). | a memory host can serve a test; no second door |
+| Inputs are kernel cells of their own, created on first read. They are NOT rows of the `File` relation. | a first read of a new cell bumps no revision (`kernel.av:320–325`); a row minted late in `File` is refused |
+
+**Every compile-time run reports the parts it read** (today: `Settled.embeds`, a list of paths). The parts then go to exactly three places:
+1. in process: a kernel dep on each (as `touch` does today for an embed);
+2. the reading file's `KeyParts.runs`, which becomes `List<Part>` instead of text digests;
+3. the run's own kept witness (door 2).
+
+And `build_inputs` (P5) folds every part a kept record names — closing C.23.
+
+**What door 1 replaces:**
+
+| today | becomes |
+|---|---|
+| reader 7: `embed`'s `avra_selfhost_read_file`, `admit_embeds`' callee matched by the STRING `"embed"` (`whole.av:382` — PROBED: a user fn named `embed` is treated as one), the `FileId` mint, the two path bases | `input_text`; `embed(p)` is `file(p).text()` |
+| reader 2: the `Manifest` loader | `input_text(avra.toml)` |
+| reader 5 + kept settlements' `m` lines: two hand-hashed listings | `input_listing` |
+| reader 3: `text_digest` | `input_text(…).hash` — one memo |
+| reader 4, and the keys avra-8sb5.68/.69 say are missing (wasm-opt, the linker) | `input_tool` |
+| reader 6: `file_text` over `@std.io` | the same `@input`, over `Host` |
+| reader 1 | stays the `.av` reader; its loader calls `input_text` |
+
+Seven readers → one door with seven kinds.
+
+### 1.4 Door 2 — ONE way a derived fact is kept
+
+**A kept run.** It is P4, made general.
+
+```avra
+// compiler/kept.av — P4's verbs, one witness shape
+/// A run's stable name: what kind of run, where it is declared, what it was asked.
+export type RunName = { kind: RunKind, home: string, name: string, asked: string }
+export enum RunKind { Const, Seated, Lift, Model, Action, Answer, Verdict }
+
+impl Workspace {
+    /// The kept value, when every part of its witness still stands.
+    fn kept(run: RunName) -> Kept?
+    /// Value and witness in ONE commit — the store's `read` slot IS the witness.
+    fn keep(run: RunName, value: string, witness: List<Part>)
+}
+```
+
+| question | answer |
+|---|---|
+| keyed by | the run's stable name — declaring path, declaration name, the arguments' fingerprint. Never `const$<FileId>$<StmtId>`. |
+| witness | direct parts only: each input read (door 1), each unit entered (P4's `u` line), each const read with its verdict (`c`), the budgets (`b`) |
+| kept across runs | `Store.keep(family, key, bytes, read)` — the `read` edges slot exists and is passed `[]` by every caller but tests (`store.av:126–148`; townhall §6.1 says so). The witness goes there. One commit, as §4.7 asks. |
+| cut off | a re-run that answers the same verdict fingerprint leaves its readers' `c` lines standing (exists: `verdict_fp`, `kept_settle.av:319`) |
+| invalidated | re-ask each part's current hash; a missing part is a mismatch (§6.5a's rule) |
+| inspected | `avra cache why <run>` prints the part that moved — `PartMoved { part, was, now }` exists for file keys (`record.av:1366–1373`) |
+| the compiler's digest | the row lives in this compiler's store (`.avra-cache/<print>/`), so it is in every witness by position |
+
+**Why §6.5a's measurement does not apply.** That measured kernel grain: 2.54 M keys. A kept run is one row per compile-time RUN — hundreds in the compiler's own tree — with tens of direct parts. It is the grain `kept_settle.av` already persists.
+
+**What door 2 replaces:**
+
+| today | becomes |
+|---|---|
+| P4's `#lines` row and its five hand "stands" checks | the witness slot; one `stands` per `InputKind`/line kind |
+| nothing (a seated settlement is never kept) | `RunKind.Seated` |
+| nothing (`Lifted`/`Expanded` are memory only) | `RunKind.Lift` — a derive's answer survives the process AND an unrelated edit to its file |
+| P3 `Db.answers`, unarmed | `RunKind.Answer` — the same row, armed through this door |
+| P2 `Decl`'s hand listing + file witness (`still_valid`) | a witness of `Listing` + `Text` parts |
+| P5's input list | a `Verdict` run whose witness is the closure's parts — proposed; see question D4 |
+| — | new consumers: a provider's model (`Model`), a native step's result (`Action`) |
+
+**Count.** Today: P1–P5. After: **P1 (the hold, its `runs` typed) and the kept run.** P2's rows keep their wire; the ones with a witness carry it through this door. Two paths, not a sixth.
+
+Raw bytes are not a path of facts: §1.5.
+
+### 1.5 Bytes
+
+A made image is megabytes, and it is not a claim about the program. It is stored by the SHA-256 of its own content: `~/.avra/cache/bytes/<k2>/<sha256>`, written by staged rename (`staged_beside`/`published`, `build.av:251–259`). `AVRA_CACHE_DIR` moves it.
+
+- A content name carries no compiler's belief, so sharing it across compilers and worktrees departs from "a store is one compiler's" only in letter. The row that says *which* bytes an action made stays in the compiler's store.
+- A hit is verified by re-hashing on first use in a process.
+- `avra cache gc` keeps what any kept action row or `assets.json` under the machine's known trees names; a size cap evicts oldest-read first.
+- SHA-256 is NEW as a runtime row (only `avra_tls_hmac_sha256` exists — READ `std-tls/src/c/std_tls_mac.c:20`). The tree's own digest (`core/digest.av`) stays for keys; SHA-256 is for content, because a shipped name and an SRI value need it.
+
+### 1.6 Hostile cases
+
+| case | which key moves | what re-runs |
+|---|---|---|
+| add `new.svg` to `./icons` | `Listing(app:icons)`. `a.av` (holding `const icons`) carries it in `KeyParts.runs` → not held. Its kept run fails on that part → re-settled → new verdict. | `b.av` reading `icons.new`: its key follows `a`'s const exactly as it follows any cross-module const today (PROBED C.24: a body edit in `data.av` changes what `main` prints) |
+| edit `close.svg` | `Range`/`Bytes(app:icons/close.svg)` | only runs that read it |
+| append a comment to the anchor's file | the file's text → it is read, not held. Its `Lift` run is looked up by name; its witness names the provider's units, the arguments and `Text(app:petstore.yaml)` — all stand. | **nothing runs.** Today: 0.04 s → 0.25 s for 1,000 generated types (PROBED C.26) |
+| edit the provider's source | the `u` line of the unit entered | that provider's runs |
+| edit an embedded file | `Text(app:x.txt)` in `runs`, in the kept run, in the closure | the const, and the binary (today: neither — C.23) |
+| swap `WASM_OPT` | `Tool(wasm-opt)` | the wasm link (today: nothing — avra-8sb5.68) |
+| two processes at once | each writes a row by staged rename | last writer wins; both wrote the same bytes for the same witness |
+| a row with an old witness shape | the row's own header names its shape; a mismatch is a miss | re-run |
+| delete `./icons` | `Listing` is missing → mismatch, never "nothing to check" | refusal at the literal |
+
+### 1.7 Questions for the DB lead
+
+| # | question | my default |
+|---|---|---|
+| D1 | Is the kept run avra-8sb5.57.101.12's layer, or a sibling? It is per RUN, with direct parts. | the same ticket; `KeptLine` → typed parts is its first slice |
+| D2 | `@input` over the armed Db: is a first read of a NEW input cell a "late write"? (`moved: !late`.) Inputs must be creatable mid-query. | no — an input is a cell with no owning query and no relation read whole |
+| D3 | `KeyParts.runs: List<string>` → `List<Part>`: a wire change to every record. One compiler generation, or a bridge? | one generation: rows never cross a compiler (§6.6) |
+| D4 | May P5 (kept binary, check verdict) become a `Verdict` run, or does its fast path need to stay a flat list? | fold `build_inputs` now; the row shape later |
+| D5 | May `Lifted` be persisted as its crossed answer (`Node` trees are plain data), or does a held arena need it re-spliced each process? | persist the answer; re-splice |
+| D6 | Fresh hashing of big byte inputs every process: at ~1 GB/s (ASSUMED), 500 MB of reached photos is ~0.5 s per build. Acceptable, or is a stamp shortcut with a racy-file guard reopened for `Bytes` only? | follow the law; measure first |
+| D7 | Raw bytes in a machine-wide store outside `.avra-cache/<print>/`: acceptable? | yes — content-named, verified, no row |
+
+---
+
+## 2. What an author writes
+
+```avra
+use @std.source.{file, dir}
 ```
 
 **1. A folder of icons.**
 ```avra
 const icons = dir("./icons") |> vectors
-icon(icons.close, color: .red)          // icons.clsoe: compile error listing the members
+icon(icons.close, color: .red)
 ```
 
-**2. A photo pipeline.** A pipeline is a fn; a folder maps it with `each`.
+**2. Photos.** A transform takes one thing or a folder of them.
 ```avra
-fn thumb(p: Picture) -> Picture { p |> resize(width: 320) |> webp(quality: 80) }
-
-const photos = dir("./photos") |> pictures |> each(thumb)
-const hero   = file("./photos/hero.jpg") |> picture |> thumb
+const photos = dir("./photos") |> resize(width: 320) |> webp(quality: 80)
+const hero   = file("./photos/hero.jpg") |> resize(width: 320) |> webp(quality: 80)
 image(photos.hero, alt: "The harbour")
 ```
 
-**3. Per-target variants.** One value; the target picks.
+**3. A pipeline is a fn.** `each` runs any per-item fn.
 ```avra
-fn responsive(p: Picture) -> Picture {
-    p |> widths([320, 640, 1280]) |> formats([.Avif, .Webp])     // variants live INSIDE the Picture
-}
-const photos = dir("./photos") |> pictures |> each(responsive)
-const logo   = file("./logo.png") |> picture |> at(.Program)      // override: embedded on every target
+fn thumb(p: Picture) -> Picture { p |> resize(width: 320) |> webp(quality: 80) |> home(.Bundle) }
+const photos = dir("./photos") |> pictures |> each(thumb)
 ```
-Web gets hashed files and `srcset`; a CLI or server embeds; iOS gets a catalog entry (§9).
 
-**4. An OpenAPI client.**
+**4. Variants.** They live inside the picture; the target picks.
+```avra
+const photos = dir("./photos") |> widths([320, 640, 1280]) |> formats([.Avif, .Webp])
+```
+
+**5. An OpenAPI client.**
 ```avra
 const api = file("./petstore.yaml") |> openapi
-
-let pet = api.pets.get(id: 3)?          // Result<Pet, PetsGetError>
-fn show(p: Pet) -> string { p.name }    // `Pet` is declared by `api`
+let pet = api.pets.get(id: 3)?          // Result<ApiPet, ApiPetsGetError>
+fn show(p: ApiPet) -> string { p.name }
 ```
 
-**5. A manifest as typed config.**
+**6. A manifest as typed config.**
 ```avra
 const config = file("./app.toml") |> toml
-listen(config.server.port)              // int; `config.server.prot` is a compile error
+listen(config.server.port)              // int; config.server.prot is a compile error
 ```
 
-**6. SQL.**
+**7. SQL.** One anchor may read another.
 ```avra
 const db      = dir("./migrations") |> schema
 const queries = dir("./queries") |> sql(db)
-let rows = queries.active_users(conn, since: day)?   // List<ActiveUsersRow>
 ```
 
-**7. Message catalogs.**
+**8. Catalogs, fonts, shaders, tables, schemas, pages.**
 ```avra
 const messages = dir("./locales") |> catalogs(base: "en")
-text(messages.greeting(name: user.name))             // a key missing from fr.toml is an error AT fr.toml
+const inter    = file("./Inter.var.ttf") |> typeface
+const blur     = file("./blur.wgsl") |> wgsl
+const cities   = file("./cities.csv") |> csv
+const events   = file("./events.schema.json") |> json_schema
+const pages    = dir("./pages") |> markdown
 ```
 
-**8. A font.**
+**9. Environment — declared, never read at build.**
 ```avra
-const inter = file("./Inter.var.ttf") |> typeface
-const brand = default_theme with { face: { "body": .Bundled(inter) } }
+const env = file("./env.toml") |> environment      // names and types; no values
+let e = env.load()?                                 // reads the process at RUN time
 ```
+A compile-time run has no row that reads the environment (`Reach.World` is refused — PROBED C.3), so no build can bake a secret in.
 
-**9. A shader.**
+**10. External bytes.** Three cases (§9.1).
 ```avra
-const blur = file("./blur.wgsl") |> wgsl
-draw(blur, BlurUniforms { radius: 4.0 })             // uniforms typed from the shader
+const spec  = url("https://example.com/v3/openapi.json") |> openapi                 // fetched once, pinned, then local
+const intro = url("https://cdn.acme.dev/intro.mp4") |> video |> home(.Origin)       // facts known at build; the program fetches
+image(remote(https("img.acme.dev/u/42.jpg"), width: 96, height: 96), alt: user.name) // nothing known but what is written
 ```
-
-**10. CSV as a table.**
-```avra
-const cities = file("./cities.csv") |> csv
-[c.name for c in cities.rows if c.population > 1000000]
-```
-
-**11. JSON Schema / proto.**
-```avra
-const events = file("./events.schema.json") |> json_schema
-let e = OrderPlaced.from_json(body)?
-```
-
-**12. Docs pages.**
-```avra
-const pages = dir("./pages") |> markdown
-routes: [page_route(p) for p in pages.items]         // the whole set escapes: every page ships
-heading(pages.about.title)
-```
-
-**13. Environment, declared — never read at build.**
-```avra
-const env = file("./env.toml") |> environment        // the file holds NAMES and TYPES, no values
-let e = env.load()?                                   // reads the process at RUN time: Result<Env, EnvError>
-connect(e.database_url)
-```
-The build reads only `env.toml`. A compile-time run has no `env` row to call (§6), so no build can bake a secret in.
-
-**14. A pinned URL.**
-```avra
-const stripe = url("https://raw.githubusercontent.com/stripe/openapi/v1000/openapi/spec3.json") |> openapi
-```
-Fetched once, pinned by SHA-256 in `avra.lock`, never fetched by `check` or `build --frozen` (§6).
 
 ### What the reader sees
 
-**A typo.**
 ```
 error[type.unknown_member]: `icons` has no member `clsoe`
   ╭─[src/app.av:9:12]
 9 │ icon(icons.clsoe, color: .red)
   ·            ──┬──
-  ·              ╰── read here
-help: the members are `close`, `menu`, `arrow_left` — from ./icons (3 files)
+help: the members are `arrow_left`, `close`, `menu` — from ./icons (3 files)
 ```
-
-**An error in the spec points at the spec.**
 ```
 error[@std/openapi:ref]: `#/components/schemas/Pett` is not declared
    ╭─[petstore.yaml:41:19]
 41 │           $ref: '#/components/schemas/Pett'
-   ·                 ─────────────┬─────────────
-   ·                              ╰── named here
    ├─ through `const api`, src/store.av:3
-help: the schemas are `Pet`, `Order`, `Error`
+help: the schemas are `Error`, `Order`, `Pet`
+```
+```
+$ avra docs photos.hero --target web
+Picture 320×180 webp — app:photos/hero.jpg (2400×1350 jpeg, 412 KB)
+  steps   @std.image.resized → @std.image.webp_made      tool @std/image (built 0.7 s, kept) · 14 ms · kept
+  action  7c1e…                                           content b41d02aa… (17 KB)
+  home    .Bundle — 17 KB is over the 4 KiB line (target rule: web)
+  ships   build/web/assets/hero.b41d02aa.webp
+```
+`avra docs <name>` and `avra expand <file>` exist. `avra explain` does not (PROBED C.18), though CLAUDE.md documents it in three places. Every output above is a proposal for `avra docs`.
+
+Go-to-definition on `ApiPet` lands on `petstore.yaml:52`: the provider gives each declaration the place it came from (`Directive.at` exists, `meta.av:467`).
+
+---
+
+## 3. `|>`
+
+**The spec** (old tree `2026_04_18_FULL_SPEC.md` §28.7 — READ(agent)): "`x |> f` desugars to `f(x)`"; "`x |> f(y, z)` desugars to `f(x, y, z)`"; "Binds tighter than assignment, looser than arithmetic and comparison." Its examples start lines with `|>`; its own newline rule says continuation is a trailing operator.
+
+**Today:** PROBED `expected BREAK` (C.1). Unlexable: `two_char_of` has no arm for it (READ `grammar/lexer.av:525–549`).
+
+| question | decided | example |
+|---|---|---|
+| meaning | parse-time sugar into a `Call`, the left value first | `x \|> f(a, k: v)` is `f(x, a, k: v)` |
+| a stage | a callee name, optional arguments, optional trailing block, optional `?` | `x \|> parse(strict: true)?` is `parse(x, strict: true)?` |
+| not a stage | a method, a lambda, any other expression — refused, naming the fix | `x \|> .trim()` → "write `x.trim()`" |
+| precedence | tighter than comparison and `??`, looser than arithmetic and bitwise — between `coalescing` and `bitwise` on the ladder (`expr_spine/mod.av:54–60`). This DEPARTS from the spec's "looser than comparison", on purpose: a stage is a call, so the looser reading makes the rows below errors. | `a + b \|> f` is `f(a + b)` |
+| | | `x \|> f ?? d` is `f(x) ?? d` |
+| | | `xs \|> count > 3` is `count(xs) > 3` |
+| | | `a ?? b \|> f` is `a ?? f(b)` — parenthesize the left to pipe both |
+| `x \|> f + 1` | refused: "a stage is a call — write `(x \|> f) + 1`" | |
+| associativity | left | `x \|> f \|> g` is `g(f(x))` |
+| in a head (`if`, `while`, `match`) | a stage with a trailing block is parenthesized, as every call there is | CLAUDE.md "A TRAILING BLOCK IN A HEAD" |
+| in a table cell | not parsed (cells parse at `additive`, and `\|` separates columns). The table's refusal says: "bind the pipeline above the table". | |
+| lines | **a line may END in `\|>`.** No leading form. CLAUDE.md's law stands unchanged: "A CONTINUING OPERATOR TRAILS, IT NEVER LEADS". `\|>` joins `continuing_op` (`lexer.av:720`). | |
+| `_` placeholder | not now | |
+| `it` | unchanged — and `it` does NOT bind at a free fn's seat today (PROBED C.13: `each(s, it * 2)` → "`it` rides a METHOD call's arguments"). `xs \|> filter(it.valid)` therefore does not work until that lands. The channels design writes that form (`2026_10_05_CHANNELS.md:183`). | |
+| the formatter | a parse-owned mark on the `Call`, as `trailing` is (`core/store.av:271`). Like `trailing`, it restamps the node's fingerprint: the parsed value holds the mark, so its hash must (CLAUDE.md "AN EARLY-CUTOFF HASH MUST COVER THE WHOLE VALUE"). So `x \|> f` and `f(x)` type alike and fingerprint apart. | |
+| munching | safe. No valid program has `\|` directly before `>` (PROBED C.19). The `>>` law is about a closer; `\|>` closes nothing. | |
+| the channel send | settled: "`\|>` is plain application… a send is `orders.send(order)`" (READ `avra-channels-design` 3390b90, `CHANNELS.md:395`) | |
+
+```avra
+const photos = dir("./photos") |>
+    resize(width: 320) |>
+    webp(quality: 80)
 ```
 
-**Explain** (P7). `avra docs <name>` and `avra expand <file>` exist; `avra explain` does not (PROBED: `unknown command: explain`).
+---
+
+## 4. Semantics
+
+### 4.1 Sources and capabilities
+
+```avra
+export fn file(path: string) -> File      // a LITERAL
+export fn dir(path: string) -> Files      // a LITERAL; recursive
+export fn url(address: string) -> File    // a LITERAL; pinned in avra.lock
+
+export type File  = { package: string, rel: string, name: string, size: int }
+export type Files = { package: string, rel: string, names: List<string>, items: List<File> }
 ```
-$ avra docs api.pets.get
-fn get(id: int) -> Result<Pet, PetsGetError>      — declared by `const api` (src/store.av:3)
-  from      petstore.yaml:18   GET /pets/{id}   operationId getPetById
-  provider  @std/openapi 0.3.0 · model kept · 1 of 212 names materialized
+
+**A handle is a NAME, not a key to a lock.** PROBED C.25: any package can forge another package's exported record, with `with` or by reusing a private-typed field. Avra has no opaque type (ROADMAP.md:1796: "`opaque type Db` is F0100"). So authority cannot ride the value. It rides the DECLARATION:
+
+> A compile-time run may read exactly what the source literals **in the declaration it is settling** name — and what the consts it reads were granted. Every read is checked by the compiler against that grant set.
+
+| case | decided |
+|---|---|
+| a forged `File { package: "app", rel: "secrets/key" }` inside a library fn | refused at the read: no literal in the settling declaration covers it |
+| `file("/etc/hosts")`, `file("../../x")` | refused at the literal: a path is relative, normalized, inside the package of the file that spells it (today `embed("/etc/hosts")` answers 256 — C.2) |
+| a path literal inside a `quote` a dependency splices into the app | its root is the package of the file that WROTE the quote — the dependency's. Same law as spans (CLAUDE.md "A COPIED TEMPLATE'S SPANS ARE ITS ORIGIN FILE'S"). |
+| the app hands `dir("./assets")` to a library fn | the library may read under `app:assets/`, nothing else |
+| `File.package`, `File.rel` | the package's NAME and a `/`-separated relative path. Never absolute: a handle is fingerprinted into keys. |
+| a symlink, as the literal or as an entry | refused at the literal, naming it. A build must not depend on where a link points. |
+| nested folders | `dir` lists recursively; `items` holds direct files; `d.sub("guide")` is the sub-folder, from the listing already read |
+| `.DS_Store`, `.gitkeep` | names starting with `.` are never listed |
+| `a.svg~`, `Thumbs.db` | listed. A reader filters by kind (`files(ext: "svg")`); a reader that meets a file it cannot read refuses, naming it |
+| the literal's case differs from the entry's (`./Icons` for `icons/`) | refused, on every host: the literal is compared to the listed name, so a case-folding disk cannot pass what Linux fails |
+| the callee | recognized by what the file IMPORTS (`use @std.source.{file}`), never by the string of its name |
+
+When opaque types land, `File` should become one; the check stays.
+
+### 4.2 Reading, and native steps
+
+```avra
+f.text()   f.bytes()   f.head(n)     // each a `Reach.Source` row; each reports the Part it read
+f.loc(offset)                        // a Loc inside the file, for diagnostics
+```
+
+`@step` marks a fn that runs in its package's **tool** (§7). It is an ordinary Declares annotation with `wraps: true` — the shape `@query` has (READ `std-relation/src/query.av:47–62`). The written body moves to a private sibling; the written name becomes a wrapper:
+
+| the step answers | the wrapper | when the body runs |
+|---|---|---|
+| `Blob` | answers `Blob.Pending(action)` — a recipe, as data. Runs nothing. | when the build ships it, or another step reads it |
+| a value (a model, facts) | asks the compiler to run the tool and decodes the answer | now — `check` needs it |
+
+### 4.3 Blobs: an action and a content
+
+```avra
+export enum Blob {
+    /// Bytes that exist: their SHA-256 and length.
+    Made(content: string, size: int)
+    /// Bytes someone can make: the action that makes them.
+    Pending(action: Action)
+}
+export type Action = { step: string, args: Bytes, inputs: List<Blob> }
+```
+
+| | action key | content digest |
+|---|---|---|
+| is | digest of (compiler digest, the tool's source closure, the step's stable name, the arguments, each input's content digest, the target if read) | SHA-256 of the bytes |
+| known | before anything runs | after the bytes exist |
+| names | the kept `Action` run (door 2): action key → content digest + size | the bytes in the store; **the shipped file; the SRI value** |
+| moves when | the compiler, the tool, an argument or an input moves | the bytes move |
+
+- A compiler upgrade moves every action key and re-runs every step once ("Adopting a compiler costs one cold build" — COMPILER.md §2). It does NOT rename a shipped file whose bytes came out the same.
+- The shipped name is needed only by `build`, when the bytes exist. `check` ships nothing.
+- A remote cache answers two questions. Bytes by content digest are verified on arrival. An action row from someone else is believed, not verified — that is trust in who may write the cache, and the doc says so (§8.5).
+- "Two machines, same names" holds exactly when they make the same bytes. A native codec built by two different C compilers may not; the receipt shows the digest either way.
+
+### 4.4 Sets and members
+
+Sets are **strict, nominal records**: `Files`, `Pictures`, `Vectors`. Each is `{ names, items, … }` and declares one ordinary method:
+
+```avra
+impl Pictures { fn member(name: string) -> Picture? { … } }
+```
+
+> `c.name`, where `c` is a top-level `const` (or a member of one) whose type has no field `name` and has `member`, is the expression `c.member("name")` **settled at compile time**. Absent → `type.unknown_member` at the read, listing `c.names`.
+
+- The mechanism is "settle this expression", which lowering already does for a component's `check()` (READ `features/components/lower.av:66–71`, `SettleRoot.Expr`).
+- PROBED C.27: `const menu: Icon? = icons.member("menu")` over a generic `Set<T>` with an ordinary method settles in 0.04 s; a wrong name settles to `null`. No `const` seat, no `const self`, no generic unit — the three things v1 leaned on and probes refused (C.8b, C.8c).
+- A name that is no identifier: `c.member("2fa")` with a literal. One hatch.
+- `x.name` where `x` is not a const (a `Pictures` parameter): refused — "a member is read from a `const`; pass the member, or walk `x.items`".
+- Reserved by the contract: the fields `names` and `items`. A file whose member name is one of them is read `c.member("items")`, and the reader warns at the literal. Methods do not collide: a method without `()` is already a refused property read.
+
+**What is lazy, truthfully:**
+
+| | whole set | per reached member |
+|---|---|---|
+| the listing (names) | one read | — |
+| facts (size, format, a view box) | planned once, in ONE native step over the folder, kept | — |
+| a transform's plan (new size, a `Pending` action) | arithmetic per item in the evaluator | — |
+| **bytes read in full, made, shipped** | — | **only these** |
+
+PROBED cost of the strict plan: 2,000 items built, mapped by a transform and one member read — **0.06 s, inside the default 600,000-step budget** (C.28). The same 2,000 with a 400-iteration fn per item blows the budget (C.29) — that work belongs in a `@step`. OS cost of listing and reading 512 bytes of 2,000 files: 32 ms (C.30, Python).
+
+v1's "2,000 icons, 3 used → 3 planned" was false. The true law is L5 (§5).
+
+### 4.5 One transform, four inputs
+
+```avra
+// @std/image
+export trait Shots<Out> { fn shot(f: fn(Picture) -> Picture) -> Out }
+impl Shots<Picture>  for File     { … }      // decode the header, then f
+impl Shots<Pictures> for Files    { … }
+impl Shots<Picture>  for Picture  { … }
+impl Shots<Pictures> for Pictures { … }
+
+export fn resize<Out, S: Shots<Out>>(s: S, width: int) -> Out { s.shot((p: Picture) -> resized_to(p, width)) }
+```
+- Generic traits parse and dispatch today. `Out` is not inferred from the bound: PROBED C.31 "`O` is not pinned by the arguments". **That one rule — a bound with exactly one fitting impl pins its argument — is what the sketch as written needs** (C8).
+- Without it, today: `fn resize<P: Each>(p: P, width: int) -> P` over `Picture` and `Pictures` runs (C.14), and a folder says its kind once: `dir("./photos") |> pictures |> resize(…)`.
+- Fan-out stays inside the item (`widths`, `formats` fill `Picture.variants`). Fan-in is a fn from a set (`sprite(icons) -> Sheet`). `each(f)` maps any per-item fn; `kept { … }` filters.
+- Order: a set is in name-byte order and that is the only order that reaches output.
+
+### 4.6 Providers
+
+> A top-level `const` whose initializer is `SOURCE |> provider(args)` — the callee's declared answer is `Provided` — is an **anchor**. The provider runs as a Declares annotation over that const: what it `made` is declared beside the const, and its `value` becomes the const's initializer.
+
+```avra
+// @std/meta — NEW
+export type Provided = { value: Code, made: List<Decls>, problems: List<Diagnostic> = [] }
+```
+
+| question | decided | stands on |
+|---|---|---|
+| how resolve knows, before typing | prefilter at the parse: a top-level const whose initializer's head is a source literal (the callee an import from `@std.source`). Then the LAST stage's callee is looked up in what the file sees and its signature's answer is asked — exactly how an annotation's fn is found today | READ `workspace.av:1577` (`has_declares`), `expand.av:107` (`declared_work(f, d, p, vis)`, `w.ret`) |
+| what the initializer may hold | one source literal, one provider call, literal arguments, and the NAMES of other anchors. No stage between the source and the provider — compose inside the provider. | today's law: arguments are source-spelled or a declaration's name (READ `expand.av:125–129`) |
+| an anchor argument (`sql(db)`) | crosses as that anchor's kept model. Asking it is a kept-run lookup, so order in the file does not matter. | door 2 |
+| a cycle between anchors | the kernel's cycle answer, spoken as `const.cycle` naming both | exists for consts |
+| when it runs | inside the resolve it serves, WHOLE, before any table is sized. Eager. | READ `workspace.av:1512–1518` "THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED" |
+| kept | the provider's answer is a `Lift` run, kept by content (door 2). A comment edit re-splices; it does not re-run. | §1.6 |
+| names | **under the anchor**: `api` declares `ApiPet`, `ApiOrder`, `ApiPetsGetError`; `config` declares `Config`, `ConfigServer`. A spec that adds a schema named `Error` adds `ApiError`. It cannot clash with a name nobody prefixed. | Q2 asks about spelling it `api.Pet` |
+| a clash anyway (a written `ApiPet`) | `annotation.generated_taken` at the anchor (exists), naming the spec line | |
+| traits on a provided type | the provider writes `@json` / `@derive(…)` in its template — which is silently DROPPED today (PROBED C.16). Fixing that is in C7. | |
+| export | follows the anchor | `generated_export`, `modules.av:378` (READ(agent)) |
+
+**Eager, with the costs on the table (PROBED C.26):**
+
+| generated | `check` | peak |
+|---|---|---|
+| 200 record types | 0.16 s | 60 MB |
+| 1,000 record types | 0.24 s | 120 MB (~75 KB per declaration) |
+| 1,000 types + 1,000 fns (reviewer's probe) | 0.78 s | 282 MB (~140 KB each) |
+| 4,000 | refused: the 5 MiB lifted budget | — |
+
+- **75–140 KB of compiler memory per generated declaration is an infrastructure smell**, whoever generates them: `@relation` and `@json` pay it too. Proposed ticket (§12, I3).
+- So a 5,000-endpoint spec does not expand whole in v1. The provider takes what to declare: `openapi(only: ["pets", "store"])`. That is honest, source-spelled, and what generators in other ecosystems offer.
+- **Per-name materialization is CUT from this design.** It contradicts the arena invariant above; nothing per-name exists (`generated_named` expands the file whole — READ `workspace.av:1557`). Revisit after I3, with a measurement.
+
+### 4.7 Which one do I write?
+
+| the data is | write | generates |
+|---|---|---|
+| many things of one kind | a reader `fn (Files) -> Pictures` | nothing |
+| one thing | a reader `fn (File) -> Typeface` | nothing |
+| a shape the data decides (config, spec, schema, columns, keys) | a provider | types and fns |
+
+---
+
+## 5. Laws
+
+| # | law | hostile case |
+|---|---|---|
+| L1 | **Reads are granted by the declaration.** A run reads what its declaration's source literals name; a literal stays in its own package. | a forged handle; `file("/etc/hosts")`; a spliced template's literal; a symlink — §4.1 |
+| L2 | **No world.** No env, clock, network, process at build. | `@std.io.env` in a const → `const.reach` naming the chain (exists, C.3) |
+| L3 | **A witness is what was read**, by stable name and content digest. Never a stamp, an ordinal, an absolute path. | touch a file → nothing; reorder declarations → nothing; add a file → the listing; C.23's embed edit → the binary |
+| L4 | **A shipped name is the content's digest.** The action key names the cache row, never a file. | a compiler upgrade: steps re-run, names stand unless bytes moved |
+| L5 | **Facts are planned for the set; bytes are made per reached member.** | 2,000 icons, 3 used: 2,000 headers read once (one step, kept), 3 files read in full and shipped |
+| L6 | **`check` makes what a type or a diagnostic needs; `build` makes what ships.** A value that depends on made bytes (`trimmed(p).width`) forces that step under `check`. A `Blob` nothing reads is never made by `check`. | a broken encoder: `check` clean while nothing reads its output's facts; `build` refuses at the file, through the member, at the reading site |
+| L7 | **Errors point home**: into the data, then name the anchor. | a bad `$ref` → `petstore.yaml:41` (needs C7: today an unknown file renders a window of the FIRST source — READ(agent) `diagnostics/render.av:154`) |
+| L8 | **No name by run-time text.** A member is a literal. | `icons.member(user_input)` → refused: the argument does not settle |
+| L9 | **Order is the name's.** | a host listing in inode order → same output |
+| L10 | **Whether `a.bytes()` compiles depends on the DECLARED home**, never on a made size. | a logo grows past the line: delivery may move (web) or refuse (CLI); no program's legality changes |
+| L11 | **No silent drop.** | `@derive` in a provider template (dropped today — C.16) |
+| L12 | **Every provided name and shipped file answers "where from".** | `avra docs ApiPet`, `avra expand`, `assets.json` |
+
+### 5.1 The empty case, first
+
+| encoding | empty | decided |
+|---|---|---|
+| a folder with no entries | `names: [], items: []` | legal, silent. A MISSING folder is an error at the literal (git carries no empty folder). |
+| a 0-byte file | `size: 0`; `text()` is `""`, present | legal for `file`. `resize` refuses "0 bytes is no picture" at the file. |
+| `Blob.Made("e3b0c4…", 0)` | bytes that exist and are empty | distinct from `Pending` by VARIANT, not by a nullable (v1 used `size: int?`) |
+| a step that answers 0 bytes | kept as made | never re-run as "missing" |
+| a provider that declares nothing | `made: []` | legal, silent |
+| a listing's hash | digest of (count, then per entry: name digest, kind) | ARITY: `["ab","c"]` and `["a","bc"]` differ. Names and kinds only (§1.3). |
+| an action key | digest of (…, count, each argument's digest, count, each input's digest) | two counted runs, never spliced |
+| a witness with no parts | a run that read nothing | stands always — a pure const |
+| a `Range(lo, lo)` | an empty read | a part whose hash is the empty digest; still names the file, so deleting it is a mismatch |
+
+### 5.2 Names
+
+| case | decided |
+|---|---|
+| a path that is also a glob (`dir("./icons/*.svg")`) | split the verb: `dir` takes a folder; `*`, `?`, `[` are refused with the fix. Filtering is a typed seat: `files(ext: "svg")`. |
+| `icon-close.svg` | member `icon_close` (`-`, space, `.` read as `_`) |
+| `2fa.svg`, `type.svg`, `café.svg` | no identifier (PROBED C.17: digit-led is a parse error, `type` is `resolve.reserved`, non-ASCII is `lex.error`). Read `icons.member("2fa")`. One hatch for all three. |
+| `hero@2x.png` | `@` is not mapped; the core lists it under its raw stem. `@std/image` claims `@2x`/`@3x` as a density of `hero`. |
+| `Close.svg` and `close.svg` | refused naming both |
+| `logo.svg` and `logo.png`; `a-b.svg` and `a_b.svg` | one member, two files: refused naming both; `files(ext:)` picks |
+| `names.svg`, `items.svg` | §4.4 |
+| two names equal under Unicode normalization | non-ASCII names are compared by the bytes the host lists. A build on two hosts that normalize differently differs — stated, not solved; the listing digest in the receipt shows it. |
+
+---
+
+## 6. Safety
+
+| what runs | where | can reach | by |
+|---|---|---|---|
+| glue: a pipeline's plan, a member read, model → declarations | the evaluator, in the compiler | what its declaration was granted | `Reach` (exists), budgets (exist) |
+| a `@step` written in Avra | the tool, a child process | the bytes the compiler sends it | the same `Reach` check when the tool is BUILT (no world row is linked in reach of a step), and the process boundary |
+| a `@step` that calls package C | the tool | the bytes it is sent — plus whatever its C does that the OS does not stop | the process boundary; the OS sandbox where one is real (§7.3) |
+
+- **No grant line.** Depending on a package with C already means running its C in your program. Running it at build, in a child that holds two pipes, is the weaker trust. One refusal for strict builds: `[build] native = false` in the ROOT manifest refuses any tool that links C, naming it.
+- **External tools (ffmpeg): no.** Unpinned, different per machine. The hatch, unbuilt until needed: a `[process.tools]` row (exists, `cli/avra.toml:8`) with a pinned digest, read through `input_tool`.
+- **Budgets.** The evaluator's glue keeps the root's `[lifted]` budget (only the root raises it — READ(agent) `packages.av:74–78`). A step has no step count: it has wall-clock and memory limits (§7.3). So a heavy third-party provider needs no budget line in every app — its heavy half is a step.
+
+**URLs and the lock.**
+```toml
+# avra.lock — written by `avra lock`; committed
+[[source]]
+url    = "https://example.com/v3/openapi.json"
+sha256 = "9f2c…"
+size   = 5310022
+```
+`avra lock` fetches what the sources spell and the lock lacks. `avra lock --update <url>` re-fetches and shows the change. `check` and `build` never touch the network: a miss says "run `avra lock`". `--frozen` refuses a lock that would change. Bytes live in the content store (§1.5).
+
+---
+
+## 7. Native steps
+
+### 7.1 The numbers
+
+| | evaluator | native | ratio |
+|---|---|---|---|
+| a loop iteration (`t = t + i % 7`) | 2.4 µs (C.11) | — | — |
+| `@std/json`: parse + print | 19 KB in 0.48 s ≈ **40 KB/s** (C.12) | 5.47 MB in 0.27 s user ≈ **20 MB/s** (C.32) | **~500×** |
+| build the native program | — | **0.68 s** cold, 0.05 s warm (C.32) | |
+| start a process | — | **2.9 ms** (200 runs in 0.57 s, C.33) | |
+| a 5 MB spec, cold | ~2 minutes | 0.7 s build + 0.3 s | |
+| a 12 MP image | hours | the codec's speed | |
+
+### 7.2 The decision: a step's package is compiled for the host and run as a child
+
+**Chosen over "fix the evaluator to 20×".** No profile stands behind 20×. At 20× JSON is still 25× slower than native, and pixels still need C — which, called from the evaluator, would run INSIDE the compiler with no boundary at all. P4 outranks minimalism.
+
+| | how |
+|---|---|
+| the tool | the package's `@step` fns behind one generated entry: read a request, run the step, write the answer. Collected the way `rules` are (READ `compiler/rules_table.av:102`: `collect rules: List<RuleEntry> = rule in closure as RuleEntry { … run: it.run … }`). |
+| built by | a child `avra build` of that entry, for the HOST. Kept like any binary (warm: 0.05 s). Never a nested derivation inside the user's resolve. |
+| built when | the first time a step of that package must RUN. A package whose steps only ever answer `Pending` under `check` builds no tool. |
+| keyed | the tool is a `Tool` input: its source closure's digest and the compiler's |
+| the call | one process, two pipes. The compiler writes requests; the tool writes answers. |
+| reads | **the tool holds no file descriptor but its pipes.** A read is a message — "bytes of `app:photos/hero.jpg`, 0..64" — that the compiler checks against the grant (L1), answers, and records as a `Part`. The witness is the compiler's own, so a tool cannot under-report it. |
+| answers | a value in the settled wire (`settlement_wire.av`, "S2", exists compiler-side; the tool side needs a derived codec — NEW std code), or bytes, stored by content |
+| batching | one process, many requests. That is all batching is: the 2.9 ms start and the codec's setup are paid once per tool per build. No batch API. **`@batched` is CUT** — v1's example could not batch (its `height` differed per photo). |
+| parallel | N processes of the same tool, each fed from one queue of pending actions. The compiler stays single-threaded; it only writes and reads pipes. N defaults to half the cores, at most 8. |
+| cross-compilation | tools build for the HOST. An action's answer is per TARGET only where the step read `target()`. |
+| pending inputs | the compiler makes an action's inputs first, then sends bytes. A tool never calls a tool. |
+
+**What stays in the evaluator:** the pipeline's plan (arithmetic and `Pending` records), `each` over a few thousand items (C.28), a member read, a provider's model → templates. Small, pure, no bytes.
+
+**Deleted from v1:** "the build re-executes itself as N workers (the hand-off `cli/src/stage.av` already does)". It is one `execv` (READ(agent) `commands/shared.av:324`). No fan-out exists to reuse; the one above is new.
+
+### 7.3 What is real about the sandbox
+
+| limit | macOS | Linux | status |
+|---|---|---|---|
+| no ambient file, env or network **for Avra code** | `Reach` at tool build: no world row in a step's reach | same | real, by the compiler (exists for settlements) |
+| only two pipes; every read is a checked message | yes | yes | real, ours to write |
+| wall-clock limit | the parent kills | the parent kills | real, ours to write |
+| memory ceiling | the parent polls and kills (what `tools/watch.sh` does). `setrlimit` on address space is not enforced (ASSUMED). | `RLIMIT_AS` (ASSUMED) | macOS: a poll, not a wall. Nothing exists today: PROBED C.34, no `setrlimit` in `runtime/` or any package C. |
+| **package C** opening a file or a socket | a pure-computation sandbox profile at tool start (ASSUMED available; deprecated API) | a seccomp filter at tool start (ASSUMED) | **convention only until built.** State it: until then a tool's C can reach what the user can. |
+
+So: "sandboxed by default" is true for Avra steps today's way, and for C only when the last row lands. The doc claims no more.
+
+---
+
+## 8. Performance
+
+### 8.1 The cost model
+
+| phase | cold | nothing changed | one photo edited |
+|---|---|---|---|
+| read and hash inputs | each part read: ranges for facts, whole files for what ships | the same reads, fresh (the law, §1.2). 500 MB of reached photos ≈ 0.5 s at ~1 GB/s (ASSUMED; D6). | the same |
+| listings | one per `dir` | the same | the same |
+| plan a set | one facts step (native) + glue: 2,000 items ≈ 32 ms of reads (C.30) + 0.06 s (C.28) | 0: the const is a kept run | the facts step re-reads one range; glue re-runs (0.06 s) |
+| a provider | tool build 0.7 s once per compiler; parse at ~20 MB/s; splice ~0.2 ms and ~75 KB per declaration (C.26) | 0 runs; re-splice only if its file was read | 0 |
+| make (build only) | each reached action, N tools in parallel | 0: kept actions | that photo's actions |
+| emit | write each reached file | skipped when the output holds the name | 1 file |
+
+Every "0" in the middle columns is door 2. Without it each is the cold number, per process (PROBED C.26: 0.04 s → 0.25 s on a comment).
+
+### 8.2 Memory
+Blob bytes never enter the kernel: values hold a 32-byte digest or a recipe. A tool's memory is its own process's. A 4 MB text const today is static data in the binary (C.10: `check` 0.27 s, 66 MB); with blobs it is a handle unless `home(.Program)`.
+
+### 8.3 Reachability
+avra-8sb5.76 (compile only what is reached) and L5 are the same demand at two grains.
+
+### 8.4 `avra dev`
+**No resident compiler.** The dev loop is: a file event → a one-shot `avra build` → the running app reloads. The build is fast because of door 2 and kept actions, not because anything stays alive. v1's "the dev server forces a blob on first request" put the compiler in a long-lived process, against COMPILER.md §8. Removed. (`avra dev` lives on branches `ui-dev` and `os-watch`, not in this tree; whether it already works this way is not READ.)
+
+### 8.5 A remote cache
+One hook, later: `[build] cache = "https://…"`, asked on a local miss. Bytes are verified by content. Action rows are believed — so the cache is written only by builders you trust. Nothing else in the design changes when it lands.
+
+---
+
+## 9. Outputs and targets
+
+### 9.1 Local or external — who has the bytes
+
+| the bytes are | spelled | the build | the program at run time | needs |
+|---|---|---|---|---|
+| **local** | `file`, `dir` | reads them | has them, at its home | — |
+| **pinned external** | `url(…)` | fetches once; pinned; then local | has them, at its home | `url` + the lock |
+| **external, facts known at build** | `url(…) \|> video \|> home(.Origin)` | fetches once to learn size, format, dimensions, SHA-256; ships nothing | fetches from the origin; verifies the digest (SRI on web) | `url` + the lock |
+| **remote** | `remote(https("…"), width: 96, height: 96)` | reads nothing | fetches; the author wrote the facts; no digest | only artifacts (§11 slice 5) |
+
+The owner's "external asset with typed facts known at build" is row three. **It cannot land before `url` and the lock.** Until then only row four exists, with hand-typed facts. Q6.
+
+### 9.2 Where a local asset lives
+
+```avra
+export enum Home { Inline, Program, Bundle, Cdn(origin: string), Origin }
+```
+
+| home | the build writes | the program holds |
+|---|---|---|
+| `.Inline` | nothing | the content in what draws it |
+| `.Program` | static data in the binary or the wasm module | name, size, the bytes |
+| `.Bundle` | `build/<target>/assets/<stem>.<content8>.<ext>` | name, size |
+| `.Cdn(o)` | the file, for `avra deploy` | name, size, origin |
+
+**Two separate things:**
+
+1. **The declared home** — written with `home(…)` or `[assets]`. Known at `check`. `a.bytes()` compiles **only** when the declared home is `.Program`. (L10.)
+2. **Delivery**, when nothing was declared — the build's choice, by made size and target. It decides how `image(…)` and `icon(…)` reach the bytes. It never makes `a.bytes()` legal or illegal.
+
+**The delivery rule:**
+
+| target | under the line | over the line | the line |
+|---|---|---|---|
+| web | in the module (a vector may be inlined in markup) | a hashed file | 4 KiB per asset, 64 KiB per module |
+| CLI, TUI, server | in the binary | **the build stops**: "`hero` is 1.4 MiB — say `home(.Bundle)` or `home(.Program)`" | 1 MiB |
+| iOS, Android | the bundle, always | — | — |
+
+- **Who leaves when the module total is exceeded:** candidates sorted by size ascending, then name; admitted while the total fits; the rest are files. Deterministic, and in the receipt.
+- On web a crossing moves an asset and the build prints it. On CLI/server it stops the build: that changes what must be deployed.
+
+**One override, three scopes:**
+```avra
+const logo = file("./logo.png") |> home(.Program)                             // per asset
+fn thumb(p: Picture) -> Picture { p |> resize(width: 320) |> home(.Bundle) }  // per pipeline
+```
+```toml
+[assets]            # per project — the ROOT avra.toml
+inline_under = 4096
+[assets.web]
+home = "bundle"
+```
+Precedence: the asset's own `home` (last wins) → `[assets.<target>]` → `[assets]` → the delivery rule.
+
+### 9.3 The web case, both ways
+
+```
+$ avra docs icons.close --target web
+Vector 24×24 — app:icons/close.svg (612 B)
+  home      none declared → delivery: in app.wasm (612 B < 4 KiB; module assets 1.8 of 64 KiB)
+  requests  0
 
 $ avra docs photos.hero --target web
-Picture 320×180 webp — ./photos/hero.jpg (2400×1350 jpeg, 412 KB)
-  steps     resized(…, 320, 180) → webp(…, 80)      made 14 ms · kept
-  ships     hero.9c1f2ab0.webp 17 KB  at .Bundle
-  reached   src/app.av:14
+Picture 320×180 webp — app:photos/hero.jpg
+  home      none declared → delivery: build/web/assets/hero.b41d02aa.webp (17 KB > 4 KiB)
+  requests  1, lazy; size known at build
+
+$ avra docs photos.hero --target web          # after `[assets.web] home = "program"`
+  home      .Program — declared by [assets.web], avra.toml:14
+  ships     inside app.wasm (+17 KB)
 ```
 
-**Go to definition** of `Pet` lands on `petstore.yaml:52` (the provider names where each declaration came from); `avra expand src/store.av` prints the record it became, as it does today for a derive.
+### 9.4 Reconciled with `2026_10_05_UI_ASSETS.md`
 
-## 2. Writing one
+| that design | here |
+|---|---|
+| `asset art = "art" { hero { dark: "…" } }` | replaced by `const` + pipeline; a variant is an argument |
+| kind sniffed from bytes; `trait Asset` collected program-wide | the reader is named in the pipeline; a mixed folder is a provider |
+| laws 3, 5, 8, 10, 14, 15, 17 | kept (L8, L1, facts in the value, L5, library, library, L6) |
+| law 9: "A file's public name is its KEY (source bytes ⊕ recipe ⊕ codec version)" | **changed**: the public name is the CONTENT digest (§4.3). That design rejected "public names from output bytes — unknown until an encoder ran"; but only `build` ships, and `build` has the bytes. |
+| `at <home>` | `home(…)`, a fn |
+| receipt, `explain`, homes, `remote` | kept |
+| fonts: subsetting, shaping | untouched |
 
-### 2.1 A reader, 14 lines — a folder of icons
+`2026_10_05_UI_ARCHITECTURE.md`: `src` carries a `Url` (READ(agent) :161–171); a `Picture` projects to a `Url.Local` on web.
 
+---
+
+## 10. The same mechanism, other consumers
+
+| consumer | today | fits |
+|---|---|---|
+| `embed` | reader 7 | door 1; it shrinks to `file(p).text()` and its four defects go (C.2, C.5, C.9, C.23) |
+| every derive and annotation (`@json`, `@model`, `@relation`, `@form`, `@derive(View)`) | re-run per process, and per edit of their file | door 2, as `Lift` runs. The compiler's own tree is the first beneficiary. |
+| `@query` answers | `Db.answers`, unarmed | door 2, as `Answer` runs |
+| the `Decl` row behind `avra docs` | hand listing + file witness | door 2 |
+| wasm-opt and linker identity (avra-8sb5.68, .69) | no key | door 1, `Tool` |
+| `wire.gen.js`, `avra_rt.h` (generate, check in, `cmp`) | make targets | an outbound artifact: `placed(blob(host_table().bytes()), …)`. Needs slice 5 only. |
+| `features/rt.av` from `rt_sigs()` | the same loop | should NOT fit: it is the compiler's own source; generating it at compile time is a bootstrap cycle |
+| sublanguages | parse-time | should not fit: syntax, not data |
+| `@std/openapi` | emits a spec from routes at run time | the reader is a new provider beside it |
+| the docs `site` | string literals | example 8 |
+
+---
+
+## 11. Build order
+
+| # | slice | usable at the end | needs |
+|---|---|---|---|
+| **1** | **door 1** (with the DB lead): typed parts, `Host.read_bytes` and a typed listing, `@input` over `Host`, `KeyParts.runs` typed, `build_inputs` folds them, the SHA-256 row; `embed` on top; grants | `embed` correct (C.2, C.5, C.9, C.23 closed); `const cfg = parse_toml(file("./app.toml").text())`; wasm-opt keyed | D2, D3 |
+| **2** | **door 2** (with the DB lead): the kept run; `Seated`, `Lift`, `Answer` on it; one-commit witness | a comment edit re-runs no derive (receipt: C.26's 0.25 s → the 0.04 s floor); the compiler's own cold `check` stops re-running every derive | D1, D4, D5 |
+| 3 | members; `Files`; a reader's set | `icons.close` over a real folder — names and facts, no bytes | 1 |
+| 4 | provider anchors, eager and kept; diagnostics into a non-`.av` input; annotations inside generated code; `toml`, `csv`, `environment`, `json_schema` | typed config, tables, env | 1, 2 |
+| 5 | the content store; artifacts; homes; `target()`; `remote(…)`; web, html, tui, headless | `icon(icons.close)` ships; `assets.json`; `wire.gen.js` as an artifact | 1, 3 |
+| 6 | tools: `@step`, the protocol, the tool build, actions as kept runs, N processes; `@std/image` | the photo pipeline; a real spec parsed in under a second | 2, 5 |
+| 7 | the bound rule (C8) | the sketch as written | — |
+| 8 | `url`, `avra.lock`, `avra lock` | pinned specs; external-with-facts (§9.1 row 3) | 5 |
+| 9 | the C sandbox per OS; the remote cache hook; iOS/Android delivery | | 6 |
+| — | **independent track:** `\|>` (C1) | pipelines everywhere | — |
+| — | **deferred:** per-name provider laziness | | I3 fixed and measured |
+
+Slices 1 and 2 are the gate. Nothing in §8 is true before 2.
+
+---
+
+## 12. Compiler changes, re-sized
+
+| # | what | where | size | landings |
+|---|---|---|---|---|
+| C1 | `\|>` | `grammar/lexer.av` (one arm, `continuing_op`), `features/expr_spine/{mod,builders}.av` (one rule between `coalescing` and `bitwise`, the desugar, three refusals), `core/store.av` (a mark that restamps), `compiler/format/source_text.av`, `features/tables` (refusal text) | ~250 + tests | 1 PR under the syntax-change protocol (`avra.pre`, two builds); a seed refresh before the tree writes it |
+| C2 | door 1 | `compiler/inputs.av`, `host/host.av` (+ the CLI's disk host), `record.av` (`KeyParts.runs`), `kept_settle.av` (an input line), `modules.av` (`build_inputs`), `interp.av` (source rows report parts; grants), `core/ir.av` (`Reach.Source` — a registry enum, every consumer spelled, `make vocab`), `whole.av` (delete `admit_embeds`), a SHA-256 row, new `packages/std-source` | ~900 | 3: the runtime rows alone first (the row-then-declaration ladder: the compiler's own closure will name them); then the door; then `embed` moved. A record wire change (D3). |
+| C3 | door 2 | new `compiler/kept.av` from `kept_settle.av`; `expand.av`/`workspace_analysis.av` (`Lifted` asked through it); `answers.av`; `db.av` (`still_valid`) | ~600, mostly moved | 2; every step under `cache_attacks` |
+| C4 | members | typing of a property read (the fallback when the field is absent), lowering (`SettleRoot.Expr`), two voices | ~350 | 1 |
+| C5 | artifacts and homes | `compiler/lower` (reached statics of an artifact type), `build.av`/`link.av` (the emit step, the receipt), `target()` in `@std/meta` (promised in COMPILER.md §7d, never built) | ~500 | 1–2 |
+| C6 | tools | the `tool_call` row and its evaluator arm; a child `avra build --tool`; the pipe protocol (runtime C ~300 + Avra); `@step` and the seat codec (std code); the make phase; N processes | ~2,500 + ~300 C | 4–5; the largest piece |
+| C7 | providers, eager | `expand.av` (the anchor prefilter and work; a source literal as an argument; `value` spliced as the initializer), `@std/meta` (`Provided` — growth; the first READER owes the seed refresh), `diagnostics/render.av` (a non-`.av` source; no `sources[0]` fallback), annotations inside generated declarations | ~700 | 2 |
+| C8 | a bound with one fitting impl pins its argument | `features/…/checks.av` (generic call pinning) | ~200 (ASSUMED; not read) | 1 |
+| C9 | `url`, the lock, `avra lock` | a new command file, `std-source` | ~400 | its own slice |
+
+Not on the list: a JIT; parallel settlement; a new keyword; a new IR instruction; a resident compiler.
+
+**Infrastructure tickets proposed** (beyond the two doors, which are C2 and C3):
+
+| # | what | evidence |
+|---|---|---|
+| I1 | **an embedded file's edit is invisible to `build`** — a wrong answer today | PROBED C.23. Closed by C2; file it now as a bug. |
+| I2 | `embed`: escape (in flight elsewhere), nested-call compiler trap, unlocated traps, callee matched by string, text only, a run-time trap instead of a refusal | PROBED C.2, C.5, C.9; a user `fn embed` is matched (C.35); READ `whole.av:382`. Closed by C2. |
+| I3 | **75–140 KB of compiler memory per generated declaration** | PROBED C.26 and the reviewer's probe. Blocks any large provider; taxes every derive. |
+| I4 | an annotation inside generated declarations is dropped silently | PROBED C.16 |
+| I5 | a diagnostic naming an unknown file renders a window of the first source | READ(agent) `diagnostics/render.av:154` |
+| I6 | `avra_str_parses_float` has no registry row, so `@std/json` cannot settle | PROBED C.4; it is runtime C (READ(agent) `runtime/avra_runtime.c:1240`). One row. |
+| I7 | a `const`-seat lookup with a wrong name is `check`-clean and traps at run time; a method's inner `const` reading `self` reports a compiler defect | the reviewer's probes of C.8b; not needed by this design any more, still defects |
+| I8 | `it` does not bind at a free fn's seat | PROBED C.13; blocks `xs \|> filter(it.valid)` |
+| I9 | no opaque type | PROBED C.25; ROADMAP.md:1796 |
+| I10 | the evaluator: 2.4 µs per loop iteration; a `Map` filled in a loop is quadratic in memory (avra-8sb5.73) | PROBED C.11. No longer on this design's path; still worth a profile. |
+| I11 | `avra explain` is documented and absent | PROBED C.18 |
+| I12 | no process limit of any kind in the runtime | PROBED C.34. Built in C6. |
+
+---
+
+## 13. The review's flaws
+
+| flaw | status | where |
+|---|---|---|
+| **B1 / H1** the infrastructure answer is a new cache beside the old; cites a closed ticket; ignores `KeyParts`, `Db.answers` | **FIXED** | §1: two doors, what each replaces, the campaign's decisions followed; .57.6 removed, .57.101.12 cited; five paths → two; seven readers → one; D1–D7 for the DB lead |
+| B1's hostile case (add `new.svg`) | FIXED | §1.3, §1.6: a `Listing` part in `KeyParts.runs` |
+| **B2 / H3, H4** laziness laws false; member rule contradicted by probes | **FIXED** | §4.4: strict nominal sets; the member rule is a settled expression over an ordinary method (PROBED C.27); L5 restated; the 2,000 case re-run: 0.06 s (C.28), and 32 ms of reads (C.30) |
+| B2: `Dir` hashes every byte | FIXED | §1.3: a `Range` part; digest on read |
+| B2: §2.1's reader blows the budget at 2,000 | FIXED | facts are one native step (§4.4, §7) |
+| **B3 / H2** `Blob.key` is two things | **FIXED** | §4.3: action key and content digest; names and SRI from content; the compiler digest in the action key only |
+| **B4 / H5** providers vs resolve | **FIXED** | §4.6: the anchor rule (parse prefilter + the last stage's signature, as annotations are found), order and cycles, eager and kept, costs on the table, names under the anchor |
+| B4: per-name materialization | **CUT** | §4.6; deferred behind I3 |
+| B4: the struct-literal name hole in a template | not re-probed | noted for C7 |
+| **B5 / H6** forgeable handles; open cases | **FIXED** | §4.1: authority rides the declaration, not the value (PROBED C.25); template root, `File.rel`, symlinks, nested folders, case, droppings all decided |
+| B5: "enforced by the OS" | FIXED | §7.3 says what is real and what is convention |
+| B5: where granted C runs at `check` | FIXED | always in the tool; never in the compiler process |
+| **B6 / H7** performance is a hope; workers misread | **FIXED** | §7: native tools decided on numbers (C.32, C.33); `stage.av` claim deleted; `@batched` CUT; budgets (§6) |
+| **B7 / H8** homes | **FIXED** | §9.2: `a.bytes()` follows the declared home (L10); the module total rule; L6 for `check`; §8.4 no daemon; §9.1 says row three needs `url` |
+| **B8 / H9** the surface | **FIXED** | §0 is the sketch as written; C8 is the one rule it needs (PROBED C.31); today's form stated |
+| H9: precedence, the line form, the channel collision | FIXED | §3 |
+| **H10** survey corrections | **FIXED** | C.6 and C.8b restated in Appendix C; 18 sites counted first-hand; "no KERNEL family persists; `Db.answers` does, unarmed"; `trailing` and `continued_by` described as READ; §14 lists every invented name |
+| F: `at` with three meanings | FIXED | `home(…)`, `f.loc(…)`, `member` |
+| F: `Dir.files` field and method | FIXED | `Files.items`; `files(ext:)` is the only method |
+| F: `icons` vs `vectors` in the example | FIXED | Appendix A |
+| F: three hatches for one problem | FIXED | one: `.member("…")` |
+| F: `Blob.size: int?` | FIXED | an enum |
+| F: listing key | FIXED | §1.3, said once |
+| F: SHA-256 placement | FIXED | slice 1 |
+| F: `Provided` asks four methods | FIXED | one record, no trait |
+| F: L10 and the CLI line were two statements | FIXED | §9.2 only |
+| F: adding a field to a set type breaks folders | FIXED | two reserved names (§4.4) |
+| G: build order | FIXED | §11 |
+| D: mtime fast path (not flagged; found re-reading the code) | CUT | §1.2 — it contradicted a standing law |
+| **DISPUTED** | none | every re-run probe agreed with the review. One number differs, not a finding: my provider probe mints types only, 75 KB each; the reviewer's mints a type and a fn, 140 KB each. |
+
+---
+
+## 14. Every NEW name in this document
+
+Nothing in this table exists. Everything else named in the doc does.
+
+| package | names |
+|---|---|
+| `@std/source` (new package) | `file`, `dir`, `url`, `File`, `Files`, `Blob`, `Action`, `blob`, `each`, `kept`, `Artifact`, `Home`, `home`, `placed`, `remote`, `step` |
+| `@std/meta` (growth) | `Provided`, `refused`, `target`, `Target` |
+| `@std/image` (new package) | `Picture`, `Pictures`, `Shots`, `pictures`, `resize`, `webp`, `widths`, `formats`, `Vector`, `vectors` |
+| providers (new) | `openapi` as a reader, `toml` as a provider, `csv`, `json_schema`, `environment`, `schema`, `sql`, `catalogs`, `typeface`, `wgsl`, `markdown`, `video` |
+| the compiler | `InputKind`, `Part`, `input_*`, `RunName`, `RunKind`, `kept`/`keep`, `Reach.Source`, the `tool_call` row, `Host.read_bytes`, a typed `Host.list`, a SHA-256 row |
+| the CLI | `avra lock`, `avra build --tool`, `avra cache gc`, `[assets]`, `[build] native`, `[build] cache`, `avra.lock` |
+
+Exists and is used as it is: `quote`, `Directive`, `Declared`, `Decls`, `Code`, `Diagnostic`, `refuse_at`, `literal`, `wraps: true`, `collect`, generic traits, named arguments, trailing blocks, `const` settlement, `SettleRoot.Expr`, `Reach`, `Store.keep`'s `read` slot, `KeyParts`, `Db.answers`, `@input`, `avra expand`, `avra docs`, `avra cache why`.
+
+---
+
+## 15. For the owner
+
+Only decisions. Each: both options, my pick.
+
+**Q1. Heavy build work: native tools, or a faster evaluator?**
+- A: a step's package is compiled for the host and run as a child process (§7). ~2,800 lines; 500× the evaluator on a parser today.
+- B: profile and speed up the evaluator; codecs as C called from inside the compiler.
+- Pick **A**. B has no profile behind it and puts third-party C in the compiler's own process.
+
+**Q2. What is a provided type called?**
+- A: `ApiPet` — the anchor's name as a prefix. No language work; a spec edit cannot clash with your names.
+- B: `api.Pet` — a type path through the anchor. Reads better; needs a new type-path rule, and `api.Pet { … }` as a literal.
+- Pick **A now**, B as its own design. Bare `Pet` is out: a vendor adding `Error` would break code nobody edited.
+
+**Q3. The sketch as written needs one typing rule (C8). Land it?**
+- A: yes — `dir("./photos") |> resize(width: 320)` types by the one impl that fits.
+- B: no — a folder says its kind: `dir("./photos") |> pictures |> resize(width: 320)`.
+- Pick **A**; B works today and stays valid.
+
+**Q4. Where does a local asset live when nobody says?**
+- A: by size — small in the program, large beside it (web 4 KiB; CLI/server stops the build over 1 MiB and asks).
+- B: by target only — web always a file, CLI always embedded.
+- Pick **A**. The two numbers are guesses to measure on `tools/ui-board`.
+
+**Q5. A tool that links C, before the OS sandbox exists (§7.3):**
+- A: runs, in a child with two pipes and a time limit; `[build] native = false` refuses.
+- B: refused unless the root manifest allows that package.
+- Pick **A**: its C already runs in your program. B if you want the stricter default.
+
+**Q6. `url` and the lock: in this campaign?**
+- A: yes, minimal (https, SHA-256, `avra.lock`, `avra lock`) — "external asset, facts known at build" needs it.
+- B: wait for package transport; until then `remote(…)` with hand-written facts.
+- Pick **A**, as slice 8. The lock is the one the package transport will reuse.
+
+**Q7. `avra dev`:**
+- A: one-shot builds on file events; the compiler never stays alive (the standing refusal).
+- B: a resident compiler that makes an asset on first request.
+- Pick **A**. B reopens "no daemon"; reopen it only with a measured warm build that is too slow.
+
+**Q8. A compiler upgrade re-runs every step once.**
+- A: yes — the action key folds the compiler's digest ("a store is one compiler's"). Shipped names do not move.
+- B: key steps by the tool's source only, so an upgrade re-runs nothing — and trust that codegen did not change behaviour.
+- Pick **A**.
+
+---
+
+# Appendix A — three things an author writes
+
+Design code (§14). Every language form in it is one that exists.
+
+**A reader.**
 ```avra
 //! @acme/icons — a folder of SVGs as a set of icons.
-use @std.source.{Dir, File, Set, Blob, each}
-use @std.meta.{refused, refuse_at}
+use @std.source.{Files, File, Blob, step}
+use @std.meta.{refuse_at, refused}
 
-export type Icon = { name: string, width: int, height: int, shape: Blob }
+export type Vector  = { name: string, width: int, height: int, shape: Blob }
+export type Vectors = { names: List<string>, items: List<Vector> }
 
-/// Every `.svg` in the folder, by its stem.
-export fn icons(d: Dir) -> Set<Icon> { d.files(ext: "svg") |> each(icon) }
+impl Vectors {
+    fn member(name: string) -> Vector? {
+        let i = self.names.index_of(name)
+        if i < 0 { return null }
+        self.items[i]
+    }
+}
 
-fn icon(f: File) -> Icon {
-    let box = view_box(f.head(512)) ?? refused(refuse_at(f.at(0), "`${f.name}.svg` has no `viewBox`", "an icon says its own size"))
-    Icon { name: f.name, width: box.w, height: box.h, shape: f.content }
+/// Every `.svg` under the folder, by its stem. ONE native step for the whole folder.
+@step
+export fn vectors(d: Files) -> Vectors {
+    let svgs = d.files(ext: "svg")
+    Vectors { names: svgs.names, items: [vector(f) for f in svgs.items] }
+}
+
+fn vector(f: File) -> Vector {
+    let box = view_box(f.head(512)) ?? refused(refuse_at(f.loc(0), "`${f.rel}` has no `viewBox`", "an icon says its own size"))
+    Vector { name: f.name, width: box.w, height: box.h, shape: f.content() }
 }
 ```
-No trait, no registration, no codegen. `icons.close` works because the answer is a `Set` (§4.4).
 
-### 2.2 A transform, with its batch form — `resize`
-
+**A transform.**
 ```avra
 //! @std/image (excerpt)
-use @std.meta.{step, batched}
-use @std.source.{Blob, blob}
-
-export type Picture = { name: string, width: int, height: int, format: Format, pixels: Blob, variants: List<Variant> = [], home: Home? = null }
-
-/// No wider than `width`, shape kept. PLANNING IS ARITHMETIC: the new size is known
-/// without touching a pixel, and the pixels are a promise.
-export fn resize(p: Picture, width: int) -> Picture {
+/// No wider than `width`, shape kept. The plan is arithmetic; the pixels are a recipe.
+fn resized_to(p: Picture, width: int) -> Picture {
     if width >= p.width { return p }
     let height = max(1, p.height * width / p.width)
     p with { width: width, height: height, pixels: resized(p.pixels, width, height) }
 }
 
-/// THE STEP: bytes in, bytes out. Runs on a miss, when something reads the answer.
+/// Bytes in, bytes out. Runs in the tool, when something needs the bytes.
 @step
 fn resized(src: Blob, width: int, height: int) -> Blob {
     let out = with_room(width * height * 4)
     blob(out.slice(0, avra_img_resize(src.bytes(), width, height, out)))
 }
 
-/// THE BATCH FORM: every pending `resized` that differs only in its first seat, at once —
-/// one decoder set up, one answer per input, in order.
-@batched(resized)
-fn resized_all(srcs: List<Blob>, width: int, height: int) -> List<Blob> {
-    let codec = avra_img_open()
-    let made = [blob(resized_with(codec, s.bytes(), width, height)) for s in srcs]
-    avra_img_close(codec)
-    made
-}
-
 extern fn avra_img_resize(src: Bytes, width: int, height: int, out: Bytes) -> int
 ```
-The author writes two ordinary fns. Keys, caching, laziness, parallelism and batching are the compiler's.
-(`out: Bytes` as a seat, never an answer: an extern answering `Bytes` is `type.host_seat` today — PROBED.)
+`out: Bytes` is a seat, never an answer: an extern answering `Bytes` is `type.host_seat` (PROBED C.20).
 
-### 2.3 A type provider — a JSON Schema subset
-
-Objects of scalars, arrays and nested objects become records.
-
+**A provider** — typed TOML. `@std/toml` runs at compile time today (C.5b) and its entries carry spans (`toml.av:23`).
 ```avra
-//! @acme/schema — a JSON Schema as Avra records with `from_json`.
-use @std.meta.{Provides, Provided, provided, Anchor, Name, Decls, Code, Diagnostic, refuse_at, literal}
+//! @std/toml (addition) — a manifest as a typed record.
+use @std.meta.{Provided, Decls, Code, Diagnostic, refuse_at, literal}
 use @std.source.{File}
-use @std.json.{parse_located, Located}
 
-/// THE MODEL: what the file says. Parsed once, kept by the file's content.
-export type Schema = { title: string, shapes: List<Shape>, problems: List<Diagnostic> }
-/// One object schema: its path under the root (`[]` is the root), its fields.
-export type Shape = { path: List<string>, slots: List<Slot>, at: Loc? }
-export type Slot = { name: string, ty: string, at: Loc? }
-
-/// The provider's whole public face: a fn from a file to a model.
-export fn json_schema(f: File) -> Provided<Schema> {
-    match parse_located(f.text()) {
-        .Ok(doc) -> provided(modelled(f, doc)),
-        .Err(e) -> provided(Schema { title: "", shapes: [], problems: [refuse_at(f.at(e.at), e.message, null)] }),
+export fn toml(f: File) -> Provided {
+    let doc = parse_toml(f.text())
+    let made = [record_of(doc, s) for s in doc.sections()]
+    Provided {
+        value: value_of(doc),
+        made: [root_of(doc)].concat(made),
+        problems: [refuse_at(f.loc(e.lo), e.message, null) for e in doc.errors],
     }
 }
 
-impl Provides for Schema {
-    /// The names this model declares, each with where it came from. No bodies.
-    fn names(a: Anchor) -> List<Name> { [Name { name: type_name(a, s.path), at: s.at } for s in self.shapes] }
-
-    /// ONE name's declaration, asked the first time something reaches it.
-    fn declared(a: Anchor, name: string) -> Decls {
-        let s? = self.shapes.find(type_name(a, it.path) == name) else { return quote {} }
-        let fields = [quote { type _ = { ${f.name}: ${f.ty} } } for f in s.slots]
-        quote {
-            @json
-            export type ${name} = { ..${fields} }
-        }
-    }
-
-    /// The const's own value: what a program can ask the schema at run time.
-    fn value(a: Anchor) -> Code { quote { Described { title: ${literal(self.title)}, root: ${literal(type_name(a, []))} } } }
-
-    fn problems() -> List<Diagnostic> { self.problems }
-}
-
-/// `events` + `["order", "line"]` → `EventsOrderLine`. One derivation, so a name is stable while its path is.
-fn type_name(a: Anchor, path: List<string>) -> string { [camel(p) for p in [a.name].concat(path)].join("") }
-
-/// Walk the document into flat shapes; a nested object's slot names its own shape.
-fn modelled(f: File, doc: Located) -> Schema {
-    let found = shapes_under(f, doc, [])
-    Schema { title: doc.text_at("title") ?? "", shapes: found.shapes, problems: found.problems }
+/// `[server]` under `const config` is `type ConfigServer = { port: int, … }`.
+fn record_of(doc: TomlDoc, section: string) -> Decls {
+    let fields = [quote { type _ = { ${e.key}: ${spelled(e.value)} } } for e in doc.entries_of(section)]
+    let n = "Config${camel(section)}"
+    quote { export type ${n} = { ..${fields} } }
 }
 ```
-`shapes_under` (25 lines of ordinary recursion over `Located`, mapping `"integer"` → `int`, `"array"` → `List<…>`, an unknown `type` → a `refuse_at` at its offset) is omitted; nothing in it is special.
+`root_of`, `value_of`, `spelled` and `camel` are ordinary fns omitted here. The anchor's name (`Config` above) reaches the provider as its first seat does for an annotation today; the exact crossing is C7's.
 
-**What a provider is:** a fn answering a *model* (plain data, settled and kept like any const) and one trait impl that turns the model into declarations, one name at a time. The compiler never loads a plugin; it calls three methods on a settled value.
+# Appendix B — every compile-time mechanism today
 
-Two things this example needs that do not exist: `parse_located` (`@std/json`'s `Json` carries no positions — READ `std-json/src/json.av:27`; `@std/toml` does — READ `toml.av:23`), and `@json` inside generated code being expanded (today it is silently dropped — PROBED, §11 I8).
-
-## 3. `|>`
-
-**The spec** (old tree, `docs/2026_04_18_FULL_SPEC.md` §28.7, L5667–5707 — READ(agent)): both `|>` and method chains; "`x |> f` desugars to `f(x)`"; "`x |> f(y, z)` desugars to `f(x, y, z)`"; a `_` placeholder for another seat; "lower precedence than most operators… Binds tighter than assignment, looser than arithmetic and comparison". Its examples START lines with `|>`; its own newline rule says continuation is a trailing operator — the spec contradicts itself.
-
-**Today:** unparsed and unlexable. PROBED: `const k = 3 |> dbl` → `parse.expected: expected BREAK`. READ: `two_char_of` has no `|`/`>` arm (`grammar/lexer.av:525–549`).
-
-**Decided here:**
-
-| question | answer |
-|---|---|
-| meaning | `x \|> f` is `f(x)`; `x \|> f(a, k: v)` is `f(x, a, k: v)`. Parse-time sugar into a `Call`; typing and lowering never see it. Works at run time and compile time alike. |
-| a stage is | a callee path with optional arguments, an optional trailing block, an optional `?`: `x \|> parse(strict: true)?` is `parse(x, strict: true)?`; `xs \|> each { it + 1 }` is `each(xs) { it + 1 }` |
-| not a stage | a method (`x \|> .trim()` — write `x.trim()`), a bare lambda (call it), any other expression: refused, with the fix |
-| precedence | loosest binary operator: `a + b \|> f` is `f(a + b)`; `a ?? b \|> f` is `f(a ?? b)`. `catch` stays looser: `x \|> f catch e -> d` is `(f(x)) catch …` |
-| associativity | left: `x \|> f \|> g` is `g(f(x))` |
-| lines | a line that STARTS with `\|>`, indented deeper, continues — the rule `.name` chains already have (`continued_by`, `lexer.av:666`). A trailing `\|>` continues too. |
-| placeholder `_` | not in the first landing (Q6). `_` is a keyword today (READ CLAUDE.md, "`_` IS A PARAMETER NAME NOWHERE"), so it stays free for it. |
-| `it` | unchanged: `it` belongs to the nearest fn seat; inside a trailing block it is the block's (PROBED `each(s) { dbl(it, by: 3) }` runs) |
-| the formatter | a parse-owned mark on the `Call` (`piped`), exactly as `trailing` is kept today (READ `core/store.av:90,271`) |
-
-**The lexer law.** "A TWO-CHARACTER OPERATOR ENDING IN `>` CANNOT BE MUNCHED" exists because `>` closes a type argument list. `|>` is safe to munch: no valid program has `|` directly before `>` — a type never ends in `|`, a table cell never starts with `>`, `a | > b` is no expression. PROBED: `grep '|>'` over every `.av` in `packages/` finds nothing but comments.
-
-**The collision.** `docs/2026_09_30_PLATFORM_MAP.md:84,124` floats `order |> orders` as a channel send. One operator, one meaning: `|>` is application; a send is a method. (The channels design is live in another lane — tell it.)
-
-**Landing.** Lexer arm + `continued_by` + one rule above `disjunction` in `features/expr_spine/mod.av` + a builder + the printer's scale (`compiler/format/source_text.av:2514`). ~150 lines. The compiler's own source does not use it yet, so it is one PR under the syntax-change protocol (`cp build/avra build/avra.pre`), plus a seed refresh before the tree starts writing it.
-
-## 4. Semantics
-
-### 4.1 Sources
-
-```avra
-export fn file(path: string) -> File     // path: a LITERAL, relative to the file that spells it, inside its package
-export fn dir(path: string) -> Dir
-export fn url(address: string) -> File   // a literal; pinned in avra.lock
-
-export type File = { path: string, name: string, size: int, content: Blob }
-export type Dir  = { path: string, files: List<File>, dirs: List<string> }
-```
-- A handle is a **capability**: the only way a compile-time run can read. There is no `read(path: string)`.
-- `File.name` is the member name: the stem, `-`, space and `.` read as `_` (§5.3).
-- `f.text()`, `f.bytes()`, `f.head(n)` read. `f.at(offset)` is a `Loc` inside the file, for diagnostics.
-- `d.files(ext: "svg")` answers a `Set<File>`; `d.sub("icons")` answers a `Dir` (still inside the capability's root).
-- A listing is sorted by name bytes. Names starting with `.` are never listed.
-
-### 4.2 Blobs and steps
-
-`Blob = { key: string, size: int? }` is bytes the build has, by key. It is an ordinary small record, so it settles today.
-
-| a blob from | its key | when its bytes exist |
-|---|---|---|
-| a file | SHA-256 of the bytes | always |
-| `blob(bytes)` | SHA-256 of the bytes | always |
-| a `@step` call | digest of (the step's code fingerprint, each argument's fingerprint, the target if it read one) | when first read |
-
-**A `@step` answers lazily.** Calling one at compile time runs nothing: it answers a `Blob` whose key names the call. `b.bytes()` forces it (and what it depends on). Purity makes this unobservable except in *when* a failure speaks.
-
-Consequences:
-- **`check` never transforms.** Sizes, formats and names are arithmetic over headers; no step is forced (carried over from the assets design, law 9).
-- **The public name is the key.** Known before any encoder runs, so the cache entry and the shipped file name are one derivation (CLAUDE.md: "THE KEY… AND THE NAME… ARE ONE DERIVATION").
-- **Per-step cache for free.** Change `webp(quality:)` and `resized` keys do not move.
-- A step is a memo boundary only where the author marks one. An unmarked fn runs inside its caller's settlement.
-
-### 4.3 Sets and `each`
-
-```avra
-export type Set<T> = { names: List<string>, items: List<T> }
-export fn each<A, B>(s: Set<A>, f: fn(A) -> B) -> Set<B>      // PROBED: this fn settles in a const today
-```
-- A set is ordered (name bytes) and that order is the only one that reaches output.
-- `each` maps; `kept(s) { … }` filters; `renamed(s) { … }` renames; `joined(a, b)` unions (a clash is refused naming both).
-- **Fan-out** stays inside the item where the outputs are one thing (a picture's widths and formats are `variants`), and is a nested set where they are several (`pages |> each(translations)` is a `Set<Set<Page>>`; `pages.about.fr`).
-- **Fan-in** is a fn from a set: `sprite(icons) -> Sheet`, `bundle(scripts) -> File`.
-- A transform is written over the **item**. Whether std transforms also accept a set directly is Q1.
-
-### 4.4 Members
-
-> `x.name`, where `x` is settled and its type has no field `name` but has `fn member(const name: string) -> T`, reads `x.member("name")` at compile time.
-
-- Absent → `type.unknown_member` at the read, listing `x.names()`.
-- **The member is the laziness unit.** Each distinct member settles as its own unit (this is what `const` seats do today — READ `fns/tests/const_seat`). An unread photo is never planned, never made, never shipped.
-- A name that is no identifier is read `x.member("2fa")` — a `const` seat, so still a literal checked at compile time. No lookup by run-time text exists.
-- A set that escapes whole (`pages.items`) reaches every member; `avra docs` names the site.
-
-PROBED today, without the sugar: `at(icons, "menu")` answers; `at(icons, "clsoe")` is a compile error (`const.trap`) — but spoken inside the library fn, not at the call (§11 I9).
-
-### 4.5 Providers
-
-> A top-level `const` whose initializer answers `Provided<M>` is an **anchor**: its value is `M.value(anchor)`, and `M.names(anchor)` are declared beside it, in its module, each materialized by `M.declared(anchor, name)` when first reached.
-
-- The model `M` is settled like any const and kept by content: a spec is parsed once per edit.
-- The initializer may name only literals, sources, **imported** fns, and other anchors. It runs before the file's names resolve, like an annotation's arguments (F2067) — this widens that law from "literals" to "what the `use` lines and the parse tree can answer".
-- Export follows the anchor: `export const api = …` exports what it declares.
-- Names are nominal, derived from the anchor's name and the data's own path (`Pet` for OpenAPI schemas; `ConfigServer` for a TOML table). A clash with a written name is `annotation.generated_taken` (exists).
-- A provided type gets traits by the provider writing `@json`/`@derive(…)` in its template, or by a provider option (`openapi(derive: [Show])`).
-- **Generative, not erased:** every provided declaration is a real declaration `avra expand` prints.
-
-**Laziness for a 5,000-endpoint spec:**
-
-| stage | cost | when |
-|---|---|---|
-| parse → model | once per spec content, kept on disk | first `check` after an edit |
-| `names()` | a list of strings | at resolve |
-| `declared(name)` | one template | the first time `name` is resolved |
-| a type's `impl` | materialized with the type | first method lookup |
-| typing, lowering, codegen | only what was materialized and reached | as today |
-
-The unit is the **name**. Resolve needs every name early and gets them cheaply; nothing else is paid for an unreached endpoint.
-
-### 4.6 Which one do I write?
-
-| the data is | write | generated code |
-|---|---|---|
-| many things of one kind (icons, photos, pages, fonts) | a reader `fn (Dir) -> Set<T>` | none |
-| one thing (a font, a shader's bytes) | a reader `fn (File) -> T` | none |
-| a shape the data decides (config, spec, schema, CSV columns, catalog keys) | a provider | types and fns |
-| a mixed folder as one record (`art.logo`, `art.icons.close`) | a provider over a `Dir` | one record type |
-
-## 5. Laws
-
-Each with the hostile case that tests it.
-
-| # | law | hostile case |
-|---|---|---|
-| L1 | **Hermetic.** A compile-time run reads only through a handle, and a handle is minted only by a literal in the package it reads. | `file("/etc/hosts")`, `file("../../other/secret")`, a symlink out, a library fn taking a path string and calling `file(p)` — all refused at the literal. (Today `embed("/etc/hosts")` answers 256 — PROBED.) |
-| L2 | **Pure.** No env, clock, network, randomness or process at build. | a step calling `@std.io.env` → `const.reach` naming the row and the chain (exists, PROBED) |
-| L3 | **Keyed by content.** A key folds every input's bytes digest, the code's fingerprint, every argument, the target if read. Never a path's mtime; never a process-local ordinal. | touch a file without changing it → nothing reruns; swap two files' contents → both rerun; reorder declarations in the provider → nothing reruns |
-| L4 | **One derivation.** The cache key, the shipped name and the receipt's row are one value. | two builds on two machines → byte-identical names and receipt |
-| L5 | **Lazy.** `check` forces no step. `build` makes only blobs a reached value holds. | 2,000 icons, 3 used → 3 planned, 3 shipped; `check` on a tree with a broken encoder → clean |
-| L6 | **Inspectable.** Every provided name and every shipped file answers "where from". | `avra docs Pet`, `avra expand`, `assets.json`; a name with no origin is a compiler defect |
-| L7 | **Errors point home.** A refusal about the data points into the data, then names the anchor. | a bad `$ref` → `petstore.yaml:41`, never `openapi.av:212` |
-| L8 | **No name by text.** A member or a provided name exists only by being spelled in source. | `icons.member(user_input)` → `type.const_seat` (exists) |
-| L9 | **Order is the name's.** Listings, sets, receipts and generated declarations are in name-byte order. | a host listing in inode order → same output |
-| L10 | **Big bytes stay out of the program** unless asked (`at(.Program)`), and over a budget that is an error whose help writes the override. | a 40 MB video in a set → not in the binary; `at(.Program)` on it → error naming the budget |
-| L11 | **A failure in a step is the build's, not the check's** — and it names the step, the input and the reading site. | a truncated JPEG: `check` clean (header reads), `build` refuses at `./photos/hero.jpg` through `photos.hero`, `src/app.av:14` |
-| L12 | **No silent drop.** An annotation, a hole or a file the compiler cannot place is spoken. | `@derive` inside a provider template (dropped today — PROBED) |
-
-### 5.2 The empty case, first
-
-| encoding | empty | decided |
-|---|---|---|
-| a dir with no entries | `Set { names: [], items: [] }` | legal and silent. A member read lists "no members". (Git does not carry an empty dir: a MISSING dir is an error at the literal.) |
-| a file of 0 bytes | `File { size: 0 }`, `text()` is `""`, present | legal for `file`. A reader decides: `picture` refuses "0 bytes is no picture" at the file. |
-| a blob of 0 bytes | key = SHA-256 of nothing, `size: 0` | a real value, distinct from "not made" (`size: null`). Absence and empty are two answers. |
-| a step answering 0 bytes | made, size 0 | kept as made; never re-run as "missing" (the `once`-cache-of-null defect, CLAUDE.md) |
-| a spec with no paths | a model with no names | legal and silent; `api` has no members |
-| a set after `kept { false }` | empty set | legal; reaches nothing |
-| a listing key | digest of (count, then each name's digest) | ARITY: folded per entry, never names joined by a separator — `["ab","c"]` and `["a","bc"]` differ |
-| a step key | digest of (step fp, count, each argument's fp) | same law; a list argument folds to one value first |
-| a lock entry for a 0-byte URL | sha256 of nothing, `size = 0` | pinned like any other |
-
-### 5.3 Two hats — names
-
-| case | decided |
-|---|---|
-| a path that is also a glob (`dir("./icons/*.svg")`) | **Split the verb.** `dir` takes a directory, always; `*`, `?`, `[` in it are refused with the fix. Filtering is its own typed seat: `d.files(ext: "svg")`. |
-| `file` naming a directory, `dir` naming a file | refused at the literal, naming which it is |
-| `icon-close.svg` | member `icon_close` |
-| `hero@2x.png` | `@` is not mapped. The core refuses the name unless a reader claims it; `pictures` claims `@2x`/`@3x` as a density of `hero`. |
-| `2fa.svg` | no identifier (PROBED: a digit-led field is a parse error). Listed, shipped, read as `icons.member("2fa")`. |
-| `type.svg`, `match.svg` | keywords cannot be field names (PROBED `resolve.reserved`). Read as `icons.member("type")`. |
-| `Close.svg` and `close.svg` | refused naming both: a checkout on a case-folding disk cannot hold them, so the build would differ by host |
-| `logo.svg` and `logo.png` | one stem, two files: refused naming both; `files(ext:)` picks, or `files(names: .WithExtension)` gives `logo_svg`, `logo_png` |
-| `a-b.svg` and `a_b.svg` | two files, one member: refused naming both |
-| `café.svg` | identifiers are ASCII (PROBED `lex.error`). Read as `.member("café")` with the source's own bytes. Two names equal under Unicode normalization are refused (needs an NFC table — ASSUMED absent; until then a non-ASCII name is refused by `files()` unless `names: .Raw`). |
-| `.DS_Store`, `.gitkeep` | never listed |
-| a member named like a `Set` field (`names.svg`, `items.svg`) | a declared field wins (the law reads members only for names the type lacks); the file is read as `.member("names")`, and `files()` warns |
-| a provided name that is a keyword or a written name | the provider refuses with `annotation.generated_taken`; OpenAPI offers `prefix:` |
-
-## 6. Safety
-
-**The capability model.**
-- Rows a compile-time run may call: `Pure`, `Lookup`, and the new `Source` (reads through a handle). `World` never (exists: `Reach`, `core/ir.av:937`).
-- A handle is minted by the compiler from a literal: resolved against the spelling file's directory, normalized, refused unless it stays under that file's package root with no symlink on the way (`@std/io`'s `open_beneath` already refuses `..` and symlinks — READ(agent) `io.av:227`).
-- A dependency can read its own package's files and what the app hands it. It cannot name the app's files.
-- `embed(p)` becomes `file(p).text()`. The hole closes by construction, not by a check.
-
-**Third-party providers are code in the compiler.**
-
-| code | runs in | can reach | trust |
-|---|---|---|---|
-| Avra | the evaluator, fenced by `Reach`, budgeted (steps, memory) | handles it was given | none needed — this is the default and it is sound |
-| package C | native, in the build's worker process | **anything** | only if the ROOT manifest grants it |
-
-```toml
-# the app's avra.toml — nothing below the root can grant this
-[build]
-native = ["@std/image", "@acme/avif"]     # these packages' `pure` externs may run at build
-```
-```toml
-# the package's own avra.toml — its promise
-[link]
-objects = ["build/img.o"]
-pure    = ["avra_img_resize", "avra_img_open", "avra_img_close"]
-```
-- `pure` is a promise the compiler cannot check. `native` is the app accepting it. Without the grant: `const.reach`, whose help writes the line.
-- The toolchain's own `@std/*` are granted implicitly — they ship with the compiler.
-- A granted step still runs in a **worker process** with a memory ceiling and a wall-clock limit (§8), so a crash or a runaway is a located refusal, never a dead compiler.
-
-**External tools (ffmpeg, ImageMagick): no, by default.** They are unpinned, unhashed, differ by machine, and are the usual end of reproducible builds. The hatch, when a tool is the only encoder: declare it as `[process.tools]` already requires (READ `packages/cli/avra.toml:8`), **pin its digest**, and the tool's bytes become an input in every key that runs it. An unpinned tool is refused at build time. Recommended to leave unbuilt until something needs it (AVIF, Apple's catalog compiler).
-
-**URLs and the lock.**
-```toml
-# avra.lock — written by `avra lock`, never by hand; committed
-[[source]]
-url    = "https://raw.githubusercontent.com/stripe/openapi/v1000/openapi/spec3.json"
-sha256 = "9f2c…"
-size   = 5310022
-```
-| verb | does |
-|---|---|
-| `avra lock` | fetch every `url(…)` the sources spell that the lock lacks; write the pin |
-| `avra lock --update <url>` / `--update-all` | re-fetch, show the size and digest change, rewrite |
-| `avra check`, `avra build` | never touch the network: read `~/.avra/cache/<sha256>`; a miss says `run avra lock` |
-| `--frozen` | also refuse a lock that would change |
-- A URL is a literal. Only `https`. The bytes live in the machine cache by SHA-256; `avra vendor` copies them into the repo for a no-network CI.
-- This is the first transport and the first lockfile in the tree (the assets design says the same, §4 there). Scope it as its own slice; `file` and `dir` do not wait for it.
-
-**Reproducible.** Same inputs → same bytes. In a key: input content digests, the step's code fingerprint (its lowered closure, so a provider's version is covered without trusting a version string), every argument, the target when read, the digest of any granted C object. Not in a key: paths outside the package, mtimes, the machine, the time.
-
-**mtime** is a fast path only: a per-machine side table `path → (mtime, size, inode) → digest` skips re-hashing an untouched file. A hit is trusted only when the stamp is older than the table's own write (the racy-git rule). The digest is the key; the stamp never is. `avra dev` and `@std.io.watch` (on branch `os-watch`, not in this tree) wake the same door.
-
-## 7. Mechanism — what each idea is made of
-
-| idea | made of (exists) | new |
-|---|---|---|
-| sources | `Reach.Embed`, `Host.read`/`list` (`compiler/host/host.av:8`), the `Source` and `Manifest` input families | an `Input` family for bytes, listings, pins, target; `Reach.Source`; four rows |
-| blobs | `Store.keep_file`/`place`, `staged_beside`/`published` (atomic) | a content-addressed `blobs/` outside the per-compiler store root |
-| steps | `Family.Settled`, `settled_symbol`, kept verdicts (`kept_settle.av`) | `@step` marker (a marker annotation, like `@plans`); lazy answer; content keys; durable rows for seat-specialized units |
-| members | `const` seats and their per-value units; `SettleRoot.Expr` (components' `check()` settles so) | one typing rule; one voice; settledness through a member chain |
-| providers | Declares annotations run inside resolve; `quote`, field spreads, `generated_named`, `generated_export`, `avra expand` | the const anchor; per-name materialization; `Reach.Source` in a Declares run |
-| outputs | settled aggregates are static data (`Ins.StaticAddr`) | reached-artifact collection; the build's emit step; the receipt |
-| `\|>` | the expression spine | one rule |
-
-## 8. Performance
-
-**Measured (Appendix C):**
-
-| fact | number |
-|---|---|
-| evaluator, tight loop | **2.4 µs per iteration** (1M iterations 2.4 s; linear to 20M = 48 s). Native: ~1–3 ns (ASSUMED) → **~1000× slower** |
-| evaluator, parsing | TOML 17 KB in 0.6 s (**~28 KB/s**); JSON 19 KB parse + print in 0.4 s (**~45 KB/s**) |
-| default settlement budget | 600,000 steps, 5 MiB (READ `features/worklist.av:46`) — a 1M-iteration loop is refused (PROBED) |
-| a 4 MB text const | `check` 0.27 s, 66 MB peak; it becomes static data in the binary |
-| a provider minting a 2-field record + const | 0.14 s end to end |
-| parallelism in the compiler | object emission only: 4 threads (READ `llvm.av:179`). Analysis and settlement are single-threaded. |
-| the compiler's own cold build | ~10–13 s; one edit 0.3–0.4 s (READ(agent) `COMPILER.md:137`) |
-
-**What follows:**
-- A pixel never goes through the evaluator. 12 MP × 2.4 µs is hours. **Codecs are package C**, called from a step; the evaluator only orchestrates (tens of steps per image).
-- A 5 MB spec in today's evaluator is ~2–3 minutes cold. Kept by content, that is paid once per spec edit — still not good enough. **Fix the evaluator first** (§11 I5): 2.4 µs for `t = t + i % 7` is ~100× off what a register interpreter does. Then a native tier (a JIT behind `run_call`, already listed "Later" in `COMPILER.md:484`) is an optimization, not a prerequisite.
-
-**The cost model.**
-
-| phase | cold | warm (nothing changed) | one photo edited |
-|---|---|---|---|
-| hash inputs | read + SHA-256 every source file (~1 GB/s) | stat each (stamp table); 0 bytes read | 1 file re-hashed |
-| listings | one `readdir` per `dir` | same; digest compared | same |
-| plan (settle reached members) | header read + arithmetic per reached member, ~µs–ms each in the evaluator | 0 — kept by content key | 1 member re-planned |
-| provider model | one parse per spec | 0 — the model is read from the store | 0 |
-| make (build only) | every reached blob, in parallel workers, batched | 0 — blobs exist by key | that photo's steps only |
-| emit | write/link each reached artifact | hard-link or skip when the output dir already holds the name | 1 file |
-
-- **Workers.** Making is embarrassingly parallel and has no shared state: each blob is written to the store by atomic rename under its own key. The build re-executes itself as N workers (the hand-off `cli/src/stage.av` already does for the test suite — READ CLAUDE.md "The CLI"), each given a slice of pending keys. N defaults to half the cores, capped at 8. No thread-safety is asked of the kernel. Parallel *settlement* stays out of scope.
-- **Batching** is how a worker runs its slice: pending calls of one step that differ in the first seat go to its `@batched` twin once. Laziness and keys stay per item.
-- **Where blobs live.** `~/.avra/cache/blobs/<k2>/<key>` by default (`AVRA_CACHE_DIR` moves it), shared by every worktree and every compiler version — a blob's key already covers the code that made it, so it does not belong under the per-compiler store. Step rows (key → size, made-in-ms, inputs) sit beside them.
-- **Remote cache.** The store is `get(key)`/`put(key)` over immutable content — the Bazel shape. One hook: `[build] cache = "https://…"` tried on a local miss, verified by key on arrival. A slice of its own; nothing else changes when it lands.
-- **Collection.** `avra cache gc` keeps what any `assets.json` or kept verdict under the machine's known trees names, plus anything read in N days; a size cap evicts oldest-read first.
-- **Memory.** Blob bytes never enter the kernel's memo: values hold handles. A worker's ceiling is `[build] step_memory` (default 1 GiB) and `step_seconds` (default 60), enforced by the OS on the worker.
-- **`avra dev`.** Nothing is made at startup. The dev server's asset route forces a blob on first request and caches it by key. One photo edited → its `File` digest moves → one member's key moves → one new name → that node reloads. This needs inputs that can be re-read in a long-lived process (§11 I10).
-- **Reachability** (avra-8sb5.76) and this are the same demand: a member, a provided name and a blob are each paid for only when reached.
-
-## 9. Outputs and targets
-
-**One value, many projections (P12).** A `Blob` reaches a running program as an `Artifact`:
-
-```avra
-export type Artifact = { name: string, size: int, key: string, home: Home }
-export enum Home { Inline, Program, Bundle, Cdn(origin: string), Origin(address: string) }
-```
-- `name` is `stem.<key8>.<ext>` — cache-busting is the key.
-- `target()` is a compile-time input (surface, OS, arch, profile). Whatever reads it is keyed by it.
-- **Reached = shipped.** An `Artifact` that survives into the lowered program's static data is reached; the build collects exactly those, forces their blobs, and writes them.
-
-### 9.1 Local or external — who has the bytes
-
-| the bytes are | spelled | the build | the program at run time | transformable |
-|---|---|---|---|---|
-| **local** — in the package | `file(…)`, `dir(…)` | reads them | has them, by its home | yes |
-| **pinned external** — someone else's, frozen | `url(…)` | fetches once, pins SHA-256 in `avra.lock`; from then on they are local | has them, by its home | yes |
-| **pinned, served from its origin** | `url(…) \|> picture \|> at(.Origin)` | fetches once to learn the facts (size, format, dimensions, hash); ships nothing | fetches from the origin; verifies the hash (SRI on web) | no — the origin serves what it serves |
-| **remote** — changes without a build | `remote(https("…"), width: 96, height: 96)` | reads nothing | fetches; the author states the facts; no hash | no |
-
-When each:
-- **`url(…)`** (pin and ship): a spec, a font, an icon set. You want the build reproducible and no third party in the request path. The default for `url`.
-- **`at(.Origin)`**: large immutable media a CDN you trust already serves. Layout still knows the size; a changed file is caught by the hash, at `avra lock --update`.
-- **`remote(…)`**: a user's avatar, server-hosted art. Nothing is known at build but what the author writes, so the size is required.
-
-"Fetched at run time" is only ever the last two rows. A local asset is never fetched from somewhere the build did not put it.
-
-### 9.2 Where a local asset lives
-
-| home | the build writes | the program holds | `a.bytes()` at run time |
-|---|---|---|---|
-| `.Inline` | nothing | the content inside what draws it (an SVG path in the markup) | — |
-| `.Program` | static data in the binary / the wasm module | name, size, an address | yes |
-| `.Bundle` | `build/<target>/assets/<name>` — a hashed file beside the program | name, size | compile error: "not in the program — `at(.Program)`" |
-| `.Cdn(o)` | the file, for `avra deploy` to upload | name, size, origin | compile error |
-
-**The default is one rule: small goes in the program, large goes beside it.**
-
-| target | under the line | over the line | the line |
-|---|---|---|---|
-| web (wasm page) | `.Program` (in the module; a vector may be `.Inline`) | `.Bundle` (hashed file, immutable cache) | 4 KiB per asset, 64 KiB total in the module |
-| CLI, TUI, server | `.Program` | error whose help writes `at(.Bundle)` — a one-file program does not silently grow a folder | 1 MiB per asset, 16 MiB total |
-| iOS, Android | `.Bundle` (the catalog, `res/`) always | — | — |
-
-- The rule reads only the made size and the target, so it is deterministic and in the receipt.
-- When an edit moves an asset across the line, the build prints the move (`hero: .Program → .Bundle, 4.3 KiB`). On CLI/server it never crosses silently: that changes what must be deployed.
-
-**One override, three scopes — the same word.**
-```avra
-const logo   = file("./logo.png") |> picture |> at(.Program)                 // per asset
-fn thumb(p: Picture) -> Picture { p |> resize(width: 320) |> at(.Bundle) }   // per pipeline: it is a step like any other
-```
-```toml
-# per project — the ROOT avra.toml; a table per target
-[assets]
-inline_under = 4096          # move the line
-[assets.web]
-home = "bundle"              # or pin every asset's home on this target
-```
-Precedence: the asset's own `at` (the last one in its pipeline wins) → `[assets.<target>]` → `[assets]` → the target's rule. A dependency's manifest cannot set it; a dependency's `at(…)` on its own art can, and the root's `[assets]` `force = true` overrides even that.
-
-### 9.3 The web case, both ways
-
-```avra
-const icons  = dir("./icons") |> vectors                       // 30 files, ~600 B each; 3 used
-const photos = dir("./photos") |> pictures |> each(thumb)      // hero.jpg → 17 KB webp
-```
-```
-$ avra docs icons.close --target web
-Vector 24×24 — ./icons/close.svg (612 B)
-  home      .Program — 612 B is under the 4 KiB line (target rule: web)
-  ships     inside app.wasm (+612 B; module assets 1.8 of 64 KiB)
-  requests  0
-
-$ avra docs photos.hero --target web
-Picture 320×180 webp — ./photos/hero.jpg (412 KB source)
-  home      .Bundle — 17 KB is over the 4 KiB line (target rule: web)
-  ships     build/web/assets/hero.9c1f2ab0.webp   Cache-Control: immutable
-  requests  1, lazy; size known at build, so layout does not move
-
-$ avra docs photos.hero --target web          # after `[assets.web] home = "program"`
-  home      .Program — set by [assets.web] in avra.toml:14 (rule would say .Bundle, 17 KB)
-  ships     inside app.wasm (+17 KB; module assets 18.8 of 64 KiB)
-```
-Every answer names the home, the reason, and who decided.
-
-**How a component receives it.** `image` takes a `Picture`; `icon` a `Vector`; a theme's face a `Typeface`. Each carries what layout needs — width, height, format, dominant tone, font metrics — as static data, so nothing is probed at run time and layout never jumps. Components stay ordinary: `icon(icons.close, color: .red)`.
-
-**What `avra build` writes.** `build/<target>/assets/…` and `build/<target>/assets.json`: every artifact, its key, size, home, source file and licence. `assets_route()` serves from that table; a name not in it is a 404 without touching the disk.
-
-**Reconciled with `2026_10_05_UI_ASSETS.md`.**
-
-| that design | here |
-|---|---|
-| `asset art = "art" { hero { dark: "…" } }` | **replaced**: `const art = dir("./art") \|> assets` (a provider over a `Dir` for a mixed folder), or a `Set` per kind. Variants are an ordinary argument: `pictures(dark: "-dark")` or `p \|> with_dark(file("./hero-dark.jpg"))`. |
-| kind from the bytes; `trait Asset`, kinds collected program-wide | **kept as library**: `assets` sniffs leading bytes and dispatches to readers. No program-wide collection: the reader is named in the pipeline. |
-| law 3 no lookup by text · 5 path literal inside the package · 8 intrinsic size · 9 check never transforms, name = key · 10 only reached ships · 14 vector model · 15 font licence · 17 no silent downgrade | **kept** (L8, L1, §9, L5/L4, L5, library, library, L11) |
-| `project() -> List<Artifact{name,key,make}>` | **kept, simpler**: `make` is the lazy `Blob`; no closure in a value |
-| `at <home>` on a declaration | **a step** (`\|> at(.Program)`), no grammar; `[assets]` in the root manifest for the project |
-| per-target table, receipt, `explain`, homes, `remote(url, w, h)` | kept; the default home is now a size rule (§9.2), and `.Origin` is new |
-| fetched pinned packages, `avra.lock`, `~/.avra/cache` | kept; the same lock serves `url(…)` |
-| font subsetting and shaping (§6 there) | untouched by this design; a `typeface` reader is its front door |
-
-`docs/2026_10_05_UI_ARCHITECTURE.md` decides `src` carries a `Url` with no unsafe value (:161–171 — READ(agent)). A `Picture` projects to a `Url.Local` on web; the law stands. `docs/2026_09_30_PLATFORM_MAP.md` says nothing about assets (READ(agent)).
-
-## 10. The same mechanism, other consumers
-
-| consumer | today | fits |
-|---|---|---|
-| `embed` | its own row, path hole, text only, string-matched callee | **as-is, and it shrinks**: `file(p).text()` |
-| the CLI reading `avra.toml` | `Family.Manifest`, a bespoke input | **as-is**: it is an `Input` of kind file; typed access is the `toml` provider. The compiler keeps its own reader (it cannot depend on a provider to find packages). |
-| `@std/db` `@model`, `@std/relation` | an annotation over a written type | **should not move**: the source of truth is the Avra type. The inverse (`dir("./migrations") \|> schema`) is a provider and coexists. |
-| the docs `site` | pages are string literals in view fns (READ(agent) `site.av:60`) | **as-is**: example 12 |
-| `wire.gen.js` (`make ui-host`) | run a program, check in the output, `cmp` in the gate | **with change X**: an *outbound* artifact — `const host = placed(blob(host_table().bytes()), …)` at `.Bundle`. Needs artifacts (§9), nothing else. The checked-in copy and the gate step go. |
-| `features/rt.av` from `rt_sigs()`, `avra_rt.h` | same generate-check-in-`cmp` loop, twice | **the header: as above.** **`rt.av`: should not, yet** — it is the compiler's own source, so generating it at compile time is a bootstrap cycle; the seed would need it. Keep the loop. |
-| sublanguages (`grammar {}`) | expand at the parse, nothing evaluated | **should not fit**: syntax, not data. A provider may *use* a grammar to read a file. |
-| i18n | nothing | **as-is**: example 7 |
-| `@std/openapi` | emits a spec FROM routes at run time (READ(agent) `openapi.av:59`) | **the inverse fits**: reading a spec is a new provider beside it. Emitting `openapi.json` at build is an outbound artifact. |
-| design tokens (`tokens(embed("design/tokens.json"))`, `2026_09_29_WEB_UI.md:883`) | a doc sketch | **as-is**: a provider |
-| the compiler's three generate-and-diff gates | hand-rolled | the pattern has a name now: **an outbound artifact** |
-
-**Is there already a general solution?** Half of one, twice:
-- **Declares annotations are the general "a compile-time call that declares".** Providers are that door with a const anchor and an input. Not a parallel concept.
-- **`@relation` / `@query` / `@input` are the general "memoized query over inputs"** — built, tested, and not wired to the compiler's own kernel or to disk (§11 I2). Steps should be the second consumer of that durable door, not a third bespoke cache.
-
-## 11. Compiler changes
-
-**The minimal list.** "Rungs" = compiler generations the landing needs.
-
-| # | what | where | why nothing existing says it | size | landing |
+| mechanism | lives | runs | mints names? | reads | kept across runs |
 |---|---|---|---|---|---|
-| C1 | `\|>` | `grammar/lexer.av`, `features/expr_spine/{mod,builders}.av`, `core/store.av` (a mark), `compiler/format/source_text.av` | no operator applies a fn to a left value | ~150 lines | 1 PR; syntax-change protocol; seed refresh before the tree writes it |
-| C2 | inputs: `Reach.Source`, rows `source_file` / `source_dir` / `source_read` / `source_head`, an `Input` family through `Host`, handles minted with the containment law; `embed` rides it | `core/ir.av`, `core/runtime_api.av`, `compiler/backend/interp.av`, `compiler/workspace*.av`, `compiler/whole.av` (delete `admit_embeds`), new `packages/std-source` | `embed` is text-only, escapes its package, and mints a `FileId` in the source table | ~500 | `Reach` is a registry enum: every consumer spelled (`make vocab`). Rows declared from a NEW package (`@std/source`), not from the compiler's closure → one landing; if `@std/meta` declares them, two (the row-then-declaration ladder) |
-| C3 | members: `x.name` over a settled value with the `member` contract; the located voice; settledness through a chain | `features/expr_spine` typing of a property read, `features/values.av` / `lower/state.av` (`SettleRoot.Expr`) | a `const` seat call does this but speaks inside the callee and does not chain (PROBED) | ~250 | 1 PR |
-| C4 | blobs + `@step`: lazy keyed answer, `bytes()` forces, content-addressed store, durable step rows, workers, `@batched` | `compiler/store/store.av`, `interp.av`, `kept_settle.av`, `cli/src/stage.av` | no persisted memo below a whole const; no byte store | ~700 | after I2, I3 |
-| C5 | artifacts: reached-static collection, the emit step, `assets.json`, `target()` | `compiler/lower`, `compiler/build.av`, `compiler/link.av` | nothing writes a file beside a binary | ~400 | 1 PR |
-| C6 | provider anchors: `Provided<M>`, the initializer lifted before resolve, per-name materialization, diagnostics located in a non-`.av` input | `compiler/expand.av`, `compiler/workspace.av` (`has_declares`, `generated_named`), `features/annotations/check.av`, `packages/std-meta`, `features/crossing.av` | a Declares site is an annotation over a written declaration, eager per file | ~600 | `@std/meta` grows (`Provides`, `Anchor`, `Name`): growth crosses without a seed refresh until something READS the new fields — the first reader owes it |
-| C7 | native at build: `[link] pure`, `[build] native`, the reach gate consults them | `compiler/host/manifest.av`, `interp.av:535` (`reaches_out`) | every package extern is `World` at compile time | ~80 | 1 PR |
-| C8 | `url`, `avra.lock`, `avra lock`, a SHA-256 row | new command file, `packages/std-source` | no transport, no lockfile, no plain SHA-256 (READ(agent): only `hmac_sha256`, `std-tls/src/mac/mac.av:16`) | ~400 | its own slice |
+| `const` settlement | `workspace_analysis.av:451,568`; `interp.av:352` | after typing; lazy under `check` (C.3b) | no | pure code; `embed` | P4, unseated only; P1 when the file is held |
+| `const` seats | `features/fns/mod.av:51`, `checks.av:1627` | a unit per settled value | no | — | no |
+| annotations: Validates / Records | `features/annotations/check.av:27,168` | at typing | no | the declaration | no |
+| annotations: Declares / Derives | `expand.av:93,124`; `workspace.av:1518` | **inside resolve**, whole file | **yes** | the declaration from the parse; source-spelled arguments; `type_named` | no (P1 when held) |
+| `quote` | `features/quote/mod.av:13` | parsed where written; spliced in expansion | via a directive | — | — |
+| sublanguages | `features/sublang/mod.av:24` | at the parse | no | the provider module's plain parse | — |
+| components | `features/components/mod.av:22` | a one-`quote` `expand` at the parse; `check()` settled at lowering | no | `self` | — |
+| `collect` | `features/collects/mod.av:37` | lowering | variants (`collect enum`) | declarations of a kind | — |
+| `embed` | `meta.av:311`; `interp.av:845` | at settlement | no | one text file, any path | `KeyParts.runs` when held; **not** in P4 or P5 (C.23) |
+| the extern host | `interp.av:1360` | `avra run` only | — | a package's `.dylib` | — |
 
-Not on the list: a JIT; parallel settlement; any new declaration keyword; any new IR instruction.
-
-### Infrastructure to fix first
-
-Ranked by how hard it bites this consumer. Each is a proposed ticket.
-
-| # | rough edge | evidence | proposed ticket |
-|---|---|---|---|
-| **I1** | **An input outside the source text is not a concept.** Two input families (`.av` text, `avra.toml`). Everything else is ambient or bespoke: `embed` reads with `avra_selfhost_read_file`, bypassing `Host`, then registers after the fact by minting a `FileId` in the SOURCE table; directory listings are hashed by hand in two places; tool identity in none. | READ `interp.av:845–859`, `workspace_analysis.av:576–581`, `whole.av:168–174`; READ(agent) `db.av:675`, `kept_settle.av:224`; tickets avra-8sb5.68, .69 | **One input door.** `Input { Bytes(path), Listing(path), Pin(url), Target, Tool(name) }` through `Host`, digest-keyed, stamp fast path. `embed`, manifests, listings, `wasm-opt`'s identity and the linker's all ride it. Closes .68 and .69 as instances. |
-| **I2** | **Persistence is bespoke: 17 hand-written write sites, no query family persists.** `Lifted` and `Expanded` (every annotation and derive) are memory only: re-run in every cold process. A seat-specialized settlement is never kept (`ask.seats.is_empty()`). The `.deps` edges are written and never read. | READ `kept_settle.av:40`, `store.av:104`; READ(agent) the 17 sites (Appendix B), `ADDING_A_PROJECTION.md` "Not yet" | **The durable door (avra-8sb5.57.6), before this.** A family opts in with a derived codec and gets answer + hash + dependency list persisted, validated by input digests. `Settled` (all units), `Lifted`, and steps are its consumers. |
-| **I3** | **Identity is an ordinal plus a side string.** `const$<FileId>$<StmtId>`, `lift$<file>$<call>$<decl>`: process-local, positional, re-interned through a `Map<string,int>`. A reordered file or a second process has a different name for the same computation. | READ `features/worklist.av:132–141`, `workspace_analysis.av:696`; ticket avra-8sb5.36 (the positional wire, patched by a re-check, "root rewrite = townhall decision 10") | **Content keys for compile-time calls**: (callee closure fingerprint, argument fingerprints). One derivation for the memo key, the store key and the artifact name. |
-| **I4** | **The store is one compiler's, per worktree, evicted whole.** Root = digest of the compiler binary + mode; 4 stores kept; no GC inside one, no size cap, no row atomicity, no lock, no sharing. A rebuilt compiler discards everything, including results that do not depend on it. | READ `build.av:186–197, 227, 302`; READ(agent) `store.av:136–149`, `DB_REDESIGN.md §8` | **Split the store.** Compiler-dependent rows stay under the print. Content-addressed blobs and step rows move to a shared machine cache with atomic writes, a size cap and `avra cache gc`. |
-| **I5** | **The evaluator is ~1000× native** and a `Map` filled in a loop is quadratic in memory. | PROBED 2.4 µs/iteration, 28–45 KB/s parsing; ticket avra-8sb5.73 (8,000 map sets peak 867 MB) | **Profile `run_call`'s hot loop; target 20×.** Then decide the JIT on numbers. A real provider (OpenAPI) is blocked on this; icons and photos are not. |
-| **I6** | **Every package extern is `World` at compile time**, so `@std/json`'s `parse` cannot settle: it reaches `avra_str_parses_float` in `@std/text`. | PROBED `const.reach` with that chain; READ `interp.av:535–541` | **`[link] pure`** (C7), and mark `@std/text`'s scanners first. |
-| **I7** | **`embed`'s defects.** (a) escapes its package; (b) nested in any expression it traps the compiler: `a 'File' write moved the whole relation after a compiler query … read it`; (c) a missing or non-UTF-8 file is an unlocated `avra:` trap; (d) the callee is found by the STRING `"embed"`; (e) text only; (f) reaching it at run time is a trap, not a refusal. | PROBED a, b, c; READ d `whole.av:382`; READ(agent) e, f (`FEEDBACK.md:4514`) | (a) is in flight on another branch. **(b)–(f) go away with C2**; do not fix them separately. |
-| **I8** | **An annotation inside generated declarations is silently dropped.** `@derive(Show)` on a provided type: no method, no diagnostic. | PROBED | **Expand generated annotations, or speak.** A provided type cannot get `@json` without it. |
-| **I9** | **`const` seats: three gaps.** A trap in the callee's inner `const` is spoken in the library, not at the call; a generic `T` const inside one is `const.form`; a call with all seats settled is not itself settled (`at(at(outer, "in"), "x")` → `type.const_seat`). | PROBED all three | Folded into C3; the first is a voice fix worth landing alone. |
-| **I10** | **Inputs load once per process; there is no long-lived mode in this tree.** | READ `query/memo.av:126–141`; READ(agent) `COMPILER.md §8` | **A re-read verb on inputs**, for `avra dev` (lives on branches `ui-dev`, `os-watch`). |
-| **I11** | **A new family costs ~8 edit sites** and a hand-written fingerprint closure; constants and dense ids are used as hashes. | READ(agent) `workspace.av:510–554, 974, 1398`, `db.av:160–216` | Derive the row plumbing from the `@family` mark (the `collect enum` is already there). |
-| **I12** | **A diagnostic cannot be rendered into a non-`.av` input** without that file being in the source table. | READ `workspace_analysis.av:580` (the embed is forced through `self.source`) | A text input projects to a `SourceFile` on demand (C6). |
-| **I13** | **A partly-held rebuild peaks 1.6× a cold one**; `Kernel.newly_read` holds 363 MB in 5.1 M boxes. Every kernel op snapshots and replaces the whole state. | tickets avra-8sb5.57.163, .76 (comment); READ `kernel.av:300–339` | Already ticketed. Named here because 5,000 members are 5,000 more queries. |
-| **I14** | **`avra explain` is documented in CLAUDE.md and absent from the tree.** `avra cache why` re-derives cold and prints relation families as `Relation N(arg)`. | PROBED `unknown command: explain`; READ(agent) `cache_walk.av:4–6, 98–111` | One inspection verb that names a value's inputs, steps and outputs. |
-
-**What is already good and general** (so it is built on, not replaced): the kernel itself (dependency discovery by execution, red-green, early cutoff, cycles, dynamic family registration); `Reach` as the compile-time fence; the digest-not-stamp law; `staged_beside`/`published` atomic publish; "the sources are the hold's oracle" (a cache bug costs time, never correctness); Declares annotations with hygiene and `avra expand`; `const` seats; `AVRA_DEP_AUDIT` for untracked reads.
-
-## 12. Prior art
-
-| | better than this design today at | steal | pain to avoid |
-|---|---|---|---|
-| **F# type providers** | IDE integration; a decade of providers (SQL, JSON, CSV, OpenAPI) | "the schema is a file in the repo"; sample-driven inference | erased types vanish from tooling; design-time and run-time are two assemblies; schema drift at run time; the IDE re-runs providers on every keystroke. Here: generative only, one package, kept by content. |
-| **Zig** comptime + `@embedFile` | comptime is the language itself, at native-ish speed | no separate macro language | `@embedFile` puts bytes in the binary — nothing else; no types from data without hand-written comptime parsers |
-| **Rust** `include_bytes!`, proc-macros, `build.rs`, sqlx offline | ecosystem; sqlx's checked queries | sqlx's offline mode = a committed snapshot (our lock + kept model) | `build.rs` and proc-macros are unsandboxed native code with ambient I/O; rerun rules are hand-written (`cargo:rerun-if-changed`) and often wrong |
-| **Bazel / Buck** | hermetic actions, remote cache and execution at scale | the action key; content-addressed store; persistent workers | BUILD files beside the code, a second language. Here the graph is the program. |
-| **Nix** | the derivation: the output path is known before building | lazy keyed outputs (`@step`) | evaluation cost; a store that grows without bound |
-| **Vite / webpack / esbuild** loaders, import attributes | the dev loop; a huge plugin ecosystem | on-demand transforms in dev; hashed names | imports of non-code are untyped strings; plugin order is global config; caching is per-plugin |
-| **Parcel** transformers | zero-config pipelines keyed by content | per-asset pipelines | config by file extension |
-| **Next.js** image | request-time resize, `srcset` from one prop | intrinsic size required; variants inside the picture | needs a server at run time |
-| **Swift asset catalogs / SwiftGen**, **Android `R`** | native platform integration, density and dark variants | the catalog is our iOS/Android projection; `R.drawable.close` is `icons.close` | SwiftGen is a pre-build script; `R` is ints, untyped across kinds |
-| **Flutter** assets | simple declaration | — | string keys, checked at run time |
-| **Gleam / Elm** codegen | simple: generated source is checked in and readable | `avra expand` gives the readable half without the check-in | stale generated files; a generate step outside the compiler |
-| **Unison** | code and results stored by hash | content keys for computations (I3) | — |
-| **Salsa / Adapton** | the query model itself | durable, validated-by-input-digest answers (I2) | — |
-
-**What this does that none do together:** the pipeline is ordinary typed code in the language; only what the program reaches is planned, made and shipped; the cache key, the file name and the receipt are one value; a third-party provider is sandboxed by default; and the same handle is a typed value in a CLI, a web page and an iOS app.
-
-## 13. Build order
-
-Each slice ends in something usable and landable.
-
-| # | slice | kind | usable at the end | needs |
-|---|---|---|---|---|
-| 1 | `\|>` | compiler (C1) | pipelines everywhere, at run time too | — |
-| 2 | the input door; `@std/source` v0: `file`, `dir`, `text`, `bytes`, `Set`, `each`; `embed` on top of it | compiler (C2) + library | `const cfg = parse_toml(file("./app.toml").text())`; a folder as a `Set` read with `.member("close")`; the `embed` hole and trap gone | I1 (this slice *is* I1), I7 |
-| 3 | members | compiler (C3) | `icons.close`, with the right error | I9 |
-| 4 | `[link] pure` + `[build] native`; `@std/text` scanners marked | compiler (C7) | `@std/json` and codecs run at build | I6 |
-| 5 | artifacts and `target()`; `Picture`/`Vector` readers; `image`/`icon` take them; web, html, tui, headless | compiler (C5) + library | `icon(icons.close)` ships a file on web and embeds in a CLI; `assets.json`; `wire.gen.js` as an artifact | 2, 3 |
-| 6 | the durable door and content keys | infra (I2, I3, I4) | settlements, lifts and derives survive a process; the compiler's own cold `check` gets faster | — (independent; start early) |
-| 7 | blobs, `@step`, workers, batching; `@std/image` resize + webp | compiler (C4) + vendored C | the photo pipeline, lazy, parallel, kept | 4, 5, 6 |
-| 8 | provider anchors; `toml`, `csv`, `environment`, `json_schema` | compiler (C6) + library | typed config, typed tables, typed env | 2, I8, I12 |
-| 9 | evaluator speed | infra (I5) | every settlement and derive is faster | — (independent; start early) |
-| 10 | per-name laziness; the OpenAPI client | library + C6's second half | `api.pets.get(id: 3)?` over a real spec | 8, 9 |
-| 11 | `url`, `avra.lock`, `avra lock` | compiler (C8) | a pinned remote spec; the transport packages will reuse | — |
-| 12 | `avra dev` incrementality; remote cache hook; iOS/Android projections; `catalogs`, `sql`, `wgsl`, `markdown` | mixed | the rest of §1 | 7, 8, I10 |
-
-Pure library after its slice: every reader and provider. Slices 1, 6 and 9 can start today, in parallel, with no dependency on each other.
-
-## 14. Open questions
-
-**Q1. Do transforms map over a set by themselves?**
-```avra
-const photos = dir("./photos") |> pictures |> each(thumb)                      // A: explicit
-const photos = dir("./photos") |> pictures |> resize(width: 320) |> webp(80)   // B: every std transform takes an item OR a set
-```
-Recommend **A now, B later**. A keeps `x |> f` meaning `f(x)` and keeps fan-out honest. B is expressible today only for a nominal set type per kind (PROBED: `fn resize<P: Pictures>(p: P, …) -> P` runs); over a generic `Set<T>` it needs a bound on an impl, which is refused. B is additive when that lands.
-
-**Q2. Member reads: sugar, or spelled?**
-```avra
-icon(icons.close)               // A: `x.name` reads a settled member
-icon(icons.member("close"))     // B: the const-seat call, written out
-```
-Recommend **A**. It is the whole ergonomic point, the error lists the members, and the rule is one sentence. B stays as the door for names that are no identifier.
-
-**Q3. How is a provider anchored?**
-```avra
-const api = file("./petstore.yaml") |> openapi      // A: the const is the anchor
-@openapi("./petstore.yaml") type Petstore = {}      // B: today's annotation over an empty type
-```
-Recommend **A**. B works today with a path literal (PROBED) but anchors on a declaration that means nothing. A costs C6.
-
-**Q4. What are provided names called?**
-```avra
-fn show(p: Pet)           // A: bare, in the anchor's module; a clash is refused; `openapi(prefix: "Store")` is the hatch
-fn show(p: ApiPet)        // B: always prefixed by the anchor
-```
-Recommend **A**: put the anchor in its own file and the module is the namespace (`use store.{Pet}`), which is already how modules work. Data whose own names are paths (a TOML table) is prefixed because it has no name of its own (`ConfigServer`).
-
-**Q5. May a package's C run at build?**
-```toml
-[build]
-native = ["@std/image"]     # A: yes, only where the ROOT grants it; std is granted
-                            # B: never — codecs wait for a native tier for Avra code
-```
-Recommend **A**. Without it there is no image pipeline this year. The grant is explicit, at the root, and the step still runs in a capped worker.
-
-**Q6. `|>`: placeholder and leading lines.**
-```avra
-x |> format("v: {}", _)     // A: `_` places the value in another seat
-x                            // B: a line may START with |>
-    |> f
-```
-Recommend **B now, A later**. B is how every pipeline is written and matches `.name` chains. A is rarely needed once APIs take the subject first; `_` stays reserved for it.
-
-**Q7. Does `url(…)` land with this, or with package transport?**
-```avra
-const api = url("https://…/spec3.json") |> openapi    // A: slice 11 here, minimal: https + sha256 + avra.lock
-const api = file("./vendor/spec3.json") |> openapi    // B: vendor the file until packages bring a transport
-```
-Recommend **B for now**: `file` and `dir` cover everything in §1 but one line, and the first lockfile deserves its own design with fetched packages.
-
-**Q9. Where does a LOCAL asset live by default?**
-```
-A: by size — small in the program, large beside it (web: 4 KiB line; CLI/server: in the program up to 1 MiB, then an error)
-B: by target only — web always a hashed file, CLI always embedded
-```
-Recommend **A**, with `at(…)` per asset or pipeline and `[assets]` per project (§9.2). A gives a web page zero requests for its icons and a cached file for its photos without anyone choosing; B makes 30 icons 30 requests or a photo part of the wasm. The two numbers are guesses to be measured on `tools/ui-board`.
-
-**Q8. Fix the evaluator, or build a native tier?**
-```
-A: profile and fix the interpreter (target 20×), keep one engine at build
-B: JIT settlements through the LLVM already in the process
-```
-Recommend **A first**. 2.4 µs per loop iteration says there is a cheap order of magnitude. A JIT adds traps, fuel and a second engine to keep honest; decide it on numbers after A.
-
----
-
-# Appendix A — every compile-time mechanism today
-
-| mechanism | lives | runs | mints names? | reads | cached | cost / budget | real consumers |
-|---|---|---|---|---|---|---|---|
-| `const` settlement | `compiler/workspace_analysis.av:451,568`; `backend/interp.av:352` | after typing; lazily on a lowered read, eagerly for every const in a build (`derive.av:597`) | no | pure code from any package; `embed` | `Family.Settled`, in memory; kept verdict on disk only for unseated consts (`kept_settle.av:40`) | 600,000 steps, 5 MiB, raised by the ROOT's `[lifted]` | every package; `consts/tests/*` |
-| `const` seats | `features/fns/mod.av:51`, `checks.av:1627` | typing + lowering; a unit per settled value | no | — | in memory, per value fingerprint | as above | regex-like `matches`, routes |
-| annotations: Validates / Records | `features/annotations/check.av:27,168` | at typing | no | the declaration; computed arguments | `Family.Lifted`, memory only | as above | `@impact`, `@deprecated`, `@plans` markers |
-| annotations: Declares / Derives | same; `compiler/expand.av:93,124`; `workspace.av:1518` | **inside resolve** | **yes**, into the file; other packages see them (`modules.av:378`) | the declaration from the PARSE store; literal arguments only (F2067); `type_named` | `Lifted`, `Expanded`: memory only | as above | `@json`, `@model`, `@relation`, `@query`, `@form`, `@action`, `@derive(Show/Eq/Decode/View/Codes/…)` |
-| `quote { }` | `features/quote/mod.av:13` | parsed where written; spliced in expansion | via a directive | — | — | — | every derive |
-| sublanguages (`grammar`, block words) | `features/sublang/mod.av:24` | at the parse; nothing evaluated | no | the provider module's plain parse | `Family.Plain` | — | `@std/sql`'s lexicon; no production block word (READ(agent)) |
-| components | `features/components/mod.av:22` | a one-`quote` `expand` at the parse; a computing `expand` is refused (`template.av:88`) | no | `self` | — | — | `@std/cli` (`command`, `flag`), `@std/ui` (every primitive), `@std/http` (`get`, `server`), `rule` |
-| `rule` | `features/rule.av:44` | a component instance; patterns are quotes | no | — | — | — | the idiom gate |
-| `table<Row>` | `features/tables/mod.av:14` | parse-time sugar | no | — | — | — | registries |
-| `collect` / `collect enum` | `features/collects/mod.av:37` | lowering; `collect enum` mints variants | variants | declarations of a kind | — | — | `Family` itself (`families.av:150`) |
-| `embed` | `std-meta/src/meta.av:311`; `interp.av:845` | at settlement; admitted at the parse by callee NAME | no | one text file, any path on the machine | touched as a `Source`; `KeyParts.runs` covers it per file (`record.av:1092`) | — | tests only; no production use (READ(agent)) |
-| the `@std/meta` crossing | `features/crossing.av` | each lift | — | slot-ordered records | — | — | every annotation |
-| the extern host | `interp.av:1360`, `interp_host.av:255` | `avra run` only | — | a package's `.dylib` | — | — | `@std/io`, `@std/process` under `avra run` |
-
-**Answers asked for:**
-
-| question | answer | receipt |
+| asked | answer | receipt |
 |---|---|---|
-| Can a `const` hold a record whose FIELDS came from data, so `photos.hero` types? | Not by itself: a const's type is its initializer's static type. **Yes through a Declares annotation** that generates the record type and the const. | PROBED C.6 |
-| Can a compile-time fn read a file? | Only `embed`, only a literal, only text, only in a const settlement. `read_text` is `const.reach`. A Declares annotation cannot even `embed`. | PROBED C.3, C.4, C.7 |
-| Can an annotation's argument be a path? | Yes — it is a string literal like any other. The annotation cannot read it. | PROBED C.6, C.7 |
-| What does `@std/openapi` do? | Emits an OpenAPI 3.1 `Json` FROM a route table at run time. No file read, no codegen, no client. | READ(agent) `std-openapi/src/openapi.av:26–76` |
-| Can the evaluator call package C? | `avra run` can (dlopen). A compile-time run cannot: an unknown row "reaches whatever it likes". | READ `interp.av:535–541`, `:195–199`; PROBED C.3 |
-| Is settlement parallel? | No. | READ(agent) `workspace_analysis.av:496`, `FIBERS_DESIGN.md:160` |
-
-# Appendix B — the compiler DB as a consumer meets it
-
-| step | today | general? |
-|---|---|---|
-| 1 declare a query | a `@family(rank, …)` marker type + a `DbRow` variant + a hand unwrapper + a `demand` call + a verifier arm + ~4 exhaustive arms. 32 families. | no — ~8 edit sites |
-| 2 key it | `Key = { family: int, arg: int }`; anything else interned by hand through a side `Map<string,int>` | ints only |
-| 3 depend on an outside input | two input families: `.av` text and `avra.toml`. Nothing for bytes, listings, env, tools, URLs. `@input fn file_text` / `env_value` exist over the *other* `Db` (`compiler/inputs.av:21`), with one caller and none. | **no** |
-| 4 early cutoff | one int compare (`kernel.av:677`); fingerprints are hand-written closures, some constant | yes, with the "whole value" hazard open (`parsed`) |
-| 5 persist | `.avra-cache/<compiler-print>/{sig,fp,unit,obj,bin,warn,rows}/<k2>/<key>` + `.deps`; text rows; bytes only as whole files | **no — bespoke** (17 write sites) |
-| 6 invalidate | revisions within a process; across processes, held-file keys re-derived; `anew` on a refused hold | per file |
-| 7 inspect | `AVRA_QTRACE`, `--time`, `avra cache why/dependents/changed/held`, `AVRA_DEP_AUDIT` | partly — `why` re-derives cold |
-
-**The 17 bespoke write sites** (READ(agent)): `suite.av:128`; `kept_settle.av:150`; `interface.av:66,85`; `db.av:593`; `record.av:571`; `derive.av:200, 244, 509, 530, 749, 761`; `build.av:530, 696/783, 719, 725`; `voices.av:689`; `cli/commands/fmt.av:281,307`.
-
-**How settlements and expansions are cached:** `Settled` in memory under an interned string; on disk as a kept verdict (unseated consts only) and as a const unit row in a held file's record ("A HELD CONST'S VALUE IS THE RECORD'S, NEVER RE-EVALUATED" — READ(agent) `workspace_analysis.av:588`). `Lifted` and `Expanded` are never written: every read file re-runs its derives in each cold process.
-
-**A 4 MB image as a const today:** impossible as bytes (`embed` is text; a PNG traps "is not UTF-8 — byte 0", PROBED C.9). As text it is static data in the binary.
+| Can a `const` hold a record whose fields came from data? | Through a Declares annotation that generates the type and the const — the MINTING works. The names in my probe were hard-coded; the annotation cannot read the folder. | C.6, C.7 |
+| Can a compile-time fn read a file? | Only `embed`: a literal, text, in a const. | C.3, C.4, C.7 |
+| Can an annotation's argument be a path? | It is a string like any other; the annotation cannot read it. | C.6 |
+| What does `@std/openapi` do? | Emits a spec from routes at run time. No reader. | READ(agent) `openapi.av:26–76` |
+| Does any query family persist? | No KERNEL family does. `Db.answers` persists `@query` answers and has no caller outside tests. | READ `answers.av`; PROBED grep |
+| Is settlement parallel? | No. Object emission is, 4 threads (`llvm.av:179`). | READ |
 
 # Appendix C — probe log
 
-Binary: `/Users/tristan/projects/tristanMatthias/avra-ui-assets-design/build/avra`, `LLVM_PREFIX=/opt/homebrew/opt/llvm`. Scratch: `/tmp/sources-probe/{pkg,tp}`. Each line: what ran → what it said.
+Binary `avra-ui-assets-design/build/avra` (0b5bd64), `LLVM_PREFIX=/opt/homebrew/opt/llvm`. `run`/`check` of scratch files, plus single-file `build` where marked.
 
 | # | probe | output |
 |---|---|---|
-| C.1 | `const k = 3 \|> dbl` (`check`) | `error[parse.expected]: expected BREAK while parsing 'stmt'` at the `\|` |
-| C.2 | `const H: string = embed("/etc/hosts")` (`run`) | `256` — a file outside the package, read |
-| C.3 | `const T = read_text("src/data.json")`, read by the program | `error[const.reach]: a const cannot read the world … 'T' reaches 'avra_io_open' in '@std.io.read_bytes'` |
-| C.3b | the same const, never read (`check`) | clean — settlement is lazy under `check` |
-| C.4 | `const DOC = parse(embed("data.json"))` with `@std/json` | `const.reach … reaches 'avra_str_parses_float' in '@std.text.parse_float', called from '@std.json.scan_number'` |
-| C.5 | `const DOC = parse_toml(embed("cfg.toml"))` | `avra: a 'File' write moved the whole relation after a compiler query (reader 936) read it this revision` — the compiler traps |
-| C.5b | `const TEXT: string = embed("cfg.toml")` then `const DOC = parse_toml(TEXT)` | `2 name 2` — TOML settles at compile time |
-| C.5c | `const B: Bytes = embed("data.json").bytes()` | the same `File` trap; through a named text const: `29 123` |
-| C.6 | a two-package prototype: `@folder("icons") type Icons = {}`, the annotation answering `Declared` with `type ${t}Set = { ..${fields} }` and `const ${bound} = ${t}Set { ..${inits} }`; program reads `icons.close` | `icons/close.svg 24` in 0.14 s. `icons.clsoe` → `error[type.unknown_prop]: no field 'clsoe' on 'IconsSet' … help: the fields are 'close', 'menu'`. `avra expand` prints both with `// from @folder on icons — template …/provider.av:16` |
-| C.7 | the same annotation calling `embed("names.txt")` | `error[annotation.unsettled]: … 'folder' embeds a file in '@std.meta.embed', but this compile-time call cannot return build inputs` |
-| C.8 | `fn at(const s: Set, const name: string) -> Icon { const it = found(s, name); it }`; `at(icons, "menu")` / `at(icons, "clsoe")` | `m.svg` / `error[const.trap]: a const trapped while settling … 'it' index -1 is out of bounds (length 2)` — spoken at the library's line, not the call |
-| C.8b | `impl Set<T> { fn member(const name: string) -> T }`; `s.member("b")` | `20` |
-| C.8c | a generic `fn at<T>(const s: Set<T>, const name: string) -> T` with an inner `const`; and `at(at(outer, "in"), "x")` | `error[const.form] … 'it' declares 'T'`; `error[type.const_seat]: 's' is a 'const' seat … this is computed at run time` |
-| C.9 | `embed("a.png")`; `embed("nope.txt")`; `embed("empty.txt")` | `avra: '…/a.png' is not UTF-8 — byte 0` (no location); `avra: '…/nope.txt' does not exist` (no location); `0` |
-| C.10 | a 4,125,000-byte text file as `const T: string = embed(…)` | `check` 0.27 s, 66 MB peak; `run` 0.12 s |
-| C.11 | `for i in 0..n { t = t + i % 7 }` under `avra run`, n = 0.5M, 1M, 2M, 20M | 1.19 s, 2.42 s, 4.89 s, 47.6 s. The same as a `const`: 48.1 s. Default budget: `error[const.budget]: … took more than 600000 steps` at n = 1M |
-| C.12 | `parse_toml` over 17,400 bytes; `@std/json` `parse` + `to_text` over 18,991 bytes (`avra run`) | 0.74 s; 0.48 s |
-| C.13 | `each(s) { dbl(it, by: 3) }` in a const; `each(s, dbl(it, by: 5))` | first runs; second `error[resolve.unresolved]: 'it' rides a METHOD call's arguments` |
-| C.14 | `trait Pictures { fn each(f: fn(Image) -> Image) -> Self }`, impls for `Image` and `Images`, `fn resize<P: Pictures>(p: P, width: int) -> P` | `3 4` — runs. `impl Pictures for Set<Image>` → `error[type.impl]: … names a specific instantiation` |
-| C.15 | a generic `each<A, B>(s: Set<A>, f: fn(A) -> B) -> Set<B>` called in a const with a named fn | `2,4` |
-| C.16 | `@derive(Show)` written inside a Declares annotation's template, over a generated type | `error[type.method]: 'Pet' has no method 'show'` — the annotation was dropped, silently |
-| C.17 | `type R = { type: int }`; `let café = 1`; `type R = { 2fa: int }` | `resolve.reserved: 'type' is a keyword`; `lex.error: unexpected character`; `parse.expected` |
+| C.1 | `const k = 3 \|> dbl` | `error[parse.expected]: expected BREAK while parsing 'stmt'` |
+| C.2 | `embed("/etc/hosts")` | `256` |
+| C.3 | `const T = read_text(…)`, read | `error[const.reach] … 'T' reaches 'avra_io_open'` |
+| C.3b | the same const, unread, `check` | clean |
+| C.4 | `const DOC = parse(embed("data.json"))` | `const.reach … reaches 'avra_str_parses_float' in '@std.text.parse_float'` |
+| C.5 | `parse_toml(embed("cfg.toml"))` in one const | `avra: a 'File' write moved the whole relation after a compiler query (reader 936) read it this revision` |
+| C.5b | through a named text const | `2 name 2` |
+| C.6 | `@folder("icons") type Icons = {}`, a Declares annotation minting `type ${t}Set = { ..${fields} }` and a const; **the member names were a hard-coded list — the path literal was unused** | `icons/close.svg 24`, 0.14 s; typo → `no field 'clsoe' on 'IconsSet' … the fields are 'close', 'menu'`; `avra expand` prints both with their template line |
+| C.7 | the same annotation calling `embed` | `… this compile-time call cannot return build inputs` |
+| C.8 | `fn at(const s: Set, const name: string)` with an inner `const`; a wrong name | `error[const.trap] … index -1 is out of bounds`, at the library's line |
+| C.8b | `impl Set<T> { fn member(const name: string) -> T }`; `s.member("b")` | `20`. **Passing case only.** The reviewer ran the wrong name: `check` clean, `run` traps. This form is no longer used (§4.4). |
+| C.8c | a generic const-seat fn with an inner `const`; `at(at(outer, "in"), "x")` | `const.form … declares 'T'`; `type.const_seat … computed at run time` |
+| C.9 | `embed` of a PNG; of a missing file | `avra: '…/a.png' is not UTF-8 — byte 0`; `avra: '…/nope.txt' does not exist` — no location |
+| C.10 | a 4.1 MB text file as a const | `check` 0.27 s, 66 MB peak |
+| C.11 | `for i in 0..n { t = t + i % 7 }`, `avra run` | n = 0.5M, 1M, 2M, 20M: 1.19 s, 2.42 s, 4.89 s, 47.6 s. Default budget refuses at 1M: `took more than 600000 steps` |
+| C.12 | `parse_toml` over 17.4 KB; `@std/json` parse + print over 19 KB, `avra run` | 0.74 s; 0.48 s |
+| C.13 | `each(s) { dbl(it, by: 3) }`; `each(s, it * 2)` | runs; `error[resolve.unresolved]: 'it' rides a METHOD call's arguments — nothing binds it here` |
+| C.14 | `trait Pictures { fn each(f: fn(Image) -> Image) -> Self }`, impls for an item and a nominal set, `fn resize<P: Pictures>(p: P, width: int) -> P` | `3 4` |
+| C.15 | generic `each<A, B>(s: Set<A>, f: fn(A) -> B)` in a const, a named fn | `2,4` |
+| C.16 | `@derive(Show)` inside a Declares template | `'Pet' has no method 'show'` — dropped, no word |
+| C.17 | a field named `type`; `let café`; a field `2fa` | `resolve.reserved`; `lex.error`; `parse.expected` |
 | C.18 | `avra explain icons` | `avra: unknown command: explain` |
-| C.19 | `grep -rn '\|>' packages --include='*.av'`, comment lines removed | no hits |
-| C.20 | main's `build/avra` (09-30) over main's packages | `error[type.host_seat]: the answer of 'avra_bytes_with_room' wears 'Bytes', which cannot cross to C` — a stale binary; not used |
-| C.21 | `const s = S { f: d }` where `f: fn(int) -> int` | `error[const.form]` — a value holding a fn does not settle (why a step is not a closure in a value) |
-| C.22 | `fn webp(n: int, quality: int = 80, lossless: bool = false)`; `webp(1, lossless: true)` | `1 q80 true` — named arguments skip defaulted seats |
+| C.19 | `grep '\|>'` over every `.av` in `packages/`, comments removed | nothing |
+| C.20 | main's 09-30 binary over main's packages | `type.host_seat: the answer of 'avra_bytes_with_room' wears 'Bytes', which cannot cross to C` |
+| C.21 | a const record holding a fn | `error[const.form]` |
+| C.22 | `webp(1, lossless: true)` with defaulted seats | `1 q80 true` |
+| **C.23** | package `ks`: `const TEXT: string = embed("x.txt")`, `println` its length. `build`, run → `3`. Edit `x.txt` to 8 bytes, `build`, run. Then also append a comment to `main.av`, edit to 12 bytes, `build`, run. Then park `.avra-cache` and `build`. | `3`; `3`; **`3`**; with the cache parked: the true length. Repeated: edit to 8 → `build` prints `2` (stale), `avra run` prints `8`. |
+| C.24 | `data/data.av`: `export const K: int = made(3)`; `main.av` prints `K`. `build`, run; change `made`'s body; `build`, run | `30`; `33` |
+| C.25 | package `cap`: a lib exports `type Handle = { path: string, seal: Seal }` with `Seal` private. Outside: `a with { path: "/etc/hosts" }`; `Handle { path: "/etc/passwd", seal: a.seal }` | `read /etc/hosts 7 \| read /etc/passwd 7` — both forgeries accepted |
+| C.26 | a Declares annotation minting N record types, `check` | N=200: 0.16 s, 60 MB. N=1000: 0.24 s, 120 MB. Unchanged re-check: 0.04 s. One comment appended: 0.25 s. N=4000: `annotation.unsettled` (budget) |
+| C.27 | `impl Set<T> { fn member(name: string) -> T? }`; `const menu: Icon? = icons.member("menu")`; `const typo: Icon? = icons.member("clsoe")` | `m.svg absent`, 0.04 s |
+| C.28 | a 2,000-item nominal set built, mapped by `resized`, one member read as a const | `320`, 0.06 s, default budget |
+| C.29 | a 2,000-item set where each item runs a 400-iteration fn; one member read | `error[const.budget]: … 'icons' took more than 600000 steps` |
+| C.30 | Python: list 2,000 files and read 512 bytes of each; SHA-256 each whole | 31.8 ms; 34.4 ms |
+| C.31 | `trait Shots<Out>`, four impls, `fn resize<O, S: Shots<O>>(s: S, width: int) -> O`; `resize(File {…}, 3)` | `error[type.mismatch]: 'O' is not pinned by the arguments` |
+| C.32 | package `nt`: read a 5.47 MB JSON, `parse`, `to_text`, print the length. `avra build`; run; rebuild | build 0.68 s; run 0.27 s user (0.72 s wall, first exec), 128 MB peak; warm rebuild 0.05 s |
+| C.33 | 200 runs of a tiny native Avra binary in a shell loop | 0.57 s |
+| C.34 | `grep RLIMIT\|setrlimit\|sandbox_init\|seccomp` over `runtime/*.c` and every package's C | nothing |
+| C.35 | a user `fn embed(p: string) -> int { p.length }`, called with a literal | `19` — no refusal; `admit_embeds` matched it by name (READ `whole.av:382`) |
 
-Not probed (no build allowed here): whether an edited embedded file invalidates the kept BINARY fast path (`kept_binary`, `build.av:475`). A survey agent could not find an embed's digest in `program_key`; `KeyParts.runs` covers it per file. Probe it in slice 2.
+Not probed: the struct-literal name hole the reviewer hit in a template; whether `avra dev` on its branches is already one-shot; C8's size.
