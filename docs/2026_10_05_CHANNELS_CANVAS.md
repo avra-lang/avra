@@ -1,9 +1,9 @@
-# FLOW — the canvas (v2)
+# FLOW — the canvas (v3)
 
 Every site in the tree that hand-rolls a stream, a queue, a poll
 loop, a callback registry, a readiness wait, a retry loop, a pipe or a
 producer/consumer pair, and what it becomes under
-docs/2026_10_05_CHANNELS.md. "Slice" is that doc's §16.
+docs/2026_10_05_CHANNELS.md. "Slice" is that doc's §17.
 
 Surveyed on `bd36bf7`, `ui-dev` `faf9ddb` for `avra dev`, and
 `../avra-os-watch` (staged) for the watch. The survey was done by
@@ -53,16 +53,16 @@ Paths are under `packages/` unless they start with `runtime/` or
 
 | site | today | becomes | deletes | risk | slice |
 |---|---|---|---|---|---|
-| `std-http/src/server.av:695-860` h2 conversation (`talked`, `waited_on`, `bell_waited`, `stall_left`; bell waits at `:849,854,860` ✓) | a reader task, per-stream handler tasks and a framer meet at ONE bell; every wake rescans every line; four deadlines folded by hand into one timeout | one `select`: the inbox, ONE replies channel every handler task sends into, `after(idle)`, `after(stall)`. Windows open when a WINDOW_UPDATE arrives through the inbox, so they are not arms | ~60 (R): the protocol logic stays | the most load-tested code here; the conformance rows | 12 |
-| `server.av:980-1024` `Inbox`, `read_beside` (`:1017` ✓) | `Cell<Inbox>` appended by the reader task; waits on the bell at 256 KiB | a channel the reader task `produce`s | ~25 | the bound is octets, a channel's is items: capacity by weight (§9) | 12 |
-| `server.av:976,787,1039` `Line.reply: Cell<H2Reply?>` | a one-shot slot a handler sets, then rings | the replies channel above | ~30 | v1 said both "a task per arm" and "a channel"; it is the channel | 12 |
-| `server.av:780` `sleep(ms(0))` | a yield used as an ORDERING dependency (R) | must be understood before it moves | 0 | missed by v1 | 12 |
-| `h2_serve.av:173-262` `Inbound`, `stream_body` (`:255` ✓) | a one-slot mailbox behind a fake `Transport` | a `Source<Bytes>` per stream | ~60 | a window is given back only for octets TAKEN (framing laws §5.5, READ(agent)) | 12 |
+| `std-http/src/server.av:695-860` h2 conversation (`talked`, `waited_on`, `bell_waited`, `stall_left`; bell waits at `:849,854,860` ✓) | a reader task, per-stream handler tasks and a framer meet at ONE bell; every wake rescans every line; four deadlines folded by hand into one timeout | one `select`: the inbox, ONE replies channel every handler task sends into, `after(idle)`, `after(stall)`. Windows open when a WINDOW_UPDATE arrives through the inbox, so they are not arms | ~60 (R): the protocol logic stays | the most load-tested code here; the conformance rows | 8b |
+| `server.av:980-1024` `Inbox`, `read_beside` (`:1017` ✓) | `Cell<Inbox>` appended by the reader task; waits on the bell at 256 KiB | a channel the reader task `produce`s | ~25 | the bound is octets, a channel's is items: capacity by weight (§9) | 8b |
+| `server.av:976,787,1039` `Line.reply: Cell<H2Reply?>` | a one-shot slot a handler sets, then rings | the replies channel above | ~30 | v1 said both "a task per arm" and "a channel"; it is the channel | 8b |
+| `server.av:780` `sleep(ms(0))` | a yield used as an ORDERING dependency (R) | must be understood before it moves | 0 | missed by v1 | 8b |
+| `h2_serve.av:173-262` `Inbound`, `stream_body` (`:255` ✓) | a one-slot mailbox behind a fake `Transport` | a `Source<Bytes>` per stream | ~60 | a window is given back only for octets TAKEN (framing laws §5.5, READ(agent)) | 8b |
 | `server.av:158,273,632-661` `Drain` | `reading: List<bool>` by descriptor so `stop()` can interrupt each parked reader | a cancel on the server's scope | ~45 | GOAWAY then linger is cleanup that waits: its own `within` | 3 |
 | `server.av:321-324,393-403` `stopped_with`, `core_ended` | one task per core as a wait-any | `select` over `any(ends)` | ~15 | — | 14 |
 | `server.av:293-304` accept loop | `conns.push(spawn self.connection(c, app))` | `for c in listener { … }` | 3 | — | 6 |
 | `server.av:578-590,914-945` `pumped`, `h2_pumped` | pull a piece, write, `sleep(ms(0))` | a `for` over the body's stream; the write parks | ~30 | "one piece per stream in memory" | 9 |
-| `server.av:1065-1072` `lingered` (`:1071` ✓) | bell wait until a deadline | a `select` with a bound `after` | 6 | — | 12 |
+| `server.av:1065-1072` `lingered` (`:1071` ✓) | bell wait until a deadline | a `select` with a bound `after` | 6 | — | 8b |
 | `http.av:354` `Stream { pull, length, ended }` ✓ | outgoing body: a record of closures (pull) | `TryStream<Bytes, E>` | ~40 | public API in every streaming handler; the NAME is taken | 9 |
 | `body.av:51-304` `Body`, `Inflow`, `Pull` | incoming body: a `Cell` state machine and a refill loop (pull) | a `TryStream<Bytes, BodyError>`; the framing machine stays | ~100 | — | 9 |
 | `fetch.av:80,523` `Payload.Stream(next: fn() -> Bytes?, …)` | uploads (pull) | `Stream<Bytes>` | ~20 | — | 9 |
@@ -72,7 +72,7 @@ Paths are under `packages/` unless they start with `runtime/` or
 | `ws.av:207-345` `receive`, `frame`, `Pending` | frame loop, reassembly, ping/pong | a `TrySource<Message, WsError>`; reassembly stays | ~30 | close codes are protocol law | 9 |
 | `pool.av:67-178` `Pool` (`:176` ✓) | lend/keep counts; a waiter parks on `freed` and re-checks | the wait becomes a gate wait. NOT a channel of carriers: that cannot say newest-first reuse, a filtered take, or "wait for a slot" (R) | ~12 (R) | — | 1 |
 | `fetch.av:232-265` `Retry`, `tried` | retry by recursion with backoff | the same policy value a `queue` uses | ~20 | never with a stream body, never past the deadline | 10 |
-| `h2_client_drive.av:91-128,173,191` | pump until every id answered; parallel arrays (UNREAD bodies) | `select` over the connection and `any(answers)` | ~40 | UNREAD | 12 |
+| `h2_client_drive.av:91-128,173,191` | pump until every id answered; parallel arrays (UNREAD bodies) | `select` over the connection and `any(answers)` | ~40 | UNREAD | 8b |
 | `client.av:292-362` h1 reply | read until whole (UNREAD) | a streamed `Answer.body` becomes possible | adds | UNREAD | 9 |
 | `files.av:159-183` `file_stream` | a file as `Stream`, 64 KiB per pull | a `yield` loop | ~15 | — | 9 |
 | `quota.av:41-90` token bucket | a rate | unchanged | 0 | — | — |
@@ -151,7 +151,7 @@ under `tools/` is a heartbeat. Each is "a child's exit or a timer".
 3. **`@std/ui`'s inbox** (slice 7). The door's first second writer.
 4. **`@std/process`'s pump** (slice 8). Removes a private `poll()` and
    a tuned interval. High risk; after 2 and 3 have proved `select`.
-5. **`@std/http`'s h2 conversation** (slice 12). Needs `any` and a
+5. **`@std/http`'s h2 conversation** (slice 8b). Needs `any` and a
    fan-in channel.
 6. **One stream type for http's four shapes** (slice 9; blocked on
    COLLECTIONS S3).
