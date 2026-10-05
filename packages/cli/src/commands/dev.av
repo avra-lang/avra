@@ -20,7 +20,7 @@ use @std.http.route.{Route, fixed}
 use @std.http.server.{server}
 use @std.http.files.{Files, directory}
 use @std.http.sse.{Event, Next, Source, Resume, event_stream, quiet_default}
-use @std.net.{Bell}
+use @std.net.{Bell, Listener}
 use @std.io.{read_bytes, read_text, exists, is_dir, stamp}
 use @std.path.{joined_path, file_name}
 use @std.process.{Tool, tool, cmd, inherited}
@@ -108,7 +108,7 @@ fn hosted(args: CliResult, path: string, routes: List<Route>, turn: fn() -> bool
     }
     let _ = turn()
     let at = "http://${site.host}:${bound.listener.port}/"
-    println("dev: ${path} at ${at}")
+    println("dev: ${path} at ${at} — ${reach_words(bound.listener)}")
     spawn bound.run(1)
     if args.has_flag("open") { opened(at) }
     let pause = ms(parse_int(args.option("interval")) ?? default_interval)
@@ -424,6 +424,19 @@ fn dev_tags(module: int) -> string {
 fn build_line(now: Standing, took_ms: int) -> string {
     if now.failure == "" { return "dev: built module ${now.number} — ${now.module.length} bytes in ${took_ms} ms" }
     if now.number == 0 { "dev: the build failed — nothing is served yet" } else { "dev: the build failed — module ${now.number} is still served" }
+}
+
+/// Who a listener can be reached by, as the kernel holds its address.
+/// Every reach spelled.
+fn reach_words(door: Listener) -> string {
+    match door.reach() {
+        .Ok(far) -> match far {
+            .Everywhere -> "every interface of this machine",
+            .Loopback -> "this machine alone",
+            .One -> "that address alone",
+        },
+        .Err(e) -> e.describe().message,
+    }
 }
 
 fn not_served(why: string) -> string { "${why} — `--port 0` takes any free port" }

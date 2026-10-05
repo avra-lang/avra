@@ -87,29 +87,18 @@ fn package_of(name: string, source: string) -> string {
     root
 }
 
-/// What the machine's own listing of listening sockets says of `port`:
-/// its lines — none where the machine has no `lsof`.
-fn listening_at(port: string) -> string {
-    match tool("lsof") {
-        .Ok(lsof) -> match cmd(lsof, ["-nP", "-iTCP:${port}", "-sTCP:LISTEN"]).outcome() {
-            .Ok(o) -> o.out.stdout,
-            .Err(_) -> "",
-        },
-        .Err(_) -> "*:${port} (no lsof here: taken on the server's word)",
-    }
-}
-
 /// `avra dev --host <host>` over a plain directory on any free port,
-/// while it serves: the status a GET through the loopback answers, and
-/// whether the machine lists it listening on every interface.
+/// while it serves: the status a GET through the loopback answers, then
+/// who it says it can be reached by — the kernel's own word for the
+/// address it bound, which the server reads back and says.
 fn reached(host: string) -> Result<string, ProcessError> {
     let asked = cmd(tool(avra_bin())?, ["dev", "--host", host, "--port", "0", plain_dir()]) with { env: inherited(), timeout: hang_bound() }
-    mut child = asked.start(Ready.Line(" at http://${host}:"), ms(120000))?
-    let port = child.out.split(" at http://${host}:").last()?.split("/")?.first() ?? ""
+    mut child = asked.start(Ready.Line("this machine"), ms(120000))?
+    let said = child.out.split(" at http://${host}:").last() ?? ""
+    let port = said.split("/").first() ?? ""
     let status = match get("http://127.0.0.1:${port}/") { .Ok(a) -> a.status, .Err(_) -> 0 }
-    let everywhere = listening_at(port).contains("*:${port}")
     child.stop()
-    "${status} ${everywhere}"
+    "${status} ${said.split(" — ").last()?.trim() ?? "nothing said"}"
 }
 
 spec "avra dev — as its help and its flags say" {
@@ -127,13 +116,19 @@ spec "avra dev — as its help and its flags say" {
         }
     }
     given "`--host 0.0.0.0`" {
-        then "it answers through the loopback and listens on every interface" {
-            match reached("0.0.0.0") { .Ok(said) -> said == "200 true", .Err(_) -> false }
+        then "it answers through the loopback and is bound to every interface" {
+            match reached("0.0.0.0") {
+                .Ok(said) -> said == "200 every interface of this machine",
+                .Err(_) -> false,
+            }
         }
     }
     given "no `--host`" {
-        then "it answers through the loopback and listens on no other interface" {
-            match reached("127.0.0.1") { .Ok(said) -> said == "200 false", .Err(_) -> false }
+        then "it answers through the loopback and is bound to it alone" {
+            match reached("127.0.0.1") {
+                .Ok(said) -> said == "200 this machine alone",
+                .Err(_) -> false,
+            }
         }
     }
 }

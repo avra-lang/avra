@@ -45,7 +45,7 @@ until grep -q '^dev: .* at http' "$work/dev.out" 2>/dev/null; do
     [ "$tries" -lt 600 ] || { echo "ui-browser: \`avra dev\` never said where it serves"; cat "$work/dev.err"; exit 1; }
     sleep 0.1
 done
-url=$(sed -n 's/^dev: .* at \(http[^ ]*\)$/\1/p' "$work/dev.out" | head -1)
+url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/dev.out" | head -1)
 
 if ! out=$(node "$here/ui-board/browser.mjs" "$url" --source "$work/tools/ui-board/src/board.av" ${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"} 2>&1); then
     echo "$out" | grep -v '^ok ' ; echo "ui-browser: the board failed in the browser"; exit 1
