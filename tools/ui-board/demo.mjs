@@ -1,7 +1,8 @@
 // The board end to end, headless: the real module + the REAL page glue
-// (bootstrap + WASI surface) over a stub document. Prints the page after
-// the first paint and after each event, so the wire, the glue and the app
-// are proven together before any browser is opened.
+// (bootstrap + WASI surface) over a stub document. Each claim below is
+// CHECKED — a line says `ok` or `FAILED`, and one failure exits 1 — so
+// the wire, the glue, `mount` and the app are proven together before any
+// browser is opened. `make ui-board` builds the module and runs this.
 //
 // THE CONTROLS ARE THE LIBRARY'S OWN, so the events are the ones they
 // declare: a button's `press`, a checkbox's `change` saying its state, a
@@ -42,50 +43,66 @@ const fire = (n) => { const [event, listener] = [...n.listeners][0]; listener();
 // What one event cost the wire: frames and bytes since the last ask.
 const spent = () => { const s = `${frames} frame(s), ${writes} byte(s)`; frames = 0; writes = 0; return s; };
 
-console.log("STYLE:", style.textContent.includes(":root{") && style.textContent.includes("body{") ? "sent (theme vars and the page's base rule)" : `MISSING (${style.textContent.slice(0, 40)})`);
-console.log("AFTER START:", shape(mount));
-console.log("FIRST PAINT:", spent());
+let failed = 0;
+// One claim: its words, whether it holds, and what was seen when it does not.
+const claim = (words, holds, seen = "") => {
+  if (!holds) failed++;
+  console.log(`${holds ? "ok    " : "FAILED"} ${words}${holds || seen === "" ? "" : ` — saw ${seen}`}`);
+};
 
+claim("the first paint sends the theme's variables and the page's base rule", style.textContent.includes(":root{") && style.textContent.includes("body{"), style.textContent.slice(0, 40));
+claim("the first paint is one frame", frames === 1, spent());
+spent();
+claim("the page holds the four seeded rows", ["t1", "t2", "t3", "t4"].every((k) => keyed(k) !== null), shape(mount).slice(0, 80));
+
+// THE PER-ITEM HANDLER: row 3's Remove names row 3's task.
 const row4 = keyed("t4");
 const remove3 = named("Remove", keyed("t3"))[0];
-console.log("ROW3 REMOVE:", remove3 ? "found" : "missing");
-console.log("FIRED:", fire(remove3), "—", spent());
-console.log("t3 gone:", keyed("t3") === null, " t2 kept:", keyed("t2") !== null);
-// The row below the removed one is the SAME element: nothing rebuilt it.
-console.log("t4 same element:", keyed("t4") === row4);
+claim("row t3 holds a Remove that listens", Boolean(remove3));
+fire(remove3);
+claim("pressing it removes t3 and keeps t2", keyed("t3") === null && keyed("t2") !== null);
+claim("the row below is the same element: nothing rebuilt it", keyed("t4") === row4);
+claim("a removal is one frame of under 200 bytes", frames === 1 && writes < 200, spent());
+spent();
 
-const toggle2 = named("Wire the event channel")[0];
-console.log("ROW2 TOGGLE:", toggle2 ? "found" : "missing");
 // The user checks the box; the control says its own state.
+const toggle2 = named("Wire the event channel")[0];
+claim("row t2's checkbox listens", Boolean(toggle2));
 toggle2.checked = true;
-console.log("FIRED:", fire(toggle2), "—", spent());
-console.log("AFTER TOGGLE t2:", shape(keyed("t2")));
+fire(toggle2);
+claim("checking it is one frame of under 200 bytes", frames === 1 && writes < 200, spent());
+spent();
 
 // ADD FROM THE FIELD: the input's own text rides the input event, then the
 // Add button appends the task the draft named. THE CARET WITNESS: while the
 // user types, the page's own value is never written back to it.
 const field = named("New task")[0];
 const add = named("Add")[0];
-console.log("FIELD+ADD:", field ? "field" : "no field", add ? "add" : "no add");
+claim("the field and the Add button listen", Boolean(field) && Boolean(add));
 let valueWrites = 0;
 let typed = "";
 Object.defineProperty(field, "value", { get: () => typed, set: (v) => { valueWrites++; typed = v; }, configurable: true });
 typed = "Ship the rewrite";
-console.log("FIRED:", fire(field), "—", spent());
-console.log("value written while typing:", valueWrites);
-console.log("FIRED:", fire(add), "—", spent());
-console.log("added row:", keyed("t5") !== null, " title kept:", textOf(keyed("t5")).includes("Ship the rewrite"));
-console.log("field cleared by the program:", valueWrites === 1 && typed === "");
+fire(field);
+claim("typing writes no value back and sends no frame", valueWrites === 0 && frames === 0, `${valueWrites} write(s), ${spent()}`);
+fire(add);
+claim("Add appends the row the draft named", keyed("t5") !== null && textOf(keyed("t5")).includes("Ship the rewrite"));
+claim("the program clears the field, once", valueWrites === 1 && typed === "", `${valueWrites} write(s), value "${typed}"`);
+spent();
 
 // A TEXT OF ANY LENGTH: the program hands out a seat for the octets the
 // field holds, so a value far past any fixed room arrives whole.
 typed = "é".repeat(6000);
 fire(field);
 fire(add);
-console.log("12000-octet title kept whole:", keyed("t6") !== null && textOf(keyed("t6")).includes(typed), "—", spent());
+claim("a 12000-octet title is kept whole", keyed("t6") !== null && textOf(keyed("t6")).includes(typed));
+spent();
 
 // A MODE IS A WHOLE SHEET: the theme's variables move and no element does.
 const theme = named("Dark mode")[0];
 const sheet = style.textContent;
-console.log("FIRED:", fire(theme), "—", spent());
-console.log("sheet rewritten:", style.textContent !== sheet, " button renamed:", named("Light mode").length === 1);
+fire(theme);
+claim("the dark mode rewrites the sheet and renames its button", style.textContent !== sheet && named("Light mode").length === 1);
+
+console.log(failed === 0 ? "ui-board: every claim holds" : `ui-board: ${failed} claim(s) FAILED`);
+process.exit(failed === 0 ? 0 : 1);

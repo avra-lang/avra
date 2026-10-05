@@ -8,9 +8,9 @@
 // program's own declarations — see realize/dom/wire.av.
 //
 // Same file for every app.
-import { WIRE_VERSION, NO_ID, OP, SAYS } from "./wire.gen.js";
+import { WIRE_VERSION, NO_ID, OP, SAYS, HOST } from "./wire.gen.js";
 
-export { WIRE_VERSION };
+export { WIRE_VERSION, HOST };
 
 // A frame's patches, in order. An id is a number in eight little-endian
 // bytes — the same width however deep its element sits — and `NO_ID` where
@@ -151,21 +151,16 @@ export async function instantiate(source, host) {
   return instance.exports;
 }
 
-// THE NAMES A PROGRAM ANSWERS TO. `avra_main` is the compiler's: a wasm
-// module's own statements, where an app says `mount(view)`. The other two
-// are the exports of `@std/ui`'s web module (web/web.av), under the names
-// the compiler gives a library's fns.
-export const HOST = { entry: "avra_main", event: "@std.ui.web.event", seat: "@std.ui.web.seat" };
-
 // The program's `event(who: int, what: int, tag: int, num: int, len: int)`
-// crosses as five i64 seats, so the host hands it BigInts. `who` is the
-// element's id and `what` the event kind, each echoed as the patch gave
-// it. What the control said crosses as the tag the patch asked for (`SAYS`)
-// and its value: nothing is a tag of its own, so a present zero or empty
-// text is never mistaken for nothing; a number or a flag rides `num`; text
-// is `len` UTF-8 octets written into a seat the program hands out for
-// exactly that many (`seat`), so no text outgrows its seat. ONE door for
-// both the page and a test harness.
+// — `HOST.event`, a name the library's own table gives — crosses as five
+// i64 seats, so the host hands it BigInts. `who` is the element's id and
+// `what` the event kind, each echoed as the patch gave it. What the control
+// said crosses as the tag the patch asked for (`SAYS`) and its value:
+// nothing is a tag of its own, so a present zero or empty text is never
+// mistaken for nothing; a number or a flag rides `num`; text is `len` UTF-8
+// octets written into a seat the program hands out for exactly that many
+// (`HOST.seat`), so no text outgrows its seat. ONE door for both the page
+// and a test harness.
 export function sendEvent(mod, who, what, said) {
   const event = mod[HOST.event];
   if (!said) { event(BigInt(who), BigInt(what), BigInt(SAYS.nothing), 0n, 0n); return; }

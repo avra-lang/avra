@@ -44,6 +44,8 @@ need_import 'avra:rt.*avra_dom_frame'
 need_export 'avra_event'
 need_export 'avra_bytes_len'
 need_export 'memory'
+# A command module's `main` runs the statements: it exports no second door to them.
+if grep -q '"avra_main"' "$work/objdump.txt"; then say "a command module exports avra_main"; fail=1; fi
 
 # A reactor drops `_start` and keeps the exports the host calls.
 if ! "$avra" build --target wasm --wasm_reactor "$work/seam" >"$work/reactor.out" 2>"$work/reactor.err"; then

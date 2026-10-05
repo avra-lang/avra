@@ -15,4 +15,4 @@ if ! cmp -s "$gen" "$here/runtime/dom/wire.gen.js"; then
   diff "$here/runtime/dom/wire.gen.js" "$gen" | head -20
   exit 1
 fi
-echo "ui-host: the host's table is the wire's ($(grep -c '^export const' "$gen") tables compared)"
+echo "ui-host: the host's table is the wire's ($(grep -c '^export const' "$gen") exports compared)"
