@@ -359,7 +359,9 @@ export fn program_closed(l: Lowered) -> string? {
 /// THE ENTRY. The program's own statements become `av_entry`; C's
 /// `main` hands the runtime its arguments and answers what the
 /// entry answered. The argument pair crosses the seam exactly here
-/// — a program reads it through the host from then on.
+/// — a program reads it through the host from then on. A wasm module
+/// also exports the entry as `avra_main`: a reactor links no `main`, so
+/// its host runs the program's statements by that name.
 fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, target: string) -> string? {
     declare(
         m,
@@ -372,8 +374,12 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, targe
     let entry = avra_llvm_get_named_function(m, "av_entry")
     let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
     if failure != null { return failure }
+    if target.starts_with("wasm") { avra_llvm_set_export(entry, HOST_ENTRY) }
     open_main(lc, m, b, entry, entry_symbol(target))
 }
+
+/// The name a wasm host runs the program's own statements by.
+const HOST_ENTRY = "avra_main"
 
 /// The C entry symbol a target's crt calls: wasi-libc's `crt1-command`
 /// hands control to `__main_argc_argv`, clang's own renaming of `main`.
