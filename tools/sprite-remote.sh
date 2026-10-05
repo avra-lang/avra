@@ -189,7 +189,7 @@ compiler_objs() {
         s=$(basename "$f" .c)
         echo "build/$s.o build/$s.sha build/$s.d"
     done
-    for s in llvm_wrapper ffi std_io std_process std_time; do
+    for s in llvm_wrapper ffi std_io std_io_watch std_process std_time std_net; do
         echo "build/$s.o build/$s.sha build/$s.d"
     done
 }

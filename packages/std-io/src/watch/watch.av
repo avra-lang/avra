@@ -1,0 +1,174 @@
+//! @std.io.watch — a set of paths the host reports on.
+//!
+//! A task parks in `next` until a watched path moves: the host's own
+//! events (inotify, kqueue) wake it through the scheduler, so nothing
+//! is polled and nothing sleeps. A module of its own because a wasm
+//! host has no such events: a program that never names it carries none
+//! of it.
+use @std.io.{IoError, one_path, refused}
+
+// THIS PACKAGE'S OWN C (src/c/std_io_watch.c) — every one answers an
+// int: a handle, a slot, a count, a kind, or a negative errno.
+extern fn avra_io_watch_open() -> int
+extern fn avra_io_watch_fd(h: int) -> int
+extern fn avra_io_watch_add(h: int, path: string) -> int
+extern fn avra_io_watch_drop(h: int, path: string) -> int
+extern fn avra_io_watch_mark(h: int) -> int
+extern fn avra_io_watch_sweep(h: int) -> int
+extern fn avra_io_watch_take(h: int) -> int
+extern fn avra_io_watch_lost(h: int) -> int
+extern fn avra_io_watch_slot(h: int, i: int) -> int
+extern fn avra_io_watch_what(h: int, i: int) -> int
+extern fn avra_io_watch_close(h: int) -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+
+/// What became of a watched path between two looks.
+export enum Moved {
+    /// It stands where nothing stood.
+    Created
+    /// A file's content was written or replaced; a directory's entries
+    /// arrived or left.
+    Changed
+    /// Nothing stands where it stood.
+    Removed
+    /// Its directory went, so the host says no more of it: it has left
+    /// the set, and `add` watches it afresh once its directory stands.
+    Unwatched
+}
+
+/// One watched path, and what became of it.
+export type Change = { path: string, what: Moved }
+
+/// What a look at a watch answers.
+export enum Seen {
+    /// The paths that moved since the last look, each once.
+    Changes(of: List<Change>)
+    /// The host lost count: any watched path may have moved.
+    Everything
+    /// Nothing moved.
+    Quiet
+}
+
+/// A SET OF PATHS THE HOST REPORTS ON. A task parks in `next` until one
+/// moves — no timer runs and nothing is polled; the host's events wake
+/// the task through the scheduler, as a socket's bytes wake a reader.
+///
+/// A FILE answers for its content, a DIRECTORY for its entries — a name
+/// arriving or leaving, never a write inside one of its files, and
+/// never anything deeper. A path is followed BY NAME: a save that
+/// renames another file over it, a removal and a later arrival are all
+/// seen, and a file that does not stand yet may be watched while its
+/// directory does.
+///
+/// A CHANGE IS THE DIFFERENCE BETWEEN TWO LOOKS, however many writes
+/// made it: a burst is one change, and a path that came and went
+/// between looks is none. The last write is always followed by a wake,
+/// so a reader that looked mid-save looks again.
+///
+/// Every copy is the same watch; `close` ends it for all of them.
+export type Watch = { handle: int, fd: int, open: Cell<bool>, names: Cell<List<string>> }
+
+/// A watch over nothing yet — or why the host gave none.
+export fn watch() -> Result<Watch, IoError> {
+    let handle = done(a_watch, avra_io_watch_open())?
+    let none: List<string> = []
+    Watch {
+        handle: handle,
+        fd: avra_io_watch_fd(handle),
+        open: Cell.new(true),
+        names: Cell.new(none),
+    }
+}
+
+impl Watch {
+    /// `path` joins the set, as it stands now. Its directory must
+    /// stand; the path need not. A path already in the set stays as it
+    /// was. Answers the path.
+    fn add(path: string) -> Result<string, IoError> {
+        let slot = done(path, avra_io_watch_add(self.held()?, one_path(path)?))?
+        if slot < self.names.get().length { self.names.set_at(slot, path) } else { self.names.push(path) }
+        path
+    }
+
+    /// `path` leaves the set; one that was not in it is no refusal.
+    /// Answers the path.
+    fn drop(path: string) -> Result<string, IoError> {
+        done(path, avra_io_watch_drop(self.held()?, one_path(path)?))?
+        path
+    }
+
+    /// THE SET BECOMES EXACTLY `paths`: each is added, and whatever
+    /// else was watched is dropped. A path already watched keeps its
+    /// watch, so nothing that moves across the call is missed. Answers
+    /// the refusals — a path the host would not watch is left out and
+    /// the rest stand.
+    fn only(paths: List<string>) -> List<IoError> {
+        let h = match self.held() { .Ok(h) -> h, .Err(e) -> { return [e] } }
+        let _ = avra_io_watch_mark(h)
+        let refused = [e! for e in [refusal(self.add(p)) for p in paths] if e != null]
+        let _ = avra_io_watch_sweep(h)
+        refused
+    }
+
+    /// What moved since the last look, without waiting.
+    fn taken() -> Result<Seen, IoError> {
+        let h = self.held()?
+        let n = done(a_watch, avra_io_watch_take(h))?
+        if avra_io_watch_lost(h) != 0 { return Seen.Everything }
+        if n == 0 { return Seen.Quiet }
+        let names = self.names.get()
+        Seen
+            .Changes(
+                [Change {
+                    path: names[avra_io_watch_slot(h, i)],
+                    what: moved_of(avra_io_watch_what(h, i)),
+                } for i in 0..n],
+            )
+    }
+
+    /// THE CALLING TASK PARKED UNTIL SOMETHING MOVES: what moved, or
+    /// `.Quiet` when a `within` around the call ran out first. Other
+    /// tasks run meanwhile, and a program with none simply waits.
+    fn next() -> Result<Seen, IoError> {
+        while true {
+            let seen = self.taken()?
+            if !(seen is .Quiet) { return seen }
+            if avra_fiber_park_fd(self.fd, 0, -1) == 0 { return Seen.Quiet }
+        }
+        Seen.Quiet
+    }
+
+    /// The watch ended and everything it held given back; a task parked
+    /// in `next` wakes to the refusal every later verb answers.
+    fn close() {
+        if !self.open.get() { return }
+        self.open.set(false)
+        let _ = avra_io_watch_close(self.handle)
+    }
+
+    /// The handle while the watch is open. A closed one's number is the
+    /// next watch's, so every verb asks before the number crosses.
+    fn held() -> Result<int, IoError> {
+        if !self.open.get() { fail IoError.Failed(a_watch, ebadf) }
+        self.handle
+    }
+}
+
+/// The host's status judged: a refusal raises, naming the path.
+fn done(path: string, status: int) -> Result<int, IoError> {
+    if status < 0 { fail refused(path, 0 - status) }
+    status
+}
+
+/// What the host's refusals of a watch itself are told of.
+const a_watch: string = "a watch"
+
+const ebadf: int = 9
+
+fn refusal(r: Result<string, IoError>) -> IoError? {
+    match r { .Ok(_) -> null, .Err(e) -> e }
+}
+
+fn moved_of(what: int) -> Moved {
+    match what { 1 -> Moved.Created, 2 -> Moved.Changed, 3 -> Moved.Removed, _ -> Moved.Unwatched }
+}

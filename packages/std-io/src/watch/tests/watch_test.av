@@ -1,0 +1,443 @@
+// A WATCH ANSWERS THE DIFFERENCE BETWEEN TWO LOOKS: a file for its
+// content, a directory for its entries, each path followed by name
+// through a save by rename, a removal and a later arrival; a task
+// parks until something moves and a `within` bounds the wait. On a
+// scratch directory under TMPDIR, against the host's own events.
+use @std.io.{
+    IoError,
+    write_text,
+    append_bytes,
+    truncate_to,
+    opened_for_append,
+    list_dir,
+    make_dirs,
+    remove,
+    env_or,
+}
+use @std.io.watch.{Watch, Seen, Moved, Change, watch}
+use @std.text.{from_codepoint}
+use @std.time.{ms, sleep, now_ms, within}
+
+/// A directory under the scratch with nothing in it — files and empty
+/// directories an earlier run left are removed first.
+fn wt_fresh(name: string) -> string {
+    let dir = "${env_or("TMPDIR", "/tmp")}/avra-watch-spec/${name}"
+    let _ = make_dirs(dir)
+    for n in list_dir(dir) catch [] {
+        for inner in list_dir("${dir}/${n}") catch [] { let _ = remove("${dir}/${n}/${inner}") }
+        let _ = remove("${dir}/${n}")
+    }
+    dir
+}
+
+/// A watch, or a closed one when the host gives none — every case then
+/// fails by its own words.
+fn wt_watch() -> Watch {
+    match watch() {
+        .Ok(w) -> w,
+        .Err(_) -> Watch { handle: -1, fd: -1, open: Cell.new(false), names: Cell.new(wt_none()) },
+    }
+}
+
+fn wt_none() -> List<string> { [] }
+
+fn wt_word(m: Moved) -> string {
+    match m {
+        .Created -> "created",
+        .Changed -> "changed",
+        .Removed -> "removed",
+        .Unwatched -> "unwatched",
+    }
+}
+
+/// What a look said of `path`: its word, `-` when nothing, or the look's
+/// own word when it named no paths.
+fn wt_of(seen: Result<Seen, IoError>, path: string) -> string {
+    match seen {
+        .Ok(.Changes(cs)) -> wt_or_dash([wt_word(c.what) for c in cs if c.path == path].join("+")),
+        .Ok(.Everything) -> "everything",
+        .Ok(.Quiet) -> "-",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn wt_or_dash(said: string) -> string { if said == "" { "-" } else { said } }
+
+/// How many paths a look named.
+fn wt_count(seen: Result<Seen, IoError>) -> int {
+    match seen { .Ok(.Changes(cs)) -> cs.length, .Ok(.Everything) or .Ok(.Quiet) or .Err(_) -> 0 }
+}
+
+fn wt_written(path: string, text: string) { let _ = write_text(path, text) }
+
+fn wt_appended(path: string, text: string) { let _ = append_bytes(path, text.bytes()) }
+
+/// `text` appended to `path` once `after` ms have passed.
+fn wt_appends_later(path: string, text: string, after: int) {
+    sleep(ms(after))
+    wt_appended(path, text)
+}
+
+/// `w` closed once `after` ms have passed.
+fn wt_closes_later(w: Watch, after: int) {
+    sleep(ms(after))
+    w.close()
+}
+
+/// The descriptor the host would give next.
+fn wt_next_fd(path: string) -> int {
+    match opened_for_append(path) {
+        .Ok(f) -> {
+            let _ = f.closed()
+            f.fd
+        },
+        .Err(_) -> -1,
+    }
+}
+
+spec "std/io watch" {
+    given "a watched file" {
+        then "nothing moved is quiet" {
+            let dir = wt_fresh("quiet")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            let said = wt_of(w.taken(), "${dir}/f")
+            w.close()
+            said == "-"
+        }
+        then "an append is a change" {
+            let dir = wt_fresh("append")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            wt_appended("${dir}/f", "b")
+            let said = wt_of(w.taken(), "${dir}/f")
+            w.close()
+            said == "changed"
+        }
+        then "a burst of writes is one change, and the look after it is quiet" {
+            let dir = wt_fresh("burst")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            for i in 0..8 { wt_appended("${dir}/f", "${i}") }
+            let first = w.taken()
+            let said = "${wt_count(first)} ${wt_of(first, "${dir}/f")} ${wt_of(w.taken(), "${dir}/f")}"
+            w.close()
+            said == "1 changed -"
+        }
+        then "a truncation is a change" {
+            let dir = wt_fresh("truncate")
+            wt_written("${dir}/f", "abcdef")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            let _ = truncate_to("${dir}/f", 2)
+            let said = wt_of(w.taken(), "${dir}/f")
+            w.close()
+            said == "changed"
+        }
+        then "a save by rename is a change, and the file that replaced it is watched" {
+            let dir = wt_fresh("rename")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            wt_written("${dir}/f", "b")
+            let saved = wt_of(w.taken(), "${dir}/f")
+            wt_appended("${dir}/f", "c")
+            let said = "${saved} ${wt_of(w.taken(), "${dir}/f")}"
+            w.close()
+            said == "changed changed"
+        }
+        then "a removal, the file made again, and a write to that one are each seen" {
+            let dir = wt_fresh("recreate")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            let _ = remove("${dir}/f")
+            let gone = wt_of(w.taken(), "${dir}/f")
+            wt_written("${dir}/f", "b")
+            let back = wt_of(w.taken(), "${dir}/f")
+            wt_appended("${dir}/f", "c")
+            let said = "${gone} ${back} ${wt_of(w.taken(), "${dir}/f")}"
+            w.close()
+            said == "removed created changed"
+        }
+        then "removed and made again between two looks is one change" {
+            let dir = wt_fresh("between")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            let _ = remove("${dir}/f")
+            wt_written("${dir}/f", "b")
+            let said = wt_of(w.taken(), "${dir}/f")
+            w.close()
+            said == "changed"
+        }
+        then "a file that does not stand yet is watched, and seen when it arrives" {
+            let dir = wt_fresh("late")
+            let w = wt_watch()
+            let added = w.add("${dir}/late") is .Ok
+            wt_written("${dir}/late", "a")
+            let said = "${added} ${wt_of(w.taken(), "${dir}/late")}"
+            w.close()
+            said == "true created"
+        }
+        then "one that came and went between two looks is nothing" {
+            let dir = wt_fresh("passing")
+            let w = wt_watch()
+            let _ = w.add("${dir}/late")
+            wt_written("${dir}/late", "a")
+            let _ = remove("${dir}/late")
+            let said = wt_of(w.taken(), "${dir}/late")
+            w.close()
+            said == "-"
+        }
+        then "an unwatched sibling says nothing" {
+            let dir = wt_fresh("sibling")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            wt_written("${dir}/other", "x")
+            wt_appended("${dir}/other", "y")
+            let _ = remove("${dir}/other")
+            let said = wt_count(w.taken())
+            w.close()
+            said == 0
+        }
+    }
+    given "a watched directory" {
+        then "an entry arriving and an entry leaving are each a change" {
+            let dir = wt_fresh("entries")
+            let w = wt_watch()
+            let _ = w.add(dir)
+            wt_written("${dir}/new", "a")
+            let arrived = wt_of(w.taken(), dir)
+            let _ = remove("${dir}/new")
+            let said = "${arrived} ${wt_of(w.taken(), dir)}"
+            w.close()
+            said == "changed changed"
+        }
+        then "a write inside one of its files is not its entries" {
+            let dir = wt_fresh("inside")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add(dir)
+            wt_appended("${dir}/f", "b")
+            let said = wt_of(w.taken(), dir)
+            w.close()
+            said == "-"
+        }
+        then "removed, made again, and an entry in that one are each seen" {
+            let dir = wt_fresh("again")
+            let sub = "${dir}/sub"
+            let _ = make_dirs(sub)
+            let w = wt_watch()
+            let _ = w.add(sub)
+            let _ = remove(sub)
+            let gone = wt_of(w.taken(), sub)
+            let _ = make_dirs(sub)
+            let back = wt_of(w.taken(), sub)
+            wt_written("${sub}/new", "a")
+            let said = "${gone} ${back} ${wt_of(w.taken(), sub)}"
+            w.close()
+            said == "removed created changed"
+        }
+        then "a trailing slash spells the same directory" {
+            let dir = wt_fresh("slash")
+            let w = wt_watch()
+            let _ = w.add("${dir}/")
+            wt_written("${dir}/new", "a")
+            let said = wt_of(w.taken(), "${dir}/")
+            w.close()
+            said == "changed"
+        }
+    }
+    given "a path whose directory goes" {
+        then "it answers unwatched once, and is watched afresh when added again" {
+            let dir = wt_fresh("orphan")
+            let sub = "${dir}/sub"
+            let _ = make_dirs(sub)
+            wt_written("${sub}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${sub}/f")
+            let _ = remove("${sub}/f")
+            let _ = remove(sub)
+            let orphaned = wt_of(w.taken(), "${sub}/f")
+            let refused = w.add("${sub}/f") is .Err
+            let _ = make_dirs(sub)
+            let again = w.add("${sub}/f") is .Ok
+            wt_written("${sub}/f", "b")
+            let said = "${orphaned} ${refused} ${again} ${wt_of(w.taken(), "${sub}/f")}"
+            w.close()
+            said == "unwatched true true created"
+        }
+    }
+    given "the set" {
+        then "`only` keeps what it names and drops the rest" {
+            let dir = wt_fresh("only")
+            wt_written("${dir}/a", "1")
+            wt_written("${dir}/b", "1")
+            let w = wt_watch()
+            let _ = w.add("${dir}/a")
+            let refused = w.only(["${dir}/b"]).length
+            wt_appended("${dir}/a", "2")
+            wt_appended("${dir}/b", "2")
+            let seen = w.taken()
+            let said = "${refused} ${wt_of(seen, "${dir}/a")} ${wt_of(seen, "${dir}/b")}"
+            w.close()
+            said == "0 - changed"
+        }
+        then "`only` answers the paths the host refused and watches the rest" {
+            let dir = wt_fresh("refused")
+            wt_written("${dir}/a", "1")
+            let w = wt_watch()
+            let refused = w.only(["${dir}/none/x", "${dir}/a"])
+            wt_appended("${dir}/a", "2")
+            let said = "${refused.length} ${refused.first()?.describe()?.message ?? ""} | ${wt_of(w.taken(), "${dir}/a")}"
+            w.close()
+            said == "1 `${dir}/none/x` does not exist | changed"
+        }
+        then "a path watched across `only` misses nothing" {
+            let dir = wt_fresh("kept")
+            wt_written("${dir}/a", "1")
+            let w = wt_watch()
+            let _ = w.add("${dir}/a")
+            wt_appended("${dir}/a", "2")
+            let _ = w.only(["${dir}/a"])
+            let said = wt_of(w.taken(), "${dir}/a")
+            w.close()
+            said == "changed"
+        }
+        then "a dropped path says nothing, and a drop of one never added is no refusal" {
+            let dir = wt_fresh("drop")
+            wt_written("${dir}/a", "1")
+            let w = wt_watch()
+            let _ = w.add("${dir}/a")
+            let dropped = w.drop("${dir}/a") is .Ok
+            let never = w.drop("${dir}/b") is .Ok
+            wt_appended("${dir}/a", "2")
+            let said = "${dropped} ${never} ${wt_count(w.taken())}"
+            w.close()
+            said == "true true 0"
+        }
+        then "a thousand adds and drops hold no descriptor" {
+            let dir = wt_fresh("cycles")
+            wt_written("${dir}/a", "1")
+            let w = wt_watch()
+            let before = wt_next_fd("${dir}/probe")
+            for _i in 0..1000 {
+                let _ = w.add("${dir}/a")
+                let _ = w.add(dir)
+                let _ = w.drop("${dir}/a")
+                let _ = w.drop(dir)
+            }
+            let after = wt_next_fd("${dir}/probe")
+            w.close()
+            before >= 0 && before == after
+        }
+        then "a closed watch holds no descriptor" {
+            let dir = wt_fresh("closed_fd")
+            wt_written("${dir}/a", "1")
+            let before = wt_next_fd("${dir}/probe")
+            let w = wt_watch()
+            let _ = w.add("${dir}/a")
+            let _ = w.add(dir)
+            w.close()
+            before >= 0 && before == wt_next_fd("${dir}/probe")
+        }
+    }
+    given "the refusals" {
+        then "a path under no directory is not found" {
+            let dir = wt_fresh("nowhere")
+            let w = wt_watch()
+            let said = match w.add("${dir}/none/x") {
+                .Ok(_) -> "added",
+                .Err(e) -> e.describe().kind,
+            }
+            w.close()
+            said == "io.not_found"
+        }
+        then "a path holding a NUL is refused before the host reads it" {
+            let dir = wt_fresh("holed")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let said = match w.add("${dir}/f${from_codepoint(0)}/x") {
+                .Ok(_) -> "added",
+                .Err(e) -> e.describe().kind,
+            }
+            w.close()
+            said == "io.holed"
+        }
+        then "every verb of a closed watch refuses, and closing twice is one close" {
+            let dir = wt_fresh("closed")
+            let w = wt_watch()
+            w.close()
+            w.close()
+            let other = wt_watch()
+            let said = "${w.add(dir) is .Err} ${w.drop(dir) is .Err} ${w.taken() is .Err} ${w.next() is .Err} ${w.only([dir]).length} ${other.add(dir) is .Ok}"
+            other.close()
+            said == "true true true true 1 true"
+        }
+    }
+    given "a task waiting" {
+        then "`next` parks until another task writes" {
+            let dir = wt_fresh("parks")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            let began = now_ms()
+            let writer = spawn wt_appends_later("${dir}/f", "b", 60)
+            let said = wt_of(within ms(5000) { w.next() }, "${dir}/f")
+            let waited = now_ms() - began
+            writer.await
+            w.close()
+            said == "changed" && waited >= 50 && waited < 4000
+        }
+        then "a `within` that runs out answers quiet" {
+            let dir = wt_fresh("within")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            let began = now_ms()
+            let said = wt_of(within ms(80) { w.next() }, "${dir}/f")
+            let waited = now_ms() - began
+            w.close()
+            said == "-" && waited >= 70 && waited < 2000
+        }
+        then "a write made before the wait is not waited for" {
+            let dir = wt_fresh("already")
+            wt_written("${dir}/f", "a")
+            let w = wt_watch()
+            let _ = w.add("${dir}/f")
+            wt_appended("${dir}/f", "b")
+            let began = now_ms()
+            let said = wt_of(within ms(5000) { w.next() }, "${dir}/f")
+            w.close()
+            said == "changed" && now_ms() - began < 1000
+        }
+        then "a close wakes the task parked on it" {
+            let dir = wt_fresh("wakes")
+            let w = wt_watch()
+            let _ = w.add(dir)
+            let closer = spawn wt_closes_later(w, 40)
+            let woke = (within ms(5000) { w.next() }) is .Err
+            closer.await
+            woke
+        }
+        then "two watches each answer their own paths" {
+            let dir = wt_fresh("two")
+            wt_written("${dir}/a", "1")
+            wt_written("${dir}/b", "1")
+            let wa = wt_watch()
+            let wb = wt_watch()
+            let _ = wa.add("${dir}/a")
+            let _ = wb.add("${dir}/b")
+            wt_appended("${dir}/b", "2")
+            let said = "${wt_count(wa.taken())} ${wt_of(wb.taken(), "${dir}/b")}"
+            wa.close()
+            wb.close()
+            said == "0 changed"
+        }
+    }
+}
