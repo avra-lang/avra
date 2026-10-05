@@ -562,29 +562,86 @@ size   = 5310022
 
 ```avra
 export type Artifact = { name: string, size: int, key: string, home: Home }
-export enum Home { Inline, Program, Bundle, Cdn(origin: string) }
+export enum Home { Inline, Program, Bundle, Cdn(origin: string), Origin(address: string) }
 ```
 - `name` is `stem.<key8>.<ext>` — cache-busting is the key.
-- A library places a blob: `placed(p.pixels, stem: p.name, ext: "webp", home: p.home ?? default_home(target(), p))`.
 - `target()` is a compile-time input (surface, OS, arch, profile). Whatever reads it is keyed by it.
 - **Reached = shipped.** An `Artifact` that survives into the lowered program's static data is reached; the build collects exactly those, forces their blobs, and writes them.
 
+### 9.1 Local or external — who has the bytes
+
+| the bytes are | spelled | the build | the program at run time | transformable |
+|---|---|---|---|---|
+| **local** — in the package | `file(…)`, `dir(…)` | reads them | has them, by its home | yes |
+| **pinned external** — someone else's, frozen | `url(…)` | fetches once, pins SHA-256 in `avra.lock`; from then on they are local | has them, by its home | yes |
+| **pinned, served from its origin** | `url(…) \|> picture \|> at(.Origin)` | fetches once to learn the facts (size, format, dimensions, hash); ships nothing | fetches from the origin; verifies the hash (SRI on web) | no — the origin serves what it serves |
+| **remote** — changes without a build | `remote(https("…"), width: 96, height: 96)` | reads nothing | fetches; the author states the facts; no hash | no |
+
+When each:
+- **`url(…)`** (pin and ship): a spec, a font, an icon set. You want the build reproducible and no third party in the request path. The default for `url`.
+- **`at(.Origin)`**: large immutable media a CDN you trust already serves. Layout still knows the size; a changed file is caught by the hash, at `avra lock --update`.
+- **`remote(…)`**: a user's avatar, server-hosted art. Nothing is known at build but what the author writes, so the size is required.
+
+"Fetched at run time" is only ever the last two rows. A local asset is never fetched from somewhere the build did not put it.
+
+### 9.2 Where a local asset lives
+
 | home | the build writes | the program holds | `a.bytes()` at run time |
 |---|---|---|---|
-| `.Inline` | nothing | the bytes inside what draws it (an SVG path in the page) | — |
-| `.Program` | static data in the binary | name, size, an address | yes |
-| `.Bundle` | `build/<target>/assets/<name>` | name, size | compile error: "not in the program — `at(.Program)`" |
+| `.Inline` | nothing | the content inside what draws it (an SVG path in the markup) | — |
+| `.Program` | static data in the binary / the wasm module | name, size, an address | yes |
+| `.Bundle` | `build/<target>/assets/<name>` — a hashed file beside the program | name, size | compile error: "not in the program — `at(.Program)`" |
 | `.Cdn(o)` | the file, for `avra deploy` to upload | name, size, origin | compile error |
 
-**Default home, by target** (carried over from the assets design §5; an item's `at(…)` overrides):
+**The default is one rule: small goes in the program, large goes beside it.**
 
-| target | default |
-|---|---|
-| CLI, TUI, server | `.Program` up to a budget (1 MiB per artifact, 16 MiB total); over it, an error whose help writes `at(.Bundle)` |
-| web page | `.Bundle`; an icon shape or a picture under 2 KB `.Inline` |
-| iOS, Android | `.Bundle` — the catalog, `res/` |
+| target | under the line | over the line | the line |
+|---|---|---|---|
+| web (wasm page) | `.Program` (in the module; a vector may be `.Inline`) | `.Bundle` (hashed file, immutable cache) | 4 KiB per asset, 64 KiB total in the module |
+| CLI, TUI, server | `.Program` | error whose help writes `at(.Bundle)` — a one-file program does not silently grow a folder | 1 MiB per asset, 16 MiB total |
+| iOS, Android | `.Bundle` (the catalog, `res/`) always | — | — |
 
-The compiler moves an asset between `.Inline` and a file by itself. It never moves one between `.Program` and `.Bundle` by itself: that changes what must be deployed.
+- The rule reads only the made size and the target, so it is deterministic and in the receipt.
+- When an edit moves an asset across the line, the build prints the move (`hero: .Program → .Bundle, 4.3 KiB`). On CLI/server it never crosses silently: that changes what must be deployed.
+
+**One override, three scopes — the same word.**
+```avra
+const logo   = file("./logo.png") |> picture |> at(.Program)                 // per asset
+fn thumb(p: Picture) -> Picture { p |> resize(width: 320) |> at(.Bundle) }   // per pipeline: it is a step like any other
+```
+```toml
+# per project — the ROOT avra.toml; a table per target
+[assets]
+inline_under = 4096          # move the line
+[assets.web]
+home = "bundle"              # or pin every asset's home on this target
+```
+Precedence: the asset's own `at` (the last one in its pipeline wins) → `[assets.<target>]` → `[assets]` → the target's rule. A dependency's manifest cannot set it; a dependency's `at(…)` on its own art can, and the root's `[assets]` `force = true` overrides even that.
+
+### 9.3 The web case, both ways
+
+```avra
+const icons  = dir("./icons") |> vectors                       // 30 files, ~600 B each; 3 used
+const photos = dir("./photos") |> pictures |> each(thumb)      // hero.jpg → 17 KB webp
+```
+```
+$ avra docs icons.close --target web
+Vector 24×24 — ./icons/close.svg (612 B)
+  home      .Program — 612 B is under the 4 KiB line (target rule: web)
+  ships     inside app.wasm (+612 B; module assets 1.8 of 64 KiB)
+  requests  0
+
+$ avra docs photos.hero --target web
+Picture 320×180 webp — ./photos/hero.jpg (412 KB source)
+  home      .Bundle — 17 KB is over the 4 KiB line (target rule: web)
+  ships     build/web/assets/hero.9c1f2ab0.webp   Cache-Control: immutable
+  requests  1, lazy; size known at build, so layout does not move
+
+$ avra docs photos.hero --target web          # after `[assets.web] home = "program"`
+  home      .Program — set by [assets.web] in avra.toml:14 (rule would say .Bundle, 17 KB)
+  ships     inside app.wasm (+17 KB; module assets 18.8 of 64 KiB)
+```
+Every answer names the home, the reason, and who decided.
 
 **How a component receives it.** `image` takes a `Picture`; `icon` a `Vector`; a theme's face a `Typeface`. Each carries what layout needs — width, height, format, dominant tone, font metrics — as static data, so nothing is probed at run time and layout never jumps. Components stay ordinary: `icon(icons.close, color: .red)`.
 
@@ -598,8 +655,8 @@ The compiler moves an asset between `.Inline` and a file by itself. It never mov
 | kind from the bytes; `trait Asset`, kinds collected program-wide | **kept as library**: `assets` sniffs leading bytes and dispatches to readers. No program-wide collection: the reader is named in the pipeline. |
 | law 3 no lookup by text · 5 path literal inside the package · 8 intrinsic size · 9 check never transforms, name = key · 10 only reached ships · 14 vector model · 15 font licence · 17 no silent downgrade | **kept** (L8, L1, §9, L5/L4, L5, library, library, L11) |
 | `project() -> List<Artifact{name,key,make}>` | **kept, simpler**: `make` is the lazy `Blob`; no closure in a value |
-| `at <home>` on a declaration | **an argument** (`at(.Program)`), no grammar |
-| per-target table, receipt, `explain`, homes, `remote(url, w, h)` | kept |
+| `at <home>` on a declaration | **a step** (`\|> at(.Program)`), no grammar; `[assets]` in the root manifest for the project |
+| per-target table, receipt, `explain`, homes, `remote(url, w, h)` | kept; the default home is now a size rule (§9.2), and `.Origin` is new |
 | fetched pinned packages, `avra.lock`, `~/.avra/cache` | kept; the same lock serves `url(…)` |
 | font subsetting and shaping (§6 there) | untouched by this design; a `typeface` reader is its front door |
 
@@ -758,6 +815,13 @@ const api = url("https://…/spec3.json") |> openapi    // A: slice 11 here, min
 const api = file("./vendor/spec3.json") |> openapi    // B: vendor the file until packages bring a transport
 ```
 Recommend **B for now**: `file` and `dir` cover everything in §1 but one line, and the first lockfile deserves its own design with fetched packages.
+
+**Q9. Where does a LOCAL asset live by default?**
+```
+A: by size — small in the program, large beside it (web: 4 KiB line; CLI/server: in the program up to 1 MiB, then an error)
+B: by target only — web always a hashed file, CLI always embedded
+```
+Recommend **A**, with `at(…)` per asset or pipeline and `[assets]` per project (§9.2). A gives a web page zero requests for its icons and a cached file for its photos without anyone choosing; B makes 30 icons 30 requests or a photo part of the wasm. The two numbers are guesses to be measured on `tools/ui-board`.
 
 **Q8. Fix the evaluator, or build a native tier?**
 ```
