@@ -1,0 +1,83 @@
+//! `terminal/keys.av` — what a terminal's input spells, as the keys the
+//! loop acts on. Tab and the down arrow move the focus on, Shift-Tab and
+//! the up arrow move it back, Enter acts, Backspace erases, Ctrl-D ends;
+//! every other printable character is itself. An escape sequence the loop
+//! has no key for is read whole and dropped, never typed.
+use @std.text.{codepoints, from_codepoint}
+
+/// A key as the loop reads it.
+export enum Key {
+    Next
+    Back
+    Enter
+    Erase
+    Char(text: string)
+    End
+}
+
+const tab = 9
+const line_feed = 10
+const carriage_return = 13
+const end_of_input = 4
+const backspace = 8
+const delete = 127
+const escape = 27
+const bracket = 91
+const space = 32
+
+/// A key read from `at`, and where the next one starts.
+type Read = { key: Key?, next: int }
+
+/// The one code point at `at`, read as `key` — or as no key at all.
+fn one(key: Key?, at: int) -> Read { Read { key: key, next: at + 1 } }
+
+/// The last code point of a control sequence: one in `@`..`~`.
+fn ends_sequence(c: int) -> bool { c >= 64 && c <= 126 }
+
+/// The key a control sequence's last code point names.
+fn sequence_key(last: int) -> Key? {
+    match from_codepoint(last) { "Z" or "A" -> Key.Back, "B" -> Key.Next, _ -> null }
+}
+
+/// The escape at `at`: a control sequence read to its end, or the lone
+/// escape itself.
+fn escaped(cs: List<int>, at: int) -> Read {
+    if at + 1 >= cs.length || cs[at + 1] != bracket { return one(null, at) }
+    let last = [j for j, c in cs if j > at + 1 && ends_sequence(c)].first() ?? cs.length - 1
+    Read { key: sequence_key(cs[last]), next: last + 1 }
+}
+
+/// A carriage return is the Enter key; the line feed a terminal sends
+/// after it is the same key, read once.
+fn returned(cs: List<int>, at: int) -> Read {
+    let paired = at + 1 < cs.length && cs[at + 1] == line_feed
+    Read { key: Key.Enter, next: if paired { at + 2 } else { at + 1 } }
+}
+
+fn read(cs: List<int>, at: int) -> Read {
+    let c = cs[at]
+    when {
+        c == escape -> escaped(cs, at)
+        c == carriage_return -> returned(cs, at)
+        c == line_feed -> one(Key.Enter, at)
+        c == tab -> one(Key.Next, at)
+        c == backspace || c == delete -> one(Key.Erase, at)
+        c == end_of_input -> one(Key.End, at)
+        c < space -> one(null, at)
+        _ -> one(Key.Char(from_codepoint(c)), at)
+    }
+}
+
+/// The keys `text` spells, in order.
+export fn keys(text: string) -> List<Key> {
+    let cs = codepoints(text)
+    mut out: List<Key> = []
+    mut at = 0
+    // LICENSED loops.push_loop: a key takes one code point or several — the walk steps by what it read
+    while at < cs.length {
+        let got = read(cs, at)
+        if got.key != null { out.push(got.key!) }
+        at = got.next
+    }
+    out
+}

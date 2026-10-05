@@ -1,16 +1,15 @@
-//! The task board — the UI library's showcase, as a wasm app. `view` is a
-//! function of module `state`: tasks with done-state, three filters, a
-//! derived count and progress, an add field, a dialog and a theme mode.
+//! The task board — the UI library's showcase. `view` is a function of
+//! module `state`: tasks with done-state, three filters, a derived count
+//! and progress, an add field, a dialog and a theme mode.
 //!
 //! The controls are the library's OWN, and each handler is written where
 //! its control is: `on press { … }` is a closure over what the view could
-//! see, so row 3's Remove names row 3's task. `mount(view, theme)` is the
-//! whole app: the library paints the page, hears the host and sends it
-//! only what changed.
+//! see, so row 3's Remove names row 3's task. The task rows are ONE keyed
+//! list (`list visible() by it.id`), so the row identity is the task id
+//! and an insert or a removal touches no other row.
 //!
-//! The task rows are ONE keyed list (`list visible() by it.id`), so the row
-//! identity is the task id and an insert or a removal touches no other
-//! row.
+//! The board names no target. A page mounts it (`main.av`) and so does a
+//! terminal (`term/`).
 use @std.ui.components.{
     button,
     card,
@@ -31,7 +30,6 @@ use @std.ui.realize.view.{View}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{Theme, dark_theme, default_theme}
-use @std.ui.web.{mount}
 
 /// Which tasks the board shows.
 enum Show { All, Active, Done }
@@ -62,7 +60,7 @@ fn admits(t: Todo) -> bool {
     match filter { .All -> true, .Active -> !t.done, .Done -> t.done }
 }
 
-fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
+export fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
 
 /// The draft becomes the next task, and the draft is spent.
 fn add() {
@@ -238,12 +236,10 @@ fn about() -> dialog {
     }
 }
 
-fn view() -> surface {
+export fn view() -> surface {
     surface {
         style: Style { fill: .Surface, radius: .M }
         layout: Layout { gap: .M, pad: around(.L) }
         items: [header(), board(), footer(), about()]
     }
 }
-
-mount(view, theme)

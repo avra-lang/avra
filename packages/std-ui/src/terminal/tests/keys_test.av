@@ -1,0 +1,45 @@
+//! What a terminal's input spells, key by key.
+use @std.text.{from_codepoint}
+use @std.ui.terminal.keys.{Key, keys}
+
+fn word(k: Key) -> string {
+    match k {
+        .Next -> "next",
+        .Back -> "back",
+        .Enter -> "enter",
+        .Erase -> "erase",
+        .Char(ch) -> "'${ch}'",
+        .End -> "end",
+    }
+}
+
+fn spelled(text: string) -> string { [word(k) for k in keys(text)].join(" ") }
+
+fn esc() -> string { from_codepoint(27) }
+
+spec "a terminal's input is read as keys" {
+    given "plain text" {
+        then "each character is itself" { spelled("hé!") == "'h' 'é' '!'" }
+        then "a space is a character" { spelled("a b") == "'a' ' ' 'b'" }
+        then "nothing spells no key" { spelled("") == "" }
+    }
+    given "the keys that move and act" {
+        then "a tab moves on and a line feed enters" { spelled("\t\n") == "next enter" }
+        then "a carriage return enters" { spelled("\r") == "enter" }
+        then "a carriage return and its line feed are one Enter" { spelled("a\r\nb") == "'a' enter 'b'" }
+        then "backspace and delete erase" { spelled(from_codepoint(8) + from_codepoint(127)) == "erase erase" }
+        then "Ctrl-D ends" { spelled("a" + from_codepoint(4)) == "'a' end" }
+    }
+    given "a control sequence" {
+        then "Shift-Tab and the up arrow move back" { spelled("${esc()}[Z${esc()}[A") == "back back" }
+        then "the down arrow moves on" { spelled("${esc()}[B") == "next" }
+        then "one the loop has no key for is dropped whole, never typed" {
+            spelled("a${esc()}[1;5Cb${esc()}[3~c") == "'a' 'b' 'c'"
+        }
+        then "one cut short spells no key" { spelled("a${esc()}[1;5") == "'a'" }
+        then "a lone escape spells no key" { spelled("${esc()}x") == "'x'" }
+    }
+    given "a control character with no key" {
+        then "it is dropped" { spelled("a" + from_codepoint(1) + from_codepoint(7) + "b") == "'a' 'b'" }
+    }
+}

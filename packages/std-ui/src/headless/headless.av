@@ -4,7 +4,9 @@
 //! the view bound and the loop paints again, so a test drives the same
 //! door a host does and names no platform.
 use app.{App, app, plain}
-use realize.render.{Node, Prim, Attribute, EventKind, Said}
+use realize.controls.{Control, controls}
+use realize.outline.{outline}
+use realize.render.{Node, EventKind, Said}
 use realize.view.{View}
 use style.theme.{Theme}
 
@@ -22,79 +24,12 @@ export fn headless<V: View>(view: fn() -> V) -> Screen {
     made
 }
 
-/// A control on the screen, and the form it stands in.
-type Control = { node: Node, form: Node? }
-
-fn is_open(a: Attribute) -> bool {
-    match a { .Open(on) -> on, _ -> false }
-}
-
-fn is_disabled(a: Attribute) -> bool {
-    match a { .Disabled(on) -> on, _ -> false }
-}
-
-fn submits(a: Attribute) -> bool {
-    match a { .Submits(on) -> on, _ -> false }
-}
-
-/// Whether what a node holds is on the screen: a dialog shows its content
-/// only while it is open.
-fn shows_content(n: Node) -> bool {
-    match n.prim {
-        .Dialog -> n.attrs.any(is_open),
-        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> true,
-    }
-}
-
-/// The form what `n` holds stands in: `n` itself when it is one, else the
-/// form around it.
-fn form_within(n: Node, around: Node?) -> Node? {
-    match n.prim {
-        .Form -> n,
-        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Switch or .Slider -> around,
-    }
-}
-
-/// Whether a node is a control: it hears an event, or submits its form.
-fn speaks(n: Node) -> bool { !n.events.is_empty() || n.attrs.any(submits) }
-
-/// Every control on the screen under `n`, in reading order.
-fn controls(n: Node, form: Node?) -> List<Control> {
-    let own: List<Control> = if speaks(n) { [Control { node: n, form: form }] } else { [] }
-    if !shows_content(n) { return own }
-    let within = form_within(n, form)
-    own.concat([c for k in n.children for c in controls(k, within)])
-}
-
-/// The node speaks `kind`, saying `said`: its handler for that kind runs.
-/// A disabled node says nothing.
-fn heard(n: Node, kind: EventKind, said: Said?) -> bool {
-    if n.attrs.any(is_disabled) { return false }
-    let action? = n.events.find(it.kind == kind) else { return false }
-    action.fire(said)
-}
-
-/// The form a control stands in is submitted.
-fn sent(c: Control) -> bool {
-    let form? = c.form else { return false }
-    heard(form, .Submit, null)
-}
-
-/// The control is pressed: its own handler runs, and a control that
-/// submits sends its form.
-fn pressed(c: Control) -> bool {
-    if c.node.attrs.any(is_disabled) { return false }
-    let own = heard(c.node, .Press, null)
-    let form = c.node.attrs.any(submits) && sent(c)
-    own || form
-}
-
 impl Screen {
     /// The `nth` control named `name`, counted in reading order from
     /// zero — absent when the screen holds no such control.
     fn control(name: string, nth: int) -> Control? {
         let root? = self.shown.get() else { return null }
-        let named = [c for c in controls(root, null) if c.node.words() == name]
+        let named = [c for c in controls(root) if c.node.words() == name]
         if nth < 0 || nth >= named.length { return null }
         named[nth]
     }
@@ -102,7 +37,7 @@ impl Screen {
     /// The control named `name` speaks `kind`, saying `said`.
     fn speak(name: string, nth: int, kind: EventKind, said: Said?) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.app.turn(() -> heard(c.node, kind, said))
+        self.app.turn(() -> c.says(kind, said))
     }
 
     /// The user presses the control named `name`. False when no handler
@@ -110,7 +45,7 @@ impl Screen {
     /// press.
     fn press(name: string, nth: int = 0) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.app.turn(() -> pressed(c))
+        self.app.turn(() -> c.pressed())
     }
 
     /// The user gives the control named `name` its text — all of it, as a
@@ -129,7 +64,7 @@ impl Screen {
     /// key in a field does.
     fn submit(name: string, nth: int = 0) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.app.turn(() -> !c.node.attrs.any(is_disabled) && sent(c))
+        self.app.turn(() -> c.sends())
     }
 
     /// The state changed outside an event — a timer, an answer arriving —
@@ -140,59 +75,6 @@ impl Screen {
     /// what its attributes say, what it holds indented under it.
     fn text() -> string {
         let root? = self.shown.get() else { return "" }
-        outline(root, "").join("\n")
+        outline(root)
     }
-}
-
-// ── the readable screen ─────────────────────────────────────────
-
-/// A state a node is in, by its word — nothing while it is not.
-fn state(word: string, on: bool) -> List<string> { if on { [word] } else { [] } }
-
-/// What one attribute tells a reader beyond the node's own words. ONE
-/// exhaustive match, so a new attribute is a decision here.
-fn noted(a: Attribute) -> List<string> {
-    match a {
-        .Text(_) or .Label(_) -> [],
-        .Level(rank) -> ["level=${rank}"],
-        .Value(t) -> ["value=\"${t}\""],
-        .Amount(n) -> ["amount=${n}"],
-        .Placeholder(t) -> ["placeholder=\"${t}\""],
-        .Src(u) -> ["src=${u.text()}"],
-        .Alt(t) -> ["alt=\"${t}\""],
-        .Href(u) -> ["href=${u.text()}"],
-        .Min(n) -> ["min=${n}"],
-        .Max(n) -> ["max=${n}"],
-        .Disabled(on) -> state("disabled", on),
-        .Checked(on) -> state("checked", on),
-        .Selected(on) -> state("selected", on),
-        .Open(on) -> state("open", on),
-        .Invalid(on) -> state("invalid", on),
-        .Loading(on) -> state("loading", on),
-        .Urgency(how) -> [how.word()],
-        .Title(t) -> ["title=\"${t}\""],
-        .Name(t) -> ["name=\"${t}\""],
-        .Submits(on) -> state("submits", on),
-    }
-}
-
-/// A node's own line: what it is, its words, its key, what it says.
-fn line(n: Node) -> string {
-    let words = n.words()
-    let named: List<string> = if words == "" { [] } else { ["\"${words}\""] }
-    let keyed: List<string> = match n.box.key {
-        key? -> ["key=${key}"]
-        null -> []
-    }
-    [n.prim.word()]
-        .concat(named)
-        .concat(keyed)
-        .concat([w for a in n.attrs for w in noted(a)])
-        .join(" ")
-}
-
-fn outline(n: Node, indent: string) -> List<string> {
-    let own = ["${indent}${line(n)}"]
-    if !shows_content(n) { return own }
-    own.concat([l for k in n.children for l in outline(k, "${indent}  ")])
 }

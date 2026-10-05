@@ -98,7 +98,19 @@ Five attempts to lift a handler into a generated message failed.
    `slide`, `submit` — through the same door; `text()` is the screen as
    a reader finds it. What a reader could not reach does not speak: a
    disabled control, a control in a dialog that is not open.
-9. **A second target fires events.** The terminal proves the seams.
+9. **A second target fires events.** A terminal app is `mount(view)`
+   too (`terminal/terminal.av`): the tree drawn as lines in a width,
+   ONE control holding the focus, and the keys going to it through the
+   same door — Tab and Shift-Tab move the focus among the controls that
+   can speak, Enter presses or changes over, a typed character fills a
+   field after what it holds, Ctrl-D ends. The controls on a screen, in
+   reading order, are one definition the headless screen and the
+   terminal share (`realize/controls.av`); the focus is kept by the path
+   a control stands at, so it follows a keyed row. A field shows what
+   the view says it holds. Input is read as it arrives on the standard
+   input — whole lines in a terminal left in its usual mode — so no row
+   of the runtime was added. The board (`tools/ui-board`) is one view
+   with two entries: `web/` mounts it on a page, `term/` in a terminal.
 10. **One library.** The `Role`/`Setting` model and its packages move
     to this one. URL sanitising (`safe_url`) comes across.
 

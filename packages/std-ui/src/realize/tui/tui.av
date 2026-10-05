@@ -11,12 +11,14 @@ use env.{Env}
 
 /// A node while its children are drawn: the cells it was given and its
 /// children's lines so far.
-type Open = { node: Node, width: int, blocks: List<List<string>> }
+type Open = { node: Node, seat: int, width: int, blocks: List<List<string>> }
 
-/// The terminal target: the screen's width, the nodes still open, and the
-/// root's lines once it has closed.
+/// The terminal target: the screen's width, the seat of the node that
+/// holds the focus, the nodes still open, and the root's lines once it
+/// has closed.
 export type Tui = {
     width: int,
+    focus: int? = null,
     open: Cell<List<Open>> = Cell.new([]),
     lines: Cell<List<string>> = Cell.new([]),
 }
@@ -44,17 +46,22 @@ impl Tui {
 }
 
 impl Sink for Tui {
-    fn opened(_seat: int, _parent: int?, _index: int, n: Node) {
-        self.open.push(Open { node: n, width: self.next_width(), blocks: [] })
+    fn opened(seat: int, _parent: int?, _index: int, n: Node) {
+        self.open.push(Open { node: n, seat: seat, width: self.next_width(), blocks: [] })
     }
     fn words(_seat: int, _s: string) {}
     fn closed(_n: Node) {
         let stack = self.open.get()
         let top? = stack.last() else { return }
         self.open.set(stack.slice(0, stack.length - 1))
-        self.give(lines_of(top.node, top.blocks, top.width))
+        let ls = lines_of(top.node, top.blocks, top.width)
+        self.give(if self.focus == top.seat { pointed(ls) } else { ls })
     }
 }
+
+/// The lines of the node that holds the focus: a mark before the first,
+/// the rest hung under it.
+fn pointed(ls: List<string>) -> List<string> { [if i == 0 { "> " } else { "  " } + l for i, l in ls] }
 
 /// The picture a control code point is shown as, so no byte of a tree
 /// can drive the terminal: C0 and DEL as their control pictures, C1 as
@@ -74,9 +81,13 @@ fn shown(line: string) -> string { from_codepoints([shown_code(c) for c in codep
 /// after the last. A width below one reads as one. Every line is at most
 /// `width` code points: text wraps on word boundaries, and a word or an
 /// atom (button, link, image) wider than the line is cut at the width.
-export fn render(root: Node, _env: Env, width: int) -> string {
+export fn render(root: Node, _env: Env, width: int) -> string { focused(root, width, null) }
+
+/// `render`, with the node at walk seat `focus` marked `> ` as the one
+/// the keys go to.
+export fn focused(root: Node, width: int, focus: int?) -> string {
     let w = at_least_one(width)
-    let t = Tui { width: w }
+    let t = Tui { width: w, focus: focus }
     draw(root, t)
     [shown(part) for l in t.lines.get() for part in cut(l, w)].join("\n")
 }

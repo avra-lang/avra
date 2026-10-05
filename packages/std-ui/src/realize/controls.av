@@ -1,0 +1,106 @@
+//! `realize/controls.av` — the controls on a screen, as a target with no
+//! host of its own finds them: in reading order, each where it stands,
+//! and what happens when one speaks. A control is a node that hears an
+//! event of its own or submits its form; one a reader could not reach — in a dialog
+//! that is not open — is not on the screen, and a disabled one does not
+//! speak.
+use realize.identity.{steps, lone}
+use realize.render.{Node, Prim, Attribute, EventKind, Said}
+
+/// A control on the screen: the node, the form it stands in, the path it
+/// stands at — its own across paints — and its seat in a walk of the tree.
+export type Control = { node: Node, form: Node?, path: string, seat: int }
+
+fn is_open(a: Attribute) -> bool {
+    match a { .Open(on) -> on, _ -> false }
+}
+
+fn is_disabled(a: Attribute) -> bool {
+    match a { .Disabled(on) -> on, _ -> false }
+}
+
+fn submits(a: Attribute) -> bool {
+    match a { .Submits(on) -> on, _ -> false }
+}
+
+/// Whether what a node holds is on the screen: a dialog shows its content
+/// only while it is open.
+export fn shows_content(n: Node) -> bool {
+    match n.prim {
+        .Dialog -> n.attrs.any(is_open),
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> true,
+    }
+}
+
+/// The form what `n` holds stands in: `n` itself when it is one, else the
+/// form around it.
+fn form_within(n: Node, around: Node?) -> Node? {
+    match n.prim {
+        .Form -> n,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Switch or .Slider -> around,
+    }
+}
+
+/// Whether an event is one a control says itself. A form's `submit` is
+/// said by what stands in it, so hearing it makes no control of the form.
+fn said_by_control(kind: EventKind) -> bool {
+    match kind { .Press or .Input or .Change -> true, .Submit -> false }
+}
+
+/// Whether a node is a control: it hears an event of its own, or submits
+/// its form.
+fn speaks(n: Node) -> bool { n.events.any(said_by_control(it.kind)) || n.attrs.any(submits) }
+
+/// A walk under way: the controls found so far and the seat the next node
+/// takes.
+type Finder = { found: Cell<List<Control>> = Cell.new([]), next: Cell<int> = Cell.new(0) }
+
+impl Finder {
+    /// EVERY node takes a seat, on the screen or not, so a seat here is
+    /// the seat `realize/sink.av`'s walk hands the same node.
+    fn walk(n: Node, form: Node?, on_screen: bool, path: string) {
+        let seat = self.next.get()
+        self.next.set(seat + 1)
+        if on_screen && speaks(n) { self.found.push(Control { node: n, form: form, path: path, seat: seat }) }
+        let within = form_within(n, form)
+        let shows = on_screen && shows_content(n)
+        let stands = steps([c.box.key for c in n.children])
+        for j, c in n.children { self.walk(c, within, shows, "${path}/${stands[j].spelled()}") }
+    }
+}
+
+/// Every control on the screen `root` draws, in reading order.
+export fn controls(root: Node) -> List<Control> {
+    let at = Finder {}
+    at.walk(root, null, true, lone(root.box.key).spelled())
+    at.found.get()
+}
+
+impl Control {
+    /// Whether the control can speak at all.
+    fn disabled() -> bool { self.node.attrs.any(is_disabled) }
+
+    /// The control speaks `kind`, saying `said`: its handler for that kind
+    /// runs. False when no handler answered.
+    fn says(kind: EventKind, said: Said?) -> bool {
+        if self.disabled() { return false }
+        let action? = self.node.events.find(it.kind == kind) else { return false }
+        action.fire(said)
+    }
+
+    /// The form the control stands in is sent.
+    fn sends() -> bool {
+        if self.disabled() { return false }
+        let form? = self.form else { return false }
+        let action? = form.events.find(it.kind == EventKind.Submit) else { return false }
+        action.fire(null)
+    }
+
+    /// The control is pressed: its own handler runs, and a control that
+    /// submits sends its form.
+    fn pressed() -> bool {
+        let own = self.says(.Press, null)
+        let form = self.node.attrs.any(submits) && self.sends()
+        own || form
+    }
+}

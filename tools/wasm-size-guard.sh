@@ -50,7 +50,7 @@ fb=$(echo "$floor" | cut -d' ' -f1)
 fg=$(echo "$floor" | cut -d' ' -f2)
 
 board=""
-[ -d "$here/ui-board" ] && board=$(footprint "$here/ui-board" reactor)
+[ -d "$here/ui-board/web" ] && board=$(footprint "$here/ui-board/web" reactor)
 
 if [ -n "$board" ]; then
     bb=$(echo "$board" | cut -d' ' -f1)
