@@ -221,6 +221,33 @@ static void idle(void) {
     CHECK(spent < 5000, "an idle second costs no CPU");
 }
 
+#if !WATCH_INOTIFY
+// More paths than the soft limit has descriptors for: the limit is
+// raised and every one is watched; with the hard limit as low, the
+// refusal is the host's.
+static void descriptors(void) {
+    struct rlimit was, low;
+    getrlimit(RLIMIT_NOFILE, &was);
+    sh("mkdir many && for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19; do echo x > many/$i; done");
+    static char paths[20][16];
+    low = was;
+    low.rlim_cur = (rlim_t)next_fd() + 8;
+    setrlimit(RLIMIT_NOFILE, &low);
+    int refused = 0;
+    for (int i = 0; i < 20; i++) {
+        snprintf(paths[i], sizeof paths[i], "many/%d", i);
+        if (avra_io_watch_add(g_watch, paths[i]) < 0) refused++;
+    }
+    struct rlimit now;
+    getrlimit(RLIMIT_NOFILE, &now);
+    CHECK(refused == 0 && now.rlim_cur > low.rlim_cur, "out of descriptors, the soft limit is raised and every path watched");
+    for (int i = 0; i < 20; i++) avra_io_watch_drop(g_watch, paths[i]);
+    setrlimit(RLIMIT_NOFILE, &was);
+}
+#else
+static void descriptors(void) {}
+#endif
+
 #if WATCH_INOTIFY
 // More events than the host queues, none read: the count is lost, said
 // once, and the watch stands settled after.
@@ -259,6 +286,7 @@ int main(void) {
     sets();
     links();
     nothing_held();
+    descriptors();
     idle();
     overflow();
     avra_io_watch_close(g_watch);

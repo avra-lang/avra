@@ -45,6 +45,8 @@ int64_t avra_io_watch_close(int64_t h) { (void)h; return -ENOSYS; }
 #include <sys/types.h>
 #include <sys/event.h>
 #include <sys/time.h>
+#include <sys/resource.h>
+#include <limits.h>
 #define WATCH_INOTIFY 0
 #endif
 
@@ -107,6 +109,28 @@ static int grown(void** list, int* cap, int len, size_t size) {
     return 1;
 }
 
+#if !WATCH_INOTIFY
+// A WATCH HERE COSTS A DESCRIPTOR A PATH, and a process starts with a
+// soft limit far under what the host allows it. Out of descriptors, the
+// soft limit is raised to the hard one — the bound the user set — and
+// whether it moved is the answer: a second refusal is the host's own.
+static int more_descriptors(void) {
+    struct rlimit lim;
+    if (getrlimit(RLIMIT_NOFILE, &lim) != 0) return 0;
+    rlim_t most = lim.rlim_max < OPEN_MAX ? lim.rlim_max : OPEN_MAX;
+    if (lim.rlim_cur >= most) return 0;
+    lim.rlim_cur = most;
+    return setrlimit(RLIMIT_NOFILE, &lim) == 0;
+}
+
+// An event descriptor on what stands at `path`, or -errno.
+static int event_fd(const char* path, int flags) {
+    int fd = open(path, O_EVTONLY | O_CLOEXEC | flags);
+    if (fd < 0 && (errno == EMFILE) && more_descriptors()) fd = open(path, O_EVTONLY | O_CLOEXEC | flags);
+    return fd < 0 ? -errno : fd;
+}
+#endif
+
 // ── A directory's OS watch ──────────────────────────────────────
 
 // The OS watch on `path` opened: its number, or -errno.
@@ -118,8 +142,8 @@ static int os_dir_open(Watch* w, const char* path, int at) {
         IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF);
     return wd < 0 ? -errno : wd;
 #else
-    int fd = open(path, O_EVTONLY | O_DIRECTORY | O_CLOEXEC);
-    if (fd < 0) return -errno;
+    int fd = event_fd(path, O_DIRECTORY);
+    if (fd < 0) return fd;
     struct kevent ev;
     EV_SET(&ev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
            NOTE_WRITE | NOTE_DELETE | NOTE_RENAME | NOTE_REVOKE, 0, (void*)(intptr_t)(at << 1));
@@ -235,8 +259,8 @@ static void entry_free(Watch* w, int at) {
 // 0 or -errno.
 static int file_open(Watch* w, int at) {
     Entry* e = &w->entries[at];
-    int fd = open(e->path, O_EVTONLY | O_CLOEXEC);
-    if (fd < 0) return -errno;
+    int fd = event_fd(e->path, 0);
+    if (fd < 0) return fd;
     struct kevent ev;
     EV_SET(&ev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
            NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_DELETE | NOTE_RENAME | NOTE_REVOKE,
