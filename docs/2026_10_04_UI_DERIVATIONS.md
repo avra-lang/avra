@@ -9,7 +9,7 @@
 > `2026_09_29_UI.md` (the program and the platform),
 > `2026_09_30_STD_VALIDATE.md` (rules and the form projection),
 > `2026_10_04_SHARING_MODEL.md` (places, `state`, `ambient`),
-> `2026_10_04_DECLARATIVE_BOARD.md` (the board as a probed witness).
+> `2026_10_05_UI_ARCHITECTURE.md` (the seams the library stands on).
 
 ## The thesis
 
