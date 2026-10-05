@@ -148,26 +148,12 @@ fn stepper(state n: int) { n = n + 1 }
 // component scope: one place per INSTANCE (landed: see the note below)
 ```
 
-> **Landed since (2026-10-05).** `component C { state n: int = 0 }` is a
-> field as a record's is, a write through a `state` field asks nothing of
-> its root — so a handler's `self.n = …` runs — and `@std/ui` keeps the
-> instance by where it stands (`2026_10_05_UI_ARCHITECTURE.md`, "Instance
-> state"). The correction below is the tree as it stood before that.
->
-> **Probe correction (2026-10-05, `982c405` + the ui-instance branch).** A
-> component body cannot seed a place: `component C { state n: int = 0 }` is
-> `error[build.failed]` "a component holds its fields and its `fn`s, and
-> nothing else", and a component head takes no seat mark
-> (`component C(state n: int)` is a parse error at the `(`). Per-instance
-> state in a PLAIN `type` record DOES land (`type R = { state n: int = 0 }`;
-> two `R {}` copies are independent), and a plain component field is
-> independent per instance but is a VALUE, so a handler capture copies it.
-> AND a `state` SEAT is not SHARED into a closure: a lambda capturing a
-> state seat is `error[resolve.immutable]` "captured by value", because
-> `capture_regs` packs a `state` BINDING's Cell and never a `.Param`'s. So a
-> shared top-level handler driven by a serialised event reaches a
-> per-instance place only through a serialisable KEY, never by capturing
-> it.
+> **Landed (2026-10-05).** `component C { state n: int = 0 }` is a field
+> as a record's is, and a write through a `state` field asks nothing of
+> its root — so a handler's `self.n = …` runs. `@std/ui` keeps the
+> instance by where it stands (`2026_10_05_UI_ARCHITECTURE.md`,
+> "Compositions and instance state"). A component's HEAD takes no seat
+> mark: `component C(state n: int)` is a parse error at the `(`.
 
 ### 1.4 `once` stays, untouched: a different axis (LIFETIME).
 

@@ -190,6 +190,7 @@ fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
 fn build_component_name_head(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
     let head = b.token(1)?
+    if !(b.exprs(3)?).is_empty() { return .Err("${braced_head(head.text)} — ${parenthesised_head(word.word, head.text)}") }
     b
         .wrap_expr(
             b
@@ -805,7 +806,17 @@ fn headless(word: string) -> string {
 /// fields — an instance's head keeps its brace — so the words write it.
 fn template_setting(word: string, head: string?) -> string {
     let named? = head else { return "`${word}`'s block is code it runs — a `key: value` setting fills a record's field" }
-    "`${word}`'s block is code it runs, and the brace after `${named}` opens it — a record literal as the head stands in parentheses: `${word} (${named} { … }) { … }`"
+    "`${word}`'s block is code it runs — ${braced_head(named)} — ${parenthesised_head(word, named)}"
+}
+
+/// THE HEAD LAW's words: an instance's head keeps its brace.
+fn braced_head(named: string) -> string {
+    "the brace after an instance's head opens the instance's block, so `${named} { … }` is no record literal here"
+}
+
+/// The form the head law's refusals write.
+fn parenthesised_head(word: string, named: string) -> string {
+    "a record literal as the head stands in parentheses: `${word} (${named} { … })`"
 }
 
 fn record_heads(word: string, declared: int, written: int) -> string {

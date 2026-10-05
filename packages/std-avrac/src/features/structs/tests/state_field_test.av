@@ -76,6 +76,12 @@ spec "structs — a state field" {
                 "`self` is captured by value — a lambda cannot assign to it",
             )
         }
+        then "a lambda writing a plain member is told the member is a place when it is `state`" {
+            refused_with(
+                "${counter}impl Counter {\n    fn set() -> fn() -> void { () -> { self.plain = 2 } }\n}\n0",
+                "a member a lambda writes is a place — declare it `state`",
+            )
+        }
         then "a lambda's captured record keeps its plain field" {
             refused_with(
                 "${counter}let c = Counter { }\nlet f = () -> { c.plain = 2 }\n0",
@@ -88,7 +94,7 @@ spec "structs — a state field" {
                 "`k` is a pattern's bind",
             )
         }
-        then "a state field itself, whole, is still the root's when the root is the target" {
+        then "a parameter holding state, assigned whole, is refused in the parameter's words" {
             refused_with(
                 "${counter}fn swap(c: Counter) { c = Counter { } }\n0",
                 "`c` is a parameter",
@@ -117,6 +123,11 @@ spec "structs — a literal in a statement's head" {
         }
         then "opens in a `match`'s subject" {
             shown("${shapes}match P { x: 1 }.x { 1 -> 10, _ -> 0 }") == "10"
+        }
+        then "opens in an `if let`'s subject" {
+            shown(
+                "${shapes}fn f() -> int {\n    if let z? = [Id { x: 4 }].first() { return z.x }\n    0\n}\nf()",
+            ) == "4"
         }
         then "opens in a `let … else`'s subject" {
             shown(

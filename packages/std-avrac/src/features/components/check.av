@@ -110,6 +110,32 @@ fn format_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
     }
 }
 
+/// THE HEAD LAW: the brace after an instance's head opens the instance's
+/// block, so a head that names a record was meant as that record's
+/// literal — refused once, before the block is read as settings.
+fn head_law(mut cx: TypeCx, e: ExprId) -> bool {
+    let inst? = cx.view.store.instance_parts(e) else { return false }
+    let head? = inst.heads.find(names_record(cx, it)) else { return false }
+    let named = cx.view.store.ident_name(head) ?? ""
+    cx
+        .emit(
+            refusal(
+                "type.component_head",
+                cx.loc_of(head),
+                braced_head(named),
+                "names a record",
+                parenthesised_head(inst.word, named),
+            ),
+        )
+    true
+}
+
+fn names_record(cx: TypeCx, e: ExprId) -> bool {
+    if cx.view.store.ident_name(e) == null { return false }
+    let d? = cx.bound_decl(e) else { return false }
+    cx.view.decls.is_record(d)
+}
+
 /// An instance hears the events its component declares, each with all
 /// its event says or none of it: a handler the component cannot hear is
 /// refused by name.

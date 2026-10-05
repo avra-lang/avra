@@ -1,8 +1,9 @@
 // proves: an unkeyed instance stands at the SITE it was written at, so
 // a sibling that comes and goes above it moves nothing — not its state,
 // and not its element on a page. Two instances of one component written
-// at two sites never trade state. Instances ONE site made, with no key,
-// are told apart by order, and the walk says so.
+// at two sites never trade state — two LIKE literals included. A control
+// whose instance left answers no press. Instances ONE site made, with no
+// key, are told apart by order, and the walk says so — once an app.
 use @std.ui.app.{app, plain}
 use @std.ui.components.{column, text}
 use @std.ui.headless.{Screen, headless}
@@ -29,6 +30,12 @@ fn page() -> column { column { items: above().concat([counter "below"]) } }
 fn pair() -> column {
     let one: List<dyn View> = if first { [counter "one"] } else { [] }
     column { items: one.concat([counter "two"]) }
+}
+
+/// Two like literals, the first of which comes and goes.
+fn twins() -> column {
+    let one: List<dyn View> = if first { [counter "p"] } else { [] }
+    column { items: one.concat([counter "p"]) }
 }
 
 /// One site, many instances.
@@ -65,6 +72,21 @@ first = true
 b.repaint()
 said(b, "the first back")
 
+println("pressing where the first stood: ${b.press("one+")}")
+first = false
+b.repaint()
+println("pressing the departed: ${b.press("one+")}")
+first = true
+
+let t = headless(twins)
+let _ = t.press("p+")
+said(t, "two like literals, the first pressed")
+first = false
+t.repaint()
+said(t, "the first gone: the second kept its own")
+println("warnings: ${t.warnings().join(" / ")}")
+first = true
+
 let c = headless(looped)
 let _ = c.press("x+")
 said(c, "a loop with no keys")
@@ -99,3 +121,13 @@ host.paint()
 banner = false
 println("── the banner gone: the patches")
 host.paint()
+
+println("── a page's walk speaks once")
+keyed = false
+fn unshown(_root: Node, _worn: Theme) {}
+
+let lists = app(looped, plain, unshown)
+lists.paint()
+println("said: ${lists.said_anew().length}")
+lists.paint()
+println("said again: ${lists.said_anew().length}")

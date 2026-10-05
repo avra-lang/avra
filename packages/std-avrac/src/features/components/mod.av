@@ -51,6 +51,7 @@ export fn components() -> LanguageFeature {
         "type.component_format"   | "a `Format` head is `@std.meta`'s pattern type"
         "type.component_event"    | "an instance hears the events its component declares"
         "type.component_body"     | "a component's body is what one trait says a body is"
+        "type.component_head"     | "the brace after an instance's head opens the instance's block"
     }
     LanguageFeature components {
         gram: grammar {
@@ -60,7 +61,7 @@ export fn components() -> LanguageFeature {
             named_inst_body = "{" BREAK* hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> instance_arms_body(hp, hg, hv, a)
                 | b:instance_body -> b
             instance_body = "{" BREAK* ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
-            primary = w:COMPONENT hn:NAME b:instance_body -> component_name_head(w, hn, b) | w:COMPONENT b:instance_body -> component_headless(w, b) | w:COMPONENT h:expression b:instance_body -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression kw:NAME iw:NAME "." fp:NAME b:instance_body -> component_keyed(w, h, kw, iw, fp, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
+            primary = w:COMPONENT hn:NAME b:instance_body ( x:instance_body )? -> component_name_head(w, hn, b, x) @trailer(x) | w:COMPONENT b:instance_body -> component_headless(w, b) | w:COMPONENT h:expression b:instance_body -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression kw:NAME iw:NAME "." fp:NAME b:instance_body -> component_keyed(w, h, kw, iw, fp, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
         }
         builders: rows
         diags: codes

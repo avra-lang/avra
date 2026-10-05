@@ -128,6 +128,41 @@ fn nested_hole() -> Grammar {
         .built!
 }
 
+/// `nested_hole`'s statements inside a braced body: a `fn` holds
+/// statements, and a failed one recovers at END.
+fn bodied() -> Grammar {
+    parse_grammar(
+        "prog = ( s:stmt | BREAK )* EOF -> prog(s)\nstmt = \"fn\" f:NAME \"{\" ( b:stmt | BREAK )* \"}\" -> fn_(f, b) | v:grp END @recover(sync_to: \"END\") -> st(v)\ngrp = \"let\" n:NAME \"in\" @expect(\"in\", \"expected `in`\") -> grp(n)\n",
+    )
+        .built!
+}
+
+fn recovered(src: string) -> string {
+    let o = run_src(bodied(), src)
+    "${result_str(o)} ${o.diagnostics.length}"
+}
+
+spec "grammar/executor — recovery keeps what stands around a failed statement" {
+    given "a statement that fails before a block it opens" {
+        then "skips the block whole, and the next statement stays in the body" {
+            recovered("fn f {\nlet a {\nx\n}\nlet c in\n}\nlet d in\n") == "(prog [(fn_ f [_ (st (grp c))]) (st (grp d))]) 1"
+        }
+        then "skips a block nested in its block" {
+            recovered("fn f {\nlet a {\nx {\ny\n}\n}\nlet c in\n}\n") == "(prog [(fn_ f [_ (st (grp c))])]) 1"
+        }
+        then "ends at the end of input when its block never closes" { recovered("let a {\nx\n") == "(prog [_]) 1" }
+    }
+    given "a statement that fails inside a body" {
+        then "leaves the body's closing brace to the body" {
+            recovered("fn f {\nlet a b\n}\nlet d in\n") == "(prog [(fn_ f [_]) (st (grp d))]) 1"
+        }
+        then "leaves it on one line too" { recovered("fn f { let a b }\nlet d in\n") == "(prog [(fn_ f [_]) (st (grp d))]) 1" }
+        then "is followed by the statement on the next line" {
+            recovered("fn f {\nlet a b\nlet c in\n}\n") == "(prog [(fn_ f [_ (st (grp c))])]) 1"
+        }
+    }
+}
+
 spec "grammar/executor" {
     given "the head law: a trailer never matches inside a head" {
         then "a call takes its trailing block outside a head" {

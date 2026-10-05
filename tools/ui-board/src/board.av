@@ -153,24 +153,30 @@ component new_task {
     }
 }
 
-/// The task rows: ONE keyed list, so a reorder or an insert keeps every
-/// node. An empty view is a word, never a stray row.
+/// One task's row. Its key is the task's id, so its node goes where the
+/// task goes.
+component task_row(task: Todo) {
+    item {
+        checkbox self.task.title {
+            checked: self.task.done
+            on change { checked -> tasks = [marked(x, self.task.id, checked) for x in tasks] }
+            style: title_style(self.task.done)
+        }
+        button "Remove" {
+            on press { tasks = [x for x in tasks if x.id != self.task.id] }
+            style: sunk_style()
+        }
+    }
+}
+
+/// The task rows: ONE list of keyed rows, so a reorder or an insert
+/// keeps every node. An empty view is a word, never a stray row.
 component task_rows {
     if visible().is_empty() {
         text "Nothing here yet." { style: Style { color: .Muted } }
     } else {
-        list visible() by it.id { t ->
-            item {
-                checkbox t.title {
-                    checked: t.done
-                    on change { checked -> tasks = [marked(x, t.id, checked) for x in tasks] }
-                    style: title_style(t.done)
-                }
-                button "Remove" {
-                    on press { tasks = [x for x in tasks if x.id != t.id] }
-                    style: sunk_style()
-                }
-            }
+        list {
+            for t in visible() { task_row t { key: t.id } }
         }
     }
 }

@@ -1778,9 +1778,9 @@ a list to collect into.
 A value kept in a record cannot stay generic, and a trait impl over a
 generic type is not landed. Take the type parameter at the constructor
 and store the one closure the record needs (packages/std-ui/src/app/
-app.av: `app<V: View>(view: fn() -> V, …)` keeps `() ->
-view().describe()`), so every caller passes its own fn by name and the
-record holds one shape.
+app.av: `app<V: View>(view: fn() -> V, …)` keeps `(at: Standing) ->
+rooted(view().describe(at))`), so every caller passes its own fn by
+name and the record holds one shape.
 
 ## A loop is one door that answers whether it ran
 

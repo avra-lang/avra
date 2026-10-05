@@ -4,11 +4,14 @@
 // not come back; two instances under ONE key are told by order, and
 // said; a state list is written in place by a handler; and a
 // composition whose file binds `View` to something of its own is a
-// view all the same.
+// view all the same; one key handed from one component to another hands
+// on no state; a composition's own `fn`s and its file's take any name;
+// a composition that keeps nothing stands for nothing, and what it holds
+// stands under it; and a composition holds itself.
 use @std.ui.components.{column}
 use @std.ui.headless.{Screen, headless}
 use @std.ui.tests.strangers.{dial}
-use @std.ui.tests.parts.{counter, shifting}
+use @std.ui.tests.parts.{clash, counter, nest, shifting, tally, wrap}
 use @std.ui.tree.view.{View}
 
 state name: string = "k1"
@@ -77,3 +80,53 @@ fn stranger() -> column {
 let e = headless(stranger)
 let _ = e.press("turn d")
 said(e, "a file with a `View` of its own")
+
+state handed: bool = false
+
+/// One key, two components in turn.
+fn one_key() -> column {
+    if handed {
+        column {
+            tally "x" { key: "k" }
+        }
+    } else {
+        column {
+            counter "x" { key: "k" }
+        }
+    }
+}
+
+let f = headless(one_key)
+let _ = f.press("x+")
+said(f, "a counter under a key")
+handed = true
+f.repaint()
+let _ = f.press("tap x")
+said(f, "a tally under that key")
+handed = false
+f.repaint()
+said(f, "the counter again")
+
+fn named() -> column {
+    column {
+        clash "c"
+    }
+}
+
+let g = headless(named)
+let _ = g.press("c+")
+said(g, "names of its own")
+
+fn wrapped() -> column {
+    column {
+        wrap "w"
+        nest 2
+    }
+}
+
+let h = headless(wrapped)
+let _ = h.press("w+")
+let _ = h.press("d2+")
+let _ = h.press("d2+")
+let _ = h.press("d0+")
+said(h, "a wrapper that keeps nothing, and a component in itself")

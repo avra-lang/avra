@@ -24,7 +24,7 @@ Five attempts to lift a handler into a generated message failed.
 
 | layer | is | owns |
 |---|---|---|
-| state | places the app owns | `state`, keyed stores |
+| state | places the app owns | module `state`, a model's `state` fields, a component instance's |
 | view | components -> the neutral tree | what a node IS, says, looks like, hears |
 | lower | neutral node -> one target's elements | tags, attributes vs properties, control structure |
 | diff | old elements vs new -> patches | reconciliation, ONCE, in Avra |
@@ -205,6 +205,9 @@ that declares it.
   site). Each node it draws carries that step in front of its own
   (`Stand.via`), so two instances' nodes are told apart beside each
   other: moving a keyed composition moves exactly its nodes.
+- **Its key shows on the first node it draws.** A composition has no
+  node to wear a key, so the first node its body makes wears it — a
+  page's `data-key` — where that node wears none of its own.
 - **A tree has one root.** A root that drew none or several nodes is
   held in a column — the one wrapper, and only there.
 - **A primitive is the other kind**: `@prim`, marked members, no body,
@@ -244,8 +247,11 @@ that declares it.
 7. **The app owns what stands.** A kept instance is held by its
    standing, behind a fn, under the app's root: two screens over one
    view share nothing, and a dropped screen takes its instances with
-   it. A component's `once fn <name>_kept()` is only the typed SEAT an
-   instance is handed across; it holds nothing between two calls.
+   it. Beside each composition its derive mints one `once fn` — only
+   the typed SEAT an instance is handed across; it holds nothing
+   between two calls. Its name, and the name of the method a body
+   becomes, are ones no program can write, so a component's own `fn`s
+   and its file's take any name.
    `App.held()` counts what stands.
 8. **A write during the walk is a write.** It lands, the rest of that
    paint reads it, and no paint follows from it — only the loop's door
@@ -253,10 +259,14 @@ that declares it.
    it, so nothing can speak. Pinned (`tests/instance_life`).
 9. **An unkeyed instance stands at its site.** Two instances of one
    component written at two places never trade state, whatever comes
-   and goes between them. Instances ONE site made, with no key, are
-   told apart by order: the walk cannot refuse a tree it is handed, so
-   it SAYS so, once a component a paint — `App.warnings()`, a
-   terminal's error stream:
+   and goes between them — two literals written alike included: a site
+   is the literal's file, its content and its turn among the literals
+   like it in that file. Instances ONE site made (a loop, a
+   comprehension, a fn called twice), with no key, are told apart by
+   order, and so are two that share a key: the walk cannot refuse a
+   tree it is handed, so it SAYS so — `App.warnings()` after each
+   paint, and once an app on a target's error stream (a terminal's, a
+   page's console):
    "`counter` keeps state, and here its instances are told apart by
    their order alone — they share a key, or one site made them and
    none wears one: give each its own `key`".
@@ -278,19 +288,22 @@ that declares it.
   compiler names no library: `@std/ui` writes `@composes(Stand) export
   trait View`, and `key:` and the site are fields of every composition
   with nothing written.
-- **Which trait is found from the program, by what the file can
-  name**: the traits wearing `@composes` among the packages the
-  component's file reaches — its own, and those its `use` lines name
-  (it imports `text` from `@std.ui.components`, so `@std/ui` is in
-  reach). Each such package is minted whole before the answer, so the
-  answer never depends on what was read first. Two libraries each
-  compose their own components; none in reach is refused, and so are
-  two in ONE file's reach.
+- **Which trait is found along what the file names**: the nearest
+  files that declare a trait wearing `@composes`, walking outward from
+  the component's file — the files its `use` lines' names are declared
+  in and the files of its own module, then theirs. A body made of
+  `text` reaches `@std/ui`'s `View` through `text`'s file; a body made
+  only of other compositions reaches it through theirs, with no `use`
+  of the library written. Only files a build already reads are read —
+  never a package's tests. Two libraries each compose their own
+  components; a body with none in reach is refused, and so is one
+  whose nearest ring holds two.
 - **A generated impl names its trait where the name was WRITTEN.**
   `impl View for counter` is the library's text: `View` is read in the
   library's file, whatever the component's file imports — nothing, or
-  an unrelated `View` of its own. Nothing is bound into the user's
-  file.
+  an unrelated `View` of its own. No import is bound into the user's
+  file; what lands in it is the impl and the seat of law 7, under
+  names no program can write.
 - **A component is instanced where it is declared.** A module's own
   component word is reserved nowhere, so it opens an instance where
   the line says so: before a head value (`counter "a"`, `counter id`,
@@ -302,28 +315,41 @@ that declares it.
 - **A statement that fails keeps the shape around it.** Recovery
   skips the block the failed statement opened, not only its line, so
   a declaration around it still closes where it was written.
-- **A head keeps its brace.** A record literal never opens in a head
-  (`if`, `match`, `for`, a component's head value): `counter id { key:
-  id }` is `counter` over `id`. A literal in a head is parenthesised,
-  and `fmt` keeps the parentheses.
+- **An instance's head keeps its brace.** After a component's word, a
+  name and then a brace is the head and the instance's block: `counter
+  id { key: id }` is `counter` over `id`. A record literal as a head
+  that a block follows stands in parentheses — `tally (Tally { … }) {
+  … }` — and `fmt` keeps them; a head naming a record is refused in
+  those words (`type.component_head`). Every other head (`if`,
+  `while`, `for`, `match`, `if let`, `let … else`) takes a literal
+  bare, as before. A module's OWN word before a parenthesis is a call,
+  refused in words that say to bind the value first.
 - `component C { state n: T = v }`: a field, as a record's is.
 - A WRITE THROUGH A `state` FIELD ASKS NOTHING OF ITS ROOT. The cell
   takes it, so `self.n = …` in a handler and `c.n = …` on a parameter
   run; `self.plain = …` keeps `resolve.immutable`'s words. The root's
   verdict is spoken at typing, where the field is known. Such a write
   marks no receiver written.
-- `@std/meta`: `Field.state`, `Type.fns`, `Type.body`.
+- `@std/meta`: `Field.state`, `Type.body`, `composes`.
 - `@std/meta`'s `Site`: A FIELD'S TYPE IS ITS MEANING. A record literal
-  that leaves a `Site` field unset holds its own site — its file and
-  its own content, folded — so it owes no default. One constant a
-  literal; content-addressed, so a line added above it moves nothing,
-  and two literals written alike in one file share one.
+  that leaves a `Site` field unset holds its own site — its file, its
+  own content and its turn among the literals like it in that file,
+  folded — so it owes no default. One constant a literal;
+  content-addressed, so a line added above it moves nothing, and two
+  literals written alike are still two sites.
 
 ### Refused
 
 - `type.component_body`: "a component is made of what its body holds,
   and nothing here says what `x`'s is" — no trait composes; and "one
-  trait says what a component's body is, and here `A` and `B` both do"
+  trait says what a component's body is, and here `A` and `B` both
+  do"; what the composing trait's own `derive` refuses, in its words
+  and under its package's kind. A derive that cannot run is
+  `annotation.unsettled`, at the component.
+- `type.component_head`: "the brace after an instance's head opens the
+  instance's block, so `P { … }` is no record literal here"
+- `resolve.unresolved`: "`label` is not defined — a member is read
+  through its receiver", help "write `self.label`"
 - `build.failed`: "a component holds its fields, its `fn`s and what it
   is made of — never a declaration of its own"; "a component's `state`
   is a field, and a field says its type — `state n: int = 0`"
@@ -483,3 +509,8 @@ one exhaustive match per target over the primitives.
 ## Open
 
 - The object cache across targets: PR #272, `avra-8sb5.67`.
+- Compositions, as they stand: an instance takes ONE head value
+  (`avra-8sb5.11.331`); a composition with no head is written `name
+  {}`, never bare (`.332`); a name in generated code other than an
+  impl's own trait still resolves in the landing file (`.333`); `fmt` prints a component's fields, then its body, then
+  its `fn`s, whatever order they were written in.

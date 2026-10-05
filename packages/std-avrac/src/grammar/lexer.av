@@ -1552,8 +1552,8 @@ fn paren_opening(ts: List<Token>, close: int) -> int? {
 /// Whether the token at `i` is a component's word opening an instance.
 /// An imported word always does. A word the file's own MODULE declares
 /// is reserved nowhere, so it opens one only where the line says so: a
-/// name after it where a statement starts, or a head value after it
-/// anywhere. Its word before a `{` stays the record's literal.
+/// head value after it. Its word before a `{` stays the record's
+/// literal.
 fn opens_instance(
     ts: List<Token>,
     i: int,
@@ -1564,9 +1564,7 @@ fn opens_instance(
     let t = ts[i]
     if t.kind != TokenKind.Name { return false }
     if components.contains(t.text) { return true }
-    named.contains(t.text) &&
-        (starts_statement(ts, i) && names_instance(ts, i + 1, keywords) ||
-            heads_instance(ts, i + 1, keywords))
+    named.contains(t.text) && heads_instance(ts, i + 1, keywords)
 }
 
 /// The keywords that are VALUES — each begins a head as a name does.
@@ -1591,14 +1589,6 @@ fn starts_statement(ts: List<Token>, i: int) -> bool {
         ts[i - 1].kind == TokenKind.Break ||
         ts[i - 1].lit_matches("export") ||
         ts[i - 1].lit_matches("{")
-}
-
-/// Whether `at` is an instance's name: a name no keyword spells, then
-/// its block or the statement's end — a break, the file's, or the
-/// enclosing block's `}`.
-fn names_instance(ts: List<Token>, at: int, keywords: List<string>) -> bool {
-    if at >= ts.length || ts[at].kind != TokenKind.Name || keywords.contains(ts[at].text) { return false }
-    at + 1 >= ts.length || ends_instance_head(ts[at + 1])
 }
 
 /// Whether a token closes an instance's head: its block's `{`, or the
