@@ -4,9 +4,16 @@
 #ifndef AVRA_RUNTIME_H
 #define AVRA_RUNTIME_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 void avra_trap(const char* msg) __attribute__((noreturn));
+// The runtime's own words: %s %c %d %lld %llx %p %% under a width and
+// `-`, into a buffer cut at `cap`, or whole onto stderr.
+void avra_fmt(char* out, size_t cap, const char* fmt, ...) __attribute__((format(printf, 3, 4)));
+void avra_say(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+// A number as an env flag spells it; base 0 reads its own prefix.
+unsigned long long avra_number(const char* s, unsigned base);
 void avra_rc_retain(void* p);
 void avra_rc_release(void* p);
 void* avra_array_sized(int64_t n);

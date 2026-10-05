@@ -34,6 +34,7 @@
 #ifndef __APPLE__
 #define _GNU_SOURCE
 #endif
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,133 @@
 #include "avra_platform.h"
 #include "avra_runtime.h"
 #include "avra_hot.h"
+
+// ── The runtime's own words ─────────────────────────────────────
+//
+// A trap, a guard and a report are FORMATTED HERE, never by libc's
+// printf: its engine is ten kilobytes a wasm module would carry to
+// print one index. The conversions are the ones these words use —
+// %s %c %d %lld %llx %p %% under a width and `-` — and the `format`
+// attribute holds every call to that subset's types. A number a
+// program prints is a FLOAT's or an int's own row, not this.
+
+// Where formatted text lands: a buffer, drained to `to` each time it
+// fills when there is one, cut at its end when there is none.
+typedef struct { char* base; char* at; char* end; FILE* to; } Words;
+
+static void words_drain(Words* w) {
+    if (w->to) fwrite(w->base, 1, (size_t)(w->at - w->base), w->to);
+    w->at = w->base;
+}
+
+static void words_put(Words* w, const char* s, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (w->at == w->end) {
+            if (!w->to) return;
+            words_drain(w);
+        }
+        *w->at++ = s[i];
+    }
+}
+
+static void words_fill(Words* w, int n) {
+    for (; n > 0; n--) words_put(w, " ", 1);
+}
+
+// `v` in `base`, written backwards from `end`; answers its first digit.
+static char* digits_before(char* end, unsigned long long v, unsigned base) {
+    do { *--end = "0123456789abcdef"[v % base]; v /= base; } while (v);
+    return end;
+}
+
+static void rt_vfmt(Words* w, const char* fmt, va_list ap) {
+    for (; *fmt; fmt++) {
+        if (*fmt != '%') { words_put(w, fmt, 1); continue; }
+        int left = *++fmt == '-';
+        if (left) fmt++;
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9') width = width * 10 + (*fmt++ - '0');
+        char held[24];
+        char* end = held + sizeof held;
+        const char* s = end;
+        if (*fmt == 's') {
+            s = va_arg(ap, const char*);
+            end = (char*)s + strlen(s);
+        } else if (*fmt == 'c') {
+            *--end = (char)va_arg(ap, int);
+            s = end++;
+        } else if (*fmt == 'd' || (fmt[0] == 'l' && fmt[1] == 'l' && fmt[2] == 'd')) {
+            long long v = *fmt == 'd' ? va_arg(ap, int) : va_arg(ap, long long);
+            if (*fmt == 'l') fmt += 2;
+            char* at = digits_before(end, v < 0 ? 0ULL - (unsigned long long)v : (unsigned long long)v, 10);
+            if (v < 0) *--at = '-';
+            s = at;
+        } else if (fmt[0] == 'l' && fmt[1] == 'l' && fmt[2] == 'x') {
+            fmt += 2;
+            s = digits_before(end, va_arg(ap, unsigned long long), 16);
+        } else if (*fmt == 'p') {
+            char* at = digits_before(end, (unsigned long long)(uintptr_t)va_arg(ap, void*), 16);
+            *--at = 'x';
+            *--at = '0';
+            s = at;
+        } else {
+            // `%%` is itself; a conversion outside the subset shows as written
+            if (*fmt != '%') words_put(w, "%", 1);
+            s = fmt;
+            end = (char*)fmt + 1;
+        }
+        int n = (int)(end - s);
+        if (!left) words_fill(w, width - n);
+        words_put(w, s, (size_t)n);
+        if (left) words_fill(w, width - n);
+    }
+}
+
+// `snprintf`'s place: the text in `out`, cut at `cap`, terminated.
+void avra_fmt(char* out, size_t cap, const char* fmt, ...) {
+    Words w = { out, out, out + cap - 1, NULL };
+    va_list ap;
+    va_start(ap, fmt);
+    rt_vfmt(&w, fmt, ap);
+    va_end(ap);
+    *w.at = 0;
+}
+
+// `fprintf(stderr, …)`'s place, whole however long the line.
+__attribute__((noinline, cold))
+void avra_say(const char* fmt, ...) {
+    char line[160];
+    Words w = { line, line, line + sizeof line, stderr };
+    va_list ap;
+    va_start(ap, fmt);
+    rt_vfmt(&w, fmt, ap);
+    va_end(ap);
+    words_drain(&w);
+}
+
+// A number an env flag spells, as `strtoull` reads one: blanks, a
+// sign, then digits in `base` up to the first that is none — 0 reads
+// `0x` as hex, a leading `0` as octal, the rest as decimal; 16 takes
+// the `0x` or leaves it. One past the widest word is the widest word.
+unsigned long long avra_number(const char* s, unsigned base) {
+    while (*s == ' ' || (*s >= '\t' && *s <= '\r')) s++;
+    int negative = *s == '-';
+    if (*s == '-' || *s == '+') s++;
+    int hexed = s[0] == '0' && (s[1] == 'x' || s[1] == 'X');
+    if (hexed && (base == 0 || base == 16)) { s += 2; base = 16; }
+    if (base == 0) base = *s == '0' ? 8 : 10;
+    unsigned long long v = 0;
+    int past = 0;
+    for (;; s++) {
+        unsigned d = *s >= '0' && *s <= '9' ? (unsigned)(*s - '0')
+                   : (*s | 32) >= 'a' && (*s | 32) <= 'f' ? (unsigned)((*s | 32) - 'a') + 10 : 16;
+        if (d >= base) break;
+        past |= v > (~0ULL - d) / base;
+        v = v * base + d;
+    }
+    if (past) return ~0ULL;
+    return negative ? 0ULL - v : v;
+}
 
 // ── The box header ──────────────────────────────────────────────
 // The layouts are avra_box.h's — shared with the backend, which lays
@@ -253,11 +381,13 @@ static void report_types(int limit) {
     qsort(rows, (size_t)merged, sizeof(Site), by_made);
     int64_t total = 0;
     for (int64_t i = 0; i < merged; i++) total += rows[i].made;
-    fprintf(stderr, "type: %lld boxes answered by owning rows (a _reusing row may answer the box it was handed), %lld labels\n",
+    avra_say("type: %lld boxes answered by owning rows (a _reusing row may answer the box it was handed), %lld labels\n",
             (long long)total, (long long)merged);
     for (int64_t i = 0; i < merged && i < limit; i++) {
-        fprintf(stderr, "type: %12lld  %5.1f%%  %s\n", (long long)rows[i].made, 100.0 * rows[i].made / total,
-                (const char*)rows[i].site);
+        // a share in tenths of a percent, rounded
+        long long share = total ? ((long long)rows[i].made * 2000 / total + 1) / 2 : 0;
+        avra_say("type: %12lld  %3lld.%lld%%  %s\n", (long long)rows[i].made, share / 10, share % 10,
+               (const char*)rows[i].site);
     }
     free(rows);
 }
@@ -272,7 +402,7 @@ static void report_made(const char* label, Site* tbl, int limit, intptr_t slide)
                 (top == NULL || tbl[i].made > top->made)) top = &tbl[i];
         }
         if (top == NULL) return;
-        fprintf(stderr, "%s: site %p %lld\n", label,
+        avra_say("%s: site %p %lld\n", label,
                 (void*)((char*)top->site - slide), (long long)top->made);
         top->made = -top->made;
     }
@@ -308,29 +438,29 @@ static int64_t g_mortal_live;
 
 static void acc_report(void) {
 #ifdef AVRA_CENSUS
-    fprintf(stderr, "rc: %lld retains, %lld releases, %lld reclaims\n",
+    avra_say("rc: %lld retains, %lld releases, %lld reclaims\n",
             (long long)g_rc_retains, (long long)g_rc_releases, (long long)g_rc_frees);
-    fprintf(stderr, "rc: %lld list reads, %lld list writes\n",
+    avra_say("rc: %lld list reads, %lld list writes\n",
             (long long)g_list_gets, (long long)g_list_pushes);
-    fprintf(stderr, "once: %lld reads, %lld pointer compares\n",
+    avra_say("once: %lld reads, %lld pointer compares\n",
             (long long)g_once_reads, (long long)g_once_steps);
-    fprintf(stderr, "alloc: %lld boxes, %lld list buffers\n",
+    avra_say("alloc: %lld boxes, %lld list buffers\n",
             (long long)g_boxes_made, (long long)g_bufs_made);
     for (int k = 0; k < ACC_KINDS; k++) {
-        if (g_made_by_kind[k]) fprintf(stderr, "alloc:   %-13s %lld\n", g_acc_name[k], (long long)g_made_by_kind[k]);
+        if (g_made_by_kind[k]) avra_say("alloc:   %-13s %lld\n", g_acc_name[k], (long long)g_made_by_kind[k]);
     }
 #endif
 
-    fprintf(stderr, "mem: peak %lld MB in all\n", (long long)(g_acc_total_peak >> 20));
+    avra_say("mem: peak %lld MB in all\n", (long long)(g_acc_total_peak >> 20));
     // EXACT, never MB-rounded: a small program's leak is bytes, and a
     // shift that floors to zero would certify it clean. `avra_once_set`
     // already credited every cached answer out of this ledger the
     // moment it made one immortal, so this line is 0 exactly when
     // nothing outstanding would still need freeing — the soundness
     // runner reads this line alone.
-    fprintf(stderr, "mem: live %lld bytes at exit\n", (long long)g_mortal_live);
+    avra_say("mem: live %lld bytes at exit\n", (long long)g_mortal_live);
     for (int k = 0; k < ACC_KINDS; k++) {
-        fprintf(stderr, "mem:   %-13s peak %6lld MB, now %6lld MB\n", g_acc_name[k],
+        avra_say("mem:   %-13s peak %6lld MB, now %6lld MB\n", g_acc_name[k],
                 (long long)(g_acc_peak[k] >> 20), (long long)(g_acc_live[k] >> 20));
     }
     intptr_t slide = image_slide();
@@ -343,14 +473,14 @@ static void acc_report(void) {
     report_types(40);
 #endif
     const char* wanted = getenv("AVRA_MEM_SITES");
-    int limit = wanted ? atoi(wanted) : 24;
+    int limit = wanted ? (int)avra_number(wanted, 10) : 24;
     for (int shown = 0; shown < limit; shown++) {
         Site* top = NULL;
         for (int i = 0; i < SITES; i++) {
             if (g_sites[i].site && g_sites[i].peak >= 0 && (top == NULL || g_sites[i].peak > top->peak)) top = &g_sites[i];
         }
         if (top == NULL || top->peak < (wanted ? 1 : (1 << 20))) break;
-        fprintf(stderr, "mem:   site 0x%llx peak %6lld MB, now %6lld MB, %lld live of %lld made\n",
+        avra_say("mem:   site 0x%llx peak %6lld MB, now %6lld MB, %lld live of %lld made\n",
                 (unsigned long long)((uintptr_t)top->site - (uintptr_t)slide), (long long)(top->peak >> 20),
                 (long long)(top->live >> 20), (long long)top->count, (long long)top->made);
         top->peak = -1;
@@ -362,7 +492,7 @@ static void acc_report(void) {
     // whatever its count; without it, every site whose sample never
     // balanced
     const char* asked = getenv("AVRA_MEM_SITE");
-    uintptr_t asked_at = asked ? (uintptr_t)strtoull(asked, NULL, 16) + (uintptr_t)slide : 0;
+    uintptr_t asked_at = asked ? (uintptr_t)avra_number(asked, 16) + (uintptr_t)slide : 0;
     if (getenv("AVRA_RC_GUARD")) {
         int replayed = 0;
         for (int i = 0; i < SITES && replayed < 6; i++) {
@@ -370,7 +500,7 @@ static void acc_report(void) {
             Header* sh = st->site && st->sample ? hdr(st->sample) : NULL;
             if (sh == NULL) continue;
             if (asked_at ? (uintptr_t)st->site != asked_at : sh->rc <= 0) continue;
-            fprintf(stderr, "mem:   LEAK at site 0x%llx (%lld made): its hundredth box ends at rc %d — its life (unslid):\n",
+            avra_say("mem:   LEAK at site 0x%llx (%lld made): its hundredth box ends at rc %d — its life (unslid):\n",
                     (unsigned long long)((uintptr_t)st->site - (uintptr_t)slide), (long long)st->made, sh->rc);
             rc_history(st->sample);
             replayed++;
@@ -378,7 +508,7 @@ static void acc_report(void) {
     }
     for (int b = 0; b < CAP_BUCKETS; b++) {
         if (g_cap_peak[b] == 0) continue;
-        fprintf(stderr, "mem:     cap %-9lld peak %6lld MB, now %6lld MB in %lld buffers\n",
+        avra_say("mem:     cap %-9lld peak %6lld MB, now %6lld MB in %lld buffers\n",
                 (long long)1 << b, (long long)(g_cap_peak[b] >> 20), (long long)(g_cap_live[b] >> 20), (long long)g_cap_count[b]);
     }
 }
@@ -393,7 +523,7 @@ static void acc_settled(void) {
     g_acc_on = getenv("AVRA_MEM_STATS") != NULL;
     if (g_acc_on) atexit(acc_report);
     const char* ceiling = getenv("AVRA_MEM_CEILING_MB");
-    if (ceiling && *ceiling) g_mem_ceiling = g_mem_next = strtoll(ceiling, NULL, 10) << 20;
+    if (ceiling && *ceiling) g_mem_ceiling = g_mem_next = (int64_t)avra_number(ceiling, 10) << 20;
     CENSUS(g_sites_census = getenv("AVRA_CENSUS_SITES") != NULL);
 }
 
@@ -452,8 +582,8 @@ static void mem_ceiling_measure(void) {
     int64_t used = mem_in_use();
     if (used > g_mem_ceiling) {
         char msg[96];
-        snprintf(msg, sizeof msg, "memory ceiling exceeded: %lld MB (AVRA_MEM_CEILING_MB)",
-                 (long long)(g_mem_ceiling >> 20));
+        avra_fmt(msg, sizeof msg, "memory ceiling exceeded: %lld MB (AVRA_MEM_CEILING_MB)",
+               (long long)(g_mem_ceiling >> 20));
         avra_trap(msg);
     }
     g_mem_next = g_live_bytes + (g_mem_ceiling - used);
@@ -656,7 +786,7 @@ static void rc_history(void* p) {
     for (size_t i = 0; i < g_log_len; i++) {
         if (g_log[i].ptr == p) {
             intptr_t sl = image_slide();
-            fprintf(stderr, "    %s from 0x%llx -> rc %lld\n",
+            avra_say("    %s from 0x%llx -> rc %lld\n",
                     g_log[i].delta > 0 ? "retain" : "release", (unsigned long long)((uintptr_t)g_log[i].at - (uintptr_t)sl), (long long)g_log[i].rc);
         }
     }
@@ -683,7 +813,7 @@ __attribute__((constructor))
 static void rc_guard_init(void) {
     avra_rc_guard_on = getenv("AVRA_RC_GUARD") != NULL;
     const char* budget = getenv("AVRA_RC_LOG_BUDGET");
-    if (budget) g_log_budget = (size_t)strtoull(budget, NULL, 10);
+    if (budget) g_log_budget = (size_t)avra_number(budget, 10);
 }
 static void* g_chain[64];
 static int g_chain_len = 0;
@@ -698,7 +828,7 @@ void avra_rc_dead_check(void* p, const char* what) {
     if (!rc_guarded()) return;
     Header* h = hdr(p);
     if (h && h->kind == KIND_DEAD) {
-        fprintf(stderr, "avra: %s read a RELEASED box %p\n", what, p);
+        avra_say("avra: %s read a RELEASED box %p\n", what, p);
         abort();
     }
 }
@@ -715,11 +845,11 @@ void avra_retain_noted(void* p, Header* h) {
 __attribute__((noinline, cold))
 void avra_release_guarded(void* p, Header* h) {
     if (h->kind == KIND_DEAD) {
-        fprintf(stderr, "avra: released an already-dead box %p (len %lld)\n", p, (long long)guard_len(p));
-        fprintf(stderr, "  this one from %p\n", AVRA_CALLER());
+        avra_say("avra: released an already-dead box %p (len %lld)\n", p, (long long)guard_len(p));
+        avra_say("  this one from %p\n", AVRA_CALLER());
         rc_history(p);
         for (int k = g_chain_len - 1; k >= 0; k--) {
-            fprintf(stderr, "  reclaiming %p (len %lld)\n", g_chain[k], (long long)guard_len(g_chain[k]));
+            avra_say("  reclaiming %p (len %lld)\n", g_chain[k], (long long)guard_len(g_chain[k]));
         }
         abort();
     }
@@ -1565,9 +1695,9 @@ int64_t avra_insist_scalar(int64_t present, int64_t value) {
 __attribute__((noinline, cold, noreturn))
 static void trap_nul(size_t at) {
     char msg[96];
-    snprintf(msg, sizeof msg,
-             "a string holding a NUL crossed to C as two strings — byte %lld",
-             (long long)at);
+    avra_fmt(msg, sizeof msg,
+           "a string holding a NUL crossed to C as two strings — byte %lld",
+           (long long)at);
     avra_trap(msg);
     abort();
 }
@@ -1593,8 +1723,8 @@ const char* avra_str_crossing(const char* s) {
 __attribute__((noinline, cold, noreturn))
 void avra_trap_bounds(int64_t i, int64_t len) {
     char msg[80];
-    snprintf(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
-             (long long)i, (long long)len);
+    avra_fmt(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
+           (long long)i, (long long)len);
     avra_trap(msg);
     abort();
 }
@@ -1602,8 +1732,8 @@ void avra_trap_bounds(int64_t i, int64_t len) {
 __attribute__((noinline, cold, noreturn))
 static void trap_slice(int64_t lo, int64_t hi, int64_t len) {
     char msg[96];
-    snprintf(msg, sizeof msg, "slice %lld..%lld is out of bounds (length %lld)",
-             (long long)lo, (long long)hi, (long long)len);
+    avra_fmt(msg, sizeof msg, "slice %lld..%lld is out of bounds (length %lld)",
+           (long long)lo, (long long)hi, (long long)len);
     avra_trap(msg);
     abort();
 }
@@ -1703,7 +1833,7 @@ static void alias_log_clone(void* site, void* box) {
     // live ASLR address — subtract the image's own slide so the
     // printed address is directly symbolicatable after the fact.
     intptr_t slide = image_slide();
-    fprintf(stderr, "ALIAS_CLONE site=%p kind=%d n=%lld\n", (void*)((char*)site - slide), h ? (int)KIND_SHAPE(h->kind) : -999, (long long)n);
+    avra_say("ALIAS_CLONE site=%p kind=%d n=%lld\n", (void*)((char*)site - slide), h ? (int)KIND_SHAPE(h->kind) : -999, (long long)n);
 }
 
 // Empties a cell WITHOUT releasing what it held: the cell's reference
@@ -1959,7 +2089,7 @@ static void hash_seeded(void) {
     uint64_t w[4];
     const char* pinned = getenv("AVRA_HASH_SEED");
     if (pinned) {
-        uint64_t x = strtoull(pinned, NULL, 0);
+        uint64_t x = avra_number(pinned, 0);
         for (int i = 0; i < 4; i++) w[i] = splitmix(&x);
     } else {
         os_entropy(w, 4);
@@ -2860,7 +2990,7 @@ int64_t avra_utf8_bad_at(const char* b) { return utf8_bad_at(b, bytes_len(b)); }
 __attribute__((noinline, cold, noreturn))
 static void trap_table(int64_t len) {
     char msg[80];
-    snprintf(msg, sizeof msg, "a class table holds 256 bytes (length %lld)", (long long)len);
+    avra_fmt(msg, sizeof msg, "a class table holds 256 bytes (length %lld)", (long long)len);
     avra_trap(msg);
     abort();
 }
@@ -3064,11 +3194,11 @@ __attribute__((noinline, cold, noreturn))
 static void trap_take(int64_t token) {
     char msg[96];
     if (token == 0)
-        snprintf(msg, sizeof msg, "a take at EOF — `read` answered 0, which names no bytes");
+        avra_fmt(msg, sizeof msg, "a take at EOF — `read` answered 0, which names no bytes");
     else if (token < 0)
-        snprintf(msg, sizeof msg, "a take of an error — `read` answered %lld, not a token", (long long)token);
+        avra_fmt(msg, sizeof msg, "a take of an error — `read` answered %lld, not a token", (long long)token);
     else
-        snprintf(msg, sizeof msg, "a take of read %lld, but read %lld has landed since", (long long)token, (long long)g_fd_gen);
+        avra_fmt(msg, sizeof msg, "a take of read %lld, but read %lld has landed since", (long long)token, (long long)g_fd_gen);
     avra_trap(msg);
     abort();
 }
@@ -3240,8 +3370,8 @@ int64_t avra_str_word_at(const char* s, int64_t i) {
     if (i < 0 || i + 8 > n) {
         int64_t bad = i < 0 ? i : n;
         char msg[80];
-        snprintf(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
-                 (long long)bad, (long long)n);
+        avra_fmt(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
+               (long long)bad, (long long)n);
         avra_trap(msg);
     }
     uint64_t w = 0;
@@ -3482,7 +3612,7 @@ static int64_t write_whole(const char* path, const char* content) {
     size_t n = strlen(path);
     char* tmp = (char*)malloc(n + 32);
     memcpy(tmp, path, n);
-    snprintf(tmp + n, 32, ".tmpav%ld", (long)getpid());
+    avra_fmt(tmp + n, 32, ".tmpav%lld", (long long)getpid());
     FILE* f = fopen(tmp, "wb");
     if (!f) { int64_t e = -errno; free(tmp); return e; }
     // the HEADER's length, never strlen: a text may hold NUL bytes, and
