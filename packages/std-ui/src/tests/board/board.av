@@ -21,10 +21,8 @@ use @std.ui.components.{
     surface,
     text,
 }
-use @std.ui.realize.dom.frame.{Live, frame_text, live, sheet}
-use @std.ui.realize.identity.{NodeId}
+use @std.ui.realize.dom.live.{Live, live, patch_text}
 use @std.ui.realize.render.{Said}
-use @std.ui.realize.update.{Op, plan}
 use @std.ui.realize.view.{View}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
@@ -85,24 +83,19 @@ fn marked(t: Todo, id: string, done: bool) -> Todo {
     if t.id == id { t with { done: done } } else { t }
 }
 
-/// The page the host would hold: the last frame and the handlers it bound.
+/// The page the host would hold: its elements and the handlers they bound.
 once fn page() -> Live { live() }
 
-/// The ids of the nodes whose words are `words`, in frame order.
-fn worded(op: Op, words: string) -> List<NodeId> {
-    match op {
-        .Words(id, label) -> if label == words { [id] } else { [] },
-        .Mount(_) or .Event(_, _) -> [],
-    }
-}
+/// What a paint of the view says to the host: the whole page the first
+/// time, and after that only what changed.
+fn painted() -> string { patch_text(page().patches(view().describe(), default_theme)) }
 
-/// The host's echo, without the wire: paint, then the `nth` control saying
-/// `words` speaks `kind`. The frame bound the handler; the echo names only
-/// the node, so row t3's Remove runs t3's closure, never the first row's.
-fn press(words: string, nth: int, kind: int, said: Said?) -> bool {
-    let root = view().describe()
-    page().diff(root, default_theme)
-    let ids = [id for op in plan(root) for id in worded(op, words)]
+/// The host's echo, without the wire: the `nth` control named `name`
+/// speaks `kind`. The last paint bound the handler; the echo names only
+/// the element, so row t3's Remove runs t3's closure, never the first
+/// row's.
+fn press(name: string, nth: int, kind: int, said: Said?) -> bool {
+    let ids = page().named(name)
     if nth >= ids.length { return false }
     page().fire(ids[nth], kind, said)
 }
@@ -253,17 +246,18 @@ fn view() -> surface {
     }
 }
 
-println(frame_text(view().describe()))
+println(painted())
 println("active=${press("Active", 0, 1, null)}")
-println(frame_text(view().describe()))
+println(painted())
 println("clear=${press("Clear done", 0, 1, null)}")
-println(frame_text(view().describe()))
+println(painted())
 println("about=${press("About", 0, 1, null)}")
-println(frame_text(view().describe()))
+println(painted())
+println("unchanged=[${painted()}]")
 println(
     "all=${filter} open=${[t for t in tasks if !t.done].length} done=${done_count()} total=${tasks.length}",
 )
-println("dark=${sheet(view().describe(), dark_theme).contains("--tone-text:#eeeeee")}")
+println("dark=${patch_text(live().patches(view().describe(), dark_theme)).starts_with("style")}")
 println("unbound=${press("Tasks", 0, 1, null)} wrong_kind=${press("About", 0, 2, null)}")
 
 // THE PER-ITEM WITNESS: both rows share one `on press` in the source, and the
@@ -271,13 +265,17 @@ println("unbound=${press("Tasks", 0, 1, null)} wrong_kind=${press("About", 0, 2,
 // would show here.
 println("remove=${press("Remove", 1, 1, null)}")
 println("after_remove_t3=[${[t.id for t in tasks].join(",")}]")
+println(painted())
 println("toggle=${press("Wire the event channel", 0, 3, Said.Flag(true))}")
 println("after_toggle_t2=${[t.title for t in tasks if t.done].join(",")}")
+println(painted())
 
-// THE ADD WITNESS: the field hands its handler the text the user gave, so
-// the draft becomes a task and the next id advances. An input that says
-// nothing runs no handler.
+// ADD FROM THE FIELD: an input that says nothing runs no handler. The
+// control says its own text, and the page already holds it — so the paint
+// that follows writes no value back.
 println("silent=${press("New task", 0, 2, null)} draft=[${draft}]")
 println("typed=${press("New task", 0, 2, Said.Text("Ship the rewrite"))}")
+println("after_typing=[${painted()}]")
 println("add=${press("Add", 0, 1, null)}")
 println("after_add=[${[t.id for t in tasks].join(",")}] draft_after=[${draft}]")
+println(painted())

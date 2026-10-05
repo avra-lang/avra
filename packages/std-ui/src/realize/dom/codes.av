@@ -1,0 +1,84 @@
+//! `realize/dom/codes.av` — `@derive(Codes)`: an enum variant carries the
+//! number the wire spells it with (`@code(3) SetText`). The number is DATA
+//! on the variant, declared ONCE: the serializer asks `code()`, and
+//! whatever writes a host's copy asks `coded()` for every variant with its
+//! word — so no host table is kept by hand.
+use @std.meta.{Type, Variant, Directive, Declared, Diagnostic, literal, refuse_as_at}
+use @std.text.{parse_int, codepoints, from_codepoints}
+
+/// One variant as a host reads it: its word and its number.
+export type Coded = { word: string, code: int }
+
+/// An enum whose variants name their wire numbers.
+export trait Codes {
+    fn code() -> int
+
+    static fn derive(t: Type) -> Declared {
+        let arms = [quote { .${v.name} -> ${code_of(v)} } for v in t.variants]
+        let rows = [quote { Coded { word: ${literal(snake(v.name))}, code: ${code_of(v)} } } for v in t.variants]
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote {
+                        impl ${t} {
+                            fn code() -> int { match self { ${arms} } }
+
+                            static fn coded() -> List<Coded> { [${..rows}] }
+                        }
+                    },
+                },
+            ],
+            problems: [uncoded(v) for v in t.variants if code_mark(v) == null]
+                .concat([recoded(v) for j, v in t.variants if twin_before(t.variants, j)]),
+        }
+    }
+
+    static fn marks(t: Type) -> List<string> { ["code"] }
+}
+
+/// The number a variant wrote, as text — absent when it wrote none.
+fn code_mark(v: Variant) -> string? { v.marks.find(it.name == "code")?.args?.first() }
+
+/// The number a variant wrote; a variant that wrote none is refused, and
+/// reads as -1 so the generated code still stands.
+fn code_of(v: Variant) -> int { parse_int(code_mark(v) ?? "") ?? -1 }
+
+/// Whether an earlier variant already wears variant `j`'s number.
+fn twin_before(vs: List<Variant>, j: int) -> bool {
+    [k for k, v in vs if k < j && code_of(v) == code_of(vs[j])].length > 0
+}
+
+/// `SetText` → `set_text`: a variant's name as a host spells a word.
+fn snake(name: string) -> string {
+    from_codepoints([c for j, u in codepoints(name) for c in lowered(u, j)])
+}
+
+/// One code point of a name in snake case: a capital is its lower letter,
+/// behind `_` unless it opens the name.
+fn lowered(u: int, at: int) -> List<int> {
+    if u < 65 || u > 90 { return [u] }
+    if at == 0 { [u + 32] } else { [95, u + 32] }
+}
+
+// ── voices ──
+
+fn uncoded(v: Variant) -> Diagnostic {
+    refuse_as_at(
+        "code",
+        v.at,
+        "a wire variant says its number, and `${v.name}` says none",
+        "`@code(7) ${v.name}`",
+    )
+}
+
+fn recoded(v: Variant) -> Diagnostic {
+    refuse_as_at(
+        "code",
+        v.at,
+        "two wire variants share no number, and `${v.name}` wears one already taken",
+        "give it a number no variant above it has",
+    )
+}

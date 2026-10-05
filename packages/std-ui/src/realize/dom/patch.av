@@ -1,0 +1,280 @@
+//! `realize/dom/patch.av` — the DIFF: the page as it stands against the
+//! page as it should be, as the PATCHES that turn one into the other. Two
+//! element trees (`realize/html/element.av`) are matched by ID — an id is
+//! its node, so the same id is the same element — and only what differs
+//! is said. A first paint is a diff against nothing.
+//!
+//! A host applies patches and holds no tree of its own: every decision —
+//! what moved, what is a property, what an event says — is made here.
+use @std.meta.{derive}
+use realize.identity.{NodeId}
+use realize.render.{Action, EventKind, Handler, Said}
+use realize.dom.codes.{Codes, Coded}
+use realize.html.element.{Element, Tagged}
+use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
+
+/// One change to the page. `Place` puts an element under its parent —
+/// the page itself when absent — right after a sibling, or first.
+export enum Patch {
+    Create(id: NodeId, tag: HtmlTag)
+    CreateText(id: NodeId, content: string)
+    Place(id: NodeId, parent: NodeId?, after: NodeId?)
+    Remove(id: NodeId)
+    SetAttr(id: NodeId, name: HtmlAttrName, value: string)
+    DropAttr(id: NodeId, name: HtmlAttrName)
+    SetProp(id: NodeId, name: HtmlAttrName, value: Said)
+    SetText(id: NodeId, content: string)
+    Listen(id: NodeId, to: Listening)
+    Unlisten(id: NodeId, kind: EventKind)
+    Style(css: string)
+}
+
+/// What a value a control holds IS — the tag a host is told to read a
+/// control's answer as, and writes a property's value as. ONE variant per
+/// thing a control can say, and one for saying nothing.
+@derive(Codes)
+export enum Says {
+    @code(0) Nothing
+    @code(1) Number
+    @code(2) Flag
+    @code(3) Text
+}
+
+/// How an element hears one event: the page's own word for it, what the
+/// event says and the property that answer is read from — none for an
+/// event that says nothing — and whether the page's own answer to it is
+/// stopped.
+export type Listening = { action: Action, event: string, says: Says, reads: HtmlAttrName?, prevents: bool }
+
+/// What a control was heard to say: the user moved its property to this.
+export type Heard = { id: NodeId, name: HtmlAttrName, value: Said }
+
+// ── the page's own facts ────────────────────────────────────────
+
+/// The page's word for each event. Every kind spelled.
+fn event_word(k: EventKind) -> string {
+    match k { .Press -> "click", .Input -> "input", .Change -> "change", .Submit -> "submit" }
+}
+
+/// Whether the page's own answer to an event is stopped: a form's submit
+/// would leave the page the program is drawing. Every kind spelled.
+fn prevented(k: EventKind) -> bool {
+    match k { .Submit -> true, .Press or .Input or .Change -> false }
+}
+
+/// What a handler hears. ONE arm per thing a control can say.
+export fn says(h: Handler) -> Says {
+    match h { .Nothing(_) -> .Nothing, .Number(_) -> .Number, .Flag(_) -> .Flag, .Text(_) -> .Text }
+}
+
+/// What a value is. ONE arm per thing a control can say.
+export fn said_as(value: Said) -> Says {
+    match value { .Number(_) -> .Number, .Flag(_) -> .Flag, .Text(_) -> .Text }
+}
+
+/// The property a control's answer is read from, by what it says. Every
+/// answer spelled.
+fn read_from(s: Says) -> HtmlAttrName? {
+    match s { .Nothing -> null, .Text or .Number -> .Value, .Flag -> .Checked }
+}
+
+/// How the page hears an action.
+export fn listening_of(a: Action) -> Listening {
+    let told = says(a.handler)
+    Listening {
+        action: a,
+        event: event_word(a.kind),
+        says: told,
+        reads: read_from(told),
+        prevents: prevented(a.kind),
+    }
+}
+
+/// A PROPERTY is live state the user moves — a field's text, a box's
+/// tick — where its attribute only seeds it. An attribute of these names
+/// is set as a property, as the value it means; every other name is an
+/// attribute. Every name spelled.
+fn property(a: HtmlAttr) -> Said? {
+    match a.name {
+        .Value -> Said.Text(a.value),
+        .Checked -> Said.Flag(true),
+        .DataKey or .Class or .AriaLabel or .AriaSelected or .AriaInvalid or .AriaBusy or .AriaLive or .Title or .Href or .Min or .Max or .Open or .Placeholder or .Src or .Alt or .Disabled or .Type or .Role -> null,
+    }
+}
+
+/// A property no attribute seeds, at rest.
+fn at_rest(value: Said) -> Said {
+    match value {
+        .Text(_) -> Said.Text(""),
+        .Flag(_) -> Said.Flag(false),
+        .Number(_) -> Said.Number(0),
+    }
+}
+
+/// Two values a control may hold, compared.
+fn same_said(a: Said, b: Said) -> bool {
+    match a {
+        .Text(x) -> match b { .Text(y) -> x == y, .Flag(_) or .Number(_) -> false },
+        .Flag(x) -> match b { .Flag(y) -> x == y, .Text(_) or .Number(_) -> false },
+        .Number(x) -> match b { .Number(y) -> x == y, .Text(_) or .Flag(_) -> false },
+    }
+}
+
+// ── the diff ────────────────────────────────────────────────────
+
+/// A diff under way: the patches so far, and what the user was heard to
+/// do to the page since it was last drawn.
+type Differ = { out: Cell<List<Patch>> = Cell.new([]), heard: List<Heard> }
+
+/// One property of an element, by its name.
+type Prop = { name: HtmlAttrName, value: Said }
+
+fn props_of(el: Tagged) -> List<Prop> {
+    [Prop { name: a.name, value: v } for a in el.attrs for v in held(property(a))]
+}
+
+fn held(value: Said?) -> List<Said> {
+    match value {
+        v? -> [v]
+        null -> []
+    }
+}
+
+fn attrs_of(el: Tagged) -> List<HtmlAttr> { [a for a in el.attrs if property(a) == null] }
+
+/// Each element's place in a run, by its id.
+fn places(run: List<Element>) -> Map<string, int> {
+    mut at: Map<string, int> = {}
+    for j, e in run { at.set(e.id().path, j) }
+    at
+}
+
+/// Where in `run` the element stands that `e` is, across a paint: the
+/// one wearing its id, when it is the same kind of thing.
+fn twin_at(run: List<Element>, at: Map<string, int>, e: Element) -> int? {
+    let j? = at.get(e.id().path) else { return null }
+    if same_kind(run[j], e) { j } else { null }
+}
+
+/// Whether two elements are one kind of thing: text and text, or elements
+/// of one tag. An id whose node became another kind is a new element.
+fn same_kind(old: Element, new: Element) -> bool {
+    match old {
+        .Text(_, _) -> match new { .Text(_, _) -> true, .Tag(_) -> false },
+        .Tag(was) -> match new { .Tag(el) -> was.tag == el.tag, .Text(_, _) -> false },
+    }
+}
+
+impl Differ {
+    fn say(p: Patch) { self.out.push(p) }
+
+    /// One parent's children: what left is removed, what stays is diffed
+    /// where it stands, and what is new or out of order is placed after
+    /// the sibling it now follows. A kept element stands still while it
+    /// follows, in the old order, every kept element before it.
+    fn siblings(parent: NodeId?, old: List<Element>, new: List<Element>) {
+        let was = places(old)
+        let now = places(new)
+        for e in old {
+            if twin_at(new, now, e) == null { self.say(Patch.Remove(e.id())) }
+        }
+        mut reached = -1
+        for j, e in new {
+            let after: NodeId? = if j == 0 { null } else { new[j - 1].id() }
+            let at? = twin_at(old, was, e) else {
+                self.made(e)
+                self.say(Patch.Place(e.id(), parent, after))
+                continue
+            }
+            self.kept(old[at], e)
+            if at > reached { reached = at } else { self.say(Patch.Place(e.id(), parent, after)) }
+        }
+    }
+
+    /// An element new to the page, built whole before it is placed.
+    fn made(e: Element) {
+        match e {
+            .Text(id, content) -> self.say(Patch.CreateText(id, content)),
+            .Tag(el) -> {
+                self.say(Patch.Create(el.id, el.tag))
+                for a in attrs_of(el) { self.say(Patch.SetAttr(el.id, a.name, a.value)) }
+                for p in props_of(el) { self.say(Patch.SetProp(el.id, p.name, p.value)) }
+                for a in el.hears { self.say(Patch.Listen(el.id, listening_of(a))) }
+                self.siblings(el.id, [], el.kids)
+            },
+        }
+    }
+
+    /// An element that stays: only what differs is said.
+    fn kept(old: Element, new: Element) {
+        match new {
+            .Text(id, content) -> {
+                if old.text() != content { self.say(Patch.SetText(id, content)) }
+            },
+            .Tag(el) -> {
+                let was? = old.tagged() else { return }
+                self.tagged(was, el)
+            },
+        }
+    }
+
+    fn tagged(old: Tagged, new: Tagged) {
+        self.attributes(new.id, attrs_of(old), attrs_of(new))
+        self.properties(new.id, props_of(old), props_of(new))
+        self.hearing(new.id, old.hears, new.hears)
+        self.siblings(new.id, old.kids, new.kids)
+    }
+
+    fn attributes(id: NodeId, old: List<HtmlAttr>, new: List<HtmlAttr>) {
+        for a in new {
+            if !old.any(it.name == a.name && it.value == a.value) { self.say(Patch.SetAttr(id, a.name, a.value)) }
+        }
+        for b in old {
+            if !new.any(it.name == b.name) { self.say(Patch.DropAttr(id, b.name)) }
+        }
+    }
+
+    /// What a property holds on the page: what the user was heard to move
+    /// it to, else what it was last drawn with.
+    fn standing(id: NodeId, drawn: Prop) -> Said {
+        self.heard.find(it.id == id && it.name == drawn.name)?.value ?? drawn.value
+    }
+
+    /// A property is set when the page does not already hold its value:
+    /// what the program last drew is not what stands once a user has
+    /// typed, so the page's own value is the one compared.
+    fn properties(id: NodeId, old: List<Prop>, new: List<Prop>) {
+        for p in new {
+            let was = old.find(it.name == p.name) ?? Prop { name: p.name, value: at_rest(p.value) }
+            if !same_said(self.standing(id, was), p.value) { self.say(Patch.SetProp(id, p.name, p.value)) }
+        }
+        for was in old {
+            if !new.any(it.name == was.name) &&
+                !same_said(self.standing(id, was), at_rest(was.value)) {
+                self.say(Patch.SetProp(id, was.name, at_rest(was.value)))
+            }
+        }
+    }
+
+    /// An event is heard anew when it is new, or says something else.
+    fn hearing(id: NodeId, old: List<Action>, new: List<Action>) {
+        for was in old {
+            if !new.any((a) -> same_hearing(was, a)) { self.say(Patch.Unlisten(id, was.kind)) }
+        }
+        for a in new {
+            if !old.any((was) -> same_hearing(was, a)) { self.say(Patch.Listen(id, listening_of(a))) }
+        }
+    }
+}
+
+/// Whether two actions ask the page for the same listener: the kind, and
+/// what the event says.
+fn same_hearing(a: Action, b: Action) -> bool { a.kind == b.kind && says(a.handler) == says(b.handler) }
+
+/// The patches that turn the page `old` into `new`, given what the user
+/// was heard to do to it since `old` was drawn.
+export fn diff(old: List<Element>, new: List<Element>, heard: List<Heard>) -> List<Patch> {
+    let d = Differ { heard: heard }
+    d.siblings(null, old, new)
+    d.out.get()
+}

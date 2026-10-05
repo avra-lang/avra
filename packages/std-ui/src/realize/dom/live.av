@@ -1,0 +1,137 @@
+//! `realize/dom/live.av` — a live page: the elements it holds, the sheet
+//! it wears and the handlers it heard, kept so the next paint says only
+//! what changed and a host's echo finds the handler it names.
+use realize.identity.{NodeId}
+use realize.render.{Node, Action, Said}
+use realize.html.element.{Element, lowered}
+use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet}
+use realize.html.tags.{HtmlTag, HtmlAttrName}
+use realize.dom.patch.{Patch, Heard, Listening, Says, diff, listening_of}
+use realize.dom.wire.{frame, kind_code}
+use style.theme.{Theme}
+
+/// An element that hears an event, and what it does then.
+type Bound = { id: NodeId, action: Action }
+
+/// A page as last painted: its elements, the sheet it wears and every
+/// rule a paint has named so far, the handlers its elements bound, and
+/// what the user was heard to do to it since.
+export type Live = {
+    page: Cell<List<Element>> = Cell.new([]),
+    sheet: Cell<string> = Cell.new(""),
+    rules: Cell<List<CssRule>> = Cell.new([]),
+    bound: Cell<List<Bound>> = Cell.new([]),
+    heard: Cell<List<Heard>> = Cell.new([]),
+}
+
+/// A page nothing was painted on.
+export fn live() -> Live { Live {} }
+
+/// Every rule a tree's nodes name, in walk order.
+fn rules_of(n: Node) -> List<CssRule> {
+    node_rules(n.prim, n.box).concat([r for c in n.children for r in rules_of(c)])
+}
+
+/// Every handler an element and what it holds bound, by who hears it.
+fn bound_in(e: Element) -> List<Bound> {
+    let el? = e.tagged() else { return [] }
+    [Bound { id: el.id, action: a } for a in el.hears]
+        .concat([b for k in el.kids for b in bound_in(k)])
+}
+
+/// The elements under `e` that hear an event and are named `name`, as a
+/// reader of the page finds a control: by its accessible name.
+fn named_in(e: Element, name: string) -> List<NodeId> {
+    let el? = e.tagged() else { return [] }
+    let own: List<NodeId> = if !el.hears.is_empty() &&
+        el.attrs.any(it.name == HtmlAttrName.AriaLabel && it.value == name) {
+        [el.id]
+    } else {
+        []
+    }
+    own.concat([id for k in el.kids for id in named_in(k, name)])
+}
+
+impl Live {
+    /// The controls named `name` on the page as last painted, in page
+    /// order — who a host's echo would name for each.
+    fn named(name: string) -> List<NodeId> { [id for e in self.page.get() for id in named_in(e, name)] }
+
+    /// The patches that turn the page into `root` under `theme`: the
+    /// sheet when it changed, then the elements that did. An unchanged
+    /// page says nothing. A RULE ONCE NAMED STAYS IN THE SHEET, so the
+    /// sheet is resent only for a class the page has never worn or a new
+    /// theme — never because the tree named its classes in another order.
+    /// The handlers are kept anew EVERY paint: two trees that draw alike
+    /// may still close over different values.
+    fn patches(root: Node, theme: Theme) -> List<Patch> {
+        let next = lowered(root)
+        let rules = distinct_rules(self.rules.get().concat(rules_of(root)))
+        let sheet = page_sheet(rules, theme, [])
+        let restyled: List<Patch> = if sheet == self.sheet.get() { [] } else { [Patch.Style(sheet)] }
+        let changed = diff(self.page.get(), next, self.heard.get())
+        self.page.set(next)
+        self.rules.set(rules)
+        self.sheet.set(sheet)
+        self.heard.set([])
+        self.bound.set([b for e in next for b in bound_in(e)])
+        restyled.concat(changed)
+    }
+
+    /// `patches`, as the frame a host applies.
+    fn paint(root: Node, theme: Theme) -> Bytes { frame(self.patches(root, theme)) }
+
+    /// The host's echo: element `id` spoke `kind`, saying `said`. The
+    /// handler the last paint bound there runs; false when nothing
+    /// answered. What a control said is what its property now holds, so
+    /// the next paint compares against that.
+    fn fire(id: NodeId, kind: int, said: Said?) -> bool {
+        let found? = self.bound.get().find((b) -> b.id == id && kind_code(b.action.kind) == kind) else { return false }
+        self.hear(id, found.action, said)
+        found.action.fire(said)
+    }
+
+    fn hear(id: NodeId, action: Action, said: Said?) {
+        let value? = said else { return }
+        let name? = listening_of(action).reads else { return }
+        self.heard.push(Heard { id: id, name: name, value: value })
+    }
+}
+
+// ── the readable projection ─────────────────────────────────────
+
+/// An id as a line spells it — `-` where there is none.
+fn spelled(id: NodeId?) -> string { id?.path ?? "-" }
+
+fn said_word(value: Said) -> string {
+    match value { .Text(t) -> "\"${t}\"", .Flag(on) -> "${on}", .Number(n) -> "${n}" }
+}
+
+/// What an event says, after its kind — no word for one that says nothing.
+fn says_word(s: Says) -> string {
+    match s { .Nothing -> "", .Number -> " number", .Flag -> " flag", .Text -> " text" }
+}
+
+/// One patch as a readable line.
+fn patch_line(p: Patch) -> string {
+    match p {
+        .Create(id, tag) -> "create ${id.path} ${tag.word()}",
+        .CreateText(id, content) -> "text ${id.path} ${content}",
+        .Place(id, parent, after) -> "place ${id.path} in ${spelled(parent)} after ${spelled(after)}",
+        .Remove(id) -> "remove ${id.path}",
+        .SetAttr(id, name, value) -> "attr ${id.path} ${name.word()}=${value}",
+        .DropAttr(id, name) -> "unattr ${id.path} ${name.word()}",
+        .SetProp(id, name, value) -> "prop ${id.path} ${name.word()}=${said_word(value)}",
+        .SetText(id, content) -> "retext ${id.path} ${content}",
+        .Listen(id, to) -> "listen ${id.path} ${to.action.kind.word()}${says_word(to.says)}",
+        .Unlisten(id, kind) -> "unlisten ${id.path} ${kind.word()}",
+        .Style(_) -> "style",
+    }
+}
+
+/// Patches as readable lines — for tests and `explain`, never the wire.
+export fn patch_text(patches: List<Patch>) -> string { [patch_line(p) for p in patches].join("\n") }
+
+/// A tree's first paint as readable lines: the page built from nothing,
+/// its sheet left out.
+export fn drawn_text(root: Node) -> string { patch_text(diff([], lowered(root), [])) }

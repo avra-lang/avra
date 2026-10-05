@@ -1,0 +1,178 @@
+//! `realize/dom/wire.av` — patches as BYTES, and the one table a host
+//! reads them by. A frame is the version, then one record per patch:
+//!
+//!   create       id, tag
+//!   create_text  id, content
+//!   place        id, parent (empty: the page), after (empty: first)
+//!   remove       id
+//!   set_attr     id, name, value
+//!   drop_attr    id, name
+//!   set_prop     id, name, says, value
+//!   set_text     id, content
+//!   listen       id, kind, event, says, reads (empty: none), prevents
+//!   unlisten     id, kind
+//!   style        css
+//!
+//! A record opens with its op's code (`Op`). An id and every other text
+//! is its byte length then its bytes; every number is four little-endian
+//! bytes. A frame of the version alone is a page that did not change.
+//!
+//! A host holds NO copy of these numbers by hand: `host_table` writes its
+//! table from the declarations here, and `make ui-host` fails when the
+//! checked-in copy is not what this file says.
+use @std.meta.{derive}
+use realize.identity.{NodeId}
+use realize.render.{EventKind, Said}
+use realize.dom.buf.{Buf, buf}
+use realize.dom.codes.{Codes, Coded}
+use realize.dom.patch.{Patch, Listening, Says, said_as}
+
+/// The wire's version: a host built for another REFUSES, never misapplies.
+export const wire_version = 8
+
+/// Each patch's code on the wire.
+@derive(Codes)
+export enum Op {
+    @code(1) Create
+    @code(2) CreateText
+    @code(3) Place
+    @code(4) Remove
+    @code(5) SetAttr
+    @code(6) DropAttr
+    @code(7) SetProp
+    @code(8) SetText
+    @code(9) Listen
+    @code(10) Unlisten
+    @code(11) Style
+}
+
+/// The op a patch is written under. Every patch spelled.
+fn op_of(p: Patch) -> Op {
+    match p {
+        .Create(_, _) -> .Create,
+        .CreateText(_, _) -> .CreateText,
+        .Place(_, _, _) -> .Place,
+        .Remove(_) -> .Remove,
+        .SetAttr(_, _, _) -> .SetAttr,
+        .DropAttr(_, _) -> .DropAttr,
+        .SetProp(_, _, _) -> .SetProp,
+        .SetText(_, _) -> .SetText,
+        .Listen(_, _) -> .Listen,
+        .Unlisten(_, _) -> .Unlisten,
+        .Style(_) -> .Style,
+    }
+}
+
+/// The wire's number for an event kind: the host echoes it back and never
+/// reads it. ONE arm per kind.
+export fn kind_code(k: EventKind) -> int {
+    match k { .Press -> 1, .Input -> 2, .Change -> 3, .Submit -> 4 }
+}
+
+/// A value a control holds, as text a host turns back by its tag.
+fn said_text(value: Said) -> string {
+    match value { .Text(t) -> t, .Flag(on) -> if on { "1" } else { "" }, .Number(n) -> "${n}" }
+}
+
+/// What the host's echo says, read back from its tag: a number or a flag
+/// rides `num`, text rides `text`. A tag no arm answers, or text the host
+/// could not hand over, is saying nothing.
+export fn echoed(tag: int, num: int, text: string?) -> Said? {
+    when {
+        tag == Says.Number.code() -> Said.Number(num)
+        tag == Says.Flag.code() -> Said.Flag(num != 0)
+        tag == Says.Text.code() -> echoed_text(text)
+        _ -> null
+    }
+}
+
+fn echoed_text(text: string?) -> Said? {
+    let body? = text else { return null }
+    Said.Text(body)
+}
+
+impl Buf {
+    /// An id, or the empty id where there is none.
+    fn push_id(id: NodeId?) { self.push_str(id?.path ?? "") }
+
+    fn push_listening(to: Listening) {
+        self.push_int(kind_code(to.action.kind))
+        self.push_str(to.event)
+        self.push_int(to.says.code())
+        self.push_str(to.reads?.word() ?? "")
+        self.push_int(if to.prevents { 1 } else { 0 })
+    }
+
+    /// One patch as its record.
+    fn push_patch(p: Patch) {
+        self.push_byte(op_of(p).code())
+        match p {
+            .Create(id, tag) -> {
+                self.push_id(id)
+                self.push_str(tag.word())
+            },
+            .CreateText(id, content) or .SetText(id, content) -> {
+                self.push_id(id)
+                self.push_str(content)
+            },
+            .Place(id, parent, after) -> {
+                self.push_id(id)
+                self.push_id(parent)
+                self.push_id(after)
+            },
+            .Remove(id) -> self.push_id(id),
+            .SetAttr(id, name, value) -> {
+                self.push_id(id)
+                self.push_str(name.word())
+                self.push_str(value)
+            },
+            .DropAttr(id, name) -> {
+                self.push_id(id)
+                self.push_str(name.word())
+            },
+            .SetProp(id, name, value) -> {
+                self.push_id(id)
+                self.push_str(name.word())
+                self.push_int(said_as(value).code())
+                self.push_str(said_text(value))
+            },
+            .Listen(id, to) -> {
+                self.push_id(id)
+                self.push_listening(to)
+            },
+            .Unlisten(id, kind) -> {
+                self.push_id(id)
+                self.push_int(kind_code(kind))
+            },
+            .Style(css) -> self.push_str(css),
+        }
+    }
+}
+
+/// Patches as one frame.
+export fn frame(patches: List<Patch>) -> Bytes {
+    let b = buf()
+    b.push_byte(wire_version)
+    for p in patches { b.push_patch(p) }
+    b.take()
+}
+
+// ── the host's table ────────────────────────────────────────────
+
+/// One table as a JavaScript object: each variant's word and its number.
+fn table_source(name: string, rows: List<Coded>) -> string {
+    "export const ${name} = { ${["${r.word}: ${r.code}" for r in rows].join(", ")} };"
+}
+
+/// The module a JavaScript host imports its numbers from — the version,
+/// each op and each thing a control can say. Written from the
+/// declarations above, never by hand.
+export fn host_table() -> string {
+    [
+        "// GENERATED by realize/dom/wire.av (`host_table`) — never edited. `make ui-host` checks it.",
+        "export const WIRE_VERSION = ${wire_version};",
+        table_source("OP", Op.coded()),
+        table_source("SAYS", Says.coded()),
+    ]
+        .join("\n")
+}

@@ -1,14 +1,14 @@
 //! The URL a tree carries, by its law: every value of the type is safe to
 //! emit, and foreign text is read strictly or not at all.
 use @std.ui.components.{link}
-use @std.ui.realize.dom.frame.{frame_text}
+use @std.ui.realize.dom.live.{drawn_text}
 use @std.ui.realize.url.{Url, Scheme, url, local, https}
 
 /// What a reader makes of `text`, written back — "refused" for none.
 fn reread(text: string) -> string { url(text)?.text() ?? "refused" }
 
-/// The live frame of a link to `to`.
-fn framed(to: Url) -> string { frame_text((link "Docs" { href: to }).describe()) }
+/// The live page's first paint of a link to `to`.
+fn framed(to: Url) -> string { drawn_text((link "Docs" { href: to }).describe()) }
 
 spec "std/ui url — a value" {
     given "a local reference" {
@@ -47,14 +47,14 @@ spec "std/ui url — reading foreign text" {
     }
 }
 
-spec "std/ui url — the live frame" {
+spec "std/ui url — the live page" {
     given "a link to a local page" {
-        then "carries its target" { framed(local("/docs")).contains("P 0 href=/docs") }
+        then "carries its target" { framed(local("/docs")).contains("attr 0 href=/docs") }
     }
     given "a link whose target spells a script" {
         then "never carries a `javascript:` href" {
             !framed(local("javascript:alert(1)")).contains("href=javascript") &&
-                framed(local("javascript:alert(1)")).contains("P 0 href=./javascript:alert(1)")
+                framed(local("javascript:alert(1)")).contains("attr 0 href=./javascript:alert(1)")
         }
     }
     given "foreign text a browser would run" {

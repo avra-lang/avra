@@ -1,0 +1,159 @@
+//! The diff, by its law: a paint says only what changed, by identity. Each
+//! case paints one tree, then another, and reads the patches between them.
+use @std.ui.realize.dom.live.{Live, live, patch_text}
+use @std.ui.realize.dom.wire.{kind_code}
+use @std.ui.realize.identity.{NodeId}
+use @std.ui.realize.render.{Node, Action, Handler, Said}
+use @std.ui.realize.tests.support.{
+    button_node,
+    field_node,
+    holding,
+    keyed,
+    leaf,
+    switch_node,
+    text_node,
+}
+use @std.ui.style.box.{Box}
+use @std.ui.style.style.{Style}
+use @std.ui.style.theme.{default_theme, dark_theme}
+
+/// What turns a page showing `from` into one showing `to`.
+fn between(from: Node, to: Node) -> string {
+    let page = live()
+    let _ = page.patches(from, default_theme)
+    patch_text(page.patches(to, default_theme))
+}
+
+fn rows(keys: List<string>) -> Node { holding(.List, [keyed(holding(.Item, [text_node(k)]), k) for k in keys]) }
+
+fn nothing() {}
+
+fn heard_text(_text: string) {}
+
+fn hearing(n: Node, handler: Handler) -> Node { n with { events: [Action { kind: .Input, handler: handler }] } }
+
+fn pressing(n: Node) -> Node { n with { events: [Action { kind: .Press, handler: Handler.Nothing(nothing) }] } }
+
+fn muted(n: Node) -> Node { n with { box: Box { style: Style { color: .Muted } } } }
+
+/// A field's control, as the page names it.
+const control = NodeId { path: "0/+control" }
+
+/// The patches after a user types `typed` into a field showing `shown`
+/// and the program then draws `drawn`.
+fn after_typing(shown: string, typed: string, drawn: string) -> string {
+    let page = live()
+    let _ = page.patches(hearing(field_node("N", shown), Handler.Text(heard_text)), default_theme)
+    let _ = page.fire(control, kind_code(.Input), Said.Text(typed))
+    patch_text(
+        page.patches(hearing(field_node("N", drawn), Handler.Text(heard_text)), default_theme),
+    )
+}
+
+spec "std/ui dom — a repaint says only what changed" {
+    given "the same tree" {
+        then "says nothing" { between(rows(["a", "b"]), rows(["a", "b"])) == "" }
+    }
+    given "keyed rows in another order" {
+        then "is one move, and nothing made or removed" { between(rows(["a", "b"]), rows(["b", "a"])) == "place 0/k1:a in 0 after 0/k1:b" }
+        then "moves only the rows that fell behind" {
+            between(rows(["a", "b", "c", "d"]), rows(["a", "c", "b", "d"])) == "place 0/k1:b in 0 after 0/k1:c"
+        }
+    }
+    given "a keyed row that left" {
+        then "is one removal, and its neighbours are untouched" { between(rows(["a", "b", "c"]), rows(["a", "c"])) == "remove 0/k1:b" }
+    }
+    given "a keyed row landing between two" {
+        then "is built whole, then placed after the row it follows" {
+            between(rows(["a", "c"]), rows(["a", "b", "c"])) == "create 0/k1:b li\nattr 0/k1:b data-key=b\ncreate 0/k1:b/0 span\ntext 0/k1:b/0/+text b\nplace 0/k1:b/0/+text in 0/k1:b/0 after -\nplace 0/k1:b/0 in 0/k1:b after -\nplace 0/k1:b in 0 after 0/k1:a"
+        }
+    }
+    given "words that changed" {
+        then "is the text rewritten, the element kept" { between(text_node("a"), text_node("b")) == "retext 0/+text b" }
+        then "is the text removed when the words go" { between(text_node("a"), text_node("")) == "remove 0/+text" }
+        then "is the text made when words arrive" {
+            between(text_node(""), text_node("a")) == "text 0/+text a\nplace 0/+text in 0 after -"
+        }
+    }
+    given "an attribute" {
+        then "is set when it arrives or changes" { between(text_node("a"), muted(text_node("a"))) == "style\nattr 0 class=color-muted" }
+        then "is dropped when it goes" { between(muted(text_node("a")), text_node("a")) == "unattr 0 class" }
+    }
+    given "a place whose node became another kind of element" {
+        then "is that element removed and the new one built" {
+            between(text_node("a"), button_node("a")).starts_with("remove 0\ncreate 0 button")
+        }
+    }
+    given "an event" {
+        then "is heard when a handler arrives" { between(button_node("a"), pressing(button_node("a"))) == "listen 0 press" }
+        then "is dropped when its handler goes" { between(pressing(button_node("a")), button_node("a")) == "unlisten 0 press" }
+        then "is left alone while it is still heard" { between(pressing(button_node("a")), pressing(button_node("a"))) == "" }
+    }
+}
+
+spec "std/ui dom — a property is what the page holds" {
+    given "a field's value and a switch's state" {
+        then "are set as properties, never attributes" {
+            between(text_node(""), field_node("N", "Ann"))
+                    .contains("prop 0/+control value=\"Ann\"") &&
+                between(text_node(""), switch_node("S", true))
+                    .contains("prop 0/+control checked=true")
+        }
+        then "are set again when the program changes them" {
+            between(field_node("N", "a"), field_node("N", "b")) == "prop 0/+control value=\"b\"" &&
+                between(switch_node("S", true), switch_node("S", false)) == "prop 0/+control checked=false"
+        }
+    }
+    given "a field the user typed into, drawn with what was typed" {
+        then "is not written back — the caret stays where the user left it" { after_typing("", "abc", "abc") == "" }
+    }
+    given "a field the user typed into, drawn with what the program still holds" {
+        then "is set back to the program's value: the page is a function of state" {
+            after_typing("", "abc", "") == "prop 0/+control value=\"\""
+        }
+    }
+    given "what a user typed" {
+        then "is forgotten once a paint has answered it" {
+            let page = live()
+            let shown = hearing(field_node("N", ""), Handler.Text(heard_text))
+            let _ = page.patches(shown, default_theme)
+            let _ = page.fire(control, kind_code(.Input), Said.Text("abc"))
+            let _ = page
+                .patches(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme)
+            patch_text(
+                page
+                    .patches(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme),
+            ) == ""
+        }
+    }
+}
+
+spec "std/ui dom — the sheet" {
+    given "a first paint" {
+        then "sends the sheet before any element" {
+            patch_text(live().patches(text_node("a"), default_theme))
+                .starts_with("style\ncreate 0 span")
+        }
+    }
+    given "a class the page has worn before, named in another order" {
+        then "sends no sheet" {
+            let page = live()
+            let _ = page
+                .patches(holding(.Row, [muted(text_node("a")), text_node("b")]), default_theme)
+            !patch_text(
+                page.patches(holding(.Row, [text_node("a"), muted(text_node("b"))]), default_theme),
+            )
+                .contains("style")
+        }
+    }
+    given "a class the page has never worn" {
+        then "sends the sheet again" { between(text_node("a"), muted(text_node("a"))).starts_with("style\n") }
+    }
+    given "another theme" {
+        then "sends the sheet and moves no element" {
+            let page = live()
+            let _ = page.patches(text_node("a"), default_theme)
+            patch_text(page.patches(text_node("a"), dark_theme)) == "style"
+        }
+    }
+}

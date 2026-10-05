@@ -10,7 +10,7 @@ title=${3:-Avra}
 here=$(cd "$(dirname "$0")/.." && pwd)
 [ -f "$wasm" ] || { echo "dom_page: no such module: $wasm" >&2; exit 1; }
 mkdir -p "$out"
-cp "$here/runtime/dom/bootstrap.js" "$here/runtime/dom/wasi.js" "$out/"
+cp "$here/runtime/dom/bootstrap.js" "$here/runtime/dom/wire.gen.js" "$here/runtime/dom/wasi.js" "$out/"
 cp "$wasm" "$out/app.wasm"
 sed -e "s|<!--TITLE-->|$title|" "$here/runtime/dom/page.html" > "$out/index.html"
-printf 'dom_page: %s (app.wasm, bootstrap.js, wasi.js, index.html)\n' "$out"
+printf 'dom_page: %s (app.wasm, bootstrap.js, wire.gen.js, wasi.js, index.html)\n' "$out"

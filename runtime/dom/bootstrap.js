@@ -1,190 +1,126 @@
 // The live target's fixed bootstrap — the ONLY JavaScript an Avra web app
-// ships. The program (wasm) emits a BYTE frame; this reconciles it into the
-// live tree. A node is matched by its ID: the program gives one node the
-// same id in every frame, whatever is inserted, removed or reordered
-// beside it. Same file for every app.
+// ships. The program (wasm) decides everything: it diffs the page it drew
+// against the page it wants and sends PATCHES. This applies them, and
+// reports what the user did. It holds no tree, no reconciler and no table
+// of the library's facts: which event a control hears, what it says, what
+// is a property and what moved all arrive IN the patches, and the numbers
+// the wire spells them with are generated (`wire.gen.js`) from the
+// program's own declarations — see realize/dom/wire.av.
 //
-// Wire V7: a version byte, then records of little-endian ints with ids and
-// values carried raw (length-prefixed). An event record names a node and a
-// kind; the handler stays in the program. Nothing is escaped; see
-// realize/dom/frame.av.
+// Same file for every app.
+import { WIRE_VERSION, OP, SAYS } from "./wire.gen.js";
 
-export const FRAME_VERSION = 7;
+export { WIRE_VERSION };
 
-// A frame's records, in frame order. `C` opens a record; `A`/`T` fill its
-// class and words. The root's parent is null. Null means NOTHING CHANGED.
+// A frame's patches, in order. Every number is four little-endian bytes;
+// an id and every other text is its byte length, then its bytes. An empty
+// id is no id: the page itself as a parent, the first place as a sibling.
 export function parseFrame(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder();
   let i = 0;
   const seen = bytes[i++];
-  if (seen !== FRAME_VERSION) {
-    throw new Error(`unsupported frame version ${seen} — this host speaks ${FRAME_VERSION}`);
+  if (seen !== WIRE_VERSION) {
+    throw new Error(`unsupported wire version ${seen} — this host speaks ${WIRE_VERSION}`);
   }
-  if (bytes[i] === 0) return null;
-  const records = [];
-  const byId = new Map();
-  const decoder = new TextDecoder();
   const int = () => { const v = dv.getInt32(i, true); i += 4; return v; };
   const str = () => { const len = int(); const s = decoder.decode(bytes.subarray(i, i + len)); i += len; return s; };
+  const patches = [];
   while (i < bytes.length) {
     const op = bytes[i++];
-    if (op === 1) {
-      const id = str();
-      const parent = str();
-      const index = int();
-      const tag = str();
-      const r = { id, parent: parent === "" ? null : parent, index, tag, cls: null, text: null, events: [], attrs: [] };
-      records.push(r);
-      byId.set(id, r);
-    } else if (op === 3 || op === 4) {
-      const r = byId.get(str());
-      const val = str();
-      if (r) { if (op === 3) r.cls = val; else r.text = val; }
-    } else if (op === 5) {
-      const r = byId.get(str());
-      const kind = int();
-      const says = int();
-      if (r) r.events.push([kind, says]);
-    } else if (op === 8) {
-      const r = byId.get(str());
-      const name = str();
-      const value = str();
-      if (r) r.attrs.push([name, value]);
-    } else if (op === 6) {
-      records.stylesheet = str();
-    } else if (op === 0) {
-      break;
-    } else {
-      throw new Error(`unknown frame op ${op}`);
-    }
+    if (op === OP.create) patches.push({ op, id: str(), tag: str() });
+    else if (op === OP.create_text || op === OP.set_text) patches.push({ op, id: str(), content: str() });
+    else if (op === OP.place) patches.push({ op, id: str(), parent: str(), after: str() });
+    else if (op === OP.remove) patches.push({ op, id: str() });
+    else if (op === OP.set_attr) patches.push({ op, id: str(), name: str(), value: str() });
+    else if (op === OP.drop_attr) patches.push({ op, id: str(), name: str() });
+    else if (op === OP.set_prop) patches.push({ op, id: str(), name: str(), says: int(), value: str() });
+    else if (op === OP.listen) patches.push({ op, id: str(), kind: int(), event: str(), says: int(), reads: str(), prevents: int() !== 0 });
+    else if (op === OP.unlisten) patches.push({ op, id: str(), kind: int() });
+    else if (op === OP.style) patches.push({ op, css: str() });
+    else throw new Error(`unknown patch op ${op}`);
   }
-  return records;
+  return patches;
 }
 
-// The DOM's own word for each event kind: a press is a click here.
-const EVENT_NAME = { 1: "click", 2: "input", 3: "change", 4: "submit" };
-// A submit's own navigation would reload the page the program is drawing.
-const PREVENTED = new Set([4]);
-// WHAT AN EVENT SAYS is the program's to name: the frame carries a code per
-// event, and the host reads that value off the control — never a guess from
-// the kind. 0 says nothing; a control that cannot say what was asked says
-// nothing too.
-const SAID = {
-  0: () => null,
-  1: (el) => { const n = Number(el.value); return Number.isFinite(n) ? { tag: "number", value: Math.trunc(n) } : null; },
-  2: (el) => ({ tag: "flag", value: Boolean(el.checked) }),
-  3: (el) => (el.value === undefined ? null : { tag: "text", value: String(el.value) }),
-};
-
-// A CONTROL HAS NO CONTENT: an `input` or a `progress` cannot hold its own
-// words, so its node is a `label` wrapping the control and the words beside
-// it. The wrapper is the node's place in the tree (its key, class and
-// order); the control takes the attributes and the events.
-const CONTROL = new Set(["input", "progress"]);
-// State the USER moves lives in a property; the attribute is only its seed.
-const PROPERTY = { checked: (el, on) => { el.checked = on; }, value: (el, on, v) => { if (el.value !== v) el.value = on ? v : ""; } };
-
-function make(doc, tag) {
-  if (!CONTROL.has(tag)) { const el = doc.createElement(tag); el.__avra_tag = tag; return el; }
-  const el = doc.createElement("label");
-  el.__avra_tag = tag;
-  el.__avra_control = doc.createElement(tag);
-  el.__avra_words = doc.createElement("span");
-  el.appendChild(el.__avra_control);
-  el.appendChild(el.__avra_words);
-  return el;
+// A value as the wire's text for it, read back by what it says.
+function valueOf(says, text) {
+  if (says === SAYS.flag) return text !== "";
+  if (says === SAYS.number) return Number(text);
+  return text;
 }
 
-// The element a node's attributes, events and value belong to.
-const controlOf = (el) => el.__avra_control || el;
-
-function setAttrs(el, attrs) {
-  const at = controlOf(el);
-  const had = at.__avra_attrs || new Set();
-  const now = new Set();
-  for (const [name, value] of attrs) {
-    now.add(name);
-    at.setAttribute(name, value);
-    if (PROPERTY[name]) PROPERTY[name](at, true, value);
-  }
-  for (const name of had) {
-    if (now.has(name)) continue;
-    at.removeAttribute(name);
-    if (PROPERTY[name]) PROPERTY[name](at, false, "");
-  }
-  at.__avra_attrs = now;
+// What a control says, read off the property the patch named. A control
+// that cannot say what was asked says nothing.
+function saidBy(el, says, reads) {
+  if (says === SAYS.nothing) return null;
+  const held = el[reads];
+  if (says === SAYS.flag) return { says, value: Boolean(held) };
+  if (says === SAYS.number) { const n = Number(held); return Number.isFinite(n) ? { says, value: Math.trunc(n) } : null; }
+  return held === undefined ? null : { says, value: String(held) };
 }
 
 // Build the applier over one document (a real one in a browser, a stub in a
-// test) and one mount element.
+// test) and one mount element. `send(id, kind, said)` is the echo.
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
-  // LICENSED loops.push_loop: this map rides the closure as the applier's table
-  let byId = new Map();
+  const byId = new Map();
+  const need = (id) => {
+    const el = byId.get(id);
+    if (!el) throw new Error(`a patch names \`${id}\`, which is not on the page`);
+    return el;
+  };
+  // An element that leaves takes everything under it.
+  const forget = (el) => {
+    byId.delete(el.__avra_id);
+    for (const child of el.childNodes || []) forget(child);
+  };
+  const keep = (id, el) => { el.__avra_id = id; byId.set(id, el); };
 
-  return function apply(bytes) {
-    const records = parseFrame(bytes);
-    if (records === null) return; // nothing changed — touch nothing
-    if (records.stylesheet !== undefined && styleEl) styleEl.textContent = records.stylesheet;
-    const next = new Map();
-    for (const r of records) {
-      // AN ID IS ITS NODE, so the element that wore it is this node's — unless
-      // the node became another kind of element, which no element can.
-      const held = byId.get(r.id);
-      const el = held && held.__avra_tag === r.tag ? held : make(doc, r.tag);
-      if (r.cls !== null) el.setAttribute("class", r.cls);
-      const words = el.__avra_words || el;
-      if (r.text !== null && words.textContent !== r.text) words.textContent = r.text;
-      setAttrs(el, r.attrs);
-      el.__avra_id = r.id;
-      next.set(r.id, el);
-    }
-    // Order each parent's children by the frame's own index.
-    const order = new Map();
-    for (const r of records) {
-      if (!order.has(r.parent)) order.set(r.parent, []);
-      order.get(r.parent).push(r);
-    }
-    if (!order.has(null)) order.set(null, []);
-    for (const [parent, kids] of order) {
-      const host = parent === null ? mount : next.get(parent);
-      if (!host) continue;
-      kids.sort((a, b) => a.index - b.index);
-      kids.forEach((r, i) => {
-        const el = next.get(r.id);
-        if (host.childNodes[i] !== el) host.insertBefore(el, host.childNodes[i] || null);
-      });
-      while (host.childNodes.length > kids.length) {
-        host.removeChild(host.childNodes[host.childNodes.length - 1]);
-      }
-    }
-    // SUBSCRIBE: each event a frame names is a listener; one it drops, or
-    // now says something else, is removed. The host calls back with the
-    // node's id, the kind, and what the frame said the event says.
-    for (const r of records) {
-      const node = next.get(r.id);
-      if (!node) continue;
-      const el = controlOf(node);
-      const attached = el.__avra_events || (el.__avra_events = new Map());
-      const want = new Map(r.events);
-      for (const [kind, held] of [...attached]) {
-        if (want.get(kind) === held.says) continue;
-        el.removeEventListener(EVENT_NAME[kind], held.listener);
-        attached.delete(kind);
-      }
-      for (const [kind, says] of want) {
-        if (attached.has(kind)) continue;
-        const name = EVENT_NAME[kind];
-        const said = SAID[says];
-        if (!name || !said) continue;
-        const listener = (ev) => {
-          if (ev && PREVENTED.has(kind)) ev.preventDefault();
-          send(node.__avra_id, kind, said(el));
-        };
-        el.addEventListener(name, listener);
-        attached.set(kind, { says, listener });
-      }
-    }
-    byId = next;
+  const apply = {
+    [OP.create]: (p) => keep(p.id, doc.createElement(p.tag)),
+    [OP.create_text]: (p) => keep(p.id, doc.createTextNode(p.content)),
+    [OP.place]: (p) => {
+      const parent = p.parent === "" ? mount : need(p.parent);
+      const before = p.after === "" ? parent.childNodes[0] : need(p.after).nextSibling;
+      parent.insertBefore(need(p.id), before || null);
+    },
+    [OP.remove]: (p) => {
+      const el = need(p.id);
+      if (el.parentNode) el.parentNode.removeChild(el);
+      forget(el);
+    },
+    [OP.set_attr]: (p) => need(p.id).setAttribute(p.name, p.value),
+    [OP.drop_attr]: (p) => need(p.id).removeAttribute(p.name),
+    // A PROPERTY IS WRITTEN ONLY WHEN IT DIFFERS: writing a field's own
+    // text back to it would move the caret a user is typing at.
+    [OP.set_prop]: (p) => {
+      const el = need(p.id);
+      const value = valueOf(p.says, p.value);
+      if (el[p.name] !== value) el[p.name] = value;
+    },
+    [OP.set_text]: (p) => { need(p.id).textContent = p.content; },
+    [OP.listen]: (p) => {
+      const el = need(p.id);
+      const held = el.__avra_listeners || (el.__avra_listeners = new Map());
+      const listener = (ev) => {
+        if (p.prevents && ev) ev.preventDefault();
+        send(p.id, p.kind, saidBy(el, p.says, p.reads));
+      };
+      el.addEventListener(p.event, listener);
+      held.set(p.kind, { event: p.event, listener });
+    },
+    [OP.unlisten]: (p) => {
+      const el = need(p.id);
+      const held = el.__avra_listeners && el.__avra_listeners.get(p.kind);
+      if (!held) return;
+      el.removeEventListener(held.event, held.listener);
+      el.__avra_listeners.delete(p.kind);
+    },
+    [OP.style]: (p) => { if (styleEl) styleEl.textContent = p.css; },
+  };
+
+  return function applyFrame(bytes) {
+    for (const p of parseFrame(bytes)) apply[p.op](p);
   };
 }
 
@@ -217,15 +153,14 @@ export async function instantiate(source, host) {
 // int)` crosses as five i64 seats, so the host hands it BigInts. Text
 // crosses through the program's own SEATS: the host writes UTF-8 octets at
 // the address the program gave and passes their length. `who` is the
-// length of the node's id, written into the id seat (`avra_id_seat`);
-// `what` is the event kind. What the control said crosses as a TAG — the
-// code the frame gave the event — and its value: tag 0 is NOTHING, a tag of
-// its own, so a present zero or empty text is never mistaken for nothing;
-// 1 is a number in `num`, 2 a flag, and 3 text of `len` octets in the
-// payload seat (`avra_payload_seat`). A text that outgrows a seat's room
-// (`avra_seat_room`) REFUSES: writing it would overwrite the program's
-// memory. ONE door for both the page and a test harness.
-const SAID_TAG = { number: 1, flag: 2, text: 3 };
+// length of the element's id, written into the id seat (`avra_id_seat`);
+// `what` is the event kind, echoed as the patch gave it. What the control
+// said crosses as the tag the patch asked for (`SAYS`) and its value:
+// nothing is a tag of its own, so a present zero or empty text is never
+// mistaken for nothing; a number or a flag rides `num`, and text is `len`
+// octets in the payload seat (`avra_payload_seat`). A text that outgrows a
+// seat's room (`avra_seat_room`) REFUSES: writing it would overwrite the
+// program's memory. ONE door for both the page and a test harness.
 const seats = new WeakMap();
 
 function seatsOf(mod) {
@@ -245,16 +180,15 @@ function seated(mod, at, room, text, what) {
   return BigInt(bytes.length);
 }
 
-export function sendEvent(mod, who, what, payload) {
+export function sendEvent(mod, who, what, said) {
   const seat = seatsOf(mod);
-  const id = seated(mod, seat.id, seat.room, who, "a node id");
-  if (!payload) { mod.avra_event(id, BigInt(what), 0n, 0n, 0n); return; }
-  const tag = SAID_TAG[payload.tag];
-  if (tag === 3) {
-    mod.avra_event(id, BigInt(what), BigInt(tag), 0n, seated(mod, seat.payload, seat.room, payload.value, "an event's text"));
+  const id = seated(mod, seat.id, seat.room, who, "an element id");
+  if (!said) { mod.avra_event(id, BigInt(what), BigInt(SAYS.nothing), 0n, 0n); return; }
+  if (said.says === SAYS.text) {
+    mod.avra_event(id, BigInt(what), BigInt(said.says), 0n, seated(mod, seat.payload, seat.room, said.value, "an event's text"));
     return;
   }
-  mod.avra_event(id, BigInt(what), BigInt(tag), BigInt(payload.value), 0n);
+  mod.avra_event(id, BigInt(what), BigInt(said.says), BigInt(said.value), 0n);
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length

@@ -4,13 +4,13 @@
 //!
 //! The controls are the library's OWN, and each handler is written where
 //! its control is: `on press { … }` is a closure over what the view could
-//! see, so row 3's Remove names row 3's task. The frame tells the host
-//! which nodes listen; the host echoes the node and kind (`avra_event`),
-//! and the program runs the handler it kept.
+//! see, so row 3's Remove names row 3's task. Each paint sends the host
+//! only what changed; the host echoes who spoke and what it said
+//! (`avra_event`), and the program runs the handler it kept.
 //!
 //! The task rows are ONE keyed list (`list visible() by it.id`), so the row
-//! identity is the task id and an insert or a removal keeps every other
-//! node.
+//! identity is the task id and an insert or a removal touches no other
+//! row.
 use @std.ui.components.{
     button,
     card,
@@ -27,7 +27,8 @@ use @std.ui.components.{
     surface,
     text,
 }
-use @std.ui.realize.dom.frame.{Live, echoed, live}
+use @std.ui.realize.dom.live.{Live, live}
+use @std.ui.realize.dom.wire.{echoed}
 use @std.ui.realize.identity.{NodeId}
 use @std.ui.realize.view.{View}
 use @std.ui.style.layout.{Layout, around}
@@ -70,7 +71,7 @@ fn admits(t: Todo) -> bool {
 
 fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
 
-/// The last frame sent — an unchanged paint costs two bytes.
+/// The page as last painted — an unchanged paint is one byte.
 once fn painted() -> Live { live() }
 
 /// The draft becomes the next task, and the draft is spent.
@@ -125,11 +126,7 @@ fn header() -> row {
                 ]
             },
             button theme_label() {
-                on press {
-                    dark = !dark
-                    // A mode is a whole stylesheet, so the next diff must resend it.
-                    painted().styled.set(false)
-                }
+                on press { dark = !dark }
                 style: sunk_style()
             },
         ]
@@ -256,7 +253,7 @@ fn view() -> surface {
     }
 }
 
-fn paint() { avra_dom_frame(painted().diff(view().describe(), theme())) }
+fn paint() { avra_dom_frame(painted().paint(view().describe(), theme())) }
 
 // ── the host's event seam ───────────────────────────────────────
 
@@ -286,7 +283,7 @@ fn seated(box: Bytes, len: int) -> string? {
     avra_bytes_adopted(box, len).text()
 }
 
-/// The host's call: the node whose id is the `who` octets in the id seat
+/// The host's call: the element whose id is the `who` octets in the id seat
 /// spoke `what`, saying the value in the tag and value seats (an input
 /// says its own text). The handler the last frame bound there runs, and
 /// the frame follows.

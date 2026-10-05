@@ -1,10 +1,9 @@
 // proves: a node's id is ITS OWN across paints — the host's echo of an id
-// an earlier frame gave still runs that node's handler after a sibling is
-// inserted above it, and two paints of one state give every node one id.
+// an earlier paint gave still runs that node's handler after a sibling is
+// inserted above it, a second paint of one state says nothing, and what
+// lands above a kept row is created and placed while the row is untouched.
 use @std.ui.components.{button, item, list, text}
-use @std.ui.realize.dom.frame.{Live, frame_text, live}
-use @std.ui.realize.identity.{NodeId}
-use @std.ui.realize.update.{Op, plan}
+use @std.ui.realize.dom.live.{Live, live, patch_text}
 use @std.ui.realize.view.{View}
 use @std.ui.style.theme.{default_theme}
 
@@ -30,32 +29,25 @@ fn view() -> list {
     list { items: shown.concat(listed) }
 }
 
-fn worded(op: Op, words: string) -> List<NodeId> {
-    match op {
-        .Words(id, label) -> if label == words { [id] } else { [] },
-        .Mount(_) or .Event(_, _) -> [],
-    }
-}
+/// The page the host would hold.
+once fn page() -> Live { live() }
 
-/// The ids of the controls saying `words`, in walk order.
-fn saying(words: string) -> List<NodeId> { [id for op in plan(view().describe()) for id in worded(op, words)] }
+/// What a paint of the view says to the host.
+fn painted() -> string { patch_text(page().patches(view().describe(), default_theme)) }
 
-let page = live()
-let _ = page.diff(view().describe(), default_theme)
-let before = saying("Pick")
-println(frame_text(view().describe()))
-println("same_twice=${frame_text(view().describe()) == frame_text(view().describe())}")
+println(painted())
+let before = page().named("Pick")
+println("same_twice=[${painted()}]")
 
 // an unkeyed sibling and a keyed row both land above rows a and b
 banner = true
 rows = rows_of(["new", "a", "b"])
-let _ = page.diff(view().describe(), default_theme)
-println(frame_text(view().describe()))
-println("b_kept=${saying("Pick").contains(before[1])}")
-println("fired=${page.fire(before[1], 1, null)} pressed=${pressed}")
-println("fired=${page.fire(before[0], 1, null)} pressed=${pressed}")
+println(painted())
+println("b_kept=${page().named("Pick").contains(before[1])}")
+println("fired=${page().fire(before[1], 1, null)} pressed=${pressed}")
+println("fired=${page().fire(before[0], 1, null)} pressed=${pressed}")
 
 // a row that left answers nothing
 rows = rows_of(["new", "b"])
-let _ = page.diff(view().describe(), default_theme)
-println("gone=${page.fire(before[0], 1, null)} pressed=${pressed}")
+println(painted())
+println("gone=${page().fire(before[0], 1, null)} pressed=${pressed}")

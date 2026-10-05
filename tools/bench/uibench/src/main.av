@@ -1,9 +1,10 @@
 //! probe: where a UI paint spends its work. A tree is built directly
-//! as `Node` data — no component layer — so `frame`'s walk and
-//! serialize are measured against the mere construction of the same
-//! tree and against `plan` alone.
+//! as `Node` data — no component layer — so a first paint (lower, diff
+//! against nothing, serialize) and an unchanged repaint (lower, diff) are
+//! measured against the mere construction of the same tree and against
+//! `plan` alone.
 use @std.time.{now_ns}
-use @std.ui.realize.dom.frame.{Live, frame, live}
+use @std.ui.realize.dom.live.{Live, live}
 use @std.ui.realize.render.{Attribute, Node, Prim}
 use @std.ui.realize.update.{plan}
 use @std.ui.style.box.{Box}
@@ -21,12 +22,15 @@ fn branch(width: int) -> Node {
 
 once fn painted() -> Live { live() }
 
-let a = frame(branch(40))
-let b = frame(branch(40))
+/// A whole page from nothing, as the frame a host applies.
+fn first_paint(n: Node) -> Bytes { live().paint(n, default_theme) }
+
+let a = first_paint(branch(40))
+let b = first_paint(branch(40))
 println("same tree, same bytes: ${a == b} bytes ${a.length}")
 
 let node = branch(40)
-println("ops: ${plan(node).length} frame bytes: ${frame(node).length}")
+println("ops: ${plan(node).length} frame bytes: ${first_paint(node).length}")
 
 let runs = 200
 let t0 = now_ns()
@@ -38,15 +42,15 @@ println("plan: ${(t1 - t0) / runs} ns/run")
 
 let t2 = now_ns()
 // LICENSED loops.push_loop: a timed loop counts, it does not build a list
-for i in 0..runs { acc = acc + frame(node).length }
+for i in 0..runs { acc = acc + first_paint(node).length }
 let t3 = now_ns()
-println("frame: ${(t3 - t2) / runs} ns/run")
+println("first paint: ${(t3 - t2) / runs} ns/run")
 
 let t4 = now_ns()
 // LICENSED loops.push_loop: a timed loop counts, it does not build a list
-for i in 0..runs { acc = acc + painted().diff(node, default_theme).length }
+for i in 0..runs { acc = acc + painted().paint(node, default_theme).length }
 let t5 = now_ns()
-println("diff: ${(t5 - t4) / runs} ns/run")
+println("repaint: ${(t5 - t4) / runs} ns/run")
 
 let t6 = now_ns()
 // LICENSED loops.push_loop: a timed loop counts, it does not build a list

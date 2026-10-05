@@ -33,9 +33,18 @@ Five attempts to lift a handler into a generated message failed.
 
 ## The seams, and their laws
 
-1. **Diff lives in Avra.** A host applies patches (create, remove, move,
-   set attribute, set property, set text, listen, unlisten). A host
-   holds no reconciler and no table of the library's facts.
+1. **Diff lives in Avra.** A node lowers to its target's elements
+   (`realize/html/element.av` — the one place that knows a control sits
+   under its label); two element trees are matched by id
+   (`realize/dom/patch.av`) and a host applies the patches: create,
+   create text, place (after a sibling — one op inserts and moves),
+   remove, set attribute, drop attribute, set property, set text,
+   listen, unlisten, style. A host holds no reconciler and no table of
+   the library's facts: the event's own word, what it says, the
+   property to read and whether to stop it ride the `listen` patch.
+   A first paint is a diff against nothing; an unchanged page is no
+   patch; a property is compared against what the PAGE holds, so a
+   field a user typed into is never written back to.
 2. **One identity.** A node's id derives from its parent's id and its
    key, or its place among its unkeyed siblings (`realize/identity.av`).
    Siblings sharing a key are told apart by their turn. Event echo,
@@ -59,8 +68,11 @@ Five attempts to lift a handler into a generated message failed.
    number (a point and a key later). `Said` is the value and `Handler`
    the listener, arm for arm. Closed: every target answers every arm,
    and the frame tells the host which one each event says.
-6. **One table per fact.** Event kinds, patch ops and their codes are
-   declared once; each host's copy is generated.
+6. **One table per fact.** Patch ops and what a control says carry
+   their wire numbers as `@code` on the variant (`realize/dom/wire.av`);
+   the host's copy (`runtime/dom/wire.gen.js`) is written from them and
+   `make ui-host` fails when it is stale. Event kinds need no host copy:
+   the host echoes a kind it never reads.
 7. **`mount(view)` is the app.** No app writes the host seam.
 8. **A test names no platform.** A headless target and a driver
    (`press`, `type`, `text`) are the library's.

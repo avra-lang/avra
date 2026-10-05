@@ -1,0 +1,75 @@
+//! The diff's ordering, proven by APPLYING it: for every pair of key
+//! sequences over four keys, the patches between them are applied to a
+//! model of the page, and the model must end in the new order. A patch
+//! list that reads plausibly and leaves a row in the wrong place fails
+//! here and nowhere else.
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.patch.{Patch}
+use @std.ui.realize.identity.{NodeId}
+use @std.ui.realize.render.{Node}
+use @std.ui.realize.tests.support.{holding, keyed, text_node}
+use @std.ui.style.theme.{default_theme}
+
+fn rows(keys: List<string>) -> Node { holding(.List, [keyed(text_node(k), k) for k in keys]) }
+
+/// The id a row keyed `key` wears under the list.
+fn row_id(key: string) -> string { "0/k${key.length}:${key}" }
+
+/// Every ordered choice of distinct items from `pool`, the empty one too.
+fn arrangements(pool: List<string>) -> List<List<string>> {
+    let none: List<string> = []
+    [none]
+        .concat([[x].concat(rest) for x in pool for rest in arrangements([y for y in pool if y != x])])
+}
+
+/// `order` with `id` placed after `after`, or first.
+fn placed(order: List<string>, id: string, after: string?) -> List<string> {
+    let others = [x for x in order if x != id]
+    let at = if after == null { 0 } else { others.index_of(after!) + 1 }
+    others.slice(0, at).concat([id]).concat(others.slice(at, others.length))
+}
+
+/// The list's children after one patch, as a host would leave them.
+fn after_patch(order: List<string>, p: Patch) -> List<string> {
+    match p {
+        .Place(id, parent, after) -> if parent?.path == "0" { placed(order, id.path, after?.path) } else { order },
+        .Remove(id) -> [x for x in order if x != id.path],
+        .Create(_, _) or .CreateText(_, _) or .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .SetText(_, _) or .Listen(_, _) or .Unlisten(_, _) or .Style(_) -> order,
+    }
+}
+
+/// The list's children once a page showing `from` is repainted as `to`.
+fn repainted(from: List<string>, to: List<string>) -> List<string> {
+    let page = live()
+    let _ = page.patches(rows(from), default_theme)
+    mut order = [row_id(k) for k in from]
+    for p in page.patches(rows(to), default_theme) { order = after_patch(order, p) }
+    order
+}
+
+fn lands(from: List<string>, to: List<string>) -> bool {
+    repainted(from, to).join(" ") == [row_id(k) for k in to].join(" ")
+}
+
+/// How many rows a repaint from `from` to `to` places.
+fn places(from: List<string>, to: List<string>) -> int {
+    let page = live()
+    let _ = page.patches(rows(from), default_theme)
+    [p for p in page.patches(rows(to), default_theme) if after_patch(["x"], p).length == 2].length
+}
+
+const pool = ["a", "b", "c", "d"]
+
+spec "std/ui dom — a reorder, applied" {
+    given "every pair of key sequences over four keys" {
+        then "there are 65 sequences, so 4225 repaints are applied" { arrangements(pool).length == 65 }
+        then "each ends in the new order" {
+            arrangements(pool).all((from) -> arrangements(pool).all((to) -> lands(from, to)))
+        }
+    }
+    given "rows that only changed order" {
+        then "a swap of two is one place" { places(["a", "b"], ["b", "a"]) == 1 }
+        then "a row sent to the end is one place" { places(["a", "b", "c", "d"], ["b", "c", "d", "a"]) == 1 }
+        then "rows already in order are never placed" { places(["a", "b", "c"], ["a", "b", "c"]) == 0 }
+    }
+}
