@@ -339,6 +339,7 @@ fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, a
         return cx.seats_judged(e, callee, arrow.seats, arrow.marks, arrow.answer, args)
     }
     if cx.errored_ty(bound) { return cx.error_type }
+    if names_component(cx, bound) { return component_called(cx, e, callee) }
     not_callable(cx, e, callee, bound)
 }
 
@@ -660,6 +661,28 @@ fn embed_computed_path(mut cx: TypeCx, e: ExprId) -> TypeId {
                 embed_literal_law,
                 "this path is computed, not written here",
                 "name the file directly, as a string literal",
+            ),
+        )
+}
+
+/// Whether a callee's name stands for a component — a record a block
+/// instantiates, never a fn.
+fn names_component(cx: TypeCx, bound: TypeId) -> bool {
+    match cx.view.types.shape_of(bound) {
+        .TypeName(decl, _) -> cx.view.decls.facts_of(decl)?.is_component ?? false,
+        _ -> false,
+    }
+}
+
+fn component_called(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.lambda",
+                cx.loc_of(e),
+                "`${callee}` is a component, and a parenthesis after its word is read as a call",
+                "called here",
+                "an instance's head value follows its word bare — `${callee} value` — so bind a longer one first: `let value = …`",
             ),
         )
 }

@@ -68,7 +68,7 @@ export trait View {
 
     static fn derive(t: Type) -> Declared {
         let said? = vocabulary() else { return Declared { made: [], problems: [unread(t)] } }
-        let word? = prim_word(t) else { return composition(t) }
+        let word? = prim_word(t) else { return composition(said, t) }
         if t.body != null { return unmade(t, [primitive_body(t)]) }
         let parts = [said.part(f) for f in t.fields]
         let problems = [d for p in parts for d in p.problems].concat(said.unfit(t, word, parts))
@@ -143,11 +143,18 @@ export fn described(at: Standing, items: List<dyn View>) -> List<Node> { flatten
 /// What a COMPOSITION standing at `at` draws: what `items` draw, IN
 /// PLACE — under the composition's own parent, with no node of its own
 /// around them. Each node is stepped through the composition, so two
-/// instances' nodes are told apart beside each other.
-export fn made_of(at: Standing, items: List<dyn View>) -> List<Node> {
+/// instances' nodes are told apart beside each other; and the FIRST
+/// node it draws wears the composition's `key` where it wears none of
+/// its own, so a keyed row is found on a page by its key.
+export fn made_of(at: Standing, items: List<dyn View>, key: string?) -> List<Node> {
     let drawn = flatten(each_described(at, items, false))
-    let via? = at.through() else { return drawn }
-    [if n.box.via == "" { n with { box: n.box with { via: via } } } else { n } for n in drawn]
+    [drawn_through(n, at.step.get(), if j == 0 { key } else { null }) for j, n in drawn]
+}
+
+/// A node as a composition drew it: stepped through `via` where it was
+/// drawn through nothing yet, wearing `key` where it wears none.
+fn drawn_through(n: Node, via: string?, key: string?) -> Node {
+    n with { box: n.box with { via: n.box.via ?? via, key: n.box.key ?? key } }
 }
 
 /// What each of `items` draws, standing under `at` at its own step.
@@ -164,13 +171,14 @@ fn each_described(at: Standing, items: List<dyn View>, drawn: bool) -> List<List
 /// `View`: what the body made, drawn in place under where it stands,
 /// and — when it holds state — the instance that stands there kept and
 /// handed this paint's props.
-fn composition(t: Type) -> Declared {
+fn composition(said: Vocabulary, t: Type) -> Declared {
     let body? = t.body else { return unmade(t, [no_body(t)]) }
     let problems = composition_problems(t)
     if !problems.is_empty() { return unmade(t, problems) }
-    let seat = "${t.name}_kept"
+    let seat = unwritable(t, "kept")
+    let composed = unwritable(t, "made")
     let stateful = t.fields.any(it.state)
-    let me = if stateful { standing_instance(t, seat) } else { quote { self } }
+    let me = if stateful { said.standing_instance(t, seat) } else { quote { self } }
     let made = [
         Directive {
             twin: "",
@@ -178,7 +186,7 @@ fn composition(t: Type) -> Declared {
             at: t.at,
             source: quote {
                 impl ${t} {
-                    fn composed() -> List<dyn View> {
+                    fn ${composed}() -> List<dyn View> {
                         let made = gathered {
                             ${body}
                         }
@@ -197,7 +205,7 @@ fn composition(t: Type) -> Declared {
 
                     fn describe(at: Standing) -> List<Node> {
                         let me = ${me}
-                        made_of(at, me.composed())
+                        made_of(at, me.${composed}(), self.key)
                     }
                 }
             },
@@ -217,25 +225,28 @@ fn composition(t: Type) -> Declared {
     }
 }
 
-/// The instance that stands: the one kept, with this paint's props laid
-/// over it — a copy shares its `state` cells — else this one.
-fn standing_instance(t: Type, seat: string) -> Code {
-    mut carried = quote { held }
-    for name in prop_names(t) { carried = quote { ${carried} with { ${name}: self.${name} } } }
-    quote {
-        match stood(${seat}(), at, self) {
-            held? -> ${carried}
-            null -> self
+/// A name the derive mints beside a component and no program can
+/// write: the component's own, a `$`, and what it is for.
+fn unwritable(t: Type, role: string) -> string { "${t.name}\$${role}" }
+
+impl Vocabulary {
+    /// The instance that stands: the one kept, with this paint's props
+    /// laid over it — a copy shares its `state` cells — else this one.
+    fn standing_instance(t: Type, seat: string) -> Code {
+        mut carried = quote { held }
+        for name in self.prop_names(t) { carried = quote { ${carried} with { ${name}: self.${name} } } }
+        quote {
+            match stood(${seat}(), at, self) {
+                held? -> ${carried}
+                null -> self
+            }
         }
     }
+
+    /// The members a later instance hands the one that stands: every one
+    /// that is no `state`, and where it says it stands.
+    fn prop_names(t: Type) -> List<string> { [f.name for f in t.fields if !f.state].concat([f.name for f in self.stand]) }
 }
-
-/// The members a later instance hands the one that stands: every one
-/// that is no `state`, and where it says it stands.
-fn prop_names(t: Type) -> List<string> { [f.name for f in t.fields if !f.state].concat([f.name for f in stand_fields()]) }
-
-/// What `Stand` declares, as the library reads its own declaration.
-fn stand_fields() -> List<Field> { type_exported(tree_module, stand_name)?.fields ?? [] }
 
 /// What a composition gets wrong: a box of its own, or a member marked
 /// as a primitive's is.
@@ -251,6 +262,7 @@ type Vocabulary = {
     kinds: List<Variant>,
     box: List<Field>,
     style: List<Field>,
+    stand: List<Field>,
 }
 
 /// The modules that declare the vocabulary, as `Type.module` spells them.
@@ -271,12 +283,14 @@ fn vocabulary() -> Vocabulary? {
     let kind? = type_exported(tree_module, "EventKind") else { return null }
     let box? = type_exported(style_module, box_name) else { return null }
     let style? = type_exported(style_module, "Style") else { return null }
+    let stand? = type_exported(tree_module, stand_name) else { return null }
     Vocabulary {
         prims: prim.variants,
         attributes: attribute.variants,
         kinds: kind.variants,
         box: box.fields,
         style: style.fields,
+        stand: stand.fields,
     }
 }
 
@@ -375,7 +389,7 @@ impl Vocabulary {
     fn box_code(parts: List<Part>) -> Code {
         mut style = quote { self.style }
         for l in [l for p in parts for l in p.styles] { style = quote { ${style} with { ${l.over}: self.${l.member.name} } } }
-        let rest = [quote { Box { ${f.name}: self.${f.name} } } for f in self.box.concat(stand_fields()) if f.name != style_field]
+        let rest = [quote { Box { ${f.name}: self.${f.name} } } for f in self.box.concat(self.stand) if f.name != style_field]
         quote { Box { style: ${style}, ..${rest} } }
     }
 
@@ -495,7 +509,7 @@ fn unread(t: Type) -> Diagnostic {
         "defect",
         t.at,
         "defect: `@derive(View)` could not read the library's own vocabulary over `${t.name}`",
-        "`Prim`, `Attribute`, `EventKind`, `Box` and `Style` are read by their modules' names — one moved",
+        "`Prim`, `Attribute`, `EventKind`, `Box`, `Style` and `Stand` are read by their modules' names — one moved",
     )
 }
 

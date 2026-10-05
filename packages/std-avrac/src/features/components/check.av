@@ -15,7 +15,7 @@ use core.{
     same_decl,
     user_kind,
 }
-use features.{ResolveCx, TypeCx, Unsettled, unsettled_label}
+use features.{ResolveCx, TypeCx}
 use @std.meta.{Diagnostic}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
@@ -57,10 +57,12 @@ fn check_body(mut cx: TypeCx, s: StmtId) {
     let m? = cx.view.decls.trait_derive(composer) else { return }
     if same_file(cx.view.decls.decl(m).file, cx.view.file) { return }
     let by = cx.view.decls.decl(composer).name
-    match cx.view.decls.lifted(m, cx.view.file, s, body, []) {
-        .Ok(crossed) -> { for x in crossed.declared_problems() { if !x.warning { body_refused(cx, m, s, x, by) } } },
-        .Err(why) -> body_unsettled(cx, s, by, why),
+    // a derive that could not run is spoken where it ran
+    let problems = match cx.view.decls.lifted(m, cx.view.file, s, body, []) {
+        .Ok(crossed) -> crossed.declared_problems(),
+        .Err(_) -> [],
     }
+    for x in problems { if !x.warning { body_refused(cx, m, s, x, by) } }
 }
 
 /// An event's seats have distinct names: a handler names each one.
@@ -242,21 +244,6 @@ fn body_refused(mut cx: TypeCx, d: DeclId, s: StmtId, x: Diagnostic, by: string)
 
 const body_kind = "type.component_body"
 
-fn body_unsettled(mut cx: TypeCx, s: StmtId, by: string, why: Unsettled) {
-    let label = unsettled_label(by, why)
-    if label.is_empty() { return }
-    let _ = cx
-        .spoken(
-            refusal(
-                body_kind,
-                cx.view.stmt_loc(s),
-                "a component's body could not be composed",
-                label,
-                "what composes a body runs at compile time from pure computation alone",
-            ),
-        )
-}
-
 fn no_composer(mut cx: TypeCx, s: StmtId, name: string) {
     let _ = cx
         .spoken(
@@ -265,7 +252,7 @@ fn no_composer(mut cx: TypeCx, s: StmtId, name: string) {
                 cx.view.stmt_loc(s),
                 "a component is made of what its body holds, and nothing here says what `${name}`'s is",
                 "holds statements",
-                "a library says what a body is — a trait wearing `@composes`; a component of fields and `fn`s holds none",
+                "a body is composed by the library whose components it is made of — write one of them in it, or `use` the library; a component of fields and `fn`s holds none",
             ),
         )
 }
@@ -278,7 +265,7 @@ fn two_composers(mut cx: TypeCx, s: StmtId, name: string, by: List<string>) {
                 cx.view.stmt_loc(s),
                 "one trait says what a component's body is, and here ${["`${t}`" for t in by].join(" and ")} both do",
                 "`${name}` holds statements",
-                null,
+                "make this file name one library's components alone — move what uses the other into a file of its own",
             ),
         )
 }

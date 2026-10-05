@@ -271,8 +271,6 @@ type Records = {
     component_scanned: Cell<Map<string, bool>>,
     /// The names a path's `component` declarations wear, read once.
     component_names: Cell<Map<string, List<string>>>,
-    /// Whether every file of a package was minted, by the package's key.
-    minted_whole: Cell<Map<string, bool>>,
     /// Every file a record has met this build, by path — each met once.
     met_files: Cell<Map<string, bool>>,
     /// A MODULE'S OWN ANSWER, keyed by module: the names its record marks as
@@ -307,7 +305,6 @@ fn new_records() -> Records {
         grammar_scanned: Cell.new(no_scanned),
         component_scanned: Cell.new(no_declaring),
         component_names: Cell.new(no_names),
-        minted_whole: Cell.new(no_declaring),
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),
         block_rows: Cell.new(no_block_rows),
@@ -1383,37 +1380,46 @@ impl Workspace {
     }
 
     /// THE TRAITS THAT MAY COMPOSE A COMPONENT OF FILE `f` — found from
-    /// the PROGRAM, by what the file can name: the packages its `use`
-    /// lines reach, and its own. Each such package's declarations are
-    /// minted first, so the answer is the same whatever was read before
-    /// it was asked, and a trait wearing `@composes` is found by its
-    /// mark in the one table. Two libraries each compose their own
-    /// components; two in ONE file's reach is the typing law's refusal.
+    /// the PROGRAM, by what the file can NAME: the nearest files, walking
+    /// out along what each one names, that declare a trait wearing
+    /// `@composes`. A file names where each declaration its `use` lines
+    /// import was written, and its own module's components. So a
+    /// composition of `text` and `button` is composed by the trait their
+    /// files name, a composition made only of compositions by theirs,
+    /// and nothing is read that the program does not already read: no
+    /// file is parsed for this alone, a test file is reached only by
+    /// what imports it. Two libraries each compose their own; two at
+    /// one distance is the typing law's refusal.
     fn composers(f: FileId) -> List<DeclId> {
-        let reach = self.packages_named(f)
-        for ordinal in reach { self.package_minted(ordinal) }
-        [x.id for x in self.decls.indexed_by_mark("composes") if self.decls.composes(x.id) &&
-            reach.contains(self.holder_of_path(self.decls.file(x.file).path))]
-    }
-
-    /// The packages a file can name, by their place in the workspace: its
-    /// own, then each its `use` lines reach.
-    fn packages_named(f: FileId) -> List<int> {
-        let own = self.holder_of_path(self.decls.file(f).path)
-        let from = self.packages()[own]
-        let keys = [k for u in self.parsed(f).store.built_uses() for k in some_list(qualified(module_path(u.path), from).package()) if self.reaches(from, k)]
-        [own].concat([j for j, pkg in self.packages() if j != own && keys.contains(pkg.key)])
-    }
-
-    /// Every file of a package minted — its declarations stand in the
-    /// one table. Once a package.
-    fn package_minted(ordinal: int) {
-        let pkg = self.packages()[ordinal]
-        if self.records.minted_whole.get().get(pkg.key) ?? false { return }
-        self.records.minted_whole.put(pkg.key, true)
-        for path in self.all_files(pkg.src) {
-            if is_source(path, pkg.src) && !self.excluded(path) { touch(self.items(self.file_id(path))) }
+        mut seen: List<int> = [f.index]
+        mut ring: List<FileId> = [f]
+        while !ring.is_empty() {
+            let found = [d for g in ring for d in self.composing_in(g)]
+            if !found.is_empty() { return found }
+            ring = self.unseen(flatten([self.named_files(g) for g in ring]), seen)
+            seen = seen.concat([g.index for g in ring])
         }
+        []
+    }
+
+    /// The traits wearing `@composes` a file declares.
+    fn composing_in(g: FileId) -> List<DeclId> {
+        touch(self.items(g))
+        [d for d in self.decls.decls_of_file(g) if self.decls.composes(d)]
+    }
+
+    /// The files `g` names, one step out: where each declaration its
+    /// `use` lines import was written, and each file of its own module
+    /// that declares a component.
+    fn named_files(g: FileId) -> List<FileId> {
+        let p = self.parsed(g)
+        [self.decls.decl(i.decl).file for u in use_lines(p) for i in self.imported_line(p, u).imports]
+            .concat([self.file_id(s) for s in self.declaring_siblings(p.source.file)])
+    }
+
+    /// `files`, each once and in order, less those already `seen`.
+    fn unseen(files: List<FileId>, seen: List<int>) -> List<FileId> {
+        [g for j, g in files if !seen.contains(g.index) && !files.slice(0, j).any(same_file(it, g))]
     }
 
     /// The declarations a file MINTS into the one table; the answer's

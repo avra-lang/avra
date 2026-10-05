@@ -33,7 +33,7 @@ type Under = { step: string, standing: Standing }
 /// after the last paint, still on offer. `by_order` is whether this
 /// paint told it from a sibling by order alone, `step` the path it
 /// stands at under the nearest node that is DRAWN — a composition draws
-/// nothing of its own — and `said` what the walk it belongs to has said
+/// nothing of its own, and a walk's root stands at none — and `said` what the walk it belongs to has said
 /// this paint.
 export type Standing = {
     hold: Cell<Hold?>,
@@ -41,7 +41,7 @@ export type Standing = {
     was_hold: Cell<Hold?>,
     was_under: Cell<List<Under>>,
     by_order: Cell<bool>,
-    step: Cell<string>,
+    step: Cell<string?>,
     said: Cell<List<string>>,
 }
 
@@ -54,6 +54,7 @@ export fn standing() -> Standing {
 /// A standing nothing has stood at, in the walk that says into `said`.
 fn stands_in(said: Cell<List<string>>) -> Standing {
     let none: Hold? = null
+    let nowhere: string? = null
     let empty: List<Under> = []
     Standing {
         hold: Cell.new(none),
@@ -61,7 +62,7 @@ fn stands_in(said: Cell<List<string>>) -> Standing {
         was_hold: Cell.new(none),
         was_under: Cell.new(empty),
         by_order: Cell.new(false),
-        step: Cell.new(""),
+        step: Cell.new(nowhere),
         said: said,
     }
 }
@@ -99,7 +100,7 @@ impl Standing {
         mut stood: Map<string, Standing> = {}
         for u in self.was_under.get() { stood.set(u.step, u.standing) }
         let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said) } for s in steps]
-        let above = if drawn { null } else { self.through() }
+        let above = if drawn { null } else { self.step.get() }
         for j, u in now {
             u.standing.opened()
             u.standing.by_order.set(shared[j])
@@ -107,12 +108,6 @@ impl Standing {
         }
         self.under.set(now)
         [u.standing for u in now]
-    }
-
-    /// The path this standing is drawn through — none at a walk's root.
-    fn through() -> string? {
-        let at = self.step.get()
-        if at == "" { null } else { at }
     }
 
     /// How many instances stand here and below — the lifetime witness.

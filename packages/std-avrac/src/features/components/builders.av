@@ -184,6 +184,24 @@ fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
     }
 }
 
+/// `counter id { key: id }` — a NAME as the head, then the instance's
+/// block. The brace after a head's name is the instance's, never a
+/// record literal's.
+fn build_component_name_head(b: Builder) -> Result<LangNode, string> {
+    let word = b.word_at(0)?
+    let head = b.token(1)?
+    b
+        .wrap_expr(
+            b
+                .instance(
+                    word,
+                    [b.store.alloc_expr(Expr.Ident(Scoped(head.text)), head.span)],
+                    b.expr(2)?,
+                    null,
+                )?,
+        )
+}
+
 /// `row { … }` — an instance with no head value.
 fn build_component_headless(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
@@ -411,7 +429,7 @@ impl Builder {
         if t.head.length != 1 { return .Err(head_count(word.word, t.head.length)) }
         if body == null { return .Err(blockless(word.word)) }
         let stmts = self.written(body)
-        if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word)) }
+        if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word, self.store.ident_name(heads[0]))) }
         let block = self.filled_body(body!, stmts)
         let minted = [self.minted_format(word, t, h, heads[j])? for j, h in t.head]
         let expansion = self.store.instantiated(t, word, heads, block, minted)
@@ -782,8 +800,12 @@ fn headless(word: string) -> string {
     "`${word}` writes its head value before its block — `${word} value { … }`"
 }
 
-fn template_setting(word: string) -> string {
-    "`${word}`'s block is code it runs — a `key: value` setting fills a record's field"
+/// A template's block holding a setting. Under a head that is a bare
+/// name, the block is what the author meant as a record literal's
+/// fields — an instance's head keeps its brace — so the words write it.
+fn template_setting(word: string, head: string?) -> string {
+    let named? = head else { return "`${word}`'s block is code it runs — a `key: value` setting fills a record's field" }
+    "`${word}`'s block is code it runs, and the brace after `${named}` opens it — a record literal as the head stands in parentheses: `${word} (${named} { … }) { … }`"
 }
 
 fn record_heads(word: string, declared: int, written: int) -> string {

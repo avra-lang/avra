@@ -1156,6 +1156,69 @@ steps=$((steps+1)); [ "$kept_before" = "$(store_print)" ] ||
 steps=$((steps+1)); [ "$kept_before" != "$(store_print)" ] ||
     { fails=$((fails+1)); echo "FAIL  a check after the edit kept nothing"; }
 cache_says "changed: no input's text moved since the kept state" "$(inspected changed)" "changed, after a check"
+# WHAT COMPOSES A COMPONENT IS NEVER SERVED STALE. `note` holds a body, composed by
+# the trait its file names (`kit`'s `Says`, wearing `@composes`); `card` is made of
+# `note`, a sibling it names by no `use`. An entry edit holds both. Then the mark is
+# dropped from the trait with no edit to either component — `note` has no composer
+# and must be refused — and put back; then the sibling's component is renamed with
+# no edit to `card`, whose body names a word its module no longer declares.
+mkdir -p $R/cb/src/kit $R/cb/src/part
+printf '[package]\nname = "rt-cb"\nversion = "0.1.0"\n' > $R/cb/avra.toml
+cat > $R/cb/src/kit/kit.av <<'AV'
+use @std.meta.{Type, Directive, Declared, composes}
+
+export type Tagged = { tag: string = "" }
+
+export component words {
+    items: List<string> = []
+}
+
+@composes(Tagged)
+export trait Says {
+    fn says() -> string
+
+    static fn derive(t: Type) -> Declared {
+        let body? = t.body else { return Declared { made: [] } }
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote {
+                        impl Says for ${t} {
+                            fn says() -> string {
+                                words made {
+                                    ${body}
+                                }
+                                made.items.join(" ")
+                            }
+                        }
+                    },
+                },
+            ],
+        }
+    }
+}
+
+export fn said_by(s: dyn Says) -> string { s.says() }
+AV
+printf 'use kit.{said_by}\n\nexport component note(name: string) {\n    "note"\n    self.name\n}\n\nexport fn noted(n: note) -> string { said_by(n) }\n' > $R/cb/src/part/note.av
+printf 'use kit.{said_by}\n\nexport component card(name: string) {\n    said_by(note self.name)\n}\n' > $R/cb/src/part/card.av
+printf 'use kit.{said_by}\nuse part.{card}\nprintln(said_by(card "a"))\n' > $R/cb/src/main.av
+HR "cold cb" check cb 0
+printf '// moved\n' >> $R/cb/src/main.av
+HR "cb: an entry edit holds the components" check cb 0 part/note.av held part/card.av held
+cp $R/cb/src/kit/kit.av $R/cb/kit.kept
+grep -v '^@composes' $R/cb/kit.kept > $R/cb/src/kit/kit.av
+steps=$((steps+1)); cb_out=$(./avra check $R/cb 2>&1)
+case "$cb_out" in *"type.component_body"*"nothing here says"*) [ -n "${VERBOSE:-}" ] && echo "ok    cb: the mark gone -> the body is refused" ;; *) fails=$((fails+1)); echo "FAIL  cb: the trait lost @composes and a body was still composed: $(printf '%s' "$cb_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+cp $R/cb/kit.kept $R/cb/src/kit/kit.av
+HR "cb: the mark back composes again" check cb 0
+sed 's/component note(/component memo(/; s/n: note/n: memo/' $R/cb/src/part/note.av > $R/cb/note.new && cp $R/cb/note.new $R/cb/src/part/note.av
+steps=$((steps+1)); cb_out=$(./avra check $R/cb 2>&1)
+case "$cb_out" in *"card.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    cb: the sibling's word gone -> card refused" ;; *) fails=$((fails+1)); echo "FAIL  cb: card names a sibling component that was renamed and the check did not refuse it: $(printf '%s' "$cb_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

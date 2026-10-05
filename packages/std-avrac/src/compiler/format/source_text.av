@@ -429,7 +429,7 @@ impl SourceText {
                 [
                     self
                         .statement_block(
-                            "${prefix}${self.head(cond, depth, col_after(prefix, depth * 4))}",
+                            "${prefix}${self.expression(cond, loosest_tier, depth, col_after(prefix, depth * 4))}",
                             stmts,
                             self.stmt_end(s),
                             self.stmt_flat(s),
@@ -535,7 +535,7 @@ impl SourceText {
                 [
                     self
                         .statement_block(
-                            "${prefix}${self.head(subject, depth, col_after(prefix, depth * 4))}",
+                            "${prefix}${self.expression(subject, loosest_tier, depth, col_after(prefix, depth * 4))}",
                             stmts,
                             self.stmt_end(s),
                             self.stmt_flat(s),
@@ -639,14 +639,15 @@ impl SourceText {
     /// would not otherwise put there.
     fn let_else_subject(subject: ExprId, depth: int, col: int = -1) -> string {
         let text = self.expression(subject, loosest_tier, depth, col)
-        if self.store.expr(subject) is .If || self.store.bares_literal(subject) { "(${text})" } else { text }
+        if self.store.expr(subject) is .If { "(${text})" } else { text }
     }
 
-    /// A HEAD KEEPS ITS BRACE: a record literal that would open in one
-    /// stands in parentheses, so the brace after the head is the head's.
+    /// AN INSTANCE'S HEAD KEEPS ITS BRACE: a record literal that would
+    /// open in one stands in parentheses, so the brace after the head is
+    /// the instance's.
     fn head(e: ExprId, depth: int, col: int = -1) -> string {
         let text = self.expression(e, loosest_tier, depth, col)
-        if self.store.bares_literal(e) { "(${text})" } else { text }
+        if self.store.opens_with_literal(e) { "(${text})" } else { text }
     }
 
     /// Whether `value` is the SAME node as `stmts`' own last
@@ -904,7 +905,7 @@ impl SourceText {
         one_line: bool,
         depth: int,
     ) -> string {
-        let condition = self.head(cond, depth, col_after("if ", depth * 4))
+        let condition = self.expression(cond, loosest_tier, depth, col_after("if ", depth * 4))
         let y = flatten([self.statement(s, depth + 1) for s in yes])
         if no.is_empty() {
             let empty = y.concat(self.trivia_before(end, depth + 1))
@@ -1827,7 +1828,7 @@ impl SourceText {
     /// An if EXPRESSION's branches, one-line when the whole form was.
     mut fn if_group(cond: ExprId, yes: ExprId, no: ExprId, id: ExprId, depth: int, col: int = -1) -> string {
         let one = self.span_flat(self.store.expr_span(id))
-        "if ${self.head(cond, depth, resolved_col(col, depth) + 3)} ${self.block(yes, one, depth)} else ${self.if_group_else(no, one, depth)}"
+        "if ${self.expression(cond, loosest_tier, depth, resolved_col(col, depth) + 3)} ${self.block(yes, one, depth)} else ${self.if_group_else(no, one, depth)}"
     }
 
     /// An if-EXPRESSION's else branch — chained straight into another
@@ -2079,7 +2080,7 @@ impl SourceText {
     }
 
     mut fn match_expr(subject: ExprId, arms: List<Arm>, id: ExprId, depth: int, col: int = -1) -> string {
-        let head = "match ${self.head(subject, depth, resolved_col(col, depth) + 6)} "
+        let head = "match ${self.expression(subject, loosest_tier, depth, resolved_col(col, depth) + 6)} "
         "${head}${self.arms_braced(arms, id, depth, col_after(head, resolved_col(col, depth)))}"
     }
 
@@ -2158,7 +2159,7 @@ impl SourceText {
                 rest -> { let _ = 0 },
             }
         }
-        let head = self.head(subject, depth, c + 6)
+        let head = self.expression(subject, loosest_tier, depth, c + 6)
         let present_head = "${source_name(bind)}? -> "
         let absent_head = "null -> "
         let arms = self

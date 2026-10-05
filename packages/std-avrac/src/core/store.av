@@ -1215,16 +1215,27 @@ impl SyntaxArena {
         }
     }
 
-    /// Whether a record literal's brace stands BARE in `e` — outside
-    /// every delimiter — so that in a head it would open before the
-    /// head's own does. A literal opens where it stands, at either side
-    /// of an operator, and under whatever is read off it.
-    fn bares_literal(e: ExprId) -> bool {
+    /// A record literal's TURN among the literals written ALIKE in its
+    /// file: how many of them stand before it. A template's literal and
+    /// its splice stand at one place, so they share a turn.
+    fn literal_turn(e: ExprId) -> int {
+        let at? = self.expr_span(e)?.lo else { return 0 }
+        let own = self.expr_fingerprint(e)
+        let like = self
+            .exprs_by_kind(0, self.exprs.count(), self.tag_expr(Expr.StructLit("", [], [])))
+        let before = [lo for x in like if self.expr_fingerprint(x) == own for lo in some_list(self.expr_span(x)?.lo) if lo < at]
+        [lo for j, lo in before if !before.slice(0, j).contains(lo)].length
+    }
+
+    /// Whether `e` OPENS with a record literal — its leftmost word is a
+    /// literal's name, its brace the next token. As an instance's head
+    /// that brace would be read as the instance's block.
+    fn opens_with_literal(e: ExprId) -> bool {
         match self.expr(e) {
             .StructLit(_, _, _) -> true,
-            .Binary(_, left, right) or .Coalesce(left, right) -> self.bares_literal(left) || self.bares_literal(right),
-            .Not(held) or .Force(held) or .Propagate(held) or .Prop(held, _) or .Chain(held, _) or .Is(held, _) or .Index(held, _) or .MethodCall(held, _, _) or .With(held, _, _) or .CallValue(held, _) -> self.bares_literal(held),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .When(_, _, _) or .Block(_, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> false,
+            .Binary(_, left, _) or .Coalesce(left, _) -> self.opens_with_literal(left),
+            .Force(held) or .Propagate(held) or .Prop(held, _) or .Chain(held, _) or .Is(held, _) or .Index(held, _) or .MethodCall(held, _, _) or .With(held, _, _) or .CallValue(held, _) -> self.opens_with_literal(held),
+            .Not(_) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .When(_, _, _) or .Block(_, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> false,
         }
     }
 

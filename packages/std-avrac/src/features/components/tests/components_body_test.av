@@ -79,7 +79,7 @@ spec "features/components — a body" {
                     says(),
                     [tells()],
                 ),
-                "one trait says what a component's body is, and here `Tells` and `Says` both do",
+                "one trait says what a component's body is, and here `Says` and `Tells` both do",
             )
         }
     }
@@ -99,6 +99,59 @@ spec "features/components — a body" {
                 built("component wrong(name: string) {\n    self.nope\n}\n0"),
                 "no field `nope` on `wrong`",
             )
+        }
+    }
+}
+
+/// A library whose derive refuses every body, and one whose derive
+/// cannot run.
+fn refusing(run: string) -> string {
+    "use @std.meta.{Type, Directive, Declared, Diagnostic, composes, refuse_as_at}\n\nexport type Tagged = { tag: string = \"\" }\n\n@composes(Tagged)\nexport trait Says {\n    fn says() -> string\n\n    static fn derive(t: Type) -> Declared {\n        ${run}\n    }\n}\n\nexport fn nothing_said() -> int { 0 }\n"
+}
+
+const refuses = "Declared { made: [], problems: [refuse_as_at(\"wordless\", t.at, \"a body says words, and `\${t.name}` says none\", \"write one\")] }"
+const traps = "let none: List<Directive> = []\n        Declared { made: [none[3]] }"
+
+spec "features/components — a body's refusals, as written" {
+    given "a body no trait composes" {
+        then "is refused at the component, with the way out" {
+            provided("component made {\n    let x = 1\n}\n0", "").report().trim() == "error[type.component_body]: a component is made of what its body holds, and nothing here says what `made`'s is\n  ╭─[/w/src/main.av:1:1]\n1 │ component made {\n  · ┬\n  · ╰── holds statements\n──╯\nhelp: a body is composed by the library whose components it is made of — write one of them in it, or `use` the library; a component of fields and `fn`s holds none"
+        }
+    }
+    given "a body two traits compose" {
+        then "is refused naming both, with the way out" {
+            provided(
+                "use @x.c.{said_by}\nuse kit.{told_by}\n" + greeting() + "0",
+                says(),
+                [tells()],
+            )
+                .report()
+                .trim() == "error[type.component_body]: one trait says what a component's body is, and here `Says` and `Tells` both do\n  ╭─[/w/src/main.av:3:1]\n3 │ component greeting(name: string) {\n  · ┬\n  · ╰── `greeting` holds statements\n──╯\nhelp: make this file name one library's components alone — move what uses the other into a file of its own"
+        }
+    }
+    given "a body its trait refuses" {
+        then "is refused in the trait's words, under the trait's package" {
+            provided(
+                "use @x.c.{nothing_said}\ncomponent mute(name: string) {\n    self.name\n}\nnothing_said()",
+                refusing(refuses),
+            )
+                .report()
+                .trim() == "error[@x/c:wordless]: a body says words, and `mute` says none\n  ╭─[/w/src/main.av:2:1]\n2 │ component mute(name: string) {\n  · ┬\n  · ╰── refused by `Says`\n──╯\nhelp: write one"
+        }
+    }
+    given "a body whose trait's derive cannot run" {
+        then "is refused where the derive ran, with what stopped it" {
+            provided(
+                "use @x.c.{nothing_said}\ncomponent mute(name: string) {\n    self.name\n}\nnothing_said()",
+                refusing(traps),
+            )
+                .report()
+                .trim() == "error[annotation.unsettled]: an annotation could not run\n  ╭─[/w/src/main.av:2:1]\n2 │ component mute(name: string) {\n  · ┬\n  · ╰── `derive` index 3 is out of bounds (length 0)\n──╯\nhelp: an annotation runs at compile time from pure computation alone"
+        }
+    }
+    given "a member read bare in a body" {
+        then "is told to read it through `self`" {
+            built(greeting().replace("self.name", "name") + "0").report().trim() == "error[resolve.unresolved]: `name` is not defined — a member is read through its receiver\n  ╭─[/w/src/main.av:6:5]\n6 │     name\n  ·     ┬\n  ·     ╰── read bare\n──╯\nhelp: write `self.name`"
         }
     }
 }

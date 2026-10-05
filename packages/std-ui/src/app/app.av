@@ -13,12 +13,14 @@ use style.theme.{Theme, default_theme}
 /// The view and the theme are held in cells, so the app stays ONE identity
 /// when it is given another view to show. `stands` is where its walk
 /// starts: every component instance on the app is kept under it, and
-/// nowhere else.
+/// nowhere else. `told` is what its walk has said that a target already
+/// passed on.
 export type App = {
     view: Cell<fn(Standing) -> Node>,
     theme: Cell<fn() -> Theme>,
     show: fn(Node, Theme) -> void,
     stands: Standing,
+    told: Cell<List<string>>,
 }
 
 /// The theme of an app that names none.
@@ -27,7 +29,14 @@ export fn plain() -> Theme { default_theme }
 /// `view` under `theme`, shown by `show`.
 export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, Theme) -> void) -> App {
     let drawn: fn(Standing) -> Node = (at: Standing) -> rooted(view().describe(at))
-    App { view: Cell.new(drawn), theme: Cell.new(theme), show: show, stands: standing() }
+    let untold: List<string> = []
+    App {
+        view: Cell.new(drawn),
+        theme: Cell.new(theme),
+        show: show,
+        stands: standing(),
+        told: Cell.new(untold),
+    }
 }
 
 /// `on` shows `view` under `theme` from now on: the same app on the same
@@ -54,6 +63,20 @@ impl App {
     /// instance that keeps state and is told from its siblings by order
     /// alone.
     fn warnings() -> List<string> { self.stands.warnings() }
+
+    /// What the last paint said that no paint before it did — each
+    /// warning once an app.
+    fn said_anew() -> List<string> {
+        let fresh = [w for w in self.warnings() if !self.told.get().contains(w)]
+        self.told.set(self.told.get().concat(fresh))
+        fresh
+    }
+
+    /// A target with an error stream passes on what its walk said: a
+    /// terminal's, a page's console.
+    fn warn() {
+        for w in self.said_anew() { eprintln("ui: ${w}") }
+    }
 
     /// How many component instances the app keeps — the lifetime
     /// witness.

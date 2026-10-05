@@ -1,7 +1,7 @@
 // A `Site` field — `@std/meta`'s — is WHERE A LITERAL WAS WRITTEN: a
 // literal that leaves it unset holds its own site, the same each time
-// that literal is built, and a different one for a literal written
-// differently. It owes no default; set, it is a value like any other.
+// that literal is built, and a different one for every other literal —
+// written differently, or written alike somewhere else in its file. It owes no default; set, it is a value like any other.
 use @std.avrac.testing.{provided, answered, refused_n}
 use @std.avrac.compiler.{Program}
 
@@ -25,10 +25,19 @@ spec "structs — a site field" {
                 built("let a = Mark { name: \"a\" }\nlet b = Mark { name: \"b\" }\na.at == b.at"),
             ) == "false"
         }
-        then "shares its site with a literal written alike in its file" {
+        then "is told from a literal written alike in its file, by its turn among them" {
             answered(
-                built("let a = Mark { name: \"a\" }\nlet b = Mark { name: \"a\" }\na.at == b.at"),
-            ) == "true"
+                built(
+                    "let a = Mark { name: \"a\" }\nlet b = Mark { name: \"a\" }\nlet c = Mark { name: \"a\" }\n\"\${a.at == b.at} \${b.at == c.at} \${a.at == c.at}\"",
+                ),
+            ) == "false false false"
+        }
+        then "keeps its site when a literal written otherwise is added above it" {
+            answered(
+                built(
+                    "fn one() -> Mark { Mark { name: \"a\" } }\nfn two() -> Mark {\n    let other = Mark { name: \"b\" }\n    Mark { name: \"a\" }\n}\none().at == two().at",
+                ),
+            ) == "false"
         }
         then "holds one site for every turn of a loop" {
             answered(built("let ms = [Mark { name: \"m\" } for i in 0..3]\nms[0].at == ms[2].at")) == "true"

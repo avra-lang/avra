@@ -132,6 +132,7 @@ impl ResolveCx {
             return
         }
         if self.apart_refused(self.names_in(origin), [NameKind.Type, NameKind.Fn], name, at) { return }
+        if self.names_a_member(name) { return self.emit(bare_member(at, name)) }
         self
             .emit(
                 self
@@ -148,6 +149,16 @@ impl ResolveCx {
                         self.def_names,
                     ),
             )
+    }
+
+    /// Whether an undefined name, read where a receiver stands, is a
+    /// field some record of this file declares — a member written bare.
+    fn names_a_member(name: string) -> bool {
+        self.in_a_method() &&
+            self
+                .view
+                .stmts
+                .any((s) -> (self.view.store.struct_parts(s)?.fields ?? []).any(it.name.of == name))
     }
 
     /// THE ONE SCOPE RITUAL: a fresh overlay opens, binds made inside
@@ -709,5 +720,15 @@ fn worn_block_word(at: Loc?, name: string) -> Diag {
         "`${name}` is a block word here, and nothing else in this file may wear it",
         "this name",
         "rename it, or import the word under another name",
+    )
+}
+
+fn bare_member(at: Loc?, name: string) -> Diag {
+    refusal(
+        "resolve.unresolved",
+        at,
+        "`${name}` is not defined — a member is read through its receiver",
+        "read bare",
+        "write `self.${name}`",
     )
 }

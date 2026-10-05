@@ -96,3 +96,32 @@ spec "structs — a state field" {
         }
     }
 }
+
+/// A record of one field, compared by it, and one that holds a list.
+const shapes = "type Id = { x: int }\ntype P = { x: int, xs: List<int> = [] }\n"
+
+spec "structs — a literal in a statement's head" {
+    given "a record literal written bare in a head" {
+        then "opens in an `if`'s condition" {
+            shown(
+                "${shapes}fn f(p: Id) -> int {\n    if p == Id { x: 1 } { return 1 }\n    0\n}\nf(Id { x: 1 })",
+            ) == "1"
+        }
+        then "opens in a `while`'s condition" {
+            shown("${shapes}mut n = 0\nwhile n < Id { x: 3 }.x { n = n + 1 }\nn") == "3"
+        }
+        then "opens in a `for`'s source" {
+            shown(
+                "${shapes}mut total = 0\nfor v in P { x: 1, xs: [1, 2] }.xs { total = total + v }\ntotal",
+            ) == "3"
+        }
+        then "opens in a `match`'s subject" {
+            shown("${shapes}match P { x: 1 }.x { 1 -> 10, _ -> 0 }") == "10"
+        }
+        then "opens in a `let … else`'s subject" {
+            shown(
+                "${shapes}fn f() -> int {\n    let z? = [Id { x: 3 }].first() else { return 0 }\n    z.x\n}\nf()",
+            ) == "3"
+        }
+    }
+}

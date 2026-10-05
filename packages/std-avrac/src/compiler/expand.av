@@ -284,14 +284,13 @@ impl Workspace {
         let written = self.written_stmt(f, d)
         let body? = p.store.component_body(written) else { return [] }
         if self.decls.meta_disagreement() != null { return [] }
-        let traits = self.decls.composers(f)
-        if traits.length != 1 { return [] }
+        let composer? = self.decls.composer(f) else { return [] }
         // a `@derive` WRITTEN over the same trait already derives it
-        if self.declared_work(f, d, p, vis).any((w) -> self.derives_over(w, p, vis, traits[0])) { return [] }
-        let m? = self.decls.trait_derive(traits[0]) else { return [] }
+        if self.declared_work(f, d, p, vis).any((w) -> self.derives_over(w, p, vis, composer)) { return [] }
+        let m? = self.decls.trait_derive(composer) else { return [] }
         let sig? = self.decls.sig(m)?.fn_sig() else { return [] }
         let w = DeclareWork {
-            ann: traits[0],
+            ann: composer,
             stmt: written,
             callee: body,
             args: [],
@@ -304,7 +303,7 @@ impl Workspace {
             annotated: d,
         }
         flatten(
-            [self.materialized_directive(f, w, directive, vis) for directive in self.trait_directives(traits[0], w, f)],
+            [self.materialized_directive(f, w, directive, vis) for directive in self.trait_directives(composer, w, f)],
         )
     }
 
