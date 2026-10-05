@@ -33,6 +33,21 @@ fn hearing(n: Node, handler: Handler) -> Node { n with { events: [Action { kind:
 
 fn pressing(n: Node) -> Node { n with { events: [Action { kind: .Press, handler: Handler.Nothing(nothing) }] } }
 
+fn heard_number(_n: int) {}
+
+fn slider_at(n: int) -> Node {
+    leaf(.Slider, [.Label("V"), .Amount(n)]) with { events: [Action { kind: .Change, handler: Handler.Number(heard_number) }] }
+}
+
+/// The patches after a user moves a slider showing `shown` to `moved`
+/// and the program then draws `drawn`.
+fn after_sliding(shown: int, moved: int, drawn: int) -> string {
+    let page = live()
+    let _ = page.patches(slider_at(shown), default_theme)
+    let _ = page.fire(page.named("V")[0], .Change, Said.Number(moved))
+    page.said(slider_at(drawn), default_theme)
+}
+
 fn muted(n: Node) -> Node { n with { box: Box { style: Style { color: .Muted } } } }
 
 /// The patches after a user types `typed` into a field showing `shown`
@@ -170,6 +185,25 @@ spec "std/ui dom — a property is what the page holds" {
     }
     given "a field the user typed into, drawn with what was typed" {
         then "is not written back — the caret stays where the user left it" { after_typing("", "abc", "abc") == "" }
+    }
+    given "a slider the user moved, drawn with where it was moved to" {
+        then "is not written back: what was heard and what is drawn compare as the text the page holds" {
+            after_sliding(3, 7, 7) == ""
+        }
+    }
+    given "a slider the user moved, drawn with where the program still holds it" {
+        then "is set back to what the program draws" { after_sliding(3, 7, 3) == "prop 0/+control value=\"3\"" }
+    }
+    given "a control heard twice before a paint" {
+        then "holds one record of what its property now holds, the latest" {
+            let page = live()
+            let _ = page
+                .patches(hearing(field_node("N", ""), Handler.Text(heard_text)), default_theme)
+            let _ = page.fire(page.named("N")[0], .Input, Said.Text("a"))
+            let _ = page.fire(page.named("N")[0], .Input, Said.Text("ab"))
+            page.heard.get().length == 1 &&
+                page.said(hearing(field_node("N", "ab"), Handler.Text(heard_text)), default_theme) == ""
+        }
     }
     given "a field the user typed into, drawn with what the program still holds" {
         then "is set back to the program's value: the page is a function of state" {

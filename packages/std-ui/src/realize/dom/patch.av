@@ -22,7 +22,7 @@ export enum Patch {
     Remove(id: NodeId)
     SetAttr(id: NodeId, name: HtmlAttrName, value: string)
     DropAttr(id: NodeId, name: HtmlAttrName)
-    SetProp(id: NodeId, name: HtmlAttrName, value: Said)
+    SetProp(id: NodeId, name: HtmlAttrName, value: Held)
     SetText(id: NodeId, content: string)
     Listen(id: NodeId, to: Listening)
     Unlisten(id: NodeId, kind: EventKind)
@@ -47,7 +47,26 @@ export enum Says {
 export type Listening = { action: Action, event: string, says: Says, reads: HtmlAttrName?, prevents: bool }
 
 /// What a control was heard to say: the user moved its property to this.
-export type Heard = { id: NodeId, name: HtmlAttrName, value: Said }
+export type Heard = { id: NodeId, name: HtmlAttrName, value: Held }
+
+/// What a property holds on the page: text, or a flag. A page's `value`
+/// is text whatever the control, so a number a control says is held as
+/// the text that spells it — ONE currency for what was drawn and what was
+/// heard.
+export enum Held {
+    Text(value: string)
+    Flag(value: bool)
+}
+
+/// What a control said, as the property it was read from now holds it.
+export fn held_as(said: Said) -> Held {
+    match said { .Text(t) -> .Text(t), .Number(n) -> .Text("${n}"), .Flag(on) -> .Flag(on) }
+}
+
+/// What a held value is, as the wire tags it.
+export fn held_says(value: Held) -> Says {
+    match value { .Text(_) -> .Text, .Flag(_) -> .Flag }
+}
 
 // ── the page's own facts ────────────────────────────────────────
 
@@ -65,11 +84,6 @@ fn prevented(k: EventKind) -> bool {
 /// What a handler hears. ONE arm per thing a control can say.
 export fn says(h: Handler) -> Says {
     match h { .Nothing(_) -> .Nothing, .Number(_) -> .Number, .Flag(_) -> .Flag, .Text(_) -> .Text }
-}
-
-/// What a value is. ONE arm per thing a control can say.
-export fn said_as(value: Said) -> Says {
-    match value { .Number(_) -> .Number, .Flag(_) -> .Flag, .Text(_) -> .Text }
 }
 
 /// The property a control's answer is read from, by what it says. Every
@@ -94,29 +108,24 @@ export fn listening_of(a: Action) -> Listening {
 /// tick — where its attribute only seeds it. An attribute of these names
 /// is set as a property, as the value it means; every other name is an
 /// attribute. Every name spelled.
-fn property(a: HtmlAttr) -> Said? {
+fn property(a: HtmlAttr) -> Held? {
     match a.name {
-        .Value -> Said.Text(a.value),
-        .Checked -> Said.Flag(true),
+        .Value -> Held.Text(a.value),
+        .Checked -> Held.Flag(true),
         .DataKey or .Class or .AriaLabel or .AriaSelected or .AriaInvalid or .AriaBusy or .AriaLive or .Title or .Href or .Min or .Max or .Open or .Placeholder or .Src or .Alt or .Disabled or .Type or .Role -> null,
     }
 }
 
 /// A property no attribute seeds, at rest.
-fn at_rest(value: Said) -> Said {
-    match value {
-        .Text(_) -> Said.Text(""),
-        .Flag(_) -> Said.Flag(false),
-        .Number(_) -> Said.Number(0),
-    }
+fn at_rest(value: Held) -> Held {
+    match value { .Text(_) -> Held.Text(""), .Flag(_) -> Held.Flag(false) }
 }
 
-/// Two values a control may hold, compared.
-fn same_said(a: Said, b: Said) -> bool {
+/// Two values a property may hold, compared.
+fn same_held(a: Held, b: Held) -> bool {
     match a {
-        .Text(x) -> match b { .Text(y) -> x == y, .Flag(_) or .Number(_) -> false },
-        .Flag(x) -> match b { .Flag(y) -> x == y, .Text(_) or .Number(_) -> false },
-        .Number(x) -> match b { .Number(y) -> x == y, .Text(_) or .Flag(_) -> false },
+        .Text(x) -> match b { .Text(y) -> x == y, .Flag(_) -> false },
+        .Flag(x) -> match b { .Flag(y) -> x == y, .Text(_) -> false },
     }
 }
 
@@ -127,13 +136,13 @@ fn same_said(a: Said, b: Said) -> bool {
 export type Diffed = { patches: List<Patch>, page: List<Element>, next: int }
 
 /// One property of an element, by its name.
-type Prop = { name: HtmlAttrName, value: Said }
+type Prop = { name: HtmlAttrName, value: Held }
 
 fn props_of(el: Tagged) -> List<Prop> {
-    [Prop { name: a.name, value: v } for a in el.attrs for v in held(property(a))]
+    [Prop { name: a.name, value: v } for a in el.attrs for v in present(property(a))]
 }
 
-fn held(value: Said?) -> List<Said> {
+fn present(value: Held?) -> List<Held> {
     match value {
         v? -> [v]
         null -> []
@@ -284,7 +293,7 @@ impl Differ {
 
     /// What a property holds on the page: what the user was heard to move
     /// it to, else what it was last drawn with.
-    fn standing(id: NodeId, drawn: Prop) -> Said {
+    fn standing(id: NodeId, drawn: Prop) -> Held {
         self.heard.find(it.id == id && it.name == drawn.name)?.value ?? drawn.value
     }
 
@@ -293,14 +302,14 @@ impl Differ {
     /// typed, so the page's own value is the one compared. A property a
     /// paint no longer names goes back to rest.
     fn properties(id: NodeId, old: List<Prop>, new: List<Prop>) -> List<Patch> {
-        [Patch.SetProp(id, p.name, p.value) for p in new if !same_said(
+        [Patch.SetProp(id, p.name, p.value) for p in new if !same_held(
             self
                 .standing(id, old.find(it.name == p.name) ?? Prop { name: p.name, value: at_rest(p.value) }),
             p.value,
         )]
             .concat(
                 [Patch.SetProp(id, was.name, at_rest(was.value)) for was in old if !new.any(it.name == was.name) &&
-                    !same_said(self.standing(id, was), at_rest(was.value))],
+                    !same_held(self.standing(id, was), at_rest(was.value))],
             )
     }
 }

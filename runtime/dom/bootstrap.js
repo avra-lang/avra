@@ -46,11 +46,10 @@ export function parseFrame(bytes) {
   return patches;
 }
 
-// A value as the wire's text for it, read back by what it says.
+// A property's value as the wire's text for it. A property holds text or a
+// flag: a number control's `value` is the text that spells it.
 function valueOf(says, text) {
-  if (says === SAYS.flag) return text !== "";
-  if (says === SAYS.number) return Number(text);
-  return text;
+  return says === SAYS.flag ? text !== "" : text;
 }
 
 // What a control says, read off the property the patch named. A control

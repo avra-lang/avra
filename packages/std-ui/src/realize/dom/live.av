@@ -7,7 +7,7 @@ use realize.render.{Node, Action, EventKind, Said}
 use realize.html.element.{Element, lowered}
 use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet}
 use realize.html.tags.{HtmlAttrName}
-use realize.dom.patch.{Patch, Heard, Says, diff, listening_of}
+use realize.dom.patch.{Patch, Heard, Held, Says, diff, held_as, listening_of}
 use realize.dom.wire.{frame}
 use style.theme.{Theme}
 
@@ -98,10 +98,14 @@ impl Live {
         found.action.fire(said)
     }
 
+    /// What a control said is what its property holds from now on. ONE
+    /// record a property: the latest replaces the one before, so what was
+    /// heard between two paints never outgrows the page.
     fn hear(id: NodeId, action: Action, said: Said?) {
         let value? = said else { return }
         let name? = listening_of(action).reads else { return }
-        self.heard.push(Heard { id: id, name: name, value: value })
+        let others = [h for h in self.heard.get() if h.id != id || h.name != name]
+        self.heard.set(others.concat([Heard { id: id, name: name, value: held_as(value) }]))
     }
 
     /// What a paint of `root` says, as readable lines — each element by
@@ -143,8 +147,8 @@ fn spelled(id: NodeId?, at: Map<string, string>) -> string {
     at.get("${held.n}") ?? "?${held.n}"
 }
 
-fn said_word(value: Said) -> string {
-    match value { .Text(t) -> "\"${t}\"", .Flag(on) -> "${on}", .Number(n) -> "${n}" }
+fn held_word(value: Held) -> string {
+    match value { .Text(t) -> "\"${t}\"", .Flag(on) -> "${on}" }
 }
 
 /// What an event says, after its kind — no word for one that says nothing.
@@ -161,7 +165,7 @@ fn patch_line(p: Patch, at: Map<string, string>) -> string {
         .Remove(id) -> "remove ${spelled(id, at)}",
         .SetAttr(id, name, value) -> "attr ${spelled(id, at)} ${name.word()}=${value}",
         .DropAttr(id, name) -> "unattr ${spelled(id, at)} ${name.word()}",
-        .SetProp(id, name, value) -> "prop ${spelled(id, at)} ${name.word()}=${said_word(value)}",
+        .SetProp(id, name, value) -> "prop ${spelled(id, at)} ${name.word()}=${held_word(value)}",
         .SetText(id, content) -> "retext ${spelled(id, at)} ${content}",
         .Listen(id, to) -> "listen ${spelled(id, at)} ${to.action.kind.word()}${says_word(to.says)}",
         .Unlisten(id, kind) -> "unlisten ${spelled(id, at)} ${kind.word()}",

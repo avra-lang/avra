@@ -1,7 +1,7 @@
 //! An app on a live page, by its law: a paint is one frame of what
 //! changed, an echo runs the handler bound to who spoke, and nothing is
 //! sent for a page that did not change.
-use @std.ui.app.{plain}
+use @std.ui.app.{plain, remounted}
 use @std.ui.components.{button, column, field, text}
 use @std.ui.realize.dom.live.{live}
 use @std.ui.realize.dom.page.{Paged, paged}
@@ -95,6 +95,38 @@ spec "an app on a live page" {
             let lost = on.heard(who, EventKind.Input.code(), Says.Text.code(), 0, null)
             let said = on.heard(who, EventKind.Input.code(), Says.Text.code(), 0, "Ada")
             !lost && said && held.get() == "Ada"
+        }
+    }
+    given "a handler that mounts another view" {
+        then "the paint that follows the handler shows the new view, never the one it replaced" {
+            let host = Host {}
+            let on = paged(
+                () -> text "starting",
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
+            remounted(
+                on.app,
+                () -> button "Go" { on press { remounted(on.app, () -> button "Back" { on press {} }, plain) } },
+                plain,
+            )
+            on.app.paint()
+            let ran = press(on, "Go")
+            ran && on.page.named("Back").length == 1 && on.page.named("Go").is_empty()
+        }
+        then "the new view's handlers are the ones bound" {
+            let hits: Cell<int> = Cell.new(0)
+            let host = Host {}
+            let on = paged(
+                () -> text "starting",
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
+            remounted(on.app, () -> button "Count" { on press { hits.set(hits.get() + 1) } }, plain)
+            on.app.paint()
+            press(on, "Count") && press(on, "Count") && hits.get() == 2
         }
     }
     given "a second app on a page that already shows one" {

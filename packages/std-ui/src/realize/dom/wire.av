@@ -27,7 +27,7 @@ use realize.identity.{NodeId}
 use realize.render.{EventKind, Said}
 use realize.dom.buf.{Buf, buf}
 use realize.codes.{Codes, Coded}
-use realize.dom.patch.{Patch, Listening, Says, said_as}
+use realize.dom.patch.{Patch, Listening, Says, Held, held_says}
 
 /// The wire's version: a host built for another REFUSES, never misapplies.
 export const wire_version = 9
@@ -69,9 +69,9 @@ fn op_of(p: Patch) -> Op {
     }
 }
 
-/// A value a control holds, as text a host turns back by its tag.
-fn said_text(value: Said) -> string {
-    match value { .Text(t) -> t, .Flag(on) -> if on { "1" } else { "" }, .Number(n) -> "${n}" }
+/// A value a property holds, as text a host turns back by its tag.
+fn held_text(value: Held) -> string {
+    match value { .Text(t) -> t, .Flag(on) -> if on { "1" } else { "" } }
 }
 
 /// A host's echo, read: who spoke, what kind of event, and what it said
@@ -145,8 +145,8 @@ impl Buf {
             .SetProp(id, name, value) -> {
                 self.push_id(id)
                 self.push_str(name.word())
-                self.push_int(said_as(value).code())
-                self.push_str(said_text(value))
+                self.push_int(held_says(value).code())
+                self.push_str(held_text(value))
             },
             .Listen(id, to) -> {
                 self.push_id(id)
