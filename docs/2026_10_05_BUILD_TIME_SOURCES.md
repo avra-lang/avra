@@ -1,7 +1,8 @@
-# Build-time sources — files, folders and specs as typed values (v2)
+# Build-time sources — files, folders and specs as typed values (v2.1)
 
 > 2026-10-05. Design only; no compiler code. Branch `sources-design`, base `bd36bf7`.
-> v2 answers the independent review of `ba901e2`/`4082312`. Every blocking flaw is FIXED, CUT or DISPUTED in §13.
+> v2 answered the first review; v2.1 answers the second (of `4c0ff43`). §13 holds both tables.
+> **§1 is PENDING THE DB LEAD** on the points it marks. The author-side items are settled here.
 > Labels: **PROBED** (I ran it; Appendix C), **READ** (I opened it, file:line), **READ(agent)** (a survey agent opened it), **ASSUMED**.
 > Probes ran `avra-ui-assets-design/build/avra` (0b5bd64, one PR behind this base). Scratch: `/tmp/sources-probe/`.
 > **Nothing under `@std/source` exists.** §14 lists every NEW name this design introduces. Code that uses one is design code.
@@ -29,11 +30,11 @@ icon(icons.close, color: .red)
 |---|---|---|
 | a source is an input | `file("…")`, `dir("…")`, `url("…")` name bytes outside the program; each read is a compiler input with a content digest | `embed`, generalized and fixed |
 | a transform is a fn | `x \|> f(a)` is `f(x, a)`. `resize` takes a file, a folder, a picture or a set of pictures | generic traits (landed) |
-| heavy work runs native | a fn marked `@step` runs in its package's tool: a child process built once, handed only bytes | `avra build`; `@query`'s wrapper shape |
+| heavy work runs native | bytes are read in a `@step`; a small one runs in the evaluator, a big one in its package's tool — a child process built once, handed only bytes | `avra build`; `@query`'s wrapper shape |
 | a folder is a set | `photos.hero` is a member read, settled at compile time | `const` settlement |
 | a spec declares | a `const` whose provider answers declarations beside it | Declares annotations |
 
-**What makes line 5 run exactly as written:** one typing rule that does not exist yet (§12, C8). Today it needs one more stage, `dir("./photos") |> pictures |> resize(…)`, and that form is PROBED to run (C.14).
+**What makes line 5 run exactly as written:** one language rule that does not exist yet — a trait says its result type is decided by the implementing type (§4.5, C8, Q3). Today it needs one more stage, `dir("./photos") |> pictures |> resize(…)`, and that form is PROBED to run (C.14).
 
 **The order (§11):** the two infrastructure doors first (§1), because every law and every cost below stands on them. `|>` is an independent track.
 
@@ -69,6 +70,11 @@ The owner asked: is there ONE general, lovely DB mechanism for a consumer like t
 
 18 direct `Store.keep*` call sites (PROBED grep: 6 `Unit`, 4 `Warn`, 2 `Obj`, 1 `Bin`, 1 `Rows`, 4 multi-line). `Db.insert` (`db.av:593`) is one of them and the funnel for P2. Keys share `node_key` (`store.av:78`). What differs per site is the wire and the validity rule.
 
+**The two tables above are not complete, and v2 said they were.**
+- Readers: the second review counts nearer **fifteen read shapes** (READ(agent)): existence and `is_dir` probes (module resolution `modules.av:102–106`, manifest presence `packages.av:81`, the `.git` root `build.av:412`, program-test markers `suite.av:143–158`); environment reads (`${NAME}` in a `[link]` row `whole.av:482`, `CC`, `WASM_OPT`, `AVRA_CWD`, `AVRA_SOUND_CHECK`); the manifest read in four places; four hand listing witnesses, not two (`current_listing_digest`, the `m` line, `SeenPart.files`, `build_inputs`).
+- Kept rows that fit none of P1–P5 (READ(agent)): `interface.av:66, 85` (a second kept-const path), `build.av:719` (the links row), `derive.av:200` (the remembered closure), `derive.av:530` (`clean_key`), `suite.av:128` (`proved_key`).
+- P4's witness is **transitive**, not direct: its `m`/`f` lines come from `import_closure`, "to a fixed point", one `f` line per file of every module in it (READ `kept_settle.av:144–149, 197–203`). Its `u`, `c` and `f` lines each stand by their own rule (a text digest, OR a declaration's syntax, OR a re-lowered shape; a const's verdict re-asked), not by one hash.
+
 **Never persisted:** `Lifted` and `Expanded` — every annotation and derive (READ `expand.av:93–116`). A seated settlement.
 
 **A correctness defect found on the way (PROBED, C.23):** `const TEXT: string = embed("x.txt")`, build, edit `x.txt`, build again → the binary still prints the old length. `avra run` prints the new one. It stays stale after an edit to the `.av` file too. Cause, READ: `build_inputs` lists no embedded file (P5), and a kept settlement has no line for one (P4). "A hold bug costs time, never a wrong answer" (COMPILER.md §2 law 6) does not hold for an embedded file today.
@@ -84,7 +90,7 @@ READ in `2026_09_26_COMPILER_DB_TOWNHALL.md`, `2026_09_21_COMPILER.md` and the t
 | §4.7 | "A row and its witness settle in one step." | follows; P4 breaks it today (two `store.keep` calls, `kept_settle.av:150–151`) |
 | §6.5a | "kernel grain cannot persist… The durable witness is the hold path's `KeyParts`… Kernel-grain deps stay in-process." Measured: 2.54 M keys, 51.6 M direct deps on one `check`. | follows: nothing here persists a kernel edge |
 | avra-8sb5.57.6 | CLOSED 2026-10-01; M3's flattened witness was a library, never wired, then deleted | v1 cited it as the door. **Wrong.** Removed. |
-| avra-8sb5.57.101.12 | OPEN, unowned: "write a cell's deps as (stable name, hash) into a durable row… validity is re-ask+compare" — for a COARSE thing (a module's view) | door 2 is that layer, for runs. Same ticket, or its sibling. |
+| avra-8sb5.57.101.12 | OPEN, unowned: "write a cell's deps as (stable name, hash) into a durable row… validity is re-ask+compare" — for a COARSE thing (a module's view) | door 2 is a SIBLING of it, not the same ticket: that one wants a kernel cell's deps re-asked through the kernel for a kept module view; a kept run has no view member. Folding them would close .101.12 without unblocking .101.11. |
 | N7 `@input` (avra-8sb5.57.15) | landed; its comment: "`Memo.input` reads the host ONCE per file per Workspace" | door 1 is `@input`, moved onto `Host` |
 | avra-8sb5.57.4.7 | CLOSED: `File`/`Module`/`Decl` relations armed through the kernel; a late write is REFUSED (`moved: !late`, `workspace.av:580`) | door 1 keeps inputs OUT of the `File` relation — that late write is `embed`'s compiler trap (C.5) |
 | COMPILER.md §2 | "A store is ONE compiler's." | follows for every row. Departs for raw bytes (§1.5). |
@@ -96,7 +102,7 @@ READ in `2026_09_26_COMPILER_DB_TOWNHALL.md`, `2026_09_21_COMPILER.md` and the t
 
 ```avra
 // compiler/inputs.av — the only readers of the outside, all through Host
-export enum InputKind { Text, Bytes, Range, Listing, Pin, Tool, Target }
+export enum InputKind { Text, Bytes, Range, Listing, Exists, Env, Pin, Tool, Target }
 /// What a read WAS: the kind, a stable name, and the digest of exactly what was read.
 export type Part = { kind: InputKind, name: string, hash: string }
 
@@ -104,6 +110,8 @@ export type Part = { kind: InputKind, name: string, hash: string }
 @input fn input_bytes(db: Db, at: Place) -> Bytes
 @input fn input_range(db: Db, at: Place, lo: int, hi: int) -> Bytes
 @input fn input_listing(db: Db, at: Place) -> List<Entry>   // names and kinds, recursive, sorted; no content
+@input fn input_exists(db: Db, at: Place) -> Entry           // Missing | File | Dir — a probe of a missing path IS a part
+@input fn input_env(db: Db, name: string) -> string?         // the compiler's OWN reads only; never a program's
 @input fn input_pin(db: Db, address: string) -> Bytes       // from the lock, never the network
 @input fn input_tool(db: Db, name: string) -> string        // a binary's digest: the compiler, clang, wasm-opt
 @input fn input_target(db: Db) -> Target
@@ -116,14 +124,15 @@ export type Part = { kind: InputKind, name: string, hash: string }
 | A listing's hash covers entry NAMES and KINDS only. Content rides each file's own part. | add a file → the listing moves; edit a file → only its part moves |
 | Read and hashed fresh in each process, memoized per process. No stamp shortcut. | the standing law (§1.2) |
 | Every read goes through `Host` (`read_bytes` and a typed `list` are NEW on it; `host.av:8` has only `read: fn(string) -> string`). | a memory host can serve a test; no second door |
-| Inputs are kernel cells of their own, created on first read. They are NOT rows of the `File` relation. | a first read of a new cell bumps no revision (`kernel.av:320–325`); a row minted late in `File` is refused |
+| Inputs are cells of their own, created on first read. They are NOT rows of the `File` relation. | a row minted late in `File` is refused (C.5). **Which mechanism this is — PENDING THE DB LEAD (D2).** `kernel.av:320–325` is `Memo.input`'s path, addressed by a dense int; `@input` as landed (`std-relation/src/db.av:625–648`, READ(agent)) records no read and marks its reader a writer. v2 wrote as if they were one thing. They are not. |
+| `Exists` and `Env` are kinds. | The existence probes and the env reads listed in §1.1 are inputs today and tracked by nothing. `Env` covers what changes a kept row (`${NAME}` in `[link]`, `CC`, `WASM_OPT`, `AVRA_SOUND_CHECK`). It stays OUT for what changes no kept row (`AVRA_QTRACE`, `AVRA_DEP_AUDIT`, `AVRA_LIGHT`) and for `AVRA_CWD`/`PWD`, which decide where the command stands, not what a file means. A compile-time RUN still has no env row (L2). |
 
 **Every compile-time run reports the parts it read** (today: `Settled.embeds`, a list of paths). The parts then go to exactly three places:
 1. in process: a kernel dep on each (as `touch` does today for an embed);
 2. the reading file's `KeyParts.runs`, which becomes `List<Part>` instead of text digests;
 3. the run's own kept witness (door 2).
 
-And `build_inputs` (P5) folds every part a kept record names — closing C.23.
+And the kept binary's key (P5) must fold every part a kept record names — closing C.23. **How — PENDING THE DB LEAD (D4):** `kept_binary` runs before anything is parsed (`build.av:475`), so the parts must be REMEMBERED from the last derivation, the shape the closure row has (`derive.av:200`). One sentence in v2 hid that.
 
 **What door 1 replaces:**
 
@@ -137,7 +146,7 @@ And `build_inputs` (P5) folds every part a kept record names — closing C.23.
 | reader 6: `file_text` over `@std.io` | the same `@input`, over `Host` |
 | reader 1 | stays the `.av` reader; its loader calls `input_text` |
 
-Seven readers → one door with seven kinds.
+About fifteen read shapes → one door with nine kinds.
 
 ### 1.4 Door 2 — ONE way a derived fact is kept
 
@@ -160,14 +169,14 @@ impl Workspace {
 | question | answer |
 |---|---|
 | keyed by | the run's stable name — declaring path, declaration name, the arguments' fingerprint. Never `const$<FileId>$<StmtId>`. |
-| witness | direct parts only: each input read (door 1), each unit entered (P4's `u` line), each const read with its verdict (`c`), the budgets (`b`) |
-| kept across runs | `Store.keep(family, key, bytes, read)` — the `read` edges slot exists and is passed `[]` by every caller but tests (`store.av:126–148`; townhall §6.1 says so). The witness goes there. One commit, as §4.7 asks. |
+| witness | **the atom is PENDING THE DB LEAD (D8).** `Part = { kind, name, hash }` holds an INPUT. It does not hold P4's `u`, `c` and `f` lines as they are: each stands by a tiered rule, and collapsing one to a hash loses "a body edit elsewhere in the file still stands". The honest atom is either an input part or a derived-fact line with its own stands rule. |
+| kept across runs | `Store.keep(family, key, bytes, read)` has an edges slot. Five non-test callers pass real edges (READ `build.av:717–726`: `[key]` three times; `interface.av:64–72`: `[obj_key_of(…)]` twice); the rest pass `[]`. **Not ready to be the witness — PENDING THE DB LEAD (D9):** no verb reads edges back; `Keeping.Aside` drops them (`store.av:129–132`); two processes can leave one's data beside the other's edges. And townhall §6.6 wants one packed file per package, never a file per row — unbuilt; ask. |
 | cut off | a re-run that answers the same verdict fingerprint leaves its readers' `c` lines standing (exists: `verdict_fp`, `kept_settle.av:319`) |
 | invalidated | re-ask each part's current hash; a missing part is a mismatch (§6.5a's rule) |
 | inspected | `avra cache why <run>` prints the part that moved — `PartMoved { part, was, now }` exists for file keys (`record.av:1366–1373`) |
 | the compiler's digest | the row lives in this compiler's store (`.avra-cache/<print>/`), so it is in every witness by position |
 
-**Why §6.5a's measurement does not apply.** That measured kernel grain: 2.54 M keys. A kept run is one row per compile-time RUN — hundreds in the compiler's own tree — with tens of direct parts. It is the grain `kept_settle.av` already persists.
+**Why §6.5a's measurement should not apply — UNMEASURED.** That measured kernel grain: 2.54 M keys. A kept run is one row per compile-time RUN, the grain `kept_settle.av` already persists. But P4's witness is transitive (§1.1), so "tens of parts" was wrong; lines per kept run on `check packages/cli` must be measured before this argument is made (D8).
 
 **What door 2 replaces:**
 
@@ -176,12 +185,12 @@ impl Workspace {
 | P4's `#lines` row and its five hand "stands" checks | the witness slot; one `stands` per `InputKind`/line kind |
 | nothing (a seated settlement is never kept) | `RunKind.Seated` |
 | nothing (`Lifted`/`Expanded` are memory only) | `RunKind.Lift` — a derive's answer survives the process AND an unrelated edit to its file |
-| P3 `Db.answers`, unarmed | `RunKind.Answer` — the same row, armed through this door |
+| P3 `Db.answers`, unarmed | `RunKind.Answer` — but NOT before avra-8sb5.57.4.6's recorded deadline is paid: "a query DECLARED in an imported module whose body changes without its interface moving is read back stale… Close it by keying on the declaring file's parts too before any consumer arms Db.answers" (READ(agent)). PENDING (D10). |
 | P2 `Decl`'s hand listing + file witness (`still_valid`) | a witness of `Listing` + `Text` parts |
 | P5's input list | a `Verdict` run whose witness is the closure's parts — proposed; see question D4 |
 | — | new consumers: a provider's model (`Model`), a native step's result (`Action`) |
 
-**Count.** Today: P1–P5. After: **P1 (the hold, its `runs` typed) and the kept run.** P2's rows keep their wire; the ones with a witness carry it through this door. Two paths, not a sixth.
+**Count, corrected.** Today: P1–P5 and the five rows of §1.1 that fit none. After: P1 (its `runs` typed), the kept run — and those five rows still, until the DB lead says which fold in (D11). Fewer than today; not yet two.
 
 Raw bytes are not a path of facts: §1.5.
 
@@ -200,25 +209,33 @@ A made image is megabytes, and it is not a claim about the program. It is stored
 |---|---|---|
 | add `new.svg` to `./icons` | `Listing(app:icons)`. `a.av` (holding `const icons`) carries it in `KeyParts.runs` → not held. Its kept run fails on that part → re-settled → new verdict. | `b.av` reading `icons.new`: its key follows `a`'s const exactly as it follows any cross-module const today (PROBED C.24: a body edit in `data.av` changes what `main` prints) |
 | edit `close.svg` | `Range`/`Bytes(app:icons/close.svg)` | only runs that read it |
-| append a comment to the anchor's file | the file's text → it is read, not held. Its `Lift` run is looked up by name; its witness names the provider's units, the arguments and `Text(app:petstore.yaml)` — all stand. | **nothing runs.** Today: 0.04 s → 0.25 s for 1,000 generated types (PROBED C.26) |
+| insert a line ABOVE the anchor | the file's text → it is read, not held. Its `Lift` run must be found by a name with no offset in it, and its answer must hold no absolute span. **Neither is true as designed — PENDING THE DB LEAD (D5).** Today the name is `lift$<file>$<call>$<decl>`, three dense ids (`workspace_analysis.av:695`), and every `@std/meta` value carries `at: Loc?` byte offsets (`meta.av:137–212`). v2's receipt was "append a comment", the one edit that moves no offset. | the target: nothing runs. Today: 0.04 s → 0.25 s for 1,000 generated types on a comment (PROBED C.26) |
 | edit the provider's source | the `u` line of the unit entered | that provider's runs |
 | edit an embedded file | `Text(app:x.txt)` in `runs`, in the kept run, in the closure | the const, and the binary (today: neither — C.23) |
 | swap `WASM_OPT` | `Tool(wasm-opt)` | the wasm link (today: nothing — avra-8sb5.68) |
-| two processes at once | each writes a row by staged rename | last writer wins; both wrote the same bytes for the same witness |
-| a row with an old witness shape | the row's own header names its shape; a mismatch is a miss | re-run |
+| two processes at once | PENDING (D9): two processes can see different inputs, so "both wrote the same thing" is an assumption | — |
+| a row with an old witness shape | the store root is the compiler's print (`build.av:199–206`), so a new wire reads no old row. (No per-row shape header exists; v2 said one did.) | re-run |
 | delete `./icons` | `Listing` is missing → mismatch, never "nothing to check" | refusal at the literal |
 
-### 1.7 Questions for the DB lead
+### 1.7 PENDING THE DB LEAD
 
-| # | question | my default |
-|---|---|---|
-| D1 | Is the kept run avra-8sb5.57.101.12's layer, or a sibling? It is per RUN, with direct parts. | the same ticket; `KeptLine` → typed parts is its first slice |
-| D2 | `@input` over the armed Db: is a first read of a NEW input cell a "late write"? (`moved: !late`.) Inputs must be creatable mid-query. | no — an input is a cell with no owning query and no relation read whole |
-| D3 | `KeyParts.runs: List<string>` → `List<Part>`: a wire change to every record. One compiler generation, or a bridge? | one generation: rows never cross a compiler (§6.6) |
-| D4 | May P5 (kept binary, check verdict) become a `Verdict` run, or does its fast path need to stay a flat list? | fold `build_inputs` now; the row shape later |
-| D5 | May `Lifted` be persisted as its crossed answer (`Node` trees are plain data), or does a held arena need it re-spliced each process? | persist the answer; re-splice |
-| D6 | Fresh hashing of big byte inputs every process: at ~1 GB/s (ASSUMED), 500 MB of reached photos is ~0.5 s per build. Acceptable, or is a stamp shortcut with a racy-file guard reopened for `Bytes` only? | follow the law; measure first |
-| D7 | Raw bytes in a machine-wide store outside `.avra-cache/<print>/`: acceptable? | yes — content-named, verified, no row |
+Nothing below is redesigned here. Each row is the exact question §1 waits on.
+
+| # | waits on | the reviewer's reading | my default |
+|---|---|---|---|
+| D1 | Is the kept run its own ticket beside avra-8sb5.57.101.12? | a sibling | a sibling |
+| D2 | **Which mechanism is door 1:** `@input` rebuilt over kernel cells with a stable-name → arg table, or `Memo.input` given `@input`'s face? | they are two things today | the DB lead's call |
+| D3 | `KeyParts.runs: List<string>` → typed parts: one compiler generation? | yes — the store root is the compiler's print | one generation |
+| D4 | The kept-binary fast path runs before analysis. Where are a build's input parts remembered so it can fold them (the C.23 fix)? | the closure row's shape | beside `derive.av:200`'s row |
+| D5 | **A kept lift must be span-free:** a name without dense ids or offsets; spans stored relative to the declaration and re-based on load; the run's `Reach.Lookup` reads (`type_named`) in its witness. Is that the shape? | yes; unsafe as v2 wrote it | yes |
+| D6 | Fresh hashing of large byte inputs each process. `digest_bytes` is an Avra loop (READ(agent) `core/digest.av:82–95`); 1 GB/s is ASSUMED. | measure; speed alone does not reopen the stamp shortcut | measure |
+| D7 | Raw bytes in a content-named store outside the tree. | nothing forbids it; it must stay outside `.avra-cache`, which `rolled` sweeps (`build.av:388–392`) | also the owner's (Q11) |
+| D8 | **The witness atom.** An input part, or a derived-fact line with its own stands rule? And: lines per kept run on `check packages/cli`. | `Part` cannot hold P4's lines | measure first |
+| D9 | The store's `read` slot as the witness: a read verb; `Keeping.Aside`; two concurrent writers; per-row `.deps` vs §6.6's pack. | not ready | — |
+| D10 | avra-8sb5.57.4.6 before `Db.answers` is armed. | a recorded deadline | pay it first |
+| D11 | Which of the five rows outside P1–P5 fold into the kept run. | at least five stay | — |
+| D12 | A per-process `input_tool` memo keyed by name is the shape `build.av:287` refused ("a path is the same kind of claim as a stamp"). Safe within one command? | state why or drop | drop the memo; hash per ask |
+| D13 | Who owns the two doors. | the DB campaign | the DB campaign, this design its first consumer (Q12) |
 
 ---
 
@@ -258,6 +275,7 @@ const api = file("./petstore.yaml") |> openapi
 let pet = api.pets.get(id: 3)?          // Result<ApiPet, ApiPetsGetError>
 fn show(p: ApiPet) -> string { p.name }
 ```
+A large spec says what it wants — `openapi(only: ["pets", "store"])`. Expansion is whole and stops near 4,000 declarations today (§4.6).
 
 **6. A manifest as typed config.**
 ```avra
@@ -396,40 +414,52 @@ When opaque types land, `File` should become one; the check stays.
 
 ```avra
 f.text()   f.bytes()   f.head(n)     // each a `Reach.Source` row; each reports the Part it read
-f.content()                          // the whole file as a `Blob.Made` — its SHA-256 and size
+f.blob()                             // `Blob.Source(f)` — a reference; reads NOTHING
 f.loc(offset)                        // a Loc inside the file, for diagnostics
 ```
 
-`@step` marks a fn that runs in its package's **tool** (§7). It is an ordinary Declares annotation with `wraps: true` — the shape `@query` has (READ `std-relation/src/query.av:47–62`). The written body moves to a private sibling; the written name becomes a wrapper:
+`@step` marks a fn that reads or makes bytes (§7.4 says where it runs). It is an ordinary Declares annotation with `wraps: true` — the shape `@query` has (READ `std-relation/src/query.av:47–62`). The written body moves to a private sibling; the written name becomes a wrapper:
 
 | the step answers | the wrapper | when the body runs |
 |---|---|---|
 | `Blob` | answers `Blob.Pending(action)` — a recipe, as data. Runs nothing. | when the build ships it, or another step reads it |
-| a value (a model, facts) | asks the compiler to run the tool and decodes the answer | now — `check` needs it |
+| a value (a model, facts) | asks the compiler to run it (§7.4) and decodes the answer | now — `check` needs it |
 
-### 4.3 Blobs: an action and a content
+### 4.3 Blobs: a reference, a recipe, or bytes
 
 ```avra
 export enum Blob {
-    /// Bytes that exist: their SHA-256 and length.
-    Made(content: string, size: int)
+    /// A file's bytes, not yet read. Its digest exists when something reads it.
+    Source(file: File)
     /// Bytes someone can make: the action that makes them.
     Pending(action: Action)
+    /// Bytes that exist: their SHA-256 and length.
+    Made(content: string, size: int)
 }
 export type Action = { step: string, args: Bytes, inputs: List<Blob> }
 ```
 
+Planning a set builds `Source` and `Pending` values only. **Nothing in a plan reads a whole file** (v2's reader wrote `f.content()` on every item, which did).
+
 | | action key | content digest |
 |---|---|---|
-| is | digest of (compiler digest, the tool's source closure, the step's stable name, the arguments, each input's content digest, the target if read) | SHA-256 of the bytes |
-| known | before anything runs | after the bytes exist |
-| names | the kept `Action` run (door 2): action key → content digest + size | the bytes in the store; **the shipped file; the SRI value** |
+| is | digest of (compiler digest, the tool's source closure, the step's stable name, the arguments, each input's CONTENT digest, the target if read) | SHA-256 of the bytes |
+| computed | when the build is about to make it — for a reached member only, because it needs its inputs' digests | when the bytes are read or made |
+| names | the kept `Action` run: action key → content digest + size | the bytes in the store; **the shipped file; the SRI value** |
 | moves when | the compiler, the tool, an argument or an input moves | the bytes move |
 
-- A compiler upgrade moves every action key and re-runs every step once ("Adopting a compiler costs one cold build" — COMPILER.md §2). It does NOT rename a shipped file whose bytes came out the same.
+- A compiler upgrade moves every action key and re-runs every step once ("Adopting a compiler costs one cold build" — COMPILER.md §2). It does not rename a shipped file whose bytes came out the same.
+- **Residue, stated:** the key folds the tool's whole source closure, so editing one step re-runs every step of its package. Per-step keys need a per-step closure fingerprint; later, if measured.
 - The shipped name is needed only by `build`, when the bytes exist. `check` ships nothing.
-- A remote cache answers two questions. Bytes by content digest are verified on arrival. An action row from someone else is believed, not verified — that is trust in who may write the cache, and the doc says so (§8.5).
-- "Two machines, same names" holds exactly when they make the same bytes. A native codec built by two different C compilers may not; the receipt shows the digest either way.
+- A remote cache: bytes by content digest are verified on arrival; an action row from someone else is believed (§8.5).
+
+**Who may read what, outside a declaration.**
+
+| read | the grant |
+|---|---|
+| the make phase reads a `Blob.Source(app:photos/hero.jpg)` | **the const it was reached through.** The build reaches an artifact through a settled const; that const's grant set — the roots its declaration's literals name, kept with its verdict — is the make phase's grant for it. A `Source` outside it is refused at make, naming the const. A forged `Pending` gains nothing: its inputs are checked the same way. |
+| any read of `Blob.Made(<sha>)` | **a digest is not a grant.** The bytes are readable only when THIS build's own runs read or made that digest (a per-build set, filled by the parts read under grants and the answers of this build's actions, kept ones included once validated). A digest that came from nowhere is refused — the machine-wide store cannot leak another project's bytes into this program. |
+| a const reading another const (`@dep.walk(photos)`) | everything `photos` was granted — intended. So the env law (§2 ex. 9) reads: no build can bake in a secret from outside what the app's own consts name. |
 
 ### 4.4 Sets and members
 
@@ -452,7 +482,7 @@ impl Pictures { fn member(name: string) -> Picture? { … } }
 | | whole set | per reached member |
 |---|---|---|
 | the listing (names) | one read | — |
-| facts (size, format, a view box) | planned once, in ONE native step over the folder, kept | — |
+| facts (size, format, a view box) | planned once, in ONE step over the folder, kept. The step is one run with one `Range` part per file: when one file moves the whole step re-runs (32 ms of reads for 2,000 — C.30). | — |
 | a transform's plan (new size, a `Pending` action) | arithmetic per item in the evaluator | — |
 | **bytes read in full, made, shipped** | — | **only these** |
 
@@ -472,8 +502,10 @@ impl Shots<Pictures> for Pictures { … }
 
 export fn resize<Out, S: Shots<Out>>(s: S, width: int) -> Out { s.shot((p: Picture) -> resized_to(p, width)) }
 ```
-- Generic traits parse and dispatch today. `Out` is not inferred from the bound: PROBED C.31 "`O` is not pinned by the arguments". **That one rule — a bound with exactly one fitting impl pins its argument — is what the sketch as written needs** (C8).
-- Without it, today: `fn resize<P: Each>(p: P, width: int) -> P` over `Picture` and `Pictures` runs (C.14), and a folder says its kind once: `dir("./photos") |> pictures |> resize(…)`.
+- Generic traits parse and dispatch today. `Out` is not inferred from the bound: PROBED C.31 "`O` is not pinned by the arguments".
+- **v2's rule — "a bound with exactly one fitting impl pins its argument" — is unsound, and is CUT.** One type may implement a generic trait at two arguments (PROBED C.36: two impls check clean), so "exactly one" is a fact about today's program. A library adding a second impl would break every caller that never named it.
+- **The sound rule (C8):** the TRAIT declares that the implementing type decides `Out`. A second impl of it for one type is then refused where it is written, and a bound pins `Out` from the declaration. Proposed spelling, the language lead's to settle: `trait Shots<Out> for one { … }`.
+- Without it, today: `fn resize<P: Each>(p: P, width: int) -> P` over `Picture` and `Pictures` runs (C.14), and a folder says its kind once: `dir("./photos") |> pictures |> resize(…)`. A typed binding also pins it today (`let p: P = made(F { n: 1 })` → `2`, C.36).
 - Fan-out stays inside the item (`widths`, `formats` fill `Picture.variants`). Fan-in is a fn from a set (`sprite(icons) -> Sheet`). `each(f)` maps any per-item fn; `filtered { … }` drops items.
 - Order: a set is in name-byte order and that is the only order that reaches output.
 
@@ -573,12 +605,12 @@ export type Provided = { value: Code, made: List<Decls>, problems: List<Diagnost
 | what runs | where | can reach | by |
 |---|---|---|---|
 | glue: a pipeline's plan, a member read, model → declarations | the evaluator, in the compiler | what its declaration was granted | `Reach` (exists), budgets (exist) |
-| a `@step` written in Avra | the tool, a child process | the bytes the compiler sends it | the same `Reach` check when the tool is BUILT (no world row is linked in reach of a step), and the process boundary |
-| a `@step` that calls package C | the tool | the bytes it is sent — plus whatever its C does that the OS does not stop | the process boundary; the OS sandbox where one is real (§7.3) |
+| a `@step` of a package that declares NO extern | the evaluator or the tool (§7.4) | the bytes the compiler sends it | the reach check at tool build, and the process boundary |
+| a `@step` that reaches package C | the tool, always | the bytes it is sent — plus whatever its C does that the OS does not stop | the process boundary; the OS sandbox where one is real (§7.6) |
 
-- **No grant line.** Depending on a package with C already means running its C in your program. Running it at build, in a child that holds two pipes, is the weaker trust. One refusal for strict builds: `[build] native = false` in the ROOT manifest refuses any tool that links C, naming it.
+- **A tool that links C runs only when the ROOT manifest names its package** — `[build] native = ["@acme/avif"]`; the toolchain's own `@std/*` are implicit. v2 said no grant was needed because "its C already runs in your program". That is not the same trust: build-time C runs on the developer's and CI's machine with their credentials, and includes dependencies whose C never ships. The list goes away for a host where §7.6's last row is real. (Q5.)
 - **External tools (ffmpeg): no.** Unpinned, different per machine. The hatch, unbuilt until needed: a `[process.tools]` row (exists, `cli/avra.toml:8`) with a pinned digest, read through `input_tool`.
-- **Budgets.** The evaluator's glue keeps the root's `[lifted]` budget (only the root raises it — READ(agent) `packages.av:74–78`). A step has no step count: it has wall-clock and memory limits (§7.3). So a heavy third-party provider needs no budget line in every app — its heavy half is a step.
+- **Budgets.** The evaluator's glue keeps the root's `[lifted]` budget (only the root raises it — READ(agent) `packages.av:74–78`). A step that outgrows it moves to its tool by rule (§7.4), so a heavy third-party provider needs no budget line in every app.
 
 **URLs and the lock.**
 ```toml
@@ -611,33 +643,95 @@ size   = 5310022
 
 | | how |
 |---|---|
-| the tool | the package's `@step` fns behind one generated entry: read a request, run the step, write the answer. Collected the way `rules` are (READ `compiler/rules_table.av:102`: `collect rules: List<RuleEntry> = rule in closure as RuleEntry { … run: it.run … }`). |
-| built by | a child `avra build` of that entry, for the HOST. Kept like any binary (warm: 0.05 s). Never a nested derivation inside the user's resolve. |
-| built when | the first time a step of that package must RUN. A package whose steps only ever answer `Pending` under `check` builds no tool. |
-| keyed | the tool is a `Tool` input: its source closure's digest and the compiler's |
-| the call | one process, two pipes. The compiler writes requests; the tool writes answers. |
-| reads | **the tool holds no file descriptor but its pipes.** A read is a message — "bytes of `app:photos/hero.jpg`, 0..64" — that the compiler checks against the grant (L1), answers, and records as a `Part`. The witness is the compiler's own, so a tool cannot under-report it. |
+| the tool | the package's `@step` fns behind one generated entry: read a request, run the step, write the answer. Collected the way `rules` are (READ `compiler/rules_table.av:102`). |
+| built by | a child `avra build --tool <package>`, for the HOST. Kept like any binary (warm: 0.05 s). |
+| built when | the first time a step of that package must run in its tool (§7.4) |
+| reads | **the tool opens nothing.** A read is a message the compiler checks against the grant (L1), answers, and records as a `Part`. The witness is the compiler's own; a tool cannot under-report it. |
 | answers | a value in the settled wire (`settlement_wire.av`, "S2", exists compiler-side; the tool side needs a derived codec — NEW std code), or bytes, stored by content |
-| batching | one process, many requests. That is all batching is: the 2.9 ms start and the codec's setup are paid once per tool per build. No batch API. **`@batched` is CUT** — v1's example could not batch (its `height` differed per photo). |
-| parallel | N processes of the same tool, each fed from one queue of pending actions. The compiler stays single-threaded; it only writes and reads pipes. N defaults to half the cores, at most 8. |
-| cross-compilation | tools build for the HOST. An action's answer is per TARGET only where the step read `target()`. |
-| pending inputs | the compiler makes an action's inputs first, then sends bytes. A tool never calls a tool. |
+| batching | one process, many requests. No batch API; `@batched` is CUT. |
+| parallel | N processes of one tool fed from one queue. The compiler stays single-threaded; it multiplexes N children's pipes (NEW: a poll loop). N defaults to half the cores, at most 8. |
+| cross-compilation | tools build for the HOST. An answer is per TARGET only where the step read `target()`. |
+| pending inputs | the compiler makes an action's inputs first, then sends bytes. A tool never asks for a tool. |
 
-**What stays in the evaluator:** the pipeline's plan (arithmetic and `Pending` records), `each` over a few thousand items (C.28), a member read, a provider's model → templates. Small, pure, no bytes.
+**What stays in the evaluator:** the plan (arithmetic, `Source` and `Pending` records), a set of a few thousand mapped (C.28), a member read, model → templates, and small steps (§7.4).
 
-**Deleted from v1:** "the build re-executes itself as N workers (the hand-off `cli/src/stage.av` already does)". It is one `execv` (READ(agent) `commands/shared.av:324`). No fan-out exists to reuse; the one above is new.
+### 7.3 Two prerequisites v2 did not state
 
-### 7.3 What is real about the sandbox
+**(a) `avra build` cannot compile a package's C.** READ `Makefile:46–51`: "A MANIFEST SAYS WHAT TO LINK, NEVER HOW TO BUILD IT, and this rule is the how". READ `compiler/host/manifest.av:175`: `[link]` takes `objects`, `wasm_objects`, `search`, `libs`, `dynamic_symbols` — no sources. A tool that links C therefore builds only where `make` already built that object: in the toolchain's own tree, and for no third-party package at all.
+
+| works WITHOUT it | waits on it (Q9) |
+|---|---|
+| every pure-Avra tool: JSON, YAML, TOML, CSV, OpenAPI, JSON Schema, SQL, catalogs, markdown, SVG (`vectors`), WGSL as text | `@std/image` (resize, WebP, AVIF), font tables read in C, any third-party codec |
+
+So slices 1–5 and the provider half of slice 6 do not wait. The photo pipeline does.
+
+**(b) A tool build must not need a tool.** Case: package P declares `@step fn a`, and a file in the tool's closure holds `const x = file("./x") |> a`. Building P's tool resolves that file, which needs P's tool. CLAUDE.md records this shape at 986 processes ("A SELF-TEST MUST NOT BE REACHABLE FROM THE ENTRY POINT IT EXERCISES"; "THE FIX IS THE SHAPE, never a depth counter").
+
+> **A tool is built with no tool door.** Under `avra build --tool`, the row a step's wrapper calls does not exist: a settlement or an expansion that needs a step to RUN is refused where it stands — "`x` needs the step `a` while `@acme/p`'s tool is being built; a tool's own closure settles in the evaluator alone". The make phase does not run either: a tool ships no artifact.
+
+Recursion is unreachable, not bounded: the mode has no way to start a process. The cost is a rule for tool authors — the files a tool's steps reach hold no const that runs a step — and its refusal says so.
+
+### 7.4 One way to write it; a rule picks where it runs
+
+An author writes ONE thing:
+
+> **Bytes are read in a `@step`.** `text()`, `bytes()`, `head()` outside a step's reach are refused, naming `@step`.
+
+Where a step runs is the compiler's rule, never the author's choice and never discovered in someone else's app:
+
+| the step | runs |
+|---|---|
+| reaches package C | its tool |
+| pure Avra, and the bytes its grant covers total ≤ 64 KiB | the evaluator, in the compiler |
+| pure Avra, over that | its tool |
+| pure Avra, in the evaluator, and it trips the step budget | its tool — the trip falls through; it is not an error |
+
+- Both engines answer the same value (the gate's own law, eval == native), and the action key does not name the engine. One kept row serves both.
+- So `const config = file("./app.toml") |> toml` needs no tool and no linker. A 5 MB spec does.
+- The 64 KiB line is a guess to measure: at ~40 KB/s (C.12) it is ~1.5 s of evaluator, about two tool builds.
+
+**`check` and tools (Q10).** A value a type or a diagnostic needs must exist under `check`. When the rule above says "its tool":
+
+| | |
+|---|---|
+| cold cost | one `avra build --tool` per package with such a step: ~0.7 s each for a small one (C.32), run one after another unless designed otherwise; then kept |
+| needs | a linker on the machine. Today `check` needs none. |
+| where it cannot work | a compiler that cannot spawn (hosted as wasm, a playground), a machine with no linker: `check` refuses there, naming the step and its input's size. Windows is not addressed anywhere in this tree (ASSUMED: no Windows host). |
+
+### 7.5 The pipe protocol
+
+| | decided |
+|---|---|
+| descriptors | requests on fd 3, answers on fd 4. stdin is `/dev/null`. **stdout is pointed at stderr**, so a C library that prints cannot corrupt the stream. stderr is captured, bounded, shown only on a failure. |
+| framing | every message is `kind (u32) · request id (u64) · length (u64) · bytes`. Kinds: `Hello`, `Call`, `Read`, `Bytes`, `Refused`, `Answer`, `Failed`. One request open per process at a time. |
+| needs | a bytes-clean framed read and a full-write loop. Both NEW: `@std/process`'s long-lived child is text and lines (READ(agent) `process.av:644, 706, 719`). |
+| a crash (exit, or EOF inside a frame) | the open request is blamed: "`@std/image`'s tool exited 139 while `resized` ran on `app:photos/hero.jpg`", with the stderr tail. The rest of that process's queue is re-queued ONCE to a fresh process. A second crash on the same action is its refusal; other actions go on. |
+| a hang | a wall-clock limit per request (default 60 s; `[build] step_seconds`). The parent kills the process; the open request is refused as timed out; the rest re-queue. |
+| partial output | a frame is whole or absent. Bytes enter the store only after the frame closes and the compiler has hashed them. |
+| stray prints | cannot reach fd 4 |
+| version skew | impossible by construction: the tool's key folds the compiler's digest. `Hello` carries it anyway; a mismatch is a compiler defect and traps. |
+| a nondeterministic tool | one content digest is recorded and shown in the receipt; nothing detects it |
+
+### 7.6 What is real about the sandbox
+
+**The reach check, as it must become.** Today any extern not in the registry is World (READ `interp.av:535–542`), so the check as it stands refuses every C-calling step. At tool build:
+
+| a step's closure reaches | ruling |
+|---|---|
+| registry rows marked `Pure`, `Lookup`, `Source` | allowed |
+| a `World` row | refused, with the call chain (exists for settlements) |
+| a package's own `extern fn`, DEFINED by an object its manifest names | allowed in the tool only; counts as "reaches package C" (§7.4) and needs the root's `native` list (§6) |
+| an `extern fn` nothing in the package's objects defines (`system`, `getenv` from libc) | refused. NEW: read from the objects' symbol tables at tool build (`tools/externs.py` does the source half today). |
+
+"Real for Avra code" therefore means: for a package that declares no extern at all.
 
 | limit | macOS | Linux | status |
 |---|---|---|---|
-| no ambient file, env or network **for Avra code** | `Reach` at tool build: no world row in a step's reach | same | real, by the compiler (exists for settlements) |
-| only two pipes; every read is a checked message | yes | yes | real, ours to write |
+| Avra code: no ambient file, env or network | the reach check above | same | real, by the compiler |
+| the tool opens nothing; every read is a checked message | yes | yes | real, ours to write |
 | wall-clock limit | the parent kills | the parent kills | real, ours to write |
-| memory ceiling | the parent polls and kills (what `tools/watch.sh` does). `setrlimit` on address space is not enforced (ASSUMED). | `RLIMIT_AS` (ASSUMED) | macOS: a poll, not a wall. Nothing exists today: PROBED C.34, no `setrlimit` in `runtime/` or any package C. |
-| **package C** opening a file or a socket | a pure-computation sandbox profile at tool start (ASSUMED available; deprecated API) | a seccomp filter at tool start (ASSUMED) | **convention only until built.** State it: until then a tool's C can reach what the user can. |
-
-So: "sandboxed by default" is true for Avra steps today's way, and for C only when the last row lands. The doc claims no more.
+| memory ceiling | the parent polls and kills. `setrlimit` on address space is not enforced (ASSUMED). | `RLIMIT_AS` (ASSUMED) | macOS: a poll, not a wall. Nothing exists today (C.34). |
+| **package C** opening a file or a socket | a pure-computation sandbox profile at tool start (ASSUMED available; deprecated API) | a seccomp filter at tool start (ASSUMED) | **convention only until built** — which is why §6 asks the root to name such packages |
 
 ---
 
@@ -785,7 +879,8 @@ $ avra docs photos.hero --target web          # after `[assets.web] home = "prog
 | 3 | members; `Files`; a reader's set | `icons.close` over a real folder — names and facts, no bytes | 1 |
 | 4 | provider anchors, eager and kept; diagnostics into a non-`.av` input; annotations inside generated code; `toml`, `csv`, `environment`, `json_schema` | typed config, tables, env | 1, 2 |
 | 5 | the content store; artifacts; homes; `target()`; `remote(…)`; web, html, tui, headless | `icon(icons.close)` ships; `assets.json`; `wire.gen.js` as an artifact | 1, 3 |
-| 6 | tools: `@step`, the protocol, the tool build, actions as kept runs, N processes; `@std/image` | the photo pipeline; a real spec parsed in under a second | 2, 5 |
+| 6a | tools for pure-Avra steps: `@step`, the protocol, `avra build --tool`, the engine rule, actions as kept runs, N processes | a real spec parsed in under a second; `vectors` over a big folder | 2, 5; Q10 |
+| 6b | tools that link C; `@std/image` | the photo pipeline | 6a; **Q9 (who builds package C)**; Q5 |
 | 7 | the bound rule (C8) | the sketch as written | — |
 | 8 | `url`, `avra.lock`, `avra lock` | pinned specs; external-with-facts (§9.1 row 3) | 5 |
 | 9 | the C sandbox per OS; the remote cache hook; iOS/Android delivery | | 6 |
@@ -805,9 +900,10 @@ Slices 1 and 2 are the gate. Nothing in §8 is true before 2.
 | C3 | door 2 | new `compiler/kept.av` from `kept_settle.av`; `expand.av`/`workspace_analysis.av` (`Lifted` asked through it); `answers.av`; `db.av` (`still_valid`) | ~600, mostly moved | 2; every step under `cache_attacks` |
 | C4 | members | typing of a property read (the fallback when the field is absent), lowering (`SettleRoot.Expr`), two voices | ~350 | 1 |
 | C5 | artifacts and homes | `compiler/lower` (reached statics of an artifact type), `build.av`/`link.av` (the emit step, the receipt), `target()` in `@std/meta` (promised in COMPILER.md §7d, never built) | ~500 | 1–2 |
-| C6 | tools | the `tool_call` row and its evaluator arm; a child `avra build --tool`; the pipe protocol (runtime C ~300 + Avra); `@step` and the seat codec (std code); the make phase; N processes | ~2,500 + ~300 C | 4–5; the largest piece |
+| C6 | tools | the tool row and its evaluator arm (the row-then-declaration ladder); a child `avra build --tool` with no tool door (§7.3b); the framed pipe protocol (runtime C + Avra, both new); `@step` and the seat codec (std code); the engine rule; the reach check over objects' symbols; a poll loop over N children; the make phase | **not sized.** v2 said ~2,500 lines in 4–5 landings; the reviewer calls the landing count low and I agree. Size it after Q9 and Q10. | 6a then 6b |
+| C10 | **`avra build` compiles a package's C** (Q9) | `compiler/host/manifest.av` (`[link] sources`, flags), `build.av`/`link.av` (a C driver through the declared `clang` tool), the `Makefile`'s one rule retired for packages | not sized | a prerequisite of 6b only |
 | C7 | providers, eager | `expand.av` (the anchor prefilter and work; a source literal as an argument; `value` spliced as the initializer), `@std/meta` (`Provided` — growth; the first READER owes the seed refresh), `diagnostics/render.av` (a non-`.av` source; no `sources[0]` fallback), annotations inside generated declarations | ~700 | 2 |
-| C8 | a bound with one fitting impl pins its argument | `features/…/checks.av` (generic call pinning) | ~200 (ASSUMED; not read) | 1 |
+| C8 | a trait declares that the implementing type decides a parameter; a second impl for one type is refused; a bound then pins it | the traits feature's grammar and impl law; generic call pinning | not sized (not read) | 1; a language decision (Q3) |
 | C9 | `url`, the lock, `avra lock` | a new command file, `std-source` | ~400 | its own slice |
 
 Not on the list: a JIT; parallel settlement; a new keyword; a new IR instruction; a resident compiler.
@@ -816,7 +912,7 @@ Not on the list: a JIT; parallel settlement; a new keyword; a new IR instruction
 
 | # | what | evidence |
 |---|---|---|
-| I1 | **an embedded file's edit is invisible to `build`** — a wrong answer today | PROBED C.23. Closed by C2; file it now as a bug. |
+| I1 | **an embedded file's edit is invisible to `build`** — a wrong answer today | PROBED C.23; reproduced by the reviewer; filed as avra-8sb5.57.164. |
 | I2 | `embed`: escape (in flight elsewhere), nested-call compiler trap, unlocated traps, callee matched by string, text only, a run-time trap instead of a refusal | PROBED C.2, C.5, C.9; READ `whole.av:382` (and C.35). Closed by C2. |
 | I3 | **75–140 KB of compiler memory per generated declaration** | PROBED C.26 and the reviewer's probe. Blocks any large provider; taxes every derive. |
 | I4 | an annotation inside generated declarations is dropped silently | PROBED C.16 |
@@ -845,7 +941,7 @@ Not on the list: a JIT; parallel settlement; a new keyword; a new IR instruction
 | B4: per-name materialization | **CUT** | §4.6; deferred behind I3 |
 | B4: the struct-literal name hole in a template | not re-probed | noted for C7 |
 | **B5 / H6** forgeable handles; open cases | **FIXED** | §4.1: authority rides the declaration, not the value (PROBED C.25); template root, `File.rel`, symlinks, nested folders, case, droppings all decided |
-| B5: "enforced by the OS" | FIXED | §7.3 says what is real and what is convention |
+| B5: "enforced by the OS" | FIXED | §7.6 says what is real and what is convention |
 | B5: where granted C runs at `check` | FIXED | always in the tool; never in the compiler process |
 | **B6 / H7** performance is a hope; workers misread | **FIXED** | §7: native tools decided on numbers (C.32, C.33); `stage.av` claim deleted; `@batched` CUT; budgets (§6) |
 | **B7 / H8** homes | **FIXED** | §9.2: `a.bytes()` follows the declared home (L10); the module total rule; L6 for `check`; §8.4 no daemon; §9.1 says row three needs `url` |
@@ -866,6 +962,33 @@ Not on the list: a JIT; parallel settlement; a new keyword; a new IR instruction
 | D: mtime fast path (not flagged; found re-reading the code) | CUT | §1.2 — it contradicted a standing law |
 | **DISPUTED** | none | every re-run probe agreed with the review. One number differs, not a finding: my provider probe mints types only, 75 KB each; the reviewer's mints a type and a fn, 140 KB each. |
 
+### 13.1 The second review (of `4c0ff43`)
+
+| item | status | where |
+|---|---|---|
+| three inaccuracies under H10: the `read` slot's callers; `kernel.av:320–325`; P4's witness "direct" | **FIXED** (facts corrected) | §1.1, §1.3, §1.4 |
+| D1 is a sibling of .57.101.12 | FIXED | §1.2, §1.7 |
+| the reader count; the five kept rows outside "five → two" | FIXED (facts corrected) | §1.1, §1.4 |
+| N7: no input kind for existence or env | **FIXED** | §1.3: `Exists`, `Env`, and what stays out |
+| N1 the witness atom · C.3 the store's read verb and concurrent writers · C.5 .57.4.6 · C.6 which mechanism door 1 is · C.7 the fast-path fix and the outside rows · §6.6's pack | **PENDING THE DB LEAD** — not redesigned here | §1.7 D2, D4, D8–D11 |
+| N4: a kept lift and spans | receipt restated; mechanism PENDING | §1.6, D5 |
+| **N2**: `avra build` cannot compile package C | **FIXED** as a stated prerequisite; put to the owner | §7.3a, C10, Q9 |
+| **N3**: a tool build can need a tool | **FIXED**, by shape | §7.3b: a tool is built with no tool door |
+| D.3: `check` builds and runs native code | **FIXED**: stated, costed, put to the owner | §7.4, Q10 |
+| D.4: the protocol is named, not specified | **FIXED** | §7.5 |
+| D.4: the reach check refuses every C-calling step as it stands | **FIXED** | §7.6 |
+| D.5: two ways to write a provider | **FIXED**: one way; a compiler rule picks the engine; a budget trip falls through | §7.4 |
+| D.6: C6's size | **CUT** — not sized until Q9 and Q10 | §12 |
+| **N5**: Appendix A's reader read every file | **FIXED** | `Blob.Source`; `f.blob()`; Appendix A |
+| E.2: the grant for the make phase; a read by digest | **FIXED** | §4.3 |
+| B3 residue: one step's edit re-runs the package's steps | stated | §4.3 |
+| **N6**: C8 unsound | **FIXED**: the "one fitting impl" rule CUT; the declared form in its place | §4.5, Q3, C.36 |
+| E.3: the 4,000 ceiling beside example 5; the facts step re-runs whole | FIXED | §2, §4.4 |
+| Q5: the reviewer's option | **adopted** | §6, Q5 |
+| Q9–Q12 | added | §15 |
+| the template struct-literal hole | still not probed by me | noted for C7 |
+| **DISPUTED** | none | C.36 reproduces the reviewer's two probes |
+
 ---
 
 ## 14. Every NEW name in this document
@@ -874,12 +997,13 @@ Nothing in this table exists. Everything else named in the doc does.
 
 | package | names |
 |---|---|
-| `@std/source` (new package) | `file`, `dir`, `url`, `File`, `Files`, `Blob`, `Action`, `blob`, `each`, `filtered`, `Artifact`, `Home`, `home`, `placed`, `remote`, `step` |
+| `@std/source` (new package) | `file`, `dir`, `url`, `File`, `Files`, `Blob` (`Source`, `Pending`, `Made`), `Action`, `blob`, `each`, `filtered`, `Artifact`, `Home`, `home`, `placed`, `remote`, `step` |
 | `@std/meta` (growth) | `Provided`, `refused`, `target`, `Target` |
 | `@std/image` (new package) | `Picture`, `Pictures`, `Shots`, `pictures`, `resize`, `webp`, `widths`, `formats`, `Vector`, `vectors` |
 | providers (new) | `openapi` as a reader, `toml` as a provider, `csv`, `json_schema`, `environment`, `schema`, `sql`, `catalogs`, `typeface`, `wgsl`, `markdown`, `video` |
-| the compiler | `InputKind`, `Part`, `input_*`, `RunName`, `RunKind`, `kept`/`keep`, `Reach.Source`, the `tool_call` row, `Host.read_bytes`, a typed `Host.list`, a SHA-256 row |
-| the CLI | `avra lock`, `avra build --tool`, `avra cache gc`, `[assets]`, `[build] native`, `[build] cache`, `avra.lock` |
+| the compiler | `InputKind`, `Part`, `input_*`, `RunName`, `RunKind`, `kept`/`keep`, `Reach.Source`, the tool row, `Host.read_bytes`, a typed `Host.list`, a SHA-256 row, the framed pipe read and write |
+| the language | `trait T<Out> for one` (C8; the spelling is a proposal) |
+| the CLI | `avra lock`, `avra build --tool`, `avra cache gc`, `[assets]`, `[build] native`, `[build] step_seconds`, `[build] cache`, `[link] sources` (Q9), `avra.lock` |
 
 Exists and is used as it is: `quote`, `Directive`, `Declared`, `Decls`, `Code`, `Diagnostic`, `refuse_at`, `literal`, `wraps: true`, `collect`, generic traits, named arguments, trailing blocks, `const` settlement, `SettleRoot.Expr`, `Reach`, `Store.keep`'s `read` slot, `KeyParts`, `Db.answers`, `@input`, `avra expand`, `avra docs`, `avra cache why`.
 
@@ -887,47 +1011,67 @@ Exists and is used as it is: `quote`, `Directive`, `Declared`, `Decls`, `Code`, 
 
 ## 15. For the owner
 
-Only decisions. Each: both options, my pick.
+Only decisions. Two options each, then my pick.
 
 **Q1. Heavy build work: native tools, or a faster evaluator?**
-- A: a step's package is compiled for the host and run as a child process (§7). ~2,800 lines; 500× the evaluator on a parser today.
+- A: a step's package is compiled for the host and run as a child process (§7). ~500× the evaluator on a parser today.
 - B: profile and speed up the evaluator; codecs as C called from inside the compiler.
-- Pick **A**. B has no profile behind it and puts third-party C in the compiler's own process.
+- Pick **A** — and for anything with C in it, A depends on Q9.
 
 **Q2. What is a provided type called?**
 - A: `ApiPet` — the anchor's name as a prefix. No language work; a spec edit cannot clash with your names.
-- B: `api.Pet` — a type path through the anchor. Reads better; needs a new type-path rule, and `api.Pet { … }` as a literal.
-- Pick **A now**, B as its own design. Bare `Pet` is out: a vendor adding `Error` would break code nobody edited.
+- B: `api.Pet` — a type path through the anchor. Reads better; needs a type-path rule and a literal form.
+- Pick **A now**, B as its own design.
 
-**Q3. The sketch as written needs one typing rule (C8). Land it?**
-- A: yes — `dir("./photos") |> resize(width: 320)` types by the one impl that fits.
-- B: no — a folder says its kind: `dir("./photos") |> pictures |> resize(width: 320)`.
-- Pick **A**; B works today and stays valid.
+**Q3. The sketch as written: `dir("./photos") |> resize(width: 320)`.**
+- A: land a trait form where the implementing type decides the result (`trait Shots<Out> for one`); the sketch then types as he wrote it.
+- B: no language change; a folder says its kind — `dir("./photos") |> pictures |> resize(width: 320)`. Runs today.
+- Pick **A**, and write B until it lands. Not v2's "one fitting impl" rule: a library adding an impl would break callers.
 
 **Q4. Where does a local asset live when nobody says?**
 - A: by size — small in the program, large beside it (web 4 KiB; CLI/server stops the build over 1 MiB and asks).
 - B: by target only — web always a file, CLI always embedded.
-- Pick **A**. The two numbers are guesses to measure on `tools/ui-board`.
+- Pick **A**; the numbers are guesses to measure.
 
-**Q5. A tool that links C, before the OS sandbox exists (§7.3):**
-- A: runs, in a child with two pipes and a time limit; `[build] native = false` refuses.
-- B: refused unless the root manifest allows that package.
-- Pick **A**: its C already runs in your program. B if you want the stricter default.
+**Q5. A tool that links C, before an OS sandbox exists (§7.6).**
+- A: runs for any dependency, in a child with two pipes and a time limit.
+- B: runs only for packages the ROOT manifest lists; `@std/*` implicit.
+- Pick **B** (the reviewer's; I had A). Build-time C runs with the developer's and CI's credentials, and includes dependencies whose C never ships.
 
 **Q6. `url` and the lock: in this campaign?**
-- A: yes, minimal (https, SHA-256, `avra.lock`, `avra lock`) — "external asset, facts known at build" needs it.
+- A: yes, minimal (https, SHA-256, `avra.lock`, `avra lock`) — "external asset, facts known at build" cannot land without it.
 - B: wait for package transport; until then `remote(…)` with hand-written facts.
-- Pick **A**, as slice 8. The lock is the one the package transport will reuse.
+- Pick **A**, as slice 8.
 
-**Q7. `avra dev`:**
-- A: one-shot builds on file events; the compiler never stays alive (the standing refusal).
+**Q7. `avra dev`.**
+- A: one-shot builds on file events; the compiler never stays alive.
 - B: a resident compiler that makes an asset on first request.
-- Pick **A**. B reopens "no daemon"; reopen it only with a measured warm build that is too slow.
+- Pick **A**; B reopens "no daemon".
 
 **Q8. A compiler upgrade re-runs every step once.**
-- A: yes — the action key folds the compiler's digest ("a store is one compiler's"). Shipped names do not move.
-- B: key steps by the tool's source only, so an upgrade re-runs nothing — and trust that codegen did not change behaviour.
+- A: yes — the action key folds the compiler's digest. Shipped names do not move.
+- B: key steps by the tool's source only, and trust that codegen did not change behaviour.
 - Pick **A**.
+
+**Q9. Who builds a package's C?**
+- A: the manifest learns sources and flags, and `avra build` compiles them (P13, P14: no Makefile between a package and its binary).
+- B: packages ship prebuilt objects per host; `make` stays the builder for the toolchain's own.
+- Pick **A**. Without it no third-party package with C can have a tool, and `@std/image` works only in the toolchain's tree. Pure-Avra tools do not wait (§7.3a).
+
+**Q10. May `check` build and run a native tool?**
+- A: yes, when the rule says a step is too big for the evaluator (§7.4): the first `check` pays ~0.7 s per such package and needs a linker.
+- B: no — `check` runs everything in the evaluator; only `build` uses tools.
+- Pick **A**. Under B a 5 MB spec is two minutes per cold `check`. Small sources never need a tool either way.
+
+**Q11. A machine-wide, content-named byte store outside the tree (`~/.avra/cache/bytes`).**
+- A: yes — the first toolchain state outside a checkout; made bytes are shared by worktrees and survive a compiler upgrade.
+- B: bytes stay under the tree's `.avra-cache`; every worktree and every compiler re-makes its own.
+- Pick **A**, for bytes only. Rows stay per compiler, per tree.
+
+**Q12. Who owns the two doors (§1)?**
+- A: the DB campaign, with this design as the first consumer.
+- B: this campaign builds them.
+- Pick **A**. Both doors change `KeyParts`, the kept-settle wire and the hold.
 
 ---
 
@@ -952,7 +1096,7 @@ impl Vectors {
     }
 }
 
-/// Every `.svg` under the folder, by its stem. ONE native step for the whole folder.
+/// Every `.svg` under the folder, by its stem. ONE step for the whole folder, 512 bytes read per file.
 @step
 export fn vectors(d: Files) -> Vectors {
     let svgs = d.files(ext: "svg")
@@ -961,7 +1105,7 @@ export fn vectors(d: Files) -> Vectors {
 
 fn vector(f: File) -> Vector {
     let box = view_box(f.head(512)) ?? refused(refuse_at(f.loc(0), "`${f.rel}` has no `viewBox`", "an icon says its own size"))
-    Vector { name: f.name, width: box.w, height: box.h, shape: f.content() }
+    Vector { name: f.name, width: box.w, height: box.h, shape: f.blob() }   // a reference: only 512 bytes of this file are read
 }
 ```
 
@@ -1081,4 +1225,6 @@ Binary `avra-ui-assets-design/build/avra` (0b5bd64), `LLVM_PREFIX=/opt/homebrew/
 | C.34 | `grep RLIMIT\|setrlimit\|sandbox_init\|seccomp` over `runtime/*.c` and every package's C | nothing |
 | C.35 | a user `fn embed(p: string) -> int { p.length }`, called with a literal | `19`, no refusal. That `admit_embeds` treats this call as an embed is READ (`whole.av:382`: `callee.of != "embed"`), not observed: minting a `FileId` for a missing file prints nothing. |
 
-Not probed: the struct-literal name hole the reviewer hit in a template; whether `avra dev` on its branches is already one-shot; C8's size.
+| C.36 | `trait Shots<Out>`; `impl Shots<P> for F` AND `impl Shots<Q> for F`; `fn made<O, S: Shots<O>>(s: S) -> O`; `let p: P = made(F { n: 1 })` | `2`, exit 0 — two impls for one type are legal, and a typed binding pins `O` |
+
+Not probed: the struct-literal name hole the reviewer hit in a template; whether `avra dev` on its branches is already one-shot; lines per kept run on `check packages/cli` (D8); hashing speed (D6).
