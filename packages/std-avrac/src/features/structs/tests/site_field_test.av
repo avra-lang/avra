@@ -1,0 +1,61 @@
+// A `Site` field — `@std/meta`'s — is WHERE A LITERAL WAS WRITTEN: a
+// literal that leaves it unset holds its own site, the same each time
+// that literal is built, and a different one for a literal written
+// differently. It owes no default; set, it is a value like any other.
+use @std.avrac.testing.{provided, answered, refused_n}
+use @std.avrac.compiler.{Program}
+
+/// A program over a record that says where it was written.
+fn built(main: string) -> Program {
+    provided("use @std.meta.{Site}\ntype Mark = { name: string, at: Site }\n" + main, "")
+}
+
+spec "structs — a site field" {
+    given "a literal that leaves its site unset" {
+        then "needs no default to be complete" { answered(built("let a = Mark { name: \"a\" }\na.name")) == "a" }
+        then "holds the same site each time it is built" {
+            answered(
+                built(
+                    "fn made(n: string) -> Mark { Mark { name: n } }\nlet x = made(\"x\")\nlet y = made(\"y\")\nx.at == y.at",
+                ),
+            ) == "true"
+        }
+        then "holds another site than a literal written differently" {
+            answered(
+                built("let a = Mark { name: \"a\" }\nlet b = Mark { name: \"b\" }\na.at == b.at"),
+            ) == "false"
+        }
+        then "shares its site with a literal written alike in its file" {
+            answered(
+                built("let a = Mark { name: \"a\" }\nlet b = Mark { name: \"a\" }\na.at == b.at"),
+            ) == "true"
+        }
+        then "holds one site for every turn of a loop" {
+            answered(built("let ms = [Mark { name: \"m\" } for i in 0..3]\nms[0].at == ms[2].at")) == "true"
+        }
+    }
+    given "a site that is set" {
+        then "is the value it was given" {
+            answered(
+                built(
+                    "let a = Mark { name: \"a\" }\nlet b = Mark { name: \"b\", at: a.at }\nlet c = b with { name: \"c\" }\n\"\${a.at == b.at} \${c.at == a.at}\"",
+                ),
+            ) == "true true"
+        }
+    }
+    given "a site spread in" {
+        then "fills in the record that spreads it, and in one that spreads that" {
+            answered(
+                provided(
+                    "use @std.meta.{Site}\ntype Stand = { key: string? = null, site: Site }\ntype Box = { fill: int = 0, ..Stand }\ntype Chip = { label: string, ..Box }\nlet a = Chip { label: \"a\" }\nlet b = Chip { label: \"b\" }\nlet s = Stand { }\n\"\${a.site == b.site} \${a.site == s.site}\"",
+                    "",
+                ),
+            ) == "false false"
+        }
+    }
+    given "any other field without a default" {
+        then "is still owed" {
+            refused_n(built("let a = Mark { }\n0"), "every declared field appears exactly once", 1)
+        }
+    }
+}

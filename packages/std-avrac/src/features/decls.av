@@ -58,6 +58,7 @@ use core.{
     Exemplar,
     fp,
     fp_list,
+    mix_final,
     list_cell,
     map_cell,
     same_type,
@@ -1434,6 +1435,11 @@ impl Decls {
         }
     }
 
+    /// Whether slot `j` is a SITE: a field typed `@std/meta`'s `Site`,
+    /// which a literal that leaves it unset fills with where it was
+    /// written — so it owes no default.
+    fn sited_slot(sig: StructSig, j: int) -> bool { self.meta_type(sig.types[j], "Site") }
+
     /// A declaration's signature — asking it IS the query: the hook
     /// the workspace arms computes it on first ask and records the
     /// dependency; the table only holds.
@@ -2483,6 +2489,17 @@ impl Decls {
     fn lifted_symbol(f: FileId, e: ExprId) -> string {
         let info = self.file(f)
         module_symbol(self.module_name(info.module_id), "${stem_of(info.path)}\$l${e.index}")
+    }
+
+    /// A literal's SITE: its file — module and stem — and its own
+    /// content, folded. Content-addressed, so a line added above a
+    /// literal moves nothing; two literals written alike in one file
+    /// share one.
+    fn site_of(f: FileId, content: int) -> int {
+        let info = self.file(f)
+        mix_final(
+            fp_list([fp_str(self.module_name(info.module_id)), fp_str(stem_of(info.path)), content]),
+        )
     }
 
     // ── traits and methods ──
