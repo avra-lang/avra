@@ -5,7 +5,7 @@ use @std.ui.realize.render.{Node}
 use @std.ui.realize.html.html.{fragment, page, Page}
 use @std.ui.realize.html.writer.{HtmlOp, source}
 use @std.ui.realize.html.tags.{HtmlAttr}
-use @std.ui.realize.html.url.{safe_url}
+use @std.ui.realize.url.{Url, url, local}
 use @std.ui.realize.tests.support.{
     leaf,
     keyed,
@@ -30,9 +30,13 @@ fn attr_source(s: string) -> string {
 
 fn linked(to: string) -> string { fragment(link_node("x", to)) }
 
-fn refused(to: string) -> string {
-    "<a aria-label=\"x\" href=\"#\" data-refused-url=\"${text_source(to)}\">x</a>"
-}
+/// A link whose target was refused: it has none.
+const untargeted = "<a aria-label=\"x\">x</a>"
+
+/// Whether `text` spells a URL a tree may carry.
+fn reads(text: string) -> bool { url(text) != null }
+
+fn refuses(text: string) -> bool { url(text) == null }
 
 spec "std/ui html — escaping" {
     given "text content" {
@@ -79,44 +83,41 @@ spec "std/ui html — escaping" {
     }
     given "a URL" {
         then "an https link keeps its target" { linked("https://x.dev/a") == "<a aria-label=\"x\" href=\"https://x.dev/a\">x</a>" }
-        then "http and mailto pass" { safe_url("http://x.dev") && safe_url("mailto:a@b.c") }
-        then "a scheme is read without ASCII case" { safe_url("HTTPS://x.dev") && safe_url("MailTo:a@b.c") }
+        then "http and mailto pass" { reads("http://x.dev") && reads("mailto:a@b.c") }
+        then "a scheme is read without ASCII case" { reads("HTTPS://x.dev") && reads("MailTo:a@b.c") }
         then "a relative path with a query and fragment keeps its target" {
             linked("/x?y=1#z") == "<a aria-label=\"x\" href=\"/x?y=1#z\">x</a>"
         }
         then "the dot, parent, fragment and query forms pass" {
-            safe_url("./a") && safe_url("../a") && safe_url("#top") && safe_url("?q=1")
+            reads("./a") && reads("../a") && reads("#top") && reads("?q=1")
         }
-        then "a path with no scheme passes" { safe_url("about.html") }
-        then "the empty URL passes as no scheme" { safe_url("") }
-        then "a javascript link is refused to `#` and its value kept inert" {
-            linked("javascript:alert(1)") == refused("javascript:alert(1)")
+        then "a path with no scheme passes" { reads("about.html") }
+        then "the empty URL passes as no scheme" { reads("") }
+        then "a javascript link is refused, and the link has no target" {
+            linked("javascript:alert(1)") == untargeted
         }
-        then "javascript in mixed case is refused" { linked("JaVaScRiPt:alert(1)") == refused("JaVaScRiPt:alert(1)") }
-        then "javascript after a leading space is refused" { linked(" javascript:alert(1)") == refused(" javascript:alert(1)") }
-        then "javascript after a leading newline is refused" { !safe_url("\njavascript:alert(1)") }
-        then "a tab inside the scheme is refused" { !safe_url("java" + from_codepoint(9) + "script:alert(1)") }
-        then "a NUL before the scheme is refused" { !safe_url(from_codepoint(0) + "javascript:alert(1)") }
+        then "javascript in mixed case is refused" { linked("JaVaScRiPt:alert(1)") == untargeted }
+        then "javascript after a leading space is refused" { linked(" javascript:alert(1)") == untargeted }
+        then "javascript after a leading newline is refused" { refuses("\njavascript:alert(1)") }
+        then "a tab inside the scheme is refused" { refuses("java" + from_codepoint(9) + "script:alert(1)") }
+        then "a NUL before the scheme is refused" { refuses(from_codepoint(0) + "javascript:alert(1)") }
         then "a data link is refused" {
-            linked("data:text/html,<script>alert(1)</script>") == refused("data:text/html,<script>alert(1)</script>")
+            linked("data:text/html,<script>alert(1)</script>") == untargeted
         }
-        then "vbscript is refused" { !safe_url("vbscript:msgbox(1)") }
-        then "file and ftp are refused" { !safe_url("file:///etc/passwd") && !safe_url("ftp://x") }
-        then "a scheme that only starts like http is refused" { !safe_url("httpx://x") && !safe_url("https2:x") }
-        then "an entity-spelled scheme is refused" { !safe_url("&#106;avascript:alert(1)") && !safe_url("&colon;x:y") }
+        then "vbscript is refused" { refuses("vbscript:msgbox(1)") }
+        then "file and ftp are refused" { refuses("file:///etc/passwd") && refuses("ftp://x") }
+        then "a scheme that only starts like http is refused" { refuses("httpx://x") && refuses("https2:x") }
+        then "an entity-spelled scheme is refused" { refuses("&#106;avascript:alert(1)") && refuses("&colon;x:y") }
         then "a colon after a leading slash is part of a path" {
-            safe_url("/javascript:alert(1)") &&
+            reads("/javascript:alert(1)") &&
                 linked("/javascript:alert(1)") == "<a aria-label=\"x\" href=\"/javascript:alert(1)\">x</a>"
         }
-        then "a colon-led URL is refused" { !safe_url(":x") }
-        then "a refused value is escaped inside its data attribute" {
-            linked("javascript:\"onmouseover=\"x") == "<a aria-label=\"x\" href=\"#\" data-refused-url=\"javascript:&quot;onmouseover=&quot;x\">x</a>"
-        }
+        then "a colon-led URL is refused" { refuses(":x") }
         then "a refused image source leaves no src" {
-            fragment(image_node("data:image/png;base64,AA", "a")) == "<img data-refused-url=\"data:image/png;base64,AA\" alt=\"a\">"
+            fragment(image_node("data:image/png;base64,AA", "a")) == "<img alt=\"a\">"
         }
-        then "a refused icon source leaves no src" {
-            fragment(leaf(.Icon, [.Src("javascript:x"), .Name("n")])) == "<img data-refused-url=\"javascript:x\" aria-label=\"n\">"
+        then "a script is no source for an icon either" {
+            url("javascript:x") == null
         }
         then "a passing URL is escaped as an attribute" { linked("/a\"b") == "<a aria-label=\"x\" href=\"/a&quot;b\">x</a>" }
     }

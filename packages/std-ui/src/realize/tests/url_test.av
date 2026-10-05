@@ -1,0 +1,63 @@
+//! The URL a tree carries, by its law: every value of the type is safe to
+//! emit, and foreign text is read strictly or not at all.
+use @std.ui.components.{link}
+use @std.ui.realize.dom.frame.{frame_text}
+use @std.ui.realize.url.{Url, Scheme, url, local, https}
+
+/// What a reader makes of `text`, written back — "refused" for none.
+fn reread(text: string) -> string { url(text)?.text() ?? "refused" }
+
+/// The live frame of a link to `to`.
+fn framed(to: Url) -> string { frame_text((link "Docs" { href: to }).describe()) }
+
+spec "std/ui url — a value" {
+    given "a local reference" {
+        then "is written as given" { local("/docs?x=1#top").text() == "/docs?x=1#top" }
+        then "that spells a scheme is written as the path it is" {
+            local("javascript:alert(1)").text() == "./javascript:alert(1)"
+        }
+        then "that is empty stays empty" { local("").text() == "" }
+    }
+    given "an address on the web" {
+        then "is written under https" { https("avra.dev/docs").text() == "https://avra.dev/docs" }
+        then "cannot be given another scheme by what follows it" {
+            https("javascript:alert(1)").text() == "https://javascript:alert(1)"
+        }
+    }
+    given "each scheme" {
+        then "is read back from its own word" {
+            [reread("${s.word()}:x") for s in [Scheme.Http, .Https, .Mailto]].join(" ") == "http:x https:x mailto:x"
+        }
+    }
+}
+
+spec "std/ui url — reading foreign text" {
+    given "text that names an allowed scheme" {
+        then "keeps everything after the colon as written" { reread("https://X.dev/A?b#c") == "https://X.dev/A?b#c" }
+        then "has its scheme, and only its scheme, lowered" { reread("HTTPS://X.dev") == "https://X.dev" }
+    }
+    given "text that names no scheme" {
+        then "is a local reference, as written" { reread("about.html") == "about.html" && reread(" /x") == " /x" }
+    }
+    given "text a browser would run" {
+        then "is refused" { reread("javascript:alert(1)") == "refused" && reread("data:text/html,x") == "refused" }
+        then "is refused however a browser would repair it" {
+            reread(" javascript:alert(1)") == "refused" && reread("JaVaScRiPt:x") == "refused"
+        }
+    }
+}
+
+spec "std/ui url — the live frame" {
+    given "a link to a local page" {
+        then "carries its target" { framed(local("/docs")).contains("P 0 href=/docs") }
+    }
+    given "a link whose target spells a script" {
+        then "never carries a `javascript:` href" {
+            !framed(local("javascript:alert(1)")).contains("href=javascript") &&
+                framed(local("javascript:alert(1)")).contains("P 0 href=./javascript:alert(1)")
+        }
+    }
+    given "foreign text a browser would run" {
+        then "makes no URL a link could carry" { url("javascript:alert(1)") == null }
+    }
+}

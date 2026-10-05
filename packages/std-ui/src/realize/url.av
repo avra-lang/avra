@@ -1,0 +1,74 @@
+//! `realize/url.av` — the URL a tree may carry. A link's target and an
+//! image's source reach a target as a `Url`, and EVERY VALUE OF THE TYPE IS
+//! SAFE TO EMIT: a URL is a reference with no scheme, or one of the schemes
+//! spelled here — there is no shape for one a browser would RUN
+//! (`javascript:`, `data:`). So no target checks a URL, and none can forget
+//! to.
+//!
+//! `url(text)` reads text a program did not write. It is STRICT and repairs
+//! nothing: the scheme is read as written — no trimming, no decoding — so a
+//! spelling a browser would repair is refused, and the answer is absent.
+use @std.meta.{derive}
+use @std.text.{ascii_lowered}
+use style.words.{Words}
+
+/// The schemes a URL may name.
+@derive(Words)
+export enum Scheme {
+    @word(http) Http
+    @word(https) Https
+    @word(mailto) Mailto
+}
+
+/// Every scheme, for reading one back from its word.
+const schemes = [Scheme.Http, .Https, .Mailto]
+
+/// The openings that make a reference local, whatever follows.
+const local_heads = ["/", "./", "../", "#", "?"]
+
+/// A URL a tree may carry.
+export enum Url {
+    /// A reference that names no scheme: a path, a query, a fragment.
+    Local(reference: string)
+    /// A scheme, and everything after its colon.
+    Absolute(scheme: Scheme, after: string)
+}
+
+impl Url {
+    /// The URL as a target writes it. A local reference whose first
+    /// segment holds a colon is written behind `./` (RFC 3986 §4.2), so
+    /// it reads as the path it is and never as a scheme.
+    fn text() -> string {
+        match self {
+            .Local(reference) -> if names_no_scheme(reference) { reference } else { "./${reference}" },
+            .Absolute(scheme, after) -> "${scheme.word()}:${after}",
+        }
+    }
+}
+
+/// Whether a reference, read as a browser reads it, names no scheme.
+fn names_no_scheme(reference: string) -> bool {
+    reference.index_of(":") < 0 || local_heads.any((head) -> reference.starts_with(head))
+}
+
+/// The scheme a word names, read without ASCII case. Octets are compared,
+/// so no text is rebuilt from what a stranger wrote.
+fn scheme_named(word: string) -> Scheme? {
+    let folded = ascii_lowered(word.bytes())
+    schemes.find(it.word().bytes() == folded)
+}
+
+/// The URL `text` spells, or absence for one a tree may not carry: a
+/// scheme that is not one of `Scheme`'s.
+export fn url(text: string) -> Url? {
+    if names_no_scheme(text) { return Url.Local(text) }
+    let colon = text.index_of(":")
+    let scheme? = scheme_named(text.substring(0, colon)) else { return null }
+    Url.Absolute(scheme, text.substring(colon + 1, text.length))
+}
+
+/// A reference inside the site — `local("/docs")`.
+export fn local(reference: string) -> Url { Url.Local(reference) }
+
+/// A page on the web by its host and path — `https("avra.dev/docs")`.
+export fn https(address: string) -> Url { Url.Absolute(.Https, "//${address}") }

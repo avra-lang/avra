@@ -5,7 +5,7 @@ use @std.ui.realize.render.{Node}
 use @std.ui.realize.html.html.{fragment, render, page, Page}
 use @std.ui.realize.html.writer.{HtmlOp, source}
 use @std.ui.realize.html.tags.{HtmlAttr}
-use @std.ui.realize.html.url.{safe_url}
+use @std.ui.realize.url.{Url, url, local}
 use @std.ui.env.{Env}
 use @std.ui.style.theme.{default_theme}
 use @std.ui.realize.tests.support.{
@@ -52,6 +52,18 @@ fn text_source(s: string) -> string { source([HtmlOp.Text(s)]) }
 
 fn attr_source(s: string) -> string { source([HtmlOp.Open(.Span, [HtmlAttr { name: .Title, value: s }])]) }
 
+/// Texts a browser would run, or read as a scheme, were they written as given.
+const scripts = [
+    "javascript:alert(1)",
+    " javascript:x",
+    "JaVaScRiPt:x",
+    "data:text/html,x",
+    "vbscript:x",
+    ":x",
+    "\"'><script>x:y",
+    "a/b:c",
+]
+
 /// One node per string slot of the vocabulary, each holding the hostile string.
 fn hostile_nodes() -> List<Node> {
     let h = hostile()
@@ -68,7 +80,7 @@ fn hostile_nodes() -> List<Node> {
         card_node(h, []),
         keyed(leaf(.Item, []), h),
         leaf(.Field, [.Label(h), .Placeholder(h)]),
-        leaf(.Icon, [.Src(h), .Name(h)]),
+        leaf(.Icon, [.Src(Url.Local(h)), .Name(h)]),
         leaf(.Dialog, [.Label(h), .Open(true)]),
         leaf(.Alert, [.Text(h)]),
         leaf(.Spinner, [.Label(h)]),
@@ -150,28 +162,36 @@ spec "std/ui html — adversarial" {
         then "the corpus holds every string up to three characters" { corpus(3).length == 1 + 6 + 36 + 216 }
     }
     given "URLs beyond the listed attacks" {
-        then "a full-width scheme is refused" { !safe_url("ｊavascript:alert(1)") }
-        then "a scheme with a slash before the colon is refused" { !safe_url("a/b:c") }
-        then "a leading space before a relative path is a path" { safe_url(" /x") }
-        then "a leading space before a colon is refused" { !safe_url(" /x:y") && !safe_url(" https://x") }
-        then "a query colon with no relative opening is refused" { !safe_url("x?a=b:c") }
+        then "a full-width scheme is refused" { refuses("ｊavascript:alert(1)") }
+        then "a scheme with a slash before the colon is refused" { refuses("a/b:c") }
+        then "a leading space before a relative path is a path" { reads(" /x") }
+        then "a leading space before a colon is refused" { refuses(" /x:y") && refuses(" https://x") }
+        then "a query colon with no relative opening is refused" { refuses("x?a=b:c") }
         then "a URL holding an entity for its colon is a path, its ampersand escaped" {
-            safe_url("javascript&colon;alert(1)") &&
+            reads("javascript&colon;alert(1)") &&
                 fragment(link_node("x", "javascript&colon;alert(1)")) == "<a aria-label=\"x\" href=\"javascript&amp;colon;alert(1)\">x</a>"
         }
-        then "a ten-thousand-letter scheme is refused" { !safe_url(repeat("a", 10000) + ":x") }
+        then "a ten-thousand-letter scheme is refused" { refuses(repeat("a", 10000) + ":x") }
         then "an allowed scheme behind a control character is refused" {
-            !safe_url(from_codepoint(1) + "https://x") &&
-                !safe_url("ht" + from_codepoint(10) + "tps://x")
+            refuses(from_codepoint(1) + "https://x") &&
+                refuses("ht" + from_codepoint(10) + "tps://x")
         }
-        then "an allowed scheme with a trailing space before its colon is refused" { !safe_url("https :x") }
-        then "a scheme in non-ASCII capitals is refused" { !safe_url("ＨＴＴＰ://x") }
-        then "a backslash opening is a path with no scheme" { safe_url("\\\\x.dev\\a") && !safe_url("\\javascript:x") }
-        then "a URL is judged on whatever primitive carries it" {
-            fragment(leaf(.Image, [.Href("vbscript:x"), .Src("/ok")])) == "<img href=\"#\" data-refused-url=\"vbscript:x\" src=\"/ok\">"
+        then "an allowed scheme with a trailing space before its colon is refused" { refuses("https :x") }
+        then "a scheme in non-ASCII capitals is refused" { refuses("ＨＴＴＰ://x") }
+        then "a backslash opening is a path with no scheme" { reads("\\\\x.dev\\a") && refuses("\\javascript:x") }
+        then "a local reference that spells a scheme is written as the path it is" {
+            fragment(leaf(.Link, [.Href(Url.Local("javascript:x"))])) == "<a href=\"./javascript:x\"></a>"
         }
-        then "each URL of one node is judged on its own" {
-            fragment(leaf(.Link, [.Href("/ok"), .Href("javascript:x")])) == "<a href=\"/ok\" href=\"#\" data-refused-url=\"javascript:x\"></a>"
+        then "a URL is safe on whatever primitive carries it" {
+            fragment(leaf(.Image, [.Href(Url.Local("vbscript:x")), .Src(local("/ok"))])) == "<img href=\"./vbscript:x\" src=\"/ok\">"
+        }
+        then "no value of the type spells a URL the reader refuses" {
+            scripts
+                .all(
+                    (h) -> reads(Url.Local(h).text()) &&
+                        reads(Url.Absolute(.Https, h).text()) &&
+                        reads(Url.Absolute(.Mailto, h).text()),
+                )
         }
         then "a refused link in a tree leaves no href holding its value" {
             !fragment(holding(.Column, [link_node("x", "javascript:alert(1)")]))

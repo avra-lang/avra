@@ -5,14 +5,13 @@
 //! document and the one stylesheet is emitted beside it. UI.md §19.2.
 //!
 //! Every value is escaped by the writer for the context it lands in, and
-//! a URL reaches an attribute only through `safe_url`. A control holds no
+//! a URL arrives as a `Url`, which has no unsafe value. A control holds no
 //! content, so it sits under a `label` beside its words.
 use realize.render.{Node, Attribute, Prim}
 use realize.identity.{NodeId}
 use realize.sink.{Sink, draw}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
 use realize.html.writer.{HtmlOp, Head, document, page_source, source}
-use realize.html.url.{safe_url}
 use realize.html.css.{CssRule, distinct_rules, node_rules, class_names, page_sheet}
 use style.theme.{Theme}
 use env.{Env}
@@ -34,9 +33,9 @@ fn attr_list(a: Attribute) -> List<HtmlAttr> {
         .Value(v) -> [HtmlAttr { name: .Value, value: v }],
         .Amount(n) -> [HtmlAttr { name: .Value, value: "${n}" }],
         .Placeholder(t) -> [HtmlAttr { name: .Placeholder, value: t }],
-        .Src(u) -> src_attrs(u),
+        .Src(u) -> [HtmlAttr { name: .Src, value: u.text() }],
         .Alt(t) -> [HtmlAttr { name: .Alt, value: t }],
-        .Href(u) -> href_attrs(u),
+        .Href(u) -> [HtmlAttr { name: .Href, value: u.text() }],
         .Min(n) -> [HtmlAttr { name: .Min, value: "${n}" }],
         .Max(n) -> [HtmlAttr { name: .Max, value: "${n}" }],
         .Disabled(flag) -> if flag { [HtmlAttr { name: .Disabled, value: "" }] } else { [] },
@@ -50,19 +49,6 @@ fn attr_list(a: Attribute) -> List<HtmlAttr> {
         .Name(t) or .Label(t) -> [HtmlAttr { name: .AriaLabel, value: t }],
         .Text(_) or .Level(_) or .Submits(_) -> [],
     }
-}
-
-/// What a refused URL leaves behind: its value, inert.
-fn refusal(u: string) -> HtmlAttr { HtmlAttr { name: .DataRefusedUrl, value: u } }
-
-/// A link's target: the URL when it is safe, else `#` and the refusal.
-fn href_attrs(u: string) -> List<HtmlAttr> {
-    if safe_url(u) { [HtmlAttr { name: .Href, value: u }] } else { [HtmlAttr { name: .Href, value: "#" }, refusal(u)] }
-}
-
-/// An image's source: the URL when it is safe, else the refusal alone.
-fn src_attrs(u: string) -> List<HtmlAttr> {
-    if safe_url(u) { [HtmlAttr { name: .Src, value: u }] } else { [refusal(u)] }
 }
 
 fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {

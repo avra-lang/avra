@@ -2,6 +2,7 @@
 //! target is tested against the vocabulary and no component stands
 //! between.
 use @std.ui.realize.render.{Node, Prim, Attribute}
+use @std.ui.realize.url.{Url, url}
 use @std.ui.style.box.{Box}
 use @std.ui.style.layout.{Layout, Edge}
 use @std.ui.ui.{Size}
@@ -32,9 +33,23 @@ export fn text_node(s: string) -> Node { leaf(.Text, [.Text(s)]) }
 
 export fn heading_node(s: string, rank: int) -> Node { leaf(.Heading, [.Text(s), .Level(rank)]) }
 
-export fn image_node(src: string, alt: string) -> Node { leaf(.Image, [.Src(src), .Alt(alt)]) }
+/// The URL `text` spells, as a run: none for one a tree may not carry.
+fn carried(text: string) -> List<Url> {
+    match url(text) {
+        u? -> [u]
+        null -> []
+    }
+}
 
-export fn link_node(label: string, to: string) -> Node { leaf(.Link, [.Label(label), .Href(to)]) }
+/// An image whose source is `src` as foreign text: refused, it has none.
+export fn image_node(src: string, alt: string) -> Node {
+    leaf(.Image, [Attribute.Src(u) for u in carried(src)].concat([.Alt(alt)]))
+}
+
+/// A link whose target is `to` as foreign text: refused, it has none.
+export fn link_node(label: string, to: string) -> Node {
+    leaf(.Link, [Attribute.Label(label)].concat([Attribute.Href(u) for u in carried(to)]))
+}
 
 export fn button_node(label: string) -> Node { leaf(.Button, [.Label(label)]) }
 
