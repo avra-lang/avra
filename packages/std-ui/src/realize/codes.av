@@ -13,10 +13,15 @@ export type Coded = { word: string, code: int }
 export trait Codes {
     fn code() -> int
 
+    /// The impl, when every variant wears a number of its own. A refused
+    /// enum generates nothing, so no call reaches a number nobody wrote.
     static fn derive(t: Type) -> Declared {
-        let arms = [quote { .${v.name} -> ${code_of(v)} } for v in t.variants]
-        let each = [quote { .${v.name} } for v in t.variants]
-        let rows = [quote { Coded { word: ${literal(snake(v.name))}, code: ${code_of(v)} } } for v in t.variants]
+        let problems = [p for j, v in t.variants for p in problem(t.variants, j)]
+        if !problems.is_empty() { return Declared { made: [], problems: problems } }
+        let coded = [Wears { name: v.name, code: c } for v in t.variants for c in worn(v)]
+        let arms = [quote { .${w.name} -> ${w.code} } for w in coded]
+        let each = [quote { .${w.name} } for w in coded]
+        let rows = [quote { Coded { word: ${literal(snake(w.name))}, code: ${w.code} } } for w in coded]
         Declared {
             made: [
                 Directive {
@@ -37,24 +42,49 @@ export trait Codes {
                     },
                 },
             ],
-            problems: [uncoded(v) for v in t.variants if code_mark(v) == null]
-                .concat([recoded(v) for j, v in t.variants if twin_before(t.variants, j)]),
+            problems: [],
         }
     }
 
-    static fn marks(t: Type) -> List<string> { ["code"] }
+    static fn marks(t: Type) -> List<string> { [code_mark] }
 }
 
-/// The number a variant wrote, as text — absent when it wrote none.
-fn code_mark(v: Variant) -> string? { v.marks.find(it.name == "code")?.args?.first() }
+/// The mark a variant's number is written under.
+const code_mark = "code"
 
-/// The number a variant wrote; a variant that wrote none is refused, and
-/// reads as -1 so the generated code still stands.
-fn code_of(v: Variant) -> int { parse_int(code_mark(v) ?? "") ?? -1 }
+/// The largest number one octet of the wire spells.
+const widest = 255
 
-/// Whether an earlier variant already wears variant `j`'s number.
-fn twin_before(vs: List<Variant>, j: int) -> bool {
-    [k for k, v in vs if k < j && code_of(v) == code_of(vs[j])].length > 0
+/// A variant and the number it wears.
+type Wears = { name: string, code: int }
+
+/// What a variant wrote for its number, as text — absent when it wrote
+/// none.
+fn written(v: Variant) -> string? { v.marks.find(it.name == code_mark)?.args?.first() }
+
+/// The number a variant wears: what it wrote, when that is a number one
+/// octet spells. None otherwise — each reason is `problem`'s to say.
+fn worn(v: Variant) -> List<int> {
+    let n? = parse_int(written(v) ?? "") else { return [] }
+    if n < 0 || n > widest { [] } else { [n] }
+}
+
+/// The smallest number no variant wears, for a remedy to name.
+fn free(vs: List<Variant>) -> int {
+    let taken = [c for v in vs for c in worn(v)]
+    [n for n in 0..widest + 1 if !taken.contains(n)].first() ?? 0
+}
+
+/// What is wrong with variant `j`, when anything is. ONE reason a
+/// variant, the first that holds.
+fn problem(vs: List<Variant>, j: int) -> List<Diagnostic> {
+    let v = vs[j]
+    if !v.payload.is_empty() || !v.fields.is_empty() { return [carries(v)] }
+    let text? = written(v) else { return [uncoded(v, free(vs))] }
+    let n? = parse_int(text) else { return [unnumbered(v, text, free(vs))] }
+    if n < 0 || n > widest { return [too_wide(v, n, free(vs))] }
+    if vs.slice(0, j).any(worn(it).contains(n)) { return [recoded(v, n, free(vs))] }
+    []
 }
 
 /// `SetText` → `set_text`: a variant's name as a host spells a word.
@@ -71,20 +101,53 @@ fn lowered(u: int, at: int) -> List<int> {
 
 // ── voices ──
 
-fn uncoded(v: Variant) -> Diagnostic {
+fn remedy(v: Variant, to: int) -> string { "`@code(${to}) ${v.name}` — ${to} is the smallest number no variant wears" }
+
+fn uncoded(v: Variant, to: int) -> Diagnostic {
     refuse_as_at(
-        "code",
+        "code-missing",
         v.at,
         "a wire variant says its number, and `${v.name}` says none",
-        "`@code(7) ${v.name}`",
+        remedy(v, to),
     )
 }
 
-fn recoded(v: Variant) -> Diagnostic {
+fn unnumbered(v: Variant, text: string, to: int) -> Diagnostic {
     refuse_as_at(
-        "code",
+        "code-not-number",
         v.at,
-        "two wire variants share no number, and `${v.name}` wears one already taken",
-        "give it a number no variant above it has",
+        if text == "" {
+            "a wire variant's code is a whole number, and `${v.name}`'s is not one"
+        } else {
+            "a wire variant's code is a whole number, and `${v.name}` wrote `${text}`"
+        },
+        remedy(v, to),
+    )
+}
+
+fn too_wide(v: Variant, n: int, to: int) -> Diagnostic {
+    refuse_as_at(
+        "code-out-of-byte",
+        v.at,
+        "a wire variant's code is one octet, 0 to ${widest}, and `${v.name}` wrote ${n}",
+        remedy(v, to),
+    )
+}
+
+fn recoded(v: Variant, n: int, to: int) -> Diagnostic {
+    refuse_as_at(
+        "code-taken",
+        v.at,
+        "two wire variants share no number, and `${v.name}` wears ${n}, which a variant above it has",
+        remedy(v, to),
+    )
+}
+
+fn carries(v: Variant) -> Diagnostic {
+    refuse_as_at(
+        "code-payload",
+        v.at,
+        "a wire code names a variant that carries nothing, and `${v.name}` carries a payload",
+        "code an enum of bare variants, and map `${v.name}` to one of them where it is written out",
     )
 }
