@@ -2,7 +2,13 @@
 //! is, its words and what its attributes say. The readable twin of a
 //! tree, for a test and for `explain`.
 use realize.controls.{shows_content}
+use realize.identity.{readable}
 use realize.render.{Node, Attribute}
+
+/// A text between quotes, on one line: a quote, a backslash and a line
+/// break are written as their escapes, so no value reads as the end of
+/// its own quotes or as a line of the screen.
+fn quoted(s: string) -> string { "\"${readable(s).replace("\"", "\\\"")}\"" }
 
 /// A state a node is in, by its word — nothing while it is not.
 fn state(word: string, on: bool) -> List<string> { if on { [word] } else { [] } }
@@ -13,12 +19,12 @@ fn noted(a: Attribute) -> List<string> {
     match a {
         .Text(_) or .Label(_) -> [],
         .Level(rank) -> ["level=${rank}"],
-        .Value(t) -> ["value=\"${t}\""],
+        .Value(t) -> ["value=${quoted(t)}"],
         .Amount(n) -> ["amount=${n}"],
-        .Placeholder(t) -> ["placeholder=\"${t}\""],
-        .Src(u) -> ["src=${u.text()}"],
-        .Alt(t) -> ["alt=\"${t}\""],
-        .Href(u) -> ["href=${u.text()}"],
+        .Placeholder(t) -> ["placeholder=${quoted(t)}"],
+        .Src(u) -> ["src=${quoted(u.text())}"],
+        .Alt(t) -> ["alt=${quoted(t)}"],
+        .Href(u) -> ["href=${quoted(u.text())}"],
         .Min(n) -> ["min=${n}"],
         .Max(n) -> ["max=${n}"],
         .Disabled(on) -> state("disabled", on),
@@ -28,8 +34,8 @@ fn noted(a: Attribute) -> List<string> {
         .Invalid(on) -> state("invalid", on),
         .Loading(on) -> state("loading", on),
         .Urgency(how) -> [how.word()],
-        .Title(t) -> ["title=\"${t}\""],
-        .Name(t) -> ["name=\"${t}\""],
+        .Title(t) -> ["title=${quoted(t)}"],
+        .Name(t) -> ["name=${quoted(t)}"],
         .Submits(on) -> state("submits", on),
     }
 }
@@ -37,9 +43,9 @@ fn noted(a: Attribute) -> List<string> {
 /// A node's own line: what it is, its words, its key, what it says.
 fn line(n: Node) -> string {
     let words = n.words()
-    let named: List<string> = if words == "" { [] } else { ["\"${words}\""] }
+    let named: List<string> = if words == "" { [] } else { [quoted(words)] }
     let keyed: List<string> = match n.box.key {
-        key? -> ["key=${key}"]
+        key? -> ["key=${quoted(key)}"]
         null -> []
     }
     [n.prim.word()]

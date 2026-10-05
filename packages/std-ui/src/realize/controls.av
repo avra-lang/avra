@@ -5,29 +5,17 @@
 //! that is not open — is not on the screen, and a disabled one does not
 //! speak.
 use realize.identity.{steps, lone}
-use realize.render.{Node, Prim, Attribute, EventKind, Said}
+use realize.render.{Node, Prim, EventKind, Said}
 
 /// A control on the screen: the node, the form it stands in, the path it
 /// stands at — its own across paints — and its seat in a walk of the tree.
 export type Control = { node: Node, form: Node?, path: string, seat: int }
 
-fn is_open(a: Attribute) -> bool {
-    match a { .Open(on) -> on, _ -> false }
-}
-
-fn is_disabled(a: Attribute) -> bool {
-    match a { .Disabled(on) -> on, _ -> false }
-}
-
-fn submits(a: Attribute) -> bool {
-    match a { .Submits(on) -> on, _ -> false }
-}
-
 /// Whether what a node holds is on the screen: a dialog shows its content
 /// only while it is open.
 export fn shows_content(n: Node) -> bool {
     match n.prim {
-        .Dialog -> n.attrs.any(is_open),
+        .Dialog -> n.open(),
         .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> true,
     }
 }
@@ -49,7 +37,7 @@ fn said_by_control(kind: EventKind) -> bool {
 
 /// Whether a node is a control: it hears an event of its own, or submits
 /// its form.
-fn speaks(n: Node) -> bool { n.events.any(said_by_control(it.kind)) || n.attrs.any(submits) }
+fn speaks(n: Node) -> bool { n.events.any(said_by_control(it.kind)) || n.submits() }
 
 /// A walk under way: the controls found so far and the seat the next node
 /// takes.
@@ -78,7 +66,7 @@ export fn controls(root: Node) -> List<Control> {
 
 impl Control {
     /// Whether the control can speak at all.
-    fn disabled() -> bool { self.node.attrs.any(is_disabled) }
+    fn disabled() -> bool { self.node.disabled() }
 
     /// The control speaks `kind`, saying `said`: its handler for that kind
     /// runs. False when no handler answered.
@@ -100,7 +88,7 @@ impl Control {
     /// submits sends its form.
     fn pressed() -> bool {
         let own = self.says(.Press, null)
-        let form = self.node.attrs.any(submits) && self.sends()
+        let form = self.node.submits() && self.sends()
         own || form
     }
 }

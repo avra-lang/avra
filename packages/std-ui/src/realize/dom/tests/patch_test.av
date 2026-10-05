@@ -3,6 +3,7 @@
 use @std.ui.realize.dom.live.{Live, live}
 use @std.ui.realize.render.{Node, Action, Handler, Said}
 use @std.ui.realize.tests.support.{
+    named,
     button_node,
     card_node,
     field_node,
@@ -44,7 +45,7 @@ fn slider_at(n: int) -> Node {
 fn after_sliding(shown: int, moved: int, drawn: int) -> string {
     let page = live()
     let _ = page.patches(slider_at(shown), default_theme)
-    let _ = page.fire(page.named("V")[0], .Change, Said.Number(moved))
+    let _ = page.fire(named(page, "V")[0], .Change, Said.Number(moved))
     page.said(slider_at(drawn), default_theme)
 }
 
@@ -55,7 +56,7 @@ fn muted(n: Node) -> Node { n with { box: Box { style: Style { color: .Muted } }
 fn after_typing(shown: string, typed: string, drawn: string) -> string {
     let page = live()
     let _ = page.patches(hearing(field_node("N", shown), Handler.Text(heard_text)), default_theme)
-    let _ = page.fire(page.named("N")[0], .Input, Said.Text(typed))
+    let _ = page.fire(named(page, "N")[0], .Input, Said.Text(typed))
     page.said(hearing(field_node("N", drawn), Handler.Text(heard_text)), default_theme)
 }
 
@@ -122,7 +123,7 @@ spec "std/ui dom — depth costs a page nothing" {
         then "is found by name and its event fires" {
             let page = live()
             let _ = page.patches(chain(120, long_key), default_theme)
-            page.named("deep").length == 1 && page.fire(page.named("deep")[0], .Press, null)
+            named(page, "deep").length == 1 && page.fire(named(page, "deep")[0], .Press, null)
         }
     }
     given "a chain twice as deep" {
@@ -164,7 +165,7 @@ spec "std/ui dom — two siblings under one key" {
                     ),
                     default_theme,
                 )
-            let both = page.named("Pick")
+            let both = named(page, "Pick")
             let first = page.fire(both[0], .Press, null) && picked == "first"
             both.length == 2 &&
                 both[0] != both[1] &&
@@ -204,8 +205,8 @@ spec "std/ui dom — a property is what the page holds" {
             let page = live()
             let _ = page
                 .patches(hearing(field_node("N", ""), Handler.Text(heard_text)), default_theme)
-            let _ = page.fire(page.named("N")[0], .Input, Said.Text("a"))
-            let _ = page.fire(page.named("N")[0], .Input, Said.Text("ab"))
+            let _ = page.fire(named(page, "N")[0], .Input, Said.Text("a"))
+            let _ = page.fire(named(page, "N")[0], .Input, Said.Text("ab"))
             page.heard.get().length == 1 &&
                 page.said(hearing(field_node("N", "ab"), Handler.Text(heard_text)), default_theme) == ""
         }
@@ -220,7 +221,7 @@ spec "std/ui dom — a property is what the page holds" {
             let page = live()
             let shown = hearing(field_node("N", ""), Handler.Text(heard_text))
             let _ = page.patches(shown, default_theme)
-            let _ = page.fire(page.named("N")[0], .Input, Said.Text("abc"))
+            let _ = page.fire(named(page, "N")[0], .Input, Said.Text("abc"))
             let _ = page
                 .patches(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme)
             page.said(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme) == ""

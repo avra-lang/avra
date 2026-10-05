@@ -5,8 +5,7 @@
 use realize.identity.{NodeId, readable}
 use realize.render.{Node, Action, EventKind, Said}
 use realize.html.element.{Element, lowered}
-use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet}
-use realize.html.tags.{HtmlAttrName}
+use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet, root_vars}
 use realize.dom.patch.{Patch, Heard, Held, Says, diff, held_as, listening_of}
 use realize.dom.wire.{frame}
 use style.theme.{Theme}
@@ -15,16 +14,14 @@ use style.theme.{Theme}
 type Bound = { id: NodeId, action: Action }
 
 /// A page as last painted: its elements, the next number it will give
-/// one, the sheet and every rule a paint has named so far, the handlers
-/// its elements bound, what the user was heard to do to it since — and
-/// the page as it stood before, so a patch that removes an element can
-/// still be read.
+/// one, every rule a paint has named so far and the theme's variables
+/// the sheet was last written with, the handlers its elements bound, and
+/// what the user was heard to do to it since.
 export type Live = {
     page: Cell<List<Element>> = Cell.new([]),
-    stood: Cell<List<Element>> = Cell.new([]),
     next: Cell<int> = Cell.new(0),
-    sheet: Cell<string> = Cell.new(""),
     rules: Cell<List<CssRule>> = Cell.new([]),
+    worn: Cell<string?> = Cell.new(null),
     bound: Cell<List<Bound>> = Cell.new([]),
     heard: Cell<List<Heard>> = Cell.new([]),
 }
@@ -44,24 +41,7 @@ fn bound_in(e: Element) -> List<Bound> {
         .concat([b for k in el.kids for b in bound_in(k)])
 }
 
-/// The elements under `e` that hear an event and are named `name`, as a
-/// reader of the page finds a control: by its accessible name.
-fn named_in(e: Element, name: string) -> List<NodeId> {
-    let el? = e.tagged() else { return [] }
-    let own: List<NodeId> = if !el.hears.is_empty() &&
-        el.attrs.any(it.name == HtmlAttrName.AriaLabel && it.value == name) {
-        [el.id]
-    } else {
-        []
-    }
-    own.concat([id for k in el.kids for id in named_in(k, name)])
-}
-
 impl Live {
-    /// The controls named `name` on the page as last painted, in page
-    /// order — who a host's echo would name for each.
-    fn named(name: string) -> List<NodeId> { [id for e in self.page.get() for id in named_in(e, name)] }
-
     /// The patches that turn the page into `root` under `theme`: the
     /// sheet when it changed, then the elements that did. An unchanged
     /// page says nothing. A RULE ONCE NAMED STAYS IN THE SHEET, so the
@@ -70,19 +50,25 @@ impl Live {
     /// The handlers are kept anew EVERY paint: two trees that draw alike
     /// may still close over different values.
     fn patches(root: Node, theme: Theme) -> List<Patch> {
-        let stood = self.page.get()
-        let rules = distinct_rules(self.rules.get().concat(rules_of(root)))
-        let sheet = page_sheet(rules, theme, [])
-        let restyled: List<Patch> = if sheet == self.sheet.get() { [] } else { [Patch.Style(sheet)] }
-        let now = diff(stood, lowered(root), self.heard.get(), self.next.get())
-        self.stood.set(stood)
+        let restyled = self.restyled(root, theme)
+        let now = diff(self.page.get(), lowered(root), self.heard.get(), self.next.get())
         self.page.set(now.page)
         self.next.set(now.next)
-        self.rules.set(rules)
-        self.sheet.set(sheet)
         self.heard.set([])
         self.bound.set([b for e in now.page for b in bound_in(e)])
         restyled.concat(now.patches)
+    }
+
+    /// The sheet, when it must be sent again: the page has never worn one
+    /// of the tree's classes, or the theme's variables moved. The sheet's
+    /// text is built only then.
+    fn restyled(root: Node, theme: Theme) -> List<Patch> {
+        let rules = distinct_rules(self.rules.get().concat(rules_of(root)))
+        let vars = root_vars(theme)
+        if rules.length == self.rules.get().length && self.worn.get() == vars { return [] }
+        self.rules.set(rules)
+        self.worn.set(vars)
+        [Patch.Style(page_sheet(rules, theme, []))]
     }
 
     /// `patches`, as the frame a host applies.
@@ -111,8 +97,8 @@ impl Live {
     /// What a paint of `root` says, as readable lines — each element by
     /// the path it stands at. For tests and `explain`, never the wire.
     fn said(root: Node, theme: Theme) -> string {
-        let patches = self.patches(root, theme)
-        patch_text(patches, self.stood.get().concat(self.page.get()))
+        let stood = self.page.get()
+        patch_text(self.patches(root, theme), stood.concat(self.page.get()))
     }
 }
 

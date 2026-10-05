@@ -4,6 +4,7 @@
 use @std.ui.app.{plain, remounted}
 use @std.ui.components.{button, column, field, text}
 use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.tests.support.{named}
 use @std.ui.realize.dom.page.{Paged, paged}
 use @std.ui.realize.dom.patch.{Says}
 use @std.ui.realize.render.{EventKind}
@@ -26,7 +27,7 @@ fn counting(count: Cell<int>, host: Host) -> Paged {
 
 /// The host's echo of a press on the control named `name`.
 fn press(on: Paged, name: string) -> bool {
-    let who? = on.page.named(name).first() else { return false }
+    let who? = named(on.page, name).first() else { return false }
     on.heard(who.n, EventKind.Press.code(), Says.Nothing.code(), 0, null)
 }
 
@@ -76,7 +77,7 @@ spec "an app on a live page" {
             let count: Cell<int> = Cell.new(0)
             let on = counting(count, host)
             on.app.paint()
-            let who = on.page.named("Raise")[0].n
+            let who = named(on.page, "Raise")[0].n
             !on.heard(who, 99, Says.Nothing.code(), 0, null) &&
                 !on.heard(who, EventKind.Press.code(), 99, 0, null) &&
                 count.get() == 0
@@ -91,7 +92,7 @@ spec "an app on a live page" {
                 (sent: Bytes) -> host.frames.push(sent),
             )
             on.app.paint()
-            let who = on.page.named("Name")[0].n
+            let who = named(on.page, "Name")[0].n
             let lost = on.heard(who, EventKind.Input.code(), Says.Text.code(), 0, null)
             let said = on.heard(who, EventKind.Input.code(), Says.Text.code(), 0, "Ada")
             !lost && said && held.get() == "Ada"
@@ -113,7 +114,7 @@ spec "an app on a live page" {
             )
             on.app.paint()
             let ran = press(on, "Go")
-            ran && on.page.named("Back").length == 1 && on.page.named("Go").is_empty()
+            ran && named(on.page, "Back").length == 1 && named(on.page, "Go").is_empty()
         }
         then "the new view's handlers are the ones bound" {
             let hits: Cell<int> = Cell.new(0)
