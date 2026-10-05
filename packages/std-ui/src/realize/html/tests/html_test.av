@@ -84,12 +84,12 @@ spec "std/ui html — primitives" {
         }
         then "a divider is a rule that is never closed" { fragment(leaf(.Divider, [])) == "<hr>" }
         then "a card shows its title as a heading over its children" {
-            fragment(card_node("T", [text_node("x")])) == "<article title=\"T\"><h2>T</h2><span>x</span></article>"
+            fragment(card_node("T", [text_node("x")])) == "<article title=\"T\" class=\"dir-col\"><h2>T</h2><span>x</span></article>"
         }
-        then "an empty card keeps its title" { fragment(card_node("T", [])) == "<article title=\"T\"><h2>T</h2></article>" }
-        then "a card given no title has no heading" { fragment(holding(.Card, [])) == "<article></article>" }
+        then "an empty card keeps its title" { fragment(card_node("T", [])) == "<article title=\"T\" class=\"dir-col\"><h2>T</h2></article>" }
+        then "a card given no title has no heading" { fragment(holding(.Card, [])) == "<article class=\"dir-col\"></article>" }
         then "a card's appearance classes sit on its own element" {
-            fragment(card_node("T", []) with { box: Box { style: Style { fill: .Surface } } }) == "<article title=\"T\" class=\"fill-surface\"><h2>T</h2></article>"
+            fragment(card_node("T", []) with { box: Box { style: Style { fill: .Surface } } }) == "<article title=\"T\" class=\"dir-col fill-surface\"><h2>T</h2></article>"
         }
         then "a keyed item carries its identity" {
             fragment(keyed(holding(.Item, [text_node("x")]), "a")) == "<li data-key=\"a\"><span>x</span></li>"
@@ -121,7 +121,11 @@ spec "std/ui html — primitives" {
         then "a layout's direction replaces a row's own axis" {
             fragment(boxed(.Row, Layout { direction: .Column }, [])) == "<div class=\"dir-col\"></div>"
         }
-        then "a surface names no axis of its own" { fragment(holding(.Surface, [])) == "<div></div>" }
+        then "what stacks its children is a column, so its gap is drawn" {
+            [Prim.Surface, .Form, .Card, .Dialog]
+                .all((p) -> fragment(boxed(p, gap(.M), [])).contains("class=\"dir-col gap-m\""))
+        }
+        then "an item flows as its element does and keeps its marker" { fragment(leaf(.Item, [])) == "<li></li>" }
         then "a pad names one class per logical edge" {
             fragment(boxed(.Column, Layout { pad: around(.S) }, [])) == "<div class=\"dir-col pis-s pie-s pt-s pb-s\"></div>"
         }
@@ -173,8 +177,27 @@ spec "std/ui html — primitives" {
             ["dir-col", "dir-row", "gap-m", "pis-s", "pie-s", "pt-s", "pb-s"]
                 .all((c) -> count(sheet(), ".${c}{") == 1)
         }
-        then "it holds the variables, the base and one line per class the tree named" {
-            sheet().split("\n").length == 2 + 7
+        then "it holds the variables, the six base rules and one line per class the tree named" {
+            sheet().split("\n").length == 1 + 6 + 7
+        }
+        then "the variables say which scheme the browser's own controls wear" {
+            sheet().starts_with(":root{color-scheme:light;") &&
+                render(tree(), Env { theme: dark_theme }).contains(":root{color-scheme:dark;")
+        }
+        then "a control wears the page's ink and face, never the browser's" {
+            sheet().contains("\nbutton,input{font:inherit;color:inherit}\n")
+        }
+        then "a heading and a rule keep no margin" { sheet().contains("\nh1,h2,h3,h4,h5,h6,hr{margin:0}\n") }
+        then "a control and its words sit on one line, a step apart" {
+            sheet()
+                .contains("\nlabel{display:inline-flex;align-items:center;gap:var(--space-xs)}\n")
+        }
+        then "a dialog wears the surface, and a closed one is not drawn whatever its classes say" {
+            sheet()
+                    .contains(
+                        "\ndialog{position:fixed;inset-block:0;background:var(--tone-surface);color:var(--tone-text)}\n",
+                    ) &&
+                sheet().contains("\ndialog:not([open]){display:none}")
         }
         then "two renders of one tree are equal" { render(tree(), Env {}) == render(tree(), Env {}) }
         then "it holds no `<`" { !sheet().contains("<") }

@@ -13,6 +13,7 @@ use style.theme.{Theme, Mode}
 use tree.lists.{flatten}
 use tree.node.{Node, Prim}
 use style.tokens.{Size, Tone, Font}
+use realize.html.tags.{HtmlTag}
 
 /// One atomic rule: its class name (already state-prefixed), the state
 /// it applies in, and the declaration it carries.
@@ -210,14 +211,16 @@ impl Box {
         out
     }
 }
-/// The axis a primitive flows along when its layout names none. Every
-/// primitive spelled: a row and a column ARE their axis, the rest flow
-/// as their element does.
+/// The axis a primitive lays its children along when its layout names
+/// none. Every primitive spelled: a row is its axis, and what stacks its
+/// children — a column, a surface, a form, a card, a dialog — is a column,
+/// so a gap it names is drawn. An item flows as its element does: a flex
+/// box draws no list marker.
 fn own_axis(p: Prim) -> Axis? {
     match p {
         .Row -> .Row,
-        .Column -> .Column,
-        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> null,
+        .Column or .Surface or .Form or .Card or .Dialog -> .Column,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Divider or .Icon or .List or .Item or .Progress or .Alert or .Spinner or .Switch or .Slider -> null,
     }
 }
 
@@ -263,10 +266,17 @@ fn face_vars(t: Theme) -> string {
     ["--face-${f.word()}:${t.face_of(f)};" for f in fonts].join("")
 }
 
-/// The theme as the variables every class reads. A mode is a whole
+/// The scheme a mode asks the browser's own controls to wear. Every
+/// mode spelled.
+fn scheme(m: Mode) -> string {
+    match m { .Light or .HighContrast -> "light", .Dark -> "dark" }
+}
+
+/// The theme as the variables every class reads, and the scheme its
+/// mode is. A mode is a whole
 /// theme, so a mode change rewrites these and moves no class.
 export fn root_vars(t: Theme) -> string {
-    ":root{${space_vars(t)}${radius_vars(t)}${tone_vars(t)}${face_vars(t)} }"
+    ":root{color-scheme:${scheme(t.mode)};${space_vars(t)}${radius_vars(t)}${tone_vars(t)}${face_vars(t)} }"
 }
 
 /// A class name as a selector; `:` in a state prefix is escaped.
@@ -281,10 +291,25 @@ fn pseudo_of(s: Interaction?) -> string {
 
 fn rule_source(r: CssRule) -> string { "${selector(r.name)}${pseudo_of(r.state)}{${r.decl}}" }
 
-/// What the page itself looks like under every node: the surface, the
-/// text colour and the body face, read from the same variables.
-fn base_rule() -> string {
-    "body{margin:0;${fill_word(.Surface).decl};${color_word(.Text).decl};${face_word(.Body).decl}}"
+/// These tags as one selector.
+fn tags(of: List<HtmlTag>) -> string { [t.word() for t in of].join(",") }
+
+/// What the page looks like under every node, read from the same
+/// variables. The page wears the surface, the text colour and the body
+/// face, and a control wears them too rather than the browser's own. A
+/// heading and a rule keep no margin: space is a gap or a pad. A control
+/// and its words sit on one line, a step apart. A dialog wears the
+/// surface over the middle of the page, and a closed one is not drawn
+/// whatever its classes say.
+fn base_rules() -> List<string> {
+    [
+        "body{margin:0;${fill_word(.Surface).decl};${color_word(.Text).decl};${face_word(.Body).decl}}",
+        "${tags([.Button, .Input])}{font:inherit;color:inherit}",
+        "${tags([.H1, .H2, .H3, .H4, .H5, .H6, .Hr])}{margin:0}",
+        "${tags([.Label])}{display:inline-flex;align-items:center;${gap_word(.Xs).decl}}",
+        "${tags([.Dialog])}{position:fixed;inset-block:0;${fill_word(.Surface).decl};${color_word(.Text).decl}}",
+        "${tags([.Dialog])}:not([open]){display:none}",
+    ]
 }
 
 /// The media query under which a reader's settings ask for a mode. Every
@@ -305,7 +330,7 @@ fn alternate(t: Theme) -> string { "@media ${mode_query(t.mode)}{${root_vars(t)}
 export fn page_sheet(rules: List<CssRule>, t: Theme, alternates: List<Theme>) -> string {
     [root_vars(t)]
         .concat([alternate(a) for a in alternates])
-        .concat([base_rule()])
+        .concat(base_rules())
         .concat([rule_source(r) for r in rules])
         .join("\n")
 }

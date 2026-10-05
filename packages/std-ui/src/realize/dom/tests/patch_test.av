@@ -103,6 +103,13 @@ spec "std/ui dom — a repaint says only what changed" {
     given "an event" {
         then "is heard when a handler arrives" { between(button_node("a"), pressing(button_node("a"))) == "listen 0 press" }
         then "is dropped when its handler goes" { between(pressing(button_node("a")), button_node("a")) == "unlisten 0 press" }
+        then "a form nothing hears still hears its submit, so the page is never left" {
+            between(text_node("x"), holding(.Form, [])).contains("listen 0 submit")
+        }
+        then "a form that hears its submit hears it once" {
+            let heard = holding(.Form, []) with { events: [Action { kind: .Submit, handler: Handler.Nothing(nothing) }] }
+            between(text_node("x"), heard).split("listen 0 submit").length == 2
+        }
         then "is left alone while it is still heard" { between(pressing(button_node("a")), pressing(button_node("a"))) == "" }
     }
 }

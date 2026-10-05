@@ -11,7 +11,7 @@
 //! part's (`tree/identity.av`). A page that keeps it gives it a number. A URL arrives as a `Url`, which has no unsafe
 //! value, and every other value is escaped by whoever writes it.
 use tree.identity.{NodeId, Step, lone, steps, unplaced, under}
-use tree.node.{Node, Attribute, Prim, Action, submits_among}
+use tree.node.{Node, Attribute, Prim, Action, EventKind, submits_among}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
 use realize.html.css.{class_names}
 
@@ -167,6 +167,22 @@ fn labelled(n: Node, seat: string, kids: List<Element>) -> Element {
         )
 }
 
+fn unheard() {}
+
+/// What a node's element hears: its own events, and for a form nothing
+/// hears a submit that does nothing — a page the program draws is never
+/// left for the form's own answer. Every primitive spelled.
+fn heard(n: Node) -> List<Action> {
+    match n.prim {
+        .Form -> if n.events.any(it.kind == EventKind.Submit) {
+            n.events
+        } else {
+            n.events.concat([Action { kind: .Submit, handler: .Nothing(unheard) }])
+        },
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Switch or .Slider -> n.events,
+    }
+}
+
 /// The node itself as one element holding `kids`.
 fn element(n: Node, seat: string, kids: List<Element>) -> Element {
     Element
@@ -175,7 +191,7 @@ fn element(n: Node, seat: string, kids: List<Element>) -> Element {
                 seat: seat,
                 tag: tag_of(n),
                 attrs: element_attrs(n.prim, n.attrs).concat(node_attrs(n)),
-                hears: n.events,
+                hears: heard(n),
                 kids: kids,
             },
         )

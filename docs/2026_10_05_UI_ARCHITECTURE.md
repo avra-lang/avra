@@ -89,7 +89,12 @@ Five attempts to lift a handler into a generated message failed.
    with the names a program answers to — and `make ui-host` fails when
    it is stale. `make ui-board` builds the board as a wasm reactor and
    runs it over the real page glue, each claim checked: the one run
-   that holds `mount`, the entry and those names to a real module. Event kinds need no host copy:
+   that holds `mount`, the entry and those names to a real module. `make
+   ui-browser` serves that module over an HTTP origin and drives it in
+   headless Firefox with the browser's own pointer and keys
+   (`tools/ui-board/browser.mjs`): what only an engine can show — the
+   sheet styling the page, a caret kept while typing, the keyboard's
+   reach. Event kinds need no host copy:
    the host echoes a kind it never reads.
 7. **`mount(view)` is the app.** No app writes the host seam: the
    page's exports and its one import are the web module's own
