@@ -83,6 +83,26 @@ git -C "$main" worktree add -q -b loose "$scratch/avra-loose" main
 (cd "$scratch/avra-loose" && sh "$work" bind) > "$scratch/out" 2>&1
 check "$? $(holder "$scratch/avra-loose")" "1 " "work bind: with none free it refuses and binds nothing" "$scratch/out"
 
+# ══ MOVE: a named bind on a bound lane moves it, cleanly or not at all
+(cd "$scratch/avra-one" && sh "$work" bind B) > "$scratch/out" 2>&1
+check "$? $(holder "$scratch/avra-one")" "1 A" "work bind <sprite>: a Sprite another lane holds is refused, and the lane keeps its own" "$scratch/out"
+(cd "$scratch/avra-two" && sh "$work" done) > /dev/null 2>&1
+git -C "$main" worktree add -q -b two-again "$scratch/avra-two" main
+gd=$(git -C "$scratch/avra-one" rev-parse --absolute-git-dir)
+echo "$$ $(LC_ALL=C ps -o lstart= -p $$ | tr -s ' ' '_')" > "$gd/avra-run"
+(cd "$scratch/avra-one" && sh "$work" bind B) > "$scratch/out" 2>&1
+check "$? $(holder "$scratch/avra-one")" "1 A" "work bind <sprite>: a lane with a run going does not move" "$scratch/out"
+rm -f "$gd/avra-run"
+(cd "$scratch/avra-one" && SILENT=B sh "$work" bind B) > "$scratch/out" 2>&1
+check "$? $(holder "$scratch/avra-one")" "1 A" "work bind <sprite>: it does not move to a Sprite that does not answer" "$scratch/out"
+(cd "$scratch/avra-one" && sh "$work" bind B) > "$scratch/out" 2>&1
+(cd "$scratch/avra-two" && sh "$work" bind) >> "$scratch/out" 2>&1
+check "$(holder "$scratch/avra-one") $(holder "$scratch/avra-two") $(grep -c 'holds B — A is free' "$scratch/out")" "B A 1" "work bind <sprite>: the lane moves, and the Sprite it left goes to the next lane" "$scratch/out"
+(cd "$scratch/avra-one" && sh "$work" bind A) > /dev/null 2>&1
+(cd "$scratch/avra-two" && sh "$work" bind B && cd "$scratch/avra-one" && sh "$work" bind A) > "$scratch/out" 2>&1
+check "$(holder "$scratch/avra-one") $(holder "$scratch/avra-two")" "B A" "work bind <sprite>: two lanes cannot swap through each other — each keeps what it holds" "$scratch/out"
+(cd "$scratch/avra-two" && rm -f "$(git rev-parse --absolute-git-dir)/avra-sprite"; cd "$scratch/avra-one" && sh "$work" bind A; cd "$scratch/avra-two" && sh "$work" bind) > /dev/null 2>&1
+
 # ══ DONE: the lane goes, its Sprite is free ═══════════════════════════
 (cd "$scratch/avra-two" && sh "$work" done) > "$scratch/out" 2>&1
 st=$?

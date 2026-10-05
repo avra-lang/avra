@@ -9,9 +9,9 @@
 #   sh tools/work sprites      every Sprite at a glance; `--fix [name]` repairs
 #   sh tools/work done         remove this lane, free its Sprite
 #
-# Also: `bind [sprite]` gives a worktree that has none a Sprite, `wait
-# <branch>` waits for a PR to merge, `run --for <minutes>` raises the
-# command's bound.
+# Also: `bind [sprite]` gives a worktree a Sprite, or moves it to the one
+# named; `wait <branch>` waits for a PR to merge; `run --for <minutes>`
+# raises the command's bound.
 #
 # ONE SPRITE PER LANE, ONE RUN PER SPRITE. A worktree's Sprite is named in
 # its own git dir (`avra-sprite`); a Sprite belongs to one worktree until
@@ -102,12 +102,18 @@ bind() {
         lockf -k -t 60 "$lock" sh "$tools/work" bind-locked "$@"
     fi
 }
+# With a name on a lane that holds another Sprite, the lane MOVES: the
+# old one is free the moment the new one is held, and never while this
+# lane has a run going on it.
 bind_locked() {
     mine=$(bound)
-    [ -z "$mine" ] || { echo "work: this lane holds $mine"; return 0; }
+    if [ -n "$mine" ]; then
+        [ -n "${1:-}" ] && [ "$1" != "$mine" ] || { echo "work: this lane holds $mine"; return 0; }
+        ! running_here . || { echo "work: this lane has a run going on $mine — it moves when that ends" >&2; return 1; }
+    fi
     held=$(lanes)
     free=$(for s in ${1:-$(pool)}; do echo "$held" | grep -q "^$s " || printf '%s ' "$s"; done)
-    [ -n "$free" ] || { echo "work: every Sprite is bound:" >&2; echo "$held" | sed 's/^/  /' >&2; return 1; }
+    [ -n "$free" ] || { echo "work: ${1:-every Sprite} is bound:" >&2; echo "$held" | sed 's/^/  /' >&2; return 1; }
     # The first free one that answers; a silent one is left for later.
     d=$(mktemp -d "${TMPDIR:-/tmp}/avra-bind.XXXXXX")
     for s in $free; do (sx "$s" 20 true >/dev/null 2>&1 && : > "$d/$s") & done
@@ -117,7 +123,7 @@ bind_locked() {
     rm -rf "$d"
     [ -n "$pick" ] || { echo "work: no free Sprite answered in 20s (free: $free) — \`work sprites\` shows them" >&2; return 1; }
     echo "$pick" > "$(binding)"
-    echo "work: this lane holds $pick"
+    echo "work: this lane holds $pick${mine:+ — $mine is free}"
 }
 
 # THE COMPILER'S SOURCE, hashed by content: packages/cli plus every std
