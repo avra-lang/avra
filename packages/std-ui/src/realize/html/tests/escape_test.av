@@ -107,7 +107,11 @@ spec "std/ui html — escaping" {
         then "vbscript is refused" { refuses("vbscript:msgbox(1)") }
         then "file and ftp are refused" { refuses("file:///etc/passwd") && refuses("ftp://x") }
         then "a scheme that only starts like http is refused" { refuses("httpx://x") && refuses("https2:x") }
-        then "an entity-spelled scheme is refused" { refuses("&#106;avascript:alert(1)") && refuses("&colon;x:y") }
+        then "an entity-spelled scheme is a path and its fragment, the ampersand escaped" {
+            reads("&#106;avascript:alert(1)") &&
+                fragment(link_node("x", "&#106;avascript:alert(1)")) == "<a aria-label=\"x\" href=\"&amp;#106;avascript:alert(1)\">x</a>"
+        }
+        then "an entity before a colon in the first segment is no scheme of ours" { refuses("&colon;x:y") }
         then "a colon after a leading slash is part of a path" {
             reads("/javascript:alert(1)") &&
                 linked("/javascript:alert(1)") == "<a aria-label=\"x\" href=\"/javascript:alert(1)\">x</a>"

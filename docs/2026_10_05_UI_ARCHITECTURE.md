@@ -139,10 +139,14 @@ one exhaustive match per target over the primitives.
 - THE NEUTRAL WORD IS `press`, never `click`: a mouse word names one
   platform. `on press { … }`.
 - A URL IN THE TREE IS CHECKED: `href` and `src` carry `Url`
-  (`realize/url.av`), a type with NO unsafe value — a reference that
-  names no scheme, or one of `Scheme`'s. `url(text)` reads foreign text
-  strictly and answers absence; `local("/docs")` and `https("x.dev")`
-  write one. No target checks a URL. (`@std/url` is not used: it models
+  (`realize/url.av`), a type with NO unsafe value — a reference inside
+  the site, or one of `Scheme`'s. `url(text)` reads foreign text
+  strictly and answers absence: a scheme (read from the first path
+  segment alone) that is not ours, a network path (`//host`, with
+  slashes or backslashes), any control character. `local("/docs")` and
+  `https("x.dev")` write one, and the writer makes a value built by
+  hand safe too — behind `./`, behind `/.`, a control character as its
+  percent escape. No target checks a URL. (`@std/url` is not used: it models
   an ABSOLUTE URL parsed by RFC 3986, and a link's usual target is a
   relative reference it refuses.)
 

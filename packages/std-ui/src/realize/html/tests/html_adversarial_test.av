@@ -166,10 +166,9 @@ spec "std/ui html — adversarial" {
     }
     given "URLs beyond the listed attacks" {
         then "a full-width scheme is refused" { refuses("ｊavascript:alert(1)") }
-        then "a scheme with a slash before the colon is refused" { refuses("a/b:c") }
+        then "a colon past the first segment is part of a path" { reads("a/b:c") && reads("x?a=b:c") && reads(" /x:y") }
         then "a leading space before a relative path is a path" { reads(" /x") }
-        then "a leading space before a colon is refused" { refuses(" /x:y") && refuses(" https://x") }
-        then "a query colon with no relative opening is refused" { refuses("x?a=b:c") }
+        then "a leading space before a scheme is refused" { refuses(" https://x") && refuses(" javascript:x") }
         then "a URL holding an entity for its colon is a path, its ampersand escaped" {
             reads("javascript&colon;alert(1)") &&
                 fragment(link_node("x", "javascript&colon;alert(1)")) == "<a aria-label=\"x\" href=\"javascript&amp;colon;alert(1)\">x</a>"
@@ -181,7 +180,9 @@ spec "std/ui html — adversarial" {
         }
         then "an allowed scheme with a trailing space before its colon is refused" { refuses("https :x") }
         then "a scheme in non-ASCII capitals is refused" { refuses("ＨＴＴＰ://x") }
-        then "a backslash opening is a path with no scheme" { reads("\\\\x.dev\\a") && refuses("\\javascript:x") }
+        then "two backslashes open a network path, and one before a colon names no scheme of ours" {
+            refuses("\\\\x.dev\\a") && refuses("\\javascript:x")
+        }
         then "a local reference that spells a scheme is written as the path it is" {
             fragment(leaf(.Link, [.Href(Url.Local("javascript:x"))])) == "<a href=\"./javascript:x\"></a>"
         }

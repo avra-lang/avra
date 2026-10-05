@@ -1,6 +1,8 @@
 //! `style/words.av` — `@derive(Words)`: an enum variant carries its own
 //! word. The word is DATA on the variant (`@word("xs") Xs`), so a target
-//! never hand-writes `match z { .None -> "none", … }` again.
+//! never hand-writes `match z { .None -> "none", … }` again — and the
+//! variant a word names is read back from the same marks (`worded`), so
+//! no second list of the variants is kept.
 use @std.meta.{Type, Variant, Directive, literal}
 
 /// An enum whose variants name their words.
@@ -9,12 +11,22 @@ export trait Words {
 
     static fn derive(t: Type) -> List<Directive> {
         let arms = [quote { .${v} -> ${literal(word_of(v))} } for v in t.variants]
+        let each = [quote { .${v} } for v in t.variants]
         [
             Directive {
                 twin: "",
                 name: t.name,
                 at: t.at,
-                source: quote { impl ${t} { fn word() -> string { match self { ${arms} } } } },
+                source: quote {
+                    impl ${t} {
+                        fn word() -> string { match self { ${arms} } }
+
+                        static fn worded(word: string) -> ${t}? {
+                            let every: List<${t}> = [${..each}]
+                            every.find(it.word() == word)
+                        }
+                    }
+                },
             },
         ]
     }
