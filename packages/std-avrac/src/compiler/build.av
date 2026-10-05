@@ -396,29 +396,36 @@ export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Resul
     BuildOutcome,
     BuildError,
 > {
-    ws.built_for(tools.target, tools.reactor, tools.wasm_opt != "")
     ws.linked_program(entry, target_binary(entry, tools.target), tools)
 }
 
+impl Toolchain {
+    /// WHAT THIS TOOLCHAIN'S OUTPUT IS FOR, beside the compiler that makes it:
+    /// every word that moves an object's bytes or the linked module's. The
+    /// host's own build is the empty mode.
+    fn mode() -> string {
+        if self.target == "" { return "" }
+        "${self.target}${marked(self.reactor, "+reactor")}${marked(self.wasm_opt != "", "+opt")}${marked(self.debug, "+debug")}"
+    }
+}
+
+/// A mode's mark, written only when it holds.
+fn marked(holds: bool, mark: string) -> string { if holds { mark } else { "" } }
+
 impl Workspace {
-    /// A NON-HOST TARGET READS FROM ITS OWN STORE. A held row is the host's
-    /// object code, and a wasm build cannot reuse one — the held file's rows
-    /// are already kept (target-independent analysis), so nothing would ever
-    /// re-read it and its object would never be made for this target. A store
-    /// of its own starts cold, so every file is read and its object built for
-    /// the target. The host's own spelling is untouched.
-    /// WHAT A BUILD IS FOR IS PART OF THE COMPILER'S OWN IDENTITY. A held row
-    /// is the host's object code, and a reactor links a different start-up, so
-    /// a non-native build reads from a store of its own — cold once, then warm.
-    /// Folding the mode into the compiler's print (and so into `compiler_id`,
-    /// the store root and the roll's name for it) is ONE mechanism: no key
-    /// needs a second spelling of the target or the reactor.
-    fn built_for(target: string, reactor: bool, shrinking: bool) {
-        let mode = if reactor { "${target}+reactor" } else { target }
-        self
-            .keys
-            .build_mode
-            .set(if target == "" { "" } else if shrinking { "${mode}+opt" } else { mode })
+    /// WHAT A BUILD IS FOR IS PART OF THE COMPILER'S OWN IDENTITY. A kept row
+    /// is one target's object code and a kept binary one link's answer, so
+    /// each mode reads from a store of its own — cold once, then warm. The
+    /// mode folds into the compiler's print (and so into `compiler_id`, the
+    /// store root and the roll's name for it): ONE mechanism, and no key
+    /// spells the target a second time. A print and a root settled under
+    /// another mode are forgotten, and a restart carries the mode (`anew`).
+    fn built_for(tools: Toolchain) {
+        let mode = tools.mode()
+        if self.keys.build_mode.get() == mode { return }
+        self.keys.build_mode.set(mode)
+        self.keys.compiler_id.set("")
+        self.keys.store_root.set("")
     }
 }
 
@@ -435,6 +442,7 @@ impl Workspace {
         BuildOutcome,
         BuildError,
     > {
+        self.built_for(tools)
         let kept = self.kept_binary(self.program_key(entry, []), binary)
         if kept != null { return .Ok(kept!) }
         let d = diagnosed(self.derived(entry, Want.Binary))?
@@ -674,13 +682,7 @@ impl Workspace {
         )
         if code != 0 { fail BuildError.LinkFailed(code) }
         clock.mark("link")
-        // A wasm module is what a browser downloads: shrink it when the host
-        // offers the optimizer, and keep the link's own answer when it does not.
-        mut ready = staged
-        if tools.target != "" && tools.wasm_opt != "" {
-            let shrunk = staged_beside(staged)
-            if avra_spawn_status(tools.wasm_opt, ["--all-features", "-Oz", staged, "-o", shrunk]) == 0 { ready = shrunk }
-        }
+        let ready = shipped(staged, tools)
         let key = self.kept_key(under)
         let _ = d
             .store
@@ -690,7 +692,7 @@ impl Workspace {
                 links_text(self.linked_files(tools.runtime, tools.target)),
                 [key],
             )
-        let _ = d.store.keep_file(Stored.Bin, key, staged, [key])
+        let _ = d.store.keep_file(Stored.Bin, key, ready, [key])
         let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
         if !published(ready, binary) { fail BuildError.Unpublished(binary) }
         BuildOutcome {
@@ -784,6 +786,21 @@ fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string 
             tools.runtime,
         ],
     )
+}
+
+/// THE LINKED FILE AS IT SHIPS, the one staged file left standing: a wasm
+/// module is what a browser downloads, so it is shrunk when the host offers
+/// the optimizer and that succeeds — the link's own answer otherwise. What a
+/// build keeps and what it publishes are both this file.
+fn shipped(staged: string, tools: Toolchain) -> string {
+    if tools.target == "" || tools.wasm_opt == "" { return staged }
+    let shrunk = staged_beside(staged)
+    if avra_spawn_status(tools.wasm_opt, ["--all-features", "-Oz", staged, "-o", shrunk]) != 0 {
+        let _ = remove(shrunk)
+        return staged
+    }
+    let _ = remove(staged)
+    shrunk
 }
 
 /// The declarations a program's module brings that nothing standing makes — each once.
