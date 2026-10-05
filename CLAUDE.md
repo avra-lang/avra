@@ -1697,15 +1697,6 @@ Syntax the grammar lacks:
   has none of its own" — `{"a": null}` and `Cell.new(null)` alike.
   Any sibling with a type names it (`[null, 7]` is a `List<int?>`),
   and a declared want fills it (`let c: Cell<int?> = Cell.new(null)`).
-- AN `on <kind> { … }` HANDLER TAKES NO SEAT: `on input { text ->
-  draft = text }` is "expected BREAK while parsing `stmt`" at the
-  `->`, then "field `on_input` is `fn(string)?`, this is `fn()`". The block
-  is a NULLARY lambda filling `on_<kind>`, so a handler that is told a
-  value is written as the setting, its seat typed: `on_input: (text:
-  string) -> { draft = text }`. The type is needed because the field is
-  NULLABLE — an untyped seat there is "a lambda cannot sit here — this
-  seat takes `fn(string)?`" (sugar backlog: a seat in the `on` block,
-  and a lambda hearing a nullable fn want).
 - A KEYED LIST (`list xs by it.id { x -> … }`): "`list` takes no head
   value — name it at a statement (`list name { … }`), or write `list
   { … }`". Write `list { for x in xs { item { key: "${x.id}" … } }

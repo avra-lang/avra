@@ -61,7 +61,23 @@ spec "features/components" {
                 ),
             ) == "6"
         }
-        then "the handler's value is a `fn()`, and no message field accepts it yet" {
+        then "`on <kind> { v -> … }` gives the handler the seat the field's fn takes" {
+            answered(
+                provided(
+                    "use @x.c.{widget}\nfn v() -> int {\n    let x = 5\n    let a = widget { on step { by -> x + by } }\n    a.on_step(2)\n}\nv()",
+                    "export component widget {\n    on_step: fn(int) -> int = ((n: int) -> 0)\n}\n",
+                ),
+            ) == "7"
+        }
+        then "a nullable fn field hands the seat its type" {
+            answered(
+                provided(
+                    "use @x.c.{widget, Hear}\nstate said: string = \"\"\nfn v() -> string {\n    let a = widget { on input { text -> said = text } }\n    let f? = a.on_input else { return \"unset\" }\n    f(\"hi\")\n    said\n}\nv()",
+                    "export alias Hear = fn(string)\nexport component widget {\n    on_input: Hear? = null\n}\n",
+                ),
+            ) == "hi"
+        }
+        then "a field that is no fn refuses the handler" {
             refused_in(
                 provided(
                     "use @x.c.{widget}\nfn v() -> int {\n    widget { on click { 1 } }\n    0\n}\nv()\n",
