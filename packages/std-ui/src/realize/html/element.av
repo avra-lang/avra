@@ -18,8 +18,12 @@ use realize.html.css.{class_names}
 /// One piece of a page: an element, or a run of text.
 export enum Element {
     Tag(el: Tagged)
-    Text(id: NodeId, seat: string, content: string)
+    Text(run: Worded)
 }
+
+/// A run of text: where it stands among its siblings, and its words.
+/// `id` is the number a page gave it — none until a page places it.
+export type Worded = { id: NodeId = unplaced, seat: string, content: string }
 
 /// An element: where it stands among its siblings (`seat`, its step as
 /// spelled), its tag, its attributes in written order, what it hears,
@@ -36,22 +40,22 @@ export type Tagged = {
 
 impl Element {
     fn id() -> NodeId {
-        match self { .Tag(el) -> el.id, .Text(id, _, _) -> id }
+        match self { .Tag(el) -> el.id, .Text(run) -> run.id }
     }
 
     /// Where this stands among its siblings.
     fn seat() -> string {
-        match self { .Tag(el) -> el.seat, .Text(_, seat, _) -> seat }
+        match self { .Tag(el) -> el.seat, .Text(run) -> run.seat }
     }
 
     /// The element, when this is one.
     fn tagged() -> Tagged? {
-        match self { .Tag(el) -> el, .Text(_, _, _) -> null }
+        match self { .Tag(el) -> el, .Text(_) -> null }
     }
 
     /// The text, when this is a run of it.
     fn text() -> string? {
-        match self { .Text(_, _, content) -> content, .Tag(_) -> null }
+        match self { .Text(run) -> run.content, .Tag(_) -> null }
     }
 }
 
@@ -116,17 +120,15 @@ fn node_attrs(n: Node) -> List<HtmlAttr> {
 // ── the elements a node lowers to ───────────────────────────────
 
 /// The parts a lowering makes inside a node, by the step each stands at.
-fn text_part() -> string { Step.Part("text").spelled() }
-
-fn control_part() -> string { Step.Part("control").spelled() }
-
-fn words_part() -> string { Step.Part("words").spelled() }
+const text_part = Step.Part("text").spelled()
+const control_part = Step.Part("control").spelled()
+const words_part = Step.Part("words").spelled()
 
 fn title_part(j: int) -> string { Step.Part(if j == 0 { "title" } else { "title~${j}" }).spelled() }
 
 /// A run of text, when there are words to say.
 fn said(words: string) -> List<Element> {
-    if words == "" { [] } else { [Element.Text(unplaced, text_part(), words)] }
+    if words == "" { [] } else { [Element.Text(Worded { seat: text_part, content: words })] }
 }
 
 /// The title an attribute carries, when it is one.
@@ -157,13 +159,13 @@ fn labelled(n: Node, seat: string, kids: List<Element>) -> Element {
                     Element
                         .Tag(
                             Tagged {
-                                seat: control_part(),
+                                seat: control_part,
                                 tag: tag_of(n),
                                 attrs: element_attrs(n.prim, n.attrs),
                                 hears: n.events,
                             },
                         ),
-                    Element.Tag(Tagged { seat: words_part(), tag: .Span, kids: said(n.words()) }),
+                    Element.Tag(Tagged { seat: words_part, tag: .Span, kids: said(n.words()) }),
                 ]
                     .concat(kids),
             },

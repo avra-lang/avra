@@ -77,11 +77,40 @@ fn places(from: List<string>, to: List<string>) -> int { repainted(from, to).pla
 
 const pool = ["a", "b", "c", "d"]
 
+/// The longest run of `to`'s rows that `from` holds in the same order, by
+/// trying every choice: a row is taken when it stands after the last one
+/// taken, or left.
+fn longest_kept(from: List<string>, to: List<string>, after: int) -> int {
+    let head? = to.first() else { return 0 }
+    let later = to.slice(1, to.length)
+    let at = from.index_of(head)
+    let left = longest_kept(from, later, after)
+    if at <= after { return left }
+    let taken = 1 + longest_kept(from, later, at)
+    if taken > left { taken } else { left }
+}
+
+/// The fewest rows a repaint can place: every new row, and every kept row
+/// outside the longest run still in order.
+fn fewest(from: List<string>, to: List<string>) -> int { to.length - longest_kept(from, to, -1) }
+
 spec "std/ui dom — a reorder, applied" {
     given "every pair of key sequences over four keys" {
         then "there are 65 sequences, so 4225 repaints are applied" { arrangements(pool).length == 65 }
         then "each ends in the new order" {
             arrangements(pool).all((from) -> arrangements(pool).all((to) -> lands(from, to)))
+        }
+    }
+    given "every pair of key sequences over four keys, counted" {
+        then "each places the fewest rows any patch list could" {
+            arrangements(pool)
+                .all((from) -> arrangements(pool).all((to) -> places(from, to) == fewest(from, to)))
+        }
+    }
+    given "a long list whose last row is carried to the front" {
+        then "is one place, whatever its length" {
+            let keys = ["k${n}" for n in 0..600]
+            places(keys, [keys[599]].concat(keys.slice(0, 599))) == 1
         }
     }
     given "rows that only changed order" {
