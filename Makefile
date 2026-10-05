@@ -261,6 +261,11 @@ wasm-seam:
 wasm-refuses:
 	sh tools/wasm-refuses.sh
 
+# THE STORE ACROSS TARGETS: a module is its own target's code, and what a
+# build keeps is what it published.
+wasm-cache:
+	sh tools/wasm-cache-attacks.sh
+
 # THE FLOOR: what the smallest wasm program carries, section by section.
 wasm-size:
 	sh tools/wasm-size.sh
@@ -288,7 +293,7 @@ wasm-archive:
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: ui-host ui-host-test ui-board h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-size wasm-body wasm-size-guard wasm-size-accept
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
