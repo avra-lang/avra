@@ -71,7 +71,12 @@ impl Runnable for DevCmd {
         match pointed(path) {
             .Files -> hosted(args, path, directory("/", fresh_files(path)), () -> false),
             .Page -> match page_at(path, asked(args, "target", "wasm")) {
-                .Ok(p) -> hosted(args, path, p.routes(), () -> !args.has_flag("no_watch") && p.turn()),
+                .Ok(p) -> hosted(
+                    args,
+                    path,
+                    p.routes(),
+                    () -> (p.unbuilt() || !args.has_flag("no_watch")) && p.turn(),
+                ),
                 .Err(code) -> code,
             },
             .Library -> unequipped(serves_no_library(path)),
@@ -112,10 +117,17 @@ fn hosted(args: CliResult, path: string, routes: List<Route>, turn: fn() -> bool
 fn fresh_files(root: string) -> Files { Files { root: root, max_age: 0 } }
 
 /// The page opened where the developer browses: the first opener this
-/// machine has.
+/// machine has. One that could not be opened is said, with where to go.
 fn opened(url: string) {
-    let opener? = found([tool("xdg-open"), tool("open")]).first() else { return }
-    let _ = cmd(opener, [url]).outcome()
+    let opener? = found([tool("xdg-open"), tool("open")]).first() else {
+        eprintln(not_opened(url))
+        return
+    }
+    let ran = match cmd(opener, [url]).outcome() {
+        .Ok(o) -> status_of_exit(o.exit) == 0,
+        .Err(_) -> false,
+    }
+    if !ran { eprintln(not_opened(url)) }
 }
 
 /// An option as given, or `otherwise` when it was not.
@@ -249,10 +261,13 @@ impl Page {
         [Watched { path: p, mark: mark_of(p) } for p in self.lister.build_inputs(entry)]
     }
 
+    /// Whether no build has been asked for yet.
+    fn unbuilt() -> bool { self.watched.get().is_empty() }
+
     /// Whether what stands now is what was last built from.
     fn still(now: List<Watched>) -> bool {
         let was = self.watched.get()
-        !was.is_empty() &&
+        !self.unbuilt() &&
             was.length == now.length &&
             [j for j, w in now if was[j].path != w.path || !unmoved(w.path, was[j].mark, w.mark)]
                 .is_empty()
@@ -398,6 +413,8 @@ fn build_line(now: Standing, took_ms: int) -> string {
 }
 
 fn not_served(why: string) -> string { "${why} — `--port 0` takes any free port" }
+
+fn not_opened(url: string) -> string { "dev: no browser could be opened here — the page is at ${url}" }
 
 fn serves_no_file(path: string) -> string { "`dev` serves a directory or a package — ${path} is a file" }
 
