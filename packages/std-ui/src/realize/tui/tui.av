@@ -1,53 +1,83 @@
 //! `realize/tui/tui.av` — the terminal target. The same Node, the same
-//! vocabulary, drawn as lines. A second target is a table and a walker,
-//! never a component list. UI.md §19.2.
-use realize.render.{Node, Prim, Attribute}
+//! vocabulary, drawn as lines of plain text in a width. The walk hands
+//! each node its place; a node's lines are made when it closes, from the
+//! lines of its children.
+use @std.text.{codepoints, from_codepoints}
 use realize.identity.{NodeId}
+use realize.render.{Node}
 use realize.sink.{Sink, draw}
+use realize.tui.layout.{lines_of, room}
+use realize.tui.wrap.{cut, at_least_one}
 use env.{Env}
 
-/// The terminal target: one accumulator of lines.
-export type Tui = { lines: Cell<List<string>> = Cell.new([]) }
+/// A node while its children are drawn: the cells it was given and its
+/// children's lines so far.
+type Open = { node: Node, width: int, blocks: List<List<string>> }
 
-/// The one line a primitive draws for itself; a container draws none.
-/// The shape a primitive's line takes: its content, bracketed, a
-/// checkbox, a rule, or nothing.
-export enum LineForm { Content, Bracketed, Checkbox, Rule, Blank }
-
-/// How a primitive draws its line — ONE match, so no per-row aggregate
-/// settles: the mapping is code, not data.
-fn line_form(p: Prim) -> LineForm {
-    match p {
-        .Text or .Heading or .Link or .Image or .Field or .Slider or .Icon or .Progress or .Alert or .Spinner -> .Content,
-        .Button -> .Bracketed,
-        .Checkbox or .Switch -> .Checkbox,
-        .Divider -> .Rule,
-        .Row or .Column or .Dialog or .Surface or .List or .Item or .Card or .Form -> .Blank,
-    }
+/// The terminal target: the screen's width, the nodes still open, and the
+/// root's lines once it has closed.
+export type Tui = {
+    width: int,
+    open: Cell<List<Open>> = Cell.new([]),
+    lines: Cell<List<string>> = Cell.new([]),
 }
 
-fn line_of(n: Node) -> string {
-    match line_form(n.prim) {
-        .Content -> n.words(),
-        .Bracketed -> "[${n.words()}]",
-        .Checkbox -> "[ ] ${n.words()}",
-        .Rule -> "----",
-        .Blank -> "",
+impl Tui {
+    /// The cells the next node opened is drawn in: its parent's room, or
+    /// the screen's for the root.
+    fn next_width() -> int {
+        let parent? = self.open.get().last() else { return self.width }
+        room(parent.node, parent.width)
+    }
+
+    /// One node's finished lines, given to its parent or kept as the frame.
+    /// A node with no lines takes no place among its siblings.
+    fn give(ls: List<string>) {
+        let at = self.open.get().length - 1
+        if at < 0 {
+            self.lines.set(ls)
+            return
+        }
+        if ls.is_empty() { return }
+        let parent = self.open.get()[at]
+        self.open.set_at(at, parent with { blocks: parent.blocks.concat([ls]) })
     }
 }
 
 impl Sink for Tui {
     fn opened(_id: NodeId, _parent: NodeId?, _index: int, n: Node) {
-        let line = line_of(n)
-        if line != "" { self.lines.push(line) }
+        self.open.push(Open { node: n, width: self.next_width(), blocks: [] })
     }
     fn words(_id: NodeId, _s: string) {}
-    fn closed(_n: Node) {}
+    fn closed(_n: Node) {
+        let stack = self.open.get()
+        let top? = stack.last() else { return }
+        self.open.set(stack.slice(0, stack.length - 1))
+        self.give(lines_of(top.node, top.blocks, top.width))
+    }
 }
 
-/// The finished frame for one tree.
-export fn render(root: Node, _env: Env) -> string {
-    let t = Tui {}
+/// The picture a control code point is shown as, so no byte of a tree
+/// can drive the terminal: C0 and DEL as their control pictures, C1 as
+/// the replacement character. Every other code point is itself.
+fn shown_code(c: int) -> int {
+    when {
+        c < 32 -> 9216 + c
+        c == 127 -> 9249
+        c >= 128 && c < 160 -> 65533
+        _ -> c
+    }
+}
+
+fn shown(line: string) -> string { from_codepoints([shown_code(c) for c in codepoints(line)]) }
+
+/// The tree as text in `width` cells, one `\n` between lines and none
+/// after the last. A width below one reads as one. Every line is at most
+/// `width` code points: text wraps on word boundaries, and a word or an
+/// atom (button, link, image) wider than the line is cut at the width.
+export fn render(root: Node, _env: Env, width: int) -> string {
+    let w = at_least_one(width)
+    let t = Tui { width: w }
     draw(root, t)
-    t.lines.get().join("\n")
+    [shown(part) for l in t.lines.get() for part in cut(l, w)].join("\n")
 }

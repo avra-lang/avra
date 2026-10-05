@@ -14,7 +14,7 @@ fn html(v: dyn View) -> string { render(v.describe(), Env {}) }
 
 fn html_in(v: dyn View, env: Env) -> string { render(v.describe(), env) }
 
-fn term(v: dyn View) -> string { tui_render(v.describe(), Env {}) }
+fn term(v: dyn View) -> string { tui_render(v.describe(), Env {}, 40) }
 
 fn occurrences(hay: string, needle: string) -> int { hay.split(needle).length - 1 }
 
@@ -39,9 +39,9 @@ spec "std/ui render — the HTML target" {
         }
     }
     given "a column of two leaves" {
-        then "nests them in a div" {
+        then "nests them in a div that flows down" {
             html(column { items: [text "a", button "b"] })
-                .contains("<div><span>a</span><button aria-label=\"b\">b</button></div>")
+                .contains("<div class=\"dir-col\"><span>a</span><button aria-label=\"b\">b</button></div>")
         }
         then "takes its children from its body, into items" {
             html(
@@ -50,16 +50,16 @@ spec "std/ui render — the HTML target" {
                     button "b"
                 },
             )
-                .contains("<div><span>a</span><button aria-label=\"b\">b</button></div>")
+                .contains("<div class=\"dir-col\"><span>a</span><button aria-label=\"b\">b</button></div>")
         }
     }
     given "text that looks like markup" {
         then "is escaped" { html(text "<b>").contains("<span>&lt;b&gt;</span>") }
     }
     given "a row of two texts" {
-        then "is a div too" {
+        then "is a div that flows across" {
             html(row { items: [text "a", text "b"] })
-                .contains("<div><span>a</span><span>b</span></div>")
+                .contains("<div class=\"dir-row\"><span>a</span><span>b</span></div>")
         }
     }
 }
@@ -180,9 +180,9 @@ spec "std/ui render — the terminal target" {
         then "is the words themselves" { term(text "hi") == "hi" }
     }
     given "a button" {
-        then "brackets its label" { term(button "Buy") == "[Buy]" }
+        then "brackets its label" { term(button "Buy") == "[ Buy ]" }
     }
     given "a column of a text and a button" {
-        then "stacks one line each" { term(column { items: [text "a", button "b"] }) == "a\n[b]" }
+        then "stacks one line each" { term(column { items: [text "a", button "b"] }) == "a\n[ b ]" }
     }
 }

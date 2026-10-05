@@ -3,12 +3,18 @@
 //! to an attribute, and `Box` to the atomic classes its rules name. The
 //! walker is the same for every tree; the class set is deduped per
 //! document and the one stylesheet is emitted beside it. UI.md §19.2.
+//!
+//! Every value is escaped by the writer for the context it lands in, and
+//! a URL reaches an attribute only through `safe_url`. A control holds no
+//! content, so it sits under a `label` beside its words.
 use realize.render.{Node, Attribute, Prim}
 use realize.identity.{NodeId}
 use realize.sink.{Sink, draw}
-use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, control_attrs, tag_of}
-use realize.html.writer.{HtmlOp, document}
-use realize.html.css.{CssRule, distinct_rules, class_names, stylesheet}
+use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
+use realize.html.writer.{HtmlOp, Head, document, page_source, source}
+use realize.html.url.{safe_url}
+use realize.html.css.{CssRule, distinct_rules, node_rules, class_names, page_sheet}
+use style.theme.{Theme}
 use env.{Env}
 
 /// The HTML target: an accumulator of ops, the rules the tree named, and
@@ -28,9 +34,9 @@ fn attr_list(a: Attribute) -> List<HtmlAttr> {
         .Value(v) -> [HtmlAttr { name: .Value, value: v }],
         .Amount(n) -> [HtmlAttr { name: .Value, value: "${n}" }],
         .Placeholder(t) -> [HtmlAttr { name: .Placeholder, value: t }],
-        .Src(u) -> [HtmlAttr { name: .Src, value: u }],
+        .Src(u) -> src_attrs(u),
         .Alt(t) -> [HtmlAttr { name: .Alt, value: t }],
-        .Href(u) -> [HtmlAttr { name: .Href, value: u }],
+        .Href(u) -> href_attrs(u),
         .Min(n) -> [HtmlAttr { name: .Min, value: "${n}" }],
         .Max(n) -> [HtmlAttr { name: .Max, value: "${n}" }],
         .Disabled(flag) -> if flag { [HtmlAttr { name: .Disabled, value: "" }] } else { [] },
@@ -44,6 +50,19 @@ fn attr_list(a: Attribute) -> List<HtmlAttr> {
         .Name(t) or .Label(t) -> [HtmlAttr { name: .AriaLabel, value: t }],
         .Text(_) or .Level(_) -> [],
     }
+}
+
+/// What a refused URL leaves behind: its value, inert.
+fn refusal(u: string) -> HtmlAttr { HtmlAttr { name: .DataRefusedUrl, value: u } }
+
+/// A link's target: the URL when it is safe, else `#` and the refusal.
+fn href_attrs(u: string) -> List<HtmlAttr> {
+    if safe_url(u) { [HtmlAttr { name: .Href, value: u }] } else { [HtmlAttr { name: .Href, value: "#" }, refusal(u)] }
+}
+
+/// An image's source: the URL when it is safe, else the refusal alone.
+fn src_attrs(u: string) -> List<HtmlAttr> {
+    if safe_url(u) { [HtmlAttr { name: .Src, value: u }] } else { [refusal(u)] }
 }
 
 fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {
@@ -72,21 +91,95 @@ fn node_attrs(n: Node) -> List<HtmlAttr> {
     keyed.concat(class_attrs(n))
 }
 
+// ── the element a node lowers to ────────────────────────────────
+
+/// The title an attribute carries, when it is one.
+fn titles(a: Attribute) -> List<string> {
+    match a { .Title(t) -> [t], _ -> [] }
+}
+
+/// The heading a titled grouping shows above its children. Every
+/// primitive spelled: only a card draws its title.
+fn title_ops(n: Node) -> List<HtmlOp> {
+    match n.prim {
+        .Card -> [op for a in n.attrs for title in titles(a) for op in [HtmlOp.Open(.H2, []), .Text(title), .Close(.H2)]],
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> [],
+    }
+}
+
+/// A node's ops up to its children. A control cannot hold its own words,
+/// so a `label` takes the node's place in the tree and the words sit
+/// beside the control inside it.
+fn opening(n: Node) -> List<HtmlOp> {
+    let tag = tag_of(n)
+    let own = element_attrs(n.prim, n.attrs)
+    match carries(tag) {
+        .Within -> [HtmlOp.Open(tag, own.concat(node_attrs(n))), .Text(n.words())].concat(title_ops(n)),
+        .Never -> [HtmlOp.Open(tag, own.concat(node_attrs(n))), .Close(tag)],
+        .Beside -> [
+            HtmlOp.Open(.Label, node_attrs(n)),
+            .Open(tag, own),
+            .Close(tag),
+            .Open(.Span, []),
+            .Text(n.words()),
+            .Close(.Span),
+        ],
+    }
+}
+
+/// The ops that end a node, after its children.
+fn closing(n: Node) -> List<HtmlOp> {
+    match carries(tag_of(n)) {
+        .Within -> [HtmlOp.Close(tag_of(n))],
+        .Never -> [],
+        .Beside -> [HtmlOp.Close(.Label)],
+    }
+}
+
 // ── the walker ──────────────────────────────────────────────────
 
 impl Sink for Html {
     fn opened(_id: NodeId, _parent: NodeId?, _index: int, n: Node) {
         // LICENSED loops.push_loop: the rules ride a shared Cell; a concat assignment would rebind a copy
-        for r in distinct_rules(n.box.rules()) { self.rules.push(r) }
-        self.ops.push(HtmlOp.Open(tag_of(n), element_attrs(n.prim, n.attrs).concat(node_attrs(n))))
+        for r in distinct_rules(node_rules(n.prim, n.box)) { self.rules.push(r) }
+        // LICENSED loops.push_loop: the ops ride a shared Cell; a concat assignment would rebind a copy
+        for op in opening(n) { self.ops.push(op) }
     }
-    fn words(_id: NodeId, s: string) { self.ops.push(HtmlOp.Text(s)) }
-    fn closed(n: Node) { self.ops.push(HtmlOp.Close(tag_of(n))) }
+    fn words(_id: NodeId, _s: string) {}
+    fn closed(n: Node) {
+        // LICENSED loops.push_loop: the ops ride a shared Cell; a concat assignment would rebind a copy
+        for op in closing(n) { self.ops.push(op) }
+    }
 }
+
+/// One tree, walked: its ops and the rules it named.
+fn drawn(root: Node, env: Env) -> Html {
+    let h = Html { env: env }
+    draw(root, h)
+    h
+}
+
+/// The tree alone as HTML: no stylesheet, no document around it.
+export fn fragment(root: Node) -> string { source(drawn(root, Env {}).ops.get()) }
 
 /// The finished document for one tree: its one stylesheet, then its body.
 export fn render(root: Node, env: Env) -> string {
-    let h = Html { env: env }
-    draw(root, h)
-    document(stylesheet(distinct_rules(h.rules.get()), env.theme), h.ops.get())
+    let h = drawn(root, env)
+    document(page_sheet(distinct_rules(h.rules.get()), env.theme, []), h.ops.get())
+}
+
+/// What a whole page says about itself. `alternates` are the themes the
+/// reader's own settings may choose over the environment's, each under
+/// the media query its mode names.
+export type Page = { title: string, env: Env = Env {}, alternates: List<Theme> = [] }
+
+/// A complete document with no script: the page's head, its one
+/// stylesheet, then the tree.
+export fn page(p: Page, root: Node) -> string {
+    let h = drawn(root, p.env)
+    page_source(
+        Head { title: p.title, locale: p.env.locale, direction: p.env.direction },
+        page_sheet(distinct_rules(h.rules.get()), p.env.theme, p.alternates),
+        h.ops.get(),
+    )
 }

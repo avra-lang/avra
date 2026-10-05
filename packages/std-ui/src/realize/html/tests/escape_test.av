@@ -1,0 +1,132 @@
+// Every context a byte can end: text, a quoted attribute, a URL, the
+// title. Each hostile string arrives inert.
+use @std.text.{from_codepoint}
+use @std.ui.realize.render.{Node}
+use @std.ui.realize.html.html.{fragment, page, Page}
+use @std.ui.realize.html.writer.{HtmlOp, source}
+use @std.ui.realize.html.tags.{HtmlAttr}
+use @std.ui.realize.html.url.{safe_url}
+use @std.ui.realize.tests.support.{
+    leaf,
+    keyed,
+    holding,
+    text_node,
+    heading_node,
+    image_node,
+    link_node,
+    button_node,
+    switch_node,
+    field_node,
+    card_node,
+}
+
+fn text_source(s: string) -> string { source([HtmlOp.Text(s)]) }
+
+/// `s` as the value of one attribute, with the quotes that hold it.
+fn attr_source(s: string) -> string {
+    let whole = source([HtmlOp.Open(.Span, [HtmlAttr { name: .Title, value: s }])])
+    whole.substring(12, whole.length - 1)
+}
+
+fn linked(to: string) -> string { fragment(link_node("x", to)) }
+
+fn refused(to: string) -> string {
+    "<a aria-label=\"x\" href=\"#\" data-refused-url=\"${text_source(to)}\">x</a>"
+}
+
+spec "std/ui html — escaping" {
+    given "text content" {
+        then "a script tag in a text arrives as entities" {
+            fragment(text_node("<script>alert(1)</script>")) == "<span>&lt;script&gt;alert(1)&lt;/script&gt;</span>"
+        }
+        then "the five specials each become their entity" { text_source("&<>\"'") == "&amp;&lt;&gt;&quot;&#39;" }
+        then "an entity's ampersand is escaped again" { text_source("&lt;") == "&amp;lt;" }
+        then "the empty string is empty" { text_source("") == "" }
+        then "plain text and unicode pass unchanged" { text_source("héllo ✓") == "héllo ✓" }
+        then "a NUL stays and the specials around it escape" {
+            text_source("<" + from_codepoint(0) + ">") == "&lt;" + from_codepoint(0) + "&gt;"
+        }
+        then "a button's label escapes in its content and its name" {
+            fragment(button_node("<b>")) == "<button aria-label=\"&lt;b&gt;\">&lt;b&gt;</button>"
+        }
+        then "a switch's label escapes beside its control" {
+            fragment(switch_node("<b>", false)) == "<label><input type=\"checkbox\" role=\"switch\" aria-label=\"&lt;b&gt;\"><span>&lt;b&gt;</span></label>"
+        }
+        then "a field's label escapes beside its control" {
+            fragment(field_node("<b>", "")) == "<label><input type=\"text\" aria-label=\"&lt;b&gt;\" value=\"\"><span>&lt;b&gt;</span></label>"
+        }
+        then "a heading's closing tag in its words is escaped" {
+            fragment(heading_node("</h1><script>", 1)) == "<h1>&lt;/h1&gt;&lt;script&gt;</h1>"
+        }
+        then "a card's title escapes in its attribute and its heading" {
+            fragment(card_node("<i>", [])) == "<article title=\"&lt;i&gt;\"><h2>&lt;i&gt;</h2></article>"
+        }
+    }
+    given "an attribute value" {
+        then "it is double-quoted" { attr_source("a") == "\"a\"" }
+        then "a double quote in an alt stays inside its attribute" {
+            fragment(image_node("/a.png", "\" onmouseover=\"x")) == "<img src=\"/a.png\" alt=\"&quot; onmouseover=&quot;x\">"
+        }
+        then "a single quote is escaped" { attr_source("' onfocus='x") == "\"&#39; onfocus=&#39;x\"" }
+        then "an angle bracket is escaped" { attr_source("><script>") == "\"&gt;&lt;script&gt;\"" }
+        then "a double quote in a field's value stays inside its attribute" {
+            fragment(field_node("f", "\" autofocus onfocus=\"x")) == "<label><input type=\"text\" aria-label=\"f\" value=\"&quot; autofocus onfocus=&quot;x\"><span>f</span></label>"
+        }
+        then "a double quote in a key stays inside its attribute" {
+            fragment(keyed(leaf(.Item, []), "\"><script>")) == "<li data-key=\"&quot;&gt;&lt;script&gt;\"></li>"
+        }
+        then "a newline stays inside the quotes" { attr_source("a\nb") == "\"a\nb\"" }
+    }
+    given "a URL" {
+        then "an https link keeps its target" { linked("https://x.dev/a") == "<a aria-label=\"x\" href=\"https://x.dev/a\">x</a>" }
+        then "http and mailto pass" { safe_url("http://x.dev") && safe_url("mailto:a@b.c") }
+        then "a scheme is read without ASCII case" { safe_url("HTTPS://x.dev") && safe_url("MailTo:a@b.c") }
+        then "a relative path with a query and fragment keeps its target" {
+            linked("/x?y=1#z") == "<a aria-label=\"x\" href=\"/x?y=1#z\">x</a>"
+        }
+        then "the dot, parent, fragment and query forms pass" {
+            safe_url("./a") && safe_url("../a") && safe_url("#top") && safe_url("?q=1")
+        }
+        then "a path with no scheme passes" { safe_url("about.html") }
+        then "the empty URL passes as no scheme" { safe_url("") }
+        then "a javascript link is refused to `#` and its value kept inert" {
+            linked("javascript:alert(1)") == refused("javascript:alert(1)")
+        }
+        then "javascript in mixed case is refused" { linked("JaVaScRiPt:alert(1)") == refused("JaVaScRiPt:alert(1)") }
+        then "javascript after a leading space is refused" { linked(" javascript:alert(1)") == refused(" javascript:alert(1)") }
+        then "javascript after a leading newline is refused" { !safe_url("\njavascript:alert(1)") }
+        then "a tab inside the scheme is refused" { !safe_url("java" + from_codepoint(9) + "script:alert(1)") }
+        then "a NUL before the scheme is refused" { !safe_url(from_codepoint(0) + "javascript:alert(1)") }
+        then "a data link is refused" {
+            linked("data:text/html,<script>alert(1)</script>") == refused("data:text/html,<script>alert(1)</script>")
+        }
+        then "vbscript is refused" { !safe_url("vbscript:msgbox(1)") }
+        then "file and ftp are refused" { !safe_url("file:///etc/passwd") && !safe_url("ftp://x") }
+        then "a scheme that only starts like http is refused" { !safe_url("httpx://x") && !safe_url("https2:x") }
+        then "an entity-spelled scheme is refused" { !safe_url("&#106;avascript:alert(1)") && !safe_url("&colon;x:y") }
+        then "a colon after a leading slash is part of a path" {
+            safe_url("/javascript:alert(1)") &&
+                linked("/javascript:alert(1)") == "<a aria-label=\"x\" href=\"/javascript:alert(1)\">x</a>"
+        }
+        then "a colon-led URL is refused" { !safe_url(":x") }
+        then "a refused value is escaped inside its data attribute" {
+            linked("javascript:\"onmouseover=\"x") == "<a aria-label=\"x\" href=\"#\" data-refused-url=\"javascript:&quot;onmouseover=&quot;x\">x</a>"
+        }
+        then "a refused image source leaves no src" {
+            fragment(image_node("data:image/png;base64,AA", "a")) == "<img data-refused-url=\"data:image/png;base64,AA\" alt=\"a\">"
+        }
+        then "a refused icon source leaves no src" {
+            fragment(leaf(.Icon, [.Src("javascript:x"), .Name("n")])) == "<img data-refused-url=\"javascript:x\" aria-label=\"n\">"
+        }
+        then "a passing URL is escaped as an attribute" { linked("/a\"b") == "<a aria-label=\"x\" href=\"/a&quot;b\">x</a>" }
+    }
+    given "the page's head" {
+        then "a closing title tag in the title is escaped" {
+            page(Page { title: "</title><script>alert(1)</script>" }, holding(.Column, []))
+                .contains("<title>&lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt;</title>")
+        }
+        then "an ampersand in the title escapes" {
+            page(Page { title: "a & b" }, holding(.Column, [])).contains("<title>a &amp; b</title>")
+        }
+    }
+}
