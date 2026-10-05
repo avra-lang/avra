@@ -1,0 +1,127 @@
+//! Identity, by its law: a node is its parent, then its key or its place
+//! among its unkeyed siblings — and no two nodes of a tree share an id.
+use @std.ui.realize.identity.{NodeId, Step, steps, root_id}
+use @std.ui.realize.render.{Node, Prim}
+use @std.ui.realize.update.{Op, plan}
+use @std.ui.style.box.{Box}
+
+fn spelled(keys: List<string?>) -> string { [s.spelled() for s in steps(keys)].join(" ") }
+
+fn node(key: string?, children: List<Node>) -> Node {
+    Node { prim: .Row, attrs: [], box: Box { key: key }, children: children }
+}
+
+fn leaf(key: string?) -> Node { node(key, []) }
+
+fn mounted(op: Op) -> List<string> {
+    match op { .Mount(m) -> [m.id.path], .Words(_, _) or .Event(_, _) -> [] }
+}
+
+/// Every id of the tree, spelled as one line.
+fn walked(root: Node) -> string { ids(root).join(" ") }
+
+fn ids(root: Node) -> List<string> { [id for op in plan(root) for id in mounted(op)] }
+
+fn distinct(xs: List<string>) -> bool { [j for j, x in xs if xs.index_of(x) == j].length == xs.length }
+
+const three_unkeyed: List<string?> = [null, null, null]
+
+fn under(path: string, step: Step) -> string { NodeId { path: path }.child(step).path }
+
+spec "std/ui identity — a sibling's step" {
+    given "unkeyed siblings" {
+        then "take their places in order" { spelled(three_unkeyed) == "0 1 2" }
+    }
+    given "a keyed sibling among unkeyed ones" {
+        then "takes no place, so the unkeyed keep theirs" { spelled([null, "a", null]) == "0 k1:a 1" }
+        then "is spelled the same wherever it stands" { spelled(["a", null]) == "k1:a 0" }
+    }
+    given "two siblings sharing a key" {
+        then "the second takes the next turn" { spelled(["a", "a", "a"]) == "k1:a k1:a~1 k1:a~2" }
+        then "another key's turns are its own" { spelled(["a", "b", "a"]) == "k1:a k1:b k1:a~1" }
+    }
+    given "an empty key" {
+        then "is a key, never an unkeyed place" { spelled(["", null]) == "k0: 0" }
+    }
+    given "no siblings" {
+        then "answers no steps" { steps([]).is_empty() }
+    }
+}
+
+spec "std/ui identity — no two paths spell one id" {
+    given "a key holding a separator" {
+        then "is not the keyed node's own child" {
+            under("0", Step.Keyed("b/3", 0)) != under(under("0", Step.Keyed("b", 0)), Step.Placed(3))
+        }
+    }
+    given "a key that is a number" {
+        then "is not that place" { under("0", Step.Keyed("1", 0)) != under("0", Step.Placed(1)) }
+    }
+    given "a key that ends like a turn" {
+        then "is not another key's second turn" {
+            under("0", Step.Keyed("a~1", 0)) != under("0", Step.Keyed("a", 1))
+        }
+    }
+    given "a key that spells a keyed step" {
+        then "is not that step" { under("0", Step.Keyed("k1:a", 0)) != under("0", Step.Keyed("a", 0)) }
+    }
+    given "a keyed root" {
+        then "wears its key" { root_id("page").path == "k4:page" }
+    }
+    given "an unkeyed root" {
+        then "is the first place" { root_id(null).path == "0" }
+    }
+}
+
+spec "std/ui identity — the walk" {
+    given "one tree walked twice" {
+        then "gives every node the same id" {
+            walked(node(null, [leaf("a"), leaf(null)])) == walked(node(null, [leaf("a"), leaf(null)]))
+        }
+    }
+    given "a sibling inserted above a keyed node" {
+        then "the keyed node keeps its id" {
+            ids(node(null, [leaf(null), node("a", [leaf(null)])])).contains("0/k1:a") &&
+                ids(node(null, [node("a", [leaf(null)])])).contains("0/k1:a")
+        }
+        then "and so does everything under it" {
+            ids(node(null, [leaf(null), leaf(null), node("a", [leaf(null)])])).contains("0/k1:a/0")
+        }
+    }
+    given "a keyed node inserted above an unkeyed one" {
+        then "the unkeyed node keeps its place" {
+            ids(node(null, [leaf("new"), leaf(null)])).contains("0/0")
+        }
+    }
+    given "an unkeyed node inserted above an unkeyed one" {
+        then "the lower one is the next place — a node with no key is its place" {
+            walked(node(null, [leaf(null), node(null, [leaf(null)])])) == "0 0/0 0/1 0/1/0"
+        }
+    }
+    given "keyed siblings reordered" {
+        then "each keeps its id" {
+            ids(node(null, [leaf("a"), leaf("b")])).contains("0/k1:b") &&
+                ids(node(null, [leaf("b"), leaf("a")])).contains("0/k1:b")
+        }
+    }
+    given "siblings sharing a key, and keys that spell steps" {
+        then "no two nodes share an id" {
+            distinct(
+                ids(
+                    node(
+                        null,
+                        [
+                            leaf("a"),
+                            leaf("a"),
+                            leaf("a~1"),
+                            leaf("0"),
+                            leaf(null),
+                            node("b", [leaf(null)]),
+                            leaf("b/0"),
+                        ],
+                    ),
+                ),
+            )
+        }
+    }
+}

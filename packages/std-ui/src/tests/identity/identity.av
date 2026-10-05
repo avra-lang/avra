@@ -1,0 +1,61 @@
+// proves: a node's id is ITS OWN across paints — the host's echo of an id
+// an earlier frame gave still runs that node's handler after a sibling is
+// inserted above it, and two paints of one state give every node one id.
+use @std.ui.components.{button, item, list, text}
+use @std.ui.realize.dom.frame.{Live, frame_text, live}
+use @std.ui.realize.identity.{NodeId}
+use @std.ui.realize.update.{Op, plan}
+use @std.ui.realize.view.{View}
+use @std.ui.style.theme.{default_theme}
+
+type Row = { id: string }
+
+fn rows_of(ids: List<string>) -> List<Row> { [Row { id: i } for i in ids] }
+
+state rows: List<Row> = rows_of(["a", "b"])
+state banner: bool = false
+state pressed: string = ""
+
+fn row_item(r: Row) -> item {
+    item {
+        key: r.id
+        items: [button "Pick" { on click { pressed = r.id } }]
+    }
+}
+
+/// The keyed rows, under an unkeyed banner when one is shown.
+fn view() -> list {
+    let shown: List<dyn View> = if banner { [text "new above"] } else { [] }
+    let listed: List<dyn View> = [row_item(r) for r in rows]
+    list { items: shown.concat(listed) }
+}
+
+fn worded(op: Op, words: string) -> List<NodeId> {
+    match op {
+        .Words(id, label) -> if label == words { [id] } else { [] },
+        .Mount(_) or .Event(_, _) -> [],
+    }
+}
+
+/// The ids of the controls saying `words`, in walk order.
+fn saying(words: string) -> List<NodeId> { [id for op in plan(view().describe()) for id in worded(op, words)] }
+
+let page = live()
+let _ = page.diff(view().describe(), default_theme)
+let before = saying("Pick")
+println(frame_text(view().describe()))
+println("same_twice=${frame_text(view().describe()) == frame_text(view().describe())}")
+
+// an unkeyed sibling and a keyed row both land above rows a and b
+banner = true
+rows = rows_of(["new", "a", "b"])
+let _ = page.diff(view().describe(), default_theme)
+println(frame_text(view().describe()))
+println("b_kept=${saying("Pick").contains(before[1])}")
+println("fired=${page.fire(before[1], 1, null)} pressed=${pressed}")
+println("fired=${page.fire(before[0], 1, null)} pressed=${pressed}")
+
+// a row that left answers nothing
+rows = rows_of(["new", "b"])
+let _ = page.diff(view().describe(), default_theme)
+println("gone=${page.fire(before[0], 1, null)} pressed=${pressed}")

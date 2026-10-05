@@ -51,8 +51,11 @@ const findClick = (n) => {
   for (const c of n.childNodes) { const hit = findClick(c); if (hit) return hit; }
   return null;
 };
+// A keyed node by its key: its id ends in the step its key spells — the
+// key's octet length, then the key.
+const stepOf = (key) => `/k${new TextEncoder().encode(key).length}:${key}`;
 const findByKey = (n, key) => {
-  if (n.attrs && n.attrs["data-key"] === key) return n;
+  if (n.__avra_id && n.__avra_id.endsWith(stepOf(key))) return n;
   for (const c of n.childNodes) { const hit = findByKey(c, key); if (hit) return hit; }
   return null;
 };
@@ -74,11 +77,14 @@ console.log("AFTER START:", shape(mount));
 const clickable = findClick(mount);
 console.log("CLICKABLE:", clickable ? clickable.tagName : "none");
 
+const row4 = findByKey(mount, "t4");
 const remove3 = findByKey(mount, "t3") && findControl(findByKey(mount, "t3"), "Remove");
 console.log("ROW3 REMOVE:", remove3 ? "found" : "missing");
 if (remove3) {
   console.log("PRESSED:", press(remove3));
   console.log("t3 gone:", findByKey(mount, "t3") === null, " t2 kept:", findByKey(mount, "t2") !== null);
+  // The row below the removed one is the SAME element under the same id.
+  console.log("t4 same element:", findByKey(mount, "t4") === row4, " id:", row4.__avra_id);
 }
 const toggle2 = findByKey(mount, "t2") && findControl(findByKey(mount, "t2"), "Wire the event channel");
 console.log("ROW2 TOGGLE:", toggle2 ? "found" : "missing");

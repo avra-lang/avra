@@ -37,9 +37,10 @@ Five attempts to lift a handler into a generated message failed.
    set attribute, set property, set text, listen, unlisten). A host
    holds no reconciler and no table of the library's facts.
 2. **One identity.** A node's id derives from its parent's id and its
-   key, or its position when unkeyed. Event echo, per-instance state,
-   retention and the event log all read it. The compiler's site
-   fingerprint replaces "position" through the same seam.
+   key, or its place among its unkeyed siblings (`realize/identity.av`).
+   Siblings sharing a key are told apart by their turn. Event echo,
+   per-instance state, retention and the event log all read it. The
+   compiler's site fingerprint replaces "place" through the same seam.
 3. **A primitive says what it projects to.** Primitives are a closed
    set the library owns; each names its attributes, children and style
    explicitly. A user component is a COMPOSITION and invents no

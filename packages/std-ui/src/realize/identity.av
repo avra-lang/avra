@@ -1,0 +1,60 @@
+//! `realize/identity.av` — ONE identity per node: its parent's identity,
+//! then its own STEP — its key, or its place among its unkeyed siblings.
+//! A node keeps its id while its key and its ancestors' stand, whatever
+//! is inserted, removed or reordered beside it. The walk, the handler
+//! table, a host's echo and a diff all read this one id.
+
+/// A node's identity. Compared and logged, never parsed.
+export type NodeId = { path: string }
+
+/// What tells a node from its siblings.
+export enum Step {
+    /// Its key, and its turn among the siblings that share it.
+    Keyed(key: string, turn: int)
+    /// Its place among its unkeyed siblings.
+    Placed(at: int)
+}
+
+impl Step {
+    /// A step as an id spells it. A key is written with its LENGTH, so no
+    /// key's own text reads as another node's steps.
+    fn spelled() -> string {
+        match self {
+            .Keyed(key, turn) -> if turn == 0 { "k${key.length}:${key}" } else { "k${key.length}:${key}~${turn}" },
+            .Placed(at) -> "${at}",
+        }
+    }
+}
+
+impl NodeId {
+    /// The id of this node's child at `step`.
+    fn child(step: Step) -> NodeId { NodeId { path: "${self.path}/${step.spelled()}" } }
+}
+
+/// One sibling list's count so far: the turns each key has had, and the
+/// unkeyed places handed out.
+type Turns = { seen: Cell<Map<string, int>> = Cell.new({}), placed: Cell<int> = Cell.new(0) }
+
+impl Turns {
+    /// The next sibling's step. A key seen before takes the next turn, so
+    /// two siblings never share a step.
+    fn next(key: string?) -> Step {
+        let k? = key else {
+            let at = self.placed.get()
+            self.placed.set(at + 1)
+            return Step.Placed(at)
+        }
+        let turn = self.seen.get().get(k) ?? 0
+        self.seen.put(k, turn + 1)
+        Step.Keyed(k, turn)
+    }
+}
+
+/// Each sibling's step, from the siblings' keys in order.
+export fn steps(keys: List<string?>) -> List<Step> {
+    let turns = Turns {}
+    [turns.next(k) for k in keys]
+}
+
+/// The id of a tree's root: its own step under no parent.
+export fn root_id(key: string?) -> NodeId { NodeId { path: Turns {}.next(key).spelled() } }

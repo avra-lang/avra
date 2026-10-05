@@ -1,27 +1,26 @@
 //! `realize/sink.av` — ONE walk, every target. A target answers three
 //! operations; the tree is walked here and nowhere else. The walk owns
-//! each node's IDENTITY (its id, parent and index), so no target
-//! recomputes where a node sits.
+//! each node's IDENTITY (`realize/identity.av`), so no target recomputes
+//! who a node is or where it sits.
+use realize.identity.{NodeId, root_id, steps}
 use realize.render.{Node}
 
 /// What a target answers while a tree is walked. `opened` is handed the
-/// node's identity, `words` its own words under that identity, and
-/// `closed` the node's end.
+/// node's id, its parent's — absent at the root — and its index among
+/// its siblings; `words` its own words under that id; `closed` its end.
 export trait Sink {
-    fn opened(id: int, parent: int, index: int, n: Node)
-    fn words(id: int, s: string)
+    fn opened(id: NodeId, parent: NodeId?, index: int, n: Node)
+    fn words(id: NodeId, s: string)
     fn closed(n: Node)
 }
 
-/// The walk: a node opened, its words, its children, then closed. The
-/// root's parent is -1 and its index 0.
-export fn draw(n: Node, sink: dyn Sink) { walk(n, -1, 0, Cell.new(0), sink) }
+/// The walk: a node opened, its words, its children, then closed.
+export fn draw(n: Node, sink: dyn Sink) { walk(n, root_id(n.box.key), null, 0, sink) }
 
-fn walk(n: Node, parent: int, index: int, next: Cell<int>, sink: dyn Sink) {
-    let id = next.get()
-    next.set(id + 1)
+fn walk(n: Node, id: NodeId, parent: NodeId?, index: int, sink: dyn Sink) {
     sink.opened(id, parent, index, n)
     sink.words(id, n.words())
-    for i, c in n.children { walk(c, id, i, next, sink) }
+    let under = steps([c.box.key for c in n.children])
+    for i, c in n.children { walk(c, id.child(under[i]), id, i, sink) }
     sink.closed(n)
 }

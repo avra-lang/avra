@@ -4,35 +4,37 @@
 //! answers. No target's currency appears here — a tag, a class, a byte
 //! op and a drawn line are an EMITTER's business. The DOM wire, the
 //! canvas draw calls and a native tree each project this one graph.
+use realize.identity.{NodeId}
 use realize.render.{Node, Prim, Attribute, Action}
 use realize.sink.{Sink, draw}
 use style.box.{Box}
 
-/// Where a node sits in the graph, and everything a target needs to make
-/// it: its neutral primitive, its attributes and its box.
+/// Who a node is, where it sits, and everything a target needs to make
+/// it: its neutral primitive, its attributes and its box. The root has no
+/// parent.
 export type Mount = {
-    id: int,
-    parent: int,
+    id: NodeId,
+    parent: NodeId?,
     index: int,
     prim: Prim,
     attrs: List<Attribute>,
     box: Box,
 }
 
-/// One update op, addressed by a pre-order node id. A target projects the
+/// One update op, addressed by its node's id. A target projects the
 /// stream into its own currency: `Mount` places, `Words` says, `Event`
 /// answers.
 export enum Op {
     Mount(m: Mount)
-    Words(id: int, text: string)
-    Event(id: int, action: Action)
+    Words(id: NodeId, text: string)
+    Event(id: NodeId, action: Action)
 }
 
 /// The graph being collected: the ops in walk order.
 export type Recorder = { ops: Cell<List<Op>> = Cell.new([]) }
 
 impl Sink for Recorder {
-    fn opened(id: int, parent: int, index: int, n: Node) {
+    fn opened(id: NodeId, parent: NodeId?, index: int, n: Node) {
         self
             .ops
             .push(
@@ -52,7 +54,7 @@ impl Sink for Recorder {
         for ev in n.events { self.ops.push(Op.Event(id, ev)) }
     }
 
-    fn words(id: int, s: string) { self.ops.push(Op.Words(id, s)) }
+    fn words(id: NodeId, s: string) { self.ops.push(Op.Words(id, s)) }
 
     fn closed(_n: Node) {}
 }
@@ -65,13 +67,13 @@ export fn plan(root: Node) -> List<Op> {
 }
 
 /// Whether an op is the words of `id`.
-fn has_words(id: int, op: Op) -> bool {
+fn has_words(id: NodeId, op: Op) -> bool {
     match op { .Words(who, _) -> who == id, .Mount(_) or .Event(_, _) -> false }
 }
 
 /// A node's words, read back from the op that carries them. Absence is a
 /// node the graph never walked.
-export fn words_at(ops: List<Op>, id: int) -> string? {
+export fn words_at(ops: List<Op>, id: NodeId) -> string? {
     let found? = ops.find(has_words(id, it)) else { return null }
     match found { .Words(_, text) -> text, .Mount(_) or .Event(_, _) -> null }
 }

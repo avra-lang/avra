@@ -28,6 +28,7 @@ use @std.ui.components.{
     text,
 }
 use @std.ui.realize.dom.frame.{Live, live}
+use @std.ui.realize.identity.{NodeId}
 use @std.ui.realize.payload.{Payload}
 use @std.ui.realize.view.{View}
 use @std.ui.style.layout.{Layout, around}
@@ -260,16 +261,31 @@ fn paint() { avra_dom_frame(painted().diff(view().describe(), theme())) }
 
 // ── the host's event seam ───────────────────────────────────────
 
-/// The room a frame's text payload is written into by the host, and the
-/// address it hands the host once. The host fills it and the program adopts
-/// the octets — the one door a foreign buffer enters by.
-const payload_room = 4096
+/// The room of each seat the host writes text into. The host reads it
+/// (`avra_seat_room`) and refuses a text that outgrows it.
+const seat_room = 4096
 
-once fn payload_box() -> Bytes { avra_bytes_with_room(payload_room) }
+/// Where the host writes the id of the node that spoke.
+once fn id_box() -> Bytes { avra_bytes_with_room(seat_room) }
 
-/// The host reads this once, then writes a text payload's UTF-8 octets at
-/// the address before calling `avra_event` with their length.
+/// Where the host writes the text a control said.
+once fn payload_box() -> Bytes { avra_bytes_with_room(seat_room) }
+
+/// The host reads each seat's address once, then writes UTF-8 octets there
+/// before calling `avra_event` with their length.
+export fn avra_id_seat() -> Bytes { id_box() }
+
 export fn avra_payload_seat() -> Bytes { payload_box() }
+
+export fn avra_seat_room() -> int { seat_room }
+
+/// The host-written octets of a seat as text. A length the seat cannot
+/// hold, or octets that are not UTF-8, is a malformed event: absent, never
+/// a wrong message.
+fn seated(box: Bytes, len: int) -> string? {
+    if len < 0 || len > seat_room { return null }
+    avra_bytes_adopted(box, len).text()
+}
 
 /// A payload as the host's own TAGS: 0 is ABSENT, and `num`/`len` carry the
 /// value. A dedicated absent tag, never a value, so a present zero or empty
@@ -283,18 +299,18 @@ fn payload_of(tag: int, num: int, len: int) -> Payload? {
     }
 }
 
-/// The host-written octets as text. A payload that cannot be read as UTF-8
-/// is a malformed frame: absent, never a wrong message.
 fn payload_text(len: int) -> Payload? {
-    let body? = avra_bytes_adopted(payload_box(), len).text() else { return null }
+    let body? = seated(payload_box(), len) else { return null }
     Payload.Text(body)
 }
 
-/// The host's call: node `who` spoke `what`, saying the value in the tag
-/// and value seats (an input says its own text). The handler the last
-/// frame bound there runs, and the frame follows.
+/// The host's call: the node whose id is the `who` octets in the id seat
+/// spoke `what`, saying the value in the tag and value seats (an input
+/// says its own text). The handler the last frame bound there runs, and
+/// the frame follows.
 export fn avra_event(who: int, what: int, tag: int, num: int, len: int) {
-    if painted().fire(who, what, payload_of(tag, num, len)) { paint() }
+    let path? = seated(id_box(), who) else { return }
+    if painted().fire(NodeId { path: path }, what, payload_of(tag, num, len)) { paint() }
 }
 
 /// The host's first call, after the reactor is initialized: one paint.

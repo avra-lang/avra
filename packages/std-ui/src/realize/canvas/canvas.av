@@ -4,6 +4,7 @@
 //! lays the graph out as a flow. The same neutral ops the DOM serializes
 //! as tags become geometry here; neither target is the other's lowest
 //! common denominator.
+use realize.identity.{NodeId}
 use realize.render.{Node, Prim}
 use realize.update.{Op, Mount, plan}
 use style.layout.{Axis}
@@ -42,7 +43,7 @@ fn form_of(p: Prim) -> Form {
     }
 }
 
-/// A node in the flat graph: its mount, its words and its child ids.
+/// A node in the flat graph: its mount, its words and its children's slots.
 type Frame = { mount: Mount, words: string, kids: List<int> }
 
 /// A laid-out extent.
@@ -53,38 +54,50 @@ type Inset = { start: int, end: int, top: int, bottom: int }
 
 // ── the graph, rebuilt as an arena ──────────────────────────────
 
-/// Every mount by id, with its words and children. The ops are pre-order,
-/// so a mount's index IS its id.
+/// The graph being rebuilt: every mount in walk order, and the slot each
+/// id took.
+type Arena = { frames: Cell<List<Frame>> = Cell.new([]), slots: Cell<Map<string, int>> = Cell.new({}) }
+
+impl Arena {
+    /// The slot `id` took. A walk mounts a node before anything names it.
+    fn slot(id: NodeId) -> int { self.slots.get().get(id.path) ?? 0 }
+
+    /// A mount takes the next slot, and joins its parent's children.
+    fn mount(m: Mount) {
+        let at = self.frames.get().length
+        self.slots.put(m.id.path, at)
+        self.frames.push(Frame { mount: m, words: "", kids: [] })
+        let parent? = m.parent else { return }
+        let held = self.frames.get()[self.slot(parent)]
+        self.frames.set_at(self.slot(parent), held with { kids: held.kids.concat([at]) })
+    }
+
+    fn say(id: NodeId, words: string) {
+        let held = self.frames.get()[self.slot(id)]
+        self.frames.set_at(self.slot(id), held with { words: words })
+    }
+}
+
+/// Every mount in walk order, with its words and its children's slots.
+/// The root is slot 0. An event draws nothing.
 fn arena_of(ops: List<Op>) -> List<Frame> {
-    let arena: Cell<List<Frame>> = Cell.new([])
+    let arena = Arena {}
     for op in ops {
-        let _ = match op {
-            .Mount(m) -> {
-                // LICENSED loops.push_loop: the arena rides a shared Cell; a concat assignment would rebind a copy
-                arena.push(Frame { mount: m, words: "", kids: [] })
-                if m.parent >= 0 {
-                    let p = arena.get()[m.parent]
-                    arena.set_at(m.parent, p with { kids: p.kids.concat([m.id]) })
-                }
-                0
-            },
-            .Words(id, t) -> {
-                let n = arena.get()[id]
-                arena.set_at(id, n with { words: t })
-                0
-            },
-            .Event(_, _) -> 0,
+        match op {
+            .Mount(m) -> arena.mount(m),
+            .Words(id, t) -> arena.say(id, t),
+            .Event(_, _) -> { continue },
         }
     }
-    arena.get()
+    arena.frames.get()
 }
 
 // ── measuring ───────────────────────────────────────────────────
 
 fn text_w(words: string, extra: int, m: Metrics) -> int { (words.length + extra) * m.char }
 
-fn size_of(arena: List<Frame>, id: int, m: Metrics, theme: Theme) -> Extent {
-    let f = arena[id]
+fn size_of(arena: List<Frame>, slot: int, m: Metrics, theme: Theme) -> Extent {
+    let f = arena[slot]
     match form_of(f.mount.prim) {
         .Flow -> flow_size(arena, f, m, theme),
         .Rule -> Extent { w: 0, h: 2 },
@@ -176,15 +189,15 @@ fn text_face(f: Frame, theme: Theme) -> string {
 /// A node's draw calls, at its own origin, then its children's.
 fn place(
     arena: List<Frame>,
-    id: int,
+    slot: int,
     x: int,
     y: int,
     out: Cell<List<Draw>>,
     m: Metrics,
     theme: Theme,
 ) {
-    let f = arena[id]
-    let e = size_of(arena, id, m, theme)
+    let f = arena[slot]
+    let e = size_of(arena, slot, m, theme)
     let _ = match fill_color(f, theme) {
         c? -> {
             out.push(Draw.Fill(x, y, e.w, e.h, c))
