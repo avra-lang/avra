@@ -27,6 +27,10 @@ command -v wasm-opt >/dev/null 2>&1 || skip "wasm-opt (binaryen) not on PATH"
 if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
     ( cd "$tree" && make -s wasm-runtime ) || skip "the wasm runtime archive did not build"
 fi
+# each fixture is built for the host too, and a gate job may hold only the compiler
+if [ ! -f "$tree/build/libavra_runtime.a" ]; then
+    ( cd "$tree" && make -s build/libavra_runtime.a ) || { say "the host runtime archive did not build"; exit 1; }
+fi
 
 fail=0
 for src in "$fixtures"/*/; do

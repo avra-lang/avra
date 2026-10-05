@@ -1,12 +1,10 @@
 //! probe: where a UI paint spends its work. A tree is built directly
 //! as `Node` data — no component layer — so a first paint (lower, diff
 //! against nothing, serialize) and an unchanged repaint (lower, diff) are
-//! measured against the mere construction of the same tree and against
-//! `plan` alone.
+//! measured against the mere construction of the same tree.
 use @std.time.{now_ns}
 use @std.ui.realize.dom.live.{Live, live}
 use @std.ui.tree.node.{Attribute, Node, Prim}
-use @std.ui.tree.plan.{plan}
 use @std.ui.style.box.{Box}
 use @std.ui.style.theme.{default_theme}
 
@@ -30,16 +28,10 @@ let b = first_paint(branch(40))
 println("same tree, same bytes: ${a == b} bytes ${a.length}")
 
 let node = branch(40)
-println("ops: ${plan(node).length} frame bytes: ${first_paint(node).length}")
+println("frame bytes: ${first_paint(node).length}")
 
 let runs = 200
-let t0 = now_ns()
 mut acc = 0
-// LICENSED loops.push_loop: a timed loop counts, it does not build a list
-for i in 0..runs { acc = acc + plan(node).length }
-let t1 = now_ns()
-println("plan: ${(t1 - t0) / runs} ns/run")
-
 let t2 = now_ns()
 // LICENSED loops.push_loop: a timed loop counts, it does not build a list
 for i in 0..runs { acc = acc + first_paint(node).length }

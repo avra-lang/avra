@@ -3,6 +3,8 @@
 # declares a host row `extern` and an `export fn` must leave a module that
 # IMPORTS that row from `avra:rt` and EXPORTS the handler under its written
 # name, the length accessor the glue reads the header through, and memory.
+# THE DOORS ARE THE ENTRY'S AND ITS IMPORTS': an export of a module the entry
+# never names is not exported, and one nothing reaches is not in the module.
 # `--wasm-reactor` must drop `_start` (no `main`), keep the exports, and export
 # the program's own statements as `avra_main` for the host to run.
 #
@@ -16,6 +18,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 avra=${AVRA:-$tree/build/avra}
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-seam.XXXXXX")}
+# WASM_TARGET names another wasm triple, for a machine whose sysroot is not the default's.
+target=${WASM_TARGET:-wasm}
 
 say() { echo "wasm-seam: $*" >&2; }
 skip() { say "$* — skipped"; exit 0; }
@@ -30,7 +34,7 @@ if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
 fi
 
 cp -R "$here/wasm-seam" "$work/seam"
-if ! "$avra" build --target wasm "$work/seam" >"$work/build.out" 2>"$work/build.err"; then
+if ! "$avra" build --target "$target" "$work/seam" >"$work/build.out" 2>"$work/build.err"; then
     say "wasm build failed"; cat "$work/build.err" >&2; cat "$work/build.out" >&2; exit 1
 fi
 wasm=$(tail -1 "$work/build.out")
@@ -44,11 +48,19 @@ need_import 'avra:rt.*avra_dom_frame'
 need_export 'avra_event'
 need_export 'avra_bytes_len'
 need_export 'memory'
+need_export 'relayed'
+need_export 'offered'
+no_export() { if grep -q "\"$1\"" "$work/objdump.txt"; then say "exported, and no door: $1"; fail=1; fi; }
+no_export 'reached'
+no_export 'unreached'
+# A door nothing calls is in the module; a deeper export nothing reaches is not.
+grep -q 'seam-offered' "$wasm" || { say "a door's body is not in the module"; fail=1; }
+if grep -q 'seam-unreached' "$wasm"; then say "an unreached export's body is in the module"; fail=1; fi
 # A command module's `main` runs the statements: it exports no second door to them.
 if grep -q '"avra_main"' "$work/objdump.txt"; then say "a command module exports avra_main"; fail=1; fi
 
 # A reactor drops `_start` and keeps the exports the host calls.
-if ! "$avra" build --target wasm --wasm_reactor "$work/seam" >"$work/reactor.out" 2>"$work/reactor.err"; then
+if ! "$avra" build --target "$target" --wasm_reactor "$work/seam" >"$work/reactor.out" 2>"$work/reactor.err"; then
     say "reactor build failed"; cat "$work/reactor.err" >&2; cat "$work/reactor.out" >&2; exit 1
 fi
 rwasm=$(tail -1 "$work/reactor.out")
@@ -61,4 +73,4 @@ if [ "$fail" -ne 0 ]; then
     say "--- imports/exports ---"; grep -iE "import|export" "$work/objdump.txt" | head -20
     exit 1
 fi
-say "seam ok: avra:rt.avra_dom_frame imported; avra_event, avra_bytes_len, memory exported; reactor drops _start and exports avra_main"
+say "seam ok: avra:rt.avra_dom_frame imported; avra_event, avra_bytes_len, memory and the imported module's doors exported, a deeper export neither exported nor carried; reactor drops _start and exports avra_main"
