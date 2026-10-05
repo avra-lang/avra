@@ -233,7 +233,11 @@ static int64_t g_acc_live[ACC_KINDS];
 static int64_t g_acc_peak[ACC_KINDS];
 static int64_t g_acc_total_live = 0;
 static int64_t g_acc_total_peak = 0;
+#if AVRA_INSTRUMENTS
 static int g_acc_on = 0;
+#else
+enum { g_acc_on = 0 };
+#endif
 // list buffers by capacity (log2), live bytes and count, with peaks
 #define CAP_BUCKETS 40
 static int64_t g_cap_live[CAP_BUCKETS];
@@ -513,17 +517,23 @@ static void acc_report(void) {
     }
 }
 
+#if AVRA_MEASURES_MEMORY
 static int64_t g_mem_ceiling;
 static int64_t g_mem_next;
+#endif
 
 // Settled at load, for the reason `rc_guard_init` gives: a lazy
 // getenv inside this carries into every allocation's fast path.
 __attribute__((constructor))
 static void acc_settled(void) {
+#if AVRA_INSTRUMENTS
     g_acc_on = getenv("AVRA_MEM_STATS") != NULL;
+#endif
     if (g_acc_on) atexit(acc_report);
+#if AVRA_MEASURES_MEMORY
     const char* ceiling = getenv("AVRA_MEM_CEILING_MB");
     if (ceiling && *ceiling) g_mem_ceiling = g_mem_next = (int64_t)avra_number(ceiling, 10) << 20;
+#endif
     CENSUS(g_sites_census = getenv("AVRA_CENSUS_SITES") != NULL);
 }
 
@@ -559,6 +569,7 @@ int64_t avra_mem_live(void) { return g_live_bytes; }
 // `g_mem_next` measures the allocator's own bytes in use: past the
 // ceiling it traps, and under it the next look waits for the ledger to
 // grow by the headroom that measurement left.
+#if AVRA_MEASURES_MEMORY
 static int64_t g_mem_ceiling = (int64_t)6000 << 20;
 static int64_t g_mem_next = (int64_t)6000 << 20;
 
@@ -567,10 +578,6 @@ static int64_t mem_in_use(void) {
     malloc_statistics_t st;
     malloc_zone_statistics(NULL, &st);
     return (int64_t)st.size_in_use;
-#elif defined(__wasm32__)
-    // no portable allocator introspection under wasi-libc; the ledger
-    // still bounds what the runtime knows it holds
-    return 0;
 #else
     struct mallinfo2 mi = mallinfo2();
     return (int64_t)(mi.uordblks + mi.hblkhd);
@@ -588,9 +595,12 @@ static void mem_ceiling_measure(void) {
     }
     g_mem_next = g_live_bytes + (g_mem_ceiling - used);
 }
+#endif
 
 static inline void mem_ceiling_check(void) {
+#if AVRA_MEASURES_MEMORY
     if (__builtin_expect(g_mem_ceiling > 0 && g_live_bytes > g_mem_next, 0)) mem_ceiling_measure();
+#endif
 }
 
 // Fresh memory from the system, past the ceiling's check: one call in
@@ -802,6 +812,7 @@ static void* box_clone(void* p);
 // DEBUG GUARD (AVRA_RC_GUARD=1): a box that reaches rc 0 is KEPT,
 // marked dead, so the next read of it traps at the site that used
 // it rather than somewhere later.
+#if AVRA_INSTRUMENTS
 int avra_rc_guard_on = 0;
 
 // THE GUARD IS READ ONCE, AT LOAD. Retain and release are the two
@@ -815,6 +826,7 @@ static void rc_guard_init(void) {
     const char* budget = getenv("AVRA_RC_LOG_BUDGET");
     if (budget) g_log_budget = (size_t)avra_number(budget, 10);
 }
+#endif
 static void* g_chain[64];
 static int g_chain_len = 0;
 
@@ -1814,12 +1826,16 @@ static int is_shared(void* p) {
 // own out-of-line, cold body so the two hot leaves below carry no
 // extra frame for it — only the clone branch they already pay for
 // gains one more call.
+#if AVRA_INSTRUMENTS
 static int g_alias_log = 0;
 
 __attribute__((constructor))
 static void alias_log_init(void) {
     g_alias_log = getenv("AVRA_ALIAS_LOG") != NULL;
 }
+#else
+enum { g_alias_log = 0 };
+#endif
 
 __attribute__((noinline, cold))
 static void alias_log_clone(void* site, void* box) {
@@ -2087,7 +2103,11 @@ static inline uint64_t wide_mix(uint64_t a, uint64_t b) {
 __attribute__((constructor(101)))
 static void hash_seeded(void) {
     uint64_t w[4];
+#if AVRA_INSTRUMENTS
     const char* pinned = getenv("AVRA_HASH_SEED");
+#else
+    const char* pinned = NULL;
+#endif
     if (pinned) {
         uint64_t x = avra_number(pinned, 0);
         for (int i = 0; i < 4; i++) w[i] = splitmix(&x);
