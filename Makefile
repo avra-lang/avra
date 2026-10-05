@@ -216,9 +216,16 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # without the stack-switching proposal. Excluding them HERE makes the law — a
 # DOM app must never link them — structural rather than a hope, and a program
 # links only the members it reaches in any case.
-WASM_TARGET ?= wasm32-unknown-wasi
-WASM_CC ?= clang
-WASM_AR ?= ar
+# THE WASM TOOLCHAIN IS FOUND, by the rule the compiler finds it by
+# (packages/cli/src/commands/shared.av, `wasm_tools`): the clang `LLVM_PREFIX`
+# names when it has one, else the PATH's; and the first triple that clang has
+# a WASI libc for — where it says the target's startup object stands is a file.
+# The archiver is that LLVM's too: a host `ar` that does not know a wasm
+# object writes an archive with no index, and the link finds nothing in it.
+WASM_TRIPLES := wasm32-unknown-wasi wasm32-wasip1
+WASM_CC ?= $(firstword $(wildcard $(LLVM_PREFIX)/bin/clang) clang)
+WASM_TARGET ?= $(firstword $(foreach t,$(WASM_TRIPLES),$(if $(wildcard $(shell $(WASM_CC) --target=$(t) -print-file-name=crt1.o 2>/dev/null)),$(t))) $(firstword $(WASM_TRIPLES)))
+WASM_AR ?= $(firstword $(wildcard $(LLVM_PREFIX)/bin/llvm-ar) ar)
 WASI_SYSROOT ?=
 WASM_EMULATED := -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_GETPID
 WASM_RUNTIME_SRCS := $(filter-out runtime/avra_fiber.c runtime/avra_cores.c,$(wildcard runtime/*.c))

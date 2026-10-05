@@ -7,7 +7,7 @@
 #
 # It needs what `make ui-board` needs, and Firefox (FIREFOX names one that is
 # not in a usual place). Where one is absent this SKIPS, spoken, naming what
-# is missing. UI_BOARD_TARGET names another wasm triple (default `wasm`);
+# is missing. UI_BOARD_TARGET names one wasm triple (default `wasm`);
 # UI_BROWSER_SHOTS names a directory the run leaves screenshots in.
 set -eu
 
@@ -23,11 +23,15 @@ skip() { echo "ui-browser: SKIPPED — $* ; the board did not run in a browser";
 command -v node >/dev/null 2>&1 || skip "no \`node\` on this machine"
 node -e 'process.exit(typeof WebSocket === "function" ? 0 : 1)' || skip "this \`node\` has no WebSocket of its own (22 or later has)"
 node --input-type=module -e "import { firefoxBinary } from '$here/ui-board/firefox.mjs'; process.exit(firefoxBinary() ? 0 : 1)" || skip "no Firefox on this machine (FIREFOX names one)"
-[ -f "$tree/build/wasm32/libavra_runtime.a" ] || skip "no wasm runtime archive (\`make ui-board\` builds it, or says why it cannot)"
+if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
+    ( cd "$tree" && make -s wasm-runtime wasm-packages ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
+fi
 
 mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
-if ! "$avra" build --target "$target" --wasm_reactor "$work/tools/ui-board/web" >"$work/build.out" 2>"$work/build.err"; then
+"$avra" build --target "$target" --wasm_reactor "$work/tools/ui-board/web" >"$work/build.out" 2>"$work/build.err" || built=$?
+[ "${built:-0}" -ne 2 ] || skip "$(sed 's/^avra: //' "$work/build.err" | head -1)"
+if [ "${built:-0}" -ne 0 ]; then
     echo "ui-browser: the board did not build for $target"; cat "$work/build.err"; tail -20 "$work/build.out"; exit 1
 fi
 wasm=$(tail -1 "$work/build.out")

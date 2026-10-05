@@ -5,11 +5,11 @@
 # run that holds `mount`, the `avra_main` entry, the web module's exports and
 # the names the host calls them by to a real module.
 #
-# It needs node, a clang that links wasm32 against a WASI sysroot, and the wasm
-# runtime archive. Where one is absent this SKIPS, spoken, naming what is
-# missing — a machine without them is not falsely green. `wasm-opt` is used
-# when it is on PATH and the line that reports success says whether it was.
-# UI_BOARD_TARGET names another wasm triple (default `wasm`).
+# It needs node and a wasm toolchain — the compiler finds one or says what is
+# missing (`avra build --target wasm` exits 2). Where one is absent this
+# SKIPS, spoken, in the compiler's own words — a machine without them is not
+# falsely green. UI_BOARD_TARGET names one wasm triple (default `wasm`: the
+# one this machine's toolchain links).
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -22,20 +22,16 @@ skip() { echo "ui-board: SKIPPED — $* ; the board did not run on a page"; exit
 
 [ -x "$avra" ] || skip "no compiler at $avra"
 command -v node >/dev/null 2>&1 || skip "no \`node\` on this machine"
-command -v clang >/dev/null 2>&1 || skip "no \`clang\` on PATH"
-clang --print-targets 2>/dev/null | grep -q wasm32 || skip "clang has no wasm32 target"
-triple=$target
-case "$target" in wasm|wasm32|wasm32-wasi) triple=wasm32-unknown-wasi ;; esac
-echo 'int main(void) { return 0; }' > "$work/probe.c"
-clang --target="$triple" "$work/probe.c" -o "$work/probe.wasm" >/dev/null 2>&1 || skip "clang cannot link a $triple program (no WASI sysroot for it)"
 if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
-    ( cd "$tree" && make -s wasm-runtime ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
+    ( cd "$tree" && make -s wasm-runtime wasm-packages ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
 fi
 
 # A COPY is built, so the tree's own object cache never holds a wasm object.
 mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
-if ! "$avra" build --target "$target" --wasm_reactor "$work/tools/ui-board/web" >"$work/build.out" 2>"$work/build.err"; then
+"$avra" build --target "$target" --wasm_reactor "$work/tools/ui-board/web" >"$work/build.out" 2>"$work/build.err" || built=$?
+[ "${built:-0}" -ne 2 ] || skip "$(sed 's/^avra: //' "$work/build.err" | head -1)"
+if [ "${built:-0}" -ne 0 ]; then
     echo "ui-board: the board did not build for $target"; cat "$work/build.err"; tail -20 "$work/build.out"; exit 1
 fi
 wasm=$(tail -1 "$work/build.out")
