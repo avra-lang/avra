@@ -1,0 +1,134 @@
+//! `realize/tui/layout.av` — one node as lines of plain text, given the
+//! lines of its children. One exhaustive match over the primitives
+//! decides the lines; the box is read for its gap, its leading pad and
+//! its direction, and nothing else of a look prints.
+//!
+//! A column, an item, a surface, a form, a card and an open dialog stack
+//! their children, the gap giving the blank lines between them (None and
+//! Xs 0, S and M 1, L and Xl 2). A row sets its children on one line, the
+//! gap giving the spaces between them (None 0, Xs and S 1, M 2, L 3, Xl
+//! 4); a child of several lines is stacked on its own, and a row that
+//! overflows continues on the next line. A layout's direction overrides
+//! either. The leading pad indents every non-blank line (None 0, Xs 1, S
+//! 2, M 4, L 6, Xl 8), never past the point where one cell of room
+//! remains. A list prefixes each child `• ` and hangs its later lines
+//! under the text. A card and an open dialog read their title over a
+//! dash rule; a closed dialog draws nothing. A heading reads in upper
+//! case (ASCII letters only), underlined `=` at level one and `-` deeper.
+use @std.text.{repeat, codepoints, from_codepoints}
+use realize.render.{Node, Prim}
+use realize.tui.wrap.{wrap, flowed, cells, at_least_one}
+use realize.tui.said.{Said, said_of}
+use style.layout.{Axis}
+use ui.{Size}
+
+/// The cells a field's value is padded to.
+const field_cells = 12
+
+/// The cells a list's bullet takes before each child.
+const bullet_cells = 2
+
+// ── the box ─────────────────────────────────────────────────────
+
+fn gap_lines(z: Size) -> int {
+    match z { .None or .Xs -> 0, .S or .M -> 1, .L or .Xl -> 2 }
+}
+
+fn gap_columns(z: Size) -> int {
+    match z { .None -> 0, .Xs or .S -> 1, .M -> 2, .L -> 3, .Xl -> 4 }
+}
+
+fn pad_columns(z: Size) -> int {
+    match z { .None -> 0, .Xs -> 1, .S -> 2, .M -> 4, .L -> 6, .Xl -> 8 }
+}
+
+fn gap_of(n: Node) -> Size { n.box.layout.gap ?? .None }
+
+/// The cells a node's leading pad indents it by within `w`: one cell of
+/// room always remains.
+fn indent_of(n: Node, w: int) -> int {
+    let pad = pad_columns(n.box.layout.pad?.start ?? .None)
+    if pad < w { pad } else { at_least_one(w) - 1 }
+}
+
+/// The cells a primitive keeps from its children before their lines.
+/// Every primitive spelled: a list keeps its bullet's.
+fn kept(p: Prim) -> int {
+    match p {
+        .List -> bullet_cells,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> 0,
+    }
+}
+
+/// The cells a node's children are drawn in, when it is drawn in `w`.
+export fn room(n: Node, w: int) -> int { at_least_one(w - indent_of(n, w) - kept(n.prim)) }
+
+// ── the lines ───────────────────────────────────────────────────
+
+/// A node's lines in `w` cells, given each child's own lines.
+export fn lines_of(n: Node, kids: List<List<string>>, w: int) -> List<string> {
+    let by = indent_of(n, w)
+    indented(body(n, kids, at_least_one(w - by)), by)
+}
+
+fn body(n: Node, kids: List<List<string>>, w: int) -> List<string> {
+    let said = said_of(n.attrs)
+    let own = n.words()
+    match n.prim {
+        .Text or .Alert or .Spinner -> wrap(own, w),
+        .Heading -> titled(upper(own), if n.level() <= 1 { "=" } else { "-" }, w),
+        .Image -> atom("[${n.prim.word()}: ${said.alt}]"),
+        .Icon -> atom("[${n.prim.word()}: ${said.name}]"),
+        .Link -> atom("${own} (${said.href})"),
+        .Button -> atom("[ ${own} ]"),
+        .Checkbox or .Switch -> atom(if said.checked { "[x] ${own}" } else { "[ ] ${own}" }),
+        .Field -> atom("${own}: ${said.value}${repeat("_", field_cells - cells(said.value))}"),
+        .Slider -> atom("${own}: ${said.amount} (${said.min}..${said.max})"),
+        .Progress -> atom("${own}: ${said.amount}/${said.max}"),
+        .Divider -> [repeat("-", w)],
+        .Row -> laid(n, .Row, kids, w),
+        .Column or .Item or .Surface or .Form -> laid(n, .Column, kids, w),
+        .Card -> titled(said.title, "-", w).concat(laid(n, .Column, kids, w)),
+        .Dialog -> if said.open { titled(own, "-", w).concat(laid(n, .Column, kids, w)) } else { [] },
+        .List -> stacked([hung(ls) for ls in kids], gap_of(n)),
+    }
+}
+
+/// The children along the node's direction, or `own` when it names none.
+fn laid(n: Node, own: Axis, kids: List<List<string>>, w: int) -> List<string> {
+    match n.box.layout.direction ?? own {
+        .Row -> flowed(kids, repeat(" ", gap_columns(gap_of(n))), w),
+        .Column -> stacked(kids, gap_of(n)),
+    }
+}
+
+/// A leaf's text as lines, at its own newlines.
+fn atom(s: string) -> List<string> { s.split("\n") }
+
+/// The blocks one under another, `gap` blank lines between.
+fn stacked(blocks: List<List<string>>, gap: Size) -> List<string> {
+    let blank = ["" for _k in 0..gap_lines(gap)]
+    [l for i, ls in blocks for l in if i == 0 { ls } else { blank.concat(ls) }]
+}
+
+/// A bullet before the first line, its width in spaces before the rest.
+fn hung(ls: List<string>) -> List<string> {
+    [if i == 0 { "• " } else { repeat(" ", bullet_cells) } + l for i, l in ls]
+}
+
+/// The title wrapped, over a rule of `mark` as wide as its widest line.
+/// An empty title has no lines and no rule.
+fn titled(title: string, mark: string, w: int) -> List<string> {
+    let ls = wrap(title, w)
+    if ls.is_empty() { return [] }
+    ls.concat([repeat(mark, [cells(l) for l in ls].max() ?? 0)])
+}
+
+fn indented(ls: List<string>, by: int) -> List<string> {
+    [if l == "" { l } else { repeat(" ", by) + l } for l in ls]
+}
+
+/// ASCII upper case; every other code point stays.
+fn upper(s: string) -> string {
+    from_codepoints([if c >= 97 && c <= 122 { c - 32 } else { c } for c in codepoints(s)])
+}

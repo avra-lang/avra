@@ -1,0 +1,61 @@
+// proves: the terminal target draws one tree alike evaluated and native —
+// every primitive, a gap, a pad, a wrap and a hostile escape, in thirty
+// cells.
+use @std.text.{from_codepoint}
+use @std.ui.realize.render.{Node, Prim}
+use @std.ui.realize.tui.tui.{render}
+use @std.ui.env.{Env}
+use @std.ui.style.box.{Box}
+use @std.ui.realize.tests.support.{
+    leaf,
+    boxed,
+    holding,
+    gap,
+    gap_pad,
+    text_node,
+    heading_node,
+    image_node,
+    link_node,
+    button_node,
+    switch_node,
+    field_node,
+    card_node,
+}
+
+let tasks = holding(
+    .List,
+    [
+        holding(.Item, [text_node("Water the plants before the weekend comes")]),
+        holding(.Item, [switch_node("Call the bank", true)]),
+    ],
+)
+
+let confirm = Node {
+    prim: .Dialog,
+    attrs: [.Label("Delete it?"), .Open(true)],
+    box: Box {},
+    children: [boxed(.Row, gap(.M), [button_node("Cancel"), button_node("Delete")])],
+}
+
+let screen = boxed(
+    .Column,
+    gap_pad(.M, .S),
+    [
+        heading_node("Today", 1),
+        text_node("Three things are left, and one of them is overdue."),
+        boxed(
+            .Row,
+            gap(.L),
+            [image_node("me.png", "me"), link_node("profile", "/me"), leaf(.Icon, [.Name("gear")])],
+        ),
+        field_node("New task", "Buy milk"),
+        leaf(.Slider, [.Label("Priority"), .Amount(2), .Min(1), .Max(5)]),
+        leaf(.Progress, [.Label("Done"), .Amount(1), .Max(3)]),
+        leaf(.Divider, []),
+        card_node("Tasks", [tasks]),
+        leaf(.Alert, [.Text("Saved" + from_codepoint(27) + "[2J")]),
+        confirm,
+    ],
+)
+
+println(render(screen, Env {}, 30))
