@@ -167,6 +167,12 @@ spec "std/ui html — adversarial" {
         then "an allowed scheme with a trailing space before its colon is refused" { !safe_url("https :x") }
         then "a scheme in non-ASCII capitals is refused" { !safe_url("ＨＴＴＰ://x") }
         then "a backslash opening is a path with no scheme" { safe_url("\\\\x.dev\\a") && !safe_url("\\javascript:x") }
+        then "a URL is judged on whatever primitive carries it" {
+            fragment(leaf(.Image, [.Href("vbscript:x"), .Src("/ok")])) == "<img href=\"#\" data-refused-url=\"vbscript:x\" src=\"/ok\">"
+        }
+        then "each URL of one node is judged on its own" {
+            fragment(leaf(.Link, [.Href("/ok"), .Href("javascript:x")])) == "<a href=\"/ok\" href=\"#\" data-refused-url=\"javascript:x\"></a>"
+        }
         then "a refused link in a tree leaves no href holding its value" {
             !fragment(holding(.Column, [link_node("x", "javascript:alert(1)")]))
                 .contains("href=\"javascript")
