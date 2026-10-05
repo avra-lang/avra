@@ -289,6 +289,9 @@ export type TypeFacts = {
     scopes: SideTable<ParamScope?>,
     pattern_types: SideTable<List<TypeId>>,
     binding_types: SideTable<TypeId?>,
+    // a paired head's INDEX binder — `int` for a list, the key's own
+    // type under a map
+    index_types: SideTable<TypeId?>,
     // a plain `let`'s declaring statement, marked when it is a
     // writing method's non-`mut` receiver — its seed is boxed into
     // a cell, thawed, the same way a `mut` local's is
@@ -360,6 +363,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
         binding_types: side_table<TypeId?>("binding_types", 0, stmts, null),
+        index_types: side_table<TypeId?>("index_types", 0, stmts, null),
         boxed_locals: side_table("boxed_locals", 0, stmts, false),
         voices: no_voices(),
     }
@@ -569,6 +573,7 @@ impl TypeFacts {
         self.dispatches.lay(other.dispatches)
         self.stages.lay(other.stages)
         self.binding_types.lay_named(other.binding_types, is_typed)
+        self.index_types.lay_named(other.index_types, is_typed)
         // a WHOLE-FILE column: a named lay, never plain, keeps one
         // declaration's `true` from being stomped by another's
         // untouched `false` — the same law `binding_types` pays
@@ -576,6 +581,10 @@ impl TypeFacts {
     }
 
     fn declared_binding(s: StmtId) -> TypeId? { self.binding_types.get(s.index) }
+
+    fn index_type(s: StmtId) -> TypeId? { self.index_types.get(s.index) }
+
+    fn record_index_type(s: StmtId, ty: TypeId) { self.index_types.set(s.index, ty) }
 
     fn wants_boxed_local(s: StmtId) -> bool { self.boxed_locals.get(s.index) }
 

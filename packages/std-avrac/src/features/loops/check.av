@@ -59,11 +59,39 @@ export fn check_for_each(mut cx: TypeCx, s: StmtId) {
         .ForEach(index, _, subject, stmts) -> {
             if index != null { cx.pair(subject) }
             cx.walk(subject)
-            cx.record_binding(s, walked_elem(cx, subject))
+            match cx.seen_at(subject) {
+                .Map(_, v) -> map_head(cx, s, index != null, subject, v),
+                _ -> cx.record_binding(s, walked_elem(cx, subject)),
+            }
             cx.turn_stmts(s, stmts)
         },
         _ -> nothing(),
     }
+}
+
+/// `for k, v in m` — the head binds the KEY through the index binder
+/// and the value through the element binder. A map has no single
+/// element, so an unpaired head refuses.
+fn map_head(mut cx: TypeCx, s: StmtId, paired: bool, subject: ExprId, value: TypeId) {
+    if !paired {
+        let _ = map_needs_pair(cx, subject)
+        return
+    }
+    cx.record_index_type(s, cx.type(string))
+    cx.record_binding(s, value)
+}
+
+fn map_needs_pair(mut cx: TypeCx, subject: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(subject),
+                "a map walks as key and value — `for k, v in m` binds both",
+                "this map",
+                "pair the head — `for k, v in m`",
+            ),
+        )
 }
 
 /// The element type the walk hands out — or the refusal.
