@@ -3,7 +3,18 @@
 //! methods walk as an impl's. Its own laws are its template's: `expand`
 //! answers the code an instance becomes, and a template reads each of
 //! its instance's fields once.
-use core.{StmtId, ExprId, TypeId, DeclId, ComponentParts, Unheard, same_file, user_kind}
+use core.{
+    StmtId,
+    ExprId,
+    TypeId,
+    DeclId,
+    Annotation,
+    ComponentParts,
+    Unheard,
+    same_file,
+    same_decl,
+    user_kind,
+}
 use features.{ResolveCx, TypeCx, Unsettled, unsettled_label}
 use @std.meta.{Diagnostic}
 use diagnostics.{Diag, refusal}
@@ -36,9 +47,13 @@ fn check_component(mut cx: TypeCx, s: StmtId) {
 fn check_body(mut cx: TypeCx, s: StmtId) {
     let body? = cx.view.store.component_body(s) else { return }
     let name = cx.view.store.type_decl_name(s) ?? "this component"
-    let traits = cx.view.decls.composing_traits()
+    let traits = cx.view.decls.composers(cx.view.file)
     let composer? = traits.first() else { return no_composer(cx, s, name) }
     if traits.length > 1 { return two_composers(cx, s, name, [cx.view.decls.decl(t).name for t in traits]) }
+    // a `@derive` WRITTEN over the same trait speaks for itself
+    if cx.view.store.annotations_of(s).any(written_over(cx, it, composer)) {
+        return
+    }
     let m? = cx.view.decls.trait_derive(composer) else { return }
     if same_file(cx.view.decls.decl(m).file, cx.view.file) { return }
     let by = cx.view.decls.decl(composer).name
@@ -204,6 +219,18 @@ fn seat_twice(at: Loc?, event: string, seat: string) -> Diag {
 
 /// Words as a refusal lists them.
 fn ticked(words: List<string>) -> string { ["`${w}`" for w in words].join(", ") }
+
+/// Whether an annotation names the trait `composer` among its
+/// arguments — a `@derive` written over it.
+fn written_over(cx: TypeCx, a: Annotation, composer: DeclId) -> bool {
+    a.args.any(names_composer(cx, it, composer))
+}
+
+/// Whether an annotation's argument names the trait `composer`.
+fn names_composer(cx: TypeCx, e: ExprId, composer: DeclId) -> bool {
+    let named? = cx.bound_decl(e) else { return false }
+    same_decl(named, composer)
+}
 
 /// What a composing trait refused of a component's body — its own
 /// words, under its package's kind.

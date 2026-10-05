@@ -269,8 +269,10 @@ type Records = {
     /// `component NAME {` declaration — what its module's other files
     /// stand under.
     component_scanned: Cell<Map<string, bool>>,
-    /// Whether a path's text wears `@composes` — read once a path.
-    composer_scanned: Cell<Map<string, bool>>,
+    /// The names a path's `component` declarations wear, read once.
+    component_names: Cell<Map<string, List<string>>>,
+    /// Whether every file of a package was minted, by the package's key.
+    minted_whole: Cell<Map<string, bool>>,
     /// Every file a record has met this build, by path — each met once.
     met_files: Cell<Map<string, bool>>,
     /// A MODULE'S OWN ANSWER, keyed by module: the names its record marks as
@@ -291,6 +293,7 @@ fn new_records() -> Records {
     let no_fault: Map<string, string> = {}
     let no_scanned: Map<string, bool> = {}
     let no_declaring: Map<string, bool> = {}
+    let no_names: Map<string, List<string>> = {}
     let no_met: Map<string, bool> = {}
     let no_block_named: Map<string, List<string>> = {}
     let no_block_rows: Map<string, List<Row>> = {}
@@ -303,7 +306,8 @@ fn new_records() -> Records {
         record_fault: Cell.new(no_fault),
         grammar_scanned: Cell.new(no_scanned),
         component_scanned: Cell.new(no_declaring),
-        composer_scanned: Cell.new(no_declaring),
+        component_names: Cell.new(no_names),
+        minted_whole: Cell.new(no_declaring),
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),
         block_rows: Cell.new(no_block_rows),
@@ -793,6 +797,7 @@ fn built(
         )
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
+    ws.decls.arm_composers((f: FileId) -> ws.composers(f))
     ws.arm_audit()
     ws.load_packages(src)
     ws
@@ -1181,9 +1186,27 @@ impl Workspace {
 
     fn clocked_parse(f: FileId) -> Parsed {
         let t0 = self.clock()
-        let p = parse_program(self.lang, self.source(f), BlockWords {})
+        let p = parse_program(
+            self.lang,
+            self.source(f),
+            BlockWords { components: self.unread_words(f) },
+        )
         self.timed("ast", self.clock() - t0)
         p
+    }
+
+    /// A PLAIN PARSE KNOWS ITS MODULE'S COMPONENT WORDS BY NAME. The
+    /// words a file's own module declares are read off this parse, so it
+    /// must stand whole where one of them opens an instance — a block
+    /// the parser did not know for an instance's would close the
+    /// declaration around it. Each word is known here by its name alone,
+    /// read off its file's tokens: its instance parses as one and builds
+    /// nothing, and the parse that follows knows its form.
+    fn unread_words(f: FileId) -> List<ComponentWord> {
+        if self.lone { return [] }
+        let path = self.decls.file(f).path
+        let files = if file_declares_component(self, path) { [path].concat([s for s in self.declaring_siblings(path) if s != path]) } else { self.declaring_siblings(path) }
+        [unread_word(name, declared) for declared in files for name in component_names(self, declared)]
     }
 
     fn parsed_under_blocks(f: FileId) -> Parsed {
@@ -1359,18 +1382,37 @@ impl Workspace {
         }
     }
 
-    /// WHAT COMPOSES A BODY IS MINTED BEFORE A BODY ASKS. A component
-    /// that holds statements is derived over the trait wearing
-    /// `@composes`, found by its mark in the one table — which holds a
-    /// file's declarations only once that file is minted, and nothing a
-    /// component's own file imports need name the trait. So every file
-    /// of a package the program has reached whose TEXT wears the mark is
-    /// minted here, before the component is.
-    fn composers_minted() {
-        for pkg in self.packages() {
-            for path in self.all_files(pkg.src) {
-                if file_wears_composes(self, path) { touch(self.items(self.file_id(path))) }
-            }
+    /// THE TRAITS THAT MAY COMPOSE A COMPONENT OF FILE `f` — found from
+    /// the PROGRAM, by what the file can name: the packages its `use`
+    /// lines reach, and its own. Each such package's declarations are
+    /// minted first, so the answer is the same whatever was read before
+    /// it was asked, and a trait wearing `@composes` is found by its
+    /// mark in the one table. Two libraries each compose their own
+    /// components; two in ONE file's reach is the typing law's refusal.
+    fn composers(f: FileId) -> List<DeclId> {
+        let reach = self.packages_named(f)
+        for ordinal in reach { self.package_minted(ordinal) }
+        [x.id for x in self.decls.indexed_by_mark("composes") if self.decls.composes(x.id) &&
+            reach.contains(self.holder_of_path(self.decls.file(x.file).path))]
+    }
+
+    /// The packages a file can name, by their place in the workspace: its
+    /// own, then each its `use` lines reach.
+    fn packages_named(f: FileId) -> List<int> {
+        let own = self.holder_of_path(self.decls.file(f).path)
+        let from = self.packages()[own]
+        let keys = [k for u in self.parsed(f).store.built_uses() for k in some_list(qualified(module_path(u.path), from).package()) if self.reaches(from, k)]
+        [own].concat([j for j, pkg in self.packages() if j != own && keys.contains(pkg.key)])
+    }
+
+    /// Every file of a package minted — its declarations stand in the
+    /// one table. Once a package.
+    fn package_minted(ordinal: int) {
+        let pkg = self.packages()[ordinal]
+        if self.records.minted_whole.get().get(pkg.key) ?? false { return }
+        self.records.minted_whole.put(pkg.key, true)
+        for path in self.all_files(pkg.src) {
+            if is_source(path, pkg.src) && !self.excluded(path) { touch(self.items(self.file_id(path))) }
         }
     }
 
@@ -1386,7 +1428,6 @@ impl Workspace {
         }
         self.decls.note_rows(f, 0)
         let p = self.parsed(f)
-        if p.stmts.any((s) -> p.store.component_body(s) != null) { self.composers_minted() }
         let ids = self.decls.admit(f, p.store, p.stmts)
         let out = items_of(
             self
@@ -1496,7 +1537,7 @@ impl Workspace {
                 f,
                 self.namespace(self.decls.file(f).module_id),
                 imports,
-                self.prelude_imports(f).concat(self.composer_imports(p)),
+                self.prelude_imports(f),
                 (path: string) -> self.shown(path),
             )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
@@ -1515,17 +1556,6 @@ impl Workspace {
         let from = self.packages()[self.holder_of_path(self.decls.file(f).path)]
         if from.key == prelude_key || !self.std_admitted(prelude_key) { return [] }
         [Import { decl: d.id, at: null, renamed: "", shared: false } for d in self.exported_decls(prelude_module())]
-    }
-
-    /// WHAT A COMPONENT WITH A BODY IS, ITS FILE SEES. Such a component
-    /// is derived over the trait that composes it, and the impl made for
-    /// it names that trait where the component stands — so the trait is
-    /// one of the file's implicit imports, bound weakly as the prelude's
-    /// are. A file that declares no such component sees nothing more.
-    fn composer_imports(p: Parsed) -> List<Import> {
-        if !p.stmts.any((s) -> p.store.component_body(s) != null) { return [] }
-        self.composers_minted()
-        [Import { decl: t, at: null, renamed: "", shared: false } for t in self.decls.composing_traits()]
     }
 
     /// A file's names resolved. RECURSIVE: a whole-program pass asks

@@ -141,62 +141,70 @@ Five attempts to lift a handler into a generated message failed.
     is listed is `tree/shows.av`'s `Shows`. The old node's `spoken`
     is `tree/outline.av`'s `outline`.
 
-## Instance state (seam 2's tenant)
+## Compositions and instance state (seam 2's tenant)
 
-A user component is a COMPOSITION: `fn view()` answers what it is made
-of, and its `state` members are places each INSTANCE owns.
+A user component is a COMPOSITION: ITS BODY IS ITS VIEW. What it holds
+beside its fields and its `fn`s is what it is made of, and its `state`
+members are places each INSTANCE owns. The author writes no `@derive`,
+no spread, no `fn view()`, no return type, and may use it in the file
+that declares it.
 
-    // parts/counter.av
-    @derive(View)
-    export component counter(label: string) {
-        ..Stand
+    use @std.ui.components.{button, text}
+
+    component counter(label: string) {
         state n: int = 0
-
-        fn view() -> row {
-            row {
-                text "${self.label}: ${self.n}"
-                button "+" { on press { self.n = self.n + 1 } }
-            }
-        }
+        text "${self.label}: ${self.n}"
+        button "+" { on press { self.n = self.n + 1 } }
     }
 
-    // parts/task_row.av
-    @derive(View)
-    export component task_row(todo: Todo) {
-        ..Stand
+    component task_row(todo: Todo) {
         state open: bool = false
-
-        fn view() -> item {
-            item {
-                button self.todo.title { on press { self.open = !self.open } }
-                text "${if self.open { "open" } else { "shut" }}"
-            }
+        item {
+            button self.todo.title { on press { self.open = !self.open } }
+            if self.open { text self.todo.notes }
         }
     }
 
-    // the app
     fn page() -> column {
         column {
             counter "left"
             counter "right" { n: 10 }
-            list visible() by it.id { t -> task_row t }
+            for t in visible() {
+                task_row t { key: t.id }
+            }
         }
     }
+
+### What a composition is
+
+- **A body draws IN PLACE.** A composition has no node of its own: what
+  its body makes — none, one or several nodes — stands under the
+  composition's own parent (`View.describe` answers a list). A page
+  holds no element for it.
+- **Its standing is one step; its nodes are stepped through it.** The
+  instance is kept at its own step under its parent (its key, else its
+  site). Each node it draws carries that step in front of its own
+  (`Stand.via`), so two instances' nodes are told apart beside each
+  other: moving a keyed composition moves exactly its nodes.
+- **A tree has one root.** A root that drew none or several nodes is
+  held in a column — the one wrapper, and only there.
+- **A primitive is the other kind**: `@prim`, marked members, no body,
+  drawn by its target. A declaration with both is refused by name.
 
 ### Laws
 
 1. **`describe` is the walk, and the walk says where it stands.**
-   `View.describe(at: Standing) -> Node`. A container hands each child
+   `View.describe(at: Standing) -> List<Node>`. A container hands each child
    the standing under its own, at the child's step — `tree/identity.av`'s
    `steps` over what each child says of where it stands, the tree's one
    identity, computed
-   where the tree is MADE. Every target has it and none owns it. A
-   composition's view stands at a step of its own (`+view`), so a view
-   that is itself a composition never shares a standing.
+   where the tree is MADE. Every target has it and none owns it. What
+   a composition is made of stands under the composition's standing,
+   so one made of a single composition never shares its standing.
 2. **The instance that stands is the first one built there.** An
    instance is a value, built fresh each paint. The walk keeps the
    first one at a standing; a later one hands it its PROPS (a copy
-   shares its `state` cells) and `view()` runs on that. A handler is a
+   shares its `state` cells) and its body runs on that. A handler is a
    closure over `self`, so it holds the kept cells.
 3. **A seed is read once.** A state member's value at the instance
    (`n: 10`, or its default) seeds the place when the instance first
@@ -238,32 +246,62 @@ of, and its `state` members are places each INSTANCE owns.
 
 ### The language
 
+- **A component's body.** A component declaration takes statements
+  beside its fields and `fn`s — child instances, `if`/`for`/`match`, a
+  `let`, a call whose answer is a view — never a declaration of its
+  own. The compiler folds them into one quote; nothing walks a body
+  where it is written.
+- **`@composes(Carried)`** (`@std/meta`), worn by a trait: A COMPONENT
+  WITH A BODY IS ONE OF THESE. It is derived over that trait exactly as
+  a written `@derive` would derive it — the trait's `derive` receives
+  the body as `Type.body` and splices it where it means something —
+  and it CARRIES the record the mark names as if it spread it. So the
+  compiler names no library: `@std/ui` writes `@composes(Stand) export
+  trait View`, and `key:` and the site are fields of every composition
+  with nothing written. The trait is one of that file's implicit
+  imports, bound weakly as the prelude's are. One trait a program
+  composes by: none is refused, and so are two.
+- **A component is instanced where it is declared.** A module's own
+  component word is reserved nowhere, so it opens an instance where
+  the line says so: before a head value (`counter "a"`, `counter id`,
+  `counter self.name`) anywhere, or before a name where a statement
+  starts. Its word before a `{` stays the record's literal.
+- **A statement that fails keeps the shape around it.** Recovery
+  skips the block the failed statement opened, not only its line, so
+  a declaration around it still closes where it was written.
+- **A head keeps its brace.** A record literal never opens in a head
+  (`if`, `match`, `for`, a component's head value): `counter id { key:
+  id }` is `counter` over `id`. A literal in a head is parenthesised,
+  and `fmt` keeps the parentheses.
 - `component C { state n: T = v }`: a field, as a record's is.
 - A WRITE THROUGH A `state` FIELD ASKS NOTHING OF ITS ROOT. The cell
   takes it, so `self.n = …` in a handler and `c.n = …` on a parameter
   run; `self.plain = …` keeps `resolve.immutable`'s words. The root's
   verdict is spoken at typing, where the field is known. Such a write
   marks no receiver written.
-- `@std/meta`: `Field.state`, and `Type.fns` — the fns a component
-  wrote in its own body.
+- `@std/meta`: `Field.state`, `Type.fns`, `Type.body`.
 - `@std/meta`'s `Site`: A FIELD'S TYPE IS ITS MEANING. A record literal
   that leaves a `Site` field unset holds its own site — its file and
   its own content, folded — so it owes no default. One constant a
   literal; content-addressed, so a line added above it moves nothing,
   and two literals written alike in one file share one.
 
-### Refused (`@std/ui:<kind>`)
+### Refused
 
-- `prim`: "a view is a primitive or is made of views, and `x` says
-  neither"
-- `stateful-primitive`: "a primitive draws what it is told, and `n` is
-  a place it would keep"
-- `boxed-composition`: "a composition wears its view's box, and `x`
-  spreads one of its own"
-- `stand`: "a view is told from its siblings by where it stands, and
-  `x` does not say" — a composition spreads `..Stand`
-- `marked-composition`: "a composition projects nothing of its own,
-  and `title` is marked `@attr`"
+- `type.component_body`: "a component is made of what its body holds,
+  and nothing here says what `x`'s is" — no trait composes; and "one
+  trait says what a component's body is, and here `A` and `B` both do"
+- `build.failed`: "a component holds its fields, its `fn`s and what it
+  is made of — never a declaration of its own"; "a component's `state`
+  is a field, and a field says its type — `state n: int = 0`"
+- `@std/ui:prim`: "a view is a primitive or is made of views, and `x`
+  is neither"
+- `@std/ui:primitive-body`: "a primitive is drawn by its target, and
+  `x` holds a body of its own"
+- `@std/ui:stateful-primitive`: "a primitive draws what it is told,
+  and `n` is a place it would keep"
+- `@std/ui:boxed-composition`, `@std/ui:marked-composition`: a
+  composition spreads no `Box` and marks no member
 
 ### Rejected
 

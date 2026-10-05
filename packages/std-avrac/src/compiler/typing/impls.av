@@ -20,7 +20,17 @@ use core.{
 }
 use core.{SeatMark, plain_mark}
 use diagnostics.{refusal, warning}
-use features.{TypeCx, FnSig, DeclSig, Decl, written_seats, EnumSig, method_row, property_row}
+use features.{
+    TypeCx,
+    FnSig,
+    DeclSig,
+    Decl,
+    Namespace,
+    written_seats,
+    EnumSig,
+    method_row,
+    property_row,
+}
 
 impl TypeCx {
     /// A trait member's sig: `Self` at seat 0 — the trait's own
@@ -92,7 +102,30 @@ impl TypeCx {
     }
 
     /// The trait a name stands for, in this file's scope.
-    fn trait_decl_named(name: string) -> DeclId? { self.view.decls.trait_named(self.names, name) }
+    /// A trait by name: in the namespace of the file that WROTE the type
+    /// being read, then where the code lands.
+    fn trait_decl_named(name: string) -> DeclId? {
+        let landed = self.view.decls.trait_named(self.names, name)
+        let writer? = self.writer else { return landed }
+        self.trait_in(writer, name) ?? landed
+    }
+
+    /// THE TRAIT AN IMPL IS FOR, READ WHERE ITS NAME WAS WRITTEN. A
+    /// generated impl's text is its template's: the trait it names is
+    /// the one its own library's file names so, whatever the file it
+    /// lands in imports — nothing, or an unrelated declaration of the
+    /// same name. A written impl reads its own file.
+    fn impl_trait(s: StmtId, of: string) -> DeclId? {
+        let origin? = self.view.origin_of_stmt(s) else { return self.view.decls.trait_named(self.names, of) }
+        self.trait_in(self.written_in(origin), of)
+    }
+
+    /// The trait a namespace binds `name` to — none when it binds no
+    /// trait there.
+    fn trait_in(names: Namespace, name: string) -> DeclId? {
+        let d? = names.type_decl(name) else { return null }
+        if self.view.decls.is_trait(d) { d } else { null }
+    }
 
     /// A member's sig under its parent: a trait's method declares
     /// its contract; an impl's method declares under the impl's
@@ -302,7 +335,7 @@ impl TypeCx {
     fn builtin_law(s: StmtId, d: DeclId, parts: ImplParts) {
         let target = parts.target
         let of? = parts.of else { return self.builtin_inherent(s, target) }
-        let tr: DeclId? = self.trait_decl_named(of)
+        let tr: DeclId? = self.impl_trait(s, of)
         if tr != null && self.view.decls.package_of(tr!) != self.view.package() { return self.builtin_foreign(s, of, target) }
         let sh = self.view.types.shape_of(self.view.decls.self_type_of(d))
         let taken? = parts.fns.find((f) -> self.builtin_answers(sh, self.fn_named(f))) else { return }
@@ -349,7 +382,7 @@ impl TypeCx {
         if !loud { return }
         let owner = self.view.decls.package_of(d)
         if owner == self.view.package() { return }
-        let tr: DeclId? = if of == null { null } else { self.trait_decl_named(of!) }
+        let tr: DeclId? = if of == null { null } else { self.impl_trait(s, of!) }
         if tr != null && self.view.decls.package_of(tr!) == self.view.package() { return }
         self.orphan_impl(s, impl_heading(of, target), target, owner)
     }
@@ -358,7 +391,7 @@ impl TypeCx {
     /// arity, param types, and return — and nothing beyond them
     /// (the recorded bs2 law, now ours).
     fn check_trait_impl(s: StmtId, of: string, target: DeclId, tname: string, fns: List<StmtId>) {
-        let tdecl? = self.trait_decl_named(of) else { return self.no_such_trait(s, of) }
+        let tdecl? = self.impl_trait(s, of) else { return self.no_such_trait(s, of) }
         let args = [self.full_type(self.stmt_loc(s), a) for a in self.view.store.trait_args_of(s)]
         let takes = self.view.decls.tparams(tdecl).length - 1
         if args.length != takes { return self.trait_args_miscounted(s, of, takes, args.length) }
@@ -450,7 +483,7 @@ impl TypeCx {
             self.seat_contract(x, if self.view.store.is_static(x.stmt) { 0 } else { 1 })
             return
         }
-        let tdecl? = self.trait_decl_named(of!) else { return }
+        let tdecl? = self.impl_trait(parent.stmt, of!) else { return }
         let member? = self.view.decls.trait_member(tdecl, x.name) else { return }
         if writes && !self.view.decls.declares_writing(member) { self.writes_under_plain_sig(x, of!) }
     }

@@ -21,7 +21,7 @@ fn op_texts(r: LexResult) -> List<string> {
 /// The texts lexed as a component's word, joined, under one word the
 /// file's own module declares.
 fn own_opened(src: string) -> string {
-    [t.text for t in lex_blocks(src, [], [], ["thing"], ["let", "fn"]).tokens if t.kind == TokenKind.Component]
+    [t.text for t in lex_blocks(src, [], [], ["thing"], ["let", "fn", "for", "in", "is"]).tokens if t.kind == TokenKind.Component]
         .join(",")
 }
 
@@ -288,8 +288,19 @@ spec "grammar/lexer" {
                 own_opened("f(thing)\nthing") == "" &&
                 own_opened("thing let") == ""
         }
-        then "a line a continuing operator joins is no statement's head" {
-            own_opened("a +\nthing add") == ""
+        then "it opens one before a head value, wherever it stands" {
+            own_opened("let v = thing \"x\"") == "thing" &&
+                own_opened("let v = thing \"a \${b}\" { k: 1 }") == "thing" &&
+                own_opened("f(thing 3)") == "thing" &&
+                own_opened("[thing id for id in ids]") == "thing" &&
+                own_opened("x = thing self.name") == "thing" &&
+                own_opened("a +\nthing add") == "thing"
+        }
+        then "a keyword that is no value after it leaves it a name" {
+            own_opened("for thing in things { }") == "" &&
+                own_opened("[x for thing in things]") == "" &&
+                own_opened("thing is .Ready") == "" &&
+                own_opened("let v = thing") == ""
         }
     }
     given "a byte string" {

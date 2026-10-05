@@ -12,12 +12,12 @@ fn tick(runs: Cell<int>, n: int) -> Tally {
 let runs: Cell<int> = Cell.new(0)
 let seen = 1000
 let hygienic = tally tick(runs, 1) { seen }
-let nested = tally Tally { n: 10 } { tally Tally { n: 100 } { 1 } }
+let nested = tally (Tally { n: 10 }) { tally (Tally { n: 100 }) { 1 } }
 fn inside(x: int) -> int {
-    tally Tally { n: x } { x * 2 }
+    tally (Tally { n: x }) { x * 2 }
 }
 fn leaves(x: int) -> int {
-    let v = tally Tally { n: 1 } {
+    let v = tally (Tally { n: 1 }) {
         if x > 5 { return 0 - 1 }
         x
     }
@@ -25,14 +25,11 @@ fn leaves(x: int) -> int {
 }
 mut total = 0
 for i in 0..3 {
-    total = total + tally Tally { n: i } { i }
+    total = total + (tally (Tally { n: i }) { i })
 }
-let listed = [tally Tally { n: 1 } { 1 }, tally Tally { n: 2 } { 2 }]
-let deferred = (x: int) -> tally Tally { n: x } { x }
-let task = spawn { tally Tally { n: 40 } { 1 } }
-let crossed = "${total} ${listed[1]} ${deferred(3)} ${task.await} ${"in ${tally Tally { n: 1 } { 1 }}"}"
-let chosen = match tally Tally { n: 2 } { 3 } {
-    5 -> "five",
-    _ -> "other",
-}
+let listed = [tally (Tally { n: 1 }) { 1 }, tally (Tally { n: 2 }) { 2 }]
+let deferred = (x: int) -> tally (Tally { n: x }) { x }
+let task = spawn { tally (Tally { n: 40 }) { 1 } }
+let crossed = "${total} ${listed[1]} ${deferred(3)} ${task.await} ${"in ${tally (Tally { n: 1 }) { 1 }}"}"
+let chosen = match tally (Tally { n: 2 }) { 3 } { 5 -> "five", _ -> "other" }
 "${hygienic} ${runs.get()} ${nested} ${inside(4)} ${leaves(2)} ${leaves(9)} ${chosen} ${crossed}"

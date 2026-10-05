@@ -1215,6 +1215,19 @@ impl SyntaxArena {
         }
     }
 
+    /// Whether a record literal's brace stands BARE in `e` — outside
+    /// every delimiter — so that in a head it would open before the
+    /// head's own does. A literal opens where it stands, at either side
+    /// of an operator, and under whatever is read off it.
+    fn bares_literal(e: ExprId) -> bool {
+        match self.expr(e) {
+            .StructLit(_, _, _) -> true,
+            .Binary(_, left, right) or .Coalesce(left, right) -> self.bares_literal(left) || self.bares_literal(right),
+            .Not(held) or .Force(held) or .Propagate(held) or .Prop(held, _) or .Chain(held, _) or .Is(held, _) or .Index(held, _) or .MethodCall(held, _, _) or .With(held, _, _) or .CallValue(held, _) -> self.bares_literal(held),
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .When(_, _, _) or .Block(_, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> false,
+        }
+    }
+
     /// An unwrap's subject; null for every other expression.
     fn forced(e: ExprId) -> ExprId? {
         match self.expr(e) { .Force(value) -> value, _ -> null }

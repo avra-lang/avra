@@ -1,0 +1,104 @@
+// A COMPONENT'S BODY IS WHAT IT IS MADE OF. A component that holds
+// statements is derived — with nothing written on it — over the one
+// trait wearing `@composes`: the trait's `derive` receives the body as
+// `Type.body` and splices it, `self` the instance, and the component
+// carries the record the mark names as if it spread it.
+use @std.avrac.testing.{provided, answered, refused_in, said, Module}
+use @std.avrac.compiler.{Program}
+
+/// The library: a trait that says a body is the words a component
+/// `says`, the record every such component carries, and the component
+/// a body's statements are gathered in.
+fn says() -> string {
+    "use @std.meta.{Type, Directive, Declared, composes}\n\nexport type Tagged = { tag: string = \"\" }\n\nexport component words {\n    items: List<string> = []\n}\n\n@composes(Tagged)\nexport trait Says {\n    fn says() -> string\n\n    static fn derive(t: Type) -> Declared {\n        let body? = t.body else { return Declared { made: [] } }\n        Declared {\n            made: [\n                Directive {\n                    twin: \"\",\n                    name: t.name,\n                    at: t.at,\n                    source: quote {\n                        impl Says for \${t} {\n                            fn says() -> string {\n                                words made {\n                                    \${body}\n                                }\n                                made.items.join(\" \")\n                            }\n                        }\n                    },\n                },\n            ],\n        }\n    }\n}\n\nexport fn said_by(s: dyn Says) -> string { s.says() }\n"
+}
+
+/// A second library, in the program's own package: a body is what a
+/// component `tells`.
+fn tells() -> Module {
+    Module {
+        name: "kit",
+        text: "use @std.meta.{Type, Directive, Declared, composes}\n\nexport type Plain = { plain: bool = true }\n\nexport component told {\n    items: List<string> = []\n}\n\n@composes(Plain)\nexport trait Tells {\n    fn tells() -> string\n\n    static fn derive(t: Type) -> Declared {\n        let body? = t.body else { return Declared { made: [] } }\n        Declared {\n            made: [\n                Directive {\n                    twin: \"\",\n                    name: t.name,\n                    at: t.at,\n                    source: quote {\n                        impl Tells for \${t} {\n                            fn tells() -> string {\n                                told made {\n                                    \${body}\n                                }\n                                \"told \" + made.items.join(\" \")\n                            }\n                        }\n                    },\n                },\n            ],\n        }\n    }\n}\n\nexport fn told_by(s: dyn Tells) -> string { s.tells() }\n",
+    }
+}
+
+fn built(main: string) -> Program { provided("use @x.c.{said_by}\n" + main, says()) }
+
+/// A component made of words, one of them only when it is loud,
+/// declared where it is used.
+fn greeting() -> string {
+    "component greeting(name: string) {\n    loud: bool = false\n    \"hello\"\n    if self.loud { \"LOUD\" }\n    self.name\n}\n"
+}
+
+spec "features/components — a body" {
+    given "a component that holds statements" {
+        then "is what its body makes, in order, `self` the instance" {
+            answered(built(greeting() + "let g = greeting \"ann\"\ng.says()")) == "hello ann"
+        }
+        then "reads its own fields through `self`" {
+            answered(built(greeting() + "let g = greeting \"ann\" { loud: true }\ng.says()")) == "hello LOUD ann"
+        }
+        then "is the trait's, with no `@derive` and no `impl` written" {
+            answered(built(greeting() + "said_by(greeting \"bo\")")) == "hello bo"
+        }
+        then "carries the record its trait names, as a setting and as a field" {
+            answered(
+                built(
+                    greeting() +
+                        "let g = greeting \"ann\" {\n    tag: \"t\"\n}\n\"\${g.says()} \${g.tag}\"",
+                ),
+            ) == "hello ann t"
+        }
+        then "says nothing of a clean program" { said(built(greeting() + "let g = greeting \"ann\"\ng.says()")).is_empty() }
+    }
+    given "a file that binds the trait's name to something else" {
+        then "is composed by the trait all the same — the impl names its own library's" {
+            answered(
+                built(
+                    "type Says = { n: int }\n" +
+                        greeting() +
+                        "let s = Says { n: 2 }\n\"\${said_by(greeting \"ann\")} \${s.n}\"",
+                ),
+            ) == "hello ann 2"
+        }
+    }
+    given "a second trait that composes, in the program's own package" {
+        then "composes a component whose file reaches it alone" {
+            answered(
+                provided(
+                    "use kit.{told_by}\ncomponent note(name: string) {\n    self.name\n}\ntold_by(note \"n\")",
+                    says(),
+                    [tells()],
+                ),
+            ) == "told n"
+        }
+        then "is refused beside the first, where one file reaches both" {
+            refused_in(
+                provided(
+                    "use @x.c.{said_by}\nuse kit.{told_by}\n" + greeting() + "0",
+                    says(),
+                    [tells()],
+                ),
+                "one trait says what a component's body is, and here `Tells` and `Says` both do",
+            )
+        }
+    }
+    given "a component that holds none" {
+        then "carries nothing and is derived over nothing" {
+            refused_in(
+                built(
+                    "component plain(name: string) {\n    x: int = 0\n}\nlet p = plain \"a\"\np.tag",
+                ),
+                "no field `tag` on `plain`",
+            )
+        }
+    }
+    given "a body the trait's derive is handed" {
+        then "is typed where it lands, and its mistakes point at the component" {
+            refused_in(
+                built("component wrong(name: string) {\n    self.nope\n}\n0"),
+                "no field `nope` on `wrong`",
+            )
+        }
+    }
+}

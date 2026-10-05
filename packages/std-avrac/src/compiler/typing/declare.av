@@ -211,10 +211,12 @@ impl TypeCx {
     /// one no single trait composes, carries nothing.
     fn with_carried(s: StmtId, written: StructSig) -> StructSig {
         if self.view.store.component_body(s) == null { return written }
-        let traits = self.view.decls.composing_traits()
+        let traits = self.view.decls.composers(self.view.file)
         if traits.length != 1 { return written }
         let carried? = self.view.decls.carried_by(traits[0]) else { return written }
         let fields? = self.view.decls.sig(carried)?.record_sig() else { return written }
+        // a component that already holds every carried field spread them in itself
+        if fields.names.all((n) -> written.names.contains(n)) { return written }
         joined_tables([written, fields]) with { lacking: written.lacking }
     }
 

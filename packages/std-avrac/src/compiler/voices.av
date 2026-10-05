@@ -51,7 +51,7 @@ use features.{
     SeatValue,
     Instanced,
 }
-use features.{no_kind}
+use features.{no_kind, ComponentWord, Instancing}
 use @std.meta.{
     Node,
     Field as MetaField,
@@ -62,7 +62,7 @@ use @std.meta.{
     Code as MetaCode,
     Diagnostic as MetaDiagnostic,
 }
-use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of}
+use core.{StmtId, Stmt, Arm, HoleKind, Inits, Unplaced, is_name_cont, digest_of, new_node_store}
 use @std.grammar.{ready}
 use grammar.{parse_grammar, avra_known_terminals, lex_source, Token, TokenKind}
 use diagnostics.{defect_at}
@@ -692,8 +692,8 @@ fn file_lexes_block(ws: Workspace, path: string) -> bool {
     found
 }
 
-/// Whether a file declares a component — `component NAME {` — read off
-/// its tokens, once a path.
+/// Whether a file declares a component — `component NAME`, then its
+/// block or its head — read off its tokens, once a path.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn file_declares_component(ws: Workspace, path: string) -> bool {
     let known = ws.records.component_scanned.get().get(path)
@@ -704,24 +704,41 @@ fn file_declares_component(ws: Workspace, path: string) -> bool {
     found
 }
 
-/// Whether a file's text wears `@composes` — a trait that says what a
-/// component's body is may stand there. Read off its text, once a path.
+/// The names a file's `component NAME` declarations wear — read off its
+/// tokens, once a path.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
-fn file_wears_composes(ws: Workspace, path: string) -> bool {
-    let known = ws.records.composer_scanned.get().get(path)
+fn component_names(ws: Workspace, path: string) -> List<string> {
+    let known = ws.records.component_names.get().get(path)
     if known != null { return known! }
-    let found = ws.host.read(path).contains("@composes")
-    ws.records.composer_scanned.put(path, found)
+    let tokens = lex_source(ws.host.read(path)).tokens
+    let found = [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
+        tokens[j + 1].kind == TokenKind.Name &&
+        (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))]
+    ws.records.component_names.put(path, found)
     found
 }
 
-/// Whether a stream holds `component NAME {`.
+/// A component word known by its name alone: its instance parses as
+/// one and stands as a hole.
+fn unread_word(name: string, origin: string) -> ComponentWord {
+    ComponentWord {
+        word: name,
+        declared: name,
+        form: Instancing.Unread,
+        store: new_node_store(origin),
+        origin: origin,
+        own: true,
+    }
+}
+
+/// Whether a stream holds a component's declaration: `component NAME`
+/// before its block or its head.
 fn declares_component(tokens: List<Token>) -> bool {
     [i for i in 0..tokens.length - 2]
         .any(
             tokens[it].lit_matches("component") &&
                 tokens[it + 1].kind == TokenKind.Name &&
-                tokens[it + 2].lit_matches("{"),
+                (tokens[it + 2].lit_matches("{") || tokens[it + 2].lit_matches("(")),
         )
 }
 

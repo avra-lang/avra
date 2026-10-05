@@ -327,9 +327,11 @@ fn binding_for<T, N>(bindings: List<Binding<T, N>>, label: string) -> Captured<T
 
 /// Skip to just past the sync target: a terminal-class name in the
 /// caller's known vocabulary syncs by class, anything else by text.
-/// `END` syncs to the statement's end: past the next Break, or BEFORE
-/// a `}` the statement did not open — braces it consumed between its
-/// entry and its failure are its own to close. Stops at Eof.
+/// `END` syncs to the statement's end: past the next Break that stands
+/// outside every brace the statement opened, or BEFORE a `}` it did not
+/// open — a block it opened, on its line or after its failure, is its
+/// own to close, so what stands around a statement that failed keeps
+/// its shape. Stops at Eof.
 fn sync_past<T, N>(cx: MatchContext<T, N>, target: string, entry: int, from: int) -> int {
     if is_end(target) { return sync_to_end<T, N>(cx, entry, from) }
     let known = cx.known_terminals.contains(target)
@@ -349,7 +351,7 @@ fn sync_to_end<T, N>(cx: MatchContext<T, N>, entry: int, from: int) -> int {
     mut i = from
     while !cx.lex.is_eof(cx.tokens[i]) {
         let t = cx.tokens[i]
-        if cx.lex.ends_statement(t) { return i + 1 }
+        if depth == 0 && cx.lex.ends_statement(t) { return i + 1 }
         if cx.lex.lit_matches(t, "{") { depth = depth + 1 }
         if closes_body(cx.lex, t) {
             if depth == 0 { return i }

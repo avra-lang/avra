@@ -562,6 +562,8 @@ export type Decls = {
     // the workspace's kept-apart hook: the declarations a file's
     // module keeps apart, what a symbol asks whether to carry its file
     apart_of: Cell<fn(FileId) -> List<DeclId>>,
+    // the traits that may compose a component of a file — the workspace's to answer
+    composers_of: Cell<fn(FileId) -> List<DeclId>>,
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
     builtins: Cell<List<DeclId>>,
@@ -816,6 +818,7 @@ export fn new_decls() -> Decls {
         lifter: Cell.new(no_lifter),
         namespace_of: Cell.new(no_namespace),
         apart_of: Cell.new(none_apart),
+        composers_of: Cell.new(none_apart),
         refs_db: Cell.new(new_db()),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
@@ -1517,6 +1520,7 @@ impl Decls {
         self.lifter.set(no_lifter)
         self.namespace_of.set(no_namespace)
         self.apart_of.set(none_apart)
+        self.composers_of.set(none_apart)
     }
 
     /// The workspace arms the sig hook once.
@@ -1639,6 +1643,11 @@ impl Decls {
     /// The workspace arms the namespace hook once.
     fn arm_namespace(ns: fn(FileId) -> Namespace) {
         self.namespace_of.set(ns)
+    }
+
+    /// The workspace arms the composers hook once.
+    fn arm_composers(composers: fn(FileId) -> List<DeclId>) {
+        self.composers_of.set(composers)
     }
 
     /// The workspace arms the kept-apart hook once.
@@ -2389,12 +2398,16 @@ impl Decls {
             .find((c) -> self.decl(c).kind is .Default && self.decl(c).name == field)
     }
 
-    /// THE TRAITS A COMPONENT'S BODY CAN BE DERIVED OVER: every trait
-    /// wearing `@std/meta`'s `@composes`, in id order — a component that
-    /// holds statements is one of the one there is.
-    fn composing_traits() -> List<DeclId> {
-        [x.id for x in self.indexed_by_mark("composes") if x.kind is .Trait && self.composes_mark(x.id) != null]
-    }
+    /// THE TRAITS THAT MAY COMPOSE A COMPONENT OF FILE `f`: every trait
+    /// wearing `@std/meta`'s `@composes` that the file can NAME — its own
+    /// package's, and those of the packages its `use` lines reach. A
+    /// component that holds statements is one of the one there is; none,
+    /// or two, is the typing law's to refuse. Asking IS the query: the
+    /// workspace mints what the file can name before it answers.
+    fn composers(f: FileId) -> List<DeclId> { (self.composers_of.get())(f) }
+
+    /// Whether a trait wears `@composes`.
+    fn composes(tr: DeclId) -> bool { self.composes_mark(tr) != null }
 
     /// A trait's `@composes(Carried)`, read in the trait's own file.
     fn composes_mark(tr: DeclId) -> AnnotationFact? {
@@ -2409,6 +2422,19 @@ impl Decls {
     fn carried_by(tr: DeclId) -> DeclId? {
         let mark? = self.composes_mark(tr) else { return null }
         (self.namespace_of.get())(self.annotation_home(tr)).type_decl(mark.args[0].text)
+    }
+
+    /// THE TRAIT AN IMPL IS FOR, read where its name was WRITTEN: a
+    /// generated impl's in its template's file, a written one's in its
+    /// own. None for an inherent impl, and for a name that binds no
+    /// trait there.
+    fn impl_trait(block: DeclId) -> DeclId? {
+        let x = self.decl(block)
+        let of = self.facts_of(block)?.of ?? ""
+        if of.is_empty() { return null }
+        let written = self.origin_of_stmt(x.file, x.stmt) ?? x.file
+        let d? = (self.namespace_of.get())(written).type_decl(of) else { return null }
+        if self.is_trait(d) { d } else { null }
     }
 
     /// What a record leaves out on purpose: its `@lacks(field, why)`s.
