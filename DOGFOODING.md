@@ -1789,3 +1789,21 @@ that may have changed the state. Give the loop one verb that runs it and
 acts only when it answers true (`App.turn(act: fn() -> bool)`), and each
 source is a caller of that verb — never a queue of typed messages with a
 dispatch beside it.
+
+## A match answers what the pair IS, never an index to look up again
+
+Pairing two runs and handing back positions makes every consumer re-read
+both sides and write an arm for the pair that cannot happen. Answer an
+enum of the cases that can — packages/std-ui/src/realize/dom/patch.av's
+`Stands { Made, KeptText, KeptTag }` — built in the ONE place both kinds
+are in hand, and the consumer is one exhaustive match with no fallback.
+
+## A seam only a real host exercises gets a run that builds the real thing
+
+A module a native link cannot reach has no unit test that is not a test
+of a stand-in. Keep its logic behind a fn seat a native test fills, AND
+give the seam itself a gate step that builds and runs the real artifact
+with every claim checked (`make ui-board`: tools/ui_board.sh builds the
+board for wasm and runs tools/ui-board/demo.mjs). It skips aloud where
+the toolchain is absent, naming what is missing, so a machine without it
+is never read as green.

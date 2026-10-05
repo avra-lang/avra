@@ -39,9 +39,14 @@ Five attempts to lift a handler into a generated message failed.
    (`realize/dom/patch.av`) and a host applies the patches: create,
    create text, place (after a sibling — one op inserts and moves),
    remove, set attribute, drop attribute, set property, set text,
-   listen, unlisten, style. A host holds no reconciler and no table of
+   listen, unlisten, style. Of the elements a parent keeps, the longest
+   run still in order stands still and only the rest are placed, so a
+   reorder says the fewest moves. A host holds no reconciler and no table of
    the library's facts: the event's own word, what it says, the
    property to read and whether to stop it ride the `listen` patch.
+   A property is held on the page as text or a flag — a number control's
+   value is the text that spells it — so what was drawn and what was
+   heard compare in one currency.
    A first paint is a diff against nothing; an unchanged page is no
    patch (the diff is a fold with no state of its own between paints:
    old page and new in, patches and the numbered page out); a property is compared against what the PAGE holds, so a
@@ -80,8 +85,11 @@ Five attempts to lift a handler into a generated message failed.
    and the frame tells the host which one each event says.
 6. **One table per fact.** Patch ops and what a control says carry
    their wire numbers as `@code` on the variant (`realize/dom/wire.av`);
-   the host's copy (`runtime/dom/wire.gen.js`) is written from them and
-   `make ui-host` fails when it is stale. Event kinds need no host copy:
+   the host's copy (`runtime/dom/wire.gen.js`) is written from them —
+   with the names a program answers to — and `make ui-host` fails when
+   it is stale. `make ui-board` builds the board as a wasm reactor and
+   runs it over the real page glue, each claim checked: the one run
+   that holds `mount`, the entry and those names to a real module. Event kinds need no host copy:
    the host echoes a kind it never reads.
 7. **`mount(view)` is the app.** No app writes the host seam: the
    page's exports and its one import are the web module's own
