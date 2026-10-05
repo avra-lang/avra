@@ -4,6 +4,8 @@
 //! the eager tree. No user writes these; they are a component's machine
 //! projection, the component being the one source of truth.
 use style.box.{Box}
+use style.tokens.{Size}
+use style.layout.{Axis}
 use @std.meta.{derive}
 use style.words.{Words}
 use tree.codes.{Codes, Coded}
@@ -39,7 +41,8 @@ export enum Prim {
 }
 
 /// What a node says when the user speaks to it, in words no platform
-/// owns: a `press` is a click, a tap or a key, as its target hears one. A
+/// owns: a `press` is a click, a tap or a key, as its target hears one; a
+/// `dismiss` is the key or the press outside that sends a dialog away. A
 /// REGISTRY: every target subscribes to every arm, or the build names the
 /// target. Each kind carries the number a host echoes it back as.
 @derive(Words)
@@ -49,6 +52,7 @@ export enum EventKind {
     @word(input) @code(2) Input
     @word(change) @code(3) Change
     @word(submit) @code(4) Submit
+    @word(dismiss) @code(5) Dismiss
 }
 
 /// What a control SAYS when it speaks: the value the user gave it, as
@@ -169,6 +173,9 @@ impl Node {
     /// This node's heading level, defaulting to one.
     fn level() -> int { level_of(self.attrs) }
 
+    /// The gap between this node's children.
+    fn gap() -> Size? { gap_between(self.prim, self.box) }
+
     /// Whether the node is open — a dialog showing what it holds.
     fn open() -> bool { self.attrs.any(says_open) }
 
@@ -178,6 +185,34 @@ impl Node {
     /// Whether pressing the node sends the form it stands in.
     fn submits() -> bool { submits_among(self.attrs) }
 }
+
+/// The axis a primitive lays its children along when its layout names
+/// none. Every primitive spelled: a row is its axis, and what stacks its
+/// children — a column, a surface, a form, a card, a dialog — is a
+/// column; the rest flow as their target draws them.
+export fn own_axis(p: Prim) -> Axis? {
+    match p {
+        .Row -> .Row,
+        .Column or .Surface or .Form or .Card or .Dialog -> .Column,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Divider or .Icon or .List or .Item or .Progress or .Alert or .Spinner or .Switch or .Slider -> null,
+    }
+}
+
+/// The gap along an axis when a layout names none. Every axis spelled:
+/// what shares a line never touches its neighbour.
+fn axis_gap(a: Axis) -> Size? {
+    match a { .Row -> .S, .Column -> null }
+}
+
+/// The gap the axis a `prim` in `box` lays along keeps on its own.
+fn own_gap(prim: Prim, box: Box) -> Size? {
+    let along? = box.layout.direction ?? own_axis(prim) else { return null }
+    axis_gap(along)
+}
+
+/// The gap between the children of a `prim` in `box`: its layout's, else
+/// its axis's own.
+export fn gap_between(prim: Prim, box: Box) -> Size? { box.layout.gap ?? own_gap(prim, box) }
 
 fn says_open(a: Attribute) -> bool {
     match a { .Open(on) -> on, _ -> false }

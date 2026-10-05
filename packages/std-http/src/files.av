@@ -71,7 +71,7 @@ impl Files {
         if path.is_empty() { return self.indexed(q, path) }
         let o? = file_beneath(self.root, path) else { return status(404) }
         match o.kind {
-            .File -> self.file(q, o),
+            .File -> self.file(q, o, path),
             .Dir -> {
                 o.close()
                 self.indexed(q, path)
@@ -95,19 +95,21 @@ impl Files {
             o.close()
             return status(404)
         }
-        self.file(q, o)
+        self.file(q, o, index)
     }
 
-    fn file(q: Request<Unrouted>, o: Opened) -> Response {
-        let r = self.answering(q, o)
+    /// The file opened, answered as what its own name `named` says it is —
+    /// an index's, never the directory's that was asked for.
+    fn file(q: Request<Unrouted>, o: Opened, named: string) -> Response {
+        let r = self.answering(q, o, named)
         // a streamed body owns the descriptor; its `ended` closes it
         if r.stream == null { let _ = o.close() }
         r
     }
 
-    fn answering(q: Request<Unrouted>, o: Opened) -> Response {
+    fn answering(q: Request<Unrouted>, o: Opened, named: string) -> Response {
         let tag = etag_of(o)
-        let fields = self.validators(o, tag, content_type(q.path()))
+        let fields = self.validators(o, tag, content_type(named))
         if not_modified(q, o, tag) { return Response { status: 304, headers: fields } }
         match wanted_range(q, o, tag) {
             .Whole -> self.whole(o, fields),
@@ -293,9 +295,8 @@ fn range_current(field: string?, o: Opened, tag: string) -> bool {
 // ── Media types ─────────────────────────────────────────────────
 
 /// The type a path's extension names; octets when it names none.
-fn content_type(path: Bytes?) -> string {
-    let p? = path?.text() else { return octets }
-    let dot = p.split("/").last()?.split(".") ?? []
+fn content_type(path: string) -> string {
+    let dot = path.split("/").last()?.split(".") ?? []
     if dot.length < 2 { return octets }
     media_types.get(dot.last()!) ?? octets
 }

@@ -125,10 +125,18 @@ fn plain(name: string) -> string {
 }
 
 /// A name as it is typed: dashes restored — two for a word, one for
-/// a letter.
+/// a letter — and the words of a name joined by hyphens, as a command
+/// line spells them: `no_watch` is `--no-watch`.
 fn spelled(name: string) -> string {
     if name.starts_with("-") { return name }
     if name.length == 1 { return "-${name}" }
+    "--${name.replace("_", "-")}"
+}
+
+/// A name letter for letter as it was declared, dashes restored: heard
+/// beside the spelling it is typed by.
+fn declared(name: string) -> string {
+    if name.starts_with("-") || name.length == 1 { return spelled(name) }
     "--${name}"
 }
 
@@ -247,11 +255,14 @@ fn classified(meta: command, w: string, options_over: bool) -> Token {
 }
 
 fn names_flag(f: flag, w: string) -> bool {
-    spelled(f.name) == w || f.short.length > 0 && spelled(f.short) == w || f.aliases.contains(w)
+    spelled(f.name) == w ||
+        declared(f.name) == w ||
+        f.short.length > 0 && spelled(f.short) == w ||
+        f.aliases.contains(w)
 }
 
 fn names_option(o: option, w: string) -> bool {
-    spelled(o.name) == w || o.short.length > 0 && spelled(o.short) == w
+    spelled(o.name) == w || declared(o.name) == w || o.short.length > 0 && spelled(o.short) == w
 }
 
 /// The positionals bound to their declarations, and a variadic's rest.

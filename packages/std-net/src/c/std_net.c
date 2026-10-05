@@ -483,6 +483,29 @@ int64_t avra_net_local_port(int64_t fd) {
     return -EAFNOSUPPORT;
 }
 
+// How far the address a descriptor is bound to reaches, as the kernel
+// holds it: 0 every interface (the wildcard), 1 this machine alone (the
+// loopback), 2 one other address — or -errno.
+int64_t avra_net_local_reach(int64_t fd) {
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof ss;
+    if (getsockname((int)fd, (struct sockaddr*)&ss, &len) < 0) return -errno;
+    if (ss.ss_family == AF_INET) {
+        struct sockaddr_in a;
+        memcpy(&a, &ss, sizeof a);
+        uint32_t host = ntohl(a.sin_addr.s_addr);
+        if (host == INADDR_ANY) return 0;
+        return (host >> 24) == 127 ? 1 : 2;
+    }
+    if (ss.ss_family == AF_INET6) {
+        struct sockaddr_in6 a;
+        memcpy(&a, &ss, sizeof a);
+        if (IN6_IS_ADDR_UNSPECIFIED(&a.sin6_addr)) return 0;
+        return IN6_IS_ADDR_LOOPBACK(&a.sin6_addr) ? 1 : 2;
+    }
+    return -EAFNOSUPPORT;
+}
+
 // A LOOKUP resolves a name on a HELPER THREAD, so the core keeps
 // running its tasks while the resolver takes its time: getaddrinfo
 // blocks for as long as the network makes it, and a blocked core

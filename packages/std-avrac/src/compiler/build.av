@@ -119,8 +119,11 @@ const WASM_FEATURES = [
 /// spellings to try, in order. An optimizer too old to know a feature by
 /// name is older than any proposal "every feature" would turn on, so for
 /// it alone that word is the same set.
+/// THE FUNCTIONS ARE NUMBERED BY USE, after the size passes: a call spells
+/// its callee's index in as many bytes as the index needs, and the runtime's
+/// rows — a push, a release, a slot read — are what a program calls most.
 fn wasm_opt_tries(linked: string, shrunk: string) -> List<List<string>> {
-    let shrink = ["-Oz", linked, "-o", shrunk]
+    let shrink = ["-Oz", "--reorder-functions", linked, "-o", shrunk]
     [["--enable-${f}" for f in WASM_FEATURES].concat(shrink), ["--all-features"].concat(shrink)]
 }
 
@@ -142,7 +145,8 @@ fn opt_level(opt: string) -> int {
 /// again of the sources is another workspace, with another registry and other file
 /// ids, and an entry built over the first one's would read this one's by index.
 /// `cases` are the cases it calls, each with the file that holds its body.
-export type ProgramModule = { main: fn(TypeRegistry) -> ProgramMain, rows: List<RtSig> = [], cases: List<CaseHome> = [] }
+/// `doors` names the bodies its host may call.
+export type ProgramModule = { main: fn(TypeRegistry) -> ProgramMain, rows: List<RtSig> = [], cases: List<CaseHome> = [], doors: List<string> = [] }
 
 /// A case the entry calls, and the path of the file its body is in.
 export type CaseHome = { call: CaseCall, path: string }
@@ -478,6 +482,7 @@ impl Workspace {
             .linked(
                 ProgramModule {
                     main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)),
+                    doors: [self.decls.symbol(d) for d in self.doors(entry)],
                 },
                 Keyed { named: entry, beside: [] },
                 binary,
@@ -639,7 +644,7 @@ impl Workspace {
             .concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))])
         // a held module nobody read is never minted, so nothing else declares its cases
         let brought = [main.case_stub(c.call, self.file_id(c.path)) for c in m.cases]
-        lo with { entry: main.body, types: main.types, externs: lo.externs.concat(m.rows), fns: undeclared(brought, stand).concat(stand) }
+        lo with { entry: main.body, types: main.types, externs: lo.externs.concat(m.rows), fns: undeclared(brought, stand).concat(stand), doors: m.doors }
     }
 
     /// THE PROGRAM MODULE'S KEY BY ITS OWN BYTES — written as bitcode at `bc`, and
@@ -672,7 +677,7 @@ impl Workspace {
         BuildError,
     > {
         let main = m.main(d.lowered.types)
-        let asked = program_asked_key(d, main, tools)
+        let asked = program_asked_key(d, main, m.doors, tools)
         // instantiations nobody lowered are owed, unless a build of these very asks kept them
         if !d.unlowered.is_empty() && !d.store.has(Stored.Obj, asked) {
             let whole = diagnosed(self.whole(d, []))?
@@ -798,15 +803,16 @@ impl Workspace {
     }
 }
 
-/// WHAT THE PROGRAM'S MODULE IS A FUNCTION OF: the program's asks, its entry, and
-/// what compiles it.
-fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string {
+/// WHAT THE PROGRAM'S MODULE IS A FUNCTION OF: the program's asks, its entry, its
+/// doors, and what compiles it.
+fn program_asked_key(d: Derived, main: ProgramMain, doors: List<string>, tools: Toolchain) -> string {
     node_key(
         Stored.Obj,
         [
             "program",
             d.asked,
             "${fp_list([i.fingerprint() for i in main.body.ins])}",
+            joined(doors, "\t"),
             tools.opt,
             tools.runtime,
         ],

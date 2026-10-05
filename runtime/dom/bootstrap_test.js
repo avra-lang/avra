@@ -24,6 +24,7 @@ const setText = (id, content) => [OP.set_text, ...idBytes(id), ...str(content)];
 const listen = (id, kind, event, says, reads, prevents) => [OP.listen, ...idBytes(id), ...i32(kind), ...str(event), ...i32(says), ...str(reads), ...i32(prevents ? 1 : 0)];
 const unlisten = (id, kind) => [OP.unlisten, ...idBytes(id), ...i32(kind)];
 const style = (css) => [OP.style, ...str(css)];
+const call = (id, verb) => [OP.call, ...idBytes(id), ...str(verb)];
 const frame = (...recs) => Uint8Array.from([WIRE_VERSION, ...recs.flat()]);
 
 let fails = 0;
@@ -135,6 +136,17 @@ c.apply(frame(listen(5, 1, "click", SAYS.nothing, "", false)));
 field.listeners.get("click")({ preventDefault: () => { kept++; } });
 check("an event it does not say to stop keeps its own answer", kept, 0);
 
+// ── a verb of the element's own ──
+const d = page();
+d.apply(frame(create(0, "dialog"), place(0, NO_ID, NO_ID)));
+let shown = 0;
+d.mount.childNodes[0].showModal = () => { shown++; };
+d.apply(frame(call(0, "showModal")));
+check("a call asks the element for the verb the patch named", shown, 1);
+let verbless = "";
+try { d.apply(frame(call(0, "levitate"))); } catch (e) { verbless = e.message; }
+check("a verb the element does not have refuses by name", verbless, "a patch calls levitate on element 0, which has no such verb");
+
 // ── the wire itself ──
 let refused = false;
 try { parseFrame(Uint8Array.from([WIRE_VERSION + 1])); } catch { refused = true; }
@@ -144,7 +156,7 @@ try { parseFrame(Uint8Array.from([WIRE_VERSION, 200])); } catch (e) { unknown = 
 check("an op the table does not hold refuses", unknown, "unknown patch op 200");
 check("an id past 32 bits reads whole", parseFrame(frame(create(5000000000, "div")))[0].id, 5000000000);
 check("no id reads as no id", parseFrame(frame(place(1, NO_ID, NO_ID)))[0].after, NO_ID);
-check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["create", "create_text", "drop_attr", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "style", "unlisten"]);
+check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["call", "create", "create_text", "drop_attr", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "style", "unlisten"]);
 
 // ── the echo's seam ──
 // A program that hands out each seat at 32, GROWING its memory as it does:

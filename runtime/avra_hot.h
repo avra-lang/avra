@@ -48,7 +48,11 @@ int64_t avra_array_len(void* arr);
 void* avra_box_thawed(void* p);
 
 // AVRA_RC_GUARD, settled at load.
+#if AVRA_INSTRUMENTS
 extern int avra_rc_guard_on;
+#else
+enum { avra_rc_guard_on = 0 };
+#endif
 
 // Each guarded tail is WHOLE: the fast path hands over live values
 // only (a pointer, a header already in hand) and computes nothing for

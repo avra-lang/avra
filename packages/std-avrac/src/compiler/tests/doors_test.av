@@ -1,0 +1,74 @@
+//! A program's doors: what its host may call by name. The entry file's own
+//! `export fn`s and those of the modules it imports are doors; an export
+//! deeper in the closure is lowered only when the program reaches it, and a
+//! non-host target exports the doors alone.
+use @std.io.{make_dirs, read_text}
+use @std.time.{now_ns}
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.lower.{Lowered}
+use compiler.backend.{emit_ll}
+use compiler.host.{memory_host}
+
+const DOORS_MAIN: string = "/w/src/main.av"
+
+/// An entry that imports `near`, which imports `far`; every module exports
+/// one fn the program calls and one nothing calls.
+fn doors_ws() -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/src/main.av": "use near.{used}\nexport fn handle(n: int) -> int {\n    n\n}\nused(1)\n",
+                "/w/src/near.av": "use far.{helper}\nexport fn used(n: int) -> int {\n    helper(n)\n}\nexport fn offered(n: int) -> int {\n    n + 1\n}\nexport fn shaped<T>(v: T) -> T {\n    v\n}\n",
+                "/w/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\nexport fn unreached(n: int) -> int {\n    n - 1\n}\n",
+            },
+            [DOORS_MAIN, "/w/src/near.av", "/w/src/far.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+fn doors_lowered() -> Lowered { doors_ws().program(DOORS_MAIN).lowered() }
+
+fn lowers(l: Lowered, name: string) -> bool { l.fns.any(it.name == name) }
+
+/// One directory per run, so no earlier run's module answers for this one.
+once fn doors_base() -> string { "/tmp/avra-doors-test/${now_ns()}" }
+
+/// The program's LLVM text for `target`.
+fn doors_text(target: string, name: string) -> string {
+    let _ = make_dirs(doors_base())
+    let path = "${doors_base()}/${name}.ll"
+    if emit_ll(doors_lowered(), path, target) != null { return "" }
+    read_text(path) catch ""
+}
+
+fn exports(ll: string, name: string) -> bool { ll.contains("\"wasm-export-name\"=\"${name}\"") }
+
+spec "compiler/lower — a program's doors" {
+    given "an entry that imports a module that imports another" {
+        then "its doors are its own export and the imported module's, generics aside" {
+            doors_lowered().doors.join(" ") == "handle used offered"
+        }
+        then "a door nothing calls is lowered" { lowers(doors_lowered(), "offered") }
+        then "a deeper export the program reaches is lowered" { lowers(doors_lowered(), "helper") }
+        then "a deeper export nothing reaches is not" { !lowers(doors_lowered(), "unreached") }
+    }
+    given "that program emitted for wasm" {
+        then "each door is exported under its written name" {
+            let ll = doors_text("wasm32-wasip1", "wasm")
+            exports(ll, "handle") && exports(ll, "used") && exports(ll, "offered")
+        }
+        then "a deeper export is not, reached or not" {
+            let ll = doors_text("wasm32-wasip1", "deep")
+            ll != "" && !exports(ll, "helper") && !exports(ll, "unreached")
+        }
+    }
+    given "that program emitted for the host" {
+        then "nothing is exported by name" {
+            let ll = doors_text("", "host")
+            ll != "" && !ll.contains("wasm-export-name")
+        }
+    }
+}

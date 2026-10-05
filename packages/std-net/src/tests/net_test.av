@@ -3,7 +3,7 @@
 // exact read, EOF after a close, and the failures each verb names.
 // Every case is a fn answering `Result<bool, NetError>` so `?` reads
 // straight, and `passes` is the one seam to the harness.
-use @std.net.{listen, listen_all, connect, poller, Listener, Conn, Poller, Read, NetError}
+use @std.net.{listen, listen_all, connect, poller, Listener, Conn, Poller, Read, NetError, Reach}
 use @std.time.{secs, ms}
 
 /// A listener, a connected client, the server's side of it, and a
@@ -20,6 +20,25 @@ fn pair() -> Result<Pair, NetError> {
     p.watch(l.fd, .None)?
     p.watch(server!.fd, .Read)?
     .Ok(Pair { l: l, client: client, server: server!, p: p })
+}
+
+/// A listener on any free port of `host`, asked how far it reaches and
+/// closed.
+fn reach_of(l: Listener) -> Result<Reach, NetError> {
+    let far = l.reach()
+    let _ = l.close()
+    far
+}
+
+fn reaches() -> Result<bool, NetError> {
+    let alone = reach_of(listen("127.0.0.1", 0)?)?
+    let every = reach_of(listen("0.0.0.0", 0)?)?
+    let all = reach_of(listen_all(0)?)?
+    let six = reach_of(listen("::1", 0)?)?
+    alone == Reach.Loopback &&
+        every == Reach.Everywhere &&
+        all == Reach.Everywhere &&
+        six == Reach.Loopback
 }
 
 fn passes(r: Result<bool, NetError>) -> bool {
@@ -145,6 +164,7 @@ spec "std.net" {
         then "a read with nothing pending is Pending, and after the peer closes it is Eof" { passes(pending_then_eof()) }
         then "a shutdown of the write side is read as Eof after the data" { passes(half_close()) }
         then "the peer is the loopback address" { passes(peers()) }
+        then "a listener says how far it reaches, as the kernel holds its address" { passes(reaches()) }
         then "a large transfer arrives whole through short writes" { passes(large_transfer()) }
         then "accept with nothing pending answers null" { passes(nothing_pending()) }
     }
