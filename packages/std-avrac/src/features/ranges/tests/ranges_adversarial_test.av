@@ -1,0 +1,47 @@
+// What `(lo..hi)` answers at its edges: an empty or backwards range
+// takes the ABSORBING side of every terminal, the upper bound is
+// EXCLUDED, and a computed bound is walked exactly once. `map` over a
+// range answers a `List`, so the list vocabulary applies from there.
+use @std.avrac.testing.{shown}
+
+spec "features/ranges/adversarial" {
+    given "empty and backwards ranges" {
+        then "an empty range counts nothing" {
+            shown("(0..0).count()") == "0"
+        }
+        then "a backwards range counts nothing" {
+            shown("(5..2).count()") == "0"
+        }
+        then "an empty range finds nothing" {
+            shown("(0..0).find((i: int) -> true) ?? -1") == "-1"
+        }
+        then "an empty range satisfies all vacuously" {
+            shown("(0..0).all((i: int) -> false)") == "true"
+        }
+        then "an empty range denies any" {
+            shown("(0..0).any((i: int) -> true)") == "false"
+        }
+        then "an empty range sums to zero" {
+            shown("(3..3).sum()") == "0"
+        }
+    }
+    given "the half-open bound" {
+        then "hi is excluded" {
+            shown("(0..3).count()") == "3"
+        }
+        then "a computed hi is walked once" {
+            shown("let n = 4\n(1..n + 1).count()") == "4"
+        }
+        then "a computed lo shifts the sum" {
+            shown("let lo = 2\n(lo..5).sum()") == "9"
+        }
+    }
+    given "map over a range answers a List" {
+        then "the answer has a length" {
+            shown("(0..4).map((i: int) -> i * i).length") == "4"
+        }
+        then "an index reads through" {
+            shown("(0..4).map((i: int) -> i * i)[3]") == "9"
+        }
+    }
+}
