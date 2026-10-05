@@ -122,3 +122,66 @@ carry. A library type is necessary but not sufficient.
   per-row payload witness (probe 2), hand-written and labelled as the
   destination the generator must reach. Both engines agree.
 - This document — the four probe answers and the reachability conclusion.
+
+## Addendum: the reserved-name angle, probed
+
+> 2026-10-04, lane ui-reserved, over main `44922a2`.
+> Tests the reachability wall named above, on the hypothesis that a
+> RESERVED declaration — not an `extern` — is the edge a typed program
+> needs, because reachability comes from the NAME EXISTING AT TYPING
+> TIME, not from where the body comes from.
+
+The mechanism: `@std/prelude` declares
+`__inline_event(site: int, tag: int, num: int, text: string) -> bool`;
+`bind_weakly` gives the name to every file, so a call is an ordinary
+typed call; and `lower_inline_event` (compiler/lower/lower.av) builds
+its body in IR instead of parsing it, the way `lower_collect`,
+`wrapped_body` and every lambda lift already do. Every one of the four
+questions answers YES.
+
+1. **A fn's body may be the compiler's.** `lower_collect` is the
+   precedent: a declaration whose body is SYNTHESISED in IR, reached by
+   the name the typed program calls. `lower_inline_event` is the same
+   shape for the door.
+2. **The name exists at typing time.** The prelude binds weakly into
+   every file. The name resolves as an ordinary fn — a first draft named
+   `inline_event` collided with the test witness's hand-written 2-arg fn
+   and the typer answered `error[type.mismatch]: \`inline_event\` takes
+   2 arguments, found 4` at the call.
+3. **Lowering emits the body.** The synthesized body emits a real site
+   comparison (`Bin` + `region`, the `match site` shape) and answers
+   `at7=true, at8=false`. A real dispatcher would switch the same way and
+   call `jobs.lifts`' symbols (probe 3 above).
+4. **The evaluator handles it — this is the one the hypothesis named as
+   the likely failure.** It does not fail. The evaluator's `.Call`
+   resolves the callee by SYMBOL through `body_index(…)` — a body in
+   `Lowered.fns`, no runtime row and no host arm. Both engines ran the
+   synthesized body, not the source body's `false`:
+
+   ```
+   packages/std-ui/src/tests/inline/probe: eval == native == expected
+   ```
+
+   So the extern-row concern does not arise: this is not an `extern`.
+
+**The dispatch-reachability wall is passable.** A reserved declaration
+whose body lowering synthesizes is reachable from typed code in both
+engines, with no post-typing stage and no new link mechanism. The
+addendum RELOCATES the wall to the half #255 and #258 already named, and
+that half is unchanged: the tree's `on_click` field must carry a
+CONCRETE `dyn Messages?` value whose site and narrowed captures come
+from the same handler expression. `on click { … }` still has no route to
+produce that value — the compiler cannot name `@std/ui`'s `Messages`
+(or the app's `Inline`), and the captures are a resolve/type-time fact
+no parse-time builder can see. The reserved door carries a SITE the host
+echoes; it does not build the value the tree must carry for the host to
+echo one.
+
+Probe receipt: the reserved declaration (`@std/prelude`'s
+`__inline_event`), the lowering hook (`lower_inline_event`, the shape of
+`lower_collect`), and the program test that pinned `at7=true, at8=false`
+in both engines. The mechanism is NOT landed on main: doubling it would
+ship a dispatcher over an empty handler list with no consumer, which is
+dead plumbing, and the value half above is what a real dispatcher needs
+first. The patch and the raw outputs are recorded on `avra-xubk.2.2`,
+and the hook is 50 lines anyone can re-add.

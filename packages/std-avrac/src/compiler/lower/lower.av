@@ -18,7 +18,6 @@ use core.{
     Type,
     Reg,
     Ins,
-    BinOp,
     Level,
     TypeRegistry,
     joined,
@@ -340,14 +339,6 @@ export fn lower_unit(
         )
         w.decl == null -> lower_main(a, w.name, externs, settle, cross)
         is_collect_decl(a, w.decl!) -> lower_collect(
-            a,
-            a.view.decls.decl(w.decl!),
-            w.name,
-            externs,
-            settle,
-            cross,
-        )
-        is_inline_event(a, w.decl!) -> lower_inline_event(
             a,
             a.view.decls.decl(w.decl!),
             w.name,
@@ -862,51 +853,6 @@ fn runs_at_top(store: SyntaxArena, s: StmtId) -> bool {
 }
 
 type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
-
-/// Whether `d` is the prelude's inline-handler dispatch door — the
-/// one declaration whose body the compiler SYNTHESISES, from the
-/// handlers the program's files lifted.
-fn is_inline_event(a: Analysis, d: DeclId) -> bool {
-    a.view.decls.decl(d).name == "__inline_event" && a.view.decls.module_of(d) == "@std.prelude"
-}
-
-/// The dispatch door's body, SYNTHESISED in IR: an ordinary body in
-/// the program's own list, reached by the same `.Call` every fn uses.
-fn lower_inline_event(
-    a: Analysis,
-    x: Decl,
-    fname: string,
-    externs: List<string>,
-    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
-    cross: fn(DeclId, TypeId) -> Lifted,
-) -> LoweredBody {
-    let sig: FnSig? = a.view.decls.sig(x.id)?.fn_sig()
-    let rt: TypeId = sig?.ret ?? a.view.decls.types.intern(Type.Bool)
-    let ptypes: List<TypeId> = sig?.params ?? []
-    mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle, cross))
-    for pt in ptypes { let _ = lo.mint_ty(pt) }
-    lo.seeded()
-    lo.seats_enter()
-    let site = Reg { index: 0 }
-    let at_seven = lo.bin(Type.Bool, BinOp.Eq, site, lo.const_int(7))
-    let r = lo
-        .region_as(at_seven, rt) { cx -> cx.const_bool(true) } else { cx -> cx.const_bool(false) }
-    lo.seats_exit(r)
-    lo.emit(Ins.RetVal(r))
-    LoweredBody {
-        body: Body {
-            name: fname,
-            params: ptypes,
-            ret: rt,
-            gives: r,
-            ins: lo.out.ins,
-            reg_types: lo.out.reg_types,
-            file: a.view.file,
-        },
-        voices: lo.out.voices,
-        jobs: lo.jobs,
-    }
-}
 
 /// One body — a fn's, a method's, a default's: params pre-minted as
 /// registers 0..N-1, the body inside one scope, the answer after
