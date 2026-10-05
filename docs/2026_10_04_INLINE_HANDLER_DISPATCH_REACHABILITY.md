@@ -185,3 +185,82 @@ ship a dispatcher over an empty handler list with no consumer, which is
 dead plumbing, and the value half above is what a real dispatcher needs
 first. The patch and the raw outputs are recorded on `avra-xubk.2.2`,
 and the hook is 50 lines anyone can re-add.
+
+## Addendum 2: the door restored, and the value half measured at it
+
+> 2026-10-05, lane ui-reserved (finish), over `7889c1b`.
+> The addendum above concluded the reserved-name door was dead without a
+> consumer, so `7889c1b` reverted it. This lane re-applied the exact hook
+> (`2cd7f27`'s four files) and re-ran both probes to ask whether the door
+> changes the value half's picture. It does not.
+
+**Re-applied locally, the door is green in both engines.** With
+`2cd7f27`'s four files restored (then dropped again, below),
+`build/avra test packages/std-ui/src/tests/inline` answers `inline:
+eval == native == expected` and `probe: eval == native == expected` —
+the probe's `at7=true, at8=false` is the SYNTHESISED body running, not
+the source body's `false`. Reachability is real. (The receipt names the
+tree it was taken in: HEAD without the restored hook does not carry
+`probe.av`, so the command has one program, not two.)
+
+**The acceptance line is still refused at typing**, on the same tree:
+
+```
+on click { todos = [x for x in todos if x.id != t.id] }  inside a keyed
+element body
+
+error[type.struct_fields]: field `on_click` is `dyn Messages?`, this is `fn()`
+```
+
+The door carries the SITE a host echoes; it does not build the VALUE the
+tree must carry for a host to echo one. The two are separate halves and
+the door touches only the first.
+
+**Why no parse-time slice closes it — measured, not reasoned.** A
+`dyn Messages?` value needs a concrete implementor, and the value's
+site + narrowed captures must come from the handler expression. The
+component builder runs at PARSE, where no binding is known: emitting a
+value there cannot tell a captured view local (`t`) from an unrelated
+module name, so a "capture-free-only" slice would resolve `t` against a
+module name and compile a silently wrong program. That is the exact
+reason `#254`/`#258` refused the same slice, and nothing about the door
+changes it. The transform belongs where `NameFacts.capture` is known —
+the resolve pass — which is the S6 ordering the epic names.
+
+**The buildable split, so the next slice is smaller than the wall.** The
+value half is two independent problems; only the second needs captures:
+
+1. *The value, capture-free.* A resolve-time pass (not parse) can (a)
+   mint a top-level `fn __inline_<site>() { body }` per handler via
+   `store.hoist` (which accepts any `StmtId`), (b) replace the setting
+   with a struct literal of a library `Inline` type, and (c) emit a
+   `use` for it. Capture-free handlers need no narrowing — but the pass
+   must still REFUSE a capture (`t` is a view local), because only the
+   resolve pass can see the difference. The library type
+   (`type Inline = { site: int, value: Payload? }` + `impl Messages`)
+   is the one piece the compiler cannot invent: it belongs to
+   `@std/ui`, and the compiler names it only through the hoisted `use`,
+   the way a user would.
+2. *Narrowing.* `on click { todos.remove(t.id) }` captures `t` through
+   one projection. It is a read-set reduction over `Cap.sources`: one
+   scalar path -> that projection rides the payload and the body's
+   `t.id` reads are rewritten to a payload binding; zero -> no payload;
+   >1 or a non-scalar final step -> the `realize/messages.av`
+   `variant_refusal` voice. This is a resolve/type-time AST rewrite and
+   is the larger half.
+
+3. *The dispatcher.* Once handlers have sites and lifted symbols,
+   `lower_inline_event` switches over them and calls each. `union`
+   already holds every file's `Analysis`, so the site -> symbol registry
+   can be gathered there and threaded into the door's lowering; the
+   lifted symbol is `Decls.lifted_symbol(file, e)`, deterministic and
+   already exposed. The board's `avra_event` then tries the door before
+   `event_at -> Msg.from_site -> update`.
+
+**What this lane lands:** this addendum, and the measurement. **What it
+does not:** the door (re-applied and probed here, then dropped again
+for the reason the previous lane gave — a dispatcher with no consumer
+is dead plumbing), and the value half, because pieces 1 and 2 are both
+new passes rather than wiring, and a capture-free slice cannot be
+landed SOUNDLY ahead of the resolve-pass refusal that keeps `t` from
+resolving to a module name.
