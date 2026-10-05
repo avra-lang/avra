@@ -1,6 +1,7 @@
 #!/bin/sh
 # THE JS HOST'S OWN PROOF, in two halves. runtime/dom/bootstrap_test.js
-# applies every patch op to a stub document and checks the echo.
+# applies every patch op to a stub document and checks the echo, and
+# runtime/dom/dev_test.js runs the dev server's client over one.
 # runtime/dom/corpus_test.js then holds the host to the MODEL host the
 # diff's property test judges by: cases the program grows from a seed
 # (packages/std-ui/src/realize/dom/tests/host_corpus) are applied by
@@ -16,8 +17,12 @@ if ! command -v node >/dev/null 2>&1; then
     echo "ui-host-test: SKIPPED — no \`node\` on this machine; runtime/dom/bootstrap_test.js did not run"
     exit 0
 fi
-out=$(node "$here/runtime/dom/bootstrap_test.js") || { echo "$out" | grep -v '^✓' ; echo "ui-host-test: the host's tests failed"; exit 1; }
-echo "ui-host-test: $(echo "$out" | tail -1)"
+said=""
+for suite in bootstrap dev; do
+    out=$(node "$here/runtime/dom/${suite}_test.js") || { echo "$out" | grep -v '^✓' ; echo "ui-host-test: the host's ${suite} tests failed"; exit 1; }
+    said="$said $(echo "$out" | tail -1)"
+done
+echo "ui-host-test:$said"
 
 corpus="$here/packages/std-ui/src/realize/dom/tests/host_corpus/host_corpus"
 out=$(node "$here/runtime/dom/corpus_test.js" "$corpus.expected") || { echo "$out"; echo "ui-host-test: the host and the model disagree on the pinned cases"; exit 1; }

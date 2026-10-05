@@ -16,7 +16,23 @@ const bytesOf = (w) => new Uint8Array(Buffer.from(w, "base64"));
 
 // What a stub node is made with: every other key is a property a patch or
 // a user wrote.
-const BUILT = new Set(Object.keys(stubElement("x")).concat(["__avra_id", "__avra_listeners"]));
+const BUILT = new Set(Object.keys(stubElement("x")).concat(["__avra_id", "__avra_listeners", "showModal", "close"]));
+
+// A stub element with a page's door: `showModal` opens it, where it
+// stands on the page and is not open already, and `close` shuts it.
+const connected = (n, mount) => n === mount || (n.parentNode !== null && connected(n.parentNode, mount));
+function doored(doc, mount) {
+  return {
+    ...doc,
+    createElement: (tag) => Object.assign(doc.createElement(tag), {
+      showModal() {
+        if (this.open || !connected(this, mount)) throw new Error("showModal: the element is open already, or stands nowhere on the page");
+        this.open = true;
+      },
+      close() { this.open = false; },
+    }),
+  };
+}
 
 // The page as realize/dom/tests/support/seen.av's `told` tells it outward:
 // a line an element, its number, tag, attributes by name, properties off
@@ -56,7 +72,8 @@ const find = (n, id) => {
 const echoText = ([who, kind, said]) => `${who} ${kind} ${said ? said.says : SAYS.nothing} ${said ? String(said.value) : ""}`;
 
 // The listener for `event` on element `id` spoken to once: its echo, and
-// whether it stopped the page's own answer.
+// whether it stopped the page's own answer — which, for a dismissal left
+// to the page, shuts the element.
 function spoken(page, id, event) {
   const el = find(page.mount, id);
   const listener = el && el.listeners.get(event);
@@ -64,6 +81,7 @@ function spoken(page, id, event) {
   page.sent.length = 0;
   let stopped = false;
   listener({ preventDefault() { stopped = true; } });
+  if (event === "cancel" && !stopped) el.close();
   return { echo: page.sent.map(echoText).join(" | "), stopped };
 }
 
@@ -88,7 +106,7 @@ const act = {
     named = `${seed} ${turn}`;
     const mount = stubElement("root");
     const sent = [];
-    page = { mount, sent, apply: createApplier(stubDocument(), mount, (who, kind, said) => sent.push([who, kind, said])) };
+    page = { mount, sent, apply: createApplier(doored(stubDocument(), mount), mount, (who, kind, said) => sent.push([who, kind, said])) };
   },
   frame: (bytes) => {
     try { page.apply(bytesOf(bytes)); } catch (e) { check("a frame is applied", e.message, "applied"); }
@@ -96,7 +114,7 @@ const act = {
   page: (want) => check("the page", told(page.mount), unworded(want)),
   say: (id, event, reads, tag, value, kind, says, echoed) => {
     const el = find(page.mount, Number(id));
-    if (el) el[reads] = Number(tag) === SAYS.flag ? unworded(value) !== "" : unworded(value);
+    if (el && reads !== "-") el[reads] = Number(tag) === SAYS.flag ? unworded(value) !== "" : unworded(value);
     check(`the echo of ${event} on ${id}`, spoken(page, Number(id), event).echo, `${id} ${kind} ${says} ${unworded(echoed)}`);
   },
   hear: (id, event, kind, says, reads, prevents) => {

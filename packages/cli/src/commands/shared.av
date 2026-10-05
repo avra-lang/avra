@@ -14,6 +14,7 @@ use @std.avrac.compiler.{
     Checked,
     phase_total,
     BuildError,
+    BuildOutcome,
     VerifyHeld,
     HeldMismatch,
 }
@@ -109,11 +110,56 @@ fn wasm_runtime_library() -> string {
     if exists(at) { at } else { joined_path("build", "wasm32/libavra_runtime.a") }
 }
 
-/// A target's one spelling. `wasm32` and `wasm32-wasi` name the toolchain's
-/// own triple; anything else passes through and a backend that knows no such
-/// target refuses it by name.
-fn canonical_target(spelled: string) -> string {
-    match spelled { "wasm" or "wasm32" or "wasm32-wasi" -> "wasm32-unknown-wasi", _ -> spelled }
+/// The triples a toolchain may spell the WASI target, the one this compiler
+/// named first leading.
+const WASM_TRIPLES: List<string> = ["wasm32-unknown-wasi", "wasm32-wasip1"]
+
+/// The triples a spelled target may mean. `wasm`, `wasm32` and `wasm32-wasi`
+/// name the WASI target however this machine's toolchain spells it; anything
+/// else is itself, and a backend that knows no such target refuses it by name.
+fn triples_of(spelled: string) -> List<string> {
+    match spelled { "wasm" or "wasm32" or "wasm32-wasi" -> WASM_TRIPLES, _ -> [spelled] }
+}
+
+/// A C compiler and a triple it links a wasm module for.
+type WasmTools = { linker: Tool, target: string }
+
+/// The C compilers that may link a wasm module, in the order they are
+/// asked: `CC` alone when it is set — the developer chose — else the LLVM
+/// `LLVM_PREFIX` names, then `clang` on the PATH.
+fn wasm_linkers() -> List<Tool> {
+    if env("CC") != null { return found([tool_from_env("CC", "clang")]) }
+    let prefixed: List<Result<Tool, ProcessError>> = match env("LLVM_PREFIX") {
+        prefix? -> [tool(joined_path(prefix, "bin/clang"))]
+        null -> []
+    }
+    found(prefixed.concat([tool("clang")]))
+}
+
+/// The tools the host found, of those asked for.
+fn found(asked: List<Result<Tool, ProcessError>>) -> List<Tool> {
+    [t for r in asked for t in match r { .Ok(t) -> [t], .Err(_) -> [] }]
+}
+
+/// Whether `clang` links a module for `triple`: where it says that target's
+/// startup object stands is a file. A clang with no libc for the target
+/// answers the bare name.
+fn links_wasm(clang: Tool, triple: string) -> bool {
+    match cmd(clang, ["--target=${triple}", "-print-file-name=crt1.o"]).outcome() {
+        .Ok(o) -> is_absolute(o.out.stdout.trim()) && exists(o.out.stdout.trim()),
+        .Err(_) -> false,
+    }
+}
+
+/// THE WASM TOOLCHAIN THIS MACHINE HAS: the first C compiler, of those that
+/// may link, with a WASI libc for one of the triples `spelled` may mean — or
+/// what was asked of which, so the refusal says what to point where.
+fn wasm_tools(spelled: string) -> Result<WasmTools, string> {
+    let triples = triples_of(spelled)
+    let linkers = wasm_linkers()
+    let fits = [WasmTools { linker: clang, target: triple } for clang in linkers for triple in triples if links_wasm(clang, triple)]
+    let first? = fits.first() else { return .Err(no_wasm_toolchain([l.path for l in linkers], triples)) }
+    first
 }
 
 /// Paths under the binary's directory, normalized.
@@ -481,50 +527,71 @@ fn build_report(e: BuildError) -> string {
     }
 }
 
+/// WHAT A BUILD FOR `target` LINKS WITH — the host's own C compiler and
+/// runtime for the empty target, a wasm toolchain found on this machine for
+/// any other — or the exit code of the refusal it spoke, naming what is
+/// missing and how to point at one.
+export fn toolchain(target: string, reactor: bool, debug: bool) -> Result<Toolchain, int> {
+    if target == "" {
+        let host = match linker() { .Ok(t) -> t, .Err(e) -> { return .Err(refused_by_host(e)) } }
+        return .Ok(Toolchain { opt: "-O1", runtime: runtime_library(), linker: host.path })
+    }
+    let wasm = match wasm_tools(target) {
+        .Ok(w) -> w,
+        .Err(why) -> { return .Err(unequipped(why)) },
+    }
+    let wasm_opt = match tool_from_env("WASM_OPT", "wasm-opt") { .Ok(t) -> t.path, .Err(_) -> "" }
+    if wasm_opt == "" { return .Err(unequipped(no_wasm_opt())) }
+    if !exists(wasm_runtime_library()) { return .Err(unequipped(no_wasm_runtime(wasm_runtime_library()))) }
+    Toolchain {
+        opt: "-Oz",
+        runtime: wasm_runtime_library(),
+        linker: wasm.linker.path,
+        target: wasm.target,
+        reactor: reactor,
+        debug: debug,
+        wasm_opt: wasm_opt,
+    }
+}
+
+/// A build this machine has no tools for, spoken: exit 2 — nothing was
+/// built and nothing about the program was said.
+fn unequipped(why: string) -> int {
+    eprintln("avra: ${why}")
+    2
+}
+
 /// The binary an argued build writes — or the exit code its refusal spoke.
 /// The cache is the library's; the link and the print are the caller's.
 export fn built_binary(args: CliResult) -> Result<string, int> {
     let path? = slotted_path(args) else { return .Err(2) }
+    let tools = match toolchain(
+        args.option("target"),
+        args.has_flag("wasm_reactor"),
+        args.has_flag("wasm_debug"),
+    ) { .Ok(t) -> t, .Err(code) -> { return .Err(code) } }
+    let b = built_outcome(path, tools)?
+    if b.warnings != "" { eprintln(b.warnings) }
+    if timed(args) {
+        eprintln(hit_line(b.reused))
+        if b.phases != "" { eprintln("time: ${b.phases}") }
+    }
+    b.binary
+}
+
+/// What a build of `path` with `tools` came to — or the exit code its
+/// refusal spoke. What it warned of is the caller's to say.
+fn built_outcome(path: string, tools: Toolchain) -> Result<BuildOutcome, int> {
     let ws = build_workspace(path)
-    let entry = build_entry(ws, path)
-    if entry == null {
+    let entry? = build_entry(ws, path) else {
         eprintln("avra: ${ws.root} declares no entry point")
         return .Err(1)
     }
-    let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return .Err(refused_by_host(e)) } }
-    let target = canonical_target(args.option("target"))
-    let runtime = if target == "" { runtime_library() } else { wasm_runtime_library() }
-    let wasm_opt = match tool_from_env("WASM_OPT", "wasm-opt") { .Ok(t) -> t.path, .Err(_) -> "" }
-    if target != "" && wasm_opt == "" {
-        eprintln(
-            "avra: a wasm build needs `wasm-opt` (binaryen) — set `WASM_OPT` or install it; the artifact must not depend on which machine built it",
-        )
-        return .Err(2)
-    }
-    match build_program(
-        ws,
-        entry!,
-        Toolchain {
-            opt: if target == "" { "-O1" } else { "-Oz" },
-            runtime: runtime,
-            linker: tool.path,
-            target: target,
-            reactor: args.has_flag("wasm_reactor"),
-            debug: args.has_flag("wasm_debug"),
-            wasm_opt: wasm_opt,
-        },
-    ) {
+    match build_program(ws, entry, tools) {
+        .Ok(b) -> b,
         .Err(e) -> {
             println(build_report(e))
             .Err(1)
-        },
-        .Ok(b) -> {
-            if b.warnings != "" { eprintln(b.warnings) }
-            if timed(args) {
-                eprintln(hit_line(b.reused))
-                if b.phases != "" { eprintln("time: ${b.phases}") }
-            }
-            .Ok(b.binary)
         },
     }
 }
@@ -554,4 +621,18 @@ export flag verify_held {
 export arg file {
     description: "the source file"
     required: true
+}
+
+// ── The voices ──
+
+fn no_wasm_toolchain(asked: List<string>, triples: List<string>) -> string {
+    "no C compiler here links a wasm module: ${if asked.is_empty() { "none was found" } else { asked.join(", ") }} ${if asked.length > 1 { "have" } else { "has" }} no WASI libc for ${triples.join(" or ")} — set `CC` to a clang whose `--target=${triples.last() ?? ""} -print-file-name=crt1.o` names a file, or `LLVM_PREFIX` to an LLVM whose `bin/clang` does"
+}
+
+fn no_wasm_opt() -> string {
+    "a wasm build needs `wasm-opt` (binaryen) — set `WASM_OPT` or install it; the artifact must not depend on which machine built it"
+}
+
+fn no_wasm_runtime(at: string) -> string {
+    "no wasm runtime archive at ${at} — `make wasm-runtime wasm-packages` builds it"
 }

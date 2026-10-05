@@ -10,12 +10,24 @@ use tree.node.{Action, EventKind, Handler}
 
 /// The page's word for each event. Every kind spelled.
 fn page_word(k: EventKind) -> string {
-    match k { .Press -> "click", .Input -> "input", .Change -> "change", .Submit -> "submit" }
+    match k {
+        .Press -> "click",
+        .Input -> "input",
+        .Change -> "change",
+        .Submit -> "submit",
+        .Dismiss -> "cancel",
+    }
 }
 
 /// Whether the page's own answer to an event is stopped. Every kind spelled.
 fn stops(k: EventKind) -> bool {
-    match k { .Submit -> true, .Press or .Input or .Change -> false }
+    match k { .Submit -> true, .Press or .Input or .Change or .Dismiss -> false }
+}
+
+/// Whether the page's own answer to an event shuts the element's door: a
+/// dialog sent away is closed before the program hears. Every kind spelled.
+fn shuts(k: EventKind) -> bool {
+    match k { .Dismiss -> true, .Press or .Input or .Change or .Submit -> false }
 }
 
 /// What a handler hears. One arm per thing a control can say.
@@ -41,15 +53,20 @@ fn ear_of(a: Action) -> Ear {
     }
 }
 
-/// An attribute that seeds a PROPERTY, as the property holds it off
-/// rest: a field's text, a box's tick. Every other attribute is none.
+/// An attribute that seeds a PROPERTY or opens a DOOR, as the page holds
+/// it off rest: a field's text, a box's tick, a dialog shown. Every other
+/// attribute is none.
 fn held_by(a: HtmlAttr) -> List<Pair> {
-    if a.name == HtmlAttrName.Checked { return [Pair { name: a.name.word(), value: "true" }] }
+    if a.name == HtmlAttrName.Checked || a.name == HtmlAttrName.Open { return [Pair { name: a.name.word(), value: "true" }] }
     if a.name != HtmlAttrName.Value || a.value == "" { return [] }
     [Pair { name: a.name.word(), value: quoted(a.value) }]
 }
 
-fn is_property(a: HtmlAttr) -> bool { a.name == HtmlAttrName.Checked || a.name == HtmlAttrName.Value }
+/// Whether an attribute is state the page holds off the element's
+/// attributes: a property, or the door a verb opens.
+fn is_property(a: HtmlAttr) -> bool {
+    a.name == HtmlAttrName.Checked || a.name == HtmlAttrName.Value || a.name == HtmlAttrName.Open
+}
 
 /// `pairs`, a name written twice holding what was written last.
 fn settled(pairs: List<Pair>) -> List<Pair> {

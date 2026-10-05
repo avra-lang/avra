@@ -39,7 +39,11 @@ Five attempts to lift a handler into a generated message failed.
    (`realize/dom/patch.av`) and a host applies the patches: create,
    create text, place (after a sibling — one op inserts and moves),
    remove, set attribute, drop attribute, set property, set text,
-   listen, unlisten, style. Of the elements a parent keeps, the longest
+   listen, unlisten, style, call. A `call` asks an element for a verb of
+   its own, said last in its frame: a DOOR is state an attribute would
+   enter another way — a dialog shown by `open` stands in the page's
+   flow, `showModal` stands it over the page with the focus inside — so
+   the attribute is never sent and its arriving and going are calls. Of the elements a parent keeps, the longest
    run still in order stands still and only the rest are placed, so a
    reorder says the fewest moves. A host holds no reconciler and no table of
    the library's facts: the event's own word, what it says, the
@@ -50,7 +54,10 @@ Five attempts to lift a handler into a generated message failed.
    A first paint is a diff against nothing; an unchanged page is no
    patch (the diff is a fold with no state of its own between paints:
    old page and new in, patches and the numbered page out); a property is compared against what the PAGE holds, so a
-   field a user typed into is never written back to — and a property a
+   field a user typed into is never written back to — and a door too: a
+   dialog the user sent away is closed by the page before the program
+   hears, so it is not closed again, and is shown again if the program
+   still says it is open. A property a
    paint does not name is at rest, whether the last paint or the user
    moved it. THE DIFF'S LAW IS RUN, NOT ARGUED: for trees grown and edited
    by chance from a seed, the frame that repaints one as the next is
@@ -86,7 +93,12 @@ Five attempts to lift a handler into a generated message failed.
    A handler hears all its event says, or none of it. An event a
    component does not declare, one heard twice, and a handler naming
    some of its seats are each refused by name
-   (`type.component_event`).
+   (`type.component_event`). A dialog declares `on dismiss`: the key
+   or the press outside that sends it away, heard by a page as the
+   browser's own `cancel` and by a headless screen as `dismiss()`. A
+   form's submit and a dialog's dismissal are heard on a page whether or
+   not a handler is: the page's own answer to each would undo what the
+   program drew.
 5. **One vocabulary for what a control says**: nothing, text, a flag, a
    number (a point and a key later). `Said` is the value and `Handler`
    the listener, arm for arm. Closed: every target answers every arm,
@@ -97,7 +109,12 @@ Five attempts to lift a handler into a generated message failed.
    with the names a program answers to — and `make ui-host` fails when
    it is stale. `make ui-board` builds the board as a wasm reactor and
    runs it over the real page glue, each claim checked: the one run
-   that holds `mount`, the entry and those names to a real module. Event kinds need no host copy:
+   that holds `mount`, the entry and those names to a real module. `make
+   ui-browser` serves that module over an HTTP origin and drives it in
+   headless Firefox with the browser's own pointer and keys
+   (`tools/ui-board/browser.mjs`): what only an engine can show — the
+   sheet styling the page, a caret kept while typing, the keyboard's
+   reach. Event kinds need no host copy:
    the host echoes a kind it never reads.
 7. **`mount(view)` is the app.** No app writes the host seam: the
    page's exports and its one import are the web module's own
@@ -148,6 +165,91 @@ Five attempts to lift a handler into a generated message failed.
 readable outline); `realize/` is the targets, one directory each
 (`html`, `dom`, `tui`); `app/` is the loop;
 `web/`, `terminal/` and `headless/` are where an app is mounted.
+
+## `avra dev` — the loop
+
+ONE VERB: `avra dev <path> [--port N] [--host H] [--open] [--no-watch]`,
+and what it does follows what it is pointed at.
+
+| pointed at | it |
+|---|---|
+| a directory that is no package | serves its files as they stand |
+| a package whose program mounts a page | builds it, serves it, watches, rebuilds, tells the page |
+| a package with no program | refuses: a library, and what a page is |
+| a package whose program mounts no page | refuses: nothing to serve, `avra run` runs it |
+| a file | refuses |
+
+A package is a directory with a manifest. It MOUNTS A PAGE when one of
+its own sources imports `@std.ui.web` — asked of the `use` lines the
+workspace reads (`imported_by`), never of a file's name.
+
+- **No JIT. The page runs a real wasm module**, the artifact that ships.
+  A change triggers a rebuild — `avra build --target wasm
+  --wasm_reactor`, as anyone runs it, as a child — and the compiler's
+  store makes it incremental: only the files that moved are read again,
+  only their objects made again, then one link and one `wasm-opt`.
+  The board, on a machine under load: cold 2.7 s; a one-line edit 1.1 s
+  to 1.6 s; unchanged 0.2 s to 0.3 s. Of a warm edit the compiler's own
+  phases are about 0.4 s (link 100 ms the largest); the rest is
+  `wasm-opt -Oz` and two process starts.
+- **Serving a directory is `@std/http`'s own** (`files.av`'s
+  `directory`: path-safe, validated, ranged, each file typed by its name
+  — `application/wasm`, a script as a script). The smallest honest
+  program today:
+
+      use @std.http.server.{server}
+      use @std.http.files.{Files, directory}
+
+      server site {
+          port: 8080
+          routes: directory("/", Files { root: "public" })
+      }
+
+      match site.run() { .Ok(n) -> "served ${n}", .Err(e) -> e.describe().message }
+
+  What stands in the way of `files "/" { root: "public" }` as a route
+  line: a component that expands to code takes no `key: value` settings,
+  and a component's head takes one argument (`avra-8sb5.11`, survey).
+  A dev server asks for a file again every time (`max-age=0` over its
+  validators).
+- **The server lives in the command** (`commands/dev.av`, one file): a
+  `server` declared over `@std/http`, answering on a task of its own in
+  the `avra` process while the first task turns the watch. What that
+  costs the compiler's own build, measured: cold 1972 MB without it and
+  2177 MB with it (30 more files); after a one-file edit 339 MB and
+  637 MB. Every export of `@std/http` is compiled into the compiler —
+  1132 of its symbols, where a program that reaches the same server
+  carries 411 — because a native program's exports are roots.
+- **Ports.** Loopback by default (`--host`), port 8787 by default,
+  `--port 0` for any free one; the address served is printed. A port
+  that is taken is refused by name: `listen 127.0.0.1:8787: Address
+  already in use — --port 0 takes any free port`.
+- **The watch set is the build's own inputs** (`Workspace.build_inputs`:
+  the files its key covers — the closure's sources, the manifests, the
+  toolchain's own), asked again every turn, so a file that arrives is
+  seen. Looked at every 250 ms: a file is its stamp, or — too young for a
+  stamp to tell two writes apart — its text, so a save that changed
+  nothing builds nothing. What is remembered is what a build STARTED
+  from. Nothing is watched where there is nothing to rebuild.
+- **The page is told over an event stream** (`/@dev/events`, `@std/http`'s
+  `sse.av`): `built` says the standing module's number — the count of builds that
+  made another module — and `failed` says what
+  the build said. A stream and not a socket: the server only ever tells,
+  the browser reopens a dropped stream by itself, and a page that joins
+  late — or again after the server restarted — hears where things stand
+  as its first event.
+- **The reload client is dev-only glue** (`runtime/dom/dev.js`), put in
+  the page's `<!--DEV-->` hole beside the number of the module the page
+  is about to load. A production page never carries it.
+- **A module that is no longer the one the page runs reloads the page.**
+  A build that failed is shown over the page and in the terminal, and
+  the last good module is still what is served and what runs.
+- **The toolchain is found.** `--target wasm` is whichever WASI triple
+  this machine's clang has a libc for — `CC` alone when set, else
+  `LLVM_PREFIX`'s clang, then the PATH's — and a machine with none hears
+  which compilers were asked for which triples.
+
+State kept across a reload is not built: `avra-8sb5.59.41.1`.
 
 ## Kept
 

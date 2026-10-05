@@ -4,7 +4,7 @@
 //! refusal is made to happen here.
 use @std.ui.realize.dom.patch.{Patch, Held, listening_of}
 use @std.ui.realize.dom.tests.support.{host, records, told, whole}
-use @std.ui.realize.dom.wire.{frame}
+use @std.ui.realize.dom.wire.{frame, wire_version}
 use @std.ui.tree.identity.{NodeId}
 use @std.ui.tree.node.{Action, Handler}
 
@@ -112,10 +112,38 @@ spec "the modelled host — a frame a page could not apply" {
             faults(standing(0).concat([pressed(), pressed()])) == "listen names 0, which already hears 1"
         }
     }
+    given "a verb asked of an element that stands nowhere on the page" {
+        then "is a fault" {
+            faults(
+                [
+                    Patch.Create(el(0), .Dialog),
+                    Patch.Call(el(0), "showModal"),
+                    Patch.Place(el(0), null, null),
+                ],
+            ) == "call asks 0 for showModal, and it does not stand on the page"
+        }
+    }
+    given "a door entered twice" {
+        then "is a fault: the page did not need the second" {
+            faults(
+                standing(0).concat([Patch.Call(el(0), "showModal"), Patch.Call(el(0), "showModal")]),
+            ) == "call asks 0 for showModal, and its door already stands so"
+        }
+    }
+    given "a door left that was never entered" {
+        then "is a fault" {
+            faults(standing(0).concat([Patch.Call(el(0), "close")])) == "call asks 0 for close, and its door already stands so"
+        }
+    }
+    given "a verb no element of a page has" {
+        then "is a fault" {
+            faults(standing(0).concat([Patch.Call(el(0), "open")])) == "call asks 0 for open, which is no verb of a page's element"
+        }
+    }
     given "a frame of another version" {
         then "is a fault, and nothing is applied" {
             mut at = host()
-            at.take([8, 1].bytes()!)
+            at.take([wire_version - 1, 1].bytes()!)
             at.faults.join("; ") == "a frame of another version"
         }
     }
@@ -159,6 +187,21 @@ spec "the modelled host — a frame a page can apply" {
                         ],
                     ),
             ) == "#0 div"
+        }
+    }
+    given "a door entered, and a door entered and left" {
+        then "is told open only where it still stands open" {
+            page(
+                standing(0)
+                    .concat(standing(1))
+                    .concat(
+                        [
+                            Patch.Call(el(0), "showModal"),
+                            Patch.Call(el(1), "showModal"),
+                            Patch.Call(el(1), "close"),
+                        ],
+                    ),
+            ) == "#1 div\n#0 div .open=true"
         }
     }
     given "an element numbered past thirty-two bits" {

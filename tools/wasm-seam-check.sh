@@ -11,30 +11,31 @@
 # The module cannot run under plain WASI — its import is the browser host's to
 # satisfy — so this inspects the module instead, with wasm-objdump.
 #
-# Skips, spoken, when the wasm toolchain or wabt is absent.
+# The compiler finds the wasm toolchain or says what is missing (`avra build
+# --target wasm` exits 2); this SKIPS, spoken, in its words then, and when
+# wabt is absent.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 avra=${AVRA:-$tree/build/avra}
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-seam.XXXXXX")}
-# WASM_TARGET names another wasm triple, for a machine whose sysroot is not the default's.
+# WASM_TARGET names one wasm triple (default `wasm`: the one this machine's toolchain links).
 target=${WASM_TARGET:-wasm}
 
 say() { echo "wasm-seam: $*" >&2; }
 skip() { say "$* — skipped"; exit 0; }
 
 [ -x "$avra" ] || skip "no compiler at $avra"
-command -v clang >/dev/null 2>&1 || skip "clang not on PATH"
-clang --print-targets 2>/dev/null | grep -q wasm32 || skip "clang has no wasm32 target"
-command -v wasm-opt >/dev/null 2>&1 || skip "wasm-opt (binaryen) not on PATH"
 command -v wasm-objdump >/dev/null 2>&1 || skip "wasm-objdump (wabt) not on PATH"
 if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
-    ( cd "$tree" && make -s wasm-runtime ) || skip "the wasm runtime archive did not build"
+    ( cd "$tree" && make -s wasm-runtime wasm-packages ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
 fi
 
 cp -R "$here/wasm-seam" "$work/seam"
-if ! "$avra" build --target "$target" "$work/seam" >"$work/build.out" 2>"$work/build.err"; then
+"$avra" build --target "$target" "$work/seam" >"$work/build.out" 2>"$work/build.err" || built=$?
+[ "${built:-0}" -ne 2 ] || skip "$(sed 's/^avra: //' "$work/build.err" | head -1)"
+if [ "${built:-0}" -ne 0 ]; then
     say "wasm build failed"; cat "$work/build.err" >&2; cat "$work/build.out" >&2; exit 1
 fi
 wasm=$(tail -1 "$work/build.out")

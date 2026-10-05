@@ -114,6 +114,37 @@ spec "a control a reader cannot reach does not speak" {
             )
             !page.press("Close") && page.press("Open") && page.press("Close") && !open.get()
         }
+        then "an open one hears the user send it away" {
+            let open: Cell<bool> = Cell.new(true)
+            let page = headless(
+                () -> dialog "About" {
+                    open: open.get()
+                    on dismiss { open.set(false) }
+                },
+            )
+            page.dismiss() && !open.get() && !page.dismiss()
+        }
+        then "a closed one, and one that hears no dismissal, answer nothing" {
+            let shut = headless(() -> dialog "About" { on dismiss {} })
+            let deaf = headless(() -> dialog "About" { open: true })
+            !shut.dismiss() && !deaf.dismiss()
+        }
+        then "the dialog over the rest is the one that hears it" {
+            let heard: Cell<string> = Cell.new("")
+            let page = headless(
+                () -> column {
+                    dialog "Under" {
+                        open: true
+                        on dismiss { heard.set("under") }
+                    }
+                    dialog "Over" {
+                        open: true
+                        on dismiss { heard.set("over") }
+                    }
+                },
+            )
+            page.dismiss() && heard.get() == "over"
+        }
         then "its content is on the screen only while it is open" {
             let page = headless(() -> dialog "About" { items: [text "Hidden"] })
             page.text() == "dialog \"About\""

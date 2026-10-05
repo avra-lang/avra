@@ -6,7 +6,7 @@
 //!   case   seed, turn
 //!   frame  the frame's bytes
 //!   page   the page then, as `told` tells it outward
-//!   say    id, event, the property moved, the wire's tag for its value,
+//!   say    id, event, the property moved (`-`: none), the wire's tag for its value,
 //!          the value — then the echo due: kind, what is said, its value
 //!   hear   id, event, kind, what is said, the property read, whether the
 //!          page's own answer is stopped
@@ -22,12 +22,15 @@ fn worded(text: string) -> string { if text == "" { "-" } else { base64(text.byt
 fn page_line(at: Host) -> string { "page ${worded(told(at.page(), outward))}" }
 
 /// What a host echoes of what a control said, as text.
-fn echoed(said: Said) -> string {
-    match said { .Text(t) -> t, .Number(n) -> "${n}", .Flag(on) -> "${on}" }
+fn echoed(said: Said?) -> string {
+    match said {
+        s? -> match s { .Text(t) -> t, .Number(n) -> "${n}", .Flag(on) -> "${on}" }
+        null -> ""
+    }
 }
 
 fn say_line(m: Move) -> string {
-    "say ${m.id} ${page_word(m.action.kind)} ${m.reads} ${m.says} ${worded(m.text)} ${m.action.kind.code()} ${voice(m.action.handler).code()} ${worded(echoed(m.said))}"
+    "say ${m.id} ${page_word(m.action.kind)} ${if m.reads == "" { "-" } else { m.reads }} ${m.says} ${worded(m.text)} ${m.action.kind.code()} ${voice(m.action.handler).code()} ${worded(echoed(m.said))}"
 }
 
 fn hear_line(id: int, e: Ear) -> string {

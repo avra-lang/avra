@@ -6,7 +6,8 @@ use tree.identity.{NodeId}
 use tree.node.{Node, Action, EventKind, Said}
 use realize.html.element.{Element, lowered}
 use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet, root_vars}
-use realize.dom.patch.{Patch, Heard, diff, held_as, listening_of}
+use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
+use realize.html.tags.{HtmlAttrName}
 use realize.dom.wire.{frame}
 use style.theme.{Theme}
 
@@ -84,13 +85,20 @@ impl Live {
         found.action.fire(said)
     }
 
-    /// What a control said is what its property holds from now on. ONE
-    /// record a property: the latest replaces the one before, so what was
-    /// heard between two paints never outgrows the page.
+    /// What the page holds once an element has spoken: the door the page's
+    /// own answer shut, and the property the control said its value from.
     fn hear(id: NodeId, action: Action, said: Said?) {
+        let heard = listening_of(action)
+        self.keep(id, heard.shuts, Held.Flag(false))
         let value? = said else { return }
-        let name? = listening_of(action).reads else { return }
-        let others = [h for h in self.heard.get() if h.id != id || h.name != name]
-        self.heard.set(others.concat([Heard { id: id, name: name, value: held_as(value) }]))
+        self.keep(id, heard.reads, held_as(value))
+    }
+
+    /// ONE record a name: the latest replaces the one before, so what was
+    /// heard between two paints never outgrows the page.
+    fn keep(id: NodeId, name: HtmlAttrName?, value: Held) {
+        let named? = name else { return }
+        let others = [h for h in self.heard.get() if h.id != id || h.name != named]
+        self.heard.set(others.concat([Heard { id: id, name: named, value: value }]))
     }
 }

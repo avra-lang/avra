@@ -21,6 +21,21 @@ export fn shows_content(n: Node) -> bool {
     }
 }
 
+/// The dialog a node is, as a run of none or one. Every primitive spelled.
+fn dialog_at(n: Node) -> List<Node> {
+    match n.prim {
+        .Dialog -> [n],
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> [],
+    }
+}
+
+/// The dialogs open on the screen `root` draws, in reading order: the
+/// last stands over the rest.
+export fn open_dialogs(root: Node) -> List<Node> {
+    if !shows_content(root) { return [] }
+    dialog_at(root).concat([d for c in root.children for d in open_dialogs(c)])
+}
+
 /// The form what `n` holds stands in: `n` itself when it is one, else the
 /// form around it.
 fn form_within(n: Node, around: Node?) -> Node? {
@@ -31,9 +46,10 @@ fn form_within(n: Node, around: Node?) -> Node? {
 }
 
 /// Whether an event is one a control says itself. A form's `submit` is
-/// said by what stands in it, so hearing it makes no control of the form.
+/// said by what stands in it and a dialog's `dismiss` from outside it, so
+/// hearing either makes no control of the node.
 fn said_by_control(kind: EventKind) -> bool {
-    match kind { .Press or .Input or .Change -> true, .Submit -> false }
+    match kind { .Press or .Input or .Change -> true, .Submit or .Dismiss -> false }
 }
 
 /// Whether a node is a control: it hears an event of its own, or submits

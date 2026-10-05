@@ -20,6 +20,7 @@ enum Rec {
     Listen(id: int, ear: Ear)
     Unlisten(id: int, kind: int)
     Style(css: string)
+    Call(id: int, verb: string)
 }
 
 // ── reading a frame ─────────────────────────────────────────────
@@ -89,6 +90,7 @@ impl Reader {
             .Listen -> Rec.Listen(self.id(), self.ear()),
             .Unlisten -> Rec.Unlisten(self.id(), self.int()),
             .Style -> Rec.Style(self.text()),
+            .Call -> Rec.Call(self.id(), self.text()),
         }
     }
 }
@@ -134,6 +136,12 @@ export type Host = {
 
 /// A host showing nothing.
 export fn host() -> Host { Host {} }
+
+/// The door a page's element has, as a line shows it open, and the verbs
+/// that enter and leave it.
+const door = "open"
+const enter = "showModal"
+const leave = "close"
 
 /// `run` with `id` standing after `after`, or first.
 fn slotted(run: List<int>, id: int, after: int) -> List<int> {
@@ -268,6 +276,30 @@ impl Host {
         self.rewrite(id, "listen", (s) -> s with { ears: s.ears.concat([ear]) })
     }
 
+    /// Whether `id`'s door stands open.
+    fn open(id: int) -> bool { self.live(id)?.seen?.props?.any(it.name == door) ?? false }
+
+    /// `id`'s door set: by a verb, or by the page's own answer to an event.
+    mut fn swing(id: int, open: bool) {
+        self
+            .rewrite(
+                id,
+                "call",
+                (s) -> s with { props: [p for p in s.props if p.name != door]
+                    .concat(if open { [Pair { name: door, value: "true" }] } else { [] }) },
+            )
+    }
+
+    /// A verb of an element's own: a door entered or left. A page refuses
+    /// one entered where the element does not stand on it; one entered
+    /// while open or left while shut is a call the page did not need.
+    mut fn call(id: int, verb: string) {
+        if verb != enter && verb != leave { return self.fault("call asks ${id} for ${verb}, which is no verb of a page's element") }
+        if !self.rooted(id) { return self.fault("call asks ${id} for ${verb}, and it does not stand on the page") }
+        if self.open(id) == (verb == enter) { return self.fault("call asks ${id} for ${verb}, and its door already stands so") }
+        self.swing(id, verb == enter)
+    }
+
     /// One record applied. Every record spelled.
     mut fn apply(r: Rec) {
         match r {
@@ -289,6 +321,7 @@ impl Host {
             .Unlisten(id, kind) -> self
                 .rewrite(id, "unlisten", (s) -> s with { ears: [e for e in s.ears if e.kind != kind] }),
             .Style(css) -> { self.sheet = css },
+            .Call(id, verb) -> self.call(id, verb),
         }
     }
 
@@ -341,5 +374,6 @@ fn rec_line(r: Rec) -> string {
         .Listen(id, ear) -> "listen ${id} ${ear.kind}:${ear.event}:${ear.says}:${ear.reads}:${ear.prevents}",
         .Unlisten(id, kind) -> "unlisten ${id} ${kind}",
         .Style(_) -> "style",
+        .Call(id, verb) -> "call ${id} ${verb}",
     }
 }

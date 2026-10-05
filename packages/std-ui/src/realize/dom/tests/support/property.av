@@ -18,10 +18,11 @@ export type Typed = { nth: int, value: int }
 /// Two trees, and what a user does to the page between them.
 export type Case = { old: Sketch, new: Sketch, typed: List<Typed> = [] }
 
-/// A control a user spoke to: who, the event, what it said, and the
-/// property that now holds it — its name, the wire's tag for the value
-/// and the value as the wire's text.
-export type Move = { id: int, action: Action, said: Said, reads: string, says: int, text: string }
+/// An element a user spoke to: who, the event, what it said — nothing
+/// for an event that says nothing — and the property that now holds it:
+/// its name, the wire's tag for the value and the value as the wire's
+/// text.
+export type Move = { id: int, action: Action, said: Said?, reads: string, says: int, text: string }
 
 /// What a control hears when a user gives it `value` — nothing for one
 /// that reads no answer. One arm per thing a control can say.
@@ -49,15 +50,15 @@ type Bound = { id: NodeId, action: Action }
 
 fn bound(run: List<Element>) -> List<Bound> { [Bound { id: el.id, action: a } for el in elements(run) for a in el.hears] }
 
-/// The control `at` saying `said`, and the property that then holds it.
-fn moved(at: Bound, said: Said) -> Move {
+/// The element `at` hearing `said`, and the property that then holds it.
+fn moved(at: Bound, said: Said?) -> Move {
     Move {
         id: at.id.n,
         action: at.action,
         said: said,
         reads: read_of(voice(at.action.handler)),
-        says: tag_held(said).code(),
-        text: text_held(said),
+        says: [tag_held(s).code() for s in present(said)].first() ?? Says.Nothing.code(),
+        text: [text_held(s) for s in present(said)].first() ?? "",
     }
 }
 
@@ -81,9 +82,13 @@ fn echo(page: Live, made: List<Move>) {
     }
 }
 
-/// A user's moves as a host holds them: each property moved.
+/// A user's moves as a host holds them: each property moved, and each
+/// door the page's own answer shut.
 fn hold(mut at: Host, made: List<Move>) {
-    for m in made { at.set_prop(m.id, m.reads, m.says, m.text) }
+    for m in made {
+        if m.said != null { at.set_prop(m.id, m.reads, m.says, m.text) }
+        if shuts(m.action.kind) { at.swing(m.id, false) }
+    }
 }
 
 /// Whether a patch changes the page's elements: every one but the sheet's.
@@ -179,7 +184,7 @@ fn bound_wrong(page: Live, mut at: Host, s: Sketch, log: Cell<List<int>>) -> str
         log,
         (b) -> page.fire(b.id, b.action.kind, probe(b.action.handler)),
     )
-    hold(at, [moved(b, said) for b in held for said in present(probe(b.action.handler))])
+    hold(at, [moved(b, probe(b.action.handler)) for b in held])
     if got == want { null } else { "the handlers bound are not the tree's: its events write ${want}, the page's ${got}" }
 }
 
@@ -213,8 +218,8 @@ export fn verdict(c: Case) -> string? {
 }
 
 /// A case played out on a page: the frame of its first paint, what the
-/// user then did, the frame of its repaint, every control that reads an
-/// answer then spoken to, and the frame that paints the first tree back.
+/// user then did, the frame of its repaint, every event
+/// then spoken to, and the frame that paints the first tree back.
 type Played = { first: Bytes, made: List<Move>, second: Bytes, spoken: List<Move>, back: Bytes }
 
 fn played(c: Case) -> Played {
@@ -224,7 +229,7 @@ fn played(c: Case) -> Played {
     let made = moves(page, c.typed)
     echo(page, made)
     let second = elements_frame(page, c.new, log)
-    let spoken = [moved(b, said) for b in bound(page.page.get()) for said in present(probe(b.action.handler))]
+    let spoken = [moved(b, probe(b.action.handler)) for b in bound(page.page.get())]
     echo(page, spoken)
     Played {
         first: first,

@@ -61,6 +61,48 @@ fn after_typing(shown: string, typed: string, drawn: string) -> string {
     spoken(page, hearing(field_node("N", drawn), Handler.Text(heard_text)), default_theme)
 }
 
+fn dialog_node(open: bool) -> Node {
+    leaf(.Dialog, [.Label("D"), .Open(open)]) with { events: [Action { kind: .Dismiss, handler: Handler.Nothing(nothing) }] }
+}
+
+/// The patches after the user sends an open dialog away and the program
+/// then draws it `open` or not.
+fn after_dismissing(open: bool) -> string {
+    let page = live()
+    let _ = page.patches(dialog_node(true), default_theme)
+    let _ = page.fire(named(page, "D")[0], .Dismiss, null)
+    spoken(page, dialog_node(open), default_theme)
+}
+
+spec "std/ui dom — a dialog stands over the page by its own verb" {
+    given "a dialog the program opens" {
+        then "is called to stand over the page, and never given the attribute" {
+            between(dialog_node(false), dialog_node(true)) == "call 0 showModal"
+        }
+        then "is called only once it stands on the page: the call is the frame's last word" {
+            between(text_node("x"), holding(.Column, [dialog_node(true)]))
+                .ends_with("place 0 in - after -\ncall 0/0 showModal")
+        }
+        then "says a press outside it sends it away, and hears its dismissal by the page's own word" {
+            let made = between(text_node("x"), dialog_node(false))
+            made.contains("attr 0 closedby=any") &&
+                made.contains("listen 0 dismiss") &&
+                !made.contains("call")
+        }
+        then "hears its dismissal though no handler does: what the page did is never unknown" {
+            between(text_node("x"), leaf(.Dialog, [.Label("D")])).contains("listen 0 dismiss")
+        }
+    }
+    given "a dialog the program closes" {
+        then "is called to close" { between(dialog_node(true), dialog_node(false)) == "call 0 close" }
+        then "is left alone while it stays open" { between(dialog_node(true), dialog_node(true)) == "" }
+    }
+    given "a dialog the user sent away" {
+        then "is not closed again: the page already closed it" { after_dismissing(false) == "" }
+        then "is shown again when the program still says it is open" { after_dismissing(true) == "call 0 showModal" }
+    }
+}
+
 spec "std/ui dom — a repaint says only what changed" {
     given "the same tree" {
         then "says nothing" { between(rows(["a", "b"]), rows(["a", "b"])) == "" }
@@ -103,6 +145,13 @@ spec "std/ui dom — a repaint says only what changed" {
     given "an event" {
         then "is heard when a handler arrives" { between(button_node("a"), pressing(button_node("a"))) == "listen 0 press" }
         then "is dropped when its handler goes" { between(pressing(button_node("a")), button_node("a")) == "unlisten 0 press" }
+        then "a form nothing hears still hears its submit, so the page is never left" {
+            between(text_node("x"), holding(.Form, [])).contains("listen 0 submit")
+        }
+        then "a form that hears its submit hears it once" {
+            let heard = holding(.Form, []) with { events: [Action { kind: .Submit, handler: Handler.Nothing(nothing) }] }
+            between(text_node("x"), heard).split("listen 0 submit").length == 2
+        }
         then "is left alone while it is still heard" { between(pressing(button_node("a")), pressing(button_node("a"))) == "" }
     }
 }
