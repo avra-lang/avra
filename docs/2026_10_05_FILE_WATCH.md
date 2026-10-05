@@ -1,12 +1,12 @@
 # FILE WATCH — the operating system says what moved
 
-`@std.io`'s `watch`: a set of paths, and a task parked until one of them
+`@std.io.watch`: a set of paths, and a task parked until one of them
 moves. No timer, no thread, no second event loop.
 
 ## 1. The verb
 
 ```avra
-use @std.io.{watch}
+use @std.io.watch.{watch}
 
 let w = watch()?
 w.add("src/main.av")?          // a file: its content, and its standing
@@ -35,6 +35,12 @@ while true {
 
 ## 2. Laws
 
+- THE WATCH IS A MODULE OF ITS OWN (`packages/std-io/src/watch/`). A
+  build makes one object per FILE a program's `use` lines reach, and a
+  module is a directory — so a verb with no wasm body, written beside
+  `read_text`, refused every wasm program that reads a file (probed:
+  `use @std.io.{exists}` alone was refused for `avra_fiber_park_fd`).
+  Named apart, only a program that names it is refused.
 - A WATCH IS ONE DESCRIPTOR, readable when something is pending: an
   inotify descriptor on Linux, a kqueue of its own on macOS (a kqueue is
   itself pollable — probed, `outer=1` for every vnode event). The task
@@ -111,7 +117,7 @@ while true {
 
 No `rt_sigs` row, so the two-landing law does not bind; the split is
 for review and because `dev.av` is not on main yet.
-1. `@std/io`'s `watch` + its C + the Makefile's and the Sprite build's
+1. `@std.io.watch` + its C + the Makefile's and the Sprite build's
    object lists + tests. Nothing in the compiler calls it.
 2. `avra dev` on the watch, polling kept as §5's fallback (on `ui-dev`).
 
