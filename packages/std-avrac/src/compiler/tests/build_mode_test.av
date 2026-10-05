@@ -1,0 +1,109 @@
+// WHAT A BUILD IS FOR NAMES ITS STORE. An object is one target's code and a
+// linked module one link's answer, so every word of a toolchain that moves
+// either must move the store root and the binary's key — and a restart must
+// stand in the store its workspace was built for.
+use @std.avrac.compiler.{build_cache_root}
+use compiler.{Workspace, Toolchain}
+
+/// A wasm toolchain as the build command spells one, shrinking.
+fn wasm_tools() -> Toolchain {
+    Toolchain {
+        opt: "-Oz",
+        runtime: "rt.a",
+        linker: "clang",
+        target: "wasm32-wasip1",
+        wasm_opt: "wasm-opt",
+    }
+}
+
+/// The host's own toolchain.
+fn host_tools() -> Toolchain { Toolchain { opt: "-O1", runtime: "rt.a", linker: "clang" } }
+
+/// A workspace over `binary`, built for `tools`.
+fn built_workspace(binary: string, tools: Toolchain) -> Workspace {
+    let ws = print_workspace(binary)
+    ws.built_for(tools)
+    ws
+}
+
+/// The store root a workspace over `binary` reads when built for `tools`.
+fn root_for(binary: string, tools: Toolchain) -> string { build_cache_root(built_workspace(binary, tools)) }
+
+spec "compiler/build — a store is one compiler's AND one mode's" {
+    given "a workspace built for a wasm target" {
+        then "its store root is not the host build's" {
+            let bin = real_binary("mode-target", "one compiler")
+            root_for(bin, wasm_tools()) != root_for(bin, host_tools())
+        }
+        then "its restart reads the same store root" {
+            let ws = built_workspace(real_binary("mode-anew", "one compiler"), wasm_tools())
+            build_cache_root(ws.anew()) == build_cache_root(ws)
+        }
+        then "its restart's restart reads the same store root" {
+            let ws = built_workspace(real_binary("mode-anew2", "one compiler"), wasm_tools())
+            build_cache_root(ws.anew().anew()) == build_cache_root(ws)
+        }
+        then "its restart keys a binary as it does" {
+            let ws = built_workspace(real_binary("mode-anew-key", "one compiler"), wasm_tools())
+            ws.anew().program_key("/w/src/main.av", []) == ws.program_key("/w/src/main.av", [])
+        }
+        then "its binary's key is not the host build's" {
+            let bin = real_binary("mode-key", "one compiler")
+            built_workspace(bin, wasm_tools()).program_key("/w/src/main.av", []) != built_workspace(bin, host_tools()).program_key("/w/src/main.av", [])
+        }
+    }
+    given "a workspace whose print and store root were asked before it was built for a target" {
+        then "the store root moves to the target's" {
+            let bin = real_binary("mode-late", "one compiler")
+            let ws = print_workspace(bin)
+            let host_root = build_cache_root(ws)
+            ws.built_for(wasm_tools())
+            build_cache_root(ws) != host_root && build_cache_root(ws) == root_for(bin, wasm_tools())
+        }
+        then "the print moves with it" {
+            let ws = print_workspace(real_binary("mode-late-id", "one compiler"))
+            let host_id = ws.compiler_id()
+            ws.built_for(wasm_tools())
+            ws.compiler_id() != host_id
+        }
+        then "built for the host again, the root is the host's again" {
+            let bin = real_binary("mode-back", "one compiler")
+            let ws = built_workspace(bin, wasm_tools())
+            let _ = build_cache_root(ws)
+            ws.built_for(host_tools())
+            build_cache_root(ws) == root_for(bin, host_tools())
+        }
+    }
+    given "two wasm toolchains one word apart" {
+        then "another target spelling is another store root" {
+            let bin = real_binary("mode-spelling", "one compiler")
+            root_for(bin, wasm_tools()) != root_for(bin, wasm_tools() with { target: "wasm32-unknown-wasi" })
+        }
+        then "a reactor is another store root" {
+            let bin = real_binary("mode-reactor", "one compiler")
+            root_for(bin, wasm_tools()) != root_for(bin, wasm_tools() with { reactor: true })
+        }
+        then "an unshrunk module is another store root" {
+            let bin = real_binary("mode-opt", "one compiler")
+            root_for(bin, wasm_tools()) != root_for(bin, wasm_tools() with { wasm_opt: "" })
+        }
+        then "a debug link is another store root" {
+            let bin = real_binary("mode-debug", "one compiler")
+            root_for(bin, wasm_tools()) != root_for(bin, wasm_tools() with { debug: true })
+        }
+        then "a reactor and a debug link are not one store root" {
+            let bin = real_binary("mode-marks", "one compiler")
+            root_for(bin, wasm_tools() with { reactor: true }) != root_for(bin, wasm_tools() with { debug: true })
+        }
+    }
+    given "a workspace built for the host" {
+        then "its store root is the one a workspace nobody built reads" {
+            let bin = real_binary("mode-host", "one compiler")
+            root_for(bin, host_tools()) == build_cache_root(print_workspace(bin))
+        }
+        then "a wasm-only word moves nothing" {
+            let bin = real_binary("mode-host-words", "one compiler")
+            root_for(bin, host_tools()) == root_for(bin, host_tools() with { reactor: true, debug: true, wasm_opt: "wasm-opt" })
+        }
+    }
+}
