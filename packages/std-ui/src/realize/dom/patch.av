@@ -190,71 +190,70 @@ fn follows(at: int?, reached: int) -> bool {
 /// what the event says.
 fn same_hearing(a: Action, b: Action) -> bool { a.kind == b.kind && says(a.handler) == says(b.handler) }
 
+/// A run of elements on the page, each wearing its number, and the next
+/// number to give.
+type Drawn = { page: List<Element>, next: int }
+
 /// A diff under way: what the user was heard to do to the page since it
-/// was last drawn.
-type Differ = { heard: List<Heard> }
+/// was last drawn, and the patches said so far. EVERY PATCH IS SAID INTO
+/// THE ONE LIST, in the order a host applies them, so a level never
+/// copies what the levels under it said.
+type Differ = { heard: List<Heard>, said: Cell<List<Patch>> = Cell.new([]) }
 
 impl Differ {
+    fn say(patches: List<Patch>) {
+        // LICENSED loops.push_loop: a cell's list grows in place — a concat copies all said so far
+        for p in patches { self.said.push(p) }
+    }
+
     /// One parent's children: what left is removed, what stays is diffed
     /// where it stands, and what is new or out of order is placed after
     /// the sibling it now follows. A kept element stands still while it
     /// follows, in the old order, every kept element before it.
-    fn siblings(parent: NodeId?, old: List<Element>, new: List<Element>, next: int) -> Diffed {
+    fn siblings(parent: NodeId?, old: List<Element>, new: List<Element>, next: int) -> Drawn {
         let stays = twins(new, old)
         let was = twins(old, new)
-        mut parts: List<Diffed> = []
+        self.say([Patch.Remove(e.id()) for j, e in old if stays[j] == null])
+        mut page: List<Element> = []
         mut free = next
         mut reached = -1
         // LICENSED loops.push_loop: each element takes the numbers the ones before it left
         for j, e in new {
             let d = self.drawn(old, was[j], e, free)
             let now? = d.page.first() else { continue }
-            let stands = follows(was[j], reached)
-            if stands { reached = was[j] ?? reached }
-            parts
-                .push(
-                    if stands {
-                        d
-                    } else {
-                        d with { patches: d
-                            .patches
-                            .concat([Patch.Place(now.id(), parent, parts.last()?.page?.first()?.id())]) }
-                    },
-                )
+            if follows(was[j], reached) {
+                reached = was[j] ?? reached
+            } else {
+                self.said.push(Patch.Place(now.id(), parent, page.last()?.id()))
+            }
+            page.push(now)
             free = d.next
         }
-        Diffed {
-            patches: [Patch.Remove(e.id()) for j, e in old if stays[j] == null]
-                .concat([p for d in parts for p in d.patches]),
-            page: [e for d in parts for e in d.page],
-            next: free,
-        }
+        Drawn { page: page, next: free }
     }
 
     /// `e` on the page: kept, when `old` holds it at `at`, else made.
-    fn drawn(old: List<Element>, at: int?, e: Element, next: int) -> Diffed {
+    fn drawn(old: List<Element>, at: int?, e: Element, next: int) -> Drawn {
         let stood? = at else { return self.made(e, next) }
         self.kept(old[stood], e, next)
     }
 
     /// An element new to the page: given the next number and built whole,
     /// for its parent to place.
-    fn made(e: Element, next: int) -> Diffed {
+    fn made(e: Element, next: int) -> Drawn {
         let id = NodeId { n: next }
         match e {
-            .Text(_, seat, content) -> Diffed {
-                patches: [Patch.CreateText(id, content)],
-                page: [Element.Text(id, seat, content)],
-                next: next + 1,
+            .Text(_, seat, content) -> {
+                self.said.push(Patch.CreateText(id, content))
+                Drawn { page: [Element.Text(id, seat, content)], next: next + 1 }
             },
             .Tag(el) -> {
+                self.said.push(Patch.Create(id, el.tag))
+                self.say([Patch.SetAttr(id, a.name, a.value) for a in attrs_of(el)])
+                self.say([Patch.SetProp(id, p.name, p.value) for p in props_of(el)])
+                self.say([Patch.Listen(id, listening_of(a)) for a in el.hears])
                 let within = self.siblings(id, [], el.kids, next + 1)
-                Diffed {
-                    patches: [Patch.Create(id, el.tag)]
-                        .concat([Patch.SetAttr(id, a.name, a.value) for a in attrs_of(el)])
-                        .concat([Patch.SetProp(id, p.name, p.value) for p in props_of(el)])
-                        .concat([Patch.Listen(id, listening_of(a)) for a in el.hears])
-                        .concat(within.patches),
+                Drawn {
                     page: [Element.Tag(el with { id: id, kids: within.page })],
                     next: within.next,
                 }
@@ -263,21 +262,19 @@ impl Differ {
     }
 
     /// An element that stays keeps its number: only what differs is said.
-    fn kept(old: Element, new: Element, next: int) -> Diffed {
+    fn kept(old: Element, new: Element, next: int) -> Drawn {
         match new {
-            .Text(_, seat, content) -> Diffed {
-                patches: if old.text() == content { [] } else { [Patch.SetText(old.id(), content)] },
-                page: [Element.Text(old.id(), seat, content)],
-                next: next,
+            .Text(_, seat, content) -> {
+                if old.text() != content { self.said.push(Patch.SetText(old.id(), content)) }
+                Drawn { page: [Element.Text(old.id(), seat, content)], next: next }
             },
             .Tag(el) -> {
                 let was? = old.tagged() else { return self.made(new, next) }
+                self.say(attributes(was.id, attrs_of(was), attrs_of(el)))
+                self.say(self.properties(was.id, props_of(was), props_of(el)))
+                self.say(hearing(was.id, was.hears, el.hears))
                 let within = self.siblings(was.id, was.kids, el.kids, next)
-                Diffed {
-                    patches: attributes(was.id, attrs_of(was), attrs_of(el))
-                        .concat(self.properties(was.id, props_of(was), props_of(el)))
-                        .concat(hearing(was.id, was.hears, el.hears))
-                        .concat(within.patches),
+                Drawn {
                     page: [Element.Tag(el with { id: was.id, kids: within.page })],
                     next: within.next,
                 }
@@ -327,5 +324,7 @@ fn hearing(id: NodeId, old: List<Action>, new: List<Action>) -> List<Patch> {
 /// wears its number; one that stays keeps it, and a new one takes the
 /// next from `next` on.
 export fn diff(old: List<Element>, new: List<Element>, heard: List<Heard>, next: int) -> Diffed {
-    Differ { heard: heard }.siblings(null, old, new, next)
+    let at = Differ { heard: heard }
+    let drawn = at.siblings(null, old, new, next)
+    Diffed { patches: at.said.get(), page: drawn.page, next: drawn.next }
 }

@@ -43,8 +43,8 @@ Five attempts to lift a handler into a generated message failed.
    the library's facts: the event's own word, what it says, the
    property to read and whether to stop it ride the `listen` patch.
    A first paint is a diff against nothing; an unchanged page is no
-   patch (the diff is a pure fold: old page and new in, patches and the
-   numbered page out); a property is compared against what the PAGE holds, so a
+   patch (the diff is a fold with no state of its own between paints:
+   old page and new in, patches and the numbered page out); a property is compared against what the PAGE holds, so a
    field a user typed into is never written back to.
 2. **One identity.** A node is WHERE IT STANDS: its parent, then its
    key or its place among its unkeyed siblings (`realize/identity.av`);

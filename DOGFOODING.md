@@ -1754,12 +1754,14 @@ ui_view_test.av: `spoken()`, `owed`, `never_ran`).
 Matching two trees needs no table of ids kept between them: lower each to
 elements that know their SEAT among their siblings, and fold old against
 new — a kept element carries its number across, a new one takes the
-next. The fold answers the patches, the numbered page and the next
-number (packages/std-ui/src/realize/dom/patch.av). A table written
-through a `mut` seat did the same job and is quadratic in the
-evaluator's memory (2,000 siblings passed 6 GB): every mutating shape
-measured there is — a `mut` map, `Cell.put`, a `mut`-seat method — so a
-pass over a tree is written pure, and accumulates by comprehension.
+next. The fold answers the numbered page and the next number
+(packages/std-ui/src/realize/dom/patch.av), and SAYS its patches into
+one `Cell` list as it goes: a level that returns its patches for the
+level above to concatenate copies its whole subtree's once per ancestor,
+which is quadratic in depth in both engines. A table written through a
+`mut` seat is the shape to avoid under `avra run`: a map copies on every
+insert there, so `set` in a loop is quadratic in time and in memory,
+while a `Cell`'s list grows in place in both engines.
 
 ## A host-only extern stands in a module only that host's programs import
 
