@@ -1,156 +1,107 @@
 #!/bin/sh
-# sp — run a command on the idlest free Sprite, against THIS worktree.
+# sp — run a command on a free Sprite, against THIS worktree.
 #
 #   sh tools/sp <cmd...>                 one command, output streamed, its exit status
 #   sh tools/sp -p "<cmd1>" "<cmd2>" ... each on its own Sprite at once, lines
 #                                        labelled, a summary table, exit 1 on any failure
+#   sh tools/sp --health                 every Sprite and every lease, in seconds; exit 1 if any is unwell
+#   sh tools/sp --repair                 reap leases, stop orphaned runs, provision, prune; says what it did
 #
 #   sh tools/sp build/avra test packages/std-avrac
 #   sh tools/sp -p "build/avra test packages/std-avrac" "build/avra test packages/cli"
 #
-# The tree syncs by rsync and build/avra comes from the Sprite's compiler cache
-# (tools/sprite-build.sh); LLVM_PREFIX is set. Pool: `sprite list` minus
-# web-terminal and avra-bench, or AVRA_SPRITES. AVRA_SP_TREE names another tree. Slots per Sprite:
-# AVRA_SP_JOBS_PER_SPRITE (default 3). A Sprite that misses its probe is skipped.
-# With no slot to be had, a command waits its turn, saying where it stands.
+# The tree syncs by rsync and build/avra comes from the Sprite's compiler
+# cache (tools/sprite-build.sh); LLVM_PREFIX is set. AVRA_SP_TREE names
+# another tree.
 #
-#   sh tools/sp --pool                           the living pool, one line
+# THE POOL is `sprite list` minus AVRA_SP_EXCLUDE, or AVRA_SPRITES. It
+# takes ONE RUN PER WORKTREE ON A SPRITE — a `-p` batch wants a Sprite a
+# command — and AVRA_SP_JOBS_PER_SPRITE (2) runs on one Sprite across
+# worktrees, while it has AVRA_SP_MIN_FREE_MB (2500) of memory to give.
+#
+# A SPRITE SLEEPS WHEN IDLE and wakes in seconds, or in minutes, or not
+# at all. One that misses its AVRA_SP_PROBE_S (12) probe is left out for
+# AVRA_SP_DEAD_S (120) while a waker goes on asking, and joins the pool
+# the moment it answers; nobody waits on it while another has room. One
+# that fails a run before its command began is left out the same way,
+# and the command moves to another.
+#
+# WITH NO SLOT TO BE HAD a command waits its turn, first come first
+# served per Sprite, saying where it stands — for AVRA_SP_WAIT_S (900),
+# then leaves with 75 and the reason.
+#
+# A LEASE DIES WITH ITS OWNER: slots live under AVRA_SP_SLOTS
+# (/tmp/avra-sp-slots), each naming its owner's pid and birth, and every
+# caller reaps the ones whose owner is gone. An interrupted sp stops its
+# run on the Sprite before it leaves.
+#
+#   sh tools/sp --pool                           the answering pool, one line
 #   sh tools/sp --lease <n> <pid> <sprite...>    a free slot among slots 1..n,
 #                                                owned by <pid>: prints its dir
-#
-# Slots live under AVRA_SP_SLOTS (default /tmp/avra-sp-slots), shared by
-# every caller, so two callers' leases and sp jobs
-# never oversubscribe one Sprite. Waiters queue first come, first served
-# PER SPRITE: a free slot goes to the earliest waiter that can use it,
-# so a waiter pinned elsewhere blocks nobody. A Sprite that fails its
-# liveness probe is skipped by every caller for AVRA_SP_DEAD_S (300).
+#   sh tools/sp --command <cmd...>               the command a run would assemble
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/sprite-lib.sh"
 worktree=$(cd "${AVRA_SP_TREE:-$here/..}" && pwd)
 slug=$(basename "$worktree")
-jobs=${AVRA_SP_JOBS_PER_SPRITE:-3}
-slots=${AVRA_SP_SLOTS:-/tmp/avra-sp-slots}
+jobs=${AVRA_SP_JOBS_PER_SPRITE:-2}
+min_free=${AVRA_SP_MIN_FREE_MB:-2500}
+probe_s=${AVRA_SP_PROBE_S:-12}
+dead_s=${AVRA_SP_DEAD_S:-120}
+wait_s=${AVRA_SP_WAIT_S:-900}
+poll_s=${AVRA_SP_POLL_S:-5}
 llvm=/usr/lib/llvm-22
 queue=$slots/.queue
 dead_dir=$slots/.dead
-dead_s=${AVRA_SP_DEAD_S:-300}
 build=${AVRA_SP_BUILD:-$here/sprite-build.sh}
+# `web-terminal` and `avra-bench` are not build hosts.
+exclude=${AVRA_SP_EXCLUDE:-web-terminal avra-bench}
 
-# The pool: awake Sprites first, and a sleeping one only while the org's
-# cap of running Sprites (AVRA_SP_MAX_RUNNING, default 10) has room, since
-# waking one past it fails.
-#
-# AVRA_SP_EXCLUDE names Sprites no run may claim. `web-terminal` and
-# `avra-bench` are not build hosts; `avra-unions-p2` carries a PERSISTENT
-# disk fault — `sprite file push` opens /home/sprite/.avra-provision.sh with
-# "input/output error" (shell writes to it succeed; the file push path does
-# not, even after a remove), so every run pays three failed provisioning
-# retries before moving on. Its ssh probe still passes, which is why the
-# liveness check alone does not drop it.
 pool() {
     if [ -n "${AVRA_SPRITES:-}" ]; then echo "$AVRA_SPRITES"; return 0; fi
-    timeout -k 1 15 sprite api /sprites 2>/dev/null | python3 -c '
+    timeout -k 1 15 "$sprite_cli" api /sprites 2>/dev/null | python3 -c '
 import json, sys
-cap = int(sys.argv[1])
-skip = set(sys.argv[2].split())
-rows = json.load(sys.stdin)["data"]
-up = [r["name"] for r in rows if r["status"] == "running"]
-mine = lambda n: n not in skip
-names = [n for n in up if mine(n)]
-if len(up) < cap:
-    names += [r["name"] for r in rows if r["status"] != "running" and mine(r["name"])]
-print(" ".join(names))' "${AVRA_SP_MAX_RUNNING:-10}" "${AVRA_SP_EXCLUDE:-web-terminal avra-bench avra-unions-p2}"
+skip = set(sys.argv[1].split())
+print(" ".join(r["name"] for r in json.load(sys.stdin)["data"] if r["name"] not in skip))' "$exclude"
 }
 
-# A Sprite that failed its liveness probe within the last dead_s seconds.
+# A Sprite left out: it missed a probe, or failed a run, within dead_s.
 is_dead() {
     at=$(cat "$dead_dir/$1" 2>/dev/null) || return 1
     case $at in '' | *[!0-9]*) return 1 ;; esac
-    [ $(( $(date +%s) - at )) -lt "$dead_s" ]
+    [ $(($(date +%s) - at)) -lt "$dead_s" ]
 }
 mark_dead() { mkdir -p "$dead_dir"; date +%s > "$dead_dir/$1"; }
 living() { for s in "$@"; do is_dead "$s" || printf '%s ' "$s"; done; }
 
-# One Sprite's load, cores and free MB, or nothing within 10 s.
+# One Sprite's "<load> <cores> <free MB>", or nothing within probe_s.
 # AVRA_SP_LOAD_PROBE stands in for it.
 probe() {
     if [ -n "${AVRA_SP_LOAD_PROBE:-}" ]; then "$AVRA_SP_LOAD_PROBE" "$1"; return; fi
-    timeout -k 1 10 sprite exec -s "$1" -- sh -c 'set -- $(cat /proc/loadavg); echo "$1 $(nproc) $(awk "/^MemAvailable:/ { print int(\$2 / 1024) }" /proc/meminfo)"' 2>/dev/null
+    remote "$1" "$probe_s" status 2>/dev/null | awk -F= '{ v[$1] = $2 } END { if (v["cores"]) print v["load"], v["cores"], v["mem_avail_mb"]; else exit 1 }'
 }
 
-# The pool, idlest first; a Sprite that did not answer its probe is dropped.
+# Goes on asking a Sprite that missed its probe, and lifts its mark the
+# moment it answers. AVRA_SP_WAKER stands in for it.
+waker() {
+    if [ -n "${AVRA_SP_WAKER:-}" ]; then "$AVRA_SP_WAKER" "$1"; return; fi
+    (woken "$1" 150 status >/dev/null 2>&1 && rm -f "$dead_dir/$1") </dev/null >/dev/null 2>&1 &
+}
+
+# The answering pool with memory to give, idlest first.
 ranked() {
     d=$(mktemp -d "${TMPDIR:-/tmp}/avra-sp-load.XXXXXX")
-    for s in $(living $(pool)); do (probe "$s" > "$d/$s" || :) & done
+    for s in $(living $(pool)); do
+        (probe "$s" > "$d/$s" 2>/dev/null || { mark_dead "$s"; waker "$s"; }) &
+    done
     wait
     for f in "$d"/*; do
         read -r load cores avail < "$f" 2>/dev/null || continue
-        [ -n "$avail" ] && awk -v s="${f##*/}" -v l="$load" -v c="$cores" -v a="$avail" 'BEGIN { printf "%012.4f %012d %s\n", l / c, 999999999 - a, s }'
+        [ -n "$avail" ] && [ "$avail" -ge "$min_free" ] &&
+            awk -v s="${f##*/}" -v l="$load" -v c="$cores" -v a="$avail" 'BEGIN { printf "%012.4f %012d %s\n", l / c, 999999999 - a, s }'
     done | sort | awk '{ printf "%s ", $3 }'
     rm -rf "$d"
-}
-
-# A slot is a directory holding its owner's pid (this process, or $2); a
-# dead owner's slot is free. The tree lock keeps one run per (Sprite,
-# worktree), since both share a tree.
-take() {
-    d=$1
-    o=${2:-$$}
-    mkdir "$d" 2>/dev/null && { echo "$o" > "$d/pid"; return 0; }
-    p=$(cat "$d/pid" 2>/dev/null || echo)
-    [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 1
-    rm -rf "$d"
-    mkdir "$d" 2>/dev/null && { echo "$o" > "$d/pid"; return 0; }
-    return 1
-}
-
-# A lease for another process: slot level by level across the living
-# Sprites in their given order that no queued waiter wants, so work
-# spreads before it stacks. Prints the slot dir.
-lease() {
-    max=$1 owner=$2
-    shift 2
-    reap
-    set -- $(unwanted "" $(living "$@"))
-    n=1
-    while [ "$n" -le "$max" ]; do
-        for s in "$@"; do
-            mkdir -p "$slots/$s"
-            take "$slots/$s/slot-$n" "$owner" && { echo "$slots/$s/slot-$n"; return 0; }
-        done
-        n=$((n + 1))
-    done
-    return 1
-}
-
-# Claims a Sprite from $1 (ranked), avoiding the names in $2 while any other
-# has room. Prints "<sprite> <slot dir> <tree dir>".
-claim() {
-    for avoid in "$2" ""; do
-        for s in $1; do
-            case " $avoid " in *" $s "*) continue ;; esac
-            mkdir -p "$slots/$s"
-            take "$slots/$s/tree-$slug" || continue
-            n=1
-            while [ "$n" -le "$jobs" ]; do
-                if take "$slots/$s/slot-$n"; then
-                    echo "$s $slots/$s/slot-$n $slots/$s/tree-$slug"
-                    return 0
-                fi
-                n=$((n + 1))
-            done
-            rm -rf "$slots/$s/tree-$slug"
-        done
-    done
-    return 1
-}
-
-probe_alive() { timeout -k 1 5 sprite -s "$1" exec --no-port-forward -- true >/dev/null 2>&1; }
-alive() {
-    "${AVRA_SP_ALIVE:-probe_alive}" "$1" && return 0
-    mark_dead "$1"
-    return 1
 }
 
 # A waiter's place: a file named by when it began waiting, holding its
@@ -186,53 +137,50 @@ unwanted() {
     done
 }
 
-# The Sprites among $@ whose tree for this worktree is free.
-usable() {
-    for s in "$@"; do
-        p=$(cat "$slots/$s/tree-$slug/pid" 2>/dev/null || echo)
-        [ -n "$p" ] && kill -0 "$p" 2>/dev/null && continue
-        printf '%s ' "$s"
-    done
-}
-
-# A live claim: a Sprite that fails its liveness probe is released and
-# marked dead for everyone. With no slot to be had it queues, saying so
-# once and then once a minute with its place in the queue.
+# Claims a Sprite for this process, avoiding the names in $1: sets
+# `claimed` to "<sprite> <slot dir> <tree dir>". It runs in this shell,
+# never a substitution, so an interrupt is heard within one round. The
+# pool is asked again every round,
+# so a Sprite that woke, or freed memory, is seen. With no slot it
+# queues, says so once a minute, and gives up after wait_s with 75.
+mine=
 claim_waiting() {
-    mine=
+    began=$(date +%s)
     said=0
+    sprites=${AVRA_SP_RANKED:-}
     while :; do
-        kill -0 $$ 2>/dev/null || exit 1
         reap
-        can=$(usable $(living $1))
-        if claimed=$(claim "$(unwanted "$mine" $can)" "$2"); then
-            s=${claimed%% *}
-            alive "$s" && { [ -z "$mine" ] || rm -f "$mine"; echo "$claimed"; return 0; }
-            r=${claimed#* }
-            rm -rf "${r%% *}" "${r#* }"
-            echo "sp: $s failed its 5s liveness probe — skipped by everyone for ${dead_s}s" >&2
-            set -- "$(echo " $1 " | sed "s/ $s / /")" "$2"
-            continue
+        leases sweep >/dev/null
+        [ -n "$sprites" ] || sprites=$(ranked)
+        can=$(living $sprites)
+        if claimed=$(leases claim "$$" "$jobs" "$slug" "$(unwanted "$mine" $can)" "$1"); then
+            [ -z "$mine" ] || rm -f "$mine"
+            mine=
+            return 0
+        fi
+        now=$(date +%s)
+        if [ $((now - began)) -ge "$wait_s" ]; then
+            [ -z "$mine" ] || rm -f "$mine"
+            echo "sp: no Sprite slot in ${wait_s}s — answering with memory to give: ${can:-none}; left out: $(for s in $(pool); do ! is_dead "$s" || printf '%s ' "$s"; done)" >&2
+            return 75
         fi
         if [ -z "$mine" ]; then
             mkdir -p "$queue"
-            mine="$queue/$(date +%s)-$$-$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
-            draft="$queue/.$(basename "$mine")"
-            trap 'rm -f "$mine" "$draft"' EXIT
+            mine="$queue/$now-$$-$(od -An -N2 -tu2 /dev/urandom | tr -d ' ')"
         fi
+        draft="$queue/.$(basename "$mine")"
         printf '%s\n%s\n' "$$" "$(echo $can)" > "$draft" && mv "$draft" "$mine"
-        now=$(date +%s)
         if [ $((now - said)) -ge 60 ]; then
-            echo "sp: every Sprite slot is taken — waiting, number $(position "$mine") in the queue" >&2
+            if [ -z "$can" ]; then
+                echo "sp: no Sprite answers with memory to give — waiting for one, up to ${wait_s}s" >&2
+            else
+                echo "sp: every Sprite slot is taken — waiting, number $(position "$mine") in the queue, up to ${wait_s}s" >&2
+            fi
             said=$now
         fi
-        sleep 5
+        sleep "$poll_s"
+        sprites=
     done
-}
-
-# Runs one command string on a claimed Sprite; its status is the command's.
-run_on() {
-    sh "$build" "$1" "$worktree" -- bash -lc "export LLVM_PREFIX=$llvm; $2"
 }
 
 # ONE COMMAND STRING, from either ONE command arg (a shell string, run as
@@ -248,60 +196,114 @@ assemble() {
     fi
 }
 
-[ "$#" -gt 0 ] || { sed -n '2,26p' "$0" >&2; exit 2; }
-[ "$1" != --pool ] || { echo $(living $(pool)); exit 0; }
-[ "$1" != --lease ] || { shift; lease "$@"; exit $?; }
-# `--command` prints the command a run would assemble, and needs no Sprite —
-# the seam `tools/witness_work_run.sh` holds the two forms to one another.
-[ "$1" != --command ] || { shift; assemble "$@"; echo; exit 0; }
-sprites=$(ranked)
-[ -n "$sprites" ] || echo "sp: no Sprite answered its probe" >&2
+# One command on a claimed Sprite; its status is the command's. A Sprite
+# that fails before the command began is left out and the command moves
+# to another; a run whose connection dropped is run once more.
+slot=
+tree=
+child=
+verdict=
+release() {
+    [ -z "$slot" ] || rm -rf "$slot" "$tree"
+    slot=
+    tree=
+}
+leave() {
+    [ -z "$child" ] || { kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; } || :
+    release
+    [ -z "$mine" ] || rm -f "$mine" "$queue/.$(basename "$mine")"
+    [ -z "$verdict" ] || rm -f "$verdict"
+}
+one() {
+    cmd=$1
+    verdict=$(mktemp "${TMPDIR:-/tmp}/avra-sp-verdict.XXXXXX")
+    trap leave EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    tries=0
+    failed=
+    while :; do
+        tries=$((tries + 1))
+        claim_waiting "$failed" || return $?
+        sprite=${claimed%% *}
+        rest=${claimed#* }
+        slot=${rest%% *}
+        tree=${rest#* }
+        echo "sp: $sprite" >&2
+        : > "$verdict"
+        AVRA_SB_VERDICT=$verdict sh "$build" "$sprite" "$worktree" -- bash -lc "export LLVM_PREFIX=$llvm; $cmd" &
+        child=$!
+        st=0
+        wait "$child" || st=$?
+        child=
+        release
+        case "$(cat "$verdict")" in
+            unreached) mark_dead "$sprite"; waker "$sprite"; failed="$failed $sprite" ;;
+            dropped) [ "$tries" -lt 2 ] || return "$st" ;;
+            *) return "$st" ;;
+        esac
+        [ "$tries" -lt 4 ] || return "$st"
+        echo "sp: $sprite did not finish the run — taking another Sprite" >&2
+        unset AVRA_SP_RANKED
+    done
+}
 
-if [ "$1" != -p ]; then
-    cmd=$(assemble "$@")
-    claimed=$(claim_waiting "$sprites" "")
-    sprite=${claimed%% *}; rest=${claimed#* }
-    slot=${rest%% *}; tree=${rest#* }
-    trap 'rm -rf "${slot:-}" "${tree:-}"' EXIT
-    echo "sp: $sprite" >&2
-    st=0
-    run_on "$sprite" "$cmd" || st=$?
-    exit "$st"
-fi
+# Every command at once, each its own sp; an interrupt reaches them all.
+many() {
+    out=$(mktemp -d "${TMPDIR:-/tmp}/avra-sp.XXXXXX")
+    kids=
+    trap 'for k in $kids; do kill -TERM "$k" 2>/dev/null || :; done; wait; rm -rf "$out"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    AVRA_SP_RANKED=$(ranked)
+    export AVRA_SP_RANKED
+    [ -n "$AVRA_SP_RANKED" ] || echo "sp: no Sprite answered its probe yet" >&2
+    i=0
+    for cmd in "$@"; do
+        i=$((i + 1))
+        printf '%s\n' "$cmd" > "$out/$i.cmd"
+        mkfifo "$out/$i.lines"
+        awk -v p="[$i] " '{ print p $0; fflush() }' < "$out/$i.lines" &
+        AVRA_SP_REPORT="$out/$i" sh "$0" "$cmd" > "$out/$i.lines" 2>&1 &
+        kids="$kids $!"
+    done
+    wait
+    kids=
+    fail=0
+    echo
+    printf '%-3s %-18s %7s %5s  %s\n' '#' sprite seconds exit command
+    n=0
+    while [ "$n" -lt "$i" ]; do
+        n=$((n + 1))
+        read -r st secs on < "$out/$n" 2>/dev/null || { st="?"; secs="?"; on=-; }
+        [ "$st" = 0 ] || fail=1
+        printf '%-3s %-18s %7s %5s  %s\n' "$n" "${on:--}" "$secs" "$st" "$(cat "$out/$n.cmd")"
+    done
+    return "$fail"
+}
 
-shift
-out=$(mktemp -d -t avra-sp.XXXXXX)
-trap 'rm -rf "$out"' EXIT
-used=""
-i=0
-for cmd in "$@"; do
-    i=$((i + 1))
-    claimed=$(claim_waiting "$sprites" "$used")
-    sprite=${claimed%% *}; rest=${claimed#* }
-    slot=${rest%% *}; tree=${rest#* }
-    used="$used $sprite"
-    printf '%s\n' "$cmd" > "$out/$i.cmd"
-    echo "$sprite" > "$out/$i.sprite"
-    (
-        trap 'rm -rf "${slot:-}" "${tree:-}"' EXIT
-        t=$(date +%s)
-        { st=0; run_on "$sprite" "$cmd" 2>&1 || st=$?; echo "$st" > "$out/$i.st"; } |
-            awk -v p="[$i $sprite] " '{ print p $0; fflush() }'
-        echo $(( $(date +%s) - t )) > "$out/$i.s"
-    ) &
-    runners="${runners:-} $!"
-done
-n=$i
-wait $runners
-
-fail=0
-echo
-printf '%-3s %-18s %6s %5s  %s\n' '#' sprite seconds exit command
-i=0
-while [ "$i" -lt "$n" ]; do
-    i=$((i + 1))
-    st=$(cat "$out/$i.st")
-    [ "$st" = 0 ] || fail=1
-    printf '%-3s %-18s %6s %5s  %s\n' "$i" "$(cat "$out/$i.sprite")" "$(cat "$out/$i.s")" "$st" "$(cat "$out/$i.cmd")"
-done
-exit "$fail"
+[ "$#" -gt 0 ] || { sed -n '2,40p' "$0" >&2; exit 2; }
+case $1 in
+    --pool) echo $(ranked); exit 0 ;;
+    --lease)
+        shift
+        max=$1 owner=$2
+        shift 2
+        reap
+        leases sweep >/dev/null
+        leases lease "$max" "$owner" $(unwanted "" $(living "$@"))
+        exit $?
+        ;;
+    # Needs no Sprite — the seam `tools/witness_work_run.sh` holds the two forms to one another.
+    --command) shift; assemble "$@"; echo; exit 0 ;;
+    --health | --repair) . "$here/sprite-health.sh"; exit $? ;;
+    -p) shift; many "$@"; exit $? ;;
+esac
+t0=$(date +%s)
+st=0
+one "$(assemble "$@")" || st=$?
+# A `-p` batch's row for this command.
+[ -z "${AVRA_SP_REPORT:-}" ] || echo "$st $(($(date +%s) - t0)) ${sprite:--}" > "$AVRA_SP_REPORT"
+exit "$st"

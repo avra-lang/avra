@@ -2,11 +2,10 @@
 # Make this machine able to build the tree — the provisioning half of a
 # fresh Sprite session. Idempotent, so it is safe to run on every start.
 #
-# A Sprite is a stock Ubuntu image: clang, python3, make and git are
-# already there, LLVM's development package is not, and the tree links
-# `-lLLVM` and compiles against the llvm-c headers. This installs that
-# package and points the tree's LLVM root at it, so `make` and `./avra`
-# run with no environment setup.
+# A Sprite is a stock Ubuntu image. This installs what the checks'
+# machine installs and points the tree's LLVM root at the distro's, so
+# `make` and `./avra` run with no environment setup. A run that
+# tools/sp starts is provisioned by tools/sprite-remote.sh instead.
 #
 # Linux-only; on macOS the Homebrew toolchain already satisfies the
 # tree, so this is a no-op.
@@ -20,11 +19,15 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 major="${AVRA_LLVM_MAJOR:-22}"
 prefix="/usr/lib/llvm-$major"
 
-if ! dpkg -s "llvm-$major-dev" >/dev/null 2>&1; then
+# The checks' machine and a Sprite carry one toolchain: the list is
+# .github/ci/packages.txt, which the Dockerfile reads too.
+packages=$(grep -v '^#' "$root/.github/ci/packages.txt" | tr '\n' ' ')
+missing=$(for p in $packages; do
+    dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' || printf '%s ' "$p"
+done)
+if [ -n "$missing" ]; then
     sudo apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-        "llvm-$major-dev" "clang-$major" \
-        "lld-$major" wasi-libc "libclang-rt-$major-dev-wasm32" wabt binaryen
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
 fi
 
 # THE TREE SPELLS ITS LLVM ROOT AS ${LLVM_PREFIX} and defaults it to the

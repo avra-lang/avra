@@ -1,12 +1,13 @@
 #!/bin/sh
-# A LIVE FIXTURE for tools/sprite-build.sh: killing the local driver
-# leaves no remote process. Runs against one real Sprite, with nothing
-# heavier than `sleep` there.
+# A LIVE FIXTURE for tools/sprite-build.sh: a run never outlives its
+# driver. Runs against one real Sprite, with nothing heavier than `sleep`
+# there — one of them in a session of its own, as the watchdog's child is.
 #
 #   sh tools/sprite_build_orphan_test.sh <sprite>
 #
-# TERM: the driver's own trap stops the remote group. KILL: no trap
-# runs, so the next sprite-build to reach the Sprite stops it.
+# TERM: the driver's own trap stops the run. KILL: no trap runs, and the
+# run's keeper on the Sprite stops it once the session is gone. LIMIT:
+# the keeper ends a run past its time, and the status says so.
 set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -20,7 +21,7 @@ ok() { total=$((total + 1)); echo "ok    $1"; }
 bad() { total=$((total + 1)); failed=$((failed + 1)); echo "FAIL  $1"; }
 
 # How many remote processes run `sleep <n>`.
-remote_count() { timeout -k 1 30 sprite -s "$s" exec --no-port-forward -- sh -c "pgrep -fc '^sleep $1\$' || :" 2>/dev/null | tr -d '[:space:]'; }
+remote_count() { timeout -k 1 30 sprite -s "$s" exec --no-port-forward --no-stdin -- sh -c "pgrep -fc '^sleep $1\$' || :" 2>/dev/null | tr -d '[:space:]'; }
 # Waits up to $2 seconds for `remote_count $1` to equal $3.
 await() {
     i=0
@@ -33,13 +34,13 @@ await() {
 }
 started() {
     n=$1
-    sh "$sb" "$s" "$tree" -- sleep "$n" > "/tmp/avra-orphan-$tag-$n.log" 2>&1 &
+    sh "$sb" "$s" "$tree" -- sh -c "setsid sleep $n & sleep $n" > "/tmp/avra-orphan-$tag-$n.log" 2>&1 &
     echo $!
 }
 
 t=$((40000 + tag % 10000))
 p="$(started "$t")"
-if await "$t" 240 1; then
+if await "$t" 240 2; then
     if sh "$sb" "$s" "$tree" -- true > "/tmp/avra-orphan-$tag-beside.log" 2>&1; then
         ok "sprite-build: a second run beside a live one from this host runs"
     else
@@ -58,23 +59,26 @@ fi
 
 k=$((t + 1))
 p="$(started "$k")"
-if await "$k" 240 1; then
+if await "$k" 240 2; then
     for c in $(pgrep -P "$p"); do kill -KILL "$c" 2>/dev/null; done
     kill -KILL "$p"
-    sleep 5
-    if [ "$(remote_count "$k")" = 1 ]; then
-        sh "$sb" "$s" "$tree" -- true > "/tmp/avra-orphan-$tag-next.log" 2>&1
-        if await "$k" 60 0 && grep -q "owner is gone" "/tmp/avra-orphan-$tag-next.log"; then
-            ok "sprite-build: after a KILL, the next run on the Sprite stops the orphan"
-        else
-            bad "sprite-build: sleep $k survived the next run on $s"
-        fi
+    if await "$k" 120 0; then
+        ok "sprite-build: after a KILL of the driver, the Sprite's keeper stops the run"
     else
-        bad "sprite-build: sleep $k was already gone — the KILL case proved nothing"
+        bad "sprite-build: sleep $k survived its driver's KILL on $s"
     fi
 else
     bad "sprite-build: sleep $k never started on $s"
     kill -KILL "$p" 2>/dev/null
+fi
+
+l=$((t + 2))
+AVRA_SP_RUN_S=5 sh "$sb" "$s" "$tree" -- sleep "$l" > "/tmp/avra-orphan-$tag-limit.log" 2>&1
+st=$?
+if [ "$st" = 124 ] && grep -q "past its 5s limit" "/tmp/avra-orphan-$tag-limit.log" && [ "$(remote_count "$l")" = 0 ]; then
+    ok "sprite-build: a run past its limit is stopped, with 124 and the reason"
+else
+    bad "sprite-build: the limit answered $st (see /tmp/avra-orphan-$tag-limit.log)"
 fi
 
 echo "----------------------------------------"

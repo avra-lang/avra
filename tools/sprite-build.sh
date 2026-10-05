@@ -3,53 +3,46 @@
 # Sprite, never the machine that holds the session.
 #
 #   sh tools/sprite-build.sh <sprite> <worktree> [--pull <remote>:<local>]... -- <command...>
+#   sh tools/sprite-build.sh --stop <sprite> <run...>
 #
 # ONE PERSISTENT TREE PER (sprite, worktree slug):
 # /home/sprite/avra-build/$slug/tree is synced IN PLACE by rsync over
 # `sprite exec` (tools/sprite-rsh.sh) — an edit moves only what changed
 # and a file the worktree no longer has is deleted. build/, .avra-cache/,
 # .claude/ and .git are never touched by the sync, at any depth, so a
-# warm build/ and test cache survive every run. Only one build may touch a given persistent tree
-# at a time — nothing here serialises concurrent callers.
+# warm build/ and test cache survive every run. One run stands in a tree
+# at a time; tools/sp's tree lease is what holds that.
 #
 # A SHARED COMPILER CACHE PER SPRITE, keyed by the hash of the
 # COMPILER'S OWN SOURCE (runtime/, backend/, bootstrap/, the Makefile,
 # packages/cli and the std packages its `use` graph actually reaches —
-# never every packages/std-*, and never a package's tests/, which
-# `avra build` never reads), lives under /home/sprite/avra-compilers/
-# <hash>/. A stale or missing build/avra is restored from that cache,
-# or — when this exact hash was never cached — ADVANCED AND CACHED,
-# BEFORE the caller's command runs: a stale build/avra already on disk
-# would otherwise pass the caller's own `test -x build/avra` and the
-# command would test the PREVIOUS compiler. THE FIXED-POINT INVARIANT:
-# only a compiler built by `make avra` run twice more (or `make
-# bootstrap` from nothing) — the same two-generation climb `make
-# bootstrap`'s gen-2 takes from the seed — is cached; a binary that
-# fails either build is never stored. Not verified by diffing the
-# binary: this toolchain's linker embeds a build id that differs
-# between two builds of the same source, so byte equality would refuse
-# a real fixed point.
+# never a package's tests/, which `avra build` never reads), lives under
+# /home/sprite/avra-compilers/<hash>/. A stale or missing build/avra is
+# restored from that cache, copied from a Sprite that holds it, or built
+# and cached, BEFORE the caller's command runs — a stale build/avra would
+# otherwise answer for the previous compiler.
 #
-# ONE RUN, ONE PROCESS GROUP: every command started on the Sprite runs
-# under `setsid`, its group id in /home/sprite/avra-runs/<run>/pid beside
-# its owner (this host and pid). Leaving by a signal, or losing the
-# connection, stops that group; a run whose owner is gone is stopped by
-# the next sprite-build to reach the Sprite. `--stop <sprite> <run...>`
-# is that stop on its own.
+# THE SPRITE'S HALF IS tools/sprite-remote.sh, carried in each call: a
+# run is marked, kept and stopped there, and never outlives this process.
+# Every call is bounded: a Sprite is waited for AVRA_SP_WAKE_S (90)
+# seconds to wake, and a run gets AVRA_SP_RUN_S (1800) seconds.
 #
-# The command runs in the synced tree and its exit status comes
-# straight back; a --receipt is written for the CALLER's worktree,
-# never the Sprite's copy, which carries no git history.
+# EXIT 3 WITH "unreached" IN $AVRA_SB_VERDICT says the Sprite failed
+# before the command began — the caller may take another Sprite. Any
+# other status is the command's own.
 set -eu
 
-# Stops each named run's process group on the Sprite and removes its
-# directory; a dropped connection is retried once.
-stop_body='for r in "$@"; do d=/home/sprite/avra-runs/$r; p=$(cat "$d/pid" 2>/dev/null) && { kill -TERM -"$p" 2>/dev/null; sleep 2; kill -KILL -"$p" 2>/dev/null; }; rm -rf "$d"; done'
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/sprite-lib.sh"
+wake_s=${AVRA_SP_WAKE_S:-90}
+run_s=${AVRA_SP_RUN_S:-1800}
+
+# Stops each named run on the Sprite; a dropped connection is retried once.
 stop_runs() {
     s=$1
     shift
     for _ in 1 2; do
-        timeout -k 1 30 sprite -s "$s" exec --no-port-forward -- sh -c "$stop_body" avra-stop "$@" >/dev/null 2>&1 && return 0
+        remote "$s" 30 stop "$@" >/dev/null 2>&1 && return 0
         sleep 2
     done
     echo "sprite-build: could not stop run(s) $* on $s" >&2
@@ -66,10 +59,6 @@ worktree=
 pulls=
 receipt=
 prebuild=
-# A worktree may predate the provisioning script, so the helper carries
-# its own copy and seeds it into the synced tree.
-here=$(cd "$(dirname "$0")" && pwd)
-provision_script="$here/sprite-provision.sh"
 while [ "$#" -gt 0 ]; do
     case $1 in
         --pull) pulls="$pulls $2"; shift 2 ;;
@@ -87,20 +76,25 @@ done
 worktree=$(cd "$worktree" && pwd)
 slug=$(basename "$worktree")
 
-info_script=$(mktemp -t avra-sprite-info.XXXXXX)
-run_script=$(mktemp -t avra-sprite-run.XXXXXX)
 host=$(hostname -s)
 run="$host-$$-$(date +%s)"
+owner="$host $$ $(born $$)"
 hash_lock=
 started=
 xpid=
+# The Sprite failed before the command began.
+unreached() {
+    echo "sprite-build: $sprite: $*" >&2
+    [ -z "${AVRA_SB_VERDICT:-}" ] || echo unreached > "$AVRA_SB_VERDICT"
+    exit 3
+}
 # Leaving with a remote run still standing stops it from a detached
 # process, so a KILL that follows this one's TERM cannot cancel the stop.
 leave() {
-    rm -f "$info_script" "$run_script"
     [ -z "$hash_lock" ] || rm -rf "$hash_lock"
-    [ -z "$xpid" ] || kill "$xpid" 2>/dev/null || :
-    [ -z "$started" ] || nohup sh "$here/sprite-build.sh" --stop "$sprite" "$run" >/dev/null 2>&1 &
+    # The exec's own client, then the shell that waits on it.
+    [ -z "$xpid" ] || { pkill -TERM -P "$xpid"; kill "$xpid"; } 2>/dev/null || :
+    [ -z "$started" ] || nohup sh "$here/sprite-build.sh" --stop "$sprite" "$started" >/dev/null 2>&1 &
 }
 trap leave EXIT
 trap 'exit 129' HUP
@@ -155,24 +149,7 @@ compiler_hash() {
 }
 compiler_hash=$(compiler_hash)
 
-remote="/home/sprite/avra-build/$slug/tree"
-info_remote="/home/sprite/.avra-info-$slug.sh"
-run_remote="/home/sprite/.avra-run-$slug.sh"
-grouped="AVRA_RUN='$run' AVRA_RUN_OWNER='$host $$' setsid -w"
-
-# A Sprite waking from sleep answers before its home is mounted, and a
-# first exec can drop its connection: wait until /home/sprite stands.
-sprite_ready() {
-    i=0
-    while [ $i -lt 30 ]; do
-        sprite -s "$sprite" exec --no-port-forward -- sh -c 'test -d /home/sprite' >/dev/null 2>&1 && return 0
-        i=$((i + 1))
-        sleep 4
-    done
-    echo "sprite-build: $sprite never readied /home/sprite after 120s" >&2
-    return 1
-}
-sprite_ready || exit 3
+tree="/home/sprite/avra-build/$slug/tree"
 
 # A dropped connection is retried twice, each retry said in one line.
 retried() {
@@ -187,242 +164,48 @@ retried() {
     done
 }
 
-# A pushed file counts only once the Sprite holds it.
-push() {
-    sprite -s "$sprite" file push "$1" "$2" >/dev/null &&
-        sprite -s "$sprite" exec --no-port-forward -- test -s "$2" >/dev/null 2>&1
-}
-
 sync_tree() {
-    rsync -az --delete -i -e "sh $here/sprite-rsh.sh" \
+    timeout -k 2 600 rsync -az --delete -i -e "sh $here/sprite-rsh.sh" \
         --exclude build/ --exclude .avra-cache/ --exclude .claude/ --exclude .git \
-        $sync_paths "$sprite:$remote/"
+        $sync_paths "$sprite:$tree/"
 }
 
-retried "the provisioning push" push "$provision_script" "/home/sprite/.avra-provision.sh" || exit 3
+# ONE ASK READIES THE SPRITE AND READS IT: awake, its home standing, the
+# checks' toolchain installed, what its cache holds and which runs stand.
+info=$(woken "$sprite" "$wake_s" ready "$compiler_hash" $ci_packages) ||
+    unreached "did not answer within ${wake_s}s"
+field() { printf '%s\n' "$info" | sed -n "s/^$1=//p"; }
+[ "$(field home)" = yes ] || unreached "/home/sprite does not stand"
+[ "$(field provisioned)" = yes ] || unreached "the toolchain is incomplete: $(field unprovisioned)"
+cache_flag=$(field holds)
 
-# RT1: what the persistent tree and the shared cache already hold, so
-# the push and the compiler restore can each be skipped when nothing
-# would change. Marks live under build/, which the sync never scans.
-cat > "$info_script" <<'SCRIPT'
-#!/bin/sh
-set -eu
-remote=$1
-chash=$2
-mkdir -p "$remote/build"
-printf 'BUILD:%s\n' "$(cat "$remote/build/.avra-compiler-hash" 2>/dev/null || echo none)"
-if [ -x "/home/sprite/avra-compilers/$chash/avra" ]; then
-    printf 'CACHE:yes\n'
-else
-    printf 'CACHE:no\n'
-fi
-for o in /home/sprite/avra-runs/*/owner; do
-    [ -f "$o" ] || continue
-    printf 'RUN:%s %s\n' "$(basename "$(dirname "$o")")" "$(cat "$o")"
-done
-SCRIPT
-retried "the info push" push "$info_script" "$info_remote" || exit 3
-info=$(sprite -s "$sprite" exec --no-port-forward -- bash -lc "sh '$info_remote' '$remote' '$compiler_hash'" 2>/dev/null) || info=""
-build_marker=$(printf '%s\n' "$info" | sed -n 's/^BUILD://p')
-cache_flag=$(printf '%s\n' "$info" | sed -n 's/^CACHE://p')
-[ -n "$build_marker" ] || build_marker=none
-[ -n "$cache_flag" ] || cache_flag=no
-
-# Runs this host started whose owner is gone: stopped before this one starts.
-orphans=$(printf '%s\n' "$info" | sed -n 's/^RUN://p' | while read -r r h p; do
-    if [ "$h" = "$host" ] && ! kill -0 "$p" 2>/dev/null; then printf '%s ' "$r"; fi
-done)
+# A run this host began whose owner is gone, or one whose processes have
+# ended, is stopped by every caller that reaches the Sprite.
+orphans=$(field run | orphaned)
 if [ -n "$orphans" ]; then
     echo "sprite-build: $sprite: stopping runs whose owner is gone: $orphans" >&2
     stop_runs "$sprite" $orphans || :
 fi
 
+sync_paths=$(cd "$worktree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
+    backend runtime packages tools bootstrap corpus .github/ci; do [ ! -e "$p" ] || printf "%s " "$p"; done)
+echo "sprite-build: $sprite: sync" >&2
+sync_t0=$(date +%s)
+sx "$sprite" 30 mkdir -p "$tree/build" || unreached "could not make the tree"
+changes=$(cd "$worktree" && retried "the rsync" sync_tree) || unreached "the tree did not sync"
+sync_state=unchanged; [ -n "$changes" ] && sync_state=synced
+sync_s=$(( $(date +%s) - sync_t0 ))
+build_marker=$(sx "$sprite" 30 cat "$tree/build/.avra-compiler-hash" 2>/dev/null) || build_marker=none
+
 do_restore=0; [ "$cache_flag" = yes ] && [ "$build_marker" != "$compiler_hash" ] && do_restore=1
 do_store=0; [ "$cache_flag" = no ] && do_store=1
 do_prebuild=0; [ -n "$prebuild" ] && do_prebuild=1
-
-# The doctrine files travel with the source: the gate reads them as data
-# (tools/idioms.baseline, tools/cited.py). rsync is its own no-op check.
-sync_paths=$(cd "$worktree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
-    backend runtime packages tools bootstrap corpus; do [ ! -e "$p" ] || printf "%s " "$p"; done)
-echo "sprite-build: $sprite: sync" >&2
-sync_t0=$(date +%s)
-changes=$(cd "$worktree" && retried "the rsync" sync_tree) || exit 3
-sync_state=unchanged; [ -n "$changes" ] && sync_state=synced
-sync_s=$(( $(date +%s) - sync_t0 ))
-
-# RT2: sync (if needed), idempotent provisioning, compiler restore or
-# a verified store, then the caller's own command, timed. Nothing here
-# writes to the command's stdout or stderr — outcomes land in
-# build/.avra-run-info, read back after.
-cat > "$run_script" <<'SCRIPT'
-#!/bin/sh
-set -eu
-remote=$1; chash=$2; do_restore=$3; do_store=$4; do_prebuild=$5
-shift 5
-
-# This run's group, for whoever must stop it: started under setsid, so
-# this shell's pid is the group's id.
-rd=/home/sprite/avra-runs/$AVRA_RUN
-mkdir -p "$rd"
-echo $$ > "$rd/pid"
-printf '%s\n' "$AVRA_RUN_OWNER" > "$rd/owner"
-trap 'rm -rf "$rd"' EXIT
-
-mkdir -p "$remote/build"
-cd "$remote"
-rm -f build/.avra-run-info
-
-# Idempotent toolchain provisioning: a Sprite is a stock Ubuntu image.
-test -f tools/sprite-provision.sh || { mkdir -p tools; cp /home/sprite/.avra-provision.sh tools/sprite-provision.sh; }
-test -f /usr/lib/llvm-22/lib/libLLVM.so || sh tools/sprite-provision.sh >/dev/null 2>&1 || true
-
-# THE COMPILER'S OWN OBJECT SET, read from the Makefile's COMPILER_OBJS
-# — the runtime's objects (globbed, one per runtime/*.c, as the
-# Makefile globs them) plus its five named ones — never a wildcard
-# over build/, which would sweep in unrelated packages' objects too.
-objs="build/avra build/libavra_runtime.a build/avra_hot.bc build/avra_hot.inc"
-for f in runtime/*.c; do
-    [ -f "$f" ] || continue
-    stem=$(basename "$f" .c)
-    objs="$objs build/$stem.o build/$stem.sha build/$stem.d"
-done
-for stem in llvm_wrapper ffi std_io std_process std_time; do
-    objs="$objs build/$stem.o build/$stem.sha build/$stem.d"
-done
-
-compile_t0=$(date +%s)
-if [ "$do_restore" = 1 ]; then
-    cache="/home/sprite/avra-compilers/$chash"
-    if [ -d "$cache" ]; then
-        for f in $objs; do
-            b=$(basename "$f")
-            [ -e "$cache/$b" ] || continue
-            cp -p "$cache/$b" "$f"
-            touch "$f"
-        done
-        printf '%s' "$chash" > build/.avra-compiler-hash
-    fi
-fi
-
-# ONLY A FIXED POINT IS CACHED: `make bootstrap` reaches gen-2 by
-# recovering from the seed and then running `make avra` twice, so
-# running `make avra` twice more from an EXISTING build/avra reaches
-# the same generation relative to the current source — the first pass
-# compiles the new source with a compiler that may still be one
-# generation behind it, the second compiles it with a compiler that
-# already reflects it. With no build/avra at all, `make bootstrap` is
-# that same climb from the seed. NOT VERIFIED BY DIFFING THE BINARY:
-# this toolchain's linker embeds a build id (or similar) that differs
-# byte-for-byte between two otherwise-identical builds — confirmed by
-# building an unchanged tree twice and comparing, same length, first
-# difference at byte 321 — so byte equality is a false negative here,
-# not a stronger check.
-advance_and_cache() {
-    set +e
-    # THE SHIM'S 4 GB WRECK-CAP IS TOO TIGHT FOR A LARGE COMPILER BUILD:
-    # `./avra build packages/cli` peaked 4003 MB and was killed at 4000, so
-    # the gate's cold build never finished. The BUILD alone gets a higher
-    # ceiling here; general runs on the shared Mac keep the tighter default
-    # (two compilers beside a desktop panicked a 16 GB box). The Sprite has
-    # 8 GB; `AVRA_BUILD_CAP_MB` overrides.
-    export AVRA_CAP_MB="${AVRA_BUILD_CAP_MB:-7000}"
-    if [ -x build/avra ]; then
-        make -s avra > "/tmp/.avra-adv-$$" 2>&1
-        a1=$?
-        make -s avra >> "/tmp/.avra-adv-$$" 2>&1
-        a2=$?
-        # A standing compiler that cannot build this source may be a
-        # broken generation; the seed climbs from nothing.
-        if [ "$a1" != 0 ] || [ "$a2" != 0 ]; then
-            make bootstrap >> "/tmp/.avra-adv-$$" 2>&1
-            a1=$?
-            a2=$a1
-        fi
-    else
-        make bootstrap > "/tmp/.avra-adv-$$" 2>&1
-        a1=$?
-        a2=$a1
-    fi
-    set -e
-    if [ "$a1" = 0 ] && [ "$a2" = 0 ] && [ -x build/avra ]; then
-        cache="/home/sprite/avra-compilers/$chash"
-        tmp="/home/sprite/avra-compilers/.tmp-$chash-$$"
-        rm -rf "$tmp"
-        mkdir -p "$tmp"
-        for f in $objs; do
-            [ -e "$f" ] || continue
-            cp -p "$f" "$tmp/$(basename "$f")"
-        done
-        rm -rf "$cache"
-        mv "$tmp" "$cache"
-        printf '%s' "$chash" > build/.avra-compiler-hash
-        store_result=built
-    else
-        store_result=unverified
-        echo "sprite-build: this tree's compiler does not build:" >&2
-        grep -aE 'error|Error' "/tmp/.avra-adv-$$" | head -20 >&2
-    fi
-    rm -f "/tmp/.avra-adv-$$"
-}
-
-# THE COMMAND MUST RUN ON THE COMPILER IT IS TESTING: a hash the cache
-# does not hold yet is advanced and cached BEFORE the timed run, not
-# after — a `build/avra` already on disk from a stale hash would
-# otherwise pass `test -x build/avra` in the caller's own command and
-# the command would run on the PREVIOUS compiler.
-store_result=none
-if [ "$do_store" = 1 ]; then
-    advance_and_cache
-    # A source that does not build gets no command: an older compiler
-    # standing in for it answers about a different program.
-    if [ "$store_result" != built ]; then
-        printf 'STORE:%s\n' "$store_result" > build/.avra-run-info
-        exit 3
-    fi
-fi
-
-if [ "$do_prebuild" = 1 ]; then
-    test -x build/avra || make avra
-fi
-
-compile_s=$(( $(date +%s) - compile_t0 ))
-
-# THE TIMED RUN: the caller's own command, isolated from our own
-# bookkeeping below — nothing past this point writes to its stdout or
-# stderr.
-set +e
-start=$(date +%s.%N)
-"$@"
-status=$?
-end=$(date +%s.%N)
-set -e
-wall=$(awk -v a="$start" -v b="$end" 'BEGIN{printf "%.1f", b-a}')
-
-# A SECOND ATTEMPT ONLY COVERS A COMMAND THAT BUILT THE COMPILER
-# ITSELF: the pre-command advance above already cached this hash on
-# the ordinary path, so this runs only when that attempt failed and
-# the caller's own command (its own `make bootstrap` fallback, say)
-# leaves a build/avra the cache still does not hold.
-if [ "$do_store" = 1 ] && [ "$store_result" != built ] && [ -x build/avra ]; then
-    advance_and_cache
-fi
-
-{
-    printf 'WALL:%s\n' "$wall"
-    printf 'STORE:%s\n' "$store_result"
-    printf 'COMPILE:%s\n' "$compile_s"
-} > build/.avra-run-info
-
-exit "$status"
-SCRIPT
-retried "the run-script push" push "$run_script" "$run_remote" || exit 3
 
 # BUILD ONCE, COPY EVERYWHERE: a hash this Sprite lacks is copied from a
 # pool Sprite whose cache holds it, and built here only when none does.
 # The hash's lock makes every other caller wait for that one build, then copy.
 cache_root=/home/sprite/avra-compilers
-holds() { timeout -k 1 8 sprite -s "$1" exec --no-port-forward -- test -x "$cache_root/$compiler_hash/avra" >/dev/null 2>&1; }
+holds() { sx "$1" 10 test -x "$cache_root/$compiler_hash/avra" >/dev/null 2>&1; }
 donor() {
     pool=$(sh "$here/sp" --pool)
     found=$(mktemp -d -t avra-sp-donor.XXXXXX)
@@ -434,14 +217,28 @@ donor() {
     done
     # The first holder to answer wins; a sleeping or unreachable Sprite is never waited out.
     n=0
-    while [ "$n" -lt 20 ] && [ -z "$(ls "$found")" ]; do sleep 0.5; n=$((n + 1)); done
-    ls "$found" | head -n 1
+    while [ "$n" -lt 20 ] && [ -z "$(find "$found" -type f)" ]; do sleep 0.5; n=$((n + 1)); done
+    find "$found" -type f | head -n 1 | sed 's|.*/||'
     kill $pids 2>/dev/null || :
     rm -rf "$found"
 }
+# The one exec that reads stdin: the archive is its input.
 copy_from() {
-    sprite -s "$1" exec --no-port-forward -- tar -C "$cache_root" -czf - "$compiler_hash" \
-        | sprite -s "$sprite" exec --no-port-forward -- sh -c "mkdir -p '$cache_root' && tar -C '$cache_root' -xzf -"
+    sx "$1" 300 tar -C "$cache_root" -czf - "$compiler_hash" |
+        timeout -k 2 300 "$sprite_cli" -s "$sprite" exec --no-port-forward -- sh -c "mkdir -p '$cache_root' && tar -C '$cache_root' -xzf -"
+}
+# One run of the Sprite's half, its status the run's; `started` names it
+# for `leave` until its own report says it ended.
+run_remote() {
+    started=$1
+    rr_restore=$2 rr_store=$3 rr_prebuild=$4
+    shift 4
+    remote "$sprite" $((run_s + 90)) run "$started" "$owner" "$run_s" "$tree" "$compiler_hash" "$rr_restore" "$rr_store" "$rr_prebuild" "$@" &
+    xpid=$!
+    rr=0
+    wait "$xpid" || rr=$?
+    xpid=
+    return "$rr"
 }
 copied=
 prebuilt=
@@ -449,12 +246,12 @@ pre_s=
 if [ "$do_store" = 1 ]; then
     lock="/tmp/avra-sp-hash-$compiler_hash"
     until mkdir "$lock" 2>/dev/null; do
-        owner=$(cat "$lock/pid" 2>/dev/null || echo)
-        [ -z "$owner" ] || kill -0 "$owner" 2>/dev/null || rm -rf "$lock"
         sleep 3
+        { read -r lp lb < "$lock/owner"; } 2>/dev/null || lp=
+        owner_live "$lp" "${lb:-}" || rm -rf "$lock"
     done
     hash_lock=$lock
-    echo $$ > "$hash_lock/pid"
+    echo "$$ $(born $$)" > "$hash_lock/owner"
     pre_t0=$(date +%s)
     echo "sprite-build: $sprite: compiler — looking for a Sprite that holds it" >&2
     from=$(donor)
@@ -464,11 +261,7 @@ if [ "$do_store" = 1 ]; then
         do_store=0
         do_restore=1
     else
-        started=1
-        sprite -s "$sprite" exec --no-port-forward -- bash -lc "$grouped sh '$run_remote' '$remote' '$compiler_hash' 0 1 0 true" >/dev/null 2>&1 &
-        xpid=$!
-        wait "$xpid" || :
-        xpid=
+        run_remote "$run-compiler" 0 1 0 true >/dev/null || :
         if holds "$sprite"; then
             started=
             prebuilt=built
@@ -483,32 +276,33 @@ fi
 [ -z "$copied" ] || echo "sprite-build: $sprite: compiler copied from $copied" >&2
 echo "sprite-build: $sprite: cmd" >&2
 status=0
-remote_run_cmd="$grouped sh '$run_remote' '$remote' '$compiler_hash' '$do_restore' '$do_store' '$do_prebuild' \"\$@\""
-started=1
-sprite -s "$sprite" exec --no-port-forward -- bash -lc "$remote_run_cmd" avra-sprite-run "$@" &
-xpid=$!
-wait "$xpid" || status=$?
-xpid=
+run_remote "$run" "$do_restore" "$do_store" "$do_prebuild" "$@" || status=$?
 
-# RT3: the run's own report — timing and the store outcome — never
-# read from stdout or stderr, which stayed the command's alone.
-run_info=$(sprite -s "$sprite" exec --no-port-forward -- bash -lc "cat '$remote/build/.avra-run-info' 2>/dev/null" 2>/dev/null) || run_info=""
+# The run's own report — timing and the store outcome — never read from
+# stdout or stderr, which stayed the command's alone.
+run_info=$(retried "the report" sx "$sprite" 30 cat "$tree/build/.avra-run-info" 2>/dev/null) || run_info=""
 wall=$(printf '%s\n' "$run_info" | sed -n 's/^WALL://p')
 store_result=$(printf '%s\n' "$run_info" | sed -n 's/^STORE://p')
 compile_s=$(printf '%s\n' "$run_info" | sed -n 's/^COMPILE://p')
 [ -n "$compile_s" ] || compile_s="?"
 [ -n "$wall" ] || wall="?"
 [ -n "$store_result" ] || store_result=none
-# The run's own report arrived, so its group has ended; with none, the
-# connection may have dropped under a run still going, and `leave` stops it.
-[ -z "$run_info" ] || started=
+# A run that reported has ended. One that did not was cut off — its
+# connection dropped, or this side was — and `leave` stops what is left.
+if [ -n "$run_info" ]; then
+    started=
+else
+    [ "$status" != 0 ] || status=1
+    echo "sprite-build: $sprite: the run never reported — its connection dropped (exit $status)" >&2
+    [ -z "${AVRA_SB_VERDICT:-}" ] || echo dropped > "$AVRA_SB_VERDICT"
+fi
 
 for spec in $pulls; do
     from=${spec%%:*}
     to=${spec#*:}
-    if sprite -s "$sprite" exec --no-port-forward -- test -e "$remote/$from" 2>/dev/null; then
+    if sx "$sprite" 30 test -e "$tree/$from" 2>/dev/null; then
         mkdir -p "$(dirname "$to")"
-        sprite -s "$sprite" file pull "$remote/$from" "$to" >/dev/null
+        timeout -k 2 120 "$sprite_cli" -s "$sprite" file pull "$tree/$from" "$to" >/dev/null
     fi
 done
 

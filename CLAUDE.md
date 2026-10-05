@@ -1947,9 +1947,20 @@ Runtime facts, ours to ratify:
 - HEAVY RUNS GO ON SPRITES: `AVRA_SP_TREE=$PWD sh tools/sp <cmd>`, or
   `sh tools/sp -p "a" "b"` for parallel. Bootstraps, whole suites and
   censuses run there; the Mac keeps quick targeted checks and anything
-  macOS-only. sp picks the idlest awake Sprite, syncs by rsync, copies a
-  built compiler, and waits for a slot rather than falling back to the
-  Mac.
+  macOS-only. sp takes the idlest answering Sprite, syncs by rsync,
+  copies a built compiler, and waits for a slot rather than falling back
+  to the Mac — for fifteen minutes, then it leaves with 75 and the reason.
+  THE POOL TAKES ONE RUN PER WORKTREE ON A SPRITE, two runs a Sprite, so
+  a `-p` batch wants a Sprite a command. `sh tools/sp --health` shows
+  every Sprite and lease in seconds; `sh tools/sp --repair` reaps,
+  provisions and prunes. A SPRITE SLEEPS THIRTY SECONDS AFTER ITS LAST
+  COMMAND and wakes in seconds or in minutes: one that misses its probe
+  is left out while a waker goes on asking, and nobody waits on it while
+  another has room. A RUN NEVER OUTLIVES ITS CALLER — the Sprite's own
+  keeper stops it when the caller is gone, past its time, or when the
+  machine nears its memory floor, since a Sprite has 8 GB and no swap.
+  One that answers nobody for minutes is the provider's to lose: its
+  filesystem did not survive, and it is destroyed and created again.
 - A BRANCH IS REBASED ONTO `origin/main` ONLY, never onto another
   unlanded branch: that lands the other branch's work unverified. A
   branch built on a stale local main moves with `git rebase --onto
