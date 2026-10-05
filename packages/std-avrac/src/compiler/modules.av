@@ -135,6 +135,15 @@ impl Workspace {
         [self.canonical(qualified(module_path(u.path), from)) for u in use_lines(self.parsed(self.file_id(path)))]
     }
 
+    /// A PROGRAM'S DOORS: what its host may call by name — the `export fn`s
+    /// its entry file declares, and those of the modules that file imports.
+    /// The entry's `use` lines are the whole of it: an export deeper in the
+    /// closure is a module's visibility, never the host's.
+    fn doors(entry: string) -> List<DeclId> {
+        let files = [entry].concat(flatten([self.module_files(m) for m in self.imported_by(entry)]))
+        flatten([self.decls.doors_of_file(self.file_id(f)) for f in distinct(files)])
+    }
+
     /// A module under its ONE name: the root package's own carry no package
     /// head, however a `use` line spelled them.
     fn canonical(m: ModulePath) -> ModulePath {

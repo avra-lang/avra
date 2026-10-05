@@ -228,13 +228,18 @@ WASM_TARGET ?= $(firstword $(foreach t,$(WASM_TRIPLES),$(if $(wildcard $(shell $
 WASM_AR ?= $(firstword $(wildcard $(LLVM_PREFIX)/bin/llvm-ar) ar)
 WASI_SYSROOT ?=
 WASM_EMULATED := -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_GETPID
+# A MODULE CARRIES NO INSTRUMENTS: the page and the node runner hand a module
+# no environment to switch one on with, and a wasm frame has no return address
+# for one to name a site by. `make -B WASM_INSTRUMENTS=1 wasm-runtime` builds
+# the archive with them, for a host that passes an environment.
+WASM_INSTRUMENTS ?= 0
 WASM_RUNTIME_SRCS := $(filter-out runtime/avra_fiber.c runtime/avra_cores.c,$(wildcard runtime/*.c))
 WASM_RUNTIME_OBJS := $(patsubst runtime/%.c,build/wasm32/%.o,$(WASM_RUNTIME_SRCS))
 WASM_RUNTIME_LIB := build/wasm32/libavra_runtime.a
 
 build/wasm32/%.o: runtime/%.c
 	@mkdir -p build/wasm32
-	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
+	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -DAVRA_INSTRUMENTS=$(WASM_INSTRUMENTS) -Iruntime -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
 
 # A PACKAGE'S C FOR WASM, from the paths its manifest's `wasm_objects` names.
 # A package opts in by naming its wasm objects; one that names none is refused

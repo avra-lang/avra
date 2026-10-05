@@ -155,7 +155,7 @@ Five attempts to lift a handler into a generated message failed.
 `tree/` is the neutral tree and what is read off it whatever draws it
 (`Node`, `View`, identity, the URL, the controls on a screen, the
 readable outline); `realize/` is the targets, one directory each
-(`html`, `dom`, `tui`, and the draw-only `canvas`); `app/` is the loop;
+(`html`, `dom`, `tui`); `app/` is the loop;
 `web/`, `terminal/` and `headless/` are where an app is mounted.
 
 ## `avra dev` — the loop

@@ -132,8 +132,10 @@ export fn home_of(b: Body) -> FileId? { b.file }
 /// body it owns as much as one it only calls. A STATIC this module lays out
 /// names too — a capture-free closure's `Slot.Code` is a body reference as
 /// real as an instruction's, just not one an `Ins` scan would ever see.
-fn refs_of(bodies: List<Body>, statics: List<Static>) -> Refs {
+/// `opened` are bodies the module names outside any instruction.
+fn refs_of(bodies: List<Body>, statics: List<Static>, opened: List<string>) -> Refs {
     mut r = Refs { whole: false, bodies: {}, hosted: {}, statics: {} }
+    for name in opened { r.bodies.set(name, true) }
     // SETS, NOT LISTS: a symbol is NAMED once however many instructions name it, and
     // `carries` asks membership per body, per static and per runtime row. The lists this
     // replaces held one entry per REFERENCING INSTRUCTION and were SCANNED linearly for
@@ -217,14 +219,15 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     let own = [bd for bd in l.fns if which.defines(bd)]
     // the entry is carried beside `l.fns`, and it names what it calls
     let scanned: List<Body> = if which.carries_entry() { own.concat([l.entry]) } else { own }
-    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics) }
+    let wasm = is_wasm(target)
+    let opened: List<string> = if wasm && which.carries_entry() { l.doors } else { [] }
+    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics, opened) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
-    let wasm = is_wasm(target)
     declare_runtime(lc, m)
     declare_externs(lc, m, l.externs, refs, wasm)
     for bd in l.fns {
-        if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd, wasm) }
+        if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd) }
     }
     for st in l.statics {
         if carries(refs, refs.statics, st.name) { emit_static(lc, m, st) }
@@ -240,7 +243,13 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
         }
     }
     if which.carries_entry() {
-        let failure: string? = emit_entry(lc, m, b, l, rt, target)
+        let failure: string? = emit_entry(lc, m, b, l, rt, target) ?? emit_doors(
+            lc,
+            m,
+            b,
+            l,
+            opened,
+        )
         if failure != null { return wreck(m, path, failure!) }
     }
     avra_llvm_dispose_builder(b)
@@ -526,10 +535,8 @@ fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
     }
 }
 
-/// One user fn's declaration, typed from its signature's shapes. An `export fn`
-/// on a non-host target exports it under its WRITTEN name (the LLVM symbol
-/// stays mangled), so a host reaches `avra_event`, never `av_avra_event`.
-fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body, wasm: bool) {
+/// One user fn's declaration, typed from its signature's shapes.
+fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
     declare(
         m,
         mangled(bd.name),
@@ -537,9 +544,50 @@ fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body, wasm: bool) {
         [ll_type_of(lc, types, pt) for pt in bd.params],
         false,
     )
-    if wasm && bd.exported {
-        avra_llvm_set_export(avra_llvm_get_named_function(m, mangled(bd.name)), bd.name)
+}
+
+/// THE DOORS, each a forwarder the entry's module defines and exports under
+/// the door's WRITTEN name (the LLVM symbols stay mangled), so a host reaches
+/// `avra_event`, never `av_avra_event`. A FILE'S OBJECT EXPORTS NOTHING: an
+/// export is a root the linker cannot drop, and a file's object is the same
+/// whatever program links it — so only the program's own module may say what
+/// that program's host calls.
+fn emit_doors(lc: ptr, m: ptr, b: ptr, l: Lowered, opened: List<string>) -> string? {
+    for name in opened {
+        let bd? = l.fns.find((x: Body) -> x.name == name) else { return not_closed(name) }
+        if !door_opened(lc, m, b, l.types, bd) { return "internal compiler error: LLVM verification failed for the door `${name}`" }
     }
+    null
+}
+
+/// One door: the body's own seats handed straight through, its answer handed
+/// straight back. Answers whether the forwarder verifies.
+fn door_opened(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, bd: Body) -> bool {
+    let symbol = "door\$${mangled(bd.name)}"
+    declare(
+        m,
+        symbol,
+        ll_type_of(lc, types, bd.ret),
+        [ll_type_of(lc, types, pt) for pt in bd.params],
+        false,
+    )
+    let f = avra_llvm_get_named_function(m, symbol)
+    avra_llvm_set_export(f, bd.name)
+    avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
+    let body = avra_llvm_get_named_function(m, mangled(bd.name))
+    let seats = avra_llvm_value_array_new(bd.params.length)
+    for j in 0..bd.params.length { avra_llvm_value_array_set(seats, j, avra_llvm_get_param(f, j)) }
+    let answer = avra_llvm_build_call(
+        b,
+        avra_llvm_fn_type_of(body),
+        body,
+        seats,
+        bd.params.length,
+        "answer",
+    )
+    avra_llvm_value_array_free(seats)
+    let _ = avra_llvm_build_ret(b, answer)
+    avra_llvm_verify_function(f) == 0
 }
 
 fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {

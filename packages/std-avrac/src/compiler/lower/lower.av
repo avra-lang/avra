@@ -114,11 +114,6 @@ export type Body = {
     /// its default is the empty list every plain seat already reads
     /// as.
     marks: List<SeatMark> = [],
-    /// A DECLARED `export fn` — part of the unit's interface. A non-host
-    /// target exports it under its written name (`wasm-export-name`), and
-    /// it is lowered as a root even when nothing inside the program calls
-    /// it. A GROWTH: every synthetic body answers false.
-    exported: bool = false,
 }
 
 /// An instantiation `want`, demanded by a body `by` declares.
@@ -177,6 +172,9 @@ export type Lowered = {
     /// Bodies reachable from a `once fn` alone — the backend compiles
     /// them for size, never speed. `cold_bodies` names the members.
     cold: Map<string, bool> = {},
+    /// The program's DOORS, by body name: what its host may call. A
+    /// non-host target exports each under its written name.
+    doors: List<string> = [],
 }
 
 impl Decls {
@@ -279,6 +277,7 @@ export fn lower(a: Analysis) -> Lowered {
             0,
             false,
             false,
+            a.view.decls.doors_of_file(a.view.file),
             [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
@@ -389,11 +388,15 @@ impl Decls {
     /// once per symbol — a memoization identity, never a NAME a
     /// declaration could also wear. The entry asks under
     /// `program_symbol`, which no `module_symbol` can ever spell.
+    /// A DOOR IS A ROOT: a host reaches it by name, so a program lowers
+    /// it even when nothing inside calls it. No other export is one — an
+    /// `export` deeper in the closure is a module's visibility.
     fn union(
         files: List<Analysis>,
         entry: int?,
         every: bool,
         programs: bool,
+        doors: List<DeclId>,
         held_asks: List<Wanted>,
         unit_of: fn(Wanted) -> Unit,
         is_held: fn(FileId) -> bool,
@@ -402,14 +405,8 @@ impl Decls {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
         let at: int = entry ?? 0
-        // AN EXPORTED FN IS A ROOT: it is part of the unit's interface, so a
-        // program lowers it even when nothing inside calls it — a non-host
-        // target exports it under its written name for a host to reach.
-        let bodies: List<Wanted> = if entry == null || every {
-            flatten([declared(a) for a in files])
-        } else {
-            flatten([exported_wants(a) for a in files])
-        }
+        let opened = [self.plain_want(d) for d in doors]
+        let bodies: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { opened }
         // EVERY FILE A PROGRAM: each file's run-time statements lower as
         // a body under the program's own symbol, for a runner's entry to
         // call in turn — every program in one binary
@@ -461,6 +458,33 @@ impl Decls {
             statics: distinct_statics(statics.concat(d.statics)),
             libraries: [],
             cold: cold_bodies(every_body),
+            doors: [w.name for w in opened],
+        }
+    }
+
+    /// Whether a declaration is one a host may call by name: a written
+    /// `export fn` with one body of its own.
+    fn opens_a_door(d: DeclId) -> bool {
+        let x = self.decl(d)
+        if !x.exported || self.is_extern(d) || self.generic(d) { return false }
+        match x.kind {
+            .Fn -> true,
+            .Method or .Default or .Collect or .State or .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Case or .Const or .CollectEnum -> false,
+        }
+    }
+
+    /// The doors one file declares.
+    fn doors_of_file(f: FileId) -> List<DeclId> { [d for d in self.decls_of_file(f) if self.opens_a_door(d)] }
+
+    /// A declaration's own body as a want, under no substitution.
+    fn plain_want(d: DeclId) -> Wanted {
+        Wanted {
+            file: self.decl(d).file,
+            decl: d,
+            name: self.symbol(d),
+            sub: null,
+            seats: [],
+            root: null,
         }
     }
 
@@ -817,24 +841,9 @@ fn declared(a: Analysis) -> List<Wanted> {
     bodies.concat([a.view.decls.instance_unit(d) for d in own if a.view.decls.is_instance(d)])
 }
 
-/// The declared `export fn`s of one file, as roots — a program's interface.
-fn exported_wants(a: Analysis) -> List<Wanted> {
-    let own = a.view.decls.decls_of_file(a.view.file)
-    [wanted_of(a, d) for d in own if a.view.decls.decl(d).exported && lowers_plain(a, d)]
-}
-
 /// One declared body of `a`'s file, as a want — the plain root every caller
 /// that lowers a file's declarations reads.
-fn wanted_of(a: Analysis, d: DeclId) -> Wanted {
-    Wanted {
-        file: a.view.file,
-        decl: d,
-        name: a.view.decls.symbol(d),
-        sub: null,
-        seats: [],
-        root: null,
-    }
-}
+fn wanted_of(a: Analysis, d: DeclId) -> Wanted { a.view.decls.plain_want(d) }
 
 /// A body lowered without an instantiation: one that has no type
 /// parameters of its own or its type's.
@@ -915,7 +924,6 @@ fn lower_fn(
             weak: sub != null,
             memoized: memoized,
             marks: body_marks,
-            exported: a.view.decls.decl(x.id).exported,
         },
         voices: lo.out.voices,
         jobs: lo.jobs,
