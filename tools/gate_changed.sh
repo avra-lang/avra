@@ -1,20 +1,18 @@
 #!/bin/sh
-# THE ENQUEUE GATE — the checks the train runs, in ONE definition, so the
-# local preflight (`tools/work land`) and the train can never be two
-# instruments. A PR's own `test` check only admits it (checks.yml's PR step
-# is "admitted; the train is what gets tested"), so this is the gate that
-# must run BEFORE a branch is pushed.
+# THE TRAIN'S CHECKS, in ONE definition, so a lane (`sh tools/work run sh
+# tools/gate_changed.sh --files … --packages …`) and the train can never
+# be two instruments.
 #
 #   sh tools/gate_changed.sh --refs <base> <head> [--no-keepers]   # a git tree
 #   sh tools/gate_changed.sh --files <f…> --packages <p…>          # no `.git`
 #
-# With the tree's OWN compiler (${AVRA:-build/avra}; `tools/sp` builds it
-# from the branch), it runs:
+# With the tree's OWN compiler (${AVRA:-build/avra}; `tools/work run` builds
+# it from the branch on the lane's Sprite), it runs:
 #   - the static keepers
 #   - `fmt --check` on the changed `.av`
 #   - `check <pkg> --baseline tools/idioms.baseline` on each affected package
 # `--no-keepers` is for a caller that already ran them (the train's own
-# keepers step); the preflight runs them here.
+# keepers step).
 set -eu
 avra=${AVRA:-build/avra}
 files=""
@@ -52,7 +50,7 @@ if [ -z "$files" ] && [ -z "$packages" ]; then
     exit 0
 fi
 if [ "$keepers" = 1 ]; then
-    for k in fingerprints vocab families cited externs dogfooding-rules ui-host ui-host-test ui-board; do
+    for k in fingerprints vocab families cited externs dogfooding-rules ui-host ui-host-test ui-board ui-browser; do
         make -s -o avra "$k" || { echo "gate_changed: keeper $k refused" >&2; exit 1; }
     done
 fi

@@ -112,7 +112,7 @@ RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c))
 RUNTIME_LIB = build/libavra_runtime.a
 
 COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrapper.o \
-                build/ffi.o build/std_io.o build/std_process.o build/std_time.o build/std_net.o
+                build/ffi.o build/std_io.o build/std_io_watch.o build/std_process.o build/std_time.o build/std_net.o
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
@@ -837,7 +837,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # (tools/gate_receipt.sh). A dirty tree writes none, and neither does
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
-# its status is discarded here exactly as sprite-build.sh's call does.
+# its status is discarded here.
 gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test

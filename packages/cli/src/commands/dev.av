@@ -10,8 +10,11 @@
 //! is what a build says, and a compiler that traps takes no server with
 //! it. THE WATCH IS THE BUILD'S OWN INPUTS (`Workspace.build_inputs`):
 //! every file its key covers, asked again each turn, so a file that
-//! arrives is seen. The loop turns on the program's first task and the
-//! server answers on another.
+//! arrives is seen. THE HOST SAYS WHEN TO LOOK: the loop is parked on a
+//! watch over those files (`@std.io.watch`) and costs nothing between
+//! saves; `--interval`, or a host that gives no watch, looks on a clock
+//! instead. The loop turns on the program's first task and the server
+//! answers on another.
 use @std.cli.{CliResult, Runnable, command, option, flag, arg}
 use @std.avrac.compiler.{Workspace, Toolchain}
 use @std.http.frame.{Method}
@@ -21,7 +24,8 @@ use @std.http.server.{server}
 use @std.http.files.{Files, directory}
 use @std.http.sse.{Event, Next, Source, Resume, event_stream, quiet_default}
 use @std.net.{Bell, Listener}
-use @std.io.{read_bytes, read_text, exists, is_dir, stamp}
+use @std.io.{IoError, read_bytes, read_text, exists, is_dir, stamp}
+use @std.io.watch.{Watch, watch}
 use @std.path.{joined_path, file_name}
 use @std.process.{Tool, tool, cmd, inherited}
 use @std.text.{parse_int}
@@ -73,7 +77,7 @@ impl Runnable for DevCmd {
             return 2
         }
         match pointed(path) {
-            .Files -> hosted(args, path, directory("/", fresh_files(path)), () -> false),
+            .Files -> hosted(args, path, directory("/", fresh_files(path)), () -> false, untended),
             .Page -> match page_at(
                 path,
                 if args.option("target") == "" { "wasm" } else { args.option("target") },
@@ -82,7 +86,8 @@ impl Runnable for DevCmd {
                     args,
                     path,
                     p.routes(),
-                    () -> (p.unbuilt() || !args.has_flag("no_watch")) && p.turn(),
+                    () -> p.turn(),
+                    if args.has_flag("no_watch") { untended } else { () -> p.tended(looked_every(args)) },
                 ),
                 .Err(code) -> code,
             },
@@ -93,10 +98,16 @@ impl Runnable for DevCmd {
     }
 }
 
-/// `routes` served for `path` until the command is stopped, `turn` turned
-/// every `--interval`: loopback and port 8787 unless told, and where it
-/// serves said once it does.
-fn hosted(args: CliResult, path: string, routes: List<Route>, turn: fn() -> bool) -> int {
+/// `routes` served for `path` until the command is stopped: `turn` turned
+/// once before it says where it serves — loopback and port 8787 unless
+/// told — and `tend` run beside the server after.
+fn hosted(
+    args: CliResult,
+    path: string,
+    routes: List<Route>,
+    turn: fn() -> bool,
+    tend: fn() -> void,
+) -> int {
     server site {
         host: args.option("host")
         port: parse_int(args.option("port")) ?? default_port
@@ -109,14 +120,20 @@ fn hosted(args: CliResult, path: string, routes: List<Route>, turn: fn() -> bool
     let _ = turn()
     let at = "http://${site.host}:${bound.listener.port}/"
     println("dev: ${path} at ${at} — ${reach_words(bound.listener)}")
-    spawn bound.run(1)
+    let serving = spawn bound.run(1)
     if args.has_flag("open") { opened(at) }
-    let pause = ms(parse_int(args.option("interval")) ?? default_interval)
-    while true {
-        sleep(pause)
-        let _ = turn()
-    }
+    tend()
+    serving.await
     0
+}
+
+/// What is served as it stands has nothing to tend.
+fn untended() {}
+
+/// How often `--interval` asks for a look, or null when the host is to say.
+fn looked_every(args: CliResult) -> Duration? {
+    let every? = parse_int(args.option("interval")) else { return null }
+    ms(every)
 }
 
 /// A directory as a dev server serves one: each file typed by its name,
@@ -153,7 +170,8 @@ export arg path {
 
 const default_port: int = 8787
 
-const default_interval: int = 250
+/// How often a page's sources are looked at where the host gives no watch.
+const unwatched_interval: int = 250
 
 export option port {
     description: "the port to serve on — 0 takes any free one"
@@ -166,8 +184,7 @@ export option host {
 }
 
 export option interval {
-    description: "how often a page's sources are looked at, in milliseconds"
-    default: "${default_interval}"
+    description: "look at a page's sources this often, in milliseconds, instead of watching them"
 }
 
 export flag open {
@@ -302,6 +319,51 @@ impl Page {
         true
     }
 
+    /// THE LOOP, FOR EVER: the page built again whenever a file the
+    /// build reads moves — looked at every `every`, or, with none, when
+    /// the host says one moved.
+    export fn tended(every: Duration?) {
+        let pause? = every else {
+            match watch() {
+                .Ok(w) -> self.woken(w),
+                .Err(e) -> self.clocked(ms(unwatched_interval), e),
+            }
+            return
+        }
+        while true {
+            sleep(pause)
+            let _ = self.turn()
+        }
+    }
+
+    /// AIM, LOOK, THEN PARK: the watch is aimed at what the last build
+    /// read, a turn is made after it is aimed, and the task parks only
+    /// when that turn found nothing moved — so a save between a build
+    /// and the aim is built, and one after it wakes the park. A file
+    /// gone since the build read it is no refusal: the turn sees it. A
+    /// host that will not watch one that stands is said, and the clock
+    /// takes over.
+    fn woken(w: Watch) {
+        while true {
+            let refused = [e for e in w.only([f.path for f in self.watched.get()]) if !(e is .NotFound)]
+            if !self.turn() {
+                let why? = unparked(w, refused) else { continue }
+                w.close()
+                self.clocked(ms(unwatched_interval), why)
+                return
+            }
+        }
+    }
+
+    /// The loop on a clock, said once: the host gave no watch.
+    fn clocked(pause: Duration, why: IoError) {
+        eprintln(not_watched(why.describe().message, pause))
+        while true {
+            sleep(pause)
+            let _ = self.turn()
+        }
+    }
+
     /// `avra build` of the package, as a child: the module it wrote, or
     /// everything the build said.
     fn built() -> Result<Bytes, string> {
@@ -419,7 +481,21 @@ fn dev_tags(module: int) -> string {
     "<meta name=\"avra-module\" content=\"${module}\">\n<script type=\"module\" src=\"./dev.js\"></script>"
 }
 
+/// The task parked on `w` until a watched file moves — or why it could
+/// not be: the first file the host refused to watch, or the watch's own
+/// refusal.
+fn unparked(w: Watch, refused: List<IoError>) -> IoError? {
+    let first? = refused.first() else {
+        return match w.next() { .Ok(_) -> null, .Err(e) -> e }
+    }
+    first
+}
+
 // ── The voices ──
+
+fn not_watched(why: string, pause: Duration) -> string {
+    "dev: this host will not watch the page's sources (${why}) — looking every ${pause.ms} ms instead"
+}
 
 fn build_line(now: Standing, took_ms: int) -> string {
     if now.failure == "" { return "dev: built module ${now.number} — ${now.module.length} bytes in ${took_ms} ms" }

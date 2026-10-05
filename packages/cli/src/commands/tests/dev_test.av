@@ -51,9 +51,23 @@ fn equipped() -> bool { session() != null }
 
 /// What `avra dev` says once it serves `path`, the server stopped after.
 fn served_line(path: string) -> Result<string, ProcessError> {
-    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0", "--interval", "100", path]) with { env: inherited(), timeout: hang_bound() }
+    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0", path]) with { env: inherited(), timeout: hang_bound() }
     mut child = asked.start(Ready.Line(" at http://127.0.0.1:"), ms(120000))?
     let said = child.out
+    child.stop()
+    said
+}
+
+/// What `avra dev` — with `flags` — says of a page whose source is saved
+/// once it serves: everything up to the second module's build, the
+/// server stopped after. A refusal when no second build is said.
+fn followed(flags: List<string>) -> Result<string, ProcessError> {
+    let root = package_of("dev_follow", page_source("one"))
+    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0"].concat(flags).concat([root])) with { env: inherited(), timeout: hang_bound() }
+    mut child = asked.start(Ready.Line(" at http://127.0.0.1:"), ms(120000))?
+    let _ = write_text("${root}/src/main.av", page_source("two"))
+    let _ = child.until_ready(Ready.Line("dev: built module 2"), ms(120000))?
+    let said = child.out + child.err
     child.stop()
     said
 }
@@ -331,6 +345,33 @@ once fn session() -> Session? {
 fn seen(holds: fn(Session) -> bool) -> bool {
     let s? = session() else { return true }
     holds(s)
+}
+
+spec "avra dev — the loop, as the command runs it" {
+    given "a page served with no `--interval`" {
+        then "a save is built, on the host's word" {
+            !equipped() ||
+                match followed([]) {
+                    .Ok(said) -> said.contains("dev: built module 2") && !said.contains("will not watch"),
+                    .Err(_) -> false,
+                }
+        }
+    }
+    given "a page served with `--interval`" {
+        then "a save is built, on the clock" {
+            !equipped() ||
+                match followed(["--interval", "50"]) {
+                    .Ok(said) -> said.contains("dev: built module 2"),
+                    .Err(_) -> false,
+                }
+        }
+    }
+    given "the command's help" {
+        then "`--interval` is said to be instead of watching, and has no default" {
+            let l = left(["dev", "--help"])
+            l.said.contains("instead of watching them") && !l.said.contains("(default: 250)")
+        }
+    }
 }
 
 spec "avra dev — the loop, turned by hand" {
