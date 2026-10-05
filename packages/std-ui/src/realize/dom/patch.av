@@ -350,25 +350,24 @@ impl Differ {
         }
     }
 
-    /// What a property holds on the page: what the user was heard to move
-    /// it to, else what it was last drawn with.
-    fn standing(id: NodeId, drawn: Prop) -> Held {
-        self.heard.find(it.id == id && it.name == drawn.name)?.value ?? drawn.value
+    /// What the page holds under each property of `id` that is off rest
+    /// or was drawn: what the user was heard to move it to, else what it
+    /// was last drawn with.
+    fn standing(id: NodeId, drawn: List<Prop>) -> List<Prop> {
+        let moved = [Prop { name: h.name, value: h.value } for h in self.heard if h.id == id]
+        moved.concat([p for p in drawn if !moved.any(it.name == p.name)])
     }
 
     /// A property is set when the page does not already hold its value:
     /// what the program last drew is not what stands once a user has
     /// typed, so the page's own value is the one compared. A property a
-    /// paint no longer names goes back to rest.
+    /// paint does not name goes back to rest — one the last paint drew,
+    /// and one only the user moved.
     fn properties(id: NodeId, old: List<Prop>, new: List<Prop>) -> List<Patch> {
-        [Patch.SetProp(id, p.name, p.value) for p in new if !same_held(
-            self
-                .standing(id, old.find(it.name == p.name) ?? Prop { name: p.name, value: at_rest(p.value) }),
-            p.value,
-        )]
+        let stood = self.standing(id, old)
+        [Patch.SetProp(id, p.name, p.value) for p in new if !same_held(stood.find(it.name == p.name)?.value ?? at_rest(p.value), p.value)]
             .concat(
-                [Patch.SetProp(id, was.name, at_rest(was.value)) for was in old if !new.any(it.name == was.name) &&
-                    !same_held(self.standing(id, was), at_rest(was.value))],
+                [Patch.SetProp(id, was.name, at_rest(was.value)) for was in stood if !new.any(it.name == was.name) && !same_held(was.value, at_rest(was.value))],
             )
     }
 }
