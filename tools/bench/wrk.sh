@@ -4,7 +4,7 @@
 # keep-alive and pipelined. Prints requests a second and the server's CPU per request
 # — the number that does not move when the generator is the bottleneck.
 #
-#   sh tools/bench/wrk.sh            (on Linux: a Sprite, via sprite-build.sh)
+#   sh tools/bench/wrk.sh            (on Linux: a Sprite, via `tools/work run`)
 #   FLOOR=1 sh tools/bench/wrk.sh    the same load against tools/bench/floor,
 #                                    the kernel's floor in C
 #   CORES=4 sh tools/bench/wrk.sh    the server on cores 0-3, wrk on the rest
