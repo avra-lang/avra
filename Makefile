@@ -679,13 +679,16 @@ ui-host:
 
 # THE JS HOST IS TESTED BY THE GATE, not by whoever remembers to: a host
 # nothing runs is a second implementation nothing checks.
-ui-host-test:
+# Its wide corpus is a NATIVE program, so what a native link reads — the
+# runtime archive and the packages' C objects — are its prerequisites: a
+# tree that has built nothing builds them here, never inside the script.
+ui-host-test: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/ui_host_test.sh
 
 # THE DIFF'S LAW, AT LENGTH: trees grown and edited by chance, each repaint
 # applied to a modelled host and held to the page its tree is
 # (tools/ui_fuzz.sh). UI_FUZZ_SEED, UI_FUZZ_SEEDS and UI_FUZZ_CASES size it.
-ui-fuzz:
+ui-fuzz: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/ui_fuzz.sh
 
 # THE HOST SEAM, END TO END: the board built as a wasm reactor and run over the
