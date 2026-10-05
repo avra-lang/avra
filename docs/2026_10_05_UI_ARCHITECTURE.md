@@ -202,35 +202,37 @@ workspace reads (`imported_by`), never of a file's name.
   What stands in the way of `files "/" { root: "public" }` as a route
   line: a component that expands to code takes no `key: value` settings,
   and a component's head takes one argument (`avra-8sb5.11`, survey).
-  The dev server is that program with a port it is handed
-  (`@std/dev`'s `static_server`): a file is asked for again every time
-  (`max-age=0` over its validators).
-- **The command is thin, the server is a program** (`@std/dev`, built
-  once, run by `commands/dev.av` with what only the compiler knows:
-  itself, the wasm triple this machine links, the glue). Linked into the
-  compiler, an HTTP server took the compiler's own build from 2.4 GB past
-  4 GB. The server ends when the command that started it has.
+  A dev server asks for a file again every time (`max-age=0` over its
+  validators).
+- **The server lives in the command** (`commands/dev.av`, one file): a
+  `server` declared over `@std/http`, answering on a task of its own in
+  the `avra` process while the first task turns the watch. What that
+  costs the compiler's own build, measured: cold 1972 MB without it and
+  2177 MB with it (30 more files); after a one-file edit 339 MB and
+  637 MB. Every export of `@std/http` is compiled into the compiler —
+  1132 of its symbols, where a program that reaches the same server
+  carries 411 — because a native program's exports are roots.
 - **Ports.** Loopback by default (`--host`), port 8787 by default,
   `--port 0` for any free one; the address served is printed. A port
   that is taken is refused by name: `listen 127.0.0.1:8787: Address
   already in use — --port 0 takes any free port`.
-- **The watch set is the build's own inputs** (`avra build --inputs`:
+- **The watch set is the build's own inputs** (`Workspace.build_inputs`:
   the files its key covers — the closure's sources, the manifests, the
-  toolchain's own), asked after each build, plus every source that
-  arrives in a directory one of them stands in. Looked at every 250 ms:
-  a file is its stamp, or — too young for a stamp to tell two writes
-  apart — its text, so a save that changed nothing builds nothing. What
-  is remembered is what a build STARTED from. Nothing is watched where
-  there is nothing to rebuild.
+  toolchain's own), asked again every turn, so a file that arrives is
+  seen. Looked at every 250 ms: a file is its stamp, or — too young for a
+  stamp to tell two writes apart — its text, so a save that changed
+  nothing builds nothing. What is remembered is what a build STARTED
+  from. Nothing is watched where there is nothing to rebuild.
 - **The page is told over an event stream** (`/@dev/events`, `@std/http`'s
-  `sse.av`): `built` says the standing module's id, `failed` says what
+  `sse.av`): `built` says the standing module's number — the count of builds that
+  made another module — and `failed` says what
   the build said. A stream and not a socket: the server only ever tells,
   the browser reopens a dropped stream by itself, and a page that joins
   late — or again after the server restarted — hears where things stand
   as its first event.
 - **The reload client is dev-only glue** (`runtime/dom/dev.js`), put in
-  the page's `<!--DEV-->` hole beside the id of the module the page is
-  about to load. A production page never carries it.
+  the page's `<!--DEV-->` hole beside the number of the module the page
+  is about to load. A production page never carries it.
 - **A module that is no longer the one the page runs reloads the page.**
   A build that failed is shown over the page and in the terminal, and
   the last good module is still what is served and what runs.

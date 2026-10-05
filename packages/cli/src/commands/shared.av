@@ -531,7 +531,7 @@ fn build_report(e: BuildError) -> string {
 /// runtime for the empty target, a wasm toolchain found on this machine for
 /// any other — or the exit code of the refusal it spoke, naming what is
 /// missing and how to point at one.
-fn toolchain(target: string, reactor: bool, debug: bool) -> Result<Toolchain, int> {
+export fn toolchain(target: string, reactor: bool, debug: bool) -> Result<Toolchain, int> {
     if target == "" {
         let host = match linker() { .Ok(t) -> t, .Err(e) -> { return .Err(refused_by_host(e)) } }
         return .Ok(Toolchain { opt: "-O1", runtime: runtime_library(), linker: host.path })
@@ -594,25 +594,6 @@ fn built_outcome(path: string, tools: Toolchain) -> Result<BuildOutcome, int> {
             .Err(1)
         },
     }
-}
-
-/// `avra build --inputs`: every file the build's key covers, one a line,
-/// and nothing built — what a watcher of this build watches.
-fn build_inputs_said(args: CliResult) -> int {
-    let path? = argued_path(args) else { return 2 }
-    let tools = match toolchain(
-        args.option("target"),
-        args.has_flag("wasm_reactor"),
-        args.has_flag("wasm_debug"),
-    ) { .Ok(t) -> t, .Err(code) -> { return code } }
-    let ws = build_workspace(path)
-    let entry? = build_entry(ws, path) else {
-        eprintln("avra: ${ws.root} declares no entry point")
-        return 1
-    }
-    ws.built_for(tools)
-    for input in ws.build_inputs(entry) { println(input) }
-    0
 }
 
 /// `avra build`: the binary's path on stdout, or the refusal.

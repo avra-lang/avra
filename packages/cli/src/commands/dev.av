@@ -1,20 +1,31 @@
 //! `avra dev <path>` — one verb, and what it does follows what it is
 //! pointed at. A DIRECTORY is served as it stands. A PACKAGE WHOSE
 //! PROGRAM MOUNTS A PAGE is built as a wasm reactor, served with the page
-//! glue, and built again when a file the build reads moves; the page is
-//! told and reloads. Anything else is refused by what it is.
+//! glue, and built again when a file the build reads moves; the page hears
+//! each move over an event stream (`runtime/dom/dev.js`): a new module
+//! reloads it, and a build that failed is shown over it while the last
+//! good module keeps running. Anything else is refused by what it is.
 //!
-//! THE SERVER IS A PROGRAM OF ITS OWN (`@std/dev`), built once and run
-//! here with what this compiler found — itself, the wasm triple this
-//! machine links, the page glue — so the compiler carries no server and a
-//! build that traps takes none with it.
+//! A BUILD IS A CHILD: `avra build`, as anyone runs it, so what it says
+//! is what a build says, and a compiler that traps takes no server with
+//! it. THE WATCH IS THE BUILD'S OWN INPUTS (`Workspace.build_inputs`):
+//! every file its key covers, asked again each turn, so a file that
+//! arrives is seen. The loop turns on the program's first task and the
+//! server answers on another.
 use @std.cli.{CliResult, Runnable, command, option, flag}
-use @std.avrac.compiler.{Workspace}
-use @std.io.{is_dir, exists}
-use @std.path.{joined_path}
-use @std.process.{tool, cmd}
-
-extern fn avra_own_pid() -> int
+use @std.avrac.compiler.{Workspace, Toolchain}
+use @std.http.frame.{Method}
+use @std.http.http.{Request, Unrouted, Response, Header, text}
+use @std.http.route.{Route, fixed}
+use @std.http.server.{server}
+use @std.http.files.{Files, directory}
+use @std.http.sse.{Event, Next, Source, Resume, event_stream, quiet_default}
+use @std.net.{Bell}
+use @std.io.{read_bytes, read_text, exists, is_dir, stamp}
+use @std.path.{joined_path, file_name}
+use @std.process.{Tool, tool, cmd, inherited}
+use @std.text.{parse_int}
+use @std.time.{Duration, ms, sleep, now_ms}
 
 type DevCmd = {}
 
@@ -46,7 +57,7 @@ fn mounts_a_page(ws: Workspace) -> bool {
 
 /// What `path` is. A package is a directory with a manifest; what it holds
 /// is the workspace's to say.
-fn pointed(path: string) -> Pointed {
+export fn pointed(path: string) -> Pointed {
     if !is_dir(path) { return .File }
     if !exists(joined_path(path, "avra.toml")) { return .Files }
     let ws = root_workspace(path)
@@ -58,8 +69,11 @@ impl Runnable for DevCmd {
     fn run(args: CliResult) -> int {
         let path? = argued_path(args) else { return 2 }
         match pointed(path) {
-            .Files -> served(args, ["files"], path),
-            .Page -> page_served(args, path),
+            .Files -> hosted(args, path, directory("/", fresh_files(path)), () -> false),
+            .Page -> match page_at(path, asked(args, "target", "wasm")) {
+                .Ok(p) -> hosted(args, path, p.routes(), () -> !args.has_flag("no_watch") && p.turn()),
+                .Err(code) -> code,
+            },
             .Library -> unequipped(serves_no_library(path)),
             .Program -> unequipped(serves_no_program(path)),
             .File -> unequipped(serves_no_file(path)),
@@ -67,50 +81,46 @@ impl Runnable for DevCmd {
     }
 }
 
-/// A package's page, served: the toolchain found first, so a machine that
-/// cannot build one says so before anything is served.
-fn page_served(args: CliResult, path: string) -> int {
-    let page = match toolchain(asked(args, "target", "wasm"), true, false) {
-        .Ok(t) -> t,
-        .Err(code) -> { return code },
+/// `routes` served for `path` until the command is stopped, `turn` turned
+/// every `--interval`: loopback and port 8787 unless told, and where it
+/// serves said once it does.
+fn hosted(args: CliResult, path: string, routes: List<Route>, turn: fn() -> bool) -> int {
+    server site {
+        host: asked(args, "host", "127.0.0.1")
+        port: parse_int(args.option("port")) ?? 8787
+        routes: routes
     }
-    let glue? = glue_dir() else { return unequipped(no_glue()) }
-    let own? = own_binary() else { return unequipped(no_compiler()) }
-    served(
-        args,
-        ["page", "--compiler=${own}", "--target=${page.target}", "--glue=${glue}"]
-            .concat(if args.has_flag("no_watch") { ["--unwatched"] } else { [] }),
-        path,
-    )
+    let bound = match site.listening() {
+        .Ok(s) -> s,
+        .Err(e) -> { return unequipped(not_served(e.describe().message)) },
+    }
+    let _ = turn()
+    let at = "http://${site.host}:${bound.listener.port}/"
+    println("dev: ${path} at ${at}")
+    spawn bound.run(1)
+    if args.has_flag("open") { opened(at) }
+    let pause = ms(parse_int(args.option("interval")) ?? 250)
+    while true {
+        sleep(pause)
+        let _ = turn()
+    }
+    0
 }
 
-/// The dev server run at the terminal in the form `form` names, over
-/// `path`, with where to serve and for whom.
-fn served(args: CliResult, form: List<string>, path: string) -> int {
-    let home? = server_home() else { return unequipped(no_server()) }
-    let host = match toolchain("", false, false) { .Ok(t) -> t, .Err(code) -> { return code } }
-    let server = match built_outcome(home, host) {
-        .Ok(b) -> b.binary,
-        .Err(code) -> { return code },
-    }
-    let words = form
-        .concat(
-            [
-                "--host=${asked(args, "host", "127.0.0.1")}",
-                "--port=${asked(args, "port", "8787")}",
-                "--interval=${asked(args, "interval", "250")}",
-                "--keeper=${avra_own_pid()}",
-            ],
-        )
-        .concat(if args.has_flag("open") { ["--open"] } else { [] })
-        .concat([path])
-    match tool(server) {
-        .Ok(program) -> match at_the_terminal(cmd(program, words)).outcome() {
-            .Ok(x) -> status_of_exit(x.exit),
-            .Err(e) -> refused_by_host(e),
-        },
-        .Err(e) -> refused_by_host(e),
-    }
+/// A directory as a dev server serves one: each file typed by its name,
+/// and none kept by a browser without asking again.
+fn fresh_files(root: string) -> Files { Files { root: root, max_age: 0 } }
+
+/// The page opened where the developer browses: the first opener this
+/// machine has.
+fn opened(url: string) {
+    let opener? = found([tool("xdg-open"), tool("open")]).first() else { return }
+    let _ = cmd(opener, [url]).outcome()
+}
+
+/// An option as given, or `otherwise` when it was not.
+fn asked(args: CliResult, name: string, otherwise: string) -> string {
+    if args.option(name) == "" { otherwise } else { args.option(name) }
 }
 
 export command dev {
@@ -142,26 +152,254 @@ export flag no_watch {
     aliases: ["--no-watch"]
 }
 
-/// An option as given, or `otherwise` when it was not.
-fn asked(args: CliResult, name: string, otherwise: string) -> string {
-    if args.option(name) == "" { otherwise } else { args.option(name) }
+// ── what is watched ─────────────────────────────────────────────
+
+/// What a file was when it was looked at: its stamp, or — while it is too
+/// young for one to tell two writes apart — its text.
+enum Mark {
+    Settled(stamp: int)
+    Young(text: string)
+    Gone
+}
+
+fn mark_of(path: string) -> Mark {
+    if !exists(path) { return .Gone }
+    match stamp(path) {
+        s? -> .Settled(s)
+        null -> .Young(read_text(path) catch "")
+    }
+}
+
+/// Whether the file at `path`, marked `was`, is still what it was now that
+/// it is marked `now`. A young file is read, so a save that changed
+/// nothing moves nothing.
+fn unmoved(path: string, was: Mark, now: Mark) -> bool {
+    match was {
+        .Settled(a) -> match now { .Settled(b) -> a == b, .Young(_) or .Gone -> false },
+        .Young(a) -> match now {
+            .Settled(_) -> (read_text(path) catch "") == a,
+            .Young(b) -> a == b,
+            .Gone -> false,
+        },
+        .Gone -> match now { .Gone -> true, .Settled(_) or .Young(_) -> false },
+    }
+}
+
+/// One watched file and what it was.
+type Watched = { path: string, mark: Mark }
+
+// ── a page ──────────────────────────────────────────────────────
+
+/// What a page is served: the module as last built and the number of the
+/// build that made it — 0 until one succeeds — and what the build said if
+/// it failed since.
+type Standing = { module: Bytes, number: int, failure: string }
+
+/// One package's page being served. `lister` is asked what the build
+/// reads; `moved` is rung when the standing changes.
+export type Page = {
+    root: string,
+    tools: Toolchain,
+    compiler: Tool,
+    glue: string,
+    lister: Workspace,
+    standing: Cell<Standing>,
+    watched: Cell<List<Watched>>,
+    moved: Bell,
 }
 
 /// The page glue beside the compiler: `runtime/dom` in a checkout,
 /// `lib/avra/dom` in an install.
 fn glue_dir() -> string? { toolchain_files(["../runtime/dom", "../lib/avra/dom"]).find(is_dir(it)) }
 
-/// The dev server's package, among the toolchain's own.
-fn server_home() -> string? {
-    let std? = std_root() else { return null }
-    [joined_path(std, "std-dev")].find(is_dir(it))
+/// The page of the package at `root`, nothing built yet — or the exit
+/// code of the refusal spoken: what this machine lacks to build one.
+fn page_at(root: string, target: string) -> Result<Page, int> {
+    let tools = toolchain(target, true, false)?
+    let glue? = glue_dir() else { return .Err(unequipped(no_glue())) }
+    let own? = own_binary() else { return .Err(unequipped(no_compiler())) }
+    match tool(own) {
+        .Ok(compiler) -> page_of(root, tools, compiler, glue),
+        .Err(e) -> .Err(refused_by_host(e)),
+    }
+}
+
+/// The page of the package at `root`, built by `compiler` for `tools` and
+/// served with the glue standing in `glue`; nothing built yet.
+export fn page_of(root: string, tools: Toolchain, compiler: Tool, glue: string) -> Page {
+    let lister = root_workspace(root)
+    lister.built_for(tools)
+    let none: List<Watched> = []
+    Page {
+        root: root,
+        tools: tools,
+        compiler: compiler,
+        glue: glue,
+        lister: lister,
+        standing: Cell.new(Standing { module: "".bytes(), number: 0, failure: "" }),
+        watched: Cell.new(none),
+        moved: Bell {},
+    }
+}
+
+impl Page {
+    /// Every file the build reads, each as it stands now.
+    fn looked() -> List<Watched> {
+        let entry? = self.lister.entry_of() else { return [] }
+        [Watched { path: p, mark: mark_of(p) } for p in self.lister.build_inputs(entry)]
+    }
+
+    /// Whether what stands now is what was last built from.
+    fn still(now: List<Watched>) -> bool {
+        let was = self.watched.get()
+        !was.is_empty() &&
+            was.length == now.length &&
+            [j for j, w in now if was[j].path != w.path || !unmoved(w.path, was[j].mark, w.mark)]
+                .is_empty()
+    }
+
+    /// ONE TURN OF THE LOOP: the build's inputs looked at, and the page
+    /// built again when one moved; answers whether it built. What is
+    /// remembered is what the build STARTED from, so a save made while it
+    /// ran is seen by the next turn; a file the build newly reached is
+    /// marked as it stands after.
+    export fn turn() -> bool {
+        let now = self.looked()
+        if self.still(now) { return false }
+        self.build()
+        mut at: Map<string, Mark> = {}
+        for w in now { at.set(w.path, w.mark) }
+        self.watched.set([w with { mark: at.get(w.path) ?? w.mark } for w in self.looked()])
+        true
+    }
+
+    /// `avra build` of the package, as a child: the module it wrote, or
+    /// everything the build said.
+    fn built() -> Result<Bytes, string> {
+        let asked = cmd(
+            self.compiler,
+            ["build", "--target", self.tools.target, "--wasm_reactor", self.root],
+        ) with { env: inherited() }
+        let o = match asked.outcome() {
+            .Ok(o) -> o,
+            .Err(e) -> { return .Err(e.describe().message) },
+        }
+        if status_of_exit(o.exit) != 0 { return .Err([o.out.stdout.trim(), o.out.stderr.trim()].filter(it != "").join("\n")) }
+        match read_bytes(o.out.stdout.trim().split("\n").last() ?? "") {
+            .Ok(module) -> module,
+            .Err(e) -> .Err(e.describe().message),
+        }
+    }
+
+    /// The page built, and the standing moved to what came of it: another
+    /// module under the next number, the same module still, or the last
+    /// good one beside what the build said.
+    fn build() {
+        let began = now_ms()
+        let was = self.standing.get()
+        let now = match self.built() {
+            .Ok(module) -> if module == was.module { was with { failure: "" } } else { Standing { module: module, number: was.number + 1, failure: "" } },
+            .Err(report) -> was with { failure: report },
+        }
+        self.standing.set(now)
+        if now.failure != "" { eprintln(now.failure) }
+        println(build_line(now, now_ms() - began))
+        if now.number != was.number || now.failure != was.failure { self.moved.ring() }
+    }
+
+    // ── what a page is answered ─────────────────────────────────
+
+    /// The standing build as one event: `built` saying the module's
+    /// number, or `failed` saying what the build said.
+    fn standing_event() -> Event {
+        let now = self.standing.get()
+        if now.failure == "" { Event { event: "built", data: "${now.number}" } } else { Event { event: "failed", data: now.failure } }
+    }
+
+    /// The next event for a page that last heard the bell at `heard`
+    /// rings: the standing as soon as it has rung again, nothing within
+    /// `wait` when it has not.
+    fn next_after(heard: Cell<int>, wait: Duration) -> Next {
+        let _ = self.moved.waited_since(heard.get(), wait)
+        if self.moved.rings() == heard.get() { return .Quiet }
+        heard.set(self.moved.rings())
+        .Event(self.standing_event())
+    }
+
+    /// THE PAGE'S CHANNEL: the standing build at once — a page that joins
+    /// late, or again after the server restarted, hears where things
+    /// stand — then each move as it happens.
+    fn events() -> Response {
+        let heard = Cell.new(-1)
+        event_stream(
+            Resume.From(Source { next: (wait: Duration) -> self.next_after(heard, wait) }),
+            quiet_default(),
+        )
+    }
+
+    /// The page: the glue's own, titled, with the dev client and the
+    /// number of the module it is about to load.
+    fn page() -> Response {
+        match read_text(joined_path(self.glue, "page.html")) {
+            .Ok(html) -> unkept(
+                "text/html; charset=utf-8",
+                html
+                    .replace(
+                        "<!--TITLE-->",
+                        file_name(self.root).replace("&", "&amp;").replace("<", "&lt;"),
+                    )
+                    .replace("<!--DEV-->", dev_tags(self.standing.get().number))
+                    .bytes(),
+            ),
+            .Err(e) -> text(500, e.describe().message),
+        }
+    }
+
+    /// The module as last built — or, before any build succeeded, what
+    /// the build said.
+    fn module() -> Response {
+        let now = self.standing.get()
+        if now.number == 0 { return text(503, now.failure) }
+        unkept("application/wasm", now.module)
+    }
+
+    /// The page, the module and the channel, then the glue's own files.
+    export fn routes() -> List<Route> {
+        [
+            fixed(Method.Get, "/", (_q: Request<Unrouted>) -> self.page()),
+            fixed(Method.Get, "/app.wasm", (_q: Request<Unrouted>) -> self.module()),
+            fixed(Method.Get, "/@dev/events", (_q: Request<Unrouted>) -> self.events()),
+        ]
+            .concat(directory("/", fresh_files(self.glue)))
+    }
+}
+
+/// An answer no cache keeps: the next ask reads what stands then.
+fn unkept(kind: string, body: Bytes) -> Response {
+    Response {
+        headers: [
+            Header { name: "content-type", value: kind },
+            Header { name: "cache-control", value: "no-store" },
+        ],
+        body: body,
+    }
+}
+
+/// What the dev page carries that a production page does not.
+fn dev_tags(module: int) -> string {
+    "<meta name=\"avra-module\" content=\"${module}\">\n<script type=\"module\" src=\"./dev.js\"></script>"
 }
 
 // ── The voices ──
 
-fn serves_no_file(path: string) -> string {
-    "`dev` serves a directory or a package — ${path} is a file"
+fn build_line(now: Standing, took_ms: int) -> string {
+    if now.failure == "" { return "dev: built module ${now.number} — ${now.module.length} bytes in ${took_ms} ms" }
+    if now.number == 0 { "dev: the build failed — nothing is served yet" } else { "dev: the build failed — module ${now.number} is still served" }
 }
+
+fn not_served(why: string) -> string { "${why} — `--port 0` takes any free port" }
+
+fn serves_no_file(path: string) -> string { "`dev` serves a directory or a package — ${path} is a file" }
 
 fn serves_no_library(path: string) -> string {
     "${path} is a library: it has no program to serve — a page is a package whose `[bin]` entry mounts a view (`use @std.ui.web.{mount}`)"
@@ -174,5 +412,3 @@ fn serves_no_program(path: string) -> string {
 fn no_glue() -> string { "the page glue is not beside the compiler — expected runtime/dom" }
 
 fn no_compiler() -> string { "this compiler cannot find its own binary to build with" }
-
-fn no_server() -> string { "the dev server is not among the toolchain's packages — expected std-dev" }
