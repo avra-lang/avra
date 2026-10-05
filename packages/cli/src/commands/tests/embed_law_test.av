@@ -1,7 +1,8 @@
 //! THE EMBED LAW ON A DISK: what a memory host cannot stand in for. A link
-//! on the way to a file refuses at the literal, and so does a file that is
-//! not UTF-8. `avra_ran` and `scratch_dir` are the neighbouring tests'
-//! own: this module shares one namespace.
+//! on the way to a file refuses at the literal, a file that is not UTF-8
+//! refuses at the literal, and a built binary follows its embedded file's
+//! edits. `avra_ran`, `binary_ran`, `clean_stdout` and `scratch_dir` are
+//! the neighbouring tests' own: this module shares one namespace.
 use @std.io.{make_dirs, write_text, write_bytes}
 use @std.process.{tool, cmd, Outcome, ProcessError}
 use @std.time.{now_ns}
@@ -46,6 +47,12 @@ fn embed_refusals(path: string) -> List<string> {
     }
 }
 
+/// What the package's built binary prints.
+fn embed_built() -> string {
+    let binary? = clean_stdout(avra_ran(["build", embedding_on_disk("hello.txt")])) else { return "the build refused" }
+    clean_stdout(binary_ran(binary.trim())) ?? "the binary did not run"
+}
+
 spec "avra — embed on a disk" {
     given "a file reached through a link" {
         then "a linked file refuses at the literal, once" {
@@ -65,5 +72,10 @@ spec "avra — embed on a disk" {
     }
     given "a file the law accepts" {
         then "the check is clean" { embed_refusals("hello.txt").is_empty() }
+        then "the built binary prints it, and prints its edit after a rebuild" {
+            let before = embed_built()
+            let _ = write_text("${embed_root()}/pkg/src/hello.txt", "second")
+            before == "first\n" && embed_built() == "second\n"
+        }
     }
 }
