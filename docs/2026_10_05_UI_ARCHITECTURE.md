@@ -77,7 +77,9 @@ Five attempts to lift a handler into a generated message failed.
    its type is checked against the library's own declaration (`Prim`,
    `Attribute`, `EventKind`'s words, `Style`), read by `type_exported`,
    so no second table exists; what two members say twice is refused. A user
-   component is a COMPOSITION and invents no projection. No meaning is
+   component is a COMPOSITION and invents no projection: its BODY is
+   the views it is made of, drawn in place under its own parent, with
+   no `@derive` and no spread written (below). No meaning is
    read from a field's spelling.
 4. **An event is a declared member.** `on input(typed: string)` in the
    component, `on input { typed -> … }` at the instance, `on input:
@@ -258,14 +260,28 @@ that declares it.
   and it CARRIES the record the mark names as if it spread it. So the
   compiler names no library: `@std/ui` writes `@composes(Stand) export
   trait View`, and `key:` and the site are fields of every composition
-  with nothing written. The trait is one of that file's implicit
-  imports, bound weakly as the prelude's are. One trait a program
-  composes by: none is refused, and so are two.
+  with nothing written.
+- **Which trait is found from the program, by what the file can
+  name**: the traits wearing `@composes` among the packages the
+  component's file reaches — its own, and those its `use` lines name
+  (it imports `text` from `@std.ui.components`, so `@std/ui` is in
+  reach). Each such package is minted whole before the answer, so the
+  answer never depends on what was read first. Two libraries each
+  compose their own components; none in reach is refused, and so are
+  two in ONE file's reach.
+- **A generated impl names its trait where the name was WRITTEN.**
+  `impl View for counter` is the library's text: `View` is read in the
+  library's file, whatever the component's file imports — nothing, or
+  an unrelated `View` of its own. Nothing is bound into the user's
+  file.
 - **A component is instanced where it is declared.** A module's own
   component word is reserved nowhere, so it opens an instance where
   the line says so: before a head value (`counter "a"`, `counter id`,
   `counter self.name`) anywhere, or before a name where a statement
-  starts. Its word before a `{` stays the record's literal.
+  starts. Its word before a `{` stays the record's literal (`header
+  {}`). The parse a module's words are read off knows them by name
+  already, so an instance stands there as a hole and the declaration
+  around it keeps its shape.
 - **A statement that fails keeps the shape around it.** Recovery
   skips the block the failed statement opened, not only its line, so
   a declaration around it still closes where it was written.
