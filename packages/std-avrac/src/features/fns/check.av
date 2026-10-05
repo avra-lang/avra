@@ -26,6 +26,7 @@ use core.{
     width_named,
 }
 use features.{
+    embed_literal_law,
     no_pins,
     Pins,
     Placed,
@@ -369,8 +370,9 @@ fn dispatched_call(
 ) -> TypeId {
     let placed? = cx.placed(e, callee, cx.bound_decl(e), args, s.params) else { return cx.error_type }
     let d? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args) }
-    if cx.view.decls.is_meta_fn(d, "embed") && cx.view.store.expr(placed.args[0]).text_of() == null {
-        return embed_computed_path(cx, e)
+    if cx.view.decls.is_meta_fn(d, "embed") {
+        let refused: TypeId? = embed_law(cx, e, placed.args[0])
+        if refused != null { return refused! }
     }
     if !cx.seat_contracts(e, callee, d, 0, placed.args, null) { return cx.error_type }
     if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, d, placed.args) }
@@ -645,21 +647,98 @@ fn value_takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
         )
 }
 
-/// `embed`'s path is read before any analysis runs over the file it
-/// names — a declared reach, like a `use` line's — so a computed
-/// path can never be found at admit time, and the file it would have
-/// named could change invisibly between one compile and the next.
-const embed_literal_law: string = "`embed` reads a file named in the source — its path is a literal"
-
 fn embed_computed_path(mut cx: TypeCx, e: ExprId) -> TypeId {
     cx
         .spoken(
             refusal(
-                "fns.embed_literal",
+                "type.embed_literal",
                 cx.loc_of(e),
                 embed_literal_law,
                 "this path is computed, not written here",
                 "name the file directly, as a string literal",
+            ),
+        )
+}
+
+/// THE EMBED LAW, at the literal: the path is written, it stays inside
+/// the package that writes it, no link stands on the way to it, and
+/// what stands there is text. Null when the const may read it.
+fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId) -> TypeId? {
+    let rel? = cx.view.store.expr(path).text_of() else { return embed_computed_path(cx, e) }
+    let fault = match cx.view.decls.embed_placed(cx.view.file, rel) {
+        .Ok(_) -> { return null },
+        .Err(why) -> why,
+    }
+    match fault {
+        .Outside -> embed_outside(cx, path, rel),
+        .Linked -> embed_linked(cx, path, rel),
+        .Missing -> embed_missing(cx, path, rel),
+        .NotText(at) -> embed_not_text(cx, path, rel, at),
+        .Refused(why) -> embed_unread(cx, path, why),
+    }
+}
+
+fn embed_outside(mut cx: TypeCx, path: ExprId, rel: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.embed_place",
+                cx.loc_of(path),
+                "`embed` reads inside its own package — `${rel}` names a file outside it",
+                "leaves the package here",
+                "keep the file in this package, or name a dependency's by its package — `embed(\"@scope/name/path\")`",
+            ),
+        )
+}
+
+fn embed_linked(mut cx: TypeCx, path: ExprId, rel: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.embed_place",
+                cx.loc_of(path),
+                "`embed` follows no link — one stands on the way to `${rel}`",
+                "reached through a symlink",
+                "embed the file itself: a link can lead out of the package",
+            ),
+        )
+}
+
+fn embed_missing(mut cx: TypeCx, path: ExprId, rel: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.embed_file",
+                cx.loc_of(path),
+                "`embed` finds no `${rel}` beside this source file",
+                "no file stands here",
+                "the path is read from this file's own directory",
+            ),
+        )
+}
+
+fn embed_not_text(mut cx: TypeCx, path: ExprId, rel: string, at: int) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.embed_file",
+                cx.loc_of(path),
+                "`embed` answers text, and `${rel}` is not UTF-8 — byte ${at}",
+                "not text",
+                "embed a UTF-8 file",
+            ),
+        )
+}
+
+fn embed_unread(mut cx: TypeCx, path: ExprId, why: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.embed_file",
+                cx.loc_of(path),
+                "`embed` could not read its file — ${why}",
+                "named here",
+                "the build reads this file as it reads its sources",
             ),
         )
 }

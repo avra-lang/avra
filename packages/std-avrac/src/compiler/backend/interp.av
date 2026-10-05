@@ -144,7 +144,9 @@ type Machine = {
     exhausted: string?,
     // a settlement's own directory, which `embed` reads beside — and
     // the files it read; null outside a settlement, where embed traps
-    base: string?,
+    /// Whether this run settles a value the build keeps.
+    settling: bool,
+    embed: fn(string) -> Result<string, string>,
     embeds: List<string>,
     // the bodies a settlement entered, each once, in order — what its
     // value is a function of
@@ -226,7 +228,8 @@ fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type) -> Mac
         mem_base: avra_mem_live(),
         mem_peak: 0,
         exhausted: null,
-        base: null,
+        settling: false,
+        embed: unembedded,
         embeds: [],
         ran: [],
         ran_seen: {},
@@ -335,15 +338,9 @@ impl Machine {
 /// A run nobody budgets: a program runs to its end.
 const unbudgeted: int = 1000000000000000
 
-/// An `embed` argument's path, resolved against its settlement's base
-/// directory exactly as `Machine.embedded` resolves it at run time —
-/// the one definition, so an admit-time mint and a settle-time read
-/// never name two different files. NORMALIZED: an unfolded `..`
-/// names the same file under a second spelling, minting it a second
-/// FileId — the same file parsed and admitted twice under two
-/// identities.
-export fn embed_resolved(base: string, rel: string) -> string {
-    normalized(if rel.starts_with("/") { rel } else { joined_path(base, rel) })
+/// A run that is no settlement has no file to embed.
+fn unembedded(_path: string) -> Result<string, string> {
+    .Err("`embed` reads a file at compile time, into a const — this run reached it outside one")
 }
 
 /// A const's initializer run to its compiler-owned value tree.
@@ -353,7 +350,7 @@ export fn embed_resolved(base: string, rel: string) -> string {
 export fn run_settle(
     l: Lowered,
     budgets: Budgets,
-    base: string,
+    embed: fn(string) -> Result<string, string>,
     named: fn(string) -> Lifted = no_named_type,
 ) -> Result<Settled, Unsettled> {
     // Every answer crosses into compiler-owned data now, so embed is
@@ -361,7 +358,8 @@ export fn run_settle(
     let world: string? = world_reached(l, true)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     mut m = budgeted_machine(l, budgets, named)
-    m.base = base
+    m.settling = true
+    m.embed = embed
     let answer: Val? = m.run_body(l.entry)
     m.spent(l.entry.name, budgets)
     if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
@@ -419,13 +417,14 @@ export fn run_lifted(
 export fn run_crossed(
     l: Lowered,
     budgets: Budgets,
-    base: string,
+    embed: fn(string) -> Result<string, string>,
     named: fn(string) -> Lifted = no_named_type,
 ) -> Result<Lifted, Unsettled> {
     let world: string? = world_reached(l, true)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     mut m = budgeted_machine(l, budgets, named)
-    m.base = base
+    m.settling = true
+    m.embed = embed
     let answer: Val? = m.run_body(l.entry)
     m.spent(l.entry.name, budgets)
     if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
@@ -689,7 +688,7 @@ impl Machine {
             self.trapped("recursion too deep — ${call_limit} nested calls")
             return false
         }
-        if self.base != null && self.ran_seen.get(target.name) == null {
+        if self.settling && self.ran_seen.get(target.name) == null {
             self.ran_seen.set(target.name, true)
             self.ran.push(target.name)
         }
@@ -840,23 +839,21 @@ impl Machine {
         }
     }
 
-    /// `embed`: the file beside the settlement's source, read whole —
-    /// and recorded, so the build knows what the const read.
-    fn embedded(rel: string) -> Val {
-        if self.base == null {
-            self
-                .trapped(
-                    "`embed` reads a file at compile time, into a const — this run reached it outside one",
-                )
-            return Val.S("")
+    /// `embed`: the file a literal named, read by the settlement's own
+    /// reader — and recorded, so the build knows what the const read.
+    fn embedded(path: string) -> Val {
+        match (self.embed)(path) {
+            .Ok(text) -> {
+                self.embeds.push(path)
+                Val.S(text)
+            },
+            .Err(why) -> self.trapped_text(why),
         }
-        let path = embed_resolved(self.base!, rel)
-        if avra_selfhost_file_exists(path) == 0 {
-            self.trapped("`embed` finds no `${rel}` beside the source")
-            return Val.S("")
-        }
-        self.embeds.push(path)
-        Val.S(avra_selfhost_read_file(path))
+    }
+
+    fn trapped_text(msg: string) -> Val {
+        self.trapped(msg)
+        Val.S("")
     }
 
     /// `type_named`: the workspace's own answer, crossed straight

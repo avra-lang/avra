@@ -398,6 +398,10 @@ export type Decls = {
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
     /// workspace arms, called before a file's declarations are read.
     ensure_file: Cell<fn(FileId) -> void>,
+    /// THE FILE AN `embed` LITERAL NAMES, or why a const may not read
+    /// it: the hook the workspace arms — it knows the package a file
+    /// stands in and the ones it depends on, and its host is what reads.
+    embed_judge: Cell<fn(FileId, string) -> Result<string, EmbedFault>>,
     /// A PACKAGE-SCOPED COLLECT GATHERS THE WHOLE PACKAGE: the hook the
     /// workspace arms, admitting every file of the package a file stands
     /// in — once per package, `scoped` records which.
@@ -628,6 +632,22 @@ fn no_marks(d: DeclId) {}
 
 fn no_failures_ensure() {}
 
+/// Why an `embed` literal names no file a const may read: it stands
+/// outside the package, it is not there, a link stands on the way to
+/// it, it is not UTF-8 (at that byte), or the host would not read it.
+export enum EmbedFault { Outside, Missing, Linked, NotText(at: int), Refused(why: string) }
+
+/// `embed`'s path is read before any analysis runs over the file it
+/// names — a declared reach, like a `use` line's — so a computed
+/// path can never be found at admit time, and the file it would have
+/// named could change invisibly between one compile and the next.
+export const embed_literal_law: string = "`embed` reads a file named in the source — its path is a literal"
+
+/// A table no workspace stands behind has no host to read a file with.
+fn embed_unjudged(_f: FileId, _rel: string) -> Result<string, EmbedFault> {
+    .Err(EmbedFault.Refused("no workspace stands behind this file"))
+}
+
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_store(f: FileId) {}
 
@@ -766,6 +786,7 @@ export fn new_decls() -> Decls {
         move_stamps: map_cell(),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
+        embed_judge: Cell.new(embed_unjudged),
         ensure_package: Cell.new(no_store),
         scoped: map_cell(),
         decl_ids: Cell.new(no_decl_ids),
@@ -1420,6 +1441,12 @@ impl Decls {
     fn is_meta_fn(d: DeclId, name: string) -> bool {
         self.decl(d).name == name && self.package_of(d) == "@std.meta"
     }
+
+    fn arm_embeds(judge: fn(FileId, string) -> Result<string, EmbedFault>) { self.embed_judge.set(judge) }
+
+    /// The path of the file an `embed` literal in `f` names, when a const
+    /// may read it — or what is wrong with it.
+    fn embed_placed(f: FileId, rel: string) -> Result<string, EmbedFault> { (self.embed_judge.get())(f, rel) }
 
     /// Whether a type is one declaration exported by `@std/meta` —
     /// `is_meta_fn`'s door, opened over a TYPE's shape rather than a

@@ -149,6 +149,10 @@ impl Decls {
             voices.speak(self.extern_not_a_value(read_at, d))
             return error_type
         }
+        if self.is_meta_fn(d, "embed") {
+            voices.speak(self.embed_not_a_value(read_at ?? self.loc(d)))
+            return error_type
+        }
         let sig? = self.sig(d)?.fn_sig() else { return error_type }
         // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
         // its declaration wrote travel with the type, so a writing fn
@@ -666,6 +670,18 @@ impl Decls {
     /// frame — a caller with no read site in hand (a capture's source
     /// binding, which never resolves to an extern in practice) still
     /// gets a sound answer, pointed at the declaration alone.
+    /// `embed` is called where its path is written: a value of it would
+    /// be handed a path nothing read at admit time.
+    fn embed_not_a_value(at: Loc?) -> Diag {
+        refusal(
+            "type.embed_literal",
+            at,
+            embed_literal_law,
+            "handed on uncalled here",
+            "call it where the path is written — `embed(\"schema.sql\")`",
+        )
+    }
+
     fn extern_not_a_value(read_at: Loc?, d: DeclId) -> Diag {
         let declared = self.loc(d)
         let primary = read_at ?? declared

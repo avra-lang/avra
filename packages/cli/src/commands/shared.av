@@ -33,9 +33,22 @@ use @std.process.{
     exit,
 }
 use @std.time.{now_ns}
-use @std.io.{read_text, write_text, exists, is_dir, list_dir, env, make_dirs, stamp, compile_slot}
+use @std.io.{
+    read_text,
+    write_text,
+    exists,
+    is_dir,
+    list_dir,
+    env,
+    make_dirs,
+    stamp,
+    compile_slot,
+    open_beneath,
+    IoError,
+    Entry,
+}
 use @std.avrac.compiler.backend.{emit_ll}
-use @std.avrac.compiler.host.{Host, no_target}
+use @std.avrac.compiler.host.{Host, no_target, Beneath}
 use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
 
 // THE TWO TRUE EXTERNS: no std package owns "re-exec this image" or
@@ -51,6 +64,7 @@ fn disk_host() -> Host {
     Host {
         exists: (p: string) -> exists(p),
         read: (p: string) -> read_or_die(p),
+        beneath: (root: string, rel: string) -> disk_beneath(root, rel),
         list: (dir: string) -> list_dir(dir) catch [],
         write: (p: string, text: string) -> write_file(p, text),
         is_dir: (dir: string) -> is_dir(dir),
@@ -59,6 +73,39 @@ fn disk_host() -> Host {
         std_root: std_root(),
         cwd: env("PWD") ?? ".",
         compiler: own_binary(),
+    }
+}
+
+/// What stands at `rel` beneath `root` on the disk, opened segment by
+/// segment and never through a link (`@std/io`'s `open_beneath`). A
+/// refusal the path itself survives — something stands there when
+/// links are followed — was a link's.
+fn disk_beneath(root: string, rel: string) -> Beneath {
+    let o = match open_beneath(root, rel) {
+        .Ok(o) -> o,
+        .Err(e) -> { return unopened(e, exists(joined_path(root, rel))) },
+    }
+    defer o.close()
+    match o.kind {
+        .File -> match o.text() { .Ok(text) -> Beneath.Text(text), .Err(e) -> unread(e) },
+        .Missing or .Dir or .Other -> Beneath.Refused("`${rel}` is not a file"),
+    }
+}
+
+/// Why a path beneath a root did not open.
+fn unopened(e: IoError, stands: bool) -> Beneath {
+    match e {
+        .NotFound(_) -> Beneath.Missing,
+        .Denied(_) or .Holed(_, _) or .NotText(_, _) -> Beneath.Refused(e.describe().message),
+        .IsDirectory(_) or .NotDirectory(_) or .Failed(_, _) -> if stands { Beneath.Linked } else { Beneath.Refused(e.describe().message) },
+    }
+}
+
+/// Why an opened file gave no text.
+fn unread(e: IoError) -> Beneath {
+    match e {
+        .NotText(_, at) -> Beneath.NotText(at),
+        .NotFound(_) or .Denied(_) or .IsDirectory(_) or .NotDirectory(_) or .Holed(_, _) or .Failed(_, _) -> Beneath.Refused(e.describe().message),
     }
 }
 
