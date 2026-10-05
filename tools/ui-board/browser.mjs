@@ -29,11 +29,14 @@ const keys = async () => (await rows()).map((r) => r.key);
 const focused = () => read(`document.activeElement.getAttribute("aria-label")`);
 const styled = (selecting, property) => read(`getComputedStyle(${selecting})[${JSON.stringify(property)}]`);
 const sheet = () => read(`document.getElementById("avra-style").textContent`);
-// The buttons whose words do not stand out from their fill: WCAG contrast
-// of each one's ink against its own background, under 4.5 to 1.
+// The buttons whose words do not stand out from what they are drawn on:
+// WCAG contrast of each one's ink against the nearest fill under it, under
+// 4.5 to 1.
 const faint = () => read(`(() => {
   const light = (rgb) => { const [r, g, b] = rgb.match(/[\\d.]+/g).slice(0, 3).map((v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
-  const ratio = (el) => { const s = getComputedStyle(el); const [a, b] = [light(s.color), light(s.backgroundColor)].sort((x, y) => y - x); return (a + 0.05) / (b + 0.05); };
+  const clear = (rgb) => rgb === "transparent" || /,\\s*0\\)$/.test(rgb);
+  const under = (el) => { const fill = getComputedStyle(el).backgroundColor; return clear(fill) && el.parentElement ? under(el.parentElement) : fill; };
+  const ratio = (el) => { const [a, b] = [light(getComputedStyle(el).color), light(under(el))].sort((x, y) => y - x); return (a + 0.05) / (b + 0.05); };
   return [...document.querySelectorAll("button")].filter((b) => ratio(b) < 4.5).map((b) => b.textContent);
 })()`);
 
@@ -47,6 +50,18 @@ claim("the four seeded rows are drawn in order", (await keys()).join() === "t1,t
 claim("a done task is a real checkbox, checked", await read(`[...document.querySelectorAll("li input")].map((i) => i.type + ":" + i.checked).join()`) === "checkbox:true,checkbox:false,checkbox:false,checkbox:true");
 claim("the progress holds its amount and its end", await read(`(() => { const p = document.querySelector("progress"); return [p.value, p.max]; })()`).then((v) => v.join() === "2,4"));
 claim("every control's words are drawn beside it", await read(`[...document.querySelectorAll("label > span")].every((s) => s.getBoundingClientRect().width > 0)`));
+// The least space between two neighbours on one line under each element
+// `selecting` answers: the list is those whose neighbours touch.
+const touching = (selecting) => read(`[...${selecting}].filter((el) => [...el.children].some((kid, i, kids) => i > 0 && kid.getBoundingClientRect().left - kids[i - 1].getBoundingClientRect().right < 1 && kid.getBoundingClientRect().top < kids[i - 1].getBoundingClientRect().bottom)).map((el) => el.textContent)`);
+const leads = (selecting) => read(`(() => { const label = ${selecting}.closest("label"); return label.querySelector("span").getBoundingClientRect().right <= ${selecting}.getBoundingClientRect().left; })()`);
+const fill = (selecting) => styled(selecting, "backgroundColor");
+
+claim("a field and a progress are named and then shown", await leads(named("New task")) && await leads(named("Done")));
+claim("a box is ticked and then named", !(await leads(named("Draft the spec"))));
+claim("nothing in a row or an item touches its neighbour", (await touching(`document.querySelectorAll("li, .dir-row")`)).length === 0, await touching(`document.querySelectorAll("li, .dir-row")`));
+claim("an item keeps its marker", await styled(`document.querySelector("li")`, "display") === "list-item");
+claim("every button's words stand out from what it is drawn on", (await faint()).length === 0, await faint());
+claim("the chosen filter is told from the others by its fill", await fill(named("All")) !== await fill(named("Active")), await fill(named("All")));
 claim("what stacks its children draws the gap it names", await styled(`document.querySelector("article")`, "display") === "flex" && await styled(`document.querySelector("article")`, "rowGap") === "16px");
 claim("a closed dialog is not drawn, whatever its classes say", await styled(`document.querySelector("dialog")`, "display") === "none");
 
@@ -83,6 +98,7 @@ await press(named("Dark mode"));
 await shot("dark");
 claim("the dark mode swaps the sheet and the page wears it", await sheet() !== light && await styled("document.body", "backgroundColor") === "rgb(18, 18, 18)");
 claim("the browser's own controls wear the dark scheme", await styled("document.documentElement", "colorScheme") === "dark");
+claim("the chosen filter is told from the others in the dark mode too", await fill(named("All")) !== await fill(named("Active")), await fill(named("All")));
 claim("every button's words stand out from its fill", (await faint()).length === 0, await faint());
 
 // ── the dialog ──────────────────────────────────────────────────

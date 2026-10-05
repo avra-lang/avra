@@ -104,5 +104,25 @@ const sheet = style.textContent;
 fire(theme);
 claim("the dark mode rewrites the sheet and renames its button", style.textContent !== sheet && named("Light mode").length === 1);
 
+// EVERY INK READS ON EVERY FILL: the tones each mode's sheet names, as WCAG
+// contrast — the least a reader with ordinary sight needs is 4.5 to 1.
+const tones = (css) => Object.fromEntries([...css.matchAll(/--tone-([a-z-]+):(#[0-9a-f]{6})/g)].map((m) => [m[1], m[2]]));
+const light = (hex) => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const faint = (css) => {
+  const named = tones(css);
+  const fills = Object.keys(named).filter((tone) => tone.startsWith("surface"));
+  const inks = Object.keys(named).filter((tone) => !tone.startsWith("surface"));
+  return inks.flatMap((ink) => fills.map((fill) => {
+    const [a, b] = [light(named[ink]), light(named[fill])].sort((x, y) => y - x);
+    return { pair: `${ink} on ${fill}`, ratio: (a + 0.05) / (b + 0.05) };
+  })).filter((seen) => seen.ratio < 4.5).map((seen) => `${seen.pair} ${seen.ratio.toFixed(2)}`);
+};
+claim("each mode's sheet names its inks and its fills", Object.keys(tones(sheet)).length >= 4 && Object.keys(tones(style.textContent)).length >= 4);
+claim("every ink reads on every fill in the light mode", faint(sheet).length === 0, faint(sheet).join(", "));
+claim("every ink reads on every fill in the dark mode", faint(style.textContent).length === 0, faint(style.textContent).join(", "));
+
 console.log(failed === 0 ? "ui-board: every claim holds" : `ui-board: ${failed} claim(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

@@ -11,7 +11,7 @@ use style.style.{Style, StateStyle, Interaction}
 use style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout}
 use style.theme.{Theme, Mode}
 use tree.lists.{flatten}
-use tree.node.{Node, Prim}
+use tree.node.{Node, Prim, own_axis, gap_between}
 use style.tokens.{Size, Tone, Font}
 use realize.html.tags.{HtmlTag}
 
@@ -211,24 +211,14 @@ impl Box {
         out
     }
 }
-/// The axis a primitive lays its children along when its layout names
-/// none. Every primitive spelled: a row is its axis, and what stacks its
-/// children — a column, a surface, a form, a card, a dialog — is a column,
-/// so a gap it names is drawn. An item flows as its element does: a flex
-/// box draws no list marker.
-fn own_axis(p: Prim) -> Axis? {
-    match p {
-        .Row -> .Row,
-        .Column or .Surface or .Form or .Card or .Dialog -> .Column,
-        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Divider or .Icon or .List or .Item or .Progress or .Alert or .Spinner or .Switch or .Slider -> null,
-    }
-}
-
 /// Every rule a node names: its primitive's own axis unless its layout
-/// names one, then its box.
+/// names one, the gap its axis keeps unless its layout names one, then
+/// its box. An item flows as its element does: a flex box draws no list
+/// marker.
 export fn node_rules(prim: Prim, box: Box) -> List<CssRule> {
-    let own = if box.layout.direction == null { axis_rule(own_axis(prim), null) } else { [] }
-    own.concat(box.rules())
+    let axis = if box.layout.direction == null { axis_rule(own_axis(prim), null) } else { [] }
+    let gap = if box.layout.gap == null { gap_rule(gap_between(prim, box), null) } else { [] }
+    axis.concat(gap).concat(box.rules())
 }
 
 /// Every class a node names, once, in rule order.
@@ -294,19 +284,28 @@ fn rule_source(r: CssRule) -> string { "${selector(r.name)}${pseudo_of(r.state)}
 /// These tags as one selector.
 fn tags(of: List<HtmlTag>) -> string { [t.word() for t in of].join(",") }
 
+/// The axis classes, as what an element that is no flex box does not wear.
+fn unflexed() -> string { [":not(.${axis_word(a).name})" for a in [Axis.Row, .Column]].join("") }
+
 /// What the page looks like under every node, read from the same
 /// variables. The page wears the surface, the text colour and the body
-/// face, and a control wears them too rather than the browser's own. A
-/// heading and a rule keep no margin: space is a gap or a pad. A control
-/// and its words sit on one line, a step apart. A dialog wears the
-/// surface over the middle of the page, and a closed one is not drawn
-/// whatever its classes say.
+/// face, and a control wears them too rather than the browser's own: a
+/// button shows what it stands on inside a border, so a fill it names is
+/// the fill a reader sees, and one that cannot speak is muted. A heading
+/// and a rule keep no margin: space is a gap or a pad. A control and its
+/// words sit on one line, a step apart; what an item holds on one line
+/// stands a step apart too, and the item keeps its marker. A dialog wears
+/// the surface over the middle of the page, and a closed one is not
+/// drawn whatever its classes say.
 fn base_rules() -> List<string> {
     [
         "body{margin:0;${fill_word(.Surface).decl};${color_word(.Text).decl};${face_word(.Body).decl}}",
         "${tags([.Button, .Input])}{font:inherit;color:inherit}",
+        "${tags([.Button])}{background:transparent;border:1px solid var(--tone-${Tone.Muted.word()});padding:var(--space-${Size.Xs.word()}) var(--space-${Size.S.word()})}",
+        "${tags([.Button])}:disabled{${color_word(.Muted).decl}}",
         "${tags([.H1, .H2, .H3, .H4, .H5, .H6, .Hr])}{margin:0}",
         "${tags([.Label])}{display:inline-flex;align-items:center;${gap_word(.Xs).decl}}",
+        "${tags([.Li])}${unflexed()}>*+*{margin-inline-start:var(--space-${Size.S.word()})}",
         "${tags([.Dialog])}{position:fixed;inset-block:0;${fill_word(.Surface).decl};${color_word(.Text).decl}}",
         "${tags([.Dialog])}:not([open]){display:none}",
     ]

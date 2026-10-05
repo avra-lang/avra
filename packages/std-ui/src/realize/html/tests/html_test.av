@@ -73,14 +73,14 @@ spec "std/ui html — primitives" {
         then "a checkbox is a checkbox input under a label" {
             fragment(leaf(.Checkbox, [.Label("Done"), .Checked(true)])) == "<label><input type=\"checkbox\" aria-label=\"Done\" checked=\"\"><span>Done</span></label>"
         }
-        then "a field is a text input holding its value, its label beside it" {
-            fragment(field_node("Name", "Ann")) == "<label><input type=\"text\" aria-label=\"Name\" value=\"Ann\"><span>Name</span></label>"
+        then "a field is a text input holding its value, its label before it" {
+            fragment(field_node("Name", "Ann")) == "<label><span>Name</span><input type=\"text\" aria-label=\"Name\" value=\"Ann\"></label>"
         }
-        then "a slider is a range input, its label beside it" {
-            fragment(leaf(.Slider, [.Label("Vol"), .Amount(4), .Min(0), .Max(9)])) == "<label><input type=\"range\" aria-label=\"Vol\" value=\"4\" min=\"0\" max=\"9\"><span>Vol</span></label>"
+        then "a slider is a range input, its label before it" {
+            fragment(leaf(.Slider, [.Label("Vol"), .Amount(4), .Min(0), .Max(9)])) == "<label><span>Vol</span><input type=\"range\" aria-label=\"Vol\" value=\"4\" min=\"0\" max=\"9\"></label>"
         }
-        then "a progress is closed before its label, both under a label" {
-            fragment(leaf(.Progress, [.Label("Up"), .Amount(3), .Max(10)])) == "<label><progress aria-label=\"Up\" value=\"3\" max=\"10\"></progress><span>Up</span></label>"
+        then "a progress follows its label, both under a label" {
+            fragment(leaf(.Progress, [.Label("Up"), .Amount(3), .Max(10)])) == "<label><span>Up</span><progress aria-label=\"Up\" value=\"3\" max=\"10\"></progress></label>"
         }
         then "a divider is a rule that is never closed" { fragment(leaf(.Divider, [])) == "<hr>" }
         then "a card shows its title as a heading over its children" {
@@ -100,7 +100,7 @@ spec "std/ui html — primitives" {
             fragment(holding(.List, [keyed(leaf(.Item, []), "a"), leaf(.Item, [])])) == "<ul><li data-key=\"a\"></li><li></li></ul>"
         }
         then "a control's key and classes sit on its label, its attributes on the control" {
-            fragment(keyed(boxed(.Field, gap(.M), []), "k")) == "<label data-key=\"k\" class=\"gap-m\"><input type=\"text\"><span></span></label>"
+            fragment(keyed(boxed(.Field, gap(.M), []), "k")) == "<label data-key=\"k\" class=\"gap-m\"><span></span><input type=\"text\"></label>"
         }
     }
     given "the look" {
@@ -118,6 +118,20 @@ spec "std/ui html — primitives" {
         then "a row flows across, its axis class first" {
             fragment(boxed(.Row, gap(.Xl), [])) == "<div class=\"dir-row gap-xl\"></div>"
         }
+        then "a row that names no gap keeps a step between its children" {
+            fragment(holding(.Row, [])) == "<div class=\"dir-row gap-s\"></div>"
+        }
+        then "a row made a column keeps none: nothing shares a line" {
+            fragment(boxed(.Row, Layout { direction: .Column }, [])) == "<div class=\"dir-col\"></div>"
+        }
+        then "a column made a row keeps a step" {
+            fragment(boxed(.Column, Layout { direction: .Row }, [])) == "<div class=\"gap-s dir-row\"></div>"
+        }
+        then "a box is ticked and then named: its control stands first" {
+            fragment(leaf(.Checkbox, [.Label("c")])) == "<label><input type=\"checkbox\" aria-label=\"c\"><span>c</span></label>" &&
+                fragment(leaf(.Switch, [.Label("s")]))
+                    .starts_with("<label><input type=\"checkbox\" role=\"switch\"")
+        }
         then "a layout's direction replaces a row's own axis" {
             fragment(boxed(.Row, Layout { direction: .Column }, [])) == "<div class=\"dir-col\"></div>"
         }
@@ -132,13 +146,13 @@ spec "std/ui html — primitives" {
     }
     given "nesting" {
         then "children recurse in order" {
-            fragment(tree()) == "<div class=\"dir-col gap-m pis-s pie-s pt-s pb-s\"><h1>Tasks</h1><div class=\"dir-row\"><span>one</span><button type=\"button\" aria-label=\"Add\">Add</button></div></div>"
+            fragment(tree()) == "<div class=\"dir-col gap-m pis-s pie-s pt-s pb-s\"><h1>Tasks</h1><div class=\"dir-row gap-s\"><span>one</span><button type=\"button\" aria-label=\"Add\">Add</button></div></div>"
         }
         then "a child given to an image follows it, never inside it" {
             fragment(with_kids(image_node("/a.png", "A"), [text_node("y")])) == "<img src=\"/a.png\" alt=\"A\"><span>y</span>"
         }
         then "a child given to a control stays inside its label" {
-            fragment(with_kids(field_node("N", ""), [text_node("y")])) == "<label><input type=\"text\" aria-label=\"N\" value=\"\"><span>N</span><span>y</span></label>"
+            fragment(with_kids(field_node("N", ""), [text_node("y")])) == "<label><span>N</span><input type=\"text\" aria-label=\"N\" value=\"\"><span>y</span></label>"
         }
     }
     given "the stylesheet" {
@@ -177,8 +191,19 @@ spec "std/ui html — primitives" {
             ["dir-col", "dir-row", "gap-m", "pis-s", "pie-s", "pt-s", "pb-s"]
                 .all((c) -> count(sheet(), ".${c}{") == 1)
         }
-        then "it holds the variables, the six base rules and one line per class the tree named" {
-            sheet().split("\n").length == 1 + 6 + 7
+        then "it holds the variables, the nine base rules and one line per class the tree named" {
+            sheet().split("\n").length == 1 + 9 + 8
+        }
+        then "a button shows what it stands on inside a border, so a fill it names is the fill a reader sees" {
+            sheet()
+                .contains(
+                    "\nbutton{background:transparent;border:1px solid var(--tone-muted);padding:var(--space-xs) var(--space-s)}\n",
+                )
+        }
+        then "a button that cannot speak is muted" { sheet().contains("\nbutton:disabled{color:var(--tone-muted)}\n") }
+        then "what an item holds on one line stands a step apart, and the item keeps its marker" {
+            sheet()
+                .contains("\nli:not(.dir-row):not(.dir-col)>*+*{margin-inline-start:var(--space-s)}\n")
         }
         then "the variables say which scheme the browser's own controls wear" {
             sheet().starts_with(":root{color-scheme:light;") &&
