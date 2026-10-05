@@ -3,9 +3,9 @@
 //! to an attribute, and `Box` to the atomic classes its rules name. The
 //! walker is the same for every tree; the class set is deduped per
 //! document and the one stylesheet is emitted beside it. UI.md §19.2.
-use realize.render.{Node, Attribute}
+use realize.render.{Node, Attribute, Prim}
 use realize.sink.{Sink, draw}
-use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, tag_of}
+use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, control_attrs, tag_of}
 use realize.html.writer.{HtmlOp, document}
 use realize.html.css.{CssRule, distinct_rules, class_names, stylesheet}
 use env.{Env}
@@ -49,6 +49,12 @@ fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {
     [h for a in attrs for h in attr_list(a)]
 }
 
+/// An element's attributes from the neutral node: what kind of control it
+/// is, then its properties.
+export fn element_attrs(prim: Prim, attrs: List<Attribute>) -> List<HtmlAttr> {
+    control_attrs(prim).concat(attrs_of(attrs))
+}
+
 // ── the class attribute ─────────────────────────────────────────
 
 fn class_attrs(n: Node) -> List<HtmlAttr> {
@@ -71,7 +77,7 @@ impl Sink for Html {
     fn opened(_id: int, _parent: int, _index: int, n: Node) {
         // LICENSED loops.push_loop: the rules ride a shared Cell; a concat assignment would rebind a copy
         for r in distinct_rules(n.box.rules()) { self.rules.push(r) }
-        self.ops.push(HtmlOp.Open(tag_of(n), attrs_of(n.attrs).concat(node_attrs(n))))
+        self.ops.push(HtmlOp.Open(tag_of(n), element_attrs(n.prim, n.attrs).concat(node_attrs(n))))
     }
     fn words(_id: int, s: string) { self.ops.push(HtmlOp.Text(s)) }
     fn closed(n: Node) { self.ops.push(HtmlOp.Close(tag_of(n))) }

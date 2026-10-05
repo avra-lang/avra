@@ -12,6 +12,8 @@
 //!   op 4  T       id, words(len+bytes)
 //!   op 5  E       id, event kind — the host SUBSCRIBES and echoes the id
 //!                 and kind; the handler itself never leaves the program
+//!   op 8  P       id, name(len+bytes), value(len+bytes) — one attribute;
+//!                 one a later frame leaves out is removed
 //!   op 6  S       css(len+bytes) — the stylesheet, sent ONCE
 //!   op 0  N       nothing changed
 //! Every int is four little-endian bytes.
@@ -19,6 +21,7 @@ use realize.render.{Node, EventKind, Action, Handler, level_of}
 use realize.payload.{Payload}
 use realize.update.{Op, Mount, plan}
 use realize.html.tags.{tag_for}
+use realize.html.html.{element_attrs}
 use realize.html.css.{CssRule, distinct_rules, class_names_of, stylesheet}
 use realize.dom.buf.{Buf, buf}
 use realize.lists.{union}
@@ -58,6 +61,12 @@ fn mount_wire(m: Mount, b: Buf) {
         b.push_byte(3)
         b.push_int(m.id)
         b.push_str(names.join(" "))
+    }
+    for a in element_attrs(m.prim, m.attrs) {
+        b.push_byte(8)
+        b.push_int(m.id)
+        b.push_str(a.name.word())
+        b.push_str(a.value)
     }
 }
 
@@ -157,7 +166,11 @@ fn text_ops(m: Mount, path: string) -> List<string> {
     let key_ops: List<string> = if key == "" { [] } else { ["K ${path} ${key}"] }
     let names = class_names_of(m.box)
     let class_ops: List<string> = if names.is_empty() { [] } else { ["A ${path} ${names.join(" ")}"] }
-    ["C ${path} ${tag_for(m.prim, level_of(m.attrs)).word()}"].concat(key_ops).concat(class_ops)
+    let attr_ops = ["P ${path} ${a.name.word()}=${a.value}" for a in element_attrs(m.prim, m.attrs)]
+    ["C ${path} ${tag_for(m.prim, level_of(m.attrs)).word()}"]
+        .concat(key_ops)
+        .concat(class_ops)
+        .concat(attr_ops)
 }
 
 /// One event as a readable line: its path and kind.

@@ -16,6 +16,7 @@ function el(tag) {
     tagName: tag, childNodes: [], attrs: {}, textContent: "", value: "", parentNode: null,
     listeners: new Map(),
     setAttribute(k, v) { this.attrs[k] = v; },
+    removeAttribute(k) { delete this.attrs[k]; },
     appendChild(c) { c.parentNode = this; this.childNodes.push(c); },
     insertBefore(c, at) {
       if (c.parentNode) c.parentNode.removeChild(c);
@@ -56,8 +57,11 @@ const findByKey = (n, key) => {
   return null;
 };
 // A control by its words: whichever kind it bound, the demo presses that.
+// A labelled control's words sit beside it, and its listeners on the control.
+const wordsOf = (n) => (n.__avra_words ? n.__avra_words.textContent : n.textContent);
 const findControl = (n, words) => {
-  if (n.textContent === words && n.listeners.size > 0) return n;
+  const control = n.__avra_control || n;
+  if (wordsOf(n) === words && control.listeners.size > 0) return control;
   for (const c of n.childNodes) { const hit = findControl(c, words); if (hit) return hit; }
   return null;
 };

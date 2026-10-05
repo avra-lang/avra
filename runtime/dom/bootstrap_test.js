@@ -13,6 +13,7 @@ const K = (id, s) => [2, ...i32(id), ...i32(s.length), ...utf8(s)];
 const A = (id, s) => [3, ...i32(id), ...i32(s.length), ...utf8(s)];
 const T = (id, s) => [4, ...i32(id), ...i32(s.length), ...utf8(s)];
 const S = (s) => [6, ...i32(s.length), ...utf8(s)];
+const P = (id, name, value) => [8, ...i32(id), ...i32(utf8(name).length), ...utf8(name), ...i32(utf8(value).length), ...utf8(value)];
 const E = (id, kind) => [5, ...i32(id), ...i32(kind)];
 const frame = (...recs) => Uint8Array.from([5, ...recs.flat()]);
 
@@ -20,6 +21,7 @@ function el(doc, tag) {
   return {
     tagName: tag, childNodes: [], attrs: {}, textContent: "", value: "", parentNode: null, listeners: new Map(),
     setAttribute(k, v) { this.attrs[k] = v; },
+    removeAttribute(k) { delete this.attrs[k]; },
     appendChild(c) { c.parentNode = this; this.childNodes.push(c); },
     insertBefore(c, at) {
       if (c.parentNode) c.parentNode.removeChild(c);
@@ -111,10 +113,24 @@ check("an event the frame drops is unsubscribed", root3.childNodes[0].childNodes
 const typed = [];
 const root5 = el(doc, "root5");
 const app5 = createApplier(doc, root5, (who, kind, said) => typed.push([who, kind, said]));
-app5(frame(C(0, -1, 0, "input"), E(0, 2)));
-root5.childNodes[0].value = "typed here";
-root5.childNodes[0].listeners.get("input")();
+app5(frame(C(0, -1, 0, "input"), T(0, "Name"), P(0, "type", "text"), E(0, 2)));
+const labelled = root5.childNodes[0];
+const control = labelled.childNodes[0];
+check("a control is a label around it, its words beside it", [labelled.tagName, control.tagName, labelled.childNodes[1].textContent], ["label", "input", "Name"]);
+check("its attributes land on the control", control.attrs.type, "text");
+control.value = "typed here";
+control.listeners.get("input")();
 check("an input sends the element's own text", typed[0], [0, 2, { tag: "text", value: "typed here" }]);
+
+// A checkbox's state is a property the user moves; a frame that leaves the
+// attribute out clears both.
+const root6 = el(doc, "root6");
+const app6 = createApplier(doc, root6);
+app6(frame(C(0, -1, 0, "input"), P(0, "type", "checkbox"), P(0, "checked", "")));
+const box = root6.childNodes[0].childNodes[0];
+check("a checked attribute sets the property", [box.checked, "checked" in box.attrs], [true, true]);
+app6(frame(C(0, -1, 0, "input"), P(0, "type", "checkbox")));
+check("an attribute the frame drops is removed", [box.checked, "checked" in box.attrs], [false, false]);
 
 const calls = [];
 const fakeMod = {
@@ -140,5 +156,5 @@ app4(frame(C(0, -1, 0, "div"), C(1, 0, 0, "ul"), C(2, 1, 0, "li"), C(3, 0, 1, "p
 const shifted = root4.childNodes[0].childNodes[1];
 check("a shifted id does not reuse another tag", { tag: shifted.tagName, text: shifted.textContent }, { tag: "p", text: "footer" });
 
-console.log(fails === 0 ? "bootstrap: 23/23" : `bootstrap: ${fails} FAILED`);
+console.log(fails === 0 ? "bootstrap: 27/27" : `bootstrap: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

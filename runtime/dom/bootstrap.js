@@ -32,7 +32,7 @@ export function parseFrame(bytes) {
       const index = dv.getInt32(i, true); i += 4;
       const len = dv.getInt32(i, true); i += 4;
       const tag = str(i, len); i += len;
-      const r = { id, parent, index, tag, key: null, cls: null, text: null, events: [] };
+      const r = { id, parent, index, tag, key: null, cls: null, text: null, events: [], attrs: [] };
       records.push(r);
       byId.set(id, r);
     } else if (op === 2 || op === 3 || op === 4) {
@@ -46,6 +46,14 @@ export function parseFrame(bytes) {
       const kind = dv.getInt32(i, true); i += 4;
       const r = byId.get(id);
       if (r) r.events.push(kind);
+    } else if (op === 8) {
+      const id = dv.getInt32(i, true); i += 4;
+      const nameLen = dv.getInt32(i, true); i += 4;
+      const name = str(i, nameLen); i += nameLen;
+      const valueLen = dv.getInt32(i, true); i += 4;
+      const value = str(i, valueLen); i += valueLen;
+      const r = byId.get(id);
+      if (r) r.attrs.push([name, value]);
     } else if (op === 6) {
       const len = dv.getInt32(i, true); i += 4;
       records.stylesheet = str(i, len); i += len;
@@ -61,6 +69,45 @@ export function parseFrame(bytes) {
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element.
 const EVENT_NAME = { 1: "click", 2: "input", 3: "change", 4: "submit" };
+
+// A CONTROL HAS NO CONTENT: an `input` or a `progress` cannot hold its own
+// words, so its node is a `label` wrapping the control and the words beside
+// it. The wrapper is the node's place in the tree (its key, class and
+// order); the control takes the attributes and the events.
+const CONTROL = new Set(["input", "progress"]);
+// State the USER moves lives in a property; the attribute is only its seed.
+const PROPERTY = { checked: (el, on) => { el.checked = on; }, value: (el, on, v) => { if (el.value !== v) el.value = on ? v : ""; } };
+
+function make(doc, tag) {
+  if (!CONTROL.has(tag)) { const el = doc.createElement(tag); el.__avra_tag = tag; return el; }
+  const el = doc.createElement("label");
+  el.__avra_tag = tag;
+  el.__avra_control = doc.createElement(tag);
+  el.__avra_words = doc.createElement("span");
+  el.appendChild(el.__avra_control);
+  el.appendChild(el.__avra_words);
+  return el;
+}
+
+// The element a node's attributes, events and value belong to.
+const controlOf = (el) => el.__avra_control || el;
+
+function setAttrs(el, attrs) {
+  const at = controlOf(el);
+  const had = at.__avra_attrs || new Set();
+  const now = new Set();
+  for (const [name, value] of attrs) {
+    now.add(name);
+    at.setAttribute(name, value);
+    if (PROPERTY[name]) PROPERTY[name](at, true, value);
+  }
+  for (const name of had) {
+    if (now.has(name)) continue;
+    at.removeAttribute(name);
+    if (PROPERTY[name]) PROPERTY[name](at, false, "");
+  }
+  at.__avra_attrs = now;
+}
 
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   // LICENSED loops.push_loop: these maps ride the closure as the applier's table
@@ -81,10 +128,12 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
       // rewrote every later node into the element of a node that moved.
       const keyed = r.key !== null && byKey.has(r.key);
       const reused = byId.get(r.id);
-      const el = keyed ? byKey.get(r.key) : reused && reused.tagName === r.tag ? reused : doc.createElement(r.tag);
+      const el = keyed ? byKey.get(r.key) : reused && reused.__avra_tag === r.tag ? reused : make(doc, r.tag);
       if (r.key !== null) { el.setAttribute("data-key", r.key); byKey.set(r.key, el); keys.add(r.key); }
       if (r.cls !== null) el.setAttribute("class", r.cls);
-      if (r.text !== null && el.textContent !== r.text) el.textContent = r.text;
+      const words = el.__avra_words || el;
+      if (r.text !== null && words.textContent !== r.text) words.textContent = r.text;
+      setAttrs(el, r.attrs);
       // The id is THIS frame's: a listener reads it when it fires, so a node
       // that moved speaks under the id the program last gave it.
       el.__avra_id = r.id;
@@ -112,8 +161,9 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     // SUBSCRIBE: each event a frame names is a listener; one it drops is
     // removed. The host calls back with the node's CURRENT id and the kind.
     for (const r of records) {
-      const el = next.get(r.id);
-      if (!el) continue;
+      const node = next.get(r.id);
+      if (!node) continue;
+      const el = controlOf(node);
       const attached = el.__avra_events || (el.__avra_events = new Map());
       const want = new Set(r.events);
       for (const [kind, handler] of [...attached]) {
@@ -129,7 +179,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
         // so an input event carries the element's value. Every other kind
         // says nothing.
         const handler = () =>
-          send(el.__avra_id, kind, kind === 2 && el.value !== undefined ? { tag: "text", value: String(el.value) } : null);
+          send(node.__avra_id, kind, kind === 2 && el.value !== undefined ? { tag: "text", value: String(el.value) } : null);
         el.addEventListener(name, handler);
         attached.set(kind, handler);
       }
