@@ -1,0 +1,214 @@
+// Each primitive's exact HTML, the look as atomic classes, nesting, the
+// stylesheet and the page. Trees are neutral nodes, so no component is
+// involved.
+use @std.ui.realize.render.{Node, Prim}
+use @std.ui.realize.html.html.{fragment, render, page, Page}
+use @std.ui.env.{Env}
+use @std.ui.style.box.{Box}
+use @std.ui.style.layout.{Layout, around}
+use @std.ui.style.style.{Style}
+use @std.ui.style.theme.{dark_theme, high_contrast_theme}
+use @std.ui.realize.tests.support.{
+    leaf,
+    boxed,
+    holding,
+    keyed,
+    with_kids,
+    gap,
+    text_node,
+    heading_node,
+    image_node,
+    link_node,
+    button_node,
+    switch_node,
+    field_node,
+    card_node,
+}
+
+fn styled(s: Style) -> Node { Node { prim: .Text, attrs: [.Text("x")], box: Box { style: s }, children: [] } }
+
+fn tree() -> Node {
+    boxed(
+        .Column,
+        Layout { gap: .M, pad: around(.S) },
+        [heading_node("Tasks", 1), holding(.Row, [text_node("one"), button_node("Add")])],
+    )
+}
+
+/// The stylesheet a document carries.
+fn css_of(document: string) -> string { document.split("<style>")[1].split("</style>")[0] }
+
+fn sheet() -> string { css_of(render(tree(), Env {})) }
+
+fn count(hay: string, needle: string) -> int { hay.split(needle).length - 1 }
+
+spec "std/ui html — primitives" {
+    given "each primitive" {
+        then "a text is a span of its words" { fragment(text_node("hi")) == "<span>hi</span>" }
+        then "a heading takes its level" { fragment(heading_node("T", 3)) == "<h3>T</h3>" }
+        then "a heading level below one is h1" {
+            fragment(heading_node("T", 0)) == "<h1>T</h1>" &&
+                fragment(heading_node("T", -4)) == "<h1>T</h1>"
+        }
+        then "a heading level above six is h6" {
+            fragment(heading_node("T", 7)) == "<h6>T</h6>" &&
+                fragment(heading_node("T", 6)) == "<h6>T</h6>"
+        }
+        then "an image carries src and alt and is never closed" {
+            fragment(image_node("/a.png", "A")) == "<img src=\"/a.png\" alt=\"A\">"
+        }
+        then "an image with an empty alt still carries alt" {
+            fragment(image_node("/a.png", "")) == "<img src=\"/a.png\" alt=\"\">"
+        }
+        then "a link carries its name, its escaped href and its label" {
+            fragment(link_node("go", "https://x.dev/a?b=1&c=2")) == "<a aria-label=\"go\" href=\"https://x.dev/a?b=1&amp;c=2\">go</a>"
+        }
+        then "a button holds its label" { fragment(button_node("Add")) == "<button aria-label=\"Add\">Add</button>" }
+        then "a switch that is on is a checked switch input under a label" {
+            fragment(switch_node("Dark", true)) == "<label><input type=\"checkbox\" role=\"switch\" aria-label=\"Dark\" checked=\"\"><span>Dark</span></label>"
+        }
+        then "a switch that is off carries no checked attribute" {
+            fragment(switch_node("Dark", false)) == "<label><input type=\"checkbox\" role=\"switch\" aria-label=\"Dark\"><span>Dark</span></label>"
+        }
+        then "a checkbox is a checkbox input under a label" {
+            fragment(leaf(.Checkbox, [.Label("Done"), .Checked(true)])) == "<label><input type=\"checkbox\" aria-label=\"Done\" checked=\"\"><span>Done</span></label>"
+        }
+        then "a field is a text input holding its value, its label beside it" {
+            fragment(field_node("Name", "Ann")) == "<label><input type=\"text\" aria-label=\"Name\" value=\"Ann\"><span>Name</span></label>"
+        }
+        then "a slider is a range input, its label beside it" {
+            fragment(leaf(.Slider, [.Label("Vol"), .Amount(4), .Min(0), .Max(9)])) == "<label><input type=\"range\" aria-label=\"Vol\" value=\"4\" min=\"0\" max=\"9\"><span>Vol</span></label>"
+        }
+        then "a progress is closed before its label, both under a label" {
+            fragment(leaf(.Progress, [.Label("Up"), .Amount(3), .Max(10)])) == "<label><progress aria-label=\"Up\" value=\"3\" max=\"10\"></progress><span>Up</span></label>"
+        }
+        then "a divider is a rule that is never closed" { fragment(leaf(.Divider, [])) == "<hr>" }
+        then "a card shows its title as a heading over its children" {
+            fragment(card_node("T", [text_node("x")])) == "<article title=\"T\"><h2>T</h2><span>x</span></article>"
+        }
+        then "an empty card keeps its title" { fragment(card_node("T", [])) == "<article title=\"T\"><h2>T</h2></article>" }
+        then "a card given no title has no heading" { fragment(holding(.Card, [])) == "<article></article>" }
+        then "a keyed item carries its identity" {
+            fragment(keyed(holding(.Item, [text_node("x")]), "a")) == "<li data-key=\"a\"><span>x</span></li>"
+        }
+        then "an unkeyed item carries none" { fragment(leaf(.Item, [])) == "<li></li>" }
+        then "an empty key is still a key" { fragment(keyed(leaf(.Item, []), "")) == "<li data-key=\"\"></li>" }
+        then "a list holds its items in order" {
+            fragment(holding(.List, [keyed(leaf(.Item, []), "a"), leaf(.Item, [])])) == "<ul><li data-key=\"a\"></li><li></li></ul>"
+        }
+        then "a control's key and classes sit on its label, its attributes on the control" {
+            fragment(keyed(boxed(.Field, gap(.M), []), "k")) == "<label data-key=\"k\" class=\"gap-m\"><input type=\"text\"><span></span></label>"
+        }
+    }
+    given "the look" {
+        then "style tokens become atomic classes in rule order" {
+            fragment(styled(Style { color: .Muted, face: .Body })) == "<span class=\"color-muted face-body\">x</span>"
+        }
+        then "every appearance token names its own class" {
+            fragment(
+                styled(Style { radius: .L, fill: .SurfaceRaised, color: .Danger, face: .Mono }),
+            ) == "<span class=\"color-danger fill-surface-raised radius-l face-mono\">x</span>"
+        }
+        then "a column flows down, its axis class first" {
+            fragment(boxed(.Column, gap(.M), [])) == "<div class=\"dir-col gap-m\"></div>"
+        }
+        then "a row flows across, its axis class first" {
+            fragment(boxed(.Row, gap(.Xl), [])) == "<div class=\"dir-row gap-xl\"></div>"
+        }
+        then "a layout's direction replaces a row's own axis" {
+            fragment(boxed(.Row, Layout { direction: .Column }, [])) == "<div class=\"dir-col\"></div>"
+        }
+        then "a surface names no axis of its own" { fragment(holding(.Surface, [])) == "<div></div>" }
+        then "a pad names one class per logical edge" {
+            fragment(boxed(.Column, Layout { pad: around(.S) }, [])) == "<div class=\"dir-col pis-s pie-s pt-s pb-s\"></div>"
+        }
+    }
+    given "nesting" {
+        then "children recurse in order" {
+            fragment(tree()) == "<div class=\"dir-col gap-m pis-s pie-s pt-s pb-s\"><h1>Tasks</h1><div class=\"dir-row\"><span>one</span><button aria-label=\"Add\">Add</button></div></div>"
+        }
+        then "a child given to an image follows it, never inside it" {
+            fragment(with_kids(image_node("/a.png", "A"), [text_node("y")])) == "<img src=\"/a.png\" alt=\"A\"><span>y</span>"
+        }
+        then "a child given to a control stays inside its label" {
+            fragment(with_kids(field_node("N", ""), [text_node("y")])) == "<label><input type=\"text\" aria-label=\"N\" value=\"\"><span>N</span><span>y</span></label>"
+        }
+    }
+    given "the stylesheet" {
+        then "it names every space and radius step" {
+            ["none", "xs", "s", "m", "l", "xl"]
+                .all((z) -> sheet().contains("--space-${z}:") && sheet().contains("--radius-${z}:"))
+        }
+        then "it names every tone" {
+            [
+                "text",
+                "muted",
+                "danger",
+                "surface",
+                "surface-raised",
+                "surface-sunk",
+                "surface-hover",
+            ]
+                .all((t) -> sheet().contains("--tone-${t}:"))
+        }
+        then "it names every face" { ["body", "heading", "footnote", "mono"].all((f) -> sheet().contains("--face-${f}:")) }
+        then "the page's base reads the surface, the text tone and the body face" {
+            sheet()
+                .contains(
+                    "body{margin:0;background:var(--tone-surface);color:var(--tone-text);font-family:var(--face-body)}",
+                )
+        }
+        then "the axis classes are flex" {
+            sheet().contains(".dir-col{display:flex;flex-direction:column}") &&
+                sheet().contains(".dir-row{display:flex;flex-direction:row}")
+        }
+        then "atomic rules read the variables" {
+            sheet().contains(".gap-m{gap:var(--space-m)}") &&
+                sheet().contains(".pis-s{padding-inline-start:var(--space-s)}")
+        }
+        then "every class the tree names has exactly one rule" {
+            ["dir-col", "dir-row", "gap-m", "pis-s", "pie-s", "pt-s", "pb-s"]
+                .all((c) -> count(sheet(), ".${c}{") == 1)
+        }
+        then "it holds the variables, the base and one line per class the tree named" {
+            sheet().split("\n").length == 2 + 7
+        }
+        then "two renders of one tree are equal" { render(tree(), Env {}) == render(tree(), Env {}) }
+        then "it holds no `<`" { !sheet().contains("<") }
+    }
+    given "the page" {
+        then "it is a complete document around the tree" {
+            let out = page(Page { title: "T" }, text_node("x"))
+            out
+                    .starts_with(
+                        "<!doctype html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>T</title><style>:root{",
+                    ) &&
+                out.ends_with("</style></head><body><span>x</span></body></html>")
+        }
+        then "it carries no script tag" { !page(Page { title: "T" }, tree()).contains("<script") }
+        then "its language and direction are the environment's" {
+            page(Page { title: "T", env: Env { locale: "ar", direction: .Rtl } }, tree())
+                .contains("<html lang=\"ar\" dir=\"rtl\">")
+        }
+        then "its variables are the environment's theme" {
+            css_of(page(Page { title: "T", env: Env { theme: dark_theme } }, tree()))
+                    .contains(":root{") &&
+                css_of(page(Page { title: "T", env: Env { theme: dark_theme } }, tree()))
+                    .contains("--tone-surface:#121212")
+        }
+        then "with no alternate it holds no media query" { !page(Page { title: "T" }, tree()).contains("@media") }
+        then "a dark alternate rewrites the variables under the dark scheme query, once" {
+            let css = css_of(page(Page { title: "T", alternates: [dark_theme] }, tree()))
+            count(css, "@media (prefers-color-scheme: dark){:root{") == 1 &&
+                css.split("prefers-color-scheme: dark")[1].contains("--tone-text:#eeeeee") &&
+                css.split("prefers-color-scheme: dark")[0].contains("--tone-text:#111111")
+        }
+        then "a high-contrast alternate sits under the contrast query" {
+            css_of(page(Page { title: "T", alternates: [high_contrast_theme] }, tree()))
+                .contains("@media (prefers-contrast: more){:root{")
+        }
+        then "the fragment is the page's body" {
+            page(Page { title: "T" }, tree()).contains("<body>${fragment(tree())}</body>")
+        }
+    }
+}

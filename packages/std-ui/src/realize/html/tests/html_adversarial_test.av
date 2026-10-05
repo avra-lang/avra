@@ -1,0 +1,186 @@
+// Hostile input against every string slot and every context, the writer
+// checked over an exhaustive corpus, and the shapes at both ends of size.
+use @std.text.{repeat, from_codepoint}
+use @std.ui.realize.render.{Node}
+use @std.ui.realize.html.html.{fragment, render, page, Page}
+use @std.ui.realize.html.writer.{HtmlOp, source}
+use @std.ui.realize.html.tags.{HtmlAttr}
+use @std.ui.realize.html.url.{safe_url}
+use @std.ui.env.{Env}
+use @std.ui.style.theme.{default_theme}
+use @std.ui.realize.tests.support.{
+    leaf,
+    holding,
+    keyed,
+    text_node,
+    heading_node,
+    image_node,
+    link_node,
+    button_node,
+    switch_node,
+    field_node,
+    card_node,
+}
+
+fn hostile() -> string { "\"'><script>x</script>&" }
+
+/// Every string over the special characters and one plain one, up to length `n`.
+fn corpus(n: int) -> List<string> {
+    if n == 0 { return [""] }
+    let rest = corpus(n - 1)
+    mut out: List<string> = [""]
+    for a in ["&", "<", ">", "\"", "'", "a"] {
+        out = out.concat([a + w for w in rest if w != ""]).concat([a])
+    }
+    out
+}
+
+fn decoded(s: string) -> string {
+    s
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+fn specials_free(s: string) -> bool {
+    !s.contains("<") && !s.contains(">") && !s.contains("\"") && !s.contains("'")
+}
+
+fn text_source(s: string) -> string { source([HtmlOp.Text(s)]) }
+
+fn attr_source(s: string) -> string { source([HtmlOp.Open(.Span, [HtmlAttr { name: .Title, value: s }])]) }
+
+/// One node per string slot of the vocabulary, each holding the hostile string.
+fn hostile_nodes() -> List<Node> {
+    let h = hostile()
+    [
+        text_node(h),
+        heading_node(h, 2),
+        image_node(h, h),
+        image_node("/ok", h),
+        link_node(h, h),
+        link_node(h, "/ok"),
+        button_node(h),
+        switch_node(h, true),
+        field_node(h, h),
+        card_node(h, []),
+        keyed(leaf(.Item, []), h),
+        leaf(.Field, [.Label(h), .Placeholder(h)]),
+        leaf(.Icon, [.Src(h), .Name(h)]),
+        leaf(.Dialog, [.Label(h), .Open(true)]),
+        leaf(.Alert, [.Text(h)]),
+        leaf(.Spinner, [.Label(h)]),
+        leaf(.Progress, [.Label(h)]),
+    ]
+}
+
+/// The double quotes in a node's HTML.
+fn quotes(n: Node) -> int { fragment(n).split("\"").length - 1 }
+
+fn nested(depth: int) -> Node {
+    if depth == 0 { return text_node("x") }
+    holding(.Column, [nested(depth - 1)])
+}
+
+fn css_of(document: string) -> string { document.split("<style>")[1].split("</style>")[0] }
+
+spec "std/ui html — adversarial" {
+    given "degenerate shapes" {
+        then "an empty text is an empty span" { fragment(text_node("")) == "<span></span>" }
+        then "an empty heading keeps its tag" { fragment(heading_node("", 1)) == "<h1></h1>" }
+        then "an empty button label is an empty button with an empty name" {
+            fragment(button_node("")) == "<button aria-label=\"\"></button>"
+        }
+        then "an empty link keeps its target" { fragment(link_node("", "/a")) == "<a aria-label=\"\" href=\"/a\"></a>" }
+        then "an empty image source is a path with no scheme" { fragment(image_node("", "")) == "<img src=\"\" alt=\"\">" }
+        then "an empty page title is an empty title" {
+            page(Page { title: "" }, holding(.Column, [])).contains("<title></title>")
+        }
+        then "a heading level at the integer ends clamps" {
+            fragment(heading_node("x", 9223372036854775807)) == "<h6>x</h6>" &&
+                fragment(heading_node("x", -9223372036854775807)) == "<h1>x</h1>"
+        }
+        then "two nested columns close in order" {
+            fragment(nested(2)) == "<div class=\"dir-col\"><div class=\"dir-col\"><span>x</span></div></div>"
+        }
+        then "two hundred nested columns keep every open and close" {
+            let out = fragment(nested(200))
+            out.length == 200 * 27 + 14 &&
+                out.starts_with("<div class=\"dir-col\"><div") &&
+                out.ends_with("</span>" + repeat("</div>", 200))
+        }
+        then "a thousand siblings keep their order" {
+            let out = fragment(holding(.List, [keyed(leaf(.Item, []), "${i}") for i in 0..1000]))
+            out.starts_with("<ul><li data-key=\"0\"></li><li data-key=\"1\"></li>") &&
+                out.ends_with("<li data-key=\"999\"></li></ul>") &&
+                out.split("<li").length == 1001
+        }
+        then "a text of five thousand specials is every one escaped" {
+            fragment(text_node(repeat("<", 5000))).length == 6 + 5000 * 4 + 7
+        }
+    }
+    given "hostile strings in every slot" {
+        then "no slot lets a script tag out" { hostile_nodes().all((n) -> !fragment(n).contains("<script")) }
+        then "no slot lets a raw single quote out" { hostile_nodes().all((n) -> !fragment(n).contains("'")) }
+        then "every double quote a node writes delimits one of its own attributes" {
+            ["${quotes(n)}" for n in hostile_nodes()].join(",") == "0,0,4,4,4,4,2,8,6,2,2,6,4,4,0,2,2"
+        }
+        then "a hostile tree inside containers lets no script tag out" {
+            let tree = holding(.Column, hostile_nodes())
+            !fragment(tree).contains("<script") &&
+                !page(Page { title: hostile() }, tree).contains("<script")
+        }
+        then "a hostile title is escaped whole inside the title" {
+            page(Page { title: hostile() }, holding(.Column, []))
+                .contains("<title>&quot;&#39;&gt;&lt;script&gt;x&lt;/script&gt;&amp;</title>")
+        }
+        then "a hostile locale stays inside the lang attribute" {
+            page(Page { title: "T", env: Env { locale: "\"><script>" } }, holding(.Column, []))
+                .contains("<html lang=\"&quot;&gt;&lt;script&gt;\" dir=\"ltr\">")
+        }
+    }
+    given "the writer over every short string" {
+        then "text escaping leaves no special character" { corpus(3).all((w) -> specials_free(text_source(w))) }
+        then "text escaping decodes back to the input" { corpus(3).all((w) -> decoded(text_source(w)) == w) }
+        then "an attribute value is the text escaping in double quotes" {
+            corpus(3).all((w) -> attr_source(w) == "<span title=\"${text_source(w)}\">")
+        }
+        then "the corpus holds every string up to three characters" { corpus(3).length == 1 + 6 + 36 + 216 }
+    }
+    given "URLs beyond the listed attacks" {
+        then "a full-width scheme is refused" { !safe_url("ｊavascript:alert(1)") }
+        then "a scheme with a slash before the colon is refused" { !safe_url("a/b:c") }
+        then "a leading space before a relative path is a path" { safe_url(" /x") }
+        then "a leading space before a colon is refused" { !safe_url(" /x:y") && !safe_url(" https://x") }
+        then "a query colon with no relative opening is refused" { !safe_url("x?a=b:c") }
+        then "a URL holding an entity for its colon is a path, its ampersand escaped" {
+            safe_url("javascript&colon;alert(1)") &&
+                fragment(link_node("x", "javascript&colon;alert(1)")) == "<a aria-label=\"x\" href=\"javascript&amp;colon;alert(1)\">x</a>"
+        }
+        then "a ten-thousand-letter scheme is refused" { !safe_url(repeat("a", 10000) + ":x") }
+        then "an allowed scheme behind a control character is refused" {
+            !safe_url(from_codepoint(1) + "https://x") &&
+                !safe_url("ht" + from_codepoint(10) + "tps://x")
+        }
+        then "an allowed scheme with a trailing space before its colon is refused" { !safe_url("https :x") }
+        then "a scheme in non-ASCII capitals is refused" { !safe_url("ＨＴＴＰ://x") }
+        then "a backslash opening is a path with no scheme" { safe_url("\\\\x.dev\\a") && !safe_url("\\javascript:x") }
+        then "a refused link in a tree leaves no href holding its value" {
+            !fragment(holding(.Column, [link_node("x", "javascript:alert(1)")]))
+                .contains("href=\"javascript")
+        }
+    }
+    given "the stylesheet" {
+        then "its braces balance" {
+            let css = css_of(render(holding(.Column, hostile_nodes()), Env {}))
+            (css + "x").split("{").length == (css + "x").split("}").length
+        }
+        then "a `<` in a theme value cannot close the style element" {
+            let theme = default_theme with { face: {"body": "x</style><script>alert(1)</script>"} }
+            let out = page(Page { title: "T", env: Env { theme: theme } }, text_node("x"))
+            !out.contains("<script") && out.split("</style>").length == 2
+        }
+    }
+}
