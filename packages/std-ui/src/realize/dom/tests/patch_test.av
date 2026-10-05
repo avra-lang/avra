@@ -3,6 +3,7 @@
 use @std.ui.realize.dom.live.{Live, live}
 use @std.ui.realize.render.{Node, Action, Handler, Said}
 use @std.ui.realize.tests.support.{
+    spoken,
     named,
     button_node,
     card_node,
@@ -21,7 +22,7 @@ use @std.ui.style.theme.{default_theme, dark_theme}
 fn between(from: Node, to: Node) -> string {
     let page = live()
     let _ = page.patches(from, default_theme)
-    page.said(to, default_theme)
+    spoken(page, to, default_theme)
 }
 
 fn rows(keys: List<string>) -> Node { holding(.List, [keyed(holding(.Item, [text_node(k)]), k) for k in keys]) }
@@ -46,7 +47,7 @@ fn after_sliding(shown: int, moved: int, drawn: int) -> string {
     let page = live()
     let _ = page.patches(slider_at(shown), default_theme)
     let _ = page.fire(named(page, "V")[0], .Change, Said.Number(moved))
-    page.said(slider_at(drawn), default_theme)
+    spoken(page, slider_at(drawn), default_theme)
 }
 
 fn muted(n: Node) -> Node { n with { box: Box { style: Style { color: .Muted } } } }
@@ -57,7 +58,7 @@ fn after_typing(shown: string, typed: string, drawn: string) -> string {
     let page = live()
     let _ = page.patches(hearing(field_node("N", shown), Handler.Text(heard_text)), default_theme)
     let _ = page.fire(named(page, "N")[0], .Input, Said.Text(typed))
-    page.said(hearing(field_node("N", drawn), Handler.Text(heard_text)), default_theme)
+    spoken(page, hearing(field_node("N", drawn), Handler.Text(heard_text)), default_theme)
 }
 
 spec "std/ui dom — a repaint says only what changed" {
@@ -208,7 +209,11 @@ spec "std/ui dom — a property is what the page holds" {
             let _ = page.fire(named(page, "N")[0], .Input, Said.Text("a"))
             let _ = page.fire(named(page, "N")[0], .Input, Said.Text("ab"))
             page.heard.get().length == 1 &&
-                page.said(hearing(field_node("N", "ab"), Handler.Text(heard_text)), default_theme) == ""
+                spoken(
+                    page,
+                    hearing(field_node("N", "ab"), Handler.Text(heard_text)),
+                    default_theme,
+                ) == ""
         }
     }
     given "a field the user typed into, drawn with what the program still holds" {
@@ -224,7 +229,7 @@ spec "std/ui dom — a property is what the page holds" {
             let _ = page.fire(named(page, "N")[0], .Input, Said.Text("abc"))
             let _ = page
                 .patches(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme)
-            page.said(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme) == ""
+            spoken(page, hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme) == ""
         }
     }
 }
@@ -232,7 +237,7 @@ spec "std/ui dom — a property is what the page holds" {
 spec "std/ui dom — the sheet" {
     given "a first paint" {
         then "sends the sheet before any element" {
-            live().said(text_node("a"), default_theme).starts_with("style\ncreate 0 span")
+            spoken(live(), text_node("a"), default_theme).starts_with("style\ncreate 0 span")
         }
     }
     given "a class the page has worn before, named in another order" {
@@ -240,8 +245,7 @@ spec "std/ui dom — the sheet" {
             let page = live()
             let _ = page
                 .patches(holding(.Row, [muted(text_node("a")), text_node("b")]), default_theme)
-            !page
-                .said(holding(.Row, [text_node("a"), muted(text_node("b"))]), default_theme)
+            !spoken(page, holding(.Row, [text_node("a"), muted(text_node("b"))]), default_theme)
                 .contains("style")
         }
     }
@@ -252,7 +256,7 @@ spec "std/ui dom — the sheet" {
         then "sends the sheet and moves no element" {
             let page = live()
             let _ = page.patches(text_node("a"), default_theme)
-            page.said(text_node("a"), dark_theme) == "style"
+            spoken(page, text_node("a"), dark_theme) == "style"
         }
     }
 }

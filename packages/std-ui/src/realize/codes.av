@@ -14,10 +14,11 @@ export trait Codes {
     fn code() -> int
 
     /// The impl, when every variant wears a number of its own. A refused
-    /// enum generates nothing, so no call reaches a number nobody wrote.
+    /// enum is given `refused_codes` in its place, so the refusal is the
+    /// one thing said.
     static fn derive(t: Type) -> Declared {
         let problems = [p for j, v in t.variants for p in problem(t.variants, j)]
-        if !problems.is_empty() { return Declared { made: [], problems: problems } }
+        if !problems.is_empty() { return Declared { made: [refused_codes(t)], problems: problems } }
         let coded = [Wears { name: v.name, code: c } for v in t.variants for c in worn(v)]
         let arms = [quote { .${w.name} -> ${w.code} } for w in coded]
         let each = [quote { .${w.name} } for w in coded]
@@ -47,6 +48,26 @@ export trait Codes {
     }
 
     static fn marks(t: Type) -> List<string> { [code_mark] }
+}
+
+/// What a refused enum is given: the three verbs, answering no number
+/// anyone wrote and no variant — the build is already refused, so none of
+/// them runs, and no caller is blamed for a method that was never made.
+fn refused_codes(t: Type) -> Directive {
+    Directive {
+        twin: "",
+        name: t.name,
+        at: t.at,
+        source: quote {
+            impl ${t} {
+                fn code() -> int { 0 }
+
+                static fn coded() -> List<Coded> { [] }
+
+                static fn coded_as(code: int) -> ${t}? { null }
+            }
+        },
+    }
 }
 
 /// The mark a variant's number is written under.

@@ -115,13 +115,18 @@ Five attempts to lift a handler into a generated message failed.
    reading order, are one definition the headless screen and the
    terminal share (`realize/controls.av`); the focus is kept by the path
    a control stands at, so it follows a keyed row. A field shows what
-   the view says it holds. Input is read as it arrives on the standard
-   input — whole lines in a terminal left in its usual mode — so no row
-   of the runtime was added. The board (`tools/ui-board`) is one view
+   the view says it holds. Input is read as octets, as they arrive on
+   the standard input: an octet that is no character is dropped alone,
+   and a character or escape sequence a read cuts is finished by the
+   next. A TERMINAL LEFT IN ITS USUAL MODE SENDS WHOLE LINES, AND A
+   LINE'S END IS ENTER: so there the focus cannot move without acting
+   on the control it lands on, and text cannot be typed into a field
+   without Enter following it. Keys one at a time need the terminal's
+   raw mode, a row the runtime does not have (avra-8sb5.11.279). The board (`tools/ui-board`) is one view
    with two entries: `web/` mounts it on a page, `term/` in a terminal.
 10. **One library.** One `View`, one `Node`. The `Role`/`Setting`
     model is deleted with the packages that drew it (`@std/ui_html`,
-    `@std/ui_tui`); `@std/ui_http` answers a `Screen` from a route as
+    `@std/ui_tui`); `@std/ui_http` answers a `Document` from a route as
     the page `realize/html` draws, and `@std/ui_gallery` and the site
     stand on the one model. The tokens a look names (`Size`, `Tone`,
     `Font`) are `style/tokens.av`'s; a value that shows itself where it

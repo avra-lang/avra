@@ -95,7 +95,7 @@ Paths are under `packages/std-avrac/src/`.
 |---|---|
 | O(n²) selection sort by slice+concat | `grammar/lexer.av:698` `sorted_remarks`, `core/types.av:1170` `sorted_distinct_ids`, `diagnostics/source.av:98` `sorted_by_lo_desc` |
 | O(n²) insertion sort | `std-http/src/route.av:385` `sorted_distinct` |
-| max fold | `core/shape.av:555-580` (three), `compiler/soundness/soundness.av:716` `largest`, `compiler/format/source_text.av:2331` `max_len`, `std-ui_tui` `larger`/`smaller` (`avra-8sb5.10.112`) |
+| max fold | `core/shape.av:555-580` (three), `compiler/soundness/soundness.av:716` `largest`, `compiler/format/source_text.av:2331` `max_len` |
 | `Map<string, bool>` used as a set | 35 declarations |
 | `mut best`/`mut m` accumulator loops | 46 |
 | `LICENSED loops.push_loop` (an accumulator the idiom bar could not state) | 55 |
@@ -114,9 +114,9 @@ Paths are under `packages/std-avrac/src/`.
 | `.11.207` | methods on `List<Operation>` | std-openapi `described()` |
 | `.10.22` | `filter_map` (one computed value for filter and element) | `defs_of` |
 | `.11.55` | a comprehension over `List<T?>` that drops absence | cli `test.av` `eval_quarrels` |
-| `.10.113` | `flatten` reachable from std (std-grammar keeps a copy) | std-ui_tui, std-ui_html |
+| `.10.113` | `flatten` reachable from std (std-grammar keeps a copy) | std-ui `realize/lists.av` |
 | `.10.133` | `(lo..n).find(p)` that stops early | `backend/interp_bytes.av` |
-| `.10.112` | `min`/`max` over ints | std-ui_tui |
+| `.10.112` | `min`/`max` over ints | the terminal target's line widths (it calls `.max()` now: std-ui `realize/tui/layout.av`) |
 | `.10.27` | `for c in s.codes()` | the lexer |
 | `.10.56` | slicing a range | — |
 | `.10.24` | list spread `[0, ..xs]` | fingerprint arms |

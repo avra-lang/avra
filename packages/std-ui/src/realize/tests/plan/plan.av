@@ -1,7 +1,7 @@
 // proves: one walk becomes a neutral update GRAPH — ids, placement, words
 // and events — with no target's currency (tag, class, byte op, line) in it.
 use @std.ui.realize.render.{Node, Prim, Attribute, EventKind, Action, Handler}
-use @std.ui.realize.update.{Op, plan, words_at}
+use @std.ui.realize.update.{Op, plan}
 use @std.ui.style.box.{Box}
 
 fn parent_word(parent: int?) -> string {
@@ -18,6 +18,18 @@ fn op_word(op: Op) -> string {
         .Event(id, a) -> "E ${id} ${a.kind.word()}",
     }
 }
+
+/// The words an op says for `seat`, when it is that seat's.
+fn words_of(op: Op, seat: int) -> string? {
+    match op {
+        .Words(who, text) -> if who == seat { text } else { null },
+        .Mount(_) or .Event(_, _) -> null,
+    }
+}
+
+/// A node's words, read back from the op that carries them — absent for a
+/// seat the walk never reached.
+fn words_at(ops: List<Op>, seat: int) -> string? { ops.find_map(words_of(it, seat)) }
 
 fn nothing() {}
 

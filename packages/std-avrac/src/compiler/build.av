@@ -115,9 +115,13 @@ const WASM_FEATURES = [
     "sign-ext",
 ]
 
-/// The optimizer's words: shrink `linked` into `shrunk`, for size.
-fn wasm_opt_words(linked: string, shrunk: string) -> List<string> {
-    ["--enable-${f}" for f in WASM_FEATURES].concat(["-Oz", linked, "-o", shrunk])
+/// The optimizer's words to shrink `linked` into `shrunk`, for size — the
+/// spellings to try, in order. An optimizer too old to know a feature by
+/// name is older than any proposal "every feature" would turn on, so for
+/// it alone that word is the same set.
+fn wasm_opt_tries(linked: string, shrunk: string) -> List<List<string>> {
+    let shrink = ["-Oz", linked, "-o", shrunk]
+    [["--enable-${f}" for f in WASM_FEATURES].concat(shrink), ["--all-features"].concat(shrink)]
 }
 
 /// ONE OBJECT OF A BUILD: what it is an object of, the key it is kept under,
@@ -816,7 +820,7 @@ fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string 
 fn shipped(staged: string, tools: Toolchain) -> string {
     if tools.target == "" || tools.wasm_opt == "" { return staged }
     let shrunk = staged_beside(staged)
-    if avra_spawn_status(tools.wasm_opt, wasm_opt_words(staged, shrunk)) != 0 {
+    if !wasm_opt_tries(staged, shrunk).any((words) -> avra_spawn_status(tools.wasm_opt, words) == 0) {
         let _ = remove(shrunk)
         return staged
     }

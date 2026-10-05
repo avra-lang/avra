@@ -1,0 +1,58 @@
+// A Document answers a text/html page: its title, its body, the one sheet
+// its classes read, and no script — and a URL the tree refused is not in it.
+use @std.http.{Respond}
+use @std.ui.components.{column, heading, link, text}
+use @std.ui.realize.url.{local, url}
+use @std.ui.realize.view.{View}
+use @std.ui.style.layout.{Layout}
+use @std.ui.style.style.{Style}
+use @std.ui_http.{Document, html_response}
+
+fn home() -> dyn View {
+    column {
+        layout: Layout { gap: .M }
+        heading "Boards"
+        text "Hello" { style: Style { color: .Muted } }
+        link "Docs" { href: local("/docs") }
+        link "Run" { href: local("javascript:alert(1)") }
+    }
+}
+
+fn served(title: string) -> string { Document { title: title, body: home() }.response().body.text() ?? "" }
+
+spec "a document answered over HTTP" {
+    given "a document" {
+        then "it answers 200 text/html" {
+            let r = Document { title: "Home", body: home() }.response()
+            r.status == 200 && r.headers[0].value == "text/html; charset=utf-8"
+        }
+        then "the page carries the title, escaped, and the body" {
+            served("Home <1>").contains("<title>Home &lt;1&gt;</title>") &&
+                served("x").contains("<h1>Boards</h1>")
+        }
+        then "the page carries no script" { !served("x").contains("<script") }
+        then "it may answer another status" {
+            Document { title: "Gone", body: home(), status: 404 }.response().status == 404
+        }
+        then "a status rides a page unchanged" { html_response(404, "<p>gone</p>").body.text() == "<p>gone</p>" }
+    }
+    given "the sheet a served page wears" {
+        then "it is one style element holding the theme's variables" {
+            served("x").split("<style").length == 2 && served("x").contains(":root{")
+        }
+        then "each class the tree names has its rule in it" {
+            served("x").contains(".gap-m{") &&
+                served("x").contains(".color-muted{") &&
+                served("x").contains("class=\"color-muted\"")
+        }
+        then "a class the tree does not name has no rule in it" { !served("x").contains(".gap-xl{") }
+    }
+    given "a link in a served page" {
+        then "a local target is its href" { served("x").contains("href=\"/docs\"") }
+        then "a target that spells a script is written as the path it is" {
+            served("x").contains("href=\"./javascript:alert(1)\"") &&
+                !served("x").contains("href=\"javascript:")
+        }
+        then "foreign text a browser would run makes no URL to serve" { url("javascript:alert(1)") == null }
+    }
+}
