@@ -301,24 +301,60 @@ run() {
     return "$st"
 }
 
-# Repairs the named Sprites, or all: installs what the checks' toolchain
-# lacks, stops runs this machine began and no longer owns, prunes old
-# compilers, trees and scratch, and forgets worktrees that are gone. One
-# that does not answer is named with what replaces it — its filesystem
-# did not survive, and only its caches are lost.
+# A SPRITE'S CLEAN STATE IS ITS OWN CHECKPOINT: taken once the toolchain
+# stands, restored in seconds when the Sprite answers but cannot be put
+# right in place. A checkpoint belongs to its Sprite and restores nowhere
+# else, so one that answers nobody is destroyed and created again — a
+# second to create, under a minute to provision; only caches are lost.
+clean_id() {
+    timeout -k 1 20 "$sprite_cli" api "/sprites/$1/checkpoints" -- -s -m 15 2>/dev/null | tail -n 1 | python3 -c '
+import json, sys
+ids = [c["id"] for c in json.load(sys.stdin) if c.get("comment", "").startswith("avra-clean")]
+print(ids[-1] if ids else "")' 2>/dev/null || :
+}
+ready_info() { woken "$1" "$2" ready - $ci_packages 2>/dev/null; }
+unwell() { [ -z "$1" ] || printf '%s\n' "$1" | grep -q '^unprovisioned=\|^home=no'; }
+
+# Repairs the named Sprites, or all: forgets worktrees that are gone,
+# installs what the checks' toolchain lacks, stops runs this machine
+# began and no longer owns, prunes old compilers, trees and scratch. One
+# it cannot put right in place is restored from its clean checkpoint; one
+# NAMED that answers nobody is replaced. Each is left with a clean
+# checkpoint.
 fix() {
     git -C "$repo" worktree prune
-    for s in ${*:-$(pool)}; do
+    named=$*
+    for s in ${named:-$(pool)}; do
         (
-            if ! info=$(woken "$s" "${AVRA_WAKE_S:-150}" ready - $ci_packages 2>&1); then
-                echo "fix: $s did not answer in ${AVRA_WAKE_S:-150}s — replace it: sprite destroy --force -s $s && sprite create --skip-console $s && sh tools/work sprites --fix $s"
+            said=
+            info=$(ready_info "$s" "${AVRA_WAKE_S:-150}") || info=
+            if [ -n "$info" ] && unwell "$info" && id=$(clean_id "$s") && [ -n "$id" ]; then
+                timeout -k 2 90 "$sprite_cli" -s "$s" restore "$id" >/dev/null 2>&1 || :
+                said="restored $id"
+                info=$(ready_info "$s" 150) || info=
+            fi
+            if [ -z "$info" ] && [ -n "$named" ]; then
+                timeout -k 2 60 "$sprite_cli" destroy --force -s "$s" >/dev/null 2>&1 || :
+                timeout -k 2 60 "$sprite_cli" create --skip-console "$s" </dev/null >/dev/null 2>&1 || :
+                said="silent for ${AVRA_WAKE_S:-150}s — destroyed and created again"
+                info=$(ready_info "$s" 300) || info=
+            fi
+            if [ -z "$info" ]; then
+                echo "fix: $s answers nobody${said:+ ($said)} — \`sh tools/work sprites --fix $s\` replaces it; only its caches are lost"
                 exit 0
             fi
-            did=$(printf '%s\n' "$info" | sed -n 's/^installed=/installed /p; s/^unprovisioned=/COULD NOT INSTALL /p')
+            if unwell "$info"; then
+                echo "fix: $s is NOT right${said:+ ($said)}: $(printf '%s\n' "$info" | grep '^unprovisioned=\|^home=' | tr '\n' ' ')"
+                exit 0
+            fi
+            did=$(printf '%s\n' "$info" | sed -n 's/^installed=/installed /p')
             gone=$(printf '%s\n' "$info" | sed -n 's/^run=//p' | orphaned)
             [ -z "$gone" ] || { remote "$s" 60 stop $gone >/dev/null 2>&1 && did="$did; stopped $gone"; }
             remote "$s" 30 prune 6 2 >/dev/null 2>&1 && did="$did; pruning"
-            echo "fix: $s: ${did#; }"
+            if [ -z "$(clean_id "$s")" ]; then
+                timeout -k 2 60 "$sprite_cli" -s "$s" checkpoint create --comment "avra-clean" >/dev/null 2>&1 && did="$did; clean checkpoint taken"
+            fi
+            echo "fix: $s: ${said:+$said; }${did#; }"
         ) &
     done
     wait
