@@ -12,6 +12,7 @@ use @std.http.frame.{framed, limits}
 use @std.http.http.{Request, Unrouted, Response, Pulled}
 use @std.http.body.{Body}
 use @std.http.route.{compiled, dispatch}
+use @std.http.fetch.{get}
 use commands.{Page, page_of, toolchain}
 
 /// A page package in scratch: one text, mounted.
@@ -84,6 +85,39 @@ fn package_of(name: string, source: string) -> string {
         let _ = write_text("${root}/src/main.av", source)
     }
     root
+}
+
+/// What a GET through the loopback answers while `avra dev --host <host>`
+/// serves a plain directory on any free port: where it said it serves,
+/// then the status — the server stopped after.
+fn reached(host: string) -> Result<string, ProcessError> {
+    let asked = cmd(tool(avra_bin())?, ["dev", "--host", host, "--port", "0", plain_dir()]) with { env: inherited(), timeout: hang_bound() }
+    mut child = asked.start(Ready.Line(" at http://${host}:"), ms(120000))?
+    let port = child.out.split(" at http://${host}:").last()?.split("/")?.first() ?? ""
+    let status = match get("http://127.0.0.1:${port}/") { .Ok(a) -> a.status, .Err(_) -> 0 }
+    child.stop()
+    "${host} ${status}"
+}
+
+spec "avra dev — as its help and its flags say" {
+    given "the command's help" {
+        then "a flag of two words is shown as it is typed, and the argument as what it is" {
+            let l = left(["dev", "--help"])
+            l.said.contains("[--no-watch]") &&
+                !l.said.contains("no_watch") &&
+                l.said.contains("<path>") &&
+                l.said.contains("a directory to serve as it stands, or a package")
+        }
+        then "the port and the address it serves at unless told are said" {
+            let l = left(["dev", "--help"])
+            l.said.contains("(default: 8787)") && l.said.contains("(default: 127.0.0.1)")
+        }
+    }
+    given "`--host 0.0.0.0`" {
+        then "it binds every interface: it says so, and the loopback reaches it" {
+            match reached("0.0.0.0") { .Ok(said) -> said == "0.0.0.0 200", .Err(_) -> false }
+        }
+    }
 }
 
 spec "avra dev — what it does follows what it is pointed at" {

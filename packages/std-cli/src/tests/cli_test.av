@@ -92,6 +92,37 @@ fn said(r: Result<CliResult, CliError>) -> string {
     match r { .Ok(p) -> "ok:${p.command}", .Err(e) -> e.describe().message }
 }
 
+/// `sweep` with a flag and an option whose names are two words.
+fn sweep_spec() -> command {
+    command {
+        name: "sweep"
+        description: "Sweep a tree"
+        flag dry_run { description: "say what would go" }
+        option {
+            name: "max_depth"
+            description: "how deep to look"
+        }
+        run: Answers { code: 0 }
+    }
+}
+
+/// A line read against `sweep` alone.
+fn swept(words: List<string>) -> CliResult {
+    let tool = cli {
+        name: "tool"
+        description: "A tool"
+        version: "1.2.3"
+        sweep_spec()
+    }
+    parse(tool, ["sweep"].concat(words)) catch CliResult {
+        command: "?",
+        flags: [],
+        options: {},
+        args: {},
+        rest: [],
+    }
+}
+
 fn parsed(words: List<string>) -> CliResult {
     parse(app(), words) catch CliResult { command: "?", flags: [], options: {}, args: {}, rest: [] }
 }
@@ -107,6 +138,19 @@ spec "std/cli" {
                 parsed(["check", "-t", "m.av"]).has_flag("time") &&
                 parsed(["check", "--timings", "m.av"]).has_flag("time") &&
                 !parsed(["check", "m.av"]).has_flag("time")
+        }
+        then "a name of two words is typed with a hyphen, and heard as it was declared too" {
+            swept(["--dry-run"]).has_flag("dry_run") &&
+                swept(["--dry_run"]).has_flag("dry_run") &&
+                swept(["--max-depth", "3"]).option("max_depth") == "3" &&
+                swept(["--max_depth=4"]).option("max_depth") == "4" &&
+                swept(["--max-depth=5"]).option("max_depth") == "5"
+        }
+        then "a name of two words is shown the way it is typed" {
+            command_help(app(), sweep_spec())
+                    .starts_with("usage: tool sweep [--dry-run] [--max-depth <value>]") &&
+                command_help(app(), sweep_spec()).contains("\n  --dry-run  say what would go") &&
+                !command_help(app(), sweep_spec()).contains("_")
         }
         then "a flag asked for with its dashes answers the same" {
             parsed(["check", "--time", "m.av"]).has_flag("--time")

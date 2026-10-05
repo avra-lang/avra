@@ -12,7 +12,7 @@
 //! every file its key covers, asked again each turn, so a file that
 //! arrives is seen. The loop turns on the program's first task and the
 //! server answers on another.
-use @std.cli.{CliResult, Runnable, command, option, flag}
+use @std.cli.{CliResult, Runnable, command, option, flag, arg}
 use @std.avrac.compiler.{Workspace, Toolchain}
 use @std.http.frame.{Method}
 use @std.http.http.{Request, Unrouted, Response, Header, text}
@@ -67,10 +67,17 @@ export fn pointed(path: string) -> Pointed {
 
 impl Runnable for DevCmd {
     fn run(args: CliResult) -> int {
-        let path? = argued_path(args) else { return 2 }
+        let path = rooted(args.arg("path"))
+        if !exists(path) {
+            no_such_file(path)
+            return 2
+        }
         match pointed(path) {
             .Files -> hosted(args, path, directory("/", fresh_files(path)), () -> false),
-            .Page -> match page_at(path, asked(args, "target", "wasm")) {
+            .Page -> match page_at(
+                path,
+                if args.option("target") == "" { "wasm" } else { args.option("target") },
+            ) {
                 .Ok(p) -> hosted(
                     args,
                     path,
@@ -91,8 +98,8 @@ impl Runnable for DevCmd {
 /// serves said once it does.
 fn hosted(args: CliResult, path: string, routes: List<Route>, turn: fn() -> bool) -> int {
     server site {
-        host: asked(args, "host", "127.0.0.1")
-        port: parse_int(args.option("port")) ?? 8787
+        host: args.option("host")
+        port: parse_int(args.option("port")) ?? default_port
         routes: routes
     }
     let bound = match site.listening() {
@@ -104,7 +111,7 @@ fn hosted(args: CliResult, path: string, routes: List<Route>, turn: fn() -> bool
     println("dev: ${path} at ${at}")
     spawn bound.run(1)
     if args.has_flag("open") { opened(at) }
-    let pause = ms(parse_int(args.option("interval")) ?? 250)
+    let pause = ms(parse_int(args.option("interval")) ?? default_interval)
     while true {
         sleep(pause)
         let _ = turn()
@@ -130,29 +137,37 @@ fn opened(url: string) {
     if !ran { eprintln(not_opened(url)) }
 }
 
-/// An option as given, or `otherwise` when it was not.
-fn asked(args: CliResult, name: string, otherwise: string) -> string {
-    if args.option(name) == "" { otherwise } else { args.option(name) }
-}
-
 export command dev {
     description: "Serve a directory as it stands, or a package's page — built, and built again as its sources change"
     flags: [open, no_watch]
     options: [port, host, target, interval]
-    args: [file]
+    args: [path]
     run: DevCmd {}
 }
 
+/// What `dev` is pointed at.
+export arg path {
+    description: "a directory to serve as it stands, or a package whose program mounts a page"
+    required: true
+}
+
+const default_port: int = 8787
+
+const default_interval: int = 250
+
 export option port {
-    description: "the port to serve on — 0 takes any free one (default 8787)"
+    description: "the port to serve on — 0 takes any free one"
+    default: "${default_port}"
 }
 
 export option host {
-    description: "the address to serve at (default 127.0.0.1, this machine alone)"
+    description: "the address to serve at — this machine alone unless told"
+    default: "127.0.0.1"
 }
 
 export option interval {
-    description: "how often a page's sources are looked at, in milliseconds (default 250)"
+    description: "how often a page's sources are looked at, in milliseconds"
+    default: "${default_interval}"
 }
 
 export flag open {
@@ -161,7 +176,6 @@ export flag open {
 
 export flag no_watch {
     description: "build a page once and serve it: nothing is watched"
-    aliases: ["--no-watch"]
 }
 
 // ── what is watched ─────────────────────────────────────────────
