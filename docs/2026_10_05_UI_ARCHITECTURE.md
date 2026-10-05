@@ -83,9 +83,21 @@ Five attempts to lift a handler into a generated message failed.
    the host's copy (`runtime/dom/wire.gen.js`) is written from them and
    `make ui-host` fails when it is stale. Event kinds need no host copy:
    the host echoes a kind it never reads.
-7. **`mount(view)` is the app.** No app writes the host seam.
-8. **A test names no platform.** A headless target and a driver
-   (`press`, `type`, `text`) are the library's.
+7. **`mount(view)` is the app.** No app writes the host seam: the
+   page's exports and its one import are the web module's own
+   (`web/web.av`), and the program's statements are its start. THE LOOP
+   IS ONE DOOR (`App.turn`, `app/app.av`): whatever may change the
+   state runs through it — a control speaking, later a timer or an
+   answer arriving — and a paint follows only when it ran. A target is
+   what the door paints on: a page sent patches, a screen held in
+   memory. Text a control says crosses in a seat the program hands out
+   for exactly its octets, so no text has a longest length.
+8. **A test names no platform.** The headless target
+   (`headless/headless.av`) is the tree itself, held in memory, and its
+   verbs speak to a control BY ITS WORDS — `press`, `fill`, `check`,
+   `slide`, `submit` — through the same door; `text()` is the screen as
+   a reader finds it. What a reader could not reach does not speak: a
+   disabled control, a control in a dialog that is not open.
 9. **A second target fires events.** The terminal proves the seams.
 10. **One library.** The `Role`/`Setting` model and its packages move
     to this one. URL sanitising (`safe_url`) comes across.

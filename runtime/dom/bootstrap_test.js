@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { createApplier, parseFrame, sendEvent, WIRE_VERSION } from "./bootstrap.js";
+import { createApplier, parseFrame, sendEvent, run, HOST, WIRE_VERSION } from "./bootstrap.js";
 import { NO_ID, OP, SAYS } from "./wire.gen.js";
 import { stubDocument, stubElement, textOf } from "./stub_dom.js";
 
@@ -147,27 +147,38 @@ check("no id reads as no id", parseFrame(frame(place(1, NO_ID, NO_ID)))[0].after
 check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["create", "create_text", "drop_attr", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "style", "unlisten"]);
 
 // ── the echo's seam ──
+// A program that hands out each seat at 32, GROWING its memory as it does:
+// a host that viewed the memory before asking would write into the old one.
 const calls = [];
+const asked = [];
 const fakeMod = {
-  memory: { buffer: new ArrayBuffer(64) },
-  avra_payload_seat: () => 32n,
-  avra_seat_room: () => 8n,
-  avra_event: (who, what, tag, num, len) => calls.push([who, what, tag, num, len]),
+  memory: { buffer: new ArrayBuffer(0) },
+  [HOST.seat]: (room) => { asked.push(room); fakeMod.memory.buffer = new ArrayBuffer(32 + Number(room)); return 32n; },
+  [HOST.event]: (who, what, tag, num, len) => calls.push([who, what, tag, num, len]),
 };
 const seat = (at, len) => new TextDecoder().decode(new Uint8Array(fakeMod.memory.buffer, at, len));
 sendEvent(fakeMod, 7, 1, null);
 check("nothing said sends who, the kind and the nothing tag", calls[0].map(String), ["7", "1", String(SAYS.nothing), "0", "0"]);
 sendEvent(fakeMod, 5000000000, 1, { says: SAYS.number, value: 42 });
 check("a number sends its value, under an id of any size", calls[1].map(String), ["5000000000", "1", String(SAYS.number), "42", "0"]);
+check("an event that says no text asks for no seat", asked.length, 0);
 sendEvent(fakeMod, 0, 1, { says: SAYS.text, value: "hi" });
-check("text is written into the program's seat", seat(32, 2), "hi");
+check("text is written into the seat the program handed out", seat(32, 2), "hi");
 check("text sends its length", calls[2].map(String), ["0", "1", String(SAYS.text), "0", "2"]);
 sendEvent(fakeMod, 0, 3, { says: SAYS.flag, value: true });
 check("a flag sends one", calls[3].map(String), ["0", "3", String(SAYS.flag), "1", "0"]);
+const long = "é".repeat(5000);
+sendEvent(fakeMod, 0, 2, { says: SAYS.text, value: long });
+check("a seat is asked for by the text's own octets, however many", asked.map(String), ["2", "10000"]);
+check("a long text arrives whole", [seat(32, 10000) === long, String(calls[4][4])], [true, "10000"]);
+sendEvent(fakeMod, 0, 2, { says: SAYS.text, value: "" });
+check("an empty text is text, of no octets", calls[5].map(String), ["0", "2", String(SAYS.text), "0", "0"]);
 
-let outgrew = "";
-try { sendEvent(fakeMod, 0, 2, { says: SAYS.text, value: "nine long" }); } catch (e) { outgrew = e.message; }
-check("a text that outgrows the seat refuses, calling nothing", [outgrew, calls.length], ["an event's text is 9 octets — the program's seat holds 8", 4]);
+// ── a page runs a program that mounts ──
+const empty = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);
+let lacking = "";
+try { await run(empty, { document: stubDocument(), mount: stubElement("root"), wasi: () => ({}) }); } catch (e) { lacking = e.message; }
+check("a module that mounts nothing refuses by the names it lacks", lacking.startsWith(`the module exports no ${HOST.entry}, ${HOST.event}, ${HOST.seat}`), true);
 
 console.log(fails === 0 ? `bootstrap: ${passes}/${passes}` : `bootstrap: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

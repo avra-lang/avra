@@ -152,35 +152,59 @@ export async function instantiate(source, host) {
   return instance.exports;
 }
 
-// The program's `avra_event(who: int, what: int, tag: int, num: int, len:
-// int)` crosses as five i64 seats, so the host hands it BigInts. `who` is
-// the element's id and `what` the event kind, each echoed as the patch gave
+// THE NAMES A PROGRAM ANSWERS TO. `avra_main` is the compiler's: a wasm
+// module's own statements, where an app says `mount(view)`. The other two
+// are the exports of `@std/ui`'s web module (web/web.av), under the names
+// the compiler gives a library's fns.
+export const HOST = { entry: "avra_main", event: "@std.ui.web.event", seat: "@std.ui.web.seat" };
+
+// The program's `event(who: int, what: int, tag: int, num: int, len: int)`
+// crosses as five i64 seats, so the host hands it BigInts. `who` is the
+// element's id and `what` the event kind, each echoed as the patch gave
 // it. What the control said crosses as the tag the patch asked for (`SAYS`)
 // and its value: nothing is a tag of its own, so a present zero or empty
 // text is never mistaken for nothing; a number or a flag rides `num`; text
-// is `len` UTF-8 octets the host writes at the address the program gave
-// (`avra_payload_seat`). A text that outgrows the seat's room
-// (`avra_seat_room`) REFUSES: writing it would overwrite the program's
-// memory. ONE door for both the page and a test harness.
-const seats = new WeakMap();
-
-function seatOf(mod) {
-  let held = seats.get(mod);
-  if (held === undefined) {
-    held = { at: Number(mod.avra_payload_seat()), room: Number(mod.avra_seat_room()) };
-    seats.set(mod, held);
-  }
-  return held;
+// is `len` UTF-8 octets written into a seat the program hands out for
+// exactly that many (`seat`), so no text outgrows its seat. ONE door for
+// both the page and a test harness.
+export function sendEvent(mod, who, what, said) {
+  const event = mod[HOST.event];
+  if (!said) { event(BigInt(who), BigInt(what), BigInt(SAYS.nothing), 0n, 0n); return; }
+  if (said.says !== SAYS.text) { event(BigInt(who), BigInt(what), BigInt(said.says), BigInt(said.value), 0n); return; }
+  const bytes = new TextEncoder().encode(said.value);
+  // THE SEAT IS ASKED FOR FIRST: handing it out may grow the program's
+  // memory, and a view made before that would name the old buffer.
+  const at = Number(mod[HOST.seat](BigInt(bytes.length)));
+  new Uint8Array(mod.memory.buffer, at, bytes.length).set(bytes);
+  event(BigInt(who), BigInt(what), BigInt(said.says), 0n, BigInt(bytes.length));
 }
 
-export function sendEvent(mod, who, what, said) {
-  if (!said) { mod.avra_event(BigInt(who), BigInt(what), BigInt(SAYS.nothing), 0n, 0n); return; }
-  if (said.says !== SAYS.text) { mod.avra_event(BigInt(who), BigInt(what), BigInt(said.says), BigInt(said.value), 0n); return; }
-  const seat = seatOf(mod);
-  const bytes = new TextEncoder().encode(said.value);
-  if (bytes.length > seat.room) throw new Error(`an event's text is ${bytes.length} octets — the program's seat holds ${seat.room}`);
-  new Uint8Array(mod.memory.buffer, seat.at, bytes.length).set(bytes);
-  mod.avra_event(BigInt(who), BigInt(what), BigInt(said.says), 0n, BigInt(bytes.length));
+// RUN AN APP ON A PAGE: load the module, apply each frame it sends to
+// `mount`, echo what the user does, then run the program's own statements
+// — its `mount(view)` paints the first frame. `document`, `mount` and
+// `style` are a real page's or a stub's; `wasi(memory)` answers the
+// preview1 rows over the module's memory; `sent(bytes)` sees each frame
+// before it is applied. A module that is no `@std/ui` web app REFUSES by
+// the name it lacks.
+export async function run(source, { document, mount, style = null, wasi, sent = () => {} }) {
+  let mod = null;
+  const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
+  mod = await instantiate(source, {
+    wasi: wasi(() => mod.memory),
+    // The seat is a Bytes: the pointer names its box, and the LENGTH comes
+    // from the runtime's own reader, exported by the module.
+    rt: { avra_dom_frame: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); } },
+  });
+  const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");
+  if (lacks.length > 0) {
+    throw new Error(`the module exports no ${lacks.join(", ")} — a page runs a program whose statements \`mount\` a view (\`use @std.ui.web.{mount}\`)`);
+  }
+  // A REACTOR: initialize the C runtime once, then the program's own
+  // statements — never a `main` that exits.
+  mod._initialize();
+  const code = mod[HOST.entry]();
+  if (code !== 0) throw new Error(`the program's statements answered ${code}`);
+  return mod;
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length

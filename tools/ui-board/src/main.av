@@ -4,9 +4,9 @@
 //!
 //! The controls are the library's OWN, and each handler is written where
 //! its control is: `on press { … }` is a closure over what the view could
-//! see, so row 3's Remove names row 3's task. Each paint sends the host
-//! only what changed; the host echoes who spoke and what it said
-//! (`avra_event`), and the program runs the handler it kept.
+//! see, so row 3's Remove names row 3's task. `mount(view, theme)` is the
+//! whole app: the library paints the page, hears the host and sends it
+//! only what changed.
 //!
 //! The task rows are ONE keyed list (`list visible() by it.id`), so the row
 //! identity is the task id and an insert or a removal touches no other
@@ -27,16 +27,11 @@ use @std.ui.components.{
     surface,
     text,
 }
-use @std.ui.realize.dom.live.{Live, live}
-use @std.ui.realize.dom.wire.{echo}
 use @std.ui.realize.view.{View}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{Theme, dark_theme, default_theme}
-
-extern fn avra_dom_frame(frame: Bytes)
-extern fn avra_bytes_with_room(n: int) -> Bytes
-extern fn avra_bytes_adopted(p: Bytes, n: int) -> Bytes
+use @std.ui.web.{mount}
 
 /// Which tasks the board shows.
 enum Show { All, Active, Done }
@@ -68,9 +63,6 @@ fn admits(t: Todo) -> bool {
 }
 
 fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
-
-/// The page as last painted — an unchanged paint is one byte.
-once fn painted() -> Live { live() }
 
 /// The draft becomes the next task, and the draft is spent.
 fn add() {
@@ -254,39 +246,4 @@ fn view() -> surface {
     }
 }
 
-fn paint() { avra_dom_frame(painted().paint(view().describe(), theme())) }
-
-// ── the host's event seam ───────────────────────────────────────
-
-/// The room of the seat the host writes a control's text into. The host
-/// reads it (`avra_seat_room`) and refuses a text that outgrows it.
-const seat_room = 4096
-
-/// Where the host writes the text a control said.
-once fn payload_box() -> Bytes { avra_bytes_with_room(seat_room) }
-
-/// The host reads the seat's address once, then writes UTF-8 octets there
-/// before calling `avra_event` with their length.
-export fn avra_payload_seat() -> Bytes { payload_box() }
-
-export fn avra_seat_room() -> int { seat_room }
-
-/// The host-written octets of the seat as text. A length the seat cannot
-/// hold, or octets that are not UTF-8, is a malformed event: absent, never
-/// a wrong message.
-fn seated(len: int) -> string? {
-    if len < 0 || len > seat_room { return null }
-    avra_bytes_adopted(payload_box(), len).text()
-}
-
-/// The host's call: element `who` spoke the kind `what`, saying the value
-/// in the tag and value seats (an input says its own text). The handler
-/// the last paint bound there runs, and the patches follow. An echo the
-/// wire cannot read answers nothing.
-export fn avra_event(who: int, what: int, tag: int, num: int, len: int) {
-    let heard? = echo(who, what, tag, num, seated(len)) else { return }
-    if painted().fire(heard.id, heard.kind, heard.said) { paint() }
-}
-
-/// The host's first call, after the reactor is initialized: one paint.
-export fn avra_start() { paint() }
+mount(view, theme)

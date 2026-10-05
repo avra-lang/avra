@@ -1,10 +1,10 @@
 // proves: the board is a REAL screen — tasks with done-state, three filters,
 // adding from a field, a derived count and progress, a card/row/column/item
-// layout, a dialog and a theme — and its frame is a function of module
-// `state`. The controls are the library's OWN (`button`, `checkbox`, `field`)
-// with `on <kind> { … }` handlers, and the task rows are one KEYED list. The
-// frame is printed byte-exact in both engines, so a change to the view
-// changes THIS receipt.
+// layout and a dialog — and the screen is a function of module `state`. The
+// controls are the library's OWN (`button`, `checkbox`, `field`) with
+// `on <kind> { … }` handlers, and the task rows are one KEYED list. The test
+// speaks to the screen as a reader would — to a control by its words — and
+// the loop paints after every event that ran a handler.
 use @std.ui.components.{
     button,
     card,
@@ -21,12 +21,10 @@ use @std.ui.components.{
     surface,
     text,
 }
-use @std.ui.realize.dom.live.{Live, live}
-use @std.ui.realize.render.{EventKind, Said}
+use @std.ui.headless.{headless}
 use @std.ui.realize.view.{View}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
-use @std.ui.style.theme.{dark_theme, default_theme}
 
 /// Which tasks the board shows.
 enum Show { All, Active, Done }
@@ -83,23 +81,6 @@ fn add() {
 /// otherwise.
 fn marked(t: Todo, id: string, done: bool) -> Todo {
     if t.id == id { t with { done: done } } else { t }
-}
-
-/// The page the host would hold: its elements and the handlers they bound.
-once fn page() -> Live { live() }
-
-/// What a paint of the view says to the host: the whole page the first
-/// time, and after that only what changed.
-fn painted() -> string { page().said(view().describe(), default_theme) }
-
-/// The host's echo, without the wire: the `nth` control named `name`
-/// speaks `kind`. The last paint bound the handler; the echo names only
-/// the element, so row t3's Remove runs t3's closure, never the first
-/// row's.
-fn press(name: string, nth: int, kind: EventKind, said: Said?) -> bool {
-    let ids = page().named(name)
-    if nth >= ids.length { return false }
-    page().fire(ids[nth], kind, said)
 }
 
 fn tab(label: string, shows: Show) -> button {
@@ -248,36 +229,48 @@ fn view() -> surface {
     }
 }
 
-println(painted())
-println("active=${press("Active", 0, .Press, null)}")
-println(painted())
-println("clear=${press("Clear done", 0, .Press, null)}")
-println(painted())
-println("about=${press("About", 0, .Press, null)}")
-println(painted())
-println("unchanged=[${painted()}]")
+let page = headless(view)
+
+println(page.text())
+println("active=${page.press("Active")}")
+println(page.text())
 println(
     "active_shown=${filter == Show.Active} open=${[t for t in tasks if !t.done].length} done=${done_count()} total=${tasks.length}",
 )
-println("dark=${live().said(view().describe(), dark_theme).starts_with("style")}")
-println("unbound=${press("Tasks", 0, .Press, null)} wrong_kind=${press("About", 0, .Input, null)}")
+
+// A PAINT WITH NOTHING CHANGED shows the same screen.
+let before = page.text()
+page.repaint()
+println("unchanged=${page.text() == before}")
+
+// WHO CANNOT SPEAK: words that are no control, a control told an event it
+// does not hear, a control in a dialog that is not open, and a disabled one.
+println(
+    "no_control=${page.press("Tasks")} wrong_event=${page.fill("About", "x")} hidden=${page.press("Close")}",
+)
+println("clear=${page.press("Clear done")} again=${page.press("Clear done")}")
+println("after_clear=[${[t.id for t in tasks].join(",")}]")
+println("about=${page.press("About")}")
+println(page.text())
+println("close=${page.press("Close")} open=${dialog_open}")
+println("all=${page.press("All")}")
 
 // THE PER-ITEM WITNESS: both rows share one `on press` in the source, and the
 // second row's Remove takes only its own task. A wrong row or none at all
 // would show here.
-println("remove=${press("Remove", 1, .Press, null)}")
+println("remove=${page.press("Remove", nth: 1)}")
 println("after_remove_t3=[${[t.id for t in tasks].join(",")}]")
-println(painted())
-println("toggle=${press("Wire the event channel", 0, .Change, Said.Flag(true))}")
+println("toggle=${page.check("Wire the event channel", true)}")
 println("after_toggle_t2=${[t.title for t in tasks if t.done].join(",")}")
-println(painted())
 
-// ADD FROM THE FIELD: an input that says nothing runs no handler. The
-// control says its own text, and the page already holds it — so the paint
-// that follows writes no value back.
-println("silent=${press("New task", 0, .Input, null)} draft=[${draft}]")
-println("typed=${press("New task", 0, .Input, Said.Text("Ship the rewrite"))}")
-println("after_typing=[${painted()}]")
-println("add=${press("Add", 0, .Press, null)}")
+// ADD FROM THE FIELD: the control says its own text, however long, and the
+// draft becomes a task.
+println("typed=${page.fill("New task", "Ship the rewrite")} draft=[${draft}]")
+println("add=${page.press("Add")}")
 println("after_add=[${[t.id for t in tasks].join(",")}] draft_after=[${draft}]")
-println(painted())
+let long = ["a task with a very long title ${n}" for n in 0..400].join(" ")
+println("long=${page.fill("New task", long)} held=${draft.length == long.length}")
+println("add_long=${page.press("Add")} last=${tasks.last()?.title == long}")
+println("remove_long=${page.press("Remove", nth: 2)} left=${tasks.length}")
+println("dark=${page.press("Dark mode")} is_dark=${dark}")
+println(page.text())

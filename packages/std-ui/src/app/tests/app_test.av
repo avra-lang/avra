@@ -1,0 +1,56 @@
+//! The loop, by its law: one door, and a paint only after what came
+//! through it ran.
+use @std.ui.app.{App, app, plain}
+use @std.ui.components.{text}
+use @std.ui.realize.render.{Node}
+use @std.ui.style.theme.{Theme, dark_theme}
+
+/// What a target was shown, paint by paint: each tree's words under the
+/// mode it wore.
+type Shown = { paints: Cell<List<string>> = Cell.new([]) }
+
+/// An app whose view says `words` as they stand, shown to `on`.
+fn saying(words: Cell<string>, on: Shown, theme: fn() -> Theme) -> App {
+    app(
+        () -> text words.get(),
+        theme,
+        (root: Node, worn: Theme) -> on.paints.push("${root.words()} ${worn.mode.word()}"),
+    )
+}
+
+spec "the loop is one door" {
+    given "something that ran" {
+        then "a paint of the state as it now stands follows" {
+            let words: Cell<string> = Cell.new("before")
+            let on = Shown {}
+            let ran = saying(words, on, plain)
+                .turn(
+                    () -> {
+                        words.set("after")
+                        true
+                    },
+                )
+            ran && on.paints.get().join(",") == "after light"
+        }
+    }
+    given "something that did not run" {
+        then "nothing is painted" {
+            let words: Cell<string> = Cell.new("before")
+            let on = Shown {}
+            let ran = saying(words, on, plain).turn(() -> false)
+            !ran && on.paints.get().is_empty()
+        }
+    }
+    given "a theme that follows the state" {
+        then "each paint wears the theme as it stands then" {
+            let words: Cell<string> = Cell.new("w")
+            let night: Cell<bool> = Cell.new(false)
+            let on = Shown {}
+            let made = saying(words, on, () -> if night.get() { dark_theme } else { plain() })
+            made.paint()
+            night.set(true)
+            made.paint()
+            on.paints.get().join(",") == "w light,w dark"
+        }
+    }
+}

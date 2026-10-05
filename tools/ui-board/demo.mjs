@@ -10,20 +10,21 @@
 // page was told to attach, never a synthetic event, so it proves the same
 // path the page takes.
 import fs from "node:fs";
-import { createApplier, instantiate, frameOf, sendEvent } from "../../runtime/dom/bootstrap.js";
+import { run } from "../../runtime/dom/bootstrap.js";
 import { wasiPreview1 } from "../../runtime/dom/wasi.js";
 import { stubDocument, stubElement, textOf } from "../../runtime/dom/stub_dom.js";
 
 const mount = stubElement("root");
 const style = { textContent: "" };
-let mod = null;
 let frames = 0;
 let writes = 0;
-const apply = createApplier(stubDocument(), mount, (who, what, said) => sendEvent(mod, who, what, said), style);
 
-mod = await instantiate(new Uint8Array(fs.readFileSync(process.argv[2])), {
-  wasi: wasiPreview1(() => mod.memory, (code) => { throw new Error(`the program exited ${code}`); }),
-  rt: { avra_dom_frame: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); frames++; writes += bytes.length; apply(bytes); } },
+await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
+  document: stubDocument(),
+  mount,
+  style,
+  wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
+  sent: (bytes) => { frames++; writes += bytes.length; },
 });
 
 const shape = (n) => {
@@ -41,8 +42,6 @@ const fire = (n) => { const [event, listener] = [...n.listeners][0]; listener();
 // What one event cost the wire: frames and bytes since the last ask.
 const spent = () => { const s = `${frames} frame(s), ${writes} byte(s)`; frames = 0; writes = 0; return s; };
 
-mod._initialize();
-mod.avra_start();
 console.log("STYLE:", style.textContent.includes(":root{") && style.textContent.includes("body{") ? "sent (theme vars and the page's base rule)" : `MISSING (${style.textContent.slice(0, 40)})`);
 console.log("AFTER START:", shape(mount));
 console.log("FIRST PAINT:", spent());
@@ -77,6 +76,13 @@ console.log("value written while typing:", valueWrites);
 console.log("FIRED:", fire(add), "—", spent());
 console.log("added row:", keyed("t5") !== null, " title kept:", textOf(keyed("t5")).includes("Ship the rewrite"));
 console.log("field cleared by the program:", valueWrites === 1 && typed === "");
+
+// A TEXT OF ANY LENGTH: the program hands out a seat for the octets the
+// field holds, so a value far past any fixed room arrives whole.
+typed = "é".repeat(6000);
+fire(field);
+fire(add);
+console.log("12000-octet title kept whole:", keyed("t6") !== null && textOf(keyed("t6")).includes(typed), "—", spent());
 
 // A MODE IS A WHOLE SHEET: the theme's variables move and no element does.
 const theme = named("Dark mode")[0];

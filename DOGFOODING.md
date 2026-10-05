@@ -1760,3 +1760,30 @@ through a `mut` seat did the same job and is quadratic in the
 evaluator's memory (2,000 siblings passed 6 GB): every mutating shape
 measured there is — a `mut` map, `Cell.put`, a `mut`-seat method — so a
 pass over a tree is written pure, and accumulates by comprehension.
+
+## A host-only extern stands in a module only that host's programs import
+
+A suite links what its files reach, so one `extern fn` a native link
+cannot answer refuses every test that reaches its module. Keep the
+extern, the exports and nothing else in ONE module (packages/std-ui/src/
+web/web.av: `avra_dom_frame`, `mount`, `event`, `seat`), and put the
+logic one module down behind a fn seat the host fills (realize/dom/
+page.av: `paged(view, theme, page, send)`), where a native test hands it
+a list to collect into.
+
+## A generic seat is erased once, at the door
+
+A value kept in a record cannot stay generic, and a trait impl over a
+generic type is not landed. Take the type parameter at the constructor
+and store the one closure the record needs (packages/std-ui/src/app/
+app.av: `app<V: View>(view: fn() -> V, …)` keeps `() ->
+view().describe()`), so every caller passes its own fn by name and the
+record holds one shape.
+
+## A loop is one door that answers whether it ran
+
+Event, timer and arriving answer are the same thing to a loop: something
+that may have changed the state. Give the loop one verb that runs it and
+acts only when it answers true (`App.turn(act: fn() -> bool)`), and each
+source is a caller of that verb — never a queue of typed messages with a
+dispatch beside it.
