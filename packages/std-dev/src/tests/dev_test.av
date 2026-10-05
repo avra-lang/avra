@@ -1,8 +1,11 @@
-//! The dev server, by its own verbs and with no socket: a small page is
+//! The dev server's page form, by its own verbs and with no socket: a small page is
 //! written to scratch, the loop is turned by hand, and each route is asked
 //! as the server frames a request. The compiler is the tree's own, run as
 //! the server runs it.
-use @std.ui_dev.{Served, Dev, dev}
+use @std.dev.{Served, Dev, dev, static_server}
+use @std.http.http.{Pulled}
+use @std.http.fetch.{Fetched, get}
+use @std.net.{listen}
 use @std.http.frame.{framed, limits}
 use @std.http.http.{Request, Unrouted, Response}
 use @std.http.body.{Body}
@@ -65,9 +68,35 @@ fn got(d: Dev, target: string) -> Response {
 
 fn body_of(d: Dev, target: string) -> string { got(d, target).body.text() ?? "" }
 
-/// The standing build's three parts: its number, the module's id, and what
-/// a failed build said.
-fn standing(d: Dev) -> List<string> { body_of(d, "/@dev/build").split("\n") }
+/// The first event a page joining now hears, as its lines.
+fn first_event(d: Dev) -> List<string> {
+    let stream? = got(d, "/@dev/events").stream else { return [] }
+    match stream.pull() {
+        .Data(piece) -> (piece.text() ?? "").trim().split("\n"),
+        .End or .Failed -> [],
+    }
+}
+
+/// What an event's lines say under `field`, its lines joined.
+fn field_of(lines: List<string>, field: string) -> string {
+    [l.substring(field.length + 2, l.length) for l in lines if l.starts_with("${field}: ")]
+        .join("\n")
+}
+
+/// The standing build's three parts, as a page hears them: its number, the
+/// module's id, and what a failed build said.
+fn standing(d: Dev) -> List<string> {
+    let heard = first_event(d)
+    if field_of(heard, "event") == "failed" { [field_of(heard, "id"), module_shown(d), field_of(heard, "data")] } else { [field_of(heard, "id"), field_of(heard, "data")] }
+}
+
+/// The id the page is told its module has.
+fn module_shown(d: Dev) -> string {
+    let page = body_of(d, "/")
+    let from = page.index_of("avra-module\" content=\"")
+    if from < 0 { return "" }
+    page.substring(from + 22, page.length).split("\"")[0]
+}
 
 /// What a standing says its build failed with: every line past the second.
 fn failure_of(standing: List<string>) -> string { [l for j, l in standing if j > 1].join("\n") }
@@ -153,7 +182,7 @@ fn seen(holds: fn(Session) -> bool) -> bool {
     !s.equipped || holds(s)
 }
 
-spec "std/ui_dev — the loop, turned by hand" {
+spec "std/dev — the loop, turned by hand" {
     given "a page nothing has built" {
         then "the first turn builds it" { seen((s) -> s.first_built && s.first_id != "") }
         then "a turn with nothing moved builds nothing" { seen((s) -> !s.idle_built) }
@@ -171,7 +200,7 @@ spec "std/ui_dev — the loop, turned by hand" {
         then "the module is served as wasm" {
             seen((s) -> s.wasm_status == 200 && s.wasm_kind == "application/wasm" && s.wasm_magic)
         }
-        then "a script is served as a script" { seen((s) -> s.script_kind == "text/javascript; charset=utf-8") }
+        then "a script is served as a script" { seen((s) -> s.script_kind.starts_with("text/javascript")) }
     }
     given "a source edited" {
         then "the next turn builds, and the module's id moves" {
@@ -197,7 +226,7 @@ spec "std/ui_dev — the loop, turned by hand" {
     }
 }
 
-spec "std/ui_dev — what a page is answered before any build" {
+spec "std/dev — what a page is answered before any build" {
     given "a server that has built nothing" {
         then "the module is not served" {
             match serving("x") {
@@ -205,9 +234,15 @@ spec "std/ui_dev — what a page is answered before any build" {
                 null -> false
             }
         }
-        then "the standing is number 0, no module, no failure" {
+        then "a page that joins hears the standing at once: number 0, built, no module" {
             match serving("x") {
-                d? -> body_of(d, "/@dev/build") == "0\n\n"
+                d? -> first_event(d).join("|") == "event: built|id: 0|data:"
+                null -> false
+            }
+        }
+        then "the channel is an event stream" {
+            match serving("x") {
+                d? -> got(d, "/@dev/events").header("content-type") == "text/event-stream"
                 null -> false
             }
         }
@@ -218,12 +253,61 @@ spec "std/ui_dev — what a page is answered before any build" {
                 null -> false
             }
         }
-        then "no answer is one a cache may keep" {
+        then "the page and the module are never kept" {
             match serving("x") {
-                d? -> got(d, "/").header("cache-control") == "no-store" &&
-                    got(d, "/bootstrap.js").header("cache-control") == "no-store"
+                d? -> got(d, "/").header("cache-control") == "no-store"
                 null -> false
             }
+        }
+        then "a glue script is asked for again each time" {
+            match serving("x") {
+                d? -> "${got(d, "/bootstrap.js").status} ${got(d, "/bootstrap.js").header("cache-control") ?? "-"}" == "200 max-age=0"
+                null -> false
+            }
+        }
+    }
+}
+
+// ── a directory, served ─────────────────────────────────────────
+
+/// A directory in scratch: an index, a module and a script.
+fn site_dir() -> string {
+    let root = "${tree()}/build/scratch/dev_site_${now_ns()}"
+    let _ = make_dirs("${root}/sub")
+    let _ = write_text("${root}/index.html", "<h1>home</h1>")
+    let _ = write_text("${root}/app.wasm", "module")
+    let _ = write_text("${root}/main.mjs", "export {}")
+    let _ = write_text("${root}/sub/index.html", "sub")
+    root
+}
+
+/// What a GET of each of `targets` answers from a directory served on any
+/// free port of the loopback: its status, its type and how long a cache
+/// may keep it, a line each.
+fn fetched(targets: List<string>) -> string {
+    let door = match listen("127.0.0.1", 0) { .Ok(l) -> l, .Err(_) -> { return "no door" } }
+    let answering = static_server(door, site_dir())
+    spawn answering.run(1)
+    defer answering.stop()
+    [answered(get("http://127.0.0.1:${door.port}${t}")) for t in targets].join("\n")
+}
+
+fn answered(got: Fetched) -> string {
+    match got {
+        .Ok(a) -> "${a.status} ${a.headers.find(it.named("content-type"))?.value ?? "-"} ${a.headers.find(it.named("cache-control"))?.value ?? "-"}",
+        .Err(_) -> "unanswered",
+    }
+}
+
+spec "std/dev — a directory, served as it stands" {
+    given "a directory with an index, a module and a script" {
+        then "each is typed by its own name, the index too, and none is kept without asking again" {
+            fetched(["/", "/app.wasm", "/main.mjs", "/sub/"]) == "200 text/html; charset=utf-8 max-age=0\n200 application/wasm max-age=0\n200 text/javascript; charset=utf-8 max-age=0\n200 text/html; charset=utf-8 max-age=0"
+        }
+        then "what is not there, and what is above it, are not found" {
+            fetched(["/nowhere.html", "/../avra.toml"])
+                .split("\n")
+                .all(it.starts_with("404") || it.starts_with("400"))
         }
     }
 }

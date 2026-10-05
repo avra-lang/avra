@@ -1,11 +1,16 @@
-//! `avra dev <package>` — the loop: the package's page built as a wasm
-//! reactor, served with the page glue on a local port, and built again
-//! when a file the build reads moves. THE SERVER IS A PROGRAM OF ITS OWN
-//! (`@std/ui_dev`), built once and run here with what this compiler found
-//! — itself, the wasm triple this machine links, the page glue — so the
-//! compiler carries no server and a build that traps takes none with it.
+//! `avra dev <path>` — one verb, and what it does follows what it is
+//! pointed at. A DIRECTORY is served as it stands. A PACKAGE WHOSE
+//! PROGRAM MOUNTS A PAGE is built as a wasm reactor, served with the page
+//! glue, and built again when a file the build reads moves; the page is
+//! told and reloads. Anything else is refused by what it is.
+//!
+//! THE SERVER IS A PROGRAM OF ITS OWN (`@std/dev`), built once and run
+//! here with what this compiler found — itself, the wasm triple this
+//! machine links, the page glue — so the compiler carries no server and a
+//! build that traps takes none with it.
 use @std.cli.{CliResult, Runnable, command, option, flag}
-use @std.io.{is_dir}
+use @std.avrac.compiler.{Workspace}
+use @std.io.{is_dir, exists}
 use @std.path.{joined_path}
 use @std.process.{tool, cmd}
 
@@ -13,48 +18,105 @@ extern fn avra_own_pid() -> int
 
 type DevCmd = {}
 
+/// What a path is, to a dev server.
+enum Pointed {
+    /// A directory that is no package: its files, as they stand.
+    Files
+    /// A package whose program mounts a view on a page.
+    Page
+    /// A package with no program: nothing in it runs.
+    Library
+    /// A package whose program mounts no page.
+    Program
+    /// No directory at all.
+    File
+}
+
+/// The module a program mounts a page through.
+const web_module: string = "@std.ui.web"
+
+/// Whether a package's own sources reach for the page: one of them
+/// imports the module a page is mounted through. Asked of the `use`
+/// lines the workspace reads, never of a file's name.
+fn mounts_a_page(ws: Workspace) -> bool {
+    ws
+        .all_files(ws.packages()[0].src)
+        .any((path) -> ws.imported_by(path).any(it.text() == web_module))
+}
+
+/// What `path` is. A package is a directory with a manifest; what it holds
+/// is the workspace's to say.
+fn pointed(path: string) -> Pointed {
+    if !is_dir(path) { return .File }
+    if !exists(joined_path(path, "avra.toml")) { return .Files }
+    let ws = root_workspace(path)
+    if ws.entry_of() == null { return .Library }
+    if mounts_a_page(ws) { .Page } else { .Program }
+}
+
 impl Runnable for DevCmd {
     fn run(args: CliResult) -> int {
-        let root? = argued_path(args) else { return 2 }
-        if !is_dir(root) { return unequipped(wants_a_package(root)) }
-        let page = match toolchain(asked(args, "target", "wasm"), true, false) {
-            .Ok(t) -> t,
-            .Err(code) -> { return code },
-        }
-        let glue? = glue_dir() else { return unequipped(no_glue()) }
-        let own? = own_binary() else { return unequipped(no_compiler()) }
-        let home? = server_home() else { return unequipped(no_server()) }
-        let host = match toolchain("", false, false) { .Ok(t) -> t, .Err(code) -> { return code } }
-        let server = match built_outcome(home, host) {
-            .Ok(b) -> b.binary,
-            .Err(code) -> { return code },
-        }
-        let words = [
-            "serve",
-            "--compiler=${own}",
-            "--target=${page.target}",
-            "--glue=${glue}",
-            "--host=${asked(args, "host", "127.0.0.1")}",
-            "--port=${asked(args, "port", "8787")}",
-            "--interval=${asked(args, "interval", "250")}",
-            "--keeper=${avra_own_pid()}",
-        ]
-            .concat(if args.has_flag("open") { ["--open"] } else { [] })
-            .concat([root])
-        match tool(server) {
-            .Ok(program) -> match at_the_terminal(cmd(program, words)).outcome() {
-                .Ok(x) -> status_of_exit(x.exit),
-                .Err(e) -> refused_by_host(e),
-            },
-            .Err(e) -> refused_by_host(e),
+        let path? = argued_path(args) else { return 2 }
+        match pointed(path) {
+            .Files -> served(args, ["files"], path),
+            .Page -> page_served(args, path),
+            .Library -> unequipped(serves_no_library(path)),
+            .Program -> unequipped(serves_no_program(path)),
+            .File -> unequipped(serves_no_file(path)),
         }
     }
 }
 
+/// A package's page, served: the toolchain found first, so a machine that
+/// cannot build one says so before anything is served.
+fn page_served(args: CliResult, path: string) -> int {
+    let page = match toolchain(asked(args, "target", "wasm"), true, false) {
+        .Ok(t) -> t,
+        .Err(code) -> { return code },
+    }
+    let glue? = glue_dir() else { return unequipped(no_glue()) }
+    let own? = own_binary() else { return unequipped(no_compiler()) }
+    served(
+        args,
+        ["page", "--compiler=${own}", "--target=${page.target}", "--glue=${glue}"]
+            .concat(if args.has_flag("no_watch") { ["--unwatched"] } else { [] }),
+        path,
+    )
+}
+
+/// The dev server run at the terminal in the form `form` names, over
+/// `path`, with where to serve and for whom.
+fn served(args: CliResult, form: List<string>, path: string) -> int {
+    let home? = server_home() else { return unequipped(no_server()) }
+    let host = match toolchain("", false, false) { .Ok(t) -> t, .Err(code) -> { return code } }
+    let server = match built_outcome(home, host) {
+        .Ok(b) -> b.binary,
+        .Err(code) -> { return code },
+    }
+    let words = form
+        .concat(
+            [
+                "--host=${asked(args, "host", "127.0.0.1")}",
+                "--port=${asked(args, "port", "8787")}",
+                "--interval=${asked(args, "interval", "250")}",
+                "--keeper=${avra_own_pid()}",
+            ],
+        )
+        .concat(if args.has_flag("open") { ["--open"] } else { [] })
+        .concat([path])
+    match tool(server) {
+        .Ok(program) -> match at_the_terminal(cmd(program, words)).outcome() {
+            .Ok(x) -> status_of_exit(x.exit),
+            .Err(e) -> refused_by_host(e),
+        },
+        .Err(e) -> refused_by_host(e),
+    }
+}
+
 export command dev {
-    description: "Serve a package's page and build it again as its sources change"
-    flags: [open]
-    options: [target, port, host, interval]
+    description: "Serve a directory as it stands, or a package's page — built, and built again as its sources change"
+    flags: [open, no_watch]
+    options: [port, host, target, interval]
     args: [file]
     run: DevCmd {}
 }
@@ -64,15 +126,20 @@ export option port {
 }
 
 export option host {
-    description: "the address to serve at (default 127.0.0.1)"
+    description: "the address to serve at (default 127.0.0.1, this machine alone)"
 }
 
 export option interval {
-    description: "how often the build's inputs are looked at, in milliseconds (default 250)"
+    description: "how often a page's sources are looked at, in milliseconds (default 250)"
 }
 
 export flag open {
     description: "open the page in the browser once it is served"
+}
+
+export flag no_watch {
+    description: "build a page once and serve it: nothing is watched"
+    aliases: ["--no-watch"]
 }
 
 /// An option as given, or `otherwise` when it was not.
@@ -87,15 +154,25 @@ fn glue_dir() -> string? { toolchain_files(["../runtime/dom", "../lib/avra/dom"]
 /// The dev server's package, among the toolchain's own.
 fn server_home() -> string? {
     let std? = std_root() else { return null }
-    [joined_path(std, "std-ui_dev")].find(is_dir(it))
+    [joined_path(std, "std-dev")].find(is_dir(it))
 }
 
 // ── The voices ──
 
-fn wants_a_package(path: string) -> string { "`dev` serves a package — ${path} is a file" }
+fn serves_no_file(path: string) -> string {
+    "`dev` serves a directory or a package — ${path} is a file"
+}
+
+fn serves_no_library(path: string) -> string {
+    "${path} is a library: it has no program to serve — a page is a package whose `[bin]` entry mounts a view (`use @std.ui.web.{mount}`)"
+}
+
+fn serves_no_program(path: string) -> string {
+    "${path}'s program mounts no page, so there is nothing to serve — `avra run` runs it where it stands; a page's program says `use @std.ui.web.{mount}` and `mount(view)`"
+}
 
 fn no_glue() -> string { "the page glue is not beside the compiler — expected runtime/dom" }
 
 fn no_compiler() -> string { "this compiler cannot find its own binary to build with" }
 
-fn no_server() -> string { "the dev server is not among the toolchain's packages — expected std-ui_dev" }
+fn no_server() -> string { "the dev server is not among the toolchain's packages — expected std-dev" }

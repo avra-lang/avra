@@ -1,9 +1,14 @@
-//! `@std/ui_dev` — the dev server `avra dev` runs. A package's page, built
-//! as a wasm reactor, is served with the page glue on a local port and
-//! built again when a file the build reads moves. The page asks what the
-//! build is and is answered when it moves (`runtime/dom/dev.js`): a new
-//! module reloads it, and a build that failed is shown over it while the
-//! last good module keeps running.
+//! `@std/dev` — the dev server `avra dev` runs, in its two forms.
+//!
+//! A DIRECTORY is served as it stands (`static_server`): `@std/http`'s
+//! own `directory`, every file revalidated on each ask.
+//!
+//! A PAGE is a package whose program mounts a view on a page. It runs as a
+//! real wasm module: built as a reactor, served with the page glue, and
+//! built again when a file the build reads moves. The page hears each move
+//! over an event stream (`runtime/dom/dev.js`): a new module reloads it,
+//! and a build that failed is shown over it while the last good module
+//! keeps running.
 //!
 //! A BUILD IS A CHILD: `avra build`, as anyone runs it, so what it says
 //! is what a build says, and a compiler that traps takes no server with
@@ -11,23 +16,33 @@
 //! file its key covers, asked after each build, and beside them every
 //! source that arrives in a directory one of them stands in.
 use @std.http.frame.{Method, limits}
-use @std.http.http.{Request, Unrouted, Response, Header, text, status}
+use @std.http.http.{Request, Unrouted, Response, Header, text}
 use @std.http.route.{Route, fixed, compiled, dispatch}
 use @std.http.server.{Server, Stateless, served, timing}
+use @std.http.files.{Files, directory}
+use @std.http.sse.{Event, Next, Source, Resume, event_stream, quiet_default}
+use @std.http.codec.{sha1}
 use @std.net.{Bell, Listener}
 use @std.io.{read_bytes, read_text, exists, list_dir, stamp}
 use @std.path.{joined_path, file_name, dir_of}
-use @std.process.{Tool, cmd, inherited, Outcome, Exit}
-use @std.text.{parse_int, base64url}
-use @std.http.codec.{sha1}
-use @std.time.{Duration, secs, now_ms}
+use @std.process.{Tool, cmd, inherited, Outcome}
+use @std.text.{base64url}
+use @std.time.{Duration, now_ms}
+
+/// A directory as a dev server serves one: its index at a path ending in
+/// `/`, each file typed by its name, and nothing a browser may keep
+/// without asking again.
+fn fresh_files(root: string) -> Files { Files { root: root, max_age: 0 } }
+
+/// `root` answered on `door` as static files, one connection a task.
+export fn static_server(door: Listener, root: string) -> Server<Stateless> {
+    let routed = compiled(directory("/", fresh_files(root)))
+    served(door, () -> Stateless {}, limits(), timing()) { _none, q -> dispatch(routed, q) }
+}
 
 /// What one dev server serves: the compiler that builds, the package, the
 /// wasm triple this machine links, and where the page glue stands.
 export type Served = { compiler: Tool, root: string, target: string, glue: string }
-
-/// How long a page's question is held before it is answered unmoved.
-fn held_for() -> Duration { secs(20) }
 
 // ── what is watched ─────────────────────────────────────────────
 
@@ -81,6 +96,7 @@ export type Dev = {
     inputs: Cell<List<string>>,
     watched: Cell<List<Watched>>,
     built_once: Cell<bool>,
+    ending: Cell<bool>,
     moved: Bell,
 }
 
@@ -94,6 +110,7 @@ export fn dev(serves: Served) -> Dev {
         inputs: Cell.new(unread),
         watched: Cell.new(none),
         built_once: Cell.new(false),
+        ending: Cell.new(false),
         moved: Bell {},
     }
 }
@@ -210,27 +227,44 @@ impl Dev {
 
     // ── what a page is answered ─────────────────────────────────
 
-    /// The standing build, as the dev client reads it: its number, the
-    /// module's id, then what a failed build said.
-    fn told() -> Response {
+    /// The standing build as one event: `built` saying the module's id,
+    /// or `failed` saying what the build said. Its id is the standing's
+    /// number.
+    fn standing_event() -> Event {
         let now = self.standing.get()
-        fresh(
-            "text/plain; charset=utf-8",
-            "${self.moved.rings()}\n${now.id}\n${now.failure}".bytes(),
+        let number = "${self.moved.rings()}"
+        if now.failure == "" { Event { event: "built", data: now.id, id: number } } else { Event { event: "failed", data: now.failure, id: number } }
+    }
+
+    /// The next event for a page that last heard the standing numbered
+    /// `heard`: the standing as soon as it is another, nothing within
+    /// `wait` when it is not, and the end once the server is ending.
+    fn next_after(heard: Cell<int>, wait: Duration) -> Next {
+        if self.ending.get() { return .End }
+        let _ = self.moved.waited_since(heard.get(), wait)
+        if self.ending.get() { return .End }
+        if self.moved.rings() == heard.get() { return .Quiet }
+        heard.set(self.moved.rings())
+        .Event(self.standing_event())
+    }
+
+    /// THE PAGE'S CHANNEL: the standing build at once — a page that joins
+    /// late, or again after the server restarted, hears where things
+    /// stand — then each move as it happens.
+    fn events() -> Response {
+        let heard = Cell.new(-1)
+        event_stream(
+            Resume.From(Source { next: (wait: Duration) -> self.next_after(heard, wait) }),
+            quiet_default(),
         )
     }
 
-    /// `told`, held while the build still stands at the number the page
-    /// last heard — until it moves, or the hold runs out.
-    fn told_since(heard: string?) -> Response {
-        let seen = parse_int(heard ?? "") ?? -1
-        let _ = self.moved.waited_since(seen, held_for())
-        self.told()
+    /// Every page's stream ended: a server that is ending keeps no page
+    /// waiting.
+    fn released() {
+        self.ending.set(true)
+        self.moved.rouse()
     }
-
-    /// Every question a page is held on, answered now: a server that is
-    /// ending keeps no page waiting.
-    fn released() { self.moved.rouse() }
 
     /// The page: the glue's own, titled, with the dev client and the id
     /// of the module it is about to load.
@@ -255,27 +289,14 @@ impl Dev {
         fresh("application/wasm", now.module)
     }
 
-    /// One of the glue's scripts, read as it stands.
-    fn script(name: string) -> Response {
-        match read_bytes(joined_path(self.serves.glue, name)) {
-            .Ok(source) -> fresh("text/javascript; charset=utf-8", source),
-            .Err(_) -> status(404),
-        }
-    }
-
+    /// The page, the module and the channel, then the glue's own files.
     fn routes() -> List<Route> {
         [
             fixed(Method.Get, "/", (_q: Request<Unrouted>) -> self.page()),
             fixed(Method.Get, "/app.wasm", (_q: Request<Unrouted>) -> self.module()),
-            fixed(
-                Method.Get,
-                "/@dev/build",
-                (q: Request<Unrouted>) -> self.told_since(q.header("x-avra-since")),
-            ),
+            fixed(Method.Get, "/@dev/events", (_q: Request<Unrouted>) -> self.events()),
         ]
-            .concat(
-                [fixed(Method.Get, "/${name}", (_q: Request<Unrouted>) -> self.script(name)) for name in glue_scripts()],
-            )
+            .concat(directory("/", fresh_files(self.serves.glue)))
     }
 
     /// This package answered on `door`, one connection a task.
@@ -284,9 +305,6 @@ impl Dev {
         served(door, () -> Stateless {}, limits(), timing()) { _none, q -> dispatch(routed, q) }
     }
 }
-
-/// The scripts a dev page loads: the page glue, and the dev client.
-fn glue_scripts() -> List<string> { ["bootstrap.js", "wasi.js", "wire.gen.js", "dev.js"] }
 
 /// An answer no cache keeps: the next ask reads what stands then.
 fn fresh(kind: string, body: Bytes) -> Response {

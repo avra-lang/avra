@@ -1,7 +1,7 @@
 //! `avra dev` and `avra build --inputs`, as a developer runs them. The
 //! loop itself — a build, an edit, a failure, the routes — is proven by the
-//! server's own suite (`@std/ui_dev`); here the command finds its tools,
-//! refuses what it cannot serve, and says where it serves. `avra_ran`,
+//! server's own suite (`@std/dev`); here the command tells what it was
+//! pointed at, refuses what it cannot serve, and says where it serves. `avra_ran`,
 //! `avra_bin`, `scratch_dir` and `hang_bound` are the neighbouring tests'
 //! own.
 use @std.io.{make_dirs, write_text}
@@ -42,29 +42,80 @@ once fn page_inputs() -> Left { left(["build", "--target", "wasm", "--wasm_react
 
 fn equipped() -> bool { page_inputs().code != 2 }
 
-/// What `avra dev` says once it serves, the server stopped after.
-fn served_line() -> Result<string, ProcessError> {
-    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0", "--interval", "100", dev_page()]) with { env: inherited(), timeout: hang_bound() }
+/// What `avra dev` says once it serves `path`, the server stopped after.
+fn served_line(path: string) -> Result<string, ProcessError> {
+    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0", "--interval", "100", path]) with { env: inherited(), timeout: hang_bound() }
     mut child = asked.start(Ready.Line(" at http://127.0.0.1:"), ms(120000))?
     let said = child.out
     child.stop()
     said
 }
 
-spec "avra dev — the command" {
-    given "a file where a package is wanted" {
-        then "it is refused by name, and nothing is served" {
+/// A directory that is no package: one page.
+once fn plain_dir() -> string {
+    let root = "${scratch_dir()}/dev_plain_${now_ns()}"
+    let _ = make_dirs(root)
+    let _ = write_text("${root}/index.html", "<h1>home</h1>")
+    root
+}
+
+/// A package with a manifest and `source` as its entry — or no entry at
+/// all when `source` is empty.
+fn package_of(name: string, source: string) -> string {
+    let root = "${scratch_dir()}/${name}_${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    if source == "" {
+        let _ = write_text(
+            "${root}/avra.toml",
+            "[package]\nname = \"${name}\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"${name}\"\npath = \"src/lib.av\"\n",
+        )
+        let _ = write_text("${root}/src/lib.av", "export fn one() -> int { 1 }\n")
+    } else {
+        let _ = write_text(
+            "${root}/avra.toml",
+            "[package]\nname = \"${name}\"\nversion = \"0.1.0\"\n\n[bin]\nname = \"${name}\"\npath = \"src/main.av\"\n",
+        )
+        let _ = write_text("${root}/src/main.av", source)
+    }
+    root
+}
+
+spec "avra dev — what it does follows what it is pointed at" {
+    given "a file" {
+        then "it is refused by what it is, and nothing is served" {
             let l = left(["dev", "${dev_page()}/src/main.av"])
-            l.code == 2 && l.said.contains("`dev` serves a package")
+            l.code == 2 && l.said.contains("`dev` serves a directory or a package")
         }
     }
     given "a path that is not there" {
         then "it is refused as every command refuses one" { left(["dev", "${dev_page()}/nowhere"]).said.contains("no such file") }
     }
-    given "a page package" {
+    given "a package with no program" {
+        then "it is called a library, and told what a page is" {
+            let l = left(["dev", package_of("dev_lib", "")])
+            l.code == 2 &&
+                l.said.contains("is a library") &&
+                l.said.contains("use @std.ui.web.{mount}")
+        }
+    }
+    given "a package whose program mounts no page" {
+        then "it is refused by that, and sent to `avra run`" {
+            let l = left(["dev", package_of("dev_prog", "println(\"hi\")\n")])
+            l.code == 2 && l.said.contains("mounts no page") && l.said.contains("`avra run`")
+        }
+    }
+    given "a directory that is no package" {
+        then "it is served as it stands: nothing is built" {
+            match served_line(plain_dir()) {
+                .Ok(said) -> said.contains("dev: ${plain_dir()} at http://127.0.0.1:") && !said.contains("built"),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a package whose program mounts a page" {
         then "it builds the page and says where it serves" {
             !equipped() ||
-                match served_line() {
+                match served_line(dev_page()) {
                     .Ok(said) -> said.contains("dev: built ") &&
                         said.contains("dev: ${dev_page()} at http://127.0.0.1:"),
                     .Err(_) -> false,

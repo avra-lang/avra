@@ -160,53 +160,86 @@ readable outline); `realize/` is the targets, one directory each
 
 ## `avra dev` — the loop
 
-`avra dev <package>` builds the package's page as a wasm reactor, serves
-it with the page glue, and builds again when a file the build reads moves.
+ONE VERB: `avra dev <path> [--port N] [--host H] [--open] [--no-watch]`,
+and what it does follows what it is pointed at.
 
-- **The command is thin, the server is a program.** `commands/dev.av`
-  finds what only the compiler knows — itself, the wasm triple this
-  machine links, the glue — then builds `@std/ui_dev` once and runs it.
-  The compiler links no HTTP server (it cost its own build 2 GB), and the
-  server ends when the command that started it has.
-- **A build is a child**: `avra build --target … --wasm_reactor`, as
-  anyone runs it. What it says is what a build says; a compiler that
-  traps takes no server with it.
-- **The watch set is the build's own inputs** (`avra build --inputs`,
-  the files its key covers: the closure's sources, the manifests, the
+| pointed at | it |
+|---|---|
+| a directory that is no package | serves its files as they stand |
+| a package whose program mounts a page | builds it, serves it, watches, rebuilds, tells the page |
+| a package with no program | refuses: a library, and what a page is |
+| a package whose program mounts no page | refuses: nothing to serve, `avra run` runs it |
+| a file | refuses |
+
+A package is a directory with a manifest. It MOUNTS A PAGE when one of
+its own sources imports `@std.ui.web` — asked of the `use` lines the
+workspace reads (`imported_by`), never of a file's name.
+
+- **No JIT. The page runs a real wasm module**, the artifact that ships.
+  A change triggers a rebuild — `avra build --target wasm
+  --wasm_reactor`, as anyone runs it, as a child — and the compiler's
+  store makes it incremental: only the files that moved are read again,
+  only their objects made again, then one link and one `wasm-opt`.
+  The board, on a machine under load: cold 2.7 s; a one-line edit 1.1 s
+  to 1.6 s; unchanged 0.2 s to 0.3 s. Of a warm edit the compiler's own
+  phases are about 0.4 s (link 100 ms the largest); the rest is
+  `wasm-opt -Oz` and two process starts.
+- **Serving a directory is `@std/http`'s own** (`files.av`'s
+  `directory`: path-safe, validated, ranged, each file typed by its name
+  — `application/wasm`, a script as a script). The smallest honest
+  program today:
+
+      use @std.http.server.{server}
+      use @std.http.files.{Files, directory}
+
+      server site {
+          port: 8080
+          routes: directory("/", Files { root: "public" })
+      }
+
+      match site.run() { .Ok(n) -> "served ${n}", .Err(e) -> e.describe().message }
+
+  What stands in the way of `files "/" { root: "public" }` as a route
+  line: a component that expands to code takes no `key: value` settings,
+  and a component's head takes one argument (`avra-8sb5.11`, survey).
+  The dev server is that program with a port it is handed
+  (`@std/dev`'s `static_server`): a file is asked for again every time
+  (`max-age=0` over its validators).
+- **The command is thin, the server is a program** (`@std/dev`, built
+  once, run by `commands/dev.av` with what only the compiler knows:
+  itself, the wasm triple this machine links, the glue). Linked into the
+  compiler, an HTTP server took the compiler's own build from 2.4 GB past
+  4 GB. The server ends when the command that started it has.
+- **Ports.** Loopback by default (`--host`), port 8787 by default,
+  `--port 0` for any free one; the address served is printed. A port
+  that is taken is refused by name: `listen 127.0.0.1:8787: Address
+  already in use — --port 0 takes any free port`.
+- **The watch set is the build's own inputs** (`avra build --inputs`:
+  the files its key covers — the closure's sources, the manifests, the
   toolchain's own), asked after each build, plus every source that
-  arrives in a directory one of them stands in. Looked at every 250 ms
-  (`--interval`): a file is its stamp, or — too young for a stamp to tell
-  two writes apart — its text, so a save that changed nothing builds
-  nothing. What is remembered is what a build STARTED from.
-- **The channel is one long poll.** `GET /@dev/build` answers the
-  standing build — its number, the module's id, what a failed build said
-  — at once, and with `x-avra-since: <number>` only when it has moved.
-  One route answers the page, a test and `curl`; an event stream keeps no
-  standing for a page that joins late.
+  arrives in a directory one of them stands in. Looked at every 250 ms:
+  a file is its stamp, or — too young for a stamp to tell two writes
+  apart — its text, so a save that changed nothing builds nothing. What
+  is remembered is what a build STARTED from. Nothing is watched where
+  there is nothing to rebuild.
+- **The page is told over an event stream** (`/@dev/events`, `@std/http`'s
+  `sse.av`): `built` says the standing module's id, `failed` says what
+  the build said. A stream and not a socket: the server only ever tells,
+  the browser reopens a dropped stream by itself, and a page that joins
+  late — or again after the server restarted — hears where things stand
+  as its first event.
 - **The reload client is dev-only glue** (`runtime/dom/dev.js`), put in
-  the page's `<!--DEV-->` hole by the server beside the id of the module
-  the page is about to load. A production page never carries it.
-- **Step 1, built: the page reloads.** A module that is no longer the one
-  the page runs reloads the page; state is lost. A build that failed is
-  shown over the page and in the terminal, and the last good module is
-  still what is served and what runs.
-- **Step 2, not built: state kept.** A module's state lives in its own
-  memory, so a new module must be HANDED it. Three parts, each a seam
-  that exists: (a) module `state` by NAME — the compiler writes, per
-  state, a reader and a writer over one neutral encoding, exported by the
-  names a generated table carries; a state whose type moved is dropped,
-  spoken; (b) instance state by IDENTITY — the same pair keyed by the
-  node's site and key (`avra-8sb5.59.43`, own-state); (c) the page
-  ADOPTED, so the new module's first paint is a diff against what stands:
-  the old module says its page as a frame, the new one reads that frame
-  back into `Live.page`, and the host keeps its elements. (c) alone is an
-  honest hot swap for a view edit and needs a frame reader in Avra;
-  (a) and (b) are the compiler's. `avra-8sb5.59.41`'s acceptance (the
-  update applied as a diff) is (c).
+  the page's `<!--DEV-->` hole beside the id of the module the page is
+  about to load. A production page never carries it.
+- **A module that is no longer the one the page runs reloads the page.**
+  A build that failed is shown over the page and in the terminal, and
+  the last good module is still what is served and what runs.
 - **The toolchain is found.** `--target wasm` is whichever WASI triple
   this machine's clang has a libc for — `CC` alone when set, else
   `LLVM_PREFIX`'s clang, then the PATH's — and a machine with none hears
   which compilers were asked for which triples.
+
+State kept across a reload is not built: `avra-8sb5.59.41.1`.
 
 ## Kept
 
