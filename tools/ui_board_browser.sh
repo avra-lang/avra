@@ -1,9 +1,10 @@
 #!/bin/sh
-# THE BOARD IN A REAL BROWSER: tools/ui-board/web built as a wasm reactor,
-# served over an HTTP origin and driven in headless Firefox by
+# THE BOARD IN A REAL BROWSER: tools/ui-board/web served by `avra dev` and
+# driven in headless Firefox by
 # tools/ui-board/browser.mjs, which checks each claim and exits 1 on the
 # first that fails. `make ui-board` proves the wire over a stub document;
-# this proves what only an engine can.
+# this proves what only an engine can — and the dev loop: the view's file is
+# edited and the running page must follow.
 #
 # It needs what `make ui-board` needs, and Firefox (FIREFOX names one that is
 # not in a usual place). Where one is absent this SKIPS, spoken, naming what
@@ -27,28 +28,26 @@ if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
     ( cd "$tree" && make -s wasm-runtime wasm-packages ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
 fi
 
+# A COPY is served, so the run edits no file of the tree's.
 mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
-"$avra" build --target "$target" --wasm_reactor "$work/tools/ui-board/web" >"$work/build.out" 2>"$work/build.err" || built=$?
-[ "${built:-0}" -ne 2 ] || skip "$(sed 's/^avra: //' "$work/build.err" | head -1)"
-if [ "${built:-0}" -ne 0 ]; then
-    echo "ui-browser: the board did not build for $target"; cat "$work/build.err"; tail -20 "$work/build.out"; exit 1
-fi
-wasm=$(tail -1 "$work/build.out")
-[ -f "$wasm" ] || { echo "ui-browser: the build named no module ($wasm)"; exit 1; }
-
-node "$here/ui-board/origin.mjs" "$tree/runtime/dom" "$wasm" >"$work/origin.out" 2>"$work/origin.err" &
-origin=$!
-trap 'kill "$origin" 2>/dev/null || true' EXIT
+"$avra" dev --target "$target" --port 0 --interval 100 "$work/tools/ui-board/web" >"$work/dev.out" 2>"$work/dev.err" &
+dev=$!
+trap 'kill "$dev" 2>/dev/null || true' EXIT
 tries=0
-until [ -s "$work/origin.out" ]; do
+until grep -q '^dev: .* at http' "$work/dev.out" 2>/dev/null; do
+    if ! kill -0 "$dev" 2>/dev/null; then
+        wait "$dev" || ended=$?
+        [ "${ended:-0}" -ne 2 ] || skip "$(sed 's/^avra: //' "$work/dev.err" | head -1)"
+        echo "ui-browser: \`avra dev\` ended before it served"; cat "$work/dev.err" "$work/dev.out"; exit 1
+    fi
     tries=$((tries + 1))
-    [ "$tries" -lt 100 ] || { echo "ui-browser: the origin never said its address"; cat "$work/origin.err"; exit 1; }
+    [ "$tries" -lt 600 ] || { echo "ui-browser: \`avra dev\` never said where it serves"; cat "$work/dev.err"; exit 1; }
     sleep 0.1
 done
-url=$(head -1 "$work/origin.out")
+url=$(sed -n 's/^dev: .* at \(http[^ ]*\)$/\1/p' "$work/dev.out" | head -1)
 
-if ! out=$(node "$here/ui-board/browser.mjs" "$url" ${UI_BROWSER_SHOTS:+"$UI_BROWSER_SHOTS"} 2>&1); then
+if ! out=$(node "$here/ui-board/browser.mjs" "$url" --source "$work/tools/ui-board/src/board.av" ${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"} 2>&1); then
     echo "$out" | grep -v '^ok ' ; echo "ui-browser: the board failed in the browser"; exit 1
 fi
-echo "ui-browser: $(echo "$out" | grep -c '^ok ') claims hold in Firefox at $url"
+echo "ui-browser: $(echo "$out" | grep -c '^ok ') claims hold in Firefox, served by \`avra dev\` at $url"

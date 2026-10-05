@@ -6,11 +6,18 @@
 // keeps its caret, that the keyboard reaches everything. Each claim is
 // CHECKED and one failure exits 1. `make ui-browser` builds and runs it.
 //
-//   node browser.mjs <page url> [directory for screenshots]
+//   node browser.mjs <page url> [--shots <directory>] [--source <the view's file>]
+//
+// With `--source` the page is `avra dev`'s, and the loop is proven too: the
+// view's file is edited where it stands and the running page must follow.
+import fs from "node:fs";
 import path from "node:path";
 import { openPage, firefoxBinary, KEY } from "./firefox.mjs";
 
-const [url, shots] = process.argv.slice(2);
+const [url, ...named_words] = process.argv.slice(2);
+const word = (name) => { const at = named_words.indexOf(name); return at < 0 ? null : named_words[at + 1]; };
+const shots = word("--shots");
+const source = word("--source");
 const page = await openPage(firefoxBinary(), url);
 const { read, press, type } = page;
 
@@ -122,6 +129,29 @@ await type(" ");
 claim("Space presses the focused button, and the focus stays on it", await focused() === "Light mode");
 await type(KEY.enter);
 claim("Enter presses it too", await focused() === "Dark mode");
+
+// ── the dev loop ────────────────────────────────────────────────
+// Until `holds` answers true of the page, asked for as long as a build takes.
+const until = async (holds) => { for (let i = 0; i < 200; i++) { if (await read(holds).catch(() => false)) return true; await new Promise((go) => setTimeout(go, 100)); } return false; };
+if (source) {
+  const written = fs.readFileSync(source, "utf8");
+  const says = (words) => `document.body.textContent.includes(${JSON.stringify(words)})`;
+  claim("the dev page names the module it loaded", (await read(`document.querySelector('meta[name="avra-module"]').content`)).length > 0);
+
+  fs.writeFileSync(source, written.replace(`heading "Tasks"`, `heading "Chores"`));
+  claim("a view edited where it stands reaches the running page", await until(says("Chores")) && !(await read(says("Tasks"))));
+  await shot("edited");
+
+  fs.writeFileSync(source, `${written}\nfn broken( {\n`);
+  const failure = `document.getElementById("avra-dev-failure")`;
+  claim("a build that fails is shown over the page, naming the file", await until(`${failure} && !${failure}.hidden && ${failure}.textContent.includes(${JSON.stringify(path.basename(source))})`));
+  await shot("failed");
+  await press(named("Wire the event channel"));
+  claim("the last good page keeps running under it", await read(says("Chores")) && (await rows())[1].done);
+
+  fs.writeFileSync(source, written);
+  claim("the mended source is served, and the failure is gone", await until(`${says("Tasks")} && !(${failure} && !${failure}.hidden)`));
+}
 
 claim("nothing reached the console while the board was used", page.complaints().length === 0, page.complaints());
 await page.close();

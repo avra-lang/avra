@@ -1,0 +1,324 @@
+//! `@std/ui_dev` — the dev server `avra dev` runs. A package's page, built
+//! as a wasm reactor, is served with the page glue on a local port and
+//! built again when a file the build reads moves. The page asks what the
+//! build is and is answered when it moves (`runtime/dom/dev.js`): a new
+//! module reloads it, and a build that failed is shown over it while the
+//! last good module keeps running.
+//!
+//! A BUILD IS A CHILD: `avra build`, as anyone runs it, so what it says
+//! is what a build says, and a compiler that traps takes no server with
+//! it. THE WATCH IS THE BUILD'S OWN INPUTS (`avra build --inputs`): every
+//! file its key covers, asked after each build, and beside them every
+//! source that arrives in a directory one of them stands in.
+use @std.http.frame.{Method, limits}
+use @std.http.http.{Request, Unrouted, Response, Header, text, status}
+use @std.http.route.{Route, fixed, compiled, dispatch}
+use @std.http.server.{Server, Stateless, served, timing}
+use @std.net.{Bell, Listener}
+use @std.io.{read_bytes, read_text, exists, list_dir, stamp}
+use @std.path.{joined_path, file_name, dir_of}
+use @std.process.{Tool, cmd, inherited, Outcome, Exit}
+use @std.text.{parse_int, base64url}
+use @std.http.codec.{sha1}
+use @std.time.{Duration, secs, now_ms}
+
+/// What one dev server serves: the compiler that builds, the package, the
+/// wasm triple this machine links, and where the page glue stands.
+export type Served = { compiler: Tool, root: string, target: string, glue: string }
+
+/// How long a page's question is held before it is answered unmoved.
+fn held_for() -> Duration { secs(20) }
+
+// ── what is watched ─────────────────────────────────────────────
+
+/// What a file was when it was looked at: its stamp, or — while it is too
+/// young for one to tell two writes apart — its text.
+enum Mark {
+    Settled(stamp: int)
+    Young(text: string)
+    Gone
+}
+
+/// A file as it stands now.
+fn mark_of(path: string) -> Mark {
+    if !exists(path) { return .Gone }
+    match stamp(path) {
+        s? -> .Settled(s)
+        null -> .Young(read_text(path) catch "")
+    }
+}
+
+/// Whether the file at `path`, marked `was`, is still what it was now that
+/// it is marked `now`. A stamp is trusted against a stamp; a young file is
+/// read, so a save that changed nothing moves nothing.
+fn unmoved(path: string, was: Mark, now: Mark) -> bool {
+    match was {
+        .Settled(a) -> match now { .Settled(b) -> a == b, .Young(_) or .Gone -> false },
+        .Young(a) -> match now {
+            .Settled(_) -> (read_text(path) catch "") == a,
+            .Young(b) -> a == b,
+            .Gone -> false,
+        },
+        .Gone -> match now { .Gone -> true, .Settled(_) or .Young(_) -> false },
+    }
+}
+
+/// One watched file and what it was.
+type Watched = { path: string, mark: Mark }
+
+// ── the server's state ──────────────────────────────────────────
+
+/// What a page is served: the module as last built and its id — empty
+/// until a build succeeds — and what the build said if it failed since.
+type Standing = { module: Bytes, id: string, failure: string }
+
+/// One package being served. `moved` is rung when the standing changes,
+/// and how often it has rung is the standing's number. `inputs` is what
+/// the build last said it reads.
+export type Dev = {
+    serves: Served,
+    standing: Cell<Standing>,
+    inputs: Cell<List<string>>,
+    watched: Cell<List<Watched>>,
+    built_once: Cell<bool>,
+    moved: Bell,
+}
+
+/// A package ready to be served, nothing built yet.
+export fn dev(serves: Served) -> Dev {
+    let none: List<Watched> = []
+    let unread: List<string> = []
+    Dev {
+        serves: serves,
+        standing: Cell.new(Standing { module: "".bytes(), id: "", failure: "" }),
+        inputs: Cell.new(unread),
+        watched: Cell.new(none),
+        built_once: Cell.new(false),
+        moved: Bell {},
+    }
+}
+
+/// The sources standing in `dir` now.
+fn sources_in(dir: string) -> List<string> {
+    [joined_path(dir, name) for name in list_dir(dir) catch [] if name.ends_with(".av")]
+}
+
+/// Each text once, in the order first met.
+fn once_each(texts: List<string>) -> List<string> {
+    mut met: Map<string, bool> = {}
+    mut out: List<string> = []
+    for t in texts {
+        if met.get(t) == null {
+            met.set(t, true)
+            out.push(t)
+        }
+    }
+    out
+}
+
+impl Dev {
+    /// `avra build` of the package with these words before its path.
+    fn compiler_ran(words: List<string>) -> Result<Outcome, string> {
+        let asked = ["build", "--target", self.serves.target, "--wasm_reactor"]
+            .concat(words)
+            .concat([self.serves.root])
+        match (cmd(self.serves.compiler, asked) with { env: inherited() }).outcome() {
+            .Ok(o) -> o,
+            .Err(e) -> .Err(e.describe().message),
+        }
+    }
+
+    /// Every file the build's key covers, asked of the compiler — none
+    /// when it cannot say.
+    fn inputs_said() -> List<string>? {
+        match self.compiler_ran(["--inputs"]) {
+            .Ok(o) -> if exit_is_clean(o) { o.out.stdout.trim().split("\n") } else { null },
+            .Err(_) -> null,
+        }
+    }
+
+    /// What is watched: the build's inputs, and every source standing in
+    /// a directory one of them stands in — a file that arrives there is
+    /// the module's before any build has read it.
+    fn watch_set() -> List<string> {
+        let known = self.inputs.get()
+        once_each(
+            known
+                .concat(
+                    [s for dir in once_each([dir_of(p) for p in known if p.ends_with(".av")]) for s in sources_in(dir)],
+                ),
+        )
+    }
+
+    /// The watch set, each file as it stands now.
+    fn looked() -> List<Watched> { [Watched { path: p, mark: mark_of(p) } for p in self.watch_set()] }
+
+    /// Whether what stands now is what was last built from.
+    fn still(now: List<Watched>) -> bool {
+        let was = self.watched.get()
+        was.length == now.length &&
+            [j for j, w in now if was[j].path != w.path || !unmoved(w.path, was[j].mark, w.mark)]
+                .is_empty()
+    }
+
+    /// ONE TURN OF THE LOOP: the watch set looked at, and the page built
+    /// again when a file in it moved; answers whether it built. What is
+    /// remembered is what the build STARTED from, so a save made while it
+    /// ran is seen by the next turn; a file the build newly reached is
+    /// marked as it stands after.
+    fn turn() -> bool {
+        let now = self.looked()
+        if self.built_once.get() && self.still(now) { return false }
+        self.built_once.set(true)
+        self.build()
+        self.inputs.set(self.inputs_said() ?? self.inputs.get())
+        mut at: Map<string, Mark> = {}
+        for w in now { at.set(w.path, w.mark) }
+        self
+            .watched
+            .set([Watched { path: p, mark: at.get(p) ?? mark_of(p) } for p in self.watch_set()])
+        true
+    }
+
+    /// The package built: the module's path, or everything the build said.
+    fn built() -> Result<string, string> {
+        let o = self.compiler_ran([])?
+        if exit_is_clean(o) { .Ok(o.out.stdout.trim().split("\n").last() ?? "") } else { .Err(said(o)) }
+    }
+
+    /// The page built, and the standing moved to what came of it: a new
+    /// module, or the last good one beside what the build said.
+    fn build() {
+        let began = now_ms()
+        let was = self.standing.get()
+        let now = match self.built() {
+            .Ok(path) -> match read_bytes(path) {
+                .Ok(module) -> Standing { module: module, id: base64url(sha1(module)), failure: "" },
+                .Err(e) -> was with { failure: e.describe().message },
+            },
+            .Err(report) -> was with { failure: report },
+        }
+        self.standing.set(now)
+        if now.failure != "" {
+            eprintln(now.failure)
+            eprintln(failed_line(was.id))
+        } else {
+            println(built_line(now.id, now.module.length, now_ms() - began))
+        }
+        if now.id != was.id || now.failure != was.failure { self.moved.ring() }
+    }
+
+    // ── what a page is answered ─────────────────────────────────
+
+    /// The standing build, as the dev client reads it: its number, the
+    /// module's id, then what a failed build said.
+    fn told() -> Response {
+        let now = self.standing.get()
+        fresh(
+            "text/plain; charset=utf-8",
+            "${self.moved.rings()}\n${now.id}\n${now.failure}".bytes(),
+        )
+    }
+
+    /// `told`, held while the build still stands at the number the page
+    /// last heard — until it moves, or the hold runs out.
+    fn told_since(heard: string?) -> Response {
+        let seen = parse_int(heard ?? "") ?? -1
+        let _ = self.moved.waited_since(seen, held_for())
+        self.told()
+    }
+
+    /// Every question a page is held on, answered now: a server that is
+    /// ending keeps no page waiting.
+    fn released() { self.moved.rouse() }
+
+    /// The page: the glue's own, titled, with the dev client and the id
+    /// of the module it is about to load.
+    fn page() -> Response {
+        match read_text(joined_path(self.serves.glue, "page.html")) {
+            .Ok(html) -> fresh(
+                "text/html; charset=utf-8",
+                html
+                    .replace("<!--TITLE-->", escaped(file_name(self.serves.root)))
+                    .replace("<!--DEV-->", dev_tags(self.standing.get().id))
+                    .bytes(),
+            ),
+            .Err(e) -> text(500, e.describe().message),
+        }
+    }
+
+    /// The module as last built — or, before any build succeeded, what
+    /// the build said.
+    fn module() -> Response {
+        let now = self.standing.get()
+        if now.id == "" { return text(503, now.failure) }
+        fresh("application/wasm", now.module)
+    }
+
+    /// One of the glue's scripts, read as it stands.
+    fn script(name: string) -> Response {
+        match read_bytes(joined_path(self.serves.glue, name)) {
+            .Ok(source) -> fresh("text/javascript; charset=utf-8", source),
+            .Err(_) -> status(404),
+        }
+    }
+
+    fn routes() -> List<Route> {
+        [
+            fixed(Method.Get, "/", (_q: Request<Unrouted>) -> self.page()),
+            fixed(Method.Get, "/app.wasm", (_q: Request<Unrouted>) -> self.module()),
+            fixed(
+                Method.Get,
+                "/@dev/build",
+                (q: Request<Unrouted>) -> self.told_since(q.header("x-avra-since")),
+            ),
+        ]
+            .concat(
+                [fixed(Method.Get, "/${name}", (_q: Request<Unrouted>) -> self.script(name)) for name in glue_scripts()],
+            )
+    }
+
+    /// This package answered on `door`, one connection a task.
+    export fn server(door: Listener) -> Server<Stateless> {
+        let routed = compiled(self.routes())
+        served(door, () -> Stateless {}, limits(), timing()) { _none, q -> dispatch(routed, q) }
+    }
+}
+
+/// The scripts a dev page loads: the page glue, and the dev client.
+fn glue_scripts() -> List<string> { ["bootstrap.js", "wasi.js", "wire.gen.js", "dev.js"] }
+
+/// An answer no cache keeps: the next ask reads what stands then.
+fn fresh(kind: string, body: Bytes) -> Response {
+    Response {
+        headers: [
+            Header { name: "content-type", value: kind },
+            Header { name: "cache-control", value: "no-store" },
+        ],
+        body: body,
+    }
+}
+
+/// What the dev page carries that a production page does not.
+fn dev_tags(module: string) -> string {
+    "<meta name=\"avra-module\" content=\"${module}\">\n<script type=\"module\" src=\"./dev.js\"></script>"
+}
+
+/// Text as a page's own words, never its markup.
+fn escaped(words: string) -> string { words.replace("&", "&amp;").replace("<", "&lt;") }
+
+/// Whether a child ended as a clean run does. Every exit spelled.
+fn exit_is_clean(o: Outcome) -> bool {
+    match o.exit { .Clean -> true, .Code(n) -> n == 0, .Signal(_, _) -> false }
+}
+
+/// Everything a build said, its report first.
+fn said(o: Outcome) -> string { [o.out.stdout.trim(), o.out.stderr.trim()].filter(it != "").join("\n") }
+
+// ── The voices ──
+
+fn built_line(id: string, octets: int, took_ms: int) -> string { "dev: built ${id} — ${octets} bytes in ${took_ms} ms" }
+
+fn failed_line(standing: string) -> string {
+    if standing == "" { "dev: the build failed — nothing is served yet" } else { "dev: the build failed — ${standing} is still served" }
+}

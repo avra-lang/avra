@@ -1,0 +1,101 @@
+//! `avra dev <package>` — the loop: the package's page built as a wasm
+//! reactor, served with the page glue on a local port, and built again
+//! when a file the build reads moves. THE SERVER IS A PROGRAM OF ITS OWN
+//! (`@std/ui_dev`), built once and run here with what this compiler found
+//! — itself, the wasm triple this machine links, the page glue — so the
+//! compiler carries no server and a build that traps takes none with it.
+use @std.cli.{CliResult, Runnable, command, option, flag}
+use @std.io.{is_dir}
+use @std.path.{joined_path}
+use @std.process.{tool, cmd}
+
+extern fn avra_own_pid() -> int
+
+type DevCmd = {}
+
+impl Runnable for DevCmd {
+    fn run(args: CliResult) -> int {
+        let root? = argued_path(args) else { return 2 }
+        if !is_dir(root) { return unequipped(wants_a_package(root)) }
+        let page = match toolchain(asked(args, "target", "wasm"), true, false) {
+            .Ok(t) -> t,
+            .Err(code) -> { return code },
+        }
+        let glue? = glue_dir() else { return unequipped(no_glue()) }
+        let own? = own_binary() else { return unequipped(no_compiler()) }
+        let home? = server_home() else { return unequipped(no_server()) }
+        let host = match toolchain("", false, false) { .Ok(t) -> t, .Err(code) -> { return code } }
+        let server = match built_outcome(home, host) {
+            .Ok(b) -> b.binary,
+            .Err(code) -> { return code },
+        }
+        let words = [
+            "serve",
+            "--compiler=${own}",
+            "--target=${page.target}",
+            "--glue=${glue}",
+            "--host=${asked(args, "host", "127.0.0.1")}",
+            "--port=${asked(args, "port", "8787")}",
+            "--interval=${asked(args, "interval", "250")}",
+            "--keeper=${avra_own_pid()}",
+        ]
+            .concat(if args.has_flag("open") { ["--open"] } else { [] })
+            .concat([root])
+        match tool(server) {
+            .Ok(program) -> match at_the_terminal(cmd(program, words)).outcome() {
+                .Ok(x) -> status_of_exit(x.exit),
+                .Err(e) -> refused_by_host(e),
+            },
+            .Err(e) -> refused_by_host(e),
+        }
+    }
+}
+
+export command dev {
+    description: "Serve a package's page and build it again as its sources change"
+    flags: [open]
+    options: [target, port, host, interval]
+    args: [file]
+    run: DevCmd {}
+}
+
+export option port {
+    description: "the port to serve on — 0 takes any free one (default 8787)"
+}
+
+export option host {
+    description: "the address to serve at (default 127.0.0.1)"
+}
+
+export option interval {
+    description: "how often the build's inputs are looked at, in milliseconds (default 250)"
+}
+
+export flag open {
+    description: "open the page in the browser once it is served"
+}
+
+/// An option as given, or `otherwise` when it was not.
+fn asked(args: CliResult, name: string, otherwise: string) -> string {
+    if args.option(name) == "" { otherwise } else { args.option(name) }
+}
+
+/// The page glue beside the compiler: `runtime/dom` in a checkout,
+/// `lib/avra/dom` in an install.
+fn glue_dir() -> string? { toolchain_files(["../runtime/dom", "../lib/avra/dom"]).find(is_dir(it)) }
+
+/// The dev server's package, among the toolchain's own.
+fn server_home() -> string? {
+    let std? = std_root() else { return null }
+    [joined_path(std, "std-ui_dev")].find(is_dir(it))
+}
+
+// ── The voices ──
+
+fn wants_a_package(path: string) -> string { "`dev` serves a package — ${path} is a file" }
+
+fn no_glue() -> string { "the page glue is not beside the compiler — expected runtime/dom" }
+
+fn no_compiler() -> string { "this compiler cannot find its own binary to build with" }
+
+fn no_server() -> string { "the dev server is not among the toolchain's packages — expected std-ui_dev" }

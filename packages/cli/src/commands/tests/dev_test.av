@@ -1,0 +1,93 @@
+//! `avra dev` and `avra build --inputs`, as a developer runs them. The
+//! loop itself — a build, an edit, a failure, the routes — is proven by the
+//! server's own suite (`@std/ui_dev`); here the command finds its tools,
+//! refuses what it cannot serve, and says where it serves. `avra_ran`,
+//! `avra_bin`, `scratch_dir` and `hang_bound` are the neighbouring tests'
+//! own.
+use @std.io.{make_dirs, write_text}
+use @std.process.{tool, cmd, inherited, Ready, Exit, ProcessError}
+use @std.time.{ms, now_ns}
+
+/// A page package in scratch: one text, mounted.
+once fn dev_page() -> string {
+    let root = "${scratch_dir()}/dev_page_${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"dev_page\"\nversion = \"0.1.0\"\n\n[bin]\nname = \"dev_page\"\npath = \"src/main.av\"\n",
+    )
+    let _ = write_text(
+        "${root}/src/main.av",
+        "use @std.ui.components.{text}\nuse @std.ui.web.{mount}\n\nfn view() -> text { text \"one\" }\n\nmount(view)\n",
+    )
+    root
+}
+
+/// What `avra` said on its standard error, and the code it left with — -1
+/// when it left no code.
+type Left = { code: int, said: string }
+
+fn left(args: List<string>) -> Left {
+    match avra_ran(args) {
+        .Ok(o) -> Left {
+            code: match o.exit { .Clean -> 0, .Code(n) -> n, .Signal(_, _) -> -1 },
+            said: o.out.stderr + o.out.stdout,
+        },
+        .Err(_) -> Left { code: -1, said: "" },
+    }
+}
+
+/// Whether this machine can build a page at all: the compiler says so itself.
+once fn page_inputs() -> Left { left(["build", "--target", "wasm", "--wasm_reactor", "--inputs", dev_page()]) }
+
+fn equipped() -> bool { page_inputs().code != 2 }
+
+/// What `avra dev` says once it serves, the server stopped after.
+fn served_line() -> Result<string, ProcessError> {
+    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0", "--interval", "100", dev_page()]) with { env: inherited(), timeout: hang_bound() }
+    mut child = asked.start(Ready.Line(" at http://127.0.0.1:"), ms(120000))?
+    let said = child.out
+    child.stop()
+    said
+}
+
+spec "avra dev — the command" {
+    given "a file where a package is wanted" {
+        then "it is refused by name, and nothing is served" {
+            let l = left(["dev", "${dev_page()}/src/main.av"])
+            l.code == 2 && l.said.contains("`dev` serves a package")
+        }
+    }
+    given "a path that is not there" {
+        then "it is refused as every command refuses one" { left(["dev", "${dev_page()}/nowhere"]).said.contains("no such file") }
+    }
+    given "a page package" {
+        then "it builds the page and says where it serves" {
+            !equipped() ||
+                match served_line() {
+                    .Ok(said) -> said.contains("dev: built ") &&
+                        said.contains("dev: ${dev_page()} at http://127.0.0.1:"),
+                    .Err(_) -> false,
+                }
+        }
+    }
+}
+
+spec "avra build --inputs — what a build reads" {
+    given "a page package" {
+        then "its manifest and its entry are named, one a line, and nothing is built" {
+            let l = page_inputs()
+            !equipped() ||
+                l.code == 0 &&
+                    l.said.split("\n").contains("${dev_page()}/avra.toml") &&
+                    l.said.split("\n").contains("${dev_page()}/src/main.av") &&
+                    !l.said.contains(".wasm")
+        }
+    }
+    given "a native build" {
+        then "its inputs are named the same way" {
+            let l = left(["build", "--inputs", dev_page()])
+            l.code == 0 && l.said.split("\n").contains("${dev_page()}/src/main.av")
+        }
+    }
+}

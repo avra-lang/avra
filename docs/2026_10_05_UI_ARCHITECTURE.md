@@ -146,6 +146,56 @@ readable outline); `realize/` is the targets, one directory each
 (`html`, `dom`, `tui`, and the draw-only `canvas`); `app/` is the loop;
 `web/`, `terminal/` and `headless/` are where an app is mounted.
 
+## `avra dev` — the loop
+
+`avra dev <package>` builds the package's page as a wasm reactor, serves
+it with the page glue, and builds again when a file the build reads moves.
+
+- **The command is thin, the server is a program.** `commands/dev.av`
+  finds what only the compiler knows — itself, the wasm triple this
+  machine links, the glue — then builds `@std/ui_dev` once and runs it.
+  The compiler links no HTTP server (it cost its own build 2 GB), and the
+  server ends when the command that started it has.
+- **A build is a child**: `avra build --target … --wasm_reactor`, as
+  anyone runs it. What it says is what a build says; a compiler that
+  traps takes no server with it.
+- **The watch set is the build's own inputs** (`avra build --inputs`,
+  the files its key covers: the closure's sources, the manifests, the
+  toolchain's own), asked after each build, plus every source that
+  arrives in a directory one of them stands in. Looked at every 250 ms
+  (`--interval`): a file is its stamp, or — too young for a stamp to tell
+  two writes apart — its text, so a save that changed nothing builds
+  nothing. What is remembered is what a build STARTED from.
+- **The channel is one long poll.** `GET /@dev/build` answers the
+  standing build — its number, the module's id, what a failed build said
+  — at once, and with `x-avra-since: <number>` only when it has moved.
+  One route answers the page, a test and `curl`; an event stream keeps no
+  standing for a page that joins late.
+- **The reload client is dev-only glue** (`runtime/dom/dev.js`), put in
+  the page's `<!--DEV-->` hole by the server beside the id of the module
+  the page is about to load. A production page never carries it.
+- **Step 1, built: the page reloads.** A module that is no longer the one
+  the page runs reloads the page; state is lost. A build that failed is
+  shown over the page and in the terminal, and the last good module is
+  still what is served and what runs.
+- **Step 2, not built: state kept.** A module's state lives in its own
+  memory, so a new module must be HANDED it. Three parts, each a seam
+  that exists: (a) module `state` by NAME — the compiler writes, per
+  state, a reader and a writer over one neutral encoding, exported by the
+  names a generated table carries; a state whose type moved is dropped,
+  spoken; (b) instance state by IDENTITY — the same pair keyed by the
+  node's site and key (`avra-8sb5.59.43`, own-state); (c) the page
+  ADOPTED, so the new module's first paint is a diff against what stands:
+  the old module says its page as a frame, the new one reads that frame
+  back into `Live.page`, and the host keeps its elements. (c) alone is an
+  honest hot swap for a view edit and needs a frame reader in Avra;
+  (a) and (b) are the compiler's. `avra-8sb5.59.41`'s acceptance (the
+  update applied as a diff) is (c).
+- **The toolchain is found.** `--target wasm` is whichever WASI triple
+  this machine's clang has a libc for — `CC` alone when set, else
+  `LLVM_PREFIX`'s clang, then the PATH's — and a machine with none hears
+  which compilers were asked for which triples.
+
 ## Kept
 
 State as places · the neutral tree as the contract · style as tokens ·
