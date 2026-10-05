@@ -1554,16 +1554,13 @@ Syntax the grammar lacks:
   "unexpected character" at the `;` — a statement ends at a line
   break, and a one-line body is `{ a }` with one statement. A
   TEMPLATE that spells `;` is refused at its own line (S4r homing).
-- A RANGE TAKES METHODS NOW — the grammar parses `(0..n).any(it ==
-  2)`, and `(0..3).map((i) -> i * 2)` answers a list — but the SCAN
-  verbs fault: `.any`, `.find` and `.all` die with
-  `language.defect: a row without its seat survived typing` (then
-  mint-order defects), and `.length` is `no property `length` on
-  `Range``. Probe at 48e8e62; the earlier entry here quoted
-  "expected `)` to close the group", stale since ranges became
-  values (avra-8sb5.65.3.4). The idiom bar's "scan with
-  `any`/`find`" still reaches a range only through a comprehension
-  (`[f(i) for i in 0..n].any(…)`).
+- A RANGE TAKES METHODS — `(0..n).any(it == 2)`, `(0..n).find(it
+  == 2)`, `(0..3).map((i) -> i * 2)` and `(0..n).all(it < 5)` all
+  parse and run (avra-8sb5.65.3.4, eval == native) — but `.length`
+  is `no property `length` on `Range``. The scan verbs faulted with
+  `language.defect: a row without its seat survived typing` until
+  that commit landed; the idiom bar's "scan with `any`/`find`"
+  reaches a range directly now.
 - A `once fn` with TYPE PARAMETERS (`once fn f<T>() -> List<T>`):
   "expected `(` while parsing `stmt`" — the once grammar takes a
   name and a parameter list only, and a `T` no argument can pin has
