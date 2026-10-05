@@ -1,9 +1,37 @@
 //! `view.av` — `View` is what a component implements (its `describe`), and
-//! the `@derive(View)` annotation that WRITES that impl from the component's
-//! fields and its `@prim`. A derive's template text resolves in THIS file,
-//! so every foreign name it writes is a static `quote`; a generated hole
-//! resolves in the annotated file, so fields are read as `self.<field>`.
-use @std.meta.{Type, Field, Directive, Code, list_of}
+//! `@derive(View)` WRITES that impl for a PRIMITIVE from what each member
+//! SAYS it projects to:
+//!
+//!     @attr(Label) label: string      an attribute of the node
+//!     @children items: List<dyn View> the node's children
+//!     @style(color) tone: Tone        a token laid over the node's style
+//!     on input(typed: string)         an event the node speaks
+//!     ..Box                           the shared box, read field for field
+//!
+//! NO MEANING IS READ FROM A MEMBER'S NAME: a member that says nothing is
+//! refused where it stands. Every word a member says is checked against
+//! the library's own declaration — an attribute against `Attribute`, an
+//! event against `EventKind`'s words, what it says against `Handler` — so
+//! each fact has the one table its type already is.
+//!
+//! A derive's template text resolves in THIS file, so every foreign name
+//! it writes is a static `quote`; a generated hole resolves in the
+//! annotated file, so fields are read as `self.<field>`.
+use @std.meta.{
+    Type,
+    Field,
+    Param,
+    Variant,
+    Mark,
+    Kind,
+    Directive,
+    Declared,
+    Diagnostic,
+    Code,
+    list_of,
+    refuse_as_at,
+    type_named,
+}
 use realize.render.{Node, Prim, Attribute, EventKind, Action, Handler}
 use realize.lists.{union}
 use style.box.{Box}
@@ -12,207 +40,321 @@ use style.box.{Box}
 export trait View {
     fn describe() -> Node
 
-    static fn derive(t: Type) -> List<Directive> {
-        let prim = prim_quote(prim_name(t))
-        let attrs = list_of([attr_quote(f) for f in t.fields if attr_variant(f.name) != null])
+    static fn derive(t: Type) -> Declared {
+        let said = Vocabulary {
+            attributes: type_named("${realize_module}.Attribute")?.variants ?? [],
+            kinds: type_named("${realize_module}.EventKind")?.variants ?? [],
+            box: type_named("${style_module}.${box_name}")?.fields ?? [],
+            style: type_named("${style_module}.Style")?.fields ?? [],
+        }
+        let parts = [said.part(f) for f in t.fields]
         let node = quote {
             Node {
-                prim: ${prim},
-                attrs: ${attrs},
-                // LICENSED compiler.modified_copy_literal: the Box is projected from the component's fields
-                box: Box { style: ${style_code(t)}, layout: self.layout, a11y: self.a11y, key: self.key },
-                children: ${children_code(t)},
-                events: ${events_code(t)},
+                prim: ${prim_code(t)},
+                attrs: ${list_of([c for p in parts for c in p.attr()])},
+                box: ${if unboxed(t).is_empty() { said.box_code(parts) } else { quote { Box {} } }},
+                children: ${joined([c for p in parts for c in p.children()])},
+                events: ${joined([c for p in parts for c in p.event()])},
             }
         }
-        [
-            Directive {
-                twin: "",
-                name: t.name,
-                at: t.at,
-                source: quote { impl View for ${t} { fn describe() -> Node { ${node} } } },
-            },
-        ]
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote { impl View for ${t} { fn describe() -> Node { ${node} } } },
+                },
+            ],
+            problems: [d for p in parts for d in p.problem()].concat(unnamed_prim(t)).concat(unboxed(t)),
+        }
     }
 
-    static fn marks(t: Type) -> List<string> { [] }
+    static fn marks(t: Type) -> List<string> { [attr_mark, children_mark, style_mark] }
 }
 
-/// The primitive a component named with `@prim`, as its written text.
-fn prim_name(t: Type) -> string {
-    for a in t.annotations {
-        if a.name == "prim" { return a.args.first() ?? "" }
+/// The library's own declarations a member's words are checked against.
+type Vocabulary = { attributes: List<Variant>, kinds: List<Variant>, box: List<Field>, style: List<Field> }
+
+/// What one member of a primitive projects to, as the code that reads it.
+enum Part {
+    /// one attribute of the node
+    Attr(code: Code)
+    /// a run of the node's children
+    Children(code: Code)
+    /// the style field the member is laid over, and the member
+    Styled(over: string, member: Field)
+    /// the actions the member binds — none while no instance hears it
+    Event(code: Code)
+    /// a member that cannot project, and why
+    Refused(why: Diagnostic)
+}
+
+impl Part {
+    fn attr() -> List<Code> {
+        match self {
+            .Attr(c) -> [c],
+            .Children(_) or .Styled(_, _) or .Event(_) or .Refused(_) -> [],
+        }
     }
-    ""
-}
 
-/// `@prim(Prim.Heading)` → the code `Prim.Heading`. ONE arm per primitive,
-/// so a new primitive lands here beside its `Prim` variant.
-fn prim_quote(text: string) -> Code {
-    match text {
-        "Text" -> quote { Prim.Text },
-        "Heading" -> quote { Prim.Heading },
-        "Button" -> quote { Prim.Button },
-        "Link" -> quote { Prim.Link },
-        "Image" -> quote { Prim.Image },
-        "Field" -> quote { Prim.Field },
-        "Checkbox" -> quote { Prim.Checkbox },
-        "Row" -> quote { Prim.Row },
-        "Column" -> quote { Prim.Column },
-        "Dialog" -> quote { Prim.Dialog },
-        "Divider" -> quote { Prim.Divider },
-        "Icon" -> quote { Prim.Icon },
-        "Surface" -> quote { Prim.Surface },
-        "List" -> quote { Prim.List },
-        "Item" -> quote { Prim.Item },
-        "Card" -> quote { Prim.Card },
-        "Progress" -> quote { Prim.Progress },
-        "Alert" -> quote { Prim.Alert },
-        "Spinner" -> quote { Prim.Spinner },
-        "Form" -> quote { Prim.Form },
-        "Switch" -> quote { Prim.Switch },
-        "Slider" -> quote { Prim.Slider },
-        rest -> quote { Prim.Text },
+    fn children() -> List<Code> {
+        match self {
+            .Children(c) -> [c],
+            .Attr(_) or .Styled(_, _) or .Event(_) or .Refused(_) -> [],
+        }
     }
-}
 
-/// The `Attribute` a component field projects to — the naming convention.
-fn attr_variant(name: string) -> string? {
-    match name {
-        "content" -> "Text",
-        "label" -> "Label",
-        "rank" -> "Level",
-        "value" -> "Value",
-        "placeholder" -> "Placeholder",
-        "src" -> "Src",
-        "alt" -> "Alt",
-        "disabled" -> "Disabled",
-        "checked" -> "Checked",
-        "message" -> "Text",
-        "href" -> "Href",
-        "amount" -> "Amount",
-        "min" -> "Min",
-        "max" -> "Max",
-        "selected" -> "Selected",
-        "open" -> "Open",
-        "invalid" -> "Invalid",
-        "loading" -> "Loading",
-        "urgency" -> "Urgency",
-        "title" -> "Title",
-        "name" -> "Name",
-        rest -> null,
+    fn event() -> List<Code> {
+        match self {
+            .Event(c) -> [c],
+            .Attr(_) or .Children(_) or .Styled(_, _) or .Refused(_) -> [],
+        }
     }
-}
 
-/// `self.content` → the code `Attribute.Text(self.content)`.
-fn attr_quote(f: Field) -> Code {
-    match attr_variant(f.name) ?? "" {
-        "Text" -> quote { Attribute.Text(self.${f}) },
-        "Label" -> quote { Attribute.Label(self.${f}) },
-        "Level" -> quote { Attribute.Level(self.${f}) },
-        "Value" -> quote { Attribute.Value(self.${f}) },
-        "Placeholder" -> quote { Attribute.Placeholder(self.${f}) },
-        "Src" -> quote { Attribute.Src(self.${f}) },
-        "Alt" -> quote { Attribute.Alt(self.${f}) },
-        "Disabled" -> quote { Attribute.Disabled(self.${f}) },
-        "Checked" -> quote { Attribute.Checked(self.${f}) },
-        "Amount" -> quote { Attribute.Amount(self.${f}) },
-        "Href" -> quote { Attribute.Href(self.${f}) },
-        "Min" -> quote { Attribute.Min(self.${f}) },
-        "Max" -> quote { Attribute.Max(self.${f}) },
-        "Selected" -> quote { Attribute.Selected(self.${f}) },
-        "Open" -> quote { Attribute.Open(self.${f}) },
-        "Invalid" -> quote { Attribute.Invalid(self.${f}) },
-        "Loading" -> quote { Attribute.Loading(self.${f}) },
-        "Urgency" -> quote { Attribute.Urgency(self.${f}) },
-        "Title" -> quote { Attribute.Title(self.${f}) },
-        "Name" -> quote { Attribute.Name(self.${f}) },
-        rest -> quote { Attribute.Text(self.${f}) },
+    fn problem() -> List<Diagnostic> {
+        match self {
+            .Refused(d) -> [d],
+            .Attr(_) or .Children(_) or .Styled(_, _) or .Event(_) -> [],
+        }
     }
-}
 
-// ── actions: what a node does when it speaks ────────────────────
-
-/// The event a component field binds — the field's name IS the kind
-/// (`on click { … }` fills `on_click`). A field that binds no event
-/// answers nothing and projects to nothing else either.
-fn event_kind(name: string) -> EventKind? {
-    match name {
-        "on_click" -> .Click,
-        "on_input" -> .Input,
-        "on_change" -> .Change,
-        "on_submit" -> .Submit,
-        rest -> null,
-    }
-}
-
-/// ONE arm per `EventKind`, so a new kind lands here beside its variant.
-fn kind_code(kind: EventKind) -> Code {
-    match kind {
-        .Click -> quote { EventKind.Click },
-        .Input -> quote { EventKind.Input },
-        .Change -> quote { EventKind.Change },
-        .Submit -> quote { EventKind.Submit },
-    }
-}
-
-/// A handler value wrapped by its field's type: `Run` is told nothing,
-/// `Hear` the user's text. ONE arm per handler alias; any other type
-/// binds no event.
-fn handler_code(ty: string, held: Code) -> Code? {
-    match ty {
-        "Run" -> quote { Handler.Run(${held}) },
-        "Hear" -> quote { Handler.Text(${held}) },
-        rest -> null,
-    }
-}
-
-/// The actions one field binds: its name picks the `EventKind`, its type
-/// the `Handler` arm. ABSENCE IS THE OPTION'S OWN NULL — a handler left
-/// unset binds no action at all, so a control that binds nothing emits
-/// nothing.
-fn field_events(f: Field) -> Code {
-    let kind? = event_kind(f.name) else { return quote { [] } }
-    let nullable = f.ty.ends_with("?")
-    let held = if nullable { quote { bound } } else { quote { self.${f} } }
-    let wrapped? = handler_code(f.ty.replace("?", ""), held) else { return quote { [] } }
-    let action = quote { [Action { kind: ${kind_code(kind)}, handler: ${wrapped} }] }
-    if !nullable { return action }
-    quote {
-        match self.${f} {
-            bound? -> ${action}
-            null -> []
+    /// `style` with this member laid over it, when the member styles.
+    fn laid_over(style: Code) -> Code {
+        match self {
+            .Styled(over, member) -> quote { ${style} with { ${over}: self.${member.name} } },
+            .Attr(_) or .Children(_) or .Event(_) or .Refused(_) -> style,
         }
     }
 }
 
-/// Every action the component binds, in field order.
-fn events_code(t: Type) -> Code {
-    let parts = [field_events(f) for f in t.fields if event_kind(f.name) != null]
-    if parts.is_empty() { return quote { [] } }
-    quote { union([${..parts}]) }
-}
+impl Vocabulary {
+    /// What `f` projects to: its event, or the one thing its mark says.
+    fn part(f: Field) -> Part {
+        let says? = f.says else { return self.marked(f) }
+        self.event(f, says)
+    }
 
-/// A component's `items` field, drawn by its children's own `describe`.
-fn children_code(t: Type) -> Code {
-    if t.fields.any(it.name == "items") {
-        quote { [v.describe() for v in self.items] }
-    } else {
-        quote { [] }
+    /// The one thing a member's marks say. Each mark is read by its own
+    /// word, so a member saying two things shows as two parts.
+    fn marked(f: Field) -> Part {
+        let said = [self.attribute(f, m) for m in marks_of(f, attr_mark)]
+            .concat([children(f, m) for m in marks_of(f, children_mark)])
+            .concat([self.styled(f, m) for m in marks_of(f, style_mark)])
+        if said.length > 1 { return Part.Refused(says_twice(f)) }
+        said.first() ?? Part.Refused(says_nothing(f))
+    }
+
+    /// `@attr(Label) label` → the code `Attribute.Label(self.label)`.
+    fn attribute(f: Field, m: Mark) -> Part {
+        let word = m.args.first() ?? ""
+        let v? = self.attributes.find(it.name == word) else {
+            return Part.Refused(no_attribute(m, word, [a.name for a in self.attributes]))
+        }
+        let carried = v.fields.first()?.kind?.spelled() ?? ""
+        if carried != f.kind.spelled() { return Part.Refused(attribute_misfit(m, v.name, carried, f)) }
+        Part.Attr(quote { Attribute.${v.name}(self.${f.name}) })
+    }
+
+    /// `@style(color) tone` → `tone` laid over the node's `style.color`.
+    fn styled(f: Field, m: Mark) -> Part {
+        let word = m.args.first() ?? ""
+        if !self.style.any(it.name == word) { return Part.Refused(no_style(m, word, [s.name for s in self.style])) }
+        Part.Styled(word, f)
+    }
+
+    /// `on press` → the action the node binds while an instance hears
+    /// it. ABSENCE IS THE OPTION'S OWN NULL: a handler left unset binds
+    /// no action, so a control nobody hears emits nothing.
+    fn event(f: Field, says: List<Param>) -> Part {
+        let kind? = self.kinds.find(word_of(it) == f.name) else {
+            return Part.Refused(no_event(f, [word_of(k) for k in self.kinds]))
+        }
+        let handler? = hearing(says, quote { bound }) else { return Part.Refused(unsayable(f, says)) }
+        Part
+            .Event(
+                quote {
+                match self.${f.name} {
+                    bound? -> [Action { kind: EventKind.${kind.name}, handler: ${handler} }]
+                    null -> []
+                }
+            },
+            )
+    }
+
+    /// The node's box: every field of `Box` read off the component, its
+    /// style with each styling member laid over it.
+    fn box_code(parts: List<Part>) -> Code {
+        mut style = quote { self.style }
+        for p in parts { style = p.laid_over(style) }
+        let rest = [quote { Box { ${f.name}: self.${f.name} } } for f in self.box if f.name != style_field]
+        quote { Box { style: ${style}, ..${rest} } }
     }
 }
 
-// ── visual variants resolve to Style ────────────────────────────
+/// The marks a member says its projection with.
+const attr_mark = "attr"
+const children_mark = "children"
+const style_mark = "style"
 
-/// A field whose value is a visual variant, not an attribute: its value
-/// is merged into the node's `Style`, so a component names a role and
-/// the caller can still override it through `style`.
-fn is_style_field(f: Field) -> bool { f.name == "tone" }
+/// A member's marks of one word.
+fn marks_of(f: Field, word: string) -> List<Mark> { [m for m in f.marks if m.name == word] }
 
-/// The component's style: its own `style` field, with the variant field
-/// laid over it.
-fn style_code(t: Type) -> Code {
-    let tone? = t.fields.find(is_style_field) else { return quote { self.style } }
-    quote { self.style with { color: self.tone } }
+/// The modules that declare the vocabulary, as `Type.module` spells them.
+const realize_module = "@std.ui.realize"
+const style_module = "@std.ui.style"
+
+/// The shared box's own name.
+const box_name = "Box"
+
+/// The box's field a styling member is laid over.
+const style_field = "style"
+
+/// `@children items` → each child's own `describe`.
+fn children(f: Field, m: Mark) -> Part {
+    match f.kind {
+        .List(.Dyn(_)) -> Part.Children(quote { [v.describe() for v in self.${f.name}] }),
+        rest -> Part.Refused(not_children(m, f)),
+    }
 }
 
+/// The word an `EventKind` answers to — its `@word`.
+fn word_of(kind: Variant) -> string { kind.marks.find(it.name == "word")?.args?.first() ?? "" }
+
+/// The `Handler` arm that hears what an event says: ONE arm per thing a
+/// control can say, and absent for anything else.
+fn hearing(says: List<Param>, bound: Code) -> Code? {
+    if says.is_empty() { return quote { Handler.Nothing(${bound}) } }
+    if says.length > 1 { return null }
+    match says[0].kind {
+        .Str -> quote { Handler.Text(${bound}) },
+        .Bool -> quote { Handler.Flag(${bound}) },
+        .Int -> quote { Handler.Number(${bound}) },
+        .Float or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+    }
+}
+
+/// Several runs as one list — none is the empty list, one is itself.
+fn joined(runs: List<Code>) -> Code {
+    if runs.is_empty() { return quote { [] } }
+    if runs.length == 1 { return runs[0] }
+    quote { union([${..runs}]) }
+}
+
+/// The primitive a component named with `@prim` — `@prim(.Button)` is
+/// the code `Prim.Button`.
+fn prim_code(t: Type) -> Code {
+    let word? = t.annotations.find(it.name == "prim")?.args?.first() else { return quote { Prim.Text } }
+    quote { Prim.${word} }
+}
+
+fn unnamed_prim(t: Type) -> List<Diagnostic> {
+    if t.annotations.any(it.name == "prim") { [] } else { [no_prim(t)] }
+}
+
+/// A primitive spreads the shared box in: the node's box is read off it
+/// field for field.
+fn unboxed(t: Type) -> List<Diagnostic> {
+    if t.spreads.any(is_box(it)) { [] } else { [no_box(t)] }
+}
+
+/// Whether a spread, as its own file names it, is the shared box.
+fn is_box(written: string) -> bool {
+    let spread? = type_named(written) else { return false }
+    spread.name == box_name && spread.module == style_module
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn says_nothing(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "unprojected",
+        f.at,
+        "a primitive says what each member projects to, and `${f.name}` says nothing",
+        "mark it `@attr(…)`, `@children` or `@style(…)`, or declare it an event — `on ${f.name}`",
+    )
+}
+
+fn says_twice(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "unprojected",
+        f.at,
+        "a member projects to one thing, and `${f.name}` says more than one",
+        "keep one of `@attr(…)`, `@children` and `@style(…)`",
+    )
+}
+
+fn no_attribute(m: Mark, word: string, known: List<string>) -> Diagnostic {
+    refuse_as_at(
+        "attribute",
+        m.at,
+        "`${word}` is no attribute of a node",
+        "the attributes are ${ticked(known)}",
+    )
+}
+
+fn attribute_misfit(m: Mark, attribute: string, carried: string, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "attribute",
+        m.at,
+        "`${attribute}` carries `${carried}`, and `${f.name}` is `${f.kind.spelled()}`",
+        null,
+    )
+}
+
+fn no_style(m: Mark, word: string, known: List<string>) -> Diagnostic {
+    refuse_as_at(
+        "style",
+        m.at,
+        "`${word}` is no field of a node's style",
+        "the fields are ${ticked(known)}",
+    )
+}
+
+fn not_children(m: Mark, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "children",
+        m.at,
+        "a node's children are views, and `${f.name}` is `${f.kind.spelled()}`",
+        "`@children` marks a `List<dyn View>`",
+    )
+}
+
+fn no_event(f: Field, known: List<string>) -> Diagnostic {
+    refuse_as_at(
+        "event",
+        f.at,
+        "`${f.name}` is no event a target hears",
+        "a primitive's events are ${ticked(known)}",
+    )
+}
+
+fn unsayable(f: Field, says: List<Param>) -> Diagnostic {
+    refuse_as_at(
+        "event",
+        f.at,
+        "a control says nothing, text, a flag or a number, and `${f.name}` says `${["${s.name}: ${s.ty}" for s in says].join(", ")}`",
+        "say one `string`, `bool` or `int`",
+    )
+}
+
+fn no_box(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "box",
+        t.at,
+        "a view carries the shared box, and `${t.name}` spreads none",
+        "spread it in — `..Box`",
+    )
+}
+
+fn no_prim(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "prim",
+        t.at,
+        "a view names the primitive it is, and `${t.name}` names none",
+        "`@prim(.Text)` above the component",
+    )
+}
+
+/// Words as a diagnostic lists them.
+fn ticked(words: List<string>) -> string { ["`${w}`" for w in words].join(", ") }

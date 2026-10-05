@@ -23,7 +23,7 @@ use @std.ui.components.{
 }
 use @std.ui.realize.dom.frame.{Live, frame_text, live, sheet}
 use @std.ui.realize.identity.{NodeId}
-use @std.ui.realize.payload.{Payload}
+use @std.ui.realize.render.{Said}
 use @std.ui.realize.update.{Op, plan}
 use @std.ui.realize.view.{View}
 use @std.ui.style.layout.{Layout, around}
@@ -79,10 +79,10 @@ fn add() {
     }
 }
 
-/// This task with its state flipped when it is the named one, unchanged
+/// This task with its state as given when it is the named one, unchanged
 /// otherwise.
-fn flipped(t: Todo, id: string) -> Todo {
-    if t.id == id { t with { done: !t.done } } else { t }
+fn marked(t: Todo, id: string, done: bool) -> Todo {
+    if t.id == id { t with { done: done } } else { t }
 }
 
 /// The page the host would hold: the last frame and the handlers it bound.
@@ -99,7 +99,7 @@ fn worded(op: Op, words: string) -> List<NodeId> {
 /// The host's echo, without the wire: paint, then the `nth` control saying
 /// `words` speaks `kind`. The frame bound the handler; the echo names only
 /// the node, so row t3's Remove runs t3's closure, never the first row's.
-fn press(words: string, nth: int, kind: int, said: Payload?) -> bool {
+fn press(words: string, nth: int, kind: int, said: Said?) -> bool {
     let root = view().describe()
     page().diff(root, default_theme)
     let ids = [id for op in plan(root) for id in worded(op, words)]
@@ -109,7 +109,7 @@ fn press(words: string, nth: int, kind: int, said: Payload?) -> bool {
 
 fn tab(label: string, shows: string) -> button {
     button label {
-        on click { filter = shows }
+        on press { filter = shows }
         style: tab_style(filter == shows)
     }
 }
@@ -128,7 +128,7 @@ fn header() -> row {
                 ]
             },
             button theme_label() {
-                on click { dark = !dark }
+                on press { dark = !dark }
                 style: sunk_style()
             },
         ]
@@ -143,7 +143,7 @@ fn filters() -> row {
             tab("Active", "active"),
             tab("Done", "done"),
             button "Clear done" {
-                on click { tasks = [t for t in tasks if !t.done] }
+                on press { tasks = [t for t in tasks if !t.done] }
                 disabled: done_count() == 0
                 style: sunk_style()
             },
@@ -161,7 +161,7 @@ fn new_task() -> row {
                 on input { body -> draft = body }
             },
             button "Add" {
-                on click { add() }
+                on press { add() }
                 style: sunk_style()
             },
         ]
@@ -186,11 +186,11 @@ fn task_list() -> list {
             items: [
                 checkbox t.title {
                     checked: t.done
-                    on change { tasks = [flipped(x, t.id) for x in tasks] }
+                    on change { checked -> tasks = [marked(x, t.id, checked) for x in tasks] }
                     style: title_style(t.done)
                 },
                 button "Remove" {
-                    on click { tasks = [x for x in tasks if x.id != t.id] }
+                    on press { tasks = [x for x in tasks if x.id != t.id] }
                     style: sunk_style()
                 },
             ]
@@ -224,7 +224,7 @@ fn footer() -> row {
                 style: Style { color: .Muted }
             },
             button "About" {
-                on click { dialog_open = true }
+                on press { dialog_open = true }
                 style: sunk_style()
             },
         ]
@@ -238,7 +238,7 @@ fn about() -> dialog {
             heading "Task board" { rank: 2 },
             text "State lives in module `state`; the frame is its projection.",
             button "Close" {
-                on click { dialog_open = false }
+                on press { dialog_open = false }
                 style: sunk_style()
             },
         ]
@@ -266,18 +266,18 @@ println(
 println("dark=${sheet(view().describe(), dark_theme).contains("--tone-text:#eeeeee")}")
 println("unbound=${press("Tasks", 0, 1, null)} wrong_kind=${press("About", 0, 2, null)}")
 
-// THE PER-ITEM WITNESS: both rows share one `on click` in the source, and the
+// THE PER-ITEM WITNESS: both rows share one `on press` in the source, and the
 // second row's Remove takes only its own task. A wrong row or none at all
 // would show here.
 println("remove=${press("Remove", 1, 1, null)}")
 println("after_remove_t3=[${[t.id for t in tasks].join(",")}]")
-println("toggle=${press("Wire the event channel", 0, 3, null)}")
+println("toggle=${press("Wire the event channel", 0, 3, Said.Flag(true))}")
 println("after_toggle_t2=${[t.title for t in tasks if t.done].join(",")}")
 
 // THE ADD WITNESS: the field hands its handler the text the user gave, so
 // the draft becomes a task and the next id advances. An input that says
 // nothing runs no handler.
 println("silent=${press("New task", 0, 2, null)} draft=[${draft}]")
-println("typed=${press("New task", 0, 2, Payload.Text("Ship the rewrite"))}")
+println("typed=${press("New task", 0, 2, Said.Text("Ship the rewrite"))}")
 println("add=${press("Add", 0, 1, null)}")
 println("after_add=[${[t.id for t in tasks].join(",")}] draft_after=[${draft}]")

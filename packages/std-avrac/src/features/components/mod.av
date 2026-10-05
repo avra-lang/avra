@@ -10,6 +10,11 @@
 //! A record's own one-seat fn field takes a body of ARMS too, like a
 //! trailing block — `Name inst { pattern -> value, … }`, the
 //! pronoun's seat implicit.
+//! AN EVENT IS A DECLARED MEMBER, written with one word on both sides:
+//! `on input(text: string)` in the component, `on input { text -> … }`
+//! at its instance. The member is a field holding the handler, absent
+//! until an instance hears it; a handler hears all its event says, or
+//! none of it.
 use features.{LanguageFeature, BuilderRow}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
@@ -36,12 +41,13 @@ export fn components() -> LanguageFeature {
         "type.component_check"    | "a component's `check` answers `List<Diagnostic>`"
         "lower.component_checked" | "a component's `check` judged this instance"
         "type.component_format"   | "a `Format` head is `@std.meta`'s pattern type"
+        "type.component_event"    | "an instance hears the events its component declares"
     }
     LanguageFeature components {
         gram: grammar {
-            stmt = "component" n:NAME ( "(" ( hs:NAME ":" ht:type ( "," hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( fs:NAME ":" ft:type ( "=" fd:expression )? | rs:".." ( dd:"." )? rt:type | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m, rs, rt, dd)
+            stmt = "component" n:NAME ( "(" ( ( hm:mark )* hs:NAME ":" ht:type ( "," ( hm:mark )* hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( ( fm:mark )* fs:NAME ":" ft:type ( "=" fd:expression )? | ON en:NAME ( "(" ( ep:NAME ":" et:type ( "," ep:NAME ":" et:type )* ","? )? ")" )? | rs:".." ( dd:"." )? rt:type | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m, rs, rt, dd, hm, fm, en, ep, et)
             stmt = w:COMPONENT n:NAME b:named_inst_body END -> component_named(w, n, b) | w:COMPONENT n:NAME END -> component_named_bare(w, n)
-            setting = k:NAME ":" v:expression END -> setting(k, v) | w:ON kw:NAME "{" BREAK* ( ip:NAME "->" )? ( s:stmt | BREAK )* "}" -> on_handler(w, kw, ip, s)
+            setting = k:NAME ":" v:expression END -> setting(k, v) | w:ON kw:NAME "{" BREAK* ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:stmt | BREAK )* "}" -> on_handler(w, kw, ip, s)
             named_inst_body = "{" BREAK* hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> instance_arms_body(hp, hg, hv, a)
                 | b:instance_body -> b
             instance_body = "{" BREAK* ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)

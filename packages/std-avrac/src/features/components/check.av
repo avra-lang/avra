@@ -3,7 +3,7 @@
 //! methods walk as an impl's. Its own laws are its template's: `expand`
 //! answers the code an instance becomes, and a template reads each of
 //! its instance's fields once.
-use core.{StmtId, TypeId, ComponentParts}
+use core.{StmtId, ExprId, TypeId, ComponentParts, Unheard}
 use features.{ResolveCx, TypeCx}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
@@ -60,6 +60,26 @@ fn format_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
     }
 }
 
+/// An instance hears the events its component declares, each with all
+/// its event says or none of it: a handler the component cannot hear is
+/// refused by name.
+fn event_law(mut cx: TypeCx, e: ExprId) {
+    let inst? = cx.view.store.instance_parts(e) else { return }
+    let body? = inst.body else { return }
+    for s in cx.view.store.block_stmts(body) ?? [] {
+        let handler? = cx.view.store.setting_parts(s)?.value else { continue }
+        let heard? = cx.view.store.on_handler(handler) else { continue }
+        let why? = heard.unheard else { continue }
+        cx
+            .emit(
+                match why {
+                    .Undeclared(declared) -> undeclared_event(cx.stmt_loc(s), inst.word, heard.event, declared),
+                    .Seats(says) -> misheard_event(cx.stmt_loc(s), heard.event, says),
+                },
+            )
+    }
+}
+
 // ── voices ──
 
 fn no_diagnostics(at: Loc?, found: string) -> Diag {
@@ -100,4 +120,40 @@ fn foreign_format(at: Loc?, field: string) -> Diag {
         "this component",
         "`use @std.meta.{Format}`, or rename the other type",
     )
+}
+
+fn undeclared_event(at: Loc?, word: string, event: string, declared: List<string>) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "`${word}` declares no event `${event}` — an instance hears the events its component declares",
+        "heard here",
+        events_help(word, declared),
+    )
+}
+
+fn misheard_event(at: Loc?, event: string, says: List<string>) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "`${event}` says ${said_words(says)} — a handler hears all its event says, or none of it",
+        "heard here",
+        heard_forms(event, says),
+    )
+}
+
+/// The ways a handler may hear the event.
+fn heard_forms(event: string, says: List<string>) -> string {
+    if says.is_empty() { return "`on ${event} { … }`" }
+    "`on ${event} { ${says.join(", ")} -> … }`, or `on ${event} { … }`"
+}
+
+fn said_words(says: List<string>) -> string {
+    if says.is_empty() { return "nothing" }
+    ["`${s}`" for s in says].join(", ")
+}
+
+fn events_help(word: string, declared: List<string>) -> string {
+    if declared.is_empty() { return "`${word}` declares no events" }
+    "the events of `${word}` are ${["`${d}`" for d in declared].join(", ")}"
 }

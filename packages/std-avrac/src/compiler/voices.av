@@ -55,6 +55,7 @@ use features.{no_kind}
 use @std.meta.{
     Node,
     Field as MetaField,
+    Param as MetaParam,
     Mark as MetaMark,
     Kind,
     Annotation as MetaAnnotation,
@@ -247,7 +248,35 @@ fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
         doc: null,
         annotations: crossed_annotations(v, p.marks),
         defaulted: p.default != null,
+        says: crossed_says(v, p, kind),
     }
+}
+
+/// A declared seat as a `Param`: its name, its type's spelling AND ITS
+/// SHAPE, its `mut` and `const` marks.
+fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
+    MetaParam {
+        name: p.name.of,
+        ty: written_spelling(p.ty),
+        mutable: p.promises.mutable,
+        settled: p.promises.settled,
+        at: placed(v, v.store.param_id_span(p.id)),
+        kind: k,
+    }
+}
+
+/// What an event says: the seats its handler is told, each shaped by
+/// the handler's own type. Absent for a member that is no event.
+fn crossed_says(v: FileView, p: Param, kind: Kind) -> List<MetaParam>? {
+    let says? = p.says else { return null }
+    let kinds = told_kinds(kind)
+    [crossed_param(v, s, kind_at(kinds, j)) for j, s in says]
+}
+
+/// The seats a handler's type takes — an event's member holds a
+/// handler that may be absent.
+fn told_kinds(kind: Kind) -> List<Kind> {
+    match kind { .Opt(.Fn(seats, _)) -> [s.kind for s in seats], rest -> [] }
 }
 
 /// A member's marks as the derive reads them — the word, its words,

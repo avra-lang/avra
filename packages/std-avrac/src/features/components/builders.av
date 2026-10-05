@@ -22,6 +22,9 @@ use core.{
     SettingParts,
     Span,
     TypeRef,
+    Param,
+    Unheard,
+    plain_mark,
     pronoun_param,
     copier,
     flatten,
@@ -34,28 +37,64 @@ use features.{
     Template,
     Record,
     ChildSlot,
+    Event,
     marked_seats,
+    marks_at,
     pat_id_at,
     expr_id_at,
     arms_at,
     record_spreads,
     three_dots,
+    between,
+    ref_within,
+    window_end,
+    void_ref,
+    zip_defect_of,
 }
 use grammar.{Token}
 use @std.path.{stem_of}
 
 fn build_component_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let head = b.fields_zipped(b.tokens(1)?, b.type_refs(2)?, [], [])?
+    let head = b.fields_zipped(b.tokens(1)?, b.type_refs(2)?, [], marks_at(b.args, 10))?
     let fs = b.tokens(3)?
-    let fields = b.fields_zipped(fs, b.type_refs(4)?, b.exprs(5)?, [])?
+    let fields = b.fields_zipped(fs, b.type_refs(4)?, b.exprs(5)?, marks_at(b.args, 11))?
     let fns = b.stmts(6)?
     if !fns.all(holds_a_member(b.store, it)) { return .Err(foreign_member()) }
     if !(b.tokens(9)?).is_empty() { return .Err(three_dots()) }
-    let records = record_spreads(fs, b.tokens(7)?, b.type_refs(8)?)?
-    let s = b.store.alloc_stmt(Stmt.ComponentDecl(Scoped(n.text), head, fields, fns), b.span)
+    let en = b.tokens(12)?
+    let events = b.events(en, b.tokens(13)?, b.type_refs(14)?)?
+    let written = in_written_order(fs, en)
+    let records = record_spreads(written, b.tokens(7)?, b.type_refs(8)?)?
+    let members = [member_at(t.span.lo, fs, fields, en, events)? for t in written]
+    let s = b.store.alloc_stmt(Stmt.ComponentDecl(Scoped(n.text), head, members, fns), b.span)
     if !records.is_empty() { b.store.spread_fields(s, records) }
     .Ok(LangNode.NStmt(s))
+}
+
+/// Two runs of names, each in written order, as one run in written
+/// order.
+fn in_written_order(a: List<Token>, b: List<Token>) -> List<Token> {
+    flatten(
+        [[x for x in b if between(x.span.lo, opened_at(a, j), t.span.lo)].concat([t]) for j, t in a],
+    )
+        .concat([x for x in b if a.all(it.span.lo < x.span.lo)])
+}
+
+/// Where the window before name `j` opens: the name before it, or the
+/// run's start.
+fn opened_at(names: List<Token>, j: int) -> int { if j == 0 { -1 } else { names[j - 1].span.lo } }
+
+/// The member a name written at `lo` declares: a field, or an event.
+fn member_at(lo: int, fs: List<Token>, fields: List<Param>, en: List<Token>, events: List<Param>) -> Result<
+    Param,
+    string,
+> {
+    let f = [x.span.lo for x in fs].index_of(lo)
+    if f >= 0 { return .Ok(fields[f]) }
+    let e = [x.span.lo for x in en].index_of(lo)
+    if e >= 0 { return .Ok(events[e]) }
+    .Err(zip_defect_of("a component's members and their names"))
 }
 
 /// A member a component may hold besides its fields: a `fn`, or a
@@ -220,15 +259,14 @@ fn build_setting(b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.Setting(Plain((b.token(0)?).text), b.expr(1)?))
 }
 
-/// `on <kind> { … }` — a handler written where the control is: the
-/// body is a LAMBDA closing over its surroundings, and `on <kind> { v
-/// -> … }` gives it the one seat the control speaks into. The setting
-/// names the component's event field (`on click` -> `on_click`), whose
-/// fn type the lambda fills.
-/// `on` is a SOFT keyword, tagged by the lexer only before a NAME and
-/// a block — never a reserved word.
+/// `on <event> { … }` — a handler written where the control is: the
+/// body is a LAMBDA closing over its surroundings, and `on <event> { v
+/// -> … }` names the seats the event says. The setting fills the
+/// event's own member, which the instance's component declares.
+/// `on` is a SOFT keyword, tagged by the lexer only at a statement's
+/// start before a NAME — never a reserved word.
 fn build_on_handler(b: Builder) -> Result<LangNode, string> {
-    let kind = (b.token(1)?).text
+    let event = (b.token(1)?).text
     let ps = b.tokens(2)?
     let stmts = b.stmts(3)?
     let unwritten: List<TypeRef?> = [null for p in ps]
@@ -237,8 +275,8 @@ fn build_on_handler(b: Builder) -> Result<LangNode, string> {
             Expr
                 .Lambda(marked_seats(b.store, ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)),
         )
-    b.store.mark_on_handler(lam, kind)
-    b.make_stmt(Stmt.Setting(Plain("on_${kind}"), lam))
+    b.store.mark_on_handler(lam, event)
+    b.make_stmt(Stmt.Setting(Plain(event), lam))
 }
 
 impl Builder {
@@ -247,6 +285,42 @@ impl Builder {
         let w = self.token(i)?
         let word? = self.words.components.find(it.word == w.text) else { return .Err(unimported(w.text)) }
         .Ok(word)
+    }
+
+    /// Each declared event as the member that holds its handler: a fn
+    /// over the seats the event says, absent until an instance hears it.
+    fn events(names: List<Token>, seats: List<Token>, types: List<TypeRef>) -> Result<
+        List<Param>,
+        string,
+    > {
+        let ends = self.span?.hi ?? 0
+        .Ok([self.event(e, seats, types, window_end(names, j, ends))? for j, e in names])
+    }
+
+    fn event(name: Token, seats: List<Token>, types: List<TypeRef>, ends: int) -> Result<
+        Param,
+        string,
+    > {
+        let told = [t for t in types if ref_within(t, name.span.lo, ends)]
+        let says = self
+            .fields_zipped([s for s in seats if between(s.span.lo, name.span.lo, ends)], told, [], [])?
+        .Ok(
+            Param {
+                name: Scoped(name.text),
+                ty: TypeRef {
+                    name: "fn",
+                    args: told.concat([void_ref]),
+                    optional: true,
+                    dynamic: false,
+                    arrow: true,
+                    span: name.span,
+                },
+                default: self.store.alloc_expr(Expr.NullLit, name.span),
+                promises: plain_mark,
+                id: self.store.alloc_param_id(name.span),
+                says: says,
+            },
+        )
     }
 
     fn named(word: ComponentWord, n: Token, body: ExprId?) -> Result<LangNode, string> {
@@ -331,7 +405,7 @@ impl Builder {
         let places = self.placed(word, r, settings, children)?
         let named = if name != null && r.named && !settings.any(it.name == "name") { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
         let placed_in = [pl.slot for pl in places]
-        let set = [Field { name: st.name, value: st.value } for st in settings if !placed_in.contains(st.name)]
+        let set = flatten([self.set(r, st) for st in settings if !placed_in.contains(st.name)])
         let filled = [Field { name: f, value: heads[j] } for j, f in r.head]
             .concat(fn_filled)
             .concat(set)
@@ -350,6 +424,44 @@ impl Builder {
                 .store
                 .alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span),
         )
+    }
+
+    /// The field a setting fills. A handler its component cannot hear
+    /// fills none: it is marked with why, and typing refuses it by name.
+    fn set(r: Record, st: SettingParts) -> List<Field> {
+        let heard? = self.store.on_handler_kind(st.value) else { return [Field { name: st.name, value: st.value }] }
+        let event? = r.events.find(it.name == heard) else { return self.unheard(st.value, Unheard.Undeclared([e.name for e in r.events])) }
+        let seats = self.store.lambda_parts(st.value)?.params?.length ?? 0
+        if seats != 0 && seats != event.says.length { return self.unheard(st.value, Unheard.Seats(event.says)) }
+        [Field { name: st.name, value: self.told(st.value, event) }]
+    }
+
+    fn unheard(handler: ExprId, why: Unheard) -> List<Field> {
+        self.store.mark_unheard(handler, why)
+        []
+    }
+
+    /// A HANDLER HEARS ALL ITS EVENT SAYS, OR NONE OF IT: one written
+    /// with no seat is given the event's seats, unread, so `on change {
+    /// … }` answers an event that says its value.
+    fn told(handler: ExprId, event: Event) -> ExprId {
+        let parts? = self.store.lambda_parts(handler) else { return handler }
+        if !parts.params.is_empty() || event.says.is_empty() { return handler }
+        let at = self.store.expr_span(handler)
+        self
+            .store
+            .alloc_expr(Expr.Lambda([self.unread_seat(s, at) for s in event.says], parts.body), at)
+    }
+
+    /// A seat its handler never reads, named as an unread seat is.
+    fn unread_seat(says: string, at: Span?) -> Param {
+        Param {
+            name: Scoped("_${says}"),
+            ty: null,
+            default: null,
+            promises: plain_mark,
+            id: self.store.alloc_param_id(at),
+        }
     }
 
     /// A one-seat fn field's ARMS BODY, given the tail its coverage

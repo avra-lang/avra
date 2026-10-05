@@ -751,11 +751,21 @@ impl SourceText {
             .concat(spread_at(fields.length))
     }
 
+    /// A declared seat as written. An event is its word and the seats
+    /// it says — never the field its handler is held in.
     mut fn param(p: Param, depth: int) -> string {
+        if p.says != null { return "on ${source_name(p.name.of)}${self.said(p.says!, depth)}" }
         let name = if p.name.is_empty() { "" } else { "${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
         let ty = if p.ty == null { "" } else { spelled(p.ty!) }
         let word = if p.state { "state " } else { "" }
         "${self.marks(p.marks, depth)}${word}${mark_prefixed(p.promises, name)}${ty}${self.default_value(p.default, depth)}"
+    }
+
+    /// What an event says, parenthesised — nothing for one that says
+    /// nothing.
+    mut fn said(says: List<Param>, depth: int) -> string {
+        if says.is_empty() { return "" }
+        "(${joined([self.param(s, depth) for s in says], ", ")})"
     }
 
     /// A member's marks as written, each with a trailing space — ""
@@ -1850,7 +1860,7 @@ impl SourceText {
             .braced("", stmts, value, self.block_end(id), self.span_flat(self.store.expr_span(id)), depth)
     }
 
-    /// A setting as written: the `on <kind> { … }` sugar when the
+    /// A setting as written: the `on <event> { … }` sugar when the
     /// value is the lambda the instance-body handler built,
     /// else `name: value`. The mark is the ONE way the printer tells a
     /// handler from an ordinary closure, so the sugar round-trips.

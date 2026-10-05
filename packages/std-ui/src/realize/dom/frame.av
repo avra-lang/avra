@@ -5,12 +5,13 @@
 //! same graph as readable lines, the debug projection tests and `explain`
 //! read.
 //!
-//!   byte 0        version 6 — a stale host REFUSES, never misapplies
+//!   byte 0        version 7 — a stale host REFUSES, never misapplies
 //!   op 1  C       id, parent (empty at the root), index, tag
 //!   op 3  A       id, class
 //!   op 4  T       id, words
-//!   op 5  E       id, event kind — the host SUBSCRIBES and echoes the id
-//!                 and kind; the handler itself never leaves the program
+//!   op 5  E       id, event kind, what the event says — the host
+//!                 SUBSCRIBES and echoes the id, the kind and the value
+//!                 said; the handler itself never leaves the program
 //!   op 8  P       id, name, value — one attribute; one a later frame
 //!                 leaves out is removed
 //!   op 6  S       css — the stylesheet, sent ONCE
@@ -19,8 +20,7 @@
 //! wears the same id in every frame. Every int is four little-endian
 //! bytes; an id and every other text is its byte length, then its bytes.
 use realize.identity.{NodeId}
-use realize.render.{Node, EventKind, Action, Handler, level_of}
-use realize.payload.{Payload}
+use realize.render.{Node, EventKind, Action, Handler, Said, level_of}
 use realize.update.{Op, Mount, plan}
 use realize.html.tags.{tag_for}
 use realize.html.html.{element_attrs}
@@ -30,17 +30,42 @@ use realize.lists.{union}
 use style.theme.{Theme}
 
 /// The wire's version.
-const version = 6
+const version = 7
 
 /// The host's own code for an event kind — the wire's currency, not the
 /// enum's order. ONE arm per kind.
 fn kind_code(k: EventKind) -> int {
-    match k { .Click -> 1, .Input -> 2, .Change -> 3, .Submit -> 4 }
+    match k { .Press -> 1, .Input -> 2, .Change -> 3, .Submit -> 4 }
 }
 
-/// The host's own word for an event kind — the debug projection's.
-fn kind_word(k: EventKind) -> string {
-    match k { .Click -> "click", .Input -> "input", .Change -> "change", .Submit -> "submit" }
+/// The wire's code for what an event says — and the tag the host's echo
+/// carries the value back under. ONE arm per thing a control can say; 0
+/// is saying nothing.
+fn says_code(h: Handler) -> int {
+    match h { .Nothing(_) -> 0, .Number(_) -> 1, .Flag(_) -> 2, .Text(_) -> 3 }
+}
+
+/// What an event says, as the debug projection spells it after the
+/// kind — no word for an event that says nothing.
+fn says_word(h: Handler) -> string {
+    match h { .Nothing(_) -> "", .Number(_) -> " number", .Flag(_) -> " flag", .Text(_) -> " text" }
+}
+
+/// What the host's echo says, read back from its tag: a number or a flag
+/// rides `num`, text rides `text`. A tag no arm answers, or text the host
+/// could not hand over, is saying nothing.
+export fn echoed(tag: int, num: int, text: string?) -> Said? {
+    when {
+        tag == 1 -> Said.Number(num)
+        tag == 2 -> Said.Flag(num != 0)
+        tag == 3 -> echoed_text(text)
+        _ -> null
+    }
+}
+
+fn echoed_text(text: string?) -> Said? {
+    let body? = text else { return null }
+    Said.Text(body)
 }
 
 // ── the wire ─────────────────────────────────────────────────────
@@ -81,6 +106,7 @@ fn wire_op(op: Op, b: Buf) {
             b.push_byte(5)
             b.push_str(id.path)
             b.push_int(kind_code(action.kind))
+            b.push_int(says_code(action.handler))
         },
     }
 }
@@ -148,7 +174,7 @@ impl Live {
 
     /// The host's echo: node `id` spoke `kind`, saying `said`. The handler
     /// the last frame bound there runs; false when nothing answered.
-    fn fire(id: NodeId, kind: int, said: Payload?) -> bool {
+    fn fire(id: NodeId, kind: int, said: Said?) -> bool {
         let action? = find_event(self.bound.get(), id, kind) else { return false }
         action.fire(said)
     }
@@ -170,7 +196,7 @@ fn text_ops(m: Mount) -> List<string> {
 fn text_op(op: Op) -> List<string> {
     match op {
         .Mount(m) -> text_ops(m),
-        .Event(id, action) -> ["E ${id.path} ${kind_word(action.kind)}"],
+        .Event(id, action) -> ["E ${id.path} ${action.kind.word()}${says_word(action.handler)}"],
         .Words(id, text) -> if text == "" { [] } else { ["T ${id.path} ${text}"] },
     }
 }

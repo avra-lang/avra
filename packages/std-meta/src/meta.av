@@ -179,7 +179,10 @@ export fn applied(a: Annotation, value: Code) -> Code? {
 /// A record's field: its name, its type's spelling, its shape, and
 /// the marks written before it. `doc`/`annotations` read as `Fn`'s.
 /// `defaulted` says it declares a default a literal may leave out.
-export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], defaulted: bool = false }
+/// `says` makes the field an EVENT its component declares (`on
+/// input(text: string)`): the seats its handler is told, none for an
+/// event that says nothing — and absent on a field that is no event.
+export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], defaulted: bool = false, says: List<Param>? = null }
 
 /// An enum's variant: its name, its payload's spellings, and the
 /// payload as FIELDS — each carrying the name a grammar rule's
@@ -194,8 +197,10 @@ export type Variant = { name: string, payload: List<string>, at: Loc?, fields: L
 /// as `Fn`'s. `module` is the declaring module fully qualified, as
 /// `use` spells it from outside its package (`@std.avrac.compiler`).
 /// `over` is a NAMED type's shape — `type Code = string` stands over
-/// `string` — and `Unspelled` for a record or an enum.
-export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled("") }
+/// `string` — and `Unspelled` for a record or an enum. `spreads` is
+/// each record it spreads in (`..Box`), as written; `fields` holds the
+/// fields it wrote itself, never the ones a spread placed.
+export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled(""), spreads: List<string> = [] }
 
 /// What an annotation says back about a declaration. A fn answering
 /// `List<Diagnostic>` VALIDATES: an empty list passes, each ERROR is
@@ -313,6 +318,11 @@ export fn embed(path: string) -> string {
 /// nothing declares there, or one that names a fn or a trait, not a
 /// type. Into an annotation processor's own compile-time run only:
 /// a program reaching it at run time has no declaration table.
+///
+/// A DOTTED name is a module's own export, wherever the caller stands
+/// — `type_named("@std.ui.realize.Attribute")`, the module as
+/// `Type.module` spells it. A derive reads its own library's
+/// declarations so: the file it runs over need not import them.
 export fn type_named(name: string) -> Type? {
     avra_type_named(name)
 }

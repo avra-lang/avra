@@ -1,0 +1,139 @@
+//! `@derive(View)` over a component that is no well-formed primitive, and
+//! an instance hearing an event its component does not declare: each
+//! mistake is refused where it stands, in the library's own words, under
+//! the library's own kind. `avra_ran`, `scratch_dir` and `exit_is_zero`
+//! are the neighbouring tests' own: this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.meta.{embed}
+use @std.time.{now_ns}
+
+/// A component whose every member breaks one law of a primitive, and one
+/// that names no primitive and spreads no box.
+const parts: string = embed("ui_view/refused_parts.txt")
+
+const main: string = embed("ui_view/refused_main.txt")
+
+/// What `avra check` says about the package, once.
+once fn refused() -> string {
+    let root = "${scratch_dir()}/ui_view_${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"ui_view\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/parts.av", parts)
+    let _ = write_text("${root}/src/main.av", main)
+    match avra_ran(["check", root]) { .Ok(o) -> o.out.stdout, .Err(_) -> "" }
+}
+
+/// A well-formed primitive of a user's own, declaring an event, and a
+/// program hearing it.
+const knob_parts: string = embed("ui_view/knob_parts.txt")
+
+const knob_main: string = embed("ui_view/knob_main.txt")
+
+fn knob_package() -> string {
+    let root = "${scratch_dir()}/ui_knob_${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"ui_knob\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/parts.av", knob_parts)
+    let _ = write_text("${root}/src/main.av", knob_main)
+    root
+}
+
+spec "@derive(View) — a primitive says what each member projects to" {
+    given "a member that says nothing" {
+        then "is refused where it stands, and gains no attribute from its name" {
+            refused()
+                .contains(
+                    "error[@std/ui:unprojected]: a primitive says what each member projects to, and `value` says nothing",
+                )
+        }
+        then "is told the ways to say it" {
+            refused()
+                .contains(
+                    "help: mark it `@attr(…)`, `@children` or `@style(…)`, or declare it an event — `on value`",
+                )
+        }
+    }
+    given "a member that says two things" {
+        then "is refused" {
+            refused().contains("a member projects to one thing, and `both` says more than one")
+        }
+    }
+    given "an attribute the node does not have" {
+        then "is refused by name" {
+            refused().contains("error[@std/ui:attribute]: `Lable` is no attribute of a node")
+        }
+        then "is told the attributes there are, from their own declaration" {
+            refused()
+                .contains("help: the attributes are `Text`, `Label`, `Level`, `Value`, `Amount`")
+        }
+    }
+    given "an attribute carrying another type than its member" {
+        then "is refused with both types" {
+            refused()
+                .contains("error[@std/ui:attribute]: `Level` carries `int`, and `words` is `string`")
+        }
+    }
+    given "children that are not views" {
+        then "are refused" {
+            refused()
+                .contains("error[@std/ui:children]: a node's children are views, and `kids` is `List<int>`")
+        }
+    }
+    given "a style field the node's style does not have" {
+        then "is refused by name" {
+            refused().contains("error[@std/ui:style]: `colour` is no field of a node's style")
+        }
+    }
+    given "an event no target hears" {
+        then "is refused by name — it binds nothing silently" {
+            refused().contains("error[@std/ui:event]: `hover` is no event a target hears")
+        }
+        then "is told the events there are, from their own declaration" {
+            refused()
+                .contains("help: a primitive's events are `press`, `input`, `change`, `submit`")
+        }
+    }
+    given "an event saying what no control says" {
+        then "is refused with what it says" {
+            refused()
+                .contains(
+                    "a control says nothing, text, a flag or a number, and `input` says `amount: float`",
+                )
+        }
+    }
+    given "a view that names no primitive and spreads no box" {
+        then "is refused for the primitive" {
+            refused()
+                .contains("error[@std/ui:prim]: a view names the primitive it is, and `loose` names none")
+        }
+        then "is refused for the box, once — never as a field its template reads" {
+            refused()
+                    .contains("error[@std/ui:box]: a view carries the shared box, and `loose` spreads none") &&
+                !refused().contains("no field `style`")
+        }
+    }
+    given "an instance hearing an event its component does not declare" {
+        then "is refused by the event's own word" {
+            refused()
+                .contains(
+                    "error[type.component_event]: `button` declares no event `hovr` — an instance hears the events its component declares",
+                )
+        }
+        then "is told the component's events" { refused().contains("help: the events of `button` are `press`") }
+        then "never sees the member an event is held in" { !refused().contains("on_") }
+    }
+}
+
+spec "@derive(View) — a user's own primitive" {
+    given "a component that says what every member is, and declares an event" {
+        then "projects its attribute and its event, heard with the same word" {
+            clean_stdout(avra_ran(["run", knob_package()])) == "V7\nC 0 input\nP 0 type=range\nP 0 aria-label=Volume\nP 0 value=0\nE 0 change number\nT 0 Volume\n"
+        }
+        then "stands canonical as written — marks, events and handlers round-trip" {
+            match avra_ran(["fmt", "--check", knob_package()]) {
+                .Ok(o) -> exit_is_zero(o.exit),
+                .Err(_) -> false,
+            }
+        }
+    }
+}

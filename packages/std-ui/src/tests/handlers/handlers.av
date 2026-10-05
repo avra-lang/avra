@@ -1,28 +1,42 @@
-// proves: `on <kind> { … }` in a std control's block is its handler — a
-// closure over what the view could see, `on input { said -> … }` taking
-// what the control says — and the control projects ONE
-// Action with the kind the word names. A handler left unset binds no
-// action at all, so a handlerless control is inert.
-use @std.ui.components.{button, checkbox, field, row}
+// proves: an event a std control DECLARES is heard by `on <event> { … }` —
+// a closure over what the view could see — and the control projects ONE
+// Action of the kind the event names, whose handler hears what the event
+// says: nothing, text, a flag or a number. A handler may name what its
+// event says or none of it. An event nobody hears binds no action, so a
+// handlerless control is inert; and a handler told a value its event does
+// not say does not run.
+use @std.ui.components.{button, checkbox, field, form, link, row, slider, switch}
 use @std.ui.realize.view.{View}
-use @std.ui.realize.render.{Node, Action, EventKind, Handler}
+use @std.ui.realize.render.{Node, Action, EventKind, Handler, Said}
 
 state count: int = 0
 state draft: string = ""
 state done: bool = false
+state volume: int = 0
+state sent: int = 0
 
 fn first(view: dyn View) -> Action? { view.describe().events.first() }
 
 fn kind(view: dyn View) -> string {
     let a? = first(view) else { return "none" }
-    match a.kind { .Click -> "click", .Input -> "input", .Change -> "change", .Submit -> "submit" }
+    a.kind.word()
+}
+
+/// What the view's first handler hears, as a target reads it.
+fn says(view: dyn View) -> string {
+    let a? = first(view) else { return "none" }
+    match a.handler {
+        .Nothing(_) -> "nothing",
+        .Text(_) -> "text",
+        .Flag(_) -> "flag",
+        .Number(_) -> "number",
+    }
 }
 
 /// The view's first handler, run as a target would run it.
-fn fired(view: dyn View, said: string) -> bool {
+fn fired(view: dyn View, said: Said?) -> bool {
     let a? = first(view) else { return false }
-    match a.handler { .Run(f) -> f(), .Text(f) -> f(said) }
-    true
+    a.fire(said)
 }
 
 fn count_of(view: dyn View) -> int { view.describe().events.length }
@@ -33,26 +47,53 @@ fn total(n: Node) -> int {
     t
 }
 
-fn step(by: int) -> button { button "x" { on click { count = count + by } } }
+fn step(by: int) -> button { button "x" { on press { count = count + by } } }
 
-let add = button "x" { on click { count = count + 1 } }
+let add = button "x" { on press { count = count + 1 } }
 let inert = button "x"
 let empty_field = field "n"
-let drafted = field "n" { on input { said -> draft = said } }
-let changed = checkbox "c" { on change { done = !done } }
+let drafted = field "n" { on input { typed -> draft = typed } }
+let checked = checkbox "c" { on change { on -> done = on } }
+let toggled = switch "s" { on change { done = !done } }
+let slid = slider "v" { on change { amount -> volume = amount } }
+let followed = link "l" {
+    href: "/x"
+    on press { count = count + 100 }
+}
+let submitted = form {
+    on submit { sent = sent + 1 }
+    field "n"
+}
 let mixed = row {
-    button "x" { on click { count = 0 } }
-    field "n" { on input { said -> draft = said } }
+    button "x" { on press { count = 0 } }
+    field "n" { on input { typed -> draft = typed } }
 }
 
-println("add_kind=${kind(add)}")
-println("add=${fired(add, "")} ${fired(add, "")} count=${count}")
-println("absent=${count_of(inert)} fired=${fired(inert, "")}")
+println("press: ${kind(add)} says ${says(add)}")
+println("add=${fired(add, null)} ${fired(add, null)} count=${count}")
+println("absent=${count_of(inert)} fired=${fired(inert, null)}")
 println("absent_field=${count_of(empty_field)}")
-println("input_kind=${kind(drafted)}")
-println("input=${fired(drafted, "hi")} draft=${draft}")
-println("change_kind=${kind(changed)}")
-println("change=${fired(changed, "")} done=${done}")
+println("input: ${kind(drafted)} says ${says(drafted)}")
+println("input=${fired(drafted, Said.Text("hi"))} draft=${draft}")
+println("checkbox: ${kind(checked)} says ${says(checked)}")
+println("check=${fired(checked, Said.Flag(true))} done=${done}")
+// a handler that names no seat still hears an event that says a value
+println("switch: ${kind(toggled)} says ${says(toggled)}")
+println("switch=${fired(toggled, Said.Flag(true))} done=${done}")
+println("slider: ${kind(slid)} says ${says(slid)}")
+println("slide=${fired(slid, Said.Number(7))} volume=${volume}")
+println("link=${fired(followed, null)} count=${count}")
+println(
+    "form: ${kind(submitted)} says ${says(submitted)} children=${submitted.describe().children.length}",
+)
+println("submit=${fired(submitted, null)} sent=${sent}")
 println("mixed=${total(mixed.describe())}")
+// a handler is not told a value its event does not say: it does not run
+println("unsaid=${fired(drafted, null)} wrong=${fired(drafted, Said.Number(3))} draft=${draft}")
+println(
+    "unsaid_flag=${fired(checked, Said.Text("yes"))} unsaid_number=${fired(slid, Said.Flag(true))} volume=${volume}",
+)
+// an event that says nothing runs whatever the host sent with it
+println("extra=${fired(add, Said.Text("noise"))} count=${count}")
 // a handler closes over a local: each instance carries its own.
-println("captured=${fired(step(10), "")} ${fired(step(5), "")} count=${count}")
+println("captured=${fired(step(10), null)} ${fired(step(5), null)} count=${count}")

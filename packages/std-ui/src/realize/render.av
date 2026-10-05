@@ -7,7 +7,6 @@ use style.box.{Box}
 use @std.meta.{derive}
 use style.words.{Words}
 use realize.facets.{Facets, Facet}
-use realize.payload.{Payload}
 
 /// The interaction contract a component IS. Every target answers every
 /// one, or the build names the target.
@@ -37,28 +36,35 @@ export enum Prim {
     @word(slider) Slider
 }
 
-/// What a node says when the user speaks to it. A REGISTRY: every target
-/// subscribes to every arm, or the build names the target.
+/// What a node says when the user speaks to it, in words no platform
+/// owns: a `press` is a click, a tap or a key, as its target hears one. A
+/// REGISTRY: every target subscribes to every arm, or the build names the
+/// target.
 @derive(Words)
 export enum EventKind {
-    @word(click) Click
+    @word(press) Press
     @word(input) Input
     @word(change) Change
     @word(submit) Submit
 }
 
-/// A handler that is told nothing but that the control spoke.
-export alias Run = fn() -> void
+/// What a control SAYS when it speaks: the value the user gave it, as
+/// DATA a target hands back with the event. ABSENCE IS THE OPTION'S OWN
+/// NULL — a press says nothing — never a sentinel value.
+export enum Said {
+    Text(value: string)
+    Flag(value: bool)
+    Number(value: int)
+}
 
-/// A handler that is told the text the user gave.
-export alias Hear = fn(string) -> void
-
-/// What a control calls when it speaks, by what it tells the handler. A
-/// REGISTRY: a new arm is a new thing a control can say, and every target
-/// that fires events answers it.
+/// What a control calls when it speaks, by what its event says. ONE
+/// VOCABULARY with `Said`: a new thing a control can say is an arm of
+/// both, and every target that fires events answers it.
 export enum Handler {
-    Run(f: fn() -> void)
+    Nothing(f: fn() -> void)
     Text(f: fn(string) -> void)
+    Flag(f: fn(bool) -> void)
+    Number(f: fn(int) -> void)
 }
 
 /// What a node does when it speaks: the KIND of event and the handler the
@@ -68,23 +74,41 @@ export type Action = { kind: EventKind, handler: Handler }
 
 impl Action {
     /// Run the handler with what the control `said`. A handler that wants
-    /// a value the control did not give does not run: false, never a
+    /// a value the control did not say does not run: false, never a
     /// made-up value.
-    fn fire(said: Payload?) -> bool {
+    fn fire(said: Said?) -> bool {
         match self.handler {
-            .Run(f) -> f(),
+            .Nothing(f) -> f(),
             .Text(f) -> {
                 let text? = said_text(said) else { return false }
                 f(text)
+            },
+            .Flag(f) -> {
+                let flag? = said_flag(said) else { return false }
+                f(flag)
+            },
+            .Number(f) -> {
+                let number? = said_number(said) else { return false }
+                f(number)
             },
         }
         true
     }
 }
 
-fn said_text(said: Payload?) -> string? {
+fn said_text(said: Said?) -> string? {
     let value? = said else { return null }
-    match value { .Text(t) -> t, .Int(_) or .Bool(_) -> null }
+    match value { .Text(t) -> t, .Flag(_) or .Number(_) -> null }
+}
+
+fn said_flag(said: Said?) -> bool? {
+    let value? = said else { return null }
+    match value { .Flag(on) -> on, .Text(_) or .Number(_) -> null }
+}
+
+fn said_number(said: Said?) -> int? {
+    let value? = said else { return null }
+    match value { .Number(n) -> n, .Text(_) or .Flag(_) -> null }
 }
 
 /// How urgently a live region speaks.

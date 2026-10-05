@@ -3,10 +3,11 @@
 // and after each event, so the wire, the glue and the app are proven together
 // before any browser is opened.
 //
-// THE CONTROLS ARE THE LIBRARY'S OWN, so the events are their own kinds: a
-// button subscribes `click`, a checkbox `change`, a field `input`. The demo
-// finds each control by its words and presses the kind it bound — never a
-// synthetic event — so it proves the same path the page takes.
+// THE CONTROLS ARE THE LIBRARY'S OWN, so the events are the ones they
+// declare: a button's `press`, a checkbox's `change` saying its state, a
+// field's `input` saying its text. The demo finds each control by its words
+// and presses the kind it bound — never a synthetic event — so it proves the
+// same path the page takes.
 import fs from "node:fs";
 import { createApplier, instantiate, frameOf, sendEvent } from "../../runtime/dom/bootstrap.js";
 import { wasiPreview1 } from "../../runtime/dom/wasi.js";
@@ -89,6 +90,8 @@ if (remove3) {
 const toggle2 = findByKey(mount, "t2") && findControl(findByKey(mount, "t2"), "Wire the event channel");
 console.log("ROW2 TOGGLE:", toggle2 ? "found" : "missing");
 if (toggle2) {
+  // The user checks the box; the control says its own state.
+  toggle2.checked = true;
   console.log("PRESSED:", press(toggle2));
   const row2 = findByKey(mount, "t2");
   console.log("AFTER TOGGLE t2:", shape(row2));

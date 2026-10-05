@@ -1,4 +1,4 @@
-// Proves the bootstrap's law over the V6 BYTE wire: a frame builds the tree,
+// Proves the bootstrap's law over the V7 BYTE wire: a frame builds the tree,
 // a second frame REUSES each id's element, order follows the frame's index,
 // a reorder moves the elements themselves, a dropped node leaves, a
 // no-change frame touches nothing, and a frame of ANOTHER VERSION refuses.
@@ -15,8 +15,8 @@ const A = (id, s) => [3, ...str(id), ...str(s)];
 const T = (id, s) => [4, ...str(id), ...str(s)];
 const S = (s) => [6, ...str(s)];
 const P = (id, name, value) => [8, ...str(id), ...str(name), ...str(value)];
-const E = (id, kind) => [5, ...str(id), ...i32(kind)];
-const frame = (...recs) => Uint8Array.from([6, ...recs.flat()]);
+const E = (id, kind, says = 0) => [5, ...str(id), ...i32(kind), ...i32(says)];
+const frame = (...recs) => Uint8Array.from([7, ...recs.flat()]);
 
 function el(doc, tag) {
   return {
@@ -79,7 +79,7 @@ check("an empty frame empties the mount", mount.childNodes.length, 0);
 
 apply(frame(C("0", "", 0, "div"), C("0/0", "0", 0, "span"), T("0/0", "hi")));
 const kept = mount.childNodes[0];
-apply(Uint8Array.from([6, 0]));
+apply(Uint8Array.from([7, 0]));
 check("a no-change frame touches nothing", mount.childNodes[0] === kept && kept.childNodes[0].textContent === "hi", true);
 
 const styleEl = { textContent: "" };
@@ -95,7 +95,7 @@ check("an id holding more than one octet a letter reads whole", parseFrame(frame
 
 // ── events: the frame names who listens, the applier echoes who spoke ──
 const ev = parseFrame(frame(C("0", "", 0, "button"), E("0", 1)));
-check("an event record names its kind", ev[0].events, [1]);
+check("an event record names its kind and what it says", ev[0].events, [[1, 0]]);
 
 const sent = [];
 const root3 = el(doc, "root3");
@@ -115,18 +115,49 @@ check("and speaks under the same id", sent[1], ["0/k1:b", 1, null]);
 app(frame(C("0", "", 0, "div"), C("0/0", "0", 0, "span"), C("0/k1:b", "0", 1, "button")));
 check("an event the frame drops is unsubscribed", root3.childNodes[0].childNodes[1].listeners.has("click"), false);
 
-// AN INPUT SAYS ITS OWN TEXT: the page's own value is what the user typed.
+// A CONTROL SAYS WHAT THE FRAME ASKED OF IT: text, a flag or a number, read
+// off the control itself.
 const typed = [];
 const root5 = el(doc, "root5");
 const app5 = createApplier(doc, root5, (who, kind, said) => typed.push([who, kind, said]));
-app5(frame(C("0", "", 0, "input"), T("0", "Name"), P("0", "type", "text"), E("0", 2)));
+app5(frame(C("0", "", 0, "input"), T("0", "Name"), P("0", "type", "text"), E("0", 2, 3)));
 const labelled = root5.childNodes[0];
 const control = labelled.childNodes[0];
 check("a control is a label around it, its words beside it", [labelled.tagName, control.tagName, labelled.childNodes[1].textContent], ["label", "input", "Name"]);
 check("its attributes land on the control", control.attrs.type, "text");
 control.value = "typed here";
 control.listeners.get("input")();
-check("an input sends the element's own text", typed[0], ["0", 2, { tag: "text", value: "typed here" }]);
+check("an event that says text sends the control's own text", typed[0], ["0", 2, { tag: "text", value: "typed here" }]);
+
+app5(frame(C("0", "", 0, "input"), P("0", "type", "checkbox"), E("0", 3, 2)));
+control.checked = true;
+control.listeners.get("change")();
+check("an event that says a flag sends the control's own state", typed[1], ["0", 3, { tag: "flag", value: true }]);
+
+app5(frame(C("0", "", 0, "input"), P("0", "type", "range"), E("0", 3, 1)));
+control.value = "42";
+control.listeners.get("change")();
+check("an event that now says a number is heard anew, and sends it", typed[2], ["0", 3, { tag: "number", value: 42 }]);
+control.value = "not a number";
+control.listeners.get("change")();
+check("a control that cannot say a number says nothing", typed[3], ["0", 3, null]);
+
+app5(frame(C("0", "", 0, "input"), P("0", "type", "range"), E("0", 3, 0)));
+control.listeners.get("change")();
+check("an event that says nothing sends nothing", typed[4], ["0", 3, null]);
+
+// A submit's own navigation is stopped: the program draws the page.
+const root7 = el(doc, "root7");
+const submits = [];
+const app7 = createApplier(doc, root7, (who, kind, said) => submits.push([who, kind, said]));
+app7(frame(C("0", "", 0, "form"), E("0", 4)));
+let prevented = 0;
+root7.childNodes[0].listeners.get("submit")({ preventDefault: () => { prevented++; } });
+check("a submit is echoed and its navigation prevented", [submits[0], prevented], [["0", 4, null], 1]);
+let clickPrevented = 0;
+app7(frame(C("0", "", 0, "button"), E("0", 1)));
+root7.childNodes[0].listeners.get("click")({ preventDefault: () => { clickPrevented++; } });
+check("a click keeps its own default", clickPrevented, 0);
 
 // A checkbox's state is a property the user moves; a frame that leaves the
 // attribute out clears both.
@@ -150,15 +181,17 @@ const seat = (at, len) => new TextDecoder().decode(new Uint8Array(fakeMod.memory
 sendEvent(fakeMod, "0/k1:a", 1, null);
 check("the id is written into the program's id seat", seat(16, 6), "0/k1:a");
 check("no payload sends the id's length and tag 0", calls[0].map(String), ["6", "1", "0", "0", "0"]);
-sendEvent(fakeMod, "0", 1, { tag: "int", value: 42n });
-check("an int sends its value", calls[1].map(String), ["1", "1", "1", "42", "0"]);
+sendEvent(fakeMod, "0", 1, { tag: "number", value: 42 });
+check("a number sends its value", calls[1].map(String), ["1", "1", "1", "42", "0"]);
 sendEvent(fakeMod, "0", 1, { tag: "text", value: "hi" });
 check("text is written into the program's payload seat", seat(32, 2), "hi");
 check("text sends its length", calls[2].map(String), ["1", "1", "3", "0", "2"]);
+sendEvent(fakeMod, "0", 3, { tag: "flag", value: true });
+check("a flag sends one", calls[3].map(String), ["1", "3", "2", "1", "0"]);
 
 let outgrew = "";
 try { sendEvent(fakeMod, "0", 2, { tag: "text", value: "nine long" }); } catch (e) { outgrew = e.message; }
-check("a text that outgrows the seat refuses, writing nothing", [outgrew, calls.length], ["an event's text is 9 octets — the program's seat holds 8", 3]);
+check("a text that outgrows the seat refuses, writing nothing", [outgrew, calls.length], ["an event's text is 9 octets — the program's seat holds 8", 4]);
 outgrew = "";
 try { sendEvent(fakeMod, "0/1/2/3/4", 1, null); } catch (e) { outgrew = e.message; }
 check("an id that outgrows the seat refuses", outgrew, "a node id is 9 octets — the program's seat holds 8");

@@ -16,7 +16,7 @@ use core.{
     some_list,
     body_behavior,
 }
-use features.{ComponentWord, Instancing, Template, Record, ChildSlot, Instanced}
+use features.{ComponentWord, Instancing, Template, Record, ChildSlot, Instanced, Event}
 use grammar.{Token, TokenKind, lex_source}
 
 /// An exported component as an importing file's block word.
@@ -99,9 +99,10 @@ fn instancing(store: SyntaxArena, c: ComponentParts) -> Instancing {
 }
 
 /// A component read as a record: its head in order, the `List` fields
-/// its instance's statements may fill, and its one fn field.
+/// its instance's statements may fill, its one fn field — an event's
+/// handler is heard, never a body — and its events.
 fn record_of(store: SyntaxArena, c: ComponentParts) -> Record {
-    let arrow_fields = [p for p in c.fields if p.ty?.arrow ?? false]
+    let arrow_fields = [p for p in c.fields if p.ty?.arrow ?? false && p.says == null]
     Record {
         head: [p.name.of for p in c.head],
         slots: [ChildSlot {
@@ -113,6 +114,7 @@ fn record_of(store: SyntaxArena, c: ComponentParts) -> Record {
         checks: member(store, c, "check") != null,
         fn_field: if arrow_fields.length == 1 { arrow_fields[0].name.of } else { null },
         fn_optional: arrow_fields.length == 1 && answers_nullable(arrow_fields[0].ty),
+        events: [Event { name: p.name.of, says: [s.name.of for s in said] } for p in c.fields for said in some_list(p.says)],
     }
 }
 

@@ -42,15 +42,23 @@ Five attempts to lift a handler into a generated message failed.
    per-instance state, retention and the event log all read it. The
    compiler's site fingerprint replaces "place" through the same seam.
 3. **A primitive says what it projects to.** Primitives are a closed
-   set the library owns; each names its attributes, children and style
-   explicitly. A user component is a COMPOSITION and invents no
-   projection. No meaning is read from a field's spelling.
-4. **An event is a declared member.** `on input(text: string)` in the
-   component, `on input { text -> … }` at the instance. `on_x` is never
-   written or shown. An event a component does not declare is refused
-   by name.
-5. **One vocabulary for what a control says** (text, flag, number; a
-   point and a key later). Closed: every target answers every arm.
+   set the library owns; each member says what it is — `@attr(Label)`,
+   `@children`, `@style(color)`, an event, or the spread `..Box` — and
+   `@derive(View)` refuses a member that says nothing. Each word is
+   checked against the library's own declaration (`Attribute`,
+   `EventKind`'s words, `Style`), so no second table exists. A user
+   component is a COMPOSITION and invents no projection. No meaning is
+   read from a field's spelling.
+4. **An event is a declared member.** `on input(typed: string)` in the
+   component, `on input { typed -> … }` at the instance. The member is
+   named by the event's own word; `on_x` is never written or shown. A
+   handler hears all its event says, or none of it. An event a
+   component does not declare is refused by name, with the events
+   there are (`type.component_event`).
+5. **One vocabulary for what a control says**: nothing, text, a flag, a
+   number (a point and a key later). `Said` is the value and `Handler`
+   the listener, arm for arm. Closed: every target answers every arm,
+   and the frame tells the host which one each event says.
 6. **One table per fact.** Event kinds, patch ops and their codes are
    declared once; each host's copy is generated.
 7. **`mount(view)` is the app.** No app writes the host seam.

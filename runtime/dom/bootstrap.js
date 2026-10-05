@@ -4,12 +4,12 @@
 // same id in every frame, whatever is inserted, removed or reordered
 // beside it. Same file for every app.
 //
-// Wire V6: a version byte, then records of little-endian ints with ids and
+// Wire V7: a version byte, then records of little-endian ints with ids and
 // values carried raw (length-prefixed). An event record names a node and a
 // kind; the handler stays in the program. Nothing is escaped; see
 // realize/dom/frame.av.
 
-export const FRAME_VERSION = 6;
+export const FRAME_VERSION = 7;
 
 // A frame's records, in frame order. `C` opens a record; `A`/`T` fill its
 // class and words. The root's parent is null. Null means NOTHING CHANGED.
@@ -43,7 +43,8 @@ export function parseFrame(bytes) {
     } else if (op === 5) {
       const r = byId.get(str());
       const kind = int();
-      if (r) r.events.push(kind);
+      const says = int();
+      if (r) r.events.push([kind, says]);
     } else if (op === 8) {
       const r = byId.get(str());
       const name = str();
@@ -60,9 +61,20 @@ export function parseFrame(bytes) {
   return records;
 }
 
-// Build the applier over one document (a real one in a browser, a stub in a
-// test) and one mount element.
+// The DOM's own word for each event kind: a press is a click here.
 const EVENT_NAME = { 1: "click", 2: "input", 3: "change", 4: "submit" };
+// A submit's own navigation would reload the page the program is drawing.
+const PREVENTED = new Set([4]);
+// WHAT AN EVENT SAYS is the program's to name: the frame carries a code per
+// event, and the host reads that value off the control — never a guess from
+// the kind. 0 says nothing; a control that cannot say what was asked says
+// nothing too.
+const SAID = {
+  0: () => null,
+  1: (el) => { const n = Number(el.value); return Number.isFinite(n) ? { tag: "number", value: Math.trunc(n) } : null; },
+  2: (el) => ({ tag: "flag", value: Boolean(el.checked) }),
+  3: (el) => (el.value === undefined ? null : { tag: "text", value: String(el.value) }),
+};
 
 // A CONTROL HAS NO CONTENT: an `input` or a `progress` cannot hold its own
 // words, so its node is a `label` wrapping the control and the words beside
@@ -103,6 +115,8 @@ function setAttrs(el, attrs) {
   at.__avra_attrs = now;
 }
 
+// Build the applier over one document (a real one in a browser, a stub in a
+// test) and one mount element.
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   // LICENSED loops.push_loop: this map rides the closure as the applier's table
   let byId = new Map();
@@ -143,30 +157,31 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
         host.removeChild(host.childNodes[host.childNodes.length - 1]);
       }
     }
-    // SUBSCRIBE: each event a frame names is a listener; one it drops is
-    // removed. The host calls back with the node's id and the kind.
+    // SUBSCRIBE: each event a frame names is a listener; one it drops, or
+    // now says something else, is removed. The host calls back with the
+    // node's id, the kind, and what the frame said the event says.
     for (const r of records) {
       const node = next.get(r.id);
       if (!node) continue;
       const el = controlOf(node);
       const attached = el.__avra_events || (el.__avra_events = new Map());
-      const want = new Set(r.events);
-      for (const [kind, handler] of [...attached]) {
-        if (want.has(kind)) continue;
-        el.removeEventListener(EVENT_NAME[kind], handler);
+      const want = new Map(r.events);
+      for (const [kind, held] of [...attached]) {
+        if (want.get(kind) === held.says) continue;
+        el.removeEventListener(EVENT_NAME[kind], held.listener);
         attached.delete(kind);
       }
-      for (const kind of want) {
+      for (const [kind, says] of want) {
         if (attached.has(kind)) continue;
         const name = EVENT_NAME[kind];
-        if (!name) continue;
-        // AN INPUT SAYS ITS OWN TEXT: what the user typed lives in the page,
-        // so an input event carries the element's value. Every other kind
-        // says nothing.
-        const handler = () =>
-          send(node.__avra_id, kind, kind === 2 && el.value !== undefined ? { tag: "text", value: String(el.value) } : null);
-        el.addEventListener(name, handler);
-        attached.set(kind, handler);
+        const said = SAID[says];
+        if (!name || !said) continue;
+        const listener = (ev) => {
+          if (ev && PREVENTED.has(kind)) ev.preventDefault();
+          send(node.__avra_id, kind, said(el));
+        };
+        el.addEventListener(name, listener);
+        attached.set(kind, { says, listener });
       }
     }
     byId = next;
@@ -203,14 +218,14 @@ export async function instantiate(source, host) {
 // crosses through the program's own SEATS: the host writes UTF-8 octets at
 // the address the program gave and passes their length. `who` is the
 // length of the node's id, written into the id seat (`avra_id_seat`);
-// `what` is the event kind. What the control said crosses as a TAG and its
-// value: tag 0 is ABSENT — a tag of its own, so a present zero or empty
-// text is never mistaken for no payload — 1 is an int in `num`, 2 a bool,
-// and 3 text of `len` octets in the payload seat (`avra_payload_seat`). A
-// text that outgrows a seat's room (`avra_seat_room`) REFUSES: writing it
-// would overwrite the program's memory. ONE door for both the page and a
-// test harness.
-const PAYLOAD_TAG = { text: 3, int: 1, bool: 2 };
+// `what` is the event kind. What the control said crosses as a TAG — the
+// code the frame gave the event — and its value: tag 0 is NOTHING, a tag of
+// its own, so a present zero or empty text is never mistaken for nothing;
+// 1 is a number in `num`, 2 a flag, and 3 text of `len` octets in the
+// payload seat (`avra_payload_seat`). A text that outgrows a seat's room
+// (`avra_seat_room`) REFUSES: writing it would overwrite the program's
+// memory. ONE door for both the page and a test harness.
+const SAID_TAG = { number: 1, flag: 2, text: 3 };
 const seats = new WeakMap();
 
 function seatsOf(mod) {
@@ -234,13 +249,12 @@ export function sendEvent(mod, who, what, payload) {
   const seat = seatsOf(mod);
   const id = seated(mod, seat.id, seat.room, who, "a node id");
   if (!payload) { mod.avra_event(id, BigInt(what), 0n, 0n, 0n); return; }
-  const tag = PAYLOAD_TAG[payload.tag];
+  const tag = SAID_TAG[payload.tag];
   if (tag === 3) {
     mod.avra_event(id, BigInt(what), BigInt(tag), 0n, seated(mod, seat.payload, seat.room, payload.value, "an event's text"));
     return;
   }
-  const num = payload.tag === "bool" ? (payload.value ? 1 : 0) : payload.value;
-  mod.avra_event(id, BigInt(what), BigInt(tag), BigInt(num), 0n);
+  mod.avra_event(id, BigInt(what), BigInt(tag), BigInt(payload.value), 0n);
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length

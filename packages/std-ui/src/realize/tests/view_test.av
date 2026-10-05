@@ -1,0 +1,64 @@
+//! `@derive(View)`, by its law: a primitive's node is exactly what its
+//! members SAY — an attribute, the children, a style token, an event, the
+//! shared box — read through the DOM's debug frame.
+use @std.ui.components.{button, card, checkbox, error_text, field, heading, row, text}
+use @std.ui.realize.dom.frame.{frame_text}
+use @std.ui.realize.view.{View}
+use @std.ui.style.layout.{Layout}
+use @std.ui.style.style.{Style}
+
+/// The view's frame, past its version line.
+fn drawn(v: dyn View) -> string { frame_text(v.describe()).split("\n").drop(1).join("\n") }
+
+fn muted() -> Style { Style { color: .Muted } }
+
+spec "std/ui view — a primitive projects what its members say" {
+    given "members marked as attributes" {
+        then "become the node's attributes" {
+            drawn(heading "Tasks" { rank: 2 }) == "C 0 h2\nT 0 Tasks"
+        }
+        then "carry the instance's own values" {
+            drawn(button "Go" { disabled: true }) == "C 0 button\nP 0 aria-label=Go\nP 0 disabled=\nT 0 Go"
+        }
+    }
+    given "a member marked as the children" {
+        then "draws each child under the node, in order" {
+            drawn(row { items: [text "a", text "b"] }) == "C 0 div\nC 0/0 span\nT 0/0 a\nC 0/1 span\nT 0/1 b"
+        }
+        then "draws none when the instance gives none" { drawn(card "Board") == "C 0 article\nP 0 title=Board" }
+    }
+    given "a member marked as a style token" {
+        then "is laid over the node's style" {
+            drawn(error_text { message: "bad" }) == "C 0 span\nA 0 color-danger\nT 0 bad"
+        }
+        then "keeps the rest of the instance's own style" {
+            drawn(
+                error_text {
+                    message: "bad"
+                    style: Style { color: .Muted, radius: .S }
+                },
+            ) == "C 0 span\nA 0 color-danger radius-s\nT 0 bad"
+        }
+    }
+    given "the shared box" {
+        then "carries the instance's style" { drawn(text "x" { style: muted() }) == "C 0 span\nA 0 color-muted\nT 0 x" }
+        then "carries the instance's layout" {
+            drawn(row { layout: Layout { gap: .S } }) == "C 0 div\nA 0 gap-s"
+        }
+        then "carries the instance's key, which is its identity" {
+            drawn(text "x" { key: "a" }) == "C k1:a span\nT k1:a x"
+        }
+    }
+    given "an event an instance hears" {
+        then "binds one action saying what the event says" {
+            drawn(field "Name" { on input { typed -> println(typed) } })
+                .ends_with("E 0 input text\nT 0 Name")
+        }
+        then "says its value to a handler that names no seat" {
+            drawn(checkbox "Done" { on change { println("x") } }).contains("E 0 change flag")
+        }
+    }
+    given "an event nobody hears" {
+        then "binds nothing" { !drawn(button "Go").contains("E 0") }
+    }
+}

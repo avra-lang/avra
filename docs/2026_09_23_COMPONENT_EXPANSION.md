@@ -101,6 +101,13 @@ export component within(limit: Code) {           // a VALUE head
 - inner words (`command`, `flag`, `description`) are CONTEXTUAL: they mean
   something only inside the block. Only the imported word is reserved,
   only where imported.
+- AN EVENT IS A DECLARED MEMBER, one word on both sides: `on input(typed:
+  string)` in the component, `on input { typed -> … }` at the instance.
+  The member is a field named by the event (`self.input`), holding the
+  handler — absent until an instance hears it. A handler hears all its
+  event says, or none of it (`on input { … }`). A handler for an event
+  the component does not declare is `type.component_event`, naming the
+  events there are. A derive reads `Field.says` (`@std/meta`).
 
 ## 4. Two stages, each reusing what exists
 
