@@ -42,7 +42,7 @@ Five attempts to lift a handler into a generated message failed.
    per-instance state, retention and the event log all read it. The
    compiler's site fingerprint replaces "place" through the same seam.
 3. **A primitive says what it projects to.** Primitives are a closed
-   set the library owns; each member says what it is — `@attr(Label)`,
+   set the library owns; each member says what it is — `@attr(.Label)`,
    `@children`, `@style(color)`, an event, or the spread `..Box` — and
    `@derive(View)` refuses a member that says nothing. Each word is
    checked against the library's own declaration (`Attribute`,

@@ -2,7 +2,7 @@
 //! `@derive(View)` WRITES that impl for a PRIMITIVE from what each member
 //! SAYS it projects to:
 //!
-//!     @attr(Label) label: string      an attribute of the node
+//!     @attr(.Label) label: string      an attribute of the node
 //!     @children items: List<dyn View> the node's children
 //!     @style(color) tone: Tone        a token laid over the node's style
 //!     on input(typed: string)         an event the node speaks
@@ -41,12 +41,7 @@ export trait View {
     fn describe() -> Node
 
     static fn derive(t: Type) -> Declared {
-        let said = Vocabulary {
-            attributes: type_named("${realize_module}.Attribute")?.variants ?? [],
-            kinds: type_named("${realize_module}.EventKind")?.variants ?? [],
-            box: type_named("${style_module}.${box_name}")?.fields ?? [],
-            style: type_named("${style_module}.Style")?.fields ?? [],
-        }
+        let said? = vocabulary() else { return Declared { made: [], problems: [unread(t)] } }
         let parts = [said.part(f) for f in t.fields]
         let node = quote {
             Node {
@@ -75,6 +70,21 @@ export trait View {
 
 /// The library's own declarations a member's words are checked against.
 type Vocabulary = { attributes: List<Variant>, kinds: List<Variant>, box: List<Field>, style: List<Field> }
+
+/// The vocabulary as the library declares it. Absent only when a
+/// declaration this file imports cannot be read — the derive's own defect.
+fn vocabulary() -> Vocabulary? {
+    let attribute? = type_named("${realize_module}.Attribute") else { return null }
+    let kind? = type_named("${realize_module}.EventKind") else { return null }
+    let box? = type_named("${style_module}.${box_name}") else { return null }
+    let style? = type_named("${style_module}.Style") else { return null }
+    Vocabulary {
+        attributes: attribute.variants,
+        kinds: kind.variants,
+        box: box.fields,
+        style: style.fields,
+    }
+}
 
 /// What one member of a primitive projects to, as the code that reads it.
 enum Part {
@@ -145,7 +155,7 @@ impl Vocabulary {
         said.first() ?? Part.Refused(says_nothing(f))
     }
 
-    /// `@attr(Label) label` → the code `Attribute.Label(self.label)`.
+    /// `@attr(.Label) label` → the code `Attribute.Label(self.label)`.
     fn attribute(f: Field, m: Mark) -> Part {
         let word = m.args.first() ?? ""
         let v? = self.attributes.find(it.name == word) else {
@@ -271,7 +281,7 @@ fn says_nothing(f: Field) -> Diagnostic {
         "unprojected",
         f.at,
         "a primitive says what each member projects to, and `${f.name}` says nothing",
-        "mark it `@attr(…)`, `@children` or `@style(…)`, or declare it an event — `on ${f.name}`",
+        "mark it `@attr(.Label)`, `@children` or `@style(color)`, or declare it an event — `on ${f.name}`",
     )
 }
 
@@ -280,7 +290,7 @@ fn says_twice(f: Field) -> Diagnostic {
         "unprojected",
         f.at,
         "a member projects to one thing, and `${f.name}` says more than one",
-        "keep one of `@attr(…)`, `@children` and `@style(…)`",
+        "keep one of `@attr`, `@children` and `@style`",
     )
 }
 
@@ -335,6 +345,15 @@ fn unsayable(f: Field, says: List<Param>) -> Diagnostic {
         f.at,
         "a control says nothing, text, a flag or a number, and `${f.name}` says `${["${s.name}: ${s.ty}" for s in says].join(", ")}`",
         "say one `string`, `bool` or `int`",
+    )
+}
+
+fn unread(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "defect",
+        t.at,
+        "defect: `@derive(View)` could not read the library's own vocabulary over `${t.name}`",
+        "`Attribute`, `EventKind`, `Box` and `Style` are read by their modules' names — one moved",
     )
 }
 
