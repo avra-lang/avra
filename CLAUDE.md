@@ -1914,13 +1914,15 @@ Runtime facts, ours to ratify:
 
 ## How work lands
 
-- ALL WORK MOVES THROUGH FIVE COMMANDS, and nothing else touches main:
+- ALL WORK MOVES THROUGH SEVEN COMMANDS, and nothing else touches main:
 
-      sh tools/work new <name>   # worktree ../avra-<name>, off GitHub's main, compiler seeded
-      sh tools/work test         # what the branch touches, built and tested on Sprites
-      sh tools/work run <cmd>    # any command in this worktree, on its Sprite
-      sh tools/work land         # rebase on origin/main, push, open the PR, queue it
-      sh tools/work status       # every open PR, its checks and queue state
+      sh tools/work new <name>   # a worktree ../avra-<name> off main, and its Sprite
+      sh tools/work run <cmd>    # run it on this lane's Sprite, streamed, its exit status
+      sh tools/work test         # what this branch touches, on this lane's Sprite
+      sh tools/work land         # push, PR, queue — no Sprite involved
+      sh tools/work status       # PRs and the queue; each lane and its Sprite
+      sh tools/work sprites      # every Sprite at a glance; `--fix [name]` repairs
+      sh tools/work done         # remove this lane, free its Sprite
 
   Main lives on GitHub (avra-lang/avra) and moves only through its merge
   queue: squash merges, linear history, no direct pushes. A local main
@@ -1989,13 +1991,17 @@ Runtime facts, ours to ratify:
   `main` deadlocked the merge queue — main could not move because that
   lane's own PR was failing the train.)
 
-- THE ENQUEUE GATE IS ONE INSTRUMENT. `tools/gate_changed.sh` runs the
-  static keepers, `fmt --check` on the changed `.av`, and
-  `check --baseline` on every affected package. `tools/work land` runs it
-  as a LOCAL preflight with the branch's own compiler, and checks.yml's
-  `gate` step runs the same script on the PR and on the train — one
-  definition, so the preflight and CI can never be two instruments, and
-  a slip dies at the gate rather than in the merge queue.
+- GITHUB'S RUNNERS ARE THE ONLY GATE. `tools/gate_changed.sh` is the
+  train's checks in one definition — the static keepers, `fmt --check`
+  on the changed `.av`, `check --baseline` on every affected package —
+  and checks.yml runs it on the PR and on the train. `tools/work land`
+  checks formatting alone, with the compiler the worktree already
+  holds, and asks no other machine; a lane that wants the whole gate
+  before pushing runs that script through `work run`.
+- A QUEUED PR WITH NO TRAIN IS STUCK, AND WAITING DOES NOT START ONE.
+  An entry can sit in the merge queue with no `merge_group` run until
+  it is taken out and put back; `work status` and `work wait` do that
+  to one queued five minutes with no train, and say so.
 - MEASURE, THEN CHANGE. `make census CMD="check <pkg>"` gives EXACT
   retain/release/list-write counts and, with the per-caller tables,
   who causes them; `AVRA_SAMPLE=<secs> sh tools/watch.sh 4000 ./avra

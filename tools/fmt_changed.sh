@@ -11,8 +11,8 @@
 # COMPILER, NEVER A STALE STANDING ONE: a binary that predates the syntax a
 # branch added REFUSES that branch's files and cannot report the canonical
 # diff, so it would certify a file the train then refuses. The train has its
-# own build; `tools/work land` gets a branch build through `tools/sp` (whose
-# synced tree carries no `.git`, which is why it passes `--files`). Nothing
+# own build; a lane's Sprite holds a branch build (`tools/work run`), and its
+# synced tree carries no `.git`, which is why `--files` exists. Nothing
 # here polls `main`: the refs are named, never watched.
 set -eu
 [ "$#" -ge 1 ] || { echo "fmt_changed: usage: sh tools/fmt_changed.sh <base> <head> | --files <files…>" >&2; exit 2; }
