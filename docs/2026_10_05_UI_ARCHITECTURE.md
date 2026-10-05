@@ -231,8 +231,8 @@ of, and its `state` members are places each INSTANCE owns.
    it SAYS so, once a component a paint — `App.warnings()`, a
    terminal's error stream:
    "`counter` keeps state, and here its instances are told apart by
-   their order alone — one site made them and none wears a key: give
-   each a `key`".
+   their order alone — they share a key, or one site made them and
+   none wears one: give each its own `key`".
 10. **`tree_of(view)` is a tree standing alone** — no paint before it,
    none after — for a document, a gallery, a test of one node.
 
