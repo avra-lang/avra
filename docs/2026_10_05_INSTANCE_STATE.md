@@ -25,7 +25,7 @@ the place** — identity by key, never by pointer.
 | per-instance state in a `type` record | `type R = { state n: int = 0 }`; two `R {}` copies are INDEPENDENT (`a=1 b=0`). The Cell is seeded per instance. |
 | per-instance state in a `component` | `component C { state n: int = 0 }` is REFUSED: "a component holds its fields and its `fn`s, and nothing else". A plain field works (`todos: List<string> = []` is independent per instance) but is a VALUE, so a handler capture copies it. |
 | `state` seat on a component head | `component C(state n: int)` is a parse error — a component head takes no seat marks. |
-| `@derive(View)` over a `fn()` event field | refused: the View derive calls `.site()` on every event field, so a handler field must be `dyn Messages` — the `on click { … }` closure form is not wired to the channel (the sibling lane's slice). |
+| `@derive(View)` over a `fn()` event field | LANDED since: a std control's event field is `Run`/`Hear` and `on click { … }` fills it; the frame keeps the handler and the host echoes the node. |
 
 So a shared, top-level handler driven by a serialised event cannot reach a
 per-instance place by capturing it. It needs a KEY.

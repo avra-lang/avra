@@ -1,5 +1,11 @@
 # Binding and sharing — `let`, `mut`, `state`, `once`, and the `ambient` seat
 
+> **Superseded for events (2026-10-05).** A handler is a closure now:
+> `on click { … }` fills a fn-typed field and the frame keeps it;
+> `@derive(Messages)`, sites and the payload wire are gone. An app that
+> wants one `update` writes `on click { update(.Toggle(t.id)) }`. The
+> `Msg` samples below are the design as it stood.
+
 > 2026-10-04. Base `3137b8f`. This doc fixes the vocabulary the owner
 > has been driving and then takes it OUTSIDE the UI: servers,
 > services, models, robotics, and the distributed case. It is written

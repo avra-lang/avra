@@ -1,22 +1,16 @@
 //! The task board — the UI library's showcase, as a wasm app. `view` is a
 //! function of module `state`: tasks with done-state, three filters, a
 //! derived count and progress, an add field, a dialog and a theme mode.
-//! `update` is ONE exhaustive match over `Msg`, so a new message breaks the
-//! build here.
 //!
-//! The controls are the library's OWN: `button`, `checkbox` and `field`
-//! carry typed event fields (`on_click`, `on_change`, `on_input`), so no
-//! wrapper component stands between a click and its message. Each control's
-//! event field is `dyn Messages?`, the frame names the message's site and
-//! its typed payload, and the host echoes the payload back across the ABI
-//! (`avra_event`'s tag/value seats) — so a click on row 3's Remove rebuilds
-//! `Msg.Remove("t3")`, never the first row's.
+//! The controls are the library's OWN, and each handler is written where
+//! its control is: `on click { … }` is a closure over what the view could
+//! see, so row 3's Remove names row 3's task. The frame tells the host
+//! which nodes listen; the host echoes the node and kind (`avra_event`),
+//! and the program runs the handler it kept.
 //!
 //! The task rows are ONE keyed list (`list visible() by it.id`), so the row
 //! identity is the task id and an insert or a removal keeps every other
-//! node. The filter body and `update` are unchanged from the pre-keyed
-//! board.
-use @std.meta.{derive}
+//! node.
 use @std.ui.components.{
     button,
     card,
@@ -33,8 +27,7 @@ use @std.ui.components.{
     surface,
     text,
 }
-use @std.ui.realize.dom.frame.{Live, event_at, live}
-use @std.ui.realize.messages.{Messages}
+use @std.ui.realize.dom.frame.{Live, live}
 use @std.ui.realize.payload.{Payload}
 use @std.ui.realize.view.{View}
 use @std.ui.style.layout.{Layout, around}
@@ -44,34 +37,6 @@ use @std.ui.style.theme.{Theme, dark_theme, default_theme}
 extern fn avra_dom_frame(frame: Bytes)
 extern fn avra_bytes_with_room(n: int) -> Bytes
 extern fn avra_bytes_adopted(p: Bytes, n: int) -> Bytes
-
-/// The screen's actions: a control with no payload carries its site alone,
-/// and a per-item action names its row by id. A message's captures ride the
-/// frame as a typed `Payload` and the host echoes them back, so `Toggle("t3")`
-/// and `Toggle("t1")` stay distinct however the tree moved.
-///
-/// A BOOL-PAYLOAD VARIANT MUST STAY IN THIS ENUM. Coercing a `Messages`
-/// enum to the event channel's `dyn Messages` lowers the trait's `marks`
-/// specialization with the wrong ABI when every payload is text or int —
-/// the call passes the declaration flat where the callee expects a
-/// pointer, and LLVM refuses the module — so an enum with only
-/// `Toggle(id: string)`/`Remove(id: string)` cannot carry per-item
-/// controls. `SetTheme(on)` is this app's own bool, and carrying the mode
-/// it wants reads better than a toggle anyway.
-@derive(Messages)
-enum Msg {
-    ShowAll
-    ShowActive
-    ShowDone
-    ClearDone
-    SetTheme(on: bool)
-    OpenDialog
-    CloseDialog
-    Toggle(id: string)
-    Remove(id: string)
-    Add
-    Draft(body: string)
-}
 
 /// One task. `id` is the item key; `done` is its state.
 type Todo = { id: string, title: string, done: bool }
@@ -108,28 +73,6 @@ fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
 /// The last frame sent — an unchanged paint costs two bytes.
 once fn painted() -> Live { live() }
 
-// ── update: ONE match, every message ────────────────────────────
-
-fn update(m: Msg) {
-    match m {
-        .ShowAll -> { filter = "all" },
-        .ShowActive -> { filter = "active" },
-        .ShowDone -> { filter = "done" },
-        .ClearDone -> { tasks = [t for t in tasks if !t.done] },
-        .SetTheme(on) -> {
-            dark = on
-            // A mode is a whole stylesheet, so the next diff must resend it.
-            painted().styled.set(false)
-        },
-        .OpenDialog -> { dialog_open = true },
-        .CloseDialog -> { dialog_open = false },
-        .Toggle(id) -> { tasks = [flipped(t, id) for t in tasks] },
-        .Remove(id) -> { tasks = [t for t in tasks if t.id != id] },
-        .Add -> { add() },
-        .Draft(body) -> { draft = body },
-    }
-}
-
 /// The draft becomes the next task, and the draft is spent.
 fn add() {
     if draft != "" {
@@ -161,10 +104,10 @@ fn sunk_style() -> Style { Style { fill: .SurfaceSunk, radius: .S } }
 
 fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
 
-fn tab(label: string, m: Msg, on: bool) -> button {
+fn tab(label: string, shows: string) -> button {
     button label {
-        on_click: m
-        style: tab_style(on)
+        on click { filter = shows }
+        style: tab_style(filter == shows)
     }
 }
 
@@ -182,7 +125,11 @@ fn header() -> row {
                 ]
             },
             button theme_label() {
-                on_click: Msg.SetTheme(!dark)
+                on click {
+                    dark = !dark
+                    // A mode is a whole stylesheet, so the next diff must resend it.
+                    painted().styled.set(false)
+                }
                 style: sunk_style()
             },
         ]
@@ -193,11 +140,11 @@ fn filters() -> row {
     row {
         layout: Layout { gap: .S, align: .Center }
         items: [
-            tab("All", Msg.ShowAll, filter == "all"),
-            tab("Active", Msg.ShowActive, filter == "active"),
-            tab("Done", Msg.ShowDone, filter == "done"),
+            tab("All", "all"),
+            tab("Active", "active"),
+            tab("Done", "done"),
             button "Clear done" {
-                on_click: Msg.ClearDone
+                on click { tasks = [t for t in tasks if !t.done] }
                 disabled: done_count() == 0
                 style: sunk_style()
             },
@@ -211,10 +158,10 @@ fn new_task() -> row {
         items: [
             field "New task" {
                 placeholder: "Type a task…"
-                on_input: Msg.Draft("")
+                on_input: (body: string) -> { draft = body }
             },
             button "Add" {
-                on_click: Msg.Add
+                on click { add() }
                 style: sunk_style()
             },
         ]
@@ -239,11 +186,11 @@ fn task_list() -> list {
             items: [
                 checkbox t.title {
                     checked: t.done
-                    on_change: Msg.Toggle(t.id)
+                    on change { tasks = [flipped(x, t.id) for x in tasks] }
                     style: title_style(t.done)
                 },
                 button "Remove" {
-                    on_click: Msg.Remove(t.id)
+                    on click { tasks = [x for x in tasks if x.id != t.id] }
                     style: sunk_style()
                 },
             ]
@@ -279,7 +226,7 @@ fn footer() -> row {
                 style: Style { color: .Muted }
             },
             button "About" {
-                on_click: Msg.OpenDialog
+                on click { dialog_open = true }
                 style: sunk_style()
             },
         ]
@@ -293,7 +240,7 @@ fn about() -> dialog {
             heading "Task board" { rank: 2 },
             text "State lives in module `state`; the frame is its projection.",
             button "Close" {
-                on_click: Msg.CloseDialog
+                on click { dialog_open = false }
                 style: sunk_style()
             },
         ]
@@ -342,14 +289,11 @@ fn payload_text(len: int) -> Payload? {
     Payload.Text(body)
 }
 
-/// The host's call: the site is the message's identity, the tag and value
-/// are the payload it echoed (an input event carries the input's OWN text),
-/// `update` dispatches, and the frame follows.
-export fn avra_event(site: int, what: int, tag: int, num: int, len: int) {
-    let e? = event_at(view().describe(), site, what) else { return }
-    let m? = Msg.from_site(e.site, payload_of(tag, num, len)) else { return }
-    update(m)
-    paint()
+/// The host's call: node `who` spoke `what`, saying the value in the tag
+/// and value seats (an input says its own text). The handler the last
+/// frame bound there runs, and the frame follows.
+export fn avra_event(who: int, what: int, tag: int, num: int, len: int) {
+    if painted().fire(who, what, payload_of(tag, num, len)) { paint() }
 }
 
 /// The host's first call, after the reactor is initialized: one paint.

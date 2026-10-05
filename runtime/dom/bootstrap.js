@@ -4,12 +4,12 @@
 // otherwise it is matched by its ID from the previous frame. Same file for
 // every app.
 //
-// Wire V4: a version byte, then records of little-endian ints with values
-// carried raw (length-prefixed). An event's typed captures follow as op 7
-// (absent when the action carries no payload). Nothing is escaped; see
+// Wire V5: a version byte, then records of little-endian ints with values
+// carried raw (length-prefixed). An event record names a node and a kind;
+// the handler stays in the program. Nothing is escaped; see
 // realize/dom/frame.av.
 
-export const FRAME_VERSION = 4;
+export const FRAME_VERSION = 5;
 
 // A frame's records, in frame order. `C` opens a record; `K`/`A`/`T` fill
 // key, class and words. Null means NOTHING CHANGED.
@@ -44,15 +44,8 @@ export function parseFrame(bytes) {
     } else if (op === 5) {
       const id = dv.getInt32(i, true); i += 4;
       const kind = dv.getInt32(i, true); i += 4;
-      const site = dv.getInt32(i, true); i += 4;
       const r = byId.get(id);
-      if (r) { if (!r.events) r.events = []; r.events.push({ kind, site, payload: null }); }
-    } else if (op === 7) {
-      const id = dv.getInt32(i, true); i += 4;
-      const read = readPayload(dv, bytes, i); i = read.next;
-      const r = byId.get(id);
-      const last = r && r.events && r.events[r.events.length - 1];
-      if (last) last.payload = read.value;
+      if (r) r.events.push(kind);
     } else if (op === 6) {
       const len = dv.getInt32(i, true); i += 4;
       records.stylesheet = str(i, len); i += len;
@@ -63,29 +56,6 @@ export function parseFrame(bytes) {
     }
   }
   return records;
-}
-
-// One typed payload record: a tag, then its value. Absent is no op 7 at
-// all; a frame never encodes a payload the program did not write.
-function readPayload(dv, bytes, i) {
-  const tag = bytes[i++];
-  if (tag === 1) {
-    const len = dv.getInt32(i, true); i += 4;
-    const value = new TextDecoder().decode(bytes.subarray(i, i + len)); i += len;
-    return { value: { tag: "text", value }, next: i };
-  }
-  if (tag === 2) {
-    const lo = dv.getUint32(i, true); i += 4;
-    const hi = dv.getInt32(i, true); i += 4;
-    // Two 32-bit halves as one 64-bit word, kept exact: a JS number loses
-    // precision past 2^53, and an int payload must go back whole.
-    const value = (BigInt(hi) << 32n) | BigInt(lo);
-    return { value: { tag: "int", value }, next: i };
-  }
-  if (tag === 3) {
-    return { value: { tag: "bool", value: bytes[i++] !== 0 }, next: i };
-  }
-  throw new Error(`unknown payload tag ${tag}`);
 }
 
 // Build the applier over one document (a real one in a browser, a stub in a
@@ -115,6 +85,9 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
       if (r.key !== null) { el.setAttribute("data-key", r.key); byKey.set(r.key, el); keys.add(r.key); }
       if (r.cls !== null) el.setAttribute("class", r.cls);
       if (r.text !== null && el.textContent !== r.text) el.textContent = r.text;
+      // The id is THIS frame's: a listener reads it when it fires, so a node
+      // that moved speaks under the id the program last gave it.
+      el.__avra_id = r.id;
       next.set(r.id, el);
     }
     // Order each parent's children by the frame's own index.
@@ -137,27 +110,26 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
       }
     }
     // SUBSCRIBE: each event a frame names is a listener; one it drops is
-    // removed. The host calls back with the ID and KIND the frame gave.
+    // removed. The host calls back with the node's CURRENT id and the kind.
     for (const r of records) {
       const el = next.get(r.id);
       if (!el) continue;
       const attached = el.__avra_events || (el.__avra_events = new Map());
-      const want = new Map((r.events || []).map((e) => [e.kind, e]));
+      const want = new Set(r.events);
       for (const [kind, handler] of [...attached]) {
         if (want.has(kind)) continue;
         el.removeEventListener(EVENT_NAME[kind], handler);
         attached.delete(kind);
       }
-      for (const [kind, ev] of want) {
+      for (const kind of want) {
         if (attached.has(kind)) continue;
         const name = EVENT_NAME[kind];
         if (!name) continue;
-        // AN INPUT'S PAYLOAD IS ITS OWN TEXT: a field's message is named
-        // once at the frame, but the text the user typed lives in the page,
+        // AN INPUT SAYS ITS OWN TEXT: what the user typed lives in the page,
         // so an input event carries the element's value. Every other kind
-        // echoes the payload the frame named.
+        // says nothing.
         const handler = () =>
-          send(ev.site, kind, kind === 2 && el.value !== undefined ? { tag: "text", value: String(el.value) } : ev.payload);
+          send(el.__avra_id, kind, kind === 2 && el.value !== undefined ? { tag: "text", value: String(el.value) } : null);
         el.addEventListener(name, handler);
         attached.set(kind, handler);
       }
@@ -192,10 +164,10 @@ export async function instantiate(source, host) {
   return instance.exports;
 }
 
-// The program's `avra_event(site: int, what: int, tag: int, num: int, len:
-// int)` crosses as five i64 seats, so the host hands it BigInts. `site` is
-// the content hash the frame named, never the node id it subscribed along.
-// A typed payload crosses as a TAG and its value: tag 0 is ABSENT — a tag of
+// The program's `avra_event(who: int, what: int, tag: int, num: int, len:
+// int)` crosses as five i64 seats, so the host hands it BigInts. `who` is
+// the node's id in the last frame, `what` the event kind. What the control
+// said crosses as a TAG and its value: tag 0 is ABSENT — a tag of
 // its own, so a present zero or empty text is never mistaken for no payload
 // — 1 is an int in `num`, 2 a bool, and 3 text whose UTF-8 octets the host
 // writes into the program's own seat (`avra_payload_seat`) and adopts by
@@ -203,19 +175,19 @@ export async function instantiate(source, host) {
 const PAYLOAD_TAG = { text: 3, int: 1, bool: 2 };
 const seats = new WeakMap();
 
-export function sendEvent(mod, site, what, payload) {
-  if (!payload) { mod.avra_event(BigInt(site), BigInt(what), 0n, 0n, 0n); return; }
+export function sendEvent(mod, who, what, payload) {
+  if (!payload) { mod.avra_event(BigInt(who), BigInt(what), 0n, 0n, 0n); return; }
   const tag = PAYLOAD_TAG[payload.tag];
   if (tag === 3) {
     const bytes = new TextEncoder().encode(payload.value);
     let seat = seats.get(mod);
     if (seat === undefined) { seat = Number(mod.avra_payload_seat()); seats.set(mod, seat); }
     new Uint8Array(mod.memory.buffer, seat, bytes.length).set(bytes);
-    mod.avra_event(BigInt(site), BigInt(what), BigInt(tag), 0n, BigInt(bytes.length));
+    mod.avra_event(BigInt(who), BigInt(what), BigInt(tag), 0n, BigInt(bytes.length));
     return;
   }
   const num = payload.tag === "bool" ? (payload.value ? 1 : 0) : payload.value;
-  mod.avra_event(BigInt(site), BigInt(what), BigInt(tag), BigInt(num), 0n);
+  mod.avra_event(BigInt(who), BigInt(what), BigInt(tag), BigInt(num), 0n);
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length

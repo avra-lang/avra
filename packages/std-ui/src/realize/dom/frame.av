@@ -5,20 +5,17 @@
 //! same graph as readable lines, the debug projection tests and `explain`
 //! read.
 //!
-//!   byte 0        version 4 — a stale host REFUSES, never misapplies
+//!   byte 0        version 5 — a stale host REFUSES, never misapplies
 //!   op 1  C       id, parent(-1 root), index, tag(len+bytes)
 //!   op 2  K       id, key(len+bytes)      data-key: identity for a reorder
 //!   op 3  A       id, class(len+bytes)
 //!   op 4  T       id, words(len+bytes)
-//!   op 5  E       id, event kind, site — the host SUBSCRIBES and echoes the
-//!                 SITE (a content hash), never the id it subscribed along
-//!   op 7  P       id, payload — the event's typed captures, following its
-//!                 op 5. Emitted only when a payload is present, so a
-//!                 capture-free action's frame is byte-identical to before
+//!   op 5  E       id, event kind — the host SUBSCRIBES and echoes the id
+//!                 and kind; the handler itself never leaves the program
 //!   op 6  S       css(len+bytes) — the stylesheet, sent ONCE
 //!   op 0  N       nothing changed
 //! Every int is four little-endian bytes.
-use realize.render.{Node, EventKind, Action, level_of}
+use realize.render.{Node, EventKind, Action, Handler, level_of}
 use realize.payload.{Payload}
 use realize.update.{Op, Mount, plan}
 use realize.html.tags.{tag_for}
@@ -28,7 +25,7 @@ use realize.lists.{union}
 use style.theme.{Theme}
 
 /// The wire's version.
-const version = 4
+const version = 5
 
 /// The host's own code for an event kind — the wire's currency, not the
 /// enum's order. ONE arm per kind.
@@ -79,49 +76,23 @@ fn wire_op(op: Op, b: Buf) {
             b.push_byte(5)
             b.push_int(id)
             b.push_int(kind_code(action.kind))
-            b.push_int(action.site)
-            if action.payload != null {
-                b.push_byte(7)
-                b.push_int(id)
-                payload_wire(action.payload!, b)
-            }
-        },
-    }
-}
-
-/// A typed payload's own records: a one-byte tag, then its value. The
-/// host reads the tag; nothing is escaped. Absent is a frame with no op
-/// 7 at all — never a tag, so the empty value stays the option's own.
-fn payload_wire(p: Payload, b: Buf) {
-    match p {
-        .Text(t) -> {
-            b.push_byte(1)
-            b.push_str(t)
-        },
-        .Int(v) -> {
-            b.push_byte(2)
-            b.push_int(v)
-            b.push_int(v >> 32)
-        },
-        .Bool(f) -> {
-            b.push_byte(3)
-            b.push_byte(if f { 1 } else { 0 })
         },
     }
 }
 
 /// The whole tree as one wire frame.
-export fn frame(root: Node) -> Bytes {
+export fn frame(root: Node) -> Bytes { frame_of(plan(root)) }
+
+fn frame_of(ops: List<Op>) -> Bytes {
     let b = buf()
     b.push_byte(version)
-    for op in plan(root) { wire_op(op, b) }
+    for op in ops { wire_op(op, b) }
     b.take()
 }
 
 /// The tree's first frame: the stylesheet the classes need, then the tree.
 /// The sheet is sent ONCE — later frames carry only what changed.
-fn styled_frame(root: Node, theme: Theme) -> Bytes {
-    let ops = plan(root)
+fn styled_frame(ops: List<Op>, theme: Theme) -> Bytes {
     let b = buf()
     b.push_byte(version)
     b.push_byte(6)
@@ -138,10 +109,14 @@ export fn no_change() -> Bytes {
     b.take()
 }
 
-/// The last frame sent, and whether the stylesheet has gone with it.
-export type Live = { last: Cell<Bytes>, styled: Cell<bool> }
+/// The last frame sent, whether the stylesheet has gone with it, and the
+/// events that frame bound — the handlers a host's echo runs.
+export type Live = { last: Cell<Bytes>, styled: Cell<bool>, bound: Cell<List<Op>> }
 
-export fn live() -> Live { Live { last: Cell.new("".bytes()), styled: Cell.new(false) } }
+export fn live() -> Live {
+    let none: List<Op> = []
+    Live { last: Cell.new("".bytes()), styled: Cell.new(false), bound: Cell.new(none) }
+}
 
 impl Live {
     /// `root`'s frame, or `no_change()` when the tree is the one last sent.
@@ -150,16 +125,27 @@ impl Live {
     ///
     /// The remembered value is ALWAYS the bare tree, never the styled frame:
     /// remembering the styled one would make every later comparison fail (the
-    /// stylesheet is not in them) and `no_change` could never fire.
+    /// stylesheet is not in them) and `no_change` could never fire. The
+    /// bound events are replaced EVERY paint: two trees that draw alike may
+    /// still close over different values.
     fn diff(root: Node, theme: Theme) -> Bytes {
-        let plain = frame(root)
+        let ops = plan(root)
+        let plain = frame_of(ops)
+        self.bound.set([op for op in ops if is_event(op)])
         if self.styled.get() && plain == self.last.get() { return no_change() }
         self.last.set(plain)
         if !self.styled.get() {
             self.styled.set(true)
-            return styled_frame(root, theme)
+            return styled_frame(ops, theme)
         }
         plain
+    }
+
+    /// The host's echo: node `id` spoke `kind`, saying `said`. The handler
+    /// the last frame bound there runs; false when nothing answered.
+    fn fire(id: int, kind: int, said: Payload?) -> bool {
+        let action? = find_event(self.bound.get(), id, kind) else { return false }
+        action.fire(said)
     }
 }
 
@@ -174,21 +160,8 @@ fn text_ops(m: Mount, path: string) -> List<string> {
     ["C ${path} ${tag_for(m.prim, level_of(m.attrs)).word()}"].concat(key_ops).concat(class_ops)
 }
 
-/// One event as a readable line: its path, kind, and — when present — its
-/// typed payload. Absent carries no suffix, so a capture-free action reads
-/// exactly as it did before the payload channel existed.
-fn event_line(path: string, action: Action) -> string {
-    let base = "E ${path} ${kind_word(action.kind)}"
-    match action.payload {
-        p? -> "${base} ${payload_word(p)}"
-        null -> base
-    }
-}
-
-/// A typed payload as a readable word — one arm per kind.
-fn payload_word(p: Payload) -> string {
-    match p { .Text(t) -> "text:${t}", .Int(n) -> "int:${n}", .Bool(b) -> "bool:${b}" }
-}
+/// One event as a readable line: its path and kind.
+fn event_line(path: string, action: Action) -> string { "E ${path} ${kind_word(action.kind)}" }
 
 /// The same graph as readable lines, addressed by lexical path — for tests
 /// and `explain`, never the wire. The first node's path is "0".
@@ -208,27 +181,27 @@ export fn frame_text(root: Node) -> string {
             },
         }
     }
-    "V4\n${lines.get().join("\n")}"
+    "V5\n${lines.get().join("\n")}"
 }
 
 // ── dispatch: the host echoes what the frame told it ────────────
 
-/// The event at content-addressed `site` for `kind`. The host echoes the
-/// site the frame gave it, and the program finds the action the tree asked
-/// for — no ordinal, so a node inserted above moves nothing.
-export fn event_at(root: Node, site: int, kind: int) -> Action? {
-    find_event(plan(root), site, kind)
+/// The action node `id` bound for `kind`, in the tree as a frame numbers it.
+export fn event_at(root: Node, id: int, kind: int) -> Action? { find_event(plan(root), id, kind) }
+
+fn is_event(op: Op) -> bool {
+    match op { .Event(_, _) -> true, .Mount(_) or .Words(_, _) -> false }
 }
 
-fn has_event(site: int, kind: int, op: Op) -> bool {
+fn has_event(id: int, kind: int, op: Op) -> bool {
     match op {
-        .Event(_, action) -> action.site == site && kind_code(action.kind) == kind,
+        .Event(who, action) -> who == id && kind_code(action.kind) == kind,
         .Mount(_) or .Words(_, _) -> false,
     }
 }
 
-fn find_event(ops: List<Op>, site: int, kind: int) -> Action? {
-    let found? = ops.find(has_event(site, kind, it)) else { return null }
+fn find_event(ops: List<Op>, id: int, kind: int) -> Action? {
+    let found? = ops.find(has_event(id, kind, it)) else { return null }
     match found { .Event(_, action) -> action, .Mount(_) or .Words(_, _) -> null }
 }
 

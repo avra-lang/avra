@@ -6,9 +6,6 @@
 // when its instance is unmounted. A pointer never crosses: the key does.
 use @std.meta.{derive}
 use @std.ui.components.{button, column, row}
-use @std.ui.realize.dom.frame.{event_at}
-use @std.ui.realize.messages.{Messages}
-use @std.ui.realize.payload.{Payload}
 use @std.ui.realize.prim.{prim}
 use @std.ui.realize.view.{View}
 use @std.ui.style.box.{Box}
@@ -37,8 +34,7 @@ state filter: string = "all"
 state mounted: List<string> = ["a", "b"]
 
 /// Every action names its target by KEY — a row by its id, a board by its
-/// key. ONE serialisable string each, because the payload is one scalar.
-@derive(Messages)
+/// key.
 enum Msg {
     Toggle(rid: string)
     Remove(rid: string)
@@ -47,8 +43,8 @@ enum Msg {
     Remount(which: string)
 }
 
-/// The extracted handler: a top-level fn reaching the place by NAME plus
-/// the key the payload carried.
+/// The one handler every control calls: a top-level fn reaching the place
+/// by NAME plus the key its message carries.
 fn update(m: Msg) {
     match m {
         .Toggle(rid) -> {
@@ -85,8 +81,8 @@ fn task_row(t: Todo) -> row {
     let s = ensure(tasks, t.id, true, TaskState { done: false, note: "" })
     row {
         items: [
-            button "${t.title}:${if s.done { "+" } else { "-" }}" { on_click: Msg.Toggle(t.id) },
-            button "x" { on_click: Msg.Remove(t.id) },
+            button "${t.title}:${if s.done { "+" } else { "-" }}" { on click { update(Msg.Toggle(t.id)) } },
+            button "x" { on click { update(Msg.Remove(t.id)) } },
         ]
     }
 }
@@ -98,23 +94,21 @@ fn board_view(b: string) -> board {
     let _ = ensure(panels, "${b}:panel", false, Panel { open: true, focused: 0 })
     touched(panels, "${b}:panel")
     let rows: List<dyn View> = [task_row(t) for t in todos if t.board == b && admits(t)]
-    let hide: List<dyn View> = [button "hide ${b}" { on_click: Msg.Unmount(b) }]
+    let hide: List<dyn View> = [button "hide ${b}" { on click { update(Msg.Unmount(b)) } }]
     board { key: b, items: rows.concat(hide) }
 }
 
 fn view() -> column {
     let panels_view: List<dyn View> = [board_view(b) for b in mounted]
     let controls: List<dyn View> = [
-        button "filter" { on_click: Msg.ToggleFilter },
-        button "show b" { on_click: Msg.Remount("b") },
+        button "filter" { on click { update(Msg.ToggleFilter) } },
+        button "show b" { on click { update(Msg.Remount("b")) } },
     ]
     column { items: panels_view.concat(controls) }
 }
 
-/// The host's echo, the real channel's two doors.
-fn from_wire(site: int, payload: Payload?) {
-    let e? = event_at(view().describe(), site, 1) else { return }
-    let m? = Msg.from_site(e.site, payload) else { return }
+/// One event: the message, then the paint that follows it.
+fn send(m: Msg) {
     update(m)
     let _ = paint()
 }
@@ -139,23 +133,23 @@ fn state_text() -> string {
 paint()
 println("start ${state_text()} tasks=${held(tasks)} panels=${held(panels)}")
 
-from_wire(Msg.Toggle("a1").site(), Msg.Toggle("a1").payload())
+send(Msg.Toggle("a1"))
 println("toggle a1 ${state_text()}")
 
-from_wire(Msg.Toggle("b1").site(), Msg.Toggle("b1").payload())
+send(Msg.Toggle("b1"))
 println("toggle b1 ${state_text()}")
 
 // the filter hides a1 (done) — its MODEL entry must NOT be swept.
-from_wire(Msg.ToggleFilter.site(), Msg.ToggleFilter.payload())
+send(Msg.ToggleFilter)
 println("filter ${filter} ${state_text()} held=${held(tasks)}")
 
 // deleting the row frees its state; nothing else may.
-from_wire(Msg.Remove("b1").site(), Msg.Remove("b1").payload())
+send(Msg.Remove("b1"))
 println("remove b1 ${state_text()} held=${held(tasks)}")
 
 // unmounting b sweeps b's INSTANCE panel; a's panel and every MODEL entry stay.
-from_wire(Msg.Unmount("b").site(), Msg.Unmount("b").payload())
+send(Msg.Unmount("b"))
 println("unmount b panels=${held(panels)} tasks=${held(tasks)}")
 
-from_wire(Msg.Remount("b").site(), Msg.Remount("b").payload())
+send(Msg.Remount("b"))
 println("remount b panels=${held(panels)}")

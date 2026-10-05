@@ -2,10 +2,9 @@
 // adding from a field, a derived count and progress, a card/row/column/item
 // layout, a dialog and a theme — and its frame is a function of module
 // `state`. The controls are the library's OWN (`button`, `checkbox`, `field`)
-// carrying typed event fields, and the task rows are one KEYED list. The
+// with `on <kind> { … }` handlers, and the task rows are one KEYED list. The
 // frame is printed byte-exact in both engines, so a change to the view
 // changes THIS receipt.
-use @std.meta.{derive}
 use @std.ui.components.{
     button,
     card,
@@ -22,38 +21,13 @@ use @std.ui.components.{
     surface,
     text,
 }
-use @std.ui.realize.dom.frame.{event_at, frame_text, sheet}
-use @std.ui.realize.messages.{Messages}
+use @std.ui.realize.dom.frame.{Live, frame_text, live, sheet}
 use @std.ui.realize.payload.{Payload}
+use @std.ui.realize.update.{Op, plan}
 use @std.ui.realize.view.{View}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{dark_theme, default_theme}
-
-/// Every action carries a typed message: a control with no payload carries
-/// its site alone, and a per-item action names its row by id. The host echoes
-/// the payload the frame named back, so `host_event` below is the app's own
-/// door exactly as `avra_event` uses it — site plus payload, never the first
-/// row's.
-///
-/// A BOOL-PAYLOAD VARIANT MUST STAY IN THIS ENUM: the event channel's `dyn
-/// Messages` coercion lowers `marks` with the wrong ABI when every payload is
-/// text or int, and LLVM refuses the module. `SetTheme(on)` is this board's
-/// own bool.
-@derive(Messages)
-enum Msg {
-    ShowAll
-    ShowActive
-    ShowDone
-    ClearDone
-    SetTheme(on: bool)
-    OpenDialog
-    CloseDialog
-    Toggle(id: string)
-    Remove(id: string)
-    Add
-    Draft(body: string)
-}
 
 type Todo = { id: string, title: string, done: bool }
 
@@ -95,22 +69,6 @@ fn sunk_style() -> Style { Style { fill: .SurfaceSunk, radius: .S } }
 
 fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
 
-fn update(m: Msg) {
-    match m {
-        .Add -> { add() },
-        .Draft(body) -> { draft = body },
-        .ShowAll -> { filter = "all" },
-        .ShowActive -> { filter = "active" },
-        .ShowDone -> { filter = "done" },
-        .ClearDone -> { tasks = [t for t in tasks if !t.done] },
-        .SetTheme(on) -> { dark = on },
-        .OpenDialog -> { dialog_open = true },
-        .CloseDialog -> { dialog_open = false },
-        .Toggle(id) -> { tasks = [flipped(t, id) for t in tasks] },
-        .Remove(id) -> { tasks = [t for t in tasks if t.id != id] },
-    }
-}
-
 /// The draft becomes the next task, and the draft is spent.
 fn add() {
     if draft != "" {
@@ -126,20 +84,32 @@ fn flipped(t: Todo, id: string) -> Todo {
     if t.id == id { t with { done: !t.done } } else { t }
 }
 
-/// The host's echo, without the wire: rebuild the typed message from the
-/// SITE the frame named and the PAYLOAD the host carried back, then
-/// dispatch it. This is the one door `avra_event` uses. The two arrive
-/// separately, so row t3's payload builds `Remove("t3")` even though t2's
-/// Remove shares the same site.
-fn host_event(site: int, payload: Payload?) {
-    let rebuilt? = Msg.from_site(site, payload) else { return }
-    update(rebuilt)
+/// The page the host would hold: the last frame and the handlers it bound.
+once fn page() -> Live { live() }
+
+/// The ids of the nodes whose words are `words`, in frame order.
+fn worded(op: Op, words: string) -> List<int> {
+    match op {
+        .Words(id, label) -> if label == words { [id] } else { [] },
+        .Mount(_) or .Event(_, _) -> [],
+    }
 }
 
-fn tab(label: string, m: Msg, on: bool) -> button {
+/// The host's echo, without the wire: paint, then the `nth` control saying
+/// `words` speaks `kind`. The frame bound the handler; the echo names only
+/// the node, so row t3's Remove runs t3's closure, never the first row's.
+fn press(words: string, nth: int, kind: int, said: Payload?) -> bool {
+    let root = view().describe()
+    page().diff(root, default_theme)
+    let ids = [id for op in plan(root) for id in worded(op, words)]
+    if nth >= ids.length { return false }
+    page().fire(ids[nth], kind, said)
+}
+
+fn tab(label: string, shows: string) -> button {
     button label {
-        on_click: m
-        style: tab_style(on)
+        on click { filter = shows }
+        style: tab_style(filter == shows)
     }
 }
 
@@ -157,7 +127,7 @@ fn header() -> row {
                 ]
             },
             button theme_label() {
-                on_click: Msg.SetTheme(!dark)
+                on click { dark = !dark }
                 style: sunk_style()
             },
         ]
@@ -168,11 +138,11 @@ fn filters() -> row {
     row {
         layout: Layout { gap: .S, align: .Center }
         items: [
-            tab("All", Msg.ShowAll, filter == "all"),
-            tab("Active", Msg.ShowActive, filter == "active"),
-            tab("Done", Msg.ShowDone, filter == "done"),
+            tab("All", "all"),
+            tab("Active", "active"),
+            tab("Done", "done"),
             button "Clear done" {
-                on_click: Msg.ClearDone
+                on click { tasks = [t for t in tasks if !t.done] }
                 disabled: done_count() == 0
                 style: sunk_style()
             },
@@ -186,10 +156,10 @@ fn new_task() -> row {
         items: [
             field "New task" {
                 placeholder: "Type a task…"
-                on_input: Msg.Draft("")
+                on_input: (body: string) -> { draft = body }
             },
             button "Add" {
-                on_click: Msg.Add
+                on click { add() }
                 style: sunk_style()
             },
         ]
@@ -214,11 +184,11 @@ fn task_list() -> list {
             items: [
                 checkbox t.title {
                     checked: t.done
-                    on_change: Msg.Toggle(t.id)
+                    on change { tasks = [flipped(x, t.id) for x in tasks] }
                     style: title_style(t.done)
                 },
                 button "Remove" {
-                    on_click: Msg.Remove(t.id)
+                    on click { tasks = [x for x in tasks if x.id != t.id] }
                     style: sunk_style()
                 },
             ]
@@ -252,7 +222,7 @@ fn footer() -> row {
                 style: Style { color: .Muted }
             },
             button "About" {
-                on_click: Msg.OpenDialog
+                on click { dialog_open = true }
                 style: sunk_style()
             },
         ]
@@ -266,7 +236,7 @@ fn about() -> dialog {
             heading "Task board" { rank: 2 },
             text "State lives in module `state`; the frame is its projection.",
             button "Close" {
-                on_click: Msg.CloseDialog
+                on click { dialog_open = false }
                 style: sunk_style()
             },
         ]
@@ -282,31 +252,30 @@ fn view() -> surface {
 }
 
 println(frame_text(view().describe()))
-update(Msg.ShowActive)
+println("active=${press("Active", 0, 1, null)}")
 println(frame_text(view().describe()))
-update(Msg.ClearDone)
+println("clear=${press("Clear done", 0, 1, null)}")
 println(frame_text(view().describe()))
-update(Msg.OpenDialog)
+println("about=${press("About", 0, 1, null)}")
 println(frame_text(view().describe()))
 println(
     "all=${filter} open=${[t for t in tasks if !t.done].length} done=${done_count()} total=${tasks.length}",
 )
-println(
-    "from_site=${Msg.from_site(Msg.ShowAll.site(), Msg.ShowAll.payload()) != null} distinct=${Msg.ShowAll.site() != Msg.ShowActive.site()}",
-)
 println("dark=${sheet(view().describe(), dark_theme).contains("--tone-text:#eeeeee")}")
-println("event=${event_at(view().describe(), Msg.OpenDialog.site(), 1) != null}")
+println("unbound=${press("Tasks", 0, 1, null)} wrong_kind=${press("About", 0, 2, null)}")
 
-// THE PER-ITEM WITNESS: the host echoes row t3's Remove payload, and only t3
-// leaves. The id is read from `tasks`, so a wrong row (t1) or none at all
+// THE PER-ITEM WITNESS: both rows share one `on click` in the source, and the
+// second row's Remove takes only its own task. A wrong row or none at all
 // would show here.
-host_event(Msg.Remove("t3").site(), Msg.Remove("t3").payload())
+println("remove=${press("Remove", 1, 1, null)}")
 println("after_remove_t3=[${[t.id for t in tasks].join(",")}]")
-host_event(Msg.Toggle("t2").site(), Msg.Toggle("t2").payload())
+println("toggle=${press("Wire the event channel", 0, 3, null)}")
 println("after_toggle_t2=${[t.title for t in tasks if t.done].join(",")}")
 
-// THE ADD WITNESS: the field's own text rides the payload the same way, so
-// the draft becomes a task and the next id advances.
-host_event(Msg.Draft("Ship the rewrite").site(), Msg.Draft("Ship the rewrite").payload())
-host_event(Msg.Add.site(), Msg.Add.payload())
+// THE ADD WITNESS: the field hands its handler the text the user gave, so
+// the draft becomes a task and the next id advances. An input that says
+// nothing runs no handler.
+println("silent=${press("New task", 0, 2, null)} draft=[${draft}]")
+println("typed=${press("New task", 0, 2, Payload.Text("Ship the rewrite"))}")
+println("add=${press("Add", 0, 1, null)}")
 println("after_add=[${[t.id for t in tasks].join(",")}] draft_after=[${draft}]")

@@ -1,47 +1,30 @@
-// proves: a std control carries a typed event field — `button.on_click`,
-// `checkbox.on_change`, `field.on_input` — typed as `dyn Messages?`, so the
-// app names its own `Msg` and the control projects ONE Action with the kind
-// its field name says, the message's content-addressed site, and its typed
-// payload. An absent handler is the option's own null: the control emits NO
-// action, never a sentinel site — so a handlerless control is inert.
-use @std.meta.{derive}
+// proves: `on <kind> { … }` in a std control's block is its handler — a
+// closure over what the view could see — and the control projects ONE
+// Action with the kind the word names. A handler left unset binds no
+// action at all, so a handlerless control is inert.
 use @std.ui.components.{button, checkbox, field, row}
 use @std.ui.realize.view.{View}
-use @std.ui.realize.messages.{Messages}
-use @std.ui.realize.payload.{Payload}
-use @std.ui.realize.render.{Node, Action, EventKind}
+use @std.ui.realize.render.{Node, Action, EventKind, Handler}
 
-@derive(Messages)
-enum Msg {
-    Add
-    Toggle(on: bool)
-    Draft(text: string)
-}
-
-fn label(m: Msg) -> string {
-    match m { .Add -> "add", .Toggle(on) -> "toggle:${on}", .Draft(text) -> "draft:${text}" }
-}
+state count: int = 0
+state draft: string = ""
+state done: bool = false
 
 fn first(view: dyn View) -> Action? { view.describe().events.first() }
-
-fn rebuilt(view: dyn View) -> string {
-    let a? = first(view) else { return "none" }
-    let m? = Msg.from_site(a.site, a.payload) else { return "unresolved" }
-    label(m)
-}
 
 fn kind(view: dyn View) -> string {
     let a? = first(view) else { return "none" }
     match a.kind { .Click -> "click", .Input -> "input", .Change -> "change", .Submit -> "submit" }
 }
 
-fn count(view: dyn View) -> int { view.describe().events.length }
-
-fn payload(view: dyn View) -> string {
-    let a? = first(view) else { return "none" }
-    let p? = a.payload else { return "null" }
-    match p { .Text(t) -> t, .Int(n) -> "${n}", .Bool(b) -> "${b}" }
+/// The view's first handler, run as a target would run it.
+fn fired(view: dyn View, said: string) -> bool {
+    let a? = first(view) else { return false }
+    match a.handler { .Run(f) -> f(), .Text(f) -> f(said) }
+    true
 }
+
+fn count_of(view: dyn View) -> int { view.describe().events.length }
 
 fn total(n: Node) -> int {
     mut t = n.events.length
@@ -49,30 +32,26 @@ fn total(n: Node) -> int {
     t
 }
 
-fn total_view(view: dyn View) -> int { total(view.describe()) }
+fn step(by: int) -> button { button "x" { on click { count = count + by } } }
 
-let add = button "x" { on_click: Msg.Add }
+let add = button "x" { on click { count = count + 1 } }
 let inert = button "x"
 let empty_field = field "n"
-let drafted = field "n" { on_input: Msg.Draft("hi") }
-let changed = checkbox "c" { on_change: Msg.Toggle(true) }
-let toggled = button "x" { on_click: Msg.Toggle(false) }
+let drafted = field "n" { on_input: (text: string) -> { draft = text } }
+let changed = checkbox "c" { on change { done = !done } }
 let mixed = row {
-    button "x" { on_click: Msg.Add }
-    field "n" { on_input: Msg.Draft("hi") }
+    button "x" { on click { count = 0 } }
+    field "n" { on_input: (text: string) -> { draft = text } }
 }
 
-println("add=${rebuilt(add)}")
 println("add_kind=${kind(add)}")
-println("absent=${count(inert)}")
-println("absent_first=${rebuilt(inert)}")
-println("absent_field=${count(empty_field)}")
-println("input=${rebuilt(drafted)}")
+println("add=${fired(add, "")} ${fired(add, "")} count=${count}")
+println("absent=${count_of(inert)} fired=${fired(inert, "")}")
+println("absent_field=${count_of(empty_field)}")
 println("input_kind=${kind(drafted)}")
-println("input_text=${payload(drafted)}")
-println("change=${rebuilt(changed)}")
+println("input=${fired(drafted, "hi")} draft=${draft}")
 println("change_kind=${kind(changed)}")
-println("change_bool=${payload(changed)}")
-println("mixed=${total_view(mixed)}")
-// the derived site is stable across a render and a bool payload round-trips.
-println("round=${rebuilt(toggled)}")
+println("change=${fired(changed, "")} done=${done}")
+println("mixed=${total(mixed.describe())}")
+// a handler closes over a local: each instance carries its own.
+println("captured=${fired(step(10), "")} ${fired(step(5), "")} count=${count}")
