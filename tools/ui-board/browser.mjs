@@ -109,13 +109,27 @@ claim("the chosen filter is told from the others in the dark mode too", await fi
 claim("every button's words stand out from its fill", (await faint()).length === 0, await faint());
 
 // ── the dialog ──────────────────────────────────────────────────
+const dialog = `document.querySelector("dialog")`;
 await press(named("About"));
 await shot("dialog");
-const box = await read(`(() => { const r = document.querySelector("dialog").getBoundingClientRect(); return { top: r.top, left: r.left, bottom: r.bottom, right: r.right, wide: innerWidth, high: innerHeight }; })()`);
-claim("About opens a real dialog, drawn whole inside the window", await read(`document.querySelector("dialog").open`) && box.top >= 0 && box.left >= 0 && box.bottom <= box.high && box.right <= box.wide, box);
-claim("an open dialog wears the theme's surface", await styled(`document.querySelector("dialog")`, "backgroundColor") === "rgb(18, 18, 18)");
+const box = await read(`(() => { const r = ${dialog}.getBoundingClientRect(); return { top: r.top, left: r.left, bottom: r.bottom, right: r.right, wide: innerWidth, high: innerHeight }; })()`);
+claim("About opens a real dialog, drawn whole inside the window", await read(`${dialog}.open`) && box.top >= 0 && box.left >= 0 && box.bottom <= box.high && box.right <= box.wide, box);
+claim("it is modal, and the focus has moved inside it", await read(`${dialog}.matches(":modal")`) && await read(`${dialog}.contains(document.activeElement)`));
+claim("an open dialog wears the theme's surface", await styled(dialog, "backgroundColor") === "rgb(18, 18, 18)");
+await read(`${named("About")}.focus(), 1`);
+claim("nothing behind it takes the focus", await read(`${dialog}.contains(document.activeElement)`), await focused());
 await press(named("Close"));
-claim("Close closes it", await read(`document.querySelector("dialog").open`) === false);
+claim("Close closes it, and the focus goes back where it was", await read(`${dialog}.open`) === false && await focused() === "About");
+await press(named("About"));
+await type(KEY.escape);
+claim("Escape sends it away", await read(`${dialog}.open`) === false);
+await press(named("About"));
+claim("the program heard that: About opens it again", await read(`${dialog}.open`) && await read(`${dialog}.matches(":modal")`));
+await press(named("Light mode"));
+claim("a press outside it sends it away, and reaches nothing behind it", await read(`${dialog}.open`) === false && await read(`${named("Light mode")} !== undefined`));
+await press(named("About"));
+claim("and it opens again after that too", await read(`${dialog}.open`));
+await press(named("Close"));
 await press(named("Light mode"));
 
 // ── the keyboard ────────────────────────────────────────────────
@@ -126,7 +140,7 @@ claim("Tab reaches each control in reading order", order.join() === "All,Active,
 await shot("focus");
 await read(`${named("Dark mode")}.focus(), 1`);
 await type(" ");
-claim("Space presses the focused button, and the focus stays on it", await focused() === "Light mode");
+claim("Space presses the focused button, and the focus stays on it", await focused() === "Light mode", await focused());
 await type(KEY.enter);
 claim("Enter presses it too", await focused() === "Dark mode");
 

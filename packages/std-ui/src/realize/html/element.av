@@ -178,18 +178,24 @@ fn labelled(n: Node, seat: string, kids: List<Element>) -> Element {
 
 fn unheard() {}
 
-/// What a node's element hears: its own events, and for a form nothing
-/// hears a submit that does nothing — a page the program draws is never
-/// left for the form's own answer. Every primitive spelled.
-fn heard(n: Node) -> List<Action> {
-    match n.prim {
-        .Form -> if n.events.any(it.kind == EventKind.Submit) {
-            n.events
-        } else {
-            n.events.concat([Action { kind: .Submit, handler: .Nothing(unheard) }])
-        },
-        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Switch or .Slider -> n.events,
+/// The event a primitive always hears on a page, handler or none: the
+/// page's own answer to it would undo what the program drew — a form's
+/// submit leaves the page, a dialog's dismissal closes it. Every primitive
+/// spelled.
+fn always_heard(p: Prim) -> EventKind? {
+    match p {
+        .Form -> .Submit,
+        .Dialog -> .Dismiss,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Switch or .Slider -> null,
     }
+}
+
+/// What a node's element hears: its own events, and the one its
+/// primitive always hears, doing nothing, when no handler does.
+fn heard(n: Node) -> List<Action> {
+    let kind? = always_heard(n.prim) else { return n.events }
+    if n.events.any(it.kind == kind) { return n.events }
+    n.events.concat([Action { kind: kind, handler: .Nothing(unheard) }])
 }
 
 /// The node itself as one element holding `kids`.

@@ -39,7 +39,11 @@ Five attempts to lift a handler into a generated message failed.
    (`realize/dom/patch.av`) and a host applies the patches: create,
    create text, place (after a sibling — one op inserts and moves),
    remove, set attribute, drop attribute, set property, set text,
-   listen, unlisten, style. Of the elements a parent keeps, the longest
+   listen, unlisten, style, call. A `call` asks an element for a verb of
+   its own, said last in its frame: a DOOR is state an attribute would
+   enter another way — a dialog shown by `open` stands in the page's
+   flow, `showModal` stands it over the page with the focus inside — so
+   the attribute is never sent and its arriving and going are calls. Of the elements a parent keeps, the longest
    run still in order stands still and only the rest are placed, so a
    reorder says the fewest moves. A host holds no reconciler and no table of
    the library's facts: the event's own word, what it says, the
@@ -50,7 +54,10 @@ Five attempts to lift a handler into a generated message failed.
    A first paint is a diff against nothing; an unchanged page is no
    patch (the diff is a fold with no state of its own between paints:
    old page and new in, patches and the numbered page out); a property is compared against what the PAGE holds, so a
-   field a user typed into is never written back to.
+   field a user typed into is never written back to — and a door too: a
+   dialog the user sent away is closed by the page before the program
+   hears, so it is not closed again, and is shown again if the program
+   still says it is open.
 2. **One identity.** A node is WHERE IT STANDS: its parent, then its
    key or its place among its unkeyed siblings (`tree/identity.av`);
    siblings sharing a key are told apart by their turn. Identity is
@@ -78,7 +85,12 @@ Five attempts to lift a handler into a generated message failed.
    A handler hears all its event says, or none of it. An event a
    component does not declare, one heard twice, and a handler naming
    some of its seats are each refused by name
-   (`type.component_event`).
+   (`type.component_event`). A dialog declares `on dismiss`: the key
+   or the press outside that sends it away, heard by a page as the
+   browser's own `cancel` and by a headless screen as `dismiss()`. A
+   form's submit and a dialog's dismissal are heard on a page whether or
+   not a handler is: the page's own answer to each would undo what the
+   program drew.
 5. **One vocabulary for what a control says**: nothing, text, a flag, a
    number (a point and a key later). `Said` is the value and `Handler`
    the listener, arm for arm. Closed: every target answers every arm,

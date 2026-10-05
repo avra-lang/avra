@@ -69,14 +69,18 @@ export async function openPage(binary, url, { width = 900, height = 700 } = {}) 
   };
   const act = (actions) => send("input.performActions", { context, actions });
 
+  const pressAt = (x, y) => act([{ type: "pointer", id: "mouse", parameters: { pointerType: "mouse" }, actions: [{ type: "pointerMove", x, y }, { type: "pointerDown", button: 0 }, { type: "pointerUp", button: 0 }] }]);
+
   return {
     read,
     // Every warning and error the page's console holds, and every uncaught one.
     complaints: () => logged.filter((entry) => entry.level === "error" || entry.level === "warn").map((entry) => `${entry.level}: ${entry.text}`),
+    // The pointer pressed and let go at a point of the window.
+    pressAt,
     // The pointer pressed and let go at the middle of the element `selecting` answers.
     async press(selecting) {
       const at = await read(`(() => { const el = ${selecting}; el.scrollIntoView({ block: "nearest" }); const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
-      await act([{ type: "pointer", id: "mouse", parameters: { pointerType: "mouse" }, actions: [{ type: "pointerMove", x: at.x, y: at.y }, { type: "pointerDown", button: 0 }, { type: "pointerUp", button: 0 }] }]);
+      await pressAt(at.x, at.y);
     },
     // These keys, each pressed and let go, sent to whatever holds the focus.
     async type(...keys) {

@@ -41,6 +41,7 @@ export function parseFrame(bytes) {
     else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), event: str(), says: int(), reads: str(), prevents: int() !== 0 });
     else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
     else if (op === OP.style) patches.push({ op, css: str() });
+    else if (op === OP.call) patches.push({ op, id: id(), verb: str() });
     else throw new Error(`unknown patch op ${op}`);
   }
   return patches;
@@ -119,6 +120,13 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
       el.__avra_listeners.delete(p.kind);
     },
     [OP.style]: (p) => { if (styleEl) styleEl.textContent = p.css; },
+    // A VERB OF THE ELEMENT'S OWN, asked for by name: the program says
+    // which, and an element with no such verb refuses by name.
+    [OP.call]: (p) => {
+      const el = need(p.id);
+      if (typeof el[p.verb] !== "function") throw new Error(`a patch calls ${p.verb} on element ${p.id}, which has no such verb`);
+      el[p.verb]();
+    },
   };
 
   return function applyFrame(bytes) {
