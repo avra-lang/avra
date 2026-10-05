@@ -51,6 +51,7 @@ case "$*" in
 esac
 STUB
 chmod +x "$scratch/sprite" "$scratch/gh"
+export AVRA_WAKE_S=3 AVRA_HEALTH_S=3
 export AVRA_SPRITE_CLI="$scratch/sprite" AVRA_SPRITES="A B" AVRA_GH="$scratch/gh" GH_LOG="$scratch/gh.log"
 unset SILENT QUEUED TRAINS
 
@@ -102,6 +103,18 @@ check "$(echo $(holder "$scratch/avra-after") $(holder "$scratch/avra-race"))" "
 # ══ RUN: a lane with no Sprite is told the one command ════════════════
 (cd "$scratch/avra-race" && rm -f "$(git rev-parse --absolute-git-dir)/avra-sprite" && sh "$work" run true) > "$scratch/out" 2>&1
 check "$? $(grep -c 'tools/work bind' "$scratch/out")" "1 1" "work run: a worktree with no Sprite is refused, with the command that binds one" "$scratch/out"
+
+# ══ BUSY IS NOT UNREACHABLE, and a held Sprite is its lane's ══════════
+(cd "$scratch/avra-after" && sh "$work" bind A) > /dev/null 2>&1
+gd=$(git -C "$scratch/avra-after" rev-parse --absolute-git-dir)
+echo "$$ $(LC_ALL=C ps -o lstart= -p $$ | tr -s ' ' '_')" > "$gd/avra-run"
+(cd "$main" && SILENT="A B" sh "$work" sprites) > "$scratch/out" 2>&1
+check "$(grep -c '^A  *BUSY' "$scratch/out") $(grep -c '^B  *NO ' "$scratch/out")" "1 1" "work sprites: a silent Sprite whose lane has a run going is BUSY, one with none is NO" "$scratch/out"
+(cd "$main" && sh "$work" sprites --fix A) > "$scratch/out" 2>&1
+check "$(grep -c 'A is running something for lane avra-after — left alone' "$scratch/out")" 1 "work sprites --fix: a Sprite with a run going is left alone even when named" "$scratch/out"
+rm -f "$gd/avra-run"
+(cd "$main" && sh "$work" sprites --fix) > "$scratch/out" 2>&1
+check "$(grep -c 'A is held by lane avra-after — left alone' "$scratch/out")" 1 "work sprites --fix: unnamed, it passes by a Sprite a lane holds, and says so" "$scratch/out"
 
 # ══ THE QUEUE: a PR queued with no train is taken out and put back ════
 cd "$main" || exit 1
