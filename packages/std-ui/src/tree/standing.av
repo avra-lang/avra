@@ -1,0 +1,117 @@
+//! `tree/standing.av` — WHERE THE WALK STANDS. `describe` is the walk
+//! that makes a tree, and a `Standing` is one node of it: under its
+//! parent's, at its own step (`tree/identity.av`). It is where a
+//! component INSTANCE is kept from paint to paint, so the state an
+//! instance owns follows the instance and nothing else.
+//!
+//! A PAINT OFFERS WHAT STOOD, ONCE. Each standing a paint reaches is
+//! opened: what stood there after the last paint — an instance, the
+//! standings under it — is offered to this one, and what this paint
+//! does not take is gone with the paint. So an instance lives exactly
+//! while a paint reaches it: no list of the living, no sweep.
+//!
+//! THE APP OWNS WHAT STANDS. A kept instance is held by the standing
+//! itself, behind a fn — the trie holds every component alike and
+//! needs no type. A component's own `Kept<T>` is only the typed seat
+//! an instance is handed across; it holds nothing between two calls.
+//! A screen that is dropped takes its instances with it.
+
+/// A kept instance as its standing holds it: which component's it is,
+/// and the fn that hands it to that component's seat.
+type Hold = { owner: int, give: fn() -> void }
+
+/// A standing under another, by the step it stands at.
+type Under = { step: string, standing: Standing }
+
+/// One node of the walk: what stands here now, and what stood here
+/// after the last paint, still on offer.
+export type Standing = {
+    hold: Cell<Hold?>,
+    under: Cell<List<Under>>,
+    was_hold: Cell<Hold?>,
+    was_under: Cell<List<Under>>,
+}
+
+/// A standing nothing has stood at.
+export fn standing() -> Standing {
+    let none: Hold? = null
+    let empty: List<Under> = []
+    Standing {
+        hold: Cell.new(none),
+        under: Cell.new(empty),
+        was_hold: Cell.new(none),
+        was_under: Cell.new(empty),
+    }
+}
+
+impl Standing {
+    /// A paint reaches this standing: what stands becomes what stood.
+    fn opened() {
+        self.was_hold.set(self.hold.get())
+        self.was_under.set(self.under.get())
+        self.hold.set(null)
+        self.under.set([])
+    }
+
+    /// The standings under this one at `steps`, each opened: the one
+    /// that stood at a step, else a new one. A step nobody names is
+    /// gone with everything under it.
+    fn children(steps: List<string>) -> List<Standing> {
+        mut stood: Map<string, Standing> = {}
+        for u in self.was_under.get() { stood.set(u.step, u.standing) }
+        let now = [Under { step: s, standing: stood.get(s) ?? standing() } for s in steps]
+        for u in now { u.standing.opened() }
+        self.under.set(now)
+        [u.standing for u in now]
+    }
+
+    /// The one standing under this one at `step`.
+    fn child(step: string) -> Standing {
+        let made = self.was_under.get().find(it.step == step)?.standing ?? standing()
+        made.opened()
+        self.under.set([Under { step: step, standing: made }])
+        made
+    }
+
+    /// How many instances stand here and below — the lifetime witness.
+    fn held() -> int {
+        let own = if self.hold.get() == null { 0 } else { 1 }
+        mut below = 0
+        for u in self.under.get() { below = below + u.standing.held() }
+        own + below
+    }
+}
+
+/// The typed seat ONE component's instances are handed across, and
+/// the number that tells its holds from every other component's.
+export type Kept<T> = { owner: int, seat: Cell<T?> }
+
+/// Components that keep instances, counted out.
+state owners: int = 0
+
+/// A component's seat, with a number no other component wears.
+export fn kept<T>() -> Kept<T> {
+    owners = owners + 1
+    let empty: T? = null
+    Kept { owner: owners, seat: Cell.new(empty) }
+}
+
+/// THE INSTANCE THAT STANDS IS THE FIRST ONE BUILT THERE. The instance
+/// of `k`'s component that stood at `at` after the last paint — and it
+/// stands on; absent when none did, and then `fresh` stands from now.
+/// A standing another component held is not this one's to read.
+export fn stood<T>(k: Kept<T>, at: Standing, fresh: T) -> T? {
+    let was? = at.was_hold.get() else { return stands(k, at, fresh) }
+    if was.owner != k.owner { return stands(k, at, fresh) }
+    was.give()
+    let held = k.seat.get()
+    k.seat.set(null)
+    at.hold.set(was)
+    held
+}
+
+/// `fresh` stands at `at` from now; nothing stood, so nothing answers.
+fn stands<T>(k: Kept<T>, at: Standing, fresh: T) -> T? {
+    at.hold.set(Hold { owner: k.owner, give: () -> k.seat.set(fresh) })
+    null
+}

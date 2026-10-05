@@ -19,12 +19,12 @@ use @std.ui.tree.outline.{outline}
 use @std.ui.tree.node.{Node}
 use @std.ui.tree.shows.{Shows, rows}
 use @std.ui.tree.url.{local}
-use @std.ui.tree.view.{View}
+use @std.ui.tree.view.{View, tree_of}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
 use @std.ui.style.tokens.{Size, Tone, Font}
 
-fn shown(v: dyn View) -> string { outline(v.describe()) }
+fn shown(v: dyn View) -> string { outline(tree_of(v)) }
 
 type Chore = { title: string, done: bool }
 
@@ -59,13 +59,13 @@ fn everything() -> column {
 spec "the components answer exact nodes" {
     given "text" {
         then "names no colour and no face unless it is given one" {
-            let n = (text "hi").describe()
+            let n = tree_of(text "hi")
             shown(text "hi") == "text \"hi\"" &&
                 n.box.style.color == null &&
                 n.box.style.face == null
         }
         then "carries the colour and face it is given" {
-            let n = (text "hi" { style: Style { color: .Danger, face: .Mono } }).describe()
+            let n = tree_of(text "hi" { style: Style { color: .Danger, face: .Mono } })
             n.box.style.color == Tone.Danger && n.box.style.face == Font.Mono
         }
     }
@@ -76,7 +76,7 @@ spec "the components answer exact nodes" {
                 rank: 3
                 style: Style { color: .Muted }
             }
-            shown(h) == "heading \"T\" level=3" && h.describe().box.style.color == Tone.Muted
+            shown(h) == "heading \"T\" level=3" && tree_of(h).box.style.color == Tone.Muted
         }
         then "a rank outside the usual range is the node's rank, unclamped" {
             shown(heading "T" { rank: 0 }) == "heading \"T\" level=0"
@@ -102,37 +102,38 @@ spec "the components answer exact nodes" {
                 shown(field "n" { value: "v" }) == "field \"n\" value=\"v\" placeholder=\"\""
         }
         then "markup, quotes, newlines and unicode ride through a label untouched" {
-            (button "<b>\"x\"</b>\né 😀").describe().words() == "<b>\"x\"</b>\né 😀"
+            tree_of(button "<b>\"x\"</b>\né 😀").words() == "<b>\"x\"</b>\né 😀"
         }
         then "an empty label is a control with no words" { shown(column { items: [button "", text "a"] }) == "column\n  button\n  text \"a\"" }
     }
     given "the containers" {
         then "a column names no gap, pad, fill or radius unless given" {
-            let n = (column {}).describe()
+            let n = tree_of(column {})
             n.box.layout.gap == null &&
                 n.box.layout.pad == null &&
                 n.box.style.fill == null &&
                 n.box.style.radius == null
         }
         then "a row carries the look it is given" {
-            let n = (row {
-                layout: Layout { gap: .L, pad: around(.Xs) }
-                style: Style { fill: .SurfaceSunk, radius: .M }
-            })
-                .describe()
+            let n = tree_of(
+                row {
+                    layout: Layout { gap: .L, pad: around(.Xs) }
+                    style: Style { fill: .SurfaceSunk, radius: .M }
+                },
+            )
             n.box.layout.gap == Size.L &&
                 n.box.layout.pad?.start == Size.Xs &&
                 n.box.style.fill == Tone.SurfaceSunk &&
                 n.box.style.radius == Size.M
         }
         then "a card carries its title" { shown(card "S" {}) == "card title=\"S\"" }
-        then "a list has no key" { shown(list {}) == "list" && (list {}).describe().box.key == null }
+        then "a list has no key" { shown(list {}) == "list" && tree_of(list {}).box.key == null }
         then "an item's key lands in the node's key" { shown(item { key: "k1" }) == "item key=\"k1\"" }
-        then "an empty key is a key, not an absence" { (item { key: "" }).describe().box.key == "" }
+        then "an empty key is a key, not an absence" { tree_of(item { key: "" }).box.key == "" }
         then "a container with no children has none, at every container" {
-            (card "S" {}).describe().children.length +
-                (row {}).describe().children.length +
-                (list {}).describe().children.length == 0
+            tree_of(card "S" {}).children.length +
+                tree_of(row {}).children.length +
+                tree_of(list {}).children.length == 0
         }
     }
     given "a nested tree of every kind" {
@@ -200,7 +201,7 @@ spec "values show themselves where they are listed" {
         }
         then "no values is no children" {
             let none: List<dyn Shows> = []
-            (list { rows(none) }).describe().children.length == 0
+            tree_of(list { rows(none) }).children.length == 0
         }
     }
 }

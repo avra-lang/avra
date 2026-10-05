@@ -135,42 +135,33 @@ Five attempts to lift a handler into a generated message failed.
 
 ## Instance state (seam 2's tenant)
 
-> DESIGN, probed at `92678df`; not built. Probes: scratch packages
-> outside the tree, `avra run` and `avra build`, same output.
-
-### What an author writes
-
 A user component is a COMPOSITION: `fn view()` answers what it is made
 of, and its `state` members are places each INSTANCE owns.
 
     // parts/counter.av
     @derive(View)
     export component counter(label: string) {
-        ..Keyed
+        ..Stand
         state n: int = 0
 
         fn view() -> row {
             row {
-                items: [
-                    text "${self.label}: ${self.n}",
-                    button "+" { on press { self.n = self.n + 1 } },
-                ]
+                text "${self.label}: ${self.n}"
+                button "+" { on press { self.n = self.n + 1 } }
             }
         }
     }
 
     // parts/task_row.av
     @derive(View)
-    export component task_row(task: Todo) {
-        ..Keyed
+    export component task_row(todo: Todo) {
+        ..Stand
         state open: bool = false
 
         fn view() -> item {
             item {
-                items: [
-                    button self.task.title { on press { self.open = !self.open } },
-                    text (if self.open { self.task.notes } else { "" }),
-                ]
+                button self.todo.title { on press { self.open = !self.open } }
+                text (if self.open { self.todo.notes } else { "" })
             }
         }
     }
@@ -178,11 +169,9 @@ of, and its `state` members are places each INSTANCE owns.
     // the app
     fn page() -> column {
         column {
-            items: [
-                counter "left",
-                counter "right" { n: 10 },
-                list visible() by it.id { t -> task_row t },
-            ]
+            counter "left"
+            counter "right" { n: 10 }
+            list visible() by it.id { t -> task_row t }
         }
     }
 
@@ -190,73 +179,73 @@ of, and its `state` members are places each INSTANCE owns.
 
 1. **`describe` is the walk, and the walk says where it stands.**
    `View.describe(at: Standing) -> Node`. A container hands each child
-   the standing under its own: the child's step, from
-   `tree/identity.av`'s `steps` over the children's keys — the tree's
-   one identity, computed where the tree is MADE, so every target has
-   it and none owns it. A composition is a step of its own (`+view`),
-   so one whose view is another composition never shares a standing.
+   the standing under its own, at the child's step — `tree/identity.av`'s
+   `steps` over the children's keys, the tree's one identity, computed
+   where the tree is MADE. Every target has it and none owns it. A
+   composition's view stands at a step of its own (`+view`), so a view
+   that is itself a composition never shares a standing.
 2. **The instance that stands is the first one built there.** An
    instance is a value, built fresh each paint. The walk keeps the
-   first one at a standing; a later one hands it its PROPS
-   (`kept with { label: fresh.label, … }` — a copy shares its `state`
-   cells) and `view()` runs on that. A handler is a closure over
-   `self`, so it holds the kept cells.
+   first one at a standing; a later one hands it its PROPS (a copy
+   shares its `state` cells) and `view()` runs on that. A handler is a
+   closure over `self`, so it holds the kept cells.
 3. **A seed is read once.** A state member's value at the instance
    (`n: 10`, or its default) seeds the place when the instance first
    stands; while it stands, later values are not read. A new key is a
    new instance.
-4. **Lifetime is standing.** After each paint every standing the walk
-   did not reach is dropped with its instance, whatever target shows
-   the tree. A keyed row keeps its standing through a reorder; a row
-   a filter hides has LEFT, and its instance state leaves with it.
-5. **State that must outlive a hide is the MODEL's.** It is a `state`
-   field of the model's own record, or module state — it lives as
-   long as the row does and no walk frees it. (`ui-instance`'s
-   "model-keyed" kind; its "instance" kind is law 4.)
-6. **A standing is never handed to another component.** A standing
-   kept by one component and reached by another drops the first's
-   state: state can be lost to a moved place, never read by a
-   stranger.
-7. **An unkeyed instance stands at its place** among its unkeyed
-   siblings, as every node does. A sibling above it that comes and
-   goes moves it: KEY what must not move. When the compiler's site
-   fingerprint becomes the step, state follows — it rides the step.
+4. **A paint offers what stood, once.** Each standing a paint reaches
+   is opened: the instance and the standings that stood there are
+   offered to this paint, and what it does not take is gone. So an
+   instance lives exactly while a paint reaches it — no list of the
+   living, no sweep. A keyed row keeps its standing through a reorder;
+   a row a filter hides has LEFT, and its instance state leaves too.
+5. **State that must outlive a hide is the MODEL's**: a `state` field
+   of the model's own record, or module state. It lives as long as the
+   row does and no paint frees it.
+6. **A standing is never handed to another component.** One kept by
+   a component and reached by another is not read: state can be lost
+   to a moved place, never read by a stranger.
+7. **The app owns what stands.** A kept instance is held by its
+   standing, behind a fn, under the app's root: two screens over one
+   view share nothing, and a dropped screen takes its instances with
+   it. A component's `once fn <name>_kept()` is only the typed SEAT an
+   instance is handed across; it holds nothing between two calls.
+   `App.held()` counts what stands.
 8. **A write during the walk is a write.** It lands, the rest of that
-   paint reads it, and no paint follows from it; only the loop's door
-   paints. Not refused: a place is a `Cell` and nothing stands between
-   a writer and it.
+   paint reads it, and no paint follows from it — only the loop's door
+   paints. A place is a `Cell`: nothing stands between a writer and
+   it, so nothing can speak. Pinned (`tests/instance_life`).
+9. **`tree_of(view)` is a tree standing alone** — no paint before it,
+   none after — for a document, a gallery, a test of one node.
 
-### Where it lives
+### The language
 
-- `tree/standing.av` — `Standing`: the walk's trie, one node a step,
-  each holding at most one HOLD (which component's table, which row,
-  how to release it) and the paint that last reached it.
-- One typed table a component (`Kept<T>`, a slab: rows and a free
-  list), minted by the derive as `once fn <name>_kept()`. The trie
-  holds a row's NUMBER, never a value, so it needs no type.
-- `App` owns the root standing: `paint` opens a frame, describes,
-  sweeps. `held()` counts what stands — the lifetime witness.
+- `component C { state n: T = v }`: a field, as a record's is.
+- A WRITE THROUGH A `state` FIELD ASKS NOTHING OF ITS ROOT. The cell
+  takes it, so `self.n = …` in a handler and `c.n = …` on a parameter
+  run; `self.plain = …` keeps `resolve.immutable`'s words. The root's
+  verdict is spoken at typing, where the field is known. Such a write
+  marks no receiver written.
+- `@std/meta`: `Field.state`, and `Type.fns` — the fns a component
+  wrote in its own body.
 
-### The language pays
+### Refused (`@std/ui:<kind>`)
 
-- `component C { state n: T = v }` — the field grammar takes `state`
-  as a record's does (today: "a component holds its fields and its
-  `fn`s, and nothing else").
-- **A write through a `state` field asks no `mut` of its root.**
-  Today `self.n = …` in a lambda is `resolve.immutable` "captured by
-  value" and `c.n = …` on a parameter is "parameters are immutable",
-  while `c.xs.push(v)` through the same field runs. The verdict moves
-  to typing, where the field is known.
-- `@std/meta`'s `Field` says `state`.
+- `prim`: "a view is a primitive or is made of views, and `x` says
+  neither"
+- `stateful-primitive`: "a primitive draws what it is told, and `n` is
+  a place it would keep"
+- `boxed-composition`: "a composition wears its view's box, and `x`
+  spreads one of its own"
+- `marked-composition`: "a composition projects nothing of its own,
+  and `title` is marked `@attr`"
 
-### Refused
+### Open in this branch
 
-- a primitive holding `state`: "a primitive draws what it is told —
-  state is kept by the composition that uses it"
-- a composition spreading `..Box`: "a composition wears its view's
-  box — spread `..Keyed` for its key"
-- a composition with no `view`: the compiler's own "`counter` has no
-  method `view`"
+- AN UNKEYED INSTANCE STANDS AT ITS PLACE among its unkeyed siblings,
+  so a sibling above it that comes and goes moves it. Its step becomes
+  its SITE — the compiler's fingerprint of the instance expression —
+  before this lands; state rides the step and changes nothing here.
 
 ### Rejected
 
@@ -264,11 +253,14 @@ of, and its `state` members are places each INSTANCE owns.
   is built, before any place exists.
 - state on the page's node number: only a page numbers, and it
   numbers after `describe`.
-- the hand-keyed store: a second identity, spelled by the author.
+- the hand-keyed store (`ui-instance`): a second identity, spelled by
+  the author.
 - call-order slots behind an ambient cursor: a hidden global, and an
   identity by ORDER of calls.
-- the kept instance as a `dyn` in the trie: needs a checked downcast
-  the language lacks (asked: avra-8sb5.11).
+- a process-wide table per component: a dropped screen's rows are
+  never reclaimed.
+- the kept instance as a `dyn` in the trie, read back by a checked
+  downcast: the language has none.
 
 ### Not foreclosed
 

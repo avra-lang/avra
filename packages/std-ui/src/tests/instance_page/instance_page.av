@@ -1,0 +1,44 @@
+// proves: instance state on a PAGE, over the patch seam. A press echoed
+// to one instance changes that instance's text and nothing else; a
+// keyed row that moves is PLACED, never made again, and its state rides
+// with it; a row that leaves is removed and a new one under its key
+// starts over.
+use @std.ui.app.{App, app, plain}
+use @std.ui.components.{list}
+use @std.ui.realize.dom.live.{Live, live}
+use @std.ui.realize.tests.support.{named, spoken}
+use @std.ui.style.theme.{Theme}
+use @std.ui.tests.parts.{counter}
+use @std.ui.tree.node.{EventKind, Node}
+use @std.ui.tree.view.{View}
+
+state order: List<string> = ["a", "b", "c"]
+
+fn page() -> list { list { items: [counter "${id}" { key: id } for id in order] } }
+
+let on = live()
+let host = app(page, plain, (root: Node, worn: Theme) -> println(spoken(on, root, worn)))
+
+/// The host's echo of a press on the control named `name`.
+fn press(host: App, on: Live, name: string) -> bool {
+    let who? = named(on, name).first() else { return false }
+    host.turn(() -> on.fire(who, EventKind.Press, null))
+}
+
+println("── first paint")
+host.paint()
+println("── press b")
+let _ = press(host, on, "b+")
+println("── press b, press c")
+let _ = press(host, on, "b+")
+let _ = press(host, on, "c+")
+println("── c first")
+order = ["c", "a", "b"]
+host.paint()
+println("── b leaves")
+order = ["c", "a"]
+host.paint()
+println("── a new b")
+order = ["c", "a", "b"]
+host.paint()
+println("held=${host.held()}")

@@ -1,0 +1,87 @@
+// proves: an instance lives exactly while a paint reaches it. A
+// composition inside a composition, and one whose view IS a
+// composition, each stand on their own; a standing is never handed to
+// another component; mounting and unmounting keeps nothing; two
+// screens over one view share nothing; and a write made while the
+// tree is described lands without asking for a paint.
+use @std.ui.components.{button, column, text}
+use @std.ui.headless.{Screen, headless}
+use @std.ui.tests.eager.{eager}
+use @std.ui.tests.frames.{framed}
+use @std.ui.tests.panels.{tally}
+use @std.ui.tests.parts.{counter}
+use @std.ui.tree.view.{View}
+
+state mounted: bool = true
+state swapped: bool = false
+
+fn nested() -> column {
+    if !mounted { return column {} }
+    column {
+        framed "f"
+        tally "t"
+    }
+}
+
+/// One place, two components in turn.
+fn turns() -> column {
+    if swapped {
+        column {
+            tally "x"
+        }
+    } else {
+        column {
+            counter "x"
+        }
+    }
+}
+
+fn walked() -> column {
+    column {
+        eager "e"
+    }
+}
+
+fn texts(screen: Screen) -> string {
+    [l.trim() for l in screen.text().split("\n") if l.trim().starts_with("text")].join(" | ")
+}
+
+fn said(screen: Screen, what: string) { println("${what}: ${texts(screen)} held=${screen.held()}") }
+
+let a = headless(nested)
+said(a, "nested")
+let _ = a.press("tap f")
+let _ = a.press("f inner+")
+let _ = a.press("t inner+")
+let _ = a.press("t inner+")
+said(a, "pressed")
+
+let b = headless(nested)
+said(b, "a second screen")
+let _ = b.press("tap t")
+said(a, "the first, after the second was pressed")
+
+// LICENSED loops.push_loop: a count of turns, nothing gathered
+for turn in 0..40 {
+    mounted = !mounted
+    a.repaint()
+}
+said(a, "after 40 mounts and unmounts")
+mounted = false
+a.repaint()
+said(a, "unmounted")
+
+let c = headless(turns)
+let _ = c.press("x+")
+said(c, "a counter")
+swapped = true
+c.repaint()
+said(c, "a tally where the counter stood")
+swapped = false
+c.repaint()
+said(c, "a counter again")
+
+let d = headless(walked)
+said(d, "a write in the walk")
+d.repaint()
+said(d, "and the next paint")

@@ -4,7 +4,7 @@ use @std.ui.components.{button, column, item, list, row, text}
 use @std.ui.tree.outline.{outline}
 use @std.ui.tree.node.{Node}
 use @std.ui.tree.shows.{Shows, rows}
-use @std.ui.tree.view.{View}
+use @std.ui.tree.view.{View, tree_of}
 use @std.ui.style.box.{Box}
 
 type Label = { word: string }
@@ -17,7 +17,7 @@ fn words(n: int) -> List<dyn Shows> { [Label { word: "w${i}" } for i in 0..n] }
 
 /// A column nested `depth` deep around one text.
 fn nested(depth: int) -> Node {
-    if depth == 0 { return (text "core").describe() }
+    if depth == 0 { return tree_of(text "core") }
     Node { prim: .Column, attrs: [], box: Box {}, children: [nested(depth - 1)] }
 }
 
@@ -28,11 +28,11 @@ fn depth_of(n: Node) -> int {
     }
 }
 
-fn many(n: int) -> Node { (column { [text "t${i}" for i in 0..n] }).describe() }
+fn many(n: int) -> Node { tree_of(column { [text "t${i}" for i in 0..n] }) }
 
 spec "the vocabulary under attack" {
     given "degenerate sizes" {
-        then "a one-element rows is one child" { (list { rows(words(1)) }).describe().children.length == 1 }
+        then "a one-element rows is one child" { tree_of(list { rows(words(1)) }).children.length == 1 }
         then "a large list keeps every child in order" {
             many(2000).children.length == 2000 &&
                 outline(many(3)) == "column\n  text \"t0\"\n  text \"t1\"\n  text \"t2\""
@@ -40,21 +40,22 @@ spec "the vocabulary under attack" {
     }
     given "computed strings" {
         then "a label built at run time survives the node that holds it" {
-            outline((list { rows(words(3)) }).describe()) == "list\n  text \"w0!\"\n  text \"w1!\"\n  text \"w2!\""
+            outline(tree_of(list { rows(words(3)) })) == "list\n  text \"w0!\"\n  text \"w1!\"\n  text \"w2!\""
         }
         then "computed keys that agree are equal keys" {
-            (item { key: "x${1 + 1}" }).describe().box.key == (item { key: "x2" }).describe().box.key
+            tree_of(item { key: "x${1 + 1}" }).box.key == tree_of(item { key: "x2" }).box.key
         }
     }
     given "depth and sharing" {
         then "a tree nested 200 deep keeps its depth" { depth_of(nested(200)) == 200 }
         then "one view written twice answers two equal nodes" {
             let b = button "again"
-            let n = (row {
-                b
-                b
-            })
-                .describe()
+            let n = tree_of(
+                row {
+                    b
+                    b
+                },
+            )
             outline(n) == "row\n  button \"again\"\n  button \"again\"" && n.children.length == 2
         }
     }
