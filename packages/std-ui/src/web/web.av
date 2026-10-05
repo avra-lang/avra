@@ -1,0 +1,65 @@
+//! `web/web.av` — the app on a web page. `mount(view)` is the whole host
+//! seam: the page is painted, and from then on the host echoes who spoke
+//! (`host_event`), the handler the last paint bound there runs, and the page
+//! is sent only what changed. THIS MODULE NAMES THE HOST: `avra_dom_frame`
+//! is the page's to answer, so only a program built for a page imports it.
+use app.{plain, remounted}
+use realize.dom.live.{live}
+use realize.dom.page.{Paged, paged}
+use tree.view.{View}
+use style.theme.{Theme}
+
+extern fn avra_dom_frame(frame: Bytes)
+extern fn avra_bytes_with_room(n: int) -> Bytes
+extern fn avra_bytes_adopted(p: Bytes, n: int) -> Bytes
+
+/// The app this program mounted, and its page.
+once fn mounted() -> Cell<Paged?> { Cell.new(null) }
+
+/// A seat and the octets it has room for.
+type Seat = { box: Bytes, room: int }
+
+once fn seated() -> Cell<Seat?> { Cell.new(null) }
+
+/// THE APP: `view` under `theme` on the page, painted now and after every
+/// event that ran a handler. Mounting again — from a handler too — turns
+/// the same page into the new view.
+export fn mount<V: View>(view: fn() -> V, theme: fn() -> Theme = plain) {
+    let held? = mounted().get() else {
+        let made = paged(view, theme, live(), (sent: Bytes) -> avra_dom_frame(sent))
+        mounted().set(made)
+        made.app.paint()
+        return
+    }
+    remounted(held.app, view, theme)
+    held.app.paint()
+}
+
+// ── what the host calls ─────────────────────────────────────────
+// Exported for the page's glue, by the names runtime/dom/wire.gen.js
+// carries; no program calls them.
+
+/// A seat with room for `room` octets, kept until the next is asked for.
+/// The host asks before each text it sends, so no text outgrows its seat.
+export fn host_seat(room: int) -> Bytes {
+    let made = Seat { box: avra_bytes_with_room(room), room: room }
+    seated().set(made)
+    made.box
+}
+
+/// The first `len` octets the host wrote into the seat, as text. A length
+/// the seat cannot hold, or octets that are not UTF-8, is a malformed
+/// event: absent, never a wrong message.
+fn seated_text(len: int) -> string? {
+    let held? = seated().get() else { return null }
+    if len < 0 || len > held.room { return null }
+    avra_bytes_adopted(held.box, len).text()
+}
+
+/// The host's echo: element `who` spoke the kind `what`, saying the value
+/// in the tag and value seats — a text is the first `len` octets of the
+/// seat. An echo before any mount answers nothing.
+export fn host_event(who: int, what: int, tag: int, num: int, len: int) {
+    let held? = mounted().get() else { return }
+    let _ = held.heard(who, what, tag, num, seated_text(len))
+}

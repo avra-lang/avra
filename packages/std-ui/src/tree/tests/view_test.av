@@ -1,0 +1,77 @@
+//! `@derive(View)`, by its law: a primitive's node is exactly what its
+//! members SAY — an attribute, the children, a style token, an event, the
+//! shared box — read through the live page's first paint.
+use @std.ui.components.{button, card, checkbox, error_text, field, heading, row, text}
+use @std.ui.realize.tests.support.{drawn_text}
+use @std.ui.tree.view.{View}
+use @std.ui.style.layout.{Layout}
+use @std.ui.style.style.{Style}
+
+/// The view's first paint, as readable patches.
+fn drawn(v: dyn View) -> string { drawn_text(v.describe()) }
+
+/// The lines of the view's first paint that set an attribute.
+fn attrs(v: dyn View) -> string { [l for l in drawn(v).split("\n") if l.starts_with("attr ")].join("\n") }
+
+fn muted() -> Style { Style { color: .Muted } }
+
+spec "std/ui view — a primitive projects what its members say" {
+    given "members marked as attributes" {
+        then "become the node's own element and words" {
+            drawn(heading "Tasks" { rank: 2 }) == "create 0 h2\ntext 0/+text Tasks\nplace 0/+text in 0 after -\nplace 0 in - after -"
+        }
+        then "carry the instance's own values" {
+            attrs(button "Go" { disabled: true }) == "attr 0 type=button\nattr 0 aria-label=Go\nattr 0 disabled="
+        }
+    }
+    given "a button" {
+        then "is pressed, never a form's default submitter" { attrs(button "Go").starts_with("attr 0 type=button") }
+        then "submits the form it stands in when it says so" {
+            attrs(button "Save" { submits: true }).starts_with("attr 0 type=submit")
+        }
+    }
+    given "a member marked as the children" {
+        then "draws each child under the node, in order" {
+            drawn(row { items: [text "a", text "b"] }) == "create 0 div\nattr 0 class=dir-row\ncreate 0/0 span\ntext 0/0/+text a\nplace 0/0/+text in 0/0 after -\nplace 0/0 in 0 after -\ncreate 0/1 span\ntext 0/1/+text b\nplace 0/1/+text in 0/1 after -\nplace 0/1 in 0 after 0/0\nplace 0 in - after -"
+        }
+        then "draws none when the instance gives none" { !drawn(card "Board").contains("create 0/0") }
+    }
+    given "a member marked as a style token" {
+        then "is laid over the node's style" { attrs(error_text { message: "bad" }) == "attr 0 class=color-danger" }
+        then "keeps the rest of the instance's own style" {
+            attrs(
+                error_text {
+                    message: "bad"
+                    style: Style { color: .Muted, radius: .S }
+                },
+            ) == "attr 0 class=color-danger radius-s"
+        }
+    }
+    given "the shared box" {
+        then "carries the instance's style" { attrs(text "x" { style: muted() }) == "attr 0 class=color-muted" }
+        then "carries the instance's layout" { attrs(row { layout: Layout { gap: .S } }) == "attr 0 class=dir-row gap-s" }
+        then "carries the instance's key, which is its identity" {
+            drawn(text "x" { key: "a" }).starts_with("create k1:a span\nattr k1:a data-key=a")
+        }
+    }
+    given "an event an instance hears" {
+        then "is heard by the control, saying what the event says" {
+            drawn(field "Name" { on input { typed -> println(typed) } })
+                .contains("listen 0/+control input text")
+        }
+        then "says its value to a handler that names no seat" {
+            drawn(checkbox "Done" { on change { println("x") } })
+                .contains("listen 0/+control change flag")
+        }
+    }
+    given "an event nobody hears" {
+        then "is not listened for" { !drawn(button "Go").contains("listen") }
+    }
+    given "a control" {
+        then "sits under a label that takes its node's place, its words beside it" {
+            drawn(checkbox "Done")
+                    .starts_with("create 0 label\ncreate 0/+control input\nattr 0/+control type=checkbox") &&
+                drawn(checkbox "Done").contains("create 0/+words span\ntext 0/+words/+text Done")
+        }
+    }
+}

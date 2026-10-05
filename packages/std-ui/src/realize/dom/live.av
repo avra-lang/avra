@@ -1,0 +1,96 @@
+//! `realize/dom/live.av` — a live page: the elements it holds, each
+//! under the number it was given, the sheet it wears and the handlers it
+//! heard — kept so the next paint says only what changed and a host's
+//! echo finds the handler it names.
+use tree.identity.{NodeId}
+use tree.node.{Node, Action, EventKind, Said}
+use realize.html.element.{Element, lowered}
+use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet, root_vars}
+use realize.dom.patch.{Patch, Heard, diff, held_as, listening_of}
+use realize.dom.wire.{frame}
+use style.theme.{Theme}
+
+/// An element that hears an event, and what it does then.
+type Bound = { id: NodeId, action: Action }
+
+/// A page as last painted: its elements, the next number it will give
+/// one, every rule a paint has named so far and the theme's variables
+/// the sheet was last written with, the handlers its elements bound, and
+/// what the user was heard to do to it since.
+export type Live = {
+    page: Cell<List<Element>> = Cell.new([]),
+    next: Cell<int> = Cell.new(0),
+    rules: Cell<List<CssRule>> = Cell.new([]),
+    worn: Cell<string?> = Cell.new(null),
+    bound: Cell<List<Bound>> = Cell.new([]),
+    heard: Cell<List<Heard>> = Cell.new([]),
+}
+
+/// A page nothing was painted on.
+export fn live() -> Live { Live {} }
+
+/// Every rule a tree's nodes name, in walk order.
+fn rules_of(n: Node) -> List<CssRule> {
+    node_rules(n.prim, n.box).concat([r for c in n.children for r in rules_of(c)])
+}
+
+/// Every handler an element and what it holds bound, by who hears it.
+fn bound_in(e: Element) -> List<Bound> {
+    let el? = e.tagged() else { return [] }
+    [Bound { id: el.id, action: a } for a in el.hears]
+        .concat([b for k in el.kids for b in bound_in(k)])
+}
+
+impl Live {
+    /// The patches that turn the page into `root` under `theme`: the
+    /// sheet when it changed, then the elements that did. An unchanged
+    /// page says nothing. A RULE ONCE NAMED STAYS IN THE SHEET, so the
+    /// sheet is resent only for a class the page has never worn or a new
+    /// theme — never because the tree named its classes in another order.
+    /// The handlers are kept anew EVERY paint: two trees that draw alike
+    /// may still close over different values.
+    fn patches(root: Node, theme: Theme) -> List<Patch> {
+        let restyled = self.restyled(root, theme)
+        let now = diff(self.page.get(), lowered(root), self.heard.get(), self.next.get())
+        self.page.set(now.page)
+        self.next.set(now.next)
+        self.heard.set([])
+        self.bound.set([b for e in now.page for b in bound_in(e)])
+        restyled.concat(now.patches)
+    }
+
+    /// The sheet, when it must be sent again: the page has never worn one
+    /// of the tree's classes, or the theme's variables moved. The sheet's
+    /// text is built only then.
+    fn restyled(root: Node, theme: Theme) -> List<Patch> {
+        let rules = distinct_rules(self.rules.get().concat(rules_of(root)))
+        let vars = root_vars(theme)
+        if rules.length == self.rules.get().length && self.worn.get() == vars { return [] }
+        self.rules.set(rules)
+        self.worn.set(vars)
+        [Patch.Style(page_sheet(rules, theme, []))]
+    }
+
+    /// `patches`, as the frame a host applies.
+    fn paint(root: Node, theme: Theme) -> Bytes { frame(self.patches(root, theme)) }
+
+    /// The host's echo: element `id` spoke `kind`, saying `said`. The
+    /// handler the last paint bound there runs; false when nothing
+    /// answered. What a control said is what its property now holds, so
+    /// the next paint compares against that.
+    fn fire(id: NodeId, kind: EventKind, said: Said?) -> bool {
+        let found? = self.bound.get().find(it.id == id && it.action.kind == kind) else { return false }
+        self.hear(id, found.action, said)
+        found.action.fire(said)
+    }
+
+    /// What a control said is what its property holds from now on. ONE
+    /// record a property: the latest replaces the one before, so what was
+    /// heard between two paints never outgrows the page.
+    fn hear(id: NodeId, action: Action, said: Said?) {
+        let value? = said else { return }
+        let name? = listening_of(action).reads else { return }
+        let others = [h for h in self.heard.get() if h.id != id || h.name != name]
+        self.heard.set(others.concat([Heard { id: id, name: name, value: held_as(value) }]))
+    }
+}

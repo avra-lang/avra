@@ -3,7 +3,7 @@
 //! methods walk as an impl's. Its own laws are its template's: `expand`
 //! answers the code an instance becomes, and a template reads each of
 //! its instance's fields once.
-use core.{StmtId, TypeId, ComponentParts}
+use core.{StmtId, ExprId, TypeId, ComponentParts, Unheard}
 use features.{ResolveCx, TypeCx}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
@@ -11,8 +11,8 @@ use @std.errors.{Loc}
 fn resolve_component(mut cx: ResolveCx, s: StmtId) {
     if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
     let c? = cx.view.store.component_parts(s) else { return }
-    cx.check_params(c.head.concat(c.fields), s)
-    for f in c.fields {
+    cx.check_params(c.head.concat(c.holders), s)
+    for f in c.holders {
         if f.default != null { cx.walk_under([], f.default!) }
     }
     cx.impl_stmts(c.fns)
@@ -20,9 +20,20 @@ fn resolve_component(mut cx: ResolveCx, s: StmtId) {
 
 fn check_component(mut cx: TypeCx, s: StmtId) {
     let c? = cx.view.store.component_parts(s) else { return }
+    seats_law(cx, c)
     check_law(cx, c)
     expand_law(cx, c)
     format_law(cx, s, c)
+}
+
+/// An event's seats have distinct names: a handler names each one.
+fn seats_law(mut cx: TypeCx, c: ComponentParts) {
+    for e in c.events() {
+        let names = [s.name.of for s in e.says]
+        let twice? = names.find([n for n in names if n == it].length > 1) else { continue }
+        let declared? = e.holder.default else { continue }
+        cx.emit(seat_twice(cx.loc_of(declared), e.name, twice))
+    }
 }
 
 /// A `check` takes nothing and answers `List<Diagnostic>` — what the
@@ -57,6 +68,27 @@ fn format_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
     let formats = formats_of(c)
     for j, n in sig.names {
         if formats.contains(n) && !cx.view.decls.meta_type(sig.types[j], "Format") { cx.emit(foreign_format(cx.stmt_loc(s), n)) }
+    }
+}
+
+/// An instance hears the events its component declares, each with all
+/// its event says or none of it: a handler the component cannot hear is
+/// refused by name.
+fn event_law(mut cx: TypeCx, e: ExprId) {
+    let inst? = cx.view.store.instance_parts(e) else { return }
+    let body? = inst.body else { return }
+    for s in cx.view.store.block_stmts(body) ?? [] {
+        let handler? = cx.view.store.setting_parts(s)?.value else { continue }
+        let heard? = cx.view.store.on_handler(handler) else { continue }
+        let why? = heard.unheard else { continue }
+        cx
+            .emit(
+                match why {
+                    .Undeclared(declared) -> undeclared_event(cx.stmt_loc(s), inst.word, heard.event, declared),
+                    .Seats(says) -> misheard_event(cx.stmt_loc(s), heard.event, says),
+                    .Twice -> heard_twice(cx.stmt_loc(s), inst.word, heard.event),
+                },
+            )
     }
 }
 
@@ -101,3 +133,52 @@ fn foreign_format(at: Loc?, field: string) -> Diag {
         "`use @std.meta.{Format}`, or rename the other type",
     )
 }
+
+fn undeclared_event(at: Loc?, word: string, event: string, declared: List<string>) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "`${word}` declares no event `${event}` — an instance hears the events its component declares",
+        "heard here",
+        if declared.is_empty() { "`${word}` declares no events" } else { "the events of `${word}` are ${ticked(declared)}" },
+    )
+}
+
+fn misheard_event(at: Loc?, event: string, says: List<string>) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "`${event}` says ${if says.is_empty() { "nothing" } else { ticked(says) }} — a handler hears all its event says, or none of it",
+        "heard here",
+        heard_forms(event, says),
+    )
+}
+
+/// The ways a handler may hear the event.
+fn heard_forms(event: string, says: List<string>) -> string {
+    if says.is_empty() { return "`on ${event} { … }`" }
+    "`on ${event} { ${says.join(", ")} -> … }`, or `on ${event} { … }`"
+}
+
+fn heard_twice(at: Loc?, word: string, event: string) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "an instance hears an event once, and this `${word}` hears `${event}` again",
+        "heard again here",
+        "keep one handler for `${event}`",
+    )
+}
+
+fn seat_twice(at: Loc?, event: string, seat: string) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "an event's seats have distinct names, and `${event}` names `${seat}` twice",
+        "declared here",
+        "rename one — a handler names each seat it is told",
+    )
+}
+
+/// Words as a refusal lists them.
+fn ticked(words: List<string>) -> string { ["`${w}`" for w in words].join(", ") }

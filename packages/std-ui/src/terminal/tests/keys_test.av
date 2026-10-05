@@ -1,0 +1,92 @@
+//! What a terminal's input spells, key by key.
+use @std.text.{from_codepoint}
+use @std.ui.terminal.keys.{Key, Heard, heard, keys}
+
+fn word(k: Key) -> string {
+    match k {
+        .Next -> "next",
+        .Back -> "back",
+        .Enter -> "enter",
+        .Erase -> "erase",
+        .Char(ch) -> "'${ch}'",
+        .End -> "end",
+    }
+}
+
+fn spelled(text: string) -> string { [word(k) for k in keys(text)].join(" ") }
+
+fn esc() -> string { from_codepoint(27) }
+
+/// What a run of octets spells, then how many it holds back: `'a' | 2`.
+fn read(octets: List<int>) -> string {
+    let run = heard(octets.bytes() ?? "".bytes())
+    "${[word(k) for k in run.keys].join(" ")} | ${run.held.length}"
+}
+
+/// What two runs spell when the second arrives behind what the first held.
+fn across(first: List<int>, second: List<int>) -> string {
+    let one = heard(first.bytes() ?? "".bytes())
+    let two = heard(one.held.concat(second.bytes() ?? "".bytes()))
+    [word(k) for k in one.keys.concat(two.keys)].join(" ")
+}
+
+spec "a terminal's input is read as keys" {
+    given "plain text" {
+        then "each character is itself" { spelled("hé!") == "'h' 'é' '!'" }
+        then "a space is a character" { spelled("a b") == "'a' ' ' 'b'" }
+        then "nothing spells no key" { spelled("") == "" }
+    }
+    given "the keys that move and act" {
+        then "a tab moves on and a line feed enters" { spelled("\t\n") == "next enter" }
+        then "a carriage return enters" { spelled("\r") == "enter" }
+        then "a carriage return and its line feed are one Enter" { spelled("a\r\nb") == "'a' enter 'b'" }
+        then "backspace and delete erase" { spelled(from_codepoint(8) + from_codepoint(127)) == "erase erase" }
+        then "Ctrl-D ends" { spelled("a" + from_codepoint(4)) == "'a' end" }
+    }
+    given "a control sequence" {
+        then "Shift-Tab and the up arrow move back" { spelled("${esc()}[Z${esc()}[A") == "back back" }
+        then "the down arrow moves on" { spelled("${esc()}[B") == "next" }
+        then "one the loop has no key for is dropped whole, never typed" {
+            spelled("a${esc()}[1;5Cb${esc()}[3~c") == "'a' 'b' 'c'"
+        }
+        then "one cut short spells no key" { spelled("a${esc()}[1;5") == "'a'" }
+        then "a lone escape takes the one character after it with it" { spelled("${esc()}xy") == "'y'" }
+        then "a single-shift arrow moves the focus and types nothing" {
+            spelled("a${esc()}OA${esc()}OBb") == "'a' back next 'b'"
+        }
+        then "a single-shift sequence with no key is dropped whole" { spelled("a${esc()}OPb") == "'a' 'b'" }
+        then "one a control character cuts is dropped, and the control character is read" {
+            spelled("${esc()}[1;\nb") == "enter 'b'"
+        }
+    }
+    given "a run that ends inside a sequence" {
+        then "holds a lone escape, typing nothing" { read([97, 27]) == "'a' | 1" }
+        then "holds an opened control sequence" { read([97, 27, 91, 49]) == "'a' | 3" }
+        then "holds an opened single-shift sequence" { read([27, 79]) == " | 2" }
+        then "the next run finishes it as one key, with no tail typed" {
+            across([97, 27, 91], [66, 98]) == "'a' next 'b'" && across([27], [79, 65]) == "back"
+        }
+        then "one that never ends is dropped once it is too long to be one" {
+            read([27, 91].concat([49 for n in 0..80])) == " | 0"
+        }
+    }
+    given "octets that are not a character" {
+        then "one that can start no character is dropped alone, and what follows is heard" {
+            read([97, 255, 98, 9, 10]) == "'a' 'b' next enter | 0"
+        }
+        then "a stray continuation octet is dropped alone" { read([128, 97]) == "'a' | 0" }
+        then "an overlong spelling is dropped, octet by octet" { read([192, 128, 97]) == "'a' | 0" }
+        then "a lead whose next octet does not continue it is dropped, and that octet is read" {
+            read([195, 97]) == "'a' | 0"
+        }
+    }
+    given "a run that ends inside a character" {
+        then "holds its octets, typing nothing" { read([97, 195]) == "'a' | 1" && read([240, 159, 152]) == " | 3" }
+        then "the next run finishes it whole" {
+            across([195], [169]) == "'é'" && across([240, 159], [152, 128, 98]) == "'😀' 'b'"
+        }
+    }
+    given "a control character with no key" {
+        then "it is dropped" { spelled("a" + from_codepoint(1) + from_codepoint(7) + "b") == "'a' 'b'" }
+    }
+}

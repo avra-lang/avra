@@ -1,0 +1,213 @@
+//! `realize/dom/wire.av` — patches as BYTES, and the one table a host
+//! reads them by. A frame is the version, then one record per patch:
+//!
+//!   create       id, tag
+//!   create_text  id, content
+//!   place        id, parent (none: the page), after (none: first)
+//!   remove       id
+//!   set_attr     id, name, value
+//!   drop_attr    id, name
+//!   set_prop     id, name, says, value
+//!   set_text     id, content
+//!   listen       id, kind, event, says, reads (empty: none), prevents
+//!   unlisten     id, kind
+//!   style        css
+//!
+//! A record opens with its op's code (`Op`). An id is a number in eight
+//! little-endian bytes — the same width however deep its node sits — and
+//! `NO_ID` where a record names none; every other number is four; a text
+//! is its byte length then its bytes. A frame of the version alone is a
+//! page that did not change.
+//!
+//! A host holds NO copy of these numbers by hand: `host_table` writes its
+//! table from the declarations here, and `make ui-host` fails when the
+//! checked-in copy is not what this file says.
+use @std.meta.{derive}
+use tree.identity.{NodeId}
+use tree.node.{EventKind, Said}
+use realize.dom.buf.{Buf, buf}
+use tree.codes.{Codes, Coded}
+use realize.dom.patch.{Patch, Listening, Says, Held, held_says}
+
+/// The wire's version: a host built for another REFUSES, never misapplies.
+export const wire_version = 9
+
+/// What stands where a record names no element: the page itself as a
+/// parent, the first place as a sibling. No id is ever negative.
+export const no_id = -1
+
+/// Each patch's code on the wire.
+@derive(Codes)
+export enum Op {
+    @code(1) Create
+    @code(2) CreateText
+    @code(3) Place
+    @code(4) Remove
+    @code(5) SetAttr
+    @code(6) DropAttr
+    @code(7) SetProp
+    @code(8) SetText
+    @code(9) Listen
+    @code(10) Unlisten
+    @code(11) Style
+}
+
+/// The op a patch is written under. Every patch spelled.
+fn op_of(p: Patch) -> Op {
+    match p {
+        .Create(_, _) -> .Create,
+        .CreateText(_, _) -> .CreateText,
+        .Place(_, _, _) -> .Place,
+        .Remove(_) -> .Remove,
+        .SetAttr(_, _, _) -> .SetAttr,
+        .DropAttr(_, _) -> .DropAttr,
+        .SetProp(_, _, _) -> .SetProp,
+        .SetText(_, _) -> .SetText,
+        .Listen(_, _) -> .Listen,
+        .Unlisten(_, _) -> .Unlisten,
+        .Style(_) -> .Style,
+    }
+}
+
+/// A value a property holds, as text a host turns back by its tag.
+fn held_text(value: Held) -> string {
+    match value { .Text(t) -> t, .Flag(on) -> if on { "1" } else { "" } }
+}
+
+/// A host's echo, read: who spoke, what kind of event, and what it said
+/// — absent for an event that says nothing.
+export type Echo = { id: NodeId, kind: EventKind, said: Said? }
+
+/// The echo a host sent: element `who` spoke the kind numbered `what`,
+/// saying what `tag` names — a number or a flag in `num`, text in `text`.
+/// An echo this wire cannot read is ABSENT and answers nothing: a kind or
+/// a tag no variant wears, or text the host could not hand over. That is
+/// never "said nothing", which is a tag of its own.
+export fn echo(who: int, what: int, tag: int, num: int, text: string?) -> Echo? {
+    let kind? = EventKind.coded_as(what) else { return null }
+    let says? = Says.coded_as(tag) else { return null }
+    let id = NodeId { n: who }
+    match says {
+        .Nothing -> Echo { id: id, kind: kind, said: null },
+        .Number -> Echo { id: id, kind: kind, said: Said.Number(num) },
+        .Flag -> Echo { id: id, kind: kind, said: Said.Flag(num != 0) },
+        .Text -> {
+            let body? = text else { return null }
+            Echo { id: id, kind: kind, said: Said.Text(body) }
+        },
+    }
+}
+
+impl Buf {
+    /// An id as eight little-endian bytes — one a host reads as a number
+    /// — and where there is none, the number no id is. A host's number is
+    /// whole only to 2^53, so that is how many elements one page can
+    /// ever have been given.
+    fn push_id(id: NodeId?) {
+        let n = id?.n ?? no_id
+        self.push_int(n)
+        self.push_int(n >> 32)
+    }
+
+    fn push_listening(to: Listening) {
+        self.push_int(to.action.kind.code())
+        self.push_str(to.event)
+        self.push_int(to.says.code())
+        self.push_str(to.reads?.word() ?? "")
+        self.push_int(if to.prevents { 1 } else { 0 })
+    }
+
+    /// One patch as its record.
+    fn push_patch(p: Patch) {
+        self.push_byte(op_of(p).code())
+        match p {
+            .Create(id, tag) -> {
+                self.push_id(id)
+                self.push_str(tag.word())
+            },
+            .CreateText(id, content) or .SetText(id, content) -> {
+                self.push_id(id)
+                self.push_str(content)
+            },
+            .Place(id, parent, after) -> {
+                self.push_id(id)
+                self.push_id(parent)
+                self.push_id(after)
+            },
+            .Remove(id) -> self.push_id(id),
+            .SetAttr(id, name, value) -> {
+                self.push_id(id)
+                self.push_str(name.word())
+                self.push_str(value)
+            },
+            .DropAttr(id, name) -> {
+                self.push_id(id)
+                self.push_str(name.word())
+            },
+            .SetProp(id, name, value) -> {
+                self.push_id(id)
+                self.push_str(name.word())
+                self.push_int(held_says(value).code())
+                self.push_str(held_text(value))
+            },
+            .Listen(id, to) -> {
+                self.push_id(id)
+                self.push_listening(to)
+            },
+            .Unlisten(id, kind) -> {
+                self.push_id(id)
+                self.push_int(kind.code())
+            },
+            .Style(css) -> self.push_str(css),
+        }
+    }
+}
+
+/// Patches as one frame.
+export fn frame(patches: List<Patch>) -> Bytes {
+    let b = buf()
+    b.push_byte(wire_version)
+    for p in patches { b.push_patch(p) }
+    b.take()
+}
+
+// ── the host's table ────────────────────────────────────────────
+
+/// One table as a JavaScript object: each variant's word and its number.
+fn table_source(name: string, rows: List<Coded>) -> string {
+    "export const ${name} = { ${["${r.word}: ${r.code}" for r in rows].join(", ")} };"
+}
+
+/// A name a page's program answers to, under the word a host calls it by.
+type Answers = { word: string, name: string }
+
+/// THE NAMES A PROGRAM ANSWERS TO. `entry` is the compiler's: a reactor's
+/// own statements, where an app says `mount(view)`. `event` and `seat`
+/// are the web module's `host_event` and `host_seat` (`web/web.av`),
+/// under the names the compiler gives a library's fns — its module, then
+/// the fn. The wasm board's own run (`make ui-board`) is what holds
+/// these to the module.
+const answers = [
+    Answers { word: "entry", name: "avra_main" },
+    Answers { word: "event", name: "@std.ui.web.host_event" },
+    Answers { word: "seat", name: "@std.ui.web.host_seat" },
+]
+
+fn names_source(name: string, rows: List<Answers>) -> string {
+    "export const ${name} = { ${["${r.word}: \"${r.name}\"" for r in rows].join(", ")} };"
+}
+
+/// The module a JavaScript host imports the library's facts from — the
+/// version, each op, each thing a control can say and the names a program
+/// answers to. Written from the declarations above, never by hand.
+export fn host_table() -> string {
+    [
+        "// GENERATED by realize/dom/wire.av (`host_table`) — never edited. `make ui-host` checks it.",
+        "export const WIRE_VERSION = ${wire_version};",
+        "export const NO_ID = ${no_id};",
+        table_source("OP", Op.coded()),
+        table_source("SAYS", Says.coded()),
+        names_source("HOST", answers),
+    ]
+        .join("\n")
+}

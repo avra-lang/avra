@@ -1,14 +1,25 @@
-// proves: the wire is BYTES — a version, records, little-endian ints, and
-// values carried raw with their length. 33 bytes for one text node.
+// proves: the wire is BYTES — a version, then one record per patch: its
+// op's code, ids and text carried raw with their length, little-endian ints.
 use @std.ui.components.{text}
-use @std.ui.realize.dom.frame.{frame}
-let t = text "hi"
-let out = frame(t.describe())
-println("${out.length}")
-mut parts: List<string> = []
-mut i = 0
-while i < out.length {
-    parts = parts.concat(["${out.at(i)}"])
-    i = i + 1
+use @std.ui.realize.dom.live.{live}
+use @std.ui.style.theme.{default_theme}
+
+fn spelled(out: Bytes) -> string {
+    mut parts: List<string> = []
+    mut i = 0
+    while i < out.length {
+        parts = parts.concat(["${out.at(i)}"])
+        i = i + 1
+    }
+    parts.join(",")
 }
-println(parts.join(","))
+
+let page = live()
+let t = text "hi"
+let first = page.paint(t.describe(), default_theme)
+// the sheet rides the first frame; the element records are its tail
+println("first=${first.length} version=${first.at(0)} opens_with_style=${first.at(1)}")
+// an unchanged page is the version alone
+println("unchanged=${spelled(page.paint(t.describe(), default_theme))}")
+// one changed word is one record: set_text, the text's id, the word
+println("retext=${spelled(page.paint((text "yo").describe(), default_theme))}")

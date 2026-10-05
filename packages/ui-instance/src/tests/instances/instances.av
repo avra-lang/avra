@@ -1,13 +1,14 @@
-// proves: TWO instances of ONE component on one page hold INDEPENDENT state
-// reached by KEY (never a pointer), through the real event channel — a
-// content-addressed SITE plus the echoed typed PAYLOAD — and the table
-// honors the TWO lifetimes: a MODEL-KEYED entry survives a filter that hides
-// its row and leaves only when the row is deleted; an INSTANCE entry is swept
-// when its instance is unmounted. A pointer never crosses: the key does.
+// proves: TWO instances of ONE component on one screen hold INDEPENDENT state
+// reached by KEY (never a pointer), driven as a user drives it — each control
+// spoken to by its words — and the table honors the TWO lifetimes: a
+// MODEL-KEYED entry survives a filter that hides its row and leaves only when
+// the row is deleted; an INSTANCE entry is swept when its instance is
+// unmounted. A pointer never crosses: the key does.
 use @std.meta.{derive}
 use @std.ui.components.{button, column, row}
-use @std.ui.realize.prim.{prim}
-use @std.ui.realize.view.{View}
+use @std.ui.headless.{headless}
+use @std.ui.tree.prim.{prim}
+use @std.ui.tree.view.{View}
 use @std.ui.style.box.{Box}
 use ui_instance.{Store, at, ensure, forget, held, opening, put, sweep, opened, touched}
 
@@ -74,15 +75,15 @@ fn admits(t: Todo) -> bool { if filter == "open" { !done_of(t.id) } else { true 
 @prim(.Card)
 component board {
     ..Box
-    items: List<dyn View> = []
+    @children items: List<dyn View> = []
 }
 
 fn task_row(t: Todo) -> row {
     let s = ensure(tasks, t.id, true, TaskState { done: false, note: "" })
     row {
         items: [
-            button "${t.title}:${if s.done { "+" } else { "-" }}" { on click { update(Msg.Toggle(t.id)) } },
-            button "x" { on click { update(Msg.Remove(t.id)) } },
+            button "${t.title}:${if s.done { "+" } else { "-" }}" { on press { update(Msg.Toggle(t.id)) } },
+            button "x" { on press { update(Msg.Remove(t.id)) } },
         ]
     }
 }
@@ -94,34 +95,24 @@ fn board_view(b: string) -> board {
     let _ = ensure(panels, "${b}:panel", false, Panel { open: true, focused: 0 })
     touched(panels, "${b}:panel")
     let rows: List<dyn View> = [task_row(t) for t in todos if t.board == b && admits(t)]
-    let hide: List<dyn View> = [button "hide ${b}" { on click { update(Msg.Unmount(b)) } }]
+    let hide: List<dyn View> = [button "hide ${b}" { on press { update(Msg.Unmount(b)) } }]
     board { key: b, items: rows.concat(hide) }
 }
 
+/// One frame: open the tables' seen sets, build the tree (each mounted
+/// instance touches its key), then sweep. The sweep runs AFTER the frame is
+/// built and no event is in flight, so a key it drops is one the frame did
+/// not name — an event naming a live key can never reach a dead place.
 fn view() -> column {
-    let panels_view: List<dyn View> = [board_view(b) for b in mounted]
-    let controls: List<dyn View> = [
-        button "filter" { on click { update(Msg.ToggleFilter) } },
-        button "show b" { on click { update(Msg.Remount("b")) } },
-    ]
-    column { items: panels_view.concat(controls) }
-}
-
-/// One event: the message, then the paint that follows it.
-fn send(m: Msg) {
-    update(m)
-    let _ = paint()
-}
-
-/// One paint: open the frame's seen sets, build the tree (each mounted
-/// instance touches its key), then sweep. The sweep runs AFTER the frame
-/// is built and no event is in flight, so a key it drops is one the frame
-/// did not name — an event naming a live key can never reach a dead place.
-fn paint() -> int {
     opening(tasks)
     opening(panels)
-    let _ = view().describe()
-    sweep(tasks) + sweep(panels)
+    let panels_view: List<dyn View> = [board_view(b) for b in mounted]
+    let controls: List<dyn View> = [
+        button "filter" { on press { update(Msg.ToggleFilter) } },
+        button "show b" { on press { update(Msg.Remount("b")) } },
+    ]
+    let _ = sweep(tasks) + sweep(panels)
+    column { items: panels_view.concat(controls) }
 }
 
 fn mark(done: bool) -> string { if done { "+" } else { "-" } }
@@ -130,26 +121,27 @@ fn state_text() -> string {
     [t.id + mark(done_of(t.id)) for t in todos].join(" ")
 }
 
-paint()
+let page = headless(view)
 println("start ${state_text()} tasks=${held(tasks)} panels=${held(panels)}")
 
-send(Msg.Toggle("a1"))
-println("toggle a1 ${state_text()}")
+println("toggle a1=${page.press("alpha:-")} ${state_text()}")
 
-send(Msg.Toggle("b1"))
-println("toggle b1 ${state_text()}")
+// each board's first row is its own: pressing b's leaves a's alone.
+println("toggle b1=${page.press("beta:-")} ${state_text()}")
+println("untoggle b1=${page.press("beta:+")} ${state_text()}")
 
-// the filter hides a1 (done) — its MODEL entry must NOT be swept.
-send(Msg.ToggleFilter)
-println("filter ${filter} ${state_text()} held=${held(tasks)}")
+// the filter hides a1 (done) — its MODEL entry must NOT be swept, and its
+// row comes back as it was left.
+println(
+    "filter=${page.press("filter")} ${filter} hidden=${!page.press("alpha:+")} held=${held(tasks)}",
+)
 
-// deleting the row frees its state; nothing else may.
-send(Msg.Remove("b1"))
-println("remove b1 ${state_text()} held=${held(tasks)}")
+// deleting the row frees its state; nothing else may. Board a shows a2 and
+// board b shows b1, so b1's remove is the second on the screen.
+println("remove b1=${page.press("x", nth: 1)} ${state_text()} held=${held(tasks)}")
 
 // unmounting b sweeps b's INSTANCE panel; a's panel and every MODEL entry stay.
-send(Msg.Unmount("b"))
-println("unmount b panels=${held(panels)} tasks=${held(tasks)}")
-
-send(Msg.Remount("b"))
-println("remount b panels=${held(panels)}")
+println("unmount b=${page.press("hide b")} panels=${held(panels)} tasks=${held(tasks)}")
+println("remount b=${page.press("show b")} panels=${held(panels)}")
+println("unfilter=${page.press("filter")} ${state_text()}")
+println(page.text())

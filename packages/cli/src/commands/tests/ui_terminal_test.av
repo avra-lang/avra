@@ -1,0 +1,76 @@
+//! A terminal app's own read loop, natively: a program that mounts a view
+//! is BUILT, and octets are piped into its standard input as a terminal
+//! would send them. The last line it prints is the state the keys left.
+//! `avra_ran`, `scratch_dir` and `hang_bound` are the neighbouring tests'
+//! own.
+use @std.io.{make_dirs, write_text}
+use @std.meta.{embed}
+use @std.process.{tool, cmd, ProcessError}
+use @std.time.{now_ns}
+
+/// A field and a counting button, mounted in the terminal.
+const terminal_app: string = embed("ui_view/terminal_app.txt")
+
+/// The app, built once: where its binary stands — "" when it did not build.
+once fn terminal_binary() -> string {
+    let root = "${scratch_dir()}/ui_terminal_${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"ui_terminal\"\nversion = \"0.1.0\"\n\n[bin]\nname = \"ui_terminal\"\npath = \"src/main.av\"\n",
+    )
+    let _ = write_text("${root}/src/main.av", terminal_app)
+    match avra_ran(["build", root]) {
+        .Ok(o) -> o.out.stdout.trim().split("\n").last() ?? "",
+        .Err(_) -> "",
+    }
+}
+
+/// Everything the app prints when `octets` — `printf`'s own spelling of
+/// them — arrive on its standard input and the input then ends.
+fn printed(octets: string) -> Result<string, ProcessError> {
+    let fed = cmd(tool("printf")?, [octets])
+    let app = cmd(tool(terminal_binary())?, []) with { timeout: hang_bound() }
+    let ran = fed.pipe(app).outcome()?
+    ran.stages.last()?.out?.stdout ?? "the app did not run"
+}
+
+/// The state the keys left: the app's last line.
+fn left(octets: string) -> string {
+    match printed(octets) {
+        .Ok(out) -> out.trim().split("\n").last() ?? "nothing printed",
+        .Err(_) -> "the pipe failed",
+    }
+}
+
+/// How many screens the app drew: each opens with its field's line.
+fn screens(octets: string) -> int {
+    match printed(octets) {
+        .Ok(out) -> [l for l in out.split("\n") if l.contains("Name: ")].length,
+        .Err(_) -> -1,
+    }
+}
+
+spec "a terminal app reads its own standard input" {
+    given "a typed word, a tab and a return" {
+        then "the word fills the field and the return presses the button" { left("abc\\t\\n") == "name=[abc] hits=1" }
+    }
+    given "an octet that is no character among the keys" {
+        then "it is dropped alone, and every key after it is still heard" { left("a\\377b\\t\\n") == "name=[ab] hits=1" }
+    }
+    given "an arrow sent as a single-shift sequence" {
+        then "it moves the focus and types nothing" { left("a\\033OBx\\n") == "name=[a] hits=1" }
+    }
+    given "a control sequence the loop has no key for" {
+        then "it is dropped whole" { left("a\\033[1;5Cb") == "name=[ab] hits=0" }
+    }
+    given "input that ends inside a line" {
+        then "what was typed is kept, and the app ends" { left("abc") == "name=[abc] hits=0" }
+    }
+    given "Ctrl-D among the keys" {
+        then "the keys after it are not read" { left("a\\004b\\t\\n") == "name=[a] hits=0" }
+    }
+    given "no input at all" {
+        then "the app draws one screen and ends" { screens("") == 1 && left("") == "name=[] hits=0" }
+    }
+}

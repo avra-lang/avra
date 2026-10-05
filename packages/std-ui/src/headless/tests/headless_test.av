@@ -1,0 +1,220 @@
+//! The headless screen, by its law: a test speaks to a control by its
+//! words, the handler the view bound runs, and the screen is painted
+//! again — and what a reader could not reach answers nothing.
+use @std.ui.components.{button, checkbox, column, dialog, field, form, item, list, slider, text}
+use @std.ui.headless.{Screen, headless}
+
+/// A counter the view reads and its handlers write.
+type Count = { n: Cell<int> = Cell.new(0) }
+
+/// A button that counts its presses and shows the count.
+fn counter(c: Count) -> Screen {
+    headless(
+        () -> column {
+            text "${c.n.get()} presses"
+            button "Count" { on press { c.n.set(c.n.get() + 1) } }
+        },
+    )
+}
+
+type Row = { id: string }
+
+/// Three keyed rows, each holding a button that wears the same words.
+fn picks(picked: Cell<string>) -> list {
+    list [Row { id: "a" }, Row { id: "b" }, Row { id: "c" }] by it.id { r ->
+        item { items: [button "Pick" { on press { picked.set(r.id) } }] }
+    }
+}
+
+spec "a control is spoken to by its words" {
+    given "a button that counts" {
+        then "a press runs its handler and paints again" {
+            let c = Count {}
+            let page = counter(c)
+            page.press("Count") && page.text() == "column\n  text \"1 presses\"\n  button \"Count\""
+        }
+        then "words no control wears answer nothing" {
+            let c = Count {}
+            let page = counter(c)
+            !page.press("1 presses") && !page.press("Missing") && c.n.get() == 0
+        }
+        then "an event the control does not hear answers nothing" {
+            let c = Count {}
+            let page = counter(c)
+            !page.fill("Count", "x") &&
+                !page.check("Count", true) &&
+                !page.slide("Count", 3) &&
+                c.n.get() == 0
+        }
+    }
+    given "controls that say a value" {
+        then "a field says the text it was given, however long" {
+            let held: Cell<string> = Cell.new("")
+            let page = headless(() -> field "Name" { on input { typed -> held.set(typed) } })
+            let long = ["octets" for n in 0..2000].join(" ")
+            page.fill("Name", long) && held.get() == long
+        }
+        then "a checkbox says its state" {
+            let on: Cell<bool> = Cell.new(false)
+            let page = headless(
+                () -> checkbox "Agree" {
+                    checked: on.get()
+                    on change { checked -> on.set(checked) }
+                },
+            )
+            page.check("Agree", true) && page.text() == "checkbox \"Agree\" checked"
+        }
+        then "a slider says its amount" {
+            let at: Cell<int> = Cell.new(0)
+            let page = headless(() -> slider "Volume" { on change { amount -> at.set(amount) } })
+            page.slide("Volume", 7) && at.get() == 7
+        }
+    }
+    given "several controls wearing the same words" {
+        then "the nth in reading order is the one spoken to" {
+            let picked: Cell<string> = Cell.new("")
+            let page = headless(() -> picks(picked))
+            page.press("Pick", nth: 2) &&
+                picked.get() == "c" &&
+                page.press("Pick") &&
+                picked.get() == "a"
+        }
+        then "an nth past the last answers nothing" {
+            let c = Count {}
+            let page = counter(c)
+            !page.press("Count", nth: 1) && !page.press("Count", nth: -1) && c.n.get() == 0
+        }
+    }
+}
+
+spec "a control a reader cannot reach does not speak" {
+    given "a disabled button" {
+        then "a press answers nothing" {
+            let c = Count {}
+            let page = headless(
+                () -> button "Go" {
+                    disabled: true
+                    on press { c.n.set(1) }
+                },
+            )
+            !page.press("Go") && c.n.get() == 0
+        }
+    }
+    given "a dialog" {
+        then "its controls speak only while it is open" {
+            let open: Cell<bool> = Cell.new(false)
+            let page = headless(
+                () -> column {
+                    button "Open" { on press { open.set(true) } }
+                    dialog "About" {
+                        open: open.get()
+                        items: [button "Close" { on press { open.set(false) } }]
+                    }
+                },
+            )
+            !page.press("Close") && page.press("Open") && page.press("Close") && !open.get()
+        }
+        then "its content is on the screen only while it is open" {
+            let page = headless(() -> dialog "About" { items: [text "Hidden"] })
+            page.text() == "dialog \"About\""
+        }
+    }
+}
+
+spec "a form is sent by what stands in it" {
+    given "a form holding a field and a button that submits" {
+        then "pressing the button sends the form" {
+            let sent: Cell<int> = Cell.new(0)
+            let page = headless(
+                () -> form {
+                    on submit { sent.set(sent.get() + 1) }
+                    field "Name"
+                    button "Save" { submits: true }
+                },
+            )
+            page.press("Save") && sent.get() == 1
+        }
+        then "a button that does not submit sends nothing" {
+            let sent: Cell<int> = Cell.new(0)
+            let page = headless(
+                () -> form {
+                    on submit { sent.set(1) }
+                    button "Cancel" { on press {} }
+                },
+            )
+            page.press("Cancel") && sent.get() == 0
+        }
+        then "a control in it sends it, as a key in a field does" {
+            let sent: Cell<int> = Cell.new(0)
+            let typed: Cell<string> = Cell.new("")
+            let page = headless(
+                () -> form {
+                    on submit { sent.set(sent.get() + 1) }
+                    field "Name" { on input { body -> typed.set(body) } }
+                },
+            )
+            page.submit("Name") && sent.get() == 1
+        }
+        then "a disabled control in it sends nothing" {
+            let sent: Cell<int> = Cell.new(0)
+            let page = headless(
+                () -> form {
+                    on submit { sent.set(1) }
+                    button "Save" {
+                        submits: true
+                        disabled: true
+                    }
+                },
+            )
+            !page.press("Save") && !page.submit("Save") && sent.get() == 0
+        }
+        then "a control outside any form sends nothing" {
+            let c = Count {}
+            let page = counter(c)
+            !page.submit("Count")
+        }
+    }
+}
+
+spec "the screen is read as text" {
+    given "a value holding a quote, a backslash and a line break" {
+        then "it stays inside its own quotes, on its own line" {
+            let page = headless(() -> field "Name" { value: "a\"\nbutton \"Forged\" \\" })
+            page.text() == "field \"Name\" value=\"a\\\"\\nbutton \\\"Forged\\\" \\\\\" placeholder=\"\""
+        }
+    }
+    given "a key holding a space and a line break" {
+        then "it stays one quoted word of its line" {
+            let page = headless(() -> item { key: "a b\nc" })
+            page.text() == "item key=\"a b\\nc\""
+        }
+    }
+}
+
+spec "the screen follows the state" {
+    given "state changed outside an event" {
+        then "the screen shows it only after a repaint" {
+            let c = Count {}
+            let page = counter(c)
+            let before = page.text()
+            c.n.set(5)
+            let stale = page.text() == before
+            page.repaint()
+            stale && page.text() == "column\n  text \"5 presses\"\n  button \"Count\""
+        }
+    }
+    given "an event no handler answered" {
+        then "the view is not built again" {
+            let built: Cell<int> = Cell.new(0)
+            let page = headless(
+                () -> {
+                    built.set(built.get() + 1)
+                    button "Go" { on press {} }
+                },
+            )
+            let _ = page.press("Missing")
+            let quiet = built.get() == 1
+            page.press("Go") && quiet && built.get() == 2
+        }
+    }
+}

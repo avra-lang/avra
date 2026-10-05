@@ -1,0 +1,147 @@
+//! An app on a live page, by its law: a paint is one frame of what
+//! changed, an echo runs the handler bound to who spoke, and nothing is
+//! sent for a page that did not change.
+use @std.ui.app.{plain, remounted}
+use @std.ui.components.{button, column, field, text}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.tests.support.{named}
+use @std.ui.realize.dom.page.{Paged, paged}
+use @std.ui.realize.dom.patch.{Says}
+use @std.ui.tree.node.{EventKind}
+
+/// The frames a host was sent, in order.
+type Host = { frames: Cell<List<Bytes>> = Cell.new([]) }
+
+/// A page showing a count and a button that raises it.
+fn counting(count: Cell<int>, host: Host) -> Paged {
+    paged(
+        () -> column {
+            text "${count.get()}"
+            button "Raise" { on press { count.set(count.get() + 1) } }
+        },
+        plain,
+        live(),
+        (sent: Bytes) -> host.frames.push(sent),
+    )
+}
+
+/// The host's echo of a press on the control named `name`.
+fn press(on: Paged, name: string) -> bool {
+    let who? = named(on.page, name).first() else { return false }
+    on.heard(who.n, EventKind.Press.code(), Says.Nothing.code(), 0, null)
+}
+
+spec "an app on a live page" {
+    given "a first paint" {
+        then "the host is sent one frame" {
+            let host = Host {}
+            counting(Cell.new(0), host).app.paint()
+            host.frames.get().length == 1
+        }
+    }
+    given "an echo of a control that hears it" {
+        then "its handler runs and the host is sent what changed" {
+            let host = Host {}
+            let count: Cell<int> = Cell.new(0)
+            let on = counting(count, host)
+            on.app.paint()
+            let ran = press(on, "Raise")
+            let frames = host.frames.get()
+            ran && count.get() == 1 && frames.length == 2 && frames[1].length < frames[0].length
+        }
+    }
+    given "an echo whose handler changes nothing a reader sees" {
+        then "the host is sent nothing" {
+            let host = Host {}
+            let on = paged(
+                () -> button "Still" { on press {} },
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
+            on.app.paint()
+            press(on, "Still") && host.frames.get().length == 1
+        }
+    }
+    given "an echo the page cannot answer" {
+        then "an element that hears nothing runs no handler and paints nothing" {
+            let host = Host {}
+            let count: Cell<int> = Cell.new(0)
+            let on = counting(count, host)
+            on.app.paint()
+            let ran = on.heard(999, EventKind.Press.code(), Says.Nothing.code(), 0, null)
+            !ran && count.get() == 0 && host.frames.get().length == 1
+        }
+        then "a kind or a tag the wire does not hold answers nothing" {
+            let host = Host {}
+            let count: Cell<int> = Cell.new(0)
+            let on = counting(count, host)
+            on.app.paint()
+            let who = named(on.page, "Raise")[0].n
+            !on.heard(who, 99, Says.Nothing.code(), 0, null) &&
+                !on.heard(who, EventKind.Press.code(), 99, 0, null) &&
+                count.get() == 0
+        }
+        then "text the host could not hand over answers nothing" {
+            let held: Cell<string> = Cell.new("")
+            let host = Host {}
+            let on = paged(
+                () -> field "Name" { on input { typed -> held.set(typed) } },
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
+            on.app.paint()
+            let who = named(on.page, "Name")[0].n
+            let lost = on.heard(who, EventKind.Input.code(), Says.Text.code(), 0, null)
+            let said = on.heard(who, EventKind.Input.code(), Says.Text.code(), 0, "Ada")
+            !lost && said && held.get() == "Ada"
+        }
+    }
+    given "a handler that mounts another view" {
+        then "the paint that follows the handler shows the new view, never the one it replaced" {
+            let host = Host {}
+            let on = paged(
+                () -> text "starting",
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
+            remounted(
+                on.app,
+                () -> button "Go" { on press { remounted(on.app, () -> button "Back" { on press {} }, plain) } },
+                plain,
+            )
+            on.app.paint()
+            let ran = press(on, "Go")
+            ran && named(on.page, "Back").length == 1 && named(on.page, "Go").is_empty()
+        }
+        then "the new view's handlers are the ones bound" {
+            let hits: Cell<int> = Cell.new(0)
+            let host = Host {}
+            let on = paged(
+                () -> text "starting",
+                plain,
+                live(),
+                (sent: Bytes) -> host.frames.push(sent),
+            )
+            remounted(on.app, () -> button "Count" { on press { hits.set(hits.get() + 1) } }, plain)
+            on.app.paint()
+            press(on, "Count") && press(on, "Count") && hits.get() == 2
+        }
+    }
+    given "a second app on a page that already shows one" {
+        then "its first frame says only what differs from the page" {
+            let host = Host {}
+            let page = live()
+            paged(() -> text "one", plain, page, (sent: Bytes) -> host.frames.push(sent))
+                .app
+                .paint()
+            paged(() -> text "two", plain, page, (sent: Bytes) -> host.frames.push(sent))
+                .app
+                .paint()
+            let frames = host.frames.get()
+            frames.length == 2 && frames[1].length < frames[0].length
+        }
+    }
+}

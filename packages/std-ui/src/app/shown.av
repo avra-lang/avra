@@ -1,0 +1,37 @@
+//! `app/shown.av` — an app shown in memory: the target is the tree its
+//! last paint showed, and nothing draws it. The headless screen and the
+//! terminal both stand on this one target; what differs is how each is
+//! spoken to and what it prints.
+use tree.controls.{Control, controls}
+use tree.outline.{outline}
+use tree.node.{Node}
+use tree.view.{View}
+use style.theme.{Theme}
+
+/// An app and the tree its last paint showed.
+export type Shown = { app: App, tree: Cell<Node?> }
+
+/// `view` shown in memory, painted once.
+export fn shown<V: View>(view: fn() -> V) -> Shown {
+    let tree: Cell<Node?> = Cell.new(null)
+    let made = Shown {
+        app: app(view, plain, (root: Node, _theme: Theme) -> tree.set(root)),
+        tree: tree,
+    }
+    made.app.paint()
+    made
+}
+
+impl Shown {
+    /// Every control on the screen, in reading order.
+    fn controls() -> List<Control> {
+        let root? = self.tree.get() else { return [] }
+        controls(root)
+    }
+
+    /// The screen as a reader finds it, with no target's drawing.
+    fn text() -> string {
+        let root? = self.tree.get() else { return "" }
+        outline(root)
+    }
+}

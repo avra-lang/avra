@@ -1,0 +1,210 @@
+//! `realize/html/element.av` — the LOWERING: a neutral node as the
+//! elements an HTML page holds. ONE place knows the page's structure — a
+//! control cannot hold its own words, so a `label` takes its node's place
+//! and the words sit beside the control inside it; a card draws its title
+//! above its children; a void element's children follow it. The static
+//! writer and the live page both read this tree, so neither knows any of
+//! it.
+//!
+//! Every element stands at a SEAT among its siblings: its node's own
+//! step, or — for an element the lowering makes inside a node — that
+//! part's (`tree/identity.av`). A page that keeps it gives it a number. A URL arrives as a `Url`, which has no unsafe
+//! value, and every other value is escaped by whoever writes it.
+use tree.identity.{NodeId, Step, lone, steps, unplaced, under}
+use tree.node.{Node, Attribute, Prim, Action, submits_among}
+use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
+use realize.html.css.{class_names}
+
+/// One piece of a page: an element, or a run of text.
+export enum Element {
+    Tag(el: Tagged)
+    Text(run: Worded)
+}
+
+/// A run of text: where it stands among its siblings, and its words.
+/// `id` is the number a page gave it — none until a page places it.
+export type Worded = { id: NodeId = unplaced, seat: string, content: string }
+
+/// An element: where it stands among its siblings (`seat`, its step as
+/// spelled), its tag, its attributes in written order, what it hears,
+/// and what it holds. `id` is the number a page gave it — none until a
+/// page places it.
+export type Tagged = {
+    id: NodeId = unplaced,
+    seat: string,
+    tag: HtmlTag,
+    attrs: List<HtmlAttr> = [],
+    hears: List<Action> = [],
+    kids: List<Element> = [],
+}
+
+impl Element {
+    fn id() -> NodeId {
+        match self { .Tag(el) -> el.id, .Text(run) -> run.id }
+    }
+
+    /// Where this stands among its siblings.
+    fn seat() -> string {
+        match self { .Tag(el) -> el.seat, .Text(run) -> run.seat }
+    }
+
+    /// The element, when this is one.
+    fn tagged() -> Tagged? {
+        match self { .Tag(el) -> el, .Text(_) -> null }
+    }
+
+    /// The text, when this is a run of it.
+    fn text() -> string? {
+        match self { .Text(run) -> run.content, .Tag(_) -> null }
+    }
+}
+
+// ── the attribute table ─────────────────────────────────────────
+
+/// A component property as an HTML attribute, or nothing (content and
+/// levels are drawn, not attached). Every arm spelled.
+fn attr_list(a: Attribute) -> List<HtmlAttr> {
+    match a {
+        .Value(v) -> [HtmlAttr { name: .Value, value: v }],
+        .Amount(n) -> [HtmlAttr { name: .Value, value: "${n}" }],
+        .Placeholder(t) -> [HtmlAttr { name: .Placeholder, value: t }],
+        .Src(u) -> [HtmlAttr { name: .Src, value: u.text() }],
+        .Alt(t) -> [HtmlAttr { name: .Alt, value: t }],
+        .Href(u) -> [HtmlAttr { name: .Href, value: u.text() }],
+        .Min(n) -> [HtmlAttr { name: .Min, value: "${n}" }],
+        .Max(n) -> [HtmlAttr { name: .Max, value: "${n}" }],
+        .Disabled(flag) -> if flag { [HtmlAttr { name: .Disabled, value: "" }] } else { [] },
+        .Checked(flag) -> if flag { [HtmlAttr { name: .Checked, value: "" }] } else { [] },
+        .Selected(flag) -> if flag { [HtmlAttr { name: .AriaSelected, value: "true" }] } else { [] },
+        .Open(flag) -> if flag { [HtmlAttr { name: .Open, value: "" }] } else { [] },
+        .Invalid(flag) -> if flag { [HtmlAttr { name: .AriaInvalid, value: "true" }] } else { [] },
+        .Loading(flag) -> if flag { [HtmlAttr { name: .AriaBusy, value: "true" }] } else { [] },
+        .Urgency(u) -> [HtmlAttr { name: .AriaLive, value: u.word() }],
+        .Title(t) -> [HtmlAttr { name: .Title, value: t }],
+        .Name(t) or .Label(t) -> [HtmlAttr { name: .AriaLabel, value: t }],
+        .Text(_) or .Level(_) or .Submits(_) -> [],
+    }
+}
+
+fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {
+    [h for a in attrs for h in attr_list(a)]
+}
+
+/// An element's attributes from the neutral node: what kind of control it
+/// is, then its properties.
+fn element_attrs(prim: Prim, attrs: List<Attribute>) -> List<HtmlAttr> {
+    control_attrs(prim, submits_among(attrs)).concat(attrs_of(attrs))
+}
+
+// ── the class attribute ─────────────────────────────────────────
+
+fn class_attrs(n: Node) -> List<HtmlAttr> {
+    let names = class_names(n)
+    if names.is_empty() { [] } else { [HtmlAttr { name: .Class, value: names.join(" ") }] }
+}
+
+/// A node's own attributes: its identity, its classes, its box.
+fn node_attrs(n: Node) -> List<HtmlAttr> {
+    let keyed: List<HtmlAttr> = match n.box.key {
+        k? -> [HtmlAttr { name: .DataKey, value: k }]
+        null -> []
+    }
+    keyed.concat(class_attrs(n))
+}
+
+// ── the elements a node lowers to ───────────────────────────────
+
+/// The parts a lowering makes inside a node, by the step each stands at.
+const text_part = Step.Part("text").spelled()
+const control_part = Step.Part("control").spelled()
+const words_part = Step.Part("words").spelled()
+
+fn title_part(j: int) -> string { Step.Part(if j == 0 { "title" } else { "title~${j}" }).spelled() }
+
+/// A run of text, when there are words to say.
+fn said(words: string) -> List<Element> {
+    if words == "" { [] } else { [Element.Text(Worded { seat: text_part, content: words })] }
+}
+
+/// The title an attribute carries, when it is one.
+fn titles(a: Attribute) -> List<string> {
+    match a { .Title(t) -> [t], _ -> [] }
+}
+
+/// The headings a titled grouping shows above its children. Every
+/// primitive spelled: only a card draws its title.
+fn headings(n: Node) -> List<Element> {
+    match n.prim {
+        .Card -> [Element.Tag(Tagged { seat: title_part(j), tag: .H2, kids: said(title) }) for j, title in [t for a in n.attrs for t in titles(a)]],
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> [],
+    }
+}
+
+/// A control under its label: the label takes the node's place — its
+/// seat, its key and its classes — and the control inside it takes the
+/// node's attributes and hears its events.
+fn labelled(n: Node, seat: string, kids: List<Element>) -> Element {
+    Element
+        .Tag(
+            Tagged {
+                seat: seat,
+                tag: .Label,
+                attrs: node_attrs(n),
+                kids: [
+                    Element
+                        .Tag(
+                            Tagged {
+                                seat: control_part,
+                                tag: tag_of(n),
+                                attrs: element_attrs(n.prim, n.attrs),
+                                hears: n.events,
+                            },
+                        ),
+                    Element.Tag(Tagged { seat: words_part, tag: .Span, kids: said(n.words()) }),
+                ]
+                    .concat(kids),
+            },
+        )
+}
+
+/// The node itself as one element holding `kids`.
+fn element(n: Node, seat: string, kids: List<Element>) -> Element {
+    Element
+        .Tag(
+            Tagged {
+                seat: seat,
+                tag: tag_of(n),
+                attrs: element_attrs(n.prim, n.attrs).concat(node_attrs(n)),
+                hears: n.events,
+                kids: kids,
+            },
+        )
+}
+
+/// The elements `n` lowers to, the node standing at `seat`: one, or —
+/// for an element that holds nothing — that one and then its children,
+/// each standing under the node's seat so it is told from the node's own
+/// siblings.
+fn lower(n: Node, seat: string) -> List<Element> {
+    let stands = steps([c.box.key for c in n.children])
+    match carries(tag_of(n)) {
+        .Within -> [
+            element(
+                n,
+                seat,
+                said(n.words()).concat(headings(n)).concat(lower_each(n.children, stands, null)),
+            ),
+        ],
+        .Never -> [element(n, seat, [])].concat(lower_each(n.children, stands, seat)),
+        .Beside -> [labelled(n, seat, lower_each(n.children, stands, null))],
+    }
+}
+
+/// Each child lowered at its own step — under `within`, when its
+/// children stand beside the node rather than inside it.
+fn lower_each(children: List<Node>, stands: List<Step>, within: string?) -> List<Element> {
+    [e for i, c in children for e in lower(c, under(within, stands[i].spelled()))]
+}
+
+/// The elements a tree lowers to, in page order.
+export fn lowered(root: Node) -> List<Element> { lower(root, lone(root.box.key).spelled()) }

@@ -1,10 +1,10 @@
 // proves: the board is a REAL screen — tasks with done-state, three filters,
 // adding from a field, a derived count and progress, a card/row/column/item
-// layout, a dialog and a theme — and its frame is a function of module
-// `state`. The controls are the library's OWN (`button`, `checkbox`, `field`)
-// with `on <kind> { … }` handlers, and the task rows are one KEYED list. The
-// frame is printed byte-exact in both engines, so a change to the view
-// changes THIS receipt.
+// layout and a dialog — and the screen is a function of module `state`. The
+// controls are the library's OWN (`button`, `checkbox`, `field`) with
+// `on <kind> { … }` handlers, and the task rows are one KEYED list. The test
+// speaks to the screen as a reader would — to a control by its words — and
+// the loop paints after every event that ran a handler.
 use @std.ui.components.{
     button,
     card,
@@ -21,17 +21,17 @@ use @std.ui.components.{
     surface,
     text,
 }
-use @std.ui.realize.dom.frame.{Live, frame_text, live, sheet}
-use @std.ui.realize.payload.{Payload}
-use @std.ui.realize.update.{Op, plan}
-use @std.ui.realize.view.{View}
+use @std.ui.headless.{headless}
+use @std.ui.tree.view.{View}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
-use @std.ui.style.theme.{dark_theme, default_theme}
+
+/// Which tasks the board shows.
+enum Show { All, Active, Done }
 
 type Todo = { id: string, title: string, done: bool }
 
-state filter: string = "all"
+state filter: Show = .All
 state dark: bool = false
 state dialog_open: bool = false
 state draft: string = ""
@@ -46,11 +46,7 @@ state tasks: List<Todo> = [
 fn done_count() -> int { [t for t in tasks if t.done].length }
 
 fn admits(t: Todo) -> bool {
-    when {
-        filter == "active" -> !t.done
-        filter == "done" -> t.done
-        _ -> true
-    }
+    match filter { .All -> true, .Active -> !t.done, .Done -> t.done }
 }
 
 fn visible() -> List<Todo> { [t for t in tasks if admits(t)] }
@@ -67,6 +63,9 @@ fn title_style(done: bool) -> Style {
 
 fn sunk_style() -> Style { Style { fill: .SurfaceSunk, radius: .S } }
 
+/// A run of controls on one line.
+fn inline_layout() -> Layout { Layout { gap: .S, align: .Center } }
+
 fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
 
 /// The draft becomes the next task, and the draft is spent.
@@ -78,37 +77,15 @@ fn add() {
     }
 }
 
-/// This task with its state flipped when it is the named one, unchanged
+/// This task with its state as given when it is the named one, unchanged
 /// otherwise.
-fn flipped(t: Todo, id: string) -> Todo {
-    if t.id == id { t with { done: !t.done } } else { t }
+fn marked(t: Todo, id: string, done: bool) -> Todo {
+    if t.id == id { t with { done: done } } else { t }
 }
 
-/// The page the host would hold: the last frame and the handlers it bound.
-once fn page() -> Live { live() }
-
-/// The ids of the nodes whose words are `words`, in frame order.
-fn worded(op: Op, words: string) -> List<int> {
-    match op {
-        .Words(id, label) -> if label == words { [id] } else { [] },
-        .Mount(_) or .Event(_, _) -> [],
-    }
-}
-
-/// The host's echo, without the wire: paint, then the `nth` control saying
-/// `words` speaks `kind`. The frame bound the handler; the echo names only
-/// the node, so row t3's Remove runs t3's closure, never the first row's.
-fn press(words: string, nth: int, kind: int, said: Payload?) -> bool {
-    let root = view().describe()
-    page().diff(root, default_theme)
-    let ids = [id for op in plan(root) for id in worded(op, words)]
-    if nth >= ids.length { return false }
-    page().fire(ids[nth], kind, said)
-}
-
-fn tab(label: string, shows: string) -> button {
+fn tab(label: string, shows: Show) -> button {
     button label {
-        on click { filter = shows }
+        on press { filter = shows }
         style: tab_style(filter == shows)
     }
 }
@@ -127,7 +104,7 @@ fn header() -> row {
                 ]
             },
             button theme_label() {
-                on click { dark = !dark }
+                on press { dark = !dark }
                 style: sunk_style()
             },
         ]
@@ -136,13 +113,13 @@ fn header() -> row {
 
 fn filters() -> row {
     row {
-        layout: Layout { gap: .S, align: .Center }
+        layout: inline_layout()
         items: [
-            tab("All", "all"),
-            tab("Active", "active"),
-            tab("Done", "done"),
+            tab("All", .All),
+            tab("Active", .Active),
+            tab("Done", .Done),
             button "Clear done" {
-                on click { tasks = [t for t in tasks if !t.done] }
+                on press { tasks = [t for t in tasks if !t.done] }
                 disabled: done_count() == 0
                 style: sunk_style()
             },
@@ -152,14 +129,15 @@ fn filters() -> row {
 
 fn new_task() -> row {
     row {
-        layout: Layout { gap: .S, align: .Center }
+        layout: inline_layout()
         items: [
             field "New task" {
+                value: draft
                 placeholder: "Type a task…"
-                on_input: (body: string) -> { draft = body }
+                on input { body -> draft = body }
             },
             button "Add" {
-                on click { add() }
+                on press { add() }
                 style: sunk_style()
             },
         ]
@@ -184,11 +162,11 @@ fn task_list() -> list {
             items: [
                 checkbox t.title {
                     checked: t.done
-                    on change { tasks = [flipped(x, t.id) for x in tasks] }
+                    on change { checked -> tasks = [marked(x, t.id, checked) for x in tasks] }
                     style: title_style(t.done)
                 },
                 button "Remove" {
-                    on click { tasks = [x for x in tasks if x.id != t.id] }
+                    on press { tasks = [x for x in tasks if x.id != t.id] }
                     style: sunk_style()
                 },
             ]
@@ -222,7 +200,7 @@ fn footer() -> row {
                 style: Style { color: .Muted }
             },
             button "About" {
-                on click { dialog_open = true }
+                on press { dialog_open = true }
                 style: sunk_style()
             },
         ]
@@ -236,7 +214,7 @@ fn about() -> dialog {
             heading "Task board" { rank: 2 },
             text "State lives in module `state`; the frame is its projection.",
             button "Close" {
-                on click { dialog_open = false }
+                on press { dialog_open = false }
                 style: sunk_style()
             },
         ]
@@ -251,31 +229,48 @@ fn view() -> surface {
     }
 }
 
-println(frame_text(view().describe()))
-println("active=${press("Active", 0, 1, null)}")
-println(frame_text(view().describe()))
-println("clear=${press("Clear done", 0, 1, null)}")
-println(frame_text(view().describe()))
-println("about=${press("About", 0, 1, null)}")
-println(frame_text(view().describe()))
-println(
-    "all=${filter} open=${[t for t in tasks if !t.done].length} done=${done_count()} total=${tasks.length}",
-)
-println("dark=${sheet(view().describe(), dark_theme).contains("--tone-text:#eeeeee")}")
-println("unbound=${press("Tasks", 0, 1, null)} wrong_kind=${press("About", 0, 2, null)}")
+let page = headless(view)
 
-// THE PER-ITEM WITNESS: both rows share one `on click` in the source, and the
+println(page.text())
+println("active=${page.press("Active")}")
+println(page.text())
+println(
+    "active_shown=${filter == Show.Active} open=${[t for t in tasks if !t.done].length} done=${done_count()} total=${tasks.length}",
+)
+
+// A PAINT WITH NOTHING CHANGED shows the same screen.
+let before = page.text()
+page.repaint()
+println("unchanged=${page.text() == before}")
+
+// WHO CANNOT SPEAK: words that are no control, a control told an event it
+// does not hear, a control in a dialog that is not open, and a disabled one.
+println(
+    "no_control=${page.press("Tasks")} wrong_event=${page.fill("About", "x")} hidden=${page.press("Close")}",
+)
+println("clear=${page.press("Clear done")} again=${page.press("Clear done")}")
+println("after_clear=[${[t.id for t in tasks].join(",")}]")
+println("about=${page.press("About")}")
+println(page.text())
+println("close=${page.press("Close")} open=${dialog_open}")
+println("all=${page.press("All")}")
+
+// THE PER-ITEM WITNESS: both rows share one `on press` in the source, and the
 // second row's Remove takes only its own task. A wrong row or none at all
 // would show here.
-println("remove=${press("Remove", 1, 1, null)}")
+println("remove=${page.press("Remove", nth: 1)}")
 println("after_remove_t3=[${[t.id for t in tasks].join(",")}]")
-println("toggle=${press("Wire the event channel", 0, 3, null)}")
+println("toggle=${page.check("Wire the event channel", true)}")
 println("after_toggle_t2=${[t.title for t in tasks if t.done].join(",")}")
 
-// THE ADD WITNESS: the field hands its handler the text the user gave, so
-// the draft becomes a task and the next id advances. An input that says
-// nothing runs no handler.
-println("silent=${press("New task", 0, 2, null)} draft=[${draft}]")
-println("typed=${press("New task", 0, 2, Payload.Text("Ship the rewrite"))}")
-println("add=${press("Add", 0, 1, null)}")
+// ADD FROM THE FIELD: the control says its own text, however long, and the
+// draft becomes a task.
+println("typed=${page.fill("New task", "Ship the rewrite")} draft=[${draft}]")
+println("add=${page.press("Add")}")
 println("after_add=[${[t.id for t in tasks].join(",")}] draft_after=[${draft}]")
+let long = ["a task with a very long title ${n}" for n in 0..400].join(" ")
+println("long=${page.fill("New task", long)} held=${draft.length == long.length}")
+println("add_long=${page.press("Add")} last=${tasks.last()?.title == long}")
+println("remove_long=${page.press("Remove", nth: 2)} left=${tasks.length}")
+println("dark=${page.press("Dark mode")} is_dark=${dark}")
+println(page.text())

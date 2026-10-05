@@ -1,0 +1,66 @@
+//! `tree/plan.av` — a tree as a FLAT graph, for a target with no
+//! elements of its own. A tree is walked ONCE (the `Sink` walk) into a
+//! stream of NEUTRAL ops: where a node sits, what it is, how it looks,
+//! what it says and what it answers. No target's currency appears here.
+//! The canvas draws from it; a page of elements lowers the tree itself
+//! (`realize/html/element.av`).
+use tree.node.{Node, Prim, Attribute, Action}
+use tree.sink.{Sink, draw}
+use style.box.{Box}
+
+/// A node's seat in the walk, where it sits, and everything a target
+/// needs to make it: its neutral primitive, its attributes and its box.
+/// The root has no parent.
+export type Mount = {
+    seat: int,
+    parent: int?,
+    index: int,
+    prim: Prim,
+    attrs: List<Attribute>,
+    box: Box,
+}
+
+/// One update op, addressed by its node's seat in the walk. A target projects the
+/// stream into its own currency: `Mount` places, `Words` says, `Event`
+/// answers.
+export enum Op {
+    Mount(m: Mount)
+    Words(seat: int, text: string)
+    Event(seat: int, action: Action)
+}
+
+/// The graph being collected: the ops in walk order.
+export type Recorder = { ops: Cell<List<Op>> = Cell.new([]) }
+
+impl Sink for Recorder {
+    fn opened(seat: int, parent: int?, index: int, n: Node) {
+        self
+            .ops
+            .push(
+                Op
+                    .Mount(
+                        Mount {
+                            seat: seat,
+                            parent: parent,
+                            index: index,
+                            prim: n.prim,
+                            attrs: n.attrs,
+                            box: n.box,
+                        },
+                    ),
+            )
+        // LICENSED loops.push_loop: the ops ride a shared Cell; a concat assignment would rebind a copy
+        for ev in n.events { self.ops.push(Op.Event(seat, ev)) }
+    }
+
+    fn words(seat: int, s: string) { self.ops.push(Op.Words(seat, s)) }
+
+    fn closed(_n: Node) {}
+}
+
+/// The update graph of one tree, in walk order.
+export fn plan(root: Node) -> List<Op> {
+    let r = Recorder {}
+    draw(root, r)
+    r.ops.get()
+}

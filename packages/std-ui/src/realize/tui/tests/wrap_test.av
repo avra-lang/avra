@@ -1,0 +1,55 @@
+// The wrap: greedy on word boundaries, long words cut, every line within
+// the width.
+use @std.ui.tree.node.{Node}
+use @std.ui.realize.tui.tui.{render}
+use @std.ui.realize.tui.wrap.{wrap, cut}
+use @std.ui.env.{Env}
+use @std.ui.realize.tests.support.{boxed, pad, text_node, heading_node, button_node}
+
+fn drawn(n: Node, width: int) -> string { render(n, Env {}, width) }
+
+fn shown(ls: List<string>) -> string { ls.join("|") }
+
+spec "std/ui tui — wrap" {
+    given "words" {
+        then "words pack greedily to the width" { shown(wrap("the quick brown fox", 10)) == "the quick|brown fox" }
+        then "a line exactly the width stays whole and one past it breaks" {
+            shown(wrap("abcde fghij", 11)) == "abcde fghij" &&
+                shown(wrap("abcde fghij", 10)) == "abcde|fghij"
+        }
+        then "a word longer than the width is cut into runs" {
+            shown(wrap("abcdefghijklmnopqrstuvwxyz", 10)) == "abcdefghij|klmnopqrst|uvwxyz"
+        }
+        then "a long word after a short one starts its own line" { shown(wrap("hi abcdefghijklmno", 10)) == "hi|abcdefghij|klmno" }
+        then "runs of spaces collapse" { shown(wrap("a    b", 10)) == "a b" }
+        then "an empty text has no lines" { wrap("", 10).length == 0 }
+        then "a newline starts a paragraph and a blank one stays" { shown(wrap("a\n\nb", 10)) == "a||b" }
+    }
+    given "the width" {
+        then "a width of one puts a character on each line" { shown(wrap("abc de", 1)) == "a|b|c|d|e" }
+        then "a width of zero or below reads as one" { shown(wrap("ab", 0)) == "a|b" && shown(wrap("ab", -3)) == "a|b" }
+        then "width counts code points, not bytes" { shown(wrap("éé éé", 2)) == "éé|éé" }
+        then "a cut keeps a multi-byte character whole" { shown(cut("ééé", 2)) == "éé|é" }
+        then "cut leaves a fitting text alone" { shown(cut("abc", 3)) == "abc" && shown(cut("", 3)) == "" }
+        then "a cut at a width of zero or below is one character a run" {
+            shown(cut("ab", 0)) == "a|b" && shown(cut("ab", -9223372036854775807)) == "a|b"
+        }
+    }
+    given "render's width law" {
+        then "a text at width ten wraps at ten with a long word cut" {
+            drawn(text_node("go abcdefghijklmnopqrs stop"), 10) == "go\nabcdefghij\nklmnopqrs\nstop"
+        }
+        then "a heading longer than the width wraps and its rule is the widest line" {
+            drawn(heading_node("a long heading here", 1), 8) == "A LONG\nHEADING\nHERE\n======="
+        }
+        then "a width of zero renders as width one" { drawn(text_node("ab"), 0) == "a\nb" }
+        then "a width of one cuts every atom" { drawn(button_node("ab"), 1) == "[\n \na\nb\n \n]" }
+        then "an empty text renders nothing" { drawn(text_node(""), 10) == "" }
+        then "an empty heading renders nothing" { drawn(heading_node("", 1), 10) == "" }
+        then "a pad wider than the width leaves one column of room" {
+            drawn(boxed(.Column, pad(.Xl), [text_node("abc")]), 4) == "   a\n   b\n   c"
+        }
+        then "unicode text is one column per character" { drawn(text_node("héllo wörld"), 5) == "héllo\nwörld" }
+        then "a heading upper-cases ASCII and leaves other letters" { drawn(heading_node("café", 1), 40) == "CAFé\n====" }
+    }
+}

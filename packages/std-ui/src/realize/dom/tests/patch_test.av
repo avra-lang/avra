@@ -1,0 +1,262 @@
+//! The diff, by its law: a paint says only what changed, by identity. Each
+//! case paints one tree, then another, and reads the patches between them.
+use @std.ui.realize.dom.live.{Live, live}
+use @std.ui.tree.node.{Node, Action, Handler, Said}
+use @std.ui.realize.tests.support.{
+    spoken,
+    named,
+    button_node,
+    card_node,
+    field_node,
+    holding,
+    keyed,
+    leaf,
+    switch_node,
+    text_node,
+}
+use @std.ui.style.box.{Box}
+use @std.ui.style.style.{Style}
+use @std.ui.style.theme.{default_theme, dark_theme}
+
+/// What turns a page showing `from` into one showing `to`.
+fn between(from: Node, to: Node) -> string {
+    let page = live()
+    let _ = page.patches(from, default_theme)
+    spoken(page, to, default_theme)
+}
+
+fn rows(keys: List<string>) -> Node { holding(.List, [keyed(holding(.Item, [text_node(k)]), k) for k in keys]) }
+
+fn nothing() {}
+
+fn heard_text(_text: string) {}
+
+fn hearing(n: Node, handler: Handler) -> Node { n with { events: [Action { kind: .Input, handler: handler }] } }
+
+fn pressing(n: Node) -> Node { n with { events: [Action { kind: .Press, handler: Handler.Nothing(nothing) }] } }
+
+fn heard_number(_n: int) {}
+
+fn slider_at(n: int) -> Node {
+    leaf(.Slider, [.Label("V"), .Amount(n)]) with { events: [Action { kind: .Change, handler: Handler.Number(heard_number) }] }
+}
+
+/// The patches after a user moves a slider showing `shown` to `moved`
+/// and the program then draws `drawn`.
+fn after_sliding(shown: int, moved: int, drawn: int) -> string {
+    let page = live()
+    let _ = page.patches(slider_at(shown), default_theme)
+    let _ = page.fire(named(page, "V")[0], .Change, Said.Number(moved))
+    spoken(page, slider_at(drawn), default_theme)
+}
+
+fn muted(n: Node) -> Node { n with { box: Box { style: Style { color: .Muted } } } }
+
+/// The patches after a user types `typed` into a field showing `shown`
+/// and the program then draws `drawn`.
+fn after_typing(shown: string, typed: string, drawn: string) -> string {
+    let page = live()
+    let _ = page.patches(hearing(field_node("N", shown), Handler.Text(heard_text)), default_theme)
+    let _ = page.fire(named(page, "N")[0], .Input, Said.Text(typed))
+    spoken(page, hearing(field_node("N", drawn), Handler.Text(heard_text)), default_theme)
+}
+
+spec "std/ui dom — a repaint says only what changed" {
+    given "the same tree" {
+        then "says nothing" { between(rows(["a", "b"]), rows(["a", "b"])) == "" }
+    }
+    given "keyed rows in another order" {
+        then "two swapped rows are one place, and nothing made or removed" {
+            between(rows(["a", "b"]), rows(["b", "a"])) == "place 0/k1:b in 0 after -"
+        }
+        then "a row moved up one is one place" {
+            between(rows(["a", "b", "c", "d"]), rows(["a", "c", "b", "d"])) == "place 0/k1:c in 0 after 0/k1:a"
+        }
+        then "the last row carried to the front is one place" {
+            between(rows(["a", "b", "c", "d"]), rows(["d", "a", "b", "c"])) == "place 0/k1:d in 0 after -"
+        }
+    }
+    given "a keyed row that left" {
+        then "is one removal, and its neighbours are untouched" { between(rows(["a", "b", "c"]), rows(["a", "c"])) == "remove 0/k1:b" }
+    }
+    given "a keyed row landing between two" {
+        then "is built whole, then placed after the row it follows" {
+            between(rows(["a", "c"]), rows(["a", "b", "c"])) == "create 0/k1:b li\nattr 0/k1:b data-key=b\ncreate 0/k1:b/0 span\ntext 0/k1:b/0/+text b\nplace 0/k1:b/0/+text in 0/k1:b/0 after -\nplace 0/k1:b/0 in 0/k1:b after -\nplace 0/k1:b in 0 after 0/k1:a"
+        }
+    }
+    given "words that changed" {
+        then "is the text rewritten, the element kept" { between(text_node("a"), text_node("b")) == "retext 0/+text b" }
+        then "is the text removed when the words go" { between(text_node("a"), text_node("")) == "remove 0/+text" }
+        then "is the text made when words arrive" {
+            between(text_node(""), text_node("a")) == "text 0/+text a\nplace 0/+text in 0 after -"
+        }
+    }
+    given "an attribute" {
+        then "is set when it arrives or changes" { between(text_node("a"), muted(text_node("a"))) == "style\nattr 0 class=color-muted" }
+        then "is dropped when it goes" { between(muted(text_node("a")), text_node("a")) == "unattr 0 class" }
+    }
+    given "a place whose node became another kind of element" {
+        then "is that element removed and the new one built" {
+            between(text_node("a"), button_node("a")).starts_with("remove 0\ncreate 0 button")
+        }
+    }
+    given "an event" {
+        then "is heard when a handler arrives" { between(button_node("a"), pressing(button_node("a"))) == "listen 0 press" }
+        then "is dropped when its handler goes" { between(pressing(button_node("a")), button_node("a")) == "unlisten 0 press" }
+        then "is left alone while it is still heard" { between(pressing(button_node("a")), pressing(button_node("a"))) == "" }
+    }
+}
+
+/// A chain `depth` nodes deep, each keyed `key`, a button at its foot.
+fn chain(depth: int, key: string) -> Node {
+    mut n = pressing(button_node("deep"))
+    for j in 0..depth { n = keyed(holding(.Column, [n]), key) }
+    n
+}
+
+const long_key = "123e4567-e89b-12d3-a456-426614174000"
+
+/// The bytes a first paint of `n` sends.
+fn first_frame(n: Node) -> int { live().paint(n, default_theme).length }
+
+spec "std/ui dom — depth costs a page nothing" {
+    given "a control 120 levels deep under 36-letter keys" {
+        then "is found by name and its event fires" {
+            let page = live()
+            let _ = page.patches(chain(120, long_key), default_theme)
+            named(page, "deep").length == 1 && page.fire(named(page, "deep")[0], .Press, null)
+        }
+    }
+    given "a chain twice as deep" {
+        then "is a frame twice as long, not four times" {
+            let shallow = first_frame(chain(200, long_key))
+            let deep = first_frame(chain(400, long_key))
+            deep < shallow * 2 + 64 && deep > shallow
+        }
+    }
+    given "a chain 1,600 levels deep" {
+        then "is painted, every level on the page" { first_frame(chain(1600, "k")) > 1600 * 16 }
+    }
+    given "an element whose parts hold other parts" {
+        then "is not rebuilt by a repaint that changed nothing" {
+            between(card_node("Board", [text_node("a")]), card_node("Board", [text_node("a")])) == ""
+        }
+    }
+}
+
+state picked: string = ""
+
+fn pick_first() { picked = "first" }
+
+fn pick_second() { picked = "second" }
+
+fn picking(pick: fn() -> void) -> Node {
+    button_node("Pick") with { events: [Action { kind: .Press, handler: Handler.Nothing(pick) }] }
+}
+
+spec "std/ui dom — two siblings under one key" {
+    given "two rows sharing a key, each with its own handler" {
+        then "each is its own element and fires its own handler" {
+            let page = live()
+            let _ = page
+                .patches(
+                    holding(
+                        .List,
+                        [keyed(picking(pick_first), "a"), keyed(picking(pick_second), "a")],
+                    ),
+                    default_theme,
+                )
+            let both = named(page, "Pick")
+            let first = page.fire(both[0], .Press, null) && picked == "first"
+            both.length == 2 &&
+                both[0] != both[1] &&
+                first &&
+                page.fire(both[1], .Press, null) &&
+                picked == "second"
+        }
+    }
+}
+
+spec "std/ui dom — a property is what the page holds" {
+    given "a field's value and a switch's state" {
+        then "are set as properties, never attributes" {
+            between(text_node(""), field_node("N", "Ann"))
+                    .contains("prop 0/+control value=\"Ann\"") &&
+                between(text_node(""), switch_node("S", true))
+                    .contains("prop 0/+control checked=true")
+        }
+        then "are set again when the program changes them" {
+            between(field_node("N", "a"), field_node("N", "b")) == "prop 0/+control value=\"b\"" &&
+                between(switch_node("S", true), switch_node("S", false)) == "prop 0/+control checked=false"
+        }
+    }
+    given "a field the user typed into, drawn with what was typed" {
+        then "is not written back — the caret stays where the user left it" { after_typing("", "abc", "abc") == "" }
+    }
+    given "a slider the user moved, drawn with where it was moved to" {
+        then "is not written back: what was heard and what is drawn compare as the text the page holds" {
+            after_sliding(3, 7, 7) == ""
+        }
+    }
+    given "a slider the user moved, drawn with where the program still holds it" {
+        then "is set back to what the program draws" { after_sliding(3, 7, 3) == "prop 0/+control value=\"3\"" }
+    }
+    given "a control heard twice before a paint" {
+        then "holds one record of what its property now holds, the latest" {
+            let page = live()
+            let _ = page
+                .patches(hearing(field_node("N", ""), Handler.Text(heard_text)), default_theme)
+            let _ = page.fire(named(page, "N")[0], .Input, Said.Text("a"))
+            let _ = page.fire(named(page, "N")[0], .Input, Said.Text("ab"))
+            page.heard.get().length == 1 &&
+                spoken(
+                    page,
+                    hearing(field_node("N", "ab"), Handler.Text(heard_text)),
+                    default_theme,
+                ) == ""
+        }
+    }
+    given "a field the user typed into, drawn with what the program still holds" {
+        then "is set back to the program's value: the page is a function of state" {
+            after_typing("", "abc", "") == "prop 0/+control value=\"\""
+        }
+    }
+    given "what a user typed" {
+        then "is forgotten once a paint has answered it" {
+            let page = live()
+            let shown = hearing(field_node("N", ""), Handler.Text(heard_text))
+            let _ = page.patches(shown, default_theme)
+            let _ = page.fire(named(page, "N")[0], .Input, Said.Text("abc"))
+            let _ = page
+                .patches(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme)
+            spoken(page, hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme) == ""
+        }
+    }
+}
+
+spec "std/ui dom — the sheet" {
+    given "a first paint" {
+        then "sends the sheet before any element" {
+            spoken(live(), text_node("a"), default_theme).starts_with("style\ncreate 0 span")
+        }
+    }
+    given "a class the page has worn before, named in another order" {
+        then "sends no sheet" {
+            let page = live()
+            let _ = page
+                .patches(holding(.Row, [muted(text_node("a")), text_node("b")]), default_theme)
+            !spoken(page, holding(.Row, [text_node("a"), muted(text_node("b"))]), default_theme)
+                .contains("style")
+        }
+    }
+    given "a class the page has never worn" {
+        then "sends the sheet again" { between(text_node("a"), muted(text_node("a"))).starts_with("style\n") }
+    }
+    given "another theme" {
+        then "sends the sheet and moves no element" {
+            let page = live()
+            let _ = page.patches(text_node("a"), default_theme)
+            spoken(page, text_node("a"), dark_theme) == "style"
+        }
+    }
+}

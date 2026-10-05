@@ -99,6 +99,31 @@ export type BuildOutcome = {
     refuses: List<RefusesCall> = [],
 }
 
+/// THE FEATURES A WASM MODULE BUILT HERE MAY USE: LLVM's baseline for a
+/// wasm triple that names no CPU, which is what the backend and the C
+/// beside it are built to. The optimizer is told these and no others —
+/// told "every feature it knows", it also writes proposals no engine
+/// ships yet, and the module it answers does not compile where it runs.
+const WASM_FEATURES = [
+    "bulk-memory",
+    "bulk-memory-opt",
+    "call-indirect-overlong",
+    "multivalue",
+    "mutable-globals",
+    "nontrapping-float-to-int",
+    "reference-types",
+    "sign-ext",
+]
+
+/// The optimizer's words to shrink `linked` into `shrunk`, for size — the
+/// spellings to try, in order. An optimizer too old to know a feature by
+/// name is older than any proposal "every feature" would turn on, so for
+/// it alone that word is the same set.
+fn wasm_opt_tries(linked: string, shrunk: string) -> List<List<string>> {
+    let shrink = ["-Oz", linked, "-o", shrunk]
+    [["--enable-${f}" for f in WASM_FEATURES].concat(shrink), ["--all-features"].concat(shrink)]
+}
+
 /// ONE OBJECT OF A BUILD: what it is an object of, the key it is kept under,
 /// where it stands for the link, and the source the link orders it by.
 type Made = { which: Owned, key: string, obj: string, source: string }
@@ -795,7 +820,7 @@ fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string 
 fn shipped(staged: string, tools: Toolchain) -> string {
     if tools.target == "" || tools.wasm_opt == "" { return staged }
     let shrunk = staged_beside(staged)
-    if avra_spawn_status(tools.wasm_opt, ["--all-features", "-Oz", staged, "-o", shrunk]) != 0 {
+    if !wasm_opt_tries(staged, shrunk).any((words) -> avra_spawn_status(tools.wasm_opt, words) == 0) {
         let _ = remove(shrunk)
         return staged
     }

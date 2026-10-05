@@ -1,0 +1,190 @@
+//! `terminal/terminal.av` — the app in a terminal. The tree is drawn as
+//! lines in a width (`realize/tui`), one control holds the FOCUS, and the
+//! keys go to it: Tab moves the focus among the controls that can speak,
+//! Enter acts, a typed character fills a field. Every key that reaches a
+//! handler goes through the app's one door, so the screen follows.
+//!
+//! A FIELD SHOWS WHAT THE VIEW SAYS IT HOLDS: a typed character says the
+//! held text and the character, and a view that does not keep what it was
+//! told shows none of it.
+use @std.text.{codepoints, from_codepoints}
+use app.{Shown, shown}
+use tree.controls.{Control}
+use tree.node.{Said}
+use realize.tui.said.{said_of}
+use realize.tui.tui.{focused}
+use tree.view.{View}
+use terminal.keys.{Key, heard, keys}
+
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken(token: int) -> Bytes
+
+/// Who holds the focus: the path the control stands at, and its place
+/// among the controls that could take it — where the focus goes when that
+/// control leaves the screen.
+type Focus = { path: string, at: int }
+
+/// An app in a terminal `width` cells wide: the screen its last paint
+/// showed, who holds the focus, and whether the input has ended.
+export type Terminal = {
+    shown: Shown,
+    width: int,
+    focus: Cell<Focus?> = Cell.new(null),
+    ended: Cell<bool> = Cell.new(false),
+}
+
+/// `view` in a terminal `width` cells wide, painted once.
+export fn terminal<V: View>(view: fn() -> V, width: int = 80) -> Terminal {
+    Terminal { shown: shown(view), width: width }
+}
+
+// ── what a key does to the control that holds the focus ─────────
+
+/// Enter: a control that is pressed is pressed, one that is on or off
+/// changes over, and a field sends the form it stands in.
+fn entered(c: Control) -> bool {
+    match c.node.prim {
+        .Checkbox or .Switch -> c.says(.Change, Said.Flag(!said_of(c.node.attrs).checked)),
+        .Field -> c.sends(),
+        .Slider -> false,
+        .Text or .Heading or .Button or .Link or .Image or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form -> c.pressed(),
+    }
+}
+
+/// A slider moved `by`, held within its bounds when it names any.
+fn slid(c: Control, by: int) -> bool {
+    let reads = said_of(c.node.attrs)
+    let to = reads.amount + by
+    if reads.max > reads.min && (to < reads.min || to > reads.max) { return false }
+    c.says(.Change, Said.Number(to))
+}
+
+/// A typed character: a field takes it after what it holds, a slider
+/// moves on `+` and `-`, and a space acts as Enter does elsewhere.
+fn typed(c: Control, ch: string) -> bool {
+    match c.node.prim {
+        .Field -> c.says(.Input, Said.Text(said_of(c.node.attrs).value + ch)),
+        .Slider -> match ch { "+" -> slid(c, 1), "-" -> slid(c, -1), _ -> false },
+        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch -> ch == " " && entered(c),
+    }
+}
+
+/// Backspace: a field loses the last character it holds.
+fn erased(c: Control) -> bool {
+    match c.node.prim {
+        .Field -> {
+            let held = codepoints(said_of(c.node.attrs).value)
+            if held.is_empty() { return false }
+            c.says(.Input, Said.Text(from_codepoints(held.slice(0, held.length - 1))))
+        },
+        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> false,
+    }
+}
+
+impl Terminal {
+    /// The controls the focus can rest on, in reading order: on the
+    /// screen and able to speak.
+    fn reachable() -> List<Control> { [c for c in self.shown.controls() if !c.disabled()] }
+
+    /// Where the focus rests among `on`: the control at the path it was
+    /// left on, else the one now standing in its place, else the first.
+    fn resting(on: List<Control>) -> int? {
+        if on.is_empty() { return null }
+        let held? = self.focus.get() else { return 0 }
+        [j for j, c in on if c.path == held.path].first() ?? if held.at < on.length { held.at } else { on.length - 1 }
+    }
+
+    /// The control that holds the focus — absent on a screen with none.
+    fn focused() -> Control? {
+        let on = self.reachable()
+        let at? = self.resting(on) else { return null }
+        on[at]
+    }
+
+    /// The focus moves `by` controls on, around the ends.
+    fn move(by: int) {
+        let on = self.reachable()
+        let at? = self.resting(on) else { return }
+        let to = (at + by + on.length) % on.length
+        self.focus.set(Focus { path: on[to].path, at: to })
+    }
+
+    /// The control that holds the focus is acted on by `act`, through the
+    /// app's door. The focus is pinned to it first, so it stays with the
+    /// control whatever the paint moves around it.
+    fn act(by: fn(Control) -> bool) -> bool {
+        let on = self.reachable()
+        let at? = self.resting(on) else { return false }
+        self.focus.set(Focus { path: on[at].path, at: at })
+        self.shown.app.turn(() -> by(on[at]))
+    }
+
+    /// The state changed outside a key — a timer, an answer arriving — and
+    /// the screen is painted again.
+    fn repaint() { self.shown.app.paint() }
+
+    /// One key. True when a handler ran.
+    fn key(k: Key) -> bool {
+        match k {
+            .Next -> {
+                self.move(1)
+                false
+            },
+            .Back -> {
+                self.move(-1)
+                false
+            },
+            .End -> {
+                self.ended.set(true)
+                false
+            },
+            .Enter -> self.act(entered),
+            .Erase -> self.act(erased),
+            .Char(ch) -> self.act((c: Control) -> typed(c, ch)),
+        }
+    }
+
+    /// Each key in turn, until the input ends.
+    fn press(pressed: List<Key>) {
+        for k in pressed {
+            if self.ended.get() { return }
+            let _ = self.key(k)
+        }
+    }
+
+    /// The keys `text` spells, each in turn, until the input ends.
+    fn feed(text: string) { self.press(keys(text)) }
+
+    /// The screen as the terminal shows it: the tree in lines, the control
+    /// that holds the focus marked.
+    fn screen() -> string {
+        let root? = self.shown.tree.get() else { return "" }
+        focused(root, self.width, self.focused()?.seat)
+    }
+
+    /// The screen as a reader finds it, with no terminal's drawing.
+    fn text() -> string { self.shown.text() }
+}
+
+// ── the terminal itself ─────────────────────────────────────────
+
+const input = 0
+const chunk = 4096
+
+/// THE APP: `view` in this terminal, drawn now and after every run of
+/// keys, until the input ends. What a run leaves unfinished — a character
+/// or an escape sequence cut by the read — stands before the next run.
+export fn mount<V: View>(view: fn() -> V, width: int = 80) {
+    let on = terminal(view, width)
+    println(on.screen())
+    mut held: Bytes = "".bytes()
+    mut token = avra_fd_read(input, chunk)
+    while token > 0 && !on.ended.get() {
+        let run = heard(held.concat(avra_fd_taken(token)))
+        held = run.held
+        on.press(run.keys)
+        println("")
+        println(on.screen())
+        if !on.ended.get() { token = avra_fd_read(input, chunk) }
+    }
+}

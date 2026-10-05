@@ -1,0 +1,53 @@
+//! `realize/tui/wrap.av` — text as lines of a width. A cell is one code
+//! point, never a byte, so an `é` is one column; a wide glyph and a
+//! combining mark still count one each.
+use @std.text.{chars, codepoint_count}
+
+/// The cells a line takes.
+export fn cells(s: string) -> int { codepoint_count(s) }
+
+/// A width below one reads as one.
+export fn at_least_one(n: int) -> int { if n < 1 { 1 } else { n } }
+
+/// The text as lines of at most `width` cells, breaking at spaces. A
+/// newline starts a fresh paragraph, a blank one keeping its blank line;
+/// runs of spaces collapse; a word longer than the line is cut at the
+/// width. "" has no lines.
+export fn wrap(text: string, width: int) -> List<string> {
+    let w = at_least_one(width)
+    [l for p in text.split("\n") for l in paragraph(p, w)]
+}
+
+fn paragraph(p: string, w: int) -> List<string> {
+    let words = [[piece] for word in p.split(" ") if word != "" for piece in cut(word, w)]
+    if words.is_empty() { return [""] }
+    flowed(words, " ", w)
+}
+
+/// `s` in runs of `width` cells; whole when it already fits.
+export fn cut(s: string, width: int) -> List<string> {
+    let w = at_least_one(width)
+    let cs = chars(s)
+    if cs.length <= w { return [s] }
+    [cs.slice(k * w, k * w + w).join("") for k in 0..(cs.length + w - 1) / w]
+}
+
+/// Parts laid on lines: single-line parts share a line, `sep` apart,
+/// until the next would pass `w`; a multi-line part takes its own lines.
+/// A part with no lines, or one blank line, is skipped.
+export fn flowed(parts: List<List<string>>, sep: string, w: int) -> List<string> {
+    mut out: List<string> = []
+    mut cur = ""
+    for ls in [p for p in parts if !is_blank(p)] {
+        if ls.length == 1 && cur != "" && cells(cur) + cells(sep) + cells(ls[0]) <= w {
+            cur = cur + sep + ls[0]
+        } else {
+            if cur != "" { out.push(cur) }
+            cur = ""
+            if ls.length == 1 { cur = ls[0] } else { out = out.concat(ls) }
+        }
+    }
+    if cur == "" { out } else { out.concat([cur]) }
+}
+
+fn is_blank(ls: List<string>) -> bool { ls.is_empty() || ls.length == 1 && ls[0] == "" }

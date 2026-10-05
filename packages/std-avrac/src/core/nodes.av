@@ -698,6 +698,22 @@ export const pronoun_param: Param = Param {
 // (workspace's claim law) rather than falling through.
 export type Mark = { name: string, args: List<string>, span: Span? = null, call: ExprId? = null }
 
+/// A handler an instance hears an event with: the event it names,
+/// whether the `on` sugar wrote it (a setting that names an event hears
+/// it too, and is printed as it was written), and why the instance's
+/// component cannot hear it, when it cannot.
+export type OnHandler = { event: string, sugar: bool = true, unheard: Unheard? = null }
+
+/// Why a component cannot hear a handler written for it.
+export enum Unheard {
+    /// It declares no such event — these are the ones it does.
+    Undeclared(declared: List<string>)
+    /// The event says these seats, and the handler names some of them.
+    Seats(says: List<string>)
+    /// The instance already hears this event once.
+    Twice
+}
+
 /// A declared seat — a fn's param, a lambda's, a struct's field, an
 /// enum variant's payload — with the DEFAULT a field may declare,
 /// the PROMISES it makes its callee (`mut`, `const`) and the MARKS
@@ -705,7 +721,10 @@ export type Mark = { name: string, args: List<string>, span: Span? = null, call:
 /// shape covers both and no arm has to ask which kind it is. Its
 /// span lives off the value, in the store's span table, keyed by
 /// `id` — never a field here to keep in sync across a rebuild.
-export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, id: ParamId, marks: List<Mark> = [], state: bool = false }
+/// `says` makes the seat an EVENT a component declares (`on input(text:
+/// string)`): the seats its handler is told, none for an event that
+/// says nothing — and absent on every seat that is not an event.
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null }
 
 /// A seat's identity in the store's span table — a fn's param, a
 /// lambda's, a struct's field, an enum variant's payload. Minted

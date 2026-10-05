@@ -1,0 +1,174 @@
+//! `tree/codes.av` — `@derive(Codes)`: an enum variant carries the
+//! number the wire spells it with (`@code(3) SetText`). The number is DATA
+//! on the variant, declared ONCE: the serializer asks `code()`, the reader
+//! of an echo asks `coded_as(n)`, and whatever writes a host's copy asks
+//! `coded()` for every variant with its word — so no table is kept twice.
+use @std.meta.{Type, Variant, Directive, Declared, Diagnostic, literal, refuse_as_at}
+use @std.text.{parse_int, codepoints, from_codepoints}
+
+/// One variant as a host reads it: its word and its number.
+export type Coded = { word: string, code: int }
+
+/// An enum whose variants name their wire numbers.
+export trait Codes {
+    fn code() -> int
+
+    /// The impl, when every variant wears a number of its own. A refused
+    /// enum is given `refused_codes` in its place, so the refusal is the
+    /// one thing said.
+    static fn derive(t: Type) -> Declared {
+        let problems = [p for j, v in t.variants for p in problem(t.variants, j)]
+        if !problems.is_empty() { return Declared { made: [refused_codes(t)], problems: problems } }
+        let coded = [Wears { name: v.name, code: c } for v in t.variants for c in worn(v)]
+        let arms = [quote { .${w.name} -> ${w.code} } for w in coded]
+        let each = [quote { .${w.name} } for w in coded]
+        let rows = [quote { Coded { word: ${literal(snake(w.name))}, code: ${w.code} } } for w in coded]
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote {
+                        impl ${t} {
+                            fn code() -> int { match self { ${arms} } }
+
+                            static fn coded() -> List<Coded> { [${..rows}] }
+
+                            static fn coded_as(code: int) -> ${t}? {
+                                let every: List<${t}> = [${..each}]
+                                every.find(it.code() == code)
+                            }
+                        }
+                    },
+                },
+            ],
+            problems: [],
+        }
+    }
+
+    static fn marks(t: Type) -> List<string> { [code_mark] }
+}
+
+/// What a refused enum is given: the three verbs, answering no number
+/// anyone wrote and no variant — the build is already refused, so none of
+/// them runs, and no caller is blamed for a method that was never made.
+fn refused_codes(t: Type) -> Directive {
+    Directive {
+        twin: "",
+        name: t.name,
+        at: t.at,
+        source: quote {
+            impl ${t} {
+                fn code() -> int { 0 }
+
+                static fn coded() -> List<Coded> { [] }
+
+                static fn coded_as(code: int) -> ${t}? { null }
+            }
+        },
+    }
+}
+
+/// The mark a variant's number is written under.
+const code_mark = "code"
+
+/// The largest number one octet of the wire spells.
+const widest = 255
+
+/// A variant and the number it wears.
+type Wears = { name: string, code: int }
+
+/// What a variant wrote for its number, as text — absent when it wrote
+/// none.
+fn written(v: Variant) -> string? { v.marks.find(it.name == code_mark)?.args?.first() }
+
+/// The number a variant wears: what it wrote, when that is a number one
+/// octet spells. None otherwise — each reason is `problem`'s to say.
+fn worn(v: Variant) -> List<int> {
+    let n? = parse_int(written(v) ?? "") else { return [] }
+    if n < 0 || n > widest { [] } else { [n] }
+}
+
+/// The smallest number no variant wears, for a remedy to name.
+fn free(vs: List<Variant>) -> int {
+    let taken = [c for v in vs for c in worn(v)]
+    [n for n in 0..widest + 1 if !taken.contains(n)].first() ?? 0
+}
+
+/// What is wrong with variant `j`, when anything is. ONE reason a
+/// variant, the first that holds.
+fn problem(vs: List<Variant>, j: int) -> List<Diagnostic> {
+    let v = vs[j]
+    if !v.payload.is_empty() || !v.fields.is_empty() { return [carries(v)] }
+    let text? = written(v) else { return [uncoded(v, free(vs))] }
+    let n? = parse_int(text) else { return [unnumbered(v, text, free(vs))] }
+    if n < 0 || n > widest { return [too_wide(v, n, free(vs))] }
+    if vs.slice(0, j).any(worn(it).contains(n)) { return [recoded(v, n, free(vs))] }
+    []
+}
+
+/// `SetText` → `set_text`: a variant's name as a host spells a word.
+fn snake(name: string) -> string {
+    from_codepoints([c for j, u in codepoints(name) for c in lowered(u, j)])
+}
+
+/// One code point of a name in snake case: a capital is its lower letter,
+/// behind `_` unless it opens the name.
+fn lowered(u: int, at: int) -> List<int> {
+    if u < 65 || u > 90 { return [u] }
+    if at == 0 { [u + 32] } else { [95, u + 32] }
+}
+
+// ── voices ──
+
+fn remedy(v: Variant, to: int) -> string { "`@code(${to}) ${v.name}` — ${to} is the smallest number no variant wears" }
+
+fn uncoded(v: Variant, to: int) -> Diagnostic {
+    refuse_as_at(
+        "code-missing",
+        v.at,
+        "a wire variant says its number, and `${v.name}` says none",
+        remedy(v, to),
+    )
+}
+
+fn unnumbered(v: Variant, text: string, to: int) -> Diagnostic {
+    refuse_as_at(
+        "code-not-number",
+        v.at,
+        if text == "" {
+            "a wire variant's code is a whole number, and `${v.name}`'s is not one"
+        } else {
+            "a wire variant's code is a whole number, and `${v.name}` wrote `${text}`"
+        },
+        remedy(v, to),
+    )
+}
+
+fn too_wide(v: Variant, n: int, to: int) -> Diagnostic {
+    refuse_as_at(
+        "code-out-of-byte",
+        v.at,
+        "a wire variant's code is one octet, 0 to ${widest}, and `${v.name}` wrote ${n}",
+        remedy(v, to),
+    )
+}
+
+fn recoded(v: Variant, n: int, to: int) -> Diagnostic {
+    refuse_as_at(
+        "code-taken",
+        v.at,
+        "two wire variants share no number, and `${v.name}` wears ${n}, which a variant above it has",
+        remedy(v, to),
+    )
+}
+
+fn carries(v: Variant) -> Diagnostic {
+    refuse_as_at(
+        "code-payload",
+        v.at,
+        "a wire code names a variant that carries nothing, and `${v.name}` carries a payload",
+        "code an enum of bare variants, and map `${v.name}` to one of them where it is written out",
+    )
+}

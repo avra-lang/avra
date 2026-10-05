@@ -151,7 +151,7 @@ export type SyntaxArena = {
     // instance-body sugar built — the word the handler was written
     // with, so the printer spells the sugar back rather than the
     // setting and closure it lowers to
-    on_handlers: Cell<List<string?>>,
+    on_handlers: Cell<List<OnHandler?>>,
 }
 
 export fn new_node_store(file: string = "") -> SyntaxArena {
@@ -481,16 +481,48 @@ impl SyntaxArena {
         self.keyed_lists.get()[e.index]
     }
 
-    /// The kind word an `on <kind> { … }` handler was written with,
-    /// by the lambda the sugar built for it. Absent on every closure a
-    /// program wrote as a closure.
-    fn mark_on_handler(e: ExprId, kind: string) {
-        self.on_handlers.set_at(e.index, kind)
+    /// The event an `on <event> { … }` handler was written for, by the
+    /// lambda the sugar built for it. Absent on every closure a program
+    /// wrote as a closure. Part of the expression's identity: the sugar
+    /// hears an EVENT, where a closure written under the same name fills
+    /// a field.
+    fn mark_on_handler(e: ExprId, event: string) {
+        self.on_handlers.set_at(e.index, OnHandler { event: event })
+        self
+            .expr_fingerprints
+            .set_at(e.index, fp(189, [self.expr_fingerprints.get()[e.index], fp_str(event)]))
     }
 
+    /// The event a handler the SUGAR wrote names — what the printer
+    /// spells back as `on <event>`.
     fn on_handler_kind(e: ExprId) -> string? {
-        self.on_handlers.get()[e.index]
+        let held? = self.on_handlers.get()[e.index] else { return null }
+        if held.sugar { held.event } else { null }
     }
+
+    /// A plain setting that names an event: it hears it as the sugar
+    /// would, and stays written as it was.
+    fn mark_heard(e: ExprId, event: string) {
+        self.on_handlers.set_at(e.index, OnHandler { event: event, sugar: false })
+    }
+
+    /// Why the instance's component cannot hear the handler at `e` —
+    /// what the instance's refusal says. Part of its identity.
+    fn mark_unheard(e: ExprId, why: Unheard) {
+        let held? = self.on_handlers.get()[e.index] else { return }
+        self.on_handlers.set_at(e.index, held with { unheard: why })
+        self
+            .expr_fingerprints
+            .set_at(e.index, fp(190, [self.expr_fingerprints.get()[e.index], unheard_fp(why)]))
+    }
+
+    /// Whether the value at `e` fills a field another law already refused
+    /// by name — a handler for an event its component does not declare.
+    /// The record's own field law then types the value and says nothing.
+    fn refused_elsewhere(e: ExprId) -> bool { self.on_handlers.get()[e.index]?.unheard != null }
+
+    /// The handler at `e`, when the sugar wrote it.
+    fn on_handler(e: ExprId) -> OnHandler? { self.on_handlers.get()[e.index] }
 
     /// Where a quote's runs of text start in the source, one per part.
     fn mark_quote_at(e: ExprId) {
@@ -1340,6 +1372,14 @@ fn named_binders(id: PatId, names: List<string>) -> List<Binder> {
     [Binder { pat: id, name: n } for n in names]
 }
 
+fn unheard_fp(why: Unheard) -> int {
+    match why {
+        .Undeclared(declared) -> fp(191, [fp_list(str_fps(declared))]),
+        .Seats(says) -> fp(192, [fp_list(str_fps(says))]),
+        .Twice -> fp(193, []),
+    }
+}
+
 impl SyntaxArena {
     /// A case list's fingerprint parts — one value per case.
     fn case_fps(cases: List<Case>) -> List<int> {
@@ -1361,8 +1401,16 @@ impl SyntaxArena {
                 self.opt_fp(p.default),
                 fp_list(self.mark_fps(p.marks)),
                 if p.state { 1 } else { 0 },
+                self.says_fp(p.says),
             ],
         ) for p in params]
+    }
+
+    /// What an event says, as ONE value — and an event that says
+    /// nothing is not a seat that is no event.
+    fn says_fp(says: List<Param>?) -> int {
+        let said? = says else { return 0 }
+        fp(188, [fp_list(self.param_fps(said))])
     }
 
     /// A variant list's fingerprint parts — ONE VALUE PER VARIANT.

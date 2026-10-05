@@ -1,6 +1,7 @@
 // Snapshots, digests, comparison, the terminal listing and the page.
-use @std.ui.{View, Node, Role, column, text, button, list, item}
-use @std.ui_html.{html}
+use @std.ui.components.{button, text}
+use @std.ui.realize.html.html.{fragment}
+use @std.ui.tree.view.{View}
 use @std.ui_gallery.{
     Case,
     Entry,
@@ -28,7 +29,7 @@ fn shown_all(cs: List<Change>) -> string { [shown(c) for c in cs].join(" ") }
 
 fn on_page(name: string) -> bool { doc().contains(name) }
 
-fn page_of(entries: List<Entry>) -> string { html(gallery(entries).node()) }
+fn page_of(entries: List<Entry>) -> string { fragment(gallery(entries).describe()) }
 
 fn hello() -> List<Snapshot> { one("Hello") }
 
@@ -48,9 +49,8 @@ spec "std/ui-gallery" {
         then "the snapshot names its view and case" {
             hello().length == 1 && hello()[0].view == "greeting" && hello()[0].case == "one"
         }
-        then "the snapshot carries the html and the spoken text" {
-            hello()[0].html == "<p class=\"color-text face-body\">Hello</p>" &&
-                hello()[0].spoken == "Hello"
+        then "the snapshot carries the html and the outline" {
+            hello()[0].html == "<span>Hello</span>" && hello()[0].outline == "text \"Hello\""
         }
         then "the digest is sixteen lowercase hex digits" {
             hello()[0].digest.length == 16 && hello()[0].digest == one("Hello")[0].digest
@@ -109,7 +109,7 @@ spec "std/ui-gallery" {
             ["greeting", "actions", "empty", "many", "one"].all(on_page(it))
         }
         then "a case's view sits under its heading" {
-            doc().index_of(">many</h3>") < doc().index_of(">hi</p>")
+            doc().index_of(">many</h3>") < doc().index_of(">hi</span>")
         }
         then "a hostile case name is escaped" {
             page_of([greeting([Case { name: "<b>", view: says("x") }])]).contains("&lt;b&gt;")

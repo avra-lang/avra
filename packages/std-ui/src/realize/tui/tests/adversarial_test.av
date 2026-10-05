@@ -1,0 +1,157 @@
+// Attacks on the terminal target: degenerate shapes, embedded newlines in
+// atoms, blank children, control characters, nesting, and box fields on
+// nodes that ignore them.
+use @std.text.{from_codepoint, codepoint_count, repeat}
+use @std.ui.tree.node.{Node, Prim}
+use @std.ui.realize.tui.tui.{render}
+use @std.ui.env.{Env}
+use @std.ui.realize.tests.support.{
+    leaf,
+    boxed,
+    holding,
+    with_kids,
+    placed,
+    gap,
+    pad,
+    text_node,
+    heading_node,
+    image_node,
+    link_node,
+    button_node,
+    field_node,
+    card_node,
+}
+
+fn drawn(n: Node, width: int) -> string { render(n, Env {}, width) }
+
+fn nested(depth: int) -> Node {
+    if depth == 0 { return text_node("x") }
+    holding(.Column, [nested(depth - 1)])
+}
+
+/// The escape that would clear a terminal's screen.
+fn clear() -> string { from_codepoint(27) + "[2J" }
+
+spec "std/ui tui — adversarial" {
+    given "degenerate shapes" {
+        then "an empty row renders nothing" { drawn(holding(.Row, []), 20) == "" }
+        then "an empty list renders nothing" { drawn(holding(.List, []), 20) == "" }
+        then "an empty item renders nothing" { drawn(holding(.Item, []), 20) == "" }
+        then "a list of an empty item renders no bullet" { drawn(holding(.List, [holding(.Item, [])]), 20) == "" }
+        then "a card with no children is its title and rule" { drawn(card_node("T", []), 20) == "T\n-" }
+        then "a card with an empty title is only its children" { drawn(card_node("", [text_node("a")]), 20) == "a" }
+        then "a card given no title is only its children" { drawn(holding(.Card, [text_node("a")]), 20) == "a" }
+        then "a one-child row is the child" { drawn(boxed(.Row, gap(.Xl), [text_node("a")]), 20) == "a" }
+        then "a one-child column ignores its gap" { drawn(boxed(.Column, gap(.Xl), [text_node("a")]), 20) == "a" }
+        then "a heading level of zero or below reads as level one" {
+            drawn(heading_node("a", 0), 20) == "A\n=" && drawn(heading_node("a", -4), 20) == "A\n="
+        }
+        then "a heading level of nine reads as the dash rule" { drawn(heading_node("a", 9), 20) == "A\n-" }
+        then "a width of a million changes nothing" { drawn(text_node("a b"), 1000000) == "a b" }
+        then "the largest width changes nothing" { drawn(text_node("a b"), 9223372036854775807) == "a b" }
+        then "the smallest width renders as width one" { drawn(text_node("ab"), -9223372036854775807) == "a\nb" }
+        then "two hundred nested columns still draw the one text" { drawn(nested(200), 20) == "x" }
+        then "a thousand siblings keep their order" {
+            let out = drawn(holding(.Column, [text_node("${i}") for i in 0..1000]), 20).split("\n")
+            out.length == 1000 && out[0] == "0" && out[999] == "999"
+        }
+    }
+    given "embedded newlines in atoms" {
+        then "a button label with a newline is two lines" { drawn(button_node("a\nb"), 20) == "[ a\nb ]" }
+        then "the pad reaches every line of a multi-line atom" {
+            drawn(boxed(.Column, pad(.S), [button_node("a\nb")]), 20) == "  [ a\n  b ]"
+        }
+        then "a list hangs the later lines of a multi-line atom" {
+            drawn(holding(.List, [link_node("a\nb", "u")]), 20) == "• a\n  b (u)"
+        }
+        then "a multi-line atom is cut by the width of each line, not of the whole" {
+            drawn(link_node("aaaa\nbbbb", "x"), 6) == "aaaa\nbbbb (\nx)"
+        }
+        then "a field label with a newline is two lines, the value on the second" {
+            drawn(field_node("ab\ncd", ""), 20) == "ab\ncd: ____________"
+        }
+        then "an image alt with a newline is two lines" { drawn(image_node("s", "a\nb"), 20) == "[image: a\nb]" }
+        then "a multi-line atom in a row is stacked" {
+            drawn(boxed(.Row, gap(.S), [text_node("x"), button_node("a\nb"), text_node("y")]), 20) == "x\n[ a\nb ]\ny"
+        }
+    }
+    given "blank children" {
+        then "a blank text in a row adds no gap" {
+            drawn(boxed(.Row, gap(.S), [text_node("a"), text_node(" "), text_node("b")]), 20) == "a b"
+        }
+        then "a trailing blank text in a row leaves no trailing space" {
+            drawn(boxed(.Row, gap(.S), [text_node("a"), text_node(" ")]), 20) == "a"
+        }
+        then "a leading blank text in a row leaves no leading space" {
+            drawn(boxed(.Row, gap(.S), [text_node(" "), text_node("a")]), 20) == "a"
+        }
+    }
+    given "odd text" {
+        then "leading and trailing spaces are dropped" { drawn(text_node("  a  "), 20) == "a" }
+        then "a trailing newline adds no line" { drawn(text_node("a\n"), 20) == "a" }
+        then "a lone newline renders nothing" { drawn(text_node("\n"), 20) == "" }
+        then "text made only of spaces renders nothing" { drawn(text_node("     "), 20) == "" }
+    }
+    given "control characters" {
+        then "a tab stays in its word and shows as its picture" { drawn(text_node("a\tb c"), 20) == "a␉b c" }
+        then "a NUL shows as one cell" {
+            let z = "a" + from_codepoint(0) + "b"
+            drawn(text_node(z + " c"), 20) == "a␀b c" &&
+                codepoint_count(drawn(text_node(z + " c"), 20)) == 5
+        }
+        then "an escape sequence in a text shows as a picture and no escape byte is drawn" {
+            drawn(text_node("a" + clear()), 20) == "a␛[2J" &&
+                !drawn(text_node("a" + clear()), 20).contains(from_codepoint(27))
+        }
+        then "no slot of any primitive draws an escape byte" {
+            let e = clear()
+            let slots = [
+                text_node(e),
+                heading_node(e, 1),
+                image_node(e, e),
+                link_node(e, e),
+                button_node(e),
+                field_node(e, e),
+                card_node(e, []),
+                leaf(.Icon, [.Name(e)]),
+                leaf(.Switch, [.Label(e)]),
+                leaf(.Slider, [.Label(e)]),
+                leaf(.Progress, [.Label(e)]),
+                leaf(.Alert, [.Text(e)]),
+                leaf(.Dialog, [.Label(e), .Open(true)]),
+            ]
+            slots
+                .all(
+                    (n) -> !drawn(n, 20).contains(from_codepoint(27)) &&
+                        drawn(n, 20).contains("␛"),
+                )
+        }
+        then "a carriage return and a backspace show as pictures" {
+            drawn(text_node("ab" + from_codepoint(13) + "c" + from_codepoint(8)), 20) == "ab␍c␈"
+        }
+        then "a delete shows as its picture and a C1 control as the replacement character" {
+            drawn(text_node(from_codepoint(127) + from_codepoint(155)), 20) == "␡�"
+        }
+        then "a control picture is one cell of the width" {
+            drawn(text_node(repeat(from_codepoint(27), 5)), 2) == "␛␛\n␛␛\n␛"
+        }
+    }
+    given "nesting" {
+        then "a list in a list indents the inner bullets under the outer text" {
+            let inner = holding(.List, [holding(.Item, [text_node("in")])])
+            drawn(holding(.List, [holding(.Item, [text_node("out"), inner])]), 20) == "• out\n  • in"
+        }
+        then "a gap on a leaf is ignored" { drawn(placed(text_node("a"), gap(.Xl)), 20) == "a" }
+        then "a leaf's children are ignored" { drawn(with_kids(text_node("a"), [text_node("b")]), 20) == "a" }
+        then "a card inside a padded column keeps its rule as wide as its title" {
+            drawn(boxed(.Column, pad(.Xs), [card_node("Hi", [])]), 20) == " Hi\n --"
+        }
+        then "pads add up through nesting until one cell of room remains" {
+            let deep = boxed(.Column, pad(.Xl), [boxed(.Column, pad(.Xl), [text_node("abcd")])])
+            drawn(deep, 10) == "         a\n         b\n         c\n         d"
+        }
+        then "a list at a width of one still draws within it" {
+            drawn(holding(.List, [holding(.Item, [text_node("ab")])]), 1) == "•\n \na\n \n \nb"
+        }
+    }
+}

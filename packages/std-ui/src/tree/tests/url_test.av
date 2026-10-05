@@ -1,0 +1,120 @@
+//! The URL a tree carries, by its law: every value of the type is safe to
+//! emit, and foreign text is read strictly or not at all.
+use @std.text.{from_codepoint}
+use @std.ui.components.{link}
+use @std.ui.realize.tests.support.{drawn_text}
+use @std.ui.tree.url.{Url, Scheme, url, local, https}
+
+/// What a reader makes of `text`, written back — "refused" for none.
+fn reread(text: string) -> string { url(text)?.text() ?? "refused" }
+
+/// The live page's first paint of a link to `to`.
+fn framed(to: Url) -> string { drawn_text((link "Docs" { href: to }).describe()) }
+
+spec "std/ui url — a value" {
+    given "a local reference" {
+        then "is written as given" { local("/docs?x=1#top").text() == "/docs?x=1#top" }
+        then "that spells a scheme is written as the path it is" {
+            local("javascript:alert(1)").text() == "./javascript:alert(1)"
+        }
+        then "that is empty stays empty" { local("").text() == "" }
+    }
+    given "an address on the web" {
+        then "is written under https" { https("avra.dev/docs").text() == "https://avra.dev/docs" }
+        then "cannot be given another scheme by what follows it" {
+            https("javascript:alert(1)").text() == "https://javascript:alert(1)"
+        }
+    }
+    given "each scheme" {
+        then "is read back from its own word" {
+            [reread("${s.word()}:x") for s in [Scheme.Http, .Https, .Mailto]].join(" ") == "http:x https:x mailto:x"
+        }
+    }
+}
+
+spec "std/ui url — reading foreign text" {
+    given "text that names an allowed scheme" {
+        then "keeps everything after the colon as written" { reread("https://X.dev/A?b#c") == "https://X.dev/A?b#c" }
+        then "has its scheme, and only its scheme, lowered" { reread("HTTPS://X.dev") == "https://X.dev" }
+    }
+    given "text that names no scheme" {
+        then "is a local reference, as written" { reread("about.html") == "about.html" && reread(" /x") == " /x" }
+    }
+    given "text a browser would run" {
+        then "is refused" { reread("javascript:alert(1)") == "refused" && reread("data:text/html,x") == "refused" }
+        then "is refused however a browser would repair it" {
+            reread(" javascript:alert(1)") == "refused" && reread("JaVaScRiPt:x") == "refused"
+        }
+    }
+}
+
+spec "std/ui url — a reference stays inside the site" {
+    given "foreign text that opens as a network path" {
+        then "is refused, with slashes, backslashes or one of each" {
+            reread("//evil.example/x") == "refused" &&
+                reread("\\\\evil.example/x") == "refused" &&
+                reread("/\\evil.example") == "refused" &&
+                reread("\\/evil.example") == "refused"
+        }
+    }
+    given "a local reference built by hand that opens as a network path" {
+        then "is written as a path on this site" {
+            local("//evil.example/x").text() == "/.//evil.example/x" &&
+                local("\\\\evil.example").text() == "/.\\\\evil.example" &&
+                local("/\\evil.example").text() == "/./\\evil.example"
+        }
+    }
+    given "a single leading slash" {
+        then "is a path, as written" { reread("/docs//deep") == "/docs//deep" }
+    }
+}
+
+spec "std/ui url — no control character is carried" {
+    given "foreign text holding a line break after its scheme" {
+        then "is refused" { reread("mailto:a@b.c\nBcc: x@y.z") == "refused" }
+    }
+    given "foreign text holding a tab, a NUL or a delete" {
+        then "is refused wherever it stands" {
+            reread("/a\tb") == "refused" &&
+                reread("/a${from_codepoint(0)}b") == "refused" &&
+                reread("/a${from_codepoint(127)}") == "refused"
+        }
+    }
+    given "a URL built by hand holding one" {
+        then "writes it as its percent escape" {
+            Url.Absolute(.Mailto, "a@b.c\nBcc: x@y.z").text() == "mailto:a@b.c%0ABcc: x@y.z" &&
+                local("/a\tb${from_codepoint(127)}").text() == "/a%09b%7F"
+        }
+    }
+}
+
+spec "std/ui url — a scheme is read from the first segment alone" {
+    given "a relative path whose later segment holds a colon" {
+        then "is a local reference, as written" { reread("a/b:c") == "a/b:c" && reread("docs?at=1:2") == "docs?at=1:2" }
+    }
+    given "a relative path whose first segment holds a colon" {
+        then "is read as naming a scheme, and refused when it is none of ours" { reread("a:b/c") == "refused" }
+    }
+    given "a word that is one of the schemes" {
+        then "is read back as that scheme, and no other word is" {
+            Scheme.worded("mailto") != null &&
+                Scheme.worded("https") != null &&
+                Scheme.worded("javascript") == null
+        }
+    }
+}
+
+spec "std/ui url — the live page" {
+    given "a link to a local page" {
+        then "carries its target" { framed(local("/docs")).contains("attr 0 href=/docs") }
+    }
+    given "a link whose target spells a script" {
+        then "never carries a `javascript:` href" {
+            !framed(local("javascript:alert(1)")).contains("href=javascript") &&
+                framed(local("javascript:alert(1)")).contains("attr 0 href=./javascript:alert(1)")
+        }
+    }
+    given "foreign text a browser would run" {
+        then "makes no URL a link could carry" { url("javascript:alert(1)") == null }
+    }
+}

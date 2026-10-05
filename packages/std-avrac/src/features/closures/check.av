@@ -154,10 +154,16 @@ fn heard_seats(mut cx: TypeCx, e: ExprId, params: List<Param>) -> List<TypeId>? 
 /// The want's arrow, when one was planted and its arity fits.
 fn wanted_arrow(cx: TypeCx, e: ExprId, arity: int) -> Arrow? {
     let w? = cx.want_at(e) else { return null }
-    let arrow: Arrow? = cx.view.types.arrow_parts(w)
+    let arrow: Arrow? = cx.view.types.arrow_parts(present_seat(cx, w))
     if arrow == null { return null }
     if arrow!.seats.length != arity { return null }
     arrow
+}
+
+/// The seat a lambda fills: a nullable seat hears what its present side
+/// takes, since the lambda IS the present value.
+fn present_seat(cx: TypeCx, w: TypeId) -> TypeId {
+    match cx.view.types.shape_of(cx.view.types.seen_through(w)) { .Opt(inner) -> inner, _ -> w }
 }
 
 /// Whether `name` stands at two seats.

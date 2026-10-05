@@ -1,0 +1,214 @@
+//! `tree/node.av` — the neutral vocabulary a component PROJECTS to and every
+//! target consumes. Closed and versioned: a primitive is a semantic
+//! interaction contract, an attribute is a component property, a Node is
+//! the eager tree. No user writes these; they are a component's machine
+//! projection, the component being the one source of truth.
+use style.box.{Box}
+use @std.meta.{derive}
+use style.words.{Words}
+use tree.codes.{Codes, Coded}
+use tree.facets.{Facets, Facet}
+use tree.url.{Url}
+
+/// The interaction contract a component IS. Every target answers every
+/// one, or the build names the target.
+@derive(Words)
+export enum Prim {
+    @word(text) Text
+    @word(heading) Heading
+    @word(button) Button
+    @word(link) Link
+    @word(image) Image
+    @word(field) Field
+    @word(checkbox) Checkbox
+    @word(row) Row
+    @word(column) Column
+    @word(dialog) Dialog
+    @word(divider) Divider
+    @word(icon) Icon
+    @word(surface) Surface
+    @word(list) List
+    @word(item) Item
+    @word(card) Card
+    @word(progress) Progress
+    @word(alert) Alert
+    @word(spinner) Spinner
+    @word(form) Form
+    @word(switch) Switch
+    @word(slider) Slider
+}
+
+/// What a node says when the user speaks to it, in words no platform
+/// owns: a `press` is a click, a tap or a key, as its target hears one. A
+/// REGISTRY: every target subscribes to every arm, or the build names the
+/// target. Each kind carries the number a host echoes it back as.
+@derive(Words)
+@derive(Codes)
+export enum EventKind {
+    @word(press) @code(1) Press
+    @word(input) @code(2) Input
+    @word(change) @code(3) Change
+    @word(submit) @code(4) Submit
+}
+
+/// What a control SAYS when it speaks: the value the user gave it, as
+/// DATA a target hands back with the event. ABSENCE IS THE OPTION'S OWN
+/// NULL — a press says nothing — never a sentinel value.
+export enum Said {
+    Text(value: string)
+    Flag(value: bool)
+    Number(value: int)
+}
+
+/// What a control calls when it speaks, by what its event says. ONE
+/// VOCABULARY with `Said`: a new thing a control can say is an arm of
+/// both, and every target that fires events answers it.
+export enum Handler {
+    Nothing(f: fn() -> void)
+    Text(f: fn(string) -> void)
+    Flag(f: fn(bool) -> void)
+    Number(f: fn(int) -> void)
+}
+
+/// What a node does when it speaks: the KIND of event and the handler the
+/// component bound to it. The handler stays in the program — a target
+/// subscribes to the kind and echoes WHICH node spoke, never the code.
+export type Action = { kind: EventKind, handler: Handler }
+
+impl Said {
+    /// The text said, when text is what was said.
+    fn text() -> string? {
+        match self { .Text(t) -> t, .Flag(_) or .Number(_) -> null }
+    }
+
+    fn flag() -> bool? {
+        match self { .Flag(on) -> on, .Text(_) or .Number(_) -> null }
+    }
+
+    fn number() -> int? {
+        match self { .Number(n) -> n, .Text(_) or .Flag(_) -> null }
+    }
+}
+
+impl Action {
+    /// Run the handler with what the control `said`. A handler that wants
+    /// a value the control did not say does not run: false, never a
+    /// made-up value.
+    fn fire(said: Said?) -> bool {
+        match self.handler {
+            .Nothing(f) -> f(),
+            .Text(f) -> {
+                let text? = said?.text() else { return false }
+                f(text)
+            },
+            .Flag(f) -> {
+                let flag? = said?.flag() else { return false }
+                f(flag)
+            },
+            .Number(f) -> {
+                let number? = said?.number() else { return false }
+                f(number)
+            },
+        }
+        true
+    }
+}
+
+/// How urgently a live region speaks.
+@derive(Words)
+export enum Urgency {
+    @word(polite) Polite
+    @word(assertive) Assertive
+}
+
+/// A component property, projected from the component's own fields.
+/// Semantic STATE crosses as an attribute (`Disabled`, `Open`, `Invalid`);
+/// a visual variant resolves to `Style` at the component.
+@derive(Facets)
+export enum Attribute {
+    @facet(content) Text(content: string)
+    @facet(content) Label(text: string)
+    @facet(level) Level(rank: int)
+    Value(text: string)
+    Amount(n: int)
+    Placeholder(text: string)
+    Src(url: Url)
+    Alt(text: string)
+    Href(url: Url)
+    Min(n: int)
+    Max(n: int)
+    Disabled(flag: bool)
+    Checked(flag: bool)
+    Selected(flag: bool)
+    Open(flag: bool)
+    Invalid(flag: bool)
+    Loading(flag: bool)
+    @facet(urgency) Urgency(level: Urgency)
+    Title(text: string)
+    Name(text: string)
+    /// Pressing the control submits the form it stands in.
+    Submits(flag: bool)
+}
+
+/// A drawn node: its primitive, its attributes, its shared Box and its
+/// children, eager — so the tree IS data a tool can read.
+export type Node = {
+    prim: Prim,
+    attrs: List<Attribute>,
+    box: Box,
+    children: List<Node>,
+    events: List<Action> = [],
+}
+
+// ── neutral projections every target reads ──────────────────────
+
+impl Node {
+    /// This node's words: its `Text`, else its `Label`.
+    fn words() -> string { content_of(self.attrs) }
+
+    /// This node's heading level, defaulting to one.
+    fn level() -> int { level_of(self.attrs) }
+
+    /// Whether the node is open — a dialog showing what it holds.
+    fn open() -> bool { self.attrs.any(says_open) }
+
+    /// Whether the node cannot speak.
+    fn disabled() -> bool { self.attrs.any(says_disabled) }
+
+    /// Whether pressing the node sends the form it stands in.
+    fn submits() -> bool { submits_among(self.attrs) }
+}
+
+fn says_open(a: Attribute) -> bool {
+    match a { .Open(on) -> on, _ -> false }
+}
+
+fn says_disabled(a: Attribute) -> bool {
+    match a { .Disabled(on) -> on, _ -> false }
+}
+
+fn says_submits(a: Attribute) -> bool {
+    match a { .Submits(on) -> on, _ -> false }
+}
+
+/// Whether these attributes say their control submits its form.
+export fn submits_among(attrs: List<Attribute>) -> bool { attrs.any(says_submits) }
+
+/// A node's words: its `Text`, else its `Label`.
+fn content_of(attrs: List<Attribute>) -> string {
+    let found? = attrs.find(is_words) else { return "" }
+    match found { .Text(t) or .Label(t) -> t, rest -> "" }
+}
+
+/// Whether an attribute carries a node's own words.
+fn is_words(a: Attribute) -> bool { a.facet() == Facet.Content }
+
+/// A heading's level, defaulting to one.
+fn level_of(attrs: List<Attribute>) -> int {
+    let found? = attrs.find(is_level) else { return 1 }
+    match found { .Level(r) -> r, rest -> 1 }
+}
+
+/// Whether an attribute is a heading's level.
+fn is_level(a: Attribute) -> bool { a.facet() == Facet.Level }
+

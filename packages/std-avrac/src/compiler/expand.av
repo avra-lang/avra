@@ -813,6 +813,7 @@ impl Workspace {
                     annotations: self.decl_annotations(v, d),
                     module: self.decls.qualified_module(d),
                     over: self.named_over(d),
+                    spreads: [spelled(sp.of) for sp in v.store.spreads_of(x.stmt)],
                 },
                 heap,
             ),
@@ -840,14 +841,26 @@ impl Workspace {
     /// it cannot re-enter another declaration's own derive: a cycle
     /// between two derives asking for each other's type is the query
     /// kernel's ordinary recursion guard, a smaller view, not a trap.
+    ///
+    /// The row answers `@std/meta`'s TWO verbs, which is why its text
+    /// has two shapes: `type_named` hands it one word, `type_exported`
+    /// a module and a word joined by the last dot — a module's own
+    /// export, wherever `f` stands. No program spells the joined form.
     fn type_named_lifted(f: FileId, name: string) -> Lifted {
-        let d? = self.visible(f).type_decl(name) else { return absent_lifted() }
+        let d? = self.type_decl_named(f, name) else { return absent_lifted() }
         // a builtin scalar (`string`, `int`, …) is bound in every
         // namespace but declares no fields or variants to answer —
         // absent, the same as a name nothing declares
         if self.decls.is_builtin(d) { return absent_lifted() }
         let want? = self.meta_type_id("Type") else { return absent_lifted() }
         self.crossed_lifted(d, want)
+    }
+
+    fn type_decl_named(f: FileId, name: string) -> DeclId? {
+        let path = name.split(".")
+        let declared? = path.last() else { return null }
+        if path.length == 1 { return self.visible(f).type_decl(name) }
+        self.decls.module_decl(path.slice(0, path.length - 1).join("."), declared)
     }
 
     /// The TypeId `@std/meta`'s own `name` record wears — the `want`
@@ -881,7 +894,7 @@ impl Workspace {
     /// AND ITS SHAPE, its `mut` and `const` marks.
     fn crossed_params(v: FileView, s: StmtId, d: DeclId) -> List<MetaParam> {
         let kinds = self.seat_kinds(d)
-        [self.crossed_param(v, p, kind_at(kinds, j)) for j, p in v.store.declared_params(s)]
+        [crossed_param(v, p, kind_at(kinds, j)) for j, p in v.store.declared_params(s)]
     }
 
     /// The type or trait a member belongs to, as its block spells it —
@@ -892,17 +905,6 @@ impl Workspace {
         v.store.impl_parts(block.stmt)?.target ?? block.name
     }
 
-    fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
-        MetaParam {
-            name: p.name.of,
-            ty: written_spelling(p.ty),
-            mutable: p.promises.mutable,
-            settled: p.promises.settled,
-            at: placed(v, v.store.param_id_span(p.id)),
-            kind: k,
-        }
-    }
-
     /// A fn's answer, spelled from its declared TypeRef — a store read
     /// alone, so crossing a declaration needs no typed facts.
     fn crossed_answer(v: FileView, s: StmtId) -> string {
@@ -911,9 +913,11 @@ impl Workspace {
 
     /// A record's fields as `Field` values: the spelling the program
     /// WROTE, and the shape its signature resolved it to.
+    /// A field finds its shape BY NAME: the signature also holds the
+    /// fields a `..Record` spread placed, which the declaration never
+    /// wrote, so the two runs do not share positions.
     fn crossed_fields(v: FileView, s: StmtId, d: DeclId) -> List<MetaField> {
-        let kinds = self.field_kinds(d)
-        [crossed_field(v, p, kind_at(kinds, j)) for j, p in v.store.declared_fields(s)]
+        [crossed_field(v, p, self.field_kind(d, p.name.of)) for p in v.store.declared_fields(s)]
     }
 
     /// An enum's variants: name, payload spellings, and the payload
@@ -968,9 +972,10 @@ impl Workspace {
         match sig { .Named(n) -> kind_of(self.decls.types, n.of), rest -> no_kind() }
     }
 
-    fn field_kinds(d: DeclId) -> List<Kind> {
-        let sig? = self.decls.sig(d)?.record_sig() else { return [] }
-        [kind_of(self.decls.types, t) for t in sig.types]
+    fn field_kind(d: DeclId, name: string) -> Kind {
+        let sig? = self.decls.sig(d)?.record_sig() else { return no_kind() }
+        let ty? = [sig.types[j] for j, n in sig.names if n == name].first() else { return no_kind() }
+        kind_of(self.decls.types, ty)
     }
 }
 

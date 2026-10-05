@@ -1,7 +1,17 @@
 // Components, the vertical: a declaration is a record with
 // defaults, and in its own module a literal fills the rest — every
 // refusal the struct law's.
-use @std.avrac.testing.{shown, refused_with, refusals, provided, refused_in, answered}
+use @std.avrac.compiler.{Program}
+use @std.avrac.testing.{
+    Module,
+    shown,
+    refused_with,
+    refusals,
+    provided,
+    refused_in,
+    refused_n,
+    answered,
+}
 
 fn config_of() -> string {
     "fn twice(n: int) -> int {\n    n * 2\n}\ncomponent Cfg {\n    name: string\n    depth: int = 3\n    f: fn(int) -> int = twice\n    notes: List<string> = [\"a\"]\n}\n"
@@ -53,21 +63,242 @@ spec "features/components" {
                 "`Cfg` has no field `size`",
             )
         }
-        then "`on <kind> { … }` is a nullary lambda — captures resolve and lift" {
+    }
+}
+
+fn panel() -> string {
+    "export component panel {\n    on press\n    size: int = 1\n    on input(text: string)\n    on drag(x: int, y: int)\n}\n"
+}
+
+/// A program that builds one `panel` with `block` and runs `after` over it.
+fn heard(block: string, after: string) -> Program {
+    provided(
+        "use @x.c.{panel}\nstate n: int = 0\nstate said: string = \"\"\nfn v() -> string {\n    let x = 5\n    let a = panel ${block}\n    ${after}\n    \"\${n} \${said}\"\n}\nv()",
+        panel(),
+    )
+}
+
+const press = "let f? = a.press else { return \"unheard\" }\n    f()"
+const type_hi = "let f? = a.input else { return \"unheard\" }\n    f(\"hi\")"
+const drag = "let f? = a.drag else { return \"unheard\" }\n    f(3, 4)"
+
+spec "features/components — events" {
+    given "an event a component declares" {
+        then "is heard by the handler written for it, which closes over what it could see" {
+            answered(heard("{ on press { n = x + 1 } }", press)) == "6 "
+        }
+        then "tells the handler the seat it says" {
+            answered(heard("{ on input { text -> said = text } }", type_hi)) == "0 hi"
+        }
+        then "tells the handler every seat it says" {
+            answered(heard("{ on drag { x, y -> n = x + y } }", drag)) == "7 "
+        }
+        then "is heard by a handler that names no seat" {
+            answered(heard("{ on drag { n = 9 } }", drag)) == "9 "
+        }
+        then "is absent until an instance hears it" { answered(heard("{ size: 2 }", press)) == "unheard" }
+        then "leaves a field written between two events its own value" {
+            answered(heard("{ size: 2 }", "return \"\${a.size}\"")) == "2"
+        }
+        then "takes a fn value as a setting" {
+            answered(heard("{ press: () -> { n = 4 } }", press)) == "4 "
+        }
+        then "takes a handler that is already a value — `on press: handler`" {
+            answered(heard("{ on press: () -> { n = 8 } }", press)) == "8 "
+        }
+        then "passes on the handler a component was itself given, absent or not" {
             answered(
                 provided(
-                    "use @x.c.{widget}\nfn v() -> int {\n    let x = 5\n    let a = widget { on click { x + 1 } }\n    a.on_click()\n}\nv()",
-                    "export component widget {\n    on_click: fn() -> int = (() -> 0)\n}\n",
+                    "use relays.{relay}\nstate n: int = 0\nfn fired(r: relay) -> string {\n    let f? = r.shown().press else { return \"unheard\" }\n    f()\n    \"\${n}\"\n}\n\"\${fired(relay { on pick { n = n + 3 } })} \${fired(relay {})}\"",
+                    panel(),
+                    [
+                        Module {
+                            name: "relays",
+                            text: "use @x.c.{panel}\nexport component relay {\n    on pick\n    fn shown() -> panel {\n        panel { on press: self.pick }\n    }\n}\n",
+                        },
+                    ],
                 ),
-            ) == "6"
+            ) == "3 unheard"
         }
-        then "the handler's value is a `fn()`, and no message field accepts it yet" {
+    }
+    given "a handler for an event the component does not declare" {
+        then "is refused by name" {
+            refused_in(heard("{ on hover { n = 1 } }", press), "`panel` declares no event `hover`")
+        }
+        then "is told the events there are" {
+            refused_in(
+                heard("{ on hover { n = 1 } }", press),
+                "the events of `panel` are `press`, `input`, `drag`",
+            )
+        }
+        then "names a field that is no event as no event" {
+            refused_in(heard("{ on size { n = 1 } }", press), "`panel` declares no event `size`")
+        }
+        then "is told when the component declares none" {
             refused_in(
                 provided(
-                    "use @x.c.{widget}\nfn v() -> int {\n    widget { on click { 1 } }\n    0\n}\nv()\n",
-                    "export trait Sink {\n    fn note() -> int\n}\nexport component widget {\n    on_click: dyn Sink? = null\n}\n",
+                    "use @x.c.{quiet}\nlet b = quiet { on press { 1 } }\n0",
+                    "export component quiet {\n    size: int = 1\n}\n",
                 ),
-                "field `on_click` is `dyn Sink?`, this is `fn() -> int`",
+                "`quiet` declares no events",
+            )
+        }
+    }
+    given "a handler that names some of what its event says" {
+        then "is refused with what the event says" {
+            refused_in(
+                heard("{ on drag { x -> n = x } }", drag),
+                "`drag` says `x`, `y` — a handler hears all its event says, or none of it",
+            )
+        }
+        then "is shown both ways to hear it" {
+            refused_in(
+                heard("{ on drag { x -> n = x } }", drag),
+                "`on drag { x, y -> … }`, or `on drag { … }`",
+            )
+        }
+        then "is refused a seat on an event that says nothing" {
+            refused_in(heard("{ on press { v -> n = 1 } }", press), "`press` says nothing")
+        }
+    }
+    given "a handler for an event the instance already hears" {
+        then "is refused where the second one stands" {
+            refused_in(
+                heard("{\n        on press { n = 1 }\n        on press { n = 2 }\n    }", press),
+                "an instance hears an event once, and this `panel` hears `press` again",
+            )
+        }
+        then "is refused beside a setting that names the event too — never as a field written twice" {
+            refused_in(
+                heard("{\n        press: () -> { n = 1 }\n        on press { n = 2 }\n    }", press),
+                "an instance hears an event once, and this `panel` hears `press` again",
+            )
+        }
+    }
+    given "a handler whose body is wrong, for an event the component does not declare" {
+        then "is refused for the event and for its body in one run" {
+            let p = heard("{ on hover { n = \"q\" } }", press)
+            refused_n(p, "`panel` declares no event `hover`", 2) &&
+                p.report().contains("assignment changes `n`: `int` to `string`")
+        }
+    }
+    given "an event's member" {
+        then "shares its component's one namespace with the fields — declared twice, refused" {
+            refused_n(
+                provided(
+                    "use @x.c.{twice}\n0",
+                    "export component twice {\n    press: int = 1\n    on press\n}\n",
+                ),
+                "`twice` declares `press` more than once",
+                2,
+            )
+        }
+    }
+    given "an event whose seats share a name" {
+        then "is refused at the declaration, in the event's own words" {
+            refused_in(
+                provided(
+                    "use @x.c.{pad}\n0",
+                    "export component pad {\n    on drag(x: int, x: int)\n}\n",
+                ),
+                "an event's seats have distinct names, and `drag` names `x` twice",
+            )
+        }
+    }
+    given "an instance hearing an event whose seats share a name, with a handler that reads none" {
+        then "says nothing of its own: the declaration alone is refused" {
+            refused_in(
+                provided(
+                    "use @x.c.{pad}\nstate n: int = 0\nlet b = pad { on drag { n = 1 } }\n0",
+                    "export component pad {\n    on drag(x: int, x: int)\n}\n",
+                ),
+                "an event's seats have distinct names, and `drag` names `x` twice",
+            )
+        }
+    }
+    given "a handler whose body is wrong, for an event the component declares" {
+        then "says its body's mistake once" {
+            refused_in(heard("{ on press { n = \"q\" } }", press), "assignment changes `n`")
+        }
+        then "says it once when the handler is handed on as a value too" {
+            refused_in(heard("{ press: () -> { n = \"q\" } }", press), "assignment changes `n`")
+        }
+    }
+    given "an event on a component that copies its `expand`" {
+        then "is refused where an instance stands: copied code hears no event" {
+            refused_in(
+                provided(
+                    "use @x.c.{lim}\nlim 1 { 2 }",
+                    "export component lim(n: Code) {\n    body: Code\n    on press\n    fn expand() -> Code { quote { \${self.body} } }\n}\n",
+                ),
+                "`lim` copies its `expand` where an instance stands, and copied code hears no event",
+            )
+        }
+    }
+    given "a mark on an event no derive claims" {
+        then "is refused as any unread mark is, by the mark's own law" {
+            refused_in(
+                provided(
+                    "use @x.c.{tagged}\n0",
+                    "export component tagged {\n    @loud on press\n}\n",
+                ),
+                "`@loud`",
+            )
+        }
+    }
+    given "a binding called `on`" {
+        then "is tested with `is`" {
+            shown("enum Sw { Lit, Dark }\nfn lit(on: Sw) -> bool {\n    on is .Lit\n}\nlit(.Lit)") == "true"
+        }
+        then "is copied with `with`" {
+            shown(
+                "type Lamp = { lit: bool }\nfn lit(on: Lamp) -> Lamp {\n    on with { lit: true }\n}\nlit(Lamp { lit: false }).lit",
+            ) == "true"
+        }
+        then "is caught with `catch`" {
+            shown(
+                "fn risky() -> Result<int, string> { .Err(\"no\") }\nfn safe() -> int {\n    let on = risky()\n    on catch e -> 7\n}\nsafe()",
+            ) == "7"
+        }
+        then "is a parameter, a condition and an argument" {
+            shown(
+                "fn pick(on: bool) -> int {\n    if on { 1 } else { 2 }\n}\nlet on = true\npick(on)",
+            ) == "1"
+        }
+    }
+    given "a refusal for an undeclared event, rendered" {
+        then "points at the handler, says the law, and lists the events" {
+            heard("{ on hover { n = 1 } }", press).report() == "error[type.component_event]: `panel` declares no event `hover` — an instance hears the events its component declares\n  ╭─[/w/src/main.av:6:21]\n6 │     let a = panel { on hover { n = 1 } }\n  ·                     ┬\n  ·                     ╰── heard here\n──╯\nhelp: the events of `panel` are `press`, `input`, `drag`"
+        }
+    }
+}
+
+/// An annotation that says back what it was handed: each member as a
+/// field with its shape or an event with what it says, then the spreads.
+fn teller() -> string {
+    "use @std.meta.{Type, Field, Diagnostic, refuse}\nexport type Base = { id: int = 0 }\nfn told(f: Field) -> string {\n    let says? = f.says else { return \"\${f.name}:\${f.kind.spelled()}\" }\n    \"\${f.name}(\${[\"\${s.name}:\${s.kind.spelled()}\" for s in says].join(\",\")})\"\n}\nexport fn seen(t: Type) -> List<Diagnostic> {\n    [refuse(\"\${[told(f) for f in t.fields].join(\" \")} | \${t.spreads.join(\",\")}\")]\n}\n"
+}
+
+spec "features/components — what a derive is handed" {
+    given "a component declaring fields and events under a spread" {
+        then "each event says its seats, a field says none, and the spread is named" {
+            refused_in(
+                provided(
+                    "use @x.c.{seen, Base}\n@seen\ncomponent probe(label: string) {\n    ..Base\n    on press\n    size: int = 1\n    on input(typed: string)\n    on drag(x: int, y: bool)\n}\n0",
+                    teller(),
+                ),
+                "label:string press() size:int input(typed:string) drag(x:int,y:bool) | Base",
+            )
+        }
+    }
+    given "a record whose spread places fields before its own" {
+        then "each written field keeps its own shape" {
+            refused_in(
+                provided(
+                    "use @x.c.{seen, Base}\n@seen\ntype Row = {\n    ..Base\n    name: string\n    done: bool\n}\n0",
+                    teller(),
+                ),
+                "name:string done:bool | Base",
             )
         }
     }

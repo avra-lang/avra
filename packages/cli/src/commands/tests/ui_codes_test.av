@@ -1,0 +1,56 @@
+//! `@derive(Codes)` over an enum whose variants do not each wear a wire
+//! number of their own: each mistake is refused at its variant, under its
+//! own kind, with the number to write — and nothing else is said.
+//! `avra_ran` and `scratch_dir` are the neighbouring tests' own.
+use @std.io.{make_dirs, write_text}
+use @std.meta.{embed}
+use @std.time.{now_ns}
+
+/// One well-coded enum, then one enum a mistake — and a caller of each
+/// verb of a refused enum, which must not be blamed for the refusal.
+const enums: string = embed("ui_view/refused_codes.txt")
+
+/// What stands for a run that never answered: no line of it is a refusal.
+const codes_never_ran = "the check did not run"
+
+/// What `avra check` says about the package, once.
+once fn codes_refused() -> string {
+    let root = "${scratch_dir()}/ui_codes_${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"ui_codes\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/main.av", enums)
+    match avra_ran(["check", root]) { .Ok(o) -> o.out.stdout, .Err(_) -> codes_never_ran }
+}
+
+fn codes_lines(opening: string) -> List<string> { [l for l in codes_refused().split("\n") if l.starts_with(opening)] }
+
+/// Every refusal the fixture owes, one per mistake, in the order written.
+const codes_owed = [
+    "error[@std/ui:code-missing]: a wire variant says its number, and `Second` says none",
+    "error[@std/ui:code-not-number]: a wire variant's code is a whole number, and `First` wrote `abc`",
+    "error[@std/ui:code-not-number]: a wire variant's code is a whole number, and `First`'s is not one",
+    "error[@std/ui:code-out-of-byte]: a wire variant's code is one octet, 0 to 255, and `First` wrote 300",
+    "error[@std/ui:code-out-of-byte]: a wire variant's code is one octet, 0 to 255, and `First` wrote -2",
+    "error[@std/ui:code-taken]: two wire variants share no number, and `Second` wears 1, which a variant above it has",
+    "error[@std/ui:code-payload]: a wire code names a variant that carries nothing, and `First` carries a payload",
+]
+
+/// The remedy under each refusal, in the same order.
+const codes_helps = [
+    "help: `@code(1) Second` — 1 is the smallest number no variant wears",
+    "help: `@code(0) First` — 0 is the smallest number no variant wears",
+    "help: `@code(0) First` — 0 is the smallest number no variant wears",
+    "help: `@code(0) First` — 0 is the smallest number no variant wears",
+    "help: `@code(0) First` — 0 is the smallest number no variant wears",
+    "help: `@code(0) Second` — 0 is the smallest number no variant wears",
+    "help: code an enum of bare variants, and map `First` to one of them where it is written out",
+]
+
+spec "a wire code is one number a variant, in one octet" {
+    given "one enum for each way a code can be wrong, beside one that is right" {
+        then "each mistake is refused once, under its own kind — the well-coded enum and every caller not at all" {
+            codes_lines("error[").join("\n") == codes_owed.join("\n")
+        }
+        then "each remedy names the number to write" { codes_lines("help: ").join("\n") == codes_helps.join("\n") }
+    }
+}

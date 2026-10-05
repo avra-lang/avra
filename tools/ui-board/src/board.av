@@ -1,0 +1,245 @@
+//! The task board — the UI library's showcase. `view` is a function of
+//! module `state`: tasks with done-state, three filters, a derived count
+//! and progress, an add field, a dialog and a theme mode.
+//!
+//! The controls are the library's OWN, and each handler is written where
+//! its control is: `on press { … }` is a closure over what the view could
+//! see, so row 3's Remove names row 3's task. The task rows are ONE keyed
+//! list (`list visible() by it.id`), so the row identity is the task id
+//! and an insert or a removal touches no other row.
+//!
+//! The board names no target. A page mounts it (`web/`) and so does a
+//! terminal (`term/`).
+use @std.ui.components.{
+    button,
+    card,
+    checkbox,
+    column,
+    dialog,
+    divider,
+    field,
+    heading,
+    item,
+    list,
+    progress,
+    row,
+    surface,
+    text,
+}
+use @std.ui.tree.view.{View}
+use @std.ui.style.layout.{Layout, around}
+use @std.ui.style.style.{Style}
+use @std.ui.style.theme.{Theme, dark_theme, default_theme}
+
+/// Which tasks the board shows.
+enum Show { All, Active, Done }
+
+/// One task. `id` is the item key; `done` is its state.
+type Todo = { id: string, title: string, done: bool }
+
+// ── state ───────────────────────────────────────────────────────
+
+state filter: Show = .All
+state dark: bool = false
+state dialog_open: bool = false
+state draft: string = ""
+state seq: int = 5
+state tasks: List<Todo> = [
+    Todo { id: "t1", title: "Draft the spec", done: true },
+    Todo { id: "t2", title: "Wire the event channel", done: false },
+    Todo { id: "t3", title: "Land the wasm board", done: false },
+    Todo { id: "t4", title: "Write the tour", done: true },
+]
+
+/// The counts are DERIVED from the list, never stored beside it.
+fn done_count() -> int { [t for t in tasks if t.done].length }
+
+fn open_count() -> int { [t for t in tasks if !t.done].length }
+
+fn admits(t: Todo) -> bool {
+    match filter { .All -> true, .Active -> !t.done, .Done -> t.done }
+}
+
+export fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
+
+/// The draft becomes the next task, and the draft is spent.
+fn add() {
+    if draft != "" {
+        tasks = tasks.concat([Todo { id: "t${seq}", title: draft, done: false }])
+        seq = seq + 1
+        draft = ""
+    }
+}
+
+/// This task with its state as given when it is the named one, unchanged
+/// otherwise.
+fn marked(t: Todo, id: string, done: bool) -> Todo {
+    if t.id == id { t with { done: done } } else { t }
+}
+
+// ── view: state in, tree out ────────────────────────────────────
+
+fn theme_label() -> string { if dark { "Light mode" } else { "Dark mode" } }
+
+fn tab_style(on: bool) -> Style {
+    if on { sunk_style() } else { Style { radius: .S } }
+}
+
+fn title_style(done: bool) -> Style {
+    if done { Style { color: .Muted } } else { Style { color: .Text } }
+}
+
+fn sunk_style() -> Style { Style { fill: .SurfaceSunk, radius: .S } }
+
+/// A run of controls on one line.
+fn inline_layout() -> Layout { Layout { gap: .S, align: .Center } }
+
+fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
+
+fn tab(label: string, shows: Show) -> button {
+    button label {
+        on press { filter = shows }
+        style: tab_style(filter == shows)
+    }
+}
+
+fn header() -> row {
+    row {
+        layout: spread_layout()
+        items: [
+            column {
+                layout: Layout { gap: .Xs }
+                items: [
+                    heading "Tasks" { rank: 1 },
+                    text "Every task is a value; the screen is a function of state." {
+                        style: Style { color: .Muted }
+                    },
+                ]
+            },
+            button theme_label() {
+                on press { dark = !dark }
+                style: sunk_style()
+            },
+        ]
+    }
+}
+
+fn filters() -> row {
+    row {
+        layout: inline_layout()
+        items: [
+            tab("All", .All),
+            tab("Active", .Active),
+            tab("Done", .Done),
+            button "Clear done" {
+                on press { tasks = [t for t in tasks if !t.done] }
+                disabled: done_count() == 0
+                style: sunk_style()
+            },
+        ]
+    }
+}
+
+fn new_task() -> row {
+    row {
+        layout: inline_layout()
+        items: [
+            field "New task" {
+                value: draft
+                placeholder: "Type a task…"
+                on input { body -> draft = body }
+            },
+            button "Add" {
+                on press { add() }
+                style: sunk_style()
+            },
+        ]
+    }
+}
+
+/// The task rows: ONE keyed list, so a reorder or an insert keeps every
+/// node. The item is written IN THE LIST — the keyed head reads `it.id` off
+/// the element it hands the body, and a helper returning an item would carry
+/// no key. An empty view is a word, never a stray row.
+fn task_view() -> List<dyn View> {
+    if visible().is_empty() {
+        [text "Nothing here yet." { style: Style { color: .Muted } }]
+    } else {
+        [task_list()]
+    }
+}
+
+fn task_list() -> list {
+    list visible() by it.id { t ->
+        item {
+            items: [
+                checkbox t.title {
+                    checked: t.done
+                    on change { checked -> tasks = [marked(x, t.id, checked) for x in tasks] }
+                    style: title_style(t.done)
+                },
+                button "Remove" {
+                    on press { tasks = [x for x in tasks if x.id != t.id] }
+                    style: sunk_style()
+                },
+            ]
+        }
+    }
+}
+
+fn visible() -> List<Todo> { [t for t in tasks if admits(t)] }
+
+fn board_items() -> List<dyn View> {
+    let done = progress "Done" {
+        amount: done_count()
+        max: tasks.length
+    }
+    let head: List<dyn View> = [done, filters(), new_task(), divider {}]
+    let body: List<dyn View> = task_view()
+    head.concat(body)
+}
+
+fn board() -> card {
+    card "Board" {
+        style: Style { fill: .SurfaceRaised, radius: .M }
+        layout: Layout { gap: .M, pad: around(.M) }
+        items: board_items()
+    }
+}
+
+fn footer() -> row {
+    row {
+        layout: spread_layout()
+        items: [
+            text "${open_count()} open · ${done_count()} done of ${tasks.length}" {
+                style: Style { color: .Muted }
+            },
+            button "About" {
+                on press { dialog_open = true }
+                style: sunk_style()
+            },
+        ]
+    }
+}
+
+fn about() -> dialog {
+    dialog "About" {
+        open: dialog_open
+        items: [
+            heading "Task board" { rank: 2 },
+            text "State lives in module `state`; the frame is its projection.",
+            button "Close" {
+                on press { dialog_open = false }
+                style: sunk_style()
+            },
+        ]
+    }
+}
+
+export fn view() -> surface {
+    surface {
+        style: Style { fill: .Surface, radius: .M }
+        layout: Layout { gap: .M, pad: around(.L) }
+        items: [header(), board(), footer(), about()]
+    }
+}

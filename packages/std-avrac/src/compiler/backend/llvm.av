@@ -220,7 +220,7 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
-    let wasm = target.starts_with("wasm")
+    let wasm = is_wasm(target)
     declare_runtime(lc, m)
     declare_externs(lc, m, l.externs, refs, wasm)
     for bd in l.fns {
@@ -356,10 +356,12 @@ export fn program_closed(l: Lowered) -> string? {
     null
 }
 
-/// THE ENTRY. The program's own statements become `av_entry`; C's
+/// THE ENTRY. The program's own statements become `avra_main`; C's
 /// `main` hands the runtime its arguments and answers what the
 /// entry answered. The argument pair crosses the seam exactly here
-/// — a program reads it through the host from then on.
+/// — a program reads it through the host from then on. A reactor links
+/// no `main`, so its link exports the entry and its host runs the
+/// program's statements by that name (`reactor_entry_words`).
 fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, target: string) -> string? {
     declare(
         m,
@@ -368,16 +370,29 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, targe
         [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)],
         false,
     )
-    declare(m, "av_entry", avra_llvm_int32_type(lc), [], false)
-    let entry = avra_llvm_get_named_function(m, "av_entry")
+    declare(m, HOST_ENTRY, avra_llvm_int32_type(lc), [], false)
+    let entry = avra_llvm_get_named_function(m, HOST_ENTRY)
     let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
     if failure != null { return failure }
     open_main(lc, m, b, entry, entry_symbol(target))
 }
 
+/// The symbol the program's own statements are emitted under — and the
+/// name a reactor's host runs them by.
+const HOST_ENTRY = "avra_main"
+
+/// The linker's words that export a reactor's entry. A command module
+/// exports none: its `main` already runs the statements, and a second
+/// door would run them twice.
+export fn reactor_entry_words() -> List<string> { ["-Wl,--export=${HOST_ENTRY}"] }
+
+/// Whether a target triple names a wasm module — the ONE reading of the
+/// triple the backend makes. Native builds carry no triple.
+fn is_wasm(target: string) -> bool { target.starts_with("wasm") }
+
 /// The C entry symbol a target's crt calls: wasi-libc's `crt1-command`
 /// hands control to `__main_argc_argv`, clang's own renaming of `main`.
-fn entry_symbol(target: string) -> string { if target.starts_with("wasm") { "__main_argc_argv" } else { "main" } }
+fn entry_symbol(target: string) -> string { if is_wasm(target) { "__main_argc_argv" } else { "main" } }
 
 /// `int main(int argc, char** argv)`: the arguments handed over,
 /// then the entry.

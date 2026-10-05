@@ -1,0 +1,27 @@
+//! `tree/sink.av` — ONE walk, every target that draws a tree once. A
+//! target answers three operations; the tree is walked here and nowhere
+//! else. The walk hands each node its SEAT — its turn in this walk — so a
+//! target can file what it draws; a seat is this walk's own and says
+//! nothing of who a node is across paints (`tree/identity.av`).
+use tree.node.{Node}
+
+/// What a target answers while a tree is walked. `opened` is handed the
+/// node's seat, its parent's — absent at the root — and its index among
+/// its siblings; `words` its own words under that seat; `closed` its end.
+export trait Sink {
+    fn opened(seat: int, parent: int?, index: int, n: Node)
+    fn words(seat: int, s: string)
+    fn closed(n: Node)
+}
+
+/// The walk: a node opened, its words, its children, then closed.
+export fn draw(n: Node, sink: dyn Sink) { walk(n, null, 0, Cell.new(0), sink) }
+
+fn walk(n: Node, parent: int?, index: int, next: Cell<int>, sink: dyn Sink) {
+    let seat = next.get()
+    next.set(seat + 1)
+    sink.opened(seat, parent, index, n)
+    sink.words(seat, n.words())
+    for i, c in n.children { walk(c, seat, i, next, sink) }
+    sink.closed(n)
+}

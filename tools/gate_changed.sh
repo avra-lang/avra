@@ -52,7 +52,7 @@ if [ -z "$files" ] && [ -z "$packages" ]; then
     exit 0
 fi
 if [ "$keepers" = 1 ]; then
-    for k in fingerprints vocab families cited externs dogfooding-rules; do
+    for k in fingerprints vocab families cited externs dogfooding-rules ui-host ui-host-test ui-board; do
         make -s -o avra "$k" || { echo "gate_changed: keeper $k refused" >&2; exit 1; }
     done
 fi

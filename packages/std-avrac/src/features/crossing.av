@@ -83,8 +83,8 @@ fn meta_records() -> List<MetaShape> {
         MetaShape {
             pkg: "@std.meta",
             name: "Field",
-            fields: ["name", "ty", "at", "kind", "marks", "doc", "annotations", "defaulted"],
-            recent: 1,
+            fields: ["name", "ty", "at", "kind", "marks", "doc", "annotations", "defaulted", "says"],
+            recent: 2,
         },
         MetaShape {
             pkg: "@std.meta",
@@ -95,7 +95,8 @@ fn meta_records() -> List<MetaShape> {
         MetaShape {
             pkg: "@std.meta",
             name: "Type",
-            fields: ["name", "fields", "variants", "at", "doc", "annotations", "module", "over"],
+            fields: ["name", "fields", "variants", "at", "doc", "annotations", "module", "over", "spreads"],
+            recent: 1,
         },
         MetaShape {
             pkg: "@std.meta",
@@ -427,6 +428,7 @@ export fn meta_of_type(x: MetaType, mut heap: MetaHeap) -> MetaVal {
             meta_of_annotations(x.annotations, heap),
             MetaVal.Text(x.module),
             meta_of_kind(x.over, heap),
+            meta_of_texts(x.spreads, heap),
         ],
         heap,
     )
@@ -467,9 +469,15 @@ fn meta_of_field(x: MetaField, mut heap: MetaHeap) -> MetaVal {
             meta_of_opt_text(x.doc),
             meta_of_annotations(x.annotations, heap),
             MetaVal.Bool(x.defaulted),
+            meta_of_opt_params(x.says, heap),
         ],
         heap,
     )
+}
+
+fn meta_of_opt_params(xs: List<MetaParam>?, mut heap: MetaHeap) -> MetaVal {
+    let params? = xs else { return MetaVal.Absent }
+    heap.node([meta_of_param(p, heap) for p in params])
 }
 
 fn meta_of_variant(x: MetaVariant, mut heap: MetaHeap) -> MetaVal {

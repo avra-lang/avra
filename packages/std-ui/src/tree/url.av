@@ -1,0 +1,108 @@
+//! `tree/url.av` — the URL a tree may carry. A link's target and an
+//! image's source reach a target as a `Url`, and EVERY VALUE OF THE TYPE IS
+//! SAFE TO EMIT: a URL is a reference inside the site, or one of the
+//! schemes spelled here — there is no shape for one a browser would RUN
+//! (`javascript:`, `data:`), none that leaves the site without naming a
+//! scheme (`//host`), and none that carries a control character. So no
+//! target checks a URL, and none can forget to.
+//!
+//! `url(text)` reads text a program did not write. It is STRICT and repairs
+//! nothing: the scheme is read as written — no trimming, no decoding — so a
+//! spelling a browser would repair is refused, and the answer is absent.
+//! The WRITER (`text()`) is what makes a value built by hand safe too: it
+//! writes a reference as the path it is, whatever its text spells.
+use @std.meta.{derive}
+use @std.text.{ascii_lower, codepoints, from_codepoint}
+use style.words.{Words}
+
+/// The schemes a URL may name.
+@derive(Words)
+export enum Scheme {
+    @word(http) Http
+    @word(https) Https
+    @word(mailto) Mailto
+}
+
+/// A URL a tree may carry.
+export enum Url {
+    /// A reference inside the site: a path, a query, a fragment.
+    Local(reference: string)
+    /// A scheme, and everything after its colon.
+    Absolute(scheme: Scheme, after: string)
+}
+
+/// The characters that end a reference's first path segment.
+const segment_ends = ["/", "?", "#"]
+
+/// The two characters a browser reads as a path separator.
+const slashes = ["/", "\\"]
+
+/// A reference's first path segment: what stands before its first `/`,
+/// `?` or `#`. Only there can a colon name a scheme (RFC 3986 §4.2).
+fn first_segment(reference: string) -> string {
+    let ends = [at for at in [reference.index_of(e) for e in segment_ends] if at >= 0]
+    reference.substring(0, ends.min() ?? reference.length)
+}
+
+/// Whether a reference, read as a browser reads it, names a scheme.
+fn names_scheme(reference: string) -> bool { first_segment(reference).contains(":") }
+
+/// Whether a reference opens as a NETWORK PATH — two separators, which a
+/// browser reads as another host under the page's own scheme.
+fn opens_network_path(reference: string) -> bool {
+    let head = codepoints(reference).slice(0, 2)
+    head.length == 2 && head.all((c) -> slashes.contains(from_codepoint(c)))
+}
+
+/// Whether a code point is a control character: C0, or delete.
+fn is_control(c: int) -> bool { c < 32 || c == 127 }
+
+const hex_digits = "0123456789ABCDEF"
+
+/// A control character as its percent escape; every other code point is
+/// itself.
+fn escaped(c: int) -> string {
+    if !is_control(c) { return from_codepoint(c) }
+    "%${hex_digits.substring(c / 16, c / 16 + 1)}${hex_digits.substring(c % 16, c % 16 + 1)}"
+}
+
+/// A text with no control character left in it.
+fn printable(s: string) -> string { [escaped(c) for c in codepoints(s)].join("") }
+
+impl Url {
+    /// The URL as a target writes it — safe whatever the value holds. A
+    /// local reference whose first segment holds a colon is written
+    /// behind `./`, so it reads as the path it is and never as a scheme;
+    /// one that opens as a network path is written behind `/.`, so it
+    /// stays a path on this site; a control character is written as its
+    /// percent escape.
+    fn text() -> string {
+        match self {
+            .Local(reference) -> printable(
+                when {
+                    opens_network_path(reference) -> "/.${reference}"
+                    names_scheme(reference) -> "./${reference}"
+                    _ -> reference
+                },
+            ),
+            .Absolute(scheme, after) -> "${scheme.word()}:${printable(after)}",
+        }
+    }
+}
+
+/// The URL `text` spells, or absence for one a tree may not carry: a
+/// scheme that is not one of `Scheme`'s, a network path, or any text
+/// holding a control character.
+export fn url(text: string) -> Url? {
+    if codepoints(text).any(is_control) || opens_network_path(text) { return null }
+    if !names_scheme(text) { return Url.Local(text) }
+    let colon = text.index_of(":")
+    let scheme? = Scheme.worded(ascii_lower(text.substring(0, colon))) else { return null }
+    Url.Absolute(scheme, text.substring(colon + 1, text.length))
+}
+
+/// A reference inside the site — `local("/docs")`.
+export fn local(reference: string) -> Url { Url.Local(reference) }
+
+/// A page on the web by its host and path — `https("avra.dev/docs")`.
+export fn https(address: string) -> Url { Url.Absolute(.Https, "//${address}") }

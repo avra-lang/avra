@@ -16,7 +16,7 @@ use core.{
     some_list,
     body_behavior,
 }
-use features.{ComponentWord, Instancing, Template, Record, ChildSlot, Instanced}
+use features.{ComponentWord, Instancing, Template, Record, ChildSlot, Instanced, Event}
 use grammar.{Token, TokenKind, lex_source}
 
 /// An exported component as an importing file's block word.
@@ -79,10 +79,12 @@ fn binds_name(c: ComponentWord) -> bool {
 /// or the library's reason it cannot.
 fn instancing(store: SyntaxArena, c: ComponentParts) -> Instancing {
     let expand? = expand_of(store, c) else { return Instancing.Record(record_of(store, c)) }
-    if c.fields.is_empty() { return Instancing.Refused(no_block_field(c.name)) }
-    if c.fields.length > 1 { return Instancing.Refused(many_fields(c.name, c.fields.length)) }
+    let fields = c.fields()
+    if !c.events().is_empty() { return Instancing.Refused(template_hears(c.name)) }
+    if fields.is_empty() { return Instancing.Refused(no_block_field(c.name)) }
+    if fields.length > 1 { return Instancing.Refused(many_fields(c.name, fields.length)) }
     let head = [p.name.of for p in c.head]
-    let block = c.fields[0].name.of
+    let block = fields[0].name.of
     let body? = template_body(store, expand) else { return Instancing.Refused(computes(c.name)) }
     let reads = [self_field(store, h) ?? "" for h in body.holes]
     if !reads.all((r) -> head.contains(r) || r == block) { return Instancing.Refused(computes(c.name)) }
@@ -99,20 +101,23 @@ fn instancing(store: SyntaxArena, c: ComponentParts) -> Instancing {
 }
 
 /// A component read as a record: its head in order, the `List` fields
-/// its instance's statements may fill, and its one fn field.
+/// its instance's statements may fill, its one fn field — an event's
+/// handler is heard, never a body — and its events.
 fn record_of(store: SyntaxArena, c: ComponentParts) -> Record {
-    let arrow_fields = [p for p in c.fields if p.ty?.arrow ?? false]
+    let fields = c.fields()
+    let arrow_fields = [p for p in fields if p.ty?.arrow ?? false]
     Record {
         head: [p.name.of for p in c.head],
         slots: [ChildSlot {
             name: p.name.of,
             of: element_name(p),
             gathers: !declares_component(store, element_name(p)),
-        } for p in c.fields if lists(p)],
-        named: c.fields.any(it.name.of == "name"),
+        } for p in fields if lists(p)],
+        named: fields.any(it.name.of == "name"),
         checks: member(store, c, "check") != null,
         fn_field: if arrow_fields.length == 1 { arrow_fields[0].name.of } else { null },
         fn_optional: arrow_fields.length == 1 && answers_nullable(arrow_fields[0].ty),
+        events: [Event { name: e.name, says: [s.name.of for s in e.says] } for e in c.events()],
     }
 }
 
@@ -197,6 +202,10 @@ fn no_block_field(name: string) -> string {
 
 fn many_fields(name: string, n: int) -> string {
     "`${name}` declares ${n} fields beside its head, and an instance's block fills one"
+}
+
+fn template_hears(name: string) -> string {
+    "`${name}` copies its `expand` where an instance stands, and copied code hears no event — declare events on a component that builds a record"
 }
 
 fn computes(name: string) -> string {

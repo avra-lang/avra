@@ -5,7 +5,7 @@
 # TWO QUANTITIES, TWO LAWS:
 #   THE FLOOR (the minimal program) is the compiler's SHARED cost and must not
 #   creep; it is capped TIGHTLY and a floor rise is the loud regression.
-#   THE BOARD (tools/ui-board) is the UI library's SHOWCASE and is SUPPOSED to
+#   THE BOARD (tools/ui-board/web, the board mounted on a page) is the UI library's SHOWCASE and is SUPPOSED to
 #   grow with every component; it is REPORTED with its move against the last
 #   accepted value, NEVER capped — a cap there would train a re-baseline on
 #   every feature, which is how a guard dies.
@@ -14,6 +14,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 avra=${AVRA:-$tree/build/avra}
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-sz.XXXXXX")
+# WASM_TARGET names another wasm triple, for a machine whose sysroot is not the default's.
+target=${WASM_TARGET:-wasm}
 say() { echo "wasm-size-guard: $*"; }
 skip() { say "$* — skipped"; exit 0; }
 
@@ -27,18 +29,22 @@ command -v wasm-objdump >/dev/null 2>&1 || skip "no wasm-objdump (wabt) on PATH"
 base=$(cd "$tree" && (git rev-parse --short HEAD 2>/dev/null || echo no-git))
 hex() { printf '%d' "$(( 0x${1:-0} ))"; }
 
-# "<bytes> <globals> <code> <data>", or empty when the program will not build
-footprint() { # dir mode
+# "<bytes> <globals> <code> <data>", or empty when the program will not build.
+# `entry` names the package to build inside `dir`, when `dir` holds more than
+# one: the whole of `dir` is copied, so a path dependency beside the entry
+# comes with it.
+footprint() { # dir mode [entry]
     dir=$1
     mode=$2
+    entry=${3:-.}
     flag=""
     [ "$mode" = reactor ] && flag=--wasm_reactor
     rm -rf "$work/pkg"
     cp -R "$dir" "$work/pkg"
-    w=$("$avra" build --target wasm $flag "$work/pkg" 2>/dev/null | tail -1)
+    w=$("$avra" build --target "$target" $flag "$work/pkg/$entry" 2>/dev/null | tail -1)
     [ -f "$w" ] || { echo ""; return; }
     bytes=$(stat -c%s "$w" 2>/dev/null || stat -f%z "$w")
-    globals=$("$avra" emit "$dir" 2>/dev/null | grep -c '^@')
+    globals=$("$avra" emit "$dir/$entry" 2>/dev/null | grep -c '^@')
     c=$(wasm-objdump -h "$w" 2>/dev/null | awk '/ Code /{print; exit}' | sed -n 's/.*size=0x\([0-9a-fA-F]*\).*/\1/p')
     d=$(wasm-objdump -h "$w" 2>/dev/null | awk '/ Data /{print; exit}' | sed -n 's/.*size=0x\([0-9a-fA-F]*\).*/\1/p')
     echo "$bytes $globals $(hex "${c:-0}") $(hex "${d:-0}")"
@@ -50,7 +56,7 @@ fb=$(echo "$floor" | cut -d' ' -f1)
 fg=$(echo "$floor" | cut -d' ' -f2)
 
 board=""
-[ -d "$here/ui-board" ] && board=$(footprint "$here/ui-board" reactor)
+[ -d "$here/ui-board/web" ] && board=$(footprint "$here/ui-board" reactor web)
 
 if [ -n "$board" ]; then
     bb=$(echo "$board" | cut -d' ' -f1)
@@ -59,7 +65,7 @@ if [ -n "$board" ]; then
     bd=$(echo "$board" | cut -d' ' -f4)
     say "base=$base floor=${fb}B/${fg}g board=${bb}B code=${bc} data=${bd} globals=${bg}g"
 else
-    say "base=$base floor=${fb}B/${fg}g board=absent (tools/ui-board not here)"
+    say "base=$base floor=${fb}B/${fg}g board=absent (tools/ui-board/web is not here, or did not build)"
 fi
 
 baseline=${WASM_SIZE_BASELINE:-$here/wasm-size.baseline}

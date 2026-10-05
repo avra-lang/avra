@@ -9,10 +9,10 @@
 use style.box.{Box}
 use style.style.{Style, StateStyle, Interaction}
 use style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout}
-use style.theme.{Theme}
-use realize.lists.{union}
-use realize.render.{Node}
-use ui.{Size, Tone, Font}
+use style.theme.{Theme, Mode}
+use tree.lists.{flatten}
+use tree.node.{Node, Prim}
+use style.tokens.{Size, Tone, Font}
 
 /// One atomic rule: its class name (already state-prefixed), the state
 /// it applies in, and the declaration it carries.
@@ -172,7 +172,7 @@ fn grow_rule(n: int, state: Interaction?) -> List<CssRule> {
 }
 
 fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
-    union(
+    flatten(
         [
             axis_rule(l.direction, state),
             gap_rule(l.gap, state),
@@ -189,7 +189,7 @@ fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
 // ── appearance ──────────────────────────────────────────────────
 
 fn appearance_rules(s: Style, state: Interaction?) -> List<CssRule> {
-    union(
+    flatten(
         [
             color_rule(s.color, state),
             fill_rule(s.fill, state),
@@ -210,11 +210,26 @@ impl Box {
         out
     }
 }
-/// Every class a box names, once, in rule order — the ONE projection of a
-/// box's rules both serializers read.
-export fn class_names_of(box: Box) -> List<string> { [r.name for r in distinct_rules(box.rules())] }
+/// The axis a primitive flows along when its layout names none. Every
+/// primitive spelled: a row and a column ARE their axis, the rest flow
+/// as their element does.
+fn own_axis(p: Prim) -> Axis? {
+    match p {
+        .Row -> .Row,
+        .Column -> .Column,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> null,
+    }
+}
 
-export fn class_names(n: Node) -> List<string> { class_names_of(n.box) }
+/// Every rule a node names: its primitive's own axis unless its layout
+/// names one, then its box.
+export fn node_rules(prim: Prim, box: Box) -> List<CssRule> {
+    let own = if box.layout.direction == null { axis_rule(own_axis(prim), null) } else { [] }
+    own.concat(box.rules())
+}
+
+/// Every class a node names, once, in rule order.
+export fn class_names(n: Node) -> List<string> { [r.name for r in distinct_rules(node_rules(n.prim, n.box))] }
 
 /// Rules with each class name kept once, order intact; two nodes that
 /// share a look share the rule.
@@ -250,7 +265,7 @@ fn face_vars(t: Theme) -> string {
 
 /// The theme as the variables every class reads. A mode is a whole
 /// theme, so a mode change rewrites these and moves no class.
-fn root_vars(t: Theme) -> string {
+export fn root_vars(t: Theme) -> string {
     ":root{${space_vars(t)}${radius_vars(t)}${tone_vars(t)}${face_vars(t)} }"
 }
 
@@ -266,7 +281,31 @@ fn pseudo_of(s: Interaction?) -> string {
 
 fn rule_source(r: CssRule) -> string { "${selector(r.name)}${pseudo_of(r.state)}{${r.decl}}" }
 
-/// The one stylesheet every class in the document names.
-export fn stylesheet(rules: List<CssRule>, t: Theme) -> string {
-    [root_vars(t)].concat([rule_source(r) for r in rules]).join("\n")
+/// What the page itself looks like under every node: the surface, the
+/// text colour and the body face, read from the same variables.
+fn base_rule() -> string {
+    "body{margin:0;${fill_word(.Surface).decl};${color_word(.Text).decl};${face_word(.Body).decl}}"
+}
+
+/// The media query under which a reader's settings ask for a mode. Every
+/// mode spelled.
+fn mode_query(m: Mode) -> string {
+    match m {
+        .Light -> "(prefers-color-scheme: light)",
+        .Dark -> "(prefers-color-scheme: dark)",
+        .HighContrast -> "(prefers-contrast: more)",
+    }
+}
+
+/// An alternate theme: the same variables, rewritten while its mode is asked for.
+fn alternate(t: Theme) -> string { "@media ${mode_query(t.mode)}{${root_vars(t)}}" }
+
+/// A whole page's stylesheet: the theme, each alternate under its mode's
+/// query, the page's own base, then the rules the tree named.
+export fn page_sheet(rules: List<CssRule>, t: Theme, alternates: List<Theme>) -> string {
+    [root_vars(t)]
+        .concat([alternate(a) for a in alternates])
+        .concat([base_rule()])
+        .concat([rule_source(r) for r in rules])
+        .join("\n")
 }

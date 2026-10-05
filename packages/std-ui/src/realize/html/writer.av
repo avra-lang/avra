@@ -1,6 +1,7 @@
 //! `realize/html/writer.av` — the typed HTML writer. A document is a list
 //! of OPS; `source` serializes them, escaping every value.
-use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
+use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, is_void}
+use env.{Direction}
 
 /// One piece of a document, in drawing order.
 export enum HtmlOp {
@@ -24,7 +25,7 @@ fn attr_source(a: HtmlAttr) -> string { " ${a.name.word()}=\"${entities(a.value)
 fn op_source(op: HtmlOp) -> string {
     match op {
         .Open(tag, attrs) -> "<${tag.word()}${[attr_source(a) for a in attrs].join("")}>",
-        .Close(tag) -> "</${tag.word()}>",
+        .Close(tag) -> if is_void(tag) { "" } else { "</${tag.word()}>" },
         .Text(content) -> entities(content),
     }
 }
@@ -39,4 +40,19 @@ fn css_safe(css: string) -> string { css.replace("<", "\\3c ") }
 /// The stylesheet, then the tree in a body.
 export fn document(css: string, ops: List<HtmlOp>) -> string {
     "<style>${css_safe(css)}</style><body>${source(ops)}</body>"
+}
+
+/// What a document's head says: its title, its language and the way its
+/// text runs.
+export type Head = { title: string, locale: string, direction: Direction }
+
+/// The `dir` value a writing direction names. Every direction spelled.
+fn dir_word(d: Direction) -> string {
+    match d { .Ltr -> "ltr", .Rtl -> "rtl" }
+}
+
+/// A complete document: every value the head carries is escaped for the
+/// context it lands in.
+export fn page_source(head: Head, css: string, ops: List<HtmlOp>) -> string {
+    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${dir_word(head.direction)}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>${entities(head.title)}</title><style>${css_safe(css)}</style></head><body>${source(ops)}</body></html>"
 }

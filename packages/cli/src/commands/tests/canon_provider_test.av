@@ -36,9 +36,9 @@ fn fmt_checked(root: string) -> Result<Exit, ProcessError> {
     match avra_ran(["fmt", "--check", root]) { .Ok(o) -> .Ok(o.exit), .Err(e) -> .Err(e) }
 }
 
-/// A package whose one file writes an `on <kind> { … }` handler. The
-/// handler lowers to a setting + nullary lambda, so only a MARK on the
-/// lambda tells the printer the sugar from the closure it builds.
+/// A package whose one file writes an `on <event> { … }` handler. The
+/// handler lowers to a setting + lambda, so only a MARK on the lambda
+/// tells the printer the sugar from the closure it builds.
 fn on_handler_package() -> string {
     let root = "${scratch_dir()}/on_handler_${now_ns()}"
     let _ = make_dirs("${root}/src")
@@ -48,12 +48,12 @@ fn on_handler_package() -> string {
     )
     let _ = write_text(
         "${root}/src/main.av",
-        "use @std.ui.components.{button}\n\nfn v() -> int {\n    let x = 5\n    let b = button \"hi\" { on click { x + 1 } }\n    0\n}\n",
+        "use @std.ui.components.{button}\n\nfn v() -> int {\n    let x = 5\n    let b = button \"hi\" { on press { println(\"\${x + 1}\") } }\n    0\n}\n",
     )
     root
 }
 
-spec "avra fmt — an `on <kind> { … }` handler is canonical" {
+spec "avra fmt — an `on <event> { … }` handler is canonical" {
     given "a component instance whose handler was written with the sugar" {
         then "the file already stands canonical — the sugar round-trips, not the closure it builds" {
             match fmt_checked(on_handler_package()) {

@@ -101,6 +101,15 @@ export component within(limit: Code) {           // a VALUE head
 - inner words (`command`, `flag`, `description`) are CONTEXTUAL: they mean
   something only inside the block. Only the imported word is reserved,
   only where imported.
+- AN EVENT IS A DECLARED MEMBER, one word on both sides: `on input(typed:
+  string)` in the component, `on input { typed -> … }` at the instance.
+  The member is a field named by the event (`self.input`), holding the
+  handler — absent until an instance hears it. A handler hears all its
+  event says, or none of it (`on input { … }`). A handler for an event
+  the component does not declare is `type.component_event`, naming the
+  events there are. `on input: handler` hands the event a handler that
+  is already a value — how a component passes on one it was given. A
+  derive reads `Field.says` (`@std/meta`).
 
 ## 4. Two stages, each reusing what exists
 
@@ -228,7 +237,8 @@ instance it is a child and binds nothing. A block is optional
 settings only — a child there refuses, its children are its base's.
 `on click { … }` AS BUILT: `on <kind> { body }` in an instance's block
 is the setting `on_<kind>: () -> { body }` — a lambda closing over what
-the view could see (`on` is a soft keyword). The component's field is a
+the view could see (`on` is a soft keyword); `on input { text -> … }`
+gives it the one seat the control speaks into. The component's field is a
 FN type (`@std/ui`'s `Run = fn()`, `Hear = fn(string)`), so the handler
 is an ordinary value: nothing is synthesized, no message type, no
 dispatcher. A target keeps the handlers of the frame it last drew and

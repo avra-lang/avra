@@ -1,141 +1,128 @@
 // The live target's fixed bootstrap — the ONLY JavaScript an Avra web app
-// ships. The program (wasm) emits a BYTE frame; this reconciles it into the
-// live tree. A node with a KEY is matched by key (identity moves with it);
-// otherwise it is matched by its ID from the previous frame. Same file for
-// every app.
+// ships. The program (wasm) decides everything: it diffs the page it drew
+// against the page it wants and sends PATCHES. This applies them, and
+// reports what the user did. It holds no tree, no reconciler and no table
+// of the library's facts: which event a control hears, what it says, what
+// is a property and what moved all arrive IN the patches, and the numbers
+// the wire spells them with are generated (`wire.gen.js`) from the
+// program's own declarations — see realize/dom/wire.av.
 //
-// Wire V5: a version byte, then records of little-endian ints with values
-// carried raw (length-prefixed). An event record names a node and a kind;
-// the handler stays in the program. Nothing is escaped; see
-// realize/dom/frame.av.
+// Same file for every app.
+import { WIRE_VERSION, NO_ID, OP, SAYS, HOST } from "./wire.gen.js";
 
-export const FRAME_VERSION = 5;
+export { WIRE_VERSION, HOST };
 
-// A frame's records, in frame order. `C` opens a record; `K`/`A`/`T` fill
-// key, class and words. Null means NOTHING CHANGED.
+// A frame's patches, in order. An id is a number in eight little-endian
+// bytes — the same width however deep its element sits — and `NO_ID` where
+// a record names none: the page itself as a parent, the first place as a
+// sibling. Every other number is four bytes; a text is its byte length,
+// then its bytes.
 export function parseFrame(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder();
   let i = 0;
   const seen = bytes[i++];
-  if (seen !== FRAME_VERSION) {
-    throw new Error(`unsupported frame version ${seen} — this host speaks ${FRAME_VERSION}`);
+  if (seen !== WIRE_VERSION) {
+    throw new Error(`unsupported wire version ${seen} — this host speaks ${WIRE_VERSION}`);
   }
-  if (bytes[i] === 0) return null;
-  const records = [];
-  const byId = new Map();
-  const str = (at, len) => new TextDecoder().decode(bytes.subarray(at, at + len));
+  const int = () => { const v = dv.getInt32(i, true); i += 4; return v; };
+  const id = () => { const lo = dv.getUint32(i, true); const hi = dv.getInt32(i + 4, true); i += 8; return hi * 4294967296 + lo; };
+  const str = () => { const len = int(); const s = decoder.decode(bytes.subarray(i, i + len)); i += len; return s; };
+  const patches = [];
   while (i < bytes.length) {
     const op = bytes[i++];
-    if (op === 1) {
-      const id = dv.getInt32(i, true); i += 4;
-      const parent = dv.getInt32(i, true); i += 4;
-      const index = dv.getInt32(i, true); i += 4;
-      const len = dv.getInt32(i, true); i += 4;
-      const tag = str(i, len); i += len;
-      const r = { id, parent, index, tag, key: null, cls: null, text: null, events: [] };
-      records.push(r);
-      byId.set(id, r);
-    } else if (op === 2 || op === 3 || op === 4) {
-      const id = dv.getInt32(i, true); i += 4;
-      const len = dv.getInt32(i, true); i += 4;
-      const val = str(i, len); i += len;
-      const r = byId.get(id);
-      if (r) { if (op === 2) r.key = val; else if (op === 3) r.cls = val; else r.text = val; }
-    } else if (op === 5) {
-      const id = dv.getInt32(i, true); i += 4;
-      const kind = dv.getInt32(i, true); i += 4;
-      const r = byId.get(id);
-      if (r) r.events.push(kind);
-    } else if (op === 6) {
-      const len = dv.getInt32(i, true); i += 4;
-      records.stylesheet = str(i, len); i += len;
-    } else if (op === 0) {
-      break;
-    } else {
-      throw new Error(`unknown frame op ${op}`);
-    }
+    if (op === OP.create) patches.push({ op, id: id(), tag: str() });
+    else if (op === OP.create_text || op === OP.set_text) patches.push({ op, id: id(), content: str() });
+    else if (op === OP.place) patches.push({ op, id: id(), parent: id(), after: id() });
+    else if (op === OP.remove) patches.push({ op, id: id() });
+    else if (op === OP.set_attr) patches.push({ op, id: id(), name: str(), value: str() });
+    else if (op === OP.drop_attr) patches.push({ op, id: id(), name: str() });
+    else if (op === OP.set_prop) patches.push({ op, id: id(), name: str(), says: int(), value: str() });
+    else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), event: str(), says: int(), reads: str(), prevents: int() !== 0 });
+    else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
+    else if (op === OP.style) patches.push({ op, css: str() });
+    else throw new Error(`unknown patch op ${op}`);
   }
-  return records;
+  return patches;
+}
+
+// A property's value as the wire's text for it. A property holds text or a
+// flag: a number control's `value` is the text that spells it.
+function valueOf(says, text) {
+  return says === SAYS.flag ? text !== "" : text;
+}
+
+// What a control says, read off the property the patch named. A control
+// that cannot say what was asked says nothing.
+function saidBy(el, says, reads) {
+  if (says === SAYS.nothing) return null;
+  const held = el[reads];
+  if (says === SAYS.flag) return { says, value: Boolean(held) };
+  if (says === SAYS.number) { const n = Number(held); return Number.isFinite(n) ? { says, value: Math.trunc(n) } : null; }
+  return held === undefined ? null : { says, value: String(held) };
 }
 
 // Build the applier over one document (a real one in a browser, a stub in a
-// test) and one mount element.
-const EVENT_NAME = { 1: "click", 2: "input", 3: "change", 4: "submit" };
-
+// test) and one mount element. `send(id, kind, said)` is the echo.
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
-  // LICENSED loops.push_loop: these maps ride the closure as the applier's table
-  const byKey = new Map();
-  let byId = new Map();
+  const byId = new Map();
+  const need = (id) => {
+    const el = byId.get(id);
+    if (!el) throw new Error(`a patch names element ${id}, which is not on the page`);
+    return el;
+  };
+  // An element that leaves takes everything under it.
+  const forget = (el) => {
+    byId.delete(el.__avra_id);
+    for (const child of el.childNodes || []) forget(child);
+  };
+  const keep = (id, el) => { el.__avra_id = id; byId.set(id, el); };
 
-  return function apply(bytes) {
-    const records = parseFrame(bytes);
-    if (records === null) return; // nothing changed — touch nothing
-    if (records.stylesheet !== undefined && styleEl) styleEl.textContent = records.stylesheet;
-    const next = new Map();
-    const keys = new Set();
-    for (const r of records) {
-      // REUSE ONLY A MATCHING ELEMENT. A pre-order id shifts when a node is
-      // added or removed, so the element byId holds for this id may be a
-      // DIFFERENT node now — a tag test refuses to wear it, and the reorder
-      // below trims the stale one. Without it a list whose size changed
-      // rewrote every later node into the element of a node that moved.
-      const keyed = r.key !== null && byKey.has(r.key);
-      const reused = byId.get(r.id);
-      const el = keyed ? byKey.get(r.key) : reused && reused.tagName === r.tag ? reused : doc.createElement(r.tag);
-      if (r.key !== null) { el.setAttribute("data-key", r.key); byKey.set(r.key, el); keys.add(r.key); }
-      if (r.cls !== null) el.setAttribute("class", r.cls);
-      if (r.text !== null && el.textContent !== r.text) el.textContent = r.text;
-      // The id is THIS frame's: a listener reads it when it fires, so a node
-      // that moved speaks under the id the program last gave it.
-      el.__avra_id = r.id;
-      next.set(r.id, el);
-    }
-    // Order each parent's children by the frame's own index.
-    const order = new Map();
-    for (const r of records) {
-      if (!order.has(r.parent)) order.set(r.parent, []);
-      order.get(r.parent).push(r);
-    }
-    if (!order.has(-1)) order.set(-1, []);
-    for (const [parent, kids] of order) {
-      const host = parent === -1 ? mount : next.get(parent);
-      if (!host) continue;
-      kids.sort((a, b) => a.index - b.index);
-      kids.forEach((r, i) => {
-        const el = next.get(r.id);
-        if (host.childNodes[i] !== el) host.insertBefore(el, host.childNodes[i] || null);
-      });
-      while (host.childNodes.length > kids.length) {
-        host.removeChild(host.childNodes[host.childNodes.length - 1]);
-      }
-    }
-    // SUBSCRIBE: each event a frame names is a listener; one it drops is
-    // removed. The host calls back with the node's CURRENT id and the kind.
-    for (const r of records) {
-      const el = next.get(r.id);
-      if (!el) continue;
-      const attached = el.__avra_events || (el.__avra_events = new Map());
-      const want = new Set(r.events);
-      for (const [kind, handler] of [...attached]) {
-        if (want.has(kind)) continue;
-        el.removeEventListener(EVENT_NAME[kind], handler);
-        attached.delete(kind);
-      }
-      for (const kind of want) {
-        if (attached.has(kind)) continue;
-        const name = EVENT_NAME[kind];
-        if (!name) continue;
-        // AN INPUT SAYS ITS OWN TEXT: what the user typed lives in the page,
-        // so an input event carries the element's value. Every other kind
-        // says nothing.
-        const handler = () =>
-          send(el.__avra_id, kind, kind === 2 && el.value !== undefined ? { tag: "text", value: String(el.value) } : null);
-        el.addEventListener(name, handler);
-        attached.set(kind, handler);
-      }
-    }
-    for (const [key] of [...byKey]) if (!keys.has(key)) byKey.delete(key);
-    byId = next;
+  const apply = {
+    [OP.create]: (p) => keep(p.id, doc.createElement(p.tag)),
+    [OP.create_text]: (p) => keep(p.id, doc.createTextNode(p.content)),
+    [OP.place]: (p) => {
+      const parent = p.parent === NO_ID ? mount : need(p.parent);
+      const before = p.after === NO_ID ? parent.childNodes[0] : need(p.after).nextSibling;
+      parent.insertBefore(need(p.id), before || null);
+    },
+    [OP.remove]: (p) => {
+      const el = need(p.id);
+      if (el.parentNode) el.parentNode.removeChild(el);
+      forget(el);
+    },
+    [OP.set_attr]: (p) => need(p.id).setAttribute(p.name, p.value),
+    [OP.drop_attr]: (p) => need(p.id).removeAttribute(p.name),
+    // A PROPERTY IS WRITTEN ONLY WHEN IT DIFFERS: writing a field's own
+    // text back to it would move the caret a user is typing at.
+    [OP.set_prop]: (p) => {
+      const el = need(p.id);
+      const value = valueOf(p.says, p.value);
+      if (el[p.name] !== value) el[p.name] = value;
+    },
+    [OP.set_text]: (p) => { need(p.id).textContent = p.content; },
+    [OP.listen]: (p) => {
+      const el = need(p.id);
+      const held = el.__avra_listeners || (el.__avra_listeners = new Map());
+      const listener = (ev) => {
+        if (p.prevents && ev) ev.preventDefault();
+        send(p.id, p.kind, saidBy(el, p.says, p.reads));
+      };
+      el.addEventListener(p.event, listener);
+      held.set(p.kind, { event: p.event, listener });
+    },
+    [OP.unlisten]: (p) => {
+      const el = need(p.id);
+      const held = el.__avra_listeners && el.__avra_listeners.get(p.kind);
+      if (!held) return;
+      el.removeEventListener(held.event, held.listener);
+      el.__avra_listeners.delete(p.kind);
+    },
+    [OP.style]: (p) => { if (styleEl) styleEl.textContent = p.css; },
+  };
+
+  return function applyFrame(bytes) {
+    for (const p of parseFrame(bytes)) apply[p.op](p);
   };
 }
 
@@ -164,30 +151,54 @@ export async function instantiate(source, host) {
   return instance.exports;
 }
 
-// The program's `avra_event(who: int, what: int, tag: int, num: int, len:
-// int)` crosses as five i64 seats, so the host hands it BigInts. `who` is
-// the node's id in the last frame, `what` the event kind. What the control
-// said crosses as a TAG and its value: tag 0 is ABSENT — a tag of
-// its own, so a present zero or empty text is never mistaken for no payload
-// — 1 is an int in `num`, 2 a bool, and 3 text whose UTF-8 octets the host
-// writes into the program's own seat (`avra_payload_seat`) and adopts by
-// pointer. ONE door for both the page and a test harness.
-const PAYLOAD_TAG = { text: 3, int: 1, bool: 2 };
-const seats = new WeakMap();
+// The program's `event(who: int, what: int, tag: int, num: int, len: int)`
+// — `HOST.event`, a name the library's own table gives — crosses as five
+// i64 seats, so the host hands it BigInts. `who` is the element's id and
+// `what` the event kind, each echoed as the patch gave it. What the control
+// said crosses as the tag the patch asked for (`SAYS`) and its value:
+// nothing is a tag of its own, so a present zero or empty text is never
+// mistaken for nothing; a number or a flag rides `num`; text is `len` UTF-8
+// octets written into a seat the program hands out for exactly that many
+// (`HOST.seat`), so no text outgrows its seat. ONE door for both the page
+// and a test harness.
+export function sendEvent(mod, who, what, said) {
+  const event = mod[HOST.event];
+  if (!said) { event(BigInt(who), BigInt(what), BigInt(SAYS.nothing), 0n, 0n); return; }
+  if (said.says !== SAYS.text) { event(BigInt(who), BigInt(what), BigInt(said.says), BigInt(said.value), 0n); return; }
+  const bytes = new TextEncoder().encode(said.value);
+  // THE SEAT IS ASKED FOR FIRST: handing it out may grow the program's
+  // memory, and a view made before that would name the old buffer.
+  const at = Number(mod[HOST.seat](BigInt(bytes.length)));
+  new Uint8Array(mod.memory.buffer, at, bytes.length).set(bytes);
+  event(BigInt(who), BigInt(what), BigInt(said.says), 0n, BigInt(bytes.length));
+}
 
-export function sendEvent(mod, who, what, payload) {
-  if (!payload) { mod.avra_event(BigInt(who), BigInt(what), 0n, 0n, 0n); return; }
-  const tag = PAYLOAD_TAG[payload.tag];
-  if (tag === 3) {
-    const bytes = new TextEncoder().encode(payload.value);
-    let seat = seats.get(mod);
-    if (seat === undefined) { seat = Number(mod.avra_payload_seat()); seats.set(mod, seat); }
-    new Uint8Array(mod.memory.buffer, seat, bytes.length).set(bytes);
-    mod.avra_event(BigInt(who), BigInt(what), BigInt(tag), 0n, BigInt(bytes.length));
-    return;
+// RUN AN APP ON A PAGE: load the module, apply each frame it sends to
+// `mount`, echo what the user does, then run the program's own statements
+// — its `mount(view)` paints the first frame. `document`, `mount` and
+// `style` are a real page's or a stub's; `wasi(memory)` answers the
+// preview1 rows over the module's memory; `sent(bytes)` sees each frame
+// before it is applied. A module that is no `@std/ui` web app REFUSES by
+// the name it lacks.
+export async function run(source, { document, mount, style = null, wasi, sent = () => {} }) {
+  let mod = null;
+  const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
+  mod = await instantiate(source, {
+    wasi: wasi(() => mod.memory),
+    // The seat is a Bytes: the pointer names its box, and the LENGTH comes
+    // from the runtime's own reader, exported by the module.
+    rt: { avra_dom_frame: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); } },
+  });
+  const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");
+  if (lacks.length > 0) {
+    throw new Error(`the module exports no ${lacks.join(", ")} — a page runs a program whose statements \`mount\` a view (\`use @std.ui.web.{mount}\`)`);
   }
-  const num = payload.tag === "bool" ? (payload.value ? 1 : 0) : payload.value;
-  mod.avra_event(BigInt(who), BigInt(what), BigInt(tag), BigInt(num), 0n);
+  // A REACTOR: initialize the C runtime once, then the program's own
+  // statements — never a `main` that exits.
+  mod._initialize();
+  const code = mod[HOST.entry]();
+  if (code !== 0) throw new Error(`the program's statements answered ${code}`);
+  return mod;
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length

@@ -1,0 +1,75 @@
+// Every line of every render is within the width, across a tree that
+// holds each primitive, padding, gaps and non-ASCII text.
+use @std.text.{codepoint_count}
+use @std.ui.tree.url.{local}
+use @std.ui.tree.node.{Node, Prim}
+use @std.ui.realize.tui.tui.{render}
+use @std.ui.env.{Env}
+use @std.ui.style.box.{Box}
+use @std.ui.realize.tests.support.{
+    leaf,
+    boxed,
+    holding,
+    gap_pad,
+    text_node,
+    heading_node,
+    image_node,
+    link_node,
+    button_node,
+    switch_node,
+    field_node,
+    card_node,
+}
+
+fn crowded() -> Node {
+    let item = holding(
+        .Item,
+        [text_node("héllo wörld and a supercalifragilistic word"), button_node("Save changes")],
+    )
+    boxed(
+        .Column,
+        gap_pad(.M, .L),
+        [
+            heading_node("An overlong heading over the line", 1),
+            image_node("i.png", "a picture of something"),
+            leaf(.Icon, [.Src(local("i.svg")), .Name("a named decorative glyph")]),
+            link_node("the documentation", "https://example.com/docs/very/long"),
+            switch_node("Remember me on this device", true),
+            leaf(.Checkbox, [.Label("Agree to every one of the terms"), .Checked(false)]),
+            field_node("Email address", "someone@example.com"),
+            leaf(.Slider, [.Label("Volume of the notification"), .Amount(40), .Min(0), .Max(100)]),
+            leaf(.Progress, [.Label("Uploading the attachment"), .Amount(3), .Max(10)]),
+            leaf(.Alert, [.Text("Something went wrong while saving")]),
+            leaf(.Spinner, [.Label("Loading the next page")]),
+            leaf(.Divider, []),
+            boxed(
+                .Row,
+                gap_pad(.Xl, .M),
+                [text_node("left side"), button_node("Go"), text_node("right side")],
+            ),
+            card_node("A card title", [holding(.List, [item, item])]),
+            Node {
+                prim: .Dialog,
+                attrs: [.Label("A dialog label"), .Open(true)],
+                box: Box {},
+                children: [holding(.Form, [holding(.Surface, [text_node("inside the dialog")])])],
+            },
+        ],
+    )
+}
+
+fn widest_at(w: int) -> int { [codepoint_count(l) for l in render(crowded(), Env {}, w).split("\n")].max() ?? 0 }
+
+spec "std/ui tui — width" {
+    given "a tree holding every primitive" {
+        then "no line passes the width, from one to sixty" { [w for w in 1..60 if widest_at(w) > w].length == 0 }
+        then "the widest line passes twenty at thirty and forty at sixty" { widest_at(30) > 20 && widest_at(60) > 40 }
+        then "at a width of zero no line passes one" { widest_at(0) <= 1 }
+        then "a divider's line is exactly the room it is given" { widest_at(47) == 47 }
+    }
+    given "non-ASCII length" {
+        then "the byte length of an accented letter is two, its code point count one" {
+            "é".length == 2 && codepoint_count("é") == 1
+        }
+    }
+}

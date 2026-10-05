@@ -1,144 +1,184 @@
-// Proves the bootstrap's law over the V5 BYTE wire: a frame builds the tree,
-// a second frame REUSES the elements, order follows the frame's index, keys
-// move identity on a reorder, a dropped node leaves, a no-change frame
-// touches nothing, and a frame of ANOTHER VERSION refuses.
-import { createApplier, parseFrame, sendEvent } from "./bootstrap.js";
+// Proves the host applies every patch op and reports what the user did —
+// and decides nothing: the frames below say what moved, what is a property
+// and what an event says. Op numbers come from the generated table, so a
+// wire the program changed is the wire this test speaks.
+import { createApplier, parseFrame, sendEvent, run, HOST, WIRE_VERSION } from "./bootstrap.js";
+import { NO_ID, OP, SAYS } from "./wire.gen.js";
+import { stubDocument, stubElement, textOf } from "./stub_dom.js";
 
 // A fixture encoder — the CONSUMING side is what is under test; the
 // producing side's exact bytes are pinned by the Avra wire test.
 const i32 = (v) => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255];
 const utf8 = (s) => [...new TextEncoder().encode(s)];
-const C = (id, parent, index, tag) => [1, ...i32(id), ...i32(parent), ...i32(index), ...i32(tag.length), ...utf8(tag)];
-const K = (id, s) => [2, ...i32(id), ...i32(s.length), ...utf8(s)];
-const A = (id, s) => [3, ...i32(id), ...i32(s.length), ...utf8(s)];
-const T = (id, s) => [4, ...i32(id), ...i32(s.length), ...utf8(s)];
-const S = (s) => [6, ...i32(s.length), ...utf8(s)];
-const E = (id, kind) => [5, ...i32(id), ...i32(kind)];
-const frame = (...recs) => Uint8Array.from([5, ...recs.flat()]);
-
-function el(doc, tag) {
-  return {
-    tagName: tag, childNodes: [], attrs: {}, textContent: "", value: "", parentNode: null, listeners: new Map(),
-    setAttribute(k, v) { this.attrs[k] = v; },
-    appendChild(c) { c.parentNode = this; this.childNodes.push(c); },
-    insertBefore(c, at) {
-      if (c.parentNode) c.parentNode.removeChild(c);
-      const i = at ? this.childNodes.indexOf(at) : this.childNodes.length;
-      this.childNodes.splice(i < 0 ? this.childNodes.length : i, 0, c);
-      c.parentNode = this;
-    },
-    removeChild(c) { const i = this.childNodes.indexOf(c); if (i >= 0) this.childNodes.splice(i, 1); c.parentNode = null; },
-    addEventListener(name, fn) { this.listeners.set(name, fn); },
-    removeEventListener(name) { this.listeners.delete(name); },
-  };
-}
-const doc = { createElement: (tag) => el(null, tag) };
-const mount = el(doc, "root");
-const apply = createApplier(doc, mount);
+const str = (s) => [...i32(utf8(s).length), ...utf8(s)];
+// An id is a number; a fixture names elements by small ones.
+const idBytes = (n) => [...i32(n >>> 0), ...i32(n < 0 ? -1 : Math.floor(n / 4294967296))];
+const create = (id, tag) => [OP.create, ...idBytes(id), ...str(tag)];
+const createText = (id, content) => [OP.create_text, ...idBytes(id), ...str(content)];
+const place = (id, parent, after) => [OP.place, ...idBytes(id), ...idBytes(parent), ...idBytes(after)];
+const remove = (id) => [OP.remove, ...idBytes(id)];
+const setAttr = (id, name, value) => [OP.set_attr, ...idBytes(id), ...str(name), ...str(value)];
+const dropAttr = (id, name) => [OP.drop_attr, ...idBytes(id), ...str(name)];
+const setProp = (id, name, says, value) => [OP.set_prop, ...idBytes(id), ...str(name), ...i32(says), ...str(value)];
+const setText = (id, content) => [OP.set_text, ...idBytes(id), ...str(content)];
+const listen = (id, kind, event, says, reads, prevents) => [OP.listen, ...idBytes(id), ...i32(kind), ...str(event), ...i32(says), ...str(reads), ...i32(prevents ? 1 : 0)];
+const unlisten = (id, kind) => [OP.unlisten, ...idBytes(id), ...i32(kind)];
+const style = (css) => [OP.style, ...str(css)];
+const frame = (...recs) => Uint8Array.from([WIRE_VERSION, ...recs.flat()]);
 
 let fails = 0;
+let passes = 0;
 function check(name, got, want) {
   const g = JSON.stringify(got), w = JSON.stringify(want);
   if (g !== w) { fails++; console.log(`✗ ${name}\n  got  ${g}\n  want ${w}`); }
-  else console.log(`✓ ${name}`);
+  else { passes++; console.log(`✓ ${name}`); }
 }
-const shape = (n) => ({ tag: n.tagName, text: n.textContent, key: n.attrs["data-key"] ?? null, cls: n.attrs["class"] ?? null, kids: n.childNodes.map(shape) });
-
-apply(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), T(1, "hi")));
-const first = mount.childNodes[0];
-check("a frame builds the tree", shape(first), { tag: "div", text: "", key: null, cls: null, kids: [{ tag: "span", text: "hi", key: null, cls: null, kids: [] }] });
-
-apply(frame(C(0, -1, 0, "div"), K(0, "card"), A(0, "fill-surface-sunk"), C(1, 0, 0, "span"), T(1, "bye")));
-check("a second frame REUSES the element (identity survives)", mount.childNodes[0] === first, true);
-check("and updates in place", shape(first), { tag: "div", text: "", key: "card", cls: "fill-surface-sunk", kids: [{ tag: "span", text: "bye", key: null, cls: null, kids: [] }] });
-
-apply(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), T(1, "hello world")));
-check("a value keeps its spaces (length-prefixed, never escaped)", shape(first).kids[0].text, "hello world");
-
-apply(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), T(1, "b"), C(2, 0, 1, "span"), T(2, "a")));
-check("children follow the frame's index", shape(first).kids.map((k) => k.text), ["b", "a"]);
-
-apply(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), T(1, "b")));
-check("a dropped child leaves", shape(first).kids.length, 1);
-
-apply(frame(C(0, -1, 0, "ul"), C(1, 0, 0, "li"), K(1, "a"), T(1, "A"), C(2, 0, 1, "li"), K(2, "b"), T(2, "B")));
-const li = mount.childNodes[0];
-const bEl = li.childNodes[1];
-check("a keyed list builds in order", shape(li).kids.map((k) => k.text), ["A", "B"]);
-
-apply(frame(C(0, -1, 0, "ul"), C(1, 0, 0, "li"), K(1, "b"), T(1, "B"), C(2, 0, 1, "li"), K(2, "a"), T(2, "A")));
-check("a KEYED reorder moves the element itself, not its text", li.childNodes[0] === bEl, true);
-check("and the order follows the keys", shape(li).kids.map((k) => k.key), ["b", "a"]);
-
-apply(frame());
-check("an empty frame empties the mount", mount.childNodes.length, 0);
-
-apply(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), T(1, "hi")));
-const kept = mount.childNodes[0];
-apply(Uint8Array.from([5, 0]));
-check("a no-change frame touches nothing", mount.childNodes[0] === kept && kept.childNodes[0].textContent === "hi", true);
-
-const styleEl = { textContent: "" };
-const styled = createApplier(doc, el(doc, "root2"), () => {}, styleEl);
-styled(frame(S("a{color:red}"), C(0, -1, 0, "div")));
-check("a stylesheet op fills the style element", styleEl.textContent, "a{color:red}");
-
-let refused = false;
-try { parseFrame(Uint8Array.from([2])); } catch { refused = true; }
-check("a frame of another VERSION refuses", refused, true);
-
-// ── events: the frame names who listens, the applier echoes who spoke ──
-const ev = parseFrame(frame(C(0, -1, 0, "button"), E(0, 1)));
-check("an event record names its kind", ev[0].events, [1]);
-
-const sent = [];
-const root3 = el(doc, "root3");
-const app = createApplier(doc, root3, (who, kind, said) => sent.push([who, kind, said]));
-app(frame(C(0, -1, 0, "div"), C(1, 0, 0, "button"), K(1, "b"), E(1, 1)));
-root3.childNodes[0].childNodes[0].listeners.get("click")();
-check("a click echoes its node and kind, saying nothing", sent[0], [1, 1, null]);
-
-// A keyed node keeps its element and its listener when a sibling lands
-// above it; the echo must carry the id the LATEST frame gave it.
-app(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), C(2, 0, 1, "button"), K(2, "b"), E(2, 1)));
-root3.childNodes[0].childNodes[1].listeners.get("click")();
-check("a moved node speaks under its current id", sent[1], [2, 1, null]);
-
-app(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), C(2, 0, 1, "button"), K(2, "b")));
-check("an event the frame drops is unsubscribed", root3.childNodes[0].childNodes[1].listeners.has("click"), false);
-
-// AN INPUT SAYS ITS OWN TEXT: the page's own value is what the user typed.
-const typed = [];
-const root5 = el(doc, "root5");
-const app5 = createApplier(doc, root5, (who, kind, said) => typed.push([who, kind, said]));
-app5(frame(C(0, -1, 0, "input"), E(0, 2)));
-root5.childNodes[0].value = "typed here";
-root5.childNodes[0].listeners.get("input")();
-check("an input sends the element's own text", typed[0], [0, 2, { tag: "text", value: "typed here" }]);
-
-const calls = [];
-const fakeMod = {
-  memory: { buffer: new ArrayBuffer(64) },
-  avra_payload_seat: () => 16n,
-  avra_event: (who, what, tag, num, len) => calls.push([who, what, tag, num, len]),
+const page = () => {
+  const mount = stubElement("root");
+  const sent = [];
+  const styleEl = { textContent: "" };
+  const apply = createApplier(stubDocument(), mount, (who, kind, said) => sent.push([who, kind, said]), styleEl);
+  return { mount, sent, styleEl, apply };
 };
+const tags = (n) => n.childNodes.map((c) => c.tagName);
+
+// ── create, create_text, place ──
+const a = page();
+a.apply(frame(create(0, "div"), create(1, "span"), createText(2, "hi"), place(2, 1, NO_ID), place(1, 0, NO_ID), place(0, NO_ID, NO_ID)));
+const div = a.mount.childNodes[0];
+check("create and place build the page", [div.tagName, tags(div), textOf(div)], ["div", ["span"], "hi"]);
+
+a.apply(frame(create(3, "p"), place(3, 0, 1), create(4, "b"), place(4, 0, NO_ID)));
+check("place puts an element after a sibling, or first", tags(div), ["b", "span", "p"]);
+
+const span = div.childNodes[1];
+a.apply(frame(place(1, 0, 3)));
+check("place moves an element that is already there — the same element", [tags(div), div.childNodes[2] === span], [["b", "p", "span"], true]);
+
+// ── set_text ──
+a.apply(frame(setText(2, "bye")));
+check("set_text rewrites a run of text", textOf(span), "bye");
+
+// ── set_attr, drop_attr ──
+a.apply(frame(setAttr(0, "class", "gap-m"), setAttr(0, "title", "a b")));
+check("set_attr writes an attribute, its value as given", div.attrs, { class: "gap-m", title: "a b" });
+a.apply(frame(dropAttr(0, "title")));
+check("drop_attr removes one", div.attrs, { class: "gap-m" });
+
+// ── remove ──
+a.apply(frame(remove(1)));
+check("remove takes an element off the page", tags(div), ["b", "p"]);
+let gone = "";
+try { a.apply(frame(setText(2, "x"))); } catch (e) { gone = e.message; }
+check("and everything under it is forgotten", gone, "a patch names element 2, which is not on the page");
+
+// ── an empty frame ──
+const before = JSON.stringify(tags(div));
+a.apply(frame());
+check("a frame of the version alone touches nothing", JSON.stringify(tags(div)), before);
+
+// ── style ──
+a.apply(frame(style("a{color:red}")));
+check("style fills the style element", a.styleEl.textContent, "a{color:red}");
+
+// ── set_prop ──
+const b = page();
+b.apply(frame(create(0, "input"), setProp(0, "value", SAYS.text, "Ann"), setProp(0, "checked", SAYS.flag, "1"), place(0, NO_ID, NO_ID)));
+const input = b.mount.childNodes[0];
+check("set_prop writes a property as the value it means", [input.value, input.checked, input.attrs], ["Ann", true, {}]);
+b.apply(frame(setProp(0, "checked", SAYS.flag, "")));
+check("a flag at rest is false", input.checked, false);
+let writes = 0;
+let held = "typed";
+Object.defineProperty(input, "value", { get: () => held, set: (v) => { writes++; held = v; } });
+b.apply(frame(setProp(0, "value", SAYS.text, "typed")));
+check("a property that already holds the value is not written — the caret stays", writes, 0);
+b.apply(frame(setProp(0, "value", SAYS.text, "")));
+check("and one that differs is", [writes, held], [1, ""]);
+
+// ── listen, unlisten, the echo ──
+const c = page();
+c.apply(frame(create(0, "button"), listen(0, 1, "click", SAYS.nothing, "", false), place(0, NO_ID, NO_ID)));
+const button = c.mount.childNodes[0];
+button.listeners.get("click")();
+check("an event the page was told to hear is echoed: who, the kind as given, nothing said", c.sent[0], [0, 1, null]);
+
+c.apply(frame(create(5, "input"), listen(5, 2, "input", SAYS.text, "value", false), place(5, NO_ID, 0)));
+const field = c.mount.childNodes[1];
+field.value = "typed here";
+field.listeners.get("input")();
+check("an event that says text sends the property the patch named", c.sent[1], [5, 2, { says: SAYS.text, value: "typed here" }]);
+
+c.apply(frame(create(6, "input"), listen(6, 3, "change", SAYS.flag, "checked", false), place(6, NO_ID, 5)));
+const box = c.mount.childNodes[2];
+box.checked = true;
+box.listeners.get("change")();
+check("an event that says a flag sends it", c.sent[2], [6, 3, { says: SAYS.flag, value: true }]);
+
+c.apply(frame(unlisten(6, 3), listen(6, 3, "change", SAYS.number, "value", false)));
+box.value = "42";
+box.listeners.get("change")();
+check("an event heard anew says what it is now asked", c.sent[3], [6, 3, { says: SAYS.number, value: 42 }]);
+box.value = "not a number";
+box.listeners.get("change")();
+check("a control that cannot say a number says nothing", c.sent[4], [6, 3, null]);
+
+c.apply(frame(unlisten(0, 1)));
+check("unlisten removes the listener", button.listeners.has("click"), false);
+
+c.apply(frame(create(7, "form"), listen(7, 4, "submit", SAYS.nothing, "", true), place(7, NO_ID, NO_ID)));
+let prevented = 0;
+c.mount.childNodes[0].listeners.get("submit")({ preventDefault: () => { prevented++; } });
+check("an event the patch says to stop is stopped, and echoed", [prevented, c.sent[5]], [1, [7, 4, null]]);
+let kept = 0;
+c.apply(frame(listen(5, 1, "click", SAYS.nothing, "", false)));
+field.listeners.get("click")({ preventDefault: () => { kept++; } });
+check("an event it does not say to stop keeps its own answer", kept, 0);
+
+// ── the wire itself ──
+let refused = false;
+try { parseFrame(Uint8Array.from([WIRE_VERSION + 1])); } catch { refused = true; }
+check("a frame of another VERSION refuses", refused, true);
+let unknown = "";
+try { parseFrame(Uint8Array.from([WIRE_VERSION, 200])); } catch (e) { unknown = e.message; }
+check("an op the table does not hold refuses", unknown, "unknown patch op 200");
+check("an id past 32 bits reads whole", parseFrame(frame(create(5000000000, "div")))[0].id, 5000000000);
+check("no id reads as no id", parseFrame(frame(place(1, NO_ID, NO_ID)))[0].after, NO_ID);
+check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["create", "create_text", "drop_attr", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "style", "unlisten"]);
+
+// ── the echo's seam ──
+// A program that hands out each seat at 32, GROWING its memory as it does:
+// a host that viewed the memory before asking would write into the old one.
+const calls = [];
+const asked = [];
+const fakeMod = {
+  memory: { buffer: new ArrayBuffer(0) },
+  [HOST.seat]: (room) => { asked.push(room); fakeMod.memory.buffer = new ArrayBuffer(32 + Number(room)); return 32n; },
+  [HOST.event]: (who, what, tag, num, len) => calls.push([who, what, tag, num, len]),
+};
+const seat = (at, len) => new TextDecoder().decode(new Uint8Array(fakeMod.memory.buffer, at, len));
 sendEvent(fakeMod, 7, 1, null);
-check("no payload sends tag 0", calls[0].map(String), ["7", "1", "0", "0", "0"]);
-sendEvent(fakeMod, 7, 1, { tag: "int", value: 42n });
-check("an int sends its value", calls[1].map(String), ["7", "1", "1", "42", "0"]);
-sendEvent(fakeMod, 7, 1, { tag: "text", value: "hi" });
-check("text is written into the program's seat", new TextDecoder().decode(new Uint8Array(fakeMod.memory.buffer, 16, 2)), "hi");
-check("text sends its length", calls[2].map(String), ["7", "1", "3", "0", "2"]);
+check("nothing said sends who, the kind and the nothing tag", calls[0].map(String), ["7", "1", String(SAYS.nothing), "0", "0"]);
+sendEvent(fakeMod, 5000000000, 1, { says: SAYS.number, value: 42 });
+check("a number sends its value, under an id of any size", calls[1].map(String), ["5000000000", "1", String(SAYS.number), "42", "0"]);
+check("an event that says no text asks for no seat", asked.length, 0);
+sendEvent(fakeMod, 0, 1, { says: SAYS.text, value: "hi" });
+check("text is written into the seat the program handed out", seat(32, 2), "hi");
+check("text sends its length", calls[2].map(String), ["0", "1", String(SAYS.text), "0", "2"]);
+sendEvent(fakeMod, 0, 3, { says: SAYS.flag, value: true });
+check("a flag sends one", calls[3].map(String), ["0", "3", String(SAYS.flag), "1", "0"]);
+const long = "é".repeat(5000);
+sendEvent(fakeMod, 0, 2, { says: SAYS.text, value: long });
+check("a seat is asked for by the text's own octets, however many", asked.map(String), ["2", "10000"]);
+check("a long text arrives whole", [seat(32, 10000) === long, String(calls[4][4])], [true, "10000"]);
+sendEvent(fakeMod, 0, 2, { says: SAYS.text, value: "" });
+check("an empty text is text, of no octets", calls[5].map(String), ["0", "2", String(SAYS.text), "0", "0"]);
 
-// A pre-order id shifts when the list above a node changes size: reuse must
-// not wear an element of another tag, or a footer becomes the node it moved
-// past. Without the tag guard this p is the old second li.
-const root4 = el(doc, "root4");
-const app4 = createApplier(doc, root4);
-app4(frame(C(0, -1, 0, "div"), C(1, 0, 0, "ul"), C(2, 1, 0, "li"), C(3, 1, 1, "li"), C(4, 0, 1, "p"), T(4, "footer")));
-app4(frame(C(0, -1, 0, "div"), C(1, 0, 0, "ul"), C(2, 1, 0, "li"), C(3, 0, 1, "p"), T(3, "footer")));
-const shifted = root4.childNodes[0].childNodes[1];
-check("a shifted id does not reuse another tag", { tag: shifted.tagName, text: shifted.textContent }, { tag: "p", text: "footer" });
+// ── a page runs a program that mounts ──
+const empty = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);
+let lacking = "";
+try { await run(empty, { document: stubDocument(), mount: stubElement("root"), wasi: () => ({}) }); } catch (e) { lacking = e.message; }
+check("a module that mounts nothing refuses by the names it lacks", lacking.startsWith(`the module exports no ${HOST.entry}, ${HOST.event}, ${HOST.seat}`), true);
 
-console.log(fails === 0 ? "bootstrap: 23/23" : `bootstrap: ${fails} FAILED`);
+console.log(fails === 0 ? `bootstrap: ${passes}/${passes}` : `bootstrap: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

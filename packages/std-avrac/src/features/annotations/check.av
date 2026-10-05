@@ -87,7 +87,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
         foreign_meta(cx, a, moved!)
         return
     }
-    if act is .Derives && derive_law(cx, a, s, d) { return }
+    if act is .Derives && derive_law(cx, a, s) { return }
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
         .Ok(crossed) -> {
             match act {
@@ -328,7 +328,7 @@ fn same_file_annotation(mut cx: TypeCx, a: Annotation) {
 /// associated `derive` must stand in ANOTHER file, for the same reason
 /// a Declares annotation's fn must — expanding needs this file's
 /// names, which are still being made. Answers whether it spoke.
-fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId, d: DeclId) -> bool {
+fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId) -> bool {
     for e in a.args {
         let tr: DeclId? = cx.bound_decl(e)
         if tr != null {
@@ -373,8 +373,9 @@ fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId, d: DeclId) -> bool {
             match cx.view.decls.lifted(m, cx.view.file, s, a.callee, []) {
                 .Ok(crossed) -> {
                     let member_sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
+                    // the problems are the TRAIT's own, so their kinds are its package's
                     if cx.view.decls.meta_type(member_sig.ret, "Declared") {
-                        speak_saids(cx, a, d, s, crossed.declared_problems())
+                        speak_saids(cx, a, m, s, crossed.declared_problems())
                     }
                 },
                 .Err(why) -> {

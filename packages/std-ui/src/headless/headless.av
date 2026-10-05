@@ -1,0 +1,66 @@
+//! `headless/headless.av` — the target with no host. The screen is the
+//! tree itself, held in memory, and a test speaks to it as a reader of
+//! any screen would: to a control BY ITS WORDS. An event runs the handler
+//! the view bound and the loop paints again, so a test drives the same
+//! door a host does and names no platform.
+use app.{Shown, shown}
+use tree.controls.{Control}
+use tree.node.{EventKind, Said}
+use tree.view.{View}
+
+/// A screen nobody draws.
+export type Screen = { shown: Shown }
+
+/// `view` on a screen held in memory, painted once.
+export fn headless<V: View>(view: fn() -> V) -> Screen { Screen { shown: shown(view) } }
+
+impl Screen {
+    /// The `nth` control named `name`, counted in reading order from
+    /// zero — absent when the screen holds no such control.
+    fn control(name: string, nth: int) -> Control? {
+        let named = [c for c in self.shown.controls() if c.node.words() == name]
+        if nth < 0 || nth >= named.length { return null }
+        named[nth]
+    }
+
+    /// The control named `name` speaks `kind`, saying `said`.
+    fn speak(name: string, nth: int, kind: EventKind, said: Said?) -> bool {
+        let c? = self.control(name, nth) else { return false }
+        self.shown.app.turn(() -> c.says(kind, said))
+    }
+
+    /// The user presses the control named `name`. False when no handler
+    /// answered: no such control, a disabled one, or one that hears no
+    /// press.
+    fn press(name: string, nth: int = 0) -> bool {
+        let c? = self.control(name, nth) else { return false }
+        self.shown.app.turn(() -> c.pressed())
+    }
+
+    /// The user gives the control named `name` its text — all of it, as a
+    /// field says its own value.
+    fn fill(name: string, text: string, nth: int = 0) -> bool { self.speak(name, nth, .Input, Said.Text(text)) }
+
+    /// The user sets the control named `name` on or off.
+    fn check(name: string, on: bool, nth: int = 0) -> bool { self.speak(name, nth, .Change, Said.Flag(on)) }
+
+    /// The user moves the control named `name` to `amount`.
+    fn slide(name: string, amount: int, nth: int = 0) -> bool {
+        self.speak(name, nth, .Change, Said.Number(amount))
+    }
+
+    /// The user sends the form the control named `name` stands in, as a
+    /// key in a field does.
+    fn submit(name: string, nth: int = 0) -> bool {
+        let c? = self.control(name, nth) else { return false }
+        self.shown.app.turn(() -> c.sends())
+    }
+
+    /// The state changed outside an event — a timer, an answer arriving —
+    /// and the screen is painted again.
+    fn repaint() { self.shown.app.paint() }
+
+    /// The screen as a reader finds it: one line a node, its words and
+    /// what its attributes say, what it holds indented under it.
+    fn text() -> string { self.shown.text() }
+}

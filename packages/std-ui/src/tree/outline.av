@@ -1,0 +1,67 @@
+//! `tree/outline.av` — a screen as text no target owns: what each node
+//! is, its words and what its attributes say. The readable twin of a
+//! tree, for a test and for `explain`.
+use tree.controls.{shows_content}
+use tree.identity.{readable}
+use tree.node.{Node, Attribute}
+
+/// A text between quotes, on one line: a quote, a backslash and a line
+/// break are written as their escapes, so no value reads as the end of
+/// its own quotes or as a line of the screen.
+fn quoted(s: string) -> string { "\"${readable(s).replace("\"", "\\\"")}\"" }
+
+/// A state a node is in, by its word — nothing while it is not.
+fn state(word: string, on: bool) -> List<string> { if on { [word] } else { [] } }
+
+/// What one attribute tells a reader beyond the node's own words. ONE
+/// exhaustive match, so a new attribute is a decision here.
+fn noted(a: Attribute) -> List<string> {
+    match a {
+        .Text(_) or .Label(_) -> [],
+        .Level(rank) -> ["level=${rank}"],
+        .Value(t) -> ["value=${quoted(t)}"],
+        .Amount(n) -> ["amount=${n}"],
+        .Placeholder(t) -> ["placeholder=${quoted(t)}"],
+        .Src(u) -> ["src=${quoted(u.text())}"],
+        .Alt(t) -> ["alt=${quoted(t)}"],
+        .Href(u) -> ["href=${quoted(u.text())}"],
+        .Min(n) -> ["min=${n}"],
+        .Max(n) -> ["max=${n}"],
+        .Disabled(on) -> state("disabled", on),
+        .Checked(on) -> state("checked", on),
+        .Selected(on) -> state("selected", on),
+        .Open(on) -> state("open", on),
+        .Invalid(on) -> state("invalid", on),
+        .Loading(on) -> state("loading", on),
+        .Urgency(how) -> [how.word()],
+        .Title(t) -> ["title=${quoted(t)}"],
+        .Name(t) -> ["name=${quoted(t)}"],
+        .Submits(on) -> state("submits", on),
+    }
+}
+
+/// A node's own line: what it is, its words, its key, what it says.
+fn line(n: Node) -> string {
+    let words = n.words()
+    let named: List<string> = if words == "" { [] } else { [quoted(words)] }
+    let keyed: List<string> = match n.box.key {
+        key? -> ["key=${quoted(key)}"]
+        null -> []
+    }
+    [n.prim.word()]
+        .concat(named)
+        .concat(keyed)
+        .concat([w for a in n.attrs for w in noted(a)])
+        .join(" ")
+}
+
+fn lines(n: Node, indent: string) -> List<string> {
+    let own = ["${indent}${line(n)}"]
+    if !shows_content(n) { return own }
+    own.concat([l for k in n.children for l in lines(k, "${indent}  ")])
+}
+
+/// The screen `root` draws, as a reader finds it: one line a node, its
+/// words and what its attributes say, what it holds indented under it.
+/// What is not on the screen is left out.
+export fn outline(root: Node) -> string { lines(root, "").join("\n") }

@@ -1471,7 +1471,7 @@ export fn lex_blocks(
         t with { kind: TokenKind.Component }
     } else if opens_state(ts, i) {
         t with { kind: TokenKind.State }
-    } else if opens_on(ts, i) {
+    } else if opens_on(ts, i, keywords) {
         t with { kind: TokenKind.On }
     } else {
         t
@@ -1498,16 +1498,55 @@ fn after_param_sep(ts: List<Token>, i: int) -> bool {
     i > 0 && (ts[i - 1].lit_matches("(") || ts[i - 1].lit_matches(","))
 }
 
-/// Whether the token at `i` is `on` opening an instance's handler — a
-/// SOFT keyword: it means `on` only before a NAME and a block, at a
-/// statement's start, so `fn maybe(on: bool)` and `Row { on: true }`
-/// stay ordinary names.
-fn opens_on(ts: List<Token>, i: int) -> bool {
+/// Whether the token at `i` is `on` opening an event — a component's
+/// declaration of one (`on input(text: string)`) or an instance's
+/// handler for one (`on input { … }`, `on input: handler`). A SOFT
+/// keyword: it means `on` only where a member starts, before a name no
+/// keyword spells, where that name is followed by a block, a seat list, a
+/// `:` or the statement's end. So a binding called `on` stays an ordinary
+/// name — `on is .Lit`, `on with { … }`, `on catch e -> 0`, `fn maybe(on:
+/// bool)`.
+fn opens_on(ts: List<Token>, i: int, keywords: List<string>) -> bool {
     let t = ts[i]
-    if t.kind != TokenKind.Name || t.text != "on" { return false }
-    if !starts_statement(ts, i) { return false }
-    if i + 1 >= ts.length || ts[i + 1].kind != TokenKind.Name { return false }
-    i + 2 < ts.length && ts[i + 2].lit_matches("{")
+    if t.kind != TokenKind.Name || t.text != "on" || !starts_member(ts, i) { return false }
+    if i + 1 >= ts.length || ts[i + 1].kind != TokenKind.Name || keywords.contains(ts[i + 1].text) { return false }
+    i + 2 >= ts.length ||
+        ts[i + 2].lit_matches("(") ||
+        ts[i + 2].lit_matches(":") ||
+        ends_instance_head(ts[i + 2])
+}
+
+/// Whether nothing but marks stands before `i` on its line: a member
+/// starts its line, or follows the marks written before it.
+fn starts_member(ts: List<Token>, i: int) -> bool {
+    if starts_statement(ts, i) { return true }
+    let opens? = mark_before(ts, i) else { return false }
+    starts_member(ts, opens)
+}
+
+/// Where the mark that ends just before `i` opens — `@name`, or `@name(…)`
+/// with its arguments on this line — absent when no mark ends there.
+fn mark_before(ts: List<Token>, i: int) -> int? {
+    if i == 0 { return null }
+    if ts[i - 1].kind == TokenKind.Pkg { return i - 1 }
+    if !ts[i - 1].lit_matches(")") { return null }
+    let opened? = paren_opening(ts, i - 1) else { return null }
+    if opened > 0 && ts[opened - 1].kind == TokenKind.Pkg { opened - 1 } else { null }
+}
+
+/// The `(` that the `)` at `close` closes, on its own line.
+fn paren_opening(ts: List<Token>, close: int) -> int? {
+    mut depth = 0
+    mut j = close
+    while j >= 0 && ts[j].kind != TokenKind.Break {
+        if ts[j].lit_matches(")") { depth = depth + 1 }
+        if ts[j].lit_matches("(") {
+            depth = depth - 1
+            if depth == 0 { return j }
+        }
+        j = j - 1
+    }
+    null
 }
 
 /// Whether the token at `i` is a component's word opening an instance.

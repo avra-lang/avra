@@ -1704,3 +1704,106 @@ Each round writes text never checked before (`avra $i-$RANDOM: …`) and
 the restore is untimed; only the first round of a toggling loop was
 ever an edit. Measure main and the branch interleaved on one machine,
 each tree with its own compiler, and quote every round, not the best.
+
+## A derive's vocabulary is its library's declarations
+
+A derive that maps a word a member wrote (`@attr(.Label)`, `on press`)
+onto the library's own types reads those types — `type_exported(module,
+name)` (`@std/meta`) — and never a table of names kept in the derive.
+The enum IS the table: its variants are the words, a variant's payload
+is the type that fits, a mark on a variant (`@word(press)`,
+`@facet(content)`) is the fact about it. A word that is not there, a
+type that does not fit and a thing said twice are each refused at the
+MEMBER, in the derive's own voice; a refusal that surfaces inside the
+derive's own `quote` is a check the derive forgot.
+packages/std-ui/src/tree/view.av is the exemplar. A derive that
+cannot read its vocabulary says so as its own defect, never `?? []`.
+
+## A code rides its variant, and both directions are generated
+
+A number a wire spells a variant with is a mark on the variant (`@code(3)
+SetText`); `@derive(Codes)` (packages/std-ui/src/tree/codes.av)
+answers `code()`, the reverse `coded_as(n)` and `coded()` — every
+variant with its word, which is what writes a host's table
+(`runtime/dom/wire.gen.js`, held by `make ui-host`). THE TRAP: a `${n}`
+hole in a PATTERN position is a binder, not the literal — `match code {
+${1} -> .A, … }` compiles and its first arm takes everything. The reverse
+read is `[…variants].find(it.code() == code)`.
+
+## A law the parse knows and the typer speaks
+
+A builder that finds a law broken returns `.Err`, and that ends the
+file's parse under `build.failed` with no help. Where the mistake is
+ordinary — a mistyped event name — the builder MARKS the node with what
+it found (`store.mark_unheard(handler, why)`), leaves the node out of
+what it builds, and the feature's typing rule speaks the refusal with its
+own kind and help (features/components: `Builder.unheard`, `event_law`).
+One mistake is one diagnostic and the rest of the file is still checked.
+
+## A refusal test compares every refusal the run spoke
+
+A test that asks `report.contains("…")` passes over a run that said that
+and ten things more, and a negative `!contains` passes over a run that
+never ran. Collect the run's `error[` lines once and compare the WHOLE
+list to the list owed, with its count; give a run that did not answer a
+text no assertion can pass over (packages/cli/src/commands/tests/
+ui_view_test.av: `spoken()`, `owed`, `never_ran`).
+
+## A diff is a fold over what stood and what is wanted
+
+Matching two trees needs no table of ids kept between them: lower each to
+elements that know their SEAT among their siblings, and fold old against
+new — a kept element carries its number across, a new one takes the
+next. The fold answers the numbered page and the next number
+(packages/std-ui/src/realize/dom/patch.av), and SAYS its patches into
+one `Cell` list as it goes: a level that returns its patches for the
+level above to concatenate copies its whole subtree's once per ancestor,
+which is quadratic in depth in both engines. A table written through a
+`mut` seat is the shape to avoid under `avra run`: a map copies on every
+insert there, so `set` in a loop is quadratic in time and in memory,
+while a `Cell`'s list grows in place in both engines.
+
+## A host-only extern stands in a module only that host's programs import
+
+A suite links what its files reach, so one `extern fn` a native link
+cannot answer refuses every test that reaches its module. Keep the
+extern, the exports and nothing else in ONE module (packages/std-ui/src/
+web/web.av: `avra_dom_frame`, `mount`, `event`, `seat`), and put the
+logic one module down behind a fn seat the host fills (realize/dom/
+page.av: `paged(view, theme, page, send)`), where a native test hands it
+a list to collect into.
+
+## A generic seat is erased once, at the door
+
+A value kept in a record cannot stay generic, and a trait impl over a
+generic type is not landed. Take the type parameter at the constructor
+and store the one closure the record needs (packages/std-ui/src/app/
+app.av: `app<V: View>(view: fn() -> V, …)` keeps `() ->
+view().describe()`), so every caller passes its own fn by name and the
+record holds one shape.
+
+## A loop is one door that answers whether it ran
+
+Event, timer and arriving answer are the same thing to a loop: something
+that may have changed the state. Give the loop one verb that runs it and
+acts only when it answers true (`App.turn(act: fn() -> bool)`), and each
+source is a caller of that verb — never a queue of typed messages with a
+dispatch beside it.
+
+## A match answers what the pair IS, never an index to look up again
+
+Pairing two runs and handing back positions makes every consumer re-read
+both sides and write an arm for the pair that cannot happen. Answer an
+enum of the cases that can — packages/std-ui/src/realize/dom/patch.av's
+`Stands { Made, KeptText, KeptTag }` — built in the ONE place both kinds
+are in hand, and the consumer is one exhaustive match with no fallback.
+
+## A seam only a real host exercises gets a run that builds the real thing
+
+A module a native link cannot reach has no unit test that is not a test
+of a stand-in. Keep its logic behind a fn seat a native test fills, AND
+give the seam itself a gate step that builds and runs the real artifact
+with every claim checked (`make ui-board`: tools/ui_board.sh builds the
+board for wasm and runs tools/ui-board/demo.mjs). It skips aloud where
+the toolchain is absent, naming what is missing, so a machine without it
+is never read as green.

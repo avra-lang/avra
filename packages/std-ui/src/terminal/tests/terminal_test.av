@@ -1,0 +1,259 @@
+//! The terminal, by its law: one control holds the focus, the keys go to
+//! it through the app's one door, and the same view driven by keys and by
+//! the headless verbs ends in the same state.
+use @std.text.{from_codepoint}
+use @std.ui.components.{button, checkbox, column, dialog, field, form, item, list, slider, text}
+use @std.ui.headless.{headless}
+use @std.ui.terminal.{Terminal, terminal}
+
+type Todo = { id: string, title: string, done: bool }
+
+/// A small board's state, in cells a view reads and its handlers write.
+type Board = {
+    tasks: Cell<List<Todo>> = Cell.new([]),
+    draft: Cell<string> = Cell.new(""),
+    seq: Cell<int> = Cell.new(1),
+}
+
+impl Board {
+    fn add() {
+        if self.draft.get() == "" { return }
+        self.tasks.push(Todo { id: "t${self.seq.get()}", title: self.draft.get(), done: false })
+        self.seq.set(self.seq.get() + 1)
+        self.draft.set("")
+    }
+
+    fn mark(id: string, done: bool) {
+        self
+            .tasks
+            .set([if t.id == id { t with { done: done } } else { t } for t in self.tasks.get()])
+    }
+
+    fn remove(id: string) { self.tasks.set([t for t in self.tasks.get() if t.id != id]) }
+
+    fn told() -> string {
+        [if t.done { "${t.id}:${t.title}+" } else { "${t.id}:${t.title}-" } for t in self.tasks.get()]
+            .join(",")
+    }
+}
+
+fn rows(b: Board) -> list {
+    list b.tasks.get() by it.id { t ->
+        item {
+            items: [
+                checkbox t.title {
+                    checked: t.done
+                    on change { checked -> b.mark(t.id, checked) }
+                },
+                button "Remove" { on press { b.remove(t.id) } },
+            ]
+        }
+    }
+}
+
+fn board(b: Board) -> column {
+    column {
+        field "New task" {
+            value: b.draft.get()
+            on input { typed -> b.draft.set(typed) }
+        }
+        button "Add" { on press { b.add() } }
+        rows(b)
+    }
+}
+
+fn tab() -> string { "\t" }
+
+fn back() -> string { "${from_codepoint(27)}[Z" }
+
+/// A terminal on a board, fed `keys`.
+fn after(b: Board, keys: string) -> Terminal {
+    let on = terminal(() -> board(b), width: 40)
+    on.feed(keys)
+    on
+}
+
+/// A counter's terminal: two buttons, the second counting presses.
+fn counting(hits: Cell<int>) -> Terminal {
+    terminal(
+        () -> column {
+            button "Idle" { on press {} }
+            button "Count" { on press { hits.set(hits.get() + 1) } }
+        },
+        width: 30,
+    )
+}
+
+spec "the same view ends in the same state by keys and by verbs" {
+    given "a board driven both ways" {
+        then "typing, adding, checking and removing agree" {
+            let by_verbs = Board {}
+            let page = headless(() -> board(by_verbs))
+            let _ = page.fill("New task", "Buy milk")
+            let _ = page.press("Add")
+            let _ = page.fill("New task", "Walk")
+            let _ = page.press("Add")
+            let _ = page.check("Buy milk", true)
+            let _ = page.press("Remove", nth: 1)
+            let by_keys = Board {}
+            let on = after(by_keys, "Buy milk\t\n${back()}Walk\t\n\t \t\t\t\n")
+            by_verbs.told() == "t1:Buy milk+" &&
+                by_keys.told() == by_verbs.told() &&
+                on.text() == page.text()
+        }
+    }
+}
+
+spec "one control holds the focus" {
+    given "a screen just painted" {
+        then "the first control holds it, and the screen marks it" {
+            let hits: Cell<int> = Cell.new(0)
+            counting(hits).screen() == "> [ Idle ]\n[ Count ]"
+        }
+    }
+    given "Tab and Shift-Tab" {
+        then "the focus moves on, and Enter presses what holds it" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = counting(hits)
+            on.feed("\t\n\n")
+            hits.get() == 2 && on.screen() == "[ Idle ]\n> [ Count ]"
+        }
+        then "the focus goes around both ends" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = counting(hits)
+            on.feed("${back()}\n\t\t\n")
+            hits.get() == 2
+        }
+    }
+    given "a control that cannot speak" {
+        then "a disabled one is passed over" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = terminal(
+                () -> column {
+                    button "First" { on press {} }
+                    button "Off" {
+                        disabled: true
+                        on press { hits.set(100) }
+                    }
+                    button "Last" { on press { hits.set(hits.get() + 1) } }
+                },
+            )
+            on.feed("\t\n")
+            hits.get() == 1
+        }
+        then "one in a dialog that is not open is passed over" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = terminal(
+                () -> column {
+                    dialog "About" { items: [button "Close" { on press { hits.set(100) } }] }
+                    button "Only" { on press { hits.set(hits.get() + 1) } }
+                },
+            )
+            on.feed("\n\t\n")
+            hits.get() == 2
+        }
+    }
+    given "a screen with no control" {
+        then "keys reach nothing" {
+            let on = terminal(() -> text "Nothing to do")
+            on.feed("\t\nabc")
+            on.screen() == "Nothing to do"
+        }
+    }
+    given "a keyed row that moves" {
+        then "the focus stays with the control, not its place" {
+            let b = Board {}
+            let on = after(b, "One\t\n${back()}Two\t\n")
+            // the focus rests on Two's checkbox; One, above it, is removed
+            on.feed("\t\t\t")
+            b.remove("t1")
+            on.repaint()
+            on.screen().contains("> [ ] Two")
+        }
+    }
+    given "the control that held the focus left the screen" {
+        then "the focus rests on what now stands in its place" {
+            let b = Board {}
+            let on = after(b, "One\t\n${back()}Two\t\n\t\t\n")
+            b.told() == "t2:Two-" && on.screen().ends_with("• [ ] Two\n  > [ Remove ]")
+        }
+    }
+}
+
+spec "a key acts on the control that holds the focus" {
+    given "a field" {
+        then "typed characters fill it, after what it holds" {
+            let b = Board {}
+            let on = after(b, "Buy")
+            on.feed(" milk")
+            b.draft.get() == "Buy milk" && on.screen().starts_with("> New task: Buy milk")
+        }
+        then "Backspace takes the last character, and none from an empty field" {
+            let b = Board {}
+            let on = after(
+                b,
+                "né${from_codepoint(127)}${from_codepoint(127)}${from_codepoint(127)}",
+            )
+            b.draft.get() == "" && on.screen().starts_with("> New task: ____")
+        }
+        then "Enter sends the form it stands in" {
+            let sent: Cell<string> = Cell.new("")
+            let held: Cell<string> = Cell.new("")
+            let on = terminal(
+                () -> form {
+                    on submit { sent.set(held.get()) }
+                    field "Name" {
+                        value: held.get()
+                        on input { typed -> held.set(typed) }
+                    }
+                },
+            )
+            on.feed("Ada\n")
+            sent.get() == "Ada"
+        }
+        then "Enter outside a form does nothing" {
+            let b = Board {}
+            let _ = after(b, "Buy\n")
+            b.told() == "" && b.draft.get() == "Buy"
+        }
+    }
+    given "a checkbox" {
+        then "Enter and Space each change it over" {
+            let b = Board {}
+            let on = after(b, "One\t\n\t\n")
+            let checked = b.told() == "t1:One+"
+            on.feed(" ")
+            checked && b.told() == "t1:One-"
+        }
+        then "another character does nothing" {
+            let b = Board {}
+            let _ = after(b, "One\t\n\tx")
+            b.told() == "t1:One-"
+        }
+    }
+    given "a slider" {
+        then "plus and minus move it, within its bounds" {
+            let at: Cell<int> = Cell.new(1)
+            let on = terminal(
+                () -> slider "Volume" {
+                    amount: at.get()
+                    min: 0
+                    max: 2
+                    on change { amount -> at.set(amount) }
+                },
+            )
+            on.feed("++")
+            let top = at.get() == 2
+            on.feed("----")
+            top && at.get() == 0
+        }
+    }
+    given "the input has ended" {
+        then "no later key is read" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = counting(hits)
+            on.feed("\t\n${from_codepoint(4)}\n\n")
+            hits.get() == 1 && on.ended.get()
+        }
+    }
+}

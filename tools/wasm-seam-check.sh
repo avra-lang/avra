@@ -3,7 +3,8 @@
 # declares a host row `extern` and an `export fn` must leave a module that
 # IMPORTS that row from `avra:rt` and EXPORTS the handler under its written
 # name, the length accessor the glue reads the header through, and memory.
-# `--wasm-reactor` must drop `_start` (no `main`) and keep the exports.
+# `--wasm-reactor` must drop `_start` (no `main`), keep the exports, and export
+# the program's own statements as `avra_main` for the host to run.
 #
 # The module cannot run under plain WASI — its import is the browser host's to
 # satisfy — so this inspects the module instead, with wasm-objdump.
@@ -43,6 +44,8 @@ need_import 'avra:rt.*avra_dom_frame'
 need_export 'avra_event'
 need_export 'avra_bytes_len'
 need_export 'memory'
+# A command module's `main` runs the statements: it exports no second door to them.
+if grep -q '"avra_main"' "$work/objdump.txt"; then say "a command module exports avra_main"; fail=1; fi
 
 # A reactor drops `_start` and keeps the exports the host calls.
 if ! "$avra" build --target wasm --wasm_reactor "$work/seam" >"$work/reactor.out" 2>"$work/reactor.err"; then
@@ -52,9 +55,10 @@ rwasm=$(tail -1 "$work/reactor.out")
 wasm-objdump -x "$rwasm" >"$work/reactor.objdump" 2>&1
 if ! grep -q '"avra_event"' "$work/reactor.objdump"; then say "reactor does not export avra_event"; fail=1; fi
 if grep -q '"_start"' "$work/reactor.objdump"; then say "reactor still exports _start"; fail=1; fi
+if ! grep -q '"avra_main"' "$work/reactor.objdump"; then say "reactor does not export avra_main"; fail=1; fi
 
 if [ "$fail" -ne 0 ]; then
     say "--- imports/exports ---"; grep -iE "import|export" "$work/objdump.txt" | head -20
     exit 1
 fi
-say "seam ok: avra:rt.avra_dom_frame imported; avra_event, avra_bytes_len, memory exported; reactor drops _start"
+say "seam ok: avra:rt.avra_dom_frame imported; avra_event, avra_bytes_len, memory exported; reactor drops _start and exports avra_main"

@@ -2,84 +2,57 @@
 //! never components: a table from `Prim` to a tag, a table from `Attribute`
 //! to an attribute, and `Box` to the atomic classes its rules name. The
 //! walker is the same for every tree; the class set is deduped per
-//! document and the one stylesheet is emitted beside it. UI.md §19.2.
-use realize.render.{Node, Attribute}
-use realize.sink.{Sink, draw}
-use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, tag_of}
-use realize.html.writer.{HtmlOp, document}
-use realize.html.css.{CssRule, distinct_rules, class_names, stylesheet}
+//! document and the one stylesheet is emitted beside it.
+//!
+//! Every value is escaped by the writer for the context it lands in, and
+//! a URL arrives as a `Url`, which has no unsafe value. A control holds no
+//! content, so it sits under a `label` beside its words.
+use tree.node.{Node}
+use realize.html.element.{Element, lowered}
+use realize.html.writer.{HtmlOp, Head, document, page_source, source}
+use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet}
+use style.theme.{Theme}
 use env.{Env}
 
-/// The HTML target: an accumulator of ops, the rules the tree named, and
-/// the environment it draws in.
-export type Html = {
-    ops: Cell<List<HtmlOp>> = Cell.new([]),
-    env: Env = Env {},
-    rules: Cell<List<CssRule>> = Cell.new([]),
-}
+// ── the page ────────────────────────────────────────────────────
 
-// ── the attribute table ─────────────────────────────────────────
-
-/// A component property as an HTML attribute, or nothing (content and
-/// levels are drawn, not attached). Every arm spelled.
-fn attr_list(a: Attribute) -> List<HtmlAttr> {
-    match a {
-        .Value(v) -> [HtmlAttr { name: .Value, value: v }],
-        .Amount(n) -> [HtmlAttr { name: .Value, value: "${n}" }],
-        .Placeholder(t) -> [HtmlAttr { name: .Placeholder, value: t }],
-        .Src(u) -> [HtmlAttr { name: .Src, value: u }],
-        .Alt(t) -> [HtmlAttr { name: .Alt, value: t }],
-        .Href(u) -> [HtmlAttr { name: .Href, value: u }],
-        .Min(n) -> [HtmlAttr { name: .Min, value: "${n}" }],
-        .Max(n) -> [HtmlAttr { name: .Max, value: "${n}" }],
-        .Disabled(flag) -> if flag { [HtmlAttr { name: .Disabled, value: "" }] } else { [] },
-        .Checked(flag) -> if flag { [HtmlAttr { name: .Checked, value: "" }] } else { [] },
-        .Selected(flag) -> if flag { [HtmlAttr { name: .AriaSelected, value: "true" }] } else { [] },
-        .Open(flag) -> if flag { [HtmlAttr { name: .Open, value: "" }] } else { [] },
-        .Invalid(flag) -> if flag { [HtmlAttr { name: .AriaInvalid, value: "true" }] } else { [] },
-        .Loading(flag) -> if flag { [HtmlAttr { name: .AriaBusy, value: "true" }] } else { [] },
-        .Urgency(u) -> [HtmlAttr { name: .AriaLive, value: u.word() }],
-        .Title(t) -> [HtmlAttr { name: .Title, value: t }],
-        .Name(t) or .Label(t) -> [HtmlAttr { name: .AriaLabel, value: t }],
-        .Text(_) or .Level(_) -> [],
+/// One element as the writer's ops: opened, what it holds, closed.
+fn ops(e: Element) -> List<HtmlOp> {
+    match e {
+        .Text(run) -> [HtmlOp.Text(run.content)],
+        .Tag(el) -> [HtmlOp.Open(el.tag, el.attrs)]
+            .concat([op for k in el.kids for op in ops(k)])
+            .concat([HtmlOp.Close(el.tag)]),
     }
 }
 
-fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {
-    [h for a in attrs for h in attr_list(a)]
+/// A tree as the writer's ops.
+fn drawn(root: Node) -> List<HtmlOp> { [op for e in lowered(root) for op in ops(e)] }
+
+/// Every rule a tree's nodes name, in walk order.
+fn rules_of(n: Node) -> List<CssRule> {
+    node_rules(n.prim, n.box).concat([r for c in n.children for r in rules_of(c)])
 }
 
-// ── the class attribute ─────────────────────────────────────────
-
-fn class_attrs(n: Node) -> List<HtmlAttr> {
-    let names = class_names(n)
-    if names.is_empty() { [] } else { [HtmlAttr { name: .Class, value: names.join(" ") }] }
-}
-
-/// A node's own attributes: its identity, its classes, its box.
-fn node_attrs(n: Node) -> List<HtmlAttr> {
-    let keyed: List<HtmlAttr> = match n.box.key {
-        k? -> [HtmlAttr { name: .DataKey, value: k }]
-        null -> []
-    }
-    keyed.concat(class_attrs(n))
-}
-
-// ── the walker ──────────────────────────────────────────────────
-
-impl Sink for Html {
-    fn opened(_id: int, _parent: int, _index: int, n: Node) {
-        // LICENSED loops.push_loop: the rules ride a shared Cell; a concat assignment would rebind a copy
-        for r in distinct_rules(n.box.rules()) { self.rules.push(r) }
-        self.ops.push(HtmlOp.Open(tag_of(n), attrs_of(n.attrs).concat(node_attrs(n))))
-    }
-    fn words(_id: int, s: string) { self.ops.push(HtmlOp.Text(s)) }
-    fn closed(n: Node) { self.ops.push(HtmlOp.Close(tag_of(n))) }
-}
+/// The tree alone as HTML: no stylesheet, no document around it.
+export fn fragment(root: Node) -> string { source(drawn(root)) }
 
 /// The finished document for one tree: its one stylesheet, then its body.
 export fn render(root: Node, env: Env) -> string {
-    let h = Html { env: env }
-    draw(root, h)
-    document(stylesheet(distinct_rules(h.rules.get()), env.theme), h.ops.get())
+    document(page_sheet(distinct_rules(rules_of(root)), env.theme, []), drawn(root))
+}
+
+/// What a whole page says about itself. `alternates` are the themes the
+/// reader's own settings may choose over the environment's, each under
+/// the media query its mode names.
+export type Page = { title: string, env: Env = Env {}, alternates: List<Theme> = [] }
+
+/// A complete document with no script: the page's head, its one
+/// stylesheet, then the tree.
+export fn page(p: Page, root: Node) -> string {
+    page_source(
+        Head { title: p.title, locale: p.env.locale, direction: p.env.direction },
+        page_sheet(distinct_rules(rules_of(root)), p.env.theme, p.alternates),
+        drawn(root),
+    )
 }

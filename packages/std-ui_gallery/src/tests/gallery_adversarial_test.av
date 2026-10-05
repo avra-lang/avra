@@ -1,6 +1,9 @@
 // Degenerate shapes, hostile names, duplicate keys and digest
 // boundaries against the gallery's page, listing, snapshots and diff.
-use @std.ui.{View, text, column, button}
+use @std.ui.components.{text}
+use @std.ui.realize.html.html.{fragment}
+use @std.ui.tree.view.{View}
+use @std.ui.style.style.{Style}
 use @std.text.{from_codepoint, repeat}
 use @std.ui_gallery.{
     Case,
@@ -13,7 +16,6 @@ use @std.ui_gallery.{
     changed,
     gallery_text,
 }
-use @std.ui_html.{html}
 
 fn lone(view: string, name: string, t: string) -> Entry {
     Entry { view: view, cases: [Case { name: name, view: says(t) }] }
@@ -31,12 +33,11 @@ spec "std/ui-gallery adversarial" {
             snapshots([Entry { view: "v", cases: [] }]).length == 0 &&
                 gallery_text([Entry { view: "v", cases: [] }], 20) == ""
         }
-        then "an entry with no cases is an empty section on the page" {
-            html(gallery([Entry { view: "v", cases: [] }]).node()).contains(">v</h2>")
+        then "an entry with no cases is an empty card on the page" {
+            fragment(gallery([Entry { view: "v", cases: [] }]).describe()).contains(">v</h2>")
         }
         then "no entries make an empty column" {
-            html(gallery([]).node()).contains("<div class=\"col ") &&
-                !html(gallery([]).node()).contains("<section")
+            fragment(gallery([]).describe()) == "<div class=\"dir-col gap-l\"></div>"
         }
         then "an empty view name and an empty case name still snapshot" {
             snapshots([lone("", "", "")]).length == 1 &&
@@ -71,16 +72,15 @@ spec "std/ui-gallery adversarial" {
             digest_of("a", "x", "same") == digest_of("b", "y", "same")
         }
         then "a look-only change moves the digest though the words agree" {
-            let a = snapshots(
-                [Entry { view: "v", cases: [Case { name: "c", view: column { text "t" } }] }],
-            )[0]
+            let muted: dyn View = text "t" { style: Style { color: .Muted } }
+            let a = snapshots([Entry { view: "v", cases: [Case { name: "c", view: muted }] }])[0]
             let b = snapshots([Entry { view: "v", cases: [Case { name: "c", view: says("t") }] }])[0]
-            a.spoken == b.spoken && a.digest != b.digest
+            a.outline == b.outline && a.digest != b.digest
         }
     }
     given "hostile names and texts" {
         then "a hostile view and case name escape on the page" {
-            let doc = html(gallery([lone("<i>", "\"><script>", "x")]).node())
+            let doc = fragment(gallery([lone("<i>", "\"><script>", "x")]).describe())
             !doc.contains("<script>") && !doc.contains("<i>") && doc.contains("&lt;i&gt;")
         }
         then "a newline in a case name stays one rule line" {

@@ -1,0 +1,121 @@
+//! The diff's ordering, proven by APPLYING it: for every pair of key
+//! sequences over four keys, the patches between them are applied to a
+//! model of the page, and the model must end in the new order. A patch
+//! list that reads plausibly and leaves a row in the wrong place fails
+//! here and nowhere else.
+use @std.ui.realize.dom.live.{Live, live}
+use @std.ui.realize.dom.patch.{Patch}
+use @std.ui.tree.identity.{NodeId}
+use @std.ui.tree.node.{Node}
+use @std.ui.realize.tests.support.{holding, keyed, text_node}
+use @std.ui.style.theme.{default_theme}
+
+fn rows(keys: List<string>) -> Node { holding(.List, [keyed(text_node(k), k) for k in keys]) }
+
+/// Every ordered choice of distinct items from `pool`, the empty one too.
+fn arrangements(pool: List<string>) -> List<List<string>> {
+    let none: List<string> = []
+    [none]
+        .concat([[x].concat(rest) for x in pool for rest in arrangements([y for y in pool if y != x])])
+}
+
+/// `order` with `id` placed after `after`, or first.
+fn placed(order: List<int>, id: int, after: int?) -> List<int> {
+    let others = [x for x in order if x != id]
+    let at = if after == null { 0 } else { others.index_of(after!) + 1 }
+    others.slice(0, at).concat([id]).concat(others.slice(at, others.length))
+}
+
+/// The children of `list` after one patch, as a host would leave them.
+fn after_patch(order: List<int>, list: NodeId, p: Patch) -> List<int> {
+    match p {
+        .Place(id, parent, after) -> if parent == list { placed(order, id.n, after?.n) } else { order },
+        .Remove(id) -> [x for x in order if x != id.n],
+        .Create(_, _) or .CreateText(_, _) or .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .SetText(_, _) or .Listen(_, _) or .Unlisten(_, _) or .Style(_) -> order,
+    }
+}
+
+/// The ids of the rows a page now holds, in page order.
+fn row_ids(page: Live) -> List<int> {
+    let list? = page.page.get().first()?.tagged() else { return [] }
+    [k.id().n for k in list.kids]
+}
+
+/// A model of the list after a page showing `from` is repainted as `to`:
+/// the rows a host would hold, and the rows the page says it holds.
+type Outcome = { modelled: List<int>, held: List<int>, places: int }
+
+fn repainted(from: List<string>, to: List<string>) -> Outcome {
+    let page = live()
+    let _ = page.patches(rows(from), default_theme)
+    let list? = page.page.get().first() else { return Outcome { modelled: [], held: [-1], places: 0 } }
+    let patches = page.patches(rows(to), default_theme)
+    mut order = row_ids(page_before(from))
+    for p in patches { order = after_patch(order, list.id(), p) }
+    Outcome {
+        modelled: order,
+        held: row_ids(page),
+        places: [p for p in patches if after_patch([-7], list.id(), p).length == 2].length,
+    }
+}
+
+/// A page freshly showing `keys`: its rows wear the numbers the first
+/// paint of any page gives them.
+fn page_before(keys: List<string>) -> Live {
+    let page = live()
+    let _ = page.patches(rows(keys), default_theme)
+    page
+}
+
+fn lands(from: List<string>, to: List<string>) -> bool {
+    let out = repainted(from, to)
+    ["${n}" for n in out.modelled].join(" ") == ["${n}" for n in out.held].join(" ")
+}
+
+/// How many rows a repaint from `from` to `to` places.
+fn places(from: List<string>, to: List<string>) -> int { repainted(from, to).places }
+
+const pool = ["a", "b", "c", "d"]
+
+/// The longest run of `to`'s rows that `from` holds in the same order, by
+/// trying every choice: a row is taken when it stands after the last one
+/// taken, or left.
+fn longest_kept(from: List<string>, to: List<string>, after: int) -> int {
+    let head? = to.first() else { return 0 }
+    let later = to.slice(1, to.length)
+    let at = from.index_of(head)
+    let left = longest_kept(from, later, after)
+    if at <= after { return left }
+    let taken = 1 + longest_kept(from, later, at)
+    if taken > left { taken } else { left }
+}
+
+/// The fewest rows a repaint can place: every new row, and every kept row
+/// outside the longest run still in order.
+fn fewest(from: List<string>, to: List<string>) -> int { to.length - longest_kept(from, to, -1) }
+
+spec "std/ui dom — a reorder, applied" {
+    given "every pair of key sequences over four keys" {
+        then "there are 65 sequences, so 4225 repaints are applied" { arrangements(pool).length == 65 }
+        then "each ends in the new order" {
+            arrangements(pool).all((from) -> arrangements(pool).all((to) -> lands(from, to)))
+        }
+    }
+    given "every pair of key sequences over four keys, counted" {
+        then "each places the fewest rows any patch list could" {
+            arrangements(pool)
+                .all((from) -> arrangements(pool).all((to) -> places(from, to) == fewest(from, to)))
+        }
+    }
+    given "a long list whose last row is carried to the front" {
+        then "is one place, whatever its length" {
+            let keys = ["k${n}" for n in 0..600]
+            places(keys, [keys[599]].concat(keys.slice(0, 599))) == 1
+        }
+    }
+    given "rows that only changed order" {
+        then "a swap of two is one place" { places(["a", "b"], ["b", "a"]) == 1 }
+        then "a row sent to the end is one place" { places(["a", "b", "c", "d"], ["b", "c", "d", "a"]) == 1 }
+        then "rows already in order are never placed" { places(["a", "b", "c"], ["a", "b", "c"]) == 0 }
+    }
+}

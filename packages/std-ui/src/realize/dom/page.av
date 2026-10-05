@@ -1,0 +1,40 @@
+//! `realize/dom/page.av` — an app on a live page. Each paint is the frame
+//! of what changed, handed to whoever holds the page; each echo runs the
+//! handler the last paint bound and paints again.
+use app.{App, app}
+use realize.dom.live.{Live}
+use realize.dom.wire.{echo, frame}
+use tree.node.{Node}
+use tree.view.{View}
+use style.theme.{Theme}
+
+/// An app and the page it is painted on.
+export type Paged = { app: App, page: Live }
+
+/// `view` under `theme` on `page`: each paint's patches go to `send` as
+/// one frame, and a page that did not change is sent nothing. A page that
+/// already shows something is TURNED INTO the view, never drawn over.
+export fn paged<V: View>(view: fn() -> V, theme: fn() -> Theme, page: Live, send: fn(Bytes) -> void) -> Paged {
+    Paged {
+        app: app(
+            view,
+            theme,
+            (root: Node, worn: Theme) -> {
+                let patches = page.patches(root, worn)
+                if !patches.is_empty() { send(frame(patches)) }
+            },
+        ),
+        page: page,
+    }
+}
+
+impl Paged {
+    /// The host's echo, as the wire carries it: element `who` spoke the
+    /// kind `what`, saying what `tag` names. The handler the last paint
+    /// bound there runs and the page is painted again; an echo the wire
+    /// cannot read, or one nothing hears, answers false and paints nothing.
+    fn heard(who: int, what: int, tag: int, num: int, text: string?) -> bool {
+        let said? = echo(who, what, tag, num, text) else { return false }
+        self.app.turn(() -> self.page.fire(said.id, said.kind, said.said))
+    }
+}

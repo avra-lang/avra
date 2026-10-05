@@ -1,0 +1,136 @@
+//! Identity, by its law: a node is where it stands — its parent, then its
+//! key or its place among its unkeyed siblings — a page gives it one
+//! number while it stays, and no two nodes ever share one.
+use @std.ui.realize.dom.live.{Live, live}
+use @std.ui.realize.html.element.{Element}
+use @std.ui.tree.identity.{Step, readable, steps}
+use @std.ui.tree.node.{Node}
+use @std.ui.realize.tests.support.{spoken, holding, keyed, leaf, text_node}
+use @std.ui.style.theme.{default_theme}
+
+fn spelled(keys: List<string?>) -> string { [s.spelled() for s in steps(keys)].join(" ") }
+
+const three_unkeyed: List<string?> = [null, null, null]
+
+/// A list whose rows are keyed `keys`, each holding its key as words.
+fn rows(keys: List<string>) -> Node { holding(.List, [keyed(holding(.Item, [text_node(k)]), k) for k in keys]) }
+
+/// Every number an element and what it holds wear.
+fn numbers(e: Element) -> List<int> {
+    let el? = e.tagged() else { return [e.id().n] }
+    [el.id.n].concat([n for k in el.kids for n in numbers(k)])
+}
+
+/// The numbers a page's top list gives its rows, in page order.
+fn row_numbers(page: Live) -> List<int> {
+    let list? = page.page.get().first()?.tagged() else { return [] }
+    [k.id().n for k in list.kids]
+}
+
+/// The rows' numbers after a page showing `from` is repainted as `to`.
+fn numbered(from: List<string>, to: List<string>) -> string {
+    let page = live()
+    let _ = page.patches(rows(from), default_theme)
+    let _ = page.patches(rows(to), default_theme)
+    ["${n}" for n in row_numbers(page)].join(" ")
+}
+
+fn distinct(xs: List<int>) -> bool { [j for j, x in xs if xs.index_of(x) == j].length == xs.length }
+
+/// Whether a page of rows keyed `keys` gives every element its own
+/// number and its own path.
+fn all_apart(keys: List<string>) -> bool {
+    let page = live()
+    let said = spoken(page, rows(keys), default_theme).split("\n")
+    let created = [l for l in said if l.starts_with("create ") || l.starts_with("text ")]
+    distinct([n for e in page.page.get() for n in numbers(e)]) &&
+        [j for j, c in created if created.index_of(c) == j].length == created.length
+}
+
+spec "std/ui identity — a sibling's step" {
+    given "unkeyed siblings" {
+        then "take their places in order" { spelled(three_unkeyed) == "0 1 2" }
+    }
+    given "a keyed sibling among unkeyed ones" {
+        then "takes no place, so the unkeyed keep theirs" { spelled([null, "a", null]) == "0 k1:a 1" }
+        then "is spelled the same wherever it stands" { spelled(["a", null]) == "k1:a 0" }
+    }
+    given "two siblings sharing a key" {
+        then "the second takes the next turn" { spelled(["a", "a", "a"]) == "k1:a k1:a~1 k1:a~2" }
+        then "another key's turns are its own" { spelled(["a", "b", "a"]) == "k1:a k1:b k1:a~1" }
+    }
+    given "an empty key" {
+        then "is a key, never an unkeyed place" { spelled(["", null]) == "k0: 0" }
+    }
+    given "no siblings" {
+        then "answers no steps" { steps([]).is_empty() }
+    }
+    given "keys that spell other steps" {
+        then "a key that is a number is not that place" { Step.Keyed("1", 0).spelled() != Step.Placed(1).spelled() }
+        then "a key that ends like a turn is not another key's second turn" {
+            Step.Keyed("a~1", 0).spelled() != Step.Keyed("a", 1).spelled()
+        }
+        then "a key that spells a keyed step is not that step" { Step.Keyed("k1:a", 0).spelled() != Step.Keyed("a", 0).spelled() }
+        then "a key that spells a part is not that part" { Step.Keyed("+text", 0).spelled() != Step.Part("text").spelled() }
+    }
+}
+
+spec "std/ui identity — a number while a node stays" {
+    given "rows painted twice" {
+        then "wear the same numbers" { numbered(["a", "b", "c"], ["a", "b", "c"]) == numbered(["a", "b", "c"], ["a", "b", "c"]) }
+    }
+    given "a row landing above two" {
+        then "takes a new number, and the two keep theirs" {
+            let page = live()
+            let _ = page.patches(rows(["a", "b"]), default_theme)
+            let before = row_numbers(page)
+            let _ = page.patches(rows(["new", "a", "b"]), default_theme)
+            let after = row_numbers(page)
+            after[1] == before[0] && after[2] == before[1] && !before.contains(after[0])
+        }
+    }
+    given "rows in another order" {
+        then "carry their numbers with them" {
+            let page = live()
+            let _ = page.patches(rows(["a", "b"]), default_theme)
+            let before = row_numbers(page)
+            let _ = page.patches(rows(["b", "a"]), default_theme)
+            row_numbers(page)[0] == before[1] && row_numbers(page)[1] == before[0]
+        }
+    }
+    given "a row that left and came back" {
+        then "takes a number no element has worn" {
+            let page = live()
+            let _ = page.patches(rows(["a", "b"]), default_theme)
+            let first = [n for e in page.page.get() for n in numbers(e)]
+            let _ = page.patches(rows(["b"]), default_theme)
+            let _ = page.patches(rows(["a", "b"]), default_theme)
+            !first.contains(row_numbers(page)[0])
+        }
+    }
+}
+
+spec "std/ui identity — no two nodes share one" {
+    given "siblings sharing a key" {
+        then "each wears its own number and stands at its own path" { all_apart(["a", "a", "a"]) }
+    }
+    given "keys that spell steps, separators and turns" {
+        then "each wears its own number and stands at its own path" {
+            all_apart(["a", "a~1", "0", "k1:a", "b/0", "b", "+text", "", " ", "é"])
+        }
+    }
+}
+
+spec "std/ui identity — the path a reader sees" {
+    given "a key holding a line break" {
+        then "is written on one line, so it forges no line of a projection" {
+            let page = live()
+            let said = spoken(page, rows(["a\ncreate 0/9 h1"]), default_theme)
+            said.contains("create 0/k15:a\\ncreate 0/9 h1 li") &&
+                !said.split("\n").contains("create 0/9 h1 li")
+        }
+    }
+    given "a key holding the escape's own character" {
+        then "is told from a line break" { readable("a\\n") != readable("a\n") }
+    }
+}

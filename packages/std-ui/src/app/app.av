@@ -1,0 +1,50 @@
+//! `app/app.av` — an app as a target runs it: the view of the program's
+//! state, the theme it wears and where a paint is shown. THE LOOP IS ONE
+//! DOOR, `turn`: whatever may change the state — a control speaking, a
+//! timer, an answer arriving — runs through it, and a paint follows only
+//! when it ran.
+use tree.node.{Node}
+use tree.view.{View}
+use style.theme.{Theme, default_theme}
+
+/// An app on one target. `show` is the target's own paint: the tree as it
+/// stands and the theme it wears, in; whatever the target does with them.
+/// The view and the theme are held in cells, so the app stays ONE identity
+/// when it is given another view to show.
+export type App = { view: Cell<fn() -> Node>, theme: Cell<fn() -> Theme>, show: fn(Node, Theme) -> void }
+
+/// The theme of an app that names none.
+export fn plain() -> Theme { default_theme }
+
+/// `view` under `theme`, shown by `show`.
+export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, Theme) -> void) -> App {
+    let drawn: fn() -> Node = () -> view().describe()
+    App { view: Cell.new(drawn), theme: Cell.new(theme), show: show }
+}
+
+/// `on` shows `view` under `theme` from now on: the same app on the same
+/// target, so a paint already under way paints this view, never the one
+/// it replaced.
+export fn remounted<V: View>(on: App, view: fn() -> V, theme: fn() -> Theme) {
+    on.view.set(() -> view().describe())
+    on.theme.set(theme)
+}
+
+impl App {
+    /// The view as the state stands now, shown.
+    fn paint() {
+        let view = self.view.get()
+        let theme = self.theme.get()
+        self.show(view(), theme())
+    }
+
+    /// THE ONE DOOR INTO THE LOOP. `act` is whatever may change the
+    /// program's state; it answers whether it ran, and a paint follows
+    /// only then. What the paint says is the target's to decide — a page
+    /// that did not change is sent nothing.
+    fn turn(act: fn() -> bool) -> bool {
+        let ran = act()
+        if ran { self.paint() }
+        ran
+    }
+}
