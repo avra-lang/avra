@@ -24,7 +24,7 @@ use realize.render.{Node, EventKind, Action, Handler, Said, level_of}
 use realize.update.{Op, Mount, plan}
 use realize.html.tags.{tag_for}
 use realize.html.html.{element_attrs}
-use realize.html.css.{CssRule, distinct_rules, class_names_of, stylesheet}
+use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet}
 use realize.dom.buf.{Buf, buf}
 use realize.lists.{union}
 use style.theme.{Theme}
@@ -68,6 +68,9 @@ fn echoed_text(text: string?) -> Said? {
     Said.Text(body)
 }
 
+/// Every class a mounted node names, once, in rule order.
+fn class_names(m: Mount) -> List<string> { [r.name for r in distinct_rules(node_rules(m.prim, m.box))] }
+
 // ── the wire ─────────────────────────────────────────────────────
 
 /// One mounted node's records: its structure, then its classes and attributes.
@@ -77,7 +80,7 @@ fn mount_wire(m: Mount, b: Buf) {
     b.push_str(m.parent?.path ?? "")
     b.push_int(m.index)
     b.push_str(tag_for(m.prim, level_of(m.attrs)).word())
-    let names = class_names_of(m.box)
+    let names = class_names(m)
     if !names.is_empty() {
         b.push_byte(3)
         b.push_str(m.id.path)
@@ -184,7 +187,7 @@ impl Live {
 
 /// This node's own lines.
 fn text_ops(m: Mount) -> List<string> {
-    let names = class_names_of(m.box)
+    let names = class_names(m)
     let class_ops: List<string> = if names.is_empty() { [] } else { ["A ${m.id.path} ${names.join(" ")}"] }
     let attr_ops = ["P ${m.id.path} ${a.name.word()}=${a.value}" for a in element_attrs(m.prim, m.attrs)]
     ["C ${m.id.path} ${tag_for(m.prim, level_of(m.attrs)).word()}"]
@@ -229,7 +232,7 @@ fn find_event(ops: List<Op>, id: NodeId, kind: int) -> Action? {
 
 /// Every rule any mounted node in the graph names.
 fn all_rules(ops: List<Op>) -> List<CssRule> {
-    union([m.box.rules() for op in ops for m in as_mount(op)])
+    union([node_rules(m.prim, m.box) for op in ops for m in as_mount(op)])
 }
 
 /// The mount an op carries, if it places a node.
@@ -238,7 +241,7 @@ fn as_mount(op: Op) -> List<Mount> {
 }
 
 fn sheet_of(ops: List<Op>, theme: Theme) -> string {
-    stylesheet(distinct_rules(all_rules(ops)), theme)
+    page_sheet(distinct_rules(all_rules(ops)), theme, [])
 }
 
 /// The tree's one stylesheet. The page carries this in its `<style>`.
