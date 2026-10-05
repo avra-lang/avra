@@ -31,7 +31,7 @@ fi
 # A COPY is served, so the run edits no file of the tree's.
 mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
-"$avra" dev --target "$target" --port 0 --interval 100 "$work/tools/ui-board/web" >"$work/dev.out" 2>"$work/dev.err" &
+"$avra" dev --target "$target" --port 0 "$work/tools/ui-board/web" >"$work/dev.out" 2>"$work/dev.err" &
 dev=$!
 trap 'kill "$dev" 2>/dev/null || true' EXIT
 tries=0
