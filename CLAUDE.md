@@ -1918,7 +1918,7 @@ Runtime facts, ours to ratify:
 
       sh tools/work new <name>   # worktree ../avra-<name>, off GitHub's main, compiler seeded
       sh tools/work test         # what the branch touches, built and tested on Sprites
-      sh tools/work run <cmd>    # any command in this worktree, on a Sprite
+      sh tools/work run <cmd>    # any command in this worktree, on its Sprite
       sh tools/work land         # rebase on origin/main, push, open the PR, queue it
       sh tools/work status       # every open PR, its checks and queue state
 
@@ -1944,23 +1944,20 @@ Runtime facts, ours to ratify:
   caches the compiler every train starts from.
 - A PRE-COMMIT HOOK refuses staged `.av` that is not canonical; the fix
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
-- HEAVY RUNS GO ON SPRITES: `AVRA_SP_TREE=$PWD sh tools/sp <cmd>`, or
-  `sh tools/sp -p "a" "b"` for parallel. Bootstraps, whole suites and
-  censuses run there; the Mac keeps quick targeted checks and anything
-  macOS-only. sp takes the idlest answering Sprite, syncs by rsync,
-  copies a built compiler, and waits for a slot rather than falling back
-  to the Mac — for fifteen minutes, then it leaves with 75 and the reason.
-  THE POOL TAKES ONE RUN PER WORKTREE ON A SPRITE, two runs a Sprite, so
-  a `-p` batch wants a Sprite a command. `sh tools/sp --health` shows
-  every Sprite and lease in seconds; `sh tools/sp --repair` reaps,
-  provisions and prunes. A SPRITE SLEEPS THIRTY SECONDS AFTER ITS LAST
-  COMMAND and wakes in seconds or in minutes: one that misses its probe
-  is left out while a waker goes on asking, and nobody waits on it while
-  another has room. A RUN NEVER OUTLIVES ITS CALLER — the Sprite's own
-  keeper stops it when the caller is gone, past its time, or when the
-  machine nears its memory floor, since a Sprite has 8 GB and no swap.
-  One that answers nobody for minutes is the provider's to lose: its
-  filesystem did not survive, and it is destroyed and created again.
+- HEAVY RUNS GO ON SPRITES, ONE SPRITE A LANE: `sh tools/work run <cmd>`
+  from inside the worktree. `work new` binds a free Sprite (`work bind`
+  for a worktree that has none, `work done` frees it), and the lane's
+  tree and compiler stay warm there between runs. Bootstraps, whole
+  suites and censuses run there; the Mac keeps quick targeted checks and
+  anything macOS-only. ONE RUN PER SPRITE, EVERY STEP BOUNDED: `run`
+  answers the command's status, or 75 (no answer), 76 (busy), 70 (the
+  compiler does not build), 124/125 (a bound; `--for <minutes>` raises
+  the command's), 137 (out of memory) — and the remote command is
+  stopped on each, since a run never outlives its caller. `sh tools/work
+  sprites` shows all of them in seconds. A Sprite sleeps thirty seconds
+  after its last command; one silent for minutes has lost its
+  filesystem and is destroyed and created again (provisioning is `run`'s
+  first step, from `.github/ci/packages.txt`).
 - A BRANCH IS REBASED ONTO `origin/main` ONLY, never onto another
   unlanded branch: that lands the other branch's work unverified. A
   branch built on a stale local main moves with `git rebase --onto

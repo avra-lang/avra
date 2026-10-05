@@ -1,6 +1,5 @@
-# Shared by tools/sp and tools/sprite-build.sh: the one way either reaches
-# a Sprite, and the one way either names a local process. Sourced; `here`
-# is the tools directory.
+# How tools/work reaches a Sprite and names a local process. Sourced;
+# `here` is the tools directory.
 #
 # EVERY EXEC IS BOUNDED AND READS NO STDIN. An exec with stdin attached is
 # not reconnected when its connection drops, and an unbounded one waits
@@ -46,18 +45,6 @@ born() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' '_'; }
 # owner_live <pid> <born>
 owner_live() {
     [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ "$(born "$1")" = "$2" ]
-}
-
-# leases <verb> <args...>: tools/sprite-lease.sh under the leases' kernel
-# lock, which every caller on this machine shares.
-slots=${AVRA_SP_SLOTS:-/tmp/avra-sp-slots}
-leases() {
-    mkdir -p "$slots"
-    if command -v flock >/dev/null 2>&1; then
-        flock -w 60 "$slots/.lock" sh "$here/sprite-lease.sh" "$@"
-    else
-        lockf -k -t 60 "$slots/.lock" sh "$here/sprite-lease.sh" "$@"
-    fi
 }
 
 # Reads a Sprite's `run=` rows ("<run> <live|ended> <host> <pid> [<born>]")

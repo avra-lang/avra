@@ -1,7 +1,7 @@
 #!/bin/sh
-# THE SPRITE'S HALF of tools/sp and tools/sprite-build.sh. It never
+# THE SPRITE'S HALF of tools/work. It never
 # lives on the Sprite: each call carries it whole as an argument of one
-# `sprite exec` (AVRA_REMOTE_SCRIPT, sprite-build.sh's `remote`), so there
+# `sprite exec` (AVRA_REMOTE_SCRIPT, sprite-lib.sh's `remote`), so there
 # is no file to push and no stale copy.
 #
 #   status [<hash> <package...>]  the machine as `key=value` lines
@@ -9,7 +9,7 @@
 #   stop <run...>              stop each run, however its processes scattered
 #   provision <package...>     install what is missing, point the tree at LLVM
 #   prune <compilers> <days>   drop old compilers, trees and scratch, detached
-#   run <id> <owner> <limit_s> <tree> <hash> <restore> <store> <prebuild> <cmd...>
+#   run <id> <owner> <build_s> <cmd_s> <tree> <hash> <cmd...>
 #
 # A RUN IS ITS ENVIRONMENT MARK: every process a run starts inherits
 # AVRA_RUN=<id>, so a stop finds them all by reading /proc — a child that
@@ -18,7 +18,7 @@
 # A RUN NEVER OUTLIVES ITS CALLER. The Sprite ends an exec session whose
 # client is gone, and each run keeps a keeper outside that session: when
 # the run's own shell is gone before it finished, the keeper stops what
-# is left. The keeper also ends a run past its time limit, and one that
+# is left. The keeper also ends a run past its time bound, and one that
 # takes the machine under its memory floor — a Sprite has no swap, and
 # one out of memory answers nobody.
 set -eu
@@ -152,16 +152,18 @@ prune_now() {
 # it writes is the run's last word) — and whatever a run left standing
 # when it ended.
 keeper() {
-    r=$1 main=$2 limit=$3
+    r=$1 main=$2 build_s=$3 cmd_s=$4
     rd=$runs/$r
     t0=$(cut -d. -f1 /proc/uptime)
     while [ -d "$rd" ] && kill -0 "$main" 2>/dev/null; do
         why=
-        if [ $(($(cut -d. -f1 /proc/uptime) - t0)) -ge "$limit" ]; then
-            why="124 past its ${limit}s limit"
-        elif [ "$(avail_mb)" -lt "$floor_mb" ]; then
-            why="137 the Sprite fell under ${floor_mb} MB free"
+        now=$(cut -d. -f1 /proc/uptime)
+        if at=$(cat "$rd/cmd_at" 2>/dev/null) && [ -n "$at" ]; then
+            [ $((now - at)) -lt "$cmd_s" ] || why="124 the command passed its ${cmd_s}s bound"
+        else
+            [ $((now - t0)) -lt "$build_s" ] || why="125 the compiler build passed its ${build_s}s bound"
         fi
+        [ -n "$why" ] || [ "$(avail_mb)" -ge "$floor_mb" ] || why="137 the Sprite fell under ${floor_mb} MB free"
         if [ -n "$why" ]; then
             echo "$why" > "$rd/stopped"
             for sig in TERM KILL; do
@@ -225,24 +227,34 @@ advance_and_cache() {
     rm -f "$log"
 }
 
+# ONE RUN ON A SPRITE AT A TIME, and it runs on the compiler it is
+# testing: build/avra is kept in place between runs, restored from this
+# Sprite's cache when the source hash moved to one it holds, and built
+# and cached otherwise — a source that does not build gets no command
+# (70), since an older compiler would answer about a different program.
 run() {
     AVRA_RUN=$1
-    owner=$2 limit=$3 remote=$4 chash=$5 do_restore=$6 do_store=$7 do_prebuild=$8
-    shift 8
+    owner=$2 build_s=$3 cmd_s=$4 remote=$5 chash=$6
+    shift 6
+    for o in "$runs"/*/owner; do
+        [ -f "$o" ] || continue
+        r=$(basename "$(dirname "$o")")
+        [ -z "$(members "$r")" ] || { echo "sprite-run: busy with $r, begun by $(cat "$o")" >&2; exit 76; }
+        rm -rf "${runs:?}/$r"
+    done
     export AVRA_RUN
     rd=$runs/$AVRA_RUN
     mkdir -p "$rd" "$remote/build" "$compilers"
     printf '%s\n' "$owner" > "$rd/owner"
     printf '%s/\n' "$remote" > "$rd/tree"
     echo $$ > "$rd/pid"
-    setsid sh -c "$AVRA_REMOTE_SCRIPT" avra-remote keeper "$AVRA_RUN" $$ "$limit" </dev/null >/dev/null 2>&1 &
+    setsid sh -c "$AVRA_REMOTE_SCRIPT" avra-remote keeper "$AVRA_RUN" $$ "$build_s" "$cmd_s" </dev/null >/dev/null 2>&1 &
     # The keeper's reason, when it ended this run, is the run's status.
     ended() {
         st=$1
         if [ -f "$rd/stopped" ]; then
             read -r st why < "$rd/stopped"
-            echo "sprite-run: stopped — $why" >&2
-            printf 'STOPPED:%s\n' "$why" > "$remote/build/.avra-run-info"
+            echo "sprite-run: stopped — ${why}" >&2
         fi
         rm -rf "$rd"
         exit "$st"
@@ -252,9 +264,10 @@ run() {
 
     export LLVM_PREFIX=/usr/lib/llvm-22 CC=/usr/lib/llvm-22/bin/clang
     cd "$remote"
-    rm -f build/.avra-run-info
-    compile_t0=$(date +%s)
-    if [ "$do_restore" = 1 ] && [ -d "$compilers/$chash" ]; then
+    t0=$(date +%s)
+    if [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
+        compiler=warm
+    elif [ -x "$compilers/$chash/avra" ]; then
         for f in $(compiler_objs); do
             b=$(basename "$f")
             [ -e "$compilers/$chash/$b" ] || continue
@@ -263,36 +276,19 @@ run() {
         done
         touch "$compilers/$chash"
         printf '%s' "$chash" > build/.avra-compiler-hash
-    fi
-
-    # THE COMMAND RUNS ON THE COMPILER IT IS TESTING: a hash the cache
-    # lacks is advanced and cached before the command, and a source that
-    # does not build gets no command — an older compiler standing in for
-    # it answers about a different program.
-    store_result=none
-    if [ "$do_store" = 1 ]; then
+        compiler=restored
+    else
+        echo "sprite-run: building this tree's compiler" >&2
         advance_and_cache
-        if [ "$store_result" != built ]; then
-            printf 'STORE:%s\n' "$store_result" > build/.avra-run-info
-            exit 3
-        fi
+        [ "$store_result" = built ] || exit 70
+        compiler=built
     fi
-    if [ "$do_prebuild" = 1 ]; then
-        test -x build/avra || make avra
-    fi
-    compile_s=$(($(date +%s) - compile_t0))
-
+    echo "sprite-run: compiler $compiler in $(($(date +%s) - t0))s" >&2
+    cut -d. -f1 /proc/uptime > "$rd/cmd_at"
     set +e
-    start=$(date +%s.%N)
     "$@"
     status=$?
-    end=$(date +%s.%N)
     set -e
-    {
-        printf 'WALL:%s\n' "$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.1f", b - a }')"
-        printf 'STORE:%s\n' "$store_result"
-        printf 'COMPILE:%s\n' "$compile_s"
-    } > build/.avra-run-info
     exit "$status"
 }
 
