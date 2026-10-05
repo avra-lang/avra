@@ -47,17 +47,45 @@ export enum EventKind {
     @word(submit) Submit
 }
 
-/// What a node says when it speaks: the KIND of event and the
-/// content-addressed SITE of the message it asks for. A message is DATA —
-/// the app's typed `Msg`, whose `@derive(Messages)` mints the site — so a
-/// value slot never holds a fn. The SITE is the message's identity (a hash
-/// of its declaring module and variant), so the wire addresses an event by
-/// content, never by a pre-order ordinal that moves when a node lands above
-/// it, and the app resolves it back to the message with ONE exhaustive
-/// `update`. The PAYLOAD is the message's captures as `Payload` DATA, or
-/// null when the variant carries nothing — so a capture-free handler is
-/// just a site, and no sentinel stands in for an absent payload.
-export type Action = { kind: EventKind, site: int = 0, payload: Payload? = null }
+/// A handler that is told nothing but that the control spoke.
+export alias Run = fn() -> void
+
+/// A handler that is told the text the user gave.
+export alias Hear = fn(string) -> void
+
+/// What a control calls when it speaks, by what it tells the handler. A
+/// REGISTRY: a new arm is a new thing a control can say, and every target
+/// that fires events answers it.
+export enum Handler {
+    Run(f: fn() -> void)
+    Text(f: fn(string) -> void)
+}
+
+/// What a node does when it speaks: the KIND of event and the handler the
+/// component bound to it. The handler stays in the program — a target
+/// subscribes to the kind and echoes WHICH node spoke, never the code.
+export type Action = { kind: EventKind, handler: Handler }
+
+impl Action {
+    /// Run the handler with what the control `said`. A handler that wants
+    /// a value the control did not give does not run: false, never a
+    /// made-up value.
+    fn fire(said: Payload?) -> bool {
+        match self.handler {
+            .Run(f) -> f(),
+            .Text(f) -> {
+                let text? = said_text(said) else { return false }
+                f(text)
+            },
+        }
+        true
+    }
+}
+
+fn said_text(said: Payload?) -> string? {
+    let value? = said else { return null }
+    match value { .Text(t) -> t, .Int(_) or .Bool(_) -> null }
+}
 
 /// How urgently a live region speaks.
 @derive(Words)

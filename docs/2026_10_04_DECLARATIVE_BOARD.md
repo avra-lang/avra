@@ -1,5 +1,11 @@
 # The declarative board — the app written as a person would write it
 
+> **Superseded for events (2026-10-05).** A handler is a closure now:
+> `on click { … }` fills a fn-typed field and the frame keeps it;
+> `@derive(Messages)`, sites and the payload wire are gone. An app that
+> wants one `update` writes `on click { update(.Toggle(t.id)) }`. The
+> `Msg` samples below are the design as it stood.
+
 > 2026-10-04. Base `48e8e62`. The board is the UI epic's witness: a real
 > program that WANTS the language, so every construct it reaches for is
 > a probed, named ask. `docs/2026_10_02_COMPILED_UI.md` is the target

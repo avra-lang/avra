@@ -1697,24 +1697,20 @@ Syntax the grammar lacks:
   has none of its own" — `{"a": null}` and `Cell.new(null)` alike.
   Any sibling with a type names it (`[null, 7]` is a `List<int?>`),
   and a declared want fills it (`let c: Cell<int?> = Cell.new(null)`).
-- THE INSTANCE-BODY EVENT SPELLING (`on click { done = !done }`):
-  "expected BREAK while parsing `stmt`" at `click` — a component
-  instance body takes settings and statements, and `on <kind>` is not
-  a production. Bind the event with a component field (`on_click:
-  Msg`) and dispatch a payload-free message today; captures and
-  per-instance sites are avra-xubk.2's remainder. (Probed for the
-  declarative board, docs/2026_10_04_DECLARATIVE_BOARD.md.)
+- AN `on <kind> { … }` HANDLER TAKES NO SEAT: `on input { text ->
+  draft = text }` is "expected BREAK while parsing `stmt`" at the
+  `->`, then "field `on_input` is `fn(string)?`, this is `fn()`". The block
+  is a NULLARY lambda filling `on_<kind>`, so a handler that is told a
+  value is written as the setting, its seat typed: `on_input: (text:
+  string) -> { draft = text }`. The type is needed because the field is
+  NULLABLE — an untyped seat there is "a lambda cannot sit here — this
+  seat takes `fn(string)?`" (sugar backlog: a seat in the `on` block,
+  and a lambda hearing a nullable fn want).
 - A KEYED LIST (`list xs by it.id { x -> … }`): "`list` takes no head
   value — name it at a statement (`list name { … }`), or write `list
   { … }`". Write `list { for x in xs { item { key: "${x.id}" … } }
   }` — the key rides the tree, but `SiteLowering` has no `Keyed` arm,
   so reconciliation is positional (avra-xubk.3).
-- A PAYLOAD-CARRYING message (`enum Msg { Toggle(id: int) }`)
-  COMPILES CLEAN and is SILENTLY BROKEN: `event_site` hashes the
-  variant's NAME, so `Msg.Toggle(1)` and `Msg.Toggle(2)` answer ONE
-  site, and `from_site` covers payload-free variants alone
-  (`messages.av`'s `plain`) — a per-item click resolves to null.
-  Dispatch a payload-free `Msg` until captures land (avra-xubk.2).
 - `derived x = …` and `query x = …`: "expected BREAK while parsing
   `stmt`" at the name — recompute in a `fn`, or hold a `state`
   (avra-8sb5.59.27).

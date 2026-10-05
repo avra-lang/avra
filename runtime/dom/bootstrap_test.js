@@ -1,4 +1,4 @@
-// Proves the bootstrap's law over the V4 BYTE wire: a frame builds the tree,
+// Proves the bootstrap's law over the V5 BYTE wire: a frame builds the tree,
 // a second frame REUSES the elements, order follows the frame's index, keys
 // move identity on a reorder, a dropped node leaves, a no-change frame
 // touches nothing, and a frame of ANOTHER VERSION refuses.
@@ -13,11 +13,8 @@ const K = (id, s) => [2, ...i32(id), ...i32(s.length), ...utf8(s)];
 const A = (id, s) => [3, ...i32(id), ...i32(s.length), ...utf8(s)];
 const T = (id, s) => [4, ...i32(id), ...i32(s.length), ...utf8(s)];
 const S = (s) => [6, ...i32(s.length), ...utf8(s)];
-const E = (id, kind, site) => [5, ...i32(id), ...i32(kind), ...i32(site)];
-const PText = (id, s) => [7, ...i32(id), 1, ...i32(s.length), ...utf8(s)];
-const PInt = (id, v) => [7, ...i32(id), 2, ...i32(Number(v & 0xffffffffn)), ...i32(Number((v >> 32n) & 0xffffffffn))];
-const PBool = (id, b) => [7, ...i32(id), 3, b ? 1 : 0];
-const frame = (...recs) => Uint8Array.from([4, ...recs.flat()]);
+const E = (id, kind) => [5, ...i32(id), ...i32(kind)];
+const frame = (...recs) => Uint8Array.from([5, ...recs.flat()]);
 
 function el(doc, tag) {
   return {
@@ -78,7 +75,7 @@ check("an empty frame empties the mount", mount.childNodes.length, 0);
 
 apply(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), T(1, "hi")));
 const kept = mount.childNodes[0];
-apply(Uint8Array.from([4, 0]));
+apply(Uint8Array.from([5, 0]));
 check("a no-change frame touches nothing", mount.childNodes[0] === kept && kept.childNodes[0].textContent === "hi", true);
 
 const styleEl = { textContent: "" };
@@ -90,38 +87,40 @@ let refused = false;
 try { parseFrame(Uint8Array.from([2])); } catch { refused = true; }
 check("a frame of another VERSION refuses", refused, true);
 
-// ── the payload channel: op 7 decodes, the applier hands it to send, and
-// sendEvent puts it on the ABI's tag/value seats ──
-const ev = parseFrame(frame(C(0, -1, 0, "button"), E(0, 1, 1234), PText(0, "t3")));
-check("a text payload decodes", ev[0].events[0].payload, { tag: "text", value: "t3" });
-const evInt = parseFrame(frame(C(0, -1, 0, "button"), E(0, 1, 7), PInt(0, -5n))).pop().events[0].payload;
-check("an int payload is exact", { tag: evInt.tag, value: String(evInt.value) }, { tag: "int", value: "-5" });
-const evBool = parseFrame(frame(C(0, -1, 0, "button"), E(0, 1, 7), PBool(0, true))).pop().events[0].payload;
-check("a bool payload decodes", evBool, { tag: "bool", value: true });
+// ── events: the frame names who listens, the applier echoes who spoke ──
+const ev = parseFrame(frame(C(0, -1, 0, "button"), E(0, 1)));
+check("an event record names its kind", ev[0].events, [1]);
 
 const sent = [];
 const root3 = el(doc, "root3");
-const app = createApplier(doc, root3, (site, kind, payload) => sent.push([site, kind, payload]));
-app(frame(C(0, -1, 0, "button"), E(0, 1, 99), PText(0, "x")));
-root3.childNodes[0].listeners.get("click")();
-check("the applier hands its payload to send", sent[0], [99, 1, { tag: "text", value: "x" }]);
+const app = createApplier(doc, root3, (who, kind, said) => sent.push([who, kind, said]));
+app(frame(C(0, -1, 0, "div"), C(1, 0, 0, "button"), K(1, "b"), E(1, 1)));
+root3.childNodes[0].childNodes[0].listeners.get("click")();
+check("a click echoes its node and kind, saying nothing", sent[0], [1, 1, null]);
 
-// AN INPUT'S PAYLOAD IS ITS OWN TEXT, never the message the frame named:
-// the field's message carries a capture placeholder, and the page's own
-// value is what the user typed.
+// A keyed node keeps its element and its listener when a sibling lands
+// above it; the echo must carry the id the LATEST frame gave it.
+app(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), C(2, 0, 1, "button"), K(2, "b"), E(2, 1)));
+root3.childNodes[0].childNodes[1].listeners.get("click")();
+check("a moved node speaks under its current id", sent[1], [2, 1, null]);
+
+app(frame(C(0, -1, 0, "div"), C(1, 0, 0, "span"), C(2, 0, 1, "button"), K(2, "b")));
+check("an event the frame drops is unsubscribed", root3.childNodes[0].childNodes[1].listeners.has("click"), false);
+
+// AN INPUT SAYS ITS OWN TEXT: the page's own value is what the user typed.
 const typed = [];
 const root5 = el(doc, "root5");
-const app5 = createApplier(doc, root5, (site, kind, payload) => typed.push([site, kind, payload]));
-app5(frame(C(0, -1, 0, "input"), E(0, 2, 100), PText(0, "")));
+const app5 = createApplier(doc, root5, (who, kind, said) => typed.push([who, kind, said]));
+app5(frame(C(0, -1, 0, "input"), E(0, 2)));
 root5.childNodes[0].value = "typed here";
 root5.childNodes[0].listeners.get("input")();
-check("an input sends the element's own text", typed[0], [100, 2, { tag: "text", value: "typed here" }]);
+check("an input sends the element's own text", typed[0], [0, 2, { tag: "text", value: "typed here" }]);
 
 const calls = [];
 const fakeMod = {
   memory: { buffer: new ArrayBuffer(64) },
   avra_payload_seat: () => 16n,
-  avra_event: (site, what, tag, num, len) => calls.push([site, what, tag, num, len]),
+  avra_event: (who, what, tag, num, len) => calls.push([who, what, tag, num, len]),
 };
 sendEvent(fakeMod, 7, 1, null);
 check("no payload sends tag 0", calls[0].map(String), ["7", "1", "0", "0", "0"]);

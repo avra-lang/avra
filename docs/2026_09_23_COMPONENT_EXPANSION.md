@@ -226,36 +226,16 @@ position and fills a declared `name` field; as a member of another
 instance it is a child and binds nothing. A block is optional
 (`secret stripe_key`). `c from base { key: v }` is `base with { … }`:
 settings only — a child there refuses, its children are its base's.
-`on click { }` — DEFERRED to APPS, the reason corrected by probe
-(ui-onflag): the grammar LANDED (`on` is a soft keyword, #253) and the
-body becomes a nullary lambda whose captures resolve and lift (#254),
-so the wall is neither the spelling nor capture EXTRACTION. It is the
-message VALUE: the event field is `dyn Messages?`, a lambda is no
-implementor, and making `on` a body DECLARATION does not change that.
-A body declaration is a `collect` of record VALUES built at the parse
-(`command`'s flags expand to `flags: collect { flag json { … } }`), not
-a declaration-minting stage; the only declaration generator
-(`compiler/expand.av`) is driven by an annotation on a DECLARATION and
-reads a `Type`'s shape, never an expression's captures, and a
-computing `expand()` is refused per instance ("is not one `quote` over
-its own fields"). The bridge is a synthesized `Messages` implementor
-plus a per-file dispatcher — an expansion stage AFTER typing (S6),
-which the body-declaration spelling reaches at no earlier point.
-CORRECTED by ui-libtype (2026-10-04, docs/2026_10_04_INLINE_HANDLER_
-DISPATCH_REACHABILITY.md): the message VALUE is NOT the wall. A
-hand-written library `impl Messages` DOES coerce into `dyn Messages?`,
-proved in `std-ui/src/tests/inline` (probe 1), and its site plus a
-NARROWED capture build inside a keyed element body and dispatch to the
-right row — in both engines (probe 2). The wall is DISPATCH
-REACHABILITY: the site-to-code table IS expressible at lowering
-(`LowerCx.jobs.lifts` names every lifted handler), but a lowering-time
-body has no NAME the typed program can call. `from_site` is reachable
-only because the derive mints it from the enum's SHAPE before typing;
-the board's `avra_event` and #251's `inline_event` are hand-written
-typed edges. So the library-type angle removes type generation but
-RELOCATES the wall from "a type must exist at typing" to "a call edge
-must exist at typing" — the S6 stage (or a new fixed-symbol entry both
-engines carry) is still required.
+`on click { … }` AS BUILT: `on <kind> { body }` in an instance's block
+is the setting `on_<kind>: () -> { body }` — a lambda closing over what
+the view could see (`on` is a soft keyword). The component's field is a
+FN type (`@std/ui`'s `Run = fn()`, `Hear = fn(string)`), so the handler
+is an ordinary value: nothing is synthesized, no message type, no
+dispatcher. A target keeps the handlers of the frame it last drew and
+the host echoes WHICH node spoke (`Live.fire(id, kind, said)`); the code
+never crosses the wire. An earlier design made the handler DATA (a
+`dyn Messages` site plus a payload) and spent five attempts generating
+that value from the block; the block was a closure all along.
 S3a AS BUILT: a component with no `expand` is `Instancing.Record`; its
 instance is an `Expr.Component` whose view is the record literal (so
 the printer keeps the written form and `avra expand` shows the

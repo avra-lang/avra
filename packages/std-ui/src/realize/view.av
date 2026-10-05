@@ -4,8 +4,7 @@
 //! so every foreign name it writes is a static `quote`; a generated hole
 //! resolves in the annotated file, so fields are read as `self.<field>`.
 use @std.meta.{Type, Field, Directive, Code, list_of}
-use realize.render.{Node, Prim, Attribute, EventKind, Action}
-use realize.messages.{Messages}
+use realize.render.{Node, Prim, Attribute, EventKind, Action, Handler}
 use realize.lists.{union}
 use style.box.{Box}
 
@@ -134,8 +133,8 @@ fn attr_quote(f: Field) -> Code {
 
 // ── actions: what a node does when it speaks ────────────────────
 
-/// The event a component field binds — `on_click: Msg` carries a typed
-/// message, and the field's name IS the kind. A field that binds no event
+/// The event a component field binds — the field's name IS the kind
+/// (`on click { … }` fills `on_click`). A field that binds no event
 /// answers nothing and projects to nothing else either.
 fn event_kind(name: string) -> EventKind? {
     match name {
@@ -157,23 +156,32 @@ fn kind_code(kind: EventKind) -> Code {
     }
 }
 
-/// The actions one field binds: its name picks the `EventKind`, and its
-/// value is the app's message as a `dyn Messages`. ABSENCE IS THE
-/// OPTION'S OWN NULL — a nullable handler that is null binds no action
-/// at all, never a sentinel site, so a control that binds nothing emits
-/// nothing. A concrete message field is always present and binds one.
+/// A handler value wrapped by its field's type: `Run` is told nothing,
+/// `Hear` the user's text. ONE arm per handler alias; any other type
+/// binds no event.
+fn handler_code(ty: string, held: Code) -> Code? {
+    match ty {
+        "Run" -> quote { Handler.Run(${held}) },
+        "Hear" -> quote { Handler.Text(${held}) },
+        rest -> null,
+    }
+}
+
+/// The actions one field binds: its name picks the `EventKind`, its type
+/// the `Handler` arm. ABSENCE IS THE OPTION'S OWN NULL — a handler left
+/// unset binds no action at all, so a control that binds nothing emits
+/// nothing.
 fn field_events(f: Field) -> Code {
     let kind? = event_kind(f.name) else { return quote { [] } }
-    if f.ty.ends_with("?") {
-        quote {
-            match self.${f} {
-                m? -> [Action { kind: ${kind_code(kind)}, site: m.site(), payload: m.payload() }]
-                null -> []
-            }
-        }
-    } else {
-        quote {
-            [Action { kind: ${kind_code(kind)}, site: self.${f}.site(), payload: self.${f}.payload() }]
+    let nullable = f.ty.ends_with("?")
+    let held = if nullable { quote { bound } } else { quote { self.${f} } }
+    let wrapped? = handler_code(f.ty.replace("?", ""), held) else { return quote { [] } }
+    let action = quote { [Action { kind: ${kind_code(kind)}, handler: ${wrapped} }] }
+    if !nullable { return action }
+    quote {
+        match self.${f} {
+            bound? -> ${action}
+            null -> []
         }
     }
 }
