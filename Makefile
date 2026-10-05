@@ -112,7 +112,7 @@ RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c))
 RUNTIME_LIB = build/libavra_runtime.a
 
 COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrapper.o \
-                build/ffi.o build/std_io.o build/std_process.o build/std_time.o
+                build/ffi.o build/std_io.o build/std_process.o build/std_time.o build/std_net.o
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
@@ -216,9 +216,16 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 # without the stack-switching proposal. Excluding them HERE makes the law — a
 # DOM app must never link them — structural rather than a hope, and a program
 # links only the members it reaches in any case.
-WASM_TARGET ?= wasm32-unknown-wasi
-WASM_CC ?= clang
-WASM_AR ?= ar
+# THE WASM TOOLCHAIN IS FOUND, by the rule the compiler finds it by
+# (packages/cli/src/commands/shared.av, `wasm_tools`): the clang `LLVM_PREFIX`
+# names when it has one, else the PATH's; and the first triple that clang has
+# a WASI libc for — where it says the target's startup object stands is a file.
+# The archiver is that LLVM's too: a host `ar` that does not know a wasm
+# object writes an archive with no index, and the link finds nothing in it.
+WASM_TRIPLES := wasm32-unknown-wasi wasm32-wasip1
+WASM_CC ?= $(firstword $(wildcard $(LLVM_PREFIX)/bin/clang) clang)
+WASM_TARGET ?= $(firstword $(foreach t,$(WASM_TRIPLES),$(if $(wildcard $(shell $(WASM_CC) --target=$(t) -print-file-name=crt1.o 2>/dev/null)),$(t))) $(firstword $(WASM_TRIPLES)))
+WASM_AR ?= $(firstword $(wildcard $(LLVM_PREFIX)/bin/llvm-ar) ar)
 WASI_SYSROOT ?=
 WASM_EMULATED := -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_GETPID
 # A MODULE CARRIES NO INSTRUMENTS: the page and the node runner hand a module
@@ -297,7 +304,7 @@ wasm-archive:
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: ui-host ui-host-test ui-board h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
+.PHONY: ui-host ui-host-test ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -386,6 +393,7 @@ install: avra
 	@cp build/avra $(PREFIX)/bin/avra
 	@cp $(RUNTIME_LIB) $(PREFIX)/lib/avra/libavra_runtime.a
 	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
+	@rm -rf $(PREFIX)/lib/avra/dom && cp -R runtime/dom $(PREFIX)/lib/avra/dom
 	@echo "install: $(PREFIX)/bin/avra, $$(ls -d packages/std-* | wc -l | tr -d ' ') std packages under $(PREFIX)/lib/avra/std"
 
 # A Sprite is a stock Ubuntu image; `make sprite` provisions the machine
@@ -680,6 +688,12 @@ ui-host-test:
 ui-board:
 	@sh tools/ui_board.sh
 
+# THE BOARD IN A REAL BROWSER: the same module served over an HTTP origin and
+# driven in headless Firefox, each claim checked (tools/ui-board/browser.mjs).
+# Skips, spoken, where Firefox, node or a wasm toolchain is absent.
+ui-browser:
+	@sh tools/ui_board_browser.sh
+
 # A fingerprint tag NAMES a node kind: inside one fold space no two
 # kinds may wear one number, or they fingerprint alike by construction.
 fingerprints:
@@ -824,7 +838,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here exactly as sprite-build.sh's call does.
-gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board families codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness cache-attacks
+gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
 	@sh tools/memcap.sh --self-test

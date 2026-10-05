@@ -11,7 +11,7 @@
 //! part's (`tree/identity.av`). A page that keeps it gives it a number. A URL arrives as a `Url`, which has no unsafe
 //! value, and every other value is escaped by whoever writes it.
 use tree.identity.{NodeId, Step, lone, steps, unplaced, under}
-use tree.node.{Node, Attribute, Prim, Action, submits_among}
+use tree.node.{Node, Attribute, Prim, Action, EventKind, submits_among}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
 use realize.html.css.{class_names}
 
@@ -140,31 +140,62 @@ fn headings(n: Node) -> List<Element> {
     }
 }
 
+/// Whether a control's words are read before it. Every primitive
+/// spelled: a field, a slider and a progress are named and then shown; a
+/// box is ticked and then named.
+fn words_lead(p: Prim) -> bool {
+    match p {
+        .Field or .Slider or .Progress -> true,
+        .Checkbox or .Switch or .Text or .Heading or .Button or .Link or .Image or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Alert or .Spinner or .Form -> false,
+    }
+}
+
 /// A control under its label: the label takes the node's place — its
 /// seat, its key and its classes — and the control inside it takes the
-/// node's attributes and hears its events.
+/// node's attributes and hears its events. The control and its words
+/// stand in the order a reader expects of its kind.
 fn labelled(n: Node, seat: string, kids: List<Element>) -> Element {
+    let control = Element
+        .Tag(
+            Tagged {
+                seat: control_part,
+                tag: tag_of(n),
+                attrs: element_attrs(n.prim, n.attrs),
+                hears: n.events,
+            },
+        )
+    let words = Element.Tag(Tagged { seat: words_part, tag: .Span, kids: said(n.words()) })
     Element
         .Tag(
             Tagged {
                 seat: seat,
                 tag: .Label,
                 attrs: node_attrs(n),
-                kids: [
-                    Element
-                        .Tag(
-                            Tagged {
-                                seat: control_part,
-                                tag: tag_of(n),
-                                attrs: element_attrs(n.prim, n.attrs),
-                                hears: n.events,
-                            },
-                        ),
-                    Element.Tag(Tagged { seat: words_part, tag: .Span, kids: said(n.words()) }),
-                ]
-                    .concat(kids),
+                kids: if words_lead(n.prim) { [words, control] } else { [control, words] }.concat(kids),
             },
         )
+}
+
+fn unheard() {}
+
+/// The event a primitive always hears on a page, handler or none: the
+/// page's own answer to it would undo what the program drew — a form's
+/// submit leaves the page, a dialog's dismissal closes it. Every primitive
+/// spelled.
+fn always_heard(p: Prim) -> EventKind? {
+    match p {
+        .Form -> .Submit,
+        .Dialog -> .Dismiss,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Switch or .Slider -> null,
+    }
+}
+
+/// What a node's element hears: its own events, and the one its
+/// primitive always hears, doing nothing, when no handler does.
+fn heard(n: Node) -> List<Action> {
+    let kind? = always_heard(n.prim) else { return n.events }
+    if n.events.any(it.kind == kind) { return n.events }
+    n.events.concat([Action { kind: kind, handler: .Nothing(unheard) }])
 }
 
 /// The node itself as one element holding `kids`.
@@ -175,7 +206,7 @@ fn element(n: Node, seat: string, kids: List<Element>) -> Element {
                 seat: seat,
                 tag: tag_of(n),
                 attrs: element_attrs(n.prim, n.attrs).concat(node_attrs(n)),
-                hears: n.events,
+                hears: heard(n),
                 kids: kids,
             },
         )

@@ -21,6 +21,7 @@ use @std.time.{Duration, ms, now_ms, sleep}
 extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
 extern fn avra_net_listen_all(port: int, backlog: int) -> int
 extern fn avra_net_accept(lfd: int) -> int
+extern fn avra_net_local_reach(fd: int) -> int
 extern fn avra_net_lookup(host: string) -> int
 extern fn avra_net_lookup_ready(h: int) -> int
 extern fn avra_net_lookup_count(h: int) -> int
@@ -167,6 +168,24 @@ export fn listen(host: string, port: int) -> Result<Listener, NetError> {
 /// A listener on EVERY interface, asked for by name.
 export fn listen_all(port: int) -> Result<Listener, NetError> {
     bound(avra_net_listen_all(port, backlog()), "*:${port}")
+}
+
+/// How far the address a listener is bound to reaches: every interface
+/// of the machine, the machine alone, or one other address.
+export enum Reach { Everywhere, Loopback, One }
+
+impl Listener {
+    /// How far this listener reaches, as the kernel holds its address —
+    /// never as the host it was asked for spelled it.
+    fn reach() -> Result<Reach, NetError> {
+        let fd = self.live("reach")?
+        match avra_net_local_reach(fd) {
+            0 -> .Ok(.Everywhere),
+            1 -> .Ok(.Loopback),
+            2 -> .Ok(.One),
+            refused -> failed("reach", "port ${self.port}", refused),
+        }
+    }
 }
 
 /// A bound descriptor as a listener, or the verb that failed on it.
