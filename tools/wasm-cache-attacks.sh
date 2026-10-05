@@ -31,7 +31,19 @@ printf '[package]\nname    = "app"\nversion = "0.1.0"\n\n[bin]\nname = "app"\npa
 printf 'use words.{word, first}\n\nprintln(word(first([2, 3]) ?? 0))\n' > "$pkg/src/main.av"
 words() { printf 'export fn word(n: int) -> string { "%s ${n}" }\n\nexport fn first<T>(xs: List<T>) -> T? { xs.first() }\n\n%s\n' "$1" "$2" > "$pkg/src/words/mod.av"; }
 words word ""
-printf '#!/bin/sh\ncp "$3" "$5" && printf X >> "$5"\n' > "$work/mark-opt"
+# the stand-in reads the optimizer's own shape — `… <module> -o <answer>` —
+# never a position, so a flag the compiler adds moves nothing here
+cat > "$work/mark-opt" <<'OPT'
+#!/bin/sh
+prev= module= answer=
+for word; do
+    [ "$word" = -o ] && module=$prev
+    [ "$prev" = -o ] && answer=$word
+    prev=$word
+done
+[ -n "$module" ] && [ -n "$answer" ] || exit 2
+cp "$module" "$answer" && printf X >> "$answer"
+OPT
 chmod +x "$work/mark-opt"
 export WASM_OPT=$work/mark-opt
 
