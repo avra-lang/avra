@@ -1,0 +1,133 @@
+//! `tests/support/sketch.av` — a tree as DATA a test can grow, edit,
+//! shrink and print: a node's handlers are named by number, so two
+//! sketches compare and a failing one is written out as the source that
+//! makes it again.
+use realize.dom.patch.{Says}
+use style.box.{Box}
+use style.style.{Style}
+use style.tokens.{Tone}
+use tree.node.{Node, Prim, Attribute, Action, Handler, EventKind, Urgency}
+use @std.text.{codepoints, from_codepoints}
+
+/// One event a sketched node hears: its kind, what it says, and the
+/// number its handler writes down when it runs.
+export type Hears = { kind: EventKind, says: Says, tag: int }
+
+/// A node, sketched.
+export type Sketch = {
+    prim: Prim,
+    key: string? = null,
+    tone: Tone? = null,
+    attrs: List<Attribute> = [],
+    hears: List<Hears> = [],
+    kids: List<Sketch> = [],
+}
+
+/// The handler that writes `h`'s number in `log`. One arm per thing a
+/// control can say.
+fn handler_of(h: Hears, log: Cell<List<int>>) -> Handler {
+    match h.says {
+        .Nothing -> Handler.Nothing(() -> log.push(h.tag)),
+        .Text -> Handler.Text((_said: string) -> log.push(h.tag)),
+        .Flag -> Handler.Flag((_said: bool) -> log.push(h.tag)),
+        .Number -> Handler.Number((_said: int) -> log.push(h.tag)),
+    }
+}
+
+/// The tree a sketch draws, each handler writing its number in `log`.
+export fn node_of(s: Sketch, log: Cell<List<int>>) -> Node {
+    Node {
+        prim: s.prim,
+        attrs: s.attrs,
+        box: Box { key: s.key, style: Style { color: s.tone } },
+        children: [node_of(k, log) for k in s.kids],
+        events: [Action { kind: h.kind, handler: handler_of(h, log) } for h in s.hears],
+    }
+}
+
+/// How many nodes a sketch holds.
+export fn size(s: Sketch) -> int { 1 + [size(k) for k in s.kids].sum() }
+
+// ── a sketch as its own source ──────────────────────────────────
+
+/// A variant's name from its word: `surface` is `.Surface`.
+fn variant(word: string) -> string {
+    let codes = codepoints(word)
+    let head? = codes.first() else { return "." }
+    ".${from_codepoints([head - 32].concat(codes.slice(1, codes.length)))}"
+}
+
+/// What a control says, as its variant. Every answer spelled.
+fn says_source(s: Says) -> string {
+    match s { .Nothing -> ".Nothing", .Number -> ".Number", .Flag -> ".Flag", .Text -> ".Text" }
+}
+
+/// An attribute as its constructor. Every arm spelled.
+fn attr_source(a: Attribute) -> string {
+    match a {
+        .Text(t) -> ".Text(${quoted(t)})",
+        .Label(t) -> ".Label(${quoted(t)})",
+        .Level(n) -> ".Level(${n})",
+        .Value(t) -> ".Value(${quoted(t)})",
+        .Amount(n) -> ".Amount(${n})",
+        .Placeholder(t) -> ".Placeholder(${quoted(t)})",
+        .Src(u) -> ".Src(local(${quoted(u.text())}))",
+        .Alt(t) -> ".Alt(${quoted(t)})",
+        .Href(u) -> ".Href(local(${quoted(u.text())}))",
+        .Min(n) -> ".Min(${n})",
+        .Max(n) -> ".Max(${n})",
+        .Disabled(on) -> ".Disabled(${on})",
+        .Checked(on) -> ".Checked(${on})",
+        .Selected(on) -> ".Selected(${on})",
+        .Open(on) -> ".Open(${on})",
+        .Invalid(on) -> ".Invalid(${on})",
+        .Loading(on) -> ".Loading(${on})",
+        .Urgency(u) -> ".Urgency(${variant(u.word())})",
+        .Title(t) -> ".Title(${quoted(t)})",
+        .Name(t) -> ".Name(${quoted(t)})",
+        .Submits(on) -> ".Submits(${on})",
+    }
+}
+
+fn hears_source(h: Hears) -> string {
+    "Hears { kind: ${variant(h.kind.word())}, says: ${says_source(h.says)}, tag: ${h.tag} }"
+}
+
+/// The fields a sketch gives, each as `name: value` — one it leaves at
+/// rest is not written.
+fn fields(s: Sketch, indent: string) -> List<string> {
+    let key = [quoted(k) for k in present(s.key)]
+    let tone = [variant(t.word()) for t in present(s.tone)]
+    ["prim: ${variant(s.prim.word())}"]
+        .concat(["key: ${k}" for k in key])
+        .concat(["tone: ${t}" for t in tone])
+        .concat(listed("attrs", [attr_source(a) for a in s.attrs]))
+        .concat(listed("hears", [hears_source(h) for h in s.hears]))
+        .concat(
+            if s.kids.is_empty() {
+                []
+            } else {
+                [
+                    "kids: [\n${["${indent}    ${source_at(k, "${indent}    ")}," for k in s.kids].join("\n")}\n${indent}]",
+                ]
+            },
+        )
+}
+
+/// A value as a run of none or one.
+fn present<T>(value: T?) -> List<T> {
+    match value {
+        v? -> [v]
+        null -> []
+    }
+}
+
+/// A list field, when it holds anything.
+fn listed(name: string, items: List<string>) -> List<string> {
+    if items.is_empty() { [] } else { ["${name}: [${items.join(", ")}]"] }
+}
+
+fn source_at(s: Sketch, indent: string) -> string { "Sketch { ${fields(s, indent).join(", ")} }" }
+
+/// A sketch as the source that makes it.
+export fn source(s: Sketch) -> string { source_at(s, "") }

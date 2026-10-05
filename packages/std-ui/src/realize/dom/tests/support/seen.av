@@ -1,0 +1,88 @@
+//! `tests/support/seen.av` — a page as a reader of it could tell it: each
+//! element's tag, attributes, the properties it holds off rest, what it
+//! hears and what it holds, in page order. Two pages are the same page
+//! when their lines are.
+use realize.dom.wire.{no_id}
+use @std.text.{codepoints}
+
+/// A name and what it holds.
+export type Pair = { name: string, value: string }
+
+/// How an element hears one event, as the wire's `listen` spells it.
+export type Ear = { kind: int, event: string, says: int, reads: string, prevents: bool }
+
+/// One element or run of text on a page: its number, its tag — none for
+/// text — and what it carries.
+export type Seen = {
+    id: int = no_id,
+    tag: string? = null,
+    text: string = "",
+    attrs: List<Pair> = [],
+    props: List<Pair> = [],
+    ears: List<Ear> = [],
+    kids: List<Seen> = [],
+}
+
+/// Text between quotes, a quote, a backslash and a line's end escaped, so
+/// no text reads as two.
+export fn quoted(text: string) -> string {
+    "\"${text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")}\""
+}
+
+/// Whether text spelled `a` sorts before the text spelled `b`, or is it:
+/// by code point, and a text before any it opens.
+fn precedes(a: List<int>, b: List<int>) -> bool {
+    let x? = a.first() else { return true }
+    let y? = b.first() else { return false }
+    if x == y { precedes(a.drop(1), b.drop(1)) } else { x < y }
+}
+
+fn named_before(a: Pair, b: Pair) -> bool { precedes(codepoints(a.name), codepoints(b.name)) }
+
+/// `pairs` with the least name first.
+fn by_name(pairs: List<Pair>) -> List<Pair> {
+    let least? = pairs.find((p) -> pairs.all((q) -> named_before(p, q))) else { return [] }
+    [least].concat(by_name([p for p in pairs if p.name != least.name]))
+}
+
+/// `ears` with the least kind first.
+fn by_kind(ears: List<Ear>) -> List<Ear> {
+    let least? = ears.find((e) -> ears.all(e.kind <= it.kind)) else { return [] }
+    [least].concat(by_kind([e for e in ears if e.kind != least.kind]))
+}
+
+/// How much of a page a line tells: each element's number, and what an
+/// event says beside its kind and word.
+export type Telling = { numbers: bool, sayings: bool }
+
+/// Everything.
+export const whole = Telling { numbers: true, sayings: true }
+
+/// The page whatever its elements are numbered.
+export const unnumbered = Telling { numbers: false, sayings: true }
+
+/// What a host shows of itself: a listener's kind and word, never what
+/// it closes over.
+export const outward = Telling { numbers: true, sayings: false }
+
+fn ear_word(e: Ear, how: Telling) -> string {
+    let saying = if how.sayings { ":${e.says}:${e.reads}:${e.prevents}" } else { "" }
+    " @${e.kind}:${e.event}${saying}"
+}
+
+/// One element's own line.
+fn line(s: Seen, how: Telling) -> string {
+    let number = if how.numbers { "#${s.id} " } else { "" }
+    let tag? = s.tag else { return "${number}${quoted(s.text)}" }
+    let attrs = [" ${a.name}=${quoted(a.value)}" for a in by_name(s.attrs)].join("")
+    let props = [" .${p.name}=${p.value}" for p in by_name(s.props)].join("")
+    "${number}${tag}${attrs}${props}${[ear_word(e, how) for e in by_kind(s.ears)].join("")}"
+}
+
+/// `run` and all under it, a line each, a child indented under its parent.
+fn lines(run: List<Seen>, indent: string, how: Telling) -> List<string> {
+    [l for s in run for l in ["${indent}${line(s, how)}"].concat(lines(s.kids, "${indent}  ", how))]
+}
+
+/// A page as its lines.
+export fn told(page: List<Seen>, how: Telling) -> string { lines(page, "", how).join("\n") }

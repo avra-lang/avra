@@ -1,0 +1,74 @@
+//! `tests/support/shrink.av` — a failing case made small: while some
+//! case with one thing less still fails, that one is taken. What is left
+//! fails, and nothing can be taken from it.
+
+/// `s` with one thing less of its own: a child gone, a child in its
+/// place, an attribute, an event, its key or its look gone.
+fn lessened(s: Sketch) -> List<Sketch> {
+    let unkeyed = if s.key == null { [] } else { [s with { key: null }] }
+    let plain = if s.tone == null { [] } else { [s with { tone: null }] }
+    s
+        .kids
+        .concat([s with { kids: s.kids.removed_at(j) } for j, k in s.kids])
+        .concat([s with { attrs: s.attrs.removed_at(j) } for j, a in s.attrs])
+        .concat([s with { hears: s.hears.removed_at(j) } for j, h in s.hears])
+        .concat(unkeyed)
+        .concat(plain)
+}
+
+/// Every sketch one thing smaller than `s`, anywhere in it.
+fn smaller(s: Sketch) -> List<Sketch> {
+    lessened(s)
+        .concat(
+            [s with { kids: s.kids.removed_at(j).inserted(j, less) } for j, k in s.kids for less in smaller(k)],
+        )
+}
+
+/// Every case one thing smaller than `c`: a move gone, both trees
+/// stepped down to the same child, or either tree smaller.
+fn nearer(c: Case) -> List<Case> {
+    [c with { typed: c.typed.removed_at(j) } for j, t in c.typed]
+        .concat([c with { old: k, new: c.new.kids[j] } for j, k in c.old.kids if j < c.new.kids.length])
+        .concat([c with { old: s } for s in smaller(c.old)])
+        .concat([c with { new: s } for s in smaller(c.new)])
+}
+
+/// `c`, made as small as still fails.
+export fn shrunk(c: Case) -> Case {
+    let less? = nearer(c).find((n) -> verdict(n) != null) else { return c }
+    shrunk(less)
+}
+
+fn typed_source(t: Typed) -> string { "Typed { nth: ${t.nth}, value: ${t.value} }" }
+
+/// A case as the source that makes it.
+export fn case_source(c: Case) -> string {
+    "Case {\n    old: ${source_at(c.old, "    ")},\n    new: ${source_at(c.new, "    ")},\n    typed: [${[typed_source(t) for t in c.typed].join(", ")}],\n}"
+}
+
+/// A failing case, told whole: what it breaks, the case, and the frame
+/// its repaint sent.
+export fn failure(c: Case) -> string {
+    "${verdict(c) ?? "holds"}\n${case_source(c)}\nthe repaint's frame:\n${["  ${l}" for l in repaint(c)].join("\n")}"
+}
+
+// ── a run ───────────────────────────────────────────────────────
+
+/// The case `seed` gives at `turn`: one stream a case, so any case
+/// replays alone.
+export fn case_at(seed: int, turn: int) -> Case {
+    let r = rng(seed * 104729 + turn * 7919)
+    let old = tree(r)
+    Case {
+        old: old,
+        new: after(r, old),
+        typed: [Typed { nth: r.below(64), value: r.below(9) } for j in 0..r.below(3)],
+    }
+}
+
+/// The first of `count` cases under `seed` that fails, shrunk and told —
+/// or nothing, when every one holds.
+export fn first_failure(seed: int, count: int) -> string? {
+    let turn? = [j for j in 0..count].find((j) -> verdict(case_at(seed, j)) != null) else { return null }
+    "seed ${seed}, case ${turn}: ${failure(shrunk(case_at(seed, turn)))}"
+}
