@@ -179,7 +179,11 @@ error[type.once_fn]: `once fn env_of` answers `Env`, which the runtime cannot ke
 help: a `once` value is one the runtime owns — a string, a list, a map, an enum, or a record wider than one scalar field
 ```
 
-### 1.5 `provide` and `env T` DIE.
+### 1.5 `provide` and `env T` ARE DELETED.
+
+Landed: the feature, its grammar, its two typing/lowering stacks and
+its `type.provider` voice are gone; `env T` and `provide x: T = v`
+refuse at parse, and `env`/`provide` are ordinary names again.
 
 `env T` invents a SECOND lookup rule (by TYPE) when every other name in
 the language resolves by NAME; it needs a bespoke scope stack duplicated
@@ -772,7 +776,7 @@ a build.
 | `dyn Trait` as a free-fn / head seat | landed | §3.3 |
 | `with { … }` record update | landed | §3.2 |
 | `@model` + `state` beside it | landed | §4.3 |
-| `provide`/`env T` | BUILT, to be DELETED | §1.5 |
+| `provide`/`env T` | DELETED | §1.5 |
 
 ## 6. What is an ask
 
@@ -780,7 +784,6 @@ a build.
 |---|---|---|
 | `ambient` seat mark (free fn + component head) | parse error at the mark | §9.2 |
 | component HEAD seat defaults (`= expr`) | parse error at `(` | §9.2 |
-| delete `provide`/`env T` | built; see §1.5 | §9.1 |
 | place-wrapper transparency (`state x: W<T>` reads `T`) | F2019/type.binding | §9.3 |
 | `at node` clause + `Remote` semantics | parse error | §9.3 |
 | bound on a type's own parameter (`Replicated<T: Merge>`) | F0100 | existing (`avra-xubk.6` sibling) |
@@ -813,10 +816,11 @@ value-vs-trait-vs-capability selection; extensibility by adding a seat.
 | id | title | parent |
 |---|---|---|
 | `avra-xubk.6.2` | The `ambient` seat mark — context by NAME, not by type | `avra-xubk.6` |
-| `avra-xubk.6.1` | Delete `provide`/`env T` — ambience is a name lookup, not a type-keyed one | `avra-xubk.6` |
+| `avra-xubk.6.1` | Delete `provide`/`env T` — ambience is a name lookup, not a type-keyed one | `avra-xubk.6` — DONE |
 | `avra-2y5c.20` | EXPLORE: the place WRAPPER type — `Cell`/`Replicated`/`Remote`/`Relation` as `state`'s sharing mechanism | `avra-2y5c` |
 
-Sequencing: `.6.2` (the seat exists) before `.6.1` (the old spelling
-dies), so nothing loses a spelling with no replacement. `.20` is an
+Sequencing: `.6.1` (the old spelling dies) landed before `.6.2` (the
+seat exists), leaving a window with no type-keyed lookup and no seat;
+the seat is the only `ambient` home now. `.20` is an
 exploration, not a build. The board's non-ambient gaps stay in their
 own tasks (§7).

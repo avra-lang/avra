@@ -521,7 +521,8 @@ runtime provider stack, no type-keyed lookup, no second scope.
 - The `ambient` seat mark (`avra-xubk.6.2`) — today `fn f(ambient env:
   Env = …)` is a parse error at the mark, and a component HEAD default is
   a separate ask.
-- The deletion of `provide`/`env T` (`avra-xubk.6.1`).
+- The deletion of `provide`/`env T` (`avra-xubk.6.1`) — DONE; neither
+  spelling exists.
 - Capability wrappers (`Toasts`, `Navigator`, `Storage`) as library
   types.
 

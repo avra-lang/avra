@@ -164,11 +164,8 @@ impl TypeCx {
         let want: TypeId = self.view.decls.sig(x.id)?.fn_sig()?.ret ?? self.error_type
         // LICENSED compiler.bracket_ritual: this IS the bracket
         self.fn_ret.push(want)
-        let outer_providers = self.providers
-        self.providers = []
         self.plant_want(root, want)
         self.walk(root)
-        self.providers = outer_providers
         let _ = self.fn_ret.pop()
         fits_case(self, root, want)
     }
@@ -183,25 +180,13 @@ impl TypeCx {
     mut fn type_stmts(stmts: List<StmtId>, value: ExprId? = null) {
         let was = self.starving
         self.starving = false
-        let base = self.providers.length
         for s in stmts {
             stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).type_stmt(self, s)
             self.unowned_tasks(s)
             self.type_annotations(s)
-            self.open_provider(s)
         }
-        // A BLOCK'S VALUE IS INSIDE ITS PROVIDER SCOPE: a tail `env`
-        // reads a sibling `provide` of the same block.
         if value != null { let _ = self.walk_type(value!) }
-        self.providers = self.providers.slice(0, base)
         self.starving = was
-    }
-
-    /// A `provide` statement's type enters the open list, for the rest
-    /// of its statement list — the scope `type_stmts` closes.
-    mut fn open_provider(s: StmtId) {
-        if !self.view.store.is_provide_stmt(s) { return }
-        self.providers.push(self.def_type(s))
     }
 
     /// A fn BODY's walk: the declared answer, the type parameters
@@ -212,11 +197,6 @@ impl TypeCx {
         let sig: FnSig? = self.stmt_sig(s)
         let outer = self.scope
         let outer_marks = self.scope_marks
-        // A BODY READS NO PROVIDER OF ITS ENCLOSING BODY: the requirement
-        // is fulfilled where the body stands, never inherited across a
-        // fn floor — lowering's per-body context has no mirror of them.
-        let outer_providers = self.providers
-        self.providers = []
         // LICENSED compiler.bracket_ritual: this IS the bracket
         self.fn_ret.push(sig?.ret ?? self.error_type)
         self.scope = sig?.params ?? []
@@ -228,7 +208,6 @@ impl TypeCx {
         self.leave_tscope()
         self.scope = outer
         self.scope_marks = outer_marks
-        self.providers = outer_providers
         let _ = self.fn_ret.pop()
     }
 
@@ -323,10 +302,7 @@ impl TypeCx {
         self.facts.seat_captures(lam, self.capture_seats(lam))
         // LICENSED compiler.bracket_ritual: this IS the bracket
         self.lam_bar.push(self.fn_ret.length)
-        let outer_providers = self.providers
-        self.providers = []
         let ret = self.walk_type(body)
-        self.providers = outer_providers
         let _ = self.lam_bar.pop()
         ret
     }
