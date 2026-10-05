@@ -9,7 +9,7 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
         .Call(callee, _, args) -> {
             let host: string? = cx.extern_callee(e)
             if host != null { return extern_call_reg(cx, e, host!, host_regs(cx, e, args)) }
-            let regs = call_arg_regs(cx, e, args)
+            let regs = embedded_regs(cx, e, args) ?? call_arg_regs(cx, e, args)
             let made: Reg? = named_reg(cx, e, regs)
             if made != null { return made! }
             let through: Reg? = cx.indirect_callee(e)
@@ -19,6 +19,19 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
             cx.call_decl_at(e, cx.callee_of(e, callee.of), seated)
         },
         rest -> cx.foreign_node(e),
+    }
+}
+
+/// `embed("…")`'s one seat: the path of the file the literal names from
+/// THIS source file, so the read is of that file whatever const runs
+/// it. Null for every other call.
+fn embedded_regs(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> List<Reg>? {
+    let d? = bound_decl_of(cx.names, e) else { return null }
+    if !cx.view.decls.is_meta_fn(d, "embed") || args.length != 1 { return null }
+    let rel? = cx.view.store.expr(args[0]).text_of() else { return null }
+    match cx.view.decls.embed_placed(cx.view.file, rel) {
+        .Ok(path) -> [cx.const_str(path)],
+        .Err(_) -> null,
     }
 }
 

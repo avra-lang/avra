@@ -17,12 +17,11 @@ use core.{
     key_spelled,
 }
 use @std.path.{under_dir, joined_path, normalized, dir_of}
-use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
+use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of, EmbedFault, embed_literal_law}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
 use compiler.lower.{LinkedPackage}
 use compiler.host.{library_stem}
-use compiler.backend.{embed_resolved}
 
 impl Workspace {
 
@@ -162,14 +161,77 @@ impl Workspace {
     /// `embed("literal")` names a file at compile time — the same
     /// declared reach a `use` line names. Minted here, before anything
     /// reads the File relation this revision, so a const's own
-    /// Settled-family query never mints a late row mid-read. A
-    /// computed path cannot be found this way; `embed_literal_only`
-    /// refuses it at typing instead.
+    /// Settled-family query never mints a late row mid-read. EVERY
+    /// literal of the file, however deep it is written: a const reads
+    /// one through a fn's body or under a property as readily as at its
+    /// own top. A FILE THE LAW REFUSES IS NO INPUT and is not minted —
+    /// typing speaks of it at the literal, and a minted row would be
+    /// read as a source first. A computed path cannot be found this
+    /// way and typing refuses it.
     fn admit_embeds(p: Parsed) {
-        let base = dir_of(p.source.file)
-        for e in p.store.stmts_exprs(p.stmts) {
-            let rel = embed_literal_at(p.store, e)
-            if rel != null { let _ = self.minted_file(embed_resolved(base, rel!)) }
+        for e in p.store.expr_ids() {
+            let rel? = embed_literal_at(p.store, e) else { continue }
+            match self.embed_placed_beside(p.source.file, rel) {
+                .Ok(path) -> { let _ = self.minted_file(path) },
+                .Err(_) -> { let _ = 0 },
+            }
+        }
+    }
+
+    /// The deepest package root that holds `path`.
+    fn root_over(path: string) -> string? {
+        let over = [pkg.root for pkg in self.packages() if under_dir(path, pkg.root)]
+        over.find((root) -> over.all(it.length <= root.length))
+    }
+
+    /// WHERE AN `embed` LITERAL'S FILE STANDS: beneath a package's root,
+    /// as the path under that root — or null. A plain path is read from
+    /// `source`'s own directory and stays in `source`'s package: an
+    /// absolute one names the machine, and a `..` past the root names
+    /// what the package does not hold. `@scope/name/…` is read from the
+    /// root of that package, when `source`'s package depends on it.
+    fn embed_place(source: string, rel: string) -> EmbedPlace? {
+        if rel.starts_with("/") { return null }
+        let from = self.packages()[self.holder_of_path(source)]
+        if !rel.starts_with("@") { return beneath_root(from.root, joined_path(dir_of(source), rel)) }
+        let segments = rel.split("/")
+        if segments.length < 3 { return null }
+        let key = "${segments[0]}/${segments[1]}"
+        if !self.reaches(from, key) { return null }
+        let root? = self.packages().find(it.key == key)?.root else { return null }
+        beneath_root(root, joined_path(root, segments.slice(2, segments.length).join("/")))
+    }
+
+    /// THE EMBED LAW, judged where the literal stands: the file's path,
+    /// or what is wrong with it.
+    fn embed_placed(f: FileId, rel: string) -> Result<string, EmbedFault> {
+        self.embed_placed_beside(self.decls.file(f).path, rel)
+    }
+
+    fn embed_placed_beside(source: string, rel: string) -> Result<string, EmbedFault> {
+        let place? = self.embed_place(source, rel) else { fail EmbedFault.Outside }
+        match (self.host.beneath)(place.root, place.rel) {
+            .Text(_) -> joined_path(place.root, place.rel),
+            .Missing -> .Err(EmbedFault.Missing),
+            .Linked -> .Err(EmbedFault.Linked),
+            .NotText(at) -> .Err(EmbedFault.NotText(at)),
+            .Refused(why) -> .Err(EmbedFault.Refused(why)),
+        }
+    }
+
+    /// A settlement's `embed`: the text of the file a literal named, or
+    /// why not. THE SAME LAW AS THE LITERAL'S, asked of the path the
+    /// lowering wrote: inside a package of this workspace, through no
+    /// link — so a path no literal named reads nothing.
+    fn embed_read(path: string) -> Result<string, string> {
+        let root? = self.root_over(path) else { fail embed_literal_law }
+        let place? = beneath_root(root, path) else { fail embed_literal_law }
+        match (self.host.beneath)(place.root, place.rel) {
+            .Text(text) -> text,
+            .Missing -> .Err("`embed` finds no `${place.rel}`"),
+            .Linked -> .Err("`embed` follows no link — one stands on the way to `${place.rel}`"),
+            .NotText(at) -> .Err("`embed` answers text, and `${place.rel}` is not UTF-8 — byte ${at}"),
+            .Refused(why) -> .Err("`embed` could not read its file — ${why}"),
         }
     }
 
@@ -372,10 +434,21 @@ fn use_lines(p: Parsed) -> List<UseParts> {
 /// What one `use` line brought in, and what it earned.
 type Imported = { imports: List<Import>, diagnostics: List<Diag> }
 
+/// A package's root and a path beneath it.
+type EmbedPlace = { root: string, rel: string }
+
+/// `path` as it stands beneath `root`, or null when it does not.
+fn beneath_root(root: string, path: string) -> EmbedPlace? {
+    let held = normalized(root)
+    let at = normalized(path)
+    if !at.starts_with("${held}/") { return null }
+    EmbedPlace { root: held, rel: at.substring(held.length + 1, at.length) }
+}
+
 /// A call to a name spelled `embed`, with one string-literal argument
 /// — the path it names, or null for any other call, arity, or a
-/// computed argument (`embed_literal_only` is where a computed one
-/// gets its refusal, at typing, where the callee is resolved).
+/// computed argument (typing refuses that one, where the callee is
+/// resolved).
 fn embed_literal_at(store: SyntaxArena, e: ExprId) -> string? {
     match store.expr(e) {
         .Call(callee, _, args) -> {
