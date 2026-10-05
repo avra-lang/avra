@@ -168,6 +168,14 @@ impl Terminal {
 
 // ── the terminal itself ─────────────────────────────────────────
 
+/// What the last paint said that `told` does not hold, written to the
+/// error stream — each warning once a session. Answers all told so far.
+fn warned(on: Terminal, told: List<string>) -> List<string> {
+    let fresh = [w for w in on.shown.app.warnings() if !told.contains(w)]
+    for w in fresh { eprintln("ui: ${w}") }
+    told.concat(fresh)
+}
+
 const input = 0
 const chunk = 4096
 
@@ -177,6 +185,7 @@ const chunk = 4096
 export fn mount<V: View>(view: fn() -> V, width: int = 80) {
     let on = terminal(view, width)
     println(on.screen())
+    mut told = warned(on, [])
     mut held: Bytes = "".bytes()
     mut token = avra_fd_read(input, chunk)
     while token > 0 && !on.ended.get() {
@@ -185,6 +194,7 @@ export fn mount<V: View>(view: fn() -> V, width: int = 80) {
         on.press(run.keys)
         println("")
         println(on.screen())
+        told = warned(on, told)
         if !on.ended.get() { token = avra_fd_read(input, chunk) }
     }
 }

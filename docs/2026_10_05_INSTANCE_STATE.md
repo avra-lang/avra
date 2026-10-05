@@ -1,5 +1,12 @@
 # Per-instance state reached by an extracted handler
 
+> **Superseded (2026-10-05).** A handler is a closure and a component
+> instance owns its state: `component C { state n: int = 0 }`, kept by
+> where the instance stands. The law is `2026_10_05_UI_ARCHITECTURE.md`,
+> "Instance state". `packages/ui-instance` is gone; its two lifetimes
+> are that doc's laws 4 and 5, asserted by `@std/ui`'s
+> `tests/instance_rows` and `tests/instance_life`.
+
 > 2026-10-05. The UI epic's identity gap (`avra-ee0u`): a handler lowered to
 > a top-level function runs on an event that crossed a serialisation
 > boundary, so everything it needs must be reachable by NAME or ride the

@@ -15,6 +15,11 @@
 //! needs no type. A component's own `Kept<T>` is only the typed seat
 //! an instance is handed across; it holds nothing between two calls.
 //! A screen that is dropped takes its instances with it.
+//!
+//! AN INSTANCE TOLD FROM ITS SIBLINGS BY ORDER ALONE IS SAID. Siblings
+//! one site made and no key tells apart keep their state by their turn,
+//! so a reorder hands one's state to another. The walk cannot refuse a
+//! tree it is handed; it says so (`warnings`), once a component a paint.
 
 /// A kept instance as its standing holds it: which component's it is,
 /// and the fn that hands it to that component's seat.
@@ -24,16 +29,26 @@ type Hold = { owner: int, give: fn() -> void }
 type Under = { step: string, standing: Standing }
 
 /// One node of the walk: what stands here now, and what stood here
-/// after the last paint, still on offer.
+/// after the last paint, still on offer. `by_order` is whether this
+/// paint told it from a sibling by order alone, and `said` is what the
+/// walk it belongs to has said this paint.
 export type Standing = {
     hold: Cell<Hold?>,
     under: Cell<List<Under>>,
     was_hold: Cell<Hold?>,
     was_under: Cell<List<Under>>,
+    by_order: Cell<bool>,
+    said: Cell<List<string>>,
 }
 
-/// A standing nothing has stood at.
+/// The root of a walk: a standing nothing has stood at.
 export fn standing() -> Standing {
+    let nothing: List<string> = []
+    stands_in(Cell.new(nothing))
+}
+
+/// A standing nothing has stood at, in the walk that says into `said`.
+fn stands_in(said: Cell<List<string>>) -> Standing {
     let none: Hold? = null
     let empty: List<Under> = []
     Standing {
@@ -41,10 +56,27 @@ export fn standing() -> Standing {
         under: Cell.new(empty),
         was_hold: Cell.new(none),
         was_under: Cell.new(empty),
+        by_order: Cell.new(false),
+        said: said,
     }
 }
 
 impl Standing {
+    /// A paint begins at this standing, the walk's root: nothing is said
+    /// yet, and what stands becomes what stood.
+    fn begun() {
+        self.said.set([])
+        self.opened()
+    }
+
+    /// What the walk said this paint.
+    fn warnings() -> List<string> { self.said.get() }
+
+    /// The walk says `words`, once a paint.
+    fn says(words: string) {
+        if !self.said.get().contains(words) { self.said.push(words) }
+    }
+
     /// A paint reaches this standing: what stands becomes what stood.
     fn opened() {
         self.was_hold.set(self.hold.get())
@@ -55,23 +87,23 @@ impl Standing {
 
     /// The standings under this one at `steps`, each opened: the one
     /// that stood at a step, else a new one. A step nobody names is
-    /// gone with everything under it.
-    fn children(steps: List<string>) -> List<Standing> {
+    /// gone with everything under it. `shared` says which steps are told
+    /// from a sibling's by order alone.
+    fn children(steps: List<string>, shared: List<bool>) -> List<Standing> {
         mut stood: Map<string, Standing> = {}
         for u in self.was_under.get() { stood.set(u.step, u.standing) }
-        let now = [Under { step: s, standing: stood.get(s) ?? standing() } for s in steps]
-        for u in now { u.standing.opened() }
+        let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said) } for s in steps]
+        for j, u in now {
+            u.standing.opened()
+            u.standing.by_order.set(shared[j])
+        }
         self.under.set(now)
         [u.standing for u in now]
     }
 
-    /// The one standing under this one at `step`.
-    fn child(step: string) -> Standing {
-        let made = self.was_under.get().find(it.step == step)?.standing ?? standing()
-        made.opened()
-        self.under.set([Under { step: step, standing: made }])
-        made
-    }
+    /// The one standing under this one at `step`, told by order exactly
+    /// when this one is.
+    fn child(step: string) -> Standing { self.children([step], [self.by_order.get()])[0] }
 
     /// How many instances stand here and below — the lifetime witness.
     fn held() -> int {
@@ -82,18 +114,20 @@ impl Standing {
     }
 }
 
-/// The typed seat ONE component's instances are handed across, and
-/// the number that tells its holds from every other component's.
-export type Kept<T> = { owner: int, seat: Cell<T?> }
+/// The typed seat ONE component's instances are handed across, the
+/// number that tells its holds from every other component's, and the
+/// component's name as a reader is told it.
+export type Kept<T> = { owner: int, name: string, seat: Cell<T?> }
 
 /// Components that keep instances, counted out.
 state owners: int = 0
 
-/// A component's seat, with a number no other component wears.
-export fn kept<T>() -> Kept<T> {
+/// The seat of the component named `name`, with a number no other
+/// component wears.
+export fn kept<T>(name: string) -> Kept<T> {
     owners = owners + 1
     let empty: T? = null
-    Kept { owner: owners, seat: Cell.new(empty) }
+    Kept { owner: owners, name: name, seat: Cell.new(empty) }
 }
 
 /// THE INSTANCE THAT STANDS IS THE FIRST ONE BUILT THERE. The instance
@@ -101,6 +135,7 @@ export fn kept<T>() -> Kept<T> {
 /// stands on; absent when none did, and then `fresh` stands from now.
 /// A standing another component held is not this one's to read.
 export fn stood<T>(k: Kept<T>, at: Standing, fresh: T) -> T? {
+    if at.by_order.get() { at.says(told_by_order(k.name)) }
     let was? = at.was_hold.get() else { return stands(k, at, fresh) }
     if was.owner != k.owner { return stands(k, at, fresh) }
     was.give()
@@ -114,4 +149,10 @@ export fn stood<T>(k: Kept<T>, at: Standing, fresh: T) -> T? {
 fn stands<T>(k: Kept<T>, at: Standing, fresh: T) -> T? {
     at.hold.set(Hold { owner: k.owner, give: () -> k.seat.set(fresh) })
     null
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn told_by_order(name: string) -> string {
+    "`${name}` keeps state, and here its instances are told apart by their order alone — one site made them and none wears a key: give each a `key`"
 }

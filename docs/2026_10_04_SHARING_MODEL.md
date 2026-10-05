@@ -145,9 +145,15 @@ state filter: string = "all"
 // a `state` SEAT: the CALLER's place (landed, #234)
 fn stepper(state n: int) { n = n + 1 }
 
-// component scope: one place per INSTANCE — NOT landed (see the correction)
+// component scope: one place per INSTANCE (landed: see the note below)
 ```
 
+> **Landed since (2026-10-05).** `component C { state n: int = 0 }` is a
+> field as a record's is, a write through a `state` field asks nothing of
+> its root — so a handler's `self.n = …` runs — and `@std/ui` keeps the
+> instance by where it stands (`2026_10_05_UI_ARCHITECTURE.md`, "Instance
+> state"). The correction below is the tree as it stood before that.
+>
 > **Probe correction (2026-10-05, `982c405` + the ui-instance branch).** A
 > component body cannot seed a place: `component C { state n: int = 0 }` is
 > `error[build.failed]` "a component holds its fields and its `fn`s, and

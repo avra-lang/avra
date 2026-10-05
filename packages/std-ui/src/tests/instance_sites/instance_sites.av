@@ -1,0 +1,101 @@
+// proves: an unkeyed instance stands at the SITE it was written at, so
+// a sibling that comes and goes above it moves nothing — not its state,
+// and not its element on a page. Two instances of one component written
+// at two sites never trade state. Instances ONE site made, with no key,
+// are told apart by order, and the walk says so.
+use @std.ui.app.{app, plain}
+use @std.ui.components.{column, text}
+use @std.ui.headless.{Screen, headless}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.tests.support.{spoken}
+use @std.ui.style.theme.{Theme}
+use @std.ui.tests.parts.{counter}
+use @std.ui.tree.node.{Node}
+use @std.ui.tree.view.{View}
+
+state banner: bool = false
+state first: bool = true
+state names: List<string> = ["x", "y"]
+state keyed: bool = false
+state loud: bool = false
+
+fn above() -> List<dyn View> {
+    if banner { [text "banner"] } else { [] }
+}
+
+fn page() -> column { column { items: above().concat([counter "below"]) } }
+
+/// Two counters, the first of which comes and goes.
+fn pair() -> column {
+    let one: List<dyn View> = if first { [counter "one"] } else { [] }
+    column { items: one.concat([counter "two"]) }
+}
+
+/// One site, many instances.
+fn looped() -> column {
+    if keyed { return column { items: [counter "${n}" { key: n } for n in names] } }
+    column { items: [counter "${n}" for n in names] }
+}
+
+fn texts(screen: Screen) -> string {
+    [l.trim() for l in screen.text().split("\n") if l.trim().starts_with("text")].join(" | ")
+}
+
+fn said(screen: Screen, what: string) { println("${what}: ${texts(screen)} held=${screen.held()}") }
+
+let a = headless(page)
+let _ = a.press("below+")
+said(a, "counted")
+banner = true
+a.repaint()
+said(a, "a banner above")
+banner = false
+a.repaint()
+said(a, "the banner gone")
+
+let b = headless(pair)
+let _ = b.press("one+")
+let _ = b.press("two+")
+let _ = b.press("two+")
+said(b, "two counters")
+first = false
+b.repaint()
+said(b, "the first gone")
+first = true
+b.repaint()
+said(b, "the first back")
+
+let c = headless(looped)
+let _ = c.press("x+")
+said(c, "a loop with no keys")
+println("warnings: ${c.warnings().join(" / ")}")
+names = ["y", "x"]
+c.repaint()
+said(c, "reordered: the count stayed with the turn")
+keyed = true
+c.repaint()
+let _ = c.press("x+")
+names = ["x", "y"]
+c.repaint()
+said(c, "keyed and reordered: the count went with the key")
+println("warnings: ${c.warnings().join(" / ")}")
+
+println("── on a page")
+banner = false
+let on = live()
+let host = app(
+    page,
+    plain,
+    (root: Node, worn: Theme) -> {
+        let patches = spoken(on, root, worn)
+        println(if loud { patches } else { "painted" })
+    },
+)
+host.paint()
+loud = true
+banner = true
+println("── a banner above: the patches")
+host.paint()
+banner = false
+println("── the banner gone: the patches")
+host.paint()

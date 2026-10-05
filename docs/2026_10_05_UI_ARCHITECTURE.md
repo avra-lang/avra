@@ -52,16 +52,24 @@ Five attempts to lift a handler into a generated message failed.
    old page and new in, patches and the numbered page out); a property is compared against what the PAGE holds, so a
    field a user typed into is never written back to.
 2. **One identity.** A node is WHERE IT STANDS: its parent, then its
-   key or its place among its unkeyed siblings (`tree/identity.av`);
-   siblings sharing a key are told apart by their turn. Identity is
-   never written out whole. A page gives a node's element a NUMBER when
-   it first appears and the element wears it while it stays — matched,
-   paint to paint, by its step among its siblings. The number is fixed
-   in width however deep the node sits and counted out, never hashed,
-   so two elements cannot share one. Event echo, per-instance state,
-   retention and the event log read the number; a reader's path is
-   spelled only by the debug projection. The compiler's site
-   fingerprint replaces "place" as a step.
+   key or the SITE it was written at (`tree/identity.av`) — the
+   literal that made it, one number a written literal, filled by the
+   compiler into a field typed `@std/meta`'s `Site`. A sibling that
+   comes and goes above a node moves nothing: not its element, not its
+   state. Siblings one site made (a loop's, a helper's called twice)
+   and siblings sharing a key are told apart by their turn, which is
+   order — what must keep its own through a reorder wears a key. A
+   root has no sibling, so where it was written says nothing: a page
+   turned into another view keeps its root. Identity is never written
+   out whole. A page gives a node's element a NUMBER when it first
+   appears and the element wears it while it stays — matched, paint to
+   paint, by its step among its siblings. The number is fixed in width
+   however deep the node sits and counted out, never hashed, so two
+   elements cannot share one. Event echo, retention and the event log
+   read the number; instance state is kept by the walk that MAKES the
+   tree, on the same steps, before any page numbers it. A reader's
+   path is spelled only by the debug projection, which shows a site as
+   the place it stands at.
 3. **A primitive says what it projects to.** Primitives are a closed
    set the library owns; each member says what it is — `@attr(.Label)`,
    `@children`, `@style(color)`, an event, or the spread `..Box` — and
@@ -161,7 +169,7 @@ of, and its `state` members are places each INSTANCE owns.
         fn view() -> item {
             item {
                 button self.todo.title { on press { self.open = !self.open } }
-                text (if self.open { self.todo.notes } else { "" })
+                text "${if self.open { "open" } else { "shut" }}"
             }
         }
     }
@@ -180,7 +188,8 @@ of, and its `state` members are places each INSTANCE owns.
 1. **`describe` is the walk, and the walk says where it stands.**
    `View.describe(at: Standing) -> Node`. A container hands each child
    the standing under its own, at the child's step — `tree/identity.av`'s
-   `steps` over the children's keys, the tree's one identity, computed
+   `steps` over what each child says of where it stands, the tree's one
+   identity, computed
    where the tree is MADE. Every target has it and none owns it. A
    composition's view stands at a step of its own (`+view`), so a view
    that is itself a composition never shares a standing.
@@ -215,7 +224,16 @@ of, and its `state` members are places each INSTANCE owns.
    paint reads it, and no paint follows from it — only the loop's door
    paints. A place is a `Cell`: nothing stands between a writer and
    it, so nothing can speak. Pinned (`tests/instance_life`).
-9. **`tree_of(view)` is a tree standing alone** — no paint before it,
+9. **An unkeyed instance stands at its site.** Two instances of one
+   component written at two places never trade state, whatever comes
+   and goes between them. Instances ONE site made, with no key, are
+   told apart by order: the walk cannot refuse a tree it is handed, so
+   it SAYS so, once a component a paint — `App.warnings()`, a
+   terminal's error stream:
+   "`counter` keeps state, and here its instances are told apart by
+   their order alone — one site made them and none wears a key: give
+   each a `key`".
+10. **`tree_of(view)` is a tree standing alone** — no paint before it,
    none after — for a document, a gallery, a test of one node.
 
 ### The language
@@ -228,6 +246,11 @@ of, and its `state` members are places each INSTANCE owns.
   marks no receiver written.
 - `@std/meta`: `Field.state`, and `Type.fns` — the fns a component
   wrote in its own body.
+- `@std/meta`'s `Site`: A FIELD'S TYPE IS ITS MEANING. A record literal
+  that leaves a `Site` field unset holds its own site — its file and
+  its own content, folded — so it owes no default. One constant a
+  literal; content-addressed, so a line added above it moves nothing,
+  and two literals written alike in one file share one.
 
 ### Refused (`@std/ui:<kind>`)
 
@@ -237,15 +260,10 @@ of, and its `state` members are places each INSTANCE owns.
   a place it would keep"
 - `boxed-composition`: "a composition wears its view's box, and `x`
   spreads one of its own"
+- `stand`: "a view is told from its siblings by where it stands, and
+  `x` does not say" — a composition spreads `..Stand`
 - `marked-composition`: "a composition projects nothing of its own,
   and `title` is marked `@attr`"
-
-### Open in this branch
-
-- AN UNKEYED INSTANCE STANDS AT ITS PLACE among its unkeyed siblings,
-  so a sibling above it that comes and goes moves it. Its step becomes
-  its SITE — the compiler's fingerprint of the instance expression —
-  before this lands; state rides the step and changes nothing here.
 
 ### Rejected
 

@@ -1,13 +1,21 @@
 //! `tree/identity.av` — ONE identity per node: WHERE IT STANDS — its
-//! parent, then its own STEP: its key, or its place among its unkeyed
-//! siblings. A node is the same node while its key and its ancestors'
-//! stand, whatever is inserted, removed or reordered beside it.
+//! parent, then its own STEP: its key, or the SITE it was written at.
+//! A node is the same node while its step and its ancestors' stand,
+//! whatever is inserted, removed or reordered beside it: a sibling that
+//! comes and goes above it moves nothing.
+//!
+//! A SITE IS LEXICAL: the literal that made the node, one number a
+//! written literal (`@std/meta`'s `Site`). Siblings one site made — a
+//! loop's, a helper's called twice — are told apart by their TURN, which
+//! is order, so what must keep its own through a reorder wears a key.
 //!
 //! Identity is never written out whole. A page that keeps a node across
 //! paints gives it a NUMBER when it first appears (`NodeId`) and the node
 //! wears that number while it stays: fixed in width however deep the node
 //! sits, and never shared, since a number is counted out and not hashed.
-//! The steps a number stands under are spelled only for a reader.
+//! The steps a number stands under are spelled only for a reader, who is
+//! shown a place where a site would say nothing.
+use @std.meta.{Site}
 
 /// The number a page gives a node while the node stays on it. Compared
 /// and echoed, never parsed. A node no page has placed wears none.
@@ -16,56 +24,81 @@ export type NodeId = { n: int }
 /// What a node not yet on a page wears.
 export const unplaced = NodeId { n: -1 }
 
-/// What a composition spreads in to be told from its siblings: its key.
-export type Stand = { key: string? = null }
+/// What a view says of where it stands among its siblings: its key, when
+/// it has one, and the site it was written at. Spread in — `..Stand` —
+/// and the site fills itself.
+export type Stand = { key: string? = null, site: Site }
+
+/// A view standing under `key`, written at `site`.
+export fn stand_of(key: string?, site: Site) -> Stand { Stand { key: key, site: site } }
 
 /// What tells a node from its siblings.
 export enum Step {
     /// Its key, and its turn among the siblings that share it.
     Keyed(key: string, turn: int)
-    /// Its place among its unkeyed siblings.
-    Placed(at: int)
+    /// The site it was written at, its turn among the siblings that site
+    /// made, and — for a reader — its place among its unkeyed siblings.
+    Sited(site: Site, turn: int, at: int)
     /// A part a target makes inside a node, by the name the target gives
     /// it — a control under its label, a run of text.
     Part(name: string)
 }
 
 impl Step {
-    /// A step as a sibling is matched by and a reader's path spells it. A
-    /// key is written with its LENGTH, so no key's own text reads as
-    /// another node's steps; a place is digits and a part opens with `+`,
-    /// so the three never spell alike.
+    /// A step as a sibling is MATCHED by. A key is written with its
+    /// LENGTH, so no key's own text reads as another node's steps; a site
+    /// opens with `s` and a part with `+`, so the three never spell alike.
     fn spelled() -> string {
         match self {
-            .Keyed(key, turn) -> if turn == 0 { "k${key.length}:${key}" } else { "k${key.length}:${key}~${turn}" },
-            .Placed(at) -> "${at}",
+            .Keyed(key, turn) -> turned("k${key.length}:${key}", turn),
+            .Sited(site, turn, _) -> turned("s${site}", turn),
             .Part(name) -> "+${name}",
         }
     }
+
+    /// A step as a READER's path shows it: a site is shown as the place
+    /// it stands at, since its number says nothing to a reader.
+    fn shown() -> string {
+        match self { .Sited(_, _, at) -> "${at}", .Keyed(_, _) or .Part(_) -> self.spelled() }
+    }
 }
 
-/// Each sibling's step, from the siblings' keys in order. A key seen
-/// before takes the next turn, so two siblings never share a step.
-export fn steps(keys: List<string?>) -> List<Step> {
-    if keys.all(it == null) { return [Step.Placed(j) for j, k in keys] }
+/// A step's words with its turn — the first turn says nothing.
+fn turned(words: string, turn: int) -> string {
+    if turn == 0 { words } else { "${words}~${turn}" }
+}
+
+/// Each sibling's step, from what each says of where it stands, in
+/// order. A key or a site seen before takes the next turn, so two
+/// siblings never share a step.
+export fn steps(stands: List<Stand>) -> List<Step> {
     mut turns: Map<string, int> = {}
     mut placed = 0
     mut out: List<Step> = []
-    // LICENSED loops.push_loop: a running count — each step is the keys before it
-    for key in keys {
-        match key {
-            k? -> {
-                let turn = turns.get(k) ?? 0
-                turns.set(k, turn + 1)
-                out.push(Step.Keyed(k, turn))
-            }
-            null -> {
-                out.push(Step.Placed(placed))
+    // LICENSED loops.push_loop: a running count — each step is the stands before it
+    for stand in stands {
+        let first = lone(stand)
+        let turn = turns.get(first.spelled()) ?? 0
+        turns.set(first.spelled(), turn + 1)
+        match first {
+            .Keyed(key, _) -> out.push(Step.Keyed(key, turn)),
+            .Sited(site, _, _) -> {
+                out.push(Step.Sited(site, turn, placed))
                 placed = placed + 1
-            }
+            },
+            .Part(_) -> out.push(first),
         }
     }
     out
+}
+
+/// Whether each sibling shares its key or its site with another — the
+/// two are then told apart by their order alone.
+export fn shared(stands: List<Stand>) -> List<bool> {
+    let words = [lone(s).spelled() for s in stands]
+    mut seen: Map<string, int> = {}
+    for w in words { seen.set(w, (seen.get(w) ?? 0) + 1) }
+    [seen.get(w) ?? 0 > 1 for w in words]
 }
 
 /// A PATH: steps from a root down, as one text. The ONE place a path is
@@ -80,11 +113,22 @@ export fn under(above: string?, step: string) -> string {
     }
 }
 
-/// The step of a node with no siblings — a tree's root.
-export fn lone(key: string?) -> Step {
+/// A sibling's step before its turn is counted: its key, else its site.
+fn lone(stand: Stand) -> Step {
+    match stand.key {
+        k? -> Step.Keyed(k, 0)
+        null -> Step.Sited(stand.site, 0, 0)
+    }
+}
+
+/// The step of a tree's ROOT. It has no sibling to be told from, so
+/// where it was written says nothing: a root is its key, or the one
+/// place a root stands — and a page turned into another view keeps its
+/// root.
+export fn root(key: string?) -> Step {
     match key {
         k? -> Step.Keyed(k, 0)
-        null -> Step.Placed(0)
+        null -> Step.Sited(Site(0), 0, 0)
     }
 }
 
