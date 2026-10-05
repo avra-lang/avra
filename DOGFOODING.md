@@ -1716,13 +1716,13 @@ is the type that fits, a mark on a variant (`@word(press)`,
 type that does not fit and a thing said twice are each refused at the
 MEMBER, in the derive's own voice; a refusal that surfaces inside the
 derive's own `quote` is a check the derive forgot.
-packages/std-ui/src/realize/view.av is the exemplar. A derive that
+packages/std-ui/src/tree/view.av is the exemplar. A derive that
 cannot read its vocabulary says so as its own defect, never `?? []`.
 
 ## A code rides its variant, and both directions are generated
 
 A number a wire spells a variant with is a mark on the variant (`@code(3)
-SetText`); `@derive(Codes)` (packages/std-ui/src/realize/codes.av)
+SetText`); `@derive(Codes)` (packages/std-ui/src/tree/codes.av)
 answers `code()`, the reverse `coded_as(n)` and `coded()` — every
 variant with its word, which is what writes a host's table
 (`runtime/dom/wire.gen.js`, held by `make ui-host`). THE TRAP: a `${n}`

@@ -52,7 +52,7 @@ Five attempts to lift a handler into a generated message failed.
    old page and new in, patches and the numbered page out); a property is compared against what the PAGE holds, so a
    field a user typed into is never written back to.
 2. **One identity.** A node is WHERE IT STANDS: its parent, then its
-   key or its place among its unkeyed siblings (`realize/identity.av`);
+   key or its place among its unkeyed siblings (`tree/identity.av`);
    siblings sharing a key are told apart by their turn. Identity is
    never written out whole. A page gives a node's element a NUMBER when
    it first appears and the element wears it while it stays — matched,
@@ -113,7 +113,7 @@ Five attempts to lift a handler into a generated message failed.
    can speak, Enter presses or changes over, a typed character fills a
    field after what it holds, Ctrl-D ends. The controls on a screen, in
    reading order, are one definition the headless screen and the
-   terminal share (`realize/controls.av`); the focus is kept by the path
+   terminal share (`tree/controls.av`); the focus is kept by the path
    a control stands at, so it follows a keyed row. A field shows what
    the view says it holds. Input is read as octets, as they arrive on
    the standard input: an octet that is no character is dropped alone,
@@ -130,8 +130,16 @@ Five attempts to lift a handler into a generated message failed.
     the page `realize/html` draws, and `@std/ui_gallery` and the site
     stand on the one model. The tokens a look names (`Size`, `Tone`,
     `Font`) are `style/tokens.av`'s; a value that shows itself where it
-    is listed is `realize/shows.av`'s `Shows`. The old node's `spoken`
-    is `realize/outline.av`'s `outline`.
+    is listed is `tree/shows.av`'s `Shows`. The old node's `spoken`
+    is `tree/outline.av`'s `outline`.
+
+## Where it lives
+
+`tree/` is the neutral tree and what is read off it whatever draws it
+(`Node`, `View`, identity, the URL, the controls on a screen, the
+readable outline); `realize/` is the targets, one directory each
+(`html`, `dom`, `tui`, and the draw-only `canvas`); `app/` is the loop;
+`web/`, `terminal/` and `headless/` are where an app is mounted.
 
 ## Kept
 
@@ -152,7 +160,7 @@ one exhaustive match per target over the primitives.
 - THE NEUTRAL WORD IS `press`, never `click`: a mouse word names one
   platform. `on press { … }`.
 - A URL IN THE TREE IS CHECKED: `href` and `src` carry `Url`
-  (`realize/url.av`), a type with NO unsafe value — a reference inside
+  (`tree/url.av`), a type with NO unsafe value — a reference inside
   the site, or one of `Scheme`'s. `url(text)` reads foreign text
   strictly and answers absence: a scheme (read from the first path
   segment alone) that is not ours, a network path (`//host`, with
