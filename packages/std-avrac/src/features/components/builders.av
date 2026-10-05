@@ -26,6 +26,7 @@ use core.{
     Unheard,
     Mark,
     sorted_by,
+    same_stmt,
     plain_mark,
     pronoun_param,
     copier,
@@ -75,8 +76,11 @@ fn build_component_decl(b: Builder) -> Result<LangNode, string> {
             [m for f in fs for m in marks.at(f.span.lo)],
             b.tokens(15)?,
         )?
-    let fns = b.stmts(6)?
-    if !fns.all(holds_a_member(b.store, it)) { return .Err(foreign_member()) }
+    let held = b.stmts(6)?
+    let made = [s for s in held if !holds_a_member(b.store, s)]
+    if made.any((s) -> b.store.is_state_stmt(s)) { return .Err(untyped_state()) }
+    if made.any((s) -> b.store.is_declaration(s)) { return .Err(foreign_member()) }
+    let fns = b.with_body(held, made)
     if !(b.tokens(9)?).is_empty() { return .Err(three_dots()) }
     let events = b.events(en, b.tokens(13)?, b.type_refs(14)?, marks)?
     let records = record_spreads(written, b.tokens(7)?, b.type_refs(8)?)?
@@ -90,7 +94,8 @@ fn build_component_decl(b: Builder) -> Result<LangNode, string> {
 }
 
 /// A member a component may hold besides its fields: a `fn`, or a
-/// recovery's hole.
+/// recovery's hole. Any other statement is part of its BODY — what it
+/// is made of.
 fn holds_a_member(store: SyntaxArena, s: StmtId) -> bool {
     store.fn_parts(s) != null || store.hole_stmt(s) != null
 }
@@ -281,6 +286,32 @@ fn build_on_value(b: Builder) -> Result<LangNode, string> {
 }
 
 impl Builder {
+    /// A component's members with its BODY — the statements `made` —
+    /// folded into one: a quote of them, standing where the first was
+    /// written. Nothing walks a body where it is written; what reads the
+    /// declaration splices it where it means something.
+    fn with_body(held: List<StmtId>, made: List<StmtId>) -> List<StmtId> {
+        let first? = made.first() else { return held }
+        let last? = made.last() else { return held }
+        let from? = self.store.stmt_span(first) else { return held }
+        let over = from.cover(self.store.stmt_span(last) ?? from)
+        let q = self
+            .store
+            .alloc_expr(
+                Expr
+                    .Body(
+                        "quote",
+                        [self.text.substring(over.lo, over.hi)],
+                        [],
+                        BodyView.Verbatim(made, []),
+                    ),
+                over,
+            )
+        self.store.mark_quote_at(q)
+        let body = self.store.alloc_stmt(Stmt.ExprStmt(q), over)
+        [if same_stmt(s, first) { body } else { s } for s in held if same_stmt(s, first) || !made.any((m) -> same_stmt(m, s))]
+    }
+
     /// The imported component the word at `args[i]` opens.
     fn word_at(i: int) -> Result<ComponentWord, string> {
         let w = self.token(i)?
@@ -735,7 +766,11 @@ fn head_count(word: string, n: int) -> string {
 }
 
 fn foreign_member() -> string {
-    "a component holds its fields and its `fn`s, and nothing else"
+    "a component holds its fields, its `fn`s and what it is made of — never a declaration of its own"
+}
+
+fn untyped_state() -> string {
+    "a component's `state` is a field, and a field says its type — `state n: int = 0`"
 }
 
 fn blockless(word: string) -> string {

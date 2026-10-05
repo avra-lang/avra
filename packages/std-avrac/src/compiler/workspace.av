@@ -269,6 +269,8 @@ type Records = {
     /// `component NAME {` declaration — what its module's other files
     /// stand under.
     component_scanned: Cell<Map<string, bool>>,
+    /// Whether a path's text wears `@composes` — read once a path.
+    composer_scanned: Cell<Map<string, bool>>,
     /// Every file a record has met this build, by path — each met once.
     met_files: Cell<Map<string, bool>>,
     /// A MODULE'S OWN ANSWER, keyed by module: the names its record marks as
@@ -301,6 +303,7 @@ fn new_records() -> Records {
         record_fault: Cell.new(no_fault),
         grammar_scanned: Cell.new(no_scanned),
         component_scanned: Cell.new(no_declaring),
+        composer_scanned: Cell.new(no_declaring),
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),
         block_rows: Cell.new(no_block_rows),
@@ -1356,6 +1359,21 @@ impl Workspace {
         }
     }
 
+    /// WHAT COMPOSES A BODY IS MINTED BEFORE A BODY ASKS. A component
+    /// that holds statements is derived over the trait wearing
+    /// `@composes`, found by its mark in the one table — which holds a
+    /// file's declarations only once that file is minted, and nothing a
+    /// component's own file imports need name the trait. So every file
+    /// of a package the program has reached whose TEXT wears the mark is
+    /// minted here, before the component is.
+    fn composers_minted() {
+        for pkg in self.packages() {
+            for path in self.all_files(pkg.src) {
+                if file_wears_composes(self, path) { touch(self.items(self.file_id(path))) }
+            }
+        }
+    }
+
     /// The declarations a file MINTS into the one table; the answer's
     /// hash is the item tree's — names and kinds.
     fn items(f: FileId) -> List<DeclId> {
@@ -1368,6 +1386,7 @@ impl Workspace {
         }
         self.decls.note_rows(f, 0)
         let p = self.parsed(f)
+        if p.stmts.any((s) -> p.store.component_body(s) != null) { self.composers_minted() }
         let ids = self.decls.admit(f, p.store, p.stmts)
         let out = items_of(
             self
@@ -1477,7 +1496,7 @@ impl Workspace {
                 f,
                 self.namespace(self.decls.file(f).module_id),
                 imports,
-                self.prelude_imports(f),
+                self.prelude_imports(f).concat(self.composer_imports(p)),
                 (path: string) -> self.shown(path),
             )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
@@ -1496,6 +1515,17 @@ impl Workspace {
         let from = self.packages()[self.holder_of_path(self.decls.file(f).path)]
         if from.key == prelude_key || !self.std_admitted(prelude_key) { return [] }
         [Import { decl: d.id, at: null, renamed: "", shared: false } for d in self.exported_decls(prelude_module())]
+    }
+
+    /// WHAT A COMPONENT WITH A BODY IS, ITS FILE SEES. Such a component
+    /// is derived over the trait that composes it, and the impl made for
+    /// it names that trait where the component stands — so the trait is
+    /// one of the file's implicit imports, bound weakly as the prelude's
+    /// are. A file that declares no such component sees nothing more.
+    fn composer_imports(p: Parsed) -> List<Import> {
+        if !p.stmts.any((s) -> p.store.component_body(s) != null) { return [] }
+        self.composers_minted()
+        [Import { decl: t, at: null, renamed: "", shared: false } for t in self.decls.composing_traits()]
     }
 
     /// A file's names resolved. RECURSIVE: a whole-program pass asks
@@ -1570,13 +1600,18 @@ impl Workspace {
         }
     }
 
-    /// Whether the file has ANY Declares annotation — the parse-level
+    /// Whether the file has ANY Declares annotation, or a component
+    /// with a body — derived as if it wore one — the parse-level
     /// prefilter that keeps the two-tier second look off the common
     /// path: a file with no generator never demands `expanded` (and
     /// never re-enters the namespace from inside a resolve).
     fn has_declares(f: FileId) -> bool {
         let p = self.parsed(f)
-        declaring_stmts(p).any((s: StmtId) -> !p.store.annotations_of(s).is_empty())
+        declaring_stmts(p)
+            .any(
+                (s: StmtId) -> !p.store.annotations_of(s).is_empty() ||
+                    p.store.component_body(s) != null,
+            )
     }
 
     /// Whether any declaration carries a MARK — the same prefilter for

@@ -194,7 +194,8 @@ impl TypeCx {
             lacking: lacking,
             states: [f.state for f in fields],
         }
-        let sig = if spreads.is_empty() { own } else { self.spread_into(s, owner, own, spreads) }
+        let written = if spreads.is_empty() { own } else { self.spread_into(s, owner, own, spreads) }
+        let sig = self.with_carried(s, written)
         for d in duplicate_names("type.duplicate_field", owner, sig.names, self.stmt_loc(s)) {
             self.emit(d)
         }
@@ -202,6 +203,19 @@ impl TypeCx {
         if self.marks_identity(record) { self.identity_law(s, record, names, sig.types) }
         self.lacks_law(s, owner, names, lacking)
         self.declare(s, DeclSig.Record(sig))
+    }
+
+    /// A COMPONENT WITH A BODY CARRIES WHAT ITS TRAIT NAMES: the record
+    /// `@composes` names, placed after the component's own fields as a
+    /// spread written last would be. A component that holds no body, or
+    /// one no single trait composes, carries nothing.
+    fn with_carried(s: StmtId, written: StructSig) -> StructSig {
+        if self.view.store.component_body(s) == null { return written }
+        let traits = self.view.decls.composing_traits()
+        if traits.length != 1 { return written }
+        let carried? = self.view.decls.carried_by(traits[0]) else { return written }
+        let fields? = self.view.decls.sig(carried)?.record_sig() else { return written }
+        joined_tables([written, fields]) with { lacking: written.lacking }
     }
 
     /// A record's own fields with each `..R`'s placed where it was

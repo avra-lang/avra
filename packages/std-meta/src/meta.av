@@ -208,8 +208,10 @@ export type Variant = { name: string, payload: List<string>, at: Loc?, fields: L
 /// each record it spreads in (`..Box`), as written; `fields` holds the
 /// fields it wrote itself, never the ones a spread placed. `fns` names
 /// the fns written in its own body — a component's methods — never
-/// an `impl`'s.
-export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled(""), spreads: List<string> = [], fns: List<string> = [] }
+/// an `impl`'s. `body` is the statements a component is MADE OF, as the
+/// template a reader splices where they mean something — absent for a
+/// declaration that holds none.
+export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled(""), spreads: List<string> = [], fns: List<string> = [], body: Stmts? = null }
 
 /// What an annotation says back about a declaration. A fn answering
 /// `List<Diagnostic>` VALIDATES: an empty list passes, each ERROR is
@@ -286,6 +288,16 @@ export fn census(_t: Type, _rows: int) {}
 /// read (`type_named(n)?.annotations`): nothing durable may hash or
 /// encode one.
 export fn dense(_t: Type) {}
+
+/// A COMPONENT WITH A BODY IS ONE OF THESE. `@composes(Carried)` on a
+/// trait: a component whose declaration holds statements — what it is
+/// made of — is derived over this trait, with nothing written on the
+/// component: the trait's own `derive` receives it, its `Type.body` the
+/// statements, and makes the impl. The component CARRIES the record
+/// `Carried` as if it spread it, so what the trait reads of every such
+/// component — where it stands, say — is a field the author never
+/// writes. One trait a program composes by; two is refused.
+export fn composes(_tr: Trait, _carried: Named) {}
 
 /// The type is an IDENTITY: every copy of it must go on reading and
 /// writing the same tables, so a field a writing path could open

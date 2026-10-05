@@ -20,6 +20,7 @@
 //! one site made and no key tells apart keep their state by their turn,
 //! so a reorder hands one's state to another. The walk cannot refuse a
 //! tree it is handed; it says so (`warnings`), once a component a paint.
+use tree.identity.{under}
 
 /// A kept instance as its standing holds it: which component's it is,
 /// and the fn that hands it to that component's seat.
@@ -30,14 +31,17 @@ type Under = { step: string, standing: Standing }
 
 /// One node of the walk: what stands here now, and what stood here
 /// after the last paint, still on offer. `by_order` is whether this
-/// paint told it from a sibling by order alone, and `said` is what the
-/// walk it belongs to has said this paint.
+/// paint told it from a sibling by order alone, `step` the path it
+/// stands at under the nearest node that is DRAWN — a composition draws
+/// nothing of its own — and `said` what the walk it belongs to has said
+/// this paint.
 export type Standing = {
     hold: Cell<Hold?>,
     under: Cell<List<Under>>,
     was_hold: Cell<Hold?>,
     was_under: Cell<List<Under>>,
     by_order: Cell<bool>,
+    step: Cell<string>,
     said: Cell<List<string>>,
 }
 
@@ -57,6 +61,7 @@ fn stands_in(said: Cell<List<string>>) -> Standing {
         was_hold: Cell.new(none),
         was_under: Cell.new(empty),
         by_order: Cell.new(false),
+        step: Cell.new(""),
         said: said,
     }
 }
@@ -88,22 +93,27 @@ impl Standing {
     /// The standings under this one at `steps`, each opened: the one
     /// that stood at a step, else a new one. A step nobody names is
     /// gone with everything under it. `shared` says which steps are told
-    /// from a sibling's by order alone.
-    fn children(steps: List<string>, shared: List<bool>) -> List<Standing> {
+    /// from a sibling's by order alone; `drawn` whether this standing's
+    /// own node is drawn, so the path under it starts over.
+    fn children(steps: List<string>, shared: List<bool>, drawn: bool) -> List<Standing> {
         mut stood: Map<string, Standing> = {}
         for u in self.was_under.get() { stood.set(u.step, u.standing) }
         let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said) } for s in steps]
+        let above = if drawn { null } else { self.through() }
         for j, u in now {
             u.standing.opened()
             u.standing.by_order.set(shared[j])
+            u.standing.step.set(under(above, u.step))
         }
         self.under.set(now)
         [u.standing for u in now]
     }
 
-    /// The one standing under this one at `step`, told by order exactly
-    /// when this one is.
-    fn child(step: string) -> Standing { self.children([step], [self.by_order.get()])[0] }
+    /// The path this standing is drawn through — none at a walk's root.
+    fn through() -> string? {
+        let at = self.step.get()
+        if at == "" { null } else { at }
+    }
 
     /// How many instances stand here and below — the lifetime witness.
     fn held() -> int {

@@ -57,6 +57,7 @@ use @std.meta.{
     Variant as MetaVariant,
     Kind,
     Annotation as MetaAnnotation,
+    Stmts as MetaStmts,
 }
 use core.{
     Stmt,
@@ -109,6 +110,7 @@ impl Workspace {
             for w in self.declared_work(f, d, p, vis) {
                 made = made.concat(self.materialized(f, w, p, vis))
             }
+            made = made.concat(self.composed(f, d, p, vis))
         }
         self.hold_marks_to_a_reader(f, p, vis)
         self
@@ -271,6 +273,37 @@ impl Workspace {
                 .decls
                 .mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, ann, w.at),
         ]
+    }
+
+    /// A COMPONENT WITH A BODY, derived over the trait that composes — as
+    /// `@derive` over it would be, with nothing written on it. The typing
+    /// law (`check_body`) speaks a body no one trait composes; here it
+    /// makes nothing.
+    fn composed(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<DeclId> {
+        if !declares_record(self.decls.decl(d).kind) { return [] }
+        let written = self.written_stmt(f, d)
+        let body? = p.store.component_body(written) else { return [] }
+        if self.decls.meta_disagreement() != null { return [] }
+        let traits = self.decls.composing_traits()
+        if traits.length != 1 { return [] }
+        let m? = self.decls.trait_derive(traits[0]) else { return [] }
+        let sig? = self.decls.sig(m)?.fn_sig() else { return [] }
+        let w = DeclareWork {
+            ann: traits[0],
+            stmt: written,
+            callee: body,
+            args: [],
+            ret: sig.ret,
+            tparams: [],
+            params: [],
+            answer: named_ref("void"),
+            original: self.decls.decl(d).name,
+            at: p.store.stmt_span(written),
+            annotated: d,
+        }
+        flatten(
+            [self.materialized_directive(f, w, directive, vis) for directive in self.trait_directives(traits[0], w, f)],
+        )
     }
 
     /// A written fn's Declares annotation, as the materializer's
@@ -816,6 +849,7 @@ impl Workspace {
                     over: self.named_over(d),
                     spreads: [spelled(sp.of) for sp in v.store.spreads_of(x.stmt)],
                     fns: own_fns(v.store, x.stmt),
+                    body: body_template(v, x.stmt),
                 },
                 heap,
             ),
@@ -1054,4 +1088,22 @@ fn wraps_kind(kind: DeclKind) -> bool {
 /// component's methods; none for any other declaration.
 fn own_fns(store: SyntaxArena, s: StmtId) -> List<string> {
     [p.name for f in store.component_parts(s)?.fns ?? [] for p in some_list(store.fn_parts(f))]
+}
+
+/// A component's BODY as the template of its statements — the quote
+/// its builder marked where the first of them stands.
+fn body_template(v: FileView, s: StmtId) -> MetaStmts? {
+    let q? = v.store.component_body(s) else { return null }
+    let at? = v.store.expr_span(q) else { return null }
+    let body? = v.store.expr(q).body_of() else { return null }
+    MetaStmts { node: Node.Template(v.source.file, at.lo, body.parts, []) }
+}
+
+/// Whether a declaration is a record — the one kind a body belongs to;
+/// a record's member and its field's default share its statement.
+fn declares_record(kind: DeclKind) -> bool {
+    match kind {
+        .Record -> true,
+        .Builtin or .Fn or .Named or .Alias or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Const or .Collect or .CollectEnum or .State or .Impl or .Trait -> false,
+    }
 }

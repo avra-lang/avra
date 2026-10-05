@@ -260,6 +260,30 @@ impl SyntaxArena {
         }
     }
 
+    /// A component's BODY: the quote of the statements it is made of,
+    /// among its members — absent for a component that holds none.
+    fn component_body(s: StmtId) -> ExprId? {
+        let c? = self.component_parts(s) else { return null }
+        [e for m in c.fns for e in some_list(self.body_member(m))].first()
+    }
+
+    /// The quote a component's body member holds — null for a `fn` and
+    /// for a recovery's hole.
+    fn body_member(m: StmtId) -> ExprId? {
+        match self.stmt(m) {
+            .ExprStmt(e) -> if self.expr(e).body_of() == null { null } else { e },
+            _ -> null,
+        }
+    }
+
+    /// A component's member as the statements it was WRITTEN as: its
+    /// body's, for the member that folds them; else itself.
+    fn member_stmts(m: StmtId) -> List<StmtId> {
+        let q? = self.body_member(m) else { return [m] }
+        let body? = self.expr(q).body_of() else { return [m] }
+        match body.view { .Verbatim(stmts, _) -> stmts, .None or .Expanded(_) -> [m] }
+    }
+
     /// The fns a declaration holds as its own members — a trait's, or
     /// a component's methods.
     fn member_fns(s: StmtId) -> List<StmtId> {
