@@ -837,7 +837,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # (tools/gate_receipt.sh). A dirty tree writes none, and neither does
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
-# its status is discarded here exactly as sprite-build.sh's call does.
+# its status is discarded here.
 gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
