@@ -4,7 +4,8 @@
 //! elements a host holds, the ones the program remembers, each kept
 //! element still itself, and each handler the second tree's own.
 use realize.dom.live.{Live, live}
-use realize.dom.patch.{Says}
+use realize.dom.patch.{Patch, Says}
+use realize.dom.wire.{frame}
 use realize.html.element.{Element, Tagged, lowered}
 use style.theme.{default_theme}
 use tree.identity.{NodeId}
@@ -77,10 +78,21 @@ fn speak(page: Live, mut at: Host, made: List<Move>) {
     }
 }
 
+/// Whether a patch changes the page's elements: every one but the sheet's.
+fn of_elements(p: Patch) -> bool {
+    match p { .Style(_) -> false, _ -> true }
+}
+
+/// `s` painted on `page`, as the frame of what changes its elements. The
+/// sheet a paint may send is no part of the law, and is left out.
+fn elements_frame(page: Live, s: Sketch, log: Cell<List<int>>) -> Bytes {
+    frame([p for p in page.patches(node_of(s, log), default_theme) if of_elements(p)])
+}
+
 /// `s` painted on `page` and the frame handed to the host `at`: what is
 /// wrong with the page then, or nothing.
 fn painted(page: Live, mut at: Host, s: Sketch, log: Cell<List<int>>) -> string? {
-    at.take(page.paint(node_of(s, log), default_theme))
+    at.take(elements_frame(page, s, log))
     let fault = at.faults.first()
     if fault != null { return fault }
     let want = told(page_of(lowered(node_of(s, log))), unnumbered)
@@ -172,5 +184,5 @@ export fn repaint(c: Case) -> List<string> {
     for m in moves(page, c.typed) {
         let _ = page.fire(NodeId { n: m.id }, m.action.kind, m.said)
     }
-    records(page.paint(node_of(c.new, log), default_theme))
+    records(elements_frame(page, c.new, log))
 }

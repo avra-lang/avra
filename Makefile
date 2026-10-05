@@ -297,7 +297,7 @@ wasm-archive:
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: ui-host ui-host-test ui-board h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
+.PHONY: ui-host ui-host-test ui-fuzz ui-board h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -673,6 +673,12 @@ ui-host:
 # nothing runs is a second implementation nothing checks.
 ui-host-test:
 	@sh tools/ui_host_test.sh
+
+# THE DIFF'S LAW, AT LENGTH: trees grown and edited by chance, each repaint
+# applied to a modelled host and held to the page its tree is
+# (tools/ui_fuzz.sh). UI_FUZZ_SEED, UI_FUZZ_SEEDS and UI_FUZZ_CASES size it.
+ui-fuzz:
+	@sh tools/ui_fuzz.sh
 
 # THE HOST SEAM, END TO END: the board built as a wasm reactor and run over the
 # real page glue, each claim checked (tools/ui-board/demo.mjs). Skips, spoken,

@@ -33,11 +33,14 @@ fn nearer(c: Case) -> List<Case> {
         .concat([c with { new: s } for s in smaller(c.new)])
 }
 
-/// `c`, made as small as still fails.
-export fn shrunk(c: Case) -> Case {
-    let less? = nearer(c).find((n) -> verdict(n) != null) else { return c }
-    shrunk(less)
+/// `c`, made as small as still `fails`.
+export fn shrunk(c: Case, fails: fn(Case) -> bool) -> Case {
+    let less? = nearer(c).find(fails) else { return c }
+    shrunk(less, fails)
 }
+
+/// Whether a case breaks the law.
+fn breaks(c: Case) -> bool { verdict(c) != null }
 
 fn typed_source(t: Typed) -> string { "Typed { nth: ${t.nth}, value: ${t.value} }" }
 
@@ -66,9 +69,29 @@ export fn case_at(seed: int, turn: int) -> Case {
     }
 }
 
-/// The first of `count` cases under `seed` that fails, shrunk and told —
-/// or nothing, when every one holds.
+/// The first of `count` cases under `seed` that breaks the law, shrunk
+/// and told — or nothing, when every one holds.
 export fn first_failure(seed: int, count: int) -> string? {
-    let turn? = [j for j in 0..count].find((j) -> verdict(case_at(seed, j)) != null) else { return null }
-    "seed ${seed}, case ${turn}: ${failure(shrunk(case_at(seed, turn)))}"
+    let turn? = [j for j in 0..count].find((j) -> breaks(case_at(seed, j))) else { return null }
+    "seed ${seed}, case ${turn}: ${failure(shrunk(case_at(seed, turn), breaks))}"
+}
+
+/// Whether `count` cases under `seed` all hold the law. The first that
+/// does not is printed, shrunk, with the seed and turn that replay it.
+export fn all_hold(seed: int, count: int) -> bool {
+    let broken? = first_failure(seed, count) else { return true }
+    println(broken)
+    false
+}
+
+/// A sum over the frames `count` cases under `seed` repaint with: two
+/// runs that grew the same trees and said the same patches agree on it.
+fn frames_sum(seed: int, count: int) -> int {
+    [l.length for turn in 0..count for l in repaint(case_at(seed, turn))].sum()
+}
+
+/// One run, as the line that tells it: how many cases held and the sum
+/// of what they said, or the first that broke the law.
+export fn run(seed: int, count: int) -> string {
+    first_failure(seed, count) ?? "seed ${seed}: ${count} cases hold the law, ${frames_sum(seed, count)} characters of patches said"
 }

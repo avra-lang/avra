@@ -1,0 +1,63 @@
+//! `tests/support/corpus.av` — cases as LINES a host outside the program
+//! is shown: the frames a page was sent, what a user did between them,
+//! and the page the model host ends holding — so another host, applying
+//! the same frames, can be held to the same page.
+//!
+//!   case   seed, turn
+//!   frame  the frame's bytes
+//!   page   the page then, as `told` tells it outward
+//!   say    id, event, the property moved, the wire's tag for its value,
+//!          the value — then the echo due: kind, what is said, its value
+//!   hear   id, event, kind, what is said, the property read, whether the
+//!          page's own answer is stopped
+//!
+//! A word is a number, a name with no space in it, or text as base64 —
+//! `-` for none.
+use realize.dom.live.{live}
+use tree.node.{Said}
+use @std.text.{base64}
+
+/// Text as one word of a line: `-` for none.
+fn worded(text: string) -> string { if text == "" { "-" } else { base64(text.bytes()) } }
+
+fn page_line(at: Host) -> string { "page ${worded(told(at.page(), outward))}" }
+
+/// What a host echoes of what a control said, as text.
+fn echoed(said: Said) -> string {
+    match said { .Text(t) -> t, .Number(n) -> "${n}", .Flag(on) -> "${on}" }
+}
+
+fn say_line(m: Move) -> string {
+    "say ${m.id} ${page_word(m.action.kind)} ${m.reads} ${m.says} ${worded(m.text)} ${m.action.kind.code()} ${voice(m.action.handler).code()} ${worded(echoed(m.said))}"
+}
+
+fn hear_line(id: int, e: Ear) -> string {
+    "hear ${id} ${e.event} ${e.kind} ${e.says} ${if e.reads == "" { "-" } else { e.reads }} ${if e.prevents { 1 } else { 0 }}"
+}
+
+/// Every element under `run`, itself first.
+fn every(run: List<Seen>) -> List<Seen> { [each for s in run for each in [s].concat(every(s.kids))] }
+
+/// The lines of one case: its first paint, the page then, the user's
+/// moves, the repaint, the page then and every event it hears.
+fn shown(c: Case) -> List<string> {
+    let page = live()
+    let log: Cell<List<int>> = Cell.new([])
+    mut at = host()
+    let first = elements_frame(page, c.old, log)
+    at.take(first)
+    let drawn = page_line(at)
+    let made = moves(page, c.typed)
+    speak(page, at, made)
+    let second = elements_frame(page, c.new, log)
+    at.take(second)
+    ["frame ${base64(first)}", drawn]
+        .concat([say_line(m) for m in made])
+        .concat(["frame ${base64(second)}", page_line(at)])
+        .concat([hear_line(s.id, e) for s in every(at.page()) for e in s.ears])
+}
+
+/// The lines of `count` cases under `seed`.
+export fn corpus(seed: int, count: int) -> List<string> {
+    [l for turn in 0..count for l in ["case ${seed} ${turn}"].concat(shown(case_at(seed, turn)))]
+}
