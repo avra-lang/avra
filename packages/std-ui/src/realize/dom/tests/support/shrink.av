@@ -24,11 +24,23 @@ fn smaller(s: Sketch) -> List<Sketch> {
         )
 }
 
+/// Both trees one thing smaller in the same place, when they are the
+/// same shape: a case that fails only while its trees agree somewhere
+/// loses that place from both at once.
+fn together(c: Case) -> List<Case> {
+    let olds = smaller(c.old)
+    let news = smaller(c.new)
+    if olds.length != news.length { return [] }
+    [c with { old: s, new: news[j] } for j, s in olds]
+}
+
 /// Every case one thing smaller than `c`: a move gone, both trees
-/// stepped down to the same child, or either tree smaller.
+/// stepped down to the same child or lessened in the same place, or
+/// either tree smaller.
 fn nearer(c: Case) -> List<Case> {
     [c with { typed: c.typed.removed_at(j) } for j, t in c.typed]
         .concat([c with { old: k, new: c.new.kids[j] } for j, k in c.old.kids if j < c.new.kids.length])
+        .concat(together(c))
         .concat([c with { old: s } for s in smaller(c.old)])
         .concat([c with { new: s } for s in smaller(c.new)])
 }
@@ -49,10 +61,19 @@ export fn case_source(c: Case) -> string {
     "Case {\n    old: ${source_at(c.old, "    ")},\n    new: ${source_at(c.new, "    ")},\n    typed: [${[typed_source(t) for t in c.typed].join(", ")}],\n}"
 }
 
-/// A failing case, told whole: what it breaks, the case, and the frame
-/// its repaint sent.
+/// A frame's records under the name of its paint, indented.
+fn frame_told(name: string, lines: List<string>) -> string { "${name}:\n${["  ${l}" for l in lines].join("\n")}" }
+
+/// A failing case, told whole: what it breaks, the case, and the frames
+/// its repaint and its paint back sent.
 export fn failure(c: Case) -> string {
-    "${verdict(c) ?? "holds"}\n${case_source(c)}\nthe repaint's frame:\n${["  ${l}" for l in repaint(c)].join("\n")}"
+    [
+        verdict(c) ?? "holds",
+        case_source(c),
+        frame_told("the repaint's frame", repaint(c)),
+        frame_told("the paint back's frame", paint_back(c)),
+    ]
+        .join("\n")
 }
 
 // ── a run ───────────────────────────────────────────────────────

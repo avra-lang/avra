@@ -50,7 +50,15 @@ Five attempts to lift a handler into a generated message failed.
    A first paint is a diff against nothing; an unchanged page is no
    patch (the diff is a fold with no state of its own between paints:
    old page and new in, patches and the numbered page out); a property is compared against what the PAGE holds, so a
-   field a user typed into is never written back to.
+   field a user typed into is never written back to — and a property a
+   paint does not name is at rest, whether the last paint or the user
+   moved it. THE DIFF'S LAW IS RUN, NOT ARGUED: for trees grown and edited
+   by chance from a seed, the frame that repaints one as the next is
+   applied to a host modelled from the wire alone, and the page must be
+   the one the next tree lowers to, each kept element still itself, a
+   second paint silent and each handler the new tree's
+   (`realize/dom/tests/support`; `make ui-fuzz` runs it at length, and
+   `make ui-host-test` holds the page's own host to the model's page).
 2. **One identity.** A node is WHERE IT STANDS: its parent, then its
    key or its place among its unkeyed siblings (`tree/identity.av`);
    siblings sharing a key are told apart by their turn. Identity is

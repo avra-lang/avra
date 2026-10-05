@@ -13,7 +13,6 @@
 //!
 //! A word is a number, a name with no space in it, or text as base64 —
 //! `-` for none.
-use realize.dom.live.{live}
 use tree.node.{Said}
 use @std.text.{base64}
 
@@ -38,22 +37,24 @@ fn hear_line(id: int, e: Ear) -> string {
 /// Every element under `run`, itself first.
 fn every(run: List<Seen>) -> List<Seen> { [each for s in run for each in [s].concat(every(s.kids))] }
 
-/// The lines of one case: its first paint, the page then, the user's
-/// moves, the repaint, the page then and every event it hears.
+/// The lines of one case: its first paint, the user's moves, its
+/// repaint and its paint back — the page after each — and every event
+/// the page ends hearing.
 fn shown(c: Case) -> List<string> {
-    let page = live()
-    let log: Cell<List<int>> = Cell.new([])
+    let run = played(c)
     mut at = host()
-    let first = elements_frame(page, c.old, log)
-    at.take(first)
+    at.take(run.first)
     let drawn = page_line(at)
-    let made = moves(page, c.typed)
-    speak(page, at, made)
-    let second = elements_frame(page, c.new, log)
-    at.take(second)
-    ["frame ${base64(first)}", drawn]
-        .concat([say_line(m) for m in made])
-        .concat(["frame ${base64(second)}", page_line(at)])
+    hold(at, run.made)
+    at.take(run.second)
+    let redrawn = page_line(at)
+    hold(at, run.spoken)
+    at.take(run.back)
+    ["frame ${base64(run.first)}", drawn]
+        .concat([say_line(m) for m in run.made])
+        .concat(["frame ${base64(run.second)}", redrawn])
+        .concat([say_line(m) for m in run.spoken])
+        .concat(["frame ${base64(run.back)}", page_line(at)])
         .concat([hear_line(s.id, e) for s in every(at.page()) for e in s.ears])
 }
 

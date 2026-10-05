@@ -49,18 +49,23 @@ type Bound = { id: NodeId, action: Action }
 
 fn bound(run: List<Element>) -> List<Bound> { [Bound { id: el.id, action: a } for el in elements(run) for a in el.hears] }
 
-/// `t` as the control it lands on among `readers`, and what it does there.
-fn move_of(readers: List<Bound>, t: Typed) -> List<Move> {
-    if readers.is_empty() { return [] }
-    let at = readers[t.nth % readers.length]
-    [Move {
+/// The control `at` saying `said`, and the property that then holds it.
+fn moved(at: Bound, said: Said) -> Move {
+    Move {
         id: at.id.n,
         action: at.action,
         said: said,
         reads: read_of(voice(at.action.handler)),
         says: tag_held(said).code(),
         text: text_held(said),
-    } for said in present(said_of(at.action.handler, t.value))]
+    }
+}
+
+/// `t` as the control it lands on among `readers`, and what it does there.
+fn move_of(readers: List<Bound>, t: Typed) -> List<Move> {
+    if readers.is_empty() { return [] }
+    let at = readers[t.nth % readers.length]
+    [moved(at, said) for said in present(said_of(at.action.handler, t.value))]
 }
 
 /// What `typed` does to the page as it stands, in order.
@@ -69,13 +74,16 @@ export fn moves(page: Live, typed: List<Typed>) -> List<Move> {
     [m for t in typed for m in move_of(readers, t)]
 }
 
-/// A user's moves made: the page's control hears each, and the host's
-/// property holds it.
-fn speak(page: Live, mut at: Host, made: List<Move>) {
+/// A user's moves as the program hears them: each control's echo.
+fn echo(page: Live, made: List<Move>) {
     for m in made {
         let _ = page.fire(NodeId { n: m.id }, m.action.kind, m.said)
-        at.set_prop(m.id, m.reads, m.says, m.text)
     }
+}
+
+/// A user's moves as a host holds them: each property moved.
+fn hold(mut at: Host, made: List<Move>) {
+    for m in made { at.set_prop(m.id, m.reads, m.says, m.text) }
 }
 
 /// Whether a patch changes the page's elements: every one but the sheet's.
@@ -146,43 +154,90 @@ fn probe(h: Handler) -> Said? {
     }
 }
 
-/// What the repaint of `c` breaks, or nothing: the law, clause by clause.
-export fn verdict(c: Case) -> string? {
-    let page = live()
-    let log: Cell<List<int>> = Cell.new([])
-    mut at = host()
-    let first = painted(page, at, c.old, log)
-    if first != null { return "the first paint: ${first!}" }
+/// What a paint of `s` over a page that showed `before` breaks, or
+/// nothing: the page is the tree's, each element that stays is still
+/// itself, and a second paint of `s` is silent.
+fn repainted(page: Live, mut at: Host, s: Sketch, log: Cell<List<int>>) -> string? {
     let before = page.page.get()
-    speak(page, at, moves(page, c.typed))
-    log.set([])
-    let second = painted(page, at, c.new, log)
-    if second != null { return "the repaint: ${second!}" }
+    let wrong = painted(page, at, s, log)
+    if wrong != null { return wrong }
     let again = remade(before, page.page.get(), "")
-    if !again.is_empty() { return "the repaint made again an element that stays: ${again.join(", ")}" }
-    let echo = page.patches(node_of(c.new, log), default_theme).length
-    if echo != 0 { return "a second paint of the same tree said ${echo} patches" }
-    let want = rung(
-        lowered(node_of(c.new, log)),
-        log,
-        (b) -> b.action.fire(probe(b.action.handler)),
-    )
+    if !again.is_empty() { return "an element that stays was made again: ${again.join(", ")}" }
+    let more = page.patches(node_of(s, log), default_theme).length
+    if more != 0 { return "a second paint of the same tree said ${more} patches" }
+    null
+}
+
+/// What the handlers `page` bound break, or nothing: each event of `s`,
+/// spoken to, runs the handler `s` gave it. The host holds what each
+/// control was given to say, as a page whose user said it would.
+fn bound_wrong(page: Live, mut at: Host, s: Sketch, log: Cell<List<int>>) -> string? {
+    let want = rung(lowered(node_of(s, log)), log, (b) -> b.action.fire(probe(b.action.handler)))
+    let held = bound(page.page.get())
     let got = rung(
         page.page.get(),
         log,
         (b) -> page.fire(b.id, b.action.kind, probe(b.action.handler)),
     )
-    if got != want { return "the handlers bound are not the tree's: its events write ${want}, the page's ${got}" }
-    null
+    hold(at, [moved(b, said) for b in held for said in present(probe(b.action.handler))])
+    if got == want { null } else { "the handlers bound are not the tree's: its events write ${want}, the page's ${got}" }
+}
+
+/// `wrong` under the name of the paint it is about, when there is any.
+fn of_paint(name: string, wrong: string?) -> string? {
+    let said? = wrong else { return null }
+    "${name}: ${said}"
+}
+
+/// What `c` breaks, or nothing — the law, clause by clause: the first
+/// tree painted on a bare page; the second painted over it after the
+/// user's moves, and its handlers spoken to; then the first painted back
+/// over that, and its handlers.
+export fn verdict(c: Case) -> string? {
+    let page = live()
+    let log: Cell<List<int>> = Cell.new([])
+    mut at = host()
+    let first = painted(page, at, c.old, log)
+    if first != null { return of_paint("the first paint", first) }
+    let made = moves(page, c.typed)
+    echo(page, made)
+    hold(at, made)
+    log.set([])
+    of_paint("the repaint", repainted(page, at, c.new, log)) ?? of_paint(
+        "after the repaint",
+        bound_wrong(page, at, c.new, log),
+    ) ?? of_paint("the paint back", repainted(page, at, c.old, log)) ?? of_paint(
+        "after the paint back",
+        bound_wrong(page, at, c.old, log),
+    )
+}
+
+/// A case played out on a page: the frame of its first paint, what the
+/// user then did, the frame of its repaint, every control that reads an
+/// answer then spoken to, and the frame that paints the first tree back.
+type Played = { first: Bytes, made: List<Move>, second: Bytes, spoken: List<Move>, back: Bytes }
+
+fn played(c: Case) -> Played {
+    let page = live()
+    let log: Cell<List<int>> = Cell.new([])
+    let first = elements_frame(page, c.old, log)
+    let made = moves(page, c.typed)
+    echo(page, made)
+    let second = elements_frame(page, c.new, log)
+    let spoken = [moved(b, said) for b in bound(page.page.get()) for said in present(probe(b.action.handler))]
+    echo(page, spoken)
+    Played {
+        first: first,
+        made: made,
+        second: second,
+        spoken: spoken,
+        back: elements_frame(page, c.old, log),
+    }
 }
 
 /// The frame that repaints `c`'s first tree as its second, a record a line.
-export fn repaint(c: Case) -> List<string> {
-    let page = live()
-    let log: Cell<List<int>> = Cell.new([])
-    let _ = page.patches(node_of(c.old, log), default_theme)
-    for m in moves(page, c.typed) {
-        let _ = page.fire(NodeId { n: m.id }, m.action.kind, m.said)
-    }
-    records(elements_frame(page, c.new, log))
-}
+export fn repaint(c: Case) -> List<string> { records(played(c).second) }
+
+/// The frame that paints `c`'s first tree back over its second, a
+/// record a line.
+export fn paint_back(c: Case) -> List<string> { records(played(c).back) }
