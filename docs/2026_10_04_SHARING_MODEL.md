@@ -160,8 +160,8 @@ fn stepper(state n: int) { n = n + 1 }
 > state seat is `error[resolve.immutable]` "captured by value", because
 > `capture_regs` packs a `state` BINDING's Cell and never a `.Param`'s. So a
 > shared top-level handler driven by a serialised event reaches a
-> per-instance place only through a serialisable KEY (see
-> `2026_10_05_INSTANCE_STATE.md`), never by capturing it.
+> per-instance place only through a serialisable KEY, never by capturing
+> it.
 
 ### 1.4 `once` stays, untouched: a different axis (LIFETIME).
 
@@ -401,7 +401,7 @@ ask must carry both.
 This is the design judged against a real program. Per-item actions
 (`on click { … }`), the `ambient env` seat, `state` for the app's
 places, module-scope `const`/`state` for supply. The parts that are
-asks are marked; the gaps are the board doc's (`2026_10_04_DECLARATIVE_BOARD.md`).
+asks are marked; the board itself is `tools/ui-board`.
 
 ```avra
 use @std.meta.{derive}
@@ -799,8 +799,8 @@ a build.
 
 Per-item `on click { }`, typed message payloads, `field.on_input`,
 `list … by it.id`, `derived`, live queries, `@model` forms — all probed
-and filed in `2026_10_04_DECLARATIVE_BOARD.md` §"The gaps", parents
-`avra-xubk.2`/`.3` and `avra-8sb5.59.27`. Nothing here duplicates them.
+and filed under `avra-xubk.2`/`.3` and `avra-8sb5.59.27`. Nothing here
+duplicates them.
 
 ## 8. Decided vs open
 
