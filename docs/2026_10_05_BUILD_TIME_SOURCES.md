@@ -129,7 +129,7 @@ And `build_inputs` (P5) folds every part a kept record names — closing C.23.
 
 | today | becomes |
 |---|---|
-| reader 7: `embed`'s `avra_selfhost_read_file`, `admit_embeds`' callee matched by the STRING `"embed"` (`whole.av:382` — PROBED: a user fn named `embed` is treated as one), the `FileId` mint, the two path bases | `input_text`; `embed(p)` is `file(p).text()` |
+| reader 7: `embed`'s `avra_selfhost_read_file`, `admit_embeds`' callee matched by the STRING `"embed"` (READ `whole.av:382`; a user fn named `embed` matches it — C.35), the `FileId` mint, the two path bases | `input_text`; `embed(p)` is `file(p).text()` |
 | reader 2: the `Manifest` loader | `input_text(avra.toml)` |
 | reader 5 + kept settlements' `m` lines: two hand-hashed listings | `input_listing` |
 | reader 3: `text_digest` | `input_text(…).hash` — one memo |
@@ -244,7 +244,7 @@ image(photos.hero, alt: "The harbour")
 **3. A pipeline is a fn.** `each` runs any per-item fn.
 ```avra
 fn thumb(p: Picture) -> Picture { p |> resize(width: 320) |> webp(quality: 80) |> home(.Bundle) }
-const photos = dir("./photos") |> pictures |> each(thumb)
+const photos = dir("./photos") |> pictures |> each(thumb)      // `each` is the set's own
 ```
 
 **4. Variants.** They live inside the picture; the target picks.
@@ -396,6 +396,7 @@ When opaque types land, `File` should become one; the check stays.
 
 ```avra
 f.text()   f.bytes()   f.head(n)     // each a `Reach.Source` row; each reports the Part it read
+f.content()                          // the whole file as a `Blob.Made` — its SHA-256 and size
 f.loc(offset)                        // a Loc inside the file, for diagnostics
 ```
 
@@ -473,7 +474,7 @@ export fn resize<Out, S: Shots<Out>>(s: S, width: int) -> Out { s.shot((p: Pictu
 ```
 - Generic traits parse and dispatch today. `Out` is not inferred from the bound: PROBED C.31 "`O` is not pinned by the arguments". **That one rule — a bound with exactly one fitting impl pins its argument — is what the sketch as written needs** (C8).
 - Without it, today: `fn resize<P: Each>(p: P, width: int) -> P` over `Picture` and `Pictures` runs (C.14), and a folder says its kind once: `dir("./photos") |> pictures |> resize(…)`.
-- Fan-out stays inside the item (`widths`, `formats` fill `Picture.variants`). Fan-in is a fn from a set (`sprite(icons) -> Sheet`). `each(f)` maps any per-item fn; `kept { … }` filters.
+- Fan-out stays inside the item (`widths`, `formats` fill `Picture.variants`). Fan-in is a fn from a set (`sprite(icons) -> Sheet`). `each(f)` maps any per-item fn; `filtered { … }` drops items.
 - Order: a set is in name-byte order and that is the only order that reaches output.
 
 ### 4.6 Providers
@@ -816,7 +817,7 @@ Not on the list: a JIT; parallel settlement; a new keyword; a new IR instruction
 | # | what | evidence |
 |---|---|---|
 | I1 | **an embedded file's edit is invisible to `build`** — a wrong answer today | PROBED C.23. Closed by C2; file it now as a bug. |
-| I2 | `embed`: escape (in flight elsewhere), nested-call compiler trap, unlocated traps, callee matched by string, text only, a run-time trap instead of a refusal | PROBED C.2, C.5, C.9; a user `fn embed` is matched (C.35); READ `whole.av:382`. Closed by C2. |
+| I2 | `embed`: escape (in flight elsewhere), nested-call compiler trap, unlocated traps, callee matched by string, text only, a run-time trap instead of a refusal | PROBED C.2, C.5, C.9; READ `whole.av:382` (and C.35). Closed by C2. |
 | I3 | **75–140 KB of compiler memory per generated declaration** | PROBED C.26 and the reviewer's probe. Blocks any large provider; taxes every derive. |
 | I4 | an annotation inside generated declarations is dropped silently | PROBED C.16 |
 | I5 | a diagnostic naming an unknown file renders a window of the first source | READ(agent) `diagnostics/render.av:154` |
@@ -873,7 +874,7 @@ Nothing in this table exists. Everything else named in the doc does.
 
 | package | names |
 |---|---|
-| `@std/source` (new package) | `file`, `dir`, `url`, `File`, `Files`, `Blob`, `Action`, `blob`, `each`, `kept`, `Artifact`, `Home`, `home`, `placed`, `remote`, `step` |
+| `@std/source` (new package) | `file`, `dir`, `url`, `File`, `Files`, `Blob`, `Action`, `blob`, `each`, `filtered`, `Artifact`, `Home`, `home`, `placed`, `remote`, `step` |
 | `@std/meta` (growth) | `Provided`, `refused`, `target`, `Target` |
 | `@std/image` (new package) | `Picture`, `Pictures`, `Shots`, `pictures`, `resize`, `webp`, `widths`, `formats`, `Vector`, `vectors` |
 | providers (new) | `openapi` as a reader, `toml` as a provider, `csv`, `json_schema`, `environment`, `schema`, `sql`, `catalogs`, `typeface`, `wgsl`, `markdown`, `video` |
@@ -1078,6 +1079,6 @@ Binary `avra-ui-assets-design/build/avra` (0b5bd64), `LLVM_PREFIX=/opt/homebrew/
 | C.32 | package `nt`: read a 5.47 MB JSON, `parse`, `to_text`, print the length. `avra build`; run; rebuild | build 0.68 s; run 0.27 s user (0.72 s wall, first exec), 128 MB peak; warm rebuild 0.05 s |
 | C.33 | 200 runs of a tiny native Avra binary in a shell loop | 0.57 s |
 | C.34 | `grep RLIMIT\|setrlimit\|sandbox_init\|seccomp` over `runtime/*.c` and every package's C | nothing |
-| C.35 | a user `fn embed(p: string) -> int { p.length }`, called with a literal | `19` — no refusal; `admit_embeds` matched it by name (READ `whole.av:382`) |
+| C.35 | a user `fn embed(p: string) -> int { p.length }`, called with a literal | `19`, no refusal. That `admit_embeds` treats this call as an embed is READ (`whole.av:382`: `callee.of != "embed"`), not observed: minting a `FileId` for a missing file prints nothing. |
 
 Not probed: the struct-literal name hole the reviewer hit in a template; whether `avra dev` on its branches is already one-shot; C8's size.
