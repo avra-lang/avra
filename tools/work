@@ -45,6 +45,7 @@ tools=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$tools/.." && pwd)
 here=$tools
 . "$tools/sprite-lib.sh"
+gh_=${AVRA_GH:-gh}
 
 die() { echo "work: $*" >&2; exit 1; }
 
@@ -123,7 +124,7 @@ bind_locked() {
 # package its `use @std.x` graph reaches, the runtime, the backend, the
 # seed and the Makefile — never a package's tests/, which a build never
 # reads. A tree whose hash moved gets its compiler rebuilt on its Sprite.
-compiler_hash() {
+compiler_paths() {
     (
         cd "$1"
         pending="cli"
@@ -141,7 +142,13 @@ compiler_hash() {
         {
             for d in $seen; do [ ! -d "packages/$d/src" ] || echo "packages/$d"; done
             printf '%s\n' Makefile backend runtime bootstrap packages/std-prelude
-        } | sort -u | while IFS= read -r p; do
+        } | sort -u
+    )
+}
+compiler_hash() {
+    (
+        cd "$1"
+        compiler_paths "$1" | while IFS= read -r p; do
             find "$p" -type f ! -path '*/build/*' ! -path '*/.avra-cache/*' ! -path '*/.claude/*' ! -path '*/tests/*' 2>/dev/null
         done | LC_ALL=C sort -u | xargs shasum -a 256
     ) | shasum -a 256 | cut -d' ' -f1
@@ -171,7 +178,7 @@ affected() {
 # the last libraries it built.
 libs_step='k=$(find packages runtime backend Makefile tools/libs.py -type f \( -name "*.[ch]" -o -name "*.toml" -o -name Makefile -o -name libs.py \) ! -path "*/build/*" -printf "%T@ %s %p\n" | sort | sha256sum)
 if [ "$k" != "$(cat build/.avra-libs-key 2>/dev/null)" ]; then
-    { make -s -j$(nproc) -o avra libs >/dev/null || make -s -o avra libs >/dev/null; } && echo "$k" > build/.avra-libs-key || s=1
+    { make -s -j$(nproc) -o avra objects libs >/dev/null || make -s -o avra objects libs >/dev/null; } && echo "$k" > build/.avra-libs-key || s=1
 fi'
 
 test_() {
@@ -189,6 +196,56 @@ for p in $pkgs; do
     [ ! -d packages/\$p/src ] || build/avra check packages/\$p --baseline tools/idioms.baseline || s=1
 done
 exit \$s"
+}
+
+# A LANE'S FIRST BUILD STARTS FROM A BUILT COMPILER, never from the seed
+# when one can be had: main's own checks run uploads its compiler (the
+# `avra-compiler` artifact, kept a day), fetched here and handed to the
+# Sprite; failing that, the newest compiler another free Sprite holds;
+# failing that, nothing — and the Sprite bootstraps. WHEN THIS TREE'S
+# COMPILER SOURCES ARE THAT RUN'S, its compiler IS this tree's and nothing
+# is built. Otherwise the seeded binary only has to BUILD this tree
+# (`make avra`, twice); one too old to read it fails that build and the
+# Sprite bootstraps after all, so a seed costs time and never
+# correctness. $1 Sprite, $2 its tree there, $3 this tree, $4 its hash.
+seed() {
+    sd=$(mktemp -d "${TMPDIR:-/tmp}/avra-seed.XXXXXX")
+    put="cat > '$2/build/avra' && chmod +x '$2/build/avra'"
+    from=
+    ci=$(timeout -k 2 30 $gh_ run list --workflow checks --branch main --event push --status success --limit 1 \
+        --json databaseId,headSha --jq '.[0] | "\(.databaseId) \(.headSha)"' 2>/dev/null) || ci=
+    id=${ci%% *}
+    sha=${ci#* }
+    if [ -n "$id" ] && timeout -k 2 120 $gh_ run download "$id" -n avra-compiler -D "$sd" >/dev/null 2>&1 && [ -s "$sd/avra" ]; then
+        if git -C "$3" cat-file -e "$sha^{commit}" 2>/dev/null &&
+            git -C "$3" diff --quiet "$sha" -- $(compiler_paths "$3") ':(exclude,glob)**/tests/**' 2>/dev/null &&
+            [ -z "$(git -C "$3" ls-files --others --exclude-standard -- $(compiler_paths "$3") ':(exclude,glob)**/tests/**' 2>/dev/null)" ]; then
+            put="$put && printf %s '$4' > '$2/build/.avra-compiler-hash'"
+            from="main's compiler at ${sha%"${sha#???????}"}, which is this tree's — nothing to build"
+        else
+            from="main's compiler at ${sha%"${sha#???????}"}"
+        fi
+        timeout -k 2 120 "$sprite_cli" -s "$1" exec --no-port-forward -- sh -c "$put" < "$sd/avra" >/dev/null 2>&1 || from=
+    fi
+    if [ -z "$from" ]; then
+        held=$(lanes)
+        for s in $(pool); do
+            [ "$s" != "$1" ] || continue
+            echo "$held" | grep -q "^$s " && continue
+            c=$(sx "$s" 10 sh -c 'ls -t /home/sprite/avra-compilers/*/avra 2>/dev/null | head -n 1' 2>/dev/null) || continue
+            [ -n "$c" ] || continue
+            if sx "$s" 120 cat "$c" 2>/dev/null | timeout -k 2 120 "$sprite_cli" -s "$1" exec --no-port-forward -- sh -c "$put" >/dev/null 2>&1; then
+                from="$s's newest compiler"
+                break
+            fi
+        done
+    fi
+    rm -rf "$sd"
+    if [ -n "$from" ]; then
+        echo "work: $1 — first build here starts from $from" >&2
+    else
+        echo "work: $1 — first build here: no built compiler to start from, bootstrapping from the seed" >&2
+    fi
 }
 
 # The lane's run: wake, provision, sync, then the command on the Sprite,
@@ -258,6 +315,9 @@ run() {
         sleep 2
     done
     [ -n "$synced" ] || { echo "work: the tree did not sync to $sprite" >&2; exit 75; }
+    if printf '%s\n' "$info" | grep -q '^holds=no' && ! sx "$sprite" 20 test -x "$remote_tree/build/avra" 2>/dev/null; then
+        seed "$sprite" "$remote_tree" "$tree" "$hash"
+    fi
 
     echo "work: $sprite — run ($(since)s): $(printf '%s' "$cmd" | head -n 1 | cut -c1-100)" >&2
     run_id="$(hostname -s)-$$-$t0"
@@ -437,7 +497,6 @@ done_() {
 }
 
 # ── Landing: GitHub's runners are the only gate ───────────────────────
-gh_=${AVRA_GH:-gh}
 
 # "<position> <seconds queued>" for PR number $1, or nothing when it is
 # not in the merge queue.
@@ -585,6 +644,7 @@ case "${1:-}" in
     sprites) shift; sprites "$@" ;;
     done) done_ ;;
     command) shift; assemble "$@"; echo ;;
+    seed) shift; seed "$@" ;;
     libs-step) printf '%s\n' "$libs_step" ;;
     land) land ;;
     status) status ;;

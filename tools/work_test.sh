@@ -37,12 +37,19 @@ cat > "$scratch/sprite" <<'STUB'
 #!/bin/sh
 # sprite -s <name> exec … : answers unless the name is in SILENT.
 case " ${SILENT:-} " in *" $2 "*) exit 1 ;; esac
+[ -z "${SPRITE_LOG:-}" ] || echo "$*" >> "$SPRITE_LOG"
+case "$*" in
+    *"ls -t /home/sprite/avra-compilers"*) case " ${HOLDERS:-} " in *" $2 "*) echo /home/sprite/avra-compilers/h/avra ;; esac ;;
+    *"cat > "*) cat > /dev/null ;;
+esac
 exit 0
 STUB
 cat > "$scratch/gh" <<'STUB'
 #!/bin/sh
 echo "$*" >> "$GH_LOG"
 case "$*" in
+    *"run list --workflow checks"*) [ -z "${CI_RUN:-}" ] || echo "$CI_RUN ${CI_SHA:-0000000}" ;;
+    *"run download"*) [ -n "${CI_RUN:-}" ] || exit 1; while [ "$1" != -D ]; do shift; done; echo binary > "$2/avra" ;;
     *"pr list --state open"*) printf '7\tPR_7\tlane-a\tsuccess\ta title\n' ;;
     *dequeuePullRequest*) ;;
     *enqueuePullRequest*) echo "queued at position 1" ;;
@@ -115,6 +122,23 @@ check "$(grep -c 'A is running something for lane avra-after — left alone' "$s
 rm -f "$gd/avra-run"
 (cd "$main" && sh "$work" sprites --fix) > "$scratch/out" 2>&1
 check "$(grep -c 'A is held by lane avra-after — left alone' "$scratch/out")" 1 "work sprites --fix: unnamed, it passes by a Sprite a lane holds, and says so" "$scratch/out"
+
+# ══ THE FIRST BUILD'S START: main's compiler, else a free Sprite's, else the seed
+export SPRITE_LOG="$scratch/sprite.log"
+seeded() { : > "$SPRITE_LOG"; (cd "$main" && "$@" sh "$work" seed B /tree "$main" HASH) > "$scratch/out" 2>&1; }
+seeded env CI_RUN=41 HOLDERS=C AVRA_SPRITES="A B C"
+check "$(grep -c "starts from main's compiler at 0000000$" "$scratch/out") $(grep -c -- '-s B exec.*cat > ./tree/build/avra' "$SPRITE_LOG") $(grep -c 'avra-compilers' "$SPRITE_LOG")" "1 1 0" "work seed: main's own compiler is fetched and handed to the Sprite; no other Sprite is asked" "$scratch/out"
+seeded env CI_RUN=41 CI_SHA="$(git -C "$main" rev-parse HEAD)" AVRA_SPRITES="A B C"
+check "$(grep -c 'which is this tree.s — nothing to build' "$scratch/out") $(grep -c 'printf %s .HASH. > ./tree/build/.avra-compiler-hash' "$SPRITE_LOG")" "1 1" "work seed: when the tree's compiler sources are that run's, its compiler is the tree's and is marked so" "$scratch/out"
+echo change >> "$main/Makefile"
+seeded env CI_RUN=41 CI_SHA="$(git -C "$main" rev-parse HEAD)" AVRA_SPRITES="A B C"
+check "$(grep -c 'nothing to build' "$scratch/out") $(grep -c 'avra-compiler-hash' "$SPRITE_LOG")" "0 0" "work seed: one edit to a compiler source and it is only a start, never marked as the tree's" "$scratch/out"
+rm -f "$main/Makefile"
+seeded env HOLDERS="A C" AVRA_SPRITES="A B C"
+check "$(grep -c "starts from C's newest compiler" "$scratch/out") $(grep -c -- '-s A exec' "$SPRITE_LOG")" "1 0" "work seed: with no CI compiler it copies a free Sprite's, never one a lane holds" "$scratch/out"
+seeded env AVRA_SPRITES="A B C"
+check "$(grep -c 'bootstrapping from the seed' "$scratch/out") $(grep -c 'cat > ' "$SPRITE_LOG")" "1 0" "work seed: with neither, it says the Sprite bootstraps and hands it nothing" "$scratch/out"
+unset SPRITE_LOG
 
 # ══ THE QUEUE: a PR queued with no train is taken out and put back ════
 cd "$main" || exit 1
