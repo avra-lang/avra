@@ -879,6 +879,17 @@ impl TypeCx {
         }
     }
 
+    /// Whether a place's path passes through a `state` field — the
+    /// write then lands in that field's cell, whatever the root is.
+    mut fn crosses_state(e: ExprId) -> bool {
+        if self.state_field_slot(e) != null { return true }
+        let step? = self.view.store.place_step(e) else { return false }
+        match step {
+            .Root(_) -> false,
+            .Field(subject, _) or .At(subject, _) or .Unwrap(subject) -> self.crosses_state(subject),
+        }
+    }
+
     /// THE VOID LAW: a value that is nothing cannot be bound. True
     /// means refused.
     mut fn refuses_void_value(e: ExprId) -> bool {

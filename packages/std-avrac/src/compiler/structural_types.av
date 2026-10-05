@@ -6,7 +6,7 @@
 //! type-check — receivers.av's writer inference, and the error-union
 //! fixpoint (failures.av).
 use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, SyntaxArena, MethodParts}
-use features.{NameFacts, Decls, bound_decl_of, method_row, declared_decl}
+use features.{NameFacts, Decls, bound_decl_of, method_row, declared_decl, state_slot}
 
 /// One fn's own view: its seats' declared types (the receiver's when
 /// it has one), the file's resolved names, and its body's store — the
@@ -26,6 +26,22 @@ impl DeclaredTypes {
             .At(subject, _) -> self.element_type(self.place_type(subject)),
             .Unwrap(subject) -> self.carried_type(self.place_type(subject)),
         }
+    }
+
+    /// Whether a place's path passes through a `state` field: a write
+    /// under it lands in that field's cell, and writes no seat.
+    fn crosses_state(e: ExprId) -> bool {
+        let step? = self.store.place_step(e) else { return false }
+        match step {
+            .Root(_) -> false,
+            .Field(subject, name) -> self.state_field(self.place_type(subject), name.of) || self.crosses_state(subject),
+            .At(subject, _) or .Unwrap(subject) -> self.crosses_state(subject),
+        }
+    }
+
+    fn state_field(holder: TypeId?, name: string) -> bool {
+        let ty? = holder else { return false }
+        state_slot(self.decls.fields_of_type(ty), name) != null
     }
 
     /// A root's declared type: the receiver's for `self`, the seat's

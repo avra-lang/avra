@@ -48,6 +48,7 @@ export fn check_assign(mut cx: TypeCx, s: StmtId) {
     let v = held!
     let t = target!
     cx.walk(t)
+    root_law(cx, s, t)
     let want = cx.type_at(t)
     if cx.errored_ty(want) || !cx.place_lawful(t) {
         cx.walk(v)
@@ -57,6 +58,15 @@ export fn check_assign(mut cx: TypeCx, s: StmtId) {
     cx.walk(v)
     if cx.drops_task(cx.stmt_loc(s), want) { return }
     if !cx.accepts(v, want) { slot_refused(cx, s, t, want, v) }
+}
+
+/// THE PLACE LAW's root half, for a PATH: a write through a `state`
+/// field lands in that field's cell, so it asks nothing of the root;
+/// any other path owes what its root's binding earns.
+fn root_law(mut cx: TypeCx, s: StmtId, t: ExprId) {
+    if cx.crosses_state(t) { return }
+    let owed? = owed_root(cx.view, cx.names, t, cx.stmt_loc(s)) else { return }
+    cx.emit(owed)
 }
 
 // ── The voices ──

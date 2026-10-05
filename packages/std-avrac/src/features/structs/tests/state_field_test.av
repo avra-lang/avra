@@ -1,7 +1,11 @@
 // `state` on a record FIELD: the slot holds a Cell, a read answers the
 // value it holds, and a write lands in the cell's one slot — no Cell
 // ever reaches the reader.
-use @std.avrac.testing.{shown}
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown, refused_with}
+
+/// A record with one plain field and one place.
+const counter = "type Counter = {\n    plain: int = 0\n    state n: int = 0\n}\n"
 
 spec "structs — a state field" {
     given "a state field" {
@@ -14,6 +18,81 @@ spec "structs — a state field" {
             shown(
                 "type Counter = {\n    state n: int = 0\n}\nimpl Counter {\n    mut fn bump() { self.n = self.n + 1 }\n    fn count() -> int { self.n }\n}\nmut c = Counter { }\nc.bump()\nc.bump()\nc.count()",
             ) == "2"
+        }
+    }
+    given "a write through a state field — the cell takes it, whatever the root" {
+        then "a parameter's state field is assigned with no `mut` seat" {
+            shown(
+                "${counter}fn poke(c: Counter) { c.n = c.n + 1 }\nlet c = Counter { }\npoke(c)\npoke(c)\nc.n",
+            ) == "2"
+        }
+        then "a plain binding's state field is assigned" {
+            shown("${counter}let c = Counter { }\nc.n = 7\nc.n") == "7"
+        }
+        then "a lambda assigns the state field of the `self` it captured" {
+            shown(
+                "${counter}impl Counter {\n    fn bump() -> fn() -> void { () -> { self.n = self.n + 1 } }\n}\nlet c = Counter { }\nlet f = c.bump()\nf()\nf()\nf()\nc.n",
+            ) == "3"
+        }
+        then "a lambda assigns the state field of a record it captured" {
+            shown("${counter}let c = Counter { }\nlet f = () -> { c.n = c.n + 5 }\nf()\nc.n") == "5"
+        }
+        then "a copy shares the cell, so a write through either is one write" {
+            shown(
+                "${counter}let c = Counter { }\nlet d = c with { plain: 4 }\nd.n = 9\n\"\${c.n} \${d.plain} \${c.plain}\"",
+            ) == "9 4 0"
+        }
+        then "an element of a state list is assigned through a parameter" {
+            shown(
+                "type Bag = {\n    state xs: List<int> = []\n}\nfn first(b: Bag) { b.xs[0] = 9 }\nlet b = Bag { xs: [1, 2] }\nfirst(b)\nb.xs[0] + b.xs[1]",
+            ) == "11"
+        }
+        then "a path under a state field is the cell's own to write" {
+            shown(
+                "type P = { x: int, y: int }\ntype Holder = {\n    state p: P = P { x: 1, y: 2 }\n}\nfn nudge(h: Holder) { h.p.x = 10 }\nlet h = Holder { }\nnudge(h)\nh.p.x + h.p.y",
+            ) == "12"
+        }
+        then "a method that writes only its state writes no receiver" {
+            analyze_source(
+                "${counter}impl Counter {\n    fn bump() { self.n = self.n + 1 }\n}\nlet c = Counter { }\nc.bump()\nc.n",
+            )
+                .diagnostics
+                .is_empty()
+        }
+    }
+    given "a write beside a state field — the root still answers" {
+        then "a parameter's plain field is refused in the parameter's words" {
+            refused_with(
+                "${counter}fn poke(c: Counter) { c.plain = 1 }\n0",
+                "`c` is a parameter — parameters are immutable",
+            )
+        }
+        then "a plain binding's plain field is refused" {
+            refused_with("${counter}let c = Counter { }\nc.plain = 1\n0", "`c` is not `mut`")
+        }
+        then "a lambda's captured `self` keeps its plain field" {
+            refused_with(
+                "${counter}impl Counter {\n    fn set() -> fn() -> void { () -> { self.plain = 2 } }\n}\n0",
+                "`self` is captured by value — a lambda cannot assign to it",
+            )
+        }
+        then "a lambda's captured record keeps its plain field" {
+            refused_with(
+                "${counter}let c = Counter { }\nlet f = () -> { c.plain = 2 }\n0",
+                "`c` is captured by value — a lambda cannot assign to it",
+            )
+        }
+        then "a pattern's bind keeps its plain field" {
+            refused_with(
+                "${counter}fn f(c: Counter?) -> int {\n    match c {\n        k? -> {\n            k.plain = 1\n            1\n        }\n        null -> 0\n    }\n}\n0",
+                "`k` is a pattern's bind",
+            )
+        }
+        then "a state field itself, whole, is still the root's when the root is the target" {
+            refused_with(
+                "${counter}fn swap(c: Counter) { c = Counter { } }\n0",
+                "`c` is a parameter",
+            )
         }
     }
 }

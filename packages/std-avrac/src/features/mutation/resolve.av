@@ -1,62 +1,94 @@
 //! The assignment's resolve rule: the target is a PLACE — a path
 //! rooted in a name — and that name must land on a `mut` binding;
 //! params and plain lets refuse with the remedy. The path itself
-//! resolves like any expression.
-use core.{StmtId, ExprId, DeclId, same_expr}
-use features.{ResolveCx, nothing}
-use diagnostics.{refusal}
+//! resolves like any expression. A PATH under a root that is no place
+//! is judged where its fields are known: a write through a `state`
+//! field lands in that field's cell and asks nothing of the root
+//! (`owed_root`, read by the typing law).
+use core.{StmtId, ExprId, DeclId, Binding, same_expr}
+use features.{ResolveCx, FileView, NameFacts}
+use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
 export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
     let t? = cx.view.store.assign_target(s) else { return }
     let at: Loc? = cx.stmt_loc(s)
     let root: ExprId? = cx.view.store.place_root(t)
-    if root == null || cx.view.store.forced(t) != null { return not_a_place(cx, at) }
+    if root == null || cx.view.store.forced(t) != null { return cx.emit(not_a_place(at)) }
     let r = root!
     cx.walk(t)
-    let n = cx.view.store.ident_name(r) ?? "this name"
     // the walk bound the root: ask THE BINDING, never the name — a
     // name-keyed table holds locals alone and would let a fn's
     // name through as a place
     let b? = cx.facts.binding(r) else { return }
+    if waits_for_fields(b, same_expr(t, r)) { return }
+    let refused? = root_refusal(cx.view, cx.facts, t, r, b, at) else { return }
+    cx.emit(refused)
+}
+
+/// What a PATH's root owes when no step of the path is a `state`
+/// field: the refusal its binding earns, absent for a root that is a
+/// place or one resolving already judged.
+fn owed_root(view: FileView, names: NameFacts, t: ExprId, at: Loc?) -> Diag? {
+    let r? = view.store.place_root(t) else { return null }
+    let b? = names.binding(r) else { return null }
+    if !waits_for_fields(b, same_expr(t, r)) { return null }
+    root_refusal(view, names, t, r, b, at)
+}
+
+/// Whether a root's verdict waits for the path's fields: a path under
+/// a binding that holds a value. A receiver is a place, and an index
+/// and a declaration hold no field a write could land in.
+fn waits_for_fields(b: Binding, whole: bool) -> bool {
+    match b {
+        .Param(_) or .LambdaParam(_, _) or .Def(_) or .Pattern(_, _) or .Capture(_, _) -> !whole,
+        .Receiver or .Index(_) or .Decl(_) -> false,
+    }
+}
+
+/// The refusal a root's binding earns for the target `t` — absent
+/// when the root is a place.
+fn root_refusal(view: FileView, names: NameFacts, t: ExprId, r: ExprId, b: Binding, at: Loc?) -> Diag? {
+    let n = root_word(view, r)
     match b {
         // a method writes through its receiver: a PATH under `self`,
         // never `self` itself
-        .Receiver -> if same_expr(t, r) { immutable_receiver(cx, at) } else { nothing() },
+        .Receiver -> if same_expr(t, r) { immutable_receiver(at) } else { null },
         // a `mut` seat is written through like a mut local — a PATH
         // under it, never the seat itself; `seat_whole` names the door
         // (`Cell<T>`) for a callee that needs to replace it whole
         .Param(_) or .LambdaParam(_, _) -> when {
-            !cx.facts.reads_mut_seat(r) -> immutable_param(cx, n, at)
-            same_expr(t, r) && !cx.facts.reads_state_seat(r) -> seat_whole(cx, n, at)
-            _ -> nothing()
+            !names.reads_mut_seat(r) -> immutable_param(n, at)
+            same_expr(t, r) && !names.reads_state_seat(r) -> seat_whole(n, at)
+            _ -> null
         },
-        .Index(_) -> immutable_index(cx, n, at),
-        .Def(s) -> mut_or_refused(cx, s, n, at),
-        .Pattern(_, _) -> immutable_bind(cx, n, at),
-        .Capture(l, j) -> if captures_state(cx, l, j) { nothing() } else { captured_copy(cx, n, at) },
-        .Decl(d) -> declared_place(cx, d, n, at),
+        .Index(_) -> immutable_index(n, at),
+        .Def(s) -> if view.store.stmt(s) is .MutLet { null } else { not_mut(n, at) },
+        .Pattern(_, _) -> immutable_bind(n, at),
+        .Capture(l, j) -> if captures_state(view, names, l, j) { null } else { captured_copy(n, at) },
+        .Decl(d) -> declared_place(view, d, n, at),
     }
+}
+
+/// A root as a refusal names it: its own word, `self` for a receiver.
+fn root_word(view: FileView, r: ExprId) -> string {
+    let step? = view.store.place_step(r) else { return "this name" }
+    match step { .Root(name) -> name.of, _ -> "this name" }
 }
 
 /// Whether a capture's source is a `state` binding — a PLACE the lambda
 /// shares, so assigning through it reaches the cell, never a copy.
-fn captures_state(cx: ResolveCx, l: ExprId, j: int) -> bool {
-    let cap? = cx.facts.capture(l) else { return false }
+fn captures_state(view: FileView, names: NameFacts, l: ExprId, j: int) -> bool {
+    let cap? = names.capture(l) else { return false }
     if j >= cap.sources.length { return false }
-    match cap.sources[j] { .Def(s) -> cx.view.store.is_state_stmt(s), rest -> false }
+    match cap.sources[j] { .Def(s) -> view.store.is_state_stmt(s), rest -> false }
 }
 
 /// A declaration is never a place: a fn and a const each refuse in
 /// their own words; a type's name as a value — the walk already spoke.
-fn declared_place(mut cx: ResolveCx, d: DeclId, n: string, at: Loc?) {
-    if cx.view.decls.fn_name(d) != null { return not_a_fn_place(cx, n, at) }
-    if cx.view.decls.decl(d).kind is .Const { immutable_const(cx, n, at) }
-}
-
-/// A definition is a place only when it was declared `mut`.
-fn mut_or_refused(mut cx: ResolveCx, s: StmtId, n: string, at: Loc?) {
-    if !(cx.view.store.stmt(s) is .MutLet) { not_mut(cx, n, at) }
+fn declared_place(view: FileView, d: DeclId, n: string, at: Loc?) -> Diag? {
+    if view.decls.fn_name(d) != null { return not_a_fn_place(n, at) }
+    if view.decls.decl(d).kind is .Const { immutable_const(n, at) } else { null }
 }
 
 // ── The voices ──
@@ -69,136 +101,106 @@ fn mut_copy_help(n: string) -> string {
     "bind a `mut` copy to change — `mut k = ${n}`"
 }
 
-fn not_a_place(mut cx: ResolveCx, at: Loc?) {
-    cx
-        .emit(
-            refusal(
-                "resolve.place",
-                at,
-                "a mutation lands on a place — a name, a field, or an index",
-                assigned_here,
-                "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding",
-            ),
-        )
+fn not_a_place(at: Loc?) -> Diag {
+    refusal(
+        "resolve.place",
+        at,
+        "a mutation lands on a place — a name, a field, or an index",
+        assigned_here,
+        "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding",
+    )
 }
 
 /// A `mut` seat is a place the CALLEE writes through, never a place
 /// it replaces: the caller keeps the binding, so a seat is written
 /// ALONG A PATH into it, never assigned whole. `Cell<T>` is the
 /// door for a value a callee needs to REPLACE outright.
-fn seat_whole(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx
-        .emit(
-            refusal(
-                "resolve.immutable",
-                at,
-                "`${n}` is a `mut` seat — a seat is written along a path, never replaced whole",
-                assigned_here,
-                "wrap the value in a `Cell<T>` and `.set(…)` it, write a path under it (`${n}.field = …`), or answer the new value",
-            ),
-        )
+fn seat_whole(n: string, at: Loc?) -> Diag {
+    refusal(
+        "resolve.immutable",
+        at,
+        "`${n}` is a `mut` seat — a seat is written along a path, never replaced whole",
+        assigned_here,
+        "wrap the value in a `Cell<T>` and `.set(…)` it, write a path under it (`${n}.field = …`), or answer the new value",
+    )
 }
 
-fn immutable_receiver(mut cx: ResolveCx, at: Loc?) {
-    cx
-        .emit(
-            refusal(
-                "resolve.immutable",
-                at,
-                "`self` is the receiver — it is not assigned",
-                assigned_here,
-                "assign a field of it — `self.<field> = …`",
-            ),
-        )
+fn immutable_receiver(at: Loc?) -> Diag {
+    refusal(
+        "resolve.immutable",
+        at,
+        "`self` is the receiver — it is not assigned",
+        assigned_here,
+        "assign a field of it — `self.<field> = …`",
+    )
 }
 
-fn immutable_param(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx
-        .emit(
-            refusal(
-                "resolve.immutable",
-                at,
-                "`${n}` is a parameter — parameters are immutable",
-                assigned_here,
-                "declare the seat `mut ${n}: …` to write through it; the caller then hands a `mut` place",
-            ),
-        )
+fn immutable_param(n: string, at: Loc?) -> Diag {
+    refusal(
+        "resolve.immutable",
+        at,
+        "`${n}` is a parameter — parameters are immutable",
+        assigned_here,
+        "declare the seat `mut ${n}: …` to write through it; the caller then hands a `mut` place",
+    )
 }
 
-fn immutable_bind(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx
-        .emit(
-            refusal(
-                "resolve.immutable",
-                at,
-                "`${n}` is a pattern's bind — it names the matched value, it is not assigned",
-                assigned_here,
-                mut_copy_help(n),
-            ),
-        )
+fn immutable_bind(n: string, at: Loc?) -> Diag {
+    refusal(
+        "resolve.immutable",
+        at,
+        "`${n}` is a pattern's bind — it names the matched value, it is not assigned",
+        assigned_here,
+        mut_copy_help(n),
+    )
 }
 
-fn captured_copy(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx
-        .emit(
-            refusal(
-                "resolve.immutable",
-                at,
-                "`${n}` is captured by value — a lambda cannot assign to it",
-                assigned_here,
-                "a capture is a copy: bind a `mut` inside the lambda, or answer the new value and let the caller keep it",
-            ),
-        )
+fn captured_copy(n: string, at: Loc?) -> Diag {
+    refusal(
+        "resolve.immutable",
+        at,
+        "`${n}` is captured by value — a lambda cannot assign to it",
+        assigned_here,
+        "a capture is a copy: bind a `mut` inside the lambda, or answer the new value and let the caller keep it",
+    )
 }
 
-fn not_a_fn_place(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx
-        .emit(
-            refusal(
-                "resolve.immutable",
-                at,
-                "`${n}` is a fn — it is not assigned",
-                assigned_here,
-                "bind a fn value to change it — `mut g = ${n}`",
-            ),
-        )
+fn not_a_fn_place(n: string, at: Loc?) -> Diag {
+    refusal(
+        "resolve.immutable",
+        at,
+        "`${n}` is a fn — it is not assigned",
+        assigned_here,
+        "bind a fn value to change it — `mut g = ${n}`",
+    )
 }
 
-fn immutable_index(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx
-        .emit(
-            refusal(
-                "resolve.immutable",
-                at,
-                "`${n}` is a loop index — it counts, it is not assigned",
-                assigned_here,
-                mut_copy_help(n),
-            ),
-        )
+fn immutable_index(n: string, at: Loc?) -> Diag {
+    refusal(
+        "resolve.immutable",
+        at,
+        "`${n}` is a loop index — it counts, it is not assigned",
+        assigned_here,
+        mut_copy_help(n),
+    )
 }
 
-fn immutable_const(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx
-        .emit(
-            refusal(
-                "resolve.immutable",
-                at,
-                "`${n}` is a const — the compiler settled it, it is not assigned",
-                assigned_here,
-                "bind a `mut` copy to change it — `mut k = ${n}`",
-            ),
-        )
+fn immutable_const(n: string, at: Loc?) -> Diag {
+    refusal(
+        "resolve.immutable",
+        at,
+        "`${n}` is a const — the compiler settled it, it is not assigned",
+        assigned_here,
+        "bind a `mut` copy to change it — `mut k = ${n}`",
+    )
 }
 
-fn not_mut(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx
-        .emit(
-            refusal(
-                "resolve.immutable",
-                at,
-                "`${n}` is not `mut`",
-                assigned_here,
-                "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`",
-            ),
-        )
+fn not_mut(n: string, at: Loc?) -> Diag {
+    refusal(
+        "resolve.immutable",
+        at,
+        "`${n}` is not `mut`",
+        assigned_here,
+        "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`",
+    )
 }
