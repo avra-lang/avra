@@ -3,33 +3,22 @@
 //! any screen would: to a control BY ITS WORDS. An event runs the handler
 //! the view bound and the loop paints again, so a test drives the same
 //! door a host does and names no platform.
-use app.{App, app, plain}
-use realize.controls.{Control, controls}
-use realize.outline.{outline}
-use realize.render.{Node, EventKind, Said}
+use app.{Shown, shown}
+use realize.controls.{Control}
+use realize.render.{EventKind, Said}
 use realize.view.{View}
-use style.theme.{Theme}
 
-/// A screen nobody draws: the app and the tree its last paint showed.
-export type Screen = { app: App, shown: Cell<Node?> }
+/// A screen nobody draws.
+export type Screen = { shown: Shown }
 
 /// `view` on a screen held in memory, painted once.
-export fn headless<V: View>(view: fn() -> V) -> Screen {
-    let shown: Cell<Node?> = Cell.new(null)
-    let made = Screen {
-        app: app(view, plain, (root: Node, _theme: Theme) -> shown.set(root)),
-        shown: shown,
-    }
-    made.app.paint()
-    made
-}
+export fn headless<V: View>(view: fn() -> V) -> Screen { Screen { shown: shown(view) } }
 
 impl Screen {
     /// The `nth` control named `name`, counted in reading order from
     /// zero — absent when the screen holds no such control.
     fn control(name: string, nth: int) -> Control? {
-        let root? = self.shown.get() else { return null }
-        let named = [c for c in controls(root) if c.node.words() == name]
+        let named = [c for c in self.shown.controls() if c.node.words() == name]
         if nth < 0 || nth >= named.length { return null }
         named[nth]
     }
@@ -37,7 +26,7 @@ impl Screen {
     /// The control named `name` speaks `kind`, saying `said`.
     fn speak(name: string, nth: int, kind: EventKind, said: Said?) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.app.turn(() -> c.says(kind, said))
+        self.shown.app.turn(() -> c.says(kind, said))
     }
 
     /// The user presses the control named `name`. False when no handler
@@ -45,7 +34,7 @@ impl Screen {
     /// press.
     fn press(name: string, nth: int = 0) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.app.turn(() -> c.pressed())
+        self.shown.app.turn(() -> c.pressed())
     }
 
     /// The user gives the control named `name` its text — all of it, as a
@@ -64,17 +53,14 @@ impl Screen {
     /// key in a field does.
     fn submit(name: string, nth: int = 0) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.app.turn(() -> c.sends())
+        self.shown.app.turn(() -> c.sends())
     }
 
     /// The state changed outside an event — a timer, an answer arriving —
     /// and the screen is painted again.
-    fn repaint() { self.app.paint() }
+    fn repaint() { self.shown.app.paint() }
 
     /// The screen as a reader finds it: one line a node, its words and
     /// what its attributes say, what it holds indented under it.
-    fn text() -> string {
-        let root? = self.shown.get() else { return "" }
-        outline(root)
-    }
+    fn text() -> string { self.shown.text() }
 }

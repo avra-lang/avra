@@ -1,9 +1,15 @@
 //! `terminal/keys.av` — what a terminal's input spells, as the keys the
 //! loop acts on. Tab and the down arrow move the focus on, Shift-Tab and
 //! the up arrow move it back, Enter acts, Backspace erases, Ctrl-D ends;
-//! every other printable character is itself. An escape sequence the loop
-//! has no key for is read whole and dropped, never typed.
-use @std.text.{codepoints, from_codepoint}
+//! every other printable character is itself.
+//!
+//! INPUT IS READ AS OCTETS, a run at a time, and a run may end anywhere:
+//! an unfinished character or escape sequence is HELD for the next run,
+//! never typed and never thrown away. An octet that can start no
+//! character is dropped alone, so what follows it is still heard. An
+//! escape sequence the loop has no key for is read whole and dropped —
+//! `ESC [ … final`, `ESC O final`, and the one character after any other
+//! escape.
 
 /// A key as the loop reads it.
 export enum Key {
@@ -15,6 +21,10 @@ export enum Key {
     End
 }
 
+/// What a run of input spells: its keys, and the octets of an unfinished
+/// character or sequence at its end, to stand before the next run.
+export type Heard = { keys: List<Key>, held: Bytes }
+
 const tab = 9
 const line_feed = 10
 const carriage_return = 13
@@ -22,62 +32,128 @@ const end_of_input = 4
 const backspace = 8
 const delete = 127
 const escape = 27
-const bracket = 91
 const space = 32
 
-/// A key read from `at`, and where the next one starts.
-type Read = { key: Key?, next: int }
+/// `[`, which opens a control sequence after an escape.
+const bracket = 91
 
-/// The one code point at `at`, read as `key` — or as no key at all.
-fn one(key: Key?, at: int) -> Read { Read { key: key, next: at + 1 } }
+/// `O`, which opens a single-shift sequence after an escape.
+const shift_three = 79
 
-/// The last code point of a control sequence: one in `@`..`~`.
-fn ends_sequence(c: int) -> bool { c >= 64 && c <= 126 }
+/// The finals that move the focus: `A` (up), `B` (down), `Z` (back-tab).
+const up = 65
+const down = 66
+const back_tab = 90
 
-/// The key a control sequence's last code point names.
-fn sequence_key(last: int) -> Key? {
-    match from_codepoint(last) { "Z" or "A" -> Key.Back, "B" -> Key.Next, _ -> null }
-}
+/// The most octets an unfinished sequence is held for; past it, it is
+/// dropped as read.
+const longest_sequence = 64
 
-/// The escape at `at`: a control sequence read to its end, or the lone
-/// escape itself.
-fn escaped(cs: List<int>, at: int) -> Read {
-    if at + 1 >= cs.length || cs[at + 1] != bracket { return one(null, at) }
-    let last = [j for j, c in cs if j > at + 1 && ends_sequence(c)].first() ?? cs.length - 1
-    Read { key: sequence_key(cs[last]), next: last + 1 }
-}
+/// One reading at a place: the key it spelled, when it spelled one, and
+/// where the next begins. `waits` says the input ended inside it.
+type Read = { keys: List<Key>, next: int, waits: bool = false }
 
-/// A carriage return is the Enter key; the line feed a terminal sends
-/// after it is the same key, read once.
-fn returned(cs: List<int>, at: int) -> Read {
-    let paired = at + 1 < cs.length && cs[at + 1] == line_feed
-    Read { key: Key.Enter, next: if paired { at + 2 } else { at + 1 } }
-}
+/// One octet read as `keys`.
+fn one(keys: List<Key>, at: int) -> Read { Read { keys: keys, next: at + 1 } }
 
-fn read(cs: List<int>, at: int) -> Read {
-    let c = cs[at]
+/// What stood before `to` spelled no key.
+fn dropped(to: int) -> Read { Read { keys: [], next: to } }
+
+/// What begins at `at` is unfinished: nothing is read past it.
+fn waiting(at: int) -> Read { Read { keys: [], next: at, waits: true } }
+
+/// The key a sequence's final names.
+fn moved(last: int) -> List<Key> {
     when {
-        c == escape -> escaped(cs, at)
-        c == carriage_return -> returned(cs, at)
-        c == line_feed -> one(Key.Enter, at)
-        c == tab -> one(Key.Next, at)
-        c == backspace || c == delete -> one(Key.Erase, at)
-        c == end_of_input -> one(Key.End, at)
-        c < space -> one(null, at)
-        _ -> one(Key.Char(from_codepoint(c)), at)
+        last == up || last == back_tab -> [Key.Back]
+        last == down -> [Key.Next]
+        _ -> []
     }
 }
 
-/// The keys `text` spells, in order.
-export fn keys(text: string) -> List<Key> {
-    let cs = codepoints(text)
-    mut out: List<Key> = []
+/// A control sequence's body from `at`: parameter and intermediate octets
+/// (`0x20`–`0x3F`), then one final (`0x40`–`0x7E`). An octet that is
+/// neither ends the sequence unread.
+fn sequence(b: Bytes, opened: int, at: int) -> Read {
+    mut end = at
+    while end < b.length && b.at(end) >= 32 && b.at(end) <= 63 { end = end + 1 }
+    if end >= b.length {
+        return if end - opened > longest_sequence { dropped(end) } else { waiting(opened) }
+    }
+    let last = b.at(end)
+    if last >= 64 && last <= 126 { Read { keys: moved(last), next: end + 1 } } else { dropped(end) }
+}
+
+/// The escape at `at`, read with what it opens.
+fn escaped(b: Bytes, at: int) -> Read {
+    if at + 1 >= b.length { return waiting(at) }
+    let opener = b.at(at + 1)
+    if opener == bracket { return sequence(b, at, at + 2) }
+    if opener != shift_three { return dropped(at + 2) }
+    if at + 2 >= b.length { return waiting(at) }
+    Read { keys: moved(b.at(at + 2)), next: at + 3 }
+}
+
+/// How many octets the character a lead octet opens takes — none for an
+/// octet that opens no character.
+fn width(lead: int) -> int {
+    when {
+        lead < 128 -> 1
+        lead >= 194 && lead <= 223 -> 2
+        lead >= 224 && lead <= 239 -> 3
+        lead >= 240 && lead <= 244 -> 4
+        _ -> 0
+    }
+}
+
+/// Whether the octets from `at` could still become a character of `wide`
+/// octets once more arrive: each one after the lead continues it.
+fn may_finish(b: Bytes, at: int, wide: int) -> bool {
+    at + wide > b.length && [b.at(j) for j in at + 1..b.length].all(continues)
+}
+
+/// Whether an octet continues a character another octet opened.
+fn continues(octet: int) -> bool { octet >= 128 && octet <= 191 }
+
+/// The printable character at `at`: itself when its octets are one, held
+/// when the input ends inside it, and its lead dropped alone otherwise.
+fn character(b: Bytes, at: int) -> Read {
+    let wide = width(b.at(at))
+    if wide == 0 { return one([], at) }
+    if may_finish(b, at, wide) { return waiting(at) }
+    let text? = b.slice(at, at + wide).text() else { return one([], at) }
+    Read { keys: [Key.Char(text)], next: at + wide }
+}
+
+fn read(b: Bytes, at: int) -> Read {
+    let c = b.at(at)
+    when {
+        c == escape -> escaped(b, at)
+        c == carriage_return -> Read {
+            keys: [Key.Enter],
+            next: if at + 1 < b.length && b.at(at + 1) == line_feed { at + 2 } else { at + 1 },
+        }
+        c == line_feed -> one([Key.Enter], at)
+        c == tab -> one([Key.Next], at)
+        c == backspace || c == delete -> one([Key.Erase], at)
+        c == end_of_input -> one([Key.End], at)
+        c < space -> one([], at)
+        _ -> character(b, at)
+    }
+}
+
+/// The keys a run of octets spells, and what it leaves unfinished.
+export fn heard(input: Bytes) -> Heard {
+    mut reads: List<Read> = []
     mut at = 0
-    // LICENSED loops.push_loop: a key takes one code point or several — the walk steps by what it read
-    while at < cs.length {
-        let got = read(cs, at)
-        if got.key != null { out.push(got.key!) }
+    // LICENSED loops.push_loop: a key takes one octet or several — the walk steps by what it read
+    while at < input.length && !(reads.last()?.waits ?? false) {
+        let got = read(input, at)
+        reads.push(got)
         at = got.next
     }
-    out
+    Heard { keys: [k for r in reads for k in r.keys], held: input.slice(at, input.length) }
 }
+
+/// The keys a whole text spells: what it leaves unfinished spells none.
+export fn keys(text: string) -> List<Key> { heard(text.bytes()).keys }

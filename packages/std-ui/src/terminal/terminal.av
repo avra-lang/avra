@@ -8,15 +8,13 @@
 //! held text and the character, and a view that does not keep what it was
 //! told shows none of it.
 use @std.text.{codepoints, from_codepoints}
-use app.{App, app, plain}
-use realize.controls.{Control, controls}
-use realize.outline.{outline}
-use realize.render.{Node, Said}
+use app.{Shown, shown}
+use realize.controls.{Control}
+use realize.render.{Said}
 use realize.tui.said.{said_of}
 use realize.tui.tui.{focused}
 use realize.view.{View}
-use style.theme.{Theme}
-use terminal.keys.{Key, keys}
+use terminal.keys.{Key, heard, keys}
 
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
@@ -26,26 +24,18 @@ extern fn avra_fd_taken(token: int) -> Bytes
 /// control leaves the screen.
 type Focus = { path: string, at: int }
 
-/// An app in a terminal `width` cells wide: the tree its last paint
+/// An app in a terminal `width` cells wide: the screen its last paint
 /// showed, who holds the focus, and whether the input has ended.
 export type Terminal = {
-    app: App,
+    shown: Shown,
     width: int,
-    shown: Cell<Node?>,
     focus: Cell<Focus?> = Cell.new(null),
     ended: Cell<bool> = Cell.new(false),
 }
 
 /// `view` in a terminal `width` cells wide, painted once.
 export fn terminal<V: View>(view: fn() -> V, width: int = 80) -> Terminal {
-    let shown: Cell<Node?> = Cell.new(null)
-    let made = Terminal {
-        app: app(view, plain, (root: Node, _theme: Theme) -> shown.set(root)),
-        width: width,
-        shown: shown,
-    }
-    made.app.paint()
-    made
+    Terminal { shown: shown(view), width: width }
 }
 
 // ── what a key does to the control that holds the focus ─────────
@@ -94,10 +84,7 @@ fn erased(c: Control) -> bool {
 impl Terminal {
     /// The controls the focus can rest on, in reading order: on the
     /// screen and able to speak.
-    fn reachable() -> List<Control> {
-        let root? = self.shown.get() else { return [] }
-        [c for c in controls(root) if !c.disabled()]
-    }
+    fn reachable() -> List<Control> { [c for c in self.shown.controls() if !c.disabled()] }
 
     /// Where the focus rests among `on`: the control at the path it was
     /// left on, else the one now standing in its place, else the first.
@@ -129,8 +116,12 @@ impl Terminal {
         let on = self.reachable()
         let at? = self.resting(on) else { return false }
         self.focus.set(Focus { path: on[at].path, at: at })
-        self.app.turn(() -> by(on[at]))
+        self.shown.app.turn(() -> by(on[at]))
     }
+
+    /// The state changed outside a key — a timer, an answer arriving — and
+    /// the screen is painted again.
+    fn repaint() { self.shown.app.paint() }
 
     /// One key. True when a handler ran.
     fn key(k: Key) -> bool {
@@ -153,26 +144,26 @@ impl Terminal {
         }
     }
 
-    /// The keys `text` spells, each in turn, until the input ends.
-    fn feed(text: string) {
-        for k in keys(text) {
+    /// Each key in turn, until the input ends.
+    fn press(pressed: List<Key>) {
+        for k in pressed {
             if self.ended.get() { return }
             let _ = self.key(k)
         }
     }
 
+    /// The keys `text` spells, each in turn, until the input ends.
+    fn feed(text: string) { self.press(keys(text)) }
+
     /// The screen as the terminal shows it: the tree in lines, the control
     /// that holds the focus marked.
     fn screen() -> string {
-        let root? = self.shown.get() else { return "" }
+        let root? = self.shown.tree.get() else { return "" }
         focused(root, self.width, self.focused()?.seat)
     }
 
     /// The screen as a reader finds it, with no terminal's drawing.
-    fn text() -> string {
-        let root? = self.shown.get() else { return "" }
-        outline(root)
-    }
+    fn text() -> string { self.shown.text() }
 }
 
 // ── the terminal itself ─────────────────────────────────────────
@@ -180,27 +171,18 @@ impl Terminal {
 const input = 0
 const chunk = 4096
 
-/// The most octets held while they are not yet text; past it they never
-/// will be, and are dropped.
-const held_limit = 65536
-
 /// THE APP: `view` in this terminal, drawn now and after every run of
-/// keys, until the input ends.
+/// keys, until the input ends. What a run leaves unfinished — a character
+/// or an escape sequence cut by the read — stands before the next run.
 export fn mount<V: View>(view: fn() -> V, width: int = 80) {
     let on = terminal(view, width)
     println(on.screen())
-    mut pending: Bytes = "".bytes()
+    mut held: Bytes = "".bytes()
     mut token = avra_fd_read(input, chunk)
     while token > 0 && !on.ended.get() {
-        pending = [pending, avra_fd_taken(token)].bytes()
-        // octets that are not yet text end mid-character: the rest is still to come
-        let read? = pending.text() else {
-            if pending.length > held_limit { pending = "".bytes() }
-            token = avra_fd_read(input, chunk)
-            continue
-        }
-        pending = "".bytes()
-        on.feed(read)
+        let run = heard(held.concat(avra_fd_taken(token)))
+        held = run.held
+        on.press(run.keys)
         println("")
         println(on.screen())
         if !on.ended.get() { token = avra_fd_read(input, chunk) }
