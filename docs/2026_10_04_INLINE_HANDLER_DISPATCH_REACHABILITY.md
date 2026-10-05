@@ -264,3 +264,55 @@ is dead plumbing), and the value half, because pieces 1 and 2 are both
 new passes rather than wiring, and a capture-free slice cannot be
 landed SOUNDLY ahead of the resolve-pass refusal that keeps `t` from
 resolving to a module name.
+
+## Addendum 3: the explicit-payload design, measured
+
+> 2026-10-05, lane ui-reserved, following a steering proposal.
+> Make the author name what crosses the wire —
+> `on click(t.id) { todo -> todos.remove(todo) }` — so the compiler
+> never infers a read-set. This IS a real simplification, and it is
+> worth stating exactly how much it removes and what it does not.
+
+**It removes narrowing, correctly.** With the payload written where the
+capture is already in scope, no `Cap.sources` read-set reduction is
+needed; the handler takes the sent value as a seat and its capture list
+is empty.
+
+**It does not remove the value's type problem — measured.** The setting
+must still become a concrete `dyn Messages?` implementor, and the
+payload must cross as a `Payload` variant. Writing the payload scalars
+straight into a `Payload?` field is refused by typing:
+
+```
+type Box = { site: int = 0, value: Payload? = null }
+type Row = { id: string }
+fn f(r: Row) -> Box { Box { site: 5, value: r.id } }
+
+error[type.struct_fields]: field `value` is `Payload?`, this is `string`
+```
+
+So the compiler must pick `Payload.Int` / `.Text` / `.Bool` from the
+payload expression's type (or from the handler seat's inferred type) —
+a type-directed choice. It is ONE decision, far smaller than narrowing,
+but it is not "no analysis": the `Inline { site, value }` literal cannot
+be built at parse where the payload's type is unknown.
+
+**And the handler is no longer the setting's value.** `Inline { site,
+value }` replaces the lambda, so the lambda is no longer reached by the
+typing walk or the lowering lift; the door must call it by the site it
+was registered under. That is the same "an expression outside the value
+must still be typed and lifted" shape the pass needs, and the same
+program-wide site -> symbol registry the door's dispatch already wants
+(`union` holds every file's `Analysis`; `Decls.lifted_symbol` names each
+lift deterministically). It is smaller than narrowing, and it is the
+part the explicit payload does not touch.
+
+**The pieces, in order, both smaller than the wall they replace:**
+1. grammar — `on <kind> ( <payload-expr> ) { <seat> -> … }` beside the
+   existing nullary form (`features/components/mod.av`'s `setting` rule
+   and `build_on_handler`), producing `Inline { site, value }` and
+   registering `(site, lambda)`.
+2. a library `Inline` type + `impl Messages` (`@std/ui`).
+3. a type-directed `Payload` wrap for the payload expression.
+4. the door's dispatch over the registered sites (`lower_inline_event`).
+5. the board's `avra_event` tries the door first.
