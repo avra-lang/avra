@@ -1,23 +1,28 @@
-//! `realize/dom/live.av` — a live page: the elements it holds, the sheet
-//! it wears and the handlers it heard, kept so the next paint says only
-//! what changed and a host's echo finds the handler it names.
-use realize.identity.{NodeId}
-use realize.render.{Node, Action, Said}
+//! `realize/dom/live.av` — a live page: the elements it holds, each
+//! under the number it was given, the sheet it wears and the handlers it
+//! heard — kept so the next paint says only what changed and a host's
+//! echo finds the handler it names.
+use realize.identity.{NodeId, readable}
+use realize.render.{Node, Action, EventKind, Said}
 use realize.html.element.{Element, lowered}
 use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet}
-use realize.html.tags.{HtmlTag, HtmlAttrName}
-use realize.dom.patch.{Patch, Heard, Listening, Says, diff, listening_of}
-use realize.dom.wire.{frame, kind_code}
+use realize.html.tags.{HtmlAttrName}
+use realize.dom.patch.{Patch, Heard, Says, diff, listening_of}
+use realize.dom.wire.{frame}
 use style.theme.{Theme}
 
 /// An element that hears an event, and what it does then.
 type Bound = { id: NodeId, action: Action }
 
-/// A page as last painted: its elements, the sheet it wears and every
-/// rule a paint has named so far, the handlers its elements bound, and
-/// what the user was heard to do to it since.
+/// A page as last painted: its elements, the next number it will give
+/// one, the sheet and every rule a paint has named so far, the handlers
+/// its elements bound, what the user was heard to do to it since — and
+/// the page as it stood before, so a patch that removes an element can
+/// still be read.
 export type Live = {
     page: Cell<List<Element>> = Cell.new([]),
+    stood: Cell<List<Element>> = Cell.new([]),
+    next: Cell<int> = Cell.new(0),
     sheet: Cell<string> = Cell.new(""),
     rules: Cell<List<CssRule>> = Cell.new([]),
     bound: Cell<List<Bound>> = Cell.new([]),
@@ -65,17 +70,19 @@ impl Live {
     /// The handlers are kept anew EVERY paint: two trees that draw alike
     /// may still close over different values.
     fn patches(root: Node, theme: Theme) -> List<Patch> {
-        let next = lowered(root)
+        let stood = self.page.get()
         let rules = distinct_rules(self.rules.get().concat(rules_of(root)))
         let sheet = page_sheet(rules, theme, [])
         let restyled: List<Patch> = if sheet == self.sheet.get() { [] } else { [Patch.Style(sheet)] }
-        let changed = diff(self.page.get(), next, self.heard.get())
-        self.page.set(next)
+        let now = diff(stood, lowered(root), self.heard.get(), self.next.get())
+        self.stood.set(stood)
+        self.page.set(now.page)
+        self.next.set(now.next)
         self.rules.set(rules)
         self.sheet.set(sheet)
         self.heard.set([])
-        self.bound.set([b for e in next for b in bound_in(e)])
-        restyled.concat(changed)
+        self.bound.set([b for e in now.page for b in bound_in(e)])
+        restyled.concat(now.patches)
     }
 
     /// `patches`, as the frame a host applies.
@@ -85,8 +92,8 @@ impl Live {
     /// handler the last paint bound there runs; false when nothing
     /// answered. What a control said is what its property now holds, so
     /// the next paint compares against that.
-    fn fire(id: NodeId, kind: int, said: Said?) -> bool {
-        let found? = self.bound.get().find((b) -> b.id == id && kind_code(b.action.kind) == kind) else { return false }
+    fn fire(id: NodeId, kind: EventKind, said: Said?) -> bool {
+        let found? = self.bound.get().find(it.id == id && it.action.kind == kind) else { return false }
         self.hear(id, found.action, said)
         found.action.fire(said)
     }
@@ -96,12 +103,45 @@ impl Live {
         let name? = listening_of(action).reads else { return }
         self.heard.push(Heard { id: id, name: name, value: value })
     }
+
+    /// What a paint of `root` says, as readable lines — each element by
+    /// the path it stands at. For tests and `explain`, never the wire.
+    fn said(root: Node, theme: Theme) -> string {
+        let patches = self.patches(root, theme)
+        patch_text(patches, self.stood.get().concat(self.page.get()))
+    }
 }
 
 // ── the readable projection ─────────────────────────────────────
 
-/// An id as a line spells it — `-` where there is none.
-fn spelled(id: NodeId?) -> string { id?.path ?? "-" }
+/// Each numbered element under `run` and the path it stands at: its
+/// ancestors' seats, then its own.
+fn paths(run: List<Element>, under: string) -> List<Path> {
+    [p for e in run for p in paths_of(e, under)]
+}
+
+type Path = { n: int, path: string }
+
+fn paths_of(e: Element, under: string) -> List<Path> {
+    let here = "${under}${readable(e.seat())}"
+    let own = [Path { n: e.id().n, path: here }]
+    let el? = e.tagged() else { return own }
+    own.concat(paths(el.kids, "${here}/"))
+}
+
+/// The path each number stands at, across the pages given.
+fn path_table(pages: List<Element>) -> Map<string, string> {
+    mut at: Map<string, string> = {}
+    for p in paths(pages, "") { at.set("${p.n}", p.path) }
+    at
+}
+
+/// An id as a line spells it: its path, `-` where there is none, and its
+/// bare number for one no page here holds.
+fn spelled(id: NodeId?, at: Map<string, string>) -> string {
+    let held? = id else { return "-" }
+    at.get("${held.n}") ?? "?${held.n}"
+}
 
 fn said_word(value: Said) -> string {
     match value { .Text(t) -> "\"${t}\"", .Flag(on) -> "${on}", .Number(n) -> "${n}" }
@@ -113,25 +153,32 @@ fn says_word(s: Says) -> string {
 }
 
 /// One patch as a readable line.
-fn patch_line(p: Patch) -> string {
+fn patch_line(p: Patch, at: Map<string, string>) -> string {
     match p {
-        .Create(id, tag) -> "create ${id.path} ${tag.word()}",
-        .CreateText(id, content) -> "text ${id.path} ${content}",
-        .Place(id, parent, after) -> "place ${id.path} in ${spelled(parent)} after ${spelled(after)}",
-        .Remove(id) -> "remove ${id.path}",
-        .SetAttr(id, name, value) -> "attr ${id.path} ${name.word()}=${value}",
-        .DropAttr(id, name) -> "unattr ${id.path} ${name.word()}",
-        .SetProp(id, name, value) -> "prop ${id.path} ${name.word()}=${said_word(value)}",
-        .SetText(id, content) -> "retext ${id.path} ${content}",
-        .Listen(id, to) -> "listen ${id.path} ${to.action.kind.word()}${says_word(to.says)}",
-        .Unlisten(id, kind) -> "unlisten ${id.path} ${kind.word()}",
+        .Create(id, tag) -> "create ${spelled(id, at)} ${tag.word()}",
+        .CreateText(id, content) -> "text ${spelled(id, at)} ${content}",
+        .Place(id, parent, after) -> "place ${spelled(id, at)} in ${spelled(parent, at)} after ${spelled(after, at)}",
+        .Remove(id) -> "remove ${spelled(id, at)}",
+        .SetAttr(id, name, value) -> "attr ${spelled(id, at)} ${name.word()}=${value}",
+        .DropAttr(id, name) -> "unattr ${spelled(id, at)} ${name.word()}",
+        .SetProp(id, name, value) -> "prop ${spelled(id, at)} ${name.word()}=${said_word(value)}",
+        .SetText(id, content) -> "retext ${spelled(id, at)} ${content}",
+        .Listen(id, to) -> "listen ${spelled(id, at)} ${to.action.kind.word()}${says_word(to.says)}",
+        .Unlisten(id, kind) -> "unlisten ${spelled(id, at)} ${kind.word()}",
         .Style(_) -> "style",
     }
 }
 
-/// Patches as readable lines — for tests and `explain`, never the wire.
-export fn patch_text(patches: List<Patch>) -> string { [patch_line(p) for p in patches].join("\n") }
+/// Patches as readable lines, each element spelled by the path it stands
+/// at on one of `pages` — the page before a paint and the page after.
+export fn patch_text(patches: List<Patch>, pages: List<Element>) -> string {
+    let at = path_table(pages)
+    [patch_line(p, at) for p in patches].join("\n")
+}
 
 /// A tree's first paint as readable lines: the page built from nothing,
 /// its sheet left out.
-export fn drawn_text(root: Node) -> string { patch_text(diff([], lowered(root), [])) }
+export fn drawn_text(root: Node) -> string {
+    let made = diff([], lowered(root), [], 0)
+    patch_text(made.patches, made.page)
+}

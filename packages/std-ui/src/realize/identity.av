@@ -1,11 +1,20 @@
-//! `realize/identity.av` — ONE identity per node: its parent's identity,
-//! then its own STEP — its key, or its place among its unkeyed siblings.
-//! A node keeps its id while its key and its ancestors' stand, whatever
-//! is inserted, removed or reordered beside it. The walk, the handler
-//! table, a host's echo and a diff all read this one id.
+//! `realize/identity.av` — ONE identity per node: WHERE IT STANDS — its
+//! parent, then its own STEP: its key, or its place among its unkeyed
+//! siblings. A node is the same node while its key and its ancestors'
+//! stand, whatever is inserted, removed or reordered beside it.
+//!
+//! Identity is never written out whole. A page that keeps a node across
+//! paints gives it a NUMBER when it first appears (`NodeId`) and the node
+//! wears that number while it stays: fixed in width however deep the node
+//! sits, and never shared, since a number is counted out and not hashed.
+//! The steps a number stands under are spelled only for a reader.
 
-/// A node's identity. Compared and logged, never parsed.
-export type NodeId = { path: string }
+/// The number a page gives a node while the node stays on it. Compared
+/// and echoed, never parsed. A node no page has placed wears none.
+export type NodeId = { n: int }
+
+/// What a node not yet on a page wears.
+export const unplaced = NodeId { n: -1 }
 
 /// What tells a node from its siblings.
 export enum Step {
@@ -19,9 +28,10 @@ export enum Step {
 }
 
 impl Step {
-    /// A step as an id spells it. A key is written with its LENGTH, so no
-    /// key's own text reads as another node's steps; a place is digits and
-    /// a part opens with `+`, so the three never spell alike.
+    /// A step as a sibling is matched by and a reader's path spells it. A
+    /// key is written with its LENGTH, so no key's own text reads as
+    /// another node's steps; a place is digits and a part opens with `+`,
+    /// so the three never spell alike.
     fn spelled() -> string {
         match self {
             .Keyed(key, turn) -> if turn == 0 { "k${key.length}:${key}" } else { "k${key.length}:${key}~${turn}" },
@@ -31,35 +41,40 @@ impl Step {
     }
 }
 
-impl NodeId {
-    /// The id of this node's child at `step`.
-    fn child(step: Step) -> NodeId { NodeId { path: "${self.path}/${step.spelled()}" } }
+/// Each sibling's step, from the siblings' keys in order. A key seen
+/// before takes the next turn, so two siblings never share a step.
+export fn steps(keys: List<string?>) -> List<Step> {
+    if keys.all(it == null) { return [Step.Placed(j) for j, k in keys] }
+    mut turns: Map<string, int> = {}
+    mut placed = 0
+    mut out: List<Step> = []
+    // LICENSED loops.push_loop: a running count — each step is the keys before it
+    for key in keys {
+        match key {
+            k? -> {
+                let turn = turns.get(k) ?? 0
+                turns.set(k, turn + 1)
+                out.push(Step.Keyed(k, turn))
+            }
+            null -> {
+                out.push(Step.Placed(placed))
+                placed = placed + 1
+            }
+        }
+    }
+    out
 }
 
-/// One sibling list's count so far: the turns each key has had, and the
-/// unkeyed places handed out.
-type Turns = { seen: Cell<Map<string, int>> = Cell.new({}), placed: Cell<int> = Cell.new(0) }
-
-impl Turns {
-    /// The next sibling's step. A key seen before takes the next turn, so
-    /// two siblings never share a step.
-    fn next(key: string?) -> Step {
-        let k? = key else {
-            let at = self.placed.get()
-            self.placed.set(at + 1)
-            return Step.Placed(at)
-        }
-        let turn = self.seen.get().get(k) ?? 0
-        self.seen.put(k, turn + 1)
-        Step.Keyed(k, turn)
+/// The step of a node with no siblings — a tree's root.
+export fn lone(key: string?) -> Step {
+    match key {
+        k? -> Step.Keyed(k, 0)
+        null -> Step.Placed(0)
     }
 }
 
-/// Each sibling's step, from the siblings' keys in order.
-export fn steps(keys: List<string?>) -> List<Step> {
-    let turns = Turns {}
-    [turns.next(k) for k in keys]
+/// A step as a reader's line shows it: a character that would break the
+/// line is written as its escape, so no key forges a line of its own.
+export fn readable(step: string) -> string {
+    step.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
 }
-
-/// The id of a tree's root: its own step under no parent.
-export fn root_id(key: string?) -> NodeId { NodeId { path: Turns {}.next(key).spelled() } }

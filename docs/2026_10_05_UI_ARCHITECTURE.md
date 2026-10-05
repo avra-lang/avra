@@ -43,13 +43,20 @@ Five attempts to lift a handler into a generated message failed.
    the library's facts: the event's own word, what it says, the
    property to read and whether to stop it ride the `listen` patch.
    A first paint is a diff against nothing; an unchanged page is no
-   patch; a property is compared against what the PAGE holds, so a
+   patch (the diff is a pure fold: old page and new in, patches and the
+   numbered page out); a property is compared against what the PAGE holds, so a
    field a user typed into is never written back to.
-2. **One identity.** A node's id derives from its parent's id and its
-   key, or its place among its unkeyed siblings (`realize/identity.av`).
-   Siblings sharing a key are told apart by their turn. Event echo,
-   per-instance state, retention and the event log all read it. The
-   compiler's site fingerprint replaces "place" through the same seam.
+2. **One identity.** A node is WHERE IT STANDS: its parent, then its
+   key or its place among its unkeyed siblings (`realize/identity.av`);
+   siblings sharing a key are told apart by their turn. Identity is
+   never written out whole. A page gives a node's element a NUMBER when
+   it first appears and the element wears it while it stays — matched,
+   paint to paint, by its step among its siblings. The number is fixed
+   in width however deep the node sits and counted out, never hashed,
+   so two elements cannot share one. Event echo, per-instance state,
+   retention and the event log read the number; a reader's path is
+   spelled only by the debug projection. The compiler's site
+   fingerprint replaces "place" as a step.
 3. **A primitive says what it projects to.** Primitives are a closed
    set the library owns; each member says what it is — `@attr(.Label)`,
    `@children`, `@style(color)`, an event, or the spread `..Box` — and

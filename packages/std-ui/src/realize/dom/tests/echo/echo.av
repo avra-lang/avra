@@ -1,0 +1,34 @@
+// proves: a host's echo is read ONCE, at the seam — who, the kind and what
+// was said, each from the number the wire gave it. An echo the wire cannot
+// read is absent, never "said nothing": an unknown kind, an unknown tag,
+// text the host could not hand over.
+use @std.ui.realize.dom.patch.{Says}
+use @std.ui.realize.dom.wire.{Echo, echo}
+use @std.ui.realize.render.{EventKind, Said}
+
+fn said_word(said: Said?) -> string {
+    let value? = said else { return "nothing" }
+    match value {
+        .Text(t) -> "text \"${t}\"",
+        .Flag(on) -> "flag ${on}",
+        .Number(n) -> "number ${n}",
+    }
+}
+
+fn read(who: int, what: int, tag: int, num: int, text: string?) -> string {
+    let e? = echo(who, what, tag, num, text) else { return "unreadable" }
+    "${e.id.n} ${e.kind.word()} ${said_word(e.said)}"
+}
+
+println(read(7, EventKind.Press.code(), Says.Nothing.code(), 0, ""))
+println(read(7, EventKind.Input.code(), Says.Text.code(), 0, "hi"))
+println(read(7, EventKind.Input.code(), Says.Text.code(), 0, ""))
+println(read(8, EventKind.Change.code(), Says.Flag.code(), 1, ""))
+println(read(8, EventKind.Change.code(), Says.Flag.code(), 0, ""))
+println(read(9, EventKind.Change.code(), Says.Number.code(), 42, ""))
+println(read(9, EventKind.Submit.code(), Says.Nothing.code(), 0, null))
+println("kind 0: ${read(1, 0, 0, 0, "")}")
+println("kind 99: ${read(1, 99, 0, 0, "")}")
+println("tag 9: ${read(1, 1, 9, 0, "")}")
+println("tag -1: ${read(1, 1, -1, 0, "")}")
+println("text unread: ${read(1, 2, Says.Text.code(), 0, null)}")

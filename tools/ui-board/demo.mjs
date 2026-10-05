@@ -53,7 +53,7 @@ console.log("ROW3 REMOVE:", remove3 ? "found" : "missing");
 console.log("FIRED:", fire(remove3), "—", spent());
 console.log("t3 gone:", keyed("t3") === null, " t2 kept:", keyed("t2") !== null);
 // The row below the removed one is the SAME element: nothing rebuilt it.
-console.log("t4 same element:", keyed("t4") === row4, " id:", row4.__avra_id);
+console.log("t4 same element:", keyed("t4") === row4);
 
 const toggle2 = named("Wire the event channel")[0];
 console.log("ROW2 TOGGLE:", toggle2 ? "found" : "missing");

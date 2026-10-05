@@ -1,8 +1,8 @@
-//! `realize/dom/codes.av` — `@derive(Codes)`: an enum variant carries the
+//! `realize/codes.av` — `@derive(Codes)`: an enum variant carries the
 //! number the wire spells it with (`@code(3) SetText`). The number is DATA
-//! on the variant, declared ONCE: the serializer asks `code()`, and
-//! whatever writes a host's copy asks `coded()` for every variant with its
-//! word — so no host table is kept by hand.
+//! on the variant, declared ONCE: the serializer asks `code()`, the reader
+//! of an echo asks `coded_as(n)`, and whatever writes a host's copy asks
+//! `coded()` for every variant with its word — so no table is kept twice.
 use @std.meta.{Type, Variant, Directive, Declared, Diagnostic, literal, refuse_as_at}
 use @std.text.{parse_int, codepoints, from_codepoints}
 
@@ -15,6 +15,7 @@ export trait Codes {
 
     static fn derive(t: Type) -> Declared {
         let arms = [quote { .${v.name} -> ${code_of(v)} } for v in t.variants]
+        let each = [quote { .${v.name} } for v in t.variants]
         let rows = [quote { Coded { word: ${literal(snake(v.name))}, code: ${code_of(v)} } } for v in t.variants]
         Declared {
             made: [
@@ -27,6 +28,11 @@ export trait Codes {
                             fn code() -> int { match self { ${arms} } }
 
                             static fn coded() -> List<Coded> { [${..rows}] }
+
+                            static fn coded_as(code: int) -> ${t}? {
+                                let every: List<${t}> = [${..each}]
+                                every.find(it.code() == code)
+                            }
                         }
                     },
                 },

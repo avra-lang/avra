@@ -9,7 +9,7 @@
 use @std.meta.{derive}
 use realize.identity.{NodeId}
 use realize.render.{Action, EventKind, Handler, Said}
-use realize.dom.codes.{Codes, Coded}
+use realize.codes.{Codes, Coded}
 use realize.html.element.{Element, Tagged}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
 
@@ -122,9 +122,9 @@ fn same_said(a: Said, b: Said) -> bool {
 
 // ── the diff ────────────────────────────────────────────────────
 
-/// A diff under way: the patches so far, and what the user was heard to
-/// do to the page since it was last drawn.
-type Differ = { out: Cell<List<Patch>> = Cell.new([]), heard: List<Heard> }
+/// A diff's answer: the patches, the page as it now stands — every
+/// element wearing its number — and the next number to give.
+export type Diffed = { patches: List<Patch>, page: List<Element>, next: int }
 
 /// One property of an element, by its name.
 type Prop = { name: HtmlAttrName, value: Said }
@@ -142,95 +142,146 @@ fn held(value: Said?) -> List<Said> {
 
 fn attrs_of(el: Tagged) -> List<HtmlAttr> { [a for a in el.attrs if property(a) == null] }
 
-/// Each element's place in a run, by its id.
-fn places(run: List<Element>) -> Map<string, int> {
-    mut at: Map<string, int> = {}
-    for j, e in run { at.set(e.id().path, j) }
-    at
+/// Whether two elements are ONE across a paint: they stand at one seat
+/// and are one kind of thing — text and text, or elements of one tag. A
+/// seat whose node became another kind holds a new element.
+fn same(old: Element, new: Element) -> bool {
+    old.seat() == new.seat() && same_kind(old, new)
 }
 
-/// Where in `run` the element stands that `e` is, across a paint: the
-/// one wearing its id, when it is the same kind of thing.
-fn twin_at(run: List<Element>, at: Map<string, int>, e: Element) -> int? {
-    let j? = at.get(e.id().path) else { return null }
-    if same_kind(run[j], e) { j } else { null }
-}
-
-/// Whether two elements are one kind of thing: text and text, or elements
-/// of one tag. An id whose node became another kind is a new element.
 fn same_kind(old: Element, new: Element) -> bool {
     match old {
-        .Text(_, _) -> match new { .Text(_, _) -> true, .Tag(_) -> false },
-        .Tag(was) -> match new { .Tag(el) -> was.tag == el.tag, .Text(_, _) -> false },
+        .Text(_, _, _) -> match new { .Text(_, _, _) -> true, .Tag(_) -> false },
+        .Tag(was) -> match new { .Tag(el) -> was.tag == el.tag, .Text(_, _, _) -> false },
     }
 }
 
-impl Differ {
-    fn say(p: Patch) { self.out.push(p) }
+/// Each element's place in a run, by its seat.
+fn places(run: List<Element>) -> Map<string, int> {
+    mut at: Map<string, int> = {}
+    for j, e in run { at.set(e.seat(), j) }
+    at
+}
 
+/// For each element of `of`, where in `run` the same element stands —
+/// absent for one `run` does not hold. Two runs that pair off in order,
+/// as an unchanged list does, are matched without a table.
+fn twins(run: List<Element>, of: List<Element>) -> List<int?> {
+    if run.length == of.length && [j for j, e in of if !same(run[j], e)].is_empty() { return [twin(j) for j, e in of] }
+    let at = places(run)
+    [twin_at(run, at, e) for e in of]
+}
+
+fn twin(j: int) -> int? { j }
+
+fn twin_at(run: List<Element>, at: Map<string, int>, e: Element) -> int? {
+    let j? = at.get(e.seat()) else { return null }
+    if same_kind(run[j], e) { j } else { null }
+}
+
+/// Whether an element that stood at `at` in the old order still follows
+/// every kept element before it — one new to the page never does.
+fn follows(at: int?, reached: int) -> bool {
+    let stood? = at else { return false }
+    stood > reached
+}
+
+/// Whether two actions ask the page for the same listener: the kind, and
+/// what the event says.
+fn same_hearing(a: Action, b: Action) -> bool { a.kind == b.kind && says(a.handler) == says(b.handler) }
+
+/// A diff under way: what the user was heard to do to the page since it
+/// was last drawn.
+type Differ = { heard: List<Heard> }
+
+impl Differ {
     /// One parent's children: what left is removed, what stays is diffed
     /// where it stands, and what is new or out of order is placed after
     /// the sibling it now follows. A kept element stands still while it
     /// follows, in the old order, every kept element before it.
-    fn siblings(parent: NodeId?, old: List<Element>, new: List<Element>) {
-        let was = places(old)
-        let now = places(new)
-        for e in old {
-            if twin_at(new, now, e) == null { self.say(Patch.Remove(e.id())) }
-        }
+    fn siblings(parent: NodeId?, old: List<Element>, new: List<Element>, next: int) -> Diffed {
+        let stays = twins(new, old)
+        let was = twins(old, new)
+        mut parts: List<Diffed> = []
+        mut free = next
         mut reached = -1
+        // LICENSED loops.push_loop: each element takes the numbers the ones before it left
         for j, e in new {
-            let after: NodeId? = if j == 0 { null } else { new[j - 1].id() }
-            let at? = twin_at(old, was, e) else {
-                self.made(e)
-                self.say(Patch.Place(e.id(), parent, after))
-                continue
-            }
-            self.kept(old[at], e)
-            if at > reached { reached = at } else { self.say(Patch.Place(e.id(), parent, after)) }
+            let d = self.drawn(old, was[j], e, free)
+            let now? = d.page.first() else { continue }
+            let stands = follows(was[j], reached)
+            if stands { reached = was[j] ?? reached }
+            parts
+                .push(
+                    if stands {
+                        d
+                    } else {
+                        d with { patches: d
+                            .patches
+                            .concat([Patch.Place(now.id(), parent, parts.last()?.page?.first()?.id())]) }
+                    },
+                )
+            free = d.next
+        }
+        Diffed {
+            patches: [Patch.Remove(e.id()) for j, e in old if stays[j] == null]
+                .concat([p for d in parts for p in d.patches]),
+            page: [e for d in parts for e in d.page],
+            next: free,
         }
     }
 
-    /// An element new to the page, built whole before it is placed.
-    fn made(e: Element) {
+    /// `e` on the page: kept, when `old` holds it at `at`, else made.
+    fn drawn(old: List<Element>, at: int?, e: Element, next: int) -> Diffed {
+        let stood? = at else { return self.made(e, next) }
+        self.kept(old[stood], e, next)
+    }
+
+    /// An element new to the page: given the next number and built whole,
+    /// for its parent to place.
+    fn made(e: Element, next: int) -> Diffed {
+        let id = NodeId { n: next }
         match e {
-            .Text(id, content) -> self.say(Patch.CreateText(id, content)),
+            .Text(_, seat, content) -> Diffed {
+                patches: [Patch.CreateText(id, content)],
+                page: [Element.Text(id, seat, content)],
+                next: next + 1,
+            },
             .Tag(el) -> {
-                self.say(Patch.Create(el.id, el.tag))
-                for a in attrs_of(el) { self.say(Patch.SetAttr(el.id, a.name, a.value)) }
-                for p in props_of(el) { self.say(Patch.SetProp(el.id, p.name, p.value)) }
-                for a in el.hears { self.say(Patch.Listen(el.id, listening_of(a))) }
-                self.siblings(el.id, [], el.kids)
+                let within = self.siblings(id, [], el.kids, next + 1)
+                Diffed {
+                    patches: [Patch.Create(id, el.tag)]
+                        .concat([Patch.SetAttr(id, a.name, a.value) for a in attrs_of(el)])
+                        .concat([Patch.SetProp(id, p.name, p.value) for p in props_of(el)])
+                        .concat([Patch.Listen(id, listening_of(a)) for a in el.hears])
+                        .concat(within.patches),
+                    page: [Element.Tag(el with { id: id, kids: within.page })],
+                    next: within.next,
+                }
             },
         }
     }
 
-    /// An element that stays: only what differs is said.
-    fn kept(old: Element, new: Element) {
+    /// An element that stays keeps its number: only what differs is said.
+    fn kept(old: Element, new: Element, next: int) -> Diffed {
         match new {
-            .Text(id, content) -> {
-                if old.text() != content { self.say(Patch.SetText(id, content)) }
+            .Text(_, seat, content) -> Diffed {
+                patches: if old.text() == content { [] } else { [Patch.SetText(old.id(), content)] },
+                page: [Element.Text(old.id(), seat, content)],
+                next: next,
             },
             .Tag(el) -> {
-                let was? = old.tagged() else { return }
-                self.tagged(was, el)
+                let was? = old.tagged() else { return self.made(new, next) }
+                let within = self.siblings(was.id, was.kids, el.kids, next)
+                Diffed {
+                    patches: attributes(was.id, attrs_of(was), attrs_of(el))
+                        .concat(self.properties(was.id, props_of(was), props_of(el)))
+                        .concat(hearing(was.id, was.hears, el.hears))
+                        .concat(within.patches),
+                    page: [Element.Tag(el with { id: was.id, kids: within.page })],
+                    next: within.next,
+                }
             },
-        }
-    }
-
-    fn tagged(old: Tagged, new: Tagged) {
-        self.attributes(new.id, attrs_of(old), attrs_of(new))
-        self.properties(new.id, props_of(old), props_of(new))
-        self.hearing(new.id, old.hears, new.hears)
-        self.siblings(new.id, old.kids, new.kids)
-    }
-
-    fn attributes(id: NodeId, old: List<HtmlAttr>, new: List<HtmlAttr>) {
-        for a in new {
-            if !old.any(it.name == a.name && it.value == a.value) { self.say(Patch.SetAttr(id, a.name, a.value)) }
-        }
-        for b in old {
-            if !new.any(it.name == b.name) { self.say(Patch.DropAttr(id, b.name)) }
         }
     }
 
@@ -242,39 +293,39 @@ impl Differ {
 
     /// A property is set when the page does not already hold its value:
     /// what the program last drew is not what stands once a user has
-    /// typed, so the page's own value is the one compared.
-    fn properties(id: NodeId, old: List<Prop>, new: List<Prop>) {
-        for p in new {
-            let was = old.find(it.name == p.name) ?? Prop { name: p.name, value: at_rest(p.value) }
-            if !same_said(self.standing(id, was), p.value) { self.say(Patch.SetProp(id, p.name, p.value)) }
-        }
-        for was in old {
-            if !new.any(it.name == was.name) &&
-                !same_said(self.standing(id, was), at_rest(was.value)) {
-                self.say(Patch.SetProp(id, was.name, at_rest(was.value)))
-            }
-        }
-    }
-
-    /// An event is heard anew when it is new, or says something else.
-    fn hearing(id: NodeId, old: List<Action>, new: List<Action>) {
-        for was in old {
-            if !new.any((a) -> same_hearing(was, a)) { self.say(Patch.Unlisten(id, was.kind)) }
-        }
-        for a in new {
-            if !old.any((was) -> same_hearing(was, a)) { self.say(Patch.Listen(id, listening_of(a))) }
-        }
+    /// typed, so the page's own value is the one compared. A property a
+    /// paint no longer names goes back to rest.
+    fn properties(id: NodeId, old: List<Prop>, new: List<Prop>) -> List<Patch> {
+        [Patch.SetProp(id, p.name, p.value) for p in new if !same_said(
+            self
+                .standing(id, old.find(it.name == p.name) ?? Prop { name: p.name, value: at_rest(p.value) }),
+            p.value,
+        )]
+            .concat(
+                [Patch.SetProp(id, was.name, at_rest(was.value)) for was in old if !new.any(it.name == was.name) &&
+                    !same_said(self.standing(id, was), at_rest(was.value))],
+            )
     }
 }
 
-/// Whether two actions ask the page for the same listener: the kind, and
-/// what the event says.
-fn same_hearing(a: Action, b: Action) -> bool { a.kind == b.kind && says(a.handler) == says(b.handler) }
+/// An attribute is set when it arrives or changes, and dropped when it goes.
+fn attributes(id: NodeId, old: List<HtmlAttr>, new: List<HtmlAttr>) -> List<Patch> {
+    [Patch.SetAttr(id, a.name, a.value) for a in new if !old.any(it.name == a.name && it.value == a.value)]
+        .concat([Patch.DropAttr(id, b.name) for b in old if !new.any(it.name == b.name)])
+}
+
+/// An event is heard anew when it is new, or says something else.
+fn hearing(id: NodeId, old: List<Action>, new: List<Action>) -> List<Patch> {
+    [Patch.Unlisten(id, was.kind) for was in old if !new.any((a) -> same_hearing(was, a))]
+        .concat(
+            [Patch.Listen(id, listening_of(a)) for a in new if !old.any((was) -> same_hearing(was, a))],
+        )
+}
 
 /// The patches that turn the page `old` into `new`, given what the user
-/// was heard to do to it since `old` was drawn.
-export fn diff(old: List<Element>, new: List<Element>, heard: List<Heard>) -> List<Patch> {
-    let d = Differ { heard: heard }
-    d.siblings(null, old, new)
-    d.out.get()
+/// was heard to do to it since `old` was drawn. Every element of `old`
+/// wears its number; one that stays keeps it, and a new one takes the
+/// next from `next` on.
+export fn diff(old: List<Element>, new: List<Element>, heard: List<Heard>, next: int) -> Diffed {
+    Differ { heard: heard }.siblings(null, old, new, next)
 }

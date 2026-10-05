@@ -1,11 +1,10 @@
 //! The diff, by its law: a paint says only what changed, by identity. Each
 //! case paints one tree, then another, and reads the patches between them.
-use @std.ui.realize.dom.live.{Live, live, patch_text}
-use @std.ui.realize.dom.wire.{kind_code}
-use @std.ui.realize.identity.{NodeId}
+use @std.ui.realize.dom.live.{Live, live}
 use @std.ui.realize.render.{Node, Action, Handler, Said}
 use @std.ui.realize.tests.support.{
     button_node,
+    card_node,
     field_node,
     holding,
     keyed,
@@ -21,7 +20,7 @@ use @std.ui.style.theme.{default_theme, dark_theme}
 fn between(from: Node, to: Node) -> string {
     let page = live()
     let _ = page.patches(from, default_theme)
-    patch_text(page.patches(to, default_theme))
+    page.said(to, default_theme)
 }
 
 fn rows(keys: List<string>) -> Node { holding(.List, [keyed(holding(.Item, [text_node(k)]), k) for k in keys]) }
@@ -36,18 +35,13 @@ fn pressing(n: Node) -> Node { n with { events: [Action { kind: .Press, handler:
 
 fn muted(n: Node) -> Node { n with { box: Box { style: Style { color: .Muted } } } }
 
-/// A field's control, as the page names it.
-const control = NodeId { path: "0/+control" }
-
 /// The patches after a user types `typed` into a field showing `shown`
 /// and the program then draws `drawn`.
 fn after_typing(shown: string, typed: string, drawn: string) -> string {
     let page = live()
     let _ = page.patches(hearing(field_node("N", shown), Handler.Text(heard_text)), default_theme)
-    let _ = page.fire(control, kind_code(.Input), Said.Text(typed))
-    patch_text(
-        page.patches(hearing(field_node("N", drawn), Handler.Text(heard_text)), default_theme),
-    )
+    let _ = page.fire(page.named("N")[0], .Input, Said.Text(typed))
+    page.said(hearing(field_node("N", drawn), Handler.Text(heard_text)), default_theme)
 }
 
 spec "std/ui dom — a repaint says only what changed" {
@@ -91,6 +85,40 @@ spec "std/ui dom — a repaint says only what changed" {
     }
 }
 
+/// A chain `depth` nodes deep, each keyed `key`, a button at its foot.
+fn chain(depth: int, key: string) -> Node {
+    mut n = pressing(button_node("deep"))
+    for j in 0..depth { n = keyed(holding(.Column, [n]), key) }
+    n
+}
+
+const long_key = "123e4567-e89b-12d3-a456-426614174000"
+
+/// The bytes a first paint of `n` sends.
+fn first_frame(n: Node) -> int { live().paint(n, default_theme).length }
+
+spec "std/ui dom — depth costs a page nothing" {
+    given "a control 120 levels deep under 36-letter keys" {
+        then "is found by name and its event fires" {
+            let page = live()
+            let _ = page.patches(chain(120, long_key), default_theme)
+            page.named("deep").length == 1 && page.fire(page.named("deep")[0], .Press, null)
+        }
+    }
+    given "a chain twice as deep" {
+        then "is a frame twice as long, not four times" {
+            let shallow = first_frame(chain(200, long_key))
+            let deep = first_frame(chain(400, long_key))
+            deep < shallow * 2 + 64 && deep > shallow
+        }
+    }
+    given "an element whose parts hold other parts" {
+        then "is not rebuilt by a repaint that changed nothing" {
+            between(card_node("Board", [text_node("a")]), card_node("Board", [text_node("a")])) == ""
+        }
+    }
+}
+
 spec "std/ui dom — a property is what the page holds" {
     given "a field's value and a switch's state" {
         then "are set as properties, never attributes" {
@@ -117,13 +145,10 @@ spec "std/ui dom — a property is what the page holds" {
             let page = live()
             let shown = hearing(field_node("N", ""), Handler.Text(heard_text))
             let _ = page.patches(shown, default_theme)
-            let _ = page.fire(control, kind_code(.Input), Said.Text("abc"))
+            let _ = page.fire(page.named("N")[0], .Input, Said.Text("abc"))
             let _ = page
                 .patches(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme)
-            patch_text(
-                page
-                    .patches(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme),
-            ) == ""
+            page.said(hearing(field_node("N", "abc"), Handler.Text(heard_text)), default_theme) == ""
         }
     }
 }
@@ -131,8 +156,7 @@ spec "std/ui dom — a property is what the page holds" {
 spec "std/ui dom — the sheet" {
     given "a first paint" {
         then "sends the sheet before any element" {
-            patch_text(live().patches(text_node("a"), default_theme))
-                .starts_with("style\ncreate 0 span")
+            live().said(text_node("a"), default_theme).starts_with("style\ncreate 0 span")
         }
     }
     given "a class the page has worn before, named in another order" {
@@ -140,9 +164,8 @@ spec "std/ui dom — the sheet" {
             let page = live()
             let _ = page
                 .patches(holding(.Row, [muted(text_node("a")), text_node("b")]), default_theme)
-            !patch_text(
-                page.patches(holding(.Row, [text_node("a"), muted(text_node("b"))]), default_theme),
-            )
+            !page
+                .said(holding(.Row, [text_node("a"), muted(text_node("b"))]), default_theme)
                 .contains("style")
         }
     }
@@ -153,7 +176,7 @@ spec "std/ui dom — the sheet" {
         then "sends the sheet and moves no element" {
             let page = live()
             let _ = page.patches(text_node("a"), default_theme)
-            patch_text(page.patches(text_node("a"), dark_theme)) == "style"
+            page.said(text_node("a"), dark_theme) == "style"
         }
     }
 }

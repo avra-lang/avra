@@ -3,7 +3,7 @@
 //! model of the page, and the model must end in the new order. A patch
 //! list that reads plausibly and leaves a row in the wrong place fails
 //! here and nowhere else.
-use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.live.{Live, live}
 use @std.ui.realize.dom.patch.{Patch}
 use @std.ui.realize.identity.{NodeId}
 use @std.ui.realize.render.{Node}
@@ -11,9 +11,6 @@ use @std.ui.realize.tests.support.{holding, keyed, text_node}
 use @std.ui.style.theme.{default_theme}
 
 fn rows(keys: List<string>) -> Node { holding(.List, [keyed(text_node(k), k) for k in keys]) }
-
-/// The id a row keyed `key` wears under the list.
-fn row_id(key: string) -> string { "0/k${key.length}:${key}" }
 
 /// Every ordered choice of distinct items from `pool`, the empty one too.
 fn arrangements(pool: List<string>) -> List<List<string>> {
@@ -23,40 +20,60 @@ fn arrangements(pool: List<string>) -> List<List<string>> {
 }
 
 /// `order` with `id` placed after `after`, or first.
-fn placed(order: List<string>, id: string, after: string?) -> List<string> {
+fn placed(order: List<int>, id: int, after: int?) -> List<int> {
     let others = [x for x in order if x != id]
     let at = if after == null { 0 } else { others.index_of(after!) + 1 }
     others.slice(0, at).concat([id]).concat(others.slice(at, others.length))
 }
 
-/// The list's children after one patch, as a host would leave them.
-fn after_patch(order: List<string>, p: Patch) -> List<string> {
+/// The children of `list` after one patch, as a host would leave them.
+fn after_patch(order: List<int>, list: NodeId, p: Patch) -> List<int> {
     match p {
-        .Place(id, parent, after) -> if parent?.path == "0" { placed(order, id.path, after?.path) } else { order },
-        .Remove(id) -> [x for x in order if x != id.path],
+        .Place(id, parent, after) -> if parent == list { placed(order, id.n, after?.n) } else { order },
+        .Remove(id) -> [x for x in order if x != id.n],
         .Create(_, _) or .CreateText(_, _) or .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .SetText(_, _) or .Listen(_, _) or .Unlisten(_, _) or .Style(_) -> order,
     }
 }
 
-/// The list's children once a page showing `from` is repainted as `to`.
-fn repainted(from: List<string>, to: List<string>) -> List<string> {
+/// The ids of the rows a page now holds, in page order.
+fn row_ids(page: Live) -> List<int> {
+    let list? = page.page.get().first()?.tagged() else { return [] }
+    [k.id().n for k in list.kids]
+}
+
+/// A model of the list after a page showing `from` is repainted as `to`:
+/// the rows a host would hold, and the rows the page says it holds.
+type Outcome = { modelled: List<int>, held: List<int>, places: int }
+
+fn repainted(from: List<string>, to: List<string>) -> Outcome {
     let page = live()
     let _ = page.patches(rows(from), default_theme)
-    mut order = [row_id(k) for k in from]
-    for p in page.patches(rows(to), default_theme) { order = after_patch(order, p) }
-    order
+    let list? = page.page.get().first() else { return Outcome { modelled: [], held: [-1], places: 0 } }
+    let patches = page.patches(rows(to), default_theme)
+    mut order = row_ids(page_before(from))
+    for p in patches { order = after_patch(order, list.id(), p) }
+    Outcome {
+        modelled: order,
+        held: row_ids(page),
+        places: [p for p in patches if after_patch([-7], list.id(), p).length == 2].length,
+    }
+}
+
+/// A page freshly showing `keys`: its rows wear the numbers the first
+/// paint of any page gives them.
+fn page_before(keys: List<string>) -> Live {
+    let page = live()
+    let _ = page.patches(rows(keys), default_theme)
+    page
 }
 
 fn lands(from: List<string>, to: List<string>) -> bool {
-    repainted(from, to).join(" ") == [row_id(k) for k in to].join(" ")
+    let out = repainted(from, to)
+    ["${n}" for n in out.modelled].join(" ") == ["${n}" for n in out.held].join(" ")
 }
 
 /// How many rows a repaint from `from` to `to` places.
-fn places(from: List<string>, to: List<string>) -> int {
-    let page = live()
-    let _ = page.patches(rows(from), default_theme)
-    [p for p in page.patches(rows(to), default_theme) if after_patch(["x"], p).length == 2].length
-}
+fn places(from: List<string>, to: List<string>) -> int { repainted(from, to).places }
 
 const pool = ["a", "b", "c", "d"]
 

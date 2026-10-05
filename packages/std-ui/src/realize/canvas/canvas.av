@@ -4,7 +4,6 @@
 //! lays the graph out as a flow. The same neutral ops the DOM serializes
 //! as tags become geometry here; neither target is the other's lowest
 //! common denominator.
-use realize.identity.{NodeId}
 use realize.render.{Node, Prim}
 use realize.update.{Op, Mount, plan}
 use style.layout.{Axis}
@@ -54,27 +53,22 @@ type Inset = { start: int, end: int, top: int, bottom: int }
 
 // ── the graph, rebuilt as an arena ──────────────────────────────
 
-/// The graph being rebuilt: every mount in walk order, and the slot each
-/// id took.
-type Arena = { frames: Cell<List<Frame>> = Cell.new([]), slots: Cell<Map<string, int>> = Cell.new({}) }
+/// The graph being rebuilt: every mount in walk order. A mount's seat in
+/// the walk IS its slot here.
+type Arena = { frames: Cell<List<Frame>> = Cell.new([]) }
 
 impl Arena {
-    /// The slot `id` took. A walk mounts a node before anything names it.
-    fn slot(id: NodeId) -> int { self.slots.get().get(id.path) ?? 0 }
-
     /// A mount takes the next slot, and joins its parent's children.
     fn mount(m: Mount) {
-        let at = self.frames.get().length
-        self.slots.put(m.id.path, at)
         self.frames.push(Frame { mount: m, words: "", kids: [] })
         let parent? = m.parent else { return }
-        let held = self.frames.get()[self.slot(parent)]
-        self.frames.set_at(self.slot(parent), held with { kids: held.kids.concat([at]) })
+        let held = self.frames.get()[parent]
+        self.frames.set_at(parent, held with { kids: held.kids.concat([m.seat]) })
     }
 
-    fn say(id: NodeId, words: string) {
-        let held = self.frames.get()[self.slot(id)]
-        self.frames.set_at(self.slot(id), held with { words: words })
+    fn say(seat: int, words: string) {
+        let held = self.frames.get()[seat]
+        self.frames.set_at(seat, held with { words: words })
     }
 }
 

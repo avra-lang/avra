@@ -28,8 +28,7 @@ use @std.ui.components.{
     text,
 }
 use @std.ui.realize.dom.live.{Live, live}
-use @std.ui.realize.dom.wire.{echoed}
-use @std.ui.realize.identity.{NodeId}
+use @std.ui.realize.dom.wire.{echo}
 use @std.ui.realize.view.{View}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
@@ -257,39 +256,34 @@ fn paint() { avra_dom_frame(painted().paint(view().describe(), theme())) }
 
 // ── the host's event seam ───────────────────────────────────────
 
-/// The room of each seat the host writes text into. The host reads it
-/// (`avra_seat_room`) and refuses a text that outgrows it.
+/// The room of the seat the host writes a control's text into. The host
+/// reads it (`avra_seat_room`) and refuses a text that outgrows it.
 const seat_room = 4096
-
-/// Where the host writes the id of the node that spoke.
-once fn id_box() -> Bytes { avra_bytes_with_room(seat_room) }
 
 /// Where the host writes the text a control said.
 once fn payload_box() -> Bytes { avra_bytes_with_room(seat_room) }
 
-/// The host reads each seat's address once, then writes UTF-8 octets there
+/// The host reads the seat's address once, then writes UTF-8 octets there
 /// before calling `avra_event` with their length.
-export fn avra_id_seat() -> Bytes { id_box() }
-
 export fn avra_payload_seat() -> Bytes { payload_box() }
 
 export fn avra_seat_room() -> int { seat_room }
 
-/// The host-written octets of a seat as text. A length the seat cannot
+/// The host-written octets of the seat as text. A length the seat cannot
 /// hold, or octets that are not UTF-8, is a malformed event: absent, never
 /// a wrong message.
-fn seated(box: Bytes, len: int) -> string? {
+fn seated(len: int) -> string? {
     if len < 0 || len > seat_room { return null }
-    avra_bytes_adopted(box, len).text()
+    avra_bytes_adopted(payload_box(), len).text()
 }
 
-/// The host's call: the element whose id is the `who` octets in the id seat
-/// spoke `what`, saying the value in the tag and value seats (an input
-/// says its own text). The handler the last frame bound there runs, and
-/// the frame follows.
+/// The host's call: element `who` spoke the kind `what`, saying the value
+/// in the tag and value seats (an input says its own text). The handler
+/// the last paint bound there runs, and the patches follow. An echo the
+/// wire cannot read answers nothing.
 export fn avra_event(who: int, what: int, tag: int, num: int, len: int) {
-    let path? = seated(id_box(), who) else { return }
-    if painted().fire(NodeId { path: path }, what, echoed(tag, num, seated(payload_box(), len))) { paint() }
+    let heard? = echo(who, what, tag, num, seated(len)) else { return }
+    if painted().fire(heard.id, heard.kind, heard.said) { paint() }
 }
 
 /// The host's first call, after the reactor is initialized: one paint.

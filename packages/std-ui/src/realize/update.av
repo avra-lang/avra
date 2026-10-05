@@ -4,44 +4,43 @@
 //! what it says and what it answers. No target's currency appears here.
 //! The canvas draws from it; a page of elements lowers the tree itself
 //! (`realize/html/element.av`).
-use realize.identity.{NodeId}
 use realize.render.{Node, Prim, Attribute, Action}
 use realize.sink.{Sink, draw}
 use style.box.{Box}
 
-/// Who a node is, where it sits, and everything a target needs to make
-/// it: its neutral primitive, its attributes and its box. The root has no
-/// parent.
+/// A node's seat in the walk, where it sits, and everything a target
+/// needs to make it: its neutral primitive, its attributes and its box.
+/// The root has no parent.
 export type Mount = {
-    id: NodeId,
-    parent: NodeId?,
+    seat: int,
+    parent: int?,
     index: int,
     prim: Prim,
     attrs: List<Attribute>,
     box: Box,
 }
 
-/// One update op, addressed by its node's id. A target projects the
+/// One update op, addressed by its node's seat in the walk. A target projects the
 /// stream into its own currency: `Mount` places, `Words` says, `Event`
 /// answers.
 export enum Op {
     Mount(m: Mount)
-    Words(id: NodeId, text: string)
-    Event(id: NodeId, action: Action)
+    Words(seat: int, text: string)
+    Event(seat: int, action: Action)
 }
 
 /// The graph being collected: the ops in walk order.
 export type Recorder = { ops: Cell<List<Op>> = Cell.new([]) }
 
 impl Sink for Recorder {
-    fn opened(id: NodeId, parent: NodeId?, index: int, n: Node) {
+    fn opened(seat: int, parent: int?, index: int, n: Node) {
         self
             .ops
             .push(
                 Op
                     .Mount(
                         Mount {
-                            id: id,
+                            seat: seat,
                             parent: parent,
                             index: index,
                             prim: n.prim,
@@ -51,10 +50,10 @@ impl Sink for Recorder {
                     ),
             )
         // LICENSED loops.push_loop: the ops ride a shared Cell; a concat assignment would rebind a copy
-        for ev in n.events { self.ops.push(Op.Event(id, ev)) }
+        for ev in n.events { self.ops.push(Op.Event(seat, ev)) }
     }
 
-    fn words(id: NodeId, s: string) { self.ops.push(Op.Words(id, s)) }
+    fn words(seat: int, s: string) { self.ops.push(Op.Words(seat, s)) }
 
     fn closed(_n: Node) {}
 }
@@ -66,14 +65,14 @@ export fn plan(root: Node) -> List<Op> {
     r.ops.get()
 }
 
-/// Whether an op is the words of `id`.
-fn has_words(id: NodeId, op: Op) -> bool {
-    match op { .Words(who, _) -> who == id, .Mount(_) or .Event(_, _) -> false }
+/// The words an op says for `seat`, when it is that seat's.
+fn words_of(op: Op, seat: int) -> string? {
+    match op {
+        .Words(who, text) -> if who == seat { text } else { null },
+        .Mount(_) or .Event(_, _) -> null,
+    }
 }
 
 /// A node's words, read back from the op that carries them. Absence is a
-/// node the graph never walked.
-export fn words_at(ops: List<Op>, id: NodeId) -> string? {
-    let found? = ops.find(has_words(id, it)) else { return null }
-    match found { .Words(_, text) -> text, .Mount(_) or .Event(_, _) -> null }
-}
+/// seat the walk never reached.
+export fn words_at(ops: List<Op>, seat: int) -> string? { ops.find_map(words_of(it, seat)) }

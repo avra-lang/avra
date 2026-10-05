@@ -8,13 +8,15 @@
 // program's own declarations — see realize/dom/wire.av.
 //
 // Same file for every app.
-import { WIRE_VERSION, OP, SAYS } from "./wire.gen.js";
+import { WIRE_VERSION, NO_ID, OP, SAYS } from "./wire.gen.js";
 
 export { WIRE_VERSION };
 
-// A frame's patches, in order. Every number is four little-endian bytes;
-// an id and every other text is its byte length, then its bytes. An empty
-// id is no id: the page itself as a parent, the first place as a sibling.
+// A frame's patches, in order. An id is a number in eight little-endian
+// bytes — the same width however deep its element sits — and `NO_ID` where
+// a record names none: the page itself as a parent, the first place as a
+// sibling. Every other number is four bytes; a text is its byte length,
+// then its bytes.
 export function parseFrame(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const decoder = new TextDecoder();
@@ -24,19 +26,20 @@ export function parseFrame(bytes) {
     throw new Error(`unsupported wire version ${seen} — this host speaks ${WIRE_VERSION}`);
   }
   const int = () => { const v = dv.getInt32(i, true); i += 4; return v; };
+  const id = () => { const lo = dv.getUint32(i, true); const hi = dv.getInt32(i + 4, true); i += 8; return hi * 4294967296 + lo; };
   const str = () => { const len = int(); const s = decoder.decode(bytes.subarray(i, i + len)); i += len; return s; };
   const patches = [];
   while (i < bytes.length) {
     const op = bytes[i++];
-    if (op === OP.create) patches.push({ op, id: str(), tag: str() });
-    else if (op === OP.create_text || op === OP.set_text) patches.push({ op, id: str(), content: str() });
-    else if (op === OP.place) patches.push({ op, id: str(), parent: str(), after: str() });
-    else if (op === OP.remove) patches.push({ op, id: str() });
-    else if (op === OP.set_attr) patches.push({ op, id: str(), name: str(), value: str() });
-    else if (op === OP.drop_attr) patches.push({ op, id: str(), name: str() });
-    else if (op === OP.set_prop) patches.push({ op, id: str(), name: str(), says: int(), value: str() });
-    else if (op === OP.listen) patches.push({ op, id: str(), kind: int(), event: str(), says: int(), reads: str(), prevents: int() !== 0 });
-    else if (op === OP.unlisten) patches.push({ op, id: str(), kind: int() });
+    if (op === OP.create) patches.push({ op, id: id(), tag: str() });
+    else if (op === OP.create_text || op === OP.set_text) patches.push({ op, id: id(), content: str() });
+    else if (op === OP.place) patches.push({ op, id: id(), parent: id(), after: id() });
+    else if (op === OP.remove) patches.push({ op, id: id() });
+    else if (op === OP.set_attr) patches.push({ op, id: id(), name: str(), value: str() });
+    else if (op === OP.drop_attr) patches.push({ op, id: id(), name: str() });
+    else if (op === OP.set_prop) patches.push({ op, id: id(), name: str(), says: int(), value: str() });
+    else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), event: str(), says: int(), reads: str(), prevents: int() !== 0 });
+    else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
     else if (op === OP.style) patches.push({ op, css: str() });
     else throw new Error(`unknown patch op ${op}`);
   }
@@ -66,7 +69,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   const byId = new Map();
   const need = (id) => {
     const el = byId.get(id);
-    if (!el) throw new Error(`a patch names \`${id}\`, which is not on the page`);
+    if (!el) throw new Error(`a patch names element ${id}, which is not on the page`);
     return el;
   };
   // An element that leaves takes everything under it.
@@ -80,8 +83,8 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     [OP.create]: (p) => keep(p.id, doc.createElement(p.tag)),
     [OP.create_text]: (p) => keep(p.id, doc.createTextNode(p.content)),
     [OP.place]: (p) => {
-      const parent = p.parent === "" ? mount : need(p.parent);
-      const before = p.after === "" ? parent.childNodes[0] : need(p.after).nextSibling;
+      const parent = p.parent === NO_ID ? mount : need(p.parent);
+      const before = p.after === NO_ID ? parent.childNodes[0] : need(p.after).nextSibling;
       parent.insertBefore(need(p.id), before || null);
     },
     [OP.remove]: (p) => {
@@ -150,45 +153,34 @@ export async function instantiate(source, host) {
 }
 
 // The program's `avra_event(who: int, what: int, tag: int, num: int, len:
-// int)` crosses as five i64 seats, so the host hands it BigInts. Text
-// crosses through the program's own SEATS: the host writes UTF-8 octets at
-// the address the program gave and passes their length. `who` is the
-// length of the element's id, written into the id seat (`avra_id_seat`);
-// `what` is the event kind, echoed as the patch gave it. What the control
-// said crosses as the tag the patch asked for (`SAYS`) and its value:
-// nothing is a tag of its own, so a present zero or empty text is never
-// mistaken for nothing; a number or a flag rides `num`, and text is `len`
-// octets in the payload seat (`avra_payload_seat`). A text that outgrows a
-// seat's room (`avra_seat_room`) REFUSES: writing it would overwrite the
-// program's memory. ONE door for both the page and a test harness.
+// int)` crosses as five i64 seats, so the host hands it BigInts. `who` is
+// the element's id and `what` the event kind, each echoed as the patch gave
+// it. What the control said crosses as the tag the patch asked for (`SAYS`)
+// and its value: nothing is a tag of its own, so a present zero or empty
+// text is never mistaken for nothing; a number or a flag rides `num`; text
+// is `len` UTF-8 octets the host writes at the address the program gave
+// (`avra_payload_seat`). A text that outgrows the seat's room
+// (`avra_seat_room`) REFUSES: writing it would overwrite the program's
+// memory. ONE door for both the page and a test harness.
 const seats = new WeakMap();
 
-function seatsOf(mod) {
+function seatOf(mod) {
   let held = seats.get(mod);
   if (held === undefined) {
-    held = { id: Number(mod.avra_id_seat()), payload: Number(mod.avra_payload_seat()), room: Number(mod.avra_seat_room()) };
+    held = { at: Number(mod.avra_payload_seat()), room: Number(mod.avra_seat_room()) };
     seats.set(mod, held);
   }
   return held;
 }
 
-// The text's octets written at a seat; their count.
-function seated(mod, at, room, text, what) {
-  const bytes = new TextEncoder().encode(text);
-  if (bytes.length > room) throw new Error(`${what} is ${bytes.length} octets — the program's seat holds ${room}`);
-  new Uint8Array(mod.memory.buffer, at, bytes.length).set(bytes);
-  return BigInt(bytes.length);
-}
-
 export function sendEvent(mod, who, what, said) {
-  const seat = seatsOf(mod);
-  const id = seated(mod, seat.id, seat.room, who, "an element id");
-  if (!said) { mod.avra_event(id, BigInt(what), BigInt(SAYS.nothing), 0n, 0n); return; }
-  if (said.says === SAYS.text) {
-    mod.avra_event(id, BigInt(what), BigInt(said.says), 0n, seated(mod, seat.payload, seat.room, said.value, "an event's text"));
-    return;
-  }
-  mod.avra_event(id, BigInt(what), BigInt(said.says), BigInt(said.value), 0n);
+  if (!said) { mod.avra_event(BigInt(who), BigInt(what), BigInt(SAYS.nothing), 0n, 0n); return; }
+  if (said.says !== SAYS.text) { mod.avra_event(BigInt(who), BigInt(what), BigInt(said.says), BigInt(said.value), 0n); return; }
+  const seat = seatOf(mod);
+  const bytes = new TextEncoder().encode(said.value);
+  if (bytes.length > seat.room) throw new Error(`an event's text is ${bytes.length} octets — the program's seat holds ${seat.room}`);
+  new Uint8Array(mod.memory.buffer, seat.at, bytes.length).set(bytes);
+  mod.avra_event(BigInt(who), BigInt(what), BigInt(said.says), 0n, BigInt(bytes.length));
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length
