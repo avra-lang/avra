@@ -19,6 +19,7 @@ use core.{
     CompClause,
     BinOp,
     Param,
+    member_of,
     Spread,
     Mark,
     Plain,
@@ -754,7 +755,15 @@ impl SourceText {
     /// A declared seat as written. An event is its word and the seats
     /// it says — never the field its handler is held in.
     mut fn param(p: Param, depth: int) -> string {
-        if p.says != null { return "on ${source_name(p.name.of)}${self.said(p.says!, depth)}" }
+        match member_of(p) {
+            .Event(e) -> "${self.marks(p.marks, depth)}on ${source_name(e.name)}${self.said(e.says, depth)}",
+            .Field(_) -> self.field(p, depth),
+        }
+    }
+
+    /// A field or a seat as written: its marks, its word, its name, its
+    /// type and its default.
+    mut fn field(p: Param, depth: int) -> string {
         let name = if p.name.is_empty() { "" } else { "${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
         let ty = if p.ty == null { "" } else { spelled(p.ty!) }
         let word = if p.state { "state " } else { "" }
@@ -1876,7 +1885,15 @@ impl SourceText {
         }
         match self.store.expr(value) {
             .Lambda(params, body) -> [source_line(depth, "on ${kind} ${self.trailing_lambda(params, body, value, depth)}")],
-            rest -> [],
+            rest -> {
+                let prefix = "on ${kind}: "
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
+            },
         }
     }
 

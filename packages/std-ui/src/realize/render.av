@@ -75,6 +75,21 @@ export enum Handler {
 /// subscribes to the kind and echoes WHICH node spoke, never the code.
 export type Action = { kind: EventKind, handler: Handler }
 
+impl Said {
+    /// The text said, when text is what was said.
+    fn text() -> string? {
+        match self { .Text(t) -> t, .Flag(_) or .Number(_) -> null }
+    }
+
+    fn flag() -> bool? {
+        match self { .Flag(on) -> on, .Text(_) or .Number(_) -> null }
+    }
+
+    fn number() -> int? {
+        match self { .Number(n) -> n, .Text(_) or .Flag(_) -> null }
+    }
+}
+
 impl Action {
     /// Run the handler with what the control `said`. A handler that wants
     /// a value the control did not say does not run: false, never a
@@ -83,35 +98,20 @@ impl Action {
         match self.handler {
             .Nothing(f) -> f(),
             .Text(f) -> {
-                let text? = said_text(said) else { return false }
+                let text? = said?.text() else { return false }
                 f(text)
             },
             .Flag(f) -> {
-                let flag? = said_flag(said) else { return false }
+                let flag? = said?.flag() else { return false }
                 f(flag)
             },
             .Number(f) -> {
-                let number? = said_number(said) else { return false }
+                let number? = said?.number() else { return false }
                 f(number)
             },
         }
         true
     }
-}
-
-fn said_text(said: Said?) -> string? {
-    let value? = said else { return null }
-    match value { .Text(t) -> t, .Flag(_) or .Number(_) -> null }
-}
-
-fn said_flag(said: Said?) -> bool? {
-    let value? = said else { return null }
-    match value { .Flag(on) -> on, .Text(_) or .Number(_) -> null }
-}
-
-fn said_number(said: Said?) -> int? {
-    let value? = said else { return null }
-    match value { .Number(n) -> n, .Text(_) or .Flag(_) -> null }
 }
 
 /// How urgently a live region speaks.

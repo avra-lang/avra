@@ -60,17 +60,20 @@ Five attempts to lift a handler into a generated message failed.
 3. **A primitive says what it projects to.** Primitives are a closed
    set the library owns; each member says what it is — `@attr(.Label)`,
    `@children`, `@style(color)`, an event, or the spread `..Box` — and
-   `@derive(View)` refuses a member that says nothing. Each word is
-   checked against the library's own declaration (`Attribute`,
-   `EventKind`'s words, `Style`), so no second table exists. A user
+   `@derive(View)` refuses a member that says nothing. Each word AND
+   its type is checked against the library's own declaration (`Prim`,
+   `Attribute`, `EventKind`'s words, `Style`), read by `type_exported`,
+   so no second table exists; what two members say twice is refused. A user
    component is a COMPOSITION and invents no projection. No meaning is
    read from a field's spelling.
 4. **An event is a declared member.** `on input(typed: string)` in the
-   component, `on input { typed -> … }` at the instance. The member is
-   named by the event's own word; `on_x` is never written or shown. A
-   handler hears all its event says, or none of it. An event a
-   component does not declare is refused by name, with the events
-   there are (`type.component_event`).
+   component, `on input { typed -> … }` at the instance, `on input:
+   handler` to hand on a handler that is already a value. The member
+   is named by the event's own word; `on_x` is never written or shown.
+   A handler hears all its event says, or none of it. An event a
+   component does not declare, one heard twice, and a handler naming
+   some of its seats are each refused by name
+   (`type.component_event`).
 5. **One vocabulary for what a control says**: nothing, text, a flag, a
    number (a point and a key later). `Said` is the value and `Handler`
    the listener, arm for arm. Closed: every target answers every arm,

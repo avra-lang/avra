@@ -493,8 +493,17 @@ impl SyntaxArena {
             .set_at(e.index, fp(189, [self.expr_fingerprints.get()[e.index], fp_str(event)]))
     }
 
+    /// The event a handler the SUGAR wrote names — what the printer
+    /// spells back as `on <event>`.
     fn on_handler_kind(e: ExprId) -> string? {
-        self.on_handlers.get()[e.index]?.event
+        let held? = self.on_handlers.get()[e.index] else { return null }
+        if held.sugar { held.event } else { null }
+    }
+
+    /// A plain setting that names an event: it hears it as the sugar
+    /// would, and stays written as it was.
+    fn mark_heard(e: ExprId, event: string) {
+        self.on_handlers.set_at(e.index, OnHandler { event: event, sugar: false })
     }
 
     /// Why the instance's component cannot hear the handler at `e` —
@@ -506,6 +515,11 @@ impl SyntaxArena {
             .expr_fingerprints
             .set_at(e.index, fp(190, [self.expr_fingerprints.get()[e.index], unheard_fp(why)]))
     }
+
+    /// Whether the value at `e` fills a field another law already refused
+    /// by name — a handler for an event its component does not declare.
+    /// The record's own field law then types the value and says nothing.
+    fn refused_elsewhere(e: ExprId) -> bool { self.on_handlers.get()[e.index]?.unheard != null }
 
     /// The handler at `e`, when the sugar wrote it.
     fn on_handler(e: ExprId) -> OnHandler? { self.on_handlers.get()[e.index] }
@@ -1362,6 +1376,7 @@ fn unheard_fp(why: Unheard) -> int {
     match why {
         .Undeclared(declared) -> fp(191, [fp_list(str_fps(declared))]),
         .Seats(says) -> fp(192, [fp_list(str_fps(says))]),
+        .Twice -> fp(193, []),
     }
 }
 

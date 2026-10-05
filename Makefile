@@ -287,7 +287,7 @@ wasm-archive:
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: ui-host h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
+.PHONY: ui-host ui-host-test h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -659,6 +659,11 @@ vocab:
 ui-host:
 	@sh tools/ui_host.sh
 
+# THE JS HOST IS TESTED BY THE GATE, not by whoever remembers to: a host
+# nothing runs is a second implementation nothing checks.
+ui-host-test:
+	@sh tools/ui_host_test.sh
+
 # A fingerprint tag NAMES a node kind: inside one fold space no two
 # kinds may wear one number, or they fingerprint alike by construction.
 fingerprints:
@@ -803,7 +808,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here exactly as sprite-build.sh's call does.
-gate: seed-check stems vocab fingerprints ui-host families codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness cache-attacks
+gate: seed-check stems vocab fingerprints ui-host ui-host-test families codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
 	@sh tools/memcap.sh --self-test

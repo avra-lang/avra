@@ -38,12 +38,15 @@ extern fn avra_dom_frame(frame: Bytes)
 extern fn avra_bytes_with_room(n: int) -> Bytes
 extern fn avra_bytes_adopted(p: Bytes, n: int) -> Bytes
 
+/// Which tasks the board shows.
+enum Show { All, Active, Done }
+
 /// One task. `id` is the item key; `done` is its state.
 type Todo = { id: string, title: string, done: bool }
 
 // ── state ───────────────────────────────────────────────────────
 
-state filter: string = "all"
+state filter: Show = .All
 state dark: bool = false
 state dialog_open: bool = false
 state draft: string = ""
@@ -61,11 +64,7 @@ fn done_count() -> int { [t for t in tasks if t.done].length }
 fn open_count() -> int { [t for t in tasks if !t.done].length }
 
 fn admits(t: Todo) -> bool {
-    when {
-        filter == "active" -> !t.done
-        filter == "done" -> t.done
-        _ -> true
-    }
+    match filter { .All -> true, .Active -> !t.done, .Done -> t.done }
 }
 
 fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
@@ -102,9 +101,12 @@ fn title_style(done: bool) -> Style {
 
 fn sunk_style() -> Style { Style { fill: .SurfaceSunk, radius: .S } }
 
+/// A run of controls on one line.
+fn inline_layout() -> Layout { Layout { gap: .S, align: .Center } }
+
 fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
 
-fn tab(label: string, shows: string) -> button {
+fn tab(label: string, shows: Show) -> button {
     button label {
         on press { filter = shows }
         style: tab_style(filter == shows)
@@ -134,11 +136,11 @@ fn header() -> row {
 
 fn filters() -> row {
     row {
-        layout: Layout { gap: .S, align: .Center }
+        layout: inline_layout()
         items: [
-            tab("All", "all"),
-            tab("Active", "active"),
-            tab("Done", "done"),
+            tab("All", .All),
+            tab("Active", .Active),
+            tab("Done", .Done),
             button "Clear done" {
                 on press { tasks = [t for t in tasks if !t.done] }
                 disabled: done_count() == 0
@@ -150,7 +152,7 @@ fn filters() -> row {
 
 fn new_task() -> row {
     row {
-        layout: Layout { gap: .S, align: .Center }
+        layout: inline_layout()
         items: [
             field "New task" {
                 value: draft

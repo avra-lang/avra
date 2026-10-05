@@ -1,17 +1,23 @@
 //! `@derive(View)` over a component that is no well-formed primitive, and
 //! an instance hearing an event its component does not declare: each
 //! mistake is refused where it stands, in the library's own words, under
-//! the library's own kind. `avra_ran`, `scratch_dir` and `exit_is_zero`
-//! are the neighbouring tests' own: this module shares one namespace.
+//! the library's own kind — and nothing else is said. `avra_ran`,
+//! `scratch_dir` and `exit_is_zero` are the neighbouring tests' own: this
+//! module shares one namespace.
 use @std.io.{make_dirs, write_text}
 use @std.meta.{embed}
 use @std.time.{now_ns}
 
-/// A component whose every member breaks one law of a primitive, and one
-/// that names no primitive and spreads no box.
+/// Components whose every member breaks one law of a primitive.
 const parts: string = embed("ui_view/refused_parts.txt")
 
+/// A program instancing one of them, and hearing an event a std control
+/// does not declare.
 const main: string = embed("ui_view/refused_main.txt")
+
+/// What stands for a run that never answered: no line of it is a refusal,
+/// and it holds every text a test denies, so no case passes over it.
+const never_ran = "the check did not run: on_ data-refused no field `style`"
 
 /// What `avra check` says about the package, once.
 once fn refused() -> string {
@@ -20,7 +26,82 @@ once fn refused() -> string {
     let _ = write_text("${root}/avra.toml", "[package]\nname = \"ui_view\"\nversion = \"0.1.0\"\n")
     let _ = write_text("${root}/src/parts.av", parts)
     let _ = write_text("${root}/src/main.av", main)
-    match avra_ran(["check", root]) { .Ok(o) -> o.out.stdout, .Err(_) -> "" }
+    match avra_ran(["check", root]) { .Ok(o) -> o.out.stdout, .Err(_) -> never_ran }
+}
+
+/// Every refusal the run spoke, in order: its kind and its words.
+fn spoken() -> List<string> { [l for l in refused().split("\n") if l.starts_with("error[")] }
+
+/// The help under the refusal whose words open with `opening`.
+fn help_under(opening: string) -> string {
+    let lines = refused().split("\n")
+    let at? = [j for j, l in lines if l.starts_with(opening)].first() else { return "no such refusal" }
+    lines
+        .slice(at, lines.length)
+        .find(it.starts_with("help: ") || it.starts_with("error[") && it != lines[at]) ?? "no help"
+}
+
+/// Every refusal the fixture owes, one per mistake, in the order written.
+const owed = [
+    "error[type.component_event]: `button` declares no event `hovr` — an instance hears the events its component declares",
+    "error[@std/ui:unprojected]: a primitive says what each member projects to, and `value` says nothing",
+    "error[@std/ui:attribute]: `Lable` is no attribute of a node",
+    "error[@std/ui:attribute-misfit]: `Level` carries `int`, and `words` is `string`",
+    "error[@std/ui:unnamed-mark]: `@attr` names what it marks its member as, and this one names nothing",
+    "error[@std/ui:children]: a node's children are views, and `kids` is `List<int>`",
+    "error[@std/ui:children]: a node's children are views, and `maybe` is `List<dyn View>?`",
+    "error[@std/ui:style]: `colour` is no field of a node's style",
+    "error[@std/ui:style-misfit]: a style's `color` is `Tone`, and `shade` is `string`",
+    "error[@std/ui:unnamed-mark]: `@style` names what it marks its member as, and this one names nothing",
+    "error[@std/ui:two-marks]: a member projects to one thing, and `both` says more than one",
+    "error[@std/ui:marked-event]: an event is heard by its own word, and `press` is marked `@attr` too",
+    "error[@std/ui:event]: `hover` is no event a target hears",
+    "error[@std/ui:unsayable]: a control says nothing, text, a flag or a number, and `input` says `amount: float`",
+    "error[@std/ui:prim]: a view names the primitive it is, and `loose` names none",
+    "error[@std/ui:box]: a view carries the shared box, and `loose` spreads none",
+    "error[@std/ui:not-a-prim]: `Nope` is no primitive a target draws",
+    "error[@std/ui:said-twice]: a node says its own words once, and another member already says them — `Label` would be lost",
+    "error[@std/ui:said-twice]: a node carries an attribute once, and `Title` is already another member's",
+    "error[@std/ui:said-twice]: a node's style holds `color` once, and another member already fills it",
+]
+
+spec "@derive(View) — a component that is no primitive" {
+    given "one mistake per member, and per component" {
+        then "is refused once per mistake, in these words and no others" { spoken().join("\n") == owed.join("\n") }
+        then "is refused as many times as there are mistakes" { spoken().length == owed.length && owed.length == 20 }
+    }
+    given "a member that says nothing" {
+        then "is told the ways to say it" {
+            help_under("error[@std/ui:unprojected]") == "help: mark it `@attr(.Label)`, `@children` or `@style(color)`, or declare it an event — `on value`"
+        }
+    }
+    given "an attribute the node does not have" {
+        then "is told the attributes there are, from their own declaration" {
+            help_under("error[@std/ui:attribute]")
+                .starts_with("help: the attributes are `Text`, `Label`, `Level`, `Value`, `Amount`")
+        }
+    }
+    given "an event no target hears" {
+        then "is told the events there are, from their own declaration" {
+            help_under("error[@std/ui:event]") == "help: a primitive's events are `press`, `input`, `change`, `submit`"
+        }
+    }
+    given "a primitive `Prim` does not have" {
+        then "is told the primitives there are" {
+            help_under("error[@std/ui:not-a-prim]")
+                .starts_with("help: the primitives are `Text`, `Heading`, `Button`")
+        }
+    }
+    given "an instance hearing an event its component does not declare" {
+        then "is told the component's events" {
+            help_under("error[type.component_event]") == "help: the events of `button` are `press`"
+        }
+    }
+    given "the whole run" {
+        then "never names the member an event is held in" { !refused().contains("on_") }
+        then "never refuses inside the library's own source" { !refused().contains("realize/view.av") }
+        then "never blames a field the derive's template reads" { !refused().contains("no field `style`") }
+    }
 }
 
 /// A well-formed primitive of a user's own, declaring an event, and a
@@ -38,96 +119,10 @@ fn knob_package() -> string {
     root
 }
 
-spec "@derive(View) — a primitive says what each member projects to" {
-    given "a member that says nothing" {
-        then "is refused where it stands, and gains no attribute from its name" {
-            refused()
-                .contains(
-                    "error[@std/ui:unprojected]: a primitive says what each member projects to, and `value` says nothing",
-                )
-        }
-        then "is told the ways to say it" {
-            refused()
-                .contains(
-                    "help: mark it `@attr(.Label)`, `@children` or `@style(color)`, or declare it an event — `on value`",
-                )
-        }
-    }
-    given "a member that says two things" {
-        then "is refused" {
-            refused().contains("a member projects to one thing, and `both` says more than one")
-        }
-    }
-    given "an attribute the node does not have" {
-        then "is refused by name" {
-            refused().contains("error[@std/ui:attribute]: `Lable` is no attribute of a node")
-        }
-        then "is told the attributes there are, from their own declaration" {
-            refused()
-                .contains("help: the attributes are `Text`, `Label`, `Level`, `Value`, `Amount`")
-        }
-    }
-    given "an attribute carrying another type than its member" {
-        then "is refused with both types" {
-            refused()
-                .contains("error[@std/ui:attribute]: `Level` carries `int`, and `words` is `string`")
-        }
-    }
-    given "children that are not views" {
-        then "are refused" {
-            refused()
-                .contains("error[@std/ui:children]: a node's children are views, and `kids` is `List<int>`")
-        }
-    }
-    given "a style field the node's style does not have" {
-        then "is refused by name" {
-            refused().contains("error[@std/ui:style]: `colour` is no field of a node's style")
-        }
-    }
-    given "an event no target hears" {
-        then "is refused by name — it binds nothing silently" {
-            refused().contains("error[@std/ui:event]: `hover` is no event a target hears")
-        }
-        then "is told the events there are, from their own declaration" {
-            refused()
-                .contains("help: a primitive's events are `press`, `input`, `change`, `submit`")
-        }
-    }
-    given "an event saying what no control says" {
-        then "is refused with what it says" {
-            refused()
-                .contains(
-                    "a control says nothing, text, a flag or a number, and `input` says `amount: float`",
-                )
-        }
-    }
-    given "a view that names no primitive and spreads no box" {
-        then "is refused for the primitive" {
-            refused()
-                .contains("error[@std/ui:prim]: a view names the primitive it is, and `loose` names none")
-        }
-        then "is refused for the box, once — never as a field its template reads" {
-            refused()
-                    .contains("error[@std/ui:box]: a view carries the shared box, and `loose` spreads none") &&
-                !refused().contains("no field `style`")
-        }
-    }
-    given "an instance hearing an event its component does not declare" {
-        then "is refused by the event's own word" {
-            refused()
-                .contains(
-                    "error[type.component_event]: `button` declares no event `hovr` — an instance hears the events its component declares",
-                )
-        }
-        then "is told the component's events" { refused().contains("help: the events of `button` are `press`") }
-        then "never sees the member an event is held in" { !refused().contains("on_") }
-    }
-}
-
 spec "@derive(View) — a user's own primitive" {
     given "a component that says what every member is, and declares an event" {
-        then "is a control under its label: its attribute, its property and its event, heard with the same word" {
-            clean_stdout(avra_ran(["run", knob_package()])) == "create 0 label\ncreate 0/+control input\nattr 0/+control type=range\nattr 0/+control aria-label=Volume\nprop 0/+control value=\"0\"\nlisten 0/+control change number\nplace 0/+control in 0 after -\ncreate 0/+words span\ntext 0/+words/+text Volume\nplace 0/+words/+text in 0/+words after -\nplace 0/+words in 0 after 0/+control\nplace 0 in - after -\n"
+        then "is a control under its label: its attribute, its property, and all four events heard by their own words" {
+            clean_stdout(avra_ran(["run", knob_package()])) == "create 0 label\ncreate 0/+control input\nattr 0/+control type=range\nattr 0/+control aria-label=Volume\nprop 0/+control value=\"0\"\nlisten 0/+control change number\nlisten 0/+control press\nlisten 0/+control input text\nlisten 0/+control submit\nplace 0/+control in 0 after -\ncreate 0/+words span\ntext 0/+words/+text Volume\nplace 0/+words/+text in 0/+words after -\nplace 0/+words in 0 after 0/+control\nplace 0 in - after -\n"
         }
         then "stands canonical as written — marks, events and handlers round-trip" {
             match avra_ran(["fmt", "--check", knob_package()]) {

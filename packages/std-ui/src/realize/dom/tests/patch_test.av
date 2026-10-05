@@ -112,9 +112,45 @@ spec "std/ui dom — depth costs a page nothing" {
             deep < shallow * 2 + 64 && deep > shallow
         }
     }
+    given "a chain 1,600 levels deep" {
+        then "is painted, every level on the page" { first_frame(chain(1600, "k")) > 1600 * 16 }
+    }
     given "an element whose parts hold other parts" {
         then "is not rebuilt by a repaint that changed nothing" {
             between(card_node("Board", [text_node("a")]), card_node("Board", [text_node("a")])) == ""
+        }
+    }
+}
+
+state picked: string = ""
+
+fn pick_first() { picked = "first" }
+
+fn pick_second() { picked = "second" }
+
+fn picking(pick: fn() -> void) -> Node {
+    button_node("Pick") with { events: [Action { kind: .Press, handler: Handler.Nothing(pick) }] }
+}
+
+spec "std/ui dom — two siblings under one key" {
+    given "two rows sharing a key, each with its own handler" {
+        then "each is its own element and fires its own handler" {
+            let page = live()
+            let _ = page
+                .patches(
+                    holding(
+                        .List,
+                        [keyed(picking(pick_first), "a"), keyed(picking(pick_second), "a")],
+                    ),
+                    default_theme,
+                )
+            let both = page.named("Pick")
+            let first = page.fire(both[0], .Press, null) && picked == "first"
+            both.length == 2 &&
+                both[0] != both[1] &&
+                first &&
+                page.fire(both[1], .Press, null) &&
+                picked == "second"
         }
     }
 }

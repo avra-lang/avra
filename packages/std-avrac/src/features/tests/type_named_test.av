@@ -31,6 +31,47 @@ fn relations(main: string) -> Program {
     provided(main, relations_provider())
 }
 
+/// A provider whose `derive` asks for one type three ways and says what
+/// each answered: by its bare name, by a dotted text, and as a module's
+/// export.
+fn asking_provider() -> string {
+    "use @std.meta.{Type, Directive, literal, type_named, type_exported}\n" +
+        "export type Shelf = { rows: int, depth: int }\n" +
+        "export trait Asks {\n" +
+        "    static fn derive(t: Type) -> List<Directive> {\n" +
+        "        let found = [seen(type_named(\"Shelf\")), seen(type_named(\"@x.c.Shelf\")), seen(type_exported(\"@x.c\", \"Shelf\")), seen(type_exported(\"@x.c\", \"Nope\")), seen(type_exported(\"@x.nowhere\", \"Shelf\")), seen(type_exported(\"@x\", \"c.Shelf\"))]\n" +
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn asked() -> string { \${literal(found.join(\" \"))} } } } }]\n" +
+        "    }\n" +
+        "}\n" +
+        "fn seen(t: Type?) -> string {\n" +
+        "    let found? = t else { return \"absent\" }\n" +
+        "    \"\${found.name}[\${[f.name for f in found.fields].join(\",\")}]\"\n" +
+        "}\n"
+}
+
+spec "@std/meta — type_named and type_exported" {
+    given "a file that does not import the type a derive's library declares" {
+        then "the bare name is absent, a dotted text is no name, and the module's export is read whole" {
+            answered(
+                provided(
+                    "use @std.meta.{derive}\nuse @x.c.{Asks}\n@derive(Asks)\ntype Q = { n: int }\nQ { n: 1 }.asked()",
+                    asking_provider(),
+                ),
+            ) == "absent absent Shelf[rows,depth] absent absent absent"
+        }
+    }
+    given "a file that imports it" {
+        then "the bare name answers, and a dotted text still does not" {
+            answered(
+                provided(
+                    "use @std.meta.{derive}\nuse @x.c.{Asks, Shelf}\n@derive(Asks)\ntype Q = { n: int }\nQ { n: 1 }.asked()",
+                    asking_provider(),
+                ),
+            ) == "Shelf[rows,depth] absent Shelf[rows,depth] absent absent absent"
+        }
+    }
+}
+
 spec "@std/meta — type_named" {
     given "a derive reading another declaration's whole Type" {
         then "a field's declared type crosses whole — its own fields, not merely its name" {

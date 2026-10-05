@@ -249,7 +249,13 @@ impl SyntaxArena {
     /// A component declaration's pieces, when the statement is one.
     fn component_parts(s: StmtId) -> ComponentParts? {
         match self.stmt(s) {
-            .ComponentDecl(name, head, fields, fns) -> ComponentParts { name: name.of, head: head, fields: fields, fns: fns },
+            .ComponentDecl(name, head, members, fns) -> ComponentParts {
+                name: name.of,
+                head: head,
+                members: [member_of(p) for p in members],
+                holders: members,
+                fns: fns,
+            },
             _ -> null,
         }
     }
@@ -514,8 +520,45 @@ export type WithParts = { subject: ExprId, fields: List<string>, values: List<Ex
 export type TraitParts = { name: string, fns: List<StmtId> }
 
 /// A component declaration: its word, its head (filled by position),
-/// its other fields, and its methods.
-export type ComponentParts = { name: string, head: List<Param>, fields: List<Param>, fns: List<StmtId> }
+/// its other members in written order, and its methods. `holders` is
+/// every member as the record field that holds it — what the record's
+/// own laws read; a reader of what a component DECLARES asks `fields`
+/// or `events`, and each answers one kind of member alone.
+export type ComponentParts = { name: string, head: List<Param>, members: List<Member>, holders: List<Param>, fns: List<StmtId> }
+
+/// One member a component declares beside its head: a field, or an event
+/// an instance may hear.
+export enum Member {
+    Field(p: Param)
+    Event(e: EventParts)
+}
+
+/// An event a component declares: its word, the seats its handler is
+/// told, and the field that holds the handler.
+export type EventParts = { name: string, says: List<Param>, holder: Param }
+
+/// A declared seat as the member it is: an event when it says its seats,
+/// a field otherwise.
+export fn member_of(p: Param) -> Member {
+    let says? = p.says else { return Member.Field(p) }
+    Member.Event(EventParts { name: p.name.of, says: says, holder: p })
+}
+
+impl ComponentParts {
+    /// The fields it declares beside its head — never an event.
+    fn fields() -> List<Param> { [p for m in self.members for p in field_in(m)] }
+
+    /// The events it declares.
+    fn events() -> List<EventParts> { [e for m in self.members for e in event_in(m)] }
+}
+
+fn field_in(m: Member) -> List<Param> {
+    match m { .Field(p) -> [p], .Event(_) -> [] }
+}
+
+fn event_in(m: Member) -> List<EventParts> {
+    match m { .Event(e) -> [e], .Field(_) -> [] }
+}
 
 /// A sublanguage declaration: its block word and its grammar's text.
 export type SyntaxParts = { name: string, text: string }

@@ -28,9 +28,12 @@ use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{dark_theme, default_theme}
 
+/// Which tasks the board shows.
+enum Show { All, Active, Done }
+
 type Todo = { id: string, title: string, done: bool }
 
-state filter: string = "all"
+state filter: Show = .All
 state dark: bool = false
 state dialog_open: bool = false
 state draft: string = ""
@@ -45,11 +48,7 @@ state tasks: List<Todo> = [
 fn done_count() -> int { [t for t in tasks if t.done].length }
 
 fn admits(t: Todo) -> bool {
-    when {
-        filter == "active" -> !t.done
-        filter == "done" -> t.done
-        _ -> true
-    }
+    match filter { .All -> true, .Active -> !t.done, .Done -> t.done }
 }
 
 fn visible() -> List<Todo> { [t for t in tasks if admits(t)] }
@@ -65,6 +64,9 @@ fn title_style(done: bool) -> Style {
 }
 
 fn sunk_style() -> Style { Style { fill: .SurfaceSunk, radius: .S } }
+
+/// A run of controls on one line.
+fn inline_layout() -> Layout { Layout { gap: .S, align: .Center } }
 
 fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
 
@@ -100,7 +102,7 @@ fn press(name: string, nth: int, kind: EventKind, said: Said?) -> bool {
     page().fire(ids[nth], kind, said)
 }
 
-fn tab(label: string, shows: string) -> button {
+fn tab(label: string, shows: Show) -> button {
     button label {
         on press { filter = shows }
         style: tab_style(filter == shows)
@@ -130,11 +132,11 @@ fn header() -> row {
 
 fn filters() -> row {
     row {
-        layout: Layout { gap: .S, align: .Center }
+        layout: inline_layout()
         items: [
-            tab("All", "all"),
-            tab("Active", "active"),
-            tab("Done", "done"),
+            tab("All", .All),
+            tab("Active", .Active),
+            tab("Done", .Done),
             button "Clear done" {
                 on press { tasks = [t for t in tasks if !t.done] }
                 disabled: done_count() == 0
@@ -146,7 +148,7 @@ fn filters() -> row {
 
 fn new_task() -> row {
     row {
-        layout: Layout { gap: .S, align: .Center }
+        layout: inline_layout()
         items: [
             field "New task" {
                 value: draft
@@ -255,7 +257,7 @@ println("about=${press("About", 0, .Press, null)}")
 println(painted())
 println("unchanged=[${painted()}]")
 println(
-    "all=${filter} open=${[t for t in tasks if !t.done].length} done=${done_count()} total=${tasks.length}",
+    "active_shown=${filter == Show.Active} open=${[t for t in tasks if !t.done].length} done=${done_count()} total=${tasks.length}",
 )
 println("dark=${live().said(view().describe(), dark_theme).starts_with("style")}")
 println("unbound=${press("Tasks", 0, .Press, null)} wrong_kind=${press("About", 0, .Input, null)}")

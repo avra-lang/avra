@@ -107,7 +107,9 @@ export component within(limit: Code) {           // a VALUE head
   handler — absent until an instance hears it. A handler hears all its
   event says, or none of it (`on input { … }`). A handler for an event
   the component does not declare is `type.component_event`, naming the
-  events there are. A derive reads `Field.says` (`@std/meta`).
+  events there are. `on input: handler` hands the event a handler that
+  is already a value — how a component passes on one it was given. A
+  derive reads `Field.says` (`@std/meta`).
 
 ## 4. Two stages, each reusing what exists
 

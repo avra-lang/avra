@@ -2,7 +2,7 @@
 //! `@derive(View)` WRITES that impl for a PRIMITIVE from what each member
 //! SAYS it projects to:
 //!
-//!     @attr(.Label) label: string      an attribute of the node
+//!     @attr(.Label) label: string     an attribute of the node
 //!     @children items: List<dyn View> the node's children
 //!     @style(color) tone: Tone        a token laid over the node's style
 //!     on input(typed: string)         an event the node speaks
@@ -10,9 +10,11 @@
 //!
 //! NO MEANING IS READ FROM A MEMBER'S NAME: a member that says nothing is
 //! refused where it stands. Every word a member says is checked against
-//! the library's own declaration — an attribute against `Attribute`, an
-//! event against `EventKind`'s words, what it says against `Handler` — so
-//! each fact has the one table its type already is.
+//! the library's own declaration — a primitive against `Prim`, an
+//! attribute against `Attribute`, a style against `Style`, an event
+//! against `EventKind`'s words, what it says against `Handler` — so each
+//! fact has the one table its type already is, and a word or a type that
+//! does not fit is refused at the member, never inside this file.
 //!
 //! A derive's template text resolves in THIS file, so every foreign name
 //! it writes is a static `quote`; a generated hole resolves in the
@@ -30,6 +32,7 @@ use @std.meta.{
     Code,
     list_of,
     refuse_as_at,
+    type_exported,
     type_named,
 }
 use realize.render.{Node, Prim, Attribute, EventKind, Action, Handler}
@@ -43,13 +46,15 @@ export trait View {
     static fn derive(t: Type) -> Declared {
         let said? = vocabulary() else { return Declared { made: [], problems: [unread(t)] } }
         let parts = [said.part(f) for f in t.fields]
+        let problems = [d for p in parts for d in p.problems].concat(said.unfit(t, parts))
+        if !problems.is_empty() { return Declared { made: [refused_view(t)], problems: problems } }
         let node = quote {
             Node {
-                prim: ${prim_code(t)},
-                attrs: ${list_of([c for p in parts for c in p.attr()])},
-                box: ${if unboxed(t).is_empty() { said.box_code(parts) } else { quote { Box {} } }},
-                children: ${joined([c for p in parts for c in p.children()])},
-                events: ${joined([c for p in parts for c in p.event()])},
+                prim: Prim.${prim_word(t) ?? ""},
+                attrs: ${list_of([c for p in parts for c in p.attrs])},
+                box: ${said.box_code(parts)},
+                children: ${joined([c for p in parts for c in p.children])},
+                events: ${joined([c for p in parts for c in p.events])},
             }
         }
         Declared {
@@ -61,154 +66,32 @@ export trait View {
                     source: quote { impl View for ${t} { fn describe() -> Node { ${node} } } },
                 },
             ],
-            problems: [d for p in parts for d in p.problem()].concat(unnamed_prim(t)).concat(unboxed(t)),
         }
     }
 
     static fn marks(t: Type) -> List<string> { [attr_mark, children_mark, style_mark] }
 }
 
+/// What a refused view is given: a `describe` that draws nothing, so the
+/// refusal is the one thing said and no user of the view is blamed for a
+/// method that was never made.
+fn refused_view(t: Type) -> Directive {
+    Directive {
+        twin: "",
+        name: t.name,
+        at: t.at,
+        source: quote { impl View for ${t} { fn describe() -> Node { Node { prim: Prim.Text, attrs: [], box: Box {}, children: [] } } } },
+    }
+}
+
 /// The library's own declarations a member's words are checked against.
-type Vocabulary = { attributes: List<Variant>, kinds: List<Variant>, box: List<Field>, style: List<Field> }
-
-/// The vocabulary as the library declares it. Absent only when a
-/// declaration this file imports cannot be read — the derive's own defect.
-fn vocabulary() -> Vocabulary? {
-    let attribute? = type_named("${realize_module}.Attribute") else { return null }
-    let kind? = type_named("${realize_module}.EventKind") else { return null }
-    let box? = type_named("${style_module}.${box_name}") else { return null }
-    let style? = type_named("${style_module}.Style") else { return null }
-    Vocabulary {
-        attributes: attribute.variants,
-        kinds: kind.variants,
-        box: box.fields,
-        style: style.fields,
-    }
+type Vocabulary = {
+    prims: List<Variant>,
+    attributes: List<Variant>,
+    kinds: List<Variant>,
+    box: List<Field>,
+    style: List<Field>,
 }
-
-/// What one member of a primitive projects to, as the code that reads it.
-enum Part {
-    /// one attribute of the node
-    Attr(code: Code)
-    /// a run of the node's children
-    Children(code: Code)
-    /// the style field the member is laid over, and the member
-    Styled(over: string, member: Field)
-    /// the actions the member binds — none while no instance hears it
-    Event(code: Code)
-    /// a member that cannot project, and why
-    Refused(why: Diagnostic)
-}
-
-impl Part {
-    fn attr() -> List<Code> {
-        match self {
-            .Attr(c) -> [c],
-            .Children(_) or .Styled(_, _) or .Event(_) or .Refused(_) -> [],
-        }
-    }
-
-    fn children() -> List<Code> {
-        match self {
-            .Children(c) -> [c],
-            .Attr(_) or .Styled(_, _) or .Event(_) or .Refused(_) -> [],
-        }
-    }
-
-    fn event() -> List<Code> {
-        match self {
-            .Event(c) -> [c],
-            .Attr(_) or .Children(_) or .Styled(_, _) or .Refused(_) -> [],
-        }
-    }
-
-    fn problem() -> List<Diagnostic> {
-        match self {
-            .Refused(d) -> [d],
-            .Attr(_) or .Children(_) or .Styled(_, _) or .Event(_) -> [],
-        }
-    }
-
-    /// `style` with this member laid over it, when the member styles.
-    fn laid_over(style: Code) -> Code {
-        match self {
-            .Styled(over, member) -> quote { ${style} with { ${over}: self.${member.name} } },
-            .Attr(_) or .Children(_) or .Event(_) or .Refused(_) -> style,
-        }
-    }
-}
-
-impl Vocabulary {
-    /// What `f` projects to: its event, or the one thing its mark says.
-    fn part(f: Field) -> Part {
-        let says? = f.says else { return self.marked(f) }
-        self.event(f, says)
-    }
-
-    /// The one thing a member's marks say. Each mark is read by its own
-    /// word, so a member saying two things shows as two parts.
-    fn marked(f: Field) -> Part {
-        let said = [self.attribute(f, m) for m in marks_of(f, attr_mark)]
-            .concat([children(f, m) for m in marks_of(f, children_mark)])
-            .concat([self.styled(f, m) for m in marks_of(f, style_mark)])
-        if said.length > 1 { return Part.Refused(says_twice(f)) }
-        said.first() ?? Part.Refused(says_nothing(f))
-    }
-
-    /// `@attr(.Label) label` → the code `Attribute.Label(self.label)`.
-    fn attribute(f: Field, m: Mark) -> Part {
-        let word = m.args.first() ?? ""
-        let v? = self.attributes.find(it.name == word) else {
-            return Part.Refused(no_attribute(m, word, [a.name for a in self.attributes]))
-        }
-        let carried = v.fields.first()?.kind?.spelled() ?? ""
-        if carried != f.kind.spelled() { return Part.Refused(attribute_misfit(m, v.name, carried, f)) }
-        Part.Attr(quote { Attribute.${v.name}(self.${f.name}) })
-    }
-
-    /// `@style(color) tone` → `tone` laid over the node's `style.color`.
-    fn styled(f: Field, m: Mark) -> Part {
-        let word = m.args.first() ?? ""
-        if !self.style.any(it.name == word) { return Part.Refused(no_style(m, word, [s.name for s in self.style])) }
-        Part.Styled(word, f)
-    }
-
-    /// `on press` → the action the node binds while an instance hears
-    /// it. ABSENCE IS THE OPTION'S OWN NULL: a handler left unset binds
-    /// no action, so a control nobody hears emits nothing.
-    fn event(f: Field, says: List<Param>) -> Part {
-        let kind? = self.kinds.find(word_of(it) == f.name) else {
-            return Part.Refused(no_event(f, [word_of(k) for k in self.kinds]))
-        }
-        let handler? = hearing(says, quote { bound }) else { return Part.Refused(unsayable(f, says)) }
-        Part
-            .Event(
-                quote {
-                match self.${f.name} {
-                    bound? -> [Action { kind: EventKind.${kind.name}, handler: ${handler} }]
-                    null -> []
-                }
-            },
-            )
-    }
-
-    /// The node's box: every field of `Box` read off the component, its
-    /// style with each styling member laid over it.
-    fn box_code(parts: List<Part>) -> Code {
-        mut style = quote { self.style }
-        for p in parts { style = p.laid_over(style) }
-        let rest = [quote { Box { ${f.name}: self.${f.name} } } for f in self.box if f.name != style_field]
-        quote { Box { style: ${style}, ..${rest} } }
-    }
-}
-
-/// The marks a member says its projection with.
-const attr_mark = "attr"
-const children_mark = "children"
-const style_mark = "style"
-
-/// A member's marks of one word.
-fn marks_of(f: Field, word: string) -> List<Mark> { [m for m in f.marks if m.name == word] }
 
 /// The modules that declare the vocabulary, as `Type.module` spells them.
 const realize_module = "@std.ui.realize"
@@ -217,19 +100,170 @@ const style_module = "@std.ui.style"
 /// The shared box's own name.
 const box_name = "Box"
 
+/// The vocabulary as the library declares it. Absent only when a
+/// declaration this file imports is not where it is read — the derive's
+/// own defect.
+fn vocabulary() -> Vocabulary? {
+    let prim? = type_exported(realize_module, "Prim") else { return null }
+    let attribute? = type_exported(realize_module, "Attribute") else { return null }
+    let kind? = type_exported(realize_module, "EventKind") else { return null }
+    let box? = type_exported(style_module, box_name) else { return null }
+    let style? = type_exported(style_module, "Style") else { return null }
+    Vocabulary {
+        prims: prim.variants,
+        attributes: attribute.variants,
+        kinds: kind.variants,
+        box: box.fields,
+        style: style.fields,
+    }
+}
+
+/// What one member of a primitive projects to, as the code that reads
+/// it: the attributes it gives the node, the children, the events it
+/// binds and the style fields it is laid over — or why it cannot project.
+/// One member fills one of them; a derive reads each across every member.
+type Part = {
+    attrs: List<Code> = [],
+    children: List<Code> = [],
+    events: List<Code> = [],
+    styles: List<Laid> = [],
+    problems: List<Diagnostic> = [],
+    said_attrs: List<Saying> = [],
+    said_styles: List<Saying> = [],
+}
+
+/// A member laid over one field of the node's style.
+type Laid = { over: string, member: Field }
+
+/// One thing a member says of the node, and the mark that says it.
+type Saying = { word: string, content: bool, at: Mark }
+
+/// A member that cannot project, and why.
+fn refused(why: Diagnostic) -> Part { Part { problems: [why] } }
+
+impl Vocabulary {
+    /// What `f` projects to: its event, or the one thing its mark says.
+    fn part(f: Field) -> Part {
+        let says? = f.says else { return self.marked(f) }
+        let marked? = f.marks.first() else { return self.event(f, says) }
+        refused(marked_event(f, marked))
+    }
+
+    /// The one thing a member's marks say. Each mark is read by its own
+    /// word, so a member saying two things shows as two parts.
+    fn marked(f: Field) -> Part {
+        let said = [self.attribute(f, m) for m in marks_of(f, attr_mark)]
+            .concat([children(f, m) for m in marks_of(f, children_mark)])
+            .concat([self.styled(f, m) for m in marks_of(f, style_mark)])
+        if said.length > 1 { return refused(says_twice(f)) }
+        said.first() ?? refused(says_nothing(f))
+    }
+
+    /// `@attr(.Label) label` → the code `Attribute.Label(self.label)`.
+    fn attribute(f: Field, m: Mark) -> Part {
+        let word? = m.args.first() else { return refused(unnamed_mark(m, "@attr(.Label)")) }
+        let v? = self.attributes.find(it.name == word) else {
+            return refused(no_attribute(m, word, [a.name for a in self.attributes]))
+        }
+        let carried? = v.fields.first() else { return refused(bare_attribute(m, v.name)) }
+        if carried.kind.spelled() != f.kind.spelled() { return refused(attribute_misfit(m, v.name, carried.kind, f)) }
+        Part {
+            attrs: [quote { Attribute.${v.name}(self.${f.name}) }],
+            said_attrs: [Saying { word: v.name, content: is_content(v), at: m }],
+        }
+    }
+
+    /// `@style(color) tone` → `tone` laid over the node's `style.color`.
+    /// A style field is optional, and the member fills it.
+    fn styled(f: Field, m: Mark) -> Part {
+        let word? = m.args.first() else { return refused(unnamed_mark(m, "@style(color)")) }
+        let over? = self.style.find(it.name == word) else {
+            return refused(no_style(m, word, [s.name for s in self.style]))
+        }
+        if filled_by(over.kind).spelled() != f.kind.spelled() { return refused(style_misfit(m, over, f)) }
+        Part {
+            styles: [Laid { over: word, member: f }],
+            said_styles: [Saying { word: word, content: false, at: m }],
+        }
+    }
+
+    /// `on press` → the action the node binds while an instance hears
+    /// it. ABSENCE IS THE OPTION'S OWN NULL: a handler left unset binds
+    /// no action, so a control nobody hears emits nothing.
+    fn event(f: Field, says: List<Param>) -> Part {
+        let kind? = self.kinds.find(word_of(it) == f.name) else {
+            return refused(no_event(f, [word_of(k) for k in self.kinds]))
+        }
+        let handler? = hearing(says, quote { bound }) else { return refused(unsayable(f, says)) }
+        Part {
+            events: [
+                quote {
+                    match self.${f.name} {
+                        bound? -> [Action { kind: EventKind.${kind.name}, handler: ${handler} }]
+                        null -> []
+                    }
+                },
+            ],
+        }
+    }
+
+    /// The node's box: every field of `Box` read off the component, its
+    /// style with each styling member laid over it.
+    fn box_code(parts: List<Part>) -> Code {
+        mut style = quote { self.style }
+        for l in [l for p in parts for l in p.styles] { style = quote { ${style} with { ${l.over}: self.${l.member.name} } } }
+        let rest = [quote { Box { ${f.name}: self.${f.name} } } for f in self.box if f.name != style_field]
+        quote { Box { style: ${style}, ..${rest} } }
+    }
+
+    /// What the component as a WHOLE gets wrong: no primitive or one
+    /// `Prim` does not have, no shared box, and anything two members say
+    /// twice — a second saying would be dropped, or drawn over the first.
+    fn unfit(t: Type, parts: List<Part>) -> List<Diagnostic> {
+        self.prim_problem(t).concat(unboxed(t)).concat(said_twice(parts))
+    }
+
+    fn prim_problem(t: Type) -> List<Diagnostic> {
+        let word? = prim_word(t) else { return [no_prim(t)] }
+        if self.prims.any(it.name == word) { [] } else { [not_a_prim(t, word, [p.name for p in self.prims])] }
+    }
+}
+
+/// The marks a member says its projection with.
+const attr_mark = "attr"
+const children_mark = "children"
+const style_mark = "style"
+
+/// The annotation that names a view's primitive, and the mark that gives
+/// an event kind its word.
+const prim_mark = "prim"
+const word_mark = "word"
+
+/// The mark that says an attribute is its node's own words.
+const facet_mark = "facet"
+const content_facet = "content"
+
+/// A member's marks of one word.
+fn marks_of(f: Field, word: string) -> List<Mark> { [m for m in f.marks if m.name == word] }
+
 /// The box's field a styling member is laid over.
 const style_field = "style"
+
+/// What fills an optional field: the type it may hold.
+fn filled_by(k: Kind) -> Kind {
+    match k { .Opt(inner) -> inner, rest -> k }
+}
 
 /// `@children items` → each child's own `describe`.
 fn children(f: Field, m: Mark) -> Part {
     match f.kind {
-        .List(.Dyn(_)) -> Part.Children(quote { [v.describe() for v in self.${f.name}] }),
-        rest -> Part.Refused(not_children(m, f)),
+        .List(.Dyn(_)) -> Part { children: [quote { [v.describe() for v in self.${f.name}] }] },
+        rest -> refused(not_children(m, f)),
     }
 }
 
 /// The word an `EventKind` answers to — its `@word`.
-fn word_of(kind: Variant) -> string { kind.marks.find(it.name == "word")?.args?.first() ?? "" }
+fn word_of(kind: Variant) -> string { kind.marks.find(it.name == word_mark)?.args?.first() ?? kind.name }
 
 /// The `Handler` arm that hears what an event says: ONE arm per thing a
 /// control can say, and absent for anything else.
@@ -251,16 +285,9 @@ fn joined(runs: List<Code>) -> Code {
     quote { union([${..runs}]) }
 }
 
-/// The primitive a component named with `@prim` — `@prim(.Button)` is
-/// the code `Prim.Button`.
-fn prim_code(t: Type) -> Code {
-    let word? = t.annotations.find(it.name == "prim")?.args?.first() else { return quote { Prim.Text } }
-    quote { Prim.${word} }
-}
-
-fn unnamed_prim(t: Type) -> List<Diagnostic> {
-    if t.annotations.any(it.name == "prim") { [] } else { [no_prim(t)] }
-}
+/// The primitive a component named with `@prim` — `@prim(.Button)` says
+/// `Button` — absent when it named none.
+fn prim_word(t: Type) -> string? { t.annotations.find(it.name == prim_mark)?.args?.first() }
 
 /// A primitive spreads the shared box in: the node's box is read off it
 /// field for field.
@@ -274,7 +301,31 @@ fn is_box(written: string) -> bool {
     spread.name == box_name && spread.module == style_module
 }
 
+/// Whether an attribute is its node's own words — its `@facet(content)`.
+fn is_content(v: Variant) -> bool { v.marks.any(it.name == facet_mark && it.args.first() == content_facet) }
+
+/// Each thing a second member says again: an attribute, a style field,
+/// or the node's own words — refused where the second one stands.
+fn said_twice(parts: List<Part>) -> List<Diagnostic> {
+    let attrs = [s for p in parts for s in p.said_attrs]
+    let styles = [s for p in parts for s in p.said_styles]
+    [attribute_twice(s) for j, s in attrs if attrs.slice(0, j).any(it.word == s.word)]
+        .concat(
+            [words_twice(s) for j, s in attrs if s.content && attrs.slice(0, j).any(it.content && it.word != s.word)],
+        )
+        .concat([style_twice(s) for j, s in styles if styles.slice(0, j).any(it.word == s.word)])
+}
+
 // ── voices ──────────────────────────────────────────────────────
+
+fn unread(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "defect",
+        t.at,
+        "defect: `@derive(View)` could not read the library's own vocabulary over `${t.name}`",
+        "`Prim`, `Attribute`, `EventKind`, `Box` and `Style` are read by their modules' names — one moved",
+    )
+}
 
 fn says_nothing(f: Field) -> Diagnostic {
     refuse_as_at(
@@ -287,10 +338,28 @@ fn says_nothing(f: Field) -> Diagnostic {
 
 fn says_twice(f: Field) -> Diagnostic {
     refuse_as_at(
-        "unprojected",
+        "two-marks",
         f.at,
         "a member projects to one thing, and `${f.name}` says more than one",
         "keep one of `@attr`, `@children` and `@style`",
+    )
+}
+
+fn marked_event(f: Field, m: Mark) -> Diagnostic {
+    refuse_as_at(
+        "marked-event",
+        m.at,
+        "an event is heard by its own word, and `${f.name}` is marked `@${m.name}` too",
+        "drop the mark — `on ${f.name}`",
+    )
+}
+
+fn unnamed_mark(m: Mark, form: string) -> Diagnostic {
+    refuse_as_at(
+        "unnamed-mark",
+        m.at,
+        "`@${m.name}` names what it marks its member as, and this one names nothing",
+        "`${form}`",
     )
 }
 
@@ -303,12 +372,39 @@ fn no_attribute(m: Mark, word: string, known: List<string>) -> Diagnostic {
     )
 }
 
-fn attribute_misfit(m: Mark, attribute: string, carried: string, f: Field) -> Diagnostic {
+fn bare_attribute(m: Mark, attribute: string) -> Diagnostic {
     refuse_as_at(
-        "attribute",
+        "attribute-misfit",
         m.at,
-        "`${attribute}` carries `${carried}`, and `${f.name}` is `${f.kind.spelled()}`",
+        "`${attribute}` carries nothing a member could fill",
         null,
+    )
+}
+
+fn attribute_misfit(m: Mark, attribute: string, carried: Kind, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "attribute-misfit",
+        m.at,
+        "`${attribute}` carries `${carried.spelled()}`, and `${f.name}` is `${f.kind.spelled()}`",
+        null,
+    )
+}
+
+fn attribute_twice(s: Saying) -> Diagnostic {
+    refuse_as_at(
+        "said-twice",
+        s.at.at,
+        "a node carries an attribute once, and `${s.word}` is already another member's",
+        "mark one member `@attr(.${s.word})`",
+    )
+}
+
+fn words_twice(s: Saying) -> Diagnostic {
+    refuse_as_at(
+        "said-twice",
+        s.at.at,
+        "a node says its own words once, and another member already says them — `${s.word}` would be lost",
+        "keep one member as the node's words",
     )
 }
 
@@ -318,6 +414,24 @@ fn no_style(m: Mark, word: string, known: List<string>) -> Diagnostic {
         m.at,
         "`${word}` is no field of a node's style",
         "the fields are ${ticked(known)}",
+    )
+}
+
+fn style_misfit(m: Mark, over: Field, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "style-misfit",
+        m.at,
+        "a style's `${over.name}` is `${filled_by(over.kind).spelled()}`, and `${f.name}` is `${f.kind.spelled()}`",
+        null,
+    )
+}
+
+fn style_twice(s: Saying) -> Diagnostic {
+    refuse_as_at(
+        "said-twice",
+        s.at.at,
+        "a node's style holds `${s.word}` once, and another member already fills it",
+        "mark one member `@style(${s.word})`",
     )
 }
 
@@ -341,19 +455,10 @@ fn no_event(f: Field, known: List<string>) -> Diagnostic {
 
 fn unsayable(f: Field, says: List<Param>) -> Diagnostic {
     refuse_as_at(
-        "event",
+        "unsayable",
         f.at,
         "a control says nothing, text, a flag or a number, and `${f.name}` says `${["${s.name}: ${s.ty}" for s in says].join(", ")}`",
         "say one `string`, `bool` or `int`",
-    )
-}
-
-fn unread(t: Type) -> Diagnostic {
-    refuse_as_at(
-        "defect",
-        t.at,
-        "defect: `@derive(View)` could not read the library's own vocabulary over `${t.name}`",
-        "`Attribute`, `EventKind`, `Box` and `Style` are read by their modules' names — one moved",
     )
 }
 
@@ -372,6 +477,15 @@ fn no_prim(t: Type) -> Diagnostic {
         t.at,
         "a view names the primitive it is, and `${t.name}` names none",
         "`@prim(.Text)` above the component",
+    )
+}
+
+fn not_a_prim(t: Type, word: string, known: List<string>) -> Diagnostic {
+    refuse_as_at(
+        "not-a-prim",
+        t.at,
+        "`${word}` is no primitive a target draws",
+        "the primitives are ${ticked(known)}",
     )
 }
 

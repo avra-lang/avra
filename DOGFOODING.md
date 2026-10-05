@@ -1704,3 +1704,59 @@ Each round writes text never checked before (`avra $i-$RANDOM: …`) and
 the restore is untimed; only the first round of a toggling loop was
 ever an edit. Measure main and the branch interleaved on one machine,
 each tree with its own compiler, and quote every round, not the best.
+
+## A derive's vocabulary is its library's declarations
+
+A derive that maps a word a member wrote (`@attr(.Label)`, `on press`)
+onto the library's own types reads those types — `type_exported(module,
+name)` (`@std/meta`) — and never a table of names kept in the derive.
+The enum IS the table: its variants are the words, a variant's payload
+is the type that fits, a mark on a variant (`@word(press)`,
+`@facet(content)`) is the fact about it. A word that is not there, a
+type that does not fit and a thing said twice are each refused at the
+MEMBER, in the derive's own voice; a refusal that surfaces inside the
+derive's own `quote` is a check the derive forgot.
+packages/std-ui/src/realize/view.av is the exemplar. A derive that
+cannot read its vocabulary says so as its own defect, never `?? []`.
+
+## A code rides its variant, and both directions are generated
+
+A number a wire spells a variant with is a mark on the variant (`@code(3)
+SetText`); `@derive(Codes)` (packages/std-ui/src/realize/codes.av)
+answers `code()`, the reverse `coded_as(n)` and `coded()` — every
+variant with its word, which is what writes a host's table
+(`runtime/dom/wire.gen.js`, held by `make ui-host`). THE TRAP: a `${n}`
+hole in a PATTERN position is a binder, not the literal — `match code {
+${1} -> .A, … }` compiles and its first arm takes everything. The reverse
+read is `[…variants].find(it.code() == code)`.
+
+## A law the parse knows and the typer speaks
+
+A builder that finds a law broken returns `.Err`, and that ends the
+file's parse under `build.failed` with no help. Where the mistake is
+ordinary — a mistyped event name — the builder MARKS the node with what
+it found (`store.mark_unheard(handler, why)`), leaves the node out of
+what it builds, and the feature's typing rule speaks the refusal with its
+own kind and help (features/components: `Builder.unheard`, `event_law`).
+One mistake is one diagnostic and the rest of the file is still checked.
+
+## A refusal test compares every refusal the run spoke
+
+A test that asks `report.contains("…")` passes over a run that said that
+and ten things more, and a negative `!contains` passes over a run that
+never ran. Collect the run's `error[` lines once and compare the WHOLE
+list to the list owed, with its count; give a run that did not answer a
+text no assertion can pass over (packages/cli/src/commands/tests/
+ui_view_test.av: `spoken()`, `owed`, `never_ran`).
+
+## A diff is a fold over what stood and what is wanted
+
+Matching two trees needs no table of ids kept between them: lower each to
+elements that know their SEAT among their siblings, and fold old against
+new — a kept element carries its number across, a new one takes the
+next. The fold answers the patches, the numbered page and the next
+number (packages/std-ui/src/realize/dom/patch.av). A table written
+through a `mut` seat did the same job and is quadratic in the
+evaluator's memory (2,000 siblings passed 6 GB): every mutating shape
+measured there is — a `mut` map, `Cell.put`, a `mut`-seat method — so a
+pass over a tree is written pure, and accumulates by comprehension.
