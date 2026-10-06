@@ -10,7 +10,8 @@
 //!
 //! A NAME IS WRITTEN, NEVER RESOLVED: `package:relative/path` as the
 //! source spells it, a variable's name, a tool's word. A file reached
-//! under two names is two inputs over one digest. A tool's `Stamp` names
+//! under two names is two inputs with two digests — the name is in the
+//! frame, so a digest is no address of the bytes. A tool's `Stamp` names
 //! the path the tool was found at and the size and modified time of what
 //! stands there after links are followed — a link re-aimed at a
 //! different binary moves the stamp, a link renamed does not.
@@ -18,7 +19,7 @@
 //! THE DIGEST IS OF A FRAME: a head that says the kind, the name and
 //! what was found — every part behind its own length, so no two shapes
 //! spell the same octets — then the body, last and whole.
-use core.{new_digest, digest_bytes, digest_key}
+use core.{new_digest, digest_bytes, digest_text, digest_key, mix_final}
 use @std.relation.stable.{Writer, writer}
 
 /// What a read asks of the world.
@@ -34,8 +35,12 @@ export type Listed = { name: string, dir: bool }
 /// size and modified time of the file there.
 export type Stamp = { path: string, size: int, mtime: int }
 
-/// A digest of an input's frame — compared, stored and never unpacked.
-export type InputDigest = string
+/// A digest of an input's frame: the key it is stored and compared by,
+/// and one word of it — what a memo cell is cut by.
+export type InputDigest = { key: string, word: int }
+
+/// What a frame ends in: the octets read, as the read holds them.
+enum Body { None, Text(text: string), Octets(octets: Bytes) }
 
 /// A named, digested read.
 export type Input = { name: InputName, digest: InputDigest }
@@ -76,6 +81,12 @@ impl Read {
         }
     }
 
+    /// The text a read saw — none for an absent file and for every read
+    /// that is not a file's text.
+    fn as_text() -> string? {
+        match self { .Text(_, text) -> text, _ -> null }
+    }
+
     /// The read as a named, digested input.
     fn input() -> Input {
         let name = self.name()
@@ -103,19 +114,25 @@ impl Read {
         head.bytes()
     }
 
-    /// The octets read, whole — empty where the head says it all.
-    fn body() -> Bytes {
+    /// The octets read, whole — none where the head says it all.
+    fn body() -> Body {
         match self {
-            .Text(_, text) or .Env(_, text) -> (text ?? "").bytes(),
-            .Octets(_, octets) or .Range(_, _, _, octets) -> octets ?? "".bytes(),
-            .Listing(_, _) or .Exists(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> "".bytes(),
+            .Text(_, text) or .Env(_, text) -> if text == null { Body.None } else { Body.Text(text!) },
+            .Octets(_, octets) or .Range(_, _, _, octets) -> if octets == null { Body.None } else { Body.Octets(octets!) },
+            .Listing(_, _) or .Exists(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> Body.None,
         }
     }
 }
 
 /// The digest of a frame — the ONE place an input's digest is computed.
-fn digested(head: Bytes, body: Bytes) -> InputDigest {
-    InputDigest(digest_key(digest_bytes(digest_bytes(new_digest(), head), body)))
+fn digested(head: Bytes, body: Body) -> InputDigest {
+    let framed = digest_bytes(new_digest(), head)
+    let whole = match body {
+        .None -> framed,
+        .Text(text) -> digest_text(framed, text),
+        .Octets(octets) -> digest_bytes(framed, octets),
+    }
+    InputDigest { key: digest_key(whole), word: mix_final(whole.a) }
 }
 
 const ABSENT: int = 0

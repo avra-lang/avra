@@ -1,6 +1,6 @@
 //! The manifest closure: the root package, its path dependencies, and
 //! the module path each names. Moved out of the workspace god-object.
-use core.{ModulePath, key_spelled, fp_str, flatten}
+use core.{ModulePath, key_spelled, flatten}
 use @std.path.{under_dir, joined_path, normalized, relative_path}
 use features.{nothing, Budgets, budgets_of}
 use diagnostics.{SourceFile, new_source_file, Diag, refusal}
@@ -60,15 +60,23 @@ impl Workspace {
                 .relation(Family.Manifest)
                 .input_loaded(
                     i,
-                    () -> {
-                        let text = self.host.read(path)
-                        Loaded {
-                            value: DbRow.Manifest(read_manifest(new_source_file(path, text))),
-                            fingerprint: fp_str(text),
-                        }
-                    },
+                    () -> self
+                        .loaded_text(
+                            path,
+                            (text: string) -> DbRow
+                                .Manifest(read_manifest(new_source_file(path, text))),
+                        ),
                 ),
         )
+    }
+
+    /// A listed file read through the door: the row its text loads as,
+    /// and the word of its digest the cell is cut by. Nothing there is
+    /// the host's to refuse; under a host that refuses nothing it loads
+    /// as no text, under a digest no empty file has.
+    fn loaded_text(path: string, row: fn(string) -> DbRow) -> Loaded<DbRow> {
+        let seen = self.host.listed_text(path)
+        Loaded { value: row(seen.as_text() ?? ""), fingerprint: seen.input().digest.word }
     }
 
     /// What a settlement may spend: the ROOT package's `[lifted]` rows,
