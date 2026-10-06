@@ -3,8 +3,18 @@
 // mixing them into arithmetic renders the first type.mismatch.
 use @std.avrac.core.{ExprId}
 use @std.avrac.compiler.{analyze_source, avra, Analysis}
-use @std.avrac.testing.{shown, refused_with, refused_at_run}
+use @std.avrac.testing.{shown, refused_with, refused_at_run, ir_of}
+use compiler.backend.{render_ir}
 use @std.avrac.diagnostics.{new_source_file}
+
+/// The program's IR as text.
+fn ir(source: string) -> string { render_ir(ir_of(source)) }
+
+/// How many loops the IR opens.
+fn loops(text: string) -> int { text.split("loop {").length - 1 }
+
+/// What `avra check` says of a one-file program.
+fn said(source: string) -> string { avra().check(new_source_file("app.av", source)) }
 
 /// Statement `i`'s value expression.
 fn value_of(a: Analysis, i: int) -> ExprId {
@@ -148,8 +158,89 @@ spec "features/str_lit" {
         then "chars() takes no argument" {
             refused_with("\"a\".chars(1)", "`chars` takes 0 arguments, found 1")
         }
-        then "a bare string walk names both views" {
-            refused_with("for c in \"ab\" { }\n1", "s.chars()")
+        then "codes() answers nothing — the view's name is chars" {
+            refused_with("\"ab\".codes()", "`.codes(…)` calls a method, and `string` has none")
+        }
+        then "a view read as a property names the call" {
+            refused_with(
+                    "let n = \"ab\".chars",
+                    "`chars` is a method of `string`, and a method is called — `.chars(…)`",
+                ) &&
+                refused_with(
+                    "let n = \"ab\".bytes",
+                    "`bytes` is a method of `string`, and a method is called — `.bytes(…)`",
+                )
+        }
+    }
+    given "a bare string is no walk — the voice names both views" {
+        then "a `for` over a string" {
+            let expected = """error[type.mismatch]: `for … in` walks a `List`, and a `string` names no element without a view
+  ╭─[app.av:1:10]
+1 │ for c in "ab" { }
+  ·          ┬
+  ·          ╰── this is `string`
+──╯
+help: iterate its octets with `s.bytes()`, or its code points with `s.chars()`"""
+            said("for c in \"ab\" { }") == expected
+        }
+        then "a comprehension over a string" {
+            let expected = """error[type.list]: a comprehension walks a list, and a `string` names no element without a view
+  ╭─[app.av:1:22]
+1 │ let xs = [c for c in "ab"]
+  ·                      ┬
+  ·                      ╰── this is `string`
+──╯
+help: iterate its octets with `s.bytes()`, or its code points with `s.chars()`"""
+            said("let xs = [c for c in \"ab\"]") == expected
+        }
+        then "both forms the help names walk" {
+            shown(
+                "mut n = 0\nfor c in \"é\".chars() { n = n + c }\nfor x in \"é\".bytes() { n = n + x }\nn",
+            ) == "597"
+        }
+    }
+    given "a string is not indexed" {
+        then "an int index names the three views" {
+            let expected = """error[type.mismatch]: an `int` names no place in a `string` — its elements are a view's
+  ╭─[app.av:2:1]
+2 │ s[0]
+  · ┬
+  · ╰── this is `string`
+──╯
+help: name the view: `s.bytes().at(i)` reads an octet, `s.chars()[i]` the code point `i` steps in, `s.substring(i, j)` a slice"""
+            said("let s = \"ab\"\ns[0]") == expected
+        }
+        then "every form the help names answers" {
+            shown(
+                "let s = \"h€y\"\n\"" +
+                    "\${s.bytes().at(1)} " +
+                    "\${s.chars()[1]} " +
+                    "\${s.substring(1, 4)}\"",
+            ) == "226 8364 €"
+        }
+        then "an index write is refused the same way" {
+            refused_with("mut s = \"ab\"\ns[0] = 1\ns", "an `int` names no place in a `string`")
+        }
+    }
+    given "a view is a walk source — no list stands between the text and the loop" {
+        then "a `for` over chars is one loop and mints no list" {
+            let text = ir("mut n = 0\nfor c in \"héllo\".chars() { n = n + c }\nn")
+            loops(text) == 1 && !text.contains("avra_array_")
+        }
+        then "a `for` over bytes is one loop over the text's own box" {
+            let text = ir("mut n = 0\nfor x in \"héllo\".bytes() { n = n + x }\nn")
+            loops(text) == 1 && !text.contains("avra_array_") && text.contains("avra_bytes_of_str")
+        }
+        then "a comprehension over chars is one loop, pushing only its answer" {
+            let text = ir("[c + 1 for c in \"héllo\".chars()].length")
+            loops(text) == 1 && !text.contains("avra_array_get")
+        }
+        then "a chain over chars is one loop and mints no list" {
+            let text = ir("\"héllo\".chars().filter(it > 127).count()")
+            loops(text) == 1 && !text.contains("avra_array_")
+        }
+        then "a named view is a list" {
+            shown("let cs = \"aé\".chars()\ncs.length * 1000 + cs[1]") == "2233"
         }
     }
     given "is_empty — a string knows when it holds nothing" {

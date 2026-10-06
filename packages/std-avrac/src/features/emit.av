@@ -419,8 +419,18 @@ impl LowerCx {
         let _ = self.loops.pop()
     }
 
+    /// The walk a source opens. A string's `chars` view is no list
+    /// until one is asked for: a walk over it walks the text.
     mut fn opened(subject: ExprId, elem: TypeId) -> Walk {
-        self.opened_reg(subject, self.reg_of(subject), self.type_at(subject), elem)
+        let source = self.viewed_text(subject) ?? subject
+        self.opened_reg(source, self.reg_of(source), self.type_at(source), elem)
+    }
+
+    /// The text a `chars` view reads, when `e` is one.
+    fn viewed_text(e: ExprId) -> ExprId? {
+        let stage? = self.facts.stage_at(e) else { return null }
+        if !(stage is .Chars) { return null }
+        match self.view.store.expr(e) { .MethodCall(text, _, _) -> text, _ -> null }
     }
 
     /// A walk over a list already in a register — `flat_map`'s inner
@@ -428,7 +438,17 @@ impl LowerCx {
     mut fn opened_reg(e: ExprId, xs: Reg, ty: TypeId, elem: TypeId) -> Walk {
         let len = self.measure_of(e, xs, ty)
         let idx = self.seeded_cell(self.type(int), self.const_int(0))
-        Walk { xs: xs, len: len, idx: idx, elem: elem, kind: self.walk_kind(ty) }
+        let kind = self.walk_kind(ty)
+        Walk { xs: xs, len: len, idx: idx, elem: elem, kind: kind, ord: self.ordinal_cell(kind) }
+    }
+
+    /// The cell a walk counts its elements in, when its count is no
+    /// element's place — a string's is a byte offset.
+    mut fn ordinal_cell(kind: WalkKind) -> Reg? {
+        match kind {
+            .Codepoints -> self.seeded_cell(self.type(int), self.const_int(0)),
+            .List or .Bytes -> null,
+        }
     }
 
     /// The kind a source of `ty` walks: a `Bytes` reads octets, a string
@@ -446,6 +466,7 @@ impl LowerCx {
             idx: self.seeded_cell(int, self.reg_of(lo)),
             elem: int,
             kind: .List,
+            ord: null,
         }
     }
 
@@ -465,6 +486,12 @@ impl LowerCx {
         self.emit(Ins.Bin(next, BinOp.Add, at, step))
         self.emit(Ins.Store(w.idx, next))
         at
+    }
+
+    /// This turn's place among the walk's elements — asked once a turn,
+    /// by a walk that names its index.
+    mut fn turn_place(w: Walk, here: Reg) -> Reg {
+        match w.kind { .Codepoints -> self.arrival(w.ord!), .List or .Bytes -> here }
     }
 
     /// This turn's element — a RUNTIME index, so the read stays raw.
@@ -647,7 +674,7 @@ export enum WalkKind {
     Codepoints
 }
 
-export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId, kind: WalkKind }
+export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId, kind: WalkKind, ord: Reg? }
 
 // ── Measures ────────────────────────────────────────────────────
 

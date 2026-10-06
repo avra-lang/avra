@@ -25,11 +25,12 @@ fn spine_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 }
 
 /// `subject[index]`: the subject is a List, the index an int, the
-/// answer the element type.
+/// answer the element type. A string has no element an int names.
 fn index_type(mut cx: TypeCx, subject: ExprId, index: ExprId) -> TypeId {
     let elem: TypeId? = cx.view.types.element(cx.type_at(subject))
     if elem == null {
         if cx.errored(subject) { return cx.error_type }
+        if cx.seen_at(subject) is .Str { return text_unindexed(cx, subject) }
         return not_indexable(cx, subject)
     }
     let ish = cx.shape_at(index)
@@ -322,6 +323,19 @@ fn not_indexable(mut cx: TypeCx, subject: ExprId) -> TypeId {
                 "`[...]` indexes a `List`, found `${n}`",
                 this_is(n),
                 null,
+            ),
+        )
+}
+
+fn text_unindexed(mut cx: TypeCx, subject: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(subject),
+                "an `int` names no place in a `string` — its elements are a view's",
+                this_is("string"),
+                "name the view: `s.bytes().at(i)` reads an octet, `s.chars()[i]` the code point `i` steps in, `s.substring(i, j)` a slice",
             ),
         )
 }

@@ -53,10 +53,15 @@ fn lower_list_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<Stmt
     cx.emit(Ins.Alloca(cell))
     cx.bind_slot(s, cell)
     let here = cx.turn_open(w, s)
-    cx.bind_index(s, here)
+    cx.bind_index(s, if names_index(cx, s) { cx.turn_place(w, here) } else { here })
     cx.emit(Ins.Store(cell, cx.turn_elem(w, here)))
     cx.lower_stmts(stmts)
     cx.loop_end()
+}
+
+/// Whether the `for` names its index.
+fn names_index(cx: LowerCx, s: StmtId) -> bool {
+    match cx.view.store.stmt(s) { .ForEach(index, _, _, _) -> index != null, _ -> false }
 }
 
 /// `for k, v in m`: both arrays snapshot in insertion order, so the
