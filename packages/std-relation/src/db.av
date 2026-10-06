@@ -49,8 +49,7 @@ export type Db = {
     closers: Cell<List<fn() -> void>>,
     sweepers: Cell<List<fn(Db, int, int) -> void>>,
     kernel: Cell<Kernel?>,
-    verifying: Cell<Verifying>,
-    late: Cell<Late>,
+    home: Cell<Home>,
     moves: Cell<Map<string, Cell<Map<string, int>>>>,
     row_families: Cell<List<int>>,
     hears: Cell<fn(string) -> void>,
@@ -70,20 +69,15 @@ export type Db = {
 /// the relations it has written so far.
 type OpenRun = { owner: int, run: int, wrote: Cell<List<int>> }
 
-/// How a relation's kernel verifier learns that a cell moved: from the
-/// cell's live hash, or from the revision a write stamped it with.
-export enum Verifying {
-    ByHash
-    ByMove
-}
-
-/// What a write does to a cell a reader has read: `Refused` when the
-/// read was this revision — a producer runs before its readers — or
-/// `Taken` as an input arriving, the revision moving so every reader
-/// is verified again.
-export enum Late {
-    Refused
-    Taken
+/// Whose kernel a Db's cells live in, and so how a write is heard.
+/// `Own`: the Db's own kernel — a cell is verified by its live hash, and a
+/// write to a cell a query read is an input arriving: the revision moves
+/// and every reader is verified again. `Given`: an owner's kernel — a cell
+/// is verified by the revision a write stamped it with, and a write to a
+/// cell read this revision is refused: a producer runs before its readers.
+enum Home {
+    Own
+    Given
 }
 
 /// Where an owner keeps query answers past the process, by a query's
@@ -113,18 +107,13 @@ once fn minted() -> Cell<int> { Cell.new(0) }
 /// A fresh Db under the next dense id. Its kernel is its own, made when
 /// a query is first asked of it — a Db that only holds rows has none —
 /// and a write to a cell a query read is an input arriving.
-export fn new_db() -> Db { made(null, Verifying.ByHash, Late.Taken, transient()) }
-
-/// A fresh Db whose cells live in `kernel`, its owner's.
-export fn db_over(kernel: Kernel, verifying: Verifying, late: Late) -> Db {
-    made(kernel, verifying, late, transient())
-}
+export fn new_db() -> Db { made(transient()) }
 
 /// `new_db`, its query answers kept past the process where `durable`
 /// keeps them.
-export fn durable_db(durable: Durable) -> Db { made(null, Verifying.ByHash, Late.Taken, durable) }
+export fn durable_db(durable: Durable) -> Db { made(durable) }
 
-fn made(kernel: Kernel?, verifying: Verifying, late: Late, durable: Durable) -> Db {
+fn made(durable: Durable) -> Db {
     let next = minted()
     let id = next.get()
     next.set(id + 1)
@@ -138,15 +127,15 @@ fn made(kernel: Kernel?, verifying: Verifying, late: Late, durable: Durable) -> 
     let names: Cell<List<string>> = Cell.new([""])
     let open: Cell<List<OpenRun>> = Cell.new([])
     let registrars: Cell<List<fn(fn(fn(int) -> int) -> int) -> void>> = Cell.new([])
+    let none: Kernel? = null
     Db {
         id: id,
         closed: Cell.new(false),
         hashes: hashes,
         closers: closers,
         sweepers: sweepers,
-        kernel: Cell.new(kernel),
-        verifying: Cell.new(verifying),
-        late: Cell.new(late),
+        kernel: Cell.new(none),
+        home: Cell.new(Home.Own),
         moves: moves,
         row_families: row_families,
         hears: Cell.new(trapped),
@@ -200,9 +189,9 @@ impl Db {
     /// A family of `kernel` over `verify`, a cell's live hash: verified
     /// by that hash, or by the revision a write last stamped the cell with.
     fn family(kernel: Kernel, verify: fn(int) -> int) -> int {
-        let family = match self.verifying.get() {
-            .ByHash -> kernel.hashed_family(verify),
-            .ByMove -> self.stamped_family(kernel),
+        let family = match self.home.get() {
+            .Own -> kernel.hashed_family(verify),
+            .Given -> self.stamped_family(kernel),
         }
         self.row_families.push(family)
         family
@@ -224,10 +213,14 @@ impl Db {
     }
 
     /// The Db handed to an owner's kernel: every family registered here
-    /// is registered there.
-    fn given(kernel: Kernel, verifying: Verifying, late: Late) {
-        self.verifying.set(verifying)
-        self.late.set(late)
+    /// is registered there. Refused once a query has read here — what it
+    /// read was told to the kernel being left.
+    fn given_to(kernel: Kernel) {
+        if self.read_ever() {
+            self.refuse(given_after_read(self.id))
+            return
+        }
+        self.home.set(Home.Given)
         self.homed(kernel)
     }
 
@@ -255,8 +248,7 @@ impl Db {
         let none: Kernel? = null
         self.forgotten()
         self.kernel.set(none)
-        self.verifying.set(Verifying.ByHash)
-        self.late.set(Late.Taken)
+        self.home.set(Home.Own)
         for again in self.registrars.get() { again((_verify: fn(int) -> int) -> 0 - 1) }
     }
 
@@ -335,19 +327,19 @@ impl Db {
     fn left() { self.asking.set(self.asking.get() - 1) }
 
     /// A write is about to move `cell`, last read at revision `read_at`
-    /// (-1 never): whether the write stands. A cell a reader holds this
-    /// revision refuses it where late writes are refused; where they are
-    /// taken, a cell any reader ever read moves the revision.
+    /// (-1 never): whether the write stands. In an owner's kernel a cell a
+    /// reader holds this revision refuses it; in the Db's own, a cell any
+    /// reader ever read moves the revision.
     fn moved(family: int, cell: int, read_at: int) -> bool {
         let kernel? = self.kernel.get() else { return true }
         self.unsettles_restored()
-        match self.late.get() {
-            .Refused -> {
+        match self.home.get() {
+            .Given -> {
                 if read_at == kernel.revision() { return false }
                 self.stamped(family, cell, kernel.revision())
                 true
             },
-            .Taken -> {
+            .Own -> {
                 if read_at >= 0 { kernel.bump() }
                 self.stamped(family, cell, kernel.revision())
                 true
@@ -671,6 +663,10 @@ export type KeptRecord<V> = { query: string, args: int, write: fn(Writer, V) -> 
 
 fn query_writes() -> string {
     "a `@query` wrote a row with no owner — a query answers, it writes no rows of its own; open a named owner's run around the write (`db.opened_run(db.owner_named(…))`)"
+}
+
+fn given_after_read(id: int) -> string {
+    "Db ${id} is given a kernel after a query read it — a Db takes its owner's kernel before anything is asked of it"
 }
 
 fn closed_db(id: int) -> string {

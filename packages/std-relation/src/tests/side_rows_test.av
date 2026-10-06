@@ -8,8 +8,8 @@
 // CURRENT table through the Cell on every invocation — a closure over a
 // bare table would answer that first read's snapshot forever.
 use @std.relation.{relation, side}
-use @std.relation.db.{Db, db_over, Verifying, Late}
-use @std.relation.engine.{Kernel, Key, new_kernel}
+use @std.relation.db.{Db, new_db}
+use @std.relation.engine.{Kernel, Key}
 use @std.relation.rows.{SideRows, side_rows}
 use @std.avrac.core.{SideTable, side_table}
 
@@ -24,16 +24,17 @@ fn two_row_store() -> Cell<SideTable<Row>> {
     Cell.new(tbl)
 }
 
-/// A kernel, a query key in it, and a Db over it.
+/// A Db, its own kernel, and a query key in it.
 type Rig = { kernel: Kernel, query: Key, db: Db, store: Cell<SideTable<Row>>, side: SideRows<Row> }
 
 fn rig() -> Rig {
-    let kernel = new_kernel()
+    let db = new_db()
+    let kernel = db.engine()
     let side: SideRows<Row> = side_rows()
     Rig {
         kernel: kernel,
         query: Key { family: kernel.family((_arg: int) -> 0), arg: 0 },
-        db: db_over(kernel, Verifying.ByHash, Late.Refused),
+        db: db,
         store: two_row_store(),
         side: side,
     }
