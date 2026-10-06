@@ -2106,8 +2106,10 @@ Runtime facts, ours to ratify:
   SPRITE, NOT TO THE CONNECTION: a supervisor there keeps its output and
   status and holds the Sprite awake while it lives, `run` only follows
   it, and a dropped connection is followed again from the byte it stood
-  at — so an interrupt stops a run, a drop never does, a run is as long
-  as its `--for` says, and the Sprite ends it at its bound whoever is
+  at — so Ctrl-C or `work stop` ends a run; a drop, a hangup or the
+  client being killed never does (it says so, and the next `run` answers
+  76 until `work attach` has followed it out); a run is as long as its
+  `--for` says, and the Sprite ends it at its bound whoever is
   watching (`work attach` follows again, `work stop` ends it, `work
   done` ends it with the lane). `sh tools/work sprites` shows all of
   them in seconds.

@@ -283,7 +283,7 @@ check "$? $(grep -c '^work: COMMAND — stopped at its bound' "$scratch/err")" "
 
 scene 0; echo Other-9 > "$scratch/fake/live"
 ran true
-check "$? $(grep -c 'BUSY — A still runs Other-9.*work attach.*work stop' "$scratch/err") $(cat "$scratch/fake/rsync" 2>/dev/null | wc -l | tr -d ' ') $(grep -c '^start' "$scratch/fake/calls")" "76 1 0 0" "work run: a Sprite with a run standing is BUSY — nothing is synced under it, nothing started" "$scratch/err"
+check "$? $(grep -c 'BUSY — Other-9 is live on A with nobody here following it.*work attach.*work stop' "$scratch/err") $(cat "$scratch/fake/rsync" 2>/dev/null | wc -l | tr -d ' ') $(grep -c '^start' "$scratch/fake/calls")" "76 1 0 0" "work run: a Sprite with a run standing is BUSY — nothing is synced under it, nothing started" "$scratch/err"
 
 scene 0; echo 9 > "$scratch/fake/ending"; : > "$scratch/fake/lost"; echo 3 > "$scratch/fake/cut"
 ran true
@@ -317,12 +317,21 @@ scene 0; echo 4 > "$scratch/fake/cut"; echo 0 > "$scratch/fake/ending"
 ran true
 check "$? $(tr '\n' ' ' < "$scratch/out")| $(grep -c '^attach' "$scratch/fake/calls")" "0 one two three | 2" "work run: a run that ended while its last connection delivered half is read to its last byte" "$scratch/err"
 
-scene 0; echo 99 > "$scratch/fake/ending"; : > "$scratch/fake/hang"
-PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" run true > "$scratch/out" 2> "$scratch/err" &
-job=$!
-i=0; while [ "$i" -lt 50 ] && ! grep -q '^attach' "$scratch/fake/calls" 2>/dev/null; do sleep 0.2; i=$((i + 1)); done
-kill -TERM "$job"; wait "$job"
-check "$? $(grep -c '^stop' "$scratch/fake/calls") $([ -f "$(git rev-parse --absolute-git-dir)/avra-run" ] && echo locked || echo free)" "143 1 free" "work run: a TERM stops the run on the Sprite and frees the lane" "$scratch/err"
+# ONLY A STOP THAT WAS MEANT ENDS A RUN. A client that is terminated or
+# hung up — a session that ended, a harness reaping its jobs — detaches,
+# and the run goes on; Ctrl-C is the one signal that stops it. A shell's
+# background job has INT ignored, so the client is started with it restored.
+signalled() {
+    scene 0; echo 99 > "$scratch/fake/ending"; : > "$scratch/fake/hang"
+    PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV' sh "$work" run true > "$scratch/out" 2> "$scratch/err" &
+    job=$!
+    i=0; while [ "$i" -lt 50 ] && ! grep -q '^attach' "$scratch/fake/calls" 2>/dev/null; do sleep 0.2; i=$((i + 1)); done
+    kill -"$1" "$job"; wait "$job"
+    echo "$? $(grep -c '^stop' "$scratch/fake/calls") $(grep -c "^work: detached ($2) — the run goes on on A; .sh tools/work attach. follows it, .sh tools/work stop. ends it" "$scratch/err") $([ -f "$(git rev-parse --absolute-git-dir)/avra-run" ] && echo locked || echo free)"
+}
+check "$(signalled TERM terminated)" "143 0 1 free" "work run: a TERM to the client detaches — the run goes on, nothing is stopped, and it says how to follow and how to end it" "$scratch/err"
+check "$(signalled HUP 'hung up')" "129 0 1 free" "work run: a hangup detaches the same way" "$scratch/err"
+check "$(signalled INT -)" "130 1 0 free" "work run: Ctrl-C stops the run on the Sprite and frees the lane" "$scratch/err"
 
 scene 3; echo Mine-1 > "$scratch/fake/live"
 PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" attach > "$scratch/out" 2> "$scratch/err"
@@ -506,7 +515,7 @@ STUB
     timeout 60 sh "$work" run true > "$scratch/out2" 2> "$scratch/busy"
     busy=$?
     timeout 90 sh "$work" attach > "$scratch/out" 2> "$scratch/err"
-    check "$?|$([ "$going" -gt 0 ] && echo going)|$busy $(grep -c '^work: BUSY — L still runs' "$scratch/busy")|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(quiet 10)" "9|going|76 1|$want|0" \
+    check "$?|$([ "$going" -gt 0 ] && echo going)|$busy $(grep -c '^work: BUSY — .* is live on L with nobody here following it' "$scratch/busy")|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(quiet 10)" "9|going|76 1|$want|0" \
         "end to end: with its follower killed outright the run goes on, a second run is BUSY, and attach has every line and the status" "$scratch/err"
 
     timeout 90 sh "$work" run 'setsid sleep 4260 & sleep 4261' > "$scratch/out" 2> "$scratch/err" &

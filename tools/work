@@ -32,7 +32,8 @@
 #   76   BUSY: the lane's Sprite already runs something
 #   70   this tree's compiler does not build
 #   124  the command passed its bound      125  the build passed its bound
-#   137  the Sprite ran out of memory      130/143  interrupted, and the run stopped
+#   137  the Sprite ran out of memory      130  Ctrl-C, and the run stopped
+#   143/129  this client was terminated or hung up, and the run goes on
 # A dropped connection is none of these: the run goes on and is followed
 # again from the byte it stood at. A failure's last line begins with the
 # one of three that failed — SPRITE, CONNECTION or COMMAND.
@@ -300,9 +301,10 @@ seed() {
 # awake; then it attaches at a byte offset and prints what arrives. A
 # connection that drops is attached again from where it stood, so the
 # command's own status is what `run` answers however many times that
-# happens. An interrupt (Ctrl-C, TERM) stops the run; a hangup, or this
-# process killed outright, leaves it running to its bound — `work attach`
-# follows it again and `work stop` ends it.
+# happens. ONLY A STOP THAT WAS MEANT ENDS A RUN: Ctrl-C, or `work stop`.
+# This process terminated, hung up or killed outright — a session that
+# ended does all three — leaves it running to its bound, and `work
+# attach` follows it again.
 client=
 side=
 run_id=
@@ -320,9 +322,11 @@ interrupted() {
     [ -z "$run_id" ] || remote "$sprite" 30 stop "$run_id" >/dev/null 2>&1 || echo "work: $sprite did not confirm the stop — \`sh tools/work stop\` asks again" >&2
     exit "$1"
 }
+# detached <status> <how>. Said once: a group signalled whole delivers it twice.
 detached() {
-    [ -z "$run_id" ] || echo "work: hung up — the run goes on on $sprite; \`sh tools/work attach\` follows it, \`sh tools/work stop\` ends it" >&2
-    exit 129
+    trap '' HUP TERM
+    [ -z "$run_id" ] || echo "work: detached ($2) — the run goes on on $sprite; \`sh tools/work attach\` follows it, \`sh tools/work stop\` ends it" >&2
+    exit "$1"
 }
 # The lane's live run on its Sprite, else the last one that ended: "<id> <live|ended>".
 last_run() {
@@ -556,9 +560,9 @@ run() {
     echo "$$ $(born $$)" > "$lockfile"
     runlock=$lockfile
     trap leave EXIT
-    trap detached HUP
+    trap 'detached 129 "hung up"' HUP
     trap 'interrupted 130' INT
-    trap 'interrupted 143' TERM
+    trap 'detached 143 terminated' TERM
     hash=$(compiler_hash "$tree")
     remote_tree=${AVRA_SPRITE_HOME:-/home/sprite}/avra-build/$slug/tree
     wake_s=${AVRA_WAKE_S:-150}
@@ -573,7 +577,7 @@ run() {
     # A run that stands is never synced under.
     live=$(printf '%s\n' "$info" | sed -n 's/^run=//p' | awk '$2 == "live" { print $1 }' | head -n 1)
     busy() {
-        echo "work: BUSY — $sprite still runs $1; \`sh tools/work attach\` follows it, \`sh tools/work stop\` ends it" >&2
+        echo "work: BUSY — $1 is live on $sprite with nobody here following it; \`sh tools/work attach\` follows it to its status, \`sh tools/work stop\` ends it" >&2
         exit 76
     }
     [ -z "$live" ] || busy "$live"
@@ -971,7 +975,7 @@ wait_landed() {
 usage() {
     case ${1:-} in
         new) echo "usage: sh tools/work new <name>   — a worktree ../avra-<name> off main, and its Sprite" ;;
-        run) echo "usage: sh tools/work run [--for <minutes>] <cmd…>   — run it on this lane's Sprite, followed to its exit status through any dropped connection (bound: 15 minutes)" ;;
+        run) echo "usage: sh tools/work run [--for <minutes>] <cmd…>   — run it on this lane's Sprite, followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
         test) echo "usage: sh tools/work test   — what this branch touches, on this lane's Sprite" ;;
         land) echo "usage: sh tools/work land   — push, PR, queue; no Sprite involved" ;;
         status) echo "usage: sh tools/work status   — PRs and the queue; each lane and its Sprite" ;;
