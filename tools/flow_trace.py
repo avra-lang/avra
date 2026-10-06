@@ -212,6 +212,8 @@ def main(argv):
     events, strays = parsed(open(argv[1]).read())
     if "--shape" in argv:
         print(shape(events))
+        if strays:
+            print(f"flow_trace: {len(strays)} line(s) were no event; the first: {strays[0][:80]}", file=sys.stderr)
         return 1 if strays else 0
     print(rendered(events, strays, only))
     print(f"flow_trace: read {len(events)} event(s) of {len(timelines(events))} task(s)")
