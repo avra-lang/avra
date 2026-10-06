@@ -265,6 +265,26 @@ fn first_statement_made() -> string {
         .join(" | ")
 }
 
+/// The rows one maker has in the admitted file, as `name#sibling`, in id order.
+fn made_by(ws: Workspace, maker: string) -> string {
+    ["${d.name}#${d.sibling}" for d in ws.decls.all_decls() if d.maker == maker].join(",")
+}
+
+/// `two_fns` admitted, then one maker generating from its first `first` statements and again from its first `again`.
+fn generated_twice(first: int, again: int) -> Workspace {
+    let ws = admitted(two_fns())
+    let f = ws.file_id(readmit_path())
+    let p = ws.parsed(f)
+    let store = ws.decls.store_of(f)
+    let _ = ws
+        .decls
+        .mint_generated_code(f, store, p.stmts.slice(0, first), 0, "one", "made()#0 @ fn .first#0", "made", null)
+    let _ = ws
+        .decls
+        .mint_generated_code(f, store, p.stmts.slice(0, again), 0, "two", "made()#0 @ fn .first#0", "made", null)
+    ws
+}
+
 spec "compiler/decl name — a declaration's key is its name" {
     given "a declaration written above two others" {
         then "neither one's key moves" {
@@ -359,6 +379,31 @@ spec "compiler/decl name — a declaration's key is its name" {
     given "an annotation on a file's first statement" {
         then "its work is the statement's own declaration's: one generated fn, made once" {
             first_statement_made() == "f_made by mark()#0 @ fn .f#0"
+        }
+    }
+    given "an expansion that runs again within one admission" {
+        then "fixture: its first run's two declarations stand" {
+            let ws = admitted(two_fns())
+            let f = ws.file_id(readmit_path())
+            let _ = ws
+                .decls
+                .mint_generated_code(
+                    f,
+                    ws.decls.store_of(f),
+                    ws.parsed(f).stmts.slice(0, 2),
+                    0,
+                    "one",
+                    "made()#0 @ fn .first#0",
+                    "made",
+                    null,
+                )
+            made_by(ws, "made()#0 @ fn .first#0") == "first#0,second#0"
+        }
+        then "generating one where it generated two leaves one, under the name it had" {
+            made_by(generated_twice(2, 1), "made()#0 @ fn .first#0") == "first#0"
+        }
+        then "generating the same two again leaves the same two" {
+            made_by(generated_twice(2, 2), "made()#0 @ fn .first#0") == "first#0,second#0"
         }
     }
     given "two declarations one annotation generates" {
