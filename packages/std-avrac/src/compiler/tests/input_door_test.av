@@ -5,11 +5,11 @@ use compiler.host.{Read, Input, InputName, InputKind, Listed, Stamp}
 
 /// Every read here digests apart from every other.
 fn apart(reads: List<Read>) -> bool {
-    distinct(["${r.input().digest}" for r in reads]).length == reads.length
+    distinct([r.input().digest.key for r in reads]).length == reads.length
 }
 
 fn same(a: Read, b: Read) -> bool {
-    "${a.input().digest}" == "${b.input().digest}"
+    a.input().digest.key == b.input().digest.key
 }
 
 fn no_octets() -> Bytes { "".bytes() }
@@ -254,7 +254,10 @@ spec "compiler/input_door" {
         then "the same read answers the same digest and the same name" {
             let a = Read.Text("std-io:src/io.av", "fn f() {}\n").input()
             let b = Read.Text("std-io:src/io.av", "fn f() {}\n").input()
-            "${a.digest}" == "${b.digest}" && a.name.key == b.name.key && a.name.kind is .Text
+            a.digest.key == b.digest.key &&
+                a.digest.word == b.digest.word &&
+                a.name.key == b.name.key &&
+                a.name.kind is .Text
         }
         then "a text and the same octets asked as octets are two inputs over two names" {
             !same(Read.Text("k", "abc"), Read.Octets("k", "abc".bytes()))

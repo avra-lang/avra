@@ -6,6 +6,7 @@
 //! `warning[kind]: …` text once required.
 use core.{joined}
 use diagnostics.{Diag, SourceFile, new_source_file}
+use compiler.host.{Host}
 use @std.relation.{relation}
 use @std.relation.db.{Db as RelDb, new_db as new_findings_db}
 
@@ -18,35 +19,35 @@ export type Finding = { @index rule: string, @index file: string, text: string }
 export fn findings_of(p: Program) -> List<Finding> {
     let db = new_findings_db()
     defer db.close()
-    for a in p.files { file_findings(db, a) }
+    for a in p.files { file_findings(db, p.ws.host, a) }
     Finding.all(db)
 }
 
-fn file_findings(db: RelDb, a: Analysis) { filed_findings(db, a, rule_findings(analysed(a), a.view.stmts)) }
+fn file_findings(db: RelDb, host: Host, a: Analysis) {
+    filed_findings(db, host, a, rule_findings(analysed(a), a.view.stmts))
+}
 
-fn filed_findings(db: RelDb, a: Analysis, found: List<Diag>) {
-    let src = current_source(db, a.view.source)
+fn filed_findings(db: RelDb, host: Host, a: Analysis, found: List<Diag>) {
+    let src = current_source(host, a.view.source)
     for d in found { filed_finding(db, src, d) }
 }
 
 /// One file's findings, in `findings_text`'s lines — the row a held file
 /// answers with in place of its rules running again.
-export fn file_findings_text(a: Analysis, found: List<Diag>) -> string {
+export fn file_findings_text(host: Host, a: Analysis, found: List<Diag>) -> string {
     let db = new_findings_db()
     defer db.close()
-    filed_findings(db, a, found)
+    filed_findings(db, host, a, found)
     joined([finding_line(f) for f in Finding.all(db)], "\n")
 }
 
-/// The file's line table, rebuilt over its CURRENT bytes — read
-/// through the declared `@input` (`compiler/inputs.av`'s `file_text`),
-/// never the parse's own copy, so a finding's trimmed line answers
-/// what the file holds right now. A read that fails (the file gone,
-/// unreadable) falls back to what the parse already held — never a
-/// worse answer than before this door existed.
-fn current_source(db: RelDb, src: SourceFile) -> SourceFile {
-    let text = file_text(db, src.file)
-    new_source_file(src.file, if text == "" { src.text } else { text })
+/// The file's line table over its CURRENT text — read through the
+/// host, never the parse's own copy, so a finding's trimmed line
+/// answers what the file holds now. A file that is gone keeps what the
+/// parse held; an empty file is empty.
+fn current_source(host: Host, src: SourceFile) -> SourceFile {
+    let text? = host.text(src.file).as_text() else { return src }
+    new_source_file(src.file, text)
 }
 
 /// `findings_of`'s rows, TSV-encoded one line each (`rule\tfile\ttext`)

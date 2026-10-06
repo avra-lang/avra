@@ -20,6 +20,17 @@ impl Host {
         normalized(joined_path(self.cwd, path))
     }
 
+    /// A file as text, through the door: what stands at `path`, or that
+    /// nothing does. A file gone between the question and the read is
+    /// absent — never an empty file — under a host that reads nothing
+    /// as empty; a host that refuses the read speaks for itself.
+    fn text(path: string) -> Read {
+        if !self.exists(path) { return Read.Text(path, null) }
+        let text = self.read(path)
+        if text.is_empty() && !self.exists(path) { return Read.Text(path, null) }
+        Read.Text(path, text)
+    }
+
     /// The directory the toolchain's copy of a std package would
     /// stand in, when the host names a std root: `@std/text` is
     /// `<std_root>/std-text`, its library stem.
