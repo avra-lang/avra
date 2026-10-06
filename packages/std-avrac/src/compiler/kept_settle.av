@@ -11,6 +11,10 @@
 //! read, by the interfaces its module sees and its declaration's syntax —
 //! or, for a unit only reached, by its call shape lowered again; a const by
 //! the verdict it answers now; a file the run embedded by what it says now.
+//! AND A KEPT VALUE IS LAID OUT UNDER ITS PROGRAM: a `mut` seat anywhere boxes
+//! a flat record, and one store serves programs that seal differently — so a
+//! verdict is kept beside the layout of every type its answer reaches, and
+//! stands only in a program that lays them out alike.
 use core.{
     StmtId,
     FileId,
@@ -37,9 +41,10 @@ impl Workspace {
     /// function of stands, else a settlement run, kept when it may be.
     fn const_settlement(ask: SettleAsk, s: StmtId) -> Result<Settled, Unsettled> {
         let d = self.decls.decl_of(ask.file, s)
-        let keyed: string? = if d != null && ask.seats.is_empty() { self.kept_settle_key(ask.file, d!) } else { null }
+        let layout = self.kept_layout(ask.file, s)
+        let keyed: string? = if d != null && layout != null && ask.seats.is_empty() { self.kept_settle_key(ask.file, d!) } else { null }
         if keyed != null {
-            let kept = self.kept_verdict(ask.file, keyed!)
+            let kept = self.kept_verdict(ask.file, keyed!, layout!)
             if kept != null { return kept! }
         }
         let asked = self.hold.body_asks.get().length
@@ -48,8 +53,16 @@ impl Workspace {
         let r = self
             .settlement_of(ask.file, self.analysis(ask.file).view.store.const_value(s)!, ask.name, ask.seats)
         let frame = self.popped_settle_frame()
-        if keyed != null && self.hold.body_asks.get().length == asked { self.keep_verdict(keyed!, r, frame) }
+        if keyed != null && self.hold.body_asks.get().length == asked { self.keep_verdict(keyed!, r, frame, layout!) }
         r
+    }
+
+    /// A const's kept layout line: every declared type its answer reaches, as
+    /// this program lays each out — a kept value is laid out under them. None
+    /// for a const that carries no type.
+    fn kept_layout(f: FileId, s: StmtId) -> string? {
+        let ty? = self.decls.type_of_const(f, s) else { return null }
+        joined(["l", self.decls.crossing_layout(ty)], "\t")
     }
 
     /// Where `d`'s kept verdict lives: its file's path and its name.
@@ -131,7 +144,12 @@ impl Workspace {
 
     /// A settlement's verdict and its lines, kept — a value, or a structural
     /// refusal; a settlement that read what no line can name is not kept.
-    fn keep_verdict(key: string, r: Result<Settled, Unsettled>, frame: List<KeptLine>) {
+    fn keep_verdict(
+        key: string,
+        r: Result<Settled, Unsettled>,
+        frame: List<KeptLine>,
+        layout: string,
+    ) {
         let store? = self.store.get() else { return }
         if frame.any(it.line == "x") { return }
         let value: string? = match r {
@@ -147,19 +165,22 @@ impl Workspace {
             .concat(
                 [self.file_line(path) for path in distinct(flatten([self.module_files(m) for m in modules]))],
             )
-            .concat([budget_line(self.budgets())])
+            .concat([budget_line(self.budgets()), layout])
             .concat([joined(["e", path, self.embed_said(path)], "\t") for path in distinct(embedded)])
         let _ = store.keep(Stored.Unit, key, value!, [])
         let _ = store.keep(Stored.Unit, "${key}#lines", joined(lines, "\n"), [])
     }
 
-    /// The kept verdict for `key`, when every line it was kept with stands;
-    /// what its run read is read again, as a run would.
-    fn kept_verdict(f: FileId, key: string) -> Result<Settled, Unsettled>? {
+    /// The kept verdict for `key`, when it was kept under this `layout` and
+    /// every line it was kept with stands; what its run read is read again, as
+    /// a run would.
+    fn kept_verdict(f: FileId, key: string, layout: string) -> Result<Settled, Unsettled>? {
         let store? = self.store.get() else { return null }
         let value? = store.get(Stored.Unit, key) else { return null }
         let lines? = store.get(Stored.Unit, "${key}#lines") else { return null }
-        let rows = [l.split("\t") for l in lines.split("\n") if !l.is_empty()]
+        let said = lines.split("\n")
+        if !said.contains(layout) { return null }
+        let rows = [l.split("\t") for l in said if !l.is_empty() && l != layout]
         if !rows.all((r: List<string>) -> self.kept_row_stands(r)) { return null }
         self.read_by(self.decls.file(f).path, distinct([r[1] for r in rows if r[0] == "u"]))
         let v = settled_from_wire(value)
