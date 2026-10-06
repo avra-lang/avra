@@ -124,6 +124,32 @@ fn package_scope_in_dependency() -> string? {
     match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
+/// A PACKAGE STANDING UNDER A DIRECTORY NAMED `tests`: its own files
+/// are its code, so `in package` gathers a member from a module
+/// nothing imports and a `use` of a sibling module resolves.
+fn package_under_tests_dir() -> string? {
+    let files = vendored_meta(
+        {
+            "/w/tests/app/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../../vendor/meta\" }\n",
+            "/w/tests/app/src/main.av": "use parts.{tag, here}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in package as Entry { name: it.name } by it.name\n\"\${[x.name for x in xs].join(\",\")} \${here()}\"",
+            "/w/tests/app/src/parts/parts.av": "use @std.meta.{Named}\nexport fn tag(_what: Named, _label: string) {}\n@tag(\"a\")\nfn one() {}\nexport fn here() -> int { 7 }\n",
+            "/w/tests/app/src/far/far.av": "use parts.{tag}\n@tag(\"b\")\nfn two() {}\n",
+        },
+    )
+    let paths = [
+        "/w/tests/app/avra.toml",
+        "/w/tests/app/src/main.av",
+        "/w/tests/app/src/parts/parts.av",
+        "/w/tests/app/src/far/far.av",
+    ]
+    let ws = new_workspace(
+        memory_host(files, paths.concat(vendored_meta_paths())),
+        "/w/tests/app",
+        avra(),
+    )
+    match ws.program("/w/tests/app/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
 /// `cross_package`'s `.Annotated` twin, widened for the EXPORT law
 /// (§4.4): `@acme/parts` is always reached (`app` imports its
 /// `Widget`) and carries both an exported `Widget` and a PRIVATE
@@ -342,6 +368,9 @@ spec "collect's own laws" {
         }
         then "a dependency's `in package` collect gathers a module nothing imports" {
             package_scope_in_dependency() == "1"
+        }
+        then "a package under a directory named `tests` gathers its own modules and resolves them" {
+            package_under_tests_dir() == "one,two 7"
         }
     }
     given "the `@name` kind (docs/2026_09_22_COLLECTIONS.md §2)" {
