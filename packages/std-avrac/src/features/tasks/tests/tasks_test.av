@@ -46,6 +46,23 @@ spec "features/tasks" {
                 "a join takes a task that answers, and this one was cancelled",
             )
         }
+        then "a join between a wait row and its park traps as the runtime's does" {
+            refused_at_run(
+                "extern fn avra_wait_until(at_ns: int, arm: int, member: int)\nextern fn avra_task_pending() -> ptr\nextern fn avra_task_join(t: ptr) -> ptr\nlet p = avra_task_pending()\navra_wait_until(9000000000000000000, 0, 0)\nlet _a = avra_task_join(p)\n1",
+                "a task waited inside a wait it had not parked",
+            )
+        }
+        then "a settle there traps alike" {
+            refused_at_run(
+                "extern fn avra_wait_until(at_ns: int, arm: int, member: int)\nextern fn avra_task_pending() -> ptr\nextern fn avra_task_settle(t: ptr)\nlet p = avra_task_pending()\navra_wait_until(9000000000000000000, 0, 0)\navra_task_settle(p)\n1",
+                "a task waited inside a wait it had not parked",
+            )
+        }
+        then "a join of a task already done is no wait, and passes inside a set" {
+            shown(
+                "extern fn avra_wait_until(at_ns: int, arm: int, member: int)\nextern fn avra_wait_park() -> int\nextern fn avra_now_ns() -> int\nlet t = spawn 5\nlet first = t.await\navra_wait_until(avra_now_ns() + 1000000, 2, 3)\nlet again = t.await\nlet claim = avra_wait_park()\n\"\${first} \${again} \${claim >> 32}:\${claim & 4294967295}\"",
+            ) == "5 5 2:3"
+        }
         then "a task answers once" {
             refused_at_run(
                 "extern fn avra_task_pending() -> ptr\nextern fn avra_task_answer(t: ptr, v: ptr)\nextern fn avra_array_new() -> ptr\nlet p = avra_task_pending()\nlet v = avra_array_new()\navra_task_answer(p, v)\navra_task_answer(p, v)\n1",
