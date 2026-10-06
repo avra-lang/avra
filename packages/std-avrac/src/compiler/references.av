@@ -62,7 +62,6 @@ use features.{
     bound_decl_of,
     declaring_decl,
 }
-use @std.relation.db.{new_db as new_refs_db, Db as RelDb}
 use compiler.families.{Family}
 use compiler.store.{Store}
 
@@ -91,8 +90,7 @@ impl Workspace {
         let all_files = self.decls.all_files()
         let files = [x.id for x in all_files if !self.is_held(x.id) && self.reads_as_source(x.path)]
         let held = [x.id for x in all_files if self.is_held(x.id)]
-        let fresh = new_refs_db()
-        let fps = flatten([self.filed_refs(fresh, f) for f in files])
+        let surveyed = [self.file_refs(f) for f in files]
         // A HELD FILE'S BODY IS NOT SURVEYED — its outgoing references come
         // from its own kept record instead (`restored_refs`), written the
         // last time it was fresh (`ref_lines`, interface.av's `record_of`).
@@ -100,17 +98,14 @@ impl Workspace {
         // rows are readable; with none attached (a lone check with nothing
         // held) `held` is empty and this changes nothing.
         let store: Store? = self.store.get()
-        let held_fps = if store == null { [] } else { flatten([self.filed_held_refs(fresh, store!, f) for f in held]) }
-        self.decls.settle_refs(fresh)
+        let restored = if store == null { [] } else { [self.restored_refs(store!, f) for f in held] }
+        // THE RELATION IS ONE VALUE: every row stands before one is filed,
+        // so nothing asked here lands among the rows it writes.
+        let rows = Ref
+            .replaced(self.decls.rows_db.get(), "references", flatten(surveyed.concat(restored)))
         self.decls.mark_refs_incomplete(store == null && !held.is_empty())
-        self.db.settle(k, fp(41, [fp_list(fps.concat(held_fps))]))
-        fps.length + held_fps.length
-    }
-
-    /// A held file's own rows, restored from its record rather than scanned —
-    /// same insertion the fresh path takes, so the fold cannot tell them apart.
-    fn filed_held_refs(db: RelDb, store: Store, f: FileId) -> List<int> {
-        [self.filed_ref(db, r) for r in self.restored_refs(store, f)]
+        self.db.settle(k, fp(41, [fp_list([ref_fp(r) for r in rows])]))
+        rows.length
     }
 
     /// The references a held file's body once made, read back off its own
@@ -147,18 +142,6 @@ impl Workspace {
         let kind? = use_kind_of_word(p[3]) else { return null }
         let target? = self.decls.wire_decl(wire_fields(p[2], "~"), 0) else { return null }
         Ref { decl: target.id, file: f, at: At.Stmt(StmtId { index: 0 }), kind: kind }
-    }
-
-    /// One file's own rows, inserted into `db` as `file_refs` produces
-    /// them — never held whole across the program first — and each
-    /// row's own fingerprint, for the pass's settle.
-    fn filed_refs(db: RelDb, f: FileId) -> List<int> {
-        [self.filed_ref(db, r) for r in self.file_refs(f)]
-    }
-
-    fn filed_ref(db: RelDb, r: Ref) -> int {
-        let _ = Ref.insert(db, decl: r.decl, file: r.file, at: r.at, kind: r.kind)
-        ref_fp(r)
     }
 
     /// One file's own rows: every expression naming a declaration,

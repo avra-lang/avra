@@ -8,7 +8,7 @@
 // wrote and keeps what the driver wrote; and a write a `@query` body
 // makes with no owner is refused and files no row — in both engines
 use @std.relation.{relation, query}
-use @std.relation.db.{Db, new_db, db_over, Verifying, Late}
+use @std.relation.db.{Db, new_db}
 use @std.relation.engine.{Kernel, Key, new_kernel}
 
 @relation
@@ -52,7 +52,8 @@ fn shared() -> string {
 
 /// A Db over `kernel`, its refusals heard in `heard`.
 fn heard_db(kernel: Kernel, heard: Cell<List<string>>) -> Db {
-    let db = db_over(kernel, Verifying.ByHash, Late.Refused)
+    let db = new_db()
+    db.given_to(kernel)
     db.heard_by((w: string) -> heard.push(w))
     db
 }
@@ -105,7 +106,8 @@ fn handed_over() -> string {
     let _ = Icon.replaced(db, "by driver", [Icon { name: "d" }])
     let next = new_kernel()
     let _ = next.family((_arg: int) -> 0)
-    db.given(next, Verifying.ByHash, Late.Refused)
+    db.released()
+    db.given_to(next)
     let other = handed(next, db, 5, "by query", ["b"])
     let driver_still = handed(next, db, 5, "by driver", ["e"])
     "${other}${driver_still} ${show(db)} heard=${heard.get().length}"

@@ -51,7 +51,7 @@ use core.{
     At,
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck}
-use @std.relation.db.{Db, new_db, Verifying, Late}
+use @std.relation.db.{Db, new_db}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
 use core.{Fingerprint, Exemplar, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
 use @std.path.{stem_of}
@@ -78,7 +78,6 @@ use features.{
 }
 use @std.meta.{Diagnostic, bracket, derive, identity, plain_field}
 use @std.relation.{relation}
-use @std.relation.db.{Db as RelDb, new_db}
 use @std.relation.engine.{list_cell, map_cell, Table, new_table, Kernel, Key, new_kernel}
 
 /// A file's path facts — known at first mention, before its parse.
@@ -458,15 +457,17 @@ export type Decls = {
     /// workspace's own, fixed at construction: never a `Cell`, so no callee can
     /// replace what a read of it holds across `record_dep`.
     record_kernel: Kernel,
-    /// THE DECLARATION TABLE'S OWN `Db`: every declaration is a `Decl` row under it,
-    /// inserted at mint and reseated at every later field write. A `Cell`, never a bare
+    /// THE COMPILER'S RELATIONS LIVE UNDER ONE `Db`: every declaration is a `Decl` row
+    /// under it, inserted at mint and reseated at every later field write, and the
+    /// passes' relations — references, error sites, raised sets — are each a named
+    /// owner's rows beside them. A `Cell`, never a bare
     /// `Db`: `Decls` is copied somewhere in the pipeline, and a bare `Db` field forked
     /// on that copy — `family()`'s registration landed on one copy's own state while a
     /// later read reached another's, "index 21 is out of bounds (length 0)" in the
     /// whole-package suite.
-    decl_rows: Cell<Db>,
+    rows_db: Cell<Db>,
     /// `File`/`Module`'s own rows, pinned once at construction — a
-    /// `Cell`, `decl_rows`'s own reason: `Rows<T>` is not itself
+    /// `Cell`, `rows_db`'s own reason: `Rows<T>` is not itself
     /// `@identity`, and an `@identity` type's field must be a `Cell` or
     /// another `@identity` (`type.identity_field`;
     /// compiler/tests/file_module_relation_test.av's pinned-handle spec
@@ -582,11 +583,6 @@ export type Decls = {
     // evidence is local to its own body alone.
     consumed: Cell<List<List<bool>?>>,
     ensure_consumed: Cell<fn(DeclId) -> void>,
-    /// THE REFERENCES RELATION's own rows, under the one Db they
-    /// live in — replaced whole (a fresh Db) when `references.av`'s
-    /// pass re-settles the program; `Ref.by_decl`/`Ref.by_file` are
-    /// the readers, never a hand-kept index.
-    refs_db: Cell<RelDb>,
     /// Whether a HELD file stood in the workspace the last time the
     /// pass ran — that file was never surveyed, so the relation
     /// cannot answer "used nowhere" with any confidence.
@@ -703,7 +699,7 @@ export fn new_decls() -> Decls {
         auditing: Cell.new(false),
         audit_hook: Cell.new(no_audit),
         record_kernel: new_kernel(),
-        decl_rows: Cell.new(db),
+        rows_db: Cell.new(db),
         file_rows: Cell.new(File.rows_in(db)),
         module_rows: Cell.new(Module.rows_in(db)),
         decl_row_rows: Cell.new(Decl.rows_in(db)),
@@ -769,7 +765,6 @@ export fn new_decls() -> Decls {
         namespace_of: Cell.new(no_namespace),
         apart_of: Cell.new(none_apart),
         composers_of: Cell.new(none_apart),
-        refs_db: Cell.new(new_db()),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
         mut_seat_index: map_cell(),
@@ -862,7 +857,7 @@ impl Decls {
 
     /// Every live declaration in id order, unrecorded: the relation's own
     /// rows, a removed one never among them.
-    fn all_decls() -> List<Decl> { Decl.all(self.decl_rows.get()) }
+    fn all_decls() -> List<Decl> { Decl.all(self.rows_db.get()) }
 
     /// A declaration's row rewritten in place, its home file's — a row
     /// with no home is no one's.
@@ -874,7 +869,7 @@ impl Decls {
     @bracket("decls")
     fn set_decl(idx: int, row: Decl) {
         let rs = self.decl_row_rows.get()
-        let db = self.decl_rows.get()
+        let db = self.rows_db.get()
         let b = self.name_bucket(row.name)
         let d = if row.bucket == b { row } else { row with { bucket: b } }
         let home? = d.home else {
@@ -1015,7 +1010,7 @@ impl Decls {
         self.recording.set(true)
         for b in 0..self.name_bucket_count() { self.bucket_moved(b) }
         self.held_rows.set(held)
-        self.decl_rows.get().given(self.record_kernel, Verifying.ByMove, Late.Refused)
+        self.rows_db.get().given_to(self.record_kernel)
     }
 
     /// Where a file's rows stand: minting (0), settled (1), held (2).
@@ -1477,7 +1472,7 @@ impl Decls {
     /// here would make every seat read unconsumed forever.
     fn disarm() {
         self.auditing.set(false)
-        self.decl_rows.get().released()
+        self.rows_db.get().released()
         self.held_rows.set(no_store)
         self.ensure.set(no_ensure)
         self.seat_ensure.set(no_ensure)
@@ -1508,8 +1503,7 @@ impl Decls {
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
         self.types.disarm_declare()
-        self.decl_rows.get().close()
-        self.refs_db.get().close()
+        self.rows_db.get().close()
     }
 
     /// The workspace arms the sig hook once.
@@ -2042,7 +2036,7 @@ impl Decls {
     /// asking runs the references pass.
     fn refs_of(d: DeclId) -> List<Ref> {
         (self.ensure_refs.get())()
-        Ref.by_decl(self.refs_db.get(), d)
+        Ref.by_decl(self.rows_db.get(), d)
     }
 
     /// Every CALL or METHOD CALL naming `d`.
@@ -2081,13 +2075,7 @@ impl Decls {
     /// One file's own rows, as `references.av`'s pass wrote them.
     fn refs_in_file(f: FileId) -> List<Ref> {
         (self.ensure_refs.get())()
-        Ref.by_file(self.refs_db.get(), f)
-    }
-
-    /// `references.av`'s own write door: the whole relation, replacing
-    /// whatever Db it held with a freshly filled one.
-    fn settle_refs(db: RelDb) {
-        self.refs_db.set(db)
+        Ref.by_file(self.rows_db.get(), f)
     }
 
     /// The workspace arms the references hook once.

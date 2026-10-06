@@ -353,15 +353,25 @@ impl Rows<R> {
         // a keyless row on a relation no query read takes a new id and moves no read cell: nothing to ask
         let asked = keyed || heard
         let named = if asked { [keys(r) for r in rows] } else { [] }
-        let moving = if heard { self.moving(cell, keyed, named) } else { [] }
-        let why = self.second_writer(db, cell) ?? self.misplaced(db, cell, keyed, named) ?? if heard { self.held(db, self.name, moving) } else { null }
+        let next = self.next_id()
+        // a keyed row's id is its key's row's, looked up once
+        let ids = if keyed { [self.own(true, ks) for ks in named] } else { [] }
+        let why = self.second_writer(db, cell) ?? self.misplaced(db, cell, named, ids)
         if why != null {
             db.refuse(replaced_whole(self.name, owner, why!))
             return rows.slice(0, 0)
         }
-        // A CELL MOVES ONCE A CALL, however many rows file under it; with
-        // no bucket ever read, the whole relation alone.
-        if db.read_ever() { self.moves(db, moving) }
+        let cells = if heard { self.moving(cell, keyed, named, ids) } else { [] }
+        let torn = if heard { self.held(db, self.name, cells) } else { null }
+        if torn != null {
+            db.refuse(replaced_whole(self.name, owner, torn!))
+            return rows.slice(0, 0)
+        }
+        // A CELL MOVES ONCE A CALL, however many rows file under it. Where
+        // no query read the relation there is no cell to tell, and the
+        // whole-relation move alone says the Db was written — what an
+        // answer read back from a record stands on.
+        if db.read_ever() { self.moves(db, cells) }
         let stamp = Stamp { owner: cell, run: renewed(db, cell) }
         let mine = self.stamped_by(cell)
         let hash = how.hash
@@ -370,7 +380,7 @@ impl Rows<R> {
         mut stored = rows.slice(0, 0)
         for i, r in rows {
             let ks = if asked { named[i] } else { keys(r) }
-            let id = self.own(keyed, ks)
+            let id = if keyed && ids[i] < next { ids[i] } else { self.next_id() }
             if id == self.next_id() { mine.push(id) }
             let row = seated(r, id)
             self.placed(id, row, hash(r), ks, stamp)
@@ -404,14 +414,11 @@ impl Rows<R> {
     /// Why `owner` may not replace its rows by ones with these keys, none
     /// when it may: two of them name one row, or one names another's row.
     /// Only a keyed row names a row; a keyless one takes the next id.
-    fn misplaced(db: Db, owner: int, keyed: bool, named: List<List<List<IndexKey>>>) -> string? {
-        if !keyed { return null }
+    fn misplaced(db: Db, owner: int, named: List<List<List<IndexKey>>>, ids: List<int>) -> string? {
+        if ids.is_empty() { return null }
         let twice? = repeated_key([key_text_of(ks[0][0]) for ks in named]) else {
             let next = self.next_id()
-            let other? = [self.own(true, ks) for ks in named]
-                .find((id: int) -> id < next && !self.owned_by(id, owner)) else {
-                return null
-            }
+            let other? = ids.find((id: int) -> id < next && !self.owned_by(id, owner)) else { return null }
             return two_owners(
                 self.name,
                 other,
@@ -425,7 +432,9 @@ impl Rows<R> {
     /// Every bucket a replacement of `owner`'s rows by ones with these keys
     /// moves, each ONCE: the ones a row names, the ones a named row stood
     /// in, and the ones a row it no longer names stood in.
-    fn moving(owner: int, keyed: bool, named: List<List<List<IndexKey>>>) -> List<int> {
+    fn moving(owner: int, keyed: bool, named: List<List<List<IndexKey>>>, ids: List<int>) -> List<
+        int,
+    > {
         let next = self.next_id()
         let none: List<int> = []
         let moved = Marks {
@@ -435,11 +444,11 @@ impl Rows<R> {
         // only a keyed row names a row to keep
         let nameable = if keyed { next } else { 0 }
         let kept: Cell<List<bool>> = Cell.new([false for _id in 0..nameable])
-        for ks in named {
+        for n, ks in named {
             for i, per in ks {
                 for k in per { moved.mark(self.bucket_of(i, k)) }
             }
-            if keyed { self.mark_named(moved, kept, self.own(true, ks), next) }
+            if keyed { self.mark_named(moved, kept, ids[n], next) }
         }
         for id in self.live_of(owner) {
             if !keyed || !kept.get()[id] { self.mark_filed(moved, id) }

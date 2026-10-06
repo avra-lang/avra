@@ -806,5 +806,20 @@ spec "relation/engine — the kernel: the open stack, attacked" {
             db.settle(Key { family: b, arg: 4 }, 1)
             during && !db.family_active(b)
         }
+        then "a family's stamp row only grows: read once, it is read through a sweep, an eviction and a disarm" {
+            mut db = new_kernel()
+            let cells = plain_family(db)
+            let queries = plain_family(db)
+            let before = db.read_any(cells)
+            db.begin(Key { family: queries, arg: 0 })
+            db.record_at(cells, 3)
+            db.settle(Key { family: queries, arg: 0 }, 1)
+            db.bump()
+            db.sweep()
+            db.evict_family(cells)
+            db.evict_family(queries)
+            db.disarm()
+            !before && db.read_any(cells)
+        }
     }
 }

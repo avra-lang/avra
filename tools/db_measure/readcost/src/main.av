@@ -16,8 +16,12 @@
 //!   write.replaced  the same rows handed to a named owner as one value
 //!   write.over      the same, then handed over again: each row filed and
 //!                   one removed from a bucket a tenth of them share
+//!   write.given     `write.replaced` in a Db its owner's kernel holds, the
+//!                   relation read by no query
+//!   write.heard     the same, a settled query having read the relation and
+//!                   one of its buckets a revision before
 use @std.relation.{relation, query}
-use @std.relation.db.{Db, db_over, new_db, Verifying, Late}
+use @std.relation.db.{Db, new_db}
 use @std.relation.engine.{Kernel, Key, new_kernel}
 use @std.io.{env_or}
 use @std.text.{parse_int}
@@ -30,6 +34,7 @@ type Wrote = { @index tag: string, n: int }
 
 /// `n` rows written the way `mode` writes them.
 fn writes(mode: string, n: int) -> int {
+    if mode == "write.given" || mode == "write.heard" { return given_writes(mode == "write.heard", n) }
     let db = new_db()
     if mode == "write.over" {
         let _ = Wrote.replaced(db, "bench", [Wrote { tag: "t${i % 10}", n: i } for i in 0..n])
@@ -47,6 +52,20 @@ fn writes(mode: string, n: int) -> int {
         rs.put_owned(db, "Wrote", rs.next_id(), row, row.stable_hash(), row.index_keys(), owner)
     }
     Wrote.all(db).length
+}
+
+/// `n` rows handed to a named owner as one value, in a Db an owner's
+/// kernel holds.
+fn given_writes(heard: bool, n: int) -> int {
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let db = new_db()
+    db.given_to(kernel)
+    kernel.begin(asking(queries, 0))
+    let read = if heard { Wrote.all(db).length + Wrote.by_tag(db, "t0").length } else { 0 }
+    kernel.settle(asking(queries, 0), 1)
+    kernel.bump()
+    read + Wrote.replaced(db, "bench", [Wrote { tag: "t${i % 10}", n: i } for i in 0..n]).length
 }
 
 /// The query cell a bench frame is opened under.
@@ -73,7 +92,8 @@ fn kernel_reads(mode: string, n: int) -> int {
 }
 
 fn filled(kernel: Kernel, names: List<string>) -> Db {
-    let db = db_over(kernel, Verifying.ByMove, Late.Refused)
+    let db = new_db()
+    db.given_to(kernel)
     for i, name in names { let _ = Row.insert(db, name: name, tag: "t${i % 10}", n: i) }
     db
 }

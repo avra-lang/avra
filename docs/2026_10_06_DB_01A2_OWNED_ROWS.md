@@ -101,7 +101,7 @@ and stale together. Two things hold that today:
    `rows_state` at 0: `Decls.rows_read` records nothing for a file that
    is minting, and only admit's own callees run in between — they read
    `Decl` raw, by id.
-2. **The late-write law.** `decl_rows` refuses late writes and traps. A
+2. **The late-write law.** `rows_db` refuses late writes and traps. A
    put or a removal that moves a bucket a query read this revision is
    refused and does not land — the fifteen late `set_decl` writes are
    under it one by one. Held by `readmit_test`, "admitted again in the

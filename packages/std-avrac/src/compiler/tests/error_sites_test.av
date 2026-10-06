@@ -56,14 +56,14 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let a = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        a.clean() && !ErrorSite.all(ws.failures_db.get()).is_empty()
+        a.clean() && !ErrorSite.all(ws.decls.rows_db.get()).is_empty()
     }
     then "invariant: a site `within` a catch shares that catch's own owner" {
         let ws = sites_workspace(source())
         let _ = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        let sites = ErrorSite.all(ws.failures_db.get())
+        let sites = ErrorSite.all(ws.decls.rows_db.get())
         let catches = [s for s in sites if s.how is .Catch]
         catches
             .all(
@@ -77,7 +77,7 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let _ = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        let sites = ErrorSite.all(ws.failures_db.get())
+        let sites = ErrorSite.all(ws.decls.rows_db.get())
         sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
     }
     then "raised_by(b) includes the re-raised string error" {
@@ -91,7 +91,7 @@ spec "compiler/failures — error_sites, raised_by and chain over a catch+re-rai
         let _ = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        let catches = [s for s in ErrorSite.all(ws.failures_db.get()) if s.how is .Catch]
+        let catches = [s for s in ErrorSite.all(ws.decls.rows_db.get()) if s.how is .Catch]
         let c = catches[0]
         let tree = ws.chain(c, [])
         tree.next.length == 1 && tree.next[0].next.length == 0
@@ -140,7 +140,7 @@ fn nested_source() -> string {
 }
 
 fn outer_catch_of(ws: Workspace, owner: DeclId) -> ErrorSite {
-    let all: List<ErrorSite> = ErrorSite.all(ws.failures_db.get())
+    let all: List<ErrorSite> = ErrorSite.all(ws.decls.rows_db.get())
     [s for s in all if s.how is .Catch && same_decl(s.owner, owner) && s.within == null][0]
 }
 
@@ -186,7 +186,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let _ = ws.raised_by(vf)
         let _ = ws.raised_by(vm)
         let _ = ws.raised_by(vn)
-        let sites = ErrorSite.all(ws.failures_db.get())
+        let sites = ErrorSite.all(ws.decls.rows_db.get())
         let catches = [s for s in sites if s.how is .Catch]
         catches
             .all(
@@ -204,7 +204,7 @@ spec "compiler/failures — a re-raise nested inside further control flow within
         let _ = ws.raised_by(vf)
         let _ = ws.raised_by(vm)
         let _ = ws.raised_by(vn)
-        let sites = ErrorSite.all(ws.failures_db.get())
+        let sites = ErrorSite.all(ws.decls.rows_db.get())
         sites.all((s: ErrorSite) -> [t for t in sites if same_expr(t.at, s.at)].length == 1)
     }
 }
@@ -254,7 +254,7 @@ spec "compiler/failures — two files whose catch sites share one raw ExprId ind
         let two = decl_named(ws, "two")
         let _ = ws.raised_by(one)
         let _ = ws.raised_by(two)
-        let sites = ErrorSite.all(ws.failures_db.get())
+        let sites = ErrorSite.all(ws.decls.rows_db.get())
         let catch_one = [s for s in sites if s.how is .Catch && same_decl(s.owner, one)][0]
         let catch_two = [s for s in sites if s.how is .Catch && same_decl(s.owner, two)][0]
         // the collision this test exists to force: same raw index, different files
@@ -283,14 +283,14 @@ spec "compiler/failures — `Raised` rows are the fixpoint's own" {
         let _ = ws.analyze_file("/w/src/main.av")
         let b = decl_named(ws, "b")
         let _ = ws.raised_by(b)
-        let rows = Raised.all(ws.failures_db.get())
+        let rows = Raised.all(ws.decls.rows_db.get())
         rows.length == 1 && same_decl(rows[0].owner, b) && rows[0].errors.length == 1
     }
     then "a concretely typed fn has no row, and reads empty" {
         let ws = sites_workspace(source())
         let _ = ws.analyze_file("/w/src/main.av")
         let a = decl_named(ws, "a")
-        ws.raised_by(a).is_empty() && Raised.by_owner(ws.failures_db.get(), a).is_empty()
+        ws.raised_by(a).is_empty() && Raised.by_owner(ws.decls.rows_db.get(), a).is_empty()
     }
     then "a mutually recursive pair's rows each hold the closed union" {
         let ws = sites_workspace(mutual_source())
@@ -299,7 +299,7 @@ spec "compiler/failures — `Raised` rows are the fixpoint's own" {
         let g = decl_named(ws, "g")
         ws.raised_by(f).length == 2 &&
             ws.raised_by(g).length == 2 &&
-            Raised.all(ws.failures_db.get()).length == 2
+            Raised.all(ws.decls.rows_db.get()).length == 2
     }
     then "a second solve replaces the first's rows rather than adding to them" {
         let ws = sites_workspace(mutual_source())
@@ -309,7 +309,7 @@ spec "compiler/failures — `Raised` rows are the fixpoint's own" {
         let _ = ws.failures()
         as_failures(ws, () -> ws.solve_raised([f, g]))
         as_failures(ws, () -> ws.solve_raised([f]))
-        let rows = Raised.all(ws.failures_db.get())
+        let rows = Raised.all(ws.decls.rows_db.get())
         rows.length == 1 && same_decl(rows[0].owner, f) && rows[0].errors.length == 2
     }
 }
@@ -321,7 +321,7 @@ spec "compiler/failures — `ErrorSite` rows are the survey's own (avra-8sb5.57.
         let f = decl_named(ws, "f")
         let g = decl_named(ws, "g")
         let _ = ws.failures()
-        let both = ErrorSite.all(ws.failures_db.get())
+        let both = ErrorSite.all(ws.decls.rows_db.get())
         // the solve read these rows this revision: a later survey follows an edit
         ws.db.kernel.bump()
         as_failures(
@@ -330,7 +330,7 @@ spec "compiler/failures — `ErrorSite` rows are the survey's own (avra-8sb5.57.
                 let _ = ws.surveyed([f])
             },
         )
-        let one = ErrorSite.all(ws.failures_db.get())
+        let one = ErrorSite.all(ws.decls.rows_db.get())
         both.any((s: ErrorSite) -> same_decl(s.owner, g)) &&
             !one.is_empty() &&
             one.all((s: ErrorSite) -> same_decl(s.owner, f)) &&
@@ -345,7 +345,7 @@ spec "compiler/failures — `Raised` holds the last solve's sets until the next 
         let f = decl_named(ws, "f")
         let _ = ws.failures()
         let heard: Cell<List<string>> = Cell.new([])
-        let db = ws.failures_db.get()
+        let db = ws.decls.rows_db.get()
         db.heard_by((w: string) -> heard.push(w))
         let reader = Key { family: ws.db.kernel.family((_arg: int) -> 0), arg: 0 }
         ws.db.kernel.begin(reader)
@@ -366,7 +366,7 @@ spec "compiler/failures — the survey's and the solve's rows have one writer" {
         let f = decl_named(ws, "f")
         let _ = ws.failures()
         let heard: Cell<List<string>> = Cell.new([])
-        let db = ws.failures_db.get()
+        let db = ws.decls.rows_db.get()
         db.heard_by((w: string) -> heard.push(w))
         ws.solve_raised([f])
         Raised.all(db).length == 2 &&
