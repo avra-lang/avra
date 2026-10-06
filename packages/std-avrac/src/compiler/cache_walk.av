@@ -53,7 +53,7 @@ export enum Subject {
 /// none — a file no check reads, a name no declaration wears or several do
 /// (each shown), a declaration no answer is keyed by, a family no answer
 /// belongs to, a label its family holds no answer for.
-export enum Named {
+export enum Meant {
     Answers(keys: List<Key>)
     FileUnread(file: string)
     NoDecl(name: string)
@@ -162,42 +162,42 @@ impl Workspace {
 
     /// What `label` names: its family by the family's word, its subject
     /// through what that family keys by — `key_label`, read backwards.
-    fn labelled(label: string) -> Named {
+    fn labelled(label: string) -> Meant {
         let open = label.index_of("(")
-        if open < 0 || !label.ends_with(")") { return Named.NoAnswer(label) }
+        if open < 0 || !label.ends_with(")") { return Meant.NoAnswer(label) }
         let word = label.substring(0, open)
-        let family? = self.family_worded(word) else { return Named.NoFamily(word) }
+        let family? = self.family_worded(word) else { return Meant.NoFamily(word) }
         let subject = label.substring(open + 1, label.length - 1)
-        if subject == "" { return Named.NoAnswer(label) }
+        if subject == "" { return Meant.NoAnswer(label) }
         let keys = [Key { family: family, arg: arg } for arg in self.subject_args(keyed(family), subject)]
         let settled = [k for k in keys if self.db.cell(k) != null]
-        if settled.is_empty() { Named.NoAnswer(label) } else { Named.Answers(settled) }
+        if settled.is_empty() { Meant.NoAnswer(label) } else { Meant.Answers(settled) }
     }
 
     /// THE ONE DOOR FROM A TARGET TO THE GRAPH: what `subject` names here —
     /// the package nothing, a file its text and its analysis, a declaration
     /// every answer keyed by it, a label the answers wearing it — the
     /// settled ones alone.
-    fn named(subject: Subject) -> Named {
+    fn meant(subject: Subject) -> Meant {
         match subject {
-            .Package -> Named.Answers([]),
+            .Package -> Meant.Answers([]),
             .File(at) -> self.file_named(at),
             .Decl(name) -> self.decl_named(name),
             .Query(label) -> self.labelled(label),
         }
     }
 
-    fn file_named(file: string) -> Named {
+    fn file_named(file: string) -> Meant {
         let settled = [k for k in some_list(self.input_key(file)).concat(some_list(self.analysis_key(file))) if self.db.cell(k) != null]
-        if settled.is_empty() { Named.FileUnread(self.shown_path(file)) } else { Named.Answers(settled) }
+        if settled.is_empty() { Meant.FileUnread(self.shown_path(file)) } else { Meant.Answers(settled) }
     }
 
-    fn decl_named(name: string) -> Named {
+    fn decl_named(name: string) -> Meant {
         let found = self.decls_named(name)
-        if found.is_empty() { return Named.NoDecl(name) }
-        if found.length > 1 { return Named.ManyDecls(name, [self.decl_shown(d.id) for d in found]) }
+        if found.is_empty() { return Meant.NoDecl(name) }
+        if found.length > 1 { return Meant.ManyDecls(name, [self.decl_shown(d.id) for d in found]) }
         let keys = self.decl_answers(found[0].id)
-        if keys.is_empty() { Named.DeclUnanswered(name) } else { Named.Answers(keys) }
+        if keys.is_empty() { Meant.DeclUnanswered(name) } else { Meant.Answers(keys) }
     }
 
     /// The family a word names: a declared one by its name, a relation's
