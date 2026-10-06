@@ -3,7 +3,8 @@
 // every row, `get` and `all` — and each Db's rows its own.
 use @std.relation.{relation, Columns}
 use @std.meta.{dense, derive}
-use @std.relation.db.{new_db, Db, hooked_db, Hooks}
+use @std.relation.db.{new_db, Db, db_over, Verifying, Late}
+use @std.relation.engine.{Key, new_kernel}
 use @std.relation.refused.{InsertRefused}
 
 /// Ided, keyless: every insert is a new row.
@@ -158,49 +159,38 @@ fn nodes() -> string {
     "${Node.by_shade(db, Shade.Green).length} ${Node.by_at(db, NodeId { index: 8 }).first()?.name ?? "-"} ${a.stable_hash() == moved.stable_hash()} ${back} ${none.name} ${a.id.index}${moved.id.index} ${Node.get(db, NodeId { index: 1 })?.name ?? "-"}"
 }
 
-/// A Db its owner armed: every read recorded — bucket `b` as cell
-/// `b + 1`, the whole relation as cell 0, a miss opening its bucket — the
-/// verifier answering live hashes, and a write into a cell read this
-/// revision refused, naming the reader.
+/// A Db in its owner's kernel: every read inside a query recorded —
+/// bucket `b` as cell `b + 1`, the whole relation as cell 0, a miss
+/// opening its bucket — and a write into a cell read this revision
+/// refused, naming the reader.
 fn hooked() -> string {
-    let log: Cell<List<string>> = Cell.new([])
     let heard: Cell<List<string>> = Cell.new([])
-    let verifiers: Cell<List<fn(int) -> int>> = Cell.new([])
-    let rev = Cell.new(1)
-    let db = hooked_db(
-        Hooks {
-            family: (v: fn(int) -> int) -> {
-                verifiers.push(v)
-                5
-            },
-            record: (f: int, cell: int) -> {
-                log.push("${f}.${cell}")
-                7
-            },
-            revision: () -> rev.get(),
-            reader: (token: int) -> "reader ${token}",
-            refused: (w: string) -> heard.push(w),
-            opened: (_f: int, _c: int) -> -1,
-            settled: (_f: int, _c: int) -> heard.push("settled"),
-            running: () -> 0 - 1,
-            moved: (_f: int, _c: int, late: bool) -> !late,
-        },
-    )
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused, false)
+    db.heard_by((w: string) -> heard.push(w))
     let _ = Note.insert(db, tag: "a", text: "1")
+    let first = Key { family: queries, arg: 0 }
+    kernel.begin(first)
     let _ = Note.by_tag(db, "a")
     let _ = Note.insert(db, tag: "z", text: "2")
     let clean = heard.get().length
     let _ = Note.insert(db, tag: "a", text: "3")
     let _ = Note.by_tag(db, "q")
     let _ = Note.insert(db, tag: "q", text: "4")
-    rev.set(2)
+    kernel.settle(first, 0)
+    kernel.bump()
     let _ = Note.insert(db, tag: "a", text: "5")
     let later = heard.get().length
+    let second = Key { family: queries, arg: 1 }
+    kernel.begin(second)
     let _ = Note.all(db)
     let _ = Note.insert(db, tag: "m", text: "6")
-    let verify = verifiers.get()[0]
-    "${log.get().join(",")} ${clean} ${later} ${heard.get().length} ${verify(0) == db.set_hashes()[0]} ${verify(1) != 0} ${heard.get()[0]}"
+    kernel.settle(second, 0)
+    "${cells(kernel.deps_of(first))} ${cells(kernel.deps_of(second))} ${clean} ${later} ${heard.get().length} ${heard.get()[0]}"
 }
+
+fn cells(read: List<Key>) -> string { ["${k.arg}" for k in read].join(",") }
 
 /// An annotation fact: its words carried, its place this process's own.
 @derive(Columns)

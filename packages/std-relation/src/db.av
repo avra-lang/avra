@@ -13,14 +13,17 @@
 //! query names its rows' owner itself (`put_owned`), and its run's close
 //! sweeps exactly as a query's does.
 use rows.{Rows, named_rows, Stamp, unowned}
-use engine.{Kernel, new_kernel, Relation, new_memo, Table, new_table}
+use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table}
 use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with}
 
 extern fn avra_trap(message: string)
 
 /// A Db: its dense id, whether it is closed, each relation it has reached
 /// (its hash, its close, its sweep), the KERNEL its cells live in — its
-/// own, or one it was given — and how that kernel is told of a write.
+/// own, or one it was given — and how that kernel is told of a write;
+/// who hears a refusal, where answers outlive the process, and the one
+/// input cell an answer READ BACK depends on (`restored`, -1 until the
+/// first), moved by every write here.
 /// Then the queries it runs: each query call's and each named owner's
 /// dense cell, each owner's run count, the frames open now, a frame per
 /// kernel query that wrote rows here, and where its owner keeps query
@@ -39,6 +42,8 @@ export type Db = {
     moves: Cell<Map<string, Cell<Map<string, int>>>>,
     hears: Cell<fn(string) -> void>,
     durable: Durable,
+    restored: Cell<int>,
+    writes: Cell<int>,
     registrars: Cell<List<fn(fn(fn(int) -> int) -> int) -> void>>,
     cells: Cell<Map<string, int>>,
     runs: Cell<List<int>>,
@@ -133,6 +138,8 @@ fn made(kernel: Kernel, verifying: Verifying, late: Late, framed: bool, durable:
         moves: moves,
         hears: Cell.new(trapped),
         durable: durable,
+        restored: Cell.new(0 - 1),
+        writes: Cell.new(0),
         registrars: registrars,
         cells: cells,
         runs: runs,
@@ -322,6 +329,7 @@ impl Db {
     /// taken, a cell any reader ever read moves the revision.
     fn moved(family: int, cell: int, read_at: int) -> bool {
         let kernel = self.kernel.get()
+        self.unsettles_restored()
         match self.late.get() {
             .Refused -> {
                 if read_at == kernel.revision() { return false }
@@ -334,6 +342,32 @@ impl Db {
                 true
             },
         }
+    }
+
+    /// An answer read back is read here: a record brings no reads with
+    /// it, so it stands only while nothing in this Db is written.
+    fn read_restored() {
+        let kernel = self.kernel.get()
+        if self.restored.get() < 0 {
+            self
+                .restored
+                .set(
+                    kernel
+                        .family(
+                            (arg: int) -> kernel
+                                .changed_at(Key { family: self.restored.get(), arg: arg }),
+                        ),
+                )
+            kernel.set_input(Key { family: self.restored.get(), arg: 0 }, self.writes.get())
+        }
+        kernel.record_at(self.restored.get(), 0)
+    }
+
+    /// A write, told to every answer read back.
+    fn unsettles_restored() {
+        if self.restored.get() < 0 { return }
+        self.writes.set(self.writes.get() + 1)
+        self.kernel.get().set_input(Key { family: self.restored.get(), arg: 0 }, self.writes.get())
     }
 
     /// The revision `cell` moved at, kept where a family verifies by it.
@@ -565,6 +599,7 @@ impl Held<V> {
             return done.value
         }
         self.again.keep(arg, again)
+        db.read_restored()
         self.memo.finish_lazy(arg, restored, digest)
     }
 
@@ -578,10 +613,7 @@ impl Held<V> {
     fn restored(db: Db, record: Record<V>) -> V? {
         let answer = db.durable.answer
         let bytes? = answer(record.query, record.args) else { return null }
-        match decoded_with(bytes, record.read) {
-            .Ok(value) -> value,
-            .Err(_) -> null,
-        }
+        match decoded_with(bytes, record.read) { .Ok(value) -> value, .Err(_) -> null }
     }
 
     fn run(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> Run<V> {

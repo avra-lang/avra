@@ -1,0 +1,61 @@
+// proves: a query's answer stands while what it read stands — three
+// queries asked three times, with rows written between, each run once,
+// and a query that read a relation runs again when a row arrives there
+// and at no other write — in both engines
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, new_db}
+
+@relation
+type Icon = { id: int, @key name: string, @index set: string, svg: string }
+
+@relation
+type Font = { id: int, @key name: string }
+
+once fn runs() -> Cell<List<string>> { Cell.new([]) }
+
+@query
+fn icons(db: Db, dir: string) -> int {
+    runs().push("icons")
+    Icon.insert(db, name: "a", set: dir, svg: "1").id
+}
+
+@query
+fn fonts(db: Db, dir: string) -> int {
+    runs().push("fonts")
+    Font.insert(db, name: "f").id
+}
+
+@query
+fn pure(_db: Db, n: int) -> int {
+    runs().push("pure")
+    n + 1
+}
+
+@query
+fn font_count(db: Db) -> int {
+    runs().push("count")
+    Font.all(db).length
+}
+
+fn asked() -> string {
+    let db = new_db()
+    for _i in 0..3 {
+        let _a = icons(db, "d")
+        let _b = fonts(db, "d")
+        let _p = pure(db, 1)
+    }
+    runs().get().join(",")
+}
+
+fn moved() -> string {
+    let db = new_db()
+    let before = runs().get().length
+    let none = font_count(db)
+    let _ = Icon.insert(db, name: "z", set: "s", svg: "2")
+    let still = font_count(db)
+    let _ = Font.insert(db, name: "g")
+    let one = font_count(db)
+    "${none}${still}${one} ${runs().get().length - before}"
+}
+
+"${asked()} | ${moved()}"
