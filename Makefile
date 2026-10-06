@@ -304,7 +304,7 @@ wasm-archive:
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers read-cost \
+.PHONY: ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -477,13 +477,19 @@ build/%.sha: %.c FORCE
 # THE RUNTIME'S OWN TESTS: C programs under runtime/tests/, each linked
 # against the runtime's objects and run, for what no Avra program can
 # reach yet — a row the language does not spell. GLOBBED, so a new test
-# file runs without a line here.
+# file runs without a line here. Built with the stack probes every frame
+# on a task's stack carries: a test of the guard is a test of them.
 RUNTIME_TESTS = $(patsubst runtime/tests/%.c,build/runtime-tests/%,$(wildcard runtime/tests/*.c))
 build/runtime-tests/%: runtime/tests/%.c $(RUNTIME_OBJS)
 	@mkdir -p build/runtime-tests
 	@cc -O2 -Wall -Werror $(STACK_PROBES) -o $@ $< $(RUNTIME_OBJS)
 runtime-tests: $(RUNTIME_TESTS)
 	@for t in $(RUNTIME_TESTS); do $$t || exit 1; done
+
+# THE TESTS, TESTED: one line of the scheduler broken at a time, and some
+# runtime test must fail for each (runtime/tests/mutations.py).
+runtime-mutations: $(RUNTIME_OBJS)
+	@python3 runtime/tests/mutations.py build/runtime-mutations "$(STACK_PROBES)" $(filter-out build/avra_fiber.o,$(RUNTIME_OBJS))
 
 # The runtime's trap contract: the words and the verdict (exit 2).
 # No program test can hold it — a suite runs every program in
@@ -911,6 +917,15 @@ bench: $(COMPILER_OBJS)
 # its Rust twin, median of 5 (tools/bench/collections/run.sh).
 bench-collections: build/libavra_runtime.a
 	@sh tools/bench/collections/run.sh
+
+# THE FLOW BENCH: tasks, waits and wakes, each Avra program beside its Go
+# twin on this machine (tools/flow_bench/run.sh); `flow-probes` is the
+# stack allocator's own measurements.
+.PHONY: flow-bench flow-probes
+flow-bench: build/libavra_runtime.a
+	@sh tools/flow_bench/run.sh
+flow-probes:
+	@sh tools/flow_bench/run.sh probes
 
 # h2spec over std-http's HTTP/2 server, in the clear and over TLS;
 # skipped, with a word, when h2spec is not installed.

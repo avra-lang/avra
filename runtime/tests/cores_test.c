@@ -263,6 +263,49 @@ static void read_all(int fd, char* into, size_t cap) {
     into[got] = 0;
 }
 
+// A TIMER TASK MADE BEFORE A FORK IS THE CHILD'S TOO: the heap keeps it,
+// so cancelling one is no crash and waiting on one still ends.
+static void* waits_on(void* self) {
+    void* task = (void*)(uintptr_t)((AvraArray*)self)->data[1];
+    avra_wait_task(task, 2, 0);
+    void* r = avra_array_sized(1);
+    avra_array_push(r, avra_wait_park() >> 32);
+    return r;
+}
+
+static int64_t forked_with_timer_tasks(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    int64_t at = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
+    void* far = avra_task_at(at + 60000000000);
+    void* farther = avra_task_at(at + 70000000000);
+    void* near = avra_task_at(at + 20000000);
+    pid_t pid = fork();
+    if (pid == 0) {
+        alarm(30);
+        avra_fiber_forked();
+        if (avra_sched_timers() != 3) _exit(11);
+        avra_task_cancel(farther);
+        if (avra_sched_timers() != 2) _exit(12);
+        avra_task_cancel(far);
+        if (avra_sched_timers() != 1) _exit(13);
+        void* body = avra_array_sized(2);
+        avra_array_push(body, (int64_t)(uintptr_t)waits_on);
+        avra_array_push(body, (int64_t)(uintptr_t)near);
+        void* r = avra_task_join(avra_task_spawn(body));
+        _exit(((AvraArray*)r)->data[0] == 2 && avra_sched_timers() == 0 ? 0 : 14);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    avra_task_cancel(far);
+    avra_task_cancel(farther);
+    avra_task_cancel(near);
+    avra_rc_release(far);
+    avra_rc_release(farther);
+    avra_rc_release(near);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status);
+}
+
 int main(void) {
     // ── sizes ───────────────────────────────────────────────────
     CHECK(avra_cores_group(0) == -EINVAL, "no cores is refused");
@@ -335,6 +378,8 @@ int main(void) {
         close(g_marks[0]);
         CHECK(exited(o, 0) && strlen(got) == 2 && strchr(got, 'p') && strchr(got, 'r'), "a task spawned before the fork runs in the supervisor alone");
     }
+
+    CHECK(forked_with_timer_tasks() == 0, "a forked child cancels and waits on timer tasks made before the fork");
 
     printf("cores: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

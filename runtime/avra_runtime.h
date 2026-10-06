@@ -21,6 +21,19 @@ void avra_array_push(void* arr, int64_t v);
 // Told when a read found a descriptor drained — a short read or none;
 // set by the scheduler when it opens its poller, NULL until then.
 extern void (*avra_fd_drained_hook)(int64_t fd);
+// WHAT A TASK CARRIES: a few managed values and its id. The running
+// task's stand behind one pointer; `main`'s are the core's own, so a
+// program that never spawns has them and links no scheduler.
+enum { AVRA_SLOT_ASKER = 0, AVRA_SLOT_FLOW = 1, AVRA_TASK_SLOTS = 4 };
+typedef struct { void* slot[AVRA_TASK_SLOTS]; int64_t id; } AvraTaskLocal;
+extern AvraTaskLocal avra_main_local __attribute__((visibility("hidden")));
+extern AvraTaskLocal* avra_task_local __attribute__((visibility("hidden")));
+// The running task's slot `key`, owned; and `v` kept in it, what it
+// held released. A slot past the table is a trap.
+void* avra_task_slot(int64_t key);
+void avra_task_slot_set(int64_t key, void* v);
+// The running task's id; 0 for `main`.
+int64_t avra_task_id(void);
 // Room for at least `spare` more cells without another grow.
 void avra_array_reserve(void* arr, int64_t spare);
 void avra_array_push_owned(void* arr, void* v);

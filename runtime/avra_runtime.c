@@ -3305,6 +3305,39 @@ static int64_t fd_landed(int64_t n) {
 // not a question, and answers -EINVAL rather than reading anything.
 void (*avra_fd_drained_hook)(int64_t fd) = NULL;
 
+// ── What a task carries ─────────────────────────────────────────
+
+AvraTaskLocal avra_main_local;
+AvraTaskLocal* avra_task_local = &avra_main_local;
+_Static_assert(AVRA_SLOT_ASKER < AVRA_TASK_SLOTS && AVRA_SLOT_FLOW < AVRA_TASK_SLOTS, "a slot key outside the table");
+
+__attribute__((noinline, cold, noreturn))
+static void slot_refused(void) { avra_trap("a task has four slots, and this is none of them"); }
+
+__attribute__((noinline))
+static void* slot_retained(void* v) {
+    avra_rc_retain(v);
+    return v;
+}
+
+// An empty slot answers from a load and a test.
+void* avra_task_slot(int64_t key) {
+    if (__builtin_expect((uint64_t)key >= AVRA_TASK_SLOTS, 0)) slot_refused();
+    void* v = avra_task_local->slot[key];
+    if (!v) return NULL;
+    return slot_retained(v);
+}
+
+void avra_task_slot_set(int64_t key, void* v) {
+    if (__builtin_expect((uint64_t)key >= AVRA_TASK_SLOTS, 0)) slot_refused();
+    void* old = avra_task_local->slot[key];
+    avra_rc_retain(v);
+    avra_task_local->slot[key] = v;
+    avra_rc_release(old);
+}
+
+int64_t avra_task_id(void) { return avra_task_local->id; }
+
 int64_t avra_fd_read(int64_t fd, int64_t max) {
     if (__builtin_expect(max < 0, 0)) return -EINVAL;
     if (max == 0) return fd_landed(0);

@@ -1,0 +1,39 @@
+//! SPAWN AND JOIN: `FLOW_N` tasks alive at once (cold, then the best
+//! of five warm rounds), one at a time, and one at a time under a
+//! `within`. Prints `<key> <total ns>
+//! <tasks>`.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.time.{now_ns, secs, within}
+
+fn number(name: string, fallback: int) -> int { parse_int(env_or(name, "")) ?? fallback }
+
+fn square(i: int) -> int { i * i }
+
+/// The time to spawn `n` tasks and join each.
+fn alive(n: int) -> int {
+    let t0 = now_ns()
+    let all = [spawn square(i) for i in 0..n]
+    mut sum = 0
+    for t in all { sum = sum + t.await }
+    now_ns() - t0
+}
+
+/// The time to spawn and join `n` tasks, one after another.
+fn one_by_one(n: int) -> int {
+    let t0 = now_ns()
+    mut sum = 0
+    for i in 0..n { sum = sum + (spawn square(i)).await }
+    now_ns() - t0
+}
+
+fn least(a: int, b: int) -> int { if a < b { a } else { b } }
+
+let n = number("FLOW_N", 10000)
+let cold = alive(n)
+println("spawn_one ${one_by_one(n)} ${n}")
+println("spawn_alive_cold ${cold} ${n}")
+println(
+    "spawn_alive_warm ${least(alive(n), least(least(alive(n), alive(n)), least(alive(n), alive(n))))} ${n}",
+)
+println("spawn_one_within ${within secs(5) { one_by_one(n) }} ${n}")

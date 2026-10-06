@@ -1,0 +1,36 @@
+//! A GATE AS AN AVRA VALUE: a list box (a `type` or an `alias` over a
+//! list is refused at a row's seat: `type.row_shape`), held in a
+//! `Cell` by a record, the record copied. A row that only READS its seat
+//! must see one box whichever copy hands it over; a row whose seat
+//! `writes` shows what a fork would look like. Run it under
+//! `AVRA_ALIAS_LOG=1`: every clone is a line on stderr.
+type Ringer = { gate: Cell<List<int>?> = Cell.new(null) }
+
+extern fn avra_array_sized(n: int) -> List<int>
+extern fn avra_array_len(g: List<int>) -> int
+extern fn avra_array_push(g: List<int>, v: int)
+
+/// The ringer's gate, made the first time it is asked for.
+fn gate_of(r: Ringer) -> List<int> {
+    let held? = r.gate.get() else {
+        let g = avra_array_sized(3)
+        r.gate.set(g)
+        return g
+    }
+    held
+}
+
+let a = Ringer {}
+let b = a
+let c = [b, a][0]
+println(
+    "made through a: ${avra_array_len(gate_of(a))} ${avra_array_len(gate_of(b))} ${avra_array_len(gate_of(c))}",
+)
+avra_array_push(gate_of(b), 7)
+println(
+    "pushed through b: ${avra_array_len(gate_of(a))} ${avra_array_len(gate_of(b))} ${avra_array_len(gate_of(c))}",
+)
+avra_array_push(gate_of(c), 8)
+println(
+    "pushed through c: ${avra_array_len(gate_of(a))} ${avra_array_len(gate_of(b))} ${avra_array_len(gate_of(c))}",
+)
