@@ -35,8 +35,7 @@ use core.{
 }
 use @std.path.{joined_path, normalized}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
-use compiler.lower.{Body, Lowered}
-use compiler.lower.{Body, Lowered}
+use compiler.lower.{Body, Lowered, hosted_within}
 extern fn avra_host_env(name: string) -> string
 
 extern fn avra_mem_live() -> int
@@ -144,6 +143,9 @@ type Machine = {
     exhausted: string?,
     // a settlement's own directory, which `embed` reads beside — and
     // the files it read; null outside a settlement, where embed traps
+    /// Whether the program defines host fns: its bodies were made to
+    /// call them, so a body handed in from outside is looked up again.
+    hosts: bool,
     /// Whether this run settles a value the build keeps.
     settling: bool,
     embed: fn(string) -> Result<string, string>,
@@ -207,7 +209,7 @@ fn no_named_type(_name: string) -> Lifted { crossed_answer(MetaVal.Absent, new_m
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type) -> Machine {
     Machine {
-        l: l,
+        l: hosted_within(l),
         rt: rt_index(),
         frames: [],
         callers: [],
@@ -229,6 +231,7 @@ fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type) -> Mac
         mem_base: avra_mem_live(),
         mem_peak: 0,
         exhausted: null,
+        hosts: l.fns.any(it.hosted),
         settling: false,
         embed: unembedded,
         embeds: [],
@@ -577,7 +580,8 @@ impl Machine {
     /// runs on the machine's own stack — the caller's place saved, the
     /// callee begun, its answer landing in the call's register when it
     /// returns — so nothing recurses on the host.
-    fn run_body(b: Body, args: List<Val> = []) -> Val? {
+    fn run_body(handed: Body, args: List<Val> = []) -> Val? {
+        let b = if self.hosts { body_named(self.l, handed.name) ?? handed } else { handed }
         let floor = self.callers.length
         self.frames.push(self.frame_for(b, args))
         mut body = b
@@ -1544,9 +1548,17 @@ impl Machine {
     fn no_symbol(callee: string) -> Val {
         self
             .trapped(
-                "`${callee}` is extern and this image does not carry it${self.owner_note(callee)} — build natively",
+                "`${callee}` is extern and this image does not carry it${self.owner_note(callee)} — ${self.extern_remedy(callee)}",
             )
         Val.I(0)
+    }
+
+    /// What to do about a missing symbol: a native build links what a
+    /// library defines, and a symbol only a HOST answers is answered by
+    /// building for that host — or here, by a host fn of that name.
+    fn extern_remedy(callee: string) -> string {
+        if self.libs.any(it.externs.contains(callee)) { return "build natively" }
+        "build natively where a library defines it; where only a host does, build for that host or answer it here with `extern fn ${callee}(…) { … }`"
     }
 
     /// Where a missing symbol should have come from: the package that

@@ -155,18 +155,12 @@ fn subject_clauses(mut cx: LowerCx, subject: ExprId) -> List<Clause> {
     inner
 }
 
-/// A receiver as a chain's opening head; `elem` overrides the element
-/// its own type yields (a string walks `int` codepoints).
-fn head_clause(subject: ExprId, elem: TypeId?) -> Clause {
-    .Head(Source { source: subject, hi: null, index: false, lookup: null, elem: elem })
-}
-
 /// The head a base receiver opens: a `(lo..hi)` range walks its bounds
 /// (a `counted` walk), anything else walks itself.
 fn head_of(cx: LowerCx, subject: ExprId) -> Clause {
     match cx.view.store.expr(subject) {
-        .Range(lo, hi) -> .Head(Source { source: lo, hi: hi, index: false, lookup: null, elem: null }),
-        _ -> head_clause(subject, null),
+        .Range(lo, hi) -> .Head(Source { source: lo, hi: hi, index: false, lookup: null }),
+        _ -> .Head(Source { source: subject, hi: null, index: false, lookup: null }),
     }
 }
 
@@ -197,7 +191,7 @@ fn chain_clauses(mut cx: LowerCx, e: ExprId) -> List<Clause>? {
     let subject? = subject_of(cx, e) else { return null }
     if stage is .Chars {
         let _ = cx.reg_of(subject)
-        return [head_clause(subject, cx.type(int))]
+        return [head_of(cx, e)]
     }
     let arg = arg_of(cx, e)
     mut prefix: List<Clause> = []

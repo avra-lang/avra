@@ -687,7 +687,7 @@ impl Program {
         self.lowered_as(entry, every, false)
     }
 
-    fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
+    fn lowered_bodies(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
         // Every file this program reaches is typed by now (the
         // driver's own law: analysis before lowering). Settle the
@@ -704,13 +704,19 @@ impl Program {
                     entry,
                     every,
                     programs,
-                    if entry == null { [] } else { ws.doors(self.files[entry!].view.source.file) },
                     ws.hold.held_wants.get(),
                     (w: Wanted) -> ws.lowered(ws.spec_id(w)),
                     (f: FileId) -> ws.is_held(f),
                     (f: FileId) -> ws.is_program_file(f),
                 ),
         ) with { libraries: ws.linked_packages() }
+    }
+
+    /// A program lowered, with what its host fns owe the program beyond
+    /// their own declarations.
+    fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
+        let lo = self.lowered_bodies(entry, every, programs)
+        lo with { diagnostics: lo.diagnostics.concat(self.ws.host_fn_voices([a.view.file for a in self.files])) }
     }
 
     /// The lowered program, CHECKED — every file's analysis first,

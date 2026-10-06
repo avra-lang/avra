@@ -313,6 +313,45 @@ def declaring_sources():
                   + glob.glob(os.path.join(ROOT, "tools/**/*.av"), recursive=True)
                   + glob.glob(os.path.join(ROOT, "tools/*.sh")))
 
+# AN `extern fn` WITH A BODY IS NO WALL. It is a HOST FN: Avra defines the
+# symbol, so no C body exists to hold it to — and a bodiless `extern fn`
+# of that name is answered by it, not by C. Both leave the wall; the
+# typer holds a host fn's seats (type.host_fn). One definition of "a
+# declaration this keeper judges", called by every reader below.
+WALL = re.compile(r"^(?:export )?extern fn ([A-Za-z_][A-Za-z_0-9]*)\s*\(([^)]*)\)(?:\s*->\s*(\w+)\??)?[ \t]*(\{)?", re.M)
+
+def host_fns_in(texts):
+    """The names some text defines as a host fn."""
+    return {m.group(1) for text in texts for m in WALL.finditer(text) if m.group(4)}
+
+def walls_in(text, hosted):
+    """Each bodiless `extern fn` of `text` no host fn answers: name, seats, answer (None when it has none)."""
+    return [(m.group(1), m.group(2), m.group(3)) for m in WALL.finditer(text) if not m.group(4) and m.group(1) not in hosted]
+
+_HOSTED = None
+def host_fns():
+    global _HOSTED
+    if _HOSTED is None:
+        _HOSTED = host_fns_in(open(path).read() for path in declaring_sources())
+    return _HOSTED
+
+HOST_CASES = [
+    ("extern fn a(n: int) -> int\n", ["a"], []),
+    ("extern fn a(n: int) -> int {\n    n\n}\n", [], ["a"]),
+    ("extern fn a(frame: Bytes)\nextern fn a(frame: Bytes) {\n}\n", [], ["a"]),
+    ("export extern fn b(p: ptr?) -> ptr?\nextern fn c() {\n}\n", ["b"], ["c"]),
+    ("extern fn d(s: string)\n\nfn e() { d(\"x\") }\n", ["d"], []),
+]
+
+def host_self_test():
+    for text, walls, hosted in HOST_CASES:
+        got_hosted = sorted(host_fns_in([text]))
+        got_walls = sorted({n for n, _, _ in walls_in(text, set(got_hosted))})
+        if got_hosted != hosted or got_walls != walls:
+            print(f"externs: host fn self-test failed on {text!r}: walls {got_walls}, host fns {got_hosted}")
+            return 1
+    return 0
+
 def externs():
     """Every `extern fn NAME(...) -> TYPE` the tree declares."""
     out = []
@@ -322,9 +361,9 @@ def externs():
         # Matching only the bare spelling made the keeper structurally
         # blind to every binding package — it had only ever been asked
         # about the compiler's own walls, which are un-exported.
-        for m in re.finditer(r"^(?:export )?extern fn ([A-Za-z_][A-Za-z_0-9]*)\s*\([^)]*\)\s*->\s*(\w+)",
-                             open(path).read(), re.M):
-            out.append((m.group(1), m.group(2), os.path.relpath(path, ROOT)))
+        for name, _, answer in walls_in(open(path).read(), host_fns()):
+            if answer is not None:
+                out.append((name, answer, os.path.relpath(path, ROOT)))
     return out
 
 def wall_seats():
@@ -337,9 +376,8 @@ def wall_seats():
     """
     out = []
     for path in declaring_sources():
-        for m in re.finditer(r"^(?:export )?extern fn ([A-Za-z_][A-Za-z_0-9]*)\s*\(([^)]*)\)",
-                             open(path).read(), re.M):
-            out.append((m.group(1), m.group(2), os.path.relpath(path, ROOT)))
+        for name, seats, _ in walls_in(open(path).read(), host_fns()):
+            out.append((name, seats, os.path.relpath(path, ROOT)))
     return out
 
 
@@ -1287,9 +1325,9 @@ def text_taking_externs():
     an error."""
     out = set()
     for path in declaring_sources():
-        for m in re.finditer(r"^(?:export )?extern fn ([a-z_0-9]+)\(([^)]*)\)", open(path).read(), re.M):
-            if re.search(r":\s*string\??\b", m.group(2)):
-                out.add(m.group(1))
+        for name, seats, _ in walls_in(open(path).read(), host_fns()):
+            if re.search(r":\s*string\??\b", seats):
+                out.add(name)
     return out
 
 
@@ -1451,7 +1489,7 @@ def inert_self_test():
     return 0
 
 def main():
-    if self_test() + seat_self_test() + fault_self_test() + octet_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + keep_self_test() + inert_self_test():
+    if self_test() + seat_self_test() + fault_self_test() + octet_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + keep_self_test() + inert_self_test() + host_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -1589,7 +1627,7 @@ def main():
     unchecked = len(wall) - len(ours)
     note = f"; {unchecked} bind C we do not own, every width named" if unchecked else ""
     widths = sum(1 for _, t, _ in wall if t in ("i32", "u32", "i64"))
-    scanned = f"{len(declaring_sources())} declaring source(s) and {len(sources)} C source(s)"
+    scanned = f"{len(declaring_sources())} declaring source(s), {len(host_fns())} host fn(s) left to the typer, and {len(sources)} C source(s)"
     if packages:
         scanned += f", {len(vendored)} of them owned by {len(packages)} linking package(s)"
     extra = f"; {widths} name a width" if widths else ""
@@ -1625,7 +1663,7 @@ def main():
         print(f"externs: {len(strayed) + len(gone)} row(s) disagree with tools/terminated.allow — a crossing joined or left the set")
         return 1
     print(f"externs: {len(recorded)} extern(s) end their text at a terminator, each recorded with its door")
-    print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(FAULT_CASES) + len(OCTET_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES)} of the keeper's own cases hold")
+    print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(FAULT_CASES) + len(OCTET_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES) + len(HOST_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())
