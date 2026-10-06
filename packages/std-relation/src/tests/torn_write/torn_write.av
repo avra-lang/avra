@@ -1,0 +1,107 @@
+// proves: a query still running never sees a relation it read move,
+// whatever the Db does with late writes — though an earlier cell of the
+// same write would have moved the revision, though a nested query's read
+// took the cell's mark, and though the rows handed over are the rows it
+// holds — and one refusal is heard each time; in both engines
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, new_db, db_over, Verifying, Late}
+use @std.relation.engine.{Key, new_kernel}
+
+@relation
+type Note = { @index tag: string }
+
+once fn heard() -> Cell<List<string>> { Cell.new([]) }
+
+fn noted(w: string) {
+    let h = heard()
+    h.push(w)
+}
+
+/// A Db that takes late writes, its refusals heard.
+fn logged() -> Db {
+    let db = new_db()
+    db.heard_by(noted)
+    db
+}
+
+/// How many refusals `ask` drew, and how many of them speak the torn law.
+fn torn_in(ask: fn() -> string) -> string {
+    let before = heard().get().length
+    let answer = ask()
+    let drawn = heard().get().slice(before, heard().get().length)
+    "${answer} ${drawn.length}/${[w for w in drawn if w.contains("is still running")].length}"
+}
+
+@query
+fn tagged(db: Db) -> int { Note.by_tag(db, "x").length }
+
+/// Reads the whole relation, then replaces it.
+@query
+fn looping(db: Db) -> string {
+    let seen = Note.all(db).length
+    let _ = Note.replaced(db, "notes", [Note { tag: "x" }])
+    "${seen}/${Note.all(db).length}"
+}
+
+@query
+fn counted(db: Db) -> int { Note.all(db).length }
+
+/// Reads the whole relation, asks a query that reads it too, then replaces it.
+@query
+fn nesting(db: Db) -> string {
+    let seen = Note.all(db).length
+    let _ = counted(db)
+    let _ = Note.replaced(db, "nested", [Note { tag: "x" }])
+    "${seen}/${Note.all(db).length}"
+}
+
+/// Replaces the relation with the rows it read.
+@query
+fn same_rows(db: Db) -> string {
+    let held = Note.all(db)
+    let _ = Note.replaced(db, "same", [Note { tag: n.tag } for n in held])
+    "${held.length}/${Note.all(db).length}"
+}
+
+/// A settled reader opened the bucket the write files under first.
+fn after_a_settled_reader() -> string {
+    let db = logged()
+    let _ = tagged(db)
+    torn_in(() -> looping(db))
+}
+
+fn under_a_nested_reader() -> string {
+    let db = logged()
+    torn_in(() -> nesting(db))
+}
+
+/// The same nesting with the kernel's own frames, on a Db of either kind.
+fn framed(late: Late) -> string {
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let db = db_over(kernel, Verifying.ByHash, late)
+    db.heard_by(noted)
+    let outer = Key { family: queries, arg: 0 }
+    let inner = Key { family: queries, arg: 1 }
+    torn_in(
+        () -> {
+            kernel.begin(outer)
+            let before = Note.all(db).length
+            kernel.begin(inner)
+            let _ = Note.all(db)
+            kernel.settle(inner, 0)
+            let _ = Note.replaced(db, "framed", [Note { tag: "x" }])
+            let after = Note.all(db).length
+            kernel.settle(outer, 0)
+            "${before}/${after}"
+        },
+    )
+}
+
+fn with_the_rows_it_holds() -> string {
+    let db = logged()
+    let _ = Note.insert(db, tag: "x")
+    torn_in(() -> same_rows(db))
+}
+
+"${after_a_settled_reader()} | ${under_a_nested_reader()} | ${framed(Late.Refused)} | ${framed(Late.Taken)} | ${with_the_rows_it_holds()}"

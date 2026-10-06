@@ -62,9 +62,11 @@ are handed over as a VALUE — `Icon.replaced(db, "icons", rows)` — which
 files them and removes every row that owner held which they do not
 name, in one step (a keyed row keeps its id; the store mints each `id`,
 whatever the value carries). Nothing is open between two statements, so
-no reader meets half a replacement. Two owners writing one row are
-refused; a replacement that would move what a query still running read
-this revision is refused and changes nothing; a relation with a
+no reader meets half a replacement, and it is all or nothing: one row
+refused files none and removes none. Two owners writing one row are
+refused, as are two queries handing rows to one owner in one revision;
+a replacement that would move what a query still running read this
+revision is refused and changes nothing; a relation with a
 `@unique` field has no `replaced`. What an owner left is read with the
 relation's ordinary lookups. ORM's program
 `packages/std-relation/src/tests/query/` pins each of these. Answers and

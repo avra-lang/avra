@@ -273,9 +273,12 @@ impl Db {
     fn counted() { self.written.set(self.written.get() + 1) }
 
     /// Who a write with no owner named belongs to: no one — and inside a
-    /// `@query`'s body it is refused.
-    fn stamp() -> Stamp {
-        if self.asking.get() > 0 { self.refuse(query_writes()) }
+    /// `@query`'s body it is refused, with no stamp to land under.
+    fn stamp() -> Stamp? {
+        if self.asking.get() > 0 {
+            self.refuse(query_writes())
+            return null
+        }
         unowned
     }
 
@@ -302,16 +305,21 @@ impl Db {
 
     fn left() { self.asking.set(self.asking.get() - 1) }
 
-    /// How a write would land on a cell last read at revision `read_at`
-    /// (-1 never) by `reader` — asked, nothing moved. A cell read this
-    /// revision by a query still running is never moved; one a settled
-    /// reader holds this revision refuses the write where late writes are
-    /// refused.
-    fn landing(read_at: int, reader: int) -> Landing {
+    /// How a write would land on `cell` of `family`, last read at
+    /// revision `read_at` (-1 never) by `reader` — asked, nothing moved. A
+    /// cell read this revision that a query still running holds is never
+    /// moved; one only settled readers hold refuses the write where late
+    /// writes are refused.
+    fn landing(family: int, cell: int, read_at: int, reader: int) -> Landing {
         let kernel? = self.kernel.get() else { return Landing.Stands }
         if read_at != kernel.revision() { return Landing.Stands }
-        if kernel.reading(reader) { return Landing.Torn }
+        if kernel.open_reader_of(family, cell, reader) >= 0 { return Landing.Torn }
         match self.late.get() { .Refused -> Landing.Late, .Taken -> Landing.Stands }
+    }
+
+    /// The query still running that holds `cell` of `family`, -1 for none.
+    fn running(family: int, cell: int, last: int) -> int {
+        self.kernel.get()?.open_reader_of(family, cell, last) ?? 0 - 1
     }
 
     /// A write that lands moves `cell`, last read at `read_at`: where late

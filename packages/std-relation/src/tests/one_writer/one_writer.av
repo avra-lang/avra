@@ -1,0 +1,63 @@
+// proves: an owner is one writer — a second query handing rows to an
+// owner another query handed rows to this revision is refused naming
+// both, the first query's rows stand and its kept answer with them, and
+// the same query handing over again is free; a write a `@query` body
+// makes with no owner is refused and files no row — in both engines
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, new_db}
+
+@relation
+type Icon = { @key name: string }
+
+once fn runs() -> Cell<int> { Cell.new(0) }
+
+/// One icon handed to the owner every call shares.
+@query
+fn icon_for(db: Db, name: string) -> int {
+    let r = runs()
+    r.set(r.get() + 1)
+    Icon.replaced(db, "icons", [Icon { name: name }]).length
+}
+
+/// Hands its icon over twice.
+@query
+fn twice(db: Db, name: string) -> int {
+    let _ = Icon.replaced(db, "pair", [Icon { name: "first" }])
+    Icon.replaced(db, "pair", [Icon { name: name }]).length
+}
+
+/// Inserts with no owner.
+@query
+fn unowned_insert(db: Db) -> int {
+    let _ = Icon.insert(db, name: "bare")
+    1
+}
+
+fn show(db: Db) -> string { [i.name for i in Icon.all(db)].join(",") }
+
+fn shared() -> string {
+    let heard: Cell<List<string>> = Cell.new([])
+    let db = new_db()
+    db.heard_by((w: string) -> heard.push(w))
+    let a = icon_for(db, "a")
+    let b = icon_for(db, "b")
+    let again = icon_for(db, "a")
+    "${a}${b}${again} ${show(db)} runs=${runs().get()} heard=${heard.get().length} ${heard.get().join(" | ")}"
+}
+
+fn alone() -> string {
+    let heard: Cell<List<string>> = Cell.new([])
+    let db = new_db()
+    db.heard_by((w: string) -> heard.push(w))
+    "${twice(db, "second")} ${show(db)} heard=${heard.get().length}"
+}
+
+fn ownerless() -> string {
+    let heard: Cell<List<string>> = Cell.new([])
+    let db = new_db()
+    db.heard_by((w: string) -> heard.push(w))
+    let _ = unowned_insert(db)
+    "${Icon.all(db).length} heard=${heard.get().length}"
+}
+
+"${shared()} | ${alone()} | ${ownerless()}"

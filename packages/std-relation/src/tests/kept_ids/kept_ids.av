@@ -1,0 +1,45 @@
+// proves: `kept_of` keeps exactly the ids it is handed and refuses the
+// whole of it — nothing removed — when one names another owner's row or
+// a row never minted; a repeated id is one id; under a query still
+// running that read the relation it removes nothing; and a replacement
+// naming one key twice files nothing — in both engines
+use @std.relation.{relation}
+use @std.relation.db.{Db, db_over, Verifying, Late}
+use @std.relation.engine.{Key, new_kernel}
+
+@relation
+type Fact = { id: int, @key name: string }
+
+fn show(db: Db) -> string { [f.name for f in Fact.all(db)].join(",") }
+
+fn named(names: List<string>) -> List<Fact> { [Fact { id: 0, name: n } for n in names] }
+
+fn run() -> string {
+    let heard: Cell<List<string>> = Cell.new([])
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused)
+    db.heard_by((w: string) -> heard.push(w))
+    let _ = Fact.replaced(db, "X", named(["a", "b", "c"]))
+    let _ = Fact.replaced(db, "Y", named(["y"]))
+    let rs = Fact.rows_in(db)
+    let x = db.owner_named("X")
+    rs.kept_of(db, x, [0, 3])
+    let others = "${show(db)} ${heard.get().length}"
+    rs.kept_of(db, x, [0, 99])
+    rs.kept_of(db, x, [0 - 1])
+    let strange = "${show(db)} ${heard.get().length}"
+    let q = Key { family: queries, arg: 0 }
+    kernel.begin(q)
+    let before = show(db)
+    rs.kept_of(db, x, [])
+    let torn = "${before}=${show(db)} ${heard.get().length}"
+    kernel.settle(q, 0)
+    kernel.bump()
+    rs.kept_of(db, x, [0, 0])
+    let kept = show(db)
+    let twice = Fact.replaced(db, "X", named(["p", "p"])).length
+    "${others} | ${strange} | ${torn} | ${kept} | ${twice} ${show(db)} ${heard.get().length} | ${heard.get().join(" | ")}"
+}
+
+run()

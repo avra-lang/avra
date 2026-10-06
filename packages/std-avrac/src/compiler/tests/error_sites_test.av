@@ -4,6 +4,7 @@
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace, ErrorSite, Raised}
 use compiler.host.{memory_host}
+use @std.relation.engine.{Key}
 use core.{DeclId, same_decl, same_expr}
 
 fn sites_workspace(main: string) -> Workspace {
@@ -319,5 +320,26 @@ spec "compiler/failures — `ErrorSite` rows are the survey's own (avra-8sb5.57.
             !one.is_empty() &&
             one.all((s: ErrorSite) -> same_decl(s.owner, f)) &&
             one.length == [s for s in both if same_decl(s.owner, f)].length
+    }
+}
+
+spec "compiler/failures — `Raised` holds the last solve's sets until the next is whole" {
+    then "a solve in the revision a settled query read `Raised` is refused whole, and that query's rows stand" {
+        let ws = sites_workspace(mutual_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "f")
+        let _ = ws.failures()
+        let heard: Cell<List<string>> = Cell.new([])
+        let db = ws.failures_db.get()
+        db.heard_by((w: string) -> heard.push(w))
+        let reader = Key { family: ws.db.kernel.family((_arg: int) -> 0), arg: 0 }
+        ws.db.kernel.begin(reader)
+        let read = Raised.by_owner(db, f).length
+        ws.db.kernel.settle(reader, 0)
+        ws.solve_raised([f])
+        read == 1 &&
+            Raised.all(db).length == 2 &&
+            heard.get().length == 1 &&
+            heard.get()[0].contains("`Raised` rows are not replaced and stand as they were")
     }
 }
