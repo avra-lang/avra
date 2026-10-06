@@ -1,0 +1,35 @@
+//! BYTES PER PARKED TASK: `FLOW_N` tasks asleep until one clock
+//! reading, the process's resident set and page tables read before
+//! they exist and while every one is parked. Prints `parked_rss <bytes>
+//! <tasks>` and `parked_pte <bytes> <tasks>`; zeros where the host has
+//! no `/proc`. `FLOW_HOLD_MS` is how long they sleep: longer than the
+//! spawns take, or the reading is of tasks already gone.
+use @std.io.{env_or, read_text}
+use @std.text.{lines, parse_int}
+use @std.time.{ms, now_ms, sleep}
+
+fn number(name: string, fallback: int) -> int { parse_int(env_or(name, "")) ?? fallback }
+
+/// A `kB` field of the process's status, in bytes.
+fn status(key: string) -> int {
+    let text = read_text("/proc/self/status") catch _ -> ""
+    let line? = lines(text).find(it.starts_with(key)) else { return 0 }
+    1024 * ([parse_int(word) ?? -1 for word in line.replace("\t", " ").split(" ")].find(it >= 0) ?? 0)
+}
+
+fn nap(until: int) -> int {
+    sleep(ms(until - now_ms()))
+    1
+}
+
+let n = number("FLOW_N", 1000)
+let rss = status("VmRSS:")
+let pte = status("VmPTE:")
+let until = now_ms() + number("FLOW_HOLD_MS", 2000)
+let tasks = [spawn nap(until) for i in 0..n]
+sleep(ms(1))
+println("parked_rss ${status("VmRSS:") - rss} ${n}")
+println("parked_pte ${status("VmPTE:") - pte} ${n}")
+println("parked_left_ms ${until - now_ms()} 1")
+mut woke = 0
+for t in tasks { woke = woke + t.await }

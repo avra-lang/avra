@@ -885,6 +885,15 @@ bench: $(COMPILER_OBJS)
 bench-collections: build/libavra_runtime.a
 	@sh tools/bench/collections/run.sh
 
+# THE FLOW BENCH: tasks, waits and wakes, each Avra program beside its Go
+# twin on this machine (tools/flow_bench/run.sh); `flow-probes` is the
+# stack allocator's own measurements.
+.PHONY: flow-bench flow-probes
+flow-bench: build/libavra_runtime.a
+	@sh tools/flow_bench/run.sh
+flow-probes:
+	@sh tools/flow_bench/run.sh probes
+
 # h2spec over std-http's HTTP/2 server, in the clear and over TLS;
 # skipped, with a word, when h2spec is not installed.
 h2spec: $(COMPILER_OBJS)
