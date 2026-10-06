@@ -6,6 +6,8 @@ use @std.avrac.compiler.{analyze_source, parse_source}
 
 const fns: string = "fn dbl(n: int) -> int { n * 2 }\nfn add(a: int, b: int) -> int { a + b }\nfn scale(a: int, by: int = 10, off: int = 0) -> int { a * by + off }\nfn some(n: int) -> int? { if n > 0 { n } else { null } }\n"
 
+const walks: string = "fn each(xs: List<int>, f: fn(int) -> int) -> List<int> { [f(x) for x in xs] }\nfn each2(xs: List<List<int>>, f: fn(List<int>) -> int) -> List<int> { [f(x) for x in xs] }\nfn has(xs: List<int>, f: fn(int) -> bool) -> bool { xs.any(f) }\nfn keep<T>(xs: List<T>, f: fn(T) -> bool) -> List<T> { xs.filter(f) }\nfn names<T>(xs: List<T>, f: fn(T) -> string) -> List<string> { xs.map(f) }\nfn joined(xs: List<string>) -> string { xs.join(\",\") }\n"
+
 /// A program over the shared fns, shown.
 fn piped(tail: string) -> string { shown("${fns}${tail}") }
 
@@ -123,13 +125,8 @@ spec "features/expr_spine (pipe)" {
         then "naming the value's seat again is refused, as in the call spelled out" {
             refused_with("${fns}1 |> scale(a: 2)", "seat `a` of `scale` is written twice")
         }
-        then "`it` in a free fn's stage binds nothing, as in the call spelled out" {
-            let each = "fn each(xs: List<int>, f: fn(int) -> int) -> List<int> { [f(x) for x in xs] }\n"
-            refused_with(
-                    "${each}[1, 2] |> each(it + 1)",
-                    "`it` rides a METHOD call's arguments",
-                ) &&
-                refused_with("${each}each([1, 2], it + 1)", "`it` rides a METHOD call's arguments")
+        then "`it` in a free call that no pipe feeds binds nothing" {
+            refused_with("${walks}each([1, 2], it + 1)", "`it` rides a METHOD call's arguments")
         }
         then "an unknown stage is named" {
             refused_with("1 |> nope(2)", "no `fn nope` is defined")
@@ -138,6 +135,54 @@ spec "features/expr_spine (pipe)" {
     given "the pronoun" {
         then "`it` on the left belongs to the enclosing method call" {
             piped("let ys = [1, 2, 3].map(it |> dbl)\n\"\${ys[0]} \${ys[2]}\"") == "2 6"
+        }
+        then "`it` in a free stage's arguments belongs to the stage" {
+            shown("${walks}let ys = [1, 2] |> each(it + 1)\n\"\${ys[0]} \${ys[1]}\"") == "2 3"
+        }
+        then "a chain of stages reads as the method chain would" {
+            shown(
+                "${walks}type User = { name: string, age: int }\nlet users = [User { name: \"ann\", age: 30 }, User { name: \"bo\", age: 12 }, User { name: \"cy\", age: 18 }]\nusers |> keep(it.age >= 18) |> names(it.name) |> joined",
+            ) == "ann,cy"
+        }
+        then "a stage inside a method's argument takes its own `it`" {
+            shown(
+                "${walks}let rows = [[1, 5], [2], [7, 8]]\n[rows.map(it |> has(it > 4)).length, rows.filter(it |> has(it > 4)).length].sum()",
+            ) == "5"
+        }
+        then "a plain call inside a stage's argument leaves `it` to the stage" {
+            shown("${fns}${walks}let ys = [1, 2] |> each(add(it, 10))\nys[1]") == "12"
+        }
+        then "a method call inside a stage's argument is nearer, and takes it" {
+            shown(
+                "${walks}let rows = [[1, 5], [2]]\n(rows |> each2(it.filter(it > 1).length)).sum()",
+            ) == "2"
+        }
+        then "a named argument rides it too" {
+            shown("${walks}let ys = [1, 2] |> each(f: it * 3)\nys[1]") == "6"
+        }
+        then "an applied value's arguments ride it" {
+            shown("${walks}let ys = [1, 2] |> (each)(it + 5)\nys[0]") == "6"
+        }
+        then "a `?` after the stage reads the stage's answer" {
+            shown(
+                "fn firsts(xs: List<int>, f: fn(int) -> bool) -> Result<int, string> {\n    let hit? = xs.find(f) else { return .Err(\"none\") }\n    .Ok(hit)\n}\nfn big(xs: List<int>) -> Result<int, string> { .Ok((xs |> firsts(it > 2)?) + 1) }\n\"\${big([1, 5]) catch 0} \${big([1]) catch -1}\"",
+            ) == "6 -1"
+        }
+        then "the piped value and the stage's argument are two pronouns — the stage takes its own" {
+            refused_with(
+                    "${fns}[1, 2].map(it |> add(it))[1]",
+                    "`it` has no element here — this seat takes `int`, not a fn",
+                ) &&
+                shown("${fns}[1, 2].map((k) -> k |> add(k))[1]") == "4"
+        }
+        then "a seat that takes no fn refuses in the pronoun's own words" {
+            refused_with(
+                "${fns}1 |> add(it)",
+                "`it` has no element here — this seat takes `int`, not a fn",
+            )
+        }
+        then "the printer writes the stage back with its pronoun" {
+            canonical("let ys = xs |> each(it + 1) |> keep(it.age >= 18)")
         }
         then "`it` in a method stage's arguments belongs to the stage" {
             shown(
