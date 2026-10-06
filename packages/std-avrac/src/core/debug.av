@@ -1,5 +1,8 @@
 //! A debug line for the compiler's own instrumentation, and the
 //! compiler's own WRECK.
+use @std.io.{env}
+use @std.relation.engine.{Kernel, new_kernel}
+
 extern fn avra_debug(s: string)
 extern fn avra_qtrace(s: string)
 extern fn avra_trap(s: string)
@@ -10,6 +13,27 @@ extern fn avra_trap(s: string)
 /// stand in a pass without breaking `make avra`.
 export fn debug(s: string) {
     avra_debug(s)
+}
+
+/// `AVRA_QTRACE`'s presence, read once: a trace line is never built
+/// when nobody reads it.
+once fn qtrace_flag() -> string? { env("AVRA_QTRACE") }
+
+/// Whether a query-kernel trace line is worth building at all.
+export fn traced() -> bool { qtrace_flag() != null }
+
+/// `AVRA_DB_GRAPH`'s presence, read once.
+once fn graph_flag() -> string? { env("AVRA_DB_GRAPH") }
+
+/// Whether the kernel's graph is written out.
+fn graphed() -> bool { graph_flag() != null }
+
+/// A kernel that traces and writes its graph when the flags ask.
+export fn watched_kernel() -> Kernel {
+    let kernel = new_kernel()
+    if graphed() { kernel.graphed() }
+    if traced() { kernel.traced() }
+    kernel
 }
 
 /// A query-kernel trace line, under `AVRA_QTRACE` alone — a gen-N vs
