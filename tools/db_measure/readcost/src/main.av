@@ -8,8 +8,10 @@
 //!   row.unheard     a relation row by its key, no query open
 //!   row.repeat      the same, inside one query, a hundred keys in turn
 //!   row.new         the same, a new query every hundred reads
-use @std.relation.{relation}
-use @std.relation.db.{Db, db_over, Verifying, Late}
+//!   ask.int         a `@query` asked again, its answer standing, by an int
+//!   ask.text        the same, by a text
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, db_over, new_db, Verifying, Late}
 use @std.relation.engine.{Kernel, Key, new_kernel}
 use @std.io.{env_or}
 use @std.text.{parse_int}
@@ -65,8 +67,29 @@ fn row_reads(mode: string, n: int) -> int {
     sum + kernel.deps_of(asking(queries, 0)).length
 }
 
+@query
+fn after(_db: Db, n: int) -> int { n + 1 }
+
+@query
+fn measure(_db: Db, name: string) -> int { name.length }
+
+/// A hundred calls asked once, then `n` asks of them again.
+fn asks(mode: string, n: int) -> int {
+    let db = new_db()
+    let names = ["a_declaration_named_${i}" for i in 0..100]
+    mut sum = 0
+    for i in 0..100 { sum = sum + after(db, i) + measure(db, names[i]) }
+    if mode == "ask.int" {
+        for i in 0..n { sum = sum + after(db, i % 100) }
+        return sum
+    }
+    for i in 0..n { sum = sum + measure(db, names[i % 100]) }
+    sum
+}
+
 fn ran(mode: string, n: int) -> int {
-    if mode.starts_with("kernel.") { kernel_reads(mode, n) } else { row_reads(mode, n) }
+    if mode.starts_with("kernel.") { return kernel_reads(mode, n) }
+    if mode.starts_with("ask.") { asks(mode, n) } else { row_reads(mode, n) }
 }
 
 println("${ran(env_or("DBM_MODE", "kernel.last"), parse_int(env_or("DBM_N", "0")) ?? 0)}")

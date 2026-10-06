@@ -6,6 +6,7 @@
 # census (exact retain, release and list read/write counts), the bench
 # (tools/db_measure/readcost) is built against it and run per mode at N and
 # at 2N reads; the difference is N reads and nothing else, so setup cancels.
+# EVERY FIGURE IS (count at 2N − count at N) / N: per read, never per run.
 # The counts are the same on every machine, which is what makes them a gate:
 # a mode that costs MORE than its row in read_cost.budget refuses. The
 # shipping runtime library is rebuilt on every exit.
@@ -48,7 +49,7 @@ instructions() {
 out=build/read-cost.out
 : > "$out"
 seen=0
-for mode in kernel.last kernel.earlier kernel.new row.unheard row.repeat row.new; do
+for mode in kernel.last kernel.earlier kernel.new row.unheard row.repeat row.new ask.int ask.text; do
     one=$(counted "$mode" "$N")
     two=$(counted "$mode" $((2 * N)))
     [ "$one" != "0 0 0 0" ] || { echo "read_cost: $mode printed no counts — the bench carries no census"; exit 1; }
