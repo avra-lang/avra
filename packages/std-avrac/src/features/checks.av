@@ -161,6 +161,16 @@ impl TypeCx {
         items.find((k) -> self.self_typed(k)) ?? items[0]
     }
 
+    /// AN AGGREGATE OF NOTHING BUT `null` names no element of its own:
+    /// it waits, hungry, for the seat it lands in to name one — true
+    /// while it waits. The first judging seat feeds it; with none, the
+    /// walk's end types it once more and it refuses in its own words.
+    mut fn awaits_seat(e: ExprId, head: ExprId) -> bool {
+        if self.starving || !(self.shape_at(head) is .Null) { return false }
+        self.go_hungry(e)
+        true
+    }
+
     fn self_typed(k: ExprId) -> bool {
         match self.shape_at(k) { .EmptyList or .EmptyMap or .Null or .Error -> false, _ -> true }
     }
@@ -926,10 +936,12 @@ impl TypeCx {
     /// ONE field, which compares by that field. The one place equality is
     /// decided: `==`, a list's scans and a literal pattern all ask here.
     fn compares_by_value(ty: TypeId) -> bool {
-        let inner? = self.view.types.carried(ty) else {
-            return comparable(self.view.types.shape_of(ty)) ||
-                self.unit_enum(ty) ||
-                self.one_field(ty)
+        // a compare READS: a name is judged by the shape it stands over
+        let seen = self.view.types.seen_through(ty)
+        let inner? = self.view.types.carried(seen) else {
+            return comparable(self.view.types.shape_of(seen)) ||
+                self.unit_enum(seen) ||
+                self.one_field(seen)
         }
         self.compares_by_value(inner)
     }
@@ -1814,10 +1826,11 @@ impl TypeCx {
 
     /// THE SETTLEMENT LAW: a call refused as a whole absorbs its
     /// arguments' hunger — the call spoke, and a hungry lambda's own
-    /// voice would be a second one for the same mistake. Every call
-    /// shape (named, valued, method) settles here.
-    mut fn settled_call(args: List<ExprId>, answer: TypeId) -> TypeId {
-        if self.errored_ty(answer) {
+    /// voice would be a second one for the same mistake. A call that
+    /// went HUNGRY itself refused nothing: its arguments wait with it.
+    /// Every call shape (named, valued, method) settles here.
+    mut fn settled_call(e: ExprId, args: List<ExprId>, answer: TypeId) -> TypeId {
+        if self.errored_ty(answer) && !self.facts.hungry_at(e) {
             for a in args { self.absorb_hunger(a) }
         }
         answer
