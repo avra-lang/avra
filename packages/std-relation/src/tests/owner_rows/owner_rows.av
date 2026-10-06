@@ -1,0 +1,57 @@
+// proves: rows handed to a named owner are that owner's, under an open
+// kernel query as outside one — a second owner of one key is refused and
+// the row stands as its first owner wrote it, a write with no owner is no
+// one's, and a replacement that moves what an open query read this
+// revision is refused and removes nothing, so that query reads the same
+// rows before and after it — in both engines
+use @std.relation.{relation}
+use @std.relation.db.{Db, db_over, Verifying, Late}
+use @std.relation.engine.{Kernel, Key, new_kernel}
+
+@relation
+type Fact = { @key name: string, n: int }
+
+@relation
+type Tag = { tag: string }
+
+once fn heard() -> Cell<List<string>> { Cell.new([]) }
+
+fn noted(w: string) {
+    let h = heard()
+    h.push(w)
+}
+
+/// A Db whose owner runs its own queries, its refusals heard.
+fn owner_db(kernel: Kernel) -> Db {
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused)
+    db.heard_by(noted)
+    db
+}
+
+fn tags(db: Db) -> string { [t.tag for t in Tag.all(db)].join(",") }
+
+fn run() -> string {
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let db = owner_db(kernel)
+    let first = Key { family: queries, arg: 7 }
+    let second = Key { family: queries, arg: 8 }
+    kernel.begin(first)
+    let _ = Fact.replaced(db, "one", [Fact { name: "a", n: 1 }])
+    kernel.settle(first, 0)
+    kernel.begin(second)
+    let _ = Fact.replaced(db, "two", [Fact { name: "a", n: 2 }])
+    let _ = Tag.replaced(db, "two", [Tag { tag: "t" }])
+    let _ = Fact.insert(db, name: "loose", n: 0)
+    kernel.settle(second, 0)
+    let settled = "${heard().get().length} ${tags(db)} ${Fact.by_key(db, FactKey { name: "a" })!.n} ${Fact.all(db).length}"
+    let third = Key { family: queries, arg: 9 }
+    kernel.begin(third)
+    let before = tags(db)
+    let _ = Tag.replaced(db, "two", [Tag { tag: "torn" }])
+    let after = tags(db)
+    kernel.settle(third, 0)
+    "${settled} ${before} ${after} ${heard().get().length} | ${heard().get().join(" | ")}"
+}
+
+run()

@@ -5,13 +5,13 @@
 //! in any package reaches its rows the same way. A CLOSED Db refuses
 //! every reach: its rows are gone, and nothing opens them again.
 //!
-//! ROWS HAVE AN OWNER WHERE A WRITER NAMES ONE: an owner's RUN is opened,
-//! the rows written while it is open are its own, stamped with the run,
-//! and its close sweeps what it did not write again — so a keyed rerun
-//! upserts and a keyless one replaces its whole set. A relation an open
-//! run has written is read by no one until the run closes, and two owners
-//! never write one row. A `@query` WRITES NO ROWS of its own: an insert
-//! inside its body with no run open is refused.
+//! ROWS HAVE AN OWNER WHERE A WRITER NAMES ONE, and an owner's rows are
+//! written as a VALUE: `Rel.replaced(db, owner, rows)` files every row as
+//! the owner's and removes what the owner held and these rows do not
+//! name — one step, so a keyed rerun upserts, a keyless one replaces its
+//! whole set, and no reader meets half of it. Two owners never write one
+//! row. A `@query` WRITES NO ROWS of its own: an insert inside its body
+//! is refused.
 //! A KERNEL'S INSTRUMENTS ARE ITS OWNER'S TO TURN ON: a fresh Db traces
 //! nothing and writes no graph. `db.engine().trace_on()` traces each
 //! ask and settle through the runtime's trace row (which prints under
@@ -37,17 +37,15 @@ extern fn avra_trap(message: string)
 /// who hears a refusal, where answers outlive the process, and the one
 /// input cell an answer READ BACK depends on (`restored`, -1 until the
 /// first), moved by every write here.
-/// Then its owners: each one's dense cell and name, its run count, the
-/// runs open now with the relations each has written, how many `@query`
-/// bodies are running here, and where its owner keeps query answers past
-/// the process. A Db given another kernel registers every
-/// family it holds there again (`registrars`).
+/// Then its owners: each one's dense cell and name and how many times
+/// its rows were replaced, how many `@query` bodies are running here,
+/// and how many writes it has taken. A Db given another kernel registers
+/// every family it holds there again (`registrars`).
 export type Db = {
     id: int,
     closed: Cell<bool>,
     hashes: Cell<List<fn() -> int>>,
     closers: Cell<List<fn() -> void>>,
-    sweepers: Cell<List<fn(Db, int, int) -> void>>,
     kernel: Cell<Kernel?>,
     verifying: Cell<Verifying>,
     late: Cell<Late>,
@@ -61,20 +59,30 @@ export type Db = {
     cells: Cell<Map<string, int>>,
     runs: Cell<List<int>>,
     names: Cell<List<string>>,
-    open: Cell<List<OpenRun>>,
     asking: Cell<int>,
     written: Cell<int>,
 }
-
-/// An owner's run, open: its owner cell, which run of it this is, and
-/// the relations it has written so far.
-type OpenRun = { owner: int, run: int, wrote: Cell<List<int>> }
 
 /// How a relation's kernel verifier learns that a cell moved: from the
 /// cell's live hash, or from the revision a write stamped it with.
 export enum Verifying {
     ByHash
     ByMove
+}
+
+/// How a write lands on a cell: it stands, it is late — a settled reader
+/// read the cell this revision — or it would tear a reader still running.
+enum Landing {
+    Stands
+    Late
+    Torn
+}
+
+/// The next replacement of `owner`'s rows: its count, moved on.
+fn renewed(db: Db, owner: int) -> int {
+    let run = db.runs.get()[owner] + 1
+    db.runs.set_at(owner, run)
+    run
 }
 
 /// What a write does to a cell a reader has read: `Refused` when the
@@ -130,20 +138,17 @@ fn made(kernel: Kernel?, verifying: Verifying, late: Late, durable: Durable) -> 
     next.set(id + 1)
     let hashes: Cell<List<fn() -> int>> = Cell.new([])
     let closers: Cell<List<fn() -> void>> = Cell.new([])
-    let sweepers: Cell<List<fn(Db, int, int) -> void>> = Cell.new([])
     let moves: Cell<Map<string, Cell<Map<string, int>>>> = Cell.new({})
     let row_families: Cell<List<int>> = Cell.new([])
     let cells: Cell<Map<string, int>> = Cell.new({})
     let runs: Cell<List<int>> = Cell.new([0])
     let names: Cell<List<string>> = Cell.new([""])
-    let open: Cell<List<OpenRun>> = Cell.new([])
     let registrars: Cell<List<fn(fn(fn(int) -> int) -> int) -> void>> = Cell.new([])
     Db {
         id: id,
         closed: Cell.new(false),
         hashes: hashes,
         closers: closers,
-        sweepers: sweepers,
         kernel: Cell.new(kernel),
         verifying: Cell.new(verifying),
         late: Cell.new(late),
@@ -157,7 +162,6 @@ fn made(kernel: Kernel?, verifying: Verifying, late: Late, durable: Durable) -> 
         cells: cells,
         runs: runs,
         names: names,
-        open: open,
         asking: Cell.new(0),
         written: Cell.new(0),
     }
@@ -166,10 +170,9 @@ fn made(kernel: Kernel?, verifying: Verifying, late: Late, durable: Durable) -> 
 impl Db {
     /// A relation reached here for the first time: its set hash and its
     /// close, each already bound to this Db.
-    fn joined(hash: fn() -> int, close: fn() -> void, sweep: fn(Db, int, int) -> void) {
+    fn joined(hash: fn() -> int, close: fn() -> void) {
         self.hashes.push(hash)
         self.closers.push(close)
-        self.sweepers.push(sweep)
     }
 
     /// Whether a read here is heard by no one: no query is open in the
@@ -266,37 +269,20 @@ impl Db {
     /// The open kernel query's token, -1 with none open.
     fn reader_now() -> int { self.kernel.get()?.reader() ?? 0 - 1 }
 
-    /// The owner whose open run wrote `family`, when one has: its rows
-    /// are no one's to read until that run closes.
-    fn writing(family: int) -> int? {
-        self.open.get().find((run: OpenRun) -> run.wrote.get().contains(family))?.owner
-    }
+    /// One more write taken — a row filed or removed.
+    fn counted() { self.written.set(self.written.get() + 1) }
 
-    /// Whether no owner's run is open.
-    fn idle() -> bool { self.open.get().is_empty() }
-
-    /// A write into `family`, counted, and told to the innermost open run.
-    fn wrote(family: int) {
-        self.written.set(self.written.get() + 1)
-        let top? = self.open.get().last() else { return }
-        if !top.wrote.get().contains(family) { top.wrote.push(family) }
-    }
-
-    /// Who a write with no owner named belongs to: the innermost open
-    /// run, or no one — and inside a `@query`'s body with no run open, a
-    /// write is refused.
+    /// Who a write with no owner named belongs to: no one — and inside a
+    /// `@query`'s body it is refused.
     fn stamp() -> Stamp {
-        let top? = self.open.get().last() else {
-            if self.asking.get() > 0 { self.refuse(query_writes()) }
-            return unowned
-        }
-        Stamp { owner: top.owner, run: top.run }
+        if self.asking.get() > 0 { self.refuse(query_writes()) }
+        unowned
     }
 
-    /// A write `owner` makes in the run it has open.
+    /// A write `owner` makes between two replacements of its rows.
     fn stamp_of(owner: int) -> Stamp { Stamp { owner: owner, run: self.runs.get()[owner] } }
 
-    /// An owner named by its writer: its dense cell, 0 is no one.
+    /// An owner named by its writer: its dense cell, never 0 — 0 is no one.
     fn owner_named(key: string) -> int {
         let known? = self.cells.get().get(key) else {
             let made = self.runs.get().length
@@ -308,26 +294,8 @@ impl Db {
         known
     }
 
-    /// The name an owner was given.
-    fn owner_name(owner: int) -> string { self.names.get()[owner] }
-
-    /// The next run of `owner` opened: every row written until it closes
-    /// with no other owner named is its own. Answers the run.
-    fn opened_run(owner: int) -> int {
-        let run = self.runs.get()[owner] + 1
-        self.runs.set_at(owner, run)
-        let wrote: List<int> = []
-        self.open.push(OpenRun { owner: owner, run: run, wrote: Cell.new(wrote) })
-        run
-    }
-
-    /// `owner`'s open run closed: every relation sweeps the rows it did
-    /// not write again in that run, and what it wrote is read again.
-    fn closed_run(owner: int) {
-        let run = self.runs.get()[owner]
-        for s in self.sweepers.get() { s(self, owner, run) }
-        self.open.set([r for r in self.open.get() if r.owner != owner])
-    }
+    /// Whose a row stamped `owner` is, in words.
+    fn whose(owner: int) -> string { if owner == 0 { "no one's" } else { "`${self.names.get()[owner]}`'s" } }
 
     /// A `@query`'s body entered, and left.
     fn entered() { self.asking.set(self.asking.get() + 1) }
@@ -335,24 +303,26 @@ impl Db {
     fn left() { self.asking.set(self.asking.get() - 1) }
 
     /// A write is about to move `cell`, last read at revision `read_at`
-    /// (-1 never): whether the write stands. A cell a reader holds this
-    /// revision refuses it where late writes are refused; where they are
-    /// taken, a cell any reader ever read moves the revision.
-    fn moved(family: int, cell: int, read_at: int) -> bool {
-        let kernel? = self.kernel.get() else { return true }
+    /// (-1 never) by `reader`: how it lands. A cell read this revision by
+    /// a query still running is never moved; one a settled reader holds
+    /// this revision refuses the write where late writes are refused;
+    /// where they are taken, a cell any reader ever read moves the
+    /// revision.
+    fn moved(family: int, cell: int, read_at: int, reader: int) -> Landing {
+        let kernel? = self.kernel.get() else { return Landing.Stands }
+        let now = kernel.revision()
+        if read_at == now && kernel.reading(reader) { return Landing.Torn }
         self.unsettles_restored()
         match self.late.get() {
             .Refused -> {
-                if read_at == kernel.revision() { return false }
-                self.stamped(family, cell, kernel.revision())
-                true
+                if read_at == now { return Landing.Late }
             },
             .Taken -> {
                 if read_at >= 0 { kernel.bump() }
-                self.stamped(family, cell, kernel.revision())
-                true
             },
         }
+        self.stamped(family, cell, kernel.revision())
+        Landing.Stands
     }
 
     /// An answer read back is read here: a record brings no reads with
@@ -380,9 +350,6 @@ impl Db {
         let moved_at? = self.moves.get().get("${family}") else { return }
         moved_at.put("${cell}", rev)
     }
-
-    /// The kernel's revision, -1 while there is no kernel.
-    fn revision() -> int { self.kernel.get()?.revision() ?? 0 - 1 }
 
     /// Whether any cell here can have a reader: no query ever opened in
     /// the kernel means no write can be late.
@@ -469,12 +436,7 @@ impl Stores<R> {
                         },
                     ),
             )
-        db
-            .joined(
-                () -> open_hash(slots.get()[id]),
-                () -> slots.set_at(id, Slot.Closed),
-                (on: Db, owner: int, run: int) -> swept(slots.get()[id], on, owner, run),
-            )
+        db.joined(() -> open_hash(slots.get()[id]), () -> slots.set_at(id, Slot.Closed))
         made
     }
 
@@ -493,11 +455,6 @@ fn cell_hash<R>(s: Slot<R>, cell: int) -> int {
         .Open(held) -> if cell == 0 { held.set_hash() } else { held.bucket_hash(cell - 1) },
         .Unreached or .Closed -> 0,
     }
-}
-
-/// A slot's rows swept of what `owner` did not write in `run`.
-fn swept<R>(s: Slot<R>, db: Db, owner: int, run: int) {
-    match s { .Open(held) -> held.sweep(db, owner, run), .Unreached or .Closed -> no_word() }
 }
 
 /// A slot's set hash: its rows', none while unreached or closed.
@@ -645,8 +602,8 @@ impl AnswersUnder<V> {
         Run { value: self.memo.finish_lazy(arg, value, digest), wrote: db.written.get() > before }
     }
 
-    /// A call left before it settled keeps no open frame behind it, in
-    /// the kernel or here.
+    /// A call left before it settled leaves no body counted as running
+    /// here and no open query in the kernel.
     fn abandoned_unless(db: Db, settled: Cell<bool>, arg: int) {
         if settled.get() { return }
         db.left()
@@ -660,7 +617,7 @@ impl AnswersUnder<V> {
     }
 }
 
-/// A run's answer and whether it wrote rows.
+/// A run's answer and whether a row was filed or removed while it ran.
 type Run<V> = { value: V, wrote: bool }
 
 /// How an answer is kept past the process: the query's durable name, the
@@ -670,7 +627,7 @@ export type KeptRecord<V> = { query: string, args: int, write: fn(Writer, V) -> 
 // ── voices ──
 
 fn query_writes() -> string {
-    "a `@query` wrote a row with no owner — a query answers, it writes no rows of its own; open a named owner's run around the write (`db.opened_run(db.owner_named(…))`)"
+    "a `@query` wrote a row with no owner — a query answers, it writes no rows of its own; hand the rows to a named owner (`Rel.replaced(db, owner, rows)`)"
 }
 
 fn closed_db(id: int) -> string {

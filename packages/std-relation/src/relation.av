@@ -30,10 +30,12 @@
 //!
 //! A keyed insert replaces the row its key names, and a keyless one
 //! appends, so key a row you will update by hand. Nothing removes a row
-//! but closing its Db or its owner's rerun: rows written while a named
-//! owner's run is open (`Db.owner_named`, `opened_run`, `closed_run`) are
-//! that owner's, read once the run closes, and swept by its next run
-//! when it does not write them again.
+//! but closing its Db or its OWNER replacing its rows:
+//! `Rel.replaced(db, owner, rows)` files `rows` as the named owner's and
+//! removes every row that owner held which they do not name, in one
+//! step — the store mints each `id`, whatever the value carries. A
+//! relation with a `@unique` field has no `replaced`: its rows are no
+//! one's until a refusal can be answered for the whole set.
 //!
 //! Stands ALONE with `@std/meta` and its own package: the file that
 //! types this derive must not also carry code the annotated file's
@@ -61,7 +63,18 @@ use @std.meta.{
     name,
     refuse_as_at,
 }
-use rows.{Rows, IndexKey, text_key, int_key, dense_key, bool_key, key_part, int_part, bool_part}
+use rows.{
+    Rows,
+    Placed,
+    IndexKey,
+    text_key,
+    int_key,
+    dense_key,
+    bool_key,
+    key_part,
+    int_part,
+    bool_part,
+}
 use db.{Db, Stores, stores}
 use refused.{InsertRefused, unheld, int_text, bool_text}
 use stable.{
@@ -467,7 +480,8 @@ const every_member: List<string> = [
 /// relation's, the key's when it has one, and one per named lookup.
 fn member_names(t: Type) -> List<string> {
     let keyed: List<string> = if key_fields(t).is_empty() { [] } else { ["key", "key_text", "by_key"] }
-    every_member.concat(keyed).concat(["by_${f.name}" for f in named_lookups(t)])
+    let whole: List<string> = if unique_checks(t).is_empty() { ["replaced"] } else { [] }
+    every_member.concat(whole).concat(keyed).concat(["by_${f.name}" for f in named_lookups(t)])
 }
 
 // ── The generated members ──
@@ -486,14 +500,9 @@ fn shape_ok(t: Type) -> bool {
 
 /// Every member the derive writes onto a sound relation.
 fn members(t: Type) -> List<Decls> {
-    [
-        encoded_member(t),
-        store_member(t),
-        index_keys_member(t),
-        insert_member(t),
-        get_member(t),
-        all_member(t),
-    ]
+    [encoded_member(t), store_member(t), index_keys_member(t), insert_member(t)]
+        .concat(replaced_members(t))
+        .concat([get_member(t), all_member(t)])
         .concat(decoded_members(t))
         .concat(key_members(t))
         .concat(field_lookups(t))
@@ -671,8 +680,6 @@ fn key_of(e: Code, k: Kind) -> Code {
 fn insert_member(t: Type) -> Decls {
     let seats = [quote { fn _(${f.name}: ${f.ty}) {} } for f in content(t)]
     let inits = id_init(t).concat([quote { W { ${f.name}: ${name(f.name)} } } for f in content(t)])
-    let own = if key_fields(t).is_empty() { quote { rs.next_id() } } else { quote { rs.first_id(rs.bucket_of(0, keys[0][0])) ?? rs.next_id() } }
-    let stored = if ided(t) { quote { r with { id: ${minted_id(t, quote { own })} } } } else { quote { r } }
     let checks = unique_checks(t)
     if checks.is_empty() {
         return quote {
@@ -680,8 +687,8 @@ fn insert_member(t: Type) -> Decls {
                 let r = ${t} { ..${inits} }
                 let rs = ${name(t.name)}.rows_in(db)
                 let keys = r.index_keys()
-                let own = ${own}
-                let stored = ${stored}
+                let own = ${own_id(t)}
+                let stored = ${stored_row(t)}
                 rs.put_in(db, ${literal(t.name)}, own, stored, stored.stable_hash(), keys)
                 stored
             }
@@ -692,13 +699,51 @@ fn insert_member(t: Type) -> Decls {
             let r = ${t} { ..${inits} }
             let rs = ${name(t.name)}.rows_in(db)
             let keys = r.index_keys()
-            let own = ${own}
+            let own = ${own_id(t)}
             ${checks}
-            let stored = ${stored}
+            let stored = ${stored_row(t)}
             rs.put_in(db, ${literal(t.name)}, own, stored, stored.stable_hash(), keys)
             stored
         }
     }
+}
+
+/// The id a row `r` with `keys` takes in `rs`: its key's row's when the
+/// key already names one, else the next.
+fn own_id(t: Type) -> Code {
+    if key_fields(t).is_empty() { quote { rs.next_id() } } else { quote { rs.first_id(rs.bucket_of(0, keys[0][0])) ?? rs.next_id() } }
+}
+
+/// The row `r` as stored at `own`: wearing the id the store minted.
+fn stored_row(t: Type) -> Code {
+    if ided(t) { quote { r with { id: ${minted_id(t, quote { own })} } } } else { quote { r } }
+}
+
+/// `replaced`: a named owner's rows of this relation, handed over as a
+/// value — each placed as `insert` places it, the owner's other rows
+/// removed. None for a relation with a `@unique` field: `unique_checks`
+/// refuses row by row, and a replacement is refused whole or not at all.
+fn replaced_members(t: Type) -> List<Decls> {
+    if !unique_checks(t).is_empty() { return [] }
+    [
+        quote {
+            static fn replaced(db: Db, owner: string, rows: List<${t}>) -> List<${t}> {
+                ${name(t.name)}
+                    .rows_in(db)
+                    .replaced(
+                        db,
+                        owner,
+                        rows,
+                        (rs: Rows<${t}>, r: ${t}) -> {
+                            let keys = r.index_keys()
+                            let own = ${own_id(t)}
+                            let stored = ${stored_row(t)}
+                            Placed { id: own, row: stored, hash: stored.stable_hash(), keys: keys }
+                        },
+                    )
+            }
+        },
+    ]
 }
 
 /// Each `@unique` field's check, per insert: a value another row holds
