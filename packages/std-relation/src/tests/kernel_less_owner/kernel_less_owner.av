@@ -1,0 +1,32 @@
+// proves: an owner and its rows are known to a Db with no kernel and
+// stand across its hand-over to one — on a plain Db a replacement of one
+// relation leaves another read with nothing heard, and after the Db is
+// given a kernel that already holds a family the owner's next
+// replacement removes exactly what it wrote before — in both engines
+use @std.relation.{relation}
+use @std.relation.db.{Db, new_db, Verifying, Late}
+use @std.relation.engine.{new_kernel}
+
+@relation
+type A = { n: int }
+
+@relation
+type B = { n: int }
+
+fn ns(rows: List<A>) -> string { ["${r.n}" for r in rows].join(",") }
+
+fn run() -> string {
+    let heard: Cell<List<string>> = Cell.new([])
+    let db = new_db()
+    db.heard_by((w: string) -> heard.push(w))
+    let _ = B.insert(db, n: 7)
+    let _ = A.replaced(db, "writer of A", [A { n: 1 }, A { n: 2 }])
+    let plain = "${B.all(db).length} ${ns(A.all(db))}"
+    let kernel = new_kernel()
+    let _ = kernel.family((_arg: int) -> 0)
+    db.given(kernel, Verifying.ByMove, Late.Refused)
+    let _ = A.replaced(db, "writer of A", [A { n: 3 }])
+    "${plain} | ${B.all(db).length} ${ns(A.all(db))} heard=${heard.get().length}"
+}
+
+run()

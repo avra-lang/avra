@@ -1,10 +1,13 @@
-// proves: a named owner's run replaces its rows in one step — what its
-// run did not write again is removed from every bucket and the set, a
-// kept row keeps its id, a run that writes nothing empties the owner, a
-// row written between runs belongs to the next one, no other owner's row
-// moves, a second owner of one row is refused, a removal is a write a
-// kept answer hears, and a removal under a read bucket is late — in both
-// engines
+// proves: a named owner's rows are replaced in one step — what the new
+// rows do not name is removed from every bucket and the set, a kept row
+// keeps its id, an empty replacement empties the owner, a row filed by id
+// for the owner between replacements is removed by the next unless named
+// again or kept, no other owner's row moves, a second owner of one row is
+// refused, a removal is a write a kept answer hears, and a removal under
+// a read bucket is late and removes nothing; keeping NO id empties an
+// owner and no one else, and is nothing at all for an owner that never
+// wrote; a replacement with one refused row files none of its rows and
+// removes none — in both engines
 use @std.relation.{relation, query}
 use @std.relation.db.{Db, new_db, db_over, Verifying, Late}
 use @std.relation.engine.{Key, new_kernel}
@@ -28,12 +31,12 @@ fn logged() -> Db {
     db
 }
 
-/// `name` filed under `tag`, owned by `owner` — its key's row, else a new one.
-fn put(db: Db, owner: int, name: string, tag: string) -> int {
+/// `name` filed under `tag` for `owner`, by id.
+fn put_as(db: Db, owner: string, name: string, tag: string) -> int {
     let rs = Fact.rows_in(db)
     let at = Fact.by_key(db, FactKey { name: name })?.id ?? rs.next_id()
     let row = Fact { id: at, name: name, tag: tag }
-    rs.put_owned(db, "Fact", at, row, row.stable_hash(), row.index_keys(), owner)
+    rs.put_owned(db, "Fact", at, row, row.stable_hash(), row.index_keys(), db.owner_named(owner))
     at
 }
 
@@ -44,14 +47,10 @@ fn bucket(db: Db, tag: string) -> int {
     rs.bucket_hash(rs.bucket_of_text(1, tag))
 }
 
-/// One run of `owner`, writing each `name:tag` pair.
-fn ran(db: Db, owner: int, pairs: List<string>) {
-    let _ = db.opened_run(owner)
-    for p in pairs {
-        let parts = p.split(":")
-        let _ = put(db, owner, parts[0], parts[1])
-    }
-    db.closed_run(owner)
+/// `owner`'s rows replaced by one per `name:tag` pair.
+fn ran(db: Db, owner: string, pairs: List<string>) {
+    let _ = Fact
+        .replaced(db, owner, [Fact { id: 0, name: p.split(":")[0], tag: p.split(":")[1] } for p in pairs])
 }
 
 /// Every Fact counted — rerun only after a write.
@@ -66,13 +65,13 @@ fn facts(db: Db) -> int {
 /// agrees with a Db that only ever held the two.
 fn replaced() -> string {
     let db = new_db()
-    let o = db.owner_named("a.av")
+    let o = "a.av"
     ran(db, o, ["a:x", "b:x", "c:y"])
     let a = Fact.by_key(db, FactKey { name: "a" })!.id
     let c = Fact.by_key(db, FactKey { name: "c" })!.id
     ran(db, o, ["a:x", "b:y"])
     let fresh = new_db()
-    ran(fresh, fresh.owner_named("a.av"), ["a:x", "b:y"])
+    ran(fresh, "a.av", ["a:x", "b:y"])
     let same = db.set_hashes()[0] == fresh.set_hashes()[0] &&
         bucket(db, "x") == bucket(fresh, "x") &&
         bucket(db, "y") == bucket(fresh, "y")
@@ -83,7 +82,7 @@ fn replaced() -> string {
 /// its owner.
 fn emptied() -> string {
     let db = new_db()
-    let o = db.owner_named("e.av")
+    let o = "e.av"
     ran(db, o, [])
     let before = Fact.all(db).length
     ran(db, o, ["a:x"])
@@ -91,24 +90,61 @@ fn emptied() -> string {
     "${before} ${Fact.all(db).length} ${tagged(db, "x") == ""}"
 }
 
-/// A row written while no run is open joins the owner's current run, so
-/// the next run removes it unless it writes it again.
+/// A row filed by id for an owner stands until its rows are next
+/// replaced, which removes it unless it is named again — and `kept_of`
+/// keeps exactly the ids it is handed.
 fn between() -> string {
     let db = new_db()
-    let o = db.owner_named("g.av")
+    let o = "g.av"
     ran(db, o, ["a:x"])
-    let _ = put(db, o, "late", "x")
-    let _ = put(db, o, "kept", "x")
+    let _ = put_as(db, o, "late", "x")
+    let _ = put_as(db, o, "kept", "x")
     let held = tagged(db, "x")
     ran(db, o, ["a:x", "kept:x"])
-    "${held} ${tagged(db, "x")}"
+    let replaced = tagged(db, "x")
+    let last = put_as(db, o, "last", "x")
+    Fact.rows_in(db).kept_of(db, db.owner_named(o), [last])
+    "${held} ${replaced} ${tagged(db, "x")}"
+}
+
+/// `kept_of` with no id: nothing for an owner that never wrote — no row
+/// moves, no hash, nothing heard — and every row of one that did, with
+/// another owner's row and no one's row standing.
+fn kept_none() -> string {
+    let db = logged()
+    let before = heard().get().length
+    let _ = Fact.insert(db, name: "loose", tag: "x")
+    ran(db, "b.av", ["b:x"])
+    let set = db.set_hashes()[0]
+    Fact.rows_in(db).kept_of(db, db.owner_named("never.av"), [])
+    let untouched = db.set_hashes()[0] == set && tagged(db, "x") == "loose,b"
+    let _ = put_as(db, "a.av", "a", "x")
+    let _ = put_as(db, "a.av", "c", "x")
+    let held = tagged(db, "x")
+    Fact.rows_in(db).kept_of(db, db.owner_named("a.av"), [])
+    Fact.rows_in(db).kept_of(db, db.owner_named("a.av"), [])
+    "${untouched} ${held} ${tagged(db, "x")} ${db.set_hashes()[0] == set} ${heard().get().length - before}"
+}
+
+/// A replacement whose LAST row is another owner's files nothing — not
+/// the rows before it — removes nothing, answers no row, and is heard
+/// once.
+fn whole() -> string {
+    let db = logged()
+    ran(db, "a.av", ["a:x", "b:x"])
+    ran(db, "b.av", ["z:y"])
+    let before = heard().get().length
+    let set = db.set_hashes()[0]
+    let filed = Fact
+        .replaced(db, "a.av", [Fact { id: 0, name: "new", tag: "x" }, Fact { id: 0, name: "z", tag: "q" }])
+    "${filed.length} ${tagged(db, "x")} ${tagged(db, "y")} ${db.set_hashes()[0] == set} ${heard().get().length - before}"
 }
 
 /// Another owner's rows, and rows no owner wrote, never move.
 fn apart() -> string {
     let db = new_db()
-    let o = db.owner_named("a.av")
-    let p = db.owner_named("b.av")
+    let o = "a.av"
+    let p = "b.av"
     let _ = Fact.insert(db, name: "loose", tag: "x")
     ran(db, o, ["a:x"])
     ran(db, p, ["b:x"])
@@ -120,8 +156,8 @@ fn apart() -> string {
 fn rival() -> string {
     let db = logged()
     let before = heard().get().length
-    ran(db, db.owner_named("a.av"), ["a:x"])
-    ran(db, db.owner_named("b.av"), ["a:y"])
+    ran(db, "a.av", ["a:x"])
+    ran(db, "b.av", ["a:y"])
     "${heard().get().length - before}"
 }
 
@@ -129,7 +165,7 @@ fn rival() -> string {
 /// is computed again, never reused stale.
 fn heard_removal() -> string {
     let db = logged()
-    let o = db.owner_named("a.av")
+    let o = "a.av"
     ran(db, o, ["a:x", "b:x"])
     let first = facts(db)
     let runs = counts().get()
@@ -142,9 +178,9 @@ fn heard_removal() -> string {
 /// filing there is — where the Db's owner refuses a late write.
 fn late() -> string {
     let kernel = new_kernel()
-    let db = db_over(kernel, Verifying.ByHash, Late.Refused, false)
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused)
     db.heard_by(noted)
-    let o = db.owner_named("a.av")
+    let o = "a.av"
     ran(db, o, ["a:x", "b:y"])
     let reader = Key { family: kernel.family((_arg: int) -> 0), arg: 0 }
     kernel.begin(reader)
@@ -152,7 +188,7 @@ fn late() -> string {
     kernel.settle(reader, 0)
     let before = heard().get().length
     ran(db, o, [])
-    "${heard().get().length - before} ${heard().get().last() ?? "-"}"
+    "${heard().get().length - before} ${Fact.all(db).length} ${heard().get().last() ?? "-"}"
 }
 
-"${replaced()} | ${emptied()} | ${between()} | ${apart()} | ${rival()} | ${heard_removal()} | ${late()}"
+"${replaced()} | ${emptied()} | ${between()} | ${kept_none()} | ${whole()} | ${apart()} | ${rival()} | ${heard_removal()} | ${late()}"

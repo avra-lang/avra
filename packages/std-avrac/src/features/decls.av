@@ -402,7 +402,7 @@ export type Decls = {
     /// TWO LAYERS SHARED — see `module_files`.
     decl_ids: Cell<List<Cell<SideTable<DeclAt>>>>,
     /// Each file's admission owner in the declaration table's `Db`,
-    /// dense by FileId: every write of a row the file homes is its run's.
+    /// dense by FileId: every row the file homes is that owner's.
     file_owners: Cell<List<int>>,
     /// TWO LAYERS SHARED — see `module_files`. Each expression's owning
     /// declaration, written once per file in `range_bodies` — `expr_owner`'s
@@ -864,7 +864,8 @@ impl Decls {
     /// rows, a removed one never among them.
     fn all_decls() -> List<Decl> { Decl.all(self.decl_rows.get()) }
 
-    /// A declaration's row rewritten in place, its write its file's run's.
+    /// A declaration's row rewritten in place, its home file's — a row
+    /// with no home is no one's.
     /// The row's `@local` columns (file, stmt, parent, root, lo, hi)
     /// carry no stable hash or index, so a write that only moves them
     /// takes `put`'s cheap path — same hash, same keys, the stored value
@@ -1014,7 +1015,7 @@ impl Decls {
         self.recording.set(true)
         for b in 0..self.name_bucket_count() { self.bucket_moved(b) }
         self.held_rows.set(held)
-        self.decl_rows.get().given(self.record_kernel, Verifying.ByMove, Late.Refused, false)
+        self.decl_rows.get().given(self.record_kernel, Verifying.ByMove, Late.Refused)
     }
 
     /// Where a file's rows stand: minting (0), settled (1), held (2).

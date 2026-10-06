@@ -1,0 +1,38 @@
+// proves: a kernel query that hands its rows to a named owner and runs
+// again replaces them — three rows, then two: the row it did not
+// write again is gone and none is doubled — while another owner's rows
+// stand, in both engines
+use @std.relation.{relation}
+use @std.relation.db.{Db, db_over, Verifying, Late}
+use @std.relation.engine.{Kernel, Key, new_kernel}
+
+@relation
+type Site = { @index within: int, n: int }
+
+/// One run of the query `q`: `ns` written as the rows of `owner`.
+fn run_once(kernel: Kernel, db: Db, q: Key, owner: string, ns: List<int>) {
+    kernel.begin(q)
+    let _ = Site.replaced(db, owner, [Site { within: 1, n: n } for n in ns])
+    kernel.settle(q, 0)
+}
+
+fn ns(db: Db) -> string { ["${s.n}" for s in Site.by_within(db, 1)].join(",") }
+
+fn run() -> string {
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let heard: Cell<List<string>> = Cell.new([])
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused)
+    db.heard_by((w: string) -> heard.push(w))
+    let q = Key { family: queries, arg: 0 }
+    run_once(kernel, db, q, "sites", [1, 2, 3])
+    let first = ns(db)
+    kernel.bump()
+    run_once(kernel, db, q, "sites", [1, 2])
+    let second = ns(db)
+    kernel.bump()
+    run_once(kernel, db, Key { family: queries, arg: 1 }, "others", [9])
+    "${first} ${second} ${ns(db)} heard=${heard.get().length}"
+}
+
+run()

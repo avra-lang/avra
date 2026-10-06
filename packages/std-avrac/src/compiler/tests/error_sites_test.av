@@ -3,8 +3,9 @@
 // fn that catches it and re-raises.
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace, ErrorSite, Raised}
-use @std.relation.db.{Db as RelDb, new_db}
 use compiler.host.{memory_host}
+use @std.relation.engine.{Key}
+use compiler.families.{Family}
 use core.{DeclId, same_decl, same_expr}
 
 fn sites_workspace(main: string) -> Workspace {
@@ -19,6 +20,15 @@ fn sites_workspace(main: string) -> Workspace {
         "/w",
         avra(),
     )
+}
+
+/// `act` run as the `Failures` query — the one writer of the survey's
+/// and the solve's rows.
+fn as_failures(ws: Workspace, act: fn() -> void) {
+    let k = Key { family: Family.Failures.ordinal, arg: 0 }
+    ws.db.kernel.begin(k)
+    act()
+    ws.db.kernel.settle(k, 0)
 }
 
 fn decl_named(ws: Workspace, name: string) -> DeclId {
@@ -297,36 +307,70 @@ spec "compiler/failures — `Raised` rows are the fixpoint's own" {
         let f = decl_named(ws, "f")
         let g = decl_named(ws, "g")
         let _ = ws.failures()
-        ws.solve_raised([f, g])
-        ws.solve_raised([f])
+        as_failures(ws, () -> ws.solve_raised([f, g]))
+        as_failures(ws, () -> ws.solve_raised([f]))
         let rows = Raised.all(ws.failures_db.get())
         rows.length == 1 && same_decl(rows[0].owner, f) && rows[0].errors.length == 2
     }
 }
 
-once fn raised_heard() -> Cell<List<string>> { Cell.new([]) }
-
-fn raised_noted(w: string) {
-    let h = raised_heard()
-    h.push(w)
+spec "compiler/failures — `ErrorSite` rows are the survey's own (avra-8sb5.57.204)" {
+    then "a survey at a later revision replaces the first's rows: a fn it leaves out keeps no site, and none is doubled" {
+        let ws = sites_workspace(mutual_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "f")
+        let g = decl_named(ws, "g")
+        let _ = ws.failures()
+        let both = ErrorSite.all(ws.failures_db.get())
+        // the solve read these rows this revision: a later survey follows an edit
+        ws.db.kernel.bump()
+        as_failures(
+            ws,
+            () -> {
+                let _ = ws.surveyed([f])
+            },
+        )
+        let one = ErrorSite.all(ws.failures_db.get())
+        both.any((s: ErrorSite) -> same_decl(s.owner, g)) &&
+            !one.is_empty() &&
+            one.all((s: ErrorSite) -> same_decl(s.owner, f)) &&
+            one.length == [s for s in both if same_decl(s.owner, f)].length
+    }
 }
 
-/// A Db that records a refusal instead of trapping, so the ownership
-/// law's own words can be asserted.
-fn noting_db() -> RelDb {
-    let db = new_db()
-    db.heard_by(raised_noted)
-    db
+spec "compiler/failures — `Raised` holds the last solve's sets until the next is whole" {
+    then "a solve in the revision a settled query read `Raised` is refused whole, and that query's rows stand" {
+        let ws = sites_workspace(mutual_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "f")
+        let _ = ws.failures()
+        let heard: Cell<List<string>> = Cell.new([])
+        let db = ws.failures_db.get()
+        db.heard_by((w: string) -> heard.push(w))
+        let reader = Key { family: ws.db.kernel.family((_arg: int) -> 0), arg: 0 }
+        ws.db.kernel.begin(reader)
+        let read = Raised.by_owner(db, f).length
+        ws.db.kernel.settle(reader, 0)
+        as_failures(ws, () -> ws.solve_raised([f]))
+        read == 1 &&
+            Raised.all(db).length == 2 &&
+            heard.get().length == 1 &&
+            heard.get()[0].contains("`Raised` rows are not replaced and stand as they were")
+    }
 }
 
-spec "compiler/failures — `Raised` read inside its owner's own run" {
-    then "is refused, naming `prior(db)`" {
-        let db = noting_db()
-        let owner = db.cell(0, 0)
-        db.began(owner)
-        let _ = Raised.insert(db, owner: DeclId { index: 0 }, errors: [])
-        let _ = Raised.by_owner(db, DeclId { index: 0 })
-        db.ended(owner)
-        raised_heard().get().length == 1 && raised_heard().get()[0].contains("prior(db)")
+spec "compiler/failures — the survey's and the solve's rows have one writer" {
+    then "a solve outside the `Failures` query is refused naming both, and the rows stand" {
+        let ws = sites_workspace(mutual_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "f")
+        let _ = ws.failures()
+        let heard: Cell<List<string>> = Cell.new([])
+        let db = ws.failures_db.get()
+        db.heard_by((w: string) -> heard.push(w))
+        ws.solve_raised([f])
+        Raised.all(db).length == 2 &&
+            heard.get().length == 1 &&
+            heard.get()[0].contains("is their writer and the driver hands rows over too")
     }
 }

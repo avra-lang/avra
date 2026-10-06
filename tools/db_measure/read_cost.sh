@@ -1,5 +1,5 @@
 #!/bin/sh
-# WHAT ONE RECORDED READ COSTS, COUNTED — and held to a budget.
+# WHAT ONE RECORDED READ AND ONE ROW WRITTEN COST, COUNTED — and held to a budget.
 #   sh tools/db_measure/read_cost.sh            print and check
 #   sh tools/db_measure/read_cost.sh --accept   write what was counted as the budget
 # From a tree's root, over its build/avra. The runtime is built with its
@@ -26,7 +26,7 @@ export LLVM_PREFIX
 N=${DBM_READS:-200000}
 bench=tools/db_measure/readcost
 budget=tools/db_measure/read_cost.budget
-modes="kernel.last kernel.earlier kernel.new row.unheard row.repeat row.new ask.int ask.text"
+modes="kernel.last kernel.earlier kernel.new row.unheard row.repeat row.new ask.int ask.text write.unowned write.owned write.replaced write.over"
 census=build/census
 trap 'rm -f "$bench/src/main" "$bench/src/main.av.ll"' EXIT INT TERM
 mkdir -p "$census/build" "$census/obj"

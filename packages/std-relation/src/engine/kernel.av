@@ -495,6 +495,32 @@ impl Kernel {
         if innermost == 0 { 0 - 1 } else { innermost }
     }
 
+    /// Whether the query `reader` names is still open.
+    fn reading(reader: int) -> bool { reader > 0 && self.asker.readers.get().contains(reader) }
+
+    /// The innermost open query as an edge, -1 with none open.
+    fn asking_edge() -> int { self.asker.open.get().last() ?? 0 - 1 }
+
+    /// A query's edge as `family:arg`.
+    fn edge_text(edge: int) -> string { spelled([edge]) }
+
+    /// The open query holding `family`'s `arg`: `last`, the reader that
+    /// marked it, while that one is open — else the innermost open query
+    /// whose edges so far name the key, a nested query's read having
+    /// taken the mark. -1 for none.
+    fn open_reader_of(family: int, arg: int, last: int) -> int {
+        if self.reading(last) { return last }
+        let edge = packed(family, arg)
+        let readers = self.asker.readers.get()
+        [readers[i] for i, held in self.asker.pending.get() if held.get().contains(edge)].last() ?? 0 - 1
+    }
+
+    /// A read its reader's standing edge already covers: recorded nowhere,
+    /// counted where the graph counts every read.
+    fn repeated(family: int) {
+        if self.graph.on.get() { self.graph.counted(family) }
+    }
+
     fn changed_at(key: Key) -> int { self.cell(key)?.changed_at ?? self.rev.get() }
 
     /// `key`'s cell; none for a key never settled or set.

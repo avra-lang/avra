@@ -16,6 +16,7 @@
 //! ORDERED index's bucket folds its members in id order instead, so the
 //! order rows were declared in is part of what a reader saw.
 use @std.meta.{identity}
+use engine.{Kernel}
 
 /// Where a row files under one index: its text, or a dense slot (a
 /// bool's tag, a typed id's index).
@@ -77,51 +78,66 @@ fn same_key(a: IndexKey, b: IndexKey) -> bool {
 /// the revision it was last read in, by whom (-1: never).
 type Bucket = { members: Cell<List<int>>, hash: Cell<int>, read: ReadMark }
 
-/// When a cell was last read, the reader's token, and the frame that read
-/// it (its owner cell and run) — revision -1 never; cells written in
-/// place, so a read allocates nothing.
-type ReadMark = { revision: Cell<int>, reader: Cell<int>, owner: Cell<int>, run: Cell<int> }
+/// When a cell was last read and the reader's token — revision -1 never;
+/// cells written in place, so a read allocates nothing.
+type ReadMark = { revision: Cell<int>, reader: Cell<int> }
 
-/// Who wrote a row: the query cell that owns it and which of its runs —
-/// owner 0 is no query.
+/// The writer that is no query: code running with none open.
+const driver: int = 0 - 1
+
+/// How a relation's rows are filed: whether its first index is its key,
+/// a row's keys in each index, its stable hash, and the row wearing the
+/// id the store minted.
+export type Filing<R> = { keyed: bool, keys: fn(R) -> List<List<IndexKey>>, hash: fn(R) -> int, seated: fn(R, int) -> R }
+
+/// Who wrote a row: its owner's cell, and which replacement of the
+/// owner's rows it was written in — owner 0 is no one.
 export type Stamp = { owner: int, run: int }
 
 export const unowned: Stamp = Stamp { owner: 0, run: 0 }
 
 /// A cell never read.
-fn unread() -> ReadMark { ReadMark { revision: Cell.new(-1), reader: Cell.new(0), owner: Cell.new(0), run: Cell.new(0) } }
+fn unread() -> ReadMark { ReadMark { revision: Cell.new(-1), reader: Cell.new(-1) } }
 
 impl ReadMark {
     /// A read in `revision` by `reader`, written in place — and only
     /// while a revision is live and the read has a reader, the one time
     /// the late-write law asks.
-    fn mark(revision: int, reader: int, owner: int, run: int) {
+    fn mark(revision: int, reader: int) {
         // no reader: the owner recorded nothing, so no one's answer can go stale
         if revision < 0 || reader < 0 { return }
         self.revision.set(revision)
         self.reader.set(reader)
-        self.owner.set(owner)
-        self.run.set(run)
     }
 
     /// The mark of a cell never read: a read is told to one kernel, and
     /// stands for no other.
     fn cleared() {
         self.revision.set(-1)
-        self.reader.set(0)
-        self.owner.set(0)
-        self.run.set(0)
+        self.reader.set(-1)
     }
 
-    /// Whether this frame already read here in `revision` — its edge
-    /// stands, so a repeat records nothing new. A frame is its OWN owner
-    /// and run: a nested frame's read never stands for its caller's.
-    fn read_by(revision: int, owner: int, run: int) -> bool {
+    /// A read of `cell` in `family` by the open query `reader`, told to
+    /// the kernel once per reader per revision: a repeat by the query
+    /// whose read already stands records nothing.
+    fn told(kernel: Kernel, reader: int, family: int, cell: int) {
+        let now = kernel.revision()
+        if self.read_by(now, reader) {
+            kernel.repeated(family)
+            return
+        }
+        kernel.record_at(family, cell)
+        self.mark(now, reader)
+    }
+
+    /// Whether `reader` already read here in `revision` — its edge
+    /// stands, so a repeat records nothing new. A nested query's read
+    /// never stands for its caller's: each open query is its own reader.
+    fn read_by(revision: int, reader: int) -> bool {
         revision >= 0 &&
-            owner != 0 &&
+            reader >= 0 &&
             self.revision.get() == revision &&
-            self.owner.get() == owner &&
-            self.run.get() == run
+            self.reader.get() == reader
     }
 }
 
@@ -137,7 +153,7 @@ export type Rows<R> = {
     filed: Cell<List<List<List<IndexKey>>>>,
     stamps: Cell<List<Stamp>>,
     stamped: Cell<Map<string, Cell<List<int>>>>,
-    last_runs: Cell<Map<string, List<R>>>,
+    writers: Cell<Map<string, int>>,
     set: Cell<int>,
     live: Cell<int>,
     indexes: List<Index>,
@@ -157,7 +173,7 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
     let filed: Cell<List<List<List<IndexKey>>>> = Cell.new([])
     let stamps: Cell<List<Stamp>> = Cell.new([])
     let stamped: Cell<Map<string, Cell<List<int>>>> = Cell.new({})
-    let last_runs: Cell<Map<string, List<R>>> = Cell.new({})
+    let writers: Cell<Map<string, int>> = Cell.new({})
     let buckets: Cell<List<Bucket>> = Cell.new([])
     Rows {
         name: name,
@@ -166,7 +182,7 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
         filed: filed,
         stamps: stamps,
         stamped: stamped,
-        last_runs: last_runs,
+        writers: writers,
         set: Cell.new(0),
         live: Cell.new(0),
         indexes: [empty_index(o) for o in ordered],
@@ -238,35 +254,34 @@ impl Rows<R> {
 
     // ── what a Db's owner records ──
 
-    /// Every read here forgotten — the kernel they were told to is left.
+    /// Every read here forgotten — the kernel they were told to is left
+    /// — and every owner's writer that was a query of it: the next
+    /// kernel numbers its own. The driver's owners stay the driver's.
     fn unmarked() {
         self.read.cleared()
         for b in self.buckets.get() { b.read.cleared() }
+        let held = self.writers.get()
+        mut drivers: Map<string, int> = {}
+        for owner in held.keys() {
+            if held.get(owner) ?? driver == driver { drivers.set(owner, driver) }
+        }
+        self.writers.set(drivers)
     }
 
     /// Bucket `b` read under `db`: recorded as cell `b + 1`, stamped
     /// with the revision and the reader. Answers `b`.
     fn seen(db: Db, b: int) -> int {
-        if db.unheard() { return b }
-        self.recorded_at(db, b + 1, self.buckets.get()[b].read)
+        let kernel? = db.kernel.get() else { return b }
+        let reader = kernel.reader()
+        if reader >= 0 { self.buckets.get()[b].read.told(kernel, reader, self.family.get(), b + 1) }
         b
     }
 
     /// The whole relation read under `db`: cell 0.
     fn seen_whole(db: Db) {
-        if db.unheard() { return }
-        self.recorded_at(db, 0, self.read)
-    }
-
-    /// Cell `cell` read under `db`, told to the owner once per frame per
-    /// revision: a repeat by the frame whose read already stands is free.
-    fn recorded_at(db: Db, cell: int, mark: ReadMark) {
-        let now = db.revision()
-        let f = db.frame()
-        let owner = f?.owner ?? 0
-        let run = f?.run ?? 0
-        if mark.read_by(now, owner, run) { return }
-        mark.mark(now, db.read(self.family.get(), cell), owner, run)
+        let kernel? = db.kernel.get() else { return }
+        let reader = kernel.reader()
+        if reader >= 0 { self.read.told(kernel, reader, self.family.get(), 0) }
     }
 
     /// A key's bucket read under `db` — opened when absent, so a row filed
@@ -300,16 +315,18 @@ impl Rows<R> {
         found
     }
 
-    /// `put`, under the WRITE-ONCE-AFTER-READ law: a write that moves a
-    /// cell some reader already read in this revision is refused, so a
-    /// producer ordered after its readers is heard, never stale.
+    /// `put`, the row no one's, under the WRITE-ONCE-AFTER-READ law: a
+    /// write that moves a cell some reader already read in this revision
+    /// is refused, so a producer ordered after its readers is heard,
+    /// never stale. A REFUSED WRITE NEVER LANDS — one a `@query`'s body
+    /// makes among them.
     fn put_in(db: Db, relation: string, id: int, row: R, hash: int, keys: List<List<IndexKey>>) {
-        self.put_stamped(db, relation, id, row, hash, keys, db.stamp())
+        if db.unowned_refused() { return }
+        let _ = self.put_stamped(db, relation, id, row, hash, keys, unowned)
     }
 
-    /// `put_in`, the row owned by `owner`'s run in progress rather than
-    /// the running query's: a writer outside every query that names its
-    /// rows' owner itself.
+    /// `put_in`, the row `owner`'s: a writer that files by id names its
+    /// rows' owner itself, and says which it keeps with `kept_of`.
     fn put_owned(
         db: Db,
         relation: string,
@@ -319,9 +336,135 @@ impl Rows<R> {
         keys: List<List<IndexKey>>,
         owner: int,
     ) {
-        self.put_stamped(db, relation, id, row, hash, keys, db.stamp_of(owner))
+        let _ = self.put_stamped(db, relation, id, row, hash, keys, db.stamp_of(owner))
     }
 
+    /// `owner`'s rows here REPLACED by `rows`: each filed as the owner's,
+    /// then every row the owner held that these do not name removed.
+    /// ALL OR NOTHING — every row and every removal is asked first, and
+    /// one refusal files nothing and removes nothing: the owner's rows
+    /// stand exactly as they were. Answers the rows as stored, in order;
+    /// none when refused.
+    fn replaced(db: Db, owner: string, rows: List<R>, how: Filing<R>) -> List<R> {
+        let cell = db.owner_named(owner)
+        let keyed = how.keyed
+        let keys = how.keys
+        let heard = db.read_ever()
+        // a keyless row on a Db no query read takes a new id and moves no read cell: nothing to ask
+        let asked = keyed || heard
+        let named = if asked { [keys(r) for r in rows] } else { [] }
+        let why = self.second_writer(db, cell) ?? if asked { self.unreplaceable(db, cell, keyed, named) } else { null }
+        if why != null {
+            db.refuse(replaced_whole(self.name, owner, why!))
+            return rows.slice(0, 0)
+        }
+        let stamp = Stamp { owner: cell, run: renewed(db, cell) }
+        let mine = self.stamped_by(cell)
+        let hash = how.hash
+        let seated = how.seated
+        db.counted()
+        mut stored = rows.slice(0, 0)
+        for i, r in rows {
+            let ks = if asked { named[i] } else { keys(r) }
+            let id = self.own(keyed, ks)
+            if heard { self.moves(db, self.touched(id, ks)) }
+            if id == self.next_id() { mine.push(id) }
+            let row = seated(r, id)
+            self.placed(id, row, hash(r), ks, stamp)
+            stored.push(row)
+        }
+        let gone = self.stale(cell, stamp.run)
+        if heard { self.moves(db, self.filed_buckets(gone)) }
+        self.remove_all(gone)
+        stored
+    }
+
+    /// AN OWNER IS ONE WRITER, for the Db's life: the query running when
+    /// its rows were first replaced, or the driver when none was. The
+    /// refusal of any other writer, none for the same one — the first
+    /// noted even where it hands over no row.
+    fn second_writer(db: Db, owner: int) -> string? {
+        let asking = db.kernel.get()?.asking_edge() ?? driver
+        let key = "${owner}"
+        let first? = self.writers.get().get(key) else {
+            self.writers.put(key, asking)
+            return null
+        }
+        if first == asking { return null }
+        two_writers(db.writer(first), db.writer(asking))
+    }
+
+    /// The id a row with `keys` takes: its key's row's where the relation
+    /// is keyed and the key names one, else the next.
+    fn own(keyed: bool, keys: List<List<IndexKey>>) -> int {
+        if keyed { self.first_id(self.bucket_of(0, keys[0][0])) ?? self.next_id() } else { self.next_id() }
+    }
+
+    /// Why `owner` may not replace its rows by ones with these keys, none
+    /// when it may: two of them name one row, one names another's row, or
+    /// a reader holds a cell they or the removals move. Nothing is moved.
+    fn unreplaceable(db: Db, owner: int, keyed: bool, named: List<List<List<IndexKey>>>) -> string? {
+        if keyed {
+            let twice? = repeated_key([key_text_of(ks[0][0]) for ks in named]) else { return self.unplaceable(db, owner, keyed, named) }
+            return key_twice(twice)
+        }
+        self.unplaceable(db, owner, keyed, named)
+    }
+
+    /// `unreplaceable`, each row naming a row of its own.
+    fn unplaceable(db: Db, owner: int, keyed: bool, named: List<List<List<IndexKey>>>) -> string? {
+        let next = self.next_id()
+        let ids = [self.own(keyed, ks) for ks in named]
+        let other? = ids.find((id: int) -> id < next && !self.owned_by(id, owner)) else {
+            if !db.read_ever() { return null }
+            let kept = [id for id in ids if id < next]
+            let gone = [id for id in self.live_of(owner) if !kept.contains(id)]
+            let moving = [b for i, ks in named for b in self.touched(ids[i], ks)]
+                .concat(self.filed_buckets(gone))
+            return self.held(db, self.name, moving)
+        }
+        two_owners(self.name, other, db.whose(self.stamps.get()[other].owner), db.whose(owner))
+    }
+
+    /// Of `owner`'s rows here, exactly those at `ids` KEPT and every
+    /// other removed — `replaced`, for a writer that files by id. An id
+    /// that names no row, or another's row, refuses the whole of it, as
+    /// a reader holding a removal's cell does: nothing is removed.
+    fn kept_of(db: Db, owner: int, ids: List<int>) {
+        let why? = self.unkeepable(db, owner, ids) else {
+            let stamp = Stamp { owner: owner, run: renewed(db, owner) }
+            for id in ids {
+                if self.row(id) != null { self.stamps.set_at(id, stamp) }
+            }
+            self.sweep(db, owner, stamp.run)
+            return
+        }
+        db.refuse(why)
+    }
+
+    /// Why `owner` may not keep `ids`: one was never minted, or is
+    /// another's row.
+    fn unkeepable(db: Db, owner: int, ids: List<int>) -> string? {
+        let next = self.next_id()
+        let strange? = ids.find((id: int) -> id < 0 || id >= next) else {
+            let other? = ids.find((id: int) -> self.row(id) != null && !self.owned_by(id, owner)) else { return null }
+            return two_owners(
+                self.name,
+                other,
+                db.whose(self.stamps.get()[other].owner),
+                db.whose(owner),
+            )
+        }
+        no_such_row(self.name, strange, db.whose(owner))
+    }
+
+    /// Whether the row at `id` is `owner`'s.
+    fn owned_by(id: int, owner: int) -> bool {
+        id >= 0 && id < self.next_id() && self.stamps.get()[id].owner == owner
+    }
+
+    /// A row filed at `id` under `stamp` — refused, not filed and false
+    /// when a second owner writes it or a reader holds a cell it moves.
     fn put_stamped(
         db: Db,
         relation: string,
@@ -330,19 +473,22 @@ impl Rows<R> {
         hash: int,
         keys: List<List<IndexKey>>,
         stamp: Stamp,
-    ) {
-        if db.read_ever() { self.late_check(db, relation, id, keys) }
+    ) -> bool {
         let held = self.row(id) != null
         let was = if id < self.next_id() { self.stamps.get()[id].owner } else { 0 }
-        if held && was != stamp.owner { db.refuse(two_owners(relation, id)) }
-        db.wrote(self.family.get())
-        self.put(id, row, hash, keys)
-        self.stamps.set_at(id, stamp)
-        if stamp.owner != 0 && (!held || was != stamp.owner) { self.stamped_by(stamp.owner).push(id) }
+        if held && was != stamp.owner {
+            db.refuse(two_owners(relation, id, db.whose(was), db.whose(stamp.owner)))
+            return false
+        }
+        if db.read_ever() && !self.lands(db, relation, self.touched(id, keys)) { return false }
+        db.counted()
+        self.placed(id, row, hash, keys, stamp)
+        if stamp.owner != 0 && !held { self.stamped_by(stamp.owner).push(id) }
+        true
     }
 
     /// The ids an owner ever stamped, in stamping order — a row since
-    /// removed or restamped is still listed, and the stamp decides.
+    /// removed is still listed, and the stamp decides.
     fn stamped_by(owner: int) -> Cell<List<int>> {
         let key = "${owner}"
         let known? = self.stamped.get().get(key) else {
@@ -354,21 +500,31 @@ impl Rows<R> {
         known
     }
 
-    /// The rows `owner` did not write again in `run`, removed — a removal
-    /// is a write, under the same late law — and what it holds now kept
-    /// as what `prior` reads in its next run.
+    /// The rows `owner` wrote before `run` and not since, removed — a
+    /// removal is a write, under the same late law, and a late one
+    /// removes nothing.
     fn sweep(db: Db, owner: int, run: int) {
-        let mine? = self.stamped.get().get("${owner}") else { return }
+        let gone = self.stale(owner, run)
+        if gone.is_empty() { return }
+        if db.read_ever() && !self.lands(db, self.name, self.filed_buckets(gone)) { return }
+        db.counted()
+        self.remove_all(gone)
+    }
+
+    /// The live rows `owner` holds, in stamping order — its list trimmed
+    /// to them.
+    fn live_of(owner: int) -> List<int> {
+        let mine? = self.stamped.get().get("${owner}") else { return [] }
         let marks = self.stamps.get()
         let live = [id for id in mine.get() if marks[id].owner == owner && self.row(id) != null]
-        let gone = [id for id in live if marks[id].run < run]
-        if !gone.is_empty() {
-            if db.read_ever() { self.late_among(db, self.name, self.filed_buckets(gone)) }
-            for id in gone { self.remove(id) }
-        }
-        let kept = [id for id in live if marks[id].run >= run]
-        mine.set(kept)
-        self.last_runs.put("${owner}", [self.row(id)! for id in kept])
+        mine.set(live)
+        live
+    }
+
+    /// The live rows `owner` wrote before `run` and not since.
+    fn stale(owner: int, run: int) -> List<int> {
+        let marks = self.stamps.get()
+        [id for id in self.live_of(owner) if marks[id].run < run]
     }
 
     /// Every bucket the rows at `ids` are filed in.
@@ -376,51 +532,50 @@ impl Rows<R> {
         [self.bucket_of(i, k) for id in ids for i, ks in self.filed.get()[id] for k in ks]
     }
 
-    /// The running query's rows as its previous run left them, recording
-    /// nothing — refused outside a running query.
-    fn prior_in(db: Db, relation: string) -> List<R> {
-        let owner? = db.running_owner() else {
-            db.refuse(prior_outside(relation))
-            return []
-        }
-        self.last_runs.get().get("${owner}") ?? []
-    }
-
-    /// A write's cells told to the Db — each bucket it moves, then the
-    /// whole relation — and the first one a reader holds refused, unless
-    /// the Db takes a late write as an input arriving.
-    fn late_check(db: Db, relation: string, id: int, keys: List<List<IndexKey>>) {
+    /// Every bucket a write of `keys` at `id` moves: the ones the row
+    /// stood in, then the ones it files under.
+    fn touched(id: int, keys: List<List<IndexKey>>) -> List<int> {
         let before: List<List<IndexKey>> = if id < self.next_id() { self.filed.get()[id] } else { [] }
         // each key list is per index, so the two are walked apart: numbering
         // across their concatenation reads an index the relation has not got
-        let touched = [self.bucket_of(i, k) for i, ks in before for k in ks]
+        [self.bucket_of(i, k) for i, ks in before for k in ks]
             .concat([self.bucket_of(i, k) for i, ks in keys for k in ks])
-        self.late_among(db, relation, touched)
     }
 
-    /// `late_check` over the buckets a write touches.
-    fn late_among(db: Db, relation: string, touched: List<int>) {
+    /// Whether a write moving the `touched` buckets lands: asked of
+    /// every cell first, and only then told to the Db — refused and
+    /// spoken where a reader holds one.
+    fn lands(db: Db, relation: string, touched: List<int>) -> bool {
+        let why? = self.held(db, relation, touched) else {
+            self.moves(db, touched)
+            return true
+        }
+        db.refuse(why)
+        false
+    }
+
+    /// The refusal of a write moving the `touched` buckets, none when no
+    /// reader holds a cell it moves — each bucket, then the whole
+    /// relation. Nothing is moved.
+    fn held(db: Db, relation: string, touched: List<int>) -> string? {
+        let family = self.family.get()
         for b in touched {
-            if b >= 0 && !self.moved_cell(db, b + 1, self.buckets.get()[b].read) {
-                db
-                    .refuse(
-                        late_write(
-                            relation,
-                            "bucket ${b}",
-                            db.reader(self.buckets.get()[b].read.reader.get()),
-                        ),
-                    )
-                return
+            if b >= 0 {
+                let why = cell_held(db, relation, family, b + 1, self.buckets.get()[b].read)
+                if why != null { return why }
             }
         }
-        if !self.moved_cell(db, 0, self.read) {
-            db.refuse(late_write(relation, "the whole relation", db.reader(self.read.reader.get())))
-        }
+        cell_held(db, relation, family, 0, self.read)
     }
 
-    /// A cell this write moves, told to the Db with the revision a reader
-    /// last saw it in — false when the Db refuses the write as late.
-    fn moved_cell(db: Db, cell: int, mark: ReadMark) -> bool { db.moved(self.family.get(), cell, mark.revision.get()) }
+    /// The `touched` buckets and the whole relation, moved in the Db.
+    fn moves(db: Db, touched: List<int>) {
+        let family = self.family.get()
+        for b in touched {
+            if b >= 0 { db.moved(family, b + 1, self.buckets.get()[b].read.revision.get()) }
+        }
+        db.moved(family, 0, self.read.revision.get())
+    }
 
     /// The row other than `own` filed under `key` in one index, if any.
     fn holder(index: int, key: IndexKey, own: int) -> int? {
@@ -440,8 +595,21 @@ impl Rows<R> {
     /// replacement with the same hash and keys files nothing: the row
     /// is stored and every bucket stays exactly as it was.
     fn put(id: int, row: R, hash: int, named: List<List<IndexKey>>) {
+        self
+            .placed(
+                id,
+                row,
+                hash,
+                named,
+                if id < self.next_id() { self.stamps.get()[id] } else { unowned },
+            )
+    }
+
+    /// `put`, the row stamped: one write of its stamp, appended or replaced.
+    fn placed(id: int, row: R, hash: int, named: List<List<IndexKey>>, stamp: Stamp) {
         let keys = [distinct_keys(ks) for ks in named]
         if id < self.next_id() {
+            self.stamps.set_at(id, stamp)
             if self.row(id) != null &&
                 self.hashes.get()[id] == hash &&
                 same_keys(self.filed.get()[id], keys) {
@@ -456,7 +624,7 @@ impl Rows<R> {
             self.rows.push(row)
             self.hashes.push(hash)
             self.filed.push(keys)
-            self.stamps.push(unowned)
+            self.stamps.push(stamp)
         }
         self.live.set(self.live.get() + 1)
         self.set.set(self.set.get() + hash)
@@ -478,6 +646,53 @@ impl Rows<R> {
         self.unfile(id)
         self.rows.set_at(id, null)
         self.filed.set_at(id, [])
+    }
+
+    /// The rows at `ids` gone, each bucket they stood in rebuilt once.
+    fn remove_all(ids: List<int>) {
+        if ids.length < 2 {
+            for id in ids { self.remove(id) }
+            return
+        }
+        let dead: Cell<List<bool>> = Cell.new([false for _id in 0..self.next_id()])
+        for id in ids {
+            if self.row(id) != null { dead.set_at(id, true) }
+        }
+        let pruned: Cell<List<bool>> = Cell.new([false for _b in self.buckets.get()])
+        for id in ids {
+            for i, ks in self.filed.get()[id] {
+                for k in ks { self.prune(i, self.bucket_of(i, k), dead.get(), pruned) }
+            }
+        }
+        for id in ids {
+            if dead.get()[id] {
+                dead.set_at(id, false)
+                self.live.set(self.live.get() - 1)
+                self.set.set(self.set.get() - self.hashes.get()[id])
+                self.rows.set_at(id, null)
+                self.filed.set_at(id, [])
+            }
+        }
+    }
+
+    /// Bucket `b` of one index without its `dead` members, once.
+    fn prune(index: int, b: int, dead: List<bool>, pruned: Cell<List<bool>>) {
+        if pruned.get()[b] { return }
+        pruned.set_at(b, true)
+        let bucket = self.buckets.get()[b]
+        let held = bucket.members.get()
+        let kept = [m for m in held if !dead[m]]
+        let hs = self.hashes.get()
+        mut lost = 0
+        for m in held {
+            if dead[m] { lost = lost + hs[m] }
+        }
+        bucket
+            .hash
+            .set(
+                if self.indexes[index].ordered { self.ordered_fold(kept) } else { bucket.hash.get() - lost },
+            )
+        bucket.members.set(kept)
     }
 
     /// Every bucket of one index holding more than one row — a `@unique`
@@ -568,9 +783,9 @@ impl Rows<R> {
 /// relation's process-wide `Stores<R>` is, since the `SideTable` it rides
 /// beside is already per-owner.
 ///
-/// NO SWEEP: a column holds no query-owned rows, so a query's run leaves
-/// nothing behind to remove — a re-admit that rewrites a slot moves that
-/// slot's own hash instead, and `verify` tells every reader so.
+/// NO OWNER: a column's slots are its table's, so nothing here is
+/// replaced or removed — a slot rewritten moves that slot's own hash,
+/// and `verify` tells every reader so.
 @identity
 export type SideRows<R> = { family: Cell<int>, reached: Cell<bool>, marks: Cell<List<ReadMark>>, whole: Cell<ReadMark>, closed: Cell<bool> }
 
@@ -615,21 +830,16 @@ impl SideRows<R> {
             )
         self.family.set(fam)
         let closed = self.closed
-        db
-            .joined(() -> verify(0), () -> closed.set(true), (on: Db, owner: int, run: int) -> no_sweep())
+        db.joined(() -> verify(0), () -> closed.set(true))
         fam
     }
 
-    /// `cell` recorded under `db` once per frame per revision through
+    /// `cell` recorded under `db` once per reader per revision through
     /// `mark` — the shared half of `mark_read`/`mark_whole`.
     fn recorded(db: Db, fam: int, cell: int, mark: ReadMark) {
-        if db.unheard() { return }
-        let now = db.revision()
-        let f = db.frame()
-        let owner = f?.owner ?? 0
-        let run = f?.run ?? 0
-        if mark.read_by(now, owner, run) { return }
-        mark.mark(now, db.read(fam, cell), owner, run)
+        let kernel? = db.kernel.get() else { return }
+        let reader = kernel.reader()
+        if reader >= 0 { mark.told(kernel, reader, fam, cell) }
     }
 
     /// Slot `id` read under `db`, recorded as cell `id + 1` — a closed Db
@@ -651,18 +861,62 @@ impl SideRows<R> {
     }
 }
 
-fn no_sweep() {}
-
 // ── voices ──
 
 fn late_write(relation: string, cell: string, reader: string) -> string {
     "a `${relation}` write moved ${cell} after ${reader} read it this revision — a producer runs before its readers"
 }
 
-fn two_owners(relation: string, id: int) -> string {
-    "`${relation}` row ${id} is written by two owners — each row has one: key it by what distinguishes its writers"
+fn torn_read(relation: string, cell: string, reader: string) -> string {
+    "a `${relation}` write moved ${cell} while ${reader}, which read it this revision, is still running — a query settles on one state of what it read"
 }
 
-fn prior_outside(relation: string) -> string {
-    "`${relation}.prior` read outside a running query — it answers that query's previous rows, so call it inside the query"
+fn two_owners(relation: string, id: int, held: string, writer: string) -> string {
+    "`${relation}` row ${id} is ${held} and a write names it ${writer} — a row has one owner from its first write: key it by what distinguishes its writers"
+}
+
+fn replaced_whole(relation: string, owner: string, why: string) -> string {
+    "`${owner}`'s `${relation}` rows are not replaced and stand as they were — ${why}"
+}
+
+fn two_writers(first: string, second: string) -> string {
+    "${first} is their writer and ${second} hands rows over too — an owner is one writer for its Db's life: name an owner each writer's own"
+}
+
+fn key_twice(key: string) -> string { "two of the rows name one key (${key}) — a replacement names each row once" }
+
+fn no_such_row(relation: string, id: int, owner: string) -> string {
+    "`${relation}` has no row ${id} to keep as ${owner} — an id is one the store minted here"
+}
+
+/// A cell's name in a refusal.
+fn cell_named(cell: int) -> string { if cell == 0 { "the whole relation" } else { "bucket ${cell - 1}" } }
+
+/// The refusal of a write moving `cell` of `family`, last read as
+/// `mark` says — none when no reader holds it.
+fn cell_held(db: Db, relation: string, family: int, cell: int, mark: ReadMark) -> string? {
+    match db.landing(family, cell, mark.revision.get(), mark.reader.get()) {
+        .Stands -> null,
+        .Late -> late_write(relation, cell_named(cell), db.reader(mark.reader.get())),
+        .Torn -> torn_read(
+            relation,
+            cell_named(cell),
+            db.reader(db.running(family, cell, mark.reader.get())),
+        ),
+    }
+}
+
+/// A key's text.
+fn key_text_of(k: IndexKey) -> string {
+    match k { .Text(v) -> v, .Slot(n) -> "${n}" }
+}
+
+/// The first text that appears twice.
+fn repeated_key(texts: List<string>) -> string? {
+    let seen: Cell<Map<string, bool>> = Cell.new({})
+    for t in texts {
+        if seen.get().has(t) { return t }
+        seen.put(t, true)
+    }
+    null
 }

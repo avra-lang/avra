@@ -218,11 +218,40 @@ spec "compiler/readmit — a file un-admitted keeps nothing" {
                 ws.decls.named("kept").is_empty() &&
                 ws.decls.named("Box").is_empty()
         }
+        then "withdrawn again it lets nothing go, and no other file's row moves" {
+            let ws = admitted(readmit_before())
+            let f = ws.file_id(readmit_path())
+            let _ = ws.decls.unadmit(f)
+            let standing = decl_set(ws)
+            ws.decls.unadmit(f).is_empty() && decl_set(ws) == standing
+        }
         then "its own seats are cleared — Main included" {
             let ws = admitted(readmit_before())
             let f = ws.file_id(readmit_path())
             let _ = ws.decls.unadmit(f)
             ws.decls.mains.get()[f.index] == null
         }
+    }
+}
+
+spec "compiler/readmit — an admission never moves what a query read this revision" {
+    then "admitted again in the revision a settled query read a dropped name's bucket, the removal is refused and the row stands" {
+        let ws = admitted(readmit_before())
+        let heard: Cell<List<string>> = Cell.new([])
+        let db = ws.decls.decl_rows.get()
+        db.heard_by((w: string) -> heard.push(w))
+        let reader = Key { family: ws.db.kernel.family((_arg: int) -> 0), arg: 0 }
+        ws.db.kernel.begin(reader)
+        let read = Decl.by_name(db, "gone").length
+        ws.db.kernel.settle(reader, 0)
+        admit_again(ws, readmit_path(), readmit_after())
+        read == 1 &&
+            Decl.by_name(db, "gone").length == 1 &&
+            heard
+                .get()
+                .any(
+                    (w: string) -> w.contains("a `Decl` write moved") &&
+                        w.contains("read it this revision"),
+                )
     }
 }

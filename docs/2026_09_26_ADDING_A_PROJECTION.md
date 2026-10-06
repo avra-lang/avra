@@ -56,11 +56,20 @@ records a row's read through, on one field only.
 `@query fn q(db, …)` (`use @std.relation.{query}`) is the second
 annotation: a fn over a Db whose answer is kept per call. A kept answer
 is reused until a write to a relation the query read, then the body
-reruns. The rows a run inserts are the query's own: a rerun replaces
-them (a keyed row keeps its id, a row the run no longer writes is
-dropped), two queries writing one key are refused, and a query that
-reads a relation it writes is refused — it reads the rows its last run
-left with `Rel.prior(db)`, from inside the query. ORM's program
+reruns. A QUERY WRITES NO ROWS OF ITS OWN: an insert in its body is
+refused. Rows that a computation produces belong to a NAMED OWNER and
+are handed over as a VALUE — `Icon.replaced(db, "icons", rows)` — which
+files them and removes every row that owner held which they do not
+name, in one step (a keyed row keeps its id; the store mints each `id`,
+whatever the value carries). Nothing is open between two statements, so
+no reader meets half a replacement, and it is all or nothing: one row
+refused files none and removes none. Two owners writing one row are
+refused, as is a second writer of one owner (the query that first
+replaced its rows, or the driver, is its writer for the Db's life);
+a replacement that would move what a query still running read this
+revision is refused and changes nothing; a relation with a
+`@unique` field has no `replaced`. What an owner left is read with the
+relation's ordinary lookups. ORM's program
 `packages/std-relation/src/tests/query/` pins each of these. Answers and
 rows live in memory for the life of the Db; persisting them is
 avra-8sb5.57.6.
