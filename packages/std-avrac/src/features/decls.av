@@ -78,7 +78,6 @@ use features.{
 }
 use @std.meta.{Diagnostic, bracket, derive, identity, plain_field}
 use @std.relation.{relation}
-use @std.relation.db.{Db as RelDb, new_db}
 use @std.relation.engine.{list_cell, map_cell, Table, new_table, Kernel, Key, new_kernel}
 
 /// A file's path facts — known at first mention, before its parse.
@@ -458,8 +457,10 @@ export type Decls = {
     /// workspace's own, fixed at construction: never a `Cell`, so no callee can
     /// replace what a read of it holds across `record_dep`.
     record_kernel: Kernel,
-    /// THE DECLARATION TABLE'S OWN `Db`: every declaration is a `Decl` row under it,
-    /// inserted at mint and reseated at every later field write. A `Cell`, never a bare
+    /// THE COMPILER'S RELATIONS LIVE UNDER ONE `Db`: every declaration is a `Decl` row
+    /// under it, inserted at mint and reseated at every later field write, and the
+    /// passes' relations — references, error sites, raised sets — are each a named
+    /// owner's rows beside them. A `Cell`, never a bare
     /// `Db`: `Decls` is copied somewhere in the pipeline, and a bare `Db` field forked
     /// on that copy — `family()`'s registration landed on one copy's own state while a
     /// later read reached another's, "index 21 is out of bounds (length 0)" in the
@@ -582,11 +583,6 @@ export type Decls = {
     // evidence is local to its own body alone.
     consumed: Cell<List<List<bool>?>>,
     ensure_consumed: Cell<fn(DeclId) -> void>,
-    /// THE REFERENCES RELATION's own rows, under the one Db they
-    /// live in — replaced whole (a fresh Db) when `references.av`'s
-    /// pass re-settles the program; `Ref.by_decl`/`Ref.by_file` are
-    /// the readers, never a hand-kept index.
-    refs_db: Cell<RelDb>,
     /// Whether a HELD file stood in the workspace the last time the
     /// pass ran — that file was never surveyed, so the relation
     /// cannot answer "used nowhere" with any confidence.
@@ -769,7 +765,6 @@ export fn new_decls() -> Decls {
         namespace_of: Cell.new(no_namespace),
         apart_of: Cell.new(none_apart),
         composers_of: Cell.new(none_apart),
-        refs_db: Cell.new(new_db()),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
         mut_seat_index: map_cell(),
@@ -1509,7 +1504,6 @@ impl Decls {
         self.audit_hook.set(no_audit)
         self.types.disarm_declare()
         self.decl_rows.get().close()
-        self.refs_db.get().close()
     }
 
     /// The workspace arms the sig hook once.
@@ -2042,7 +2036,7 @@ impl Decls {
     /// asking runs the references pass.
     fn refs_of(d: DeclId) -> List<Ref> {
         (self.ensure_refs.get())()
-        Ref.by_decl(self.refs_db.get(), d)
+        Ref.by_decl(self.decl_rows.get(), d)
     }
 
     /// Every CALL or METHOD CALL naming `d`.
@@ -2081,13 +2075,7 @@ impl Decls {
     /// One file's own rows, as `references.av`'s pass wrote them.
     fn refs_in_file(f: FileId) -> List<Ref> {
         (self.ensure_refs.get())()
-        Ref.by_file(self.refs_db.get(), f)
-    }
-
-    /// `references.av`'s own write door: the whole relation, replacing
-    /// whatever Db it held with a freshly filled one.
-    fn settle_refs(db: RelDb) {
-        self.refs_db.set(db)
+        Ref.by_file(self.decl_rows.get(), f)
     }
 
     /// The workspace arms the references hook once.
