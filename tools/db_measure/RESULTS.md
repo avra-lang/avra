@@ -488,10 +488,13 @@ store also holds what only a check writes (6 rows, 4 units, 1848 warn rows).
 | cost | before | after |
 |---|---|---|
 | kept-lines bytes, cli check store (510 rows) | 32,633,459 | 32,754,137 (+0.37%) |
-| one-edit cli check, ms | 4611, 4850, 4745 | 5044, 4971, 5109; 4819, 4860, 5056 |
+| one-edit cli check, ms | 4611, 4850, 4745; 4815, 4846, 4820 | 5044, 4971, 5109; 4819, 4860, 5056 |
 | files held on those edits | 446, 448, 448 | 446 every time |
-| one-edit std-avrac check, ms | 4356, 3170, 3291 | 3478, 3364, 3324; 3524, 3232, 3344 |
-| one file then its directory, ms | 4509 | 4638; 4625 |
+| one-edit std-avrac check, ms | 4356, 3170, 3291; 4311, 3115, 3124 | 3478, 3364, 3324; 3524, 3232, 3344 |
+| one file then its directory, ms | 4509; 4525 | 4638; 4625 |
+
+Two samples a side; the second before sample is on main 0d261da. The first
+std-avrac edit holds 457 files before and 459 after.
 
 The two files no longer held are expand.av and ir.av: their compile-time
 runs read the edited shared.av, and before the fix the record lost that
