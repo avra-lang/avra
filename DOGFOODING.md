@@ -806,6 +806,15 @@ Lists AND ranges: `[f(i) for i in lo..hi]` counts and `[f(i, x) for
 i, x in xs]` pairs — the head is the `for` statement's, so whatever
 that spells, a comprehension spells too.
 
+## The enum vocabulary
+
+`E.all()` is every variant of a payload-free enum, in declaration
+order — a registry over an enum is never a second list beside it.
+`v.name` is the word a variant was declared with (every enum, carrying
+or not) and `v.ordinal` its place. A bare variant beside `==`/`!=`
+reads its enum off the other side, through one `?`: `style.color ==
+.Danger`, never `== Tone.Danger`.
+
 ## The native list vocabulary
 
 `length`, indexing, `push`, `set(i, v)`, `pop` (-> `T`, never
@@ -813,7 +822,10 @@ that spells, a comprehension spells too.
 `contains(v)` (-> bool), `index_of(v)`, `find(pred)` (-> `T?`),
 `find_map(f)` (-> `U?` for `f: fn(T) -> U?` — the first PRESENT
 projection, and the walk stops there), `any(pred)`, `all(pred)`,
-`first()`/`last()` (-> `T?`),
+`first()`/`last()` (-> `T?`), `get(i)` (-> `T?`: absence outside
+the list, where `xs[i]` traps), `fold(seed, f)` (the seed carried
+through `f(acc, x)`; a seed with no type of its own — `[]`, `null` —
+takes the fold's declared answer),
 `is_empty()` — all native, and native closures are mono-safe
 (unlike fn args through OUR generics). They work in `<N>`-generic
 bodies too (`bindings.find(it.label == label)`). The list is
@@ -821,11 +833,22 @@ features/lists/mod.av's method table, entire.
 
 `enumerate` is a `for`-head and a comprehension head only, never a
 value: `xs.enumerate()` alone is F2005 "`enumerate` pairs only
-under a paired `for` head". And the runtime has NO `get`, `insert`,
+under a paired `for` head". And the runtime has NO `insert`,
 `reduce`, `foreach`, `zip`, `sort` or `reverse` — each is F2030
 "`.sort(…)` calls a method, and `List<int>` has none". core/lists
-answers two of them with COPIES (`reversed`, `inserted`); a fold is
-a loop, and there is no sort.
+answers two of them with COPIES (`reversed`, `inserted`); `reduce`
+is `fold`, and there is no sort.
+
+A position a caller supplies is read with `get`, never guarded by
+hand: `named.get(nth)`, not `if nth < 0 || nth >= named.length {
+return null }` then `named[nth]`. And one accumulator rewritten per
+element is a `fold`, not a `mut` and a loop: `attrs.fold(Reads {},
+heard)`. Two accumulators stay a loop.
+
+A scan READS, so a list of a NAMED type scans by the shape its name
+stands over: `ids.contains(id)` over `type NodeId = string` needs no
+one-field record to wrap the text. The needle's seat still wants the
+name.
 
 A scan is never a loop:
 
@@ -1025,8 +1048,12 @@ engine_codes().find(it.cause == c)?.kind ?? "language.defect"
 ```
 
 `?.` reaches FIELDS and METHODS — `p?.doubled()` answers the
-method's type, nullable. Mapping a present value through a FREE fn
-or a constructor is still a guarded `if`.
+method's type, nullable — and a FN THAT MAY BE ABSENT: `self.press?.()`
+calls the handler when one is held and answers absence when none is
+(its arguments unevaluated), where `let f? = self.press else { return
+}` then `f()` took three lines. `f?(x)` is not that form — it is `?`
+then a call, and passes the absence to the caller. Mapping a present
+value through a FREE fn or a constructor is still a guarded `if`.
 
 ## Extractor + `want` for typed unwrapping
 
@@ -1531,9 +1558,13 @@ answering the hole silently) and lets the one agreement door feed
 it — `accepts` hands every hungry expression the want it meets
 (`cx.feed`), and the rule runs again with it. At the walk's end
 the rules still hungry run once more STARVING (`cx.starving()`)
-and each speaks in its own words. Two rules ride it: the
-annotation-less lambda (fed its seats) and the bare variant
-literal `.name(args)` (fed its enum). The smell it replaces: a
+and each speaks in its own words. Three rules ride it: the
+annotation-less lambda (fed its seats), the bare variant
+literal `.name(args)` (fed its enum — by a seat, or by the other
+side of `==`), and a list or map literal of nothing but `null`
+(fed its element). A CALL THAT WENT HUNGRY REFUSED NOTHING: its
+hungry arguments wait with it (`settled_call`), or each would be
+silenced with nobody left to speak. The smell it replaces: a
 rule refusing "cannot infer" at a site the door was about to
 feed, or a driver speaking a feature's refusal. UNRATCHETED: a
 placement, read for at review.

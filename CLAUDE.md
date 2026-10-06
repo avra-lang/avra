@@ -1707,11 +1707,15 @@ Syntax the grammar lacks:
   arm's block is not read as diverging. Write the statement `match`
   (`.Err(e) -> { … fail e }, .Ok(v) -> …`), as @std/process's three
   drivers do.
-- A LITERAL OF `null` ALONE names no type: `let xs = [null, null]`
-  is F2006 "a list element takes its type from its value, and `null`
-  has none of its own" — `{"a": null}` and `Cell.new(null)` alike.
-  Any sibling with a type names it (`[null, 7]` is a `List<int?>`),
-  and a declared want fills it (`let c: Cell<int?> = Cell.new(null)`).
+- A LITERAL OF `null` ALONE names no type WHERE NO SEAT NAMES ONE:
+  `let xs = [null, null]` is F2006 "a list element takes its type
+  from its value, and `null` has none of its own" — `{"a": null}` and
+  `Cell.new(null)` alike. Any sibling with a type names it (`[null,
+  7]` is a `List<int?>`), and so does the seat it lands in: a
+  declared want (`let c: Cell<int?> = Cell.new(null)`), an argument
+  (`count([null, null])` at a `List<string?>` seat), a field, a fn's
+  answer. A generic seat nothing else pins (`g([null])` at `List<T?>`)
+  is the same refusal, spoken once, at the literal.
 - A KEYED LIST (`list xs by it.id { x -> … }`): "`list` takes no head
   value — name it at a statement (`list name { … }`), or write `list
   { … }`". Write `list { for x in xs { item { key: "${x.id}" … } }
@@ -1853,7 +1857,12 @@ Runtime facts, ours to ratify:
   value is F2030 "`.at(…)` calls a method, and `Bytes?` has none" —
   while a `List<Bytes>`'s GATHERS the parts and answers a plain
   `Bytes`. One name, three receivers, and only the octet reading is
-  nullable.
+  nullable. AND TEXT OUT OF OCTETS HAS THREE READERS, by what a bad
+  octet should do: `b.text()` answers `string?` (null when any octet
+  is not UTF-8), `b.text_prefix()` the longest whole-UTF-8 prefix
+  (never null; the rest is `b.slice(prefix.length, b.length)`, and a
+  stream holds at most one unfinished character there), and
+  `b.text_lossy()` every octet, each ill-formed subpart one U+FFFD.
 - A STRING's `.length` is a LOAD — the header carries the length
   (lane A), as a list's does; `while i < s.length` costs a load per
   turn, and style.restrlen_loop retired with the strlen it ratcheted. WITH ONE
