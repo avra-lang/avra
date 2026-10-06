@@ -20,6 +20,9 @@ binaries, and prints what the smallest programs weigh.
   A ROW IS ONE MACHINE'S: the platform and the toolchain (the `cc` that
   built the archive, the driver that links). Elsewhere the sizes are
   printed and not gated; the symbol half is held everywhere.
+  AND A ROW IS ACCEPTED FROM THE TREE THE CHECK BUILDS: a pull request is
+  measured merged onto main, so a branch's own base reads smaller by
+  whatever the runtime gained since — the same toolchain, another source.
 
   python3 tools/footprint.py              # the gate
   python3 tools/footprint.py --accept     # re-accept this platform's sizes
