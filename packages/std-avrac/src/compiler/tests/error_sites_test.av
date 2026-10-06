@@ -3,7 +3,6 @@
 // fn that catches it and re-raises.
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace, ErrorSite, Raised}
-use @std.relation.db.{Db as RelDb, new_db}
 use compiler.host.{memory_host}
 use core.{DeclId, same_decl, same_expr}
 
@@ -304,33 +303,20 @@ spec "compiler/failures — `Raised` rows are the fixpoint's own" {
     }
 }
 
-once fn raised_heard() -> Cell<List<string>> { Cell.new([]) }
-
-fn raised_noted(w: string) {
-    let h = raised_heard()
-    h.push(w)
-}
-
-/// A Db that records a refusal instead of trapping, so the ownership
-/// law's own words can be asserted.
-fn noting_db() -> RelDb {
-    let db = new_db()
-    db.heard_by(raised_noted)
-    db
-}
-
-spec "compiler/failures — `Raised` read while its owner's run is open" {
-    then "is refused, naming the relation and the owner, and read freely once the run closes" {
-        let db = noting_db()
-        let owner = db.owner_named("raised")
-        let _ = db.opened_run(owner)
-        let _ = Raised.insert(db, owner: DeclId { index: 0 }, errors: [])
-        let _ = Raised.by_owner(db, DeclId { index: 0 })
-        db.closed_run(owner)
-        let closed = Raised.by_owner(db, DeclId { index: 0 }).length
-        closed == 1 &&
-            raised_heard().get().length == 1 &&
-            raised_heard().get()[0]
-                .contains("`Raised` is read while its owner `raised` has a run open")
+spec "compiler/failures — `ErrorSite` rows are the survey's own (avra-8sb5.57.204)" {
+    then "a second survey replaces the first's rows: a fn it leaves out keeps no site, and none is doubled" {
+        let ws = sites_workspace(mutual_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "f")
+        let g = decl_named(ws, "g")
+        let _ = ws.failures()
+        let _ = ws.surveyed([f, g])
+        let both = ErrorSite.all(ws.failures_db.get())
+        let _ = ws.surveyed([f])
+        let one = ErrorSite.all(ws.failures_db.get())
+        both.any((s: ErrorSite) -> same_decl(s.owner, g)) &&
+            !one.is_empty() &&
+            one.all((s: ErrorSite) -> same_decl(s.owner, f)) &&
+            one.length == [s for s in both if same_decl(s.owner, f)].length
     }
 }

@@ -65,8 +65,9 @@ export fn result_infers(ret: TypeRef) -> bool {
 
 /// One `_`-declared fn's own evidence: the error types its direct
 /// `fail`/`?` sites raise, and the OTHER `_`-declared fns whose own
-/// (still-settling) set flows in through a `?`.
-type FailSummary = { direct: List<TypeId>, calls: List<DeclId> }
+/// (still-settling) set flows in through a `?` — and every `ErrorSite`
+/// its body holds, for the survey to file.
+type FailSummary = { direct: List<TypeId>, calls: List<DeclId>, sites: List<ErrorSite> }
 
 /// A fail/propagate site's contribution, once its value is asked:
 /// a concrete type, an edge into another pending fn's set, or
@@ -111,10 +112,10 @@ export type ErrorSite = {
 
 /// One inferring fn's settled error set, written by the fixpoint's
 /// solve alone — one row per `owner` per solve, the last solve's rows
-/// swept. `@index`, never `@key`: a `DeclId` is dense, so it is
-/// `@local`, and a key is never local. Read inside the solve it is
-/// refused: a member reads a fellow's in-flight answer through the
-/// fixpoint, never through this.
+/// removed. `@index`, never `@key`: a `DeclId` is dense, so it is
+/// `@local`, and a key is never local. Inside the solve it holds the
+/// LAST solve's sets: a member reads a fellow's in-flight answer through
+/// the fixpoint, never through this.
 @relation
 export type Raised = { @local @index owner: DeclId, @local errors: List<TypeId> }
 
@@ -472,15 +473,13 @@ impl Workspace {
         fns.length
     }
 
-    /// Every fn's summary, the `ErrorSite` rows its walk writes ONE run of
-    /// their owner: the last survey's rows that this one does not write
-    /// again are swept when it closes, and the solve reads them closed.
+    /// Every fn's summary, the sites they hold filed as the survey's rows
+    /// in one step: the last survey's rows these do not name are removed,
+    /// and the solve reads them whole.
     fn surveyed(fns: List<DeclId>) -> List<FailSummary> {
-        let db = self.failures_db.get()
-        let owner = db.owner_named("error sites")
-        let _ = db.opened_run(owner)
         let sums = [self.fail_summary(d) for d in fns]
-        db.closed_run(owner)
+        let _ = ErrorSite
+            .replaced(self.failures_db.get(), "survey", flatten([s.sites for s in sums]))
         sums
     }
 
@@ -546,7 +545,7 @@ impl Workspace {
     /// `_`-declared fn's `sig()` (FailSurvey.via_callee's guard).
     fn fail_summary(d: DeclId) -> FailSummary {
         let x = self.decls.decl(d)
-        if x.root == null { return FailSummary { direct: [], calls: [] } }
+        if x.root == null { return FailSummary { direct: [], calls: [], sites: [] } }
         let receiver: TypeId? = self.receiver_type(x)
         // `decls.seats`, never `sig`/`sig_so_far`: `d`'s own ANSWER is what
         // this fixpoint is computing, so asking `sig(d)` here would recurse
@@ -578,21 +577,10 @@ impl Workspace {
         )
         let all = fails.concat(props)
         if all.any(is_unresolved) { self.decls.mark_inferred_unresolved(d) }
-        let new_sites = built_error_sites(fs, self.decls, d, store, x.lo, x.hi)
-        let db = self.failures_db.get()
-        let _ = [ErrorSite
-            .insert(
-                db,
-                at: s.at,
-                owner: s.owner,
-                how: s.how,
-                callee: s.callee,
-                within: s.within,
-                errors: s.errors,
-            ) for s in new_sites]
         FailSummary {
             direct: flatten([some_list(direct_ty(c)) for c in all]),
             calls: flatten([some_list(edge_callee(c)) for c in all]),
+            sites: built_error_sites(fs, self.decls, d, store, x.lo, x.hi),
         }
     }
 
@@ -616,19 +604,20 @@ impl Workspace {
         self.raised_fixpoint.value_at(c.index)
     }
 
-    /// The raised-set fixpoint over `ErrorSite`, solved as ONE run of
-    /// `Raised`'s owner: `Raised` is read by no one until the run closes,
-    /// and the last solve's rows are swept when it does.
+    /// The raised-set fixpoint over `ErrorSite`, its settled sets filed
+    /// as the solve's rows in one step once it ends: the last solve's
+    /// rows these do not name are removed.
     /// Beside `Decls`' own Kleene loop, which typing reads.
     fn solve_raised(fns: List<DeclId>) {
-        let db = self.failures_db.get()
-        let owner = db.owner_named("raised")
-        let _ = db.opened_run(owner)
         let solved = self
             .raised_fixpoint
             .solve([f.index for f in fns], (arg: int) -> self.raised_compute(arg))
-        for f in fns { let _ = Raised.insert(db, owner: f, errors: self.raised_fixpoint.value_at(f.index)) }
-        db.closed_run(owner)
+        let _ = Raised
+            .replaced(
+                self.failures_db.get(),
+                "solve",
+                [Raised { owner: f, errors: self.raised_fixpoint.value_at(f.index) } for f in fns],
+            )
         let refusal? = refusal_of(solved) else { return }
         self.defect("defect: ${fixpoint_spoken(refusal)}")
     }

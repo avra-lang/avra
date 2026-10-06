@@ -1,6 +1,6 @@
 // A real Kernel under a `@std/relation` Db, as the workspace's
-// `failures_db` is: a relation an owner's open run wrote is read by no
-// one until the run closes, under an open kernel query as outside one.
+// `failures_db` is: an owner's replacement never moves what a kernel
+// query still running read this revision.
 use @std.relation.{relation}
 use @std.relation.db.{Db, db_over, Verifying, Late}
 use @std.relation.engine.{Kernel, new_kernel, Key}
@@ -34,23 +34,34 @@ fn framed(kernel: Kernel, heard: Cell<List<string>>) -> Db {
     db
 }
 
-spec "compiler/workspace — an open run's rows are read once it closes" {
-    then "a kernel query reading a relation its owner's open run just wrote is refused" {
+spec "compiler/workspace — a replacement never tears a running kernel query" {
+    then "a kernel query replacing a relation it read this revision is refused, and reads the same rows after" {
         let kernel = new_kernel()
         let heard: Cell<List<string>> = Cell.new([])
         let db = framed(kernel, heard)
         let key = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
-        let owner = db.owner_named("facts")
         kernel.begin(key)
-        let _ = db.opened_run(owner)
-        let _ = Fact.insert(db, name: "a", n: 1)
-        let _ = Fact.all(db)
-        db.closed_run(owner)
+        let before = Fact.all(db).length
+        let _ = Fact.replaced(db, "facts", [Fact { name: "a", n: 1 }])
+        let after = Fact.all(db).length
         kernel.settle(key, 0)
-        heard.get().length == 1 &&
-            heard.get()[0].contains("`Fact` is read while its owner `facts` has a run open")
+        before == 0 &&
+            after == 0 &&
+            heard.get().length == 1 &&
+            heard.get()[0].contains("a `Fact` write moved the whole relation while a query")
     }
-    then "a read with no run open is free" {
+    then "a kernel query replacing a relation it has not read files its rows, and reads them" {
+        let kernel = new_kernel()
+        let heard: Cell<List<string>> = Cell.new([])
+        let db = framed(kernel, heard)
+        let key = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        kernel.begin(key)
+        let _ = Fact.replaced(db, "facts", [Fact { name: "a", n: 1 }])
+        let seen = Fact.all(db).length
+        kernel.settle(key, 0)
+        seen == 1 && heard.get().is_empty()
+    }
+    then "a read outside every query is free" {
         let kernel = new_kernel()
         let heard: Cell<List<string>> = Cell.new([])
         let db = framed(kernel, heard)

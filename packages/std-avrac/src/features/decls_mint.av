@@ -135,14 +135,14 @@ impl Decls {
 
     /// A file admitted with its parse: which statements declare, and
     /// every declaration minted — the top-level ones, then each
-    /// trait's and impl's methods under their owner. ONE RUN of the
-    /// file's owner: what it held before and did not mint again is
-    /// removed in the same step. Answers the top-level ids, in order.
+    /// trait's and impl's methods under their owner. The file's rows
+    /// are then exactly the ones minted here: what it held before and
+    /// did not mint again is removed in one step. Answers the top-level
+    /// ids, in order.
     fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
         let before = self.decls_so_far(f)
-        let owner = self.file_owners.get()[f.index]
-        let _ = self.decl_rows.get().opened_run(owner)
         self.stores.set_at(f.index, store)
+        mut minted: List<int> = []
         mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
         mut out: List<DeclId> = []
         mut seen: List<string> = []
@@ -176,6 +176,7 @@ impl Decls {
                     )
                 by_stmt.set(s.index, DeclAt { decl: d })
                 out.push(d)
+                minted.push(d.index)
                 self.orphan(d)
                 let members = store.member_fns(s)
                 for m in members {
@@ -190,10 +191,11 @@ impl Decls {
                             declared_body(store, m),
                         )
                     by_stmt.set(m.index, DeclAt { decl: md })
+                    minted.push(md.index)
                 }
                 let fields: List<Param> = store.struct_parts(s)?.fields ?? []
                 let seats: List<Param> = store.fn_parts(s)?.params ?? []
-                let _ = self.mint_defaults(key, f, s, fields.concat(seats), name, d)
+                for dd in self.mint_defaults(key, f, s, fields.concat(seats), name, d) { minted.push(dd.index) }
             }
             // a top-level `const` is a declaration like a fn: module-wide,
             // order-free, exported only when it says so.
@@ -205,13 +207,14 @@ impl Decls {
                     .mint(key, f, s, name, DeclKind.Const, store.is_exported(s), "", null, false, null)
                 by_stmt.set(s.index, DeclAt { decl: d })
                 out.push(d)
+                minted.push(d.index)
                 self.orphan(d)
             }
             let sp: SpecParts? = store.spec_parts(s)
             if sp != null {
                 let suite = sp!
                 for k, c in suite.cases {
-                    let _ = self
+                    let made = self
                         .mint(
                             "${path}::case ${s.index}.${k}",
                             f,
@@ -224,6 +227,7 @@ impl Decls {
                             false,
                             c.body,
                         )
+                    minted.push(made.index)
                 }
             }
             let ip: ImplParts? = store.impl_parts(s)
@@ -234,15 +238,17 @@ impl Decls {
                 let block_decl = self
                     .mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
                 by_stmt.set(s.index, DeclAt { decl: block_decl })
+                minted.push(block_decl.index)
                 self.orphan(block_decl)
                 for m in block.fns {
                     let mkey = member_key(key, store, m, block.fns)
                     let md = self
                         .mint_method(mkey, f, store, m, block.target, block_decl, store.fn_parts(m)?.body)
                     by_stmt.set(m.index, DeclAt { decl: md })
+                    minted.push(md.index)
                     let seats: List<Param> = store.fn_parts(m)?.params ?? []
                     let mname = self.decl(md).name
-                    let _ = self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md)
+                    for dd in self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md) { minted.push(dd.index) }
                 }
             }
         }
@@ -260,6 +266,7 @@ impl Decls {
                 null,
             )
         self.mains.set_at(f.index, main)
+        minted.push(main.index)
         // A declaration NESTED in a body is refused by its feature, but
         // typing still walks it: it gets an identity under a key no
         // module-level name can take, and joins no namespace.
@@ -283,33 +290,36 @@ impl Decls {
                         null,
                     )
                 by_stmt.set(i, DeclAt { decl: nd })
+                minted.push(nd.index)
             }
         }
         self.decl_ids.set_at(f.index, Cell.new(by_stmt))
-        self.decl_rows.get().closed_run(owner)
+        self.file_keeps(f, minted)
         self.forget([d for d in before if self.row_at(d.index) == null])
         self.range_bodies(f, store, main)
         out
     }
 
     /// A FILE WITHDRAWN FROM THE TABLE — a deleted file, or one whose
-    /// text left the workspace. The file's owner runs and closes with
-    /// NOTHING minted, so every relation sweeps the rows that owner
-    /// wrote (the declaration rows, their name and home buckets, every
-    /// side table) and the file's own seats are cleared: a withdrawn
-    /// file keeps no declaration, Main included. Answers the ids let go.
+    /// text left the workspace. The file keeps NO row: every declaration
+    /// it owns leaves the relation, its name and home buckets with it,
+    /// and the file's own seats are cleared — Main included. Answers the
+    /// ids let go.
     @bracket("decls")
     fn unadmit(f: FileId) -> List<DeclId> {
         let gone = self.decls_so_far(f)
-        let owner = self.file_owners.get()[f.index]
-        let _ = self.decl_rows.get().opened_run(owner)
-        self.decl_rows.get().closed_run(owner)
+        self.file_keeps(f, [])
         self.forget([d for d in gone if self.row_at(d.index) == null])
         self.clear_file_seats(f)
         gone
     }
 
-    /// The per-file seats an empty run leaves standing, cleared by hand:
+    /// Of the declaration rows `f` owns, exactly those at `ids` kept.
+    fn file_keeps(f: FileId, ids: List<int>) {
+        self.decl_row_rows.get().kept(self.decl_rows.get(), self.file_owners.get()[f.index], ids)
+    }
+
+    /// The per-file seats a withdrawal leaves standing, cleared by hand:
     /// the file's store, its Main, its statement and expression tables.
     fn clear_file_seats(f: FileId) {
         self.stores.set_at(f.index, null)
