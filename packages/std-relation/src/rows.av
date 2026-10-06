@@ -160,7 +160,6 @@ export type Rows<R> = {
     buckets: Cell<List<Bucket>>,
     family: Cell<int>,
     read: ReadMark,
-    met: Met,
 }
 
 /// An empty store with an index per flag, numbered in the order the
@@ -190,7 +189,6 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
         buckets: buckets,
         family: Cell.new(-1),
         read: unread(),
-        met: unmet(),
     }
 }
 
@@ -382,7 +380,7 @@ impl Rows<R> {
         mut stored = rows.slice(0, 0)
         for i, r in rows {
             let ks = if asked { named[i] } else { keys(r) }
-            let id = if i < ids.length && ids[i] < next { ids[i] } else { self.next_id() }
+            let id = if keyed && ids[i] < next { ids[i] } else { self.next_id() }
             if id == self.next_id() { mine.push(id) }
             let row = seated(r, id)
             self.placed(id, row, hash(r), ks, stamp)
@@ -438,32 +436,37 @@ impl Rows<R> {
         int,
     > {
         let next = self.next_id()
-        let met = self.met
-        met.begun()
         let none: List<int> = []
-        let out = Cell.new(none)
+        let moved = Marks {
+            seen: Cell.new([false for _b in self.buckets.get()]),
+            out: Cell.new(none),
+        }
+        // only a keyed row names a row to keep
+        let nameable = if keyed { next } else { 0 }
+        let kept: Cell<List<bool>> = Cell.new([false for _id in 0..nameable])
         for n, ks in named {
             for i, per in ks {
-                for k in per { self.meet(out, self.bucket_of(i, k)) }
+                for k in per { moved.mark(self.bucket_of(i, k)) }
             }
-            if keyed && ids[n] < next && met.first(met.ids, ids[n]) { self.meet_filed(out, ids[n]) }
+            if keyed { self.mark_named(moved, kept, ids[n], next) }
         }
         for id in self.live_of(owner) {
-            if !keyed || !met.has(met.ids, id) { self.meet_filed(out, id) }
+            if !keyed || !kept.get()[id] { self.mark_filed(moved, id) }
         }
-        out.get()
+        moved.out.get()
     }
 
-    /// Bucket `b` added to `out` the first time this call meets it —
-    /// nothing for -1, a key no bucket was opened for.
-    fn meet(out: Cell<List<int>>, b: int) {
-        if b >= 0 && self.met.first(self.met.buckets, b) { out.push(b) }
+    /// A keyed row's own id kept, and the buckets its row stood in marked.
+    fn mark_named(moved: Marks, kept: Cell<List<bool>>, id: int, next: int) {
+        if id >= next { return }
+        kept.set_at(id, true)
+        self.mark_filed(moved, id)
     }
 
-    /// Every bucket the row at `id` is filed in, met.
-    fn meet_filed(out: Cell<List<int>>, id: int) {
+    /// Every bucket the row at `id` is filed in, marked.
+    fn mark_filed(moved: Marks, id: int) {
         for i, ks in self.filed.get()[id] {
-            for k in ks { self.meet(out, self.bucket_of(i, k)) }
+            for k in ks { moved.mark(self.bucket_of(i, k)) }
         }
     }
 
@@ -933,30 +936,17 @@ fn no_such_row(relation: string, id: int, owner: string) -> string {
 /// A cell's name in a refusal.
 fn cell_named(cell: int) -> string { if cell == 0 { "the whole relation" } else { "bucket ${cell - 1}" } }
 
-/// What a call has met, each number once: per bucket and per row id,
-/// the call that last met it. Kept with the rows and grown to what calls
-/// reach, so a call costs what it touches, never what the relation holds.
-type Met = { call: Cell<int>, buckets: Cell<List<int>>, ids: Cell<List<int>> }
+/// Buckets marked once each: which were seen, and the distinct ones in
+/// the order they were first marked.
+type Marks = { seen: Cell<List<bool>>, out: Cell<List<int>> }
 
-fn unmet() -> Met {
-    let none: List<int> = []
-    Met { call: Cell.new(0), buckets: Cell.new(none), ids: Cell.new(none) }
-}
-
-impl Met {
-    /// A new call: nothing is met yet.
-    fn begun() { self.call.set(self.call.get() + 1) }
-
-    /// Whether this call meets `n` for the first time — and it is met now.
-    fn first(marks: Cell<List<int>>, n: int) -> bool {
-        while marks.get().length <= n { marks.push(0) }
-        if marks.get()[n] == self.call.get() { return false }
-        marks.set_at(n, self.call.get())
-        true
+impl Marks {
+    /// Bucket `b` marked — nothing for -1, a key no bucket was opened for.
+    fn mark(b: int) {
+        if b < 0 || self.seen.get()[b] { return }
+        self.seen.set_at(b, true)
+        self.out.push(b)
     }
-
-    /// Whether this call has met `n`.
-    fn has(marks: Cell<List<int>>, n: int) -> bool { n < marks.get().length && marks.get()[n] == self.call.get() }
 }
 
 /// The refusal of a write moving `cell` of `family`, last read as
