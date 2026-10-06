@@ -1,7 +1,7 @@
 // A row filed again leaves and enters only the buckets its keys changed:
 // every bucket's members, their order, its hash and the set's hash equal
 // those of a relation the final rows were filed into afresh.
-use @std.relation.{relation}
+use @std.relation.{relation, query}
 use @std.relation.db.{Db, new_db}
 use @std.relation.rows.{Rows}
 
@@ -45,6 +45,154 @@ fn six(db: Db) {
 fn chip_again(db: Db, id: int, row: Chip) {
     let rs = Chip.rows_in(db)
     rs.put(id, row, row.stable_hash(), row.index_keys())
+}
+
+/// A row under every kind of index a re-file must handle: a list of
+/// keys, an ordered list, a nullable key, a bool, and one outside the
+/// row's stable hash.
+@relation
+type Tagged = {
+    @key name: string,
+    @index tags: List<string>,
+    @index(ordered) ranks: List<string>,
+    @index note: string?,
+    @index live: bool,
+    @local @index spot: string,
+    n: int,
+}
+
+const LETTERS: List<string> = ["a", "b", "c"]
+
+fn tagged(
+    name: string,
+    tags: List<string>,
+    ranks: List<string>,
+    note: string?,
+    live: bool,
+    spot: string,
+    n: int,
+) -> Tagged {
+    Tagged { name: name, tags: tags, ranks: ranks, note: note, live: live, spot: spot, n: n }
+}
+
+fn tag_in(db: Db, r: Tagged) {
+    let _ = Tagged
+        .insert(
+            db,
+            name: r.name,
+            tags: r.tags,
+            ranks: r.ranks,
+            note: r.note,
+            live: r.live,
+            spot: r.spot,
+            n: r.n,
+        )
+}
+
+fn tagged_names(rows: List<Tagged>) -> string { [r.name for r in rows].join(",") }
+
+/// Every bucket a `Tagged` row can stand in — its members by name and,
+/// for the text indexes, its hash — and the set's hash.
+fn tagged_state(db: Db) -> string {
+    let rs = Tagged.rows_in(db)
+    let tags = ["${v}=${tagged_names(Tagged.by_tags(db, v))}:${rs.bucket_hash(rs.bucket_of_text(1, v))}" for v in LETTERS]
+    let ranks = ["${v}=${tagged_names(Tagged.by_ranks(db, v))}:${rs.bucket_hash(rs.bucket_of_text(2, v))}" for v in LETTERS]
+    let notes = ["${v}=${tagged_names(Tagged.by_note(db, v))}:${rs.bucket_hash(rs.bucket_of_text(3, v))}" for v in LETTERS]
+    let spots = ["${v}=${tagged_names(Tagged.by_spot(db, v))}" for v in LETTERS]
+    let live = "on=${tagged_names(Tagged.by_live(db, true))} off=${tagged_names(Tagged.by_live(db, false))}"
+    "${tags.join(" ")} | ${ranks.join(" ")} | ${notes.join(" ")} | ${spots.join(" ")} | ${live} | ${rs.set_hash()}"
+}
+
+/// One re-file: the rows first filed, then the rows filed over them by key.
+type Refile = { says: string, before: List<Tagged>, after: List<Tagged> }
+
+/// The state after every `before` row is filed and every `after` row is filed over it.
+fn refiled_state(c: Refile) -> string {
+    let db = new_db()
+    for r in c.before.concat(c.after) { tag_in(db, r) }
+    tagged_state(db)
+}
+
+/// The state of a relation the final rows were filed into afresh, each
+/// at the id its key first took.
+fn fresh_state(c: Refile) -> string {
+    let db = new_db()
+    for r in c.before { tag_in(db, [x for x in c.after if x.name == r.name].last() ?? r) }
+    for r in c.after {
+        if !c.before.any((x: Tagged) -> x.name == r.name) { tag_in(db, r) }
+    }
+    tagged_state(db)
+}
+
+/// Three rows spread over the letters, `mid` between the other two by id.
+fn trio(mid: Tagged) -> List<Tagged> {
+    [
+        tagged("lo", ["a", "b"], ["a", "b"], "a", true, "a", 1),
+        mid,
+        tagged("hi", ["b", "c"], ["b", "c"], "b", false, "b", 3),
+    ]
+}
+
+fn refiles() -> List<Refile> {
+    let mid = tagged("mid", ["a", "b"], ["a", "b"], "a", true, "a", 2)
+    [
+        Refile {
+            says: "a list index leaves one bucket, stays in one and enters one",
+            before: trio(mid),
+            after: [mid with { tags: ["b", "c"] }],
+        },
+        Refile {
+            says: "an ordered list index leaves, stays and enters, between rows on both sides of its id",
+            before: trio(mid),
+            after: [mid with { ranks: ["b", "c"], n: 20 }],
+        },
+        Refile {
+            says: "a key named twice in the new list",
+            before: trio(mid),
+            after: [mid with { tags: ["c", "c", "a"] }],
+        },
+        Refile {
+            says: "a nullable index goes to null",
+            before: trio(mid),
+            after: [mid with { note: null }],
+        },
+        Refile {
+            says: "a nullable index comes from null",
+            before: trio(mid with { note: null }),
+            after: [mid with { note: "c" }],
+        },
+        Refile { says: "a bool index flips", before: trio(mid), after: [mid with { live: false }] },
+        Refile {
+            says: "a key outside the stable hash moves, the hash standing",
+            before: trio(mid),
+            after: [mid with { spot: "c" }],
+        },
+        Refile {
+            says: "only the payload moves, every key standing",
+            before: trio(mid),
+            after: [mid with { n: 99 }],
+        },
+        Refile {
+            says: "every index moves at once, twice over",
+            before: trio(mid),
+            after: [
+                mid with { tags: ["c"], ranks: ["c"], note: "c", live: false, spot: "c", n: 7 },
+                mid with { tags: ["a"], ranks: ["a", "c"], note: null, live: true, spot: "b", n: 8 },
+            ],
+        },
+    ]
+}
+
+/// The sum of `n` over one tag's rows, counting its runs.
+once fn tag_sum_runs() -> Cell<int> { Cell.new(0) }
+
+@query
+fn tag_sum(db: Db, tag: string) -> int {
+    let runs = tag_sum_runs()
+    runs.set(runs.get() + 1)
+    mut sum = 0
+    for r in Tagged.by_tags(db, tag) { sum = sum + r.n }
+    sum
 }
 
 spec "std/relation — a row filed again" {
@@ -93,6 +241,58 @@ spec "std/relation — a row filed again" {
         piece(fresh, 1, "blue", "low", 1)
         let rs = Piece.rows_in(again)
         pieces(again) == pieces(fresh) && rs.ids_in(rs.bucket_of_text(1, "red")).is_empty()
+    }
+    then "every kind of index, each against a relation built afresh" {
+        [c.says for c in refiles() if refiled_state(c) != fresh_state(c)].join("; ") == ""
+    }
+    then "the last of two re-files in one table is the one that stands" {
+        let twice = refiles().last()!
+        let db = new_db()
+        for r in twice.before.concat(twice.after) { tag_in(db, r) }
+        Tagged.by_key(db, TaggedKey { name: "mid" })?.n == 8 &&
+            tagged_names(Tagged.by_spot(db, "b")) == "mid,hi"
+    }
+    then "two members with equal row hashes share a bucket: one filed again leaves the other standing" {
+        let again = new_db()
+        for _i in 0..2 { let _ = Chip.insert(again, shade: "red", tier: "low", n: 1) }
+        chip_again(again, 0, Chip { shade: "blue", tier: "low", n: 1 })
+        let fresh = new_db()
+        let _ = Chip.insert(fresh, shade: "blue", tier: "low", n: 1)
+        let _ = Chip.insert(fresh, shade: "red", tier: "low", n: 1)
+        chips(again) == chips(fresh)
+    }
+    then "a row removed and filed again at its id stands as a first filing does" {
+        let again = new_db()
+        for i in 0..3 { let _ = Chip.insert(again, shade: SHADES[i], tier: TIERS[i], n: i) }
+        Chip.rows_in(again).remove(1)
+        let gone = Chip.all(again).length
+        chip_again(again, 1, Chip { shade: "red", tier: "top", n: 5 })
+        let fresh = new_db()
+        let _ = Chip.insert(fresh, shade: SHADES[0], tier: TIERS[0], n: 0)
+        let _ = Chip.insert(fresh, shade: "red", tier: "top", n: 5)
+        let _ = Chip.insert(fresh, shade: SHADES[2], tier: TIERS[2], n: 2)
+        gone == 2 && chips(again) == chips(fresh)
+    }
+    then "an owner's rows filed again stay the owner's: the next replacement removes the ones it does not name" {
+        let db = new_db()
+        let mid = tagged("mid", ["a"], ["a"], "a", true, "a", 2)
+        let _ = Tagged.replaced(db, "o", trio(mid))
+        let _ = Tagged.replaced(db, "o", trio(mid with { tags: ["c"], n: 9 }))
+        let after = tagged_names(Tagged.all(db))
+        let _ = Tagged.replaced(db, "o", [mid with { tags: ["c"], n: 9 }])
+        after == "lo,mid,hi" &&
+            tagged_names(Tagged.all(db)) == "mid" &&
+            tagged_names(Tagged.by_tags(db, "c")) == "mid"
+    }
+    then "a reader of a bucket the row stays in runs again when the row's payload moves" {
+        let db = new_db()
+        let mid = tagged("mid", ["a", "b"], ["a"], "a", true, "a", 2)
+        for r in trio(mid) { tag_in(db, r) }
+        let from = tag_sum_runs().get()
+        let before = tag_sum(db, "b")
+        tag_in(db, mid with { n: 40 })
+        let after = tag_sum(db, "b")
+        before == 6 && after == 44 && tag_sum_runs().get() == from + 2
     }
     then "a keyless row filed again by its id, payload then buckets" {
         let again = new_db()
