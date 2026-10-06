@@ -761,14 +761,19 @@ footprint-accept: $(RUNTIME_LIB)
 # Every keeper runs, and each that refuses is named.
 # TWO HALVES OF ABOUT EQUAL COST, so the train's one keepers job can run
 # them side by side, each in its own copy of the tree (keepers-a,
-# keepers-b). KEEPERS is their union: a keeper joins a half, never a list
-# of its own. Each keeper's seconds are printed, which is what balances them.
-KEEPERS_A = read-cost codecs traps compile-slots witness stems
-KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
-            ui-host ui-host-test ui-board ui-browser fmt-lossless tool-witnesses footprint
-KEEPERS = $(KEEPERS_A) $(KEEPERS_B)
-keepers keepers-a keepers-b:
-	@fail=0; for k in $(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS))); do \
+# keepers-b). KEEPERS is their union and the ones that run alone: a keeper
+# joins one of the three, never a list of its own. Each keeper's seconds
+# are printed, which is what balances the halves — the second is the
+# lighter because the train runs the seed check after it.
+# KEEPERS_ALONE are held to a clock (a timer firing within one round of the
+# scheduler), so nothing may compete with them for a core.
+KEEPERS_ALONE = runtime-tests
+KEEPERS_A = read-cost codecs traps compile-slots witness stems fmt-lossless
+KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
+            ui-host ui-host-test ui-board ui-browser tool-witnesses footprint
+KEEPERS = $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
+keepers keepers-alone keepers-a keepers-b:
+	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))); do \
 	  t0=$$(date +%s); \
 	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
 	  echo "keepers: $$k $$(( $$(date +%s) - t0 ))s"; \

@@ -156,34 +156,32 @@ jobs:
       # job rebuilds what prepare built from the same commit.
       - name: built
         run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
-      # ONE LIST, the Makefile's, in its two halves SIDE BY SIDE, and the seed
-      # check beside them: each runs in its own copy of the tree, so nothing
-      # one writes under build/ or beside a package is another's, and each
-      # takes its own build lock. All three run to the end, and any refusing
-      # fails the job.
+      # ONE LIST, the Makefile's. The keepers held to a clock run first, with
+      # nothing beside them. Then its two halves run SIDE BY SIDE, each in its
+      # own copy of the tree, so nothing one writes under build/ or beside a
+      # package is the other's, and each takes its own build lock. Both run
+      # to the end, and either refusing fails the job. Two, never three: a
+      # third process on these four cores slowed every keeper and failed the
+      # clocked ones.
       #
-      # THE COMMITTED SEED STILL BUILDS THIS TREE: it links against the
-      # runtime and compiles HEAD. No other job starts from the seed once a
-      # cached compiler exists, so a removed runtime symbol the seed names, or
-      # source the seed cannot read, is refused here before it can land.
+      # THE COMMITTED SEED STILL BUILDS THIS TREE, checked after the lighter
+      # half: it links against the runtime and compiles HEAD. No other job
+      # starts from the seed once a cached compiler exists, so a removed
+      # runtime symbol the seed names, or source the seed cannot read, is
+      # refused here before it can land.
       - name: keepers
         run: |
+          alone=0; a=0; b=0
+          make -s -o avra keepers-alone || alone=1
           cp -a . ../keepers-b
-          cp -a . ../seed
-          (cd ../keepers-b && AVRA_BUILD_LOCK=/tmp/avra-build-b.lock make -s -o avra keepers-b) > ../keepers-b.log 2>&1 &
-          pb=$!
-          (cd ../seed && AVRA_BUILD_LOCK=/tmp/avra-build-seed.lock make -s -o avra seed-check) > ../seed.log 2>&1 &
-          ps=$!
-          a=0; b=0; s=0
+          (cd ../keepers-b && export AVRA_BUILD_LOCK=/tmp/avra-build-b.lock && s=0 && { make -s -o avra keepers-b || s=1; } && { t0=$(date +%s); make -s -o avra seed-check || s=1; echo "keepers: seed-check $(( $(date +%s) - t0 ))s"; } && exit $s) > ../keepers-b.log 2>&1 &
           make -s -o avra keepers-a || a=1
-          wait $pb || b=1
-          wait $ps || s=1
-          echo "::group::keepers-b"; cat ../keepers-b.log; echo "::endgroup::"
-          echo "::group::seed-check"; cat ../seed.log; echo "::endgroup::"
+          wait $! || b=1
+          echo "::group::keepers-b and seed-check"; cat ../keepers-b.log; echo "::endgroup::"
+          [ "$alone" = 0 ] || echo "::error::a keeper that runs alone refused"
           [ "$a" = 0 ] || echo "::error::a keeper in the first half refused"
-          [ "$b" = 0 ] || echo "::error::a keeper in the second half refused"
-          [ "$s" = 0 ] || echo "::error::seed-check refused"
-          exit $((a + b + s))
+          [ "$b" = 0 ] || echo "::error::a keeper in the second half, or the seed check, refused"
+          exit $((alone + a + b))
 
   # THE BUILD CACHE, ATTACKED — the train's, like the keepers. Its own job: it
   # clears the store it builds through, and it runs beside the gate.
