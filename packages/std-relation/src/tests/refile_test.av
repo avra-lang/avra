@@ -1,0 +1,115 @@
+// A row filed again leaves and enters only the buckets its keys changed:
+// every bucket's members, their order, its hash and the set's hash equal
+// those of a relation the final rows were filed into afresh.
+use @std.relation.{relation}
+use @std.relation.db.{Db, new_db}
+use @std.relation.rows.{Rows}
+
+@relation
+type Piece = { @key name: string, @index shade: string, @index(ordered) tier: string, n: int }
+
+@relation
+type Chip = { @index shade: string, @index(ordered) tier: string, n: int }
+
+const SHADES: List<string> = ["red", "blue", "green"]
+
+const TIERS: List<string> = ["low", "mid", "top"]
+
+/// One bucket: its value, its member ids in order, its hash.
+fn bucket_print<R>(rs: Rows<R>, index: int, v: string) -> string {
+    let b = rs.bucket_of_text(index, v)
+    "${v}=${["${id}" for id in rs.ids_in(b)].join(",")}:${rs.bucket_hash(b)}"
+}
+
+/// Every bucket of the shade and tier indexes, and the set's hash.
+fn printed<R>(rs: Rows<R>, shade: int, tier: int) -> string {
+    let shades = [bucket_print(rs, shade, v) for v in SHADES]
+    let tiers = [bucket_print(rs, tier, v) for v in TIERS]
+    "${shades.join(" ")} | ${tiers.join(" ")} | ${rs.set_hash()}"
+}
+
+fn pieces(db: Db) -> string { printed(Piece.rows_in(db), 1, 2) }
+
+fn chips(db: Db) -> string { printed(Chip.rows_in(db), 0, 1) }
+
+fn piece(db: Db, i: int, shade: string, tier: string, n: int) {
+    let _ = Piece.insert(db, name: "p${i}", shade: shade, tier: tier, n: n)
+}
+
+/// Six pieces, two a shade, their tiers by turn.
+fn six(db: Db) {
+    for i in 0..6 { piece(db, i, SHADES[i % 3], TIERS[i % 3], i) }
+}
+
+/// Chip `id` filed again as `row`, by its id.
+fn chip_again(db: Db, id: int, row: Chip) {
+    let rs = Chip.rows_in(db)
+    rs.put(id, row, row.stable_hash(), row.index_keys())
+}
+
+spec "std/relation — a row filed again" {
+    then "under the same keys with another payload, many times over: buckets keep their members and order, hashes follow" {
+        let again = new_db()
+        six(again)
+        for turn in 1..40 {
+            for i in 0..6 { piece(again, i, SHADES[i % 3], TIERS[i % 3], i + turn) }
+        }
+        let fresh = new_db()
+        for i in 0..6 { piece(fresh, i, SHADES[i % 3], TIERS[i % 3], i + 39) }
+        pieces(again) == pieces(fresh) && Piece.all(again).length == 6
+    }
+    then "moved between two buckets of one index, the other index standing" {
+        let again = new_db()
+        six(again)
+        piece(again, 0, "blue", TIERS[0], 0)
+        piece(again, 4, "red", TIERS[1], 4)
+        let fresh = new_db()
+        for i in 0..6 {
+            let shade = if i == 0 { "blue" } else if i == 4 { "red" } else { SHADES[i % 3] }
+            piece(fresh, i, shade, TIERS[i % 3], i)
+        }
+        pieces(again) == pieces(fresh)
+    }
+    then "moved in the ordered index: the bucket it leaves and the one it enters fold their members in id order" {
+        let again = new_db()
+        six(again)
+        piece(again, 1, SHADES[1], "top", 100)
+        piece(again, 5, SHADES[2], "low", 500)
+        let fresh = new_db()
+        for i in 0..6 {
+            let tier = if i == 1 { "top" } else if i == 5 { "low" } else { TIERS[i % 3] }
+            let n = if i == 1 { 100 } else if i == 5 { 500 } else { i }
+            piece(fresh, i, SHADES[i % 3], tier, n)
+        }
+        pieces(again) == pieces(fresh)
+    }
+    then "out of a one-member bucket, leaving it empty, and into a bucket no row stood in" {
+        let again = new_db()
+        piece(again, 0, "red", "low", 0)
+        piece(again, 1, "blue", "low", 1)
+        piece(again, 0, "green", "top", 7)
+        let fresh = new_db()
+        piece(fresh, 0, "green", "top", 7)
+        piece(fresh, 1, "blue", "low", 1)
+        let rs = Piece.rows_in(again)
+        pieces(again) == pieces(fresh) && rs.ids_in(rs.bucket_of_text(1, "red")).is_empty()
+    }
+    then "a keyless row filed again by its id, payload then buckets" {
+        let again = new_db()
+        for i in 0..6 { let _ = Chip.insert(again, shade: SHADES[i % 3], tier: TIERS[i % 3], n: i) }
+        for turn in 1..20 { chip_again(again, 2, Chip { shade: SHADES[2], tier: TIERS[2], n: turn }) }
+        chip_again(again, 3, Chip { shade: "green", tier: "top", n: 3 })
+        let fresh = new_db()
+        for i in 0..6 {
+            let moved = i == 3
+            let _ = Chip
+                .insert(
+                    fresh,
+                    shade: if moved { "green" } else { SHADES[i % 3] },
+                    tier: if moved { "top" } else { TIERS[i % 3] },
+                    n: if i == 2 { 19 } else { i },
+                )
+        }
+        chips(again) == chips(fresh) && Chip.all(again).length == 6
+    }
+}
