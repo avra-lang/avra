@@ -1,0 +1,63 @@
+//! THE SEALED LAW: a type marked `@sealed` (`@std/meta`) is BUILT and
+//! REWRITTEN in the module that declares it and nowhere else — no
+//! literal fills it, no `Name(value)` converts into it, no record
+//! literal, `with`, field write or variant constructs it. Every READ
+//! stays transparent: a field, `==`, a pattern, a method. So a checked
+//! constructor the module exports is the type's one door, and a value
+//! of the type anywhere is one that door answered.
+use core.{ExprId, TypeId, DeclId, Type}
+use diagnostics.{refusal}
+use @std.errors.{Loc}
+
+/// The declaration a nominal shape names; none for a structural one.
+fn sealable(sh: Type) -> DeclId? {
+    match sh { .Struct(d, _) or .Enum(d, _) or .App(d, _, _) -> d, rest -> null }
+}
+
+impl TypeCx {
+    /// Whether `d` is sealed and this file's module is not the one
+    /// that declares it.
+    fn sealed_elsewhere(d: DeclId) -> bool {
+        let decls = self.view.decls
+        decls.is_sealed(d) &&
+            decls.module_of(d) != decls.module_name(decls.file(self.view.file).module_id)
+    }
+
+    /// Whether building or rewriting a `ty` here breaks its seal —
+    /// spoken when it does. `how` is the site's own label.
+    mut fn seals(at: Loc?, ty: TypeId, how: string) -> bool {
+        let d? = sealable(self.view.types.shape_of(ty)) else { return false }
+        self.seals_decl(at, d, how)
+    }
+
+    /// `seals` for a site that holds the declaration itself.
+    mut fn seals_decl(at: Loc?, d: DeclId, how: string) -> bool {
+        if !self.sealed_elsewhere(d) { return false }
+        self.sealed_built(at, self.view.decls.decl(d).name, self.view.decls.module_of(d), how)
+        true
+    }
+
+    /// A write along a path rewrites every value it passes through:
+    /// each subject under `target` is held to its seal.
+    mut fn seals_path(at: Loc?, target: ExprId) {
+        let step? = self.view.store.place_step(target) else { return }
+        let subject? = place_subject(step) else { return }
+        if self.seals(at, self.type_at(subject), "written through here") { return }
+        self.seals_path(at, subject)
+    }
+
+    // ── The voice ──
+
+    mut fn sealed_built(at: Loc?, name: string, home: string, how: string) {
+        self
+            .emit(
+                refusal(
+                    "type.sealed",
+                    at,
+                    "`${name}` is sealed — only `${home}`, the module that declares it, builds or rewrites one",
+                    how,
+                    "ask `${home}` for one through a fn it exports; reading it — a field, `==`, a pattern — is open everywhere",
+                ),
+            )
+    }
+}

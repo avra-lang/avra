@@ -146,14 +146,35 @@ echo $$ > "$AVRA_SPRITE_HOME/avra-runs/reboot/pid"
 remote status > /dev/null 2>&1
 check "$(res reboot)|$(remote attach reboot 0 | grep -c '^before$\|the Sprite restarted under this run')" "status 75|2" "a run whose Sprite restarted under it answers 75, keeps what it printed and says what happened — a stranger wearing its pid is not its supervisor"
 
+# ══ FROZEN: a run that stood still says for how long, in its output and its status line
+AVRA_FROZEN_S=3 begin frozen 60 sh -c 'echo first; sleep 4253' > /dev/null
+sleep 2
+k=$(keeper_of frozen)
+kill -STOP "$k"
+sleep 5
+kill -CONT "$k"
+sleep 3
+remote status > "$scratch/status" 2>&1
+check "$(grep -c '^sprite-run: this run made no progress for [0-9]*s' "$AVRA_SPRITE_HOME/avra-runs/frozen/out")|$(sed -n 's/^run=frozen live .* quiet=[0-9]* frozen=\([0-9]*\)$/\1/p' "$scratch/status" | awk '{ print ($1 >= 4 && $1 <= 9) ? "counted" : $1 }')" "1|counted" "a run whose keeper stood still five seconds says so in its output, and its status line counts them" "$scratch/status"
+remote stop frozen
+settled frozen 10
+
 # ══ THE HOLD: the Sprite is asked to stay awake before start answers, and released at the end
 if [ -S /.sprite/api.sock ]; then
     tasks() { curl -s -m 5 --unix-socket /.sprite/api.sock http://sprite/v1/tasks | grep -c "\"$1\""; }
-    begin held 60 sh -c 'sleep 4' > /dev/null
-    during=$(tasks held)
-    settled held 20
+    # A run is named after the machine that began it, capitals and all; the Sprite takes no capital.
+    begin Held-Mac_1 60 sh -c 'sleep 4' > /dev/null
+    during=$(tasks avra-held-mac-1)
+    settled Held-Mac_1 20
     sleep 3
-    check "$during|$(tasks held)" "1|0" "a run holds its Sprite awake from the moment start answers, and lets go when it ends"
+    check "$during|$(tasks avra-held-mac-1)|$(grep -c 'would not be held' "$AVRA_SPRITE_HOME/avra-runs/Held-Mac_1/out")" "1|0|0" "a run holds its Sprite awake from the moment start answers, under a name the Sprite takes, and lets go when it ends"
+    # The Sprite refusing: a curl that answers 400 stands in for it.
+    mkdir -p "$scratch/deaf"
+    printf '#!/bin/sh\nprintf "no such thing\\n400"\n' > "$scratch/deaf/curl"
+    chmod +x "$scratch/deaf/curl"
+    PATH="$scratch/deaf:$PATH" begin unheld 60 sh -c 'sleep 2' > /dev/null
+    settled unheld 20
+    check "$(grep -c '^sprite-run: the Sprite would not be held awake (no such thing 400) — this run stands still' "$AVRA_SPRITE_HOME/avra-runs/unheld/out" | awk '{ print ($1 >= 1) ? "said" : "silent" }')" "said" "a run the Sprite refuses to hold says so in its own output"
 else
     echo "skip  the hold: no Sprite socket here (/.sprite/api.sock)"
 fi

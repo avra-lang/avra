@@ -9,9 +9,9 @@
 //! `url(text)` reads text a program did not write. It is STRICT and repairs
 //! nothing: the scheme is read as written — no trimming, no decoding — so a
 //! spelling a browser would repair is refused, and the answer is absent.
-//! The WRITER (`text()`) is what makes a value built by hand safe too: it
+//! The type is SEALED, so the doors here are the only makers, and each
 //! writes a reference as the path it is, whatever its text spells.
-use @std.meta.{derive}
+use @std.meta.{derive, sealed}
 use @std.text.{ascii_lower, codepoints, from_codepoint}
 use style.words.{Words}
 
@@ -23,13 +23,10 @@ export enum Scheme {
     @word(mailto) Mailto
 }
 
-/// A URL a tree may carry.
-export enum Url {
-    /// A reference inside the site: a path, a query, a fragment.
-    Local(reference: string)
-    /// A scheme, and everything after its colon.
-    Absolute(scheme: Scheme, after: string)
-}
+/// A URL a tree may carry, as the text a target writes. SEALED: only this
+/// module builds one, so every value is one a door below answered.
+@sealed
+export type Url = string
 
 /// The characters that end a reference's first path segment.
 const segment_ends = ["/", "?", "#"]
@@ -70,24 +67,8 @@ fn escaped(c: int) -> string {
 fn printable(s: string) -> string { [escaped(c) for c in codepoints(s)].join("") }
 
 impl Url {
-    /// The URL as a target writes it — safe whatever the value holds. A
-    /// local reference whose first segment holds a colon is written
-    /// behind `./`, so it reads as the path it is and never as a scheme;
-    /// one that opens as a network path is written behind `/.`, so it
-    /// stays a path on this site; a control character is written as its
-    /// percent escape.
-    fn text() -> string {
-        match self {
-            .Local(reference) -> printable(
-                when {
-                    opens_network_path(reference) -> "/.${reference}"
-                    names_scheme(reference) -> "./${reference}"
-                    _ -> reference
-                },
-            ),
-            .Absolute(scheme, after) -> "${scheme.word()}:${printable(after)}",
-        }
-    }
+    /// The URL as a target writes it.
+    fn text() -> string { "${self}" }
 }
 
 /// The URL `text` spells, or absence for one a tree may not carry: a
@@ -95,14 +76,32 @@ impl Url {
 /// holding a control character.
 export fn url(text: string) -> Url? {
     if codepoints(text).any(is_control) || opens_network_path(text) { return null }
-    if !names_scheme(text) { return Url.Local(text) }
+    if !names_scheme(text) { return Url(text) }
     let colon = text.index_of(":")
     let scheme? = Scheme.worded(ascii_lower(text.substring(0, colon))) else { return null }
-    Url.Absolute(scheme, text.substring(colon + 1, text.length))
+    Url("${scheme.word()}:${text.substring(colon + 1, text.length)}")
 }
 
-/// A reference inside the site — `local("/docs")`.
-export fn local(reference: string) -> Url { Url.Local(reference) }
+/// A reference inside the site — `local("/docs")` — safe whatever the
+/// text spells. One whose first segment holds a colon is written behind
+/// `./`, so it reads as the path it is and never as a scheme; one that
+/// opens as a network path is written behind `/.`, so it stays a path on
+/// this site; a control character is written as its percent escape.
+export fn local(reference: string) -> Url {
+    Url(
+        printable(
+            when {
+                opens_network_path(reference) -> "/.${reference}"
+                names_scheme(reference) -> "./${reference}"
+                _ -> reference
+            },
+        ),
+    )
+}
+
+/// A scheme and everything after its colon — `absolute(.Mailto, "a@b.c")`.
+/// A control character is written as its percent escape.
+export fn absolute(scheme: Scheme, after: string) -> Url { Url("${scheme.word()}:${printable(after)}") }
 
 /// A page on the web by its host and path — `https("avra.dev/docs")`.
-export fn https(address: string) -> Url { Url.Absolute(.Https, "//${address}") }
+export fn https(address: string) -> Url { absolute(.Https, "//${address}") }

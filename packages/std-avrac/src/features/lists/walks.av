@@ -70,6 +70,7 @@ export fn lower_index_of(mut cx: LowerCx, mc: MethodCall) -> Reg {
     index_of_chain(cx, mc, seat)
 }
 
+export fn lower_fold(mut cx: LowerCx, mc: MethodCall) -> Reg { fold_chain(cx, mc) }
 export fn lower_count(mut cx: LowerCx, mc: MethodCall) -> Reg { count_chain(cx, mc) }
 export fn lower_sum(mut cx: LowerCx, mc: MethodCall) -> Reg { sum_chain(cx, mc) }
 export fn lower_min(mut cx: LowerCx, mc: MethodCall) -> Reg { extreme_chain(cx, mc, true) }
@@ -171,15 +172,35 @@ fn edge(mut cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
     let opt = cx.type_at(mc.e)
     let xs = cx.reg_of(mc.subject)
     let cell = absent_cell(cx, opt)
-    let len = cx.measure_of(mc.subject, cx.reg_of(mc.subject), cx.type_at(mc.subject))
+    let len = cx.measure_of(mc.subject, xs, cx.type_at(mc.subject))
     let zero = cx.const_int(0)
     cx
         .void_region(cx.bin(Type.Bool, BinOp.Lt, zero, len)) { cx ->
-            let at = if last { decremented(cx, len) } else { zero }
-            let raw = cx.elem_read(xs, at, cx.carried_type(opt))
-            cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
+            adopt_slot(cx, cell, opt, xs, if last { decremented(cx, len) } else { zero })
         }
     cx.loaded(mc.e, cell)
+}
+
+/// `xs.get(i)` — the same cell, the slot adopted when `i` stands
+/// inside the list.
+export fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let opt = cx.type_at(mc.e)
+    let xs = cx.reg_of(mc.subject)
+    let at = cx.reg_of(mc.args[0])
+    let cell = absent_cell(cx, opt)
+    let len = cx.measure_of(mc.subject, xs, cx.type_at(mc.subject))
+    cx
+        .void_region(cx.bin(Type.Bool, BinOp.Ge, at, cx.const_int(0))) { cx ->
+            cx
+                .void_region(cx.bin(Type.Bool, BinOp.Lt, at, len)) { c2 -> adopt_slot(c2, cell, opt, xs, at) }
+        }
+    cx.loaded(mc.e, cell)
+}
+
+/// The slot at `at` stored present into an Opt cell.
+fn adopt_slot(mut cx: LowerCx, cell: Reg, opt: TypeId, xs: Reg, at: Reg) {
+    let raw = cx.elem_read(xs, at, cx.carried_type(opt))
+    cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
 }
 
 // ── The skeleton ────────────────────────────────────────────────
@@ -209,6 +230,10 @@ fn decremented(mut cx: LowerCx, n: Reg) -> Reg {
 
 fn bool_cell(mut cx: LowerCx, seed: bool) -> Reg {
     cx.seeded_cell(bool_ty(cx), cx.const_bool(seed))
+}
+
+fn int_cell(mut cx: LowerCx, seed: int) -> Reg {
+    cx.seeded_cell(cx.type(int), cx.const_int(seed))
 }
 
 fn absent_cell(mut cx: LowerCx, opt: TypeId) -> Reg {

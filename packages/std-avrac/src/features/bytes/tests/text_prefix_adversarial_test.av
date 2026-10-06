@@ -1,0 +1,71 @@
+// The two decoders that never refuse, under attack: where the prefix
+// stops, what the lossy read substitutes, and what `text()` still
+// answers beside them.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/bytes/text_prefix — the longest valid text" {
+    given "octets that are text" {
+        then "the prefix is all of them" {
+            shown("\"abc\".bytes().text_prefix()") == "abc"
+        }
+        then "the empty buffer is the empty text" {
+            shown("\"\".bytes().text_prefix().length") == "0"
+        }
+    }
+    given "octets that stop being text" {
+        then "the prefix ends before a character cut short" {
+            shown("[104, 105, 226, 130].bytes()!.text_prefix()") == "hi"
+        }
+        then "the prefix ends before an octet that leads nothing" {
+            shown("[104, 255, 105].bytes()!.text_prefix()") == "h"
+        }
+        then "a first octet that is not text leaves the empty prefix" {
+            shown("[255, 104].bytes()!.text_prefix().length") == "0"
+        }
+        then "the rest is a slice by the prefix's length" {
+            shown(
+                "let b = [104, 105, 226, 130].bytes()!\nb.slice(b.text_prefix().length, b.length).length",
+            ) == "2"
+        }
+        then "`text()` still answers absence for the same octets" {
+            shown("[104, 255].bytes()!.text() ?? \"none\"") == "none"
+        }
+    }
+    given "the seat" {
+        then "it takes no arguments" {
+            refused_with("\"a\".bytes().text_prefix(1)", "`text_prefix`")
+        }
+        then "a string is not octets" {
+            refused_with("\"a\".text_prefix()", "`string`")
+        }
+    }
+}
+
+spec "features/bytes/text_lossy — every octet read" {
+    given "ill-formed octets" {
+        then "one that leads nothing is one U+FFFD" {
+            shown(
+                "let s = [97, 255, 98].bytes()!.text_lossy().bytes()\n\"\${s.length} \${s.at(0)} \${s.at(1)} \${s.at(2)} \${s.at(3)} \${s.at(4)}\"",
+            ) == "5 97 239 191 189 98"
+        }
+        then "a sequence cut short is one U+FFFD, not one per octet" {
+            shown("[226, 130].bytes()!.text_lossy().length") == "3"
+        }
+        then "a cut sequence before ASCII keeps the ASCII" {
+            shown(
+                "let s = [226, 130, 65].bytes()!.text_lossy()\n\"\${s.length} \${s.bytes().at(3)}\"",
+            ) == "4 65"
+        }
+        then "a surrogate's lead and its continuations are refused apart" {
+            shown("[237, 160, 128].bytes()!.text_lossy().length") == "9"
+        }
+    }
+    given "whole text" {
+        then "it is the text" {
+            shown("\"ok\".bytes().text_lossy()") == "ok"
+        }
+        then "a NUL is a character" {
+            shown("[97, 0, 98].bytes()!.text_lossy().length") == "3"
+        }
+    }
+}

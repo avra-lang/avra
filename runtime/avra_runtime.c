@@ -3007,6 +3007,65 @@ const char* avra_str_of_bytes_reusing(const char* b) {
 
 int64_t avra_utf8_bad_at(const char* b) { return utf8_bad_at(b, bytes_len(b)); }
 
+// The longest prefix that is whole UTF-8, as text: every octet when
+// they all are (the same box), the empty text when the first is not.
+// Never null — what follows the prefix is the caller's to slice.
+const char* avra_str_of_bytes_prefix(const char* b) {
+    int64_t bad = utf8_bad_at(b, bytes_len(b));
+    return bad < 0 ? shared(b) : str_owned(b, (size_t)bad);
+}
+
+// How many octets at `b` (the place `utf8_bad_at` named) one U+FFFD
+// stands for: the lead and every continuation that could still follow
+// it — the maximal subpart — and a byte that leads nothing alone.
+static size_t utf8_ill_formed(const unsigned char* b, size_t n) {
+    unsigned char c = b[0], lo = 0x80, hi = 0xBF;
+    size_t need;
+    if (c >= 0xC2 && c <= 0xDF)                               need = 1;
+    else if (c == 0xE0)                                       { need = 2; lo = 0xA0; }
+    else if ((c >= 0xE1 && c <= 0xEC) || c == 0xEE || c == 0xEF) need = 2;
+    else if (c == 0xED)                                       { need = 2; hi = 0x9F; }
+    else if (c == 0xF0)                                       { need = 3; lo = 0x90; }
+    else if (c >= 0xF1 && c <= 0xF3)                          need = 3;
+    else if (c == 0xF4)                                       { need = 3; hi = 0x8F; }
+    else return 1;
+    if (n < 2 || b[1] < lo || b[1] > hi) return 1;
+    size_t k = 2;
+    while (k <= need && k < n && b[k] >= 0x80 && b[k] <= 0xBF) k++;
+    return k;
+}
+
+// One pass over the octets as LOSSY text: each whole run is handed to
+// `out` (when there is one) and each ill-formed subpart counts three
+// octets, U+FFFD's. The size it answers is the text's.
+static size_t utf8_lossy(const char* b, size_t n, char* out) {
+    size_t i = 0, w = 0;
+    while (i < n) {
+        int64_t bad = utf8_bad_at(b + i, n - i);
+        size_t run = bad < 0 ? n - i : (size_t)bad;
+        if (out) memcpy(out + w, b + i, run);
+        w += run;
+        i += run;
+        if (bad < 0) break;
+        if (out) memcpy(out + w, "\xEF\xBF\xBD", 3);
+        w += 3;
+        i += utf8_ill_formed((const unsigned char*)b + i, n - i);
+    }
+    return w;
+}
+
+// The octets as text whatever they hold: each ill-formed subpart reads
+// as one U+FFFD. Whole UTF-8 is the same box.
+const char* avra_str_of_bytes_lossy(const char* b) {
+    size_t n = bytes_len(b);
+    if (utf8_bad_at(b, n) < 0) return shared(b);
+    size_t size = utf8_lossy(b, n, NULL);
+    char* out = sized_box(size, KIND_STR);
+    utf8_lossy(b, n, out);
+    out[size] = '\0';
+    return out;
+}
+
 __attribute__((noinline, cold, noreturn))
 static void trap_table(int64_t len) {
     char msg[80];
