@@ -17,6 +17,9 @@ binaries, and prints what the smallest programs weigh.
   floor is one small fn family or the toolchain's own drift between
   machines, and several times less than linking the scheduler adds.
   STRIPPED, because a symbol spells the path its program was built at.
+  A ROW IS ONE MACHINE'S: the platform and the toolchain (the `cc` that
+  built the archive, the driver that links). Elsewhere the sizes are
+  printed and not gated; the symbol half is held everywhere.
 
   python3 tools/footprint.py              # the gate
   python3 tools/footprint.py --accept     # re-accept this platform's sizes
@@ -106,12 +109,12 @@ def cap(base):
 
 
 def baseline_rows(text):
-    """`<platform> <program> <bytes> <text>` lines -> {(platform, program): (bytes, text)}."""
+    """`<platform> <program> <bytes> <text> <toolchain>` lines -> {(platform, toolchain, program): (bytes, text)}."""
     rows = {}
     for line in text.splitlines():
-        parts = line.split()
-        if len(parts) == 4 and not line.startswith("#"):
-            rows[(parts[0], parts[1])] = (int(parts[2]), int(parts[3]))
+        parts = line.split(None, 4)
+        if len(parts) == 5 and not line.startswith("#"):
+            rows[(parts[0], parts[4].strip(), parts[1])] = (int(parts[2]), int(parts[3]))
     return rows
 
 
@@ -129,6 +132,16 @@ def ran(*words):
 
 def host():
     return f"{platform.system().lower()}-{platform.machine().lower()}"
+
+
+def version_of(tool):
+    out = ran(tool, "--version")
+    return (out.stdout.splitlines() or ["absent"])[0].strip() if out.returncode == 0 else "absent"
+
+
+def toolchain():
+    """What decides a program's bytes here: the `cc` the archive was built by, the driver that links."""
+    return f"cc: {version_of('cc')}; link: {version_of(os.environ.get('CC', 'clang'))}"
 
 
 def code_size(binary):
@@ -180,6 +193,8 @@ def gate(accept):
         f"what a task carries ({len(TASK_STATE)} name(s)) is the core runtime's")
 
     accepted = baseline_rows(open(BASELINE).read()) if os.path.isfile(BASELINE) else {}
+    here = (host(), toolchain())
+    say(f"{here[0]}, {here[1]}")
     sizes, read = {}, 0
     with tempfile.TemporaryDirectory(prefix="avra-footprint.") as work:
         for name in CLEAN + (SPAWNING,):
@@ -211,12 +226,12 @@ def gate(accept):
                 sizes[name] = (stripped_size(binary), code_size(binary))
 
     for name, now in sizes.items():
-        base = accepted.get((host(), name))
+        base = accepted.get(here + (name,))
         if 0 in now:
             say(f"{name} could not be sized here (`strip` or `size` answered nothing)")
             fail = 1
         elif accept or base is None:
-            say(f"{name} {now[0]} bytes, text {now[1]} — {'accepted' if accept else f'no baseline for {host()}, uncapped'}")
+            say(f"{name} {now[0]} bytes, text {now[1]} — {'accepted' if accept else 'no baseline for this toolchain — sizes printed, not gated'}")
         else:
             say(f"{name} {now[0]} bytes (accepted {base[0]}), text {now[1]} (accepted {base[1]}), cap +{CEILING}%")
             for words in over(now, base):
@@ -224,18 +239,18 @@ def gate(accept):
                     f"`make footprint-accept` if it is meant")
                 fail = 1
     if accept and not fail:
-        kept = {k: v for k, v in accepted.items() if k[0] != host()}
-        kept.update({(host(), name): now for name, now in sizes.items()})
+        kept = {k: v for k, v in accepted.items() if k[:2] != here}
+        kept.update({here + (name,): now for name, now in sizes.items()})
         with open(BASELINE, "w") as out:
             out.write("# THE LAST ACCEPTED FOOTPRINT, written by `make footprint-accept`:\n"
-                      "# <platform> <program> <stripped bytes> <code bytes>. A platform with no row is uncapped.\n")
-            for (plat, name), (size, code) in sorted(kept.items()):
-                out.write(f"{plat} {name} {size} {code}\n")
+                      "# <platform> <program> <stripped bytes> <code bytes> <toolchain>. No row, no cap.\n")
+            for (plat, tools, name), (size, code) in sorted(kept.items()):
+                out.write(f"{plat} {name} {size} {code} {tools}\n")
     if fail:
         say("REFUSED")
         return 1
     say(f"clean — {len(CLEAN)} program(s) carry no scheduler, 1 witness refused, {read} symbol(s) read, "
-        f"{len(sizes)} sized on {host()}")
+        f"{len(sizes)} sized, {sum(1 for n in sizes if here + (n,) in accepted)} held to a baseline")
     return 0
 
 
@@ -271,7 +286,11 @@ def self_test():
         ("past it names the quantity", [w.split()[0] for w in over((1101, 900), (1000, 1000))] == ["bytes"]),
         ("code past it is named too", [w.split()[0] for w in over((900, 1101), (1000, 1000))] == ["text"]),
         ("a baseline row is read, a comment is not",
-         baseline_rows("# linux-x86_64 hello 1 2\nlinux-x86_64 hello 10 20\n") == {("linux-x86_64", "hello"): (10, 20)}),
+         baseline_rows("# linux-x86_64 hello 1 2 cc: a; link: b\nlinux-x86_64 hello 10 20 cc: a; link: b\n")
+         == {("linux-x86_64", "cc: a; link: b", "hello"): (10, 20)}),
+        ("another toolchain's row is not this one's",
+         ("linux-x86_64", "cc: z; link: b", "hello") not in baseline_rows("linux-x86_64 hello 10 20 cc: a; link: b\n")),
+        ("a row with no toolchain is no row", baseline_rows("linux-x86_64 hello 10 20\n") == {}),
         ("a binary's names are read", symbols_of("0000 T main\n     U malloc\n") == {"main", "malloc"}),
     ]
     failed = [what for what, held in checks if not held]
