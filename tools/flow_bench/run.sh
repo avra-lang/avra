@@ -64,6 +64,11 @@ if [ "${1:-bench}" = probes ]; then
         spawn_bench $v
         for r in 1 2 3; do "$out/spawn_bench_$v" "$v"; done | sort | awk '{ k=$1; v=$2/$3; if (!(k in best) || v < best[k]) best[k]=v } END { for (k in best) printf "  %-28s %.1f ns\n", k, best[k] }' | sort
     done
+    echo "== a stack bound at a task's first run, not at spawn (record on the heap), against today's"
+    spawn_bench late
+    for v in today late; do
+        for r in 1 2 3; do "$out/spawn_bench_$v" "$v"; "$out/spawn_bench_$v" "$v" parked; done | awk '{ k=$1; v=$2/$3; if (!(k in best) || v < best[k]) best[k]=v } END { for (k in best) printf "  %-28s %.1f ns\n", k, best[k] }' | sort
+    done
     echo "== (b) the same rows, today's scheduler, a 256 KiB reservation"
     for r in 1 2 3; do AVRA_FIBER_STACK=262144 "$out/spawn_bench_today" today256k; done | awk '{ k=$1; v=$2/$3; if (!(k in best) || v < best[k]) best[k]=v } END { for (k in best) printf "  %-28s %.1f ns\n", k, best[k] }' | sort
     echo "== the yield path: instructions in the object, and counted over ten million switches"
