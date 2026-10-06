@@ -13,6 +13,8 @@
 #   result <id>                   `status <n> <bytes>`, `running <bytes>`, or `gone`
 #   stop <run...>                 end each run, however its processes scattered
 #   reap                          end every run whose supervisor is gone
+#   manifest <tree> <root...>     the tree's identity: `path<TAB>hash` of every file and link, sorted
+#   unlink <tree> <path...>       remove those files of the tree
 #
 # A RUN IS ITS ENVIRONMENT MARK: every process a run starts inherits
 # AVRA_RUN=<id>, so a stop finds them all by reading /proc — a child that
@@ -435,6 +437,34 @@ supervise() {
     ended "$status"
 }
 
+# A TREE'S IDENTITY IS ITS MANIFEST: every file and link under the given
+# roots as `path<TAB>hash`, sorted — outside the directories a sync never
+# carries (build, .avra-cache, .claude, .git). The worktree's side is this
+# same fn run where the worktree stands, so the two are one definition.
+manifest() {
+    cd "$1"
+    shift
+    sum=sha256sum
+    command -v sha256sum >/dev/null 2>&1 || sum='shasum -a 256'
+    unsynced() { find "$@" -type d \( -name build -o -name .avra-cache -o -name .claude -o -name .git \) -prune -o "$kind" "$what" -print0; }
+    {
+        kind=-type what=f
+        unsynced "$@" | xargs -0 -r $sum | awk '{ print substr($0, 67) "\t" substr($0, 1, 64) }'
+        what=l
+        unsynced "$@" | xargs -0 -r -n 1 sh -c 'printf "%s\tlink:%s\n" "$1" "$(readlink "$1")"' link
+    } | LC_ALL=C sort
+}
+
+# Removes files of a tree by name; a path that leaves the tree is not one.
+unlink_() {
+    cd "$1"
+    shift
+    for p in "$@"; do
+        case $p in /* | ../* | */../* | */..) continue ;; esac
+        rm -f -- "$p"
+    done
+}
+
 # The run's output from byte $2 on, as it is written, until the run has
 # ended or a turn of AVRA_ATTACH_S (540) seconds has passed — a client
 # asks again from where it stands, so no one connection has to last.
@@ -486,6 +516,8 @@ case $verb in
     supervise) supervise "$@" ;;
     attach) attach "$@" ;;
     result) result "$@" ;;
+    manifest) manifest "$@" ;;
+    unlink) unlink_ "$@" ;;
     provision) provision "$@" ;;
     prune) prune "$@" ;;
     prune-now) prune_now "$@" ;;
