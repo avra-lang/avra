@@ -791,8 +791,8 @@ queued() {
     $gh_ api graphql -F owner='{owner}' -F name='{repo}' -F number="$1" -f query='
         query($owner: String!, $name: String!, $number: Int!) {
           repository(owner: $owner, name: $name) { pullRequest(number: $number) {
-            mergeQueueEntry { position enqueuedAt } } } }' \
-        --jq '.data.repository.pullRequest.mergeQueueEntry | select(. != null) | "\(.position) \(now - (.enqueuedAt | fromdateiso8601) | floor)"'
+            mergeQueueEntry { position enqueuedAt enqueuer { login } } } } }' \
+        --jq '.data.repository.pullRequest.mergeQueueEntry | select(. != null) | "\(.position) \(now - (.enqueuedAt | fromdateiso8601) | floor) \(.enqueuer.login // "")"'
 }
 # Whether a train carries PR number $1: the queue's own runs name it.
 train() {
@@ -806,13 +806,23 @@ enqueue() {
 # A QUEUED PR WITH NO TRAIN IS STUCK, AND WAITING DOES NOT START ONE: an
 # entry can sit in the queue with no merge_group run until it is taken
 # out and put back. One queued past AVRA_STUCK_S (300) seconds with no
-# train is requeued, once, and said aloud. $1 number, $2 node id.
+# train is requeued, and said aloud. AN ENTRY A BOT ADDED NEVER GETS ONE —
+# GitHub starts no workflow for an event a workflow's token caused — so
+# it is requeued at once, as this user. $1 number, $2 node id.
 requeue_stuck() {
     q=$(queued "$1") || return 0
     [ -n "$q" ] || return 0
-    [ "${q#* }" -ge "${AVRA_STUCK_S:-300}" ] || return 0
+    set -- "$1" "$2" $q
     ! train "$1" || return 0
-    echo "work: #$1 has been queued ${q#* }s with no train — taking it out and queueing it again" >&2
+    case "${5:-}" in
+        *'[bot]' | github-actions)
+            echo "work: #$1 was queued by $5, whose entry starts no train — taking it out and queueing it again" >&2
+            ;;
+        *)
+            [ "$4" -ge "${AVRA_STUCK_S:-300}" ] || return 0
+            echo "work: #$1 has been queued ${4}s with no train — taking it out and queueing it again" >&2
+            ;;
+    esac
     $gh_ api graphql -f query="mutation{dequeuePullRequest(input:{id:\"$2\"}){mergeQueueEntry{position}}}" >/dev/null
     enqueue "$2" >&2
 }
@@ -877,7 +887,7 @@ status() {
             elif train "$n"; then
                 where="queued #${q%% *}, train running"
             else
-                where="queued #${q%% *}, NO TRAIN for ${q#* }s"
+                where="queued #${q%% *}, NO TRAIN for $(echo "$q" | cut -d' ' -f2)s"
             fi
             echo "#$n  $branch  $where  checks: ${checks:-none}  $title"
             [ -z "$q" ] || requeue_stuck "$n" "$id"

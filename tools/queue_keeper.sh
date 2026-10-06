@@ -1,6 +1,5 @@
 #!/bin/sh
-# Keeps every open, non-draft PR moving through the merge queue. A PR its
-# owner is holding back is a DRAFT (`gh pr ready --undo <n>`).
+# Keeps the merge queue moving, and tells a PR's owner when the PR cannot.
 #
 #   sh tools/queue_keeper.sh          one pass
 #   sh tools/queue_keeper.sh --loop   a pass every 2 minutes, until stopped
@@ -8,12 +7,18 @@
 # GitHub runs it after every train and every 5 minutes (.github/workflows/
 # queue-keeper.yml); a pass by hand is never needed.
 #
-# A PR GitHub dropped from the queue is put back, at most twice per head
-# commit: a train fails every PR it carries, so most drops are someone
-# else's failure. A PR that conflicts with main gets ONE comment saying
-# "rebase onto origin/main"; one that failed its third train is held as a
-# DRAFT, since every PR behind it rides its failure, with its failing
-# lines on the PR. Either is left for its owner.
+# IT NEVER ENQUEUES. It runs as the workflow's token, and GitHub starts no
+# workflow for an event that token causes: an entry it adds sits in the
+# queue with no train until someone takes it out and puts it back. A PR
+# enters the queue from its lane, as its user (`sh tools/work land`).
+#
+# What it does: an entry GitHub marked UNMERGEABLE leaves the queue. A PR
+# that conflicts with main gets ONE comment saying "rebase onto
+# origin/main". A PR a failed train dropped is told once per failure to
+# land again — a train fails every PR it carries, so most drops are
+# someone else's — and one whose head has failed three trains is held as a
+# DRAFT, with its failing lines on the PR, since every PR behind it rides
+# its failure. Each is left for its owner.
 set -eu
 
 repo=avra-lang/avra
@@ -56,15 +61,13 @@ say_once() {
     gh pr comment "$1" -R "$repo" --body "$2" >/dev/null && : > "$mark"
 }
 
-# Puts PR $1 in the queue. A PR whose own check is missing cannot be
-# queued, and a check this token starts would wait for approval, so its
-# owner is asked to re-land it.
-enqueue() {
-    id=$(gh pr view "$1" -R "$repo" --json id --jq .id)
-    q="mutation{enqueuePullRequest(input:{pullRequestId:\"$id\"}){mergeQueueEntry{position}}}"
-    gh api graphql -f query="$q" >/dev/null 2>&1 && return 0
-    say_once "$1" "queue keeper: this PR cannot rejoin the queue because its own \`test\` check is missing. Run \`sh tools/work land\` from its worktree." nocheck
-    return 1
+# How many trains carrying PR $1 have failed since its head commit $2 was
+# made: a new head starts from nothing.
+failed_trains() {
+    since=$(gh api "repos/$repo/commits/$2" --jq .commit.committer.date 2>/dev/null) || since=
+    [ -n "$since" ] || { echo 0; return 0; }
+    gh run list -R "$repo" -e merge_group -L 100 --json headBranch,conclusion,createdAt \
+        --jq "[.[] | select(.headBranch | test(\"/pr-$1-\")) | select(.conclusion == \"failure\") | select(.createdAt > \"$since\")] | length"
 }
 
 pass() {
@@ -79,18 +82,16 @@ pass() {
             echo "queue-keeper: #$n conflicts with main — owner told"
             continue
         fi
-        tries="$state/$n-$head.tries"
-        t=$(cat "$tries" 2>/dev/null || echo 0)
-        if [ "$t" -ge 2 ]; then
+        t=$(failed_trains "$n" "$head")
+        [ "${t:-0}" -gt 0 ] || continue
+        if [ "$t" -ge 3 ]; then
             say_once "$n" "$(printf 'queue keeper: three trains have failed with this PR in them, so it is held as a DRAFT — every PR behind it rode its failure. Its newest failure:\n\n```\n%s\n```\nFix it, then `gh pr ready %s` and `sh tools/work land`.' "$(train_failure "$n")" "$n")" failed
             gh pr ready "$n" -R "$repo" --undo >/dev/null 2>&1 || :
             echo "queue-keeper: #$n failed three trains — held as a draft, owner told"
             continue
         fi
-        if enqueue "$n"; then
-            echo $((t + 1)) > "$tries"
-            echo "queue-keeper: #$n back in the queue (retry $((t + 1)) of 2)"
-        fi
+        say_once "$n" "queue keeper: a train carrying this PR failed and dropped it from the queue (failure $t of 3 before it is held). If the failure is not this PR's, run \`sh tools/work land\` from its worktree to queue it again." "dropped-$t"
+        echo "queue-keeper: #$n was dropped by a failed train ($t of 3) — owner told"
     done
 }
 
