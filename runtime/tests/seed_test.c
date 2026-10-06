@@ -326,6 +326,37 @@ static void settled(void) {
     CHECK(avra_sched_world_visits() - asked <= 4, "nor leaves the fast path: two thousand switches ask the world a handful of times");
 }
 
+// A RUN INSIDE A RUN has its own schedule: it begins unseeded, and the
+// seed it takes ends with it — the outer schedule goes on from where it
+// stood, its choices its own.
+static void run_in_a_run(void) {
+    char second[64];
+    avra_sched_seed(5);
+    fresh(); three_once();
+    fresh(); three_once(); strcpy(second, g_log);
+    int64_t alone = avra_sched_settle();
+
+    avra_sched_seed(5);
+    fresh(); three_once();
+    avra_sched_run_begins();
+    int64_t links = avra_sched_pick_links();
+    fresh(); three_once();
+    CHECK(strcmp(g_log, "abc") == 0 && avra_sched_pick_links() == links, "a run inside a seeded run begins unseeded");
+    avra_sched_seed(9);
+    for (int i = 0; i < 3; i++) three_once();
+    avra_sched_run_ends();
+    fresh(); three_once();
+    CHECK(strcmp(g_log, second) == 0, "and the outer schedule goes on from where it stood");
+    CHECK(avra_sched_settle() == alone, "its choices its own: none of the inner run's is counted");
+
+    avra_sched_run_begins();
+    avra_sched_seed(9);
+    avra_sched_run_ends();
+    links = avra_sched_pick_links();
+    fresh(); three_once();
+    CHECK(strcmp(g_log, "abc") == 0 && avra_sched_pick_links() == links, "a seed a run never settled ends with the run");
+}
+
 // A forked child is a new program: its order is the queue's own.
 static void child_of_a_seeded_run(void) {
     avra_fiber_forked();
@@ -361,6 +392,7 @@ int main(void) {
     reader_among_yielders();
     bounded_pick();
     settled();
+    run_in_a_run();
     forked_while_seeded();
     CHECK(avra_mem_live() == live, "a seeded run leaves nothing behind");
     avra_fiber_fd_closing(g_pipe[0]);

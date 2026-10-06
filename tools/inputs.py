@@ -131,7 +131,7 @@ ROWS = {
     "avra_selfhost_argc": "argv", "avra_selfhost_get_arg_cstr": "argv",
 }
 INERT_ROWS = re.compile(
-    r"^(LLVM\w*|avra_(llvm|float|int|str|bytes|vtask|fiber|ffi)_\w+|avra_(debug|eputs|puts|"
+    r"^(LLVM\w*|avra_(llvm|float|int|str|bytes|vtask|fiber|ffi|sched)_\w+|avra_(debug|eputs|puts|"
     r"errno_text|ptr_at|qtrace|trap|utf8_bad_at|mem_live|fd_taken|fd_write|type_named|"
     r"vgate_open|vgate_claim|gate_new|rc_release|task_at|task_done|task_cancel)|"
     r"host|println)$")

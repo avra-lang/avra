@@ -376,16 +376,20 @@ static void lets_go_twice(void) {
 static void run_in_a_run(void) {
     int64_t ahead = avra_now_ns() - wall();
     avra_clock_run_begins();
+    int64_t w1 = wall();
+    avra_fiber_sleep(10);
+    CHECK(wall() - w1 >= 8 * MS, "a run begins on its host's clock: flowing, where its host's flows");
+    avra_clock_virtual(1);
     int64_t c0 = avra_now_ns();
     avra_fiber_sleep(60000);
-    CHECK(avra_now_ns() - c0 == 60 * SECOND, "a run's clock is virtual from its beginning");
+    CHECK(avra_now_ns() - c0 == 60 * SECOND, "and virtual once it says so");
     avra_clock_run_begins();
     avra_fiber_sleep(60000);
     avra_clock_run_ends();
     CHECK(avra_now_ns() - c0 == 60 * SECOND, "a run inside it leaves the outer run's clock where it stood");
     avra_clock_run_ends();
     int64_t drift = avra_now_ns() - wall() - ahead;
-    CHECK(drift > -SECOND && drift < SECOND, "and when the run ends its host's clock is the one it had: no jump stays");
+    CHECK(drift > -SECOND && drift < SECOND, "and when the run ends its host's clock is the one it had: no jump stays, and it is not virtual");
     struct timespec nap = { 0, 3 * MS };
     int64_t c1 = avra_now_ns();
     nanosleep(&nap, NULL);
@@ -409,6 +413,14 @@ static void run_in_a_run(void) {
     avra_fiber_sleep(60000);
     CHECK(wall() - w0 < SECOND, "a hold a run left standing ends with the run");
     avra_clock_virtual(0);
+    // the scheduler's bracket carries the clock's
+    avra_sched_run_begins();
+    avra_clock_virtual(1);
+    avra_fiber_sleep(60000);
+    avra_sched_run_ends();
+    w0 = wall();
+    avra_fiber_sleep(10);
+    CHECK(wall() - w0 >= 8 * MS, "a run that ends takes its virtual clock with it, whichever bracket ended it");
 }
 
 // `body` in a child under a short alarm, its checks counted here: a

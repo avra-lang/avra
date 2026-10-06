@@ -3877,9 +3877,9 @@ int64_t avra_clock_holds_dropped(void) {
 
 // A run inside a run keeps the outer clock whole, to put it back, and
 // the count of reads its host had made.
-enum { CLOCK_RUNS_MOST = 16 };
-static AvraClock g_clock_outer[CLOCK_RUNS_MOST];
-static int g_clock_runs = 0;
+static AvraClock* g_clock_outer = NULL;
+static size_t g_clock_runs = 0;
+static size_t g_clock_runs_cap = 0;
 
 static void clock_run_turned(void) {
     avra_task_local->clock_asks = 0;
@@ -3887,10 +3887,13 @@ static void clock_run_turned(void) {
 }
 
 void avra_clock_run_begins(void) {
-    if (g_clock_runs == CLOCK_RUNS_MOST) avra_trap("runs under a virtual clock are nested too deep");
+    if (g_clock_runs == g_clock_runs_cap) {
+        g_clock_runs_cap = g_clock_runs_cap ? g_clock_runs_cap * 2 : 8;
+        g_clock_outer = realloc(g_clock_outer, g_clock_runs_cap * sizeof(AvraClock));
+        if (!g_clock_outer) avra_trap("the runtime ran out of memory for a run's clock");
+    }
     g_clock_outer[g_clock_runs++] = avra_clock;
     avra_clock.held = 0;
-    avra_clock.virtual = 1;
     clock_settled();
     clock_run_turned();
 }
