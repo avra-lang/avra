@@ -26,7 +26,8 @@ git init -q -b main "$scratch/avra"
 main=$scratch/avra
 mkdir -p "$main/tools" "$main/.github/ci"
 cp "$here/work" "$here/sprite-lib.sh" "$here/sprite-remote.sh" "$here/sprite-rsh.sh" "$main/tools/"
-cp "$here/../.github/ci/packages.txt" "$main/.github/ci/"
+# No fixture installs anything: the toolchain list is empty.
+echo "# none" > "$main/.github/ci/packages.txt"
 git -C "$main" add -A
 git -C "$main" -c user.name=t -c user.email=t@t commit -q -m seed
 git -C "$main" remote add origin "$scratch/origin.git"
@@ -351,7 +352,6 @@ STUB
     export E2E="$scratch/e2e" AVRA_SPRITE_HOME="$scratch/sprite-home" AVRA_SPRITE_CLI="$scratch/sprite-here" AVRA_SPRITES=L AVRA_REATTACH_S=0
     export PATH="$scratch/bin:$PATH" FAKE="$scratch/fake"
     mkdir -p "$E2E"
-    : > "$main/.github/ci/packages.txt"
     git -C "$main" worktree add -q -b e2e "$scratch/avra-e2e" main
     cd "$scratch/avra-e2e" || exit 1
     sh "$work" bind > /dev/null 2>&1

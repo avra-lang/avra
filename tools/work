@@ -441,10 +441,11 @@ run() {
     echo "work: $sprite — sync ($(since)s)" >&2
     paths=$(cd "$tree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
         backend runtime packages tools bootstrap corpus .github/ci; do [ ! -e "$p" ] || printf "%s " "$p"; done)
+    # Each path lands under its own name (-R): `.github/ci` is never a bare `ci`.
     synced=
     for _ in 1 2 3; do
         if sx "$sprite" 30 mkdir -p "$remote_tree/build" &&
-            (cd "$tree" && timeout -k 2 "${AVRA_SYNC_S:-300}" rsync -az --delete -e "sh $tools/sprite-rsh.sh" \
+            (cd "$tree" && timeout -k 2 "${AVRA_SYNC_S:-300}" rsync -azR --delete -e "sh $tools/sprite-rsh.sh" \
                 --exclude build/ --exclude .avra-cache/ --exclude .claude/ --exclude .git $paths "$sprite:$remote_tree/"); then
             synced=1
             break
