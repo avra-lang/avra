@@ -58,6 +58,7 @@ export fn check_entries(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let value? = value_held(cx, mc, "entries") else { return cx.error_type }
     if !cx.seated(mc, "entries", []) { return cx.error_type }
     let entry? = cx.view.decls.prelude_named("Entry") else { return no_entry(cx, mc.e) }
+    // a record's layout is its declaration's answer
     let _ = cx.view.decls.sig(entry)
     let held = cx.view.types.intern(Type.App(entry, "Entry", [cx.type(string), value]))
     cx.type(List<held>)
@@ -80,10 +81,13 @@ export fn lower_values(mut cx: LowerCx, mc: MethodCall) -> Reg {
 }
 
 export fn lower_entries(mut cx: LowerCx, mc: MethodCall) -> Reg {
-    let value: TypeId? = match cx.seen_at(mc.subject) { .Map(_, v) -> v, _ -> null }
-    let entry: TypeId? = cx.view.types.element(cx.type_at(mc.e))
-    if value == null || entry == null { return cx.lower_defect(mc.e, "`entries` over no map survived typing") }
-    entries_reg(cx, mc.e, mc.subject, value!, entry!)
+    let value? = cx.view.types.map_value(cx.type_at(mc.subject)) else {
+        return cx.lower_defect(mc.e, "`entries` over no map survived typing")
+    }
+    let entry? = cx.view.types.element(cx.type_at(mc.e)) else {
+        return cx.lower_defect(mc.e, "`entries` answering no list survived typing")
+    }
+    entries_reg(cx, mc.e, mc.subject, value, entry)
 }
 
 /// `m.entries()`: each key packed beside its value, in the map's order.
