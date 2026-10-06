@@ -305,13 +305,24 @@ blame() {
     listed=$(api_state)
     if [ -n "$listed" ]; then
         who=SPRITE
-        why="the provider answers and lists it as \`$(echo "$listed" | sed -n "s/^$sprite //p" | grep . || echo absent)\`, yet it answered nothing here — \`sh tools/work sprites --fix $sprite\` repairs it"
+        state=$(echo "$listed" | sed -n "s/^$sprite //p")
+        why="the provider answers and lists it as \`${state:-absent}\`, yet it answered nothing here — \`sh tools/work sprites --fix $sprite\` replaces one that will not wake"
         code=75
     else
         who=CONNECTION
+        state=
         why="the provider (api.sprites.dev) does not answer from this machine either"
         code=74
     fi
+}
+# What became of a run whose Sprite stopped answering: one the provider
+# still lists as running goes on; any other state under a held run means
+# the machine went down, which a Sprite out of memory does.
+fate() {
+    case $state in
+        running | "") echo "The run goes on there to its bound; \`sh tools/work attach\` follows it again" ;;
+        *) echo "It went down under the run — a Sprite out of memory does — and the run is lost; \`sh tools/work attach\` prints what it wrote, if the Sprite wakes" ;;
+    esac
 }
 bytes() { wc -c < "$log" | tr -d ' '; }
 
@@ -336,7 +347,15 @@ follow() {
             sleep 5
             now=$(wc -c < "$log" 2>/dev/null | tr -d ' ')
             if [ "$now" = "$size" ]; then quiet=$((quiet + 5)); else quiet=0; size=$now; fi
-            [ "$quiet" -lt 30 ] || { echo "work: $sprite — still running, $(since)s in, silent ${quiet}s" >&2; quiet=0; }
+            [ "$quiet" -lt 30 ] || {
+                # Silence is the command's, unless the Sprite itself says nothing when asked.
+                if sx "$sprite" 15 true >/dev/null 2>&1; then
+                    echo "work: $sprite — still running, $(since)s in, silent ${quiet}s" >&2
+                else
+                    echo "work: SPRITE — $sprite does not answer, $(since)s in; a run short of memory stalls it. Still following" >&2
+                fi
+                quiet=0
+            }
         done
         c=$(cat "$log.client" 2>/dev/null) && { pkill -TERM -P "$c"; kill "$c"; } 2>/dev/null
         kill "$printer" 2>/dev/null
@@ -354,7 +373,7 @@ follow() {
         client=
         res=$(woken "$sprite" "${AVRA_WAKE_S:-150}" result "$run_id") || {
             blame
-            echo "work: $who — $sprite stopped answering $(since)s in: $why. The run goes on there to its bound; \`sh tools/work attach\` follows it again" >&2
+            echo "work: $who — $sprite stopped answering $(since)s in: $why. $(fate)" >&2
             exit "$code"
         }
         case $res in
@@ -502,6 +521,10 @@ report() {
         125) what="the compiler build was stopped at its bound" ;;
         137) what="stopped: it took the Sprite under its memory floor" ;;
         143) what="stopped" ;;
+        75)
+            echo "work: SPRITE — $sprite restarted under the run, which is lost — a Sprite out of memory does this; $(since)s$through" >&2
+            return 0
+            ;;
         *) what="exit $st" ;;
     esac
     echo "work: COMMAND — $what, on $sprite, $(since)s$through" >&2

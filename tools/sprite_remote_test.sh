@@ -121,6 +121,16 @@ st=$?
 settled next 20
 check "$st|$(res next)|$(pgrep -fc '^sleep 4251$')" "0|status 0|0" "a run whose supervisor and keeper are gone does not hold the Sprite BUSY: the next start ends it and runs" "$scratch/busy"
 
+# ══ THE SPRITE RESTARTED UNDER A RUN: it is the Sprite's failure, and said so
+begin reboot 60 sh -c 'echo before; sleep 4252' > /dev/null
+sleep 2
+kill -KILL "$(pid_of reboot)" $(keeper_of reboot) $(pgrep -f '^sleep 4252$')
+echo another-boot > "$AVRA_SPRITE_HOME/avra-runs/reboot/boot"
+# A pid the run once had now belongs to a stranger.
+echo $$ > "$AVRA_SPRITE_HOME/avra-runs/reboot/pid"
+remote status > /dev/null 2>&1
+check "$(res reboot)|$(remote attach reboot 0 | grep -c '^before$\|the Sprite restarted under this run')" "status 75|2" "a run whose Sprite restarted under it answers 75, keeps what it printed and says what happened — a stranger wearing its pid is not its supervisor"
+
 # ══ THE HOLD: the Sprite is asked to stay awake before start answers, and released at the end
 if [ -S /.sprite/api.sock ]; then
     tasks() { curl -s -m 5 --unix-socket /.sprite/api.sock http://sprite/v1/tasks | grep -c "\"$1\""; }

@@ -41,7 +41,7 @@ cat > "$scratch/sprite" <<'STUB'
 case " ${SILENT:-} " in *" $2 "*) exit 1 ;; esac
 if [ "$1" = api ]; then
     [ -z "${OFFLINE:-}" ] || exit 1
-    echo '{"data":[{"name":"A","status":"running"},{"name":"B","status":"warm"}]}'
+    echo "{\"data\":[{\"name\":\"A\",\"status\":\"${A_STATE:-running}\"},{\"name\":\"B\",\"status\":\"warm\"}]}"
     exit 0
 fi
 # The Sprite's half, played from $FAKE: `out` is the run's whole output,
@@ -263,6 +263,14 @@ check "$? $(grep -c '^work: SPRITE — A stopped answering.*lists it as .running
 scene 0; echo 9 > "$scratch/fake/ending"; : > "$scratch/fake/lost"; echo 3 > "$scratch/fake/cut"
 with OFFLINE=1 -- true
 check "$? $(grep -c '^work: CONNECTION — A stopped answering.*api.sprites.dev.*The run goes on there.*work attach' "$scratch/err") $(grep -c '^stop' "$scratch/fake/calls")" "74 1 0" "work run: with the provider silent too it is CONNECTION and 74 — and the run is still left to go on" "$scratch/err"
+
+scene 0; echo 9 > "$scratch/fake/ending"; : > "$scratch/fake/lost"; echo 3 > "$scratch/fake/cut"
+with A_STATE=cold -- true
+check "$? $(grep -c '^work: SPRITE — A stopped answering.*lists it as .cold.*It went down under the run.*the run is lost' "$scratch/err") $(grep -c 'The run goes on' "$scratch/err")" "75 1 0" "work run: a Sprite the provider lists as down mid-run is said to be down, and the run lost — never 'the run goes on'" "$scratch/err"
+
+scene 75
+ran true
+check "$? $(grep -c '^work: SPRITE — A restarted under the run, which is lost' "$scratch/err") $(grep -c 'COMMAND' "$scratch/err")" "75 1 0" "work run: a run its Sprite restarted under answers 75 and names the SPRITE, never the command" "$scratch/err"
 
 scene 0
 with SILENT=A -- true

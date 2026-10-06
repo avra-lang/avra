@@ -31,6 +31,13 @@
 # floor — a Sprite has no swap, and one out of memory answers nobody —
 # so a run with no client left still ends, and says how.
 #
+# THE FLOOR IS READ AGAINST WHAT IS AVAILABLE, NEVER AGAINST MemTotal: a
+# Sprite says 16 GB and a balloon holds half of it, more while it idles
+# (3.3 to 7.3 GB were free to a run, measured). Under about 250 MB the
+# whole machine stops answering for minutes, so the keeper ends the run
+# above that, and the command — never its supervisor — is what the
+# kernel takes first if the keeper is too slow.
+#
 # NOTHING A RUN STARTED OUTLIVES ITS SUPERVISOR. Supervisor and keeper
 # watch each other: whichever is killed, the other ends every process
 # carrying the run's mark within seconds and writes its status. Both
@@ -42,7 +49,7 @@ home=${AVRA_SPRITE_HOME:-/home/sprite}
 runs=$home/avra-runs
 compilers=$home/avra-compilers
 trees=$home/avra-build
-floor_mb=${AVRA_RUN_FLOOR_MB:-350}
+floor_mb=${AVRA_RUN_FLOOR_MB:-600}
 
 avail_mb() { awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo; }
 
@@ -195,16 +202,22 @@ keeper() {
     t0=$(cut -d. -f1 /proc/uptime)
     held=$t0
     hold on "$r"
+    was=$(avail_mb)
     while [ -d "$rd" ] && kill -0 "$main" 2>/dev/null; do
         why=
         now=$(cut -d. -f1 /proc/uptime)
+        # The floor rises with the fall: three more turns like the last must still clear it.
+        have=$(avail_mb)
+        need=$(((was - have) * 3))
+        [ "$need" -gt "$floor_mb" ] || need=$floor_mb
+        was=$have
         [ $((now - held)) -lt 60 ] || { hold again "$r"; held=$now; }
         if at=$(cat "$rd/cmd_at" 2>/dev/null) && [ -n "$at" ]; then
             [ $((now - at)) -lt "$cmd_s" ] || why="124 the command passed its ${cmd_s}s bound"
         else
             [ $((now - t0)) -lt "$build_s" ] || why="125 the compiler build passed its ${build_s}s bound"
         fi
-        [ -n "$why" ] || [ "$(avail_mb)" -ge "$floor_mb" ] || why="137 the Sprite fell under ${floor_mb} MB free"
+        [ -n "$why" ] || [ "$have" -ge "$need" ] || why="137 the Sprite was down to ${have} MB of available memory, under its floor of ${need}"
         if [ -n "$why" ]; then
             echo "$why" > "$rd/stopped"
             for sig in TERM KILL; do
@@ -279,8 +292,11 @@ advance_and_cache() {
 }
 
 # A run with no status whose supervisor is gone has nobody to end it:
-# what it left is ended here, and it answers 143. Under the runs' lock,
-# so a run being started is never read as one abandoned; a lock held
+# what it left is ended here, and it answers 143 — or 75 when the Sprite
+# itself restarted under it, which is the Sprite's failure and is said in
+# the run's output. A supervisor is its pid AND the run's mark: a pid
+# alone is another process after a restart. Under the runs' lock, so a
+# run being started is never read as one abandoned; a lock held
 # elsewhere is left to its holder.
 reap() {
     [ -d "$runs" ] || return 0
@@ -291,7 +307,11 @@ reap() {
             r=$(basename "$(dirname "$o")")
             [ ! -f "$runs/$r/status" ] || continue
             p=$(cat "$runs/$r/pid" 2>/dev/null) || p=
-            [ -n "$p" ] && kill -0 "$p" 2>/dev/null && continue
+            [ -n "$p" ] && members "$r" | grep -qx "$p" && continue
+            if [ "$(cat "$runs/$r/boot" 2>/dev/null)" != "$(cat /proc/sys/kernel/random/boot_id)" ]; then
+                echo "sprite-run: the Sprite restarted under this run — one out of memory does; what it printed up to then is above" >> "$runs/$r/out"
+                settle "$r" 75
+            fi
             stop_run "$r"
             hold off "$r"
         done
@@ -319,6 +339,7 @@ start() {
     mkdir -p "$rd"
     printf '%s\n' "$owner" > "$rd/owner"
     printf '%s/\n' "$tree" > "$rd/tree"
+    cat /proc/sys/kernel/random/boot_id > "$rd/boot"
     : > "$rd/out"
     AVRA_RUN=$id
     export AVRA_RUN
@@ -384,8 +405,10 @@ supervise() {
             [ "$store_result" = built ] || exit 70
             compiler=built
         fi
-        echo "sprite-run: compiler $compiler in $(($(date +%s) - t0))s" >&2
+        echo "sprite-run: compiler $compiler in $(($(date +%s) - t0))s; $(avail_mb) MB of memory available to the command" >&2
         cut -d. -f1 /proc/uptime > "$rd/cmd_at"
+        # Out of memory, the kernel ends the command and what it started first.
+        echo 800 > /proc/self/oom_score_adj 2>/dev/null || :
         exec "$@"
     ) &
     body=$!
