@@ -302,27 +302,30 @@ impl Db {
 
     fn left() { self.asking.set(self.asking.get() - 1) }
 
-    /// A write is about to move `cell`, last read at revision `read_at`
-    /// (-1 never) by `reader`: how it lands. A cell read this revision by
-    /// a query still running is never moved; one a settled reader holds
-    /// this revision refuses the write where late writes are refused;
-    /// where they are taken, a cell any reader ever read moves the
-    /// revision.
-    fn moved(family: int, cell: int, read_at: int, reader: int) -> Landing {
+    /// How a write would land on a cell last read at revision `read_at`
+    /// (-1 never) by `reader` — asked, nothing moved. A cell read this
+    /// revision by a query still running is never moved; one a settled
+    /// reader holds this revision refuses the write where late writes are
+    /// refused.
+    fn landing(read_at: int, reader: int) -> Landing {
         let kernel? = self.kernel.get() else { return Landing.Stands }
-        let now = kernel.revision()
-        if read_at == now && kernel.reading(reader) { return Landing.Torn }
+        if read_at != kernel.revision() { return Landing.Stands }
+        if kernel.reading(reader) { return Landing.Torn }
+        match self.late.get() { .Refused -> Landing.Late, .Taken -> Landing.Stands }
+    }
+
+    /// A write that lands moves `cell`, last read at `read_at`: where late
+    /// writes are taken, a cell any reader ever read moves the revision.
+    fn moved(family: int, cell: int, read_at: int) {
+        let kernel? = self.kernel.get() else { return }
         self.unsettles_restored()
-        match self.late.get() {
-            .Refused -> {
-                if read_at == now { return Landing.Late }
-            },
-            .Taken -> {
-                if read_at >= 0 { kernel.bump() }
-            },
-        }
+        if read_at >= 0 && self.takes_late() { kernel.bump() }
         self.stamped(family, cell, kernel.revision())
-        Landing.Stands
+    }
+
+    /// Whether a late write here is an input arriving.
+    fn takes_late() -> bool {
+        match self.late.get() { .Refused -> false, .Taken -> true }
     }
 
     /// An answer read back is read here: a record brings no reads with

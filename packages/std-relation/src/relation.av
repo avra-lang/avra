@@ -65,7 +65,7 @@ use @std.meta.{
 }
 use rows.{
     Rows,
-    Placed,
+    Filing,
     IndexKey,
     text_key,
     int_key,
@@ -515,6 +515,7 @@ fn generated(t: Type) -> Decls {
         "side" -> side_generated(t),
         _ -> quote {
             ${stores_decl(t)}
+            ${filing_decl(t)}
             ${key_record(t)}
             ${stored_record(t)}
             impl ${t} {
@@ -720,27 +721,36 @@ fn stored_row(t: Type) -> Code {
 }
 
 /// `replaced`: a named owner's rows of this relation, handed over as a
-/// value — each placed as `insert` places it, the owner's other rows
-/// removed. None for a relation with a `@unique` field: `unique_checks`
-/// refuses row by row, and a replacement is refused whole or not at all.
+/// value — each filed as `insert` files it, the owner's other rows
+/// removed, all or nothing. None for a relation with a `@unique` field:
+/// `unique_checks` refuses row by row.
 fn replaced_members(t: Type) -> List<Decls> {
     if !unique_checks(t).is_empty() { return [] }
     [
         quote {
             static fn replaced(db: Db, owner: string, rows: List<${t}>) -> List<${t}> {
-                ${name(t.name)}
-                    .rows_in(db)
-                    .replaced(
-                        db,
-                        owner,
-                        rows,
-                        (rs: Rows<${t}>, r: ${t}) -> {
-                            let keys = r.index_keys()
-                            let own = ${own_id(t)}
-                            let stored = ${stored_row(t)}
-                            Placed { id: own, row: stored, hash: stored.stable_hash(), keys: keys }
-                        },
-                    )
+                ${name(t.name)}.rows_in(db).replaced(db, owner, rows, ${filing_name(t)}())
+            }
+        },
+    ]
+}
+
+/// The generated filing's name: `decl_filing` for `Decl`.
+fn filing_name(t: Type) -> string { "${snake(t.name)}_filing" }
+
+/// How the relation's rows are filed, made once.
+fn filing_decl(t: Type) -> List<Decls> {
+    if !unique_checks(t).is_empty() { return [] }
+    let keyed = if key_fields(t).is_empty() { quote { false } } else { quote { true } }
+    [
+        quote {
+            once fn ${filing_name(t)}() -> Filing<${t}> {
+                Filing {
+                    keyed: ${keyed},
+                    keys: (r: ${t}) -> r.index_keys(),
+                    hash: (r: ${t}) -> r.stable_hash(),
+                    seated: (r: ${t}, own: int) -> ${stored_row(t)},
+                }
             }
         },
     ]

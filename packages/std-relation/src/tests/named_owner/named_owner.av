@@ -6,7 +6,8 @@
 // refused, a removal is a write a kept answer hears, and a removal under
 // a read bucket is late and removes nothing; keeping NO id empties an
 // owner and no one else, and is nothing at all for an owner that never
-// wrote — in both engines
+// wrote; a replacement with one refused row files none of its rows and
+// removes none — in both engines
 use @std.relation.{relation, query}
 use @std.relation.db.{Db, new_db, db_over, Verifying, Late}
 use @std.relation.engine.{Key, new_kernel}
@@ -125,6 +126,20 @@ fn kept_none() -> string {
     "${untouched} ${held} ${tagged(db, "x")} ${db.set_hashes()[0] == set} ${heard().get().length - before}"
 }
 
+/// A replacement whose LAST row is another owner's files nothing — not
+/// the rows before it — removes nothing, answers no row, and is heard
+/// once.
+fn whole() -> string {
+    let db = logged()
+    ran(db, "a.av", ["a:x", "b:x"])
+    ran(db, "b.av", ["z:y"])
+    let before = heard().get().length
+    let set = db.set_hashes()[0]
+    let filed = Fact
+        .replaced(db, "a.av", [Fact { id: 0, name: "new", tag: "x" }, Fact { id: 0, name: "z", tag: "q" }])
+    "${filed.length} ${tagged(db, "x")} ${tagged(db, "y")} ${db.set_hashes()[0] == set} ${heard().get().length - before}"
+}
+
 /// Another owner's rows, and rows no owner wrote, never move.
 fn apart() -> string {
     let db = new_db()
@@ -176,4 +191,4 @@ fn late() -> string {
     "${heard().get().length - before} ${Fact.all(db).length} ${heard().get().last() ?? "-"}"
 }
 
-"${replaced()} | ${emptied()} | ${between()} | ${kept_none()} | ${apart()} | ${rival()} | ${heard_removal()} | ${late()}"
+"${replaced()} | ${emptied()} | ${between()} | ${kept_none()} | ${whole()} | ${apart()} | ${rival()} | ${heard_removal()} | ${late()}"
