@@ -1872,7 +1872,11 @@ Wants the typer does not carry yet:
 - `it` through a self-method wrapper (`xs.any(self.rides(it))`):
   F2033 "`it` has no element here — this seat takes `int`, not a
   fn" — `it` binds to the NEAREST call; write `(k) ->
-  self.rides(k)`. `it is .A` binds fine.
+  self.rides(k)`. `it is .A` binds fine. A PIPE STAGE IS SUCH A CALL:
+  `users |> keep(it.age >= 18) |> names(it.name)` binds each `it` at
+  its stage, where the same free call with no pipe feeding it
+  (`keep(users, it.age >= 18)`) is "`it` rides a METHOD call's
+  arguments — nothing binds it here".
 - `join` over a list that is not text: `[1, 2].join(",")` is F2005
   "`join` reads a list of text, this one holds `int`" — map to text
   first.
