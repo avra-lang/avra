@@ -253,7 +253,7 @@ THE OTHER TARGETS. A headless screen is the tree itself, so it holds
 nothing a tree does not name. A terminal keeps one thing of its own, the
 focus, by the path a control stands at, so it follows a keyed row; it
 keeps no text, so a field shows what the view says it holds and one
-given no `value` shows none (avra-8sb5.11, filed with this law).
+given no `value` shows none (avra-8sb5.11.336).
 
 AS OTHERS DO IT. React writes a controlled input back after every event
 and never touches an uncontrolled one; Elm writes `value` and `checked`
