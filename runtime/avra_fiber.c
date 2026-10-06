@@ -425,43 +425,21 @@ static void timer_down(size_t i) {
     }
 }
 
-// THE WORLD'S TURN. Timers and descriptors are the world's, and asking
-// it costs a clock read or a syscall, so the switches between two asks
-// are a WINDOW counted down by `g_until_world`; inside one, a switch
-// reads no clock.
+// THE WORLD, AND WHEN IT IS ASKED.
 //
-// THE INVARIANT: A WINDOW NEVER SPANS MORE THAN HALF THE TIME LEFT TO
-// THE EARLIEST TIMER, at the pace the window before it ran — and a
-// pace is believed one doubling at a time. So with a timer filed the
-// world is asked at the very next switch, then after 2, 4 … at most
-// FAIR_TURNS, for as long as switches stay short against the time left;
-// tasks that compute for long between switches are asked about at every
-// one, and a timer fires at the first switch after it is due. A
-// descriptor is asked about every FAIR_TURNS switches. With nothing
-// filed the window is endless.
+// TIMERS: A DUE TIMER FIRES AT THE FIRST SWITCH AFTER IT IS DUE. While
+// the heap holds anything, every switch reads the clock against its
+// earliest time; while it is empty, no switch reads a clock.
+//
+// DESCRIPTORS: THE POLLER IS ASKED EVERY FAIR_TURNS SWITCHES while a
+// waiter is filed on one and tasks are ready — a crowd of yielding
+// tasks cannot starve a reader — and at once when nobody is ready.
+// `g_until_poll` counts the switches left; with no waiter filed it is
+// out of reach.
 #define FAIR_TURNS 64
-#define WORLD_IDLE ((int64_t)1 << 62)
-static int64_t g_until_world = WORLD_IDLE;   // switches left in the window
-static int64_t g_window = WORLD_IDLE;        // switches it was given, less those it was cut by
-static int64_t g_grant = FAIR_TURNS;         // the size the last timed window was given
-static int64_t g_window_began = 0;           // the clock at its start; 0 when none was read
-static int64_t g_pace = 0;                   // ns a switch took in the window before; 0 when unknown
-static int64_t g_since_poll = 0;             // switches since the poller was last asked
+#define POLL_IDLE ((int64_t)1 << 62)
+static int64_t g_until_poll = POLL_IDLE;
 static int64_t g_polls = 0;
-
-// The window ends in `left` more switches at most.
-static inline void window_cut(int64_t left) {
-    if (g_until_world <= left) return;
-    g_window -= g_until_world - left;
-    g_until_world = left;
-}
-
-// A time became the earliest: the next switch is the world's, unless
-// the window in hand already ends with twice its own length to spare.
-static inline void time_filed(int64_t at) {
-    if (g_pace > 0 && g_window_began > 0 && g_until_world <= FAIR_TURNS && at - g_window_began >= 2 * g_grant * g_pace) return;
-    window_cut(1);
-}
 
 static void timer_set(uint32_t kind, void* who, int64_t at) {
     if (g_timers_len == g_timers_cap) {
@@ -472,7 +450,7 @@ static void timer_set(uint32_t kind, void* who, int64_t at) {
     size_t i = g_timers_len++;
     g_timers[i] = (Timer){ at, g_timer_seq++, kind, who };
     timer_placed(i);
-    if (timer_up(i) == 0) time_filed(at);
+    timer_up(i);
 }
 
 // The entry at `i` leaves the heap; its owner's place is its to clear.
@@ -591,7 +569,7 @@ static void waiter_filed(Waiter* w) {
     w->filed = 1;
     if (w->kind != W_GATE) {
         g_parked_fds++;
-        window_cut(FAIR_TURNS);
+        if (g_until_poll > FAIR_TURNS) g_until_poll = FAIR_TURNS;
     }
 }
 
@@ -731,7 +709,7 @@ int64_t avra_fiber_fd_ready(int64_t fd, int64_t writing) {
 static void poller_wait(int64_t timeout_ns) {
     poller_open();
     g_polls++;
-    g_since_poll = 0;
+    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;
     enum { BATCH = 256 };
 #if AVRA_KQUEUE
     struct kevent evs[BATCH];
@@ -1112,46 +1090,18 @@ static inline void switch_to(Fiber* next) {
     bury_finished();
 }
 
-// A window ends and the next is sized: due timers fire, and what is
-// left to the earliest decides how many switches may pass before the
-// world is asked again.
-static void window_opened(void) {
-    int64_t ran = g_window - (g_until_world > 0 ? g_until_world : 0);
-    g_since_poll += ran;
-    int64_t now = 0;
-    if (g_timers_len > 0) {
-        now = now_ns();
-        fire_due_timers(now);
-    }
-    if (g_timers_len == 0) {
-        g_window_began = 0;
-        g_pace = 0;
-        g_window = g_until_world = g_parked_fds > 0 ? FAIR_TURNS : WORLD_IDLE;
-        return;
-    }
-    // A window that began at a clock read and ran some switches says
-    // what a switch costs; one that did not says nothing, and the world
-    // is asked again at the next switch.
-    int timed = g_window_began > 0 && ran > 0;
-    int64_t pace = timed ? (now - g_window_began) / ran : 0;
-    if (timed && pace < 1) pace = 1;
-    int64_t most = 2 * g_grant < FAIR_TURNS ? 2 * g_grant : FAIR_TURNS;
-    int64_t fits = timed ? (g_timers[0].at - now) / (2 * pace) : 1;
-    g_grant = !timed || fits < 1 ? 1 : fits < most ? fits : most;
-    g_pace = pace;
-    g_window_began = now;
-    g_window = g_until_world = g_grant;
-}
-
 // The caller has already filed itself (ready, parked, waiting or
-// done); who runs next, waiting on the world when nobody is ready.
-// A world with nothing to wait on and nobody ready is a deadlock,
-// and a deadlock is never a hang.
+// done); who runs next, the world asked first, and waited on when
+// nobody is ready. A world with nothing to wait on and nobody ready is
+// a deadlock, and a deadlock is never a hang.
 __attribute__((noinline))
 static Fiber* next_with_world(void) {
     for (;;) {
-        window_opened();
-        if (g_parked_fds > 0 && g_since_poll >= FAIR_TURNS) poller_wait(0);
+        if (g_timers_len > 0) fire_due_timers(now_ns());
+        if (g_until_poll <= 0) {
+            if (g_parked_fds > 0) poller_wait(0);
+            else g_until_poll = POLL_IDLE;
+        }
         Fiber* next = ready_pop();
         if (next) return next;
         if (g_timers_len == 0 && g_parked_fds == 0) avra_trap("every task is waiting — deadlock");
@@ -1161,15 +1111,22 @@ static Fiber* next_with_world(void) {
     }
 }
 
+// Whether the queue alone decides this switch: no timer is filed, and
+// the poller's turn has not come.
+__attribute__((always_inline))
+static inline int queue_alone(void) {
+    int64_t left = --g_until_poll;
+    return __builtin_expect(g_timers_len == 0 && left > 0, 1);
+}
+
 // THE POLICY, ONE FOR BOTH ENGINES: who runs next. A compiled program
 // switches to the fiber it answers; the evaluator is handed it and
-// switches call stacks itself — so both interleave tasks alike. Until
-// the world's turn comes the queue alone decides, and the world's
-// machinery stays out of line: A COLD PATH IN A HOT LEAF COSTS EVERY
-// SWITCH A FRAME.
+// switches call stacks itself — so both interleave tasks alike, and
+// both ask the world by the same law. The world's machinery stays out
+// of line: A COLD PATH IN A HOT LEAF COSTS EVERY SWITCH A FRAME.
 __attribute__((always_inline))
 static inline Fiber* next_ready(void) {
-    if (__builtin_expect(--g_until_world > 0, 1)) {
+    if (queue_alone()) {
         Fiber* next = ready_pop();
         if (next) return next;
     }
@@ -1185,7 +1142,7 @@ static void run_next_with_world(void) {
 
 __attribute__((always_inline))
 static inline void run_next(void) {
-    if (__builtin_expect(--g_until_world > 0, 1)) {
+    if (queue_alone()) {
         Fiber* next = ready_pop();
         if (next) { switch_to(next); return; }
     }

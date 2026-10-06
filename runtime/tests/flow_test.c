@@ -646,6 +646,51 @@ static void timers_among_workers(void) {
     CHECK(late <= 5, "a sleep among them is asked about at the first switch after its time, not a window of switches later");
 }
 
+// Yields `g_quick` times at once, then computes 2 ms between yields
+// `g_slow` times; over and over.
+static int g_quick, g_slow;
+static void* works_in_bursts(void* self) {
+    (void)self;
+    while (!g_stop) {
+        for (int i = 0; i < g_quick && !g_stop; i++) avra_fiber_yield();
+        for (int i = 0; i < g_slow && !g_stop; i++) {
+            int64_t until = now_ns() + 2000000;
+            while (now_ns() < until) {}
+            avra_fiber_yield();
+        }
+    }
+    return answer(0);
+}
+
+// `cap` sleeps of 5 ms; the worst any of them ran over, in ms.
+static void* naps(void* self) {
+    int64_t worst = 0;
+    for (int64_t i = 0; i < cap(self); i++) {
+        int64_t t0 = now_ns();
+        avra_fiber_sleep(5);
+        int64_t late = (now_ns() - t0) / 1000000 - 5;
+        if (late > worst) worst = late;
+    }
+    return answer(worst);
+}
+
+// Tasks that alternate a run of quick yields with a run of long slices:
+// a sleep is never later than one round of the long slices, however the
+// quick run before it went.
+static void timers_among_bursts(void) {
+    static const int shapes[2][3] = { { 8, 100, 8 }, { 2, 300, 40 } };
+    for (int s = 0; s < 2; s++) {
+        int workers = shapes[s][0];
+        g_stop = 0; g_quick = shapes[s][1]; g_slow = shapes[s][2];
+        void* w[8];
+        for (int i = 0; i < workers; i++) w[i] = spawn1(works_in_bursts, 0);
+        int64_t worst = joined(spawn1(naps, 20));
+        g_stop = 1;
+        for (int i = 0; i < workers; i++) joined(w[i]);
+        CHECK(worst <= workers * 2 + 12, s == 0 ? "twenty sleeps among eight bursting tasks are each late by one round of slices at most" : "twenty sleeps among two bursting tasks are each late by one round of slices at most");
+    }
+}
+
 // Yields `cap` times at most, counting; notes the turn at which the
 // time `g_due` had come.
 static void* yields_counting(void* self) {
@@ -704,6 +749,64 @@ static void world_within_reach(void) {
     joined(w);
     for (int i = 0; i < YIELDERS; i++) joined(y[i]);
     CHECK(late >= 0 && late <= REACH + 64, "a reader parked among yielding tasks wakes within a window of switches of its byte");
+}
+
+// ── laws whose breaking would hang the rest: each in a child ────
+
+// `body` in a child that a hang cannot outlive; passes when every check
+// the child made held.
+static void in_child(const char* what, void (*body)(void)) {
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid == 0) {
+        alarm(30);
+        g_fails = 0;
+        body();
+        _exit(g_fails ? 1 : 0);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, what);
+}
+
+static void winner_leaves_at_claim(void) {
+    g_gate = avra_gate_new();
+    spawn1(waits_for_ever, 0);
+    avra_fiber_sleep(2);
+    CHECK(avra_gate_claim(g_gate) == 5, "the waiter is claimed");
+    CHECK(!filed(g_gate), "and is out of the gate's list at the claim");
+}
+
+static void freed_vtask_leaves_its_sources(void) {
+    g_gate = avra_gate_new();
+    int64_t vt = avra_vtask_new();
+    avra_vtask_wait_gate(vt, g_gate, 0, 0);
+    avra_vtask_wait_until(vt, in_ms(60000), 1, 0);
+    avra_vtask_wait_fd(vt, g_pipe[0], 0, 2, 0);
+    CHECK(avra_vtask_park(vt) == 1, "a virtual task parks");
+    avra_vtask_free(vt);
+    CHECK(!filed(g_gate) && avra_sched_timers() == 0 && avra_sched_fd_waiters() == 0, "freed, it is filed nowhere");
+}
+
+static void* parks_on_number(void* self) { return answer(avra_fiber_park_fd(cap(self), 0, 2000)); }
+
+// A descriptor closed through the scheduler's door, its number given to
+// another pipe: a park on the number is watched afresh.
+static void closed_number_is_watched_afresh(void) {
+    int first[2], second[2];
+    if (pipe(first) != 0 || pipe(second) != 0) _exit(9);
+    fcntl(first[0], F_SETFL, O_NONBLOCK);
+    void* t = spawn1(parks_on_number, first[0]);
+    avra_fiber_sleep(2);
+    avra_fiber_fd_closing(first[0]);
+    close(first[0]);
+    CHECK(joined(t) == 1, "a close wakes the task parked on the descriptor");
+    if (dup2(second[0], first[0]) != first[0]) _exit(9);
+    fcntl(first[0], F_SETFL, O_NONBLOCK);
+    t = spawn1(parks_on_number, first[0]);
+    avra_fiber_sleep(2);
+    CHECK(write(second[1], "n", 1) == 1, "the new pipe takes a byte");
+    CHECK(joined(t) == 1, "a park on the number's next tenant is woken by its byte");
 }
 
 // ── a wait on an open gate is a set too ─────────────────────────
@@ -973,14 +1076,23 @@ static void as_virtual(void) {
 
 int main(void) {
     alarm(120);
+    if (pipe(g_pipe) != 0) { perror("pipe"); return 1; }
+    fcntl(g_pipe[0], F_SETFL, O_NONBLOCK);
+    in_child("a claimant takes the winner out of its list at the claim", winner_leaves_at_claim);
+    in_child("a freed virtual task leaves every source it was filed with", freed_vtask_leaves_its_sources);
+    in_child("a closed descriptor's number is watched afresh for its next tenant", closed_number_is_watched_afresh);
+    in_child("a sleep and a reader among yielding tasks wake within reach", world_within_reach);
+    in_child("timers among tasks that compute between yields fire at the first switch after", timers_among_workers);
+    if (g_fails) {
+        printf("flow: %d checks, %d failed — the rest would hang on what these hold\n", g_checks, g_fails);
+        return 1;
+    }
     trapped("a sleep inside a set", sleep_in_set, "a task waited inside a wait it had not parked");
     trapped("a join inside a set", join_in_set, "a task waited inside a wait it had not parked");
     trapped("a descriptor park inside a set", park_in_set, "a task waited inside a wait it had not parked");
     trapped("a sleep after a wait an open gate claimed", sleep_in_claimed_set, "a task waited inside a wait it had not parked");
     stacks();
 
-    if (pipe(g_pipe) != 0) { perror("pipe"); return 1; }
-    fcntl(g_pipe[0], F_SETFL, O_NONBLOCK);
     int64_t live = avra_mem_live();
     three_sources_as_fibers();
     claim_then_cancel();
@@ -999,6 +1111,7 @@ int main(void) {
     interrupt_is_time();
     late_parker();
     timers_among_workers();
+    timers_among_bursts();
     world_within_reach();
     CHECK(avra_mem_live() == live, "the fibers leave nothing behind");
     as_virtual();

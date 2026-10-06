@@ -51,22 +51,20 @@ MUTATIONS = [
     ("a waiter's gate is never let go", "    if (w->kind == W_GATE) avra_rc_release(w->on.gate);\n    else g_parked_fds--;", "    if (w->kind != W_GATE) g_parked_fds--;"),
     ("a timer task is not released when it fires", "    gate_opened(task, BY_TIMER);\n    avra_rc_release(task);", "    gate_opened(task, BY_TIMER);"),
     ("a task's slots outlive it", "        self->own.slot[i] = NULL;\n        avra_rc_release(held);", "        self->own.slot[i] = NULL;"),
-    ("the switch does not repoint the task's locals", "    g_current = next;\n    avra_task_local = next->local;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// A window ends", "    g_current = next;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// A window ends"),
+    ("the switch does not repoint the task's locals", "    g_current = next;\n    avra_task_local = next->local;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// The caller has already filed itself", "    g_current = next;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// The caller has already filed itself"),
     ("the guarded count never runs out", "            if (!g_guards_all) g_each_left -= n;\n", ""),
     ("a stack given back forgets what guards it", "    if (f->base) stack_give((Stack){ f->base, f->guard });", "    if (f->base) stack_give((Stack){ f->base, f->base - g_page });"),
     ("a guarded stack is not preferred", "    return pool_taken(g_guarded.len > 0 ? &g_guarded : &g_shared);", "    return pool_taken(g_shared.len > 0 ? &g_shared : &g_guarded);"),
     ("a misspelled guard count is read as none", "        if (!end || *end != 0 || errno != 0) guards_misspelled(env);\n", ""),
-    ("filing a time does not bring the world within reach", "    window_cut(1);\n", ""),
-    ("filing a descriptor waiter does not bring the world within reach", "        window_cut(FAIR_TURNS);\n", ""),
-    ("the world's turn comes every million switches", "#define FAIR_TURNS 64\n", "#define FAIR_TURNS 1000000\n"),
-    ("a window is not sized by the time left", "    int64_t fits = timed ? (g_timers[0].at - now) / (2 * pace) : 1;", "    int64_t fits = most;"),
-    ("the world is asked only when nobody is ready", "    if (__builtin_expect(--g_until_world > 0, 1)) {", "    if (1) {"),
-    ("a world turn never asks the poller", "        if (g_parked_fds > 0 && g_since_poll >= FAIR_TURNS) poller_wait(0);\n", ""),
-    ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("        if (g_parked_fds > 0 && g_since_poll >= FAIR_TURNS) poller_wait(0);\n", "        if (g_parked_fds > 0) poller_wait(0);\n")], None),
+    ("a switch with a timer filed reads no clock", "    return __builtin_expect(g_timers_len == 0 && left > 0, 1);", "    return __builtin_expect(left > 0, 1);"),
+    ("filing a descriptor waiter does not bring the poller within reach", "        if (g_until_poll > FAIR_TURNS) g_until_poll = FAIR_TURNS;\n", ""),
+    ("the poller's turn comes every million switches", "#define FAIR_TURNS 64\n", "#define FAIR_TURNS 1000000\n"),
+    ("the world is asked only when nobody is ready", "    return __builtin_expect(g_timers_len == 0 && left > 0, 1);", "    return 1;"),
+    ("the poller is never asked while tasks are ready", "            if (g_parked_fds > 0) poller_wait(0);\n            else g_until_poll = POLL_IDLE;", "            g_until_poll = FAIR_TURNS;"),
+    ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("        if (g_until_poll <= 0) {", "        if (1) {")], None),
 ]
 TESTS = ["flow_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
 BOUND = 60
-EVERYWHERE = {"the world is asked only when nobody is ready"}
 
 os.makedirs(out, exist_ok=True)
 for test in TESTS:
@@ -77,7 +75,7 @@ def tried(numbered):
     at, (name, old, new) = numbered
     text = source
     for a, b in old if isinstance(old, list) else [(old, new)]:
-        if text.count(a) != 1 and not (name in EVERYWHERE and text.count(a) > 1):
+        if text.count(a) != 1:
             return name, "rotten", f"its line is not in the source (x{text.count(a)})"
         text = text.replace(a, b)
     here = f"{out}/{at}"
@@ -105,5 +103,6 @@ for name, how, by in results:
 killed = sum(how == "killed" for _, how, _ in results)
 alive = sum(how == "alive" for _, how, _ in results)
 rotten = sum(how == "rotten" for _, how, _ in results)
-print(f"runtime-mutations: {killed} of {len(MUTATIONS)} killed" + (f"; {alive} survive" if alive else "") + (f"; {rotten} no longer apply" if rotten else ""))
+bound = sum("outlived" in by for _, how, by in results if how == "killed")
+print(f"runtime-mutations: {killed} of {len(MUTATIONS)} killed, {killed - bound} by a failing check and {bound} by the bound" + (f"; {alive} survive" if alive else "") + (f"; {rotten} no longer apply" if rotten else ""))
 sys.exit(1 if alive or rotten else 0)
