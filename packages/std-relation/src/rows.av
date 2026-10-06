@@ -84,13 +84,13 @@ type ReadMark = { revision: Cell<int>, reader: Cell<int> }
 
 /// The ids one owner stamped in one relation, in stamping order — a row
 /// since removed or restamped is still listed, and the stamp decides —
-/// and the run none of them is older than.
+/// and the run none of them is older than, 0 while it holds none.
 type Stamped = { ids: Cell<List<int>>, since: Cell<int> }
 
 impl Stamped {
     /// `id` stamped in `run`: the first into an empty list dates it.
     fn took(id: int, run: int) {
-        if self.ids.get().is_empty() { self.since.set(run) }
+        if self.since.get() == 0 { self.since.set(run) }
         self.ids.push(id)
     }
 }
@@ -156,6 +156,8 @@ export type Rows<R> = {
     filed: Cell<List<List<List<IndexKey>>>>,
     stamps: Cell<List<Stamp>>,
     stamped: Cell<List<Stamped?>>,
+    stamper: Cell<int>,
+    stamper_ids: Cell<Stamped?>,
     set: Cell<int>,
     live: Cell<int>,
     indexes: List<Index>,
@@ -175,6 +177,7 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
     let filed: Cell<List<List<List<IndexKey>>>> = Cell.new([])
     let stamps: Cell<List<Stamp>> = Cell.new([])
     let stamped: Cell<List<Stamped?>> = Cell.new([])
+    let no_stamped: Stamped? = null
     let buckets: Cell<List<Bucket>> = Cell.new([])
     Rows {
         name: name,
@@ -183,6 +186,8 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
         filed: filed,
         stamps: stamps,
         stamped: stamped,
+        stamper: Cell.new(0),
+        stamper_ids: Cell.new(no_stamped),
         set: Cell.new(0),
         live: Cell.new(0),
         indexes: [empty_index(o) for o in ordered],
@@ -359,8 +364,17 @@ impl Rows<R> {
         if stamp.owner != 0 && (!held || was != stamp.owner) { self.stamped_by(stamp.owner).took(id, stamp.run) }
     }
 
-    /// What `owner` stamped here, made on its first write.
+    /// What `owner` stamped here, made on its first write — the owner that
+    /// wrote last is found without a lookup.
     fn stamped_by(owner: int) -> Stamped {
+        if self.stamper.get() == owner { return self.stamper_ids.get()! }
+        let found = self.stamped_of(owner)
+        self.stamper.set(owner)
+        self.stamper_ids.set(found)
+        found
+    }
+
+    fn stamped_of(owner: int) -> Stamped {
         while self.stamped.get().length <= owner { self.stamped.push(null) }
         let known? = self.stamped.get()[owner] else {
             let none: List<int> = []
@@ -386,8 +400,9 @@ impl Rows<R> {
             db.unsettles_restored()
             for id in gone { self.remove(id) }
         }
-        mine.ids.set([id for id in live if marks[id].run >= run])
-        mine.since.set(run)
+        let kept = [id for id in live if marks[id].run >= run]
+        mine.since.set(if kept.is_empty() { 0 } else { run })
+        mine.ids.set(kept)
     }
 
     /// Every bucket the rows at `ids` are filed in.

@@ -38,7 +38,9 @@ extern fn avra_trap(message: string)
 /// input cell an answer READ BACK depends on (`restored`, -1 until the
 /// first), moved by every write here.
 /// Then its owners: each one's dense cell and name, its run count, the
-/// runs open now with the relations each has written, how many `@query`
+/// runs open now with the relations each has written — and, kept beside
+/// them so a write asks nothing twice, the innermost run's stamp, the
+/// relation it wrote last and what a write there owes — how many `@query`
 /// bodies are running here, and where its owner keeps query answers past
 /// the process. A Db given another kernel registers every
 /// family it holds there again (`registrars`).
@@ -61,14 +63,16 @@ export type Db = {
     runs: Cell<List<int>>,
     names: Cell<List<string>>,
     open: Cell<List<OpenRun>>,
+    top: Cell<Stamp>,
+    top_last: Cell<int>,
+    top_owed: Cell<bool>,
     asking: Cell<int>,
     written: Cell<int>,
 }
 
 /// An owner's run, open: the stamp its rows wear (its owner cell and
-/// which run of it this is), the relations it has written so far, and
-/// the one it wrote last with whether a reader may hold a cell of it.
-type OpenRun = { stamp: Stamp, wrote: Cell<List<int>>, last: Cell<int>, owed: Cell<bool> }
+/// which run of it this is) and the relations it has written so far.
+type OpenRun = { stamp: Stamp, wrote: Cell<List<int>> }
 
 /// Whose kernel a Db's cells live in, and so how a write is heard.
 /// `Own`: the Db's own kernel — a cell is verified by its live hash, and a
@@ -153,6 +157,9 @@ fn made(durable: Durable) -> Db {
         runs: runs,
         names: names,
         open: open,
+        top: Cell.new(unowned),
+        top_last: Cell.new(0 - 1),
+        top_owed: Cell.new(false),
         asking: Cell.new(0),
         written: Cell.new(0),
     }
@@ -284,12 +291,12 @@ impl Db {
     fn writing_into(family: int) -> bool {
         self.written.set(self.written.get() + 1)
         self.unsettles_restored()
-        let top? = self.open.get().last() else { return self.heard(family) }
-        if top.last.get() == family { return top.owed.get() }
-        if !top.wrote.get().contains(family) { top.wrote.push(family) }
+        if self.top_last.get() == family { return self.top_owed.get() }
         let owed = self.heard(family)
-        top.last.set(family)
-        top.owed.set(owed)
+        let top? = self.open.get().last() else { return owed }
+        if !top.wrote.get().contains(family) { top.wrote.push(family) }
+        self.top_last.set(family)
+        self.top_owed.set(owed)
         owed
     }
 
@@ -297,17 +304,21 @@ impl Db {
     /// run, or no one — and inside a `@query`'s body with no run open, a
     /// write is refused.
     fn stamp() -> Stamp {
-        let top? = self.open.get().last() else {
-            if self.asking.get() > 0 { self.refuse(query_writes()) }
-            return unowned
-        }
-        top.stamp
+        let top = self.top.get()
+        if top.owner == 0 && self.asking.get() > 0 { self.refuse(query_writes()) }
+        top
     }
 
     /// A write `owner` makes in the run it has open.
     fn stamp_of(owner: int) -> Stamp {
-        let top? = self.open.get().last() else { return Stamp { owner: owner, run: self.runs.get()[owner] } }
-        if top.stamp.owner == owner { top.stamp } else { Stamp { owner: owner, run: self.runs.get()[owner] } }
+        let top = self.top.get()
+        if top.owner == owner { top } else { Stamp { owner: owner, run: self.runs.get()[owner] } }
+    }
+
+    /// The innermost open run, kept where a write reads it.
+    fn retopped() {
+        self.top.set(self.open.get().last()?.stamp ?? unowned)
+        self.top_last.set(0 - 1)
     }
 
     /// An owner named by its writer: its dense cell, 0 is no one.
@@ -334,13 +345,9 @@ impl Db {
         self
             .open
             .push(
-                OpenRun {
-                    stamp: Stamp { owner: owner, run: run },
-                    wrote: Cell.new(wrote),
-                    last: Cell.new(0 - 1),
-                    owed: Cell.new(false),
-                },
+                OpenRun { stamp: Stamp { owner: owner, run: run }, wrote: Cell.new(wrote) },
             )
+        self.retopped()
         run
     }
 
@@ -350,6 +357,7 @@ impl Db {
         let run = self.runs.get()[owner]
         for s in self.sweepers.get() { s(self, owner, run) }
         self.open.set([r for r in self.open.get() if r.stamp.owner != owner])
+        self.retopped()
     }
 
     /// A `@query`'s body entered, and left.
