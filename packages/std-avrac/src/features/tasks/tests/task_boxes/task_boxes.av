@@ -1,0 +1,53 @@
+// proves: a task keeps the boxes its closure captured after the
+// spawner let go of them, and its answer outlives the task — through
+// a park, a join from another task, and a replaced cell.
+use @std.time.{ms, sleep}
+
+type Job = { parts: List<int>, name: string }
+
+fn summed(j: Job) -> List<int> {
+    sleep(ms(2))
+    mut t = 0
+    for p in j.parts { t = t + p }
+    [t, j.parts.length]
+}
+
+fn gathered() -> int {
+    mut ts: List<Task<List<int>>> = []
+    for i in 0..20 {
+        let j = Job { parts: [i, i + 1, i + 2], name: "j" }
+        ts.push(spawn summed(j))
+    }
+    mut t = 0
+    for k in ts {
+        let r = k.await
+        t = t + r[0] + r[1]
+    }
+    t
+}
+
+fn relayed() -> int {
+    let a = spawn summed(Job { parts: [5, 6], name: "a" })
+    let b = spawn {
+        let got = a.await
+        sleep(ms(2))
+        [got[0] * 2]
+    }
+    b.await[0] + a.await[1]
+}
+
+fn watched(c: Cell<Job>) -> int {
+    let seen = c.get()
+    sleep(ms(10))
+    seen.parts.length + c.get().parts.length
+}
+
+fn replaced() -> int {
+    let c = Cell.new(Job { parts: [1, 2, 3], name: "first" })
+    let t = spawn watched(c)
+    sleep(ms(2))
+    for i in 0..50 { c.set(Job { parts: [i], name: "next" }) }
+    t.await
+}
+
+"${gathered()} ${relayed()} ${replaced()}"

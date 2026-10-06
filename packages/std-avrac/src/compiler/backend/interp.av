@@ -57,6 +57,9 @@ enum Val {
     Y(v: Bytes)
     /// An aggregate — a handle into the machine's array table.
     A(id: int)
+    /// A packed value, held whole: the words a register pair carries.
+    /// It is no box — no identity, no handle, no count of its own.
+    P(parts: List<Val>)
     /// A mut binding's cell — a handle into the cell table.
     C(id: int)
     /// A map — a handle into the map table.
@@ -76,7 +79,7 @@ impl Val {
         match self {
             .A(id) -> "a${id}",
             .M(id) -> "m${id}",
-            .I(_) or .F(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N or .Gone -> "",
+            .I(_) or .F(_) or .B(_) or .S(_) or .Y(_) or .P(_) or .C(_) or .N or .Gone -> "",
         }
     }
 }
@@ -100,8 +103,22 @@ type Machine = {
     running: int,
     parking: bool,
     arrays: List<List<Val>>,
+    // an aggregate's reference count, index-aligned with `arrays`:
+    // a box holds one on creation, Retain/Release move it, and zero
+    // frees the box, releasing everything it holds; -1 never dies
+    counts: List<int>,
+    // whether a box at zero is FREED. A standalone program run — the
+    // long-lived one the counts exist for — frees; a compiler-internal
+    // settlement run does not, because its values cross into and out
+    // of `MetaVal` heaps whose references the memory pass never saw,
+    // and its budget already bounds it.
+    freeing: bool,
     maps: List<MapVal>,
     logs: List<MapLog>,
+    // a map's reference count, index-aligned with `maps`, and the
+    // views each log still has, index-aligned with `logs`
+    map_counts: List<int>,
+    log_views: List<int>,
     cells: List<Val>,
     // a `once fn`'s answer, settled for this run under its symbol
     onces: Map<string, Val>,
@@ -215,8 +232,12 @@ fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type) -> Mac
         running: -1,
         parking: false,
         arrays: [],
+        counts: [],
+        freeing: false,
         maps: [],
         logs: [],
+        map_counts: [],
+        log_views: [],
         cells: [],
         onces: {},
         statics: {},
@@ -246,6 +267,12 @@ export fn run_lowered(l: Lowered) -> Result<string, string> {
     .Ok(printed(ran(l, l.entry)?))
 }
 
+/// How many boxes and maps a program still held when it ended: a run
+/// frees what it lets go, so its own scopes leave none.
+export fn run_held(l: Lowered) -> Result<int, string> {
+    .Ok((ran(l, l.entry)?).m.held())
+}
+
 /// How a live run ended: clean, or by a trap in its words.
 export enum Ended {
     Clean
@@ -256,7 +283,7 @@ export enum Ended {
 /// as it is printed, so a program that never ends (a server) is heard,
 /// and a trap does not take the lines before it along.
 export fn run_live(l: Lowered) -> Ended {
-    mut m = fresh_machine(l) with { live: true }
+    mut m = fresh_machine(l) with { live: true, freeing: true }
     let _ = m.run_body(l.entry, [])
     let words? = m.failures.first() else { return Ended.Clean }
     Ended.Trapped(words)
@@ -284,7 +311,7 @@ export fn run_symbol(l: Lowered, symbol: string) -> Result<bool, string> {
 type Ran = { m: Machine, answer: Val? }
 
 fn ran(l: Lowered, target: Body) -> Result<Ran, string> {
-    mut m = fresh_machine(l)
+    mut m = fresh_machine(l) with { freeing: true }
     let answer: Val? = m.run_body(target)
     if !m.failures.is_empty() { return .Err(m.failures.first()!) }
     .Ok(Ran { m: m, answer: answer })
@@ -558,7 +585,8 @@ impl Machine {
             .B(b) -> fp(4, [if b { 1 } else { 0 }]),
             .S(s) -> fp(5, [fp_str(s)]),
             .Y(data) -> fp(10, octets_of_box(data)),
-            .A(id) -> fp(6, [self.value_hash(x) for x in self.arrays[id]]),
+            // a pack hashes as the node it crosses as
+            .A(_) or .P(_) -> fp(6, [self.value_hash(x) for x in self.packed(v!) ?? []]),
             .C(id) -> fp(7, [self.value_hash(self.cells[id])]),
             .M(id) -> fp(
                 8,
@@ -734,7 +762,15 @@ impl Machine {
             .Alloca(d) -> self.put_at(d, self.fresh_cell(), pc),
             .Load(d, slot) -> self.put_at(d, self.cell_read(slot), pc),
             .Store(slot, src) -> self.store_step(slot, src, pc),
-            .ScopeEnter(_) or .ScopeExit(_) or .Retain(_) or .Release(_) -> pc + 1,
+            .ScopeEnter(_) or .ScopeExit(_) -> pc + 1,
+            .Retain(r) -> {
+                self.retain_reg(r)
+                pc + 1
+            },
+            .Release(r) -> {
+                self.release_reg(r)
+                pc + 1
+            },
             // the run loop owns calls and returns
             .RetVal(_) or .FnExit(_) or .Ret(_) or .Call(_, _, _) or .CallPtr(_, _, _) -> {
                 let _ = self
@@ -752,19 +788,23 @@ impl Machine {
         Val.I(v)
     }
 
-    /// A packed value rides the same table an aggregate does — the
-    /// interpreter's bookkeeping, not the machine's layout.
     /// A BARE register IS its one element — the pack is the value
-    /// itself; every other aggregate is a fresh array. The backend
-    /// renders the same instruction the same way.
+    /// itself; every other pack is its words held whole, owning
+    /// nothing. The backend renders the same instruction the same way.
     fn pack_val(b: Body, d: Reg, elems: List<Reg>) -> Val {
         if self.bare_reg(b, d) { return self.value(elems[0]) }
-        self.fresh_array([self.value(r) for r in elems])
+        Val.P([self.value(r) for r in elems])
     }
 
     /// Whether a register holds a value with no aggregate behind it: a
     /// FLAT record of one field, which IS its field, or a nullable
     /// WORD ENUM, whose own tag doubles as the absent sentinel.
+    /// A pack's words: its own, or a box's when the value crossed in
+    /// as a node.
+    fn packed(v: Val) -> List<Val>? {
+        match v { .P(parts) -> parts, .A(id) -> self.arrays[id], rest -> null }
+    }
+
     fn bare_reg(b: Body, r: Reg) -> bool {
         let ty = b.reg_types[r.index]
         if self.l.types.is_flat(ty) && !self.l.types.is_wide(ty) { return true }
@@ -776,11 +816,9 @@ impl Machine {
 
     fn extract_val(b: Body, src: Reg, at: int) -> Val {
         if self.bare_reg(b, src) { return self.value(src) }
-        let id: int? = match self.value(src) { .A(x) -> x, _ -> null }
-        if id == null { return self.defect_val("an extract from a non-pack") }
-        let arr = self.arrays[id!]
-        if at < 0 || at >= arr.length { return self.defect_val("an extract past a pack's end") }
-        arr[at]
+        let parts? = self.packed(self.value(src)) else { return self.defect_val("an extract from a non-pack") }
+        if at < 0 || at >= parts.length { return self.defect_val("an extract past a pack's end") }
+        parts[at]
     }
 
     /// A register written in the TOP frame — IN PLACE: a frame read out and
@@ -829,6 +867,7 @@ impl Machine {
             .N -> MetaVal.Absent,
             .Gone -> MetaVal.Gone,
             .A(id) -> { heap.node([self.meta_of(x, heap) for x in self.arrays[id]]) },
+            .P(parts) -> { heap.node([self.meta_of(x, heap) for x in parts]) },
             .M(id) -> heap.map(self.map_keys(id), [self.meta_of(x, heap) for x in self.map_vals(id)]),
             .C(_) -> MetaVal.Absent,
         }
@@ -902,7 +941,7 @@ impl Machine {
         match v {
             .S(s) -> s,
             .Y(data) -> self.decoded(data),
-            .I(_) or .F(_) or .B(_) or .A(_) or .M(_) or .C(_) or .N or .Gone -> {
+            .I(_) or .F(_) or .B(_) or .A(_) or .P(_) or .M(_) or .C(_) or .N or .Gone -> {
                 self.defect("a non-string reached text")
                 ""
             },
@@ -1165,6 +1204,7 @@ impl Machine {
             .B(t) -> if t { "true" } else { "false" },
             .S(s) -> s,
             .A(id) -> "[${joined([self.val_text(e) for e in self.arrays[id]], ", ")}]",
+            .P(parts) -> "[${joined([self.val_text(e) for e in parts], ", ")}]",
             .Y(_) -> "<Bytes>",
             .C(_) -> "<cell>",
             .M(_) -> "<map>",
@@ -1220,34 +1260,62 @@ impl Machine {
             .Puts -> self.puts_val(vals),
             .Streq -> self.streq_val(vals),
             .ArrayNew -> self.array_new_val(),
-            .ArrayPush -> self.array_push_val(vals),
-            .ArrayGet -> self.array_get_val(vals),
+            .ArrayPush -> {
+                let kept = self.kept_seat(callee, vals)
+                if kept >= 0 { self.retains(vals[kept]) }
+                self.array_push_val(vals)
+            },
+            .ArrayGet -> self.answer_owned(callee, self.array_get_val(vals)),
             .ArrayLen -> self.array_len_val(vals),
-            .CellRelease or .CellForget -> Val.I(0),
+            .CellRelease -> self.cell_released(vals),
+            .CellForget -> self.cell_forgotten(vals),
             .CellUnique -> self.cell_unique_val(vals),
             .CellThawed -> self.cell_thawed_val(vals),
             .BoxThawed -> self.box_thawed_val(vals),
-            .EnumBoxed -> if self.whole(vals[0]) < 0 { Val.N } else { self.fresh_array([vals[0], vals[1]]) },
+            .ArrayPushMaybe -> {
+                let kept = self.kept_seat(callee, vals)
+                if kept >= 0 { self.retains(vals[kept]) }
+                self.push_maybe_val(vals)
+            },
+            .SlotSetMaybe -> {
+                let kept = self.kept_seat(callee, vals)
+                if kept >= 0 { self.retains(vals[kept]) }
+                self.set_maybe_val(vals)
+            },
+            .MapSetMaybe -> {
+                let kept = self.kept_seat(callee, vals)
+                if kept >= 0 { self.retains(vals[kept]) }
+                self.map_set_maybe_val(vals)
+            },
+            .EnumBoxed -> if self.whole(vals[0]) < 0 { Val.N } else { self.enum_boxed_val(vals) },
             .EnumTag -> self.enum_part_val(vals, 0, -1),
             .EnumWord -> self.enum_part_val(vals, 1, 0),
             .SlotUnique -> self.slot_unique_val(vals),
-            .SlotSet -> self.slot_set_val(vals),
+            .SlotSet -> {
+                let kept = self.kept_seat(callee, vals)
+                if kept >= 0 { self.retains(vals[kept]) }
+                self.slot_set_val(vals)
+            },
             .MapNew -> self.map_new_val(),
             .MapLen -> self.map_len_val(vals),
             .MapHas -> self.map_has_val(vals),
-            .MapGet -> self.map_get_val(vals),
-            .MapSet -> self.map_set_val(vals),
+            .MapGet -> self.answer_owned(callee, self.map_get_val(vals)),
+            .MapSet -> {
+                let kept = self.kept_seat(callee, vals)
+                if kept >= 0 { self.retains(vals[kept]) }
+                self.map_set_val(vals)
+            },
             .StrJoin -> self.str_join_val(vals),
-            .OnceGet -> self.once_get_val(vals),
+            .OnceGet -> self.answer_owned(callee, self.once_get_val(vals)),
             .OnceSet -> self.once_set_val(vals),
-            .Insist -> self.insist_val(vals),
+            .Insist -> self.answer_owned(callee, self.insist_val(vals)),
             .InsistScalar -> self.insist_scalar_val(vals),
             .Text -> Val.S(self.val_text(vals[0])),
             .FloatTextBits -> Val.S(avra_float_text_bits(self.whole(vals[0]))),
             .Strlen -> Val.I(self.byte_length(vals[0])),
-            .ArrayPop -> self.array_pop_val(vals),
-            .ArrayConcat -> self.array_concat_val(vals),
-            .ArraySlice -> self.array_slice_val(vals),
+            .ArrayPop -> self.answer_owned(callee, self.array_pop_val(vals)),
+            .ArrayConcat -> self.consuming(row, vals, self.array_concat_val(vals)),
+            .ArraySlice -> self.consuming(row, vals, self.array_slice_val(vals)),
             .StrContains -> verdict(self.text_val(vals[0]).contains(self.text_val(vals[1]))),
             .StrStartsWith -> verdict(self.text_val(vals[0]).starts_with(self.text_val(vals[1]))),
             .StrEndsWith -> verdict(self.text_val(vals[0]).ends_with(self.text_val(vals[1]))),
@@ -1293,16 +1361,13 @@ impl Machine {
             .Embed -> self.embedded(self.text_val(vals[0])),
             .StrFromCodepoint -> Val.S(avra_str_from_codepoint(self.whole(vals[0]))),
             .ExecSelf -> self.exec_self_val(vals),
-            .ArrayPushMaybe -> self.push_maybe_val(vals),
-            .MapSetMaybe -> self.map_set_maybe_val(vals),
             .MapValuePresent -> self.map_value_present_val(vals),
             .MapSlot -> self.map_slot_val(vals),
-            .MapValueAt -> self.map_value_at_val(vals),
+            .MapValueAt -> self.answer_owned(callee, self.map_value_at_val(vals)),
             .MapPresentAt -> self.map_present_at_val(vals),
             .MapKeys -> self.map_keys_val(vals),
             .MapVals -> self.map_vals_val(vals),
             .MapRemove -> self.map_remove_val(vals),
-            .SlotSetMaybe -> self.set_maybe_val(vals),
             .SlotPresent -> self.present_val(vals),
             .ArrayLastPresent -> self.last_present_val(vals),
             .TaskSpawn -> self.task_spawn_val(vals),
@@ -1421,7 +1486,7 @@ impl Machine {
             .Y(_) -> self.stage_bytes(at, v),
             .N or .Gone -> self.staged_at(at, 0),
             .I(a) -> self.staged_at(at, a),
-            .F(_) or .B(_) or .A(_) or .M(_) or .C(_) -> false,
+            .F(_) or .B(_) or .A(_) or .P(_) or .M(_) or .C(_) -> false,
         }
     }
 
@@ -1434,7 +1499,7 @@ impl Machine {
     fn staged_cell(at: int, v: Val) -> bool {
         match v {
             .C(id) -> self.seeded(at, id),
-            .S(_) or .Y(_) or .N or .Gone or .I(_) or .F(_) or .B(_) or .A(_) or .M(_) -> false,
+            .S(_) or .Y(_) or .N or .Gone or .I(_) or .F(_) or .B(_) or .A(_) or .P(_) or .M(_) -> false,
         }
     }
 
@@ -1610,10 +1675,173 @@ impl Machine {
         self.fresh_array([])
     }
 
-    /// A new array in the table, holding these values.
+    /// A new array in the table, holding these values. Its seed count
+    /// is one: the reference of whatever first holds it — a register,
+    /// or the box that stores it as a field. A box's OWN elements are
+    /// counted by the site that puts them there (`pack_val`,
+    /// `cloned_val`, an owned push), never here, so a freshly minted
+    /// child's one reference is its parent's.
     fn fresh_array(elems: List<Val>) -> Val {
         self.arrays.push(elems)
+        self.counts.push(1)
         Val.A(self.arrays.length - 1)
+    }
+
+    /// A new array over values that already stood: each takes the
+    /// reference the new box holds.
+    fn shared_array(held: List<Val>) -> Val {
+        for v in held { self.retains(v) }
+        self.fresh_array(held)
+    }
+
+    /// A box takes one more holder. A count that is not positive is
+    /// not a holder — a freed box (zero), or an immortal one (-1: a
+    /// static's or a `once` answer's, shared by definition).
+    fn retained(id: int) {
+        if self.counts[id] > 0 { self.counts.set(id, self.counts[id] + 1) }
+    }
+
+    fn map_retained(id: int) {
+        if self.map_counts[id] > 0 { self.map_counts.set(id, self.map_counts[id] + 1) }
+    }
+
+    /// A holder leaves; whether it was the last.
+    fn lapsed(id: int) -> bool {
+        if self.counts[id] <= 0 { return false }
+        self.counts.set(id, self.counts[id] - 1)
+        self.counts[id] == 0
+    }
+
+    fn map_lapsed(id: int) -> bool {
+        if self.map_counts[id] <= 0 { return false }
+        self.map_counts.set(id, self.map_counts[id] - 1)
+        self.map_counts[id] == 0
+    }
+
+    /// A box or map nobody holds is freed, and so is everything that
+    /// lost its last holder with it — a worklist, so a long chain costs
+    /// no depth. The entry is tombstoned: an id is never reused.
+    fn reclaimed(first: Val) {
+        if !self.freeing { return }
+        mut dead = [first]
+        while !dead.is_empty() {
+            for e in self.emptied(dead.pop()) { self.lapsing(e, dead) }
+        }
+    }
+
+    /// A dead entry's contents, taken out of its table.
+    fn emptied(v: Val) -> List<Val> {
+        match v {
+            .A(id) -> {
+                let kids = self.arrays[id]
+                self.arrays.set(id, [Val.Gone])
+                kids
+            },
+            .M(id) -> self.map_dropped(id),
+            rest -> [],
+        }
+    }
+
+    /// What a value names that just lost its last holder.
+    fn lapsing(v: Val, mut dead: List<Val>) {
+        match v {
+            .A(id) -> { if self.lapsed(id) { dead.push(v) } },
+            .M(id) -> { if self.map_lapsed(id) { dead.push(v) } },
+            .P(parts) -> { for x in parts { self.lapsing(x, dead) } },
+            rest -> nothing(),
+        }
+    }
+
+    /// How many boxes and maps a holder still counts.
+    fn held() -> int {
+        [c for c in self.counts if c > 0].length + [c for c in self.map_counts if c > 0].length
+    }
+
+    /// A pack counts through to the boxes its words name, as a
+    /// register pair's retain reaches its counted word.
+    fn retains(v: Val) {
+        match v {
+            .A(id) -> self.retained(id),
+            .M(id) -> self.map_retained(id),
+            .P(parts) -> { for x in parts { self.retains(x) } },
+            rest -> nothing(),
+        }
+    }
+
+    fn releases_val(v: Val) {
+        match v {
+            .A(id) -> { if self.lapsed(id) { self.reclaimed(v) } },
+            .M(id) -> { if self.map_lapsed(id) { self.reclaimed(v) } },
+            .P(parts) -> { for x in parts { self.releases_val(x) } },
+            rest -> nothing(),
+        }
+    }
+
+    /// Whether a place must COPY before it writes: a box another
+    /// holder counts, or one that never dies. A run that does not free
+    /// holds references nothing counted, so every box there is shared.
+    fn shared(v: Val) -> bool {
+        match v {
+            .A(id) -> !self.freeing || self.counts[id] != 1,
+            .M(id) -> !self.freeing || self.map_counts[id] != 1,
+            rest -> true,
+        }
+    }
+
+    fn retain_reg(r: Reg) { self.retains(self.value(r)) }
+    fn release_reg(r: Reg) { self.releases_val(self.value(r)) }
+
+    /// The seat a row's own C body RETAINED — the `<name>_owned` twins
+    /// and a boxed enum's counted word. -1 for a row that keeps none,
+    /// including the `_moved` twins, whose seat's reference transfers
+    /// without a count.
+    fn kept_seat(callee: string, vals: List<Val>) -> int {
+        match callee {
+            "avra_array_push_owned" -> 1,
+            "avra_array_push_maybe_owned" -> if self.flag_of(vals[1]) { 2 } else { -1 },
+            "avra_slot_set_owned" -> 2,
+            "avra_slot_set_maybe_owned" -> if self.flag_of(vals[2]) { 3 } else { -1 },
+            "avra_map_set_owned" -> 2,
+            "avra_map_set_maybe_owned" -> if self.flag_of(vals[2]) { 3 } else { -1 },
+            "avra_array_push_tagged" -> if self.counted_word(self.whole(vals[2]), self.whole(vals[3])) { 1 } else { -1 },
+            "avra_slot_set_tagged" -> if self.counted_word(self.whole(vals[3]), self.whole(vals[4])) { 2 } else { -1 },
+            rest -> -1,
+        }
+    }
+
+    /// The rows that hand back a box which ALREADY stood — a borrow's
+    /// owned twin, the once cache's answer, `!`'s shared answer — so
+    /// the answer takes its own reference. A row that MINTS its answer
+    /// (concat, slice, a boxed enum) seeds it already.
+    fn shares_answer(callee: string) -> bool {
+        match callee {
+            "avra_array_get_owned" or "avra_slot_get_owned" or "avra_map_get_owned" or "avra_map_value_at_owned" or "avra_once_get" or "avra_insist" -> true,
+            rest -> false,
+        }
+    }
+
+    /// A reusing twin CONSUMES its first seat — the row writes it — so
+    /// the reference the caller handed over ends with the call.
+    fn consuming(row: RtSig, vals: List<Val>, answer: Val) -> Val {
+        if row.writes.first() ?? false { self.releases_val(vals[0]) }
+        answer
+    }
+
+    fn answer_owned(callee: string, v: Val) -> Val {
+        if self.shares_answer(callee) { self.retains(v) }
+        v
+    }
+
+    /// A boxed enum's word carries a pointer the row retained when bit
+    /// `tag` of `counted` says the variant does.
+    fn counted_word(tag: int, counted: int) -> bool {
+        tag >= 0 && (counted >> tag) & 1 != 0
+    }
+
+    fn enum_boxed_val(vals: List<Val>) -> Val {
+        let box = self.fresh_array([vals[0], vals[1]])
+        if self.counted_word(self.whole(vals[0]), self.whole(vals[2])) { self.retains(vals[1]) }
+        box
     }
 
     /// An int argument's value — a defect answers zero.
@@ -1641,7 +1869,7 @@ impl Machine {
         let a: int? = array_id(vals[0])
         let b: int? = array_id(vals[1])
         if a == null || b == null { return self.defect_val("a concat over a non-array") }
-        self.fresh_array(self.arrays[a!].concat(self.arrays[b!]))
+        self.shared_array(self.arrays[a!].concat(self.arrays[b!]))
     }
 
     /// The slots from lo up to hi, clamped — worded like the runtime's.
@@ -1654,7 +1882,7 @@ impl Machine {
         let xs = self.arrays[id]
         let lo = clamped(from, 0, xs.length)
         let hi = clamped(to, 0, xs.length)
-        self.fresh_array(if lo < hi { xs.slice(lo, hi) } else { [] })
+        self.shared_array(if lo < hi { xs.slice(lo, hi) } else { [] })
     }
 
     /// The bytes from lo up to hi, clamped — worded like the runtime's.
@@ -1694,12 +1922,9 @@ impl Machine {
         match v {
             // a word is its own copy
             .F(_) -> v,
-            .A(id) -> {
-                self.arrays.push([x for x in self.arrays[id]])
-                Val.A(self.arrays.length - 1)
-            },
+            .A(id) -> { self.shared_array([x for x in self.arrays[id]]) },
             .M(id) -> self.map_copy(id),
-            .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N or .Gone -> v,
+            .I(_) or .B(_) or .S(_) or .Y(_) or .P(_) or .C(_) or .N or .Gone -> v,
         }
     }
 
@@ -1746,9 +1971,16 @@ impl Machine {
         self.arrays[id][at]
     }
 
-    /// A static's box, noted as the binary's own.
+    /// A static's box or a `once` answer's, noted as the binary's own:
+    /// it lives as long as the run, so its count is -1 and neither a
+    /// retain nor a release moves it.
     fn frozen_val(v: Val) -> Val {
         self.frozen.set(v.handle(), true)
+        match v {
+            .A(id) -> self.counts.set(id, -1),
+            .M(id) -> self.map_counts.set(id, -1),
+            rest -> nothing(),
+        }
         v
     }
 
@@ -1763,8 +1995,11 @@ impl Machine {
     fn cell_unique_val(vals: List<Val>) -> Val {
         match vals[0] {
             .C(id) -> {
-                let fresh = self.cloned_val(self.cells[id])
+                let held = self.cells[id]
+                if !self.shared(held) { return held }
+                let fresh = self.cloned_val(held)
                 self.cells.set(id, fresh)
+                self.releases_val(held)
                 fresh
             },
             _ -> self.defect_val("a place opened through a non-cell"),
@@ -1775,12 +2010,16 @@ impl Machine {
     /// receiver, a borrowed parameter: opened only when it is a
     /// static's. Any other box stands, whoever else holds it.
     fn box_thawed_val(vals: List<Val>) -> Val {
-        if self.frozen.get(vals[0].handle()) == null { return vals[0] }
+        if self.frozen.get(vals[0].handle()) == null {
+            self.retains(vals[0])
+            return vals[0]
+        }
         self.cloned_val(vals[0])
     }
 
     fn slot_unique_val(vals: List<Val>) -> Val {
         let held = self.array_get_val(vals)
+        if !self.shared(held) { return held }
         let fresh = self.cloned_val(held)
         let _ = self.slot_set_val([vals[0], vals[1], fresh])
         fresh
@@ -1794,7 +2033,33 @@ impl Machine {
     mut fn slot_written(id: int, at: int, v: Val) -> Val {
         let n = self.arrays[id].length
         if at < 0 || at >= n { return self.out_of_bounds(at, n) }
+        let old = self.arrays[id][at]
         self.arrays[id].set(at, v)
+        self.releases_val(old)
+        Val.I(0)
+    }
+
+    /// A cell's held reference released through its slot, and the slot
+    /// emptied — the memory pass's `avra_cell_release` before a store.
+    fn cell_released(vals: List<Val>) -> Val {
+        match vals[0] {
+            .C(id) -> {
+                let old = self.cells[id]
+                self.cells.set(id, Val.N)
+                self.releases_val(old)
+            },
+            rest -> self.defect("a release of a non-cell"),
+        }
+        Val.I(0)
+    }
+
+    /// The same slot emptied WITHOUT a release: its reference moved out
+    /// to the value a reuse-in-place load will carry.
+    fn cell_forgotten(vals: List<Val>) -> Val {
+        match vals[0] {
+            .C(id) -> self.cells.set(id, Val.N),
+            rest -> self.defect("a forget of a non-cell"),
+        }
         Val.I(0)
     }
 
@@ -1874,7 +2139,7 @@ impl Machine {
 
     fn map_vals_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.unlooked() }
-        self.fresh_array([read_out(x) for x in self.map_vals(id)])
+        self.shared_array([read_out(x) for x in self.map_vals(id)])
     }
 
     fn map_remove_val(vals: List<Val>) -> Val {
@@ -1897,7 +2162,7 @@ impl Machine {
         match v {
             .B(b) -> b,
             .I(n) -> n != 0,
-            .F(_) or .S(_) or .Y(_) or .A(_) or .C(_) or .M(_) or .N or .Gone -> {
+            .F(_) or .S(_) or .Y(_) or .A(_) or .P(_) or .C(_) or .M(_) or .N or .Gone -> {
                 self.defect("a flag seat held neither a bool nor a word")
                 false
             },
@@ -1925,7 +2190,7 @@ impl Machine {
     /// `once_committed`'s fiber-race witness.
     fn once_set_val(vals: List<Val>) -> Val {
         let key = self.text_val(vals[0])
-        if self.onces.get(key) == null { self.onces.set(key, vals[1]) }
+        if self.onces.get(key) == null { self.onces.set(key, self.frozen_val(vals[1])) }
         Val.I(0)
     }
 
@@ -1935,7 +2200,7 @@ impl Machine {
     /// one is silent — `OnceRead`'s own arm is what every later call
     /// sees.
     fn once_committed(sym: string, value: Reg, pc: int) -> int {
-        if self.onces.get(sym) == null { self.onces.set(sym, self.value(value)) }
+        if self.onces.get(sym) == null { self.onces.set(sym, self.frozen_val(self.value(value))) }
         pc + 1
     }
 

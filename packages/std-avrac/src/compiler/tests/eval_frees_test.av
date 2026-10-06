@@ -1,0 +1,64 @@
+//! The evaluator FREES what a run lets go: each program test under
+//! `freed_*` is run here once more, and must leave no box and no map
+//! counted when it ends. The program tests prove the answers; this
+//! proves nothing was kept to get them.
+use @std.avrac.compiler.{avra, new_workspace}
+use @std.meta.{embed}
+use compiler.host.{memory_host}
+
+const ALIAS: string = embed("freed_alias/freed_alias.av")
+const UNIQUE: string = embed("freed_unique/freed_unique.av")
+const ACROSS_CALL: string = embed("freed_across_call/freed_across_call.av")
+const STORES: string = embed("freed_stores/freed_stores.av")
+const ENUMS: string = embed("freed_enums/freed_enums.av")
+const PAIRS: string = embed("freed_pairs/freed_pairs.av")
+const NULLABLE: string = embed("freed_nullable/freed_nullable.av")
+const ONCE_DYN: string = embed("freed_once_dyn/freed_once_dyn.av")
+const STATICS: string = embed("freed_statics/freed_statics.av")
+const CLOSURES: string = embed("freed_closures/freed_closures.av")
+const WIDE_ENUM: string = embed("freed_wide_enum/freed_wide_enum.av")
+const CHAIN: string = embed("freed_chain/freed_chain.av")
+const MAPS: string = embed("freed_maps/freed_maps.av")
+const MAP_COPY: string = embed("freed_map_copy/freed_map_copy.av")
+const TASKS: string = embed("freed_tasks/freed_tasks.av")
+
+/// The one thing counting never frees.
+const CYCLE: string = "type Hook = { run: fn() -> int }\nfn hooked() -> int {\n    let c: Cell<List<Hook>> = Cell.new([])\n    c.push(Hook { run: () -> c.get().length })\n    c.get().length\n}\nhooked()"
+
+const ENTRY: string = "/w/src/main.av"
+
+/// What a program still held when its run ended; -1 when it did not run.
+fn held(text: string) -> int {
+    new_workspace(memory_host({"/w/src/main.av": text}, [ENTRY]), "/w", avra())
+        .program(ENTRY)
+        .held() catch e -> -1
+}
+
+spec "compiler/backend (the evaluator frees)" {
+    given "boxes with more than one holder" {
+        then "two holders of one box leave nothing" { held(ALIAS) == 0 }
+        then "a place opened only while shared leaves nothing" { held(UNIQUE) == 0 }
+        then "a box held across a call leaves nothing" { held(ACROSS_CALL) == 0 }
+        then "stores, slot writes, pops, concats and slices leave nothing" { held(STORES) == 0 }
+    }
+    given "values that ride registers" {
+        then "an enum's payload leaves nothing" { held(ENUMS) == 0 }
+        then "a pair leaves nothing, and neither does what it named" { held(PAIRS) == 0 }
+        then "a nullable box leaves nothing" { held(NULLABLE) == 0 }
+        then "an enum past sixty-four variants leaves nothing" { held(WIDE_ENUM) == 0 }
+    }
+    given "what never dies" {
+        then "a `once` answer and a `dyn` box leave nothing counted" { held(ONCE_DYN) == 0 }
+        then "the binary's own data is never counted" { held(STATICS) == 0 }
+    }
+    given "boxes that own boxes" {
+        then "a closure's captures leave nothing" { held(CLOSURES) == 0 }
+        then "a long chain leaves nothing" { held(CHAIN) == 0 }
+        then "a map's values leave nothing" { held(MAPS) == 0 }
+        then "a copied map's values leave nothing" { held(MAP_COPY) == 0 }
+        then "a task's body and answer leave nothing" { held(TASKS) == 0 }
+    }
+    given "a closure a cell holds that captured the cell" {
+        then "the cycle is what the count still shows" { held(CYCLE) > 0 }
+    }
+}

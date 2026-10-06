@@ -23,7 +23,10 @@ type Job = {
     frames: List<List<Val?>>,
     callers: List<Resume>,
     at: Place?,
-    answer: Val?,
+    // its RECORD in the array table, as the runtime's task is one: its
+    // id, the body it owns, and the answer it leaves. The handle a
+    // program holds is this box; -1 for the program's own run.
+    record: int,
     done: bool,
     waiters: List<int>,
     // it parked on the policy at the instruction it resumes on: that
@@ -43,7 +46,7 @@ impl Machine {
                     frames: [],
                     callers: [],
                     at: null,
-                    answer: null,
+                    record: -1,
                     done: false,
                     waiters: [],
                     resumed: false,
@@ -68,6 +71,10 @@ impl Machine {
         self.rooted()
         let box? = array_id(vals[0]) else { return self.closureless() }
         let target? = self.addressed_val(self.arrays[box].first() ?? Val.N) else { return self.closureless() }
+        // the record owns its body, and the task holds its own record
+        // until it answers
+        let record = self.shared_array([Val.I(self.tasks.length), vals[0], Val.N])
+        self.retains(record)
         let vt = avra_vtask_new()
         avra_vtask_within_end(vt, avra_vtask_deadline(self.tasks[self.running].vt))
         self
@@ -78,23 +85,36 @@ impl Machine {
                     frames: [self.frame_for(target, [vals[0]])],
                     callers: [],
                     at: Place { body: target, pc: 0 },
-                    answer: null,
+                    record: array_id(record) ?? -1,
                     done: false,
                     waiters: [],
                     resumed: false,
                 },
             )
         avra_vtask_ready(vt)
-        Val.I(self.tasks.length - 1)
+        record
     }
+
+    /// The task a handle names.
+    fn task_of(handle: Val) -> int {
+        let record? = array_id(handle) else {
+            self.defect("a task handle that is no record survived typing")
+            return 0
+        }
+        self.whole(self.arrays[record][0])
+    }
+
+    fn task_spent(handle: Val) -> bool { self.tasks[self.task_of(handle)].done }
 
     /// The task's answer — the one-cell list its body answered. Parks
     /// until done.
     fn task_join_val(vals: List<Val>) -> Val {
-        let id = self.whole(vals[0])
+        let id = self.task_of(vals[0])
         if id == self.running { return self.trapped_val("a task joined itself — deadlock") }
         if !self.tasks[id].done { return self.waited_on(id) }
-        self.tasks[id].answer ?? Val.N
+        let answer = self.arrays[self.tasks[id].record][2]
+        self.retains(answer)
+        answer
     }
 
     /// The running task waits for `id`: filed among its waiters — never
@@ -117,13 +137,13 @@ impl Machine {
     }
 
     fn task_done_val(vals: List<Val>) -> Val {
-        Val.I(if self.tasks[self.whole(vals[0])].done { 1 } else { 0 })
+        Val.I(if self.task_spent(vals[0]) { 1 } else { 0 })
     }
 
     /// An owner's scope ended: its task joined, or each in its list.
     fn task_settle_val(vals: List<Val>) -> Val {
         if vals[0] is .N { return Val.I(0) }
-        let id = self.whole(vals[0])
+        let id = self.task_of(vals[0])
         if !self.tasks[id].done { return self.waited_on(id) }
         Val.I(0)
     }
@@ -133,15 +153,20 @@ impl Machine {
     fn tasks_push_val(vals: List<Val>) -> Val {
         let list? = array_id(vals[0]) else { return self.defect_val("a `Tasks` owner that is not a list survived typing") }
         let held = self.arrays[list]
-        if held.length >= 4 && held.length & held.length - 1 == 0 { self.arrays.set(list, [v for v in held if !self.tasks[self.whole(v)].done]) }
+        if held.length >= 4 && held.length & held.length - 1 == 0 {
+            let shed = [v for v in held if self.task_spent(v)]
+            self.arrays.set(list, [v for v in held if !self.task_spent(v)])
+            for v in shed { self.releases_val(v) }
+        }
+        self.retains(vals[1])
         self.arrays[list].push(vals[1])
         Val.I(0)
     }
 
     fn task_settle_all_val(vals: List<Val>) -> Val {
         let list? = array_id(vals[0]) else { return self.defect_val("a list of tasks that is not a list survived typing") }
-        let open? = self.arrays[list].find((v) -> !self.tasks[self.whole(v)].done) else { return Val.I(0) }
-        self.waited_on(self.whole(open))
+        let open? = self.arrays[list].find((v) -> !self.task_spent(v)) else { return Val.I(0) }
+        self.waited_on(self.task_of(open))
     }
 
     fn fiber_yield_val() -> Val {
@@ -210,12 +235,13 @@ impl Machine {
     /// machine runs whoever is next.
     fn finished(answer: Val?) -> Place {
         let t = self.tasks[self.running]
-        self.tasks[self.running].answer = answer
+        if t.record >= 0 { self.arrays[t.record].set(2, answer ?? Val.N) }
         self.tasks[self.running].done = true
         self.tasks[self.running].frames = []
         for w in t.waiters { avra_vtask_ready(self.tasks[w].vt) }
         self.tasks[self.running].waiters = []
         avra_vtask_free(t.vt)
+        if t.record >= 0 { self.releases_val(Val.A(t.record)) }
         self.resume_next()
     }
 

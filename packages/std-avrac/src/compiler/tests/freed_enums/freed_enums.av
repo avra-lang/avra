@@ -1,0 +1,40 @@
+// proves: an enum's payload box outlives the value it was read from,
+// through a Result and a match
+enum Shape {
+    Dot
+    Line(pts: List<int>)
+    Pair(a: List<int>, b: string)
+}
+
+enum Bad { Bad(why: List<string>) }
+
+fn made(i: int) -> Result<List<int>, Bad> {
+    if i % 3 == 0 { fail Bad.Bad(["no", "${i}"]) }
+    [i, i * 2]
+}
+
+fn sized(s: Shape) -> int {
+    match s { .Dot -> 0, .Line(pts) -> pts.length, .Pair(a, b) -> a.length + b.length }
+}
+
+fn pulled(s: Shape) -> List<int> {
+    match s { .Line(pts) -> pts, .Pair(a, _) -> a, .Dot -> [] }
+}
+
+fn shown() -> string {
+    mut t = 0
+    mut whys: List<string> = []
+    for i in 0..300 {
+        match made(i) {
+            .Ok(xs) -> { t = t + xs[1] },
+            .Err(b) -> match b { .Bad(why) -> { if i < 7 { whys.push(why.join("")) } } },
+        }
+        let s = if i % 2 == 0 { Shape.Line([i]) } else { Shape.Pair([i, i], "ab") }
+        let p = pulled(s)
+        t = t + sized(s) + p.length
+    }
+    let opt: Shape? = if t > 0 { Shape.Line([1, 2, 3]) } else { null }
+    "${t} ${whys.join(" ")} ${sized(opt ?? Shape.Dot)}"
+}
+
+shown()
