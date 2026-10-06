@@ -2070,9 +2070,12 @@ Runtime facts, ours to ratify:
   check is fmt on its changed `.av`, and idioms and suites over the
   packages it TOUCHES, on the PR's own tree (`.github/workflows/
   checks.yml`); a PR that touches no `.av`, no package and no compiler
-  source builds nothing. It does NOT run the keepers, the cache attacks,
-  the seed check or its dependents' suites: each runs on the train, and a
-  failure there drops the PR one train later. THE COMPILER IS CACHED BY
+  source builds nothing. Before it builds anything it runs the keepers
+  that need NO COMPILER (`make keepers-static`, half a minute), so a
+  refusal one of them speaks stops on the PR. It does NOT run the other
+  keepers, the cache attacks, the seed check or its dependents' suites:
+  each runs on the train, and a failure there drops the PR one train
+  later. THE COMPILER IS CACHED BY
   ITS OWN SOURCE (`tools/compiler_paths.sh`): a tree whose compiler is
   main's takes main's binary; otherwise the newest cached binary builds
   the tree twice (the generation law), and one too old to read it — new

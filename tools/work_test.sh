@@ -439,7 +439,7 @@ git -C "$main" worktree remove --force "$lane"
 # that reaps what a killed supervisor leaves: a Sprite, never a container
 # job, where AVRA_NO_SUPERVISOR_TESTS says so and the skip is spoken.
 if [ "$(uname -s)" = Linux ] && [ -n "${AVRA_NO_SUPERVISOR_TESTS:-}" ]; then
-    echo "work_test: SKIPPED the supervisor's end-to-end checks — AVRA_NO_SUPERVISOR_TESTS is set; \`sh tools/work run sh tools/work_test.sh\` runs them"
+    echo "work_test: SKIPPED the supervisor's end-to-end checks and the Sprite's half (tools/sprite_remote_test.sh) — AVRA_NO_SUPERVISOR_TESTS is set; \`sh tools/work run sh tools/work_test.sh\` runs them"
 elif [ "$(uname -s)" = Linux ]; then
     carrier=${AVRA_RUN:-none}
     unset AVRA_RUN SILENT OFFLINE FAKE
