@@ -1432,13 +1432,19 @@ void avra_fiber_yield(void) {
     run_next();
 }
 
-void avra_fiber_sleep(int64_t ms) {
-    if (ms < 1) { avra_fiber_yield(); return; }
+__attribute__((noinline))
+static void slept(int64_t ms) {
     Fiber* self = g_current;
     alone(self);
     waits_until(self, deadline_after(ms), 0, 0);
     legacy_parked(self);
     run_next();
+}
+
+// A sleep of no time is a yield, and costs what a yield costs.
+void avra_fiber_sleep(int64_t ms) {
+    if (ms < 1) { avra_fiber_yield(); return; }
+    slept(ms);
 }
 
 void avra_fiber_fd_closing(int64_t fd) {
