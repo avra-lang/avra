@@ -48,6 +48,11 @@ if [ "${1:-bench}" = probes ]; then
             "$out/stacks" $reserve $guard 20000 448
         done
     done
+    echo "== a stack's top page: a fault at the first touch, or asked for by name first"
+    for r in 1 2 3; do
+        "$out/stacks" 262144 none 20000 448
+        "$out/stacks" 262144 none 20000 448 populate
+    done
     # A MILLION TOUCHED STACKS IS A MILLION RESIDENT PAGES: asked only where
     # the kernel has a mapping ceiling to find, and never on 16 KiB pages.
     if [ -r /proc/sys/vm/max_map_count ]; then
@@ -125,6 +130,7 @@ while [ "$r" -le "$rounds" ]; do
     ran c "$out/spawn_bench_today" c
     ran c "$out/spawn_bench_today" c parked
     ran c "$out/spawn_bench_today" c gate
+    ran c "$out/spawn_bench_today" c within
     FLOW_ROW=spawn_chan
     ran go1 env GOMAXPROCS=1 FLOW_CHAN=1 "$out/go/spawn"
     ran goN env FLOW_CHAN=1 "$out/go/spawn"

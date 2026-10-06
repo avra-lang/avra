@@ -5,6 +5,7 @@
 // A second argument `switch` runs the ten million switches alone, for an
 // instruction count taken from outside; `parked` runs instead ten
 // thousand tasks alive AND parked, each having yielded once, cold first;
+// `within` the same switches while one deadline stands filed;
 // `gate` a round trip between two tasks over two gates — a claim and a
 // park each way, NO value moved and no lock taken — bare, then with a
 // `within` opened around each wait; `hold <n> <ms>` parks n tasks on one
@@ -142,6 +143,28 @@ int main(int argc, char** argv) {
         avra_fiber_sleep(atoi(argv[4]));
         while (avra_gate_claim(g_ping) >= 0) {}
         for (int i = 0; i < n; i++) joined(all[i]);
+        return 0;
+    }
+    if (argc > 2 && strcmp(argv[2], "within") == 0) {
+        // one deadline filed for the whole run: a wait under a `within`
+        int64_t outer = avra_fiber_within(60000);
+        struct timespec at;
+        clock_gettime(CLOCK_MONOTONIC, &at);
+        avra_wait_until((int64_t)at.tv_sec * 1000000000 + at.tv_nsec + 1000000, 0, 0);
+        avra_wait_park();
+        double under = 1e18;
+        for (int r = 0; r < 5; r++) {
+            void* p = spawn1(turns, TURNS);
+            void* q = spawn1(turns, TURNS);
+            double t0 = now_ns();
+            joined(p);
+            joined(q);
+            double t1 = now_ns();
+            if (t1 - t0 < under) under = t1 - t0;
+        }
+        printf("%s_yield_under_within %.0f %d\n", tag, under, 2 * TURNS);
+        printf("%s_timers_filed_meanwhile %lld 1\n", tag, (long long)avra_sched_timers());
+        avra_fiber_within_end(outer);
         return 0;
     }
     if (argc > 2 && strcmp(argv[2], "parked") == 0) {

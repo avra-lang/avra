@@ -304,7 +304,7 @@ wasm-archive:
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
+.PHONY: ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -485,6 +485,11 @@ build/runtime-tests/%: runtime/tests/%.c $(RUNTIME_OBJS)
 	@cc -O2 -Wall -Werror $(STACK_PROBES) -o $@ $< $(RUNTIME_OBJS)
 runtime-tests: $(RUNTIME_TESTS)
 	@for t in $(RUNTIME_TESTS); do $$t || exit 1; done
+
+# THE TESTS, TESTED: one line of the scheduler broken at a time, and some
+# runtime test must fail for each (runtime/tests/mutations.py).
+runtime-mutations: $(RUNTIME_OBJS)
+	@python3 runtime/tests/mutations.py build/runtime-mutations "$(STACK_PROBES)" $(filter-out build/avra_fiber.o,$(RUNTIME_OBJS))
 
 # The runtime's trap contract: the words and the verdict (exit 2).
 # No program test can hold it — a suite runs every program in

@@ -5,7 +5,11 @@
 // stack holds resident and in page tables, how many mappings the
 // process ends with, and where the kernel refused.
 //
-//   stacks <reserve bytes> <mprotect|madvise|none> <stacks> <touched bytes>
+//   stacks <reserve bytes> <mprotect|madvise|none> <stacks> <touched bytes> [populate]
+//
+// `populate` asks the kernel for each stack's top page by name
+// (`MADV_POPULATE_WRITE`) before it is touched, where a touch alone
+// takes a fault.
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -15,6 +19,9 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef MADV_POPULATE_WRITE
+#define MADV_POPULATE_WRITE 23
+#endif
 #ifndef MADV_GUARD_INSTALL
 #define MADV_GUARD_INSTALL 102
 #endif
@@ -50,7 +57,8 @@ static long mappings(void) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 5) { fprintf(stderr, "usage: stacks <reserve> <mprotect|madvise|none> <stacks> <touched>\n"); return 1; }
+    int populate = argc == 6 && strcmp(argv[5], "populate") == 0;
+    if (argc != 5 && !populate) { fprintf(stderr, "usage: stacks <reserve> <mprotect|madvise|none> <stacks> <touched>\n"); return 1; }
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
     size_t reserve = (strtoull(argv[1], NULL, 10) + page - 1) / page * page;
     const char* mode = argv[2];
@@ -78,8 +86,13 @@ int main(int argc, char** argv) {
         }
     }
     double t0 = now_ns();
-    for (long i = 0; i < made; i++) memset(tops[i] - touched, 1, touched);
+    int refused_populate = 0;
+    for (long i = 0; i < made; i++) {
+        if (populate && madvise(tops[i] - page, page, MADV_POPULATE_WRITE) != 0) refused_populate = 1;
+        memset(tops[i] - touched, 1, touched);
+    }
     double touch_ns = now_ns() - t0;
+    if (populate) printf("populate %s: ", refused_populate ? "REFUSED" : "asked");
     long n = made ? made : 1;
     printf("reserve %zu KiB, guard %s, page %zu, asked %ld: made %ld, refused by %s (%s)\n",
            reserve / 1024, mode, page, want, made, refused, why ? strerror(why) : "nothing");
