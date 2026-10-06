@@ -1,8 +1,9 @@
 //! `@query` — a fn over a Db whose answer is kept per call. Its written
-//! body moves behind a wrapper (WRAP): a call's CELL is its arguments'
-//! stable hash, a kept answer is reused while it may be, and otherwise
-//! the body runs as that cell's next run — the rows it inserts its own,
-//! swept of what it did not write again.
+//! body moves behind a wrapper (WRAP): a call is a CELL of the Db's
+//! kernel, named by its arguments' encoding, so its answer stands while
+//! everything it read stands and is computed again when one of them
+//! moves. The body runs as that cell's next run — the rows it inserts
+//! its own, swept of what it did not write again.
 //!
 //! A kept answer OUTLIVES THE PROCESS where the Db's owner keeps it
 //! (`durable_db`): a call no answer here stands for asks the owner for
@@ -26,7 +27,7 @@ use @std.meta.{
     literal,
     refuse_as_at,
 }
-use db.{Db, Memo, memo}
+use db.{Db, Answers, answers, Record}
 use stable.{
     stable_hasher,
     text_hash,
@@ -39,6 +40,7 @@ use stable.{
     read_opt,
     read_list,
     tagged,
+    spelled_with,
     Writer,
     Reader,
 }
@@ -54,7 +56,7 @@ export fn query(f: Fn) -> Declared {
                 twin: "",
                 name: kept,
                 at: f.at,
-                source: quote { once fn ${kept}() -> Memo<${f.answer}> { memo() } },
+                source: quote { once fn ${kept}() -> Answers<${f.answer}> { answers() } },
             },
             Directive { twin: "", name: f.name, at: f.at, wraps: true, source: wrapper(f) },
         ],
@@ -101,26 +103,44 @@ fn wrapper(f: Fn) -> Decls {
     let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
     let args = [name(p.name) for p in f.params]
     let db = name(f.params[0].name)
-    let hash = args_hash(f)
+    let body = quote { () -> ${wrapped(f)}(${..args}) }
+    let again = quote { () -> ${f.name}(${..args}) }
     if decodable(f.answers) {
-        let named = literal(durable_name(f))
+        let record = quote { Record { query: ${literal(durable_name(f))}, args: ${args_hash(f)}, write: ${write_each(f.answers)}, read: ${read_each(f.answers)} } }
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
-                let m = ${kept_name(f)}()
-                let held? = m.lasting(${db}, ${hash}, ${named}, ${read_each(f.answers)}) else {
-                    return m.ran_lasting(${db}, ${hash}, ${named}, () -> ${wrapped(f)}(${..args}), ${write_each(f.answers)})
+                let held = ${kept_name(f)}().under(${db})
+                let arg = held.arg(${args_spelled(f)})
+                match held.memo.start(arg) {
+                    .Reuse(value) -> value,
+                    .Compute -> held.ran_lasting(${db}, arg, ${body}, ${again}, ${answer_hash(f)}, ${record}),
                 }
-                held.value
             }
         }
     }
     quote {
         fn ${f.name}(..${seats}) -> ${f.answer} {
-            let m = ${kept_name(f)}()
-            let held? = m.kept(${db}, ${hash}) else { return m.ran(${db}, ${hash}, () -> ${wrapped(f)}(${..args})) }
-            held.value
+            let held = ${kept_name(f)}().under(${db})
+            let arg = held.arg(${args_spelled(f)})
+            match held.memo.start(arg) {
+                .Reuse(value) -> value,
+                .Compute -> held.ran(${db}, arg, ${body}, ${again}, ${answer_hash(f)}),
+            }
         }
     }
+}
+
+/// A call's arguments as text no other arguments spell: each written in
+/// order through the codec, the octets spelled out. What a call's cell
+/// is interned by — never a hash, which two calls may share.
+export fn args_spelled(f: Fn) -> Code {
+    let writes = [quote { (w: Writer) -> ${written(quote { w }, name(p.name), p.kind)} } for p in f.params.slice(1, f.params.length)]
+    quote { spelled_with([${..writes}]) }
+}
+
+/// The answer's own stable hash, one value folded alone.
+export fn answer_hash(f: Fn) -> Code {
+    quote { (v: ${f.answer}) -> ${hashed(quote { stable_hasher(0) }, quote { v }, f.answers)}.finish() }
 }
 
 /// The name a query's answers are kept under past the process: its

@@ -316,8 +316,7 @@ impl Rows<R> {
         keys: List<List<IndexKey>>,
         stamp: Stamp,
     ) {
-        let now = db.revision()
-        if now >= 0 { self.late_check(db, relation, id, keys, now) }
+        self.late_check(db, relation, id, keys)
         let held = self.row(id) != null
         let was = if id < self.next_id() { self.stamps.get()[id].owner } else { 0 }
         if held && was != stamp.owner { db.refuse(two_owners(relation, id)) }
@@ -349,9 +348,7 @@ impl Rows<R> {
         let live = [id for id in mine.get() if marks[id].owner == owner && self.row(id) != null]
         let gone = [id for id in live if marks[id].run < run]
         if !gone.is_empty() {
-            let now = db.revision()
-            if now >= 0 { self.late_among(db, self.name, self.filed_buckets(gone), now) }
-            db.counted()
+            self.late_among(db, self.name, self.filed_buckets(gone))
             for id in gone { self.remove(id) }
         }
         let kept = [id for id in live if marks[id].run >= run]
@@ -374,22 +371,22 @@ impl Rows<R> {
         self.last_runs.get().get("${owner}") ?? []
     }
 
-    /// A write's cells told to the owner — each bucket it moves, then the
-    /// whole relation — and the first one read in revision `now` refused
-    /// unless the owner takes a late write as an input arriving.
-    fn late_check(db: Db, relation: string, id: int, keys: List<List<IndexKey>>, now: int) {
+    /// A write's cells told to the Db — each bucket it moves, then the
+    /// whole relation — and the first one a reader holds refused, unless
+    /// the Db takes a late write as an input arriving.
+    fn late_check(db: Db, relation: string, id: int, keys: List<List<IndexKey>>) {
         let before: List<List<IndexKey>> = if id < self.next_id() { self.filed.get()[id] } else { [] }
         // each key list is per index, so the two are walked apart: numbering
         // across their concatenation reads an index the relation has not got
         let touched = [self.bucket_of(i, k) for i, ks in before for k in ks]
             .concat([self.bucket_of(i, k) for i, ks in keys for k in ks])
-        self.late_among(db, relation, touched, now)
+        self.late_among(db, relation, touched)
     }
 
     /// `late_check` over the buckets a write touches.
-    fn late_among(db: Db, relation: string, touched: List<int>, now: int) {
+    fn late_among(db: Db, relation: string, touched: List<int>) {
         for b in touched {
-            if b >= 0 && !self.moved_cell(db, b + 1, self.buckets.get()[b].read, now) {
+            if b >= 0 && !self.moved_cell(db, b + 1, self.buckets.get()[b].read) {
                 db
                     .refuse(
                         late_write(
@@ -401,16 +398,14 @@ impl Rows<R> {
                 return
             }
         }
-        if !self.moved_cell(db, 0, self.read, now) {
+        if !self.moved_cell(db, 0, self.read) {
             db.refuse(late_write(relation, "the whole relation", db.reader(self.read.reader.get())))
         }
     }
 
-    /// A cell this write moves, told to the owner with whether a reader saw
-    /// it this revision — false when the owner refuses the late write.
-    fn moved_cell(db: Db, cell: int, mark: ReadMark, now: int) -> bool {
-        db.moved(self.family.get(), cell, mark.revision.get() == now)
-    }
+    /// A cell this write moves, told to the Db with the revision a reader
+    /// last saw it in — false when the Db refuses the write as late.
+    fn moved_cell(db: Db, cell: int, mark: ReadMark) -> bool { db.moved(self.family.get(), cell, mark.revision.get()) }
 
     /// The row other than `own` filed under `key` in one index, if any.
     fn holder(index: int, key: IndexKey, own: int) -> int? {

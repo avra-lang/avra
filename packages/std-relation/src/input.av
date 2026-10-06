@@ -15,6 +15,7 @@
 //!     set_file_text(db, path, edited_text)   // the driver's own push
 use @std.meta.{Fn, Param, Directive, Declared, Diagnostic, Decls, Code, name, wrapped, refuse_as_at}
 use stable.{stable_hasher}
+use db.{Answers, answers}
 
 /// `@input`: the accessor, the setter and the input's contract, from
 /// one reading.
@@ -28,7 +29,7 @@ export fn input(f: Fn) -> Declared {
                 twin: "",
                 name: store,
                 at: f.at,
-                source: quote { once fn ${store}() -> InputSlot<${f.answer}> { input_slot() } },
+                source: quote { once fn ${store}() -> Answers<${f.answer}> { answers() } },
             },
             Directive { twin: "", name: f.name, at: f.at, wraps: true, source: accessor(f) },
             Directive { twin: "", name: setter_name(f), at: f.at, source: setter(f) },
@@ -55,9 +56,8 @@ fn accessor(f: Fn) -> Decls {
     let db = name(f.params[0].name)
     quote {
         fn ${f.name}(..${seats}) -> ${f.answer} {
-            let m = ${store_name(f)}()
-            let cell = m.cell(${db}, ${args_hash(f)})
-            m.read(${db}, cell, () -> ${wrapped(f)}(${..args}), ${answer_hash(f)})
+            let held = ${store_name(f)}().under(${db})
+            held.memo.input(held.arg(${args_spelled(f)}), () -> ${wrapped(f)}(${..args}), ${answer_hash(f)})
         }
     }
 }
@@ -70,18 +70,10 @@ fn setter(f: Fn) -> Decls {
     let db = name(f.params[0].name)
     quote {
         fn ${setter_name(f)}(..${seats}) -> void {
-            let m = ${store_name(f)}()
-            let cell = m.cell(${db}, ${args_hash(f)})
-            let _ = m.write(${db}, cell, value, ${answer_hash(f)})
+            let held = ${store_name(f)}().under(${db})
+            held.set(held.arg(${args_spelled(f)}), value, ${answer_hash(f)})
         }
     }
-}
-
-/// The answer's own stable hash, one value folded alone — an input's
-/// witness (COMPILER DB townhall's own words: "an input's witness is
-/// its content hash").
-fn answer_hash(f: Fn) -> Code {
-    quote { (v: ${f.answer}) -> ${hashed(quote { stable_hasher(0) }, quote { v }, f.answers)}.finish() }
 }
 
 // ── voices ──
