@@ -95,16 +95,19 @@ ran() {
     if "$@" > "$out/one" 2> "$out/err"; then
         sed "s/^\([a-z_0-9]*\)/$engine \1${FLOW_SUFFIX:-}/" "$out/one" >> "$out/raw"
     else
-        echo "$engine ${FLOW_ROW:-$(basename "$1")} exit $?: $(tail -1 "$out/err" | cut -c1-120)" >> "$out/raw"
+        echo "$engine $FLOW_ROW exit $?: $(tail -1 "$out/err" | cut -c1-120)" >> "$out/raw"
     fi
 }
 
 r=1
 while [ "$r" -le "$rounds" ]; do
-    for p in switch spawn pingpong scope; do ran avra "$here/avra/$p/src/main"; done
+    FLOW_SUFFIX=""
+    for p in switch spawn pingpong scope; do FLOW_ROW=$p; ran avra "$here/avra/$p/src/main"; done
+    FLOW_ROW=spawn_bench
     ran c "$out/spawn_bench_today" c
     for g in switch spawn pingpong deadline fanin selectn canceltree; do
-        GOMAXPROCS=1 ran go1 "$out/go/$g"
+        FLOW_ROW=$g
+        ran go1 env GOMAXPROCS=1 "$out/go/$g"
         ran goN "$out/go/$g"
     done
     r=$((r + 1))
@@ -115,13 +118,15 @@ done
 free_kb=$(awk '/MemAvailable/ { print $2 }' /proc/meminfo 2>/dev/null || echo 99999999)
 for n in 1000 30000 100000 1000000; do
     hold=$((2000 + n / 20))
-    FLOW_ROW=parked_$n FLOW_SUFFIX=_$n FLOW_N=$n FLOW_HOLD_MS=$hold ran avra "$here/avra/parked/src/main"
+    FLOW_ROW=parked_$n
+    FLOW_SUFFIX=_$n
+    ran avra env FLOW_N=$n FLOW_HOLD_MS=$hold "$here/avra/parked/src/main"
     if [ "$n" -ge 1000000 ] && [ "$free_kb" -lt 5000000 ]; then
         echo "go1 parked_$n skipped: $((free_kb / 1024)) MiB available" >> "$out/raw"
         continue
     fi
-    FLOW_ROW=parked_$n FLOW_SUFFIX=_$n FLOW_N=$n GOMAXPROCS=1 ran go1 "$out/go/parked"
-    FLOW_ROW=parked_$n FLOW_SUFFIX=_$n FLOW_N=$n ran goN "$out/go/parked"
+    ran go1 env FLOW_N=$n GOMAXPROCS=1 "$out/go/parked"
+    ran goN env FLOW_N=$n "$out/go/parked"
 done
 
 load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg)
