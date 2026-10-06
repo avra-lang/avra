@@ -65,7 +65,7 @@ fn forced_reg(mut cx: LowerCx, v: ExprId) -> Reg {
 fn match_opt_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, present: ExprId, absent: ExprId) -> Reg {
     let v = cx.reg_of(subject)
     let held = cx.type_at(subject)
-    if cx.shape_at(e) is .Void { return effect_when_held(cx, e, v, held, present) }
+    if cx.shape_at(e) is .Void { return effects(cx, e, v, held, present, absent) }
     cx
         .region(cx.presence_of(v, held), e) { cx ->
             cx.bind_patterns(present, [cx.carried_of(v, held)])
@@ -73,14 +73,15 @@ fn match_opt_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, present: ExprId, a
         } else { cx -> cx.reg_of(absent) }
 }
 
-/// A chain that answers nothing: its call runs under the presence
-/// test, and there is no value to join.
-fn effect_when_held(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId, present: ExprId) -> Reg {
+/// A nullable match that answers nothing — a chain into a void call,
+/// or arms written for their effects: each arm runs on its own side
+/// of the presence test, and there is no value to join.
+fn effects(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId, present: ExprId, absent: ExprId) -> Reg {
     cx
-        .void_region(cx.presence_of(v, held)) { cx ->
+        .void_branches(cx.presence_of(v, held)) { cx ->
             cx.bind_patterns(present, [cx.carried_of(v, held)])
             let _ = cx.reg_of(present)
-        }
+        } else { cx -> let _ = cx.reg_of(absent) }
     cx.zero(e)
 }
 
