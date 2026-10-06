@@ -40,16 +40,20 @@ fn slot_read(key: int) -> string {
     "${avra_array_get(held, 0)}"
 }
 
-/// Ids in spawn order, a task nothing runs made between two spawns.
+/// Ids in spawn order, a task nothing runs made between two spawns —
+/// counted from the first spawn here, since a process counts every
+/// task it ever spawned and a suite runs many programs in one.
 fn ids() -> string {
+    let first = spawn avra_task_id()
+    let base = first.await - 1
     let a = spawn avra_task_id()
     let _unrun = avra_task_pending()
     let b = spawn avra_task_id()
     let c = spawn {
         let inner = spawn avra_task_id()
-        inner.await * 10 + avra_task_id()
+        (inner.await - base) * 10 + avra_task_id() - base
     }
-    "${avra_task_id()} ${a.await} ${b.await} ${c.await}"
+    "${avra_task_id()} ${a.await - base} ${b.await - base} ${c.await}"
 }
 
 /// A gate, a task and a time in one set: woken by the gate, then by
