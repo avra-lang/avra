@@ -353,6 +353,42 @@ reader, and the relation refuses a late write), so that law is what the
 change has to answer. The second is the key work the ticket's step 2
 names: 0.46 s.
 
+## Follow-ups 1b and 4 — the two fixes, and who pays for a discarded attempt
+
+**Root cause 1 of follow-up 1, fixed** (branch `db-00a-unreached-files`):
+a file its module's record places is met with the files named, so a
+sibling nothing names is held instead of parsed every run. One edit of a
+std-avrac file, check of the cli: 13 files parsed -> 3, admit
+1,075–1,200 ms -> 139–154 ms, wall 4.7–4.9 s -> 3.7 s. Root cause 2 (a
+compile-time run keyed by the whole text of every file it read) is open
+for DB 07.
+
+**Every package's one-edit check** (`sh tools/db_measure/discarded_sweep.sh`,
+main `982836c`, a comment line appended to one non-entry file; raw:
+`raw/discarded_sweep.txt`). 40 packages; these throw an attempt away:
+
+| package | wall | discarded | the stated reason |
+|---|---|---|---|
+| std-action | 14.9 s | 3,323 + 3,092 + 3,367 ms | reads the homes 83 instantiations it owes; then `src/derive.av`, then `std-meta/src/meta.av` and `src/action.av` — "a compile-time run called one of its bodies" |
+| std-avrac | 10.4 s | 4,057 ms | `features/impls/tests/generic_builtin_trait/generic_builtin_trait.av` — "what its bodies ask could not be read back" |
+| std-http | 14.7 s | 1,796 ms, then everything | the hold was refused (held 0/121) |
+| std-relation | 2.6 s | 219 ms | reads the homes its instantiations lower from |
+| std-https, std-http-soak, std-db, std-validate, std-process, std-net, std-errors | 0.3–4.3 s | 81–188 ms each | reads the homes its instantiations lower from |
+
+The other 29 discard nothing on this edit. (An earlier edit of std-json's
+`json.av` discarded 293 ms to read `std-text/src/text.av`; this sweep's
+edit of `codec/codec.av` does not.)
+
+**std-avrac's cause, fixed** (branch `db-00d-asks-read-back`): the
+language's own declarations are filed under file 0 — whichever file is
+first in the process — and a builtin's wire names that file. Read back in
+another process it finds nothing, so a held file whose bodies ask for an
+instantiation over a builtin generic (`impl Show for List<T>`) never has
+its asks read: held, analysed, row unread, attempt discarded, file read,
+every time. Not special to a test program — a three-file fixture
+reproduces it. A builtin's wire is now resolved by name. One edit, check
+of std-avrac: 10.4 s -> 5.5 s, discarded 1 -> 0.
+
 ## Not measured
 
 - The encoded size of any family's value under a new codec.
