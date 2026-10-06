@@ -16,7 +16,7 @@
 //! twins never wait: a read that finds nothing answers `.Pending`, a
 //! write that takes nothing answers 0, and a poller loop decides.
 use @std.errors.{Error, ErrorInfo, info}
-use @std.time.{Duration, ms, now_ms, sleep}
+use @std.time.{Duration, ms, now_ms, now_ns}
 
 extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
 extern fn avra_net_listen_all(port: int, backlog: int) -> int
@@ -57,9 +57,12 @@ extern fn avra_net_errno_pipe() -> int
 extern fn avra_net_errno_closed() -> int
 extern fn avra_net_errno_denied() -> int
 extern fn avra_net_entropy32() -> int
-extern fn avra_net_bell() -> int
-extern fn avra_net_bell_rung() -> int
-extern fn avra_net_ring(heard: int, rung: int) -> int
+extern fn avra_gate_new() -> List<int>
+extern fn avra_gate_claim(g: List<int>) -> int
+extern fn avra_wait_gate(g: List<int>, arm: int, member: int)
+extern fn avra_wait_until(at_ns: int, arm: int, member: int)
+extern fn avra_wait_park() -> int
+extern fn avra_trap(message: string)
 
 /// 32 bits the kernel drew from its entropy, as a non-negative word —
 /// unpredictable to any peer, as a WebSocket client's masking key
@@ -929,29 +932,20 @@ const six_to_four_v6: Block = Block { net: v6_words("2002:0:0:0:0:0:0:0")!, bits
 /// may pause between its test and its park counts the rings first
 /// (`rings`) and parks only if none came since (`waited_since`); it
 /// wakes the others with `rouse`, which is no news to itself and is
-/// not counted. A ring with nobody parked costs no write.
+/// not counted.
 ///
-/// Its pipe exists only while it is needed: `bell()` opens one its
-/// owner holds until `close`, and a bell nobody holds (`Bell {}`) opens
-/// with its first waiter and closes behind its last — so an idle one
-/// holds nothing and a fork inherits none. Every copy is the same bell.
+/// It is a gate: no descriptor, nothing a fork inherits, and a ring
+/// with nobody parked costs a load and a test. Every copy is the same
+/// bell. `heard` is the descriptor it has — none.
 export type Bell = {
     heard: Cell<int> = Cell.new(-1),
-    rung: Cell<int> = Cell.new(-1),
-    held: Cell<bool> = Cell.new(false),
+    gate: Cell<List<int>> = Cell.new(avra_gate_new()),
     waiting: Cell<int> = Cell.new(0),
-    parked: Cell<bool> = Cell.new(false),
     count: Cell<int> = Cell.new(0),
 }
 
-/// A bell whose pipe is open and held until `close`, or the errno
-/// opening it answered.
-export fn bell() -> Result<Bell, NetError> {
-    let b = Bell { held: Cell.new(true) }
-    let heard = b.opened()
-    if heard < 0 { return failed("open", "a bell", heard) }
-    .Ok(b)
-}
+/// A bell.
+export fn bell() -> Result<Bell, NetError> { .Ok(Bell {}) }
 
 impl Bell {
     /// Every task parked on the bell woken, and the ring counted.
@@ -960,28 +954,29 @@ impl Bell {
         self.rouse()
     }
 
-    /// Every task parked on the bell woken, the ring not counted.
+    /// Every task parked on the bell woken, the ring not counted. One
+    /// claim wakes one waiter, and none of them runs before the last
+    /// is claimed.
     fn rouse() {
-        if !self.parked.get() { return }
-        self.parked.set(false)
-        let _ = avra_net_ring(self.heard.get(), self.rung.get())
+        while avra_gate_claim(self.gate.get()) >= 0 {}
     }
 
     /// The calling task parked until the bell rings, `timeout` passes —
-    /// null is none of its own, a negative one is spent and opens
-    /// nothing — or the deadline of a `within` around it; the last two
-    /// fail the wait `timed_out()`, as every parking verb here does.
+    /// null is none of its own, a negative one is spent — or the
+    /// deadline of a `within` around it; the last two fail the wait
+    /// `timed_out()`, as every parking verb here does. A ring answers
+    /// the descriptor the bell has: -1.
     fn waited(timeout: Duration?) -> Result<int, NetError> {
         let budget = timeout?.ms
         if spent(budget) { return timed_out("wait", "a bell") }
-        let heard = self.opened()
-        if heard < 0 { return unopened(heard, budget) }
         self.waiting.set(self.waiting.get() + 1)
-        self.parked.set(true)
-        let woken = avra_fiber_park_fd(heard, 0, budget ?? -1) != 0
-        self.left()
-        if !woken { return timed_out("wait", "a bell") }
-        .Ok(heard)
+        avra_wait_gate(self.gate.get(), rung_arm, 0)
+        if budget != null { avra_wait_until(wake_at(budget!), timed_arm, 0) }
+        let claim = avra_wait_park()
+        self.waiting.set(self.waiting.get() - 1)
+        if claim == rung_arm { return .Ok(-1) }
+        if claim == cancelled_claim { avra_trap("a bell's wait has no answer for a cancel") }
+        timed_out("wait", "a bell")
     }
 
     /// How many times the bell has rung.
@@ -990,53 +985,24 @@ impl Bell {
     /// `waited`, unless the bell has rung since it had rung `seen`
     /// times — then at once.
     fn waited_since(seen: int, timeout: Duration?) -> Result<int, NetError> {
-        if self.count.get() != seen { return .Ok(self.heard.get()) }
+        if self.count.get() != seen { return .Ok(-1) }
         self.waited(timeout)
     }
 
-    /// Its pipe closed and no longer held; a task parked on it wakes.
-    fn close() {
-        self.held.set(false)
-        self.shut()
-    }
-
-    /// The end tasks park on, the pipe opened when it is not; -errno
-    /// when none could be.
-    fn opened() -> int {
-        if self.heard.get() >= 0 { return self.heard.get() }
-        let heard = avra_net_bell()
-        if heard < 0 { return heard }
-        self.rung.set(avra_net_bell_rung())
-        self.heard.set(heard)
-        heard
-    }
-
-    /// A waiter gone: the pipe closed behind the last, unless held.
-    fn left() {
-        self.waiting.set(self.waiting.get() - 1)
-        if self.waiting.get() == 0 && !self.held.get() { self.shut() }
-    }
-
-    /// Both ends closed, the scheduler told first, and nothing left for
-    /// a ring to write to.
-    fn shut() {
-        if self.heard.get() < 0 { return }
-        let _ = avra_net_close(self.heard.get())
-        let _ = avra_net_close(self.rung.get())
-        self.heard.set(-1)
-        self.rung.set(-1)
-        self.parked.set(false)
-    }
+    /// Every task parked on it wakes; the bell rings on as before.
+    fn close() { self.rouse() }
 }
 
-/// A wait with no pipe to park on — the process has none to give —
-/// pauses before it answers the errno, never at once, so a waiting loop
-/// cannot spin; never past the budget it was given.
-fn unopened(errno: int, budget: int?) -> Result<int, NetError> {
-    let pause = unopened_pause().ms
-    let b = budget ?? pause
-    sleep(ms(if b < pause { b } else { pause }))
-    failed("open", "a bell", errno)
-}
+// A wait's claim is `arm << 32 | member`, every member here 0: the
+// ring's arm is the claim 0, and a cancel's is arm -1 with member 0.
+const rung_arm: int = 0
+const timed_arm: int = 1
+const cancelled_claim: int = -4294967296
 
-fn unopened_pause() -> Duration { ms(10) }
+/// The monotonic instant `wait` ms from now, in nanoseconds — the last
+/// instant there is when that is past spelling, never one already due.
+fn wake_at(wait: int) -> int {
+    let now = now_ns()
+    if wait > (9223372036854775807 - now) / 1000000 { return 9223372036854775807 }
+    now + wait * 1000000
+}
