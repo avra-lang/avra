@@ -30,7 +30,7 @@ echo "== \`check $work\` from cold, seconds (wall, user)"
 n=0
 for round in $(seq 1 ${ROUNDS:-3}); do
     for v in plain byte go; do
-        for c in $(find . -maxdepth 4 -name .avra-cache -not -path './build/*'); do n=$((n + 1)); mv "$c" "$out/parked/$n"; done
+        for c in $(find . -maxdepth 4 -name .avra-cache -not -path './build/*'); do n=$((n + 1)); mv "$c" "$out/parked/$$-$n"; done
         t0=$(date +%s%N)
         u0=$(awk '{ print $14 + $16 }' /proc/$$/stat)
         AVRA_MEM_CEILING_MB=5000 build/avra_probe_$v check "$work" > "$out/check_$v.out" 2>&1
