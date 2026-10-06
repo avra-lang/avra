@@ -5,6 +5,7 @@
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
+use compiler.record.{read_fields}
 use features.{Decl}
 
 const HELDFACTS_PATH: string = "/w/src/main.av"
@@ -21,6 +22,12 @@ fn heldfacts_source() -> string {
         "impl Point {",
         "    fn sum() -> int { self.x + self.y }",
         "}",
+        "",
+        "component gauge {",
+        "    depth: int = 3",
+        "}",
+        "",
+        "gauge tuned { depth: 8 }",
         "",
         "/// Adds the limit.",
         "@inline",
@@ -66,7 +73,7 @@ fn heldfacts_both() -> HeldFacts {
     let rows = heldfacts_rows(parsed)
     let lines = [parsed.record_line(d, ordinal, false) for ordinal, d in rows]
     let held = heldfacts_workspace()
-    held.mint_file(HELDFACTS_PATH, [line.split("\t") for line in lines])
+    held.mint_file(HELDFACTS_PATH, [read_fields(line) for line in lines])
     HeldFacts { parsed: rows, held: heldfacts_rows(held) }
 }
 
@@ -76,10 +83,11 @@ spec "compiler/interface — a held declaration's fact columns" {
         both.parsed.length >= 5 &&
             [heldfacts_columns(d) for d in both.held].join("\n") == [heldfacts_columns(d) for d in both.parsed].join("\n")
     }
-    then "the facts the comparison rests on are there to compare: an extern, a mark and a told fingerprint" {
+    then "the facts the comparison rests on are there to compare: an extern, a mark, a word and a told fingerprint" {
         let parsed = heldfacts_both().parsed
         parsed.any((d: Decl) -> d.external) &&
             parsed.any((d: Decl) -> d.marks.join(",") == "inline") &&
+            parsed.any((d: Decl) -> d.word == "gauge") &&
             parsed.all((d: Decl) -> d.told != 0)
     }
 }
