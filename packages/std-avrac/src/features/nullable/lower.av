@@ -65,11 +65,23 @@ fn forced_reg(mut cx: LowerCx, v: ExprId) -> Reg {
 fn match_opt_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, present: ExprId, absent: ExprId) -> Reg {
     let v = cx.reg_of(subject)
     let held = cx.type_at(subject)
+    if cx.shape_at(e) is .Void { return effect_when_held(cx, e, v, held, present) }
     cx
         .region(cx.presence_of(v, held), e) { cx ->
             cx.bind_patterns(present, [cx.carried_of(v, held)])
             cx.reg_of(present)
         } else { cx -> cx.reg_of(absent) }
+}
+
+/// A chain that answers nothing: its call runs under the presence
+/// test, and there is no value to join.
+fn effect_when_held(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId, present: ExprId) -> Reg {
+    cx
+        .void_region(cx.presence_of(v, held)) { cx ->
+            cx.bind_patterns(present, [cx.carried_of(v, held)])
+            let _ = cx.reg_of(present)
+        }
+    cx.zero(e)
 }
 
 /// `v?` — the present arm unwraps what the nullable carries; the
