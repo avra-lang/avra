@@ -286,45 +286,6 @@ int64_t avra_net_shutdown(int64_t fd, int64_t how) {
     return shutdown((int)fd, h) == 0 ? 0 : -errno;
 }
 
-// ── A bell ──────────────────────────────────────────────────────
-// A bell is a pipe between tasks: one parks on its heard end until
-// another writes an octet into its rung end. Both ends are nonblocking
-// and CLOEXEC. A row answers one int, so the rung end of the bell last
-// opened is answered by a second row, asked before any task can run.
-
-static int64_t g_bell_rung = -1;
-
-// A bell's heard end, its rung end kept for `avra_net_bell_rung`; or
-// -errno.
-int64_t avra_net_bell(void) {
-    int p[2];
-    if (pipe(p) != 0) return -errno;
-    int64_t err = net_prepared(p[0]);
-    if (err == 0) err = net_prepared(p[1]);
-    if (err != 0) {
-        close(p[0]);
-        close(p[1]);
-        return err;
-    }
-    g_bell_rung = p[1];
-    return p[0];
-}
-
-// The rung end of the bell last opened.
-int64_t avra_net_bell_rung(void) { return g_bell_rung; }
-
-// A bell rung: what its pipe holds read away, then one octet written,
-// so the pipe holds one octet at most and every ring is a fresh edge —
-// never swallowed by a drain before the poller reports it, since the
-// drain and the write are one step no task runs between. 0, or -errno.
-int64_t avra_net_ring(int64_t heard, int64_t rung) {
-    char buf[64];
-    while (read((int)heard, buf, sizeof buf) > 0) {}
-    if (errno != EAGAIN && errno != EWOULDBLOCK) return -errno;
-    char c = 1;
-    return write((int)rung, &c, 1) == 1 ? 0 : -errno;
-}
-
 // A readiness queue, as a CLOEXEC descriptor or -errno.
 int64_t avra_net_poll_new(void) {
 #ifdef __APPLE__
