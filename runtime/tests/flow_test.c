@@ -582,6 +582,130 @@ static void late_parker(void) {
     CHECK(avra_sched_fd_waiters() == 0 && avra_sched_timers() == 0, "nothing stays filed");
 }
 
+// ── the world's turn: bounded in time, and in switches ──────────
+
+static volatile int g_stop;
+static int64_t g_turns, g_due, g_due_turn;
+
+// Computes for `cap` ms between yields, until told to stop; counts its
+// turns and notes the one at which the time `g_due` had come.
+static void* works_between_yields(void* self) {
+    while (!g_stop) {
+        int64_t until = now_ns() + cap(self) * 1000000;
+        while (now_ns() < until) {}
+        g_turns++;
+        if (g_due && !g_due_turn && now_ns() >= g_due) g_due_turn = g_turns;
+        avra_fiber_yield();
+    }
+    return answer(0);
+}
+
+// Sleeps `cap` ms; answers how many turns of the others passed between
+// its time and its waking.
+static void* sleeps_counting(void* self) {
+    g_due = now_ns() + cap(self) * 1000000;
+    avra_fiber_sleep(cap(self));
+    return answer(g_due_turn ? g_turns - g_due_turn : 0);
+}
+
+static void* deadline_five(void* self) {
+    (void)self;
+    int64_t t0 = now_ns();
+    int64_t outer = avra_fiber_within(5);
+    avra_wait_gate(g_gate, 0, 0);
+    int64_t claim = avra_wait_park();
+    avra_fiber_within_end(outer);
+    return answer(arm_of(claim) == -1 ? (now_ns() - t0) / 1000000 : -1);
+}
+
+// Eight tasks that each compute 2 ms between yields: a 5 ms sleep and a
+// 5 ms deadline are heard at the first switch after they are due — one
+// round of the eight at most, never a window of rounds.
+static void timers_among_workers(void) {
+    g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
+    g_gate = avra_gate_new();
+    void* workers[8];
+    for (int i = 0; i < 8; i++) workers[i] = spawn1(works_between_yields, 2);
+    void* s = spawn1(sleeper, 5);
+    void* d = spawn1(deadline_five, 0);
+    int64_t slept = joined(s);
+    int64_t heard = joined(d);
+    g_stop = 1;
+    for (int i = 0; i < 8; i++) joined(workers[i]);
+    CHECK(slept >= 5 && slept <= 45, "a sleep among tasks that compute between yields wakes within one round of them");
+    CHECK(heard >= 5 && heard <= 45, "a deadline among them is heard within one round too");
+    avra_rc_release(g_gate);
+
+    // counted, not timed: two such tasks, a 46 ms sleep — woken at the
+    // first switch after its time, then behind the two already ready
+    g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
+    for (int i = 0; i < 2; i++) workers[i] = spawn1(works_between_yields, 2);
+    int64_t late = joined(spawn1(sleeps_counting, 46));
+    g_stop = 1;
+    for (int i = 0; i < 2; i++) joined(workers[i]);
+    CHECK(late <= 5, "a sleep among them is asked about at the first switch after its time, not a window of switches later");
+}
+
+// Yields `cap` times at most, counting; notes the turn at which the
+// time `g_due` had come.
+static void* yields_counting(void* self) {
+    for (int64_t i = 0; i < cap(self) && !g_stop; i++) {
+        g_turns++;
+        if (g_due && !g_due_turn && now_ns() >= g_due) g_due_turn = g_turns;
+        avra_fiber_yield();
+    }
+    return answer(0);
+}
+
+// Files its sleep only after the yielders have run a while with nothing
+// filed; answers how many turns passed between its time and its waking.
+static void* sleeps_among_yielders(void* self) {
+    (void)self;
+    for (int i = 0; i < 2000; i++) avra_fiber_yield();
+    g_due = now_ns() + 3000000;
+    avra_fiber_sleep(3);
+    int64_t late = g_due_turn ? g_turns - g_due_turn : 0;
+    g_stop = 1;
+    return answer(late);
+}
+
+// Parks on the pipe after the yielders have run a while; a second task
+// writes once it sees the reader parked.
+static void* reads_among_yielders(void* self) {
+    (void)self;
+    for (int i = 0; i < 2000; i++) avra_fiber_yield();
+    int64_t woken = avra_fiber_park_fd(g_pipe[0], 0, 2000);
+    int64_t late = g_turns - g_due_turn;
+    char c;
+    g_stop = 1;
+    return answer(woken && read(g_pipe[0], &c, 1) == 1 ? late : -1);
+}
+static void* writes_once_parked(void* self) {
+    (void)self;
+    while (avra_sched_fd_waiters() == 0 && !g_stop) avra_fiber_yield();
+    g_due_turn = g_turns;
+    return answer(write(g_pipe[1], "w", 1));
+}
+
+static void world_within_reach(void) {
+    enum { YIELDERS = 4, MOST = 1000000, REACH = 2 * 64 + 4 * YIELDERS };
+    void* y[YIELDERS];
+    g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
+    for (int i = 0; i < YIELDERS; i++) y[i] = spawn1(yields_counting, MOST);
+    int64_t late = joined(spawn1(sleeps_among_yielders, 0));
+    for (int i = 0; i < YIELDERS; i++) joined(y[i]);
+    CHECK(late >= 0 && late <= REACH, "a sleep filed among yielding tasks wakes within a window of switches of its time");
+
+    g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
+    for (int i = 0; i < YIELDERS; i++) y[i] = spawn1(yields_counting, MOST);
+    void* r = spawn1(reads_among_yielders, 0);
+    void* w = spawn1(writes_once_parked, 0);
+    late = joined(r);
+    joined(w);
+    for (int i = 0; i < YIELDERS; i++) joined(y[i]);
+    CHECK(late >= 0 && late <= REACH + 64, "a reader parked among yielding tasks wakes within a window of switches of its byte");
+}
+
 // ── a wait on an open gate is a set too ─────────────────────────
 
 static void* sleeps_in_a_claimed_set(void* self) { (void)self; avra_wait_gate(g_gate, 0, 0); avra_fiber_sleep(5); return answer(0); }
@@ -804,6 +928,22 @@ static void as_virtual(void) {
     avra_vtask_free(vt);
     CHECK(!filed(g_gate) && avra_sched_timers() == 0, "and freeing it takes the deadline out of the heap");
 
+    // a switch between ready virtual tasks, a descriptor waiter filed meanwhile
+    vt = avra_vtask_new();
+    avra_vtask_wait_fd(vt, g_pipe[0], 0, 0, 0);
+    CHECK(avra_vtask_park(vt) == 1, "a virtual task parks on the pipe");
+    int64_t runner = avra_vtask_new();
+    int64_t polls = avra_sched_polls();
+    int named = 1;
+    for (int i = 0; i < 1000; i++) {
+        avra_vtask_ready(runner);
+        named = named && avra_vtask_next() == runner;
+    }
+    CHECK(named, "the policy names the ready task each time");
+    CHECK(avra_sched_polls() - polls <= 1000 / 64 + 2, "and asks the poller once a window, not once a switch");
+    avra_vtask_free(runner);
+    avra_vtask_free(vt);
+
     // an opened gate, as a finished task's
     vt = avra_vtask_new();
     avra_vtask_wait_gate(vt, g_gate, 4, 1);
@@ -858,6 +998,8 @@ int main(void) {
     claim_before_cancel();
     interrupt_is_time();
     late_parker();
+    timers_among_workers();
+    world_within_reach();
     CHECK(avra_mem_live() == live, "the fibers leave nothing behind");
     as_virtual();
     closed(g_pipe[0]);

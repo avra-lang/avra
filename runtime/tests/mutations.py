@@ -5,12 +5,16 @@ matches the source is a break nobody is checking. Either fails the run.
 
     mutations.py <build dir> <cc flags> <object>...
 
-The objects are the runtime's, the scheduler's own left out.
+The objects are the runtime's, the scheduler's own left out. A break is
+one line, or the few that make one fault. Each runs apart from the
+others, at once, and a test that outlives its bound is a kill: a hang
+is a failure too, and the bound keeps the whole run short.
 """
 import os
 import platform
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 out, flags, objects = sys.argv[1], sys.argv[2].split(), sys.argv[3:]
 source = open("runtime/avra_fiber.c").read()
@@ -47,43 +51,59 @@ MUTATIONS = [
     ("a waiter's gate is never let go", "    if (w->kind == W_GATE) avra_rc_release(w->on.gate);\n    else g_parked_fds--;", "    if (w->kind != W_GATE) g_parked_fds--;"),
     ("a timer task is not released when it fires", "    gate_opened(task, BY_TIMER);\n    avra_rc_release(task);", "    gate_opened(task, BY_TIMER);"),
     ("a task's slots outlive it", "        self->own.slot[i] = NULL;\n        avra_rc_release(held);", "        self->own.slot[i] = NULL;"),
-    ("the switch does not repoint the task's locals", "    g_current = next;\n    avra_task_local = next->local;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// The caller has already filed itself", "    g_current = next;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// The caller has already filed itself"),
+    ("the switch does not repoint the task's locals", "    g_current = next;\n    avra_task_local = next->local;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// A window ends", "    g_current = next;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// A window ends"),
     ("the guarded count never runs out", "            if (!g_guards_all) g_each_left -= n;\n", ""),
     ("a stack given back forgets what guards it", "    if (f->base) stack_give((Stack){ f->base, f->guard });", "    if (f->base) stack_give((Stack){ f->base, f->base - g_page });"),
     ("a guarded stack is not preferred", "    return pool_taken(g_guarded.len > 0 ? &g_guarded : &g_shared);", "    return pool_taken(g_shared.len > 0 ? &g_shared : &g_guarded);"),
     ("a misspelled guard count is read as none", "        if (!end || *end != 0 || errno != 0) guards_misspelled(env);\n", ""),
+    ("filing a time does not bring the world within reach", "    window_cut(1);\n", ""),
+    ("filing a descriptor waiter does not bring the world within reach", "        window_cut(FAIR_TURNS);\n", ""),
+    ("the world's turn comes every million switches", "#define FAIR_TURNS 64\n", "#define FAIR_TURNS 1000000\n"),
+    ("a window is not sized by the time left", "    int64_t fits = timed ? (g_timers[0].at - now) / (2 * pace) : 1;", "    int64_t fits = most;"),
+    ("the world is asked only when nobody is ready", "    if (__builtin_expect(--g_until_world > 0, 1)) {", "    if (1) {"),
+    ("a world turn never asks the poller", "        if (g_parked_fds > 0 && g_since_poll >= FAIR_TURNS) poller_wait(0);\n", ""),
+    ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("        if (g_parked_fds > 0 && g_since_poll >= FAIR_TURNS) poller_wait(0);\n", "        if (g_parked_fds > 0) poller_wait(0);\n")], None),
 ]
 TESTS = ["flow_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
+BOUND = 60
+EVERYWHERE = {"the world is asked only when nobody is ready"}
 
 os.makedirs(out, exist_ok=True)
-killed, alive, rotten = 0, [], []
-for name, old, new in MUTATIONS:
-    if source.count(old) != 1:
-        rotten.append(name)
-        print(f"  {name}: its line is not in the source (x{source.count(old)})")
-        continue
-    open(f"{out}/avra_fiber.c", "w").write(source.replace(old, new))
-    built = subprocess.run(["cc", "-c", "-O2", *flags, "-Iruntime", "-o", f"{out}/avra_fiber.o", f"{out}/avra_fiber.c"], capture_output=True, text=True)
+for test in TESTS:
+    subprocess.run(["cc", "-c", "-O2", *flags, "-o", f"{out}/{test}.o", f"runtime/tests/{test}.c"], check=True)
+
+
+def tried(numbered):
+    at, (name, old, new) = numbered
+    text = source
+    for a, b in old if isinstance(old, list) else [(old, new)]:
+        if text.count(a) != 1 and not (name in EVERYWHERE and text.count(a) > 1):
+            return name, "rotten", f"its line is not in the source (x{text.count(a)})"
+        text = text.replace(a, b)
+    here = f"{out}/{at}"
+    os.makedirs(here, exist_ok=True)
+    open(f"{here}/avra_fiber.c", "w").write(text)
+    built = subprocess.run(["cc", "-c", "-O2", *flags, "-Iruntime", "-o", f"{here}/avra_fiber.o", f"{here}/avra_fiber.c"], capture_output=True, text=True)
     if built.returncode:
-        rotten.append(name)
-        print(f"  {name}: does not build — {built.stderr.strip().splitlines()[0][:120]}")
-        continue
-    by = None
+        return name, "rotten", "does not build — " + built.stderr.strip().splitlines()[0][:120]
     for test in TESTS:
-        subprocess.run(["cc", "-O2", *flags, "-o", f"{out}/{test}", f"runtime/tests/{test}.c", f"{out}/avra_fiber.o", *objects], check=True, capture_output=True)
+        subprocess.run(["cc", "-O2", *flags, "-o", f"{here}/{test}", f"{out}/{test}.o", f"{here}/avra_fiber.o", *objects], check=True, capture_output=True)
         try:
-            ran = subprocess.run([f"{out}/{test}"], capture_output=True, timeout=200)
-            if ran.returncode != 0:
-                by = test
+            ran = subprocess.run([f"{here}/{test}"], capture_output=True, timeout=BOUND)
         except subprocess.TimeoutExpired:
-            by = f"{test} (it hung)"
-        if by:
-            break
-    if by:
-        killed += 1
-        print(f"  {name}: killed by {by}")
-    else:
-        alive.append(name)
-        print(f"  {name}: SURVIVED every runtime test")
-print(f"runtime-mutations: {killed} of {len(MUTATIONS)} killed" + (f"; {len(alive)} survive" if alive else "") + (f"; {len(rotten)} no longer apply" if rotten else ""))
+            return name, "killed", f"{test} (it outlived {BOUND} s)"
+        if ran.returncode != 0:
+            words = [line for line in ran.stderr.decode(errors="replace").splitlines() if "FAILED" in line]
+            return name, "killed", test + (f": {words[0].split('FAILED ', 1)[1][:70]}" if words else f" (exit {ran.returncode})")
+    return name, "alive", ""
+
+
+with ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 2) // 2)) as pool:
+    results = list(pool.map(tried, enumerate(MUTATIONS)))
+for name, how, by in results:
+    print(f"  {name}: " + {"killed": f"killed by {by}", "alive": "SURVIVED every runtime test", "rotten": by}[how])
+killed = sum(how == "killed" for _, how, _ in results)
+alive = sum(how == "alive" for _, how, _ in results)
+rotten = sum(how == "rotten" for _, how, _ in results)
+print(f"runtime-mutations: {killed} of {len(MUTATIONS)} killed" + (f"; {alive} survive" if alive else "") + (f"; {rotten} no longer apply" if rotten else ""))
 sys.exit(1 if alive or rotten else 0)

@@ -425,17 +425,42 @@ static void timer_down(size_t i) {
     }
 }
 
-// THE WORLD IS ASKED EVERY FAIR_TURNS SWITCHES while anything is filed
-// with it — a time, a descriptor — and tasks are ready: a crowd of
-// yielding tasks cannot starve a sleeper or a reader, and a switch with
-// nothing due reads no clock. `g_until_world` counts the switches left;
-// whoever files the first waiter brings it within reach.
+// THE WORLD'S TURN. Timers and descriptors are the world's, and asking
+// it costs a clock read or a syscall, so the switches between two asks
+// are a WINDOW counted down by `g_until_world`; inside one, a switch
+// reads no clock.
+//
+// THE INVARIANT: A WINDOW NEVER SPANS MORE THAN HALF THE TIME LEFT TO
+// THE EARLIEST TIMER, at the pace the window before it ran — and a
+// pace is believed one doubling at a time. So with a timer filed the
+// world is asked at the very next switch, then after 2, 4 … at most
+// FAIR_TURNS, for as long as switches stay short against the time left;
+// tasks that compute for long between switches are asked about at every
+// one, and a timer fires at the first switch after it is due. A
+// descriptor is asked about every FAIR_TURNS switches. With nothing
+// filed the window is endless.
 #define FAIR_TURNS 64
 #define WORLD_IDLE ((int64_t)1 << 62)
-static int64_t g_until_world = WORLD_IDLE;
+static int64_t g_until_world = WORLD_IDLE;   // switches left in the window
+static int64_t g_window = WORLD_IDLE;        // switches it was given, less those it was cut by
+static int64_t g_grant = FAIR_TURNS;         // the size the last timed window was given
+static int64_t g_window_began = 0;           // the clock at its start; 0 when none was read
+static int64_t g_pace = 0;                   // ns a switch took in the window before; 0 when unknown
+static int64_t g_since_poll = 0;             // switches since the poller was last asked
+static int64_t g_polls = 0;
 
-static inline void world_wanted(void) {
-    if (g_until_world > FAIR_TURNS) g_until_world = FAIR_TURNS;
+// The window ends in `left` more switches at most.
+static inline void window_cut(int64_t left) {
+    if (g_until_world <= left) return;
+    g_window -= g_until_world - left;
+    g_until_world = left;
+}
+
+// A time became the earliest: the next switch is the world's, unless
+// the window in hand already ends with twice its own length to spare.
+static inline void time_filed(int64_t at) {
+    if (g_pace > 0 && g_window_began > 0 && g_until_world <= FAIR_TURNS && at - g_window_began >= 2 * g_grant * g_pace) return;
+    window_cut(1);
 }
 
 static void timer_set(uint32_t kind, void* who, int64_t at) {
@@ -447,8 +472,7 @@ static void timer_set(uint32_t kind, void* who, int64_t at) {
     size_t i = g_timers_len++;
     g_timers[i] = (Timer){ at, g_timer_seq++, kind, who };
     timer_placed(i);
-    timer_up(i);
-    world_wanted();
+    if (timer_up(i) == 0) time_filed(at);
 }
 
 // The entry at `i` leaves the heap; its owner's place is its to clear.
@@ -567,7 +591,7 @@ static void waiter_filed(Waiter* w) {
     w->filed = 1;
     if (w->kind != W_GATE) {
         g_parked_fds++;
-        world_wanted();
+        window_cut(FAIR_TURNS);
     }
 }
 
@@ -706,6 +730,8 @@ int64_t avra_fiber_fd_ready(int64_t fd, int64_t writing) {
 // claims whoever it names.
 static void poller_wait(int64_t timeout_ns) {
     poller_open();
+    g_polls++;
+    g_since_poll = 0;
     enum { BATCH = 256 };
 #if AVRA_KQUEUE
     struct kevent evs[BATCH];
@@ -982,9 +1008,11 @@ static Stack pool_taken(Pool* p) {
 }
 
 // A stack with a guard of its own while one is free or one more may be
-// made; else one that shares its slab's.
+// made; else one that shares its slab's. A shared slab is only ever
+// made once no more guarded ones may be, so both pools empty is the one
+// time a slab is owed.
 static Stack stack_take(void) {
-    if (g_guarded.len == 0 && (g_guards_all || g_each_left > 0 || g_shared.len == 0)) slab_made();
+    if (g_guarded.len == 0 && g_shared.len == 0) slab_made();
     return pool_taken(g_guarded.len > 0 ? &g_guarded : &g_shared);
 }
 
@@ -1016,9 +1044,7 @@ static inline void bury_finished(void) {
 
 static void task_fired(void* task);
 
-static void fire_due_timers(void) {
-    if (g_timers_len == 0) return;
-    int64_t now = now_ns();
+static void fire_due_timers(int64_t now) {
     while (g_timers_len > 0 && g_timers[0].at <= now) {
         Timer t = g_timers[0];
         timer_out(0);
@@ -1086,19 +1112,46 @@ static inline void switch_to(Fiber* next) {
     bury_finished();
 }
 
+// A window ends and the next is sized: due timers fire, and what is
+// left to the earliest decides how many switches may pass before the
+// world is asked again.
+static void window_opened(void) {
+    int64_t ran = g_window - (g_until_world > 0 ? g_until_world : 0);
+    g_since_poll += ran;
+    int64_t now = 0;
+    if (g_timers_len > 0) {
+        now = now_ns();
+        fire_due_timers(now);
+    }
+    if (g_timers_len == 0) {
+        g_window_began = 0;
+        g_pace = 0;
+        g_window = g_until_world = g_parked_fds > 0 ? FAIR_TURNS : WORLD_IDLE;
+        return;
+    }
+    // A window that began at a clock read and ran some switches says
+    // what a switch costs; one that did not says nothing, and the world
+    // is asked again at the next switch.
+    int timed = g_window_began > 0 && ran > 0;
+    int64_t pace = timed ? (now - g_window_began) / ran : 0;
+    if (timed && pace < 1) pace = 1;
+    int64_t most = 2 * g_grant < FAIR_TURNS ? 2 * g_grant : FAIR_TURNS;
+    int64_t fits = timed ? (g_timers[0].at - now) / (2 * pace) : 1;
+    g_grant = !timed || fits < 1 ? 1 : fits < most ? fits : most;
+    g_pace = pace;
+    g_window_began = now;
+    g_window = g_until_world = g_grant;
+}
+
 // The caller has already filed itself (ready, parked, waiting or
-// done); run whoever is next, waiting on the world when nobody is.
+// done); who runs next, waiting on the world when nobody is ready.
 // A world with nothing to wait on and nobody ready is a deadlock,
 // and a deadlock is never a hang.
 __attribute__((noinline))
-// THE POLICY, ONE FOR BOTH ENGINES: who runs next. A compiled program
-// switches to the fiber it answers; the evaluator is handed it and
-// switches call stacks itself — so both interleave tasks alike.
-static Fiber* next_ready(void) {
+static Fiber* next_with_world(void) {
     for (;;) {
-        g_until_world = g_timers_len > 0 || g_parked_fds > 0 ? FAIR_TURNS : WORLD_IDLE;
-        fire_due_timers();
-        if (g_parked_fds > 0) poller_wait(0);
+        window_opened();
+        if (g_parked_fds > 0 && g_since_poll >= FAIR_TURNS) poller_wait(0);
         Fiber* next = ready_pop();
         if (next) return next;
         if (g_timers_len == 0 && g_parked_fds == 0) avra_trap("every task is waiting — deadlock");
@@ -1108,16 +1161,28 @@ static Fiber* next_ready(void) {
     }
 }
 
+// THE POLICY, ONE FOR BOTH ENGINES: who runs next. A compiled program
+// switches to the fiber it answers; the evaluator is handed it and
+// switches call stacks itself — so both interleave tasks alike. Until
+// the world's turn comes the queue alone decides, and the world's
+// machinery stays out of line: A COLD PATH IN A HOT LEAF COSTS EVERY
+// SWITCH A FRAME.
+__attribute__((always_inline))
+static inline Fiber* next_ready(void) {
+    if (__builtin_expect(--g_until_world > 0, 1)) {
+        Fiber* next = ready_pop();
+        if (next) return next;
+    }
+    return next_with_world();
+}
+
 __attribute__((noinline))
 static void run_next_with_world(void) {
-    Fiber* next = next_ready();
+    Fiber* next = next_with_world();
     if (next->virtual) avra_trap("defect: a compiled task's scheduler met one of the evaluator's");
     switch_to(next);
 }
 
-// A COLD PATH IN A HOT LEAF COSTS EVERY SWITCH A FRAME: until the
-// world's turn comes the queue alone decides, and the world's machinery
-// stays out of line.
 __attribute__((always_inline))
 static inline void run_next(void) {
     if (__builtin_expect(--g_until_world > 0, 1)) {
@@ -1675,3 +1740,5 @@ int64_t avra_vtask_next(void) {
 int64_t avra_sched_timers(void) { return (int64_t)g_timers_len; }
 
 int64_t avra_sched_fd_waiters(void) { return g_parked_fds; }
+
+int64_t avra_sched_polls(void) { return g_polls; }

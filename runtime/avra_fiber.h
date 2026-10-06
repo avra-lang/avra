@@ -147,9 +147,10 @@ void avra_vgate_open(void* gate);
 // world with nothing to wait on and nothing ready traps, deadlocked.
 int64_t avra_vtask_next(void);
 
-// How many entries the timer heap holds, and how many waiters are filed
-// on descriptors.
+// How many entries the timer heap holds, how many waiters are filed on
+// descriptors, and how many times the poller has been asked.
 int64_t avra_sched_timers(void);
 int64_t avra_sched_fd_waiters(void);
+int64_t avra_sched_polls(void);
 
 #endif

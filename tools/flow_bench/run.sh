@@ -33,6 +33,7 @@ runtime_built() {
 spawn_bench() {
     cc -c -O2 -fPIC $probes -I"$root/runtime" -o "$out/fiber_today.o" "$root/runtime/avra_fiber.c"
     cc -O2 -I"$root/runtime" -o "$out/spawn_bench_today" "$here/probes/spawn_bench.c" "$out/fiber_today.o" $rest
+    cc -O2 -I"$root/runtime" -o "$out/latency_bench" "$here/probes/latency_bench.c" "$out/fiber_today.o" $rest
 }
 
 if [ "${1:-bench}" = probes ]; then
@@ -99,7 +100,7 @@ fi
 (cd "$here/go" && GOFLAGS=-buildvcs=false "$go" build -o "$out/go/" ./...)
 
 # A tree with no compiler still measures the runtime's rows and Go.
-programs="switch spawn spawnparked pingpong scope parked"
+programs="switch spawn spawnparked pingpong scope latency parked"
 [ "${FLOW_AVRA:-1}" = 1 ] && [ -x "$root/build/avra" ] || { echo "flow-bench: no compiler asked for or found — the compiled Avra rows are not run" >&2; programs=""; }
 for p in $programs; do
     "$root/build/avra" build "$here/avra/$p" > /dev/null 2> "$out/$p.build" || { cat "$out/$p.build"; exit 1; }
@@ -135,6 +136,7 @@ while [ "$r" -le "$rounds" ]; do
     ran c "$out/spawn_bench_today" c parked
     ran c "$out/spawn_bench_today" c gate
     ran c "$out/spawn_bench_today" c within
+    ran c "$out/latency_bench" c
     FLOW_ROW=spawn_chan
     ran go1 env GOMAXPROCS=1 FLOW_CHAN=1 "$out/go/spawn"
     ran goN env FLOW_CHAN=1 "$out/go/spawn"
