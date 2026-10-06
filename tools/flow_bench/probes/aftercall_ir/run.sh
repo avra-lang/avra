@@ -2,36 +2,29 @@
 # Prices the cancel slice's tests ON AVRA'S OWN CODE: the bench server
 # (tools/bench/serve) is emitted as LLVM IR, rewritten four ways
 # (rewrite.py), linked as `avra build` links it, and put under the same
-# load, the variants taking turns. Prints the census, each binary's text
+# load, the variants taking turns (`built` is `avra build`'s own binary,
+# beside the four made here by clang -O2). Prints the census, each binary's text
 # size, and requests a second with the server's CPU a request.
 #   ROUNDS=3 SECS=6 sh tools/flow_bench/probes/aftercall_ir/run.sh
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../../.." && pwd)
 out=$root/build/flow-bench/aftercall_ir
-mkdir -p "$out/shim"
+mkdir -p "$out"
 cd "$root" || exit 1
 real=$(command -v clang)
-# The link line `avra build` uses, heard through a clang that writes its words down.
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/clang.log"\nexec "%s" "$@"\n' "$out" "$real" > "$out/shim/clang"
-chmod +x "$out/shim/clang"
-: > "$out/clang.log"
 make -s libs > /dev/null 2>&1
-find tools/bench/serve -name .avra-cache -prune -exec mv {} "$out/parked-cache.$$" \; 2>/dev/null
-PATH="$out/shim:$PATH" build/avra build tools/bench/serve/src/main.av > "$out/build.log" 2>&1 || { echo "the bench server does not build"; head -5 "$out/build.log"; exit 1; }
+build/avra build tools/bench/serve/src/main.av > "$out/build.log" 2>&1 || { echo "the bench server does not build"; head -5 "$out/build.log"; exit 1; }
 cp tools/bench/serve/src/main "$out/serve_built"
-link=$(grep -- ' -o ' "$out/clang.log" | grep -v -- ' -c ' | tail -1)
-[ -n "$link" ] || { echo "no link line was heard; the clang calls were:"; cut -c1-200 "$out/clang.log" | head; exit 1; }
-echo "== $(uname -srm); the link line: $(echo "$link" | cut -c1-400)"
-libs=$(echo "$link" | tr ' ' '\n' | grep -E '(^-l|^-L|\.a$|^-pthread$|^-rdynamic$)' | tr '\n' ' ')
-objs=$(echo "$link" | tr ' ' '\n' | grep -E '\.o$' | grep -v -- "$out" | grep -E '(^|/)build/[a-z_0-9]+\.o$' | tr '\n' ' ')
-build/avra emit tools/bench/serve/src/main.av > "$out/serve.ll" 2> "$out/emit.err" || { echo "emit failed"; head -5 "$out/emit.err"; exit 1; }
-echo "== the emitted program: $(wc -l < "$out/serve.ll") lines of IR; package objects: $objs; libs: $libs"
+link=$(python3 "$here/linkrows.py" "$root" tools/bench/serve)
+build/avra emit tools/bench/serve > "$out/serve.ll" 2> "$out/emit.err" || { echo "emit failed"; head -5 "$out/emit.err"; exit 1; }
+[ -s "$out/serve.ll" ] || cp tools/bench/serve/build/main.ll "$out/serve.ll" 2> /dev/null
+echo "== $(uname -srm); the emitted program: $(wc -l < "$out/serve.ll") lines of IR; linked with: $link"
 $real -O2 -c -o "$out/probe_state.o" "$here/probe_state.c" || exit 1
 for v in plain byte task edge; do
     python3 "$here/rewrite.py" "$out/serve.ll" "$out/serve_$v.ll" $v || exit 1
     t0=$(date +%s%N)
-    $real -w -O2 "$out/serve_$v.ll" "$out/probe_state.o" $objs $libs -o "$out/serve_$v" 2> "$out/link_$v.err" || { echo "$v does not link"; head -8 "$out/link_$v.err"; exit 1; }
+    $real -w -O2 "$out/serve_$v.ll" "$out/probe_state.o" $link -o "$out/serve_$v" 2> "$out/link_$v.err" || { echo "$v does not link"; head -8 "$out/link_$v.err"; exit 1; }
     echo "   $v: text $(size "$out/serve_$v" | awk 'NR == 2 { print $1 }') bytes, clang -O2 $(( ($(date +%s%N) - t0) / 1000000 )) ms"
 done
 command -v wrk > /dev/null || sudo apt-get install -y wrk > /dev/null 2>&1
