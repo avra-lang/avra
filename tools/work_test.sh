@@ -426,7 +426,7 @@ exec "$@"
 STUB
     chmod +x "$scratch/sprite-here"
     export E2E="$scratch/e2e" AVRA_SPRITE_HOME="$scratch/sprite-home" AVRA_SPRITE_CLI="$scratch/sprite-here" AVRA_SPRITES=L AVRA_REATTACH_S=0
-    export PATH="$scratch/bin:$PATH" FAKE="$scratch/fake"
+    # The real rsync carries the tree here: the sync's proof is part of every run.
     mkdir -p "$E2E"
     git -C "$main" worktree add -q -b e2e "$scratch/avra-e2e" main
     cd "$scratch/avra-e2e" || exit 1
