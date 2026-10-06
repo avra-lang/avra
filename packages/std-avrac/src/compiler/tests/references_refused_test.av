@@ -1,0 +1,45 @@
+// The references relation is filed whole or not at all, and a refusal
+// is SPOKEN: where a reader held one of its cells this revision, the
+// pass says a defect — it never settles as a program with no uses.
+use compiler.{new_workspace, avra, Workspace}
+use compiler.host.{memory_host}
+use features.{Decl, Ref}
+use @std.relation.engine.{Key}
+
+fn refs_refused_workspace() -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "fn a() -> int { 1 }\nfn b() -> int { a() }\nb()\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+spec "compiler/references — a refused replacement" {
+    then "under a reader that read a use's bucket this revision, the pass speaks one defect and one refusal is heard" {
+        let ws = refs_refused_workspace()
+        let _ = ws.analyze_file("/w/src/main.av")
+        let db = ws.decls.rows_db.get()
+        let heard: Cell<List<string>> = Cell.new([])
+        db.heard_by((w: string) -> heard.push(w))
+        let a = Decl.by_name(db, "a").first()!.id
+        let reader = Key { family: ws.db.kernel.family((_arg: int) -> 0), arg: 0 }
+        ws.db.kernel.begin(reader)
+        let read = Ref.by_decl(db, a).length
+        ws.db.kernel.settle(reader, 0)
+        let before = ws.defects.get().length
+        let filed = ws.references()
+        read == 0 && filed == 0 && heard.get().length == 1 && ws.defects.get().length == before + 1
+    }
+    then "with no reader, the same pass files its rows and speaks nothing" {
+        let ws = refs_refused_workspace()
+        let _ = ws.analyze_file("/w/src/main.av")
+        let before = ws.defects.get().length
+        ws.references() > 0 && ws.defects.get().length == before
+    }
+}

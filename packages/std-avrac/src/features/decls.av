@@ -587,7 +587,7 @@ export type Decls = {
     /// pass ran — that file was never surveyed, so the relation
     /// cannot answer "used nowhere" with any confidence.
     refs_incomplete: Cell<bool>,
-    ensure_refs: Cell<fn() -> void>,
+    ensure_refs: Cell<fn() -> bool>,
     /// THE SEAL INDEX — a type name to the `.Fn` decls whose `mut` parameters
     /// write it, kept by `face` as every declaration's facts land, so it covers
     /// a module minted after the first ask as well as one parsed before it.
@@ -655,7 +655,8 @@ fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
 fn no_entry_ensure() -> bool { false }
 
 // LICENSED fns.dead_parameter: a fn VALUE filling the references-ensure seat — no pass runs before the workspace arms it
-fn no_refs_ensure() {}
+/// No pass to run: what the relation holds is what stands.
+fn no_refs_ensure() -> bool { true }
 
 /// A const's type as the program answers it — or why it has none:
 /// the const REFUSED (spoken at its own value), or its value asks
@@ -2035,9 +2036,14 @@ impl Decls {
     /// Every named USE of `d`, of any kind, across the program —
     /// asking runs the references pass.
     fn refs_of(d: DeclId) -> List<Ref> {
-        (self.ensure_refs.get())()
+        if !self.refs_stand() { return [] }
         Ref.by_decl(self.rows_db.get(), d)
     }
+
+    /// Whether the references relation stands to be read — asking runs
+    /// the pass. While it cannot run the answer is no, and NOTHING IS
+    /// READ: a read then would be one the pass's own write must answer to.
+    fn refs_stand() -> bool { (self.ensure_refs.get())() }
 
     /// Every CALL or METHOD CALL naming `d`.
     fn callers(d: DeclId) -> List<Ref> {
@@ -2074,12 +2080,12 @@ impl Decls {
 
     /// One file's own rows, as `references.av`'s pass wrote them.
     fn refs_in_file(f: FileId) -> List<Ref> {
-        (self.ensure_refs.get())()
+        if !self.refs_stand() { return [] }
         Ref.by_file(self.rows_db.get(), f)
     }
 
     /// The workspace arms the references hook once.
-    fn arm_references(ensure: fn() -> void) {
+    fn arm_references(ensure: fn() -> bool) {
         self.ensure_refs.set(ensure)
     }
 
