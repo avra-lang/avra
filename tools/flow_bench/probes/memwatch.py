@@ -34,9 +34,9 @@ while child.poll() is None:
         words = args.split()
         name = " ".join(os.path.basename(w) for w in words[:3])[:60]
         peaks[name] = max(peaks.get(name, 0), int(rss) // 1024)
-    if least < 900:
+    if least < 640:
         os.killpg(child.pid, signal.SIGKILL)
-        ended = "ENDED EARLY at 900 MB available"
+        ended = "ENDED EARLY at 640 MB available"
         break
 child.wait()
 print(f"{label}: wall {time.time() - started:.1f} s, {ended}, exit {child.returncode}, least available {least} MB")
