@@ -5,10 +5,10 @@
 #            builds the C objects and package libraries ONCE, and hands both
 #            down as artifacts.
 #   suites   one matrix job PER SHARD, in parallel on their own runners.
-#   keepers  the static keepers, on the prepared compiler — the train's.
+#   keepers  the static keepers and the seed check, on the prepared compiler
+#            — the train's.
 #   gate     the changed-file fmt and the packages' idioms.
-#   cache-attacks  the committed seed proved to build the tree, then the
-#            build cache attacked — the train's.
+#   cache-attacks  the build cache attacked — the train's.
 #   test     the ONE required check name: an aggregate that passes iff every
 #            needed job succeeded or was skipped.
 # A PR RUNS THE MINIMUM, THE TRAIN RUNS THE GATE. A PR's own check is fmt,
@@ -156,28 +156,37 @@ jobs:
       # job rebuilds what prepare built from the same commit.
       - name: built
         run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
-      # ONE LIST, the Makefile's, in its two halves SIDE BY SIDE: each half
-      # runs in its own copy of the tree, so nothing one writes under build/
-      # or beside a package is the other's, and each takes its own build
-      # lock. Both run to the end, and either refusing fails the job.
+      # ONE LIST, the Makefile's, in its two halves SIDE BY SIDE, and the seed
+      # check beside them: each runs in its own copy of the tree, so nothing
+      # one writes under build/ or beside a package is another's, and each
+      # takes its own build lock. All three run to the end, and any refusing
+      # fails the job.
+      #
+      # THE COMMITTED SEED STILL BUILDS THIS TREE: it links against the
+      # runtime and compiles HEAD. No other job starts from the seed once a
+      # cached compiler exists, so a removed runtime symbol the seed names, or
+      # source the seed cannot read, is refused here before it can land.
       - name: keepers
         run: |
           cp -a . ../keepers-b
+          cp -a . ../seed
           (cd ../keepers-b && AVRA_BUILD_LOCK=/tmp/avra-build-b.lock make -s -o avra keepers-b) > ../keepers-b.log 2>&1 &
-          a=0
+          pb=$!
+          (cd ../seed && AVRA_BUILD_LOCK=/tmp/avra-build-seed.lock make -s -o avra seed-check) > ../seed.log 2>&1 &
+          ps=$!
+          a=0; b=0; s=0
           make -s -o avra keepers-a || a=1
-          b=0
-          wait $! || b=1
-          echo "::group::keepers-b"
-          cat ../keepers-b.log
-          echo "::endgroup::"
+          wait $pb || b=1
+          wait $ps || s=1
+          echo "::group::keepers-b"; cat ../keepers-b.log; echo "::endgroup::"
+          echo "::group::seed-check"; cat ../seed.log; echo "::endgroup::"
           [ "$a" = 0 ] || echo "::error::a keeper in the first half refused"
           [ "$b" = 0 ] || echo "::error::a keeper in the second half refused"
-          exit $((a + b))
+          [ "$s" = 0 ] || echo "::error::seed-check refused"
+          exit $((a + b + s))
 
-  # THE SEED PROVED AND THE BUILD CACHE ATTACKED — the train's, like the
-  # keepers. Its own job: the attacks clear the store they build through, and
-  # it runs beside the gate.
+  # THE BUILD CACHE, ATTACKED — the train's, like the keepers. Its own job: it
+  # clears the store it builds through, and it runs beside the gate.
   cache-attacks:
     needs: [prepare]
     if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
@@ -196,14 +205,6 @@ jobs:
       # job rebuilds what prepare built from the same commit.
       - name: built
         run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
-      # THE COMMITTED SEED STILL BUILDS THIS TREE: it links against the
-      # runtime and compiles HEAD. No other job starts from the seed once a
-      # cached compiler exists, so a removed runtime symbol the seed names, or
-      # source the seed cannot read, is refused here before it can land. It
-      # rides this job because this job always runs on a train and is not
-      # the slowest.
-      - name: seed-check
-        run: make -s -o avra seed-check
       - name: cache-attacks
         run: make -s -o avra cache-attacks
 
