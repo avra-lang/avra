@@ -694,6 +694,7 @@ fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId) -> TypeId? {
     }
     match fault {
         .Outside -> embed_outside(cx, path, rel),
+        .Undeclared(key) -> embed_undeclared(cx, path, rel, key),
         .Linked -> embed_linked(cx, path, rel),
         .Missing -> embed_missing(cx, path, rel),
         .NotText(at) -> embed_not_text(cx, path, rel, at),
@@ -710,6 +711,19 @@ fn embed_outside(mut cx: TypeCx, path: ExprId, rel: string) -> TypeId {
                 "`embed` reads inside its own package — `${rel}` names a file outside it",
                 "leaves the package here",
                 "keep the file in this package, or name a dependency's by its package — `embed(\"@scope/name/path\")`",
+            ),
+        )
+}
+
+fn embed_undeclared(mut cx: TypeCx, path: ExprId, rel: string, key: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.embed_place",
+                cx.loc_of(path),
+                "`embed` reads `${key}` as a package, and this package does not depend on it",
+                "names a dependency here",
+                "a directory of this package that is named so is `./${rel}`; a package's file needs the package in `[dependencies]`",
             ),
         )
 }

@@ -185,21 +185,22 @@ impl Workspace {
     }
 
     /// WHERE AN `embed` LITERAL'S FILE STANDS: beneath a package's root,
-    /// as the path under that root — or null. A plain path is read from
-    /// `source`'s own directory and stays in `source`'s package: an
-    /// absolute one names the machine, and a `..` past the root names
-    /// what the package does not hold. `@scope/name/…` is read from the
-    /// root of that package, when `source`'s package depends on it.
-    fn embed_place(source: string, rel: string) -> EmbedPlace? {
-        if rel.starts_with("/") { return null }
+    /// as the path under that root. A plain path is read from `source`'s
+    /// own directory and stays in `source`'s package: an absolute one
+    /// names the machine, and a `..` past the root names what the package
+    /// does not hold. A PATH THAT OPENS WITH `@` NAMES A PACKAGE, always:
+    /// `@scope/name/…` is read from the root of that package when
+    /// `source`'s package depends on it, and refuses when it does not —
+    /// a directory of this package named so is written `./@scope/…`.
+    fn embed_place(source: string, rel: string) -> Result<EmbedPlace, EmbedFault> {
+        if rel.starts_with("/") { fail EmbedFault.Outside }
         let from = self.packages()[self.holder_of_path(source)]
-        if !rel.starts_with("@") { return beneath_root(from.root, joined_path(dir_of(source), rel)) }
+        if !rel.starts_with("@") { return placed_beneath(from.root, joined_path(dir_of(source), rel)) }
         let segments = rel.split("/")
-        if segments.length < 3 { return null }
-        let key = "${segments[0]}/${segments[1]}"
-        if !self.reaches(from, key) { return null }
-        let root? = self.packages().find(it.key == key)?.root else { return null }
-        beneath_root(root, joined_path(root, segments.slice(2, segments.length).join("/")))
+        let key = segments.slice(0, 2).join("/")
+        if segments.length < 3 || !self.reaches(from, key) { fail EmbedFault.Undeclared(key) }
+        let root? = self.packages().find(it.key == key)?.root else { fail EmbedFault.Undeclared(key) }
+        placed_beneath(root, joined_path(root, segments.slice(2, segments.length).join("/")))
     }
 
     /// THE EMBED LAW, judged where the literal stands: the file's path,
@@ -209,7 +210,7 @@ impl Workspace {
     }
 
     fn embed_placed_beside(source: string, rel: string) -> Result<string, EmbedFault> {
-        let place? = self.embed_place(source, rel) else { fail EmbedFault.Outside }
+        let place = self.embed_place(source, rel)?
         match (self.host.beneath)(place.root, place.rel) {
             .Text(_) -> joined_path(place.root, place.rel),
             .Missing -> .Err(EmbedFault.Missing),
@@ -436,6 +437,12 @@ type Imported = { imports: List<Import>, diagnostics: List<Diag> }
 
 /// A package's root and a path beneath it.
 type EmbedPlace = { root: string, rel: string }
+
+/// `path` as it stands beneath `root`, or that it stands outside it.
+fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> {
+    let place? = beneath_root(root, path) else { fail EmbedFault.Outside }
+    place
+}
 
 /// `path` as it stands beneath `root`, or null when it does not.
 fn beneath_root(root: string, path: string) -> EmbedPlace? {
