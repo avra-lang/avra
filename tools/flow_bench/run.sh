@@ -59,18 +59,6 @@ if [ "${1:-bench}" = probes ]; then
     echo "== the yield path: instructions in the object, and counted over ten million switches"
     # THE FRAME PROOF: a leaf's fast path saves nothing — no push, no stack
     # adjustment — before its first branch.
-    if [ -r "$here/probes/base/avra_fiber.c" ]; then
-        cc -c -O2 -fPIC $probes -I"$here/probes/base" -o "$out/fiber_base.o" "$here/probes/base/avra_fiber.c"
-        for f in avra_fiber_yield avra_fiber_park_fd avra_task_join; do
-            for o in "$out/fiber_base.o" "$out/fiber_today.o"; do
-                objdump -d --no-show-raw-insn "$o" | awk -v f="$f" -v o="$(basename "$o" .o)" '
-                    $2 ~ "<_?" f ">:" { on=1; next }
-                    on && /^$/ { exit }
-                    on && /^ / { n++; if (!branched) { if ($0 ~ /push|sub .*,%rsp|stp|sub\tsp/) frame++; if ($2 ~ /^(j|b\.|cb|tb|call|bl|ret)/ || $2 == "b") branched=1 } }
-                    END { printf "  %-12s %-22s %3d instructions, %d frame op(s) before the first branch\n", o, f, n+0, frame+0 }'
-            done
-        done
-    fi
     for f in avra_fiber_yield avra_fiber_switch avra_wait_park avra_gate_claim avra_wait_gate avra_fiber_park_fd avra_task_slot avra_task_slot_set avra_task_id; do
         o=$out/fiber_today.o
         case $f in avra_task_*) o=$out/rt/avra_runtime.o ;; esac
