@@ -8,7 +8,8 @@
 # what differs is the compiler alone, and each binary stands in the base's own
 # build/ so `@std/*` resolves there too — cold each time, every store moved aside:
 # the kernel's graph (which must be the same bytes when the candidate changes
-# no behaviour), the runtime's memory account, and wall time and peak per round.
+# no behaviour), the runtime's memory account, wall time and peak per round, and
+# a warm check after one body edit.
 # Last, the candidate's first and second generations trace the same check.
 set -u
 base=$1
@@ -86,6 +87,11 @@ cp "$tree/build/avra.gen2" "$at/build/avra.cand2"
 cp "$tree/build/avra.gen3" "$at/build/avra.cand"
 measured base "$at/build/avra.gen2"
 measured cand "$at/build/avra.cand"
+# One body edit, warm, in the base's tree: warm_edit.sh's own rounds, per binary.
+for b in gen2 cand; do
+    echo "one-edit	$b"
+    (cd "$at" && AVRA_BIN="$at/build/avra.$b" sh "$here/warm_edit.sh" "$R" packages/cli cli packages/cli/src/commands/shared.av '· memo' 2>&1 | grep -E "edit[0-9]|noop|restored|absent" | cut -c1-260)
+done
 if cmp -s "$out/graph.base" "$out/graph.cand"; then
     echo "graph	IDENTICAL	$(grep -c '^G' "$out/graph.cand") cells"
 else
