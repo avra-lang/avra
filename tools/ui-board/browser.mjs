@@ -156,14 +156,14 @@ claim("the box ticked from script repainted the page", (await rows())[0].done ==
 claim("a repaint elsewhere leaves a field its text, its caret and the focus", await read(`(() => { const f = ${field}; return [f.value, f.selectionStart, document.activeElement === f]; })()`).then((v) => v.join() === "Keep me,5,true"));
 await read(`${named("Draft the spec")}.click(), 1`);
 
-const box = named("Wire the event channel");
-await read(`(() => { const b = ${box}; b.focus(); b.witness = "kept"; ${row("t2")}.witness = "t2"; })(), 1`);
+const carried = named("Wire the event channel");
+await read(`(() => { const b = ${carried}; b.focus(); b.witness = "kept"; ${row("t2")}.witness = "t2"; })(), 1`);
 await read(`${named("Newest first")}.click(), 1`);
 claim("Newest first turns the rows end for end", (await keys()).join() === "t5,t4,t2,t1", await keys());
 claim("a keyed row carried to another place is the same element", await read(`${row("t2")}.witness`) === "t2");
-claim("and the focus is kept on the control inside it", await read(`(() => { const b = ${box}; return [document.activeElement === b, b.witness]; })()`).then((v) => v.join() === "true,kept"));
+claim("and the focus is kept on the control inside it", await read(`(() => { const b = ${carried}; return [document.activeElement === b, b.witness]; })()`).then((v) => v.join() === "true,kept"));
 await read(`${named("Newest first")}.click(), 1`);
-claim("the rows turn back, the focus still kept", (await keys()).join() === "t1,t2,t4,t5" && await read(`document.activeElement === ${box}`), await keys());
+claim("the rows turn back, the focus still kept", (await keys()).join() === "t1,t2,t4,t5" && await read(`document.activeElement === ${carried}`), await keys());
 
 // ── the dev loop ────────────────────────────────────────────────
 // Until `holds` answers true of the page, asked for as long as a build takes.
