@@ -116,8 +116,12 @@ void avra_fiber_forked(void);
 // A new task, filed nowhere until readied or parked; `site` is where it
 // was spawned, for the trace.
 int64_t avra_vtask_new(void);
-int64_t avra_vtask_new_at(int64_t site);
+// The same, under the id its machine counts it by: what the trace and
+// every claimant's name for it read.
+int64_t avra_vtask_new_at(int64_t site, int64_t id);
 void avra_vtask_free(int64_t t);
+// A task whose body answered: the trace says so, then it is freed.
+void avra_vtask_end(int64_t t);
 void avra_vtask_ready(int64_t t);
 void avra_vtask_sleep(int64_t t, int64_t ms);
 // 1 when parked; 0 when it did not wait: the descriptor cannot be
@@ -142,6 +146,9 @@ void avra_vtask_cancel(int64_t t, int64_t by);
 // The gate stands open for ever: every waiter is claimed, and a later
 // wait on it is claimed at once — what a finished task's gate does.
 void avra_vgate_open(void* gate);
+// `avra_gate_claim`, made by the task `t`: the claimed waiter's member,
+// or -1.
+int64_t avra_vgate_claim(int64_t t, void* gate);
 
 // The next task to run, waiting on the world as long as it takes; a
 // world with nothing to wait on and nothing ready traps, deadlocked.

@@ -1,7 +1,9 @@
 // The vertical: `spawn` runs beside the spawner, `.await` answers what
 // the body did, `.done` asks without parking, and a task is joined where
 // the last thing holding it ends.
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_at_run}
+
+extern fn avra_sched_timers() -> int
 
 spec "features/tasks" {
     given "spawn and await" {
@@ -37,9 +39,53 @@ spec "features/tasks" {
             shown("let a = spawn 4\nlet b = spawn { a.await + 100 }\nb.await") == "104"
         }
     }
+    given "tasks nothing runs" {
+        then "a join of a cancelled task traps in the row's words" {
+            refused_at_run(
+                "extern fn avra_task_pending() -> ptr\nextern fn avra_task_cancel(t: ptr)\nextern fn avra_task_join(t: ptr) -> ptr\nlet p = avra_task_pending()\navra_task_cancel(p)\nlet _a = avra_task_join(p)\n1",
+                "a join takes a task that answers, and this one was cancelled",
+            )
+        }
+        then "a join between a wait row and its park traps as the runtime's does" {
+            refused_at_run(
+                "extern fn avra_wait_until(at_ns: int, arm: int, member: int)\nextern fn avra_task_pending() -> ptr\nextern fn avra_task_join(t: ptr) -> ptr\nlet p = avra_task_pending()\navra_wait_until(9000000000000000000, 0, 0)\nlet _a = avra_task_join(p)\n1",
+                "a task waited inside a wait it had not parked",
+            )
+        }
+        then "a settle there traps alike" {
+            refused_at_run(
+                "extern fn avra_wait_until(at_ns: int, arm: int, member: int)\nextern fn avra_task_pending() -> ptr\nextern fn avra_task_settle(t: ptr)\nlet p = avra_task_pending()\navra_wait_until(9000000000000000000, 0, 0)\navra_task_settle(p)\n1",
+                "a task waited inside a wait it had not parked",
+            )
+        }
+        then "a join of a task already done is no wait, and passes inside a set" {
+            shown(
+                "extern fn avra_wait_until(at_ns: int, arm: int, member: int)\nextern fn avra_wait_park() -> int\nextern fn avra_now_ns() -> int\nlet t = spawn 5\nlet first = t.await\navra_wait_until(avra_now_ns() + 1000000, 2, 3)\nlet again = t.await\nlet claim = avra_wait_park()\n\"\${first} \${again} \${claim >> 32}:\${claim & 4294967295}\"",
+            ) == "5 5 2:3"
+        }
+        then "a task answers once" {
+            refused_at_run(
+                "extern fn avra_task_pending() -> ptr\nextern fn avra_task_answer(t: ptr, v: ptr)\nextern fn avra_array_new() -> ptr\nlet p = avra_task_pending()\nlet v = avra_array_new()\navra_task_answer(p, v)\navra_task_answer(p, v)\n1",
+                "a task answered twice",
+            )
+        }
+        then "a slot past the four traps" {
+            refused_at_run(
+                "extern fn avra_task_slot(key: int) -> ptr?\nlet _s = avra_task_slot(4)\n1",
+                "a task has four slots, and this is none of them",
+            )
+        }
+    }
     given "one process, many runs" {
         then "a run a trap stopped with tasks outstanding leaves none for the next" {
             shown("let a = spawn 1\nlet b = spawn 2\n[1][5]") == "<refused>" &&
+                shown("let t = spawn 3\nt.await") == "3"
+        }
+        then "a run that ends holding a pending task and a far timer leaves the policy none" {
+            shown(
+                    "extern fn avra_task_pending() -> ptr\nextern fn avra_task_at(at_ns: int) -> ptr\nlet _p = avra_task_pending()\nlet _t = avra_task_at(9000000000000000000)\n1",
+                ) == "1" &&
+                avra_sched_timers() == 0 &&
                 shown("let t = spawn 3\nt.await") == "3"
         }
     }

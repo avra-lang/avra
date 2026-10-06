@@ -1,0 +1,33 @@
+// proves: a task's record begins as a gate — a wait row files on
+// either through either seat, evaluated as compiled.
+use @std.time.{ms, sleep}
+
+extern fn avra_wait_gate(g: ptr, arm: int, member: int)
+extern fn avra_wait_task(t: ptr, arm: int, member: int)
+extern fn avra_wait_park() -> int
+extern fn avra_gate_new() -> ptr
+extern fn avra_gate_claim(g: ptr) -> int
+extern fn avra_task_pending() -> ptr
+extern fn avra_task_answer(t: ptr, v: ptr)
+extern fn avra_array_sized(n: int) -> ptr
+
+fn said(claim: int) -> string { "${claim >> 32}:${claim & 4294967295}" }
+
+let p = avra_task_pending()
+let g = avra_gate_new()
+let answerer = spawn {
+    sleep(ms(2))
+    avra_task_answer(p, avra_array_sized(1))
+    0
+}
+avra_wait_gate(p, 1, 4)
+let by_task = said(avra_wait_park())
+avra_wait_gate(p, 1, 5)
+let spent = said(avra_wait_park())
+let ringer = spawn {
+    sleep(ms(2))
+    avra_gate_claim(g)
+}
+avra_wait_task(g, 2, 6)
+let by_gate = said(avra_wait_park())
+"${by_task} ${spent} ${by_gate} ${answerer.await} ${ringer.await}"

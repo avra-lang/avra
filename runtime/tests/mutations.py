@@ -62,6 +62,11 @@ MUTATIONS = [
     ("the world is asked only when nobody is ready", "    return __builtin_expect(g_timers_len == 0 && left > 0, 1);", "    return 1;"),
     ("the poller is never asked while tasks are ready", "            if (g_parked_fds > 0) poller_wait(0);\n            else g_until_poll = POLL_IDLE;", "            g_until_poll = FAIR_TURNS;"),
     ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("        if (g_until_poll <= 0) {", "        if (1) {")], None),
+    ("a join answers a cancelled task", "    if (cells[TASK_END] == END_CANCELLED) join_refused();\n", ""),
+    ("a fired timer's task answers nothing", "    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;\n", "    avra_rc_release(unit);\n"),
+    ("a virtual claim names whoever the host runs", "    return gate_claimed(gate, id_of(virtual_at(t)));", "    return gate_claimed(gate, id_of(g_current));"),
+    ("a virtual task's end is not traced", "    if (TRACING) traced_fiber(\"end\", virtual_at(t), 0);\n", ""),
+    ("a virtual task keeps the policy's count for its id", "    virtual_at(t)->own.id = id;\n", ""),
 ]
 TESTS = ["flow_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
 BOUND = 60
