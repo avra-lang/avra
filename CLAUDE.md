@@ -1967,14 +1967,30 @@ Runtime facts, ours to ratify:
   tree and compiler stay warm there between runs. Bootstraps, whole
   suites and censuses run there; the Mac keeps quick targeted checks and
   anything macOS-only. ONE RUN PER SPRITE, EVERY STEP BOUNDED: `run`
-  answers the command's status, or 75 (no answer), 76 (busy), 70 (the
-  compiler does not build), 124/125 (a bound; `--for <minutes>` raises
-  the command's), 137 (out of memory) — and the remote command is
-  stopped on each, since a run never outlives its caller. `sh tools/work
-  sprites` shows all of them in seconds. A Sprite sleeps thirty seconds
-  after its last command; one silent for minutes has lost its
-  filesystem and is destroyed and created again (provisioning is `run`'s
-  first step, from `.github/ci/packages.txt`).
+  answers the command's status, or 76 (busy), 70 (the compiler does not
+  build), 124/125 (a bound; `--for <minutes>` raises the command's), 137
+  (out of memory), 75 (the Sprite did not answer), 74 (the provider did
+  not answer) — and a failure's last line begins with the one of three
+  that failed: SPRITE, CONNECTION or COMMAND. A RUN BELONGS TO THE
+  SPRITE, NOT TO THE CONNECTION: a supervisor there keeps its output and
+  status and holds the Sprite awake while it lives, `run` only follows
+  it, and a dropped connection is followed again from the byte it stood
+  at — so an interrupt stops a run, a drop never does, a run is as long
+  as its `--for` says, and the Sprite ends it at its bound whoever is
+  watching (`work attach` follows again, `work stop` ends it, `work
+  done` ends it with the lane). `sh tools/work sprites` shows all of
+  them in seconds.
+  WHAT ENDS A RUN EARLY IS MEMORY, NOT TIME: a twenty-minute exec holds,
+  chatty or silent, and thirty-two spinning processes leave a Sprite
+  answering in a second — but a Sprite says 16 GB and a balloon holds
+  half, more while it idles (3.3 to 7.3 GB were free to a run), there is
+  no swap, and under about 250 MB the whole machine answers nobody for
+  minutes. The Sprite's keeper ends a run at 600 MB (137), and every run
+  says what it had to start with. A SPRITE WITH NO SESSION AND NO HOLD
+  IS SUSPENDED WITHIN SECONDS, MID-WRITE IF NEED BE, which is why
+  nothing runs there detached without the hold; one silent for minutes
+  has lost its filesystem and is destroyed and created again
+  (provisioning is `run`'s first step, from `.github/ci/packages.txt`).
 - A BRANCH IS REBASED ONTO `origin/main` ONLY, never onto another
   unlanded branch: that lands the other branch's work unverified. A
   branch built on a stale local main moves with `git rebase --onto
