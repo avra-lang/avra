@@ -2359,6 +2359,18 @@ Runtime facts, ours to ratify:
   unbuildable between the merge and the refresh, and an integrator
   that gates the LANE hits the same wall one step later with the
   landing dead.
+  AND A ROW WHOSE SEAT TAKES A BOX HAS THREE RUNGS: the row, its arm,
+  its declaration. `crossing_law` exempts a row only when it is ARMED
+  — an arm is what materialises the aggregate — so a compiler that
+  knows a row `Unhosted` refuses a box at its seat exactly as one that
+  has never heard of it. Probed at `590f8e3`, the rows known and
+  `Unhosted`: `extern fn avra_gate_new() -> List<int>` is
+  `type.host_seat` "the answer of `avra_gate_new` wears `List<int>`,
+  which cannot cross to C", while the same row declared `-> ptr`, and
+  every word seat, checks clean. So the arm lands with word and `ptr`
+  seats alone — the evaluator's own source declares the row it arms,
+  and a box there would need the armed compiler to build the arm — the
+  seed is refreshed, and only then does a declaration spell the box.
   A PLACEHOLDER ARM IS NOT NEEDED AND SHOULD NOT BE WRITTEN. `Unhosted`
   already says what is true and already has its arm; inventing a
   temporary variant to delete next week is a comment about a point in

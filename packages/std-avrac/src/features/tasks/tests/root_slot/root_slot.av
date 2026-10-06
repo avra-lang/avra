@@ -1,0 +1,25 @@
+// proves: a slot the program's own run sets before any task exists is
+// its own after one does, and no task is born with it.
+extern fn avra_task_slot(key: int) -> ptr?
+extern fn avra_task_slot_set(key: int, v: ptr)
+extern fn avra_task_id() -> int
+extern fn avra_array_sized(n: int) -> ptr
+extern fn avra_array_push(a: ptr, v: int)
+extern fn avra_array_get(a: ptr, i: int) -> int
+
+fn boxed(v: int) -> ptr {
+    let b = avra_array_sized(1)
+    avra_array_push(b, v)
+    b
+}
+
+fn slot_read(key: int) -> string {
+    let held? = avra_task_slot(key) else { return "none" }
+    "${avra_array_get(held, 0)}"
+}
+
+avra_task_slot_set(0, boxed(41))
+let before = slot_read(0)
+let child = spawn slot_read(0)
+let theirs = child.await
+"${before} ${theirs} ${slot_read(0)} ${avra_task_id()}"

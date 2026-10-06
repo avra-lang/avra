@@ -297,6 +297,77 @@ static void fiberless_tasks(void) {
     trapped("a task answered twice", answers_twice, "a task answered twice");
 }
 
+// ── a join takes a task that answers ────────────────────────────
+
+static void joins_cancelled(void) {
+    void* t = avra_task_pending();
+    avra_task_cancel(t);
+    avra_task_join(t);
+}
+
+static void joins_of_tasks_nothing_runs(void) {
+    int64_t live = avra_mem_live();
+    void* t = avra_task_at(in_ms(2));
+    avra_rc_retain(t);
+    CHECK(joined(t) == 0, "a fired timer task joins to a unit box");
+    avra_rc_retain(t);
+    CHECK(joined(t) == 0, "and to the same box again");
+    avra_rc_release(t);
+    CHECK(avra_mem_live() == live, "the box leaves with its record");
+
+    t = avra_task_pending();
+    avra_task_cancel(t);
+    avra_task_settle(t);
+    CHECK(avra_task_done(t), "a settle of a cancelled task returns");
+    avra_rc_release(t);
+    CHECK(avra_mem_live() == live, "and leaves nothing");
+    trapped("a join of a cancelled task", joins_cancelled, "a join takes a task that answers, and this one was cancelled");
+}
+
+// ── the trace names a virtual task by its machine's id ──────────
+
+// Run alone, in a process started with the trace on.
+static int traced_scene(void) {
+    void* gate = avra_gate_new();
+    int64_t claimant = avra_vtask_new_at(7, 41);
+    int64_t waiter = avra_vtask_new_at(8, 42);
+    avra_vtask_wait_gate(waiter, gate, 0, 5);
+    if (avra_vtask_park(waiter) != 1) return 1;
+    if (avra_vgate_claim(claimant, gate) != 5) return 1;
+    if (avra_vgate_claim(claimant, gate) != -1) return 1;
+    if (avra_vtask_next() != waiter) return 1;
+    avra_vtask_claim(waiter);
+    avra_vtask_end(waiter);
+    avra_vtask_free(claimant);
+    avra_rc_release(gate);
+    return 0;
+}
+
+static void trace_names_virtual_tasks(const char* self) {
+    int out[2];
+    if (pipe(out) != 0) { perror("pipe"); exit(1); }
+    pid_t pid = fork();
+    if (pid == 0) {
+        dup2(out[1], 2);
+        close(out[0]);
+        setenv("AVRA_FLOW_TRACE", "1", 1);
+        execl(self, self, "traced-scene", (char*)NULL);
+        _exit(9);
+    }
+    close(out[1]);
+    char buf[4096] = {0};
+    size_t got = 0;
+    for (ssize_t n; got < sizeof buf - 1 && (n = read(out[0], buf + got, sizeof buf - 1 - got)) > 0;) got += (size_t)n;
+    close(out[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the traced scene runs");
+    CHECK(strstr(buf, "spawn-at id=42 8") != NULL, "a virtual task is traced under the id it was given, at its site");
+    CHECK(strstr(buf, "claim id=42 by=41 arm=0:5") != NULL, "a virtual claim names the virtual claimant");
+    CHECK(strstr(buf, "end id=42 0") != NULL, "a virtual task's end is traced");
+    CHECK(strstr(buf, "end id=41") == NULL, "and a task freed unfinished says no end");
+}
+
 // ── more waiters than a fiber holds inline ──────────────────────
 
 static void* six_gates(void* self) {
@@ -958,7 +1029,7 @@ static void stacks(void) {
 static void as_virtual(void) {
     int64_t live = avra_mem_live();
     g_gate = avra_gate_new();
-    int64_t vt = avra_vtask_new_at(0x1234);
+    int64_t vt = avra_vtask_new_at(0x1234, 9);
 
     // woken by the gate
     avra_vtask_wait_fd(vt, g_pipe[0], 0, 0, 10);
@@ -1074,8 +1145,9 @@ static void as_virtual(void) {
     CHECK(avra_sched_timers() == 0 && avra_mem_live() == live, "the virtual tasks leave nothing behind");
 }
 
-int main(void) {
+int main(int argc, char** argv) {
     alarm(120);
+    if (argc > 1 && strcmp(argv[1], "traced-scene") == 0) return traced_scene();
     if (pipe(g_pipe) != 0) { perror("pipe"); return 1; }
     fcntl(g_pipe[0], F_SETFL, O_NONBLOCK);
     in_child("a claimant takes the winner out of its list at the claim", winner_leaves_at_claim);
@@ -1100,6 +1172,7 @@ int main(void) {
     due_on_a_claimed_set();
     fork_forgets_gate_waiters();
     fiberless_tasks();
+    joins_of_tasks_nothing_runs();
     overflow_list();
     opened_gate();
     deadline_once();
@@ -1115,6 +1188,7 @@ int main(void) {
     world_within_reach();
     CHECK(avra_mem_live() == live, "the fibers leave nothing behind");
     as_virtual();
+    trace_names_virtual_tasks(argv[0]);
     closed(g_pipe[0]);
     closed(g_pipe[1]);
 
