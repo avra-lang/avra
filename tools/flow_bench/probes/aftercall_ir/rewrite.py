@@ -114,8 +114,8 @@ def rewritten(lines, mode, whiles=frozenset()):
                 body.append(line)
                 body += load_of(mode, n) + [f'  %uw.c{n} = icmp ne i8 %uw.b{n}, 0', f'  br i1 %uw.c{n}, label %uw.exit, label %uw.k{n}, !prof !987654', '', f'uw.k{n}:']
                 final[label] = f'uw.k{n}'
-                if not cold:
-                    cold = ['', 'uw.exit:', '  call void @avra_probe_unwound()', '  unreachable']
+                if 'uw.exit:' not in cold:
+                    cold += ['', 'uw.exit:', '  call void @avra_probe_unwound()', '  unreachable']
                 continue
             back = (mode == 'edge' or name in spinning) and line.startswith('  br ') and label is not None and any(order.get(t, 1 << 30) <= order[label] for t in TARGET.findall(line))
             if back:
