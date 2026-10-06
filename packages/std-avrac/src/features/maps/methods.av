@@ -57,10 +57,7 @@ export fn check_values(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 export fn check_entries(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let value? = value_held(cx, mc, "entries") else { return cx.error_type }
     if !cx.seated(mc, "entries", []) { return cx.error_type }
-    let entry? = cx.view.decls.prelude_named("Entry") else { return no_entry(cx, mc.e) }
-    // a record's layout is its declaration's answer
-    let _ = cx.view.decls.sig(entry)
-    let held = cx.view.types.intern(Type.App(entry, "Entry", [cx.type(string), value]))
+    let held? = cx.entry_type(mc.e, value) else { return cx.error_type }
     cx.type(List<held>)
 }
 
@@ -215,19 +212,6 @@ fn unknowable_map(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
                 "`{}.${name}` cannot know its values",
                 "asked here",
                 "bind the map under a declared type first — `let m: Map<string, int> = {}`",
-            ),
-        )
-}
-
-fn no_entry(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.map_entry",
-                cx.loc_of(e),
-                "a map's entries wear the prelude's `Entry`, and this program sees no `@std/prelude`",
-                "asked here",
-                "a file in a package sees the prelude — or walk the pairs, `for k, v in m`",
             ),
         )
 }

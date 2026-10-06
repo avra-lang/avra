@@ -12,10 +12,11 @@ export fn on_list(t: Type) -> bool {
     t is .List || t is .EmptyList
 }
 
-/// The pipeline verbs' receivers: a list (or the empty literal), or a
-/// `(lo..hi)` range, which walks as its own counter.
+/// The pipeline verbs' receivers: a list (or the empty literal), a
+/// `(lo..hi)` range, which walks as its own counter, or a map, which
+/// walks as its entries.
 export fn on_walk(t: Type) -> bool {
-    t is .List || t is .EmptyList || t is .Range
+    t is .List || t is .EmptyList || t is .Range || t is .Map
 }
 
 /// A string — the receiver `chars` views.
@@ -423,6 +424,7 @@ export fn check_join(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 fn elem_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
     let elem: TypeId? = match cx.view.types.seen_shape(cx.type_at(mc.subject)) {
         .Range -> cx.type(int),
+        .Map(_, value) -> cx.entry_type(mc.e, value),
         _ -> cx.view.types.element(cx.type_at(mc.subject)),
     }
     if elem == null && cx.seen_at(mc.subject) is .EmptyList { let _ = unknowable_walk(cx, mc.e, name) }
