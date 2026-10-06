@@ -654,7 +654,8 @@ layers:
 
 # A RECORDED READ HAS A BUDGET: retains, releases and list reads and writes
 # per read, counted on the census runtime, never over read_cost.budget.
-read-cost:
+# Its bench links the tree's own package objects, so it names them.
+read-cost: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/db_measure/read_cost.sh
 
 idioms:
@@ -736,7 +737,7 @@ fingerprints:
 # is held on every pull request and every train, and one left off is
 # held by nobody. Each names what it links as its own prerequisites.
 # Every keeper runs, and each that refuses is named.
-KEEPERS = fingerprints vocab families layers cited http-cites externs suites stems rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
+KEEPERS = fingerprints vocab families layers read-cost cited http-cites externs suites stems rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
           ui-host ui-host-test ui-board ui-browser codecs fmt-lossless traps compile-slots witness tool-witnesses
 keepers:
 	@fail=0; for k in $(KEEPERS); do \
