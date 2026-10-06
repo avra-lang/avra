@@ -12,8 +12,8 @@
 # does a mode with no row and a row with no mode. `--accept` rewrites the
 # budget whole: the review of that diff is the only ratchet.
 # THE CENSUS RUNTIME IS BUILT TO ITS OWN PLACE (build/census/), with a copy
-# of the compiler beside it and the tree's packages one up, where a compiler
-# looks: the tree's own library and objects are never touched, so a run
+# of the compiler beside it and links to the tree's packages and sources one
+# up, where a compiler looks: the tree's own library and objects are never touched, so a run
 # killed anywhere leaves the shipping runtime where every build expects it.
 # Instructions per read are printed too where the machine can count them
 # (macOS `/usr/bin/time -l`) — published, never gated: they are this
@@ -30,7 +30,10 @@ modes="kernel.last kernel.earlier kernel.new row.unheard row.repeat row.new ask.
 census=build/census
 trap 'rm -f "$bench/src/main" "$bench/src/main.av.ll"' EXIT INT TERM
 mkdir -p "$census/build" "$census/obj"
-[ -e "$census/packages" ] || ln -s ../../packages "$census/packages"
+# what a compiler reads from the tree it stands in: its packages and its own sources
+for p in packages backend runtime Makefile; do
+    [ -e "$census/$p" ] || ln -s "../../$p" "$census/$p"
+done
 probes=$([ "$(uname -s)" = Darwin ] || echo -fstack-clash-protection)
 for c in runtime/*.c; do
     o=$census/obj/$(basename "$c" .c).o
