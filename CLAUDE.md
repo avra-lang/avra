@@ -1994,6 +1994,11 @@ Runtime facts, ours to ratify:
   watching (`work attach` follows again, `work stop` ends it, `work
   done` ends it with the lane). `sh tools/work sprites` shows all of
   them in seconds.
+  A RUN ANSWERS ABOUT THIS WORKTREE OR NOT AT ALL: rsync carries files
+  to the Sprite, a file the worktree no longer has is removed there by
+  name, and the Sprite's manifest (every path and its hash) must equal
+  the worktree's before anything starts — else `SPRITE — sync:` and 75.
+  What a run wrote is left: `build/`, `.avra-cache`, anything git ignores.
   WHAT ENDS A RUN EARLY IS MEMORY, NOT TIME: a twenty-minute exec holds,
   chatty or silent, and thirty-two spinning processes leave a Sprite
   answering in a second — but a Sprite says 16 GB and a balloon holds
