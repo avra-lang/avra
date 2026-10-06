@@ -1,0 +1,85 @@
+// A held declaration's fact columns are its parsed row's: every row a
+// file's record lines restore — written by `record_line`, read back by
+// `mint_file` into a workspace that never parsed the file — files under
+// the same word, marks and extern mark, and tells a reader the same.
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use features.{Decl}
+
+const HELDFACTS_PATH: string = "/w/src/main.av"
+
+fn heldfacts_source() -> string {
+    [
+        "extern fn avra_trap(message: string)",
+        "",
+        "/// What the limit is.",
+        "const LIMIT: int = 3",
+        "",
+        "type Point = { x: int, y: int }",
+        "",
+        "impl Point {",
+        "    fn sum() -> int { self.x + self.y }",
+        "}",
+        "",
+        "/// Adds the limit.",
+        "@inline",
+        "fn bumped(n: int) -> int { n + LIMIT }",
+        "",
+        "bumped(1)",
+        "",
+    ]
+        .join("\n")
+}
+
+fn heldfacts_workspace() -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": heldfacts_source(),
+            },
+            ["/w/avra.toml", HELDFACTS_PATH],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+/// The file's rows in a workspace: its declarations in mint order.
+fn heldfacts_rows(ws: Workspace) -> List<Decl> {
+    let f? = ws.decls.known_file_id(HELDFACTS_PATH) else { return [] }
+    [ws.decls.raw_decl(d) for d in ws.decls.decls_of_file(f)]
+}
+
+/// One row's fact columns, spelled.
+fn heldfacts_columns(d: Decl) -> string {
+    "${d.name} word=${d.word ?? "-"} marks=${d.marks.join(",")} external=${d.external} told=${d.told}"
+}
+
+/// The parsed rows, and the rows a fresh workspace restores from their record lines.
+type HeldFacts = { parsed: List<Decl>, held: List<Decl> }
+
+fn heldfacts_both() -> HeldFacts {
+    let parsed = heldfacts_workspace()
+    let _ = parsed.analyze_file(HELDFACTS_PATH)
+    let rows = heldfacts_rows(parsed)
+    let lines = [parsed.record_line(d, ordinal, false) for ordinal, d in rows]
+    let held = heldfacts_workspace()
+    held.mint_file(HELDFACTS_PATH, [line.split("\t") for line in lines])
+    HeldFacts { parsed: rows, held: heldfacts_rows(held) }
+}
+
+spec "compiler/interface — a held declaration's fact columns" {
+    then "every restored row files under its parsed row's word, marks and extern mark, and tells the same" {
+        let both = heldfacts_both()
+        both.parsed.length >= 5 &&
+            [heldfacts_columns(d) for d in both.held].join("\n") == [heldfacts_columns(d) for d in both.parsed].join("\n")
+    }
+    then "the facts the comparison rests on are there to compare: an extern, a mark and a told fingerprint" {
+        let parsed = heldfacts_both().parsed
+        parsed.any((d: Decl) -> d.external) &&
+            parsed.any((d: Decl) -> d.marks.join(",") == "inline") &&
+            parsed.all((d: Decl) -> d.told != 0)
+    }
+}
