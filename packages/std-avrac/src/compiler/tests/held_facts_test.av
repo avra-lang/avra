@@ -83,11 +83,18 @@ spec "compiler/interface — a held declaration's fact columns" {
         both.parsed.length >= 5 &&
             [heldfacts_columns(d) for d in both.held].join("\n") == [heldfacts_columns(d) for d in both.parsed].join("\n")
     }
-    then "the facts the comparison rests on are there to compare: an extern, a mark, a word and a told fingerprint" {
-        let parsed = heldfacts_both().parsed
-        parsed.any((d: Decl) -> d.external) &&
-            parsed.any((d: Decl) -> d.marks.join(",") == "inline") &&
-            parsed.any((d: Decl) -> d.word == "gauge") &&
-            parsed.all((d: Decl) -> d.told != 0)
+    given "the facts the comparison rests on" {
+        then "an extern is among the rows" {
+            heldfacts_both().parsed.any((d: Decl) -> d.external)
+        }
+        then "a mark is among the rows" {
+            heldfacts_both().parsed.any((d: Decl) -> d.marks.join(",") == "inline")
+        }
+        then "a word is among the rows" {
+            [d.word ?? "-" for d in heldfacts_both().parsed].join(" ").contains("gauge")
+        }
+        then "every row tells a reader something" {
+            [d.name for d in heldfacts_both().parsed if d.told == 0].join(" ") == ""
+        }
     }
 }
