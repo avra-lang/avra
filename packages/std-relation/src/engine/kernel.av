@@ -109,6 +109,14 @@ fn dropped<T>(stack: Cell<List<T>>) {
     stack.set(held.slice(0, held.length - 1))
 }
 
+/// How a family's cell is verified: by a fn its owner gave, as an input
+/// the driver sets, or by its live hash.
+enum Verifier {
+    By(verify: fn(int) -> int)
+    Input
+    Hash(live: fn(int) -> int)
+}
+
 /// A read that skipped `ask`, held for the outermost open query: which verb read
 /// which subject (both the reader's own dense numbers), and the queries open when it
 /// first happened.
@@ -193,7 +201,12 @@ export type Kernel = {
     /// depends on a count that can grow, so a family registered late
     /// remaps nothing.
     cells: Cell<List<Cell<List<QueryCell?>>>>,
-    verifiers: Cell<List<fn(int) -> int>>,
+    verifiers: Cell<List<Verifier>>,
+    /// A hashed family's cells as last seen: each one's hash and the
+    /// revision it was seen to move at (0: never seen), laid out as
+    /// `cells` is. Empty rows for every other family.
+    seen: Cell<List<Cell<List<int>>>>,
+    moved: Cell<List<Cell<List<int>>>>,
     /// The LAST-READER STAMP of every key, laid out as `cells` is: the
     /// reader id that last recorded it, 0 for none.
     stamps: Cell<List<Cell<List<int>>>>,
@@ -221,6 +234,8 @@ export fn new_kernel() -> Kernel {
         rev: Cell.new(1),
         cells: list_cell(),
         verifiers: list_cell(),
+        seen: list_cell(),
+        moved: list_cell(),
         stamps: list_cell(),
         minted: Cell.new(0),
         asker: new_asker(),
@@ -365,8 +380,23 @@ impl Kernel {
 
     fn bump() { self.rev.set(self.rev.get() + 1) }
 
-    fn family(verify: fn(int) -> int) -> int {
-        self.verifiers.push(verify)
+    fn family(verify: fn(int) -> int) -> int { self.registered(Verifier.By(verify)) }
+
+    /// A family of INPUTS: a cell changed when it was last set to a new
+    /// value, and nothing is asked to verify it.
+    fn input_family() -> int { self.registered(Verifier.Input) }
+
+    /// A family verified by each cell's LIVE HASH: a cell changed at the
+    /// revision its hash was last seen to differ. The kernel keeps what it
+    /// saw, so `live` holds no kernel and the family is no cycle.
+    fn hashed_family(live: fn(int) -> int) -> int { self.registered(Verifier.Hash(live)) }
+
+    fn registered(verifier: Verifier) -> int {
+        self.verifiers.push(verifier)
+        let no_seen: Cell<List<int>> = list_cell()
+        self.seen.push(no_seen)
+        let no_moved: Cell<List<int>> = list_cell()
+        self.moved.push(no_moved)
         let no_cells: List<QueryCell?> = []
         self.cells.push(Cell.new(no_cells))
         let no_stamps: Cell<List<int>> = list_cell()
@@ -380,7 +410,7 @@ impl Kernel {
     /// contains this handle. Replacing them breaks that ownership cycle
     /// after a one-shot run.
     fn disarm() {
-        self.verifiers.set([never_verify for v in self.verifiers.get()])
+        self.verifiers.set([Verifier.By(never_verify) for v in self.verifiers.get()])
         self.audit.on.set(false)
         self.audit.exempt.set(unexempt)
         self.audit.covers.set(uncovering)
@@ -434,9 +464,30 @@ impl Kernel {
         false
     }
 
-    fn changed_after(edge: int, since: int) -> bool {
-        let verify = self.verifiers.get()[family_of(edge)]
-        verify(arg_of(edge)) > since
+    fn changed_after(edge: int, since: int) -> bool { self.verified(family_of(edge), arg_of(edge)) > since }
+
+    /// The revision a cell last changed at, by its family's verifier.
+    fn verified(family: int, arg: int) -> int {
+        match self.verifiers.get()[family] {
+            .By(verify) -> verify(arg),
+            .Input -> self.changed_at(Key { family: family, arg: arg }),
+            .Hash(live) -> self.moved_at(family, arg, live(arg)),
+        }
+    }
+
+    /// A hashed cell's hash as it stands, against the one last seen: the
+    /// revision it moved at — this one, when it differs or was never seen.
+    fn moved_at(family: int, arg: int, hash: int) -> int {
+        let seen = self.seen.get()[family]
+        let moved = self.moved.get()[family]
+        while moved.get().length <= arg {
+            seen.push(0)
+            moved.push(0)
+        }
+        if moved.get()[arg] != 0 && seen.get()[arg] == hash { return moved.get()[arg] }
+        seen.set_at(arg, hash)
+        moved.set_at(arg, self.rev.get())
+        self.rev.get()
     }
 
     fn active(key: Key) -> bool { self.asker.open.get().contains(edge_of(key)) }
