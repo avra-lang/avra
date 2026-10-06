@@ -930,6 +930,28 @@ registry is the idiom engine's spec, written by dogfooding.
   from `tests/support/` and read as `use tests.support.{…}` — a program
   test is a module like the rest, so it reaches the same file
   (packages/std-http/src/tests/support).
+  AND A TEST READS ITS MODULE'S PRIVATE NAMES: a file DIRECTLY in a
+  module's own `tests/` may `use` a top-level name that module declares
+  and does not export — by an explicit `use`, never bare. Nothing else
+  may: another module's tests, a directory under `tests/`, another
+  package. A name two of the module's files each keep private is
+  `resolve.private_apart`, naming both; a private name is never
+  re-exported.
+- A DEPENDENCY IS ITS LIBRARY. The file a dependency's `[bin]` names
+  is that package's program and runs only where the package is the
+  root, so it is no module file of a program that depends on it — its
+  statements never run there and its names are not the library's
+  (tools/ui-board: the page program is the package's own `[bin]`, and
+  `term/` depends on it).
+- A SEALED TYPE IS BUILT WHERE IT IS DECLARED. `@sealed` (`@std/meta`)
+  on a type: outside the declaring MODULE no literal fills it, no
+  `Name(value)` converts into it, no record literal, `with`, field
+  write or variant makes one (type.sealed) — every seat a literal
+  reaches, a default and an annotation's argument included — while
+  every read stays open. The doors are the fns the module exports, so
+  a value anywhere is one a door answered (std-ui's `Url`). Generated
+  code is judged where it LANDS: a derive on a sealed type lands in its
+  module and builds it. The module's own `tests/` is another module.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
   suite does not have. "a comment-only line is a blank line" asserts

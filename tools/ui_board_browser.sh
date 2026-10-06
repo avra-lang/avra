@@ -1,5 +1,5 @@
 #!/bin/sh
-# THE BOARD IN A REAL BROWSER: tools/ui-board/web served by `avra dev` and
+# THE BOARD IN A REAL BROWSER: tools/ui-board served by `avra dev` and
 # driven in headless Firefox by
 # tools/ui-board/browser.mjs, which checks each claim and exits 1 on the
 # first that fails. `make ui-board` proves the wire over a stub document;
@@ -31,7 +31,7 @@ fi
 # A COPY is served, so the run edits no file of the tree's.
 mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
-"$avra" dev --target "$target" --port 0 "$work/tools/ui-board/web" >"$work/dev.out" 2>"$work/dev.err" &
+"$avra" dev --target "$target" --port 0 "$work/tools/ui-board" >"$work/dev.out" 2>"$work/dev.err" &
 dev=$!
 trap 'kill "$dev" 2>/dev/null || true' EXIT
 tries=0

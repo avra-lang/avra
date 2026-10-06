@@ -5,7 +5,7 @@
 # TWO QUANTITIES, TWO LAWS:
 #   THE FLOOR (the minimal program) is the compiler's SHARED cost and must not
 #   creep; it is capped TIGHTLY and a floor rise is the loud regression.
-#   THE BOARD (tools/ui-board/web, the board mounted on a page) is the UI library's SHOWCASE and is SUPPOSED to
+#   THE BOARD (tools/ui-board, the board mounted on a page) is the UI library's SHOWCASE and is SUPPOSED to
 #   grow with every component; it is REPORTED with its move against the last
 #   accepted value, NEVER capped — a cap there would train a re-baseline on
 #   every feature, which is how a guard dies.
@@ -56,7 +56,7 @@ fb=$(echo "$floor" | cut -d' ' -f1)
 fg=$(echo "$floor" | cut -d' ' -f2)
 
 board=""
-[ -d "$here/ui-board/web" ] && board=$(footprint "$here/ui-board" reactor web)
+[ -f "$here/ui-board/src/main.av" ] && board=$(footprint "$here/ui-board" reactor)
 
 if [ -n "$board" ]; then
     bb=$(echo "$board" | cut -d' ' -f1)
@@ -65,7 +65,7 @@ if [ -n "$board" ]; then
     bd=$(echo "$board" | cut -d' ' -f4)
     say "base=$base floor=${fb}B/${fg}g board=${bb}B code=${bc} data=${bd} globals=${bg}g"
 else
-    say "base=$base floor=${fb}B/${fg}g board=absent (tools/ui-board/web is not here, or did not build)"
+    say "base=$base floor=${fb}B/${fg}g board=absent (tools/ui-board is not here, or did not build)"
 fi
 
 baseline=${WASM_SIZE_BASELINE:-$here/wasm-size.baseline}
