@@ -13,9 +13,15 @@ their price is measured on the code Avra emits. Two rewrites:
          taken to reach, as if every fn value said whether it waits.
   edge   one test before every branch back to an earlier block: a loop's
          back-edge, as the emitter lays blocks out.
+  go     the owner's D5 and the lead's ruling together: a `while`
+         back-edge is a cancel point, so a fn whose source holds a
+         `while` (whiles.py's list) may reach, its callers are tested
+         after the call, and its back-edges carry the tick's test. The
+         emitter lays a `for` and a `while` out alike, so every
+         back-edge of such a fn is tested: an upper bound.
 
 The taken side is cold and out of line. Prints the census it rewrote by.
-usage: rewrite.py <in.ll> <out.ll> plain|byte|task|known|edge"""
+usage: rewrite.py <in.ll> <out.ll> plain|byte|task|known|edge|go [<whiles.txt>]"""
 import re, sys
 
 PARKS = re.compile(r'^@avra_(task_join|task_settle\w*|tasks_\w+|fiber_sleep|fiber_yield|fiber_park_fd|wait_park)$')
@@ -41,13 +47,19 @@ def functions(lines):
     return out
 
 
-def reaching(lines, fns, through_registers):
+def source_name(symbol):
+    """An emitted symbol as its source name: unmangled, with no instantiation or lambda suffix."""
+    name = re.sub(r'\$([0-9A-F]{2})', lambda m: chr(int(m.group(1), 16)), symbol.strip('@"'))
+    return name.removeprefix('av_').split('$')[0]
+
+
+def reaching(lines, fns, through_registers, spinning=frozenset()):
     """The fns that may reach a cancel point: those that park, those that
     call through a register when `through_registers`, and their callers."""
     callees = {}
     for name, lo, hi in fns:
         callees[name] = {m.group(1) for line in lines[lo:hi] for m in [CALL.search(line)] if m}
-    reach = {n for n, cs in callees.items() if any(PARKS.match(c) or (through_registers and c.startswith('%')) for c in cs)}
+    reach = {n for n, cs in callees.items() if n in spinning or any(PARKS.match(c) or (through_registers and c.startswith('%')) for c in cs)}
     grew = True
     while grew:
         grew = False
@@ -72,10 +84,11 @@ def load_of(mode, n):
     return [f'  %uw.b{n} = load i8, ptr @avra_probe_byte, align 1']
 
 
-def rewritten(lines, mode):
+def rewritten(lines, mode, whiles=frozenset()):
     fns = functions(lines)
-    reach = reaching(lines, fns, mode != 'known')
-    stats = dict(fns=len(fns), reach=len(reach), calls=0, tested=0, indirect=0, edges=0, blocks=0)
+    spinning = {n for n, _, _ in fns if source_name(n) in whiles} if mode == 'go' else set()
+    reach = reaching(lines, fns, mode != 'known', spinning)
+    stats = dict(fns=len(fns), reach=len(reach), calls=0, tested=0, indirect=0, edges=0, blocks=0, spinning=len(spinning))
     out, at, n = [], 0, 0
     for name, lo, hi in fns:
         out += lines[at:lo]
@@ -95,7 +108,7 @@ def rewritten(lines, mode):
             if call:
                 stats['calls'] += 1
                 stats['indirect'] += call.group(1).startswith('%')
-            if mode in ('byte', 'task', 'known') and tested(line, reach):
+            if mode in ('byte', 'task', 'known', 'go') and tested(line, reach):
                 n += 1
                 stats['tested'] += 1
                 body.append(line)
@@ -104,11 +117,11 @@ def rewritten(lines, mode):
                 if not cold:
                     cold = ['', 'uw.exit:', '  call void @avra_probe_unwound()', '  unreachable']
                 continue
-            back = mode == 'edge' and line.startswith('  br ') and label is not None and any(order.get(t, 1 << 30) <= order[label] for t in TARGET.findall(line))
+            back = (mode == 'edge' or name in spinning) and line.startswith('  br ') and label is not None and any(order.get(t, 1 << 30) <= order[label] for t in TARGET.findall(line))
             if back:
                 n += 1
                 stats['edges'] += 1
-                body += [f'  %tk.b{n} = load i8, ptr @avra_probe_byte, align 1', f'  %tk.c{n} = icmp ne i8 %tk.b{n}, 0', f'  br i1 %tk.c{n}, label %tk.cold{n}, label %tk.k{n}, !prof !987654', '', f'tk.k{n}:', line]
+                body += [f'  %tk.b{n} = load i8, ptr @avra_probe_tick, align 1', f'  %tk.c{n} = icmp ne i8 %tk.b{n}, 0', f'  br i1 %tk.c{n}, label %tk.cold{n}, label %tk.k{n}, !prof !987654', '', f'tk.k{n}:', line]
                 cold += ['', f'tk.cold{n}:', '  call void @avra_probe_preempted()', f'  br label %tk.k{n}']
                 final[label] = f'tk.k{n}'
                 continue
@@ -118,16 +131,17 @@ def rewritten(lines, mode):
         out += body + cold
         at = hi
     out += lines[at:]
-    out += ['', '@avra_probe_byte = external global i8', '@avra_probe_task = external global ptr', 'declare void @avra_probe_unwound() cold noreturn', 'declare void @avra_probe_preempted() cold', '!987654 = !{!"branch_weights", i32 1, i32 1048575}']
+    out += ['', '@avra_probe_byte = external global i8', '@avra_probe_tick = external global i8', '@avra_probe_task = external global ptr', 'declare void @avra_probe_unwound() cold noreturn', 'declare void @avra_probe_preempted() cold', '!987654 = !{!"branch_weights", i32 1, i32 1048575}']
     return out, stats
 
 
 def main():
     src, dst, mode = sys.argv[1:4]
+    whiles = frozenset(open(sys.argv[4]).read().split()) if len(sys.argv) > 4 else frozenset()
     lines = open(src).read().split('\n')
-    out, s = rewritten(lines, mode)
+    out, s = rewritten(lines, mode, whiles)
     open(dst, 'w').write('\n'.join(out))
-    print(f"{mode}: fns {s['fns']}, may reach a cancel point {s['reach']}; calls {s['calls']} (through a register {s['indirect']}), tested {s['tested']}; blocks {s['blocks']}, back-edges tested {s['edges']}")
+    print(f"{mode}: fns {s['fns']}, may reach a cancel point {s['reach']}; calls {s['calls']} (through a register {s['indirect']}), tested {s['tested']}; blocks {s['blocks']}, back-edges tested {s['edges']}; fns holding a `while` {s['spinning']}")
 
 
 main()
