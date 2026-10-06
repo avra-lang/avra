@@ -13,9 +13,12 @@ seqf="$tmp/gh.seq"
 gitlog="$tmp/git.log"
 : > "$gitlog"
 
-# A `gh` that answers the next state in the sequence, then stays OPEN.
+# A `gh` that answers the next state in the sequence, then stays OPEN —
+# to the STATE ask alone. Every other ask answers nothing: no PR number,
+# so no queue entry to look for.
 cat > "$tmp/bin/gh" <<'SH'
 #!/bin/sh
+case "$*" in *"--json state"*) ;; *) exit 0 ;; esac
 if [ -s "$GH_SEQ" ]; then
     head -1 "$GH_SEQ"
     tail -n +2 "$GH_SEQ" > "$GH_SEQ.next"
