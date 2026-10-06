@@ -41,7 +41,6 @@ use core.{
     DeclKind,
 }
 use @std.path.{dir_of, joined_path}
-use @std.relation.db.{Db as RelDb, db_over, Verifying, Late}
 use features.components.{word_of, instanced, named_instances}
 use features.{
     takes_receiver,
@@ -400,10 +399,6 @@ export type Workspace = {
     // plain for its identity: the injected clock fn, set once at construction
     clock: fn() -> int,
     phases: Cell<List<Phase>>,
-    /// The failures pass's relations (failures.av): one `ErrorSite` row
-    /// per fail/propagate/catch site, filed by `fail_summary`, and one
-    /// `Raised` row per inferring fn, owned by the fixpoint's solve.
-    failures_db: Cell<RelDb>,
     /// The whole-program raised-error fixpoint over `ErrorSite` — its
     /// members' in-flight answers; everyone else reads `Raised`.
     raised_fixpoint: Fixpoint<List<TypeId>>,
@@ -649,7 +644,6 @@ fn built(
         closed: Cell.new(false),
         clock: clock,
         phases: list_cell(),
-        failures_db: Cell.new(db_over(kernel, Verifying.ByHash, Late.Refused)),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
         read_fixpoint: new_fixpoint<bool>(kernel, Family.DeclReads.ordinal, false, read_reach_join, read_reach_fp),
     }
@@ -736,7 +730,6 @@ impl Workspace {
         for f in Family.all() { self.relation(f).evict() }
         self.db.disarm()
         self.decls.let_go()
-        self.failures_db.get().close()
     }
 
     fn ensured(d: DeclId) {
