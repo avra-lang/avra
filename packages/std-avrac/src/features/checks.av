@@ -41,6 +41,15 @@ fn place_subject(step: PlaceStep) -> ExprId? {
 }
 
 impl TypeCx {
+    /// The element a walk source yields: a list's element, or a `Bytes`'s
+    /// octet (an int).
+    fn yielded(st: TypeId) -> TypeId? {
+        match self.view.types.seen_shape(st) {
+            .Bytes -> self.type(int),
+            _ -> self.view.types.element(st),
+        }
+    }
+
     /// Speak and ABSORB: the diagnostic lands and the answer is the
     /// interned Error — the standard refusal tail of a typing law.
     mut fn spoken(d: Diag) -> TypeId {
@@ -535,6 +544,9 @@ impl TypeCx {
         // refusal, if any, still shows the name the writer wrote.
         let of: TypeId? = self.view.types.stands_for(ty)
         if of != null { return self.member_type_of(e, shown, of!, name) }
+        if method_row(self.view.lang.methods, name, self.view.types.shape_of(ty)) != null {
+            return self.method_uncalled(e, shown, name)
+        }
         self.no_such_property(e, shown, name)
     }
 
@@ -560,6 +572,19 @@ impl TypeCx {
                     "no property `${name}` on `${shown}`",
                     "read here",
                     "a property is a record's field, or a measure like `length` on the shapes that have one",
+                ),
+            )
+    }
+
+    mut fn method_uncalled(e: ExprId, shown: string, name: string) -> TypeId {
+        self
+            .spoken(
+                refusal(
+                    "type.unknown_prop",
+                    self.loc_of(e),
+                    "no property `${name}` on `${shown}`",
+                    "read here",
+                    "`${name}` is a method of `${shown}`, and a method is called — `.${name}(…)`",
                 ),
             )
     }

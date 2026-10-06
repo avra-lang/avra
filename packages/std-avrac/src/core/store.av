@@ -9,7 +9,7 @@ use @std.meta.{identity, plain_field}
 /// `grammar` declaration read), so it stays its own side table — a
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
-export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool }
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool, is_host: bool }
 
 fn no_stmt_marks() -> StmtMarks {
     StmtMarks {
@@ -20,6 +20,7 @@ fn no_stmt_marks() -> StmtMarks {
         is_state: false,
         is_provide: false,
         is_module_state: false,
+        is_host: false,
     }
 }
 
@@ -666,19 +667,26 @@ impl SyntaxArena {
     /// `value` as its FIRST argument — the call protocol's other end.
     /// A name or a field read with no parentheses is a call with
     /// none, a lambda is applied, and a method call seats the value
-    /// as any argument written in its parentheses is seated. Null
+    /// as any argument written in its parentheses is seated. A free
+    /// stage's own arguments ride the pronoun (`stage_args`). Null
     /// for every shape that is not a call.
     fn called_on(stage: ExprId, value: ExprId) -> Expr? {
         match self.expr(stage) {
-            .Call(callee, pins, args) -> Expr.Call(callee, pins, [value].concat(args)),
+            .Call(callee, pins, args) -> Expr.Call(callee, pins, [value].concat(self.stage_args(args))),
             .MethodCall(subject, name, args) -> Expr.MethodCall(subject, name, [self.pronouned(value)].concat(args)),
-            .CallValue(subject, args) -> Expr.CallValue(subject, [value].concat(args)),
+            .CallValue(subject, args) -> Expr.CallValue(subject, [value].concat(self.stage_args(args))),
             .Ident(name) -> Expr.Call(name, [], [value]),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, [self.pronouned(value)]),
             .Lambda(_, _) -> Expr.CallValue(stage, [value]),
             .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Spawn(_) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
         }
     }
+
+    /// A STAGE'S CALL BINDS THE PRONOUN AS A METHOD CALL DOES: the
+    /// arguments written in a stage's parentheses each ride `it` —
+    /// `xs |> keep(it > 1)` is `keep(xs, (it) -> it > 1)`. A method
+    /// stage's were wrapped where its call was built.
+    fn stage_args(args: List<ExprId>) -> List<ExprId> { [self.pronouned(a) for a in args] }
 
     /// `value |> stage` as its node, marked piped — or null when the
     /// stage is no call. A `?` or `!` after a stage acts on the
@@ -1051,6 +1059,15 @@ impl SyntaxArena {
     fn is_once(s: StmtId) -> bool {
         self.marks_at(s).is_once
     }
+
+    /// `extern fn … { … }` — a HOST FN: the body DEFINES the symbol its
+    /// name spells, where a bodiless `extern fn` only names one.
+    fn mark_host(s: StmtId) {
+        self.update_marks(s, (m) -> m with { is_host: true })
+        self.restamp(s, 195)
+    }
+
+    fn is_host_fn(s: StmtId) -> bool { s.index < self.marks.get().length && self.marks_at(s).is_host }
 
     /// `static fn` crossed this declaration — it lives under an impl
     /// and takes NO receiver, which is the third value of the same

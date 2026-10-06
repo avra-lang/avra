@@ -133,20 +133,18 @@ fn build_extern(b: Builder) -> Result<LangNode, string> {
             "defect: an extern declaration without a span — the arena and the grammar disagree",
         )
     }
-    b
-        .make_stmt(
-            Stmt
-                .ExternFn(
-                    Scoped(n.text),
-                    marked_seats(
-                        b.store,
-                        ps,
-                        aligned_param_types(ps, b.type_refs(4)?, ends),
-                        muts,
-                        consts,
-                        n.span.lo,
-                    ),
-                    b.answer(5),
-                ),
-        )
+    let params = marked_seats(
+        b.store,
+        ps,
+        aligned_param_types(ps, b.type_refs(4)?, ends),
+        muts,
+        consts,
+        n.span.lo,
+    )
+    // A BODY MAKES IT A HOST FN: the same seats, and a fn like any other
+    // under them — the mark says its name is the symbol it defines.
+    let body? = expr_id_at(b.args, 6) else { return b.make_stmt(Stmt.ExternFn(Scoped(n.text), params, b.answer(5))) }
+    let s = b.store.alloc_stmt(Stmt.FnDecl(Scoped(n.text), [], params, b.answer(5), body), b.span)
+    b.store.mark_host(s)
+    .Ok(LangNode.NStmt(s))
 }

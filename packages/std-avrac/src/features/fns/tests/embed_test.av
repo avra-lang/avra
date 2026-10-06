@@ -34,7 +34,9 @@ fn embedding(main: string, files: Map<string, string>) -> Program {
 }
 
 /// Every path a case here may place a file at, under the package root.
-fn embed_fixture_paths() -> List<string> { ["src/hello.txt", "src/sub/deep.txt", "data/side.txt", "src/banner.txt"] }
+fn embed_fixture_paths() -> List<string> {
+    ["src/hello.txt", "src/sub/deep.txt", "data/side.txt", "src/banner.txt", "src/@x/f.txt"]
+}
 
 /// The files most cases stand over.
 fn stood() -> Map<string, string> {
@@ -43,6 +45,7 @@ fn stood() -> Map<string, string> {
         "src/sub/deep.txt": "deep",
         "data/side.txt": "side",
         "src/banner.txt": "the app's",
+        "src/@x/f.txt": "local",
     }
 }
 
@@ -72,6 +75,22 @@ spec "features/fns — embed reads a file inside its own package" {
             answered("const A: string = embed(\"@x/lib/src/banner.txt\")\nA") == "the library's"
         }
     }
+    given "a directory of the package literally named `@x`" {
+        then "`./@x/…` reaches it: a path that opens with `.` is this package's" {
+            answered("const A: string = embed(\"./@x/f.txt\")\nA") == "local"
+        }
+        then "`@x/…` does not: a path that opens with `@` names a package, and none is declared" {
+            refused_once(
+                "const A: string = embed(\"@x/f.txt\")\nA",
+                "`embed` reads `@x/f.txt` as a package, and this package does not depend on it",
+            )
+        }
+        then "the refusal says how the local directory is written" {
+            embedding("const A: string = embed(\"@x/f.txt\")\nA", stood())
+                .report()
+                .contains("a directory of this package that is named so is `./@x/f.txt`")
+        }
+    }
     given "a library whose fn embeds a file" {
         then "the read is of the library's file, beside the library's source" {
             answered("use @x.lib.{banner}\nconst A: string = banner()\nA") == "the library's"
@@ -90,10 +109,10 @@ spec "features/fns — embed reads a file inside its own package" {
                 "`../../outside/secret.txt` names a file outside it",
             )
         }
-        then "a package this one does not depend on refuses at the literal" {
+        then "a package this one does not depend on refuses, naming the package" {
             refused_once(
                 "const A: string = embed(\"@y/other/src/x.txt\")\nA",
-                "`@y/other/src/x.txt` names a file outside it",
+                "`embed` reads `@y/other` as a package, and this package does not depend on it",
             )
         }
         then "a `..` out of a dependency refuses" {

@@ -48,15 +48,20 @@ export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: Lis
 }
 
 fn lower_list_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
-    let w = cx.opened(subject, elem_of(cx, subject))
+    let w = cx.opened(subject, cx.elem_of(subject))
     let cell = cx.mint_ty(w.elem)
     cx.emit(Ins.Alloca(cell))
     cx.bind_slot(s, cell)
     let here = cx.turn_open(w, s)
-    cx.bind_index(s, here)
+    cx.bind_index(s, if names_index(cx, s) { cx.turn_place(w, here) } else { here })
     cx.emit(Ins.Store(cell, cx.turn_elem(w, here)))
     cx.lower_stmts(stmts)
     cx.loop_end()
+}
+
+/// Whether the `for` names its index.
+fn names_index(cx: LowerCx, s: StmtId) -> bool {
+    match cx.view.store.stmt(s) { .ForEach(index, _, _, _) -> index != null, _ -> false }
 }
 
 /// `for k, v in m`: both arrays snapshot in insertion order, so the
@@ -75,13 +80,6 @@ fn lower_map_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtI
     cx.emit(Ins.Store(cell, cx.elem_read(vals, here, vty)))
     cx.lower_stmts(stmts)
     cx.loop_end()
-}
-
-/// The subject's element type — typing proved it a List, and the
-/// miss answers the subject's own type.
-fn elem_of(ex: LowerCx, subject: ExprId) -> TypeId {
-    let elem: TypeId? = ex.view.types.element(ex.type_at(subject))
-    elem ?? ex.type_at(subject)
 }
 
 /// `break`/`continue`: the loop its label binds, or the innermost one

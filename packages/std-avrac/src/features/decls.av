@@ -257,6 +257,10 @@ export type DeclFacts = {
     /// THE ARGUMENTS AN `impl X<A> for Y` GIVES ITS TRAIT, as written — two impls
     /// of one generic trait on one type are told apart by them.
     trait_args: List<string> = [],
+    /// AN `extern fn` WITH A BODY — a host fn. Its symbol is defined here,
+    /// so a held file must say which of its externs a caller links to
+    /// and which the target answers.
+    hosted: bool = false,
 }
 
 impl DeclFacts {
@@ -326,6 +330,7 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         annotations: if readable { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
         mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },
         trait_args: if readable && x.kind is .Impl { [spelled(a) for a in store.trait_args_of(x.stmt)] } else { [] },
+        hosted: readable && x.kind is .Fn && store.is_host_fn(x.stmt),
     }
 }
 
@@ -636,9 +641,10 @@ fn no_marks(d: DeclId) {}
 fn no_failures_ensure() {}
 
 /// Why an `embed` literal names no file a const may read: it stands
-/// outside the package, it is not there, a link stands on the way to
-/// it, it is not UTF-8 (at that byte), or the host would not read it.
-export enum EmbedFault { Outside, Missing, Linked, NotText(at: int), Refused(why: string) }
+/// outside the package, it names a package this one does not depend on,
+/// it is not there, a link stands on the way to it, it is not UTF-8 (at
+/// that byte), or the host would not read it.
+export enum EmbedFault { Outside, Undeclared(key: string), Missing, Linked, NotText(at: int), Refused(why: string) }
 
 /// `embed`'s path is read before any analysis runs over the file it
 /// names — a declared reach, like a `use` line's — so a computed
@@ -2324,6 +2330,13 @@ impl Decls {
     }
 
     fn is_extern(d: DeclId) -> bool { self.decl(d).kind is .Fn && self.facts_of(d)?.external ?? false }
+
+    /// Whether a declaration is a HOST FN: an `extern fn` with a body,
+    /// which defines the symbol its name spells.
+    fn is_host_fn(d: DeclId) -> bool { self.is_extern(d) && self.facts_of(d)?.hosted ?? false }
+
+    /// The host fns one file declares.
+    fn host_fns_of_file(f: FileId) -> List<DeclId> { [d for d in self.decls_of_file(f) if self.is_host_fn(d)] }
 
     /// Every `extern fn`, in id order, off the externs' bucket.
     @bracket("decls")

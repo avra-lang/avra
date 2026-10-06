@@ -24,8 +24,6 @@ which) · `PROBED` I ran it; the command and its output are beside it · `MEASUR
 | date | the owner said | where |
 |---|---|---|
 | 09-18 | "build packages/cli … cold < 60 s · edit < 1 s" · "We need <1s edit recompiles" | codex session :5-11, :14964 |
-| 09-18 | "i don't want this to be a list we need to maintain as new things are added. this will be generic right? i want this to scale" | codex session :6920 |
-| 09-18 | "Keep the stateless store design" (his pick against "a resident compiler") | codex session :8565 |
 | 09-26 | "The compiler's DB is a real database, and every tool is a THIN QUERY over its rows." Generic · easy to integrate · very performant · extremely centralized · resumable | townhall :64-78 |
 | 10-06 | "a saved answer is its value plus the list of inputs it read with their digests, recorded automatically by the kernel, valid only if every digest still matches — one rule, no hand-written checks." | brief |
 | 10-06 | "EVERYTHING needs to be in the DB and queryable and maximally easy to work with as a consumer/plugin." "Pluggable. Performant. Simple seams." | brief |
@@ -48,7 +46,7 @@ which) · `PROBED` I ran it; the command and its output are beside it · `MEASUR
 | D10 | **The re-ask of the sources is retired at DB 07, with no switch.** | Today a *failure* under a held answer is asked again of the sources. After DB 07 an answer stands on the digests of its reads; the edit corpus and the attack cases in CI are the net. No flag, no CI mode |
 | D9 | **A tool is identified by path + size + modified-time**; full digest on demand. | for tools and the compiler binary only. Source files are always read |
 | D11 | **The engine lives in `@std/relation`**, the library that already holds `@relation`/`@query`/`@input`. No new package. "ok fine do this" | the compiler and a running program share ONE engine (§5.1). It is a library, not `avrac-*`, because a running program imports it too |
-| — | **No bisect.** | M3 is phase timings on main today (§7.3) |
+| — | **No bisect.** | M3 is phase timings on main today (§7.2) |
 | — | **A read list holds saved answers as well as inputs.** | a *verifying trace* |
 
 ### 1.3 PENDING OWNER
@@ -89,7 +87,7 @@ every family key has one, so all 32 families are saved. What has no name: a node
 So for the compiler L4's refusal is a rule about **keyless rows**; M2 counts them. A row
 and an index bucket are *named parts of their producer's answer* (A11).
 
-**M1 and M2 are in** (§7.3): 70,015 cells, 5.3 M direct edges; 54,947 of the cells are
+**M1 and M2 are in** (A21): 70,015 cells, 5.3 M direct edges; 54,947 of the cells are
 saved answers with short lists (median 3 reads). Always-save is blocked by **names**, not
 by size (§7.4). A read with no durable name makes its reader unsavable; it is never dropped.
 
@@ -195,7 +193,6 @@ Deleted whole, MEASURED: **1,908 lines** (the first four rows). Net of everythin
 | `avra explain X --why` | X's record, its previous record, the reverse index |
 | `avra dev`'s watch set | the input manifest: every file any answer read (today a hand-built list that misses embeds, `.57.185`) |
 | test selection | a test reruns only if a read of `Proved(test)` moved (today `tools/work test` selects by package) |
-| docs; a formatter or linter that re-checks only what changed | `exported(package)` then `Doc(declaration)`; `Canon(file)`, `Findings(declaration)` |
 | find references, unused exports, go to definition, hover | `RefRow.to(name)` · `Declaration.by_name` · `Sig(declaration)` — one read each |
 | `collect xs = @mark in scope …` | `Declaration.wearing(mark)`: an index read; adding a member reruns exactly the collects that asked |
 
@@ -391,10 +388,9 @@ families (16, 19, 20, 30) are the ones that make any edit O(program); each is sp
 - **A dependency is a packed int.** Today each edge is a boxed `Key`: 375 MB in 5,326,142
   boxes on a cold `check packages/cli` (MEASURED, ticket `.57.167`). Packed: ~9 B an edge
   (ESTIMATED) → ~48 MB.
-- **A recorded read costs ≤ 350 instructions**, held by a census in CI. Today a kernel read is
-  ~125 unrecorded · ~315 stamped repeat · ~1,900 first read (MEASURED, townhall :2753), and a
-  recorded relation read is ~938 against ~90 raw (MEASURED, ticket `.57.8.1`). The townhall set
-  350 as its own condition (:2106) and it was never held.
+- **A recorded read stays cheap**: ≤ 2 × an unrecorded one, held by `readbench` in CI
+  (MEASURED today: list 4 ns, relation unrecorded 35–38, recorded 67–75). This bounds DB 12's
+  migration; it is not why warm edits are slow today (§7.2).
 - **Refusals speak.** Two owners of one key, a late write, a cross-owner local read, a cycle,
   an unencodable key: each names the query and its key. Today they are bare traps.
 - **Cycles.** A recursive query re-enters and contributes nothing (`start_recursive`). A
@@ -434,7 +430,6 @@ settle(q):                                      one append per read; no walk; no
 
 | question | answer |
 |---|---|
-| what failed on 09-28? | flattening: one transitive closure copied into 770 file records (33,286,285 edges; the direct deps of the same files were 13,578 — `3806c7d`, MEASURED). Not saving |
 | is it a verifying or a constructive trace? | verifying. Values are also findable by content, so A → B → A is warm while the old record is still in the file |
 | a query's own code | is a read: the digest of the unit that declares it. A plugin edit reruns that plugin's answers (pays `.57.4.6`) |
 | the longest in-memory list | printed by `avra explain --stats`, with p99 reads per saved answer. A family that breaks the gate has the wrong key |
@@ -448,8 +443,6 @@ settle(q):                                      one append per read; no walk; no
 | how key and answer cross | `MetaVal` trees by slot order; no fn or `Cell` variant, so a `Db` cannot cross | the **same encoded bytes the store saves**. One codec for disk and for the crossing |
 | a plugin's rows | in the evaluator's heap | the encoded answer of its query, held by the kernel |
 | reading compiler facts | three ask verbs (`embed`, `type_named`, `type_exported`) | `@std/meta` row relations: `DeclRow`, `FieldRow`, `VariantRow`, `ParamRow`, `ImplRow`, `RefRow`. A decoded row is a different type with no `@local` columns (townhall §4.10) |
-| names | `Field`, `Variant`, `Param` are already `@std/meta` types; `Decl` is a name it forbids (`meta.av:480-482`) | the `…Row` names above |
-| `compiling()` | cannot exist as the first draft described | not needed: the Db is never an argument (D3), and inside a compile-time run it is the compiler's |
 | direction | — | core never reads a plugin relation; a plugin writes only its own answers |
 | a plugin relation in a module nobody imports | would silently not register (townhall :2665, open) | a manifest dependency contributes all its files to registration. PROPOSED; decided in DB 10 |
 
@@ -477,9 +470,7 @@ Two defects are fixed first, each with its probe as the acceptance test: the ann
 ~/.avra/cache/bytes/<hh>/<sha256>         big values by content; shared across worktrees (DB 11)
 ```
 
-Why not a file per record: one root holds 8,440 files today; opening 1,300 small files costs
-60–100 ms and 10,994 costs 490 ms (PROBED by the review, warm page cache). The no-op budget
-is 60 ms.
+Why not a file per record: one cold check writes 8,964 files today (M2); 1,300 opens cost 60–100 ms.
 
 ### 6.2 What a warm command does, in order
 
@@ -494,7 +485,7 @@ is 60 ms.
 | 7 | append the new records, the reverse-index delta and one commit marker | 2–10 ms |
 
 Floors (ESTIMATED from the measured parts): unchanged 40–60 ms · one body edit 60–110 ms.
-The ancestor of this tree measured 0.04 s and 0.18 s on 09-21 at file grain (§7.1).
+The 09-21 tree measured 0.046 s and 0.36–0.51 s at file grain on the same Sprite (§7.1).
 
 ### 6.3 Names (L5; DB 03)
 
@@ -510,59 +501,67 @@ Processes, crashes, other compilers, gc: A12. The codec: A13.
 
 ## 7. Speed: what is measured, the targets, the gates
 
-### 7.1 Baselines and the regression
+All of M1–M3 are measured (`origin/db-measure` @ `064cd27`, `tools/db_measure/RESULTS.md`).
+M1 and M2 in full: A20, A21.
 
-| what | value | source |
+### 7.1 Two points, one Sprite, one harness (`check packages/cli`)
+
+| | 09-21 `86d7009` | main `05fe643` |
 |---|---|---|
-| 09-21 `check cli`, one edit, cold process, 289 files | **~0.18 s** (startup 15 · load 36 · mint/fill 26 · parse+typing ~20 · lower 16 · keep 16 ms) | MEASURED `2026_09_21_COMPILER.md:136-150` |
-| 09-21 `check cli` no-op · `build cli` no-op · `build cli` one body edit | ~0.04 s · 0.08 s · 0.31–0.40 s | same |
-| today `check cli` no-op, 408 files | 0.22 s | MEASURED ticket `.57.6.5` |
-| **same Sprite, same harness**: 09-21 (`86d7009`) against main (`05fe643`) | cold `check cli` 17.9 s → 62.8 s · no-op 0.05 s → 0.20 s · one body edit 0.36–0.51 s → 4.8–7.2 s. Not like-for-like: the tree grew 680 → 1,513 `.av` files. Bisect pending | MEASURED db-measure, `tools/db_measure/warm_edit.sh` (first M3 numbers) |
-| cold `check cli` peak | 1,869 MB; 375 MB of it dependency edges; 412 MB per-declaration fact columns | MEASURED tickets `.57.167`, `.57.168` |
-| a partly-held rebuild | 3,442 MB against 2,168 MB cold | MEASURED ticket `.57.163` |
-| file-then-directory test | past 4.5 GB → 2,153 MB with PR #289 | MEASURED PR #289 |
+| `.av` files in the tree · files the check holds | 680 · 289 | 1,513 · 458 |
+| cold | 17.9 s | 62.8–65.1 s |
+| unchanged | 0.046 s | 0.20 s |
+| one body edit | 0.36–0.51 s | 4.7–7.2 s |
 
-The regression rests on two measured points: the 09-21 tree and main, same Sprite, same
-harness. **Why is INFERRED, not measured**: declarations moved into recorded relation rows
-in between, and the tree grew. The intermediate before/after pairs are in A8.
+No commit is named (no bisect). COMPILER.md's 0.18 s was a Mac figure. Every round uses fresh edit text.
 
-### 7.2 Targets and CI gates (`packages/cli`, cold process, no daemon)
+### 7.2 Where a one-edit check goes today, and what removes each part
 
-| scenario | gate | goal | today |
-|---|---|---|---|
-| unchanged `check` | ≤ 60 ms | 40 ms | 220 ms |
-| one body edit, `check` | ≤ 300 ms | 150 ms | 4.8–7.2 s (Sprite) |
-| one body edit, `build` | ≤ 500 ms | 300 ms (the link is ~110 ms) | unmeasured since 09-21 |
-| one signature edit | proportional to the declarations that mention the name | — | unmeasured |
-| any partly-held state: time and peak | ≤ cold | — | 1.6 × cold |
-| a recorded read | ≤ 350 instructions | — | ~938 (relation) |
-| cold, saving on against off | digest: < 1 % (M2, MEASURED). Encoding: unmeasured — M4 sets the gate | — | — |
-| reads per saved answer | p95 ≤ 600, and no answer over 3,000 once DB 07 c splits the three long ones (today: p95 510, max 41,435 — M2) | — | — |
+One string literal edited in one body; wall 4.7–4.9 s (6.1–6.4 s when the file is in the cli).
 
-The time rows run on the CI runner with an instruction-count twin, so machine noise cannot
-hide a regression. The gates switch on as each PR makes them reachable (§8). Every timing
-round uses fresh edit text: a repeated text is a cache hit (HANDOFF 10-01 :100).
+| phase | ms | what it does today | what the edit needed | removed by → then (ESTIMATED) |
+|---|---|---|---|---|
+| **load** | 1,820–1,900 | meets every held module's record and asks every hold. **The O(program) phase**: ~4 ms per held file whatever was edited (6 ms at 4 files → 1.85 s at 458 → 3.3 s at 867) | one module's record | the input manifest and reverse index find what an edit reaches (DB 05); nothing is loaded until asked (DB 07 d) → ~40 ms. Early proposal: `.57.193` |
+| **admit** | 1,075–2,100 | parses **23–50 files** for a one-file edit (7 when checked from std-avrac: 45 ms). Why is **unknown** — DB 00's first question, `.57.191` | 1 file | a saved per-file syntax answer: an unchanged file is never parsed (DB 07 d) → ~50 ms |
+| **analyze** | 450–530 | re-types 308–316 declarations; rebuilds **all 994 method tables** on every edit (`.57.192`) | one declaration | per-declaration answers and the per-impl split (DB 07 b, c) → 30–80 ms. Earlier if `.57.192` finds one whole-table read |
+| **lower** | 720–760 | 225–232 lowerings | the edited fn | `Lowered` named and saved (DB 03 a, DB 07) → 10–30 ms |
+| keep · start | 175–190 · 18 | writes rows as files | — | appends (DB 05) → ~10 ms |
 
-### 7.3 Three measurements still owed — being run by `db-measure`
+Three things the phases do not show:
 
-| # | question | result | what it changes |
-|---|---|---|---|
-| M1 | How big is the kernel's graph on a cold `check cli`? | **MEASURED** (`AVRA_DB_GRAPH=1`, branch `db-measure`, `tools/db_measure/graph.py`): **70,015 cells, 5,314,590 direct edges**. 37.2 M recorded read *calls* — 7 per kept edge; 17.8 M on `Named`, 14.5 M on `Items`. In memory 74 B an edge (375 MB) and ~1,050 B a cell (70 MB) of a 1,867 MB peak; as plain text the graph is 45.7 MB. 54,947 cells are keyed by file, module, declaration or unit; 15,068 by a process-local ask number. The three std-relation families hold 2 edges between them | save every cell's digest and reads (≈ 46 MB before packing). The 15,068 ask-number cells need names at DB 03. The cost to cut is the 37 M calls, on `Named` and `Items` — DB 01 c–d |
-| M2 | Under L4: how many saved answers, how many reads each? | **MEASURED** (a simulation over the M1 graph, `graph.py`; nothing persisted): **54,947 of 70,015 cells are saved answers.** Direct durable reads per answer: total 1,091,224, median 2, p95 19 as keys are typed today; total 3,359,012, median 3, p95 510, max 41,435 once name buckets count as durable. File grain (what main saves today): 4,184 answers, 2.67 M reads, median 5, p95 5,090. Digest 362 MB/s: 55 k answers ≈ 0.05–0.5 s, under 1 % of a 63 s cold check | **Always-save at declaration grain is ~55 k records with short lists. It is blocked by names, not by size** (§7.4) |
-| M3 | Where does a warm one-edit `check cli` spend its time on main **today**? `--time` phase timings and `AVRA_QTRACE` reuse/compute counts, naming every phase that walks the whole program and its cost. No bisect (owner: too expensive) | **PENDING M3** | each O(program) phase it names is a line in DB 07 d's acceptance. If recorded relation reads dominate, DB 01 c–d stay ahead of any further family conversion (as ordered) |
-
-M4 (bytes per row, encoding cost), M6 (store IO) and M7 (the 220 ms no-op) are measured
-inside DB 05.
-
-### 7.4 Three gaps M2 exposes, and the PR that closes each
-
-| gap | answer | PR |
+| finding | evidence | answer |
 |---|---|---|
-| **2.27 M of 5.31 M edges read a `Named` name bucket**, which today is neither a saved answer nor an input. Under the strict rule that dependency is *lost* | a name bucket is the by-name index root of A11, named by the name's own text. And a law: **a read with no durable name makes its reader unsavable — it is never dropped.** `explain --stats` prints "reads with no name"; it must be 0 for a family before that family is saved | DB 03 a, before DB 06 |
-| **`Lowered` (12,324 cells, 1.07 M edges) and `Settled` (501, 0.81 M) are keyed by ask numbers and read by no saved answer.** They are roots: only 705 of 15,068 in-memory cells sit under an owner, so "belongs to the saved answer that owns it" has nothing to say | they get names, not a "re-derived" status: `Lowered(declaration · type arguments)`, `Settled(const · seat fingerprint)` — the key and the artifact's name from one derivation (CLAUDE.md, `settled_symbol`) | DB 03 a |
-| **three long lists**: `Receivers` 41,435 reads, `References` 13,030, `MethodDiags` 994 in every file | unchanged run: no list is walked — an answer that no changed input reaches through the reverse index is never touched (§6.2). After an edit: each is split so one edit dirties a short list — per impl, per declaration, per (file, type it mentions) | DB 05 (reverse index); DB 07 c (the splits) |
+| **a discarded attempt is paid in full and its cost printed nowhere** | std-avrac: 8.4–8.7 s wall, phases sum to 4.5 s; first edit after cold 31.7 s, two discarded | validation before derivation (DB 07). Now: `--time` prints each discarded attempt's cost — **DB 00c**, `.57.189` |
+| **std-http's hold is refused for this edit** | held 0/121: its "one edit" is a 13 s cold check | a bug: `.57.190` |
+| **the unchanged check's 0.20 s** | ~0.125 s fixed + 0.1 ms per file; the kernel does nothing; ~0.18 s is outside every phase timer | split it (M7, in DB 05). 09-21 measured 0.046 s on the same machine |
 
-Detail and the per-family numbers: appendix A20.
+**Recorded relation reads did not cause this.** The review inferred they did; this
+document repeated it. MEASURED: 3 recorded reads of `@std/relation` families on the
+one-edit path; 1.38–1.55 M kernel reads, 93 % `HeldSig`; at 67–75 ns a read that bounds to
+0.11 s of the edit. The read-cost budget is not a fix for today's slowness. It bounds DB
+12: as 32 families become queries, a recorded read must stay cheap.
+
+### 7.3 Targets, and when each becomes reachable
+
+| scenario (`packages/cli`, cold process, no daemon) | gate | today |
+|---|---|---|
+| unchanged `check` | ≤ 60 ms (goal 40) | 200 ms |
+| one body edit, `check` | ≤ 300 ms (goal 150) | 4.7–7.2 s |
+| one body edit, `build` | ≤ 500 ms | unmeasured (only `check` was) |
+| any partly-held state: time and peak | ≤ cold | 1.6 × cold |
+| a recorded relation read | ≤ 2 × an unrecorded one, by `readbench` | 67–75 ns against 35–38 |
+| reads per saved answer | p95 ≤ 600; none over 3,000 after DB 07 c | p95 510, max 41,435 |
+
+| after | one body edit, `check` (ESTIMATED from §7.2's rows) |
+|---|---|
+| `.57.193`, if its profile allows | ~3 s for an edit to a leaf file; no gain for a widely imported one |
+| DB 05, DB 06 | unchanged: the store and the rule arrive, but the hold still decides. The gate until DB 07 is "never slower than the last landing" |
+| DB 07 d (by-name loading, saved syntax) | ~1.3 s: load and admit are gone |
+| DB 07 b, c and `Lowered` saved | **150–250 ms — the first point the 300 ms gate is reachable** |
+
+**7.4** M2 exposes three gaps, each closed by a PR (A20): name buckets have no durable name
+(DB 03 a, before DB 06) · `Lowered` and `Settled` are roots keyed by ask numbers (DB 03 a) ·
+three long read lists (DB 05, DB 07 c). Always-save is blocked by names, not by size.
 
 ---
 
@@ -570,11 +569,11 @@ Detail and the per-family numbers: appendix A20.
 
 Each lands alone and leaves main green. "Ladder" is what the seed and generation laws cost
 (CLAUDE.md "How work lands"). Order matters: 00 → 01 → 02, 03, 04 → 05 → 06 → 07 → 08, 09 →
-10 → 11. DB 12 runs throughout.
+10 → 11. DB 12 runs throughout. M3 added DB 00 a–c; DB 01 c–d need not lead.
 
 | PR | ticket | what lands | "when this lands, the owner can run …" | ladder | closes |
 |---|---|---|---|---|---|
-| **DB 00** secure, measure, fence | `.57.169` | the M1–M3 harness (`tools/db_measure/`, branch `db-measure`); PR #289 with its memory attack in CI; `keepers-green`: three keepers on every PR; defects filed | `make keepers` green and required · the per-family counters table · `sh tools/db_measure/warm_edit.sh` | none | `.57.165`; half of `.57.163` |
+| **DB 00** secure, measure, fence | `.57.169` | the harness (`tools/db_measure/`, branch `db-measure`) landed; `keepers-green`: three keepers on every PR. Then three small PRs M3 asks for: **00a** why 22 unchanged files are parsed (`.57.191`); **00b** the load profile and, if it allows, the early fix (`.57.193`); **00c** `--time` prints a discarded attempt's cost (`.57.189`). Bugs filed: `.57.190` (std-http), `.57.192` (994 method tables) | `make keepers` green and required · `sh tools/db_measure/warm_edit.sh` · the table of why each unchanged file was read | none | `.57.165`; half of `.57.163` |
 | **DB 01** one engine, as a–e | `.57.170` | §5.1: (a) the kernel moves into `@std/relation`; the layering rule restated and pinned by a keeper; (b) `@query`/`@input` are kernel cells on every Db, the second memo and the hooks deleted; (c) packed deps; (d) the read-cost census; (e) families register by name, refusals speak, `make families-left` starts at 32, `tools/families.py`'s order contract retired | a std-relation program test: three pure queries each run **once** after an unrelated write (nine times today) · the M1 graph shows the compiler's `@query` cells holding their own edges (2 today) · `Kernel.newly_read` < 60 MB (375) | `seed-check` must pass; build twice before trusting a peak | `.57.167` |
 | **DB 02** `avra explain` | `.57.171` | A14.4 over the in-memory graph: `--stats` and "what did this read". `--why` re-derives in process, as `avra cache why` does today, until DB 05–06 give it the store | `build/avra explain --stats packages/cli` · `explain <file>` prints its reads | none | — |
 | **DB 03** names, the id codec, as a–c | `.57.172` | §6.3, A13: (a) the name scheme and `Decl`'s key — waits on `file` leaving `@local` (`decl_rows.av:26`, owner: ERRORS); (b) the codec grows payload enums and recursive records; (c) one codec per family answer, ~20, each its own small PR | `make codecs` · a declaration inserted above changes no other declaration's bytes | none expected | — |
@@ -806,7 +805,13 @@ two-package repro is written out in ticket `.57.182`.
 | same, earlier run | 363 MB in 5.1 M boxes | `avra-8sb5.76` | MEASURED |
 | per-declaration fact columns | 154 MB (`side_table<bool>`, 142,264 tables) + 258 MB (`side_grow<DeclAt>`) | ticket `.57.168` | MEASURED |
 | kernel read | ~120 unrecorded · ~315 stamped repeat · ~1,900 new dep | TH:2753 | MEASURED |
-| relation recorded read | ~938 instructions against ~90 raw | ticket `.57.8.1` | MEASURED |
+| relation recorded read | ~938 instructions against ~90 raw | ticket `.57.8.1` (PERF's `kbench`, outside the repo) | MEASURED; not re-measured (no instruction counter on a Sprite) |
+| the same, by `readbench` (ns per read, native) | list 4 · relation unrecorded 35–38 · recorded 67–75 | M3, `origin/db-measure` @ `064cd27` | MEASURED |
+| one-edit `check cli` by phase | start 16–20 · load 1,820–1,900 · admit 1,075–1,200 (2.1 s for a cli file) · analyze 450–530 · lower 720–760 · keep 175–190 ms; wall 4.68–4.85 s (6.1–6.4 s) | M3 | MEASURED |
+| the same edit by package size (files held → load) | 4 → 6 ms · 14 → 120 ms · 458 → 1.85 s · 867 → 3.2–3.4 s | M3 | MEASURED |
+| kernel recorded reads on the one-edit path | 1,383,865–1,553,242; `HeldSig` 1.33–1.44 M for 75 module cells; `@std/relation` families: 3 | M3 | MEASURED |
+| a discarded attempt | std-avrac one edit 8.4–8.7 s wall, phases 4.5 s; first edit after cold 31.7 s, two discarded | M3 | MEASURED |
+| not measured | instructions per read · where the unchanged check's 0.18 s goes · which commits cost what · `build` | M3 | — |
 | `KeyParts` hold on a warm cli edit | 397/399 held "at near-zero cost" | TH:2436 | MEASURED |
 | always-hash sources | ~36–42 ms at 730 files | `92b24db` | MEASURED |
 | hashing all 1,513 `.av` under `packages/` (11.0 MB) | stat 3.2 ms · read 31 ms · read + SHA-256 40 ms | review E3 (Python, warm cache) | PROBED there |
@@ -1024,7 +1029,7 @@ It never writes the store it inspects (the `.57.153` law).
 | COMPILER.md: no resident compiler | stands | the targets need no daemon (§6.2) |
 
 Restored without change after the first draft dropped them silently: "durable by default,
-with nothing to tune" (townhall :2277) · a recorded read ≤ ~350 instructions (:2106) · a
+with nothing to tune" (townhall :2277) · a bound on what a recorded read costs (:2106) · a
 decoded row is a different type (§4.10) · core never reads a plugin relation (:2656).
 | second draft: the kernel moves to a new package `@std/query` | no new package: it lives in `@std/relation` (D11) | the owner, 10-06: "I don't want @std/query", then, shown that a running program cannot link the compiler: "ok fine do this" |
 | second draft: an eight-commit bisect for M3 | phase timings on main today | the owner, 10-06: "it's too expensive" |
@@ -1152,3 +1157,19 @@ Source: `tools/db_measure/graph.py` replaying the M1 graph of a cold `check pack
 | `MethodDiags` reads 994 of something in every one of 438 files | it asks every type's methods; it should ask only for the types the file mentions |
 | digest cost is under 1 % of a cold check | the cold-cost budget is about encoding, which nobody has measured (M4) |
 | the store today is 8,964 files for one check | one packed file (§6.1) |
+
+**The three gaps, in full**
+
+| gap | answer | PR |
+|---|---|---|
+| **2.27 M of 5.31 M edges read a `Named` name bucket**, which today is neither a saved answer nor an input. Under the strict rule that dependency is *lost* | a name bucket is the by-name index root of A11, named by the name's own text. And a law: **a read with no durable name makes its reader unsavable — it is never dropped.** `explain --stats` prints "reads with no name"; it must be 0 for a family before that family is saved | DB 03 a, before DB 06 |
+| **`Lowered` (12,324 cells, 1.07 M edges) and `Settled` (501, 0.81 M) are keyed by ask numbers and read by no saved answer.** They are roots: only 705 of 15,068 in-memory cells sit under an owner, so "belongs to the saved answer that owns it" has nothing to say | they get names, not a "re-derived" status: `Lowered(declaration · type arguments)`, `Settled(const · seat fingerprint)` — the key and the artifact's name from one derivation (CLAUDE.md, `settled_symbol`) | DB 03 a |
+| **three long lists**: `Receivers` 41,435 reads, `References` 13,030, `MethodDiags` 994 in every file | unchanged run: no list is walked — an answer that no changed input reaches through the reverse index is never touched (§6.2). After an edit: each is split so one edit dirties a short list — per impl, per declaration, per (file, type it mentions) | DB 05 (reverse index); DB 07 c (the splits) |
+
+
+## A21. M1 and M2 as measured
+
+| # | question | result | what it changes |
+|---|---|---|---|
+| M1 | How big is the kernel's graph on a cold `check cli`? | **MEASURED** (`AVRA_DB_GRAPH=1`, branch `db-measure`, `tools/db_measure/graph.py`): **70,015 cells, 5,314,590 direct edges**. 37.2 M recorded read *calls* — 7 per kept edge; 17.8 M on `Named`, 14.5 M on `Items`. In memory 74 B an edge (375 MB) and ~1,050 B a cell (70 MB) of a 1,867 MB peak; as plain text the graph is 45.7 MB. 54,947 cells are keyed by file, module, declaration or unit; 15,068 by a process-local ask number. The three std-relation families hold 2 edges between them | save every cell's digest and reads (≈ 46 MB before packing). The 15,068 ask-number cells need names at DB 03. The cost to cut is the 37 M calls, on `Named` and `Items` — DB 01 c–d |
+| M2 | Under L4: how many saved answers, how many reads each? | **MEASURED** (a simulation over the M1 graph, `graph.py`; nothing persisted): **54,947 of 70,015 cells are saved answers.** Direct durable reads per answer: total 1,091,224, median 2, p95 19 as keys are typed today; total 3,359,012, median 3, p95 510, max 41,435 once name buckets count as durable. File grain (what main saves today): 4,184 answers, 2.67 M reads, median 5, p95 5,090. Digest 362 MB/s: 55 k answers ≈ 0.05–0.5 s, under 1 % of a 63 s cold check | **Always-save at declaration grain is ~55 k records with short lists. It is blocked by names, not by size** (§7.4) |

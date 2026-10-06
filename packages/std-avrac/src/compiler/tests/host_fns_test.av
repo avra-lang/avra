@@ -1,0 +1,228 @@
+//! A HOST FN: an `extern fn` with a body. It defines the symbol its name
+//! spells — a host calls it by that name, a non-host target exports it from
+//! wherever it is declared, and a bodiless `extern fn` of the name is
+//! answered by it. An `export` is a module's visibility and exports nothing.
+use @std.io.{make_dirs, read_text}
+use @std.time.{now_ns}
+use @std.avrac.compiler.{avra, new_workspace}
+use @std.avrac.testing.{refused_in, refused_n}
+use compiler.{Workspace, Program}
+use compiler.lower.{Lowered}
+use compiler.backend.{emit_ll}
+use compiler.host.{memory_host}
+
+const HOSTED_MAIN: string = "/w/src/main.av"
+
+/// An entry over `near`, which imports `far`: `far` declares a host fn the
+/// entry never names, every module exports a fn nothing calls, and `seam`
+/// names a symbol bodiless that `main` answers when it is asked to.
+fn hosted_ws(main: string) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/src/main.av": main,
+                "/w/src/near.av": "use far.{helper}\nexport fn used(n: int) -> int {\n    helper(n)\n}\nexport fn offered(n: int) -> int {\n    n + 1\n}\n",
+                "/w/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\nexport fn unreached(n: int) -> int {\n    n - 1\n}\nextern fn far_event(n: int) -> int {\n    n + 40\n}\n",
+                "/w/src/seam.av": "extern fn told(n: int) -> int\nexport fn asked(n: int) -> int {\n    told(n)\n}\n",
+            },
+            [HOSTED_MAIN, "/w/src/near.av", "/w/src/far.av", "/w/src/seam.av"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+/// A program `app` over two packages: `@x/near`, which names an extern
+/// bodiless and imports `@x/far`; and `@x/far`, which declares `far_src`.
+fn packaged(main: string, far_src: string) -> Program {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/near\" = { path = \"vendor/near\" }\n\"@x/far\" = { path = \"vendor/far\" }\n",
+                "/w/src/main.av": main,
+                "/w/vendor/near/avra.toml": "[package]\nname = \"@x/near\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/far\" = { path = \"../far\" }\n",
+                "/w/vendor/near/src/near.av": "use @x.far.{helper}\nextern fn page_row(n: int) -> int\nexport fn used(n: int) -> int {\n    page_row(helper(n))\n}\n",
+                "/w/vendor/far/avra.toml": "[package]\nname = \"@x/far\"\nversion = \"0.1.0\"\n",
+                "/w/vendor/far/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\n${far_src}",
+            },
+            [
+                "/w/avra.toml",
+                "/w/src/main.av",
+                "/w/vendor/near/avra.toml",
+                "/w/vendor/near/src/near.av",
+                "/w/vendor/far/avra.toml",
+                "/w/vendor/far/src/far.av",
+            ],
+        ),
+        "/w",
+        avra(),
+    )
+        .program("/w/src/main.av")
+}
+
+/// The one refusal lowering speaks of `p`, rendered — or how many it spoke.
+fn lowering_refusal(p: Program) -> string {
+    let spoken = p.lowered().diagnostics
+    if spoken.length == 1 { p.rendered(spoken) } else { "${spoken.length} refusals" }
+}
+
+/// The entry most cases stand over: one host fn of its own, one call.
+fn plain_main() -> string { "use near.{used}\nextern fn handle(n: int) -> int {\n    n\n}\nused(1)\n" }
+
+fn hosted(main: string) -> Program { hosted_ws(main).program(HOSTED_MAIN) }
+
+fn lowers(l: Lowered, name: string) -> bool { l.fns.any(it.name == name) }
+
+/// One directory per run, so no earlier run's module answers for this one.
+once fn hosted_base() -> string { "/tmp/avra-host-fns-test/${now_ns()}" }
+
+/// The plain program's LLVM text for `target`.
+fn hosted_text(target: string, name: string) -> string {
+    let _ = make_dirs(hosted_base())
+    let path = "${hosted_base()}/${name}.ll"
+    if emit_ll(hosted(plain_main()).lowered(), path, target) != null { return "" }
+    read_text(path) catch ""
+}
+
+fn exports(ll: string, name: string) -> bool { ll.contains("\"wasm-export-name\"=\"${name}\"") }
+
+/// What the program answers, or the refusal.
+fn hosted_answer(main: string) -> string { hosted(main).run() catch e -> e }
+
+spec "compiler/lower — a host fn" {
+    given "a program whose modules declare host fns and exports" {
+        then "a host fn nothing calls is lowered, in the entry or two modules down" {
+            lowers(hosted(plain_main()).lowered(), "handle") &&
+                lowers(hosted(plain_main()).lowered(), "far_event")
+        }
+        then "an export nothing calls is not lowered, imported by the entry or not" {
+            !lowers(hosted(plain_main()).lowered(), "offered") &&
+                !lowers(hosted(plain_main()).lowered(), "unreached")
+        }
+        then "an export the program reaches is lowered" { lowers(hosted(plain_main()).lowered(), "helper") }
+    }
+    given "that program emitted for wasm" {
+        then "each host fn is exported under its own name" {
+            let ll = hosted_text("wasm32-wasip1", "wasm")
+            exports(ll, "handle") && exports(ll, "far_event")
+        }
+        then "no export fn is exported" {
+            let ll = hosted_text("wasm32-wasip1", "plain")
+            ll != "" && !exports(ll, "used") && !exports(ll, "offered") && !exports(ll, "helper")
+        }
+    }
+    given "that program emitted for the host" {
+        then "nothing is exported by name" {
+            let ll = hosted_text("", "host")
+            ll != "" && !ll.contains("wasm-export-name")
+        }
+        then "a host fn's symbol is defined under its bare name" { hosted_text("", "bare").contains("@handle(i64") }
+    }
+    given "a host fn called from Avra" {
+        then "it runs as the fn it is" {
+            hosted_answer("extern fn doubled(n: int) -> int {\n    n * 2\n}\n\"\${doubled(21)}\"") == "42"
+        }
+        then "a bodiless extern of its name, declared in another file, is answered by it" {
+            hosted_answer(
+                "use seam.{asked}\nextern fn told(n: int) -> int {\n    n + 1\n}\n\"\${asked(41)}\"",
+            ) == "42"
+        }
+        then "a call for nothing reaches it too" {
+            hosted_answer(
+                "once fn seen() -> Cell<int> {\n    Cell.new(0)\n}\nextern fn noted(n: int) {\n    seen().set(seen().get() + n)\n}\nnoted(40)\nnoted(2)\n\"\${seen().get()}\"",
+            ) == "42"
+        }
+    }
+    given "a bodiless extern nothing answers" {
+        then "the run says what would answer it" {
+            hosted_answer("use seam.{asked}\n\"\${asked(41)}\"")
+                .contains("answer it here with `extern fn told(…) { … }`")
+        }
+    }
+    given "a host fn that breaks its law" {
+        then "a seat no host can hand over refuses" {
+            refused_in(
+                hosted("extern fn takes(xs: List<int>) -> int {\n    xs.length\n}\ntakes([1])"),
+                "seat `xs` of the host fn `takes` wears `List<int>`, which no host can hand over",
+            )
+        }
+        then "an answer no host can take refuses" {
+            refused_in(
+                hosted("extern fn gives() -> bool {\n    true\n}\n1"),
+                "the host fn `gives` answers `bool`, which no host can take",
+            )
+        }
+        then "a marked seat refuses, beside the warning that it is never written" {
+            refused_n(
+                hosted("extern fn writes(mut n: int) -> int {\n    n\n}\n1"),
+                "seat `n` of the host fn `writes` is marked — a host makes no promise about a seat",
+                2,
+            )
+        }
+        then "a runtime row's name refuses" {
+            refused_in(
+                hosted("extern fn avra_trap(msg: string) -> int {\n    msg.length\n}\n1"),
+                "`avra_trap` is the runtime's own symbol",
+            )
+        }
+        then "two host fns of one name in a program refuse the second, where it stands" {
+            let p = hosted(
+                "use near.{used}\nextern fn far_event(n: int) -> int {\n    n\n}\nused(1)\n",
+            )
+            let spoken = p.lowered().diagnostics
+            spoken.length == 1 &&
+                p
+                    .rendered(spoken)
+                    .contains("two host fns define `far_event` — a symbol has one body")
+        }
+    }
+    given "a host fn in a dependency" {
+        then "the program's own sources import that package: it is the program's host fn" {
+            let p = packaged(
+                "use @x.near.{used}\nuse @x.far.{helper}\nextern fn page_row(n: int) -> int {\n    n + 1\n}\n\"\${used(helper(5))}\"",
+                "extern fn far_event(n: int) -> int {\n    n\n}\n",
+            )
+            let got = p.run() catch e -> e
+            p.lowered().diagnostics.is_empty() && lowers(p.lowered(), "far_event") && got == "21"
+        }
+        then "the program never imports that package: refused where the host fn stands" {
+            lowering_refusal(
+                packaged(
+                    "use @x.near.{used}\nextern fn page_row(n: int) -> int {\n    n\n}\n\"\${used(1)}\"",
+                    "extern fn far_event(n: int) -> int {\n    n\n}\n",
+                ),
+            )
+                .contains(
+                    "the host fn `far_event` of `@x/far` would be this program's export, and the program's own sources never import `@x/far`",
+                )
+        }
+        then "it answers another package's extern: refused, whoever imports it" {
+            lowering_refusal(
+                packaged(
+                    "use @x.near.{used}\nuse @x.far.{helper}\n\"\${used(helper(1))}\"",
+                    "extern fn page_row(n: int) -> int {\n    0\n}\n",
+                ),
+            )
+                .contains("`page_row` is `@x/near`'s to name, and `@x/far` answers it")
+        }
+    }
+    given "a host fn named for a symbol the platform defines" {
+        then "the C library's allocator refuses" {
+            lowering_refusal(
+                hosted(
+                    "extern fn avra_ptr_at(address: int) -> ptr?\nextern fn malloc(n: int) -> ptr {\n    avra_ptr_at(n)!\n}\n1",
+                ),
+            )
+                .contains("`malloc` is a symbol this platform already defines")
+        }
+        then "the program's own start refuses" {
+            lowering_refusal(hosted("extern fn main() -> int {\n    7\n}\n1"))
+                .contains("`main` is a symbol this platform already defines")
+        }
+    }
+    given "the refusal, rendered" {
+        then "a seat no host can hand over" {
+            hosted("extern fn takes(xs: List<int>) -> int {\n    xs.length\n}\ntakes([1])").report() == "error[type.host_fn]: seat `xs` of the host fn `takes` wears `List<int>`, which no host can hand over\n  ╭─[/w/src/main.av:1:1]\n1 │ extern fn takes(xs: List<int>) -> int {\n  · ┬\n  · ╰── declared here\n──╯\nhelp: a host fn's seat is `int`, `float`, `string`, `Bytes` or `ptr`"
+        }
+    }
+}

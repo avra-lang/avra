@@ -293,14 +293,8 @@ fn filter_checks(mut cx: TypeCx, cond: ExprId, tys: List<TypeId>) {
 fn walked_types(mut cx: TypeCx, index: string?, source: ExprId) -> List<TypeId> {
     let st = cx.walk_type(source)
     if cx.errored(source) { return binders(cx, index, cx.error_type) }
-    let held? = walk_elem_type(cx, st) else { return binders(cx, index, not_walkable(cx, source)) }
+    let held? = cx.yielded(st) else { return binders(cx, index, not_walkable(cx, source)) }
     binders(cx, index, held)
-}
-
-/// The element a walk source yields: a list's element, or a `Bytes`'s
-/// octet (an int).
-fn walk_elem_type(mut cx: TypeCx, st: TypeId) -> TypeId? {
-    match cx.view.types.seen_shape(st) { .Bytes -> cx.type(int), _ -> cx.view.types.element(st) }
 }
 
 /// The binders' types over a range: the counter is an int, both
@@ -345,7 +339,7 @@ fn not_walkable_string(mut cx: TypeCx, source: ExprId) -> TypeId {
                 cx.loc_of(source),
                 "a comprehension walks a list, and a `string` names no element without a view",
                 "this is `string`",
-                "iterate its octets with `s.bytes()`",
+                "iterate its octets with `s.bytes()`, or its code points with `s.chars()`",
             ),
         )
 }

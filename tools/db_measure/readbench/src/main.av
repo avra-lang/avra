@@ -46,21 +46,17 @@ fn read_list(rows: List<Plain>) -> int {
 
 /// An owner that counts each read it is told of, under the reader `reader` names.
 fn counting(told: Cell<int>, reader: Cell<int>) -> Hooks {
-    quiet_hooks() with {
-        record: (_family: int, _cell: int) -> {
-            told.set(told.get() + 1)
-            reader.get()
-        },
-        revision: () -> 1,
-        running: () -> reader.get(),
-    }
+    quiet_hooks() with { record: (_family: int, _cell: int) -> {
+        told.set(told.get() + 1)
+        reader.get()
+    }, revision: () -> 1, running: () -> reader.get() }
 }
 
 fn timed(label: string, n: int, rounds: int, pass: fn(int) -> int) {
     let t = now_ns()
     mut sum = 0
     for r in 0..rounds { sum = sum + pass(r) }
-    println("${label}	ns_per_read=${(now_ns() - t) / (n * rounds)}	checksum=${sum}")
+    println("${label}\tns_per_read=${(now_ns() - t) / (n * rounds)}\tchecksum=${sum}")
 }
 
 let n = 20000
@@ -78,9 +74,14 @@ let heard = hooked_db(counting(told, reader))
 filled(heard, n)
 reader.set(1)
 timed("relation.repeat", n, rounds, (_r: int) -> read_rows(heard, n))
-println("told	${told.get()}")
-timed("relation.new_reader", n, rounds, (r: int) -> {
-    reader.set(r + 2)
-    read_rows(heard, n)
-})
-println("told	${told.get()}")
+println("told\t${told.get()}")
+timed(
+    "relation.new_reader",
+    n,
+    rounds,
+    (r: int) -> {
+        reader.set(r + 2)
+        read_rows(heard, n)
+    },
+)
+println("told\t${told.get()}")

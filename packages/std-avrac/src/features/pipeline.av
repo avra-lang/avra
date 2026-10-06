@@ -6,11 +6,10 @@
 //! reaches the sink. A comprehension is a pipeline whose sink pushes.
 use core.{ExprId, DeclId, Reg, TypeId, Ins, Type, BinOp}
 
-/// A head's source: a list (or a string, walked as codepoints), or the
+/// A head's source: a list, a `Bytes`, a string's `chars` view, or the
 /// range `source..hi`. `index` binds the position before the element; a
-/// `lookup` is read in the source's place; `elem` overrides the element
-/// the source's own type yields (a string walks `int` codepoints).
-export type Source = { source: ExprId, hi: ExprId?, index: bool, lookup: Lookup?, elem: TypeId? }
+/// `lookup` is read in the source's place.
+export type Source = { source: ExprId, hi: ExprId?, index: bool, lookup: Lookup? }
 
 /// A relation's narrower read: `lookup(db, value)`, the value written
 /// in the filter `cond`.
@@ -51,9 +50,9 @@ export enum Sink {
     Find(ret: TypeId, cell: Reg, pred: FnBox)
     FindMap(ret: TypeId, cell: Reg, pred: FnBox)
     FindLast(ret: TypeId, cell: Reg, pred: FnBox)
-    FindIndex(ret: TypeId, cell: Reg, pred: FnBox)
+    FindIndex(ret: TypeId, cell: Reg, seen: Reg, pred: FnBox)
     Contains(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
-    IndexOf(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
+    IndexOf(ret: TypeId, cell: Reg, seen: Reg, needle: Reg, elem: TypeId)
     Fold(ret: TypeId, cell: Reg, f: Step)
     Count(ret: TypeId, cell: Reg)
     Sum(ret: TypeId, cell: Reg)
@@ -63,15 +62,14 @@ export enum Sink {
 
 export type Pipeline = { clauses: List<Clause>, sink: Sink }
 
-/// Every head's registers so far, which a written step binds, the
-/// element in hand, and this turn's place — a pipeline opens with a
-/// head, so a sink has both.
-type Turn = { regs: List<Reg>, at: Reg?, value: Reg? }
+/// Every head's registers so far, which a written step binds, and the
+/// element in hand — a pipeline opens with a head, so a sink has one.
+type Turn = { regs: List<Reg>, value: Reg? }
 
 impl LowerCx {
     /// The pipeline run, answering its sink's value.
     mut fn piped(p: Pipeline) -> Reg {
-        self.staged(p, 0, Turn { regs: [], at: null, value: null })
+        self.staged(p, 0, Turn { regs: [], value: null })
         self.sink_answer(p.sink)
     }
 
@@ -93,8 +91,7 @@ impl LowerCx {
                 self.void_region(self.un(keep)) { cx -> cx.walk_done() }
             },
             .Drop(count, n) -> {
-                let seen = self.loaded_as(self.type(int), count)
-                self.count_past(count, seen)
+                let seen = self.arrival(count)
                 let past = self.bin(Type.Bool, BinOp.Ge, seen, n)
                 self.void_region(past) { cx -> cx.staged(p, at + 1, t) }
             },
@@ -138,7 +135,7 @@ impl LowerCx {
     mut fn headed(p: Pipeline, at: int, t: Turn, s: Source) {
         self.bind_patterns(s.source, t.regs)
         self.looked_up(s.source, t.regs, s.lookup)
-        let w = if s.hi == null { self.opened(s.source, s.elem ?? self.elem_of(s.source)) } else { self.counted(s.source, s.hi!) }
+        let w = if s.hi == null { self.opened(s.source, self.elem_of(s.source)) } else { self.counted(s.source, s.hi!) }
         let here = self.turn_open(w)
         let v = if s.hi == null { self.turn_elem(w, here) } else { here }
         self
@@ -146,8 +143,7 @@ impl LowerCx {
                 p,
                 at + 1,
                 Turn {
-                    regs: t.regs.concat(if s.index { [here, v] } else { [v] }),
-                    at: here,
+                    regs: t.regs.concat(if s.index { [self.turn_place(w, here), v] } else { [v] }),
                     value: v,
                 },
             )
@@ -223,10 +219,11 @@ impl LowerCx {
                         cx.emit(Ins.Store(cell, cx.adopted(ret, false, t.value!)))
                     }
             },
-            .FindIndex(ret, cell, pred) -> {
+            .FindIndex(ret, cell, seen, pred) -> {
+                let place = self.arrival(seen)
                 self
                     .void_region(self.pred_call(pred, t)) { cx ->
-                        cx.store_hit(cell, cx.adopted(ret, false, t.at!))
+                        cx.store_hit(cell, cx.adopted(ret, false, place))
                     }
             },
             .Contains(_, cell, needle, elem) -> {
@@ -235,10 +232,11 @@ impl LowerCx {
                         cx.store_hit(cell, cx.const_bool(true))
                     }
             },
-            .IndexOf(_, cell, needle, elem) -> {
+            .IndexOf(_, cell, seen, needle, elem) -> {
+                let place = self.arrival(seen)
                 self
                     .void_region(self.same_value(t.value!, needle, elem)) { cx ->
-                        cx.store_hit(cell, t.at!)
+                        cx.store_hit(cell, place)
                     }
             },
             .Fold(ret, cell, f) -> self.emit(Ins.Store(cell, self.folded(f, self.loaded_as(ret, cell), t.value!))),
@@ -282,8 +280,16 @@ impl LowerCx {
         let w = self.opened_reg(e, xs, list, elem)
         let here = self.turn_open(w)
         let v = self.turn_elem(w, here)
-        self.staged(p, at + 1, Turn { regs: [v], at: here, value: v })
+        self.staged(p, at + 1, Turn { regs: [v], value: v })
         self.loop_end()
+    }
+
+    /// How many elements reached `count` before this one — its place in
+    /// the stream a clause or a sink sees — counted past as it is read.
+    mut fn arrival(count: Reg) -> Reg {
+        let seen = self.loaded_as(self.type(int), count)
+        self.count_past(count, seen)
+        seen
     }
 
     /// `take`/`drop` count the elements that REACH them — one more past
@@ -313,7 +319,7 @@ impl LowerCx {
     mut fn sink_answer(s: Sink) -> Reg {
         match s {
             .Push(dst) -> dst,
-            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindMap(ret, cell, _) or .FindLast(ret, cell, _) or .FindIndex(ret, cell, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _) or .Fold(ret, cell, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
+            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindMap(ret, cell, _) or .FindLast(ret, cell, _) or .FindIndex(ret, cell, _, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _, _) or .Fold(ret, cell, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
             .MinMax(ret, has, best, _) or .MinBy(ret, has, best, _, _, _, _) -> self
                 .region_as(self.loaded_as(self.type(bool), has), ret) { cx ->
                     cx.adopted(ret, false, cx.loaded_as(self.type(int), best))
@@ -321,7 +327,8 @@ impl LowerCx {
         }
     }
 
-    /// The source's element type — typing proved it a list.
+    /// What the source's walk yields: a list's element, or the int a
+    /// `Bytes` or a string reads.
     fn elem_of(source: ExprId) -> TypeId {
         let ty = self.type_at(source)
         match self.view.types.seen_shape(ty) {
