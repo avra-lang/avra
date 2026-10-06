@@ -592,8 +592,6 @@ Each lands alone and leaves main green. "Ladder" is what the seed and generation
 `.57.165`, `.57.9.7`, `avra-8sb5.46` and `.79` (weak hashes — no PR here touches the
 in-process hash; linked, not absorbed), `avra-8sb5.68`, `.69`.
 
----
-
 **9.** Every earlier decision this overturns, with its measurement: appendix A15. Hostile
 cases, each answered: appendix A0.
 
