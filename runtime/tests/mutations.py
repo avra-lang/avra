@@ -42,6 +42,7 @@ MUTATIONS = [
     ("the one-set check ignores a claimed set", "    if (f->held_n != 0 || f->claimed) avra_trap", "    if (f->held_n != 0) avra_trap"),
     ("a descriptor park that timed out reads as ready", "        f->timed_out = arm != 0;", "        f->timed_out = 0;"),
     ("an interrupt reads as readiness", "        set_claimed(f, -1, 1, BY_CLOSE);", "        set_claimed(f, 0, 0, BY_CLOSE);"),
+    ("a late parker takes an edge that came before it", "    if ((size_t)fd < g_fds_cap && g_fds[fd].head[writable != 0]) poller_wait(0);\n", ""),
     ("a closing descriptor keeps its registration", "waiter_claims(w->head[d], BY_CLOSE);\n    w->armed = 0;\n", "waiter_claims(w->head[d], BY_CLOSE);\n"),
     ("a waiter's gate is never let go", "    if (w->kind == W_GATE) avra_rc_release(w->on.gate);\n    else g_parked_fds--;", "    if (w->kind != W_GATE) g_parked_fds--;"),
     ("a timer task is not released when it fires", "    gate_opened(task, BY_TIMER);\n    avra_rc_release(task);", "    gate_opened(task, BY_TIMER);"),

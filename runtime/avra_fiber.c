@@ -1176,6 +1176,10 @@ static void waits_fd(Fiber* f, int64_t fd, int64_t writable, int64_t arm, int64_
     if (f->claimed) return;
     if (fd < 0 || fd > INT32_MAX) { set_claimed(f, (int32_t)arm, (int32_t)member, BY_POLLER); return; }
     poller_open();
+    // AN EDGE BELONGS TO WHOEVER WAITED WHEN IT CAME: one the poller has
+    // not yet reported is theirs, so they are told before a later task
+    // joins them — or it would wake on news that was never its own.
+    if ((size_t)fd < g_fds_cap && g_fds[fd].head[writable != 0]) poller_wait(0);
     Waiter* w = waiter_new(f, writable ? W_FD_WRITE : W_FD_READ, arm, member);
     w->on.fd = (int)fd;
     waiter_filed(w);

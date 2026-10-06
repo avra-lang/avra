@@ -564,6 +564,24 @@ static void interrupt_is_time(void) {
     CHECK(avra_sched_fd_waiters() == 0, "and leaves the descriptor");
 }
 
+// ── an edge belongs to whoever waited when it came ──────────────
+
+static void* parks_briefly(void* self) {
+    int64_t woken = avra_fiber_park_fd(g_pipe[0], 0, cap(self));
+    char c;
+    return answer(woken ? 10 + (read(g_pipe[0], &c, 1) == 1) : 0);
+}
+
+static void late_parker(void) {
+    void* early = spawn1(parks_briefly, 2000);
+    avra_fiber_sleep(2);
+    CHECK(write(g_pipe[1], "e", 1) == 1, "the pipe takes a byte");
+    void* late = spawn1(parks_briefly, 30);
+    CHECK(joined(early) == 11, "the task parked when the byte came is woken and reads it");
+    CHECK(joined(late) == 0, "a task that parks after it waits for the next, and times out");
+    CHECK(avra_sched_fd_waiters() == 0 && avra_sched_timers() == 0, "nothing stays filed");
+}
+
 // ── a wait on an open gate is a set too ─────────────────────────
 
 static void* sleeps_in_a_claimed_set(void* self) { (void)self; avra_wait_gate(g_gate, 0, 0); avra_fiber_sleep(5); return answer(0); }
@@ -839,6 +857,7 @@ int main(void) {
     fork_forgets_deadlines();
     claim_before_cancel();
     interrupt_is_time();
+    late_parker();
     CHECK(avra_mem_live() == live, "the fibers leave nothing behind");
     as_virtual();
     closed(g_pipe[0]);
