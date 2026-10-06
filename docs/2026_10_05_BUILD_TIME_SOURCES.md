@@ -1075,6 +1075,25 @@ Only decisions. Two options each, then my pick.
 
 ---
 
+## 15a. Decided by the owner (2026-10-05)
+
+| Q | decided |
+|---|---|
+| 1 heavy build work | native tools |
+| 2 provided type names | `api.Pet` — a type path through the anchor; needs its own short design before slice 7 |
+| 3 the sketch as written | land the trait form where the implementing type decides the result |
+| 4 default home | by size, with the override |
+| 5 a tool that links C | pending — explained to the owner, recommendation B (root manifest lists them) |
+| 6 `url` and the lock | in this campaign |
+| 7 `avra dev` | pending — explained, recommendation A (one-shot builds, no resident compiler) |
+| 8 compiler upgrade re-runs steps | yes |
+| 9 who builds a package's C | `avra build`, from the manifest |
+| 10 `check` may run a native tool | yes |
+| 11 machine-wide byte store | yes, bytes only |
+| 12 who owns the two doors | this session with the owner; no other session exists. §1 is designed with him before anything is built on it |
+
+`|>` is being landed on branch `pipe-op`.
+
 # Appendix A — three things an author writes
 
 Design code (§14). Every language form in it is one that exists.
