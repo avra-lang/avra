@@ -477,11 +477,12 @@ build/%.sha: %.c FORCE
 # THE RUNTIME'S OWN TESTS: C programs under runtime/tests/, each linked
 # against the runtime's objects and run, for what no Avra program can
 # reach yet — a row the language does not spell. GLOBBED, so a new test
-# file runs without a line here.
+# file runs without a line here. Built with the stack probes every frame
+# on a task's stack carries: a test of the guard is a test of them.
 RUNTIME_TESTS = $(patsubst runtime/tests/%.c,build/runtime-tests/%,$(wildcard runtime/tests/*.c))
 build/runtime-tests/%: runtime/tests/%.c $(RUNTIME_OBJS)
 	@mkdir -p build/runtime-tests
-	@cc -O2 -Wall -Werror -o $@ $< $(RUNTIME_OBJS)
+	@cc -O2 -Wall -Werror $(STACK_PROBES) -o $@ $< $(RUNTIME_OBJS)
 runtime-tests: $(RUNTIME_TESTS)
 	@for t in $(RUNTIME_TESTS); do $$t || exit 1; done
 
