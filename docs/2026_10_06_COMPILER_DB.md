@@ -121,7 +121,7 @@ Declaration.by_kind(Kind.Trait)                    // 5. an index read: recorded
 
 | today, by hand | on the DB |
 |---|---|
-| a `@family(rank, "Key", "Answer")` marker, an arm in `family_word`, a line in `tools/families.order` | `@query fn …` |
+| a `@family(rank, "Key", "Answer")` marker, a line in `tools/families.order` (its word is the variant's `.name`) | `@query fn …` |
 | a side table keyed by typed ids, owned by the pass | the query's answer type |
 | a string-keyed memo map on the `Workspace` (35 today) | nothing: the kernel memoizes |
 | a key recipe, a `Store.keep` call, a validity format and its `*_stands` fn (nine formats) | nothing: the read list is recorded |
@@ -133,7 +133,7 @@ counts by `awk` at `36eb0a1`), ~80 lines in four files:
 ```avra
 @family(6, "DeclId", "DeclSig")                 // families.av:41 — key and answer are unchecked strings
 type Sig = {}
-.Sig -> "Sig",                                  // workspace.av:531 family_word · :980 a `touch` arm
+.Sig -> touch(self.sig(decl_at_arg(arg))),      // workspace.av:941 a `touch` arm; its word is `Family.Sig.name`
 fn sig(d: DeclId) -> DeclSig? {                 // workspace.av:1682-1709, 28 lines
     let k = key(Family.Sig, d.index)
     let x = self.decls.decl(d)
@@ -174,7 +174,7 @@ MEASURED = `wc -l` or `grep` at `origin/main` @ `4294595`, non-test. "After" is 
 | `compiler/kept_settle.av` — six line kinds, six `*_stands` fns | 324 lines | 0; four digest-only queries, ~40 |
 | `compiler/db.av` — the compiler's own `Db`, `DbRow`/`DbKind` (24 kinds), `DocFacts`, `still_valid`; `answers.av` | 732 + 46 lines | 0 |
 | `compiler/verify_held.av` — the held path's hand checks | 439 lines | 0 |
-| `families.av` markers + `tools/families.py` + `families.order` + `family_word`'s 32 arms | 149 + 154 + 32 + 32 | 0; 32 `@query` declarations |
+| `families.av` markers + `tools/families.py` + `families.order` | 149 + 154 + 32 | 0; 32 `@query` declarations |
 | `compiler/record.av` — module record lines, `KeyParts`, `parts`/`seen` rows | 1,605 lines | ~300: the encoding is derived |
 | `compiler/interface.av` — the hand-written interface wire | 869 lines | ~200 |
 | `compiler/derive.av` — try the held path, fail, derive again (what PR #289 tamed) | 867 lines | ~400: one path |
@@ -1043,7 +1043,7 @@ decoded row is a different type (§4.10) · core never reads a plugin relation (
 | `@input` (records nothing) vs `Memo.input` (records; 3 callers) | `input.av`, `query/memo.av:128-141` | DB 01 |
 | world reads outside any door | 172 sites; ~50 behind `Host`; ~35 are not inputs | DB 04 a–e |
 | `admit_embeds` (callee matched by the string `"embed"`) | `whole.av:171` | DB 04 c |
-| `@family(rank, "Key", "Answer")` (unchecked strings) and `family_word`'s 32 arms | `families.av`, `workspace.av:523` | DB 12, a counter |
+| `@family(rank, "Key", "Answer")` (unchecked strings) | `families.av` | DB 12, a counter |
 | the compiler's own `Db`, `DbRow` (8 durable variants), `DbKind`, `durable_key` | `compiler/db.av` (732 lines) | DB 06, then DB 12 |
 | `Db.answers`, `answer_name`, the hex codec | `answers.av` (46) | DB 06 |
 | hand format 1: `KeyParts` content key, `stands_in` | `record.av:1097-1306` | DB 07 |
