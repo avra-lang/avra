@@ -171,9 +171,24 @@ Labels: READ (I opened the line) · PROBED (I ran it) · MEASURED · PROPOSED (n
   process (review 5, F1 — PROBED wrong answer `2 2 2`, now `2 2 10` in
   `tests/durable`). A STOPGAP, PENDING DB 06, which replaces `Durable` with records
   that carry their reads: `avra-8sb5.57.203` names every piece that goes then.
-- **D4.** An un-owned row insert inside an open `@query` is REFUSED with a named voice.
-  `Frame`, `began`, `ended` and the self-read law are deleted with it. Compiler families
-  keep named owners until DB 07a.
+- **D4.** An un-owned row insert inside an open `@query` BODY is REFUSED with a named
+  voice. `Frame`, `began`, `ended`, `framed`, `Rel.prior` and the self-read law are
+  deleted with it. Compiler families keep named owners until DB 07a. BUILT in P4a2 as:
+  - ROWS ARE A NAMED OWNER'S OR NO ONE'S. `db.opened_run(owner)` … `db.closed_run(owner)`
+    brackets a run; every insert inside it with no other owner named is stamped to it,
+    and its close sweeps what it did not write again. The open runs are the Db's one
+    stack; a `@query`'s wrapper opens none.
+  - A RELATION AN OPEN RUN HAS WRITTEN IS READ BY NO ONE UNTIL THE RUN CLOSES — refused
+    naming the relation and the owner. That is the self-read law's read-after-write
+    half; its write-after-read half is the late-write law, unchanged. Refusal, not "the
+    last closed run": the second needs every write buffered until close.
+  - NARROWER THAN "any open kernel query": the compiler's other Dbs insert un-owned rows
+    under kernel queries (side columns, references), and that is not a query writing
+    rows in D4's sense. The refusal is for a `@query` body.
+  - `failures.av` is TWO runs: `error sites` closes before `raised` reads it. It fixes
+    `avra-8sb5.57.204`: a recompute replaces its rows (`tests/rerun_swept`: 3 → 2).
+  - A read mark is now (revision, reader): each open kernel query is its own reader, so
+    a nested query's read never stands for its caller's, with no frame to say so.
 - **`@family`**: `Workspace.built`'s loop calls the same `kernel.family(name, verify)`;
   `Family` and its ordinals stay until each family converts. The two unchecked strings
   (`"DeclId"`, `"DeclSig"`) leave the marker in P5.
@@ -217,7 +232,7 @@ Each off `origin/main`, green alone, reported before the next.
 | P2 | `read_cost.sh` over db-measure's readbench: instructions per recorded read, the ambient lookup and the Db check included once they exist | the number, for a kernel cell and a relation row |
 | P3 | the move (§1 item 1): files only | the graph identical |
 | P4a1 | a Db holds a kernel, its own or one given; `Hooks` deleted; `@query` / `@input` are cells; keys interned by bytes; a call left before it settles abandons its frame. The compiler's three Dbs are GIVEN the workspace's kernel, so it records what it records today. BUILT and verified (branch `db-04a1-one-kernel`) | MEASURED: the graph byte-identical to P3's, kernel ids included; c3's assertion on a plain Db (`tests/unrelated_writes`) and under an owner's kernel (`tests/given_kernel_test.av`) — in std-relation, where the engine now is, not `compiler/tests` |
-| P4a2 | D4: the insert refusal; `Frame` / `began` / `ended` and the self-read law deleted; std-relation's own program tests rewritten (`query/`, `owner_frames/`, `named_owner/`, `swept_heard/`) | each rewritten test names the law it now proves |
+| P4a2 | D4: the insert refusal; `Frame` / `began` / `ended` and the self-read law deleted; std-relation's own program tests rewritten (`query/`, `owner_frames/` → `owner_runs/`, `named_owner/`, `swept_heard/`, `quiet_self_read/`, `unrelated_writes/`, `durable/`), `rerun_swept/` added. BUILT (branch `db-04a2-owned-runs`) | each rewritten test names the law it now proves; a mid-run read or an un-owned query write anywhere in the compiler would trap, so the whole std-avrac suite and a cold `check cli` passing IS the count: 0 |
 | P4a3 | three Dbs → one; `refs_db` recorded; `db_over` deleted | the graph CHANGES: the expected delta is stated before the run (the reference relation's cells and their readers' edges appear; nothing else moves) and compared after |
 | P4a4 | `revision_of_hash` + `move_stamps` → one kernel verb over dense rows | the graph identical |
 | P4b | the D3 spelling: `@query`, `@input` and the generated relation accessors lose the Db seat (27 non-test call sites, 215 in tests); the ambient Db, `within_db` (restoring under `defer`) and THE `begin` LAW arrive here together — while the Db is still an argument (P4a1–a4) there is no ambient to disagree with it, and three Dbs share the workspace's kernel until P4a3, so "the kernel's own Db" has no meaning before then | the two-live-workspaces interleaved test, with a stored closure in it, failing without the `begin` law |
