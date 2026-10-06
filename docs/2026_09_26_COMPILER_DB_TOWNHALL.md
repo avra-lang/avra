@@ -1,5 +1,7 @@
 # Compiler DB townhall — `compiler/db.av`'s next shape
 
+> **HISTORY — superseded by [`2026_10_06_COMPILER_DB.md`](2026_10_06_COMPILER_DB.md) (2026-10-06).** Kept for its record of decisions and measurements; its laws that still hold are carried in that document's appendix A1. Its status lines are not current.
+
 > **Scope:** the COMPILER'S OWN fact store — `packages/std-avrac/src/compiler/db.av`
 > (`Db`, `DbRow`, `DbKind`) and what `Workspace` still holds outside it.
 > **NOT in scope:** `@std/db` (`packages/std-db`, `@model`, the ORM —
