@@ -2066,22 +2066,27 @@ Runtime facts, ours to ratify:
   queue: squash merges, linear history, no direct pushes. A local main
   only follows `origin/main` (the reference-transaction hook refuses any
   other update; a deliberate repair sets `AVRA_MAIN_OVERRIDE="<reason>"`).
-- A PR TESTS ITSELF FIRST, AND THE QUEUE STILL TESTS THE TRAIN. A PR's
-  own `test` check runs the SAME keepers, fmt, idioms and affected
-  suites as the train, on the PR's own tree (`.github/workflows/
-  checks.yml`). A PR has no cached compiler, so it BOOTSTRAPS from the
-  committed seed — a derived cache never does (the generation law); a PR
-  that ADDS SYNTAX cannot be bootstrapped by its base's seed, so it
-  proves itself with the branch-local compiler and lands by the
-  refresh-after rule. So a green PR check is the pre-enqueue proof, and
-  a slip dies before the queue. The queue then builds main plus every PR
-  ahead of it plus this one and tests that COMBINATION in ONE job on
-  GitHub's runners (Ubuntu 26.04, LLVM 22, the image in `.github/ci/`) —
+- A PR RUNS THE MINIMUM, AND THE TRAIN RUNS THE GATE. A PR's own `test`
+  check is fmt on its changed `.av`, and idioms and suites over the
+  packages it TOUCHES, on the PR's own tree (`.github/workflows/
+  checks.yml`); a PR that touches no `.av`, no package and no compiler
+  source builds nothing. It does NOT run the keepers, the cache attacks,
+  the seed check or its dependents' suites: each runs on the train, and a
+  failure there drops the PR one train later. THE COMPILER IS CACHED BY
+  ITS OWN SOURCE (`tools/compiler_paths.sh`): a tree whose compiler is
+  main's takes main's binary; otherwise the newest cached binary builds
+  the tree twice (the generation law), and one too old to read it — new
+  syntax, a new refusal about its own source — fails that build and the
+  tree BOOTSTRAPS from the committed seed. The queue then builds main
+  plus every PR ahead of it plus this one and tests that COMBINATION on
+  GitHub's runners (Ubuntu 26.04, LLVM 22, the image in `.github/ci/`):
+  the keepers, the attacks, the seed check and every AFFECTED package —
   the only place a CROSS-PR interaction (two individually-green PRs
-  colliding on a latent bug) can be seen. Ten trains test at once; when
-  one passes, it and every PR ahead of it land together (HEADGREEN). A
-  failing train drops its PR with the log on the PR. Main's own push run
-  caches the compiler every train starts from.
+  colliding on a latent bug) can be seen, and the only place the seed is
+  proved to build the tree. Ten trains test at once; when one passes, it
+  and every PR ahead of it land together (HEADGREEN). A failing train
+  drops its PR with the log on the PR. Main's own push run caches the
+  compiler every run starts from.
 - A PRE-COMMIT HOOK refuses staged `.av` that is not canonical; the fix
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
 - HEAVY RUNS GO ON SPRITES, ONE SPRITE A LANE: `sh tools/work run <cmd>`
@@ -2163,7 +2168,8 @@ Runtime facts, ours to ratify:
 - GITHUB'S RUNNERS ARE THE ONLY GATE. `tools/gate_changed.sh` is the
   train's checks in one definition — the static keepers, `fmt --check`
   on the changed `.av`, `check --baseline` on every affected package —
-  and checks.yml runs it on the PR and on the train. `tools/work land`
+  and checks.yml runs it on the train, and on a PR without the keepers
+  and over the packages it touches. `tools/work land`
   checks formatting alone, with the compiler the worktree already
   holds, and asks no other machine; a lane that wants the whole gate
   before pushing runs that script through `work run`.

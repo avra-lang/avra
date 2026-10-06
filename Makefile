@@ -753,10 +753,11 @@ footprint: $(RUNTIME_LIB)
 footprint-accept: $(RUNTIME_LIB)
 	@python3 tools/footprint.py --accept
 
-# THE KEEPERS, ONE LIST. The train's keepers job and
+# THE KEEPERS, ONE LIST. The train's keepers job and a lane's own
 # tools/gate_changed.sh both run `make keepers`, so a keeper named here
-# is held on every pull request and every train, and one left off is
-# held by nobody. Each names what it links as its own prerequisites.
+# is held on every train, and one left off is held by nobody. A pull
+# request's own check does not run them: the train does, before anything
+# merges. Each names what it links as its own prerequisites.
 # Every keeper runs, and each that refuses is named.
 KEEPERS = fingerprints vocab families layers inputs read-cost cited http-cites externs suites stems rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
           ui-host ui-host-test ui-board ui-browser codecs fmt-lossless traps compile-slots witness tool-witnesses footprint
