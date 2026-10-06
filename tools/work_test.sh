@@ -37,6 +37,40 @@ cat > "$scratch/sprite" <<'STUB'
 #!/bin/sh
 # sprite -s <name> exec … : answers unless the name is in SILENT.
 case " ${SILENT:-} " in *" $2 "*) exit 1 ;; esac
+# The Sprite's half, played from $FAKE: `out` is the run's whole output,
+# `status` its exit status once `ending` attaches have passed; `cut` makes
+# the next attach deliver that many bytes and drop; `lost` makes the
+# Sprite stop answering after the next attach; `live` names a run that stands.
+if [ -n "${FAKE:-}" ]; then
+    a="$*"
+    while [ "$#" -gt 0 ] && [ "$1" != avra-remote ]; do shift; done
+    if [ "$#" -gt 2 ]; then
+        verb=$3
+        shift 3
+        echo "$verb $*" | cut -c1-60 >> "$FAKE/calls"
+        case $verb in
+            ready | status) echo "holds=yes"; [ ! -f "$FAKE/live" ] || echo "run=$(cat "$FAKE/live") live host 1 x" ;;
+            start) echo "started=$1" ;;
+            attach)
+                [ ! -f "$FAKE/hang" ] || sleep 30
+                if [ -f "$FAKE/cut" ]; then
+                    n=$(cat "$FAKE/cut"); rm -f "$FAKE/cut"
+                    tail -c +$(($2 + 1)) "$FAKE/out" | head -c "$n"
+                    exit 1
+                fi
+                tail -c +$(($2 + 1)) "$FAKE/out"
+                ;;
+            result)
+                [ ! -f "$FAKE/lost" ] || exit 1
+                n=$(cat "$FAKE/ending" 2>/dev/null || echo 0)
+                if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$FAKE/ending"; echo running; else echo "status $(cat "$FAKE/status")"; fi
+                ;;
+            stop) echo 143 > "$FAKE/status"; rm -f "$FAKE/hang" ;;
+        esac
+        exit 0
+    fi
+    set -- $a
+fi
 [ -z "${SPRITE_LOG:-}" ] || echo "$*" >> "$SPRITE_LOG"
 case "$*" in
     *"ls -t /home/sprite/avra-compilers"*) case " ${HOLDERS:-} " in *" $2 "*) echo /home/sprite/avra-compilers/h/avra ;; esac ;;
@@ -165,7 +199,7 @@ export SPRITE_LOG="$scratch/sprite.log"
 : > "$SPRITE_LOG"; : > "$GH_LOG"
 before=$(git -C "$main" worktree list | wc -l)
 cd "$scratch/avra-after" || exit 1
-for v in new run test land status sprites done bind wait; do
+for v in new run test land status sprites done bind wait attach stop; do
     for h in -h --help help; do
         sh "$work" "$v" "$h" > "$scratch/out" 2> "$scratch/err"
         st=$?
@@ -186,6 +220,49 @@ check "$st $? $(cat "$SPRITE_LOG" | wc -l | tr -d ' ')" "64 64 0" "work run: a -
 sh "$work" frobnicate > "$scratch/out" 2>&1
 check "$? $(grep -c 'no verb .frobnicate' "$scratch/out")" "64 1" "work: an unknown verb is named, with the usage and 64" "$scratch/out"
 unset SPRITE_LOG
+
+# ══ A RUN IS FOLLOWED, NOT HELD: drops, a lost Sprite, a bound, a run that stands
+mkdir -p "$scratch/bin" "$scratch/fake"
+printf '#!/bin/sh\necho "$*" >> "$FAKE/rsync"\n' > "$scratch/bin/rsync"
+chmod +x "$scratch/bin/rsync"
+cd "$scratch/avra-after" || exit 1
+(sh "$work" bind A) > /dev/null 2>&1
+ran() { PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" run "$@" > "$scratch/out" 2> "$scratch/err"; }
+scene() { rm -f "$scratch"/fake/*; printf 'one\ntwo\nthree\n' > "$scratch/fake/out"; echo "$1" > "$scratch/fake/status"; }
+
+scene 7; echo 1 > "$scratch/fake/ending"; echo 6 > "$scratch/fake/cut"
+ran true
+check "$? $(tr '\n' ' ' < "$scratch/out")| $(grep -c 'connection dropped (1 so far' "$scratch/err") $(grep -c '^attach .* 6$' "$scratch/fake/calls")" "7 one two three | 1 1" "work run: a connection dropped mid-run is followed again from its byte: every line once, the command's status" "$scratch/err"
+
+scene 5; echo 0 > "$scratch/fake/cut"
+ran true
+check "$? $(tr '\n' ' ' < "$scratch/out")" "5 one two three " "work run: a connection dropped after the run ended still delivers its output and its status" "$scratch/err"
+
+scene 124
+ran --for 1 true
+check "$? $(grep -c 'STOPPED: the command passed its bound' "$scratch/err")" "124 1" "work run: a run the Sprite ended at its bound answers 124 and says so" "$scratch/err"
+
+scene 0; echo Other-9 > "$scratch/fake/live"
+ran true
+check "$? $(grep -c 'BUSY — A still runs Other-9.*work attach.*work stop' "$scratch/err") $(cat "$scratch/fake/rsync" 2>/dev/null | wc -l | tr -d ' ') $(grep -c '^start' "$scratch/fake/calls")" "76 1 0 0" "work run: a Sprite with a run standing is BUSY — nothing is synced under it, nothing started" "$scratch/err"
+
+scene 0; echo 9 > "$scratch/fake/ending"; : > "$scratch/fake/lost"; echo 3 > "$scratch/fake/cut"
+ran true
+check "$? $(grep -c 'stopped answering.*the run goes on there.*work attach' "$scratch/err") $(grep -c '^stop' "$scratch/fake/calls")" "75 1 0" "work run: a Sprite that stops answering mid-run is 75, the run left to go on, never stopped" "$scratch/err"
+
+scene 0; echo 99 > "$scratch/fake/ending"; : > "$scratch/fake/hang"
+PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" run true > "$scratch/out" 2> "$scratch/err" &
+job=$!
+i=0; while [ "$i" -lt 50 ] && ! grep -q '^attach' "$scratch/fake/calls" 2>/dev/null; do sleep 0.2; i=$((i + 1)); done
+kill -TERM "$job"; wait "$job"
+check "$? $(grep -c '^stop' "$scratch/fake/calls") $([ -f "$(git rev-parse --absolute-git-dir)/avra-run" ] && echo locked || echo free)" "143 1 free" "work run: a TERM stops the run on the Sprite and frees the lane" "$scratch/err"
+
+scene 3; echo Mine-1 > "$scratch/fake/live"
+PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" attach > "$scratch/out" 2> "$scratch/err"
+check "$? $(tr '\n' ' ' < "$scratch/out")| $(grep -c 'following Mine-1 (live)' "$scratch/err")" "3 one two three | 1" "work attach: follows the lane's run from its first byte and answers its status" "$scratch/err"
+PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" stop > "$scratch/out" 2>&1
+check "$(grep -c 'Mine-1 stopped' "$scratch/out") $(grep -c '^stop Mine-1' "$scratch/fake/calls")" "1 1" "work stop: ends the lane's live run by name"
+cd "$main" || exit 1
 
 # ══ THE QUEUE: a PR queued with no train is taken out and put back ════
 cd "$main" || exit 1

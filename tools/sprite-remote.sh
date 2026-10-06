@@ -6,24 +6,32 @@
 #
 #   status [<hash> <package...>]  the machine as `key=value` lines
 #   ready <hash> <package...>     provision, prune a filling disk, then status
-#   stop <run...>              stop each run, however its processes scattered
-#   provision <package...>     install what is missing, point the tree at LLVM
-#   prune <compilers> <days>   drop old compilers, trees and scratch, detached
-#   run <id> <owner> <build_s> <cmd_s> <tree> <hash> <cmd...>
+#   provision <package...>        install what is missing, point the tree at LLVM
+#   prune <compilers> <days>      drop old compilers, trees and scratch, detached
+#   start <id> <owner> <build_s> <cmd_s> <tree> <hash> <cmd...>   begin a run; 76 when one stands
+#   attach <id> <offset>          the run's output from that byte on, until it ends or a turn passes
+#   result <id>                   `status <n>`, `running`, or `gone`
+#   stop <run...>                 end each run, however its processes scattered
 #
 # A RUN IS ITS ENVIRONMENT MARK: every process a run starts inherits
 # AVRA_RUN=<id>, so a stop finds them all by reading /proc — a child that
 # took its own session or group (the watchdog's does) is still found.
 #
-# A RUN NEVER OUTLIVES ITS CALLER. The Sprite ends an exec session whose
-# client is gone, and each run keeps a keeper outside that session: when
-# the run's own shell is gone before it finished, the keeper stops what
-# is left. The keeper also ends a run past its time bound, and one that
-# takes the machine under its memory floor — a Sprite has no swap, and
-# one out of memory answers nobody.
+# A RUN BELONGS TO THE SPRITE, NOT TO THE CONNECTION THAT BEGAN IT. Its
+# supervisor stands outside every exec session and writes the run's
+# output and its exit status to the run's own directory; a client only
+# attaches, at a byte offset, and a dropped connection loses nothing.
+#
+# AND A RUN IS NEVER LEFT TO THE PROVIDER'S MERCY: a Sprite with no
+# session attached is suspended, mid-write if need be, so a run's keeper
+# HOLDS THE SPRITE AWAKE for as long as the run lives (the Sprite's own
+# tasks, refreshed each minute) and no longer. The keeper also ends a run
+# past its time bound, and one that takes the machine under its memory
+# floor — a Sprite has no swap, and one out of memory answers nobody —
+# so a run with no client left still ends, and says how.
 set -eu
 
-home=/home/sprite
+home=${AVRA_SPRITE_HOME:-/home/sprite}
 runs=$home/avra-runs
 compilers=$home/avra-compilers
 trees=$home/avra-build
@@ -37,12 +45,13 @@ members() {
         p=${e#/proc/}
         p=${p%/environ}
         [ "$p" = "$$" ] && continue
-        tr '\0' '\n' < "$e" 2>/dev/null | grep -qx "AVRA_RUN=$1" && echo "$p"
+        tr '\0' '\n' 2>/dev/null < "$e" | grep -qx "AVRA_RUN=$1" && echo "$p"
     done
     return 0
 }
 
-# Ends a run's processes, sparing the pids in $2.., and removes its record.
+# Ends a run's processes, sparing the pids in $2..; its record stays, for
+# whoever asks how it ended.
 stop_run() {
     r=$1
     shift
@@ -55,7 +64,21 @@ stop_run() {
         [ -n "$left" ] || break
         [ "$sig" = KILL ] || sleep 2
     done
-    rm -rf "${runs:?}/$r"
+    [ ! -d "$runs/$r" ] || [ -f "$runs/$r/status" ] || settle "$r" 143
+}
+# A run's status is written once, whole.
+settle() {
+    [ -f "$runs/$1/status" ] || { echo "$2" > "$runs/$1/status.new" && mv "$runs/$1/status.new" "$runs/$1/status"; }
+}
+
+# The Sprite's own promise to stay awake, by name, for five minutes.
+hold() {
+    [ -S /.sprite/api.sock ] || return 0
+    case $1 in
+        on) curl -s -m 5 --unix-socket /.sprite/api.sock -H 'Content-Type: application/json' -X POST http://sprite/v1/tasks -d "{\"name\":\"$2\",\"expire\":\"5m\"}" ;;
+        again) curl -s -m 5 --unix-socket /.sprite/api.sock -H 'Content-Type: application/json' -X PUT "http://sprite/v1/tasks/$2" -d '{"expire":"5m"}' ;;
+        off) curl -s -m 5 --unix-socket /.sprite/api.sock -X DELETE "http://sprite/v1/tasks/$2" ;;
+    esac >/dev/null 2>&1 || :
 }
 
 lacking() {
@@ -84,7 +107,7 @@ status() {
     for o in "$runs"/*/owner; do
         [ -f "$o" ] || continue
         r=$(basename "$(dirname "$o")")
-        [ -n "$(members "$r")" ] && state=live || state=ended
+        [ ! -f "$runs/$r/status" ] && [ -n "$(members "$r")" ] && state=live || state=ended
         echo "run=$r $state $(cat "$o")"
     done
 }
@@ -147,17 +170,21 @@ prune_now() {
     echo "disk_free_mb=$after"
 }
 
-# Outside the run's session: ends the run when its shell is gone, when
-# its time is up, or when the machine nears its memory floor (the reason
-# it writes is the run's last word) — and whatever a run left standing
-# when it ended.
+# Beside the run's supervisor: holds the Sprite awake while the run
+# lives, ends the run when its time is up or the machine nears its
+# memory floor (the reason it writes is the run's last word), and when
+# the supervisor is gone ends whatever the run left standing and sees
+# that its status is written.
 keeper() {
     r=$1 main=$2 build_s=$3 cmd_s=$4
     rd=$runs/$r
     t0=$(cut -d. -f1 /proc/uptime)
+    held=$t0
+    hold on "$r"
     while [ -d "$rd" ] && kill -0 "$main" 2>/dev/null; do
         why=
         now=$(cut -d. -f1 /proc/uptime)
+        [ $((now - held)) -lt 60 ] || { hold again "$r"; held=$now; }
         if at=$(cat "$rd/cmd_at" 2>/dev/null) && [ -n "$at" ]; then
             [ $((now - at)) -lt "$cmd_s" ] || why="124 the command passed its ${cmd_s}s bound"
         else
@@ -179,6 +206,7 @@ keeper() {
         sleep 1
     done
     stop_run "$r" $$
+    hold off "$r"
 }
 
 # The compiler's own objects, as the Makefile's COMPILER_OBJS names them.
@@ -236,28 +264,47 @@ advance_and_cache() {
     rm -f "$log"
 }
 
-# ONE RUN ON A SPRITE AT A TIME, and it runs on the compiler it is
-# testing: build/avra is kept in place between runs, restored from this
-# Sprite's cache when the source hash moved to one it holds, and built
-# and cached otherwise — a source that does not build gets no command
-# (70), since an older compiler would answer about a different program.
-run() {
-    AVRA_RUN=$1
-    owner=$2 build_s=$3 cmd_s=$4 remote=$5 chash=$6
-    shift 6
+# ONE RUN ON A SPRITE AT A TIME: a second is refused with 76 and the
+# first's name. The run's supervisor leaves this session before `start`
+# answers, so the caller's connection is nothing to it.
+start() {
+    id=$1
+    owner=$2 tree=$5
+    mkdir -p "$runs"
+    exec 7> "$runs/.lock"
+    flock 7
     for o in "$runs"/*/owner; do
         [ -f "$o" ] || continue
         r=$(basename "$(dirname "$o")")
-        [ -z "$(members "$r")" ] || { echo "sprite-run: busy with $r, begun by $(cat "$o")" >&2; exit 76; }
+        # A run that has written its status is over, whatever its keeper is still tidying.
+        [ -f "$runs/$r/status" ] || [ -z "$(members "$r")" ] || { echo "busy=$r $(cat "$o")"; exit 76; }
         rm -rf "${runs:?}/$r"
     done
-    export AVRA_RUN
-    rd=$runs/$AVRA_RUN
-    mkdir -p "$rd" "$remote/build" "$compilers"
+    rd=$runs/$id
+    mkdir -p "$rd"
     printf '%s\n' "$owner" > "$rd/owner"
-    printf '%s/\n' "$remote" > "$rd/tree"
+    printf '%s/\n' "$tree" > "$rd/tree"
+    : > "$rd/out"
+    AVRA_RUN=$id
+    export AVRA_RUN
+    shift 2
+    # The supervisor outlives this call, so it runs from the run's own copy.
+    printf '%s\n' "$AVRA_REMOTE_SCRIPT" > "$rd/remote.sh"
+    setsid sh "$rd/remote.sh" supervise "$id" "$@" </dev/null >> "$rd/out" 2>&1 7>&- &
+    echo "started=$id"
+}
+
+# The run itself, on the compiler it is testing: build/avra is kept in
+# place between runs, restored from this Sprite's cache when the source
+# hash moved to one it holds, and built and cached otherwise — a source
+# that does not build gets no command (70), since an older compiler
+# would answer about a different program.
+supervise() {
+    id=$1 build_s=$2 cmd_s=$3 remote=$4 chash=$5
+    shift 5
+    rd=$runs/$id
     echo $$ > "$rd/pid"
-    setsid sh -c "$AVRA_REMOTE_SCRIPT" avra-remote keeper "$AVRA_RUN" $$ "$build_s" "$cmd_s" </dev/null >/dev/null 2>&1 &
+    sh "$rd/remote.sh" keeper "$id" $$ "$build_s" "$cmd_s" </dev/null >/dev/null 2>&1 &
     # The keeper's reason, when it ended this run, is the run's status.
     ended() {
         st=$1
@@ -265,16 +312,19 @@ run() {
             read -r st why < "$rd/stopped"
             echo "sprite-run: stopped — ${why}" >&2
         fi
-        rm -rf "$rd"
+        settle "$id" "$st"
         exit "$st"
     }
     trap 'ended 143' TERM
     trap 'ended $?' EXIT
 
     export LLVM_PREFIX=/usr/lib/llvm-22 CC=/usr/lib/llvm-22/bin/clang
+    mkdir -p "$remote/build" "$compilers"
     cd "$remote"
     t0=$(date +%s)
-    if [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
+    if [ "$chash" = - ]; then
+        compiler=unasked
+    elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
         compiler=warm
     elif [ -x "$compilers/$chash/avra" ]; then
         for f in $(compiler_objs); do
@@ -301,6 +351,33 @@ run() {
     exit "$status"
 }
 
+# The run's output from byte $2 on, as it is written, until the run has
+# ended or a turn of AVRA_ATTACH_S (540) seconds has passed — a client
+# asks again from where it stands, so no one connection has to last.
+attach() {
+    rd=$runs/$1
+    [ -f "$rd/out" ] || exit 3
+    tail -c +$(($2 + 1)) -f -s 1 "$rd/out" &
+    tl=$!
+    trap 'kill "$tl" 2>/dev/null' EXIT
+    n=0
+    while [ ! -f "$rd/status" ] && [ "$n" -lt "${AVRA_ATTACH_S:-540}" ]; do
+        sleep 1
+        n=$((n + 1))
+    done
+    [ ! -f "$rd/status" ] || sleep 2
+}
+
+result() {
+    if [ -f "$runs/$1/status" ]; then
+        echo "status $(cat "$runs/$1/status")"
+    elif [ -d "$runs/$1" ] && [ -n "$(members "$1")" ]; then
+        echo running
+    else
+        echo gone
+    fi
+}
+
 verb=$1
 shift
 case $verb in
@@ -313,10 +390,13 @@ case $verb in
         status "$hash" "$@"
         ;;
     stop) for r in "$@"; do stop_run "$r"; done ;;
+    start) start "$@" ;;
+    supervise) supervise "$@" ;;
+    attach) attach "$@" ;;
+    result) result "$@" ;;
     provision) provision "$@" ;;
     prune) prune "$@" ;;
     prune-now) prune_now "$@" ;;
     keeper) keeper "$@" ;;
-    run) run "$@" ;;
     *) echo "sprite-remote: unknown verb $verb" >&2; exit 2 ;;
 esac
