@@ -435,7 +435,12 @@ git -C "$main" worktree remove --force "$lane"
 # real supervisor, every exec run here — and its connection killed whole
 # when `drop` says after how many seconds. Linux only: the Sprite's half
 # reads /proc and takes its own session.
-if [ "$(uname -s)" = Linux ]; then
+# The end-to-end checks count a run's processes in /proc and need an init
+# that reaps what a killed supervisor leaves: a Sprite, never a container
+# job, where AVRA_NO_SUPERVISOR_TESTS says so and the skip is spoken.
+if [ "$(uname -s)" = Linux ] && [ -n "${AVRA_NO_SUPERVISOR_TESTS:-}" ]; then
+    echo "work_test: SKIPPED the supervisor's end-to-end checks — AVRA_NO_SUPERVISOR_TESTS is set; \`sh tools/work run sh tools/work_test.sh\` runs them"
+elif [ "$(uname -s)" = Linux ]; then
     carrier=${AVRA_RUN:-none}
     unset AVRA_RUN SILENT OFFLINE FAKE
     cat > "$scratch/sprite-here" <<'STUB'
