@@ -19,6 +19,23 @@ fn vanishing(stays: int, text: string) -> Host {
     }, read: (p: string) -> text }
 }
 
+/// A workspace whose host lists `gone.av` beside `main.av`, holds it
+/// until `gone` is set, and writes down every path it is asked to read.
+fn listing_gone(gone: Cell<bool>, asked: Cell<List<string>>) -> Workspace {
+    let base = memory_host(
+        {"/w/src/main.av": "1\n", "/w/src/gone.av": "2\n"},
+        ["/w/src/main.av", "/w/src/gone.av"],
+    )
+    new_workspace(
+        base with { exists: (p: string) -> (p != "/w/src/gone.av" || !gone.get()) && base.exists(p), read: (p: string) -> {
+            asked.push(p)
+            if p == "/w/src/gone.av" && gone.get() { "" } else { base.read(p) }
+        } },
+        "/w",
+        avra(),
+    )
+}
+
 fn key_of(r: Read) -> string { r.input().digest.key }
 
 /// A workspace over one file whose host answers "nothing there" once
@@ -107,6 +124,27 @@ spec "compiler/input_host" {
                 avra(),
             )
             ws.source(ws.file_id("/w/src/gone.av")).text == ""
+        }
+        then "a listed file never there — a link to nothing — is handed to the host's read, where a disk refuses" {
+            let asked: Cell<List<string>> = Cell.new([])
+            let ws = listing_gone(Cell.new(true), asked)
+            let _ = ws.source(ws.file_id("/w/src/gone.av"))
+            asked.get().contains("/w/src/gone.av")
+        }
+        then "a listed file removed after it was listed is handed to the host's read" {
+            let asked: Cell<List<string>> = Cell.new([])
+            let gone = Cell.new(false)
+            let ws = listing_gone(gone, asked)
+            let f = ws.file_id("/w/src/gone.av")
+            gone.set(true)
+            let _ = ws.source(f)
+            asked.get().contains("/w/src/gone.av")
+        }
+        then "a file asked for, not listed, and not there is never read" {
+            let asked: Cell<List<string>> = Cell.new([])
+            let ws = listing_gone(Cell.new(true), asked)
+            ws.host.text("/w/src/gone.av").as_text() == null &&
+                !asked.get().contains("/w/src/gone.av")
         }
         then "a file's text is the host's" {
             let ws = new_workspace(host_of({"/w/src/main.av": "let a = 1\na\n"}), "/w", avra())
