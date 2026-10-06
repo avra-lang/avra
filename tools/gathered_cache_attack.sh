@@ -8,8 +8,8 @@
 # file must become a variant; an edit nothing reads must change nothing.
 set -u
 cd "$(dirname "$0")/.."
-R=build/gathered-cache-attack; fails=0; steps=0
-rm -rf "$R" .avra-cache && mkdir -p $R/src/shapes
+T=$(pwd); R=build/gathered-cache-attack; W=build/gathered-cache-attack-recursive; fails=0; steps=0
+rm -rf "$R" "$W" && mkdir -p $R/src/shapes $W/src/shapes
 cat > $R/avra.toml <<'TOML'
 [package]
 name = "gathered-cache-attack"
@@ -57,7 +57,8 @@ import sys
 p,old,new=sys.argv[1:4]; t=open(p).read(); assert old in t,(p,old); open(p,'w').write(t.replace(old,new,1))
 PY
 }
-ran() { ./avra run $R 2>&1 | grep -v '^watch:' | tail -1; }
+# each fixture is run from its own directory, so its store is its own
+ran() { (cd ${1:-$R} && "$T/build/avra" run . 2>&1 | grep -v '^watch:' | tail -1); }
 
 steps=$((steps+1)); cold=$(ran)
 [ "$cold" = "Dot() Line(int/Int) 0" ] || { fails=$((fails+1)); echo "FAIL  cold build: got '$cold'"; }
@@ -89,6 +90,54 @@ ed $R/src/shapes/shapes.av 'fn wide(n: string) -> int { n.length }' 'fn wide(n: 
 fn nobody_calls_this() -> int { 42 }'
 steps=$((steps+1)); unrelated=$(ran)
 [ "$unrelated" = "$grown" ] || { fails=$((fails+1)); echo "FAIL  an unrelated edit changed the answer: got '$unrelated', want '$grown'"; }
+
+# A MEMBER THAT NAMES ITS OWN ENUM, and nothing asking the enum first: the
+# member's signature and the enum's each read the other, so a warm run that
+# verifies the member first must still move the enum's payload.
+cat > $W/avra.toml <<'TOML'
+[package]
+name = "gathered-cache-attack-recursive"
+version = "0.1.0"
+TOML
+cat > $W/src/main.av <<'AV'
+use shapes.{shape, made}
+
+export collect enum Shape = @shape in package by it.mark.args[0] dense
+
+fn seen(s: Shape) -> string {
+    match s {
+        .Dot -> "dot"
+        .Line(to, next) -> "${to}${if next == null { "." } else { "+" }}"
+        .Both(_, right) -> "${right.length}"
+    }
+}
+
+seen(made())
+AV
+cat > $W/src/shapes/shapes.av <<'AV'
+use @std.meta.{Named}
+use main.{Shape}
+
+export fn shape(_t: Named, _rank: int) {}
+
+@shape(0)
+type Dot = {}
+
+@shape(1)
+type Line = { to: int, next: Shape? }
+
+@shape(2)
+type Both = { left: Shape, right: List<Shape> }
+
+export fn made() -> Shape { Shape.Line(7, null) }
+AV
+steps=$((steps+1)); first=$(ran $W)
+[ "$first" = "7." ] || { fails=$((fails+1)); echo "FAIL  recursive, cold build: got '$first'"; }
+
+ed $W/src/shapes/shapes.av 'type Line = { to: int, next: Shape? }' 'type Line = { to: string, next: Shape? }'
+ed $W/src/shapes/shapes.av 'Shape.Line(7, null)' 'Shape.Line("seven", null)'
+steps=$((steps+1)); turned=$(ran $W)
+[ "$turned" = "seven." ] || { fails=$((fails+1)); echo "FAIL  recursive, after the member's field changed type: got '$turned' (a held enum signature would still carry int)"; }
 
 echo "gathered-cache-attack: $steps runs through one store, $fails failed"
 [ $fails -eq 0 ]
