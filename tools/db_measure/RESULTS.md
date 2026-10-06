@@ -275,6 +275,50 @@ cli parses 23–50 files for a one-file edit, every method table is
 rebuilt on every edit, and several hundred declarations are re-typed
 and re-lowered for one changed literal.
 
+## Follow-up 1 (avra-8sb5.57.191) — why unchanged files are parsed
+
+`sh tools/db_measure/parsed_why.sh packages/cli <file> <literal>`, main `1af10de`, `READ_NAMED` lifted by a local uncommitted patch; raw:
+`raw/parsed_why.txt`. `Q parse` fires twice for most files — once for the
+plain parse, once under block words — so "23 parses" is 13 files and
+"50 parses" is 25 files.
+
+Edit in `std-avrac/src/diagnostics/render.av` — 13 files parsed, 1 needed:
+
+| files | parses | the hold's reason | group |
+|---|---|---|---|
+| `std-avrac/src/diagnostics/render.av` | 1 | its text moved | the edit |
+| `cli/src/main.av` | 2 | the entry | always read |
+| `std-cli/src/cli.av` | 2 | none printed — held; parsed as `main.av`'s block-word provider | provider of a read file |
+| `std-http/src/{auth,cookie,form,guard,observe,quota,ws}.av` | 14 | none printed — **no record knows them** (`held 452/461`, 9 not held, 2 named) | never kept |
+| `std-http/src/{route,server}.av`, `std-time/src/time.av` | 4 | none — held; parsed as block-word providers of the seven | provider of a never-kept file |
+
+Edit in `cli/src/commands/shared.av` — 25 files parsed: the 12 above
+that are not the edit, `shared.av` itself, and 12 sibling command files
+(`build check dev emit fix fmt process repr rules run test writes`), each
+"nothing kept stands in: what it sees moved" with the moved key part
+**"what its compile-time runs read"**.
+
+Root causes:
+
+1. **A module is admitted whole but kept only where reached.** `use
+   @std.http.…` in `cli/src/commands/dev.av` registers all 26 files of
+   module `@std.http`; the cli's uses reach 19. `admit_all`
+   (compiler/whole.av:132-143) asks `items` — a parse — of every file
+   that is not held, and the seven unreached files are never analysed,
+   so no record line is ever written for them and they are parsed, twice
+   each with three providers, on every warm run whatever was edited.
+   18 of the 23 parses. It arrived with `avra dev` (#94f40e3, 10-05).
+   Fix size: small — either `admit_all` skips a file nothing reaches (as
+   it already skips a held one), or the module's record keeps a line for
+   a parsed-but-unreached file. Hold-sensitive: cache-attacks decides.
+2. **A compile-time run's key is the text of every file it read.** Each
+   `command … { }` instance in the cli runs code in `shared.av` while it
+   compiles, so any edit to `shared.av` — one string literal in a body —
+   moves the `Runs` part of twelve files' keys. Working as designed at
+   file grain; it goes away only when a run's reads are recorded per
+   declaration.
+3. The entry is always read (2 parses + its provider's 2).
+
 ## Not measured
 
 - The encoded size of any family's value under a new codec.
