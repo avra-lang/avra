@@ -319,6 +319,40 @@ Root causes:
    declaration.
 3. The entry is always read (2 parses + its provider's 2).
 
+## Follow-up 3 (avra-8sb5.57.193, first half) — `load`, split
+
+`AVRA_LOAD_SPLIT=1 build/avra check --time packages/cli` after one fresh
+edit of `std-avrac/src/diagnostics/render.av`, three rounds, main
+`ada390f` + env-gated timers (compiler/derive.av `holding` /
+`settle_holds`, compiler/record.av `load_named` / `meet_file` /
+`read_why`). Raw: `raw/load_split.txt`. `load` is 2.00–2.03 s here
+(453 of 462 files held).
+
+| part | ms | share |
+|---|---|---|
+| **minting every held declaration** (`settle_holds`' last loop: `mint_module` for each of 453 held files) | 890–920 | 45 % |
+| **re-keying and validating holds** (`read_why` per file) | 590–600 | 29 % |
+| — of which the file's key parts (`obj_key_cached` → `key_parts`) | 460–470 | |
+| — its text digest 29, `stands_in` 12, const rows 8, the rest ~80 | | |
+| registering each file (`ws.file_id` in `meet_file`) | 240–250 | 12 % |
+| reading and decoding module records (read 33, fields 45, fault 33, places 9) | 120 | 6 % |
+| opening the store, forced reads | 85–96 | 4 % |
+| `unruled` | 10 | |
+| the hold worklist (`forced_runs`), `hold_only` | 0 | |
+| **`HeldSig` reads inside `load`** | **0 reads** | 0 |
+
+The 1.33 M recorded `HeldSig` reads are not in `load` at all: the count
+is 0 when the holds are settled and 0 when `load` ends. They happen in
+the later phases, as held rows are read.
+
+The single change that would take the most out: mint a held module's
+declarations when something first reads them instead of minting all 453
+files' on every run — 0.9 s of the 2.0. The loop's own comment says why
+it is eager today (a row minted inside a query arrives after its
+reader, and the relation refuses a late write), so that law is what the
+change has to answer. The second is the key work the ticket's step 2
+names: 0.46 s.
+
 ## Not measured
 
 - The encoded size of any family's value under a new codec.

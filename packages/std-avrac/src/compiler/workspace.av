@@ -14,6 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
+use @std.io.{env}
 use core.{
     Table,
     new_table,
@@ -459,6 +460,15 @@ export type Phase = { name: string, ns: int }
 impl Phase {
     fn shown() -> string { "${self.name} ${self.ns / 1000000}ms" }
 }
+
+/// `AVRA_LOAD_SPLIT`'s presence, read once.
+once fn load_split_flag() -> string? { env("AVRA_LOAD_SPLIT") }
+
+/// Whether the load is timed part by part.
+fn load_split() -> bool { load_split_flag() != null }
+
+/// The held-row reads made so far, counted only under `AVRA_LOAD_SPLIT`.
+once fn held_sig_reads() -> Cell<int> { Cell.new(0) }
 
 /// A PHASE CLOCK: each mark closes the span since the last one.
 export type Marks = { now: fn() -> int, last: int, spans: List<Phase> }
@@ -1012,6 +1022,11 @@ impl Workspace {
 
     fn timed(name: string, ns: int) {
         self.phases.push(Phase { name: name, ns: ns })
+    }
+
+    /// A span of the load, since `since` — timed only under `AVRA_LOAD_SPLIT`.
+    fn split(name: string, since: int) {
+        if load_split() { self.timed(name, self.clock() - since) }
     }
 
     fn defect(message: string) {
@@ -1717,6 +1732,7 @@ impl Workspace {
     /// Every held row read lands here, so after the revision's first ask a
     /// read records its edge and nothing more, as a read file's row does.
     fn held_sig_dep(f: FileId) {
+        if load_split() { held_sig_reads().set(held_sig_reads().get() + 1) }
         let mid = self.hold.file_module.at(f.index) ?? self.held_module(f)
         let rev = self.db.revision()
         if self.hold.sig_asked.at(mid) ?? 0 == rev {

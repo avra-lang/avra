@@ -628,12 +628,16 @@ fn load_named(
     // A MODULE HELD NOTHING FOR IS READ, and a read file is one the workspace MET:
     // a module whose importers are all held is met nowhere else, and a file never
     // met is neither parsed nor linked.
+    let t0 = ws.clock()
     let text = record_cached(ws, store, m)
+    ws.split("L.i.read", t0)
     if text == "" {
         ws.met_all(named)
         return
     }
+    let t1 = ws.clock()
     let fields = record_fields(ws, store, m)
+    ws.split("L.i.fields", t1)
     // FAIL CLOSED: a record the decoder cannot rebuild WHOLE holds NOTHING, and
     // its files parse. A partial hold is how a declaration goes missing — the
     // cache must be a miss rather than a lie.
@@ -647,7 +651,9 @@ fn load_named(
     // short, so the refusal names itself instead of reading as "no reason
     // recorded" at every file it would have covered.
     let here = ws.module_files(m)
+    let t2 = ws.clock()
     let why = record_fault(ws, key, fields, here)
+    ws.split("L.i.fault", t2)
     if why != "" {
         if first {
             ws
@@ -667,7 +673,9 @@ fn load_named(
     if first { load_imports(ws, store, m, fields, entry, want) }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
+    let t3 = ws.clock()
     let places = record_places(ws, store, m)
+    ws.split("L.i.places", t3)
     for f in named {
         if ws.records.met_files.get().get(f) == null {
             ws.records.met_files.put(f, true)
@@ -730,9 +738,13 @@ fn meet_file(
     entry: string?,
     want: Want,
 ) {
+    let t0 = ws.clock()
     let _ = ws.file_id(f)
+    ws.split("L.f.id", t0)
     let is_entry = entry != null && f == entry!
+    let t1 = ws.clock()
     let why: Reads? = read_why(ws, store, m, f, at, is_entry, want)
+    ws.split("L.f.why", t1)
     if why == null {
         ws.hold.hold_asked.push(f)
         return
@@ -804,10 +816,22 @@ fn read_why(
     if is_entry { return Reads.Entry }
     let forced: Reads? = ws.hold.forced.get().get(f)
     if forced != null { return forced! }
-    if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
-    if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
+    let t0 = ws.clock()
+    let digest = ws.text_digest(f)
+    ws.split("L.w.text", t0)
+    if !written_from(at, digest) { return Reads.Moved }
+    let t1 = ws.clock()
+    let okey = obj_key_cached(ws, store, m, f)
+    ws.split("L.w.key", t1)
+    let t2 = ws.clock()
+    let stands = ws.stands_in(store, okey, want)
+    ws.split("L.w.stands", t2)
+    if !stands { return Reads.Unkept }
+    let t3 = ws.clock()
     let rows = file_rows(record_fields(ws, store, m), at)
-    if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
+    let ready = ws.const_rows_ready(store, m, f, rows)
+    ws.split("L.w.consts", t3)
+    if !ready { return Reads.Consts }
     if !holdable(rows) { return Reads.Unholdable }
     null
 }

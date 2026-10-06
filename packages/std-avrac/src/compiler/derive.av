@@ -476,7 +476,11 @@ impl Workspace {
     fn tried(at: Attempt) -> Result<Derived, Turn> {
         mut clock = self.marking()
         let store = self.holding(at)?
-        at.having_read(self.unruled(store, at.want))?
+        let t0 = self.clock()
+        let unruled = self.unruled(store, at.want)
+        self.split("L.unruled", t0)
+        if load_split() { eprintln("split: ${held_sig_reads().get()} held-row reads by the end of load") }
+        at.having_read(unruled)?
         clock.mark("load")
         self.admit_all()
         clock.mark("admit")
@@ -494,16 +498,28 @@ impl Workspace {
     /// must not do heavy work where it stands leaves there, having done none.
     /// From here a held file's declarations are minted when something reads them.
     fn holding(at: Attempt) -> Result<Store, Turn> {
+        let t0 = self.clock()
         let store = self.opened_store()
         self.attach_store(store)
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
+        self.split("L.open", t0)
         if at.hold {
-            for m in held_modules(self, store) { load_interface(self, store, m, at.entry, at.want) }
+            let t1 = self.clock()
+            let roots = held_modules(self, store)
+            self.split("L.roots", t1)
+            let t2 = self.clock()
+            for m in roots { load_interface(self, store, m, at.entry, at.want) }
+            self.split("L.interfaces", t2)
+            let t3 = self.clock()
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
+            self.split("L.homes", t3)
+            let t4 = self.clock()
             self.settle_holds(store)
+            self.split("L.settle", t4)
+            if load_split() { eprintln("split: ${held_sig_reads().get()} held-row reads by the end of the holds") }
         }
         self.host.reads_ahead(self.reads_ahead())
         self.hold.holds_settled.set(true)
@@ -676,6 +692,7 @@ impl Workspace {
     /// the noting below is the same one the worklist does for what IT finds,
     /// never a second law.
     fn settle_holds(store: Store) {
+        let t0 = self.clock()
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
         mut reads: List<string> = distinct(self.hold.read_with.get())
         for rf in self.hold.read_seeds.get() {
@@ -704,6 +721,8 @@ impl Workspace {
             }
             at = at + 1
         }
+        self.split("L.s.runs", t0)
+        let t1 = self.clock()
         // a held file's row exists before any query reads the relation — minting it
         // parses nothing, and a module walk inside a query then only finds it
         for path in self.hold.hold_asked.get() {
@@ -712,6 +731,8 @@ impl Workspace {
                 let _ = self.file_id(path)
             }
         }
+        self.split("L.s.only", t1)
+        let t2 = self.clock()
         // EVERY HELD DECLARATION IS MINTED BEFORE ANY QUERY READS THE RELATION —
         // minting parses nothing, and a held file's rows are read by name from
         // another module's wire (a type's own declarations, a method table), so a
@@ -726,6 +747,7 @@ impl Workspace {
                 self.decls.note_module_rows(self.decls.file(f).module_id, 2)
             }
         }
+        self.split("L.s.mint", t2)
     }
 
     /// WHAT THE PROGRAM'S INSTANTIATIONS ARE A FUNCTION OF: its root asks, and the
