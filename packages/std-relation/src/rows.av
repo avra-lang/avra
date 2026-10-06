@@ -113,12 +113,11 @@ impl ReadMark {
         self.reader.set(-1)
     }
 
-    /// A read of `cell` in `family`, told to the kernel once per reader
-    /// per revision: a repeat by the query whose read already stands is
-    /// free.
-    fn told(kernel: Kernel, family: int, cell: int) {
+    /// A read of `cell` in `family` by the open query `reader`, told to
+    /// the kernel once per reader per revision: a repeat by the query
+    /// whose read already stands records nothing.
+    fn told(kernel: Kernel, reader: int, family: int, cell: int) {
         let now = kernel.revision()
-        let reader = kernel.reader()
         if self.read_by(now, reader) {
             kernel.repeated(family)
             return
@@ -257,17 +256,17 @@ impl Rows<R> {
     /// Bucket `b` read under `db`: recorded as cell `b + 1`, stamped
     /// with the revision and the reader. Answers `b`.
     fn seen(db: Db, b: int) -> int {
-        if db.unheard() { return b }
         let kernel? = db.kernel.get() else { return b }
-        self.buckets.get()[b].read.told(kernel, self.family.get(), b + 1)
+        let reader = kernel.reader()
+        if reader >= 0 { self.buckets.get()[b].read.told(kernel, reader, self.family.get(), b + 1) }
         b
     }
 
     /// The whole relation read under `db`: cell 0.
     fn seen_whole(db: Db) {
-        if db.unheard() { return }
         let kernel? = db.kernel.get() else { return }
-        self.read.told(kernel, self.family.get(), 0)
+        let reader = kernel.reader()
+        if reader >= 0 { self.read.told(kernel, reader, self.family.get(), 0) }
     }
 
     /// A key's bucket read under `db` — opened when absent, so a row filed
@@ -656,9 +655,9 @@ impl SideRows<R> {
     /// `cell` recorded under `db` once per reader per revision through
     /// `mark` — the shared half of `mark_read`/`mark_whole`.
     fn recorded(db: Db, fam: int, cell: int, mark: ReadMark) {
-        if db.unheard() { return }
         let kernel? = db.kernel.get() else { return }
-        mark.told(kernel, fam, cell)
+        let reader = kernel.reader()
+        if reader >= 0 { mark.told(kernel, reader, fam, cell) }
     }
 
     /// Slot `id` read under `db`, recorded as cell `id + 1` — a closed Db
