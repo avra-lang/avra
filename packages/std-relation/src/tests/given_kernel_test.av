@@ -84,6 +84,27 @@ spec "std/relation — a @query under an owner's kernel" {
         let _ = Glyph.insert(o.db, name: "b", set: "s")
         heard.get().length == 1 && heard.get()[0].contains("a producer runs before its readers")
     }
+    then "a large replacement refused for its last row files nothing and moves no cell: an answer over another bucket it names stands" {
+        let o = under_owner()
+        let heard: Cell<List<string>> = Cell.new([])
+        o.db.heard_by((w: string) -> heard.push(w))
+        let _ = Glyph.replaced(o.db, "glyphs", [Glyph { name: "seed", set: "first" }])
+        let from = glyph_runs().get().length
+        let first = glyphs_in(o.db, "first")
+        o.kernel.bump()
+        let _ = glyphs_in(o.db, "last")
+        let rows = [Glyph { name: "g${i}", set: "first" } for i in 0..500]
+        let stored = Glyph.replaced(o.db, "glyphs", rows.concat([Glyph { name: "z", set: "last" }]))
+        o.kernel.bump()
+        let again = glyphs_in(o.db, "first")
+        stored.is_empty() &&
+            heard.get().length == 1 &&
+            heard.get()[0].contains("a producer runs before its readers") &&
+            Glyph.all(o.db).length == 1 &&
+            first == 1 &&
+            again == 1 &&
+            since(from) == "glyphs,glyphs"
+    }
     then "a read told to the Db's own kernel is no reader in the kernel it is given: a row lands unrefused" {
         let db = new_db()
         let heard: Cell<List<string>> = Cell.new([])
