@@ -189,25 +189,7 @@ bind_locked() {
 # seed and the Makefile — never a package's tests/, which a build never
 # reads. A tree whose hash moved gets its compiler rebuilt on its Sprite.
 compiler_paths() {
-    (
-        cd "$1"
-        pending="cli"
-        seen=""
-        while [ -n "$pending" ]; do
-            d=${pending%% *}
-            case $pending in *' '*) pending=${pending#* } ;; *) pending= ;; esac
-            case " $seen " in *" $d "*) continue ;; esac
-            seen="$seen $d"
-            [ -d "packages/$d/src" ] || continue
-            for dep in $(grep -rhoE 'use +@std\.[A-Za-z0-9_]+' "packages/$d/src" 2>/dev/null | sed -E 's/^use +@std\.//' | sort -u); do
-                pending="$pending std-$dep"
-            done
-        done
-        {
-            for d in $seen; do [ ! -d "packages/$d/src" ] || echo "packages/$d"; done
-            printf '%s\n' Makefile backend runtime bootstrap packages/std-prelude
-        } | sort -u
-    )
+    sh "$tools/compiler_paths.sh" "$1"
 }
 compiler_hash() {
     (
