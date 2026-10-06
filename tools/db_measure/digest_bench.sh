@@ -44,7 +44,7 @@ many(200000, 256)
 many(200000, 2048)
 AV
 (cd "$at" && AVRA_MEM_CEILING_MB=5000 "$A" build . > build.log 2>&1) || { tail -n 20 "$at/build.log"; exit 1; }
-bin=$(find "$at" -maxdepth 3 -type f -perm -u+x -name 'dbm-digest*' | head -n 1)
+bin=$(find "$at" -maxdepth 3 -type f -perm -u+x ! -name '*.av' | head -n 1)
 [ -n "$bin" ] || { echo "no binary under $at"; ls -R "$at" | head -n 30; exit 1; }
 "$bin"
 "$bin"
