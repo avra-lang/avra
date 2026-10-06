@@ -251,7 +251,8 @@ impl Rows<R> {
     /// with the revision and the reader. Answers `b`.
     fn seen(db: Db, b: int) -> int {
         self.settled_for(db)
-        let kernel? = db.hearing() else { return b }
+        if db.unheard() { return b }
+        let kernel? = db.kernel.get() else { return b }
         self.buckets.get()[b].read.told(kernel, self.family.get(), b + 1)
         b
     }
@@ -259,7 +260,8 @@ impl Rows<R> {
     /// The whole relation read under `db`: cell 0.
     fn seen_whole(db: Db) {
         self.settled_for(db)
-        let kernel? = db.hearing() else { return }
+        if db.unheard() { return }
+        let kernel? = db.kernel.get() else { return }
         self.read.told(kernel, self.family.get(), 0)
     }
 
@@ -613,7 +615,8 @@ impl SideRows<R> {
     /// `cell` recorded under `db` once per reader per revision through
     /// `mark` — the shared half of `mark_read`/`mark_whole`.
     fn recorded(db: Db, fam: int, cell: int, mark: ReadMark) {
-        let kernel? = db.hearing() else { return }
+        if db.unheard() { return }
+        let kernel? = db.kernel.get() else { return }
         mark.told(kernel, fam, cell)
     }
 
