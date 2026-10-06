@@ -332,21 +332,25 @@ impl Rows<R> {
         let cell = db.owner_named(owner)
         let keyed = how.keyed
         let keys = how.keys
-        let named = [keys(r) for r in rows]
-        if !self.replaceable(db, cell, keyed, named) { return rows.slice(0, 0) }
+        let heard = db.read_ever()
+        // a keyless row on a Db no query read takes a new id and moves no read cell: nothing to ask
+        let asked = keyed || heard
+        let named = if asked { [keys(r) for r in rows] } else { [] }
+        if asked && !self.replaceable(db, cell, keyed, named) { return rows.slice(0, 0) }
         let stamp = Stamp { owner: cell, run: renewed(db, cell) }
         let mine = self.stamped_by(cell)
-        let heard = db.read_ever()
         let hash = how.hash
         let seated = how.seated
         db.counted()
         mut stored = rows.slice(0, 0)
         for i, r in rows {
-            let id = self.own(keyed, named[i])
-            if heard { self.moves(db, self.touched(id, named[i])) }
+            let ks = if asked { named[i] } else { keys(r) }
+            let id = self.own(keyed, ks)
+            if heard { self.moves(db, self.touched(id, ks)) }
             if id == self.next_id() { mine.push(id) }
-            stored.push(seated(r, id))
-            self.placed(id, stored[i], hash(r), named[i], stamp)
+            let row = seated(r, id)
+            self.placed(id, row, hash(r), ks, stamp)
+            stored.push(row)
         }
         let gone = self.stale(cell, stamp.run)
         if heard { self.moves(db, self.filed_buckets(gone)) }
