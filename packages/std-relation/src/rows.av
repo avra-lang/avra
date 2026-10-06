@@ -250,8 +250,7 @@ impl Rows<R> {
     /// Bucket `b` read under `db`: recorded as cell `b + 1`, stamped
     /// with the revision and the reader. Answers `b`.
     fn seen(db: Db, b: int) -> int {
-        self.settled_for(db)
-        if db.unheard() { return b }
+        if !self.settled_for(db) || db.unheard() { return b }
         let kernel? = db.kernel.get() else { return b }
         self.buckets.get()[b].read.told(kernel, self.family.get(), b + 1)
         b
@@ -259,18 +258,19 @@ impl Rows<R> {
 
     /// The whole relation read under `db`: cell 0.
     fn seen_whole(db: Db) {
-        self.settled_for(db)
-        if db.unheard() { return }
+        if !self.settled_for(db) || db.unheard() { return }
         let kernel? = db.kernel.get() else { return }
         self.read.told(kernel, self.family.get(), 0)
     }
 
-    /// A read here stands only on rows no open run is still writing:
-    /// refused while one is, naming the owner.
-    fn settled_for(db: Db) {
-        if db.idle() { return }
-        let owner? = db.writing(self.family.get()) else { return }
+    /// Whether a read here stands: only on rows no open run is still
+    /// writing — refused while one is, naming the owner, and told to no
+    /// kernel.
+    fn settled_for(db: Db) -> bool {
+        if db.idle() { return true }
+        let owner? = db.writing(self.family.get()) else { return true }
         db.refuse(read_mid_run(self.name, db.owner_name(owner)))
+        false
     }
 
     /// A key's bucket read under `db` — opened when absent, so a row filed
@@ -299,7 +299,7 @@ impl Rows<R> {
         if grain < 0 {
             self.seen_whole(db)
         } else if db.unheard() {
-            self.settled_for(db)
+            let _ = self.settled_for(db)
         } else {
             let _ = self.seen(db, self.bucket_of(grain, self.filed.get()[id][grain][0]))
         }
@@ -337,11 +337,10 @@ impl Rows<R> {
         stamp: Stamp,
     ) {
         // no query ever read here: no write can be late, and no cell owes a stamp
-        if db.heard(self.family.get()) { self.late_check(db, relation, id, keys) }
+        if db.writing_into(self.family.get()) { self.late_check(db, relation, id, keys) }
         let held = self.row(id) != null
         let was = if id < self.next_id() { self.stamps.get()[id].owner } else { 0 }
         if held && was != stamp.owner { db.refuse(two_owners(relation, id)) }
-        db.wrote(self.family.get())
         self.put(id, row, hash, keys)
         self.stamps.set_at(id, stamp)
         if stamp.owner != 0 && (!held || was != stamp.owner) { self.stamped_by(stamp.owner).push(id) }

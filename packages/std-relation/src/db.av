@@ -65,9 +65,10 @@ export type Db = {
     written: Cell<int>,
 }
 
-/// An owner's run, open: its owner cell, which run of it this is, and
-/// the relations it has written so far.
-type OpenRun = { owner: int, run: int, wrote: Cell<List<int>> }
+/// An owner's run, open: the stamp its rows wear (its owner cell and
+/// which run of it this is), the relations it has written so far, and
+/// the one it wrote last with whether a reader may hold a cell of it.
+type OpenRun = { stamp: Stamp, wrote: Cell<List<int>>, last: Cell<int>, owed: Cell<bool> }
 
 /// Whose kernel a Db's cells live in, and so how a write is heard.
 /// `Own`: the Db's own kernel — a cell is verified by its live hash, and a
@@ -269,19 +270,27 @@ impl Db {
     /// The owner whose open run wrote `family`, when one has: its rows
     /// are no one's to read until that run closes.
     fn writing(family: int) -> int? {
-        self.open.get().find((run: OpenRun) -> run.wrote.get().contains(family))?.owner
+        self.open.get().find((run: OpenRun) -> run.wrote.get().contains(family))?.stamp?.owner
     }
 
     /// Whether no owner's run is open.
     fn idle() -> bool { self.open.get().is_empty() }
 
-    /// A write into `family`, counted, told to every answer read back and
-    /// to the innermost open run.
-    fn wrote(family: int) {
+    /// A write into `family` begun: counted, told to every answer read
+    /// back and to the innermost open run. Answers whether a reader may
+    /// hold a cell of it — whether the late-write walk is owed. A run asks
+    /// the kernel once per relation it writes in a row: nothing reads a
+    /// relation an open run has written, so the answer stands.
+    fn writing_into(family: int) -> bool {
         self.written.set(self.written.get() + 1)
         self.unsettles_restored()
-        let top? = self.open.get().last() else { return }
+        let top? = self.open.get().last() else { return self.heard(family) }
+        if top.last.get() == family { return top.owed.get() }
         if !top.wrote.get().contains(family) { top.wrote.push(family) }
+        let owed = self.heard(family)
+        top.last.set(family)
+        top.owed.set(owed)
+        owed
     }
 
     /// Who a write with no owner named belongs to: the innermost open
@@ -292,11 +301,14 @@ impl Db {
             if self.asking.get() > 0 { self.refuse(query_writes()) }
             return unowned
         }
-        Stamp { owner: top.owner, run: top.run }
+        top.stamp
     }
 
     /// A write `owner` makes in the run it has open.
-    fn stamp_of(owner: int) -> Stamp { Stamp { owner: owner, run: self.runs.get()[owner] } }
+    fn stamp_of(owner: int) -> Stamp {
+        let top? = self.open.get().last() else { return Stamp { owner: owner, run: self.runs.get()[owner] } }
+        if top.stamp.owner == owner { top.stamp } else { Stamp { owner: owner, run: self.runs.get()[owner] } }
+    }
 
     /// An owner named by its writer: its dense cell, 0 is no one.
     fn owner_named(key: string) -> int {
@@ -319,7 +331,16 @@ impl Db {
         let run = self.runs.get()[owner] + 1
         self.runs.set_at(owner, run)
         let wrote: List<int> = []
-        self.open.push(OpenRun { owner: owner, run: run, wrote: Cell.new(wrote) })
+        self
+            .open
+            .push(
+                OpenRun {
+                    stamp: Stamp { owner: owner, run: run },
+                    wrote: Cell.new(wrote),
+                    last: Cell.new(0 - 1),
+                    owed: Cell.new(false),
+                },
+            )
         run
     }
 
@@ -328,7 +349,7 @@ impl Db {
     fn closed_run(owner: int) {
         let run = self.runs.get()[owner]
         for s in self.sweepers.get() { s(self, owner, run) }
-        self.open.set([r for r in self.open.get() if r.owner != owner])
+        self.open.set([r for r in self.open.get() if r.stamp.owner != owner])
     }
 
     /// A `@query`'s body entered, and left.
