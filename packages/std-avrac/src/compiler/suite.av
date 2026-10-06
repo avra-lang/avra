@@ -15,6 +15,13 @@ use compiler.lower.{Lowered, program_symbol}
 /// in-process — `voice` is the text its trap's stderr must carry.
 export type RefusesCall = { path: string, voice: string }
 
+/// What the evaluator made of a held derivation: agreed with it, or quarrelled
+/// under a hold — the derivation let go, the sources to be asked.
+enum Hearing {
+    Agreed(Derived)
+    Quarrelled
+}
+
 /// A suite's own module, as one derivation tells it: every case in scope and
 /// the file its body is in, and each program the entry calls.
 fn suite_module(d: Derived, only: string?, calls: List<ProgramCall>) -> ProgramModule {
@@ -132,30 +139,35 @@ impl Workspace {
         Derived,
         string,
     > {
-        let agreed: Derived? = self.heard(store, owed, told_from, owes)?
-        if agreed != null { return agreed! }
-        let sure = self.from_sources(null, Want.Binary)?
-        let last = sure.program.ws.quarrels(sure, owed, told_from)
-        if !last.is_empty() { fail joined(last, "\n") }
-        sure.program.ws.agreed(store, sure, owed)
+        match self.heard(store, owed, told_from, owes)? {
+            .Agreed(d) -> .Ok(d),
+            .Quarrelled -> self.heard_whole(store, owed, told_from),
+        }
     }
 
-    /// THE HELD DERIVATION, HEARD BY THE EVALUATOR: the derivation it agreed with,
-    /// or null for a quarrel under a hold — that derivation let go, so the
-    /// sources' own never stands beside it. A quarrel with nothing held is the
-    /// program's.
+    /// THE HELD DERIVATION, HEARD BY THE EVALUATOR: agreed with, or — quarrelling
+    /// under a hold — let go, so the sources' own derivation never stands beside
+    /// it. A quarrel with nothing held is the program's.
     fn heard(store: Store, owed: List<string>, told_from: string, owes: fn(Derived) -> bool) -> Result<
-        Derived?,
+        Hearing,
         string,
     > {
         let reach = [ReadFile { path: path, why: Reads.Reached } for path in flatten([self.seen_files(store, path) for path in owed])]
         // the evaluator runs bodies, an instantiation's among them
         let d = self.derived_owing(null, Want.Binary, reach, (met: Derived) -> !owed.is_empty() || owes(met))?
         let first = d.program.ws.quarrels(d, owed, told_from)
-        if first.is_empty() { return d.program.ws.agreed(store, d, owed) }
+        if first.is_empty() { return Hearing.Agreed(d.program.ws.agreed(store, d, owed)) }
         if held_paths(d.program.ws).is_empty() { fail joined(first, "\n") }
         d.program.ws.discarded()
-        null
+        Hearing.Quarrelled
+    }
+
+    /// The sources' own derivation, heard: the verdict on the program.
+    fn heard_whole(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
+        let sure = self.from_sources(null, Want.Binary)?
+        let last = sure.program.ws.quarrels(sure, owed, told_from)
+        if !last.is_empty() { fail joined(last, "\n") }
+        sure.program.ws.agreed(store, sure, owed)
     }
 
     /// The evaluator agreed with each: remembered under what the program can see.
