@@ -1341,6 +1341,8 @@ impl SourceText {
     /// looking ahead.
     mut fn expression(id: ExprId, parent: int, depth: int, col: int = -1) -> string {
         let c = resolved_col(col, depth)
+        let piped = self.pipe_walk(id, depth)
+        if !piped.links.is_empty() { return self.pipe_rendered(piped, parent, depth, c) }
         match self.store.expr(id) {
             // A negative literal is stored folded, but it still has
             // unary precedence on the page: `(-3).field` must keep
@@ -1408,8 +1410,8 @@ impl SourceText {
             },
             .StructLit(name, fields, values) -> grouped(self.struct_lit_text(id, name.of, fields, values, depth, c), atom_tier, parent),
             .With(subject, fields, values) -> grouped(
-                "${self.expression(subject, 10, depth, c)} with { ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }",
-                10,
+                "${self.expression(subject, with_tier, depth, c)} with { ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }",
+                with_tier,
                 parent,
             ),
             .Match(subject, arms) -> grouped(self.match_or_payload_if(subject, arms, id, depth, c), atom_tier, parent),
@@ -1417,7 +1419,7 @@ impl SourceText {
             .Coalesce(left, right) -> {
                 let l = self.expression(left, 5, depth, c)
                 grouped(
-                    "${l} ?? ${self.expression(right, 6, depth, col_after(l, c) + 4)}",
+                    "${l} ?? ${self.expression(right, pipe_tier, depth, col_after(l, c) + 4)}",
                     5,
                     parent,
                 )
@@ -1711,7 +1713,7 @@ impl SourceText {
     /// the catch-all is the builder's own invariant, never a program's.
     mut fn table_row(e: ExprId, depth: int) -> List<string> {
         match self.store.expr(e) {
-            .StructLit(name, fields, values) -> [self.expression(v, loosest_tier, depth) for v in values],
+            .StructLit(name, fields, values) -> [self.expression(v, cell_tier, depth) for v in values],
             rest -> [],
         }
     }
@@ -2349,6 +2351,8 @@ impl SourceText {
     /// broken continuation line (`grammar/lexer.av`'s `continued_by`),
     /// so the walk never crosses a `?.`.
     mut fn chain_walk(e: ExprId, depth: int) -> ChainWalk {
+        // a piped call is a pipeline's, never a link: it stands as the root
+        if self.store.is_piped(e) { return unlinked(e) }
         match self.store.expr(e) {
             .Prop(subject, name) -> {
                 let inner = self.chain_walk(subject, depth)
@@ -2364,7 +2368,7 @@ impl SourceText {
                     links: inner.links.concat([self.method_link_text(e, name, args, depth)]),
                 }
             },
-            rest -> ChainWalk { root: e, links: [] },
+            rest -> unlinked(e),
         }
     }
 
@@ -2378,7 +2382,7 @@ impl SourceText {
         let walk = self.chain_walk(id, depth)
         let c = resolved_col(col, depth)
         let root = self.expression(walk.root, postfix_tier, depth, c)
-        let head = if self.store.expr(walk.root) is .Propagate { "(${root})" } else { root }
+        let head = if self.bare_propagate(walk.root) { "(${root})" } else { root }
         if walk.links.is_empty() { return grouped(head, postfix_tier, parent) }
         grouped(
             render_doc_at(
@@ -2392,6 +2396,63 @@ impl SourceText {
         )
     }
 
+    /// A pipeline's root and its stages, walked from the LAST stage
+    /// inward: a piped call's first argument is the value it was
+    /// handed (`store.is_piped`), so that argument extends the walk
+    /// and the call's remainder is the stage as it was written. A
+    /// stage with nothing left in its parentheses prints bare where
+    /// the bare form reads back as the same call, and a `?` or `!`
+    /// on a stage's answer rides the stage (`x |> f(a)?`).
+    mut fn pipe_walk(e: ExprId, depth: int) -> ChainWalk {
+        match self.store.expr(e) {
+            .Propagate(call) if self.store.is_piped(call) -> suffixed(self.pipe_walk(call, depth), "?"),
+            .Force(call) if self.store.is_piped(call) -> suffixed(self.pipe_walk(call, depth), "!"),
+            .Call(callee, pins, args) if self.store.is_piped(e) -> self
+                .piped_stage(e, args, "${source_name(callee.of)}${self.pins(pins)}", pins.is_empty(), depth),
+            .MethodCall(subject, name, args) if self.store.is_piped(e) -> {
+                let head = "${self.chain_subject(subject, depth + 1)}.${source_name(name.of)}"
+                self.piped_stage(e, args, head, true, depth)
+            },
+            .CallValue(subject, args) if self.store.is_piped(e) -> {
+                let head = "(${self.expression(subject, loosest_tier, depth + 1)})"
+                self.piped_stage(e, args, head, self.store.expr_is_closure(subject), depth)
+            },
+            rest -> unlinked(e),
+        }
+    }
+
+    /// One stage: the walk through the piped value, then `head` and
+    /// the arguments written after it.
+    mut fn piped_stage(e: ExprId, args: List<ExprId>, head: string, short: bool, depth: int) -> ChainWalk {
+        let value? = args.first() else { return unlinked(e) }
+        let inner = self.pipe_walk(value, depth)
+        let written = args.slice(1, args.length)
+        let tail = if short && written.is_empty() { "" } else { self.call_tail(written, depth + 1) }
+        ChainWalk { root: inner.root, links: inner.links.concat(["${head}${tail}"]) }
+    }
+
+    /// A pipeline, width-decided as an operator run is: flat, or one
+    /// stage per line with `|>` ENDING the line it continues. A
+    /// written lambda at the root keeps its group — bare, its body
+    /// would read the whole pipeline.
+    mut fn pipe_rendered(walk: ChainWalk, parent: int, depth: int, col: int) -> string {
+        let root = self.expression(walk.root, pipe_tier, depth + 1)
+        let head = match self.store.expr(walk.root) {
+            .Lambda(params, _) if !is_pronoun(params) -> "(${root})",
+            rest -> root,
+        }
+        grouped(
+            render_doc_at(
+                chain_doc("|>", [text(head)].concat([text(l) for l in walk.links])),
+                self.layout_width(),
+                depth * 4,
+                col,
+            ),
+            pipe_tier,
+            parent,
+        )
+    }
+
     /// A postfix chain's subject (`.Chain`, `.Propagate`) — parenthesised
     /// `.type(T)` read-back) — parenthesised when it is a bare
     /// `.Propagate`, regardless of precedence: `get(i)?` then a
@@ -2401,7 +2462,13 @@ impl SourceText {
     /// tell the printer parens are unneeded here.
     mut fn chain_subject(subject: ExprId, depth: int, col: int = -1) -> string {
         let text = self.expression(subject, postfix_tier, depth, col)
-        if self.store.expr(subject) is .Propagate { "(${text})" } else { text }
+        if self.bare_propagate(subject) { "(${text})" } else { text }
+    }
+
+    /// A `?` a following `.` would meet and lex with as `?.` — a
+    /// pipeline's own `?` already stands inside the pipeline's group.
+    fn bare_propagate(e: ExprId) -> bool {
+        match self.store.expr(e) { .Propagate(value) -> !self.store.is_piped(value), rest -> false }
     }
 
     /// `v.type(T)`'s argument read back to `T` — the SAME `words`/
@@ -2444,6 +2511,15 @@ impl SourceText {
 fn is_pronoun(params: List<Param>) -> bool {
     if params.length != 1 { return false }
     same_param_id(params[0].id, pronoun_param_id)
+}
+
+/// A walk that is its root alone.
+fn unlinked(root: ExprId) -> ChainWalk { ChainWalk { root: root, links: [] } }
+
+/// A walk whose LAST link carries `mark` — the postfix a pipeline's
+/// last stage was written with.
+fn suffixed(walk: ChainWalk, mark: string) -> ChainWalk {
+    walk with { links: [if j == walk.links.length - 1 { "${l}${mark}" } else { l } for j, l in walk.links] }
 }
 
 fn source_line(depth: int, text: string) -> string {
@@ -2489,7 +2565,7 @@ fn grouped(text: string, own: int, parent: int) -> string {
 }
 
 fn numeric(text: string, parent: int) -> string {
-    grouped(text, if text.starts_with("-") { 9 } else { 12 }, parent)
+    grouped(text, if text.starts_with("-") { unary_tier } else { atom_tier }, parent)
 }
 
 impl SourceText {
@@ -2532,9 +2608,13 @@ fn bitwise(op: BinOp) -> bool {
 /// would make `language` depend on `features`' rule NAMES, and every
 /// feature adding a rule would shift the scale under the printer.
 const loosest_tier: int = 0
-const unary_tier: int = 9
-const postfix_tier: int = 11
-const atom_tier: int = 12
+const pipe_tier: int = 6
+// a table cell parses at `additive` — `|` is the column separator
+const cell_tier: int = 8
+const unary_tier: int = 10
+const with_tier: int = 11
+const postfix_tier: int = 12
+const atom_tier: int = 13
 
 /// A binary operator's tier — below `unary_tier`, above `loosest_tier`.
 fn binary_precedence(op: BinOp) -> int {
@@ -2542,9 +2622,9 @@ fn binary_precedence(op: BinOp) -> int {
         .Or -> 2,
         .And -> 3,
         .Eq or .Ne or .Lt or .Le or .Gt or .Ge -> 4,
-        .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> 6,
-        .Add or .Sub -> 7,
-        .Mul or .Div or .Mod -> 8,
+        .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> 7,
+        .Add or .Sub -> 8,
+        .Mul or .Div or .Mod -> 9,
     }
 }
 

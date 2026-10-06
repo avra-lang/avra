@@ -42,6 +42,7 @@ type Todo = { id: string, title: string, done: bool }
 
 state filter: Show = .All
 state dark: bool = false
+state newest_first: bool = false
 state dialog_open: bool = false
 state seq: int = 5
 state tasks: List<Todo> = [
@@ -129,6 +130,10 @@ component filters {
             disabled: done_count() == 0
             style: sunk_style()
         }
+        button "Newest first" {
+            on press { newest_first = !newest_first }
+            style: tab_style(newest_first)
+        }
     }
 }
 
@@ -181,7 +186,12 @@ component task_rows {
     }
 }
 
-fn visible() -> List<Todo> { [t for t in tasks if admits(t)] }
+/// The tasks the filter admits, in the order the board shows them. The
+/// rows are keyed, so turning the order CARRIES each row: none is made.
+fn visible() -> List<Todo> {
+    let admitted = [t for t in tasks if admits(t)]
+    if newest_first { [admitted[admitted.length - 1 - j] for j, t in admitted] } else { admitted }
+}
 
 component board {
     card "Board" {

@@ -6,6 +6,8 @@
 //!   case   seed, turn
 //!   frame  the frame's bytes
 //!   page   the page then, as `told` tells it outward
+//!   move   id, what the user left on it with nothing hearing: the name
+//!          a page keeps it under, the wire's tag for its value, the value
 //!   say    id, event, the property moved (`-`: none), the wire's tag for its value,
 //!          the value — then the echo due: kind, what is said, its value
 //!   hear   id, event, kind, what is said, the property read, whether the
@@ -33,6 +35,8 @@ fn say_line(m: Move) -> string {
     "say ${m.id} ${page_word(m.action.kind)} ${if m.reads == "" { "-" } else { m.reads }} ${m.says} ${worded(m.text)} ${m.action.kind.code()} ${voice(m.action.handler).code()} ${worded(echoed(m.said))}"
 }
 
+fn move_line(t: Touch) -> string { "move ${t.id} ${t.name} ${t.says} ${worded(t.text)}" }
+
 fn hear_line(id: int, e: Ear) -> string {
     "hear ${id} ${e.event} ${e.kind} ${e.says} ${if e.reads == "" { "-" } else { e.reads }} ${if e.prevents { 1 } else { 0 }}"
 }
@@ -40,8 +44,8 @@ fn hear_line(id: int, e: Ear) -> string {
 /// Every element under `run`, itself first.
 fn every(run: List<Seen>) -> List<Seen> { [each for s in run for each in [s].concat(every(s.kids))] }
 
-/// The lines of one case: its first paint, the user's moves, its
-/// repaint and its paint back — the page after each — and every event
+/// The lines of one case: its first paint, the user's moves, heard and
+/// unheard, its repaint and its paint back — the page after each — and every event
 /// the page ends hearing.
 fn shown(c: Case) -> List<string> {
     let run = played(c)
@@ -49,14 +53,18 @@ fn shown(c: Case) -> List<string> {
     at.take(run.first)
     let drawn = page_line(at)
     hold(at, run.made)
+    lay(at, run.strayed)
     at.take(run.second)
     let redrawn = page_line(at)
     hold(at, run.spoken)
+    lay(at, run.strayed_back)
     at.take(run.back)
     ["frame ${base64(run.first)}", drawn]
         .concat([say_line(m) for m in run.made])
+        .concat([move_line(t) for t in run.strayed])
         .concat(["frame ${base64(run.second)}", redrawn])
         .concat([say_line(m) for m in run.spoken])
+        .concat([move_line(t) for t in run.strayed_back])
         .concat(["frame ${base64(run.back)}", page_line(at)])
         .concat([hear_line(s.id, e) for s in every(at.page()) for e in s.ears])
 }

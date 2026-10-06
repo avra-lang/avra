@@ -4,6 +4,7 @@
 //! (`@prim`) is one, drawn from what each member SAYS it projects to:
 //!
 //!     @attr(.Label) label: string     an attribute of the node
+//!     @attr(.Value) value: string?    one the node names only when given
 //!     @children items: List<dyn View> the node's children
 //!     @style(color) tone: Tone        a token laid over the node's style
 //!     on input(typed: string)         an event the node speaks
@@ -76,7 +77,7 @@ export trait View {
         let node = quote {
             Node {
                 prim: Prim.${word},
-                attrs: ${list_of([c for p in parts for c in p.attrs])},
+                attrs: ${attrs_code(parts)},
                 box: ${said.box_code(parts)},
                 children: ${held_by([c for p in parts for c in p.children])},
                 events: ${joined([c for p in parts for c in p.events])},
@@ -297,9 +298,12 @@ fn vocabulary() -> Vocabulary? {
 /// What one member of a primitive projects to, as the code that reads
 /// it: the attributes it gives the node, the children, the events it
 /// binds and the style fields it is laid over — or why it cannot project.
+/// `named` holds the attributes an optional member gives, each as the
+/// code of a run: the one attribute when the member is given, else none.
 /// One member fills one of them; a derive reads each across every member.
 type Part = {
     attrs: List<Code> = [],
+    named: List<Code> = [],
     children: List<Code> = [],
     events: List<Code> = [],
     styles: List<Laid> = [],
@@ -337,16 +341,30 @@ impl Vocabulary {
     }
 
     /// `@attr(.Label) label` → the code `Attribute.Label(self.label)`.
+    /// AN OPTIONAL MEMBER NAMES ITS ATTRIBUTE ONLY WHEN GIVEN: a node
+    /// whose instance wrote no `value` carries no `Value`, so a target
+    /// can tell what the program draws from what it leaves alone.
     fn attribute(f: Field, m: Mark) -> Part {
         let word? = m.args.first() else { return refused(unnamed_mark(m, "@attr(.Label)")) }
         let v? = self.attributes.find(it.name == word) else {
             return refused(no_attribute(m, word, [a.name for a in self.attributes]))
         }
         let carried? = v.fields.first() else { return refused(bare_attribute(m, v.name)) }
-        if carried.kind.spelled() != f.kind.spelled() { return refused(attribute_misfit(m, v.name, carried.kind, f)) }
+        if carried.kind.spelled() != filled_by(f.kind).spelled() { return refused(attribute_misfit(m, v.name, carried.kind, f)) }
+        let said = [Saying { word: v.name, content: is_content(v), at: m }]
+        if carried.kind.spelled() == f.kind.spelled() {
+            return Part { attrs: [quote { Attribute.${v.name}(self.${f.name}) }], said_attrs: said }
+        }
         Part {
-            attrs: [quote { Attribute.${v.name}(self.${f.name}) }],
-            said_attrs: [Saying { word: v.name, content: is_content(v), at: m }],
+            named: [
+                quote {
+                    match self.${f.name} {
+                        written? -> [Attribute.${v.name}(written)]
+                        null -> []
+                    }
+                },
+            ],
+            said_attrs: said,
         }
     }
 
@@ -459,6 +477,13 @@ fn hearing(says: List<Param>, bound: Code) -> Code? {
 fn held_by(members: List<Code>) -> Code {
     if members.is_empty() { return quote { [] } }
     quote { described(at, ${joined(members)}) }
+}
+
+/// A node's attributes in the order its members stand: one list, or —
+/// where an optional member may name none — the runs each member gives.
+fn attrs_code(parts: List<Part>) -> Code {
+    if parts.all(it.named.is_empty()) { return list_of([c for p in parts for c in p.attrs]) }
+    joined([run for p in parts for run in [list_of([c]) for c in p.attrs].concat(p.named)])
 }
 
 /// Several runs as one list — none is the empty list, one is itself.

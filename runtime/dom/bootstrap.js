@@ -63,6 +63,14 @@ function saidBy(el, says, reads) {
   return held === undefined ? null : { says, value: String(held) };
 }
 
+// Where a control's caret stands — none for an element that has none, which
+// a page says by answering nothing or by refusing the question.
+function caretOf(el) {
+  try {
+    return typeof el.selectionStart === "number" ? [el.selectionStart, el.selectionEnd, el.selectionDirection] : null;
+  } catch { return null; }
+}
+
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element. `send(id, kind, said)` is the echo.
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
@@ -78,14 +86,39 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     for (const child of el.childNodes || []) forget(child);
   };
   const keep = (id, el) => { el.__avra_id = id; byId.set(id, el); };
+  // WHAT THE PAGE KEEPS ON AN ELEMENT IS NEVER THIS HOST'S TO LOSE: the
+  // focus, a caret, how far it is scrolled, a video playing, an animation
+  // under way. A page that can carry an element standing on it
+  // (`moveBefore`) keeps all of it. One that cannot takes the element off
+  // and puts it back, which drops it — so the focus and the caret under
+  // it, which a page hands back when asked, are put back after.
+  const carry = (parent, el, before) => {
+    if (typeof parent.moveBefore === "function" && el.isConnected && parent.isConnected) { parent.moveBefore(el, before); return; }
+    const held = focusUnder(el);
+    parent.insertBefore(el, before);
+    held();
+  };
+  const focusUnder = (el) => {
+    const active = doc.activeElement;
+    if (!active || !el.contains || !el.contains(active)) return () => {};
+    const caret = caretOf(active);
+    return () => {
+      active.focus({ preventScroll: true });
+      if (caret) active.setSelectionRange(...caret);
+    };
+  };
 
   const apply = {
     [OP.create]: (p) => keep(p.id, doc.createElement(p.tag)),
     [OP.create_text]: (p) => keep(p.id, doc.createTextNode(p.content)),
+    // A NODE THAT MOVES IS THE SAME NODE, with all the page keeps on it. One
+    // that already stands where it is put is not touched.
     [OP.place]: (p) => {
       const parent = p.parent === NO_ID ? mount : need(p.parent);
-      const before = p.after === NO_ID ? parent.childNodes[0] : need(p.after).nextSibling;
-      parent.insertBefore(need(p.id), before || null);
+      const el = need(p.id);
+      const before = (p.after === NO_ID ? parent.childNodes[0] : need(p.after).nextSibling) || null;
+      if (before === el || (el.parentNode === parent && el.nextSibling === before)) return;
+      carry(parent, el, before);
     },
     [OP.remove]: (p) => {
       const el = need(p.id);

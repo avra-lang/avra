@@ -97,6 +97,55 @@ check("a property that already holds the value is not written — the caret stay
 b.apply(frame(setProp(0, "value", SAYS.text, "")));
 check("and one that differs is", [writes, held], [1, ""]);
 
+// ── what the page keeps on an element is the page's ──
+// A list of two rows, an input in each, on a page that can carry an
+// element (`moveBefore`) or one that cannot.
+const listed = (carries) => {
+  const mount = stubElement("root");
+  const doc = stubDocument({ carries });
+  const apply = createApplier(doc, mount);
+  apply(frame(create(0, "ul"), create(1, "li"), create(2, "input"), place(2, 1, NO_ID), place(1, 0, NO_ID), create(3, "li"), create(4, "input"), place(4, 3, NO_ID), place(3, 0, 1), place(0, NO_ID, NO_ID)));
+  const ul = mount.childNodes[0];
+  return { doc, apply, ul, first: ul.childNodes[0], second: ul.childNodes[1] };
+};
+// A user in the first row's input: focused, the caret mid-text, the row
+// scrolled, and text no patch ever wrote.
+const used = (at) => {
+  const input = at.first.childNodes[0];
+  input.value = "typed";
+  input.focus();
+  input.setSelectionRange(2, 4, "forward");
+  at.first.scrollTop = 40;
+  return input;
+};
+const state = (at, input) => [at.doc.activeElement === input, input.selectionStart, input.selectionEnd, input.selectionDirection, input.value, at.first.scrollTop];
+
+const k = listed(true);
+const kin = used(k);
+k.apply(frame(setAttr(0, "class", "wide"), setAttr(1, "title", "t"), create(5, "li"), place(5, 0, 3), setProp(4, "value", SAYS.text, "other")));
+check("patches that name other things leave a used control as the user left it", state(k, kin), [true, 2, 4, "forward", "typed", 40]);
+k.apply(frame(place(1, 0, 5)));
+check("a row carried to another place is the same row, in its new place", [k.ul.childNodes.map((c) => c.__avra_id), k.ul.childNodes[2] === k.first], [[3, 5, 1], true]);
+check("on a page that can carry it, a moved row keeps its focus, its caret, its text and its scroll", state(k, kin), [true, 2, 4, "forward", "typed", 40]);
+
+const u = listed(false);
+const uin = used(u);
+u.apply(frame(place(1, 0, 3)));
+check("on a page that cannot, the focus and the caret are put back and the text stays", state(u, uin).slice(0, 5), [true, 2, 4, "forward", "typed"]);
+check("and how far it was scrolled is lost: that page takes the row off to move it", u.first.scrollTop, 0);
+
+const s = listed(false);
+const sin = used(s);
+let moves = 0;
+const really = s.ul.insertBefore;
+s.ul.insertBefore = function (c, at) { moves++; return really.call(this, c, at); };
+s.apply(frame(place(1, 0, NO_ID), place(3, 0, 1)));
+check("an element placed where it already stands is not touched", [moves, state(s, sin)], [0, [true, 2, 4, "forward", "typed", 40]]);
+s.apply(frame(remove(3)));
+check("a sibling leaving takes nothing from it", state(s, sin), [true, 2, 4, "forward", "typed", 40]);
+s.apply(frame(remove(1)));
+check("an element that leaves takes its focus with it", s.doc.activeElement, null);
+
 // ── listen, unlisten, the echo ──
 const c = page();
 c.apply(frame(create(0, "button"), listen(0, 1, "click", SAYS.nothing, "", false), place(0, NO_ID, NO_ID)));

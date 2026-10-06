@@ -34,11 +34,12 @@ fn together(c: Case) -> List<Case> {
     [c with { old: s, new: news[j] } for j, s in olds]
 }
 
-/// Every case one thing smaller than `c`: a move gone, both trees
+/// Every case one thing smaller than `c`: a move or a touch gone, both trees
 /// stepped down to the same child or lessened in the same place, or
 /// either tree smaller.
 fn nearer(c: Case) -> List<Case> {
     [c with { typed: c.typed.removed_at(j) } for j, t in c.typed]
+        .concat([c with { strayed: c.strayed.removed_at(j) } for j, s in c.strayed])
         .concat([c with { old: k, new: c.new.kids[j] } for j, k in c.old.kids if j < c.new.kids.length])
         .concat(together(c))
         .concat([c with { old: s } for s in smaller(c.old)])
@@ -56,9 +57,11 @@ fn breaks(c: Case) -> bool { verdict(c) != null }
 
 fn typed_source(t: Typed) -> string { "Typed { nth: ${t.nth}, value: ${t.value} }" }
 
+fn stray_source(s: Stray) -> string { "Stray { nth: ${s.nth}, name: ${s.name}, value: ${s.value} }" }
+
 /// A case as the source that makes it.
 export fn case_source(c: Case) -> string {
-    "Case {\n    old: ${source_at(c.old, "    ")},\n    new: ${source_at(c.new, "    ")},\n    typed: [${[typed_source(t) for t in c.typed].join(", ")}],\n}"
+    "Case {\n    old: ${source_at(c.old, "    ")},\n    new: ${source_at(c.new, "    ")},\n    typed: [${[typed_source(t) for t in c.typed].join(", ")}],\n    strayed: [${[stray_source(s) for s in c.strayed].join(", ")}],\n}"
 }
 
 /// A frame's records under the name of its paint, indented.
@@ -87,6 +90,7 @@ export fn case_at(seed: int, turn: int) -> Case {
         old: old,
         new: after(r, old),
         typed: [Typed { nth: r.below(64), value: r.below(9) } for j in 0..r.below(3)],
+        strayed: [Stray { nth: r.below(64), name: r.below(5), value: r.below(9) } for j in 0..r.below(3)],
     }
 }
 

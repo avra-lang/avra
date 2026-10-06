@@ -1,0 +1,262 @@
+//! WHAT THE TREE DOES NOT NAME IS THE HOST'S. A property is the
+//! program's while its tree names it: written when the program draws
+//! other than it knows the page to hold, drawn at rest the once it stops
+//! being named, and never written otherwise — and a node that stays is
+//! the same node, so all a page keeps on it stays too. Each case is one
+//! a user would meet.
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.tests.support.{Case, Sketch, Stray, repaint, repainted_page, verdict}
+use @std.ui.realize.tests.support.{spoken, named, field_node, holding, leaf, switch_node, text_node}
+use @std.ui.style.theme.{default_theme}
+use @std.ui.style.tokens.{Tone}
+use @std.ui.tree.node.{Node, Action, EventKind, Handler, Said}
+
+fn heard_text(_text: string) {}
+
+fn heard_flag(_on: bool) {}
+
+/// `n` hearing what is typed into it.
+fn typed_into(n: Node) -> Node { n with { events: [Action { kind: .Input, handler: Handler.Text(heard_text) }] } }
+
+/// `n` hearing its tick change.
+fn ticking(n: Node) -> Node { n with { events: [Action { kind: .Change, handler: Handler.Flag(heard_flag) }] } }
+
+/// A field the program draws no value for.
+fn bare_field() -> Node { leaf(.Field, [.Label("N")]) }
+
+/// A box the program draws no tick for.
+fn bare_box() -> Node { leaf(.Switch, [.Label("S")]) }
+
+/// A field beside a line of words.
+fn beside(field: Node, words: string) -> Node { holding(.Column, [field, text_node(words)]) }
+
+/// What each paint of `trees` says after the first, a line between two,
+/// the control named `name` hearing `kind` say `said` before the second.
+fn paints(name: string, kind: EventKind, said: Said, trees: List<Node>) -> string {
+    let page = live()
+    let _ = page.patches(trees[0], default_theme)
+    let _ = page.fire(named(page, name)[0], kind, said)
+    [spoken(page, t, default_theme) for t in trees.drop(1)].join(" | ")
+}
+
+/// What a user typing `text` into the field named `N` leaves each paint
+/// of `trees` to say.
+fn typing(text: string, trees: List<Node>) -> string { paints("N", .Input, Said.Text(text), trees) }
+
+/// What a user ticking the box named `S` leaves each paint of `trees` to
+/// say.
+fn ticking_then(trees: List<Node>) -> string { paints("S", .Change, Said.Flag(true), trees) }
+
+/// What turns a page showing `from` into one showing `to`, nothing heard.
+fn between(from: Node, to: Node) -> string {
+    let page = live()
+    let _ = page.patches(from, default_theme)
+    spoken(page, to, default_theme)
+}
+
+spec "std/ui dom — a property the tree does not name is the host's" {
+    given "a field drawn with no value, typed into, its handler hearing" {
+        then "is written by no paint: not the one its handler asks for, nor one after" {
+            typing(
+                "abc",
+                [typed_into(bare_field()), typed_into(bare_field()), typed_into(bare_field())],
+            ) == " | "
+        }
+    }
+    given "a box drawn with no tick, ticked, its handler hearing" {
+        then "is written by no paint" {
+            ticking_then([ticking(bare_box()), ticking(bare_box()), ticking(bare_box())]) == " | "
+        }
+    }
+    given "an element new to the page" {
+        then "is sent no property it would hold at rest" {
+            !between(text_node(""), field_node("N", "")).contains("prop") &&
+                !between(text_node(""), switch_node("S", false)).contains("prop")
+        }
+    }
+}
+
+spec "std/ui dom — a property the tree names is written when what is drawn is news" {
+    given "a field typed into while another part of the page repaints" {
+        then "is written by neither paint: the program draws what it heard, then what it drew" {
+            let said = typing(
+                "abc",
+                [
+                    beside(typed_into(field_node("N", "ab")), "1"),
+                    beside(typed_into(field_node("N", "abc")), "1"),
+                    beside(typed_into(field_node("N", "abc")), "2"),
+                ],
+            )
+            said.starts_with(" | retext ") && !said.contains("prop") && said.split("\n").length == 1
+        }
+    }
+    given "a field cleared by the program after it was sent" {
+        then "is cleared: what is drawn changed" {
+            typing(
+                "abc",
+                [
+                    typed_into(field_node("N", "ab")),
+                    typed_into(field_node("N", "abc")),
+                    typed_into(field_node("N", "")),
+                ],
+            ) == " | prop 0/+control value=\"\""
+        }
+    }
+    given "a field whose handler heard and kept another value" {
+        then "is set to what the program draws" {
+            typing("abc", [typed_into(field_node("N", "ab")), typed_into(field_node("N", "AB"))]) == "prop 0/+control value=\"AB\""
+        }
+    }
+    given "a box drawn unticked, ticked, its handler hearing and the program drawing it unticked still" {
+        then "is unticked: the program heard of the tick and draws none" {
+            ticking_then([ticking(switch_node("S", false)), ticking(switch_node("S", false))]) == "prop 0/+control checked=false"
+        }
+        then "is left alone when the program draws the tick it heard" {
+            ticking_then([ticking(switch_node("S", false)), ticking(switch_node("S", true))]) == ""
+        }
+    }
+    given "a box drawn unticked on every paint, nothing heard" {
+        then "is written by no paint: what is drawn did not change" { between(switch_node("S", false), switch_node("S", false)) == "" }
+    }
+}
+
+spec "std/ui dom — a property handed over" {
+    given "a property the tree stops naming" {
+        then "goes to rest, once" {
+            let page = live()
+            let _ = page.patches(field_node("N", "abc"), default_theme)
+            [spoken(page, bare_field(), default_theme), spoken(page, bare_field(), default_theme)]
+                .join(" | ") == "prop 0/+control value=\"\" | "
+        }
+        then "a tick too" { between(switch_node("S", true), bare_box()) == "prop 0/+control checked=false" }
+        then "says nothing when the program knows it at rest already" {
+            between(switch_node("S", false), bare_box()) == "" &&
+                between(field_node("N", ""), bare_field()) == ""
+        }
+    }
+    given "a property the tree starts naming" {
+        then "is written, at rest or off it: the program knows nothing of what stands there" {
+            between(bare_field(), field_node("N", "")) == "prop 0/+control value=\"\"" &&
+                between(bare_box(), switch_node("S", false)) == "prop 0/+control checked=false" &&
+                between(bare_field(), field_node("N", "a")) == "prop 0/+control value=\"a\""
+        }
+    }
+}
+
+// ── on a host ───────────────────────────────────────────────────
+
+/// What a page keeps on an element, as `Stray.name` counts it.
+const text_kept = 0
+const scroll_kept = 1
+const caret_kept = 2
+const tick_kept = 3
+const focus_kept = 4
+
+/// A field beside words that change, a user in the field with nothing
+/// hearing: text typed, the caret set, the focus held.
+fn typing_beside() -> Case {
+    Case {
+        old: Sketch {
+            prim: .Column,
+            kids: [Sketch { prim: .Field }, Sketch { prim: .Text, attrs: [.Text("1")] }],
+        },
+        new: Sketch {
+            prim: .Column,
+            kids: [Sketch { prim: .Field }, Sketch { prim: .Text, attrs: [.Text("2")] }],
+        },
+        strayed: [
+            Stray { nth: 3, name: text_kept, value: 1 },
+            Stray { nth: 3, name: caret_kept, value: 2 },
+            Stray { nth: 3, name: focus_kept, value: 0 },
+        ],
+    }
+}
+
+fn row(key: string) -> Sketch { Sketch { prim: .Item, key: key, kids: [Sketch { prim: .Field }] } }
+
+/// Two keyed rows that change places, the focus in the first row's field.
+fn reordered() -> Case {
+    Case {
+        old: Sketch { prim: .List, kids: [row("a"), row("b")] },
+        new: Sketch { prim: .List, kids: [row("b"), row("a")] },
+        strayed: [Stray { nth: 4, name: focus_kept, value: 0 }, Stray { nth: 4, name: caret_kept, value: 3 }],
+    }
+}
+
+/// An image under a surface whose look changes, the page keeping
+/// something on the image no tree names.
+fn under_a_restyled_parent() -> Case {
+    Case {
+        old: Sketch { prim: .Surface, kids: [Sketch { prim: .Image }] },
+        new: Sketch { prim: .Surface, tone: Tone.Muted, kids: [Sketch { prim: .Image }] },
+        strayed: [Stray { nth: 1, name: scroll_kept, value: 3 }],
+    }
+}
+
+/// A box the program draws unticked both times, ticked with nothing
+/// hearing.
+fn ticked_unheard() -> Case {
+    Case {
+        old: Sketch { prim: .Checkbox, attrs: [.Checked(false)] },
+        new: Sketch { prim: .Checkbox, attrs: [.Checked(false)] },
+        strayed: [Stray { nth: 1, name: tick_kept, value: 0 }],
+    }
+}
+
+/// A keyed field carried from one keyed row to the other.
+fn reparented() -> Case {
+    let field = Sketch { prim: .Field, key: "f" }
+    Case {
+        old: Sketch {
+            prim: .Column,
+            kids: [Sketch { prim: .Row, key: "r1", kids: [field] }, Sketch { prim: .Row, key: "r2" }],
+        },
+        new: Sketch {
+            prim: .Column,
+            kids: [Sketch { prim: .Row, key: "r1" }, Sketch { prim: .Row, key: "r2", kids: [field] }],
+        },
+    }
+}
+
+/// The word each record of a frame opens with, in order.
+fn ops(frame: List<string>) -> string { [l.split(" ").first() ?? "" for l in frame].join(" ") }
+
+spec "std/ui dom — what a host keeps survives a repaint" {
+    given "a field a user is typing in while another part of the page repaints" {
+        then "holds the law" { verdict(typing_beside()) == null }
+        then "keeps its text, its caret and the focus: the frame rewrites the other words alone" {
+            ops(repaint(typing_beside())) == "retext" &&
+                repainted_page(typing_beside())
+                    .contains(".focus=true .selection=\"strayed 2\" .value=\"strayed 1\"")
+        }
+    }
+    given "a keyed list reordered with the focus in one row's field" {
+        then "holds the law" { verdict(reordered()) == null }
+        then "carries one row and makes none: the field is the same element, the focus and the caret still on it" {
+            ops(repaint(reordered())) == "place" &&
+                repainted_page(reordered()).contains("#4 input") &&
+                repainted_page(reordered()).contains(".focus=true .selection=\"strayed 3\"")
+        }
+    }
+    given "an element under a parent whose attribute changes" {
+        then "holds the law" { verdict(under_a_restyled_parent()) == null }
+        then "is not made again, and keeps what the page held on it" {
+            ops(repaint(under_a_restyled_parent())) == "attr" &&
+                repainted_page(under_a_restyled_parent()).contains(".scroll=\"strayed 3\"")
+        }
+    }
+    given "a box the program draws unticked on every paint, ticked with nothing hearing" {
+        then "holds the law" { verdict(ticked_unheard()) == null }
+        then "stays ticked: the program draws what it drew, and knows of no tick" {
+            repaint(ticked_unheard()).is_empty() &&
+                repainted_page(ticked_unheard()).contains(".checked=true")
+        }
+    }
+    given "a node carried under another parent" {
+        then "holds the law" { verdict(reparented()) == null }
+        then "is another node, made again: a node is where it stands, its parent first" {
+            ops(repaint(reparented())).contains("remove") &&
+                ops(repaint(reparented())).contains("create")
+        }
+    }
+}

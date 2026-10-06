@@ -1,0 +1,80 @@
+//! THE PIPE: `x |> f(a)` IS `f(x, a)` — application, and nothing
+//! else. The parse desugars into the call it names, so no pass
+//! learns a node: typing, both engines and every idiom rule read an
+//! ordinary call, and only the printer reads the mark that spells it
+//! back.
+//!
+//! A STAGE IS A CALL, and the value becomes its FIRST argument:
+//!
+//!     x |> f              f(x)
+//!     x |> f(a, k: v)     f(x, a, k: v)
+//!     x |> f<T>(a)        f<T>(x, a)
+//!     x |> f { … }        f(x) { … }
+//!     x |> a.m            a.m(x)
+//!     x |> a.m(b)         a.m(x, b)
+//!     x |> (g)(b)         (g)(x, b)
+//!     x |> ((v) -> …)     ((v) -> …)(x)
+//!     x |> f(a)?          f(x, a)?            `!` alike
+//!
+//! Anything else is no stage and is refused; a method on the value
+//! itself stays `x.m()`. The value is SEATED AS A WRITTEN ARGUMENT
+//! IS — a `mut` first seat is written through, a named argument or a
+//! default fills the seats after it, and `it` binds exactly as in
+//! the call spelled out.
+//!
+//! PRECEDENCE, loosest to tightest — the pipe sits between `??` and
+//! the bitwise band, and folds LEFT (`x |> f |> g` is `g(f(x))`):
+//!
+//!     catch  ||  &&  == != < <= > >= is  ??  |>  | ^ & << >>  + -  * / %
+//!
+//!     a + b |> f          f(a + b)
+//!     x |> f ?? d         f(x) ?? d
+//!     x |> n > 3          n(x) > 3
+//!     a ?? b |> f         a ?? f(b)
+//!     x |> f + 1          refused — `(x |> f) + 1`
+//!
+//! LINES: a line may END in `|>`. One that begins with it starts a
+//! statement, as every continuing operator does, and is refused.
+use core.{Expr, ExprId, BinOp, op_symbol}
+use features.{LangNode, Builder}
+
+/// `l ( |> r )*` folds left, each stage taking the value built so
+/// far as its first argument.
+fn build_fold_pipe(b: Builder) -> Result<LangNode, string> {
+    mut acc = b.expr(0)?
+    for stage in b.exprs(1)? {
+        let call? = b.store.piped(stage, acc) else { return .Err(no_stage(b, stage)) }
+        acc = call
+    }
+    b.wrap_expr(acc)
+}
+
+/// A line that begins with `|>`.
+fn build_leading_pipe(_b: Builder) -> Result<LangNode, string> {
+    .Err(leading_pipe())
+}
+
+// ── voices ──
+
+/// The refusal a right side that is no call hears — an operator's
+/// run names the group that pipes first.
+fn no_stage(b: Builder, stage: ExprId) -> string {
+    let op? = stage_operator(b, stage) else { return stage_is_a_call() }
+    operator_after_stage(op_symbol(op))
+}
+
+fn stage_operator(b: Builder, stage: ExprId) -> BinOp? {
+    match b.store.expr(stage) { .Binary(op, _, _) -> op, _ -> null }
+}
+
+fn stage_is_a_call() -> string {
+    "a pipe's right side is a call, and the piped value becomes its first argument — `x |> f`, `x |> f(a)`, `x |> a.m(b)`, `x |> ((v) -> …)`; a method on the value itself is `x.m()`"
+}
+
+fn operator_after_stage(op: string) -> string {
+    "a pipe's right side is a call, and `|>` binds looser than `${op}` — write `(x |> f) ${op} …` to pipe first"
+}
+
+fn leading_pipe() -> string {
+    "a line never begins with `|>` — a continuing operator ends the line it continues, so end the previous line with `|>`"
+}

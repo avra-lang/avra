@@ -1,7 +1,8 @@
 //! The diff, held to its law over trees nobody chose: a page showing one
 //! tree, sent the frame that repaints it as another, is the page the
-//! other tree is. The cases are grown and edited by chance from fixed
-//! seeds; the ones the law once caught are kept by name.
+//! other tree is for all that tree names, and as its host held it for
+//! all else. The cases are grown and edited by chance from fixed seeds;
+//! the ones the law once caught are kept by name.
 use @std.ui.realize.dom.patch.{Says}
 use @std.ui.realize.dom.tests.support.{
     Case,
@@ -9,6 +10,7 @@ use @std.ui.realize.dom.tests.support.{
     Sketch,
     Typed,
     all_hold,
+    repainted_page,
     case_at,
     case_source,
     repaint,
@@ -17,7 +19,7 @@ use @std.ui.realize.dom.tests.support.{
     source,
     verdict,
 }
-use @std.ui.tree.node.{EventKind}
+use @std.ui.tree.node.{Attribute, EventKind}
 
 /// Every record the first `count` repaints under `seed` say, a line each.
 fn said(seed: int, count: int) -> List<string> { [l for turn in 0..count for l in repaint(case_at(seed, turn))] }
@@ -50,7 +52,7 @@ const every_op = [
 
 spec "std/ui dom — a repaint, by its law" {
     given "six hundred pairs of trees grown from three seeds" {
-        then "every repaint leaves the page its tree is" { [1, 2, 3].all((seed) -> all_hold(seed, 200)) }
+        then "every repaint leaves the page its tree names, and all else as the host held it" { [1, 2, 3].all((seed) -> all_hold(seed, 200)) }
     }
     given "the first two hundred repaints of one seed" {
         then "say every kind of record a frame holds but the sheet" {
@@ -86,13 +88,15 @@ spec "std/ui dom — a failing case, shrunk" {
     }
 }
 
-/// A box drawn unticked both times, ticked by a user between.
-fn ticked() -> Case {
-    Case {
-        old: Sketch { prim: .Checkbox, hears: [Hears { kind: .Change, says: .Flag, tag: 1 }] },
-        new: Sketch { prim: .Checkbox, hears: [Hears { kind: .Change, says: .Flag, tag: 1 }] },
-        typed: [Typed { nth: 0, value: 0 }],
+/// A box whose tick is drawn as `attrs` say both times, ticked by a
+/// user between, its handler hearing.
+fn ticked(attrs: List<Attribute>) -> Case {
+    let box = Sketch {
+        prim: .Checkbox,
+        attrs: attrs,
+        hears: [Hears { kind: .Change, says: .Flag, tag: 1 }],
     }
+    Case { old: box, new: box, typed: [Typed { nth: 0, value: 0 }] }
 }
 
 /// A control drawn with no value both times, given one by a user between.
@@ -115,13 +119,25 @@ spec "std/ui dom — what the law caught" {
             ) == null
         }
     }
-    given "a box a user ticked while the program draws it unticked" {
-        then "holds the law" { verdict(ticked()) == null }
-        then "is unticked by the next paint" { repaint(ticked()).join("\n") == "prop 1 checked=2:\"\"" }
+    given "a box a user ticked while the program draws it unticked, its handler hearing" {
+        then "holds the law" { verdict(ticked([.Checked(false)])) == null }
+        then "is unticked by the next paint: the program heard, and draws it unticked still" {
+            repaint(ticked([.Checked(false)])).join("\n") == "prop 1 checked=2:\"\""
+        }
+    }
+    given "a box a user ticked while the program draws no tick for it" {
+        then "holds the law" { verdict(ticked([])) == null }
+        then "is the host's: no paint writes it, whatever was heard" {
+            repaint(ticked([])).join("\n") == "" &&
+                repainted_page(ticked([])).contains(".checked=true")
+        }
     }
     given "a control drawn with no value that a user gave one" {
         then "holds the law" { verdict(given_a_value()) == null }
-        then "is put back to rest by the next paint" { repaint(given_a_value()).join("\n") == "prop 0 value=3:\"\"" }
+        then "keeps it: the tree names no value there" {
+            repaint(given_a_value()).join("\n") == "" &&
+                repainted_page(given_a_value()).contains(".value=\"8\"")
+        }
     }
 }
 
