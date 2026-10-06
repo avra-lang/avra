@@ -439,6 +439,18 @@ static void timer_down(size_t i) {
 #define FAIR_TURNS 64
 #define POLL_IDLE ((int64_t)1 << 62)
 static int64_t g_until_poll = POLL_IDLE;
+
+// SEEDED, THE QUEUE ALONE NEVER DECIDES: `g_until_poll` is held at zero,
+// so every switch fails the fast path's own test and reaches the pick —
+// and an unseeded switch carries nothing for it. The poller's turn is
+// then counted here, by the same law.
+static int g_seeded = 0;
+static int64_t g_schedule = 0;
+static uint64_t g_seed_state = 0;
+static int64_t g_choices = 0;
+static int64_t g_pick_links = 0;
+static int64_t g_seeded_until_poll = 0;
+
 static int64_t g_polls = 0;
 
 static void timer_set(uint32_t kind, void* who, int64_t at) {
@@ -480,6 +492,16 @@ static void fd_drained(int64_t fd);
 static int64_t g_parked_fds = 0;
 static FdWaits* g_fds = NULL;
 static size_t g_fds_cap = 0;
+
+// The poller has been asked, or its count begins: when it is next due.
+static void poll_counted(void) {
+    if (g_seeded) {
+        g_until_poll = 0;
+        g_seeded_until_poll = FAIR_TURNS;
+        return;
+    }
+    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;
+}
 
 static void poller_open(void) {
     if (g_poller >= 0) return;
@@ -709,7 +731,7 @@ int64_t avra_fiber_fd_ready(int64_t fd, int64_t writing) {
 static void poller_wait(int64_t timeout_ns) {
     poller_open();
     g_polls++;
-    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;
+    poll_counted();
     enum { BATCH = 256 };
 #if AVRA_KQUEUE
     struct kevent evs[BATCH];
@@ -1094,15 +1116,60 @@ static inline void switch_to(Fiber* next) {
 // done); who runs next, the world asked first, and waited on when
 // nobody is ready. A world with nothing to wait on and nobody ready is
 // a deadlock, and a deadlock is never a hang.
+// The poller's turn among ready tasks: every FAIR_TURNS switches while a
+// descriptor waiter is filed, seeded or not.
+static void poller_turn(void) {
+    if (g_seeded) {
+        if (g_parked_fds > 0 && --g_seeded_until_poll <= 0) poller_wait(0);
+        return;
+    }
+    if (g_until_poll > 0) return;
+    if (g_parked_fds > 0) poller_wait(0);
+    else g_until_poll = POLL_IDLE;
+}
+
+// A schedule's own number, drawn on: splitmix64.
+static uint64_t seed_drawn(void) {
+    uint64_t z = (g_seed_state += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+
+// Which of `n` runs: schedule 0 takes the first, any other draws.
+static uint64_t chosen(uint64_t n) {
+    g_choices++;
+    if (g_schedule == 0) return 0;
+    return (uint64_t)(((__uint128_t)seed_drawn() * n) >> 64);
+}
+
+// THE SEEDED PICK: one of the first PICK_WINDOW ready tasks, by the
+// schedule's choice. A PICK AMONG ONE IS NO CHOICE — nothing is counted
+// and nothing drawn, so a switch one engine makes and the other skips
+// costs the schedule nothing. The window bounds the walk whatever is
+// ready; a task behind it moves up as the queue does.
+enum { PICK_WINDOW = 16 };
+static Fiber* ready_picked(void) {
+    Fiber* before[PICK_WINDOW];
+    uint64_t n = 0;
+    Fiber* prev = NULL;
+    for (Fiber* q = g_ready_head; q && n < PICK_WINDOW; prev = q, q = q->next) before[n++] = prev;
+    g_pick_links += (int64_t)n;
+    if (n < 2) return ready_pop();
+    uint64_t k = chosen(n);
+    Fiber* f = before[k] ? before[k]->next : g_ready_head;
+    if (before[k]) before[k]->next = f->next; else g_ready_head = f->next;
+    if (g_ready_tail == f) g_ready_tail = before[k];
+    f->next = NULL;
+    return f;
+}
+
 __attribute__((noinline))
 static Fiber* next_with_world(void) {
     for (;;) {
         if (g_timers_len > 0) fire_due_timers(now_ns());
-        if (g_until_poll <= 0) {
-            if (g_parked_fds > 0) poller_wait(0);
-            else g_until_poll = POLL_IDLE;
-        }
-        Fiber* next = ready_pop();
+        poller_turn();
+        Fiber* next = g_seeded ? ready_picked() : ready_pop();
         if (next) return next;
         if (g_timers_len == 0 && g_parked_fds == 0) avra_trap("every task is waiting — deadlock");
         pool_trim();
@@ -1720,6 +1787,23 @@ int64_t avra_vtask_next(void) {
     return (int64_t)(uintptr_t)next;
 }
 
+// ── The seeded order ────────────────────────────────────────────
+
+void avra_sched_seed(int64_t schedule) {
+    g_seeded = 1;
+    g_schedule = schedule;
+    g_seed_state = (uint64_t)schedule;
+    g_choices = 0;
+    poll_counted();
+}
+
+// The first unseeded switch after it finds the poller's count spent and
+// sets it again.
+int64_t avra_sched_settle(void) {
+    g_seeded = 0;
+    return g_choices;
+}
+
 // ── What a test and a dump read ─────────────────────────────────
 
 int64_t avra_sched_timers(void) { return (int64_t)g_timers_len; }
@@ -1727,3 +1811,5 @@ int64_t avra_sched_timers(void) { return (int64_t)g_timers_len; }
 int64_t avra_sched_fd_waiters(void) { return g_parked_fds; }
 
 int64_t avra_sched_polls(void) { return g_polls; }
+
+int64_t avra_sched_pick_links(void) { return g_pick_links; }

@@ -60,15 +60,25 @@ MUTATIONS = [
     ("filing a descriptor waiter does not bring the poller within reach", "        if (g_until_poll > FAIR_TURNS) g_until_poll = FAIR_TURNS;\n", ""),
     ("the poller's turn comes every million switches", "#define FAIR_TURNS 64\n", "#define FAIR_TURNS 1000000\n"),
     ("the world is asked only when nobody is ready", "    return __builtin_expect(g_timers_len == 0 && left > 0, 1);", "    return 1;"),
-    ("the poller is never asked while tasks are ready", "            if (g_parked_fds > 0) poller_wait(0);\n            else g_until_poll = POLL_IDLE;", "            g_until_poll = FAIR_TURNS;"),
-    ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("        if (g_until_poll <= 0) {", "        if (1) {")], None),
+    ("the poller is never asked while tasks are ready", "    if (g_parked_fds > 0) poller_wait(0);\n    else g_until_poll = POLL_IDLE;", "    g_until_poll = FAIR_TURNS;"),
+    ("a pick among one is counted as a choice", "    if (n < 2) return ready_pop();\n    uint64_t k = chosen(n);", "    if (n < 1) return ready_pop();\n    uint64_t k = chosen(n);"),
+    ("schedule 0 draws like any other", "    if (g_schedule == 0) return 0;\n", ""),
+    ("the pick ignores the schedule's choice", "    uint64_t k = chosen(n);", "    uint64_t k = chosen(n) * 0;"),
+    ("a seeded switch takes the fast path", "    if (g_seeded) {\n        g_until_poll = 0;\n        g_seeded_until_poll = FAIR_TURNS;", "    if (g_seeded) {\n        g_until_poll = POLL_IDLE;\n        g_seeded_until_poll = FAIR_TURNS;"),
+    ("a seeded run asks the poller at every switch", "        if (g_parked_fds > 0 && --g_seeded_until_poll <= 0) poller_wait(0);", "        if (g_parked_fds > 0) poller_wait(0);"),
+    ("a seeded run never asks the poller while tasks are ready", "        if (g_parked_fds > 0 && --g_seeded_until_poll <= 0) poller_wait(0);\n        return;", "        return;"),
+    ("a poll in a seeded run hands the next switches to the fast path", "    g_polls++;\n    poll_counted();", "    g_polls++;\n    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;"),
+    ("a settle leaves the order seeded", "    g_seeded = 0;\n    return g_choices;", "    return g_choices;"),
+    ("the pick walks the whole queue", "enum { PICK_WINDOW = 16 };", "enum { PICK_WINDOW = 16384 };"),
+    ("a seed does not restart the count of choices", "    g_choices = 0;\n", ""),
+    ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("    if (g_until_poll > 0) return;\n", "")], None),
     ("a join answers a cancelled task", "    if (cells[TASK_END] == END_CANCELLED) join_refused();\n", ""),
     ("a fired timer's task answers nothing", "    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;\n", "    avra_rc_release(unit);\n"),
     ("a virtual claim names whoever the host runs", "    return gate_claimed(gate, id_of(virtual_at(t)));", "    return gate_claimed(gate, id_of(g_current));"),
     ("a virtual task's end is not traced", "    if (TRACING) traced_fiber(\"end\", virtual_at(t), 0);\n", ""),
     ("a virtual task keeps the policy's count for its id", "    virtual_at(t)->own.id = id;\n", ""),
 ]
-TESTS = ["flow_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
+TESTS = ["seed_test", "flow_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
 BOUND = 60
 
 os.makedirs(out, exist_ok=True)

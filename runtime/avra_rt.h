@@ -219,6 +219,8 @@ extern const char avra_rt_held_avra_task_cancel __asm__(AVRA_RT_LABEL(avra_task_
 extern const char avra_rt_held_avra_task_slot __asm__(AVRA_RT_LABEL(avra_task_slot));
 extern const char avra_rt_held_avra_task_slot_set __asm__(AVRA_RT_LABEL(avra_task_slot_set));
 extern const char avra_rt_held_avra_task_id __asm__(AVRA_RT_LABEL(avra_task_id));
+extern const char avra_rt_held_avra_sched_seed __asm__(AVRA_RT_LABEL(avra_sched_seed));
+extern const char avra_rt_held_avra_sched_settle __asm__(AVRA_RT_LABEL(avra_sched_settle));
 extern const char avra_rt_held_avra_cores_online __asm__(AVRA_RT_LABEL(avra_cores_online));
 extern const char avra_rt_held_avra_cores_group __asm__(AVRA_RT_LABEL(avra_cores_group));
 extern const char avra_rt_held_avra_cores_fork __asm__(AVRA_RT_LABEL(avra_cores_fork));
@@ -406,6 +408,8 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_task_slot,
     &avra_rt_held_avra_task_slot_set,
     &avra_rt_held_avra_task_id,
+    &avra_rt_held_avra_sched_seed,
+    &avra_rt_held_avra_sched_settle,
     &avra_rt_held_avra_cores_online,
     &avra_rt_held_avra_cores_group,
     &avra_rt_held_avra_cores_fork,
@@ -751,6 +755,10 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_slot_set(AVRA_R
     "avra_task_slot_set: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_id()), int64_t),
     "avra_task_id: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_seed(AVRA_RT_I64)), void),
+    "avra_sched_seed: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_settle()), int64_t),
+    "avra_sched_settle: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_cores_online()), int64_t),
     "avra_cores_online: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_cores_group(AVRA_RT_I64)), int64_t),
