@@ -207,6 +207,31 @@ seeded env AVRA_SPRITES="A B C"
 check "$(grep -c 'bootstrapping from the seed' "$scratch/out") $(grep -c 'cat > ' "$SPRITE_LOG")" "1 0" "work seed: with neither, it says the Sprite bootstraps and hands it nothing" "$scratch/out"
 unset SPRITE_LOG
 
+# ══ A NEW LANE'S LOCAL COMPILER: the one built from its tree, the nearest behind, or none
+sl=$scratch/seedlab
+git clone -q "$scratch/origin.git" "$sl/main" 2>/dev/null
+mkdir -p "$sl/main/tools"
+cp "$here/work" "$here/sprite-lib.sh" "$here/sprite-remote.sh" "$here/sprite-rsh.sh" "$sl/main/tools/"
+[ ! -f "$here/compiler_paths.sh" ] || cp "$here/compiler_paths.sh" "$sl/main/tools/"
+slc() { git -C "$sl/main" -c user.name=t -c user.email=t@t "$@"; }
+echo one > "$sl/main/Makefile"; slc add -A; slc commit -q -m one
+old_at=$(slc rev-parse HEAD)
+echo two > "$sl/main/Makefile"; slc commit -q -am two
+slc update-ref refs/remotes/origin/main HEAD
+slw="$sl/main/tools/work"
+lane() { rm -rf "$sl/$1"; slc worktree prune; slc worktree add -q --detach "$sl/$1" "${2:-HEAD}"; }
+holds() { lane held "${2:-HEAD}"; mkdir -p "$sl/held/build"; echo bin > "$sl/held/build/avra"; chmod +x "$sl/held/build/avra"; [ -z "$1" ] || echo "$1" > "$sl/held/build/.avra-built-from"; }
+seeds() { lane fresh; (cd "$sl/main" && "$@" sh "$slw" seed-local "$sl/fresh") > "$scratch/out" 2>&1; [ -x "$sl/fresh/build/avra" ] && echo copied || echo none; }
+holds ""
+check "$(seeds env) $(grep -c 'starts with none' "$scratch/out")" "none 1" "work new: a compiler that does not say what it was built from is never copied" "$scratch/out"
+holds "$(sh "$slw" compiler-hash "$sl/main") edited"
+check "$(seeds env) $(grep -c 'it is this tree.s' "$scratch/out")" "copied 1" "work new: the compiler built from this tree's compiler source is taken, and said" "$scratch/out"
+holds "somethingelse edited"
+check "$(seeds env)" "none" "work new: a compiler built from a lane's own edits is never copied" "$scratch/out"
+holds "olderhash $old_at" "$old_at"
+check "$(seeds env) $(grep -c '1 compiler commit(s) behind' "$scratch/out")" "copied 1" "work new: failing that, the nearest behind origin/main is a start, and says how far" "$scratch/out"
+check "$(seeds env AVRA_SEED_BEHIND=0) $(grep -c 'not copied' "$scratch/out")" "none 1" "work new: one past the bound is refused with the distance, never copied" "$scratch/out"
+
 # ══ HELP: asked after any verb it prints that verb's line, and touches nothing
 export SPRITE_LOG="$scratch/sprite.log"
 : > "$SPRITE_LOG"; : > "$GH_LOG"
