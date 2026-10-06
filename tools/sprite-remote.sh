@@ -50,6 +50,8 @@ runs=$home/avra-runs
 compilers=$home/avra-compilers
 trees=$home/avra-build
 floor_mb=${AVRA_RUN_FLOOR_MB:-600}
+# Under this much available memory a Sprite answers nobody.
+stall_mb=250
 
 avail_mb() { awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo; }
 
@@ -203,14 +205,17 @@ keeper() {
     held=$t0
     hold on "$r"
     was=$(avail_mb)
+    low=$was
     while [ -d "$rd" ] && kill -0 "$main" 2>/dev/null; do
         why=
         now=$(cut -d. -f1 /proc/uptime)
-        # The floor rises with the fall: three more turns like the last must still clear it.
+        # The floor rises with the fall: one more turn like the last must
+        # leave the Sprite above where it stalls.
         have=$(avail_mb)
-        need=$(((was - have) * 3))
+        need=$((was - have + stall_mb))
         [ "$need" -gt "$floor_mb" ] || need=$floor_mb
         was=$have
+        [ "$have" -ge "$low" ] || { low=$have; echo "$low" > "$rd/low"; }
         [ $((now - held)) -lt 60 ] || { hold again "$r"; held=$now; }
         if at=$(cat "$rd/cmd_at" 2>/dev/null) && [ -n "$at" ]; then
             [ $((now - at)) -lt "$cmd_s" ] || why="124 the command passed its ${cmd_s}s bound"
@@ -373,6 +378,8 @@ supervise() {
             read -r st why < "$rd/stopped"
             echo "sprite-run: stopped — ${why}" >&2
         fi
+        # A run's memory is read, never guessed: the least the Sprite had left.
+        [ ! -f "$rd/low" ] || echo "sprite-run: ended $st; the Sprite's available memory was never under $(cat "$rd/low") MB" >&2
         settle "$id" "$st"
         exit "$st"
     }
@@ -400,7 +407,7 @@ supervise() {
             printf '%s' "$chash" > build/.avra-compiler-hash
             compiler=restored
         else
-            echo "sprite-run: building this tree's compiler" >&2
+            echo "sprite-run: building this tree's compiler; $(avail_mb) MB of memory available" >&2
             advance_and_cache
             [ "$store_result" = built ] || exit 70
             compiler=built
