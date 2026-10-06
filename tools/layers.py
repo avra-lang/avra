@@ -14,6 +14,13 @@ test of a feature is — so the compiler's `tests/` are not read.
 std-relation's are, with one licence spelled here: they may read the
 compiler's `core` (a side table's test needs the table).
 
+ROWS FILED BY ID HAVE ONE WRITER. `@std/relation` hands an owner's rows
+over as a value (`Rel.replaced`); the three verbs under it — `owner_named`,
+`put_owned`, `kept_of` — are the declaration table's alone, LICENSED to
+the two files named in `BY_ID_WRITERS` until its rows are a value too
+(avra-8sb5.57.214). Any other call outside packages/std-relation is
+refused, in every package.
+
     python3 tools/layers.py          # refuses, naming each `use` that climbs
 """
 import glob
@@ -54,6 +61,26 @@ def outside(text, engine, tests):
     return out
 
 
+BY_ID = re.compile(r"\.(owner_named|put_owned|kept_of)\(")
+BY_ID_WRITERS = ("packages/std-avrac/src/features/decls.av", "packages/std-avrac/src/features/decls_mint.av")
+
+
+def by_id_calls(path, text):
+    """The by-id writer's verbs `text` calls, where `path` is no licensed writer of them."""
+    if path.startswith("packages/std-relation/") or path in BY_ID_WRITERS:
+        return []
+    return [f"`.{verb}(` files rows by id — the declaration table's alone; hand rows over with `Rel.replaced`"
+            for verb in BY_ID.findall(text)]
+
+
+def by_id_writers():
+    found, read = [], 0
+    for path in sorted(glob.glob("packages/*/src/**/*.av", recursive=True)):
+        read += 1
+        found.extend(f"{path}: {w}" for w in by_id_calls(path, open(path, encoding="utf-8").read()))
+    return found, read
+
+
 def climbs():
     found, read = [], 0
     for path in sorted(glob.glob("packages/std-avrac/src/**/*.av", recursive=True)):
@@ -84,18 +111,25 @@ def selftest():
     assert len(outside("use db.{Db}\n", True, False)) == 1
     assert len(outside("use @std.relation.{relation}\n", True, False)) == 1
     assert outside("use db.{Db}\n", False, False) == []
+    stray = "rs.put_owned(db, \"F\", 0, r, h, ks, db.owner_named(\"x\"))\nrs.kept_of(db, o, [])\n"
+    assert len(by_id_calls("packages/std-http/src/quota.av", stray)) == 3
+    assert len(by_id_calls("packages/std-avrac/src/compiler/failures.av", stray)) == 3
+    assert by_id_calls("packages/std-avrac/src/features/decls.av", stray) == []
+    assert by_id_calls("packages/std-relation/src/tests/named_owner/named_owner.av", stray) == []
+    assert by_id_calls("packages/std-http/src/quota.av", "self.kept(buckets, k, b)\nFact.replaced(db, \"o\", rows)\n") == []
 
 
 def main():
     selftest()
     found, read = climbs()
-    for line in found:
+    strays, scanned = by_id_writers()
+    for line in found + strays:
         print(f"layers: {line}")
-    if found:
+    if found or strays:
         sys.exit(1)
-    if read == 0:
+    if read == 0 or scanned == 0:
         sys.exit("layers: 0 files read — run from the tree's root; a check that read nothing passed nothing")
-    print(f"layers: no `use` climbs — {read} file(s) read")
+    print(f"layers: no `use` climbs — {read} file(s) read; rows are filed by id in the declaration table alone — {scanned} file(s) read")
 
 
 main()

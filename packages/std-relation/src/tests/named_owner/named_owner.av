@@ -4,7 +4,9 @@
 // for the owner between replacements is removed by the next unless named
 // again or kept, no other owner's row moves, a second owner of one row is
 // refused, a removal is a write a kept answer hears, and a removal under
-// a read bucket is late and removes nothing — in both engines
+// a read bucket is late and removes nothing; keeping NO id empties an
+// owner and no one else, and is nothing at all for an owner that never
+// wrote — in both engines
 use @std.relation.{relation, query}
 use @std.relation.db.{Db, new_db, db_over, Verifying, Late}
 use @std.relation.engine.{Key, new_kernel}
@@ -88,7 +90,7 @@ fn emptied() -> string {
 }
 
 /// A row filed by id for an owner stands until its rows are next
-/// replaced, which removes it unless it is named again — and `kept`
+/// replaced, which removes it unless it is named again — and `kept_of`
 /// keeps exactly the ids it is handed.
 fn between() -> string {
     let db = new_db()
@@ -100,8 +102,27 @@ fn between() -> string {
     ran(db, o, ["a:x", "kept:x"])
     let replaced = tagged(db, "x")
     let last = put_as(db, o, "last", "x")
-    Fact.rows_in(db).kept(db, db.owner_named(o), [last])
+    Fact.rows_in(db).kept_of(db, db.owner_named(o), [last])
     "${held} ${replaced} ${tagged(db, "x")}"
+}
+
+/// `kept_of` with no id: nothing for an owner that never wrote — no row
+/// moves, no hash, nothing heard — and every row of one that did, with
+/// another owner's row and no one's row standing.
+fn kept_none() -> string {
+    let db = logged()
+    let before = heard().get().length
+    let _ = Fact.insert(db, name: "loose", tag: "x")
+    ran(db, "b.av", ["b:x"])
+    let set = db.set_hashes()[0]
+    Fact.rows_in(db).kept_of(db, db.owner_named("never.av"), [])
+    let untouched = db.set_hashes()[0] == set && tagged(db, "x") == "loose,b"
+    let _ = put_as(db, "a.av", "a", "x")
+    let _ = put_as(db, "a.av", "c", "x")
+    let held = tagged(db, "x")
+    Fact.rows_in(db).kept_of(db, db.owner_named("a.av"), [])
+    Fact.rows_in(db).kept_of(db, db.owner_named("a.av"), [])
+    "${untouched} ${held} ${tagged(db, "x")} ${db.set_hashes()[0] == set} ${heard().get().length - before}"
 }
 
 /// Another owner's rows, and rows no owner wrote, never move.
@@ -155,4 +176,4 @@ fn late() -> string {
     "${heard().get().length - before} ${Fact.all(db).length} ${heard().get().last() ?? "-"}"
 }
 
-"${replaced()} | ${emptied()} | ${between()} | ${apart()} | ${rival()} | ${heard_removal()} | ${late()}"
+"${replaced()} | ${emptied()} | ${between()} | ${kept_none()} | ${apart()} | ${rival()} | ${heard_removal()} | ${late()}"
