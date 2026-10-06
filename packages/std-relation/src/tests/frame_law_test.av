@@ -80,6 +80,19 @@ spec "std/relation — a frame records its own kernel's keys alone" {
             before == 0 && o.kernel.deps_of(again).length == 1
         }
     }
+    given "a Db nothing was asked of" {
+        then "has no kernel after rows are written and read, and one once it is reached for" {
+            let db = new_db()
+            let _ = Root.insert(db, name: "a", at: 0)
+            let none = db.kernel.get() == null && Root.all(db).length == 1
+            let kernel = db.engine()
+            let reader = Key { family: kernel.family((_arg: int) -> 0), arg: 0 }
+            kernel.begin(reader)
+            let _ = Root.all(db)
+            kernel.settle(reader, 0)
+            none && db.kernel.get() != null && kernel.deps_of(reader).length == 1
+        }
+    }
     given "the same key number open in two kernels" {
         then "is a cycle in neither" {
             let o = outer()

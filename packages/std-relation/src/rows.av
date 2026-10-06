@@ -557,12 +557,13 @@ impl Rows<R> {
 /// nothing behind to remove — a re-admit that rewrites a slot moves that
 /// slot's own hash instead, and `verify` tells every reader so.
 @identity
-export type SideRows<R> = { family: Cell<int>, marks: Cell<List<ReadMark>>, whole: Cell<ReadMark>, closed: Cell<bool> }
+export type SideRows<R> = { family: Cell<int>, reached: Cell<bool>, marks: Cell<List<ReadMark>>, whole: Cell<ReadMark>, closed: Cell<bool> }
 
 export fn side_rows<R>() -> SideRows<R> {
     let no_marks: List<ReadMark> = []
     SideRows {
         family: Cell.new(-1),
+        reached: Cell.new(false),
         marks: Cell.new(no_marks),
         whole: Cell.new(unread()),
         closed: Cell.new(false),
@@ -580,8 +581,8 @@ impl SideRows<R> {
     /// `verify` answers a cell's live hash — 0 the whole column, slot
     /// `s`'s read as cell `s + 1`.
     fn opened(db: Db, verify: fn(int) -> int) -> int {
-        let known = self.family.get()
-        if known >= 0 { return known }
+        if self.reached.get() { return self.family.get() }
+        self.reached.set(true)
         let family = self.family
         let fam = db
             .registered(verify, (register: fn(fn(int) -> int) -> int) -> family.set(register(verify)))

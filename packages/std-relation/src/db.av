@@ -10,7 +10,7 @@
 //! keyed rerun upserts and a keyless one replaces its whole set. A query
 //! never reads a relation it writes, and two queries never own one key.
 //! A KERNEL'S INSTRUMENTS ARE ITS OWNER'S TO TURN ON: a fresh Db traces
-//! nothing and writes no graph. `db.kernel.get().trace_on()` traces each
+//! nothing and writes no graph. `db.engine().trace_on()` traces each
 //! ask and settle through the runtime's trace row (which prints under
 //! `AVRA_QTRACE`), and `.graph_on()` writes every settled cell with the
 //! keys it read to stderr — the compiler turns both on for its own
@@ -48,7 +48,7 @@ export type Db = {
     hashes: Cell<List<fn() -> int>>,
     closers: Cell<List<fn() -> void>>,
     sweepers: Cell<List<fn(Db, int, int) -> void>>,
-    kernel: Cell<Kernel>,
+    kernel: Cell<Kernel?>,
     verifying: Cell<Verifying>,
     late: Cell<Late>,
     framed: Cell<bool>,
@@ -110,9 +110,10 @@ fn trapped(words: string) { avra_trap(words) }
 /// The next Db id this process mints.
 once fn minted() -> Cell<int> { Cell.new(0) }
 
-/// A fresh Db under the next dense id, over a kernel of its own: a write
-/// to a cell a query read is an input arriving.
-export fn new_db() -> Db { made(new_kernel(), Verifying.ByHash, Late.Taken, false, transient()) }
+/// A fresh Db under the next dense id. Its kernel is its own, made when
+/// a query is first asked of it — a Db that only holds rows has none —
+/// and a write to a cell a query read is an input arriving.
+export fn new_db() -> Db { made(null, Verifying.ByHash, Late.Taken, false, transient()) }
 
 /// A fresh Db whose cells live in `kernel`, its owner's. `framed`: a
 /// write outside every `@query` belongs to the kernel query open then.
@@ -122,9 +123,9 @@ export fn db_over(kernel: Kernel, verifying: Verifying, late: Late, framed: bool
 
 /// `new_db`, its query answers kept past the process where `durable`
 /// keeps them.
-export fn durable_db(durable: Durable) -> Db { made(new_kernel(), Verifying.ByHash, Late.Taken, false, durable) }
+export fn durable_db(durable: Durable) -> Db { made(null, Verifying.ByHash, Late.Taken, false, durable) }
 
-fn made(kernel: Kernel, verifying: Verifying, late: Late, framed: bool, durable: Durable) -> Db {
+fn made(kernel: Kernel?, verifying: Verifying, late: Late, framed: bool, durable: Durable) -> Db {
     let next = minted()
     let id = next.get()
     next.set(id + 1)
@@ -173,21 +174,35 @@ impl Db {
     }
 
     /// Whether a read here is heard by no one: no query is open in the
-    /// kernel, and no run here.
-    fn unheard() -> bool { self.kernel.get().reader() < 0 && self.running.get().is_empty() }
-
-    /// A family registered in this Db's kernel now, and again in any
-    /// kernel it is given later — `again` receives the register fn, so
-    /// it never holds the Db itself.
-    fn registered(verify: fn(int) -> int, again: fn(fn(fn(int) -> int) -> int) -> void) -> int {
-        self.registrars.push(again)
-        self.family(verify)
+    /// kernel — or there is no kernel yet — and no run here.
+    fn unheard() -> bool {
+        let kernel? = self.kernel.get() else { return self.running.get().is_empty() }
+        kernel.reader() < 0 && self.running.get().is_empty()
     }
 
-    /// A kernel family over `verify`, a cell's live hash: verified by
-    /// that hash, or by the revision a write last stamped the cell with.
-    fn family(verify: fn(int) -> int) -> int {
-        let kernel = self.kernel.get()
+    /// The Db's kernel, made on the first reach when it has none: every
+    /// family registered here so far is registered in it then.
+    fn engine() -> Kernel {
+        let held? = self.kernel.get() else {
+            let made = new_kernel()
+            self.homed(made)
+            return made
+        }
+        held
+    }
+
+    /// A family registered in this Db's kernel when it has one, and again
+    /// in any kernel it comes to have — `again` receives the register fn,
+    /// so it never holds the Db itself. -1 while there is no kernel.
+    fn registered(verify: fn(int) -> int, again: fn(fn(fn(int) -> int) -> int) -> void) -> int {
+        self.registrars.push(again)
+        let kernel? = self.kernel.get() else { return 0 - 1 }
+        self.family(kernel, verify)
+    }
+
+    /// A family of `kernel` over `verify`, a cell's live hash: verified
+    /// by that hash, or by the revision a write last stamped the cell with.
+    fn family(kernel: Kernel, verify: fn(int) -> int) -> int {
         match self.verifying.get() {
             .ByHash -> kernel.hashed_family(verify),
             .ByMove -> {
@@ -202,17 +217,29 @@ impl Db {
     /// The Db handed to an owner's kernel: every family registered here
     /// is registered there.
     fn given(kernel: Kernel, verifying: Verifying, late: Late, framed: bool) {
-        let no_moves: Map<string, Cell<Map<string, int>>> = {}
-        self.moves.set(no_moves)
-        self.kernel.set(kernel)
         self.verifying.set(verifying)
         self.late.set(late)
         self.framed.set(framed)
-        for again in self.registrars.get() { again((verify: fn(int) -> int) -> self.family(verify)) }
+        self.homed(kernel)
     }
 
-    /// The Db let go by its owner — back to a kernel of its own.
-    fn released() { self.given(new_kernel(), Verifying.ByHash, Late.Taken, false) }
+    /// `kernel` taken as this Db's, every family here registered in it.
+    fn homed(kernel: Kernel) {
+        let no_moves: Map<string, Cell<Map<string, int>>> = {}
+        self.moves.set(no_moves)
+        self.kernel.set(kernel)
+        for again in self.registrars.get() { again((verify: fn(int) -> int) -> self.family(kernel, verify)) }
+    }
+
+    /// The Db let go by its owner — back to no kernel, its families in none.
+    fn released() {
+        let none: Kernel? = null
+        self.kernel.set(none)
+        self.verifying.set(Verifying.ByHash)
+        self.late.set(Late.Taken)
+        self.framed.set(false)
+        for again in self.registrars.get() { again((_verify: fn(int) -> int) -> 0 - 1) }
+    }
 
     /// Who hears a refusal, in place of ending the program.
     fn heard_by(hears: fn(string) -> void) { self.hears.set(hears) }
@@ -227,7 +254,7 @@ impl Db {
     }
 
     fn recorded(family: int, cell: int) -> int {
-        let kernel = self.kernel.get()
+        let kernel? = self.kernel.get() else { return 0 - 1 }
         kernel.record_at(family, cell)
         kernel.reader()
     }
@@ -262,7 +289,7 @@ impl Db {
         let top = self.running.get().last()
         if top != null { return top }
         if !self.framed.get() { return null }
-        let query = self.kernel.get().reader()
+        let query = self.kernel.get()?.reader() ?? 0 - 1
         if query < 0 { return null }
         // the owner query read last is the one reading again, almost always
         if query == self.last_query.get() { return self.last_frame.get() }
@@ -344,7 +371,7 @@ impl Db {
     /// revision refuses it where late writes are refused; where they are
     /// taken, a cell any reader ever read moves the revision.
     fn moved(family: int, cell: int, read_at: int) -> bool {
-        let kernel = self.kernel.get()
+        let kernel? = self.kernel.get() else { return true }
         self.unsettles_restored()
         match self.late.get() {
             .Refused -> {
@@ -363,7 +390,7 @@ impl Db {
     /// An answer read back is read here: a record brings no reads with
     /// it, so it stands only while nothing in this Db is written.
     fn read_restored() {
-        let kernel = self.kernel.get()
+        let kernel = self.engine()
         if self.restored.get() < 0 {
             self.restored.set(kernel.input_family())
             kernel.set_input(self.restored_cell(0), self.writes.get())
@@ -377,7 +404,7 @@ impl Db {
     fn unsettles_restored() {
         if self.restored.get() < 0 { return }
         self.writes.set(self.writes.get() + 1)
-        self.kernel.get().set_input(self.restored_cell(0), self.writes.get())
+        self.engine().set_input(self.restored_cell(0), self.writes.get())
     }
 
     /// The revision `cell` moved at, kept where a family verifies by it.
@@ -386,12 +413,12 @@ impl Db {
         moved_at.put("${cell}", rev)
     }
 
-    /// The kernel's revision.
-    fn revision() -> int { self.kernel.get().revision() }
+    /// The kernel's revision, -1 while there is no kernel.
+    fn revision() -> int { self.kernel.get()?.revision() ?? 0 - 1 }
 
     /// Whether any cell here can have a reader: no query ever opened in
     /// the kernel means no write can be late.
-    fn read_ever() -> bool { self.kernel.get().opened_ever() }
+    fn read_ever() -> bool { self.kernel.get()?.opened_ever() ?? false }
 
     /// The name a reader's token stands for.
     fn reader(token: int) -> string { "a query (reader ${token})" }
@@ -536,7 +563,7 @@ impl Answers<V> {
         while self.held.get().length <= db.id { self.held.push(null) }
         let slots = self.held
         let id = db.id
-        let kernel = db.kernel.get()
+        let kernel = db.engine()
         self.placed(db, held_in(kernel, kernel.family((arg: int) -> reasked(slots.get()[id], arg))))
     }
 
