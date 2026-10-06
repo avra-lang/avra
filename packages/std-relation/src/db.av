@@ -50,7 +50,7 @@ export type Db = {
     sweepers: Cell<List<fn(Db, int, int) -> void>>,
     kernel: Cell<Kernel?>,
     home: Cell<Home>,
-    moves: Cell<Map<string, Cell<Map<string, int>>>>,
+    moves: Cell<List<Cell<List<int>>?>>,
     row_families: Cell<List<int>>,
     hears: Cell<fn(string) -> void>,
     durable: Durable,
@@ -94,6 +94,11 @@ export fn transient() -> Durable {
     }
 }
 
+/// The revision `cell` moved at, 0 for one no write has moved.
+fn moved_in(moved_at: List<int>, cell: int) -> int {
+    if cell < moved_at.length { moved_at[cell] } else { 0 }
+}
+
 fn no_bytes() -> Bytes? { null }
 
 fn no_word() {}
@@ -120,7 +125,7 @@ fn made(durable: Durable) -> Db {
     let hashes: Cell<List<fn() -> int>> = Cell.new([])
     let closers: Cell<List<fn() -> void>> = Cell.new([])
     let sweepers: Cell<List<fn(Db, int, int) -> void>> = Cell.new([])
-    let moves: Cell<Map<string, Cell<Map<string, int>>>> = Cell.new({})
+    let moves: Cell<List<Cell<List<int>>?>> = Cell.new([])
     let row_families: Cell<List<int>> = Cell.new([])
     let cells: Cell<Map<string, int>> = Cell.new({})
     let runs: Cell<List<int>> = Cell.new([0])
@@ -198,11 +203,14 @@ impl Db {
     }
 
     /// A family of `kernel` verified by the revision a write last stamped
-    /// each cell with.
+    /// each cell with — kept by the family's number and the cell's, 0 for a
+    /// cell no write has moved.
     fn stamped_family(kernel: Kernel) -> int {
-        let moved_at: Cell<Map<string, int>> = Cell.new({})
-        let family = kernel.family((cell: int) -> moved_at.get().get("${cell}") ?? 0)
-        self.moves.put("${family}", moved_at)
+        let none: List<int> = []
+        let moved_at = Cell.new(none)
+        let family = kernel.family((cell: int) -> moved_in(moved_at.get(), cell))
+        while self.moves.get().length <= family { self.moves.push(null) }
+        self.moves.set_at(family, moved_at)
         family
     }
 
@@ -236,7 +244,7 @@ impl Db {
     /// numbers its own from the start. Each
     /// relation forgets its read marks as it registers again.
     fn forgotten() {
-        let no_moves: Map<string, Cell<Map<string, int>>> = {}
+        let no_moves: List<Cell<List<int>>?> = []
         let no_rows: List<int> = []
         self.moves.set(no_moves)
         self.row_families.set(no_rows)
@@ -369,8 +377,10 @@ impl Db {
 
     /// The revision `cell` moved at, kept where a family verifies by it.
     fn stamped(family: int, cell: int, rev: int) {
-        let moved_at? = self.moves.get().get("${family}") else { return }
-        moved_at.put("${cell}", rev)
+        if family >= self.moves.get().length { return }
+        let moved_at? = self.moves.get()[family] else { return }
+        while moved_at.get().length <= cell { moved_at.push(0) }
+        moved_at.set_at(cell, rev)
     }
 
     /// The kernel's revision, -1 while there is no kernel.
