@@ -31,7 +31,8 @@ fn wire_map(row: MetaMap) -> string {
 
 /// A unit row contains the answer, its heap, embed dependencies, the bodies its
 /// run entered, and the value fingerprint that specialization keys use. Heap handles remain indices into
-/// these serialized arrays; no process-local type or AST id crosses the disk.
+/// these serialized arrays. The bodies a run entered are named as its process named them, so
+/// what the store keeps is `kept_wire`.
 fn settled_wire(s: Settled) -> string {
     "S2" +
         wire_field("${s.fingerprint}") +
@@ -40,6 +41,11 @@ fn settled_wire(s: Settled) -> string {
         heap_wire(s.heap) +
         wire_value(s.answer)
 }
+
+/// A settled value AS THE STORE KEEPS IT: without the bodies its run entered. Those
+/// names are the run's own process's, and nothing reads them back — so no
+/// process-local id crosses the disk.
+fn kept_wire(s: Settled) -> string { settled_wire(s with { ran: [] }) }
 
 type WireReader = { raw: string, pos: int }
 

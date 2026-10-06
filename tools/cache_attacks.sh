@@ -1396,6 +1396,33 @@ HR "bi: an edit elsewhere checks clean" check bi 0
 printf 'export fn pad() -> int { 0 }\n' > $R/bil/src/list_tell.av
 steps=$((steps+1)); bi_out=$(./avra check $R/bi 2>&1); bi_st=$?
 case "$bi_st:$bi_out" in 1:*"tell"*) [ -n "${VERBOSE:-}" ] && echo "ok    bi: the impl gone -> refused" ;; *) fails=$((fails+1)); echo "FAIL  bi: the impl over List is gone and the warm check did not refuse the call (exit $bi_st): $(printf '%s' "$bi_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+# A CONST THAT STANDS ON ANOTHER CONST FOLLOWS IT. `kr`'s K reads J in another module,
+# and J settles by running a body in a third. A build that finds K's verdict kept does
+# not run it again, and K's file's record then lists NO file its run read — the state
+# this attack must reach, read back from the record itself. From there the body is
+# edited: J moves, its module's interface with it, and K's file — held on a key that
+# no longer names that body — must be read all the same, in a check and in the binary.
+mkdir -p $R/kr/src/f $R/kr/src/x $R/kr/src/y
+printf '[package]\nname = "rt-kr"\nversion = "0.1.0"\n' > $R/kr/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/kr/src/y/calc.av
+printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/kr/src/x/mid.av
+printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\nfn scaled(const n: int, factor: int) -> int { n * factor }\nexport fn seated() -> int { scaled(J, 10) }\n' > $R/kr/src/f/held.av
+printf 'use f.{shown, seated}\nprintln("${shown()} ${seated()}")\n' > $R/kr/src/main.av
+kr_runs() { # the files the record says held.av's compile-time runs read, by name
+    grep -rah "$(printf '^file\t')" .avra-cache/*/rows 2>/dev/null | awk -F'\t' '$2 ~ /cache-attacks\/kr\/src\/f\/held.av$/ { m = split($4, b, "|"); for (i = 1; i <= m; i++) { k = split(b[i], c, "/"); if (c[k] != "") printf "%s ", c[k] } }'
+}
+HR "cold kr" check kr 0
+steps=$((steps+1)); case "$(kr_runs)" in *mid.av*) ;; *) fails=$((fails+1)); echo "FAIL  kr: a cold check records no run of held.av reading mid.av ('$(kr_runs)'), so the fixture has no run to lose" ;; esac
+S "kr: built with K's verdict kept" kr
+steps=$((steps+1)); [ -z "$(kr_runs)" ] || { fails=$((fails+1)); echo "FAIL  kr: held.av's record still lists its run's files ('$(kr_runs)') — the attack does not reach the state it is for"; }
+printf '// moved\n' >> $R/kr/src/main.av
+S "kr: an edit elsewhere, held.av held" kr
+ed $R/kr/src/y/calc.av "n * 2" "n * 3"
+HR "kr: the body J ran moved" check kr 0 f/held.av read
+S "kr: and the binary follows" kr
+steps=$((steps+1)); kr_out=$($R/kr/src/main 2>&1)
+[ "$kr_out" = "18 90" ] || { fails=$((fails+1)); echo "FAIL  kr: K or the seat it feeds kept the value of the body J ran before: printed '$kr_out', wanted '18 90'"; }
+
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
 # order than a cold build meets them. The binary must be the cold one's, byte for
