@@ -729,16 +729,11 @@ keepers:
 
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
+TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test \
+                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh reclaim_test.sh
 tool-witnesses:
-	@sh tools/capped.sh --self-test
-	@sh tools/gate_receipt.sh --self-test
-	@sh tools/watch.sh --self-test
-	@sh tools/memcap.sh --self-test
-	@sh tools/witness_fmt_changed.sh
-	@sh tools/witness_gate_changed.sh
-	@sh tools/witness_work_wait.sh
-	@sh tools/witness_work_run.sh
-	@sh tools/reclaim_test.sh
+	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
+	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
 
 # THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
 # compiler/codecs.av's registry runs every pair over its exemplars,

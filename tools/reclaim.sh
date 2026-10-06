@@ -60,7 +60,8 @@ cwds() {
     if command -v lsof >/dev/null 2>&1; then
         lsof -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'
     elif [ -d /proc/self ]; then
-        for c in /proc/[0-9]*/cwd; do readlink "$c" 2>/dev/null; done
+        # a process may end mid-walk or stand unreadable: neither is a failure
+        for c in /proc/[0-9]*/cwd; do readlink "$c" 2>/dev/null || :; done
     else
         echo "reclaim: no way to read a process's directory here — retiring nothing" >&2
         exit 1
