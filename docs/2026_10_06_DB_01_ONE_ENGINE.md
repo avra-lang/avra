@@ -4,229 +4,312 @@
 Plan: `docs/2026_10_06_COMPILER_DB.md` and its hand-off, on `origin/db-design`.
 Base: `origin/main` @ `4294595`. Nothing here is built unless a line says so.
 
-Status: P0 and P1 have a go. P3 onward is held for the review of this note.
-Decided by team-lead after the first draft: Q1 yes, Q2 yes, Q3 this lane (§9).
-§5 (tasks) was added after the first draft and has not been reviewed.
+**Status.** Second draft, after the independent review (`REVIEW3.md`: GO WITH CHANGES for
+P3–P6, NO-GO for P4c as first written) and two owner decisions (§5.1). P0 and P1 are
+being verified. Order of work: P0 → P1 → P2, P3 → P4a1 … a4 one at a time → P4b → P5 →
+P6. P4c is not on the compiler's path and is built only from §5 as rewritten here.
 
-READ (opened, each): the plan and hand-off, `query/kernel.av`, `query/memo.av`,
-std-relation `db.av` / `query.av` / `input.av`, `families.av`, `workspace.av`
-:500-800 / :965 / :1682, `decls.av` :680-1090, `compiler/db.av` :540-660, REVIEW
-B2 / B3 / E2 / G1, REVIEW2 N1 / N2 / N4 / N6, the db-measure kernel diff.
+Labels: READ (I opened the line) · PROBED (I ran it) · MEASURED · PROPOSED (not built).
 
 ## 1. End state — files and types
 
-1. `packages/std-relation/src/kernel.av` (today's `query/kernel.av`), `answers.av`
-   (today's `query/memo.av`: the typed `Relation<T>` = kernel + family + value table),
-   `fixpoint.av`, `key_marks.av`, `table.av` (core's `Table` / `list_cell` / `map_cell`,
-   which the kernel needs and std-relation cannot import from std-avrac). std-avrac's
-   `query/` is DELETED; its tests move too. The layering line becomes
-   `core → grammar → features → compiler`, all over `@std/relation`. The moved files
-   name nothing in std-avrac (the derive-file law: `relation.av`'s import closure grows
-   by them).
-2. `Db` (std-relation `db.av`) = `@identity { id, kernel: Kernel, closed, closers,
-   sweepers, runs, names, durable }`. EVERY Db owns a kernel, `new_db()` included, so a
-   run-time program has the same engine. Deleted: `Hooks` (all nine), `quiet_hooks`,
-   `hooked_db`, `armed` / `quieted` / `rearmed` / `registrars`, `Memo<V>`, `Kept`,
-   `InputSlot`, `writes`, `cells`, `running`, `owner_frames`, `last_query` /
-   `last_frame`. Kept until DB 07a, unchanged in meaning: named owners and their sweep
-   (`owner_named`, `opened_run`, `closed_run`, `put_owned`) — `decls_mint.av` mints
-   Decl rows through them.
-3. The compiler: a Workspace has ONE std-relation Db. Today it has three plus a bare
-   kernel (`decl_rows` armed to the kernel, `failures_db` hooked to it, `refs_db` a
-   plain unrecorded `new_db()`, compiler `Db.kernel`). `compiler/db.av`'s `Db` keeps its
-   `DbRow` store until DB 06 / 12 but holds that one Db. `relation_hooks`,
-   `kernel_hooks`, and the two copies of the hash→revision conversion (`workspace.av`
-   `revision_of_hash`, decls' `move_stamps` — both string-keyed maps per cell) become
-   ONE kernel verb over dense int rows.
+1. **The engine's files live in `@std/relation`.** `kernel.av` (today's
+   `query/kernel.av`), `answers.av` (today's `query/memo.av`: the typed `Relation<T>` =
+   kernel + family + value table), `fixpoint.av`, `key_marks.av`, `table.av` (core's
+   `Table` / `new_table` / `list_cell` / `map_cell`). std-avrac's `query/` and
+   `core/table.av` are DELETED; their tests move. What the first draft left out (review
+   §3):
+   - `core/` then imports `@std/relation` for `Table` (16 non-test files use it, 24 import
+     `query.`). The layering line becomes `@std/relation → core → grammar → features →
+     compiler`.
+   - **The engine reads no environment and needs no `@std/io`.** `AVRA_QTRACE` and
+     `AVRA_DB_GRAPH` are read by the compiler's driver, which hands the kernel a trace
+     sink and a graph sink (two `fn(string) -> void` cells, quiet by default — the shape
+     the audit's `sink` already has). `qtrace` (a runtime row behind a core fn) stays in
+     core, behind that sink. std-relation's manifest gains no row.
+   - the paths `make vocab`, `make cited` and CLAUDE.md name move in the same commit.
+2. **`Db`** (std-relation `db.av`) = `@identity { id, kernel: Kernel, closed, closers,
+   sweepers, runs, names, durable }`. EVERY Db holds a kernel — its own, or one it is
+   given (`db_over(kernel)`; P4a1's seam, gone at P4a3). Deleted: `Hooks` (all nine),
+   `quiet_hooks`, `hooked_db`, `armed` / `quieted` / `rearmed` / `registrars`, `Memo<V>`,
+   `Kept`, `InputSlot`, `writes`, `running`, `owner_frames`, `last_query` /
+   `last_frame`. KEPT until DB 07a, unchanged in meaning: named owners and their sweep
+   (`owner_named`, `opened_run`, `closed_run`, `put_owned`, `runs`, `sweepers`) —
+   `decls_mint.av` mints Decl rows through them. `owner_named` interns through `names`
+   (the first draft listed its map, `cells`, as deleted).
+3. **The compiler: a Workspace has ONE std-relation Db.** Today it has three plus a bare
+   kernel: `decl_rows` (armed to the kernel), `failures_db` (hooked to it), `refs_db` (a
+   plain `new_db()`, nothing recorded — READ `decls.av:843`), and compiler `Db.kernel`.
+   `compiler/db.av`'s `Db` keeps its `DbRow` store until DB 06 / 12 but holds that one
+   Db. `relation_hooks`, `kernel_hooks`, and the two copies of the hash→revision
+   conversion (`workspace.av` `revision_of_hash`, decls' `move_stamps` — string-keyed
+   maps per cell) become ONE kernel verb over dense int rows.
 
 ## 2. How a query finds its engine (D3)
 
-- `once fn ambient() -> Cell<Db>` in std-relation, seeded with the process's default
-  Db; `current()` reads it; `within_db(d) { … }` swaps and restores (a free fn: generic
-  methods are F2031). A `@query` wrapper reads the ambient to find its engine, so inside
-  a body the ambient is, by induction, the Db the query was asked on. Nothing else sets
-  it. §5 replaces the `once` cell with a per-task value; the accessor does not change.
-- Several workspaces in one process: each command or test entry enters its workspace's
-  Db. A converted compiler query finds its Workspace as `workspaces()[current().id]`
-  (the dense-by-Db-id pattern `Stores<R>` already uses), cleared at `disarmed`. The
-  default Db has no workspace, so a compiler query asked outside an entered workspace is
-  a named refusal, never a wrong answer. Each Workspace face that fronts a converted
-  query checks `current().id == self.rel.id` (one compare) and refuses on a mismatch —
-  the only defence against "B entered, A's method called"; its cost is measured and
-  held to the read budget.
-- The evaluator: `once` answers are per machine (`backend/interp.av:107`, `onces`), so
-  an evaluated program has its own ambient and default Db and can never see the host's.
-  A plugin query reaching the compiler's kernel stays DB 10's host row.
+**One law, held at one door: inside any open frame, the ambient Db is that frame's Db.**
+
+- `current()` answers the ambient Db; `within_db(d) { … }` enters one and restores the
+  previous under `defer` (a free fn: generic methods are F2031). The ambient starts as
+  the process's default Db.
+- **`kernel.begin` refuses a frame opened while the ambient Db is not the kernel's own
+  Db**, naming the query and both Dbs. One compare per frame, none per read. Every ask
+  made BY HANDLE (`self.db.ask(k)` — the 31 unconverted families, READ
+  `workspace.av:1683-1707`) enters `within_db(self.rel)`. So the law holds for converted
+  and unconverted families alike, and for every stored closure (verifiers, closers,
+  sweepers, `Analysis`'s closures, the declaration table's hooks): each reaches the
+  kernel through `begin`. This REPLACES the first draft's per-face check, which an
+  unconverted body calling `sig_of(d)` directly walked past.
+- **A frame lives in its Db's kernel.** The open stack, the cycle test and the stamps are
+  per kernel (they are today, and P1 keeps them so), so a key of Db B can never sit in a
+  dep list of Db A, and two Dbs' unrelated queries can never read as a cycle. What is
+  per ASKER is only which Db is ambient (and, at P4c, which task's frames: §5).
+- **A nested Db inside an open frame.** The compiler builds throwaway Dbs inside open
+  queries today (READ `features/code.av:1078`, `features/decls.av:767`). The rule: from
+  inside an open frame, `within_db(d)` is allowed only for a Db BORN inside that frame
+  (a Db remembers the reader it was made under); any other is refused by name. Reads on
+  the inner Db are recorded on the inner kernel alone. The inner Db is the outer query's
+  local scratch: built from the outer's own recorded reads, dead with it.
+- **The query wrapper abandons its frame under `errdefer`**, so a body left by `fail`,
+  `?`, a trap that unwinds or a cancel leaves no frame behind. Without it one failed
+  body kills the engine for the process.
+- **A converted compiler query finds its Workspace** as `workspaces()[current().id]`.
+  The slot is cleared by that Db's CLOSERS — every Db, not only a one-shot one (a
+  process-wide list of workspaces is the recorded 922 MB leak; CLAUDE.md's cycle law).
+  Asks after `disarmed` are legitimate ("an Analysis asked after is remade over the
+  memoized parts"), so the slot outlives `disarmed` and dies at close; the one-shot
+  suites prove it before P6. The looked-up workspace is never bound to `mut` (F2106:
+  a copy forks it). The default Db has no workspace: a compiler query asked there is a
+  named refusal. `Syntax` and `Names` (P6) need no registry at all.
+- The evaluator: `once` answers are per machine (READ `backend/interp.av:107`), so an
+  evaluated program has its own ambient and default Db and never sees the host's.
 - Tests that build many Dbs: ids are dense and never reused; per-query answer slots are
-  indexed by Db id and released by the Db's closers, exactly as `Stores<R>` today.
+  indexed by Db id and released by the Db's closers, as `Stores<R>` does today. The list
+  only grows; `test packages/std-avrac` time and peak are published per PR (§7).
 
 ## 3. How each thing becomes a kernel cell
 
-- `@query fn q(k: K) -> V`: generates `once fn q_answers() -> Answers<K, V>` (slots by
-  Db id, each a `Relation<V>` plus its keys) and a wrapper = today's
-  `Relation.start` / `finish_lazy`. The family is registered on first ask by stable name
-  (module path + fn name); its verifier re-asks `q` for that arg. The arg is the int of
-  a `@dense` key (std-meta's existing mark; `DeclId` / `FileId` take it), else the key
-  interned per family — by stable hash in 01, as today; by encoded bytes at DB 03 (the
-  collision weakness exists today and is not added). V's digest: its stable hash when it
-  has one, asked lazily; for an answer with no encoding (`DeclSig`, `TypeFacts`) the
-  query names a digest fn.
-- `@input fn i(k) -> V`: the same `Answers`, through today's `Relation.input`; `set_i`
-  is `kernel.set_input`. It records its read. `@input` and `Memo.input` are one
+- **`@query fn q(k: K) -> V`** generates `once fn q_answers() -> Answers<K, V>` (slots by
+  Db id, each a `Relation<V>` plus its keys) and a wrapper = today's `Relation.start` /
+  `finish_lazy`. The family registers on first ask by stable NAME (module path + fn
+  name); ids then follow ask order, so every dump (`AVRA_DB_GRAPH`, `AVRA_QTRACE`)
+  prints the name, never the id. Its verifier re-asks `q` for that arg.
+- **Keys.** A `@dense` key (std-meta's existing mark; `DeclId`, `FileId`) is its int.
+  Any other key is interned per family by its ENCODED BYTES (`stable.av`'s writer), not
+  by a hash: a hash collision hands one key another key's answer, and this work promotes
+  that from two test paths to every running program (`avra-8sb5.46`). In P4a1.
+- **Digests.** An answer with a stable encoding is digested by it, lazily. An answer
+  without one (`DeclSig`, `TypeFacts`) implements a one-method `Digest` trait that the
+  wrapper calls. Not an annotation argument — PROBED by the review: `@tagged(dg)` with a
+  fn is "must name a literal", `@tagged(digest: dg)` is "an annotation's arguments fill
+  its seats" — and not a sibling fn found by name, which is a name match.
+- **Re-entry.** A `@query` that reaches itself is a named refusal that spells the cycle.
+  A query that MEANS to be re-entered declares it and answers `V?`, absent on re-entry
+  (PROPOSED spelling: a second mark, `@reentrant`, beside `@query`; probed before P6's
+  second conversion). Nine families use `start_recursive` today; each takes this form or
+  stays a family until its recursion is removed.
+- **`@input fn i(k) -> V`**: the same `Answers`, through today's `Relation.input`;
+  `set_i` is `kernel.set_input`. It records its read. `@input` and `Memo.input` are one
   definition.
-- A relation's row set and index buckets: the same cells as today (0 = the set,
+- **A relation's row set and index buckets**: the same cells as today (0 = the set,
   b + 1 = bucket b), registered straight on `db.kernel`; a read is `kernel.record_at`.
-  The late-write law is unchanged.
-- An un-owned row insert inside an open `@query` is REFUSED with a named voice (D4;
-  Q1). `Frame`, `began`, `ended` and the self-read law are deleted with it. Compiler
-  families keep named owners until DB 07a.
-- `@family`: `Workspace.built`'s loop calls the same `kernel.family(name, verify)`;
+  The late-write law is unchanged for the compiler (§5 scopes the run-time change).
+- **D4.** An un-owned row insert inside an open `@query` is REFUSED with a named voice.
+  `Frame`, `began`, `ended` and the self-read law are deleted with it. Compiler families
+  keep named owners until DB 07a.
+- **`@family`**: `Workspace.built`'s loop calls the same `kernel.family(name, verify)`;
   `Family` and its ordinals stay until each family converts. The two unchecked strings
-  (`"DeclId"`, `"DeclSig"`) leave the marker in the names PR; real types return per
-  conversion.
-- `Sig`, end to end (the worked example): `@query fn sig_of(d: DeclId) -> Signed`, its
-  body today's `sign_cx_for` + `declare_one`. Gone: `Family.Sig`, its `refetched` /
-  `family_word` / `reads_rows_whole` arms, `decls.sigs`, `sig_voices`, the hand-written
-  ask / begin / settle. The held branch moves inside the body and dies at DB 07e.
+  (`"DeclId"`, `"DeclSig"`) leave the marker in P5.
+
+### 3.1 The first conversion is `Syntax`, not `Sig`
+
+`Syntax` is `DeclId → int`: a `@dense` key, an encodable answer, no recursion, no held
+branch, no side table, three non-test uses. It proves registration by name, the wrapper,
+the digest, `families-left` = 31 and the measurement harness with nothing else moving.
+
+### 3.2 `Sig` second — what its conversion really is
+
+READ `workspace.av:1682-1708`. `Sig`'s body is not a function of its key alone today, so
+it converts only after each row below is settled. "80 lines → 3" does not describe it.
+
+| today | after | DELETED or MOVED |
+|---|---|---|
+| `key(Family.Sig, …)`, `db.ask`, `db.begin`, `db.settle` | the generated wrapper | deleted |
+| `sig_hash` | `impl Digest for Signed` | moved |
+| `Family.Sig` and its arms (`refetched`, `family_word`, `reads_rows_whole`, `dep_audit.av:92`) | — | deleted. `Family` is a `collect enum … dense`, so ranks 7–31 renumber in the same commit (legal once P5 retires `families.order`) |
+| `decls.sigs`, a table `declare_one` writes AS IT RUNS and callers read back | the answer table inside `Answers` | moved, and not for free: signing must RETURN its `DeclSig` instead of writing a shared row. OPEN: whether a re-entrant ask today reads a partly written row; read `declare_*` before P6 and say so here |
+| re-entry: "a sig reached from inside its own computation is simply not there yet" | `@reentrant`, answering `Signed?` | moved into the declared form (§3) |
+| `sig_voices.keep(d.index, …)` | a field of `Signed` | moved |
+| "the language's own declarations were signed at admission" (`x.kind is .Builtin`) | the body answers the admitted row | moved: a table the driver fills, read inside a query — an input in all but name until DB 04 |
+| the held branch (`held_sig_dep`, `file_ensured`, `fill_ensured`) | inside the body | moved: a store read with a hand-recorded dependency, exactly what L1 / L3 exist to delete. It dies at DB 07e and is not "gone" before then |
+| 106 non-test `.sig(` call sites; `features/` reaches signatures through the declaration table's hook because features may not import `compiler/` | unchanged spelling; the hook's target becomes `sig_of` | moved: the hook stays until by-name loading (DB 07d). A query declared low and defined high has no spelling today (sugar ask, recorded at P6) |
+
+Also recorded against DB 06: signing has an effect outside its answer — the type
+registry's flat-record mark ("ITS MARK IS MADE AT ITS DECLARATION"). In one process the
+body runs once, so P6 is safe; the day an answer is restored instead of computed, the
+mark is not made.
 
 ## 4. PR sequence
 
 Each off `origin/main`, green alone, reported before the next.
 
-| PR | what | plan's name |
+| PR | what | proof beyond the standing list (§7) |
 |---|---|---|
-| P0 | the instrument: `tools/db_measure` + `AVRA_DB_GRAPH` from `origin/db-measure` | DB 00 |
-| P1 | deps as packed ints (`family << 40 \| arg`; a negative arg refused at the record site); the kernel's state no longer copied per new read; the repeat-read fast path cut for `Named` / `Items`. Inside today's kernel, behaviour unchanged | 01c |
-| P2 | `read_cost.sh` over db-measure's readbench | 01d |
-| P3 | the move (§1 item 1): files only, no behaviour | — |
-| P4a | one engine: §1 items 2 and 3, the `Db` argument still spelled. c3's assertion (`pure` runs once after unrelated writes) in std-relation's suite on a plain Db AND in `compiler/tests` | 01a + 01b |
-| P4b | the D3 spelling: `@query`, `@input` and the generated relation accessors lose the Db seat (27 non-test call sites, 215 in tests; mechanical) | 01a |
-| P4c | the task-local row (§5): two landings | new |
-| P5 | names, speaking refusals, `make families-left` = 32; `make families` and `families.order` retired on the two stated conditions | 01e |
-| P6 | `Sig` converted: families-left = 31 | DB 12 |
+| P0 | the instrument: `tools/db_measure` + `AVRA_DB_GRAPH` from `origin/db-measure`, plus `ab.sh` (two compilers over one pinned source) | it prints M1's table |
+| P1 | edges as packed ints; the kernel's state split into cells, engine half and asker half; the repeat-read fast path. Inside today's kernel | the graph IDENTICAL, byte for byte |
+| P2 | `read_cost.sh` over db-measure's readbench: instructions per recorded read, the ambient lookup and the Db check included once they exist | the number, for a kernel cell and a relation row |
+| P3 | the move (§1 item 1): files only | the graph identical |
+| P4a1 | a Db holds a kernel, its own or one given; `Hooks` deleted; `@query` / `@input` are cells; keys interned by bytes; `Digest`; the `begin` law and `errdefer`. The compiler's three Dbs are GIVEN the workspace's kernel, so it records what it records today | the graph identical for the 32 families and the relation cells; c3's assertion (`pure` runs once after unrelated writes) on a plain Db and in `compiler/tests` |
+| P4a2 | D4: the insert refusal; `Frame` / `began` / `ended` and the self-read law deleted; std-relation's own program tests rewritten (`query/`, `owner_frames/`, `named_owner/`, `swept_heard/`) | each rewritten test names the law it now proves |
+| P4a3 | three Dbs → one; `refs_db` recorded; `db_over` deleted | the graph CHANGES: the expected delta is stated before the run (the reference relation's cells and their readers' edges appear; nothing else moves) and compared after |
+| P4a4 | `revision_of_hash` + `move_stamps` → one kernel verb over dense rows | the graph identical |
+| P4b | the D3 spelling: `@query`, `@input` and the generated relation accessors lose the Db seat (27 non-test call sites, 215 in tests) | the two-live-workspaces interleaved test, with a stored closure in it, failing without the `begin` law |
+| P5 | families register by name; refusals speak; `make families-left` = 32; `make families` and `families.order` retired on the hand-off's two conditions | — |
+| P6 | `Syntax` converted (families-left = 31); then `Sig`, once §3.2 has no OPEN row | `Syntax`'s cells and edges unchanged |
+| P4c | the per-task asker (§5): two landings and a seed refresh. Its first consumer is `avra-8sb5.57.187` | §5.3 |
 
-Why not 01a → 01b as written: with the engine in std-relation there is no seam for the
-compiler to arm, so a and b collapse into P4a. The semantic change (P4a) is split from
-the spelling change (P4b) instead.
+The plan's 01a → 01b: a Db constructed over a given kernel IS the seam, for P4a1–a2;
+P4a3 removes it.
 
-## 5. Tasks — what the law is at run time  (added after the first draft)
+## 5. Tasks — what the law is at run time
 
 The owner put the engine in `@std/relation` so RUNNING programs get it. The first such
 program is a server with a task per connection whose query bodies wait (a database
-read). So "a query body never yields" cannot be the run-time law.
+read). "A query body never yields" cannot be the run-time law.
 
-What is per ASKER, not per engine — three things, and they travel together:
+### 5.1 The owner's two decisions (2026-10-06) — DECIDED
 
-| state | today | why it is the asker's |
+| # | question | decided |
 |---|---|---|
-| the ambient Db | (new) | two tasks may work on two Dbs |
-| the open-frame stack: `open`, `pending`, `restore`, `began`, `readers` | fields of `KernelState` and `Kernel` | a task that waits mid-body must find its own frames when it resumes, and another task's reads are not its deps |
-| "is this key in flight for ME" (the cycle test) | `open.any(same_key)` over the one stack | a key open in ANOTHER task is not a cycle |
+| O1 | an input changes while a request's query is running: what does the request get? | **A.** The query runs again, so every answer is true at one moment. The retries are capped; at the cap the ask answers a NAMED error, never a mixed answer |
+| O2 | may a query's body start tasks? | **A for now.** A query body that starts a task is REFUSED by name. **B is ticketed, `avra-8sb5.57.187`**: structured children (`all`, `parallel`) whose reads count as the query's; `race` and detached spawns stay refused |
 
-Everything else is the engine's and is shared: cells, verifiers, the revision, the
-last-reader stamps.
+"Why can't we do B now? Don't we have all the parallelization needed?" The
+parallelism is there. What is missing is one fact the engine cannot learn today: **inside
+a child task, which open query is this read for?** The engine finds the open query
+through its asker, and the runtime has no per-task value to hang an asker on (PROBED:
+no task-local in `runtime/`). That per-task slot is P4c. So B is P4c's FIRST consumer and
+lands right behind it: a structured child inherits its spawner's open frame as the place
+its reads go, and the join is where they are folded in.
 
-**The design: one `Asker` value per task, found through one accessor.**
+### 5.2 What is per task, and what is shared
 
-```avra
-type Asker = { db: Cell<Db>, open: …, pending: …, restore: …, began: …, readers: … }
-fn asker() -> Asker      // the running task's
-```
+| state | whose |
+|---|---|
+| which Db is ambient | the task's |
+| the open-frame stack of each kernel: `open`, `pending`, `restore`, `began`, `readers`, `reader`, `last` (P1's `Asker`) | the task's, per kernel |
+| cells, verifiers, the revision, the last-reader stamps | the engine's, shared |
 
-- `asker()` reads ONE task-local slot: a runtime row pair (`avra_task_slot` /
-  `avra_task_slot_set`) over one managed pointer on the task record, released when the
-  task ends. That is the whole runtime change. It is two landings by the registry-row
-  law: the row `Unhosted` plus its C body, then the declaration, the evaluator's arm and
-  the callers.
-- A spawned task starts with an EMPTY frame stack and the spawner's ambient Db. A
-  query's reads are its own task's: what a child task read is not a dep of the parent's
-  open query. A body that fans out and joins asks its facts itself, or the join is an
-  input.
-- A key in flight in another task: the second asker COMPUTES it too. Queries are pure,
-  so both answers are equal and the second settle is an early cutoff. It wastes work and
-  is never wrong; waiting on the first asker instead is a later refinement that needs
-  nothing here to change.
-- Stamps stay shared and stay sound: a reader id names one frame, so a stamp another
-  task left is simply "not mine" and the read is recorded again. A dep list may then
-  hold a key twice. P1's packed lists must therefore tolerate a duplicate — they do
-  today, since a stamp a nested frame clobbered already re-records.
-- A revision that moves while a task waits is already handled: a frame settles as
-  verified at the revision it BEGAN at (`began`).
-- A late write from another task while a reader holds the old value this revision is
-  refused today. At run time that is wrong for a driver that sets an input while a
-  request is in flight; the write must be TAKEN (the revision moves; the in-flight
-  frame settles stale and is re-verified at its next ask). This is the one semantic
-  change §5 asks of the kernel and it lands with P4c, under its own tests.
+The task's value is reached through ONE accessor. It is fetched once per frame and
+carried through the wrapper; a bare relation read pays one call. Its cost is in
+`read_cost.sh`'s number.
 
-**What the compiler-only steps assume meanwhile.** The compiler asks from one task per
-process, so a per-process asker is exactly a per-task one for it. To keep run time out
-of a corner:
+### 5.3 The rules P4c is built to (each a test before the code)
 
-1. P1 already splits the kernel's state in two — engine state and asker state — because
-   that split is what stops the per-read copy. The asker half is one value from then on.
-2. From P4a every reach for the ambient Db or the frame stack goes through `asker()`,
-   defined in one file. Until P4c its body is a `once` cell; P4c changes that body and
-   nothing else.
-3. Until P4c the kernel refuses an out-of-order settle or abandon, naming both queries,
-   so an interleave at run time is a loud trap and never a wrong dep list. P4c deletes
-   that refusal's run-time reach by making the interleave legal.
-4. P4c lands before any run-time consumer is told the engine is ready. P5 and P6 do not
-   depend on it.
+1. **The slot.** One managed pointer per task behind a runtime row pair, released when
+   the task ends. The row lives OUTSIDE the scheduler's object with a main-task fallback,
+   so a program that never spawns still links no scheduler; the wasm runtime carries it.
+   Two landings: the row `Unhosted` with its C body, `avra_rt.h` and `make externs`; then
+   the declaration, the evaluator's arm and the callers.
+2. **The evaluator traps by name** on a query asked from an interpreted task other than
+   the first, until its arm lands — never a silent eval ≠ native.
+3. **A body that starts a task is refused by name** (O2 = A): a child's first touch of the
+   engine finds frames that are its spawner's and says so. Nothing ships in which a
+   child's reads are dropped. Before P4c this cannot be detected, so no run-time consumer
+   is told the engine is ready before P4c.
+4. **A key in flight in another task is computed again.** Queries are pure, so the
+   answers are equal — except an INPUT's first load, which is single-flight per key: the
+   second asker waits for the first load or reuses it. The count of duplicate
+   computations is published (0 for the compiler). Waiting on another task's key instead
+   is NOT free to add later: a cycle can then span tasks, which a per-task cycle test
+   cannot see; it needs a cross-task wait graph, and is not designed here.
+5. **A settle whose `began` is older than the cell's `verified_at` is dropped.** The
+   value still returns to its caller; the cell keeps the newer answer.
+6. **O1 = A.** When the outermost ask of a task settles and an input one of its frames
+   read has moved since it began, it runs again. After the cap (PROPOSED: 8) the ask
+   answers the named failure `Unsettled { query, key, attempts }`. OPEN for P4c's first
+   design round: how a call site whose type is plain `V` hears it — a trap by that name,
+   or a last attempt that holds writers off until it settles.
+7. **The late-write law changes only for a write from OUTSIDE the reader's task.** A
+   write by the task that holds the reader stays refused — the compiler's `collect` /
+   mint ordering rests on that refusal, and §3 keeps it. A write from a driver or another
+   task is an input arriving: taken, and rule 6 decides what the reader does.
+8. **Duplicates in a frame's dep list are bounded.** Stamps stay shared, so two tasks
+   reading the same keys in turn clobber each other's stamp and each read re-records. A
+   frame's list is deduplicated at settle (the edges are ints: sort and compact).
+9. A cancelled task: the wrapper's `errdefer` (§2, already in P4a1) abandons its frames;
+   its value is dropped with it.
 
-Not designed here: the evaluator runs interpreted tasks, so its arm for the slot keys
-by the interpreted task, not the host's. That is the second landing's work.
+### 5.4 What the compiler-only steps assume meanwhile
+
+The compiler asks from one task per process, so a per-process asker is a per-task one for
+it. P1 already splits kernel state into the engine's half and the asker's. From P4a1 the
+`begin` law, the `errdefer` and bytes-interned keys are in. Until P4c the kernel refuses
+an out-of-order settle or abandon by name, so an interleave is a loud trap and never a
+wrong dep list. P5 and P6 do not depend on P4c.
 
 ## 6. Generation, seed and bridge cost
 
 No step P0–P6 needs a bridge or a seed refresh by design: none adds syntax, a runtime
 row, a node variant or a moved `@std/meta` shape, and derives run from source. Each is
 still proven by `make bootstrap` from the committed seed, `seed-check`, and gen-2 ==
-gen-3. P4c is the exception: a runtime row the compiler's own source declares is two
-landings with a seed refresh between.
+gen-3. P4c is the exception (§5.3 rule 1).
 
 Watch points: P3 — the seed must resolve the new files in std-relation (std-relation
 already imports `@std` packages with no manifest rows, so the resolver is in the seed).
-P4a / P4b — the compiler's own source wears `@query` / `@input` in `doc_rows`,
+P4a1 / P4b — the compiler's own source wears `@query` / `@input` in `doc_rows`,
 `inputs`, `findings`, `answers`; rewritten in the same commit. P6 — a `Family` variant
-removed: every exhaustive match loses an arm, source only.
+removed and the ranks after it renumbered: source only. `@reentrant`, if it needs more
+than a mark the derive reads, is probed before it is relied on.
 
-The one thing that WOULD cost a bridge before P4c: `@query(digest: some_fn)`, if a fn
-name is not a legal Declares-annotation argument (F2067). Probed first; the fallback is
-a sibling fn by convention, with no language change.
+## 7. What each PR is verified by and publishes
 
-## 7. Measurements each PR publishes
+Standing list: `make bootstrap` from the seed, `seed-check`, gen-2 and gen-3, the whole
+`sh tools/work test` selection, `make cache-attacks`, `turn-memory-attack`, the keepers,
+idioms per touched package, `fmt --check`.
 
-On a Sprite, both compilers over ONE pinned source snapshot, the cache moved aside,
-three runs: cells · edges · read calls per family · bytes per edge · bytes per cell ·
-`Kernel.newly_read` MB · cold, no-op and one-edit `check packages/cli` time and peak ·
-instructions per recorded read (a kernel cell, a relation row).
+Published, from `tools/db_measure/ab.sh` on a Sprite — both compilers over ONE pinned
+source, every store moved aside, three rounds: cells · edges · read calls per family ·
+bytes per edge · bytes per cell · `Kernel.newly_read` MB · cold `check packages/cli`
+in INSTRUCTIONS, wall time and peak · no-op and one-edit time · instructions per recorded
+read (a kernel cell, a relation row) · bytes per `new_db()` · `test packages/std-avrac`
+time and peak · duplicate computations.
 
 | PR | budget |
 |---|---|
-| every PR | cold time and peak no worse than its base beyond run-to-run noise; the graph identical where behaviour is unchanged |
+| every PR | cold instructions and peak no worse than its base; the graph as §4 says |
 | P1 | `newly_read` < 60 MB (375 today) |
-| P4a | a relation's recorded read ≤ 350 instructions (~938 today); c3 = once |
-| P3, P4b, P5 | neutral |
-| P6 | neutral; `Sig`'s cells and edges unchanged |
+| P4a1 | a relation's recorded read ≤ 350 instructions (~938 today), the ambient and Db checks included; c3 = once |
+| P3, P4a4, P4b, P5 | neutral |
+| P6 | neutral; the converted family's cells and edges unchanged |
 
 ## 8. The three riskiest points
 
-1. The ambient Db answering for the wrong workspace, silently. De-risk: the face check
-   and the no-workspace refusal of §2; a two-live-workspaces interleaved test written
-   before P4b and shown failing without the check.
-2. Collapsing `Hooks` while Decl minting depends on owner frames, sweeps and the
+1. The ambient Db answering for the wrong workspace, silently. De-risk: the `begin` law
+   of §2, proved by a test with two live workspaces, interleaved asks and a stored
+   closure, shown failing without it.
+2. Collapsing `Hooks` while Decl minting depends on named owners, sweeps and the
    late-write law — an error is a stale or doubled Decl row and a gen-2 trap. De-risk:
-   P4a keeps the named-owner API as it is; the proof is an `AVRA_DB_GRAPH` dump
-   edge-for-edge identical before and after on the pinned snapshot, `AVRA_QTRACE` gen-1
-   against gen-2 identical, `cache-attacks`, `turn-memory-attack`.
-3. Packed deps and the hot-path rewrite breaking red-green only on warm edits (stamp
-   restore under nesting, abandon, a late write, a cycle). De-risk: adversarial kernel
-   tests for those four written first; the same graph diff; `warm_edit.sh`.
+   P4a1 keeps the named-owner API as it is and the compiler's three Dbs apart; the proof
+   is the graph byte-identical, `AVRA_QTRACE` gen-1 against gen-2 identical,
+   `cache-attacks`, `turn-memory-attack`. Only P4a3 moves the graph, by a delta stated
+   first.
+3. Packed deps and the hot-path rewrite breaking red-green only on warm edits. De-risk:
+   the adversarial kernel tests (stamp restore under nesting, abandon, a write while
+   open, a cycle, the last read across a begin and a close), each killed by a mutant;
+   the graph diff; `warm_edit.sh`.
 
-## 9. Questions, answered by team-lead
+## 9. Questions, answered
 
-| # | question | answer |
-|---|---|---|
-| Q1 | does 01 enforce D4? | yes: P4a refuses an un-owned insert inside an open `@query` |
-| Q2 | do relation accessors lose the Db seat in P4b? | yes |
-| Q3 | who lands the instrument? | this lane, as P0 |
+| # | question | answer | by |
+|---|---|---|---|
+| Q1 | does 01 enforce D4? | yes, in P4a2 | team-lead |
+| Q2 | do relation accessors lose the Db seat? | yes, in P4b | team-lead |
+| Q3 | who lands the instrument? | this lane, as P0 | team-lead |
+| O1 | an input moves mid-query | the query runs again; capped; a named error at the cap | owner |
+| O2 | may a query body start tasks? | refused for now; structured children are `.57.187`, P4c's first consumer | owner |
+
+A correction to the review, for the record: P1's "a negative arg refused at the record
+site" is not a behaviour change. PROBED on the old kernel, the same program
+(`query/tests/negative_arg`) already traps — `index -1 is out of bounds (length 0)`,
+from the stamp row's write. P1 changes the words of that trap, not whether it happens.
