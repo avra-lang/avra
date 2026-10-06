@@ -27,14 +27,16 @@ while child.poll() is None:
     time.sleep(1)
     least = min(least, available_mb())
     rows = subprocess.run(["ps", "-eo", "rss,args", "--sort=-rss"], capture_output=True, text=True).stdout.splitlines()[1:4]
+    if int(time.time() - started) % 20 == 0:
+        print(f"  t={int(time.time() - started):4d}s avail={available_mb():5d} MB  " + "; ".join(f"{int(r.split(None, 1)[0]) // 1024} MB {os.path.basename(r.split(None, 1)[1].split()[0])}" for r in rows[:2]), flush=True)
     for row in rows:
         rss, args = row.split(None, 1)
         words = args.split()
         name = " ".join(os.path.basename(w) for w in words[:3])[:60]
         peaks[name] = max(peaks.get(name, 0), int(rss) // 1024)
-    if least < 1100:
+    if least < 900:
         os.killpg(child.pid, signal.SIGKILL)
-        ended = "ENDED EARLY at 1100 MB available"
+        ended = "ENDED EARLY at 900 MB available"
         break
 child.wait()
 print(f"{label}: wall {time.time() - started:.1f} s, {ended}, exit {child.returncode}, least available {least} MB")
