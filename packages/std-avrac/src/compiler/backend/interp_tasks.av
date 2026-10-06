@@ -9,6 +9,8 @@ extern fn avra_vtask_new_at(site: int, id: int) -> int
 extern fn avra_vtask_free(t: int)
 extern fn avra_vtask_end(t: int)
 extern fn avra_vtask_ready(t: int)
+extern fn avra_vtask_joins(t: int, on: int)
+extern fn avra_vtask_joined(t: int, by: int)
 extern fn avra_vtask_sleep(t: int, ms: int)
 extern fn avra_vtask_park_fd(t: int, fd: int, writable: int, timeout_ms: int) -> int
 extern fn avra_vtask_timed_out(t: int) -> int
@@ -190,6 +192,7 @@ impl Machine {
             t = self.joining_of(t)
         }
         if self.tasks[self.running].arming { return self.trapped_val("a task waited inside a wait it had not parked") }
+        avra_vtask_joins(self.tasks[self.running].vt, self.tasks[id].id)
         if self.tasks[id].clocked { return self.waited_on_time(id) }
         self.tasks[id].waiters.push(self.running)
         self.parking = true
@@ -324,7 +327,7 @@ impl Machine {
         let t = self.tasks[id]
         if t.record >= 0 { self.arrays[t.record].set(2, answer) }
         self.tasks[id].done = true
-        for w in t.waiters { avra_vtask_ready(self.tasks[w].vt) }
+        for w in t.waiters { avra_vtask_joined(self.tasks[w].vt, t.id) }
         self.tasks[id].waiters = []
         for v in t.slots { self.releases_val(v) }
         self.tasks[id].slots = []

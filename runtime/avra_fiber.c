@@ -362,6 +362,25 @@ static void traced_fiber(const char* what, const Fiber* f, long long n) {
     traced(line);
 }
 
+// A join, about to wait: who the joiner waits for. A task nothing runs
+// has no id, and is named as that.
+__attribute__((noinline, cold))
+static void traced_join(const Fiber* f, int64_t on) {
+    char line[160];
+    if (on < 0) avra_fmt(line, sizeof line, "join id=%lld on=unrun", (long long)id_of(f));
+    else avra_fmt(line, sizeof line, "join id=%lld on=%lld", (long long)id_of(f), (long long)on);
+    traced(line);
+}
+
+// A joiner readied by the end of the task it waited for.
+__attribute__((noinline, cold))
+static void traced_joined(const Fiber* f, int64_t by) {
+    char line[160];
+    if (by < 0) avra_fmt(line, sizeof line, "claim id=%lld by=unrun arm=0:0", (long long)id_of(f));
+    else avra_fmt(line, sizeof line, "claim id=%lld by=%lld arm=0:0", (long long)id_of(f), (long long)by);
+    traced(line);
+}
+
 // ── Time ────────────────────────────────────────────────────────
 
 // The process's one clock, read as the scheduler's own.
@@ -1466,6 +1485,12 @@ static void legacy_parked(Fiber* self) {
     self->state = FIBER_PARKED;
 }
 
+// The id of the fiber that runs `task`, or -1 when nothing runs it.
+static int64_t task_id(void* task) {
+    Fiber* f = (Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER];
+    return f ? id_of(f) : -1;
+}
+
 // The calling task parked until `task` has ended; its cells, read after.
 static int64_t* task_awaited(void* task) {
     int64_t* cells = task_cells(task);
@@ -1473,6 +1498,7 @@ static int64_t* task_awaited(void* task) {
     Fiber* self = g_current;
     refuse_join_ring(task, self);
     alone(self);
+    if (TRACING) traced_join(self, task_id(task));
     self->joining = task;
     waits_gate(self, task, 0, 0);
     legacy_parked(self);
@@ -1758,6 +1784,15 @@ void avra_vtask_end(int64_t t) {
 }
 
 void avra_vtask_ready(int64_t t) { ready_push(virtual_at(t)); }
+
+void avra_vtask_joins(int64_t t, int64_t on) {
+    if (TRACING) traced_join(virtual_at(t), on);
+}
+
+void avra_vtask_joined(int64_t t, int64_t by) {
+    if (TRACING) traced_joined(virtual_at(t), by);
+    ready_push(virtual_at(t));
+}
 
 // The evaluator's reads of the clock are its host's: when one of its
 // tasks parks, that count begins again.

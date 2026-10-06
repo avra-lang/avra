@@ -326,8 +326,11 @@ static void joins_of_tasks_nothing_runs(void) {
 
 // ── the trace names a virtual task by its machine's id ──────────
 
+static void* answers_cap(void* body) { return answer(cap(body)); }
+
 // Run alone, in a process started with the trace on.
 static int traced_scene(void) {
+    if (joined(spawn1(answers_cap, 3)) != 3) return 1;
     void* gate = avra_gate_new();
     int64_t claimant = avra_vtask_new_at(7, 41);
     int64_t waiter = avra_vtask_new_at(8, 42);
@@ -338,6 +341,12 @@ static int traced_scene(void) {
     if (avra_vtask_next() != waiter) return 1;
     avra_vtask_claim(waiter);
     avra_vtask_end(waiter);
+    int64_t joiner = avra_vtask_new_at(9, 43);
+    avra_vtask_joins(joiner, 41);
+    avra_vtask_joined(joiner, 41);
+    if (avra_vtask_next() != joiner) return 1;
+    avra_vtask_joins(joiner, -2);
+    avra_vtask_end(joiner);
     avra_vtask_free(claimant);
     avra_rc_release(gate);
     return 0;
@@ -366,6 +375,11 @@ static void trace_names_virtual_tasks(const char* self) {
     CHECK(strstr(buf, "claim id=42 by=41 arm=0:5") != NULL, "a virtual claim names the virtual claimant");
     CHECK(strstr(buf, "end id=42 0") != NULL, "a virtual task's end is traced");
     CHECK(strstr(buf, "end id=41") == NULL, "and a task freed unfinished says no end");
+    CHECK(strstr(buf, "join id=0 on=1\n") != NULL, "a compiled join names the task it waits for");
+    CHECK(strstr(buf, "claim id=0 by=1 arm=0:0") != NULL, "and the joined task's end claims the joiner");
+    CHECK(strstr(buf, "join id=43 on=41\n") != NULL, "a virtual join names the task it waits for");
+    CHECK(strstr(buf, "claim id=43 by=41 arm=0:0") != NULL, "and its waking names the task that ended");
+    CHECK(strstr(buf, "join id=43 on=unrun") != NULL, "a join of a task nothing runs says so");
 }
 
 // ── more waiters than a fiber holds inline ──────────────────────
