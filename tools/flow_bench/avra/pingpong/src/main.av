@@ -1,0 +1,49 @@
+//! PING-PONG OVER BELLS, the only way one task wakes another today: a
+//! ring is a pipe write, a wake is the poller's. Bare, then with a
+//! five-second `within` around each wait. Prints `<key> <total ns>
+//! <round trips>`.
+use @std.io.{env_or}
+use @std.net.{Bell, bell}
+use @std.text.{parse_int}
+use @std.time.{now_ns, secs, within}
+
+fn number(name: string, fallback: int) -> int { parse_int(env_or(name, "")) ?? fallback }
+
+fn held() -> Bell {
+    match bell() { .Ok(b) -> b, .Err(_) -> Bell {} }
+}
+
+/// Answers every ring of `mine` with one of `theirs`, `n` times.
+fn ponger(mine: Bell, theirs: Bell, n: int) -> int {
+    for i in 0..n {
+        let _ = mine.waited_since(i, null)
+        theirs.ring()
+    }
+    n
+}
+
+/// `n` round trips; each wait under a deadline when `bounded`.
+fn rally(n: int, bounded: bool) -> int {
+    let ping = held()
+    let pong = held()
+    let other = spawn ponger(ping, pong, n)
+    let t0 = now_ns()
+    for i in 0..n {
+        ping.ring()
+        if bounded {
+            let _ = within secs(5) { pong.waited_since(i, null) }
+        } else {
+            let _ = pong.waited_since(i, null)
+        }
+    }
+    let spent = now_ns() - t0
+    let _ = other.await
+    ping.close()
+    pong.close()
+    spent
+}
+
+let n = number("FLOW_N", 100000)
+println("pingpong_bell ${rally(n, false)} ${n}")
+println("deadline_bare ${rally(n, false)} ${n}")
+println("deadline_within ${rally(n, true)} ${n}")

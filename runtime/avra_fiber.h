@@ -39,6 +39,51 @@ void avra_fiber_sleep(int64_t ms);
 // and 0 when the time ran out.
 int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms);
 
+// ── The wait set ────────────────────────────────────────────────
+//
+// A task registers what it waits on, then parks ONCE: the first source
+// to claim the set wakes it and the park answers that source's `arm`
+// and `member`; every other waiter is taken back. A row that registers
+// runs between a task's own test and its park, and nothing else runs
+// there.
+
+// The caller also waits for `fd` to be readable (`writable` 0) or
+// writable (1) — having read or written and found nothing, as the
+// descriptor park asks. One the poller cannot watch claims at once.
+void avra_wait_fd(int64_t fd, int64_t writable, int64_t arm, int64_t member);
+// … for the scheduler's clock (`avra_now_ns`) to reach `at_ns`.
+void avra_wait_until(int64_t at_ns, int64_t arm, int64_t member);
+// … for `gate` to claim it. The gate is kept while the waiter is filed.
+// An open gate claims at once.
+void avra_wait_gate(void* gate, int64_t arm, int64_t member);
+// … for `task` to end.
+void avra_wait_task(void* task, int64_t arm, int64_t member);
+// Parks the caller on what it registered and answers the claim:
+// `arm << 32 | member`. Arm -1 is the scheduler's: member 0 a cancel,
+// member 1 the task's deadline. A claim made while the set was arming
+// is answered without a switch; then a cancel that stands; then a
+// deadline that has passed.
+int64_t avra_wait_park(void);
+
+// A gate: a queue of waiters in memory, owned.
+void* avra_gate_new(void);
+// Claims the first waiter whose set nothing has claimed, readies its
+// task and answers the waiter's `member`; -1 when no one waits.
+int64_t avra_gate_claim(void* gate);
+
+// A task nothing runs, owned: `avra_task_answer` ends it.
+void* avra_task_pending(void);
+// One the timer heap ends, with no answer, at `at_ns`.
+void* avra_task_at(int64_t at_ns);
+// Ends a fiberless task with the answer `v` (kept) and claims its
+// waiters. A task answers once: twice is a trap.
+void avra_task_answer(void* task, void* v);
+// Records a cancel on the task and claims its set when nothing has —
+// a claim is never displaced: the task resumes on its arm and hears the
+// cancel at its next wait. A task parked by a sleep, a join or a
+// descriptor park is not woken. A fiberless task ends, unanswered.
+void avra_task_cancel(void* task);
+
 // A `within`'s scope opens: the calling task's deadline narrows to
 // `ms` from now (never widens) for every park until it ends. Answers
 // the outer deadline, which `avra_fiber_within_end` restores.
@@ -68,8 +113,10 @@ void avra_fiber_forked(void);
 // ── The evaluator's tasks: no stack; the policy above files them and
 // names the next, and the evaluator switches its own call stacks. ──
 
-// A new task, filed nowhere until readied or parked.
+// A new task, filed nowhere until readied or parked; `site` is where it
+// was spawned, for the trace.
 int64_t avra_vtask_new(void);
+int64_t avra_vtask_new_at(int64_t site);
 void avra_vtask_free(int64_t t);
 void avra_vtask_ready(int64_t t);
 void avra_vtask_sleep(int64_t t, int64_t ms);
@@ -81,8 +128,29 @@ int64_t avra_vtask_timed_out(int64_t t);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
 void avra_vtask_within_end(int64_t t, int64_t outer);
 int64_t avra_vtask_deadline(int64_t t);
+// The wait set, for the task `t`. `avra_vtask_park` answers 1 when the
+// task is parked — the policy names it once it is claimed — and 0 when
+// its set is claimed already; either way `avra_vtask_claim` reads the
+// claim and takes the losers back.
+void avra_vtask_wait_fd(int64_t t, int64_t fd, int64_t writable, int64_t arm, int64_t member);
+void avra_vtask_wait_until(int64_t t, int64_t at_ns, int64_t arm, int64_t member);
+void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member);
+int64_t avra_vtask_park(int64_t t);
+int64_t avra_vtask_claim(int64_t t);
+// A cancel on `t`, asked by the task whose id is `by`.
+void avra_vtask_cancel(int64_t t, int64_t by);
+// The gate stands open for ever: every waiter is claimed, and a later
+// wait on it is claimed at once — what a finished task's gate does.
+void avra_vgate_open(void* gate);
+
 // The next task to run, waiting on the world as long as it takes; a
 // world with nothing to wait on and nothing ready traps, deadlocked.
 int64_t avra_vtask_next(void);
+
+// How many entries the timer heap holds, how many waiters are filed on
+// descriptors, and how many times the poller has been asked.
+int64_t avra_sched_timers(void);
+int64_t avra_sched_fd_waiters(void);
+int64_t avra_sched_polls(void);
 
 #endif

@@ -1,0 +1,41 @@
+//! A SWITCH: two tasks yielding to each other, `FLOW_N` turns each.
+//! Then the same switches while a deadline stands filed: the spawner has
+//! waited once under a `within`. Prints `<key> <total ns> <switches>`.
+use @std.io.{env_or}
+use @std.net.{Bell, bell}
+use @std.text.{parse_int}
+use @std.time.{ms, now_ns, secs, sleep, within}
+
+fn number(name: string, fallback: int) -> int { parse_int(env_or(name, "")) ?? fallback }
+
+fn turns(n: int) -> int {
+    for i in 0..n { sleep(ms(0)) }
+    n
+}
+
+/// The time two tasks take to yield `n` times each.
+fn yielded(n: int) -> int {
+    let t0 = now_ns()
+    let a = spawn turns(n)
+    let b = spawn turns(n)
+    let switches = a.await + b.await
+    if switches == 2 * n { now_ns() - t0 } else { 0 - 1 }
+}
+
+fn held() -> Bell {
+    match bell() { .Ok(b) -> b, .Err(_) -> Bell {} }
+}
+
+/// The same, after one wait under a `within` that stands meanwhile.
+fn yielded_under_within(n: int) -> int {
+    within secs(60) {
+        let b = held()
+        let _ = b.waited(ms(1))
+        b.close()
+        yielded(n)
+    }
+}
+
+let n = number("FLOW_N", 1000000)
+println("yield_switch ${yielded(n)} ${2 * n}")
+println("yield_under_within ${yielded_under_within(n)} ${2 * n}")
