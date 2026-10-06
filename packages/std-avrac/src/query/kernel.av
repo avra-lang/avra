@@ -30,63 +30,85 @@ export enum Verdict {
     Cycle
 }
 
-/// A cached query's bookkeeping: the deps it discovered, the
+/// A dependency edge: a key packed into one int — its family above
+/// bit 40, its arg below.
+fn packed(family: int, arg: int) -> int { (family << 40) + arg }
+
+fn family_of(edge: int) -> int { edge >> 40 }
+
+fn arg_of(edge: int) -> int { edge & 1099511627775 }
+
+/// No edge: below every packed key, a negative arg's included.
+fn no_edge() -> int { 0 - 4611686018427387904 }
+
+fn edge_of(key: Key) -> int { packed(key.family, key.arg) }
+
+fn key_of(edge: int) -> Key { Key { family: family_of(edge), arg: arg_of(edge) } }
+
+/// A cached query's bookkeeping: the edges it discovered, the
 /// revisions it last CHANGED and was last VERIFIED, and its answer's
-/// hash. The last-reader stamp `record_dep` dedupes against lives
+/// hash. The last-reader stamp `record_at` dedupes against lives
 /// apart, in `Kernel.stamps` — a repeat read never touches this.
 /// `value_hash` is NULL for a cell `settle_lazy` wrote whose fold was
 /// never asked — its OWN state, never a sentinel a real fold could
-/// equal (CLAUDE.md, "an encoding spends the empty value"): the
-/// common case, since a key's first-ever settle has no prior to
-/// compare against and nobody asks a fold to be thrown away unread.
-type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int? }
+/// equal.
+type QueryCell = { deps: List<int>, changed_at: int, verified_at: int, value_hash: int? }
 
 /// A fresh cell for an input: no deps, changed and verified as of
-/// `rev` alike (it was just set, so this revision is both).
+/// `rev` alike.
 fn input_cell(rev: int, value_hash: int) -> QueryCell {
     QueryCell { deps: [], changed_at: rev, verified_at: rev, value_hash: value_hash }
 }
 
-/// One stamp a frame overwrote and must hand back to whoever it took
-/// it from — `record_dep`, `settle`.
-type Restore = { key: Key, previous: int }
+/// One stamp a frame overwrote and must hand back to the frame it
+/// took it from.
+type Restore = { edge: int, previous: int }
 
-type KernelState = {
-    rev: int,
-    /// ONE TABLE PER FAMILY, each its own `Cell` (a write must not copy
-    /// the family it lands in) — `cells[family]` holds that family's
-    /// cells, indexed directly by `arg`. Grown in lockstep with
-    /// `verifiers` (`family`, below): a cell's address never depends
-    /// on a count that can grow, so a family registered after others
-    /// have already written cells cannot remap a single one of them —
-    /// the earlier flat, multiplied addressing did exactly that the
-    /// moment a later family registered (avra-8sb5.57.81).
-    cells: List<Cell<List<QueryCell?>>>,
-    verifiers: List<fn(int) -> int>,
-    // One dependency list per open query, EACH IN ITS OWN CELL. A shared
-    // `List` reaches a copy at every append, so a list routed through the
-    // state copied its whole self per recorded read; a cell is a stable
-    // box, so `push` on it appends in place.
-    pending: List<Cell<List<Key>>>,
-    open: List<Key>,
-    // One RESTORE LIST per open query, parallel to `pending` — null
-    // until that frame's first STAMP OVERWRITE of a STILL-OPEN
-    // ancestor's cell (most frames never nest into one, so most stay
-    // null: no allocation at all on that path, only a bare slot in
-    // this outer list). A NESTED query reading the same cell
-    // overwrites its STAMP (one field, the last reader wins), so the
-    // outer query's next read sees a mismatch that is not "never
-    // read" — it is "read, then clobbered". `record_dep` saves the
-    // clobbered value here; `settle` writes it back, so the ancestor
-    // that resumes sees its own stamp again and its next read is the
-    // one-compare fast path, same as if nothing had nested at all.
-    restore: List<Cell<List<Restore>>?>,
-    // The revision each open query BEGAN at, parallel to `open`: a query
-    // settles as verified at that revision, never a later one, so a write
-    // that moved its input while it ran (a late write bumps the revision)
-    // leaves it re-verified on its next ask rather than certified fresh.
-    began: List<int>,
-    next_reader: int,
+/// THE ASKING HALF: the open queries, innermost last — five stacks
+/// that grow and shrink together — and the innermost's own reader id
+/// and grain, kept apart so a repeat read asks one cell.
+@identity
+type Asker = {
+    /// Each open query's key, as an edge.
+    open: Cell<List<int>>,
+    /// Each open query's edges so far, each list in its own cell: a
+    /// read appends in place.
+    pending: Cell<List<Cell<List<int>>>>,
+    /// Each open query's restores — null until it first overwrites a
+    /// still-open ancestor's stamp, which most never do.
+    restore: Cell<List<Cell<List<Restore>>?>>,
+    /// The revision each open query BEGAN at: it settles as verified
+    /// then, never later, so a write that moved its input while it ran
+    /// leaves it re-verified on its next ask.
+    began: Cell<List<int>>,
+    /// Each open query's reader id; `reader` is the innermost's, 0
+    /// when none is open.
+    readers: Cell<List<int>>,
+    reader: Cell<int>,
+    /// The edge the innermost open query appended last, `no_edge`
+    /// when it has appended none since it began or resumed.
+    last: Cell<int>,
+    /// Whether the innermost open query reads rows whole.
+    whole: Cell<bool>,
+}
+
+fn new_asker() -> Asker {
+    Asker {
+        open: list_cell(),
+        pending: list_cell(),
+        restore: list_cell(),
+        began: list_cell(),
+        readers: list_cell(),
+        reader: Cell.new(0),
+        last: Cell.new(no_edge()),
+        whole: Cell.new(false),
+    }
+}
+
+/// A stack cell without its top.
+fn dropped<T>(stack: Cell<List<T>>) {
+    let held = stack.get()
+    stack.set(held.slice(0, held.length - 1))
 }
 
 /// A read that skipped `ask`, held for the outermost open query: which verb read
@@ -145,45 +167,45 @@ impl Graph {
 
     fn input_set(key: Key) { eprintln("I\t${self.id.get()}\t${key.family}\t${key.arg}") }
 
-    fn settled(key: Key, deps: List<Key>, outermost: bool) {
+    fn settled(key: Key, deps: List<int>, outermost: bool) {
         eprintln("G\t${self.id.get()}\t${key.family}\t${key.arg}\t${deps.length}\t${spelled(deps)}")
         if outermost { eprintln("C\t${self.id.get()}\t${["${n}" for n in self.reads.get()].join(" ")}") }
     }
 
-    fn abandoned(key: Key, deps: List<Key>) {
+    fn abandoned(key: Key, deps: List<int>) {
         eprintln("A\t${self.id.get()}\t${key.family}\t${key.arg}\t${deps.length}")
     }
 
     fn evicted(family: int) { eprintln("E\t${self.id.get()}\t${family}") }
 }
 
-/// Keys as `family:arg`, space-separated.
-fn spelled(keys: List<Key>) -> string { ["${k.family}:${k.arg}" for k in keys].join(" ") }
+/// Edges as `family:arg`, space-separated.
+fn spelled(edges: List<int>) -> string { ["${family_of(e)}:${arg_of(e)}" for e in edges].join(" ") }
 
 /// A kernel is a shared handle. Copying it copies the handle; every
 /// query family and verifier therefore sees the same revision, open
-/// stack, dependencies, and counters.
+/// stack, dependencies, and counters. Every table is its own cell, so
+/// a write lands in place and copies nothing beside it.
 @identity
 export type Kernel = {
-    state: Cell<KernelState>,
-    /// The ask counters, apart from `state`: counting one writes an int,
-    /// never a copy of the state.
+    rev: Cell<int>,
+    /// ONE TABLE PER FAMILY, each its own `Cell` — `cells[family]`
+    /// holds that family's cells, indexed directly by `arg`. Grown in
+    /// lockstep with `verifiers` and `stamps`: a cell's address never
+    /// depends on a count that can grow, so a family registered late
+    /// remaps nothing.
+    cells: Cell<List<Cell<List<QueryCell?>>>>,
+    verifiers: Cell<List<fn(int) -> int>>,
+    /// The LAST-READER STAMP of every key, laid out as `cells` is: the
+    /// reader id that last recorded it, 0 for none.
+    stamps: Cell<List<Cell<List<int>>>>,
+    /// The last reader id minted; ids start at 1.
+    minted: Cell<int>,
+    asker: Asker,
     hits: Cell<int>,
     misses: Cell<int>,
-    /// The open queries' own reader ids, innermost last, parallel to
-    /// the state's `pending`/`open`. Held apart from `state`, as
-    /// `stamps` is, so a repeat read never snapshots `KernelState`.
-    readers: Cell<List<int>>,
-    /// The LAST-READER STAMP of every key: one row per family, indexed
-    /// by `arg`, exactly as the state's `cells` — the reader id that
-    /// last recorded it, 0 (never minted) for none. A bare int, so a
-    /// repeat read is one indexed compare and never retains a
-    /// `QueryCell`; a row grows only when stamped.
-    stamps: Cell<List<Cell<List<int>>>>,
-    /// Each family's GRAIN — whether its queries read rows whole — and the innermost
-    /// open query's, kept apart so a hot read asks one cell.
+    /// Each family's GRAIN — whether its queries read rows whole.
     whole_families: Cell<List<bool>>,
-    whole: Cell<bool>,
     audit: Audit,
     graph: Graph,
 }
@@ -195,24 +217,16 @@ fn unexempt(_b: Bypass) -> bool { false }
 fn uncovering(_b: Bypass) -> List<Key> { [] }
 
 export fn new_kernel() -> Kernel {
-    let state = KernelState {
-        rev: 1,
-        cells: [],
-        verifiers: [],
-        pending: [],
-        open: [],
-        restore: [],
-        began: [],
-        next_reader: 0,
-    }
     Kernel {
-        state: Cell.new(state),
+        rev: Cell.new(1),
+        cells: list_cell(),
+        verifiers: list_cell(),
+        stamps: list_cell(),
+        minted: Cell.new(0),
+        asker: new_asker(),
         hits: Cell.new(0),
         misses: Cell.new(0),
-        readers: list_cell(),
-        stamps: list_cell(),
         whole_families: list_cell(),
-        whole: Cell.new(false),
         audit: Audit {
             on: Cell.new(false),
             width: Cell.new(1),
@@ -231,8 +245,6 @@ export fn new_kernel() -> Kernel {
 }
 
 impl Kernel {
-    fn snapshot() -> KernelState { self.state.get() }
-
     /// Arms the audit for a reader with `width` verbs: `exempt` names the reads that need
     /// no dependency, `covers` the keys that would have recorded one, and `sink` hears
     /// each read no open query covered, when the outermost query settles.
@@ -253,20 +265,23 @@ impl Kernel {
     /// (verb, subject). With no query open, nothing depends on the read.
     fn bypassed(verb: int, subject: int) {
         if !self.audit.on.get() { return }
-        let open = self.snapshot().open
+        let open = self.asker.open.get()
         if open.is_empty() { return }
         let at = subject * self.audit.width.get() + verb
         while self.audit.seen.get().length <= at { self.audit.seen.push(false) }
         if self.audit.seen.get()[at] { return }
         self.audit.seen.set_at(at, true)
         self.audit.touched.push(at)
-        self.audit.held.push(Bypass { verb: verb, subject: subject, frames: open })
+        self
+            .audit
+            .held
+            .push(Bypass { verb: verb, subject: subject, frames: [key_of(e) for e in open] })
     }
 
     /// The outermost query settled: every read held for it is judged against the queries
     /// that were open when it happened, whose deps are final now.
     fn judged() {
-        if !self.snapshot().open.is_empty() { return }
+        if !self.asker.open.get().is_empty() { return }
         let held = self.audit.held.get()
         if held.is_empty() { return }
         let exempt = self.audit.exempt.get()
@@ -336,25 +351,17 @@ impl Kernel {
         true
     }
 
-    fn replace(state: KernelState) { self.state.set(state) }
+    fn revision() -> int { self.rev.get() }
 
-    fn revision() -> int { self.snapshot().rev }
-
-    fn bump() {
-        mut s = self.snapshot()
-        s.rev = s.rev + 1
-        self.replace(s)
-    }
+    fn bump() { self.rev.set(self.rev.get() + 1) }
 
     fn family(verify: fn(int) -> int) -> int {
-        mut s = self.snapshot()
-        s.verifiers.push(verify)
+        self.verifiers.push(verify)
         let no_cells: List<QueryCell?> = []
-        s.cells.push(Cell.new(no_cells))
-        let ordinal = s.verifiers.length - 1
-        self.replace(s)
+        self.cells.push(Cell.new(no_cells))
         let no_stamps: Cell<List<int>> = list_cell()
         self.stamps.push(no_stamps)
+        let ordinal = self.verifiers.get().length - 1
         if self.graph.on.get() { self.graph.registered(ordinal) }
         ordinal
     }
@@ -363,9 +370,7 @@ impl Kernel {
     /// contains this handle. Replacing them breaks that ownership cycle
     /// after a one-shot run.
     fn disarm() {
-        mut s = self.snapshot()
-        s.verifiers = [never_verify for v in s.verifiers]
-        self.replace(s)
+        self.verifiers.set([never_verify for v in self.verifiers.get()])
         self.audit.on.set(false)
         self.audit.exempt.set(unexempt)
         self.audit.covers.set(uncovering)
@@ -374,52 +379,40 @@ impl Kernel {
 
     fn set_input(key: Key, value_hash: int) {
         if self.graph.on.get() { self.graph.input_set(key) }
-        mut s = self.snapshot()
-        let prior? = state_cell(s, key) else {
-            write_cell(s, key, input_cell(state_revision(s), value_hash))
-            self.replace(s)
+        let rev = self.rev.get()
+        let prior? = self.cell(key) else {
+            self.write_cell(key, input_cell(rev, value_hash))
             return
         }
         if prior.value_hash == value_hash {
-            write_cell(
-                s,
-                key,
-                prior with { deps: [], verified_at: state_revision(s), value_hash: value_hash },
-            )
-            self.replace(s)
+            self.write_cell(key, prior with { deps: [], verified_at: rev, value_hash: value_hash })
             return
         }
-        s.rev = state_revision(s) + 1
-        write_cell(s, key, input_cell(state_revision(s), value_hash))
-        self.replace(s)
+        self.rev.set(rev + 1)
+        self.write_cell(key, input_cell(rev + 1, value_hash))
     }
 
     /// An input set again before any reader read it: no reader can have seen the
     /// value it replaces, so no revision moves. Once read, it keeps what its readers
     /// saw, and a later change is `set_input`'s.
     fn input_unread(key: Key, value_hash: int) {
-        let stamps = self.stamp_row(key.family).get()
-        if key.arg < stamps.length && stamps[key.arg] != 0 { return }
-        mut s = self.snapshot()
-        if state_cell(s, key)?.value_hash == value_hash { return }
-        write_cell(s, key, input_cell(state_revision(s), value_hash))
-        self.replace(s)
+        if self.stamp_of(key.family, key.arg) != 0 { return }
+        if self.cell(key)?.value_hash == value_hash { return }
+        self.write_cell(key, input_cell(self.rev.get(), value_hash))
     }
 
     fn ask(key: Key) -> Verdict {
-        self.record_dep(key)
-        let seen = self.snapshot()
-        if seen.open.any(same_key(it, key)) { return Verdict.Cycle }
-        let cell? = state_cell(seen, key) else { return self.miss() }
-        if cell.verified_at == state_revision(seen) { return self.hit() }
+        self.record_at(key.family, key.arg)
+        if self.active(key) { return Verdict.Cycle }
+        let cell? = self.cell(key) else { return self.miss() }
+        let rev = self.rev.get()
+        if cell.verified_at == rev { return self.hit() }
         // Marked verified at this revision BEFORE its deps are walked: a
         // verifier may recursively update this database and re-enter this
         // key, and a re-entry reads the mark and reuses rather than walking
         // again. The mark names the revision the walk began at, so a late
         // write during the walk leaves it stale.
-        mut marked = seen
-        write_cell(marked, key, cell with { verified_at: state_revision(seen) })
-        self.replace(marked)
+        self.write_cell(key, cell with { verified_at: rev })
         if self.any_dep_changed(cell) { return self.miss() }
         self.hit()
     }
@@ -431,46 +424,58 @@ impl Kernel {
         false
     }
 
-    fn changed_after(dep: Key, since: int) -> bool {
-        let verify = self.snapshot().verifiers[dep.family]
-        verify(dep.arg) > since
+    fn changed_after(edge: int, since: int) -> bool {
+        let verify = self.verifiers.get()[family_of(edge)]
+        verify(arg_of(edge)) > since
     }
 
-    fn active(key: Key) -> bool {
-        self.snapshot().open.any(same_key(it, key))
-    }
+    fn active(key: Key) -> bool { self.asker.open.get().contains(edge_of(key)) }
 
     /// Whether ANY key of a family is open — a query of that family is
     /// in flight. The kernel is language-agnostic, so the family is
     /// passed in.
-    fn family_active(family: int) -> bool {
-        self.snapshot().open.any(it.family == family)
-    }
+    fn family_active(family: int) -> bool { self.asker.open.get().any(family_of(it) == family) }
 
     /// The innermost open frame's own reader id — the same number
-    /// `record_dep` stamps a cell with, so a repeat ask by the frame
+    /// `record_at` stamps a cell with, so a repeat ask by the frame
     /// still running answers the SAME identity every time and two
     /// different frames never share one. -1 when nothing is open.
     fn reader() -> int {
-        self.readers.get().last() ?? 0 - 1
+        let innermost = self.asker.reader.get()
+        if innermost == 0 { 0 - 1 } else { innermost }
     }
 
-    fn changed_at(key: Key) -> int {
-        let s = self.snapshot()
-        state_cell(s, key)?.changed_at ?? state_revision(s)
+    fn changed_at(key: Key) -> int { self.cell(key)?.changed_at ?? self.rev.get() }
+
+    /// `key`'s cell; none for a key never settled or set.
+    fn cell(key: Key) -> QueryCell? {
+        let row = self.row(key.family).get()
+        if key.arg < 0 || key.arg >= row.length { return null }
+        row[key.arg]
     }
 
-    fn cell(key: Key) -> QueryCell? { state_cell(self.snapshot(), key) }
+    /// `family`'s cells; a family never registered is a defect.
+    fn row(family: int) -> Cell<List<QueryCell?>> {
+        let rows = self.cells.get()
+        if family < 0 || family >= rows.length { unregistered_family(family) }
+        rows[family]
+    }
+
+    fn write_cell(key: Key, cell: QueryCell) {
+        let row = self.row(key.family)
+        while row.get().length <= key.arg { row.push(null) }
+        row.set_at(key.arg, cell)
+    }
 
     /// The keys a settled cell reads, in the order it first read them.
     fn deps_of(key: Key) -> List<Key> {
-        let none: List<Key> = []
-        state_cell(self.snapshot(), key)?.deps ?? none
+        let none: List<int> = []
+        [key_of(e) for e in self.cell(key)?.deps ?? none]
     }
 
     /// Every key a cell stands for, family by family, in arg order.
     fn settled_keys() -> List<Key> {
-        [Key { family: f, arg: a } for f, row in self.snapshot().cells for a, held in row.get() if held != null]
+        [Key { family: f, arg: a } for f, row in self.cells.get() for a, held in row.get() if held != null]
     }
 
     /// A settled cell's own value hash — an edge's other half, read
@@ -481,22 +486,21 @@ impl Kernel {
     /// only composes this into ANOTHER fold should fold the absence
     /// itself as one more part (the arity law), never coalesce it
     /// into a plain int a real hash could also answer.
-    fn value_hash_of(key: Key) -> int? {
-        state_cell(self.snapshot(), key)?.value_hash
-    }
+    fn value_hash_of(key: Key) -> int? { self.cell(key)?.value_hash }
 
     fn begin(key: Key) {
-        mut s = self.snapshot()
-        let none: List<Key> = []
+        let none: List<int> = []
         let no_restore: Cell<List<Restore>>? = null
-        s.pending.push(Cell.new(none))
-        s.restore.push(no_restore)
-        s.open.push(key)
-        s.next_reader = s.next_reader + 1
-        s.began.push(s.rev)
-        self.replace(s)
-        self.readers.push(s.next_reader)
-        self.whole.set(self.family_whole(key.family))
+        let reader = self.minted.get() + 1
+        self.minted.set(reader)
+        self.asker.pending.push(Cell.new(none))
+        self.asker.restore.push(no_restore)
+        self.asker.open.push(edge_of(key))
+        self.asker.began.push(self.rev.get())
+        self.asker.readers.push(reader)
+        self.asker.reader.set(reader)
+        self.asker.last.set(no_edge())
+        self.asker.whole.set(self.family_whole(key.family))
     }
 
     /// Whether `family`'s queries read rows whole.
@@ -514,21 +518,13 @@ impl Kernel {
     }
 
     /// Whether the innermost open query reads rows whole.
-    fn reading_whole() -> bool { self.whole.get() }
+    fn reading_whole() -> bool { self.asker.whole.get() }
 
     fn settle(key: Key, value_hash: int) {
-        mut s = self.snapshot()
-        let began = s.began.last() ?? state_revision(s)
-        let deps = self.closed_frame(s)
+        let began = self.asker.began.get().last() ?? self.rev.get()
+        let deps = self.closed_frame()
         self
-            .settled(
-                s,
-                key,
-                deps,
-                kept_since(state_cell(s, key), value_hash) ?? state_revision(s),
-                value_hash,
-                began,
-            )
+            .settled(key, deps, kept_since(self.cell(key), value_hash) ?? self.rev.get(), value_hash, began)
     }
 
     /// Like `settle`, but `fingerprint` is called AT MOST ONCE, and
@@ -542,16 +538,14 @@ impl Kernel {
     /// the hash THIS settle writes is always real, so every
     /// comparison after it is exact.
     fn settle_lazy(key: Key, fingerprint: fn() -> int) {
-        mut s = self.snapshot()
-        let began = s.began.last() ?? state_revision(s)
-        let deps = self.closed_frame(s)
-        let prior? = state_cell(s, key) else {
-            self.settled(s, key, deps, state_revision(s), null, began)
+        let began = self.asker.began.get().last() ?? self.rev.get()
+        let deps = self.closed_frame()
+        let prior? = self.cell(key) else {
+            self.settled(key, deps, self.rev.get(), null, began)
             return
         }
         let value_hash = fingerprint()
-        self
-            .settled(s, key, deps, kept_since(prior, value_hash) ?? state_revision(s), value_hash, began)
+        self.settled(key, deps, kept_since(prior, value_hash) ?? self.rev.get(), value_hash, began)
     }
 
     /// Closes `key`'s open frame WITHOUT settling it: nothing is kept for
@@ -559,98 +553,82 @@ impl Kernel {
     /// around it. A query that learns mid-flight it cannot answer whole
     /// answers through its reader instead.
     fn abandon(key: Key) {
-        mut s = self.snapshot()
-        if !same_key(s.open.last() ?? key, key) { abandoned_out_of_order(key) }
-        let deps = self.closed_frame(s)
-        self.replace(s)
+        let innermost = self.asker.open.get().last() ?? edge_of(key)
+        if innermost != edge_of(key) { abandoned_out_of_order(key) }
+        let deps = self.closed_frame()
         if self.graph.on.get() { self.graph.abandoned(key, deps) }
-        for d in deps { self.record_dep(d) }
+        for e in deps { self.record_at(family_of(e), arg_of(e)) }
     }
 
-    /// Closes the open query frame: its read deps, with the frame's
-    /// restores replayed and its stacks popped.
-    // LICENSED compiler.cell_get_copy: the readers stack is cold in the profile, and a `List` cell has no in-place `pop`
-    fn closed_frame(mut s: KernelState) -> List<Key> {
-        let deps: List<Key> = s.pending.pop().get()
-        let _ = s.began.pop()
-        let restored: Cell<List<Restore>>? = s.restore.pop()
-        let _ = s.open.pop()
-        mut open_readers = self.readers.get()
-        let _ = open_readers.pop()
-        self.readers.set(open_readers)
-        self.whole.set(self.family_whole(s.open.last()?.family ?? 0 - 1))
-        if restored != null { for r in restored!.get() { self.stamped(r.key, r.previous) } }
-        deps
+    /// Closes the innermost open frame: its edges, held at their own
+    /// size, with the frame's restores replayed and its stacks popped.
+    fn closed_frame() -> List<int> {
+        let edges = self.asker.pending.get().last()!.get()
+        let restores = self.asker.restore.get()
+        // LICENSED lists.last_index: `last()!` of a nullable element never lets its referent go
+        let restored: Cell<List<Restore>>? = restores[restores.length - 1]
+        dropped(self.asker.pending)
+        dropped(self.asker.restore)
+        dropped(self.asker.open)
+        dropped(self.asker.began)
+        dropped(self.asker.readers)
+        self.asker.reader.set(self.asker.readers.get().last() ?? 0)
+        self.asker.last.set(no_edge())
+        self.asker.whole.set(self.family_whole(family_of(self.asker.open.get().last() ?? 0 - 1)))
+        if restored != null { for r in restored!.get() { self.stamped(family_of(r.edge), arg_of(r.edge), r.previous) } }
+        edges.slice(0, edges.length)
     }
 
-    /// Writes a settled cell, verified this revision, and publishes it.
-    fn settled(
-        mut s: KernelState,
-        key: Key,
-        deps: List<Key>,
-        changed: int,
-        value_hash: int?,
-        verified: int,
-    ) {
-        write_cell(
-            s,
-            key,
-            QueryCell {
-                deps: deps,
-                changed_at: changed,
-                verified_at: verified,
-                value_hash: value_hash,
-            },
-        )
-        self.replace(s)
-        if self.graph.on.get() { self.graph.settled(key, deps, s.open.is_empty()) }
+    /// Writes a settled cell and publishes it.
+    fn settled(key: Key, deps: List<int>, changed: int, value_hash: int?, verified: int) {
+        self
+            .write_cell(
+                key,
+                QueryCell {
+                    deps: deps,
+                    changed_at: changed,
+                    verified_at: verified,
+                    value_hash: value_hash,
+                },
+            )
+        if self.graph.on.get() { self.graph.settled(key, deps, self.asker.open.get().is_empty()) }
         if self.audit.on.get() { self.judged() }
     }
 
-    /// A repeat read is one stamp compare: the key's last-reader stamp
-    /// against the innermost open reader, touching neither the state
-    /// nor a `QueryCell`. A MISMATCH is not always "never read": a
-    /// NESTED query reading the same key overwrites the stamp with ITS
-    /// OWN reader id, so the outer query's next read mismatches too,
-    /// though it already recorded the dep. `newly_read` tells the two
-    /// apart.
-    fn record_dep(key: Key) {
-        let reader? = self.readers.get().last() else { return }
-        if self.graph.on.get() { self.graph.counted(key.family) }
-        let stamp = self.stamp_of(key.family, key.arg)
-        if stamp == reader { return }
-        self.newly_read(key, stamp, reader)
-    }
+    fn record_dep(key: Key) { self.record_at(key.family, key.arg) }
 
-    /// `record_dep` over a key's two parts, the key minted only for a new read — a
-    /// repeat allocates nothing.
+    /// Records a read of a key in the innermost open query. A read of
+    /// the edge that query appended LAST is one compare; any other
+    /// repeat is the key's last-reader stamp against the innermost
+    /// reader. Neither allocates. A stamp MISMATCH is not always
+    /// "never read": a NESTED query reading the same key overwrites
+    /// the stamp with ITS OWN reader id, so the outer query's next
+    /// read mismatches too; `newly_read` tells them apart.
     fn record_at(family: int, arg: int) {
-        let reader? = self.readers.get().last() else { return }
+        let reader = self.asker.reader.get()
+        if reader == 0 { return }
+        if packed(family, arg) == self.asker.last.get() { return }
         if self.graph.on.get() { self.graph.counted(family) }
-        let stamp = self.stamp_of(family, arg)
-        if stamp == reader { return }
-        self.newly_read(Key { family: family, arg: arg }, stamp, reader)
+        let row = self.stamp_row(family)
+        let stamp = stamp_in(row.get(), arg)
+        if stamp != reader { self.newly_read(row, family, arg, stamp, reader) }
     }
 
     /// The reader that last recorded a key, 0 for none.
-    fn stamp_of(family: int, arg: int) -> int {
-        let stamps = self.stamp_row(family).get()
-        if arg >= 0 && arg < stamps.length { stamps[arg] } else { 0 }
-    }
+    fn stamp_of(family: int, arg: int) -> int { stamp_in(self.stamp_row(family).get(), arg) }
 
-    /// Records `key` as a dep of the innermost open query. When the
-    /// stamp it overwrites belongs to a STILL-OPEN frame (a scan of
-    /// the open stack — a handful of ints deep), that frame will read
+    /// Appends an edge to the innermost open query. When the stamp it
+    /// overwrites belongs to a STILL-OPEN frame, that frame will read
     /// this key again and must see its own stamp restored, so the
-    /// value is saved (`save_restore`); a genuinely new dep, or a
-    /// stamp some now-closed query left behind, is never asked for
-    /// again, so nothing is saved.
-    fn newly_read(key: Key, stamp: int, reader: int) {
-        mut s = self.snapshot()
-        if self.readers.get().contains(stamp) { self.save_restore(s, key, stamp) }
-        self.stamped(key, reader)
-        s.pending.last()!.push(key)
-        self.replace(s)
+    /// value is saved; a stamp a closed query left behind is never
+    /// asked for again, so nothing is saved.
+    fn newly_read(row: Cell<List<int>>, family: int, arg: int, stamp: int, reader: int) {
+        if arg < 0 { negative_arg(family, arg) }
+        if stamp != 0 && self.asker.readers.get().contains(stamp) { self.save_restore(packed(family, arg), stamp) }
+        stamped_in(row, arg, reader)
+        self.asker.pending.get().last()!.push(packed(family, arg))
+        // the graph counts every read, so no read may skip it
+        if !self.graph.on.get() { self.asker.last.set(packed(family, arg)) }
     }
 
     /// `family`'s stamp row; a family never registered is a defect.
@@ -660,50 +638,39 @@ impl Kernel {
         rows[family]
     }
 
-    /// Writes `key`'s stamp, growing its family's row to reach it.
-    fn stamped(key: Key, stamp: int) {
-        let row = self.stamp_row(key.family)
-        while row.get().length <= key.arg { row.push(0) }
-        row.set_at(key.arg, stamp)
-    }
+    /// Writes a key's stamp, growing its family's row to reach it.
+    fn stamped(family: int, arg: int, stamp: int) { stamped_in(self.stamp_row(family), arg, stamp) }
 
-    /// Remembers a stamp `record_dep` is about to overwrite, so
-    /// `settle` can hand it back to the frame it belonged to. Lazily
-    /// mints this frame's own restore list on its first entry — the
-    /// common, no-nesting case never allocates one at all; every later
-    /// entry in the same frame just pushes onto the `Cell` already
-    /// there, in place.
-    fn save_restore(mut s: KernelState, key: Key, previous: int) {
-        let idx = s.restore.length - 1
-        let entry = Restore { key: key, previous: previous }
-        let frame? = s.restore[idx] else {
-            s.restore.set(idx, Cell.new([entry]))
-            self.replace(s)
+    /// Remembers a stamp about to be overwritten, for the innermost
+    /// frame's close to hand back — its list minted on the first one.
+    fn save_restore(edge: int, previous: int) {
+        let restores = self.asker.restore.get()
+        let entry = Restore { edge: edge, previous: previous }
+        // LICENSED lists.last_index: `last()!` of a nullable element never lets its referent go
+        let frame? = restores[restores.length - 1] else {
+            self.asker.restore.set_at(restores.length - 1, Cell.new([entry]))
             return
         }
         frame.push(entry)
     }
 
     fn sweep() {
-        let s = self.snapshot()
-        let rev = state_revision(s)
-        for row in s.cells {
+        let rev = self.rev.get()
+        for row in self.cells.get() {
             for j, held in row.get() {
                 if held != null && held!.verified_at != rev { row.set_at(j, null) }
             }
         }
-        self.replace(s)
     }
 
     /// Remove every cell in one family. Typed memo storage must be
     /// evicted with it, so a later ask cannot reuse bookkeeping after
     /// its value has been released.
     fn evict_family(family: int) {
-        let s = self.snapshot()
-        if family < 0 || family >= s.cells.length { return }
+        let rows = self.cells.get()
+        if family < 0 || family >= rows.length { return }
         let none: List<QueryCell?> = []
-        s.cells[family].set(none)
-        self.replace(s)
+        rows[family].set(none)
         if self.graph.on.get() { self.graph.evicted(family) }
     }
 
@@ -717,20 +684,17 @@ impl Kernel {
         Verdict.Compute
     }
 
-    fn stats() -> string {
-        "rev ${state_revision(self.snapshot())}: ${self.hits.get()} hits, ${self.misses.get()} misses"
-    }
+    fn stats() -> string { "rev ${self.rev.get()}: ${self.hits.get()} hits, ${self.misses.get()} misses" }
 }
 
-fn state_revision(s: KernelState) -> int { s.rev }
+/// A stamp row's entry for `arg`, 0 past its end.
+fn stamp_in(stamps: List<int>, arg: int) -> int {
+    if arg >= 0 && arg < stamps.length { stamps[arg] } else { 0 }
+}
 
-// A bound check by length compare, not by indexing `verifiers`: that
-// index would answer a `fn` value nobody wants, and retaining one to
-// discard it is the one cost this check must never carry — it runs
-// on every dep read, hit or miss.
-fn checked_family(s: KernelState, family: int) -> int {
-    if family < 0 || family >= s.cells.length { unregistered_family(family) }
-    family
+fn stamped_in(row: Cell<List<int>>, arg: int, stamp: int) {
+    while row.get().length <= arg { row.push(0) }
+    row.set_at(arg, stamp)
 }
 
 /// The revision a prior cell last changed at, when its hash matches —
@@ -739,26 +703,18 @@ fn kept_since(prior: QueryCell?, value_hash: int) -> int? {
     if prior?.value_hash == value_hash { prior?.changed_at } else { null }
 }
 
-fn state_cell(s: KernelState, key: Key) -> QueryCell? {
-    let fam = checked_family(s, key.family)
-    let row = s.cells[fam].get()
-    if key.arg < 0 || key.arg >= row.length { return null }
-    row[key.arg]
-}
-
-fn write_cell(mut s: KernelState, key: Key, cell: QueryCell) {
-    let fam = checked_family(s, key.family)
-    let row = s.cells[fam]
-    while row.get().length <= key.arg { row.push(null) }
-    row.set_at(key.arg, cell)
-}
-
 extern fn avra_trap(message: string)
 
 // ── The voices ──
 
 fn unregistered_family(family: int) {
     avra_trap("defect: key names family ${family}, no such family is registered")
+}
+
+fn negative_arg(family: int, arg: int) {
+    avra_trap(
+        "defect: a read of family ${family} names arg ${arg} — a key's arg is a dense id, never negative",
+    )
 }
 
 fn abandoned_out_of_order(key: Key) {
