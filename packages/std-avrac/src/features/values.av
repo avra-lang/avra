@@ -692,30 +692,41 @@ impl LowerCx {
     /// member's own global type id, so which union claims it never
     /// changes what the box holds — a narrower union widens into a
     /// wider one by pointer move, same as a plain box does today. A
-    /// PLAIN member meeting a UNION promise is the one real
-    /// mismatch — it has no discriminant of its own, so it is LIFTED
-    /// into the union's own tagged box, never moved raw.
+    /// PLAIN member and a UNION are the real mismatch, in both
+    /// directions: a plain member has no discriminant of its own, so
+    /// meeting a union promise it is LIFTED into the union's tagged
+    /// box; a union meeting a plain promise — a selective `catch`
+    /// whose remainder is one member — hands over the member its box
+    /// holds.
     mut fn propagated(r: Reg) -> Reg {
         let ret? = self.enclosing_ret() else { return r }
         let into = self.concrete(ret)
         let from = self.out.type_of_reg(r)
         let fsides? = self.view.types.res_parts(from) else { return r }
         let isides? = self.view.types.res_parts(into) else { return r }
+        let was_union = self.view.types.shape_of(fsides.err) is .Union
         let agrees = same_type(fsides.err, isides.err) ||
-            self.view.types.shape_of(fsides.err) is .Union &&
-                self.view.types.shape_of(isides.err) is .Union
+            was_union && self.view.types.shape_of(isides.err) is .Union
         if agrees && self.valued(from) == self.valued(into) { return r }
         let payload = self.payload_of(r, fsides.err)
+        if agrees { return self.failed(into, payload) }
         self
             .failed(
                 into,
-                if agrees {
-                    payload
-                } else {
-                    self
-                        .tagged_value(self.view.types.shape_of(isides.err), fsides.err.index, [payload])
-                },
+                if was_union { self.payload_of(payload, isides.err) } else { self.union_boxed(isides.err, payload) },
             )
+    }
+
+    /// The union lift: a member value tagged into its union's own
+    /// box — the tag is the member's own GLOBAL type id, which is
+    /// what a `catch` (or a wider union) reads back regardless of
+    /// which union claims it. A value already union-shaped arrives
+    /// through unchanged — a narrower union widening into a wider
+    /// one needs no repack, by the same law.
+    mut fn union_boxed(into: TypeId, r: Reg) -> Reg {
+        let from = self.out.type_of_reg(r)
+        if self.view.types.shape_of(from) is .Union { return r }
+        self.tagged_value(self.view.types.shape_of(into), from.index, [r])
     }
 
     /// Is the result an ANSWER — its tag read against Ok's, as an i1.
