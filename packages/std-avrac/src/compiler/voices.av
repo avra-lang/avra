@@ -28,6 +28,7 @@ use core.{
     StaticBox,
     DeclId,
 }
+use compiler.families.{Family}
 use features.{
     Unsettled,
     Settlement,
@@ -687,49 +688,76 @@ fn maybe_declares_block(ws: Workspace, files: List<string>) -> bool {
 
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn file_lexes_block(ws: Workspace, path: string) -> bool {
-    let seen = ws.listed_seen(path)
-    let known = ws.records.grammar_scanned.get().get(seen.mark)
-    if known != null { return known! }
-    // THE DB ANSWERS BEFORE THE LEXER: the verdict is the text's own, so a
-    // row under its digest holds for every process that reads these bytes —
-    // but the VERDICT also depends on which keywords THIS compiler's
-    // assembled grammar opens a block with, so the compiler's own print
-    // joins the key too.
-    let store = ws.opened_store()
-    let key = digest_of("scan\n${ws.compiler_id()}\n${seen.text}")
-    let kept = ws.db.scan(store, key)
-    let found = if kept != null { kept! == "1" } else { text_opens_block(seen.text, ws.lang.keywords) }
-    if kept == null { ws.db.insert_scan(store, key, if found { "1" } else { "0" }) }
-    ws.records.grammar_scanned.put(seen.mark, found)
-    found
+    scan_flag(
+        ws
+            .relation(Family.BlockScan)
+            .demand(
+                ws.text_key(path),
+                () -> {
+                    let text = ws.listed_text(path)
+                    // THE DB ANSWERS BEFORE THE LEXER: the verdict is the text's own, so a
+                    // row under its digest holds for every process that reads these bytes —
+                    // but the VERDICT also depends on which keywords THIS compiler's
+                    // assembled grammar opens a block with, so the compiler's own print
+                    // joins the key too.
+                    let store = ws.opened_store()
+                    let key = digest_of("scan\n${ws.compiler_id()}\n${text}")
+                    let kept = ws.db.scan(store, key)
+                    let found = if kept != null { kept! == "1" } else { text_opens_block(text, ws.lang.keywords) }
+                    if kept == null { ws.db.insert_scan(store, key, if found { "1" } else { "0" }) }
+                    DbRow.Flag(found)
+                },
+                flag_print,
+            ),
+    )
 }
 
 /// Whether a file declares a component — `component NAME`, then its
-/// block or its head — read off its tokens, once a path.
+/// block or its head — read off its tokens. A SCAN IS A QUERY OVER ITS
+/// TEXT: a reader depends on the answer, so an edit that leaves the
+/// answer standing leaves the reader standing.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn file_declares_component(ws: Workspace, path: string) -> bool {
-    let seen = ws.listed_seen(path)
-    let known = ws.records.component_scanned.get().get(seen.mark)
-    if known != null { return known! }
-    let found = seen.text.contains("component") && declares_component(lex_source(seen.text).tokens)
-    ws.records.component_scanned.put(seen.mark, found)
-    found
+    scan_flag(
+        ws
+            .relation(Family.ComponentScan)
+            .demand(
+                ws.text_key(path),
+                () -> DbRow.Flag(declares_a_component(ws.listed_text(path))),
+                flag_print,
+            ),
+    )
+}
+
+fn declares_a_component(text: string) -> bool {
+    text.contains("component") && declares_component(lex_source(text).tokens)
 }
 
 /// The names a file's `component NAME` declarations wear — read off its
-/// tokens, once a path.
+/// tokens.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn component_names(ws: Workspace, path: string) -> List<string> {
-    let seen = ws.listed_seen(path)
-    let known = ws.records.component_names.get().get(seen.mark)
-    if known != null { return known! }
-    let tokens = lex_source(seen.text).tokens
-    let found = [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
+    scan_words(
+        ws
+            .relation(Family.ComponentNames)
+            .demand(
+                ws.text_key(path),
+                () -> DbRow.Words(components_named(ws.listed_text(path))),
+                words_print,
+            ),
+    )
+}
+
+fn components_named(text: string) -> List<string> {
+    let tokens = lex_source(text).tokens
+    [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
         tokens[j + 1].kind == TokenKind.Name &&
         (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))]
-    ws.records.component_names.put(seen.mark, found)
-    found
 }
+
+fn flag_print(r: DbRow) -> int { if scan_flag(r) { 1 } else { 0 } }
+
+fn words_print(r: DbRow) -> int { fp_str(joined(scan_words(r), "\n")) }
 
 /// A component word known by its name alone: its instance parses as
 /// one and stands as a hole.

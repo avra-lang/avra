@@ -1,8 +1,9 @@
 // The world as cells: a read stands until the driver says the world may
 // have moved, and then every input is read again.
-use compiler.{avra, new_workspace, Workspace}
+use compiler.{avra, new_workspace, Workspace, component_names, file_declares_component}
 use compiler.host.{Host, InputName, Listed, Beneath, memory_host}
 use compiler.families.{Family}
+use @std.relation.engine.{Key}
 
 /// A host over a table the test writes: `names` is what a listing sees.
 fn shifting(files: Cell<Map<string, string>>, names: Cell<List<string>>) -> Host {
@@ -45,6 +46,15 @@ fn library() -> World {
 fn entered(w: World) {
     w.files.put("/w/src/main.av", "1\n")
     w.names.push("main.av")
+}
+
+fn scan_key(w: World, f: Family) -> Key { Key { family: f.ordinal, arg: w.ws.text_key("/w/src/a.av") } }
+
+/// The revision the names scanned out of `a.av` last changed at — what
+/// a reader of the scan compares, asked after the scan itself.
+fn named_at(w: World) -> int {
+    let _ = component_names(w.ws, "/w/src/a.av")
+    w.ws.db.changed_at(scan_key(w, Family.ComponentNames))
 }
 
 fn added(w: World) {
@@ -143,6 +153,41 @@ spec "compiler/world" {
             w.files.set({"/w/avra.toml": manifest()})
             w.names.set([])
             had && (w.ws.inputs_now() catch e -> ["?"]).is_empty()
+        }
+    }
+    given "a scan of a sibling file, read by another file's query" {
+        then "a comment added to the file moves the revision and leaves the scan's answer where a reader last saw it" {
+            let w = world()
+            let before = named_at(w)
+            w.files.put("/w/src/a.av", "// a note\n1\n")
+            let rev = w.ws.db.revision()
+            let _ = moved(w)
+            component_names(w.ws, "/w/src/a.av").is_empty() &&
+                w.ws.db.revision() == rev + 1 &&
+                named_at(w) == before
+        }
+        then "a component named in the file moves the scan's answer, so a reader of it runs again" {
+            let w = world()
+            let before = named_at(w)
+            w.files.put("/w/src/a.av", "component Panel {\n}\n")
+            let _ = moved(w)
+            component_names(w.ws, "/w/src/a.av").join(",") == "Panel" && named_at(w) > before
+        }
+        then "whether the file declares a component moves with it, and stands under a comment" {
+            let w = world()
+            let was = file_declares_component(w.ws, "/w/src/a.av")
+            let before = w.ws.db.changed_at(scan_key(w, Family.ComponentScan))
+            w.files.put("/w/src/a.av", "// a note\n1\n")
+            let _ = moved(w)
+            let noted = file_declares_component(w.ws, "/w/src/a.av")
+            let stood = w.ws.db.changed_at(scan_key(w, Family.ComponentScan)) == before
+            w.files.put("/w/src/a.av", "component Panel {\n}\n")
+            let _ = moved(w)
+            !was &&
+                !noted &&
+                stood &&
+                file_declares_component(w.ws, "/w/src/a.av") &&
+                w.ws.db.changed_at(scan_key(w, Family.ComponentScan)) > before
         }
     }
     given "a listing" {

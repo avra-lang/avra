@@ -182,6 +182,8 @@ export enum DbKind {
     Findings
     Answer
     Input
+    Flag
+    Words
 }
 
 impl DbKind {
@@ -212,6 +214,8 @@ impl DbKind {
             .Findings -> "Findings",
             .Answer -> "Answer",
             .Input -> "Input",
+            .Flag -> "Flag",
+            .Words -> "Words",
         }
     }
 }
@@ -324,6 +328,10 @@ export enum DbRow {
     Answer(name: string, text: string)
     /// One read of the world, as the door answered it.
     Input(Read)
+    /// A scan's yes or no.
+    Flag(bool)
+    /// A scan's words.
+    Words(List<string>)
 }
 
 impl DbRow {
@@ -354,6 +362,8 @@ impl DbRow {
             .Findings(_, _) -> DbKind.Findings,
             .Answer(_, _) -> DbKind.Answer,
             .Input(_) -> DbKind.Input,
+            .Flag(_) -> DbKind.Flag,
+            .Words(_) -> DbKind.Words,
         }
     }
 
@@ -377,6 +387,26 @@ impl DbRow {
 /// already uses: a wrong variant reaching one is a defect the `Memo`
 /// layer already prevents by construction, so the trap is a belt,
 /// never a guess.
+fn scan_flag(r: DbRow) -> bool {
+    match r {
+        .Flag(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Flag expected")
+            scan_flag(r)
+        },
+    }
+}
+
+fn scan_words(r: DbRow) -> List<string> {
+    match r {
+        .Words(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Words expected")
+            scan_words(r)
+        },
+    }
+}
+
 fn read_of(r: DbRow) -> Read {
     match r {
         .Input(value) -> value,

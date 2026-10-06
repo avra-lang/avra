@@ -24,11 +24,6 @@ fn kind_word(k: InputKind) -> string {
     }
 }
 
-/// A file's text and its MARK — the path under the word its cell was
-/// cut by. What is scanned out of a text is kept under its mark, so a
-/// changed file is another key and its old scan is never asked again.
-type Seen = { text: string, mark: string }
-
 fn loaded(seen: Read) -> Loaded<DbRow> {
     Loaded { value: DbRow.Input(seen), fingerprint: seen.input().digest.word }
 }
@@ -61,19 +56,17 @@ impl Workspace {
     /// A LISTED file's text, through its cell. Nothing there is the
     /// host's to refuse; under a host that refuses nothing it reads as
     /// no text.
-    fn listed_text(path: string) -> string { self.listed_seen(path).text }
-
-    /// A listed file's text beside the mark of the bytes it holds.
-    fn listed_seen(path: string) -> Seen {
-        let at = self.world_key(InputName { kind: .Text, key: path })
-        let seen = read_of(
-            self.relation(Family.Input).input_loaded(at, () -> loaded(self.host.listed_text(path))),
+    fn listed_text(path: string) -> string {
+        read_of(
+            self
+                .relation(Family.Input)
+                .input_loaded(self.text_key(path), () -> loaded(self.host.listed_text(path))),
         )
-        Seen {
-            text: seen.as_text() ?? "",
-            mark: "${self.db.value_hash_of(key(Family.Input, at)) ?? 0} ${path}",
-        }
+            .as_text() ?? ""
     }
+
+    /// The cell key of a file's text.
+    fn text_key(path: string) -> int { self.world_key(InputName { kind: .Text, key: path }) }
 
     /// A name's cell key, minted the first time it is asked.
     fn world_key(name: InputName) -> int {
