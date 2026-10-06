@@ -2,7 +2,7 @@
 //! fn argument's seats and answer before any loop exists), the
 //! scans, the growth words and the copies, each a row's rule; the
 //! receiver is always a list because the row's `takes` said so.
-use core.{ExprId, TypeId, Type, Arrow, LambdaParts, no_marks, same_type}
+use core.{ExprId, TypeId, Type, TypeRegistry, Arrow, LambdaParts, no_marks, same_type}
 use features.{TypeCx, MethodCall, this_is, slot_worthy, TypeArgs, PipeStage}
 use diagnostics.{refusal}
 
@@ -17,6 +17,9 @@ export fn on_list(t: Type) -> bool {
 export fn on_walk(t: Type) -> bool {
     t is .List || t is .EmptyList || t is .Range
 }
+
+/// A string — the receiver `chars` views.
+export fn on_text(t: Type) -> bool { t is .Str }
 
 // ── The rows' rules ──
 
@@ -118,6 +121,16 @@ export fn check_filter(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.facts.mark_stage(mc.e, .Keep)
     cx.type_at(mc.subject)
 }
+
+/// `s.chars()` — the text's code points as a `List<int>`, decoded in
+/// the walk's own loop.
+export fn check_chars(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if !cx.seated(mc, "chars", []) { return cx.error_type }
+    cx.facts.mark_stage(mc.e, .Chars)
+    cx.type(List<int>)
+}
+
+export fn chars_answer(types: TypeRegistry, _receiver: TypeId) -> TypeId? { types.type(List<int>) }
 
 /// `xs.take(n)` / `xs.drop(n)` — the receiver's own type; the bound
 /// is an int, read once before the walk.

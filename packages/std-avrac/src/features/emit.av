@@ -431,8 +431,8 @@ impl LowerCx {
         Walk { xs: xs, len: len, idx: idx, elem: elem, kind: self.walk_kind(ty) }
     }
 
-    /// The kind a source of `ty` walks: a `Bytes` reads octets, anything
-    /// else (a list, a range) reads elements.
+    /// The kind a source of `ty` walks: a `Bytes` reads octets, a string
+    /// decodes code points, anything else reads elements.
     fn walk_kind(ty: TypeId) -> WalkKind {
         match self.view.types.seen_shape(ty) { .Bytes -> .Bytes, .Str -> .Codepoints, _ -> .List }
     }
@@ -478,7 +478,7 @@ impl LowerCx {
         match w.kind {
             .List -> self.elem_read(w.xs!, here, w.elem),
             .Bytes -> self.bytes_at(Type.Int, w.xs!, here),
-            .Codepoints -> self.walk_code(w.xs!, here, w.len),
+            .Codepoints -> self.walk_code(w, here),
         }
     }
 
@@ -491,12 +491,32 @@ impl LowerCx {
         }
     }
 
-    /// A UTF-8 lead byte's width, 1..4 — a malformed lead, or a scalar
-    /// whose bytes run past the text, is 1, so the walk never overruns.
+    /// The UTF-8 sequence's width at `at`, 1..4: what its lead declares
+    /// when every tail is there and is a tail, else 1 — a byte standing
+    /// for itself, so the walk never overruns.
     mut fn walk_width(s: Reg, at: Reg, len: Reg) -> Reg {
         let w = self.lead_width(self.str_char_code(Type.Int, s, at))
-        let past = self.bin(Type.Bool, BinOp.Gt, self.bin(Type.Int, BinOp.Add, at, w), len)
-        self.region_as(past, self.type(int)) { cx -> cx.const_int(1) } else { _cx -> w }
+        let fits = self.bin(Type.Bool, BinOp.Le, self.bin(Type.Int, BinOp.Add, at, w), len)
+        let whole = self
+            .region_as(fits, self.type(bool)) { cx -> cx.tailed(s, at, 1, w) } else { cx ->
+                cx.const_bool(false)
+            }
+        self.region_as(whole, self.type(int)) { _cx -> w } else { cx -> cx.const_int(1) }
+    }
+
+    /// Whether the bytes at `at+k` up to `at+w` are all tails.
+    mut fn tailed(s: Reg, at: Reg, k: int, w: Reg) -> Reg {
+        if k > 3 { return self.const_bool(true) }
+        let owed = self.bin(Type.Bool, BinOp.Gt, w, self.const_int(k))
+        self
+            .region_as(owed, self.type(bool)) { cx ->
+                let b = cx
+                    .str_char_code(Type.Int, s, cx.bin(Type.Int, BinOp.Add, at, cx.const_int(k)))
+                cx
+                    .region_as(cx.between(b, 128, 191), cx.type(bool)) { cx ->
+                        cx.tailed(s, at, k + 1, w)
+                    } else { cx -> cx.const_bool(false) }
+            } else { cx -> cx.const_bool(true) }
     }
 
     /// The width a lead byte declares — `b` and `b+1` are one byte wide.
@@ -512,25 +532,23 @@ impl LowerCx {
                         cx
                             .region_as(cx.between(b, 192, 223), cx.type(int)) { cx ->
                                 cx.const_int(2)
-                            } else { _cx -> cx.const_int(1) }
+                            } else { cx -> cx.const_int(1) }
                     }
             }
     }
 
-    /// The scalar a lead byte and its tails decode to: strip the lead's
-    /// mark, then six bits per tail, high to low.
-    mut fn walk_code(s: Reg, at: Reg, len: Reg) -> Reg {
-        let w = self.walk_width(s, at, len)
+    /// The scalar this turn's bytes decode to: strip the lead's mark,
+    /// then six bits per tail, high to low. The count has stepped past
+    /// them, so the step taken is their width.
+    mut fn walk_code(w: Walk, at: Reg) -> Reg {
+        let s = w.xs!
+        let width = self.bin(Type.Int, BinOp.Sub, self.loaded_as(self.type(int), w.idx), at)
         let lead = self.str_char_code(Type.Int, s, at)
-        let mark = self.lead_mark(w)
-        self.byte_joined(self.bin(Type.Int, BinOp.Sub, lead, mark), s, at, w)
+        self.byte_tail(self.bin(Type.Int, BinOp.Sub, lead, self.lead_mark(width)), s, at, 1, width)
     }
 
-    /// `code` with the tails at `at+1..at+w` folded in — six bits each.
-    mut fn byte_joined(code: Reg, s: Reg, at: Reg, w: Reg) -> Reg {
-        self.byte_tail(code, s, at, 1, w)
-    }
-
+    /// `code` with the tails from `at+k` up to `at+w` folded in — six
+    /// bits each.
     mut fn byte_tail(code: Reg, s: Reg, at: Reg, k: int, w: Reg) -> Reg {
         if k > 3 { return code }
         let more = self.bin(Type.Bool, BinOp.Ge, w, self.const_int(k + 1))
@@ -557,7 +575,7 @@ impl LowerCx {
                         cx
                             .region_as(cx.bin(Type.Bool, BinOp.Eq, w, cx.const_int(2)), cx.type(int)) { cx ->
                                 cx.const_int(192)
-                            } else { _cx -> cx.const_int(0) }
+                            } else { cx -> cx.const_int(0) }
                     }
             }
     }
@@ -619,9 +637,10 @@ export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
 
 /// A walk counts `idx` up to `len`; over a list, `xs` is the box each
 /// turn reads at the count, and a range has no box to read.
-/// What a walk source reads per turn: a list's element, or a byte of a
-/// `Bytes`. The kind is DERIVED from the source's shape (`walk_kind`),
-/// so a walk over `s.bytes()` reads octets without a second spelling.
+/// What a walk source reads per turn: a list's element, a byte of a
+/// `Bytes`, or a string's code point. The kind is DERIVED from the
+/// source's shape (`walk_kind`), so a walk over `s.bytes()` reads
+/// octets without a second spelling.
 export enum WalkKind {
     List
     Bytes
@@ -629,9 +648,6 @@ export enum WalkKind {
 }
 
 export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId, kind: WalkKind }
-
-/// The kind a source of `ty` walks: a `Bytes` reads octets, anything
-/// else (a list, a range) reads elements.
 
 // ── Measures ────────────────────────────────────────────────────
 
