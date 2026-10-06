@@ -381,6 +381,8 @@ avra: $(COMPILER_OBJS)
 	@cp packages/cli/src/main build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
+	@# what this binary was built from, for a worktree that wants to start from it
+	@sh tools/work built-from . > build/.avra-built-from 2>/dev/null || rm -f build/.avra-built-from
 	@echo "avra: build/avra"
 
 # THE INSTALL: the binary under bin/, and what it finds from its own

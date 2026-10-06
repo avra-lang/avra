@@ -61,6 +61,59 @@ main_tree() {
     git -C "$repo" worktree list --porcelain | awk '/^worktree /{w=$2} $0=="branch refs/heads/main"{print w}'
 }
 
+# WHAT A BUILT COMPILER WAS BUILT FROM, said by `make avra` beside the
+# binary (build/.avra-built-from): the compiler source's hash, then the
+# commit it stood at — or `edited` when that source differed from the
+# commit, which only its own tree can account for.
+built_from() {
+    tree=${1:-$PWD}
+    at=$(git -C "$tree" rev-parse HEAD 2>/dev/null) || at=edited
+    if [ -n "$(git -C "$tree" status --porcelain -- $(compiler_paths "$tree") 2>/dev/null | grep -v '/tests/' | head -n 1)" ]; then at=edited; fi
+    echo "$(compiler_hash "$tree") $at"
+}
+
+# A NEW WORKTREE STARTS FROM A COMPILER THAT CAN BUILD IT, OR FROM NONE.
+# Every worktree's binary says what it was built from; the one built from
+# THIS tree's compiler source is this tree's, and failing that the one
+# fewest compiler commits behind origin/main is a start that `make avra`
+# brings level. A binary that does not say, one built from a lane's own
+# edits, and one more than AVRA_SEED_BEHIND (10) compiler commits behind
+# are never copied: a stale compiler types nothing and says so badly. $1
+# the new worktree, standing at origin/main.
+seed_local() {
+    want=$(compiler_hash "$1")
+    paths=$(compiler_paths "$1")
+    best=
+    best_n=
+    for tree in $(git -C "$1" worktree list --porcelain | sed -n 's/^worktree //p'); do
+        [ -x "$tree/build/avra" ] && [ -s "$tree/build/.avra-built-from" ] || continue
+        read -r hash at < "$tree/build/.avra-built-from" || continue
+        if [ "$hash" = "$want" ]; then best=$tree; best_n=0; break; fi
+        [ "$at" != edited ] && git -C "$1" merge-base --is-ancestor "$at" origin/main 2>/dev/null || continue
+        n=$(git -C "$1" rev-list --count "$at..origin/main" -- $paths ':(exclude,glob)**/tests/**' 2>/dev/null) || continue
+        if [ -z "$best_n" ] || [ "$n" -lt "$best_n" ]; then best=$tree; best_n=$n; fi
+    done
+    limit=${AVRA_SEED_BEHIND:-10}
+    if [ -z "$best" ]; then
+        echo "work: no worktree holds a compiler that says what it was built from — this lane starts with none. \`make bootstrap\` here builds one from the seed, or \`work run\` builds it on the Sprite."
+        return 0
+    fi
+    if [ "$best_n" -gt "$limit" ]; then
+        echo "work: the nearest compiler ($best) is $best_n compiler commits behind origin/main, past $limit — not copied; this lane starts with none. \`make bootstrap\` here builds one from the seed, or \`work run\` builds it on the Sprite."
+        return 0
+    fi
+    mkdir -p "$1/build"
+    for f in avra libavra_runtime.a .avra-built-from; do
+        [ ! -f "$best/build/$f" ] || cp -p "$best/build/$f" "$1/build/$f"
+    done
+    made=$(date -r "$best/build/avra" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "an unknown time")
+    if [ "$best_n" = 0 ]; then
+        echo "work: compiler from $best, built $made — it is this tree's"
+    else
+        echo "work: compiler from $best, built $made — $best_n compiler commit(s) behind origin/main; \`make avra\` twice brings it level"
+    fi
+}
+
 new() {
     [ $# -eq 1 ] || die "usage: work new <name>"
     name=$1
@@ -72,10 +125,7 @@ new() {
     [ -n "$free" ] || { echo "$held" | sed 's/^/  /' >&2; die "every Sprite is bound to a lane — \`work done\` in one frees its Sprite"; }
     git -C "$main" fetch -q origin main
     git -C "$main" worktree add -q -b "$name" "$wt" origin/main
-    mkdir -p "$wt/build"
-    for f in avra libavra_runtime.a; do
-        [ -f "$main/build/$f" ] && cp "$main/build/$f" "$wt/build/$f"
-    done
+    seed_local "$wt" >&2
     (cd "$wt" && bind) >&2 || die "$wt stands, with no Sprite — free one with \`work done\`, then \`work bind\` there"
     echo "$wt"
 }
@@ -968,6 +1018,8 @@ case "${1:-}" in
     command) shift; assemble "$@"; echo ;;
     seed) shift; seed "$@" ;;
     compiler-hash) compiler_hash "${2:-$PWD}" ;;
+    built-from) built_from "${2:-$PWD}" ;;
+    seed-local) seed_local "$2" ;;
     libs-step) printf '%s\n' "$libs_step" ;;
     land) land ;;
     status) status ;;
