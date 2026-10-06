@@ -6,24 +6,38 @@ use compiler.host.{memory_host}
 use features.{Decl, Ref}
 use @std.relation.engine.{Key}
 
-fn refs_refused_workspace() -> Workspace {
-    new_workspace(
+const REFS_REFUSED_MAIN: string = "/w/src/main.av"
+
+/// A package of one file, analysed.
+fn refs_refused_over(source: string) -> Workspace {
+    let ws = new_workspace(
         memory_host(
             {
                 "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-                "/w/src/main.av": "fn a() -> int { 1 }\nfn b() -> int { a() }\nb()\n",
+                "/w/src/main.av": source,
             },
-            ["/w/avra.toml", "/w/src/main.av"],
+            ["/w/avra.toml", REFS_REFUSED_MAIN],
         ),
         "/w",
         avra(),
     )
+    let _ = ws.analyze_file(REFS_REFUSED_MAIN)
+    ws
 }
+
+fn refs_refused_workspace() -> Workspace {
+    refs_refused_over(
+        "fn a() -> int { 1 }\nfn keep(xs: List<int>) -> List<int> { xs }\nfn b() -> int { a() + keep([1]).length }\nb()\n",
+    )
+}
+
+/// A resolve in flight: `Family.Resolved`'s number, which the family table is
+/// private about, at a file no workspace here has.
+fn refs_refused_resolving() -> Key { Key { family: 5, arg: 900 } }
 
 spec "compiler/references — a refused replacement" {
     then "under a reader that read a use's bucket this revision, the pass speaks one defect and one refusal is heard" {
         let ws = refs_refused_workspace()
-        let _ = ws.analyze_file("/w/src/main.av")
         let db = ws.decls.rows_db.get()
         let heard: Cell<List<string>> = Cell.new([])
         db.heard_by((w: string) -> heard.push(w))
@@ -38,8 +52,63 @@ spec "compiler/references — a refused replacement" {
     }
     then "with no reader, the same pass files its rows and speaks nothing" {
         let ws = refs_refused_workspace()
-        let _ = ws.analyze_file("/w/src/main.av")
         let before = ws.defects.get().length
         ws.references() > 0 && ws.defects.get().length == before
+    }
+    then "a refusal of NO rows is a refusal still: the defect is spoken and no 'used nowhere' is read off the relation" {
+        let quiet = refs_refused_over("")
+        let ws = refs_refused_over("")
+        let db = ws.decls.rows_db.get()
+        let heard: Cell<List<string>> = Cell.new([])
+        db.heard_by((w: string) -> heard.push(w))
+        let reader = Key { family: ws.db.kernel.family((_arg: int) -> 0), arg: 0 }
+        ws.db.kernel.begin(reader)
+        let read = Ref.all(db).length
+        ws.db.kernel.settle(reader, 0)
+        let before = ws.defects.get().length
+        let filed = ws.references()
+        quiet.references() == 0 &&
+            read == 0 &&
+            filed == 0 &&
+            heard.get().length == 1 &&
+            ws.defects.get().length == before + 1 &&
+            ws.decls.refs_are_incomplete() &&
+            !quiet.decls.refs_are_incomplete()
+    }
+}
+
+spec "compiler/references — asked while a resolve is in flight" {
+    then "both readers read nothing and record nothing, and the pass then files its rows in the same revision, unrefused" {
+        let ws = refs_refused_workspace()
+        let db = ws.decls.rows_db.get()
+        let heard: Cell<List<string>> = Cell.new([])
+        db.heard_by((w: string) -> heard.push(w))
+        let a = Decl.by_name(db, "a").first()!.id
+        let resolving = refs_refused_resolving()
+        ws.db.kernel.begin(resolving)
+        let seen = ws.decls.refs_of(a).length +
+            ws.decls.refs_in_file(ws.file_id(REFS_REFUSED_MAIN)).length
+        ws.db.kernel.settle(resolving, 0)
+        let recorded = ws.db.kernel.deps_of(resolving).length
+        let filed = ws.references()
+        seen == 0 &&
+            recorded == 0 &&
+            filed > 0 &&
+            heard.get().is_empty() &&
+            ws.decls.refs_of(a).length == 1
+    }
+    then "a seat's consumption is not inferred and not recorded; asked again once the references stand, it is" {
+        let ws = refs_refused_workspace()
+        let keep = Decl.by_name(ws.decls.rows_db.get(), "keep").first()!.id
+        let resolving = refs_refused_resolving()
+        ws.db.kernel.begin(resolving)
+        let during = ws.computed_consumed(keep)
+        let unrecorded = ws.decls.consumed.get()[keep.index] == null
+        ws.db.kernel.settle(resolving, 0)
+        let after = ws.computed_consumed(keep)
+        !during.any(it) &&
+            unrecorded &&
+            ws.decls.consumed.get()[keep.index] != null &&
+            after.length == during.length
     }
 }

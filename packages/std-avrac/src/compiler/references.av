@@ -102,9 +102,16 @@ impl Workspace {
         // THE RELATION IS ONE VALUE: every row stands before one is filed,
         // so nothing asked here lands among the rows it writes.
         let found = flatten(surveyed.concat(restored))
-        let rows = Ref.replaced(self.decls.rows_db.get(), "references", found)
-        if rows.length != found.length { self.defect(references_refused(found.length)) }
-        self.decls.mark_refs_incomplete(store == null && !held.is_empty())
+        let db = self.decls.rows_db.get()
+        // A REPLACEMENT THAT LANDS IS ONE WRITE on the Db's own count,
+        // whatever it hands over; a refused one is none — so a refusal of
+        // no rows at all is seen as one too.
+        let before = db.written.get()
+        let rows = Ref.replaced(db, "references", found)
+        let refused = db.written.get() == before
+        if refused { self.defect(references_refused(found.length)) }
+        // refused, the relation holds the LAST pass's rows: no "used nowhere" is read off it
+        self.decls.mark_refs_incomplete(refused || store == null && !held.is_empty())
         self.db.settle(k, fp(41, [fp_list([ref_fp(r) for r in rows])]))
         rows.length
     }
