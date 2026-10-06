@@ -3,7 +3,8 @@
 // its own; a query that asks another runs again only when that one's
 // ANSWER moves, once that answer has been compared (an answer's hash is
 // first folded at its second settle, so its first rerun always carries); two argument lists that spell alike when joined are two
-// calls; and one query under two Dbs is two answers — in both engines
+// calls; a record and a list of records each key a call by their
+// own value; and one query under two Dbs is two answers — in both engines
 use @std.relation.{relation, query, input}
 use @std.relation.db.{Db, new_db}
 
@@ -47,6 +48,30 @@ fn joined(_db: Db, a: string, b: string) -> string {
     "${a}|${b}"
 }
 
+type Span = { lo: int, hi: int }
+
+@query
+fn width_of(_db: Db, s: Span) -> int {
+    ran("width_of")
+    s.hi - s.lo
+}
+
+@query
+fn widest(_db: Db, spans: List<Span>) -> int {
+    ran("widest")
+    spans.length
+}
+
+/// Values a joined spelling could confuse: a span and one whose digits
+/// split elsewhere, two spans and one, one and none.
+fn shaped() -> string {
+    let db = new_db()
+    let from = runs().get().length
+    let spans = "${width_of(db, Span { lo: 1, hi: 23 })} ${width_of(db, Span { lo: 12, hi: 3 })} ${width_of(db, Span { lo: 1, hi: 23 })}"
+    let lists = "${widest(db, [Span { lo: 1, hi: 2 }, Span { lo: 3, hi: 4 }])} ${widest(db, [Span { lo: 1, hi: 2 }])} ${widest(db, [])} ${widest(db, [Span { lo: 1, hi: 2 }])}"
+    "${spans} ${lists} ${since(from)}"
+}
+
 fn buckets() -> string {
     let db = new_db()
     let _ = Icon.insert(db, name: "x", set: "a")
@@ -86,4 +111,4 @@ fn apart() -> string {
     "${in_set(one, "a")}${in_set(two, "a")}${in_set(one, "a")} ${since(from)}"
 }
 
-"${buckets()} | ${cutoff()} | ${spelled()} | ${apart()}"
+"${buckets()} | ${cutoff()} | ${spelled()} | ${apart()} | ${shaped()}"
