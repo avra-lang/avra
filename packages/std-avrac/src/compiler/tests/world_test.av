@@ -1,0 +1,171 @@
+// The world as cells: a read stands until the driver says the world may
+// have moved, and then every input is read again.
+use compiler.{avra, new_workspace, Workspace}
+use compiler.host.{Host, InputName, Listed, Beneath, memory_host}
+use compiler.families.{Family}
+
+/// A host over a table the test writes: `names` is what a listing sees.
+fn shifting(files: Cell<Map<string, string>>, names: Cell<List<string>>) -> Host {
+    let base = memory_host({"/w/avra.toml": ""}, [])
+    base with { exists: (p: string) -> files.get().get(p) != null, read: (p: string) -> files.get().get(p) ?? "", beneath: (root: string, rel: string) -> held_beneath(files, "${root}/${rel}"), list: (dir: string) -> under(names, dir), is_dir: (dir: string) -> dir == "/w/src" || dir == "/w" }
+}
+
+/// What a listing of `dir` sees: the package root holds its manifest
+/// and `src`, and `src` holds `names`.
+fn under(names: Cell<List<string>>, dir: string) -> List<string> {
+    if dir == "/w/src" { return [n for n in names.get()] }
+    if dir == "/w" { ["avra.toml", "src"] } else { [] }
+}
+
+fn held_beneath(files: Cell<Map<string, string>>, at: string) -> Beneath {
+    let text? = files.get().get(at) else { return Beneath.Missing }
+    Beneath.Text(text)
+}
+
+/// Every input read so far was read again.
+fn all_reread(w: World) -> bool { moved(w) == w.ws.input_names.get().length }
+
+type World = { ws: Workspace, files: Cell<Map<string, string>>, names: Cell<List<string>> }
+
+fn world() -> World {
+    let files: Cell<Map<string, string>> = Cell.new({"/w/src/a.av": "1\n"})
+    let names: Cell<List<string>> = Cell.new(["a.av"])
+    World { ws: new_workspace(shifting(files, names), "/w", avra()), files: files, names: names }
+}
+
+fn manifest() -> string { "[package]\nname = \"app\"\nversion = \"0.1.0\"\n" }
+
+/// A package with a manifest and no entry yet.
+fn library() -> World {
+    let files: Cell<Map<string, string>> = Cell.new({"/w/avra.toml": manifest()})
+    let names: Cell<List<string>> = Cell.new([])
+    World { ws: new_workspace(shifting(files, names), "/w", avra()), files: files, names: names }
+}
+
+fn entered(w: World) {
+    w.files.put("/w/src/main.av", "1\n")
+    w.names.push("main.av")
+}
+
+fn added(w: World) {
+    w.files.put("/w/src/b.av", "2\n")
+    w.names.push("b.av")
+}
+
+fn removed(w: World) {
+    w.files.set({})
+    w.names.set([])
+}
+
+fn text_name(path: string) -> InputName { InputName { kind: .Text, key: path } }
+
+fn entry() -> Listed { Listed { name: "", dir: false } }
+
+fn names_of(w: World) -> string { w.ws.listed("/w/src").join(",") }
+
+fn moved(w: World) -> int { w.ws.world_moved() catch e -> -1 }
+
+spec "compiler/world" {
+    given "an edit inside one process, before the driver says the world moved" {
+        then "a file added is not in the listing a cell holds" {
+            let w = world()
+            let before = names_of(w)
+            added(w)
+            before == "a.av" && names_of(w) == "a.av"
+        }
+        then "a file added is still nothing where it was asked for" {
+            let w = world()
+            let before = w.ws.there("/w/src/b.av")
+            added(w)
+            !before && !w.ws.there("/w/src/b.av")
+        }
+    }
+    given "an edit inside one process, after the driver says the world moved" {
+        then "a file added is listed, and stands where it was asked for" {
+            let w = world()
+            let _ = names_of(w)
+            let _ = w.ws.there("/w/src/b.av")
+            added(w)
+            all_reread(w) && names_of(w) == "a.av,b.av" && w.ws.there("/w/src/b.av")
+        }
+        then "a file removed is gone from the listing, and nothing stands there" {
+            let w = world()
+            let _ = names_of(w)
+            let was = w.ws.there("/w/src/a.av")
+            removed(w)
+            let _ = moved(w)
+            was && names_of(w) == "" && !w.ws.there("/w/src/a.av")
+        }
+        then "a file changed is read again as text" {
+            let w = world()
+            let before = w.ws.input(text_name("/w/src/a.av")).as_text()
+            w.files.put("/w/src/a.av", "3\n")
+            let held = w.ws.input(text_name("/w/src/a.av")).as_text()
+            let _ = moved(w)
+            before == "1\n" &&
+                held == "1\n" &&
+                w.ws.input(text_name("/w/src/a.av")).as_text() == "3\n"
+        }
+        then "the revision moves once for each input that differs" {
+            let w = world()
+            let _ = names_of(w)
+            let _ = w.ws.there("/w/src/a.av")
+            let rev = w.ws.db.revision()
+            added(w)
+            let _ = moved(w)
+            w.ws.db.revision() == rev + 1
+        }
+        then "nothing changed moves no revision" {
+            let w = world()
+            let _ = names_of(w)
+            let _ = w.ws.there("/w/src/a.av")
+            let rev = w.ws.db.revision()
+            all_reread(w) && w.ws.db.revision() == rev
+        }
+    }
+    given "a workspace that lives across turns, asked what its build reads" {
+        then "an entry added after the first turn is no entry to a cell, and its build reads nothing" {
+            let w = library()
+            let first = w.ws.inputs_now() catch e -> ["?"]
+            entered(w)
+            first.is_empty() && w.ws.entry_of() == null
+        }
+        then "the next turn reads the world again, and the entry is in what the build reads" {
+            let w = library()
+            let _ = w.ws.inputs_now() catch e -> ["?"]
+            entered(w)
+            (w.ws.inputs_now() catch e -> ["?"]).contains("/w/src/main.av")
+        }
+        then "an entry removed is gone from the next turn" {
+            let w = library()
+            entered(w)
+            let had = (w.ws.inputs_now() catch e -> ["?"]).contains("/w/src/main.av")
+            w.files.set({"/w/avra.toml": manifest()})
+            w.names.set([])
+            had && (w.ws.inputs_now() catch e -> ["?"]).is_empty()
+        }
+    }
+    given "a listing" {
+        then "its names are sorted, whatever order the host answers in" {
+            let w = world()
+            w.names.set(["c.av", "a.av", "b.av"])
+            names_of(w) == "a.av,b.av,c.av"
+        }
+        then "no directory is no listing, and an empty directory an empty one" {
+            let w = world()
+            w.names.set([])
+            w.ws.listing("/w/none") == null && (w.ws.listing("/w/src") ?? [entry()]).length == 0
+        }
+    }
+    given "a query asking for the world to be read again" {
+        then "it is refused, naming the driver" {
+            let w = world()
+            let _ = names_of(w)
+            w.ws.relation(Family.Input).begin(7)
+            match w.ws.world_moved() {
+                .Err(why) -> why.contains("the driver's verb"),
+                .Ok(_) -> false,
+            }
+        }
+    }
+}

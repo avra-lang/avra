@@ -88,7 +88,7 @@ use diagnostics.{
 }
 use @std.errors.{Loc}
 use @std.testing.{words}
-use compiler.host.{Host, Manifest, memory_host}
+use compiler.host.{Host, Manifest, InputName, memory_host}
 use compiler.store.{Store, Keeping}
 use compiler.lower.{Unit}
 use compiler.families.{Family}
@@ -334,6 +334,10 @@ fn new_records() -> Records {
 @plain_field("per_file")
 @plain_field("clock")
 export type Workspace = {
+    // every name the world was asked by, interned: a name's place in
+    // `input_names` is its Input cell's key, `input_index` finds it
+    input_index: Cell<Map<string, int>>,
+    input_names: Cell<List<InputName>>,
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
     host: Host,
@@ -524,7 +528,7 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
 fn reads_rows_whole(f: Family) -> bool {
     match f {
         .Lowered or .LiftLowered or .Lifted or .Settled -> true,
-        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads -> false,
+        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input -> false,
     }
 }
 
@@ -649,6 +653,8 @@ fn built(
         phases: list_cell(),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
         read_fixpoint: new_fixpoint<bool>(kernel, Family.DeclReads.ordinal, false, read_reach_join, read_reach_fp),
+        input_index: map_cell(),
+        input_names: list_cell(),
     }
     // The registration IS `Family`'s declaration order: `Family.all()`
     // answers the variants in ordinal order, so `db.family`'s minted index
@@ -899,6 +905,7 @@ impl Workspace {
             .Named -> self.decls.named_now(arg),
             .ReadReach -> touch(self.read_reach()),
             .DeclReads -> touch(self.decl_reads_state(decl_at_arg(arg))),
+            .Input -> touch(self.input_at(arg)),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -1221,7 +1228,7 @@ impl Workspace {
     fn declaring_siblings(path: string) -> List<string> {
         if self.per_file { return [] }
         let dir = dir_of(path)
-        let declaring = [joined_path(dir, f) for f in self.host.list(dir) if is_source(f, dir) && file_declares_component(self, joined_path(dir, f))]
+        let declaring = [joined_path(dir, f) for f in self.listed(dir) if is_source(f, dir) && file_declares_component(self, joined_path(dir, f))]
         [s for s in declaring if !self.excluded(s)]
     }
 

@@ -2,7 +2,7 @@
 // a file that is there, empty, missing, or gone between them — and what
 // a source and a finding make of each.
 use compiler.{avra, new_workspace, findings_of, Workspace}
-use compiler.host.{Host, Read, memory_host}
+use compiler.host.{Host, Read, Beneath, memory_host}
 
 fn host_of(files: Map<string, string>) -> Host {
     memory_host(files, files.keys())
@@ -53,6 +53,20 @@ fn named_line(main: string, edit: fn(Workspace, Cell<bool>) -> void) -> string? 
     let p = ws.program("/w/src/main.av")
     edit(ws, gone)
     findings_of(p).find(it.rule == "let_stmt.unmutated_mut")?.text
+}
+
+/// The file can no longer be given as text: `beneath` refuses it, and
+/// every later whole-file read is written down in `died`.
+fn unreadable(main: string, died: Cell<List<string>>, turned: Cell<bool>) -> Workspace {
+    let base = host_of({"/w/src/main.av": main})
+    new_workspace(
+        base with { beneath: (root: string, rel: string) -> if turned.get() { Beneath.NotText(0) } else { (base.beneath)(root, rel) }, read: (p: string) -> {
+            if turned.get() { died.push(p) }
+            base.read(p)
+        } },
+        "/w",
+        avra(),
+    )
 }
 
 fn untouched(_ws: Workspace, _gone: Cell<bool>) {}
@@ -160,6 +174,15 @@ spec "compiler/input_host" {
         }
         then "a file truncated to empty names an empty line — never the parse's old one" {
             named_line("mut a = 0\na\n", truncated) == ""
+        }
+        then "a file that became unreadable keeps the line the parse read, and no read that ends the run is asked" {
+            let died: Cell<List<string>> = Cell.new([])
+            let turned = Cell.new(false)
+            let ws = unreadable("mut a = 0\na\n", died, turned)
+            let p = ws.program("/w/src/main.av")
+            turned.set(true)
+            findings_of(p).find(it.rule == "let_stmt.unmutated_mut")?.text == "mut a = 0" &&
+                died.get().is_empty()
         }
         then "a file that is gone keeps the line the parse read" {
             named_line("mut a = 0\na\n", removed) == "mut a = 0"

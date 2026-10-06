@@ -67,7 +67,7 @@ use core.{
     Exemplar,
 }
 use compiler.store.{Store, Stored, node_key}
-use compiler.host.{Manifest}
+use compiler.host.{Manifest, Read}
 use diagnostics.{SourceFile}
 use compiler.lower.{Unit}
 use features.{ModuleNames, Namespace, NameFacts, TypeFacts, Settlement}
@@ -181,6 +181,7 @@ export enum DbKind {
     Licenses
     Findings
     Answer
+    Input
 }
 
 impl DbKind {
@@ -210,6 +211,7 @@ impl DbKind {
             .Licenses -> "Licenses",
             .Findings -> "Findings",
             .Answer -> "Answer",
+            .Input -> "Input",
         }
     }
 }
@@ -320,6 +322,8 @@ export enum DbRow {
     /// hex, under that file's key parts (answers.av) — a moved part names
     /// another key, so the row holds unconditionally.
     Answer(name: string, text: string)
+    /// One read of the world, as the door answered it.
+    Input(Read)
 }
 
 impl DbRow {
@@ -349,6 +353,7 @@ impl DbRow {
             .Licenses(_, _) -> DbKind.Licenses,
             .Findings(_, _) -> DbKind.Findings,
             .Answer(_, _) -> DbKind.Answer,
+            .Input(_) -> DbKind.Input,
         }
     }
 
@@ -372,6 +377,16 @@ impl DbRow {
 /// already uses: a wrong variant reaching one is a defect the `Memo`
 /// layer already prevents by construction, so the trap is a belt,
 /// never a guess.
+fn read_of(r: DbRow) -> Read {
+    match r {
+        .Input(value) -> value,
+        rest -> {
+            avra_trap("defect: DbRow.Input expected")
+            read_of(r)
+        },
+    }
+}
+
 fn source_of(r: DbRow) -> SourceFile {
     match r {
         .Source(value) -> value,

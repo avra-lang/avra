@@ -86,7 +86,7 @@ impl Workspace {
     }
 
     fn has_manifest(pkg: Package) -> bool {
-        self.host.exists(joined_path(pkg.root, "avra.toml"))
+        self.there(joined_path(pkg.root, "avra.toml"))
     }
 
     fn manifest_source(pkg: Package) -> SourceFile {
@@ -138,7 +138,7 @@ impl Workspace {
             if self.host.absolute(known!.root) != self.host.absolute(dir) { self.speak_package(duplicate_package(at, key, known!.root, dir)) }
             return
         }
-        if !self.host.exists(joined_path(dir, "avra.toml")) { return self.speak_package(bad_dependency_path(at, key, dir)) }
+        if !self.there(joined_path(dir, "avra.toml")) { return self.speak_package(bad_dependency_path(at, key, dir)) }
         self.entered(key, dir, at, Origin.Declared, chain)
     }
 
@@ -150,7 +150,7 @@ impl Workspace {
     /// graph. A key the toolchain does not carry is nobody's here.
     fn std_admitted(key: string) -> bool {
         let dir? = self.host.std_dir(key) else { return false }
-        if !self.host.exists(joined_path(dir, "avra.toml")) { return false }
+        if !self.there(joined_path(dir, "avra.toml")) { return false }
         if self.packages().any(it.key == key) { return true }
         self.entered(key, dir, null, Origin.Toolchain, [])
         true
@@ -258,7 +258,7 @@ impl Workspace {
         let line = "\"${k}\" = { path = \"${relative_path(from.root, known.root)}\" }"
         let manifest_path = joined_path(from.root, "avra.toml")
         let text = if m.deps_at == null { "\n[dependencies]\n${line}\n" } else { "\n${line}" }
-        let at = deps_offset(m) ?? self.host.read(manifest_path).length
+        let at = deps_offset(m) ?? self.listed_text(manifest_path).length
         [
             Suggestion {
                 confidence: Confidence.High,

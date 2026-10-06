@@ -687,20 +687,20 @@ fn maybe_declares_block(ws: Workspace, files: List<string>) -> bool {
 
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn file_lexes_block(ws: Workspace, path: string) -> bool {
-    let known = ws.records.grammar_scanned.get().get(path)
+    let seen = ws.listed_seen(path)
+    let known = ws.records.grammar_scanned.get().get(seen.mark)
     if known != null { return known! }
-    let text = ws.host.read(path)
     // THE DB ANSWERS BEFORE THE LEXER: the verdict is the text's own, so a
     // row under its digest holds for every process that reads these bytes —
     // but the VERDICT also depends on which keywords THIS compiler's
     // assembled grammar opens a block with, so the compiler's own print
     // joins the key too.
     let store = ws.opened_store()
-    let key = digest_of("scan\n${ws.compiler_id()}\n${text}")
+    let key = digest_of("scan\n${ws.compiler_id()}\n${seen.text}")
     let kept = ws.db.scan(store, key)
-    let found = if kept != null { kept! == "1" } else { text_opens_block(text, ws.lang.keywords) }
+    let found = if kept != null { kept! == "1" } else { text_opens_block(seen.text, ws.lang.keywords) }
     if kept == null { ws.db.insert_scan(store, key, if found { "1" } else { "0" }) }
-    ws.records.grammar_scanned.put(path, found)
+    ws.records.grammar_scanned.put(seen.mark, found)
     found
 }
 
@@ -708,11 +708,11 @@ fn file_lexes_block(ws: Workspace, path: string) -> bool {
 /// block or its head — read off its tokens, once a path.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn file_declares_component(ws: Workspace, path: string) -> bool {
-    let known = ws.records.component_scanned.get().get(path)
+    let seen = ws.listed_seen(path)
+    let known = ws.records.component_scanned.get().get(seen.mark)
     if known != null { return known! }
-    let text = ws.host.read(path)
-    let found = text.contains("component") && declares_component(lex_source(text).tokens)
-    ws.records.component_scanned.put(path, found)
+    let found = seen.text.contains("component") && declares_component(lex_source(seen.text).tokens)
+    ws.records.component_scanned.put(seen.mark, found)
     found
 }
 
@@ -720,13 +720,14 @@ fn file_declares_component(ws: Workspace, path: string) -> bool {
 /// tokens, once a path.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn component_names(ws: Workspace, path: string) -> List<string> {
-    let known = ws.records.component_names.get().get(path)
+    let seen = ws.listed_seen(path)
+    let known = ws.records.component_names.get().get(seen.mark)
     if known != null { return known! }
-    let tokens = lex_source(ws.host.read(path)).tokens
+    let tokens = lex_source(seen.text).tokens
     let found = [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
         tokens[j + 1].kind == TokenKind.Name &&
         (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))]
-    ws.records.component_names.put(path, found)
+    ws.records.component_names.put(seen.mark, found)
     found
 }
 

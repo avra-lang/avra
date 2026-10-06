@@ -86,11 +86,12 @@ Each PR ends with `make inputs-accept`; the baseline falls by the count in its r
 | PR | what moves | files | removes | leaves |
 |---|---|---|---|---|
 | **b** | `Host.text(path) -> Read` lands as the door's first verb, over the fields `Host` already has. The `Source` and `Manifest` loaders read through it and the kernel cell is cut by one word of the input's digest. `compiler/inputs.av` (`@input file_text` / `env_value`) is deleted; findings reads `host.text` | `host/host.av`, `host/input.av`, `workspace.av` (the Source loader), `packages.av` (the Manifest loader), `findings.av`, `derive.av` (one call), `compiler/inputs.av` (deleted) | 4 | 196 |
-| **c** | the general cell — an interned `InputName` under its own family — and the rest behind `Host`: `exists`, `is_dir`, `list`, `beneath`, the remaining `read`s, the three manifest re-reads that stand outside any cell today (`packages.av` 2, `build.av` 1); `embed` as `Text`; `admit_embeds`' string match deleted; the four unrecorded reads of `avra-8sb5.57.184` | `modules.av` 11, `suite.av` 11, `build.av` 10, `packages.av` 5, `voices.av` 3, `record.av` 3, `whole.av` 3, `derive.av` 2, `workspace.av` 1, `rule_proof.av` 1, `testing/mod.av` 3 | 53 | 143 |
+| **c1** | the general cell — `Family.Input` over an interned `InputName` (`compiler/world.av`) — the door verbs `there`, `listing`, `spared_text`, and `world_moved`, the driver's verb that reads every input cell again. Every read made INSIDE A QUERY and recorded by nothing moves onto a cell | `modules.av` 6, `packages.av` 4, `voices.av` 3, `workspace.av` 1, `whole.av` 1 | 15 | 181 |
+| **c2** | Source and Manifest under `world_moved` (first commit); then the driver's reads behind `Host`, the manifest re-reads in `build.av` and `manifest_source`; `embed` as `Text`; `admit_embeds`' string match deleted | `suite.av` 11, `build.av` 10, `modules.av` 5, `record.av` 3, `whole.av` 2, `derive.av` 2, `packages.av` 1, `rule_proof.av` 1, `testing/mod.av` 3 | 38 | 143 |
 | **d** | env, tool, target, the compiler's identity: `Env`, `Tool`, `Compiler` reads; `Target` declared; the three `Host` fields become inputs | `cli/commands/shared.av` 42, `whole.av` (link words) 1 | 43 | 100 |
 | **e** | the remaining direct sites by subsystem, and a `// LICENSED input.<why>:` line on each read that is no input | commands 47 · `build.av` 9, `db.av` 4 · debug flags 6 (licensed) · clock 21, evaluator 8, store 5 (licensed) | 100 | 0 |
 
-Order is b, c, d, e: c needs b's verb; d and e are independent of each other
+Order is b, c1, c2, d, e: c needs b's verb; d and e are independent of each other
 once c is in. A read sent through the door while recording nothing would fall off
 the keeper's count without becoming an input, so a site moves only with its cell.
 
