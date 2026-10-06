@@ -1,0 +1,63 @@
+// proves: what was read out of a box outlives the box — a map's
+// values after the map is gone, a concat and a slice after their
+// sources, a copy after its original, a forked map after the one it
+// was copied from — every element still its own
+type Entry = { vals: List<int>, name: string }
+
+fn entry(n: int) -> Entry { Entry { vals: [n, n + 1], name: "e${n}" } }
+
+fn values_after_map() -> List<Entry> {
+    mut m: Map<string, Entry> = {}
+    for i in 0..4 { m.set("k${i}", entry(i)) }
+    m.values()
+}
+
+fn joined_after_sources() -> List<Entry> {
+    let left = [entry(10), entry(11)]
+    let right = [entry(12)]
+    left.concat(right)
+}
+
+fn sliced_after_source() -> List<Entry> {
+    let all = [entry(20), entry(21), entry(22), entry(23)]
+    all.slice(1, 3)
+}
+
+fn copy_after_original() -> List<Entry> {
+    let first = [entry(30), entry(31)]
+    mut second = first
+    second.push(entry(32))
+    second
+}
+
+fn fork_after_original() -> Map<string, Entry> {
+    mut m: Map<string, Entry> = {}
+    m.set("a", entry(40))
+    m.set("b", entry(41))
+    mut n = m
+    m.set("c", entry(42))
+    n.set("d", entry(43))
+    n
+}
+
+fn told(es: List<Entry>) -> string {
+    ["${e.name}:${e.vals[0] + e.vals[1]}" for e in es].join(",")
+}
+
+fn churned() -> int {
+    mut t = 0
+    for i in 0..5000 { t = t + entry(i).vals.length }
+    t
+}
+
+fn shown() -> string {
+    let a = values_after_map()
+    let b = joined_after_sources()
+    let c = sliced_after_source()
+    let d = copy_after_original()
+    let f = fork_after_original()
+    let n = churned()
+    "${told(a)} | ${told(b)} | ${told(c)} | ${told(d)} | ${told(f.values())} ${f.length} | ${n}"
+}
+
+shown()
