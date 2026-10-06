@@ -5,7 +5,7 @@
 //! HOSTS every row by its host column. The twins: runtime/
 //! avra_runtime.c natively, the host arm in the interpreter — a new
 //! runtime fn is a row plus both bodies, nothing else.
-use core.{RtKind, RtSig, RtHost, Reach, TypeRegistry, TypeId, TypeRef, joined, Box}
+use core.{RtKind, RtSig, RtHost, Reach, Takes, TypeRegistry, TypeId, TypeRef, joined, Box}
 
 export once fn rt_sigs() -> List<RtSig> {
     let sigs: List<RtSig> = [
@@ -94,6 +94,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_array_push_owned",
+            takes: Takes.Always(1),
             ret: RtKind.Void,
             params: [RtKind.Ptr, RtKind.Ptr],
             writes: [true, false],
@@ -129,6 +130,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_array_get_owned",
+            stood: true,
             ret: RtKind.Ptr,
             params: [RtKind.Ptr, RtKind.I64],
             owns_result: true,
@@ -155,6 +157,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_slot_get_owned",
+            stood: true,
             ret: RtKind.Ptr,
             params: [RtKind.Ptr, RtKind.I64],
             owns_result: true,
@@ -205,6 +208,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_enum_boxed",
+            takes: Takes.Counted(1, 0, 2),
             ret: RtKind.Ptr,
             params: [RtKind.I64, RtKind.I64, RtKind.I64],
             answer: Box.List,
@@ -215,6 +219,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_array_push_tagged",
+            takes: Takes.Counted(1, 2, 3),
             ret: RtKind.Void,
             params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.I64],
             writes: [true, false, false, false],
@@ -226,6 +231,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_slot_set_tagged",
+            takes: Takes.Counted(2, 3, 4),
             ret: RtKind.Void,
             params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.I64, RtKind.I64],
             writes: [true, false, false, false, false],
@@ -327,6 +333,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_map_get_owned",
+            stood: true,
             ret: RtKind.Ptr,
             params: [RtKind.Ptr, RtKind.Ptr],
             owns_result: true,
@@ -348,6 +355,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_map_set_owned",
+            takes: Takes.Always(2),
             ret: RtKind.Void,
             params: [RtKind.Ptr, RtKind.Ptr, RtKind.Ptr],
             writes: [true, false, false],
@@ -371,6 +379,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_map_set_maybe_owned",
+            takes: Takes.Present(3, 2),
             ret: RtKind.Void,
             params: [RtKind.Ptr, RtKind.Ptr, RtKind.I64, RtKind.Ptr],
             writes: [true, false, false, false],
@@ -416,6 +425,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_map_value_at_owned",
+            stood: true,
             ret: RtKind.Ptr,
             params: [RtKind.Ptr, RtKind.I64],
             owns_result: true,
@@ -505,6 +515,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_slot_set_owned",
+            takes: Takes.Always(2),
             ret: RtKind.Void,
             params: [RtKind.Ptr, RtKind.I64, RtKind.Ptr],
             writes: [true, false, false],
@@ -540,6 +551,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_array_push_maybe_owned",
+            takes: Takes.Present(2, 1),
             ret: RtKind.Void,
             params: [RtKind.Ptr, RtKind.I64, RtKind.Ptr],
             writes: [true, false, false],
@@ -562,6 +574,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_slot_set_maybe_owned",
+            takes: Takes.Present(3, 2),
             ret: RtKind.Void,
             params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.Ptr],
             writes: [true, false, false, false],
@@ -607,6 +620,7 @@ export once fn rt_sigs() -> List<RtSig> {
         // does not consume the caller's.
         RtSig {
             name: "avra_once_get",
+            stood: true,
             ret: RtKind.Ptr,
             params: [RtKind.Ptr],
             owns_result: true,
@@ -656,6 +670,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_insist",
+            stood: true,
             ret: RtKind.Ptr,
             params: [RtKind.Ptr],
             owns_result: true,
@@ -1417,6 +1432,7 @@ export once fn rt_sigs() -> List<RtSig> {
         // the body answers its value in a one-cell list — one box, always
         RtSig {
             name: "avra_task_spawn",
+            takes: Takes.Always(0),
             wasm: false,
             ret: RtKind.Ptr,
             params: [RtKind.Ptr],
@@ -1442,6 +1458,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_tasks_push",
+            takes: Takes.Always(1),
             ret: RtKind.Void,
             params: [RtKind.Ptr, RtKind.Ptr],
             writes: [true, false],
@@ -1467,6 +1484,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_task_join",
+            stood: true,
             wasm: false,
             ret: RtKind.Ptr,
             params: [RtKind.Ptr],

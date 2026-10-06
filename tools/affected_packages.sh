@@ -19,7 +19,8 @@
 # found by the graph, never assumed: two rounds of reverse-lookup would
 # miss a three-deep chain, so the closure runs until it stops growing.
 #
-# A CHANGE UNDER packages/std-avrac, packages/cli, packages/std-meta OR
+# A CHANGE UNDER packages/std-avrac, packages/cli, packages/std-meta,
+# packages/std-relation (the kernel every compile runs through) OR
 # runtime/ IS A COMPILER CHANGE: every package's own build depends on
 # the compiler that builds it, so the affected set is then everything —
 # the one case an import graph cannot capture, since the compiler is
@@ -108,12 +109,12 @@ done
 compiler_changed=0
 for f in $touched_files; do
     case "$f" in
-        packages/std-avrac/*|packages/cli/*|packages/std-meta/*|runtime/*) compiler_changed=1 ;;
+        packages/std-avrac/*|packages/cli/*|packages/std-meta/*|packages/std-relation/*|runtime/*) compiler_changed=1 ;;
     esac
 done
 
 if [ "$compiler_changed" -eq 1 ]; then
-    echo "affected_packages: the compiler changed (packages/std-avrac, packages/cli, packages/std-meta or runtime/) — testing every package" >&2
+    echo "affected_packages: the compiler changed (packages/std-avrac, packages/cli, packages/std-meta, packages/std-relation or runtime/) — testing every package" >&2
     for name in $all_pkgs; do echo "$name"; done
     exit 0
 fi

@@ -16,10 +16,6 @@
 //! package of one rooted at its directory.
 use @std.io.{env}
 use core.{
-    Table,
-    new_table,
-    list_cell,
-    map_cell,
     SyntaxArena,
     StmtId,
     same_decl,
@@ -79,7 +75,7 @@ use features.{
     Instanced,
 }
 use @std.meta.{Diagnostic, bracket, identity, plain_field}
-use core.{StmtId}
+use core.{StmtId, watched_kernel}
 use diagnostics.{
     SourceFile,
     new_source_file,
@@ -92,7 +88,6 @@ use diagnostics.{
     has_errors,
     is_error,
 }
-use query.{Kernel, new_kernel, Key, Relation, Fixpoint, new_fixpoint}
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
@@ -102,6 +97,17 @@ use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
+use @std.relation.engine.{
+    Table,
+    new_table,
+    list_cell,
+    map_cell,
+    Kernel,
+    Key,
+    Relation,
+    Fixpoint,
+    new_fixpoint,
+}
 
 /// No paths, typed — a Cell's first value says what it holds.
 fn no_paths() -> List<string> { [] }
@@ -479,6 +485,12 @@ impl Marks {
         self.spans.push(Phase { name: name, ns: at - self.last })
         self.last = at
     }
+
+    /// Closes the span since the last mark under the next of `names` — the phase
+    /// a run of them is in is the one after those already closed.
+    mut fn next(names: List<string>) {
+        if self.spans.length < names.length { self.mark(names[self.spans.length]) }
+    }
 }
 
 /// EVERY NAME ONCE, SUMMED — the one grouping every `--time` report
@@ -525,45 +537,6 @@ fn reads_rows_whole(f: Family) -> bool {
     match f {
         .Lowered or .LiftLowered or .Lifted or .Settled -> true,
         .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads -> false,
-    }
-}
-
-/// `.ordinal`'s other sibling: the variant's own word, for a voice that
-/// must name it — a reader recognizes `Family.Raised`, never `22`.
-fn family_word(f: Family) -> string {
-    match f {
-        .Source -> "Source",
-        .Parsed -> "Parsed",
-        .Items -> "Items",
-        .Namespace -> "Namespace",
-        .Visible -> "Visible",
-        .Resolved -> "Resolved",
-        .Sig -> "Sig",
-        .Methods -> "Methods",
-        .Typed -> "Typed",
-        .ConstTyped -> "ConstTyped",
-        .Folded -> "Folded",
-        .Analysis -> "Analysis",
-        .Settled -> "Settled",
-        .Lowered -> "Lowered",
-        .Lifted -> "Lifted",
-        .Manifest -> "Manifest",
-        .Receivers -> "Receivers",
-        .Expanded -> "Expanded",
-        .Plain -> "Plain",
-        .References -> "References",
-        .Failures -> "Failures",
-        .HeldSig -> "HeldSig",
-        .Raised -> "Raised",
-        .MethodDiags -> "MethodDiags",
-        .LiftLowered -> "LiftLowered",
-        .Syntax -> "Syntax",
-        .Names -> "Names",
-        .Marks -> "Marks",
-        .Admitted -> "Admitted",
-        .Named -> "Named",
-        .ReadReach -> "ReadReach",
-        .DeclReads -> "DeclReads",
     }
 }
 
@@ -707,7 +680,7 @@ fn built(
     lone: bool,
     per_file: bool,
 ) -> Workspace {
-    let kernel = new_kernel()
+    let kernel = watched_kernel()
     let no_asks: List<Wanted> = []
     let no_asks_index: Map<string, int> = {}
     let no_lifts: List<LiftAsk> = []
@@ -2001,7 +1974,7 @@ impl Workspace {
         // those folds on every cold compile, the moment this file's
         // Folded settles — this closure runs only when `Folded`
         // ITSELF has a prior settle to compare against
-        // (query/kernel.av's `settle_lazy`), so on a cold compile,
+        // (the kernel's `settle_lazy`), so on a cold compile,
         // where Folded's own settle is always its first, nothing
         // here ever runs (CLAUDE.md, "the key a remembered value
         // settles on and the name its result is stored under are

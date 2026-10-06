@@ -1,0 +1,61 @@
+// What `--time` says of an attempt that gave way (compiler/derive.av): its
+// whole time, its phases up to where it left, and what the next attempt does
+// that it did not.
+use compiler.{Left, left_line, turn_said, Phase, ReadFile, Reads}
+
+fn read(path: string, why: Reads) -> ReadFile { ReadFile { path: path, why: why } }
+
+fn left(turn: string) -> Left {
+    Left {
+        spans: [
+            Phase { name: "ast", ns: 40000000 },
+            Phase { name: "ast", ns: 2000000 },
+            Phase { name: "load", ns: 3200000000 },
+            Phase { name: "admit", ns: 700000000 },
+        ],
+        ns: 3900000000,
+        turn: turn,
+    }
+}
+
+spec "compiler/derive — a discarded attempt's cost" {
+    given "an attempt that left in its second phase" {
+        then "the line is one line" {
+            !left_line(left("holds nothing")).contains("\n")
+        }
+        then "it leads with the attempt's whole time" {
+            left_line(left("holds nothing")).starts_with("discarded: 3900ms — ")
+        }
+        then "a span pushed twice is said once, summed" {
+            left_line(left("holds nothing")).contains("ast 42ms, load 3200ms, admit 700ms")
+        }
+        then "it ends with what the next attempt does" {
+            left_line(left("holds nothing")).ends_with(" — next holds nothing")
+        }
+    }
+    given "the turn's words" {
+        then "files read whatever the store holds are named with why, under the root" {
+            turn_said("/r", [read("/r/src/a.av", Reads.BodyAsked)], false, false, false) == "reads 1 more (src/a.av — a compile-time run called one of its bodies)"
+        }
+        then "past three files the rest are counted" {
+            let more = [
+                read("/r/a.av", Reads.Home),
+                read("/r/b.av", Reads.Home),
+                read("/r/c.av", Reads.Home),
+                read("/r/d.av", Reads.Home),
+                read("/r/e.av", Reads.Home),
+            ]
+            let said = turn_said("/r", more, false, false, false)
+            said.starts_with("reads 5 more (a.av — ") &&
+                said.contains("c.av — ") &&
+                !said.contains("d.av") &&
+                said.ends_with("; … and 2 more)")
+        }
+        then "the homes, nothing held and moved records each say so, in that order" {
+            turn_said("/r", [], true, true, true) == "reads the homes its instantiations lower from; holds nothing; reads the records again, moved under it"
+        }
+        then "an attempt named again unchanged says so" {
+            turn_said("/r", [], false, false, false) == "asks the same again"
+        }
+    }
+}

@@ -1,0 +1,121 @@
+//! The evaluator FREES what a run lets go: each program test under
+//! `freed_*` is run here once more, and must leave no box and no map
+//! counted when it ends. The program tests prove the answers; this
+//! proves nothing was kept to get them — and that a long run's tables
+//! stay the size of what was live at once. The `kept_*` programs are
+//! the other half: each fails when a retain is taken out of the
+//! evaluator, where a missing retain leaves `held` at zero all the same.
+use @std.avrac.compiler.{avra, new_workspace}
+use @std.avrac.testing.{floored}
+use @std.meta.{embed}
+use compiler.backend.{Kept, freed_read_words}
+use compiler.host.{memory_host}
+
+const ALIAS: string = embed("freed_alias/freed_alias.av")
+const UNIQUE: string = embed("freed_unique/freed_unique.av")
+const ACROSS_CALL: string = embed("freed_across_call/freed_across_call.av")
+const STORES: string = embed("freed_stores/freed_stores.av")
+const ENUMS: string = embed("freed_enums/freed_enums.av")
+const PAIRS: string = embed("freed_pairs/freed_pairs.av")
+const NULLABLE: string = embed("freed_nullable/freed_nullable.av")
+const ONCE_DYN: string = embed("freed_once_dyn/freed_once_dyn.av")
+const STATICS: string = embed("freed_statics/freed_statics.av")
+const CLOSURES: string = embed("freed_closures/freed_closures.av")
+const WIDE_ENUM: string = embed("freed_wide_enum/freed_wide_enum.av")
+const CHAIN: string = embed("freed_chain/freed_chain.av")
+const MAPS: string = embed("freed_maps/freed_maps.av")
+const MAP_COPY: string = embed("freed_map_copy/freed_map_copy.av")
+const MAP_WALKS: string = embed("freed_map_walks/freed_map_walks.av")
+
+/// A map's entries, read and dropped — under the prelude, whose
+/// `Entry` they wear.
+const ENTRIES: string = "type Row = { vals: List<int> }\nfn shown() -> int {\n    mut m: Map<string, Row> = {}\n    for i in 0..200 { m.set(\"k\${i % 5}\", Row { vals: [i, i] }) }\n    let es = m.entries()\n    m.remove(\"k0\")\n    mut t = 0\n    for e in es { t = t + e.value.vals.length + e.key.length }\n    t + m.entries().length\n}\nshown()"
+
+const TASKS: string = embed("freed_tasks/freed_tasks.av")
+const CELLS: string = embed("freed_cells/freed_cells.av")
+const OUTLIVES: string = embed("kept_outlives/kept_outlives.av")
+const READS: string = embed("kept_reads/kept_reads.av")
+const HANDLES: string = embed("kept_handles/kept_handles.av")
+const OWNER: string = embed("kept_owner/kept_owner.av")
+const MAYBE: string = embed("kept_maybe/kept_maybe.av")
+
+/// The one thing counting never frees.
+const CYCLE: string = "type Hook = { run: fn() -> int }\nfn hooked() -> int {\n    let c: Cell<List<Hook>> = Cell.new([])\n    c.push(Hook { run: () -> c.get().length })\n    c.get().length\n}\nhooked()"
+
+const ENTRY: string = "/w/src/main.av"
+
+/// Sixty thousand boxes and thirty thousand cells, two and one live
+/// at once.
+const LONG: string = "type Row = { cells: List<int> }\nfn made(i: int) -> Row {\n    mut xs = [i]\n    xs.push(i + 1)\n    Row { cells: xs }\n}\nfn spun(n: int) -> int {\n    mut t = 0\n    for i in 0..n { t = t + made(i).cells.length }\n    t\n}\nspun(30000)"
+
+/// What a program's run left behind; null when it did not run.
+fn left_by(text: string) -> Kept? {
+    match new_workspace(memory_host({"/w/src/main.av": text}, [ENTRY]), "/w", avra())
+        .program(ENTRY)
+        .kept() { .Ok(k) -> k, .Err(_) -> null }
+}
+
+/// What reading a freed box says, on any program's machine.
+fn freed_words() -> string {
+    match new_workspace(memory_host({"/w/src/main.av": "1"}, [ENTRY]), "/w", avra())
+        .program(ENTRY)
+        .lowered_checked() { .Ok(l) -> freed_read_words(l) ?? "silent", .Err(e) -> e }
+}
+
+/// What a program still held when its run ended; -1 when it did not run.
+fn held(text: string) -> int { left_by(text)?.held ?? -1 }
+
+/// `held`, for a program that needs the prelude.
+fn held_floored(text: string) -> int {
+    match floored(text).kept() { .Ok(k) -> k.held, .Err(_) -> -1 }
+}
+
+spec "compiler/backend (the evaluator frees)" {
+    given "boxes with more than one holder" {
+        then "two holders of one box leave nothing" { held(ALIAS) == 0 }
+        then "a place opened only while shared leaves nothing" { held(UNIQUE) == 0 }
+        then "a box held across a call leaves nothing" { held(ACROSS_CALL) == 0 }
+        then "stores, slot writes, pops, concats and slices leave nothing" { held(STORES) == 0 }
+    }
+    given "values that ride registers" {
+        then "an enum's payload leaves nothing" { held(ENUMS) == 0 }
+        then "a pair leaves nothing, and neither does what it named" { held(PAIRS) == 0 }
+        then "a nullable box leaves nothing" { held(NULLABLE) == 0 }
+        then "an enum past sixty-four variants leaves nothing" { held(WIDE_ENUM) == 0 }
+    }
+    given "what never dies" {
+        then "a `once` answer and a `dyn` box leave nothing counted" { held(ONCE_DYN) == 0 }
+        then "the binary's own data is never counted" { held(STATICS) == 0 }
+    }
+    given "boxes that own boxes" {
+        then "a closure's captures leave nothing" { held(CLOSURES) == 0 }
+        then "a long chain leaves nothing" { held(CHAIN) == 0 }
+        then "a map's values leave nothing" { held(MAPS) == 0 }
+        then "a copied map's values leave nothing" { held(MAP_COPY) == 0 }
+        then "a walk over a map's values leaves nothing" { held(MAP_WALKS) == 0 }
+        then "a map's entries leave nothing" { held_floored(ENTRIES) == 0 }
+        then "a task's body and answer leave nothing" { held(TASKS) == 0 }
+        then "a frame's cells leave nothing" { held(CELLS) == 0 }
+    }
+    given "boxes that outlive what they were read from or stored by" {
+        then "values, concats, slices, copies and forks leave nothing" { held(OUTLIVES) == 0 }
+        then "elements, fields, payloads and stored boxes leave nothing" { held(READS) == 0 }
+        then "task handles leave nothing" { held(HANDLES) == 0 }
+        then "a `Tasks` owner leaves nothing" { held(OWNER) == 0 }
+        then "nullable-of-nullable slots leave nothing" { held(MAYBE) == 0 }
+    }
+    given "a box nobody holds, read" {
+        then "the machine says so, in these words" {
+            freed_words() == "defect: a freed box was reached in a clean program"
+        }
+    }
+    given "a run far longer than what it holds at once" {
+        then "its tables stay near what was live, never what was made" {
+            let k? = left_by(LONG) else { return false }
+            k.held == 0 && k.entries < 10000
+        }
+    }
+    given "a closure a cell holds that captured the cell" {
+        then "the cycle is what the count still shows" { held(CYCLE) > 0 }
+    }
+}

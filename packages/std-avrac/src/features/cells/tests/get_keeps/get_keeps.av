@@ -1,0 +1,43 @@
+// proves: a value read out of a cell is the reader's own — a later
+// `push`, `set_at` or `put` through the cell never reaches it, whoever
+// holds it — and a copy of the cell still shares every write.
+type Seen = { rows: List<int>, names: Map<string, int> }
+
+fn grown(c: Cell<List<int>>, n: int) {
+    for i in 0..n { c.push(i) }
+}
+
+fn lists() -> string {
+    let c = Cell.new([1])
+    let g = c.get()
+    c.push(2)
+    c.set_at(0, 9)
+    let twin = c
+    let kept = [c.get(), twin.get()]
+    twin.push(3)
+    grown(c, 100)
+    let after = c.get()
+    "${g.length} ${g[0]} ${kept[0].length} ${kept[1][0]} ${after.length} ${after[0]} ${twin.get().length}"
+}
+
+fn maps() -> string {
+    let m: Cell<Map<string, int>> = Cell.new({})
+    m.put("a", 1)
+    let seen = Seen { rows: [], names: m.get() }
+    m.put("a", 2)
+    m.put("b", 3)
+    "${seen.names.length} ${seen.names.get("a") ?? 0} ${m.get().length} ${m.get().get("a") ?? 0}"
+}
+
+fn snapshots() -> int {
+    let c: Cell<List<int>> = Cell.new([])
+    mut total = 0
+    for i in 0..50 {
+        let before = c.get()
+        c.push(i)
+        total = total + before.length
+    }
+    total + c.get().length
+}
+
+"${lists()} | ${maps()} | ${snapshots()}"

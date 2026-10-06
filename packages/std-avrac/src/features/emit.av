@@ -451,6 +451,25 @@ impl LowerCx {
         }
     }
 
+    /// A map's walk: keys and values snapshot in insertion order, so a
+    /// turn's pair agrees whatever the body writes to the map.
+    mut fn keyed(subject: ExprId, value: TypeId) -> Keyed {
+        let m = self.reg_of(subject)
+        let listed = self.type(List<string>)
+        let keys = self.map_keys(self.view.types.shape_of(listed), m)
+        let vals = self.map_vals(self.view.types.shape_of(self.type(List<value>)), m)
+        Keyed {
+            keys: self.opened_reg(subject, keys, listed, self.type(string)),
+            vals: vals,
+            value: value,
+        }
+    }
+
+    /// This turn's value — the key is the walk's own element.
+    mut fn keyed_value(k: Keyed, here: Reg) -> Reg {
+        self.elem_read(k.vals, here, k.value)
+    }
+
     /// The kind a source of `ty` walks: a `Bytes` reads octets, a string
     /// decodes code points, anything else reads elements.
     fn walk_kind(ty: TypeId) -> WalkKind {
@@ -675,6 +694,9 @@ export enum WalkKind {
 }
 
 export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId, kind: WalkKind, ord: Reg? }
+
+/// A map's walk: its keys' walk, and the values read beside it.
+export type Keyed = { keys: Walk, vals: Reg, value: TypeId }
 
 // ── Measures ────────────────────────────────────────────────────
 

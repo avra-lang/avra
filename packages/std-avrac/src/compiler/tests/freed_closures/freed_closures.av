@@ -1,0 +1,34 @@
+// proves: a closure owns what it captured, and a fn value read out of a
+// record keeps its box
+type Counter = { step: fn(int) -> int, seen: List<int> }
+
+fn adder(base: List<int>) -> fn(int) -> int {
+    (n: int) -> n + base.length + (base.first() ?? 0)
+}
+
+fn made() -> Counter {
+    let base = [10, 20, 30]
+    Counter { step: adder(base), seen: base }
+}
+
+fn twice(f: fn(int) -> int, n: int) -> int { f(f(n)) }
+
+fn shown() -> int {
+    let c = made()
+    let d = c
+    let fs = [c.step, d.step, adder([1])]
+    mut t = 0
+    for f in fs { t = t + twice(f, 1) }
+    t + c.seen.length
+}
+
+fn looped(n: int) -> int {
+    mut t = 0
+    for i in 0..n {
+        let f = adder([i, i])
+        t = t + f(1)
+    }
+    t
+}
+
+"${shown()} ${looped(500)}"

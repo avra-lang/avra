@@ -52,6 +52,18 @@ export fn check_values(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.type(List<value>)
 }
 
+/// `m.entries()` answers the prelude's `Entry<string, V>` — a record
+/// the program can name, whatever the file calls its own types.
+export fn check_entries(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let value? = value_held(cx, mc, "entries") else { return cx.error_type }
+    if !cx.seated(mc, "entries", []) { return cx.error_type }
+    let entry? = cx.view.decls.prelude_named("Entry") else { return no_entry(cx, mc.e) }
+    // a record's layout is its declaration's answer
+    let _ = cx.view.decls.sig(entry)
+    let held = cx.view.types.intern(Type.App(entry, "Entry", [cx.type(string), value]))
+    cx.type(List<held>)
+}
+
 export fn lower_has(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let m = cx.reg_of(mc.subject)
     let key = cx.reg_of(mc.args[0])
@@ -66,6 +78,27 @@ export fn lower_keys(mut cx: LowerCx, mc: MethodCall) -> Reg {
 export fn lower_values(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let m = cx.reg_of(mc.subject)
     cx.map_vals(cx.shape_at(mc.e), m)
+}
+
+export fn lower_entries(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let value? = cx.view.types.map_value(cx.type_at(mc.subject)) else {
+        return cx.lower_defect(mc.e, "`entries` over no map survived typing")
+    }
+    let entry? = cx.view.types.element(cx.type_at(mc.e)) else {
+        return cx.lower_defect(mc.e, "`entries` answering no list survived typing")
+    }
+    entries_reg(cx, mc.e, mc.subject, value, entry)
+}
+
+/// `m.entries()`: each key packed beside its value, in the map's order.
+fn entries_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, value: TypeId, entry: TypeId) -> Reg {
+    let k = cx.keyed(subject, value)
+    let dst = cx.grown_box(cx.shape_at(e), cx.box_size(0), [])
+    let here = cx.turn_open(k.keys)
+    cx
+        .push_slot(dst, cx.packed_struct(entry, [cx.turn_elem(k.keys, here), cx.keyed_value(k, here)]))
+    cx.loop_end()
+    dst
 }
 
 export fn check_remove(mut cx: TypeCx, mc: MethodCall) -> TypeId {
@@ -182,6 +215,19 @@ fn unknowable_map(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
                 "`{}.${name}` cannot know its values",
                 "asked here",
                 "bind the map under a declared type first — `let m: Map<string, int> = {}`",
+            ),
+        )
+}
+
+fn no_entry(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.map_entry",
+                cx.loc_of(e),
+                "a map's entries wear the prelude's `Entry`, and this program sees no `@std/prelude`",
+                "asked here",
+                "a file in a package sees the prelude — or walk the pairs, `for k, v in m`",
             ),
         )
 }

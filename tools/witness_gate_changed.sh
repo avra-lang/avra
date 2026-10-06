@@ -52,7 +52,13 @@ cat > "$tmp/bin/git" <<'SH'
 printf '%s\n' "$*" >> "$GIT_LOG"
 exit 99
 SH
-chmod +x "$tmp/bin/avra" "$tmp/bin/make" "$tmp/bin/git"
+# A `clang` with no wasm target, so the gate's wasm proof skips here as it
+# does on a machine without the toolchain — it reads the real tree.
+cat > "$tmp/bin/clang" <<'SH'
+#!/bin/sh
+exit 0
+SH
+chmod +x "$tmp/bin/avra" "$tmp/bin/make" "$tmp/bin/git" "$tmp/bin/clang"
 
 run() {
     ( cd "$tmp" && PATH="$tmp/bin:$PATH" AVRA="$tmp/bin/avra" \

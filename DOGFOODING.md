@@ -815,6 +815,19 @@ or not) and `v.ordinal` its place. A bare variant beside `==`/`!=`
 reads its enum off the other side, through one `?`: `style.color ==
 .Danger`, never `== Tone.Danger`.
 
+## A named code is matched by name
+
+A table of named numbers is ONE match: `match c { escape -> …, tab or
+newline -> …, _ -> … }`. A bare name in a pattern that is a `const`'s
+compares the subject to it by the equality law, anywhere a pattern
+stands — an or-run, a variant's payload. The smells it replaces: a
+`when { c == escape -> … }` ladder over one subject, an arm that binds
+only to test (`x -> if x == K { … }`), and a literal repeated beside
+the const that names it. The same spelling BINDS when no const wears
+the name, so end such a match with `_ -> …`, never with a name: the
+compiler warns where a match ends on a const, and where an arm follows
+a name that turned out to bind.
+
 ## The native list vocabulary
 
 `length`, indexing, `push`, `set(i, v)`, `pop` (-> `T`, never
@@ -1705,7 +1718,7 @@ wrong thing; `declare` answers "the program has this name," not
 "this name's facts were recomputed this run." The signal for "was
 this recomputed" is the family-specific `ask`/`settle` pair
 (`Q ask <family> <arg> compute` then `Q settle <family> <arg> …`),
-read by family ordinal (`family_word`, compiler/workspace.av), never
+read by family ordinal (`key_family_word`, compiler/cache_walk.av), never
 by proximity to a `declare` or `parse` line.
 
 ## Typing is one later whole-program pass, not per-file

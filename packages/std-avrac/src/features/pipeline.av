@@ -6,9 +6,10 @@
 //! reaches the sink. A comprehension is a pipeline whose sink pushes.
 use core.{ExprId, DeclId, Reg, TypeId, Ins, Type, BinOp}
 
-/// A head's source: a list, a `Bytes`, a string's `chars` view, or the
-/// range `source..hi`. `index` binds the position before the element; a
-/// `lookup` is read in the source's place.
+/// A head's source: a list, a `Bytes`, a string's `chars` view, a map
+/// (its key and value both bound), or the range `source..hi`. `index`
+/// binds the position before the element; a `lookup` is read in the
+/// source's place.
 export type Source = { source: ExprId, hi: ExprId?, index: bool, lookup: Lookup? }
 
 /// A relation's narrower read: `lookup(db, value)`, the value written
@@ -135,6 +136,8 @@ impl LowerCx {
     mut fn headed(p: Pipeline, at: int, t: Turn, s: Source) {
         self.bind_patterns(s.source, t.regs)
         self.looked_up(s.source, t.regs, s.lookup)
+        let value: TypeId? = if s.hi == null { self.view.types.map_value(self.type_at(s.source)) } else { null }
+        if value != null { return self.keyed_head(p, at, t, s.source, value!) }
         let w = if s.hi == null { self.opened(s.source, self.elem_of(s.source)) } else { self.counted(s.source, s.hi!) }
         let here = self.turn_open(w)
         let v = if s.hi == null { self.turn_elem(w, here) } else { here }
@@ -147,6 +150,16 @@ impl LowerCx {
                     value: v,
                 },
             )
+        self.loop_end()
+    }
+
+    /// A map's head: the key and the value bind, in the map's order.
+    mut fn keyed_head(p: Pipeline, at: int, t: Turn, source: ExprId, value: TypeId) {
+        let k = self.keyed(source, value)
+        let here = self.turn_open(k.keys)
+        let v = self.keyed_value(k, here)
+        self
+            .staged(p, at + 1, Turn { regs: t.regs.concat([self.turn_elem(k.keys, here), v]), value: v })
         self.loop_end()
     }
 

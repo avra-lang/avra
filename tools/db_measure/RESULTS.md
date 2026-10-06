@@ -389,6 +389,52 @@ every time. Not special to a test program — a three-file fixture
 reproduces it. A builtin's wire is now resolved by name. One edit, check
 of std-avrac: 10.4 s -> 5.5 s, discarded 1 -> 0.
 
+## Two entries over the same modules, and what the builtin word costs
+
+Sprite `avra-unions-p2-b`, main + the unreached-files fix, every store
+cleared first; `tools/db_measure/hist/two_entries*.sh` (untracked scratch).
+
+1. **Cold `check packages/cli`, then `check --time packages/std-avrac`:
+   held 0/944**, a full cold derive (61 s). `avra cache held` says "it was
+   never built here" of all 944. READ: a module's record is keyed by the
+   root (`record_key` = compiler, `self.root`, module —
+   compiler/record.av:50), so two roots never share a record.
+2. **Then one edit of the cli: held 460/462, 3.7–3.8 s, nothing
+   discarded** — as before std-avrac was checked. The check path is
+   unharmed.
+3. **`avra cache held` on the cli at that point: 349 held, 122 read**; 81
+   files "what it sees moved"; 143 moved-interface notes; 104 differing
+   interface lines, 104 of them naming a builtin. The inspection walk has
+   the same root and no entry, so a different first file, and a builtin's
+   wire names the first file. Measured cost of that spelling: a wrong
+   report, not a lost hold.
+4. **One file, then its directory** (`check` of `fns_test.av`, then
+   `check --time packages/std-avrac`): the one file derives the package
+   cold (0/944); the directory holds 883/944 and throws away four
+   attempts, 27 s — 4.0 s "asks could not be read back" (fixed by
+   `db-00d-asks-read-back`), 7.0 s "reads the homes 1381 instantiations
+   it owes", 8.0 s and 8.2 s "a compile-time run called one of its
+   bodies". No interface reported moved.
+5. **`check` then `build` of the cli: held 0/471.** A check makes no
+   objects.
+
+std-http's refused hold (avra-8sb5.57.190): the held attempt refuses
+with "`string` does not implement `Respond`" (route.av:182) because an
+`impl Respond for string` in a held file aims at a builtin whose wire did
+not read back. With `db-00d-asks-read-back`: one edit 14.7 s -> 1.8 s,
+held 0/121 -> 111/121, refused 1 -> 0.
+
+std-action's three discarded attempts (avra-8sb5.57.194): the first
+derivation stands but owes 83–86 instantiations' verdict and is let go
+for the homes; the next finds a compile-time run calling a body in the
+held `src/derive.av`; the next finds `std-meta/src/meta.av` and
+`src/action.av`; the fourth stands. One round per discovery, 1.6–2.4 s
+each. Unexplained: the EDITED file `src/action.av` is named in the third
+turn as newly read.
+
+Correction to M3 above: the 1.33 M recorded `HeldSig` reads are not in
+`load` (0 when it ends); they happen in analyze and lower.
+
 ## Not measured
 
 - The encoded size of any family's value under a new codec.

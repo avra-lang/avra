@@ -150,8 +150,9 @@ registry is the idiom engine's spec, written by dogfooding.
 ## Rules
 
 - `core/` is infrastructure only. Features never import features.
-- Layering is one-way: core -> query -> grammar -> features -> compiler.
-  `query/` is the memo kernel — infrastructure, language-agnostic.
+- Layering is one-way: core -> grammar -> features -> compiler, all
+  over `@std/relation`, whose `engine/` is the memo kernel —
+  infrastructure, language-agnostic, the one a running program asks too.
   `grammar/` is the language-agnostic engine; `compiler/` is the
   driver and the ONE definition of Avra (feature order is branch
   order is the language).
@@ -885,9 +886,10 @@ registry is the idiom engine's spec, written by dogfooding.
   cannot read a manifest with no rows. Strip them in the slice after
   that refresh, and the pin law holds across the tree.
 - THE PRELUDE IS THE FLOOR: `@std/prelude` (packages/std-prelude) is
-  seen by every file in every package without a `use` — `println`
-  and `eprintln` today, and nothing a program can be compiled
-  without; a verb that fails that test belongs to a package above.
+  seen by every file in every package without a `use` — `println`,
+  `eprintln` and `Entry<K, V>` (what `m.entries()` answers) today,
+  and nothing a program can be compiled without; a name that fails
+  that test belongs to a package above.
   It is a PACKAGE the toolchain carries, not a scope the resolver
   injects (P7: a reader can open it, `explain` can point at it, and
   the layering `prelude <- text <- io <- process <- …` has a node at
@@ -1078,10 +1080,18 @@ registry is the idiom engine's spec, written by dogfooding.
   one a map's output may use: `m.keys()` and `m.values()` read back in
   written order, an overwrite keeps a key's place, and a snapshot
   keeps the order it had. The hash seed never reaches output (tests
-  pin it with `AVRA_HASH_SEED`). AND A MAP CANNOT BE WALKED WITH
-  `for` YET: `for k in m` is F2000 "`for … in` walks a `List`, this
-  is `Map<K, V>`" — walk `m.keys()` instead. Its vocabulary is
-  `get`/`set`/`has`/`keys`/`values`/`length`.
+  pin it with `AVRA_HASH_SEED`). AND A MAP WALKS PAIRED: `for k, v in
+  m` and `[f(k, v) for k, v in m]` bind the key and the value over a
+  snapshot, and a head naming ONE binder is refused ("a map walks as
+  key and value — `for k, v in m` binds both"). `m.entries()` answers
+  `List<Entry<string, V>>`, and `Entry<K, V> = { key: K, value: V }`
+  is the PRELUDE's record, never a built-in name: a file's own `Entry`
+  takes the name silently and the answer stays the prelude's (import
+  it under another name to say both — `use @std.prelude.{Entry as
+  Pair}`). A LONE FILE sees no prelude, so `entries` there is
+  `type.map_entry` — probe it from a directory with an `avra.toml`.
+  Its vocabulary is `get`/`set`/`has`/`remove`/`keys`/`values`/
+  `entries`/`length`/`is_empty`.
 - Grammar authoring: EVERY COMMA LIST TAKES A TRAILING COMMA — a
   repeated `( "," x )*` ends `","?` before its closer, in every
   rule (params, type params and args, payload declarations, lambda
@@ -1726,6 +1736,30 @@ Syntax the grammar lacks:
   lexer keeps an unknown escape as its two characters, so the text
   holds a backslash and a `u`. Spell a code point with `@std/text`'s
   `from_codepoint(65533)` (sugar backlog: `\u{…}` escapes).
+- A BARE NAME IN A PATTERN IS A CONST'S OR A BINDER'S, BY ITS
+  BINDING — never by its spelling. `match c { escape -> …, _ -> … }`
+  COMPARES where a `const escape` is in scope (declared, imported
+  through `use`, a body's own) and no parameter or local of that name
+  hides it; any other name BINDS what arrives. The const's type is
+  the subject's own ("a `int` never matches `int?`" — unwrap first),
+  it must compare by value ("`==` compares by value — …"), and a
+  comparison covers nothing: the catch-all is still owed. THE HAZARD
+  IS THAT ONE SPELLING MEANS TWO THINGS, and adding or deleting a
+  const flips an arm with no edit at the arm. Two warnings stand
+  where the flip would be silent: type.const_pattern on a match that
+  ENDS on a const's name ("`escape` is a const here, so this arm
+  compares" — add `_ -> …` or rename the binder), and
+  type.unreachable_arm on any arm after one that takes every value
+  ("this arm is never reached — `gone` above binds, and takes every
+  value" — what a deleted const leaves behind). A name-turned-binder
+  that is the LAST arm says nothing: it is a catch-all, as written.
+  An arms block cannot START on a bare name (`xs.map() { tab -> … }`
+  is a lambda's head) — write the `match` out. An `is` payload under
+  `if` (`if k is .C(tab) { … }`) is a pattern seat like any other. A
+  TEMPLATE'S bare name is judged in the file that WROTE the template:
+  its const compares there, and a const of the same name in the file
+  the code lands in never turns the template's binder into a
+  comparison (features/enums/tests/const_pat_template).
 - A match arm whose body is a bare STATEMENT (`.Unknown(t) -> fail
   E.Bad(t),`): F0100 "expected `}` to close the `match`" at the
   `fail`'s payload, then "expected EOF while parsing `program`" — and
@@ -2134,7 +2168,8 @@ Runtime facts, ours to ratify:
 - A GEN-N VS GEN-N+1 DIVERGENCE IS FOUND BY TRACING, NEVER GUESSED.
   `AVRA_QTRACE=1` prints one stderr line per query-kernel event —
   every `Memo.ask` (family, arg, reuse/compute/cycle) and
-  `Memo.settle` (family, arg, fingerprint) in query/memo.av, every
+  `Memo.settle` (family, arg, fingerprint) in @std/relation's
+  engine/answers.av, every
   `Binder.declare` (name, file) in features/namespace.av, every
   failed `named_type` lookup in compiler/typing/declare.av, every
   file a check PARSES (`Q parse <path>`, compiler/program.av), every

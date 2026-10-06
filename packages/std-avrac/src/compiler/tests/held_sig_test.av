@@ -4,12 +4,12 @@
 // it no-ops; asked with one, it settles once and reuses after, and a
 // query already open when it runs ends up depending on it.
 use @std.avrac.compiler.{avra, new_workspace}
-use @std.avrac.query.{Key, same_key}
 use @std.time.{now_ns}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
 use compiler.store.{store_at}
 use @std.io.{make_dirs}
+use @std.relation.engine.{Key, same_key}
 
 /// A cache root nothing has ever written to: nanosecond-unique per
 /// call, so no run ever reads what an earlier one (this session's or
@@ -73,7 +73,7 @@ spec "compiler/workspace — a held decl's sig records a dependency" {
                 let _ = ws.held_sig(mid)
                 ws.db.settle(outer, 0)
             }
-            let recorded = ws.db.kernel.cell(outer)?.deps ?? []
+            let recorded = ws.db.deps_of(outer)
             recorded.any(same_key(it, held_sig_key(mid.index)))
         }
     }

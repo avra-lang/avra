@@ -36,4 +36,23 @@ spec "one-line bodies" {
         then "a struct stays expanded" { kept("type S = {\n    a: int,\n}") }
         then "an if with one branch across lines stays expanded" { kept("fn f() -> int {\n    if true { 1 } else { 2 }\n}") }
     }
+    given "a comment trailing a line of code" {
+
+        then "it stays on its own line, never the line above" { kept("let a = 1\nlet b = 2 // x\nb") }
+        then "it stays after a one-line fn above it" { kept("fn dbl(n: int) -> int { n * 2 }\nlet v = dbl(1) // note\nv") }
+        then "it stays on the second statement of a body" {
+            kept("fn g() -> int {\n    let a = 1\n    let b = a // x\n    b\n}")
+        }
+        then "it stays below a body's closing brace, never on the body's last line" {
+            kept("fn f() -> int {\n    1\n}\nlet v = f() // note\nv")
+        }
+        then "it stays on the last line of a file with no break after it" { kept("let a = 1\nlet v = a // note") }
+        then "it stays on its own arm" {
+            kept(
+                "fn f(n: int) -> int {\n    match n {\n        0 -> 1,\n        _ -> 2, // rest\n    }\n}",
+            )
+        }
+        then "it stays on the line it already trails" { kept("let a = 1 // x\nlet b = 2\nb") }
+        then "it stays on a body's closing line" { kept("fn f() -> int {\n    1\n} // done\nf()") }
+    }
 }

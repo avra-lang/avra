@@ -1,0 +1,173 @@
+// `Fixpoint<T>` over two lattices: reachability (sets of nodes, `List<bool>`,
+// join = element-wise OR) and a small SCC where one member starts reading
+// another only partway through the solve (PERF's round-4 case). Both prove
+// the worklist actually propagates growth, not merely that a seed pass runs.
+// `solve` answers a Result, never a trap — a misdeclared lattice is the
+// caller's error, so §3's cases run bad joins straight through `solve` and
+// assert the refusal it answers, in its own words.
+use @std.relation.engine.{new_kernel, new_fixpoint, spoken}
+use @std.relation.stable.{text_hash}
+
+fn bit_vec(n: int, on: int) -> List<bool> { [i == on for i in 0..n] }
+
+fn or_vec(a: List<bool>, b: List<bool>) -> List<bool> { [a[i] || b[i] for i in 0..a.length] }
+
+fn vec_fp(v: List<bool>) -> int { text_hash([if b { "1" } else { "0" } for b in v].join("")) }
+
+/// A 4-node graph: a cycle 0 -> 1 -> 2 -> 0, plus a sink 2 -> 3.
+fn reach_edges(n: int) -> List<int> {
+    match n { 0 -> [1], 1 -> [2], 2 -> [0, 3], rest -> [] }
+}
+
+fn reach_compute(fx: fn(int) -> List<bool>, arg: int) -> List<bool> {
+    mut acc = bit_vec(4, arg)
+    for e in reach_edges(arg) { acc = or_vec(acc, fx(e)) }
+    acc
+}
+
+spec "relation/engine — the fixpoint: reachability" {
+    then "every node reaches exactly what the graph says, including through the cycle" {
+        let db = new_kernel()
+        let family = db.family((arg: int) -> 0)
+        let fp = new_fixpoint<List<bool>>(db, family, [false, false, false, false], or_vec, vec_fp)
+        fp.solve([0, 1, 2, 3], (arg: int) -> reach_compute((e: int) -> fp.value_at(e), arg)) is .Ok &&
+            vec_fp(fp.value_at(0)) == vec_fp([true, true, true, true]) &&
+            vec_fp(fp.value_at(1)) == vec_fp([true, true, true, true]) &&
+            vec_fp(fp.value_at(2)) == vec_fp([true, true, true, true]) &&
+            vec_fp(fp.value_at(3)) == vec_fp([false, false, false, true])
+    }
+}
+
+/// A -> constant [1]. C -> [2] plus whatever D contributes; D is a
+/// constant [99] one member "behind" C in solve order, so C's own value
+/// only reaches its final form after a re-run. B reads A first; only
+/// once A shows up does B start reading C at all — the read C sees on
+/// B's first look is C's SEED value, not yet grown by D. B must still
+/// end up with C's fully-grown value once the worklist wakes it.
+fn scc_compute(fx: fn(int) -> List<int>, arg: int) -> List<int> {
+    match arg {
+        0 -> [1],
+        1 -> {
+            let a = fx(0)
+            if a.contains(1) { fx(2) } else { [] }
+        },
+        2 -> [2].concat(fx(3)),
+        rest -> [99],
+    }
+}
+
+fn int_set_join(a: List<int>, b: List<int>) -> List<int> { a.concat([x for x in b if !a.contains(x)]) }
+
+fn int_set_fp(v: List<int>) -> int { text_hash([sig_of(x) for x in v].join(",")) }
+
+fn sig_of(x: int) -> string { "${x}" }
+
+spec "relation/engine — the fixpoint: a reader that starts mid-solve" {
+    then "B, which only starts reading C once A appears, still sees C's later growth" {
+        let db = new_kernel()
+        let family = db.family((arg: int) -> 0)
+        let fp = new_fixpoint<List<int>>(db, family, [], int_set_join, int_set_fp)
+        // B (1) is seeded BEFORE A (0), so its first look at A is bottom
+        // and it does not read C at all on that pass.
+        fp.solve([1, 0, 2, 3], (arg: int) -> scc_compute((e: int) -> fp.value_at(e), arg)) is .Ok &&
+            int_set_fp(fp.value_at(1)) == int_set_fp([2, 99])
+    }
+}
+
+fn int_set_meet(a: List<int>, b: List<int>) -> List<int> { [x for x in a if b.contains(x)] }
+
+spec "relation/engine — the fixpoint: the identity law a meet cannot pass" {
+    then "a real join keeps a non-bottom answer whole" {
+        let db = new_kernel()
+        let family = db.family((arg: int) -> 0)
+        let fp = new_fixpoint<List<int>>(db, family, [], int_set_join, int_set_fp)
+        fp.keeps_what_its_given([1, 2, 3])
+    }
+    then "a meet does not — bottom absorbs everything it is joined with" {
+        let db = new_kernel()
+        let family = db.family((arg: int) -> 0)
+        let fp = new_fixpoint<List<int>>(db, family, [], int_set_meet, int_set_fp)
+        !fp.keeps_what_its_given([1, 2, 3])
+    }
+}
+
+spec "relation/engine — the fixpoint: edges" {
+    given "no members at all" {
+        then "solve is a no-op, not a defect" {
+            let db = new_kernel()
+            let family = db.family((arg: int) -> 0)
+            let fp = new_fixpoint<List<int>>(db, family, [], int_set_join, int_set_fp)
+            match fp.solve([], (arg: int) -> [1]) { .Ok(n) -> n == 0, .Err(_) -> false } &&
+                int_set_fp(fp.value_at(0)) == int_set_fp([])
+        }
+    }
+    given "one member that reads only itself" {
+        then "it converges to its own fixpoint without looping forever" {
+            let db = new_kernel()
+            let family = db.family((arg: int) -> 0)
+            let fp = new_fixpoint<List<int>>(db, family, [], int_set_join, int_set_fp)
+            // Contributes its own current length back to itself each
+            // turn, capped by a fixed ceiling once inside it — a
+            // genuinely self-referential, single-member group.
+            let step = (arg: int) -> {
+                let mine = fp.value_at(0)
+                if mine.length < 3 { [mine.length] } else { [] }
+            }
+            match fp.solve([0], step) {
+                .Ok(_) -> int_set_fp(fp.value_at(0)) == int_set_fp([0, 1, 2]),
+                .Err(_) -> false,
+            }
+        }
+    }
+}
+
+// ── End to end: a misdeclared lattice is a REFUSED VALUE, never a trap ──
+
+spec "relation/engine — the fixpoint: solve refuses a misdeclared lattice, end to end" {
+    given "a join that is a meet, not a join" {
+        then "solve answers the Identity refusal, in its own words" {
+            let db = new_kernel()
+            let family = db.family((arg: int) -> 0)
+            let fp = new_fixpoint<List<int>>(db, family, [], int_set_meet, int_set_fp)
+            match fp.solve([0], (arg: int) -> [1, 2, 3]) {
+                .Err(r) -> match r {
+                    .Identity(f) -> f == 0 &&
+                        spoken(r) == "family 0's join must keep what it's given — join(bottom, x) must be x",
+                    rest -> false,
+                },
+                .Ok(_) -> false,
+            }
+        }
+    }
+    given "a join that disagrees with itself by argument order" {
+        then "solve answers the NotCommutative refusal before any member runs" {
+            let db = new_kernel()
+            let family = db.family((arg: int) -> 0)
+            let fp = new_fixpoint<List<int>>(
+                db,
+                family,
+                [],
+                (a: List<int>, b: List<int>) -> b,
+                int_set_fp,
+            )
+            match fp.solve([0], (arg: int) -> [1, 2, 3]) {
+                .Err(r) -> match r { .NotCommutative(f) -> f == 0, rest -> false },
+                .Ok(_) -> false,
+            }
+        }
+    }
+    given "a lattice with no finite height" {
+        then "solve answers the TurnCap refusal, naming the member and the cap" {
+            let db = new_kernel()
+            let family = db.family((arg: int) -> 0)
+            let base = new_fixpoint<List<int>>(db, family, [], int_set_join, int_set_fp)
+            // A tiny cap: the law is what is under test, not 10000 real turns.
+            let fp = base with { turn_cap: 5 }
+            let out = fp.solve([0], (arg: int) -> [fp.value_at(0).length])
+            match out {
+                .Err(r) -> match r { .TurnCap(f, arg, cap) -> f == 0 && arg == 0 && cap == 5, rest -> false },
+                .Ok(_) -> false,
+            }
+        }
+    }
+}

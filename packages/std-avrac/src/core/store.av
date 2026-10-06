@@ -1,6 +1,7 @@
 //! The node store: append-only arenas in one table, side tables keyed
 //! by id, and the mint/access seam. The node MODEL lives in nodes.av.
 use @std.meta.{identity, plain_field}
+use @std.relation.engine.{list_cell, map_cell}
 
 /// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn` — the
 /// fn-shaped keywords a declaration wears, one bitset instead of four
@@ -83,6 +84,7 @@ export type SyntaxArena = {
     remarks: Cell<List<Remark>>,
     pats: Cell<List<Pat>>,
     pat_spans: Cell<List<Span?>>,
+    pat_reads: Cell<List<ExprId?>>,
     pat_fingerprints: Cell<List<int>>,
     // a seat's span, by ParamId — the store's only fact about a
     // Param, which otherwise never touches an arena
@@ -180,6 +182,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         remarks: list_cell(),
         pats: list_cell(),
         pat_spans: list_cell(),
+        pat_reads: list_cell(),
         pat_fingerprints: list_cell(),
         param_spans: list_cell(),
         trailing: list_cell(),
@@ -822,9 +825,20 @@ impl SyntaxArena {
     fn alloc_pat(p: Pat, span: Span? = null) -> PatId {
         self.pat_fingerprints.push(self.fingerprint_pat(p))
         self.pat_spans.push(span)
+        self.pat_reads.push(self.read_of(p, span))
         self.pats.push(p)
         PatId { index: self.pats.get().length - 1 }
     }
+
+    /// A bare name in a pattern, as a READ of that name: the node
+    /// resolve walks when the name is a const's, so the pattern
+    /// compares to it. Minted with every binding pattern, whoever
+    /// allocates it; a name that binds leaves it unread.
+    fn read_of(p: Pat, span: Span?) -> ExprId? {
+        match p { .Bind(name) -> self.alloc_expr(Expr.Ident(name), span), rest -> null }
+    }
+
+    fn name_read(id: PatId) -> ExprId? { self.pat_reads.get()[id.index] }
 
     fn pat_count() -> int { self.pats.get().length }
     fn pat(id: PatId) -> Pat { self.pats.get()[id.index] }

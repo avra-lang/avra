@@ -9,6 +9,49 @@ fn show_decls() -> string {
 }
 
 spec "features/lists/comp_joins/adversarial" {
+    given "a head's own source or range bound that is refused" {
+        then "the first head's source speaks once" {
+            refused_with(
+                "enum E { A, B }\nlet x = [1 for c in E.A(1)]\nx.length",
+                "`E.A` carries nothing",
+            )
+        }
+        then "a variant spelled `all`, called as the list, speaks once" {
+            refused_with(
+                "enum E { all, B }\nlet x = [c.ordinal for c in E.all()]\nx.length",
+                "`E.all` carries nothing",
+            )
+        }
+        then "the first head's range bound speaks once" {
+            refused_with(
+                "enum E { A, B }\nlet x = [1 for i in E.A(1)..3]\nx.length",
+                "`E.A` carries nothing",
+            )
+        }
+        then "a later head's source speaks once" {
+            refused_with(
+                "enum E { A, B }\nlet x = [1 for a in [1] for c in E.A(1)]\nx.length",
+                "`E.A` carries nothing",
+            )
+        }
+        then "a later head's range bound is typed, and speaks once" {
+            refused_with(
+                "enum E { A, B }\nlet x = [1 for a in [1] for i in 0..E.A(1)]\nx.length",
+                "`E.A` carries nothing",
+            )
+        }
+        then "a later head's range bound that is no int is refused" {
+            refused_with(
+                "let x = [a + i for a in [10] for i in 0..\"s\"]\nx.length",
+                "a range's high bound is a `int`",
+            )
+        }
+        then "a later head's range bound reads the names bound before it" {
+            shown(
+                "fn two() -> int { 2 }\nlet x = [a + i for a in [10] for i in 0..(two() + a - 10)]\n\"\${x.length} \${x[1]}\"",
+            ) == "2 11"
+        }
+    }
     given "the expected-type channel" {
         then "a dyn want on the whole list does not leak into a later head's own source" {
             shown(

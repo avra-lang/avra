@@ -1,0 +1,736 @@
+//! THE QUERY KERNEL — the compiler as a spreadsheet (L6, ps3t.8):
+//! every step is a query that remembers its answer, the queries it
+//! read (its deps, discovered by execution), the revision its answer
+//! last CHANGED and the revision it was last VERIFIED. `ask` is the
+//! red-green decision: a cell verified this revision is current;
+//! otherwise its deps are re-verified through their families, and a
+//! cell none of whose deps changed since its own verification is
+//! re-marked current without running (green). A recomputed answer
+//! whose hash is unchanged keeps its changed_at — the wave dies
+//! there (early cutoff). A query that reaches itself is a CYCLE,
+//! answered as such rather than recursed into. Inputs are cells the
+//! driver sets. A key is a FAMILY number and the dense id the family
+//! keys by — two list indexes, no strings. Values live in the
+//! families' own typed tables; the kernel holds only bookkeeping.
+use @std.meta.{identity}
+
+/// A cell's address: its family, and the dense id the family keys
+/// by (a FileId, a DeclId).
+export type Key = { family: int, arg: int }
+
+export fn same_key(a: Key, b: Key) -> bool {
+    a.family == b.family && a.arg == b.arg
+}
+
+export enum Verdict {
+    Reuse
+    Compute
+    Cycle
+}
+
+/// A dependency edge: a key packed into one int — its family above
+/// bit 40, its arg below.
+fn packed(family: int, arg: int) -> int { (family << 40) + arg }
+
+fn family_of(edge: int) -> int { edge >> 40 }
+
+fn arg_of(edge: int) -> int { edge & 1099511627775 }
+
+/// No edge: below every packed key, a negative arg's included.
+fn no_edge() -> int { 0 - 4611686018427387904 }
+
+fn edge_of(key: Key) -> int { packed(key.family, key.arg) }
+
+fn key_of(edge: int) -> Key { Key { family: family_of(edge), arg: arg_of(edge) } }
+
+/// A cached query's bookkeeping: the edges it discovered, the
+/// revisions it last CHANGED and was last VERIFIED, and its answer's
+/// hash. The last-reader stamp `record_at` dedupes against lives
+/// apart, in `Kernel.stamps` — a repeat read never touches this.
+/// `value_hash` is NULL for a cell `settle_lazy` wrote whose fold was
+/// never asked — its OWN state, never a sentinel a real fold could
+/// equal.
+type QueryCell = { deps: List<int>, changed_at: int, verified_at: int, value_hash: int? }
+
+/// A fresh cell for an input: no deps, changed and verified as of
+/// `rev` alike.
+fn input_cell(rev: int, value_hash: int) -> QueryCell {
+    QueryCell { deps: [], changed_at: rev, verified_at: rev, value_hash: value_hash }
+}
+
+/// One stamp a frame overwrote and must hand back to the frame it
+/// took it from.
+type Restore = { edge: int, previous: int }
+
+/// THE ASKING HALF: the open queries, innermost last — five stacks
+/// that grow and shrink together — and the innermost's own reader id
+/// and grain, kept apart so a repeat read asks one cell.
+@identity
+type Asker = {
+    /// Each open query's key, as an edge.
+    open: Cell<List<int>>,
+    /// Each open query's edges so far, each list in its own cell: a
+    /// read appends in place.
+    pending: Cell<List<Cell<List<int>>>>,
+    /// Each open query's restores — null until it first overwrites a
+    /// still-open ancestor's stamp, which most never do.
+    restore: Cell<List<Cell<List<Restore>>?>>,
+    /// The revision each open query BEGAN at: it settles as verified
+    /// then, never later, so a write that moved its input while it ran
+    /// leaves it re-verified on its next ask.
+    began: Cell<List<int>>,
+    /// Each open query's reader id; `reader` is the innermost's, 0
+    /// when none is open.
+    readers: Cell<List<int>>,
+    reader: Cell<int>,
+    /// The edge the innermost open query appended last, `no_edge`
+    /// when it has appended none since it began or resumed.
+    last: Cell<int>,
+    /// Whether the innermost open query reads rows whole.
+    whole: Cell<bool>,
+}
+
+fn new_asker() -> Asker {
+    Asker {
+        open: list_cell(),
+        pending: list_cell(),
+        restore: list_cell(),
+        began: list_cell(),
+        readers: list_cell(),
+        reader: Cell.new(0),
+        last: Cell.new(no_edge()),
+        whole: Cell.new(false),
+    }
+}
+
+/// A stack cell without its top.
+fn dropped<T>(stack: Cell<List<T>>) {
+    let held = stack.get()
+    stack.set(held.slice(0, held.length - 1))
+}
+
+/// A read that skipped `ask`, held for the outermost open query: which verb read
+/// which subject (both the reader's own dense numbers), and the queries open when it
+/// first happened.
+export type Bypass = { verb: int, subject: int, frames: List<Key> }
+
+/// THE DEPENDENCY AUDIT: off, it is one flag. On, a bypass read is held once per
+/// (verb, subject) until the outermost query settles, then judged against the queries
+/// that were open when it happened: a read none of them records a cover for is one no
+/// witness of them could see, and goes to `sink`. `seen` marks the pairs held so far,
+/// `touched` lists them for the reset.
+@identity
+export type Audit = {
+    on: Cell<bool>,
+    width: Cell<int>,
+    held: Cell<List<Bypass>>,
+    seen: Cell<List<bool>>,
+    touched: Cell<List<int>>,
+    exempt: Cell<fn(Bypass) -> bool>,
+    covers: Cell<fn(Bypass) -> List<Key>>,
+    sink: Cell<fn(Bypass) -> void>,
+    visit: Cell<List<Cell<List<int>>>>,
+    round: Cell<int>,
+    reach: Cell<Map<string, bool>>,
+}
+
+/// The kernels made so far — a graph line names its kernel by this count.
+once fn kernels_made() -> Cell<int> { Cell.new(0) }
+
+/// THE GRAPH, WRITTEN OUT: off, it is one flag. On — its owner turns it on, before
+/// any family registers — a kernel writes a line to stderr
+/// for each family it registers (`F`), input it sets (`I`), cell it settles with the
+/// keys that cell read (`G`), frame it abandons (`A`) and family it evicts (`E`), and
+/// counts every recorded read by the family read — repeats too, which no cell's list
+/// shows — written (`C`) each time the outermost query settles.
+@identity
+type Graph = { on: Cell<bool>, id: Cell<int>, reads: Cell<List<int>> }
+
+fn new_graph() -> Graph { Graph { on: Cell.new(false), id: Cell.new(0), reads: list_cell() } }
+
+impl Graph {
+    fn opened() {
+        kernels_made().set(kernels_made().get() + 1)
+        self.id.set(kernels_made().get())
+        self.on.set(true)
+    }
+
+    /// One more read of a key of `family`.
+    fn counted(family: int) { self.reads.set_at(family, self.reads.get()[family] + 1) }
+
+    fn registered(family: int) {
+        self.reads.push(0)
+        eprintln("F\t${self.id.get()}\t${family}")
+    }
+
+    fn input_set(key: Key) { eprintln("I\t${self.id.get()}\t${key.family}\t${key.arg}") }
+
+    fn settled(key: Key, deps: List<int>, outermost: bool) {
+        eprintln("G\t${self.id.get()}\t${key.family}\t${key.arg}\t${deps.length}\t${spelled(deps)}")
+        if outermost { eprintln("C\t${self.id.get()}\t${["${n}" for n in self.reads.get()].join(" ")}") }
+    }
+
+    fn abandoned(key: Key, deps: List<int>) {
+        eprintln("A\t${self.id.get()}\t${key.family}\t${key.arg}\t${deps.length}")
+    }
+
+    fn evicted(family: int) { eprintln("E\t${self.id.get()}\t${family}") }
+}
+
+/// Edges as `family:arg`, space-separated.
+fn spelled(edges: List<int>) -> string { ["${family_of(e)}:${arg_of(e)}" for e in edges].join(" ") }
+
+/// A kernel is a shared handle. Copying it copies the handle; every
+/// query family and verifier therefore sees the same revision, open
+/// stack, dependencies, and counters. Every table is its own cell, so
+/// a write lands in place and copies nothing beside it.
+@identity
+export type Kernel = {
+    rev: Cell<int>,
+    /// ONE TABLE PER FAMILY, each its own `Cell` — `cells[family]`
+    /// holds that family's cells, indexed directly by `arg`. Grown in
+    /// lockstep with `verifiers` and `stamps`: a cell's address never
+    /// depends on a count that can grow, so a family registered late
+    /// remaps nothing.
+    cells: Cell<List<Cell<List<QueryCell?>>>>,
+    verifiers: Cell<List<fn(int) -> int>>,
+    /// The LAST-READER STAMP of every key, laid out as `cells` is: the
+    /// reader id that last recorded it, 0 for none.
+    stamps: Cell<List<Cell<List<int>>>>,
+    /// The last reader id minted; ids start at 1.
+    minted: Cell<int>,
+    asker: Asker,
+    /// Whether each ask and settle is traced; its owner's to turn on.
+    tracing: Cell<bool>,
+    hits: Cell<int>,
+    misses: Cell<int>,
+    /// Each family's GRAIN — whether its queries read rows whole.
+    whole_families: Cell<List<bool>>,
+    audit: Audit,
+    graph: Graph,
+}
+
+fn unheard(_b: Bypass) {}
+
+fn unexempt(_b: Bypass) -> bool { false }
+
+fn uncovering(_b: Bypass) -> List<Key> { [] }
+
+export fn new_kernel() -> Kernel {
+    Kernel {
+        rev: Cell.new(1),
+        cells: list_cell(),
+        verifiers: list_cell(),
+        stamps: list_cell(),
+        minted: Cell.new(0),
+        asker: new_asker(),
+        tracing: Cell.new(false),
+        hits: Cell.new(0),
+        misses: Cell.new(0),
+        whole_families: list_cell(),
+        audit: Audit {
+            on: Cell.new(false),
+            width: Cell.new(1),
+            held: list_cell(),
+            seen: list_cell(),
+            touched: list_cell(),
+            exempt: Cell.new(unexempt),
+            covers: Cell.new(uncovering),
+            sink: Cell.new(unheard),
+            visit: list_cell(),
+            round: Cell.new(0),
+            reach: map_cell(),
+        },
+        graph: new_graph(),
+    }
+}
+
+impl Kernel {
+    /// Arms the audit for a reader with `width` verbs: `exempt` names the reads that need
+    /// no dependency, `covers` the keys that would have recorded one, and `sink` hears
+    /// each read no open query covered, when the outermost query settles.
+    fn audit_to(
+        width: int,
+        exempt: fn(Bypass) -> bool,
+        covers: fn(Bypass) -> List<Key>,
+        sink: fn(Bypass) -> void,
+    ) {
+        self.audit.width.set(width)
+        self.audit.exempt.set(exempt)
+        self.audit.covers.set(covers)
+        self.audit.sink.set(sink)
+        self.audit.on.set(true)
+    }
+
+    /// Notes a read that skipped `ask`, for the outermost open query to judge — once per
+    /// (verb, subject). With no query open, nothing depends on the read.
+    fn bypassed(verb: int, subject: int) {
+        if !self.audit.on.get() { return }
+        let open = self.asker.open.get()
+        if open.is_empty() { return }
+        let at = subject * self.audit.width.get() + verb
+        while self.audit.seen.get().length <= at { self.audit.seen.push(false) }
+        if self.audit.seen.get()[at] { return }
+        self.audit.seen.set_at(at, true)
+        self.audit.touched.push(at)
+        self
+            .audit
+            .held
+            .push(Bypass { verb: verb, subject: subject, frames: [key_of(e) for e in open] })
+    }
+
+    /// The outermost query settled: every read held for it is judged against the queries
+    /// that were open when it happened, whose deps are final now.
+    fn judged() {
+        if !self.asker.open.get().is_empty() { return }
+        let held = self.audit.held.get()
+        if held.is_empty() { return }
+        let exempt = self.audit.exempt.get()
+        let covers = self.audit.covers.get()
+        let sink = self.audit.sink.get()
+        for b in held {
+            if !exempt(b) && !self.covered(b, covers(b)) { sink(b) }
+        }
+        for at in self.audit.touched.get() { self.audit.seen.set_at(at, false) }
+        let no_touched: List<int> = []
+        self.audit.touched.set(no_touched)
+        let none: List<Bypass> = []
+        self.audit.held.set(none)
+        let unasked: Map<string, bool> = {}
+        self.audit.reach.set(unasked)
+    }
+
+    /// Whether the cover is a query open at the read (the read is of a table that query
+    /// is making), or the query that PERFORMED the read reaches it: every query is a cell
+    /// verified on its own dependencies, so a cover only an ancestor reaches leaves the
+    /// reader's own cell unsound.
+    fn covered(b: Bypass, covers: List<Key>) -> bool {
+        let reader? = b.frames.last() else { return true }
+        covers.any((c: Key) -> b.frames.any((f: Key) -> same_key(c, f)) || self.reaches(reader, c))
+    }
+
+    /// Whether following `from`'s dependencies to the bottom meets `target`; answered once
+    /// per (from, target) until the judging ends.
+    fn reaches(from: Key, target: Key) -> bool {
+        let asked = "${from.family}:${from.arg}>${target.family}:${target.arg}"
+        let known? = self.audit.reach.get().get(asked) else {
+            let found = self.searched(from, target)
+            self.audit.reach.put(asked, found)
+            return found
+        }
+        known
+    }
+
+    /// The search: each cell is visited once, stamped with a round the call opens.
+    fn searched(from: Key, target: Key) -> bool {
+        self.audit.round.set(self.audit.round.get() + 1)
+        mut frontier = [from]
+        while !frontier.is_empty() {
+            mut below: List<Key> = []
+            for k in frontier {
+                for d in self.deps_of(k) {
+                    if same_key(d, target) { return true }
+                    if self.first_visit(d) { below.push(d) }
+                }
+            }
+            frontier = below
+        }
+        false
+    }
+
+    /// Whether `k` has not yet been reached in this round; stamps it.
+    fn first_visit(k: Key) -> bool {
+        while self.audit.visit.get().length <= k.family {
+            let row: Cell<List<int>> = list_cell()
+            self.audit.visit.push(row)
+        }
+        let row = self.audit.visit.get()[k.family]
+        while row.get().length <= k.arg { row.push(0) }
+        let round = self.audit.round.get()
+        if row.get()[k.arg] == round { return false }
+        row.set_at(k.arg, round)
+        true
+    }
+
+    /// Every later registration, input, settle, abandon and eviction is written out.
+    fn graph_on() { self.graph.opened() }
+
+    /// Every later ask and settle is traced.
+    fn trace_on() { self.tracing.set(true) }
+
+    fn revision() -> int { self.rev.get() }
+
+    fn bump() { self.rev.set(self.rev.get() + 1) }
+
+    fn family(verify: fn(int) -> int) -> int {
+        self.verifiers.push(verify)
+        let no_cells: List<QueryCell?> = []
+        self.cells.push(Cell.new(no_cells))
+        let no_stamps: Cell<List<int>> = list_cell()
+        self.stamps.push(no_stamps)
+        let ordinal = self.verifiers.get().length - 1
+        if self.graph.on.get() { self.graph.registered(ordinal) }
+        ordinal
+    }
+
+    /// Verifiers and the audit's judges capture their workspace, which
+    /// contains this handle. Replacing them breaks that ownership cycle
+    /// after a one-shot run.
+    fn disarm() {
+        self.verifiers.set([never_verify for v in self.verifiers.get()])
+        self.audit.on.set(false)
+        self.audit.exempt.set(unexempt)
+        self.audit.covers.set(uncovering)
+        self.audit.sink.set(unheard)
+    }
+
+    fn set_input(key: Key, value_hash: int) {
+        if self.graph.on.get() { self.graph.input_set(key) }
+        let rev = self.rev.get()
+        let prior? = self.cell(key) else {
+            self.write_cell(key, input_cell(rev, value_hash))
+            return
+        }
+        if prior.value_hash == value_hash {
+            self.write_cell(key, prior with { deps: [], verified_at: rev, value_hash: value_hash })
+            return
+        }
+        self.rev.set(rev + 1)
+        self.write_cell(key, input_cell(rev + 1, value_hash))
+    }
+
+    /// An input set again before any reader read it: no reader can have seen the
+    /// value it replaces, so no revision moves. Once read, it keeps what its readers
+    /// saw, and a later change is `set_input`'s.
+    fn input_unread(key: Key, value_hash: int) {
+        if self.stamp_of(key.family, key.arg) != 0 { return }
+        if self.cell(key)?.value_hash == value_hash { return }
+        self.write_cell(key, input_cell(self.rev.get(), value_hash))
+    }
+
+    fn ask(key: Key) -> Verdict {
+        self.record_at(key.family, key.arg)
+        if self.active(key) { return Verdict.Cycle }
+        let cell? = self.cell(key) else { return self.miss() }
+        let rev = self.rev.get()
+        if cell.verified_at == rev { return self.hit() }
+        // Marked verified at this revision BEFORE its deps are walked: a
+        // verifier may recursively update this database and re-enter this
+        // key, and a re-entry reads the mark and reuses rather than walking
+        // again. The mark names the revision the walk began at, so a late
+        // write during the walk leaves it stale.
+        self.write_cell(key, cell with { verified_at: rev })
+        if self.any_dep_changed(cell) { return self.miss() }
+        self.hit()
+    }
+
+    fn any_dep_changed(cell: QueryCell) -> bool {
+        for d in cell.deps {
+            if self.changed_after(d, cell.verified_at) { return true }
+        }
+        false
+    }
+
+    fn changed_after(edge: int, since: int) -> bool {
+        let verify = self.verifiers.get()[family_of(edge)]
+        verify(arg_of(edge)) > since
+    }
+
+    fn active(key: Key) -> bool { self.asker.open.get().contains(edge_of(key)) }
+
+    /// Whether ANY key of a family is open — a query of that family is
+    /// in flight. The kernel is language-agnostic, so the family is
+    /// passed in.
+    fn family_active(family: int) -> bool { self.asker.open.get().any(family_of(it) == family) }
+
+    /// The innermost open frame's own reader id — the same number
+    /// `record_at` stamps a cell with, so a repeat ask by the frame
+    /// still running answers the SAME identity every time and two
+    /// different frames never share one. -1 when nothing is open.
+    fn reader() -> int {
+        let innermost = self.asker.reader.get()
+        if innermost == 0 { 0 - 1 } else { innermost }
+    }
+
+    fn changed_at(key: Key) -> int { self.cell(key)?.changed_at ?? self.rev.get() }
+
+    /// `key`'s cell; none for a key never settled or set.
+    fn cell(key: Key) -> QueryCell? {
+        let row = self.row(key.family).get()
+        if key.arg < 0 || key.arg >= row.length { return null }
+        row[key.arg]
+    }
+
+    /// `family`'s cells; a family never registered is a defect.
+    fn row(family: int) -> Cell<List<QueryCell?>> {
+        let rows = self.cells.get()
+        if family < 0 || family >= rows.length { unregistered_family(family) }
+        rows[family]
+    }
+
+    fn write_cell(key: Key, cell: QueryCell) {
+        let row = self.row(key.family)
+        while row.get().length <= key.arg { row.push(null) }
+        row.set_at(key.arg, cell)
+    }
+
+    /// The keys a settled cell reads, in the order it first read them.
+    fn deps_of(key: Key) -> List<Key> {
+        let none: List<int> = []
+        [key_of(e) for e in self.cell(key)?.deps ?? none]
+    }
+
+    /// Every key a cell stands for, family by family, in arg order.
+    fn settled_keys() -> List<Key> {
+        [Key { family: f, arg: a } for f, row in self.cells.get() for a, held in row.get() if held != null]
+    }
+
+    /// A settled cell's own value hash — an edge's other half, read
+    /// back once the dep it names has itself settled. NULL both for
+    /// no cell at all and for one `settle_lazy` wrote whose fold was
+    /// never asked — a reader that must tell those apart has no
+    /// business forcing a fold nothing else needed; a reader that
+    /// only composes this into ANOTHER fold should fold the absence
+    /// itself as one more part (the arity law), never coalesce it
+    /// into a plain int a real hash could also answer.
+    fn value_hash_of(key: Key) -> int? { self.cell(key)?.value_hash }
+
+    fn begin(key: Key) {
+        let none: List<int> = []
+        let no_restore: Cell<List<Restore>>? = null
+        let reader = self.minted.get() + 1
+        self.minted.set(reader)
+        self.asker.pending.push(Cell.new(none))
+        self.asker.restore.push(no_restore)
+        self.asker.open.push(edge_of(key))
+        self.asker.began.push(self.rev.get())
+        self.asker.readers.push(reader)
+        self.asker.reader.set(reader)
+        self.asker.last.set(no_edge())
+        self.asker.whole.set(self.family_whole(key.family))
+    }
+
+    /// Whether `family`'s queries read rows whole.
+    fn family_whole(family: int) -> bool {
+        family >= 0 &&
+            family < self.whole_families.get().length &&
+            self.whole_families.get()[family]
+    }
+
+    /// Queries of `family` read rows WHOLE: a reader offered a fine edge and a
+    /// coarse one records the coarse one inside them.
+    fn reads_whole(family: int) {
+        while self.whole_families.get().length <= family { self.whole_families.push(false) }
+        self.whole_families.set_at(family, true)
+    }
+
+    /// Whether the innermost open query reads rows whole.
+    fn reading_whole() -> bool { self.asker.whole.get() }
+
+    fn settle(key: Key, value_hash: int) {
+        let began = self.asker.began.get().last() ?? self.rev.get()
+        let deps = self.closed_frame()
+        self
+            .settled(key, deps, kept_since(self.cell(key), value_hash) ?? self.rev.get(), value_hash, began)
+    }
+
+    /// Like `settle`, but `fingerprint` is called AT MOST ONCE, and
+    /// only when a PRIOR cell stands to compare it against — a fresh
+    /// key (every key, on a cold compile: nothing has ever settled
+    /// it before) costs nothing, since there is nothing yet to cut
+    /// off against. A prior cell whose OWN hash was never asked (its
+    /// one and only settle before this one, the same fresh case one
+    /// key up) reads as unknown and this settle answers changed —
+    /// conservative, never wrong, and the last imprecise transition:
+    /// the hash THIS settle writes is always real, so every
+    /// comparison after it is exact.
+    fn settle_lazy(key: Key, fingerprint: fn() -> int) {
+        let began = self.asker.began.get().last() ?? self.rev.get()
+        let deps = self.closed_frame()
+        let prior? = self.cell(key) else {
+            self.settled(key, deps, self.rev.get(), null, began)
+            return
+        }
+        let value_hash = fingerprint()
+        self.settled(key, deps, kept_since(prior, value_hash) ?? self.rev.get(), value_hash, began)
+    }
+
+    /// Closes `key`'s open frame WITHOUT settling it: nothing is kept for
+    /// `key`, and every read the frame made becomes a read of the frame
+    /// around it. A query that learns mid-flight it cannot answer whole
+    /// answers through its reader instead.
+    fn abandon(key: Key) {
+        let innermost = self.asker.open.get().last() ?? edge_of(key)
+        if innermost != edge_of(key) { abandoned_out_of_order(key) }
+        let deps = self.closed_frame()
+        if self.graph.on.get() { self.graph.abandoned(key, deps) }
+        for e in deps { self.record_at(family_of(e), arg_of(e)) }
+    }
+
+    /// Closes the innermost open frame: its edges, held at their own
+    /// size, with the frame's restores replayed and its stacks popped.
+    fn closed_frame() -> List<int> {
+        let edges = self.asker.pending.get().last()!.get()
+        let restores = self.asker.restore.get()
+        // LICENSED lists.last_index: `last()!` of a nullable element never lets its referent go
+        let restored: Cell<List<Restore>>? = restores[restores.length - 1]
+        dropped(self.asker.pending)
+        dropped(self.asker.restore)
+        dropped(self.asker.open)
+        dropped(self.asker.began)
+        dropped(self.asker.readers)
+        self.asker.reader.set(self.asker.readers.get().last() ?? 0)
+        self.asker.last.set(no_edge())
+        self.asker.whole.set(self.family_whole(family_of(self.asker.open.get().last() ?? 0 - 1)))
+        if restored != null { for r in restored!.get() { self.stamped(family_of(r.edge), arg_of(r.edge), r.previous) } }
+        edges.slice(0, edges.length)
+    }
+
+    /// Writes a settled cell and publishes it.
+    fn settled(key: Key, deps: List<int>, changed: int, value_hash: int?, verified: int) {
+        self
+            .write_cell(
+                key,
+                QueryCell {
+                    deps: deps,
+                    changed_at: changed,
+                    verified_at: verified,
+                    value_hash: value_hash,
+                },
+            )
+        if self.graph.on.get() { self.graph.settled(key, deps, self.asker.open.get().is_empty()) }
+        if self.audit.on.get() { self.judged() }
+    }
+
+    fn record_dep(key: Key) { self.record_at(key.family, key.arg) }
+
+    /// Records a read of a key in the innermost open query. A read of
+    /// the edge that query appended LAST is one compare; any other
+    /// repeat is the key's last-reader stamp against the innermost
+    /// reader. Neither allocates. A stamp MISMATCH is not always
+    /// "never read": a NESTED query reading the same key overwrites
+    /// the stamp with ITS OWN reader id, so the outer query's next
+    /// read mismatches too; `newly_read` tells them apart.
+    fn record_at(family: int, arg: int) {
+        let reader = self.asker.reader.get()
+        if reader == 0 { return }
+        if packed(family, arg) == self.asker.last.get() { return }
+        if self.graph.on.get() { self.graph.counted(family) }
+        let row = self.stamp_row(family)
+        let stamp = stamp_in(row.get(), arg)
+        if stamp != reader { self.newly_read(row, family, arg, stamp, reader) }
+    }
+
+    /// The reader that last recorded a key, 0 for none.
+    fn stamp_of(family: int, arg: int) -> int { stamp_in(self.stamp_row(family).get(), arg) }
+
+    /// Appends an edge to the innermost open query. When the stamp it
+    /// overwrites belongs to a STILL-OPEN frame, that frame will read
+    /// this key again and must see its own stamp restored, so the
+    /// value is saved; a stamp a closed query left behind is never
+    /// asked for again, so nothing is saved.
+    fn newly_read(row: Cell<List<int>>, family: int, arg: int, stamp: int, reader: int) {
+        if arg < 0 { negative_arg(family, arg) }
+        if stamp != 0 && self.asker.readers.get().contains(stamp) { self.save_restore(packed(family, arg), stamp) }
+        stamped_in(row, arg, reader)
+        self.asker.pending.get().last()!.push(packed(family, arg))
+        // the graph counts every read, so no read may skip it
+        if !self.graph.on.get() { self.asker.last.set(packed(family, arg)) }
+    }
+
+    /// `family`'s stamp row; a family never registered is a defect.
+    fn stamp_row(family: int) -> Cell<List<int>> {
+        let rows = self.stamps.get()
+        if family < 0 || family >= rows.length { unregistered_family(family) }
+        rows[family]
+    }
+
+    /// Writes a key's stamp, growing its family's row to reach it.
+    fn stamped(family: int, arg: int, stamp: int) { stamped_in(self.stamp_row(family), arg, stamp) }
+
+    /// Remembers a stamp about to be overwritten, for the innermost
+    /// frame's close to hand back — its list minted on the first one.
+    fn save_restore(edge: int, previous: int) {
+        let restores = self.asker.restore.get()
+        let entry = Restore { edge: edge, previous: previous }
+        // LICENSED lists.last_index: `last()!` of a nullable element never lets its referent go
+        let frame? = restores[restores.length - 1] else {
+            self.asker.restore.set_at(restores.length - 1, Cell.new([entry]))
+            return
+        }
+        frame.push(entry)
+    }
+
+    fn sweep() {
+        let rev = self.rev.get()
+        for row in self.cells.get() {
+            for j, held in row.get() {
+                if held != null && held!.verified_at != rev { row.set_at(j, null) }
+            }
+        }
+    }
+
+    /// Remove every cell in one family. Typed memo storage must be
+    /// evicted with it, so a later ask cannot reuse bookkeeping after
+    /// its value has been released.
+    fn evict_family(family: int) {
+        let rows = self.cells.get()
+        if family < 0 || family >= rows.length { return }
+        let none: List<QueryCell?> = []
+        rows[family].set(none)
+        if self.graph.on.get() { self.graph.evicted(family) }
+    }
+
+    fn hit() -> Verdict {
+        self.hits.set(self.hits.get() + 1)
+        Verdict.Reuse
+    }
+
+    fn miss() -> Verdict {
+        self.misses.set(self.misses.get() + 1)
+        Verdict.Compute
+    }
+
+    fn stats() -> string { "rev ${self.rev.get()}: ${self.hits.get()} hits, ${self.misses.get()} misses" }
+}
+
+/// A stamp row's entry for `arg`, 0 past its end.
+fn stamp_in(stamps: List<int>, arg: int) -> int {
+    if arg >= 0 && arg < stamps.length { stamps[arg] } else { 0 }
+}
+
+fn stamped_in(row: Cell<List<int>>, arg: int, stamp: int) {
+    while row.get().length <= arg { row.push(0) }
+    row.set_at(arg, stamp)
+}
+
+/// The revision a prior cell last changed at, when its hash matches —
+/// absent when there is no prior or the answer moved.
+fn kept_since(prior: QueryCell?, value_hash: int) -> int? {
+    if prior?.value_hash == value_hash { prior?.changed_at } else { null }
+}
+
+extern fn avra_trap(message: string)
+
+// ── The voices ──
+
+fn unregistered_family(family: int) {
+    avra_trap("defect: key names family ${family}, no such family is registered")
+}
+
+fn negative_arg(family: int, arg: int) {
+    avra_trap(
+        "defect: a read of family ${family} names arg ${arg} — a key's arg is a dense id, never negative",
+    )
+}
+
+fn abandoned_out_of_order(key: Key) {
+    avra_trap(
+        "defect: only the innermost open query may be abandoned, and ${key.family}:${key.arg} is not it",
+    )
+}
+
+fn never_verify(arg: int) -> int {
+    avra_trap("defect: a disarmed query database was reused")
+    arg
+}

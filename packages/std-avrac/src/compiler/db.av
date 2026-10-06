@@ -2,7 +2,7 @@
 //! package, one `DbRow` per kind of fact, addressed one of two ways: a
 //! dense `(family, arg)` key inside one compile (`Db.families`, one
 //! `Relation<DbRow>` per registered family, the `Kernel`'s own
-//! addressing — `query/kernel.av`), or a durable string name that
+//! addressing — `@std/relation`'s engine), or a durable string name that
 //! survives across processes (`Db.get`/`insert`, below).
 //!
 //! ONE ENUM, NOT TWO: the earlier split (`Stage` for the dense half,
@@ -16,17 +16,16 @@
 //! `Db` itself now lives per-`Workspace` too (`new_db`, below,
 //! called once from `built()`), never a process-wide `once`.
 //!
-//! `Kernel` (query/kernel.av) STAYS A SEPARATE TYPE: `query/` sits
-//! BELOW `compiler/` in this tree's one-way layering (core -> query ->
-//! grammar -> features -> compiler), and `Relation<T>` (query/memo.av;
-//! `Memo<T>` is its old name, kept as an alias) is a concrete
+//! `Kernel` (`@std/relation`'s engine) STAYS A SEPARATE TYPE: the engine
+//! sits BELOW the compiler, in a package of its own, and `Relation<T>`
+//! (engine/answers.av; `Memo<T>` is its alias) is a concrete
 //! `{ kernel: Kernel, ... }` — never generic over what a `Workspace`
-//! calls its own database — so `query/` must never learn `Db`'s name.
+//! calls its own database — so the engine never learns `Db`'s name.
 //! `Db` HOLDS a `Kernel` (the `kernel` field, below) rather than
 //! becoming one: `Workspace.db` reads as one type to every other file,
 //! and every `Relation<DbRow>` `Db.family` mints below shares that SAME
-//! kernel handle, so `query/` never sees past its own export. Holding
-//! is the legal direction (`compiler` already depends on `query`); a
+//! kernel handle, so the engine never sees past its own export. Holding
+//! is the legal direction (the compiler already depends on the engine); a
 //! merge that made `Kernel` disappear was the one this file rejects —
 //! `Db` WRAPS it, verbatim, forwarding every verb a caller already
 //! spelled (`ask`/`begin`/`settle`/`family`/`family_active`/
@@ -55,6 +54,7 @@
 //! derive, the wire format IS the value.
 use core.{
     wire_fields,
+    watched_kernel,
     digest_of,
     joined,
     sorted_texts,
@@ -63,11 +63,9 @@ use core.{
     wire_unescape,
     DeclId,
     TypeId,
-    map_cell,
     list_eq,
     Exemplar,
 }
-use query.{Kernel, Key, Verdict as KernelVerdict, new_kernel, Relation, new_memo}
 use compiler.store.{Store, Stored, node_key}
 use compiler.host.{Manifest}
 use diagnostics.{SourceFile}
@@ -77,6 +75,7 @@ use @std.io.{list_dir, is_dir, read_text}
 use @std.path.{joined_path}
 use @std.text.{parse_int}
 use @std.meta.{derive, identity}
+use @std.relation.engine.{map_cell, Kernel, Key, Verdict as KernelVerdict, Relation, new_memo}
 
 /// A file an answer's validity rides on: its path, and its content's
 /// digest at the moment the answer was captured.
@@ -369,7 +368,7 @@ impl DbRow {
 
 /// Every dense variant's unwrapper — hand-written (see the enum's own
 /// doc comment on why `@derive(Unwrap)` was abandoned here), same
-/// trap-and-recurse pattern `query/memo.av`'s `missing_value<T>`
+/// trap-and-recurse pattern the engine's `missing_value<T>`
 /// already uses: a wrong variant reaching one is a defect the `Memo`
 /// layer already prevents by construction, so the trap is a belt,
 /// never a guess.
@@ -535,7 +534,7 @@ fn lifted_of(r: DbRow) -> LiftResult {
 
 /// One `Workspace`'s rows, in memory, plus the `Kernel` handle every
 /// dense family's `Relation<DbRow>` was built over — held, not merged, so
-/// `Workspace.db` reads as one type while `query/` still exports the
+/// `Workspace.db` reads as one type while the engine still exports the
 /// only `Kernel` there is. `rows` is a `Cell`, an IDENTITY: `Db` is a
 /// struct a caller may hold in a fresh local, but every copy still
 /// writes the same table, so no caller reads a fork of the cache it
@@ -561,7 +560,7 @@ export fn new_db(kernel: Kernel) -> Db {
 /// docs fast path (`avra docs <name>`) answers from the durable store
 /// alone, deliberately before a `Workspace` is built, so it mints its
 /// own kernel rather than waiting on one.
-export fn fresh_db() -> Db { new_db(new_kernel()) }
+export fn fresh_db() -> Db { new_db(watched_kernel()) }
 
 /// A row's name, over the package it belongs to and the compiler that
 /// answered it — two packages never share a row by coincidence of a bare

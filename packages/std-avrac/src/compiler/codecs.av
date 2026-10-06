@@ -15,7 +15,17 @@
 //! an encoder/decoder-shaped pair the tree carries that this registry
 //! does not name.
 use core.{SeatMark, TypeId, Type, DeclKind, list_eq}
-use features.{DeclFacts, AnnotationFact, Settled, MetaHeap, Wanted, SeatValue, MetaVal, kind_word}
+use features.{
+    DeclFacts,
+    AnnotationFact,
+    Settled,
+    MetaHeap,
+    Wanted,
+    SeatValue,
+    MetaVal,
+    UseKind,
+    kind_word,
+}
 use compiler.{avra, new_workspace, Workspace}
 use compiler.host.{memory_host}
 
@@ -509,6 +519,31 @@ fn same_seen_list(a: List<SeenPart>, b: List<SeenPart>) -> bool { list_eq(a, b, 
 
 fn same_seen(a: SeenPart, b: SeenPart) -> bool { a.module == b.module && a.bytes_key == b.bytes_key && a.files == b.files }
 
+// ── `use_kind_word`/`use_kind_of_word` — every variant, one character each. ──
+
+fn use_kind_exemplars() -> List<UseKind> {
+    [UseKind.Call, UseKind.MethodCall, UseKind.Read, UseKind.Write, UseKind.Import, UseKind.TypeUse]
+}
+
+fn use_kind_labels() -> List<string> { ["call", "method call", "read", "write", "import", "type use"] }
+
+fn same_use_kind(a: UseKind, b: UseKind) -> bool { a == b }
+
+// ── `reach_wire`/`reach_from_wire` — a refusal's words, framed. ──
+
+fn reach_exemplars() -> List<string> { ["", "reads the clock", "a\tb\nc", "R1 inside the words"] }
+
+fn reach_labels() -> List<string> {
+    [
+        "no words",
+        "plain words",
+        "tab and newline inside the words",
+        "the envelope's own mark inside the words",
+    ]
+}
+
+fn same_text(a: string, b: string) -> bool { a == b }
+
 // ── THE REGISTRY ─────────────────────────────────────────────────────
 
 export fn codec_pairs() -> List<CodecCheck> {
@@ -649,6 +684,22 @@ export fn codec_pairs() -> List<CodecCheck> {
             (xs) -> ws.wanted_list_wire(xs),
             (w) -> ws.wanted_list_from_wire(w),
             (xs, ys) -> list_eq(xs, ys, (x, y) -> ws.codec_same_wanted(x, y)),
+        ),
+        derived(
+            "references.use_kind_word/use_kind_of_word",
+            use_kind_exemplars(),
+            use_kind_labels(),
+            use_kind_word,
+            use_kind_of_word,
+            same_use_kind,
+        ),
+        derived(
+            "settlement_wire.reach_wire/reach_from_wire",
+            reach_exemplars(),
+            reach_labels(),
+            reach_wire,
+            reach_from_wire,
+            same_text,
         ),
         dbrow_check(),
     ]

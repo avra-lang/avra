@@ -8,8 +8,7 @@
 //! last one a run leaves carries the count to within a factor of two. It exists only in a
 //! compiler built with `audit_build` true (features/bypass.av); any other compiler carries
 //! none of it.
-use core.{DeclId, FileId, joined, list_cell, map_cell, sorted_texts}
-use query.{Key, Bypass}
+use core.{DeclId, FileId, joined, sorted_texts}
 use compiler.families.{Family}
 use features.{
     Bypassed,
@@ -21,6 +20,7 @@ use features.{
     bypassed_at,
 }
 use @std.io.{env, write_text}
+use @std.relation.engine.{list_cell, map_cell, Key, Bypass}
 
 /// The run's tally, one slot per (read, scope, stack): a map cannot be walked, so the
 /// slot names the row and the count beside it. One process, one file.
@@ -126,7 +126,7 @@ impl Workspace {
     /// was made inside.
     fn audit_report(b: Bypass, path: string) {
         let words = self.audit_note(bypassed_at(b.verb, b.subject)).split("\t")
-        let line_key = "${words[0]}\t${self.audit_scope(b, words[1])}\t${joined([self.frame_word(k) for k in b.frames], "/")}"
+        let line_key = "${words[0]}\t${self.audit_scope(b, words[1])}\t${joined([self.key_family_word(k) for k in b.frames], "/")}"
         let slot = audit_slot(line_key)
         let n = audit_counts().get()[slot] + 1
         audit_counts().set_at(slot, n)
@@ -152,12 +152,6 @@ impl Workspace {
         let root? = b.frames.first() else { return "-" }
         if root.family != Family.Analysis.ordinal { return "-" }
         if self.decls.file(FileId { index: root.arg }).path == home { "own" } else { "foreign" }
-    }
-
-    fn frame_word(k: Key) -> string {
-        let all = Family.all()
-        if k.family >= all.length { return "Relation ${k.family}" }
-        family_word(all[k.family])
     }
 }
 

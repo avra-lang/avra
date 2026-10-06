@@ -53,22 +53,7 @@ use core.{
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck}
 use @std.relation.db.{Db, new_db, Hooks as RelHooks, quiet_hooks}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
-use core.{
-    Fingerprint,
-    Exemplar,
-    fp,
-    fp_list,
-    mix_final,
-    list_cell,
-    map_cell,
-    same_type,
-    touch,
-    Table,
-    new_table,
-    list_eq,
-    opt_eq,
-}
-use query.{Kernel, Key, new_kernel}
+use core.{Fingerprint, Exemplar, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -94,6 +79,7 @@ use features.{
 use @std.meta.{Diagnostic, bracket, derive, identity, plain_field}
 use @std.relation.{relation}
 use @std.relation.db.{Db as RelDb, new_db}
+use @std.relation.engine.{list_cell, map_cell, Table, new_table, Kernel, Key, new_kernel}
 
 /// A file's path facts — known at first mention, before its parse.
 /// `test` is the caller's structural fact (the package's own test
@@ -1377,6 +1363,13 @@ impl Decls {
         self.package_decl("@std.avrac", name)
     }
 
+    /// A declaration of the PRELUDE by name — the door to the names
+    /// the compiler's own answers wear (`Entry`); null when the
+    /// program sees no prelude, as a lone file does not.
+    fn prelude_named(name: string) -> DeclId? {
+        self.package_decl("@std.prelude", name)
+    }
+
     /// Whether a type IS one declaration a package exports, by NAME —
     /// `meta_type`'s door, generalized past `.Struct` to `.Enum` too,
     /// so `@std/avrac`'s `Fix` (an enum) answers through the same
@@ -2194,6 +2187,13 @@ impl Decls {
     fn is_enum(d: DeclId) -> bool { self.decl(d).kind is .Enum || self.decl(d).kind is .CollectEnum }
 
     fn is_named(d: DeclId) -> bool { self.decl(d).kind is .Named }
+
+    fn is_const(d: DeclId) -> bool {
+        match self.decl(d).kind {
+            .Const -> true,
+            .Fn or .Record or .Named or .Alias or .Enum or .CollectEnum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin or .Collect or .State -> false,
+        }
+    }
 
     fn is_alias(d: DeclId) -> bool { self.decl(d).kind is .Alias }
 

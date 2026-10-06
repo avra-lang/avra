@@ -1,0 +1,166 @@
+// The kernel's dependency audit, over two toy families: a read that skips `ask` is held
+// once per (verb, subject) until the outermost query settles, then judged against the
+// queries that were open when it happened. `heard` collects what the sink was told.
+use @std.relation.engine.{Kernel, new_kernel, Key, Bypass}
+
+/// A kernel with two families and an armed audit. Verb 0 with subject `n` is covered by
+/// `Key{1, n}`; every read is judged, none exempt.
+type Rig = { db: Kernel, heard: Cell<List<string>> }
+
+fn rig() -> Rig {
+    let db = new_kernel()
+    let _ = db.family((arg: int) -> 0)
+    let _ = db.family((arg: int) -> 0)
+    let heard: Cell<List<string>> = Cell.new([])
+    db
+        .audit_to(
+            2,
+            (b: Bypass) -> false,
+            (b: Bypass) -> [Key { family: 1, arg: b.subject }],
+            (b: Bypass) -> heard.push("${b.verb}/${b.subject}@${b.frames.length}"),
+        )
+    Rig { db: db, heard: heard }
+}
+
+/// What the sink heard, in order, one text.
+fn said(r: Rig) -> string { r.heard.get().join(" ") }
+
+fn opened(r: Rig, arg: int) { r.db.begin(Key { family: 0, arg: arg }) }
+
+fn closed(r: Rig, arg: int) { r.db.settle(Key { family: 0, arg: arg }, 1) }
+
+/// A settled cell of the covering family, to be read.
+fn made(r: Rig, arg: int) {
+    r.db.begin(Key { family: 1, arg: arg })
+    r.db.settle(Key { family: 1, arg: arg }, 1)
+}
+
+spec "relation/engine — the kernel: the dependency audit" {
+    then "a read no open query covers is told to the sink once the outermost query settles" {
+        let r = rig()
+        opened(r, 0)
+        r.db.bypassed(0, 5)
+        let before = r.heard.get().length
+        closed(r, 0)
+        before == 0 && said(r) == "0/5@1"
+    }
+    then "the frames open at the read are what it reports" {
+        let r = rig()
+        opened(r, 0)
+        opened(r, 1)
+        r.db.bypassed(1, 7)
+        closed(r, 1)
+        closed(r, 0)
+        said(r) == "1/7@2"
+    }
+    then "a read held twice under one outermost query is told once" {
+        let r = rig()
+        opened(r, 0)
+        r.db.bypassed(0, 5)
+        r.db.bypassed(0, 5)
+        r.db.bypassed(1, 5)
+        closed(r, 0)
+        said(r) == "0/5@1 1/5@1"
+    }
+    then "the same read under a later outermost query is told again" {
+        let r = rig()
+        opened(r, 0)
+        r.db.bypassed(0, 5)
+        closed(r, 0)
+        opened(r, 1)
+        r.db.bypassed(0, 5)
+        closed(r, 1)
+        said(r) == "0/5@1 0/5@1"
+    }
+    then "a read whose cover an open query recorded is not told" {
+        let r = rig()
+        made(r, 5)
+        opened(r, 0)
+        let _ = r.db.ask(Key { family: 1, arg: 5 })
+        r.db.bypassed(0, 5)
+        closed(r, 0)
+        said(r) == ""
+    }
+    then "a cover only an ancestor of the reader recorded does not cover the read" {
+        let r = rig()
+        made(r, 5)
+        opened(r, 0)
+        let _ = r.db.ask(Key { family: 1, arg: 5 })
+        opened(r, 1)
+        r.db.bypassed(0, 5)
+        closed(r, 1)
+        closed(r, 0)
+        said(r) == "0/5@2"
+    }
+    then "a cover the reader recorded covers a read made under an ancestor" {
+        let r = rig()
+        made(r, 5)
+        opened(r, 0)
+        opened(r, 1)
+        let _ = r.db.ask(Key { family: 1, arg: 5 })
+        r.db.bypassed(0, 5)
+        closed(r, 1)
+        closed(r, 0)
+        said(r) == ""
+    }
+    then "a cover recorded only by a query that is not open at the read does not cover it" {
+        let r = rig()
+        made(r, 5)
+        opened(r, 0)
+        opened(r, 1)
+        let _ = r.db.ask(Key { family: 1, arg: 5 })
+        closed(r, 1)
+        r.db.bypassed(0, 5)
+        closed(r, 0)
+        said(r) == "0/5@1"
+    }
+    then "a cover an open query reaches through what it asked in turn is not told" {
+        let r = rig()
+        made(r, 5)
+        opened(r, 3)
+        let _ = r.db.ask(Key { family: 1, arg: 5 })
+        closed(r, 3)
+        opened(r, 0)
+        let _ = r.db.ask(Key { family: 0, arg: 3 })
+        r.db.bypassed(0, 5)
+        closed(r, 0)
+        said(r) == ""
+    }
+    then "a query asked that never reached the cover does not cover" {
+        let r = rig()
+        made(r, 5)
+        opened(r, 3)
+        closed(r, 3)
+        opened(r, 0)
+        let _ = r.db.ask(Key { family: 0, arg: 3 })
+        r.db.bypassed(0, 5)
+        closed(r, 0)
+        said(r) == "0/5@1"
+    }
+    then "a read made inside the covering query itself is not told" {
+        let r = rig()
+        r.db.begin(Key { family: 1, arg: 5 })
+        r.db.bypassed(0, 5)
+        r.db.settle(Key { family: 1, arg: 5 }, 1)
+        said(r) == ""
+    }
+    then "a read with no query open depends on nothing and is not held" {
+        let r = rig()
+        r.db.bypassed(0, 5)
+        opened(r, 0)
+        closed(r, 0)
+        said(r) == ""
+    }
+}
+
+spec "relation/engine — the kernel: the audit is off until armed" {
+    then "a read is not held" {
+        let db = new_kernel()
+        let _ = db.family((arg: int) -> 0)
+        db.begin(Key { family: 0, arg: 0 })
+        db.bypassed(0, 5)
+        let held = db.audit.held.get().length
+        db.settle(Key { family: 0, arg: 0 }, 1)
+        held == 0
+    }
+}

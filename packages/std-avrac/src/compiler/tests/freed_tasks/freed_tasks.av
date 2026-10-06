@@ -1,0 +1,40 @@
+// proves: a task's record owns its body and its answer: both are freed
+// when the last handle goes, whoever joined and in whatever order
+type Job = { parts: List<int>, name: string }
+
+fn summed(j: Job) -> List<int> {
+    mut t = 0
+    for p in j.parts { t = t + p }
+    [t, j.parts.length]
+}
+
+fn gathered() -> int {
+    mut ts: List<Task<List<int>>> = []
+    for i in 0..20 {
+        let j = Job { parts: [i, i + 1, i + 2], name: "j" }
+        ts.push(spawn summed(j))
+    }
+    mut t = 0
+    for k in ts {
+        let r = k.await
+        t = t + r[0] + r[1]
+    }
+    t
+}
+
+fn relayed() -> int {
+    let a = spawn summed(Job { parts: [5, 6], name: "a" })
+    let b = spawn { [a.await[0] * 2] }
+    b.await[0] + a.await[1]
+}
+
+fn unjoined() -> int {
+    let t = spawn summed(Job { parts: [1], name: "left" })
+    let u: Task<List<int>>? = if true { spawn summed(Job { parts: [2, 3], name: "kept" }) } else { null }
+    match u {
+        v? -> v.await[0]
+        null -> 0
+    }
+}
+
+"${gathered()} ${relayed()} ${unjoined()}"

@@ -214,7 +214,9 @@ self_test() {
     fi
     tree_kill "$lead"
     sleep 0.3
-    if ps -eo pid=,pgid= | awk -v root="$lead" '$2 == root { found=1 } END { exit !found }'; then
+    # A ZOMBIE IS DEAD: a killed grandchild stays in the table until its
+    # new parent reaps it, and a container's first process may never.
+    if ps -eo pid=,pgid=,stat= | awk -v root="$lead" '$2 == root && $3 !~ /^Z/ { found=1 } END { exit !found }'; then
         echo "watch: self-test: fixture 4 — tree_kill left the guarded tree alive"
         kill -9 "$lead" 2>/dev/null
         return 1

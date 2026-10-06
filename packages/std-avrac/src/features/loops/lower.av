@@ -64,20 +64,16 @@ fn names_index(cx: LowerCx, s: StmtId) -> bool {
     match cx.view.store.stmt(s) { .ForEach(index, _, _, _) -> index != null, _ -> false }
 }
 
-/// `for k, v in m`: both arrays snapshot in insertion order, so the
-/// body reads a key and its value that agree even when it writes the
-/// map. The key rides the index binder, the value the element cell.
+/// `for k, v in m`: the key rides the index binder, the value the
+/// element cell.
 fn lower_map_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>, vty: TypeId) {
-    let m = cx.reg_of(subject)
-    let keys = cx.map_keys(cx.view.types.shape_of(cx.type(List<string>)), m)
-    let vals = cx.map_vals(cx.view.types.shape_of(cx.type(List<vty>)), m)
-    let w = cx.opened_reg(subject, keys, cx.type(List<string>), cx.type(string))
+    let k = cx.keyed(subject, vty)
     let cell = cx.mint_ty(vty)
     cx.emit(Ins.Alloca(cell))
     cx.bind_slot(s, cell)
-    let here = cx.turn_open(w, s)
-    cx.bind_index(s, cx.turn_elem(w, here))
-    cx.emit(Ins.Store(cell, cx.elem_read(vals, here, vty)))
+    let here = cx.turn_open(k.keys, s)
+    cx.bind_index(s, cx.turn_elem(k.keys, here))
+    cx.emit(Ins.Store(cell, cx.keyed_value(k, here)))
     cx.lower_stmts(stmts)
     cx.loop_end()
 }

@@ -6,8 +6,18 @@
 //! minted from its module's record, its warnings and its object come from the
 //! store. The sources are the hold's oracle — a derivation that fails under a
 //! hold is answered again from the sources alone.
-use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, qtrace, FileId, DeclId}
-use query.{traced}
+use core.{
+    distinct,
+    joined,
+    sorted_texts,
+    digest_of,
+    module_path,
+    same_file,
+    qtrace,
+    traced,
+    FileId,
+    DeclId,
+}
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path, joined_path}
 use diagnostics.{Diag, render_among}
@@ -22,8 +32,16 @@ export enum Want { Diagnostics, Binary }
 
 /// ONE ATTEMPT AT A PROGRAM: what it derives and for what, the files it reads
 /// whatever the store holds, whether it reads the program's instantiation HOMES,
-/// whether it holds anything, and how many times the records moved under it.
-type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0, turned: int = 0 }
+/// whether it holds anything, how many times the records moved under it, and
+/// the attempts that gave way to it.
+type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0, turned: int = 0, left: List<Left> = [] }
+
+/// AN ATTEMPT THAT DID NOT STAND: what it spent, phase by phase up to where it
+/// left, and what the attempt made instead does that it did not.
+export type Left = { spans: List<Phase>, ns: int, turn: string }
+
+/// The derivation's phases, in the order `tried` ends them.
+const PHASES: List<string> = ["load", "admit", "analyze", "lower", "keep"]
 
 /// WHAT AN ATTEMPT THAT DOES NOT STAND ANSWERS: the attempt to make instead, or
 /// the refusal. It rides the failure channel, so a phase that finds the question
@@ -53,14 +71,60 @@ impl Attempt {
         "hold ${self.hold} homes ${self.homes} moved ${self.moved} reading ${self.parse.length}"
     }
 
+    /// Why this attempt gave way to `next`, as what `next` does that this did not.
+    fn gave_way(root: string, next: Attempt) -> string {
+        turn_said(
+            root,
+            next.parse.slice(self.parse.length, next.parse.length),
+            next.homes && !self.homes,
+            self.hold && !next.hold,
+            next.moved > self.moved,
+        )
+    }
+
     /// The attempt once more, the records having moved under it — twice, no more.
     fn adrift(paths: List<string>) -> Turn {
         if self.moved >= 2 { Turn.Refused(records_adrift(paths)) } else { Turn.Again(self with { moved: self.moved + 1 }) }
     }
 }
 
-/// What one attempt answered, and whether its workspace held any file.
-type Tried = { answer: Result<Derived, Turn>, held: bool }
+/// What one attempt answered, whether its workspace held any file, and what it
+/// spent: its phases and its whole time.
+type Tried = { answer: Result<Derived, Turn>, held: bool, spans: List<Phase>, ns: int }
+
+/// How many read files a turn names before it counts the rest.
+const TURN_NAMED: int = 3
+
+/// WHAT THE NEXT ATTEMPT DOES THAT THE ONE BEFORE DID NOT: the files it reads
+/// whatever the store holds, each with why; the homes; nothing held; the records
+/// read again.
+export fn turn_said(root: string, more: List<ReadFile>, homes: bool, unheld: bool, adrift: bool) -> string {
+    let reads = if !more.is_empty() { ["reads ${more.length} more (${read_words(root, more)})"] } else { [] }
+    let said = reads
+        .concat(if homes { ["reads the homes its instantiations lower from"] } else { [] })
+        .concat(if unheld { ["holds nothing"] } else { [] })
+        .concat(if adrift { ["reads the records again, moved under it"] } else { [] })
+    if said.is_empty() { "asks the same again" } else { joined(said, "; ") }
+}
+
+/// The first read files by path and why, the rest counted.
+fn read_words(root: string, more: List<ReadFile>) -> string {
+    let named = ["${relative_path(root, r.path)} — ${r.why.says()}" for r in more.slice(0, TURN_NAMED)]
+    let rest = if more.length > TURN_NAMED { ["… and ${more.length - TURN_NAMED} more"] } else { [] }
+    joined(named.concat(rest), "; ")
+}
+
+/// One discarded attempt, as `--time` says it: its whole time, its phases, the turn.
+export fn left_line(l: Left) -> string {
+    "discarded: ${l.ns / 1000000}ms — ${joined([ph.shown() for ph in grouped_phases(l.spans)], ", ")} — next ${l.turn}"
+}
+
+/// The time a list of spans covers.
+fn spent(spans: List<Phase>) -> int {
+    mut total = 0
+    for ph in spans { total = total + ph.ns }
+    total
+}
 
 /// A derivation that stood: kept, or let go for the attempt that lowers what it owes.
 enum Stood {
@@ -92,7 +156,7 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 /// lower, and `asked` names what they and every other would lower to: the
 /// program's root asks, and the key of every home it has ever lowered from. The
 /// same `asked` is the same instantiations, whoever lowered them.
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, files: int, turns: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0 }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, held: int, files: int, turns: int, turned: int = 0, spans: List<Phase>, read: List<ReadFile>, refused: int = 0, left: List<Left> = [] }
 
 /// One file's hold: held, or read with why (null for a file no record
 /// knows), the stored rows a read-for-want-of-rows file lacks, and what
@@ -119,7 +183,8 @@ impl Derived {
     }
 
     /// WHAT `--time` SAYS: the phases and what followed them on one line, then
-    /// the files a record knows that were read all the same, each with why.
+    /// each attempt that gave way to this one with what it spent, then the files a
+    /// record knows that were read all the same, each with why.
     fn timed(more: List<Phase>) -> string {
         let counted = [
             "held ${self.held}/${self.files}",
@@ -127,16 +192,26 @@ impl Derived {
             "discarded ${self.turned}",
             "refused ${self.refused}",
         ]
-        let spent = joined(
+        let line = joined(
             [ph.shown() for ph in grouped_phases(self.program.phases)]
                 .concat(counted)
                 .concat([ph.shown() for ph in grouped_phases(self.spans.concat(more))]),
             ", ",
         )
-        if self.read.is_empty() { return spent }
+        let said = [line].concat(["  ${left_line(l)}" for l in self.left])
+        if self.read.is_empty() { return joined(said, "\n") }
         let named = ["  ${relative_path(self.program.ws.root, r.path)} — ${r.why.says()}" for r in self.read.slice(0, READ_NAMED)]
         let rest = if self.read.length > READ_NAMED { ["  … and ${self.read.length - READ_NAMED} more"] } else { [] }
-        joined([spent, "read:"].concat(named).concat(rest), "\n")
+        joined(said.concat(["read:"]).concat(named).concat(rest), "\n")
+    }
+
+    /// This derivation as one that stood and was let go for the homes it owes.
+    fn owing() -> Left {
+        Left {
+            spans: self.program.phases.concat(self.spans),
+            ns: spent(self.spans),
+            turn: "reads the homes ${self.unlowered.length} instantiations it owes lower from",
+        }
     }
 }
 
@@ -335,16 +410,31 @@ impl Workspace {
         let d = self.under_hold(at)?
         if d.unlowered.is_empty() || !owes(d) { return Stood.Kept(d) }
         d.program.ws.discarded()
-        Stood.Owing(Attempt { entry: d.entry, want: d.want, parse: at.parse, homes: true })
+        Stood
+            .Owing(
+                Attempt {
+                    entry: d.entry,
+                    want: d.want,
+                    parse: at.parse,
+                    homes: true,
+                    left: d.left.concat([d.owing()]),
+                },
+            )
     }
 
     /// The attempt under the hold, and from the sources alone when it refused
     /// and its first workspace held anything — the hold's oracle.
     fn under_hold(at: Attempt) -> Result<Derived, string> {
+        let began = self.clock()
         let first = self.tried_anew(at)
-        let held = self.turned(at, first.answer)
+        let held = self.turned(at, first)
         if held is .Ok || !first.held { return held }
-        let plain = self.from_sources(at.entry, at.want)
+        let refused = Left {
+            spans: [],
+            ns: self.clock() - began,
+            turn: "holds nothing — the hold was refused",
+        }
+        let plain = self.again(at with { parse: [], hold: false, left: [refused] })
         match plain {
             .Ok(d) -> {
                 eprintln(self.refusal_noted(held))
@@ -446,7 +536,7 @@ impl Workspace {
     /// AN ATTEMPT, TURNED UNTIL IT STANDS: one that finds its question was wrong
     /// names the attempt to make instead, and a fresh workspace makes it — a
     /// restart never inherits a hold.
-    fn again(at: Attempt) -> Result<Derived, string> { self.turned(at, self.tried_anew(at).answer) }
+    fn again(at: Attempt) -> Result<Derived, string> { self.turned(at, self.tried_anew(at)) }
 
     /// ONE ATTEMPT IN A WORKSPACE OF ITS OWN, which gives back what it derived
     /// unless the attempt stood. The workspace is this fn's alone, so what a
@@ -456,40 +546,45 @@ impl Workspace {
         // NOT `mut`: `anew`'s own hooks already capture this box
         // (workspace.av's `anew` doc — an identity, never a value).
         let fresh = self.anew()
-        let answer = fresh.tried(at)
+        mut clock = fresh.marking()
+        let began = clock.last
+        let answer = fresh.tried(at, clock)
         let held = !held_paths(fresh).is_empty()
-        if !(answer is .Ok) { fresh.discarded() }
-        Tried { answer: answer, held: held }
+        if answer is .Ok { return Tried { answer: answer, held: held, spans: [], ns: 0 } }
+        // the phase it left in closes under its own name
+        clock.next(PHASES)
+        let spans = fresh.phases.get().concat(clock.spans)
+        fresh.discarded()
+        Tried { answer: answer, held: held, spans: spans, ns: clock.last - began }
     }
 
-    /// What `at` answered: the derivation that stood, or the attempt it names, made.
-    fn turned(at: Attempt, tried: Result<Derived, Turn>) -> Result<Derived, string> {
-        match tried {
+    /// What `at` answered: the derivation that stood, or the attempt it names,
+    /// made — carrying what `at` spent.
+    fn turned(at: Attempt, t: Tried) -> Result<Derived, string> {
+        match t.answer {
             .Ok(d) -> d,
-            .Err(.Again(next)) -> self.again(next with { turned: at.turned + 1 }),
+            .Err(.Again(next)) -> {
+                let left = Left { spans: t.spans, ns: t.ns, turn: at.gave_way(self.root, next) }
+                self.again(next with { turned: at.turned + 1, left: next.left.concat([left]) })
+            },
             .Err(.Refused(why)) -> { fail why },
         }
     }
 
     /// THE DERIVATION, straight through: hold what the store stands in for, read
     /// the rest, lower it, keep what was learned.
-    fn tried(at: Attempt) -> Result<Derived, Turn> {
-        mut clock = self.marking()
+    fn tried(at: Attempt, mut clock: Marks) -> Result<Derived, Turn> {
         let store = self.holding(at)?
-        let t0 = self.clock()
-        let unruled = self.unruled(store, at.want)
-        self.split("L.unruled", t0)
-        if load_split() { eprintln("split: ${held_sig_reads().get()} held-row reads by the end of load") }
-        at.having_read(unruled)?
-        clock.mark("load")
+        at.having_read(self.unruled(store, at.want))?
+        clock.next(PHASES)
         self.admit_all()
-        clock.mark("admit")
+        clock.next(PHASES)
         let p = self.analysed(at, store)?
-        clock.mark("analyze")
+        clock.next(PHASES)
         let lo = self.bodies_lowered(at, store, p)?
-        clock.mark("lower")
+        clock.next(PHASES)
         let said = self.kept(at, store, p, lo)?
-        clock.mark("keep")
+        clock.next(PHASES)
         self.stood(at, store, p, lo, said, clock.spans)
     }
 
@@ -498,28 +593,16 @@ impl Workspace {
     /// must not do heavy work where it stands leaves there, having done none.
     /// From here a held file's declarations are minted when something reads them.
     fn holding(at: Attempt) -> Result<Store, Turn> {
-        let t0 = self.clock()
         let store = self.opened_store()
         self.attach_store(store)
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
-        self.split("L.open", t0)
         if at.hold {
-            let t1 = self.clock()
-            let roots = held_modules(self, store)
-            self.split("L.roots", t1)
-            let t2 = self.clock()
-            for m in roots { load_interface(self, store, m, at.entry, at.want) }
-            self.split("L.interfaces", t2)
-            let t3 = self.clock()
+            for m in held_modules(self, store) { load_interface(self, store, m, at.entry, at.want) }
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
-            self.split("L.homes", t3)
-            let t4 = self.clock()
             self.settle_holds(store)
-            self.split("L.settle", t4)
-            if load_split() { eprintln("split: ${held_sig_reads().get()} held-row reads by the end of the holds") }
         }
         self.host.reads_ahead(self.reads_ahead())
         self.hold.holds_settled.set(true)
@@ -608,6 +691,7 @@ impl Workspace {
             files: self.decls.file_count(),
             turns: at.moved,
             turned: at.turned,
+            left: at.left,
             spans: spans,
             read: self.hold.read_files.get(),
         }
@@ -692,7 +776,6 @@ impl Workspace {
     /// the noting below is the same one the worklist does for what IT finds,
     /// never a second law.
     fn settle_holds(store: Store) {
-        let t0 = self.clock()
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
         mut reads: List<string> = distinct(self.hold.read_with.get())
         for rf in self.hold.read_seeds.get() {
@@ -721,8 +804,6 @@ impl Workspace {
             }
             at = at + 1
         }
-        self.split("L.s.runs", t0)
-        let t1 = self.clock()
         // a held file's row exists before any query reads the relation — minting it
         // parses nothing, and a module walk inside a query then only finds it
         for path in self.hold.hold_asked.get() {
@@ -731,8 +812,6 @@ impl Workspace {
                 let _ = self.file_id(path)
             }
         }
-        self.split("L.s.only", t1)
-        let t2 = self.clock()
         // EVERY HELD DECLARATION IS MINTED BEFORE ANY QUERY READS THE RELATION —
         // minting parses nothing, and a held file's rows are read by name from
         // another module's wire (a type's own declarations, a method table), so a
@@ -747,7 +826,6 @@ impl Workspace {
                 self.decls.note_module_rows(self.decls.file(f).module_id, 2)
             }
         }
-        self.split("L.s.mint", t2)
     }
 
     /// WHAT THE PROGRAM'S INSTANTIATIONS ARE A FUNCTION OF: its root asks, and the

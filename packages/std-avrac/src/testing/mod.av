@@ -159,6 +159,24 @@ export fn provided_workspace(main: string, provider: string, modules: List<Modul
     new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
 }
 
+// ── The prelude, carried in memory ───────────────────────────────────
+
+const prelude_real: string = embed("@std/prelude/src/prelude.av")
+
+/// A program at `/w` whose toolchain carries the real `@std/prelude`
+/// and nothing else — what a file in a package sees and a lone source
+/// does not.
+export fn floored(main: string) -> Program {
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        "/w/src/main.av": main,
+        "/std/std-prelude/avra.toml": "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n",
+        "/std/std-prelude/src/prelude.av": prelude_real,
+    }
+    new_workspace(memory_host(files, files.keys()) with { std_root: "/std" }, "/w", avra())
+        .program("/w/src/main.av")
+}
+
 /// One module of a test program: its name and its one file's text.
 export type Module = { name: string, text: string }
 
