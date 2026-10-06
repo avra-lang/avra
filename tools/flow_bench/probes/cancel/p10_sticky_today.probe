@@ -1,0 +1,41 @@
+//! asks: today's rule, RUN — a deadline caught inside the block: does
+//! the next wait hear it again, and does an inner handler swallow an
+//! outer deadline
+use @std.net.{listen, Listener, NetError}
+use @std.time.{ms, secs, sleep, within, now_ms}
+
+fn heard(l: Listener) -> string {
+    match l.accept() { .Ok(_) -> "accepted", .Err(e) -> if e.timed_out() { "timed out" } else { "failed" } }
+}
+
+fn caught_then_waits(l: Listener) -> string {
+    let from = now_ms()
+    within ms(30) {
+        let first = heard(l)
+        let after_first = now_ms() - from
+        sleep(ms(60))
+        let slept = now_ms() - from
+        let second = heard(l)
+        "first: ${first} at ~30 ${after_first >= 25 && after_first < 55} | sleep under a passed deadline took its 60 ms ${slept - after_first >= 55} | second: ${second} at once ${now_ms() - from - slept < 10}"
+    }
+}
+
+fn inner_swallows(l: Listener) -> string {
+    let from = now_ms()
+    let outer = within ms(30) {
+        let inner = within secs(5) { heard(l) }
+        sleep(ms(40))
+        "the inner block said `${inner}` and the outer block went on to its end"
+    }
+    "${outer}, ${now_ms() - from >= 65} (70 ms under a 30 ms deadline)"
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let a = caught_then_waits(l)
+    let b = inner_swallows(l)
+    let _ = l.close()
+    .Ok("${a}\n${b}")
+}
+
+println(run() catch _ -> "failed")

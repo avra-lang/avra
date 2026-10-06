@@ -24,6 +24,7 @@
 
 static uint8_t g_tick;
 static volatile int g_stop;
+static double g_ticker_cpu_ns;   // the tick thread's own CPU, read as it ends
 
 static double now_ns(void) {
     struct timespec t;
@@ -52,6 +53,9 @@ static void* ticker(void* _) {
 #endif
         __atomic_store_n(&g_tick, 1, __ATOMIC_RELAXED);
     }
+    struct timespec own;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &own);
+    g_ticker_cpu_ns = own.tv_sec * 1e9 + own.tv_nsec;
     return NULL;
 }
 
@@ -82,7 +86,7 @@ static uint8_t bytes[4096];
 // The worker: a hash loop with the check on its back-edge, for `secs`.
 static void busy(const char* how, double secs) {
     armed(how);
-    double start = now_ns(), cpu0 = cpu_ns(), last = start, longest = 0;
+    double start = now_ns(), last = start, longest = 0;
     uint64_t turns = 0, seen = 0, h = 1469598103934665603ull;
     for (;;) {
         for (int i = 0; i < 4096; i++) {
@@ -98,10 +102,11 @@ static void busy(const char* how, double secs) {
         turns += 4096;
         if ((turns & 0xfffff) == 0 && now_ns() - start >= secs * 1e9) break;
     }
-    double wall = now_ns() - start, cpu = cpu_ns() - cpu0;
+    double wall = now_ns() - start;
+    g_ticker_cpu_ns = 0;
     disarmed(how);
-    printf("busy %-6s %.1f M turns/s   ticks seen %llu in %.2f s   longest gap %.3f ms   CPU beyond the worker %.3f ms/s   (h %llx)\n",
-        how, turns / wall * 1e3, (unsigned long long)seen, wall / 1e9, longest / 1e6, (cpu - wall) / wall * 1e3, (unsigned long long)(h & 0xff));
+    printf("busy %-6s %.1f M turns/s   ticks seen %llu in %.2f s   longest gap %.3f ms   the tick thread's own CPU %.3f ms/s   (h %llx)\n",
+        how, turns / wall * 1e3, (unsigned long long)seen, wall / 1e9, longest / 1e6, g_ticker_cpu_ns / wall * 1e3, (unsigned long long)(h & 0xff));
 }
 
 // A process with nothing ready waits on its poller; the tick is left armed.

@@ -8,10 +8,12 @@
 #include <stdio.h>
 #include <time.h>
 
-typedef struct { uint64_t pad[8]; uint8_t unwinding; } Task;
-uint8_t avra_unwinding = 0;
+// Volatile, so each test is a load made after its call: the callee is
+// compiled apart in a real program and may have set the byte.
+typedef struct { uint64_t pad[8]; volatile uint8_t unwinding; } Task;
+volatile uint8_t avra_unwinding = 0;
 Task g_main_task;
-Task* g_current = &g_main_task;
+Task* volatile g_current = &g_main_task;
 
 #if defined(BYTE)
 #define UNWINDING() __builtin_expect(avra_unwinding, 0)

@@ -4,7 +4,8 @@
 // task's record; COUNT counts turns in a register and looks at the flag
 // every 1024th; CHUNK is what a compiler can do for a counted loop —
 // the loop split into runs of 1024 with the check between runs — and
-// falls back to FLAG where the trip count is unknown. Prints
+// falls back to FLAG where the trip count is unknown; CLOCK is COUNT
+// with no tick, the loop reading the clock itself every 1024th turn. Prints
 // `<variant> <loop> <ns a turn>`, the least of five.
 #include <stdint.h>
 #include <stdio.h>
@@ -16,6 +17,13 @@ uint8_t avra_tick = 0;
 Task g_main_task;
 Task* g_current = &g_main_task;
 __attribute__((noinline, cold)) void preempted(void) { avra_tick = 0; g_current->preempt = 0; }
+int64_t g_earliest = INT64_MAX;
+// No tick at all: every 1024th turn the loop reads the clock itself.
+__attribute__((noinline, cold)) void clock_asked(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    if ((int64_t)t.tv_sec * 1000000000 + t.tv_nsec >= g_earliest) preempted();
+}
 
 #if defined(FLAG) || defined(CHUNK)
 #define EDGE() do { if (__builtin_expect(__atomic_load_n(&avra_tick, __ATOMIC_RELAXED), 0)) preempted(); } while (0)
@@ -23,10 +31,12 @@ __attribute__((noinline, cold)) void preempted(void) { avra_tick = 0; g_current-
 #define EDGE() do { if (__builtin_expect(__atomic_load_n(&g_current->preempt, __ATOMIC_RELAXED), 0)) preempted(); } while (0)
 #elif defined(COUNT)
 #define EDGE() do { if (__builtin_expect(--budget == 0, 0)) { budget = 1024; if (__atomic_load_n(&avra_tick, __ATOMIC_RELAXED)) preempted(); } } while (0)
+#elif defined(CLOCK)
+#define EDGE() do { if (__builtin_expect(--budget == 0, 0)) { budget = 1024; clock_asked(); } } while (0)
 #else
 #define EDGE() do { } while (0)
 #endif
-#if defined(COUNT)
+#if defined(COUNT) || defined(CLOCK)
 #define BUDGET uint32_t budget = 1024;
 #else
 #define BUDGET
@@ -105,6 +115,9 @@ __attribute__((noinline)) uint64_t chase(const Node* p) {
     return s;
 }
 
+// A value the optimizer cannot see through, so a call is made every time.
+#define HIDE(T, v) ({ T hidden_ = (v); __asm__ volatile("" : "+r"(hidden_)); hidden_; })
+
 static double now_ns(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
@@ -125,15 +138,15 @@ int main(int argc, char** argv) {
     volatile uint64_t sink = 0;
     for (int r = 0; r < 5; r++) {
         double t0 = now_ns();
-        for (int k = 0; k < 60000; k++) sink += sum(words, N);
+        for (int k = 0; k < 60000; k++) sink += sum(HIDE(const uint32_t*, words), N);
         double t1 = now_ns();
-        for (int k = 0; k < 20000; k++) sink += fnv(bytes, N);
+        for (int k = 0; k < 20000; k++) sink += fnv(HIDE(const uint8_t*, bytes), N);
         double t2 = now_ns();
-        for (int k = 0; k < 200000; k++) sink += collatz(837799);
+        for (int k = 0; k < 200000; k++) sink += collatz(HIDE(uint64_t, 837799));
         double t3 = now_ns();
         for (int k = 0; k < 400; k++) { matmul(); sink += (uint64_t)mc[3][5]; }
         double t4 = now_ns();
-        for (int k = 0; k < 30000; k++) sink += chase(nodes);
+        for (int k = 0; k < 30000; k++) sink += chase(HIDE(const Node*, nodes));
         double t5 = now_ns();
         double got[5] = { (t1 - t0) / (60000.0 * N), (t2 - t1) / (20000.0 * N), (t3 - t2) / (200000.0 * steps), (t4 - t3) / (400.0 * M * M * M), (t5 - t4) / (30000.0 * N) };
         for (int i = 0; i < 5; i++) if (got[i] < best[i]) best[i] = got[i];

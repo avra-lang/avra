@@ -1,0 +1,45 @@
+//! asks: a `within` answering `Result<T, TimedOut>` — the catch, the `?`, the match
+use @std.time.{secs, ms}
+use @std.meta.{Code}
+use @std.time.{Duration}
+
+/// What a `within` whose time ran out answers.
+type TimedOut = { after: Duration }
+
+fn expired() -> bool { false }
+
+fn timed<T>(after: Duration, v: T) -> Result<T, TimedOut> {
+    if expired() { return .Err(TimedOut { after: after }) }
+    .Ok(v)
+}
+
+/// `within2 limit { … }` — the block's value, or `TimedOut`.
+component within2(limit: Code) {
+    body: Code
+    fn expand() -> Code {
+        quote {
+            {
+                let limit: Duration = ${self.limit}
+                let v = ${self.body}
+                timed(limit, v)
+            }
+        }
+    }
+}
+
+fn fetch(u: string) -> string { u }
+
+fn cached(u: string) -> string { "cached ${u}" }
+
+fn asked(u: string) -> Result<string, TimedOut> {
+    let page = within2 secs(5) { fetch(u) }?
+    .Ok(page)
+}
+
+fn told(r: Result<string, TimedOut>) -> string {
+    match r { .Ok(v) -> v, .Err(t) -> "timed out after ${t.after.ms}" }
+}
+
+let page = within2 secs(5) { fetch("u") } catch t -> { cached("u") }
+let whole = match within2 ms(5) { fetch("m") } { .Ok(p) -> p, .Err(t) -> "late ${t.after.ms}" }
+println("${page} ${told(asked("q"))} ${whole}")

@@ -1,0 +1,20 @@
+//! asks: today's rule, RUN — a task that outlives the `within` it was
+//! spawned under, joined after the deadline passed
+use @std.net.{listen, Listener, NetError}
+use @std.time.{ms, secs, sleep, within, now_ms}
+
+fn served(l: Listener) -> string {
+    match l.accept() { .Ok(_) -> "accepted", .Err(e) -> if e.timed_out() { "timed out" } else { "failed" } }
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    mut held: List<Task<string>> = []
+    within ms(20) { held.push(spawn served(l)) }
+    let from = now_ms()
+    let said = held[0].await
+    let _ = l.close()
+    .Ok("the join answered `${said}` after ${now_ms() - from >= 15} ~20 ms: the child's own verb turned its deadline into a value")
+}
+
+println(run() catch _ -> "failed")

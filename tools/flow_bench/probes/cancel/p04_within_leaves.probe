@@ -1,0 +1,52 @@
+//! asks: a `return` and a `?` inside the block, as std-time's own test holds today
+use @std.time.{secs, ms}
+use @std.meta.{Code}
+use @std.time.{Duration}
+
+/// What a `within` whose time ran out answers.
+type TimedOut = { after: Duration }
+
+fn expired() -> bool { false }
+
+fn timed<T>(after: Duration, v: T) -> Result<T, TimedOut> {
+    if expired() { return .Err(TimedOut { after: after }) }
+    .Ok(v)
+}
+
+/// `within2 limit { … }` — the block's value, or `TimedOut`.
+component within2(limit: Code) {
+    body: Code
+    fn expand() -> Code {
+        quote {
+            {
+                let limit: Duration = ${self.limit}
+                let v = ${self.body}
+                timed(limit, v)
+            }
+        }
+    }
+}
+
+fn number(s: string) -> Result<int, string> {
+    if s != "4" { fail "not a number" }
+    .Ok(4)
+}
+
+fn early(n: int) -> int {
+    let v = within2 secs(1) {
+        if n > 1 { return 0 - n }
+        n
+    } catch _ -> 0
+    v * 10
+}
+
+fn parsed(s: string) -> Result<int, string> {
+    let v = within2 ms(500) { number(s)? + 1 } catch _ -> 0
+    .Ok(v)
+}
+
+fn told(r: Result<int, string>) -> string {
+    match r { .Ok(v) -> "${v}", .Err(e) -> e }
+}
+
+println("${early(1)} ${early(3)} ${told(parsed("4"))} ${told(parsed("x"))}")

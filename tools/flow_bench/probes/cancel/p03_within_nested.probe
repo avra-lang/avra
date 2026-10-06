@@ -1,0 +1,53 @@
+//! asks: the migration shape — a body that already answers a `Result`
+use @std.time.{secs, ms}
+use @std.meta.{Code}
+use @std.time.{Duration}
+
+/// What a `within` whose time ran out answers.
+type TimedOut = { after: Duration }
+
+fn expired() -> bool { false }
+
+fn timed<T>(after: Duration, v: T) -> Result<T, TimedOut> {
+    if expired() { return .Err(TimedOut { after: after }) }
+    .Ok(v)
+}
+
+/// `within2 limit { … }` — the block's value, or `TimedOut`.
+component within2(limit: Code) {
+    body: Code
+    fn expand() -> Code {
+        quote {
+            {
+                let limit: Duration = ${self.limit}
+                let v = ${self.body}
+                timed(limit, v)
+            }
+        }
+    }
+}
+
+type NetError = { errno: int }
+
+fn read(n: int) -> Result<int, NetError> {
+    if n < 0 { fail NetError { errno: 60 } }
+    .Ok(n)
+}
+
+fn nested(n: int) -> string {
+    match within2 ms(5) { read(n) } {
+        .Ok(.Ok(v)) -> "read ${v}",
+        .Ok(.Err(e)) -> "failed ${e.errno}",
+        .Err(t) -> "timed out ${t.after.ms}",
+    }
+}
+
+fn flat(n: int) -> Result<int, NetError> {
+    within2 ms(5) { read(n) } catch _ -> .Err(NetError { errno: 60 })
+}
+
+fn told(r: Result<int, NetError>) -> string {
+    match r { .Ok(v) -> "${v}", .Err(e) -> "errno ${e.errno}" }
+}
+
+println("${nested(4)} | ${nested(0 - 1)} | ${told(flat(7))}")
