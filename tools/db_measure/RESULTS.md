@@ -502,6 +502,31 @@ read after the first edit. No attempt was discarded in any of these runs
 before or after; the wasted attempt shows in the fixtures only (`kv`: 1
 discarded, 87 ms, before; 0 after).
 
+## One interface edit, three attempts thrown away (avra-8sb5.57.219)
+
+Sprite avra-comptime, PR #324's tree cce48f2 plus three measuring prints
+(never committed), `turns_probe.sh`, packages/cli: cold check and build, two
+body-string edits of commands/shared.av, then the descriptions of `flag time`
+and `arg file` changed, then one warm `check --time`. Raw:
+`raw/turns_interface_edit.txt`, `raw/turns_forced_runs.txt`.
+
+| attempt | time thrown away | what it learned |
+|---|---|---|
+| 0 | 4.2–4.4 s | 15 command files' runs asked for 321 bodies in 28 held files |
+| 1 | 9.8–10.3 s | after keeping the records, 41 held cli files' keys no longer stood |
+| 2 | 10.2–10.7 s | 3 of those 41, now read, ran and asked bodies in 3 more held files |
+| 3 | stands | held 371/471 |
+
+At load in attempt 0, each of the 15 files' records listed 1 to 6 run-read
+files, and none was read ahead: every const of the file had a kept verdict
+in the store, and `forced_runs` (kept_settle.av) answers "none" on that
+alone. The verdicts did not stand. The records' lists are also shorter than
+what the runs asked for (build.av: 3 listed, 11 files asked).
+
+First check after a build, one body-string edit between (`after_build.sh`):
+main 0d261da 19,033 and 19,794 ms, held 430/462, discarded 3; #324 4,990 and
+4,780 ms, held 446/462, discarded 0.
+
 ## Not measured
 
 - The encoded size of any family's value under a new codec.
