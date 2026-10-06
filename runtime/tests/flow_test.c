@@ -426,6 +426,149 @@ static void slots(void) {
     trapped("a slot past the table", slot_out_of_range, "a task has four slots");
 }
 
+// ── a task that ends with a wait it never parked on ─────────────
+
+static void* arms_gate_and_ends(void* self) { (void)self; avra_wait_gate(g_gate, 1, 42); return answer(0); }
+static void* arms_time_and_ends(void* self) { (void)self; avra_wait_until(in_ms(10), 3, 9); return answer(0); }
+
+static void ends_without_parking(void) {
+    int64_t live = avra_mem_live();
+    g_gate = avra_gate_new();
+    joined(spawn1(arms_gate_and_ends, 0));
+    CHECK(!filed(g_gate), "a task that ends takes the gate wait it never parked on with it");
+    void* s = spawn1(sleeper, 30);
+    avra_fiber_sleep(2);
+    CHECK(avra_gate_claim(g_gate) == -1, "the gate has no waiter of a task that is gone");
+    CHECK(joined(s) >= 29, "and the next task to take its record sleeps its whole sleep");
+    avra_rc_release(g_gate);
+    CHECK(avra_mem_live() == live, "nothing of the ended task's wait is kept");
+
+    joined(spawn1(arms_time_and_ends, 0));
+    CHECK(avra_sched_timers() == 0, "a task that ends takes the time it never parked on out of the heap");
+    CHECK(joined(spawn1(sleeper, 40)) >= 39, "and the next task to take its record is not woken by it");
+    CHECK(avra_sched_timers() == 0, "the heap is empty after");
+}
+
+// ── the deadline, where it must and must not reach ──────────────
+
+// Parks once under a `within` it never closes, then ends.
+static void* ends_inside_within(void* self) {
+    (void)self;
+    avra_fiber_within(60000);
+    avra_wait_gate(g_gate, 0, 0);
+    avra_wait_park();
+    return answer(0);
+}
+
+// A real wait files the deadline; a sleep or a join after it, running
+// past the deadline, must not be cut short by it.
+static void* sleeps_past_deadline(void* self) {
+    int64_t outer = avra_fiber_within(15);
+    avra_wait_gate(g_gate, 0, 0);
+    avra_wait_park();
+    int64_t t0 = now_ns();
+    if (cap(self)) joined(spawn1(sleeper, 40)); else avra_fiber_sleep(40);
+    int64_t ms = (now_ns() - t0) / 1000000;
+    avra_fiber_within_end(outer);
+    return answer(ms);
+}
+
+static void* waits_reports(void* self) {
+    (void)self;
+    avra_wait_gate(g_gate, 0, 5);
+    int64_t claim = avra_wait_park();
+    return answer(arm_of(claim) * 100 + member_of(claim));
+}
+
+static void deadline_reach(void) {
+    g_gate = avra_gate_new();
+    void* t = spawn1(ends_inside_within, 0);
+    avra_fiber_sleep(2);
+    CHECK(avra_sched_timers() == 1, "a wait under a `within` files the deadline");
+    CHECK(avra_gate_claim(g_gate) == 0, "the waiter is claimed");
+    joined(t);
+    CHECK(avra_sched_timers() == 0, "a task that ends inside its `within` takes its deadline out of the heap");
+
+    for (int joins = 0; joins < 2; joins++) {
+        t = spawn1(sleeps_past_deadline, joins);
+        avra_fiber_sleep(2);
+        CHECK(avra_gate_claim(g_gate) == 0, "the task under the deadline is claimed");
+        CHECK(joined(t) >= 39, joins ? "a deadline filed by an earlier wait does not cut a join short" : "a deadline filed by an earlier wait does not cut a sleep short");
+    }
+    CHECK(avra_sched_timers() == 0, "and leaves the heap with its scope");
+
+    int64_t outer = avra_fiber_within(8);
+    t = spawn1(waits_reports, 0);
+    avra_fiber_within_end(outer);
+    CHECK(joined(t) == -99, "a task inherits its spawner's deadline: its wait answers -1:1 when that passes");
+    CHECK(!filed(g_gate), "and the wait the deadline cut short is retracted");
+    avra_rc_release(g_gate);
+}
+
+// A parked task's deadline is another task's: a forked child keeps none of it.
+static void fork_forgets_deadlines(void) {
+    g_gate = avra_gate_new();
+    void* t = spawn1(ends_inside_within, 0);
+    avra_fiber_sleep(2);
+    pid_t pid = fork();
+    if (pid == 0) {
+        avra_fiber_forked();
+        _exit(avra_sched_timers() == 0 ? 0 : 1);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "a forked child's heap holds no other task's deadline");
+    CHECK(avra_gate_claim(g_gate) == 0, "the parent's task is still parked");
+    joined(t);
+    avra_rc_release(g_gate);
+}
+
+// ── a claim made while arming is heard before a standing cancel ─
+
+static void* cancelled_then_handed(void* self) {
+    (void)self;
+    avra_wait_gate(g_gate, 3, 7);
+    note(arm_of(avra_wait_park()));
+    avra_wait_gate(g_gates[0], 5, 8);
+    int64_t handed = avra_wait_park();
+    note(arm_of(handed) * 100 + member_of(handed));
+    avra_wait_gate(g_gate, 3, 7);
+    note(arm_of(avra_wait_park()));
+    return answer(0);
+}
+
+static void claim_before_cancel(void) {
+    g_log_len = 0;
+    g_gate = avra_gate_new();
+    g_gates[0] = avra_gate_new();
+    avra_vgate_open(g_gates[0]);
+    void* t = spawn1(cancelled_then_handed, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    joined(t);
+    int64_t want[] = { -1, 508, -1 };
+    CHECK(logged(want, 3), "under a standing cancel a wait a source claims while arming answers that source, and the next answers the cancel");
+    avra_rc_release(g_gate);
+    avra_rc_release(g_gates[0]);
+}
+
+// ── an interrupt reads as time, not readiness ───────────────────
+
+static void* parks_on_pipe(void* self) { (void)self; return answer(avra_fiber_park_fd(g_pipe[0], 0, -1)); }
+
+static void interrupt_is_time(void) {
+    void* t = spawn1(parks_on_pipe, 0);
+    avra_fiber_sleep(2);
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    CHECK(joined(t) == 0, "a descriptor park that is interrupted answers as one whose time ran out");
+    CHECK(avra_sched_fd_waiters() == 0, "and leaves the descriptor");
+}
+
+// ── a wait on an open gate is a set too ─────────────────────────
+
+static void* sleeps_in_a_claimed_set(void* self) { (void)self; avra_wait_gate(g_gate, 0, 0); avra_fiber_sleep(5); return answer(0); }
+static void sleep_in_claimed_set(void) { g_gate = avra_gate_new(); avra_vgate_open(g_gate); joined(spawn1(sleeps_in_a_claimed_set, 0)); }
+
 // ── stacks past the count that get a guard each ─────────────────
 
 static void* yields_thrice(void* self) { for (int i = 0; i < 3; i++) avra_fiber_yield(); return answer(cap(self)); }
@@ -478,6 +621,74 @@ static void first_of_k(void) { setenv("AVRA_FIBER_GUARDS", "1", 1); nth_task(0, 
 static void third_past_k(void) { setenv("AVRA_FIBER_GUARDS", "1", 1); nth_task(2, overruns_then_yields); }
 static void third_with_all(void) { setenv("AVRA_FIBER_GUARDS", "all", 1); nth_task(2, overruns_then_yields); }
 
+// A burst past the guarded count parks, ends, and ONE task then overruns.
+static void lone_after_burst(void) {
+    setenv("AVRA_FIBER_STACK", "65536", 1);
+    setenv("AVRA_FIBER_GUARDS", "64", 1);
+    g_gate = avra_gate_new();
+    enum { BURST = 200 };
+    static void* all[BURST];
+    for (int i = 0; i < BURST; i++) all[i] = spawn1(waits_for_ever, 0);
+    avra_fiber_sleep(2);
+    while (avra_gate_claim(g_gate) >= 0) {}
+    for (int i = 0; i < BURST; i++) joined(all[i]);
+    void* other = spawn1(yields_thrice, 0);
+    joined(spawn1(overruns_then_yields, 0));
+    joined(other);
+}
+
+// A stack that shares its slab's guard, used, given back and taken again.
+static void* ends_at_once(void* self) { return answer(cap(self)); }
+static void recycled_past_k(void) {
+    setenv("AVRA_FIBER_STACK", "65536", 1);
+    setenv("AVRA_FIBER_GUARDS", "0", 1);
+    void* below = spawn1(yields_thrice, 0);
+    joined(spawn1(ends_at_once, 0));
+    joined(spawn1(overruns_then_yields, 0));
+    joined(below);
+}
+
+static void guards_spelled(const char* value) {
+    setenv("AVRA_FIBER_GUARDS", value, 1);
+    joined(spawn1(ends_at_once, 0));
+}
+static void guards_upper(void) { guards_spelled("ALL"); }
+static void guards_short(void) { guards_spelled("al"); }
+static void guards_negative(void) { guards_spelled("-1"); }
+static void guards_trailing(void) { guards_spelled("12x"); }
+
+// THE LAW'S OWN HOLE, pinned: past the guarded count a bounded overrun
+// that returns before the next switch and never writes the canary word
+// changes its neighbour's stack and nothing traps. Exits 0 when that
+// is what happened.
+__attribute__((noinline)) static void skips(volatile char* p) { p[0] = 7; p[4096] = 7; p[8192] = 7; }
+__attribute__((noinline)) static int64_t dips(void) { volatile char big[70000]; skips(big); return big[0]; }
+static void* dips_then_yields(void* self) { (void)self; int64_t v = dips(); avra_fiber_yield(); return answer(v); }
+static void* holds_bytes(void* self) {
+    (void)self;
+    volatile char mine[2048];
+    for (size_t i = 0; i < sizeof mine; i++) mine[i] = 0x55;
+    for (int i = 0; i < 3; i++) avra_fiber_yield();
+    int64_t changed = 0;
+    for (size_t i = 0; i < sizeof mine; i++) changed += mine[i] != 0x55;
+    return answer(changed);
+}
+static int uncaught_overrun(void) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        alarm(60);
+        setenv("AVRA_FIBER_STACK", "65536", 1);
+        setenv("AVRA_FIBER_GUARDS", "0", 1);
+        void* below = spawn1(holds_bytes, 0);
+        void* t = spawn1(dips_then_yields, 0);
+        int64_t answered = joined(t);
+        _exit(answered == 7 && joined(below) > 0 ? 0 : 3);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
 static void stacks(void) {
     const char* at_switch = "a task's stack overflowed into its neighbour — caught at a switch";
     const char* at_write = "a task's stack overflowed\n";
@@ -487,6 +698,14 @@ static void stacks(void) {
     trapped("an overrun on the one stack that has a guard", first_of_k, at_write);
     trapped("an overrun on the third stack, one guarded", third_past_k, at_switch);
     trapped("an overrun on the third stack, every stack guarded", third_with_all, at_write);
+    trapped("a lone task after a burst past the guarded count", lone_after_burst, at_write);
+    trapped("an overrun on a stack given back and taken again, past the guarded count", recycled_past_k, at_switch);
+    const char* misspelled = "it is `all`, or a whole number of stacks that get a guard page each";
+    trapped("AVRA_FIBER_GUARDS=ALL", guards_upper, misspelled);
+    trapped("AVRA_FIBER_GUARDS=al", guards_short, misspelled);
+    trapped("AVRA_FIBER_GUARDS=-1", guards_negative, misspelled);
+    trapped("AVRA_FIBER_GUARDS=12x", guards_trailing, misspelled);
+    CHECK(uncaught_overrun() == 0, "the law's hole stands as written: an overrun that skips the canary word changes its neighbour and nothing traps");
 }
 
 // ── the same set, as the evaluator drives it ────────────────────
@@ -552,6 +771,21 @@ static void as_virtual(void) {
     avra_vtask_free(vt);
     CHECK(!filed(g_gate) && avra_sched_timers() == 0 && avra_sched_fd_waiters() == 0, "a freed virtual task leaves every source it waited on");
 
+    // freed with a wait it never parked on
+    vt = avra_vtask_new();
+    avra_vtask_wait_gate(vt, g_gate, 0, 0);
+    avra_vtask_wait_until(vt, in_ms(60000), 1, 0);
+    avra_vtask_free(vt);
+    CHECK(!filed(g_gate) && avra_sched_timers() == 0, "a virtual task freed before it parks leaves every source it registered with");
+
+    // freed inside a `within` it waited under
+    vt = avra_vtask_new();
+    avra_vtask_within(vt, 60000);
+    avra_vtask_wait_gate(vt, g_gate, 0, 0);
+    CHECK(avra_vtask_park(vt) == 1 && avra_sched_timers() == 1, "a virtual task's wait under a `within` files its deadline");
+    avra_vtask_free(vt);
+    CHECK(!filed(g_gate) && avra_sched_timers() == 0, "and freeing it takes the deadline out of the heap");
+
     // an opened gate, as a finished task's
     vt = avra_vtask_new();
     avra_vtask_wait_gate(vt, g_gate, 4, 1);
@@ -584,6 +818,7 @@ int main(void) {
     trapped("a sleep inside a set", sleep_in_set, "a task waited inside a wait it had not parked");
     trapped("a join inside a set", join_in_set, "a task waited inside a wait it had not parked");
     trapped("a descriptor park inside a set", park_in_set, "a task waited inside a wait it had not parked");
+    trapped("a sleep after a wait an open gate claimed", sleep_in_claimed_set, "a task waited inside a wait it had not parked");
     stacks();
 
     if (pipe(g_pipe) != 0) { perror("pipe"); return 1; }
@@ -599,6 +834,11 @@ int main(void) {
     opened_gate();
     deadline_once();
     slots();
+    ends_without_parking();
+    deadline_reach();
+    fork_forgets_deadlines();
+    claim_before_cancel();
+    interrupt_is_time();
     CHECK(avra_mem_live() == live, "the fibers leave nothing behind");
     as_virtual();
     closed(g_pipe[0]);

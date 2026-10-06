@@ -194,7 +194,7 @@ struct Fiber {
     uint8_t unwinding;      // a cancel met a cancel point
     int32_t arm, member;    // the claim
     uint32_t held_n;
-    uint32_t cancel_by;     // 1 + the id of the task that asked, else 0
+    int64_t cancel_by;      // 1 + the id of the task that asked, else 0
     int64_t deadline;       // the innermost `within`'s end, in ns; 0 when none
     int64_t due_at;         // the deadline `due` is filed under
     Waiter held[HELD];
@@ -425,6 +425,19 @@ static void timer_down(size_t i) {
     }
 }
 
+// THE WORLD IS ASKED EVERY FAIR_TURNS SWITCHES while anything is filed
+// with it — a time, a descriptor — and tasks are ready: a crowd of
+// yielding tasks cannot starve a sleeper or a reader, and a switch with
+// nothing due reads no clock. `g_until_world` counts the switches left;
+// whoever files the first waiter brings it within reach.
+#define FAIR_TURNS 64
+#define WORLD_IDLE ((int64_t)1 << 62)
+static int64_t g_until_world = WORLD_IDLE;
+
+static inline void world_wanted(void) {
+    if (g_until_world > FAIR_TURNS) g_until_world = FAIR_TURNS;
+}
+
 static void timer_set(uint32_t kind, void* who, int64_t at) {
     if (g_timers_len == g_timers_cap) {
         g_timers_cap = g_timers_cap ? g_timers_cap * 2 : 64;
@@ -435,6 +448,7 @@ static void timer_set(uint32_t kind, void* who, int64_t at) {
     g_timers[i] = (Timer){ at, g_timer_seq++, kind, who };
     timer_placed(i);
     timer_up(i);
+    world_wanted();
 }
 
 // The entry at `i` leaves the heap; its owner's place is its to clear.
@@ -551,7 +565,10 @@ static void waiter_filed(Waiter* w) {
     if (*tail) (*tail)->next = w; else *head = w;
     *tail = w;
     w->filed = 1;
-    if (w->kind != W_GATE) g_parked_fds++;
+    if (w->kind != W_GATE) {
+        g_parked_fds++;
+        world_wanted();
+    }
 }
 
 // A waiter leaves whatever holds it: its list, the heap, the count the
@@ -776,15 +793,19 @@ static size_t g_stack_bytes = 0;
 // FINISHED STACKS ARE KEPT, WARM, AND NEVER UNMAPPED. Handing a stack
 // back costs a syscall and taking a fresh one a page fault —
 // microseconds against a spawn of about a hundred nanoseconds — so a
-// stack goes to the pool with its pages. The pool's oldest members,
-// past the POOL_HOT most recent, give their pages back when the
-// scheduler has nothing to run (`pool_trim`), which is time nobody is
-// waiting on.
+// stack goes to its pool with its pages. A pool's oldest members, past
+// the POOL_HOT most recent, give their pages back when the scheduler
+// has nothing to run (`pool_trim`), which is time nobody is waiting on.
+//
+// TWO POOLS, BY WHAT GUARDS THE STACK: those with a guard of their own
+// directly under them, and those that share their slab's. A task takes
+// a stack of the first kind whenever one is free, so a guard page each
+// is what tasks have until more of them hold a stack at once than there
+// are such stacks.
 #define POOL_HOT 256
-static Stack* g_pool = NULL;
-static size_t g_pool_len = 0;
-static size_t g_pool_cap = 0;
-static size_t g_pool_clean = 0;   // members below this have given their pages back
+typedef struct { Stack* at; size_t len; size_t cap; size_t clean; } Pool;   // members below `clean` have given their pages back
+static Pool g_guarded = {0};
+static Pool g_shared = {0};
 
 static void guard_handler_install(void);
 
@@ -797,6 +818,13 @@ static void guard_handler_install(void);
 static int g_guard_regions = 0;
 static int g_guards_all = 0;
 static size_t g_each_left = 0;
+
+__attribute__((noinline, cold, noreturn))
+static void guards_misspelled(const char* value) {
+    char words[200];
+    avra_fmt(words, sizeof words, "AVRA_FIBER_GUARDS is `%s` — it is `all`, or a whole number of stacks that get a guard page each", value);
+    avra_trap(words);
+}
 
 // STACK GUARD POLICY. KEEP THIS COMMENT: it is the only record of a
 // safety trade the code cannot show. Do not remove or shorten it.
@@ -814,22 +842,37 @@ static size_t g_each_left = 0;
 //
 // K is `g_each_left`: an eighth of the mapping limit, so guarded stacks
 // take a quarter of the process's mappings; `AVRA_FIBER_GUARDS=<n>` sets
-// it. The canary is the word under a stack's floor — the top word of
-// the stack below, which nothing writes — so it costs no page. Past K a
-// runaway recursion still reaches the slab's guard, since no other task
-// runs meanwhile; a bounded overrun that returns before the next switch
-// and never wrote that one word is not caught.
+// it, and is given pages and slabs whatever the kernel has. "The first K
+// tasks" are whoever holds a stack while at most K do: a task takes a
+// page-guarded stack whenever one is free. The canary is the top word of
+// the stack below, which nothing writes, so it costs no page. Past K a
+// runaway recursion still reaches the slab's guard; a bounded overrun
+// that returns before the next switch and never wrote that one word is
+// not caught.
 static void guards_settle(void) {
     const char* env = getenv("AVRA_FIBER_GUARDS");
-    if (env && strcmp(env, "all") == 0) { g_guards_all = 1; return; }
-    if (env && *env) { g_each_left = (size_t)avra_number(env, 0); return; }
+    int all = env && strcmp(env, "all") == 0;
+    int counted = env && *env && !all;
+    if (counted) {
+        // A COUNT IS READ WHOLE OR REFUSED: a word misread as 0 would
+        // quietly choose the weakest guard there is.
+        char* end = NULL;
+        errno = 0;
+        unsigned long long n = *env >= '0' && *env <= '9' ? strtoull(env, &end, 10) : 0;
+        if (!end || *end != 0 || errno != 0) guards_misspelled(env);
+        // A COUNT ASKS FOR PAGES AND SLABS BY NAME, so it is given them
+        // whatever the kernel has: it is how the policy past K is run
+        // and tested on a kernel with guard regions.
+        g_each_left = (size_t)n;
+        return;
+    }
 #if AVRA_EPOLL
     void* probe = mmap(NULL, g_page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (probe != MAP_FAILED) {
         g_guard_regions = madvise(probe, g_page, MADV_GUARD_INSTALL) == 0;
         munmap(probe, g_page);
     }
-    if (g_guard_regions) { g_guards_all = 1; return; }
+    if (g_guard_regions || all) { g_guards_all = 1; return; }
     // A QUARTER OF THE PROCESS'S MAPPINGS GO TO GUARDED STACKS, two
     // apiece; the rest are the program's, and the slabs' after them.
     FILE* f = fopen("/proc/sys/vm/max_map_count", "r");
@@ -857,13 +900,16 @@ static void stacks_settle(void) {
     guard_handler_install();
 }
 
+static int own_guard(Stack s) { return s.guard == s.base - g_page; }
+
 static void stack_give(Stack s) {
-    if (g_pool_len == g_pool_cap) {
-        g_pool_cap = g_pool_cap ? g_pool_cap * 2 : 64;
-        g_pool = realloc(g_pool, g_pool_cap * sizeof(Stack));
-        if (!g_pool) avra_trap("the scheduler ran out of memory for its stack pool");
+    Pool* p = own_guard(s) ? &g_guarded : &g_shared;
+    if (p->len == p->cap) {
+        p->cap = p->cap ? p->cap * 2 : 64;
+        p->at = realloc(p->at, p->cap * sizeof(Stack));
+        if (!p->at) avra_trap("the scheduler ran out of memory for its stack pool");
     }
-    g_pool[g_pool_len++] = s;
+    p->at[p->len++] = s;
 }
 
 // Whether `page` now faults when touched.
@@ -874,6 +920,7 @@ static int guard_set(char* page) {
 
 __attribute__((noinline, cold, noreturn))
 static void guard_refused(void) {
+    if (g_guard_regions) avra_trap("the scheduler could not guard a task's stack: the kernel refused a guard region");
     avra_trap("the scheduler could not guard a task's stack: a guarded stack takes two of the process's mappings and the kernel holds no more — raise vm.max_map_count, run a kernel with guard regions (Linux 6.13 or later), or unset AVRA_FIBER_GUARDS");
 }
 
@@ -927,18 +974,29 @@ static void slab_made(void) {
     slab_guarded_once();
 }
 
-static Stack stack_take(void) {
-    if (g_pool_len == 0) slab_made();
-    Stack s = g_pool[--g_pool_len];
-    if (g_pool_clean > g_pool_len) g_pool_clean = g_pool_len;
+static Stack pool_taken(Pool* p) {
+    Stack s = p->at[--p->len];
+    if (p->clean > p->len) p->clean = p->len;
     return s;
 }
 
-static void pool_trim(void) {
-    while (g_pool_len > POOL_HOT && g_pool_clean < g_pool_len - POOL_HOT) {
-        madvise(g_pool[g_pool_clean].base, g_stack_bytes, MADV_FREE);
-        g_pool_clean++;
+// A stack with a guard of its own while one is free or one more may be
+// made; else one that shares its slab's.
+static Stack stack_take(void) {
+    if (g_guarded.len == 0 && (g_guards_all || g_each_left > 0 || g_shared.len == 0)) slab_made();
+    return pool_taken(g_guarded.len > 0 ? &g_guarded : &g_shared);
+}
+
+static void pool_trimmed(Pool* p) {
+    while (p->len > POOL_HOT && p->clean < p->len - POOL_HOT) {
+        madvise(p->at[p->clean].base, g_stack_bytes, MADV_FREE);
+        p->clean++;
     }
+}
+
+static void pool_trim(void) {
+    pool_trimmed(&g_guarded);
+    pool_trimmed(&g_shared);
 }
 
 __attribute__((noinline, cold))
@@ -983,7 +1041,7 @@ static void fiber_bound(Fiber* f) {
     f->base = s.base;
     f->guard = s.guard;
     f->floor = (uintptr_t)s.base;
-    f->canary = s.guard == s.base - g_page ? &g_untouched : (const uint64_t*)(s.base - sizeof(uint64_t));
+    f->canary = own_guard(s) ? &g_untouched : (const uint64_t*)(s.base - sizeof(uint64_t));
     uint64_t* frame = (uint64_t*)((((uintptr_t)s.base + g_stack_bytes - 16) & ~(uintptr_t)15) - FIBER_FRAME);
     memset(frame, 0, FIBER_FRAME);
     frame[FIBER_RETURN] = (uint64_t)(uintptr_t)fiber_start;
@@ -1027,12 +1085,6 @@ static inline void switch_to(Fiber* next) {
     bury_finished();
 }
 
-// THE WORLD IS ASKED EVERY FAIR_TURNS SWITCHES even while tasks are
-// ready, so a crowd of yielding tasks cannot starve one waiting on a
-// descriptor.
-#define FAIR_TURNS 64
-static int g_turns_since_poll = 0;
-
 // The caller has already filed itself (ready, parked, waiting or
 // done); run whoever is next, waiting on the world when nobody is.
 // A world with nothing to wait on and nobody ready is a deadlock,
@@ -1043,11 +1095,9 @@ __attribute__((noinline))
 // switches call stacks itself — so both interleave tasks alike.
 static Fiber* next_ready(void) {
     for (;;) {
+        g_until_world = g_timers_len > 0 || g_parked_fds > 0 ? FAIR_TURNS : WORLD_IDLE;
         fire_due_timers();
-        if (g_parked_fds > 0 && ++g_turns_since_poll >= FAIR_TURNS) {
-            g_turns_since_poll = 0;
-            poller_wait(0);
-        }
+        if (g_parked_fds > 0) poller_wait(0);
         Fiber* next = ready_pop();
         if (next) return next;
         if (g_timers_len == 0 && g_parked_fds == 0) avra_trap("every task is waiting — deadlock");
@@ -1064,12 +1114,12 @@ static void run_next_with_world(void) {
     switch_to(next);
 }
 
-// A COLD PATH IN A HOT LEAF COSTS EVERY SWITCH A FRAME: while no timer
-// is set and no descriptor waited on, the queue alone decides, and the
-// world's machinery stays out of line.
+// A COLD PATH IN A HOT LEAF COSTS EVERY SWITCH A FRAME: until the
+// world's turn comes the queue alone decides, and the world's machinery
+// stays out of line.
 __attribute__((always_inline))
 static inline void run_next(void) {
-    if (__builtin_expect(g_timers_len == 0 && g_parked_fds == 0, 1)) {
+    if (__builtin_expect(--g_until_world > 0, 1)) {
         Fiber* next = ready_pop();
         if (next) { switch_to(next); return; }
     }
@@ -1160,7 +1210,7 @@ static void waits_gate(Fiber* f, void* gate, int64_t arm, int64_t member) {
 static int park_begun(Fiber* f) {
     f->heeds = 1;
     if (f->claimed) return 0;
-    if (f->cancel_by != 0) { set_claimed(f, -1, 0, (int64_t)f->cancel_by - 1); return 0; }
+    if (f->cancel_by != 0) { set_claimed(f, -1, 0, f->cancel_by - 1); return 0; }
     if (deadline_passed(f)) { set_claimed(f, -1, 1, BY_DEADLINE); return 0; }
     f->parked = 1;
     f->state = FIBER_PARKED;
@@ -1248,7 +1298,11 @@ static void fiber_start(void) {
     cells[TASK_FIBER] = 0;
     cells[TASK_END] = END_ANSWERED;
     gate_opened(task, id_of(self));
-    if (self->due.filed) waiter_out(&self->due);
+    // A TASK THAT ENDS WAITS ON NOTHING: what it registered and never
+    // parked on leaves with it, before its record is anyone else's.
+    retract(self);
+    self->claimed = 0;
+    waiter_out(&self->due);
     for (int i = 0; i < AVRA_TASK_SLOTS; i++) {
         void* held = self->own.slot[i];
         if (!held) continue;
@@ -1414,7 +1468,7 @@ static void task_fired(void* task) {
 // wait. A task parked by a sleep, a join or a descriptor park is not
 // woken by it. A fiberless task simply ends.
 static void fiber_cancelled(Fiber* f, int64_t by) {
-    f->cancel_by = (uint32_t)(by + 1);
+    f->cancel_by = by + 1;
     if (TRACING) traced_fiber("cancel", f, (long long)by);
     if (f->parked && !f->legacy) set_claimed(f, -1, 0, by);
 }
@@ -1498,7 +1552,9 @@ void avra_fiber_within_end(int64_t outer) { within_ended(g_current, outer); }
 // A FORKED CHILD KEEPS THE CALLING TASK ALONE: every other fiber leaves
 // every list it is filed in — a gate lives in memory the child copied,
 // and a waiter left on one would be a task of the parent's the child
-// could ready.
+// could ready. What the heap keeps is the caller's own deadline and the
+// tasks the timer ends: those are the child's memory too, and whoever
+// waits on one in the child is still owed its time.
 void avra_fiber_forked(void) {
 #if AVRA_EPOLL
     if (g_poller >= 0) close(g_poller);
@@ -1510,19 +1566,17 @@ void avra_fiber_forked(void) {
         f->claimed = 0;
         f->parked = 0;
         retract(f);
-        waiter_out(&f->due);
+        if (f != g_current) waiter_out(&f->due);
         if (f != g_current && !f->virtual) fiber_unlisted(f);
         f = after;
     }
     if (g_current != &g_main) {
         g_main.legacy = g_main.claimed = g_main.parked = 0;
         retract(&g_main);
+        waiter_out(&g_main.due);
     }
-    waiter_out(&g_main.due);
     g_ready_head = g_ready_tail = NULL;
-    g_timers_len = 0;
     g_parked_fds = 0;
-    g_turns_since_poll = 0;
     if (g_fds) memset(g_fds, 0, g_fds_cap * sizeof(FdWaits));
 }
 
