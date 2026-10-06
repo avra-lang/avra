@@ -35,8 +35,14 @@ work="$main/tools/work"
 
 cat > "$scratch/sprite" <<'STUB'
 #!/bin/sh
-# sprite -s <name> exec … : answers unless the name is in SILENT.
+# sprite -s <name> exec … : answers unless the name is in SILENT; the
+# provider's own list answers unless OFFLINE is set.
 case " ${SILENT:-} " in *" $2 "*) exit 1 ;; esac
+if [ "$1" = api ]; then
+    [ -z "${OFFLINE:-}" ] || exit 1
+    echo '{"data":[{"name":"A","status":"running"},{"name":"B","status":"warm"}]}'
+    exit 0
+fi
 # The Sprite's half, played from $FAKE: `out` is the run's whole output,
 # `status` its exit status once `ending` attaches have passed; `cut` makes
 # the next attach deliver that many bytes and drop; `lost` makes the
@@ -63,7 +69,8 @@ if [ -n "${FAKE:-}" ]; then
             result)
                 [ ! -f "$FAKE/lost" ] || exit 1
                 n=$(cat "$FAKE/ending" 2>/dev/null || echo 0)
-                if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$FAKE/ending"; echo running; else echo "status $(cat "$FAKE/status")"; fi
+                size=$(wc -c < "$FAKE/out" | tr -d ' ')
+                if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$FAKE/ending"; echo "running $size"; else echo "status $(cat "$FAKE/status") $size"; fi
                 ;;
             stop) echo 143 > "$FAKE/status"; rm -f "$FAKE/hang" ;;
         esac
@@ -227,12 +234,14 @@ printf '#!/bin/sh\necho "$*" >> "$FAKE/rsync"\n' > "$scratch/bin/rsync"
 chmod +x "$scratch/bin/rsync"
 cd "$scratch/avra-after" || exit 1
 (sh "$work" bind A) > /dev/null 2>&1
+# `with VAR=value… -- <args>` is `ran` under those variables, and only it.
+with() { (while [ "$1" != -- ]; do export "$1"; shift; done; shift; ran "$@"); }
 ran() { PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" run "$@" > "$scratch/out" 2> "$scratch/err"; }
 scene() { rm -f "$scratch"/fake/*; printf 'one\ntwo\nthree\n' > "$scratch/fake/out"; echo "$1" > "$scratch/fake/status"; }
 
 scene 7; echo 1 > "$scratch/fake/ending"; echo 6 > "$scratch/fake/cut"
 ran true
-check "$? $(tr '\n' ' ' < "$scratch/out")| $(grep -c 'connection dropped (1 so far' "$scratch/err") $(grep -c '^attach .* 6$' "$scratch/fake/calls")" "7 one two three | 1 1" "work run: a connection dropped mid-run is followed again from its byte: every line once, the command's status" "$scratch/err"
+check "$? $(tr '\n' ' ' < "$scratch/out")| $(grep -c '^work: CONNECTION — dropped (1 so far.*the run goes on, following again from byte 6' "$scratch/err") $(grep -c '^attach .* 6$' "$scratch/fake/calls") $(grep -c '^work: COMMAND — exit 7, on A.*through 1 dropped' "$scratch/err")" "7 one two three | 1 1 1" "work run: a connection dropped mid-run is followed again from its byte: every line once, the command's status, and both said by name" "$scratch/err"
 
 scene 5; echo 0 > "$scratch/fake/cut"
 ran true
@@ -240,7 +249,7 @@ check "$? $(tr '\n' ' ' < "$scratch/out")" "5 one two three " "work run: a conne
 
 scene 124
 ran --for 1 true
-check "$? $(grep -c 'STOPPED: the command passed its bound' "$scratch/err")" "124 1" "work run: a run the Sprite ended at its bound answers 124 and says so" "$scratch/err"
+check "$? $(grep -c '^work: COMMAND — stopped at its bound' "$scratch/err")" "124 1" "work run: a run the Sprite ended at its bound answers 124 and says so" "$scratch/err"
 
 scene 0; echo Other-9 > "$scratch/fake/live"
 ran true
@@ -248,7 +257,27 @@ check "$? $(grep -c 'BUSY — A still runs Other-9.*work attach.*work stop' "$sc
 
 scene 0; echo 9 > "$scratch/fake/ending"; : > "$scratch/fake/lost"; echo 3 > "$scratch/fake/cut"
 ran true
-check "$? $(grep -c 'stopped answering.*the run goes on there.*work attach' "$scratch/err") $(grep -c '^stop' "$scratch/fake/calls")" "75 1 0" "work run: a Sprite that stops answering mid-run is 75, the run left to go on, never stopped" "$scratch/err"
+check "$? $(grep -c '^work: SPRITE — A stopped answering.*lists it as .running.*The run goes on there.*work attach' "$scratch/err") $(grep -c '^stop' "$scratch/fake/calls")" "75 1 0" "work run: a Sprite that stops answering mid-run, the provider still answering, is SPRITE and 75 — the run left to go on, never stopped" "$scratch/err"
+
+scene 0; echo 9 > "$scratch/fake/ending"; : > "$scratch/fake/lost"; echo 3 > "$scratch/fake/cut"
+with OFFLINE=1 -- true
+check "$? $(grep -c '^work: CONNECTION — A stopped answering.*api.sprites.dev.*The run goes on there.*work attach' "$scratch/err") $(grep -c '^stop' "$scratch/fake/calls")" "74 1 0" "work run: with the provider silent too it is CONNECTION and 74 — and the run is still left to go on" "$scratch/err"
+
+scene 0
+with SILENT=A -- true
+check "$? $(grep -c '^work: SPRITE — A did not answer within 3s.*Nothing was started' "$scratch/err") $(cat "$scratch/fake/calls" 2>/dev/null | grep -c '^start')" "75 1 0" "work run: a Sprite that never wakes is SPRITE and 75, and nothing is started" "$scratch/err"
+with SILENT=A OFFLINE=1 -- true
+check "$? $(grep -c '^work: CONNECTION — A did not answer' "$scratch/err")" "74 1" "work run: a Sprite and a provider both silent is CONNECTION and 74" "$scratch/err"
+
+scene 0
+ran true
+check "$? $(grep -c '^work: A — passed' "$scratch/err") $(grep -c 'SPRITE\|CONNECTION\|COMMAND' "$scratch/err")" "0 1 0" "work run: a run that passed names none of the three" "$scratch/err"
+
+# The follow holds every byte the Sprite says the run wrote: a last
+# connection that delivered half is asked again, never trusted.
+scene 0; echo 4 > "$scratch/fake/cut"; echo 0 > "$scratch/fake/ending"
+ran true
+check "$? $(tr '\n' ' ' < "$scratch/out")| $(grep -c '^attach' "$scratch/fake/calls")" "0 one two three | 2" "work run: a run that ended while its last connection delivered half is read to its last byte" "$scratch/err"
 
 scene 0; echo 99 > "$scratch/fake/ending"; : > "$scratch/fake/hang"
 PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" run true > "$scratch/out" 2> "$scratch/err" &
@@ -262,6 +291,22 @@ PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" attach > "$scratch/out
 check "$? $(tr '\n' ' ' < "$scratch/out")| $(grep -c 'following Mine-1 (live)' "$scratch/err")" "3 one two three | 1" "work attach: follows the lane's run from its first byte and answers its status" "$scratch/err"
 PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" stop > "$scratch/out" 2>&1
 check "$(grep -c 'Mine-1 stopped' "$scratch/out") $(grep -c '^stop Mine-1' "$scratch/fake/calls")" "1 1" "work stop: ends the lane's live run by name"
+
+# ══ NOTHING RUNS FOR NOBODY: a lane that moves or ends takes its run with it
+scene 0; echo Mine-2 > "$scratch/fake/live"
+(cd "$scratch/avra-loose" && sh "$work" done) > /dev/null 2>&1
+PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" bind B > "$scratch/out" 2>&1
+check "$? $(holder .) $(grep -c 'A still runs something for this lane' "$scratch/out")" "1 A 1" "work bind <sprite>: a lane whose Sprite still runs its run does not move away from it" "$scratch/out"
+(cd "$main" && FAKE="$scratch/fake" sh "$work" sprites --fix A) > "$scratch/out" 2>&1
+check "$(grep -c 'A is running Mine-2 for lane avra-after — left alone' "$scratch/out") $(grep -c '^stop' "$scratch/fake/calls")" "1 0" "work sprites --fix: a live run on a Sprite its lane holds is left alone, even named" "$scratch/out"
+(cd "$main" && FAKE="$scratch/fake" sh "$work" sprites --fix B) > "$scratch/out" 2>&1
+check "$(grep -c 'B: stopped Mine-2, which no lane owns' "$scratch/out") $(grep -c '^stop Mine-2' "$scratch/fake/calls")" "1 1" "work sprites --fix: a live run on a Sprite no lane holds is nobody's, and is stopped" "$scratch/out"
+: > "$scratch/fake/calls"
+FAKE="$scratch/fake" sh "$work" done > "$scratch/out" 2>&1
+st=$?
+cd "$main" || exit 1
+[ -e "$scratch/avra-after" ] && stands=stands || stands=absent
+check "$st $stands $(grep -c 'Mine-2 stopped' "$scratch/out") $(grep -c '^stop Mine-2' "$scratch/fake/calls")" "0 absent 1 1" "work done: the lane's live run is stopped before its Sprite is freed" "$scratch/out"
 cd "$main" || exit 1
 
 # ══ THE QUEUE: a PR queued with no train is taken out and put back ════
@@ -278,6 +323,97 @@ check "$(grep -c dequeuePullRequest "$GH_LOG")" 0 "work status: one queued a min
 : > "$GH_LOG"
 QUEUED= sh "$work" status > "$scratch/out" 2>&1
 check "$(grep -c dequeuePullRequest "$GH_LOG") $(grep -c '#7  lane-a  open' "$scratch/out")" "0 1" "work status: a PR outside the queue is only shown" "$scratch/out"
+
+# ══ END TO END, THE SPRITE BEING THIS MACHINE: the real follower over the
+# real supervisor, every exec run here — and its connection killed whole
+# when `drop` says after how many seconds. Linux only: the Sprite's half
+# reads /proc and takes its own session.
+if [ "$(uname -s)" = Linux ]; then
+    carrier=${AVRA_RUN:-none}
+    unset AVRA_RUN SILENT OFFLINE FAKE
+    cat > "$scratch/sprite-here" <<'STUB'
+#!/bin/sh
+[ "$1" != api ] || { echo '{"data":[{"name":"L","status":"running"}]}'; exit 0; }
+[ "$3" = exec ] || exit 0
+while [ "$1" != -- ]; do shift; done
+shift
+if [ "${6:-}" = attach ] && [ -f "$E2E/drop" ]; then
+    n=$(cat "$E2E/drop")
+    rm -f "$E2E/drop"
+    setsid "$@" &
+    sleep "$n"
+    kill -KILL "-$!" 2>/dev/null
+    exit 1
+fi
+exec "$@"
+STUB
+    chmod +x "$scratch/sprite-here"
+    export E2E="$scratch/e2e" AVRA_SPRITE_HOME="$scratch/sprite-home" AVRA_SPRITE_CLI="$scratch/sprite-here" AVRA_SPRITES=L AVRA_REATTACH_S=0
+    export PATH="$scratch/bin:$PATH" FAKE="$scratch/fake"
+    mkdir -p "$E2E"
+    : > "$main/.github/ci/packages.txt"
+    git -C "$main" worktree add -q -b e2e "$scratch/avra-e2e" main
+    cd "$scratch/avra-e2e" || exit 1
+    sh "$work" bind > /dev/null 2>&1
+    # The lane's compiler stands already: these runs are about the run.
+    there="$AVRA_SPRITE_HOME/avra-build/avra-e2e/tree/build"
+    mkdir -p "$there"
+    printf '#!/bin/sh\n' > "$there/avra"
+    chmod +x "$there/avra"
+    sh "$work" compiler-hash | tr -d '\n' > "$there/.avra-compiler-hash"
+    # How many processes carry any run's mark but the one carrying these fixtures.
+    marked() {
+        n=0
+        for e in /proc/[0-9]*/environ; do
+            m=$(tr '\0' '\n' 2>/dev/null < "$e" | sed -n 's/^AVRA_RUN=//p' | head -n 1)
+            [ -z "$m" ] || [ "$m" = "$carrier" ] || n=$((n + 1))
+        done
+        echo "$n"
+    }
+    # Up to $1 seconds for every marked process to go.
+    quiet() { i=0; while [ "$i" -lt "$1" ] && [ "$(marked)" != 0 ]; do sleep 1; i=$((i + 1)); done; marked; }
+    lines='i=0; while [ $i -lt 8 ]; do i=$((i + 1)); echo "line $i"; sleep 1; done'
+    want="line 1 line 2 line 3 line 4 line 5 line 6 line 7 line 8 "
+
+    echo 3 > "$E2E/drop"
+    timeout 90 sh "$work" run "$lines; exit 7" > "$scratch/out" 2> "$scratch/err"
+    check "$?|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(grep -c '^work: CONNECTION — dropped (1 so far' "$scratch/err")|$(grep -c '^work: COMMAND — exit 7' "$scratch/err")|$(quiet 10)" "7|$want|1|1|0" \
+        "end to end: a connection killed mid-run is followed again — every line once and in order, the command's own status, no process left" "$scratch/err"
+
+    echo 1 > "$E2E/drop"
+    timeout 90 sh "$work" run 'echo only; exit 5' > "$scratch/out" 2> "$scratch/err"
+    check "$?|$(grep -c '^only$' "$scratch/out")|$(quiet 10)" "5|1|0" "end to end: a connection that dropped after the command ended still delivers its output and its status" "$scratch/err"
+
+    # The follower killed outright: the run goes on, a second run is BUSY, attach has it whole.
+    setsid timeout 90 sh "$work" run "$lines; exit 9" > "$scratch/out" 2> "$scratch/err" &
+    job=$!
+    i=0; while [ "$i" -lt 30 ] && ! grep -q '^line 2' "$scratch/out" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+    kill -KILL "-$job" 2>/dev/null
+    wait "$job" 2>/dev/null
+    sleep 1
+    going=$(marked)
+    timeout 60 sh "$work" run true > "$scratch/out2" 2> "$scratch/busy"
+    busy=$?
+    timeout 90 sh "$work" attach > "$scratch/out" 2> "$scratch/err"
+    check "$?|$([ "$going" -gt 0 ] && echo going)|$busy $(grep -c '^work: BUSY — L still runs' "$scratch/busy")|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(quiet 10)" "9|going|76 1|$want|0" \
+        "end to end: with its follower killed outright the run goes on, a second run is BUSY, and attach has every line and the status" "$scratch/err"
+
+    timeout 90 sh "$work" run 'setsid sleep 4260 & sleep 4261' > "$scratch/out" 2> "$scratch/err" &
+    job=$!
+    i=0; while [ "$i" -lt 30 ] && [ "$(pgrep -fc '^sleep 426[01]$')" != 2 ]; do sleep 1; i=$((i + 1)); done
+    sh "$work" stop > "$scratch/stop" 2>&1
+    wait "$job"
+    check "$?|$(grep -c 'stopped' "$scratch/stop")|$(grep -c '^work: COMMAND — stopped' "$scratch/err")|$(quiet 10)|$(pgrep -fc '^sleep 426[01]$')" "143|1|1|0|0" \
+        "end to end: work stop ends the run, its child in another session too, and the follower answers 143" "$scratch/err"
+    cd "$main" || exit 1
+
+    sh "$here/sprite_remote_test.sh" > "$scratch/remote" 2>&1
+    rs=$?
+    sed 's/^/  /' "$scratch/remote"
+    check "$rs" 0 "the Sprite's half: tools/sprite_remote_test.sh"
+else
+    echo "skip  END TO END and the Sprite's half: they need Linux (/proc, setsid) — \`sh tools/work run sh tools/work_test.sh\` runs them on this lane's Sprite"
+fi
 
 echo "----------------------------------------"
 echo "work_test: $total checks, $failed failed"

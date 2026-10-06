@@ -10,8 +10,9 @@
 #   prune <compilers> <days>      drop old compilers, trees and scratch, detached
 #   start <id> <owner> <build_s> <cmd_s> <tree> <hash> <cmd...>   begin a run; 76 when one stands
 #   attach <id> <offset>          the run's output from that byte on, until it ends or a turn passes
-#   result <id>                   `status <n>`, `running`, or `gone`
+#   result <id>                   `status <n> <bytes>`, `running <bytes>`, or `gone`
 #   stop <run...>                 end each run, however its processes scattered
+#   reap                          end every run whose supervisor is gone
 #
 # A RUN IS ITS ENVIRONMENT MARK: every process a run starts inherits
 # AVRA_RUN=<id>, so a stop finds them all by reading /proc — a child that
@@ -29,6 +30,12 @@
 # past its time bound, and one that takes the machine under its memory
 # floor — a Sprite has no swap, and one out of memory answers nobody —
 # so a run with no client left still ends, and says how.
+#
+# NOTHING A RUN STARTED OUTLIVES ITS SUPERVISOR. Supervisor and keeper
+# watch each other: whichever is killed, the other ends every process
+# carrying the run's mark within seconds and writes its status. Both
+# killed at once, the next `start`, `status` or `reap` finds a run with
+# no supervisor and ends it the same way.
 set -eu
 
 home=${AVRA_SPRITE_HOME:-/home/sprite}
@@ -104,6 +111,7 @@ status() {
     echo "compilers=$(find "$compilers" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | wc -l)"
     echo "trees=$(find "$trees" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
     [ -x "$compilers/$hash/avra" ] && echo "holds=yes" || echo "holds=no"
+    reap
     for o in "$runs"/*/owner; do
         [ -f "$o" ] || continue
         r=$(basename "$(dirname "$o")")
@@ -114,6 +122,12 @@ status() {
 
 provision() {
     llvm=/usr/lib/llvm-22
+    # A home that was moved is a fixture's: the system is not touched.
+    if [ -n "${AVRA_SPRITE_HOME:-}" ]; then
+        mkdir -p "$runs" "$compilers" "$trees"
+        echo "provisioned=yes"
+        return 0
+    fi
     missing=$(lacking "$@")
     if [ -n "$missing" ]; then
         # One installer at a time; apt's own lock would fail the second.
@@ -264,6 +278,26 @@ advance_and_cache() {
     rm -f "$log"
 }
 
+# A run with no status whose supervisor is gone has nobody to end it:
+# what it left is ended here, and it answers 143. Under the runs' lock,
+# so a run being started is never read as one abandoned; a lock held
+# elsewhere is left to its holder.
+reap() {
+    [ -d "$runs" ] || return 0
+    (
+        flock -w 5 6 || exit 0
+        for o in "$runs"/*/owner; do
+            [ -f "$o" ] || continue
+            r=$(basename "$(dirname "$o")")
+            [ ! -f "$runs/$r/status" ] || continue
+            p=$(cat "$runs/$r/pid" 2>/dev/null) || p=
+            [ -n "$p" ] && kill -0 "$p" 2>/dev/null && continue
+            stop_run "$r"
+            hold off "$r"
+        done
+    ) 6> "$runs/.lock"
+}
+
 # ONE RUN ON A SPRITE AT A TIME: a second is refused with 76 and the
 # first's name. The run's supervisor leaves this session before `start`
 # answers, so the caller's connection is nothing to it.
@@ -271,6 +305,7 @@ start() {
     id=$1
     owner=$2 tree=$5
     mkdir -p "$runs"
+    reap
     exec 7> "$runs/.lock"
     flock 7
     for o in "$runs"/*/owner; do
@@ -290,7 +325,10 @@ start() {
     shift 2
     # The supervisor outlives this call, so it runs from the run's own copy.
     printf '%s\n' "$AVRA_REMOTE_SCRIPT" > "$rd/remote.sh"
+    # Held before this call answers: the session that carried it may be the Sprite's last.
+    hold on "$id"
     setsid sh "$rd/remote.sh" supervise "$id" "$@" </dev/null >> "$rd/out" 2>&1 7>&- &
+    echo $! > "$rd/pid"
     echo "started=$id"
 }
 
@@ -305,8 +343,10 @@ supervise() {
     rd=$runs/$id
     echo $$ > "$rd/pid"
     sh "$rd/remote.sh" keeper "$id" $$ "$build_s" "$cmd_s" </dev/null >/dev/null 2>&1 &
+    keeper=$!
     # The keeper's reason, when it ended this run, is the run's status.
     ended() {
+        trap - EXIT TERM
         st=$1
         if [ -f "$rd/stopped" ]; then
             read -r st why < "$rd/stopped"
@@ -318,37 +358,51 @@ supervise() {
     trap 'ended 143' TERM
     trap 'ended $?' EXIT
 
-    export LLVM_PREFIX=/usr/lib/llvm-22 CC=/usr/lib/llvm-22/bin/clang
-    mkdir -p "$remote/build" "$compilers"
-    cd "$remote"
-    t0=$(date +%s)
-    if [ "$chash" = - ]; then
-        compiler=unasked
-    elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
-        compiler=warm
-    elif [ -x "$compilers/$chash/avra" ]; then
-        for f in $(compiler_objs); do
-            b=$(basename "$f")
-            [ -e "$compilers/$chash/$b" ] || continue
-            cp -p "$compilers/$chash/$b" "$f"
-            touch "$f"
-        done
-        touch "$compilers/$chash"
-        printf '%s' "$chash" > build/.avra-compiler-hash
-        compiler=restored
-    else
-        echo "sprite-run: building this tree's compiler" >&2
-        advance_and_cache
-        [ "$store_result" = built ] || exit 70
-        compiler=built
-    fi
-    echo "sprite-run: compiler $compiler in $(($(date +%s) - t0))s" >&2
-    cut -d. -f1 /proc/uptime > "$rd/cmd_at"
-    set +e
-    "$@"
-    status=$?
-    set -e
-    exit "$status"
+    (
+        trap - EXIT TERM
+        export LLVM_PREFIX=/usr/lib/llvm-22 CC=/usr/lib/llvm-22/bin/clang
+        mkdir -p "$remote/build" "$compilers"
+        cd "$remote"
+        t0=$(date +%s)
+        if [ "$chash" = - ]; then
+            compiler=unasked
+        elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
+            compiler=warm
+        elif [ -x "$compilers/$chash/avra" ]; then
+            for f in $(compiler_objs); do
+                b=$(basename "$f")
+                [ -e "$compilers/$chash/$b" ] || continue
+                cp -p "$compilers/$chash/$b" "$f"
+                touch "$f"
+            done
+            touch "$compilers/$chash"
+            printf '%s' "$chash" > build/.avra-compiler-hash
+            compiler=restored
+        else
+            echo "sprite-run: building this tree's compiler" >&2
+            advance_and_cache
+            [ "$store_result" = built ] || exit 70
+            compiler=built
+        fi
+        echo "sprite-run: compiler $compiler in $(($(date +%s) - t0))s" >&2
+        cut -d. -f1 /proc/uptime > "$rd/cmd_at"
+        exec "$@"
+    ) &
+    body=$!
+    # The body is waited for a second at a time, so a keeper that died is
+    # noticed: a run nobody bounds and nobody holds awake is ended.
+    while kill -0 "$body" 2>/dev/null; do
+        if ! kill -0 "$keeper" 2>/dev/null && [ ! -f "$rd/stopped" ]; then
+            echo "143 its keeper died" > "$rd/stopped"
+            stop_run "$id" $$
+            hold off "$id"
+            break
+        fi
+        sleep 1
+    done
+    status=0
+    wait "$body" || status=$?
+    ended "$status"
 }
 
 # The run's output from byte $2 on, as it is written, until the run has
@@ -357,6 +411,10 @@ supervise() {
 attach() {
     rd=$runs/$1
     [ -f "$rd/out" ] || exit 3
+    if [ -f "$rd/status" ]; then
+        tail -c +$(($2 + 1)) "$rd/out"
+        return 0
+    fi
     tail -c +$(($2 + 1)) -f -s 1 "$rd/out" &
     tl=$!
     trap 'kill "$tl" 2>/dev/null' EXIT
@@ -365,14 +423,17 @@ attach() {
         sleep 1
         n=$((n + 1))
     done
+    # The tail reads each second: two, and it has the run's last line.
     [ ! -f "$rd/status" ] || sleep 2
 }
 
+# How a run stands, and how many bytes of output it has written: a
+# follower has the whole of it when it holds that many.
 result() {
     if [ -f "$runs/$1/status" ]; then
-        echo "status $(cat "$runs/$1/status")"
+        echo "status $(cat "$runs/$1/status") $(wc -c < "$runs/$1/out")"
     elif [ -d "$runs/$1" ] && [ -n "$(members "$1")" ]; then
-        echo running
+        echo "running $(wc -c < "$runs/$1/out")"
     else
         echo gone
     fi
@@ -389,7 +450,8 @@ case $verb in
         [ "$(df -P "$home" | awk 'NR == 2 { print $5 + 0 }')" -lt "${AVRA_PRUNE_PCT:-70}" ] || prune 6 2
         status "$hash" "$@"
         ;;
-    stop) for r in "$@"; do stop_run "$r"; done ;;
+    stop) for r in "$@"; do stop_run "$r"; hold off "$r"; done ;;
+    reap) reap ;;
     start) start "$@" ;;
     supervise) supervise "$@" ;;
     attach) attach "$@" ;;

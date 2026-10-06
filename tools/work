@@ -26,13 +26,15 @@
 # command 900 or `--for <minutes>` — and the Sprite itself ends a run at
 # its bound, whoever is or is not following. `run` answers the command's
 # status, or:
-#   75   the Sprite did not answer, or the tree did not sync
+#   75   SPRITE: it did not answer, though the provider does
+#   74   CONNECTION: the provider did not answer from here, or the tree did not sync
 #   76   BUSY: the lane's Sprite already runs something
 #   70   this tree's compiler does not build
 #   124  the command passed its bound      125  the build passed its bound
 #   137  the Sprite ran out of memory      130/143  interrupted, and the run stopped
 # A dropped connection is none of these: the run goes on and is followed
-# again from the byte it stood at.
+# again from the byte it stood at. A failure's last line begins with the
+# one of three that failed — SPRITE, CONNECTION or COMMAND.
 #
 # `test`, `run`, `land`, `wait`, `bind` and `done` run from inside the
 # worktree. Main moves only through GitHub's merge queue, which tests each
@@ -114,6 +116,7 @@ bind_locked() {
     if [ -n "$mine" ]; then
         [ -n "${1:-}" ] && [ "$1" != "$mine" ] || { echo "work: this lane holds $mine"; return 0; }
         ! running_here . || { echo "work: this lane has a run going on $mine — it moves when that ends" >&2; return 1; }
+        case $(last_run "$mine" 10) in *" live") echo "work: $mine still runs something for this lane — \`sh tools/work stop\` ends it, then it moves" >&2; return 1 ;; esac
     fi
     held=$(lanes)
     free=$(for s in ${1:-$(pool)}; do echo "$held" | grep -q "^$s " || printf '%s ' "$s"; done)
@@ -290,13 +293,33 @@ detached() {
 }
 # The lane's live run on its Sprite, else the last one that ended: "<id> <live|ended>".
 last_run() {
-    remote "$1" 30 status 2>/dev/null | sed -n 's/^run=//p' | awk '$2 == "live" { live = $1 " " $2 } { any = $1 " " $2 } END { if (live) print live; else if (any) print any }'
+    remote "$1" "${2:-30}" status 2>/dev/null | sed -n 's/^run=//p' | awk '$2 == "live" { live = $1 " " $2 } { any = $1 " " $2 } END { if (live) print live; else if (any) print any }'
 }
+
+# WHICH OF THE THREE FAILED is said in one line, by its first word: the
+# SPRITE (it does not answer, though the provider does), the CONNECTION
+# (the provider does not answer either — this machine's network or
+# theirs), or the COMMAND (its own status). `blame` asks the provider and
+# sets `who` and `why` for the first two.
+blame() {
+    listed=$(api_state)
+    if [ -n "$listed" ]; then
+        who=SPRITE
+        why="the provider answers and lists it as \`$(echo "$listed" | sed -n "s/^$sprite //p" | grep . || echo absent)\`, yet it answered nothing here — \`sh tools/work sprites --fix $sprite\` repairs it"
+        code=75
+    else
+        who=CONNECTION
+        why="the provider (api.sprites.dev) does not answer from this machine either"
+        code=74
+    fi
+}
+bytes() { wc -c < "$log" | tr -d ' '; }
 
 # Follows run $run_id on $sprite into $log and onto stdout until it has
 # ended, and sets `st` to its status. Each attach is one bounded
 # connection; the Sprite ends its turn before that bound, so a healthy
-# follow never meets it.
+# follow never meets it. THE FOLLOW IS DONE WHEN IT HOLDS EVERY BYTE the
+# Sprite says the run wrote — never after a pause that is hoped long enough.
 follow() {
     : > "$log"
     tail -n +1 -f "$log" &
@@ -321,35 +344,49 @@ follow() {
     ) </dev/null &
     side="$side $!"
     drops=0
+    wrote=
     while :; do
-        remote "$sprite" "${AVRA_ATTACH_BOUND_S:-600}" attach "$run_id" "$(wc -c < "$log" | tr -d ' ')" >> "$log" 2>/dev/null &
+        remote "$sprite" "${AVRA_ATTACH_BOUND_S:-600}" attach "$run_id" "$(bytes)" >> "$log" 2>/dev/null &
         client=$!
         echo "$client" > "$log.client"
         rc=0
         wait "$client" || rc=$?
         client=
         res=$(woken "$sprite" "${AVRA_WAKE_S:-150}" result "$run_id") || {
-            echo "work: $sprite stopped answering, $(since)s in — the run goes on there to its bound; \`sh tools/work attach\` follows it again" >&2
-            exit 75
+            blame
+            echo "work: $who — $sprite stopped answering $(since)s in: $why. The run goes on there to its bound; \`sh tools/work attach\` follows it again" >&2
+            exit "$code"
         }
         case $res in
-            "status "*) st=${res#status }; break ;;
-            running)
+            "status "*)
+                set -- $res
+                st=$2
+                wrote=${3:-}
+                break
+                ;;
+            running*)
                 [ "$rc" = 0 ] || {
                     drops=$((drops + 1))
-                    echo "work: $sprite — the connection dropped ($drops so far, $(since)s in); following again from byte $(wc -c < "$log" | tr -d ' ')" >&2
-                    sleep 2
+                    echo "work: CONNECTION — dropped ($drops so far, $(since)s in); the run goes on, following again from byte $(bytes)" >&2
+                    sleep "${AVRA_REATTACH_S:-2}"
                 }
                 ;;
             *)
-                echo "work: the run is gone from $sprite — the Sprite restarted under it, $(since)s in" >&2
+                echo "work: SPRITE — the run is gone from $sprite, $(since)s in: the Sprite restarted under it" >&2
                 exit 75
                 ;;
         esac
     done
-    # What the last attach left unread.
-    remote "$sprite" 60 attach "$run_id" "$(wc -c < "$log" | tr -d ' ')" >> "$log" 2>/dev/null || :
-    sleep 2
+    # What the last attach left unread, to the run's last byte.
+    for _ in 1 2 3 4 5; do
+        [ -n "$wrote" ] && [ "$(bytes)" -ge "$wrote" ] && break
+        remote "$sprite" 60 attach "$run_id" "$(bytes)" >> "$log" 2>/dev/null || sleep 1
+        [ -n "$wrote" ] || break
+    done
+    [ -z "$wrote" ] || [ "$(bytes)" = "$wrote" ] ||
+        echo "work: CONNECTION — $(bytes) of the run's $wrote bytes of output arrived; \`sh tools/work attach\` prints it whole" >&2
+    # The printer has shown the log's last byte once it has nothing more to read.
+    sleep 1
     kill $side 2>/dev/null || :
     side=
     rm -f "$log.client"
@@ -384,15 +421,16 @@ run() {
     trap 'interrupted 130' INT
     trap 'interrupted 143' TERM
     hash=$(compiler_hash "$tree")
-    remote_tree=/home/sprite/avra-build/$slug/tree
+    remote_tree=${AVRA_SPRITE_HOME:-/home/sprite}/avra-build/$slug/tree
     wake_s=${AVRA_WAKE_S:-150}
     echo "work: $sprite — waking" >&2
     info=$(woken "$sprite" "$wake_s" ready "$hash" $ci_packages) || {
-        echo "work: $sprite did not answer within ${wake_s}s — \`work sprites\` shows the pool" >&2
-        exit 75
+        blame
+        echo "work: $who — $sprite did not answer within ${wake_s}s: $why. Nothing was started" >&2
+        exit "$code"
     }
     lacks=$(printf '%s\n' "$info" | sed -n 's/^unprovisioned=//p')
-    [ -z "$lacks" ] || { echo "work: $sprite could not install: $lacks" >&2; exit 75; }
+    [ -z "$lacks" ] || { echo "work: SPRITE — $sprite could not install: $lacks. Nothing was started; \`sh tools/work sprites --fix $sprite\` repairs it" >&2; exit 75; }
     # A run that stands is never synced under.
     live=$(printf '%s\n' "$info" | sed -n 's/^run=//p' | awk '$2 == "live" { print $1 }' | head -n 1)
     busy() {
@@ -414,7 +452,15 @@ run() {
         echo "work: $sprite — the sync failed, again" >&2
         sleep 2
     done
-    [ -n "$synced" ] || { echo "work: the tree did not sync to $sprite" >&2; exit 75; }
+    [ -n "$synced" ] || {
+        if sx "$sprite" 20 true >/dev/null 2>&1; then
+            echo "work: CONNECTION — the tree did not sync to $sprite in three tries, though the Sprite answers. Nothing was started" >&2
+            exit 74
+        fi
+        blame
+        echo "work: $who — $sprite went silent during the sync: $why. Nothing was started" >&2
+        exit "$code"
+    }
     if printf '%s\n' "$info" | grep -q '^holds=no' && ! sx "$sprite" 20 test -x "$remote_tree/build/avra" 2>/dev/null; then
         seed "$sprite" "$remote_tree" "$tree" "$hash"
     fi
@@ -433,7 +479,11 @@ run() {
         res=$(woken "$sprite" 60 result "$id") || break
         [ "$res" = gone ] || { begun=1; break; }
     done
-    [ -n "$begun" ] || { echo "work: $sprite did not start the run" >&2; exit 75; }
+    [ -n "$begun" ] || {
+        blame
+        echo "work: $who — $sprite did not start the run: $why" >&2
+        exit "$code"
+    }
     run_id=$id
     log=$gitdir/avra-run.log
     st=0
@@ -442,17 +492,18 @@ run() {
     return "$st"
 }
 report() {
+    through=
+    [ "${drops:-0}" = 0 ] || through=", through $drops dropped connection(s)"
     case $st in
-        0) what="passed" ;;
+        0) echo "work: $sprite — passed, $(since)s$through" >&2; return 0 ;;
         70) what="this tree's compiler does not build" ;;
-        124) what="STOPPED: the command passed its bound (\`run --for <minutes>\` raises it)" ;;
-        125) what="STOPPED: the compiler build passed its bound" ;;
-        137) what="STOPPED: the Sprite ran out of memory" ;;
+        124) what="stopped at its bound (\`run --for <minutes>\` raises it)" ;;
+        125) what="the compiler build was stopped at its bound" ;;
+        137) what="stopped: it took the Sprite under its memory floor" ;;
         143) what="stopped" ;;
         *) what="exit $st" ;;
     esac
-    [ "${drops:-0}" = 0 ] || what="$what, through $drops dropped connection(s)"
-    echo "work: $sprite — $what, $(since)s" >&2
+    echo "work: COMMAND — $what, on $sprite, $(since)s$through" >&2
 }
 
 # Follows this lane's run again — the live one, else the last that ended —
@@ -461,7 +512,11 @@ attach() {
     inside
     sprite=$(bound)
     [ -n "$sprite" ] || die "this worktree holds no Sprite — \`sh tools/work bind\`"
-    woken "$sprite" "${AVRA_WAKE_S:-150}" result - >/dev/null || { echo "work: $sprite did not answer — \`work sprites\` shows the pool" >&2; exit 75; }
+    woken "$sprite" "${AVRA_WAKE_S:-150}" result - >/dev/null || {
+        blame
+        echo "work: $who — $sprite did not answer: $why" >&2
+        exit "$code"
+    }
     found=$(last_run "$sprite")
     [ -n "$found" ] || { echo "work: nothing has run on $sprite for this lane to follow" >&2; exit 1; }
     log=$(mktemp "${TMPDIR:-/tmp}/avra-attach.XXXXXX")
@@ -555,9 +610,13 @@ fix() {
                 echo "fix: $s answers nobody${said:+ ($said)} — \`sh tools/work sprites --fix $s\` replaces it; only its caches are lost"
                 exit 0
             fi
-            if printf '%s\n' "$info" | grep -q '^run=[^ ]* live '; then
-                echo "fix: $s is running something — left alone"
+            live=$(printf '%s\n' "$info" | sed -n 's/^run=\([^ ]*\) live .*/\1/p' | tr '\n' ' ')
+            if [ -n "$live" ] && [ -n "$wt" ]; then
+                echo "fix: $s is running ${live% } for lane ${wt##*/} — left alone; \`sh tools/work stop\` there ends it"
                 exit 0
+            elif [ -n "$live" ]; then
+                # A run on a Sprite no lane holds is nobody's.
+                remote "$s" 60 stop $live >/dev/null 2>&1 && said="${said:+$said; }stopped ${live% }, which no lane owns"
             fi
             if unwell "$info"; then
                 echo "fix: $s is NOT right${said:+ ($said)}: $(printf '%s\n' "$info" | grep '^unprovisioned=\|^home=' | tr '\n' ' ')"
@@ -618,6 +677,14 @@ done_() {
     main=$(main_tree)
     [ "$wt" != "$main" ] || die "this is the main checkout"
     s=$(bound)
+    # The lane's run ends with the lane: nothing is left running for nobody.
+    if [ -n "$s" ]; then
+        found=$(last_run "$s") || found=
+        case $found in
+            *" live") remote "$s" 60 stop "${found% *}" >/dev/null 2>&1 && echo "work: $s — ${found% *} stopped" ||
+                die "$s did not confirm that ${found% *} stopped — the lane stays; \`sh tools/work stop\`, then done again" ;;
+        esac
+    fi
     rm -f "$(binding)"
     [ -z "$s" ] || echo "work: $s is free"
     cd "$main"
@@ -799,6 +866,7 @@ case "${1:-}" in
     done) done_ ;;
     command) shift; assemble "$@"; echo ;;
     seed) shift; seed "$@" ;;
+    compiler-hash) compiler_hash "${2:-$PWD}" ;;
     libs-step) printf '%s\n' "$libs_step" ;;
     land) land ;;
     status) status ;;
