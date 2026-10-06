@@ -271,7 +271,11 @@ impl Server {
     /// No more connections accepted: the listener closes, every core
     /// is told to stop, every connection parked reading wakes to the
     /// drain, and `run` answers once each has answered what it was
-    /// asked — within `drain` of the first stop.
+    /// asked — within `drain` of the first stop. A task parked on an
+    /// HTTP/2 connection's bell — its own turn, or a handler reading a
+    /// body — is ROUSED, never failed: it finds the drain asked and goes
+    /// on under what the drain has left, so a body mid-flight is served
+    /// through the drain and cut at its end.
     fn stop() {
         if !self.drain.asked.get() { self.drain.ends.set(now_ms() + self.timing.drain.ms) }
         self.drain.asked.set(true)
@@ -662,8 +666,9 @@ impl Drain {
         self.reading.set_at(fd, now)
     }
 
-    /// A bell a task is about to park on, filed for a stop to rouse:
-    /// the place it was filed at, a free one taken first.
+    /// A connection's bell, filed for its life so a stop rouses whoever
+    /// is parked on it: the place it was filed at, a free one taken
+    /// first.
     fn filed(b: Bell) -> int {
         let free = self.bells.get().find_index(it == null) ?? self.bells.get().length
         if free == self.bells.get().length { self.bells.push(null) }
@@ -671,7 +676,7 @@ impl Drain {
         free
     }
 
-    /// The bell filed at `place` is parked on no longer.
+    /// The connection whose bell is filed at `place` has ended.
     fn unfiled(place: int) { self.bells.set_at(place, null) }
 }
 
@@ -732,6 +737,7 @@ impl Serving {
         let inbox = Cell.new(Inbox { got: l.buf, closed: false, failed: null })
         l.buf = no_bytes
         let reader = spawn read_beside(l.conn, inbox, b)
+        let place = self.drain.filed(b)
         mut t = Talk {
             h: h2_server(self.limits),
             lines: [],
@@ -746,6 +752,7 @@ impl Serving {
         cut_lines(t.lines, b)
         let _ = l.conn.wire_unheard()
         let _ = reader.await
+        self.drain.unfiled(place)
         if parting { self.parted(l) } else { self.dropped(l) }
     }
 
@@ -841,15 +848,12 @@ impl Serving {
         if waiting && now_ms() - t.moved > self.timing.idle.ms && !t.h.closing { t.h.ended() }
     }
 
-    /// This task parked on the bell until something moves, filed with
-    /// the drain so a stop wakes it. Whether the peer is still within
-    /// its deadline — never once a stop's drain has run out.
+    /// This task parked on the connection's bell until something moves.
+    /// Whether the peer is still within its deadline — never once a
+    /// stop's drain has run out.
     fn waited_on(t: Talk, b: Bell, seen: int) -> bool {
         if self.drain.asked.get() && !self.drain.running() { return false }
-        let place = self.drain.filed(b)
-        let kept = self.bell_waited(t, b, seen)
-        self.drain.unfiled(place)
-        kept
+        self.bell_waited(t, b, seen)
     }
 
     /// The wait itself — not at all when the bell rang after it had rung

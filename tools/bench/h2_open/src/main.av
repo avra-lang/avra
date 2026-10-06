@@ -13,7 +13,7 @@ use @std.http.frame.{limits}
 use @std.http.http.{text}
 use @std.http.server.{Timing, served}
 use @std.http.hpack.{header_field, encoder}
-use @std.http.h2.{frame_bytes, preface, end_headers, end_stream}
+use @std.http.h2.{frame_bytes, preface, end_headers, end_stream, u32_bytes}
 
 type App = { hits: Cell<int> }
 
@@ -45,10 +45,16 @@ fn asked(c: Conn, id: int, block: Bytes) -> Result<int, NetError> {
     .Ok(got.length)
 }
 
-/// A connection that has said the preface and nothing more.
+/// A connection that has said the preface, opened its window wide as
+/// a browser does, and nothing more.
 fn opened(port: int) -> Result<Conn, NetError> {
     let c = connect("127.0.0.1", port, secs(2))?
-    c.write(preface.concat(frame_bytes(.Settings, 0, 0, "".bytes())))?
+    c
+        .write(
+            preface
+                .concat(frame_bytes(.Settings, 0, 0, "".bytes()))
+                .concat(frame_bytes(.WindowUpdate, 0, 0, u32_bytes(2147483647 - 65535))),
+        )?
     .Ok(c)
 }
 
@@ -78,7 +84,14 @@ fn run() -> Result<string, NetError> {
     let _ = asked(hot, 1, opening)?
     let t0 = now_ns()
     mut back = 0
-    for i in 0..n { back = back + asked(hot, 2 * i + 3, block)? }
+    for i in 0..n {
+        match asked(hot, 2 * i + 3, block) {
+            .Ok(octets) -> { back = back + octets },
+            .Err(e) -> { return .Ok(
+                    "h2_open ${idle} idle: stream ${i} of ${n} failed — ${e.describe().message}",
+                ) },
+        }
+    }
     let each = (now_ns() - t0) / n
     .Ok(
         "h2_open ${idle} idle: ${each} ns a request (${back / n} octets back), ${s.connections()} open, ${held.length} held",

@@ -936,9 +936,10 @@ const six_to_four_v6: Block = Block { net: v6_words("2002:0:0:0:0:0:0:0")!, bits
 ///
 /// It is a gate: no descriptor, nothing a fork inherits, and a ring
 /// with nobody parked costs a load and a test. Every copy is the same
-/// bell. `heard` is the descriptor it has — none.
+/// bell. A wait with no budget holds the scheduler to nothing: when
+/// every task of a process waits so and no time or descriptor is
+/// filed, nobody can ring, and the process traps as deadlocked.
 export type Bell = {
-    heard: Cell<int> = Cell.new(-1),
     gate: Cell<List<int>> = Cell.new(avra_gate_new()),
     waiting: Cell<int> = Cell.new(0),
     count: Cell<int> = Cell.new(0),
@@ -965,7 +966,7 @@ impl Bell {
     /// null is none of its own, a negative one is spent — or the
     /// deadline of a `within` around it; the last two fail the wait
     /// `timed_out()`, as every parking verb here does. A ring answers
-    /// the descriptor the bell has: -1.
+    /// -1: a bell has no descriptor.
     fn waited(timeout: Duration?) -> Result<int, NetError> {
         let budget = timeout?.ms
         if spent(budget) { return timed_out("wait", "a bell") }
