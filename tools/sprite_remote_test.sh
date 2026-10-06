@@ -15,9 +15,10 @@ script=$(cat "$here/sprite-remote.sh")
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/avra-remote-test.XXXXXX")
 export AVRA_SPRITE_HOME="$scratch/home"
 mkdir -p "$scratch/tree"
-trap 'rm -rf "$scratch"' EXIT
 # The fixtures' own runs are not the lane's run that carries them.
 unset AVRA_RUN
+# No attach here follows a run longer than this: one that should have ended and did not is a FAIL, never a wait.
+export AVRA_ATTACH_S=30
 
 total=0
 failed=0
@@ -37,13 +38,28 @@ left() {
 }
 # A run's state without its byte count.
 res() { remote result "$1" | awk '{ print ($1 == "status") ? $1 " " $2 : $1 }'; }
-# Waits up to $2 seconds for the run to answer, then up to ten more for its last process to go.
+# Waits up to $2 seconds for the run to answer, then up to ten more for
+# its last process to go. A run still going then is ended here and said
+# so: the case that waited for it fails on the status, and the next case
+# starts on a free Sprite.
 settled() {
     i=0
     while [ "$i" -lt "$2" ] && [ "$(res "$1")" = running ]; do sleep 1; i=$((i + 1)); done
+    if [ "$(res "$1")" = running ]; then
+        echo "      | $1 was still running after ${2}s — ended by the fixture"
+        remote stop "$1"
+    fi
     i=0
     while [ "$i" -lt 10 ] && [ "$(left "$1")" != 0 ]; do sleep 1; i=$((i + 1)); done
 }
+# Nothing a fixture started outlives the fixtures, pass or fail.
+swept() {
+    for d in "$AVRA_SPRITE_HOME"/avra-runs/*/; do
+        [ -d "$d" ] && remote stop "$(basename "$d")" 2>/dev/null
+    done
+    rm -rf "$scratch"
+}
+trap swept EXIT
 pid_of() { cat "$AVRA_SPRITE_HOME/avra-runs/$1/pid"; }
 # The run's keeper: the supervisor's child that is the script's `keeper`.
 keeper_of() { pgrep -P "$(pid_of "$1")" -f "remote.sh keeper $1 " | head -n 1; }
