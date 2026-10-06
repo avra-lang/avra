@@ -309,13 +309,23 @@ spec "compiler/world" {
         }
     }
     given "a workspace whose package graph moved" {
+        then "it is let go on the spot: its rows are closed before any replacement is asked for" {
+            let w = library()
+            let _ = w.ws.manifest(0)
+            let open_before = !w.ws.decls.rows_db.get().closed.get()
+            w.files.set({})
+            open_before &&
+                graph_moved(w) &&
+                w.ws.decls.rows_db.get().closed.get() &&
+                w.ws.let_go.get()
+        }
         then "asked for the world again, it is refused, naming its replacement" {
             let w = library()
             let _ = w.ws.manifest(0)
             w.files.set({})
             let _ = graph_moved(w)
             match w.ws.world_moved() {
-                .Err(why) -> why.contains("package graph moved") && why.contains("regraphed"),
+                .Err(why) -> why.contains("was let go") && why.contains("regraphed"),
                 .Ok(.Graph) or .Ok(.Reread(_)) -> false,
             }
         }
@@ -325,7 +335,7 @@ spec "compiler/world" {
             w.files.set({})
             let _ = graph_moved(w)
             match w.ws.inputs_now() {
-                .Err(why) -> why.contains("package graph moved"),
+                .Err(why) -> why.contains("was let go"),
                 .Ok(.Graph) or .Ok(.Inputs(_)) -> false,
             }
         }

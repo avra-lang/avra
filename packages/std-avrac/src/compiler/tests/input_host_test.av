@@ -166,6 +166,20 @@ spec "compiler/input_host" {
             ws.source(ws.file_id("/w/src/main.av")).text == "let a = 1\na\n"
         }
     }
+    given "a source that turns unreadable in a workspace that lives on" {
+        then "read again, it is handed to the host to refuse — never analysed as an empty file in silence" {
+            let died: Cell<List<string>> = Cell.new([])
+            let turned = Cell.new(false)
+            let ws = unreadable("1\n", died, turned)
+            let f = ws.file_id("/w/src/main.av")
+            let before = ws.source(f).text
+            turned.set(true)
+            let unasked = died.get().is_empty()
+            let _ = ws.world_moved()
+            let _ = ws.source(f)
+            before == "1\n" && unasked && died.get().contains("/w/src/main.av")
+        }
+    }
     given "a proof's after-program, over one file overlaid with new text" {
         then "it reads the overlaid text where the original reads its own" {
             let ws = new_workspace(host_of({"/w/src/main.av": "1\n"}), "/w", avra())

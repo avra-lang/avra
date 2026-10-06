@@ -329,11 +329,11 @@ export type Workspace = {
     // `input_names` is its Input cell's key, `input_index` finds it
     input_index: Cell<Map<string, int>>,
     input_names: Cell<List<InputName>>,
-    // the Text cells that are manifests', and whether the file set or
-    // a manifest has moved since: the graph is then no longer this
-    // workspace's to answer
+    // the Text cells that are manifests' — the one text the package
+    // graph is shaped by
     manifest_texts: Cell<List<int>>,
-    graph_moved: Cell<bool>,
+    // whether this workspace was let go: it answers nothing after
+    let_go: Cell<bool>,
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
     host: Host,
@@ -652,7 +652,7 @@ fn built(
         input_index: map_cell(),
         input_names: list_cell(),
         manifest_texts: list_cell(),
-        graph_moved: Cell.new(false),
+        let_go: Cell.new(false),
     }
     // The registration IS `Family`'s declaration order: `Family.all()`
     // answers the variants in ordinal order, so `db.family`'s minted index
@@ -709,6 +709,7 @@ impl Workspace {
     /// family's table through this one door instead. The ordinal is
     /// `Family`'s own declaration place, so it always names a slot.
     fn relation(fam: Family) -> Relation<DbRow> {
+        if self.let_go.get() { avra_trap(asked_after_let_go()) }
         self.db.relation(fam.ordinal)
     }
 
@@ -732,11 +733,13 @@ impl Workspace {
     /// captures it — so what it read is freed here and the rest dies with its
     /// last holder, never standing beside the derivation that follows. A
     /// derivation made in it must be let go by its holder too: its program
-    /// and its bodies are that value's own.
+    /// and its bodies are that value's own. Asked for any family after,
+    /// it refuses.
     fn discarded() {
         for f in Family.all() { self.relation(f).evict() }
         self.db.disarm()
         self.decls.let_go()
+        self.let_go.set(true)
     }
 
     fn ensured(d: DeclId) {

@@ -48,6 +48,9 @@ fn names_the_set(k: InputKind) -> bool {
     }
 }
 
+/// The name a file's text is asked by.
+fn text_named(path: string) -> InputName { InputName { kind: .Text, key: path } }
+
 fn loaded(seen: Read) -> Loaded<DbRow> {
     Loaded { value: DbRow.Input(seen), fingerprint: seen.input().digest.word }
 }
@@ -77,20 +80,21 @@ impl Workspace {
     /// Whether a directory stands at `dir`.
     fn is_dir(dir: string) -> bool { self.listing(dir) != null }
 
-    /// A LISTED file's text, through its cell. Nothing there is the
-    /// host's to refuse; under a host that refuses nothing it reads as
-    /// no text.
+    /// A LISTED file's text, through its cell. No text there — nothing
+    /// stands, or the host will not give it — is the host's to refuse,
+    /// on the first read and on every read after: it is never an empty
+    /// file passed on in silence. Under a host that refuses nothing it
+    /// reads as no text.
     fn listed_text(path: string) -> string {
-        read_of(
-            self
-                .relation(Family.Input)
-                .input_loaded(self.text_key(path), () -> loaded(self.host.listed_text(path))),
-        )
-            .as_text() ?? ""
+        let text? = self.input(text_named(path)).as_text() else {
+            (self.host.refused)(path)
+            return ""
+        }
+        text
     }
 
     /// The cell key of a file's text.
-    fn text_key(path: string) -> int { self.world_key(InputName { kind: .Text, key: path }) }
+    fn text_key(path: string) -> int { self.world_key(text_named(path)) }
 
     /// A name's cell key, minted the first time it is asked.
     fn world_key(name: InputName) -> int {
@@ -125,11 +129,11 @@ impl Workspace {
     /// on.
     export fn world_moved() -> Result<Moved, string> {
         if !self.db.kernel.asker.open.get().is_empty() { fail world_moved_in_query() }
-        if self.graph_moved.get() { fail asked_after_graph() }
+        if self.let_go.get() { fail asked_after_let_go() }
         let names = self.input_names.get()
         if [at for at, name in names if self.input_reread(at, name)]
             .any((at) -> self.shapes_graph(at)) {
-            self.graph_moved.set(true)
+            self.discarded()
             return .Ok(Moved.Graph)
         }
         .Ok(Moved.Reread(names.length))
@@ -169,7 +173,7 @@ impl Workspace {
     /// then the same program opened with nothing remembered. Never two
     /// standing at once.
     export fn regraphed() -> Workspace {
-        self.discarded()
+        if !self.let_go.get() { self.discarded() }
         self.anew()
     }
 
@@ -203,8 +207,8 @@ export fn inputs_this_turn(held: Cell<Workspace>) -> Result<List<string>, string
     }
 }
 
-fn asked_after_graph() -> string {
-    "this workspace's package graph moved — it answers nothing more; open another (`regraphed`)"
+fn asked_after_let_go() -> string {
+    "this workspace was let go — it answers nothing more; open another (`regraphed`)"
 }
 
 fn world_moved_in_query() -> string {
