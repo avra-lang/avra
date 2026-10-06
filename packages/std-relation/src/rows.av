@@ -148,6 +148,7 @@ export type Rows<R> = {
     indexes: List<Index>,
     buckets: Cell<List<Bucket>>,
     family: Cell<int>,
+    seat: Cell<int>,
     read: ReadMark,
 }
 
@@ -175,6 +176,7 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
         indexes: [empty_index(o) for o in ordered],
         buckets: buckets,
         family: Cell.new(-1),
+        seat: Cell.new(-1),
         read: unread(),
     }
 }
@@ -269,7 +271,7 @@ impl Rows<R> {
     /// refused while one is, naming the owner.
     fn settled_for(db: Db) {
         if db.idle() { return }
-        let owner? = db.writing(self.family.get()) else { return }
+        let owner? = db.writing(self.seat.get()) else { return }
         db.refuse(read_mid_run(self.name, db.owner_name(owner)))
     }
 
@@ -340,7 +342,7 @@ impl Rows<R> {
         let held = self.row(id) != null
         let was = if id < self.next_id() { self.stamps.get()[id].owner } else { 0 }
         if held && was != stamp.owner { db.refuse(two_owners(relation, id)) }
-        db.wrote(self.family.get())
+        db.wrote(self.seat.get())
         self.put(id, row, hash, keys)
         self.stamps.set_at(id, stamp)
         if stamp.owner != 0 && (!held || was != stamp.owner) { self.stamped_by(stamp.owner).push(id) }
@@ -607,7 +609,7 @@ impl SideRows<R> {
             )
         self.family.set(fam)
         let closed = self.closed
-        db
+        let _ = db
             .joined(() -> verify(0), () -> closed.set(true), (on: Db, owner: int, run: int) -> no_sweep())
         fam
     }
