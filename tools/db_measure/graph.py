@@ -11,6 +11,8 @@ Reads the lines a compiler writes under AVRA_DB_GRAPH=1 (query/kernel.av):
     C <kernel> <reads per family ...>        recorded reads so far, repeats included
 
     python3 tools/db_measure/graph.py <graph file> <families.av> [--top N]
+    python3 tools/db_measure/graph.py --m1 <graph file> <families.av>      M1's table alone
+    python3 tools/db_measure/graph.py --qtrace <trace file> <families.av>  AVRA_QTRACE's asks per family
 
 M1 is the table per family. M2 simulates "a query keyed by a durable name is
 saved; one keyed by a local id belongs to the saved answer that reads it": each
@@ -119,6 +121,8 @@ def m1(k, table):
         row = (cells[f], k.settles[f], len(k.inputs[f]), out[f], k.pushed[f], into[f], len(targets[f]), reads)
         for i, v in enumerate(row):
             total[i] += v
+        if not any(row):
+            continue
         print("%-4d %-14s %-11s %9d %9d %8d %11d %11d %11d %10d %12d" % ((f, label_of(table, f), key_of(table, f)) + row))
     print("%-4s %-14s %-11s %9d %9d %8d %11d %11d %11d %10d %12d" % (
         ("", "TOTAL", "") + tuple(total[i] for i in range(8))))
@@ -224,9 +228,42 @@ def m2(k, table, variant, top):
             "%s %d" % (label_of(table, f), n) for f, n in sorted(lost.items(), key=lambda p: -p[1])[:top]))
 
 
+def qtrace(path, table):
+    """AVRA_QTRACE's asks by outcome and settles, per family, and the files parsed."""
+    asks = defaultdict(lambda: defaultdict(int))
+    settles = defaultdict(int)
+    parsed = 0
+    with open(path, encoding="utf-8", errors="replace") as lines:
+        for line in lines:
+            part = line.rstrip("\n").split("\t")
+            if part[0] != "Q" or len(part) < 3:
+                continue
+            if part[1] == "ask" and len(part) >= 5:
+                asks[int(part[2])][part[4]] += 1
+            elif part[1] == "settle":
+                settles[int(part[2])] += 1
+            elif part[1] == "parse":
+                parsed += 1
+    print("%-14s %9s %9s %7s %9s" % ("family", "reuse", "compute", "cycle", "settle"))
+    total = defaultdict(int)
+    for f in sorted(set(asks) | set(settles)):
+        row = (asks[f]["reuse"], asks[f]["compute"], asks[f]["cycle"], settles[f])
+        for i, v in enumerate(row):
+            total[i] += v
+        print("%-14s %9d %9d %7d %9d" % ((label_of(table, f),) + row))
+    print("%-14s %9d %9d %7d %9d" % (("TOTAL",) + tuple(total[i] for i in range(4))))
+    print("files parsed: %d" % parsed)
+
+
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
+    if sys.argv[1] == "--qtrace":
+        qtrace(sys.argv[2], family_table(sys.argv[3]))
+        return
+    only_m1 = sys.argv[1] == "--m1"
+    if only_m1:
+        del sys.argv[1]
     top = int(sys.argv[sys.argv.index("--top") + 1]) if "--top" in sys.argv else 12
     table = family_table(sys.argv[2])
     kernels = read_graph(sys.argv[1])
@@ -237,6 +274,8 @@ def main():
             continue
         print("\n==== kernel #%s: M1, the graph as settled ====" % i)
         m1(k, table)
+        if only_m1:
+            continue
         for variant in ("A", "A+", "file"):
             m2(k, table, variant, top)
 
