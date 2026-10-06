@@ -1,10 +1,10 @@
 // proves: a `@query` keeps its answer per call and reruns only after a
-// write; the rows a run inserts are its own — a keyed rerun upserts, a
+// write to what it read; the rows a run inserts are its own — a keyed rerun upserts, a
 // keyless one replaces, two owners of one key are refused, a query
 // reading a relation it writes is refused, and `prior` reads the last
 // run's rows — in both engines
 use @std.relation.{relation, query}
-use @std.relation.db.{Db, hooked_db, Hooks}
+use @std.relation.db.{Db, new_db}
 
 @relation
 type Input = { @key name: string, live: bool }
@@ -19,36 +19,16 @@ once fn runs() -> Cell<int> { Cell.new(0) }
 
 once fn heard() -> Cell<List<string>> { Cell.new([]) }
 
-once fn families() -> Cell<int> { Cell.new(0) }
-
-fn next_family() -> int {
-    let f = families().get()
-    families().set(f + 1)
-    f
-}
-
 fn noted(w: string) {
     let h = heard()
     h.push(w)
 }
 
-fn none() {}
-
 /// A Db whose refusals are heard, never trapped.
 fn logged() -> Db {
-    hooked_db(
-        Hooks {
-            family: (_v: fn(int) -> int) -> next_family(),
-            record: (_f: int, _c: int) -> 0,
-            revision: () -> -1,
-            reader: (_t: int) -> "a read",
-            refused: noted,
-            opened: (_f: int, _c: int) -> -1,
-            settled: (_f: int, _c: int) -> none(),
-            running: () -> 0 - 1,
-            moved: (_f: int, _c: int, late: bool) -> !late,
-        },
-    )
+    let db = new_db()
+    db.heard_by(noted)
+    db
 }
 
 /// Every input name as an owned row, and a loose tag each.
@@ -78,9 +58,10 @@ fn looping(db: Db) -> int {
     Loose.all(db).length
 }
 
-/// Grows by one past what its last run left.
+/// Grows by one past what its last run left, each time an input moves.
 @query
 fn grow(db: Db) -> int {
+    let _ = Input.all(db)
     let before = Owned.prior(db).length
     for i in 0..before + 1 {
         let _ = Owned.insert(db, name: "g${i}", n: i)

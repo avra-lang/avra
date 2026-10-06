@@ -543,9 +543,10 @@ impl Held<V> {
     }
 
     /// `ran`, for an answer that reads back: a call this process never
-    /// answered takes the owner's record when it has one, and a first
-    /// run that wrote no rows hands its answer over — a record read back
-    /// brings no rows with it.
+    /// answered takes the owner's record when it has one, and its first
+    /// run here hands its answer over when it wrote no rows — a record
+    /// read back brings no rows with it. A call answered here and gone
+    /// stale was moved in this process, which no record saw: it runs.
     fn ran_lasting(
         db: Db,
         arg: int,
@@ -554,6 +555,7 @@ impl Held<V> {
         digest: fn(V) -> int,
         record: Record<V>,
     ) -> V {
+        if self.answered(arg) { return self.ran(db, arg, body, again, digest) }
         let restored? = self.restored(db, record) else {
             let done = self.run(db, arg, body, again, digest)
             if !done.wrote {
@@ -564,6 +566,11 @@ impl Held<V> {
         }
         self.again.keep(arg, again)
         self.memo.finish_lazy(arg, restored, digest)
+    }
+
+    /// Whether this process ever answered the call.
+    fn answered(arg: int) -> bool {
+        match self.again.entry(arg) { .Present(_) -> true, .Missing -> false }
     }
 
     /// The owner's record for a call, read back — one that does not read
