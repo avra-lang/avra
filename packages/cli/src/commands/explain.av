@@ -79,9 +79,14 @@ export fn explain_answer(a: Asked) -> Lines {
     }
     if a.stats && a.why { return .Err([stats_or_why()]) }
     if a.time && !a.stats { return .Err([time_wants_stats()]) }
-    match aim.subject {
-        .Package -> if a.stats || a.why { package_answer(a, aim.root) } else { .Err([needs_target()]) },
-        .File(_) or .Decl(_) or .Query(_) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { subject_answer(a, aim) },
+    let ws = root_workspace(aim.root)
+    let subject = match placed("explain", a.target, aim.subject, ws) {
+        .Ok(subject) -> subject,
+        .Err(why) -> { return .Err([why]) },
+    }
+    match subject {
+        .Package -> if a.stats || a.why { package_answer(a, ws) } else { .Err([needs_target()]) },
+        .File(_) or .Decl(_) or .Query(_) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { subject_answer(a, subject, ws) },
     }
 }
 
@@ -107,8 +112,7 @@ fn answers_named(g: Workspace, subject: Subject) -> Result<List<Key>, List<strin
 
 // ── the package: `--stats`, `--why` ──
 
-fn package_answer(a: Asked, root: string) -> Lines {
-    let ws = root_workspace(root)
+fn package_answer(a: Asked, ws: Workspace) -> Lines {
     if a.stats { return stats_answer(a, ws.walk_graph()) }
     let walk = walk_of(ws)?
     if a.json { return [to_text(holds_json(walk))] }
@@ -196,26 +200,25 @@ fn table_row(cells: List<string>, widths: List<int>) -> string {
 /// from it to each moved input.
 type Shown = { said: Explained, trails: List<Trail>? }
 
-fn subject_answer(a: Asked, aim: Aim) -> Lines {
-    let ws = root_workspace(aim.root)
-    if a.why { why_subject(a, aim, ws, walk_of(ws)?) } else { plain_subject(a, aim, ws) }
+fn subject_answer(a: Asked, subject: Subject, ws: Workspace) -> Lines {
+    if a.why { why_subject(a, subject, ws, walk_of(ws)?) } else { plain_subject(a, subject, ws) }
 }
 
 /// A subject's answers, each with what it read and who reads it.
-fn plain_subject(a: Asked, aim: Aim, ws: Workspace) -> Lines {
+fn plain_subject(a: Asked, subject: Subject, ws: Workspace) -> Lines {
     let g = ws.walk_graph().ws
-    let answers = [Shown { said: e, trails: null } for e in g.explained_all(answers_named(g, aim.subject)?)]
+    let answers = [Shown { said: e, trails: null } for e in g.explained_all(answers_named(g, subject)?)]
     if a.json { return [to_text(page_json([], answers))] }
     [line for s in answers for line in answer_lines(s)]
 }
 
 /// A subject's answers under `--why`: its file's hold first, then each
 /// answer with the way down from it to every moved input.
-fn why_subject(a: Asked, aim: Aim, ws: Workspace, walk: CacheWalk) -> Lines {
-    let hold = hold_of(walk, aim.subject)
+fn why_subject(a: Asked, subject: Subject, ws: Workspace, walk: CacheWalk) -> Lines {
+    let hold = hold_of(walk, subject)
     let fresh = compared_held(ws, hold)
     let g = ws.walk_graph().ws
-    let keys = answers_named(g, aim.subject)?
+    let keys = answers_named(g, subject)?
     let answers = [Shown { said: e, trails: g.trails(keys[i], walk.moved) } for i, e in g.explained_all(keys)]
     let held? = hold else {
         if a.json { return [to_text(page_json([], answers))] }
