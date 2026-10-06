@@ -4,7 +4,7 @@
 //! method, like `push`.
 use core.{BinOp, ExprId, Reg, Ins, Type, TypeId, TypeRegistry}
 use diagnostics.{refusal}
-use features.{TypeCx, LowerCx, MethodCall, Refusal, TypeArgs, same_binding}
+use features.{TypeCx, LowerCx, MethodCall, Refusal, TypeArgs, same_binding, state_slot}
 
 /// The empty literal takes the rows too — it is refused in the
 /// map's own words.
@@ -214,17 +214,39 @@ fn set_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: Expr
 }
 
 /// The `m.get(k)` a `set`'s value reads of its own place and key, when
-/// NOTHING ELSE UNDER THE VALUE CAN MOVE EITHER: the place's root and
-/// the key are each named once there, by that read. Then no write
-/// stands between the probe and the store, and the word holds.
+/// NOTHING CAN MOVE EITHER BEFORE THE STORE: the place is no shared
+/// cell, and its root and the key are each named once under the
+/// value, by that read. Then the probe's word still holds.
 fn fused_read(cx: LowerCx, subject: ExprId, key: ExprId, value: ExprId) -> ExprId? {
-    if !(cx.shape_at(subject) is .Map) { return null }
+    if !(cx.shape_at(subject) is .Map) || shared_place(cx, subject) { return null }
     let root? = cx.view.store.place_root(subject) else { return null }
     let under = cx.view.store.every_expr(value)
     let read? = under.find((e: ExprId) -> reads_same(cx, e, subject, key)) else { return null }
     if cx.facts.widened_at(read) != null || cx.facts.narrowed_at(read) != null { return null }
     if named(cx, under, root) != 1 || !steady_key(cx, under, key) { return null }
     read
+}
+
+/// Whether a place stands where code that never names it can write: a
+/// `state` cell, on the path or at its root, or a lambda's capture.
+fn shared_place(cx: LowerCx, e: ExprId) -> bool {
+    let step? = cx.view.store.place_step(e) else { return true }
+    match step {
+        .Root(_) -> shared_root(cx, e),
+        .Field(subject, name) -> state_slot(cx.view.decls.fields_of_type(cx.type_at(subject)), name.of) != null ||
+            shared_place(cx, subject),
+        .At(subject, _) or .Unwrap(subject) -> shared_place(cx, subject),
+    }
+}
+
+fn shared_root(cx: LowerCx, root: ExprId) -> bool {
+    let b? = cx.names.binding(root) else { return true }
+    cx.names.reads_state_seat(root) ||
+        match b {
+            .Def(s) -> cx.view.store.is_state_stmt(s),
+            .Capture(_, _) -> true,
+            .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .Decl(_) -> false,
+        }
 }
 
 /// Whether `e` is `get` on the same place under the same key.

@@ -1,7 +1,13 @@
 // Maps, the vertical: the literal, `{}` adopted, `get` answering
 // absence, `set` on a place, `length`, and the refusals in their
 // own words.
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{shown, refused_with, ir_of}
+use compiler.backend.{render_ir}
+
+/// The runtime rows a program's IR calls, as text.
+fn rows(source: string) -> string { render_ir(ir_of(source)) }
+
+const counted: string = "mut m: Map<string, int> = {}\nlet k = \"k\"\n"
 
 spec "features/maps" {
     given "the literal" {
@@ -124,6 +130,54 @@ spec "features/maps" {
             refused_with(
                 "let m = { \"a\": 1 }\n[k for k in m].length",
                 "a map walks as key and value",
+            )
+        }
+    }
+    given "m.set(k, f(m.get(k))) — the read's probe is the write's" {
+        then "a value reading its own key hands the write its word" {
+            let ir = rows(counted + "m.set(k, (m.get(k) ?? 0) + 1)\nm.length")
+            ir.contains("avra_map_slot(") &&
+                ir.contains("avra_map_set_at(") &&
+                !ir.contains("avra_map_set(")
+        }
+        then "a literal key written twice is one key" {
+            rows(counted + "m.set(\"a\", (m.get(\"a\") ?? 0) + 1)\nm.length")
+                .contains("avra_map_set_at(")
+        }
+        then "another key keeps its own probe" {
+            !rows(counted + "m.set(k, (m.get(\"other\") ?? 0) + 1)\nm.length")
+                .contains("avra_map_set_at(")
+        }
+        then "a value naming the map again keeps its own probe" {
+            !rows(counted + "m.set(k, (m.get(k) ?? 0) + m.length)\nm.length")
+                .contains("avra_map_set_at(")
+        }
+        then "a value naming the key again keeps its own probe" {
+            !rows(counted + "m.set(k, (m.get(k) ?? 0) + k.length)\nm.length")
+                .contains("avra_map_set_at(")
+        }
+        then "a read under a lambda is a copy's, and keeps its own probe" {
+            !rows(counted + "m.set(k, [1].map((m.get(k) ?? 0) + it).sum())\nm.length")
+                .contains("avra_map_set_at(")
+        }
+        then "the count is the same either way" {
+            shown(
+                counted +
+                    "m.set(k, (m.get(k) ?? 0) + 1)\nm.set(k, (m.get(k) ?? 0) + 1)\nm.get(k) ?? 0",
+            ) == "2"
+        }
+    }
+    given "a walk over a map — its entries, the prelude's" {
+        then "a program that sees no prelude is told so, once" {
+            refused_with(
+                "let m = { \"a\": 1 }\nm.any(it.value > 0)",
+                "a map's entries wear the prelude's `Entry`, and this program sees no `@std/prelude`",
+            )
+        }
+        then "the empty literal names no map to walk" {
+            refused_with(
+                "let m = {}\nm.filter(it.value > 0)\n0",
+                "`.filter(…)` calls a method, and `{}` has none",
             )
         }
     }
