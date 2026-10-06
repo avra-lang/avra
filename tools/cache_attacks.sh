@@ -1314,6 +1314,23 @@ ed $R/usl/src/reach.av "export fn r() -> int { 2 }" "$(printf 'const K: int = se
 S "us: a const in the named file starts running the held sibling's body" us
 HR "us checks clean after it" check us 0
 
+# A HELD FILE'S ASKS READ BACK WHEN ONE AIMS AT A BUILTIN. An impl over `List<T>`
+# asks for an instantiation whose target is the language's own declaration; that
+# target's wire names whichever file was first in the process that wrote it, and a
+# row that cannot be read back turns the attempt and reads the file on every build.
+mkdir -p $R/ab/src
+printf '[package]\nname = "rt-ab"\nversion = "0.1.0"\n' > $R/ab/avra.toml
+printf 'export trait Show { fn show() -> string }\nimpl Show for List<T> { fn show() -> string { "list" } }\nimpl Show for Result<T, E> { fn show() -> string { "result" } }\nexport fn shown() -> string {\n    let xs: List<int> = [1, 2]\n    let ok: Result<int, string> = .Ok(1)\n    xs.show() + " " + ok.show()\n}\n' > $R/ab/src/shows.av
+printf 'export fn other() -> int { 1 }\n' > $R/ab/src/other.av
+printf 'use shows.{shown}\nuse other.{other}\nprintln("${shown()} ${other()}")\n' > $R/ab/src/main.av
+S "cold ab: impls over builtin generics" ab
+HR "ab checks clean" check ab 0
+ed $R/ab/src/other.av "{ 1 }" "{ 10 }"
+HR "ab: an edit elsewhere holds the file whose asks aim at a builtin" check ab 0 shows.av held
+steps=$((steps+1)); ed $R/ab/src/other.av "{ 10 }" "{ 100 }"; ab_out=$(./avra build --time $R/ab 2>&1)
+case "$ab_out" in *"discarded 0, refused 0"*) [ -n "${VERBOSE:-}" ] && echo "ok    ab: no attempt turned" ;; *) fails=$((fails+1)); echo "FAIL  ab: an attempt turned to read a held file's asks: $(printf '%s' "$ab_out" | grep -E '^time:|discarded:' | cut -c1-300 | tr '\n' ' ')" ;; esac
+S "ab: the binary after it" ab
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }
