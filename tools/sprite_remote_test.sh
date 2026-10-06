@@ -39,14 +39,13 @@ left() {
 # A run's state without its byte count.
 res() { remote result "$1" | awk '{ print ($1 == "status") ? $1 " " $2 : $1 }'; }
 # Waits up to $2 seconds for the run to answer, then up to ten more for
-# its last process to go. A run still going then is ended here and said
-# so: the case that waited for it fails on the status, and the next case
-# starts on a free Sprite.
+# its last process to go. A run still going then is a failure of its
+# own, and is ended here so the next case starts on a free Sprite.
 settled() {
     i=0
     while [ "$i" -lt "$2" ] && [ "$(res "$1")" = running ]; do sleep 1; i=$((i + 1)); done
     if [ "$(res "$1")" = running ]; then
-        echo "      | $1 was still running after ${2}s — ended by the fixture"
+        bad "$1 was still running after ${2}s — ended by the fixture, whose stop is not the run's own end"
         remote stop "$1"
     fi
     i=0
