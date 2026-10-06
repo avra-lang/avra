@@ -51,15 +51,43 @@ export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
     if p.order.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
     checked_order(cx, s, p.kind, p.scope, p.order, p.dense)
     let members = gathered_members(cx.view.decls, p.kind, p.scope, cx.view.file)
-    for d in duplicate_names(
+    let twice = duplicate_names(
         "collect_enum.variant",
         p.name,
         [m.name for m in members],
         cx.stmt_loc(s),
-    ) {
-        cx.emit(d)
-    }
+    )
+    for d in twice { cx.emit(d) }
     for m in members { checked_member(cx, s, p.name, m) }
+    checked_enum_scope(cx, s, p.name, p.scope)
+    // two members of one name are refused as that; their shared key is the same mistake
+    if !p.dense && twice.is_empty() { checked_ties(cx, s, p.kind, p.order, members) }
+}
+
+/// A REGISTRY match over `CollectScope`: an enum's variants are the
+/// same set whoever asks and whenever, so it gathers what its own
+/// file or package holds — never what imports happen to have reached.
+fn checked_enum_scope(mut cx: TypeCx, s: StmtId, owner: string, scope: CollectScope) {
+    match scope {
+        .Self or .Package or .UnknownScope(_) -> nothing(),
+        .Closure -> cx.emit(closure_enum(cx.stmt_loc(s), owner)),
+    }
+}
+
+/// An enum's ordinals are its `by` order, so two members may not
+/// share a key: a tie would leave their order to the order files
+/// were read in.
+fn checked_ties(
+    mut cx: TypeCx,
+    s: StmtId,
+    kind: CollectKind,
+    order: List<Plain>,
+    members: List<Decl>,
+) {
+    let keys = [[sort_value(cx.view.decls, kind, k, m) for k in order] for m in members]
+    let ordered = sorted_by(keys, sort_key_before)
+    if [j for j in 1..ordered.length if !sort_key_before(ordered[j - 1], ordered[j])].is_empty() { return }
+    cx.emit(tied_order(cx.stmt_loc(s)))
 }
 
 /// A gathered variant's payload is the fields its member's record
@@ -372,6 +400,26 @@ fn mixed_order(at: Loc?, key: Plain) -> Diag {
 /// The label every `by` key's refusal shares — one spelling for one
 /// seat, so the same sentence is not duplicated per voice.
 fn order_at() -> string { "in this collect's order" }
+
+fn closure_enum(at: Loc?, owner: string) -> Diag {
+    refusal(
+        "collect_enum.scope",
+        at,
+        "an enum's variants are one set for every reader — `${owner}` gathers `in closure`, which is what imports have reached so far",
+        "in this collect",
+        "gather `in self` or `in package`",
+    )
+}
+
+fn tied_order(at: Loc?) -> Diag {
+    refusal(
+        "collect_enum.tie",
+        at,
+        "an enum's `by` order is its variants' ordinals — two members share a key",
+        order_at(),
+        "order by a key every member holds apart, or number them: `by it.mark.args[0] dense`",
+    )
+}
 
 fn generic_member(at: Loc?, owner: string, member: string) -> Diag {
     refusal(

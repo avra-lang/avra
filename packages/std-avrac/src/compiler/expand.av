@@ -967,8 +967,8 @@ impl Workspace {
     /// as FIELDS — one writer, so a payload's name and its spelling
     /// cannot come from two places and disagree.
     fn crossed_variants(v: FileView, s: StmtId, d: DeclId) -> List<MetaVariant> {
-        let rows = self.payload_kinds(d)
         let gathers? = v.store.collect_enum_parts(s) else {
+            let rows = self.payload_kinds(d)
             return [self.crossed_variant(v, va, kinds_at(rows, j)) for j, va in v.store.declared_variants(s)]
         }
         let members = ordered_collect_members(
@@ -978,11 +978,21 @@ impl Workspace {
             gathers.order,
             self.decls.decl(d).file,
         )
-        [self.gathered_variant(m, kinds_at(rows, j)) for j, m in members]
+        [self.gathered_variant(m, self.payload_kinds_named(d, m.name)) for m in members]
     }
 
-    /// A gathered variant: the member's name, its record's fields as
-    /// the payload, its own annotations — read where the member stands.
+    /// One variant's payload shapes, found BY NAME in the enum's own
+    /// signature — none for a name the signature does not hold.
+    fn payload_kinds_named(d: DeclId, variant: string) -> List<Kind> {
+        let sig? = self.decls.sig(d)?.enum_sig() else { return [] }
+        let at = sig.names.index_of(variant)
+        if at < 0 { return [] }
+        [kind_of(self.decls.types, t) for t in sig.payloads[at]]
+    }
+
+    /// A gathered variant: the member's name, the fields its record
+    /// writes as the payload — the list the enum's signature was made
+    /// from — its own annotations, read where the member stands.
     fn gathered_variant(m: Decl, kinds: List<Kind>) -> MetaVariant {
         let v = file_view(self.lang, self.parsed(m.file), self.decls, m.file)
         let fields = v.store.declared_fields(m.stmt)

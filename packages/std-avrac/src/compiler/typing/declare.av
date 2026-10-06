@@ -130,13 +130,17 @@ impl TypeCx {
 
     /// A collect enum's table: every gathered member, in `by` order,
     /// one variant each, named by the member's own declaration name
-    /// and carrying its record's fields — `declare_enum_sig`'s twin, computed rather
-    /// than written. Duplicate names are left in the table as found;
-    /// `check_collect_enum` (features/collects/check.av) is where
-    /// that refuses, the same split `declare_enum_sig`/`check_enum_decl`
-    /// already keep.
+    /// and carrying the fields its record writes — `declare_enum_sig`'s
+    /// twin, computed rather than written. Duplicate names are left in
+    /// the table as found; `check_collect_enum`
+    /// (features/collects/check.av) is where that refuses, the same
+    /// split `declare_enum_sig`/`check_enum_decl` already keep.
     fn declare_collect_enum(s: StmtId) {
         let p? = self.view.store.collect_enum_parts(s) else { return }
+        let record = self.decl_of(s)
+        let ty = self.view.types.intern(Type.Enum(record, self.view.decls.decl(record).name))
+        self.view.types.begin_declare(ty)
+        defer { self.view.types.end_declare(ty) }
         let members = ordered_collect_members(
             self.view.decls,
             p.kind,
@@ -146,15 +150,30 @@ impl TypeCx {
         )
         let sig = EnumSig {
             names: [m.name for m in members],
-            payloads: [self.gathered_payload(m) for m in members],
+            payloads: [self.gathered_payload(s, m) for m in members],
         }
         self.declare(s, DeclSig.Enum(sig))
     }
 
-    /// What a gathered variant carries: its member record's field
-    /// types, in field order — nothing for a member that is no record.
-    fn gathered_payload(m: Decl) -> List<TypeId> {
-        self.view.decls.sig(m.id)?.record_sig()?.types ?? []
+    /// What a gathered variant carries: the fields its member's record
+    /// WRITES, each read in the member's own file — never the member's
+    /// signature, which may be the very one asking for this enum. A
+    /// member that is no record carries nothing.
+    mut fn gathered_payload(s: StmtId, m: Decl) -> List<TypeId> {
+        // the member's signature is this table's recorded input: its answer is
+        // not read, so a member in flight costs nothing but the edge
+        let _ = self.view.decls.sig(m.id)
+        [self.gathered_slot(s, m, f.ty) for f in self.view.decls.store_of(m.file).declared_fields(m.stmt)]
+    }
+
+    /// One written field of a member as a payload's type. The member's
+    /// own declaration speaks for a type it cannot name.
+    mut fn gathered_slot(s: StmtId, m: Decl, written: TypeRef?) -> TypeId {
+        let ty? = written else { return self.error_type }
+        let spoken = self.facts.voices
+        let named = self.written_by(m.file, self.stmt_loc(s), ty)
+        self.facts.voices = spoken
+        named
     }
 
     /// What a variant carries, in order — each payload judged by the
