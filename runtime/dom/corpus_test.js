@@ -112,6 +112,11 @@ const act = {
     try { page.apply(bytesOf(bytes)); } catch (e) { check("a frame is applied", e.message, "applied"); }
   },
   page: (want) => check("the page", told(page.mount), unworded(want)),
+  // What a user left on an element with nothing hearing of it.
+  move: (id, name, tag, value) => {
+    const el = find(page.mount, Number(id));
+    if (el) el[name] = Number(tag) === SAYS.flag ? unworded(value) !== "" : unworded(value);
+  },
   say: (id, event, reads, tag, value, kind, says, echoed) => {
     const el = find(page.mount, Number(id));
     if (el && reads !== "-") el[reads] = Number(tag) === SAYS.flag ? unworded(value) !== "" : unworded(value);

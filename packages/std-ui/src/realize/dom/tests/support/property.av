@@ -1,6 +1,7 @@
 //! `tests/support/property.av` — THE LAW A REPAINT ANSWERS TO, as one
 //! verdict over any two trees: a page showing the first, sent the frame
-//! that repaints it as the second, is the page the second tree is — the
+//! that repaints it as the second, is the page the second tree is FOR
+//! ALL THE TREE NAMES, and as the host held it for all else — the
 //! elements a host holds, the ones the program remembers, each kept
 //! element still itself, and each handler the second tree's own.
 use realize.dom.live.{Live, live}
@@ -15,8 +16,14 @@ use tree.node.{Action, Handler, Said}
 /// that reads an answer, counted round, given `value`.
 export type Typed = { nth: int, value: int }
 
-/// Two trees, and what a user does to the page between them.
-export type Case = { old: Sketch, new: Sketch, typed: List<Typed> = [] }
+/// A user's hand on the page that NO HANDLER HEARS OF: the `nth`
+/// element, counted round, given `value` under the `name`th thing a page
+/// keeps on an element.
+export type Stray = { nth: int, name: int, value: int }
+
+/// Two trees, and what a user does to the page before each is painted
+/// over: what the controls say of it, and what nothing hears.
+export type Case = { old: Sketch, new: Sketch, typed: List<Typed> = [], strayed: List<Stray> = [] }
 
 /// An element a user spoke to: who, the event, what it said — nothing
 /// for an event that says nothing — and the property that now holds it:
@@ -91,6 +98,52 @@ fn hold(mut at: Host, made: List<Move>) {
     }
 }
 
+/// What a page keeps on an element, by the name a host holds it under:
+/// the two a tree may name, and three no tree can.
+const texts_kept = ["value", "scroll", "selection"]
+const flags_kept = ["checked", "focus"]
+
+/// An element a user touched with nothing hearing: who, the name it is
+/// kept under, the wire's tag for the value and the value as the wire's
+/// text.
+export type Touch = { id: int, name: string, says: int, text: string }
+
+/// `s` as what it leaves on the element it lands on among `on`.
+fn touch_of(on: List<int>, s: Stray) -> List<Touch> {
+    if on.is_empty() { return [] }
+    let id = on[s.nth % on.length]
+    let at = s.name % (texts_kept.length + flags_kept.length)
+    if at < texts_kept.length {
+        return [
+            Touch {
+                id: id,
+                name: texts_kept[at],
+                says: Says.Text.code(),
+                text: if s.value % 4 == 0 { "" } else { "strayed ${s.value}" },
+            },
+        ]
+    }
+    [
+        Touch {
+            id: id,
+            name: flags_kept[at - texts_kept.length],
+            says: Says.Flag.code(),
+            text: if s.value % 2 == 0 { "1" } else { "" },
+        },
+    ]
+}
+
+/// What `strayed` leaves on the page as it stands, in order.
+export fn touches(page: Live, strayed: List<Stray>) -> List<Touch> {
+    let on = [el.id.n for el in elements(page.page.get())]
+    [t for s in strayed for t in touch_of(on, s)]
+}
+
+/// A user's unheard touches as a host holds them.
+fn lay(mut at: Host, touched: List<Touch>) {
+    for t in touched { at.set_prop(t.id, t.name, t.says, t.text) }
+}
+
 /// Whether a patch changes the page's elements: every one but the sheet's.
 fn of_elements(p: Patch) -> bool {
     match p { .Style(_) -> false, _ -> true }
@@ -105,15 +158,20 @@ fn elements_frame(page: Live, s: Sketch, log: Cell<List<int>>) -> Bytes {
 /// `s` painted on `page` and the frame handed to the host `at`: what is
 /// wrong with the page then, or nothing.
 fn painted(page: Live, mut at: Host, s: Sketch, log: Cell<List<int>>) -> string? {
+    let before = Before {
+        drawn: elements(page.page.get()),
+        heard: page.heard.get(),
+        held: every(at.page()),
+    }
     at.take(elements_frame(page, s, log))
     let fault = at.faults.first()
     if fault != null { return fault }
-    let want = told(page_of(lowered(node_of(s, log))), unnumbered)
-    let got = told(at.page(), unnumbered)
-    if got != want { return "the page is not the tree's\n— the tree's:\n${want}\n— the page:\n${got}" }
-    let kept = told(page_of(page.page.get()), whole)
-    let held = told(at.page(), whole)
-    if held != kept { return "the program remembers a page the host does not hold\n— remembered:\n${kept}\n— held:\n${held}" }
+    let tree = told(page_of(lowered(node_of(s, log))), unnumbered)
+    let kept = told(page_of(page.page.get()), unnumbered)
+    if kept != tree { return "the program remembers a page that is not the tree's\n— the tree's:\n${tree}\n— remembered:\n${kept}" }
+    let want = told(page_owed(before, page.page.get()), whole)
+    let got = told(at.page(), whole)
+    if got != want { return "the page is not the one the law owes\n— owed:\n${want}\n— the page:\n${got}" }
     null
 }
 
@@ -196,8 +254,9 @@ fn of_paint(name: string, wrong: string?) -> string? {
 
 /// What `c` breaks, or nothing — the law, clause by clause: the first
 /// tree painted on a bare page; the second painted over it after the
-/// user's moves, and its handlers spoken to; then the first painted back
-/// over that, and its handlers.
+/// user's moves, heard and unheard, and its handlers spoken to; then the
+/// first painted back over that after the unheard ones again, and its
+/// handlers.
 export fn verdict(c: Case) -> string? {
     let page = live()
     let log: Cell<List<int>> = Cell.new([])
@@ -207,20 +266,33 @@ export fn verdict(c: Case) -> string? {
     let made = moves(page, c.typed)
     echo(page, made)
     hold(at, made)
+    lay(at, touches(page, c.strayed))
     log.set([])
-    of_paint("the repaint", repainted(page, at, c.new, log)) ?? of_paint(
+    let wrong = of_paint("the repaint", repainted(page, at, c.new, log)) ?? of_paint(
         "after the repaint",
         bound_wrong(page, at, c.new, log),
-    ) ?? of_paint("the paint back", repainted(page, at, c.old, log)) ?? of_paint(
+    )
+    if wrong != null { return wrong }
+    lay(at, touches(page, c.strayed))
+    of_paint("the paint back", repainted(page, at, c.old, log)) ?? of_paint(
         "after the paint back",
         bound_wrong(page, at, c.old, log),
     )
 }
 
 /// A case played out on a page: the frame of its first paint, what the
-/// user then did, the frame of its repaint, every event
-/// then spoken to, and the frame that paints the first tree back.
-type Played = { first: Bytes, made: List<Move>, second: Bytes, spoken: List<Move>, back: Bytes }
+/// user then did — heard, and unheard — the frame of its repaint, every
+/// event then spoken to, what the user did unheard again, and the frame
+/// that paints the first tree back.
+type Played = {
+    first: Bytes,
+    made: List<Move>,
+    strayed: List<Touch>,
+    second: Bytes,
+    spoken: List<Move>,
+    strayed_back: List<Touch>,
+    back: Bytes,
+}
 
 fn played(c: Case) -> Played {
     let page = live()
@@ -228,16 +300,32 @@ fn played(c: Case) -> Played {
     let first = elements_frame(page, c.old, log)
     let made = moves(page, c.typed)
     echo(page, made)
+    let strayed = touches(page, c.strayed)
     let second = elements_frame(page, c.new, log)
     let spoken = [moved(b, probe(b.action.handler)) for b in bound(page.page.get())]
     echo(page, spoken)
     Played {
         first: first,
         made: made,
+        strayed: strayed,
         second: second,
         spoken: spoken,
+        strayed_back: touches(page, c.strayed),
         back: elements_frame(page, c.old, log),
     }
+}
+
+/// The page a host holds once `c`'s repaint is applied to it, as its
+/// lines: the first paint, the user's moves, heard and unheard, then the
+/// repaint.
+export fn repainted_page(c: Case) -> string {
+    let run = played(c)
+    mut at = host()
+    at.take(run.first)
+    hold(at, run.made)
+    lay(at, run.strayed)
+    at.take(run.second)
+    told(at.page(), whole)
 }
 
 /// The frame that repaints `c`'s first tree as its second, a record a line.

@@ -1,9 +1,10 @@
 //! `tests/support/oracle.av` — the page a tree SHOULD be, read straight
-//! off its lowered elements by the page's own rules. The rules are
-//! written here a second time ON PURPOSE, from what the wire and the
-//! architecture say: this is what a diff's patches are judged against, so
-//! it asks the diff nothing.
-use realize.dom.patch.{Says}
+//! off its lowered elements by the page's own rules, and the page a
+//! repaint OWES: what the tree names as the program draws it, and all
+//! else as the host held it. The rules are written here a second time ON
+//! PURPOSE, from what the wire and the architecture say: this is what a
+//! diff's patches are judged against, so it asks the diff nothing.
+use realize.dom.patch.{Says, Heard, Held}
 use realize.html.element.{Element, Tagged}
 use realize.html.tags.{HtmlAttr, HtmlAttrName}
 use tree.node.{Action, EventKind, Handler}
@@ -99,6 +100,92 @@ export fn seen_of(e: Element) -> Seen {
 
 /// A run of elements as a page shows it.
 export fn page_of(run: List<Element>) -> List<Seen> { [seen_of(e) for e in run] }
+
+// ── the page a repaint owes ─────────────────────────────────────
+
+/// A page as a paint finds it: the elements the program remembers
+/// drawing, what its handlers heard since, and what the host holds.
+export type Before = { drawn: List<Tagged>, heard: List<Heard>, held: List<Seen> }
+
+/// A value as a line shows it — nothing, at rest.
+fn text_shown(text: string) -> string { if text == "" { "" } else { quoted(text) } }
+
+fn held_shown(value: Held) -> string {
+    match value { .Text(t) -> text_shown(t), .Flag(on) -> if on { "true" } else { "" } }
+}
+
+/// What an attribute NAMES of a property, as a line shows it: a field's
+/// text, a box's tick. Every other attribute names none.
+fn named_by(a: HtmlAttr) -> List<Pair> {
+    if a.name == HtmlAttrName.Checked { return [Pair { name: a.name.word(), value: "true" }] }
+    if a.name == HtmlAttrName.Value { return [Pair { name: a.name.word(), value: text_shown(a.value) }] }
+    []
+}
+
+/// Every property an element's tree names — what it draws at rest too,
+/// as nothing.
+fn names_of(el: Tagged) -> List<Pair> {
+    settled([p for a in el.attrs for p in named_by(a)])
+        .concat([Pair { name: name.word(), value: "" } for name in el.rests])
+}
+
+fn value_in(pairs: List<Pair>, name: string) -> string? { pairs.find(it.name == name)?.value }
+
+/// Whether the program knows the page to hold `value`.
+fn knows(known: string?, value: string) -> bool {
+    match known {
+        k? -> k == value
+        null -> false
+    }
+}
+
+/// THE PROPERTY LAW, for one property of an element that stays: `now`
+/// and `was` are what the new tree and the old name it as — absent when
+/// they do not — `heard` what a handler heard of it since the old paint,
+/// and `held` what the host holds. A named property is the program's
+/// where the program draws other than it knows the page to hold; one no
+/// longer named goes to rest, where the program knows it off rest; all
+/// else stays as the host holds it.
+fn owed(now: string?, was: string?, heard: string?, held: string) -> string {
+    let known = heard ?? was
+    match now {
+        drawn? -> if knows(known, drawn) { held } else { drawn }
+        null -> if was == null || knows(known, "") { held } else { "" }
+    }
+}
+
+/// `names`, each once.
+fn each_once(names: List<string>) -> List<string> { [n for j, n in names if !names.slice(0, j).contains(n)] }
+
+/// The properties `el` owes a host after a paint over `before`: the
+/// tree's own for an element new to the page, the law's for one that
+/// stays — and its door as the tree draws it.
+fn props_owed(before: Before, el: Tagged) -> List<Pair> {
+    let was? = before.drawn.find(it.id == el.id) else { return props_of(el.attrs) }
+    let held = before.held.find(it.id == el.id.n)?.props ?? []
+    let now = names_of(el)
+    let old = names_of(was)
+    let heard = [Pair { name: h.name.word(), value: held_shown(h.value) } for h in before.heard if h.id == el.id]
+    let names = each_once(
+        [p.name for p in held.concat(now).concat(old).concat(heard) if p.name != door],
+    )
+    let laid = [Pair {
+        name: n,
+        value: owed(value_in(now, n), value_in(old, n), value_in(heard, n), value_in(held, n) ?? ""),
+    } for n in names]
+    [p for p in laid if p.value != ""].concat([p for p in props_of(el.attrs) if p.name == door])
+}
+
+/// An element as a page owes it after a paint over `before`.
+fn seen_owed(before: Before, e: Element) -> Seen {
+    match e {
+        .Text(_) -> seen_of(e),
+        .Tag(el) -> seen_of(e) with { props: props_owed(before, el), kids: [seen_owed(before, k) for k in el.kids] },
+    }
+}
+
+/// The page a host owes after a paint of `run` over `before`.
+export fn page_owed(before: Before, run: List<Element>) -> List<Seen> { [seen_owed(before, e) for e in run] }
 
 /// Every element under `run`, itself first, in page order.
 fn elements(run: List<Element>) -> List<Tagged> {
