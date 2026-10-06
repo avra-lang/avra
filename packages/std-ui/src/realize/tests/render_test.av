@@ -1,12 +1,20 @@
 //! The data-driven renderer, by its laws: one tree, a vocabulary of
-//! primitives and attributes, a table per target.
+//! primitives and attributes, a table per target, and an HTML target that
+//! names ATOMIC CLASSES over one generated stylesheet.
 use @std.ui.components.{text, heading, button, column, row}
 use @std.ui.realize.view.{View}
-use @std.ui.realize.html.html.{render}
+use @std.ui.realize.html.html.{render, body_of}
 use @std.ui.realize.tui.tui.{render as tui_render}
 use @std.ui.env.{Env}
+use @std.ui.style.style.{Style, StateStyle}
+use @std.ui.style.layout.{around}
+use @std.ui.style.theme.{dark_theme}
 
-fn html(v: dyn View) -> string { render(v.describe(), Env {}) }
+fn html(v: dyn View) -> string { body_of(v.describe(), Env {}) }
+
+fn doc(v: dyn View) -> string { render(v.describe(), Env {}) }
+
+fn doc_in(v: dyn View, env: Env) -> string { render(v.describe(), env) }
 
 fn term(v: dyn View) -> string { tui_render(v.describe(), Env {}) }
 
@@ -21,8 +29,8 @@ spec "std/ui render — the HTML target" {
         then "is a button holding its label" { html(button "Buy") == "<button>Buy</button>" }
     }
     given "a column of two leaves" {
-        then "nests them in a div" {
-            html(column { items: [text "a", button "b"] }) == "<div><span>a</span><button>b</button></div>"
+        then "nests them in a div carrying its structural class" {
+            html(column { items: [text "a", button "b"] }) == "<div class=\"col\"><span>a</span><button>b</button></div>"
         }
         then "takes its children from its body, into items" {
             html(
@@ -30,14 +38,62 @@ spec "std/ui render — the HTML target" {
                     text "a"
                     button "b"
                 },
-            ) == "<div><span>a</span><button>b</button></div>"
+            ) == "<div class=\"col\"><span>a</span><button>b</button></div>"
         }
     }
     given "text that looks like markup" {
         then "is escaped" { html(text "<b>") == "<span>&lt;b&gt;</span>" }
     }
     given "a row of two texts" {
-        then "is a div too" { html(row { items: [text "a", text "b"] }) == "<div><span>a</span><span>b</span></div>" }
+        then "is a div too" {
+            html(row { items: [text "a", text "b"] }) == "<div class=\"row\"><span>a</span><span>b</span></div>"
+        }
+    }
+    given "a container with a gap and a pad" {
+        then "names one atomic class per token" {
+            doc(
+                column {
+                    gap: .M
+                    pad: around(.S)
+                },
+            )
+                .contains("class=\"col gap-m pad-top-s pad-bottom-s pad-start-s pad-end-s\"")
+        }
+    }
+    given "the theme's mode" {
+        then "is variables on `:root`, so one tree draws in either mode" {
+            let light = doc(text "hi")
+            let dark = doc_in(text "hi", Env { theme: dark_theme })
+            light.contains("--tone-text:#111111") && dark.contains("--tone-text:#eeeeee")
+        }
+    }
+    given "the document" {
+        then "emits the stylesheet before the body" {
+            let d = doc(text "hi")
+            d.starts_with("<style>") && d.contains("</style><body>") && d.ends_with("</body>")
+        }
+    }
+}
+
+spec "std/ui render — a state on the HTML target" {
+    given "a button with a hover and a pressed look" {
+        then "classes its base look and scopes each state under its pseudo" {
+            let b = button "Buy" {
+                style: Style {
+                    fill: .Surface,
+                    states: [
+                        StateStyle { state: .Hover, style: Style { fill: .SurfaceHover } },
+                        StateStyle { state: .Pressed, style: Style { fill: .SurfaceSunk } },
+                    ],
+                }
+            }
+            let d = doc(b)
+            d.contains("class=\"bg-surface hover:bg-surface-hover pressed:bg-surface-sunk\"") &&
+                d
+                    .contains(".hover\\:bg-surface-hover:hover{background-color:var(--tone-surface-hover)}") &&
+                d
+                    .contains(".pressed\\:bg-surface-sunk:active{background-color:var(--tone-surface-sunk)}")
+        }
     }
 }
 

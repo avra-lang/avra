@@ -1,19 +1,30 @@
 //! `realize/html/html.av` — the HTML adapter. It enumerates the VOCABULARY,
 //! never components: a table from `Prim` to a tag, a table from `Attribute`
-//! to an attribute, and `Box` to one style declaration list. The walker is
-//! the same for every tree. UI.md §19.2.
+//! to an attribute, and `Style`/`Layout` to ATOMIC CLASSES. A node carries
+//! class names; ONE generated stylesheet names them, over the theme's CSS
+//! variables, so a `:hover` a node cannot spell inline is one state-scoped
+//! class. UI.md §19.2, charter §4a.
 use realize.render.{Node, Prim, Attribute, content_of, level_of}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
 use realize.html.writer.{HtmlOp, source}
-use env.{Env, Direction}
+use env.{Env}
 use style.box.{Box}
 use style.theme.{Theme, space_of, radius_of, color_of, face_of}
 use style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout}
-use style.style.{Style}
+use style.style.{Style, Interaction, StateStyle}
 use ui.{Size, Tone, Font}
 
-/// The HTML target: an accumulator of ops and the environment it draws in.
-export type Html = { ops: Cell<List<HtmlOp>> = Cell.new([]), env: Env = Env {} }
+/// One atomic CSS class: its name, its declarations, and the pseudo its
+/// state scopes it under ("" for a base class).
+export type Rule = { name: string, body: string, pseudo: string = "" }
+
+/// The HTML target: the ops in drawing order, every rule the tree named,
+/// and the environment it draws in.
+export type Html = {
+    ops: Cell<List<HtmlOp>> = Cell.new([]),
+    rules: Cell<List<Rule>> = Cell.new([]),
+    env: Env = Env {},
+}
 
 // ── the primitive table ─────────────────────────────────────────
 
@@ -55,179 +66,343 @@ fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {
     [h for a in attrs for h in attr_list(a)]
 }
 
-// ── the box table ───────────────────────────────────────────────
+// ── atomic classes ──────────────────────────────────────────────
 
-fn decl(parts: List<string>) -> string { [p for p in parts if p != ""].join(";") }
+fn size_word(z: Size) -> string {
+    match z { .None -> "none", .Xs -> "xs", .S -> "s", .M -> "m", .L -> "l", .Xl -> "xl" }
+}
 
-fn color_decl(c: Tone?, t: Theme) -> string {
-    match c {
-        v? -> "color:${color_of(t, v)}"
-        null -> ""
+fn tone_word(t: Tone) -> string {
+    match t {
+        .Text -> "text",
+        .Muted -> "muted",
+        .Danger -> "danger",
+        .Surface -> "surface",
+        .SurfaceRaised -> "surface-raised",
+        .SurfaceSunk -> "surface-sunk",
+        .SurfaceHover -> "surface-hover",
     }
 }
 
-fn fill_decl(c: Tone?, t: Theme) -> string {
-    match c {
-        v? -> "background:${color_of(t, v)}"
-        null -> ""
+fn font_word(f: Font) -> string {
+    match f { .Body -> "body", .Heading -> "heading", .Footnote -> "footnote", .Mono -> "mono" }
+}
+
+fn axis_rule(a: Axis) -> Rule {
+    match a {
+        .Row -> Rule { name: "row", body: "display:flex;flex-direction:row" },
+        .Column -> Rule { name: "col", body: "display:flex;flex-direction:column" },
     }
 }
 
-fn radius_decl(z: Size?, t: Theme) -> string {
+fn gap_rule(z: Size) -> Rule { Rule { name: "gap-${size_word(z)}", body: "gap:var(--space-${size_word(z)})" } }
+
+fn side_rule(z: Size?, css: string, prefix: string) -> List<Rule> {
     match z {
-        v? -> "border-radius:${radius_of(t, v)}px"
-        null -> ""
-    }
-}
-
-fn face_decl(f: Font?, t: Theme) -> string {
-    match f {
-        v? -> "font-family:${face_of(t, v)}"
-        null -> ""
-    }
-}
-
-fn axis_decl(a: Axis?) -> string {
-    match a {
-        v? -> axis_one(v)
-        null -> ""
-    }
-}
-
-fn axis_one(a: Axis) -> string {
-    match a {
-        .Row -> "display:flex;flex-direction:row",
-        .Column -> "display:flex;flex-direction:column",
-    }
-}
-
-fn gap_decl(z: Size?, t: Theme) -> string {
-    match z {
-        v? -> "gap:${space_of(t, v)}px"
-        null -> ""
-    }
-}
-
-fn pad_one(e: Edge, t: Theme, dir: Direction) -> string {
-    let s = e.start ?? Size.None
-    let en = e.end ?? Size.None
-    let top = e.top ?? Size.None
-    let bot = e.bottom ?? Size.None
-    let left = if dir == Direction.Ltr { s } else { en }
-    let right = if dir == Direction.Ltr { en } else { s }
-    "padding:${space_of(t, top)}px ${space_of(t, right)}px ${space_of(t, bot)}px ${space_of(t, left)}px"
-}
-
-fn pad_decl(e: Edge?, t: Theme, dir: Direction) -> string {
-    match e {
-        v? -> pad_one(v, t, dir)
-        null -> ""
-    }
-}
-
-fn align_one(a: Align) -> string {
-    match a {
-        .Start -> "align-items:flex-start",
-        .Center -> "align-items:center",
-        .End -> "align-items:flex-end",
-        .Stretch -> "align-items:stretch",
-        .Baseline -> "align-items:baseline",
-    }
-}
-
-fn align_decl(a: Align?) -> string {
-    match a {
-        v? -> align_one(v)
-        null -> ""
-    }
-}
-
-fn distribute_one(d: Distribute) -> string {
-    match d {
-        .Start -> "justify-content:flex-start",
-        .Center -> "justify-content:center",
-        .End -> "justify-content:flex-end",
-        .SpaceBetween -> "justify-content:space-between",
-        .SpaceAround -> "justify-content:space-around",
-        .SpaceEvenly -> "justify-content:space-evenly",
-    }
-}
-
-fn distribute_decl(d: Distribute?) -> string {
-    match d {
-        v? -> distribute_one(v)
-        null -> ""
-    }
-}
-
-fn sizing_one(prop: string, s: Sizing) -> string {
-    match s {
-        .Hug -> "",
-        .Fill -> "${prop}:100%",
-        .Fixed(n) -> "${prop}:${n}px",
-        .Percent(_) -> "",
-    }
-}
-
-fn sizing_decl(prop: string, s: Sizing?) -> string {
-    match s {
-        v? -> sizing_one(prop, v)
-        null -> ""
-    }
-}
-
-fn grow_decl(n: int) -> string { if n > 0 { "flex-grow:${n}" } else { "" } }
-
-fn layout_css(l: Layout, t: Theme, dir: Direction) -> string {
-    decl(
-        [
-            axis_decl(l.direction),
-            gap_decl(l.gap, t),
-            pad_decl(l.pad, t, dir),
-            align_decl(l.align),
-            distribute_decl(l.distribute),
-            sizing_decl("width", l.width),
-            sizing_decl("height", l.height),
-            grow_decl(l.grow),
-        ],
-    )
-}
-
-fn appearance_css(s: Style, t: Theme) -> string {
-    decl(
-        [
-            color_decl(s.color, t),
-            fill_decl(s.fill, t),
-            radius_decl(s.radius, t),
-            face_decl(s.face, t),
-        ],
-    )
-}
-
-fn box_attrs(n: Node, env: Env) -> List<HtmlAttr> {
-    let css_text = decl(
-        [layout_css(n.box.layout, env.theme, env.direction), appearance_css(n.box.style, env.theme)],
-    )
-    let keyed: List<HtmlAttr> = match n.box.key {
-        k? -> [HtmlAttr { name: .DataKey, value: k }]
+        v? -> [
+            Rule { name: "${prefix}-${size_word(v)}", body: "${css}:var(--space-${size_word(v)})" },
+        ]
         null -> []
     }
-    if css_text == "" { keyed } else { keyed.concat([HtmlAttr { name: .Style, value: css_text }]) }
+}
+
+fn pad_rules(e: Edge) -> List<Rule> {
+    side_rule(e.top, "padding-top", "pad-top")
+        .concat(side_rule(e.bottom, "padding-bottom", "pad-bottom"))
+        .concat(side_rule(e.start, "padding-inline-start", "pad-start"))
+        .concat(side_rule(e.end, "padding-inline-end", "pad-end"))
+}
+
+fn align_rule(a: Align?) -> List<Rule> {
+    match a {
+        v? -> [Rule { name: "items-${align_word(v)}", body: "align-items:${align_css(v)}" }]
+        null -> []
+    }
+}
+
+fn distribute_rule(d: Distribute?) -> List<Rule> {
+    match d {
+        v? -> [
+            Rule {
+                name: "justify-${distribute_word(v)}",
+                body: "justify-content:${distribute_css(v)}",
+            },
+        ]
+        null -> []
+    }
+}
+
+fn sizing_rules(prop: string, s: Sizing?) -> List<Rule> {
+    match s {
+        v? -> sizing_rule(prop, v)
+        null -> []
+    }
+}
+
+fn sizing_rule(prop: string, s: Sizing) -> List<Rule> {
+    match s {
+        .Hug -> [],
+        .Fill -> [Rule { name: "${prop}-fill", body: "${prop}:100%" }],
+        .Fixed(n) -> [Rule { name: "${prop}-fixed-${n}", body: "${prop}:${n}px" }],
+        .Percent(f) -> [Rule { name: "${prop}-pct-${f}", body: "${prop}:${f}%" }],
+    }
+}
+
+fn grow_rules(n: int) -> List<Rule> {
+    if n <= 0 { return [] }
+    [Rule { name: "grow-${n}", body: "flex-grow:${n}" }]
+}
+
+fn layout_rules(l: Layout) -> List<Rule> {
+    let axis: List<Rule> = match l.direction {
+        v? -> [axis_rule(v)]
+        null -> []
+    }
+    let gap: List<Rule> = match l.gap {
+        v? -> [gap_rule(v)]
+        null -> []
+    }
+    let pad: List<Rule> = match l.pad {
+        v? -> pad_rules(v)
+        null -> []
+    }
+    axis
+        .concat(gap)
+        .concat(pad)
+        .concat(align_rule(l.align))
+        .concat(distribute_rule(l.distribute))
+        .concat(sizing_rules("width", l.width))
+        .concat(sizing_rules("height", l.height))
+        .concat(grow_rules(l.grow))
+}
+
+fn radius_rule(z: Size?) -> List<Rule> {
+    match z {
+        v? -> [
+            Rule {
+                name: "radius-${size_word(v)}",
+                body: "border-radius:var(--radius-${size_word(v)})",
+            },
+        ]
+        null -> []
+    }
+}
+
+fn fill_rule(t: Tone?) -> List<Rule> {
+    match t {
+        v? -> [
+            Rule {
+                name: "bg-${tone_word(v)}",
+                body: "background-color:var(--tone-${tone_word(v)})",
+            },
+        ]
+        null -> []
+    }
+}
+
+fn color_rule(t: Tone?) -> List<Rule> {
+    match t {
+        v? -> [Rule { name: "color-${tone_word(v)}", body: "color:var(--tone-${tone_word(v)})" }]
+        null -> []
+    }
+}
+
+fn face_rule(f: Font?) -> List<Rule> {
+    match f {
+        v? -> [
+            Rule { name: "font-${font_word(v)}", body: "font-family:var(--face-${font_word(v)})" },
+        ]
+        null -> []
+    }
+}
+
+/// The classes a LOOK is: radius, fill, colour and face, each absent unless
+/// the component asked.
+fn appearance_rules(s: Style) -> List<Rule> {
+    radius_rule(s.radius)
+        .concat(fill_rule(s.fill))
+        .concat(color_rule(s.color))
+        .concat(face_rule(s.face))
+}
+
+/// A component's whole class set: its placement, its look, and one
+/// state-scoped copy per interaction override.
+fn rules_of(box: Box) -> List<Rule> {
+    layout_rules(box.layout)
+        .concat(appearance_rules(box.style))
+        .concat(state_rules(box.style.states))
+}
+
+/// A container's structural class comes from its PRIMITIVE, which is what
+/// says the interaction contract: a `row` lays out across, a `column` down.
+fn prim_rules(p: Prim) -> List<Rule> {
+    match p {
+        .Row -> [axis_rule(.Row)],
+        .Column -> [axis_rule(.Column)],
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Dialog -> [],
+    }
+}
+
+fn state_rules(states: List<StateStyle>) -> List<Rule> {
+    [state_rule(ss.state, r) for ss in states for r in appearance_rules(ss.style)]
+}
+
+fn state_rule(state: Interaction, r: Rule) -> Rule {
+    Rule { name: "${state_word(state)}:${r.name}", body: r.body, pseudo: pseudo_of(state) }
+}
+
+fn state_word(s: Interaction) -> string {
+    match s { .Hover -> "hover", .Focus -> "focus", .Pressed -> "pressed", .Disabled -> "disabled" }
+}
+
+fn pseudo_of(s: Interaction) -> string {
+    match s {
+        .Hover -> ":hover",
+        .Focus -> ":focus-visible",
+        .Pressed -> ":active",
+        .Disabled -> ":disabled",
+    }
+}
+
+fn align_word(a: Align) -> string {
+    match a {
+        .Start -> "start",
+        .Center -> "center",
+        .End -> "end",
+        .Stretch -> "stretch",
+        .Baseline -> "baseline",
+    }
+}
+
+fn align_css(a: Align) -> string {
+    match a {
+        .Start -> "flex-start",
+        .Center -> "center",
+        .End -> "flex-end",
+        .Stretch -> "stretch",
+        .Baseline -> "baseline",
+    }
+}
+
+fn distribute_word(d: Distribute) -> string {
+    match d {
+        .Start -> "start",
+        .Center -> "center",
+        .End -> "end",
+        .SpaceBetween -> "between",
+        .SpaceAround -> "around",
+        .SpaceEvenly -> "evenly",
+    }
+}
+
+fn distribute_css(d: Distribute) -> string {
+    match d {
+        .Start -> "flex-start",
+        .Center -> "center",
+        .End -> "flex-end",
+        .SpaceBetween -> "space-between",
+        .SpaceAround -> "space-around",
+        .SpaceEvenly -> "space-evenly",
+    }
 }
 
 // ── the walker ──────────────────────────────────────────────────
 
+fn box_attrs(n: Node, rules: List<Rule>) -> List<HtmlAttr> {
+    let keyed: List<HtmlAttr> = match n.box.key {
+        k? -> [HtmlAttr { name: .DataKey, value: k }]
+        null -> []
+    }
+    let names = rule_names(rules)
+    if names.is_empty() { keyed } else { keyed.concat([HtmlAttr { name: .Class, value: names.join(" ") }]) }
+}
+
+fn rule_names(rules: List<Rule>) -> List<string> {
+    mut seen: List<string> = []
+    for r in rules {
+        if !seen.contains(r.name) { seen.push(r.name) }
+    }
+    seen
+}
+
 fn draw(n: Node, h: Html) {
     let tag = tag_of(n.prim, n.attrs)
-    h.ops.push(HtmlOp.Open(tag, attrs_of(n.attrs).concat(box_attrs(n, h.env))))
+    let rules = prim_rules(n.prim).concat(rules_of(n.box))
+    for r in rules { h.rules.push(r) }
+    h.ops.push(HtmlOp.Open(tag, attrs_of(n.attrs).concat(box_attrs(n, rules))))
     h.ops.push(HtmlOp.Text(content_of(n.attrs)))
     for c in n.children { draw(c, h) }
     h.ops.push(HtmlOp.Close(tag))
 }
 
-/// The finished document for one tree, in one environment.
-export fn render(root: Node, env: Env) -> string {
+// ── the stylesheet ──────────────────────────────────────────────
+
+const sizes = [Size.None, .Xs, .S, .M, .L, .Xl]
+
+const tones = [Tone.Text, .Muted, .Danger, .Surface, .SurfaceRaised, .SurfaceSunk, .SurfaceHover]
+
+const fonts = [Font.Body, .Heading, .Footnote, .Mono]
+
+fn scale_vars(prefix: string, step: fn(Theme, Size) -> int, t: Theme, unit: string) -> string {
+    ["--${prefix}-${size_word(z)}:${step(t, z)}${unit};" for z in sizes].join("")
+}
+
+fn tone_vars(t: Theme) -> string {
+    ["--tone-${tone_word(c)}:${color_of(t, c)};" for c in tones].join("")
+}
+
+fn face_vars(t: Theme) -> string {
+    ["--face-${font_word(f)}:${face_of(t, f)};" for f in fonts].join("")
+}
+
+fn root_rule(t: Theme) -> string {
+    let vars = scale_vars("space", space_of, t, "px")
+        .concat(scale_vars("radius", radius_of, t, "px"))
+        .concat(tone_vars(t))
+        .concat(face_vars(t))
+    ":root{${vars}}"
+}
+
+fn rule_css(r: Rule) -> string {
+    if r.pseudo == "" { ".${r.name}{${r.body}}" } else { ".${escape_class(r.name)}${r.pseudo}{${r.body}}" }
+}
+
+/// A state class's `:` is escaped in the SELECTOR (never in the class
+/// attribute): `.hover\:bg-x:hover`.
+fn escape_class(name: string) -> string { name.replace(":", "\\:") }
+
+fn unique_rules(rules: List<Rule>) -> List<Rule> {
+    mut seen: List<string> = []
+    mut out: List<Rule> = []
+    for r in rules {
+        if !seen.contains(r.name) {
+            seen.push(r.name)
+            out.push(r)
+        }
+    }
+    out
+}
+
+/// The one stylesheet a tree's classes name: the theme's variables, the
+/// document rule, then one rule per class the tree used.
+export fn stylesheet(env: Env, rules: List<Rule>) -> string {
+    let body = "body{margin:0;background:var(--tone-surface);color:var(--tone-text);font-family:var(--face-body)}"
+    [root_rule(env.theme), body].concat([rule_css(r) for r in rules]).join("")
+}
+
+// ── the document ────────────────────────────────────────────────
+
+/// The body fragment for one tree — its ops, no stylesheet.
+export fn body_of(root: Node, env: Env) -> string {
     let h = Html { env: env }
     draw(root, h)
     source(h.ops.get())
+}
+
+/// The finished document for one tree, in one environment: the ONE
+/// stylesheet its classes name, then its body.
+export fn render(root: Node, env: Env) -> string {
+    let h = Html { env: env }
+    draw(root, h)
+    "<style>${stylesheet(env, unique_rules(h.rules.get()))}</style><body>${source(h.ops.get())}</body>"
 }
