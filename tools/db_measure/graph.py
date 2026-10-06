@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """THE KERNEL'S GRAPH, COUNTED — and the saved-answer rule tried on it.
 
-Reads the lines a compiler writes under AVRA_DB_GRAPH=1 (query/kernel.av):
+Reads the lines a compiler writes under AVRA_DB_GRAPH=1 (@std/relation's engine/kernel.av):
 
     F <kernel> <family>                      a family registered
     I <kernel> <family> <arg>                an input set

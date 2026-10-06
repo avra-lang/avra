@@ -150,8 +150,9 @@ registry is the idiom engine's spec, written by dogfooding.
 ## Rules
 
 - `core/` is infrastructure only. Features never import features.
-- Layering is one-way: core -> query -> grammar -> features -> compiler.
-  `query/` is the memo kernel — infrastructure, language-agnostic.
+- Layering is one-way: core -> grammar -> features -> compiler, all
+  over `@std/relation`, whose `engine/` is the memo kernel —
+  infrastructure, language-agnostic, the one a running program asks too.
   `grammar/` is the language-agnostic engine; `compiler/` is the
   driver and the ONE definition of Avra (feature order is branch
   order is the language).
@@ -2143,7 +2144,8 @@ Runtime facts, ours to ratify:
 - A GEN-N VS GEN-N+1 DIVERGENCE IS FOUND BY TRACING, NEVER GUESSED.
   `AVRA_QTRACE=1` prints one stderr line per query-kernel event —
   every `Memo.ask` (family, arg, reuse/compute/cycle) and
-  `Memo.settle` (family, arg, fingerprint) in query/memo.av, every
+  `Memo.settle` (family, arg, fingerprint) in @std/relation's
+  engine/answers.av, every
   `Binder.declare` (name, file) in features/namespace.av, every
   failed `named_type` lookup in compiler/typing/declare.av, every
   file a check PARSES (`Q parse <path>`, compiler/program.av), every
