@@ -276,6 +276,7 @@ log=
 leave() {
     [ -z "$client" ] || { pkill -TERM -P "$client"; kill "$client"; } 2>/dev/null || :
     [ -z "$side" ] || kill $side 2>/dev/null || :
+    [ -z "$log" ] || rm -f "$log.client"
     [ -z "$runlock" ] || rm -f "$runlock"
 }
 interrupted() {
@@ -301,8 +302,11 @@ follow() {
     tail -n +1 -f "$log" &
     side=$!
     main=$$
+    printer=$side
+    # Says so while the run is silent — and, this process killed outright,
+    # ends the printer and the connection it left; the run itself goes on.
     (
-        trap '' HUP INT TERM
+        trap '' HUP
         size=-1
         quiet=0
         while kill -0 "$main" 2>/dev/null; do
@@ -311,12 +315,16 @@ follow() {
             if [ "$now" = "$size" ]; then quiet=$((quiet + 5)); else quiet=0; size=$now; fi
             [ "$quiet" -lt 30 ] || { echo "work: $sprite — still running, $(since)s in, silent ${quiet}s" >&2; quiet=0; }
         done
+        c=$(cat "$log.client" 2>/dev/null) && { pkill -TERM -P "$c"; kill "$c"; } 2>/dev/null
+        kill "$printer" 2>/dev/null
+        rm -f "$log.client"
     ) </dev/null &
     side="$side $!"
     drops=0
     while :; do
         remote "$sprite" "${AVRA_ATTACH_BOUND_S:-600}" attach "$run_id" "$(wc -c < "$log" | tr -d ' ')" >> "$log" 2>/dev/null &
         client=$!
+        echo "$client" > "$log.client"
         rc=0
         wait "$client" || rc=$?
         client=
@@ -344,6 +352,7 @@ follow() {
     sleep 2
     kill $side 2>/dev/null || :
     side=
+    rm -f "$log.client"
 }
 t0=$(date +%s)
 since() { echo $(($(date +%s) - t0)); }

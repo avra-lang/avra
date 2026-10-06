@@ -1969,12 +1969,18 @@ Runtime facts, ours to ratify:
   anything macOS-only. ONE RUN PER SPRITE, EVERY STEP BOUNDED: `run`
   answers the command's status, or 75 (no answer), 76 (busy), 70 (the
   compiler does not build), 124/125 (a bound; `--for <minutes>` raises
-  the command's), 137 (out of memory) — and the remote command is
-  stopped on each, since a run never outlives its caller. `sh tools/work
-  sprites` shows all of them in seconds. A Sprite sleeps thirty seconds
-  after its last command; one silent for minutes has lost its
-  filesystem and is destroyed and created again (provisioning is `run`'s
-  first step, from `.github/ci/packages.txt`).
+  the command's), 137 (out of memory). A RUN BELONGS TO THE SPRITE, NOT
+  TO THE CONNECTION: a supervisor there keeps its output and status and
+  holds the Sprite awake while it lives, `run` only follows it, and a
+  dropped connection is followed again from the byte it stood at — so
+  an interrupt stops a run, a drop never does, and the Sprite ends it at
+  its bound whoever is watching (`work attach` follows again, `work
+  stop` ends it). `sh tools/work sprites` shows all of them in seconds.
+  A SPRITE WITH NO SESSION AND NO HOLD IS SUSPENDED THIRTY SECONDS
+  LATER, MID-WRITE IF NEED BE, which is why nothing runs there detached
+  without the hold; one silent for minutes has lost its filesystem and
+  is destroyed and created again (provisioning is `run`'s first step,
+  from `.github/ci/packages.txt`).
 - A BRANCH IS REBASED ONTO `origin/main` ONLY, never onto another
   unlanded branch: that lands the other branch's work unverified. A
   branch built on a stale local main moves with `git rebase --onto
