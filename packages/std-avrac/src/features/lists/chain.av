@@ -46,7 +46,13 @@ export fn found_at_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let clauses = subject_clauses(cx, mc.subject)
     let opt = cx.type_at(mc.e)
     let cell = absent_cell(cx, opt)
-    cx.piped(Pipeline { clauses: clauses, sink: .FindIndex(opt, cell, box_of(cx, s.arg)) })
+    cx
+        .piped(
+            Pipeline {
+                clauses: clauses,
+                sink: .FindIndex(opt, cell, int_cell(cx, 0), box_of(cx, s.arg)),
+            },
+        )
 }
 
 /// `xs.any(p)` / `xs.all(p)` — a verdict, the walk ended on the first
@@ -74,7 +80,13 @@ export fn index_of_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let clauses = subject_clauses(cx, mc.subject)
     let ret = cx.type(int)
     let cell = cx.seeded_cell(ret, cx.const_int(-1))
-    cx.piped(Pipeline { clauses: clauses, sink: .IndexOf(ret, cell, cx.reg_of(s.arg), s.elem) })
+    cx
+        .piped(
+            Pipeline {
+                clauses: clauses,
+                sink: .IndexOf(ret, cell, int_cell(cx, 0), cx.reg_of(s.arg), s.elem),
+            },
+        )
 }
 
 /// `xs.fold(seed, f)` over a chain — the accumulator's cell, seeded
@@ -106,7 +118,7 @@ export fn sum_chain(mut cx: LowerCx, mc: MethodCall) -> Reg {
 export fn extreme_chain(mut cx: LowerCx, mc: MethodCall, less: bool) -> Reg {
     let ret = cx.type(int?)
     let has = bool_cell(cx, false)
-    let best = cx.seeded_cell(cx.type(int), cx.const_int(0))
+    let best = int_cell(cx, 0)
     cx
         .piped(
             Pipeline {
@@ -121,8 +133,8 @@ export fn extreme_chain(mut cx: LowerCx, mc: MethodCall, less: bool) -> Reg {
 export fn keyed_extreme_chain(mut cx: LowerCx, mc: MethodCall, less: bool) -> Reg {
     let ret = cx.type(int?)
     let has = bool_cell(cx, false)
-    let best = cx.seeded_cell(cx.type(int), cx.const_int(0))
-    let key = cx.seeded_cell(cx.type(int), cx.const_int(0))
+    let best = int_cell(cx, 0)
+    let key = int_cell(cx, 0)
     cx
         .piped(
             Pipeline {
@@ -220,8 +232,8 @@ fn link_clause(mut cx: LowerCx, stage: PipeStage, arg: ExprId?, subject: ExprId,
         .Flatten -> .Flatten(e, mapped_to(cx, subject), mapped_to(cx, e)),
         .Keep -> .Keep(step_of(cx, arg!, bool_ty(cx))),
         .Map -> .Map(step_of(cx, arg!, mapped_to(cx, e))),
-        .Take -> .Take(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg!)),
-        .Drop -> .Drop(cx.seeded_cell(cx.type(int), cx.const_int(0)), cx.reg_of(arg!)),
+        .Take -> .Take(int_cell(cx, 0), cx.reg_of(arg!)),
+        .Drop -> .Drop(int_cell(cx, 0), cx.reg_of(arg!)),
         .TakeWhile -> .TakeWhile(box_of(cx, arg!)),
         .DropWhile -> .DropWhile(box_of(cx, arg!), cx.seeded_cell(cx.type(bool), cx.const_bool(false))),
         .FilterMap -> .FilterMap(box_of(cx, arg!), fn_answer(cx, arg!)),
