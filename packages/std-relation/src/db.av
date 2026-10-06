@@ -354,23 +354,19 @@ impl Db {
         if self.restored.get() < 0 {
             self
                 .restored
-                .set(
-                    kernel
-                        .family(
-                            (arg: int) -> kernel
-                                .changed_at(Key { family: self.restored.get(), arg: arg }),
-                        ),
-                )
-            kernel.set_input(Key { family: self.restored.get(), arg: 0 }, self.writes.get())
+                .set(kernel.family((arg: int) -> kernel.changed_at(self.restored_cell(arg))))
+            kernel.set_input(self.restored_cell(0), self.writes.get())
         }
         kernel.record_at(self.restored.get(), 0)
     }
+
+    fn restored_cell(arg: int) -> Key { Key { family: self.restored.get(), arg: arg } }
 
     /// A write, told to every answer read back.
     fn unsettles_restored() {
         if self.restored.get() < 0 { return }
         self.writes.set(self.writes.get() + 1)
-        self.kernel.get().set_input(Key { family: self.restored.get(), arg: 0 }, self.writes.get())
+        self.kernel.get().set_input(self.restored_cell(0), self.writes.get())
     }
 
     /// The revision `cell` moved at, kept where a family verifies by it.
