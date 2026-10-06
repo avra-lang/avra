@@ -1091,7 +1091,19 @@ registry is the idiom engine's spec, written by dogfooding.
   Pair}`). A LONE FILE sees no prelude, so `entries` there is
   `type.map_entry` — probe it from a directory with an `avra.toml`.
   Its vocabulary is `get`/`set`/`has`/`remove`/`keys`/`values`/
-  `entries`/`length`/`is_empty`.
+  `entries`/`length`/`is_empty`, and A MAP IS A WALK SOURCE: every
+  walk verb runs over its entries (`m.any(it.value > 1)`,
+  `m.map(it.key)`, `m.find(…)`, `m.fold(…)`) with no list between,
+  and a shape-keeping one — `filter`, `take`, `drop`, `take_while`,
+  `drop_while` — answers a `Map` in the same order. `get` is ONE
+  probe, and `m.set(k, f(m.get(k)))` is one too when the map's root
+  and the key are each named once under the value: the read's word
+  is the write's (`AVRA_MAP_STATS=1` says a run's probes at exit).
+  Spelled as two statements it stays two. THE RUNTIME BELIEVES THAT
+  WORD ONLY WHERE THE MAP CONFIRMS IT — a hit's slot must hold the
+  very key, a miss's index word must be of the same building of the
+  index and still empty — so the lowering's proof is the fast path,
+  never what the write's rightness rests on.
 - Grammar authoring: EVERY COMMA LIST TAKES A TRAILING COMMA — a
   repeated `( "," x )*` ends `","?` before its closer, in every
   rule (params, type params and args, payload declarations, lambda

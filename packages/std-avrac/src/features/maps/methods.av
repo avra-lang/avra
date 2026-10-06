@@ -4,7 +4,7 @@
 //! method, like `push`.
 use core.{BinOp, ExprId, Reg, Ins, Type, TypeId, TypeRegistry}
 use diagnostics.{refusal}
-use features.{TypeCx, LowerCx, MethodCall, Refusal, TypeArgs}
+use features.{TypeCx, LowerCx, MethodCall, Refusal, TypeArgs, same_binding, state_slot}
 
 /// The empty literal takes the rows too — it is refused in the
 /// map's own words.
@@ -57,10 +57,7 @@ export fn check_values(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 export fn check_entries(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let value? = value_held(cx, mc, "entries") else { return cx.error_type }
     if !cx.seated(mc, "entries", []) { return cx.error_type }
-    let entry? = cx.view.decls.prelude_named("Entry") else { return no_entry(cx, mc.e) }
-    // a record's layout is its declaration's answer
-    let _ = cx.view.decls.sig(entry)
-    let held = cx.view.types.intern(Type.App(entry, "Entry", [cx.type(string), value]))
+    let held? = cx.entry_type(mc.e, value) else { return cx.error_type }
     cx.type(List<held>)
 }
 
@@ -183,11 +180,14 @@ fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, valu
 /// adopted into the nullable only when there is one — a cell seeded
 /// absent, like `find`.
 fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
-    let opt = cx.type_at(e)
     let m = cx.reg_of(subject)
-    let k = cx.reg_of(key)
+    got_at(cx, e, m, cx.map_slot(Type.Int, m, cx.reg_of(key)))
+}
+
+/// The value a probe's word names in `m`, as `get` answers it.
+fn got_at(mut cx: LowerCx, e: ExprId, m: Reg, slot: Reg) -> Reg {
+    let opt = cx.type_at(e)
     let cell = cx.seeded_cell(opt, cx.absent_of(opt))
-    let slot = cx.map_slot(Type.Int, m, k)
     cx
         .void_region(cx.bin(Type.Bool, BinOp.Ge, slot, cx.const_int(0))) { cx ->
             let raw = cx.map_value(m, slot, cx.carried_type(opt))
@@ -197,11 +197,109 @@ fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
 }
 
 /// `m.set(k, v)`: the place opens unique, the runtime stores, and
-/// the answer is nothing.
+/// the answer is nothing. A value that reads `m.get(k)` — this place,
+/// this key — shares one probe with the write: the read's word is the
+/// write's.
 fn set_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: ExprId) -> Reg {
     let box = cx.unique_box(subject)
-    cx.map_write(box, cx.reg_of(key), cx.reg_of(value))
+    let k = cx.reg_of(key)
+    let read? = fused_read(cx, subject, key, value) else {
+        cx.map_write(box, k, cx.reg_of(value))
+        return cx.zero(e)
+    }
+    let slot = cx.map_slot(Type.Int, box, k)
+    cx.body.set_reg(read, got_at(cx, read, box, slot))
+    cx.map_write_at(box, k, slot, cx.reg_of(value))
     cx.zero(e)
+}
+
+/// The `m.get(k)` a `set`'s value reads of its own place and key, when
+/// NOTHING CAN MOVE EITHER BEFORE THE STORE: the place is no shared
+/// cell, and its root and the key are each named once under the
+/// value, by that read. Then the probe's word still holds.
+fn fused_read(cx: LowerCx, subject: ExprId, key: ExprId, value: ExprId) -> ExprId? {
+    if !(cx.shape_at(subject) is .Map) || shared_place(cx, subject) { return null }
+    let root? = cx.view.store.place_root(subject) else { return null }
+    let under = cx.view.store.every_expr(value)
+    let read? = under.find((e: ExprId) -> reads_same(cx, e, subject, key)) else { return null }
+    if cx.facts.widened_at(read) != null || cx.facts.narrowed_at(read) != null { return null }
+    if named(cx, under, root) != 1 || !steady_key(cx, under, key) { return null }
+    read
+}
+
+/// Whether a place stands where code that never names it can write: a
+/// `state` cell, on the path or at its root, or a lambda's capture.
+fn shared_place(cx: LowerCx, e: ExprId) -> bool {
+    let step? = cx.view.store.place_step(e) else { return true }
+    match step {
+        .Root(_) -> shared_root(cx, e),
+        .Field(subject, name) -> state_slot(cx.view.decls.fields_of_type(cx.type_at(subject)), name.of) != null ||
+            shared_place(cx, subject),
+        .At(subject, _) or .Unwrap(subject) -> shared_place(cx, subject),
+    }
+}
+
+fn shared_root(cx: LowerCx, root: ExprId) -> bool {
+    let b? = cx.names.binding(root) else { return true }
+    cx.names.reads_state_seat(root) ||
+        match b {
+            .Def(s) -> cx.view.store.is_state_stmt(s),
+            .Capture(_, _) -> true,
+            .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .Decl(_) -> false,
+        }
+}
+
+/// Whether `e` is `get` on the same place under the same key.
+fn reads_same(cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> bool {
+    let mc? = cx.view.store.method_parts(e) else { return false }
+    mc.name == "get" &&
+        mc.args.length == 1 &&
+        same_path(cx, mc.subject, subject) &&
+        same_key(cx, mc.args[0], key)
+}
+
+/// Two places spelled alike from one root: the same binding, the same
+/// fields under it. An index or an unwrap on the way is no fixed path.
+fn same_path(cx: LowerCx, a: ExprId, b: ExprId) -> bool {
+    let sa? = cx.view.store.place_step(a) else { return false }
+    let sb? = cx.view.store.place_step(b) else { return false }
+    match sa {
+        .Root(_) -> sb is .Root && same_name(cx, a, b),
+        .Field(pa, na) -> match sb { .Field(pb, nb) -> na == nb && same_path(cx, pa, pb), _ -> false },
+        .At(_, _) or .Unwrap(_) -> false,
+    }
+}
+
+/// Two uses of one binding.
+fn same_name(cx: LowerCx, a: ExprId, b: ExprId) -> bool {
+    let ba? = cx.names.binding(a) else { return false }
+    let bb? = cx.names.binding(b) else { return false }
+    same_binding(ba, bb)
+}
+
+/// Two keys that are one: the same text written twice, or one name.
+fn same_key(cx: LowerCx, a: ExprId, b: ExprId) -> bool {
+    let ta: string? = cx.view.store.expr(a).text_of()
+    let tb: string? = cx.view.store.expr(b).text_of()
+    if ta != null || tb != null { return ta != null && tb != null && ta! == tb! }
+    cx.view.store.ident_name(a) != null && same_name(cx, a, b)
+}
+
+/// A key nothing under the value can change: written text, or a name
+/// the read alone mentions.
+fn steady_key(cx: LowerCx, under: List<ExprId>, key: ExprId) -> bool {
+    cx.view.store.expr(key).text_of() != null || named(cx, under, key) == 1
+}
+
+/// How many of these expressions name `root`'s binding.
+fn named(cx: LowerCx, under: List<ExprId>, root: ExprId) -> int {
+    [e for e in under if is_root(cx, e) && same_name(cx, e, root)].length
+}
+
+/// Whether an expression is a bare name — a path's root.
+fn is_root(cx: LowerCx, e: ExprId) -> bool {
+    let step? = cx.view.store.place_step(e) else { return false }
+    step is .Root
 }
 
 // ── The voices ──
@@ -215,19 +313,6 @@ fn unknowable_map(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
                 "`{}.${name}` cannot know its values",
                 "asked here",
                 "bind the map under a declared type first — `let m: Map<string, int> = {}`",
-            ),
-        )
-}
-
-fn no_entry(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "type.map_entry",
-                cx.loc_of(e),
-                "a map's entries wear the prelude's `Entry`, and this program sees no `@std/prelude`",
-                "asked here",
-                "a file in a package sees the prelude — or walk the pairs, `for k, v in m`",
             ),
         )
 }

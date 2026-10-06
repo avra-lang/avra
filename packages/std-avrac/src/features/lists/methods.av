@@ -12,10 +12,11 @@ export fn on_list(t: Type) -> bool {
     t is .List || t is .EmptyList
 }
 
-/// The pipeline verbs' receivers: a list (or the empty literal), or a
-/// `(lo..hi)` range, which walks as its own counter.
+/// The pipeline verbs' receivers: a list (or the empty literal), a
+/// `(lo..hi)` range, which walks as its own counter, or a map, which
+/// walks as its entries.
 export fn on_walk(t: Type) -> bool {
-    t is .List || t is .EmptyList || t is .Range
+    t is .List || t is .EmptyList || t is .Range || t is .Map
 }
 
 /// A string — the receiver `chars` views.
@@ -300,7 +301,7 @@ export fn check_count(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 export fn check_sum(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, "sum")
     if elem == null || !cx.seated(mc, "sum", []) { return cx.error_type }
-    if !(cx.view.types.seen_shape(elem!) is .Int) { return ints_only(cx, mc.e, elem!, "sum") }
+    if !(cx.view.types.seen_shape(elem!) is .Int) { return ints_only(cx, mc, elem!, "sum") }
     cx.type(int)
 }
 
@@ -312,7 +313,7 @@ export fn check_max(mut cx: TypeCx, mc: MethodCall) -> TypeId { extremes(cx, mc,
 fn extremes(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, name)
     if elem == null || !cx.seated(mc, name, []) { return cx.error_type }
-    if !(cx.view.types.seen_shape(elem!) is .Int) { return ints_only(cx, mc.e, elem!, name) }
+    if !(cx.view.types.seen_shape(elem!) is .Int) { return ints_only(cx, mc, elem!, name) }
     cx.type(int?)
 }
 
@@ -323,20 +324,20 @@ export fn check_max_by(mut cx: TypeCx, mc: MethodCall) -> TypeId { keyed_extreme
 
 fn keyed_extreme(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
     let seat? = walk_seat(cx, mc, name) else { return cx.error_type }
-    if !(cx.view.types.seen_shape(seat.elem) is .Int) { return ints_only(cx, mc.e, seat.elem, name) }
-    if !(cx.view.types.seen_shape(seat.answer) is .Int) { return ints_only(cx, mc.e, seat.answer, name) }
+    if !(cx.view.types.seen_shape(seat.elem) is .Int) { return ints_only(cx, mc, seat.elem, name) }
+    if !(cx.view.types.seen_shape(seat.answer) is .Int) { return ints_only(cx, mc, seat.answer, name) }
     cx.type(int?)
 }
 
 /// A verb that adds or ranks numbers, refused on a list of something
 /// else in its own words.
-fn ints_only(mut cx: TypeCx, e: ExprId, elem: TypeId, name: string) -> TypeId {
+fn ints_only(mut cx: TypeCx, mc: MethodCall, elem: TypeId, name: string) -> TypeId {
     cx
         .spoken(
             refusal(
                 "type.list_element",
-                cx.loc_of(e),
-                "`${name}` needs numbers, and this list holds `${cx.view.types.name_of(elem)}`",
+                cx.loc_of(mc.e),
+                "`${name}` needs numbers, and this ${walked_word(cx, mc)} holds `${cx.view.types.name_of(elem)}`",
                 "${name} here",
                 "map to `int` first",
             ),
@@ -348,7 +349,7 @@ fn scanned(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
     let elem: TypeId? = elem_held(cx, mc, name)
     if elem == null { return null }
     if cx.compares_by_value(elem!) { return elem }
-    let _ = scans_by_value(cx, mc.e, name, elem!)
+    let _ = scans_by_value(cx, mc, name, elem!)
     null
 }
 
@@ -423,6 +424,7 @@ export fn check_join(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 fn elem_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
     let elem: TypeId? = match cx.view.types.seen_shape(cx.type_at(mc.subject)) {
         .Range -> cx.type(int),
+        .Map(_, value) -> cx.entry_type(mc.e, value),
         _ -> cx.view.types.element(cx.type_at(mc.subject)),
     }
     if elem == null && cx.seen_at(mc.subject) is .EmptyList { let _ = unknowable_walk(cx, mc.e, name) }
@@ -556,13 +558,18 @@ fn unpaired_enumerate(mut cx: TypeCx, e: ExprId) -> TypeId {
         )
 }
 
-fn scans_by_value(mut cx: TypeCx, e: ExprId, name: string, elem: TypeId) -> TypeId {
+/// What a walk's receiver is, for a voice: a map, or a list.
+fn walked_word(cx: TypeCx, mc: MethodCall) -> string {
+    if cx.seen_at(mc.subject) is .Map { "map" } else { "list" }
+}
+
+fn scans_by_value(mut cx: TypeCx, mc: MethodCall, name: string, elem: TypeId) -> TypeId {
     cx
         .spoken(
             refusal(
                 "type.list_element",
-                cx.loc_of(e),
-                "`${name}` scans by value — a scalar, text, a tagged enum, or a record of one such field — and this list holds `${cx.view.types.name_of(elem)}`",
+                cx.loc_of(mc.e),
+                "`${name}` scans by value — a scalar, text, a tagged enum, or a record of one such field — and this ${walked_word(cx, mc)} holds `${cx.view.types.name_of(elem)}`",
                 "scanned here",
                 "spell the scan — `xs.any(same(it))` with the fields you mean",
             ),

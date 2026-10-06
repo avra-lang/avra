@@ -20,6 +20,11 @@ void* avra_cell_unique(void* slot);
 const char* avra_bytes_adopted(const void* p, int64_t n);
 const char* avra_str_of_bytes(const char* b);
 int64_t avra_map_worst_probe(void* map);
+int64_t avra_map_slot(void* map, const char* key);
+int64_t avra_map_value_at(void* map, int64_t slot);
+void avra_map_set_at(void* map, const char* key, int64_t token, int64_t v);
+void avra_map_remove(void* map, const char* key);
+int64_t avra_map_probes(void);
 int64_t avra_map_keyed(void* map);
 uint64_t avra_text_hash(const char* s);
 uint64_t avra_sip_hash_keyed(uint64_t k0, uint64_t k1, const char* s, int64_t n);
@@ -90,6 +95,125 @@ static void attack(const char* what, const char** keys, int64_t n) {
     avra_rc_release(m);
     snprintf(msg, sizeof msg, "%s: the map, released, leaves the live count where it began", what);
     CHECK(avra_mem_live() == live, msg);
+}
+
+static int64_t held_alike(void* m, const char** keys, const int64_t* want, int64_t n) {
+    for (int64_t i = 0; i < n; i++) {
+        if (want[i] < 0 ? avra_map_has(m, keys[i]) : (!avra_map_has(m, keys[i]) || avra_map_get(m, keys[i]) != want[i])) return 0;
+    }
+    return 1;
+}
+
+// A WORD THE MAP CANNOT CONFIRM IS NEVER BELIEVED, whoever hands it
+// over: every case below gives `avra_map_set_at` a word that was true
+// once — before a remove, before an earlier key's remove moved every
+// slot, before the index was built again, or of ANOTHER map — and the
+// map must end exactly as an ordinary write leaves it.
+static void stale_words(void) {
+    enum { N = 6 };
+    const char* k[N];
+    for (int64_t i = 0; i < N; i++) {
+        char buf[8];
+        int len = snprintf(buf, sizeof buf, "s%lld", (long long)i);
+        k[i] = text(buf, (size_t)len);
+    }
+    void* m = avra_map_new();
+    for (int64_t i = 0; i < N - 1; i++) avra_map_set(m, k[i], i);
+
+    int64_t hit = avra_map_slot(m, k[3]);
+    avra_map_remove(m, k[1]);
+    avra_map_set_at(m, k[3], hit, 30);
+    CHECK(held_alike(m, k, (int64_t[]){0, -1, 2, 30, 4, -1}, N) && avra_map_len(m) == 4, "a hit's word after an EARLIER key left writes its own key, never the one that moved into its slot");
+
+    hit = avra_map_slot(m, k[2]);
+    avra_map_remove(m, k[2]);
+    avra_map_set_at(m, k[2], hit, 20);
+    CHECK(held_alike(m, k, (int64_t[]){0, -1, 20, 30, 4, -1}, N) && avra_map_len(m) == 4, "a hit's word after its own key left puts the key back, and leaves its old slot's new holder alone");
+
+    int64_t miss = avra_map_slot(m, k[5]);
+    avra_map_remove(m, k[0]);
+    avra_map_set_at(m, k[5], miss, 50);
+    CHECK(held_alike(m, k, (int64_t[]){-1, -1, 20, 30, 4, 50}, N), "a miss's word from before a remove built the index again is probed afresh, and the key is found");
+
+    void* grown = avra_map_new();
+    const char* lone = text("lone", 4);
+    miss = avra_map_slot(grown, lone);
+    enum { FILL = 400 };
+    static const char* fill[FILL];
+    for (int64_t i = 0; i < FILL; i++) {
+        char buf[16];
+        int len = snprintf(buf, sizeof buf, "f%lld", (long long)i);
+        fill[i] = text(buf, (size_t)len);
+        avra_map_set(grown, fill[i], i);
+    }
+    avra_map_set_at(grown, lone, miss, 7);
+    CHECK(avra_map_has(grown, lone) && avra_map_get(grown, lone) == 7 && avra_map_len(grown) == FILL + 1 && found_all(grown, fill, FILL), "a miss's word from before the index grew is probed afresh, and every key is found");
+
+    void* other = avra_map_new();
+    avra_map_set(other, k[4], 400);
+    avra_map_set(other, k[3], 300);
+    hit = avra_map_slot(m, k[4]);
+    avra_map_set_at(other, k[4], hit, 401);
+    miss = avra_map_slot(m, k[1]);
+    avra_map_set_at(other, k[1], miss, 100);
+    CHECK(held_alike(other, k, (int64_t[]){-1, 100, -1, 300, 401, -1}, N) && avra_map_len(other) == 3, "a word of ANOTHER map writes this map's own key");
+    CHECK(held_alike(m, k, (int64_t[]){-1, -1, 20, 30, 4, 50}, N), "and the map the word came from is untouched");
+
+    avra_rc_release(m);
+    avra_rc_release(grown);
+    avra_rc_release(other);
+    avra_rc_release((void*)lone);
+    release_all(k, N);
+    release_all(fill, FILL);
+}
+
+// A READ THEN A WRITE OF ONE KEY IS ONE PROBE: the slot row's word
+// carries a hit's slot or a miss's empty index word, and the write
+// under it walks nothing — through every growth of the index. A word
+// the map has since outgrown is probed afresh.
+static void token_writes(void) {
+    enum { COUNT = 5000 };
+    static const char* keys[COUNT];
+    for (int64_t i = 0; i < COUNT; i++) {
+        char buf[24];
+        int len = snprintf(buf, sizeof buf, "t%lld", (long long)i);
+        keys[i] = text(buf, (size_t)len);
+    }
+    void* m = avra_map_new();
+    (void)avra_map_probes();
+    int64_t before = avra_map_probes();
+    for (int64_t i = 0; i < COUNT; i++) {
+        int64_t token = avra_map_slot(m, keys[i]);
+        if (token >= 0) break;
+        avra_map_set_at(m, keys[i], token, i);
+    }
+    CHECK(avra_map_probes() - before == COUNT, "a miss then its write is one probe a key, through every rebuild");
+    CHECK(avra_map_len(m) == COUNT && found_all(m, keys, COUNT), "every key written under a miss's word answers its value");
+    before = avra_map_probes();
+    int64_t hits = 0;
+    for (int64_t i = 0; i < COUNT; i++) {
+        int64_t token = avra_map_slot(m, keys[i]);
+        if (token >= 0) hits++;
+        avra_map_set_at(m, keys[i], token, avra_map_value_at(m, token) + 1);
+    }
+    CHECK(hits == COUNT && avra_map_probes() - before == COUNT, "a hit then its write is one probe a key");
+    CHECK(avra_map_len(m) == COUNT && avra_map_get(m, keys[7]) == 8, "a write under a hit's word overwrites in place");
+
+    const char* late = text("late", 4);
+    int64_t stale_miss = avra_map_slot(m, late);
+    avra_map_set(m, late, 1);
+    avra_map_set_at(m, late, stale_miss, 2);
+    CHECK(avra_map_len(m) == COUNT + 1 && avra_map_get(m, late) == 2, "a miss's word for a key since written overwrites, never doubles");
+    int64_t stale_hit = avra_map_slot(m, late);
+    avra_map_remove(m, late);
+    avra_map_set_at(m, late, stale_hit, 3);
+    CHECK(avra_map_len(m) == COUNT + 1 && avra_map_get(m, late) == 3 && avra_map_get(m, keys[COUNT - 1]) == COUNT, "a hit's word past the map's end is probed afresh");
+    avra_map_set_at(m, keys[0], -1, 40);
+    CHECK(avra_map_get(m, keys[0]) == 40, "a word that says nothing is an ordinary write");
+    stale_words();
+    avra_rc_release(m);
+    avra_rc_release((void*)late);
+    release_all(keys, COUNT);
 }
 
 // "k", a NUL, then i: one prefix before the NUL, distinct after it.
@@ -232,6 +356,8 @@ int main(void) {
     CHECK(avra_map_has(e, empty) && avra_map_get(e, empty) == 7 && avra_map_len(e) == 1, "an empty key stores and reads");
     avra_rc_release(e);
     avra_rc_release((void*)empty);
+
+    token_writes();
 
     printf("map hash: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

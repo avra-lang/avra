@@ -2183,7 +2183,22 @@ static uint64_t sip_hash(uint64_t k0, uint64_t k1, const char* s, size_t n) {
     return v0 ^ v1 ^ v2 ^ v3;
 }
 
-static inline int map_keyed(AvraMap* m) { return m->index[-1] != 0; }
+// THE WORD BEFORE A BUILT INDEX: bit 0 says which hash filed it (set:
+// the keyed fallback); the rest is the index's GENERATION — a number no
+// other building of any index is given, so a probe's word can say which
+// index it walked. The last number is SPENT: an index that wears it
+// hands out no word at all.
+enum { GEN_BITS = 36 };
+static const uint64_t GEN_SPENT = ((uint64_t)1 << GEN_BITS) - 1;
+static uint64_t g_index_gen;
+
+static inline int map_keyed(AvraMap* m) { return (int)(m->index[-1] & 1); }
+static inline uint64_t map_gen(AvraMap* m) { return (uint64_t)m->index[-1] >> 1; }
+
+static uint64_t gen_minted(void) {
+    uint64_t gen = __atomic_add_fetch(&g_index_gen, 1, __ATOMIC_RELAXED);
+    return gen < GEN_SPENT ? gen : GEN_SPENT;
+}
 
 __attribute__((always_inline))
 static inline uint64_t key_hash(int keyed, const char* key) {
@@ -2212,7 +2227,7 @@ static void map_index_rebuild(AvraMap* m, int64_t icap, int keyed) {
     if (icap >= CELL_CEILING || icap <= 0) avra_trap("a map grew past any possible size — a corrupted box");
     index_free(m);
     int64_t* words = (int64_t*)calloc((size_t)icap + 1, sizeof(int64_t));
-    words[0] = keyed;
+    words[0] = (int64_t)((gen_minted() << 1) | (keyed ? 1 : 0));
     m->index = words + 1;
     m->icap = icap;
     acc_add(ACC_INDEX, index_words(m) * (int64_t)sizeof(int64_t));
@@ -2270,6 +2285,23 @@ static inline void map_indexed(AvraMap* m) {
     if (__builtin_expect(m->icap == 0, 0)) map_index_first(m);
 }
 
+// THE PROBES, COUNTED (AVRA_MAP_STATS=1): every walk of an index, said
+// at exit — how a fused read-then-write is held to one.
+static int g_map_stats;
+static int64_t g_map_probes;
+
+static void map_stats_report(void) {
+    avra_say("map: %lld probes\n", (long long)g_map_probes);
+}
+
+__attribute__((constructor))
+static void map_stats_settled(void) {
+#if AVRA_INSTRUMENTS
+    g_map_stats = getenv("AVRA_MAP_STATS") != NULL;
+#endif
+    if (g_map_stats) atexit(map_stats_report);
+}
+
 // Where a key's probe ended: its slot or -1, and for a miss the empty
 // word it stopped at, the key's hash and how far it walked.
 typedef struct { int64_t slot; uint64_t hash; uint64_t at; int64_t walked; } Probe;
@@ -2277,6 +2309,7 @@ typedef struct { int64_t slot; uint64_t hash; uint64_t at; int64_t walked; } Pro
 __attribute__((always_inline))
 static inline Probe map_probe(AvraMap* m, const char* key) {
     map_indexed(m);
+    if (__builtin_expect(g_map_stats, 0)) g_map_probes++;
     uint64_t mask = (uint64_t)m->icap - 1;
     uint64_t h = key_hash(map_keyed(m), key);
     uint64_t i = h & mask;
@@ -2306,6 +2339,49 @@ static int64_t map_claim(AvraMap* m, const char* key, int* fresh) {
     if (m->keys->len * 10 >= m->icap * 7) map_index_rebuild(m, m->icap * 2, map_keyed(m));
     else if (__builtin_expect(p.walked > PROBE_TRIPWIRE && !map_keyed(m), 0)) map_rekeyed(m);
     else m->index[p.at] = index_word(p.hash, s);
+    return s;
+}
+
+// A PROBE AS ONE WORD, so the write that follows a read walks nothing:
+// a hit is its slot; a miss is negative — the sign bit, the generation
+// of the index it walked, the empty word the walk stopped at. A miss
+// past the tripwire, past what the word can hold, or in an index whose
+// generation is spent is -1 and says nothing.
+enum { TOKEN_AT_BITS = 27 };
+static const uint64_t TOKEN_AT_MASK = ((uint64_t)1 << TOKEN_AT_BITS) - 1;
+
+static inline int64_t probe_token(AvraMap* m, Probe p) {
+    if (p.slot >= 0) return p.slot;
+    uint64_t gen = map_gen(m);
+    if (p.walked > PROBE_TRIPWIRE || p.at >> TOKEN_AT_BITS || gen == GEN_SPENT) return -1;
+    return (int64_t)(((uint64_t)1 << 63) | (gen << TOKEN_AT_BITS) | p.at);
+}
+
+// `map_claim` for a key whose probe a word may still hold. THE WORD IS
+// BELIEVED ONLY WHERE THE MAP ITSELF CONFIRMS IT, whatever the caller
+// proved: a hit's slot must hold this very key; a miss's empty word
+// must be in the index the probe walked — the same generation — and
+// still empty, since within one building words only fill, and this
+// key's own arrival would have filled that one. Anything else is
+// probed afresh.
+static int64_t map_claim_at(AvraMap* m, const char* key, int64_t token, int* fresh) {
+    if (token >= 0) {
+        if (token < m->keys->len) {
+            const char* held = (const char*)(uintptr_t)m->keys->data[token];
+            if (held == key || avra_streq(held, key)) { *fresh = 0; return token; }
+        }
+        return map_claim(m, key, fresh);
+    }
+    uint64_t at = (uint64_t)token & TOKEN_AT_MASK;
+    uint64_t gen = ((uint64_t)token >> TOKEN_AT_BITS) & GEN_SPENT;
+    if (token == -1 || m->icap == 0 || gen != map_gen(m) || at >= (uint64_t)m->icap || m->index[at] != 0) {
+        return map_claim(m, key, fresh);
+    }
+    *fresh = 1;
+    avra_array_push_owned(m->keys, (void*)key);
+    int64_t s = m->keys->len - 1;
+    if (m->keys->len * 10 >= m->icap * 7) map_index_rebuild(m, m->icap * 2, map_keyed(m));
+    else m->index[at] = index_word(key_hash(map_keyed(m), key), s);
     return s;
 }
 
@@ -2366,10 +2442,13 @@ void* avra_map_get_owned(void* map, const char* key) {
     return v;
 }
 
-// A key's ONE probe: the slot it names, or -1. The reads below take
-// that slot, so `get` hashes once whatever it asks after.
+// A key's ONE probe: the slot it names, or a negative word for a key
+// that is not there. The reads below take that slot, so `get` hashes
+// once whatever it asks after — and a write handed the word back
+// (`avra_map_set_at`) walks nothing where the map confirms it.
 int64_t avra_map_slot(void* map, const char* key) {
-    return map_find((AvraMap*)map, key);
+    AvraMap* m = (AvraMap*)map;
+    return probe_token(m, map_probe(m, key));
 }
 
 // The value in a slot `avra_map_slot` named.
@@ -2391,12 +2470,16 @@ int64_t avra_map_present_at(void* map, int64_t slot) {
 // A write under a key: an existing slot is overwritten (the old
 // owned value released), a new key appends in written order and
 // the map takes its own reference to the key. Answers the slot.
-static int64_t map_put(AvraMap* m, const char* key, int64_t v) {
+static int64_t map_put_at(AvraMap* m, const char* key, int64_t token, int64_t v) {
     int fresh;
-    int64_t s = map_claim(m, key, &fresh);
+    int64_t s = map_claim_at(m, key, token, &fresh);
     if (fresh) avra_array_push(m->vals, v);
     else avra_slot_set(m->vals, s, v);
     return s;
+}
+
+static int64_t map_put(AvraMap* m, const char* key, int64_t v) {
+    return map_put_at(m, key, -1, v);
 }
 
 void avra_map_set(void* map, const char* key, int64_t v) {
@@ -2428,6 +2511,37 @@ void avra_map_set_owned(void* map, const char* key, void* v) {
 void avra_map_set_maybe_owned(void* map, const char* key, int64_t present, void* v) {
     if (present) avra_map_set_owned(map, key, v);
     else avra_map_set_maybe(map, key, 0, 0);
+}
+
+// THE SET FAMILY UNDER A TOKEN: the write `avra_map_slot`'s word
+// already found the place for. Each is its twin above, less the probe.
+void avra_map_set_at(void* map, const char* key, int64_t token, int64_t v) {
+    map_put_at((AvraMap*)map, key, token, v);
+}
+
+void avra_map_set_at_maybe(void* map, const char* key, int64_t token, int64_t present, int64_t v) {
+    AvraMap* m = (AvraMap*)map;
+    m->vals->marks[map_put_at(m, key, token, present ? v : 0)] = present ? 0 : MARK_ABSENT;
+}
+
+void avra_map_set_at_owned(void* map, const char* key, int64_t token, void* v) {
+    AvraMap* m = (AvraMap*)map;
+    int fresh;
+    int64_t s = map_claim_at(m, key, token, &fresh);
+    if (fresh) avra_array_push_owned(m->vals, v);
+    else avra_slot_set_owned(m->vals, s, v);
+}
+
+void avra_map_set_at_maybe_owned(void* map, const char* key, int64_t token, int64_t present, void* v) {
+    if (present) avra_map_set_at_owned(map, key, token, v);
+    else avra_map_set_at_maybe(map, key, token, 0, 0);
+}
+
+// The index walks so far, counted from the first ask — for the
+// runtime's own tests.
+int64_t avra_map_probes(void) {
+    g_map_stats = 1;
+    return g_map_probes;
 }
 
 // THE INDEX, MEASURED — for the runtime's own tests, never a hot path:

@@ -31,6 +31,10 @@ const MAP_WALKS: string = embed("freed_map_walks/freed_map_walks.av")
 /// `Entry` they wear.
 const ENTRIES: string = "type Row = { vals: List<int> }\nfn shown() -> int {\n    mut m: Map<string, Row> = {}\n    for i in 0..200 { m.set(\"k\${i % 5}\", Row { vals: [i, i] }) }\n    let es = m.entries()\n    m.remove(\"k0\")\n    mut t = 0\n    for e in es { t = t + e.value.vals.length + e.key.length }\n    t + m.entries().length\n}\nshown()"
 
+/// A map walked as a source, a kept map, and the one-probe write of a
+/// managed value.
+const MAP_SOURCE: string = "type Row = { vals: List<int> }\nfn shown() -> int {\n    mut m: Map<string, Row> = {}\n    for i in 0..200 {\n        let k = \"k\${i % 5}\"\n        m.set(k, Row { vals: (m.get(k)?.vals ?? []).concat([i]) })\n    }\n    let kept = m.filter(it.value.vals.length > 0).drop(1)\n    let sizes = m.map(it.value.vals.length)\n    let hit = m.find(it.key == \"k3\")\n    kept.length + sizes.sum() + (if hit == null { 0 } else { 1 }) + m.fold(0, (acc, e) -> acc + e.key.length)\n}\nshown()"
+
 const TASKS: string = embed("freed_tasks/freed_tasks.av")
 const CELLS: string = embed("freed_cells/freed_cells.av")
 const OUTLIVES: string = embed("kept_outlives/kept_outlives.av")
@@ -93,6 +97,7 @@ spec "compiler/backend (the evaluator frees)" {
         then "a map's values leave nothing" { held(MAPS) == 0 }
         then "a copied map's values leave nothing" { held(MAP_COPY) == 0 }
         then "a walk over a map's values leaves nothing" { held(MAP_WALKS) == 0 }
+        then "a walk over a map as a source, and a fused write, leave nothing" { held_floored(MAP_SOURCE) == 0 }
         then "a map's entries leave nothing" { held_floored(ENTRIES) == 0 }
         then "a task's body and answer leave nothing" { held(TASKS) == 0 }
         then "a frame's cells leave nothing" { held(CELLS) == 0 }

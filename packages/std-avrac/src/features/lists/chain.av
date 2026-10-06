@@ -11,6 +11,7 @@ use features.{LowerCx, MethodCall, PipeStage, FnBox, Step, Clause, Sink, Source,
 /// `xs.map(f)` / `xs.filter(p)` — the chain ending here, run once.
 export fn chained(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let clauses? = chain_clauses(cx, mc.e) else { return cx.lower_defect(mc.e, "a chain link without its stage survived typing") }
+    if cx.seen_at(mc.e) is .Map { return cx.piped(Pipeline { clauses: clauses, sink: .Put(cx.map_new(cx.shape_at(mc.e))) }) }
     let dst = cx.grown_box(cx.shape_at(mc.e), cx.box_size(0), [])
     cx.piped(Pipeline { clauses: clauses, sink: .Push(dst) })
 }

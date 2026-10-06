@@ -41,11 +41,13 @@ export enum Clause {
     Flatten(e: ExprId, list: TypeId, elem: TypeId)
 }
 
-/// Where each element that passes every clause goes: a pushed list, or
-/// a terminal's answer cell — a verdict, the first hit, its place. `ret`
-/// is the sink's own answer type; `cell` was seeded before the loop.
+/// Where each element that passes every clause goes: a pushed list, a
+/// map its entry is put into, or a terminal's answer cell — a verdict,
+/// the first hit, its place. `ret` is the sink's own answer type;
+/// `cell` was seeded before the loop.
 export enum Sink {
     Push(dst: Reg)
+    Put(dst: Reg)
     Any(ret: TypeId, cell: Reg, pred: FnBox)
     All(ret: TypeId, cell: Reg, pred: FnBox)
     Find(ret: TypeId, cell: Reg, pred: FnBox)
@@ -65,7 +67,10 @@ export type Pipeline = { clauses: List<Clause>, sink: Sink }
 
 /// Every head's registers so far, which a written step binds, and the
 /// element in hand — a pipeline opens with a head, so a sink has one.
-type Turn = { regs: List<Reg>, value: Reg? }
+type Turn = { regs: List<Reg>, value: Reg?, pair: Pair? = null }
+
+/// A map's turn as it was read: the key and the value an entry packs.
+type Pair = { key: Reg, value: Reg }
 
 impl LowerCx {
     /// The pipeline run, answering its sink's value.
@@ -137,7 +142,7 @@ impl LowerCx {
         self.bind_patterns(s.source, t.regs)
         self.looked_up(s.source, t.regs, s.lookup)
         let value: TypeId? = if s.hi == null { self.view.types.map_value(self.type_at(s.source)) } else { null }
-        if value != null { return self.keyed_head(p, at, t, s.source, value!) }
+        if value != null { return self.keyed_head(p, at, t, s, value!) }
         let w = if s.hi == null { self.opened(s.source, self.elem_of(s.source)) } else { self.counted(s.source, s.hi!) }
         let here = self.turn_open(w)
         let v = if s.hi == null { self.turn_elem(w, here) } else { here }
@@ -153,13 +158,19 @@ impl LowerCx {
         self.loop_end()
     }
 
-    /// A map's head: the key and the value bind, in the map's order.
-    mut fn keyed_head(p: Pipeline, at: int, t: Turn, source: ExprId, value: TypeId) {
-        let k = self.keyed(source, value)
+    /// A map's head, in the map's order: a paired head binds the key
+    /// and the value; a chain's walks the entry packed from them.
+    mut fn keyed_head(p: Pipeline, at: int, t: Turn, s: Source, value: TypeId) {
+        let k = self.keyed(s.source, value)
         let here = self.turn_open(k.keys)
-        let v = self.keyed_value(k, here)
-        self
-            .staged(p, at + 1, Turn { regs: t.regs.concat([self.turn_elem(k.keys, here), v]), value: v })
+        let pair = Pair { key: self.turn_elem(k.keys, here), value: self.keyed_value(k, here) }
+        let turn = if s.index {
+            Turn { regs: t.regs.concat([pair.key, pair.value]), value: pair.value }
+        } else {
+            let entry = self.packed_struct(self.elem_of(s.source), [pair.key, pair.value])
+            Turn { regs: t.regs.concat([entry]), value: entry, pair: pair }
+        }
+        self.staged(p, at + 1, turn)
         self.loop_end()
     }
 
@@ -203,6 +214,7 @@ impl LowerCx {
     mut fn sunk(s: Sink, t: Turn) {
         match s {
             .Push(dst) -> self.push_slot(dst, t.value!),
+            .Put(dst) -> self.map_write(dst, t.pair!.key, t.pair!.value),
             .Any(_, cell, pred) -> {
                 self
                     .void_region(self.pred_call(pred, t)) { cx -> cx.store_hit(cell, cx.const_bool(true)) }
@@ -331,7 +343,7 @@ impl LowerCx {
 
     mut fn sink_answer(s: Sink) -> Reg {
         match s {
-            .Push(dst) -> dst,
+            .Push(dst) or .Put(dst) -> dst,
             .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindMap(ret, cell, _) or .FindLast(ret, cell, _) or .FindIndex(ret, cell, _, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _, _) or .Fold(ret, cell, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
             .MinMax(ret, has, best, _) or .MinBy(ret, has, best, _, _, _, _) -> self
                 .region_as(self.loaded_as(self.type(bool), has), ret) { cx ->
@@ -340,12 +352,13 @@ impl LowerCx {
         }
     }
 
-    /// What the source's walk yields: a list's element, or the int a
-    /// `Bytes` or a string reads.
+    /// What the source's walk yields: a list's element, the int a
+    /// `Bytes` or a string reads, or a map's entry.
     fn elem_of(source: ExprId) -> TypeId {
         let ty = self.type_at(source)
         match self.view.types.seen_shape(ty) {
             .Bytes or .Str -> self.type(int),
+            .Map(_, value) -> self.view.decls.entry_of(value) ?? ty,
             _ -> self.view.types.element(ty) ?? ty,
         }
     }
