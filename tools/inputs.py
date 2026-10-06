@@ -133,7 +133,7 @@ ROWS = {
 INERT_ROWS = re.compile(
     r"^(LLVM\w*|avra_(llvm|float|int|str|bytes|vtask|fiber|ffi)_\w+|avra_(debug|eputs|puts|"
     r"errno_text|ptr_at|qtrace|trap|utf8_bad_at|mem_live|fd_taken|fd_write|type_named|"
-    r"vgate_open|vgate_claim|gate_new|rc_release)|"
+    r"vgate_open|vgate_claim|gate_new|rc_release|task_at|task_done|task_cancel)|"
     r"host|println)$")
 
 # A read through the filesystem seam: behind `Host`, not yet an input —
