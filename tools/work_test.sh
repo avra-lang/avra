@@ -160,6 +160,33 @@ seeded env AVRA_SPRITES="A B C"
 check "$(grep -c 'bootstrapping from the seed' "$scratch/out") $(grep -c 'cat > ' "$SPRITE_LOG")" "1 0" "work seed: with neither, it says the Sprite bootstraps and hands it nothing" "$scratch/out"
 unset SPRITE_LOG
 
+# ══ HELP: asked after any verb it prints that verb's line, and touches nothing
+export SPRITE_LOG="$scratch/sprite.log"
+: > "$SPRITE_LOG"; : > "$GH_LOG"
+before=$(git -C "$main" worktree list | wc -l)
+cd "$scratch/avra-after" || exit 1
+for v in new run test land status sprites done bind wait; do
+    for h in -h --help help; do
+        sh "$work" "$v" "$h" > "$scratch/out" 2> "$scratch/err"
+        st=$?
+        [ "$st" = 0 ] && [ "$(wc -l < "$scratch/out" | tr -d ' ')" = 1 ] && grep -q "^usage: sh tools/work $v" "$scratch/out" && [ ! -s "$scratch/err" ] ||
+            { echo "$v $h -> $st" >> "$scratch/helpfail"; cat "$scratch/out" "$scratch/err" >> "$scratch/helpfail"; }
+    done
+done
+[ -d "$scratch/avra-after" ] && lane=stands || lane=gone
+check "$(cat "$scratch/helpfail" 2>/dev/null | head -n 3 | tr '\n' ' ')|$(cat "$SPRITE_LOG" "$GH_LOG" | wc -l | tr -d ' ')|$lane|$(($(git -C "$main" worktree list | wc -l) - before))" "|0|stands|0" "work <verb> -h/--help/help: one usage line, exit 0, and no Sprite, no GitHub, no worktree is touched" "$scratch/helpfail"
+for h in "" -h --help help; do sh "$work" $h > "$scratch/out.$total.$h" 2>&1 || echo "bare '$h' failed" >> "$scratch/helpfail"; done
+check "$(cat "$scratch/helpfail" 2>/dev/null | wc -l | tr -d ' ') $(grep -c 'sh tools/work' "$scratch/out.$total.")" "0 7" "work, bare or asked for help: the seven verbs, exit 0" "$scratch/helpfail"
+sh "$work" run --verbose true > "$scratch/out" 2>&1
+check "$? $(grep -c 'has no flag .--verbose' "$scratch/out") $(grep -c '^usage: sh tools/work run' "$scratch/out") $(cat "$SPRITE_LOG" | wc -l | tr -d ' ')" "64 1 1 0" "work run: a flag it does not know is refused with the usage and 64, and nothing runs" "$scratch/out"
+sh "$work" run --for soon true > "$scratch/out" 2>&1
+st=$?
+sh "$work" run > "$scratch/out2" 2>&1
+check "$st $? $(cat "$SPRITE_LOG" | wc -l | tr -d ' ')" "64 64 0" "work run: a --for that is no number, and no command at all, are refused the same way" "$scratch/out"
+sh "$work" frobnicate > "$scratch/out" 2>&1
+check "$? $(grep -c 'no verb .frobnicate' "$scratch/out")" "64 1" "work: an unknown verb is named, with the usage and 64" "$scratch/out"
+unset SPRITE_LOG
+
 # ══ THE QUEUE: a PR queued with no train is taken out and put back ════
 cd "$main" || exit 1
 : > "$GH_LOG"

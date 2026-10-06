@@ -1,0 +1,137 @@
+//! `tests/support/grow.av` — trees by chance: every primitive, nested,
+//! with keys that repeat and keys that read like a path's own steps,
+//! attributes and properties from the whole vocabulary, handlers of every
+//! kind, wide lists and long chains.
+use realize.dom.patch.{Says}
+use style.tokens.{Tone}
+use tree.node.{Prim, Attribute, EventKind, Urgency}
+use tree.url.{local}
+
+const prims: List<Prim> = [
+    .Text,
+    .Heading,
+    .Button,
+    .Link,
+    .Image,
+    .Field,
+    .Checkbox,
+    .Row,
+    .Column,
+    .Dialog,
+    .Divider,
+    .Icon,
+    .Surface,
+    .List,
+    .Item,
+    .Card,
+    .Progress,
+    .Alert,
+    .Spinner,
+    .Form,
+    .Switch,
+    .Slider,
+]
+
+/// The primitives a page draws under a label.
+const controls: List<Prim> = [.Field, .Checkbox, .Switch, .Slider, .Progress]
+
+/// Keys a list might give its rows — one empty, and some that read like
+/// a place, a spelled key, a part and a path.
+const keys = ["a", "b", "c", "d", "e", "", "0", "k1:a", "+text", "a/b"]
+
+/// Words a node might say — none, and some a page must not read as its
+/// own markup or as one byte a letter.
+const words = ["", "a", "b", "two words", "é✓", "<b> & \"q\"", "line\nbreak", "0"]
+
+const kinds: List<EventKind> = [.Press, .Input, .Change, .Submit, .Dismiss]
+
+const sayings: List<Says> = [.Nothing, .Text, .Flag, .Number]
+
+fn flag(r: Rng) -> bool { r.chance(2) }
+
+/// One attribute by chance. The two a page holds as PROPERTIES come up
+/// as often as all the rest.
+fn attr(r: Rng) -> Attribute {
+    match r.below(40) {
+        0 -> .Text(one_of(r, words)),
+        1 -> .Label(one_of(r, words)),
+        2 -> .Level(r.below(8)),
+        3 -> .Amount(r.below(3)),
+        4 -> .Placeholder(one_of(r, words)),
+        5 -> .Src(local("/${one_of(r, keys)}")),
+        6 -> .Alt(one_of(r, words)),
+        7 -> .Href(local("/${one_of(r, keys)}")),
+        8 -> .Min(r.below(3)),
+        9 -> .Max(r.below(3)),
+        10 -> .Disabled(flag(r)),
+        11 -> .Selected(flag(r)),
+        12 -> .Open(flag(r)),
+        13 -> .Invalid(flag(r)),
+        14 -> .Loading(flag(r)),
+        15 -> .Urgency(if flag(r) { Urgency.Polite } else { Urgency.Assertive }),
+        16 -> .Title(one_of(r, words)),
+        17 -> .Name(one_of(r, words)),
+        18 -> .Submits(flag(r)),
+        19 -> .Text(one_of(r, words)),
+        _ -> if flag(r) { .Value(one_of(r, words)) } else { .Checked(flag(r)) },
+    }
+}
+
+/// The words a node says, as often as not: its text, or its label.
+fn spoken_words(r: Rng) -> List<Attribute> {
+    match r.below(4) { 0 -> [.Text(one_of(r, words))], 1 -> [.Label(one_of(r, words))], _ -> [] }
+}
+
+/// One event a node hears, its handler numbered apart from every other.
+fn hearing(r: Rng, kind: EventKind) -> Hears { Hears { kind: kind, says: one_of(r, sayings), tag: r.fresh() } }
+
+/// The events a node hears: mostly none, never one kind twice.
+fn hearings(r: Rng) -> List<Hears> { [hearing(r, k) for k in kinds if r.chance(5)] }
+
+/// How many children a node has: often none, sometimes a wide run.
+fn breadth(r: Rng) -> int {
+    match r.below(10) {
+        0 or 1 or 2 -> 0,
+        3 or 4 or 5 -> 1 + r.below(2),
+        6 or 7 or 8 -> 3 + r.below(2),
+        _ -> 7 + r.below(6),
+    }
+}
+
+/// A key for the child at `place` under a parent that keys its
+/// children by `habit`: never, each its own, each by chance — so some
+/// share one — or now and then.
+fn key_by(r: Rng, habit: int, place: int) -> string? {
+    match habit {
+        0 -> null,
+        1 -> one_of(r, keys),
+        2 -> if flag(r) { null } else { one_of(r, keys) },
+        _ -> keys[place % keys.length],
+    }
+}
+
+/// A node by chance, alone.
+fn leaf(r: Rng) -> Sketch {
+    Sketch {
+        prim: one_of(r, if r.chance(3) { controls } else { prims }),
+        tone: if r.chance(4) { one_of(r, [Tone.Muted, Tone.Danger]) } else { null },
+        attrs: spoken_words(r).concat([attr(r) for turn in 0..r.below(4)]),
+        hears: hearings(r),
+    }
+}
+
+/// A tree by chance, at most `depth` levels under its root.
+export fn grown(r: Rng, depth: int) -> Sketch {
+    let habit = r.below(6)
+    let count = if depth == 0 { 0 } else { breadth(r) }
+    leaf(r) with { kids: [grown(r, depth - 1) with { key: key_by(r, habit, place) } for place in 0..count] }
+}
+
+/// A chain `depth` nodes deep, one child a level.
+export fn chain(r: Rng, depth: int) -> Sketch {
+    if depth == 0 { return leaf(r) }
+    leaf(r) with { kids: [chain(r, depth - 1) with { key: key_by(r, r.below(6), r.below(3)) }] }
+}
+
+/// A tree by chance: now and then a long chain, else a bush.
+export fn tree(r: Rng) -> Sketch { if r.chance(12) { chain(r, 12 + r.below(30)) } else { grown(r, 3) } }

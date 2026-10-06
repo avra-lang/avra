@@ -1,0 +1,136 @@
+//! THE EMBED LAW. `embed("…")` reads a file at compile time, into a const:
+//! the path is written where it is called, it stays inside the package
+//! that writes it, and what stands there is text. Each refusal is spoken
+//! at the literal, once; a file the law accepts is read from beside the
+//! source that names it, whatever const runs the read.
+use @std.avrac.compiler.{avra, new_workspace, Program}
+use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.testing.{vendored_meta, vendored_meta_paths, refused_in}
+
+/// `main` as the entry of a package that also holds `files`, each by its
+/// path under the package root `/w`, and that depends on a library `@x/lib`.
+fn embedding(main: string, files: Map<string, string>) -> Program {
+    mut held = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/lib\" = { path = \"vendor/lib\" }\n",
+            "/w/src/main.av": "use @std.meta.{embed}\n${main}",
+            "/w/vendor/lib/avra.toml": "[package]\nname = \"@x/lib\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/lib/src/lib.av": "use @std.meta.{embed}\nexport fn banner() -> string {\n    embed(\"banner.txt\")\n}\n",
+            "/w/vendor/lib/src/banner.txt": "the library's",
+        },
+    )
+    let placed = [k for k in embed_fixture_paths() if files.get(k) != null]
+    for k in placed { held.set("/w/${k}", files.get(k) ?? "") }
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/lib/avra.toml",
+        "/w/vendor/lib/src/lib.av",
+        "/w/vendor/lib/src/banner.txt",
+    ]
+        .concat(vendored_meta_paths())
+        .concat(["/w/${k}" for k in placed])
+    new_workspace(memory_host(held, paths), "/w", avra()).program("/w/src/main.av")
+}
+
+/// Every path a case here may place a file at, under the package root.
+fn embed_fixture_paths() -> List<string> { ["src/hello.txt", "src/sub/deep.txt", "data/side.txt", "src/banner.txt"] }
+
+/// The files most cases stand over.
+fn stood() -> Map<string, string> {
+    {
+        "src/hello.txt": "hi",
+        "src/sub/deep.txt": "deep",
+        "data/side.txt": "side",
+        "src/banner.txt": "the app's",
+    }
+}
+
+/// What the program answers, or the refusal.
+fn answered(main: string) -> string { embedding(main, stood()).run() catch e -> e }
+
+fn refused_once(main: string, phrase: string) -> bool { refused_in(embedding(main, stood()), phrase) }
+
+spec "features/fns — embed reads a file inside its own package" {
+    given "a literal naming a file beside the source" {
+        then "the const holds its text" { answered("const A: string = embed(\"hello.txt\")\nA") == "hi" }
+        then "a directory below is reached" { answered("const A: string = embed(\"sub/deep.txt\")\nA") == "deep" }
+        then "a `..` that stays inside the package is reached" {
+            answered("const A: string = embed(\"../data/side.txt\")\nA") == "side"
+        }
+        then "one read under a property settles" {
+            answered("const N: int = embed(\"hello.txt\").length\n\"\${N}\"") == "2"
+        }
+        then "one read inside a fn's body settles" {
+            answered(
+                "fn body() -> string {\n    embed(\"sub/deep.txt\")\n}\nconst A: string = body()\nA",
+            ) == "deep"
+        }
+    }
+    given "a file of a package this one depends on, named by the package" {
+        then "the const holds its text, read from that package's root" {
+            answered("const A: string = embed(\"@x/lib/src/banner.txt\")\nA") == "the library's"
+        }
+    }
+    given "a library whose fn embeds a file" {
+        then "the read is of the library's file, beside the library's source" {
+            answered("use @x.lib.{banner}\nconst A: string = banner()\nA") == "the library's"
+        }
+    }
+    given "a path that leaves the package" {
+        then "an absolute path refuses at the literal" {
+            refused_once(
+                "const A: string = embed(\"/etc/hosts\")\nA",
+                "`/etc/hosts` names a file outside it",
+            )
+        }
+        then "a `..` that climbs past the root refuses at the literal" {
+            refused_once(
+                "const A: string = embed(\"../../outside/secret.txt\")\nA",
+                "`../../outside/secret.txt` names a file outside it",
+            )
+        }
+        then "a package this one does not depend on refuses at the literal" {
+            refused_once(
+                "const A: string = embed(\"@y/other/src/x.txt\")\nA",
+                "`@y/other/src/x.txt` names a file outside it",
+            )
+        }
+        then "a `..` out of a dependency refuses" {
+            refused_once(
+                "const A: string = embed(\"@x/lib/../../src/hello.txt\")\nA",
+                "`@x/lib/../../src/hello.txt` names a file outside it",
+            )
+        }
+    }
+    given "a path no file stands at" {
+        then "it refuses at the literal, naming the path" {
+            refused_once(
+                "const A: string = embed(\"nope.txt\")\nA",
+                "`embed` finds no `nope.txt` beside this source file",
+            )
+        }
+        then "a directory is no file" {
+            refused_once(
+                "const A: string = embed(\"sub\")\nA",
+                "`embed` finds no `sub` beside this source file",
+            )
+        }
+    }
+    given "`embed` read as a value" {
+        then "it refuses: a value of it is handed a path nothing read" {
+            refused_once(
+                "fn through(f: fn(string) -> string) -> string {\n    f(\"/etc/hosts\")\n}\nconst A: string = through(embed)\nA",
+                "`embed` reads a file named in the source — its path is a literal",
+            )
+        }
+    }
+    given "the refusals, rendered" {
+        then "a path outside the package" {
+            embedding("const A: string = embed(\"/etc/hosts\")\nA", stood()).report() == "error[type.embed_place]: `embed` reads inside its own package — `/etc/hosts` names a file outside it\n  ╭─[/w/src/main.av:2:25]\n2 │ const A: string = embed(\"/etc/hosts\")\n  ·                         ┬\n  ·                         ╰── leaves the package here\n──╯\nhelp: keep the file in this package, or name a dependency's by its package — `embed(\"@scope/name/path\")`"
+        }
+        then "a missing file" {
+            embedding("const A: string = embed(\"nope.txt\")\nA", stood()).report() == "error[type.embed_file]: `embed` finds no `nope.txt` beside this source file\n  ╭─[/w/src/main.av:2:25]\n2 │ const A: string = embed(\"nope.txt\")\n  ·                         ┬\n  ·                         ╰── no file stands here\n──╯\nhelp: the path is read from this file's own directory"
+        }
+    }
+}

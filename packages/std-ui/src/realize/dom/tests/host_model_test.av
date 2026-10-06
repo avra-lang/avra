@@ -1,0 +1,219 @@
+//! The modelled host, by what it must REFUSE and what it must hold: a
+//! frame a page could not apply is a fault it names, and a frame it can
+//! is the page the records say. The diff is judged by this host, so each
+//! refusal is made to happen here.
+use @std.ui.realize.dom.patch.{Patch, Held, listening_of}
+use @std.ui.realize.dom.tests.support.{host, records, told, whole}
+use @std.ui.realize.dom.wire.{frame, wire_version}
+use @std.ui.tree.identity.{NodeId}
+use @std.ui.tree.node.{Action, Handler}
+
+fn el(n: int) -> NodeId { NodeId { n: n } }
+
+fn nothing() {}
+
+/// A `div` numbered `n`, made and placed first on the page.
+fn standing(n: int) -> List<Patch> { [Patch.Create(el(n), .Div), Patch.Place(el(n), null, null)] }
+
+fn pressed() -> Patch { Patch.Listen(el(0), listening_of(Action { kind: .Press, handler: Handler.Nothing(nothing) })) }
+
+/// What a host shown `patches` as one frame could not apply.
+fn faults(patches: List<Patch>) -> string {
+    mut at = host()
+    at.take(frame(patches))
+    at.faults.join("; ")
+}
+
+/// The page a host shown `patches` as one frame holds.
+fn page(patches: List<Patch>) -> string {
+    mut at = host()
+    at.take(frame(patches))
+    told(at.page(), whole)
+}
+
+spec "the modelled host — a frame a page could not apply" {
+    given "a record naming an element never made" {
+        then "is a fault for place" { faults([Patch.Place(el(4), null, null)]) == "place names 4, which is not on the page" }
+        then "is a fault for an attribute" {
+            faults([Patch.SetAttr(el(4), .Title, "t")]) == "set_attr names 4, which is not on the page"
+        }
+        then "is a fault for remove" { faults([Patch.Remove(el(4))]) == "remove names 4, which is not on the page" }
+    }
+    given "a record naming an element after it was removed" {
+        then "is a fault" {
+            faults(standing(0).concat([Patch.Remove(el(0)), Patch.DropAttr(el(0), .Title)])) == "drop_attr names 0, which is not on the page"
+        }
+    }
+    given "a record naming what stood under a removed element" {
+        then "is a fault: an element that leaves takes all under it" {
+            faults(
+                standing(0)
+                    .concat(
+                        [
+                            Patch.Create(el(1), .Span),
+                            Patch.Place(el(1), el(0), null),
+                            Patch.Remove(el(0)),
+                            Patch.SetAttr(el(1), .Title, "t"),
+                        ],
+                    ),
+            ) == "set_attr names 1, which is not on the page"
+        }
+    }
+    given "a number given to two elements" {
+        then "is a fault" {
+            faults(standing(0).concat([Patch.Create(el(0), .Span)])) == "create gives 0, a number already given"
+        }
+    }
+    given "an element made and never placed" {
+        then "is an orphan, and a fault" { faults([Patch.Create(el(0), .Div)]) == "0 is held and stands nowhere on the page" }
+    }
+    given "an element placed after one that stands under another parent" {
+        then "is a fault" {
+            faults(
+                standing(0)
+                    .concat(standing(1))
+                    .concat([Patch.Create(el(2), .Span), Patch.Place(el(2), el(0), el(1))]),
+            ) == "place puts 2 after 1, which does not stand under 0; 2 is held and stands nowhere on the page"
+        }
+    }
+    given "an element placed under itself" {
+        then "is a fault" { faults(standing(0).concat([Patch.Place(el(0), el(0), null)])) == "place puts 0 under itself" }
+    }
+    given "an element placed under a run of text" {
+        then "is a fault" {
+            faults(
+                [
+                    Patch.CreateText(el(0), "a"),
+                    Patch.Place(el(0), null, null),
+                    Patch.Create(el(1), .Span),
+                    Patch.Place(el(1), el(0), null),
+                ],
+            ) == "place puts 1 under 0, which is no element on the page; 1 is held and stands nowhere on the page"
+        }
+    }
+    given "text set on an element" {
+        then "is a fault: its children would go" {
+            faults(standing(0).concat([Patch.SetText(el(0), "a")])) == "set_text names 0, an element: its children would go"
+        }
+    }
+    given "an attribute set on a run of text" {
+        then "is a fault" {
+            faults(
+                [
+                    Patch.CreateText(el(0), "a"),
+                    Patch.Place(el(0), null, null),
+                    Patch.SetAttr(el(0), .Title, "t"),
+                ],
+            ) == "set_attr names 0, which is text"
+        }
+    }
+    given "an event heard twice by one element" {
+        then "is a fault: a page would answer it twice" {
+            faults(standing(0).concat([pressed(), pressed()])) == "listen names 0, which already hears 1"
+        }
+    }
+    given "a verb asked of an element that stands nowhere on the page" {
+        then "is a fault" {
+            faults(
+                [
+                    Patch.Create(el(0), .Dialog),
+                    Patch.Call(el(0), "showModal"),
+                    Patch.Place(el(0), null, null),
+                ],
+            ) == "call asks 0 for showModal, and it does not stand on the page"
+        }
+    }
+    given "a door entered twice" {
+        then "is a fault: the page did not need the second" {
+            faults(
+                standing(0).concat([Patch.Call(el(0), "showModal"), Patch.Call(el(0), "showModal")]),
+            ) == "call asks 0 for showModal, and its door already stands so"
+        }
+    }
+    given "a door left that was never entered" {
+        then "is a fault" {
+            faults(standing(0).concat([Patch.Call(el(0), "close")])) == "call asks 0 for close, and its door already stands so"
+        }
+    }
+    given "a verb no element of a page has" {
+        then "is a fault" {
+            faults(standing(0).concat([Patch.Call(el(0), "open")])) == "call asks 0 for open, which is no verb of a page's element"
+        }
+    }
+    given "a frame of another version" {
+        then "is a fault, and nothing is applied" {
+            mut at = host()
+            at.take([wire_version - 1, 1].bytes()!)
+            at.faults.join("; ") == "a frame of another version"
+        }
+    }
+}
+
+spec "the modelled host — a frame a page can apply" {
+    given "elements made, placed, written to and moved" {
+        then "is the page the records say" {
+            page(
+                [
+                    Patch.Create(el(0), .Ul),
+                    Patch.SetAttr(el(0), .Title, "b \"q\""),
+                    Patch.SetAttr(el(0), .Class, "c"),
+                    Patch.SetAttr(el(0), .Title, "t"),
+                    Patch.Create(el(1), .Li),
+                    Patch.Place(el(1), el(0), null),
+                    Patch.Create(el(2), .Input),
+                    Patch.SetProp(el(2), .Value, Held.Text("v")),
+                    Patch.SetProp(el(2), .Checked, Held.Flag(true)),
+                    Patch.Place(el(2), el(0), el(1)),
+                    Patch.CreateText(el(3), "line\nbreak"),
+                    Patch.Place(el(3), el(1), null),
+                    Patch.Place(el(0), null, null),
+                    pressed(),
+                    Patch.Place(el(1), el(0), el(2)),
+                    Patch.DropAttr(el(0), .Class),
+                ],
+            ) == "#0 ul title=\"t\" @1:click:0::false\n  #2 input .checked=true .value=\"v\"\n  #1 li\n    #3 \"line\\nbreak\""
+        }
+    }
+    given "a property set back to rest" {
+        then "is not told: a host that never set it holds the same" {
+            page(
+                standing(0)
+                    .concat(
+                        [
+                            Patch.SetProp(el(0), .Value, Held.Text("v")),
+                            Patch.SetProp(el(0), .Checked, Held.Flag(true)),
+                            Patch.SetProp(el(0), .Value, Held.Text("")),
+                            Patch.SetProp(el(0), .Checked, Held.Flag(false)),
+                        ],
+                    ),
+            ) == "#0 div"
+        }
+    }
+    given "a door entered, and a door entered and left" {
+        then "is told open only where it still stands open" {
+            page(
+                standing(0)
+                    .concat(standing(1))
+                    .concat(
+                        [
+                            Patch.Call(el(0), "showModal"),
+                            Patch.Call(el(1), "showModal"),
+                            Patch.Call(el(1), "close"),
+                        ],
+                    ),
+            ) == "#1 div\n#0 div .open=true"
+        }
+    }
+    given "an element numbered past thirty-two bits" {
+        then "is read back whole" {
+            page(
+                [Patch.Create(el(1099511627776), .Div), Patch.Place(el(1099511627776), null, null)],
+            ) == "#1099511627776 div"
+        }
+    }
+    given "a frame's records, read back" {
+        then "name where no id stands as `-`" {
+            records(frame(standing(0).concat([Patch.Unlisten(el(0), .Submit)]))).join("\n") == "create 0 div\nplace 0 in - after -\nunlisten 0 4"
+        }
+    }
+}

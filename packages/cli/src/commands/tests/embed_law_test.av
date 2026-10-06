@@ -1,0 +1,81 @@
+//! THE EMBED LAW ON A DISK: what a memory host cannot stand in for. A link
+//! on the way to a file refuses at the literal, a file that is not UTF-8
+//! refuses at the literal, and a built binary follows its embedded file's
+//! edits. `avra_ran`, `binary_ran`, `clean_stdout` and `scratch_dir` are
+//! the neighbouring tests' own: this module shares one namespace.
+use @std.io.{make_dirs, write_text, write_bytes}
+use @std.process.{tool, cmd, Outcome, ProcessError}
+use @std.time.{now_ns}
+
+/// `at` made a symlink to `to`.
+fn linked(to: string, at: string) -> Result<Outcome, ProcessError> { cmd(tool("ln")?, ["-s", to, at]).outcome() }
+
+/// A package on the disk beside a directory it does not hold: a text
+/// file, a file that is not UTF-8, a link to a file outside, and a link
+/// to the directory outside.
+once fn embed_root() -> string {
+    let root = "${scratch_dir()}/embed_${now_ns()}"
+    let _ = make_dirs("${root}/pkg/src/sub")
+    let _ = make_dirs("${root}/outside")
+    let _ = write_text("${root}/outside/secret.txt", "secret")
+    let _ = write_text(
+        "${root}/pkg/avra.toml",
+        "[package]\nname = \"embeds\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${root}/pkg/src/hello.txt", "first")
+    let _ = write_bytes("${root}/pkg/src/bad.bin", [255, 254, 0].bytes()!)
+    let _ = linked("${root}/outside/secret.txt", "${root}/pkg/src/link.txt")
+    let _ = linked("${root}/outside", "${root}/pkg/src/ldir")
+    root
+}
+
+/// The package with `path` embedded by its entry.
+fn embedding_on_disk(path: string) -> string {
+    let pkg = "${embed_root()}/pkg"
+    let _ = write_text(
+        "${pkg}/src/main.av",
+        "use @std.meta.{embed}\nconst A: string = embed(\"${path}\")\nprintln(A)\n",
+    )
+    pkg
+}
+
+/// Every refusal `avra check` speaks of the package embedding `path`.
+fn embed_refusals(path: string) -> List<string> {
+    match avra_ran(["check", embedding_on_disk(path)]) {
+        .Ok(o) -> [l for l in o.out.stdout.split("\n") if l.starts_with("error[")],
+        .Err(_) -> ["the check did not run"],
+    }
+}
+
+/// What the package's built binary prints.
+fn embed_built() -> string {
+    let binary? = clean_stdout(avra_ran(["build", embedding_on_disk("hello.txt")])) else { return "the build refused" }
+    clean_stdout(binary_ran(binary.trim())) ?? "the binary did not run"
+}
+
+spec "avra — embed on a disk" {
+    given "a file reached through a link" {
+        then "a linked file refuses at the literal, once" {
+            embed_refusals("link.txt").join("|") == "error[type.embed_place]: `embed` follows no link — one stands on the way to `link.txt`"
+        }
+        then "a file under a linked directory refuses the same way" {
+            embed_refusals("ldir/secret.txt").join("|") == "error[type.embed_place]: `embed` follows no link — one stands on the way to `ldir/secret.txt`"
+        }
+    }
+    given "a file that is not text" {
+        then "octets that are not UTF-8 refuse at the literal, naming the byte" {
+            embed_refusals("bad.bin").join("|") == "error[type.embed_file]: `embed` answers text, and `bad.bin` is not UTF-8 — byte 0"
+        }
+        then "a directory refuses as no file" {
+            embed_refusals("sub").join("|") == "error[type.embed_file]: `embed` could not read its file — `src/sub` is not a file"
+        }
+    }
+    given "a file the law accepts" {
+        then "the check is clean" { embed_refusals("hello.txt").is_empty() }
+        then "the built binary prints it, and prints its edit after a rebuild" {
+            let before = embed_built()
+            let _ = write_text("${embed_root()}/pkg/src/hello.txt", "second")
+            before == "first\n" && embed_built() == "second\n"
+        }
+    }
+}

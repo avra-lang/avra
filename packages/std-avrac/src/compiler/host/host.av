@@ -5,7 +5,12 @@ use @std.path.{under_dir, joined_path, normalized, head_segment}
 
 /// The filesystem, as its questions. `stamp` says a file's bytes have not moved
 /// without reading them — null when the host cannot tell.
-export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, std_root: string? = null, cwd: string = "", compiler: string? = null }
+/// What stands at a path BENEATH a root, reached through no link: its
+/// text, nothing, a link on the way, octets that are not UTF-8 (at that
+/// byte), or the host's own refusal.
+export enum Beneath { Text(text: string), Missing, Linked, NotText(at: int), Refused(why: string) }
+
+export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, beneath: fn(string, string) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, std_root: string? = null, cwd: string = "", compiler: string? = null }
 
 impl Host {
     /// One spelling for one directory: a relative path rooted at the
@@ -38,6 +43,10 @@ export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: s
     Host {
         exists: (p: string) -> held.get().get(normalized(joined_path(cwd, p))) != null,
         read: (p: string) -> held.get().get(normalized(joined_path(cwd, p))) ?? "",
+        beneath: (root: string, rel: string) -> memory_beneath(
+            held,
+            normalized(joined_path(cwd, joined_path(root, rel))),
+        ),
         write: (p: string, text: string) -> memory_put(held, normalized(joined_path(cwd, p)), text),
         list: (dir: string) -> children_of(names, normalized(joined_path(cwd, dir))),
         is_dir: (dir: string) -> names.any(under_dir(it, normalized(joined_path(cwd, dir)))),
@@ -45,6 +54,18 @@ export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: s
         reads_ahead: any_reads,
         cwd: cwd,
     }
+}
+
+/// The in-memory table holds text and no link.
+fn memory_beneath(held: Cell<Map<string, string>>, at: string) -> Beneath {
+    let text? = held.get().get(at) else { return Beneath.Missing }
+    Beneath.Text(text)
+}
+
+/// A host with no links, over what it can already say of a path: what
+/// stands there is its text.
+export fn unlinked(exists: fn(string) -> bool, read: fn(string) -> string) -> fn(string, string) -> Beneath {
+    (root: string, rel: string) -> if exists(joined_path(root, rel)) { Beneath.Text(read(joined_path(root, rel))) } else { Beneath.Missing }
 }
 
 /// A host that reads however many files it is asked to.

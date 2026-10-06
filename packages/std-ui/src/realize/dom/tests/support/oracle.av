@@ -1,0 +1,106 @@
+//! `tests/support/oracle.av` — the page a tree SHOULD be, read straight
+//! off its lowered elements by the page's own rules. The rules are
+//! written here a second time ON PURPOSE, from what the wire and the
+//! architecture say: this is what a diff's patches are judged against, so
+//! it asks the diff nothing.
+use realize.dom.patch.{Says}
+use realize.html.element.{Element, Tagged}
+use realize.html.tags.{HtmlAttr, HtmlAttrName}
+use tree.node.{Action, EventKind, Handler}
+
+/// The page's word for each event. Every kind spelled.
+fn page_word(k: EventKind) -> string {
+    match k {
+        .Press -> "click",
+        .Input -> "input",
+        .Change -> "change",
+        .Submit -> "submit",
+        .Dismiss -> "cancel",
+    }
+}
+
+/// Whether the page's own answer to an event is stopped. Every kind spelled.
+fn stops(k: EventKind) -> bool {
+    match k { .Submit -> true, .Press or .Input or .Change or .Dismiss -> false }
+}
+
+/// Whether the page's own answer to an event shuts the element's door: a
+/// dialog sent away is closed before the program hears. Every kind spelled.
+fn shuts(k: EventKind) -> bool {
+    match k { .Dismiss -> true, .Press or .Input or .Change or .Submit -> false }
+}
+
+/// What a handler hears. One arm per thing a control can say.
+fn voice(h: Handler) -> Says {
+    match h { .Nothing(_) -> .Nothing, .Text(_) -> .Text, .Flag(_) -> .Flag, .Number(_) -> .Number }
+}
+
+/// The property an answer is read from — none for an event that says
+/// nothing. Every answer spelled.
+fn read_of(s: Says) -> string {
+    match s { .Nothing -> "", .Text or .Number -> "value", .Flag -> "checked" }
+}
+
+/// How a page hears `a`.
+fn ear_of(a: Action) -> Ear {
+    let says = voice(a.handler)
+    Ear {
+        kind: a.kind.code(),
+        event: page_word(a.kind),
+        says: says.code(),
+        reads: read_of(says),
+        prevents: stops(a.kind),
+    }
+}
+
+/// An attribute that seeds a PROPERTY or opens a DOOR, as the page holds
+/// it off rest: a field's text, a box's tick, a dialog shown. Every other
+/// attribute is none.
+fn held_by(a: HtmlAttr) -> List<Pair> {
+    if a.name == HtmlAttrName.Checked || a.name == HtmlAttrName.Open { return [Pair { name: a.name.word(), value: "true" }] }
+    if a.name != HtmlAttrName.Value || a.value == "" { return [] }
+    [Pair { name: a.name.word(), value: quoted(a.value) }]
+}
+
+/// Whether an attribute is state the page holds off the element's
+/// attributes: a property, or the door a verb opens.
+fn is_property(a: HtmlAttr) -> bool {
+    a.name == HtmlAttrName.Checked || a.name == HtmlAttrName.Value || a.name == HtmlAttrName.Open
+}
+
+/// `pairs`, a name written twice holding what was written last.
+fn settled(pairs: List<Pair>) -> List<Pair> {
+    [p for j, p in pairs if !pairs.drop(j + 1).any(it.name == p.name)]
+}
+
+/// The property each name holds: what was written last, when that is
+/// off rest.
+fn props_of(attrs: List<HtmlAttr>) -> List<Pair> {
+    let last = [a for j, a in attrs if !attrs.drop(j + 1).any(it.name == a.name)]
+    [p for a in last for p in held_by(a)]
+}
+
+/// An element as a page shows it, with all it holds.
+export fn seen_of(e: Element) -> Seen {
+    match e {
+        .Text(run) -> Seen { id: run.id.n, text: run.content },
+        .Tag(el) -> Seen {
+            id: el.id.n,
+            tag: el.tag.word(),
+            attrs: settled(
+                [Pair { name: a.name.word(), value: a.value } for a in el.attrs if !is_property(a)],
+            ),
+            props: props_of(el.attrs),
+            ears: [ear_of(a) for a in el.hears],
+            kids: [seen_of(k) for k in el.kids],
+        },
+    }
+}
+
+/// A run of elements as a page shows it.
+export fn page_of(run: List<Element>) -> List<Seen> { [seen_of(e) for e in run] }
+
+/// Every element under `run`, itself first, in page order.
+fn elements(run: List<Element>) -> List<Tagged> {
+    [t for e in run for el in present(e.tagged()) for t in [el].concat(elements(el.kids))]
+}

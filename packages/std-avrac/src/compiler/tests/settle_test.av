@@ -8,10 +8,13 @@ use @std.avrac.features.{Unsettled, budgets_of}
 use compiler.backend.{run_settle, world_witness}
 use compiler.lower.{Body, Lowered}
 
+/// A settlement with no file to read.
+fn no_embed(_path: string) -> Result<string, string> { .Err("no file stands here") }
+
 spec "compiler/settle — the evaluator settles a const" {
     given "a program's own entry" {
         then "prints, and printing reaches the world" {
-            match run_settle(ir_of("3 + 4"), budgets_of(1000), "/") {
+            match run_settle(ir_of("3 + 4"), budgets_of(1000), no_embed) {
                 .Err(why) -> reaches(why, "avra_puts"),
                 .Ok(_) -> false,
             }
@@ -24,7 +27,7 @@ spec "compiler/settle — the evaluator settles a const" {
             // LICENSED compiler.raw_rt_call_void: the reach law's own subject is the row's NAME — a
             // synthetic instruction built by hand to probe it, not a feature's call
             let worldly = f with { ins: [Ins.CallRtVoid("avra_io_write", [])].concat(f.ins) }
-            match run_settle(l with { fns: [worldly] }, budgets_of(1000), "/") {
+            match run_settle(l with { fns: [worldly] }, budgets_of(1000), no_embed) {
                 .Err(why) -> reaches(why, "avra_io_write"),
                 .Ok(_) -> false,
             }
@@ -35,7 +38,7 @@ spec "compiler/settle — the evaluator settles a const" {
             // LICENSED compiler.raw_rt_call_void: the reach law's own subject is the row's NAME — a
             // synthetic instruction built by hand to probe it, not a feature's call
             let embedding = f with { ins: [Ins.CallRtVoid("avra_embed", [])].concat(f.ins) }
-            match run_settle(l with { fns: [embedding] }, budgets_of(1000), "/") {
+            match run_settle(l with { fns: [embedding] }, budgets_of(1000), no_embed) {
                 .Err(why) -> reaches(why, "avra_puts"),
                 .Ok(_) -> false,
             }
@@ -46,13 +49,13 @@ spec "compiler/settle — the evaluator settles a const" {
             match run_settle(
                 l with { entry: e with { ins: [Ins.CallRtVoid("sqlite3_open", [])].concat(e.ins) } },
                 budgets_of(1000),
-                "/",
+                no_embed,
             ) { .Err(why) -> reaches(why, "sqlite3_open"), .Ok(_) -> false }
         }
     }
     given "a two-body call chain beside a body reached only as a value, never called" {
         then "the settlement refuses: the chain's own call reaches the world" {
-            match run_settle(chained(true), budgets_of(1000), "/") {
+            match run_settle(chained(true), budgets_of(1000), no_embed) {
                 .Err(why) -> reaches(why, "avra_io_write"),
                 .Ok(_) -> false,
             }
@@ -62,7 +65,7 @@ spec "compiler/settle — the evaluator settles a const" {
             names.contains("callee_a") && names.contains("callee_b") && !names.contains("off_chain")
         }
         then "removing the world call off the same chain settles to a value" {
-            match run_settle(chained(false), budgets_of(1000), "/") {
+            match run_settle(chained(false), budgets_of(1000), no_embed) {
                 .Ok(_) -> true,
                 .Err(_) -> false,
             }

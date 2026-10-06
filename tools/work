@@ -270,10 +270,14 @@ leave() {
     [ -z "$fifo" ] || rm -f "$fifo"
 }
 run() {
-    inside
     minutes=15
-    [ "${1:-}" != --for ] || { minutes=$2; shift 2; }
-    [ $# -gt 0 ] || die "usage: work run [--for <minutes>] <command…>"
+    if [ "${1:-}" = --for ]; then
+        case ${2:-} in '' | *[!0-9]*) usage run >&2; exit 64 ;; esac
+        minutes=$2
+        shift 2
+    fi
+    case ${1:-} in '' | -*) [ -z "${1:-}" ] || echo "work: \`run\` has no flag \`$1\`" >&2; usage run >&2; exit 64 ;; esac
+    inside
     cmd=$(assemble "$@")
     sprite=$(bound)
     [ -n "$sprite" ] || die "this worktree holds no Sprite — \`sh tools/work bind\`"
@@ -641,7 +645,30 @@ wait_landed() {
     done
 }
 
+# A VERB'S USAGE IS ONE LINE, and asking for it touches nothing: `-h`,
+# `--help` or `help` after any verb prints that verb's line and leaves
+# with 0; a bare `work` prints them all; an unknown verb, or a flag `run`
+# does not know, prints usage and leaves with 64.
+usage() {
+    case ${1:-} in
+        new) echo "usage: sh tools/work new <name>   — a worktree ../avra-<name> off main, and its Sprite" ;;
+        run) echo "usage: sh tools/work run [--for <minutes>] <cmd…>   — run it on this lane's Sprite, streamed, its exit status (bound: 15 minutes)" ;;
+        test) echo "usage: sh tools/work test   — what this branch touches, on this lane's Sprite" ;;
+        land) echo "usage: sh tools/work land   — push, PR, queue; no Sprite involved" ;;
+        status) echo "usage: sh tools/work status   — PRs and the queue; each lane and its Sprite" ;;
+        sprites) echo "usage: sh tools/work sprites [--fix [<sprite>…]]   — every Sprite at a glance; --fix repairs" ;;
+        done) echo "usage: sh tools/work done   — remove this lane, free its Sprite" ;;
+        bind) echo "usage: sh tools/work bind [<sprite>]   — give this worktree a Sprite, or move it to the one named" ;;
+        wait) echo "usage: sh tools/work wait <branch>   — wait until the branch's PR merges" ;;
+        *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ;;
+    esac
+}
+case ${2:-} in
+    -h | --help | help) usage "$1"; exit 0 ;;
+esac
+
 case "${1:-}" in
+    "" | -h | --help | help) usage; exit 0 ;;
     new) shift; new "$@" ;;
     test) test_ ;;
     run) shift; run "$@" ;;
@@ -655,5 +682,5 @@ case "${1:-}" in
     land) land ;;
     status) status ;;
     wait) shift; wait_landed "$@" ;;
-    *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) echo "work: no verb \`$1\`" >&2; usage >&2; exit 64 ;;
 esac
