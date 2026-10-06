@@ -430,7 +430,6 @@ settle(q):                                      one append per read; no walk; no
 
 | question | answer |
 |---|---|
-| is it a verifying or a constructive trace? | verifying. Values are also findable by content, so A → B → A is warm while the old record is still in the file |
 | a query's own code | is a read: the digest of the unit that declares it. A plugin edit reruns that plugin's answers (pays `.57.4.6`) |
 | the longest in-memory list | printed by `avra explain --stats`, with p99 reads per saved answer. A family that breaks the gate has the wrong key |
 | the guard | `AVRA_DB_CHECK=1` runs an **edit corpus**: one mutation per input and per declaration of a fixture package, then compares against a cold derivation. A second run on an unchanged tree proves nothing |
@@ -518,26 +517,27 @@ No commit is named (no bisect). COMPILER.md's 0.18 s was a Mac figure. Every rou
 ### 7.2 Where a one-edit check goes today, and what removes each part
 
 One string literal edited in one body; wall 4.7–4.9 s (6.1–6.4 s when the file is in the cli).
+`load` is 2.0 s in the split run and grows ~4 ms per held file whatever was edited — the O(program) phase.
 
 | phase | ms | what it does today | what the edit needed | removed by → then (ESTIMATED) |
 |---|---|---|---|---|
-| **load** | 1,820–1,900 | meets every held module's record and asks every hold. **The O(program) phase**: ~4 ms per held file whatever was edited (6 ms at 4 files → 1.85 s at 458 → 3.3 s at 867) | one module's record | the input manifest and reverse index find what an edit reaches (DB 05); nothing is loaded until asked (DB 07 d) → ~40 ms. Early proposal: `.57.193` |
-| **admit** | 1,075–2,100 | parses **23–50 files** for a one-file edit (7 when checked from std-avrac: 45 ms). Why is **unknown** — DB 00's first question, `.57.191` | 1 file | a saved per-file syntax answer: an unchanged file is never parsed (DB 07 d) → ~50 ms |
+| **load: minting** | 890–920 | mints every declaration of all 453 held files, every run. Eager because a row minted inside a query arrives after its reader, and the relation refuses a late write | the declarations something reads | a row is part of its producer's answer, pulled by its first read — no write, so nothing is late (DB 07 a; needs DB 03 a's names and DB 01 b's "a read asks the producer") → ~0 |
+| **load: keys** | 590–600 | re-keys and validates every hold; 460–470 of it builds each file's key parts | the files the edit reaches | the input manifest and reverse index (DB 05) → ~10 ms. Early: `.57.193` step 2 |
+| **load: the rest** | 450–470 | registers every file (240–250), reads and decodes module records (120), opens the store (85–96) | one module | a file is a name, interned when asked (DB 03 a); records read in place (DB 05) → ~30 ms |
+| **admit** | 1,075–2,100 | parses **13 files** for an edit in std-avrac, 25 for one in the cli (each parse fires twice, hence "23" and "50"). 1 is needed. Ten come from one defect: `admit_all` (`whole.av:132-143`) parses every unheld file of an admitted module, and a file nothing reaches never gets a record line. Twelve more for a cli edit: a compile-time run is keyed by the whole text of every file it read | 1 file | **DB 00a**, being built: 13 → 3 files, most of the 1.1 s. The twelve go when a run's reads are recorded per declaration (DB 07) → ~50 ms |
 | **analyze** | 450–530 | re-types 308–316 declarations; rebuilds **all 994 method tables** on every edit (`.57.192`) | one declaration | per-declaration answers and the per-impl split (DB 07 b, c) → 30–80 ms. Earlier if `.57.192` finds one whole-table read |
 | **lower** | 720–760 | 225–232 lowerings | the edited fn | `Lowered` named and saved (DB 03 a, DB 07) → 10–30 ms |
-| keep · start | 175–190 · 18 | writes rows as files | — | appends (DB 05) → ~10 ms |
 
-Three things the phases do not show:
-
-| finding | evidence | answer |
+| what the phases do not show | evidence | answer |
 |---|---|---|
-| **a discarded attempt is paid in full and its cost printed nowhere** | std-avrac: 8.4–8.7 s wall, phases sum to 4.5 s; first edit after cold 31.7 s, two discarded | validation before derivation (DB 07). Now: `--time` prints each discarded attempt's cost — **DB 00c**, `.57.189` |
+| **a discarded attempt is paid in full** | std-avrac: every one-edit check discards a 3.9 s attempt to read one test program back (3,943 ms discarded + 5,807 standing of 10,382 — PR #306, which now prints it) | validation before derivation (DB 07). Now: the cause, as **DB 00d**, `.57.194` |
 | **std-http's hold is refused for this edit** | held 0/121: its "one edit" is a 13 s cold check | a bug: `.57.190` |
 | **the unchanged check's 0.20 s** | ~0.125 s fixed + 0.1 ms per file; the kernel does nothing; ~0.18 s is outside every phase timer | split it (M7, in DB 05). 09-21 measured 0.046 s on the same machine |
 
 **Recorded relation reads did not cause this.** The review inferred they did; this
 document repeated it. MEASURED: 3 recorded reads of `@std/relation` families on the
-one-edit path; 1.38–1.55 M kernel reads, 93 % `HeldSig`; at 67–75 ns a read that bounds to
+one-edit path; 1.38–1.55 M kernel reads, 93 % `HeldSig` (none in `load`: they happen in
+analyze and lower); at 67–75 ns a read that bounds to
 0.11 s of the edit. The read-cost budget is not a fix for today's slowness. It bounds DB
 12: as 32 families become queries, a recorded read must stay cheap.
 
@@ -554,9 +554,10 @@ one-edit path; 1.38–1.55 M kernel reads, 93 % `HeldSig`; at 67–75 ns a read 
 
 | after | one body edit, `check` (ESTIMATED from §7.2's rows) |
 |---|---|
-| `.57.193`, if its profile allows | ~3 s for an edit to a leaf file; no gain for a widely imported one |
-| DB 05, DB 06 | unchanged: the store and the rule arrive, but the hold still decides. The gate until DB 07 is "never slower than the last landing" |
-| DB 07 d (by-name loading, saved syntax) | ~1.3 s: load and admit are gone |
+| DB 00a (the admit defect); `.57.193` step 2 (re-key only moved parts) | ~3.8 s: admit 1.1 s → ~0.2 s for an edit outside the cli; step 2 takes a further 0.46 s for a leaf-file edit |
+| DB 01 b + DB 03 a + lazy minting (DB 07 a pulled forward) | ~2.5 s: minting and file registration, 1.15 s, are gone |
+| DB 05, DB 06 | ~2 s: the manifest replaces the key work and the record decode. The rule lands on pure lists only, so the hold still decides the rest |
+| DB 07 d (saved syntax; nothing loaded until asked) | ~1.3 s: what is left is analyze and lower |
 | DB 07 b, c and `Lowered` saved | **150–250 ms — the first point the 300 ms gate is reachable** |
 
 **7.4** M2 exposes three gaps, each closed by a PR (A20): name buckets have no durable name
@@ -809,7 +810,10 @@ two-package repro is written out in ticket `.57.182`.
 | the same, by `readbench` (ns per read, native) | list 4 · relation unrecorded 35–38 · recorded 67–75 | M3, `origin/db-measure` @ `064cd27` | MEASURED |
 | one-edit `check cli` by phase | start 16–20 · load 1,820–1,900 · admit 1,075–1,200 (2.1 s for a cli file) · analyze 450–530 · lower 720–760 · keep 175–190 ms; wall 4.68–4.85 s (6.1–6.4 s) | M3 | MEASURED |
 | the same edit by package size (files held → load) | 4 → 6 ms · 14 → 120 ms · 458 → 1.85 s · 867 → 3.2–3.4 s | M3 | MEASURED |
-| kernel recorded reads on the one-edit path | 1,383,865–1,553,242; `HeldSig` 1.33–1.44 M for 75 module cells; `@std/relation` families: 3 | M3 | MEASURED |
+| kernel recorded reads on the one-edit path | 1,383,865–1,553,242; `HeldSig` 1.33–1.44 M for 75 module cells — **0 of them inside `load`**; `@std/relation` families: 3 | M3; Follow-up 3 | MEASURED |
+| `load`, split (2.00–2.03 s, three rounds within 3 %) | minting every held declaration 890–920 (45 %) · re-keying and validating holds 590–600 (29 %; key parts 460–470) · registering each file 240–250 (12 %) · records read and decoded 120 (6 %) · store opened 85–96 (4 %) | `origin/db-measure` @ `5b5290d`, `raw/load_split.txt`, `AVRA_LOAD_SPLIT=1` | MEASURED |
+| why unchanged files are parsed | `Q parse` fires twice a file: 13 files for a std-avrac edit (the edit, the entry and its provider, ten from `admit_all`), 25 for a cli edit (twelve more by compile-time run keys) | same, `raw/parsed_why.txt` | MEASURED |
+| a discarded attempt, std-avrac one edit | 3,943 ms discarded + 5,807 ms standing of 10,382 ms | PR #306 | MEASURED |
 | a discarded attempt | std-avrac one edit 8.4–8.7 s wall, phases 4.5 s; first edit after cold 31.7 s, two discarded | M3 | MEASURED |
 | not measured | instructions per read · where the unchanged check's 0.18 s goes · which commits cost what · `build` | M3 | — |
 | `KeyParts` hold on a warm cli edit | 397/399 held "at near-zero cost" | TH:2436 | MEASURED |

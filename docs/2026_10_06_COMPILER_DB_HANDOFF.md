@@ -38,23 +38,25 @@ One ask for the owner, not a task: making `keepers` and `cache-attacks` **requir
 is a repository setting only he can change.
 
 **What M3 found, and the three small PRs it adds to DB 00.** A one-literal edit re-checks
-the cli in 4.7–6.4 s: load 1.85 s (every held module's record met; ~4 ms per held file
-whatever was edited), admit 1.1–2.1 s (23–50 files parsed for one edited), analyze 0.5 s
+the cli in 4.7–6.4 s: load 1.85–2.0 s (~4 ms per held file whatever was edited: 45 % minting
+every held declaration, 29 % re-keying holds, 12 % registering files), admit 1.1–2.1 s (13–25
+files parsed for one edited), analyze 0.5 s
 (all 994 method tables rebuilt), lower 0.75 s. Recorded relation reads are **not** the
 cause: 3 of them on that path.
 
 | PR | ticket | what | done when |
 |---|---|---|---|
-| **00a** why unchanged files are parsed | `.57.191` | run the edit once and keep the whole `check --time` output: it already names each file a record knows that was read anyway, with why (`Reads`; the list is capped at 12 by `READ_NAMED`, `compiler/derive.av:109` — lift the cap for the run) | a table: each of the 22–49 unchanged files with its reason; each reason has a fix or names its PR |
-| **00b** the load profile, then maybe an early fix | `.57.193` | `load` is `Derived.holding` (`derive.av:476-500`). First split its 1.85 s between meeting records and asking holds (`AVRA_SAMPLE` on a Sprite). Only if the hold's key work dominates: remember a held file's key parts beside its key and re-key only a file with a moved part (`record.av:1104-1113`, `:1297-1306`, the `parts`/`seen` rows `:1310`, `:1323`). It is a memo of a pure function of digests on code DB 07 deletes — nothing more | the split table; if the fix is taken, `load` < 300 ms for the std-avrac-file edit and cache-attacks green |
-| **00c** a discarded attempt says what it cost | `.57.189` | `--time` prints the count only (`discarded 1`). std-avrac's one edit is 8.4–8.7 s wall with 4.5 s of printed phases. Sites: `derive.av:120-134` (`timed`), `:455-470` (`tried_anew`, `turned`) | one line per discarded attempt: wall ms, phases, the attempt it named instead |
+| **00a** the admit defect | `.57.191` | ANSWERED (`RESULTS.md` Follow-up 1): of 13 files parsed for a std-avrac edit, ten come from `admit_all` (`compiler/whole.av:132-143`) parsing every unheld file of an admitted module — a file nothing reaches is never analysed, so no record line is ever written for it (seven std-http files via the cli's `dev.av`, three block-word providers). The fix is being built: `admit_all` skips a file nothing reaches, or the record keeps a line for it. The other twelve of a cli edit are by design until DB 07 | 13 → 3 files parsed for a std-avrac-file edit; cache-attacks green |
+| **00b** load | `.57.193` | step 1 DONE (`RESULTS.md` Follow-up 3): minting every held declaration 890–920 ms; re-keying and validating holds 590–600 (key parts 460–470); registering files 240–250; records 120. Step 2, optional and early: re-key only a held file with a moved key part (`record.av:1104-1113`, `:1297-1306`) — worth ~0.46 s on a leaf-file edit; a memo on code DB 07 deletes. **Lazy minting is not an early fix**: the loop is eager because the relation refuses a late write (`settle_holds`' own comment). It lands as DB 07 a, when a row is part of its producer's answer and a first read pulls it; it needs DB 01 b ("a read asks the producer") and DB 03 a (a declaration found by name before any dense id exists). It may be pulled forward to right after those two | if step 2 is taken: `load` under 1.6 s for the std-avrac-file edit, cache-attacks green |
+| **00c** a discarded attempt says what it cost | `.57.189` | PR #306 (open on 10-06): one line per attempt that did not stand — its time, its phases, what the next attempt does instead | merged |
+| **00d** std-avrac discards an attempt on every edit | `.57.194` | 00c's line shows it: 3,943 ms discarded of a 10,382 ms wall, to read one test program whose bodies' asks could not be read back. Cause being found | `discarded 0` for a one-body edit of std-avrac |
 
 Also filed from M3, not part of DB 00: `.57.190` (std-http refuses its hold for a one-body
 edit: held 0/121, a 13 s cold check) and `.57.192` (all 994 method tables rebuilt per edit —
 if one whole-table read is the cause, narrow it now; otherwise DB 07 c).
 
 Done when: `make keepers` and `make cache-attacks` are green in CI; the harness is on
-main; 00a's table exists; 00b's split exists; 00c prints.
+main; 00a's fix lands; 00c and 00d land. 00b's step 2 is optional.
 
 ### DB 01 — one engine (`.57.170`) · five PRs · the first build
 
