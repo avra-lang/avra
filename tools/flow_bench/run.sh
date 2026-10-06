@@ -136,20 +136,21 @@ while [ "$r" -le "$rounds" ]; do
     r=$((r + 1))
 done
 
-# Parked tasks, once each: 1k, 100k and 1M, the last only where the
-# machine has the memory to hold Go's.
-free_kb=$(awk '/MemAvailable/ { print $2 }' /proc/meminfo 2>/dev/null || echo 99999999)
-sizes="1000 30000 100000 1000000"
+# Parked tasks, once each. A size runs only where the machine can hold it
+# with room to spare: 8 KiB a task is asked for, more than either engine
+# takes, since a machine out of memory answers nobody.
+sizes="1000 30000 100000 500000 1000000"
 [ -r /proc/self/status ] && [ -n "$programs" ] || { echo "flow-bench: the parked rows need /proc and the compiler — not run" >&2; sizes=""; }
 for n in $sizes; do
     hold=$((2000 + n / 20))
     FLOW_ROW=parked_$n
     FLOW_SUFFIX=_$n
-    ran avra env FLOW_N=$n FLOW_HOLD_MS=$hold "$here/avra/parked/src/main"
-    if [ "$n" -ge 1000000 ] && [ "$free_kb" -lt 5000000 ]; then
-        echo "go1 parked_$n skipped: $((free_kb / 1024)) MiB available" >> "$out/raw"
+    free_kb=$(awk '/MemAvailable/ { print $2 }' /proc/meminfo 2>/dev/null || echo 99999999)
+    if [ $((n * 8)) -gt $((free_kb - 1500000)) ]; then
+        for e in avra go1 goN; do echo "$e parked_$n not run: $((free_kb / 1024)) MiB available, $((n * 8 / 1024)) MiB asked for" >> "$out/raw"; done
         continue
     fi
+    ran avra env FLOW_N=$n FLOW_HOLD_MS=$hold "$here/avra/parked/src/main"
     ran go1 env FLOW_N=$n GOMAXPROCS=1 "$out/go/parked"
     ran goN env FLOW_N=$n "$out/go/parked"
 done
