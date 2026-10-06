@@ -41,7 +41,7 @@ use core.{
     DeclKind,
 }
 use @std.path.{dir_of, joined_path}
-use @std.relation.db.{Db as RelDb, Hooks as RelHooks, hooked_db}
+use @std.relation.db.{Db as RelDb, db_over, Verifying, Late}
 use features.components.{word_of, instanced, named_instances}
 use features.{
     takes_receiver,
@@ -530,79 +530,6 @@ fn reads_rows_whole(f: Family) -> bool {
     }
 }
 
-/// A `@std/relation` `Db`'s owner, worn over this workspace's OWN
-/// kernel — never a fixed `Family` variant, since a relation mints its
-/// family dynamically, on first reach, through the same door
-/// `kernel.family` already answers any caller. A read or write outside
-/// a `@query` lands in the frame of whichever kernel query is open —
-/// `kernel.reader()`, stable for that query's own run and distinct from
-/// every other's — so a query reading a relation it just wrote is
-/// refused, and its own words say to read `prior(db)` instead. A
-/// refusal here TRAPS: nothing outside the compiler's own process
-/// could be listening for it, so a hit is the compiler's own defect,
-/// not a program's.
-export fn relation_hooks(kernel: Kernel) -> RelHooks {
-    RelHooks {
-        family: (verify: fn(int) -> int) -> kernel.family(revision_of_hash(kernel, verify)),
-        record: (fam: int, cell: int) -> {
-            kernel.record_at(fam, cell)
-            kernel.reader()
-        },
-        revision: () -> kernel.revision(),
-        reader: (token: int) -> "a compiler query (reader ${token})",
-        refused: (words: string) -> avra_trap(words),
-        opened: (_fam: int, _cell: int) -> 0 - 1,
-        settled: (_fam: int, _cell: int) -> no_relation_settle_word(),
-        running: () -> kernel.reader(),
-        moved: (_fam: int, _cell: int, late: bool) -> !late,
-    }
-}
-
-/// `avra-8sb5.57.152`: `Kernel.changed_after` reads a dep's verifier as
-/// `verify(dep.arg) > since`, where `since` is a REVISION — but a
-/// `@std/relation` family's own verifier answers a CONTENT HASH (an
-/// arbitrary int with no ordering relation to a revision). A hash that
-/// happens to land below `since` after a real change would read as
-/// unchanged. This wraps `@std/relation`'s hash in the currency the
-/// kernel actually compares: the revision at which the hash was last
-/// OBSERVED to move, one table per family, so every relation and every
-/// `@side` column is correct through this one door.
-fn revision_of_hash(kernel: Kernel, verify: fn(int) -> int) -> fn(int) -> int {
-    let hashes: Cell<Map<string, int>> = Cell.new({})
-    let moved_at: Cell<Map<string, int>> = Cell.new({})
-    (cell: int) -> {
-        let key = "${cell}"
-        let h = verify(cell)
-        let seen = hashes.get().get(key)
-        if seen != null && seen! == h {
-            moved_at.get().get(key) ?? kernel.revision()
-        } else {
-            moved(kernel, hashes, moved_at, key, h)
-        }
-    }
-}
-
-/// `key`'s hash just moved to `h`: remembered, stamped with the
-/// revision it moved at, which is also the honest answer for THIS ask.
-fn moved(
-    kernel: Kernel,
-    hashes: Cell<Map<string, int>>,
-    moved_at: Cell<Map<string, int>>,
-    key: string,
-    h: int,
-) -> int {
-    hashes.put(key, h)
-    let now = kernel.revision()
-    moved_at.put(key, now)
-    now
-}
-
-/// `Hooks.settled` answers `void`: this Db leans on `@std/relation`'s
-/// OWN write-count reuse check (`opened`'s `-1`, "no opinion") rather
-/// than the kernel's early-cutoff fingerprint, so nothing needs telling
-/// when a cell settles.
-fn no_relation_settle_word() {}
-
 export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
     timed_workspace(host, root, lang, () -> 0)
 }
@@ -722,7 +649,7 @@ fn built(
         closed: Cell.new(false),
         clock: clock,
         phases: list_cell(),
-        failures_db: Cell.new(hooked_db(relation_hooks(kernel))),
+        failures_db: Cell.new(db_over(kernel, Verifying.ByHash, Late.Refused, true)),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
         read_fixpoint: new_fixpoint<bool>(kernel, Family.DeclReads.ordinal, false, read_reach_join, read_reach_fp),
     }

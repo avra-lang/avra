@@ -51,7 +51,7 @@ use core.{
     At,
 }
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck}
-use @std.relation.db.{Db, new_db, Hooks as RelHooks, quiet_hooks}
+use @std.relation.db.{Db, new_db, Verifying, Late}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
 use core.{Fingerprint, Exemplar, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
 use @std.path.{stem_of}
@@ -501,7 +501,6 @@ export type Decls = {
     rows_state: Cell<List<int>>,
     held_rows: Cell<fn(FileId) -> void>,
     /// The revision each armed relation cell last moved at, by family.
-    move_stamps: Cell<Map<string, Cell<Map<string, int>>>>,
 
     // a GENERATED declaration's origin — null for every written one
     provenance: Cell<List<Provenance?>>,
@@ -673,67 +672,6 @@ export enum ConstType {
 
 fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 
-/// THE KERNEL AS A RELATION DB'S OWNER — one recorder: a relation's read
-/// is the kernel's own `record_dep` in the open query (its per-frame
-/// dedup included) and its revision the kernel's; no query owns a row. A
-/// family's kernel verifier answers the
-/// revision its cell last MOVED at — the kernel's contract — never the
-/// relation's own hash, which a revision cannot be compared with.
-///
-/// A LATE WRITE IS REFUSED: every module a `use` can reach is minted
-/// while files are admitted (`Workspace.admit_used`), before any query
-/// reads the relation, so a row filed after a query read its bucket is a
-/// defect the relation names — never an input the check absorbs.
-fn kernel_hooks(kernel: Kernel, stamps: Cell<Map<string, Cell<Map<string, int>>>>) -> RelHooks {
-    RelHooks {
-        family: (_verify: fn(int) -> int) -> kernel_family(kernel, stamps),
-        record: (family: int, cell: int) -> recorded_in(kernel, family, cell),
-        revision: () -> kernel.revision(),
-        reader: (token: int) -> "a compiler query (reader ${token})",
-        refused: quiet_hooks().refused,
-        opened: (_family: int, _cell: int) -> 0 - 1,
-        settled: (_family: int, _cell: int) -> nothing(),
-        // no query OWNS a row here: a declaration is minted by one query and its
-        // facts filed by another, and nothing sweeps it — reads alone are recorded
-        running: () -> 0 - 1,
-        moved: (family: int, cell: int, is_late: bool) -> moved_in(kernel, stamps, family, cell, is_late),
-    }
-}
-
-/// A relation family registered with the kernel, verified by the revision
-/// each of its cells last moved at — 0, never, for a cell no write moved.
-fn kernel_family(kernel: Kernel, stamps: Cell<Map<string, Cell<Map<string, int>>>>) -> int {
-    let moved_at: Cell<Map<string, int>> = map_cell()
-    let family = kernel.family((cell: int) -> moved_at.get().get("${cell}") ?? 0)
-    stamps.put("${family}", moved_at)
-    family
-}
-
-/// A cell a write moved, stamped with the revision — refused when late.
-fn moved_in(
-    kernel: Kernel,
-    stamps: Cell<Map<string, Cell<Map<string, int>>>>,
-    family: int,
-    cell: int,
-    is_late: bool,
-) -> bool {
-    if is_late { return false }
-    stamped(stamps, family, cell, kernel.revision())
-    true
-}
-
-/// Records that a family's cell moved at `rev`.
-fn stamped(stamps: Cell<Map<string, Cell<Map<string, int>>>>, family: int, cell: int, rev: int) {
-    let moved_at? = stamps.get().get("${family}") else { return }
-    moved_at.put("${cell}", rev)
-}
-
-/// A relation read recorded in the kernel's open query, answering its reader.
-fn recorded_in(kernel: Kernel, family: int, cell: int) -> int {
-    kernel.record_dep(Key { family: family, arg: cell })
-    kernel.reader()
-}
-
 export fn new_decls() -> Decls {
     let no_mains: List<DeclId?> = []
     let no_stores: List<SyntaxArena?> = []
@@ -778,7 +716,6 @@ export fn new_decls() -> Decls {
         cell_names: list_cell(),
         rows_state: list_cell(),
         held_rows: Cell.new(no_store),
-        move_stamps: map_cell(),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
         embed_judge: Cell.new(embed_unjudged),
@@ -1077,7 +1014,7 @@ impl Decls {
         self.recording.set(true)
         for b in 0..self.name_bucket_count() { self.bucket_moved(b) }
         self.held_rows.set(held)
-        self.decl_rows.get().armed(kernel_hooks(self.record_kernel, self.move_stamps))
+        self.decl_rows.get().given(self.record_kernel, Verifying.ByMove, Late.Refused, false)
     }
 
     /// Where a file's rows stand: minting (0), settled (1), held (2).
@@ -1530,7 +1467,7 @@ impl Decls {
     /// here would make every seat read unconsumed forever.
     fn disarm() {
         self.auditing.set(false)
-        self.decl_rows.get().quieted()
+        self.decl_rows.get().released()
         self.held_rows.set(no_store)
         self.ensure.set(no_ensure)
         self.seat_ensure.set(no_ensure)
