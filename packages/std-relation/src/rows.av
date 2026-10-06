@@ -104,6 +104,15 @@ impl ReadMark {
         self.run.set(run)
     }
 
+    /// The mark of a cell never read: a read is told to one kernel, and
+    /// stands for no other.
+    fn cleared() {
+        self.revision.set(-1)
+        self.reader.set(0)
+        self.owner.set(0)
+        self.run.set(0)
+    }
+
     /// Whether this frame already read here in `revision` — its edge
     /// stands, so a repeat records nothing new. A frame is its OWN owner
     /// and run: a nested frame's read never stands for its caller's.
@@ -229,6 +238,12 @@ impl Rows<R> {
 
     // ── what a Db's owner records ──
 
+    /// Every read here forgotten — the kernel they were told to is left.
+    fn unmarked() {
+        self.read.cleared()
+        for b in self.buckets.get() { b.read.cleared() }
+    }
+
     /// Bucket `b` read under `db`: recorded as cell `b + 1`, stamped
     /// with the revision and the reader. Answers `b`.
     fn seen(db: Db, b: int) -> int {
@@ -316,8 +331,7 @@ impl Rows<R> {
         keys: List<List<IndexKey>>,
         stamp: Stamp,
     ) {
-        let now = db.revision()
-        if now >= 0 { self.late_check(db, relation, id, keys, now) }
+        if db.read_ever() { self.late_check(db, relation, id, keys) }
         let held = self.row(id) != null
         let was = if id < self.next_id() { self.stamps.get()[id].owner } else { 0 }
         if held && was != stamp.owner { db.refuse(two_owners(relation, id)) }
@@ -349,9 +363,7 @@ impl Rows<R> {
         let live = [id for id in mine.get() if marks[id].owner == owner && self.row(id) != null]
         let gone = [id for id in live if marks[id].run < run]
         if !gone.is_empty() {
-            let now = db.revision()
-            if now >= 0 { self.late_among(db, self.name, self.filed_buckets(gone), now) }
-            db.counted()
+            if db.read_ever() { self.late_among(db, self.name, self.filed_buckets(gone)) }
             for id in gone { self.remove(id) }
         }
         let kept = [id for id in live if marks[id].run >= run]
@@ -374,22 +386,22 @@ impl Rows<R> {
         self.last_runs.get().get("${owner}") ?? []
     }
 
-    /// A write's cells told to the owner — each bucket it moves, then the
-    /// whole relation — and the first one read in revision `now` refused
-    /// unless the owner takes a late write as an input arriving.
-    fn late_check(db: Db, relation: string, id: int, keys: List<List<IndexKey>>, now: int) {
+    /// A write's cells told to the Db — each bucket it moves, then the
+    /// whole relation — and the first one a reader holds refused, unless
+    /// the Db takes a late write as an input arriving.
+    fn late_check(db: Db, relation: string, id: int, keys: List<List<IndexKey>>) {
         let before: List<List<IndexKey>> = if id < self.next_id() { self.filed.get()[id] } else { [] }
         // each key list is per index, so the two are walked apart: numbering
         // across their concatenation reads an index the relation has not got
         let touched = [self.bucket_of(i, k) for i, ks in before for k in ks]
             .concat([self.bucket_of(i, k) for i, ks in keys for k in ks])
-        self.late_among(db, relation, touched, now)
+        self.late_among(db, relation, touched)
     }
 
     /// `late_check` over the buckets a write touches.
-    fn late_among(db: Db, relation: string, touched: List<int>, now: int) {
+    fn late_among(db: Db, relation: string, touched: List<int>) {
         for b in touched {
-            if b >= 0 && !self.moved_cell(db, b + 1, self.buckets.get()[b].read, now) {
+            if b >= 0 && !self.moved_cell(db, b + 1, self.buckets.get()[b].read) {
                 db
                     .refuse(
                         late_write(
@@ -401,16 +413,14 @@ impl Rows<R> {
                 return
             }
         }
-        if !self.moved_cell(db, 0, self.read, now) {
+        if !self.moved_cell(db, 0, self.read) {
             db.refuse(late_write(relation, "the whole relation", db.reader(self.read.reader.get())))
         }
     }
 
-    /// A cell this write moves, told to the owner with whether a reader saw
-    /// it this revision — false when the owner refuses the late write.
-    fn moved_cell(db: Db, cell: int, mark: ReadMark, now: int) -> bool {
-        db.moved(self.family.get(), cell, mark.revision.get() == now)
-    }
+    /// A cell this write moves, told to the Db with the revision a reader
+    /// last saw it in — false when the Db refuses the write as late.
+    fn moved_cell(db: Db, cell: int, mark: ReadMark) -> bool { db.moved(self.family.get(), cell, mark.revision.get()) }
 
     /// The row other than `own` filed under `key` in one index, if any.
     fn holder(index: int, key: IndexKey, own: int) -> int? {
@@ -562,12 +572,13 @@ impl Rows<R> {
 /// nothing behind to remove — a re-admit that rewrites a slot moves that
 /// slot's own hash instead, and `verify` tells every reader so.
 @identity
-export type SideRows<R> = { family: Cell<int>, marks: Cell<List<ReadMark>>, whole: Cell<ReadMark>, closed: Cell<bool> }
+export type SideRows<R> = { family: Cell<int>, reached: Cell<bool>, marks: Cell<List<ReadMark>>, whole: Cell<ReadMark>, closed: Cell<bool> }
 
 export fn side_rows<R>() -> SideRows<R> {
     let no_marks: List<ReadMark> = []
     SideRows {
         family: Cell.new(-1),
+        reached: Cell.new(false),
         marks: Cell.new(no_marks),
         whole: Cell.new(unread()),
         closed: Cell.new(false),
@@ -581,15 +592,27 @@ impl SideRows<R> {
         while self.marks.get().length < count { self.marks.push(unread()) }
     }
 
+    /// Every read here forgotten — the kernel they were told to is left.
+    fn unmarked() {
+        self.whole.get().cleared()
+        for m in self.marks.get() { m.cleared() }
+    }
+
     /// This column's family under `db`, registered on first reach.
     /// `verify` answers a cell's live hash — 0 the whole column, slot
     /// `s`'s read as cell `s + 1`.
     fn opened(db: Db, verify: fn(int) -> int) -> int {
-        let known = self.family.get()
-        if known >= 0 { return known }
+        if self.reached.get() { return self.family.get() }
+        self.reached.set(true)
         let family = self.family
         let fam = db
-            .registered(verify, (register: fn(fn(int) -> int) -> int) -> family.set(register(verify)))
+            .registered(
+                verify,
+                (register: fn(fn(int) -> int) -> int) -> {
+                    self.unmarked()
+                    family.set(register(verify))
+                },
+            )
         self.family.set(fam)
         let closed = self.closed
         db

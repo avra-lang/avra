@@ -1,0 +1,110 @@
+// THE FRAME LAW: a frame opened on kernel K only ever records K's keys.
+// A Db built and read inside another Db's open query is that query's
+// scratch: its reads land in its own kernel, never in the outer frame.
+use @std.relation.{relation}
+use @std.relation.db.{Db, new_db, db_over, Verifying, Late}
+use @std.relation.engine.{Kernel, Key, new_kernel}
+
+@relation
+type Root = { @key name: string, @index at: int }
+
+@relation
+type Held = { @key name: string, n: int }
+
+/// An owner's kernel with one query family, and a Db given to it.
+type Outer = { kernel: Kernel, query: Key, db: Db }
+
+fn outer() -> Outer {
+    let kernel = new_kernel()
+    Outer {
+        kernel: kernel,
+        query: Key { family: kernel.family((_arg: int) -> 0), arg: 0 },
+        db: db_over(kernel, Verifying.ByHash, Late.Refused, false),
+    }
+}
+
+/// A throwaway Db filled in one pass, the way a pass files what it found.
+fn filed(names: List<string>) -> Db {
+    let db = new_db()
+    for i, name in names { let _ = Root.insert(db, name: name, at: i) }
+    db
+}
+
+spec "std/relation — a frame records its own kernel's keys alone" {
+    given "a throwaway Db built inside an owner's open query" {
+        then "its writes and reads leave the outer frame's edges untouched" {
+            let o = outer()
+            o.kernel.begin(o.query)
+            let scratch = filed(["a", "b", "c"])
+            let seen = Root.by_at(scratch, 1).length + Root.all(scratch).length
+            o.kernel.settle(o.query, 0)
+            seen == 4 && o.kernel.deps_of(o.query).is_empty()
+        }
+        then "the outer frame still records its own Db's reads beside it" {
+            let o = outer()
+            let _ = Held.insert(o.db, name: "x", n: 1)
+            o.kernel.begin(o.query)
+            let scratch = filed(["a"])
+            let _ = Root.all(scratch)
+            let _ = Held.all(o.db)
+            o.kernel.settle(o.query, 0)
+            o.kernel.deps_of(o.query).length == 1
+        }
+        then "a write to the scratch Db after the outer query read its own Db is no late write" {
+            let o = outer()
+            let heard: Cell<List<string>> = Cell.new([])
+            o.db.heard_by((w: string) -> heard.push(w))
+            let _ = Held.insert(o.db, name: "x", n: 1)
+            o.kernel.begin(o.query)
+            let _ = Held.all(o.db)
+            let scratch = filed(["a", "b"])
+            let _ = Root.insert(scratch, name: "c", at: 2)
+            o.kernel.settle(o.query, 0)
+            heard.get().is_empty() && Root.all(scratch).length == 3
+        }
+    }
+    given "a Db that starts on its own kernel and is given its owner's later" {
+        then "what it read before is in no frame of the owner, and what it reads after is" {
+            let o = outer()
+            let late = new_db()
+            let _ = Held.insert(late, name: "x", n: 1)
+            o.kernel.begin(o.query)
+            let _ = Held.all(late)
+            o.kernel.settle(o.query, 0)
+            let before = o.kernel.deps_of(o.query).length
+            late.given(o.kernel, Verifying.ByMove, Late.Refused, false)
+            let again = Key { family: o.query.family, arg: 1 }
+            o.kernel.begin(again)
+            let _ = Held.all(late)
+            o.kernel.settle(again, 0)
+            before == 0 && o.kernel.deps_of(again).length == 1
+        }
+    }
+    given "a Db nothing was asked of" {
+        then "has no kernel after rows are written and read, and one once it is reached for" {
+            let db = new_db()
+            let _ = Root.insert(db, name: "a", at: 0)
+            let none = db.kernel.get() == null && Root.all(db).length == 1
+            let kernel = db.engine()
+            let reader = Key { family: kernel.family((_arg: int) -> 0), arg: 0 }
+            kernel.begin(reader)
+            let _ = Root.all(db)
+            kernel.settle(reader, 0)
+            none && db.kernel.get() != null && kernel.deps_of(reader).length == 1
+        }
+    }
+    given "the same key number open in two kernels" {
+        then "is a cycle in neither" {
+            let o = outer()
+            let inner = new_kernel()
+            let twin = Key { family: inner.family((_arg: int) -> 0), arg: 0 }
+            o.kernel.begin(o.query)
+            let asked = inner.ask(twin)
+            inner.begin(twin)
+            let outer_again = o.kernel.ask(o.query)
+            inner.settle(twin, 0)
+            o.kernel.settle(o.query, 0)
+            asked is .Compute && outer_again is .Cycle && inner.deps_of(twin).is_empty()
+        }
+    }
+}

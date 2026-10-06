@@ -6,50 +6,26 @@
 // kept answer hears, and a removal under a read bucket is late — in both
 // engines
 use @std.relation.{relation, query}
-use @std.relation.db.{Db, new_db, hooked_db, Hooks}
+use @std.relation.db.{Db, new_db, db_over, Verifying, Late}
+use @std.relation.engine.{Key, new_kernel}
 
 @relation
 type Fact = { id: int, @key name: string, @index tag: string }
 
 once fn heard() -> Cell<List<string>> { Cell.new([]) }
 
-once fn families() -> Cell<int> { Cell.new(0) }
-
 once fn counts() -> Cell<int> { Cell.new(0) }
-
-once fn now() -> Cell<int> { Cell.new(0 - 1) }
-
-fn next_family() -> int {
-    let f = families().get()
-    families().set(f + 1)
-    f
-}
 
 fn noted(w: string) {
     let h = heard()
     h.push(w)
 }
 
-fn none() {}
-
-fn revision_now() -> int { now().get() }
-
-/// A Db whose refusals are heard, its revision `now`'s, a kept answer
-/// reused while no write moved the count.
+/// A Db whose refusals are heard.
 fn logged() -> Db {
-    hooked_db(
-        Hooks {
-            family: (_v: fn(int) -> int) -> next_family(),
-            record: (_f: int, _c: int) -> 3,
-            revision: revision_now,
-            reader: (t: int) -> "reader ${t}",
-            refused: noted,
-            opened: (_f: int, _c: int) -> -1,
-            settled: (_f: int, _c: int) -> none(),
-            running: () -> 0 - 1,
-            moved: (_f: int, _c: int, late: bool) -> !late,
-        },
-    )
+    let db = new_db()
+    db.heard_by(noted)
+    db
 }
 
 /// `name` filed under `tag`, owned by `owner` — its key's row, else a new one.
@@ -163,18 +139,20 @@ fn heard_removal() -> string {
 }
 
 /// A removal from a bucket a reader read this revision is refused, as a
-/// filing there is.
+/// filing there is — where the Db's owner refuses a late write.
 fn late() -> string {
-    let db = logged()
+    let kernel = new_kernel()
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused, false)
+    db.heard_by(noted)
     let o = db.owner_named("a.av")
     ran(db, o, ["a:x", "b:y"])
-    now().set(1)
+    let reader = Key { family: kernel.family((_arg: int) -> 0), arg: 0 }
+    kernel.begin(reader)
     let _ = Fact.by_tag(db, "y")
+    kernel.settle(reader, 0)
     let before = heard().get().length
     ran(db, o, [])
-    let words = heard().get().last() ?? "-"
-    now().set(0 - 1)
-    "${heard().get().length - before} ${words}"
+    "${heard().get().length - before} ${heard().get().last() ?? "-"}"
 }
 
 "${replaced()} | ${emptied()} | ${between()} | ${apart()} | ${rival()} | ${heard_removal()} | ${late()}"

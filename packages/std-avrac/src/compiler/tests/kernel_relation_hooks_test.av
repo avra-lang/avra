@@ -1,16 +1,12 @@
-// avra-8sb5.57.81: a real Kernel, worn as a `@std/relation` Db's
-// owner, through the same shape `Workspace.relation_hooks` builds —
-// proves the ownership law fires when a REAL kernel frame is open,
-// and stays quiet with none, independent of failures_db.
-use compiler.{relation_hooks}
+// avra-8sb5.57.81: a real Kernel under a `@std/relation` Db framed by
+// it, as the workspace's `failures_db` is — proves the ownership law
+// fires when a REAL kernel frame is open, and stays quiet with none.
 use @std.relation.{relation}
-use @std.relation.db.{Db, hooked_db, Hooks}
+use @std.relation.db.{Db, db_over, Verifying, Late}
 use @std.relation.engine.{Kernel, new_kernel, Key}
 
 @relation
 type Fact = { @key name: string, n: int }
-
-fn none() {}
 
 /// A query reading `Fact`'s whole relation under the REAL bridge, its
 /// own runs counted so a wrongly-reused answer is observable as a
@@ -29,33 +25,20 @@ fn read_facts(kernel: Kernel, db: Db, outer: Key, runs: Cell<int>) -> int {
     }
 }
 
-/// The exact bridge `Workspace.relation_hooks` builds, over a REAL
-/// kernel — `refused` records into `heard`, its own fresh cell,
-/// instead of trapping, so the law's own words can be asserted
-/// rather than ending the process. A `once fn` here would share ONE
-/// list across every case in this file; each case gets its own.
-fn kernel_hooks(kernel: Kernel, heard: Cell<List<string>>) -> Hooks {
-    Hooks {
-        family: (verify: fn(int) -> int) -> kernel.family(verify),
-        record: (fam: int, cell: int) -> {
-            kernel.record_dep(Key { family: fam, arg: cell })
-            kernel.reader()
-        },
-        revision: () -> kernel.revision(),
-        reader: (token: int) -> "a query (reader ${token})",
-        refused: (w: string) -> heard.push(w),
-        opened: (_fam: int, _cell: int) -> 0 - 1,
-        settled: (_fam: int, _cell: int) -> none(),
-        running: () -> kernel.reader(),
-        moved: (_family: int, _cell: int, late: bool) -> !late,
-    }
+/// A Db framed by `kernel` — the workspace's own shape — whose
+/// refusals land in `heard`, its own fresh cell, instead of trapping,
+/// so the law's own words can be asserted.
+fn framed(kernel: Kernel, heard: Cell<List<string>>) -> Db {
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused, true)
+    db.heard_by((w: string) -> heard.push(w))
+    db
 }
 
 spec "compiler/workspace — a real kernel frame arms the ownership law" {
     then "a query reading a relation it just wrote, inside the same frame, is refused" {
         let kernel = new_kernel()
         let heard: Cell<List<string>> = Cell.new([])
-        let db = hooked_db(kernel_hooks(kernel, heard))
+        let db = framed(kernel, heard)
         let key = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
         kernel.begin(key)
         let _ = Fact.insert(db, name: "a", n: 1)
@@ -66,7 +49,7 @@ spec "compiler/workspace — a real kernel frame arms the ownership law" {
     then "a read with no kernel frame open is free" {
         let kernel = new_kernel()
         let heard: Cell<List<string>> = Cell.new([])
-        let db = hooked_db(kernel_hooks(kernel, heard))
+        let db = framed(kernel, heard)
         let _ = Fact.insert(db, name: "b", n: 2)
         let free = Fact.all(db).length
         free == 1 && heard.get().is_empty()
@@ -74,7 +57,7 @@ spec "compiler/workspace — a real kernel frame arms the ownership law" {
     then "a different frame reading a relation an earlier, closed frame wrote is free" {
         let kernel = new_kernel()
         let heard: Cell<List<string>> = Cell.new([])
-        let db = hooked_db(kernel_hooks(kernel, heard))
+        let db = framed(kernel, heard)
         let writer = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
         kernel.begin(writer)
         let _ = Fact.insert(db, name: "c", n: 3)
@@ -88,9 +71,9 @@ spec "compiler/workspace — a real kernel frame arms the ownership law" {
 }
 
 spec "compiler/workspace — a relation's verify answers a revision, not a hash (avra-8sb5.57.152)" {
-    then "a query reading Fact's whole relation reruns after a real edit, through the REAL bridge" {
+    then "a query reading Fact's whole relation reruns after a real edit" {
         let kernel = new_kernel()
-        let db = hooked_db(relation_hooks(kernel))
+        let db = db_over(kernel, Verifying.ByHash, Late.Refused, true)
         let runs: Cell<int> = Cell.new(0)
         let outer = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
         let bump = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
@@ -110,7 +93,7 @@ spec "compiler/workspace — a relation's verify answers a revision, not a hash 
     }
     then "repeated edits each move the hash enough to cross zero at least once, and every one reruns" {
         let kernel = new_kernel()
-        let db = hooked_db(relation_hooks(kernel))
+        let db = db_over(kernel, Verifying.ByHash, Late.Refused, true)
         let runs: Cell<int> = Cell.new(0)
         let outer = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
         let bump = Key { family: kernel.family((arg: int) -> 0), arg: 0 }

@@ -3,7 +3,7 @@
 // fn that catches it and re-raises.
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace, ErrorSite, Raised}
-use @std.relation.db.{Db as RelDb, Hooks, hooked_db}
+use @std.relation.db.{Db as RelDb, new_db}
 use compiler.host.{memory_host}
 use core.{DeclId, same_decl, same_expr}
 
@@ -311,24 +311,12 @@ fn raised_noted(w: string) {
     h.push(w)
 }
 
-fn raised_quiet() {}
-
 /// A Db that records a refusal instead of trapping, so the ownership
 /// law's own words can be asserted.
 fn noting_db() -> RelDb {
-    hooked_db(
-        Hooks {
-            family: (_verify: fn(int) -> int) -> 0,
-            record: (_fam: int, _cell: int) -> 0,
-            revision: () -> 0 - 1,
-            reader: (token: int) -> "reader ${token}",
-            refused: raised_noted,
-            opened: (_fam: int, _cell: int) -> 0 - 1,
-            settled: (_fam: int, _cell: int) -> raised_quiet(),
-            running: () -> 0 - 1,
-            moved: (_family: int, _cell: int, late: bool) -> !late,
-        },
-    )
+    let db = new_db()
+    db.heard_by(raised_noted)
+    db
 }
 
 spec "compiler/failures — `Raised` read inside its owner's own run" {

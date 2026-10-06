@@ -1,42 +1,29 @@
-// proves: re-filing a keyed row under a Db whose owner keeps a revision
-// checks every bucket the row leaves and every bucket it lands in, index
-// by index — a row with several indexes re-filed is not walked past them
+// proves: re-filing a keyed row under a Db a query has read checks every
+// bucket the row leaves and every bucket it lands in, index by index — a
+// row with several indexes re-filed is not walked past them, and the
+// reader of a bucket it left or landed in runs again
 use @std.relation.{relation}
-use @std.relation.db.{Db, hooked_db, Hooks}
+use @std.relation.db.{Db, db_over, Verifying, Late}
+use @std.relation.engine.{Key, new_kernel}
 
 @relation
 type Item = { @key name: string, @index shade: string, @index size: int, n: int }
 
-once fn families() -> Cell<int> { Cell.new(0) }
+fn shades(db: Db) -> string { "${Item.by_shade(db, "red").length}${Item.by_shade(db, "blue").length}" }
 
-fn next_family() -> int {
-    let f = families().get()
-    families().set(f + 1)
-    f
+fn run() -> string {
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let db = db_over(kernel, Verifying.ByHash, Late.Taken, false)
+    let _ = Item.insert(db, name: "a", shade: "red", size: 1, n: 1)
+    let reader = Key { family: queries, arg: 0 }
+    kernel.begin(reader)
+    let before = shades(db)
+    kernel.settle(reader, 0)
+    let at = kernel.revision()
+    let _ = Item.insert(db, name: "a", shade: "blue", size: 2, n: 2)
+    let stale = kernel.ask(reader) is .Compute
+    "${Item.all(db).length} ${Item.by_key(db, ItemKey { name: "a" })?.n ?? 0} ${before} ${shades(db)} ${kernel.revision() > at} ${stale}"
 }
 
-fn none() {}
-
-fn heard(_w: string) {}
-
-/// A Db whose owner keeps revision 1 and takes every write.
-fn kept_db() -> Db {
-    hooked_db(
-        Hooks {
-            family: (_v: fn(int) -> int) -> next_family(),
-            record: (_f: int, _c: int) -> 0,
-            revision: () -> 1,
-            reader: (_t: int) -> "a read",
-            refused: heard,
-            opened: (_f: int, _c: int) -> -1,
-            settled: (_f: int, _c: int) -> none(),
-            running: () -> 0 - 1,
-            moved: (_f: int, _c: int, _late: bool) -> true,
-        },
-    )
-}
-
-let db = kept_db()
-let _ = Item.insert(db, name: "a", shade: "red", size: 1, n: 1)
-let _ = Item.insert(db, name: "a", shade: "blue", size: 2, n: 2)
-"${Item.all(db).length} ${Item.by_key(db, ItemKey { name: "a" })?.n ?? 0} ${Item.by_shade(db, "red").length} ${Item.by_shade(db, "blue").length}"
+run()

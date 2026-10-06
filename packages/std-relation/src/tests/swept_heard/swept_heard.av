@@ -2,40 +2,13 @@
 // wrote before is a write — a kept answer that read those rows is
 // computed again, never reused stale — in both engines
 use @std.relation.{relation, query}
-use @std.relation.db.{Db, hooked_db, Hooks}
+use @std.relation.db.{Db, new_db}
 
 @relation
 type Input = { @key name: string, live: bool }
 
 @relation
 type Loose = { tag: string }
-
-once fn families() -> Cell<int> { Cell.new(0) }
-
-fn next_family() -> int {
-    let f = families().get()
-    families().set(f + 1)
-    f
-}
-
-fn none() {}
-
-/// A Db that reuses a kept answer while no write moved the count.
-fn counted() -> Db {
-    hooked_db(
-        Hooks {
-            family: (_v: fn(int) -> int) -> next_family(),
-            record: (_f: int, _c: int) -> 0,
-            revision: () -> -1,
-            reader: (_t: int) -> "a read",
-            refused: (_w: string) -> none(),
-            opened: (_f: int, _c: int) -> -1,
-            settled: (_f: int, _c: int) -> none(),
-            running: () -> 0 - 1,
-            moved: (_f: int, _c: int, late: bool) -> !late,
-        },
-    )
-}
 
 /// A loose tag per live input — keyless, so a rerun replaces the set.
 @query
@@ -49,7 +22,7 @@ fn mirror(db: Db) -> int {
 fn loose(db: Db) -> int { Loose.all(db).length }
 
 fn run() -> string {
-    let db = counted()
+    let db = new_db()
     let _ = Input.insert(db, name: "a", live: true)
     let _ = mirror(db)
     let first = loose(db)

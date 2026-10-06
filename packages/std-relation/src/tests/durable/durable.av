@@ -1,9 +1,12 @@
 // proves: a `@query` answer outlives its Db where the owner keeps it — a
 // fresh Db (a later process) reads the record back instead of running;
 // a moved owner key, a record that does not read back, and a run that
-// wrote rows each run again — in both engines
-use @std.relation.{relation, query}
-use @std.relation.db.{Db, Durable, durable_db, quiet_hooks}
+// wrote rows each run again; an answer that read an input is never kept,
+// and an input set moves every answer read back; what a record cannot
+// see — another Db's rows, this Db's rows held differently — is pinned
+// as it stands today — in both engines
+use @std.relation.{relation, query, input}
+use @std.relation.db.{Db, Durable, durable_db}
 
 @relation
 type Note = { @key name: string }
@@ -41,7 +44,7 @@ fn keep_record(query: string, args: int, record: Bytes) {
 }
 
 /// A Db standing for a fresh process over the same disk.
-fn process() -> Db { durable_db(quiet_hooks(), Durable { answer: read_record, keep: keep_record }) }
+fn process() -> Db { durable_db(Durable { answer: read_record, keep: keep_record }) }
 
 @query
 fn total(_db: Db, n: int) -> int {
@@ -98,6 +101,16 @@ fn notes(db: Db) -> int {
 fn shadow(_db: Db, cell: int, args: int, m: int, held: int) -> int {
     counted()
     cell * 1000 + args * 100 + m * 10 + held
+}
+
+@input
+fn size(_db: Db, _k: string) -> int { 1 }
+
+/// Reads an input: its record would bring no word of it.
+@query
+fn doubled(db: Db, k: string) -> int {
+    counted()
+    size(db, k) * 2
 }
 
 fn since(before: int) -> int { computes().get() - before }
@@ -163,6 +176,57 @@ fn midway() -> string {
     "${cold}${restored}${moved}${next} ${since(before)}"
 }
 
+/// An answer that read an input runs in every process, so a set input
+/// is answered.
+fn input_read() -> string {
+    let before = computes().get()
+    let cold = doubled(process(), "x")
+    let db = process()
+    let warm = doubled(db, "x")
+    set_size(db, "x", 5)
+    "${cold} ${warm} ${doubled(db, "x")} ${since(before)}"
+}
+
+/// An input set in this process moves an answer read back, whatever it
+/// read when it was kept.
+fn input_set() -> string {
+    let _ = fixed(process())
+    let before = computes().get()
+    let db = process()
+    let restored = fixed(db)
+    set_size(db, "y", 3)
+    "${restored} ${fixed(db)} ${since(before)}"
+}
+
+once fn elsewhere() -> Db { process() }
+
+/// Reads another Db's rows: recorded in that Db's kernel, never in the
+/// asked one's.
+@query
+fn notes_elsewhere(_db: Db) -> int {
+    counted()
+    Note.all(elsewhere()).length
+}
+
+/// KNOWN, UNTIL A RECORD CARRIES ITS READS: an answer that read another
+/// Db's rows is kept, and the next process reads it back though those
+/// rows moved (1, where 2 is right); and an answer over this Db's rows is
+/// read back by a process whose Db holds other rows before it asks (0,
+/// where 1 is right) — the owner's key alone decides.
+fn blind() -> string {
+    file_key().set("f3")
+    let _ = Note.insert(elsewhere(), name: "one")
+    let cold = notes_elsewhere(process())
+    let _ = Note.insert(elsewhere(), name: "two")
+    let stale = notes_elsewhere(process())
+    let empty = notes(process())
+    let filled = process()
+    let _ = Note.insert(filled, name: "here")
+    let other = notes(filled)
+    file_key().set("f1")
+    "${cold}${stale} ${empty}${other}"
+}
+
 /// Seats named like the wrapper's locals reach the body as written.
 fn shadowed() -> string {
     let first = shadow(process(), 1, 2, 3, 4)
@@ -170,4 +234,4 @@ fn shadowed() -> string {
     "${first} ${again}"
 }
 
-"${survives()} | ${shapes()} | ${reruns()} | ${midway()} | ${shadowed()}"
+"${survives()} | ${shapes()} | ${reruns()} | ${midway()} | ${shadowed()} | ${input_read()} | ${input_set()} | ${blind()}"

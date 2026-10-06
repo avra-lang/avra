@@ -1,11 +1,13 @@
 //! WHAT ONE ROW READ COSTS, in nanoseconds: a dense list index, `get` on a
-//! relation nothing records, and `get` on a relation whose owner records
-//! every read — once with the same reader throughout (a repeat is the
-//! mark's fast path) and once with a new reader each pass (every read is
-//! told to the owner, as a new query's first read is).
-use @std.relation.{relation}
+//! relation no query is reading, and `get` inside a kernel query — once
+//! with the same query throughout (a repeat is the mark's fast path) and
+//! once with a new query each pass (every read is a new edge, as a
+//! query's first read is) — and a `@query` ASKED again, its answer
+//! standing: by an int argument and by a text one.
+use @std.relation.{relation, query}
 use @std.meta.{dense}
-use @std.relation.db.{new_db, hooked_db, quiet_hooks, Db, Hooks}
+use @std.relation.db.{new_db, Db}
+use @std.relation.engine.{Key}
 use @std.time.{now_ns}
 
 @dense
@@ -36,20 +38,30 @@ fn read_rows(db: Db, n: int) -> int {
     sum
 }
 
+@query
+fn after(_db: Db, n: int) -> int { n + 1 }
+
+@query
+fn measure(_db: Db, name: string) -> int { name.length }
+
+fn ask_ints(db: Db, n: int) -> int {
+    mut sum = 0
+    for i in 0..n { sum = sum + after(db, i) }
+    sum
+}
+
+fn ask_texts(db: Db, names: List<string>) -> int {
+    mut sum = 0
+    for name in names { sum = sum + measure(db, name) }
+    sum
+}
+
 fn read_list(rows: List<Plain>) -> int {
     mut sum = 0
     for r in rows {
         if r.exported { sum = sum + 1 }
     }
     sum
-}
-
-/// An owner that counts each read it is told of, under the reader `reader` names.
-fn counting(told: Cell<int>, reader: Cell<int>) -> Hooks {
-    quiet_hooks() with { record: (_family: int, _cell: int) -> {
-        told.set(told.get() + 1)
-        reader.get()
-    }, revision: () -> 1, running: () -> reader.get() }
 }
 
 fn timed(label: string, n: int, rounds: int, pass: fn(int) -> int) {
@@ -68,20 +80,31 @@ let quiet = new_db()
 filled(quiet, n)
 timed("relation.unrecorded", n, rounds, (_r: int) -> read_rows(quiet, n))
 
-let told: Cell<int> = Cell.new(0)
-let reader: Cell<int> = Cell.new(-1)
-let heard = hooked_db(counting(told, reader))
+let heard = new_db()
 filled(heard, n)
-reader.set(1)
+let kernel = heard.engine()
+let queries = kernel.family((_arg: int) -> 0)
+let one = Key { family: queries, arg: 0 }
+kernel.begin(one)
 timed("relation.repeat", n, rounds, (_r: int) -> read_rows(heard, n))
-println("told\t${told.get()}")
+kernel.settle(one, 0)
+println("edges\t${kernel.deps_of(one).length}")
 timed(
     "relation.new_reader",
     n,
     rounds,
     (r: int) -> {
-        reader.set(r + 2)
-        read_rows(heard, n)
+        let each = Key { family: queries, arg: r + 1 }
+        kernel.begin(each)
+        let sum = read_rows(heard, n)
+        kernel.settle(each, 0)
+        sum
     },
 )
-println("told\t${told.get()}")
+println("edges\t${kernel.deps_of(Key { family: queries, arg: 1 }).length}")
+
+let asked = new_db()
+let names = ["a_declaration_named_${i}" for i in 0..n]
+let _ = ask_ints(asked, n) + ask_texts(asked, names)
+timed("query.ask.int", n, rounds, (_r: int) -> ask_ints(asked, n))
+timed("query.ask.text", n, rounds, (_r: int) -> ask_texts(asked, names))

@@ -1,0 +1,123 @@
+// A `@query` under a Db its owner gave a kernel — the compiler's shape,
+// where a late write is refused — is a cell of THAT kernel: it stands
+// across revisions that moved nothing it read, and runs again when a row
+// arrives, at a later revision, in a relation it read.
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, db_over, new_db, Verifying, Late}
+use @std.relation.engine.{Kernel, Key, new_kernel}
+
+@relation
+type Glyph = { @key name: string, @index set: string }
+
+@relation
+type Face = { @key name: string }
+
+once fn glyph_runs() -> Cell<List<string>> { Cell.new([]) }
+
+fn ran(word: string) {
+    let r = glyph_runs()
+    r.push(word)
+}
+
+fn since(from: int) -> string { glyph_runs().get().slice(from, glyph_runs().get().length).join(",") }
+
+@query
+fn glyphs_in(db: Db, set: string) -> int {
+    ran("glyphs")
+    Glyph.by_set(db, set).length
+}
+
+@query
+fn next_after(_db: Db, n: int) -> int {
+    ran("next")
+    n + 1
+}
+
+/// The owner's kernel and the Db given to it.
+type Owned = { kernel: Kernel, db: Db }
+
+fn under_owner() -> Owned {
+    let kernel = new_kernel()
+    Owned { kernel: kernel, db: db_over(kernel, Verifying.ByMove, Late.Refused, false) }
+}
+
+spec "std/relation — a @query under an owner's kernel" {
+    then "an answer that read nothing runs once across writes and revisions" {
+        let o = under_owner()
+        let from = glyph_runs().get().length
+        let first = next_after(o.db, 1)
+        let _ = Face.insert(o.db, name: "f")
+        o.kernel.bump()
+        let _ = Glyph.insert(o.db, name: "a", set: "s")
+        o.kernel.bump()
+        let again = next_after(o.db, 1)
+        first == 2 && again == 2 && since(from) == "next"
+    }
+    then "an answer that read a bucket stands when a row lands in another, and runs again when one lands in its own" {
+        let o = under_owner()
+        let _ = Glyph.insert(o.db, name: "a", set: "s")
+        let from = glyph_runs().get().length
+        let one = glyphs_in(o.db, "s")
+        o.kernel.bump()
+        let _ = Glyph.insert(o.db, name: "b", set: "t")
+        let still = glyphs_in(o.db, "s")
+        o.kernel.bump()
+        let _ = Glyph.insert(o.db, name: "c", set: "s")
+        let two = glyphs_in(o.db, "s")
+        one == 1 && still == 1 && two == 2 && since(from) == "glyphs,glyphs"
+    }
+    then "the call is a cell of the owner's kernel, holding the bucket it read" {
+        let o = under_owner()
+        let before = o.kernel.settled_keys().length
+        let _ = Glyph.insert(o.db, name: "a", set: "s")
+        let _ = glyphs_in(o.db, "s")
+        let cells = o.kernel.settled_keys()
+        let made = cells[cells.length - 1]
+        cells.length == before + 1 && o.kernel.deps_of(made).length == 1
+    }
+    then "a row written to a bucket the query read this revision is refused, where the owner refuses late writes" {
+        let o = under_owner()
+        let heard: Cell<List<string>> = Cell.new([])
+        o.db.heard_by((w: string) -> heard.push(w))
+        let _ = Glyph.insert(o.db, name: "a", set: "s")
+        let _ = glyphs_in(o.db, "s")
+        let _ = Glyph.insert(o.db, name: "b", set: "s")
+        heard.get().length == 1 && heard.get()[0].contains("a producer runs before its readers")
+    }
+    then "a read told to the Db's own kernel is no reader in the kernel it is given: a row lands unrefused" {
+        let db = new_db()
+        let heard: Cell<List<string>> = Cell.new([])
+        db.heard_by((w: string) -> heard.push(w))
+        let _ = Glyph.insert(db, name: "a", set: "s")
+        let _ = glyphs_in(db, "s")
+        let owner = new_kernel()
+        let asked = Key { family: owner.family((_arg: int) -> 0), arg: 0 }
+        owner.begin(asked)
+        owner.settle(asked, 0)
+        db.given(owner, Verifying.ByMove, Late.Refused, false)
+        let _ = Glyph.insert(db, name: "b", set: "s")
+        db.released()
+        let _ = glyphs_in(db, "s")
+        db.given(owner, Verifying.ByMove, Late.Refused, false)
+        let _ = Glyph.insert(db, name: "c", set: "s")
+        heard.get().is_empty()
+    }
+    then "a framed Db given a second kernel keeps no frame of the first: a query there writes what a query numbered alike read" {
+        let first = new_kernel()
+        let db = db_over(first, Verifying.ByHash, Late.Refused, true)
+        let heard: Cell<List<string>> = Cell.new([])
+        db.heard_by((w: string) -> heard.push(w))
+        let reader = Key { family: first.family((_arg: int) -> 0), arg: 0 }
+        first.begin(reader)
+        let _ = Face.all(db)
+        first.settle(reader, 0)
+        let second = new_kernel()
+        let writer = Key { family: second.family((_arg: int) -> 0), arg: 0 }
+        db.given(second, Verifying.ByHash, Late.Refused, true)
+        second.bump()
+        second.begin(writer)
+        let _ = Face.insert(db, name: "f")
+        second.settle(writer, 0)
+        heard.get().is_empty()
+    }
+}
