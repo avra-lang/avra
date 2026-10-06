@@ -60,10 +60,16 @@ Labels: READ (I opened the line) · PROBED (I ran it) · MEASURED · PROPOSED (n
   sweepers, `Analysis`'s closures, the declaration table's hooks): each reaches the
   kernel through `begin`. This REPLACES the first draft's per-face check, which an
   unconverted body calling `sig_of(d)` directly walked past.
-- **A frame lives in its Db's kernel.** The open stack, the cycle test and the stamps are
-  per kernel (they are today, and P1 keeps them so), so a key of Db B can never sit in a
-  dep list of Db A, and two Dbs' unrelated queries can never read as a cycle. What is
-  per ASKER is only which Db is ambient (and, at P4c, which task's frames: §5).
+- **THE FRAME LAW: a frame opened on kernel K only ever records K's keys.** The open
+  stack, the cycle test and the stamps are per kernel (they are today, and P1 keeps them
+  so), so a key of Db B can never sit in a dep list of Db A, and two Dbs' unrelated
+  queries can never read as a cycle — by construction, not by comparing a Db id on each
+  frame (agreed with team-lead in place of the review's item 2). What is per ASKER is
+  only which Db is ambient (and, at P4c, which task's frames: §5). Its tests, in P4a1:
+  a throwaway Db built and read inside an open query, once in the shape of
+  `features/code.av:1078` and once in that of `features/decls.av:767` — the outer
+  frame's dep list holds only the outer kernel's keys, the inner Db's cells hold only
+  the inner's, and the same key number open on both is no cycle.
 - **A nested Db inside an open frame.** The compiler builds throwaway Dbs inside open
   queries today (READ `features/code.av:1078`, `features/decls.av:767`). The rule: from
   inside an open frame, `within_db(d)` is allowed only for a Db BORN inside that frame
