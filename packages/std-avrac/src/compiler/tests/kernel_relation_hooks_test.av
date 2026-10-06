@@ -1,6 +1,6 @@
-// avra-8sb5.57.81: a real Kernel under a `@std/relation` Db framed by
-// it, as the workspace's `failures_db` is — proves the ownership law
-// fires when a REAL kernel frame is open, and stays quiet with none.
+// A real Kernel under a `@std/relation` Db, as the workspace's
+// `failures_db` is: a relation an owner's open run wrote is read by no
+// one until the run closes, under an open kernel query as outside one.
 use @std.relation.{relation}
 use @std.relation.db.{Db, db_over, Verifying, Late}
 use @std.relation.engine.{Kernel, new_kernel, Key}
@@ -25,28 +25,31 @@ fn read_facts(kernel: Kernel, db: Db, outer: Key, runs: Cell<int>) -> int {
     }
 }
 
-/// A Db framed by `kernel` — the workspace's own shape — whose
-/// refusals land in `heard`, its own fresh cell, instead of trapping,
-/// so the law's own words can be asserted.
+/// A Db over `kernel` — the workspace's own shape — whose refusals land
+/// in `heard`, its own fresh cell, instead of trapping, so the law's own
+/// words can be asserted.
 fn framed(kernel: Kernel, heard: Cell<List<string>>) -> Db {
     let db = db_over(kernel, Verifying.ByHash, Late.Refused)
     db.heard_by((w: string) -> heard.push(w))
     db
 }
 
-spec "compiler/workspace — a real kernel frame arms the ownership law" {
-    then "a query reading a relation it just wrote, inside the same frame, is refused" {
+spec "compiler/workspace — an open run's rows are read once it closes" {
+    then "a kernel query reading a relation its owner's open run just wrote is refused" {
         let kernel = new_kernel()
         let heard: Cell<List<string>> = Cell.new([])
         let db = framed(kernel, heard)
         let key = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
+        let owner = db.owner_named("facts")
         kernel.begin(key)
+        let _ = db.opened_run(owner)
         let _ = Fact.insert(db, name: "a", n: 1)
         let _ = Fact.all(db)
+        db.closed_run(owner)
         kernel.settle(key, 0)
-        heard.get().length == 1 && heard.get()[0].contains("prior(db)")
+        heard.get().length == 1 && heard.get()[0].contains("`Fact` is read while its owner `facts` has a run open")
     }
-    then "a read with no kernel frame open is free" {
+    then "a read with no run open is free" {
         let kernel = new_kernel()
         let heard: Cell<List<string>> = Cell.new([])
         let db = framed(kernel, heard)
@@ -54,7 +57,7 @@ spec "compiler/workspace — a real kernel frame arms the ownership law" {
         let free = Fact.all(db).length
         free == 1 && heard.get().is_empty()
     }
-    then "a different frame reading a relation an earlier, closed frame wrote is free" {
+    then "a kernel query reading a relation an earlier, closed query wrote is free" {
         let kernel = new_kernel()
         let heard: Cell<List<string>> = Cell.new([])
         let db = framed(kernel, heard)
