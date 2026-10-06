@@ -192,9 +192,9 @@ with **no switch** (D10) · the kernel stays in `std-avrac` · no bisect.
 | # | still pending | recommended | first PR that needs it |
 |---|---|---|---|
 | D9 | how we know a tool (clang, the linker) changed: read all of it every build, or trust path + size + modified-time? | the shortcut, for tools and the compiler binary only | DB 04 d |
-| D11 | a plain run-time program using `@query` has no memo, because the kernel lives in the compiler. Accept, or let `kernel.av` live in `@std/relation`? | accept for now | DB 01a |
+| D11 | where the one engine lives: in the compiler only (a run-time `@query` then has no memo), or `kernel.av` in `@std/relation` so one engine serves compile time and run time (it matters to the autonomous-systems/state and ORM work) | being put to the owner | DB 01a builds the same seam either way |
 
-Waiting on measurements: M1 (how big the kernel graph is), M2 (saved answers and reads per
+M1 is measured: 70,015 cells, 5.3 M direct edges, 37.2 M read calls (design §7.3). Waiting on: M2 (saved answers and reads per
 answer), M3 (the phase table for a warm edit on main today). The design's §7.3 says what each result changes.
 
 ## Questions a cold session cannot answer from the code

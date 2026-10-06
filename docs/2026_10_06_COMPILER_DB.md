@@ -56,7 +56,7 @@ which) · `PROBED` I ran it; the command and its output are beside it · `MEASUR
 | # | question | in plain words | recommended |
 |---|---|---|---|
 | D9 | How do we know `clang` or the linker changed? | To be sure, we would read all ~100 MB of the tool on every build (~100 ms, ESTIMATED). Instead: remember its path, size and modified-time, and treat it as changed when any of the three moves. Source files never get this shortcut — they are always read | the shortcut, for tools and the compiler binary only |
-| D11 | A plain program that uses `@query` at run time (no compiler in it) | The kernel lives in the compiler, and a program cannot link the compiler (it links LLVM). So a run-time `new_db()` runs a query's body on every ask — correct, no memo. No shipped package uses a run-time `@query` today (READ(agent): 0 outside tests). The alternative keeps one engine everywhere: `kernel.av` (717 lines) lives in `@std/relation`, which the compiler already imports | accept no run-time memo now; revisit when a run-time consumer needs one |
+| D11 | Where does the one engine live, so that a program **at run time** can use it too? | **A — in the compiler only** (as decided): a program cannot link the compiler (it links LLVM), so a run-time `@query` has no memo; its body runs on every ask. **B — the kernel file (717 lines) lives in `@std/relation`**, which the compiler already imports: one engine at compile time *and* run time, no new package. The run-time side matters to the autonomous-systems/state work and the ORM (`docs/2026_09_24_AUTONOMOUS_SYSTEMS_AND_STATE.md`, `docs/2026_09_24_ORM.md`), which want saved, incremental queries inside a running program. No shipped package uses a run-time `@query` today | A now is cheaper; B if those two campaigns are to stand on this engine. DB 01a is the same seam either way |
 
 ---
 
@@ -92,9 +92,9 @@ every family key has one, so all 32 families are saved. What has no name: a node
 So for the compiler L4's refusal is a rule about **keyless rows**; M2 counts them. A row
 and an index bucket are *named parts of their producer's answer* (A11).
 
-**PENDING M1** (§7.3): if the whole kernel graph is ~5 M edges, every cell's digest and reads
-are saved and L4's refusal is a speed lint. If it is ~50 M, the refusal is a correctness law.
-The plugin author's view is the same either way.
+**M1 is in** (§7.3): the whole graph is 70,015 cells and 5.3 M direct edges — small enough
+to save every cell's digest and reads. So L4's refusal is a speed lint, not a correctness
+law. "51.6 M" was never an edge count.
 
 ---
 
@@ -327,7 +327,7 @@ consumer becomes, and `avra explain`'s output: appendix A14.
 READ `packages/std-avrac/src/compiler/families/families.av:17-149` (key, answer). "Encodes
 today" is READ(agent). "Saved as" is PROPOSED and confirmed per family by M2 and M4.
 Every key below is a local number whose name arrives at DB 03 (§2), so all 32 are saved.
-The other kernel cells — relation rows and buckets, most of the ~5 M edges — are A11.
+Relation rows and buckets (A11) hold almost none of the 5.3 M edges today (M1: 2).
 
 | # | family | key | answer | encodes today? blocked by | saved as |
 |---|---|---|---|---|---|
@@ -548,7 +548,7 @@ round uses fresh edit text: a repeated text is a cache hit (HANDOFF 10-01 :100).
 
 | # | question | result | what it changes |
 |---|---|---|---|
-| M1 | How big is the kernel's graph on a cold `check cli`? 51.6 M (an uncommitted count, townhall :2427) or ~5.3 M (ticket `.57.167`)? | **PENDING M1** | ~5 M: save every cell's digest and reads; L4's refusal is a lint; DB 06 is simpler. ~50 M: the refusal is a correctness law and DB 03 must finish before DB 06 saves a compiler family |
+| M1 | How big is the kernel's graph on a cold `check cli`? | **MEASURED** (`AVRA_DB_GRAPH=1`, branch `db-measure`, `tools/db_measure/graph.py`): **70,015 cells, 5,314,590 direct edges**. 37.2 M recorded read *calls* — 7 per kept edge; 17.8 M on `Named`, 14.5 M on `Items`. In memory 74 B an edge (375 MB) and ~1,050 B a cell (70 MB) of a 1,867 MB peak; as plain text the graph is 45.7 MB. 54,947 cells are keyed by file, module, declaration or unit; 15,068 by a process-local ask number. The three std-relation families hold 2 edges between them | save every cell's digest and reads (≈ 46 MB before packing). The 15,068 ask-number cells need names at DB 03. The cost to cut is the 37 M calls, on `Named` and `Items` — DB 01 c–d |
 | M2 | Under L4: how many saved answers, reads per answer, the longest in-memory list? | **PENDING M2** | §4.1's "saved as" column; the two gates in §7.2; the store size (ESTIMATED today: ~80 k records, ~2.4 M reads, 15–20 MB) |
 | M3 | Where does a warm one-edit `check cli` spend its time on main **today**? `--time` phase timings and `AVRA_QTRACE` reuse/compute counts, naming every phase that walks the whole program and its cost. No bisect (owner: too expensive) | **PENDING M3** | each O(program) phase it names is a line in DB 07 d's acceptance. If recorded relation reads dominate, DB 01 c–d stay ahead of any further family conversion (as ordered) |
 
@@ -795,7 +795,8 @@ two-package repro is written out in ticket `.57.182`.
 |---|---|---|---|
 | flattened witness, cold `check std-avrac` | 74,600 edges/file median; 33.3 M edges; pack 279 MB; +62 % / +38 % / +116 % / +216 % | TH:2404-2413 | MEASURED |
 | direct deps of the same 770 files | 13,578 (17.6/file, median 9) | `3806c7d` | MEASURED |
-| "kernel grain": ≥2.54 M keys, ≥51.6 M deps | "still climbing when stopped"; no commit, no harness | TH:2427-2434 | UNREPRODUCIBLE |
+| "kernel grain": ≥2.54 M keys, ≥51.6 M deps | "still climbing when stopped"; no commit, no harness. Not an edge count: M1 measured 5,314,590 edges and 37.2 M read calls | TH:2427-2434 | UNREPRODUCIBLE |
+| the kernel graph, cold `check cli` | 70,015 cells · 5,314,590 direct edges · 37.2 M recorded read calls · 45.7 MB as text | M1, `AVRA_DB_GRAPH=1`, branch `db-measure` | MEASURED |
 | `Kernel.newly_read`, cold `check cli` | 375 MB in 5,326,142 live boxes, ~70 B an edge | ticket `.57.167` | MEASURED |
 | same, earlier run | 363 MB in 5.1 M boxes | `avra-8sb5.76` | MEASURED |
 | per-declaration fact columns | 154 MB (`side_table<bool>`, 142,264 tables) + 258 MB (`side_grow<DeclAt>`) | ticket `.57.168` | MEASURED |
@@ -860,7 +861,8 @@ extraction made for this rewrite. The line numbers were read by those agents at
 
 **Today** (READ `features/decls.av:704-706`): "no query OWNS a row here: a declaration is
 minted by one query and its facts filed by another, and nothing sweeps it". Row and bucket
-cells are keyed by a dense row id and are most of the kernel's ~5 M edges. 259 non-test
+cells are keyed by a dense row id. They hold almost no kernel edges today (M1: the three
+std-relation families hold 2): row reads are recorded on the reading family's own cells. 259 non-test
 call sites read `.decl(…)` (PROBED by grep at `05fe643`).
 
 | thing | what it is on this DB | PR |
@@ -1005,7 +1007,7 @@ It never writes the store it inspects (the `.57.153` law).
 | first draft: gate one edit at 2.0 s | 300 ms (D7) | this tree measured 0.18 s on 09-21 |
 | first draft: one file per record | one packed file | 1,300 opens = 60–100 ms. This restores townhall §6.6 |
 | first draft: "everything is a relation", `Expr.by_shape` | every fact is a query answer; the AST stays an arena | townhall P4 ruling (:2761); a first read is ~15× |
-| townhall §6.5a: the durable witness is `KeyParts`; kernel-grain deps stay in process | `KeyParts` is deleted at DB 07 | **PENDING M1/M2.** "≥51.6 M deps" was never committed; two later measurements say ~5 M |
+| townhall §6.5a: the durable witness is `KeyParts`; kernel-grain deps stay in process | `KeyParts` is deleted at DB 07 | M1, MEASURED: 5,314,590 direct edges in 70,015 cells; 45.7 MB as text. "≥51.6 M" was not an edge count |
 | `.57.148`: keep `@family(rank, key, answer)` | families become `@query` | the owner overruled it, 10-06. `.148` stays closed |
 | COMPILER.md law 6: "The sources are the hold's oracle. A hold bug costs time, never a wrong answer" | retired at DB 07, with no switch (D10) | the owner, 10-06: "no switch". The hold that re-asks the sources is deleted; the edit corpus and the attack cases in CI are the net. What it can miss: a stale saved answer shown as a false error between a bug landing and the corpus catching it |
 | sources §15a Q12: the two doors are designed with the owner | unchanged. This document supplies the mechanism; the grant policy is D6 | the first draft claimed the doors silently |
