@@ -457,7 +457,7 @@ impl Workspace {
         self.db.begin(k)
         let fns = [x.id for x in self.decls.all_decls() if !self.is_held(x.file) && self.decls.inferring(x)]
         self.decls.clear_inferred()
-        let sums = [self.fail_summary(d) for d in fns]
+        let sums = self.surveyed(fns)
         self.decls.settle_failures(fns, sums)
         self.solve_raised(fns)
         self
@@ -470,6 +470,18 @@ impl Workspace {
                 ),
             )
         fns.length
+    }
+
+    /// Every fn's summary, the `ErrorSite` rows its walk writes ONE run of
+    /// their owner: the last survey's rows that this one does not write
+    /// again are swept when it closes, and the solve reads them closed.
+    fn surveyed(fns: List<DeclId>) -> List<FailSummary> {
+        let db = self.failures_db.get()
+        let owner = db.owner_named("error sites")
+        let _ = db.opened_run(owner)
+        let sums = [self.fail_summary(d) for d in fns]
+        db.closed_run(owner)
+        sums
     }
 
     /// `Decls.seats`' hook: types one fn's own parameters, standalone, through
@@ -605,19 +617,18 @@ impl Workspace {
     }
 
     /// The raised-set fixpoint over `ErrorSite`, solved as ONE run of
-    /// `Raised`'s owner: the solve and the rows it settles share one
-    /// frame of `failures_db`, so a member reading `Raised` mid-solve is
-    /// refused, and the last solve's rows are swept when this one ends.
+    /// `Raised`'s owner: `Raised` is read by no one until the run closes,
+    /// and the last solve's rows are swept when it does.
     /// Beside `Decls`' own Kleene loop, which typing reads.
     fn solve_raised(fns: List<DeclId>) {
         let db = self.failures_db.get()
-        let owner = db.cell(self.raised_fixpoint.family, 0)
-        db.began(owner)
+        let owner = db.owner_named("raised")
+        let _ = db.opened_run(owner)
         let solved = self
             .raised_fixpoint
             .solve([f.index for f in fns], (arg: int) -> self.raised_compute(arg))
         for f in fns { let _ = Raised.insert(db, owner: f, errors: self.raised_fixpoint.value_at(f.index)) }
-        db.ended(owner)
+        db.closed_run(owner)
         let refusal? = refusal_of(solved) else { return }
         self.defect("defect: ${fixpoint_spoken(refusal)}")
     }

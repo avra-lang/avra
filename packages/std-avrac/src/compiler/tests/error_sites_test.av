@@ -319,14 +319,17 @@ fn noting_db() -> RelDb {
     db
 }
 
-spec "compiler/failures — `Raised` read inside its owner's own run" {
-    then "is refused, naming `prior(db)`" {
+spec "compiler/failures — `Raised` read while its owner's run is open" {
+    then "is refused, naming the relation and the owner, and read freely once the run closes" {
         let db = noting_db()
-        let owner = db.cell(0, 0)
-        db.began(owner)
+        let owner = db.owner_named("raised")
+        let _ = db.opened_run(owner)
         let _ = Raised.insert(db, owner: DeclId { index: 0 }, errors: [])
         let _ = Raised.by_owner(db, DeclId { index: 0 })
-        db.ended(owner)
-        raised_heard().get().length == 1 && raised_heard().get()[0].contains("prior(db)")
+        db.closed_run(owner)
+        let closed = Raised.by_owner(db, DeclId { index: 0 }).length
+        closed == 1 &&
+            raised_heard().get().length == 1 &&
+            raised_heard().get()[0].contains("`Raised` is read while its owner `raised` has a run open")
     }
 }

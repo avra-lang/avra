@@ -56,11 +56,15 @@ records a row's read through, on one field only.
 `@query fn q(db, …)` (`use @std.relation.{query}`) is the second
 annotation: a fn over a Db whose answer is kept per call. A kept answer
 is reused until a write to a relation the query read, then the body
-reruns. The rows a run inserts are the query's own: a rerun replaces
+reruns. A QUERY WRITES NO ROWS OF ITS OWN: an insert in its body with no
+owner's run open is refused. Rows that a computation produces belong to
+a NAMED OWNER — `let o = db.owner_named("icons")`, `db.opened_run(o)`,
+the inserts, `db.closed_run(o)` — and a rerun of that owner replaces
 them (a keyed row keeps its id, a row the run no longer writes is
-dropped), two queries writing one key are refused, and a query that
-reads a relation it writes is refused — it reads the rows its last run
-left with `Rel.prior(db)`, from inside the query. ORM's program
+dropped). Two owners writing one row are refused, and a relation an open
+run has written is read by no one until the run closes. `Rel.prior(db)`
+is gone with query-owned rows: what a run left is read after it closes,
+with the relation's ordinary lookups. ORM's program
 `packages/std-relation/src/tests/query/` pins each of these. Answers and
 rows live in memory for the life of the Db; persisting them is
 avra-8sb5.57.6.
