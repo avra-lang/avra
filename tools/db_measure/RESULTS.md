@@ -465,6 +465,40 @@ read (81 "what it sees moved") -> 430 held, 32 read, none moved. A body
 edit under `impl Show for List<T>` read the file's importer before
 ("what it sees moved") and holds it after — cache attack `bw`.
 
+## A kept verdict carries its run's reads (avra-8sb5.57.212)
+
+Sprite avra-comptime, tree f765cfd, the fix against the same tree with its
+three source files reversed. Scripts: `store_two.sh`, and the attacks `kr`
+and `kv` in `tools/cache_attacks.sh`.
+
+| two stores over one cli source | before | after |
+|---|---|---|
+| check pair: module records that differ | 4 | 0 |
+| check pair: unit rows that differ | 7 | 0 |
+| check pair: unit / warn rows under other keys | 52 / 42 | 0 / 0 |
+| build pair: module records that differ | 4 | 0 |
+| build pair: unit rows that differ | 8 | 1 (same lines, another order) |
+| build pair: objects under other keys | 16 | 2 |
+| build pair: objects, one key, other bytes | 9 | 9 (avra-8sb5.57.215) |
+
+The check pair is a cold check against one test file then the package; the
+build pair is a cold build against a check then a build, so its second
+store also holds what only a check writes (6 rows, 4 units, 1848 warn rows).
+
+| cost | before | after |
+|---|---|---|
+| kept-lines bytes, cli check store (510 rows) | 32,633,459 | 32,754,137 (+0.37%) |
+| one-edit cli check, ms | 4611, 4850, 4745 | 5044, 4971, 5109; 4819, 4860, 5056 |
+| files held on those edits | 446, 448, 448 | 446 every time |
+| one-edit std-avrac check, ms | 4356, 3170, 3291 | 3478, 3364, 3324; 3524, 3232, 3344 |
+| one file then its directory, ms | 4509 | 4638; 4625 |
+
+The two files no longer held are expand.av and ir.av: their compile-time
+runs read the edited shared.av, and before the fix the record lost that
+read after the first edit. No attempt was discarded in any of these runs
+before or after; the wasted attempt shows in the fixtures only (`kv`: 1
+discarded, 87 ms, before; 0 after).
+
 ## Not measured
 
 - The encoded size of any family's value under a new codec.
