@@ -56,7 +56,7 @@ if [ -n "${FAKE:-}" ]; then
         shift 3
         echo "$verb $*" | cut -c1-60 >> "$FAKE/calls"
         case $verb in
-            ready | status) echo "holds=yes"; [ ! -f "$FAKE/live" ] || echo "run=$(cat "$FAKE/live") live host 1 x" ;;
+            ready | status) echo "holds=yes"; [ ! -f "$FAKE/live" ] || echo "run=$(cat "$FAKE/live") live host 1 x $(cat "$FAKE/idle" 2>/dev/null)" ;;
             start) echo "started=$1" ;;
             attach)
                 [ ! -f "$FAKE/hang" ] || sleep 30
@@ -311,6 +311,12 @@ scene 0; echo Mine-2 > "$scratch/fake/live"
 (cd "$scratch/avra-loose" && sh "$work" done) > /dev/null 2>&1
 PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" bind B > "$scratch/out" 2>&1
 check "$? $(holder .) $(grep -c 'A still runs something for this lane' "$scratch/out")" "1 A 1" "work bind <sprite>: a lane whose Sprite still runs its run does not move away from it" "$scratch/out"
+echo "quiet=12 frozen=357" > "$scratch/fake/idle"
+(cd "$main" && FAKE="$scratch/fake" sh "$work" sprites) > "$scratch/out" 2>&1
+check "$(grep -c '^A .*host(pid 1) quiet 12s — MADE NO PROGRESS FOR 357s, unattended' "$scratch/out")" 1 "work sprites: a live run shows how long it has been quiet, and how long it stood frozen with nobody attached" "$scratch/out"
+echo "quiet=3 frozen=0" > "$scratch/fake/idle"
+(cd "$main" && FAKE="$scratch/fake" sh "$work" sprites) > "$scratch/out" 2>&1
+check "$(grep -c '^A .*host(pid 1) quiet 3s $' "$scratch/out") $(grep -c 'NO PROGRESS' "$scratch/out")" "1 0" "work sprites: a run that never froze says only how long it has been quiet" "$scratch/out"
 (cd "$main" && FAKE="$scratch/fake" sh "$work" sprites --fix A) > "$scratch/out" 2>&1
 check "$(grep -c 'A is running Mine-2 for lane avra-after — left alone' "$scratch/out") $(grep -c '^stop' "$scratch/fake/calls")" "1 0" "work sprites --fix: a live run on a Sprite its lane holds is left alone, even named" "$scratch/out"
 (cd "$main" && FAKE="$scratch/fake" sh "$work" sprites --fix B) > "$scratch/out" 2>&1

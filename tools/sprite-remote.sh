@@ -127,7 +127,8 @@ status() {
         [ -f "$o" ] || continue
         r=$(basename "$(dirname "$o")")
         [ ! -f "$runs/$r/status" ] && [ -n "$(members "$r")" ] && state=live || state=ended
-        echo "run=$r $state $(cat "$o")"
+        # How long since the run last wrote, and how long it has stood frozen in all.
+        echo "run=$r $state $(cat "$o") quiet=$(($(date +%s) - $(stat -c %Y "$runs/$r/out" 2>/dev/null || date +%s))) frozen=$(cat "$runs/$r/frozen" 2>/dev/null || echo 0)"
     done
 }
 
@@ -208,9 +209,18 @@ keeper() {
     hold on "$r"
     was=$(avail_mb)
     low=$was
+    wall=$(date +%s)
     while [ -d "$rd" ] && kill -0 "$main" 2>/dev/null; do
         why=
         now=$(cut -d. -f1 /proc/uptime)
+        # A turn is a second or two; one that took far longer is time the
+        # run did not have, and the run says so where its output is read.
+        turn=$(($(date +%s) - wall))
+        wall=$((wall + turn))
+        [ "$turn" -lt "${AVRA_FROZEN_S:-20}" ] || {
+            echo "sprite-run: this run made no progress for ${turn}s — the Sprite was suspended, or stalled, with nobody attached" >> "$rd/out"
+            echo $(($(cat "$rd/frozen" 2>/dev/null || echo 0) + turn)) > "$rd/frozen"
+        }
         # The floor rises with the fall: one more turn like the last must
         # leave the Sprite above where it stalls.
         have=$(avail_mb)

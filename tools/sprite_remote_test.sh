@@ -146,6 +146,19 @@ echo $$ > "$AVRA_SPRITE_HOME/avra-runs/reboot/pid"
 remote status > /dev/null 2>&1
 check "$(res reboot)|$(remote attach reboot 0 | grep -c '^before$\|the Sprite restarted under this run')" "status 75|2" "a run whose Sprite restarted under it answers 75, keeps what it printed and says what happened — a stranger wearing its pid is not its supervisor"
 
+# ══ FROZEN: a run that stood still says for how long, in its output and its status line
+AVRA_FROZEN_S=3 begin frozen 60 sh -c 'echo first; sleep 4253' > /dev/null
+sleep 2
+k=$(keeper_of frozen)
+kill -STOP "$k"
+sleep 5
+kill -CONT "$k"
+sleep 3
+remote status > "$scratch/status" 2>&1
+check "$(grep -c '^sprite-run: this run made no progress for [0-9]*s' "$AVRA_SPRITE_HOME/avra-runs/frozen/out")|$(sed -n 's/^run=frozen live .* quiet=[0-9]* frozen=\([0-9]*\)$/\1/p' "$scratch/status" | awk '{ print ($1 >= 4 && $1 <= 9) ? "counted" : $1 }')" "1|counted" "a run whose keeper stood still five seconds says so in its output, and its status line counts them" "$scratch/status"
+remote stop frozen
+settled frozen 10
+
 # ══ THE HOLD: the Sprite is asked to stay awake before start answers, and released at the end
 if [ -S /.sprite/api.sock ]; then
     tasks() { curl -s -m 5 --unix-socket /.sprite/api.sock http://sprite/v1/tasks | grep -c "\"$1\""; }
