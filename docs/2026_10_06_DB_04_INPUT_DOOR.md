@@ -85,14 +85,14 @@ Each PR ends with `make inputs-accept`; the baseline falls by the count in its r
 
 | PR | what moves | files | removes | leaves |
 |---|---|---|---|---|
-| **b** | `Host.input(name) -> Input` lands as the door's verb. `Source` and `Manifest` are read through it; the kernel's `set_input` takes the input's digest. `compiler/inputs.av`'s `@input file_text` / `env_value` are folded in or deleted (its `read_text(path) catch ""` reads absent as empty) | `workspace.av` (:1050), `packages.av` (3), `build.av` (:642), `compiler/inputs.av` (2), `host/host.av`, `cli/commands/shared.av` (the `Host` literal) | 7 | 193 |
-| **c** | the rest behind `Host`: `exists`, `is_dir`, `list`, `beneath`, the remaining `read`s; `embed` as `Text`; `admit_embeds`' string match deleted; the four unrecorded reads of `avra-8sb5.57.184` | `modules.av` 11, `suite.av` 11, `build.av` 9, `packages.av` 3, `voices.av` 3, `record.av` 3, `whole.av` 3, `derive.av` 2, `workspace.av` 1, `rule_proof.av` 1, `testing/mod.av` 3 | 50 | 143 |
+| **b** | `Host.text(path) -> Read` lands as the door's first verb, over the fields `Host` already has. The `Source` and `Manifest` loaders read through it and the kernel cell is cut by one word of the input's digest. `compiler/inputs.av` (`@input file_text` / `env_value`) is deleted; findings reads `host.text` | `host/host.av`, `host/input.av`, `workspace.av` (the Source loader), `packages.av` (the Manifest loader), `findings.av`, `derive.av` (one call), `compiler/inputs.av` (deleted) | 4 | 196 |
+| **c** | the general cell — an interned `InputName` under its own family — and the rest behind `Host`: `exists`, `is_dir`, `list`, `beneath`, the remaining `read`s, the three manifest re-reads that stand outside any cell today (`packages.av` 2, `build.av` 1); `embed` as `Text`; `admit_embeds`' string match deleted; the four unrecorded reads of `avra-8sb5.57.184` | `modules.av` 11, `suite.av` 11, `build.av` 10, `packages.av` 5, `voices.av` 3, `record.av` 3, `whole.av` 3, `derive.av` 2, `workspace.av` 1, `rule_proof.av` 1, `testing/mod.av` 3 | 53 | 143 |
 | **d** | env, tool, target, the compiler's identity: `Env`, `Tool`, `Compiler` reads; `Target` declared; the three `Host` fields become inputs | `cli/commands/shared.av` 42, `whole.av` (link words) 1 | 43 | 100 |
 | **e** | the remaining direct sites by subsystem, and a `// LICENSED input.<why>:` line on each read that is no input | commands 47 · `build.av` 9, `db.av` 4 · debug flags 6 (licensed) · clock 21, evaluator 8, store 5 (licensed) | 100 | 0 |
 
 Order is b, c, d, e: c needs b's verb; d and e are independent of each other
-once c is in. b touches `workspace.av` and `packages.av`, which other lanes
-hold today — it waits for them or takes the lead's leave.
+once c is in. A read sent through the door while recording nothing would fall off
+the keeper's count without becoming an input, so a site moves only with its cell.
 
 Open for whoever takes b:
 
