@@ -205,7 +205,8 @@ export type Kernel = {
     cells: Cell<List<Cell<List<QueryCell?>>>>,
     verifiers: Cell<List<Verifier>>,
     /// The LAST-READER STAMP of every key, laid out as `cells` is: the
-    /// reader id that last recorded it, 0 for none.
+    /// reader id that last recorded it, 0 for none. A row only grows
+    /// (`read_any`).
     stamps: Cell<List<Cell<List<int>>>>,
     /// The last reader id minted; ids start at 1.
     minted: Cell<int>,
@@ -707,7 +708,10 @@ impl Kernel {
         if !self.graph.on.get() { self.asker.last.set(packed(family, arg)) }
     }
 
-    /// Whether any key of `family` was ever recorded as read.
+    /// Whether any key of `family` was ever recorded as read. A STAMP ROW
+    /// ONLY GROWS — no eviction, sweep or disarm shortens one — and a
+    /// relation's writer reads this as "ever read": while it is false a
+    /// write there asks no reader and tells none.
     fn read_any(family: int) -> bool { !self.stamp_row(family).get().is_empty() }
 
     /// `family`'s stamp row; a family never registered is a defect.

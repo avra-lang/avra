@@ -12,6 +12,12 @@ type Glyph = { @key name: string, @index set: string }
 @relation
 type Face = { @key name: string }
 
+@relation
+type Mark = { @index set: string }
+
+@query
+fn marks_in(db: Db, set: string) -> int { Mark.all(db).length + Mark.by_set(db, set).length }
+
 once fn glyph_runs() -> Cell<List<string>> { Cell.new([]) }
 
 fn ran(word: string) {
@@ -148,5 +154,57 @@ spec "std/relation — a @query under an owner's kernel" {
         o.db.given_to(second)
         let _ = Glyph.insert(o.db, name: "b", set: "s")
         heard.get().is_empty()
+    }
+    then "a replacement moves a cell once, however many rows file under it: keyed rows into one read bucket move the revision by one" {
+        let db = new_db()
+        let _ = glyphs_in(db, "s")
+        let kernel = db.engine()
+        let before = kernel.revision()
+        let stored = Glyph
+            .replaced(db, "glyphs", [Glyph { name: "g${i}", set: "s" } for i in 0..300])
+        stored.length == 300 && kernel.revision() == before + 1
+    }
+    then "keyless rows into one read bucket of a relation read whole move the revision by two" {
+        let db = new_db()
+        let _ = marks_in(db, "s")
+        let kernel = db.engine()
+        let before = kernel.revision()
+        let stored = Mark.replaced(db, "marks", [Mark { set: "s" } for _i in 0..70])
+        stored.length == 70 && kernel.revision() == before + 2
+    }
+    then "a relation no query has read is told of the whole alone, and of each cell once a query has read it" {
+        let o = under_owner()
+        let _ = Face.insert(o.db, name: "f")
+        let reader = Key { family: o.kernel.family((_arg: int) -> 0), arg: 0 }
+        o.kernel.begin(reader)
+        let _ = Face.all(o.db)
+        o.kernel.settle(reader, 0)
+        let _ = Glyph.replaced(o.db, "glyphs", [Glyph { name: "a", set: "s" }])
+        o.kernel.bump()
+        let _ = Glyph.replaced(o.db, "glyphs", [Glyph { name: "b", set: "s" }])
+        let rs = Glyph.rows_in(o.db)
+        let family = rs.family.get()
+        let cell = rs.bucket_of_text(1, "s") + 1
+        let unread = o.kernel.verified(family, cell) == 0 &&
+            o.kernel.verified(family, 0) == o.kernel.revision()
+        let from = glyph_runs().get().length
+        let one = glyphs_in(o.db, "s")
+        o.kernel.bump()
+        let _ = Glyph
+            .replaced(o.db, "glyphs", [Glyph { name: "c", set: "s" }, Glyph { name: "d", set: "s" }])
+        let read = o.kernel.verified(family, cell) == o.kernel.revision()
+        unread && read && one == 1 && glyphs_in(o.db, "s") == 2 && since(from) == "glyphs,glyphs"
+    }
+    then "a replacement is refused for a bucket only a row it removes stands in" {
+        let o = under_owner()
+        let heard: Cell<List<string>> = Cell.new([])
+        o.db.heard_by((w: string) -> heard.push(w))
+        let _ = Glyph.replaced(o.db, "glyphs", [Glyph { name: "a", set: "s" }])
+        o.kernel.bump()
+        let _ = glyphs_in(o.db, "s")
+        let stored = Glyph.replaced(o.db, "glyphs", [Glyph { name: "c", set: "t" }])
+        stored.is_empty() &&
+            heard.get().length == 1 &&
+            [g.name for g in Glyph.all(o.db)].join(",") == "a"
     }
 }
