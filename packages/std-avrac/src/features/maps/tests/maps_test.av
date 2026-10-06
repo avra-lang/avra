@@ -86,14 +86,13 @@ spec "features/maps" {
                     "\${m.get(\"a\") ?? 0}\"",
             ) == "a b 10"
         }
-        then "a nullable value keeps presence" {
+        then "a null value reads back null, its key still counted" {
             shown(
                 "mut m: Map<string, int?> = {}\nm.set(\"p\", null)\nm.set(\"q\", 7)\nlet vs = m.values()\n\"" +
                     "\${vs.length} " +
-                    "\${vs[0] != null} " +
+                    "\${vs[0] == null} " +
                     "\${vs[1] ?? 0}\"",
             ) == "2 true 7"
-
         }
         then "an empty declared map has an empty order" {
             shown("let m: Map<string, int> = {}\n\"\${m.keys().length} \${m.values().length}\"") == "0 0"
@@ -113,6 +112,36 @@ spec "features/maps" {
                 "let m = { \"a\": 1 }\nfor k in m { 0 }\n0",
                 "a map walks as key and value",
             )
+        }
+    }
+    given "[f(k, v) for k, v in m] — a comprehension's head pairs too" {
+        then "the pairs read in insertion order, under a filter" {
+            shown(
+                "let m = { \"b\": 2, \"a\": 1, \"c\": 3 }\n[k for k, v in m if v != 1].join(\",\")",
+            ) == "b,c"
+        }
+        then "an unpaired head refuses, once" {
+            refused_with(
+                "let m = { \"a\": 1 }\n[k for k in m].length",
+                "a map walks as key and value",
+            )
+        }
+    }
+    given "entries — a pair is the prelude's record" {
+        then "a program that sees no prelude is told so, once" {
+            refused_with(
+                "let m = { \"a\": 1 }\nm.entries().length",
+                "a map's entries wear the prelude's `Entry`, and this program sees no `@std/prelude`",
+            )
+        }
+        then "an argument refuses before the prelude is asked" {
+            refused_with(
+                "let m = { \"a\": 1 }\nm.entries(1)\n0",
+                "`entries` takes 0 arguments, found 1",
+            )
+        }
+        then "`{}` cannot know its values" {
+            refused_with("let m = {}\nm.entries()\n0", "`{}.entries` cannot know its values")
         }
     }
     given "remove and is_empty — a key drops and the rest keep order" {
