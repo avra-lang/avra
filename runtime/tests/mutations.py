@@ -103,7 +103,7 @@ CLOCK_MUTATIONS = [
     ("a run begins with its host's holds", "    avra_clock.held = 0;\n    avra_clock.virtual = 1;", "    avra_clock.virtual = 1;"),
     ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
 ]
-TESTS = ["clock_test", "seed_test", "flow_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
+TESTS = ["flow_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
 BOUND = 60
 
 os.makedirs(out, exist_ok=True)

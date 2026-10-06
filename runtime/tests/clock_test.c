@@ -285,6 +285,15 @@ static void spins_computing(void) {
     int64_t until = avra_now_ns() + MS;
     while (avra_now_ns() < until) {}
 }
+// Five thousand reads and done: a trap only because the setting says a
+// thousand.
+static void reads_past_its_setting(void) {
+    asks_most("1000");
+    avra_clock_virtual(1);
+    int64_t sum = 0;
+    for (int i = 0; i < 5000; i++) sum += avra_now_ns() & 1;
+    _exit(sum < 0);
+}
 static void misspelled(void) {
     asks_most("many");
     avra_clock_virtual(1);
@@ -466,6 +475,7 @@ int main(void) {
     }
     trapped("a task that yields until the clock moves", spins_yielding, "a task is waiting on the clock without sleeping");
     trapped("a task that computes until the clock moves", spins_computing, "AVRA_CLOCK_ASKS sets how many");
+    trapped("a task that reads past the setting's limit", reads_past_its_setting, "read it 1000 times");
     trapped("a limit that is no number", misspelled, "AVRA_CLOCK_ASKS takes a whole number of reads, or 0 for never");
     trapped("a hold given back twice", lets_go_twice, "the world was let go more often than it was held");
     printf("clock: %d checks, %d failed\n", g_checks, g_fails);
