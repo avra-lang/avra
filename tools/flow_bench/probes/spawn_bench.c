@@ -2,8 +2,11 @@
 // a time, and ten thousand tasks alive at once (the first round cold,
 // then the best of four). No closure lift, no `Tasks` owner, no Avra
 // frame — what the runtime alone costs. Prints `<key> <total ns> <count>`.
+// A second argument `switch` runs the ten million switches alone, for an
+// instruction count taken from outside.
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 #include "avra_box.h"
@@ -56,11 +59,12 @@ static double alive(void) {
 
 int main(int argc, char** argv) {
     const char* tag = argc > 1 ? argv[1] : "c";
-    double cold = alive();
+    int switches_only = argc > 2 && strcmp(argv[2], "switch") == 0;
+    double cold = switches_only ? 0 : alive();
     double warm = 1e18;
-    for (int r = 0; r < 4; r++) { double w = alive(); if (w < warm) warm = w; }
+    for (int r = 0; r < 4 && !switches_only; r++) { double w = alive(); if (w < warm) warm = w; }
     double one = 1e18;
-    for (int r = 0; r < 5; r++) {
+    for (int r = 0; r < 5 && !switches_only; r++) {
         double t0 = now_ns();
         for (int i = 0; i < MANY; i++) joined(spawn1(square, i));
         double t1 = now_ns();
@@ -77,6 +81,7 @@ int main(int argc, char** argv) {
         if (t1 - t0 < best) best = t1 - t0;
     }
     printf("%s_switch %.0f %d\n", tag, best, 2 * TURNS);
+    if (switches_only) return 0;
     printf("%s_spawn_one %.0f %d\n", tag, one, MANY);
     printf("%s_spawn_alive_cold %.0f %d\n", tag, cold, MANY);
     printf("%s_spawn_alive_warm %.0f %d\n", tag, warm, MANY);

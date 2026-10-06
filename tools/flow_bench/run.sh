@@ -7,6 +7,7 @@
 #
 #   sh tools/flow_bench/run.sh          the bench
 #   sh tools/flow_bench/run.sh probes   the stack allocator's probes
+#   FLOW_AVRA=0 …                       Go and the runtime's rows alone
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -50,10 +51,14 @@ if [ "${1:-bench}" = probes ]; then
             "$out/stacks" $reserve $guard 20000 448
         done
     done
-    echo "== (c) the ceiling: stacks asked for until the kernel refuses"
-    "$out/stacks" 1048576 mprotect 1000000 448
-    "$out/stacks" 262144 mprotect 1000000 448
-    "$out/stacks" 262144 none 1000000 448
+    # A MILLION TOUCHED STACKS IS A MILLION RESIDENT PAGES: asked only where
+    # the kernel has a mapping ceiling to find, and never on 16 KiB pages.
+    if [ -r /proc/sys/vm/max_map_count ]; then
+        echo "== (c) the ceiling: stacks asked for until the kernel refuses"
+        "$out/stacks" 1048576 mprotect 1000000 448
+        "$out/stacks" 262144 mprotect 1000000 448
+        "$out/stacks" 262144 none 1000000 448
+    fi
     echo "== (a) the fiber's record at 392 bytes: zeroed whole at spawn, or its live prefix alone"
     for v in today full prefix; do
         spawn_bench $v
@@ -61,6 +66,15 @@ if [ "${1:-bench}" = probes ]; then
     done
     echo "== (b) the same rows, today's scheduler, a 256 KiB reservation"
     for r in 1 2 3; do AVRA_FIBER_STACK=262144 "$out/spawn_bench_today" today256k; done | awk '{ k=$1; v=$2/$3; if (!(k in best) || v < best[k]) best[k]=v } END { for (k in best) printf "  %-28s %.1f ns\n", k, best[k] }' | sort
+    echo "== the yield path: instructions in the object, and counted over ten million switches"
+    for f in avra_fiber_yield avra_fiber_switch; do
+        printf '  %-20s %s instructions\n' "$f" "$(objdump -d "$out/fiber_today.o" 2>/dev/null | awk -v f="$f" '$2 ~ "<_?" f ">:" { on=1; next } on && /^$/ { exit } on && /^ / { n++ } END { print n+0 }')"
+    done
+    if command -v perf > /dev/null 2>&1; then
+        perf stat -e instructions,cycles "$out/spawn_bench_today" today switch 2>&1 | grep -E "instructions|cycles|today_switch" || echo "  perf stat refused"
+    else
+        echo "  no perf on this machine"
+    fi
     exit 0
 fi
 
@@ -77,7 +91,9 @@ if [ -z "$go" ]; then
 fi
 (cd "$here/go" && GOFLAGS=-buildvcs=false "$go" build -o "$out/go/" ./...)
 
+# A tree with no compiler still measures the runtime's rows and Go.
 programs="switch spawn pingpong scope parked"
+[ "${FLOW_AVRA:-1}" = 1 ] && [ -x "$root/build/avra" ] || { echo "flow-bench: no compiler asked for or found — the compiled Avra rows are not run" >&2; programs=""; }
 for p in $programs; do
     "$root/build/avra" build "$here/avra/$p" > /dev/null 2> "$out/$p.build" || { cat "$out/$p.build"; exit 1; }
 done
@@ -102,7 +118,11 @@ ran() {
 r=1
 while [ "$r" -le "$rounds" ]; do
     FLOW_SUFFIX=""
-    for p in switch spawn pingpong scope; do FLOW_ROW=$p; ran avra "$here/avra/$p/src/main"; done
+    for p in $programs; do
+        [ "$p" = parked ] && continue
+        FLOW_ROW=$p
+        ran avra "$here/avra/$p/src/main"
+    done
     FLOW_ROW=spawn_bench
     ran c "$out/spawn_bench_today" c
     for g in switch spawn pingpong deadline fanin selectn canceltree; do
@@ -116,7 +136,9 @@ done
 # Parked tasks, once each: 1k, 100k and 1M, the last only where the
 # machine has the memory to hold Go's.
 free_kb=$(awk '/MemAvailable/ { print $2 }' /proc/meminfo 2>/dev/null || echo 99999999)
-for n in 1000 30000 100000 1000000; do
+sizes="1000 30000 100000 1000000"
+[ -r /proc/self/status ] && [ -n "$programs" ] || { echo "flow-bench: the parked rows need /proc and the compiler — not run" >&2; sizes=""; }
+for n in $sizes; do
     hold=$((2000 + n / 20))
     FLOW_ROW=parked_$n
     FLOW_SUFFIX=_$n

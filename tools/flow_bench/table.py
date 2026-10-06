@@ -31,7 +31,7 @@ def shown(key, v):
         return "—"
     if isinstance(v, str):
         return v
-    unit = "B" if key.startswith("parked") else "ns"
+    unit = "ms" if key.startswith("parked_left_ms") else "B" if key.startswith("parked") else "ns"
     return f"{v:.1f} {unit}" if v < 100 else f"{v:.0f} {unit}"
 
 
