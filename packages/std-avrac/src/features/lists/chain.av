@@ -77,6 +77,15 @@ export fn index_of_chain(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     cx.piped(Pipeline { clauses: clauses, sink: .IndexOf(ret, cell, cx.reg_of(s.arg), s.elem) })
 }
 
+/// `xs.fold(seed, f)` over a chain — the accumulator's cell, seeded
+/// after the receiver and rewritten by every element that arrives.
+export fn fold_chain(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let clauses = subject_clauses(cx, mc.subject)
+    let ret = cx.type_at(mc.e)
+    let cell = cx.seeded_cell(ret, cx.reg_of(mc.args[0]))
+    cx.piped(Pipeline { clauses: clauses, sink: .Fold(ret, cell, step_of(cx, mc.args[1], ret, 2)) })
+}
+
 /// `xs.count()` over a chain — how many elements reach the sink, no
 /// list minted.
 export fn count_chain(mut cx: LowerCx, mc: MethodCall) -> Reg {
@@ -155,11 +164,12 @@ fn box_of(mut cx: LowerCx, f: ExprId) -> FnBox {
     FnBox { box: b.f, code: b.fp }
 }
 
-/// The step a fn-arg keeps or maps by: an inlined lambda body when the
-/// argument is a literal the lowering can bind in place, else a boxed
-/// fn (a fn VALUE, or a lambda with captures).
-fn step_of(mut cx: LowerCx, arg: ExprId, ret: TypeId) -> Step {
-    if cx.can_inline(arg) { .Inline(arg, ret) } else { .Applied(box_of(cx, arg), ret) }
+/// The step a fn-arg keeps, maps or folds by: an inlined lambda body
+/// when the argument is a literal of `seats` params the lowering can
+/// bind in place, else a boxed fn (a fn VALUE, or a lambda with
+/// captures).
+fn step_of(mut cx: LowerCx, arg: ExprId, ret: TypeId, seats: int = 1) -> Step {
+    if cx.can_inline(arg, seats) { .Inline(arg, ret) } else { .Applied(box_of(cx, arg), ret) }
 }
 
 /// A fn's answer type — `filter_map`'s optional, read off the arrow.

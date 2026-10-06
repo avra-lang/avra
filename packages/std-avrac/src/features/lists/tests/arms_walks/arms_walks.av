@@ -1,0 +1,35 @@
+// proves: an arms block at a list walk reads ONE variant's payload in
+// one step — `find_map` and `filter_map` leave the variants it does
+// not name to absence, a predicate walk (`any`, `all`, `filter`,
+// `find`) to `false` — with a guard, a second arm and a two-payload
+// variant each still an arm like any other.
+enum Attribute {
+    Level(int)
+    Title(string)
+    Label(string)
+    Open(bool)
+    Pad(int, int)
+}
+
+fn title(attrs: List<Attribute>) -> string { attrs.find_map() { .Title(t) -> t } ?? "-" }
+
+fn rank(attrs: List<Attribute>) -> int { attrs.find_map() { .Level(r) -> r } ?? 1 }
+
+fn open(attrs: List<Attribute>) -> bool { attrs.any() { .Open(on) -> on } }
+
+let attrs = [
+    Attribute.Level(3),
+    Attribute.Title("a"),
+    Attribute.Open(true),
+    Attribute.Title("b"),
+    Attribute.Pad(1, 2),
+    Attribute.Label("l"),
+]
+let none: List<Attribute> = []
+let titles = attrs.filter_map() { .Title(t) -> t }
+let words = attrs.filter_map() { .Title(t) -> t, .Label(t) -> t }
+let big = attrs.find_map() { .Level(r) if r > 5 -> r }
+let wide = attrs.filter() { .Pad(a, b) -> a + b > 2 }
+let reads = "${title(attrs)} ${title(none)} ${rank(attrs)} ${rank(none)} ${open(attrs)} ${open(none)}"
+let runs = "${titles.join(",")} ${words.join(",")} ${big ?? -1} ${wide.length} ${attrs.all() { .Open(on) -> on }} ${attrs.filter() { .Title(_) -> true }.length}"
+"${reads} | ${runs} | ${attrs.find() { .Label(l) -> l == "l" } != null} ${attrs.find_index() { .Open(_) -> true } ?? -1}"

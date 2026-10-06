@@ -128,7 +128,13 @@ fn switched_reg_with_default(
     if cases.length != arms.length { return short_cases(cx, e) }
     cx.emit(Ins.SwitchStart(cx.tag_of(v), cases))
     for a in arms { cx.arm_end(arm_reg(cx, v, vty, a, want)) }
-    cx.close_region(e, cx.absent_of(want))
+    cx.close_region(e, tail_reg(cx, want))
+}
+
+/// What an implicit tail answers: `false` at a predicate's seat, the
+/// nullable's own absence anywhere else.
+fn tail_reg(mut cx: LowerCx, want: TypeId) -> Reg {
+    if cx.view.types.seen_shape(want) is .Bool { cx.const_bool(false) } else { cx.absent_of(want) }
 }
 
 /// `arm_cases` answering short of what it was asked for — an arm
@@ -174,7 +180,7 @@ fn chained_reg_with_default(
     k: int,
     want: TypeId,
 ) -> Reg {
-    if k == arms.length { return cx.absent_of(want) }
+    if k == arms.length { return tail_reg(cx, want) }
     let a = arms[k]
     cx
         .region_as(accepts_reg(cx, v, vty, a), want) { cx -> arm_reg(cx, v, vty, a, want) } else { cx -> chained_reg_with_default(cx, v, vty, arms, k + 1, want) }

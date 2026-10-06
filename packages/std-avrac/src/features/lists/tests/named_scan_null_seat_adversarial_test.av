@@ -1,0 +1,96 @@
+// The scan over a named type and the all-null literal under attack:
+// what a name does NOT buy (a two-field record still refuses, the
+// needle's seat still wants the name), and where a literal of nulls
+// finds no seat to name its element.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/lists/scans — a named element" {
+    given "a name over a comparable shape" {
+        then "text scans" {
+            shown("type Id = string\nlet ids: List<Id> = [\"a\", \"b\"]\nids.index_of(\"b\")") == "1"
+        }
+        then "a number scans" {
+            shown("type N = int\nlet ns: List<N> = [4, 5]\nns.contains(5)") == "true"
+        }
+        then "a nullable of a name scans through presence" {
+            shown("type Id = string\nlet ids: List<Id?> = [null, \"a\"]\nids.index_of(\"a\")") == "1"
+        }
+        then "a name over a unit enum compares by tag" {
+            shown("enum E { A, B }\ntype N = E\nN(E.B) == N(E.B)") == "true"
+        }
+    }
+    given "what the name does not buy" {
+        then "a name over a two-field record still refuses, by the name" {
+            refused_with(
+                "type P = { a: int, b: int }\ntype N = P\nlet ps: List<N> = [N(P { a: 1, b: 2 })]\nps.contains(N(P { a: 1, b: 2 }))",
+                "and this list holds `N`",
+            )
+        }
+        then "the needle's seat wants the name, not its shape's value" {
+            refused_with(
+                "type Id = string\nlet ids: List<Id> = [\"a\"]\nlet s = \"a\" + \"\"\nids.contains(s)",
+                "argument 1 of `contains` wants `Id`, found `string`",
+            )
+        }
+    }
+}
+
+spec "features/lists/literal — nothing but null" {
+    given "a seat that names the element" {
+        then "an argument seat" {
+            shown("fn n(xs: List<string?>) -> int { xs.length }\nn([null, null, null])") == "3"
+        }
+        then "a field seat" {
+            shown("type H = { xs: List<int?> }\nH { xs: [null] }.xs.length") == "1"
+        }
+        then "a generic seat another argument pins" {
+            shown("fn g<T>(x: T, xs: List<T?>) -> int { xs.length }\ng(1, [null, null])") == "2"
+        }
+        then "a map of nulls at an argument seat" {
+            shown("fn n(m: Map<string, int?>) -> int { m.length }\nn({\"a\": null})") == "1"
+        }
+    }
+    given "no seat" {
+        then "an untyped binding refuses in the literal's words" {
+            refused_with(
+                "let xs = [null, null]\n0",
+                "a list element takes its type from its value, and `null` has none of its own",
+            )
+        }
+        then "a receiver refuses in the literal's words" {
+            refused_with("[null, null].length", "`null` has none of its own")
+        }
+        then "a map value refuses in the map's words" {
+            refused_with("let m = {\"a\": null}\n0", "a map value takes its type from its value")
+        }
+        then "a generic seat pins left to right — a later argument is too late" {
+            refused_with(
+                "fn g<T>(xs: List<T?>, x: T) -> int { xs.length }\ng([null], 1)",
+                "`null` has none of its own",
+            )
+        }
+        then "a generic seat nothing pins refuses once, at the literal" {
+            refused_with(
+                "fn g<T>(xs: List<T?>) -> int { xs.length }\ng([null, null])",
+                "a list element takes its type from its value, and `null` has none of its own",
+            )
+        }
+        then "a seat of non-nullable elements refuses the null" {
+            refused_with("fn n(xs: List<int>) -> int { xs.length }\nn([null])", "`int`")
+        }
+    }
+}
+
+spec "features/fns/generic call — a hungry argument is never swallowed" {
+    given "a call no argument pins" {
+        then "a hungry generic call as its argument speaks" {
+            refused_with(
+                "fn g<T>(xs: List<T?>) -> int { xs.length }\nfn h<U>() -> List<U?> { [] }\ng(h())",
+                "`U` is not pinned by the arguments",
+            )
+        }
+        then "a hungry lambda as its argument speaks" {
+            refused_with("fn g<T>(f: fn(T) -> T) -> int { 1 }\ng((x) -> x)", "`x` needs a type")
+        }
+    }
+}
