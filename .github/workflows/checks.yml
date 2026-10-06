@@ -156,9 +156,24 @@ jobs:
       # job rebuilds what prepare built from the same commit.
       - name: built
         run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
-      # ONE LIST, the Makefile's: `tools/gate_changed.sh` runs the same target.
+      # ONE LIST, the Makefile's, in its two halves SIDE BY SIDE: each half
+      # runs in its own copy of the tree, so nothing one writes under build/
+      # or beside a package is the other's, and each takes its own build
+      # lock. Both run to the end, and either refusing fails the job.
       - name: keepers
-        run: make -s -o avra keepers
+        run: |
+          cp -a . ../keepers-b
+          (cd ../keepers-b && AVRA_BUILD_LOCK=/tmp/avra-build-b.lock make -s -o avra keepers-b) > ../keepers-b.log 2>&1 &
+          a=0
+          make -s -o avra keepers-a || a=1
+          b=0
+          wait $! || b=1
+          echo "::group::keepers-b"
+          cat ../keepers-b.log
+          echo "::endgroup::"
+          [ "$a" = 0 ] || echo "::error::a keeper in the first half refused"
+          [ "$b" = 0 ] || echo "::error::a keeper in the second half refused"
+          exit $((a + b))
 
   # THE SEED PROVED AND THE BUILD CACHE ATTACKED — the train's, like the
   # keepers. Its own job: the attacks clear the store they build through, and

@@ -759,11 +759,19 @@ footprint-accept: $(RUNTIME_LIB)
 # request's own check does not run them: the train does, before anything
 # merges. Each names what it links as its own prerequisites.
 # Every keeper runs, and each that refuses is named.
-KEEPERS = fingerprints vocab families layers inputs read-cost cited http-cites externs suites stems rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
-          ui-host ui-host-test ui-board ui-browser codecs fmt-lossless traps compile-slots witness tool-witnesses footprint
-keepers:
-	@fail=0; for k in $(KEEPERS); do \
+# TWO HALVES OF ABOUT EQUAL COST, so the train's one keepers job can run
+# them side by side, each in its own copy of the tree (keepers-a,
+# keepers-b). KEEPERS is their union: a keeper joins a half, never a list
+# of its own. Each keeper's seconds are printed, which is what balances them.
+KEEPERS_A = read-cost codecs traps compile-slots witness stems
+KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
+            ui-host ui-host-test ui-board ui-browser fmt-lossless tool-witnesses footprint
+KEEPERS = $(KEEPERS_A) $(KEEPERS_B)
+keepers keepers-a keepers-b:
+	@fail=0; for k in $(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS))); do \
+	  t0=$$(date +%s); \
 	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
+	  echo "keepers: $$k $$(( $$(date +%s) - t0 ))s"; \
 	done; exit $$fail
 
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
