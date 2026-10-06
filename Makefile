@@ -736,7 +736,7 @@ fingerprints:
 # is held on every pull request and every train, and one left off is
 # held by nobody. Each names what it links as its own prerequisites.
 # Every keeper runs, and each that refuses is named.
-KEEPERS = fingerprints vocab families layers cited http-cites externs suites stems rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
+KEEPERS = fingerprints vocab families layers read-cost cited http-cites externs suites stems rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
           ui-host ui-host-test ui-board ui-browser codecs fmt-lossless traps compile-slots witness tool-witnesses
 keepers:
 	@fail=0; for k in $(KEEPERS); do \
