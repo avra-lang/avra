@@ -5,6 +5,9 @@
 # (`packages/<name>`, as a path a caller hands straight to `build/avra
 # test`), and its reasoning on stderr.
 #
+# `--touched` first answers the touched packages alone, no dependents:
+# what a PR's own check runs, the train running the rest.
+#
 # THE ROOT IS AN ARGUMENT, NEVER THIS SCRIPT'S OWN LOCATION: a caller
 # tests a DIFFERENT tree than the one this copy of the script happens to
 # live in, so a root guessed from `$0` would read the wrong tree's
@@ -27,7 +30,9 @@
 # not `use`d, it is invoked.
 set -eu
 
-usage="usage: sh tools/affected_packages.sh <base-ref> <branch-ref> [<repo-root>]"
+usage="usage: sh tools/affected_packages.sh [--touched] <base-ref> <branch-ref> [<repo-root>]"
+touched_only=0
+[ "${1:-}" != --touched ] || { touched_only=1; shift; }
 base="${1:?$usage}"
 branch="${2:?$usage}"
 root="${3:-$(git rev-parse --show-toplevel)}"
@@ -47,19 +52,16 @@ for d in packages/*/; do
     all_pkgs="$all_pkgs $name"
 done
 
-std_word_of() {
-    # packages/<name>/avra.toml's own `name = "@std/<word>"` line, or
-    # nothing — a package that is not `@std/*` is never `use`d that way.
-    pkg="$1"
-    grep -E '^\s*name\s*=\s*"@std/' "packages/$pkg/avra.toml" 2>/dev/null \
-        | sed -E 's/.*"@std\/([^"]+)".*/\1/' \
-        | head -1
-}
+# The word each package answers to, read ONCE: "<word> <name>" per line.
+# A package that is not `@std/*` is never `use`d that way and has no row.
+words_of="$(for d in packages/*/; do
+    w="$(sed -nE 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"@std\/([^"]+)".*/\1/p' "${d}avra.toml" 2>/dev/null | head -1)"
+    [ -z "$w" ] || echo "$w $(basename "$d")"
+done)"
 
-# reached[<name>] = "1" once <name>'s files are known to depend on it,
-# built as a flat list of "depender depended" pairs — POSIX sh has no
-# maps, and a package count in the dozens makes a linear scan of pairs
-# cheap enough that a real table would only add a second bug surface.
+# edges: "depender dependee" pairs, one per line — POSIX sh has no maps,
+# and a package count in the dozens makes a linear scan of pairs cheap
+# enough that a real table would only add a second bug surface.
 edges=""
 for d in packages/*/; do
     name="$(basename "$d")"
@@ -67,30 +69,23 @@ for d in packages/*/; do
     # @std/* reached by a `use` — the implicit door every package walks
     # through with no manifest row (the toolchain resolves it, not the
     # manifest; see CLAUDE.md's `@std/*` law).
-    words="$(grep -rhoE 'use @std\.[A-Za-z_][A-Za-z0-9_]*' "${d}src" 2>/dev/null \
+    used="$(grep -rhoE 'use @std\.[A-Za-z_][A-Za-z0-9_]*' "${d}src" 2>/dev/null \
         | sed -E 's/use @std\.//' | sort -u)"
-    for w in $words; do
-        for other in packages/*/; do
-            oname="$(basename "$other")"
-            [ "$oname" = "$name" ] && continue
-            if [ "$(std_word_of "$oname")" = "$w" ]; then
-                edges="$edges
+    for w in $used; do
+        for oname in $(printf '%s\n' "$words_of" | sed -n "s/^$w //p"); do
+            [ "$oname" = "$name" ] || edges="$edges
 $name $oname"
-            fi
         done
     done
-    # An explicit manifest dependency row: `"@x/y" = { path = "../y" }`.
-    # None exist in this tree today (the toolchain resolves `@std/*`
-    # implicitly instead) — read generically so the day one lands,
-    # this needs no second pass.
+    # An explicit manifest dependency row: `"@x/y" = { path = "../y" }`,
+    # read generically so the day one lands this needs no second pass.
     if [ -f "${d}avra.toml" ]; then
         paths="$(grep -E '\{\s*path\s*=' "${d}avra.toml" 2>/dev/null \
             | sed -E 's/.*path\s*=\s*"([^"]+)".*/\1/')"
         for p in $paths; do
             resolved="$(cd "$d" 2>/dev/null && cd "$p" 2>/dev/null && pwd)" || continue
-            oname="$(basename "$resolved")"
             edges="$edges
-$name $oname"
+$name $(basename "$resolved")"
         done
     fi
 done
@@ -105,6 +100,14 @@ for f in $touched_files; do
             ;;
     esac
 done
+
+# `--touched` stops here: a PR's own check runs the packages its diff
+# stands in, and their dependents are the train's to run.
+if [ "$touched_only" -eq 1 ]; then
+    echo "affected_packages: touched:$touched_pkgs — dependents left to the train" >&2
+    for name in $touched_pkgs; do echo "$name"; done
+    exit 0
+fi
 
 compiler_changed=0
 for f in $touched_files; do
