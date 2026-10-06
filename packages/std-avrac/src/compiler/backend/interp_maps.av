@@ -1,11 +1,10 @@
-//! The evaluator's MAP: a view of a shared write log. The machine has
-//! no counts, so it cannot ask whether a map is held once — a place
-//! opened for writing is always a copy. A copy here is two words: a
-//! second view of the same log. Every write APPENDS (a set, an
-//! overwrite, a removal), and the view standing at the log's end
+//! The evaluator's MAP: a view of a shared write log. A copy is two
+//! words: a second view of the same log. Every write APPENDS (a set,
+//! an overwrite, a removal), and the view standing at the log's end
 //! appends in place; a view behind the end takes its own log first.
 //! So a map filled in a loop is filled in linear time, and no view
-//! ever sees a write it did not make.
+//! ever sees a write it did not make. A LOG OWNS WHAT IT HOLDS: each
+//! entry keeps its value's reference until the log's last view goes.
 use core.{list_cell, map_cell}
 
 /// A map as the machine holds it: the first `len` entries of a log.
@@ -95,15 +94,46 @@ impl Machine {
     fn fresh_map(keys: List<string>, vals: List<Val>) -> Val {
         let log = new_map_log()
         for j, k in keys { log.append(k, vals[j], true) }
-        self.logs.push(log)
-        self.maps.push(MapVal { log: self.logs.length - 1, len: keys.length })
-        Val.M(self.maps.length - 1)
+        self.viewed(self.logged(log), keys.length)
     }
 
     /// A second view of the same entries — the whole cost of a copy.
     fn map_copy(id: int) -> Val {
-        self.maps.push(self.maps[id])
+        let m = self.maps[id]
+        self.viewed(m.log, m.len)
+    }
+
+    /// A log in the table, no view on it yet.
+    fn logged(log: MapLog) -> int {
+        self.logs.push(log)
+        self.log_views.push(0)
+        self.logs.length - 1
+    }
+
+    /// One more view of a log's first `len` entries: a map, its seed
+    /// count one as an array's is.
+    fn viewed(log: int, len: int) -> Val {
+        self.log_views.set(log, self.log_views[log] + 1)
+        self.maps.push(MapVal { log: log, len: len })
+        self.map_counts.push(1)
         Val.M(self.maps.length - 1)
+    }
+
+    /// A view leaves its log. The last one empties it, and what its
+    /// entries held is answered for the caller to let go.
+    fn unviewed(log: int) -> List<Val> {
+        self.log_views.set(log, self.log_views[log] - 1)
+        if self.log_views[log] > 0 { return [] }
+        let held = self.logs[log].vals.get()
+        self.logs.set(log, new_map_log())
+        held
+    }
+
+    /// A dead map's view, taken off its log.
+    fn map_dropped(id: int) -> List<Val> {
+        let m = self.maps[id]
+        self.maps.set(id, MapVal { log: m.log, len: 0 })
+        self.unviewed(m.log)
     }
 
     /// The keys a map holds, in insertion order.
@@ -154,9 +184,11 @@ impl Machine {
         let log = new_map_log()
         let vals = self.map_vals(id)
         for j, k in self.map_keys(id) { log.append(k, vals[j], true) }
-        self.logs.push(log)
-        let own = MapVal { log: self.logs.length - 1, len: log.length() }
+        for v in vals { self.retains(v) }
+        let own = MapVal { log: self.logged(log), len: log.length() }
+        self.log_views.set(own.log, 1)
         self.maps.set(id, own)
+        for v in self.unviewed(m.log) { self.releases_val(v) }
         own
     }
 }

@@ -1,0 +1,28 @@
+// proves: a copied map holds its values too, so a write to one never
+// frees what the other reads
+type Entry = { vals: List<int> }
+
+fn bumped(mut m: Map<string, Entry>) {
+    m.set("a", Entry { vals: [0] })
+}
+
+fn shown() -> string {
+    mut m: Map<string, Entry> = {}
+    m.set("a", Entry { vals: [1, 2] })
+    m.set("b", Entry { vals: [3] })
+    mut n = m
+    n.set("a", Entry { vals: [9] })
+    n.remove("b")
+    let c = Cell.new(m)
+    c.put("a", Entry { vals: [7, 7, 7] })
+    mut t = 0
+    for i in 0..200 {
+        mut k = m
+        k.set("a", Entry { vals: [i] })
+        bumped(k)
+        t = t + k.get("a")!.vals.length + m.get("a")!.vals.length
+    }
+    "${m.get("a")!.vals.length} ${m.get("b")!.vals[0]} ${n.get("a")!.vals[0]} ${n.length} ${c.get().get("a")!.vals.length} ${t}"
+}
+
+shown()
