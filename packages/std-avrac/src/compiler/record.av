@@ -611,8 +611,8 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
 
 /// THE FILES OF `m` A PATH NAMES, met under `m`'s record: the record is loaded once,
 /// each file met once. A `use` may name ONE FILE of a directory module
-/// (`@std.http.frame`) — its record is the directory's, and the file alone is met, as
-/// the resolver meets it.
+/// (`@std.http.frame`) — its record is the directory's, and every file that record
+/// places is met with it: a module is one namespace, so naming one registers them all.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
 fn load_named(
     ws: Workspace,
@@ -668,7 +668,10 @@ fn load_named(
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     let places = record_places(ws, store, m)
-    for f in named {
+    // A FILE THE RECORD PLACES IS MET WITH THE FILES NAMED: registering one file of a
+    // directory registers them all, and a registered file never met is asked no hold —
+    // it parses on every run, whatever moved.
+    for f in named.concat([f for f in here if places.get(f) != null && !named.contains(f)]) {
         if ws.records.met_files.get().get(f) == null {
             ws.records.met_files.put(f, true)
             meet_file(ws, store, m, f, places.get(f), entry, want)
