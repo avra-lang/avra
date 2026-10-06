@@ -316,7 +316,7 @@ impl Rows<R> {
         keys: List<List<IndexKey>>,
         stamp: Stamp,
     ) {
-        self.late_check(db, relation, id, keys)
+        if db.read_ever() { self.late_check(db, relation, id, keys) }
         let held = self.row(id) != null
         let was = if id < self.next_id() { self.stamps.get()[id].owner } else { 0 }
         if held && was != stamp.owner { db.refuse(two_owners(relation, id)) }
@@ -348,7 +348,7 @@ impl Rows<R> {
         let live = [id for id in mine.get() if marks[id].owner == owner && self.row(id) != null]
         let gone = [id for id in live if marks[id].run < run]
         if !gone.is_empty() {
-            self.late_among(db, self.name, self.filed_buckets(gone))
+            if db.read_ever() { self.late_among(db, self.name, self.filed_buckets(gone)) }
             for id in gone { self.remove(id) }
         }
         let kept = [id for id in live if marks[id].run >= run]
