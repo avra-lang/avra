@@ -56,7 +56,7 @@ if [ -n "${FAKE:-}" ]; then
         shift 3
         echo "$verb $*" | cut -c1-60 >> "$FAKE/calls"
         case $verb in
-            ready | status) echo "holds=yes"; [ ! -f "$FAKE/live" ] || echo "run=$(cat "$FAKE/live") live host 1 x $(cat "$FAKE/idle" 2>/dev/null)" ;;
+            ready | status) echo "holds=yes"; echo "disk_free_mb=2048"; echo "mem_avail_mb=7000"; [ ! -f "$FAKE/live" ] || echo "run=$(cat "$FAKE/live") live host 1 x $(cat "$FAKE/idle" 2>/dev/null)" ;;
             start) echo "started=$1" ;;
             attach)
                 [ ! -f "$FAKE/hang" ] || sleep 30
