@@ -1,0 +1,63 @@
+// The arms block at a walk under attack: which seats give its tail a
+// meaning, what a hand-written match still owes, and what the arms
+// may answer.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/lists/arms at a walk — the implicit tail" {
+    given "a seat that reads absence" {
+        then "`find_map` answers the first payload" {
+            shown("enum A { L(int), T(string) }\n[A.T(\"x\"), A.L(4)].find_map { .L(n) -> n } ?? 0") == "4"
+        }
+        then "`find_map` answers absence when no element is the variant" {
+            shown("enum A { L(int), T(string) }\n[A.T(\"x\")].find_map { .L(n) -> n } ?? -1") == "-1"
+        }
+        then "`filter_map` keeps each payload" {
+            shown(
+                "enum A { L(int), T(string) }\n[A.L(1), A.T(\"x\"), A.L(2)].filter_map { .L(n) -> n }.sum()",
+            ) == "3"
+        }
+        then "arms that already answer a nullable are not wrapped twice" {
+            shown(
+                "enum A { L(int?), T(string) }\n[A.T(\"x\"), A.L(null), A.L(7)].find_map { .L(n) -> n } ?? 0",
+            ) == "7"
+        }
+        then "a block naming every variant still answers a nullable" {
+            shown(
+                "enum A { L(int), M(int) }\n[A.M(2)].find_map { .L(n) -> n, .M(n) -> n * 10 } ?? 0",
+            ) == "20"
+        }
+    }
+    given "a predicate's seat" {
+        then "`any` reads the variants it does not name as false" {
+            shown("enum A { O(bool), T(string) }\n[A.T(\"x\"), A.O(true)].any { .O(on) -> on }") == "true"
+        }
+        then "`all` reads them as false too — every element must be it" {
+            shown("enum A { O(bool), T(string) }\n[A.T(\"x\"), A.O(true)].all { .O(on) -> on }") == "false"
+        }
+        then "`filter` keeps what the block accepts" {
+            shown(
+                "enum A { O(bool), T(string) }\n[A.T(\"x\"), A.O(true), A.O(false)].filter { .O(on) -> on }.length",
+            ) == "1"
+        }
+    }
+    given "what the tail does not excuse" {
+        then "a hand-written match in a lambda still owes every variant" {
+            refused_with(
+                "enum A { L(int), T(string) }\n[A.L(1)].any((a) -> match a { .L(n) -> n > 0 })",
+                "must handle `.T`",
+            )
+        }
+        then "a block of literal arms is no variant read — it still owes its catch-all" {
+            refused_with("[1, 2, 3].filter() { 2 -> true }.length", "needs a catch-all arm")
+        }
+        then "`map` gives the tail no meaning" {
+            refused_with(
+                "enum A { L(int), T(string) }\n[A.L(1)].map { .L(n) -> n }",
+                "must handle `.T`",
+            )
+        }
+        then "a variant the enum lacks refuses by the enum" {
+            refused_with("enum A { L(int), T(string) }\n[A.L(1)].find_map { .Z(n) -> n }", "`Z`")
+        }
+    }
+}

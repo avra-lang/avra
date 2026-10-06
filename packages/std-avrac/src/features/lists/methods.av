@@ -33,6 +33,7 @@ export fn check_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 /// `xs.filter_map(f)` — the fn answers `T?`; present answers join the
 /// list, absent ones drop.
 export fn check_filter_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    absent_tail(cx, mc)
     let seat? = walk_seat(cx, mc, "filter_map") else { return cx.error_type }
     let held: TypeId? = match cx.view.types.seen_shape(seat.answer) {
         .Opt(inner) -> inner,
@@ -158,6 +159,7 @@ export fn check_find_last(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 /// The fn's answer must itself be nullable, and that same nullable is
 /// the row's.
 export fn check_find_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    absent_tail(cx, mc)
     let seat? = walk_seat(cx, mc, "find_map") else { return cx.error_type }
     if cx.view.types.carried(seat.answer) == null { return unprojected(cx, mc.e, seat.answer) }
     seat.answer
@@ -444,10 +446,10 @@ type WalkSeat = { elem: TypeId, answer: TypeId }
 /// literal refuses in the walk's words), then the one fn argument
 /// judged against it — absent when either refused, or when the fn's
 /// own body already spoke.
-fn walk_seat(mut cx: TypeCx, mc: MethodCall, name: string) -> WalkSeat? {
+fn walk_seat(mut cx: TypeCx, mc: MethodCall, name: string, answer: TypeId? = null) -> WalkSeat? {
     let elem: TypeId? = elem_held(cx, mc, name)
     if elem == null { return null }
-    let held? = walk_arg(cx, mc.e, name, elem!, mc.args) else { return null }
+    let held? = walk_arg(cx, mc.e, name, elem!, mc.args, answer) else { return null }
     // a body that erred already spoke — its answer absorbs here
     if cx.errored_ty(held.answer) { return null }
     let seat = WalkSeat { elem: elem!, answer: held.answer }
@@ -457,20 +459,38 @@ fn walk_seat(mut cx: TypeCx, mc: MethodCall, name: string) -> WalkSeat? {
 /// A predicate walk's prelude: the shared one, and the fn must
 /// answer `bool`.
 fn predicate_seat(mut cx: TypeCx, mc: MethodCall, name: string) -> WalkSeat? {
-    let seat: WalkSeat? = walk_seat(cx, mc, name)
+    let seat: WalkSeat? = walk_seat(cx, mc, name, cx.type(bool))
     if seat == null { return null }
     if cx.view.types.shape_of(seat!.answer) is .Bool { return seat }
     let _ = unpredicated(cx, mc.e, name, seat!.answer)
     null
 }
 
-/// A walk takes exactly ONE fn, whose single seat IS the element.
-fn walk_arg(mut cx: TypeCx, e: ExprId, name: string, elem: TypeId, args: List<ExprId>) -> Arrow? {
+/// A walk whose fn answers ABSENCE for the elements it does not take:
+/// an arms block there leaves its uncovered variants to `null`, its
+/// answer the arms' own under one `?`. Marked before the body is
+/// typed — the walk declares no answer for the block to hear.
+fn absent_tail(cx: TypeCx, mc: MethodCall) {
+    let f? = mc.args.first() else { return }
+    let parts? = cx.view.store.lambda_parts(f) else { return }
+    if cx.view.store.is_sugar_match(parts.body) { cx.facts.mark_null_tail(parts.body) }
+}
+
+/// A walk takes exactly ONE fn, whose single seat IS the element — a
+/// predicate's also answers `answer`, which its body hears.
+fn walk_arg(
+    mut cx: TypeCx,
+    e: ExprId,
+    name: string,
+    elem: TypeId,
+    args: List<ExprId>,
+    answer: TypeId? = null,
+) -> Arrow? {
     if args.length != 1 {
         let _ = one_fn_wanted(cx, e, name, args.length)
         return null
     }
-    let rescued: TypeId? = cx.retype_seated(args[0], [elem], no_marks(1))
+    let rescued: TypeId? = cx.retype_seated(args[0], [elem], no_marks(1), answer)
     let fnty: TypeId = rescued ?? cx.type_at(args[0])
     if cx.errored_ty(fnty) {
         // a lambda with the wrong seat count could never be fed —
