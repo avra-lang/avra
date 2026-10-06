@@ -1749,8 +1749,14 @@ impl Machine {
             "avra_slot_set_maybe_owned" -> if self.flag_of(vals[2]) { 3 } else { -1 },
             "avra_map_set_owned" -> 2,
             "avra_map_set_maybe_owned" -> if self.flag_of(vals[2]) { 3 } else { -1 },
-            "avra_array_push_tagged" -> if self.counted_word(self.whole(vals[2]), self.whole(vals[3])) { 1 } else { -1 },
-            "avra_slot_set_tagged" -> if self.counted_word(self.whole(vals[3]), self.whole(vals[4])) { 2 } else { -1 },
+            "avra_array_push_tagged" -> {
+                self.probe_tag("push_tagged", self.whole(vals[2]), self.whole(vals[3]))
+                if self.counted_word(self.whole(vals[2]), self.whole(vals[3])) { 1 } else { -1 }
+            },
+            "avra_slot_set_tagged" -> {
+                self.probe_tag("slot_tagged", self.whole(vals[3]), self.whole(vals[4]))
+                if self.counted_word(self.whole(vals[3]), self.whole(vals[4])) { 2 } else { -1 }
+            },
             rest -> -1,
         }
     }
@@ -1771,6 +1777,10 @@ impl Machine {
         v
     }
 
+    fn probe_tag(site: string, tag: int, counted: int) {
+        if tag < 0 || tag >= 64 { eprintln("TRACE ${site} tag=${tag} counted=${counted} arrays=${self.arrays.length}") }
+    }
+
     /// A boxed enum's word carries a pointer the row retained when bit
     /// `tag` of `counted` says the variant does.
     fn counted_word(tag: int, counted: int) -> bool {
@@ -1778,6 +1788,7 @@ impl Machine {
     }
 
     fn enum_boxed_val(vals: List<Val>) -> Val {
+        self.probe_tag("enum_boxed", self.whole(vals[0]), self.whole(vals[2]))
         let box = self.fresh_array([vals[0], vals[1]])
         if self.counted_word(self.whole(vals[0]), self.whole(vals[2])) { self.retains(vals[1]) }
         box

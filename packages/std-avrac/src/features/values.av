@@ -375,6 +375,12 @@ impl LowerCx {
     mut fn push_leaf(box: Reg, v: Reg) {
         let ty = self.out.type_of_reg(v)
         if !self.valued(ty) { return self.push_slot(box, v) }
+        let nm = self.view.types.name_of(ty)
+        if nm.contains(" or ") || nm == "NotFound" || nm == "Timeout" || nm == "Denied" {
+            eprintln(
+                "TRACE push_leaf ty=${ty.index} name=${nm} counted=${self.view.types.counted_mask(ty)}",
+            )
+        }
         let tag = self.extracted(v, 0, self.mint_shape(Type.Int))
         self.array_push(box, tag)
         self
@@ -391,6 +397,12 @@ impl LowerCx {
     mut fn leaf_write(box: Reg, at: int, v: Reg) {
         let ty = self.out.type_of_reg(v)
         if !self.valued(ty) { return self.slot_write(box, self.const_int(at), v) }
+        let nm = self.view.types.name_of(ty)
+        if nm.contains(" or ") || nm == "NotFound" || nm == "Timeout" || nm == "Denied" {
+            eprintln(
+                "TRACE leaf_write ty=${ty.index} name=${nm} counted=${self.view.types.counted_mask(ty)}",
+            )
+        }
         let tag = self.extracted(v, 0, self.mint_shape(Type.Int))
         self.slot_set(box, self.const_int(at), tag)
         self
@@ -539,6 +551,10 @@ impl LowerCx {
     mut fn tagged_value(sh: Type, tag: int, payloads: List<Reg>) -> Reg {
         // an enum whose variants carry nothing IS its tag
         let ty = self.view.types.intern(sh)
+        let nm = self.view.types.name_of(ty)
+        if nm.contains(" or ") || nm == "NotFound" || nm == "Timeout" || nm == "Denied" {
+            eprintln("TRACE tagged_value ty=${ty.index} name=${nm} tag=${tag}")
+        }
         if self.view.types.is_flat(ty) { return self.pack(ty, [self.const_int(tag)]) }
         // a value enum is its tag and its one word, in registers
         if self.view.types.is_valued(ty) { return self.pack(ty, [self.const_int(tag), payloads.first() ?? self.const_int(0)]) }
