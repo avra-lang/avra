@@ -990,7 +990,10 @@ static inline uintptr_t sp_now(void) {
     return sp;
 }
 
-static void switch_to(Fiber* next) {
+// INLINED INTO EVERY PARK AND YIELD: the switch is the leaf everything
+// else here is measured against.
+__attribute__((always_inline))
+static inline void switch_to(Fiber* next) {
     Fiber* self = g_current;
     next->state = FIBER_RUNNING;
     if (next == self) return;
