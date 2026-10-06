@@ -154,10 +154,23 @@ int64_t avra_vgate_claim(int64_t t, void* gate);
 // world with nothing to wait on and nothing ready traps, deadlocked.
 int64_t avra_vtask_next(void);
 
+// THE ORDER IS SEEDED from now: at every switch with more than one task
+// ready, which runs is a CHOICE the schedule makes. Schedule 0 always
+// takes the queue's head — the unseeded order, its choices counted —
+// and any other draws from its own number, so one schedule is one order,
+// for a compiled program's tasks and the evaluator's alike. A run that
+// never calls this is untouched.
+void avra_sched_seed(int64_t schedule);
+// The seeded run ends and the order is the queue's own again: how many
+// choices it made. None means the run has one order.
+int64_t avra_sched_settle(void);
+
 // How many entries the timer heap holds, how many waiters are filed on
-// descriptors, and how many times the poller has been asked.
+// descriptors, how many times the poller has been asked, and how many
+// links of the queue the seeded pick has walked.
 int64_t avra_sched_timers(void);
 int64_t avra_sched_fd_waiters(void);
 int64_t avra_sched_polls(void);
+int64_t avra_sched_pick_links(void);
 
 #endif

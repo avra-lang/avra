@@ -439,18 +439,6 @@ static void timer_down(size_t i) {
 #define FAIR_TURNS 64
 #define POLL_IDLE ((int64_t)1 << 62)
 static int64_t g_until_poll = POLL_IDLE;
-
-// SEEDED, THE QUEUE ALONE NEVER DECIDES: `g_until_poll` is held at zero,
-// so every switch fails the fast path's own test and reaches the pick —
-// and an unseeded switch carries nothing for it. The poller's turn is
-// then counted here, by the same law.
-static int g_seeded = 0;
-static int64_t g_schedule = 0;
-static uint64_t g_seed_state = 0;
-static int64_t g_choices = 0;
-static int64_t g_pick_links = 0;
-static int64_t g_seeded_until_poll = 0;
-
 static int64_t g_polls = 0;
 
 static void timer_set(uint32_t kind, void* who, int64_t at) {
@@ -492,16 +480,6 @@ static void fd_drained(int64_t fd);
 static int64_t g_parked_fds = 0;
 static FdWaits* g_fds = NULL;
 static size_t g_fds_cap = 0;
-
-// The poller has been asked, or its count begins: when it is next due.
-static void poll_counted(void) {
-    if (g_seeded) {
-        g_until_poll = 0;
-        g_seeded_until_poll = FAIR_TURNS;
-        return;
-    }
-    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;
-}
 
 static void poller_open(void) {
     if (g_poller >= 0) return;
@@ -731,7 +709,7 @@ int64_t avra_fiber_fd_ready(int64_t fd, int64_t writing) {
 static void poller_wait(int64_t timeout_ns) {
     poller_open();
     g_polls++;
-    poll_counted();
+    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;
     enum { BATCH = 256 };
 #if AVRA_KQUEUE
     struct kevent evs[BATCH];
@@ -1116,60 +1094,15 @@ static inline void switch_to(Fiber* next) {
 // done); who runs next, the world asked first, and waited on when
 // nobody is ready. A world with nothing to wait on and nobody ready is
 // a deadlock, and a deadlock is never a hang.
-// The poller's turn among ready tasks: every FAIR_TURNS switches while a
-// descriptor waiter is filed, seeded or not.
-static void poller_turn(void) {
-    if (g_seeded) {
-        if (g_parked_fds > 0 && --g_seeded_until_poll <= 0) poller_wait(0);
-        return;
-    }
-    if (g_until_poll > 0) return;
-    if (g_parked_fds > 0) poller_wait(0);
-    else g_until_poll = POLL_IDLE;
-}
-
-// A schedule's own number, drawn on: splitmix64.
-static uint64_t seed_drawn(void) {
-    uint64_t z = (g_seed_state += 0x9e3779b97f4a7c15ULL);
-    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
-    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
-    return z ^ (z >> 31);
-}
-
-// Which of `n` runs: schedule 0 takes the first, any other draws.
-static uint64_t chosen(uint64_t n) {
-    g_choices++;
-    if (g_schedule == 0) return 0;
-    return (uint64_t)(((__uint128_t)seed_drawn() * n) >> 64);
-}
-
-// THE SEEDED PICK: one of the first PICK_WINDOW ready tasks, by the
-// schedule's choice. A PICK AMONG ONE IS NO CHOICE — nothing is counted
-// and nothing drawn, so a switch one engine makes and the other skips
-// costs the schedule nothing. The window bounds the walk whatever is
-// ready; a task behind it moves up as the queue does.
-enum { PICK_WINDOW = 16 };
-static Fiber* ready_picked(void) {
-    Fiber* before[PICK_WINDOW];
-    uint64_t n = 0;
-    Fiber* prev = NULL;
-    for (Fiber* q = g_ready_head; q && n < PICK_WINDOW; prev = q, q = q->next) before[n++] = prev;
-    g_pick_links += (int64_t)n;
-    if (n < 2) return ready_pop();
-    uint64_t k = chosen(n);
-    Fiber* f = before[k] ? before[k]->next : g_ready_head;
-    if (before[k]) before[k]->next = f->next; else g_ready_head = f->next;
-    if (g_ready_tail == f) g_ready_tail = before[k];
-    f->next = NULL;
-    return f;
-}
-
 __attribute__((noinline))
 static Fiber* next_with_world(void) {
     for (;;) {
         if (g_timers_len > 0) fire_due_timers(now_ns());
-        poller_turn();
-        Fiber* next = g_seeded ? ready_picked() : ready_pop();
+        if (g_until_poll <= 0) {
+            if (g_parked_fds > 0) poller_wait(0);
+            else g_until_poll = POLL_IDLE;
+        }
+        Fiber* next = ready_pop();
         if (next) return next;
         if (g_timers_len == 0 && g_parked_fds == 0) avra_trap("every task is waiting — deadlock");
         pool_trim();
@@ -1341,12 +1274,12 @@ void* avra_gate_new(void) {
 }
 
 __attribute__((noinline))
-static int64_t gate_claimed(void* gate, int64_t by) {
+static int64_t gate_claimed(void* gate) {
     int64_t* cells = task_cells(gate);
     while (cells[GATE_HEAD]) {
         Waiter* w = (Waiter*)(uintptr_t)cells[GATE_HEAD];
         int32_t member = w->member;
-        if (waiter_claims(w, by)) return member;
+        if (waiter_claims(w, id_of(g_current))) return member;
     }
     return -1;
 }
@@ -1355,7 +1288,7 @@ static int64_t gate_claimed(void* gate, int64_t by) {
 // and answers from a load and a test.
 int64_t avra_gate_claim(void* gate) {
     if (!task_cells(gate)[GATE_HEAD]) return -1;
-    return gate_claimed(gate, id_of(g_current));
+    return gate_claimed(gate);
 }
 
 // ── A task's life ───────────────────────────────────────────────
@@ -1445,29 +1378,19 @@ static void legacy_parked(Fiber* self) {
     self->state = FIBER_PARKED;
 }
 
-// The calling task parked until `task` has ended; its cells, read after.
-static int64_t* task_awaited(void* task) {
-    int64_t* cells = task_cells(task);
-    if (cells[GATE_OPEN]) return cells;
-    Fiber* self = g_current;
-    refuse_join_ring(task, self);
-    alone(self);
-    self->joining = task;
-    waits_gate(self, task, 0, 0);
-    legacy_parked(self);
-    run_next();
-    self->joining = NULL;
-    return task_cells(task);
-}
-
-__attribute__((noinline, cold, noreturn))
-static void join_refused(void) { avra_trap("a join takes a task that answers, and this one was cancelled"); }
-
-// A JOIN TAKES A TASK THAT ANSWERS: a cancelled one has no answer, and
-// none is made up for it.
 void* avra_task_join(void* task) {
-    int64_t* cells = task_awaited(task);
-    if (cells[TASK_END] == END_CANCELLED) join_refused();
+    int64_t* cells = task_cells(task);
+    if (!cells[GATE_OPEN]) {
+        Fiber* self = g_current;
+        refuse_join_ring(task, self);
+        alone(self);
+        self->joining = task;
+        waits_gate(self, task, 0, 0);
+        legacy_parked(self);
+        run_next();
+        self->joining = NULL;
+        cells = task_cells(task);
+    }
     void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];
     avra_rc_retain(answer);
     return answer;
@@ -1478,7 +1401,8 @@ void* avra_task_join(void* task) {
 // settle costs nothing.
 void avra_task_settle(void* task) {
     if (!task) return;
-    task_awaited(task);
+    void* answer = avra_task_join(task);
+    avra_rc_release(answer);
 }
 
 // A FULL OWNER SHEDS ITS FINISHED TASKS before it grows: each is
@@ -1559,9 +1483,6 @@ void* avra_task_at(int64_t at_ns) {
 // The heap's entry is already out.
 static void task_fired(void* task) {
     int64_t* cells = task_cells(task);
-    void* unit = avra_array_sized(1);
-    avra_array_push(unit, 0);
-    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;
     cells[TASK_AT] = 0;
     cells[TASK_END] = END_ANSWERED;
     gate_opened(task, BY_TIMER);
@@ -1701,11 +1622,8 @@ int64_t avra_vtask_new(void) {
     return (int64_t)(uintptr_t)f;
 }
 
-// A virtual task under the id its machine counts it by — the one the
-// program reads, so a trace names the same task the program does.
-int64_t avra_vtask_new_at(int64_t site, int64_t id) {
+int64_t avra_vtask_new_at(int64_t site) {
     int64_t t = avra_vtask_new();
-    virtual_at(t)->own.id = id;
     if (TRACING) traced_fiber("spawn-at", virtual_at(t), (long long)site);
     return t;
 }
@@ -1726,12 +1644,6 @@ void avra_vtask_free(int64_t t) {
         }
     }
     fiber_freed(f);
-}
-
-// A virtual task whose body answered: said, then gone.
-void avra_vtask_end(int64_t t) {
-    if (TRACING) traced_fiber("end", virtual_at(t), 0);
-    avra_vtask_free(t);
 }
 
 void avra_vtask_ready(int64_t t) { ready_push(virtual_at(t)); }
@@ -1773,35 +1685,11 @@ void avra_vtask_cancel(int64_t t, int64_t by) { fiber_cancelled(virtual_at(t), b
 
 void avra_vgate_open(void* gate) { gate_opened(gate, BY_CLOSE); }
 
-// A claim made by a virtual task: the claimant is that task, never
-// whoever the host happens to be running.
-int64_t avra_vgate_claim(int64_t t, void* gate) {
-    if (!task_cells(gate)[GATE_HEAD]) return -1;
-    return gate_claimed(gate, id_of(virtual_at(t)));
-}
-
 int64_t avra_vtask_next(void) {
     Fiber* next = next_ready();
     if (!next->virtual) avra_trap("defect: the evaluator's scheduler met a compiled task");
     next->state = FIBER_RUNNING;
     return (int64_t)(uintptr_t)next;
-}
-
-// ── The seeded order ────────────────────────────────────────────
-
-void avra_sched_seed(int64_t schedule) {
-    g_seeded = 1;
-    g_schedule = schedule;
-    g_seed_state = (uint64_t)schedule;
-    g_choices = 0;
-    poll_counted();
-}
-
-// The first unseeded switch after it finds the poller's count spent and
-// sets it again.
-int64_t avra_sched_settle(void) {
-    g_seeded = 0;
-    return g_choices;
 }
 
 // ── What a test and a dump read ─────────────────────────────────
@@ -1811,5 +1699,3 @@ int64_t avra_sched_timers(void) { return (int64_t)g_timers_len; }
 int64_t avra_sched_fd_waiters(void) { return g_parked_fds; }
 
 int64_t avra_sched_polls(void) { return g_polls; }
-
-int64_t avra_sched_pick_links(void) { return g_pick_links; }
