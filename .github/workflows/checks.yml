@@ -10,10 +10,10 @@
 #   test     the ONE required check name: an aggregate that passes iff every
 #            needed job succeeded or was skipped.
 # A PR RUNS THE MINIMUM, THE TRAIN RUNS THE GATE. A PR's own check is fmt,
-# idioms and suites over the packages it TOUCHES, and the cache attacks when
-# the compiler's source moved; the train runs the keepers, the attacks and
-# every AFFECTED package (dependents included) on the COMBINATION, so nothing
-# lands untested and a PR pays the whole gate once, not twice. The shard count
+# idioms and suites over the packages it TOUCHES; the train runs the keepers,
+# the cache attacks and every AFFECTED package (dependents included) on the
+# COMBINATION, so nothing lands untested and a PR pays the whole gate once,
+# not twice. A failure only the train sees drops the PR one train later. The shard count
 # trades runner slots (the queue has ten) against wall time: four shards
 # leaves room for two trains at once.
 name: checks
@@ -44,7 +44,6 @@ jobs:
       shards: ${{ steps.plan.outputs.shards }}
       changed: ${{ steps.plan.outputs.changed }}
       packages: ${{ steps.plan.outputs.packages }}
-      compiler: ${{ steps.plan.outputs.compiler }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
@@ -54,9 +53,9 @@ jobs:
         run: git fetch -q --depth=20 origin main
       # WHAT THIS RUN OWES, decided before anything is built. A TRAIN owes the
       # whole gate over every affected package. A PR owes the minimum: the
-      # packages it TOUCHES (their dependents are the train's), the cache
-      # attacks only when the compiler's own source moved, and no compiler at
-      # all when it touches no `.av`, no package and no compiler source.
+      # packages it TOUCHES (their dependents are the train's), and no
+      # compiler at all when it touches no `.av`, no package and no compiler
+      # source.
       - id: plan
         name: plan
         run: |
@@ -79,7 +78,6 @@ jobs:
           {
             echo "changed=${changed}"
             echo "packages=$(echo $pkgs)"
-            echo "compiler=${compiler}"
             echo "build=${build}"
             echo "key=avrac-$(sh tools/compiler_paths.sh --key)"
             echo "shards<<EOF"
@@ -152,11 +150,11 @@ jobs:
       - name: keepers
         run: make -s -o avra keepers
 
-  # THE BUILD CACHE, ATTACKED. Its own job: it clears the store it builds
-  # through, and it runs beside the gate rather than after it.
+  # THE BUILD CACHE, ATTACKED — the train's, like the keepers. Its own job: it
+  # clears the store it builds through, and it runs beside the gate.
   cache-attacks:
     needs: [prepare]
-    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.prepare.outputs.compiler == '1')
+    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
