@@ -8,8 +8,13 @@
 # at 2N reads; the difference is N reads and nothing else, so setup cancels.
 # EVERY FIGURE IS (count at 2N − count at N) / N: per read, never per run.
 # The counts are the same on every machine, which is what makes them a gate:
-# a mode that costs MORE than its row in read_cost.budget refuses. The
-# shipping runtime library is rebuilt on every exit.
+# a mode that costs MORE than its row in read_cost.budget refuses, and so
+# does a mode with no row and a row with no mode. `--accept` rewrites the
+# budget whole: the review of that diff is the only ratchet.
+# THE CENSUS RUNTIME IS BUILT TO ITS OWN PLACE (build/census/), with a copy
+# of the compiler beside it and the tree's packages one up, where a compiler
+# looks: the tree's own library and objects are never touched, so a run
+# killed anywhere leaves the shipping runtime where every build expects it.
 # Instructions per read are printed too where the machine can count them
 # (macOS `/usr/bin/time -l`) — published, never gated: they are this
 # machine's.
@@ -21,16 +26,21 @@ export LLVM_PREFIX
 N=${DBM_READS:-200000}
 bench=tools/db_measure/readcost
 budget=tools/db_measure/read_cost.budget
-flags="CFLAGS_avra_runtime=-DAVRA_CENSUS CFLAGS_avra_hot=-DAVRA_CENSUS"
-restore() {
-    make --no-print-directory build/libavra_runtime.a > /dev/null 2>&1 ||
-        echo "read_cost: the shipping runtime did NOT rebuild — run \`make build/libavra_runtime.a\`"
-    rm -f "$bench/src/main" "$bench/src/main.av.ll"
-}
-trap restore EXIT INT TERM
-# shellcheck disable=SC2086
-make --no-print-directory $flags build/libavra_runtime.a > /dev/null
-AVRA_INLINE_RUNTIME=0 build/avra build "$bench" > build/read-cost-build.out 2>&1 || {
+modes="kernel.last kernel.earlier kernel.new row.unheard row.repeat row.new ask.int ask.text"
+census=build/census
+trap 'rm -f "$bench/src/main" "$bench/src/main.av.ll"' EXIT INT TERM
+mkdir -p "$census/build" "$census/obj"
+[ -e "$census/packages" ] || ln -s ../../packages "$census/packages"
+probes=$([ "$(uname -s)" = Darwin ] || echo -fstack-clash-protection)
+for c in runtime/*.c; do
+    o=$census/obj/$(basename "$c" .c).o
+    # shellcheck disable=SC2086
+    cc -c -O2 -fPIC $probes -ffunction-sections -fdata-sections -Wall -Werror -DAVRA_CENSUS -o "$o" "$c"
+done
+rm -f "$census/build/libavra_runtime.a"
+ar rcs "$census/build/libavra_runtime.a" "$census"/obj/*.o
+cp build/avra "$census/build/avra"
+AVRA_INLINE_RUNTIME=0 "$census/build/avra" build "$bench" > build/read-cost-build.out 2>&1 || {
     tail -n 20 build/read-cost-build.out
     echo "read_cost: the bench did not build"
     exit 1
@@ -49,7 +59,7 @@ instructions() {
 out=build/read-cost.out
 : > "$out"
 seen=0
-for mode in kernel.last kernel.earlier kernel.new row.unheard row.repeat row.new ask.int ask.text; do
+for mode in $modes; do
     one=$(counted "$mode" "$N")
     two=$(counted "$mode" $((2 * N)))
     [ "$one" != "0 0 0 0" ] || { echo "read_cost: $mode printed no counts — the bench carries no census"; exit 1; }
@@ -68,7 +78,9 @@ if [ "${1:-}" = --accept ]; then
 fi
 [ -f "$budget" ] || { echo "read_cost: no budget at $budget — run with --accept"; exit 1; }
 over=$(awk -F'\t' 'NR == FNR { for (i = 2; i <= 5; i++) cap[$1, i] = $i; known[$1] = 1; next }
+    { counted[$1] = 1 }
     !known[$1] { print $1 " has no budget row"; next }
-    { for (i = 2; i <= 5; i++) if ($i > cap[$1, i] + 0.0005) print $1 " column " i - 1 ": " $i " over its budget of " cap[$1, i] }' "$budget" "$out")
+    { for (i = 2; i <= 5; i++) if ($i > cap[$1, i] + 0.0005) print $1 " column " i - 1 ": " $i " over its budget of " cap[$1, i] }
+    END { for (m in known) if (!counted[m]) print "budget row " m " names no mode this counts — drop the row or count the mode" }' "$budget" "$out")
 [ -z "$over" ] || { echo "$over" | sed 's/^/read_cost: /'; exit 1; }
 echo "read_cost: $seen mode(s) counted, each within its budget"
