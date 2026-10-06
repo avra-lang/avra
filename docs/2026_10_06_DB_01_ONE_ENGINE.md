@@ -28,9 +28,14 @@ Labels: READ (I opened the line) · PROBED (I ran it) · MEASURED · PROPOSED (n
      the audit's `sink` already has). `qtrace` (a runtime row behind a core fn) stays in
      core, behind that sink. std-relation's manifest gains no row.
    - the paths `make vocab`, `make cited` and CLAUDE.md name move in the same commit.
-2. **`Db`** (std-relation `db.av`) = `@identity { id, kernel: Kernel, closed, closers,
-   sweepers, runs, names, durable }`. EVERY Db holds a kernel — its own, or one it is
-   given (`db_over(kernel, …)`; P4a1's seam, gone at P4a3). WRITTEN in P4a1 (branch
+2. **`Db`** (std-relation `db.av`) = `@identity { id, kernel, closed, closers,
+   sweepers, runs, names, durable }`. Every Db HAS an engine — its own, or one it is
+   given (`db_over(kernel, …)`; P4a1's seam, gone at P4a3) — and its own is made on the
+   first reach (`db.engine()`): a Db that only ever holds rows allocates no kernel.
+   MEASURED why: with a kernel per `new_db()`, std-avrac's suite peaked 227 MB over P3
+   (4,579 against 4,352 MB), because the compiler builds throwaway Dbs by the thousand
+   and the suite keeps its workspaces; lazily, with a hashed family carrying its own
+   seen-state, it is 4,381 MB. WRITTEN in P4a1 (branch
    `db-04a1-one-kernel`), what is left of the nine closures is three small modes and
    one cell, each with the step that removes it: `Verifying` (by hash, or by the
    revision a write stamped — the compiler's two hook records differed exactly so; one
@@ -137,6 +142,20 @@ Labels: READ (I opened the line) · PROBED (I ran it) · MEASURED · PROPOSED (n
   and every reader is verified again against the cell's hash. "Ever", not "this
   revision": a reader re-verified green by the dep walk leaves no mark on the cell, so
   a mark-this-revision test would miss it. The compiler's Dbs keep `Late.Refused`.
+- **NO VERIFIER HOLDS ITS OWN KERNEL.** The hash→revision conversion as a closure
+  captures the kernel it is registered in — a cycle counting never frees (CLAUDE.md's
+  cycle law). One per workspace was survivable while `disarm` broke it; one per Db is
+  not. So the kernel has three kinds of family: `By(verify)` (its owner's fn),
+  `Input` (changed when last set to a new value) and `Hash(live, seen, moved)` (the
+  kernel compares the live hash with what it saw; `live` holds no kernel). PROBED:
+  20,000 throwaway Dbs, each closed, leave 1.6 MB alive, the same as on P3. This is
+  P4a4's "one verb", pulled forward for the hashed half; `ByMove`'s string-keyed maps
+  remain for P4a4.
+- **A Db that asked a query lives until it is closed.** A `@query`'s and an `@input`'s
+  answers are kept, by Db id, where the query is declared, so they hold the Db's
+  kernel, and a query's way to be asked again holds the Db. `close` (and being given
+  another kernel) lets them go. The compiler's throwaway findings Dbs, which read an
+  `@input`, are closed under `defer`.
 - **An answer READ BACK from the owner (`Durable`) brings no reads with it**, so it
   stands only until the next write to its Db: it depends on one input cell every write
   moves. A shim for the one law the durable tests hold; DB 06 replaces `Durable` with
