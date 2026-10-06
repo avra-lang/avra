@@ -1,0 +1,294 @@
+// The pipe: application and nothing else. Every stage shape, every
+// neighbour on the ladder, the line law, each refusal rendered whole,
+// and the printer spelling it back.
+use @std.avrac.testing.{shown, refused_with, refusals, projected}
+use @std.avrac.compiler.{analyze_source, parse_source}
+
+const fns: string = "fn dbl(n: int) -> int { n * 2 }\nfn add(a: int, b: int) -> int { a + b }\nfn scale(a: int, by: int = 10, off: int = 0) -> int { a * by + off }\nfn some(n: int) -> int? { if n > 0 { n } else { null } }\n"
+
+/// A program over the shared fns, shown.
+fn piped(tail: string) -> string { shown("${fns}${tail}") }
+
+/// The whole report a program earns.
+fn report(source: string) -> string { analyze_source(source).report().trim() }
+
+/// A source the printer answers unchanged.
+fn canonical(source: string) -> bool { projected(source) == source }
+
+/// Two sources that parse to different fingerprints, statement for
+/// statement — the first statement of each.
+fn apart(a: string, b: string) -> bool {
+    let pa = parse_source(a)
+    let pb = parse_source(b)
+    pa.voices.list.is_empty() &&
+        pb.voices.list.is_empty() &&
+        pa.store.stmt_fingerprint(pa.stmts[0]) != pb.store.stmt_fingerprint(pb.stmts[0])
+}
+
+spec "features/expr_spine (pipe)" {
+    given "a stage" {
+        then "a bare name is called with the value" {
+            piped("3 |> dbl") == "6"
+        }
+        then "a call takes the value as its FIRST argument" {
+            piped("10 |> add(1)") == "11" && shown("fn sub(a: int, b: int) -> int { a - b }\n10 |> sub(1)") == "9"
+        }
+        then "empty parentheses are the bare name" {
+            piped("3 |> dbl()") == "6"
+        }
+        then "a named argument fills a seat after the value" {
+            piped("2 |> scale(by: 3)") == "6" && piped("2 |> scale(off: 1)") == "21"
+        }
+        then "a default fills every seat the stage leaves" {
+            piped("2 |> scale") == "20"
+        }
+        then "a pinned generic call takes the value" {
+            shown("fn ident<T>(v: T) -> T { v }\n5 |> ident<int>()") == "5"
+        }
+        then "a generic fn is pinned by the value" {
+            shown("fn ident<T>(v: T) -> T { v }\n\"s\" |> ident") == "s"
+        }
+        then "a trailing block is the stage's last argument" {
+            shown(
+                "fn each(xs: List<int>, f: fn(int) -> int) -> List<int> { [f(x) for x in xs] }\nlet ys = [1, 2] |> each { it + 1 }\n\"\${ys[0]} \${ys[1]}\"",
+            ) == "2 3"
+        }
+        then "a method call takes the value as its first written argument" {
+            shown(
+                "type B = { n: int }\nimpl B {\n    fn plus(a: int, b: int) -> int { self.n + a - b }\n}\nlet b = B { n: 100 }\n10 |> b.plus(1)",
+            ) == "109"
+        }
+        then "a field read is a method call with no parentheses" {
+            shown(
+                "type B = { n: int }\nimpl B {\n    fn bump(a: int) -> int { self.n + a }\n}\nlet b = B { n: 100 }\n1 |> b.bump",
+            ) == "101"
+        }
+        then "a fn held in a field is called" {
+            shown("type B = { f: fn(int) -> int }\nlet b = B { f: (v: int) -> v + 1 }\n1 |> b.f") == "2"
+        }
+        then "a fn held in a local is called" {
+            shown("let pick = (v: int) -> v * 7\n3 |> pick") == "21"
+        }
+        then "a lambda is applied" {
+            shown("4 |> ((v: int) -> v + 1)") == "5"
+        }
+        then "a bare lambda's body reads to the line's end" {
+            piped("2 |> (v: int) -> v + 1 |> dbl") == "6"
+        }
+        then "a value application takes the value first" {
+            shown("let sub = (a: int, b: int) -> a - b\n10 |> (sub)(1)") == "9"
+        }
+        then "the left side is evaluated once, before the stage's arguments" {
+            shown(
+                "mut log: List<string> = []\nfn say(mut log: List<string>, w: string, n: int) -> int {\n    log.push(w)\n    n\n}\nfn add(a: int, b: int) -> int { a + b }\nlet v = say(log, \"l\", 1) |> add(say(log, \"r\", 2))\n\"\${v} \${log.join(\"\")}\"",
+            ) == "3 lr"
+        }
+    }
+    given "a chain" {
+        then "it folds left" {
+            piped("1 |> dbl |> add(3) |> dbl") == "10"
+        }
+        then "a group on the right is the same call — parentheses mint nothing" {
+            piped("1 |> (dbl)") == "2"
+        }
+    }
+    given "the first seat's law" {
+        then "a `mut` first seat is written through, as in the call spelled out" {
+            shown(
+                "fn grow(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nmut xs = [1, 2]\nlet n = xs |> grow(9)\n\"\${n} \${xs.length}\"",
+            ) == "3 3"
+        }
+        then "an immutable binding at a `mut` seat is refused, as in the call spelled out" {
+            let law = "fn grow(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet xs = [1, 2]\n"
+            refusals("${law}xs |> grow(9)") == 1 && refusals("${law}grow(xs, 9)") == 1
+        }
+        then "a wrong value is refused at the value" {
+            report("fn dbl(n: int) -> int { n * 2 }\n\"s\" |> dbl") == "error[type.mismatch]: argument 1 of `dbl` wants `int`, found `string`\n  ╭─[<source>:2:1]\n2 │ \"s\" |> dbl\n  · ┬\n  · ╰── this is `string`\n──╯"
+        }
+        then "a stage short of arguments counts the value" {
+            refused_with("${fns}1 |> add", "`add` takes 2 arguments, found 1")
+        }
+        then "an unknown stage is named" {
+            refused_with("1 |> nope(2)", "no `fn nope` is defined")
+        }
+    }
+    given "the pronoun" {
+        then "`it` on the left belongs to the enclosing method call" {
+            piped("let ys = [1, 2, 3].map(it |> dbl)\n\"\${ys[0]} \${ys[2]}\"") == "2 6"
+        }
+        then "`it` in a method stage's arguments belongs to the stage" {
+            shown(
+                "type H = { k: int }\nimpl H {\n    fn over(xs: List<int>, f: fn(int) -> int) -> int { f(xs[0]) + self.k }\n}\nlet h = H { k: 10 }\n[5] |> h.over(it + 1)",
+            ) == "16"
+        }
+    }
+    given "absence and failure" {
+        then "`??` is looser: it reads the stage's answer" {
+            piped("0 |> some ?? 42") == "42" && piped("7 |> some ?? 42") == "7"
+        }
+        then "`??`'s right side pipes alone — `a ?? b |> f` is `a ?? f(b)`" {
+            piped("let a: int? = 5\na ?? 1 |> dbl") == "5" && piped("let a: int? = null\na ?? 1 |> dbl") == "2"
+        }
+        then "a `?` after a stage propagates the stage's answer" {
+            shown(
+                "fn pos(n: int) -> Result<int, string> { if n > 0 { .Ok(n) } else { .Err(\"neg\") } }\nfn twice(n: int) -> Result<int, string> {\n    let v = n |> pos?\n    let w = n |> pos()?\n    .Ok(v + w)\n}\n\"\${twice(4) catch 0} \${twice(0) catch -1}\"",
+            ) == "8 -1"
+        }
+        then "a group propagates the same" {
+            shown(
+                "fn pos(n: int) -> Result<int, string> { if n > 0 { .Ok(n) } else { .Err(\"neg\") } }\nfn once(n: int) -> Result<int, string> {\n    let v = (n |> pos)?\n    .Ok(v)\n}\nonce(4) catch 0",
+            ) == "4"
+        }
+        then "a `!` after a stage insists on the stage's answer" {
+            piped("7 |> some!") == "7"
+        }
+        then "`catch` is loosest: it recovers the whole pipeline" {
+            shown(
+                "fn pos(n: int) -> Result<int, string> { if n > 0 { .Ok(n) } else { .Err(\"neg\") } }\n0 |> pos catch 9",
+            ) == "9"
+        }
+    }
+    given "the ladder" {
+        then "arithmetic is tighter on the left: `a + b |> f` is `f(a + b)`" {
+            piped("1 + 2 |> dbl") == "6"
+        }
+        then "a unary minus is tighter: `-a |> f` is `f(-a)`" {
+            piped("-1 |> add(1)") == "0"
+        }
+        then "the bitwise band is tighter: `a | b |> f` is `f(a | b)`" {
+            piped("1 | 2 |> dbl") == "6"
+        }
+        then "comparison is looser: `x |> f > n` is `f(x) > n`" {
+            piped("3 |> dbl > 5") == "true" && piped("5 < 3 |> dbl") == "true"
+        }
+        then "equality is looser on both sides" {
+            piped("1 |> dbl == 2 |> add(0)") == "true"
+        }
+        then "`&&` and `||` are looser" {
+            piped("1 |> dbl == 2 && 2 |> dbl == 4") == "true" && piped("false || 1 |> dbl == 2") == "true"
+        }
+        then "a group pipes first where arithmetic follows" {
+            piped("(1 |> dbl) + 1") == "3"
+        }
+        then "a range's bounds are whole expressions" {
+            piped("mut t = 0\nfor i in 0..2 |> dbl {\n    t = t + i\n}\nt") == "6"
+        }
+        then "a lambda's body takes the pipeline" {
+            piped("let f = (v: int) -> v |> dbl\nf(2)") == "4"
+        }
+        then "assignment is loosest: the pipeline is the assigned value" {
+            piped("mut a = 0\na = 1 |> dbl\na") == "2"
+        }
+        then "a `const` settles a pipeline" {
+            piped("const k = 3 |> dbl\nk") == "6"
+        }
+        then "an interpolation hole takes one" {
+            piped("\"\${1 |> dbl |> add(3)}\"") == "5"
+        }
+        then "a table cell takes one in parentheses" {
+            piped("type R = { a: int, b: int }\nlet rows = table<R> {\n    a | b\n    1 | (2 |> dbl)\n}\nrows[0].b") == "4"
+        }
+    }
+    given "the line law" {
+        then "a line ending in `|>` continues" {
+            piped("let v = 1 |>\n    dbl |>\n    add(5)\nv") == "7"
+        }
+        then "inside parentheses a break is nothing, so `|>` may lead" {
+            piped("let v = (1\n    |> dbl\n    |> add(5))\nv") == "7"
+        }
+        then "a line beginning with `|>` is refused, naming the trailing form" {
+            report("fn dbl(n: int) -> int { n * 2 }\nlet v = 1\n    |> dbl\nv") == "error[build.failed]: a line never begins with `|>` — a continuing operator ends the line it continues, so end the previous line with `|>`\n  ╭─[<source>:3:5]\n3 │     |> dbl\n  ·     ┬\n──╯"
+        }
+    }
+    given "a right side that is no call" {
+        then "a literal is refused, naming the forms that are" {
+            report("1 |> 5") == "error[build.failed]: a pipe's right side is a call, and the piped value becomes its first argument — `x |> f`, `x |> f(a)`, `x |> a.m(b)`, `x |> ((v) -> …)`; a method on the value itself is `x.m()`\n  ╭─[<source>:1:1]\n1 │ 1 |> 5\n  · ┬\n──╯"
+        }
+        then "an operator after the stage is refused, naming the group" {
+            report("fn dbl(n: int) -> int { n * 2 }\n1 |> dbl + 1") == "error[build.failed]: a pipe's right side is a call, and `|>` binds looser than `+` — write `(x |> f) + …` to pipe first\n  ╭─[<source>:2:1]\n2 │ 1 |> dbl + 1\n  · ┬\n──╯"
+        }
+        then "the operator named is the one written" {
+            refused_with("${fns}1 |> dbl * 2", "binds looser than `*` — write `(x |> f) * …`")
+        }
+        then "a leading-dot method is refused, naming `x.m()`" {
+            refused_with("let s = \" x \"\ns |> .trim()", "a method on the value itself is `x.m()`")
+        }
+        then "an index, a list, a struct literal and `self` are no stage" {
+            refused_with("let fs = [1]\n1 |> fs[0]", "a pipe's right side is a call") &&
+                refused_with("1 |> [1, 2]", "a pipe's right side is a call") &&
+                refused_with("1 |> !true", "a pipe's right side is a call")
+        }
+        then "a table cell names the parentheses" {
+            analyze_source("${fns}type R = { a: int, b: int }\nlet rows = table<R> {\n    a | b\n    1 | 2 |> dbl\n}\n1")
+                .report()
+                .contains("so `==`, `??`, `|>` and the bitwise operators need parentheses")
+        }
+    }
+    given "the node" {
+        then "a pipe and the call it names fingerprint apart" {
+            apart("x |> f", "f(x)") && apart("x |> f(a)", "f(x, a)") && apart("x |> a.m(b)", "a.m(x, b)")
+        }
+        then "two pipelines that differ in a stage fingerprint apart" {
+            apart("x |> f |> g", "x |> g |> f")
+        }
+    }
+    given "the printer" {
+        then "a pipeline is its own canonical form" {
+            canonical("let v = x |> f |> g(1, k: 2) |> a.m(3) |> a.n")
+        }
+        then "a bare stage stays bare, and empty parentheses drop" {
+            canonical("x |> f") && projected("x |> f()") == "x |> f"
+        }
+        then "pins keep their parentheses" {
+            canonical("x |> ident<int>()")
+        }
+        then "a trailing block prints after the stage" {
+            canonical("xs |> each() { it + 1 }") && canonical("xs |> each(2) { v -> v + 1 }")
+        }
+        then "a lambda stage keeps its group" {
+            canonical("x |> ((v) -> v + 1) |> f") && projected("x |> (v) -> v + 1") == "x |> ((v) -> v + 1)"
+        }
+        then "a value application keeps its parentheses" {
+            canonical("x |> (g)()") && canonical("x |> (g)(1)")
+        }
+        then "a `?` or `!` rides its stage" {
+            canonical("let v = x |> f(1)?") &&
+                canonical("let v = x |> f? |> g!") &&
+                projected("let v = (x |> f)?") == "let v = x |> f?"
+        }
+        then "a looser left side keeps its group, a tighter one does not" {
+            canonical("(a ?? b) |> f") &&
+                canonical("(a == b) |> f") &&
+                canonical("a + b |> f") &&
+                canonical("a | b |> f") &&
+                canonical("((v) -> v) |> f")
+        }
+        then "a pipeline under a tighter operator keeps its group" {
+            canonical("(x |> f) + 1") &&
+                canonical("(x |> f) | 1") &&
+                canonical("!(x |> f)") &&
+                canonical("(x |> f).m()") &&
+                canonical("(x |> f)[0]") &&
+                canonical("(x |> f?).name") &&
+                canonical("(x |> f) with { a: 1 }")
+        }
+        then "a pipeline under a looser operator stands bare" {
+            canonical("x |> f ?? d") &&
+                canonical("a ?? x |> f") &&
+                canonical("x |> f > 3 && y |> g == 1") &&
+                canonical("let v = x |> f catch 0")
+        }
+        then "a pipeline in an argument, a list and a table cell" {
+            canonical("g(x |> f, [x |> f])") &&
+                canonical("let rows = table<R> {\n    a | b\n    1 | (2 |> dbl)\n}")
+        }
+        then "a pipeline past the width breaks after each `|>`" {
+            let flat = "let photos = directory(\"./photographs/originals\") |> pictures |> resize(width: 320, height: 240) |> webp(quality: 80)"
+            let wrapped = "let photos = directory(\"./photographs/originals\") |>\n    pictures |>\n    resize(width: 320, height: 240) |>\n    webp(quality: 80)"
+            projected(flat) == wrapped && canonical(wrapped)
+        }
+        then "the pronoun's stage prints as written" {
+            canonical("xs.map(it |> f |> a.m)")
+        }
+    }
+}
