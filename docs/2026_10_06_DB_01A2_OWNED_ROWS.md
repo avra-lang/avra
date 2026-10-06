@@ -20,13 +20,16 @@ run to leave open, to open twice, or to adopt another writer's insert.
 | `Rel.insert(db, …)` | anyone outside a `@query` body | the row is no one's |
 | `Db.owner_named`, `Rows.put_owned`, `Rows.kept_of` | the declaration table ALONE | file by id; LICENSED in `tools/layers.py`, which refuses any other caller outside `packages/std-relation`; retired by `avra-8sb5.57.214` |
 
-AN OWNER IS ONE WRITER. A query handing rows to an owner another query
-handed rows to THIS REVISION is refused naming both; the same query
-handing over again is free. The owner is still a string a caller builds
-(`"icons ${dir}"`): it goes entirely at DB 07a, when the `@query`
-wrapper passes the call's own cell as the owner. Until then two calls
-that share a name across revisions are unguarded — the later one removes
-the earlier one's rows and the earlier answer stands.
+AN OWNER IS ONE WRITER, FOR ITS DB'S LIFE. The writer is the innermost
+query running when the owner's rows are first replaced — its KEY, which
+a rerun keeps — or the DRIVER when none is. Any other writer is refused
+naming both, in any revision: a second query, the driver after a query,
+a query after the driver. The first writer is noted though it hands over
+no row. A Db given another kernel forgets which QUERY wrote — the next
+kernel numbers its own keys — and keeps what the driver wrote
+(`one_writer/`). This is the identity DB 07a makes structural: there the
+`@query` wrapper passes the call's own cell as the owner, and the owner
+string (`"icons ${dir}"`) and this writer map go together.
 
 A REFUSED WRITE NEVER LANDS, and every refusal is decided before the
 first cell moves. The sites, all in `rows.av` / `db.av`:

@@ -64,7 +64,8 @@ name, in one step (a keyed row keeps its id; the store mints each `id`,
 whatever the value carries). Nothing is open between two statements, so
 no reader meets half a replacement, and it is all or nothing: one row
 refused files none and removes none. Two owners writing one row are
-refused, as are two queries handing rows to one owner in one revision;
+refused, as is a second writer of one owner (the query that first
+replaced its rows, or the driver, is its writer for the Db's life);
 a replacement that would move what a query still running read this
 revision is refused and changes nothing; a relation with a
 `@unique` field has no `replaced`. What an owner left is read with the

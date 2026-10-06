@@ -82,9 +82,8 @@ type Bucket = { members: Cell<List<int>>, hash: Cell<int>, read: ReadMark }
 /// cells written in place, so a read allocates nothing.
 type ReadMark = { revision: Cell<int>, reader: Cell<int> }
 
-/// The query that last replaced an owner's rows, as its edge, and the
-/// revision it did so in.
-type Handover = { query: int, revision: int }
+/// The writer that is no query: code running with none open.
+const driver: int = 0 - 1
 
 /// How a relation's rows are filed: whether its first index is its key,
 /// a row's keys in each index, its stable hash, and the row wearing the
@@ -154,7 +153,7 @@ export type Rows<R> = {
     filed: Cell<List<List<List<IndexKey>>>>,
     stamps: Cell<List<Stamp>>,
     stamped: Cell<Map<string, Cell<List<int>>>>,
-    writers: Cell<Map<string, Handover>>,
+    writers: Cell<Map<string, int>>,
     set: Cell<int>,
     live: Cell<int>,
     indexes: List<Index>,
@@ -174,7 +173,7 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
     let filed: Cell<List<List<List<IndexKey>>>> = Cell.new([])
     let stamps: Cell<List<Stamp>> = Cell.new([])
     let stamped: Cell<Map<string, Cell<List<int>>>> = Cell.new({})
-    let writers: Cell<Map<string, Handover>> = Cell.new({})
+    let writers: Cell<Map<string, int>> = Cell.new({})
     let buckets: Cell<List<Bucket>> = Cell.new([])
     Rows {
         name: name,
@@ -255,12 +254,18 @@ impl Rows<R> {
 
     // ── what a Db's owner records ──
 
-    /// Every read here forgotten — the kernel they were told to is left.
+    /// Every read here forgotten — the kernel they were told to is left
+    /// — and every owner's writer that was a query of it: the next
+    /// kernel numbers its own. The driver's owners stay the driver's.
     fn unmarked() {
         self.read.cleared()
         for b in self.buckets.get() { b.read.cleared() }
-        let none: Map<string, Handover> = {}
-        self.writers.set(none)
+        let held = self.writers.get()
+        mut drivers: Map<string, int> = {}
+        for owner in held.keys() {
+            if held.get(owner) ?? driver == driver { drivers.set(owner, driver) }
+        }
+        self.writers.set(drivers)
     }
 
     /// Bucket `b` read under `db`: recorded as cell `b + 1`, stamped
@@ -374,22 +379,19 @@ impl Rows<R> {
         stored
     }
 
-    /// AN OWNER IS ONE WRITER: the refusal of a running query replacing
-    /// rows another query replaced this revision, none otherwise — and
-    /// the running query noted as the owner's writer.
+    /// AN OWNER IS ONE WRITER, for the Db's life: the query running when
+    /// its rows were first replaced, or the driver when none was. The
+    /// refusal of any other writer, none for the same one — the first
+    /// noted even where it hands over no row.
     fn second_writer(db: Db, owner: int) -> string? {
-        let kernel? = db.kernel.get() else { return null }
-        let asking = kernel.asking_edge()
-        if asking < 0 { return null }
-        let now = kernel.revision()
+        let asking = db.kernel.get()?.asking_edge() ?? driver
         let key = "${owner}"
         let first? = self.writers.get().get(key) else {
-            self.writers.put(key, Handover { query: asking, revision: now })
+            self.writers.put(key, asking)
             return null
         }
-        if first.query != asking && first.revision == now { return two_writers(kernel.edge_text(first.query), kernel.edge_text(asking)) }
-        self.writers.put(key, Handover { query: asking, revision: now })
-        null
+        if first == asking { return null }
+        two_writers(db.writer(first), db.writer(asking))
     }
 
     /// The id a row with `keys` takes: its key's row's where the relation
@@ -878,7 +880,7 @@ fn replaced_whole(relation: string, owner: string, why: string) -> string {
 }
 
 fn two_writers(first: string, second: string) -> string {
-    "query ${first} handed them over this revision and query ${second} hands them over too — an owner is one writer: name an owner each call's own"
+    "${first} is their writer and ${second} hands rows over too — an owner is one writer for its Db's life: name an owner each writer's own"
 }
 
 fn key_twice(key: string) -> string { "two of the rows name one key (${key}) — a replacement names each row once" }

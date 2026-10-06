@@ -5,6 +5,7 @@ use @std.avrac.compiler.{avra, new_workspace}
 use compiler.{Workspace, ErrorSite, Raised}
 use compiler.host.{memory_host}
 use @std.relation.engine.{Key}
+use compiler.families.{Family}
 use core.{DeclId, same_decl, same_expr}
 
 fn sites_workspace(main: string) -> Workspace {
@@ -19,6 +20,15 @@ fn sites_workspace(main: string) -> Workspace {
         "/w",
         avra(),
     )
+}
+
+/// `act` run as the `Failures` query — the one writer of the survey's
+/// and the solve's rows.
+fn as_failures(ws: Workspace, act: fn() -> void) {
+    let k = Key { family: Family.Failures.ordinal, arg: 0 }
+    ws.db.kernel.begin(k)
+    act()
+    ws.db.kernel.settle(k, 0)
 }
 
 fn decl_named(ws: Workspace, name: string) -> DeclId {
@@ -297,8 +307,8 @@ spec "compiler/failures — `Raised` rows are the fixpoint's own" {
         let f = decl_named(ws, "f")
         let g = decl_named(ws, "g")
         let _ = ws.failures()
-        ws.solve_raised([f, g])
-        ws.solve_raised([f])
+        as_failures(ws, () -> ws.solve_raised([f, g]))
+        as_failures(ws, () -> ws.solve_raised([f]))
         let rows = Raised.all(ws.failures_db.get())
         rows.length == 1 && same_decl(rows[0].owner, f) && rows[0].errors.length == 2
     }
@@ -314,7 +324,12 @@ spec "compiler/failures — `ErrorSite` rows are the survey's own (avra-8sb5.57.
         let both = ErrorSite.all(ws.failures_db.get())
         // the solve read these rows this revision: a later survey follows an edit
         ws.db.kernel.bump()
-        let _ = ws.surveyed([f])
+        as_failures(
+            ws,
+            () -> {
+                let _ = ws.surveyed([f])
+            },
+        )
         let one = ErrorSite.all(ws.failures_db.get())
         both.any((s: ErrorSite) -> same_decl(s.owner, g)) &&
             !one.is_empty() &&
@@ -336,10 +351,26 @@ spec "compiler/failures — `Raised` holds the last solve's sets until the next 
         ws.db.kernel.begin(reader)
         let read = Raised.by_owner(db, f).length
         ws.db.kernel.settle(reader, 0)
-        ws.solve_raised([f])
+        as_failures(ws, () -> ws.solve_raised([f]))
         read == 1 &&
             Raised.all(db).length == 2 &&
             heard.get().length == 1 &&
             heard.get()[0].contains("`Raised` rows are not replaced and stand as they were")
+    }
+}
+
+spec "compiler/failures — the survey's and the solve's rows have one writer" {
+    then "a solve outside the `Failures` query is refused naming both, and the rows stand" {
+        let ws = sites_workspace(mutual_source())
+        let _ = ws.analyze_file("/w/src/main.av")
+        let f = decl_named(ws, "f")
+        let _ = ws.failures()
+        let heard: Cell<List<string>> = Cell.new([])
+        let db = ws.failures_db.get()
+        db.heard_by((w: string) -> heard.push(w))
+        ws.solve_raised([f])
+        Raised.all(db).length == 2 &&
+            heard.get().length == 1 &&
+            heard.get()[0].contains("is their writer and the driver hands rows over too")
     }
 }

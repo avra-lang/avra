@@ -1,10 +1,15 @@
-// proves: an owner is one writer — a second query handing rows to an
-// owner another query handed rows to this revision is refused naming
-// both, the first query's rows stand and its kept answer with them, and
-// the same query handing over again is free; a write a `@query` body
+// proves: an owner is one writer for its Db's life — a second query
+// handing rows to an owner another query handed rows to is refused
+// naming both, in the same revision and in a later one, the first
+// query's rows stand and its kept answer with them, and the same query
+// handing over again is free; the driver is a writer too, refused after
+// a query and refusing one after it; the first writer is noted though
+// it hands over no row; a Db given another kernel forgets which query
+// wrote and keeps what the driver wrote; and a write a `@query` body
 // makes with no owner is refused and files no row — in both engines
 use @std.relation.{relation, query}
-use @std.relation.db.{Db, new_db}
+use @std.relation.db.{Db, new_db, db_over, Verifying, Late}
+use @std.relation.engine.{Kernel, Key, new_kernel}
 
 @relation
 type Icon = { @key name: string }
@@ -45,6 +50,67 @@ fn shared() -> string {
     "${a}${b}${again} ${show(db)} runs=${runs().get()} heard=${heard.get().length} ${heard.get().join(" | ")}"
 }
 
+/// A Db over `kernel`, its refusals heard in `heard`.
+fn heard_db(kernel: Kernel, heard: Cell<List<string>>) -> Db {
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused)
+    db.heard_by((w: string) -> heard.push(w))
+    db
+}
+
+/// `names` handed to `owner` by the query `arg` of `kernel`'s first family.
+fn handed(kernel: Kernel, db: Db, arg: int, owner: string, names: List<string>) -> int {
+    let q = Key { family: 0, arg: arg }
+    kernel.begin(q)
+    let filed = Icon.replaced(db, owner, [Icon { name: n } for n in names]).length
+    kernel.settle(q, 0)
+    filed
+}
+
+/// A second query in a LATER revision is refused as in the same one.
+fn later() -> string {
+    let heard: Cell<List<string>> = Cell.new([])
+    let kernel = new_kernel()
+    let _ = kernel.family((_arg: int) -> 0)
+    let db = heard_db(kernel, heard)
+    let first = handed(kernel, db, 0, "o", ["a"])
+    kernel.bump()
+    let second = handed(kernel, db, 1, "o", ["b"])
+    kernel.bump()
+    let again = handed(kernel, db, 0, "o", ["c"])
+    "${first}${second}${again} ${show(db)} heard=${heard.get().length}"
+}
+
+/// The driver and a query are two writers, whichever came first — and
+/// the first is noted though it hands over nothing.
+fn driven() -> string {
+    let heard: Cell<List<string>> = Cell.new([])
+    let kernel = new_kernel()
+    let _ = kernel.family((_arg: int) -> 0)
+    let db = heard_db(kernel, heard)
+    let _ = Icon.replaced(db, "by driver", [])
+    let after_driver = handed(kernel, db, 0, "by driver", ["a"])
+    let _ = handed(kernel, db, 1, "by query", [])
+    let after_query = Icon.replaced(db, "by query", [Icon { name: "b" }]).length
+    "${after_driver}${after_query} ${Icon.all(db).length} heard=${heard.get().length} ${heard.get().join(" | ")}"
+}
+
+/// Given another kernel, a Db forgets which query wrote — the next
+/// kernel's keys are its own — and keeps what the driver wrote.
+fn handed_over() -> string {
+    let heard: Cell<List<string>> = Cell.new([])
+    let kernel = new_kernel()
+    let _ = kernel.family((_arg: int) -> 0)
+    let db = heard_db(kernel, heard)
+    let _ = handed(kernel, db, 0, "by query", ["a"])
+    let _ = Icon.replaced(db, "by driver", [Icon { name: "d" }])
+    let next = new_kernel()
+    let _ = next.family((_arg: int) -> 0)
+    db.given(next, Verifying.ByHash, Late.Refused)
+    let other = handed(next, db, 5, "by query", ["b"])
+    let driver_still = handed(next, db, 5, "by driver", ["e"])
+    "${other}${driver_still} ${show(db)} heard=${heard.get().length}"
+}
+
 fn alone() -> string {
     let heard: Cell<List<string>> = Cell.new([])
     let db = new_db()
@@ -60,4 +126,4 @@ fn ownerless() -> string {
     "${Icon.all(db).length} heard=${heard.get().length}"
 }
 
-"${shared()} | ${alone()} | ${ownerless()}"
+"${shared()} | ${later()} | ${driven()} | ${handed_over()} | ${alone()} | ${ownerless()}"
