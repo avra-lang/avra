@@ -59,7 +59,11 @@ if [ "${1:-bench}" = probes ]; then
         echo "== (c) the ceiling: stacks asked for until the kernel refuses"
         "$out/stacks" 1048576 mprotect 1000000 448
         "$out/stacks" 262144 mprotect 1000000 448
-        "$out/stacks" 262144 none 1000000 448
+        # as many unguarded stacks as the machine can hold touched, with room to spare
+        free_kb=$(awk '/MemAvailable/ { print $2 }' /proc/meminfo)
+        most=$(( (free_kb - 2500000) / 5 ))
+        [ "$most" -lt 1000000 ] || most=1000000
+        [ "$most" -lt 1000 ] || "$out/stacks" 262144 none "$most" 448
     fi
     echo "== the yield path: instructions in the object, and counted over ten million switches"
     # THE FRAME PROOF: a leaf's fast path saves nothing — no push, no stack
