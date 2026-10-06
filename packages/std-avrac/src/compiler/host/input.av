@@ -1,0 +1,161 @@
+//! AN INPUT: one read of the world as a value — the name it was asked
+//! by and the digest of exactly what was seen. A `Read` carries both
+//! halves in one variant, so a name and what it saw cannot disagree.
+//!
+//! ABSENCE IS A VALUE, AND IT HAS ONE CAUSE. A null payload says nothing
+//! stands there: no file, no directory, an unset variable, no tool. A
+//! read the host would not perform — permissions, a link on the way,
+//! octets that are not text — is `Refused`, with the host's words, and
+//! digests apart from absence and from every other refusal.
+//!
+//! A NAME IS WRITTEN, NEVER RESOLVED: `package:relative/path` as the
+//! source spells it, a variable's name, a tool's word. A file reached
+//! under two names is two inputs over one digest. A tool's `Stamp` names
+//! the path the tool was found at and the size and modified time of what
+//! stands there after links are followed — a link re-aimed at a
+//! different binary moves the stamp, a link renamed does not.
+//!
+//! THE DIGEST IS OF A FRAME: a head that says the kind, the name and
+//! what was found — every part behind its own length, so no two shapes
+//! spell the same octets — then the body, last and whole.
+use core.{new_digest, digest_bytes, digest_key}
+use @std.relation.stable.{Writer, writer}
+
+/// What a read asks of the world.
+export enum InputKind { Text, Octets, Range, Listing, Exists, Env, Tool, Compiler }
+
+/// An input's name: its kind and the key it was asked by.
+export type InputName = { kind: InputKind, key: string }
+
+/// What stands in a directory under one name.
+export type Listed = { name: string, dir: bool }
+
+/// A tool's identity without reading it: where it was found, and the
+/// size and modified time of the file there.
+export type Stamp = { path: string, size: int, mtime: int }
+
+/// A digest of an input's frame — compared, stored and never unpacked.
+export type InputDigest = string
+
+/// A named, digested read.
+export type Input = { name: InputName, digest: InputDigest }
+
+/// One read of the world: what was asked, and what was seen.
+export enum Read {
+    /// A file as text; null where no file stands.
+    Text(key: string, text: string?)
+    /// A file as octets; null where no file stands.
+    Octets(key: string, octets: Bytes?)
+    /// `count` octets of a file from `from` — the digest covers those alone.
+    Range(key: string, from: int, count: int, octets: Bytes?)
+    /// A directory's names, sorted; null where no directory stands.
+    Listing(key: string, entries: List<Listed>?)
+    Exists(key: string, there: bool)
+    /// A variable's value; null when unset, which is not empty.
+    Env(key: string, value: string?)
+    /// A tool by its word; null when none is found.
+    Tool(key: string, stamp: Stamp?)
+    /// The running compiler; null when the host cannot name it.
+    Compiler(stamp: Stamp?)
+    /// A read the host would not perform, in its words.
+    Refused(name: InputName, why: string)
+}
+
+impl Read {
+    fn name() -> InputName {
+        match self {
+            .Text(key, _) -> InputName { kind: .Text, key: key },
+            .Octets(key, _) -> InputName { kind: .Octets, key: key },
+            .Range(key, from, count, _) -> InputName { kind: .Range, key: "${key}@${from}+${count}" },
+            .Listing(key, _) -> InputName { kind: .Listing, key: key },
+            .Exists(key, _) -> InputName { kind: .Exists, key: key },
+            .Env(key, _) -> InputName { kind: .Env, key: key },
+            .Tool(key, _) -> InputName { kind: .Tool, key: key },
+            .Compiler(_) -> InputName { kind: .Compiler, key: "" },
+            .Refused(name, _) -> name,
+        }
+    }
+
+    /// The read as a named, digested input.
+    fn input() -> Input {
+        let name = self.name()
+        let head = writer()
+        head.count(kind_tag(name.kind))
+        head.text(name.key)
+        Input { name: name, digest: digested(self.found(head), self.body()) }
+    }
+
+    /// What was found, written behind the name: a state, then every
+    /// part that is not the body. Answers the finished head.
+    fn found(head: Writer) -> Bytes {
+        match self {
+            .Text(_, text) -> head.count(state(text != null)),
+            .Octets(_, octets) or .Range(_, _, _, octets) -> head.count(state(octets != null)),
+            .Listing(_, entries) -> listed(head, entries),
+            .Exists(_, there) -> head.count(state(there)),
+            .Env(_, value) -> head.count(state(value != null)),
+            .Tool(_, stamp) or .Compiler(stamp) -> stamped(head, stamp),
+            .Refused(_, why) -> {
+                head.count(REFUSED)
+                head.text(why)
+            },
+        }
+        head.bytes()
+    }
+
+    /// The octets read, whole — empty where the head says it all.
+    fn body() -> Bytes {
+        match self {
+            .Text(_, text) or .Env(_, text) -> (text ?? "").bytes(),
+            .Octets(_, octets) or .Range(_, _, _, octets) -> octets ?? "".bytes(),
+            .Listing(_, _) or .Exists(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> "".bytes(),
+        }
+    }
+}
+
+/// The digest of a frame — the ONE place an input's digest is computed.
+fn digested(head: Bytes, body: Bytes) -> InputDigest {
+    InputDigest(digest_key(digest_bytes(digest_bytes(new_digest(), head), body)))
+}
+
+const ABSENT: int = 0
+const PRESENT: int = 1
+const REFUSED: int = 2
+
+fn state(there: bool) -> int {
+    if there { PRESENT } else { ABSENT }
+}
+
+/// A kind's number in a frame — stored, so a kind keeps its number.
+fn kind_tag(k: InputKind) -> int {
+    match k {
+        .Text -> 1,
+        .Octets -> 2,
+        .Range -> 3,
+        .Listing -> 4,
+        .Exists -> 5,
+        .Env -> 6,
+        .Tool -> 7,
+        .Compiler -> 8,
+    }
+}
+
+/// A listing behind its count, each name behind its own length.
+fn listed(head: Writer, entries: List<Listed>?) {
+    head.count(state(entries != null))
+    let held? = entries else { return }
+    head.count(held.length)
+    for e in held {
+        head.text(e.name)
+        head.bool(e.dir)
+    }
+}
+
+/// A stamp's three parts, each its own value.
+fn stamped(head: Writer, stamp: Stamp?) {
+    head.count(state(stamp != null))
+    let s? = stamp else { return }
+    head.text(s.path)
+    head.int(s.size)
+    head.int(s.mtime)
+}
