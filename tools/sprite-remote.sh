@@ -89,14 +89,31 @@ settle() {
     [ -f "$runs/$1/status" ] || { echo "$2" > "$runs/$1/status.new" && mv "$runs/$1/status.new" "$runs/$1/status"; }
 }
 
-# The Sprite's own promise to stay awake, by name, for five minutes.
+# The Sprite's own promise to stay awake, by the run's name, for five
+# minutes. THE ANSWER IS READ: the Sprite takes a name of lowercase
+# letters, digits and dashes only and refuses any other, and a run it
+# refused to hold stands still whenever nobody is attached — so the
+# name is made one it takes, and a refusal is the run's own output.
 hold() {
     [ -S /.sprite/api.sock ] || return 0
+    task=avra-$(printf '%s' "$2" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-')
+    ask() { curl -s -m 5 -w '\n%{http_code}' --unix-socket /.sprite/api.sock -H 'Content-Type: application/json' "$@" 2>/dev/null || :; }
     case $1 in
-        on) curl -s -m 5 --unix-socket /.sprite/api.sock -H 'Content-Type: application/json' -X POST http://sprite/v1/tasks -d "{\"name\":\"$2\",\"expire\":\"5m\"}" ;;
-        again) curl -s -m 5 --unix-socket /.sprite/api.sock -H 'Content-Type: application/json' -X PUT "http://sprite/v1/tasks/$2" -d '{"expire":"5m"}' ;;
-        off) curl -s -m 5 --unix-socket /.sprite/api.sock -X DELETE "http://sprite/v1/tasks/$2" ;;
-    esac >/dev/null 2>&1 || :
+        on) said=$(ask -X POST http://sprite/v1/tasks -d "{\"name\":\"$task\",\"expire\":\"5m\"}") ;;
+        again)
+            said=$(ask -X PUT "http://sprite/v1/tasks/$task" -d '{"expire":"5m"}')
+            # A hold that lapsed while the Sprite stood still is asked for again.
+            case $said in *200) ;; *) said=$(ask -X POST http://sprite/v1/tasks -d "{\"name\":\"$task\",\"expire\":\"5m\"}") ;; esac
+            ;;
+        off)
+            ask -X DELETE "http://sprite/v1/tasks/$task" >/dev/null
+            return 0
+            ;;
+    esac
+    case $said in
+        *200 | *201 | *409) ;;
+        *) [ ! -d "$runs/$2" ] || echo "sprite-run: the Sprite would not be held awake ($(printf '%s' "$said" | tr '\n' ' ')) — this run stands still whenever nobody is attached" >> "$runs/$2/out" ;;
+    esac
 }
 
 lacking() {
