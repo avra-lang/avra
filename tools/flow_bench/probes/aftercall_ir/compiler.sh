@@ -7,6 +7,7 @@
 # stands, so each stands beside build/avra. Prints the census and each
 # run's seconds.
 #   WORK=packages/std-http ROUNDS=3 sh tools/flow_bench/probes/aftercall_ir/compiler.sh
+#   KEEP=1 links nothing a run before it already linked.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../../.." && pwd)
@@ -20,7 +21,7 @@ for v in plain known byte; do
     python3 "$here/rewrite.py" bootstrap/seed.ll "$out/seed_$v.ll" $v || exit 1
     t0=$(date +%s%N)
     cmd=$(echo "$line" | sed "s#bootstrap/seed.ll#$out/seed_$v.ll $out/probe_state.o#; s#-o build/avra#-o build/avra_probe_$v#")
-    sh -c "$cmd" 2> "$out/seedlink_$v.err" || { echo "$v does not link"; head -6 "$out/seedlink_$v.err"; exit 1; }
+    [ -n "${KEEP:-}" ] && [ -x "build/avra_probe_$v" ] || sh -c "$cmd" 2> "$out/seedlink_$v.err" || { echo "$v does not link"; head -6 "$out/seedlink_$v.err"; exit 1; }
     echo "   $v: text $(size "build/avra_probe_$v" | awk 'NR == 2 { print $1 }') bytes, linked in $(( ($(date +%s%N) - t0) / 1000000 )) ms"
 done
 work=${WORK:-packages/std-http}
