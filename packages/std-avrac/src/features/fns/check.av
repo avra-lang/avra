@@ -319,8 +319,8 @@ fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
         .Named(_, value) -> cx.type_at(value),
         .Call(callee, pins, args) -> {
             cx.warn_use(e)
-            let sig? = cx.sig_of(e) else { return cx.settled_call(args, valued_call(cx, e, callee.of, pins, args)) }
-            cx.settled_call(args, dispatched_call(cx, e, callee.of, pins, args, sig))
+            let sig? = cx.sig_of(e) else { return cx.settled_call(e, args, valued_call(cx, e, callee.of, pins, args)) }
+            cx.settled_call(e, args, dispatched_call(cx, e, callee.of, pins, args, sig))
         },
         rest -> cx.error_type,
     }
@@ -355,6 +355,7 @@ fn named_construction(mut cx: TypeCx, e: ExprId, callee: string, args: List<Expr
     let _ = cx.view.decls.sig(d)
     let named = cx.view.decls.self_type_of(d)
     let of? = cx.view.types.stands_for(named) else { return null }
+    let _ = cx.seals(cx.loc_of(e), named, "converted into here")
     cx.seats_judged(e, callee, [of], [], named, args)
 }
 
@@ -428,9 +429,10 @@ fn generic_call(
 }
 
 /// An argument that already refused — itself, or a fn whose answer
-/// did — pins nothing, and has said so in its own words.
+/// did — pins nothing, and has said so in its own words. One still
+/// hungry when the walk ends speaks for itself in that same pass.
 fn spoke_already(cx: TypeCx, a: ExprId) -> bool {
-    if cx.facts.hungry_at(a) { return false }
+    if cx.facts.hungry_at(a) { return cx.starving }
     if cx.errored(a) { return true }
     let arrow? = cx.view.types.arrow_parts(cx.type_at(a)) else { return false }
     cx.errored_ty(arrow.answer)

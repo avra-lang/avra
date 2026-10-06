@@ -17,7 +17,8 @@
 # ONE SPRITE PER LANE, ONE RUN PER SPRITE. A worktree's Sprite is named in
 # its own git dir (`avra-sprite`); a Sprite belongs to one worktree until
 # `done` (or the worktree is gone). `run` syncs this tree there by rsync,
-# keeps that tree's compiler built from it — warm after the first run —
+# proves the Sprite then holds exactly this worktree (`sync` does that
+# much alone), keeps that tree's compiler built from it — warm after the first run —
 # and starts the command under a supervisor on the Sprite, then follows
 # it. The pool is `sprite list` minus AVRA_SP_EXCLUDE, or AVRA_SPRITES.
 #
@@ -413,6 +414,93 @@ follow() {
 t0=$(date +%s)
 since() { echo $(($(date +%s) - t0)); }
 
+# THE TREE ON THE SPRITE IS THIS WORKTREE, AND EVERY SYNC PROVES IT. rsync
+# only carries files there; what the worktree no longer has is removed by
+# name, from the difference of the two manifests — never by rsync's own
+# delete, which under -R, from the Mac's rsync to the Sprite's, leaves
+# files standing in silence. A file git
+# ignores is a product (a built program, a cache) and is left where a run
+# wrote it. The sync ends when the Sprite's manifest is the worktree's,
+# or the run is refused: a command never answers about another tree.
+# Needs `sprite`, `tree`, `remote_tree`.
+manifest_at() { sh -c 'AVRA_REMOTE_SCRIPT=$1; shift; eval "$AVRA_REMOTE_SCRIPT"' avra-remote "$remote_script" manifest "$@"; }
+sync_tree() {
+    echo "work: $sprite — sync ($(since)s)" >&2
+    paths=$(cd "$tree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
+        backend runtime packages tools bootstrap corpus .github/ci; do [ ! -e "$p" ] || printf "%s " "$p"; done)
+    held=$(mktemp -d "${TMPDIR:-/tmp}/avra-sync.XXXXXX")
+    manifest_at "$tree" $paths > "$held/mine"
+    # A second pass compares contents: a file of the same size and time is not always the same file.
+    by=
+    removed=0
+    for _ in 1 2 3; do
+        carry "$by"
+        remote "$sprite" 120 manifest "$remote_tree" $paths > "$held/theirs" 2>/dev/null || {
+            blame
+            echo "work: $who — $sprite did not say what tree it holds after the sync: $why. Nothing was started" >&2
+            exit "$code"
+        }
+        awk -F '\t' 'NR == FNR { mine[$1] = $2; next }
+            { seen[$1] = 1; if (!($1 in mine)) print "stale\t" $1; else if (mine[$1] != $2) print "differs\t" $1 }
+            END { for (p in mine) if (!(p in seen)) print "missing\t" p }' "$held/mine" "$held/theirs" > "$held/all"
+        sed -n 's/^stale\t//p' "$held/all" > "$held/extra"
+        git -C "$tree" check-ignore --stdin < "$held/extra" > "$held/products" 2>/dev/null || :
+        grep -vxFf "$held/products" "$held/extra" > "$held/stale" || :
+        grep -v '^stale' "$held/all" > "$held/wrong" || :
+        if [ ! -s "$held/stale" ] && [ ! -s "$held/wrong" ]; then
+            echo "work: $sprite — holds this worktree, proved: $(wc -l < "$held/mine" | tr -d ' ') files match$([ "$removed" = 0 ] || echo ", $removed it no longer has removed")" >&2
+            rm -rf "$held"
+            return 0
+        fi
+        if [ -s "$held/stale" ]; then
+            removed=$((removed + $(wc -l < "$held/stale")))
+            set --
+            while IFS= read -r p; do
+                set -- "$@" "$p"
+                [ "$#" -lt 200 ] || { remote "$sprite" 60 unlink "$remote_tree" "$@" 2>/dev/null || :; set --; }
+            done < "$held/stale"
+            [ "$#" = 0 ] || remote "$sprite" 60 unlink "$remote_tree" "$@" 2>/dev/null || :
+        fi
+        by=c
+    done
+    echo "work: SPRITE — sync: $sprite does not hold this worktree after three tries — $(wc -l < "$held/stale" | tr -d ' ') file(s) it should not have, $(grep -c '^missing' "$held/wrong") missing, $(grep -c '^differs' "$held/wrong") different; first: $({ sed 's/^/stale\t/' "$held/stale"; cat "$held/wrong"; } | head -n 3 | tr '\t\n' ' ;'). Nothing was started" >&2
+    rm -rf "$held"
+    exit 75
+}
+# The sync alone, with its proof: nothing is run.
+sync_() {
+    inside
+    sprite=$(bound)
+    [ -n "$sprite" ] || die "this worktree holds no Sprite — \`sh tools/work bind\`"
+    tree=$(git rev-parse --show-toplevel)
+    remote_tree=${AVRA_SPRITE_HOME:-/home/sprite}/avra-build/$(basename "$tree")/tree
+    sync_tree
+}
+# Carries the worktree's files to the Sprite, each under its own name
+# (-R): `.github/ci` is never a bare `ci`. $1 is `c` to compare contents.
+carry() {
+    synced=
+    for _ in 1 2 3; do
+        if sx "$sprite" 30 mkdir -p "$remote_tree/build" &&
+            (cd "$tree" && timeout -k 2 "${AVRA_SYNC_S:-300}" rsync -azR$1 -e "sh $tools/sprite-rsh.sh" \
+                --exclude build/ --exclude .avra-cache/ --exclude .claude/ --exclude .git $paths "$sprite:$remote_tree/"); then
+            synced=1
+            break
+        fi
+        echo "work: $sprite — the sync failed, again" >&2
+        sleep 2
+    done
+    [ -n "$synced" ] || {
+        if sx "$sprite" 20 true >/dev/null 2>&1; then
+            echo "work: CONNECTION — the tree did not sync to $sprite in three tries, though the Sprite answers. Nothing was started" >&2
+            exit 74
+        fi
+        blame
+        echo "work: $who — $sprite went silent during the sync: $why. Nothing was started" >&2
+        exit "$code"
+    }
+}
+
 run() {
     minutes=15
     if [ "${1:-}" = --for ]; then
@@ -457,30 +545,7 @@ run() {
         exit 76
     }
     [ -z "$live" ] || busy "$live"
-    echo "work: $sprite — sync ($(since)s)" >&2
-    paths=$(cd "$tree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
-        backend runtime packages tools bootstrap corpus .github/ci; do [ ! -e "$p" ] || printf "%s " "$p"; done)
-    # Each path lands under its own name (-R): `.github/ci` is never a bare `ci`.
-    synced=
-    for _ in 1 2 3; do
-        if sx "$sprite" 30 mkdir -p "$remote_tree/build" &&
-            (cd "$tree" && timeout -k 2 "${AVRA_SYNC_S:-300}" rsync -azR --delete -e "sh $tools/sprite-rsh.sh" \
-                --exclude build/ --exclude .avra-cache/ --exclude .claude/ --exclude .git $paths "$sprite:$remote_tree/"); then
-            synced=1
-            break
-        fi
-        echo "work: $sprite — the sync failed, again" >&2
-        sleep 2
-    done
-    [ -n "$synced" ] || {
-        if sx "$sprite" 20 true >/dev/null 2>&1; then
-            echo "work: CONNECTION — the tree did not sync to $sprite in three tries, though the Sprite answers. Nothing was started" >&2
-            exit 74
-        fi
-        blame
-        echo "work: $who — $sprite went silent during the sync: $why. Nothing was started" >&2
-        exit "$code"
-    }
+    sync_tree
     if printf '%s\n' "$info" | grep -q '^holds=no' && ! sx "$sprite" 20 test -x "$remote_tree/build/avra" 2>/dev/null; then
         seed "$sprite" "$remote_tree" "$tree" "$hash"
     fi
@@ -896,6 +961,7 @@ case "${1:-}" in
     status) status ;;
     wait) shift; wait_landed "$@" ;;
     attach) attach ;;
+    sync) sync_ ;;
     stop) stop_ ;;
     *) echo "work: no verb \`$1\`" >&2; usage >&2; exit 64 ;;
 esac

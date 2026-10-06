@@ -553,8 +553,10 @@ impl LowerCx {
     /// here is how a consumer avoids knowing the number.
     mut fn tag_of(v: Reg) -> Reg {
         if self.valued(self.out.type_of_reg(v)) { return self.extracted(self.opened_enum(v), 0, self.mint_shape(Type.Int)) }
-        if self.view.types.word_carrier(self.out.type_of_reg(v)) { return self.extracted(v, 0, self.mint_shape(Type.Int)) }
-        self.slot_read(v, 0, null)
+        // a name over an enum is read as the enum it stands over
+        let own = self.read_as(v, self.seen(self.out.type_of_reg(v)))
+        if self.view.types.word_carrier(self.out.type_of_reg(own)) { return self.extracted(own, 0, self.mint_shape(Type.Int)) }
+        self.slot_read(own, 0, null)
     }
 
     /// The PAYLOAD a tagged value carries, as the type it was written

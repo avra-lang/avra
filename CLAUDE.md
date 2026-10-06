@@ -930,6 +930,28 @@ registry is the idiom engine's spec, written by dogfooding.
   from `tests/support/` and read as `use tests.support.{…}` — a program
   test is a module like the rest, so it reaches the same file
   (packages/std-http/src/tests/support).
+  AND A TEST READS ITS MODULE'S PRIVATE NAMES: a file DIRECTLY in a
+  module's own `tests/` may `use` a top-level name that module declares
+  and does not export — by an explicit `use`, never bare. Nothing else
+  may: another module's tests, a directory under `tests/`, another
+  package. A name two of the module's files each keep private is
+  `resolve.private_apart`, naming both; a private name is never
+  re-exported.
+- A DEPENDENCY IS ITS LIBRARY. The file a dependency's `[bin]` names
+  is that package's program and runs only where the package is the
+  root, so it is no module file of a program that depends on it — its
+  statements never run there and its names are not the library's
+  (tools/ui-board: the page program is the package's own `[bin]`, and
+  `term/` depends on it).
+- A SEALED TYPE IS BUILT WHERE IT IS DECLARED. `@sealed` (`@std/meta`)
+  on a type: outside the declaring MODULE no literal fills it, no
+  `Name(value)` converts into it, no record literal, `with`, field
+  write or variant makes one (type.sealed) — every seat a literal
+  reaches, a default and an annotation's argument included — while
+  every read stays open. The doors are the fns the module exports, so
+  a value anywhere is one a door answered (std-ui's `Url`). Generated
+  code is judged where it LANDS: a derive on a sealed type lands in its
+  module and builds it. The module's own `tests/` is another module.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
   suite does not have. "a comment-only line is a blank line" asserts
@@ -1721,11 +1743,15 @@ Syntax the grammar lacks:
   arm's block is not read as diverging. Write the statement `match`
   (`.Err(e) -> { … fail e }, .Ok(v) -> …`), as @std/process's three
   drivers do.
-- A LITERAL OF `null` ALONE names no type: `let xs = [null, null]`
-  is F2006 "a list element takes its type from its value, and `null`
-  has none of its own" — `{"a": null}` and `Cell.new(null)` alike.
-  Any sibling with a type names it (`[null, 7]` is a `List<int?>`),
-  and a declared want fills it (`let c: Cell<int?> = Cell.new(null)`).
+- A LITERAL OF `null` ALONE names no type WHERE NO SEAT NAMES ONE:
+  `let xs = [null, null]` is F2006 "a list element takes its type
+  from its value, and `null` has none of its own" — `{"a": null}` and
+  `Cell.new(null)` alike. Any sibling with a type names it (`[null,
+  7]` is a `List<int?>`), and so does the seat it lands in: a
+  declared want (`let c: Cell<int?> = Cell.new(null)`), an argument
+  (`count([null, null])` at a `List<string?>` seat), a field, a fn's
+  answer. A generic seat nothing else pins (`g([null])` at `List<T?>`)
+  is the same refusal, spoken once, at the literal.
 - A KEYED LIST (`list xs by it.id { x -> … }`): "`list` takes no head
   value — name it at a statement (`list name { … }`), or write `list
   { … }`". Write `list { for x in xs { item { key: "${x.id}" … } }
@@ -1867,7 +1893,12 @@ Runtime facts, ours to ratify:
   value is F2030 "`.at(…)` calls a method, and `Bytes?` has none" —
   while a `List<Bytes>`'s GATHERS the parts and answers a plain
   `Bytes`. One name, three receivers, and only the octet reading is
-  nullable.
+  nullable. AND TEXT OUT OF OCTETS HAS THREE READERS, by what a bad
+  octet should do: `b.text()` answers `string?` (null when any octet
+  is not UTF-8), `b.text_prefix()` the longest whole-UTF-8 prefix
+  (never null; the rest is `b.slice(prefix.length, b.length)`, and a
+  stream holds at most one unfinished character there), and
+  `b.text_lossy()` every octet, each ill-formed subpart one U+FFFD.
 - A STRING's `.length` is a LOAD — the header carries the length
   (lane A), as a list's does; `while i < s.length` costs a load per
   turn, and style.restrlen_loop retired with the strlen it ratcheted. WITH ONE
@@ -1994,6 +2025,11 @@ Runtime facts, ours to ratify:
   watching (`work attach` follows again, `work stop` ends it, `work
   done` ends it with the lane). `sh tools/work sprites` shows all of
   them in seconds.
+  A RUN ANSWERS ABOUT THIS WORKTREE OR NOT AT ALL: rsync carries files
+  to the Sprite, a file the worktree no longer has is removed there by
+  name, and the Sprite's manifest (every path and its hash) must equal
+  the worktree's before anything starts — else `SPRITE — sync:` and 75.
+  What a run wrote is left: `build/`, `.avra-cache`, anything git ignores.
   WHAT ENDS A RUN EARLY IS MEMORY, NOT TIME: a twenty-minute exec holds,
   chatty or silent, and thirty-two spinning processes leave a Sprite
   answering in a second — but a Sprite says 16 GB and a balloon holds

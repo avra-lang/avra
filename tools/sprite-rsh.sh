@@ -1,2 +1,2 @@
 h=$1; shift
-exec sprite -s "$h" exec --no-port-forward -- "$@"
+exec "${AVRA_SPRITE_CLI:-sprite}" -s "$h" exec --no-port-forward -- "$@"

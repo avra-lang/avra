@@ -12,7 +12,6 @@
 //! live in machine tables addressed by handle, and calls run on the
 //! machine's own stack, never the host's.
 use core.{
-    copied,
     Ins,
     Reg,
     BinOp,
@@ -102,6 +101,7 @@ type Machine = {
     parking: bool,
     arrays: List<List<Val>>,
     maps: List<MapVal>,
+    logs: List<MapLog>,
     cells: List<Val>,
     // a `once fn`'s answer, settled for this run under its symbol
     onces: Map<string, Val>,
@@ -216,6 +216,7 @@ fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type) -> Mac
         parking: false,
         arrays: [],
         maps: [],
+        logs: [],
         cells: [],
         onces: {},
         statics: {},
@@ -562,8 +563,8 @@ impl Machine {
             .M(id) -> fp(
                 8,
                 [
-                    fp_list([fp_str(k) for k in self.maps[id].keys]),
-                    fp_list([self.value_hash(x) for x in self.maps[id].vals]),
+                    fp_list([fp_str(k) for k in self.map_keys(id)]),
+                    fp_list([self.value_hash(x) for x in self.map_vals(id)]),
                 ],
             ),
             .N -> fp(9, []),
@@ -810,10 +811,7 @@ impl Machine {
             .Octets(xs) -> Val.Y(xs.bytes()!),
             .Map(id) -> {
                 let row = heap.maps[id]
-                self
-                    .maps
-                    .push(MapVal { keys: row.keys, vals: [self.val_of(heap, x) for x in row.values] })
-                Val.M(self.maps.length - 1)
+                self.fresh_map(row.keys, [self.val_of(heap, x) for x in row.values])
             },
         }
     }
@@ -831,10 +829,7 @@ impl Machine {
             .N -> MetaVal.Absent,
             .Gone -> MetaVal.Gone,
             .A(id) -> { heap.node([self.meta_of(x, heap) for x in self.arrays[id]]) },
-            .M(id) -> {
-                let row = self.maps[id]
-                heap.map(row.keys, [self.meta_of(x, heap) for x in row.vals])
-            },
+            .M(id) -> heap.map(self.map_keys(id), [self.meta_of(x, heap) for x in self.map_vals(id)]),
             .C(_) -> MetaVal.Absent,
         }
     }
@@ -1110,12 +1105,7 @@ impl Machine {
         match b {
             .Slots(cells) -> self.fresh_array([self.slot_val(c, built) for c in cells]),
             .Octets(b) -> Val.Y(b),
-            .Table(keys, values) -> {
-                self
-                    .maps
-                    .push(MapVal { keys: keys, vals: [self.slot_val(c, built) for c in values] })
-                Val.M(self.maps.length - 1)
-            },
+            .Table(keys, values) -> self.fresh_map(keys, [self.slot_val(c, built) for c in values]),
         }
     }
 
@@ -1708,33 +1698,16 @@ impl Machine {
                 self.arrays.push([x for x in self.arrays[id]])
                 Val.A(self.arrays.length - 1)
             },
-            .M(id) -> {
-                self
-                    .maps
-                    .push(
-                        MapVal {
-                            keys: [k for k in self.maps[id].keys],
-                            vals: [x for x in self.maps[id].vals],
-                        },
-                    )
-                Val.M(self.maps.length - 1)
-            },
+            .M(id) -> self.map_copy(id),
             .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N or .Gone -> v,
         }
     }
 
-    fn map_new_val() -> Val {
-        self.maps.push(MapVal { keys: [], vals: [] })
-        Val.M(self.maps.length - 1)
-    }
-
-    fn map_slot(id: int, key: string) -> int {
-        self.maps[id].keys.index_of(key)
-    }
+    fn map_new_val() -> Val { self.fresh_map([], []) }
 
     fn map_len_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.defect_val("a length of a non-map") }
-        Val.I(self.maps[id].keys.length)
+        Val.I(self.map_count(id))
     }
 
     fn map_has_val(vals: List<Val>) -> Val {
@@ -1750,7 +1723,7 @@ impl Machine {
     fn map_read(id: int, key: string) -> Val {
         let s = self.map_slot(id, key)
         if s < 0 { return Val.N }
-        read_out(self.maps[id].vals[s])
+        read_out(self.map_stored(id, s))
     }
 
     fn map_set_val(vals: List<Val>) -> Val {
@@ -1759,16 +1732,8 @@ impl Machine {
     }
 
     fn map_write(id: int, key: string, v: Val) -> Val {
-        let s = self.map_slot(id, key)
-        let entry = self.maps[id]
-        let written = if s >= 0 {
-            entry with { vals: copied(entry.vals, [v], s) }
-        } else {
-            entry with { keys: entry.keys.concat([key]), vals: entry.vals.concat([v]) }
-        }
-        self.maps.set(id, written)
+        self.map_append(id, key, v, true)
         Val.I(0)
-
     }
 
     /// A tagged box's tag (slot 0) or word (slot 1): `none` for the null
@@ -1884,7 +1849,7 @@ impl Machine {
     fn map_value_present_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.unlooked() }
         let s = self.map_slot(id, self.text_val(vals[1]))
-        Val.I(if s >= 0 && !(self.maps[id].vals[s] is .Gone) { 1 } else { 0 })
+        Val.I(if s >= 0 && !(self.map_stored(id, s) is .Gone) { 1 } else { 0 })
     }
 
     fn map_slot_val(vals: List<Val>) -> Val {
@@ -1894,38 +1859,28 @@ impl Machine {
 
     fn map_value_at_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.unlooked() }
-        read_out(self.maps[id].vals[self.whole(vals[1])])
+        read_out(self.map_stored(id, self.whole(vals[1])))
     }
 
     fn map_present_at_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.unlooked() }
-        Val.I(if self.maps[id].vals[self.whole(vals[1])] is .Gone { 0 } else { 1 })
+        Val.I(if self.map_stored(id, self.whole(vals[1])) is .Gone { 0 } else { 1 })
     }
 
     fn map_keys_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.unlooked() }
-        self.fresh_array([Val.S(k) for k in self.maps[id].keys])
+        self.fresh_array([Val.S(k) for k in self.map_keys(id)])
     }
 
     fn map_vals_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.unlooked() }
-        self.fresh_array([read_out(x) for x in self.maps[id].vals])
+        self.fresh_array([read_out(x) for x in self.map_vals(id)])
     }
 
     fn map_remove_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.unlooked() }
-        let s = self.map_slot(id, self.text_val(vals[1]))
-        if s < 0 { return Val.I(0) }
-        let entry = self.maps[id]
-        self
-            .maps
-            .set(
-                id,
-                MapVal {
-                    keys: [k for i, k in entry.keys if i != s],
-                    vals: [v for i, v in entry.vals if i != s],
-                },
-            )
+        let key = self.text_val(vals[1])
+        if self.map_slot(id, key) >= 0 { self.map_append(id, key, Val.N, false) }
         Val.I(0)
     }
 

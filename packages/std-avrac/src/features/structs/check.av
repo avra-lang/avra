@@ -32,6 +32,7 @@ fn with_type(mut cx: TypeCx, e: ExprId, subject: ExprId, fields: List<string>, v
     let ty = cx.type_at(subject)
     if cx.errored_ty(ty) { return cx.error_type }
     let sig? = cx.fields_of(ty) else { return not_a_struct(cx, e, subject) }
+    let _ = cx.seals(cx.loc_of(e), ty, "copied with new fields here")
     written_checks(cx, cx.view.types.name_of(ty), fields, values, sig)
     ty
 }
@@ -42,6 +43,7 @@ fn lit_type(mut cx: TypeCx, e: ExprId, name: string, fields: List<string>, value
     let target? = cx.view.decls.named_by(bound) else { return fieldless_alias(cx, e, name, bound) }
     let ty = cx.view.types.intern(Type.Struct(target, cx.view.decls.decl(target).name))
     let sig? = cx.fields_of(ty) else { return not_a_record(cx, e, name) }
+    let _ = cx.seals(cx.loc_of(e), ty, "built here")
     if !cx.tparams(target).is_empty() {
         return generic_lit(cx, e, name, fields, values, target, sig)
     }

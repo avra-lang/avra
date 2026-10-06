@@ -1,0 +1,54 @@
+// The bare-variant comparison under attack: a side that names no
+// enum, a variant the other side's enum lacks, a payload enum beside
+// `==`.
+use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.compiler.{analyze_source}
+
+spec "features/enums/compare — a bare variant reads the other side" {
+    given "a side that names the enum" {
+        then "the right side reads the left" {
+            shown("enum T { A, B }\nlet t = T.B\nt == .B") == "true"
+        }
+        then "the left side reads the right" {
+            shown("enum T { A, B }\nlet t = T.B\n.A == t") == "false"
+        }
+        then "a nullable side lends its enum through the `?`" {
+            shown("enum T { A, B }\nlet t: T? = T.B\nt == .B") == "true"
+        }
+        then "an absent nullable equals no variant" {
+            shown("enum T { A, B }\nlet t: T? = null\nt == .A") == "false"
+        }
+        then "`!=` reads it too" {
+            shown("enum T { A, B }\nlet t = T.B\nt != .A") == "true"
+        }
+    }
+    given "the seats a comparison sits in" {
+        then "a walk's `it` beside a bare variant" {
+            shown("enum T { A, B }\n[T.A, T.B, T.B].filter(it == .B).length") == "2"
+        }
+        then "a scan's needle reads the list's enum" {
+            shown("enum T { A, B }\n[T.A].contains(.B)") == "false"
+        }
+        then "a guard compares its bind" {
+            shown("enum T { A, B }\nmatch T.B { x if x == .A -> 1, _ -> 2 }") == "2"
+        }
+        then "a name over an enum is its own seat — the variant refuses by the name" {
+            refused_with("enum T { A, B }\ntype M = T\nlet m: M = M(T.B)\nm == .B", "`M` has none")
+        }
+    }
+    given "nothing to read" {
+        then "two bare variants name no enum, each in its own voice" {
+            let a = analyze_source(".A == .A")
+            a.diagnostics.length == 2 && a.report().contains("`.A` needs a known enum")
+        }
+        then "a variant the other side's enum lacks refuses by that enum" {
+            refused_with("enum T { A, B }\nlet t = T.B\nt == .C", "`C`")
+        }
+        then "a non-enum side refuses the variant" {
+            refused_with("let n = 1\nn == .A", "`.A`")
+        }
+        then "a payload enum still compares by `match`, not `==`" {
+            refused_with("enum P { A, B(int) }\nlet p = P.A\np == .A", "match on it instead")
+        }
+    }
+}
