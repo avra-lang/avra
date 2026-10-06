@@ -104,6 +104,15 @@ impl ReadMark {
         self.run.set(run)
     }
 
+    /// The mark of a cell never read: a read is told to one kernel, and
+    /// stands for no other.
+    fn cleared() {
+        self.revision.set(-1)
+        self.reader.set(0)
+        self.owner.set(0)
+        self.run.set(0)
+    }
+
     /// Whether this frame already read here in `revision` — its edge
     /// stands, so a repeat records nothing new. A frame is its OWN owner
     /// and run: a nested frame's read never stands for its caller's.
@@ -228,6 +237,12 @@ impl Rows<R> {
     }
 
     // ── what a Db's owner records ──
+
+    /// Every read here forgotten — the kernel they were told to is left.
+    fn unmarked() {
+        self.read.cleared()
+        for b in self.buckets.get() { b.read.cleared() }
+    }
 
     /// Bucket `b` read under `db`: recorded as cell `b + 1`, stamped
     /// with the revision and the reader. Answers `b`.
@@ -577,6 +592,12 @@ impl SideRows<R> {
         while self.marks.get().length < count { self.marks.push(unread()) }
     }
 
+    /// Every read here forgotten — the kernel they were told to is left.
+    fn unmarked() {
+        self.whole.get().cleared()
+        for m in self.marks.get() { m.cleared() }
+    }
+
     /// This column's family under `db`, registered on first reach.
     /// `verify` answers a cell's live hash — 0 the whole column, slot
     /// `s`'s read as cell `s + 1`.
@@ -585,7 +606,13 @@ impl SideRows<R> {
         self.reached.set(true)
         let family = self.family
         let fam = db
-            .registered(verify, (register: fn(fn(int) -> int) -> int) -> family.set(register(verify)))
+            .registered(
+                verify,
+                (register: fn(fn(int) -> int) -> int) -> {
+                    self.unmarked()
+                    family.set(register(verify))
+                },
+            )
         self.family.set(fam)
         let closed = self.closed
         db

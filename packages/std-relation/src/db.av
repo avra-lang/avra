@@ -246,8 +246,9 @@ impl Db {
     }
 
     /// Everything kept about the kernel being left: its families' ids and
-    /// stamps, and the frames of its queries — the next kernel numbers its
-    /// own from the start.
+    /// stamps, the frames of its queries, and the cell answers read back
+    /// depend on — the next kernel numbers its own from the start. Each
+    /// relation forgets its read marks as it registers again.
     fn forgotten() {
         let no_moves: Map<string, Cell<Map<string, int>>> = {}
         let no_frames: Map<string, Frame> = {}
@@ -258,6 +259,7 @@ impl Db {
         self.row_families.set(no_rows)
         self.last_query.set(0 - 1)
         self.last_frame.set(no_frame)
+        self.restored.set(0 - 1)
     }
 
     /// The Db let go by its owner — back to no kernel, its families in none.
@@ -532,7 +534,10 @@ impl Stores<R> {
                 db
                     .registered(
                         verify,
-                        (register: fn(fn(int) -> int) -> int) -> made.family.set(register(verify)),
+                        (register: fn(fn(int) -> int) -> int) -> {
+                            made.unmarked()
+                            made.family.set(register(verify))
+                        },
                     ),
             )
         db

@@ -3,7 +3,7 @@
 // across revisions that moved nothing it read, and runs again when a row
 // arrives, at a later revision, in a relation it read.
 use @std.relation.{relation, query}
-use @std.relation.db.{Db, db_over, Verifying, Late}
+use @std.relation.db.{Db, db_over, new_db, Verifying, Late}
 use @std.relation.engine.{Kernel, Key, new_kernel}
 
 @relation
@@ -83,6 +83,24 @@ spec "std/relation — a @query under an owner's kernel" {
         let _ = glyphs_in(o.db, "s")
         let _ = Glyph.insert(o.db, name: "b", set: "s")
         heard.get().length == 1 && heard.get()[0].contains("a producer runs before its readers")
+    }
+    then "a read told to the Db's own kernel is no reader in the kernel it is given: a row lands unrefused" {
+        let db = new_db()
+        let heard: Cell<List<string>> = Cell.new([])
+        db.heard_by((w: string) -> heard.push(w))
+        let _ = Glyph.insert(db, name: "a", set: "s")
+        let _ = glyphs_in(db, "s")
+        let owner = new_kernel()
+        let asked = Key { family: owner.family((_arg: int) -> 0), arg: 0 }
+        owner.begin(asked)
+        owner.settle(asked, 0)
+        db.given(owner, Verifying.ByMove, Late.Refused, false)
+        let _ = Glyph.insert(db, name: "b", set: "s")
+        db.released()
+        let _ = glyphs_in(db, "s")
+        db.given(owner, Verifying.ByMove, Late.Refused, false)
+        let _ = Glyph.insert(db, name: "c", set: "s")
+        heard.get().is_empty()
     }
     then "a framed Db given a second kernel keeps no frame of the first: a query there writes what a query numbered alike read" {
         let first = new_kernel()
