@@ -73,7 +73,7 @@ impl Machine {
         let target? = self.addressed_val(self.arrays[box].first() ?? Val.N) else { return self.closureless() }
         // the record owns its body, and the task holds its own record
         // until it answers
-        let record = self.shared_array([Val.I(self.tasks.length), vals[0], Val.N])
+        let record = self.fresh_array([Val.I(self.tasks.length), vals[0], Val.N])
         self.retains(record)
         let vt = avra_vtask_new()
         avra_vtask_within_end(vt, avra_vtask_deadline(self.tasks[self.running].vt))
@@ -112,9 +112,7 @@ impl Machine {
         let id = self.task_of(vals[0])
         if id == self.running { return self.trapped_val("a task joined itself — deadlock") }
         if !self.tasks[id].done { return self.waited_on(id) }
-        let answer = self.arrays[self.tasks[id].record][2]
-        self.retains(answer)
-        answer
+        self.arrays[self.tasks[id].record][2]
     }
 
     /// The running task waits for `id`: filed among its waiters — never
@@ -158,7 +156,6 @@ impl Machine {
             self.arrays.set(list, [v for v in held if !self.task_spent(v)])
             for v in shed { self.releases_val(v) }
         }
-        self.retains(vals[1])
         self.arrays[list].push(vals[1])
         Val.I(0)
     }

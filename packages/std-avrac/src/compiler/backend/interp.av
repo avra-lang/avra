@@ -18,6 +18,7 @@ use core.{
     UnOp,
     RtSig,
     RtKind,
+    Takes,
     Reach,
     opens_region,
     closes_region,
@@ -82,6 +83,11 @@ impl Val {
             .I(_) or .F(_) or .B(_) or .S(_) or .Y(_) or .P(_) or .C(_) or .N or .Gone -> "",
         }
     }
+}
+
+/// Whether bit `tag` of `counted` says a variant's word is a pointer.
+fn counted_word(tag: int, counted: int) -> bool {
+    tag >= 0 && (counted >> tag) & 1 != 0
 }
 
 /// The register an `Alloca` defines, as a list of none or one.
@@ -1338,64 +1344,61 @@ impl Machine {
         // strings may cross, which is the one thing this check exists
         // to prevent.
         self.crossings(row, vals)
+        self.taken(row.takes, vals)
+        let answer = self.hosted(row, callee, vals)
+        if row.stood { self.retains(answer) }
+        answer
+    }
+
+    /// The reference a row's own body takes to the seat it keeps.
+    fn taken(takes: Takes, vals: List<Val>) {
+        match takes {
+            .Never -> nothing(),
+            .Always(seat) -> self.retains(vals[seat]),
+            .Present(seat, flag) -> { if self.flag_of(vals[flag]) { self.retains(vals[seat]) } },
+            .Counted(seat, tag, counted) -> {
+                if counted_word(self.whole(vals[tag]), self.whole(vals[counted])) { self.retains(vals[seat]) }
+            },
+        }
+    }
+
+    /// The registry's host column, hosted — exhaustive over RtHost, so
+    /// a row with a new host demands its arm here.
+    fn hosted(row: RtSig, callee: string, vals: List<Val>) -> Val {
         match row.host {
             .Puts -> self.puts_val(vals),
             .Streq -> self.streq_val(vals),
             .ArrayNew -> self.array_new_val(),
-            .ArrayPush -> {
-                let kept = self.kept_seat(callee, vals)
-                if kept >= 0 { self.retains(vals[kept]) }
-                self.array_push_val(vals)
-            },
-            .ArrayGet -> self.answer_owned(callee, self.array_get_val(vals)),
+            .ArrayPush -> self.array_push_val(vals),
+            .ArrayGet -> self.array_get_val(vals),
             .ArrayLen -> self.array_len_val(vals),
             .CellRelease -> self.cell_released(vals),
             .CellForget -> self.cell_forgotten(vals),
             .CellUnique -> self.cell_unique_val(vals),
             .CellThawed -> self.cell_thawed_val(vals),
             .BoxThawed -> self.box_thawed_val(vals),
-            .ArrayPushMaybe -> {
-                let kept = self.kept_seat(callee, vals)
-                if kept >= 0 { self.retains(vals[kept]) }
-                self.push_maybe_val(vals)
-            },
-            .SlotSetMaybe -> {
-                let kept = self.kept_seat(callee, vals)
-                if kept >= 0 { self.retains(vals[kept]) }
-                self.set_maybe_val(vals)
-            },
-            .MapSetMaybe -> {
-                let kept = self.kept_seat(callee, vals)
-                if kept >= 0 { self.retains(vals[kept]) }
-                self.map_set_maybe_val(vals)
-            },
-            .EnumBoxed -> if self.whole(vals[0]) < 0 { Val.N } else { self.enum_boxed_val(vals) },
+            .ArrayPushMaybe -> self.push_maybe_val(vals),
+            .SlotSetMaybe -> self.set_maybe_val(vals),
+            .MapSetMaybe -> self.map_set_maybe_val(vals),
+            .EnumBoxed -> if self.whole(vals[0]) < 0 { Val.N } else { self.fresh_array([vals[0], vals[1]]) },
             .EnumTag -> self.enum_part_val(vals, 0, -1),
             .EnumWord -> self.enum_part_val(vals, 1, 0),
             .SlotUnique -> self.slot_unique_val(vals),
-            .SlotSet -> {
-                let kept = self.kept_seat(callee, vals)
-                if kept >= 0 { self.retains(vals[kept]) }
-                self.slot_set_val(vals)
-            },
+            .SlotSet -> self.slot_set_val(vals),
             .MapNew -> self.map_new_val(),
             .MapLen -> self.map_len_val(vals),
             .MapHas -> self.map_has_val(vals),
-            .MapGet -> self.answer_owned(callee, self.map_get_val(vals)),
-            .MapSet -> {
-                let kept = self.kept_seat(callee, vals)
-                if kept >= 0 { self.retains(vals[kept]) }
-                self.map_set_val(vals)
-            },
+            .MapGet -> self.map_get_val(vals),
+            .MapSet -> self.map_set_val(vals),
             .StrJoin -> self.str_join_val(vals),
-            .OnceGet -> self.answer_owned(callee, self.once_get_val(vals)),
+            .OnceGet -> self.once_get_val(vals),
             .OnceSet -> self.once_set_val(vals),
-            .Insist -> self.answer_owned(callee, self.insist_val(vals)),
+            .Insist -> self.insist_val(vals),
             .InsistScalar -> self.insist_scalar_val(vals),
             .Text -> Val.S(self.val_text(vals[0])),
             .FloatTextBits -> Val.S(avra_float_text_bits(self.whole(vals[0]))),
             .Strlen -> Val.I(self.byte_length(vals[0])),
-            .ArrayPop -> self.answer_owned(callee, self.array_pop_val(vals)),
+            .ArrayPop -> self.array_pop_val(vals),
             .ArrayConcat -> self.consuming(row, vals, self.array_concat_val(vals)),
             .ArraySlice -> self.consuming(row, vals, self.array_slice_val(vals)),
             .StrContains -> verdict(self.text_val(vals[0]).contains(self.text_val(vals[1]))),
@@ -1445,7 +1448,7 @@ impl Machine {
             .ExecSelf -> self.exec_self_val(vals),
             .MapValuePresent -> self.map_value_present_val(vals),
             .MapSlot -> self.map_slot_val(vals),
-            .MapValueAt -> self.answer_owned(callee, self.map_value_at_val(vals)),
+            .MapValueAt -> self.map_value_at_val(vals),
             .MapPresentAt -> self.map_present_at_val(vals),
             .MapKeys -> self.map_keys_val(vals),
             .MapVals -> self.map_vals_val(vals),
@@ -1896,57 +1899,11 @@ impl Machine {
     fn retain_reg(r: Reg) { self.retains(self.value(r)) }
     fn release_reg(r: Reg) { self.releases_val(self.value(r)) }
 
-    /// The seat a row's own C body RETAINED — the `<name>_owned` twins
-    /// and a boxed enum's counted word. -1 for a row that keeps none,
-    /// including the `_moved` twins, whose seat's reference transfers
-    /// without a count.
-    fn kept_seat(callee: string, vals: List<Val>) -> int {
-        match callee {
-            "avra_array_push_owned" -> 1,
-            "avra_array_push_maybe_owned" -> if self.flag_of(vals[1]) { 2 } else { -1 },
-            "avra_slot_set_owned" -> 2,
-            "avra_slot_set_maybe_owned" -> if self.flag_of(vals[2]) { 3 } else { -1 },
-            "avra_map_set_owned" -> 2,
-            "avra_map_set_maybe_owned" -> if self.flag_of(vals[2]) { 3 } else { -1 },
-            "avra_array_push_tagged" -> if self.counted_word(self.whole(vals[2]), self.whole(vals[3])) { 1 } else { -1 },
-            "avra_slot_set_tagged" -> if self.counted_word(self.whole(vals[3]), self.whole(vals[4])) { 2 } else { -1 },
-            rest -> -1,
-        }
-    }
-
-    /// The rows that hand back a box which ALREADY stood — a borrow's
-    /// owned twin, the once cache's answer, `!`'s shared answer — so
-    /// the answer takes its own reference. A row that MINTS its answer
-    /// (concat, slice, a boxed enum) seeds it already.
-    fn shares_answer(callee: string) -> bool {
-        match callee {
-            "avra_array_get_owned" or "avra_slot_get_owned" or "avra_map_get_owned" or "avra_map_value_at_owned" or "avra_once_get" or "avra_insist" -> true,
-            rest -> false,
-        }
-    }
-
     /// A reusing twin CONSUMES its first seat — the row writes it — so
     /// the reference the caller handed over ends with the call.
     fn consuming(row: RtSig, vals: List<Val>, answer: Val) -> Val {
         if row.writes.first() ?? false { self.releases_val(vals[0]) }
         answer
-    }
-
-    fn answer_owned(callee: string, v: Val) -> Val {
-        if self.shares_answer(callee) { self.retains(v) }
-        v
-    }
-
-    /// A boxed enum's word carries a pointer the row retained when bit
-    /// `tag` of `counted` says the variant does.
-    fn counted_word(tag: int, counted: int) -> bool {
-        tag >= 0 && (counted >> tag) & 1 != 0
-    }
-
-    fn enum_boxed_val(vals: List<Val>) -> Val {
-        let box = self.fresh_array([vals[0], vals[1]])
-        if self.counted_word(self.whole(vals[0]), self.whole(vals[2])) { self.retains(vals[1]) }
-        box
     }
 
     /// An int argument's value — a defect answers zero.
