@@ -65,6 +65,7 @@ fn disk_host() -> Host {
     Host {
         exists: (p: string) -> exists(p),
         read: (p: string) -> read_or_die(p),
+        peek: (p: string) -> disk_peek(p),
         beneath: (root: string, rel: string) -> disk_beneath(root, rel),
         list: (dir: string) -> list_dir(dir) catch [],
         write: (p: string, text: string) -> write_file(p, text),
@@ -99,6 +100,24 @@ fn unopened(e: IoError, stands: bool) -> Beneath {
         .NotFound(_) -> Beneath.Missing,
         .Denied(_) or .Holed(_, _) or .NotText(_, _) -> Beneath.Refused(e.describe().message),
         .IsDirectory(_) or .NotDirectory(_) or .Failed(_, _) -> if stands { Beneath.Linked } else { Beneath.Refused(e.describe().message) },
+    }
+}
+
+/// The disk's whole-file read, links followed.
+fn disk_text(path: string) -> Result<string, IoError> { read_text(path) }
+
+/// What stands at a path on the disk, links followed — and never the
+/// end of the run.
+fn disk_peek(path: string) -> Beneath {
+    match disk_text(path) { .Ok(text) -> Beneath.Text(text), .Err(e) -> unpeeked(e) }
+}
+
+/// Why a whole-file read gave no text.
+fn unpeeked(e: IoError) -> Beneath {
+    match e {
+        .NotFound(_) -> Beneath.Missing,
+        .NotText(_, at) -> Beneath.NotText(at),
+        .Denied(_) or .IsDirectory(_) or .NotDirectory(_) or .Holed(_, _) or .Failed(_, _) -> Beneath.Refused(e.describe().message),
     }
 }
 
@@ -218,7 +237,7 @@ fn toolchain_files(rels: List<string>) -> List<string> {
 /// A source the host gives up, or the refusal spoken and exit 2 — an
 /// unreadable file once parsed as an empty program and answered 0.
 fn read_or_die(path: string) -> string {
-    match read_text(path) {
+    match disk_text(path) {
         .Ok(text) -> text,
         .Err(e) -> {
             let _ = host_refused(e.describe().message)

@@ -16,7 +16,7 @@
 //! instead. The loop turns on the program's first task and the server
 //! answers on another.
 use @std.cli.{CliResult, Runnable, command, option, flag, arg}
-use @std.avrac.compiler.{Workspace, Toolchain}
+use @std.avrac.compiler.{Workspace, Toolchain, inputs_this_turn}
 use @std.http.frame.{Method}
 use @std.http.http.{Request, Unrouted, Response, Header, text}
 use @std.http.route.{Route, fixed}
@@ -245,7 +245,7 @@ export type Page = {
     tools: Toolchain,
     compiler: Tool,
     glue: string,
-    lister: Workspace,
+    lister: Cell<Workspace>,
     standing: Cell<Standing>,
     watched: Cell<List<Watched>>,
     moved: Bell,
@@ -278,7 +278,7 @@ export fn page_of(root: string, tools: Toolchain, compiler: Tool, glue: string) 
         tools: tools,
         compiler: compiler,
         glue: glue,
-        lister: lister,
+        lister: Cell.new(lister),
         standing: Cell.new(Standing { module: "".bytes(), number: 0, failure: "" }),
         watched: Cell.new(none),
         moved: Bell {},
@@ -288,7 +288,7 @@ export fn page_of(root: string, tools: Toolchain, compiler: Tool, glue: string) 
 impl Page {
     /// Every file the build reads, each as it stands now.
     fn looked() -> List<Watched> {
-        match self.lister.inputs_now() {
+        match inputs_this_turn(self.lister) {
             .Ok(read) -> [Watched { path: p, mark: mark_of(p) } for p in read],
             .Err(why) -> {
                 eprintln("avra: ${why}")

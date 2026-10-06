@@ -56,27 +56,19 @@ impl Workspace {
             )
         }
         manifest_of(
-            self
-                .relation(Family.Manifest)
-                .input_loaded(
-                    i,
-                    () -> self
-                        .loaded_text(
-                            path,
-                            (text: string) -> DbRow
-                                .Manifest(read_manifest(new_source_file(path, text))),
-                        ),
-                ),
+            self.relation(Family.Manifest).input_loaded(i, () -> self.loaded_manifest(path)),
         )
     }
 
-    /// A listed file read through the door: the row its text loads as,
-    /// and the word of its digest the cell is cut by. Nothing there is
-    /// the host's to refuse; under a host that refuses nothing it loads
-    /// as no text, under a digest no empty file has.
-    fn loaded_text(path: string, row: fn(string) -> DbRow) -> Loaded<DbRow> {
-        let seen = self.host.listed_text(path)
-        Loaded { value: row(seen.as_text() ?? ""), fingerprint: seen.input().digest.word }
+    /// A manifest's row over its Text input, cut by the word that cell
+    /// is. Loaded once a package, so its text's cell is marked once: a
+    /// manifest's text is the one text the package graph is shaped by.
+    fn loaded_manifest(path: string) -> Loaded<DbRow> {
+        self.manifest_texts.push(self.text_key(path))
+        Loaded {
+            value: DbRow.Manifest(read_manifest(new_source_file(path, self.listed_text(path)))),
+            fingerprint: self.text_word(path),
+        }
     }
 
     /// What a settlement may spend: the ROOT package's `[lifted]` rows,

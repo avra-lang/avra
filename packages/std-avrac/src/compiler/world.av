@@ -8,6 +8,21 @@ use compiler.families.{Family}
 use compiler.host.{Read, InputName, InputKind, Listed}
 use @std.relation.engine.{Loaded}
 
+/// What reading the world again found.
+export enum Moved {
+    /// Every input was read again — so many — and each one that
+    /// differed moved the revision.
+    Reread(inputs: int)
+    /// The set of files moved, or a manifest's text did. The package
+    /// graph is no longer this workspace's to answer: the driver lets
+    /// it go and opens another.
+    Graph
+}
+
+/// What a turn's first question answers: the files the build reads, or
+/// that the package graph moved.
+export enum Looked { Inputs(files: List<string>), Graph }
+
 /// A name as it is interned and shown: its kind's word, then its key.
 fn spelled(name: InputName) -> string { "${kind_word(name.kind)} ${name.key}" }
 
@@ -21,6 +36,15 @@ fn kind_word(k: InputKind) -> string {
         .Env -> "env",
         .Tool -> "tool",
         .Compiler -> "compiler",
+    }
+}
+
+/// Whether a kind of input says WHAT FILES THERE ARE, rather than what
+/// one holds.
+fn names_the_set(k: InputKind) -> bool {
+    match k {
+        .Exists or .Listing -> true,
+        .Text or .Octets or .Range or .Env or .Tool or .Compiler -> false,
     }
 }
 
@@ -87,30 +111,66 @@ impl Workspace {
 
     fn input_at(at: int) -> Read { self.input(self.input_names.get()[at]) }
 
+    /// The word a file's Text input is cut by; zero before it is read.
+    fn text_word(path: string) -> int { self.db.value_hash_of(key(Family.Input, self.text_key(path))) ?? 0 }
+
     /// THE WORLD MAY HAVE MOVED: every input read so far is read again
-    /// through the door. One whose digest differs moves the revision;
-    /// the rest stand. The driver's verb, at the start of a request —
-    /// never a query's, which would move the ground it stands on.
-    /// Answers how many inputs were read again.
-    fn world_moved() -> Result<int, string> {
+    /// through the door. A TEXT that differs moves the revision — a
+    /// source and a scan are queries over their text's input, so they
+    /// follow. The SET of files that differs — something stands or no
+    /// longer stands, a directory lists otherwise — or a manifest's
+    /// text, moves the package graph instead, and this workspace
+    /// answers nothing after. The driver's verb, at the start of a
+    /// request — never a query's, which would move the ground it stands
+    /// on.
+    export fn world_moved() -> Result<Moved, string> {
         if !self.db.kernel.asker.open.get().is_empty() { fail world_moved_in_query() }
-        let cells = self.relation(Family.Input)
+        if self.graph_moved.get() { fail asked_after_graph() }
         let names = self.input_names.get()
-        for at, name in names {
-            let seen = self.asked(name)
-            cells.set(at, DbRow.Input(seen), seen.input().digest.word)
+        if [at for at, name in names if self.input_reread(at, name)]
+            .any((at) -> self.shapes_graph(at)) {
+            self.graph_moved.set(true)
+            return .Ok(Moved.Graph)
         }
-        names.length
+        .Ok(Moved.Reread(names.length))
+    }
+
+    /// Whether an input cell is one the package graph is shaped by: one
+    /// that says what files there are, or a manifest's text.
+    fn shapes_graph(at: int) -> bool {
+        names_the_set(self.input_names.get()[at].kind) || self.manifest_texts.get().contains(at)
+    }
+
+    /// One input read again and set. Answers whether it differed.
+    fn input_reread(at: int, name: InputName) -> bool {
+        let seen = self.asked(name)
+        let word = seen.input().digest.word
+        let differed = self.db.value_hash_of(key(Family.Input, at)) ?? 0 != word
+        self.relation(Family.Input).set(at, DbRow.Input(seen), word)
+        differed
     }
 
     /// Every file the root program's build reads, as the world stands
     /// NOW — the driver's question at the start of a turn: the world is
     /// read again first, so a file added, removed or changed since the
     /// last turn is seen. None for a package with no entry.
-    export fn inputs_now() -> Result<List<string>, string> {
-        let _ = self.world_moved()?
-        let entry? = self.entry_of() else { return .Ok([]) }
-        .Ok(self.build_inputs(entry))
+    export fn inputs_now() -> Result<Looked, string> {
+        match self.world_moved()? {
+            .Graph -> .Ok(Looked.Graph),
+            .Reread(_) -> {
+                let entry? = self.entry_of() else { return .Ok(Looked.Inputs([])) }
+                .Ok(Looked.Inputs(self.build_inputs(entry)))
+            },
+        }
+    }
+
+    /// THE WORKSPACE AFTER ITS PACKAGE GRAPH MOVED: this one let go
+    /// first — its values, its hooks, its relations' rows — and only
+    /// then the same program opened with nothing remembered. Never two
+    /// standing at once.
+    export fn regraphed() -> Workspace {
+        self.discarded()
+        self.anew()
     }
 
     /// The door's answer for a name. A kind no cell asks for is a
@@ -126,6 +186,25 @@ impl Workspace {
             },
         }
     }
+}
+
+/// A TURN'S FIRST QUESTION, asked of the workspace a driver holds
+/// across turns: what the build reads now. A workspace whose package
+/// graph moved is let go and replaced in `held`, and the replacement
+/// answers — so the driver never holds two, and never one that answers
+/// nothing.
+export fn inputs_this_turn(held: Cell<Workspace>) -> Result<List<string>, string> {
+    match held.get().inputs_now()? {
+        .Inputs(files) -> .Ok(files),
+        .Graph -> {
+            held.set(held.get().regraphed())
+            inputs_this_turn(held)
+        },
+    }
+}
+
+fn asked_after_graph() -> string {
+    "this workspace's package graph moved — it answers nothing more; open another (`regraphed`)"
 }
 
 fn world_moved_in_query() -> string {

@@ -1,6 +1,14 @@
 // The world as cells: a read stands until the driver says the world may
 // have moved, and then every input is read again.
-use compiler.{avra, new_workspace, Workspace, component_names, file_declares_component}
+use compiler.{
+    avra,
+    new_workspace,
+    Workspace,
+    component_names,
+    file_declares_component,
+    file_lexes_block,
+    inputs_this_turn,
+}
 use compiler.host.{Host, InputName, Listed, Beneath, memory_host}
 use compiler.families.{Family}
 use @std.relation.engine.{Key}
@@ -8,7 +16,7 @@ use @std.relation.engine.{Key}
 /// A host over a table the test writes: `names` is what a listing sees.
 fn shifting(files: Cell<Map<string, string>>, names: Cell<List<string>>) -> Host {
     let base = memory_host({"/w/avra.toml": ""}, [])
-    base with { exists: (p: string) -> files.get().get(p) != null, read: (p: string) -> files.get().get(p) ?? "", beneath: (root: string, rel: string) -> held_beneath(files, "${root}/${rel}"), list: (dir: string) -> under(names, dir), is_dir: (dir: string) -> dir == "/w/src" || dir == "/w" }
+    base with { exists: (p: string) -> files.get().get(p) != null, read: (p: string) -> files.get().get(p) ?? "", peek: (p: string) -> held_beneath(files, p), list: (dir: string) -> under(names, dir), is_dir: (dir: string) -> files.get().keys().any((p: string) -> p.starts_with("${dir}/")) }
 }
 
 /// What a listing of `dir` sees: the package root holds its manifest
@@ -22,9 +30,6 @@ fn held_beneath(files: Cell<Map<string, string>>, at: string) -> Beneath {
     let text? = files.get().get(at) else { return Beneath.Missing }
     Beneath.Text(text)
 }
-
-/// Every input read so far was read again.
-fn all_reread(w: World) -> bool { moved(w) == w.ws.input_names.get().length }
 
 type World = { ws: Workspace, files: Cell<Map<string, string>>, names: Cell<List<string>> }
 
@@ -41,6 +46,34 @@ fn library() -> World {
     let files: Cell<Map<string, string>> = Cell.new({"/w/avra.toml": manifest()})
     let names: Cell<List<string>> = Cell.new([])
     World { ws: new_workspace(shifting(files, names), "/w", avra()), files: files, names: names }
+}
+
+/// A package whose manifest names a dependency no directory holds yet.
+fn depending() -> World {
+    let files: Cell<Map<string, string>> = Cell.new({"/w/avra.toml": with_dependency()})
+    let names: Cell<List<string>> = Cell.new([])
+    World { ws: new_workspace(shifting(files, names), "/w", avra()), files: files, names: names }
+}
+
+fn importer() -> string { "use helper.{one}\nexport fn two() -> int {\n    one() + 1\n}\n" }
+
+/// A package whose `main.av` imports a fn from `helper.av` beside it.
+fn importing() -> World {
+    let files: Cell<Map<string, string>> = Cell
+        .new(
+            {
+                "/w/avra.toml": manifest(),
+                "/w/src/main.av": importer(),
+                "/w/src/helper.av": "export fn one() -> int {\n    1\n}\n",
+            },
+        )
+    let names: Cell<List<string>> = Cell.new(["main.av", "helper.av"])
+    World { ws: new_workspace(shifting(files, names), "/w", avra()), files: files, names: names }
+}
+
+fn helper_deleted(w: World) {
+    w.files.set({"/w/avra.toml": manifest(), "/w/src/main.av": importer()})
+    w.names.set(["main.av"])
 }
 
 fn entered(w: World) {
@@ -73,7 +106,22 @@ fn entry() -> Listed { Listed { name: "", dir: false } }
 
 fn names_of(w: World) -> string { w.ws.listed("/w/src").join(",") }
 
-fn moved(w: World) -> int { w.ws.world_moved() catch e -> -1 }
+/// How many INPUT cells a turn read again; -1 refused, -2 the graph moved.
+fn moved(w: World) -> int {
+    match w.ws.world_moved() { .Ok(.Reread(inputs)) -> inputs, .Ok(.Graph) -> -2, .Err(_) -> -1 }
+}
+
+fn graph_moved(w: World) -> bool {
+    match w.ws.world_moved() { .Ok(.Graph) -> true, .Ok(.Reread(_)) or .Err(_) -> false }
+}
+
+/// What a turn's build reads, by the workspace `held` holds after it;
+/// `["?"]` when the turn was refused.
+fn turn(held: Cell<Workspace>) -> List<string> { inputs_this_turn(held) catch e -> ["?"] }
+
+fn with_dependency() -> string { "${manifest()}\n[dependencies]\n\"@app/dep\" = { path = \"dep\" }\n" }
+
+fn source_text(w: World) -> string { w.ws.source(w.ws.file_id("/w/src/main.av")).text }
 
 spec "compiler/world" {
     given "an edit inside one process, before the driver says the world moved" {
@@ -90,22 +138,7 @@ spec "compiler/world" {
             !before && !w.ws.there("/w/src/b.av")
         }
     }
-    given "an edit inside one process, after the driver says the world moved" {
-        then "a file added is listed, and stands where it was asked for" {
-            let w = world()
-            let _ = names_of(w)
-            let _ = w.ws.there("/w/src/b.av")
-            added(w)
-            all_reread(w) && names_of(w) == "a.av,b.av" && w.ws.there("/w/src/b.av")
-        }
-        then "a file removed is gone from the listing, and nothing stands there" {
-            let w = world()
-            let _ = names_of(w)
-            let was = w.ws.there("/w/src/a.av")
-            removed(w)
-            let _ = moved(w)
-            was && names_of(w) == "" && !w.ws.there("/w/src/a.av")
-        }
+    given "a text edited inside one process, after the driver says the world moved" {
         then "a file changed is read again as text" {
             let w = world()
             let before = w.ws.input(text_name("/w/src/a.av")).as_text()
@@ -116,43 +149,200 @@ spec "compiler/world" {
                 held == "1\n" &&
                 w.ws.input(text_name("/w/src/a.av")).as_text() == "3\n"
         }
-        then "the revision moves once for each input that differs" {
+        then "the revision moves once for the one text that differs" {
             let w = world()
             let _ = names_of(w)
-            let _ = w.ws.there("/w/src/a.av")
+            let _ = w.ws.input(text_name("/w/src/a.av"))
             let rev = w.ws.db.revision()
-            added(w)
-            let _ = moved(w)
-            w.ws.db.revision() == rev + 1
+            w.files.put("/w/src/a.av", "3\n")
+            moved(w) > 0 && w.ws.db.revision() == rev + 1
         }
         then "nothing changed moves no revision" {
             let w = world()
             let _ = names_of(w)
             let _ = w.ws.there("/w/src/a.av")
             let rev = w.ws.db.revision()
-            all_reread(w) && w.ws.db.revision() == rev
+            moved(w) > 0 && w.ws.db.revision() == rev
+        }
+    }
+    given "the set of files moved inside one process" {
+        then "a file added to a listed directory moves the package graph" {
+            let w = world()
+            let _ = names_of(w)
+            added(w)
+            graph_moved(w)
+        }
+        then "a file deleted from a listed directory moves the package graph" {
+            let w = world()
+            let _ = names_of(w)
+            removed(w)
+            graph_moved(w)
+        }
+        then "a file that now stands where nothing did moves the package graph" {
+            let w = world()
+            let stood = w.ws.there("/w/src/b.av")
+            w.files.put("/w/src/b.av", "2\n")
+            !stood && graph_moved(w)
+        }
+        then "a directory that appears where none was listed moves the package graph" {
+            let w = world()
+            let none = w.ws.listing("/w/src/sub") == null
+            w.files.put("/w/src/sub/c.av", "3\n")
+            none && graph_moved(w)
         }
     }
     given "a workspace that lives across turns, asked what its build reads" {
-        then "an entry added after the first turn is no entry to a cell, and its build reads nothing" {
+        then "an entry added is a moved file set: the workspace is replaced, and the replacement's build reads it" {
             let w = library()
-            let first = w.ws.inputs_now() catch e -> ["?"]
+            let held = Cell.new(w.ws)
+            let first = turn(held)
             entered(w)
-            first.is_empty() && w.ws.entry_of() == null
-        }
-        then "the next turn reads the world again, and the entry is in what the build reads" {
-            let w = library()
-            let _ = w.ws.inputs_now() catch e -> ["?"]
-            entered(w)
-            (w.ws.inputs_now() catch e -> ["?"]).contains("/w/src/main.av")
+            first.is_empty() && turn(held).contains("/w/src/main.av")
         }
         then "an entry removed is gone from the next turn" {
             let w = library()
             entered(w)
-            let had = (w.ws.inputs_now() catch e -> ["?"]).contains("/w/src/main.av")
+            let held = Cell.new(w.ws)
+            let had = turn(held).contains("/w/src/main.av")
             w.files.set({"/w/avra.toml": manifest()})
             w.names.set([])
-            had && (w.ws.inputs_now() catch e -> ["?"]).is_empty()
+            had && turn(held).is_empty()
+        }
+        then "the workspace that answered before a moved set is let go: its rows are closed" {
+            let w = library()
+            let held = Cell.new(w.ws)
+            let _ = turn(held)
+            entered(w)
+            let _ = turn(held)
+            w.ws.decls.rows_db.get().closed.get() && !held.get().decls.rows_db.get().closed.get()
+        }
+        then "a file created and deleted over three turns leaves as many cells as the first turn read" {
+            let w = library()
+            entered(w)
+            let held = Cell.new(w.ws)
+            let _ = turn(held)
+            let first = held.get().input_names.get().length
+            for n in 0..3 {
+                w.files.put("/w/src/extra.av", "${n}\n")
+                w.names.set(["main.av", "extra.av"])
+                let _ = turn(held)
+                w.files.set({"/w/avra.toml": manifest(), "/w/src/main.av": "1\n"})
+                w.names.set(["main.av"])
+                let _ = turn(held)
+            }
+            first > 0 && held.get().input_names.get().length == first
+        }
+    }
+    given "a source read once, edited inside one process" {
+        then "its text stands until the driver says the world moved, and is read again after" {
+            let w = library()
+            entered(w)
+            let before = source_text(w)
+            w.files.put("/w/src/main.av", "2\n")
+            let held = source_text(w)
+            let _ = moved(w)
+            before == "1\n" && held == "1\n" && source_text(w) == "2\n"
+        }
+        then "an edited source moves the revision once, an untouched one not at all" {
+            let w = library()
+            entered(w)
+            let _ = source_text(w)
+            let rev = w.ws.db.revision()
+            let _ = moved(w)
+            let still = w.ws.db.revision()
+            w.files.put("/w/src/main.av", "2\n")
+            let _ = moved(w)
+            still == rev && w.ws.db.revision() == rev + 1
+        }
+    }
+    given "a file another file imports, deleted inside one process" {
+        then "the importer is clean before; the replacement says the module is not there" {
+            let w = importing()
+            let clean = w.ws.analysis(w.ws.file_id("/w/src/main.av")).clean()
+            helper_deleted(w)
+            let moved_set = graph_moved(w)
+            let next = w.ws.regraphed()
+            clean &&
+                moved_set &&
+                next.analysis(next.file_id("/w/src/main.av")).report().contains("resolve.no_module")
+        }
+        then "the file is gone from the replacement's discovery" {
+            let w = importing()
+            let listed = names_of(w)
+            helper_deleted(w)
+            let _ = graph_moved(w)
+            listed == "helper.av,main.av" &&
+                w.ws.regraphed().listed("/w/src").join(",") == "main.av"
+        }
+    }
+    given "a manifest, edited inside one process" {
+        then "a dependency added moves the package graph — never a patched list" {
+            let w = library()
+            let _ = w.ws.manifest(0)
+            let held = w.ws.packages().length
+            w.files.put("/w/avra.toml", with_dependency())
+            graph_moved(w) && w.ws.packages().length == held
+        }
+        then "a manifest removed moves the package graph" {
+            let w = library()
+            let _ = w.ws.manifest(0)
+            w.files.set({})
+            graph_moved(w)
+        }
+        then "a manifest that appears where none stood moves the package graph" {
+            let w = world()
+            let _ = w.ws.manifest(0)
+            w.files.put("/w/avra.toml", manifest())
+            graph_moved(w)
+        }
+        then "a dependency's manifest that appears where its directory held none moves the package graph" {
+            let w = depending()
+            let unvoiced = w.ws.packages_voiced().is_empty()
+            w.files.put("/w/dep/avra.toml", "[package]\nname = \"@app/dep\"\nversion = \"0.1.0\"\n")
+            !unvoiced && graph_moved(w)
+        }
+        then "a manifest read again and unchanged moves nothing" {
+            let w = library()
+            let _ = w.ws.manifest(0)
+            let rev = w.ws.db.revision()
+            !graph_moved(w) && w.ws.db.revision() == rev
+        }
+    }
+    given "a workspace whose package graph moved" {
+        then "asked for the world again, it is refused, naming its replacement" {
+            let w = library()
+            let _ = w.ws.manifest(0)
+            w.files.set({})
+            let _ = graph_moved(w)
+            match w.ws.world_moved() {
+                .Err(why) -> why.contains("package graph moved") && why.contains("regraphed"),
+                .Ok(.Graph) or .Ok(.Reread(_)) -> false,
+            }
+        }
+        then "asked what its build reads, it is refused too" {
+            let w = library()
+            let _ = w.ws.manifest(0)
+            w.files.set({})
+            let _ = graph_moved(w)
+            match w.ws.inputs_now() {
+                .Err(why) -> why.contains("package graph moved"),
+                .Ok(.Graph) or .Ok(.Inputs(_)) -> false,
+            }
+        }
+        then "its replacement stands only after it is let go: the old one's rows are closed, the new one's open" {
+            let w = library()
+            let _ = w.ws.manifest(0)
+            w.files.put("/w/avra.toml", with_dependency())
+            let _ = graph_moved(w)
+            let next = w.ws.regraphed()
+            w.ws.decls.rows_db.get().closed.get() && !next.decls.rows_db.get().closed.get()
+        }
+        then "its replacement reads the manifest as it stands now" {
+            let w = library()
+            let _ = w.ws.manifest(0)
+            w.files.put("/w/avra.toml", with_dependency())
+            let _ = graph_moved(w)
+            w.ws.regraphed().manifest(0).deps.length == 1
         }
     }
     given "a scan of a sibling file, read by another file's query" {
@@ -172,6 +362,22 @@ spec "compiler/world" {
             w.files.put("/w/src/a.av", "component Panel {\n}\n")
             let _ = moved(w)
             component_names(w.ws, "/w/src/a.av").join(",") == "Panel" && named_at(w) > before
+        }
+        then "whether the file can open a block word moves with it, and stands under a comment" {
+            let w = world()
+            let was = file_lexes_block(w.ws, "/w/src/a.av")
+            let before = w.ws.db.changed_at(scan_key(w, Family.BlockScan))
+            w.files.put("/w/src/a.av", "// a note\n1\n")
+            let _ = moved(w)
+            let noted = file_lexes_block(w.ws, "/w/src/a.av")
+            let stood = w.ws.db.changed_at(scan_key(w, Family.BlockScan)) == before
+            w.files.put("/w/src/a.av", "component Panel {\n}\n")
+            let _ = moved(w)
+            !was &&
+                !noted &&
+                stood &&
+                file_lexes_block(w.ws, "/w/src/a.av") &&
+                w.ws.db.changed_at(scan_key(w, Family.BlockScan)) > before
         }
         then "whether the file declares a component moves with it, and stands under a comment" {
             let w = world()

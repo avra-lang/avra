@@ -329,6 +329,11 @@ export type Workspace = {
     // `input_names` is its Input cell's key, `input_index` finds it
     input_index: Cell<Map<string, int>>,
     input_names: Cell<List<InputName>>,
+    // the Text cells that are manifests', and whether the file set or
+    // a manifest has moved since: the graph is then no longer this
+    // workspace's to answer
+    manifest_texts: Cell<List<int>>,
+    graph_moved: Cell<bool>,
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
     host: Host,
@@ -646,6 +651,8 @@ fn built(
         read_fixpoint: new_fixpoint<bool>(kernel, Family.DeclReads.ordinal, false, read_reach_join, read_reach_fp),
         input_index: map_cell(),
         input_names: list_cell(),
+        manifest_texts: list_cell(),
+        graph_moved: Cell.new(false),
     }
     // The registration IS `Family`'s declaration order: `Family.all()`
     // answers the variants in ordinal order, so `db.family`'s minted index
@@ -1039,20 +1046,20 @@ impl Workspace {
         null
     }
 
-    /// An INPUT: the file's text, hashed; the revision moves only when
-    /// the text did.
+    /// A file's text as a source, over its Text input: the input's cell
+    /// is the one place the text is read, and the source is cut by the
+    /// word that cell is.
     fn source(f: FileId) -> SourceFile {
-        let staged = self
-            .relation(Family.Source)
-            .input_loaded(
-                f.index,
-                () -> {
-                    let path = self.decls.file(f).path
-                    self
-                        .loaded_text(path, (text: string) -> DbRow.Source(new_source_file(path, text)))
-                },
-            )
-        source_of(staged)
+        let path = self.decls.file(f).path
+        source_of(
+            self
+                .relation(Family.Source)
+                .demand(
+                    f.index,
+                    () -> DbRow.Source(new_source_file(path, self.listed_text(path))),
+                    (s: DbRow) -> self.text_word(path),
+                ),
+        )
     }
 
     /// The file parsed — pure in its text.

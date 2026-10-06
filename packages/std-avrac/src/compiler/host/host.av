@@ -1,7 +1,7 @@
 //! The filesystem seam: a record of four questions, and the in-memory
 //! host a test hands in. The disk host is the CLI's.
 use core.{sorted_texts}
-use @std.path.{under_dir, joined_path, normalized, head_segment, dir_of, file_name}
+use @std.path.{under_dir, joined_path, normalized, head_segment}
 
 /// The filesystem, as its questions. `stamp` says a file's bytes have not moved
 /// without reading them — null when the host cannot tell.
@@ -10,7 +10,7 @@ use @std.path.{under_dir, joined_path, normalized, head_segment, dir_of, file_na
 /// byte), or the host's own refusal.
 export enum Beneath { Text(text: string), Missing, Linked, NotText(at: int), Refused(why: string) }
 
-export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, beneath: fn(string, string) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, std_root: string? = null, cwd: string = "", compiler: string? = null }
+export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, peek: fn(string) -> Beneath, beneath: fn(string, string) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, std_root: string? = null, cwd: string = "", compiler: string? = null }
 
 impl Host {
     /// One spelling for one directory: a relative path rooted at the
@@ -20,28 +20,16 @@ impl Host {
         normalized(joined_path(self.cwd, path))
     }
 
-    /// A file as text, through the door: what stands at `path`, or that
-    /// nothing does. A file gone between the question and the read is
-    /// absent — never an empty file — under a host that reads nothing
-    /// as empty; a host that refuses the read speaks for itself.
-    fn text(path: string) -> Read {
-        if !self.exists(path) { return Read.Text(path, null) }
-        let text = self.read(path)
-        if text.is_empty() && !self.exists(path) { return Read.Text(path, null) }
-        Read.Text(path, text)
-    }
-
-    /// A file as text for a reader that can do without it: a file the
-    /// host cannot give as text is `Refused`, by the KIND of refusal —
-    /// never the host's own words, and never the end of the run. A file
-    /// reached through a link is read as `text` reads it.
+    /// A file as text, through the door: what stands at `path`, links
+    /// followed — its text, nothing, or that the host would not give it,
+    /// by the KIND of refusal. Never the host's own words, and never the
+    /// end of the run.
     fn spared_text(path: string) -> Read {
-        if !self.exists(path) { return Read.Text(path, null) }
-        match (self.beneath)(dir_of(path), file_name(path)) {
+        match (self.peek)(path) {
             .Text(text) -> Read.Text(path, text),
             .Missing -> Read.Text(path, null),
-            .Linked -> self.text(path),
             .NotText(_) -> withheld(path, "not text"),
+            .Linked -> withheld(path, "linked"),
             .Refused(_) -> withheld(path, "refused"),
         }
     }
@@ -65,7 +53,7 @@ impl Host {
     /// speaks it, and a listed file is never passed on as an empty one
     /// in silence.
     fn listed_text(path: string) -> Read {
-        let seen = self.text(path)
+        let seen = self.spared_text(path)
         if seen.as_text() == null { let _ = self.read(path) }
         seen
     }
@@ -98,6 +86,7 @@ export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: s
     Host {
         exists: (p: string) -> held.get().get(normalized(joined_path(cwd, p))) != null,
         read: (p: string) -> held.get().get(normalized(joined_path(cwd, p))) ?? "",
+        peek: (p: string) -> memory_beneath(held, normalized(joined_path(cwd, p))),
         beneath: (root: string, rel: string) -> memory_beneath(
             held,
             normalized(joined_path(cwd, joined_path(root, rel))),
@@ -121,6 +110,12 @@ fn memory_beneath(held: Cell<Map<string, string>>, at: string) -> Beneath {
 /// stands there is its text.
 export fn unlinked(exists: fn(string) -> bool, read: fn(string) -> string) -> fn(string, string) -> Beneath {
     (root: string, rel: string) -> if exists(joined_path(root, rel)) { Beneath.Text(read(joined_path(root, rel))) } else { Beneath.Missing }
+}
+
+/// A host with no refusals, over what it can already say of a path:
+/// what stands there is its text.
+export fn plainly(exists: fn(string) -> bool, read: fn(string) -> string) -> fn(string) -> Beneath {
+    (path: string) -> if exists(path) { Beneath.Text(read(path)) } else { Beneath.Missing }
 }
 
 /// A host that reads however many files it is asked to.

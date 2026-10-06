@@ -2,21 +2,10 @@
 // a file that is there, empty, missing, or gone between them — and what
 // a source and a finding make of each.
 use compiler.{avra, new_workspace, findings_of, Workspace}
-use compiler.host.{Host, Read, Beneath, memory_host}
+use compiler.host.{Host, Read, Beneath, InputName, memory_host}
 
 fn host_of(files: Map<string, string>) -> Host {
     memory_host(files, files.keys())
-}
-
-/// A host whose file is there for the first `stays` questions and gone
-/// after, reading as `text` throughout.
-fn vanishing(stays: int, text: string) -> Host {
-    let asked = Cell.new(0)
-    let none: Map<string, string> = {}
-    memory_host(none, []) with { exists: (p: string) -> {
-        asked.set(asked.get() + 1)
-        asked.get() <= stays
-    }, read: (p: string) -> text }
 }
 
 /// A workspace whose host lists `gone.av` beside `main.av`, holds it
@@ -30,10 +19,23 @@ fn listing_gone(gone: Cell<bool>, asked: Cell<List<string>>) -> Workspace {
         base with { exists: (p: string) -> (p != "/w/src/gone.av" || !gone.get()) && base.exists(p), read: (p: string) -> {
             asked.push(p)
             if p == "/w/src/gone.av" && gone.get() { "" } else { base.read(p) }
-        } },
+        }, peek: (p: string) -> if p == "/w/src/gone.av" && gone.get() { Beneath.Missing } else { (base.peek)(p) } },
         "/w",
         avra(),
     )
+}
+
+/// A host whose whole-file read answers `answer`, and writes down every
+/// path its exiting read is asked for.
+fn refusing(answer: Beneath, asked: Cell<List<string>>) -> Host {
+    host_of({"/w/a.av": "x"}) with { peek: (p: string) -> answer, read: (p: string) -> {
+        asked.push(p)
+        ""
+    } }
+}
+
+fn refused_key(kind: string) -> string {
+    Read.Refused(InputName { kind: .Text, key: "/w/a.av" }, kind).input().digest.key
 }
 
 fn key_of(r: Read) -> string { r.input().digest.key }
@@ -42,7 +44,11 @@ fn key_of(r: Read) -> string { r.input().digest.key }
 /// `gone` is set.
 fn leaving(main: string, gone: Cell<bool>) -> Workspace {
     let base = host_of({"/w/src/main.av": main})
-    new_workspace(base with { exists: (p: string) -> !gone.get() && base.exists(p) }, "/w", avra())
+    new_workspace(
+        base with { exists: (p: string) -> !gone.get() && base.exists(p), peek: (p: string) -> if gone.get() { Beneath.Missing } else { (base.peek)(p) } },
+        "/w",
+        avra(),
+    )
 }
 
 /// The source line the unwritten-`mut` rule names, as the host holds
@@ -60,7 +66,7 @@ fn named_line(main: string, edit: fn(Workspace, Cell<bool>) -> void) -> string? 
 fn unreadable(main: string, died: Cell<List<string>>, turned: Cell<bool>) -> Workspace {
     let base = host_of({"/w/src/main.av": main})
     new_workspace(
-        base with { beneath: (root: string, rel: string) -> if turned.get() { Beneath.NotText(0) } else { (base.beneath)(root, rel) }, read: (p: string) -> {
+        base with { peek: (p: string) -> if turned.get() { Beneath.NotText(0) } else { (base.peek)(p) }, read: (p: string) -> {
             if turned.get() { died.push(p) }
             base.read(p)
         } },
@@ -84,50 +90,55 @@ fn removed(_ws: Workspace, gone: Cell<bool>) { gone.set(true) }
 spec "compiler/input_host" {
     given "nothing there" {
         then "a missing file is absent, and no empty file" {
-            let seen = host_of({"/w/a.av": ""}).text("/w/b.av")
+            let seen = host_of({"/w/a.av": ""}).spared_text("/w/b.av")
             seen.as_text() == null && seen.name().key == "/w/b.av" && seen.name().kind is .Text
         }
         then "an empty file is there, and empty" {
-            host_of({"/w/a.av": ""}).text("/w/a.av").as_text() == ""
+            host_of({"/w/a.av": ""}).spared_text("/w/a.av").as_text() == ""
         }
         then "a missing file and an empty one at one path digest apart, in key and in word" {
             let none: Map<string, string> = {}
-            let absent = host_of(none).text("/w/a.av").input().digest
-            let empty = host_of({"/w/a.av": ""}).text("/w/a.av").input().digest
+            let absent = host_of(none).spared_text("/w/a.av").input().digest
+            let empty = host_of({"/w/a.av": ""}).spared_text("/w/a.av").input().digest
             absent.key != empty.key && absent.word != empty.word
         }
     }
-    given "a file gone between the two questions" {
-        then "one that read as nothing is absent, never an empty file" {
-            vanishing(1, "").text("/w/a.av").as_text() == null
+    given "a file the host will not give as text" {
+        then "octets that are no text are refused by kind, and the read that ends a run is never asked" {
+            let asked: Cell<List<string>> = Cell.new([])
+            let seen = refusing(Beneath.NotText(3), asked).spared_text("/w/a.av")
+            seen.as_text() == null &&
+                seen.input().digest.key == refused_key("not text") &&
+                asked.get().is_empty()
         }
-        then "it digests as the missing file it is" {
+        then "a refusal in the host's own words is refused by kind, never by those words" {
+            let asked: Cell<List<string>> = Cell.new([])
+            let one = refusing(Beneath.Refused("permission denied (os error 13)"), asked)
+                .spared_text("/w/a.av")
+            let other = refusing(Beneath.Refused("EACCES"), asked).spared_text("/w/a.av")
+            one.input().digest.key == other.input().digest.key &&
+                one.input().digest.key == refused_key("refused") &&
+                asked.get().is_empty()
+        }
+        then "a refused file and a missing one digest apart" {
+            let asked: Cell<List<string>> = Cell.new([])
             let none: Map<string, string> = {}
-            key_of(vanishing(1, "").text("/w/a.av")) == key_of(host_of(none).text("/w/a.av"))
-        }
-        then "one whose text was read before it went is what was read" {
-            vanishing(1, "let a = 1\n").text("/w/a.av").as_text() == "let a = 1\n"
-        }
-        then "an empty file that stays is empty" {
-            vanishing(2, "").text("/w/a.av").as_text() == ""
-        }
-        then "a file never there is not read at all" {
-            vanishing(0, "never").text("/w/a.av").as_text() == null
+            refusing(Beneath.Refused("x"), asked).spared_text("/w/a.av").input().digest.key != host_of(none).spared_text("/w/a.av").input().digest.key
         }
     }
     given "a file that is there" {
         then "its text is what the host reads, under the path it was asked by" {
-            let seen = host_of({"/w/a.av": "let a = 1\n"}).text("/w/a.av")
+            let seen = host_of({"/w/a.av": "let a = 1\n"}).spared_text("/w/a.av")
             seen.as_text() == "let a = 1\n" && seen.name().key == "/w/a.av"
         }
         then "two texts at one path digest apart, and one text asked twice does not" {
-            let a = key_of(host_of({"/w/a.av": "let a = 1\n"}).text("/w/a.av"))
-            let b = key_of(host_of({"/w/a.av": "let a = 2\n"}).text("/w/a.av"))
-            a != b && a == key_of(host_of({"/w/a.av": "let a = 1\n"}).text("/w/a.av"))
+            let a = key_of(host_of({"/w/a.av": "let a = 1\n"}).spared_text("/w/a.av"))
+            let b = key_of(host_of({"/w/a.av": "let a = 2\n"}).spared_text("/w/a.av"))
+            a != b && a == key_of(host_of({"/w/a.av": "let a = 1\n"}).spared_text("/w/a.av"))
         }
         then "one text at two paths is two inputs" {
             let fs = {"/w/a.av": "x", "/w/b.av": "x"}
-            key_of(host_of(fs).text("/w/a.av")) != key_of(host_of(fs).text("/w/b.av"))
+            key_of(host_of(fs).spared_text("/w/a.av")) != key_of(host_of(fs).spared_text("/w/b.av"))
         }
     }
     given "a source loaded through the door" {
@@ -145,19 +156,18 @@ spec "compiler/input_host" {
             let _ = ws.source(ws.file_id("/w/src/gone.av"))
             asked.get().contains("/w/src/gone.av")
         }
-        then "a listed file removed after it was listed is handed to the host's read" {
+        then "a listed file removed after its text was read is the text this workspace read — the host is asked nothing more" {
             let asked: Cell<List<string>> = Cell.new([])
             let gone = Cell.new(false)
             let ws = listing_gone(gone, asked)
             let f = ws.file_id("/w/src/gone.av")
             gone.set(true)
-            let _ = ws.source(f)
-            asked.get().contains("/w/src/gone.av")
+            ws.source(f).text == "2\n" && !asked.get().contains("/w/src/gone.av")
         }
         then "a file asked for, not listed, and not there is never read" {
             let asked: Cell<List<string>> = Cell.new([])
             let ws = listing_gone(Cell.new(true), asked)
-            ws.host.text("/w/src/gone.av").as_text() == null &&
+            ws.host.spared_text("/w/src/gone.av").as_text() == null &&
                 !asked.get().contains("/w/src/gone.av")
         }
         then "a file's text is the host's" {
