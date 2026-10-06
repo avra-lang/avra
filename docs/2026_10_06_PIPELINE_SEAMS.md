@@ -210,7 +210,7 @@ fn set_decl(idx: int, row: Decl) {
 - **Touch:** a feature that declares something edits `DeclKind` (`core/nodes.av:121`), `declared_kind`/`declared_name` in `parts.av`, and usually a special case inside `admit` (const :203, spec :214, impl :237, main :260, nested :284).
 - **Counts (COUNT):** 15 `.mint(` call sites, each ten positional arguments. 7 hand-built string keys. 13 `set_decl` calls, most only to write `lo`/`hi` after the row exists.
 - **DB-shaped?** The row type is (`@relation type Decl`, `features/decl_rows.av:39-76`). The write is not. `Decl` is keyless; the file says why (`decl_rows.av:26-31`).
-- **Cost (BRIEF, corrected the same day by a count):** 93.8 M list writes, 40 % of a one-edit check, come from re-filing declaration rows. 11 of the 13 `set_decl` sites change only process-local columns (`lo`/`hi`, `parent`) and re-file nothing; the cost is the second write right after mint, when a declaration's facts land (`filed_under`: word, marks, external), which rebuilds a whole index bucket's member list.
+- **Cost (COUNTED the same day):** on a one-edit check a declaration row is re-filed through a moved hash exactly ONCE (14,012 list entries rewritten, 13,554 of them in the `external` bool index's one big bucket); 11 of the 13 `set_decl` sites change only process-local columns and re-file nothing. A census figure of 93.8 M list writes (40 % of that check) was charged to this code by nearest symbol and is NOT it: three suspects named by reading were each acquitted by a count. The write path's case rests on clarity and one mechanism, not on that number.
 
 **Could:** the feature answers what its statement declares; the file's rows are one returned value.
 
@@ -230,7 +230,7 @@ fn declarations_of(file: string) -> List<Decl> { ranged(flatten([declared(file, 
 
 - Ranges are computed **before** the row exists. No patching.
 - The key is the tuple. No string is built.
-- **Faster:** a body edit returns equal rows, so nothing is re-filed; a row written once, with its facts, never takes the second write. Removes the re-file cost above (ESTIMATE: most of that 40 %). `Decl.by_name` becomes one index read.
+- **Faster:** a body edit returns equal rows, so nothing is re-filed; a row written once, with its facts, never takes the second write. `Decl.by_name` becomes one index read.
 - **Needs:** the hand-over (`Decl.replaced(db, owner, rows)`) is available now — three relations already use it. The tuple key waits for `file` to leave `@local` (DB 03).
 - **Principle:** P12, P4. Law L6 held for the last relation that breaks it.
 
