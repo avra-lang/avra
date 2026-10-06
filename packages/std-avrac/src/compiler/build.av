@@ -474,20 +474,19 @@ impl Workspace {
         self.built_for(tools)
         let kept = self.kept_binary(self.program_key(entry, []), binary)
         if kept != null { return .Ok(kept!) }
-        let d = diagnosed(self.derived(entry, Want.Binary))?
+        let d = diagnosed(
+            self
+                .derived_owing(
+                    entry,
+                    Want.Binary,
+                    [],
+                    (met: Derived) -> link_owes(met, runner_module(met, entry), tools),
+                ),
+        )?
         let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(self.root)])) }
         if main.view.stmts.is_empty() { fail BuildError.Empty }
         let _ = make_dirs(dir_of(binary))
-        d
-            .linked(
-                ProgramModule {
-                    main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)),
-                    doors: [self.decls.symbol(d) for d in self.doors(entry)],
-                },
-                Keyed { named: entry, beside: [] },
-                binary,
-                tools,
-            )
+        d.linked(runner_module(d, entry), Keyed { named: entry, beside: [] }, binary, tools)
     }
 
     /// A binary these exact inputs linked before, placed where a fresh one would
@@ -839,6 +838,21 @@ impl Workspace {
             source: path,
         }
     }
+}
+
+/// A program's own module, as the workspace that derived it names its doors.
+fn runner_module(d: Derived, entry: string) -> ProgramModule {
+    ProgramModule {
+        main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)),
+        doors: [d.program.ws.decls.symbol(door) for door in d.program.ws.doors(entry)],
+    }
+}
+
+/// WHETHER A LINK OWES THE INSTANTIATIONS A DERIVATION LEFT UNLOWERED: no build
+/// of these very asks kept the program's module. Asked where the derivation is
+/// made, so the one that owes is let go before the whole one begins.
+fn link_owes(d: Derived, m: ProgramModule, tools: Toolchain) -> bool {
+    !d.store.has(Stored.Obj, program_asked_key(d, m.main(d.lowered.types), m.doors, tools))
 }
 
 /// WHAT THE PROGRAM'S MODULE IS A FUNCTION OF: the program's asks, its entry, its

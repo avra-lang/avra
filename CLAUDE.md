@@ -335,6 +335,21 @@ registry is the idiom engine's spec, written by dogfooding.
   revision one, every sig it will ask for is held, and an Analysis
   asked after is remade over the memoized parts, never kept. The
   language's answer is in the sugar backlog: weak captures.
+- ONE DERIVATION IS ALIVE AT A TIME. A derivation that turns, owes
+  its instantiations, or quarrels under a hold is asked AGAIN in a
+  fresh workspace, and the one before must be LET GO first or the
+  build's peak is their SUM — a file test then its directory's passed
+  5 GB where either alone is 2.2. Three holders keep one alive, and
+  each needs its own answer. THE STACK: a caller's binding stands for
+  the whole call, so the derivation that is superseded is bound in a
+  HELPER that returns the next attempt and dies (`stood_first`,
+  `heard`, `tried_anew`), never in the fn that asks again. THE HOOKS:
+  `Workspace.discarded()` ends every one, the registry's declare hook
+  among them — it captures the table that holds the registry. THE
+  PROCESS: a relation's rows stand in a process-wide store under their
+  Db until `close()`, whoever else died. `make turn-memory-attack`
+  holds it by memory: a rebuild that turns twelve times, under a
+  ceiling one attempt clears and their sum trips.
 - A VALUE ITS OWN HOOKS CAPTURE IS AN IDENTITY, AND A COPY FORKS IT.
   `mut q = p` is a copy (spec 11.5), hooks included: the copy's writes
   land in the copy while its hooks answer for the original. The
@@ -2045,7 +2060,9 @@ Runtime facts, ours to ratify:
   `Memo.settle` (family, arg, fingerprint) in query/memo.av, every
   `Binder.declare` (name, file) in features/namespace.av, every
   failed `named_type` lookup in compiler/typing/declare.av, every
-  file a check PARSES (`Q parse <path>`, compiler/program.av) — behind
+  file a check PARSES (`Q parse <path>`, compiler/program.av), every
+  ATTEMPT a derivation makes (`Q attempt <turn> hold … reading <n>`,
+  compiler/derive.av) — behind
   `avra_qtrace` (runtime/avra_runtime.c), inert without the flag.
   Run both binaries on the SAME input with `AVRA_QTRACE=1`, confirm
   each is deterministic against itself (diff two runs of the same
