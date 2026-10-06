@@ -844,11 +844,18 @@ impl Decls {
     /// words it read (4, or 5 across a name it shared with a sibling).
     fn wire_decl(words: List<string>, at: int) -> WireDeclRef? {
         if at + 3 >= words.length { return null }
-        let f: FileId? = self.known_file_id(words[at])
-        if f == null { return null }
         let kind = words[at + 1]
         let owner = text_of_field(words[at + 2])
         let name = text_of_field(words[at + 3])
+        // A BUILTIN IS THE LANGUAGE'S, filed under no file of the program's: its wire
+        // names whichever file was first in the process that wrote it, so its name
+        // alone finds it.
+        if builtin_word(kind) {
+            let b? = self.builtin_decls().find((d) -> self.decl(d).name == name) else { return null }
+            return WireDeclRef { id: b, next: at + 4 }
+        }
+        let f: FileId? = self.known_file_id(words[at])
+        if f == null { return null }
         let siblings = self.wire_siblings(f!, kind, owner, name)
         if siblings.length == 1 { return WireDeclRef { id: siblings[0], next: at + 4 } }
         if siblings.is_empty() { return null }
