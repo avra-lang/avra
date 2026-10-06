@@ -31,7 +31,7 @@ Nothing after this can be believed without it. True state, checked 2026-10-06:
 | one derivation alive at a time | **merged**: PR #289 → `9163515`. `turn-memory-attack` is in the CI keepers list (`checks.yml:110`) | nothing |
 | keepers in CI | `origin/keepers-green` @ `a23c730`: a branch, **no PR**. Four good commits (`5de48f0`, `1caf3d9`, `01c219c` the `Line` layout fix, `5f495f5` the CI list) and four titled `WIP`, the last "(unverified)". Its lane is still verifying | ask team-lead whether that lane is alive. If not: run `make keepers` and `make cache-attacks` on a Sprite from that branch; a WIP commit is verified when the keeper it touches is green there. Then `sh tools/work land` |
 | the measuring harness | `origin/db-measure` @ `6b12cf8`, no PR yet: `tools/db_measure/` holds `warm_edit.sh` (the one-edit check, per-family trace counts), `graph.py` + the kernel's `AVRA_DB_GRAPH=1` (every settled cell with the keys it read; it also tries the saved-answer rule on the graph), `digest_bench.sh`, `readbench/` (a row-read bench), `hist_point.sh`, `archive.sh` | land it as its own PR once its lane reports M2 and M3; do not rewrite it |
-| M1 · M2 · M3 | **M1 measured** (design §7.3: 70,015 cells, 5,314,590 edges). M2 and M3 are that lane's, in progress | if the lane has stopped: M2 to the spec below with `graph.py`; M3 as written below |
+| M1 · M2 · M3 | **M1 and M2 measured** (design §7.3, A20). M3 is that lane's, in progress | if the lane has stopped: M3 as written below |
 | defects | filed: `.57.182`, `.57.183`, `.57.184`, `.57.185` | `.57.182` (the annotation trap) is independent — fix it any time |
 
 One ask for the owner, not a task: making `keepers` and `cache-attacks` **required** checks
@@ -199,9 +199,18 @@ path + size + modified-time, full digest on demand (D9) · the re-ask of the sou
 retired at DB 07 with **no switch** (D10) · the engine lives in `@std/relation`, no new
 package (D11) · no bisect.
 
-M1 is measured: 70,015 cells, 5.3 M direct edges, 37.2 M read calls (design §7.3). Waiting
-on: M2 (saved answers and reads per answer) and M3 (the phase table for a warm edit on main
-today). The design's §7.3 says what each result changes.
+M1 and M2 are measured (design §7.3, §7.4, A20): 70,015 cells and 5.3 M direct edges;
+54,947 saved answers with a median of 3 reads. Always-save is blocked by **names, not
+size**. Three things follow for whoever builds DB 03, 06 and 07:
+
+- a read with no durable name makes its reader unsavable — never drop it. Name buckets
+  (2.27 M edges) get names in DB 03 a, before DB 06 saves any compiler family;
+- `Lowered` and `Settled` are roots keyed by ask numbers: DB 03 a names them (declaration ·
+  type arguments; const · seat fingerprint);
+- `Receivers` (41,435 reads), `References` (13,030) and `MethodDiags` (994 a file) are
+  split in DB 07 c; an unchanged run must walk none of them.
+
+Waiting on: M3 (the phase table for a warm edit on main today).
 
 ## Questions a cold session cannot answer from the code
 

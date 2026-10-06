@@ -32,7 +32,6 @@ which) · `PROBED` I ran it; the command and its output are beside it · `MEASUR
 | 10-06 | "Why wouldn't we always save? I feel like we should figure that out." | brief |
 | 10-06 | "Yes!!!!!! This is what I have been asking for!!! I want to standardize on this as MUCH AS POSSIBLE." | brief |
 | 10-06 | "It should be blazing fast." | brief |
-| 10-06 | "I want a tidy work tree, a single document and a single epic that I can give to a new session and say do this work." | brief |
 
 ### 1.2 Decided by the owner (2026-10-06)
 
@@ -90,9 +89,9 @@ every family key has one, so all 32 families are saved. What has no name: a node
 So for the compiler L4's refusal is a rule about **keyless rows**; M2 counts them. A row
 and an index bucket are *named parts of their producer's answer* (A11).
 
-**M1 is in** (§7.3): the whole graph is 70,015 cells and 5.3 M direct edges — small enough
-to save every cell's digest and reads. So L4's refusal is a speed lint, not a correctness
-law. "51.6 M" was never an edge count.
+**M1 and M2 are in** (§7.3): 70,015 cells, 5.3 M direct edges; 54,947 of the cells are
+saved answers with short lists (median 3 reads). Always-save is blocked by **names**, not
+by size (§7.4). A read with no durable name makes its reader unsavable; it is never dropped.
 
 ---
 
@@ -335,39 +334,37 @@ Relation rows and buckets (A11) hold almost none of the 5.3 M edges today (M1: 2
 | 3 | Namespace | module | `ModuleNames` | `Map` + dense ids | value |
 | 4 | Visible | file | `Namespace` | `Map` + dense ids | digest; value by M4 |
 | 5 | Resolved | file | `NameFacts` | `ExprId` side tables | split per declaration; digest |
-| 6 | Sig | declaration | `DeclSig` | `TypeId` | **value** — what importers load by name |
+| 6 | Sig | declaration | `DeclSig` | `TypeId` | **value** — what importers load by name. M2: 13,240 answers, median 4 reads, p95 618 |
 | 7 | Methods | declaration | `List<DeclId>` | dense ids | value |
-| 8 | Typed | declaration | `TypeFacts` | `ExprId` tables, `TypeId` | digest + diagnostics; value by M4 |
+| 8 | Typed | declaration | `TypeFacts` | `ExprId` tables, `TypeId` | digest + diagnostics; value by M4. M2: 13,626 answers, median 11, p95 583, max 2,564 |
 | 9 | ConstTyped | settle int → const name | `TypeId` | `TypeId` | value |
 | 10 | Folded | file | `TypeFacts` | as 8 | split per declaration; digest |
 | 11 | Analysis | file | `Analysis` | no: closures | digest = fold of its parts'; dissolves at DB 07 f |
-| 12 | Settled | settle int → const name · seats | `Settlement` | yes | value (DB 09) |
-| 13 | Lowered | ask int → declaration · type args | `Unit` | `TypeId`, `FileId` | value |
+| 12 | Settled | settle int → const name · seat fingerprint | `Settlement` | yes | value (DB 09). M2: 501 cells, 0.81 M edges, a **root**: named at DB 03 a (§7.4) |
+| 13 | Lowered | ask int → declaration · type args | `Unit` | `TypeId`, `FileId` | value. M2: 12,324 cells, 1.07 M edges, a **root**: named at DB 03 a (§7.4) |
 | 14 | Lifted | lift int → annotation · declaration · args | `LiftResult` | yes; spans | value (DB 09) |
 | 15 | Manifest | int → package name | `Manifest` | yes | value over `Text(avra.toml)` |
-| 16 | Receivers | whole program | `bool?` | yes | split per impl; a root over digests |
+| 16 | Receivers | whole program | `bool?` | yes | split per impl (DB 07 c). M2: 1 answer, **41,435 reads** |
 | 17 | Expanded | file | `List<DeclId>` | dense ids | value |
 | 18 | Plain | file | `Parsed` | no (as 1) | digest only, as 1 |
-| 19 | References | whole program | `List<Ref>` | every column `@local` | split: `Refs(declaration)` |
+| 19 | References | whole program | `List<Ref>` | every column `@local` | split: `Refs(declaration)` (DB 07 c). M2: 1 answer, **13,030 reads** |
 | 20 | Failures | whole program | `Raised` | dense ids | one record per cycle group |
 | 21 | HeldSig | module | `string` | yes | deleted at DB 07 (it is the hold) |
 | 22 | Raised | declaration | `List<TypeId>` | `TypeId` | value |
-| 23 | MethodDiags | file | `List<Diag>` | spans | value |
+| 23 | MethodDiags | file | `List<Diag>` | spans | value; split per (file, type it mentions) (DB 07 c). M2: 438 answers × exactly 994 reads |
 | 24 | LiftLowered | lift int (as 14) | `Unit` | as 13 | value |
 | 25 | Syntax | declaration | `int` | yes | digest (the answer is one) |
 | 26 | Names | declaration | `int` | yes | digest |
 | 27 | Marks | declaration | `List<Diag>` | spans | value |
 | 28 | Admitted | file | `Unit` | as 13 | deleted at DB 07 (by-name loading) |
-| 29 | Named | int → name | `Unit` | as 13 | value |
+| 29 | Named | int → the name's text | `Unit` | as 13 | value; its key is a **name bucket**: 2.27 M of the 5.31 M edges read one (§7.4) |
 | 30 | ReadReach | whole program | `int` | yes | one record per cycle group |
 | 31 | DeclReads | declaration | `bool` | yes | value |
 
 Count: 9 encode today · 3 never will (1, 11, 18) · 20 wait on DB 03. The four whole-program
 families (16, 19, 20, 30) are the ones that make any edit O(program); each is split.
 
-### 4.2 Every second mechanism, and the PR that removes it
-
-26 rows, each naming its PR: appendix A16. Summary: §2b's deletion ledger.
+**4.2** Every second mechanism on main, each with the PR that removes it: appendix A16.
 
 ---
 
@@ -539,8 +536,8 @@ in between, and the tree grew. The intermediate before/after pairs are in A8.
 | one signature edit | proportional to the declarations that mention the name | — | unmeasured |
 | any partly-held state: time and peak | ≤ cold | — | 1.6 × cold |
 | a recorded read | ≤ 350 instructions | — | ~938 (relation) |
-| cold, saving on against off | ≤ +15 % (ESTIMATED; M4 sets it) | — | — |
-| longest in-memory read list; p99 reads per saved answer | set from M2 | — | — |
+| cold, saving on against off | digest: < 1 % (M2, MEASURED). Encoding: unmeasured — M4 sets the gate | — | — |
+| reads per saved answer | p95 ≤ 600, and no answer over 3,000 once DB 07 c splits the three long ones (today: p95 510, max 41,435 — M2) | — | — |
 
 The time rows run on the CI runner with an instruction-count twin, so machine noise cannot
 hide a regression. The gates switch on as each PR makes them reachable (§8). Every timing
@@ -551,11 +548,21 @@ round uses fresh edit text: a repeated text is a cache hit (HANDOFF 10-01 :100).
 | # | question | result | what it changes |
 |---|---|---|---|
 | M1 | How big is the kernel's graph on a cold `check cli`? | **MEASURED** (`AVRA_DB_GRAPH=1`, branch `db-measure`, `tools/db_measure/graph.py`): **70,015 cells, 5,314,590 direct edges**. 37.2 M recorded read *calls* — 7 per kept edge; 17.8 M on `Named`, 14.5 M on `Items`. In memory 74 B an edge (375 MB) and ~1,050 B a cell (70 MB) of a 1,867 MB peak; as plain text the graph is 45.7 MB. 54,947 cells are keyed by file, module, declaration or unit; 15,068 by a process-local ask number. The three std-relation families hold 2 edges between them | save every cell's digest and reads (≈ 46 MB before packing). The 15,068 ask-number cells need names at DB 03. The cost to cut is the 37 M calls, on `Named` and `Items` — DB 01 c–d |
-| M2 | Under L4: how many saved answers, reads per answer, the longest in-memory list? | **PENDING M2** | §4.1's "saved as" column; the two gates in §7.2; the store size (ESTIMATED today: ~80 k records, ~2.4 M reads, 15–20 MB) |
+| M2 | Under L4: how many saved answers, how many reads each? | **MEASURED** (a simulation over the M1 graph, `graph.py`; nothing persisted): **54,947 of 70,015 cells are saved answers.** Direct durable reads per answer: total 1,091,224, median 2, p95 19 as keys are typed today; total 3,359,012, median 3, p95 510, max 41,435 once name buckets count as durable. File grain (what main saves today): 4,184 answers, 2.67 M reads, median 5, p95 5,090. Digest 362 MB/s: 55 k answers ≈ 0.05–0.5 s, under 1 % of a 63 s cold check | **Always-save at declaration grain is ~55 k records with short lists. It is blocked by names, not by size** (§7.4) |
 | M3 | Where does a warm one-edit `check cli` spend its time on main **today**? `--time` phase timings and `AVRA_QTRACE` reuse/compute counts, naming every phase that walks the whole program and its cost. No bisect (owner: too expensive) | **PENDING M3** | each O(program) phase it names is a line in DB 07 d's acceptance. If recorded relation reads dominate, DB 01 c–d stay ahead of any further family conversion (as ordered) |
 
-M4–M7 (bytes per row, digest MB/s, store IO, where the 220 ms no-op goes) are measured
-inside DB 05 and gate nothing earlier.
+M4 (bytes per row, encoding cost), M6 (store IO) and M7 (the 220 ms no-op) are measured
+inside DB 05.
+
+### 7.4 Three gaps M2 exposes, and the PR that closes each
+
+| gap | answer | PR |
+|---|---|---|
+| **2.27 M of 5.31 M edges read a `Named` name bucket**, which today is neither a saved answer nor an input. Under the strict rule that dependency is *lost* | a name bucket is the by-name index root of A11, named by the name's own text. And a law: **a read with no durable name makes its reader unsavable — it is never dropped.** `explain --stats` prints "reads with no name"; it must be 0 for a family before that family is saved | DB 03 a, before DB 06 |
+| **`Lowered` (12,324 cells, 1.07 M edges) and `Settled` (501, 0.81 M) are keyed by ask numbers and read by no saved answer.** They are roots: only 705 of 15,068 in-memory cells sit under an owner, so "belongs to the saved answer that owns it" has nothing to say | they get names, not a "re-derived" status: `Lowered(declaration · type arguments)`, `Settled(const · seat fingerprint)` — the key and the artifact's name from one derivation (CLAUDE.md, `settled_symbol`) | DB 03 a |
+| **three long lists**: `Receivers` 41,435 reads, `References` 13,030, `MethodDiags` 994 in every file | unchanged run: no list is walked — an answer that no changed input reaches through the reverse index is never touched (§6.2). After an edit: each is split so one edit dirties a short list — per impl, per declaration, per (file, type it mentions) | DB 05 (reverse index); DB 07 c (the splits) |
+
+Detail and the per-family numbers: appendix A20.
 
 ---
 
@@ -587,10 +594,8 @@ in-process hash; linked, not absorbed), `avra-8sb5.68`, `.69`.
 
 ---
 
-## 9. Reversed decisions and hostile cases
-
-Every earlier decision this overturns, with its measurement: appendix A15. Hostile cases,
-each answered: appendix A0.
+**9.** Every earlier decision this overturns, with its measurement: appendix A15. Hostile
+cases, each answered: appendix A0.
 
 ---
 
@@ -816,7 +821,12 @@ two-package repro is written out in ticket `.57.182`.
 | twelve turned attempts | peak 92 MB under a 273 MB ceiling | PR #289 | MEASURED |
 | warm one-line edit, before/after pairs on different days | 20.9 → 2.3 s (`e203c0d`, #48) · 8.06 → 5.93 s (`e61260b`, #119) · 6.30 → 4.27 s (`b8311ee`, #124); phases on 10-01: ast, sublang, load, admit ~1.0–1.4 s each | commit bodies; inventory G2 | MEASURED |
 | the witness as landed 09-28 | cold 27–38 s against 6.3–10 s; edited 95–150 s; OOM at 4.4 GB → shipped off | `e4d4420` | MEASURED |
-| packed dep ≈ 9 B · saved records ≈ 80 k · reads ≈ 2.4 M · store 15–20 MB · cold cost +10–15 % | — | review E2 | ESTIMATED |
+| saved answers under L4, cold `check cli` (simulated) | 54,947 of 70,015 cells; reads 1,091,224 (median 2, p95 19, max 32,114) strictly; 3,359,012 (median 3, p95 510, max 41,435) with name buckets durable | M2, `graph.py`, `origin/db-measure` @ `6b12cf8` | MEASURED |
+| the same at file grain (what main saves) | 4,184 answers; 2.67 M reads; median 5, p95 5,090 | M2 | MEASURED |
+| digest (`core/digest.av`, native) | 362 MB/s; 0.63 µs at 72 B, 1.35 µs at 288 B, 8.3 µs at 2.3 KB | M2, `digest_bench.sh` | MEASURED |
+| today's store after a cold `check cli` | 8,964 files, 58 MB (unit 5,010 / 30.8 MB · rows 1,172 / 26.7 MB · warn 2,752 / 0.13 MB) | M2 | MEASURED |
+| `perf/witness-folded` reproduced in kind, std-avrac today | `Analysis`: 867 files, 37,258 direct deps, 43 a file, median 23 | M2 | MEASURED |
+| packed dep ≈ 9 B · cold encoding cost | — | review E2 | ESTIMATED; encoding unmeasured |
 | rustc pays ~15–25 % of a cold build for incremental bookkeeping | — | review E1 | RECALLED, unchecked |
 
 Not measured anywhere: bytes per relation row · codec throughput · digest MB/s
@@ -1120,3 +1130,27 @@ codecs, `still_valid`, `current_listing_digest`, `current_file_digest`. On the D
 | one column value; a grouping | `R.by_<index>(v)`; each group is a bucket | a loop with an `if` over `R.all()`; a `Map` built by hand |
 | a whole-program fact | a query over index reads, or a fixpoint group (§5.1) | a pass that walks every file |
 | every declaration wearing a mark | `collect`, or `Declaration.wearing(mark)` | `Decls.gathered` over a raw bucket |
+
+## A20. M2 in detail (a simulation; nothing was persisted)
+
+Source: `tools/db_measure/graph.py` replaying the M1 graph of a cold `check packages/cli`,
+`origin/db-measure` @ `6b12cf8`. "Second reading" = name buckets counted as durable inputs.
+
+| family (second reading) | saved answers | reads per answer |
+|---|---|---|
+| `Sig` | 13,240 | median 4, p95 618 |
+| `Typed` | 13,626 | median 11, p95 583, max 2,564 |
+| `MethodDiags` | 438 | exactly 994 each |
+| `Analysis` | 458 | median 29 |
+| `Receivers` | 1 | 41,435 |
+| `References` | 1 | 13,030 |
+| all | 54,947 | total 3,359,012 · median 3 · p95 510 · max 41,435 |
+
+| what it shows | consequence |
+|---|---|
+| strict reading loses 2.27 M reads (3.36 M − 1.09 M) | those are name-bucket reads; a dependency that is not recorded is a stale answer. Hence the law in §7.4 row 1 |
+| 15,068 cells are keyed by an ask number; 705 sit under a saved answer; `Lowered` and `Settled` are roots | DB 03 a names every interned-int key. After it, no family cell is in memory only |
+| declaration grain: median 3, p95 510. File grain: median 5, p95 5,090 | finer grain gives *shorter* lists, the opposite of what the 09-28 flattening suggested |
+| `MethodDiags` reads 994 of something in every one of 438 files | it asks every type's methods; it should ask only for the types the file mentions |
+| digest cost is under 1 % of a cold check | the cold-cost budget is about encoding, which nobody has measured (M4) |
+| the store today is 8,964 files for one check | one packed file (§6.1) |
