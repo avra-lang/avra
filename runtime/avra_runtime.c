@@ -3785,11 +3785,123 @@ const char* avra_host_env(const char* name) {
     return str_static(v ? v : "");
 }
 
-int64_t avra_now_ns(void) {
+// ── The clock ───────────────────────────────────────────────────
+
+AvraClock avra_clock;
+void (*avra_clock_turned_hook)(void) = NULL;
+static int64_t g_clock_jumps = 0;
+
+static int64_t clock_real(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
+
+// A FROZEN CLOCK MOVES ONLY WHEN EVERY TASK WAITS, so a task that reads
+// it again and again without waiting between is waiting on a time that
+// cannot come: a hang, and a hang is spoken. The count is each task's
+// own and begins again when that task waits. HOW MANY READS IS A
+// SETTING, `AVRA_CLOCK_ASKS`, read once when a clock first freezes; 0
+// never traps. It is a watchdog, not a law: a task that reads the clock
+// that often while working, and never waits, is told the same.
+#define CLOCK_ASKS_SETTING "AVRA_CLOCK_ASKS"
+enum { CLOCK_ASKS_UNSET = -1, CLOCK_ASKS_DEFAULT = 1 << 24 };
+static int64_t g_clock_asks_most = CLOCK_ASKS_UNSET;
+
+static void clock_asks_settled(void) {
+    if (g_clock_asks_most != CLOCK_ASKS_UNSET) return;
+    const char* said = getenv(CLOCK_ASKS_SETTING);
+    g_clock_asks_most = CLOCK_ASKS_DEFAULT;
+    if (!said || !*said) return;
+    char* end = NULL;
+    long long n = strtoll(said, &end, 10);
+    if (*end != 0 || n < 0) avra_trap(CLOCK_ASKS_SETTING " takes a whole number of reads, or 0 for never");
+    g_clock_asks_most = n;
+}
+
+// The state follows `virtual` and `held`, the reading kept across it.
+static void clock_settled(void) {
+    int frozen = avra_clock.virtual && avra_clock.held == 0;
+    if (frozen == avra_clock.frozen) return;
+    if (frozen) {
+        clock_asks_settled();
+        avra_clock.at = clock_real() + avra_clock.skew;
+    } else avra_clock.skew = avra_clock.at - clock_real();
+    avra_clock.frozen = frozen;
+}
+
+__attribute__((noinline, cold, noreturn))
+static void clock_never_comes(void) {
+    char words[240];
+    avra_fmt(words, sizeof words, "a task is waiting on the clock without sleeping — the clock is virtual and moves only when every task waits (task %lld read it %lld times with no wait between; " CLOCK_ASKS_SETTING " sets how many, 0 for never)", (long long)avra_task_local->id, (long long)g_clock_asks_most);
+    avra_trap(words);
+    abort();
+}
+
+__attribute__((noinline, cold))
+static int64_t clock_asked(void) {
+    if (g_clock_asks_most > 0 && ++avra_task_local->clock_asks > g_clock_asks_most) clock_never_comes();
+    return avra_clock.at;
+}
+
+int64_t avra_now_ns(void) {
+    if (__builtin_expect(avra_clock.frozen, 0)) return clock_asked();
+    return clock_real() + avra_clock.skew;
+}
+
+void avra_clock_virtual(int64_t on) {
+    avra_clock.virtual = on != 0;
+    clock_settled();
+    if (avra_clock_turned_hook) avra_clock_turned_hook();
+}
+
+int64_t avra_clock_jumped(int64_t at) {
+    if (!avra_clock.frozen) return 0;
+    if (at > avra_clock.at) avra_clock.at = at;
+    g_clock_jumps++;
+    return 1;
+}
+
+void avra_clock_hold(int64_t by) {
+    avra_clock.held += (int32_t)by;
+    if (avra_clock.held < 0) avra_trap("the world was let go more often than it was held — a hold on the clock is a count");
+    clock_settled();
+}
+
+int64_t avra_clock_holds_dropped(void) {
+    int64_t held = avra_clock.held;
+    avra_clock.held = 0;
+    clock_settled();
+    return held;
+}
+
+// A run inside a run keeps the outer clock whole, to put it back, and
+// the count of reads its host had made.
+enum { CLOCK_RUNS_MOST = 16 };
+static AvraClock g_clock_outer[CLOCK_RUNS_MOST];
+static int g_clock_runs = 0;
+
+static void clock_run_turned(void) {
+    avra_task_local->clock_asks = 0;
+    if (avra_clock_turned_hook) avra_clock_turned_hook();
+}
+
+void avra_clock_run_begins(void) {
+    if (g_clock_runs == CLOCK_RUNS_MOST) avra_trap("runs under a virtual clock are nested too deep");
+    g_clock_outer[g_clock_runs++] = avra_clock;
+    avra_clock.held = 0;
+    avra_clock.virtual = 1;
+    clock_settled();
+    clock_run_turned();
+}
+
+void avra_clock_run_ends(void) {
+    if (g_clock_runs == 0) avra_trap("defect: a run's clock ended that never began");
+    avra_clock = g_clock_outer[--g_clock_runs];
+    clock_run_turned();
+}
+
+int64_t avra_clock_jumps(void) { return g_clock_jumps; }
 
 void avra_process_exit(int64_t code) {
     exit((int)code);

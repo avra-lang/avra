@@ -1,5 +1,6 @@
 """THE SCHEDULER'S TESTS, TESTED: each entry breaks one line of
-runtime/avra_fiber.c, and some runtime test must fail for it. A break
+runtime/avra_fiber.c — or, for the clock, of runtime/avra_runtime.c —
+and some runtime test must fail for it. A break
 every test survives is a law nothing holds; a pattern that no longer
 matches the source is a break nobody is checking. Either fails the run.
 
@@ -17,7 +18,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 out, flags, objects = sys.argv[1], sys.argv[2].split(), sys.argv[3:]
-source = open("runtime/avra_fiber.c").read()
+FIBER, CLOCK = "avra_fiber", "avra_runtime"
+sources = {name: open(f"runtime/{name}.c").read() for name in (FIBER, CLOCK)}
 arm = platform.machine() in ("arm64", "aarch64")
 
 FLOOR = ('    "    b.lo 1f\\n"\n', '    "    nop\\n"\n') if arm else ('    "    jb 1f\\n"\n', '    "    nop\\n"\n')
@@ -64,13 +66,22 @@ MUTATIONS = [
     ("a pick among one is counted as a choice", "    if (n < 2) return ready_pop();\n    uint64_t k = chosen(n);", "    if (n < 1) return ready_pop();\n    uint64_t k = chosen(n);"),
     ("schedule 0 draws like any other", "    if (g_schedule == 0) return 0;\n", ""),
     ("the pick ignores the schedule's choice", "    uint64_t k = chosen(n);", "    uint64_t k = chosen(n) * 0;"),
-    ("a seeded switch takes the fast path", "    if (g_seeded) {\n        g_until_poll = 0;\n        g_seeded_until_poll = FAIR_TURNS;", "    if (g_seeded) {\n        g_until_poll = POLL_IDLE;\n        g_seeded_until_poll = FAIR_TURNS;"),
-    ("a seeded run asks the poller at every switch", "        if (g_parked_fds > 0 && --g_seeded_until_poll <= 0) poller_wait(0);", "        if (g_parked_fds > 0) poller_wait(0);"),
-    ("a seeded run never asks the poller while tasks are ready", "        if (g_parked_fds > 0 && --g_seeded_until_poll <= 0) poller_wait(0);\n        return;", "        return;"),
+    ("a seeded switch takes the fast path", "    if (pinned()) {\n        g_until_poll = 0;\n        g_pinned_until_poll = FAIR_TURNS;", "    if (pinned()) {\n        g_until_poll = POLL_IDLE;\n        g_pinned_until_poll = FAIR_TURNS;"),
+    ("a seeded run asks the poller at every switch", "        if (g_parked_fds > 0 && --g_pinned_until_poll <= 0) poller_wait(0);", "        if (g_parked_fds > 0) poller_wait(0);"),
+    ("a seeded run never asks the poller while tasks are ready", "        if (g_parked_fds > 0 && --g_pinned_until_poll <= 0) poller_wait(0);\n        return;", "        return;"),
     ("a poll in a seeded run hands the next switches to the fast path", "    g_polls++;\n    poll_counted();", "    g_polls++;\n    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;"),
     ("a settle leaves the order seeded", "    g_seeded = 0;\n    return g_choices;", "    return g_choices;"),
     ("the pick walks the whole queue", "enum { PICK_WINDOW = 16 };", "enum { PICK_WINDOW = 16384 };"),
     ("a seed does not restart the count of choices", "    g_choices = 0;\n", ""),
+    ("a frozen clock never jumps", "        if (world_waited_virtually()) continue;\n", ""),
+    ("the clock jumps past a descriptor's waiter", "    return g_parked_fds == 0 && g_timers_len > 0 && avra_clock_jumped(g_timers[0].at);", "    return g_timers_len > 0 && avra_clock_jumped(g_timers[0].at);"),
+    ("the poller's wait does not hold the clock", "        if (held) avra_clock_hold(1);\n", ""),
+    ("the poller's hold is never given back", "        if (held) avra_clock_hold(-1);\n", ""),
+    ("the scheduler's reads of the clock count as a task's waiting", "static inline int64_t now_ns(void) { return avra_clock_read(); }", "static inline int64_t now_ns(void) { return avra_now_ns(); }"),
+    ("a task that parks keeps its count of clock reads", "    if (avra_clock.virtual && g_current->state == FIBER_PARKED) g_current->local->clock_asks = 0;\n", ""),
+    ("a task that yields begins its count of clock reads again", "    if (avra_clock.virtual && g_current->state == FIBER_PARKED) g_current->local->clock_asks = 0;", "    if (avra_clock.virtual) g_current->local->clock_asks = 0;"),
+    ("a virtual clock leaves the switch on the fast path", "static int pinned(void) { return g_seeded || avra_clock.virtual; }", "static int pinned(void) { return g_seeded; }"),
+    ("the evaluator's count of clock reads outlives its task's park", "    if (parked) avra_task_local->clock_asks = 0;\n", ""),
     ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("    if (g_until_poll > 0) return;\n", "")], None),
     ("a join answers a cancelled task", "    if (cells[TASK_END] == END_CANCELLED) join_refused();\n", ""),
     ("a fired timer's task answers nothing", "    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;\n", "    avra_rc_release(unit);\n"),
@@ -78,29 +89,49 @@ MUTATIONS = [
     ("a virtual task's end is not traced", "    if (TRACING) traced_fiber(\"end\", virtual_at(t), 0);\n", ""),
     ("a virtual task keeps the policy's count for its id", "    virtual_at(t)->own.id = id;\n", ""),
 ]
-TESTS = ["seed_test", "flow_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
+CLOCK_MUTATIONS = [
+    ("freezing loses the present reading", "        avra_clock.at = clock_real() + avra_clock.skew;", "        avra_clock.at = 0;"),
+    ("flowing again starts from the wall", "    } else avra_clock.skew = avra_clock.at - clock_real();", "    } else avra_clock.skew = 0;"),
+    ("a held clock stays frozen", "    int frozen = avra_clock.virtual && avra_clock.held == 0;", "    int frozen = avra_clock.virtual;"),
+    ("a jump can move the clock back", "    if (at > avra_clock.at) avra_clock.at = at;", "    avra_clock.at = at;"),
+    ("a task waiting on a frozen clock is never told", "    if (g_clock_asks_most > 0 && ++avra_task_local->clock_asks > g_clock_asks_most) clock_never_comes();\n", ""),
+    ("a limit of none still traps", "    if (g_clock_asks_most > 0 && ++avra_task_local->clock_asks", "    if (++avra_task_local->clock_asks"),
+    ("the limit is not the setting's", "    g_clock_asks_most = n;\n", ""),
+    ("a limit that is no number is read as one", "    if (*end != 0 || n < 0) avra_trap(CLOCK_ASKS_SETTING", "    if (0) avra_trap(CLOCK_ASKS_SETTING"),
+    ("a hold let go too often goes unsaid", "    if (avra_clock.held < 0) avra_trap(", "    if (0) avra_trap("),
+    ("dropped holds still hold", "    int64_t held = avra_clock.held;\n    avra_clock.held = 0;", "    int64_t held = avra_clock.held;"),
+    ("a run begins with its host's holds", "    avra_clock.held = 0;\n    avra_clock.virtual = 1;", "    avra_clock.virtual = 1;"),
+    ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
+]
+TESTS = ["flow_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
 BOUND = 60
 
 os.makedirs(out, exist_ok=True)
 for test in TESTS:
     subprocess.run(["cc", "-c", "-O2", *flags, "-o", f"{out}/{test}.o", f"runtime/tests/{test}.c"], check=True)
 
+# What a break of one file links beside it: every other object, and for
+# the clock's the scheduler built whole.
+ALL = [(FIBER, m) for m in MUTATIONS] + [(CLOCK, m) for m in CLOCK_MUTATIONS]
+subprocess.run(["cc", "-c", "-O2", *flags, "-Iruntime", "-o", f"{out}/{FIBER}.o", f"runtime/{FIBER}.c"], check=True)
+rest = {FIBER: objects, CLOCK: [o for o in objects if not o.endswith(f"/{CLOCK}.o")] + [f"{out}/{FIBER}.o"]}
+
 
 def tried(numbered):
-    at, (name, old, new) = numbered
-    text = source
+    at, (which, (name, old, new)) = numbered
+    text = sources[which]
     for a, b in old if isinstance(old, list) else [(old, new)]:
         if text.count(a) != 1:
             return name, "rotten", f"its line is not in the source (x{text.count(a)})"
         text = text.replace(a, b)
     here = f"{out}/{at}"
     os.makedirs(here, exist_ok=True)
-    open(f"{here}/avra_fiber.c", "w").write(text)
-    built = subprocess.run(["cc", "-c", "-O2", *flags, "-Iruntime", "-o", f"{here}/avra_fiber.o", f"{here}/avra_fiber.c"], capture_output=True, text=True)
+    open(f"{here}/{which}.c", "w").write(text)
+    built = subprocess.run(["cc", "-c", "-O2", *flags, "-Iruntime", "-o", f"{here}/{which}.o", f"{here}/{which}.c"], capture_output=True, text=True)
     if built.returncode:
         return name, "rotten", "does not build — " + built.stderr.strip().splitlines()[0][:120]
     for test in TESTS:
-        subprocess.run(["cc", "-O2", *flags, "-o", f"{here}/{test}", f"{out}/{test}.o", f"{here}/avra_fiber.o", *objects], check=True, capture_output=True)
+        subprocess.run(["cc", "-O2", *flags, "-o", f"{here}/{test}", f"{out}/{test}.o", f"{here}/{which}.o", *rest[which]], check=True, capture_output=True)
         try:
             ran = subprocess.run([f"{here}/{test}"], capture_output=True, timeout=BOUND)
         except subprocess.TimeoutExpired:
@@ -112,12 +143,12 @@ def tried(numbered):
 
 
 with ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 2) // 2)) as pool:
-    results = list(pool.map(tried, enumerate(MUTATIONS)))
+    results = list(pool.map(tried, enumerate(ALL)))
 for name, how, by in results:
     print(f"  {name}: " + {"killed": f"killed by {by}", "alive": "SURVIVED every runtime test", "rotten": by}[how])
 killed = sum(how == "killed" for _, how, _ in results)
 alive = sum(how == "alive" for _, how, _ in results)
 rotten = sum(how == "rotten" for _, how, _ in results)
 bound = sum("outlived" in by for _, how, by in results if how == "killed")
-print(f"runtime-mutations: {killed} of {len(MUTATIONS)} killed, {killed - bound} by a failing check and {bound} by the bound" + (f"; {alive} survive" if alive else "") + (f"; {rotten} no longer apply" if rotten else ""))
+print(f"runtime-mutations: {killed} of {len(ALL)} killed, {killed - bound} by a failing check and {bound} by the bound" + (f"; {alive} survive" if alive else "") + (f"; {rotten} no longer apply" if rotten else ""))
 sys.exit(1 if alive or rotten else 0)
