@@ -23,6 +23,10 @@ export type HeldMismatch = { file: string, decl: string, field: string, held: st
 /// What the pass examined and found.
 export type VerifyHeld = { files: int, declarations: int, mismatches: List<HeldMismatch> }
 
+/// A held file against a fresh reading: where its declarations read
+/// differently, or why no fresh reading could be made.
+export type Compared = { odds: List<HeldMismatch>, unread: string? }
+
 /// One held file's own count and mismatches.
 type FileVerified = { declarations: int, mismatches: List<HeldMismatch> }
 
@@ -35,7 +39,13 @@ impl Workspace {
             warm_ws.discarded()
             return .Ok(VerifyHeld { files: 0, declarations: 0, mismatches: [] })
         }
-        let fresh = self.from_sources(entry, Want.Diagnostics)?
+        let fresh = match self.from_sources(entry, Want.Diagnostics) {
+            .Ok(d) -> d,
+            .Err(why) -> {
+                warm_ws.discarded()
+                return .Err(why)
+            },
+        }
         let fresh_ws = fresh.program.ws
         let checks = [warm_ws.file_verified(path, fresh_ws) for path in files]
         mut declarations = 0
@@ -49,6 +59,15 @@ impl Workspace {
                 mismatches: flatten([c.mismatches for c in checks]),
             },
         )
+    }
+
+    /// ONE HELD FILE AGAINST A FRESH READING, in a workspace of its own that
+    /// is let go before this answers.
+    fn held_compared(file: string) -> Compared {
+        match self.anew().verify_held(null) {
+            .Ok(v) -> Compared { odds: [m for m in v.mismatches if m.file == file], unread: null },
+            .Err(why) -> Compared { odds: [], unread: why },
+        }
     }
 
     /// A HELD FILE'S DECLARATIONS PAIR WITH A FRESH READ'S BY ORDINAL: the

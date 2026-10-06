@@ -3,7 +3,8 @@
 // to a text it reads, and a text's readers are the queries that reach it.
 // `a_process_over`, `checked`, `package_files` and the ordinals are
 // workspace_fixtures.av's own.
-use compiler.{Workspace, Labelled, family_word}
+use compiler.{Workspace, Named, Subject, avra, new_workspace, family_word}
+use compiler.host.{memory_host}
 use core.{sorted_texts}
 use @std.relation.engine.{Key, same_key}
 
@@ -16,7 +17,7 @@ fn walked() -> Workspace {
 
 /// The answers a label names, none when it names no family or no answer.
 fn named_by(ws: Workspace, label: string) -> List<Key> {
-    match ws.labelled(label) { .Answers(keys) -> keys, .NoFamily(_) or .NoAnswer -> [] }
+    match ws.labelled(label) { .Answers(keys) -> keys, rest -> [] }
 }
 
 /// The settled answers whose own label, read backwards, does not name them.
@@ -26,7 +27,7 @@ fn unread(ws: Workspace) -> List<Key> {
 
 /// The word of the family a label names when no answer belongs to it.
 fn unknown_family(ws: Workspace, label: string) -> string {
-    match ws.labelled(label) { .NoFamily(word) -> word, .Answers(_) or .NoAnswer -> "" }
+    match ws.labelled(label) { .NoFamily(word) -> word, rest -> "" }
 }
 
 /// Every answer that reads `k` at any depth, nearest first.
@@ -37,6 +38,33 @@ fn above(ws: Workspace, k: Key) -> List<Key> {
 
 /// The families the fixture's graph holds an answer of.
 fn families_held(ws: Workspace) -> int { [1 for cells in ws.db.cells_by_family() if !cells.is_empty()].length }
+
+/// A program with a vendored dependency, derived whole: the graph of more
+/// than one package.
+fn packaged() -> Workspace {
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/greet\" = { path = \"vendor/greet\" }\n",
+        "/w/src/main.av": "use @acme.greet.{greet}\ngreet(2)\n",
+        "/w/vendor/greet/avra.toml": "[package]\nname = \"@acme/greet\"\nversion = \"0.1.0\"\n",
+        "/w/vendor/greet/src/greet.av": "export fn greet(n: int) -> int {\n    n + 40\n}\n",
+    }
+    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    let _ = ws.program(null)
+    ws
+}
+
+/// What a subject names, as one word: how many answers, or which refusal.
+fn named_word(ws: Workspace, subject: Subject) -> string {
+    match ws.named(subject) {
+        .Answers(keys) -> "${keys.length} answers",
+        .FileUnread(file) -> "unread ${file}",
+        .NoDecl(name) -> "no decl ${name}",
+        .ManyDecls(name, shown) -> "${shown.length} decls ${name}",
+        .DeclUnanswered(name) -> "unanswered ${name}",
+        .NoFamily(word) -> "no family ${word}",
+        .NoAnswer(label) -> "no answer ${label}",
+    }
+}
 
 fn label_at(ws: Workspace, family: int, arg: int) -> string { ws.key_label(Key { family: family, arg: arg }) }
 
@@ -91,6 +119,41 @@ spec "compiler/cache_walk — a query's label" {
     }
     then "and the answers so read span the fixture's families" {
         families_held(walked()) > 8
+    }
+}
+
+spec "compiler/cache_walk — a graph of two packages" {
+    then "every settled answer's label reads back, a dependency's among them" {
+        unread(packaged()).length == 0
+    }
+    then "each package's manifest is named by its root, the asked package's by a dot" {
+        let ws = packaged()
+        named_by(ws, "Manifest(.)").length == 1 &&
+            named_by(ws, "Manifest(vendor/greet)").length == 1
+    }
+    then "a dependency's file is found by its path from the asked package" {
+        named_by(packaged(), "Source(vendor/greet/src/greet.av)").length == 1
+    }
+}
+
+spec "compiler/cache_walk — what a target names" {
+    then "the package names no one answer" {
+        named_word(walked(), Subject.Package) == "0 answers"
+    }
+    then "a file names its text and its analysis" {
+        named_word(walked(), Subject.File("/w/src/a.av")) == "2 answers"
+    }
+    then "a file no check read is said unread, by its path from the package" {
+        named_word(walked(), Subject.File("/w/src/gone.av")) == "unread src/gone.av"
+    }
+    then "a name no declaration wears is said so" {
+        named_word(walked(), Subject.Decl("nowhere")) == "no decl nowhere"
+    }
+    then "a label of an unknown family names the family's word" {
+        named_word(walked(), Subject.Query("Sog(f)")) == "no family Sog"
+    }
+    then "a label its family holds no answer for carries the label" {
+        named_word(walked(), Subject.Query("Sig()")) == "no answer Sig()"
     }
 }
 
@@ -187,17 +250,20 @@ spec "compiler/cache_walk — one answer explained" {
 spec "compiler/cache_walk — the families, counted" {
     then "each family's cells are counted once, and the input family reads nothing" {
         let ws = walked()
-        let counts = ws.family_counts()
+        let counts = ws.family_counts().families
         let source = counts.find(it.family == "Source")
         source != null && source!.cells > 0 && source!.edges == 0 && source!.longest == 0
     }
     then "a family's median read list is no longer than its ninety-ninth, nor that than its longest" {
-        walked().family_counts().all(it.p50 <= it.p99 && it.p99 <= it.longest && it.cells > 0)
+        walked()
+            .family_counts()
+            .families
+            .all(it.p50 <= it.p99 && it.p99 <= it.longest && it.cells > 0)
     }
     then "the families' cells are every settled answer" {
         let ws = walked()
         mut cells = 0
-        for c in ws.family_counts() { cells = cells + c.cells }
+        for c in ws.family_counts().families { cells = cells + c.cells }
         cells == [1 for family in ws.db.cells_by_family() for _c in family].length
     }
 }
