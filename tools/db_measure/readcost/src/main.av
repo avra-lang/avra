@@ -17,19 +17,22 @@ use @std.text.{parse_int}
 @relation
 type Row = { @key name: string, @index tag: string, n: int }
 
+/// The query cell a bench frame is opened under.
+fn asking(queries: int, q: int) -> Key { Key { family: queries, arg: q } }
+
 fn kernel_reads(mode: string, n: int) -> int {
     let kernel = new_kernel()
     let queries = kernel.family((_arg: int) -> 0)
     let cells = kernel.family((_arg: int) -> 0)
     if mode == "kernel.new" {
         for q in 0..n / 1000 {
-            kernel.begin(Key { family: queries, arg: q })
+            kernel.begin(asking(queries, q))
             for i in 0..1000 { kernel.record_at(cells, (q * 37 + i) % 50000) }
-            kernel.settle(Key { family: queries, arg: q }, 1)
+            kernel.settle(asking(queries, q), 1)
         }
-        return kernel.deps_of(Key { family: queries, arg: 0 }).length
+        return kernel.deps_of(asking(queries, 0)).length
     }
-    let one = Key { family: queries, arg: 0 }
+    let one = asking(queries, 0)
     kernel.begin(one)
     let spread = if mode == "kernel.earlier" { 2 } else { 1 }
     for i in 0..n { kernel.record_at(cells, 7 + i % spread) }
@@ -55,11 +58,11 @@ fn row_reads(mode: string, n: int) -> int {
     }
     let per_query = if mode == "row.new" { 100 } else { n }
     for q in 0..n / per_query {
-        kernel.begin(Key { family: queries, arg: q })
+        kernel.begin(asking(queries, q))
         for i in 0..per_query { sum = sum + (Row.by_key(db, RowKey { name: names[i % 100] })?.n ?? 0) }
-        kernel.settle(Key { family: queries, arg: q }, 1)
+        kernel.settle(asking(queries, q), 1)
     }
-    sum + kernel.deps_of(Key { family: queries, arg: 0 }).length
+    sum + kernel.deps_of(asking(queries, 0)).length
 }
 
 fn ran(mode: string, n: int) -> int {
