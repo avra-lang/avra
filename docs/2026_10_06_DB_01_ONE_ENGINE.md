@@ -336,6 +336,13 @@ time and peak · duplicate computations.
 | O1 | an input moves mid-query | the query runs again; capped; a named error at the cap | owner |
 | O2 | may a query body start tasks? | refused for now; structured children are `.57.187`, P4c's first consumer | owner |
 
+P1's negative-arg refusal has no trap test of its own in P1. A program that proves a
+trap runs as a child, and one that imports `@std.avrac.query` has to load the compiler's
+package: PROBED, the child was stopped at the suite's 30 s and std-avrac's suite ended
+there. The program lives in `@std/relation`'s engine tests from P3, where the kernel
+loads alone. In P1 the refusal rests on the native-cli count (0 negative args in
+37,541,053 reads) and on the old kernel already trapping.
+
 A correction to the review, for the record: P1's "a negative arg refused at the record
 site" is not a behaviour change. PROBED on the old kernel, the same program
 (`query/tests/negative_arg`) already traps — `index -1 is out of bounds (length 0)`,
