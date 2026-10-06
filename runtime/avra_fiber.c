@@ -1045,6 +1045,7 @@ static void run_next_with_world(void) {
 // A COLD PATH IN A HOT LEAF COSTS EVERY SWITCH A FRAME: while no timer
 // is set and no descriptor waited on, the queue alone decides, and the
 // world's machinery stays out of line.
+__attribute__((always_inline))
 static inline void run_next(void) {
     if (__builtin_expect(g_timers_len == 0 && g_parked_fds == 0, 1)) {
         Fiber* next = ready_pop();
