@@ -8,7 +8,7 @@
 #
 # With the tree's OWN compiler (${AVRA:-build/avra}; `tools/work run` builds
 # it from the branch on the lane's Sprite), it runs:
-#   - the static keepers
+#   - the keepers (`make keepers`, the Makefile's one list)
 #   - `fmt --check` on the changed `.av`
 #   - `check <pkg> --baseline tools/idioms.baseline` on each affected package
 # `--no-keepers` is for a caller that already ran them (the train's own
@@ -50,9 +50,7 @@ if [ -z "$files" ] && [ -z "$packages" ]; then
     exit 0
 fi
 if [ "$keepers" = 1 ]; then
-    for k in fingerprints vocab families cited externs dogfooding-rules ui-host ui-host-test ui-board ui-browser; do
-        make -s -o avra "$k" || { echo "gate_changed: keeper $k refused" >&2; exit 1; }
-    done
+    make -s -o avra keepers || { echo "gate_changed: a keeper refused" >&2; exit 1; }
 fi
 [ -z "$files" ] || "$avra" fmt --check $files
 for p in $packages; do

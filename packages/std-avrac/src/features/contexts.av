@@ -23,6 +23,7 @@ use core.{
     same_stmt,
     same_expr,
     same_decl,
+    same_type,
     TypeRef,
     joined,
     flatten,
@@ -48,18 +49,57 @@ impl Decls {
         if seen.contains(ty.index) { return null }
         if self.is_identity(ty) { return ty }
         let walked = seen.concat([ty.index])
-        let parts: List<TypeId> = match self.types.shape_of(self.types.seen_through(ty)) {
+        for p in self.held_types(ty) {
+            let held: TypeId? = self.identity_in(p, walked)
+            if held != null { return held }
+        }
+        null
+    }
+
+    /// The types a value of type `ty` holds, seen through a name: an
+    /// element, a key and a value, a declared type's contents — none
+    /// for a scalar, or for what holds its contents unseen.
+    fn held_types(ty: TypeId) -> List<TypeId> {
+        match self.types.shape_of(self.types.seen_through(ty)) {
             .Cell(_) or .Task(_) or .Tasks or .Ptr or .Fn(_, _, _) or .Dyn(_, _) or .Var(_, _, _) or .Int or .Float or .Bool or .Str or .Bytes or .Null or .EmptyList or .EmptyMap or .Void or .Error or .TypeName(_, _) or .Range -> [],
             .List(t) or .Opt(t) -> [t],
             .Map(k, v) or .Res(k, v) -> [k, v],
             .Struct(_, _) or .Enum(_, _) or .App(_, _, _) -> self.parts_of(ty),
             .Union(members) -> members,
         }
-        for p in parts {
-            let held: TypeId? = self.identity_in(p, walked)
-            if held != null { return held }
+    }
+
+    /// `ty` and every type a value of it holds, each once, `seen` first.
+    fn reached_types(ty: TypeId, seen: List<TypeId>) -> List<TypeId> {
+        if seen.any((t) -> same_type(t, ty)) { return seen }
+        mut walked = seen.concat([ty])
+        for p in self.held_types(ty) { walked = self.reached_types(p, walked) }
+        walked
+    }
+
+    /// THE LAYOUT A VALUE OF `ty` CROSSES UNDER: every declared type its
+    /// static type reaches, by name, beside how many fields it is when
+    /// flat and whether it is a value enum — what a `mut` seat anywhere
+    /// in the program moves, each asked of its declaration first.
+    fn crossing_layout(ty: TypeId) -> string {
+        joined(
+            [self.layout_word(t) for t in self.reached_types(ty, []) if self.declared_shape(t)],
+            ";",
+        )
+    }
+
+    fn layout_word(t: TypeId) -> string {
+        self.declared_first(t)
+        "${self.types.name_of(t)}:${self.types.flat_fields(t).length}:${if self.types.is_valued(t) { 1 } else { 0 }}"
+    }
+
+    /// Whether a type is a declaration's own — a record, an enum, or an
+    /// instantiation of one.
+    fn declared_shape(t: TypeId) -> bool {
+        match self.types.shape_of(t) {
+            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) -> true,
+            .Cell(_) or .Task(_) or .Tasks or .Ptr or .Fn(_, _, _) or .Dyn(_, _) or .Var(_, _, _) or .Int or .Float or .Bool or .Str or .Bytes or .Null or .EmptyList or .EmptyMap or .Void or .Error or .TypeName(_, _) or .Range or .List(_) or .Opt(_) or .Map(_, _) or .Res(_, _) or .Union(_) -> false,
         }
-        null
     }
 
     /// Whether a value of type `ty` IS an identity — one a copy forks —

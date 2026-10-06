@@ -5,7 +5,7 @@
 # A worktree is retired only when ALL hold:
 #   - its branch is merged into main;
 #   - `git status --porcelain` is empty;
-#   - no process has its cwd inside it (lsof);
+#   - no process has its cwd inside it (lsof, or /proc);
 #   - it is not main's checkout, the repo's own tree, the land batch
 #     tree, or the tree of a branch a land.sh ticket names.
 # A detached worktree has no branch to keep, so it is never retired.
@@ -53,8 +53,20 @@ ticketed() {
     done
 }
 
-# Every process's cwd, one real path per line.
-cwds() { lsof -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'; }
+# Every process's cwd, one real path per line: `lsof` where it stands, the
+# kernel's own table where it does not — a machine with neither answers
+# nothing, and nothing is retired there.
+cwds() {
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'
+    elif [ -d /proc/self ]; then
+        # a process may end mid-walk or stand unreadable: neither is a failure
+        for c in /proc/[0-9]*/cwd; do readlink "$c" 2>/dev/null || :; done
+    else
+        echo "reclaim: no way to read a process's directory here — retiring nothing" >&2
+        exit 1
+    fi
+}
 
 # Whether `$1` is `$2` or lies below it.
 inside() {
@@ -101,7 +113,7 @@ main_tree="$(real "$(printf '%s\n' "$list" | awk -F '\t' '$2 == "main" { print $
 batch_tree="$(real "${AVRA_LAND_BATCH_WT:-$(dirname "${main_tree:-$own_tree}")/avra-land-batch-wt}")"
 [ -n "$batch_tree" ] || batch_tree="${AVRA_LAND_BATCH_WT:-}"
 tickets_now="$(ticketed)"
-cwds_now="$(cwds)"
+cwds_now="$(cwds)" || exit 1
 
 looked=0
 retired=0

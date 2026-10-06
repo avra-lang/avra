@@ -41,7 +41,9 @@ chmod +x "$tmp/bin/git"
 
 (
     cd "$tmp"
-    "$tmp/bin/git" init -q
+    # born on a branch of its own: `main` is then made beside it, whatever
+    # this machine names a new repository's first branch
+    "$tmp/bin/git" init -q -b seed
     "$tmp/bin/git" config user.email w@x
     "$tmp/bin/git" config user.name w
     printf 'fn a() -> int {\n    1\n}\n' > a.av

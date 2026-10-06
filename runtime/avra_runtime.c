@@ -1386,7 +1386,7 @@ static void guard_kept(void* p, Header* h) {
         if (a->site) acc_site(a->site, -array_bytes(a), -1);
         if (!laid_out(a)) acc_add(ACC_BUF, -(int64_t)buf_bytes(a->cap));
     } else if (h->kind == KIND_MAP) {
-        acc_add(ACC_INDEX, -(int64_t)(((AvraMap*)p)->icap * (int64_t)sizeof(int64_t)));
+        acc_add(ACC_INDEX, -index_words((AvraMap*)p) * (int64_t)sizeof(int64_t));
     }
     acc_box(h->kind, -(int64_t)(sizeof(Header) + box_bytes(h)));
     h->kind = KIND_DEAD;

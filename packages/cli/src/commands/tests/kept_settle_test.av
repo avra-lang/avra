@@ -58,6 +58,35 @@ fn shapes_text(count: string) -> string {
         .join("\n")
 }
 
+/// A package whose library const holds a flat record its entry reads.
+fn layout_package(name: string) -> string {
+    let root = "${scratch_dir()}/kept_layout_${name}_${now_ns()}"
+    let _ = make_dirs("${root}/src/lib")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"laid\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/main.av", layout_main("", "tick()"))
+    let _ = write_text(
+        "${root}/src/lib/lib.av",
+        [
+            "export type Tick = { n: int }",
+            "export type Line = { at: Tick, tag: string }",
+            "export const HEAD: Line = Line { at: Tick { n: 4 }, tag: \"t\" }",
+            "export fn tick() -> Tick { Tick { n: 8 } }",
+            "",
+        ]
+            .join("\n"),
+    )
+    root
+}
+
+/// The entry: `seal` stands before its one line, which prints the const's
+/// tick beside `shown`'s.
+fn layout_main(seal: string, shown: string) -> string {
+    "use lib.{HEAD, Tick, tick}\n${seal}println(\"\${HEAD.at.n} \${${shown}.n}\")\n"
+}
+
+/// A `mut` seat over `Tick`, written through: it boxes the record program-wide.
+const sealing = "fn bump(mut t: Tick) { t.n = t.n + 1 }\nmut bumped = tick()\nbump(bumped)\n"
+
 /// A world call, as a body's statement before its answer.
 fn loud(answer: string) -> string { "avra_puts(\"x\")\n    ${answer}" }
 
@@ -109,6 +138,14 @@ spec "a kept settlement — reused only while what it read stands" {
         }
         then "a const the run read, given a new initializer, answers the new value" {
             settled_after_edit(kept_package("const_read"), "lib/lib.av", lib_text("2000", "7")) == "2123\n"
+        }
+        then "a `mut` seat added in another file, boxing a record the kept value holds flat, answers the same value" {
+            settled_after_edit(layout_package("sealed"), "main.av", layout_main(sealing, "bumped")) == "4 9\n"
+        }
+        then "a `mut` seat removed again answers the same value from the flat layout" {
+            let root = layout_package("unsealed")
+            let _ = write_text("${root}/src/main.av", layout_main(sealing, "bumped"))
+            settled_after_edit(root, "main.av", layout_main("", "tick()")) == "4 8\n"
         }
         then "a world call added to another file's impl the run dispatches to refuses the const" {
             rechecked(kept_package("impl_world"), "shapes/shapes.av", shapes_text(loud("self.n")))
