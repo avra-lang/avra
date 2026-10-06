@@ -1219,6 +1219,62 @@ sed 's/component note(/component memo(/; s/n: note/n: memo/' $R/cb/src/part/note
 steps=$((steps+1)); cb_out=$(./avra check $R/cb 2>&1)
 case "$cb_out" in *"card.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    cb: the sibling's word gone -> card refused" ;; *) fails=$((fails+1)); echo "FAIL  cb: card names a sibling component that was renamed and the check did not refuse it: $(printf '%s' "$cb_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
 
+# A FILE NOTHING REACHES IS HELD LIKE ANY OTHER. `ur` names ONE file of `@rt/url`'s
+# root module; its siblings are registered with it — a module is one namespace — and
+# a sibling no `use` names must be held by its record, never parsed again on every
+# run. It is still the module's: its edit, its parse error, its clash, its impl and
+# its removal each reach the next check as they reach a cold one.
+mkdir -p $R/url/src $R/ur/src
+printf '[package]\nname = "@rt/url"\nversion = "0.1.0"\n\n[lib]\nname = "rt-url"\npath = "src/lib.av"\n' > $R/url/avra.toml
+printf '[package]\nname = "rt-ur"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/url" = { path = "../url" }\n' > $R/ur/avra.toml
+printf 'export fn base() -> int { 1 }\n' > $R/url/src/lib.av
+printf 'export trait Say { fn say() -> int }\nexport type Pt = { v: int }\nexport fn r() -> int { 2 }\n' > $R/url/src/reach.av
+printf 'use reach.{Say, Pt}\nexport fn lone() -> int { 3 }\nimpl Say for Pt { fn say() -> int { self.v + 1 } }\n' > $R/url/src/lone.av
+printf 'use @rt.url.reach.{r, Say, Pt}\nlet s: dyn Say = Pt { v: 1 }\nprintln("${r()} ${s.say()}")\n' > $R/ur/src/main.av
+ur_parsed() { # the files of the fixture a warm check parses, sorted
+    AVRA_QTRACE=1 ./avra check $R/ur 2>&1 | grep "$(printf '^Q\tparse\t')" | cut -f3 | grep '/cache-attacks/ur' | sed 's|.*/cache-attacks/||' | sort -u | tr '\n' ' '
+}
+UR() { # UR <label> <the files parsed>
+    steps=$((steps+1)); holds=$((holds+1)); got=$(ur_parsed)
+    if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1: a warm check parsed '$got', wanted '$2'"; fi
+}
+URX() { # URX <label> <a word the refusal carries> <the file it names>
+    steps=$((steps+1)); out=$(./avra check $R/ur 2>&1); st=$?
+    case "$st:$out" in 1:*"$2"*"$3"*|1:*"$3"*"$2"*) [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> refused" ;; *) fails=$((fails+1)); echo "FAIL  $1: exit $st, wanted a refusal carrying '$2' and '$3': $(printf '%s' "$out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+}
+S "cold ur: an impl in a file nothing names is dispatched" ur
+HR "ur checks clean" check ur 0
+printf '// moved\n' >> $R/ur/src/main.av
+UR "ur: an entry edit parses the entry alone" "ur/src/main.av "
+ed $R/url/src/lone.av "self.v + 1" "self.v + 100"
+S "ur: the unnamed file's impl body moved" ur
+HR "ur checks clean after it" check ur 0
+printf '// moved\n' >> $R/ur/src/main.av
+UR "ur: the edited sibling is held again" "ur/src/main.av "
+cp $R/url/src/lone.av $R/url/lone.kept
+printf 'export fn lone( -> int { 3 }\n' >> $R/url/src/lone.av
+URX "ur: the unnamed file gains a parse error" "parse." "lone.av"
+cp $R/url/lone.kept $R/url/src/lone.av
+printf 'export fn r() -> int { 9 }\n' >> $R/url/src/lone.av
+URX "ur: the unnamed file gains a name its sibling exports" "duplicate_in_module" "lone.av"
+cp $R/url/lone.kept $R/url/src/lone.av
+ed $R/url/src/lone.av "{ 3 }" "{ 30 }"
+ed $R/ur/src/main.av 'use @rt.url.reach.{r, Say, Pt}' "$(printf 'use @rt.url.reach.{r, Say, Pt}\nuse @rt.url.lone.{lone}')"
+ed $R/ur/src/main.av '${r()} ' '${r()} ${lone()} '
+S "ur: the unnamed file becomes named by an edit elsewhere" ur
+printf 'export fn fresh( -> int { 4 }\n' > $R/url/src/fresh.av
+URX "ur: a new file nothing names arrives broken" "parse." "fresh.av"
+printf 'export fn fresh() -> int { 4 }\n' > $R/url/src/fresh.av
+HR "ur: the new file mended" check ur 0
+printf '// moved\n' >> $R/ur/src/main.av
+UR "ur: the new file is held from its first clean check" "ur/src/main.av "
+rm $R/url/src/fresh.av
+S "ur: the new file removed" ur
+ed $R/ur/src/main.av "$(printf 'use @rt.url.reach.{r, Say, Pt}\nuse @rt.url.lone.{lone}')" 'use @rt.url.reach.{r, Say, Pt}'
+ed $R/ur/src/main.av '${r()} ${lone()} ' '${r()} '
+printf 'export fn lone() -> int { 3 }\n' > $R/url/src/lone.av
+URX "ur: the file that held the impl loses it" "Say" "main.av"
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }
