@@ -29,6 +29,7 @@
 use core.{At, alpha_renamed, same_fps, same_ins_list, Span, DeclId}
 use features.{Analysed, enclosing_decl, FileView}
 use compiler.lower.{Body, Lowered}
+use compiler.host.{Beneath}
 use @std.path.{normalized}
 use @std.errors.{Edit}
 use diagnostics.{spliced}
@@ -138,7 +139,7 @@ impl Program {
     /// original's host reads it. Never written to disk: the proof is
     /// asked before `avra fix` decides whether to write at all.
     fn after_program(path: string, text: string) -> Program {
-        let host2 = self.ws.host with { read: (p: string) -> if normalized(p) == normalized(path) { text } else { self.ws.host.read(p) } }
+        let host2 = self.ws.host with { peek: (p: string) -> if normalized(p) == normalized(path) { Beneath.Text(text) } else { (self.ws.host.peek)(p) } }
         let ws2 = timed_workspace(host2, self.ws.root, self.ws.lang, self.ws.clock)
         ws2.program(null)
     }

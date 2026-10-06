@@ -9,29 +9,23 @@ fn host_of(files: Map<string, string>) -> Host {
 }
 
 /// A workspace whose host lists `gone.av` beside `main.av`, holds it
-/// until `gone` is set, and writes down every path it is asked to read.
+/// until `gone` is set, and writes down every path it is handed to refuse.
 fn listing_gone(gone: Cell<bool>, asked: Cell<List<string>>) -> Workspace {
     let base = memory_host(
         {"/w/src/main.av": "1\n", "/w/src/gone.av": "2\n"},
         ["/w/src/main.av", "/w/src/gone.av"],
     )
     new_workspace(
-        base with { exists: (p: string) -> (p != "/w/src/gone.av" || !gone.get()) && base.exists(p), read: (p: string) -> {
-            asked.push(p)
-            if p == "/w/src/gone.av" && gone.get() { "" } else { base.read(p) }
-        }, peek: (p: string) -> if p == "/w/src/gone.av" && gone.get() { Beneath.Missing } else { (base.peek)(p) } },
+        base with { exists: (p: string) -> (p != "/w/src/gone.av" || !gone.get()) && base.exists(p), refused: (p: string) -> asked.push(p), peek: (p: string) -> if p == "/w/src/gone.av" && gone.get() { Beneath.Missing } else { (base.peek)(p) } },
         "/w",
         avra(),
     )
 }
 
 /// A host whose whole-file read answers `answer`, and writes down every
-/// path its exiting read is asked for.
+/// path it is handed to refuse.
 fn refusing(answer: Beneath, asked: Cell<List<string>>) -> Host {
-    host_of({"/w/a.av": "x"}) with { peek: (p: string) -> answer, read: (p: string) -> {
-        asked.push(p)
-        ""
-    } }
+    host_of({"/w/a.av": "x"}) with { peek: (p: string) -> answer, refused: (p: string) -> asked.push(p) }
 }
 
 fn refused_key(kind: string) -> string {
@@ -62,14 +56,11 @@ fn named_line(main: string, edit: fn(Workspace, Cell<bool>) -> void) -> string? 
 }
 
 /// The file can no longer be given as text: `beneath` refuses it, and
-/// every later whole-file read is written down in `died`.
+/// every path handed to the host to refuse is written down in `died`.
 fn unreadable(main: string, died: Cell<List<string>>, turned: Cell<bool>) -> Workspace {
     let base = host_of({"/w/src/main.av": main})
     new_workspace(
-        base with { peek: (p: string) -> if turned.get() { Beneath.NotText(0) } else { (base.peek)(p) }, read: (p: string) -> {
-            if turned.get() { died.push(p) }
-            base.read(p)
-        } },
+        base with { peek: (p: string) -> if turned.get() { Beneath.NotText(0) } else { (base.peek)(p) }, refused: (p: string) -> died.push(p) },
         "/w",
         avra(),
     )
@@ -104,7 +95,7 @@ spec "compiler/input_host" {
         }
     }
     given "a file the host will not give as text" {
-        then "octets that are no text are refused by kind, and the read that ends a run is never asked" {
+        then "octets that are no text are refused by kind, and the host is handed nothing to refuse" {
             let asked: Cell<List<string>> = Cell.new([])
             let seen = refusing(Beneath.NotText(3), asked).spared_text("/w/a.av")
             seen.as_text() == null &&
@@ -150,7 +141,7 @@ spec "compiler/input_host" {
             )
             ws.source(ws.file_id("/w/src/gone.av")).text == ""
         }
-        then "a listed file never there — a link to nothing — is handed to the host's read, where a disk refuses" {
+        then "a listed file never there — a link to nothing — is handed to the host to refuse, where a disk ends the run" {
             let asked: Cell<List<string>> = Cell.new([])
             let ws = listing_gone(Cell.new(true), asked)
             let _ = ws.source(ws.file_id("/w/src/gone.av"))
@@ -175,6 +166,23 @@ spec "compiler/input_host" {
             ws.source(ws.file_id("/w/src/main.av")).text == "let a = 1\na\n"
         }
     }
+    given "a proof's after-program, over one file overlaid with new text" {
+        then "it reads the overlaid text where the original reads its own" {
+            let ws = new_workspace(host_of({"/w/src/main.av": "1\n"}), "/w", avra())
+            let after = ws.program("/w/src/main.av").after_program("/w/src/main.av", "2\n")
+            after.ws.source(after.ws.file_id("/w/src/main.av")).text == "2\n" &&
+                ws.source(ws.file_id("/w/src/main.av")).text == "1\n"
+        }
+        then "every other file is read as the original's host reads it" {
+            let ws = new_workspace(
+                host_of({"/w/src/main.av": "1\n", "/w/src/other.av": "3\n"}),
+                "/w",
+                avra(),
+            )
+            let after = ws.program("/w/src/main.av").after_program("/w/src/main.av", "2\n")
+            after.ws.source(after.ws.file_id("/w/src/other.av")).text == "3\n"
+        }
+    }
     given "a finding's source line, over what the file holds now" {
         then "an unchanged file names the line the parse read" {
             named_line("mut a = 0\na\n", untouched) == "mut a = 0"
@@ -185,7 +193,7 @@ spec "compiler/input_host" {
         then "a file truncated to empty names an empty line — never the parse's old one" {
             named_line("mut a = 0\na\n", truncated) == ""
         }
-        then "a file that became unreadable keeps the line the parse read, and no read that ends the run is asked" {
+        then "a file that became unreadable keeps the line the parse read, and the host is handed nothing to refuse" {
             let died: Cell<List<string>> = Cell.new([])
             let turned = Cell.new(false)
             let ws = unreadable("mut a = 0\na\n", died, turned)

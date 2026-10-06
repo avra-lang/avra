@@ -64,8 +64,8 @@ extern fn avra_selfhost_get_arg_cstr(i: int) -> string
 fn disk_host() -> Host {
     Host {
         exists: (p: string) -> exists(p),
-        read: (p: string) -> read_or_die(p),
         peek: (p: string) -> disk_peek(p),
+        refused: (p: string) -> refusal_spoken(p),
         beneath: (root: string, rel: string) -> disk_beneath(root, rel),
         list: (dir: string) -> list_dir(dir) catch [],
         write: (p: string, text: string) -> write_file(p, text),
@@ -101,6 +101,12 @@ fn unopened(e: IoError, stands: bool) -> Beneath {
         .Denied(_) or .Holed(_, _) or .NotText(_, _) -> Beneath.Refused(e.describe().message),
         .IsDirectory(_) or .NotDirectory(_) or .Failed(_, _) -> if stands { Beneath.Linked } else { Beneath.Refused(e.describe().message) },
     }
+}
+
+/// The disk host's refusal of a file it would not give: read again for
+/// the reason, spoken, and the run ended.
+fn refusal_spoken(path: string) {
+    let _ = read_or_die(path)
 }
 
 /// The disk's whole-file read, links followed.

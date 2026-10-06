@@ -10,7 +10,7 @@ use @std.path.{under_dir, joined_path, normalized, head_segment}
 /// byte), or the host's own refusal.
 export enum Beneath { Text(text: string), Missing, Linked, NotText(at: int), Refused(why: string) }
 
-export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, peek: fn(string) -> Beneath, beneath: fn(string, string) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, std_root: string? = null, cwd: string = "", compiler: string? = null }
+export type Host = { exists: fn(string) -> bool, peek: fn(string) -> Beneath, refused: fn(string) -> void, beneath: fn(string, string) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, std_root: string? = null, cwd: string = "", compiler: string? = null }
 
 impl Host {
     /// One spelling for one directory: a relative path rooted at the
@@ -18,6 +18,20 @@ impl Host {
     /// compared by, never the strings as typed.
     fn absolute(path: string) -> string {
         normalized(joined_path(self.cwd, path))
+    }
+
+    /// A file's text. THE HOST HAS ONE WHOLE-FILE READ, `peek`: this is
+    /// that read, and where it gives no text the host's own refusal is
+    /// spoken (`refused` — a host that ends runs ends this one) and no
+    /// text is answered.
+    fn read(path: string) -> string {
+        match (self.peek)(path) {
+            .Text(text) -> text,
+            .Missing or .Linked or .NotText(_) or .Refused(_) -> {
+                (self.refused)(path)
+                ""
+            },
+        }
     }
 
     /// A file as text, through the door: what stands at `path`, links
@@ -54,7 +68,7 @@ impl Host {
     /// in silence.
     fn listed_text(path: string) -> Read {
         let seen = self.spared_text(path)
-        if seen.as_text() == null { let _ = self.read(path) }
+        if seen.as_text() == null { (self.refused)(path) }
         seen
     }
 
@@ -85,7 +99,7 @@ export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: s
     let held = Cell.new(files)
     Host {
         exists: (p: string) -> held.get().get(normalized(joined_path(cwd, p))) != null,
-        read: (p: string) -> held.get().get(normalized(joined_path(cwd, p))) ?? "",
+        refused: unrefusing,
         peek: (p: string) -> memory_beneath(held, normalized(joined_path(cwd, p))),
         beneath: (root: string, rel: string) -> memory_beneath(
             held,
@@ -111,6 +125,9 @@ fn memory_beneath(held: Cell<Map<string, string>>, at: string) -> Beneath {
 export fn unlinked(exists: fn(string) -> bool, read: fn(string) -> string) -> fn(string, string) -> Beneath {
     (root: string, rel: string) -> if exists(joined_path(root, rel)) { Beneath.Text(read(joined_path(root, rel))) } else { Beneath.Missing }
 }
+
+/// A host that says nothing of a file it would not give.
+export fn unrefusing(_path: string) {}
 
 /// A host with no refusals, over what it can already say of a path:
 /// what stands there is its text.
