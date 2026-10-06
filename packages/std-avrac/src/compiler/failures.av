@@ -479,7 +479,7 @@ impl Workspace {
     fn surveyed(fns: List<DeclId>) -> List<FailSummary> {
         let sums = [self.fail_summary(d) for d in fns]
         let _ = ErrorSite
-            .replaced(self.failures_db.get(), "survey", flatten([s.sites for s in sums]))
+            .replaced(self.decls.decl_rows.get(), "survey", flatten([s.sites for s in sums]))
         sums
     }
 
@@ -592,7 +592,7 @@ impl Workspace {
     /// re-raise inside its arm is already its OWN Fail/Propagate row
     /// (with `within` set), counted on its own turn.
     fn raised_compute(arg: int) -> List<TypeId> {
-        let rows = ErrorSite.by_owner(self.failures_db.get(), DeclId { index: arg })
+        let rows = ErrorSite.by_owner(self.decls.decl_rows.get(), DeclId { index: arg })
         let sites = [s for s in rows if s.how is .Fail || s.how is .Propagate]
         flatten([s.errors.concat(self.raised_via_callee(s.callee)) for s in sites])
     }
@@ -614,7 +614,7 @@ impl Workspace {
             .solve([f.index for f in fns], (arg: int) -> self.raised_compute(arg))
         let _ = Raised
             .replaced(
-                self.failures_db.get(),
+                self.decls.decl_rows.get(),
                 "solve",
                 [Raised { owner: f, errors: self.raised_fixpoint.value_at(f.index) } for f in fns],
             )
@@ -628,12 +628,12 @@ impl Workspace {
     /// revision, so asking this never re-solves what is already settled.
     fn raised_by(d: DeclId) -> List<TypeId> {
         let _ = self.failures()
-        Raised.by_owner(self.failures_db.get(), d).first()?.errors ?? []
+        Raised.by_owner(self.decls.decl_rows.get(), d).first()?.errors ?? []
     }
 
     /// Every site whose `callee` is `f` — the reverse edge `chain`
     /// walks up through.
-    fn error_sites_by_callee(f: DeclId) -> List<ErrorSite> { ErrorSite.by_callee(self.failures_db.get(), f) }
+    fn error_sites_by_callee(f: DeclId) -> List<ErrorSite> { ErrorSite.by_callee(self.decls.decl_rows.get(), f) }
 
     /// Every site lexically within catch `c`'s own arm — `chain`'s
     /// downward step when it reaches a `Catch`. Scoped by `owner`
@@ -644,7 +644,7 @@ impl Workspace {
     /// fix, since it would index across files by a number that means
     /// nothing outside one).
     fn error_sites_within(owner: DeclId, c: ExprId) -> List<ErrorSite> {
-        [x for x in ErrorSite.by_owner(self.failures_db.get(), owner) if within_is(x.within, c)]
+        [x for x in ErrorSite.by_owner(self.decls.decl_rows.get(), owner) if within_is(x.within, c)]
     }
 
     /// The error topology's own worked example (design doc §6.7,

@@ -4,8 +4,8 @@
 // took the cell's mark, and though the rows handed over are the rows it
 // holds — and one refusal is heard each time; in both engines
 use @std.relation.{relation, query}
-use @std.relation.db.{Db, new_db, db_over, Verifying, Late}
-use @std.relation.engine.{Key, new_kernel}
+use @std.relation.db.{Db, new_db}
+use @std.relation.engine.{Kernel, Key, new_kernel}
 
 @relation
 type Note = { @index tag: string }
@@ -76,10 +76,8 @@ fn under_a_nested_reader() -> string {
 }
 
 /// The same nesting with the kernel's own frames, on a Db of either kind.
-fn framed(late: Late) -> string {
-    let kernel = new_kernel()
+fn framed(db: Db, kernel: Kernel) -> string {
     let queries = kernel.family((_arg: int) -> 0)
-    let db = db_over(kernel, Verifying.ByHash, late)
     db.heard_by(noted)
     let outer = Key { family: queries, arg: 0 }
     let inner = Key { family: queries, arg: 1 }
@@ -98,10 +96,22 @@ fn framed(late: Late) -> string {
     )
 }
 
+fn framed_in_its_own() -> string {
+    let db = new_db()
+    framed(db, db.engine())
+}
+
+fn framed_in_an_owners() -> string {
+    let kernel = new_kernel()
+    let db = new_db()
+    db.given_to(kernel)
+    framed(db, kernel)
+}
+
 fn with_the_rows_it_holds() -> string {
     let db = logged()
     let _ = Note.insert(db, tag: "x")
     torn_in(() -> same_rows(db))
 }
 
-"${after_a_settled_reader()} | ${under_a_nested_reader()} | ${framed(Late.Refused)} | ${framed(Late.Taken)} | ${with_the_rows_it_holds()}"
+"${after_a_settled_reader()} | ${under_a_nested_reader()} | ${framed_in_an_owners()} | ${framed_in_its_own()} | ${with_the_rows_it_holds()}"

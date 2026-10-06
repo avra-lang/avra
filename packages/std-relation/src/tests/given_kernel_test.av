@@ -3,7 +3,7 @@
 // across revisions that moved nothing it read, and runs again when a row
 // arrives, at a later revision, in a relation it read.
 use @std.relation.{relation, query}
-use @std.relation.db.{Db, db_over, new_db, Verifying, Late}
+use @std.relation.db.{Db, new_db}
 use @std.relation.engine.{Kernel, Key, new_kernel}
 
 @relation
@@ -38,7 +38,9 @@ type Owned = { kernel: Kernel, db: Db }
 
 fn under_owner() -> Owned {
     let kernel = new_kernel()
-    Owned { kernel: kernel, db: db_over(kernel, Verifying.ByMove, Late.Refused) }
+    let db = new_db()
+    db.given_to(kernel)
+    Owned { kernel: kernel, db: db }
 }
 
 spec "std/relation — a @query under an owner's kernel" {
@@ -105,40 +107,46 @@ spec "std/relation — a @query under an owner's kernel" {
             again == 1 &&
             since(from) == "glyphs,glyphs"
     }
-    then "a read told to the Db's own kernel is no reader in the kernel it is given: a row lands unrefused" {
+    then "a Db a query has read is given no kernel: refused by name, on its own kernel as on an owner's" {
+        let own = new_db()
+        let heard: Cell<List<string>> = Cell.new([])
+        own.heard_by((w: string) -> heard.push(w))
+        let _ = Glyph.insert(own, name: "a", set: "s")
+        let _ = glyphs_in(own, "s")
+        own.given_to(new_kernel())
+        let o = under_owner()
+        o.db.heard_by((w: string) -> heard.push(w))
+        let _ = glyphs_in(o.db, "s")
+        o.db.given_to(new_kernel())
+        heard.get().length == 2 &&
+            heard.get().all(it.contains("is given a kernel after a query read it")) &&
+            glyphs_in(own, "s") == 1
+    }
+    then "a Db nothing was asked of is given a kernel unrefused, rows and all" {
         let db = new_db()
         let heard: Cell<List<string>> = Cell.new([])
         db.heard_by((w: string) -> heard.push(w))
         let _ = Glyph.insert(db, name: "a", set: "s")
-        let _ = glyphs_in(db, "s")
-        let owner = new_kernel()
-        let asked = Key { family: owner.family((_arg: int) -> 0), arg: 0 }
-        owner.begin(asked)
-        owner.settle(asked, 0)
-        db.given(owner, Verifying.ByMove, Late.Refused)
-        let _ = Glyph.insert(db, name: "b", set: "s")
-        db.released()
-        let _ = glyphs_in(db, "s")
-        db.given(owner, Verifying.ByMove, Late.Refused)
-        let _ = Glyph.insert(db, name: "c", set: "s")
-        heard.get().is_empty()
+        let _ = Glyph.by_set(db, "s")
+        db.given_to(new_kernel())
+        heard.get().is_empty() && glyphs_in(db, "s") == 1
     }
-    then "a Db given a second kernel keeps no read of the first: a query there writes what a query numbered alike read" {
-        let first = new_kernel()
-        let db = db_over(first, Verifying.ByHash, Late.Refused)
+    then "a Db its owner released takes another kernel, and no read told to the first stands in it" {
+        let o = under_owner()
         let heard: Cell<List<string>> = Cell.new([])
-        db.heard_by((w: string) -> heard.push(w))
-        let reader = Key { family: first.family((_arg: int) -> 0), arg: 0 }
-        first.begin(reader)
-        let _ = Face.all(db)
-        first.settle(reader, 0)
+        o.db.heard_by((w: string) -> heard.push(w))
+        let _ = Glyph.insert(o.db, name: "a", set: "s")
+        let reader = Key { family: o.kernel.family((_arg: int) -> 0), arg: 0 }
+        o.kernel.begin(reader)
+        let _ = Glyph.by_set(o.db, "s")
+        o.kernel.settle(reader, 0)
+        o.db.released()
         let second = new_kernel()
-        let writer = Key { family: second.family((_arg: int) -> 0), arg: 0 }
-        db.given(second, Verifying.ByHash, Late.Refused)
-        second.bump()
-        second.begin(writer)
-        let _ = Face.insert(db, name: "f")
-        second.settle(writer, 0)
+        let asked = Key { family: second.family((_arg: int) -> 0), arg: 0 }
+        second.begin(asked)
+        second.settle(asked, 0)
+        o.db.given_to(second)
+        let _ = Glyph.insert(o.db, name: "b", set: "s")
         heard.get().is_empty()
     }
 }

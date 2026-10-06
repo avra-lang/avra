@@ -2,7 +2,7 @@
 // `failures_db` is: an owner's replacement never moves what a kernel
 // query still running read this revision.
 use @std.relation.{relation}
-use @std.relation.db.{Db, db_over, Verifying, Late}
+use @std.relation.db.{Db, new_db}
 use @std.relation.engine.{Kernel, new_kernel, Key}
 
 @relation
@@ -29,7 +29,8 @@ fn read_facts(kernel: Kernel, db: Db, outer: Key, runs: Cell<int>) -> int {
 /// in `heard`, its own fresh cell, instead of trapping, so the law's own
 /// words can be asserted.
 fn framed(kernel: Kernel, heard: Cell<List<string>>) -> Db {
-    let db = db_over(kernel, Verifying.ByHash, Late.Refused)
+    let db = new_db()
+    db.given_to(kernel)
     db.heard_by((w: string) -> heard.push(w))
     db
 }
@@ -88,7 +89,8 @@ spec "compiler/workspace — a replacement never tears a running kernel query" {
 spec "compiler/workspace — a relation's verify answers a revision, not a hash (avra-8sb5.57.152)" {
     then "a query reading Fact's whole relation reruns after a real edit" {
         let kernel = new_kernel()
-        let db = db_over(kernel, Verifying.ByHash, Late.Refused)
+        let db = new_db()
+        db.given_to(kernel)
         let runs: Cell<int> = Cell.new(0)
         let outer = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
         let bump = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
@@ -108,7 +110,8 @@ spec "compiler/workspace — a relation's verify answers a revision, not a hash 
     }
     then "repeated edits each move the hash enough to cross zero at least once, and every one reruns" {
         let kernel = new_kernel()
-        let db = db_over(kernel, Verifying.ByHash, Late.Refused)
+        let db = new_db()
+        db.given_to(kernel)
         let runs: Cell<int> = Cell.new(0)
         let outer = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
         let bump = Key { family: kernel.family((arg: int) -> 0), arg: 0 }
