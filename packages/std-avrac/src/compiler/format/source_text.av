@@ -1378,12 +1378,11 @@ impl SourceText {
                 self.skip_trivia_within(end_of(self.store.expr_span(id)))
                 grouped(text, atom_tier, parent)
             },
-            // A COMPONENT INSTANCE BINDS LOOSEST: its HEAD is an
-            // expression, so a following `.` chain or binary operator is
-            // swallowed into the head — `text "hi".describe()` reads as
-            // `text ("hi".describe())`. Loosest tier forces the group
-            // wherever anything follows it.
-            .Component(word, heads, block, _, _) -> grouped(self.keyed_instance(id, word, heads, block, depth), loosest_tier, parent),
+            .Component(word, heads, block, _, _) -> grouped(
+                self.keyed_instance(id, word, heads, block, depth),
+                instance_tier(block),
+                parent,
+            ),
             .If(cond, yes, no) -> grouped(self.if_group(cond, yes, no, id, depth, c), atom_tier, parent),
             .When(conds, values, fallback) -> grouped(
                 self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth),
@@ -2558,6 +2557,15 @@ fn source_name(name: string) -> string {
 fn unquoted(text: string) -> string {
     let q = quoted_text(text)
     q.substring(1, q.length - 1)
+}
+
+/// AN INSTANCE ENDS WHERE ITS LAST PIECE ENDS. Closed by its block it is
+/// whole, as a block is: `within d { … }?` and `match within d { … } { … }`
+/// read the instance. Ending in its HEAD it binds loosest, since whatever
+/// follows is read into that expression — `text "hi".describe()` is
+/// `text ("hi".describe())`.
+fn instance_tier(block: ExprId?) -> int {
+    if block == null { loosest_tier } else { atom_tier }
 }
 
 fn grouped(text: string, own: int, parent: int) -> string {
