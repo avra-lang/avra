@@ -74,6 +74,11 @@ if [ -n "${FAKE:-}" ]; then
                 if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$FAKE/ending"; echo "running $size"; else echo "status $(cat "$FAKE/status") $size"; fi
                 ;;
             stop) echo 143 > "$FAKE/status"; rm -f "$FAKE/hang" ;;
+            # A Sprite the fake rsync "reached" holds the worktree it was asked about.
+            manifest)
+                shift
+                sh -c 'AVRA_REMOTE_SCRIPT=$1; shift; eval "$AVRA_REMOTE_SCRIPT"' avra-remote "$(cat "$(dirname "$0")/avra/tools/sprite-remote.sh")" manifest "$(git rev-parse --show-toplevel)" "$@"
+                ;;
         esac
         exit 0
     fi
@@ -332,6 +337,69 @@ check "$(grep -c dequeuePullRequest "$GH_LOG")" 0 "work status: one queued a min
 : > "$GH_LOG"
 QUEUED= sh "$work" status > "$scratch/out" 2>&1
 check "$(grep -c dequeuePullRequest "$GH_LOG") $(grep -c '#7  lane-a  open' "$scratch/out")" "0 1" "work status: a PR outside the queue is only shown" "$scratch/out"
+
+# ══ THE SYNC, THE SPRITE BEING A DIRECTORY HERE: this machine's own rsync
+# carries the tree, and the Sprite's half answers from $scratch/sync-home.
+# `DEAF` makes the Sprite ignore a removal.
+cat > "$scratch/sprite-dir" <<'STUB'
+#!/bin/sh
+[ "$1" != api ] || { echo '{"data":[{"name":"S","status":"running"}]}'; exit 0; }
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+shift
+[ -z "${DEAF:-}" ] || [ "${4:-} ${6:-}" != "avra-remote unlink" ] || exit 0
+exec "$@"
+STUB
+chmod +x "$scratch/sprite-dir"
+git -C "$main" worktree add -q -b sync-a "$scratch/avra-sync" main
+lane=$scratch/avra-sync
+there=$scratch/sync-home/avra-build/avra-sync/tree
+echo S > "$(git -C "$lane" rev-parse --absolute-git-dir)/avra-sprite"
+echo '**/src/main' > "$lane/.gitignore"
+mkdir -p "$lane/packages/p"
+echo one > "$lane/packages/p/gone.av"
+echo two > "$lane/packages/p/keep.av"
+synced() { (cd "$lane" && AVRA_SPRITE_HOME="$scratch/sync-home" AVRA_SPRITE_CLI="$scratch/sprite-dir" sh "$work" sync > "$scratch/out" 2> "$scratch/err"); }
+has() { for f in "$@"; do [ -e "$there/$f" ] && printf 'y' || printf 'n'; done; }
+
+synced
+check "$? $(has packages/p/gone.av packages/p/keep.av tools/work .github/ci/packages.txt ci) $(grep -c 'holds this worktree, proved' "$scratch/err")" "0 yyyyn 1" "sync: the tree lands under its own names and the Sprite's manifest proves it" "$scratch/err"
+
+# What a run wrote there, and what this worktree's rsync never carries.
+mkdir -p "$there/build" "$there/packages/p/.avra-cache" "$there/packages/p/src"
+: > "$there/build/avra"; : > "$there/packages/p/.avra-cache/held"; : > "$there/packages/p/src/main"
+rm "$lane/packages/p/gone.av"
+synced
+check "$? $(has packages/p/gone.av packages/p/keep.av) $(has build/avra packages/p/.avra-cache/held packages/p/src/main) $(grep -c '1 it no longer has removed' "$scratch/err")" "0 ny yyy 1" "sync: a file deleted here is gone there; build/, a cache and an ignored product a run wrote are left" "$scratch/err"
+
+mv "$lane/packages/p/keep.av" "$lane/packages/p/kept.av"
+synced
+check "$? $(has packages/p/keep.av packages/p/kept.av)" "0 ny" "sync: a renamed file is there under its new name only" "$scratch/err"
+
+git -C "$lane" add -A
+git -C "$lane" -c user.name=t -c user.email=t@t commit -q -m base
+git -C "$lane" checkout -q -b sync-b
+mkdir -p "$lane/packages/q"
+echo b > "$lane/packages/q/only_b.av"
+git -C "$lane" add -A
+git -C "$lane" -c user.name=t -c user.email=t@t commit -q -m b
+synced
+before=$(has packages/q/only_b.av)
+git -C "$lane" checkout -q sync-a
+synced
+check "$? $before$(has packages/q/only_b.av packages/p/kept.av)" "0 yny" "sync: after a branch switch the other branch's files are gone from the Sprite" "$scratch/err"
+
+# The same size and the same time, another content: only a manifest of contents sees it.
+echo TWO > "$there/packages/p/kept.av"
+touch -r "$lane/packages/p/kept.av" "$there/packages/p/kept.av"
+synced
+check "$? $(cat "$there/packages/p/kept.av")" "0 two" "sync: a file there that differs only in content is carried again" "$scratch/err"
+
+echo stale > "$there/packages/p/left.av"
+(export DEAF=1; synced)
+check "$? $(grep -c '^work: SPRITE — sync: S does not hold this worktree.*1 file(s) it should not have.*packages/p/left.av.*Nothing was started' "$scratch/err")" "75 1" "sync: a Sprite left holding a file this worktree lacks is refused with 75 and the file's name — nothing runs on another tree" "$scratch/err"
+synced
+check "$? $(has packages/p/left.av)" "0 n" "sync: the same Sprite, hearing again, is put right"
+git -C "$main" worktree remove --force "$lane"
 
 # ══ END TO END, THE SPRITE BEING THIS MACHINE: the real follower over the
 # real supervisor, every exec run here — and its connection killed whole
