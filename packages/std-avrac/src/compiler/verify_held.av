@@ -31,12 +31,17 @@ impl Workspace {
         let warm = self.again(Attempt { entry: entry, want: Want.Diagnostics })?
         let warm_ws = warm.program.ws
         let files = held_paths(warm_ws)
-        if files.is_empty() { return .Ok(VerifyHeld { files: 0, declarations: 0, mismatches: [] }) }
+        if files.is_empty() {
+            warm_ws.discarded()
+            return .Ok(VerifyHeld { files: 0, declarations: 0, mismatches: [] })
+        }
         let fresh = self.from_sources(entry, Want.Diagnostics)?
         let fresh_ws = fresh.program.ws
         let checks = [warm_ws.file_verified(path, fresh_ws) for path in files]
         mut declarations = 0
         for c in checks { declarations = declarations + c.declarations }
+        warm_ws.discarded()
+        fresh_ws.discarded()
         .Ok(
             VerifyHeld {
                 files: files.length,

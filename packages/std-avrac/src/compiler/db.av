@@ -75,7 +75,18 @@ use @std.io.{list_dir, is_dir, read_text}
 use @std.path.{joined_path}
 use @std.text.{parse_int}
 use @std.meta.{derive, identity}
-use @std.relation.engine.{map_cell, Kernel, Key, Verdict as KernelVerdict, Relation, new_memo}
+use @std.relation.engine.{
+    map_cell,
+    Kernel,
+    Key,
+    Verdict as KernelVerdict,
+    Relation,
+    new_memo,
+    KeyMarks,
+    no_key_marks,
+    key_of,
+    edge_of,
+}
 
 /// A file an answer's validity rides on: its path, and its content's
 /// digest at the moment the answer was captured.
@@ -594,11 +605,60 @@ fn lifted_of(r: DbRow) -> LiftResult {
 /// live elsewhere, or run through the Kernel's verbs directly) still
 /// gets a slot, just an empty one.
 @identity
-export type Db = { kernel: Kernel, rows: Cell<Map<string, DbRow>>, families: Cell<List<Relation<DbRow>>> }
+export type Db = { kernel: Kernel, rows: Cell<Map<string, DbRow>>, families: Cell<List<Relation<DbRow>>>, read_by: Cell<Turned?> }
 
 export fn new_db(kernel: Kernel) -> Db {
     let no_families: List<Relation<DbRow>> = []
-    Db { kernel: kernel, rows: map_cell(), families: Cell.new(no_families) }
+    let unturned: Turned? = null
+    Db {
+        kernel: kernel,
+        rows: map_cell(),
+        families: Cell.new(no_families),
+        read_by: Cell.new(unturned),
+    }
+}
+
+/// A settled cell: its key, and its answer's digest — none for an answer the
+/// kernel never digested.
+export type CellRow = { key: Key, digest: int? }
+
+/// A key no settled cell stands at.
+const UNPLACED: int = 0
+
+/// THE GRAPH, TURNED ROUND: each settled cell's place, one past its rank in
+/// key order, and every cell's readers as packed keys in one run — the
+/// readers of the cell ranked `i` stand from `from[i]` up to `from[i + 1]`.
+type Turned = { place: KeyMarks, from: List<int>, readers: List<int> }
+
+/// Every edge filed under the cell it reads: counted, then placed.
+fn turned_round(kernel: Kernel) -> Turned {
+    let keys = kernel.settled_keys()
+    let place = no_key_marks()
+    for i, k in keys { place.mark(k, i + 1) }
+    let none: List<int> = []
+    let cells = keys.length
+    let read = Cell.new([0 for _k in 0..cells])
+    for k in keys {
+        for e in kernel.edges_of(k) ?? none {
+            let at = place.mark_of(key_of(e))
+            if at != UNPLACED { read.set_at(at - 1, read.get()[at - 1] + 1) }
+        }
+    }
+    mut from = [0]
+    for n in read.get() { from.push((from.last() ?? 0) + n) }
+    let next = Cell.new(from)
+    let readers = Cell.new([0 for _k in 0..from[cells]])
+    for k in keys {
+        for e in kernel.edges_of(k) ?? none {
+            let at = place.mark_of(key_of(e))
+            if at != UNPLACED {
+                let seat = next.get()[at - 1]
+                readers.set_at(seat, edge_of(k))
+                next.set_at(at - 1, seat + 1)
+            }
+        }
+    }
+    Turned { place: place, from: from, readers: readers.get() }
 }
 
 /// A `Db` for a caller with no `Workspace` to read one from — the
@@ -657,12 +717,52 @@ impl Db {
 
     fn record_dep(key: Key) { self.kernel.record_dep(key) }
 
-    /// A settled cell's deps — the edges `avra cache` walks
-    /// (compiler/cache_walk.av).
-    fn deps_of(key: Key) -> List<Key> { self.kernel.deps_of(key) }
+    // THE GRAPH, READ: the kernel's cells and edges as two relations would
+    // answer them — `Cell(key, digest)` by its key and by its family,
+    // `Edge(reader, read)` by either end. Every inspection is a fold over
+    // these four reads and reaches no further into the kernel.
 
-    /// Every key settled — the walk's nodes.
-    fn settled_keys() -> List<Key> { self.kernel.settled_keys() }
+    /// Cell by key: the settled cell at `key`, none for a key never settled.
+    fn cell(key: Key) -> CellRow? {
+        if self.kernel.edges_of(key) == null { return null }
+        CellRow { key: key, digest: self.kernel.value_hash_of(key) }
+    }
+
+    /// Cell by family: every settled cell, family by family, in key order.
+    fn cells_by_family() -> List<List<CellRow>> {
+        mut families: List<List<CellRow>> = []
+        mut run: List<CellRow> = []
+        for k in self.kernel.settled_keys() {
+            while families.length < k.family {
+                families.push(run)
+                run = []
+            }
+            run.push(CellRow { key: k, digest: self.kernel.value_hash_of(k) })
+        }
+        if run.is_empty() { families } else { families.concat([run]) }
+    }
+
+    /// Edge by reader: what `key`'s cell read, in the order it first read them.
+    fn edges_by_reader(key: Key) -> List<Key> { self.kernel.deps_of(key) }
+
+    /// Edge by read: the cells that read `key`'s directly, in key order —
+    /// over the graph as it stood when this was first asked.
+    fn edges_by_read(key: Key) -> List<Key> {
+        let turned = self.turned()
+        let at = turned.place.mark_of(key)
+        if at == UNPLACED { return [] }
+        [key_of(e) for e in turned.readers.slice(turned.from[at - 1], turned.from[at])]
+    }
+
+    /// The graph turned round, turned once.
+    fn turned() -> Turned {
+        let known? = self.read_by.get() else {
+            let turned = turned_round(self.kernel)
+            self.read_by.set(turned)
+            return turned
+        }
+        known
+    }
 
     fn value_hash_of(key: Key) -> int? { self.kernel.value_hash_of(key) }
 

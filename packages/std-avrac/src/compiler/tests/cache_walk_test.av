@@ -3,8 +3,9 @@
 // to a text it reads, and a text's readers are the queries that reach it.
 // `a_process_over`, `checked`, `package_files` and the ordinals are
 // workspace_fixtures.av's own.
-use compiler.{Workspace}
-use @std.relation.engine.{Key}
+use compiler.{Workspace, Labelled, family_word}
+use core.{sorted_texts}
+use @std.relation.engine.{Key, same_key}
 
 /// The package checked in one process, so the kernel holds what each file read.
 fn walked() -> Workspace {
@@ -12,6 +13,30 @@ fn walked() -> Workspace {
     for path in package_names() { let _ = checked(ws, path) }
     ws
 }
+
+/// The answers a label names, none when it names no family or no answer.
+fn named_by(ws: Workspace, label: string) -> List<Key> {
+    match ws.labelled(label) { .Answers(keys) -> keys, .NoFamily(_) or .NoAnswer -> [] }
+}
+
+/// The settled answers whose own label, read backwards, does not name them.
+fn unread(ws: Workspace) -> List<Key> {
+    [c.key for cells in ws.db.cells_by_family() for c in cells if !named_by(ws, ws.key_label(c.key)).any((k: Key) -> same_key(k, c.key))]
+}
+
+/// The word of the family a label names when no answer belongs to it.
+fn unknown_family(ws: Workspace, label: string) -> string {
+    match ws.labelled(label) { .NoFamily(word) -> word, .Answers(_) or .NoAnswer -> "" }
+}
+
+/// Every answer that reads `k` at any depth, nearest first.
+fn above(ws: Workspace, k: Key) -> List<Key> {
+    let up = ws.readers_from(k)
+    [r.key for r in up.slice(1, up.length)]
+}
+
+/// The families the fixture's graph holds an answer of.
+fn families_held(ws: Workspace) -> int { [1 for cells in ws.db.cells_by_family() if !cells.is_empty()].length }
 
 fn label_at(ws: Workspace, family: int, arg: int) -> string { ws.key_label(Key { family: family, arg: arg }) }
 
@@ -26,13 +51,37 @@ spec "compiler/cache_walk — a query's label" {
             label_at(ws, manifest_ordinal(), 0).starts_with("Manifest(")
     }
     then "a family past the declared ones is a relation, named by its place" {
-        let ws = walked()
-        ws.key_family_word(Key { family: 4096, arg: 0 }) == "Relation 4096" &&
-            ws.key_family_word(Key { family: -1, arg: 0 }) == "Relation -1" &&
-            ws.key_family_word(Key { family: 22, arg: 0 }) == "Raised"
+        family_word(4096) == "Relation 4096" &&
+            family_word(-1) == "Relation -1" &&
+            family_word(22) == "Raised"
     }
     then "a label typed whole names exactly that query" {
-        walked().named_queries("Sig(f · src/a.av)").length == 1
+        named_by(walked(), "Sig(f · src/a.av)").length == 1
+    }
+    then "part of a label names no query" {
+        let ws = walked()
+        named_by(ws, "Sig(f").is_empty() && named_by(ws, "Sig(f · src/b.av)").is_empty()
+    }
+    then "a word no family wears is named as the word" {
+        let ws = walked()
+        unknown_family(ws, "Sog(f · src/a.av)") == "Sog" &&
+            unknown_family(ws, "Relation 4096(0)") == "Relation 4096" &&
+            unknown_family(ws, "Sig(f · src/a.av)") == ""
+    }
+    then "an empty subject names no answer, whatever its family keys by" {
+        let ws = walked()
+        ["Source()", "Namespace()", "Sig()", "Manifest()", "Receivers()", "Lowered()", "Named()"]
+            .all((l: string) -> named_by(ws, l).is_empty() && unknown_family(ws, l) == "")
+    }
+    then "every settled answer's label, read backwards, names that answer" {
+        unread(walked()).length == 0
+    }
+    then "no family holds an answer its own label cannot find" {
+        let ws = walked()
+        [k.family * 1000000 + k.arg for k in unread(ws)].first() ?? -1 == -1
+    }
+    then "and the answers so read span the fixture's families" {
+        families_held(walked()) > 8
     }
 }
 
@@ -52,7 +101,7 @@ spec "compiler/cache_walk — down from a file's analysis" {
     }
     then "a file's analysis reads more than itself" {
         let ws = walked()
-        ws.reads_count(ws.analysis_key("/w/src/b.av")!) > 0
+        ws.reached_from(ws.analysis_key("/w/src/b.av")!).length > 1
     }
 }
 
@@ -60,9 +109,86 @@ spec "compiler/cache_walk — up from a text" {
     then "a callee's text is read by its own parse and by its caller's analysis, never by itself" {
         let ws = walked()
         let text = ws.input_key("/w/src/a.av")!
-        let labels = [ws.key_label(k) for k in ws.readers(text)]
+        let labels = [ws.key_label(k) for k in above(ws, text)]
         labels.contains("Parsed(src/a.av)") &&
             labels.contains("Analysis(src/b.av)") &&
             !labels.contains("Source(src/a.av)")
+    }
+    then "its direct readers are among its readers at any depth, and fewer" {
+        let ws = walked()
+        let text = ws.input_key("/w/src/a.av")!
+        let near = [ws.key_label(k) for k in ws.db.edges_by_read(text)]
+        let far = [ws.key_label(k) for k in above(ws, text)]
+        !near.is_empty() && near.length < far.length && near.all((l: string) -> far.contains(l))
+    }
+    then "an answer never settled is read by nothing" {
+        let ws = walked()
+        let gone = Key { family: parsed_ordinal(), arg: 4096 }
+        ws.db.cell(gone) == null &&
+            ws.db.edges_by_read(gone).is_empty() &&
+            above(ws, gone).is_empty()
+    }
+    then "every edge found by its reader is found by what it reads, and no other is" {
+        let ws = walked()
+        let cells = [c.key for family in ws.db.cells_by_family() for c in family]
+        let down = [1 for k in cells for d in ws.db.edges_by_reader(k) if ws.db.cell(d) != null]
+            .length
+        let up = [1 for k in cells for _r in ws.db.edges_by_read(k)].length
+        down > 0 &&
+            down == up &&
+            cells
+                .all(
+                    (k: Key) -> ws
+                        .db
+                        .edges_by_reader(k)
+                        .all(
+                            (d: Key) -> ws.db.cell(d) == null ||
+                                ws.db.edges_by_read(d).any((r: Key) -> same_key(r, k)),
+                        ),
+                )
+    }
+}
+
+spec "compiler/cache_walk — one answer explained" {
+    then "a text reads nothing, and the files analysed again when it moves are its own and its caller's" {
+        let ws = walked()
+        let said = ws.explained_all([ws.input_key("/w/src/a.av")!])
+        said.length == 1 &&
+            said[0].answer.label == "Source(src/a.av)" &&
+            said[0].reads.is_empty() &&
+            said[0].deep == 0 &&
+            said[0].deep_by >= said[0].read_by.length &&
+            said[0].files.contains("src/a.av") &&
+            said[0].files.contains("src/b.av")
+    }
+    then "what an analysis read directly comes in label order" {
+        let ws = walked()
+        let reads = [r.label for r in ws.explained_all([ws.analysis_key("/w/src/b.av")!])[0].reads]
+        reads.length > 1 && reads.join("\n") == sorted_texts(reads).join("\n")
+    }
+    then "a declaration's name finds it, and every answer keyed by it is keyed by a declaration" {
+        let ws = walked()
+        let found = ws.decls_named("f")
+        found.length == 1 &&
+            [ws.key_label(k) for k in ws.decl_answers(found[0].id)].contains("Sig(f · src/a.av)") &&
+            ws.decls_named("no_such_name").is_empty()
+    }
+}
+
+spec "compiler/cache_walk — the families, counted" {
+    then "each family's cells are counted once, and the input family reads nothing" {
+        let ws = walked()
+        let counts = ws.family_counts()
+        let source = counts.find(it.family == "Source")
+        source != null && source!.cells > 0 && source!.edges == 0 && source!.longest == 0
+    }
+    then "a family's median read list is no longer than its ninety-ninth, nor that than its longest" {
+        walked().family_counts().all(it.p50 <= it.p99 && it.p99 <= it.longest && it.cells > 0)
+    }
+    then "the families' cells are every settled answer" {
+        let ws = walked()
+        mut cells = 0
+        for c in ws.family_counts() { cells = cells + c.cells }
+        cells == [1 for family in ws.db.cells_by_family() for _c in family].length
     }
 }
