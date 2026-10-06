@@ -30,7 +30,8 @@
 set -u
 avra=${AVRA:-build/avra}
 root=${1:-.}
-shift || true
+# a `shift` past `$#` ends the script under dash, whatever follows it
+[ "$#" -gt 0 ] && shift
 if [ "$#" -gt 0 ]; then
     list=$*
 else

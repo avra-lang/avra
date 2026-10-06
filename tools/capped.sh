@@ -58,6 +58,10 @@ mkdir -p "$(dirname "$out")"
 # read as "no status", and every red command would answer green. The
 # probe caught it; nothing in the tree would have.
 { set +e; "$@" 2>&1; echo "__capped_status=$?"; } | tail -c "$bytes" > "$out"
+# A PIPE'S TAIL MAY ANSWER WHOLE CHUNKS PAST THE CAP (uutils' does, over
+# many small writes); a file's seeks and is exact, so the cap is taken
+# again from the file.
+tail -c "$bytes" "$out" > "$out.tmp" && mv "$out.tmp" "$out"
 line="$(tail -1 "$out")"
 case "$line" in
     __capped_status=*)
