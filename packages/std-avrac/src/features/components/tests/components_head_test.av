@@ -1,0 +1,73 @@
+// AN INSTANCE'S HEAD KEEPS ITS BRACE. The brace after an instance's
+// head opens the instance's block, so a record literal written as the
+// head stands in parentheses; everywhere else a literal opens bare.
+use @std.avrac.testing.{provided, provided_workspace, answered}
+use @std.avrac.compiler.{Program}
+
+/// The library: a record a head takes, and a component over it.
+fn provider() -> string {
+    "export type Span = { n: int }\nexport component tally(span: Span) {\n    extra: int = 0\n    fn total() -> int { self.span.n + self.extra }\n}\n"
+}
+
+fn over(main: string) -> Program { provided("use @x.c.{tally, Span}\n" + main, provider()) }
+
+/// A file as the formatter prints it.
+fn printed(main: string) -> string {
+    let ws = provided_workspace("use @x.c.{tally, Span}\n" + main, provider())
+    match ws.formatted_source(ws.file_id("/w/src/main.av")) {
+        .Ok(text) -> text,
+        .Err(why) -> "refused: ${why}",
+    }
+}
+
+/// A component declared in the file that instances it.
+const nest = "component nest(depth: int) {\n    extra: int = 0\n    fn total() -> int { self.depth + self.extra }\n}\n"
+
+spec "features/components — an instance's head" {
+    given "a record literal as the head" {
+        then "stands in parentheses before the block" {
+            answered(over("let t = tally (Span { n: 2 }) {\n    extra: 3\n}\nt.total()")) == "5"
+        }
+        then "written bare, hands its brace to the instance — refused in words that write the parentheses" {
+            over("let t = tally Span { n: 2 } {\n    extra: 3\n}\nt.total()").report().trim() == "error[build.failed]: the brace after an instance's head opens the instance's block, so `Span { … }` is no record literal here — a record literal as the head stands in parentheses: `tally (Span { … })`\n  ╭─[/w/src/main.av:2:9]\n2 │ let t = tally Span { n: 2 } {\n  ·         ┬\n──╯"
+        }
+        then "stands in parentheses where no block follows" {
+            answered(over("let t = tally (Span { n: 2 })\nt.total()")) == "2"
+        }
+        then "written bare with no block, is refused the same way" {
+            answered(over("let t = tally Span { n: 2 }\nt.total()")) == "error[type.struct_fields]: field `span` is `Span`, this is `type Span`\n  ╭─[/w/src/main.av:2:15]\n2 │ let t = tally Span { n: 2 }\n  ·               ┬\n  ·               ╰── this is `type Span`\n──╯\n\nerror[type.component_head]: the brace after an instance's head opens the instance's block, so `Span { … }` is no record literal here\n  ╭─[/w/src/main.av:2:15]\n2 │ let t = tally Span { n: 2 }\n  ·               ┬\n  ·               ╰── names a record\n──╯\nhelp: a record literal as the head stands in parentheses: `tally (Span { … })`\n\nerror[type.struct_fields]: `tally` has no field `n`\n  ╭─[/w/src/main.av:2:25]\n2 │ let t = tally Span { n: 2 }\n  ·                         ┬\n  ·                         ╰── written here\n──╯\nhelp: the fields are `span`, `extra`"
+        }
+    }
+    given "a name as the head" {
+        then "is the head, and the brace after it the block" {
+            answered(over("let id = Span { n: 4 }\nlet t = tally id {\n    extra: 1\n}\nt.total()")) == "5"
+        }
+        then "is the head in a list, element by element" {
+            answered(
+                over(
+                    "let ids = [Span { n: 1 }, Span { n: 2 }]\nlet ts = [tally id { extra: 10 } for id in ids]\n\"\${ts[0].total()} \${ts[1].total()}\"",
+                ),
+            ) == "11 12"
+        }
+    }
+    given "a word its own module declares" {
+        then "takes a bare head" { answered(provided(nest + "let n = nest 2\nn.total()", "")) == "2" }
+        then "takes a name and a block" {
+            answered(provided(nest + "let d = 2\nlet n = nest d {\n    extra: 5\n}\nn.total()", "")) == "7"
+        }
+        then "followed by a parenthesis is a call — refused in words that write the head" {
+            provided(nest + "let d = 2\nlet n = nest (d - 1)\nn.total()", "").report().trim() == "error[type.lambda]: `nest` is a component, and a parenthesis after its word is read as a call\n  ╭─[/w/src/main.av:6:9]\n6 │ let n = nest (d - 1)\n  ·         ┬\n  ·         ╰── called here\n──╯\nhelp: an instance's head value follows its word bare — `nest value` — so bind a longer one first: `let value = …`"
+        }
+    }
+    given "the formatter" {
+        then "keeps a parenthesised literal head as written" {
+            printed("let t = tally (Span { n: 2 }) {\n    extra: 3\n}\nt.total()\n") == "use @x.c.{tally, Span}\nlet t = tally (Span { n: 2 }) {\n    extra: 3\n}\nt.total()"
+        }
+        then "keeps a name head bare" {
+            printed("let id = Span { n: 4 }\nlet t = tally id {\n    extra: 1\n}\nt.total()\n") == "use @x.c.{tally, Span}\nlet id = Span { n: 4 }\nlet t = tally id {\n    extra: 1\n}\nt.total()"
+        }
+        then "keeps the parentheses where no block follows" {
+            printed("let t = tally (Span { n: 2 })\nt.total()\n") == "use @x.c.{tally, Span}\nlet t = tally (Span { n: 2 })\nt.total()"
+        }
+    }
+}

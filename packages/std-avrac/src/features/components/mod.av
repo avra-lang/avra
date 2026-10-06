@@ -1,7 +1,8 @@
 //! Components — a record type with defaults that a block instantiates.
 //! `component Name(head: T) { field: T = default … fn … }` declares
 //! it: the head's fields are filled by position, the rest by name,
-//! and the fns are its methods. A component whose `expand` is ONE
+//! and the fns are its methods. A `state` field is a place each
+//! instance holds, as a record's is. A component whose `expand` is ONE
 //! `quote` reading only `self` is a TEMPLATE: an importing file's
 //! `within ms(5) { … }` is that quote, copied where the instance
 //! stands. One with no `expand` is a RECORD its instance builds:
@@ -16,6 +17,10 @@
 //! until an instance hears it; a handler hears all its event says, or
 //! none of it. `on input: handler` hands the event a handler that is
 //! already a value — how a component passes on one it was given.
+//! AN INSTANCE'S HEAD KEEPS ITS BRACE: a name and then a brace after a
+//! component's word is that name as the head and the instance's own
+//! block — `counter id { key: id }` — never a record literal. A literal
+//! as a head stands in parentheses.
 use features.{LanguageFeature, BuilderRow}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
@@ -27,6 +32,7 @@ export fn components() -> LanguageFeature {
         "component_value"      | build_component_value
         "component_keyed"      | build_component_keyed
         "component_headless"   | build_component_headless
+        "component_name_head"  | build_component_name_head
         "component_blockless"  | build_component_blockless
         "component_named"      | build_component_named
         "component_named_bare" | build_component_named_bare
@@ -44,16 +50,18 @@ export fn components() -> LanguageFeature {
         "lower.component_checked" | "a component's `check` judged this instance"
         "type.component_format"   | "a `Format` head is `@std.meta`'s pattern type"
         "type.component_event"    | "an instance hears the events its component declares"
+        "type.component_body"     | "a component's body is what one trait says a body is"
+        "type.component_head"     | "the brace after an instance's head opens the instance's block"
     }
     LanguageFeature components {
         gram: grammar {
-            stmt = "component" n:NAME ( "(" ( ( hm:mark )* hs:NAME ":" ht:type ( "," ( hm:mark )* hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( ( fm:mark )* ( fs:NAME ":" ft:type ( "=" fd:expression )? | ON en:NAME ( "(" ( ep:NAME ":" et:type ( "," ep:NAME ":" et:type )* ","? )? ")" )? ) | rs:".." ( dd:"." )? rt:type | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m, rs, rt, dd, hm, fm, en, ep, et)
+            stmt = "component" n:NAME ( "(" ( ( hm:mark )* hs:NAME ":" ht:type ( "," ( hm:mark )* hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( ( fm:mark )* ( ( st:STATE )? fs:NAME ":" ft:type ( "=" fd:expression )? | ON en:NAME ( "(" ( ep:NAME ":" et:type ( "," ep:NAME ":" et:type )* ","? )? ")" )? ) | rs:".." ( dd:"." )? rt:type | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m, rs, rt, dd, hm, fm, en, ep, et, st)
             stmt = w:COMPONENT n:NAME b:named_inst_body END -> component_named(w, n, b) | w:COMPONENT n:NAME END -> component_named_bare(w, n)
             setting = k:NAME ":" v:expression END -> setting(k, v) | w:ON kw:NAME "{" BREAK* ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:stmt | BREAK )* "}" -> on_handler(w, kw, ip, s) | w:ON kw:NAME ":" v:expression END -> on_value(w, kw, v)
             named_inst_body = "{" BREAK* hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> instance_arms_body(hp, hg, hv, a)
                 | b:instance_body -> b
             instance_body = "{" BREAK* ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
-            primary = w:COMPONENT b:instance_body -> component_headless(w, b) | w:COMPONENT h:expression b:instance_body -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression kw:NAME iw:NAME "." fp:NAME b:instance_body -> component_keyed(w, h, kw, iw, fp, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
+            primary = w:COMPONENT hn:NAME b:instance_body ( x:instance_body )? -> component_name_head(w, hn, b, x) @trailer(x) | w:COMPONENT b:instance_body -> component_headless(w, b) | w:COMPONENT h:expression b:instance_body -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression kw:NAME iw:NAME "." fp:NAME b:instance_body -> component_keyed(w, h, kw, iw, fp, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
         }
         builders: rows
         diags: codes

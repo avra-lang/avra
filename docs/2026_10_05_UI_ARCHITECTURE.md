@@ -24,7 +24,7 @@ Five attempts to lift a handler into a generated message failed.
 
 | layer | is | owns |
 |---|---|---|
-| state | places the app owns | `state`, keyed stores |
+| state | places the app owns | module `state`, a model's `state` fields, a component instance's |
 | view | components -> the neutral tree | what a node IS, says, looks like, hears |
 | lower | neutral node -> one target's elements | tags, attributes vs properties, control structure |
 | diff | old elements vs new -> patches | reconciliation, ONCE, in Avra |
@@ -67,16 +67,24 @@ Five attempts to lift a handler into a generated message failed.
    (`realize/dom/tests/support`; `make ui-fuzz` runs it at length, and
    `make ui-host-test` holds the page's own host to the model's page).
 2. **One identity.** A node is WHERE IT STANDS: its parent, then its
-   key or its place among its unkeyed siblings (`tree/identity.av`);
-   siblings sharing a key are told apart by their turn. Identity is
-   never written out whole. A page gives a node's element a NUMBER when
-   it first appears and the element wears it while it stays — matched,
-   paint to paint, by its step among its siblings. The number is fixed
-   in width however deep the node sits and counted out, never hashed,
-   so two elements cannot share one. Event echo, per-instance state,
-   retention and the event log read the number; a reader's path is
-   spelled only by the debug projection. The compiler's site
-   fingerprint replaces "place" as a step.
+   key or the SITE it was written at (`tree/identity.av`) — the
+   literal that made it, one number a written literal, filled by the
+   compiler into a field typed `@std/meta`'s `Site`. A sibling that
+   comes and goes above a node moves nothing: not its element, not its
+   state. Siblings one site made (a loop's, a helper's called twice)
+   and siblings sharing a key are told apart by their turn, which is
+   order — what must keep its own through a reorder wears a key. A
+   root has no sibling, so where it was written says nothing: a page
+   turned into another view keeps its root. Identity is never written
+   out whole. A page gives a node's element a NUMBER when it first
+   appears and the element wears it while it stays — matched, paint to
+   paint, by its step among its siblings. The number is fixed in width
+   however deep the node sits and counted out, never hashed, so two
+   elements cannot share one. Event echo, retention and the event log
+   read the number; instance state is kept by the walk that MAKES the
+   tree, on the same steps, before any page numbers it. A reader's
+   path is spelled only by the debug projection, which shows a site as
+   the place it stands at.
 3. **A primitive says what it projects to.** Primitives are a closed
    set the library owns; each member says what it is — `@attr(.Label)`,
    `@children`, `@style(color)`, an event, or the spread `..Box` — and
@@ -84,7 +92,9 @@ Five attempts to lift a handler into a generated message failed.
    its type is checked against the library's own declaration (`Prim`,
    `Attribute`, `EventKind`'s words, `Style`), read by `type_exported`,
    so no second table exists; what two members say twice is refused. A user
-   component is a COMPOSITION and invents no projection. No meaning is
+   component is a COMPOSITION and invents no projection: its BODY is
+   the views it is made of, drawn in place under its own parent, with
+   no `@derive` and no spread written (below). No meaning is
    read from a field's spelling.
 4. **An event is a declared member.** `on input(typed: string)` in the
    component, `on input { typed -> … }` at the instance, `on input:
@@ -157,6 +167,229 @@ Five attempts to lift a handler into a generated message failed.
     `Font`) are `style/tokens.av`'s; a value that shows itself where it
     is listed is `tree/shows.av`'s `Shows`. The old node's `spoken`
     is `tree/outline.av`'s `outline`.
+
+## Compositions and instance state (seam 2's tenant)
+
+A user component is a COMPOSITION: ITS BODY IS ITS VIEW. What it holds
+beside its fields and its `fn`s is what it is made of, and its `state`
+members are places each INSTANCE owns. The author writes no `@derive`,
+no spread, no `fn view()`, no return type, and may use it in the file
+that declares it.
+
+    use @std.ui.components.{button, text}
+
+    component counter(label: string) {
+        state n: int = 0
+        text "${self.label}: ${self.n}"
+        button "+" { on press { self.n = self.n + 1 } }
+    }
+
+    component task_row(todo: Todo) {
+        state open: bool = false
+        item {
+            button self.todo.title { on press { self.open = !self.open } }
+            if self.open { text self.todo.notes }
+        }
+    }
+
+    fn page() -> column {
+        column {
+            counter "left"
+            counter "right" { n: 10 }
+            for t in visible() {
+                task_row t { key: t.id }
+            }
+        }
+    }
+
+### What a composition is
+
+- **A body draws IN PLACE.** A composition has no node of its own: what
+  its body makes — none, one or several nodes — stands under the
+  composition's own parent (`View.describe` answers a list). A page
+  holds no element for it.
+- **Its standing is one step; its nodes are stepped through it.** The
+  instance is kept at its own step under its parent (its key, else its
+  site). Each node it draws carries that step in front of its own
+  (`Stand.via`), so two instances' nodes are told apart beside each
+  other: moving a keyed composition moves exactly its nodes.
+- **Its key shows on the first node it draws.** A composition has no
+  node to wear a key, so the first node its body makes wears it — a
+  page's `data-key` — where that node wears none of its own.
+- **A tree has one root.** A root that drew none or several nodes is
+  held in a column — the one wrapper, and only there.
+- **A primitive is the other kind**: `@prim`, marked members, no body,
+  drawn by its target. A declaration with both is refused by name.
+
+### Laws
+
+1. **`describe` is the walk, and the walk says where it stands.**
+   `View.describe(at: Standing) -> List<Node>`. A container hands each child
+   the standing under its own, at the child's step — `tree/identity.av`'s
+   `steps` over what each child says of where it stands, the tree's one
+   identity, computed
+   where the tree is MADE. Every target has it and none owns it. What
+   a composition is made of stands under the composition's standing,
+   so one made of a single composition never shares its standing.
+2. **The instance that stands is the first one built there.** An
+   instance is a value, built fresh each paint. The walk keeps the
+   first one at a standing; a later one hands it its PROPS (a copy
+   shares its `state` cells) and its body runs on that. A handler is a
+   closure over `self`, so it holds the kept cells.
+3. **A seed is read once.** A state member's value at the instance
+   (`n: 10`, or its default) seeds the place when the instance first
+   stands; while it stands, later values are not read. A new key is a
+   new instance.
+4. **A paint offers what stood, once.** Each standing a paint reaches
+   is opened: the instance and the standings that stood there are
+   offered to this paint, and what it does not take is gone. So an
+   instance lives exactly while a paint reaches it — no list of the
+   living, no sweep. A keyed row keeps its standing through a reorder;
+   a row a filter hides has LEFT, and its instance state leaves too.
+5. **State that must outlive a hide is the MODEL's**: a `state` field
+   of the model's own record, or module state. It lives as long as the
+   row does and no paint frees it.
+6. **A standing is never handed to another component.** One kept by
+   a component and reached by another is not read: state can be lost
+   to a moved place, never read by a stranger.
+7. **The app owns what stands.** A kept instance is held by its
+   standing, behind a fn, under the app's root: two screens over one
+   view share nothing, and a dropped screen takes its instances with
+   it. Beside each composition its derive mints one `once fn` — only
+   the typed SEAT an instance is handed across; it holds nothing
+   between two calls. Its name, and the name of the method a body
+   becomes, are ones no program can write, so a component's own `fn`s
+   and its file's take any name.
+   `App.held()` counts what stands.
+8. **A write during the walk is a write.** It lands, the rest of that
+   paint reads it, and no paint follows from it — only the loop's door
+   paints. A place is a `Cell`: nothing stands between a writer and
+   it, so nothing can speak. Pinned (`tests/instance_life`).
+9. **An unkeyed instance stands at its site.** Two instances of one
+   component written at two places never trade state, whatever comes
+   and goes between them — two literals written alike included: a site
+   is the literal's file, its content and its turn among the literals
+   like it in that file. Instances ONE site made (a loop, a
+   comprehension, a fn called twice), with no key, are told apart by
+   order, and so are two that share a key: the walk cannot refuse a
+   tree it is handed, so it SAYS so — `App.warnings()` after each
+   paint, and once an app on a target's error stream (a terminal's, a
+   page's console):
+   "`counter` keeps state, and here its instances are told apart by
+   their order alone — they share a key, or one site made them and
+   none wears one: give each its own `key`".
+10. **`tree_of(view)` is a tree standing alone** — no paint before it,
+   none after — for a document, a gallery, a test of one node.
+
+### The language
+
+- **A component's body.** A component declaration takes statements
+  beside its fields and `fn`s — child instances, `if`/`for`/`match`, a
+  `let`, a call whose answer is a view — never a declaration of its
+  own. The compiler folds them into one quote; nothing walks a body
+  where it is written.
+- **`@composes(Carried)`** (`@std/meta`), worn by a trait: A COMPONENT
+  WITH A BODY IS ONE OF THESE. It is derived over that trait exactly as
+  a written `@derive` would derive it — the trait's `derive` receives
+  the body as `Type.body` and splices it where it means something —
+  and it CARRIES the record the mark names as if it spread it. So the
+  compiler names no library: `@std/ui` writes `@composes(Stand) export
+  trait View`, and `key:` and the site are fields of every composition
+  with nothing written.
+- **Which trait is found along what the file names**: the nearest
+  files that declare a trait wearing `@composes`, walking outward from
+  the component's file — the files its `use` lines' names are declared
+  in and the files of its own module, then theirs. A body made of
+  `text` reaches `@std/ui`'s `View` through `text`'s file; a body made
+  only of other compositions reaches it through theirs, with no `use`
+  of the library written. Only files a build already reads are read —
+  never a package's tests. Two libraries each compose their own
+  components; a body with none in reach is refused, and so is one
+  whose nearest ring holds two.
+- **A generated impl names its trait where the name was WRITTEN.**
+  `impl View for counter` is the library's text: `View` is read in the
+  library's file, whatever the component's file imports — nothing, or
+  an unrelated `View` of its own. No import is bound into the user's
+  file; what lands in it is the impl and the seat of law 7, under
+  names no program can write.
+- **A component is instanced where it is declared.** A module's own
+  component word is reserved nowhere, so it opens an instance where
+  the line says so: before a head value (`counter "a"`, `counter id`,
+  `counter self.name`) anywhere, or before a name where a statement
+  starts. Its word before a `{` stays the record's literal (`header
+  {}`). The parse a module's words are read off knows them by name
+  already, so an instance stands there as a hole and the declaration
+  around it keeps its shape.
+- **A statement that fails keeps the shape around it.** Recovery
+  skips the block the failed statement opened, not only its line, so
+  a declaration around it still closes where it was written.
+- **An instance's head keeps its brace.** After a component's word, a
+  name and then a brace is the head and the instance's block: `counter
+  id { key: id }` is `counter` over `id`. A record literal as a head
+  that a block follows stands in parentheses — `tally (Tally { … }) {
+  … }` — and `fmt` keeps them; a head naming a record is refused in
+  those words (`type.component_head`). Every other head (`if`,
+  `while`, `for`, `match`, `if let`, `let … else`) takes a literal
+  bare, as before. A module's OWN word before a parenthesis is a call,
+  refused in words that say to bind the value first.
+- `component C { state n: T = v }`: a field, as a record's is.
+- A WRITE THROUGH A `state` FIELD ASKS NOTHING OF ITS ROOT. The cell
+  takes it, so `self.n = …` in a handler and `c.n = …` on a parameter
+  run; `self.plain = …` keeps `resolve.immutable`'s words. The root's
+  verdict is spoken at typing, where the field is known. Such a write
+  marks no receiver written.
+- `@std/meta`: `Field.state`, `Type.body`, `composes`.
+- `@std/meta`'s `Site`: A FIELD'S TYPE IS ITS MEANING. A record literal
+  that leaves a `Site` field unset holds its own site — its file, its
+  own content and its turn among the literals like it in that file,
+  folded — so it owes no default. One constant a literal;
+  content-addressed, so a line added above it moves nothing, and two
+  literals written alike are still two sites.
+
+### Refused
+
+- `type.component_body`: "a component is made of what its body holds,
+  and nothing here says what `x`'s is" — no trait composes; and "one
+  trait says what a component's body is, and here `A` and `B` both
+  do"; what the composing trait's own `derive` refuses, in its words
+  and under its package's kind. A derive that cannot run is
+  `annotation.unsettled`, at the component.
+- `type.component_head`: "the brace after an instance's head opens the
+  instance's block, so `P { … }` is no record literal here"
+- `resolve.unresolved`: "`label` is not defined — a member is read
+  through its receiver", help "write `self.label`"
+- `build.failed`: "a component holds its fields, its `fn`s and what it
+  is made of — never a declaration of its own"; "a component's `state`
+  is a field, and a field says its type — `state n: int = 0`"
+- `@std/ui:prim`: "a view is a primitive or is made of views, and `x`
+  is neither"
+- `@std/ui:primitive-body`: "a primitive is drawn by its target, and
+  `x` holds a body of its own"
+- `@std/ui:stateful-primitive`: "a primitive draws what it is told,
+  and `n` is a place it would keep"
+- `@std/ui:boxed-composition`, `@std/ui:marked-composition`: a
+  composition spreads no `Box` and marks no member
+
+### Rejected
+
+- a cell bound when the node is placed: the view READS state while it
+  is built, before any place exists.
+- state on the page's node number: only a page numbers, and it
+  numbers after `describe`.
+- the hand-keyed store (`ui-instance`): a second identity, spelled by
+  the author.
+- call-order slots behind an ambient cursor: a hidden global, and an
+  identity by ORDER of calls.
+- a process-wide table per component: a dropped screen's rows are
+  never reclaimed.
+- the kept instance as a `dyn` in the trie, read back by a checked
+  downcast: the language has none.
+
+### Not foreclosed
+
+A standing is a path of steps, the same in every process, so a dev
+reload can carry `path -> state fields` across where the fields
+encode; a `Cell`'s address could not.
 
 ## Where it lives
 
@@ -284,3 +517,8 @@ one exhaustive match per target over the primitives.
 ## Open
 
 - The object cache across targets: PR #272, `avra-8sb5.67`.
+- Compositions, as they stand: an instance takes ONE head value
+  (`avra-8sb5.11.331`); a composition with no head is written `name
+  {}`, never bare (`.332`); a name in generated code other than an
+  impl's own trait still resolves in the landing file (`.333`); `fmt` prints a component's fields, then its body, then
+  its `fn`s, whatever order they were written in.

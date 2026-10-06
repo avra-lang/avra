@@ -58,6 +58,7 @@ use core.{
     Exemplar,
     fp,
     fp_list,
+    mix_final,
     list_cell,
     map_cell,
     same_type,
@@ -565,6 +566,8 @@ export type Decls = {
     // the workspace's kept-apart hook: the declarations a file's
     // module keeps apart, what a symbol asks whether to carry its file
     apart_of: Cell<fn(FileId) -> List<DeclId>>,
+    // the traits that may compose a component of a file — the workspace's to answer
+    composers_of: Cell<fn(FileId) -> List<DeclId>>,
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
     builtins: Cell<List<DeclId>>,
@@ -836,6 +839,7 @@ export fn new_decls() -> Decls {
         lifter: Cell.new(no_lifter),
         namespace_of: Cell.new(no_namespace),
         apart_of: Cell.new(none_apart),
+        composers_of: Cell.new(none_apart),
         refs_db: Cell.new(new_db()),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
@@ -1461,6 +1465,11 @@ impl Decls {
         }
     }
 
+    /// Whether slot `j` is a SITE: a field typed `@std/meta`'s `Site`,
+    /// which a literal that leaves it unset fills with where it was
+    /// written — so it owes no default.
+    fn sited_slot(sig: StructSig, j: int) -> bool { self.meta_type(sig.types[j], "Site") }
+
     /// A declaration's signature — asking it IS the query: the hook
     /// the workspace arms computes it on first ask and records the
     /// dependency; the table only holds.
@@ -1538,6 +1547,7 @@ impl Decls {
         self.lifter.set(no_lifter)
         self.namespace_of.set(no_namespace)
         self.apart_of.set(none_apart)
+        self.composers_of.set(none_apart)
     }
 
     /// The workspace arms the sig hook once.
@@ -1660,6 +1670,11 @@ impl Decls {
     /// The workspace arms the namespace hook once.
     fn arm_namespace(ns: fn(FileId) -> Namespace) {
         self.namespace_of.set(ns)
+    }
+
+    /// The workspace arms the composers hook once.
+    fn arm_composers(composers: fn(FileId) -> List<DeclId>) {
+        self.composers_of.set(composers)
     }
 
     /// The workspace arms the kept-apart hook once.
@@ -2174,6 +2189,14 @@ impl Decls {
 
     fn is_builtin(d: DeclId) -> bool { self.decl(d).kind is .Builtin }
 
+    /// Whether a declaration is one a record literal is written of.
+    fn is_record(d: DeclId) -> bool {
+        match self.decl(d).kind {
+            .Record -> true,
+            .Fn or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .Builtin or .State -> false,
+        }
+    }
+
     /// The type a builtin declaration stands for: the shape its row
     /// builds over these arguments.
     fn built_type(d: DeclId, args: List<TypeId>) -> TypeId {
@@ -2410,6 +2433,51 @@ impl Decls {
             .find((c) -> self.decl(c).kind is .Default && self.decl(c).name == field)
     }
 
+    /// THE TRAITS THAT MAY COMPOSE A COMPONENT OF FILE `f`: the nearest
+    /// traits wearing `@std/meta`'s `@composes` among what the file can
+    /// name. A component that holds statements is one of the one there
+    /// is; none, or two, is the typing law's to refuse. Asking IS the
+    /// query — the workspace walks what the file names.
+    fn composers(f: FileId) -> List<DeclId> { (self.composers_of.get())(f) }
+
+    /// THE trait that composes a component of file `f` — absent when
+    /// none does, and when more than one would.
+    fn composer(f: FileId) -> DeclId? {
+        let all = self.composers(f)
+        if all.length == 1 { all[0] } else { null }
+    }
+
+    /// Whether a declaration is a trait wearing `@composes`.
+    fn composes(d: DeclId) -> bool { self.is_trait(d) && self.composes_mark(d) != null }
+
+    /// A trait's `@composes(Carried)`, read in the trait's own file.
+    fn composes_mark(tr: DeclId) -> AnnotationFact? {
+        let file = self.annotation_home(tr)
+        self
+            .annotations_of(tr)
+            .find((a) -> a.args.length == 1 && self.is_meta_annotation(a, file, "composes"))
+    }
+
+    /// The record every component composed by `tr` carries — the one its
+    /// `@composes` names, as the trait's own file reads the name.
+    fn carried_by(tr: DeclId) -> DeclId? {
+        let mark? = self.composes_mark(tr) else { return null }
+        (self.namespace_of.get())(self.annotation_home(tr)).type_decl(mark.args[0].text)
+    }
+
+    /// THE TRAIT AN IMPL IS FOR, read where its name was WRITTEN: a
+    /// generated impl's in its template's file, a written one's in its
+    /// own. None for an inherent impl, and for a name that binds no
+    /// trait there.
+    fn impl_trait(block: DeclId) -> DeclId? {
+        let x = self.decl(block)
+        let of = self.facts_of(block)?.of ?? ""
+        if of.is_empty() { return null }
+        let written = self.origin_of_stmt(x.file, x.stmt) ?? x.file
+        let d? = (self.namespace_of.get())(written).type_decl(of) else { return null }
+        if self.is_trait(d) { d } else { null }
+    }
+
     /// What a record leaves out on purpose: its `@lacks(field, why)`s.
     fn lacking(record: DeclId) -> List<Lacked> {
         let file = self.annotation_home(record)
@@ -2510,6 +2578,24 @@ impl Decls {
     fn lifted_symbol(f: FileId, e: ExprId) -> string {
         let info = self.file(f)
         module_symbol(self.module_name(info.module_id), "${stem_of(info.path)}\$l${e.index}")
+    }
+
+    /// A literal's SITE: its file — module and stem — its own content,
+    /// and its turn among the literals written alike in that file,
+    /// folded. Content-addressed, so a line added above a literal moves
+    /// nothing; two literals written alike are told apart by their turn.
+    fn site_of(f: FileId, content: int, turn: int) -> int {
+        let info = self.file(f)
+        mix_final(
+            fp_list(
+                [
+                    fp_str(self.module_name(info.module_id)),
+                    fp_str(stem_of(info.path)),
+                    content,
+                    turn,
+                ],
+            ),
+        )
     }
 
     // ── traits and methods ──

@@ -9,6 +9,7 @@ use core.{
     Variant,
     Mark,
     same_stmt,
+    same_decl,
     DeclId,
     FileId,
     ExprId,
@@ -57,6 +58,7 @@ use @std.meta.{
     Variant as MetaVariant,
     Kind,
     Annotation as MetaAnnotation,
+    Stmts as MetaStmts,
 }
 use core.{
     Stmt,
@@ -108,6 +110,7 @@ impl Workspace {
             for w in self.declared_work(f, d, p, vis) {
                 made = made.concat(self.materialized(f, w, p, vis))
             }
+            made = made.concat(self.composed(f, d, p, vis))
         }
         self.hold_marks_to_a_reader(f, p, vis)
         self
@@ -270,6 +273,44 @@ impl Workspace {
                 .decls
                 .mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, ann, w.at),
         ]
+    }
+
+    /// A COMPONENT WITH A BODY, derived over the trait that composes — as
+    /// `@derive` over it would be, with nothing written on it. The typing
+    /// law (`check_body`) speaks a body no one trait composes; here it
+    /// makes nothing.
+    fn composed(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<DeclId> {
+        if !declares_record(self.decls.decl(d).kind) { return [] }
+        let written = self.written_stmt(f, d)
+        let body? = p.store.component_body(written) else { return [] }
+        if self.decls.meta_disagreement() != null { return [] }
+        let composer? = self.decls.composer(f) else { return [] }
+        // a `@derive` WRITTEN over the same trait already derives it
+        if self.declared_work(f, d, p, vis).any((w) -> self.derives_over(w, p, vis, composer)) { return [] }
+        let m? = self.decls.trait_derive(composer) else { return [] }
+        let sig? = self.decls.sig(m)?.fn_sig() else { return [] }
+        let w = DeclareWork {
+            ann: composer,
+            stmt: written,
+            callee: body,
+            args: [],
+            ret: sig.ret,
+            tparams: [],
+            params: [],
+            answer: named_ref("void"),
+            original: self.decls.decl(d).name,
+            at: p.store.stmt_span(written),
+            annotated: d,
+        }
+        flatten(
+            [self.materialized_directive(f, w, directive, vis) for directive in self.trait_directives(composer, w, f)],
+        )
+    }
+
+    /// Whether an annotation's work names the trait `tr` among its
+    /// arguments — a `@derive` written over it.
+    fn derives_over(w: DeclareWork, p: Parsed, vis: Namespace, tr: DeclId) -> bool {
+        w.args.any((e) -> names_decl(self.named_arg(p, vis, e), tr))
     }
 
     /// A written fn's Declares annotation, as the materializer's
@@ -814,6 +855,7 @@ impl Workspace {
                     module: self.decls.qualified_module(d),
                     over: self.named_over(d),
                     spreads: [spelled(sp.of) for sp in v.store.spreads_of(x.stmt)],
+                    body: body_template(v, x.stmt),
                 },
                 heap,
             ),
@@ -1046,4 +1088,28 @@ fn wraps_kind(kind: DeclKind) -> bool {
         .Fn or .Method -> true,
         .Const or .Collect or .CollectEnum or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .State -> false,
     }
+}
+
+/// A component's BODY as the template of its statements — the quote
+/// its builder marked where the first of them stands.
+fn body_template(v: FileView, s: StmtId) -> MetaStmts? {
+    let q? = v.store.component_body(s) else { return null }
+    let at? = v.store.expr_span(q) else { return null }
+    let body? = v.store.expr(q).body_of() else { return null }
+    MetaStmts { node: Node.Template(v.source.file, at.lo, body.parts, []) }
+}
+
+/// Whether a declaration is a record — the one kind a body belongs to;
+/// a record's member and its field's default share its statement.
+fn declares_record(kind: DeclKind) -> bool {
+    match kind {
+        .Record -> true,
+        .Builtin or .Fn or .Named or .Alias or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Const or .Collect or .CollectEnum or .State or .Impl or .Trait -> false,
+    }
+}
+
+/// Whether a name's declaration, when it has one, is `d`.
+fn names_decl(named: DeclId?, d: DeclId) -> bool {
+    let found? = named else { return false }
+    same_decl(found, d)
 }

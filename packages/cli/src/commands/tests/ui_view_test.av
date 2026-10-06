@@ -1,4 +1,5 @@
-//! `@derive(View)` over a component that is no well-formed primitive, and
+//! `@derive(View)` over a component that is no well-formed primitive and
+//! no well-formed composition, and
 //! an instance hearing an event its component does not declare: each
 //! mistake is refused where it stands, in the library's own words, under
 //! the library's own kind — and nothing else is said. `avra_ran`,
@@ -45,6 +46,7 @@ fn help_under(opening: string) -> string {
 const owed = [
     "error[type.component_event]: `button` declares no event `hovr` — an instance hears the events its component declares",
     "error[@std/ui:unprojected]: a primitive says what each member projects to, and `value` says nothing",
+    "error[@std/ui:stateful-primitive]: a primitive draws what it is told, and `held` is a place it would keep",
     "error[@std/ui:attribute]: `Lable` is no attribute of a node",
     "error[@std/ui:attribute-misfit]: `Level` carries `int`, and `words` is `string`",
     "error[@std/ui:unnamed-mark]: `@attr` names what it marks its member as, and this one names nothing",
@@ -57,8 +59,12 @@ const owed = [
     "error[@std/ui:marked-event]: an event is heard by its own word, and `press` is marked `@attr` too",
     "error[@std/ui:event]: `hover` is no event a target hears",
     "error[@std/ui:unsayable]: a control says nothing, text, a flag or a number, and `input` says `amount: float`",
-    "error[@std/ui:prim]: a view names the primitive it is, and `loose` names none",
-    "error[@std/ui:box]: a view carries the shared box, and `loose` spreads none",
+    "error[@std/ui:prim]: a view is a primitive or is made of views, and `loose` is neither",
+    "error[@std/ui:boxed-composition]: a composition wears its view's box, and `made` spreads one of its own",
+    "error[@std/ui:marked-composition]: a composition projects nothing of its own, and `title` is marked `@attr`",
+    "error[@std/ui:boxed-composition]: a composition wears its view's box, and `boxy` spreads one of its own",
+    "error[@std/ui:primitive-body]: a primitive is drawn by its target, and `wordy` holds a body of its own",
+    "error[@std/ui:box]: a view carries the shared box, and `boxless` spreads none",
     "error[@std/ui:not-a-prim]: `Nope` is no primitive a target draws",
     "error[@std/ui:said-twice]: a node says its own words once, and another member already says them — `Label` would be lost",
     "error[@std/ui:said-twice]: a node carries an attribute once, and `Title` is already another member's",
@@ -68,7 +74,7 @@ const owed = [
 spec "@derive(View) — a component that is no primitive" {
     given "one mistake per member, and per component" {
         then "is refused once per mistake, in these words and no others" { spoken().join("\n") == owed.join("\n") }
-        then "is refused as many times as there are mistakes" { spoken().length == owed.length && owed.length == 20 }
+        then "is refused as many times as there are mistakes" { spoken().length == owed.length && owed.length == 25 }
     }
     given "a member that says nothing" {
         then "is told the ways to say it" {
@@ -90,6 +96,16 @@ spec "@derive(View) — a component that is no primitive" {
         then "is told the primitives there are" {
             help_under("error[@std/ui:not-a-prim]")
                 .starts_with("help: the primitives are `Text`, `Heading`, `Button`")
+        }
+    }
+    given "a component that names no primitive and holds no body" {
+        then "is told both things a view can be" {
+            help_under("error[@std/ui:prim]") == "help: name the primitive it is — `@prim(.Text)` above it — or write in its body the views it is made of"
+        }
+    }
+    given "a primitive that would keep state" {
+        then "is told who keeps it" {
+            help_under("error[@std/ui:stateful-primitive]") == "help: state is kept by the composition that uses the primitive — a component whose body is made of views"
         }
     }
     given "an instance hearing an event its component does not declare" {
@@ -129,6 +145,32 @@ spec "@derive(View) — a user's own primitive" {
                 .Ok(o) -> exit_is_zero(o.exit),
                 .Err(_) -> false,
             }
+        }
+    }
+}
+
+/// A package that is not the library's: a counter, and a component made
+/// of that counter alone — its file names nothing of the library.
+const shell_counter: string = embed("ui_view/shell_counter.txt")
+
+const shell_shell: string = embed("ui_view/shell_shell.txt")
+
+const shell_main: string = embed("ui_view/shell_main.txt")
+
+fn shell_package() -> string {
+    let root = "${scratch_dir()}/ui_shell_${now_ns()}"
+    let _ = make_dirs("${root}/src/parts")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"ui_shell\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/parts/counter.av", shell_counter)
+    let _ = write_text("${root}/src/parts/shell.av", shell_shell)
+    let _ = write_text("${root}/src/main.av", shell_main)
+    root
+}
+
+spec "a composition — in a package of the user's own" {
+    given "a component made only of another composition, in a file that names nothing of the library" {
+        then "is composed by the library its parts are made of, and each instance keeps its own" {
+            clean_stdout(avra_ran(["run", shell_package()])) == "text \"a: 0\" | text \"b: 2\"\n"
         }
     }
 }

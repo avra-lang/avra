@@ -3,8 +3,20 @@
 //! methods walk as an impl's. Its own laws are its template's: `expand`
 //! answers the code an instance becomes, and a template reads each of
 //! its instance's fields once.
-use core.{StmtId, ExprId, TypeId, ComponentParts, Unheard}
+use core.{
+    StmtId,
+    ExprId,
+    TypeId,
+    DeclId,
+    Annotation,
+    ComponentParts,
+    Unheard,
+    same_file,
+    same_decl,
+    user_kind,
+}
 use features.{ResolveCx, TypeCx}
+use @std.meta.{Diagnostic}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
@@ -15,15 +27,42 @@ fn resolve_component(mut cx: ResolveCx, s: StmtId) {
     for f in c.holders {
         if f.default != null { cx.walk_under([], f.default!) }
     }
-    cx.impl_stmts(c.fns)
+    cx.impl_stmts(cx.view.store.member_fns(s))
 }
 
 fn check_component(mut cx: TypeCx, s: StmtId) {
     let c? = cx.view.store.component_parts(s) else { return }
     seats_law(cx, c)
+    check_body(cx, s)
     check_law(cx, c)
     expand_law(cx, c)
     format_law(cx, s, c)
+}
+
+/// THE BODY LAW: a component that holds statements is made of them,
+/// and what "made of" means is ONE trait's to say — the one wearing
+/// `@composes`. Its `derive` ran over the component during this file's
+/// resolve; asking again hits the memo, and what it refused is spoken
+/// here, as a written `@derive`'s is.
+fn check_body(mut cx: TypeCx, s: StmtId) {
+    let body? = cx.view.store.component_body(s) else { return }
+    let name = cx.view.store.type_decl_name(s) ?? "this component"
+    let traits = cx.view.decls.composers(cx.view.file)
+    let composer? = traits.first() else { return no_composer(cx, s, name) }
+    if traits.length > 1 { return two_composers(cx, s, name, [cx.view.decls.decl(t).name for t in traits]) }
+    // a `@derive` WRITTEN over the same trait speaks for itself
+    if cx.view.store.annotations_of(s).any(written_over(cx, it, composer)) {
+        return
+    }
+    let m? = cx.view.decls.trait_derive(composer) else { return }
+    if same_file(cx.view.decls.decl(m).file, cx.view.file) { return }
+    let by = cx.view.decls.decl(composer).name
+    // a derive that could not run is spoken where it ran
+    let problems = match cx.view.decls.lifted(m, cx.view.file, s, body, []) {
+        .Ok(crossed) -> crossed.declared_problems(),
+        .Err(_) -> [],
+    }
+    for x in problems { if !x.warning { body_refused(cx, m, s, x, by) } }
 }
 
 /// An event's seats have distinct names: a handler names each one.
@@ -69,6 +108,32 @@ fn format_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
     for j, n in sig.names {
         if formats.contains(n) && !cx.view.decls.meta_type(sig.types[j], "Format") { cx.emit(foreign_format(cx.stmt_loc(s), n)) }
     }
+}
+
+/// THE HEAD LAW: the brace after an instance's head opens the instance's
+/// block, so a head that names a record was meant as that record's
+/// literal — refused once, before the block is read as settings.
+fn head_law(mut cx: TypeCx, e: ExprId) -> bool {
+    let inst? = cx.view.store.instance_parts(e) else { return false }
+    let head? = inst.heads.find(names_record(cx, it)) else { return false }
+    let named = cx.view.store.ident_name(head) ?? ""
+    cx
+        .emit(
+            refusal(
+                "type.component_head",
+                cx.loc_of(head),
+                braced_head(named),
+                "names a record",
+                parenthesised_head(inst.word, named),
+            ),
+        )
+    true
+}
+
+fn names_record(cx: TypeCx, e: ExprId) -> bool {
+    if cx.view.store.ident_name(e) == null { return false }
+    let d? = cx.bound_decl(e) else { return false }
+    cx.view.decls.is_record(d)
 }
 
 /// An instance hears the events its component declares, each with all
@@ -182,3 +247,51 @@ fn seat_twice(at: Loc?, event: string, seat: string) -> Diag {
 
 /// Words as a refusal lists them.
 fn ticked(words: List<string>) -> string { ["`${w}`" for w in words].join(", ") }
+
+/// Whether an annotation names the trait `composer` among its
+/// arguments — a `@derive` written over it.
+fn written_over(cx: TypeCx, a: Annotation, composer: DeclId) -> bool {
+    a.args.any(names_composer(cx, it, composer))
+}
+
+/// Whether an annotation's argument names the trait `composer`.
+fn names_composer(cx: TypeCx, e: ExprId, composer: DeclId) -> bool {
+    let named? = cx.bound_decl(e) else { return false }
+    same_decl(named, composer)
+}
+
+/// What a composing trait refused of a component's body — its own
+/// words, under its package's kind.
+fn body_refused(mut cx: TypeCx, d: DeclId, s: StmtId, x: Diagnostic, by: string) {
+    let kind = user_kind(cx.view.decls.package_of(d), x.kind) ?? body_kind
+    let _ = cx
+        .spoken(refusal(kind, x.at ?? cx.view.stmt_loc(s), x.message, "refused by `${by}`", x.help))
+}
+
+const body_kind = "type.component_body"
+
+fn no_composer(mut cx: TypeCx, s: StmtId, name: string) {
+    let _ = cx
+        .spoken(
+            refusal(
+                body_kind,
+                cx.view.stmt_loc(s),
+                "a component is made of what its body holds, and nothing here says what `${name}`'s is",
+                "holds statements",
+                "a body is composed by the library whose components it is made of — write one of them in it, or `use` the library; a component of fields and `fn`s holds none",
+            ),
+        )
+}
+
+fn two_composers(mut cx: TypeCx, s: StmtId, name: string, by: List<string>) {
+    let _ = cx
+        .spoken(
+            refusal(
+                body_kind,
+                cx.view.stmt_loc(s),
+                "one trait says what a component's body is, and here ${["`${t}`" for t in by].join(" and ")} both do",
+                "`${name}` holds statements",
+                "make this file name one library's components alone — move what uses the other into a file of its own",
+            ),
+        )
+}

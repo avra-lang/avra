@@ -47,6 +47,7 @@ use @std.meta.{
     Seat as MetaSeatValue,
     Annotation as MetaAnnotation,
     Code as MetaCode,
+    Stmts as MetaStmts,
 }
 use features.{MetaVal, MetaHeap, Decls, Lifted}
 
@@ -83,8 +84,19 @@ fn meta_records() -> List<MetaShape> {
         MetaShape {
             pkg: "@std.meta",
             name: "Field",
-            fields: ["name", "ty", "at", "kind", "marks", "doc", "annotations", "defaulted", "says"],
-            recent: 2,
+            fields: [
+                "name",
+                "ty",
+                "at",
+                "kind",
+                "marks",
+                "doc",
+                "annotations",
+                "defaulted",
+                "says",
+                "state",
+            ],
+            recent: 3,
         },
         MetaShape {
             pkg: "@std.meta",
@@ -95,8 +107,19 @@ fn meta_records() -> List<MetaShape> {
         MetaShape {
             pkg: "@std.meta",
             name: "Type",
-            fields: ["name", "fields", "variants", "at", "doc", "annotations", "module", "over", "spreads"],
-            recent: 1,
+            fields: [
+                "name",
+                "fields",
+                "variants",
+                "at",
+                "doc",
+                "annotations",
+                "module",
+                "over",
+                "spreads",
+                "body",
+            ],
+            recent: 2,
         },
         MetaShape {
             pkg: "@std.meta",
@@ -429,6 +452,7 @@ export fn meta_of_type(x: MetaType, mut heap: MetaHeap) -> MetaVal {
             MetaVal.Text(x.module),
             meta_of_kind(x.over, heap),
             meta_of_texts(x.spreads, heap),
+            meta_of_opt_stmts(x.body, heap),
         ],
         heap,
     )
@@ -470,6 +494,7 @@ fn meta_of_field(x: MetaField, mut heap: MetaHeap) -> MetaVal {
             meta_of_annotations(x.annotations, heap),
             MetaVal.Bool(x.defaulted),
             meta_of_opt_params(x.says, heap),
+            MetaVal.Bool(x.state),
         ],
         heap,
     )
@@ -531,6 +556,11 @@ fn meta_of_annotation(x: MetaAnnotation, mut heap: MetaHeap) -> MetaVal {
 fn meta_of_opt_code(x: MetaCode?, mut heap: MetaHeap) -> MetaVal {
     if x == null { return MetaVal.Absent }
     meta_of_template(x!.node, heap)
+}
+
+fn meta_of_opt_stmts(x: MetaStmts?, mut heap: MetaHeap) -> MetaVal {
+    let held? = x else { return MetaVal.Absent }
+    meta_of_template(held.node, heap)
 }
 
 // ── The type vocabulary, both ways ──────────────────────────────

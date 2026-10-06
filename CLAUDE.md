@@ -1549,6 +1549,21 @@ Syntax the grammar lacks:
           1  | "a"
           2  | "b"
       }
+- A RECORD LITERAL AS A COMPONENT INSTANCE'S HEAD STANDS IN
+  PARENTHESES: after a component's word, a name and then a brace is the
+  head and the instance's block, so `counter id { key: id }` is
+  `counter` over `id`. `tally Span { n: 2 } { extra: 3 }` is
+  `build.failed` "the brace after an instance's head opens the
+  instance's block, so `Span { … }` is no record literal here — a
+  record literal as the head stands in parentheses: `tally (Span { …
+  })`", and with no block after it `type.component_head` says the same
+  — followed by `type.struct_fields` "`tally` has no field `n`", the
+  block having been read as settings. A module's OWN component word
+  before a parenthesis is a CALL (`type.lambda` "`nest` is a component,
+  and a parenthesis after its word is read as a call"): its head is
+  written bare (`nest self.depth - 1`) or bound first. Every other head
+  (`if`, `while`, `for`, `match`, `if let`, `let … else`) takes a
+  literal bare.
 - The pipe `|>`: "expected BREAK while parsing `stmt`".
 - A SEMICOLON between statements (`let a = 1; a + 1`): F0001
   "unexpected character" at the `;` — a statement ends at a line

@@ -1,12 +1,14 @@
-//! The task board — the UI library's showcase. `view` is a function of
-//! module `state`: tasks with done-state, three filters, a derived count
-//! and progress, an add field, a dialog and a theme mode.
+//! The task board — the UI library's showcase. The screen is made of
+//! COMPOSITIONS: a component whose body is what it is made of. `filters`
+//! is three `tab`s and a button; `new_task` is a field and a button, and
+//! the draft a user is typing is THAT instance's own `state`; the rest
+//! of the program's state is the module's.
 //!
-//! The controls are the library's OWN, and each handler is written where
-//! its control is: `on press { … }` is a closure over what the view could
-//! see, so row 3's Remove names row 3's task. The task rows are ONE keyed
-//! list (`list visible() by it.id`), so the row identity is the task id
-//! and an insert or a removal touches no other row.
+//! Each handler is written where its control is: `on press { … }` is a
+//! closure over what its composition could see, so row 3's Remove names
+//! row 3's task. The task rows are ONE keyed list (`list visible() by
+//! it.id`), so the row identity is the task id and an insert or a
+//! removal touches no other row.
 //!
 //! The board names no target. A page mounts it (`web/`) and so does a
 //! terminal (`term/`).
@@ -26,7 +28,6 @@ use @std.ui.components.{
     surface,
     text,
 }
-use @std.ui.tree.view.{View}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
 use @std.ui.style.theme.{Theme, dark_theme, default_theme}
@@ -42,7 +43,6 @@ type Todo = { id: string, title: string, done: bool }
 state filter: Show = .All
 state dark: bool = false
 state dialog_open: bool = false
-state draft: string = ""
 state seq: int = 5
 state tasks: List<Todo> = [
     Todo { id: "t1", title: "Draft the spec", done: true },
@@ -62,13 +62,11 @@ fn admits(t: Todo) -> bool {
 
 export fn theme() -> Theme { if dark { dark_theme } else { default_theme } }
 
-/// The draft becomes the next task, and the draft is spent.
-fn add() {
-    if draft != "" {
-        tasks = tasks.concat([Todo { id: "t${seq}", title: draft, done: false }])
-        seq = seq + 1
-        draft = ""
-    }
+/// `title` becomes the next task — none, when it says nothing.
+fn add(title: string) {
+    if title == "" { return }
+    tasks = tasks.concat([Todo { id: "t${seq}", title: title, done: false }])
+    seq = seq + 1
 }
 
 /// This task with its state as given when it is the named one, unchanged
@@ -96,144 +94,131 @@ fn inline_layout() -> Layout { Layout { gap: .S, align: .Center } }
 
 fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
 
-fn tab(label: string, shows: Show) -> button {
-    button label {
-        on press { filter = shows }
-        style: tab_style(filter == shows)
+/// One filter: pressed, it is the filter in force.
+component tab(label: string) {
+    shows: Show
+    button self.label {
+        on press { filter = self.shows }
+        style: tab_style(filter == self.shows)
     }
 }
 
-fn header() -> row {
+component header {
     row {
         layout: spread_layout()
-        items: [
-            column {
-                layout: Layout { gap: .Xs }
-                items: [
-                    heading "Tasks" { rank: 1 },
-                    text "Every task is a value; the screen is a function of state." {
-                        style: Style { color: .Muted }
-                    },
-                ]
-            },
-            button theme_label() {
-                on press { dark = !dark }
-                style: sunk_style()
-            },
-        ]
+        column {
+            layout: Layout { gap: .Xs }
+            heading "Tasks" { rank: 1 }
+            text "Every task is a value; the screen is a function of state." { style: Style { color: .Muted } }
+        }
+        button theme_label() {
+            on press { dark = !dark }
+            style: sunk_style()
+        }
     }
 }
 
-fn filters() -> row {
+component filters {
     row {
         layout: inline_layout()
-        items: [
-            tab("All", .All),
-            tab("Active", .Active),
-            tab("Done", .Done),
-            button "Clear done" {
-                on press { tasks = [t for t in tasks if !t.done] }
-                disabled: done_count() == 0
-                style: sunk_style()
-            },
-        ]
+        tab "All" { shows: .All }
+        tab "Active" { shows: .Active }
+        tab "Done" { shows: .Done }
+        button "Clear done" {
+            on press { tasks = [t for t in tasks if !t.done] }
+            disabled: done_count() == 0
+            style: sunk_style()
+        }
     }
 }
 
-fn new_task() -> row {
+/// The field a task is typed into. THE DRAFT IS THIS INSTANCE'S: nothing
+/// else on the board reads what is being typed, so nothing else holds it.
+component new_task {
+    state draft: string = ""
     row {
         layout: inline_layout()
-        items: [
-            field "New task" {
-                value: draft
-                placeholder: "Type a task…"
-                on input { body -> draft = body }
-            },
-            button "Add" {
-                on press { add() }
-                style: sunk_style()
-            },
-        ]
+        field "New task" {
+            value: self.draft
+            placeholder: "Type a task…"
+            on input { body -> self.draft = body }
+        }
+        button "Add" {
+            on press {
+                add(self.draft)
+                self.draft = ""
+            }
+            style: sunk_style()
+        }
     }
 }
 
-/// The task rows: ONE keyed list, so a reorder or an insert keeps every
-/// node. The item is written IN THE LIST — the keyed head reads `it.id` off
-/// the element it hands the body, and a helper returning an item would carry
-/// no key. An empty view is a word, never a stray row.
-fn task_view() -> List<dyn View> {
+/// One task's row. Its key is the task's id, so its node goes where the
+/// task goes.
+component task_row(task: Todo) {
+    item {
+        checkbox self.task.title {
+            checked: self.task.done
+            on change { checked -> tasks = [marked(x, self.task.id, checked) for x in tasks] }
+            style: title_style(self.task.done)
+        }
+        button "Remove" {
+            on press { tasks = [x for x in tasks if x.id != self.task.id] }
+            style: sunk_style()
+        }
+    }
+}
+
+/// The task rows: ONE list of keyed rows, so a reorder or an insert
+/// keeps every node. An empty view is a word, never a stray row.
+component task_rows {
     if visible().is_empty() {
-        [text "Nothing here yet." { style: Style { color: .Muted } }]
+        text "Nothing here yet." { style: Style { color: .Muted } }
     } else {
-        [task_list()]
-    }
-}
-
-fn task_list() -> list {
-    list visible() by it.id { t ->
-        item {
-            items: [
-                checkbox t.title {
-                    checked: t.done
-                    on change { checked -> tasks = [marked(x, t.id, checked) for x in tasks] }
-                    style: title_style(t.done)
-                },
-                button "Remove" {
-                    on press { tasks = [x for x in tasks if x.id != t.id] }
-                    style: sunk_style()
-                },
-            ]
+        list {
+            for t in visible() { task_row t { key: t.id } }
         }
     }
 }
 
 fn visible() -> List<Todo> { [t for t in tasks if admits(t)] }
 
-fn board_items() -> List<dyn View> {
-    let done = progress "Done" {
-        amount: done_count()
-        max: tasks.length
-    }
-    let head: List<dyn View> = [done, filters(), new_task(), divider {}]
-    let body: List<dyn View> = task_view()
-    head.concat(body)
-}
-
-fn board() -> card {
+component board {
     card "Board" {
         style: Style { fill: .SurfaceRaised, radius: .M }
         layout: Layout { gap: .M, pad: around(.M) }
-        items: board_items()
+        progress "Done" {
+            amount: done_count()
+            max: tasks.length
+        }
+        filters {}
+        new_task {}
+        divider {}
+        task_rows {}
     }
 }
 
-fn footer() -> row {
+component footer {
     row {
         layout: spread_layout()
-        items: [
-            text "${open_count()} open · ${done_count()} done of ${tasks.length}" {
-                style: Style { color: .Muted }
-            },
-            button "About" {
-                on press { dialog_open = true }
-                style: sunk_style()
-            },
-        ]
+        text "${open_count()} open · ${done_count()} done of ${tasks.length}" { style: Style { color: .Muted } }
+        button "About" {
+            on press { dialog_open = true }
+            style: sunk_style()
+        }
     }
 }
 
-fn about() -> dialog {
+component about {
     dialog "About" {
         open: dialog_open
         on dismiss { dialog_open = false }
-        items: [
-            heading "Task board" { rank: 2 },
-            text "State lives in module `state`; the frame is its projection.",
-            button "Close" {
-                on press { dialog_open = false }
-                style: sunk_style()
-            },
-        ]
+        heading "Task board" { rank: 2 }
+        text "The board is made of compositions; each keeps what is its own."
+        button "Close" {
+            on press { dialog_open = false }
+            style: sunk_style()
+        }
     }
 }
 
@@ -241,6 +226,9 @@ export fn view() -> surface {
     surface {
         style: Style { fill: .Surface, radius: .M }
         layout: Layout { gap: .M, pad: around(.L) }
-        items: [header(), board(), footer(), about()]
+        header {}
+        board {}
+        footer {}
+        about {}
     }
 }

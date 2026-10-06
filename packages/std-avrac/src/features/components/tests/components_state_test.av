@@ -1,0 +1,66 @@
+// A component's `state` field is a PLACE each instance holds, as a
+// record's is: seeded where the instance is built, shared by every
+// copy of that instance, written with no `mut` anywhere.
+use @std.avrac.testing.{provided, answered, refused_n, refused_in, said}
+use @std.avrac.compiler.{Program}
+
+/// The provider: a counter whose count is a place.
+fn parts() -> string {
+    "export component counter(label: string) {\n    step: int = 1\n    state n: int = 0\n    fn bump() -> fn() -> void { () -> { self.n = self.n + self.step } }\n    fn poke() { self.n = self.n + self.step }\n    fn shown() -> string { \"\${self.label}=\${self.n}\" }\n}\n"
+}
+
+fn built(main: string) -> Program { provided("use @x.c.{counter}\n" + main, parts()) }
+
+spec "features/components — a state field" {
+    given "an instance" {
+        then "seeds its place from the default" { answered(built("let c = counter \"a\"\nc.shown()")) == "a=0" }
+        then "seeds its place from its own setting" {
+            answered(built("let c = counter \"a\" {\n    n: 7\n}\nc.shown()")) == "a=7"
+        }
+        then "holds a place no other instance shares" {
+            answered(
+                built(
+                    "let a = counter \"a\"\nlet b = counter \"b\"\na.poke()\na.poke()\n\"\${a.shown()} \${b.shown()}\"",
+                ),
+            ) == "a=2 b=0"
+        }
+        then "shares its place with a copy of itself" {
+            answered(
+                built(
+                    "let a = counter \"a\"\nlet b = a with { label: \"b\", step: 10 }\nb.poke()\na.poke()\n\"\${a.shown()} \${b.shown()}\"",
+                ),
+            ) == "a=11 b=11"
+        }
+        then "is written by a handler that captured it" {
+            answered(built("let a = counter \"a\"\nlet f = a.bump()\nf()\nf()\na.shown()")) == "a=2"
+        }
+        then "is written through a plain binding without a warning" {
+            said(built("let a = counter \"a\"\na.poke()\na.shown()")).is_empty()
+        }
+    }
+    given "a component's body" {
+        then "takes a `state` field and refuses a declaration — and so exports nothing" {
+            refused_n(
+                provided(
+                    "use @x.c.{bad}\n0",
+                    "export component bad {\n    state n: int = 0\n    type Inner = { x: int }\n}\n",
+                ),
+                "a component holds its fields, its `fn`s and what it is made of — never a declaration of its own",
+                2,
+            )
+        }
+        then "refuses a `state` that says no type, in the field's words" {
+            refused_n(
+                provided("use @x.c.{bad}\n0", "export component bad {\n    state n = 0\n}\n"),
+                "a component's `state` is a field, and a field says its type",
+                2,
+            )
+        }
+        then "holding statements, is refused where no trait says what a body is" {
+            refused_in(
+                provided("use @x.c.{made}\n0", "export component made {\n    let x = 1\n}\n"),
+                "a component is made of what its body holds, and nothing here says what `made`'s is",
+            )
+        }
+    }
+}

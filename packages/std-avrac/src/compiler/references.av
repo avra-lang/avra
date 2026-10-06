@@ -222,19 +222,10 @@ impl Workspace {
     /// the target answers once the impl is SIGNED, which `folded(f)`
     /// (typing, `file_refs`'s own caller) already forced.
     fn impl_refs(f: FileId, names: NameFacts, d: DeclId) -> List<Ref> {
-        let trait_name = self.decls.facts_of(d)?.of ?? ""
-        let trait_rows = if trait_name.is_empty() { [] } else { some_list(self.named_impl_ref(f, names, d, trait_name)) }
-        let target_rows = flatten(
-            [some_list(
-                Ref { decl: t, file: f, at: At.Stmt(self.decls.decl(d).stmt), kind: UseKind.Read },
-            ) for t in some_list(self.decls.target_of(d))],
-        )
-        trait_rows.concat(target_rows)
-    }
-
-    fn named_impl_ref(f: FileId, names: NameFacts, d: DeclId, trait_name: string) -> Ref? {
-        let target? = names.names.type_decl(trait_name) else { return null }
-        Ref { decl: target, file: f, at: At.Stmt(self.decls.decl(d).stmt), kind: UseKind.Read }
+        let named = self.decls.impl_trait(d) ?? names
+            .names
+            .type_decl(self.decls.facts_of(d)?.of ?? "")
+        [Ref { decl: t, file: f, at: At.Stmt(self.decls.decl(d).stmt), kind: UseKind.Read } for t in some_list(named).concat(some_list(self.decls.target_of(d)))]
     }
 
     /// One expression's own use, if it names a declaration — zero or

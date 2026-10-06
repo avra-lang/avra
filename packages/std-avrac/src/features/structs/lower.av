@@ -74,9 +74,20 @@ fn lit_reg(mut cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId
     cx.packed_struct(cx.type_at(e), [slot_filled(cx, e, sig, slot, r) for slot, r in by_slot])
 }
 
-/// The default an omitted slot lowers to — typing guaranteed one:
-/// a call to the field's own body, as instantiated at this literal.
+/// What an omitted slot lowers to: a SITE is the literal's own, and
+/// any other slot its default — typing guaranteed one — a call to the
+/// field's own body, as instantiated at this literal.
 export fn defaulted_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
+    if cx.view.decls.sited_slot(sig, slot) {
+        return cx
+            .const_int_as(
+                cx.viewed(sig.types[slot]),
+                cx
+                    .view
+                    .decls
+                    .site_of(cx.view.file, cx.view.store.expr_fingerprint(e), cx.view.store.literal_turn(e)),
+            )
+    }
     let d? = sig.defaults[slot] else { return cx.lower_defect(e, "a literal missing a field without a default survived typing") }
     cx.call_decl(cx.viewed(slot_want(cx.view.types, sig, slot)), cx.symbol_at(d, e), [])
 }

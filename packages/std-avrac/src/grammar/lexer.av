@@ -1550,6 +1550,10 @@ fn paren_opening(ts: List<Token>, close: int) -> int? {
 }
 
 /// Whether the token at `i` is a component's word opening an instance.
+/// An imported word always does. A word the file's own MODULE declares
+/// is reserved nowhere, so it opens one only where the line says so: a
+/// head value after it. Its word before a `{` stays the record's
+/// literal.
 fn opens_instance(
     ts: List<Token>,
     i: int,
@@ -1560,7 +1564,23 @@ fn opens_instance(
     let t = ts[i]
     if t.kind != TokenKind.Name { return false }
     if components.contains(t.text) { return true }
-    named.contains(t.text) && starts_statement(ts, i) && names_instance(ts, i + 1, keywords)
+    named.contains(t.text) && heads_instance(ts, i + 1, keywords)
+}
+
+/// The keywords that are VALUES — each begins a head as a name does.
+const value_words: List<string> = ["self", "true", "false", "null"]
+
+/// Whether `at` begins a HEAD VALUE: text, a number, a name no
+/// keyword spells, or a keyword that is a value. Nothing else follows a name so, so a module's own
+/// component word standing before one opens an instance and no other
+/// reading of the line is lost.
+fn heads_instance(ts: List<Token>, at: int, keywords: List<string>) -> bool {
+    if at >= ts.length { return false }
+    match ts[at].kind {
+        .Str or .IStrBegin or .Num -> true,
+        .Name -> !keywords.contains(ts[at].text) || value_words.contains(ts[at].text),
+        .IStrMid or .IStrEnd or .Op or .Break or .Eof or .Pkg or .Hole or .HoleBegin or .HoleEnd or .Block or .Body or .Component or .State or .Octets or .Env or .Provide or .On -> false,
+    }
 }
 
 /// Whether nothing of a statement stands before `i` on its line.
@@ -1569,14 +1589,6 @@ fn starts_statement(ts: List<Token>, i: int) -> bool {
         ts[i - 1].kind == TokenKind.Break ||
         ts[i - 1].lit_matches("export") ||
         ts[i - 1].lit_matches("{")
-}
-
-/// Whether `at` is an instance's name: a name no keyword spells, then
-/// its block or the statement's end — a break, the file's, or the
-/// enclosing block's `}`.
-fn names_instance(ts: List<Token>, at: int, keywords: List<string>) -> bool {
-    if at >= ts.length || ts[at].kind != TokenKind.Name || keywords.contains(ts[at].text) { return false }
-    at + 1 >= ts.length || ends_instance_head(ts[at + 1])
 }
 
 /// Whether a token closes an instance's head: its block's `{`, or the

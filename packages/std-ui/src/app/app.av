@@ -4,39 +4,83 @@
 //! timer, an answer arriving — runs through it, and a paint follows only
 //! when it ran.
 use tree.node.{Node}
-use tree.view.{View}
+use tree.standing.{Standing, standing}
+use tree.view.{View, rooted}
 use style.theme.{Theme, default_theme}
 
 /// An app on one target. `show` is the target's own paint: the tree as it
 /// stands and the theme it wears, in; whatever the target does with them.
 /// The view and the theme are held in cells, so the app stays ONE identity
-/// when it is given another view to show.
-export type App = { view: Cell<fn() -> Node>, theme: Cell<fn() -> Theme>, show: fn(Node, Theme) -> void }
+/// when it is given another view to show. `stands` is where its walk
+/// starts: every component instance on the app is kept under it, and
+/// nowhere else. `told` is what its walk has said that a target already
+/// passed on.
+export type App = {
+    view: Cell<fn(Standing) -> Node>,
+    theme: Cell<fn() -> Theme>,
+    show: fn(Node, Theme) -> void,
+    stands: Standing,
+    told: Cell<List<string>>,
+}
 
 /// The theme of an app that names none.
 export fn plain() -> Theme { default_theme }
 
 /// `view` under `theme`, shown by `show`.
 export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, Theme) -> void) -> App {
-    let drawn: fn() -> Node = () -> view().describe()
-    App { view: Cell.new(drawn), theme: Cell.new(theme), show: show }
+    let drawn: fn(Standing) -> Node = (at: Standing) -> rooted(view().describe(at))
+    let untold: List<string> = []
+    App {
+        view: Cell.new(drawn),
+        theme: Cell.new(theme),
+        show: show,
+        stands: standing(),
+        told: Cell.new(untold),
+    }
 }
 
 /// `on` shows `view` under `theme` from now on: the same app on the same
 /// target, so a paint already under way paints this view, never the one
-/// it replaced.
+/// it replaced. What stood stays on offer: an instance the new view
+/// reaches where the old one had it keeps its state.
 export fn remounted<V: View>(on: App, view: fn() -> V, theme: fn() -> Theme) {
-    on.view.set(() -> view().describe())
+    on.view.set((at: Standing) -> rooted(view().describe(at)))
     on.theme.set(theme)
 }
 
 impl App {
-    /// The view as the state stands now, shown.
+    /// The view as the state stands now, shown. The walk opens the
+    /// app's standing, so an instance this paint does not reach is gone
+    /// with it.
     fn paint() {
         let view = self.view.get()
         let theme = self.theme.get()
-        self.show(view(), theme())
+        self.stands.begun()
+        self.show(view(self.stands), theme())
     }
+
+    /// What the last paint's walk said of the tree it was handed — an
+    /// instance that keeps state and is told from its siblings by order
+    /// alone.
+    fn warnings() -> List<string> { self.stands.warnings() }
+
+    /// What the last paint said that no paint before it did — each
+    /// warning once an app.
+    fn said_anew() -> List<string> {
+        let fresh = [w for w in self.warnings() if !self.told.get().contains(w)]
+        self.told.set(self.told.get().concat(fresh))
+        fresh
+    }
+
+    /// A target with an error stream passes on what its walk said: a
+    /// terminal's, a page's console.
+    fn warn() {
+        for w in self.said_anew() { eprintln("ui: ${w}") }
+    }
+
+    /// How many component instances the app keeps — the lifetime
+    /// witness.
+    fn held() -> int { self.stands.held() }
 
     /// THE ONE DOOR INTO THE LOOP. `act` is whatever may change the
     /// program's state; it answers whether it ran, and a paint follows

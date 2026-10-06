@@ -642,6 +642,14 @@ impl SourceText {
         if self.store.expr(subject) is .If { "(${text})" } else { text }
     }
 
+    /// AN INSTANCE'S HEAD KEEPS ITS BRACE: a record literal that would
+    /// open in one stands in parentheses, so the brace after the head is
+    /// the instance's.
+    fn head(e: ExprId, depth: int, col: int = -1) -> string {
+        let text = self.expression(e, loosest_tier, depth, col)
+        if self.store.opens_with_literal(e) { "(${text})" } else { text }
+    }
+
     /// Whether `value` is the SAME node as `stmts`' own last
     /// statement's answer — the annotated-tail case, where nothing
     /// else stands between the two.
@@ -1071,7 +1079,11 @@ impl SourceText {
             [self.trivia_before(f.lo, depth + 1).concat([source_line(depth + 1, f.text)]) for f in fields],
         )
         let body = lines
-            .concat(flatten([self.statement(s, depth + 1) for s in fns]))
+            .concat(
+                flatten(
+                    [self.statement(s, depth + 1) for m in fns for s in self.store.member_stmts(m)],
+                ),
+            )
             .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "${opened} {}") }
         "${source_line(depth, "${opened} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
@@ -1949,7 +1961,7 @@ impl SourceText {
     mut fn instance(word: string, heads: List<ExprId>, block: ExprId?, depth: int) -> string {
         joined(
             [source_name(word)]
-                .concat([self.expression(e, loosest_tier, depth) for e in heads])
+                .concat([self.head(e, depth) for e in heads])
                 .concat([self.instance_body(b, depth) for b in some_list(block)]),
             " ",
         )

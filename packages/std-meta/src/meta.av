@@ -181,13 +181,21 @@ export fn applied(a: Annotation, value: Code) -> Code? {
     }
 }
 
+/// WHERE A LITERAL WAS WRITTEN. A field of this type that a record
+/// literal leaves unset holds that literal's own site: one number a
+/// literal, the same each time it is built, so a value can be told by
+/// where it was made. Two literals written alike in one file are told
+/// apart by their turn among them.
+export type Site = int
+
 /// A record's field: its name, its type's spelling, its shape, and
 /// the marks written before it. `doc`/`annotations` read as `Fn`'s.
 /// `defaulted` says it declares a default a literal may leave out.
+/// `state` says it is a place its record holds.
 /// `says` makes the field an EVENT its component declares (`on
 /// input(text: string)`): the seats its handler is told, none for an
 /// event that says nothing — and absent on a field that is no event.
-export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], defaulted: bool = false, says: List<Param>? = null }
+export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], defaulted: bool = false, says: List<Param>? = null, state: bool = false }
 
 /// An enum's variant: its name, its payload's spellings, and the
 /// payload as FIELDS — each carrying the name a grammar rule's
@@ -204,8 +212,11 @@ export type Variant = { name: string, payload: List<string>, at: Loc?, fields: L
 /// `over` is a NAMED type's shape — `type Code = string` stands over
 /// `string` — and `Unspelled` for a record or an enum. `spreads` is
 /// each record it spreads in (`..Box`), as written; `fields` holds the
-/// fields it wrote itself, never the ones a spread placed.
-export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled(""), spreads: List<string> = [] }
+/// fields it wrote itself, never the ones a spread placed. `body` is
+/// the statements a component is MADE OF, as the template a reader
+/// splices where they mean something — absent for a declaration that
+/// holds none.
+export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc?, doc: string? = null, annotations: List<Annotation> = [], module: string = "", over: Kind = Kind.Unspelled(""), spreads: List<string> = [], body: Stmts? = null }
 
 /// What an annotation says back about a declaration. A fn answering
 /// `List<Diagnostic>` VALIDATES: an empty list passes, each ERROR is
@@ -282,6 +293,16 @@ export fn census(_t: Type, _rows: int) {}
 /// read (`type_named(n)?.annotations`): nothing durable may hash or
 /// encode one.
 export fn dense(_t: Type) {}
+
+/// A COMPONENT WITH A BODY IS ONE OF THESE. `@composes(Carried)` on a
+/// trait: a component whose declaration holds statements — what it is
+/// made of — is derived over this trait, with nothing written on the
+/// component: the trait's own `derive` receives it, its `Type.body` the
+/// statements, and makes the impl. The component CARRIES the record
+/// `Carried` as if it spread it, so what the trait reads of every such
+/// component — where it stands, say — is a field the author never
+/// writes. One trait a program composes by; two is refused.
+export fn composes(_tr: Trait, _carried: Named) {}
 
 /// The type is an IDENTITY: every copy of it must go on reading and
 /// writing the same tables, so a field a writing path could open

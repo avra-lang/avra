@@ -185,7 +185,7 @@ impl SyntaxArena {
     /// is one.
     fn instance_parts(e: ExprId) -> InstanceParts? {
         match self.expr(e) {
-            .Component(word, _, body, _, _) -> InstanceParts { word: word, body: body },
+            .Component(word, heads, body, _, _) -> InstanceParts { word: word, heads: heads, body: body },
             _ -> null,
         }
     }
@@ -260,10 +260,34 @@ impl SyntaxArena {
         }
     }
 
+    /// A component's BODY: the quote of the statements it is made of,
+    /// among its members — absent for a component that holds none.
+    fn component_body(s: StmtId) -> ExprId? {
+        let c? = self.component_parts(s) else { return null }
+        [e for m in c.fns for e in some_list(self.body_member(m))].first()
+    }
+
+    /// The quote a component's body member holds — null for a `fn` and
+    /// for a recovery's hole.
+    fn body_member(m: StmtId) -> ExprId? {
+        match self.stmt(m) {
+            .ExprStmt(e) -> if self.expr(e).body_of() == null { null } else { e },
+            _ -> null,
+        }
+    }
+
+    /// A component's member as the statements it was WRITTEN as: its
+    /// body's, for the member that folds them; else itself.
+    fn member_stmts(m: StmtId) -> List<StmtId> {
+        let q? = self.body_member(m) else { return [m] }
+        let body? = self.expr(q).body_of() else { return [m] }
+        match body.view { .Verbatim(stmts, _) -> stmts, .None or .Expanded(_) -> [m] }
+    }
+
     /// The fns a declaration holds as its own members — a trait's, or
-    /// a component's methods.
+    /// a component's methods. A component's body is a member and no fn.
     fn member_fns(s: StmtId) -> List<StmtId> {
-        self.trait_parts(s)?.fns ?? self.component_parts(s)?.fns ?? []
+        self.trait_parts(s)?.fns ?? [m for m in self.component_parts(s)?.fns ?? [] if self.body_member(m) == null]
     }
 
     /// A sublanguage declaration's pieces, when the statement is one.
@@ -458,9 +482,10 @@ impl SyntaxArena {
     /// Every written type this statement's own signature carries: a
     /// binding's annotation (`binding_ty` already answers `Collect`'s
     /// too), a type parameter's bound, a seat's or a field's type, a
-    /// variant's payloads, the shape a `type`/`alias` names. Empty
-    /// for a statement that declares no type at all — through the
-    /// EXISTING projections, never a second match over the enum.
+    /// record it spreads in, a variant's payloads, the shape a
+    /// `type`/`alias` names. Empty for a statement that declares no
+    /// type at all — through the EXISTING projections, never a second
+    /// match over the enum.
     fn type_roots(s: StmtId) -> List<TypeRef> {
         flatten(
             [
@@ -470,6 +495,7 @@ impl SyntaxArena {
                 some_list(self.fn_parts(s)?.ret),
                 some_list(self.extern_parts(s)?.ret),
                 param_types(self.declared_fields(s)),
+                [sp.of for sp in self.spreads_of(s)],
                 variant_types(self.declared_variants(s)),
                 some_list(self.named_parts(s)?.of),
                 some_list(self.alias_parts(s)?.of),
@@ -501,7 +527,7 @@ export type SettingParts = { name: string, value: ExprId }
 
 /// An instance as written: its component's word, and its block when it
 /// wrote one.
-export type InstanceParts = { word: string, body: ExprId? }
+export type InstanceParts = { word: string, heads: List<ExprId>, body: ExprId? }
 
 /// A call by name, projected once.
 export type CallParts = { callee: string, args: List<ExprId> }

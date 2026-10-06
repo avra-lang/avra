@@ -166,11 +166,13 @@ impl Workspace {
 type Survey = { ws: Workspace, decls: Decls, store: SyntaxArena, names: NameFacts, receiver: TypeId?, seats: List<TypeId>, lo: int, hi: int, own: List<bool>, edges: List<Flow> }
 
 impl Survey {
-    /// Every assignment in the range rooted in a seat writes it.
+    /// Every assignment in the range rooted in a seat writes it —
+    /// unless its path passes through a `state` field, whose cell takes
+    /// the write.
     mut fn assigns() {
         for s in self.store.stmt_ids() {
-            let t: ExprId? = self.store.assign_target(s)
-            if t != null && self.in_range(t!) { self.mark(self.seat_of(t!)) }
+            let t? = self.store.assign_target(s) else { continue }
+            if self.in_range(t) && !self.shape().crosses_state(t) { self.mark(self.seat_of(t)) }
         }
     }
 
@@ -347,13 +349,20 @@ impl Survey {
 }
 
 impl Workspace {
-    /// A method's receiver type: its impl's target's instance type —
+    /// A method's receiver type: its impl's target's instance type, or
+    /// the record that declares it —
     /// null for a free fn, a trait's sig, and a method whose impl was
     /// refused.
     fn receiver_type(x: Decl) -> TypeId? {
-        if x.parent == null { return null }
-        let target? = self.decls.target_of(x.parent!) else { return null }
-        self.decls.self_type_of(target)
+        let parent? = x.parent else { return null }
+        match self.decls.decl(parent).kind {
+            .Record -> self.decls.self_type_of(parent),
+            .Impl -> {
+                let target? = self.decls.target_of(parent) else { return null }
+                self.decls.self_type_of(target)
+            },
+            .Trait or .Fn or .Named or .Alias or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Builtin or .Const or .Collect or .CollectEnum or .State -> null,
+        }
     }
 }
 

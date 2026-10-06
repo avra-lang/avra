@@ -1,0 +1,50 @@
+// proves: a keyed row's instance state FOLLOWS THE ROW through a
+// reorder, LEAVES with the row when a filter hides it or it is
+// removed, and never lands on another row — while state the MODEL
+// holds (`starred`, a place on the todo itself) outlives the hide.
+use @std.ui.components.{list}
+use @std.ui.headless.{Screen, headless}
+use @std.ui.tests.parts.{task_row, Todo}
+use @std.ui.tree.view.{View}
+
+state todos: List<Todo> = [
+    Todo { id: "a", title: "alpha" },
+    Todo { id: "b", title: "beta" },
+    Todo { id: "c", title: "gamma" },
+]
+state hidden: string = ""
+
+fn shown() -> List<Todo> { [t for t in todos if t.id != hidden] }
+
+fn page() -> list {
+    list shown() by it.id { t -> task_row t }
+}
+
+fn rows(screen: Screen) -> string {
+    [l.trim() for l in screen.text().split("\n") if l.trim().starts_with("text")].join(" | ")
+}
+
+fn said(screen: Screen, what: string) { println("${what}: ${rows(screen)} held=${screen.held()}") }
+
+let screen = headless(page)
+said(screen, "start")
+let _ = screen.press("beta")
+let _ = screen.press("star beta")
+let _ = screen.press("star gamma")
+said(screen, "open beta, star beta and gamma")
+todos = [todos[2], todos[0], todos[1]]
+screen.repaint()
+said(screen, "reorder")
+hidden = "b"
+screen.repaint()
+said(screen, "hide beta")
+hidden = ""
+screen.repaint()
+said(screen, "show beta")
+let _ = screen.press("gamma")
+todos = [t for t in todos if t.id != "c"]
+screen.repaint()
+said(screen, "remove gamma")
+todos = todos.concat([Todo { id: "c", title: "gamma" }])
+screen.repaint()
+said(screen, "a new gamma")

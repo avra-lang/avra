@@ -26,6 +26,7 @@ use core.{
     Unheard,
     Mark,
     sorted_by,
+    same_stmt,
     plain_mark,
     pronoun_param,
     copier,
@@ -68,9 +69,18 @@ fn build_component_decl(b: Builder) -> Result<LangNode, string> {
         from: b.span?.lo ?? 0,
     }
     let fields = b
-        .fields_zipped(fs, b.type_refs(4)?, b.exprs(5)?, [m for f in fs for m in marks.at(f.span.lo)])?
-    let fns = b.stmts(6)?
-    if !fns.all(holds_a_member(b.store, it)) { return .Err(foreign_member()) }
+        .fields_zipped(
+            fs,
+            b.type_refs(4)?,
+            b.exprs(5)?,
+            [m for f in fs for m in marks.at(f.span.lo)],
+            b.tokens(15)?,
+        )?
+    let held = b.stmts(6)?
+    let made = [s for s in held if !holds_a_member(b.store, s)]
+    if made.any((s) -> b.store.is_state_stmt(s)) { return .Err(untyped_state()) }
+    if made.any((s) -> b.store.is_declaration(s)) { return .Err(foreign_member()) }
+    let fns = b.with_body(held, made)
     if !(b.tokens(9)?).is_empty() { return .Err(three_dots()) }
     let events = b.events(en, b.tokens(13)?, b.type_refs(14)?, marks)?
     let records = record_spreads(written, b.tokens(7)?, b.type_refs(8)?)?
@@ -84,7 +94,8 @@ fn build_component_decl(b: Builder) -> Result<LangNode, string> {
 }
 
 /// A member a component may hold besides its fields: a `fn`, or a
-/// recovery's hole.
+/// recovery's hole. Any other statement is part of its BODY — what it
+/// is made of.
 fn holds_a_member(store: SyntaxArena, s: StmtId) -> bool {
     store.fn_parts(s) != null || store.hole_stmt(s) != null
 }
@@ -171,6 +182,25 @@ fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
         },
         rest -> value,
     }
+}
+
+/// `counter id { key: id }` — a NAME as the head, then the instance's
+/// block. The brace after a head's name is the instance's, never a
+/// record literal's.
+fn build_component_name_head(b: Builder) -> Result<LangNode, string> {
+    let word = b.word_at(0)?
+    let head = b.token(1)?
+    if !(b.exprs(3)?).is_empty() { return .Err("${braced_head(head.text)} — ${parenthesised_head(word.word, head.text)}") }
+    b
+        .wrap_expr(
+            b
+                .instance(
+                    word,
+                    [b.store.alloc_expr(Expr.Ident(Scoped(head.text)), head.span)],
+                    b.expr(2)?,
+                    null,
+                )?,
+        )
 }
 
 /// `row { … }` — an instance with no head value.
@@ -275,6 +305,32 @@ fn build_on_value(b: Builder) -> Result<LangNode, string> {
 }
 
 impl Builder {
+    /// A component's members with its BODY — the statements `made` —
+    /// folded into one: a quote of them, standing where the first was
+    /// written. Nothing walks a body where it is written; what reads the
+    /// declaration splices it where it means something.
+    fn with_body(held: List<StmtId>, made: List<StmtId>) -> List<StmtId> {
+        let first? = made.first() else { return held }
+        let last? = made.last() else { return held }
+        let from? = self.store.stmt_span(first) else { return held }
+        let over = from.cover(self.store.stmt_span(last) ?? from)
+        let q = self
+            .store
+            .alloc_expr(
+                Expr
+                    .Body(
+                        "quote",
+                        [self.text.substring(over.lo, over.hi)],
+                        [],
+                        BodyView.Verbatim(made, []),
+                    ),
+                over,
+            )
+        self.store.mark_quote_at(q)
+        let body = self.store.alloc_stmt(Stmt.ExprStmt(q), over)
+        [if same_stmt(s, first) { body } else { s } for s in held if same_stmt(s, first) || !made.any((m) -> same_stmt(m, s))]
+    }
+
     /// The imported component the word at `args[i]` opens.
     fn word_at(i: int) -> Result<ComponentWord, string> {
         let w = self.token(i)?
@@ -327,7 +383,7 @@ impl Builder {
     fn named(word: ComponentWord, n: Token, body: ExprId?) -> Result<LangNode, string> {
         match word.form {
             .Record(r) -> if r.head.is_empty() { self.bound(word, n, body) } else { self.wrap_expr_stmt(self.instance(word, [self.name_value(n)], body, null)?) },
-            .Template(_) or .Refused(_) -> self.wrap_expr_stmt(self.instance(word, [self.name_value(n)], body, null)?),
+            .Template(_) or .Refused(_) or .Unread -> self.wrap_expr_stmt(self.instance(word, [self.name_value(n)], body, null)?),
         }
     }
 
@@ -362,6 +418,7 @@ impl Builder {
             .Template(t) -> self.templated(word, t, heads, body),
             .Record(r) -> self.recorded(word.word, r, heads, body, name),
             .Refused(why) -> .Err(why),
+            .Unread -> .Ok(self.store.alloc_expr(Expr.Error, self.span)),
         }
     }
 
@@ -373,7 +430,7 @@ impl Builder {
         if t.head.length != 1 { return .Err(head_count(word.word, t.head.length)) }
         if body == null { return .Err(blockless(word.word)) }
         let stmts = self.written(body)
-        if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word)) }
+        if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word, self.store.ident_name(heads[0]))) }
         let block = self.filled_body(body!, stmts)
         let minted = [self.minted_format(word, t, h, heads[j])? for j, h in t.head]
         let expansion = self.store.instantiated(t, word, heads, block, minted)
@@ -729,7 +786,11 @@ fn head_count(word: string, n: int) -> string {
 }
 
 fn foreign_member() -> string {
-    "a component holds its fields and its `fn`s, and nothing else"
+    "a component holds its fields, its `fn`s and what it is made of — never a declaration of its own"
+}
+
+fn untyped_state() -> string {
+    "a component's `state` is a field, and a field says its type — `state n: int = 0`"
 }
 
 fn blockless(word: string) -> string {
@@ -740,8 +801,22 @@ fn headless(word: string) -> string {
     "`${word}` writes its head value before its block — `${word} value { … }`"
 }
 
-fn template_setting(word: string) -> string {
-    "`${word}`'s block is code it runs — a `key: value` setting fills a record's field"
+/// A template's block holding a setting. Under a head that is a bare
+/// name, the block is what the author meant as a record literal's
+/// fields — an instance's head keeps its brace — so the words write it.
+fn template_setting(word: string, head: string?) -> string {
+    let named? = head else { return "`${word}`'s block is code it runs — a `key: value` setting fills a record's field" }
+    "`${word}`'s block is code it runs — ${braced_head(named)} — ${parenthesised_head(word, named)}"
+}
+
+/// THE HEAD LAW's words: an instance's head keeps its brace.
+fn braced_head(named: string) -> string {
+    "the brace after an instance's head opens the instance's block, so `${named} { … }` is no record literal here"
+}
+
+/// The form the head law's refusals write.
+fn parenthesised_head(word: string, named: string) -> string {
+    "a record literal as the head stands in parentheses: `${word} (${named} { … })`"
 }
 
 fn record_heads(word: string, declared: int, written: int) -> string {
