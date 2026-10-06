@@ -1,0 +1,135 @@
+// proves: the wait set's rows, the gate's, the rows of a task nothing
+// runs, a task's slots and its id answer alike evaluated and compiled.
+use @std.time.{ms, sleep, now_ns}
+
+extern fn avra_wait_fd(fd: int, writable: int, arm: int, member: int)
+extern fn avra_wait_until(at_ns: int, arm: int, member: int)
+extern fn avra_wait_gate(g: ptr, arm: int, member: int)
+extern fn avra_wait_task(t: ptr, arm: int, member: int)
+extern fn avra_wait_park() -> int
+extern fn avra_gate_new() -> ptr
+extern fn avra_gate_claim(g: ptr) -> int
+extern fn avra_task_pending() -> ptr
+extern fn avra_task_at(at_ns: int) -> ptr
+extern fn avra_task_answer(t: ptr, v: ptr)
+extern fn avra_task_cancel(t: ptr)
+extern fn avra_task_join(t: ptr) -> ptr
+extern fn avra_task_done(t: ptr) -> int
+extern fn avra_task_slot(key: int) -> ptr?
+extern fn avra_task_slot_set(key: int, v: ptr)
+extern fn avra_task_id() -> int
+extern fn avra_array_sized(n: int) -> ptr
+extern fn avra_array_push(a: ptr, v: int)
+extern fn avra_array_get(a: ptr, i: int) -> int
+
+fn far() -> int { now_ns() + 60000000000 }
+
+fn soon(wait: int) -> int { now_ns() + wait * 1000000 }
+
+/// A claim as `arm:member`.
+fn said(claim: int) -> string { "${claim >> 32}:${claim & 4294967295}" }
+
+fn boxed(v: int) -> ptr {
+    let b = avra_array_sized(1)
+    avra_array_push(b, v)
+    b
+}
+
+fn slot_read(key: int) -> string {
+    let held? = avra_task_slot(key) else { return "none" }
+    "${avra_array_get(held, 0)}"
+}
+
+/// Ids in spawn order, a task nothing runs made between two spawns.
+fn ids() -> string {
+    let a = spawn avra_task_id()
+    let _unrun = avra_task_pending()
+    let b = spawn avra_task_id()
+    let c = spawn {
+        let inner = spawn avra_task_id()
+        inner.await * 10 + avra_task_id()
+    }
+    "${avra_task_id()} ${a.await} ${b.await} ${c.await}"
+}
+
+/// A gate, a task and a time in one set: woken by the gate, then by
+/// the task's answer, then at once by a task already done.
+fn one_set() -> string {
+    let g = avra_gate_new()
+    let p = avra_task_pending()
+    let empty = avra_gate_claim(g)
+    let ringer = spawn {
+        sleep(ms(2))
+        avra_gate_claim(g)
+    }
+    avra_wait_gate(g, 0, 5)
+    avra_wait_task(p, 1, 6)
+    avra_wait_until(far(), 2, 7)
+    let by_gate = said(avra_wait_park())
+    let answerer = spawn {
+        sleep(ms(2))
+        avra_task_answer(p, boxed(77))
+        0
+    }
+    avra_wait_gate(g, 0, 5)
+    avra_wait_task(p, 1, 6)
+    let by_task = said(avra_wait_park())
+    avra_wait_task(p, 3, 1)
+    let by_done = said(avra_wait_park())
+    "${empty} ${by_gate} ${ringer.await} ${by_task} ${answerer.await} ${by_done} ${avra_array_get(avra_task_join(p), 0)}"
+}
+
+/// A time alone, a descriptor ready at once, and a timer's task: woken
+/// at its time, done, and joined to a unit box.
+fn timed() -> string {
+    avra_wait_until(soon(2), 2, 9)
+    let by_time = said(avra_wait_park())
+    avra_wait_fd(1, 1, 3, 7)
+    avra_wait_until(far(), 2, 9)
+    let by_fd = said(avra_wait_park())
+    let t = avra_task_at(soon(3))
+    let before = avra_task_done(t)
+    avra_wait_task(t, 4, 2)
+    let by_timer = said(avra_wait_park())
+    "${by_time} ${by_fd} ${before} ${by_timer} ${avra_task_done(t)} ${avra_array_get(avra_task_join(t), 0)}"
+}
+
+/// A cancelled pending task and a cancelled timer are done; a waiter
+/// on the timer hears its end.
+fn cancelled() -> string {
+    let p = avra_task_pending()
+    avra_task_cancel(p)
+    avra_task_cancel(p)
+    let t = avra_task_at(far())
+    let canceller = spawn {
+        sleep(ms(2))
+        avra_task_cancel(t)
+        0
+    }
+    avra_wait_task(t, 6, 3)
+    let heard = said(avra_wait_park())
+    "${avra_task_done(p)} ${heard} ${avra_task_done(t)} ${canceller.await}"
+}
+
+/// A slot set in the program's own run is read there after a spawn,
+/// and a task starts with none and keeps its own.
+fn slots() -> string {
+    let unset = slot_read(1)
+    avra_task_slot_set(1, boxed(41))
+    let child = spawn {
+        let born = slot_read(1)
+        avra_task_slot_set(1, boxed(9))
+        "${born} ${slot_read(1)} ${slot_read(0)}"
+    }
+    let theirs = child.await
+    avra_task_slot_set(1, boxed(42))
+    "${unset} ${theirs} ${slot_read(1)}"
+}
+
+let i = ids()
+let o = one_set()
+let t = timed()
+let c = cancelled()
+let s = slots()
+let _left = avra_task_pending()
+"${i} | ${o} | ${t} | ${c} | ${s}"

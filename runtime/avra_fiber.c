@@ -1274,12 +1274,12 @@ void* avra_gate_new(void) {
 }
 
 __attribute__((noinline))
-static int64_t gate_claimed(void* gate) {
+static int64_t gate_claimed(void* gate, int64_t by) {
     int64_t* cells = task_cells(gate);
     while (cells[GATE_HEAD]) {
         Waiter* w = (Waiter*)(uintptr_t)cells[GATE_HEAD];
         int32_t member = w->member;
-        if (waiter_claims(w, id_of(g_current))) return member;
+        if (waiter_claims(w, by)) return member;
     }
     return -1;
 }
@@ -1288,7 +1288,7 @@ static int64_t gate_claimed(void* gate) {
 // and answers from a load and a test.
 int64_t avra_gate_claim(void* gate) {
     if (!task_cells(gate)[GATE_HEAD]) return -1;
-    return gate_claimed(gate);
+    return gate_claimed(gate, id_of(g_current));
 }
 
 // ── A task's life ───────────────────────────────────────────────
@@ -1378,19 +1378,29 @@ static void legacy_parked(Fiber* self) {
     self->state = FIBER_PARKED;
 }
 
-void* avra_task_join(void* task) {
+// The calling task parked until `task` has ended; its cells, read after.
+static int64_t* task_awaited(void* task) {
     int64_t* cells = task_cells(task);
-    if (!cells[GATE_OPEN]) {
-        Fiber* self = g_current;
-        refuse_join_ring(task, self);
-        alone(self);
-        self->joining = task;
-        waits_gate(self, task, 0, 0);
-        legacy_parked(self);
-        run_next();
-        self->joining = NULL;
-        cells = task_cells(task);
-    }
+    if (cells[GATE_OPEN]) return cells;
+    Fiber* self = g_current;
+    refuse_join_ring(task, self);
+    alone(self);
+    self->joining = task;
+    waits_gate(self, task, 0, 0);
+    legacy_parked(self);
+    run_next();
+    self->joining = NULL;
+    return task_cells(task);
+}
+
+__attribute__((noinline, cold, noreturn))
+static void join_refused(void) { avra_trap("a join takes a task that answers, and this one was cancelled"); }
+
+// A JOIN TAKES A TASK THAT ANSWERS: a cancelled one has no answer, and
+// none is made up for it.
+void* avra_task_join(void* task) {
+    int64_t* cells = task_awaited(task);
+    if (cells[TASK_END] == END_CANCELLED) join_refused();
     void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];
     avra_rc_retain(answer);
     return answer;
@@ -1401,8 +1411,7 @@ void* avra_task_join(void* task) {
 // settle costs nothing.
 void avra_task_settle(void* task) {
     if (!task) return;
-    void* answer = avra_task_join(task);
-    avra_rc_release(answer);
+    task_awaited(task);
 }
 
 // A FULL OWNER SHEDS ITS FINISHED TASKS before it grows: each is
@@ -1483,6 +1492,9 @@ void* avra_task_at(int64_t at_ns) {
 // The heap's entry is already out.
 static void task_fired(void* task) {
     int64_t* cells = task_cells(task);
+    void* unit = avra_array_sized(1);
+    avra_array_push(unit, 0);
+    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;
     cells[TASK_AT] = 0;
     cells[TASK_END] = END_ANSWERED;
     gate_opened(task, BY_TIMER);
@@ -1622,8 +1634,11 @@ int64_t avra_vtask_new(void) {
     return (int64_t)(uintptr_t)f;
 }
 
-int64_t avra_vtask_new_at(int64_t site) {
+// A virtual task under the id its machine counts it by — the one the
+// program reads, so a trace names the same task the program does.
+int64_t avra_vtask_new_at(int64_t site, int64_t id) {
     int64_t t = avra_vtask_new();
+    virtual_at(t)->own.id = id;
     if (TRACING) traced_fiber("spawn-at", virtual_at(t), (long long)site);
     return t;
 }
@@ -1644,6 +1659,12 @@ void avra_vtask_free(int64_t t) {
         }
     }
     fiber_freed(f);
+}
+
+// A virtual task whose body answered: said, then gone.
+void avra_vtask_end(int64_t t) {
+    if (TRACING) traced_fiber("end", virtual_at(t), 0);
+    avra_vtask_free(t);
 }
 
 void avra_vtask_ready(int64_t t) { ready_push(virtual_at(t)); }
@@ -1684,6 +1705,13 @@ int64_t avra_vtask_claim(int64_t t) { return claim_taken(virtual_at(t)); }
 void avra_vtask_cancel(int64_t t, int64_t by) { fiber_cancelled(virtual_at(t), by); }
 
 void avra_vgate_open(void* gate) { gate_opened(gate, BY_CLOSE); }
+
+// A claim made by a virtual task: the claimant is that task, never
+// whoever the host happens to be running.
+int64_t avra_vgate_claim(int64_t t, void* gate) {
+    if (!task_cells(gate)[GATE_HEAD]) return -1;
+    return gate_claimed(gate, id_of(virtual_at(t)));
+}
 
 int64_t avra_vtask_next(void) {
     Fiber* next = next_ready();

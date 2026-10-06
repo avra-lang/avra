@@ -5,8 +5,9 @@
 //! PARKING and the run loop saves the task at that very instruction, so
 //! the row runs again when its task resumes and answers then.
 
-extern fn avra_vtask_new() -> int
+extern fn avra_vtask_new_at(site: int, id: int) -> int
 extern fn avra_vtask_free(t: int)
+extern fn avra_vtask_end(t: int)
 extern fn avra_vtask_ready(t: int)
 extern fn avra_vtask_sleep(t: int, ms: int)
 extern fn avra_vtask_park_fd(t: int, fd: int, writable: int, timeout_ms: int) -> int
@@ -15,11 +16,27 @@ extern fn avra_vtask_within(t: int, ms: int) -> int
 extern fn avra_vtask_within_end(t: int, outer: int)
 extern fn avra_vtask_deadline(t: int) -> int
 extern fn avra_vtask_next() -> int
+extern fn avra_vtask_wait_fd(t: int, fd: int, writable: int, arm: int, member: int)
+extern fn avra_vtask_wait_until(t: int, at_ns: int, arm: int, member: int)
+extern fn avra_vtask_wait_gate(t: int, gate: ptr, arm: int, member: int)
+extern fn avra_vtask_park(t: int) -> int
+extern fn avra_vtask_claim(t: int) -> int
+extern fn avra_vtask_cancel(t: int, by: int)
+extern fn avra_vgate_open(gate: ptr)
+extern fn avra_vgate_claim(t: int, gate: ptr) -> int
+extern fn avra_gate_new() -> ptr
+extern fn avra_rc_release(p: ptr)
 
 /// One interpreted task — a JOB: its own call stack while it waits, the place it
 /// resumes, and — once it has one — its answer and whoever waits for it.
 type Job = {
+    // its place with the policy; 0 for a task nothing runs and no
+    // timer ends
     vt: int,
+    // what `avra_task_id` answers in it: 0 for the program's own run,
+    // n for the n-th task spawned. A task nothing runs answers for
+    // nobody, and wears minus its place among the jobs.
+    id: int,
     frames: List<List<Val?>>,
     callers: List<Resume>,
     at: Place?,
@@ -32,35 +49,67 @@ type Job = {
     // it parked on the policy at the instruction it resumes on: that
     // row reads its waking
     resumed: bool,
+    // what it carries: four slots, released when it ends
+    slots: List<Val>,
+    // the gate a wait set files on to hear its end, made when the
+    // first one asks
+    gate: ptr?,
+    // it ended with no answer
+    cancelled: bool,
+}
+
+impl Job {
+    /// Whether nothing runs it: a pending task, or a timer's.
+    fn unrun() -> bool { self.id < 0 }
+
+    /// Whether the policy ends it at its time.
+    fn timed() -> bool { self.id < 0 && self.vt != 0 }
+}
+
+/// A job at rest: nobody waits for it, and it carries nothing.
+fn job_of(vt: int, id: int, record: int, at: Place?, frames: List<List<Val?>>) -> Job {
+    Job {
+        vt: vt,
+        id: id,
+        frames: frames,
+        callers: [],
+        at: at,
+        record: record,
+        done: false,
+        waiters: [],
+        resumed: false,
+        slots: [Val.N, Val.N, Val.N, Val.N],
+        gate: null,
+        cancelled: false,
+    }
+}
+
+/// The reference the machine held to a gate, given up.
+fn let_go(gate: ptr?) {
+    let held? = gate else { return }
+    avra_rc_release(held)
 }
 
 impl Machine {
     /// The program's own run, filed as a task the first time a row asks.
     fn rooted() {
         if !self.tasks.is_empty() { return }
-        self
-            .tasks
-            .push(
-                Job {
-                    vt: avra_vtask_new(),
-                    frames: [],
-                    callers: [],
-                    at: null,
-                    record: -1,
-                    done: false,
-                    waiters: [],
-                    resumed: false,
-                },
-            )
+        self.tasks.push(job_of(avra_vtask_new_at(0, 0), 0, -1, null, []))
         self.running = 0
     }
 
     /// Every task the run still holds leaves the policy — the root's,
-    /// and any a trap stopped — so the next run starts from none.
+    /// and any a trap stopped — and every gate it still holds is let
+    /// go, so the next run starts from none.
     fn retired() {
         for t in self.tasks {
-            if !t.done { avra_vtask_free(t.vt) }
+            if t.done { continue }
+            if t.vt != 0 { avra_vtask_free(t.vt) }
+            let_go(t.gate)
+            for v in t.slots { self.releases_val(v) }
         }
+        for gate in self.gates { let_go(gate) }
+        self.gates = []
         self.tasks = []
         self.running = -1
     }
@@ -75,21 +124,19 @@ impl Machine {
         // until it answers
         let record = self.fresh_array([Val.I(self.tasks.length), vals[0], Val.N])
         self.retains(record)
-        let vt = avra_vtask_new()
+        self.spawned = self.spawned + 1
+        let vt = avra_vtask_new_at(self.whole(self.arrays[box].first() ?? Val.N), self.spawned)
         avra_vtask_within_end(vt, avra_vtask_deadline(self.tasks[self.running].vt))
         self
             .tasks
             .push(
-                Job {
-                    vt: vt,
-                    frames: [self.frame_for(target, [vals[0]])],
-                    callers: [],
-                    at: Place { body: target, pc: 0 },
-                    record: array_id(record) ?? -1,
-                    done: false,
-                    waiters: [],
-                    resumed: false,
-                },
+                job_of(
+                    vt,
+                    self.spawned,
+                    array_id(record) ?? -1,
+                    Place { body: target, pc: 0 },
+                    [self.frame_for(target, [vals[0]])],
+                ),
             )
         avra_vtask_ready(vt)
         record
@@ -112,6 +159,7 @@ impl Machine {
         let id = self.task_of(vals[0])
         if id == self.running { return self.trapped_val("a task joined itself — deadlock") }
         if !self.tasks[id].done { return self.waited_on(id) }
+        if self.tasks[id].cancelled { return self.trapped_val("a join takes a task that answers, and this one was cancelled") }
         self.arrays[self.tasks[id].record][2]
     }
 
@@ -232,18 +280,51 @@ impl Machine {
     /// machine runs whoever is next.
     fn finished(answer: Val?) -> Place {
         let t = self.tasks[self.running]
-        if t.record >= 0 { self.arrays[t.record].set(2, answer ?? Val.N) }
-        self.tasks[self.running].done = true
         self.tasks[self.running].frames = []
-        for w in t.waiters { avra_vtask_ready(self.tasks[w].vt) }
-        self.tasks[self.running].waiters = []
-        avra_vtask_free(t.vt)
+        self.ended(self.running, answer ?? Val.N)
+        avra_vtask_end(t.vt)
         if t.record >= 0 { self.releases_val(Val.A(t.record)) }
         self.resume_next()
     }
 
+    /// The task `id` ended: its answer left in its record, its waiters
+    /// ready, what it carried released, and its gate — when a wait set
+    /// asked for one — open for ever.
+    fn ended(id: int, answer: Val) {
+        let t = self.tasks[id]
+        if t.record >= 0 { self.arrays[t.record].set(2, answer) }
+        self.tasks[id].done = true
+        for w in t.waiters { avra_vtask_ready(self.tasks[w].vt) }
+        self.tasks[id].waiters = []
+        for v in t.slots { self.releases_val(v) }
+        self.tasks[id].slots = []
+        let gate? = t.gate else { return }
+        avra_vgate_open(gate)
+        avra_rc_release(gate)
+        self.tasks[id].gate = null
+    }
+
+    /// A task nothing runs ended with `answer`: a timer's leaves the
+    /// policy, with the reference its time held to its record.
+    fn unrun_ended(id: int, answer: Val) {
+        let t = self.tasks[id]
+        self.ended(id, answer)
+        if !t.timed() { return }
+        avra_vtask_free(t.vt)
+        self.releases_val(Val.A(t.record))
+    }
+
+    /// Whether the policy named a timer's task: its time came, so it
+    /// answers a unit box and there is nothing to resume.
+    fn fired(vt: int) -> bool {
+        let id? = self.tasks.find_index(it.vt == vt && !it.done && it.timed()) else { return false }
+        self.unrun_ended(id, self.fresh_array([Val.I(0)]))
+        true
+    }
+
     fn resume_next() -> Place {
-        let vt = avra_vtask_next()
+        mut vt = avra_vtask_next()
+        while self.fired(vt) { vt = avra_vtask_next() }
         let next? = self.tasks.find_index(it.vt == vt && !it.done) else {
             self.defect("the policy named a task the machine does not hold")
             return self.tasks[self.running].at!
@@ -252,5 +333,181 @@ impl Machine {
         self.frames = self.tasks[next].frames
         self.callers = self.tasks[next].callers
         self.tasks[next].at!
+    }
+
+    // ── The wait set, gates, tasks nothing runs, what a task carries ──
+
+    fn running_vt() -> int {
+        self.rooted()
+        self.tasks[self.running].vt
+    }
+
+    fn wait_fd_val(vals: List<Val>) -> Val {
+        avra_vtask_wait_fd(
+            self.running_vt(),
+            self.whole(vals[0]),
+            self.whole(vals[1]),
+            self.whole(vals[2]),
+            self.whole(vals[3]),
+        )
+        Val.I(0)
+    }
+
+    fn wait_until_val(vals: List<Val>) -> Val {
+        avra_vtask_wait_until(
+            self.running_vt(),
+            self.whole(vals[0]),
+            self.whole(vals[1]),
+            self.whole(vals[2]),
+        )
+        Val.I(0)
+    }
+
+    fn ungated() -> Val { self.defect_val("a gate that is no gate survived typing") }
+
+    fn wait_gate_val(vals: List<Val>) -> Val {
+        let gate? = self.gate_of(vals[0]) else { return self.ungated() }
+        avra_vtask_wait_gate(self.running_vt(), gate, self.whole(vals[1]), self.whole(vals[2]))
+        Val.I(0)
+    }
+
+    fn wait_task_val(vals: List<Val>) -> Val {
+        let id = self.task_of(vals[0])
+        let gate = self.end_gate(id)
+        avra_vtask_wait_gate(self.running_vt(), gate, self.whole(vals[1]), self.whole(vals[2]))
+        if self.tasks[id].done { avra_rc_release(gate) }
+        Val.I(0)
+    }
+
+    /// The gate a wait on task `id` files on: the task's own while it
+    /// lives, opened at its end; once it is done, one already open that
+    /// the caller lets go.
+    fn end_gate(id: int) -> ptr {
+        let held? = self.tasks[id].gate else { return self.end_gate_made(id) }
+        held
+    }
+
+    fn end_gate_made(id: int) -> ptr {
+        let gate = avra_gate_new()
+        if self.tasks[id].done { avra_vgate_open(gate) } else { self.tasks[id].gate = gate }
+        gate
+    }
+
+    /// The running task parks on its set, and answers the claim: at
+    /// once when the set is claimed already, else when it resumes here.
+    fn wait_park_val() -> Val {
+        let vt = self.running_vt()
+        if self.woke() || avra_vtask_park(vt) == 0 { return Val.I(avra_vtask_claim(vt)) }
+        self.policy_parked()
+        Val.I(0)
+    }
+
+    /// A gate: the box a program holds, and the runtime's own gate
+    /// filed beside it under the box's id.
+    fn gate_new_val() -> Val {
+        let box = self.fresh_array([Val.I(0), Val.I(0), Val.I(0)])
+        let id? = array_id(box) else { return box }
+        while self.gates.length <= id { self.gates.push(null) }
+        self.gates.set(id, avra_gate_new())
+        box
+    }
+
+    /// The runtime's gate behind a program's.
+    fn gate_of(v: Val) -> ptr? {
+        let id? = array_id(v) else { return null }
+        if id >= self.gates.length { return null }
+        self.gates[id]
+    }
+
+    /// The box `id` died: the gate filed beside it, if any, is let go.
+    fn gate_closed(id: int) {
+        if id >= self.gates.length { return }
+        let_go(self.gates[id])
+        self.gates.set(id, null)
+    }
+
+    fn gate_claim_val(vals: List<Val>) -> Val {
+        let gate? = self.gate_of(vals[0]) else { return self.ungated() }
+        Val.I(avra_vgate_claim(self.running_vt(), gate))
+    }
+
+    /// A task nothing runs, filed as a job under `vt`: its record.
+    fn unrun(vt: int) -> Val {
+        let record = self.fresh_array([Val.I(self.tasks.length), Val.N, Val.N])
+        self.tasks.push(job_of(vt, 0 - self.tasks.length, array_id(record) ?? -1, null, []))
+        record
+    }
+
+    fn task_pending_val() -> Val {
+        self.rooted()
+        self.unrun(0)
+    }
+
+    /// A task the policy ends at `at_ns`: its time holds its record
+    /// until then, so one nobody else holds still fires.
+    fn task_at_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let vt = avra_vtask_new_at(0, 0 - self.tasks.length)
+        let record = self.unrun(vt)
+        self.retains(record)
+        avra_vtask_wait_until(vt, self.whole(vals[0]), 0, 0)
+        if avra_vtask_park(vt) == 0 {
+            let _ = self.fired(vt)
+        }
+        record
+    }
+
+    fn task_answer_val(vals: List<Val>) -> Val {
+        let id = self.task_of(vals[0])
+        if self.tasks[id].done { return self.trapped_val("a task answered twice") }
+        if !self.tasks[id].unrun() { return self.trapped_val("a running task answers for itself") }
+        self.retains(vals[1])
+        self.unrun_ended(id, vals[1])
+        Val.I(0)
+    }
+
+    /// A cancel: a running task hears it at its wait; a task nothing
+    /// runs simply ends, with no answer.
+    fn task_cancel_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let id = self.task_of(vals[0])
+        if self.tasks[id].done { return Val.I(0) }
+        if !self.tasks[id].unrun() {
+            avra_vtask_cancel(self.tasks[id].vt, self.tasks[self.running].id)
+            return Val.I(0)
+        }
+        self.tasks[id].cancelled = true
+        self.unrun_ended(id, Val.N)
+        Val.I(0)
+    }
+
+    /// The slot a key names in the running task, or null past the four.
+    fn slot_key(v: Val) -> int? {
+        let key = self.whole(v)
+        if key >= 0 && key < 4 { return key }
+        self.trapped("a task has four slots, and this is none of them")
+        null
+    }
+
+    fn task_slot_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let key? = self.slot_key(vals[0]) else { return Val.N }
+        let held = self.tasks[self.running].slots[key]
+        self.retains(held)
+        held
+    }
+
+    fn task_slot_set_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let key? = self.slot_key(vals[0]) else { return Val.I(0) }
+        let old = self.tasks[self.running].slots[key]
+        self.retains(vals[1])
+        self.tasks[self.running].slots.set(key, vals[1])
+        self.releases_val(old)
+        Val.I(0)
+    }
+
+    fn task_id_val() -> Val {
+        Val.I(if self.running < 0 { 0 } else { self.tasks[self.running].id })
     }
 }

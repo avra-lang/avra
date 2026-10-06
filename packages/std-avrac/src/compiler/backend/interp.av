@@ -135,6 +135,11 @@ type Machine = {
     tasks: List<Job>,
     running: int,
     parking: bool,
+    // how many tasks the run has spawned: the newest one's id
+    spawned: int = 0,
+    // the runtime's gate behind a program's, by the id of the box the
+    // program holds; let go when that box dies
+    gates: List<ptr?> = [],
     arrays: List<List<Val>>,
     // an aggregate's reference count, index-aligned with `arrays`:
     // a box holds one on creation, Retain/Release move it, and zero
@@ -1478,6 +1483,20 @@ impl Machine {
             .FiberParkFd -> self.fiber_park_fd_val(vals),
             .FiberWithin -> self.fiber_within_val(vals),
             .FiberWithinEnd -> self.fiber_within_end_val(vals),
+            .WaitFd -> self.wait_fd_val(vals),
+            .WaitUntil -> self.wait_until_val(vals),
+            .WaitGate -> self.wait_gate_val(vals),
+            .WaitTask -> self.wait_task_val(vals),
+            .WaitPark -> self.wait_park_val(),
+            .GateNew -> self.gate_new_val(),
+            .GateClaim -> self.gate_claim_val(vals),
+            .TaskPending -> self.task_pending_val(),
+            .TaskAt -> self.task_at_val(vals),
+            .TaskAnswer -> self.task_answer_val(vals),
+            .TaskCancel -> self.task_cancel_val(vals),
+            .TaskSlot -> self.task_slot_val(vals),
+            .TaskSlotSet -> self.task_slot_set_val(vals),
+            .TaskId -> self.task_id_val(),
             .SpawnStatus -> self.spawn_status_val(vals),
             .SpawnIn -> self.spawn_in_val(vals),
             .TypeNamed -> self.type_named_val(self.text_val(vals[0])),
@@ -1848,6 +1867,7 @@ impl Machine {
                 let kids = self.arrays[id]
                 self.arrays.set(id, [])
                 self.spare.retired(id)
+                self.gate_closed(id)
                 kids
             },
             .M(id) -> self.map_dropped(id),
