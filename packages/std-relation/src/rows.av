@@ -87,10 +87,6 @@ type ReadMark = { revision: Cell<int>, reader: Cell<int> }
 /// id the store minted.
 export type Filing<R> = { keyed: bool, keys: fn(R) -> List<List<IndexKey>>, hash: fn(R) -> int, seated: fn(R, int) -> R }
 
-/// One replacement under way: the stamp its rows take, its owner's list,
-/// and whether any query ever read here.
-type Replacing = { stamp: Stamp, mine: Cell<List<int>>, heard: bool }
-
 /// Who wrote a row: its owner's cell, and which replacement of the
 /// owner's rows it was written in — owner 0 is no one.
 export type Stamp = { owner: int, run: int }
@@ -334,17 +330,26 @@ impl Rows<R> {
     /// stored, in order; none when refused.
     fn replaced(db: Db, owner: string, rows: List<R>, how: Filing<R>) -> List<R> {
         let cell = db.owner_named(owner)
-        let named = [(how.keys)(r) for r in rows]
-        if !self.replaceable(db, cell, how.keyed, named) { return rows.slice(0, 0) }
-        let run = Replacing {
-            stamp: Stamp { owner: cell, run: renewed(db, cell) },
-            mine: self.stamped_by(cell),
-            heard: db.read_ever(),
-        }
+        let keyed = how.keyed
+        let keys = how.keys
+        let named = [keys(r) for r in rows]
+        if !self.replaceable(db, cell, keyed, named) { return rows.slice(0, 0) }
+        let stamp = Stamp { owner: cell, run: renewed(db, cell) }
+        let mine = self.stamped_by(cell)
+        let heard = db.read_ever()
+        let hash = how.hash
+        let seated = how.seated
         db.counted()
-        let stored = [self.filed(db, r, named[i], how, run) for i, r in rows]
-        let gone = self.stale(cell, run.stamp.run)
-        if run.heard { self.moves(db, self.filed_buckets(gone)) }
+        mut stored = rows.slice(0, 0)
+        for i, r in rows {
+            let id = self.own(keyed, named[i])
+            if heard { self.moves(db, self.touched(id, named[i])) }
+            if id == self.next_id() { mine.push(id) }
+            stored.push(seated(r, id))
+            self.placed(id, stored[i], hash(r), named[i], stamp)
+        }
+        let gone = self.stale(cell, stamp.run)
+        if heard { self.moves(db, self.filed_buckets(gone)) }
         for id in gone { self.remove(id) }
         stored
     }
@@ -381,17 +386,6 @@ impl Rows<R> {
         false
     }
 
-    /// A row already asked, filed as its owner's. Answers it as stored.
-    fn filed(db: Db, r: R, keys: List<List<IndexKey>>, how: Filing<R>, run: Replacing) -> R {
-        let id = self.own(how.keyed, keys)
-        let row = (how.seated)(r, id)
-        if run.heard { self.moves(db, self.touched(id, keys)) }
-        if self.row(id) == null { run.mine.push(id) }
-        self.put(id, row, (how.hash)(r), keys)
-        self.stamps.set_at(id, run.stamp)
-        row
-    }
-
     /// Of `owner`'s rows here, exactly those at `ids` KEPT and every
     /// other removed — `replaced`, for a writer that files by id.
     fn kept_of(db: Db, owner: int, ids: List<int>) {
@@ -426,8 +420,7 @@ impl Rows<R> {
         }
         if db.read_ever() && !self.lands(db, relation, self.touched(id, keys)) { return false }
         db.counted()
-        self.put(id, row, hash, keys)
-        self.stamps.set_at(id, stamp)
+        self.placed(id, row, hash, keys, stamp)
         if stamp.owner != 0 && !held { self.stamped_by(stamp.owner).push(id) }
         true
     }
@@ -548,8 +541,21 @@ impl Rows<R> {
     /// replacement with the same hash and keys files nothing: the row
     /// is stored and every bucket stays exactly as it was.
     fn put(id: int, row: R, hash: int, named: List<List<IndexKey>>) {
+        self
+            .placed(
+                id,
+                row,
+                hash,
+                named,
+                if id < self.next_id() { self.stamps.get()[id] } else { unowned },
+            )
+    }
+
+    /// `put`, the row stamped: one write of its stamp, appended or replaced.
+    fn placed(id: int, row: R, hash: int, named: List<List<IndexKey>>, stamp: Stamp) {
         let keys = [distinct_keys(ks) for ks in named]
         if id < self.next_id() {
+            self.stamps.set_at(id, stamp)
             if self.row(id) != null &&
                 self.hashes.get()[id] == hash &&
                 same_keys(self.filed.get()[id], keys) {
@@ -564,7 +570,7 @@ impl Rows<R> {
             self.rows.push(row)
             self.hashes.push(hash)
             self.filed.push(keys)
-            self.stamps.push(unowned)
+            self.stamps.push(stamp)
         }
         self.live.set(self.live.get() + 1)
         self.set.set(self.set.get() + hash)
