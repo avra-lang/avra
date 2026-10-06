@@ -56,6 +56,11 @@ fn mark_decl() -> string {
     "use @std.meta.{Named}\ntrait Mark {\n    fn label() -> string\n}\nimpl Mark for int {\n    fn label() -> string { \"i\" }\n}\nimpl Mark for string {\n    fn label() -> string { self }\n}\nfn mark(what: Named, label: dyn Mark) -> void {}\n"
 }
 
+/// A gathered enum of two records: one empty, one of two fields.
+fn shapes() -> string {
+    "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int, to: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n"
+}
+
 fn ui2() -> string {
     "export component widget {\n    run: fn(int) -> int?\n}\nexport component gadget {\n    run: fn(int) -> int?\n}\n"
 }
@@ -574,6 +579,61 @@ spec "collect's own laws" {
                     ui(),
                 ),
             ) == "build init 0 1"
+        }
+        then "a gathered variant carries its member record's fields, in field order" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        shapes() +
+                        "match Shape.Line(1, 4) { .Dot -> 0, .Line(a, b) -> b - a }",
+                    ui(),
+                ),
+            ) == "3"
+        }
+        then "a match missing a gathered variant names it" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        shapes() +
+                        "fn f(s: Shape) -> int { match s { .Dot -> 0 } }\n1",
+                    ui(),
+                ),
+                "must handle `.Line`",
+            )
+        }
+        then "a member record naming an unknown type refuses once, at the member" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { at: Nowhere }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n" +
+                        "match Shape.Dot(1) { .Dot(_) -> 0 }",
+                    ui(),
+                ),
+                "`Nowhere` names no type",
+            )
+        }
+        then "a member record taking type parameters refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Wrap<T> = { held: T }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Wrap` takes type parameters",
+            )
+        }
+        then "a member record spreading another's fields refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "type Base = { id: int }\n@numbered(0)\ntype Line = { ..Base, to: int }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Line` spreads another record's",
+            )
         }
         then "a record field of the collect enum's own type, and a fn matching it exhaustively, both resolve — written BEFORE the collect enum's own declaration, pinning `sig_rank`'s order" {
             answered(

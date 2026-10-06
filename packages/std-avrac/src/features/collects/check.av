@@ -41,8 +41,9 @@ export fn check_collect(mut cx: TypeCx, s: StmtId) {
 }
 
 /// `check_collect`'s twin over `collect enum` — no declared type, no
-/// projection: the members ARE the variants, so the one extra law is
-/// theirs — two members naming the same variant.
+/// projection: the members ARE the variants, so the extra laws are
+/// theirs — two members naming the same variant, and a member whose
+/// record cannot be a payload.
 export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
     let p? = cx.view.store.collect_enum_parts(s) else { return }
     checked_kind(cx, s, p.kind)
@@ -58,6 +59,16 @@ export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
     ) {
         cx.emit(d)
     }
+    for m in members { checked_member(cx, s, p.name, m) }
+}
+
+/// A gathered variant's payload is the fields its member's record
+/// WRITES, at fixed types: a record that takes type parameters or
+/// spreads another's fields refuses.
+fn checked_member(mut cx: TypeCx, s: StmtId, owner: string, m: Decl) {
+    let record? = cx.view.decls.store_of(m.file).struct_parts(m.stmt) else { return }
+    if !record.tparams.is_empty() { cx.emit(generic_member(cx.stmt_loc(s), owner, m.name)) }
+    if !record.spreads.is_empty() { cx.emit(spread_member(cx.stmt_loc(s), owner, m.name)) }
 }
 
 /// The kind's own gathering door — A REGISTRY, exhaustive over
@@ -361,6 +372,26 @@ fn mixed_order(at: Loc?, key: Plain) -> Diag {
 /// The label every `by` key's refusal shares — one spelling for one
 /// seat, so the same sentence is not duplicated per voice.
 fn order_at() -> string { "in this collect's order" }
+
+fn generic_member(at: Loc?, owner: string, member: string) -> Diag {
+    refusal(
+        "collect_enum.member",
+        at,
+        "a gathered variant carries fixed types — `${member}` takes type parameters",
+        "`${owner}` gathers it here",
+        "write `${member}`'s fields at the types the variant carries",
+    )
+}
+
+fn spread_member(at: Loc?, owner: string, member: string) -> Diag {
+    refusal(
+        "collect_enum.member",
+        at,
+        "a gathered variant carries the fields its record writes — `${member}` spreads another record's",
+        "`${owner}` gathers it here",
+        "write the fields in `${member}` itself, in payload order",
+    )
+}
 
 fn dense_shape(at: Loc?) -> Diag {
     refusal(
