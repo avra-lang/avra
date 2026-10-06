@@ -3,7 +3,9 @@
 Every site in the tree that hand-rolls a stream, a queue, a poll
 loop, a callback registry, a readiness wait, a retry loop, a pipe or a
 producer/consumer pair, and what it becomes under
-docs/2026_10_05_CHANNELS.md. "Slice" is that doc's §17.
+docs/2026_10_05_CHANNELS.md. "Slice" is that doc's OLD slice number;
+its §17 maps each to the build order and its ticket. To build, start
+from docs/2026_10_06_CHANNELS_HANDOFF.md.
 
 Surveyed on `bd36bf7`, `ui-dev` `faf9ddb` for `avra dev`, and
 `../avra-os-watch` (staged) for the watch. The survey was done by

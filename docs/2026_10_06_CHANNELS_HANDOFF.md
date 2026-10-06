@@ -215,46 +215,28 @@ Ticket ids are `avra-8sb5.34.53.N`. Kind: R runtime, C compiler, L library.
 
 ## 7. How to work here
 
-- Read `CLAUDE.md` first: "How work lands", "Working discipline", the
-  idiom bar, the IR protocol, the vocabulary seam rule.
-- Docs live on branch `channels-design` (worktree
-  `../avra-channels-design`). The lead opens its PR. Do not build there.
-- One slice = one worktree: `sh tools/work new flow-<n>`. Then
-  `sh tools/work test`, `sh tools/work run <cmd>`, `sh tools/work land`
-  (only on the lead's go), `sh tools/work status`.
+- Read `CLAUDE.md` first: "How work lands", "Working discipline", the idiom bar, the IR protocol, the vocabulary seam rule.
+- Docs live on branch `channels-design` (worktree `../avra-channels-design`). The lead opens its PR. Do not build there.
+- One slice = one worktree: `sh tools/work new flow-<n>`. Then `sh tools/work test`, `sh tools/work run <cmd>`, `sh tools/work land` (only on the lead's go), `sh tools/work status`.
 - Heavy runs go on Sprites. Every command is bounded to ~2 minutes.
-- A runtime row the compiler's own source declares takes TWO landings
-  (CLAUDE.md, "A REGISTRY ROW … CANNOT BE GATED IN THE COMMIT THAT ADDS
-  IT"). A grammar change: `cp build/avra build/avra.pre` first.
+- A runtime row the compiler's own source declares takes TWO landings (CLAUDE.md, "A REGISTRY ROW … CANNOT BE GATED IN THE COMMIT THAT ADDS IT"). A grammar change: `cp build/avra build/avra.pre` first.
 - Every slice: implement → `/red-team` → `/review-round` → land.
-- THE LOOP THAT WORKED for the design: author writes, an INDEPENDENT
-  reviewer attacks with probes, repeat. Three rounds found 11, then 4,
-  then 6 flaws. Use it for slices 11 and 19, and for slice 3's spellings.
+- THE LOOP THAT WORKED for the design: author writes, an INDEPENDENT reviewer attacks with probes, repeat. Three rounds found 11, then 4, then 6 flaws. Use it for slices 11 and 19, and for slice 3's spellings.
 - Probe every example before claiming it types. Probe outside the tree.
 - Update the ticket when a slice lands; close it with the PR number.
 
 ## 8. Traps the reviews already paid for
 
-1. Do not claim an example types without running it. `?` inside a
-   block lambda, `Task<void>`, tuples and generic methods do not.
-2. A cancel never displaces a wake that already claimed the wait. The
-   promised value is taken first. Two bits: asked, and unwinding.
-3. A task made in an arm head and not taken is CANCELLED, never joined.
-   Joining waits out every unfired timer.
-4. A `send` to a reader that left is a cancel point. Without it a
-   producer that never waits hangs its owner.
-5. `reduce` keeps item order (consecutive runs). Dealing by index mod 8
-   reorders; text came out `acegibdfhj`.
-6. An effect's key is (delivery key, callee, n-th call), never the
-   delivery id alone. `n` is unsafe under control flow: name it.
-7. "In store S" means the `Tx` the handler was HANDED. A second
-   `begin()` inside commits apart from the ack: refuse it.
-8. A run-time home changes the mechanism, never the promise: an outbox
-   row for the sender, an inbox row for the handler.
-9. An attempt counts when a handler STARTS, not at `take`. A newer
-   writer's shape is released, not buried (rolling deploys).
-10. In the simulator a crash is not a cancel: no `defer` runs. A
-    duplicate the contract permits is a note, not a failure.
+1. Do not claim an example types without running it. `?` inside a block lambda, `Task<void>`, tuples and generic methods do not.
+2. A cancel never displaces a wake that already claimed the wait. The promised value is taken first. Two bits: asked, and unwinding.
+3. A task made in an arm head and not taken is CANCELLED, never joined. Joining waits out every unfired timer.
+4. A `send` to a reader that left is a cancel point. Without it a producer that never waits hangs its owner.
+5. `reduce` keeps item order (consecutive runs). Dealing by index mod 8 reorders; text came out `acegibdfhj`.
+6. An effect's key is (delivery key, callee, n-th call), never the delivery id alone. `n` is unsafe under control flow: name it.
+7. "In store S" means the `Tx` the handler was HANDED. A second `begin()` inside commits apart from the ack: refuse it.
+8. A run-time home changes the mechanism, never the promise: an outbox row for the sender, an inbox row for the handler.
+9. An attempt counts when a handler STARTS, not at `take`. A newer writer's shape is released, not buried (rolling deploys).
+10. In the simulator a crash is not a cancel: no `defer` runs. A duplicate the contract permits is a note, not a failure.
 
 ## 9. Open, needing the owner
 
