@@ -1231,15 +1231,16 @@ printf 'export fn base() -> int { 1 }\n' > $R/url/src/lib.av
 printf 'export trait Say { fn say() -> int }\nexport type Pt = { v: int }\nexport fn r() -> int { 2 }\n' > $R/url/src/reach.av
 printf 'use reach.{Say, Pt}\nexport fn lone() -> int { 3 }\nimpl Say for Pt { fn say() -> int { self.v + 1 } }\n' > $R/url/src/lone.av
 printf 'use @rt.url.reach.{r, Say, Pt}\nlet s: dyn Say = Pt { v: 1 }\nprintln("${r()} ${s.say()}")\n' > $R/ur/src/main.av
-ur_parsed() { # the files of the fixture a warm check parses, sorted
-    AVRA_QTRACE=1 ./avra check $R/ur 2>&1 | grep "$(printf '^Q\tparse\t')" | cut -f3 | grep '/cache-attacks/ur' | sed 's|.*/cache-attacks/||' | sort -u | tr '\n' ' '
+up=ur
+ur_parsed() { # the files of the fixture `up` a warm check parses, sorted
+    AVRA_QTRACE=1 ./avra check $R/$up 2>&1 | grep "$(printf '^Q\tparse\t')" | cut -f3 | grep "/cache-attacks/$up" | sed 's|.*/cache-attacks/||' | sort -u | tr '\n' ' '
 }
 UR() { # UR <label> <the files parsed>
     steps=$((steps+1)); holds=$((holds+1)); got=$(ur_parsed)
     if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1: a warm check parsed '$got', wanted '$2'"; fi
 }
 URX() { # URX <label> <a word the refusal carries> <the file it names>
-    steps=$((steps+1)); out=$(./avra check $R/ur 2>&1); st=$?
+    steps=$((steps+1)); out=$(./avra check $R/$up 2>&1); st=$?
     case "$st:$out" in 1:*"$2"*"$3"*|1:*"$3"*"$2"*) [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> refused" ;; *) fails=$((fails+1)); echo "FAIL  $1: exit $st, wanted a refusal carrying '$2' and '$3': $(printf '%s' "$out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
 }
 S "cold ur: an impl in a file nothing names is dispatched" ur
@@ -1274,6 +1275,44 @@ ed $R/ur/src/main.av "$(printf 'use @rt.url.reach.{r, Say, Pt}\nuse @rt.url.lone
 ed $R/ur/src/main.av '${r()} ${lone()} ' '${r()} '
 printf 'export fn lone() -> int { 3 }\n' > $R/url/src/lone.av
 URX "ur: the file that held the impl loses it" "Say" "main.av"
+
+# A HELD SIBLING STANDS ON ITS OWN MODULE. `us` names one file of `@rt/usl`; the
+# sibling nothing names implements that file's trait and calls its PRIVATE fn with
+# no `use` line — a module is one namespace. Held, it must still dispatch; and a
+# signature it leans on, moved in the named file, must refuse at the sibling as a
+# cold check does. A const in the named file that starts running the sibling's
+# body reads the sibling.
+mkdir -p $R/usl/src $R/us/src
+printf '[package]\nname = "@rt/usl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-usl"\npath = "src/lib.av"\n' > $R/usl/avra.toml
+printf '[package]\nname = "rt-us"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/usl" = { path = "../usl" }\n' > $R/us/avra.toml
+printf 'export fn base() -> int { 1 }\n' > $R/usl/src/lib.av
+printf 'export trait Say { fn say() -> int }\nexport type Pt = { v: int }\nfn hidden() -> int { 4 }\nexport fn r() -> int { 2 }\n' > $R/usl/src/reach.av
+printf 'use reach.{Say, Pt}\nimpl Say for Pt { fn say() -> int { self.v + hidden() } }\nfn seven() -> int { 7 }\n' > $R/usl/src/lone.av
+printf 'use @rt.usl.reach.{r, Say, Pt}\nlet s: dyn Say = Pt { v: 1 }\nprintln("${r()} ${s.say()}")\n' > $R/us/src/main.av
+up=us
+S "cold us" us
+HR "us checks clean" check us 0
+printf '// moved\n' >> $R/us/src/main.av
+UR "us: an entry edit parses the entry alone" "us/src/main.av "
+printf '// moved\n' >> $R/us/src/main.av
+S "us: the held sibling's impl is dispatched" us
+cp $R/usl/src/reach.av $R/usl/reach.kept
+ed $R/usl/src/reach.av "fn say() -> int" "fn say() -> string"
+URX "us: the trait's answer moved under the held sibling's impl" "say" "lone.av"
+cp $R/usl/reach.kept $R/usl/src/reach.av
+HR "us: the trait back" check us 0
+ed $R/usl/src/reach.av "fn hidden() -> int { 4 }" 'fn hidden() -> string { "4" }'
+URX "us: a private fn the held sibling calls with no use changed its answer" "hidden" "lone.av"
+cp $R/usl/reach.kept $R/usl/src/reach.av
+HR "us: the private fn back" check us 0
+ed $R/usl/src/reach.av "fn hidden() -> int { 4 }
+" ""
+URX "us: a private fn the held sibling calls with no use is gone" "hidden" "lone.av"
+cp $R/usl/reach.kept $R/usl/src/reach.av
+HR "us: the private fn restored" check us 0
+ed $R/usl/src/reach.av "export fn r() -> int { 2 }" "$(printf 'const K: int = seven()\nexport fn r() -> int { K }')"
+S "us: a const in the named file starts running the held sibling's body" us
+HR "us checks clean after it" check us 0
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
