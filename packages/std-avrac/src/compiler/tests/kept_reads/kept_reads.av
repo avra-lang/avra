@@ -1,0 +1,88 @@
+// proves: a box read out of its holder is the reader's own once the
+// holder is gone — an element, a field, a map's value by key, an
+// unwrapped nullable, an enum's payload, a nullable slot — and a box
+// stored into a holder is the holder's once the binding that made it
+// is gone
+type Entry = { vals: List<int>, name: string }
+type Shelf = { top: Entry, spare: Entry?, all: List<Entry?> }
+
+enum Found {
+    Hit(e: Entry)
+    Miss
+}
+
+fn entry(n: int) -> Entry { Entry { vals: [n, n + 1], name: "e${n}" } }
+
+fn element() -> Entry { [entry(1), entry(2)][1] }
+
+fn field() -> List<int> { entry(3).vals }
+
+fn by_key() -> Entry {
+    mut m: Map<string, Entry> = {}
+    m.set("k", entry(4))
+    m.get("k")!
+}
+
+fn unwrapped() -> Entry {
+    let s = Shelf { top: entry(5), spare: entry(6), all: [] }
+    s.spare!
+}
+
+fn payload() -> Entry {
+    let f = Found.Hit(entry(7))
+    match f { .Hit(e) -> e, .Miss -> entry(0) }
+}
+
+fn slot() -> Entry {
+    let s = Shelf { top: entry(8), spare: null, all: [null, entry(9)] }
+    s.all[1] ?? s.top
+}
+
+fn stored() -> Shelf {
+    mut all: List<Entry?> = []
+    for i in 10..13 {
+        let e = entry(i)
+        all.push(e)
+    }
+    all.push(null)
+    mut s = Shelf { top: entry(13), spare: null, all: all }
+    let late = entry(14)
+    s.spare = late
+    s.all.set(0, entry(15))
+    s
+}
+
+fn filed() -> Map<string, Entry?> {
+    mut m: Map<string, Entry?> = {}
+    for i in 16..18 {
+        let e = entry(i)
+        m.set("k${i}", e)
+    }
+    m.set("none", null)
+    m
+}
+
+fn told(e: Entry) -> string { "${e.name}:${e.vals[0] + e.vals[1]}" }
+
+fn churned() -> int {
+    mut t = 0
+    for i in 0..5000 { t = t + entry(i).vals.length }
+    t
+}
+
+fn shown() -> string {
+    let a = element()
+    let b = field()
+    let c = by_key()
+    let d = unwrapped()
+    let p = payload()
+    let q = slot()
+    let s = stored()
+    let m = filed()
+    let n = churned()
+    let rest = [told(x ?? s.top) for x in s.all].join(",")
+    let got = told(m.get("k17") ?? null ?? s.top)
+    "${told(a)} ${b[0] + b[1]} ${told(c)} ${told(d)} ${told(p)} ${told(q)} | ${told(s.top)} ${told(s.spare ?? s.top)} ${rest} | ${got} ${m.length} | ${n}"
+}
+
+shown()

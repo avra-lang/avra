@@ -1,0 +1,31 @@
+// proves: a task's record keeps its body and its answer for as long as
+// any handle does — the spawner's binding gone, the answer read twice,
+// a handle filed in a list and awaited after the task finished
+type Job = { parts: List<int>, name: string }
+
+fn summed(j: Job) -> List<int> {
+    mut t = 0
+    for p in j.parts { t = t + p }
+    [t, j.parts.length]
+}
+
+fn churned() -> int {
+    mut t = 0
+    for i in 0..5000 { t = t + [i, i].length }
+    t
+}
+
+fn shown() -> string {
+    mut ts: List<Task<List<int>>> = []
+    for i in 0..6 { ts.push(spawn summed(Job { parts: [i, i, i], name: "j" })) }
+    let first = ts[0].await
+    let n = churned()
+    let again = ts[0].await
+    let last = ts[5].await
+    let lone = spawn summed(Job { parts: [7, 8], name: "one" })
+    let got = lone.await
+    let m = churned()
+    "${first[0]} ${first[1]} ${again[1]} ${last[0]} ${got[0]} ${got[1]} ${n + m}"
+}
+
+shown()

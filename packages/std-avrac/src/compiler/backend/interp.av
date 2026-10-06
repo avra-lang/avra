@@ -318,6 +318,18 @@ export fn run_kept(l: Lowered) -> Result<Kept, string> {
     .Ok(Kept { held: m.held(), entries: m.arrays.length + m.maps.length + m.cells.length })
 }
 
+/// What a machine says when a box nobody holds is read: one box made,
+/// let go, and read, on a machine of its own. No clean program reaches
+/// this — a count the evaluator got wrong does — so its words are
+/// witnessed here.
+export fn freed_read_words(l: Lowered) -> string? {
+    mut m = fresh_machine(l) with { freeing: true }
+    let box = m.fresh_array([Val.I(1)])
+    m.releases_val(box)
+    let _ = m.array_get_val([box, Val.I(0)])
+    m.failures.first()
+}
+
 /// How a live run ended: clean, or by a trap in its words.
 export enum Ended {
     Clean
