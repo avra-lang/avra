@@ -654,18 +654,18 @@ static void late_parker(void) {
 }
 
 // A waiter gone by a hand other than the poller's — an interrupt, its
-// own time — while an edge stood unreported: the next task to park
-// there waits for the next edge.
+// own time — while a byte it was never told of still waits: the byte is
+// the descriptor's, so the next task to park there is woken at once and
+// reads it. Nothing is lost with the waiter that left.
 static void late_parker_after_interrupt(void) {
-    char c;
     void* early = spawn1(parks_on_pipe, 0);
     avra_fiber_sleep(2);
     CHECK(write(g_pipe[1], "e", 1) == 1, "the pipe takes a byte nobody has been told of");
     avra_fiber_fd_interrupt(g_pipe[0]);
-    CHECK(read(g_pipe[0], &c, 1) == 1, "and another hand reads it");
-    void* late = spawn1(parks_briefly, 30);
+    int64_t t0 = now_ns();
+    void* late = spawn1(parks_briefly, 2000);
     CHECK(joined(early) == 0, "the interrupted waiter answers as one whose time ran out");
-    CHECK(joined(late) == 0, "a task that parks after an interrupted waiter left is not woken by the edge before it");
+    CHECK(joined(late) == 11 && now_ns() - t0 < 1000000000, "the next task to park after an interrupted waiter left reads the byte, at once");
 
     early = spawn1(parks_briefly, 3);
     avra_fiber_yield();
@@ -674,10 +674,10 @@ static void late_parker_after_interrupt(void) {
     CHECK(write(g_pipe[1], "e", 1) == 1, "a byte comes after a waiter's time has passed, before any switch");
     avra_fiber_yield();
     CHECK(avra_sched_fd_waiters() == 0, "the waiter has left by its time");
-    CHECK(read(g_pipe[0], &c, 1) == 1, "and another hand reads the byte");
-    late = spawn1(parks_briefly, 30);
+    t0 = now_ns();
+    late = spawn1(parks_briefly, 2000);
     CHECK(joined(early) == 0, "the waiter answers as timed out");
-    CHECK(joined(late) == 0, "a task that parks after a timed-out waiter left is not woken by the edge before it");
+    CHECK(joined(late) == 11 && now_ns() - t0 < 1000000000, "the next task to park after a timed-out waiter left reads the byte, at once");
     CHECK(avra_sched_fd_waiters() == 0 && avra_sched_timers() == 0, "nothing stays filed");
 }
 
