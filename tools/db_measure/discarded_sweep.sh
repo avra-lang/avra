@@ -5,11 +5,15 @@
 # source file that is not the entry (the first by name; the only file when
 # there is one), then `check --time` twice more, each on fresh text. Printed:
 # the second edit's wall ms, its held count, and each attempt that did not
-# stand with what it cost and why. The file is restored.
+# stand with what it cost and why. The file is restored, and restored if the sweep
+# is stopped. Linux alone: the clock is `date +%s%N`.
 set -u
 A=${AVRA_BIN:-build/avra}
 export AVRA_MEM_CEILING_MB=${AVRA_MEM_CEILING_MB:-5000}
 out=${TMPDIR:-/tmp}/dbm_sweep.$$
+f=
+restored() { [ -z "$f" ] || [ ! -f "$out.orig" ] || cp "$out.orig" "$f"; }
+trap 'restored; rm -f "$out" "$out.orig"; exit 130' HUP INT TERM
 [ "$#" -gt 0 ] || set -- $(ls packages)
 for p in "$@"; do
     pkg=packages/$p
@@ -26,7 +30,8 @@ for p in "$@"; do
         st=$?
         e=$(date +%s%N)
     done
-    cp "$out.orig" "$f"
+    restored
+    rm -f "$out.orig"
     echo "$p	wall_ms=$(((e - s) / 1000000))	status=$st	$(grep -o 'held [0-9]*/[0-9]*' "$out" | tail -n 1)	$(grep -o 'discarded [0-9]*, refused [0-9]*' "$out" | tail -n 1)	edited=${f#$pkg/}"
     grep '^  discarded: ' "$out" | cut -c1-400
 done

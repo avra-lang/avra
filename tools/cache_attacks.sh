@@ -1318,18 +1318,48 @@ HR "us checks clean after it" check us 0
 # asks for an instantiation whose target is the language's own declaration; that
 # target's wire names whichever file was first in the process that wrote it, and a
 # row that cannot be read back turns the attempt and reads the file on every build.
-mkdir -p $R/ab/src
-printf '[package]\nname = "rt-ab"\nversion = "0.1.0"\n' > $R/ab/avra.toml
-printf 'export trait Show { fn show() -> string }\nimpl Show for List<T> { fn show() -> string { "list" } }\nimpl Show for Result<T, E> { fn show() -> string { "result" } }\nexport fn shown() -> string {\n    let xs: List<int> = [1, 2]\n    let ok: Result<int, string> = .Ok(1)\n    xs.show() + " " + ok.show()\n}\n' > $R/ab/src/shows.av
-printf 'export fn other() -> int { 1 }\n' > $R/ab/src/other.av
-printf 'use shows.{shown}\nuse other.{other}\nprintln("${shown()} ${other()}")\n' > $R/ab/src/main.av
-S "cold ab: impls over builtin generics" ab
+# `abx` reads the rows `ab` wrote from ANOTHER ENTRY, so the two processes meet
+# different first files whatever order a package lists its own.
+mkdir -p $R/abl/src $R/ab/src $R/abx/src
+printf '[package]\nname = "@rt/abl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-abl"\npath = "src/lib.av"\n' > $R/abl/avra.toml
+for p in ab abx; do printf '[package]\nname = "rt-%s"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/abl" = { path = "../abl" }\n' $p > $R/$p/avra.toml; done
+printf 'export fn base() -> int { 1 }\n' > $R/abl/src/lib.av
+cat > $R/abl/src/shows.av <<'AV'
+export trait Show { fn show() -> string }
+impl Show for List<T> { fn show() -> string { "list" } }
+impl Show for Result<T, E> { fn show() -> string { "result" } }
+impl Show for string { fn show() -> string { "text" } }
+export type Box<T> = { held: T }
+impl Box<T> { fn peek() -> T { self.held } }
+export fn shown() -> string {
+    let xs: List<int> = [1, 2]
+    let ok: Result<int, string> = .Ok(1)
+    let b: Box<List<int>> = Box { held: xs }
+    xs.show() + " " + ok.show() + " " + "s".show() + " " + b.peek().show()
+}
+export fn count(m: Map<string, List<int>>) -> int { m.length }
+AV
+printf 'export fn other() -> int { 1 }\n' > $R/abl/src/other.av
+printf 'use @rt.abl.shows.{shown, count}\nuse @rt.abl.other.{other}\nlet m: Map<string, List<int>> = {"a": [1]}\nprintln("${shown()} ${count(m)} ${other()}")\n' > $R/ab/src/main.av
+printf 'export fn first() -> int { 0 }\n' > $R/abx/src/aaa.av
+printf 'use aaa.{first}\nuse @rt.abl.shows.{shown}\nprintln("${first()} ${shown()}")\n' > $R/abx/src/main.av
+AB() { # AB <label> <build|check> <pkg>: no file is read because its asks could not be read back
+    steps=$((steps+1)); ab_out=$(./avra $2 --time $R/$3 2>&1)
+    case "$ab_out" in *"could not be read back"*) fails=$((fails+1)); echo "FAIL  $1: a held file's asks did not read back: $(printf '%s' "$ab_out" | grep -E '^time:|discarded:|read back' | cut -c1-300 | tr '\n' ' ')" ;; *"held "[1-9]*"/"*) holds=$((holds+1)); [ -n "${VERBOSE:-}" ] && echo "ok    $1" ;; *) fails=$((fails+1)); echo "FAIL  $1: nothing was held, so no asks row was read: $(printf '%s' "$ab_out" | grep -E '^time:' | cut -c1-200)" ;; esac
+}
+S "cold ab: impls over builtin generics, a scalar, a user generic over one" ab
 HR "ab checks clean" check ab 0
-ed $R/ab/src/other.av "{ 1 }" "{ 10 }"
+ed $R/abl/src/other.av "{ 1 }" "{ 10 }"
 HR "ab: an edit elsewhere holds the file whose asks aim at a builtin" check ab 0 shows.av held
-steps=$((steps+1)); ed $R/ab/src/other.av "{ 10 }" "{ 100 }"; ab_out=$(./avra build --time $R/ab 2>&1)
-case "$ab_out" in *"discarded 0, refused 0"*) [ -n "${VERBOSE:-}" ] && echo "ok    ab: no attempt turned" ;; *) fails=$((fails+1)); echo "FAIL  ab: an attempt turned to read a held file's asks: $(printf '%s' "$ab_out" | grep -E '^time:|discarded:' | cut -c1-300 | tr '\n' ' ')" ;; esac
+ed $R/abl/src/other.av "{ 10 }" "{ 100 }"
+AB "ab: a build after an edit elsewhere" build ab
 S "ab: the binary after it" ab
+HR "abx: another entry checks clean over ab's rows" check abx 0 shows.av held
+printf '// moved\n' >> $R/abx/src/aaa.av
+AB "abx: a check from another entry" check abx
+printf '// moved\n' >> $R/abx/src/aaa.av
+AB "abx: a build from another entry" build abx
+S "abx: the binary from another entry" abx
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
