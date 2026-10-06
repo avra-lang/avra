@@ -1,10 +1,10 @@
-// proves: a Db's owner names its own running query through the `running`
-// hook, and a read or write outside any `@query` lands in that query's
-// frame — a second owner of one key refused, a read of a relation the
-// query wrote refused — while with no query running a read is free, in
-// both engines
+// proves: in a Db framed by its owner's kernel, a read or write outside
+// any `@query` lands in the frame of the kernel query open then — a
+// second owner of one key refused, a read of a relation the query wrote
+// refused — while with no query open a read is free, in both engines
 use @std.relation.{relation}
-use @std.relation.db.{Db, hooked_db, Hooks}
+use @std.relation.db.{Db, db_over, Verifying, Late}
+use @std.relation.engine.{Kernel, Key, new_kernel}
 
 @relation
 type Fact = { @key name: string, n: int }
@@ -12,53 +12,34 @@ type Fact = { @key name: string, n: int }
 @relation
 type Tag = { tag: string }
 
-once fn current() -> Cell<int> { Cell.new(0 - 1) }
-
 once fn heard() -> Cell<List<string>> { Cell.new([]) }
-
-once fn families() -> Cell<int> { Cell.new(0) }
-
-fn next_family() -> int {
-    let f = families().get()
-    families().set(f + 1)
-    f
-}
 
 fn noted(w: string) {
     let h = heard()
     h.push(w)
 }
 
-fn none() {}
-
-fn running_now() -> int { current().get() }
-
 /// A Db whose owner runs its own queries, its refusals heard.
-fn owner_db() -> Db {
-    hooked_db(
-        Hooks {
-            family: (_v: fn(int) -> int) -> next_family(),
-            record: (_f: int, _c: int) -> 0,
-            revision: () -> -1,
-            reader: (_t: int) -> "a read",
-            refused: noted,
-            opened: (_f: int, _c: int) -> -1,
-            settled: (_f: int, _c: int) -> none(),
-            running: running_now,
-            moved: (_f: int, _c: int, late: bool) -> !late,
-        },
-    )
+fn owner_db(kernel: Kernel) -> Db {
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused, true)
+    db.heard_by(noted)
+    db
 }
 
 fn run() -> string {
-    let db = owner_db()
-    current().set(7)
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let db = owner_db(kernel)
+    let first = Key { family: queries, arg: 7 }
+    let second = Key { family: queries, arg: 8 }
+    kernel.begin(first)
     let _ = Fact.insert(db, name: "a", n: 1)
-    current().set(8)
+    kernel.settle(first, 0)
+    kernel.begin(second)
     let _ = Fact.insert(db, name: "a", n: 2)
     let _ = Tag.insert(db, tag: "t")
     let _ = Tag.all(db)
-    current().set(0 - 1)
+    kernel.settle(second, 0)
     let free = Tag.all(db).length
     "${heard().get().length} ${free} | ${heard().get().join(" | ")}"
 }

@@ -1,64 +1,30 @@
-// proves: a frame's repeat read of one bucket in one revision tells the
-// owner once — its edge already stands — while a nested frame's read
-// never stands for its caller's: outer reads, inner reads, the outer's
-// next read is told again, in both engines
+// proves: a frame's repeat read of one bucket is one edge of that frame,
+// and a nested frame's read never stands for its caller's: outer reads,
+// inner reads, the outer reads again — each holds the bucket once, in
+// both engines
 use @std.relation.{relation}
-use @std.relation.db.{Db, hooked_db, Hooks}
+use @std.relation.db.{db_over, Verifying, Late}
+use @std.relation.engine.{Key, new_kernel}
 
 @relation
 type Fact = { @key name: string, n: int }
 
-once fn current() -> Cell<int> { Cell.new(0 - 1) }
-
-once fn told() -> Cell<List<string>> { Cell.new([]) }
-
-once fn families() -> Cell<int> { Cell.new(0) }
-
-fn next_family() -> int {
-    let f = families().get()
-    families().set(f + 1)
-    f
-}
-
-fn record(_family: int, cell: int) -> int {
-    let t = told()
-    t.push("${current().get()}:${cell}")
-    current().get()
-}
-
-fn none() {}
-
-fn heard(_w: string) {}
-
-fn running_now() -> int { current().get() }
-
-fn owner_db() -> Db {
-    hooked_db(
-        Hooks {
-            family: (_v: fn(int) -> int) -> next_family(),
-            record: record,
-            revision: () -> 1,
-            reader: (_t: int) -> "a read",
-            refused: heard,
-            opened: (_f: int, _c: int) -> -1,
-            settled: (_f: int, _c: int) -> none(),
-            running: running_now,
-            moved: (_f: int, _c: int, late: bool) -> !late,
-        },
-    )
-}
-
 fn run() -> string {
-    let db = owner_db()
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused, true)
     let _ = Fact.insert(db, name: "b", n: 1)
-    current().set(7)
+    let outer = Key { family: queries, arg: 7 }
+    let inner = Key { family: queries, arg: 8 }
+    kernel.begin(outer)
     let _ = Fact.by_key(db, FactKey { name: "b" })
     let _ = Fact.by_key(db, FactKey { name: "b" })
-    current().set(8)
+    kernel.begin(inner)
     let _ = Fact.by_key(db, FactKey { name: "b" })
-    current().set(7)
+    kernel.settle(inner, 0)
     let _ = Fact.by_key(db, FactKey { name: "b" })
-    told().get().join(" ")
+    kernel.settle(outer, 0)
+    "${["${d.arg}" for d in kernel.deps_of(outer)].join(",")} ${["${d.arg}" for d in kernel.deps_of(inner)].join(",")}"
 }
 
 run()

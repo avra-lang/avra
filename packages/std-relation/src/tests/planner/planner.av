@@ -1,10 +1,11 @@
 // proves: a comprehension over a relation's rows narrows to a declared
 // `@plans` lookup when a filter compares a row field to an invariant
 // value — and scans otherwise — each answer equal to a plain scan over
-// the same rows, the recorded reads showing which it did, in both
+// the same rows, the reads its query recorded showing which it did, in both
 // engines; a join's inner head narrows per outer row
 use @std.relation.{relation}
-use @std.relation.db.{Db, hooked_db, Hooks}
+use @std.relation.db.{Db, db_over, Verifying, Late}
+use @std.relation.engine.{Kernel, Key, new_kernel}
 use @std.meta.{dense}
 
 enum Shade { Red, Green }
@@ -25,47 +26,35 @@ type Coded = { @index code: Code, n: int }
 @relation
 type Item = { @index tag: string, @index shade: Shade, @index labels: List<string>, n: int, note: string? }
 
-once fn reads() -> Cell<List<int>> { Cell.new([]) }
+once fn kernel() -> Kernel { new_kernel() }
+
+once fn spans() -> Cell<int> { Cell.new(0) }
+
+once fn span_family() -> Cell<int> { Cell.new(kernel().family((_arg: int) -> 0)) }
 
 once fn picks() -> Cell<int> { Cell.new(0) }
-
-once fn families() -> Cell<int> { Cell.new(0) }
 
 const WANT: string = "a"
 
 type Box = { tag: string }
 
-fn next_family() -> int {
-    let f = families().get()
-    families().set(f + 1)
-    f
+/// A Db in the kernel the spans are queries of.
+fn logged() -> Db { db_over(kernel(), Verifying.ByHash, Late.Taken, false) }
+
+fn span(n: int) -> Key { Key { family: span_family().get(), arg: n } }
+
+/// A span of reads opened — a kernel query of its own. Answers its number.
+fn opened() -> int {
+    let n = spans().get()
+    spans().set(n + 1)
+    kernel().begin(span(n))
+    n
 }
 
-fn read(cell: int) -> int {
-    let r = reads()
-    r.push(cell)
-    0
-}
-
-fn none() {}
-
-fn heard(_w: string) {}
-
-/// A Db that logs every cell read — 0 the whole relation, `b + 1` a bucket.
-fn logged() -> Db {
-    hooked_db(
-        Hooks {
-            family: (_v: fn(int) -> int) -> next_family(),
-            record: (_f: int, cell: int) -> read(cell),
-            revision: () -> -1,
-            reader: (_t: int) -> "",
-            refused: heard,
-            opened: (_f: int, _c: int) -> -1,
-            settled: (_f: int, _c: int) -> none(),
-            running: () -> 0 - 1,
-            moved: (_f: int, _c: int, late: bool) -> !late,
-        },
-    )
+/// The cells span `n` read — 0 the whole relation, `b + 1` a bucket — the span closed.
+fn cells(n: int) -> List<int> {
+    kernel().settle(span(n), 0)
+    [d.arg for d in kernel().deps_of(span(n))]
 }
 
 fn pick() -> string {
@@ -76,10 +65,9 @@ fn pick() -> string {
 
 fn ns(xs: List<Item>) -> string { ["${i.n}" for i in xs].join(",") }
 
-/// Whether the reads since `from` touched a bucket and never the whole set.
-fn narrowed(from: int) -> string {
-    let seen = reads().get().slice(from, reads().get().length)
-    if seen.any(it == 0) { "scan" } else { "lookup" }
+/// Whether span `n` touched a bucket and never the whole set.
+fn narrowed(n: int) -> string {
+    if cells(n).any(it == 0) { "scan" } else { "lookup" }
 }
 
 fn filled() -> Db {
@@ -96,28 +84,28 @@ fn cases() -> string {
     let want = "a"
     let maybe: string? = "a"
     let box = Box { tag: "a" }
-    let m1 = reads().get().length
+    let m1 = opened()
     let by_text = [i for i in Item.all(db) if i.tag == "a"]
     let c1 = "${narrowed(m1)} ${ns(by_text) == ns([i for i in rows if i.tag == "a"])}"
-    let m2 = reads().get().length
+    let m2 = opened()
     let by_enum = [i for i in Item.all(db) if i.shade == Shade.Green]
     let c2 = "${narrowed(m2)} ${ns(by_enum) == ns([i for i in rows if i.shade == Shade.Green])}"
-    let m3 = reads().get().length
+    let m3 = opened()
     let by_label = [i for i in Item.all(db) if i.labels.contains("y")]
     let c3 = "${narrowed(m3)} ${ns(by_label) == ns([i for i in rows if i.labels.contains("y")])}"
-    let m4 = reads().get().length
+    let m4 = opened()
     let by_names = [i.n for i in Item.all(db) if want == i.tag && i.n > 1].length +
         [i for i in Item.all(db) if i.tag == WANT].length +
         [i for i in Item.all(db) if i.tag == box.tag].length
     let c4 = "${narrowed(m4)} ${by_names}"
-    let m5 = reads().get().length
+    let m5 = opened()
     let by_maybe = [i for i in Item.all(db) if i.tag == maybe]
     let c5 = "${narrowed(m5)} ${ns(by_maybe) == ns([i for i in rows if i.tag == maybe])}"
-    let m6 = reads().get().length
+    let m6 = opened()
     let before = picks().get()
     let by_call = [i for i in Item.all(db) if i.tag == pick()]
     let c6 = "${narrowed(m6)} ${picks().get() - before} ${ns(by_call) == ns([i for i in rows if i.tag == "a"])}"
-    let m7 = reads().get().length
+    let m7 = opened()
     let by_unindexed = [i for i in Item.all(db) if i.n == 2]
     let c7 = "${narrowed(m7)} ${ns(by_unindexed)}"
     "${c1} | ${c2} | ${c3} | ${c4} | ${c5} | ${c6} | ${c7}"
@@ -130,7 +118,7 @@ fn coded() -> string {
     let _ = Coded.insert(db, code: Code("a"), n: 3)
     let rows = Coded.all(db)
     let want = Code("a")
-    let m = reads().get().length
+    let m = opened()
     let hits = [c.n for c in Coded.all(db) if c.code == want]
     let scan = [c.n for c in rows if c.code == want]
     "${narrowed(m)} ${hits.length} ${hits.length == scan.length}"
@@ -143,7 +131,7 @@ fn edges() -> string {
     let _ = Edge.insert(db, callee: Node { index: 1 }, n: 3)
     let rows = Edge.all(db)
     let d = Node { index: 1 }
-    let m = reads().get().length
+    let m = opened()
     let hits = [c.n for c in Edge.all(db) if c.callee == d]
     let scan = [c.n for c in rows if c.callee == d]
     "${narrowed(m)} ${hits.length} ${hits.length == scan.length}"
@@ -156,9 +144,10 @@ fn empty_calls() -> string {
     "${none.length} ${picks().get() - before}"
 }
 
-/// How many reads since `from` took the whole relation.
-fn whole_reads(from: int) -> int {
-    [c for c in reads().get().slice(from, reads().get().length) if c == 0].length
+/// Span `n`'s reads: whether it took the whole relation, and how many buckets.
+fn shape(n: int) -> string {
+    let read = cells(n)
+    "${[c for c in read if c == 0].length}/${[c for c in read if c != 0].length}"
 }
 
 fn pairs(xs: List<int>) -> string { ["${x}" for x in xs].join(",") }
@@ -166,10 +155,10 @@ fn pairs(xs: List<int>) -> string { ["${x}" for x in xs].join(",") }
 fn joins() -> string {
     let db = filled()
     let rows = Item.all(db)
-    let m = reads().get().length
+    let m = opened()
     let hits = [i.n * 10 + j.n for i in Item.all(db) for j in Item.all(db) if j.tag == i.tag]
     let scan = [i.n * 10 + j.n for i in rows for j in rows if j.tag == i.tag]
-    "${whole_reads(m)} ${hits.length} ${pairs(hits) == pairs(scan)}"
+    "${shape(m)} ${hits.length} ${pairs(hits) == pairs(scan)}"
 }
 
 "${cases()} | ${empty_calls()} | ${coded()} | ${edges()} | ${joins()}"
