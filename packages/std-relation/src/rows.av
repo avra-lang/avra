@@ -349,15 +349,19 @@ impl Rows<R> {
         let cell = db.owner_named(owner)
         let keyed = how.keyed
         let keys = how.keys
-        let heard = db.read_ever()
-        // a keyless row on a Db no query read takes a new id and moves no read cell: nothing to ask
+        let heard = db.read_in(self.family.get())
+        // a keyless row on a relation no query read takes a new id and moves no read cell: nothing to ask
         let asked = keyed || heard
         let named = if asked { [keys(r) for r in rows] } else { [] }
-        let why = self.second_writer(db, cell) ?? if asked { self.unreplaceable(db, cell, keyed, named) } else { null }
+        let moving = if heard { self.moving(cell, keyed, named) } else { [] }
+        let why = self.second_writer(db, cell) ?? self.misplaced(db, cell, keyed, named) ?? if heard { self.held(db, self.name, moving) } else { null }
         if why != null {
             db.refuse(replaced_whole(self.name, owner, why!))
             return rows.slice(0, 0)
         }
+        // A CELL MOVES ONCE A CALL, however many rows file under it; with
+        // no bucket ever read, the whole relation alone.
+        if db.read_ever() { self.moves(db, moving) }
         let stamp = Stamp { owner: cell, run: renewed(db, cell) }
         let mine = self.stamped_by(cell)
         let hash = how.hash
@@ -367,15 +371,12 @@ impl Rows<R> {
         for i, r in rows {
             let ks = if asked { named[i] } else { keys(r) }
             let id = self.own(keyed, ks)
-            if heard { self.moves(db, self.touched(id, ks)) }
             if id == self.next_id() { mine.push(id) }
             let row = seated(r, id)
             self.placed(id, row, hash(r), ks, stamp)
             stored.push(row)
         }
-        let gone = self.stale(cell, stamp.run)
-        if heard { self.moves(db, self.filed_buckets(gone)) }
-        self.remove_all(gone)
+        self.remove_all(self.stale(cell, stamp.run))
         stored
     }
 
@@ -401,29 +402,63 @@ impl Rows<R> {
     }
 
     /// Why `owner` may not replace its rows by ones with these keys, none
-    /// when it may: two of them name one row, one names another's row, or
-    /// a reader holds a cell they or the removals move. Nothing is moved.
-    fn unreplaceable(db: Db, owner: int, keyed: bool, named: List<List<List<IndexKey>>>) -> string? {
-        if keyed {
-            let twice? = repeated_key([key_text_of(ks[0][0]) for ks in named]) else { return self.unplaceable(db, owner, keyed, named) }
-            return key_twice(twice)
+    /// when it may: two of them name one row, or one names another's row.
+    /// Only a keyed row names a row; a keyless one takes the next id.
+    fn misplaced(db: Db, owner: int, keyed: bool, named: List<List<List<IndexKey>>>) -> string? {
+        if !keyed { return null }
+        let twice? = repeated_key([key_text_of(ks[0][0]) for ks in named]) else {
+            let next = self.next_id()
+            let other? = [self.own(true, ks) for ks in named]
+                .find((id: int) -> id < next && !self.owned_by(id, owner)) else {
+                return null
+            }
+            return two_owners(
+                self.name,
+                other,
+                db.whose(self.stamps.get()[other].owner),
+                db.whose(owner),
+            )
         }
-        self.unplaceable(db, owner, keyed, named)
+        key_twice(twice)
     }
 
-    /// `unreplaceable`, each row naming a row of its own.
-    fn unplaceable(db: Db, owner: int, keyed: bool, named: List<List<List<IndexKey>>>) -> string? {
+    /// Every bucket a replacement of `owner`'s rows by ones with these keys
+    /// moves, each ONCE: the ones a row names, the ones a named row stood
+    /// in, and the ones a row it no longer names stood in.
+    fn moving(owner: int, keyed: bool, named: List<List<List<IndexKey>>>) -> List<int> {
         let next = self.next_id()
-        let ids = [self.own(keyed, ks) for ks in named]
-        let other? = ids.find((id: int) -> id < next && !self.owned_by(id, owner)) else {
-            if !db.read_ever() { return null }
-            let kept = [id for id in ids if id < next]
-            let gone = [id for id in self.live_of(owner) if !kept.contains(id)]
-            let moving = [b for i, ks in named for b in self.touched(ids[i], ks)]
-                .concat(self.filed_buckets(gone))
-            return self.held(db, self.name, moving)
+        let none: List<int> = []
+        let moved = Marks {
+            seen: Cell.new([false for _b in self.buckets.get()]),
+            out: Cell.new(none),
         }
-        two_owners(self.name, other, db.whose(self.stamps.get()[other].owner), db.whose(owner))
+        // only a keyed row names a row to keep
+        let nameable = if keyed { next } else { 0 }
+        let kept: Cell<List<bool>> = Cell.new([false for _id in 0..nameable])
+        for ks in named {
+            for i, per in ks {
+                for k in per { moved.mark(self.bucket_of(i, k)) }
+            }
+            if keyed { self.mark_named(moved, kept, self.own(true, ks), next) }
+        }
+        for id in self.live_of(owner) {
+            if !keyed || !kept.get()[id] { self.mark_filed(moved, id) }
+        }
+        moved.out.get()
+    }
+
+    /// A keyed row's own id kept, and the buckets its row stood in marked.
+    fn mark_named(moved: Marks, kept: Cell<List<bool>>, id: int, next: int) {
+        if id >= next { return }
+        kept.set_at(id, true)
+        self.mark_filed(moved, id)
+    }
+
+    /// Every bucket the row at `id` is filed in, marked.
+    fn mark_filed(moved: Marks, id: int) {
+        for i, ks in self.filed.get()[id] {
+            for k in ks { moved.mark(self.bucket_of(i, k)) }
+        }
     }
 
     /// Of `owner`'s rows here, exactly those at `ids` KEPT and every
@@ -891,6 +926,19 @@ fn no_such_row(relation: string, id: int, owner: string) -> string {
 
 /// A cell's name in a refusal.
 fn cell_named(cell: int) -> string { if cell == 0 { "the whole relation" } else { "bucket ${cell - 1}" } }
+
+/// Buckets marked once each: which were seen, and the distinct ones in
+/// the order they were first marked.
+type Marks = { seen: Cell<List<bool>>, out: Cell<List<int>> }
+
+impl Marks {
+    /// Bucket `b` marked — nothing for -1, a key no bucket was opened for.
+    fn mark(b: int) {
+        if b < 0 || self.seen.get()[b] { return }
+        self.seen.set_at(b, true)
+        self.out.push(b)
+    }
+}
 
 /// The refusal of a write moving `cell` of `family`, last read as
 /// `mark` says — none when no reader holds it.
