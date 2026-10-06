@@ -3,6 +3,7 @@
 2026-10-06 · branch `db-design` · worktree `../avra-db-design` · epic `avra-8sb5.57` ·
 code checked against `origin/main` @ `05fe643`
 Start here, then [`2026_10_06_COMPILER_DB_HANDOFF.md`](2026_10_06_COMPILER_DB_HANDOFF.md).
+Both documents land on main in one docs PR (team-lead opens it) and then live in `docs/`.
 This replaces the first draft, which an independent review ruled NOT READY (appendix A9).
 
 **What this is.** Every fact the compiler knows becomes a query answer in one database.
@@ -47,7 +48,7 @@ which) · `PROBED` I ran it; the command and its output are beside it · `MEASUR
 | # | question | A | B | R |
 |---|---|---|---|---|
 | D3 | Is the Db passed by hand? | `@query fn icons_in(dir: string)` — implicit inside a query | `@query fn icons_in(db: Db, dir: string)` — first argument everywhere (today) | **A**: the wrong-Db mistake cannot be written |
-| D4 | Can a query write rows? | no: `Icon` is the indexed answer of `icons_in`; reading its index asks that query | yes (today): `Icon.insert(db, …)` inside a query | **A**: B caused three probed defects (appendix A6) |
+| D4 | Can a query write rows? | no: `Icon` is the indexed answer of `icons_in`; reading its index asks that query | yes (today): `Icon.insert(db, …)` inside a query | **A**: B caused three probed defects (A6). Its consequence: a producer's keys must be listable — it takes no key, or it names a query that lists them (A11) |
 | D5 | How is a lint written? | `rule` is the one way, for third parties too | keep `rule` and add `@check @query` | **A** |
 | D6 | What may a plugin read at compile time? | only what its package manifest grants; every read recorded | any file, env var or tool | **A**; the grant policy is the sources design's, decided with you |
 | D8 | Is the cache thrown away when the compiler is rebuilt? | answers keyed by the code of the query that made them | one store per compiler binary (today) | **B now**, A recorded as the next step |
@@ -66,7 +67,7 @@ which) · `PROBED` I ran it; the command and its output are beside it · `MEASUR
 | **L4** | **Always save; the key picks the grain.** | A query keyed by a durable name is saved, with no mark. A query keyed by a local id lives in memory and belongs to the saved answer that owns the id; reading it from anywhere else is refused at the read. |
 | **L5** | **Names are stable, ids are local.** | A name is a path plus a number *among same-named siblings of one owner*. A local id is (owner declaration, index). A saved value holds names, never dense ids or absolute offsets. |
 | **L6** | **Every fact is a query answer.** | Small keyed facts with indexes are relations. Trees are blobs behind a query. A relation is filled by the driver (an input) or is the answer of one named query. A query never writes rows. |
-| **L7** | **One codec; the digest covers the whole value.** | The bytes saved are the bytes digested and the bytes that cross to a plugin. |
+| **L7** | **One codec; the digest covers the whole value.** | The bytes saved are the bytes digested and the bytes that cross to a plugin. An answer with no bytes takes the digest of its input, or the fold of its parts' digests — never a narrower fingerprint. |
 | **L8** | **Warm is never worse than cold, and never O(program).** | Validation before derivation. One derivation alive. Nothing on the warm path walks the whole program. |
 | **L9** | **Every answer can say why.** | One command prints any answer, what it read, what moved, who reads it. Every refusal names its query and key. |
 | **L10** | **Purity is checked.** | A keeper refuses a world read outside the door. The kernel refuses a cross-owner local read. An edit corpus proves no saved answer is stale. |
@@ -79,6 +80,14 @@ answer *with diagnostics* is an answer and is saved.
 saved answers). The value too when the compiler says it is worth it — one constant per
 family, set from a measurement (§4.1 "saved as"). An answer that cannot be encoded (a closure,
 a `Cell`) keeps only its digest; its value lives in memory.
+
+**Which keys are durable.** `FileId`, `DeclId`, `ModuleId`, the interned settle/ask/lift
+ints and a row id are all *process-local numbers*. A key is durable when its type has a
+**name** (§6.3) the codec can write; the dense number is that name, interned. After DB 03
+every family key has one, so all 32 families are saved. What has no name: a node id
+(`ExprId`, `StmtId` — never a key, only inside a value) and a row of a keyless relation.
+So for the compiler L4's refusal is a rule about **keyless rows**; M2 counts them. A row
+and an index bucket are *named parts of their producer's answer* (A11).
 
 **PENDING M1** (§7.3): if the whole kernel graph is ~5 M edges, every cell's digest and reads
 are saved and L4's refusal is a speed lint. If it is ~50 M, the refusal is a correctness law.
@@ -153,7 +162,7 @@ Icon.by_set("assets/icons")               // index read: asks icons_in("assets/i
 |---|---|---|
 | the Db | first argument of every call | implicit inside a query; a program has one default Db (D3) |
 | rows from a query | `Icon.insert(db, …)` as a side effect | the query *answers* rows; the relation names its producer (D4) |
-| an index read across producers | reads whatever happened to be inserted | a generated two-level query: one small answer per producer key, one root over them — one producer's edit dirties one small answer |
+| an index read on another column (`by_name`, `wearing`) | reads whatever happened to be inserted | the producer's keys are listable (D4), so the read brings every producer up to date, then reads one **bucket root** the store maintains by delta — never rebuilt from rows (A11) |
 | saving | never | always (L4) |
 | world reads | `@std.io`, unrecorded | the nine reads of §5.2; each is a recorded input |
 | selecting declarations | `Decl.by_marks(db, "model")` — a string | `DeclRow.wearing(model)` — by the annotation's own declaration |
@@ -248,13 +257,13 @@ It never writes the store it inspects (the `.57.153` law).
 
 READ `packages/std-avrac/src/compiler/families/families.av:17-149` (key, answer). "Encodes
 today" is READ(agent). "Saved as" is PROPOSED and confirmed per family by M2 and M4.
-Durable key = it becomes a name at DB 03. No family is keyed by a node id, so all 32 are
-saved; the in-memory grain is below them (side tables and arena nodes keyed by `ExprId`).
+Every key below is a local number whose name arrives at DB 03 (§2), so all 32 are saved.
+The other kernel cells — relation rows and buckets, most of the ~5 M edges — are A11.
 
 | # | family | key | answer | encodes today? blocked by | saved as |
 |---|---|---|---|---|---|
 | 0 | Source | file | `SourceFile` | yes | it is the input `Text(file)` |
-| 1 | Parsed | file | `Parsed` (arena) | no: arena + Cells | digest only |
+| 1 | Parsed | file | `Parsed` (arena) | no: arena + Cells | digest only = `Text(file)`'s (readers see text and spans) |
 | 2 | Items | file | `List<DeclId>` | dense ids | value (names) |
 | 3 | Namespace | module | `ModuleNames` | `Map` + dense ids | value |
 | 4 | Visible | file | `Namespace` | `Map` + dense ids | digest; value by M4 |
@@ -264,14 +273,14 @@ saved; the in-memory grain is below them (side tables and arena nodes keyed by `
 | 8 | Typed | declaration | `TypeFacts` | `ExprId` tables, `TypeId` | digest + diagnostics; value by M4 |
 | 9 | ConstTyped | settle int → const name | `TypeId` | `TypeId` | value |
 | 10 | Folded | file | `TypeFacts` | as 8 | split per declaration; digest |
-| 11 | Analysis | file | `Analysis` | no: closures | in memory; a view that dissolves at DB 07 |
+| 11 | Analysis | file | `Analysis` | no: closures | digest = fold of its parts'; dissolves at DB 07 f |
 | 12 | Settled | settle int → const name · seats | `Settlement` | yes | value (DB 09) |
 | 13 | Lowered | ask int → declaration · type args | `Unit` | `TypeId`, `FileId` | value |
 | 14 | Lifted | lift int → annotation · declaration · args | `LiftResult` | yes; spans | value (DB 09) |
 | 15 | Manifest | int → package name | `Manifest` | yes | value over `Text(avra.toml)` |
 | 16 | Receivers | whole program | `bool?` | yes | split per impl; a root over digests |
 | 17 | Expanded | file | `List<DeclId>` | dense ids | value |
-| 18 | Plain | file | `Parsed` | no (as 1) | digest only |
+| 18 | Plain | file | `Parsed` | no (as 1) | digest only, as 1 |
 | 19 | References | whole program | `List<Ref>` | every column `@local` | split: `Refs(declaration)` |
 | 20 | Failures | whole program | `Raised` | dense ids | one record per cycle group |
 | 21 | HeldSig | module | `string` | yes | deleted at DB 07 (it is the hold) |
@@ -326,7 +335,8 @@ families (16, 19, 20, 30) are the ones that make any edit O(program); each is sp
 
 - **One registration.** `@query`, `@input`, a relation's index bucket and a compiler family
   each register a kernel family by stable name (`@acme.icons.icons_in`). `@family` becomes a
-  second spelling of that same call and is retired one family at a time (DB 12).
+  second spelling of that same call and is retired one family at a time (DB 12). A family is
+  addressed by name, so its ordinal stops being a durable address (handoff, DB 01 e).
 - **Every Db has a kernel.** A plain `new_db()` owns a private one. `Memo<V>`, the write
   counter and the unarmed hooks are deleted. The kernel moves below `@std/relation` so both
   packages use it directly.
@@ -376,8 +386,8 @@ pinned("https://…/pet.yaml", "sha256:…")   // Bytes — refused unless the p
 settle(q):                                      one append per read; no walk; nothing flattened
     q.reads = for each direct dep d of q:
         d is an input or a saved answer   →  (name(d), digest(d))
-        d is in memory, owned by q        →  d.reads            (already a short list)
-        d is in memory, owned by another  →  REFUSED at the read, naming q and d
+        d has no name, owned by q         →  d.reads            (already a short list)
+        d has no name, owned by another   →  REFUSED at the read, naming q and d   (keyless rows)
     q is keyed by a durable name          →  append record(q) = digest · reads · value?
 ```
 
@@ -466,27 +476,7 @@ first draft's "never an ordinal" could not name the second `impl X`.
 A comment above a declaration: `Text(file)` moves → the file is parsed → every declaration's
 `Syntax` digest is unchanged → nothing above stands on absolute offsets, so everything stands.
 
-### 6.4 Processes, crashes, other compilers
-
-| case | answer |
-|---|---|
-| crash mid-commit | no commit marker → the tail is ignored; the previous state is whole |
-| two processes | a segment is one `write` on an append descriptor under an advisory lock; a reader sees whole segments. A process that cannot take the lock skips saving — a lost write is a recompute |
-| two processes that saw different inputs | each record carries the digests *it* saw; a reader validates against the world *now* |
-| a store from another compiler | a different directory (the compiler print), and the header repeats the print. Never read |
-| a compiler rebuild | a new store; nothing derived survives (D8-B). Bytes in the byte store survive |
-| a record of another shape | the shape fingerprint differs → not read. Nothing decodes across shapes |
-| growth of the file | records only append. `avra cache gc` rewrites the live ones and renames; the newest four compilers are kept (today's rule) |
-| a value's blob is gone | the record does not stand; a swept blob is a miss, never an error |
-
-### 6.5 The codec (L7)
-
-One codec, derived from the type: length-prefixed strings (NUL is data), count-prefixed
-lists, one presence byte per `?` layer, an enum by its variant's **name**, every sequence
-folded to one value. It must grow payload enums and recursive records (refused today:
-READ(agent) `relation.av:296-306`), or `Lifted`'s generated code cannot be saved. A `fn`,
-`Cell` or `Map` field is refused at the declaration, naming the field: that answer is
-digest-only.
+Processes, crashes, other compilers, gc: A12. The codec: A13.
 
 ---
 
@@ -551,18 +541,18 @@ Each lands alone and leaves main green. "Ladder" is what the seed and generation
 | PR | ticket | what lands | "when this lands, the owner can run …" | ladder | closes |
 |---|---|---|---|---|---|
 | **DB 00** secure, measure, fence | `.57.169` | the M1–M3 harness (`tools/db_measure/`, branch `db-measure`); PR #289 with its memory attack in CI; `keepers-green`: three keepers on every PR; defects filed | `make keepers` green and required · the per-family counters table · `sh tools/db_measure/warm_edit.sh` | none | `.57.165`; half of `.57.163` |
-| **DB 01** one engine | `.57.170` | §5.1: `@query`/`@input` are kernel cells on every Db; the second memo deleted; packed deps; the read-cost census; `make families` starts at 32 | three pure queries each run **once** after an unrelated insert (nine times today) · `Kernel.newly_read` < 60 MB (375 today) | the kernel moves below std-relation; `seed-check` must pass; build twice | `.57.167` |
-| **DB 02** `avra explain` | `.57.171` | §3.6 over the in-memory graph; never writes; `avra cache …` become aliases | `build/avra explain --stats packages/cli` · `explain <file> --why` after an edit | none | — |
-| **DB 03** names, the id codec | `.57.172` | §6.3, §6.5: `Decl` gets its key; ids encode as names; a round trip per family | `make codecs` · a declaration inserted above changes no other declaration's bytes | none expected | — |
+| **DB 01** one engine, as a–e | `.57.170` | §5.1: (a) the kernel moves to `@std/query`; (b) `@query`/`@input` are kernel cells, the second memo deleted; (c) packed deps; (d) the read-cost census; (e) families register by name, refusals speak, `make families-left` starts at 32 and `tools/families.py`'s order contract is retired | three pure queries each run **once** after an unrelated insert (nine times today) · `Kernel.newly_read` < 60 MB (375 today) | `seed-check` must pass; build twice. **Needs D3** | `.57.167` |
+| **DB 02** `avra explain` | `.57.171` | §3.6 over the in-memory graph: `--stats` and "what did this read". `--why` re-derives in process, as `avra cache why` does today, until DB 05–06 give it the store | `build/avra explain --stats packages/cli` · `explain <file>` prints its reads | none | — |
+| **DB 03** names, the id codec, as a–c | `.57.172` | §6.3, A13: (a) the name scheme and `Decl`'s key — waits on `file` leaving `@local` (`decl_rows.av:26`, owner: ERRORS); (b) the codec grows payload enums and recursive records; (c) one codec per family answer, ~20, each its own small PR | `make codecs` · a declaration inserted above changes no other declaration's bytes | none expected | — |
 | **DB 04** the input door a–e | `.57.173` | §5.2 as five PRs: (a) the digest row; (b) `Source`, `Manifest`; (c) `embed`, listings; (d) env, tool, target, compiler; (e) the rest | `make inputs` prints the count outside the door and fails on a new one | (a) is **two landings** | `.57.184` |
-| **DB 05** the store | `.57.174` | §6.1, §6.4; today's rows move in as opaque values, so no meaning changes; M4–M6 | one `store` file · `make cache-attacks` · the kill and two-process attacks | none | — |
-| **DB 06** the saved-answer rule | `.57.175` | §5.3, on by default. First on formats that are already pure lists: the two docs queries and the links witness. The edit corpus | `build/avra docs LanguageFeature` twice: the second ≤ 0.05 s · `make db-corpus` · the 17 attack cases (A5) | none | `.57.9.7`; absorbs `.57.101.12`, `.57.12.5` |
-| **DB 07** per-declaration answers; the hold deleted | `.57.176` | §4.1; `KeyParts`, `stands_in`, `verify_held`, the record lines and the memo maps deleted; no O(program) phase when warm | `warm_edit.sh`: unchanged ≤ 60 ms, one body edit ≤ 300 ms · the `.57.163` repro peaks ≤ cold | none for the seed; the riskiest — behind the edit corpus on a Sprite; the re-ask of the sources stays behind a flag until D10 | `.57.163`; absorbs `.57.101.11` |
+| **DB 05** the store | `.57.174` | §6.1, A12; today's rows move in as opaque values, so no meaning changes; M4–M6 | one `store` file · `make cache-attacks` · the kill and two-process attacks | none | — |
+| **DB 06** the saved-answer rule | `.57.175` | §5.3, on by default. First on formats that are already pure lists: the two docs queries and the links witness. The edit corpus | `build/avra docs LanguageFeature` twice: the second ≤ 0.05 s · `make db-corpus` · the 17 attack cases (A5), ported — they were written against deleted code | none | `.57.9.7`; absorbs `.57.101.12`, `.57.12.5` |
+| **DB 07** per-declaration answers; the hold deleted, as a–f | `.57.176` | (a) rows and buckets become named parts of their producer's answer (A11) — "minted by one query, filed by another" ends; (b) `Resolved`, `Folded` split per declaration; (c) the four whole-program families split; (d) by-name loading replaces load/admit; (e) the hold, its record lines and the memo maps deleted; (f) `Analysis` dissolves | `warm_edit.sh`: unchanged ≤ 60 ms, one body edit ≤ 300 ms · the `.57.163` repro peaks ≤ cold | none for the seed; the riskiest — behind the edit corpus on a Sprite; the re-ask of the sources stays behind a flag until D10 | `.57.163`; absorbs `.57.101.11` |
 | **DB 08** roots | `.57.177` | `Verdict`, `Linked`, `Proved`; formats 4, 7–9 and the remembered rows deleted (A2); tools and env are inputs | `build` after one edit ≤ 500 ms · change `CC` → relink | none | links `avra-8sb5.68`, `.69`, `.31`, `.25.20` |
 | **DB 09** `Settled` and `Lifted` | `.57.178` | `kept_settle.av` deleted (A4); `Lifted` saved with relative spans | a comment above 1,000 generated types: ≤ 0.06 s (0.25 s today) | none | — |
 | **DB 10** the plugin crossing | `.57.179` | §5.4; `…Row` relations; `collect` membership; the lint arm (D5); grants (D6) | the two-package probe prints `a_close \| b_open` (a trap today) | each host row is **two landings** | `.57.182`, `.57.183` |
 | **DB 11** byte store, `Blob`, gc | `.57.180` | §6.1's byte store; `avra cache gc` | `build/avra cache gc` · two worktrees share one copy of a 5 MB input | none | links `avra-8sb5.37`, `.40.17` |
-| **DB 12** families → `@query` | `.57.181` | not one PR: `make families` prints N of 32 and may only fall. At 0 `@family` and the compiler's `Db`/`DbRow`/`DbKind` are deleted | `make families` | a bridge only where the compiler checks its own source | `.57.12` on adoption |
+| **DB 12** families → `@query` | `.57.181` | not one PR: `make families-left` prints N of 32 and may only fall. At 0 `@family` and the compiler's `Db`/`DbRow`/`DbKind` are deleted | `make families-left` | a bridge only where the compiler checks its own source | `.57.12` on adoption |
 
 **Live bugs stay open with their repros** until the PR above passes them: `.57.163`,
 `.57.165`, `.57.9.7`, `avra-8sb5.46` and `.79` (weak hashes — no PR here touches the
@@ -642,7 +632,7 @@ Deleting the old documents loses nothing below. Sources: **C** `2026_09_21_COMPI
 | a refusal is never kept | | C:118 | §2 |
 | an incomplete query result must not be memoized | "`methods(target)` cached empty while resolving" | C:273 | §2 |
 | a whole-program pass never runs inside a resolve | | C:271 | §4.1: the four whole-program families are split |
-| a store is one compiler's | "`.avra-cache/<print>/` … the newest four kept" | C:114 | §6.4, D8 |
+| a store is one compiler's | "`.avra-cache/<print>/` … the newest four kept" | C:114 | A12, D8 |
 | move the content, not the key | | C:191 | L3 |
 | held by name is held by accident | | C:195 | L5 |
 | a symbol outlives every id a run hands out | | C:197 | L5 |
@@ -651,7 +641,7 @@ Deleting the old documents loses nothing below. Sources: **C** `2026_09_21_COMPI
 | the gate never edits a file | "so it cannot see a hold wrong for an edit nobody tried" | C:229 | the edit corpus (§5.3) |
 | a suite that never held attacked nothing | "22 green steps at `held 0/6`" | C:231 | every attack asserts a *count* of answers that stood |
 | a cache can cost more than what it keeps | "A type-wire memo doubled `fill`; a stamp row per file lost to reading the file" | C:238 | value-or-digest is measured (M4) |
-| a text record spends its separators; the empty name is a name | | C:244 | §6.5: length-prefixed |
+| a text record spends its separators; the empty name is a name | | C:244 | A13: length-prefixed |
 | a memo keyed on nothing answers for the day it was filled | | C:247 | every memo is a keyed query |
 | a workspace is an identity, never a value | | C:252 | unchanged |
 | the saved-answer rule, first written | `if !record.deps.all((d) -> current_content_hash(d) == d.content_hash) { return null }` | RD:134 | L3 |
@@ -667,7 +657,7 @@ Deleting the old documents loses nothing below. Sources: **C** `2026_09_21_COMPI
 | a row with no owning query is an input | | TH:2166 | L6 |
 | a relation's stable name is its import path | | TH:2312 | §6.3 |
 | a key says what the source declares, never where | | TH:2324 | §6.3 `sibling` |
-| a missing dep is a mismatch | | TH:2349 | §6.4 |
+| a missing dep is a mismatch | | TH:2349 | A12 |
 | a phantom read: a new row under a key someone looked up | "an index bucket is itself a Kernel cell" | TH:2366 | §3.2 two-level buckets |
 | a bucket hash is a sum through a nonlinear finalizer | "(a,1),(b,2) and (a,2),(b,1) sum alike" without it | TH:2370 | A0 |
 | registration is the declaration | "a dense family slot by its STABLE name … never persisted" | TH:2647 | §5.1 |
@@ -734,9 +724,11 @@ READ(agent) `agent-facts.md` §8. Two of its line kinds are not "every digest ma
 Each OR is a monotone chain (text same ⇒ syntax same ⇒ call shape same), so the coarse tier
 is early cutoff for the fine one — which is what a digest-only saved answer gives for free.
 The four write-time vetoes (an unnameable read `x`; `body_asks` moved; a non-structural
-refusal; seats present) become one law: such a run is not saved. Open: validating
-`CallShape` means lowering the unit; if that costs more than it saves, the read stays at
-`Syntax`.
+refusal; seats present) become one law: such a run is not saved.
+
+Open question for DB 09: validating `CallShape` means lowering the unit again. If that costs
+more than it saves, the `u` line reads `Syntax(declaration)` in both cases and `CallShape`
+is not built.
 
 ## A5. Attack cases carried
 
@@ -758,8 +750,8 @@ cases fail by design, and one case traps"). Each asserts the correct behaviour:
 
 Also carried: the two-process stale refusal pinned in `cache_attacks` ("a signature edit
 re-reads its importers, a body edit holds them", TH:2445) · `("a.b","c")` against
-`("a","b.c")` (TH:2319) · the 62-build `make cache-attacks` (C:154) · `tools/hold_sweep.sh`
-(every source touched, one at a time) becomes the edit corpus.
+`("a","b.c")` (TH:2319) · the 62-build `make cache-attacks` (C:154).
+`tools/hold_sweep.sh` (it touches every source, one at a time) becomes the edit corpus.
 
 ## A6. The review's probes, kept as repros
 
@@ -857,3 +849,58 @@ extraction made for this rewrite. The line numbers were read by those agents at
 | D11 the five rows outside P1–P5 | A2 | answered |
 | D12 a per-process tool memo | tools are identified by a stamp re-read at each ask (D9); a digest memo lives one revision (§5.2) | **open**: D9 is the owner's |
 | D13 who owns the two doors | the owner, with the sources session (§15a Q12); this document is the mechanism | answered |
+
+## A11. Rows, buckets and index reads under L4 and L6
+
+**Today** (READ `features/decls.av:704-706`): "no query OWNS a row here: a declaration is
+minted by one query and its facts filed by another, and nothing sweeps it". Row and bucket
+cells are keyed by a dense row id and are most of the kernel's ~5 M edges. 259 non-test
+call sites read `.decl(…)` (PROBED by grep at `05fe643`).
+
+| thing | what it is on this DB | PR |
+|---|---|---|
+| a `Decl` row | a **named part of its producer's answer**: `Items(file)` for a written declaration, `Lifted(…)` for a generated one. The producer's record carries one digest per row | DB 07 a |
+| a row's filed facts (signature, marks, doc) | the answers of `Sig(declaration)`, `Marks(declaration)`, `Doc(declaration)` — no longer columns written into the row by a second query | DB 07 a |
+| a row read | records (row name, row digest). The producer reruns, the row's digest is unchanged, the reader stands | DB 07 a |
+| the 259 `.decl(` sites | keep their spelling. The change is under `Decls`: the read records the row part instead of a name bucket | DB 07 a |
+| a bucket of one producer (`Icon` rows of `icons_in("a")` with `name = "close"`) | a named part too: its digest is the sum of its rows' finalised hashes | DB 06 |
+| a row of a keyless relation (`Finding`, `Ref` today) | has no name: readable only under its producer; from elsewhere it is refused. Each gets a key or stays private | DB 07 c |
+| an `@local` column (`stmt: StmtId`) | never saved; reading the node it points at is a read of that file's `Parsed`, or better of `Syntax(declaration)` | DB 03 a |
+
+**An index read on a column that is not the producer's key** (`Icon.by_name("close")`,
+`DeclRow.wearing(model)`):
+
+| question | rule |
+|---|---|
+| over which producers? | a derived relation's producer either takes no key (the relation is one answer) or names a query that lists its keys: `@query(over: icon_dirs)`. "Those asked so far" is never the answer — it would depend on who asked first. For `Decl` the list is the package's files |
+| what does the read do? | reads the key list (a recorded read), brings every listed producer up to date (when warm, only suspect ones do any work), then reads the **bucket root** `(relation, index, value)` |
+| how is the root kept? | by the store, by delta. When a producer's answer is replaced, its old and new bucket parts are subtracted and added to the roots of exactly the values they touch. Cost: the rows that changed. Never a rebuild over all rows — that would be the O(program) step L8 forbids |
+| who becomes suspect? | readers of the roots whose digest moved. Not readers of other buckets |
+| a phantom or negative read | a read of an empty bucket records its root with digest 0. A row appearing later moves that root, so the reader is suspect |
+| two producer calls answer the same `@key` | refused, naming both producer keys |
+| early cutoff | at the producer (same answer → no delta) and at the root (a delta that sums to the same digest) |
+
+This is decided before DB 06, where `@relation(from: …)` first exists. It is the reason D4
+is one question: "a query never writes rows" only works if producers can be listed.
+
+## A12. The store under processes, crashes and other compilers (DB 05)
+
+| case | answer |
+|---|---|
+| crash mid-commit | no commit marker → the tail is ignored; the previous state is whole |
+| two processes | a segment is one `write` on an append descriptor under an advisory lock; a reader sees whole segments. A process that cannot take the lock skips saving — a lost write is a recompute |
+| two processes that saw different inputs | each record carries the digests *it* saw; a reader validates against the world *now* |
+| a store from another compiler | a different directory (the compiler print), and the header repeats the print. Never read |
+| a compiler rebuild | a new store; nothing derived survives (D8-B). Bytes in the byte store survive |
+| a record of another shape | the shape fingerprint differs → not read. Nothing decodes across shapes |
+| growth of the file | records only append. `avra cache gc` rewrites the live ones and renames; the newest four compilers are kept (today's rule) |
+| a value's blob is gone | the record does not stand; a swept blob is a miss, never an error |
+
+## A13. The codec (L7; DB 03)
+
+One codec, derived from the type: length-prefixed strings (NUL is data), count-prefixed
+lists, one presence byte per `?` layer, an enum by its variant's **name**, every sequence
+folded to one value. It must grow payload enums and recursive records (refused today:
+READ(agent) `relation.av:296-306`), or `Lifted`'s generated code cannot be saved. A `fn`,
+`Cell` or `Map` field is refused at the declaration, naming the field: that answer is
+digest-only.
