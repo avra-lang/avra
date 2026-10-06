@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,7 +43,12 @@
 // registers on the running stack, records its top in `*from`, loads
 // `to`'s and restores its registers. A new fiber's stack is laid out
 // as if it had switched away at the first instruction of
-// `fiber_start` (see `fiber_stack_seed`).
+// `fiber_start` (see `fiber_bound`).
+//
+// EVERY SWITCH-OUT IS WHERE AN OVERFLOW IS CAUGHT (the guard policy,
+// below): `from` is the fiber's record, and its next two words are the
+// floor its saved stack top must stand on and the address of a word
+// that must still read zero. Either broken, the fiber never switches.
 
 void avra_fiber_switch(void** from, void* to);
 
@@ -76,6 +82,12 @@ __asm__(
     "    stp d12, d13, [sp, #128]\n"
     "    stp d14, d15, [sp, #144]\n"
     "    mov x9, sp\n"
+    "    ldr x10, [x0, #8]\n"
+    "    cmp x9, x10\n"
+    "    b.lo 1f\n"
+    "    ldr x10, [x0, #16]\n"
+    "    ldr x10, [x10]\n"
+    "    cbnz x10, 1f\n"
     "    str x9, [x0]\n"
     "    mov sp, x1\n"
     "    ldp x19, x20, [sp, #0]\n"
@@ -89,7 +101,8 @@ __asm__(
     "    ldp d12, d13, [sp, #128]\n"
     "    ldp d14, d15, [sp, #144]\n"
     "    add sp, sp, #176\n"
-    "    ret\n");
+    "    ret\n"
+    "1:  bl " AVRA_SYM(avra_fiber_overflowed) "\n");
 #elif defined(__x86_64__)
 // r15–r12, rbx and rbp popped, then the return address; one word more
 // stands above it, so `fiber_start` begins with rsp ≡ 8 (mod 16) as a
@@ -107,6 +120,11 @@ __asm__(
     "    pushq %r13\n"
     "    pushq %r14\n"
     "    pushq %r15\n"
+    "    cmpq 8(%rdi), %rsp\n"
+    "    jb 1f\n"
+    "    movq 16(%rdi), %rax\n"
+    "    cmpq $0, (%rax)\n"
+    "    jne 1f\n"
     "    movq %rsp, (%rdi)\n"
     "    movq %rsi, %rsp\n"
     "    popq %r15\n"
@@ -115,7 +133,9 @@ __asm__(
     "    popq %r12\n"
     "    popq %rbx\n"
     "    popq %rbp\n"
-    "    ret\n");
+    "    ret\n"
+    "1:  subq $8, %rsp\n"
+    "    call " AVRA_SYM(avra_fiber_overflowed) "\n");
 #else
 #error "the scheduler has no context switch for this architecture"
 #endif
@@ -157,7 +177,7 @@ enum { HELD = 4 };
 // and readies the task; every later one finds it claimed and moves on.
 struct Fiber {
     void* sp;               // the saved stack top while switched out; NULL until first run
-    uintptr_t floor;        // a frame below this has left the stack; 0 for main
+    uintptr_t floor;        // a saved stack top below this has left the stack; 0 for main
     const uint64_t* canary; // the word under the floor; non-zero when a neighbour was written
     AvraTaskLocal* local;   // the slots and id a program reads: main's are the core's
     void* task;             // the task this fiber answers; NULL for main
@@ -198,6 +218,9 @@ enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_
 enum { END_LIVE, END_ANSWERED, END_CANCELLED };
 
 static int64_t* task_cells(void* task) { return ((AvraArray*)task)->data; }
+
+// The switch reads these three by their place.
+_Static_assert(offsetof(Fiber, sp) == 0 && offsetof(Fiber, floor) == 8 && offsetof(Fiber, canary) == 16, "the switch reads a fiber's first three words");
 
 static const uint64_t g_untouched = 0;
 static Fiber g_main = { .state = FIBER_RUNNING, .canary = &g_untouched, .local = &avra_main_local };
@@ -742,9 +765,6 @@ static void deadline_fired(Fiber* f) {
 // task spawned and not yet run holds none, and tasks that run one after
 // another share the stack the last one left warm.
 #define STACK_DEFAULT ((size_t)256 << 10)
-// The switch's own frame, and room for the frames between a check and
-// the switch it guards.
-#define FLOOR_ROOM ((size_t)512)
 
 // A stack and the page whose fault is its overflow: its own, directly
 // under it, or the one at the foot of its slab.
@@ -831,7 +851,6 @@ static void stacks_settle(void) {
         if (v > 0) want = (size_t)v;
     }
     g_stack_bytes = (want + g_page - 1) / g_page * g_page;
-    if (g_stack_bytes < 4 * FLOOR_ROOM) g_stack_bytes = g_page;
     guards_settle();
     guard_handler_install();
 }
@@ -961,7 +980,7 @@ static void fiber_bound(Fiber* f) {
     Stack s = stack_take();
     f->base = s.base;
     f->guard = s.guard;
-    f->floor = (uintptr_t)s.base + FLOOR_ROOM;
+    f->floor = (uintptr_t)s.base;
     f->canary = s.guard == s.base - g_page ? &g_untouched : (const uint64_t*)(s.base - sizeof(uint64_t));
     uint64_t* frame = (uint64_t*)((((uintptr_t)s.base + g_stack_bytes - 16) & ~(uintptr_t)15) - FIBER_FRAME);
     memset(frame, 0, FIBER_FRAME);
@@ -969,24 +988,15 @@ static void fiber_bound(Fiber* f) {
     f->sp = frame;
 }
 
-__attribute__((noinline, cold, noreturn))
-static void overflowed(const Fiber* f) {
+// Where the switch goes when it finds a fiber under its floor or its
+// canary written.
+__attribute__((noinline, cold, noreturn, visibility("hidden"), used))
+void avra_fiber_overflowed(const Fiber* f) {
     char words[160];
     void* body = f->task ? (void*)(uintptr_t)task_cells(f->task)[TASK_BODY] : NULL;
     void* site = body ? (void*)(uintptr_t)((AvraArray*)body)->data[0] : NULL;
     avra_fmt(words, sizeof words, "a task's stack overflowed into its neighbour — caught at a switch (task %lld, spawned at %p)", (long long)id_of(f), site);
     avra_trap(words);
-}
-
-// The stack pointer, read without asking for a frame.
-static inline uintptr_t sp_now(void) {
-    uintptr_t sp;
-#if defined(__aarch64__)
-    __asm__("mov %0, sp" : "=r"(sp));
-#else
-    __asm__("movq %%rsp, %0" : "=r"(sp));
-#endif
-    return sp;
 }
 
 // The switch to a fiber that has never run, whole and out of line: a
@@ -1008,7 +1018,6 @@ static inline void switch_to(Fiber* next) {
     Fiber* self = g_current;
     next->state = FIBER_RUNNING;
     if (next == self) return;
-    if (__builtin_expect(sp_now() < self->floor || *self->canary != 0, 0)) overflowed(self);
     if (__builtin_expect(!next->sp, 0)) { switched_to_fresh(self, next); return; }
     g_current = next;
     avra_task_local = next->local;
