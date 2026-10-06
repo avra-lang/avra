@@ -54,10 +54,14 @@ fn prop_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId
 /// answer is the enum's own type.
 fn variant_type(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
     let tp = cx.tparams(decl)
-    if !tp.is_empty() { return cx.unit_instantiated(e, tname, name, decl, tp) }
+    if !tp.is_empty() {
+        if cx.seals_decl(cx.loc_of(e), decl, "built here") { return cx.error_type }
+        return cx.unit_instantiated(e, tname, name, decl, tp)
+    }
     let ty = cx.view.types.intern(Type.Enum(decl, tname))
     let declared? = cx.variants_of(ty) else { return record_name_read(cx, e, decl, tname, name) }
     if declared.tag_of(name) == null { return no_variant_read(cx, e, tname, name, declared) }
+    if cx.seals_decl(cx.loc_of(e), decl, "built here") { return cx.error_type }
     // A carrying variant named bare would build a value missing its
     // payload — the arity law belongs on both construction paths.
     let carried = declared.payloads_of(name)

@@ -943,6 +943,15 @@ registry is the idiom engine's spec, written by dogfooding.
   statements never run there and its names are not the library's
   (tools/ui-board: the page program is the package's own `[bin]`, and
   `term/` depends on it).
+- A SEALED TYPE IS BUILT WHERE IT IS DECLARED. `@sealed` (`@std/meta`)
+  on a type: outside the declaring MODULE no literal fills it, no
+  `Name(value)` converts into it, no record literal, `with`, field
+  write or variant makes one (type.sealed) — every seat a literal
+  reaches, a default and an annotation's argument included — while
+  every read stays open. The doors are the fns the module exports, so
+  a value anywhere is one a door answered (std-ui's `Url`). Generated
+  code is judged where it LANDS: a derive on a sealed type lands in its
+  module and builds it. The module's own `tests/` is another module.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
   suite does not have. "a comment-only line is a blank line" asserts
