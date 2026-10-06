@@ -1,0 +1,89 @@
+// proves: a `@query` call is a cell of its own — a bucket's reader stands
+// when a row lands in another bucket and runs again when one lands in
+// its own; a query that asks another runs again only when that one's
+// ANSWER moves, once that answer has been compared (an answer's hash is
+// first folded at its second settle, so its first rerun always carries); two argument lists that spell alike when joined are two
+// calls; and one query under two Dbs is two answers — in both engines
+use @std.relation.{relation, query, input}
+use @std.relation.db.{Db, new_db}
+
+@relation
+type Icon = { @key name: string, @index set: string }
+
+once fn runs() -> Cell<List<string>> { Cell.new([]) }
+
+fn ran(word: string) {
+    let r = runs()
+    r.push(word)
+}
+
+fn since(from: int) -> string { runs().get().slice(from, runs().get().length).join(",") }
+
+@query
+fn in_set(db: Db, set: string) -> int {
+    ran("in_set")
+    Icon.by_set(db, set).length
+}
+
+@input
+fn width(_db: Db, of: string) -> int { 10 }
+
+/// Whether `of` is wide — an answer that stays put while the width moves under 100.
+@query
+fn wide(db: Db, of: string) -> bool {
+    ran("wide")
+    width(db, of) >= 100
+}
+
+@query
+fn label(db: Db, of: string) -> string {
+    ran("label")
+    if wide(db, of) { "wide ${of}" } else { of }
+}
+
+@query
+fn joined(_db: Db, a: string, b: string) -> string {
+    ran("joined")
+    "${a}|${b}"
+}
+
+fn buckets() -> string {
+    let db = new_db()
+    let _ = Icon.insert(db, name: "x", set: "a")
+    let from = runs().get().length
+    let one = in_set(db, "a")
+    let _ = Icon.insert(db, name: "y", set: "b")
+    let still = in_set(db, "a")
+    let _ = Icon.insert(db, name: "z", set: "a")
+    let two = in_set(db, "a")
+    "${one}${still}${two} ${since(from)}"
+}
+
+fn cutoff() -> string {
+    let db = new_db()
+    let from = runs().get().length
+    let first = label(db, "m")
+    set_width(db, "m", 20)
+    let second = label(db, "m")
+    set_width(db, "m", 30)
+    let third = label(db, "m")
+    set_width(db, "m", 200)
+    let moved = label(db, "m")
+    "${first} ${second} ${third} ${moved} ${since(from)}"
+}
+
+fn spelled() -> string {
+    let db = new_db()
+    let from = runs().get().length
+    "${joined(db, "ab", "c")} ${joined(db, "a", "bc")} ${joined(db, "ab", "c")} ${since(from)}"
+}
+
+fn apart() -> string {
+    let one = new_db()
+    let two = new_db()
+    let _ = Icon.insert(one, name: "x", set: "a")
+    let from = runs().get().length
+    "${in_set(one, "a")}${in_set(two, "a")}${in_set(one, "a")} ${since(from)}"
+}
+
+"${buckets()} | ${cutoff()} | ${spelled()} | ${apart()}"
