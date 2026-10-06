@@ -52,6 +52,7 @@ which) · `PROBED` I ran it; the command and its output are beside it · `MEASUR
 | D6 | What may a plugin read at compile time? | only what its package manifest grants; every read recorded | any file, env var or tool | **A**; the grant policy is the sources design's, decided with you |
 | D8 | Is the cache thrown away when the compiler is rebuilt? | answers keyed by the code of the query that made them | one store per compiler binary (today) | **B now**, A recorded as the next step |
 | D9 | What identifies a tool (clang, the linker)? | digest its bytes every process (~100 ms for clang, ESTIMATED) | path + size + mtime; full digest on demand | **B**, for tools and the compiler binary only — never for sources |
+| D10 | Is the old safety net retired? Today a *failure* under a held answer is asked again of the sources, so a hold bug costs a cold run, never a wrong error (COMPILER.md :77, :93) | retire it at DB 07. An answer stands on the digests of its recorded reads; the edit corpus and the 17 attacks (A5) run in CI | keep it: every error reported from saved answers is re-derived cold first — each real error while editing costs a cold run (62.8 s today) | **A**, and until you say yes DB 07 keeps the re-ask behind a flag and as a CI mode. What A can miss that the net caught: a stale saved answer that shows up as a false error between a bug landing and the corpus catching it |
 
 ---
 
@@ -501,6 +502,7 @@ digest-only.
 | 10-01 warm one-line edit | 8.06 → 5.93 s, then 6.30 → **4.27 s** | MEASURED `e61260b` (#119), `b8311ee` (#124) |
 | 10-01 its phases | ast, sublang, load, admit: ~1.0–1.4 s each | MEASURED (inventory G2; A8) |
 | today `check cli` no-op, 408 files | 0.22 s | MEASURED ticket `.57.6.5` |
+| **same Sprite, same harness**: 09-21 (`86d7009`) against main (`05fe643`) | cold `check cli` 17.9 s → 62.8 s · no-op 0.05 s → 0.20 s · one body edit 0.36–0.51 s → 4.8–7.2 s. Not like-for-like: the tree grew 680 → 1,513 `.av` files. Bisect pending | MEASURED db-measure, `tools/db_measure/warm_edit.sh` (first M3 numbers) |
 | cold `check cli` peak | 1,869 MB; 375 MB of it dependency edges; 412 MB per-declaration fact columns | MEASURED tickets `.57.167`, `.57.168` |
 | a partly-held rebuild | 3,442 MB against 2,168 MB cold | MEASURED ticket `.57.163` |
 | file-then-directory test | past 4.5 GB → 2,153 MB with PR #289 | MEASURED PR #289 |
@@ -555,7 +557,7 @@ Each lands alone and leaves main green. "Ladder" is what the seed and generation
 | **DB 04** the input door a–e | `.57.173` | §5.2 as five PRs: (a) the digest row; (b) `Source`, `Manifest`; (c) `embed`, listings; (d) env, tool, target, compiler; (e) the rest | `make inputs` prints the count outside the door and fails on a new one | (a) is **two landings** | `.57.184` |
 | **DB 05** the store | `.57.174` | §6.1, §6.4; today's rows move in as opaque values, so no meaning changes; M4–M6 | one `store` file · `make cache-attacks` · the kill and two-process attacks | none | — |
 | **DB 06** the saved-answer rule | `.57.175` | §5.3, on by default. First on formats that are already pure lists: the two docs queries and the links witness. The edit corpus | `build/avra docs LanguageFeature` twice: the second ≤ 0.05 s · `make db-corpus` · the 17 attack cases (A5) | none | `.57.9.7`; absorbs `.57.101.12`, `.57.12.5` |
-| **DB 07** per-declaration answers; the hold deleted | `.57.176` | §4.1; `KeyParts`, `stands_in`, `verify_held`, the record lines and the memo maps deleted; no O(program) phase when warm | `warm_edit.sh`: unchanged ≤ 60 ms, one body edit ≤ 300 ms · the `.57.163` repro peaks ≤ cold | none for the seed; the riskiest — behind the edit corpus on a Sprite | `.57.163`; absorbs `.57.101.11` |
+| **DB 07** per-declaration answers; the hold deleted | `.57.176` | §4.1; `KeyParts`, `stands_in`, `verify_held`, the record lines and the memo maps deleted; no O(program) phase when warm | `warm_edit.sh`: unchanged ≤ 60 ms, one body edit ≤ 300 ms · the `.57.163` repro peaks ≤ cold | none for the seed; the riskiest — behind the edit corpus on a Sprite; the re-ask of the sources stays behind a flag until D10 | `.57.163`; absorbs `.57.101.11` |
 | **DB 08** roots | `.57.177` | `Verdict`, `Linked`, `Proved`; formats 4, 7–9 and the remembered rows deleted (A2); tools and env are inputs | `build` after one edit ≤ 500 ms · change `CC` → relink | none | links `avra-8sb5.68`, `.69`, `.31`, `.25.20` |
 | **DB 09** `Settled` and `Lifted` | `.57.178` | `kept_settle.av` deleted (A4); `Lifted` saved with relative spans | a comment above 1,000 generated types: ≤ 0.06 s (0.25 s today) | none | — |
 | **DB 10** the plugin crossing | `.57.179` | §5.4; `…Row` relations; `collect` membership; the lint arm (D5); grants (D6) | the two-package probe prints `a_close \| b_open` (a trap today) | each host row is **two landings** | `.57.182`, `.57.183` |
@@ -583,7 +585,7 @@ in-process hash; linked, not absorbed), `avra-8sb5.68`, `.69`.
 | first draft: "everything is a relation", `Expr.by_shape` | every fact is a query answer; the AST stays an arena | townhall P4 ruling (:2761); a first read is ~15× |
 | townhall §6.5a: the durable witness is `KeyParts`; kernel-grain deps stay in process | `KeyParts` is deleted at DB 07 | **PENDING M1/M2.** "≥51.6 M deps" was never committed; two later measurements say ~5 M |
 | `.57.148`: keep `@family(rank, key, answer)` | families become `@query` | the owner overruled it, 10-06. `.148` stays closed |
-| COMPILER.md law 6: "The sources are the hold's oracle. A hold bug costs time, never a wrong answer" | retired at DB 07. The net is the edit corpus in CI; a cold derivation with the cache set aside stays the oracle | the hold is what re-asks the sources; it is deleted. **Named because the safety net changes** |
+| COMPILER.md law 6: "The sources are the hold's oracle. A hold bug costs time, never a wrong answer" | **PENDING OWNER D10.** Recommended: retired at DB 07, the edit corpus in CI replaces it; until he says yes the re-ask stays behind a flag | no measurement — the hold that re-asks the sources is deleted, so the net must be re-decided, not dropped silently |
 | sources §15a Q12: the two doors are designed with the owner | unchanged. This document supplies the mechanism; the grant policy is D6 | the first draft claimed the doors silently |
 | COMPILER.md: no resident compiler | stands | the targets need no daemon (§6.2) |
 

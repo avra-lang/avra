@@ -126,9 +126,7 @@ The design is written with the recommendation for each. Ask before building on o
 | D6 | may a plugin read anything, or only what its manifest grants? | only what is granted | DB 10 |
 | D8 | one store per compiler binary, or answers keyed by their query's code? | per binary now | DB 05 |
 | D9 | a tool's identity: digest every time, or path + size + mtime? | path + size + mtime, tools and the compiler only | DB 04 d |
-
-Also named for the owner in the design's §9: COMPILER.md's law "the sources are the hold's
-oracle" is retired when the hold is deleted (DB 07); the edit corpus replaces it.
+| D10 | is "a failure under a held answer is asked again of the sources" retired? | yes, replaced by the edit corpus and the attack suite in CI | DB 07 — which keeps the re-ask behind a flag and as a CI mode until he says yes |
 
 Waiting on measurements: M1 (how big the kernel graph is), M2 (saved answers and reads per
-answer), M3 (where 0.18 s → 4.27 s went). The design's §7.3 says what each result changes.
+answer), M3 (where 0.18 s → 4.27 s went; first numbers are in the design's §7.1, the bisect is pending). The design's §7.3 says what each result changes.
