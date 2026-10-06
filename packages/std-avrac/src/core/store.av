@@ -9,7 +9,7 @@ use @std.meta.{identity, plain_field}
 /// `grammar` declaration read), so it stays its own side table — a
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
-export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool }
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool, is_host: bool }
 
 fn no_stmt_marks() -> StmtMarks {
     StmtMarks {
@@ -20,6 +20,7 @@ fn no_stmt_marks() -> StmtMarks {
         is_state: false,
         is_provide: false,
         is_module_state: false,
+        is_host: false,
     }
 }
 
@@ -992,6 +993,15 @@ impl SyntaxArena {
     fn is_once(s: StmtId) -> bool {
         self.marks_at(s).is_once
     }
+
+    /// `extern fn … { … }` — a HOST FN: the body DEFINES the symbol its
+    /// name spells, where a bodiless `extern fn` only names one.
+    fn mark_host(s: StmtId) {
+        self.update_marks(s, (m) -> m with { is_host: true })
+        self.restamp(s, 194)
+    }
+
+    fn is_host_fn(s: StmtId) -> bool { s.index < self.marks.get().length && self.marks_at(s).is_host }
 
     /// `static fn` crossed this declaration — it lives under an impl
     /// and takes NO receiver, which is the third value of the same

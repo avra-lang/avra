@@ -29,7 +29,7 @@ fi
 # A COPY is built, so the tree's own object cache never holds a wasm object.
 mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
-"$avra" build --target "$target" --wasm_reactor "$work/tools/ui-board/web" >"$work/build.out" 2>"$work/build.err" || built=$?
+"$avra" build --time --target "$target" --wasm_reactor "$work/tools/ui-board/web" >"$work/build.out" 2>"$work/build.err" || built=$?
 [ "${built:-0}" -ne 2 ] || skip "$(sed 's/^avra: //' "$work/build.err" | head -1)"
 if [ "${built:-0}" -ne 0 ]; then
     echo "ui-board: the board did not build for $target"; cat "$work/build.err"; tail -20 "$work/build.out"; exit 1
@@ -43,4 +43,6 @@ command -v "${WASM_OPT:-wasm-opt}" >/dev/null 2>&1 && shrunk="shrunk by ${WASM_O
 if ! out=$(node "$tree/tools/ui-board/demo.mjs" "$wasm" 2>&1); then
     echo "$out" | grep -v '^ok ' ; echo "ui-board: the board failed on the page"; exit 1
 fi
+# WHAT THE HOST MAY CALL, and whose word each is: the module's host fns.
+sed -n 's/^host fn: /ui-board: host fn /p' "$work/build.err"
 echo "ui-board: $(echo "$out" | grep -c '^ok ') claims hold over a $(wc -c < "$wasm" | tr -d ' ')-byte module, $shrunk"

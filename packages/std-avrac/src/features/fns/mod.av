@@ -40,6 +40,7 @@ export fn fns() -> LanguageFeature {
         "type.row_shape"       | "an extern that names a runtime row wears the row's shape — its seat count, and the box each pointer seat reads"
         "type.host_absence"    | "a runtime row's seat takes no absence — core's C reads every pointer it is handed"
         "type.extern_value"    | "an extern fn is a C symbol, not a value — wrap it to hand it around"
+        "type.host_fn"         | "a host fn defines the symbol its name spells — its seats and its answer are words and pointers a host hands over, plain"
         "type.embed_literal"   | "`embed` reads a file named in the source — its path is a literal, written where it is called"
         "type.embed_place"     | "`embed` reads inside its own package, through no link"
         "type.embed_file"      | "`embed` answers a file's text — the file stands there and is UTF-8"
@@ -49,7 +50,7 @@ export fn fns() -> LanguageFeature {
     }
     LanguageFeature fns {
         gram: grammar {
-            stmt = "extern" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type )* ","? )? ")" ( "->" r:type )? END @recover(sync_to: "END") -> extern_fn(n, ck, mk, ps, pt, r)
+            stmt = "extern" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type )* ","? )? ")" ( "->" r:type )? ( b:block )? END @recover(sync_to: "END") -> extern_fn(n, ck, mk, ps, pt, r, b)
             stmt = "fn" n:NAME ( "<" tp:NAME ( ":" tb:type )? ( "," tp:NAME ( ":" tb:type )? )* ","? ">" )? "(" ( ( ( ck:"const" )? ( mk:"mut" )? ( sk:STATE )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? | sp:".." ps:HOLE ) ( "," ( ( ck:"const" )? ( mk:"mut" )? ( sk:STATE )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? | sp:".." ps:HOLE ) )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> fn_decl(n, tp, tb, ck, mk, sk, ps, pt, pd, r, b, ik, sp)
             stmt = "once" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> once_fn(n, ck, mk, ps, pt, r, b)
             stmt = "return" ( v:expression )? END @recover(sync_to: "END") -> return_stmt(v)

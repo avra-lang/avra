@@ -11,10 +11,13 @@ use core.{
     joined,
     distinct,
     flatten,
+    rt_sigs,
     sorted_texts,
     fp_list,
     RtSig,
     TypeRegistry,
+    FileId,
+    DeclId,
     map_cell,
 }
 use features.{Wanted}
@@ -57,7 +60,7 @@ export enum BuildError {
     /// The entry's module was written but its bytes could not be read back.
     ModuleUnreadable(path: string)
     /// `clang` exited non-zero linking the objects into a binary.
-    LinkFailed(code: int)
+    LinkFailed(code: int, unanswered: List<string>)
     /// A held object the store named is no longer where the store put it.
     ObjectGone(path: string)
     /// A body calls a symbol nothing in the program declares.
@@ -77,7 +80,7 @@ impl Error for BuildError {
             .Empty -> info("build.empty", "the program is empty"),
             .EmitFailed(m) -> info("build.emit_failed", m),
             .ModuleUnreadable(p) -> info("build.module_unreadable", module_unreadable(p)),
-            .LinkFailed(code) -> info("build.link_failed", clang_link_failed(code)),
+            .LinkFailed(code, unanswered) -> info("build.link_failed", clang_link_failed(code) + unanswered_note(unanswered)),
             .ObjectGone(p) -> info("build.object_gone", object_gone(p)),
             .NotClosed(missing) -> info("build.not_closed", not_closed(missing)),
             .UnsupportedOnWasm(names) -> info("build.wasm_unsupported", wasm_unsupported(names)),
@@ -97,6 +100,9 @@ export type BuildOutcome = {
     reused: bool,
     phases: string = "",
     refuses: List<RefusesCall> = [],
+    /// The host fns the program defines, each as `package name` — what a
+    /// host may call it by, and whose word each is.
+    host_fns: List<string> = [],
 }
 
 /// THE FEATURES A WASM MODULE BUILT HERE MAY USE: LLVM's baseline for a
@@ -145,8 +151,7 @@ fn opt_level(opt: string) -> int {
 /// again of the sources is another workspace, with another registry and other file
 /// ids, and an entry built over the first one's would read this one's by index.
 /// `cases` are the cases it calls, each with the file that holds its body.
-/// `doors` names the bodies its host may call.
-export type ProgramModule = { main: fn(TypeRegistry) -> ProgramMain, rows: List<RtSig> = [], cases: List<CaseHome> = [], doors: List<string> = [] }
+export type ProgramModule = { main: fn(TypeRegistry) -> ProgramMain, rows: List<RtSig> = [], cases: List<CaseHome> = [] }
 
 /// A case the entry calls, and the path of the file its body is in.
 export type CaseHome = { call: CaseCall, path: string }
@@ -315,6 +320,9 @@ fn compiler_print(ws: Workspace) -> string {
 /// while every file it linked still holds the bytes it linked.
 fn links_key(key: string) -> string { node_key(Stored.Unit, ["links", key]) }
 
+/// Where a kept binary's host fns are listed.
+fn host_fns_key(key: string) -> string { node_key(Stored.Unit, ["host-fns", key]) }
+
 /// Each linked file and its digest, one per line — an unreadable one as `-`,
 /// which no digest equals.
 fn links_text(files: List<string>) -> string {
@@ -482,7 +490,6 @@ impl Workspace {
             .linked(
                 ProgramModule {
                     main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)),
-                    doors: [self.decls.symbol(d) for d in self.doors(entry)],
                 },
                 Keyed { named: entry, beside: [] },
                 binary,
@@ -503,7 +510,12 @@ impl Workspace {
         // a stored binary is bytes, and its mode is not in them
         let _ = avra_spawn_status("chmod", ["+x", staged])
         if !published(staged, binary) { return null }
-        BuildOutcome { binary: binary, warnings: store.get(Stored.Warn, key) ?? "", reused: true }
+        BuildOutcome {
+            binary: binary,
+            warnings: store.get(Stored.Warn, key) ?? "",
+            reused: true,
+            host_fns: [line for line in (store.get(Stored.Unit, host_fns_key(key)) ?? "").split("\n") if !line.is_empty()],
+        }
     }
 
     /// EVERY PACKAGE A PROGRAM'S KEY COVERS, each as `src<TAB>root`: the admitted
@@ -682,7 +694,7 @@ impl Workspace {
             .concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))])
         // a held module nobody read is never minted, so nothing else declares its cases
         let brought = [main.case_stub(c.call, self.file_id(c.path)) for c in m.cases]
-        lo with { entry: main.body, types: main.types, externs: lo.externs.concat(m.rows), fns: undeclared(brought, stand).concat(stand), doors: m.doors }
+        lo with { entry: main.body, types: main.types, externs: lo.externs.concat(m.rows), fns: undeclared(brought, stand).concat(stand) }
     }
 
     /// THE PROGRAM MODULE'S KEY BY ITS OWN BYTES — written as bitcode at `bc`, and
@@ -715,7 +727,7 @@ impl Workspace {
         BuildError,
     > {
         let main = m.main(d.lowered.types)
-        let asked = program_asked_key(d, main, m.doors, tools)
+        let asked = program_asked_key(d, main, tools)
         // instantiations nobody lowered are owed, unless a build of these very asks kept them
         if !d.unlowered.is_empty() && !d.store.has(Stored.Obj, asked) {
             let whole = diagnosed(self.whole(d, []))?
@@ -746,9 +758,13 @@ impl Workspace {
                 tools.target,
                 tools.reactor,
                 tools.debug,
+                [b.name for b in full.fns if b.hosted],
             ),
         )
-        if code != 0 { fail BuildError.LinkFailed(code) }
+        if code != 0 {
+            fail BuildError
+                .LinkFailed(code, if tools.target == "" { unanswered_externs(full) } else { [] })
+        }
         clock.mark("link")
         let ready = shipped(staged, tools)
         let key = self.kept_key(under)
@@ -762,13 +778,28 @@ impl Workspace {
             )
         let _ = d.store.keep_file(Stored.Bin, key, ready, [key])
         let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
+        let host_fns = self.host_fn_lines([a.view.file for a in d.program.files])
+        let _ = d.store.keep(Stored.Unit, host_fns_key(key), joined(host_fns, "\n"), [key])
         if !published(ready, binary) { fail BuildError.Unpublished(binary) }
         BuildOutcome {
             binary: binary,
             warnings: d.warnings,
             reused: false,
             phases: d.timed(clock.spans),
+            host_fns: host_fns,
         }
+    }
+
+    /// The program's host fns, each as `package name`, in name order.
+    fn host_fn_lines(files: List<FileId>) -> List<string> {
+        sorted_texts(
+            [self.host_fn_line(d) for d in flatten([self.decls.host_fns_of_file(f) for f in files])],
+        )
+    }
+
+    fn host_fn_line(d: DeclId) -> string {
+        let x = self.decls.decl(d)
+        "${self.packages()[self.holder_of_path(self.decls.file(x.file).path)].key} ${x.name}"
     }
 
     /// A read file's object: kept under the file's key, standing beside the store's
@@ -841,20 +872,37 @@ impl Workspace {
     }
 }
 
-/// WHAT THE PROGRAM'S MODULE IS A FUNCTION OF: the program's asks, its entry, its
-/// doors, and what compiles it.
-fn program_asked_key(d: Derived, main: ProgramMain, doors: List<string>, tools: Toolchain) -> string {
+/// WHAT THE PROGRAM'S MODULE IS A FUNCTION OF: the program's asks, its entry, and
+/// what compiles it.
+fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string {
     node_key(
         Stored.Obj,
         [
             "program",
             d.asked,
             "${fp_list([i.fingerprint() for i in main.body.ins])}",
-            joined(doors, "\t"),
             tools.opt,
             tools.runtime,
         ],
     )
+}
+
+/// THE EXTERNS NOTHING HERE ANSWERS: no runtime row, no package's
+/// library, no host fn of the program — what a failed link most likely
+/// lacked. A host's own row is one of these on every target but that
+/// host's.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names nothing in it defines out.
+fn unanswered_externs(l: Lowered) -> List<string> {
+    let claimed = flatten([p.externs for p in l.libraries if p.library != ""])
+    let defined = [b.name for b in l.fns if b.hosted]
+    [row.name for row in l.externs if !rt_sigs().any(it.name == row.name) &&
+        !claimed.contains(row.name) &&
+        !defined.contains(row.name)]
+}
+
+fn unanswered_note(names: List<string>) -> string {
+    if names.is_empty() { return "" }
+    "\nno package's library and no host fn of this program defines ${["`${n}`" for n in names].join(", ")} — when the linker names one of them, a host answers it: build for that host, or answer it here with `extern fn ${names[0]}(…) { … }`"
 }
 
 /// THE LINKED FILE AS IT SHIPS, the one staged file left standing: a wasm

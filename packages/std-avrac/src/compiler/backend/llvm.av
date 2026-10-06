@@ -132,10 +132,8 @@ export fn home_of(b: Body) -> FileId? { b.file }
 /// body it owns as much as one it only calls. A STATIC this module lays out
 /// names too — a capture-free closure's `Slot.Code` is a body reference as
 /// real as an instruction's, just not one an `Ins` scan would ever see.
-/// `opened` are bodies the module names outside any instruction.
-fn refs_of(bodies: List<Body>, statics: List<Static>, opened: List<string>) -> Refs {
+fn refs_of(bodies: List<Body>, statics: List<Static>) -> Refs {
     mut r = Refs { whole: false, bodies: {}, hosted: {}, statics: {} }
-    for name in opened { r.bodies.set(name, true) }
     // SETS, NOT LISTS: a symbol is NAMED once however many instructions name it, and
     // `carries` asks membership per body, per static and per runtime row. The lists this
     // replaces held one entry per REFERENCING INSTRUCTION and were SCANNED linearly for
@@ -189,6 +187,14 @@ export fn unreached_dropped() -> string {
     if avra_llvm_drops_by_atom() != 0 { "-Wl,-dead_strip" } else { "-Wl,--gc-sections" }
 }
 
+/// The link's words that keep each host fn's symbol whatever reaches it:
+/// an undefined reference the link must resolve, spelled as the object
+/// format spells a C name.
+export fn host_kept_words(names: List<string>) -> List<string> {
+    let lead = if avra_llvm_drops_by_atom() != 0 { "_" } else { "" }
+    ["-Wl,-u,${lead}${n}" for n in names]
+}
+
 /// Every object handed to a worker, written — null — or the refusal.
 export fn objects_made() -> string? {
     let unwritten = avra_llvm_objects_unwritten()
@@ -220,12 +226,15 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     // the entry is carried beside `l.fns`, and it names what it calls
     let scanned: List<Body> = if which.carries_entry() { own.concat([l.entry]) } else { own }
     let wasm = is_wasm(target)
-    let opened: List<string> = if wasm && which.carries_entry() { l.doors } else { [] }
-    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics, opened) }
+    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
     declare_runtime(lc, m)
-    declare_externs(lc, m, l.externs, refs, wasm)
+    mut own: Map<string, bool> = {}
+    for bd in l.fns {
+        if bd.hosted { own.set(bd.name, true) }
+    }
+    declare_externs(lc, m, l.externs, refs, own, wasm)
     for bd in l.fns {
         if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd) }
     }
@@ -240,16 +249,11 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
             if failure != null { return wreck(m, path, failure!) }
             if bd.weak { avra_llvm_set_weak_odr(f) }
             if l.cold.get(bd.name) != null { avra_llvm_set_cold(f) }
+            if bd.hosted && !host_symbol_defined(lc, m, b, l.externs, refs, bd, wasm) { return wreck(m, path, host_symbol_wrecked(bd.name)) }
         }
     }
     if which.carries_entry() {
-        let failure: string? = emit_entry(lc, m, b, l, rt, target) ?? emit_doors(
-            lc,
-            m,
-            b,
-            l,
-            opened,
-        )
+        let failure: string? = emit_entry(lc, m, b, l, rt, target)
         if failure != null { return wreck(m, path, failure!) }
     }
     avra_llvm_dispose_builder(b)
@@ -512,11 +516,19 @@ fn declare_runtime(lc: ptr, m: ptr) {
 /// TARGET they are the HOST IMPORTS: a wasm module has no package C to define
 /// one, so each crosses as an import from `avra:rt` under its own symbol — the
 /// module the browser host implements beside WASI.
-fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>, refs: Refs, wasm: bool) {
+fn declare_externs(
+    lc: ptr,
+    m: ptr,
+    rows: List<RtSig>,
+    refs: Refs,
+    own: Map<string, bool>,
+    wasm: bool,
+) {
     for s in rows {
         if carries(refs, refs.hosted, s.name) {
             declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
-            if wasm { avra_llvm_set_import(avra_llvm_get_named_function(m, s.name), "avra:rt", s.name) }
+            // a symbol one of the program's host fns defines is no import
+            if wasm && own.get(s.name) == null { avra_llvm_set_import(avra_llvm_get_named_function(m, s.name), "avra:rt", s.name) }
         }
     }
 }
@@ -546,33 +558,30 @@ fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
     )
 }
 
-/// THE DOORS, each a forwarder the entry's module defines and exports under
-/// the door's WRITTEN name (the LLVM symbols stay mangled), so a host reaches
-/// `avra_event`, never `av_avra_event`. A FILE'S OBJECT EXPORTS NOTHING: an
-/// export is a root the linker cannot drop, and a file's object is the same
-/// whatever program links it — so only the program's own module may say what
-/// that program's host calls.
-fn emit_doors(lc: ptr, m: ptr, b: ptr, l: Lowered, opened: List<string>) -> string? {
-    for name in opened {
-        let bd? = l.fns.find((x: Body) -> x.name == name) else { return not_closed(name) }
-        if !door_opened(lc, m, b, l.types, bd) { return "internal compiler error: LLVM verification failed for the door `${name}`" }
+/// A HOST FN'S SYMBOL, defined beside its body: a fn of the bare name,
+/// under its extern row's shape, that hands its seats straight to the
+/// body and its answer straight back. It is what a host calls, what a
+/// bodiless `extern fn` of the name in another file links to, and — on
+/// a non-host target — the module's export under that name. A FILE THAT
+/// DECLARES A HOST FN EXPORTS IT wherever it is linked: the declaration
+/// says so, and nothing is inferred from who imports what. Answers
+/// whether the symbol verifies.
+fn host_symbol_defined(
+    lc: ptr,
+    m: ptr,
+    b: ptr,
+    externs: List<RtSig>,
+    refs: Refs,
+    bd: Body,
+    wasm: bool,
+) -> bool {
+    let row? = externs.find(it.name == bd.name) else { return false }
+    // the row's declaration stands already where this module also calls the name
+    if !carries(refs, refs.hosted, bd.name) {
+        declare(m, bd.name, ll_rt_kind(lc, row.ret), [ll_rt_kind(lc, k) for k in row.params], false)
     }
-    null
-}
-
-/// One door: the body's own seats handed straight through, its answer handed
-/// straight back. Answers whether the forwarder verifies.
-fn door_opened(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, bd: Body) -> bool {
-    let symbol = "door\$${mangled(bd.name)}"
-    declare(
-        m,
-        symbol,
-        ll_type_of(lc, types, bd.ret),
-        [ll_type_of(lc, types, pt) for pt in bd.params],
-        false,
-    )
-    let f = avra_llvm_get_named_function(m, symbol)
-    avra_llvm_set_export(f, bd.name)
+    let f = avra_llvm_get_named_function(m, bd.name)
+    if wasm { avra_llvm_set_export(f, bd.name) }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     let body = avra_llvm_get_named_function(m, mangled(bd.name))
     let seats = avra_llvm_value_array_new(bd.params.length)
@@ -583,11 +592,20 @@ fn door_opened(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, bd: Body) -> bool {
         body,
         seats,
         bd.params.length,
-        "answer",
+        if answers_nothing(row.ret) { "" } else { "answer" },
     )
     avra_llvm_value_array_free(seats)
-    let _ = avra_llvm_build_ret(b, answer)
+    let _ = if answers_nothing(row.ret) { avra_llvm_build_ret_void(b) } else { avra_llvm_build_ret(b, answer) }
     avra_llvm_verify_function(f) == 0
+}
+
+/// Whether a row's answer is no value at all.
+fn answers_nothing(k: RtKind) -> bool {
+    match k { .Void -> true, .I64 or .I32 or .U32 or .F64 or .Ptr -> false }
+}
+
+fn host_symbol_wrecked(name: string) -> string {
+    "internal compiler error: LLVM verification failed for the host fn `${name}`"
 }
 
 fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {

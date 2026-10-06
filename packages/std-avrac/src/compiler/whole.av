@@ -5,6 +5,7 @@ use core.{
     module_path,
     SyntaxArena,
     DeclId,
+    distinct,
     FileId,
     UseParts,
     ExprId,
@@ -22,6 +23,8 @@ use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
 use compiler.lower.{LinkedPackage}
 use compiler.host.{library_stem}
+use compiler.backend.{platform_defines}
+use @std.errors.{Loc}
 
 impl Workspace {
 
@@ -176,6 +179,52 @@ impl Workspace {
                 .Err(_) -> { let _ = 0 },
             }
         }
+    }
+
+    /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
+    /// the whole link, so three things are held where each one stands:
+    /// its name is no symbol the platform already defines — that body
+    /// would answer every caller of the name, the runtime's included;
+    /// it answers a bodiless `extern fn` of another package only from
+    /// the program's own package — a dependency does not get to stand
+    /// in for another's host; and a dependency's host fn is the
+    /// program's export only when the program's own sources import that
+    /// dependency — the root says which packages speak for it.
+    fn host_fn_voices(files: List<FileId>) -> List<Diag> {
+        let hosted = flatten([self.decls.host_fns_of_file(f) for f in files])
+        if hosted.is_empty() { return [] }
+        let named = [x for x in self.decls.externs() if !self.decls.is_host_fn(x.id)]
+        let asked = self.root_imports()
+        flatten([self.host_fn_owes(d, named, asked) for d in hosted])
+    }
+
+    /// The packages the program's own sources import from, by key.
+    fn root_imports() -> List<string> {
+        distinct(
+            [m.package()! for path in self.all_files(self.packages()[0].src) for m in self.imported_by(path) if m.package() != null],
+        )
+    }
+
+    fn host_fn_owes(d: DeclId, named: List<Decl>, asked: List<string>) -> List<Diag> {
+        let x = self.decls.decl(d)
+        let from = self.packages()[self.holder_of_path(self.decls.file(x.file).path)]
+        if platform_defines(x.name) || entry_symbols.contains(x.name) { return [host_fn_shadows(self.decls.loc(d), x.name)] }
+        if from.ordinal == 0 { return [] }
+        let theirs? = named
+            .find(
+                (n: Decl) -> n.name == x.name &&
+                    self.holder_of_path(self.decls.file(n.file).path) != from.ordinal,
+            ) else {
+            return if asked.contains(from.key) { [] } else { [host_fn_unasked(self.decls.loc(d), x.name, from.key)] }
+        }
+        [
+            host_fn_answers_another(
+                self.decls.loc(d),
+                x.name,
+                self.packages()[self.holder_of_path(self.decls.file(theirs.file).path)].key,
+                from.key,
+            ),
+        ]
     }
 
     /// The deepest package root that holds `path`.
@@ -434,6 +483,49 @@ fn use_lines(p: Parsed) -> List<UseParts> {
 
 /// What one `use` line brought in, and what it earned.
 type Imported = { imports: List<Import>, diagnostics: List<Diag> }
+
+/// The symbols a linked program's own start is found by.
+const entry_symbols: List<string> = [
+    "main",
+    "avra_main",
+    "_start",
+    "_initialize",
+    "__main_argc_argv",
+]
+
+/// THE RULE'S CONDITION: "the platform defines it" is asked of the
+/// machine the compiler stands on, so the same name can refuse on one
+/// build machine and pass on another, and a build for another target is
+/// judged by this one's C library.
+fn host_fn_shadows(at: Loc?, name: string) -> Diag {
+    refusal(
+        "lower.host_fn_shadows",
+        at,
+        "`${name}` is a symbol this platform already defines — a host fn of that name would answer every caller of it",
+        "defined here",
+        "name the host fn for what its host asks of this program, as `avra_ui_event` is",
+    )
+}
+
+fn host_fn_answers_another(at: Loc?, name: string, theirs: string, from: string) -> Diag {
+    refusal(
+        "lower.host_fn_answers",
+        at,
+        "`${name}` is `${theirs}`'s to name, and `${from}` answers it — only the package that names an extern, or the program's own, answers it",
+        "answered here",
+        "answer it in the program's own package: a test stands there, and so does a host's stand-in",
+    )
+}
+
+fn host_fn_unasked(at: Loc?, name: string, from: string) -> Diag {
+    refusal(
+        "lower.host_fn_unasked",
+        at,
+        "the host fn `${name}` of `${from}` would be this program's export, and the program's own sources never import `${from}`",
+        "declared here",
+        "import from `${from}` in the program's own package — that says its host fns speak for this program — or drop the dependency that brings it",
+    )
+}
 
 /// A package's root and a path beneath it.
 type EmbedPlace = { root: string, rel: string }

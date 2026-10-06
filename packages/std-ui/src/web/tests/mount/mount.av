@@ -1,0 +1,31 @@
+// proves: the module that names the host runs where no page stands. This
+// program ANSWERS the page's row itself — a host fn of the row's name — so
+// `mount` paints into it, the page's echo (`avra_ui_event`) runs the handler
+// the paint bound, and each repaint is a frame, evaluated and native alike.
+use @std.ui.components.{button, column, text}
+use @std.ui.web.{mount}
+
+state presses: int = 0
+
+/// The page's row, answered here: what a frame would have carried.
+extern fn avra_dom_frame(frame: Bytes) {
+    println("a frame of ${frame.length} octets, after ${presses} presses")
+}
+
+/// The web module's echo, named as the page's glue names it.
+extern fn avra_ui_event(who: int, what: int, tag: int, num: int, len: int)
+
+fn view() -> column {
+    column {
+        items: [text "pressed ${presses}", button "More" { on press { presses = presses + 1 } }]
+    }
+}
+
+mount(view)
+println("── every element is told every kind once")
+for who in 0..8 {
+    for what in 0..12 { avra_ui_event(who, what, 0, 0, 0) }
+}
+println("── mounted again")
+mount(view)
+println("${presses} presses heard")

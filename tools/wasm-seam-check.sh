@@ -1,10 +1,11 @@
 #!/bin/sh
 # The M1 host seam's proof: `avra build --target wasm` on a program that
-# declares a host row `extern` and an `export fn` must leave a module that
-# IMPORTS that row from `avra:rt` and EXPORTS the handler under its written
-# name, the length accessor the glue reads the header through, and memory.
-# THE DOORS ARE THE ENTRY'S AND ITS IMPORTS': an export of a module the entry
-# never names is not exported, and one nothing reaches is not in the module.
+# declares a host row `extern` and a host fn (an `extern fn` with a body) must
+# leave a module that IMPORTS that row from `avra:rt` and EXPORTS the host fn
+# under its own name, the length accessor the glue reads the header through,
+# and memory. A HOST FN IS EXPORTED FROM WHEREVER IT IS DECLARED — a module
+# the entry never names included — and an `export fn` is exported from
+# nowhere: one nothing reaches is not in the module at all.
 # `--wasm-reactor` must drop `_start` (no `main`), keep the exports, and export
 # the program's own statements as `avra_main` for the host to run.
 #
@@ -49,13 +50,14 @@ need_import 'avra:rt.*avra_dom_frame'
 need_export 'avra_event'
 need_export 'avra_bytes_len'
 need_export 'memory'
-need_export 'relayed'
-need_export 'offered'
-no_export() { if grep -q "\"$1\"" "$work/objdump.txt"; then say "exported, and no door: $1"; fail=1; fi; }
+need_export 'avra_far_event'
+no_export() { if grep -q "\"$1\"" "$work/objdump.txt"; then say "exported, and no host fn: $1"; fail=1; fi; }
+no_export 'relayed'
+no_export 'offered'
 no_export 'reached'
 no_export 'unreached'
-# A door nothing calls is in the module; a deeper export nothing reaches is not.
-grep -q 'seam-offered' "$wasm" || { say "a door's body is not in the module"; fail=1; }
+# An `export fn` nothing reaches is not in the module, whoever imports its module.
+if grep -q 'seam-offered' "$wasm"; then say "an unreached export's body is in the module"; fail=1; fi
 if grep -q 'seam-unreached' "$wasm"; then say "an unreached export's body is in the module"; fail=1; fi
 # A command module's `main` runs the statements: it exports no second door to them.
 if grep -q '"avra_main"' "$work/objdump.txt"; then say "a command module exports avra_main"; fail=1; fi
@@ -74,4 +76,4 @@ if [ "$fail" -ne 0 ]; then
     say "--- imports/exports ---"; grep -iE "import|export" "$work/objdump.txt" | head -20
     exit 1
 fi
-say "seam ok: avra:rt.avra_dom_frame imported; avra_event, avra_bytes_len, memory and the imported module's doors exported, a deeper export neither exported nor carried; reactor drops _start and exports avra_main"
+say "seam ok: avra:rt.avra_dom_frame imported; avra_event, avra_bytes_len, memory and a deeper module's host fn exported, no export fn exported and none carried unreached; reactor drops _start and exports avra_main"

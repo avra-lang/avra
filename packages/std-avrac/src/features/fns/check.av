@@ -44,6 +44,7 @@ export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .FnDecl(fname, _, fparams, fret, body) -> {
             defaults_law(cx, s, fname.of, fparams)
+            if cx.view.store.is_host_fn(s) { host_fn_law(cx, s, fname.of, fparams) }
             checked_fn(cx, s, fname.of, fret, body)
         },
         .ExternFn(hname, hparams, hret) -> checked_extern(cx, s, hname.of, hparams, hret),
@@ -65,6 +66,35 @@ fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>
     let row? = rt_sigs().find(it.name == hname) else { return }
     row_shape_law(cx, s, row, hparams, hret)
     row_absence_law(cx, s, hname, hparams)
+}
+
+/// THE HOST FN LAW. An `extern fn` with a body DEFINES the symbol its
+/// name spells: a host calls it by that name, and a bodiless `extern fn`
+/// of the name elsewhere is answered by it. So its name is no runtime
+/// row's — that symbol has a body already — and its seats and answer
+/// are what crosses the seam in ONE register with no promise attached:
+/// a word, a float, or a pointer to text or octets. A `mut` or `const`
+/// seat is a promise between Avra callers, and the host makes none.
+fn host_fn_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
+    if rt_sigs().any(it.name == hname) { host_fn_names_a_row(cx, s, hname) }
+    for p in hparams {
+        if p.promises.mutable || p.promises.settled { host_seat_promises(cx, s, hname, p) }
+    }
+    let sig? = cx.stmt_sig(s) else { return nothing() }
+    for j, p in sig.params {
+        if !host_handed(cx.view.types, p) { host_seat_unhanded(cx, s, hname, hparams[j].name.of, p) }
+    }
+    if !(cx.view.types.shape_of(sig.ret) is .Void) && !host_handed(cx.view.types, sig.ret) { host_answer_unhanded(cx, s, hname, sig.ret) }
+}
+
+/// What crosses a host fn's seam: Avra's one integer, a float, text,
+/// octets or a raw pointer — each one register wide in both engines'
+/// own shape, which is what lets the body be called as it stands.
+fn host_handed(types: TypeRegistry, ty: TypeId) -> bool {
+    match types.shape_of(ty) {
+        .Int or .Float or .Str or .Bytes or .Ptr or .Error -> true,
+        rest -> false,
+    }
 }
 
 /// THE PLAIN HALF OF THE SEAT LAW, AND THE ANSWER — one law, because
@@ -1013,6 +1043,58 @@ fn seat_not_inout_able(mut cx: TypeCx, s: StmtId, hname: string, j: int, pp: Par
                 "seat ${j + 1} of `${hname}` is `mut` and wears `${spelled(pp.ty ?? void_written)}` — a `mut` host seat hands C the ADDRESS of the caller's cell",
                 "declared here",
                 "a cell C may write is `ptr`, `ptr?`, or an integer at its DECLARED WIDTH — `i32` for a C `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`. A bare `int` is refused here alone, because it is right for `int64_t*` and silently wrong for `int*`, and only the declaration knows which. A managed value (`string`, a list, a map, a record) cannot cross at all — C keeps no refcount for what it writes.",
+            ),
+        )
+}
+
+fn host_fn_names_a_row(mut cx: TypeCx, s: StmtId, hname: string) {
+    cx
+        .emit(
+            refusal(
+                "type.host_fn",
+                cx.stmt_loc(s),
+                "`${hname}` is the runtime's own symbol — a host fn cannot define it again",
+                "defined here",
+                "name the host fn for what the host asks of this program",
+            ),
+        )
+}
+
+fn host_seat_promises(mut cx: TypeCx, s: StmtId, hname: string, p: Param) {
+    cx
+        .emit(
+            refusal(
+                "type.host_fn",
+                cx.stmt_loc(s),
+                "seat `${p.name.of}` of the host fn `${hname}` is marked — a host makes no promise about a seat",
+                "marked here",
+                "drop the mark: a host fn's seats are plain values",
+            ),
+        )
+}
+
+fn host_seat_unhanded(mut cx: TypeCx, s: StmtId, hname: string, seat: string, p: TypeId) {
+    cx
+        .emit(
+            refusal(
+                "type.host_fn",
+                cx.stmt_loc(s),
+                "seat `${seat}` of the host fn `${hname}` wears `${cx.view.types.name_of(p)}`, which no host can hand over",
+                "declared here",
+                "a host fn's seat is `int`, `float`, `string`, `Bytes` or `ptr`",
+            ),
+        )
+}
+
+fn host_answer_unhanded(mut cx: TypeCx, s: StmtId, hname: string, ret: TypeId) {
+    cx
+        .emit(
+            refusal(
+                "type.host_fn",
+                cx.stmt_loc(s),
+                "the host fn `${hname}` answers `${cx.view.types.name_of(ret)}`, which no host can take",
+                "declared here",
+                "a host fn answers `int`, `float`, `string`, `Bytes`, `ptr`, or nothing",
             ),
         )
 }

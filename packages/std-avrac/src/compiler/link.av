@@ -1,6 +1,6 @@
 //! The vocabulary a build links with: clang's words for a link, and the binary
 //! a source names.
-use compiler.backend.{unreached_dropped, host_export_words, reactor_entry_words}
+use compiler.backend.{unreached_dropped, host_export_words, reactor_entry_words, host_kept_words}
 
 /// clang's words for a link: the objects, the packages' own objects and
 /// flags, the runtime, then the binary's path.
@@ -21,6 +21,7 @@ fn link_objects(
     target: string,
     reactor: bool,
     debug: bool,
+    hosted: List<string>,
 ) -> List<string> {
     if target != "" {
         // A WASM LINK: the driver's own target names crt1 and a libc, and the
@@ -50,7 +51,10 @@ fn link_objects(
                 ],
             )
     } else {
+        // A HOST FN IS KEPT: its symbol is defined for a caller outside the
+        // program, which the linker cannot see reaching it.
         ["-w", if ws.names_its_symbols() { "-rdynamic" } else { unreached_dropped() }]
+            .concat(host_kept_words(hosted))
             .concat(objs)
             .concat(ws.link_words(""))
             .concat([runtime, "-o", out])

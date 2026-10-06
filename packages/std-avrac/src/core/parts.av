@@ -425,10 +425,12 @@ impl SyntaxArena {
             self.const_value(s) != null
     }
 
-    /// An extern fn's pieces, when the statement is one.
+    /// An extern fn's pieces, when the statement is one — a bodiless one
+    /// that names a symbol, or a host fn that defines one.
     fn extern_parts(s: StmtId) -> ExternParts? {
         match self.stmt(s) {
-            .ExternFn(name, params, ret) -> ExternParts { name: name.of, params: params, ret: ret },
+            .ExternFn(name, params, ret) -> extern_of(name, params, ret),
+            .FnDecl(name, _, params, ret, _) -> if self.is_host_fn(s) { extern_of(name, params, ret) } else { null },
             _ -> null,
         }
     }
@@ -518,6 +520,11 @@ fn variant_types(vs: List<Variant>) -> List<TypeRef> {
 
 /// What an extern fn declares, projected once.
 export type ExternParts = { name: string, params: List<Param>, ret: TypeRef }
+
+/// An extern's pieces under its written name.
+fn extern_of(name: Scoped, params: List<Param>, ret: TypeRef) -> ExternParts {
+    ExternParts { name: name.of, params: params, ret: ret }
+}
 
 /// What a lambda carries, projected once.
 export type LambdaParts = { params: List<Param>, body: ExprId }
