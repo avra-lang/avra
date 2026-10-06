@@ -4,9 +4,31 @@
 //! type. Coverage is the point: adding a variant breaks every match
 //! that spelled them, and a hole under two or more ANSWERING arms
 //! is warned — under one it is a projection, and `rest` is quiet.
-use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, SyntaxArena, joined, filled, flatten}
-use features.{TypeCx, EnumSig, this_is, nothing, duplicate_names, variants_are, pat_semantics_of}
-use features.enums.{all_irrefutable, hole_of}
+use core.{
+    ExprId,
+    StmtId,
+    Type,
+    TypeId,
+    Arm,
+    PatId,
+    Variant,
+    SyntaxArena,
+    joined,
+    filled,
+    flatten,
+    same_type,
+}
+use features.{
+    TypeCx,
+    EnumSig,
+    NameFacts,
+    this_is,
+    nothing,
+    duplicate_names,
+    variants_are,
+    pat_semantics_of,
+}
+use features.enums.{all_irrefutable, hole_of, binders, catches}
 use diagnostics.{refusal, warning, defect_at}
 
 /// The declaration's own law.
@@ -126,7 +148,7 @@ fn arm_checks(mut cx: TypeCx, subject_ty: TypeId, a: Arm) {
     let names = bound_names(cx, a.pats[0])
     for k, p in a.pats {
         let own = bound_names(cx, p)
-        let binders = cx.view.store.pattern_binds(p)
+        let binders = binders(cx.view.store, cx.names, p)
         for b in binders {
             // one pattern node naming a name twice is that node's own law
             // (a format's `{a}z{a}`); across two nodes it is this one's
@@ -139,7 +161,7 @@ fn arm_checks(mut cx: TypeCx, subject_ty: TypeId, a: Arm) {
 }
 
 fn bound_names(cx: TypeCx, p: PatId) -> List<string> {
-    [b.name for b in cx.view.store.pattern_binds(p)]
+    [b.name for b in binders(cx.view.store, cx.names, p)]
 }
 
 /// Alternative `k` of an `or` arm binds the first alternative's names,
@@ -185,7 +207,7 @@ export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId>
             cx.emit(defect_at(cx.pat_loc(p), "a quote pattern reached the enum typing's binds"))
             []
         },
-        .Bind(_) -> [expected],
+        .Bind(_) -> named_types(cx, p, expected),
         .Variant(name, args) -> variant_types(cx, p, name.of, args, expected),
         .Lit(v) -> lit_types(cx, p, v, expected),
     }
@@ -230,6 +252,21 @@ fn lit_types(mut cx: TypeCx, p: PatId, v: ExprId, expected: TypeId) -> List<Type
     []
 }
 
+/// A BARE NAME: a const's compares the subject to it by the equality
+/// law — the two wear one type, and that type compares by value — and
+/// binds nothing; any other name binds what arrives.
+fn named_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+    let read? = cx.names.compared(cx.view.store, p) else { return [expected] }
+    let got = cx.walk_type(read)
+    if cx.errored(read) { return [] }
+    if !cx.compares_by_value(got) {
+        let _ = cx.not_comparable("==", read)
+        return []
+    }
+    if !same_type(got, expected) { literal_mismatch(cx, p, got, expected) }
+    []
+}
+
 /// A TEXT LITERAL READ AS OCTETS: over a `Bytes` subject a string
 /// pattern compares its own UTF-8 octets, as a holed format already
 /// cuts them — a literal has no type until a want lands on it.
@@ -253,29 +290,31 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
     let sname = cx.name_at(subject)
     mut covered: List<string> = []
     mut before: List<PatId> = []
-    for a in arms {
+    for k, a in arms {
         for n in covers(cx, a) {
             if covered.contains(n) { repeated_arm(cx, a.value, n) } else { covered.push(n) }
         }
         // A GUARDED HOLE IS NOT A CATCH-ALL: it may fall through, so
         // it neither ends coverage nor answers hidden_checks' question.
-        let hole: PatId? = hole_of(cx.view.store, a.pats)
+        let hole: PatId? = hole_of(cx.view.store, cx.names, a.pats)
         if hole != null && a.guard == null {
             if declared != null {
                 let sig = declared!
                 hidden_checks(
                     cx,
                     hole!,
-                    answering_arms(cx.view.store, arms),
+                    answering_arms(cx.view.store, cx.names, arms),
                     uncovered(cx, before, sig),
                 )
             }
+            if k + 1 < arms.length { unreached_arm(cx, arms[k + 1], hole!) }
             return
         }
         // A guarded arm never enters `before` — it covers nothing,
         // so a later hole must not read it as already handled.
         if a.guard == null { before = before.concat(a.pats) }
     }
+    compares_last(cx, arms)
     if declared == null { return needs_catch_all(cx, e, sname) }
     let sig = declared!
     let missing = uncovered(cx, before, sig)
@@ -364,7 +403,7 @@ fn specialized(cx: TypeCx, rows: List<Row>, sig: EnumSig, k: int) -> List<Row> {
     // LICENSED loops.push_loop: two shapes of row join one list
     for r in rows {
         let head: PatId? = r.pats[0]
-        if head == null || cx.view.store.irrefutable(head!) {
+        if head == null || catches(cx.view.store, cx.names, head!) {
             out.push(Row { pats: blanks(sig.payloads[k].length).concat(rest_of(r).pats) })
         } else {
             let args: List<PatId?>? = variant_args(cx, head!, sig.names[k], sig.payloads[k].length)
@@ -408,7 +447,7 @@ fn blanks(n: int) -> List<PatId?> {
 
 fn hole_first(cx: TypeCx, r: Row) -> bool {
     let head: PatId? = r.pats[0]
-    head == null || cx.view.store.irrefutable(head!)
+    head == null || catches(cx.view.store, cx.names, head!)
 }
 
 fn rest_of(r: Row) -> Row {
@@ -430,10 +469,10 @@ fn tests_variant(store: SyntaxArena, a: Arm) -> bool {
 /// PROJECTION, TWO OR MORE a REGISTRY. `Code.answering()`
 /// (features/code.av) reads the same count outside a `match`'s own
 /// typing.
-export fn answering_arms(store: SyntaxArena, arms: List<Arm>) -> int {
+export fn answering_arms(store: SyntaxArena, names: NameFacts, arms: List<Arm>) -> int {
     mut n = 0
     for a in arms {
-        let hole: PatId? = hole_of(store, a.pats)
+        let hole: PatId? = hole_of(store, names, a.pats)
         if hole != null && a.guard == null { return n }
         if tests_variant(store, a) { n = n + 1 }
     }
@@ -463,7 +502,7 @@ fn hole_binds(cx: TypeCx, hole: PatId) -> bool {
 /// patterns are all irrefutable — or absence.
 fn whole_variant(cx: TypeCx, p: PatId) -> string? {
     match cx.view.store.pat(p) {
-        .Variant(name, args) if all_irrefutable(cx.view.store, args) -> name.of,
+        .Variant(name, args) if all_irrefutable(cx.view.store, cx.names, args) -> name.of,
         .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) -> null,
     }
 }
@@ -616,6 +655,66 @@ fn unknown_arm(mut cx: TypeCx, p: PatId, sname: string, v: string, sig: EnumSig)
             ),
         )
     []
+}
+
+/// THE BARE NAME'S HAZARD, the comparing half: a match that ends on a
+/// name which is a const's reads like one ending on a binder that
+/// takes the rest. It compares, and the writer is told.
+fn compares_last(mut cx: TypeCx, arms: List<Arm>) {
+    let last? = arms.last() else { return }
+    if last.guard != null || last.pats.length != 1 { return }
+    if cx.names.compared(cx.view.store, last.pats[0]) == null { return }
+    let name? = cx.view.store.bind_name(last.pats[0]) else { return }
+    last_arm_compares(cx, last.pats[0], name)
+}
+
+fn last_arm_compares(mut cx: TypeCx, p: PatId, name: string) {
+    cx
+        .emit(
+            warning(
+                "type.const_pattern",
+                cx.pat_loc(p),
+                "`${name}` is a const here, so this arm compares — it does not take the values the arms above left",
+                "compares to the const",
+                "add `_ -> …` after it, or rename the binder",
+            ),
+        )
+}
+
+/// THE BINDING HALF: an arm after one that takes every value never
+/// runs — what a name meant to compare, with no const of that name in
+/// scope, does to the arms below it.
+fn unreached_arm(mut cx: TypeCx, a: Arm, hole: PatId) {
+    match cx.view.store.bind_name(hole) {
+        name? -> unreached_after_binder(cx, a.pats[0], name)
+        null -> unreached_after_hole(cx, a.pats[0])
+    }
+}
+
+fn unreached_after_binder(mut cx: TypeCx, p: PatId, name: string) {
+    cx
+        .emit(
+            warning(
+                "type.unreachable_arm",
+                cx.pat_loc(p),
+                "this arm is never reached — `${name}` above binds, and takes every value",
+                "never reached",
+                "a bare name compares only where a `const` of that name is in scope — declare it, or move this arm above",
+            ),
+        )
+}
+
+fn unreached_after_hole(mut cx: TypeCx, p: PatId) {
+    cx
+        .emit(
+            warning(
+                "type.unreachable_arm",
+                cx.pat_loc(p),
+                "this arm is never reached — the arm above takes every value",
+                "never reached",
+                "move it above the catch-all, or remove it",
+            ),
+        )
 }
 
 fn repeated_arm(mut cx: TypeCx, value: ExprId, v: string) {

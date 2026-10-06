@@ -1,0 +1,81 @@
+// proves: a bare name in a pattern that is a CONST'S compares the
+// subject to it by the equality law — a number, text, a unit enum, a
+// one-field record and a named type; in an or-run, inside a variant's
+// payload, in a lambda's match, and from a const whose value is
+// another const or a body's own. A name no const wears still binds,
+// under a guard and bare.
+enum Key {
+    Char(int)
+    Named(string)
+    Chord(int, int)
+}
+
+enum Mode {
+    Insert
+    Normal
+}
+
+type Id = { n: int }
+type Code = int
+
+const tab = 9
+const escape = 27
+const newline = 10
+const also_tab = tab
+const quit = "quit"
+const home = Mode.Normal
+const root = Id { n: 0 }
+const limit: Code = Code(100)
+
+fn named(c: int) -> string {
+    match c {
+        escape -> "escape",
+        tab or newline -> "space",
+        also_tab -> "unreached",
+        other if other > 100 -> "big",
+        other -> "c${other}",
+    }
+}
+
+fn key(k: Key) -> string {
+    match k {
+        .Char(escape) -> "esc",
+        .Char(c) -> "char ${c}",
+        .Named(quit) -> "bye",
+        .Named(n) -> n,
+        .Chord(tab, tab) -> "tabtab",
+        .Chord(tab, b) -> "tab+${b}",
+        .Chord(_, _) -> "chord",
+    }
+}
+
+fn local_const(c: int) -> bool {
+    const bell = 7
+    match c { bell -> true, _ -> false }
+}
+
+fn mode(m: Mode) -> string {
+    match m { home -> "home", _ -> "away" }
+}
+
+fn at_root(i: Id) -> bool {
+    match i { root -> true, _ -> false }
+}
+
+fn capped(c: Code) -> bool {
+    match c { limit -> true, _ -> false }
+}
+
+let keys = [
+    Key.Char(27),
+    Key.Char(9),
+    Key.Named("quit"),
+    Key.Named("x"),
+    Key.Chord(9, 9),
+    Key.Chord(9, 1),
+    Key.Chord(1, 9),
+]
+let heads = [27, 9, 10, 5, 200].map(match it { escape -> "e", tab -> "t", _ -> "-" })
+let ints = "${named(27)} ${named(9)} ${named(10)} ${named(500)} ${named(3)} ${heads.join("")}"
+let rest = "${mode(Mode.Normal)} ${mode(Mode.Insert)} ${at_root(Id { n: 0 })} ${at_root(Id { n: 1 })} ${capped(Code(100))} ${capped(Code(1))} ${local_const(7)} ${local_const(8)}"
+"${ints} | ${[key(k) for k in keys].join(",")} | ${rest}"
