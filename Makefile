@@ -654,7 +654,8 @@ layers:
 
 # A RECORDED READ HAS A BUDGET: retains, releases and list reads and writes
 # per read, counted on the census runtime, never over read_cost.budget.
-read-cost:
+# Its bench links the tree's own package objects, so it names them.
+read-cost: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/db_measure/read_cost.sh
 
 idioms:
