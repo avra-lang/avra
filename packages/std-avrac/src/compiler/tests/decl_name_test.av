@@ -1,0 +1,127 @@
+// A DECLARATION'S NAME IS ITS KEY: its file's name, its kind, its owner,
+// what generated it, its own name, and its place among the declarations of
+// that file sharing all five. A declaration written above another moves the
+// other's name only when it shares them.
+use compiler.{Workspace}
+use core.{DeclKind, no_stmt}
+use features.{Decl, new_decls}
+
+/// The key of every declaration of one kind and name, in id order.
+fn keys_named(ws: Workspace, kind: DeclKind, name: string) -> string {
+    [Decl.key_text(d.key()) for d in ws.decls.all_decls() if d.name == name && same_kind(d.kind, kind)]
+        .join(" | ")
+}
+
+/// The stable hash of every declaration of one kind and name, in id order.
+fn prints_named(ws: Workspace, kind: DeclKind, name: string) -> string {
+    ["${d.stable_hash()}" for d in ws.decls.all_decls() if d.name == name && same_kind(d.kind, kind)]
+        .join(" | ")
+}
+
+fn same_kind(a: DeclKind, b: DeclKind) -> bool { a == b }
+
+/// The siblings of every declaration of one kind and name, in id order.
+fn siblings_named(ws: Workspace, kind: DeclKind, name: string) -> string {
+    ["${d.sibling}" for d in ws.decls.all_decls() if d.name == name && same_kind(d.kind, kind)]
+        .join(",")
+}
+
+fn two_fns() -> string { "fn first() -> int {\n    1\n}\nfn second() -> int {\n    2\n}\n" }
+
+fn one_above() -> string { "fn above() -> int {\n    0\n}\n" + two_fns() }
+
+fn one_impl() -> string {
+    "export type Box = { v: int }\nfn kept() -> int {\n    2\n}\nimpl Box {\n    fn late() -> int {\n        3\n    }\n}\n"
+}
+
+fn two_impls() -> string {
+    "export type Box = { v: int }\nfn kept() -> int {\n    2\n}\nimpl Box {\n    fn early() -> int {\n        1\n    }\n}\nimpl Box {\n    fn late() -> int {\n        3\n    }\n}\n"
+}
+
+fn nested_once() -> string {
+    "fn outer() -> int {\n    fn inner() -> int {\n        1\n    }\n    1\n}\nfn other() -> int {\n    fn inner() -> int {\n        2\n    }\n    2\n}\n"
+}
+
+fn nested_other_name() -> string {
+    "fn outer() -> int {\n    fn helper() -> int {\n        0\n    }\n    fn inner() -> int {\n        1\n    }\n    1\n}\nfn other() -> int {\n    fn inner() -> int {\n        2\n    }\n    2\n}\n"
+}
+
+fn nested_same_name() -> string {
+    "fn before() -> int {\n    fn inner() -> int {\n        0\n    }\n    0\n}\n" + nested_once()
+}
+
+/// One annotation's generated fns minted under `names`, in that order.
+fn generated(names: List<string>) -> List<Decl> {
+    let decls = new_decls()
+    let f = decls.file_id("/w/src/lib.av", "w:src/lib.av", "lib", false)
+    let ids = [decls
+        .mint_faced(
+            "made ${j}",
+            f,
+            no_stmt,
+            n,
+            DeclKind.Fn,
+            false,
+            "",
+            null,
+            false,
+            null,
+            "derive(Shown)#0 @ type .T#0",
+            null,
+        ) for j, n in names]
+    [decls.decl(d) for d in ids]
+}
+
+fn generated_key_of(names: List<string>, which: string) -> string {
+    [Decl.key_text(d.key()) for d in generated(names) if d.name == which].join(" | ")
+}
+
+fn generated_siblings(names: List<string>) -> string { ["${d.sibling}" for d in generated(names)].join(",") }
+
+spec "compiler/decl name — a declaration's key is its name" {
+    given "a declaration written above two others" {
+        then "neither one's key moves" {
+            keys_named(admitted(two_fns()), DeclKind.Fn, "first") == keys_named(admitted(one_above()), DeclKind.Fn, "first") &&
+                keys_named(admitted(two_fns()), DeclKind.Fn, "second") == keys_named(admitted(one_above()), DeclKind.Fn, "second")
+        }
+        then "neither one's stable hash moves" {
+            prints_named(admitted(two_fns()), DeclKind.Fn, "second") == prints_named(admitted(one_above()), DeclKind.Fn, "second")
+        }
+        then "admitted again in one workspace, each keeps its id" {
+            let ws = admitted(two_fns())
+            let was = ws.decls.named_decl(readmit_path(), DeclKind.Fn, "second")
+            admit_again(ws, readmit_path(), one_above())
+            let now = ws.decls.named_decl(readmit_path(), DeclKind.Fn, "second")
+            was != null && now != null && was!.index == now!.index
+        }
+    }
+    given "an `impl` written above another `impl` of the same type" {
+        then "fixture: one impl is sibling 0, two are 0 and 1" {
+            siblings_named(admitted(one_impl()), DeclKind.Impl, "Box") == "0" &&
+                siblings_named(admitted(two_impls()), DeclKind.Impl, "Box") == "0,1"
+        }
+        then "the type of that name keeps its key — an impl is another kind" {
+            keys_named(admitted(one_impl()), DeclKind.Record, "Box") == keys_named(admitted(two_impls()), DeclKind.Record, "Box")
+        }
+        then "a declaration of another name keeps its key" {
+            keys_named(admitted(one_impl()), DeclKind.Fn, "kept") == keys_named(admitted(two_impls()), DeclKind.Fn, "kept")
+        }
+    }
+    given "a nested fn added inside one body" {
+        then "under another name, no other body's nested fn moves" {
+            siblings_named(admitted(nested_once()), DeclKind.Fn, "inner") == siblings_named(admitted(nested_other_name()), DeclKind.Fn, "inner")
+        }
+        then "under the same name in an earlier body, the later ones are numbered after it" {
+            siblings_named(admitted(nested_once()), DeclKind.Fn, "inner") == "0,1" &&
+                siblings_named(admitted(nested_same_name()), DeclKind.Fn, "inner") == "0,1,2"
+        }
+    }
+    given "two declarations one annotation generates" {
+        then "each one's key is the same whichever is generated first" {
+            generated_key_of(["made_a", "made_b"], "made_b") == generated_key_of(["made_b", "made_a"], "made_b")
+        }
+        then "two of one name, kind and owner are siblings 0 and 1 in generation order" {
+            generated_siblings(["twin", "twin"]) == "0,1"
+        }
+    }
+}

@@ -329,7 +329,7 @@ impl Workspace {
         let fields = record_fields(self, store, m)
         let places = record_places(self, store, m)
         let held = [path for path in self.module_files(m) if self.decls.held.get().get(path) != null]
-        for path in held { self.mint_file(path, file_rows(fields, places.get(path))) }
+        for path in held { self.mint_file(path, file_rows(fields, places.get(path)), makers_in(fields, path)) }
         for path in held { self.hold.reexports.put(path, reexports_in(fields, path)) }
         for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
     }
@@ -337,11 +337,11 @@ impl Workspace {
     /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The
     /// file's statement table is written ONCE: read out and stored back per line, it
     /// is held twice while it is written, and every line copies it.
-    fn mint_file(path: string, rows: List<List<string>>) {
+    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) {
         let f = self.file_id(path)
         mut by_stmt = self.decls.decl_ids.get()[f.index].get()
         for parts in rows {
-            let id: DeclId? = self.minted(f, path, parts)
+            let id: DeclId? = self.minted(f, path, parts, makers)
             let stmt_index = read_row(parts)?.stmt ?? 0
             by_stmt.grow_to(stmt_index + 1)
             if id != null && by_stmt.get(stmt_index).decl == null { by_stmt.set(stmt_index, DeclAt { decl: id }) }
@@ -352,7 +352,7 @@ impl Workspace {
     /// One record line as a declaration — null for a line that names nothing. A line
     /// that does not decode is a DEFECT spoken: the hold's attempt fails, and the
     /// sources answer.
-    fn minted(f: FileId, path: string, parts: List<string>) -> DeclId? {
+    fn minted(f: FileId, path: string, parts: List<string>, makers: Map<string, string>) -> DeclId? {
         let row? = read_row(parts) else { return null }
         let kind = declared_kind(row.shape, row.kind)
         let facts = facts_unblocked(row.facts)
@@ -376,6 +376,7 @@ impl Workspace {
                 null,
                 row.nested,
                 root,
+                makers.get("${row.ordinal}") ?? "",
                 facts!,
             )
         self.decls.held_joins(f, id, kind! is .Main, row.item)
@@ -535,7 +536,11 @@ impl Workspace {
     fn lines_of(path: string) -> List<string> {
         let f = self.file_id(path)
         let top = self.items(f)
-        [self.record_line(self.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in self.decls.decls_of_file(f)]
+        let ids = self.decls.decls_of_file(f)
+        [self.record_line(self.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in ids]
+            .concat(
+                [maker_line(path, ordinal, self.decl_at(id).maker) for ordinal, id in ids if self.decl_at(id).maker != ""],
+            )
             .concat([reexport_line(path, r) for r in self.file_reexports(path)])
     }
 
@@ -879,3 +884,17 @@ type WireDeclRef = { id: DeclId, next: int }
 
 /// One bounded seat in the fn row's bounds column.
 fn bound_entry(j: int, wires: List<string>) -> string { "${j}=${joined(wires, "|")}" }
+
+/// What generated the declaration at `ordinal` of `path` — written only for a generated one.
+fn maker_line(path: string, ordinal: int, maker: string) -> string {
+    "maker\t${path}\t${ordinal}\t${field_text(maker)}"
+}
+
+/// A file's makers as its record keeps them, by the declaration's ordinal.
+fn makers_in(fields: List<List<string>>, path: string) -> Map<string, string> {
+    mut out: Map<string, string> = {}
+    for p in fields {
+        if p.length == 4 && p[0] == "maker" && p[1] == path { out.set(p[2], text_of_field(p[3])) }
+    }
+    out
+}

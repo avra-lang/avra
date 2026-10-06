@@ -143,6 +143,28 @@ fn decl_mismatches(path: string, warm_ws: Workspace, wid: DeclId, fresh_ws: Work
         )
         .concat(sig_mismatches(path, warm_ws, wd, wid, fresh_ws, fd, fid))
         .concat(ref_mismatches(path, wd.name, warm_ws, wid, fresh_ws, fid))
+        .concat(name_mismatches(path, warm_ws, wd, fresh_ws, fd))
+}
+
+/// A DECLARATION HAS ONE NAME, HELD OR READ: its row's key and the wire a
+/// record spells it by are the same text in both workspaces.
+fn name_mismatches(path: string, warm_ws: Workspace, wd: Decl, fresh_ws: Workspace, fd: Decl) -> List<
+    HeldMismatch,
+> {
+    some_list(
+        maybe_mismatch(path, wd.name, "name.key", Decl.key_text(wd.key()), Decl.key_text(fd.key())),
+    )
+        .concat(
+            some_list(
+                maybe_mismatch(
+                    path,
+                    wd.name,
+                    "name.wire",
+                    warm_ws.decls.decl_wire(wd.id),
+                    fresh_ws.decls.decl_wire(fd.id),
+                ),
+            ),
+        )
 }
 
 /// HOW MANY REFERENCE ROWS NAME THE DECLARATION: a held file's own uses ride
