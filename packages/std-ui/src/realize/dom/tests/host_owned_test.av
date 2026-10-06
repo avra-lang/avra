@@ -8,6 +8,7 @@ use @std.ui.realize.dom.live.{live}
 use @std.ui.realize.dom.tests.support.{Case, Sketch, Stray, repaint, repainted_page, verdict}
 use @std.ui.realize.tests.support.{spoken, named, field_node, holding, leaf, switch_node, text_node}
 use @std.ui.style.theme.{default_theme}
+use @std.ui.style.tokens.{Tone}
 use @std.ui.tree.node.{Node, Action, EventKind, Handler, Said}
 
 fn heard_text(_text: string) {}
@@ -187,7 +188,7 @@ fn reordered() -> Case {
 fn under_a_restyled_parent() -> Case {
     Case {
         old: Sketch { prim: .Surface, kids: [Sketch { prim: .Image }] },
-        new: Sketch { prim: .Surface, tone: .Muted, kids: [Sketch { prim: .Image }] },
+        new: Sketch { prim: .Surface, tone: Tone.Muted, kids: [Sketch { prim: .Image }] },
         strayed: [Stray { nth: 1, name: scroll_kept, value: 3 }],
     }
 }
@@ -217,14 +218,14 @@ fn reparented() -> Case {
     }
 }
 
-/// The word each record of a frame opens with.
-fn ops(frame: List<string>) -> List<string> { [l.split(" ").first() ?? "" for l in frame] }
+/// The word each record of a frame opens with, in order.
+fn ops(frame: List<string>) -> string { [l.split(" ").first() ?? "" for l in frame].join(" ") }
 
 spec "std/ui dom — what a host keeps survives a repaint" {
     given "a field a user is typing in while another part of the page repaints" {
         then "holds the law" { verdict(typing_beside()) == null }
         then "keeps its text, its caret and the focus: the frame rewrites the other words alone" {
-            ops(repaint(typing_beside())) == ["retext"] &&
+            ops(repaint(typing_beside())) == "retext" &&
                 repainted_page(typing_beside())
                     .contains(".focus=true .selection=\"strayed 2\" .value=\"strayed 1\"")
         }
@@ -232,7 +233,7 @@ spec "std/ui dom — what a host keeps survives a repaint" {
     given "a keyed list reordered with the focus in one row's field" {
         then "holds the law" { verdict(reordered()) == null }
         then "carries one row and makes none: the field is the same element, the focus and the caret still on it" {
-            ops(repaint(reordered())) == ["place"] &&
+            ops(repaint(reordered())) == "place" &&
                 repainted_page(reordered()).contains("#4 input") &&
                 repainted_page(reordered()).contains(".focus=true .selection=\"strayed 3\"")
         }
@@ -240,7 +241,7 @@ spec "std/ui dom — what a host keeps survives a repaint" {
     given "an element under a parent whose attribute changes" {
         then "holds the law" { verdict(under_a_restyled_parent()) == null }
         then "is not made again, and keeps what the page held on it" {
-            ops(repaint(under_a_restyled_parent())) == ["attr"] &&
+            ops(repaint(under_a_restyled_parent())) == "attr" &&
                 repainted_page(under_a_restyled_parent()).contains(".scroll=\"strayed 3\"")
         }
     }
