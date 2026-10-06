@@ -42,10 +42,10 @@ impl Decls {
     fn file_id(path: string, module: string, test: bool) -> FileId {
         let known? = self.known_file_id(path) else {
             let m = self.module_id(module)
-            let id = File.insert(self.decl_rows.get(), path: path, module: m, test: test).id
+            let id = File.insert(self.rows_db.get(), path: path, module: m, test: test).id
             self.stores.push(null)
             self.decl_ids.push(Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
-            self.file_owners.push(self.decl_rows.get().owner_named("file ${id.index}"))
+            self.file_owners.push(self.rows_db.get().owner_named("file ${id.index}"))
             self
                 .expr_owners
                 .push(Cell.new(side_table<DeclAt>("expr_owners", 0, 0, DeclAt { decl: null })))
@@ -70,7 +70,7 @@ impl Decls {
 
     /// A module's identity — minted at first mention.
     fn module_id(module: string) -> ModuleId {
-        let known? = self.known_module_id(module) else { return Module.insert(self.decl_rows.get(), name: module).id }
+        let known? = self.known_module_id(module) else { return Module.insert(self.rows_db.get(), name: module).id }
         known
     }
 
@@ -101,7 +101,7 @@ impl Decls {
 
     /// Every minted file — the relation's whole set, recorded as read.
     fn all_files() -> List<FileInfo> {
-        [file_info(r) for r in File.all(self.decl_rows.get())]
+        [file_info(r) for r in File.all(self.rows_db.get())]
     }
 
     /// Every minted file's path, read unrecorded as `file(f)` is.
@@ -113,7 +113,7 @@ impl Decls {
     /// Every file of a module, in mint order — the relation's own
     /// `@local @index module`, recorded as read.
     fn files_of_module(m: ModuleId) -> List<FileId> {
-        [r.id for r in File.by_module(self.decl_rows.get(), m)]
+        [r.id for r in File.by_module(self.rows_db.get(), m)]
     }
 
     fn store_of(f: FileId) -> SyntaxArena {
@@ -320,7 +320,7 @@ impl Decls {
     /// Of the declaration rows `f` owns, exactly those at `ids` kept.
     @bracket("decls")
     fn file_keeps(f: FileId, ids: List<int>) {
-        self.decl_row_rows.get().kept_of(self.decl_rows.get(), self.file_owners.get()[f.index], ids)
+        self.decl_row_rows.get().kept_of(self.rows_db.get(), self.file_owners.get()[f.index], ids)
     }
 
     /// The per-file seats a withdrawal leaves standing, cleared by hand:

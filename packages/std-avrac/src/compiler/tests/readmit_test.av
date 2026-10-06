@@ -62,10 +62,10 @@ fn named_here(ws: Workspace, name: string) -> DeclId? {
     ws.decls.named_decl(readmit_path(), "fn", name)
 }
 
-fn decl_set(ws: Workspace) -> int { Decl.rows_in(ws.decls.decl_rows.get()).set_hash() }
+fn decl_set(ws: Workspace) -> int { Decl.rows_in(ws.decls.rows_db.get()).set_hash() }
 
 fn name_bucket(ws: Workspace, name: string) -> int {
-    let rs = Decl.rows_in(ws.decls.decl_rows.get())
+    let rs = Decl.rows_in(ws.decls.rows_db.get())
     rs.bucket_hash(rs.bucket_of_text(0, name))
 }
 
@@ -98,7 +98,7 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
         }
         then "it leaves its name's bucket" {
             let ws = readmitted(readmit_before(), readmit_after())
-            Decl.by_name(ws.decls.decl_rows.get(), "gone").is_empty()
+            Decl.by_name(ws.decls.rows_db.get(), "gone").is_empty()
         }
         then "it leaves the bucket of every mark it wore" {
             !readmitted(readmit_before(), readmit_after())
@@ -190,7 +190,7 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
             let _ = ws.items(b)
             admit_again(ws, "/w/src/a.av", "fn y() -> int {\n    2\n}\n")
             admit_again(ws, "/w/src/b.av", "fn z() -> int {\n    3\n}\nfn x() -> int {\n    1\n}\n")
-            let xs = Decl.by_name(ws.decls.decl_rows.get(), "x")
+            let xs = Decl.by_name(ws.decls.rows_db.get(), "x")
             xs.length == 1 && same_file(xs[0].file, b) && !same_file(xs[0].file, a)
         }
     }
@@ -238,7 +238,7 @@ spec "compiler/readmit — an admission never moves what a query read this revis
     then "admitted again in the revision a settled query read a dropped name's bucket, the removal is refused and the row stands" {
         let ws = admitted(readmit_before())
         let heard: Cell<List<string>> = Cell.new([])
-        let db = ws.decls.decl_rows.get()
+        let db = ws.decls.rows_db.get()
         db.heard_by((w: string) -> heard.push(w))
         let reader = Key { family: ws.db.kernel.family((_arg: int) -> 0), arg: 0 }
         ws.db.kernel.begin(reader)
