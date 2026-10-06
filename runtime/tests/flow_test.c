@@ -104,7 +104,7 @@ static void* three_sources(void* self) {
         avra_wait_gate(g_gate, 2, 12);
         int64_t claim = avra_wait_park();
         note(arm_of(claim) * 100 + member_of(claim));
-        note(avra_sched_timers() * 10 + avra_sched_fd_waiters() + (filed(g_gate) ? 100 : 0));
+        note(avra_sched_fd_waiters() + (filed(g_gate) ? 100 : 0));
         char c;
         if (arm_of(claim) == 0 && read(g_pipe[0], &c, 1) != 1) note(-1);
     }
