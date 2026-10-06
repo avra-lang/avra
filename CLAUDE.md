@@ -930,6 +930,12 @@ registry is the idiom engine's spec, written by dogfooding.
   from `tests/support/` and read as `use tests.support.{…}` — a program
   test is a module like the rest, so it reaches the same file
   (packages/std-http/src/tests/support).
+- A DEPENDENCY IS ITS LIBRARY. The file a dependency's `[bin]` names
+  is that package's program and runs only where the package is the
+  root, so it is no module file of a program that depends on it — its
+  statements never run there and its names are not the library's
+  (tools/ui-board: the page program is the package's own `[bin]`, and
+  `term/` depends on it).
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
   suite does not have. "a comment-only line is a blank line" asserts

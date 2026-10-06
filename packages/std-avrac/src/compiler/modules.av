@@ -160,9 +160,23 @@ impl Workspace {
             .any(under_dir(path, joined_path(pkg.root, it)) || path == joined_path(pkg.root, it))
     }
 
-    /// A source file the package lists — `.av`, and not excluded.
+    /// A source file the package lists — `.av`, not excluded, and not a
+    /// dependency's entry.
     fn listed_source(dir: string, f: string) -> bool {
-        is_source(f, dir) && !self.excluded(joined_path(dir, f))
+        is_source(f, dir) &&
+            !self.excluded(joined_path(dir, f)) &&
+            !self.entry_of_dependency(joined_path(dir, f))
+    }
+
+    /// A DEPENDENCY IS ITS LIBRARY. The file a dependency's `[bin]` names
+    /// is that package's program, which runs only where the package is
+    /// the root — so it is no module file of a program that depends on
+    /// the package, and its names are not the library's.
+    fn entry_of_dependency(path: string) -> bool {
+        let pkg = self.packages()[self.holder_of_path(path)]
+        if pkg.ordinal == 0 { return false }
+        let bin? = self.manifest(pkg.ordinal).bin else { return false }
+        path == joined_path(pkg.root, bin) && bin != self.manifest(pkg.ordinal).lib
     }
 
     /// Whether a directory is a package root of its own.
