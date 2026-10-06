@@ -29,6 +29,10 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      only:
+        description: "leave empty for a whole train; `keepers` runs the keepers job alone"
+        default: ""
 
 concurrency:
   group: checks-${{ github.ref }}
@@ -69,7 +73,7 @@ jobs:
           pkgs=""
           compiler=1
           build=1
-          if [ "$event" != push ]; then
+          if [ "$event" != push ] && [ -z "${{ inputs.only }}" ]; then
             changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
           fi
           if [ "$event" = merge_group ]; then
@@ -77,7 +81,7 @@ jobs:
           fi
           # Asked for by hand, the run is a train's over EVERY package: the
           # whole gate on any branch, without a queue entry.
-          if [ "$event" = workflow_dispatch ]; then
+          if [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; then
             pkgs=$(ls packages)
           fi
           if [ "$event" = pull_request ]; then
@@ -187,7 +191,7 @@ jobs:
   # clears the store it builds through, and it runs beside the gate.
   cache-attacks:
     needs: [prepare]
-    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.only == '')
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
