@@ -305,7 +305,7 @@ wasm-archive:
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -715,12 +715,24 @@ ui-browser:
 fingerprints:
 	@python3 tools/fingerprints.py
 
+# THE KEEPERS, ONE LIST. The train's keepers job and
+# tools/gate_changed.sh both run `make keepers`, so a keeper named here
+# is held on every pull request and every train, and one left off is
+# held by nobody. Each names what it links as its own prerequisites.
+# Every keeper runs, and each that refuses is named.
+KEEPERS = fingerprints vocab families cited http-cites externs suites stems rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
+          ui-host ui-host-test ui-board ui-browser codecs fmt-lossless traps compile-slots witness
+keepers:
+	@fail=0; for k in $(KEEPERS); do \
+	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
+	done; exit $$fail
+
 # THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
 # compiler/codecs.av's registry runs every pair over its exemplars,
 # decode(encode(x)) compared to x field by field; tools/codecs.py
 # refuses any encoder/decoder-shaped pair in the tree the registry
 # does not name.
-codecs:
+codecs: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@./build/avra test packages/std-avrac/src/compiler/tests/codecs_test.av
 	@python3 tools/codecs.py
 
