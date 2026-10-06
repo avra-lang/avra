@@ -1,0 +1,56 @@
+// proves: a cell write opens what the cell holds whoever else holds
+// it — a list handed to `set`, the binary's own data, a value filed in
+// a map, one a closure read, a list of cells — and every copy of the
+// cell itself still shares the write.
+const seed_rows: List<int> = [1, 2]
+
+type Board = { rows: Cell<List<int>>, by: Cell<Map<string, List<int>>> }
+
+fn noted(b: Board, n: int) {
+    b.rows.push(n)
+    b.by.put("k${n}", b.rows.get())
+}
+
+fn set_then_push() -> string {
+    let xs = [1]
+    let c: Cell<List<int>> = Cell.new([])
+    c.set(xs)
+    c.push(2)
+    let d = Cell.new(seed_rows)
+    d.push(3)
+    d.set_at(0, 7)
+    "${xs.length} ${c.get().length} ${seed_rows.length} ${seed_rows[0]} ${d.get().length} ${d.get()[0]}"
+}
+
+fn boards() -> string {
+    let rows: Cell<List<int>> = Cell.new([])
+    let by: Cell<Map<string, List<int>>> = Cell.new({})
+    let b = Board { rows: rows, by: by }
+    let twin = b
+    for i in 0..5 { noted(b, i) }
+    let early = twin.by.get().get("k1") ?? []
+    let all = twin.by.get()
+    noted(twin, 9)
+    "${early.length} ${all.length} ${b.by.get().length} ${b.rows.get().length} ${(b.by.get().get("k9") ?? []).length}"
+}
+
+fn captured() -> int {
+    let c: Cell<List<int>> = Cell.new([])
+    let add = (n: int) -> {
+        let before = c.get()
+        c.push(n)
+        before.length
+    }
+    add(1) + add(2) + add(3) + c.get().length * 10
+}
+
+fn nested() -> string {
+    let inner: Cell<List<int>> = Cell.new([1])
+    let outer = Cell.new([inner])
+    let got = outer.get()
+    outer.push(Cell.new([5, 6]))
+    got[0].push(2)
+    "${got.length} ${outer.get().length} ${inner.get().length} ${outer.get()[0].get().length}"
+}
+
+"${set_then_push()} | ${boards()} | ${captured()} | ${nested()}"
