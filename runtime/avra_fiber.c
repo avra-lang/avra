@@ -842,7 +842,8 @@ static void guards_misspelled(const char* value) {
 //
 // K is `g_each_left`: an eighth of the mapping limit, so guarded stacks
 // take a quarter of the process's mappings; `AVRA_FIBER_GUARDS=<n>` sets
-// it, and is given pages and slabs whatever the kernel has. "The first K
+// it; a value, `all` or a count, is given pages whatever the kernel has,
+// and any other spelling is refused. "The first K
 // tasks" are whoever holds a stack while at most K do: a task takes a
 // page-guarded stack whenever one is free. The canary is the top word of
 // the stack below, which nothing writes, so it costs no page. Past K a
@@ -851,18 +852,18 @@ static void guards_misspelled(const char* value) {
 // not caught.
 static void guards_settle(void) {
     const char* env = getenv("AVRA_FIBER_GUARDS");
-    int all = env && strcmp(env, "all") == 0;
-    int counted = env && *env && !all;
-    if (counted) {
+    // A VALUE ASKS FOR PAGES BY NAME, so it is given them whatever the
+    // kernel has: `all` is a page under every stack and the ceiling that
+    // comes with it, and a count is how the policy past K is run and
+    // tested on a kernel with guard regions.
+    if (env && strcmp(env, "all") == 0) { g_guards_all = 1; return; }
+    if (env && *env) {
         // A COUNT IS READ WHOLE OR REFUSED: a word misread as 0 would
         // quietly choose the weakest guard there is.
         char* end = NULL;
         errno = 0;
         unsigned long long n = *env >= '0' && *env <= '9' ? strtoull(env, &end, 10) : 0;
         if (!end || *end != 0 || errno != 0) guards_misspelled(env);
-        // A COUNT ASKS FOR PAGES AND SLABS BY NAME, so it is given them
-        // whatever the kernel has: it is how the policy past K is run
-        // and tested on a kernel with guard regions.
         g_each_left = (size_t)n;
         return;
     }
@@ -872,7 +873,7 @@ static void guards_settle(void) {
         g_guard_regions = madvise(probe, g_page, MADV_GUARD_INSTALL) == 0;
         munmap(probe, g_page);
     }
-    if (g_guard_regions || all) { g_guards_all = 1; return; }
+    if (g_guard_regions) { g_guards_all = 1; return; }
     // A QUARTER OF THE PROCESS'S MAPPINGS GO TO GUARDED STACKS, two
     // apiece; the rest are the program's, and the slabs' after them.
     FILE* f = fopen("/proc/sys/vm/max_map_count", "r");
