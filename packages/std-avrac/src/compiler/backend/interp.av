@@ -22,6 +22,7 @@ use core.{
     opens_region,
     closes_region,
     filled,
+    flatten,
     joined,
     reversed,
     rt_index,
@@ -84,6 +85,33 @@ impl Val {
     }
 }
 
+/// The register an `Alloca` defines, as a list of none or one.
+fn alloca_reg(i: Ins) -> List<int> {
+    match i { .Alloca(d) -> [d.index], rest -> [] }
+}
+
+/// FREED IDS, waiting to be handed out again. An id RESTS first: a
+/// handle that outlived its box reaches a freed slot — a defect that
+/// speaks — for as long as `rest_span` later frees, before it could
+/// ever reach another box.
+type Spares = { resting: List<int>, ready: List<int> }
+
+const rest_span = 4096
+
+impl Spares {
+    mut fn retired(id: int) { self.resting.push(id) }
+
+    /// An id whose rest is over, or -1.
+    mut fn taken() -> int {
+        if self.ready.is_empty() {
+            if self.resting.length < rest_span { return -1 }
+            self.ready = self.resting
+            self.resting = []
+        }
+        self.ready.pop()
+    }
+}
+
 /// The machine: the program, its heaps, the register frame stack
 /// (innermost last — mutated through element aliases), its output,
 /// and its refusal.
@@ -107,6 +135,8 @@ type Machine = {
     // a box holds one on creation, Retain/Release move it, and zero
     // frees the box, releasing everything it holds; -1 never dies
     counts: List<int>,
+    // the array ids freed and not yet handed out again
+    spare: Spares,
     // whether a box at zero is FREED. A standalone program run — the
     // long-lived one the counts exist for — frees; a compiler-internal
     // settlement run does not, because its values cross into and out
@@ -120,6 +150,10 @@ type Machine = {
     map_counts: List<int>,
     log_views: List<int>,
     cells: List<Val>,
+    // the cells whose frame has ended, and each body's own cell
+    // registers by its name — what a frame's end hands back
+    idle_cells: List<int>,
+    slot_regs: Map<string, List<int>>,
     // a `once fn`'s answer, settled for this run under its symbol
     onces: Map<string, Val>,
     // a static's value, built once per run under its name
@@ -233,12 +267,15 @@ fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type) -> Mac
         parking: false,
         arrays: [],
         counts: [],
+        spare: Spares { resting: [], ready: [] },
         freeing: false,
         maps: [],
         logs: [],
         map_counts: [],
         log_views: [],
         cells: [],
+        idle_cells: [],
+        slot_regs: {},
         onces: {},
         statics: {},
         out: [],
@@ -267,10 +304,15 @@ export fn run_lowered(l: Lowered) -> Result<string, string> {
     .Ok(printed(ran(l, l.entry)?))
 }
 
-/// How many boxes and maps a program still held when it ended: a run
-/// frees what it lets go, so its own scopes leave none.
-export fn run_held(l: Lowered) -> Result<int, string> {
-    .Ok((ran(l, l.entry)?).m.held())
+/// What a run left behind: the boxes and maps `held` — still counted
+/// when it ended, where a run that frees what it lets go leaves none —
+/// and the table `entries` it ever needed, which a run that reuses
+/// what it freed keeps near what was live at once.
+export type Kept = { held: int, entries: int }
+
+export fn run_kept(l: Lowered) -> Result<Kept, string> {
+    let m = (ran(l, l.entry)?).m
+    .Ok(Kept { held: m.held(), entries: m.arrays.length + m.maps.length + m.cells.length })
 }
 
 /// How a live run ended: clean, or by a trap in its words.
@@ -661,7 +703,7 @@ impl Machine {
             match stepped {
                 .On -> nothing(),
                 .Ended(gave) -> {
-                    let _ = self.frames.pop()
+                    self.frame_left(body)
                     if self.callers.length == floor && self.running > 0 {
                         // a spawned task answered: the machine runs the next
                         let next = self.finished(gave)
@@ -759,7 +801,7 @@ impl Machine {
             .LoopCond(c) -> if self.truth(c) { pc + 1 } else { b.past_loop(pc) },
             .LoopEnd -> b.loop_header(pc) + 1,
             .LoopJump(outward, again) -> b.jumped(pc, outward, again),
-            .Alloca(d) -> self.put_at(d, self.fresh_cell(), pc),
+            .Alloca(d) -> self.put_at(d, self.slot_cell(d), pc),
             .Load(d, slot) -> self.put_at(d, self.cell_read(slot), pc),
             .Store(slot, src) -> self.store_step(slot, src, pc),
             .ScopeEnter(_) or .ScopeExit(_) -> pc + 1,
@@ -1176,8 +1218,44 @@ impl Machine {
     }
 
     fn fresh_cell() -> Val {
-        self.cells.push(Val.I(0))
-        Val.C(self.cells.length - 1)
+        if self.idle_cells.is_empty() {
+            self.cells.push(Val.I(0))
+            return Val.C(self.cells.length - 1)
+        }
+        let id = self.idle_cells.pop()
+        self.cells.set(id, Val.I(0))
+        Val.C(id)
+    }
+
+    /// A binding's cell: the one its register already names when the
+    /// instruction runs again — a loop's next turn — else a fresh one.
+    fn slot_cell(d: Reg) -> Val {
+        match self.at(d) ?? Val.N {
+            .C(id) -> {
+                self.cells.set(id, Val.I(0))
+                Val.C(id)
+            },
+            rest -> self.fresh_cell(),
+        }
+    }
+
+    /// A body's frame ends: popped, and the cells it minted are idle —
+    /// nothing outlives a frame holding one.
+    fn frame_left(b: Body) {
+        let frame? = self.frames.last() else { return }
+        for at in self.slots_of(b) {
+            match frame[at] ?? Val.N { .C(id) -> self.idle_cells.push(id), rest -> nothing() }
+        }
+        let _ = self.frames.pop()
+    }
+
+    /// The registers a body's own `Alloca`s define, asked once a body.
+    fn slots_of(b: Body) -> List<int> {
+        let known: List<int>? = self.slot_regs.get(b.name)
+        if known != null { return known! }
+        let regs = flatten([alloca_reg(i) for i in b.ins])
+        self.slot_regs.set(b.name, regs)
+        regs
     }
 
     fn cell_read(slot: Reg) -> Val {
@@ -1682,9 +1760,15 @@ impl Machine {
     /// `cloned_val`, an owned push), never here, so a freshly minted
     /// child's one reference is its parent's.
     fn fresh_array(elems: List<Val>) -> Val {
-        self.arrays.push(elems)
-        self.counts.push(1)
-        Val.A(self.arrays.length - 1)
+        let id = self.spare.taken()
+        if id < 0 {
+            self.arrays.push(elems)
+            self.counts.push(1)
+            return Val.A(self.arrays.length - 1)
+        }
+        self.arrays.set(id, elems)
+        self.counts.set(id, 1)
+        Val.A(id)
     }
 
     /// A new array over values that already stood: each takes the
@@ -1720,7 +1804,8 @@ impl Machine {
 
     /// A box or map nobody holds is freed, and so is everything that
     /// lost its last holder with it — a worklist, so a long chain costs
-    /// no depth. The entry is tombstoned: an id is never reused.
+    /// no depth. The entry is emptied, and an array's id rests before
+    /// another box takes it.
     fn reclaimed(first: Val) {
         if !self.freeing { return }
         mut dead = [first]
@@ -1734,7 +1819,8 @@ impl Machine {
         match v {
             .A(id) -> {
                 let kids = self.arrays[id]
-                self.arrays.set(id, [Val.Gone])
+                self.arrays.set(id, [])
+                self.spare.retired(id)
                 kids
             },
             .M(id) -> self.map_dropped(id),

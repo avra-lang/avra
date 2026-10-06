@@ -1,0 +1,46 @@
+// proves: a `mut` binding's cell is its frame's — a loop's next turn,
+// a recursion, a callee writing through a `mut` seat and a closure that
+// read the binding each see their own
+type Tally = { seen: List<int> }
+
+fn bumped(mut t: Tally, n: int) {
+    mut copy = n
+    copy = copy + 1
+    t.seen.push(copy)
+}
+
+fn depth(n: int) -> int {
+    mut here = n
+    if n == 0 { return 0 }
+    let below = depth(n - 1)
+    here = here + below
+    here
+}
+
+fn readers() -> List<fn() -> int> {
+    mut out: List<fn() -> int> = []
+    for i in 0..3 {
+        mut held = i * 10
+        held = held + 1
+        out.push(() -> held)
+    }
+    out
+}
+
+fn turned(n: int) -> int {
+    mut total = 0
+    mut t = Tally { seen: [] }
+    for i in 0..n {
+        mut row = [i]
+        for j in 0..3 {
+            mut cell = j
+            cell = cell + i
+            row.push(cell)
+            bumped(t, cell)
+        }
+        total = total + row.length + (row[3] - row[1])
+    }
+    total + t.seen.length
+}
+
+"${turned(200)} ${depth(50)} ${[f() for f in readers()].map((n) -> "${n}").join(",")}"

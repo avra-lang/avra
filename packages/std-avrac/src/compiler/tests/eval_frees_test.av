@@ -1,9 +1,11 @@
 //! The evaluator FREES what a run lets go: each program test under
 //! `freed_*` is run here once more, and must leave no box and no map
 //! counted when it ends. The program tests prove the answers; this
-//! proves nothing was kept to get them.
+//! proves nothing was kept to get them — and that a long run's tables
+//! stay the size of what was live at once.
 use @std.avrac.compiler.{avra, new_workspace}
 use @std.meta.{embed}
+use compiler.backend.{Kept}
 use compiler.host.{memory_host}
 
 const ALIAS: string = embed("freed_alias/freed_alias.av")
@@ -21,18 +23,26 @@ const CHAIN: string = embed("freed_chain/freed_chain.av")
 const MAPS: string = embed("freed_maps/freed_maps.av")
 const MAP_COPY: string = embed("freed_map_copy/freed_map_copy.av")
 const TASKS: string = embed("freed_tasks/freed_tasks.av")
+const CELLS: string = embed("freed_cells/freed_cells.av")
 
 /// The one thing counting never frees.
 const CYCLE: string = "type Hook = { run: fn() -> int }\nfn hooked() -> int {\n    let c: Cell<List<Hook>> = Cell.new([])\n    c.push(Hook { run: () -> c.get().length })\n    c.get().length\n}\nhooked()"
 
 const ENTRY: string = "/w/src/main.av"
 
-/// What a program still held when its run ended; -1 when it did not run.
-fn held(text: string) -> int {
-    new_workspace(memory_host({"/w/src/main.av": text}, [ENTRY]), "/w", avra())
+/// Sixty thousand boxes and thirty thousand cells, two and one live
+/// at once.
+const LONG: string = "type Row = { cells: List<int> }\nfn made(i: int) -> Row {\n    mut xs = [i]\n    xs.push(i + 1)\n    Row { cells: xs }\n}\nfn spun(n: int) -> int {\n    mut t = 0\n    for i in 0..n { t = t + made(i).cells.length }\n    t\n}\nspun(30000)"
+
+/// What a program's run left behind; null when it did not run.
+fn left_by(text: string) -> Kept? {
+    match new_workspace(memory_host({"/w/src/main.av": text}, [ENTRY]), "/w", avra())
         .program(ENTRY)
-        .held() catch e -> -1
+        .kept() { .Ok(k) -> k, .Err(_) -> null }
 }
+
+/// What a program still held when its run ended; -1 when it did not run.
+fn held(text: string) -> int { left_by(text)?.held ?? -1 }
 
 spec "compiler/backend (the evaluator frees)" {
     given "boxes with more than one holder" {
@@ -57,6 +67,13 @@ spec "compiler/backend (the evaluator frees)" {
         then "a map's values leave nothing" { held(MAPS) == 0 }
         then "a copied map's values leave nothing" { held(MAP_COPY) == 0 }
         then "a task's body and answer leave nothing" { held(TASKS) == 0 }
+        then "a frame's cells leave nothing" { held(CELLS) == 0 }
+    }
+    given "a run far longer than what it holds at once" {
+        then "its tables stay near what was live, never what was made" {
+            let k? = left_by(LONG) else { return false }
+            k.held == 0 && k.entries < 10000
+        }
     }
     given "a closure a cell holds that captured the cell" {
         then "the cycle is what the count still shows" { held(CYCLE) > 0 }
