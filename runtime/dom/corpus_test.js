@@ -18,6 +18,13 @@ const bytesOf = (w) => new Uint8Array(Buffer.from(w, "base64"));
 // a user wrote.
 const BUILT = new Set(Object.keys(stubElement("x")).concat(["__avra_id", "__avra_listeners", "showModal", "close"]));
 
+// The key a stub element keeps a property under: the model's own name,
+// but for one the stub is built with (`focus` is its verb), which is kept
+// beside it.
+const HELD = "held:";
+const keyOf = (name) => (BUILT.has(name) ? HELD + name : name);
+const nameOf = (key) => (key.startsWith(HELD) ? key.slice(HELD.length) : key);
+
 // A stub element with a page's door: `showModal` opens it, where it
 // stands on the page and is not open already, and `close` shuts it.
 const connected = (n, mount) => n === mount || (n.parentNode !== null && connected(n.parentNode, mount));
@@ -44,8 +51,9 @@ function line(n) {
   const number = `#${n.__avra_id} `;
   if (n.tagName === "#text") return number + quoted(n.textContent);
   const attrs = Object.keys(n.attrs).sort().map((k) => ` ${k}=${quoted(n.attrs[k])}`).join("");
-  const props = Object.keys(n).filter((k) => !BUILT.has(k) && n[k] !== "" && n[k] !== false).sort()
-    .map((k) => ` .${k}=${propShown(n[k])}`).join("");
+  const props = Object.keys(n).filter((k) => !BUILT.has(k) && n[k] !== "" && n[k] !== false)
+    .map((k) => [nameOf(k), n[k]]).sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([name, value]) => ` .${name}=${propShown(value)}`).join("");
   const ears = [...n.listeners.keys()].map((event) => [kindOf(n, event), event]).sort((a, b) => a[0] - b[0])
     .map(([kind, event]) => ` @${kind}:${event}`).join("");
   return number + n.tagName + attrs + props + ears;
@@ -115,7 +123,7 @@ const act = {
   // What a user left on an element with nothing hearing of it.
   move: (id, name, tag, value) => {
     const el = find(page.mount, Number(id));
-    if (el) el[name] = Number(tag) === SAYS.flag ? unworded(value) !== "" : unworded(value);
+    if (el) el[keyOf(name)] = Number(tag) === SAYS.flag ? unworded(value) !== "" : unworded(value);
   },
   say: (id, event, reads, tag, value, kind, says, echoed) => {
     const el = find(page.mount, Number(id));
