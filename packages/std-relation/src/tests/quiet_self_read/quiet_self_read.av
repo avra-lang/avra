@@ -1,5 +1,5 @@
-// proves: a Db with no owner still holds a running query to the law — a
-// query that `get`s a row of a relation it writes is refused
+// proves: a Db no one hears still holds a run to the law — a `get` of a
+// row in a relation an open run wrote is refused, by the trap
 use @std.relation.{relation, query}
 use @std.relation.db.{Db, new_db}
 
@@ -8,8 +8,12 @@ type Note = { @index tag: string }
 
 @query
 fn looping(db: Db) -> int {
+    let owner = db.owner_named("notes")
+    let _ = db.opened_run(owner)
     let _ = Note.insert(db, tag: "x")
-    if Note.get(db, 0) == null { 0 } else { 1 }
+    let held = Note.get(db, 0) != null
+    db.closed_run(owner)
+    if held { 1 } else { 0 }
 }
 
 looping(new_db())

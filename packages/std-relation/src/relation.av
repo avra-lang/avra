@@ -26,15 +26,14 @@
 //!
 //! `@query` (`use @std.relation.{query}`) wraps a fn over a Db: its
 //! answer is kept per call and rerun once a write touches a relation
-//! it read, and the rows it writes are its own — replaced on rerun,
-//! refused if another query writes the same key, refused itself if it
-//! reads a relation it writes (read the last run's rows with
-//! `Rel.prior(db)` instead).
+//! it read. A query answers and writes no rows of its own.
 //!
-//! Rows only arrive outside a `@query`: a keyed insert replaces the row
-//! its key names, and a keyless one appends, so key a row you will
-//! update by hand. Nothing removes a row but closing its Db or an
-//! owner's rerun — a `@query`'s, or a named owner's (`Db.owner_named`).
+//! A keyed insert replaces the row its key names, and a keyless one
+//! appends, so key a row you will update by hand. Nothing removes a row
+//! but closing its Db or its owner's rerun: rows written while a named
+//! owner's run is open (`Db.owner_named`, `opened_run`, `closed_run`) are
+//! that owner's, read once the run closes, and swept by its next run
+//! when it does not write them again.
 //!
 //! Stands ALONE with `@std/meta` and its own package: the file that
 //! types this derive must not also carry code the annotated file's
@@ -462,7 +461,6 @@ const every_member: List<string> = [
     "index_keys",
     "get",
     "all",
-    "prior",
 ]
 
 /// The member names the derive writes onto this relation: every
@@ -495,7 +493,6 @@ fn members(t: Type) -> List<Decls> {
         insert_member(t),
         get_member(t),
         all_member(t),
-        prior_member(t),
     ]
         .concat(decoded_members(t))
         .concat(key_members(t))
@@ -623,12 +620,6 @@ fn store_member(t: Type) -> Decls {
 fn get_member(t: Type) -> Decls {
     let ty = t.fields.find(it.name == "id")?.ty ?? "int"
     quote { static fn get(db: Db, id: ${ty}) -> ${t}? { ${name(t.name)}.rows_in(db).got(db, ${id_int(t, quote { id })}, ${grain_index(t)}) } }
-}
-
-/// `prior`: the running query's rows as its previous run left them —
-/// the one read of a relation a query writes, recording nothing.
-fn prior_member(t: Type) -> Decls {
-    quote { static fn prior(db: Db) -> List<${t}> { ${name(t.name)}.rows_in(db).prior_in(db, ${literal(t.name)}) } }
 }
 
 /// `all`: every live row under a Db, in id order.

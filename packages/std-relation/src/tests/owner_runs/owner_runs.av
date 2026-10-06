@@ -1,7 +1,8 @@
-// proves: in a Db framed by its owner's kernel, a read or write outside
-// any `@query` lands in the frame of the kernel query open then — a
-// second owner of one key refused, a read of a relation the query wrote
-// refused — while with no query open a read is free, in both engines
+// proves: rows written while an owner's run is open are that owner's,
+// under an open kernel query as outside one — a second owner of one key
+// refused, a read of a relation an open run wrote refused by name, the
+// same read free once the run closes — and a write with no run open is
+// no one's, in both engines
 use @std.relation.{relation}
 use @std.relation.db.{Db, db_over, Verifying, Late}
 use @std.relation.engine.{Kernel, Key, new_kernel}
@@ -21,7 +22,7 @@ fn noted(w: string) {
 
 /// A Db whose owner runs its own queries, its refusals heard.
 fn owner_db(kernel: Kernel) -> Db {
-    let db = db_over(kernel, Verifying.ByHash, Late.Refused, true)
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused)
     db.heard_by(noted)
     db
 }
@@ -32,16 +33,22 @@ fn run() -> string {
     let db = owner_db(kernel)
     let first = Key { family: queries, arg: 7 }
     let second = Key { family: queries, arg: 8 }
+    let one = db.owner_named("one")
+    let two = db.owner_named("two")
     kernel.begin(first)
+    let _ = db.opened_run(one)
     let _ = Fact.insert(db, name: "a", n: 1)
+    db.closed_run(one)
     kernel.settle(first, 0)
     kernel.begin(second)
+    let _ = db.opened_run(two)
     let _ = Fact.insert(db, name: "a", n: 2)
     let _ = Tag.insert(db, tag: "t")
     let _ = Tag.all(db)
+    db.closed_run(two)
+    let _ = Fact.insert(db, name: "loose", n: 0)
     kernel.settle(second, 0)
-    let free = Tag.all(db).length
-    "${heard().get().length} ${free} | ${heard().get().join(" | ")}"
+    "${heard().get().length} ${Tag.all(db).length} ${Fact.all(db).length} | ${heard().get().join(" | ")}"
 }
 
 run()

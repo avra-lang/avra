@@ -1,7 +1,8 @@
 // proves: a query's answer stands while what it read stands — three
 // queries asked three times, with rows written between, each run once,
 // and a query that read a relation runs again when a row arrives there
-// and at no other write — in both engines
+// and at no other write; the rows a query's body writes are a named
+// owner's — in both engines
 use @std.relation.{relation, query}
 use @std.relation.db.{Db, new_db}
 
@@ -16,13 +17,21 @@ once fn runs() -> Cell<List<string>> { Cell.new([]) }
 @query
 fn icons(db: Db, dir: string) -> int {
     runs().push("icons")
-    Icon.insert(db, name: "a", set: dir, svg: "1").id
+    let owner = db.owner_named("icons ${dir}")
+    let _ = db.opened_run(owner)
+    let made = Icon.insert(db, name: "a", set: dir, svg: "1").id
+    db.closed_run(owner)
+    made
 }
 
 @query
 fn fonts(db: Db, _dir: string) -> int {
     runs().push("fonts")
-    Font.insert(db, name: "f").id
+    let owner = db.owner_named("fonts")
+    let _ = db.opened_run(owner)
+    let made = Font.insert(db, name: "f").id
+    db.closed_run(owner)
+    made
 }
 
 @query
