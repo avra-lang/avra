@@ -4,8 +4,8 @@
 #   sh tools/queue_keeper.sh          one pass
 #   sh tools/queue_keeper.sh --loop   a pass every 2 minutes, until stopped
 #
-# GitHub runs it after every train and every 5 minutes (.github/workflows/
-# queue-keeper.yml); a pass by hand is never needed.
+# GitHub runs it every 5 minutes (.github/workflows/queue-keeper.yml); a
+# pass by hand is never needed.
 #
 # IT NEVER ENQUEUES. It runs as the workflow's token, and GitHub starts no
 # workflow for an event that token causes: an entry it adds sits in the
