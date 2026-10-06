@@ -1,7 +1,7 @@
 // The vertical: `spawn` runs beside the spawner, `.await` answers what
 // the body did, `.done` asks without parking, and a task is joined where
 // the last thing holding it ends.
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_at_run}
 
 extern fn avra_sched_timers() -> int
 
@@ -37,6 +37,26 @@ spec "features/tasks" {
         }
         then "a task's body may await a sibling — both join here" {
             shown("let a = spawn 4\nlet b = spawn { a.await + 100 }\nb.await") == "104"
+        }
+    }
+    given "tasks nothing runs" {
+        then "a join of a cancelled task traps in the row's words" {
+            refused_at_run(
+                "extern fn avra_task_pending() -> ptr\nextern fn avra_task_cancel(t: ptr)\nextern fn avra_task_join(t: ptr) -> ptr\nlet p = avra_task_pending()\navra_task_cancel(p)\nlet _a = avra_task_join(p)\n1",
+                "a join takes a task that answers, and this one was cancelled",
+            )
+        }
+        then "a task answers once" {
+            refused_at_run(
+                "extern fn avra_task_pending() -> ptr\nextern fn avra_task_answer(t: ptr, v: ptr)\nextern fn avra_array_new() -> ptr\nlet p = avra_task_pending()\nlet v = avra_array_new()\navra_task_answer(p, v)\navra_task_answer(p, v)\n1",
+                "a task answered twice",
+            )
+        }
+        then "a slot past the four traps" {
+            refused_at_run(
+                "extern fn avra_task_slot(key: int) -> ptr?\nlet _s = avra_task_slot(4)\n1",
+                "a task has four slots, and this is none of them",
+            )
         }
     }
     given "one process, many runs" {
