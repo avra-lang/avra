@@ -25,7 +25,7 @@
 //! asked again holds the Db. `close` lets both go. A Db that only ever
 //! held rows is let go with its last holder.
 //!
-use rows.{Rows, named_rows, Stamp, unowned}
+use rows.{Rows, named_rows, Stamp}
 use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table}
 use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with}
 
@@ -272,14 +272,12 @@ impl Db {
     /// One more write taken — a row filed or removed.
     fn counted() { self.written.set(self.written.get() + 1) }
 
-    /// Who a write with no owner named belongs to: no one — and inside a
-    /// `@query`'s body it is refused, with no stamp to land under.
-    fn stamp() -> Stamp? {
-        if self.asking.get() > 0 {
-            self.refuse(query_writes())
-            return null
-        }
-        unowned
+    /// Whether a write with no owner named is refused: inside a
+    /// `@query`'s body it is, spoken — anywhere else it is no one's.
+    fn unowned_refused() -> bool {
+        if self.asking.get() == 0 { return false }
+        self.refuse(query_writes())
+        true
     }
 
     /// A write `owner` makes between two replacements of its rows.

@@ -33,7 +33,7 @@ first cell moves. The sites, all in `rows.av` / `db.av`:
 
 | Refusal | Decided in | Before it |
 |---|---|---|
-| a `@query` body's un-owned insert | `Db.stamp` answers no stamp; `put_in` returns | nothing written |
+| a `@query` body's un-owned insert | `Db.unowned_refused`; `put_in` returns | nothing written |
 | a second owner of a row | `put_stamped`, `unplaceable`, `unkeepable` | nothing written |
 | a late or torn write | `held` asks every cell; `moves` runs only after | nothing moved, no revision bumped |
 | a second writer of an owner | `second_writer` | nothing written |
