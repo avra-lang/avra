@@ -26,8 +26,8 @@ extern void (*avra_fd_drained_hook)(int64_t fd);
 // program that never spawns has them and links no scheduler.
 enum { AVRA_SLOT_ASKER = 0, AVRA_SLOT_FLOW = 1, AVRA_TASK_SLOTS = 4 };
 typedef struct { void* slot[AVRA_TASK_SLOTS]; int64_t id; } AvraTaskLocal;
-extern AvraTaskLocal avra_main_local;
-extern AvraTaskLocal* avra_task_local;
+extern AvraTaskLocal avra_main_local __attribute__((visibility("hidden")));
+extern AvraTaskLocal* avra_task_local __attribute__((visibility("hidden")));
 // The running task's slot `key`, owned; and `v` kept in it, what it
 // held released. A slot past the table is a trap.
 void* avra_task_slot(int64_t key);

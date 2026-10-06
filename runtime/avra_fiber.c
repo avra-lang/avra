@@ -957,7 +957,6 @@ static void fiber_start(void);
 // `avra_fiber_switch` will restore — zeroed callee-saved registers and
 // `fiber_start` where the return goes. The top word stays untouched:
 // it is the word the stack above reads as its canary.
-__attribute__((noinline, cold))
 static void fiber_bound(Fiber* f) {
     Stack s = stack_take();
     f->base = s.base;
@@ -990,6 +989,18 @@ static inline uintptr_t sp_now(void) {
     return sp;
 }
 
+// The switch to a fiber that has never run, whole and out of line: a
+// call that came back into the switch would cost every switch the
+// registers it saves across it.
+__attribute__((noinline, cold))
+static void switched_to_fresh(Fiber* self, Fiber* next) {
+    fiber_bound(next);
+    g_current = next;
+    avra_task_local = next->local;
+    avra_fiber_switch(&self->sp, next->sp);
+    bury_finished();
+}
+
 // INLINED INTO EVERY PARK AND YIELD: the switch is the leaf everything
 // else here is measured against.
 __attribute__((always_inline))
@@ -998,7 +1009,7 @@ static inline void switch_to(Fiber* next) {
     next->state = FIBER_RUNNING;
     if (next == self) return;
     if (__builtin_expect(sp_now() < self->floor || *self->canary != 0, 0)) overflowed(self);
-    if (__builtin_expect(!next->sp, 0)) fiber_bound(next);
+    if (__builtin_expect(!next->sp, 0)) { switched_to_fresh(self, next); return; }
     g_current = next;
     avra_task_local = next->local;
     avra_fiber_switch(&self->sp, next->sp);
