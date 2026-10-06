@@ -24,7 +24,7 @@ use core.{
     is_managed,
     some_list,
 }
-use features.{NameFacts, Decls, Decl, Ref}
+use features.{NameFacts, Decls, Decl}
 
 impl Workspace {
     /// The pass: asking IS the query — the hook the workspace arms
@@ -52,11 +52,12 @@ impl Workspace {
             self.decls.record_consumed(d, kept)
             return kept
         }
-        if x.root == null || self.taken_as_value(d) {
-            let none = filled(n, false)
-            self.decls.record_consumed(d, none)
-            return none
-        }
+        // WHERE THE REFERENCES DO NOT STAND, NOTHING IS INFERRED AND NOTHING
+        // RECORDED: an unread relation is no finding that no one takes `d`
+        // as a value, and a recorded bit reaches the module's own record.
+        if x.root == null { return self.none_consumed(d, n) }
+        let taken? = self.taken_as_value(d) else { return filled(n, false) }
+        if taken { return self.none_consumed(d, n) }
         let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
         mut cx = Consumed {
             store: self.decls.store(d),
@@ -67,6 +68,13 @@ impl Workspace {
         let out = cx.scan(x.root!)
         self.decls.record_consumed(d, out)
         out
+    }
+
+    /// No seat of `d` consumed, recorded.
+    fn none_consumed(d: DeclId, n: int) -> List<bool> {
+        let none = filled(n, false)
+        self.decls.record_consumed(d, none)
+        none
     }
 
     /// A seat is a candidate at all only as an ordinary BY-VALUE
@@ -115,9 +123,8 @@ impl Workspace {
     /// building the adapter the full design calls for — excluding the
     /// DECLARATION here, not the call site, is what landing without
     /// that adapter means for it.
-    fn taken_as_value(d: DeclId) -> bool {
-        self.decls.refs_of(d).any((r: Ref) -> r.kind is .Read)
-    }
+    /// Null where the references do not stand to be asked.
+    fn taken_as_value(d: DeclId) -> bool? { self.decls.read_found(d) }
 }
 
 /// What one body's survey reads and gathers: its file's parts, which
