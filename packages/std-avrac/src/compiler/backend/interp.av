@@ -1752,6 +1752,13 @@ impl Machine {
         }
     }
 
+    /// Whether a box was freed: no holder counts it, in a run that
+    /// frees. A program that reaches one holds a reference nothing
+    /// counted.
+    fn freed(id: int) -> bool { self.freeing && self.counts[id] == 0 }
+
+    fn read_freed() -> Val { self.defect_val("a freed box was reached") }
+
     /// How many boxes and maps a holder still counts.
     fn held() -> int {
         [c for c in self.counts if c > 0].length + [c for c in self.map_counts if c > 0].length
@@ -2031,6 +2038,7 @@ impl Machine {
     }
 
     mut fn slot_written(id: int, at: int, v: Val) -> Val {
+        if self.freed(id) { return self.read_freed() }
         let n = self.arrays[id].length
         if at < 0 || at >= n { return self.out_of_bounds(at, n) }
         let old = self.arrays[id][at]
@@ -2079,6 +2087,7 @@ impl Machine {
     }
 
     mut fn pushed(id: int, v: Val) -> Val {
+        if self.freed(id) { return self.read_freed() }
         self.arrays[id].push(v)
         Val.I(0)
     }
@@ -2222,6 +2231,7 @@ impl Machine {
     }
 
     fn slot_read_val(id: int, at: int) -> Val {
+        if self.freed(id) { return self.read_freed() }
         let arr = self.arrays[id]
         if at < 0 || at >= arr.length { return self.out_of_bounds(at, arr.length) }
         read_out(arr[at])
@@ -2229,6 +2239,7 @@ impl Machine {
 
     fn array_len_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a length of a non-array") }
+        if self.freed(id) { return self.read_freed() }
         Val.I(self.arrays[id].length)
     }
 
