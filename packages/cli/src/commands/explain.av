@@ -22,9 +22,8 @@ use @std.avrac.compiler.{
     Phase,
 }
 use @std.avrac.core.{joined, counted, some_list}
-use @std.io.{exists, is_dir}
 use @std.json.{Json, Field, field, to_text}
-use @std.path.{relative_path, dir_of, joined_path, is_absolute, normalized}
+use @std.path.{relative_path, joined_path, is_absolute, normalized}
 use @std.relation.engine.{Key}
 use @std.text.{pad_left, pad_right, from_codepoints}
 
@@ -83,7 +82,10 @@ fn printed(said: Lines) -> int {
 /// What a form answers: the lines it prints, or the lines of its refusal.
 /// Every refusal the words alone decide is spoken before anything is derived.
 export fn explain_answer(a: Asked) -> Lines {
-    let aim = match aimed(a.target, a.from) { .Ok(aim) -> aim, .Err(why) -> { return .Err([why]) } }
+    let aim = match placed(a.target, aimed(a.target, a.from)) {
+        .Ok(aim) -> aim,
+        .Err(why) -> { return .Err([why]) },
+    }
     if a.stats && a.why { return .Err([stats_or_why()]) }
     if a.time && !a.stats { return .Err([time_wants_stats()]) }
     match aim.subject {
@@ -100,7 +102,7 @@ fn walk_of(ws: Workspace) -> Result<CacheWalk, List<string>> {
 // ── what a target names ──
 
 /// A target read by its spelling, and the package it is asked of: a path
-/// names the package above it, anything else the one above `from`.
+/// names the package at or above it, anything else the one above `from`.
 fn aimed(target: string, from: string) -> Result<Aim, string> {
     if target == "" { return under(from, Subject.Package) }
     if target.starts_with("@") {
@@ -111,9 +113,22 @@ fn aimed(target: string, from: string) -> Result<Aim, string> {
         if !target.ends_with(")") { return .Err(query_unclosed(target)) }
         return under(from, Subject.Query(target))
     }
-    let file = if is_absolute(target) { normalized(target) } else { normalized(joined_path(from, target)) }
-    if !exists(file) { return .Err(no_such_path(target)) }
-    if is_dir(file) { under(file, Subject.Package) } else { under(dir_of(file), Subject.File(file)) }
+    let path = if is_absolute(target) { normalized(target) } else { normalized(joined_path(from, target)) }
+    under(path, Subject.File(path))
+}
+
+/// A path target against the world, asked through its package's own door:
+/// nothing there is refused, and a directory there is its package.
+fn placed(target: string, aim: Result<Aim, string>) -> Result<Aim, string> {
+    let read = aim?
+    match read.subject {
+        .File(at) -> {
+            let ws = root_workspace(read.root)
+            if !ws.there(at) { return .Err(no_such_path(target)) }
+            if ws.is_dir(at) { Aim { root: read.root, subject: Subject.Package } } else { read }
+        },
+        .Package or .Decl(_) or .Query(_) -> read,
+    }
 }
 
 fn under(dir: string, subject: Subject) -> Result<Aim, string> {
