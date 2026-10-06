@@ -200,6 +200,7 @@ Ticket ids are `avra-8sb5.34.53.N`. Kind: R runtime, C compiler, L library.
 | 13 | `@std/ui` inbox | a timer and a task's answer reach `App.turn` in the terminal | 2, 5 | L | `.7` | with the UI lead (`.59.44.13`) |
 | 14 | `@std/process` on `select` | no private `poll()`; suites green | 6 | R L | `.8` | 2 landings (`avra_wait_exit`) |
 | 15 | `@std/http` h2 on `select` | h2 conformance and soak green; req/s within noise | 5 | L | `.13` | the largest migration (canvas §3) |
+| 15b | HTTP/2 client: many tasks on one connection ("Slice D") | N tasks fetch over ONE h2 connection at once; each reads its own answer; a reset or a passed deadline wakes its requester with a typed error | 15 | L | `avra-8sb5.1.27.8` | its own ladder after 15: a driver task reads the socket, each requester parks on its stream's gate. Closes `avra-8sb5.1.27.4` |
 | 16 | cores: links, crossing, `on_crash` | trap one core; its peers keep serving; the item is buried | 7 | R C L | `.14` | 2 landings (3 rows). Re-fork is sketched |
 | 17 | `Stream`, `yield`, `.buffered` | one `yield` fn is one loop; `.buffered(8)` makes it two tasks | 5, **COLLECTIONS S3 (`avra-8sb5.65.5`)** | C L | `.9` | `yield` becomes a keyword |
 | 18 | `fold`, `reduce` | `reduce` over floats: same bits on both engines | 5; **`law` for fold→reduce**; clang experiment first | C L | `.17` | `LoopStart` payload pays 11 consumers |
@@ -207,6 +208,7 @@ Ticket ids are `avra-8sb5.34.53.N`. Kind: R runtime, C compiler, L library.
 
 - 1–6 meet the epic's first acceptance. 7–10 are the flagship.
 - 13–15 are migrations. They can run beside 7–12 if a second lane exists.
+- 15b adds behaviour where 15 only migrates, so it is never folded into 15: 15's gate is "behaviour and req/s unchanged". 15's design leaves its seam.
 - Unbuilt things outside this epic that a slice names: `law` (8, 10,
   18), COLLECTIONS S3 (17), the `deploy` block (`laws: .proven` is a
   build flag until then), fibers F4 offload (9), WASM32 step 6 (any wait
