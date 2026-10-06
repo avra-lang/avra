@@ -174,7 +174,7 @@ impl Db {
 
     /// Whether a read here is heard by no one: no query is open in the
     /// kernel, or there is no kernel yet.
-    fn unheard() -> bool { (self.kernel.get()?.reader() ?? 0 - 1) < 0 }
+    fn unheard() -> bool { self.reader_now() < 0 }
 
     /// The Db's kernel, made on the first reach when it has none: every
     /// family registered here so far is registered in it then. A program
@@ -276,10 +276,11 @@ impl Db {
     /// The owner whose open run wrote `family`, when one has: its rows
     /// are no one's to read until that run closes.
     fn writing(family: int) -> int? {
-        let open = self.open.get()
-        if open.is_empty() { return null }
-        open.find((run: OpenRun) -> run.wrote.get().contains(family))?.owner
+        self.open.get().find((run: OpenRun) -> run.wrote.get().contains(family))?.owner
     }
+
+    /// Whether no owner's run is open.
+    fn idle() -> bool { self.open.get().is_empty() }
 
     /// A write into `family`, counted, and told to the innermost open run.
     fn wrote(family: int) {
