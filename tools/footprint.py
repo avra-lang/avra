@@ -14,8 +14,9 @@ binaries, and prints what the smallest programs weigh.
   scheduler members is refused, so a moved fn or a new object asks here.
   THE SIZE is the stripped file and its code, per platform, against
   tools/footprint.baseline. The cap is RELATIVE (CEILING): a tenth of the
-  floor is one small fn family and the toolchain's own drift between
-  machines, and a fifteenth of what linking the scheduler adds.
+  floor is one small fn family or the toolchain's own drift between
+  machines, and several times less than linking the scheduler adds.
+  STRIPPED, because a symbol spells the path its program was built at.
 
   python3 tools/footprint.py              # the gate
   python3 tools/footprint.py --accept     # re-accept this platform's sizes
