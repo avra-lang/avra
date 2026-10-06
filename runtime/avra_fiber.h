@@ -139,6 +139,11 @@ int64_t avra_vtask_deadline(int64_t t);
 void avra_vtask_wait_fd(int64_t t, int64_t fd, int64_t writable, int64_t arm, int64_t member);
 void avra_vtask_wait_until(int64_t t, int64_t at_ns, int64_t arm, int64_t member);
 void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member);
+// `t` joins `task`, parked as a compiled join parks: on the task's own
+// gate, heeding no cancel and no deadline, readied where the task ends —
+// by the timer heap, for a task its time ends. 1 parked; 0 when the task
+// has ended already.
+int64_t avra_vtask_join(int64_t t, void* task);
 int64_t avra_vtask_park(int64_t t);
 int64_t avra_vtask_claim(int64_t t);
 // A cancel on `t`, asked by the task whose id is `by`.
@@ -172,5 +177,7 @@ int64_t avra_sched_timers(void);
 int64_t avra_sched_fd_waiters(void);
 int64_t avra_sched_polls(void);
 int64_t avra_sched_pick_links(void);
+// How many switches left the fast path to ask the world.
+int64_t avra_sched_world_visits(void);
 
 #endif

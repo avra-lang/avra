@@ -1,0 +1,84 @@
+// proves: a schedule names ONE order of the ready tasks, the same
+// evaluated and compiled — over four hundred schedules, with a task
+// nothing runs, a timer's task waited on and a timer's task joined in
+// the scenario.
+use @std.time.{ms, sleep}
+
+extern fn avra_sched_seed(schedule: int)
+extern fn avra_sched_settle() -> int
+extern fn avra_wait_task(t: ptr, arm: int, member: int)
+extern fn avra_wait_park() -> int
+extern fn avra_task_pending() -> ptr
+extern fn avra_task_at(at_ns: int) -> ptr
+extern fn avra_task_answer(t: ptr, v: ptr)
+extern fn avra_task_join(t: ptr) -> ptr
+extern fn avra_array_sized(n: int) -> ptr
+extern fn avra_array_push(a: ptr, v: int)
+extern fn avra_array_get(a: ptr, i: int) -> int
+
+fn boxed(v: int) -> ptr {
+    let b = avra_array_sized(1)
+    avra_array_push(b, v)
+    b
+}
+
+/// What a task does between its first step and its second: 1 waits on
+/// the task nothing runs, 2 answers it, 3 waits on a task the timer
+/// ends, 4 joins one.
+fn between(name: int, pending: ptr) -> int {
+    if name == 1 {
+        avra_wait_task(pending, 0, 0)
+        return avra_wait_park()
+    }
+    if name == 2 {
+        avra_task_answer(pending, boxed(0))
+        return 0
+    }
+    let timed = avra_task_at(1)
+    if name == 3 {
+        avra_wait_task(timed, 0, 0)
+        return avra_wait_park()
+    }
+    avra_array_get(avra_task_join(timed), 0)
+}
+
+/// Three steps, each noting its name, a yield between them.
+fn stepper(name: int, log: ptr, pending: ptr) -> int {
+    avra_array_push(log, name)
+    sleep(ms(0))
+    let _ = between(name, pending)
+    avra_array_push(log, name)
+    sleep(ms(0))
+    avra_array_push(log, name)
+    0
+}
+
+/// The order one schedule gives — twelve names — and then how many
+/// choices it made.
+fn order(schedule: int) -> List<int> {
+    let log = avra_array_sized(12)
+    let pending = avra_task_pending()
+    avra_sched_seed(schedule)
+    let a = spawn stepper(1, log, pending)
+    let b = spawn stepper(2, log, pending)
+    let c = spawn stepper(3, log, pending)
+    let d = spawn stepper(4, log, pending)
+    let _ = a.await + b.await + c.await + d.await
+    let choices = avra_sched_settle()
+    [avra_array_get(log, i) for i in 0..12].concat([choices])
+}
+
+fn shown(o: List<int>) -> string { ["${v}" for v in o].join("") }
+
+/// Every order folded into one number, so four hundred of them are one
+/// line a reader can hold both engines to.
+fn folded(orders: List<List<int>>) -> int {
+    mut sum = 7
+    for o in orders {
+        for v in o { sum = (sum * 31 + v) % 1000000007 }
+    }
+    sum
+}
+
+let orders = [order(k) for k in 0..400]
+"${shown(orders[0])} ${shown(orders[1])} ${shown(orders[2])} ${shown(orders[3])} | ${folded(orders)}"
