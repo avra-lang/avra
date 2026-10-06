@@ -5,13 +5,17 @@ their price is measured on the code Avra emits. Two rewrites:
   after  one test after every call that MAY REACH a cancel point: a
          direct call to a fn that parks or calls one that may (a
          fixpoint over the module's own call graph), and every call
-         through a register. `byte` loads one global byte; `task` loads
-         the current task's record, then its byte.
+         through a register. A CALL THROUGH A REGISTER MAY REACH
+         ANYTHING, so the fn making one may reach too — `byte` (one
+         global byte) and `task` (the current task's record, then its
+         byte) hold that rule. `known` is the floor: the test still
+         follows a call through a register, but the fn making it is not
+         taken to reach, as if every fn value said whether it waits.
   edge   one test before every branch back to an earlier block: a loop's
          back-edge, as the emitter lays blocks out.
 
 The taken side is cold and out of line. Prints the census it rewrote by.
-usage: rewrite.py <in.ll> <out.ll> plain|byte|task|edge"""
+usage: rewrite.py <in.ll> <out.ll> plain|byte|task|known|edge"""
 import re, sys
 
 PARKS = re.compile(r'^@avra_(task_join|task_settle\w*|tasks_\w+|fiber_sleep|fiber_yield|fiber_park_fd|wait_park)$')
@@ -37,12 +41,13 @@ def functions(lines):
     return out
 
 
-def reaching(lines, fns):
-    """The fns that may reach a cancel point, and each one's direct callees."""
+def reaching(lines, fns, through_registers):
+    """The fns that may reach a cancel point: those that park, those that
+    call through a register when `through_registers`, and their callers."""
     callees = {}
     for name, lo, hi in fns:
         callees[name] = {m.group(1) for line in lines[lo:hi] for m in [CALL.search(line)] if m}
-    reach = {n for n, cs in callees.items() if any(PARKS.match(c) for c in cs)}
+    reach = {n for n, cs in callees.items() if any(PARKS.match(c) or (through_registers and c.startswith('%')) for c in cs)}
     grew = True
     while grew:
         grew = False
@@ -69,7 +74,7 @@ def load_of(mode, n):
 
 def rewritten(lines, mode):
     fns = functions(lines)
-    reach = reaching(lines, fns)
+    reach = reaching(lines, fns, mode != 'known')
     stats = dict(fns=len(fns), reach=len(reach), calls=0, tested=0, indirect=0, edges=0, blocks=0)
     out, at, n = [], 0, 0
     for name, lo, hi in fns:
@@ -90,7 +95,7 @@ def rewritten(lines, mode):
             if call:
                 stats['calls'] += 1
                 stats['indirect'] += call.group(1).startswith('%')
-            if mode in ('byte', 'task') and tested(line, reach):
+            if mode in ('byte', 'task', 'known') and tested(line, reach):
                 n += 1
                 stats['tested'] += 1
                 body.append(line)

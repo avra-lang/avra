@@ -1,6 +1,6 @@
 #!/bin/sh
 # Prices the cancel slice's tests ON AVRA'S OWN CODE: the bench server
-# (tools/bench/serve) is emitted as LLVM IR, rewritten four ways
+# (tools/bench/serve) is emitted as LLVM IR, rewritten five ways
 # (rewrite.py), linked as `avra build` links it, and put under the same
 # load, the variants taking turns (`built` is `avra build`'s own binary,
 # beside the four made here by clang -O2). Prints the census, each binary's text
@@ -21,7 +21,7 @@ build/avra emit tools/bench/serve > "$out/serve.ll" 2> "$out/emit.err" || { echo
 [ -s "$out/serve.ll" ] || cp tools/bench/serve/build/main.ll "$out/serve.ll" 2> /dev/null
 echo "== $(uname -srm); the emitted program: $(wc -l < "$out/serve.ll") lines of IR; linked with: $link"
 $real -O2 -c -o "$out/probe_state.o" "$here/probe_state.c" || exit 1
-for v in plain byte task edge; do
+for v in plain known byte task edge; do
     python3 "$here/rewrite.py" "$out/serve.ll" "$out/serve_$v.ll" $v || exit 1
     t0=$(date +%s%N)
     $real -w -O2 "$out/serve_$v.ll" "$out/probe_state.o" $link -o "$out/serve_$v" 2> "$out/link_$v.err" || { echo "$v does not link"; head -8 "$out/link_$v.err"; exit 1; }
@@ -57,7 +57,7 @@ measured() {
 }
 echo "== requests a second and server CPU a request, core 0, ${secs}s a run"
 for round in $(seq 1 ${ROUNDS:-3}); do
-    for v in built plain byte task edge; do
+    for v in built plain known byte task edge; do
         bin=$out/serve_$v
         echo "round $round  $(printf '%-6s' $v) keep-alive c=50 $(measured "$bin" -c50)   pipelined16 c=200 $(measured "$bin" -c200 -s "$pipeline")"
     done
