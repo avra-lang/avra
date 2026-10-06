@@ -275,9 +275,11 @@ impl Db {
     /// Whether no owner's run is open.
     fn idle() -> bool { self.open.get().is_empty() }
 
-    /// A write into `family`, counted, and told to the innermost open run.
+    /// A write into `family`, counted, told to every answer read back and
+    /// to the innermost open run.
     fn wrote(family: int) {
         self.written.set(self.written.get() + 1)
+        self.unsettles_restored()
         let top? = self.open.get().last() else { return }
         if !top.wrote.get().contains(family) { top.wrote.push(family) }
     }
@@ -340,7 +342,6 @@ impl Db {
     /// reader ever read moves the revision.
     fn moved(family: int, cell: int, read_at: int) -> bool {
         let kernel? = self.kernel.get() else { return true }
-        self.unsettles_restored()
         match self.home.get() {
             .Given -> {
                 if read_at == kernel.revision() { return false }

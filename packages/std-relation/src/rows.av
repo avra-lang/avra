@@ -111,13 +111,14 @@ impl ReadMark {
 
     /// A read of `cell` in `family`, told to the kernel once per reader
     /// per revision: a repeat by the query whose read already stands is
-    /// free.
-    fn told(kernel: Kernel, family: int, cell: int) {
+    /// free. Answers whether this read was told.
+    fn told(kernel: Kernel, family: int, cell: int) -> bool {
         let now = kernel.revision()
         let reader = kernel.reader()
-        if self.read_by(now, reader) { return }
+        if self.read_by(now, reader) { return false }
         kernel.record_at(family, cell)
         self.mark(now, reader)
+        true
     }
 
     /// Whether `reader` already read here in `revision` — its edge
@@ -149,6 +150,7 @@ export type Rows<R> = {
     buckets: Cell<List<Bucket>>,
     family: Cell<int>,
     read: ReadMark,
+    heard: Cell<bool>,
 }
 
 /// An empty store with an index per flag, numbered in the order the
@@ -176,6 +178,7 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
         buckets: buckets,
         family: Cell.new(-1),
         read: unread(),
+        heard: Cell.new(false),
     }
 }
 
@@ -243,6 +246,7 @@ impl Rows<R> {
 
     /// Every read here forgotten — the kernel they were told to is left.
     fn unmarked() {
+        self.heard.set(false)
         self.read.cleared()
         for b in self.buckets.get() { b.read.cleared() }
     }
@@ -253,7 +257,7 @@ impl Rows<R> {
         self.settled_for(db)
         if db.unheard() { return b }
         let kernel? = db.kernel.get() else { return b }
-        self.buckets.get()[b].read.told(kernel, self.family.get(), b + 1)
+        if self.buckets.get()[b].read.told(kernel, self.family.get(), b + 1) { self.heard.set(true) }
         b
     }
 
@@ -262,7 +266,7 @@ impl Rows<R> {
         self.settled_for(db)
         if db.unheard() { return }
         let kernel? = db.kernel.get() else { return }
-        self.read.told(kernel, self.family.get(), 0)
+        if self.read.told(kernel, self.family.get(), 0) { self.heard.set(true) }
     }
 
     /// A read here stands only on rows no open run is still writing:
@@ -336,7 +340,8 @@ impl Rows<R> {
         keys: List<List<IndexKey>>,
         stamp: Stamp,
     ) {
-        if db.read_ever() { self.late_check(db, relation, id, keys) }
+        // no query ever read here: no write can be late, and no cell owes a stamp
+        if self.heard.get() { self.late_check(db, relation, id, keys) }
         let held = self.row(id) != null
         let was = if id < self.next_id() { self.stamps.get()[id].owner } else { 0 }
         if held && was != stamp.owner { db.refuse(two_owners(relation, id)) }
@@ -367,7 +372,8 @@ impl Rows<R> {
         let live = [id for id in mine.get() if marks[id].owner == owner && self.row(id) != null]
         let gone = [id for id in live if marks[id].run < run]
         if !gone.is_empty() {
-            if db.read_ever() { self.late_among(db, self.name, self.filed_buckets(gone)) }
+            if self.heard.get() { self.late_among(db, self.name, self.filed_buckets(gone)) }
+            db.unsettles_restored()
             for id in gone { self.remove(id) }
         }
         mine.set([id for id in live if marks[id].run >= run])
@@ -617,7 +623,7 @@ impl SideRows<R> {
     fn recorded(db: Db, fam: int, cell: int, mark: ReadMark) {
         if db.unheard() { return }
         let kernel? = db.kernel.get() else { return }
-        mark.told(kernel, fam, cell)
+        let _ = mark.told(kernel, fam, cell)
     }
 
     /// Slot `id` read under `db`, recorded as cell `id + 1` — a closed Db
