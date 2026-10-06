@@ -56,6 +56,9 @@ type Job = {
     gate: ptr?,
     // it ended with no answer
     cancelled: bool,
+    // a wait row filed for it and it has not parked on its set: one
+    // set at a time, so no other wait may begin
+    arming: bool,
 }
 
 impl Job {
@@ -81,6 +84,7 @@ fn job_of(vt: int, id: int, record: int, at: Place?, frames: List<List<Val?>>) -
         slots: [Val.N, Val.N, Val.N, Val.N],
         gate: null,
         cancelled: false,
+        arming: false,
     }
 }
 
@@ -172,6 +176,7 @@ impl Machine {
             if t == self.running { return self.trapped_val("tasks join each other in a ring — deadlock") }
             t = self.joining_of(t)
         }
+        if self.tasks[self.running].arming { return self.trapped_val("a task waited inside a wait it had not parked") }
         self.tasks[id].waiters.push(self.running)
         self.parking = true
         Val.N
@@ -351,9 +356,17 @@ impl Machine {
         self.tasks[self.running].vt
     }
 
+    /// The running task's place with the policy, as a wait row files
+    /// for it: it is arming a set until it parks on it.
+    fn arming_vt() -> int {
+        let vt = self.running_vt()
+        self.tasks[self.running].arming = true
+        vt
+    }
+
     fn wait_fd_val(vals: List<Val>) -> Val {
         avra_vtask_wait_fd(
-            self.running_vt(),
+            self.arming_vt(),
             self.whole(vals[0]),
             self.whole(vals[1]),
             self.whole(vals[2]),
@@ -364,7 +377,7 @@ impl Machine {
 
     fn wait_until_val(vals: List<Val>) -> Val {
         avra_vtask_wait_until(
-            self.running_vt(),
+            self.arming_vt(),
             self.whole(vals[0]),
             self.whole(vals[1]),
             self.whole(vals[2]),
@@ -374,18 +387,31 @@ impl Machine {
 
     fn ungated() -> Val { self.defect_val("a gate that is no gate survived typing") }
 
-    fn wait_gate_val(vals: List<Val>) -> Val {
-        let gate? = self.gate_of(vals[0]) else { return self.ungated() }
-        avra_vtask_wait_gate(self.running_vt(), gate, self.whole(vals[1]), self.whole(vals[2]))
+    /// A wait on a gate or on a task's end: a task's record begins as a
+    /// gate, so either files through either row.
+    fn wait_on_val(vals: List<Val>) -> Val {
+        let vt = self.arming_vt()
+        let own? = self.gate_of(vals[0]) else { return self.wait_on_task(vt, vals) }
+        avra_vtask_wait_gate(vt, own, self.whole(vals[1]), self.whole(vals[2]))
         Val.I(0)
     }
 
-    fn wait_task_val(vals: List<Val>) -> Val {
-        let id = self.task_of(vals[0])
+    fn wait_on_task(vt: int, vals: List<Val>) -> Val {
+        let id? = self.job_of_record(vals[0]) else { return self.ungated() }
         let gate = self.end_gate(id)
-        avra_vtask_wait_gate(self.running_vt(), gate, self.whole(vals[1]), self.whole(vals[2]))
+        avra_vtask_wait_gate(vt, gate, self.whole(vals[1]), self.whole(vals[2]))
         if self.tasks[id].done { avra_rc_release(gate) }
         Val.I(0)
+    }
+
+    /// The job whose record `v` is, or null: the record names its job,
+    /// and the job names that record back.
+    fn job_of_record(v: Val) -> int? {
+        let box? = array_id(v) else { return null }
+        let head = self.arrays[box].first() ?? Val.N
+        let at? = match head { .I(j) -> j, rest -> null } else { return null }
+        if at <= 0 || at >= self.tasks.length || self.tasks[at].record != box { return null }
+        at
     }
 
     /// The gate a wait on task `id` files on: the task's own while it
@@ -406,7 +432,10 @@ impl Machine {
     /// once when the set is claimed already, else when it resumes here.
     fn wait_park_val() -> Val {
         let vt = self.running_vt()
-        if self.woke() || avra_vtask_park(vt) == 0 { return Val.I(avra_vtask_claim(vt)) }
+        if self.woke() || avra_vtask_park(vt) == 0 {
+            self.tasks[self.running].arming = false
+            return Val.I(avra_vtask_claim(vt))
+        }
         self.policy_parked()
         Val.I(0)
     }
