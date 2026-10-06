@@ -1,0 +1,85 @@
+//! WHAT ONE ROW READ COSTS, in nanoseconds: a dense list index, `get` on a
+//! relation nothing records, and `get` on a relation whose owner records
+//! every read — once with the same reader throughout (a repeat is the
+//! mark's fast path) and once with a new reader each pass (every read is
+//! told to the owner, as a new query's first read is).
+use @std.relation.{relation}
+use @std.meta.{dense}
+use @std.relation.db.{new_db, hooked_db, quiet_hooks, Db, Hooks}
+use @std.time.{now_ns}
+
+@dense
+type RowId = { index: int }
+
+@relation
+type Row = {
+    id: RowId,
+    @index name: string,
+    exported: bool,
+    owner: string,
+}
+
+type Plain = { name: string, exported: bool, owner: string }
+
+fn filled(db: Db, n: int) {
+    for i in 0..n {
+        let _ = Row.insert(db, name: "n${i}", exported: i % 3 == 0, owner: "")
+    }
+}
+
+fn read_rows(db: Db, n: int) -> int {
+    mut sum = 0
+    for i in 1..n + 1 {
+        let x = Row.get(db, RowId { index: i })
+        if x != null && x!.exported { sum = sum + 1 }
+    }
+    sum
+}
+
+fn read_list(rows: List<Plain>) -> int {
+    mut sum = 0
+    for r in rows {
+        if r.exported { sum = sum + 1 }
+    }
+    sum
+}
+
+/// An owner that counts each read it is told of, under the reader `reader` names.
+fn counting(told: Cell<int>, reader: Cell<int>) -> Hooks {
+    quiet_hooks() with {
+        record: (_family: int, _cell: int) -> {
+            told.set(told.get() + 1)
+            reader.get()
+        },
+        revision: () -> 1,
+        running: () -> reader.get(),
+    }
+}
+
+fn timed(label: string, n: int, rounds: int, pass: fn(int) -> int) {
+    let t = now_ns()
+    mut sum = 0
+    for r in 0..rounds { sum = sum + pass(r) }
+    println("${label}	ns_per_read=${(now_ns() - t) / (n * rounds)}	checksum=${sum}")
+}
+
+let n = 20000
+let rounds = 50
+let rows = [Plain { name: "n${i}", exported: i % 3 == 0, owner: "" } for i in 0..n]
+timed("list", n, rounds, (_r: int) -> read_list(rows))
+
+let quiet = new_db()
+filled(quiet, n)
+timed("relation.unrecorded", n, rounds, (_r: int) -> read_rows(quiet, n))
+
+let told: Cell<int> = Cell.new(0)
+let reader: Cell<int> = Cell.new(1)
+let heard = hooked_db(counting(told, reader))
+filled(heard, n)
+timed("relation.repeat", n, rounds, (_r: int) -> read_rows(heard, n))
+println("told	${told.get()}")
+timed("relation.new_reader", n, rounds, (r: int) -> {
+    reader.set(r + 2)
+    read_rows(heard, n)
+})
+println("told	${told.get()}")
