@@ -296,8 +296,11 @@ static int64_t g_trace_left = 0;
 
 static int64_t now_ns(void);
 
+static void clock_turned(void);
+
 __attribute__((constructor))
 static void trace_settle(void) {
+    avra_clock_turned_hook = clock_turned;
     const char* env = getenv("AVRA_FLOW_TRACE");
     if (!env || !*env) return;
     if (strcmp(env, "1") != 0) {
@@ -362,7 +365,7 @@ static void traced_fiber(const char* what, const Fiber* f, long long n) {
 // ── Time ────────────────────────────────────────────────────────
 
 // The process's one clock, read as the scheduler's own.
-static int64_t now_ns(void) { return avra_clock_read(); }
+static inline int64_t now_ns(void) { return avra_clock_read(); }
 
 // `ms` from now, saturating: a wait too long to spell in nanoseconds
 // is a wait for ever, never one already due.
@@ -440,13 +443,14 @@ static int64_t g_until_poll = POLL_IDLE;
 // SEEDED, THE QUEUE ALONE NEVER DECIDES: `g_until_poll` is held at zero,
 // so every switch fails the fast path's own test and reaches the pick —
 // and an unseeded switch carries nothing for it. The poller's turn is
-// then counted here, by the same law.
+// then counted here, by the same law. A VIRTUAL CLOCK PINS THE SWITCH
+// the same way: the slow half is where a task that parks is seen to.
 static int g_seeded = 0;
 static int64_t g_schedule = 0;
 static uint64_t g_seed_state = 0;
 static int64_t g_choices = 0;
 static int64_t g_pick_links = 0;
-static int64_t g_seeded_until_poll = 0;
+static int64_t g_pinned_until_poll = 0;
 
 static int64_t g_polls = 0;
 
@@ -490,11 +494,13 @@ static int64_t g_parked_fds = 0;
 static FdWaits* g_fds = NULL;
 static size_t g_fds_cap = 0;
 
+static int pinned(void) { return g_seeded || avra_clock.virtual; }
+
 // The poller has been asked, or its count begins: when it is next due.
 static void poll_counted(void) {
-    if (g_seeded) {
+    if (pinned()) {
         g_until_poll = 0;
-        g_seeded_until_poll = FAIR_TURNS;
+        g_pinned_until_poll = FAIR_TURNS;
         return;
     }
     g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;
@@ -1125,8 +1131,8 @@ static inline void switch_to(Fiber* next) {
 // The poller's turn among ready tasks: every FAIR_TURNS switches while a
 // descriptor waiter is filed, seeded or not.
 static void poller_turn(void) {
-    if (g_seeded) {
-        if (g_parked_fds > 0 && --g_seeded_until_poll <= 0) poller_wait(0);
+    if (pinned()) {
+        if (g_parked_fds > 0 && --g_pinned_until_poll <= 0) poller_wait(0);
         return;
     }
     if (g_until_poll > 0) return;
@@ -1172,6 +1178,9 @@ static Fiber* ready_picked(void) {
 
 __attribute__((noinline))
 static Fiber* next_with_world(void) {
+    // A TASK THAT PARKS HAS WAITED: its count of reads of a frozen clock
+    // begins again.
+    if (avra_clock.virtual && g_current->state == FIBER_PARKED) g_current->local->clock_asks = 0;
     for (;;) {
         if (g_timers_len > 0) fire_due_timers(now_ns());
         poller_turn();
@@ -1746,17 +1755,25 @@ void avra_vtask_end(int64_t t) {
 
 void avra_vtask_ready(int64_t t) { ready_push(virtual_at(t)); }
 
+// The evaluator's reads of the clock are its host's: when one of its
+// tasks parks, that count begins again.
+static int64_t host_waited(int64_t parked) {
+    if (parked) avra_task_local->clock_asks = 0;
+    return parked;
+}
+
 void avra_vtask_sleep(int64_t t, int64_t ms) {
     Fiber* f = virtual_at(t);
     if (ms < 1) { ready_push(f); return; }
     alone(f);
     waits_until(f, deadline_after(ms), 0, 0);
     legacy_parked(f);
+    host_waited(1);
 }
 
 int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms) {
     Fiber* f = virtual_at(t);
-    if (park_fd_filed(f, fd, writable, timeout_ms)) return 1;
+    if (park_fd_filed(f, fd, writable, timeout_ms)) return host_waited(1);
     if (!f->timed_out) ready_push(f);
     return 0;
 }
@@ -1775,7 +1792,7 @@ void avra_vtask_wait_until(int64_t t, int64_t at_ns, int64_t arm, int64_t member
 
 void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member) { waits_gate(virtual_at(t), gate, arm, member); }
 
-int64_t avra_vtask_park(int64_t t) { return park_begun(virtual_at(t)); }
+int64_t avra_vtask_park(int64_t t) { return host_waited(park_begun(virtual_at(t))); }
 
 int64_t avra_vtask_claim(int64_t t) { return claim_taken(virtual_at(t)); }
 
@@ -1796,6 +1813,10 @@ int64_t avra_vtask_next(void) {
     next->state = FIBER_RUNNING;
     return (int64_t)(uintptr_t)next;
 }
+
+// The clock became virtual, or real again: the switch is pinned to the
+// slow half, or let go.
+static void clock_turned(void) { poll_counted(); }
 
 // ── The seeded order ────────────────────────────────────────────
 
