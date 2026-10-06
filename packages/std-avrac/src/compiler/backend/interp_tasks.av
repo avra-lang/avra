@@ -314,18 +314,27 @@ impl Machine {
         self.releases_val(Val.A(t.record))
     }
 
-    /// Whether the policy named a timer's task: its time came, so it
-    /// answers a unit box and there is nothing to resume.
-    fn fired(vt: int) -> bool {
-        let id? = self.tasks.find_index(it.vt == vt && !it.done && it.timed()) else { return false }
+    /// A timer's time came: its task answers a unit box.
+    fn fired(id: int) {
         self.unrun_ended(id, self.fresh_array([Val.I(0)]))
-        true
     }
 
+    /// The job the policy names next, or -1 when the machine holds none
+    /// by that name.
+    fn named() -> int {
+        let vt = avra_vtask_next()
+        self.tasks.find_index(it.vt == vt && !it.done) ?? -1
+    }
+
+    /// The next task to run, loaded. A timer the policy names has
+    /// nothing to resume: it fires, and the policy is asked again.
     fn resume_next() -> Place {
-        mut vt = avra_vtask_next()
-        while self.fired(vt) { vt = avra_vtask_next() }
-        let next? = self.tasks.find_index(it.vt == vt && !it.done) else {
+        mut next = self.named()
+        while next >= 0 && self.tasks[next].timed() {
+            self.fired(next)
+            next = self.named()
+        }
+        if next < 0 {
             self.defect("the policy named a task the machine does not hold")
             return self.tasks[self.running].at!
         }
@@ -451,9 +460,7 @@ impl Machine {
         let record = self.unrun(vt)
         self.retains(record)
         avra_vtask_wait_until(vt, self.whole(vals[0]), 0, 0)
-        if avra_vtask_park(vt) == 0 {
-            let _ = self.fired(vt)
-        }
+        if avra_vtask_park(vt) == 0 { self.fired(self.tasks.length - 1) }
         record
     }
 

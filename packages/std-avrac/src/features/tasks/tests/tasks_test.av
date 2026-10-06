@@ -3,6 +3,8 @@
 // the last thing holding it ends.
 use @std.avrac.testing.{shown}
 
+extern fn avra_sched_timers() -> int
+
 spec "features/tasks" {
     given "spawn and await" {
         then "a body's answer comes back through `.await`" {
@@ -40,6 +42,13 @@ spec "features/tasks" {
     given "one process, many runs" {
         then "a run a trap stopped with tasks outstanding leaves none for the next" {
             shown("let a = spawn 1\nlet b = spawn 2\n[1][5]") == "<refused>" &&
+                shown("let t = spawn 3\nt.await") == "3"
+        }
+        then "a run that ends holding a pending task and a far timer leaves the policy none" {
+            shown(
+                    "extern fn avra_task_pending() -> ptr\nextern fn avra_task_at(at_ns: int) -> ptr\nlet _p = avra_task_pending()\nlet _t = avra_task_at(9000000000000000000)\n1",
+                ) == "1" &&
+                avra_sched_timers() == 0 &&
                 shown("let t = spawn 3\nt.await") == "3"
         }
     }
