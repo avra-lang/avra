@@ -241,8 +241,12 @@ impl Workspace {
         [f for f in flatten([self.all_files(pkg.src) for pkg in self.packages()]) if !self.is_test_path(f)]
     }
 
-    /// Whether a source path is a package's TEST tree rather than its code.
-    fn is_test_path(path: string) -> bool { path.contains("/tests/") }
+    /// Whether a source path is in its OWN package's test tree rather
+    /// than its code: `tests/` is read under the source root of the
+    /// package that holds the file, never above it.
+    fn is_test_path(path: string) -> bool {
+        "/${below(path, self.packages()[self.holder_of_path(path)].src)}".contains("/tests/")
+    }
 
     fn root_files() -> List<string> {
         self.all_files(self.packages()[0].src)
