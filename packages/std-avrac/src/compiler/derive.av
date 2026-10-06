@@ -6,7 +6,8 @@
 //! minted from its module's record, its warnings and its object come from the
 //! store. The sources are the hold's oracle — a derivation that fails under a
 //! hold is answered again from the sources alone.
-use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
+use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, qtrace, FileId, DeclId}
+use query.{traced}
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path, joined_path}
 use diagnostics.{Diag, render_among}
@@ -45,6 +46,11 @@ impl Attempt {
     /// has no hold to blame: asking again would ask forever.
     fn unheld(why: string) -> Turn {
         if self.hold { Turn.Again(self with { hold: false }) } else { Turn.Refused(nothing_held(why)) }
+    }
+
+    /// What the attempt asks, for a trace line.
+    fn shown() -> string {
+        "hold ${self.hold} homes ${self.homes} moved ${self.moved} reading ${self.parse.length}"
     }
 
     /// The attempt once more, the records having moved under it — twice, no more.
@@ -405,16 +411,35 @@ impl Workspace {
 
     /// A fresh workspace's attempt — a restart never inherits a hold.
     fn again(at: Attempt) -> Result<Derived, string> {
+        if traced() { qtrace("Q\tattempt\t${at.turned}\t${at.shown()}\n") }
+        self.turned(at, self.tried_anew(at))
+    }
+
+    /// One attempt in a workspace of its own, which gives back what it derived
+    /// unless the attempt stood: the workspace is this fn's alone, so what a
+    /// turned attempt read dies here, before the next attempt reads anything.
+    fn tried_anew(at: Attempt) -> Result<Derived, Turn> {
         // NOT `mut`: `anew`'s own hooks already capture this box
         // (workspace.av's `anew` doc — an identity, never a value).
         let fresh = self.anew()
-        fresh.attempted(at)
+        let tried = fresh.tried(at)
+        if !(tried is .Ok) { fresh.discarded() }
+        tried
     }
 
     /// AN ATTEMPT, TURNED UNTIL IT STANDS: one that finds its question was wrong
-    /// names the attempt to make instead, and a fresh workspace makes it.
+    /// names the attempt to make instead, and a fresh workspace makes it. ONE
+    /// ATTEMPT IS ALIVE AT A TIME — this workspace gives back what its own
+    /// attempt derived before the next begins.
     fn attempted(at: Attempt) -> Result<Derived, string> {
-        match self.tried(at) {
+        let tried = self.tried(at)
+        if !(tried is .Ok) { self.discarded() }
+        self.turned(at, tried)
+    }
+
+    /// What `at` answered: the derivation that stood, or the attempt it names, made.
+    fn turned(at: Attempt, tried: Result<Derived, Turn>) -> Result<Derived, string> {
+        match tried {
             .Ok(d) -> d,
             .Err(.Again(next)) -> self.again(next with { turned: at.turned + 1 }),
             .Err(.Refused(why)) -> { fail why },
