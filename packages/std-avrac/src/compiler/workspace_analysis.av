@@ -449,10 +449,12 @@ impl Workspace {
     /// program's, memoized — then run in the evaluator. A const whose
     /// value asks for itself is refused as the cycle it is.
     fn settled(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
-        // a run that reads this const reads its file
+        // a run that reads this const reads its file, and what its settlement read
         let reader: string? = self.hold.settling.get().last()
         if reader != null { self.read_by(reader!, [self.decls.file(f).path]) }
-        let r = self.settled_at(self.settle_id(f, root, seats))
+        let id = self.settle_id(f, root, seats)
+        let r = self.settled_at(id)
+        if reader != null { self.read_by(reader!, self.hold.settle_reads.get().get("${id}") ?? []) }
         self.logged_const_read(f, root, seats, r)
         r
     }
