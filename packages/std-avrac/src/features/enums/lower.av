@@ -6,7 +6,7 @@
 //! order, each arm's binds read inside its own region.
 use core.{ExprId, Reg, Ins, TypeId, Type, BinOp, Arm, PatId}
 use features.{LowerCx, EnumSig, pat_semantics_of}
-use features.enums.{all_irrefutable}
+use features.enums.{all_irrefutable, binders}
 
 fn enums_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
@@ -91,7 +91,7 @@ fn switchable(cx: LowerCx, arms: List<Arm>, count: int) -> bool {
 fn whole_test(cx: LowerCx, a: Arm) -> string? {
     if a.guard != null || a.pats.length != 1 { return null }
     match cx.view.store.pat(a.pats[0]) {
-        .Variant(name, args) if all_irrefutable(cx.view.store, args) -> name.of,
+        .Variant(name, args) if all_irrefutable(cx.view.store, cx.names, args) -> name.of,
         .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) -> null,
     }
 }
@@ -200,7 +200,7 @@ fn arm_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm, want: TypeId) -> Reg {
 /// its own test, since each variant lays its payloads out its own way
 /// — then read out in the first alternative's order.
 fn or_binds_regs(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> List<Reg> {
-    let names = [b.name for b in cx.view.store.pattern_binds(a.pats[0])]
+    let names = [b.name for b in binders(cx.view.store, cx.names, a.pats[0])]
     if names.is_empty() { return [] }
     let types? = spoken_types(cx, a.value, names.length) else {
         cx.defect("an `or` arm's binds reached lowering without their types")
@@ -246,7 +246,7 @@ fn stored_binds(
     cells: List<Reg>,
 ) {
     let regs = pat_binds_of(cx, p, v, vty)
-    let own = [b.name for b in cx.view.store.pattern_binds(p)]
+    let own = [b.name for b in binders(cx.view.store, cx.names, p)]
     for j, n in names { cx.stored(cells[j], regs[own.index_of(n)]) }
 }
 
@@ -265,7 +265,8 @@ export fn pat_binds_of(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<R
 
 export fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
     match cx.view.store.pat(p) {
-        .Bind(_) -> [v],
+        // a name that compares to a const binds nothing
+        .Bind(_) -> if cx.names.compared(cx.view.store, p) == null { [v] } else { [] },
         .Variant(name, args) -> payload_binds(cx, name.of, args, v, vty),
         .Format(_, _) -> {
             cx.defect("a format pattern reached the enum lowering's binds")
@@ -337,7 +338,8 @@ fn guard_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm, g: ExprId) -> Reg {
 /// missing payload is never touched.
 export fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
     match cx.view.store.pat(p) {
-        .Wild or .Rest or .Bind(_) -> cx.const_bool(true),
+        .Wild or .Rest -> cx.const_bool(true),
+        .Bind(_) -> named_pat_reg(cx, p, v, vty),
         .Lit(lit) -> literal_pat_reg(cx, lit, v, vty),
         .Variant(name, args) -> variant_reg(cx, name.of, args, v, vty),
         .Format(_, _) -> {
@@ -357,6 +359,13 @@ export fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
 /// `null` pattern is never adopted, so comparing it by VALUE reads a
 /// TAGGED subject's spare tag against an unrelated zero. Any other
 /// literal still compares by value.
+/// A bare name: a const's compares as a literal does; any other binds
+/// and accepts whatever arrives.
+fn named_pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
+    let read? = cx.names.compared(cx.view.store, p) else { return cx.const_bool(true) }
+    literal_pat_reg(cx, read, v, vty)
+}
+
 fn literal_pat_reg(mut cx: LowerCx, lit: ExprId, v: Reg, vty: TypeId) -> Reg {
     if cx.view.store.null_literal(lit) { return cx.un(cx.presence_of(v, vty)) }
     cx.same_value(v, cx.reg_of(lit), vty)
@@ -370,7 +379,7 @@ fn variant_reg(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: Ty
         return cx.const_bool(false)
     }
     let tagged = cx.bin(Type.Bool, BinOp.Eq, cx.tag_of(v), cx.const_int(which!))
-    if all_irrefutable(cx.view.store, args) { return tagged }
+    if all_irrefutable(cx.view.store, cx.names, args) { return tagged }
     let carried = declared!.payloads_of(name)
     cx
         .region_as(tagged, cx.type(bool)) { cx -> payloads_reg(cx, carried, args, v) } else { cx -> cx.const_bool(false) }

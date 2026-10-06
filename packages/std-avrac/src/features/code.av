@@ -43,7 +43,7 @@ use features.{
     AnnotationFact,
     bound_decl_of,
 }
-use features.enums.{answering_arms}
+use features.enums.{answering_arms, binders}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
 use @std.relation.{relation}
@@ -378,7 +378,7 @@ impl Code {
     fn answering() -> int? {
         match self.at {
             .Expr(id) -> match self.of.view.store.expr(id) {
-                .Match(_, arms) -> answering_arms(self.of.view.store, arms),
+                .Match(_, arms) -> answering_arms(self.of.view.store, self.of.names, arms),
                 _ -> null,
             },
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
@@ -806,7 +806,7 @@ impl ArmInfo {
     fn binds() -> List<ArmBind> {
         let p? = self.pats.first() else { return [] }
         match p.at {
-            .Pat(id) -> [self.bound(j, b.name) for j, b in p.of.view.store.pattern_binds(id)],
+            .Pat(id) -> [self.bound(j, b.name) for j, b in binders(p.of.view.store, p.of.names, id)],
             _ -> [],
         }
     }
