@@ -59,6 +59,21 @@ impl Attempt {
     }
 }
 
+/// What one attempt answered, and whether its workspace held any file.
+type Tried = { answer: Result<Derived, Turn>, held: bool }
+
+/// A derivation that stood: kept, or let go for the attempt that lowers what it owes.
+enum Stood {
+    Kept(Derived)
+    Owing(Attempt)
+}
+
+/// A derivation that only SPEAKS owes its instantiations' verdict, unless these
+/// very instantiations lowered clean before; one that links answers at the link.
+fn verdict_owed(d: Derived) -> bool {
+    d.want is .Diagnostics && !d.store.has(Stored.Unit, clean_key(d.asked))
+}
+
 /// A refusal in the derivation's words is the attempt's refusal.
 fn or_refused<T>(r: Result<T, string>) -> Result<T, Turn> {
     match r { .Ok(v) -> .Ok(v), .Err(why) -> .Err(Turn.Refused(why)) }
@@ -296,10 +311,40 @@ impl Workspace {
 
     /// `derived`, with files read whatever the store holds for them.
     fn derived_reading(entry: string?, want: Want, parse: List<ReadFile>) -> Result<Derived, string> {
-        let held = self.attempted(Attempt { entry: entry, want: want, parse: parse })
-        if held is .Ok { return self.checked_whole(held?) }
-        if held_paths(self).is_empty() { return held }
-        let plain = self.from_sources(entry, want)
+        self.derived_owing(entry, want, parse, verdict_owed)
+    }
+
+    /// THE PROGRAM DERIVED — and derived again WHOLE, every instantiation lowered,
+    /// when `owes` says what the first derivation left unlowered is owed. ONE
+    /// DERIVATION IS ALIVE AT A TIME: the one that owes is let go before the whole
+    /// one begins, so asking again never stands two programs side by side.
+    fn derived_owing(entry: string?, want: Want, parse: List<ReadFile>, owes: fn(Derived) -> bool) -> Result<
+        Derived,
+        string,
+    > {
+        match self.stood_first(Attempt { entry: entry, want: want, parse: parse }, owes)? {
+            .Kept(d) -> d,
+            .Owing(at) -> self.again(at),
+        }
+    }
+
+    /// The derivation that stood under the hold: kept, or — owing — let go for
+    /// the attempt that reads the homes. It dies with this fn, its workspace
+    /// having given back what it derived.
+    fn stood_first(at: Attempt, owes: fn(Derived) -> bool) -> Result<Stood, string> {
+        let d = self.under_hold(at)?
+        if d.unlowered.is_empty() || !owes(d) { return Stood.Kept(d) }
+        d.program.ws.discarded()
+        Stood.Owing(Attempt { entry: d.entry, want: d.want, parse: at.parse, homes: true })
+    }
+
+    /// The attempt under the hold, and from the sources alone when it refused
+    /// and its first workspace held anything — the hold's oracle.
+    fn under_hold(at: Attempt) -> Result<Derived, string> {
+        let first = self.tried_anew(at)
+        let held = self.turned(at, first.answer)
+        if held is .Ok || !first.held { return held }
+        let plain = self.from_sources(at.entry, at.want)
         match plain {
             .Ok(d) -> {
                 eprintln(self.refusal_noted(held))
@@ -323,17 +368,6 @@ impl Workspace {
             },
             .Aside(_) -> hold_refusal_unkept(why),
         }
-    }
-
-    /// A derivation that only SPEAKS owes its instantiations' verdict: lowered now,
-    /// unless these very instantiations lowered clean before.
-    fn checked_whole(d: Derived) -> Result<Derived, string> {
-        if !(d.want is .Diagnostics) ||
-            d.unlowered.is_empty() ||
-            d.store.has(Stored.Unit, clean_key(d.asked)) {
-            return d
-        }
-        d.program.ws.whole(d, [])
     }
 
     /// The derivation with every instantiation lowered: the homes read, and
@@ -409,32 +443,23 @@ impl Workspace {
         }
     }
 
-    /// A fresh workspace's attempt — a restart never inherits a hold.
-    fn again(at: Attempt) -> Result<Derived, string> {
-        if traced() { qtrace("Q\tattempt\t${at.turned}\t${at.shown()}\n") }
-        self.turned(at, self.tried_anew(at))
-    }
+    /// AN ATTEMPT, TURNED UNTIL IT STANDS: one that finds its question was wrong
+    /// names the attempt to make instead, and a fresh workspace makes it — a
+    /// restart never inherits a hold.
+    fn again(at: Attempt) -> Result<Derived, string> { self.turned(at, self.tried_anew(at).answer) }
 
-    /// One attempt in a workspace of its own, which gives back what it derived
-    /// unless the attempt stood: the workspace is this fn's alone, so what a
+    /// ONE ATTEMPT IN A WORKSPACE OF ITS OWN, which gives back what it derived
+    /// unless the attempt stood. The workspace is this fn's alone, so what a
     /// turned attempt read dies here, before the next attempt reads anything.
-    fn tried_anew(at: Attempt) -> Result<Derived, Turn> {
+    fn tried_anew(at: Attempt) -> Tried {
+        if traced() { qtrace("Q\tattempt\t${at.turned}\t${at.shown()}\n") }
         // NOT `mut`: `anew`'s own hooks already capture this box
         // (workspace.av's `anew` doc — an identity, never a value).
         let fresh = self.anew()
-        let tried = fresh.tried(at)
-        if !(tried is .Ok) { fresh.discarded() }
-        tried
-    }
-
-    /// AN ATTEMPT, TURNED UNTIL IT STANDS: one that finds its question was wrong
-    /// names the attempt to make instead, and a fresh workspace makes it. ONE
-    /// ATTEMPT IS ALIVE AT A TIME — this workspace gives back what its own
-    /// attempt derived before the next begins.
-    fn attempted(at: Attempt) -> Result<Derived, string> {
-        let tried = self.tried(at)
-        if !(tried is .Ok) { self.discarded() }
-        self.turned(at, tried)
+        let answer = fresh.tried(at)
+        let held = !held_paths(fresh).is_empty()
+        if !(answer is .Ok) { fresh.discarded() }
+        Tried { answer: answer, held: held }
     }
 
     /// What `at` answered: the derivation that stood, or the attempt it names, made.
