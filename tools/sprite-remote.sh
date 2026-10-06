@@ -89,14 +89,31 @@ settle() {
     [ -f "$runs/$1/status" ] || { echo "$2" > "$runs/$1/status.new" && mv "$runs/$1/status.new" "$runs/$1/status"; }
 }
 
-# The Sprite's own promise to stay awake, by name, for five minutes.
+# The Sprite's own promise to stay awake, by the run's name, for five
+# minutes. THE ANSWER IS READ: the Sprite takes a name of lowercase
+# letters, digits and dashes only and refuses any other, and a run it
+# refused to hold stands still whenever nobody is attached — so the
+# name is made one it takes, and a refusal is the run's own output.
 hold() {
     [ -S /.sprite/api.sock ] || return 0
+    task=avra-$(printf '%s' "$2" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-')
+    ask() { curl -s -m 5 -w '\n%{http_code}' --unix-socket /.sprite/api.sock -H 'Content-Type: application/json' "$@" 2>/dev/null || :; }
     case $1 in
-        on) curl -s -m 5 --unix-socket /.sprite/api.sock -H 'Content-Type: application/json' -X POST http://sprite/v1/tasks -d "{\"name\":\"$2\",\"expire\":\"5m\"}" ;;
-        again) curl -s -m 5 --unix-socket /.sprite/api.sock -H 'Content-Type: application/json' -X PUT "http://sprite/v1/tasks/$2" -d '{"expire":"5m"}' ;;
-        off) curl -s -m 5 --unix-socket /.sprite/api.sock -X DELETE "http://sprite/v1/tasks/$2" ;;
-    esac >/dev/null 2>&1 || :
+        on) said=$(ask -X POST http://sprite/v1/tasks -d "{\"name\":\"$task\",\"expire\":\"5m\"}") ;;
+        again)
+            said=$(ask -X PUT "http://sprite/v1/tasks/$task" -d '{"expire":"5m"}')
+            # A hold that lapsed while the Sprite stood still is asked for again.
+            case $said in *200) ;; *) said=$(ask -X POST http://sprite/v1/tasks -d "{\"name\":\"$task\",\"expire\":\"5m\"}") ;; esac
+            ;;
+        off)
+            ask -X DELETE "http://sprite/v1/tasks/$task" >/dev/null
+            return 0
+            ;;
+    esac
+    case $said in
+        *200 | *201 | *409) ;;
+        *) [ ! -d "$runs/$2" ] || echo "sprite-run: the Sprite would not be held awake ($(printf '%s' "$said" | tr '\n' ' ')) — this run stands still whenever nobody is attached" >> "$runs/$2/out" ;;
+    esac
 }
 
 lacking() {
@@ -127,7 +144,8 @@ status() {
         [ -f "$o" ] || continue
         r=$(basename "$(dirname "$o")")
         [ ! -f "$runs/$r/status" ] && [ -n "$(members "$r")" ] && state=live || state=ended
-        echo "run=$r $state $(cat "$o")"
+        # How long since the run last wrote, and how long it has stood frozen in all.
+        echo "run=$r $state $(cat "$o") quiet=$(($(date +%s) - $(stat -c %Y "$runs/$r/out" 2>/dev/null || date +%s))) frozen=$(cat "$runs/$r/frozen" 2>/dev/null || echo 0)"
     done
 }
 
@@ -208,9 +226,18 @@ keeper() {
     hold on "$r"
     was=$(avail_mb)
     low=$was
+    wall=$(date +%s)
     while [ -d "$rd" ] && kill -0 "$main" 2>/dev/null; do
         why=
         now=$(cut -d. -f1 /proc/uptime)
+        # A turn is a second or two; one that took far longer is time the
+        # run did not have, and the run says so where its output is read.
+        turn=$(($(date +%s) - wall))
+        wall=$((wall + turn))
+        [ "$turn" -lt "${AVRA_FROZEN_S:-20}" ] || {
+            echo "sprite-run: this run made no progress for ${turn}s — the Sprite was suspended, or stalled, with nobody attached" >> "$rd/out"
+            echo $(($(cat "$rd/frozen" 2>/dev/null || echo 0) + turn)) > "$rd/frozen"
+        }
         # The floor rises with the fall: one more turn like the last must
         # leave the Sprite above where it stalls.
         have=$(avail_mb)

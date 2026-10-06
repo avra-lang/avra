@@ -2041,6 +2041,16 @@ Runtime facts, ours to ratify:
   nothing runs there detached without the hold; one silent for minutes
   has lost its filesystem and is destroyed and created again
   (provisioning is `run`'s first step, from `.github/ci/packages.txt`).
+  WHAT HOLDS A SPRITE AWAKE WITH NOBODY ATTACHED IS ITS TASKS API AND
+  NOTHING ELSE WE TRIED, measured over 400 s without contact: a task
+  refreshed each minute, no gap; a detached TTY session that prints, no
+  gap; a running service, a 372 s gap; outbound traffic, frozen at once;
+  an exec from outside every 20 s, one tick each. And a task's name is
+  lowercase letters, digits and dashes or the Sprite answers 400 — a
+  run is named after the machine that began it, capitals and all, so the
+  hold is asked under a name made to fit and ITS ANSWER IS READ. A run
+  that stood still says for how long in its own output, and `work
+  sprites` shows it beside how long the run has been quiet.
 - A BRANCH IS REBASED ONTO `origin/main` ONLY, never onto another
   unlanded branch: that lands the other branch's work unverified. A
   branch built on a stale local main moves with `git rebase --onto
