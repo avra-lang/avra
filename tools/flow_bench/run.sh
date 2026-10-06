@@ -100,7 +100,7 @@ fi
 (cd "$here/go" && GOFLAGS=-buildvcs=false "$go" build -o "$out/go/" ./...)
 
 # A tree with no compiler still measures the runtime's rows and Go.
-programs="switch spawn spawnparked pingpong scope latency parked"
+programs="switch spawn spawnparked pingpong gate scope latency parked"
 [ "${FLOW_AVRA:-1}" = 1 ] && [ -x "$root/build/avra" ] || { echo "flow-bench: no compiler asked for or found — the compiled Avra rows are not run" >&2; programs=""; }
 for p in $programs; do
     "$root/build/avra" build "$here/avra/$p" > /dev/null 2> "$out/$p.build" || { cat "$out/$p.build"; exit 1; }

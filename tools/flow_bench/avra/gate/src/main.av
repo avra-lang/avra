@@ -1,0 +1,55 @@
+//! A ROUND TRIP BETWEEN TWO TASKS OVER TWO GATES, by the rows
+//! themselves: each claims the other's gate, then parks on its own.
+//! Bare, then with a five-second `within` around each wait. Prints
+//! `<key> <total ns> <round trips>`.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.time.{ms, now_ns, secs, sleep, within}
+
+extern fn avra_gate_new() -> List<int>
+extern fn avra_gate_claim(g: List<int>) -> int
+extern fn avra_wait_gate(g: List<int>, arm: int, member: int)
+extern fn avra_wait_park() -> int
+
+fn number(name: string, fallback: int) -> int { parse_int(env_or(name, "")) ?? fallback }
+
+/// The calling task parked on `g` until it is claimed.
+fn waited(g: Cell<List<int>>) -> int {
+    avra_wait_gate(g.get(), 0, 0)
+    avra_wait_park()
+}
+
+/// Answers every claim of `mine` with one of `theirs`, `n` times.
+fn ponger(mine: Cell<List<int>>, theirs: Cell<List<int>>, n: int) -> int {
+    mut heard = 0
+    for _i in 0..n {
+        heard = heard + waited(mine)
+        let _ = avra_gate_claim(theirs.get())
+    }
+    heard
+}
+
+/// `n` round trips; each wait under a deadline when `bounded`. A gate
+/// keeps no claim nobody waited for, so the other task parks first.
+fn rally(n: int, bounded: bool) -> int {
+    let ping = Cell.new(avra_gate_new())
+    let pong = Cell.new(avra_gate_new())
+    let other = spawn ponger(ping, pong, n)
+    sleep(ms(1))
+    let t0 = now_ns()
+    for _i in 0..n {
+        let _ = avra_gate_claim(ping.get())
+        if bounded {
+            let _ = within secs(5) { waited(pong) }
+        } else {
+            let _ = waited(pong)
+        }
+    }
+    let spent = now_ns() - t0
+    let _ = other.await
+    spent
+}
+
+let n = number("FLOW_N", 1000000)
+println("gate_round_trip ${rally(n, false)} ${n}")
+println("gate_round_trip_within ${rally(n, true)} ${n}")
