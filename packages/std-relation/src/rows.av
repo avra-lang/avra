@@ -16,6 +16,7 @@
 //! ORDERED index's bucket folds its members in id order instead, so the
 //! order rows were declared in is part of what a reader saw.
 use @std.meta.{identity}
+use engine.{Kernel}
 
 /// Where a row files under one index: its text, or a dense slot (a
 /// bool's tag, a typed id's index).
@@ -106,6 +107,17 @@ impl ReadMark {
     fn cleared() {
         self.revision.set(-1)
         self.reader.set(-1)
+    }
+
+    /// A read of `cell` in `family`, told to the kernel once per reader
+    /// per revision: a repeat by the query whose read already stands is
+    /// free.
+    fn told(kernel: Kernel, family: int, cell: int) {
+        let now = kernel.revision()
+        let reader = kernel.reader()
+        if self.read_by(now, reader) { return }
+        kernel.record_at(family, cell)
+        self.mark(now, reader)
     }
 
     /// Whether `reader` already read here in `revision` — its edge
@@ -239,16 +251,16 @@ impl Rows<R> {
     /// with the revision and the reader. Answers `b`.
     fn seen(db: Db, b: int) -> int {
         self.settled_for(db)
-        if db.unheard() { return b }
-        self.recorded_at(db, b + 1, self.buckets.get()[b].read)
+        let kernel? = db.hearing() else { return b }
+        self.buckets.get()[b].read.told(kernel, self.family.get(), b + 1)
         b
     }
 
     /// The whole relation read under `db`: cell 0.
     fn seen_whole(db: Db) {
         self.settled_for(db)
-        if db.unheard() { return }
-        self.recorded_at(db, 0, self.read)
+        let kernel? = db.hearing() else { return }
+        self.read.told(kernel, self.family.get(), 0)
     }
 
     /// A read here stands only on rows no open run is still writing:
@@ -257,14 +269,6 @@ impl Rows<R> {
         if db.idle() { return }
         let owner? = db.writing(self.family.get()) else { return }
         db.refuse(read_mid_run(self.name, db.owner_name(owner)))
-    }
-
-    /// Cell `cell` read under `db`, told to the kernel once per reader per
-    /// revision: a repeat by the query whose read already stands is free.
-    fn recorded_at(db: Db, cell: int, mark: ReadMark) {
-        let now = db.revision()
-        if mark.read_by(now, db.reader_now()) { return }
-        mark.mark(now, db.read(self.family.get(), cell))
     }
 
     /// A key's bucket read under `db` — opened when absent, so a row filed
@@ -609,10 +613,8 @@ impl SideRows<R> {
     /// `cell` recorded under `db` once per reader per revision through
     /// `mark` — the shared half of `mark_read`/`mark_whole`.
     fn recorded(db: Db, fam: int, cell: int, mark: ReadMark) {
-        if db.unheard() { return }
-        let now = db.revision()
-        if mark.read_by(now, db.reader_now()) { return }
-        mark.mark(now, db.read(fam, cell))
+        let kernel? = db.hearing() else { return }
+        mark.told(kernel, fam, cell)
     }
 
     /// Slot `id` read under `db`, recorded as cell `id + 1` — a closed Db
