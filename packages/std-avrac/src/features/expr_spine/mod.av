@@ -11,10 +11,11 @@
 //! one as a call with no parentheses (`run { … }`, `db.tx { … }`).
 //! A HEAD — what `if`, `while`, `for`, `match` and `let … else`
 //! open their brace after — takes none: parenthesise the call
-//! there. The TYPE LITERAL is a postfix too: `v.type(List<string?>)`
-//! is `v.interned(.List(.Opt(.Str)))` — the type in its own
-//! spelling, folded once by the receiver; a name that spells no
-//! shape is a hole, the id it names.
+//! there. THE PIPE is application: `x |> f(a)` IS `f(x, a)`, and
+//! pipe.av states its whole law. The TYPE LITERAL is a postfix
+//! too: `v.type(List<string?>)` is `v.interned(.List(.Opt(.Str)))`
+//! — the type in its own spelling, folded once by the receiver; a
+//! name that spells no shape is a hole, the id it names.
 use features.{LanguageFeature, BuilderRow}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
@@ -33,6 +34,8 @@ export fn expr_spine() -> LanguageFeature {
         "fold_postfix"  | build_fold_postfix
         "fold_with"     | build_fold_with
         "fold_coalesce" | build_fold_coalesce
+        "fold_pipe"     | build_fold_pipe
+        "leading_pipe"  | build_leading_pipe
         "catch_any"     | build_catch
         "trailing"      | build_trailing
         "named_arg"     | build_named_arg
@@ -54,7 +57,9 @@ export fn expr_spine() -> LanguageFeature {
             conjunction = l:comparison ( op:"&&" r:comparison )* -> fold_binary(l, op, r)
             comparison = l:coalescing ( op:( "==" | "!=" | "<=" | ">=" | "<" | ">" ) r:coalescing | "is" "." iv:NAME ( "(" ( ip:asked_payload ( "," ip:asked_payload )* ","? )? ")" )? )? -> fold_cmp(l, op, r, iv, ip)
             asked_payload = "_" -> asked_wild() | n:NAME -> asked_bind(n)
-            coalescing = l:bitwise ( "??" r:bitwise )* -> fold_coalesce(l, r)
+            coalescing = l:pipeline ( "??" r:pipeline )* -> fold_coalesce(l, r)
+            pipeline = l:bitwise ( "|>" r:bitwise )* -> fold_pipe(l, r)
+            stmt = lp:"|>" -> leading_pipe(lp)
             bitwise = l:additive ( op:( "|" | "^" | "&" | "<<" ) r:additive | op:">" ">" r:additive )* -> fold_bitwise(l, op, r)
             additive = l:multiplicative ( op:( "+" | "-" ) r:multiplicative )* -> fold_binary(l, op, r)
             multiplicative = l:unary ( op:( "*" | "/" | "%" ) r:unary )* -> fold_binary(l, op, r)

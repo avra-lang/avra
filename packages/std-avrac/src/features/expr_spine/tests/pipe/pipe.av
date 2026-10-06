@@ -1,0 +1,52 @@
+//! The pipe, both engines: every stage shape, a chain, a `mut` first
+//! seat, a generic, a trailing block, a settled const, and the
+//! neighbours on the ladder.
+fn dbl(n: int) -> int { n * 2 }
+
+fn add(a: int, b: int) -> int { a + b }
+
+fn scale(a: int, by: int = 10, off: int = 0) -> int { a * by + off }
+
+fn ident<T>(v: T) -> T { v }
+
+fn grow(mut xs: List<int>, v: int) -> int {
+    xs.push(v)
+    xs.length
+}
+
+fn each(xs: List<int>, f: fn(int) -> int) -> List<int> { [f(x) for x in xs] }
+
+fn some(n: int) -> int? { if n > 0 { n } else { null } }
+
+fn pos(n: int) -> Result<int, string> { if n > 0 { .Ok(n) } else { .Err("neg") } }
+
+fn twice(n: int) -> Result<int, string> {
+    let v = n |> pos?
+    let w = n |> pos |> ident?
+    .Ok(v + w)
+}
+
+type Box = { n: int, f: fn(int) -> int }
+
+impl Box {
+    fn plus(a: int, b: int) -> int { self.n + a - b }
+
+    fn bump(a: int) -> int { self.n + a }
+
+    fn piped() -> int { self.n |> dbl |> self.plus(1) }
+}
+
+const k = 3 |> dbl
+
+let bx = Box { n: 100, f: (v: int) -> v + 1 }
+mut xs = [1, 2]
+let n = xs |> grow(9)
+let pick = (v: int) -> v * 7
+let ys = [1, 2, 3] |> each() { it + 1 }
+let zs = [1, 2, 3].map(it |> dbl)
+"k=${k} chain=${1 |> dbl |> add(3)} arith=${1 + 2 |> dbl} cmp=${3 |> dbl > 5} coal=${0 |> some ?? 42}" +
+    " named=${2 |> scale(by: 3)} def=${2 |> scale} gen=${5 |> ident<int>()} str=${"s" |> ident}" +
+    " mut=${n}/${xs.length} meth=${10 |> bx.plus(1)} prop=${1 |> bx.bump} field=${1 |> bx.f}" +
+    " lam=${4 |> ((v: int) -> v + 1)} val=${3 |> (pick)()} local=${3 |> pick} blk=${ys[0]}${ys[2]}" +
+    " it=${zs[2]} try=${twice(4) catch 0}/${twice(0) catch -1} self=${bx.piped()}" +
+    " paren=${(1 |> dbl) + 1} bit=${1 | 2 |> dbl} force=${7 |> some!}"

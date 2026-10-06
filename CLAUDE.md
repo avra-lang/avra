@@ -1579,7 +1579,6 @@ Syntax the grammar lacks:
   written bare (`nest self.depth - 1`) or bound first. Every other head
   (`if`, `while`, `for`, `match`, `if let`, `let … else`) takes a
   literal bare.
-- The pipe `|>`: "expected BREAK while parsing `stmt`".
 - A SEMICOLON between statements (`let a = 1; a + 1`): F0001
   "unexpected character" at the `;` — a statement ends at a line
   break, and a one-line body is `{ a }` with one statement. A

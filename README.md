@@ -44,7 +44,8 @@ insertion-ordered, `.get`/`.set`), typed table literals
 (`table<Row> { … }`), components and record field defaults
 (`type P = { y: int = 2 }` — a default is a declaration every
 literal that omits the field calls), index-paired `for i, x in xs`,
-and modules (`use a.b.{f}`, `export`, an `avra.toml` marking the
+the pipe (`x |> f(a)` is `f(x, a)` — application, written left to
+right), and modules (`use a.b.{f}`, `export`, an `avra.toml` marking the
 package root, and `avra check <dir>` checking every file under it)
 — every construct golden-tested from its parse tree to its
 diagnostics to its native output, on both engines.
