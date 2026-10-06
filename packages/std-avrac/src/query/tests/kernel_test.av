@@ -511,3 +511,273 @@ spec "query/kernel — an abandoned frame" {
         }
     }
 }
+
+/// A family whose verifier answers each cell's own changed_at.
+fn plain_family(db: Kernel) -> int {
+    let at: Cell<int> = Cell.new(0)
+    let fam = db.family((arg: int) -> db.changed_at(Key { family: at.get(), arg: arg }))
+    at.set(fam)
+    fam
+}
+
+spec "query/kernel — an edge is its key, whole" {
+    given "keys far apart in family and arg" {
+        then "a late family's large arg reads back as itself" {
+            mut db = new_kernel()
+            let a = plain_family(db)
+            let _ = plain_family(db)
+            let c = plain_family(db)
+            let far = Key { family: c, arg: 300000 }
+            db.set_input(far, 7)
+            let reader = Key { family: a, arg: 0 }
+            db.begin(reader)
+            db.record_dep(far)
+            db.settle(reader, 1)
+            let deps = db.deps_of(reader)
+            deps.length == 1 && same_key(deps[0], far)
+        }
+        then "one arg under two families is two edges" {
+            mut db = new_kernel()
+            let a = plain_family(db)
+            let b = plain_family(db)
+            db.set_input(Key { family: a, arg: 3 }, 1)
+            db.set_input(Key { family: b, arg: 3 }, 2)
+            let reader = Key { family: a, arg: 0 }
+            db.begin(reader)
+            db.record_at(a, 3)
+            db.record_at(b, 3)
+            db.record_at(a, 3)
+            db.settle(reader, 1)
+            let deps = db.deps_of(reader)
+            deps.length == 2 &&
+                same_key(deps[0], Key { family: a, arg: 3 }) &&
+                same_key(deps[1], Key { family: b, arg: 3 })
+        }
+        then "a thousand reads keep their first-read order" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let reader = Key { family: fam, arg: 0 }
+            db.begin(reader)
+            for i in 0..1000 { db.record_at(fam, 2000 - i) }
+            for i in 0..1000 { db.record_at(fam, 2000 - i) }
+            db.settle(reader, 1)
+            let deps = db.deps_of(reader)
+            deps.length == 1000 && [i for i, d in deps if d.arg != 2000 - i].is_empty()
+        }
+        then "a key open under one family is no cycle for the same arg under another" {
+            mut db = new_kernel()
+            let a = plain_family(db)
+            let b = plain_family(db)
+            db.begin(Key { family: a, arg: 5 })
+            let other = db.ask(Key { family: b, arg: 5 })
+            let own = db.ask(Key { family: a, arg: 5 })
+            db.settle(Key { family: a, arg: 5 }, 0)
+            other is .Compute && own is .Cycle
+        }
+    }
+    given "verification over edges of two families" {
+        then "a moved dep in the second family recomputes, an unrelated move does not" {
+            mut db = new_kernel()
+            let a = plain_family(db)
+            let b = plain_family(db)
+            let left = Key { family: a, arg: 1 }
+            let right = Key { family: b, arg: 1 }
+            let unrelated = Key { family: b, arg: 2 }
+            db.set_input(left, 1)
+            db.set_input(right, 1)
+            db.set_input(unrelated, 1)
+            let reader = Key { family: a, arg: 0 }
+            db.begin(reader)
+            db.record_dep(left)
+            db.record_dep(right)
+            db.settle(reader, 1)
+            db.set_input(unrelated, 2)
+            let stood = db.ask(reader)
+            db.set_input(right, 2)
+            let moved = db.ask(reader)
+            stood is .Reuse && moved is .Compute
+        }
+    }
+}
+
+spec "query/kernel — the open stack, attacked" {
+    given "stamps under nesting" {
+        then "a sibling nested after the first restores the outer's stamp again" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let shared = Key { family: fam, arg: 0 }
+            db.set_input(shared, 1)
+            let outer = Key { family: fam, arg: 1 }
+            let first = Key { family: fam, arg: 2 }
+            let second = Key { family: fam, arg: 3 }
+            db.begin(outer)
+            db.record_dep(shared)
+            db.begin(first)
+            db.record_dep(shared)
+            db.settle(first, 1)
+            db.begin(second)
+            db.record_dep(shared)
+            db.record_dep(shared)
+            db.settle(second, 1)
+            db.record_dep(shared)
+            db.settle(outer, 1)
+            db.deps_of(outer).length == 1 &&
+                db.deps_of(first).length == 1 &&
+                db.deps_of(second).length == 1
+        }
+        then "a grandchild overwriting the outer's stamp hands it back through the frame between" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let shared = Key { family: fam, arg: 0 }
+            db.set_input(shared, 1)
+            let outer = Key { family: fam, arg: 1 }
+            let middle = Key { family: fam, arg: 2 }
+            let inner = Key { family: fam, arg: 3 }
+            db.begin(outer)
+            db.record_dep(shared)
+            db.begin(middle)
+            db.begin(inner)
+            db.record_dep(shared)
+            db.settle(inner, 1)
+            db.settle(middle, 1)
+            db.record_dep(shared)
+            db.settle(outer, 1)
+            db.deps_of(outer).length == 1 &&
+                db.deps_of(middle).is_empty() &&
+                db.deps_of(inner).length == 1
+        }
+        then "the reader is the outer's own again once the nested frame closes" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            db.begin(Key { family: fam, arg: 1 })
+            let outer = db.reader()
+            db.begin(Key { family: fam, arg: 2 })
+            let nested = db.reader()
+            db.settle(Key { family: fam, arg: 2 }, 1)
+            let back = db.reader()
+            db.settle(Key { family: fam, arg: 1 }, 1)
+            outer == back && nested != outer && db.reader() == 0 - 1
+        }
+    }
+    given "an abandoned frame" {
+        then "its reads join the outer's in the order it made them, each once" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let outer = Key { family: fam, arg: 0 }
+            let inner = Key { family: fam, arg: 1 }
+            db.begin(outer)
+            db.record_at(fam, 10)
+            db.begin(inner)
+            db.record_at(fam, 12)
+            db.record_at(fam, 10)
+            db.record_at(fam, 11)
+            db.record_at(fam, 12)
+            db.abandon(inner)
+            db.record_at(fam, 11)
+            db.settle(outer, 1)
+            ["${d.arg}" for d in db.deps_of(outer)].join(",") == "10,12,11"
+        }
+        then "an abandoned frame that overwrote the outer's stamp hands it back" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let outer = Key { family: fam, arg: 0 }
+            let inner = Key { family: fam, arg: 1 }
+            let after = Key { family: fam, arg: 2 }
+            db.begin(outer)
+            db.record_at(fam, 10)
+            db.begin(inner)
+            db.record_at(fam, 10)
+            db.abandon(inner)
+            db.begin(after)
+            db.settle(after, 1)
+            db.record_at(fam, 10)
+            db.settle(outer, 1)
+            db.deps_of(outer).length == 1
+        }
+        then "the frame around it still settles and is reused" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let outer = Key { family: fam, arg: 0 }
+            let inner = Key { family: fam, arg: 1 }
+            db.set_input(Key { family: fam, arg: 10 }, 1)
+            db.begin(outer)
+            db.begin(inner)
+            db.record_at(fam, 10)
+            db.abandon(inner)
+            db.settle(outer, 1)
+            db.bump()
+            db.ask(outer) is .Reuse && !db.active(outer) && !db.active(inner)
+        }
+    }
+    given "a write while a query is open" {
+        then "a query whose input moved mid-flight is recomputed at its next ask" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let input = Key { family: fam, arg: 0 }
+            let reader = Key { family: fam, arg: 1 }
+            db.set_input(input, 1)
+            db.begin(reader)
+            db.record_dep(input)
+            db.set_input(input, 2)
+            db.settle(reader, 1)
+            db.ask(reader) is .Compute
+        }
+        then "a query whose input was set to the same value mid-flight stands" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let input = Key { family: fam, arg: 0 }
+            let reader = Key { family: fam, arg: 1 }
+            db.set_input(input, 1)
+            db.begin(reader)
+            db.record_dep(input)
+            db.set_input(input, 1)
+            db.settle(reader, 1)
+            db.ask(reader) is .Reuse
+        }
+        then "an outer query settles at its own beginning, not at a nested one's" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let input = Key { family: fam, arg: 0 }
+            let outer = Key { family: fam, arg: 1 }
+            let nested = Key { family: fam, arg: 2 }
+            db.set_input(input, 1)
+            db.begin(outer)
+            db.record_dep(input)
+            db.set_input(input, 2)
+            db.begin(nested)
+            db.record_dep(input)
+            db.settle(nested, 1)
+            db.settle(outer, 1)
+            let inner_stands = db.ask(nested)
+            db.ask(outer) is .Compute && inner_stands is .Reuse
+        }
+    }
+    given "a cycle through two keys" {
+        then "the far key is a cycle from inside, and both stand after" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let a = Key { family: fam, arg: 0 }
+            let b = Key { family: fam, arg: 1 }
+            db.begin(a)
+            db.begin(b)
+            let back = db.ask(a)
+            db.settle(b, 1)
+            db.settle(a, 1)
+            let a_again = db.ask(a)
+            let b_again = db.ask(b)
+            back is .Cycle &&
+                a_again is .Reuse &&
+                b_again is .Reuse &&
+                same_key(db.deps_of(b)[0], a)
+        }
+        then "a family is in flight only while one of its keys is open" {
+            mut db = new_kernel()
+            let a = plain_family(db)
+            let b = plain_family(db)
+            db.begin(Key { family: b, arg: 4 })
+            let during = db.family_active(b) && !db.family_active(a)
+            db.settle(Key { family: b, arg: 4 }, 1)
+            during && !db.family_active(b)
+        }
+    }
+}
