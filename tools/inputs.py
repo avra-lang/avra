@@ -2,7 +2,8 @@
 """EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR, and this counts
 the reads that are not: a call in the compiler or its CLI that asks the
 disk, the environment, a tool, a child process, the clock, the process
-table or argv, outside packages/std-avrac/src/compiler/host/.
+table or argv, outside the door — the one file that defines the input
+verbs (DOOR), never the directory it stands in.
 
 A SITE IS FOUND FROM WHAT ITS FILE IMPORTS, never from a verb's
 spelling: a name taken from a world package is looked up in that
@@ -11,9 +12,14 @@ called `env` is nobody's site. Beside those: a call through a `Host`
 value (`host.read(…)`), and a call of a world runtime row the file
 declares itself (`extern fn avra_host_env`).
 
-THE TABLES CANNOT GO STALE QUIETLY. Three refusals hold them:
+THE TABLES CANNOT GO STALE QUIETLY. Five refusals hold them:
+  - a `use @std.…` line the keeper cannot read is refused, never skipped;
   - a `@std` package a scope file imports is in WORLD or INERT, or the
     keeper refuses naming it;
+  - a WORLD package's name classed pure is held to its own source — a
+    free fn whose body reaches a world row or a counted name, itself or
+    through the package's free fns, is refused (a read reached only
+    through a METHOD is not followed);
   - an INERT package is held to its own source — it declares the rows
     pinned here and no other, and imports inert packages alone — so a
     package that starts reading the world stops being inert;
@@ -36,7 +42,9 @@ import re
 import sys
 
 SCOPE = ["packages/std-avrac/src", "packages/cli/src"]
-DOOR = "packages/std-avrac/src/compiler/host/"
+# The door is the FILE that defines the input verbs. A read beside it,
+# in the same directory, is outside like any other.
+DOOR = {"packages/std-avrac/src/compiler/host/host.av"}
 BASELINE = "tools/inputs.baseline"
 
 # What a call asks of the world. A kind in COUNTED is a read; the rest
@@ -59,7 +67,8 @@ WORLD = {
     "process": {
         "tool": "tool", "tool_from_env": "tool", "host": "spawn", "run_through": "spawn",
         "parallel": "spawn", "race": "spawn", "serving": "spawn",
-        "cmd": P, "minimal": P, "developer": P, "inherited": P, "exit_text": P,
+        "minimal": "env", "developer": "env",
+        "cmd": P, "inherited": P, "exit_text": P,
         "status_of": P, "scripted": P, "plan": P, "exit": E,
         "Tool": T, "Command": T, "Exit": T, "Output": T, "Outcome": T, "Env": T,
         "EnvPair": T, "Stdin": T, "Streams": T, "Ready": T, "Stream": T,
@@ -85,8 +94,11 @@ WORLD = {
 }
 
 # A spawn is a METHOD on a command a file built, so a file that imports
-# `cmd` is read for these too.
-SPAWNS = re.compile(r"\.(run|run_in|output|capture|status|spawn|lines|start)\(")
+# a SPAWNER is read for these too: `@std/process`'s three spawning
+# methods and no other. `run` takes nothing, so `.run(` with an argument
+# is somebody else's verb.
+SPAWNERS = {"cmd", "Command", "Tool", "Pipeline", "Runner"}
+SPAWNS = re.compile(r"\.(run(?=\(\))|outcome|start)\(")
 
 # An INERT package reads nothing: the rows it may declare, and the one
 # name of it that does read. Held to the package's own source.
@@ -120,7 +132,8 @@ ROWS = {
 }
 INERT_ROWS = re.compile(
     r"^(LLVM\w*|avra_(llvm|float|int|str|bytes|vtask|fiber|ffi)_\w+|avra_(debug|eputs|puts|"
-    r"errno_text|ptr_at|qtrace|trap|utf8_bad_at|mem_live|fd_taken|fd_write|type_named)|"
+    r"errno_text|ptr_at|qtrace|trap|utf8_bad_at|mem_live|fd_taken|fd_write|type_named|"
+    r"vgate_open|vgate_claim|gate_new|rc_release)|"
     r"host|println)$")
 
 # A read through the filesystem seam: behind `Host`, not yet an input —
@@ -129,7 +142,8 @@ INERT_ROWS = re.compile(
 HOSTED = re.compile(r"\bhost\.(read|exists|beneath|list|is_dir|stamp)\)?\(")
 CHAINED = re.compile(r"^\s*\.(read|exists|beneath|list|is_dir|stamp)\)?\(")
 
-USE = re.compile(r"^use\s+@std\.([a-z_]+)((?:\.[a-z_]+)*)\.(\{[^}]*\}|[A-Za-z_][A-Za-z_0-9]*)", re.M | re.S)
+SEG = r"[a-z_][a-z_0-9]*"
+USE = re.compile(r"^use\s+@std\.(" + SEG + r")((?:\." + SEG + r")*)\.(\{[^}]*\}|[A-Za-z_][A-Za-z_0-9]*)", re.M | re.S)
 EXTERN = re.compile(r"^\s*(?:export\s+)?extern\s+fn\s+([A-Za-z_][A-Za-z_0-9]*)", re.M)
 LICENSE = re.compile(r"^\s*//\s*LICENSED\s+input\.[a-z_]+:\s*\S")
 
@@ -204,7 +218,7 @@ def sites_in(path, text, module_rows=()):
         kind = WORLD.get(pkg, {}).get(name) or INERT.get(pkg, {"world": {}})["world"].get(name)
         if kind in COUNTED:
             watched[local] = kind
-        spawns = spawns or (pkg == "process" and name in ("cmd", "Command", "Tool"))
+        spawns = spawns or (pkg == "process" and name in SPAWNERS)
     for row in rows_of(text) | set(module_rows):
         watched[row] = ROWS[row]
     skipped = use_lines(text)
@@ -222,7 +236,7 @@ def sites_in(path, text, module_rows=()):
         if spawns:
             found += [("spawn", "." + m.group(1), False) for m in SPAWNS.finditer(code)]
         for kind, verb, hosted in found:
-            state = ("door" if path.startswith(DOOR)
+            state = ("door" if path in DOOR
                      else "licensed" if i > 0 and LICENSE.match(lines[i - 1])
                      else "outside")
             out.append(Site(path, i + 1, line.strip(), kind, verb, state))
@@ -232,6 +246,10 @@ def sites_in(path, text, module_rows=()):
 def unclassified(path, text):
     """What a file names that no table places."""
     out = []
+    for m in re.finditer(r"^use\s+@std\b[^\n]*", text, re.M):
+        if not USE.match(text, m.start()):
+            out.append(f"{path}: `{m.group(0).strip()}` is an import the keeper cannot read — "
+                       "name what it takes (`use @std.pkg.{name}`)")
     for pkg in sorted(packages_used(text)):
         if pkg != "avrac" and pkg not in WORLD and pkg not in INERT:
             out.append(f"{path}: `@std.{pkg}` is in neither WORLD nor INERT — say which it is")
@@ -256,6 +274,58 @@ def inert_faults(pkg, sources):
             if used != pkg and used not in INERT:
                 out.append(f"{path}: `@std.{pkg}` is INERT and imports `@std.{used}`, which is not")
     return out
+
+
+def body_from(text, at):
+    """A fn's text from its `fn` to the brace that closes it, by nesting —
+    a one-line fn ends on its own line."""
+    depth, i, quoted = 0, at, False
+    while i < len(text):
+        c = text[i]
+        if c == "\\":
+            i += 1
+        elif c == '"':
+            quoted = not quoted
+        elif not quoted and c == "{":
+            depth += 1
+        elif not quoted and c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[at:i + 1]
+        i += 1
+    return text[at:]
+
+
+FREE_FN = re.compile(r"^(?:export\s+)?(?:mut\s+|once\s+)?fn\s+([A-Za-z_][A-Za-z_0-9]*)", re.M)
+
+
+def pure_faults(pkg, sources):
+    """How a WORLD package's own source breaks a `pure` claim: the fn
+    reaches a world row or a counted name of its package, itself or
+    through the package's free fns."""
+    bodies = collections.defaultdict(str)
+    world = {n for n, k in WORLD[pkg].items() if k in COUNTED}
+    for _, text in sources:
+        code = "\n".join(code_of(l) for l in text.split("\n"))
+        world |= {r for r in EXTERN.findall(code) if r in ROWS or not INERT_ROWS.match(r)}
+        for m in FREE_FN.finditer(code):
+            bodies[m.group(1)] += body_from(code, m.end())
+    reach = {}
+    for name in bodies:
+        hit = next((w for w in sorted(world) if w != name and called(w).search(bodies[name])), None)
+        if hit:
+            reach[name] = hit
+    moved = True
+    while moved:
+        moved = False
+        for name in bodies:
+            if name in reach or name in world:
+                continue
+            hit = next((w for w in sorted(reach) if w != name and called(w).search(bodies[name])), None)
+            if hit:
+                reach[name], moved = f"{hit} -> {reach[hit]}", True
+    return [f"`{n}` of `@std.{pkg}` is classed pure and reaches the world ({n} -> {reach[n]}) — class it by what it reads"
+            for n, k in sorted(WORLD[pkg].items()) if k == P and n in reach]
 
 
 def key(s):
@@ -325,6 +395,21 @@ def selftest():
         ("packages/std-avrac/src/compiler/x.av", io + "fn f() {\n    let v = env(\"HOME\")\n}\n", [(4, "env", "outside")]),
         ("packages/cli/src/commands/x.av", "use @std.process.{tool, cmd}\nfn f() {\n    let t = tool(\"cc\")?\n    cmd(t, []).run()\n}\n",
          [(3, "tool", "outside"), (4, "spawn", "outside")]),
+        # every spelling SPAWNS accepts, and every name that turns it on
+        ("packages/cli/src/commands/x.av", "use @std.process.{cmd}\nfn f(t: T) { cmd(t, []).outcome() }\n", [(2, "spawn", "outside")]),
+        ("packages/cli/src/commands/x.av", "use @std.process.{Command}\nfn f(c: Command) { c.start(r, l) }\n", [(2, "spawn", "outside")]),
+        ("packages/cli/src/commands/x.av", "use @std.process.{Tool}\nfn f(c: C) { c.run() }\n", [(2, "spawn", "outside")]),
+        ("packages/cli/src/commands/x.av", "use @std.process.{Pipeline}\nfn f(p: Pipeline) { p.outcome() }\n", [(2, "spawn", "outside")]),
+        ("packages/cli/src/commands/x.av", "use @std.process.{Runner}\nfn f(r: Runner, c: C) { r.outcome(c) }\n", [(2, "spawn", "outside")]),
+        # no spawn: another type's `run`, a reader's verbs, a file that built no command
+        ("packages/cli/src/commands/x.av", "use @std.process.{cmd}\nfn f(b: B) { spawn b.run(1) }\n", []),
+        ("packages/cli/src/commands/x.av", "use @std.process.{cmd}\nfn f(t: T) { t.lines()\n t.status()\n t.output()\n t.capture()\n t.spawn()\n t.run_in(d) }\n", []),
+        ("packages/cli/src/commands/x.av", "use @std.process.{exit}\nfn f(a: A) { a.run() }\n", []),
+        # an environment a file asks for is an env read
+        ("packages/cli/src/x.av", "use @std.process.{minimal, developer}\nfn f() {\n    minimal()\n    developer()\n}\n",
+         [(3, "env", "outside"), (4, "env", "outside")]),
+        # a package named with a digit is read like any other
+        ("packages/std-avrac/src/compiler/x.av", "use @std.io2.sub3.{env}\nfn f() { env(\"X\") }\n", "IO2"),
         ("packages/std-avrac/src/compiler/x.av", "extern fn avra_host_env(n: string) -> string?\nfn f() { avra_host_env(\"X\") }\n", [(2, "env", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", "fn f(ws: W) { ws.host.read(p) }\n", [(1, "read", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", io + "fn f() { xs.map(read_text) }\n", [(3, "read", "outside")]),
@@ -335,7 +420,9 @@ def selftest():
         ("packages/std-avrac/src/compiler/x.av", "use @std.io.{env as os_env}\nfn env(k: string) -> string? { os_env(k) }\n", [(2, "env", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", "fn f() { avra_now_ns() }\n", "ROW"),
         # accepts: the door, a licence, a write, a local fn, a method, a comment, a longer name
-        (DOOR + "x.av", io + "fn f() { env(\"HOME\") }\n", [(3, "env", "door")]),
+        (sorted(DOOR)[0], io + "fn f() { env(\"HOME\") }\n", [(3, "env", "door")]),
+        # the door is its file: a neighbour in the directory is outside
+        (os.path.dirname(sorted(DOOR)[0]) + "/manifest.av", io + "fn f() { read_text(\"/etc/passwd\") catch \"\" }\n", [(3, "read", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", io + "// LICENSED input.debug_flag: read once, changes no answer\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "licensed")]),
         ("packages/std-avrac/src/compiler/x.av", io + "fn f() { write_text(\"a\", \"b\") }\n", []),
         ("packages/std-avrac/src/compiler/x.av", "use @std.io.{\n    read_text,\n    env,\n}\nfn f() {}\n", []),
@@ -345,8 +432,10 @@ def selftest():
         ("packages/std-avrac/src/compiler/x.av", io + "fn f() { env_or_else(\"HOME\") }\n", []),
         ("packages/std-avrac/src/compiler/x.av", io + "fn f(env: string) -> T { T { env: env } }\n", []),
     ]
+    WORLD["io2"] = {"env": "env"}
     for path, text, want in cases:
         rows, want = ({"avra_now_ns"}, [(1, "clock", "outside")]) if want == "ROW" else ((), want)
+        want = [(2, "env", "outside")] if want == "IO2" else want
         got = [(s.line, s.kind, s.state) for s in sites_in(path, text, rows)]
         if got != want:
             sys.exit(f"inputs: self-test failed on {text!r}: {got} != {want}")
@@ -356,18 +445,35 @@ def selftest():
         sys.exit("inputs: self-test failed — the baseline is a multiset of sites")
     stale = [
         ("use @std.sockets.{dial}\n", "neither WORLD nor INERT"),
+        ("use @std.sha256.{file_digest}\n", "`@std.sha256` is in neither WORLD nor INERT"),
+        ("use @std.io\n", "is an import the keeper cannot read"),
+        ("use @std.Io.{env}\n", "is an import the keeper cannot read"),
         ("use @std.io.{read_link}\n", "`read_link` of `@std.io` is unclassified"),
         ("extern fn avra_getenv_raw(n: string) -> string\n", "`avra_getenv_raw` is unclassified"),
     ]
     for text, want in stale:
         if not any(want in u for u in unclassified("x.av", text)):
             sys.exit(f"inputs: self-test failed — {text!r} was not refused as {want!r}")
-    if unclassified("x.av", "use @std.io.{read_text}\nuse @std.text.{trim}\nextern fn avra_llvm_x()\n"):
+    del WORLD["io2"]
+    if unclassified("x.av", "use @std.io.{read_text}\nuse @std.text.{trim}\nuse @std.avrac.core.x9.{A}\nextern fn avra_llvm_x()\n"):
         sys.exit("inputs: self-test failed — a classified file was refused")
     if not inert_faults("path", [("p.av", "extern fn avra_host_env(n: string) -> string?\n")]) \
             or not inert_faults("path", [("p.av", "use @std.io.{env}\n")]) \
             or inert_faults("text", [("t.av", "use @std.text.{trim}\nextern fn avra_str_parses_int(s: string) -> bool\n")]):
         sys.exit("inputs: self-test failed — an inert package is held to its own source")
+    WORLD["px"] = {"quiet": P, "one_line": P, "loud": P, "far": P, "named": P, "env": "env"}
+    px = [("p.av", "extern fn avra_host_env(n: string) -> string?\n"
+                   "export fn env(n: string) -> string? { avra_host_env(n) }\n"
+                   "fn held(n: string) -> string? { env(n) }\n"
+                   "export fn one_line() -> int { 1 }\n"
+                   "export fn loud() -> string? { avra_host_env(\"A\") }\n"
+                   "export fn far() -> string? {\n    held(\"A\")\n}\n"
+                   "export fn named() -> string? {\n    let s = \"}\"\n    env(s)\n}\n"
+                   "export fn quiet(c: C) -> string {\n    // env(\"A\") is the caller's\n    c.env(\"A\")\n}\n")]
+    got = [f.split("`")[1] for f in pure_faults("px", px)]
+    del WORLD["px"]
+    if got != ["far", "loud", "named"]:
+        sys.exit(f"inputs: self-test failed — a pure name is held to its own source: {got}")
 
 
 def main():
@@ -381,6 +487,11 @@ def main():
         if not sources:
             faults.append(f"`@std.{pkg}` is INERT and has no source under packages/std-{pkg}/src to hold it to")
         faults += inert_faults(pkg, sources)
+    for pkg in sorted(used & set(WORLD)):
+        sources = package_sources(pkg)
+        if not sources:
+            faults.append(f"`@std.{pkg}` is WORLD and has no source under packages/std-{pkg}/src to hold its pure names to")
+        faults += [f"{sources[0][0] if sources else pkg}: {f}" for f in pure_faults(pkg, sources)]
     sites = scope_sites(texts)
     if not files or "io" not in used or not sites:
         sys.exit(f"inputs: read {len(files)} file(s) and found {len(sites)} site(s) — nothing was examined")
@@ -410,7 +521,7 @@ def main():
         print(f"inputs: {len(left)} baseline site(s) are gone — `make inputs-accept` prunes them")
     if new or faults:
         sys.exit(f"inputs: refused — {len(new)} new site(s), {len(faults)} unclassified; "
-                 "route the read through compiler/host/, or license it at the site")
+                 "route the read through the door, or license it at the site")
 
 
 if __name__ == "__main__":

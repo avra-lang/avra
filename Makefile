@@ -653,7 +653,7 @@ layers:
 	@python3 tools/layers.py
 
 # EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR: the world reads
-# outside compiler/host/, counted by subsystem; a site the baseline does
+# outside the door, counted by subsystem; a site the baseline does
 # not list is refused, and the baseline only falls.
 inputs:
 	@python3 tools/inputs.py
