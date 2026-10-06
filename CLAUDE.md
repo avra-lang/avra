@@ -930,6 +930,13 @@ registry is the idiom engine's spec, written by dogfooding.
   from `tests/support/` and read as `use tests.support.{…}` — a program
   test is a module like the rest, so it reaches the same file
   (packages/std-http/src/tests/support).
+  AND A TEST READS ITS MODULE'S PRIVATE NAMES: a file DIRECTLY in a
+  module's own `tests/` may `use` a top-level name that module declares
+  and does not export — by an explicit `use`, never bare. Nothing else
+  may: another module's tests, a directory under `tests/`, another
+  package. A name two of the module's files each keep private is
+  `resolve.private_apart`, naming both; a private name is never
+  re-exported.
 - A DEPENDENCY IS ITS LIBRARY. The file a dependency's `[bin]` names
   is that package's program and runs only where the package is the
   root, so it is no module file of a program that depends on it — its

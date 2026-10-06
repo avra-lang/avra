@@ -15,8 +15,8 @@ use core.{
     same_file,
     touch,
 }
-use @std.path.{dir_of, under_dir, joined_path, normalized}
-use features.{Decl, Import, nothing}
+use @std.path.{dir_of, under_dir, joined_path, normalized, file_name}
+use features.{Decl, Import, nothing, table_of}
 use diagnostics.{Diag, loc_at}
 use @std.testing.{words}
 
@@ -427,18 +427,31 @@ impl Workspace {
         if self.ambiguous_module(m) { return Imported { imports: [], diagnostics: [module_ambiguous(at, m)] } }
         if self.module_files(m).is_empty() { return Imported { imports: [], diagnostics: [no_module(at, m)] } }
         let shared = p.store.is_exported(u.stmt)
+        let own_test = !shared && self.tests_module(p.source.file, m)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
         mut listed: List<string> = []
         for j, item in u.items {
-            let id: DeclId? = self.export_of(m, item)
+            let own = if own_test { self.private_named(m, item) } else { [] }
+            let exported = self.export_of(m, item)
+            let id: DeclId? = exported ?? own.first()
             let claimed: DeclId? = if shared && id != null { self.export_of(self.module_path_of(p.source.file), u.bound_as(j)) } else { null }
             if listed.contains(item) {
                 diags.push(listed_twice(at, item))
             } else if id == null && self.reexports(m).any(it.name == item) {
                 diags.push(reexport_unreached(at, m, item))
             } else if id == null {
-                diags.push(not_exported(at, m, item, self.exported_names(m)))
+                diags.push(not_exported(at, m, item, self.exported_names(m), own_test))
+            } else if exported == null && own.length > 1 {
+                diags
+                    .push(
+                        private_apart(
+                            at,
+                            m,
+                            item,
+                            [file_name(self.decls.file(self.decl_at(d).file).path) for d in own],
+                        ),
+                    )
             } else if shared && self.closes_cycle(from, m) {
                 diags.push(reexport_cycle(at, from.key, m.package() ?? ""))
             } else if claimed != null && !same_decl(claimed!, id!) {
@@ -449,6 +462,35 @@ impl Workspace {
             listed.push(item)
         }
         Imported { imports: imports, diagnostics: diags }
+    }
+
+    /// A TEST READS ITS MODULE'S PRIVATE NAMES. Whether `asker` is a file
+    /// of `m`'s own `tests/` directory — the one directly under the
+    /// module's, in the module's package. Such a file may `use` a name
+    /// `m` declares and does not export; nothing else may.
+    fn tests_module(asker: string, m: ModulePath) -> bool {
+        let pkg? = self.holder(m) else { return false }
+        !self.per_file &&
+            pkg.ordinal == self.holder_of_path(asker) &&
+            normalized(dir_of(asker)) == normalized(joined_path(m.dir_under(pkg.src), "tests"))
+    }
+
+    /// The written top-level declarations of `m` that bind `name` and
+    /// are not exported, in file order.
+    fn private_named(m: ModulePath, name: string) -> List<DeclId> {
+        let files = self.module_file_ids(m)
+        for f in files { self.admission(f) }
+        [x.id for f in files for x in self.decls.named(name) if self.written_private_in(x, f)]
+    }
+
+    /// Whether a row is one of `f`'s own written top-level private names.
+    fn written_private_in(x: Decl, f: FileId) -> bool {
+        same_file(x.file, f) &&
+            !x.exported &&
+            x.parent == null &&
+            !x.nested &&
+            table_of(x.kind) != null &&
+            self.decls.provenance_of(x.id) == null
     }
 
     /// A name that is both a directory and a file under the source root.
