@@ -1,6 +1,6 @@
 //! `web/web.av` — the app on a web page. `mount(view)` is the whole host
 //! seam: the page is painted, and from then on the host echoes who spoke
-//! (`host_event`), the handler the last paint bound there runs, and the page
+//! (`avra_ui_event`), the handler the last paint bound there runs, and the page
 //! is sent only what changed. THIS MODULE NAMES THE HOST: `avra_dom_frame`
 //! is the page's to answer, so only a program built for a page imports it.
 use app.{plain, remounted}
@@ -38,12 +38,12 @@ export fn mount<V: View>(view: fn() -> V, theme: fn() -> Theme = plain) {
 }
 
 // ── what the host calls ─────────────────────────────────────────
-// Exported for the page's glue, by the names runtime/dom/wire.gen.js
-// carries; no program calls them.
+// Host fns: each name is the symbol the page's glue calls it by, the one
+// runtime/dom/wire.gen.js carries. No program calls them.
 
 /// A seat with room for `room` octets, kept until the next is asked for.
 /// The host asks before each text it sends, so no text outgrows its seat.
-export fn host_seat(room: int) -> Bytes {
+extern fn avra_ui_seat(room: int) -> Bytes {
     let made = Seat { box: avra_bytes_with_room(room), room: room }
     seated().set(made)
     made.box
@@ -61,7 +61,7 @@ fn seated_text(len: int) -> string? {
 /// The host's echo: element `who` spoke the kind `what`, saying the value
 /// in the tag and value seats — a text is the first `len` octets of the
 /// seat. An echo before any mount answers nothing.
-export fn host_event(who: int, what: int, tag: int, num: int, len: int) {
+extern fn avra_ui_event(who: int, what: int, tag: int, num: int, len: int) {
     let held? = mounted().get() else { return }
     let _ = held.heard(who, what, tag, num, seated_text(len))
     held.app.warn()

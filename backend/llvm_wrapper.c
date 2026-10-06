@@ -856,6 +856,10 @@ LLVMValueRef avra_llvm_build_ret(LLVMBuilderRef b, LLVMValueRef val) {
     return LLVMBuildRet(b, val);
 }
 
+LLVMValueRef avra_llvm_build_ret_void(LLVMBuilderRef b) {
+    return LLVMBuildRetVoid(b);
+}
+
 // ── PHI nodes ──
 
 LLVMValueRef avra_llvm_build_phi(LLVMBuilderRef b, LLVMTypeRef ty, const char* name) {

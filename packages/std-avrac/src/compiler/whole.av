@@ -5,6 +5,7 @@ use core.{
     module_path,
     SyntaxArena,
     DeclId,
+    distinct,
     FileId,
     UseParts,
     ExprId,
@@ -22,6 +23,8 @@ use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
 use compiler.lower.{LinkedPackage}
 use compiler.host.{library_stem}
+use compiler.backend.{platform_defines}
+use @std.errors.{Loc}
 
 impl Workspace {
 
@@ -178,6 +181,52 @@ impl Workspace {
         }
     }
 
+    /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
+    /// the whole link, so three things are held where each one stands:
+    /// its name is no symbol the platform already defines — that body
+    /// would answer every caller of the name, the runtime's included;
+    /// it answers a bodiless `extern fn` of another package only from
+    /// the program's own package — a dependency does not get to stand
+    /// in for another's host; and a dependency's host fn is the
+    /// program's export only when the program's own sources import that
+    /// dependency — the root says which packages speak for it.
+    fn host_fn_voices(files: List<FileId>) -> List<Diag> {
+        let hosted = flatten([self.decls.host_fns_of_file(f) for f in files])
+        if hosted.is_empty() { return [] }
+        let named = [x for x in self.decls.externs() if !self.decls.is_host_fn(x.id)]
+        let asked = self.root_imports()
+        flatten([self.host_fn_owes(d, named, asked) for d in hosted])
+    }
+
+    /// The packages the program's own sources import from, by key.
+    fn root_imports() -> List<string> {
+        distinct(
+            [m.package()! for path in self.all_files(self.packages()[0].src) for m in self.imported_by(path) if m.package() != null],
+        )
+    }
+
+    fn host_fn_owes(d: DeclId, named: List<Decl>, asked: List<string>) -> List<Diag> {
+        let x = self.decls.decl(d)
+        let from = self.packages()[self.holder_of_path(self.decls.file(x.file).path)]
+        if platform_defines(x.name) || entry_symbols.contains(x.name) { return [host_fn_shadows(self.decls.loc(d), x.name)] }
+        if from.ordinal == 0 { return [] }
+        let theirs? = named
+            .find(
+                (n: Decl) -> n.name == x.name &&
+                    self.holder_of_path(self.decls.file(n.file).path) != from.ordinal,
+            ) else {
+            return if asked.contains(from.key) { [] } else { [host_fn_unasked(self.decls.loc(d), x.name, from.key)] }
+        }
+        [
+            host_fn_answers_another(
+                self.decls.loc(d),
+                x.name,
+                self.packages()[self.holder_of_path(self.decls.file(theirs.file).path)].key,
+                from.key,
+            ),
+        ]
+    }
+
     /// The deepest package root that holds `path`.
     fn root_over(path: string) -> string? {
         let over = [pkg.root for pkg in self.packages() if under_dir(path, pkg.root)]
@@ -185,21 +234,22 @@ impl Workspace {
     }
 
     /// WHERE AN `embed` LITERAL'S FILE STANDS: beneath a package's root,
-    /// as the path under that root — or null. A plain path is read from
-    /// `source`'s own directory and stays in `source`'s package: an
-    /// absolute one names the machine, and a `..` past the root names
-    /// what the package does not hold. `@scope/name/…` is read from the
-    /// root of that package, when `source`'s package depends on it.
-    fn embed_place(source: string, rel: string) -> EmbedPlace? {
-        if rel.starts_with("/") { return null }
+    /// as the path under that root. A plain path is read from `source`'s
+    /// own directory and stays in `source`'s package: an absolute one
+    /// names the machine, and a `..` past the root names what the package
+    /// does not hold. A PATH THAT OPENS WITH `@` NAMES A PACKAGE, always:
+    /// `@scope/name/…` is read from the root of that package when
+    /// `source`'s package depends on it, and refuses when it does not —
+    /// a directory of this package named so is written `./@scope/…`.
+    fn embed_place(source: string, rel: string) -> Result<EmbedPlace, EmbedFault> {
+        if rel.starts_with("/") { fail EmbedFault.Outside }
         let from = self.packages()[self.holder_of_path(source)]
-        if !rel.starts_with("@") { return beneath_root(from.root, joined_path(dir_of(source), rel)) }
+        if !rel.starts_with("@") { return placed_beneath(from.root, joined_path(dir_of(source), rel)) }
         let segments = rel.split("/")
-        if segments.length < 3 { return null }
-        let key = "${segments[0]}/${segments[1]}"
-        if !self.reaches(from, key) { return null }
-        let root? = self.packages().find(it.key == key)?.root else { return null }
-        beneath_root(root, joined_path(root, segments.slice(2, segments.length).join("/")))
+        let key = segments.slice(0, 2).join("/")
+        if segments.length < 3 || !self.reaches(from, key) { fail EmbedFault.Undeclared(key) }
+        let root? = self.packages().find(it.key == key)?.root else { fail EmbedFault.Undeclared(key) }
+        placed_beneath(root, joined_path(root, segments.slice(2, segments.length).join("/")))
     }
 
     /// THE EMBED LAW, judged where the literal stands: the file's path,
@@ -209,7 +259,7 @@ impl Workspace {
     }
 
     fn embed_placed_beside(source: string, rel: string) -> Result<string, EmbedFault> {
-        let place? = self.embed_place(source, rel) else { fail EmbedFault.Outside }
+        let place = self.embed_place(source, rel)?
         match (self.host.beneath)(place.root, place.rel) {
             .Text(_) -> joined_path(place.root, place.rel),
             .Missing -> .Err(EmbedFault.Missing),
@@ -434,8 +484,57 @@ fn use_lines(p: Parsed) -> List<UseParts> {
 /// What one `use` line brought in, and what it earned.
 type Imported = { imports: List<Import>, diagnostics: List<Diag> }
 
+/// The symbols a linked program's own start is found by.
+const entry_symbols: List<string> = [
+    "main",
+    "avra_main",
+    "_start",
+    "_initialize",
+    "__main_argc_argv",
+]
+
+/// THE RULE'S CONDITION: "the platform defines it" is asked of the
+/// machine the compiler stands on, so the same name can refuse on one
+/// build machine and pass on another, and a build for another target is
+/// judged by this one's C library.
+fn host_fn_shadows(at: Loc?, name: string) -> Diag {
+    refusal(
+        "lower.host_fn_shadows",
+        at,
+        "`${name}` is a symbol this platform already defines — a host fn of that name would answer every caller of it",
+        "defined here",
+        "name the host fn for what its host asks of this program, as `avra_ui_event` is",
+    )
+}
+
+fn host_fn_answers_another(at: Loc?, name: string, theirs: string, from: string) -> Diag {
+    refusal(
+        "lower.host_fn_answers",
+        at,
+        "`${name}` is `${theirs}`'s to name, and `${from}` answers it — only the package that names an extern, or the program's own, answers it",
+        "answered here",
+        "answer it in the program's own package: a test stands there, and so does a host's stand-in",
+    )
+}
+
+fn host_fn_unasked(at: Loc?, name: string, from: string) -> Diag {
+    refusal(
+        "lower.host_fn_unasked",
+        at,
+        "the host fn `${name}` of `${from}` would be this program's export, and the program's own sources never import `${from}`",
+        "declared here",
+        "import from `${from}` in the program's own package — that says its host fns speak for this program — or drop the dependency that brings it",
+    )
+}
+
 /// A package's root and a path beneath it.
 type EmbedPlace = { root: string, rel: string }
+
+/// `path` as it stands beneath `root`, or that it stands outside it.
+fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> {
+    let place? = beneath_root(root, path) else { fail EmbedFault.Outside }
+    place
+}
 
 /// `path` as it stands beneath `root`, or null when it does not.
 fn beneath_root(root: string, path: string) -> EmbedPlace? {
