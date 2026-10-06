@@ -523,6 +523,20 @@ in the store, and `forced_runs` (kept_settle.av) answers "none" on that
 alone. The verdicts did not stand. The records' lists are also shorter than
 what the runs asked for (build.av: 3 listed, 11 files asked).
 
+Experiment, one binary, never committed: `forced_runs` answers the record's
+list always (`list`) against today's shortcut (`short`). Raw:
+`raw/turns_list_honoured.txt`.
+
+| | short | list |
+|---|---|---|
+| two-description edit, wall under QTRACE | 41.1 s | 17.5 s |
+| attempts discarded | 3 (4.3 s, 10.8 s, 10.6 s) | 1 (7.1 s, records moved) |
+| body asks of held files | 321, then 4 | 0 |
+| files held | 371/471 | 386/471 |
+| one-edit cli check (body string), ms | 5.0 s (446 held) | 7580, 7392, 7488 (432 held) |
+
+So the list must be honoured only when a verdict will not stand.
+
 First check after a build, one body-string edit between (`after_build.sh`):
 main 0d261da 19,033 and 19,794 ms, held 430/462, discarded 3; #324 4,990 and
 4,780 ms, held 446/462, discarded 0.
