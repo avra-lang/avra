@@ -435,6 +435,36 @@ turn as newly read.
 Correction to M3 above: the 1.33 M recorded `HeldSig` reads are not in
 `load` (0 when it ends); they happen in analyze and lower.
 
+## The warm-built compiler, and the builtin word after all
+
+**avra-8sb5.57.196 — same program, laid out differently.** Sprite
+`avra-cores`, `./avra build --time packages/cli`. Cold twice: 0 bytes
+differ. A no-op over a build-only store: 0. After `warm_edit.sh 1`:
+4,771,181 bytes differ, same size. `nm`: 14,935 symbols each, identical
+(name, size) pairs, different order by address. That build held 0/471 —
+it reused no object — but met its files through the checks' records
+first (load 957 ms, admit 18 s). Each of the two binaries, from a
+cleared store, emits a byte-identical LLVM module for `packages/cli`
+(32,580,007 bytes) and identical `check packages/std-avrac` output. So a
+build's function order depends on store state; a warm binary is not
+comparable to a cold one by `cmp`.
+
+**The builtin word does lose holds** (correcting the section above,
+which measured shapes that did not exercise it). Branch
+`db-00e-builtin-wire-word` writes `@language` where the first file's
+path stood.
+
+| `check` of `fns_test.av`, then `check --time packages/std-avrac` | wall | held | attempts thrown away |
+|---|---|---|---|
+| main + unreached-files fix | ~40 s | 883/944 | 4 |
+| + builtin read-back | 29.3 s | 880/941 | 3 |
+| + the fixed word | 7.2 s | 939/941 | 0 |
+
+`avra cache held` on the cli after std-avrac was checked: 349 held, 122
+read (81 "what it sees moved") -> 430 held, 32 read, none moved. A body
+edit under `impl Show for List<T>` read the file's importer before
+("what it sees moved") and holds it after — cache attack `bw`.
+
 ## Not measured
 
 - The encoded size of any family's value under a new codec.
