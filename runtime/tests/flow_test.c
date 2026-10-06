@@ -653,6 +653,34 @@ static void late_parker(void) {
     CHECK(avra_sched_fd_waiters() == 0 && avra_sched_timers() == 0, "nothing stays filed");
 }
 
+// A waiter gone by a hand other than the poller's — an interrupt, its
+// own time — while an edge stood unreported: the next task to park
+// there waits for the next edge.
+static void late_parker_after_interrupt(void) {
+    char c;
+    void* early = spawn1(parks_on_pipe, 0);
+    avra_fiber_sleep(2);
+    CHECK(write(g_pipe[1], "e", 1) == 1, "the pipe takes a byte nobody has been told of");
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    CHECK(read(g_pipe[0], &c, 1) == 1, "and another hand reads it");
+    void* late = spawn1(parks_briefly, 30);
+    CHECK(joined(early) == 0, "the interrupted waiter answers as one whose time ran out");
+    CHECK(joined(late) == 0, "a task that parks after an interrupted waiter left is not woken by the edge before it");
+
+    early = spawn1(parks_briefly, 3);
+    avra_fiber_yield();
+    int64_t until = now_ns() + 6000000;
+    while (now_ns() < until) {}
+    CHECK(write(g_pipe[1], "e", 1) == 1, "a byte comes after a waiter's time has passed, before any switch");
+    avra_fiber_yield();
+    CHECK(avra_sched_fd_waiters() == 0, "the waiter has left by its time");
+    CHECK(read(g_pipe[0], &c, 1) == 1, "and another hand reads the byte");
+    late = spawn1(parks_briefly, 30);
+    CHECK(joined(early) == 0, "the waiter answers as timed out");
+    CHECK(joined(late) == 0, "a task that parks after a timed-out waiter left is not woken by the edge before it");
+    CHECK(avra_sched_fd_waiters() == 0 && avra_sched_timers() == 0, "nothing stays filed");
+}
+
 // ── the world's turn: bounded in time, and in switches ──────────
 
 static volatile int g_stop;
@@ -1183,6 +1211,7 @@ int main(int argc, char** argv) {
     claim_before_cancel();
     interrupt_is_time();
     late_parker();
+    late_parker_after_interrupt();
     timers_among_workers();
     timers_among_bursts();
     world_within_reach();
