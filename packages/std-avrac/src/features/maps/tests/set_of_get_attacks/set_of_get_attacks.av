@@ -1,0 +1,88 @@
+// proves: `set(k, f(get(k)))` answers what two statements answer when
+// `f` reaches the map or the key another way — a method that removes
+// or grows under `self`, a trait method, a fn held in a field, a cell
+// that shares the box, a key rebound under the value, a task.
+trait Zap {
+    mut fn zap(v: int) -> int
+}
+
+type Rec = { m: Map<string, int>, hook: fn(int) -> int, n: int }
+
+impl Zap for Rec {
+    mut fn zap(v: int) -> int {
+        let _ = self.m.remove("x")
+        v + 1
+    }
+}
+
+impl Rec {
+    mut fn drop_x(v: int) -> int {
+        let _ = self.m.remove("x")
+        v + 1
+    }
+
+    mut fn grow(v: int) -> int {
+        for i in 0..40 { self.m.set("g${i}", i) }
+        v + 1
+    }
+
+    mut fn fused_drop() { self.m.set("k", self.drop_x(self.m.get("k") ?? 0)) }
+
+    mut fn plain_drop() {
+        let old = self.m.get("k") ?? 0
+        let next = self.drop_x(old)
+        self.m.set("k", next)
+    }
+
+    mut fn fused_grow() { self.m.set("new", self.grow(self.m.get("new") ?? 0)) }
+
+    mut fn plain_grow() {
+        let old = self.m.get("new") ?? 0
+        let next = self.grow(old)
+        self.m.set("new", next)
+    }
+
+    mut fn fused_zap() { self.m.set("k", self.zap(self.m.get("k") ?? 0)) }
+
+    mut fn fused_hook() { self.m.set("k", (self.hook)(self.m.get("k") ?? 0)) }
+}
+
+fn made() -> Rec { Rec { m: {"x": 1, "k": 5, "z": 9}, hook: (v: int) -> v * 2, n: 0 } }
+
+fn shown(r: Rec) -> string { "${r.m.keys().join("")}:${r.m.get("k") ?? -1}:${r.m.get("z") ?? -1}:${r.m.get("new") ?? -1}:${r.m.length}" }
+
+fn poked(c: Cell<Map<string, int>>, v: int) -> int {
+    c.set({"k": 50})
+    v + 1
+}
+
+mut a = made()
+a.fused_drop()
+mut b = made()
+b.plain_drop()
+mut c = made()
+c.fused_grow()
+mut d = made()
+d.plain_grow()
+mut e = made()
+e.fused_zap()
+mut f = made()
+f.fused_hook()
+mut held = {"x": 1, "k": 5}
+let cell = Cell.new(held)
+held.set("k", poked(cell, held.get("k") ?? 0))
+mut key = "k"
+mut m = {"k": 1, "j": 10}
+m
+    .set(
+        key,
+        {
+                key = "j"
+                m.get(key) ?? 0
+            } +
+            1,
+    )
+mut t = {"k": 1}
+let task = spawn { t.get("k") ?? 0 }
+t.set("k", task.await + (t.get("k") ?? 0))
+"${shown(a)} ${shown(b)} ${shown(c) == shown(d)} ${c.m.get("new") ?? -1} ${shown(e)} ${shown(f)} ${held.keys().join("")}${held.get("k") ?? -1} ${cell.get().keys().join("")} ${m.get("k") ?? -1}${m.get("j") ?? -1} ${t.get("k") ?? -1}"

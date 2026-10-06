@@ -160,6 +160,12 @@ spec "features/maps" {
             !rows(counted + "m.set(k, [1].map((m.get(k) ?? 0) + it).sum())\nm.length")
                 .contains("avra_map_set_at(")
         }
+        then "one map handed to two `mut` seats is refused, so no callee moves it under the read" {
+            refused_with(
+                "fn h(mut b: Map<string, int>, v: int) -> int {\n    let _ = b.remove(\"k\")\n    v + 1\n}\nfn g(mut a: Map<string, int>, mut b: Map<string, int>) { a.set(\"k\", h(b, a.get(\"k\") ?? 0)) }\nmut m = { \"k\": 5 }\ng(m, m)\nm.length",
+                "`m` is handed `mut` twice in one call to `g`",
+            )
+        }
         then "the count is the same either way" {
             shown(
                 counted +

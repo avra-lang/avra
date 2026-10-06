@@ -1099,7 +1099,11 @@ registry is the idiom engine's spec, written by dogfooding.
   probe, and `m.set(k, f(m.get(k)))` is one too when the map's root
   and the key are each named once under the value: the read's word
   is the write's (`AVRA_MAP_STATS=1` says a run's probes at exit).
-  Spelled as two statements it stays two.
+  Spelled as two statements it stays two. THE RUNTIME BELIEVES THAT
+  WORD ONLY WHERE THE MAP CONFIRMS IT — a hit's slot must hold the
+  very key, a miss's index word must be of the same building of the
+  index and still empty — so the lowering's proof is the fast path,
+  never what the write's rightness rests on.
 - Grammar authoring: EVERY COMMA LIST TAKES A TRAILING COMMA — a
   repeated `( "," x )*` ends `","?` before its closer, in every
   rule (params, type params and args, payload declarations, lambda

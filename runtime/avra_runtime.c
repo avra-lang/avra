@@ -2183,7 +2183,22 @@ static uint64_t sip_hash(uint64_t k0, uint64_t k1, const char* s, size_t n) {
     return v0 ^ v1 ^ v2 ^ v3;
 }
 
-static inline int map_keyed(AvraMap* m) { return m->index[-1] != 0; }
+// THE WORD BEFORE A BUILT INDEX: bit 0 says which hash filed it (set:
+// the keyed fallback); the rest is the index's GENERATION — a number no
+// other building of any index is given, so a probe's word can say which
+// index it walked. The last number is SPENT: an index that wears it
+// hands out no word at all.
+enum { GEN_BITS = 36 };
+static const uint64_t GEN_SPENT = ((uint64_t)1 << GEN_BITS) - 1;
+static uint64_t g_index_gen;
+
+static inline int map_keyed(AvraMap* m) { return (int)(m->index[-1] & 1); }
+static inline uint64_t map_gen(AvraMap* m) { return (uint64_t)m->index[-1] >> 1; }
+
+static uint64_t gen_minted(void) {
+    uint64_t gen = __atomic_add_fetch(&g_index_gen, 1, __ATOMIC_RELAXED);
+    return gen < GEN_SPENT ? gen : GEN_SPENT;
+}
 
 __attribute__((always_inline))
 static inline uint64_t key_hash(int keyed, const char* key) {
@@ -2212,7 +2227,7 @@ static void map_index_rebuild(AvraMap* m, int64_t icap, int keyed) {
     if (icap >= CELL_CEILING || icap <= 0) avra_trap("a map grew past any possible size — a corrupted box");
     index_free(m);
     int64_t* words = (int64_t*)calloc((size_t)icap + 1, sizeof(int64_t));
-    words[0] = keyed;
+    words[0] = (int64_t)((gen_minted() << 1) | (keyed ? 1 : 0));
     m->index = words + 1;
     m->icap = icap;
     acc_add(ACC_INDEX, index_words(m) * (int64_t)sizeof(int64_t));
@@ -2328,29 +2343,45 @@ static int64_t map_claim(AvraMap* m, const char* key, int* fresh) {
 }
 
 // A PROBE AS ONE WORD, so the write that follows a read walks nothing:
-// a hit is its slot; a miss is negative — the sign bit, the hash's high
-// half, the empty word the walk stopped at. A miss past the tripwire,
-// or past what the word can hold, is -1 and says nothing.
-enum { TOKEN_AT_BITS = 31 };
+// a hit is its slot; a miss is negative — the sign bit, the generation
+// of the index it walked, the empty word the walk stopped at. A miss
+// past the tripwire, past what the word can hold, or in an index whose
+// generation is spent is -1 and says nothing.
+enum { TOKEN_AT_BITS = 27 };
+static const uint64_t TOKEN_AT_MASK = ((uint64_t)1 << TOKEN_AT_BITS) - 1;
 
-static inline int64_t probe_token(Probe p) {
+static inline int64_t probe_token(AvraMap* m, Probe p) {
     if (p.slot >= 0) return p.slot;
-    if (p.walked > PROBE_TRIPWIRE || p.at >> TOKEN_AT_BITS) return -1;
-    return (int64_t)(((uint64_t)1 << 63) | ((p.hash >> 32) << TOKEN_AT_BITS) | p.at);
+    uint64_t gen = map_gen(m);
+    if (p.walked > PROBE_TRIPWIRE || p.at >> TOKEN_AT_BITS || gen == GEN_SPENT) return -1;
+    return (int64_t)(((uint64_t)1 << 63) | (gen << TOKEN_AT_BITS) | p.at);
 }
 
-// `map_claim` for a key whose probe a token already holds. A token that
-// no longer fits the map — a slot past its end, a word since taken —
-// is probed afresh.
+// `map_claim` for a key whose probe a word may still hold. THE WORD IS
+// BELIEVED ONLY WHERE THE MAP ITSELF CONFIRMS IT, whatever the caller
+// proved: a hit's slot must hold this very key; a miss's empty word
+// must be in the index the probe walked — the same generation — and
+// still empty, since within one building words only fill, and this
+// key's own arrival would have filled that one. Anything else is
+// probed afresh.
 static int64_t map_claim_at(AvraMap* m, const char* key, int64_t token, int* fresh) {
-    if (token >= 0 && token < m->keys->len) { *fresh = 0; return token; }
-    uint64_t at = (uint64_t)token & (((uint64_t)1 << TOKEN_AT_BITS) - 1);
-    if (token >= -1 || at >= (uint64_t)m->icap || m->index[at] != 0) return map_claim(m, key, fresh);
+    if (token >= 0) {
+        if (token < m->keys->len) {
+            const char* held = (const char*)(uintptr_t)m->keys->data[token];
+            if (held == key || avra_streq(held, key)) { *fresh = 0; return token; }
+        }
+        return map_claim(m, key, fresh);
+    }
+    uint64_t at = (uint64_t)token & TOKEN_AT_MASK;
+    uint64_t gen = ((uint64_t)token >> TOKEN_AT_BITS) & GEN_SPENT;
+    if (token == -1 || m->icap == 0 || gen != map_gen(m) || at >= (uint64_t)m->icap || m->index[at] != 0) {
+        return map_claim(m, key, fresh);
+    }
     *fresh = 1;
     avra_array_push_owned(m->keys, (void*)key);
     int64_t s = m->keys->len - 1;
     if (m->keys->len * 10 >= m->icap * 7) map_index_rebuild(m, m->icap * 2, map_keyed(m));
-    else m->index[at] = index_word((((uint64_t)token >> TOKEN_AT_BITS) & 0xffffffffu) << 32, s);
+    else m->index[at] = index_word(key_hash(map_keyed(m), key), s);
     return s;
 }
 
@@ -2414,9 +2445,10 @@ void* avra_map_get_owned(void* map, const char* key) {
 // A key's ONE probe: the slot it names, or a negative word for a key
 // that is not there. The reads below take that slot, so `get` hashes
 // once whatever it asks after — and a write handed the word back
-// (`avra_map_set_at`) walks nothing.
+// (`avra_map_set_at`) walks nothing where the map confirms it.
 int64_t avra_map_slot(void* map, const char* key) {
-    return probe_token(map_probe((AvraMap*)map, key));
+    AvraMap* m = (AvraMap*)map;
+    return probe_token(m, map_probe(m, key));
 }
 
 // The value in a slot `avra_map_slot` named.
