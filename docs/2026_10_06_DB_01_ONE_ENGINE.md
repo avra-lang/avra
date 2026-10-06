@@ -30,7 +30,14 @@ Labels: READ (I opened the line) · PROBED (I ran it) · MEASURED · PROPOSED (n
    - the paths `make vocab`, `make cited` and CLAUDE.md name move in the same commit.
 2. **`Db`** (std-relation `db.av`) = `@identity { id, kernel: Kernel, closed, closers,
    sweepers, runs, names, durable }`. EVERY Db holds a kernel — its own, or one it is
-   given (`db_over(kernel)`; P4a1's seam, gone at P4a3). Deleted: `Hooks` (all nine),
+   given (`db_over(kernel, …)`; P4a1's seam, gone at P4a3). WRITTEN in P4a1 (branch
+   `db-04a1-one-kernel`), what is left of the nine closures is three small modes and
+   one cell, each with the step that removes it: `Verifying` (by hash, or by the
+   revision a write stamped — the compiler's two hook records differed exactly so; one
+   verb at P4a4), `framed` (a write outside every `@query` belongs to the open kernel
+   query — `failures_db`'s shape; gone with frames at P4a2/a3), `Late` (below; stays),
+   and `hears`, who is told a refusal instead of the program ending (tests assert a
+   law's words through it). Deleted: `Hooks` (all nine),
    `quiet_hooks`, `hooked_db`, `armed` / `quieted` / `rearmed` / `registrars`, `Memo<V>`,
    `Kept`, `InputSlot`, `writes`, `running`, `owner_frames`, `last_query` /
    `last_frame`. KEPT until DB 07a, unchanged in meaning: named owners and their sweep
@@ -100,13 +107,16 @@ Labels: READ (I opened the line) · PROBED (I ran it) · MEASURED · PROPOSED (n
   `finish_lazy`. The family registers on first ask by stable NAME (module path + fn
   name); ids then follow ask order, so every dump (`AVRA_DB_GRAPH`, `AVRA_QTRACE`)
   prints the name, never the id. Its verifier re-asks `q` for that arg.
-- **Keys.** A `@dense` key (std-meta's existing mark; `DeclId`, `FileId`) is its int.
-  Any other key is interned per family by its ENCODED BYTES (`stable.av`'s writer), not
-  by a hash: a hash collision hands one key another key's answer, and this work promotes
-  that from two test paths to every running program (`avra-8sb5.46`). In P4a1.
+- **Keys.** Any key is interned per family by its ENCODED BYTES (`stable.av`'s writer,
+  the octets spelled out), not by a hash: a hash collision hands one key another key's
+  answer, and this work promotes that from two test paths to every running program
+  (`avra-8sb5.46`). WRITTEN in P4a1. A `@dense` key (std-meta's existing mark; `DeclId`,
+  `FileId`) becomes its own int at P6, where its first user is — a `@dense` argument is
+  refused by `@query` today.
 - **Digests.** An answer with a stable encoding is digested by it, lazily. An answer
   without one (`DeclSig`, `TypeFacts`) implements a one-method `Digest` trait that the
-  wrapper calls. Not an annotation argument — PROBED by the review: `@tagged(dg)` with a
+  wrapper calls — built at P6 with its first user; until then `@query` refuses such an
+  answer, as it does today. Not an annotation argument — PROBED by the review: `@tagged(dg)` with a
   fn is "must name a literal", `@tagged(digest: dg)` is "an annotation's arguments fill
   its seats" — and not a sibling fn found by name, which is a name match.
 - **Re-entry.** A `@query` that reaches itself is a named refusal that spells the cycle.
@@ -120,6 +130,17 @@ Labels: READ (I opened the line) · PROBED (I ran it) · MEASURED · PROPOSED (n
 - **A relation's row set and index buckets**: the same cells as today (0 = the set,
   b + 1 = bucket b), registered straight on `db.kernel`; a read is `kernel.record_at`.
   The late-write law is unchanged for the compiler (§5 scopes the run-time change).
+- **A late write on a plain Db is an input arriving** (`Late.Taken`; PROBED in P4a1's
+  scratch suite). A Db over its own kernel has a live revision, so the compiler's law —
+  refuse a write to a cell a reader holds this revision — would refuse a program's
+  ordinary insert. There a write to a cell ANY reader ever read moves the revision,
+  and every reader is verified again against the cell's hash. "Ever", not "this
+  revision": a reader re-verified green by the dep walk leaves no mark on the cell, so
+  a mark-this-revision test would miss it. The compiler's Dbs keep `Late.Refused`.
+- **An answer READ BACK from the owner (`Durable`) brings no reads with it**, so it
+  stands only until the next write to its Db: it depends on one input cell every write
+  moves. A shim for the one law the durable tests hold; DB 06 replaces `Durable` with
+  records that carry their reads.
 - **D4.** An un-owned row insert inside an open `@query` is REFUSED with a named voice.
   `Frame`, `began`, `ended` and the self-read law are deleted with it. Compiler families
   keep named owners until DB 07a.
