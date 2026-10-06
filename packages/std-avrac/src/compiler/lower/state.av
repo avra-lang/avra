@@ -367,13 +367,13 @@ impl LowerCx {
 
     /// Whether `f` is a lambda literal meant to be lowered IN PLACE:
     /// no captures (its reads are its own params and program-wide
-    /// names), one positional seat, and a body with no frame of its
-    /// own — a `?`, a `catch` or a block of statements acts on the
-    /// CALLER's frame once the body is inlined.
-    fn can_inline(f: ExprId) -> bool {
+    /// names), exactly `seats` positional seats, and a body with no
+    /// frame of its own — a `?`, a `catch` or a block of statements
+    /// acts on the CALLER's frame once the body is inlined.
+    fn can_inline(f: ExprId, seats: int = 1) -> bool {
         let parts? = self.view.store.lambda_parts(f) else { return false }
         if !(self.names.capture(f)?.names ?? []).is_empty() { return false }
-        if self.facts.takes_by_name(f) || parts.params.length != 1 { return false }
+        if self.facts.takes_by_name(f) || parts.params.length != seats { return false }
         let body? = self.inline_body(f) else { return false }
         self.inline_safe(body)
     }
@@ -402,13 +402,12 @@ impl LowerCx {
         }
     }
 
-    /// The lambda `lam` lowered where its seat stands: its param bound
-    /// to `elem`, its body lowered in THIS context, so no box is minted
-    /// and no code pointer is called per element. `ret` is the lambda's
-    /// answer, read by the site that makes the seat.
-    mut fn inlined(lam: ExprId, _ret: TypeId, elem: Reg) -> Reg {
+    /// The lambda `lam` lowered where its seat stands: its params bound
+    /// to `regs`, its body lowered in THIS context, so no box is minted
+    /// and no code pointer is called per element.
+    mut fn inlined(lam: ExprId, regs: List<Reg>) -> Reg {
         let body? = self.inline_body(lam) else { return self.lower_defect(lam, "an inline seat without an inlinable lambda") }
-        self.inline_enter(InlineSeat { lam: lam, regs: [elem] })
+        self.inline_enter(InlineSeat { lam: lam, regs: regs })
         let r = self.reg_of(body)
         self.inline_exit()
         r

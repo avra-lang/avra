@@ -54,6 +54,7 @@ export enum Sink {
     FindIndex(ret: TypeId, cell: Reg, pred: FnBox)
     Contains(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
     IndexOf(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
+    Fold(ret: TypeId, cell: Reg, f: Step)
     Count(ret: TypeId, cell: Reg)
     Sum(ret: TypeId, cell: Reg)
     MinMax(ret: TypeId, has: Reg, best: Reg, less: bool)
@@ -175,7 +176,16 @@ impl LowerCx {
                 self.reg_of(e)
             },
             .Applied(f, ret) -> self.call_ptr(ret, f.code, [f.box, t.value!]),
-            .Inline(lam, ret) -> self.inlined(lam, ret, t.value!),
+            .Inline(lam, _) -> self.inlined(lam, [t.value!]),
+        }
+    }
+
+    /// `fold`'s fn asked once: the accumulator in hand and the element.
+    mut fn folded(f: Step, acc: Reg, v: Reg) -> Reg {
+        match f {
+            .Written(e) -> self.lower_defect(e, "a fold's fn written over the heads"),
+            .Applied(box, ret) -> self.call_ptr(ret, box.code, [box.box, acc, v]),
+            .Inline(lam, _) -> self.inlined(lam, [acc, v]),
         }
     }
 
@@ -231,6 +241,7 @@ impl LowerCx {
                         cx.store_hit(cell, t.at!)
                     }
             },
+            .Fold(ret, cell, f) -> self.emit(Ins.Store(cell, self.folded(f, self.loaded_as(ret, cell), t.value!))),
             .Count(_, cell) -> self.accumulate(cell, self.const_int(1)),
             .Sum(_, cell) -> self.accumulate(cell, t.value!),
             .MinMax(_, has, best, less) -> {
@@ -302,7 +313,7 @@ impl LowerCx {
     mut fn sink_answer(s: Sink) -> Reg {
         match s {
             .Push(dst) -> dst,
-            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindMap(ret, cell, _) or .FindLast(ret, cell, _) or .FindIndex(ret, cell, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
+            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindMap(ret, cell, _) or .FindLast(ret, cell, _) or .FindIndex(ret, cell, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _) or .Fold(ret, cell, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
             .MinMax(ret, has, best, _) or .MinBy(ret, has, best, _, _, _, _) -> self
                 .region_as(self.loaded_as(self.type(bool), has), ret) { cx ->
                     cx.adopted(ret, false, cx.loaded_as(self.type(int), best))

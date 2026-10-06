@@ -2,7 +2,7 @@
 //! fn argument's seats and answer before any loop exists), the
 //! scans, the growth words and the copies, each a row's rule; the
 //! receiver is always a list because the row's `takes` said so.
-use core.{ExprId, TypeId, Type, Arrow, LambdaParts, no_marks}
+use core.{ExprId, TypeId, Type, Arrow, LambdaParts, no_marks, same_type}
 use features.{TypeCx, MethodCall, this_is, slot_worthy, TypeArgs, PipeStage}
 use diagnostics.{refusal}
 
@@ -219,6 +219,61 @@ export fn check_index_of(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     int_type(cx)
 }
 
+/// `xs.fold(seed, f)` — the seed carried through every element:
+/// `f(acc, x)` answers the next accumulator, and the last one is the
+/// answer. The seed names the accumulator's type; the fn answers it.
+export fn check_fold(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let elem? = elem_held(cx, mc, "fold") else { return cx.error_type }
+    if mc.args.length != 2 { return fold_seats(cx, mc.e, mc.args.length) }
+    let acc? = fold_seed(cx, mc) else { return cx.error_type }
+    let arrow? = fold_arrow(cx, mc.args[1], acc, elem) else { return cx.error_type }
+    if !folds(arrow, acc, elem) {
+        return fold_fn_misfit(cx, mc.args[1], acc, elem)
+    }
+    acc
+}
+
+/// Whether a fn IS `fold`'s: the accumulator and the element in, the
+/// accumulator out — identity, never agreement.
+fn folds(arrow: Arrow, acc: TypeId, elem: TypeId) -> bool {
+    arrow.seats.length == 2 &&
+        same_type(arrow.seats[0], acc) &&
+        same_type(arrow.seats[1], elem) &&
+        same_type(arrow.answer, acc)
+}
+
+/// The accumulator's type: the seed's own, or — for a seed with none
+/// (`[]`, `null`) — the type the fold's own seat declares.
+fn fold_seed(mut cx: TypeCx, mc: MethodCall) -> TypeId? {
+    let seed = mc.args[0]
+    let own = cx.type_at(seed)
+    if cx.errored_ty(own) { return null }
+    if slot_worthy(cx.view.types.shape_of(own)) { return own }
+    let want? = cx.want_at(mc.e) else {
+        let _ = seedless_fold(cx, seed, own)
+        return null
+    }
+    if cx.errored_ty(want) || !cx.accepts(seed, want) { return null }
+    want
+}
+
+/// `fold`'s fn, typed under its two seats with the accumulator planted
+/// as its answer. Absent when its own body already spoke.
+fn fold_arrow(mut cx: TypeCx, f: ExprId, acc: TypeId, elem: TypeId) -> Arrow? {
+    let fnty: TypeId = cx.retype_seated(f, [acc, elem], no_marks(2), acc) ?? cx.type_at(f)
+    if cx.errored_ty(fnty) {
+        let parts: LambdaParts? = cx.view.store.lambda_parts(f)
+        if parts != null && parts!.params.length != 2 { let _ = misseated_fold(cx, f, parts!.params.length) }
+        return null
+    }
+    let held? = cx.view.types.arrow_parts(fnty) else {
+        let _ = fold_fn_misfit(cx, f, acc, elem)
+        return null
+    }
+    if cx.errored_ty(held.answer) { return null }
+    held
+}
+
 /// `xs.count()` — how many elements reach it, no list minted.
 export fn check_count(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     if elem_held(cx, mc, "count") == null || !cx.seated(mc, "count", []) { return cx.error_type }
@@ -296,6 +351,13 @@ export fn check_last(mut cx: TypeCx, mc: MethodCall) -> TypeId { edge_type(cx, m
 fn edge_type(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, name)
     if elem == null || !cx.seated(mc, name, []) { return cx.error_type }
+    cx.view.types.intern(Type.Opt(elem!))
+}
+
+/// `xs.get(i)` — the element at `i`, absent outside the list.
+export fn check_get(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let elem: TypeId? = elem_held(cx, mc, "get")
+    if elem == null || !cx.seated(mc, "get", [int_type(cx)]) { return cx.error_type }
     cx.view.types.intern(Type.Opt(elem!))
 }
 
@@ -470,6 +532,59 @@ fn scans_by_value(mut cx: TypeCx, e: ExprId, name: string, elem: TypeId) -> Type
                 "`${name}` scans by value — a scalar, text, a tagged enum, or a record of one such field — and this list holds `${cx.view.types.name_of(elem)}`",
                 "scanned here",
                 "spell the scan — `xs.any(same(it))` with the fields you mean",
+            ),
+        )
+}
+
+fn fold_seats(mut cx: TypeCx, e: ExprId, found: int) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(e),
+                "`fold` takes a seed and a fn, found ${found} arguments",
+                "this call",
+                "write `xs.fold(0, (acc, x) -> acc + x)`",
+            ),
+        )
+}
+
+fn seedless_fold(mut cx: TypeCx, seed: ExprId, acc: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.list_element",
+                cx.loc_of(seed),
+                "`fold`'s seed names what it accumulates, and `${cx.view.types.name_of(acc)}` names no type",
+                "this seed",
+                "bind the seed under a typed let first — `let seed: List<int> = []`",
+            ),
+        )
+}
+
+fn misseated_fold(mut cx: TypeCx, f: ExprId, seats: int) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(f),
+                "`fold` seats two params — the accumulator, then the element — and this lambda takes ${seats}",
+                "this lambda",
+                "write `(acc, x) -> …`",
+            ),
+        )
+}
+
+fn fold_fn_misfit(mut cx: TypeCx, f: ExprId, acc: TypeId, elem: TypeId) -> TypeId {
+    let a = cx.view.types.name_of(acc)
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(f),
+                "`fold`'s fn takes the accumulator and the element and answers the accumulator — `fn(${a}, ${cx.view.types.name_of(elem)}) -> ${a}` — and this is `${cx.name_at(f)}`",
+                "this fn",
+                null,
             ),
         )
 }
