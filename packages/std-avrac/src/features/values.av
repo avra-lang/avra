@@ -430,6 +430,21 @@ impl LowerCx {
             )
     }
 
+    /// `map_write` under the key's own probe — `map_slot`'s word, so the
+    /// write walks no index.
+    mut fn map_write_at(m: Reg, k: Reg, token: Reg, v: Reg) {
+        let ty = self.out.type_of_reg(v)
+        if !self.scalar_nullable(ty) { return self.map_set_at(m, k, token, v) }
+        self
+            .map_set_at_maybe(
+                m,
+                k,
+                token,
+                self.presence_of(v, ty),
+                self.extracted(v, 1, self.mint_ty(self.carried_type(ty))),
+            )
+    }
+
     /// The last slot, removed, as a value of `ty` — a nullable scalar's
     /// presence read before its word leaves.
     mut fn popped(box: Reg, ty: TypeId) -> Reg {

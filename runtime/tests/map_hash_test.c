@@ -20,6 +20,11 @@ void* avra_cell_unique(void* slot);
 const char* avra_bytes_adopted(const void* p, int64_t n);
 const char* avra_str_of_bytes(const char* b);
 int64_t avra_map_worst_probe(void* map);
+int64_t avra_map_slot(void* map, const char* key);
+int64_t avra_map_value_at(void* map, int64_t slot);
+void avra_map_set_at(void* map, const char* key, int64_t token, int64_t v);
+void avra_map_remove(void* map, const char* key);
+int64_t avra_map_probes(void);
 int64_t avra_map_keyed(void* map);
 uint64_t avra_text_hash(const char* s);
 uint64_t avra_sip_hash_keyed(uint64_t k0, uint64_t k1, const char* s, int64_t n);
@@ -90,6 +95,54 @@ static void attack(const char* what, const char** keys, int64_t n) {
     avra_rc_release(m);
     snprintf(msg, sizeof msg, "%s: the map, released, leaves the live count where it began", what);
     CHECK(avra_mem_live() == live, msg);
+}
+
+// A READ THEN A WRITE OF ONE KEY IS ONE PROBE: the slot row's word
+// carries a hit's slot or a miss's empty index word, and the write
+// under it walks nothing — through every growth of the index. A word
+// the map has since outgrown is probed afresh.
+static void token_writes(void) {
+    enum { COUNT = 5000 };
+    static const char* keys[COUNT];
+    for (int64_t i = 0; i < COUNT; i++) {
+        char buf[24];
+        int len = snprintf(buf, sizeof buf, "t%lld", (long long)i);
+        keys[i] = text(buf, (size_t)len);
+    }
+    void* m = avra_map_new();
+    (void)avra_map_probes();
+    int64_t before = avra_map_probes();
+    for (int64_t i = 0; i < COUNT; i++) {
+        int64_t token = avra_map_slot(m, keys[i]);
+        if (token >= 0) break;
+        avra_map_set_at(m, keys[i], token, i);
+    }
+    CHECK(avra_map_probes() - before == COUNT, "a miss then its write is one probe a key, through every rebuild");
+    CHECK(avra_map_len(m) == COUNT && found_all(m, keys, COUNT), "every key written under a miss's word answers its value");
+    before = avra_map_probes();
+    int64_t hits = 0;
+    for (int64_t i = 0; i < COUNT; i++) {
+        int64_t token = avra_map_slot(m, keys[i]);
+        if (token >= 0) hits++;
+        avra_map_set_at(m, keys[i], token, avra_map_value_at(m, token) + 1);
+    }
+    CHECK(hits == COUNT && avra_map_probes() - before == COUNT, "a hit then its write is one probe a key");
+    CHECK(avra_map_len(m) == COUNT && avra_map_get(m, keys[7]) == 8, "a write under a hit's word overwrites in place");
+
+    const char* late = text("late", 4);
+    int64_t stale_miss = avra_map_slot(m, late);
+    avra_map_set(m, late, 1);
+    avra_map_set_at(m, late, stale_miss, 2);
+    CHECK(avra_map_len(m) == COUNT + 1 && avra_map_get(m, late) == 2, "a miss's word for a key since written overwrites, never doubles");
+    int64_t stale_hit = avra_map_slot(m, late);
+    avra_map_remove(m, late);
+    avra_map_set_at(m, late, stale_hit, 3);
+    CHECK(avra_map_len(m) == COUNT + 1 && avra_map_get(m, late) == 3 && avra_map_get(m, keys[COUNT - 1]) == COUNT, "a hit's word past the map's end is probed afresh");
+    avra_map_set_at(m, keys[0], -1, 40);
+    CHECK(avra_map_get(m, keys[0]) == 40, "a word that says nothing is an ordinary write");
+    avra_rc_release(m);
+    avra_rc_release((void*)late);
+    release_all(keys, COUNT);
 }
 
 // "k", a NUL, then i: one prefix before the NUL, distinct after it.
@@ -232,6 +285,8 @@ int main(void) {
     CHECK(avra_map_has(e, empty) && avra_map_get(e, empty) == 7 && avra_map_len(e) == 1, "an empty key stores and reads");
     avra_rc_release(e);
     avra_rc_release((void*)empty);
+
+    token_writes();
 
     printf("map hash: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
