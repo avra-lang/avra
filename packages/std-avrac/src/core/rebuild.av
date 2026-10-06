@@ -283,8 +283,19 @@ impl Rebuilder {
         let holed = self.holed.pop()
         if !self.copying { return p }
         let id = self.dst.alloc_pat(rebuilt, self.src.pat_span(p))
-        if holed { self.holed_pats.push(id) } else { self.made_pats.push(id) }
+        if holed { self.holed_pats.push(id) } else { self.made_pat(id, p) }
         id
+    }
+
+    /// A copied pattern wears the template's origin, and so does the
+    /// READ of its name: a const it compares to is the one the file
+    /// that wrote the template sees.
+    mut fn made_pat(id: PatId, from: PatId) {
+        self.made_pats.push(id)
+        let read? = self.dst.name_read(id) else { return }
+        let source? = self.src.name_read(from) else { return }
+        self.made_exprs.push(read)
+        self.made_from.push(source)
     }
 
     mut fn arms(arms: List<Arm>) -> List<Arm> { flatten([self.arm(a) for a in arms]) }

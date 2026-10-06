@@ -1006,6 +1006,22 @@ impl TypeCx {
     }
 
     // ── The voices: every refusal worded HERE, once ──
+    /// The equality law's refusal — `==`, `!=` and a pattern's `==`
+    /// speak it of the side that cannot compare.
+    mut fn not_comparable(op: string, offender: ExprId) -> TypeId {
+        let n = self.name_at(offender)
+        self
+            .spoken(
+                refusal(
+                    "type.mismatch",
+                    self.loc_of(offender),
+                    "`${op}` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+                    this_is(n),
+                    compare_help(self.seen_at(offender)),
+                ),
+            )
+    }
+
     mut fn isolated_capture(
         a: ExprId,
         callee: string,
@@ -1969,5 +1985,28 @@ fn postfix_ready(e: Expr) -> bool {
     match e {
         .Ident(_) or .Call(_, _, _) or .MethodCall(_, _, _) or .Prop(_, _) or .Index(_, _) -> true,
         _ -> false,
+    }
+}
+
+/// Where to look instead, by what was offered.
+fn compare_help(sh: Type) -> string {
+    match sh {
+        .List(_) -> "compare an element or the `length` instead",
+        .Cell(_) -> "read the cell with `get` before comparing",
+        .Task(_) -> "compare what it answers — `.await` it first",
+        .Tasks -> "an owner of tasks is not a value to compare",
+        .Struct(_, _) -> "compare a field instead",
+        .Enum(_, _) or .Res(_, _) -> "match on it instead — only an enum carrying nothing compares, by variant",
+        .Opt(_) or .Null -> "answer the absence first — `??` gives it a value",
+        .EmptyList -> "an empty list compares with nothing — give it elements or a declared type",
+        .Map(_, _) or .EmptyMap -> "maps do not compare — ask `get`",
+        .Var(_, _, _) -> "a type parameter cannot compare — operator traits are recorded",
+        .Dyn(_, _) -> "a `dyn` compares behind its contract — operator traits are recorded",
+        .Fn(_, _, _) -> "fn values do not compare — call them instead",
+        .Void -> "nothing compares — a mutation answers no value",
+        .App(_, _, _) -> "reach for a member instead — the declaration decides field or `match`",
+        .Union(_) -> "`catch` narrows to a member instead — a union carries no value to compare",
+        .Range -> "compare a bound instead",
+        .Ptr or .Int or .Float or .Bytes or .Bool or .Str or .TypeName(_, _) or .Error -> "compare scalars or strings",
     }
 }

@@ -465,6 +465,27 @@ impl ResolveCx {
         self.chained(0, name, outer)
     }
 
+    /// Whether a bare name in a pattern is a CONST'S here, by the
+    /// binding law: a parameter or a local of that name hides the
+    /// const, and the name then binds. Asked without reading the name,
+    /// so a name that binds captures nothing.
+    fn names_const(name: string, origin: FileId?) -> bool {
+        let key = keyed(name, origin)
+        if frame_param_hit(self.lframes, key) != null || found_at(self.scope, key) != null { return false }
+        let ohit: int? = overlay_index(self.overlays, key)
+        if ohit != null { return self.const_def(overlay_at(self.overlays, ohit!, key)) }
+        let outer: Binding? = self.outer_binding(key)
+        if outer != null { return self.const_def(outer) }
+        let d? = self.names_in(origin).fn_decl(name) else { return false }
+        self.view.decls.is_const(d)
+    }
+
+    /// Whether a local binding is a body's own `const`.
+    fn const_def(b: Binding?) -> bool {
+        let held? = b else { return false }
+        match held { .Def(s) -> self.view.store.const_value(s) != null, rest -> false }
+    }
+
     /// The top level's binding for a name — unless a fn body is
     /// asking: its floor hides the run-time values around it. (A
     /// `const` is a declaration, found in the namespace after this.)

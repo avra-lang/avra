@@ -246,29 +246,6 @@ fn uncomparable(cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
     null
 }
 
-/// Where to look instead, by what was offered.
-fn compare_help(sh: Type) -> string {
-    match sh {
-        .List(_) -> "compare an element or the `length` instead",
-        .Cell(_) -> "read the cell with `get` before comparing",
-        .Task(_) -> "compare what it answers — `.await` it first",
-        .Tasks -> "an owner of tasks is not a value to compare",
-        .Struct(_, _) -> "compare a field instead",
-        .Enum(_, _) or .Res(_, _) -> "match on it instead — only an enum carrying nothing compares, by variant",
-        .Opt(_) or .Null -> "answer the absence first — `??` gives it a value",
-        .EmptyList -> "an empty list compares with nothing — give it elements or a declared type",
-        .Map(_, _) or .EmptyMap -> "maps do not compare — ask `get`",
-        .Var(_, _, _) -> "a type parameter cannot compare — operator traits are recorded",
-        .Dyn(_, _) -> "a `dyn` compares behind its contract — operator traits are recorded",
-        .Fn(_, _, _) -> "fn values do not compare — call them instead",
-        .Void -> "nothing compares — a mutation answers no value",
-        .App(_, _, _) -> "reach for a member instead — the declaration decides field or `match`",
-        .Union(_) -> "`catch` narrows to a member instead — a union carries no value to compare",
-        .Range -> "compare a bound instead",
-        .Ptr or .Int or .Float or .Bytes or .Bool or .Str or .TypeName(_, _) or .Error -> "compare scalars or strings",
-    }
-}
-
 fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     heard_across(cx, l, r)
     heard_across(cx, r, l)
@@ -296,7 +273,7 @@ fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
     // compares THROUGH PRESENCE: absent equals nothing but absence.
     let inner: TypeId? = nullable_compared(cx, l, r)
     if inner != null {
-        if !cx.compares_by_value(inner!) { return not_comparable(cx, op, l) }
+        if !cx.compares_by_value(inner!) { return cx.not_comparable(op_symbol(op), l) }
         return cx.type(bool)
     }
     // An AGGREGATE would compare by ADDRESS — never what the writer
@@ -304,7 +281,7 @@ fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
     // refused while the backend quietly answered `false` for two
     // identical values.
     let found: ExprId? = uncomparable(cx, l, r)
-    if found != null { return not_comparable(cx, op, found!) }
+    if found != null { return cx.not_comparable(op_symbol(op), found!) }
     // A NAME IS TRANSPARENT AT A READ: the named law already held
     // both sides to one name, so the shapes are what remain to agree.
     if !cx.types_disagree(cx.seen(cx.type_at(l)), cx.seen(cx.type_at(r))) { return cx.type(bool) }
@@ -449,20 +426,6 @@ fn not_askable(mut cx: TypeCx, op: BinOp, solid: ExprId) -> TypeId {
                 "`${op_symbol(op)} null` asks a nullable, this is `${n}`",
                 this_is(n),
                 "`${n}` is a guarantee — it is never absent",
-            ),
-        )
-}
-
-fn not_comparable(mut cx: TypeCx, op: BinOp, offender: ExprId) -> TypeId {
-    let n = cx.name_at(offender)
-    cx
-        .spoken(
-            refusal(
-                "type.mismatch",
-                cx.loc_of(offender),
-                "`${op_symbol(op)}` compares by value — a scalar, text, a tagged enum, or a record of one such field",
-                this_is(n),
-                compare_help(cx.seen_at(offender)),
             ),
         )
 }

@@ -1727,6 +1727,30 @@ Syntax the grammar lacks:
   lexer keeps an unknown escape as its two characters, so the text
   holds a backslash and a `u`. Spell a code point with `@std/text`'s
   `from_codepoint(65533)` (sugar backlog: `\u{…}` escapes).
+- A BARE NAME IN A PATTERN IS A CONST'S OR A BINDER'S, BY ITS
+  BINDING — never by its spelling. `match c { escape -> …, _ -> … }`
+  COMPARES where a `const escape` is in scope (declared, imported
+  through `use`, a body's own) and no parameter or local of that name
+  hides it; any other name BINDS what arrives. The const's type is
+  the subject's own ("a `int` never matches `int?`" — unwrap first),
+  it must compare by value ("`==` compares by value — …"), and a
+  comparison covers nothing: the catch-all is still owed. THE HAZARD
+  IS THAT ONE SPELLING MEANS TWO THINGS, and adding or deleting a
+  const flips an arm with no edit at the arm. Two warnings stand
+  where the flip would be silent: type.const_pattern on a match that
+  ENDS on a const's name ("`escape` is a const here, so this arm
+  compares" — add `_ -> …` or rename the binder), and
+  type.unreachable_arm on any arm after one that takes every value
+  ("this arm is never reached — `gone` above binds, and takes every
+  value" — what a deleted const leaves behind). A name-turned-binder
+  that is the LAST arm says nothing: it is a catch-all, as written.
+  An arms block cannot START on a bare name (`xs.map() { tab -> … }`
+  is a lambda's head) — write the `match` out. An `is` payload under
+  `if` (`if k is .C(tab) { … }`) is a pattern seat like any other. A
+  TEMPLATE'S bare name is judged in the file that WROTE the template:
+  its const compares there, and a const of the same name in the file
+  the code lands in never turns the template's binder into a
+  comparison (features/enums/tests/const_pat_template).
 - A match arm whose body is a bare STATEMENT (`.Unknown(t) -> fail
   E.Bad(t),`): F0100 "expected `}` to close the `match`" at the
   `fail`'s payload, then "expected EOF while parsing `program`" — and

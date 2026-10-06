@@ -5,7 +5,16 @@
 //! CONTROL-OWNING: its arms are hidden from `kids` and walked
 //! through the driver, each under its own bind.
 use core.{Expr, ExprId, StmtId, TypeId, Reg, Arm, PatId, SyntaxArena, Binder}
-use features.{NodeSemantics, StmtSemantics, PatSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use features.{
+    NodeSemantics,
+    StmtSemantics,
+    PatSemantics,
+    ResolveCx,
+    TypeCx,
+    LowerCx,
+    NameFacts,
+    nothing,
+}
 use features.enums.{bind_types, pat_reg, bind_regs}
 
 export type EnumsSemantics = {}
@@ -67,29 +76,56 @@ impl StmtSemantics for EnumDeclSemantics {
 /// in pre-order (an `or` arm's alternatives bind nothing, which
 /// typing enforces). A match is a CONTROL-OWNING node, so `kids`
 /// hides the arm values and this walks them instead.
+/// A BARE NAME IS A CONST'S OR A BINDER'S, BY ITS BINDING: where a
+/// const of that name stands and no local hides it, the name's read is
+/// walked where the match stands — the pattern compares — and it binds
+/// nothing; any other name binds, as ever.
 fn resolve_arms(mut cx: ResolveCx, arms: List<Arm>) {
-    for a in arms { cx.arm_scope(cx.bound_pats(arm_binds(cx.view.store, a)), a.value, a.guard) }
+    for a in arms {
+        for p in a.pats {
+            for b in cx.view.store.pattern_binds(p) { compared_read(cx, b) }
+        }
+        cx.arm_scope(cx.bound_pats(arm_binds(cx.view.store, cx.facts, a)), a.value, a.guard)
+    }
+}
+
+/// The name's read, walked when the name is a const's here.
+fn compared_read(mut cx: ResolveCx, b: Binder) {
+    let read? = cx.view.store.name_read(b.pat) else { return }
+    if cx.names_const(b.name, cx.view.origin_of_pat(b.pat)) { cx.walk(read) }
+}
+
+/// A pattern's BINDERS: the names it binds, in pre-order — the order
+/// that indexes `Binding.Pattern` in every pass. A name that compares
+/// to a const binds nothing.
+export fn binders(store: SyntaxArena, names: NameFacts, p: PatId) -> List<Binder> {
+    [b for b in store.pattern_binds(p) if names.compared(store, b.pat) == null]
+}
+
+/// A pattern nothing can refuse: a hole, or a name that binds.
+export fn catches(store: SyntaxArena, names: NameFacts, p: PatId) -> bool {
+    store.irrefutable(p) && names.compared(store, p) == null
 }
 
 /// Whether every pattern is irrefutable — spelled as a scan: a
 /// method call on a captured store inside `all` mistypes the pronoun.
-export fn all_irrefutable(store: SyntaxArena, ids: List<PatId>) -> bool {
+export fn all_irrefutable(store: SyntaxArena, names: NameFacts, ids: List<PatId>) -> bool {
     for p in ids {
-        if !store.irrefutable(p) { return false }
+        if !catches(store, names, p) { return false }
     }
     true
 }
 
 /// The first irrefutable pattern among these, when one is.
-export fn hole_of(store: SyntaxArena, ids: List<PatId>) -> PatId? {
+export fn hole_of(store: SyntaxArena, names: NameFacts, ids: List<PatId>) -> PatId? {
     for p in ids {
-        if store.irrefutable(p) { return p }
+        if catches(store, names, p) { return p }
     }
     null
 }
 
 /// The names an arm binds: its first pattern's, in pre-order.
-export fn arm_binds(store: SyntaxArena, a: Arm) -> List<Binder> {
+export fn arm_binds(store: SyntaxArena, names: NameFacts, a: Arm) -> List<Binder> {
     let first? = a.pats.first() else { return [] }
-    store.pattern_binds(first)
+    binders(store, names, first)
 }
