@@ -82,6 +82,19 @@ type Bucket = { members: Cell<List<int>>, hash: Cell<int>, read: ReadMark }
 /// cells written in place, so a read allocates nothing.
 type ReadMark = { revision: Cell<int>, reader: Cell<int> }
 
+/// The ids one owner stamped in one relation, in stamping order — a row
+/// since removed or restamped is still listed, and the stamp decides —
+/// and the run none of them is older than.
+type Stamped = { ids: Cell<List<int>>, since: Cell<int> }
+
+impl Stamped {
+    /// `id` stamped in `run`: the first into an empty list dates it.
+    fn took(id: int, run: int) {
+        if self.ids.get().is_empty() { self.since.set(run) }
+        self.ids.push(id)
+    }
+}
+
 /// Who wrote a row: the query cell that owns it and which of its runs —
 /// owner 0 is no query.
 export type Stamp = { owner: int, run: int }
@@ -142,7 +155,7 @@ export type Rows<R> = {
     hashes: Cell<List<int>>,
     filed: Cell<List<List<List<IndexKey>>>>,
     stamps: Cell<List<Stamp>>,
-    stamped: Cell<List<Cell<List<int>>?>>,
+    stamped: Cell<List<Stamped?>>,
     set: Cell<int>,
     live: Cell<int>,
     indexes: List<Index>,
@@ -161,7 +174,7 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
     let hashes: Cell<List<int>> = Cell.new([])
     let filed: Cell<List<List<List<IndexKey>>>> = Cell.new([])
     let stamps: Cell<List<Stamp>> = Cell.new([])
-    let stamped: Cell<List<Cell<List<int>>?>> = Cell.new([])
+    let stamped: Cell<List<Stamped?>> = Cell.new([])
     let buckets: Cell<List<Bucket>> = Cell.new([])
     Rows {
         name: name,
@@ -343,16 +356,15 @@ impl Rows<R> {
         if held && was != stamp.owner { db.refuse(two_owners(relation, id)) }
         self.put(id, row, hash, keys)
         self.stamps.set_at(id, stamp)
-        if stamp.owner != 0 && (!held || was != stamp.owner) { self.stamped_by(stamp.owner).push(id) }
+        if stamp.owner != 0 && (!held || was != stamp.owner) { self.stamped_by(stamp.owner).took(id, stamp.run) }
     }
 
-    /// The ids an owner ever stamped, in stamping order — a row since
-    /// removed or restamped is still listed, and the stamp decides.
-    fn stamped_by(owner: int) -> Cell<List<int>> {
+    /// What `owner` stamped here, made on its first write.
+    fn stamped_by(owner: int) -> Stamped {
         while self.stamped.get().length <= owner { self.stamped.push(null) }
         let known? = self.stamped.get()[owner] else {
             let none: List<int> = []
-            let made = Cell.new(none)
+            let made = Stamped { ids: Cell.new(none), since: Cell.new(0) }
             self.stamped.set_at(owner, made)
             return made
         }
@@ -360,19 +372,22 @@ impl Rows<R> {
     }
 
     /// The rows `owner` did not write again in `run`, removed — a removal
-    /// is a write, under the same late law.
+    /// is a write, under the same late law. A list whose every row was
+    /// stamped in this run holds nothing to remove and is not walked.
     fn sweep(db: Db, owner: int, run: int) {
         if owner >= self.stamped.get().length { return }
         let mine? = self.stamped.get()[owner] else { return }
+        if mine.since.get() == run { return }
         let marks = self.stamps.get()
-        let live = [id for id in mine.get() if marks[id].owner == owner && self.row(id) != null]
+        let live = [id for id in mine.ids.get() if marks[id].owner == owner && self.row(id) != null]
         let gone = [id for id in live if marks[id].run < run]
         if !gone.is_empty() {
             if db.heard(self.family.get()) { self.late_among(db, self.name, self.filed_buckets(gone)) }
             db.unsettles_restored()
             for id in gone { self.remove(id) }
         }
-        mine.set([id for id in live if marks[id].run >= run])
+        mine.ids.set([id for id in live if marks[id].run >= run])
+        mine.since.set(run)
     }
 
     /// Every bucket the rows at `ids` are filed in.
