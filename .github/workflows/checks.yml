@@ -34,8 +34,10 @@ on:
         description: "leave empty for a whole train; `keepers` runs the keepers job alone"
         default: ""
 
+# The event is part of the group: a run asked for by hand on a ref never
+# cancels that ref's own PR check or train.
 concurrency:
-  group: checks-${{ github.ref }}
+  group: checks-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -82,6 +84,9 @@ jobs:
           # Asked for by hand, the run is a train's over EVERY package: the
           # whole gate on any branch, without a queue entry.
           if [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; then
+            for d in packages/*/; do
+              [ -d "${d}src" ] || { echo "::error::${d} has no src — a whole train would pass it by untested"; exit 1; }
+            done
             pkgs=$(ls packages)
           fi
           if [ "$event" = pull_request ]; then
@@ -286,6 +291,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # A PART OF THE GATE IS NO VERDICT: a run asked for with `only` set posts
+      # a failing `test`, so it can never stand as the required check on a
+      # commit. Its jobs' own results say what it found.
+      - if: github.event_name == 'workflow_dispatch' && inputs.only != ''
+        name: partial
+        run: |
+          echo "test: NOT A VERDICT — this run was asked for with only=${{ inputs.only }}; read the jobs it ran"
+          exit 1
       - name: verdict
         run: |
           echo '${{ toJSON(needs) }}' > needs.json

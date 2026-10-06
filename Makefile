@@ -612,6 +612,7 @@ libs: avra $(PACKAGE_OBJS)
 # The suites, derived and counted: a cycle or a dependency that is no
 # package refuses here, before a silent empty list runs nothing.
 suites:
+	@python3 tools/shards.py --self-test
 	@python3 tools/suites.py --self-test
 	@python3 tools/suites.py --report
 
@@ -756,8 +757,9 @@ footprint-accept: $(RUNTIME_LIB)
 # THE KEEPERS, ONE LIST. The train's keepers job and a lane's own
 # tools/gate_changed.sh both run `make keepers`, so a keeper named here
 # is held on every train, and one left off is held by nobody. A pull
-# request's own check does not run them: the train does, before anything
-# merges. Each names what it links as its own prerequisites.
+# request's own check runs only those that need no compiler
+# (KEEPERS_STATIC); the train runs them all, before anything merges.
+# Each names what it links as its own prerequisites.
 # Every keeper runs, and each that refuses is named.
 # TWO HALVES OF ABOUT EQUAL COST, so the train's one keepers job can run
 # them side by side, each in its own copy of the tree (keepers-a,
@@ -793,6 +795,7 @@ tool-witnesses:
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
 KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites
+.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@fail=0; for k in $(KEEPERS_STATIC); do \
