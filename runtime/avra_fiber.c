@@ -317,7 +317,7 @@ static void trace_settle(void) {
 // A LOG HAS A CEILING: past it one line says so and the trace is over.
 __attribute__((noinline, cold))
 static void traced(const char* line) {
-    char out[256];
+    char out[512];
     avra_fmt(out, sizeof out, "ts=%lld %s\n", (long long)now_ns(), line);
     size_t n = strlen(out);
     if ((g_trace_left -= (int64_t)n) < 0) {
@@ -378,6 +378,28 @@ static void traced_joined(const Fiber* f, int64_t by) {
     char line[160];
     if (by < 0) avra_fmt(line, sizeof line, "claim id=%lld by=unrun arm=0:0", (long long)id_of(f));
     else avra_fmt(line, sizeof line, "claim id=%lld by=%lld arm=0:0", (long long)id_of(f), (long long)by);
+    traced(line);
+}
+
+// Where a task's body was written, as its code carries it — or NULL
+// for code that carries no site.
+static const char* site_of(void* body) {
+    const char* code = (const char*)(uintptr_t)((AvraArray*)body)->data[0];
+    uint64_t mark;
+    const char* site;
+    memcpy(&mark, code - 16, sizeof mark);
+    if (mark != AVRA_SITE_MARK) return NULL;
+    memcpy(&site, code - 8, sizeof site);
+    return site;
+}
+
+// A task's site, said once: its source line, or — for code that
+// carries none — its address.
+__attribute__((noinline, cold))
+static void traced_site(const Fiber* f, const char* site, const void* code) {
+    char line[400];
+    if (site) avra_fmt(line, sizeof line, "site id=%lld %s", (long long)id_of(f), site);
+    else avra_fmt(line, sizeof line, "site id=%lld %p", (long long)id_of(f), code);
     traced(line);
 }
 
@@ -1458,7 +1480,10 @@ void* avra_task_spawn(void* body) {
     f->task = task;
     f->deadline = g_current->deadline;          // a task inherits its spawner's `within`
     avra_rc_retain(task);                       // the running fiber's own reference
-    if (TRACING) traced_fiber("spawn", f, (long long)id_of(g_current));
+    if (TRACING) {
+        traced_fiber("spawn", f, (long long)id_of(g_current));
+        traced_site(f, site_of(body), (const void*)(uintptr_t)((AvraArray*)body)->data[0]);
+    }
     ready_push(f);
     return task;
 }
@@ -1781,6 +1806,10 @@ void avra_vtask_free(int64_t t) {
 void avra_vtask_end(int64_t t) {
     if (TRACING) traced_fiber("end", virtual_at(t), 0);
     avra_vtask_free(t);
+}
+
+void avra_vtask_sited(int64_t t, const char* site) {
+    if (TRACING) traced_site(virtual_at(t), site, NULL);
 }
 
 void avra_vtask_ready(int64_t t) { ready_push(virtual_at(t)); }

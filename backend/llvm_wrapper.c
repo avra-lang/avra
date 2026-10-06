@@ -296,6 +296,22 @@ void avra_llvm_set_cold(LLVMValueRef fn) {
     LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "minsize"));
 }
 
+// A TASK BODY'S SITE, laid before its code (avra_box.h): the mark and
+// the address of `file:line`. No instruction reads it, so a program
+// pays its bytes and nothing else.
+void avra_llvm_set_site(LLVMValueRef fn, const char* site) {
+    LLVMModuleRef m = LLVMGetGlobalParent(fn);
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMValueRef text = LLVMConstStringInContext2(ctx, site, strlen(site), 0);
+    LLVMValueRef held = LLVMAddGlobal(m, LLVMTypeOf(text), "");
+    LLVMSetInitializer(held, text);
+    LLVMSetGlobalConstant(held, 1);
+    LLVMSetLinkage(held, LLVMPrivateLinkage);
+    LLVMSetUnnamedAddress(held, LLVMGlobalUnnamedAddr);
+    LLVMValueRef fields[2] = { LLVMConstInt(LLVMInt64TypeInContext(ctx), AVRA_SITE_MARK, 0), held };
+    LLVMSetPrefixData(fn, LLVMConstStructInContext(ctx, fields, 2, 0));
+}
+
 // Whether this build counts the boxes runtime rows mint, by type:
 // AVRA_CENSUS_TYPES set and not "0". The census's own build sets it.
 int64_t avra_llvm_census_types(void) {

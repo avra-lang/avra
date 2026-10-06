@@ -70,4 +70,11 @@ typedef struct {
     int64_t icap;
 } AvraMap;
 
+// A TASK BODY'S SITE rides before its code: this mark, then the address
+// of `file:line` as C text. The backend lays it there for a task's
+// body; the scheduler reads it when a trace or a listing names the
+// task. Code that carries none — C's own — is known by the mark's
+// absence.
+#define AVRA_SITE_MARK 0x4554495361727661ULL
+
 #endif

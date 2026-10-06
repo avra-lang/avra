@@ -98,6 +98,9 @@ export type Body = {
     file: FileId? = null,
     /// Instantiations may be emitted by more than one cached object.
     weak: bool = false,
+    /// Where a task's body was written, `file:line` — what a trace and
+    /// a listing name the task by. Absent for a body that is no task's.
+    site: string? = null,
     /// A `once fn`'s own — its runtime guard runs every call, its
     /// computation at most one. A GROWTH: every other construction
     /// site answers false.
@@ -1031,10 +1034,19 @@ fn lower_lambda(
             reg_types: lo.out.reg_types,
             file: a.view.file,
             weak: true,
+            site: if lj.kind is .Task { written_at(a, lj.lam) } else { null },
         },
         voices: lo.out.voices,
         jobs: lo.jobs,
     }
+}
+
+/// Where `e` was written, `file:line`. Absent for code a template
+/// copied from another file: its offsets are that file's.
+fn written_at(a: Analysis, e: ExprId) -> string? {
+    if a.view.store.spanned_elsewhere(e) { return null }
+    let at? = a.view.store.expr_span(e) else { return null }
+    "${a.view.source.file}:${a.view.source.linecol(at.lo).line}"
 }
 
 /// The wrapper, built directly in IR — no AST exists for it: env
