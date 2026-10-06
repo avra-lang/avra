@@ -240,6 +240,7 @@ extern const char avra_rt_held_avra_str_concat __asm__(AVRA_RT_LABEL(avra_str_co
 extern const char avra_rt_held_avra_str_concat_reusing __asm__(AVRA_RT_LABEL(avra_str_concat_reusing));
 extern const char avra_rt_held_avra_errno_text __asm__(AVRA_RT_LABEL(avra_errno_text));
 extern const char avra_rt_held_avra_now_ns __asm__(AVRA_RT_LABEL(avra_now_ns));
+extern const char avra_rt_held_avra_clock_virtual __asm__(AVRA_RT_LABEL(avra_clock_virtual));
 extern const char avra_rt_held_avra_host_env __asm__(AVRA_RT_LABEL(avra_host_env));
 extern const char avra_rt_held_avra_selfhost_read_file __asm__(AVRA_RT_LABEL(avra_selfhost_read_file));
 extern const char avra_rt_held_avra_eputs __asm__(AVRA_RT_LABEL(avra_eputs));
@@ -429,6 +430,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_str_concat_reusing,
     &avra_rt_held_avra_errno_text,
     &avra_rt_held_avra_now_ns,
+    &avra_rt_held_avra_clock_virtual,
     &avra_rt_held_avra_host_env,
     &avra_rt_held_avra_selfhost_read_file,
     &avra_rt_held_avra_eputs,
@@ -797,6 +799,8 @@ _Static_assert(__builtin_classify_type(avra_errno_text(AVRA_RT_I64)) == AVRA_RT_
     "avra_errno_text: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_now_ns()), int64_t),
     "avra_now_ns: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_clock_virtual(AVRA_RT_I64)), void),
+    "avra_clock_virtual: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_host_env(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_host_env: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_selfhost_read_file(AVRA_RT_PTR)) == AVRA_RT_POINTER,

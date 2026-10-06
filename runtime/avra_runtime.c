@@ -3785,11 +3785,115 @@ const char* avra_host_env(const char* name) {
     return str_static(v ? v : "");
 }
 
-int64_t avra_now_ns(void) {
+// ── The clock ───────────────────────────────────────────────────
+//
+// One clock for the process. FLOWING it is the monotonic clock plus a
+// skew; FROZEN it is one reading that only a jump moves. A virtual
+// clock is frozen unless the world is held, and each change of state
+// keeps the present reading — so it never goes back.
+typedef struct {
+    int64_t skew;       // flowing: what is added to the monotonic clock
+    int64_t at;         // frozen: the reading
+    int32_t virtual;
+    int32_t frozen;     // virtual and not held
+    int32_t held;
+    int64_t asked;      // reads since the clock last moved, while frozen
+} Clock;
+
+static Clock g_clock;
+static int64_t g_clock_jumps = 0;
+
+static int64_t clock_real(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
+
+// The state follows `virtual` and `held`, the reading kept across it.
+static void clock_settled(void) {
+    int frozen = g_clock.virtual && g_clock.held <= 0;
+    if (frozen == g_clock.frozen) return;
+    if (frozen) g_clock.at = clock_real() + g_clock.skew;
+    else g_clock.skew = g_clock.at - clock_real();
+    g_clock.frozen = frozen;
+    g_clock.asked = 0;
+}
+
+// A FROZEN CLOCK MOVES ONLY WHEN EVERY TASK WAITS, so a task that reads
+// it again and again without waiting is waiting on something that
+// cannot come: it yields, or computes, until a time that never arrives.
+// That is a hang, and a hang is spoken.
+enum { CLOCK_ASKED_MOST = 1 << 24 };
+
+__attribute__((noinline, cold, noreturn))
+static void clock_never_comes(void) {
+    char words[160];
+    avra_fmt(words, sizeof words, "a task is waiting on the clock without sleeping — the clock is virtual and moves only when every task waits (task %lld)", (long long)avra_task_local->id);
+    avra_trap(words);
+    abort();
+}
+
+__attribute__((noinline, cold))
+static int64_t clock_asked(void) {
+    if (++g_clock.asked > CLOCK_ASKED_MOST) clock_never_comes();
+    return g_clock.at;
+}
+
+int64_t avra_now_ns(void) {
+    if (__builtin_expect(g_clock.frozen, 0)) return clock_asked();
+    return clock_real() + g_clock.skew;
+}
+
+int64_t avra_clock_read(void) {
+    if (__builtin_expect(g_clock.frozen, 0)) return g_clock.at;
+    return clock_real() + g_clock.skew;
+}
+
+void avra_clock_virtual(int64_t on) {
+    g_clock.virtual = on != 0;
+    clock_settled();
+}
+
+int64_t avra_clock_jumped(int64_t at) {
+    if (!g_clock.frozen) return 0;
+    if (at > g_clock.at) g_clock.at = at;
+    g_clock.asked = 0;
+    g_clock_jumps++;
+    return 1;
+}
+
+void avra_clock_hold(int64_t by) {
+    g_clock.held += (int32_t)by;
+    clock_settled();
+}
+
+int64_t avra_clock_holds_dropped(void) {
+    int64_t held = g_clock.held;
+    g_clock.held = 0;
+    clock_settled();
+    return held;
+}
+
+// A run inside a run keeps the outer clock whole, to put it back.
+enum { CLOCK_RUNS_MOST = 16 };
+static Clock g_clock_outer[CLOCK_RUNS_MOST];
+static int g_clock_runs = 0;
+
+void avra_clock_run_begins(void) {
+    if (g_clock_runs == CLOCK_RUNS_MOST) avra_trap("runs under a virtual clock are nested too deep");
+    g_clock_outer[g_clock_runs++] = g_clock;
+    g_clock.held = 0;
+    g_clock.virtual = 1;
+    clock_settled();
+}
+
+void avra_clock_run_ends(void) {
+    if (g_clock_runs == 0) avra_trap("defect: a run's clock ended that never began");
+    g_clock = g_clock_outer[--g_clock_runs];
+    g_clock.asked = 0;
+}
+
+int64_t avra_clock_jumps(void) { return g_clock_jumps; }
 
 void avra_process_exit(int64_t code) {
     exit((int)code);

@@ -361,11 +361,8 @@ static void traced_fiber(const char* what, const Fiber* f, long long n) {
 
 // ── Time ────────────────────────────────────────────────────────
 
-static int64_t now_ns(void) {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
-}
+// The process's one clock, read as the scheduler's own.
+static int64_t now_ns(void) { return avra_clock_read(); }
 
 // `ms` from now, saturating: a wait too long to spell in nanoseconds
 // is a wait for ever, never one already due.
@@ -1057,6 +1054,15 @@ static void fire_due_timers(int64_t now) {
     }
 }
 
+// EVERY TASK WAITS, ON TIME ALONE: a frozen clock jumps to the earliest
+// timer and nothing is waited for. With a descriptor waiter filed the
+// world is waited on in real time instead, and the clock is HELD across
+// that wait — it flows by the wall time the wait took, so a deadline
+// around a real descriptor means what it says.
+static int world_waited_virtually(void) {
+    return g_parked_fds == 0 && g_timers_len > 0 && avra_clock_jumped(g_timers[0].at);
+}
+
 static void fiber_start(void);
 
 // A fiber's first run: a stack from the pool, and at its top a frame
@@ -1173,8 +1179,12 @@ static Fiber* next_with_world(void) {
         if (next) return next;
         if (g_timers_len == 0 && g_parked_fds == 0) avra_trap("every task is waiting — deadlock");
         pool_trim();
+        if (world_waited_virtually()) continue;
         int64_t wait = g_timers_len > 0 ? g_timers[0].at - now_ns() : -1;
+        int held = g_parked_fds > 0;
+        if (held) avra_clock_hold(1);
         poller_wait(g_timers_len > 0 && wait < 0 ? 0 : wait);
+        if (held) avra_clock_hold(-1);
     }
 }
 

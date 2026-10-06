@@ -38,6 +38,29 @@ int64_t avra_task_id(void);
 void avra_array_reserve(void* arr, int64_t spare);
 void avra_array_push_owned(void* arr, void* v);
 int64_t avra_mem_live(void);
+
+// THE CLOCK, ONE FOR THE PROCESS: every reader asks here. VIRTUAL, it is
+// FROZEN — time moves only when every task waits, and then jumps to the
+// earliest timer — except while the world is HELD, when it flows at wall
+// rate. Freezing keeps the present reading and flowing again starts from
+// where the clock stood, so it never goes back.
+int64_t avra_now_ns(void);
+void avra_clock_virtual(int64_t on);
+// The scheduler's own read: never counted as a task's waiting.
+int64_t avra_clock_read(void);
+// Frozen: the clock set to `at` when that is later, and 1. Flowing: 0.
+int64_t avra_clock_jumped(int64_t at);
+// THE WORLD IS HELD while something waits on it in real time — the
+// poller with a descriptor waiter filed, a child not yet reaped. A count.
+void avra_clock_hold(int64_t by);
+// Every hold given up at once, for a run whose holders are gone: how many.
+int64_t avra_clock_holds_dropped(void);
+// A RUN UNDER TEST INSIDE ANOTHER PROGRAM: its clock is virtual from its
+// beginning, and its end puts the outer clock back exactly as it was —
+// no jump the run made stays, and no hold.
+void avra_clock_run_begins(void);
+void avra_clock_run_ends(void);
+int64_t avra_clock_jumps(void);
 // The suite case in flight, else NULL — what a trap names first.
 void avra_case_begin(const char* label);
 const char* avra_case_now(void);
