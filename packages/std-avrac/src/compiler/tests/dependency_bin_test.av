@@ -1,0 +1,94 @@
+//! A DEPENDENCY IS ITS LIBRARY: the file a dependency's `[bin]` names is
+//! that package's own program, and no module file of a program that
+//! depends on the package.
+use @std.avrac.compiler.{avra, new_workspace}
+use @std.avrac.testing.{refused_in}
+use compiler.{Program}
+use compiler.host.{memory_host}
+
+const TOOL_MANIFEST: string = "[package]\nname = \"@x/tool\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"tool\"\npath = \"src/lib.av\"\n\n[bin]\nname = \"tool\"\npath = \"src/main.av\"\n"
+
+/// A program `app` over `@x/tool`, a package that is a library (`lib`)
+/// and a program (`entry`) at once.
+fn over_tool(lib: string, entry: string) -> Program {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/tool\" = { path = \"vendor/tool\" }\n",
+                "/w/src/main.av": "use @x.tool.{helper}\n\"\${helper(21)}\"",
+                "/w/vendor/tool/avra.toml": TOOL_MANIFEST,
+                "/w/vendor/tool/src/lib.av": lib,
+                "/w/vendor/tool/src/main.av": entry,
+            },
+            [
+                "/w/avra.toml",
+                "/w/src/main.av",
+                "/w/vendor/tool/avra.toml",
+                "/w/vendor/tool/src/lib.av",
+                "/w/vendor/tool/src/main.av",
+            ],
+        ),
+        "/w",
+        avra(),
+    )
+        .program("/w/src/main.av")
+}
+
+/// The files of a package `board` that is a library and a program, with
+/// a second program `term` nested under it that depends on it.
+fn board_host_files() -> Map<string, string> {
+    {
+        "/w/board/avra.toml": "[package]\nname = \"@x/board\"\nversion = \"0.1.0\"\n\n[lib]\nname = \"board\"\npath = \"src/board.av\"\n\n[bin]\nname = \"board\"\npath = \"src/main.av\"\n",
+        "/w/board/src/board.av": "export fn view(n: int) -> int {\n    n * 2\n}\n",
+        "/w/board/src/main.av": "\"web \${view(1)}\"",
+        "/w/board/term/avra.toml": "[package]\nname = \"term\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/board\" = { path = \"..\" }\n",
+        "/w/board/term/src/main.av": "use @x.board.{view}\n\"term \${view(21)}\"",
+    }
+}
+
+/// The program at `entry`, with the workspace rooted at `root`.
+fn boarded(root: string, entry: string) -> Program {
+    new_workspace(
+        memory_host(
+            board_host_files(),
+            [
+                "/w/board/avra.toml",
+                "/w/board/src/board.av",
+                "/w/board/src/main.av",
+                "/w/board/term/avra.toml",
+                "/w/board/term/src/main.av",
+            ],
+        ),
+        root,
+        avra(),
+    )
+        .program(entry)
+}
+
+fn answer(p: Program) -> string { p.run() catch e -> e }
+
+const HELPER: string = "export fn helper(n: int) -> int {\n    n * 2\n}\n"
+
+spec "compiler/modules — a dependency with a `[bin]`" {
+    given "a program over a package that is a library and a program" {
+        then "the dependency's entry runs no statement of the program's" {
+            answer(over_tool(HELPER, "fn shout() -> int {\n    7\n}\nprintln(\"the tool ran\")\n")) == "42"
+        }
+        then "the dependency's entry may hold a mistake the program never reads" {
+            answer(over_tool(HELPER, "let broken = \n")) == "42"
+        }
+        then "the dependency's library does not see a name its own entry declares" {
+            refused_in(
+                over_tool(
+                    "export fn helper(n: int) -> int {\n    secret(n)\n}\n",
+                    "fn secret(n: int) -> int {\n    n\n}\nprintln(\"the tool ran\")\n",
+                ),
+                "`secret` is not defined",
+            )
+        }
+    }
+    given "one package that is a library and a program, and a sibling program over it" {
+        then "the sibling runs over the library alone" { answer(boarded("/w/board/term", "/w/board/term/src/main.av")) == "term 42" }
+        then "the package's own program still runs, as the root" { answer(boarded("/w/board", "/w/board/src/main.av")) == "web 2" }
+    }
+}

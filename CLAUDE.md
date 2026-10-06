@@ -494,6 +494,20 @@ registry is the idiom engine's spec, written by dogfooding.
   body under the extern row's shape; the evaluator, which has no
   linker, turns a call of the name into a call of the body
   (`hosted_within`).
+  AND A SYMBOL IS THE WHOLE LINK'S, so three things are held where the
+  host fn stands (compiler/whole.av's `host_fn_owes`). WHO OPENS IT: a
+  dependency's host fn is the program's export only when the program's
+  OWN sources import that package (lower.host_fn_unasked), and a build
+  lists each as `host fn: <package> <name>`, fresh or kept. WHAT IT
+  MAY NAME: nothing the platform already defines (lower.host_fn_shadows
+  — a host fn named `malloc` once linked and REPLACED the allocator),
+  and a bodiless extern of ANOTHER package only from the program's own
+  package (lower.host_fn_answers). THAT IT STAYS: a native link keeps
+  each with `-u <symbol>`, since no caller inside the program reaches
+  it. THE SHADOW CHECK ASKS THE BUILD MACHINE (`platform_defines`, the
+  compiler's own process), so its verdict is that machine's C library,
+  for every target; a name defined only in a package's C archive member
+  is not seen at all.
 - A ROW'S ANSWER IS THE ROW'S, NOT THE DECLARATION'S — the seat law's
   other end, and it was unheld while every argument was held. An
   extern naming a runtime row could answer ANY type:

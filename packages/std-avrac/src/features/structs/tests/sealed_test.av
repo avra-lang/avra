@@ -1,0 +1,142 @@
+//! `@sealed`: a type only its own module builds or rewrites. Outside it
+//! no literal fills one, no `Name(value)` converts into one, no record
+//! literal, `with`, field write or variant makes one — and every read
+//! stays open. Judged by DECLARATION, so packaged: a lone source cannot
+//! import `@std/meta`.
+use @std.avrac.testing.{provided, refused_in, refused_n, answered, Module}
+use compiler.{Program}
+
+/// The sealing module: a name over text, a record and an enum, each
+/// sealed, and the fns that are their doors.
+fn urls() -> Module {
+    Module {
+        name: "urls",
+        text: "use @std.meta.{sealed}\n@sealed\nexport type Url = string\n@sealed\nexport type Point = { x: int, y: int }\n@sealed\nexport enum Scheme {\n    Http\n    Other(string)\n}\nexport fn url_of(s: string) -> Url {\n    Url(s)\n}\nexport fn home() -> Url {\n    \"home\"\n}\nexport fn origin() -> Point {\n    Point { x: 0, y: 0 }\n}\nexport fn east(p: Point) -> Point {\n    p with { x: p.x + 1 }\n}\nexport fn north(mut p: Point) {\n    p.y = p.y + 1\n}\nexport fn http() -> Scheme {\n    .Http\n}\nexport fn other(s: string) -> Scheme {\n    .Other(s)\n}\nexport fn scheme_name(s: Scheme) -> string {\n    match s {\n        .Http -> \"http\"\n        .Other(n) -> n\n    }\n}\n",
+    }
+}
+
+/// `main` over the sealing module.
+fn outside(main: string) -> Program { provided(main, "", [urls()]) }
+
+/// A provider whose derive makes `blank()` on the annotated type — a
+/// literal filling it — and whose own sealed `Token` a second derive
+/// builds wherever it lands.
+fn provider() -> string {
+    "use @std.meta.{Type, Directive, sealed}\n@sealed\nexport type Token = string\nexport fn token_of(s: string) -> Token {\n    Token(s)\n}\nexport trait Blank {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn blank() -> \${t} { \"\" } } } }]\n    }\n}\nexport trait Forge {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn forged() -> Token { \"forged\" } } } }]\n    }\n}\n"
+}
+
+/// A module that seals a type and derives `Blank` on it, where it is declared.
+fn derived() -> Module {
+    Module {
+        name: "ids",
+        text: "use @std.meta.{sealed, derive}\nuse @x.c.{Blank}\n@sealed\n@derive(Blank)\nexport type Id = string\nexport fn id_of(s: string) -> Id {\n    Id(s)\n}\n",
+    }
+}
+
+const SEALED_URL: string = "`Url` is sealed — only `urls`, the module that declares it, builds or rewrites one"
+const SEALED_POINT: string = "`Point` is sealed — only `urls`, the module that declares it, builds or rewrites one"
+const SEALED_SCHEME: string = "`Scheme` is sealed — only `urls`, the module that declares it, builds or rewrites one"
+
+spec "features/structs (sealed)" {
+    given "a sealed type read outside its module" {
+        then "its module's doors answer it, and every read is open" {
+            answered(
+                outside(
+                    "use urls.{url_of, origin, east, north, http, other, scheme_name}\nmut u = url_of(\"ab\")\nu = url_of(\"abc\")\nmut p = east(origin())\nnorth(p)\nlet tag = match other(\"ftp\") {\n    .Http -> \"h\"\n    .Other(n) -> n\n}\n\"\${u.length} \${p.x} \${p.y} \${tag} \${scheme_name(http())} \${u == url_of(\"abc\")}\"",
+                ),
+            ) == "3 1 1 ftp http true"
+        }
+        then "a const settles from a door" {
+            answered(
+                outside(
+                    "use urls.{Url, url_of}\nconst HOME: Url = url_of(\"home\")\n\"\${HOME.length}\"",
+                ),
+            ) == "4"
+        }
+    }
+    given "a sealed name over text, built outside its module" {
+        then "a literal does not fill it" { refused_in(outside("use urls.{Url}\nlet u: Url = \"x\"\n1"), SEALED_URL) }
+        then "a literal does not fill it through a nullable" {
+            refused_in(outside("use urls.{Url}\nlet u: Url? = \"x\"\n1"), SEALED_URL)
+        }
+        then "`Name(value)` does not convert into it" { refused_in(outside("use urls.{Url}\nlet u = Url(\"x\")\n1"), SEALED_URL) }
+        then "a list literal's elements do not fill it, each refused" {
+            refused_n(
+                outside("use urls.{Url}\nlet xs: List<Url> = [\"a\", \"b\"]\n1"),
+                SEALED_URL,
+                2,
+            )
+        }
+        then "`Cell.new` under a want does not fill it" {
+            refused_in(outside("use urls.{Url}\nlet c: Cell<Url> = Cell.new(\"x\")\n1"), SEALED_URL)
+        }
+        then "a const does not settle one from a literal" {
+            refused_in(outside("use urls.{Url}\nconst HOME: Url = \"x\"\n1"), SEALED_URL)
+        }
+        then "an argument seat is not filled by a literal" {
+            refused_in(
+                outside("use urls.{Url}\nfn takes(u: Url) -> int {\n    u.length\n}\ntakes(\"x\")"),
+                SEALED_URL,
+            )
+        }
+    }
+    given "a sealed record, built or rewritten outside its module" {
+        then "a record literal refuses" { refused_in(outside("use urls.{Point}\nlet p = Point { x: 1, y: 2 }\n1"), SEALED_POINT) }
+        then "`with` refuses" { refused_in(
+                outside("use urls.{origin}\nlet p = origin() with { x: 9 }\n1"),
+                SEALED_POINT,
+            ) }
+        then "a field write refuses" { refused_in(outside("use urls.{origin}\nmut p = origin()\np.x = 9\n1"), SEALED_POINT) }
+        then "a write through a holder's path refuses" {
+            refused_in(
+                outside(
+                    "use urls.{Point, origin}\ntype Holder = { p: Point }\nmut h = Holder { p: origin() }\nh.p.x = 3\n1",
+                ),
+                SEALED_POINT,
+            )
+        }
+        then "a holder's own field is still written whole" {
+            answered(
+                outside(
+                    "use urls.{Point, origin, east}\ntype Holder = { p: Point }\nmut h = Holder { p: origin() }\nh.p = east(h.p)\n\"\${h.p.x}\"",
+                ),
+            ) == "1"
+        }
+    }
+    given "a sealed enum, built outside its module" {
+        then "a variant with a payload refuses" {
+            refused_in(
+                outside("use urls.{Scheme}\nlet s: Scheme = .Other(\"ftp\")\n1"),
+                SEALED_SCHEME,
+            )
+        }
+        then "a bare variant refuses though the type is never imported" {
+            refused_in(outside("use urls.{scheme_name}\nscheme_name(.Http)"), SEALED_SCHEME)
+        }
+    }
+    given "generated code" {
+        then "a derive on a sealed type builds it, landing in the module that declares it" {
+            answered(
+                provided(
+                    "use ids.{id_of}\n\"\${id_of(\"ab\").blank().length}\"",
+                    provider(),
+                    [derived()],
+                ),
+            ) == "0"
+        }
+        then "a template that lands in another module does not build its own package's sealed type" {
+            refused_in(
+                provided(
+                    "use @std.meta.{derive}\nuse @x.c.{Forge}\n@derive(Forge)\ntype Thing = { x: int }\n1",
+                    provider(),
+                ),
+                "`Token` is sealed — only `@x.c`, the module that declares it, builds or rewrites one",
+            )
+        }
+    }
+    given "the refusal, rendered" {
+        then "a conversion outside the module" {
+            outside("use urls.{Url}\nUrl(\"x\")").report() == "error[type.sealed]: `Url` is sealed — only `urls`, the module that declares it, builds or rewrites one\n  ╭─[/w/src/main.av:2:1]\n2 │ Url(\"x\")\n  · ┬\n  · ╰── converted into here\n──╯\nhelp: ask `urls` for one through a fn it exports; reading it — a field, `==`, a pattern — is open everywhere"
+        }
+    }
+}
