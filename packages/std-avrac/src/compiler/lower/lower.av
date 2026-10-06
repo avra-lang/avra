@@ -9,6 +9,7 @@
 //! the statement list.
 use @std.meta.{derive}
 use @std.io.{env}
+use @std.errors.{Frame}
 use core.{
     Fingerprint,
     StmtId,
@@ -114,6 +115,10 @@ export type Body = {
     /// its default is the empty list every plain seat already reads
     /// as.
     marks: List<SeatMark> = [],
+    /// A HOST FN's own — its name is a symbol of the host seam, which
+    /// the backend defines beside it under its row's shape. A GROWTH:
+    /// every other body answers false.
+    hosted: bool = false,
 }
 
 /// An instantiation `want`, demanded by a body `by` declares.
@@ -172,9 +177,6 @@ export type Lowered = {
     /// Bodies reachable from a `once fn` alone — the backend compiles
     /// them for size, never speed. `cold_bodies` names the members.
     cold: Map<string, bool> = {},
-    /// The program's DOORS, by body name: what its host may call. A
-    /// non-host target exports each under its written name.
-    doors: List<string> = [],
 }
 
 impl Decls {
@@ -277,7 +279,6 @@ export fn lower(a: Analysis) -> Lowered {
             0,
             false,
             false,
-            a.view.decls.doors_of_file(a.view.file),
             [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
@@ -388,15 +389,14 @@ impl Decls {
     /// once per symbol — a memoization identity, never a NAME a
     /// declaration could also wear. The entry asks under
     /// `program_symbol`, which no `module_symbol` can ever spell.
-    /// A DOOR IS A ROOT: a host reaches it by name, so a program lowers
-    /// it even when nothing inside calls it. No other export is one — an
-    /// `export` deeper in the closure is a module's visibility.
+    /// A HOST FN IS A ROOT: a host reaches it by name, so a program
+    /// lowers it even when nothing inside calls it. An `export` is a
+    /// module's visibility and roots nothing.
     fn union(
         files: List<Analysis>,
         entry: int?,
         every: bool,
         programs: bool,
-        doors: List<DeclId>,
         held_asks: List<Wanted>,
         unit_of: fn(Wanted) -> Unit,
         is_held: fn(FileId) -> bool,
@@ -405,8 +405,9 @@ impl Decls {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
         let at: int = entry ?? 0
-        let opened = [self.plain_want(d) for d in doors]
-        let bodies: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { opened }
+        let hosted = flatten([self.host_fns_of_file(a.view.file) for a in files])
+        let bodies: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { [self.plain_want(d) for d in hosted] }
+        spoken = spoken.concat(self.host_fns_twice(hosted))
         // EVERY FILE A PROGRAM: each file's run-time statements lower as
         // a body under the program's own symbol, for a runner's entry to
         // call in turn — every program in one binary
@@ -458,23 +459,25 @@ impl Decls {
             statics: distinct_statics(statics.concat(d.statics)),
             libraries: [],
             cold: cold_bodies(every_body),
-            doors: [w.name for w in opened],
         }
     }
 
-    /// Whether a declaration is one a host may call by name: a written
-    /// `export fn` with one body of its own.
-    fn opens_a_door(d: DeclId) -> bool {
-        let x = self.decl(d)
-        if !x.exported || self.is_extern(d) || self.generic(d) { return false }
-        match x.kind {
-            .Fn -> true,
-            .Method or .Default or .Collect or .State or .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Case or .Const or .CollectEnum -> false,
-        }
+    /// ONE SYMBOL, ONE BODY: two host fns of one name in a program are
+    /// two definitions of one symbol — each after the first is refused
+    /// where it stands.
+    fn host_fns_twice(hosted: List<DeclId>) -> List<Diag> {
+        [self.host_fn_twice(d, hosted[first_named(self, hosted, d)]) for j, d in hosted if first_named(self, hosted, d) < j]
     }
 
-    /// The doors one file declares.
-    fn doors_of_file(f: FileId) -> List<DeclId> { [d for d in self.decls_of_file(f) if self.opens_a_door(d)] }
+    fn host_fn_twice(d: DeclId, first: DeclId) -> Diag {
+        refusal(
+            "lower.host_fn_twice",
+            self.loc(d),
+            "two host fns define `${self.decl(d).name}` — a symbol has one body",
+            "defined again here",
+            "rename one: a host fn's name is the symbol a host calls it by",
+        ) with { secondary: [Frame { label: "first defined here", loc: self.loc(first) }] }
+    }
 
     /// A declaration's own body as a want, under no substitution.
     fn plain_want(d: DeclId) -> Wanted {
@@ -524,6 +527,7 @@ impl Decls {
             reg_types: [],
             weak: true,
             marks: self.marks_of(d, sig.params.length),
+            hosted: self.is_host_fn(d),
         }
     }
 
@@ -841,6 +845,62 @@ fn declared(a: Analysis) -> List<Wanted> {
     bodies.concat([a.view.decls.instance_unit(d) for d in own if a.view.decls.is_instance(d)])
 }
 
+/// Where the first host fn of `d`'s name stands in `hosted`.
+fn first_named(decls: Decls, hosted: List<DeclId>, d: DeclId) -> int {
+    [j for j, x in hosted if decls.decl(x).name == decls.decl(d).name].first() ?? 0
+}
+
+/// A step that calls a hosted fn and keeps its answer.
+type KeptCall = { dst: Reg, callee: string, args: List<Reg> }
+
+fn kept_call(i: Ins) -> KeptCall? {
+    match i {
+        .CallRt(dst, callee, args) -> KeptCall { dst: dst, callee: callee, args: args },
+        rest -> null,
+    }
+}
+
+/// A step that calls a hosted fn for nothing.
+type BareCall = { callee: string, args: List<Reg> }
+
+fn bare_call(i: Ins) -> BareCall? {
+    match i { .CallRtVoid(callee, args) -> BareCall { callee: callee, args: args }, rest -> null }
+}
+
+/// THE PROGRAM ANSWERS ITS OWN HOST FNS. A call that names a symbol one
+/// of the program's host fns defines is a call to that body, whoever
+/// declared the name bodiless — so an evaluated run needs no linker to
+/// join the two. A linked build keeps the call as written: there each
+/// file's object is the same whatever program links it, and the symbol
+/// is the linker's to resolve.
+export fn hosted_within(l: Lowered) -> Lowered {
+    let own = [b.name for b in l.fns if b.hosted]
+    if own.is_empty() { return l }
+    let nothing_ty = l.types.type(void)
+    l with { fns: [answering(b, own, nothing_ty) for b in l.fns], entry: answering(l.entry, own, nothing_ty) }
+}
+
+/// `b` with each call of a symbol in `own` made a call to that body.
+fn answering(b: Body, own: List<string>, nothing_ty: TypeId) -> Body {
+    mut regs = [t for t in b.reg_types]
+    let ins = [own_call(i, own, regs, nothing_ty) for i in b.ins]
+    b with { ins: ins, reg_types: regs }
+}
+
+/// One step, a call of a host fn's symbol made a call to its body.
+fn own_call(i: Ins, own: List<string>, mut regs: List<TypeId>, nothing_ty: TypeId) -> Ins {
+    let kept? = kept_call(i) else { return own_bare_call(i, own, regs, nothing_ty) }
+    if own.contains(kept.callee) { Ins.Call(kept.dst, kept.callee, kept.args) } else { i }
+}
+
+/// A call for nothing gains the register a body's answer lands in.
+fn own_bare_call(i: Ins, own: List<string>, mut regs: List<TypeId>, nothing_ty: TypeId) -> Ins {
+    let unkept? = bare_call(i) else { return i }
+    if !own.contains(unkept.callee) { return i }
+    regs.push(nothing_ty)
+    Ins.Call(Reg { index: regs.length - 1 }, unkept.callee, unkept.args)
+}
+
 /// One declared body of `a`'s file, as a want — the plain root every caller
 /// that lowers a file's declarations reads.
 fn wanted_of(a: Analysis, d: DeclId) -> Wanted { a.view.decls.plain_want(d) }
@@ -924,6 +984,7 @@ fn lower_fn(
             weak: sub != null,
             memoized: memoized,
             marks: body_marks,
+            hosted: a.view.decls.is_host_fn(x.id),
         },
         voices: lo.out.voices,
         jobs: lo.jobs,

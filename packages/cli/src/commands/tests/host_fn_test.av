@@ -1,0 +1,50 @@
+//! A HOST FN IN A NATIVE BINARY: its symbol is there for a caller outside
+//! the program though nothing inside calls it, and a build says which host
+//! fns it defines and whose each is. `avra_ran` and `scratch_dir` are the
+//! neighbouring tests' own: this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.process.{tool, cmd, Outcome, ProcessError}
+use @std.time.{now_ns}
+
+/// A program that defines one host fn and never calls it.
+once fn hosting() -> string {
+    let root = "${scratch_dir()}/host_fn_${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"hosting\"\nversion = \"0.1.0\"\n")
+    let _ = write_text(
+        "${root}/src/main.av",
+        "extern fn avra_kept_probe(n: int) -> int {\n    n + 1\n}\n\nprintln(\"built\")\n",
+    )
+    root
+}
+
+/// One timed build of it: where the binary stands, and what the build said.
+type Built = { binary: string, said: string }
+
+fn hosting_built() -> Built {
+    match avra_ran(["build", "--time", hosting()]) {
+        .Ok(o) -> Built { binary: o.out.stdout.trim(), said: o.out.stderr },
+        .Err(_) -> Built { binary: "", said: "the build did not run" },
+    }
+}
+
+/// The symbols of a binary, as `nm` lists them.
+fn symbols_of(binary: string) -> Result<Outcome, ProcessError> { cmd(tool("nm")?, [binary]).outcome() }
+
+fn carries(binary: string, symbol: string) -> bool {
+    match symbols_of(binary) { .Ok(o) -> o.out.stdout.contains(symbol), .Err(_) -> false }
+}
+
+spec "avra build — a host fn in a native binary" {
+    given "a program that defines a host fn nothing in it calls" {
+        then "the binary carries the symbol under its bare name" { carries(hosting_built().binary, "avra_kept_probe") }
+        then "a timed build names the host fn and its package" { hosting_built().said.contains("host fn: hosting avra_kept_probe") }
+        then "a kept binary's build names it too" {
+            let first = hosting_built()
+            let again = hosting_built()
+            again.said.contains("cache hit") &&
+                again.said.contains("host fn: hosting avra_kept_probe") &&
+                first.binary == again.binary
+        }
+    }
+}

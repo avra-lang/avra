@@ -30,6 +30,21 @@ fn same_tree(source: string, projected: string) -> bool {
 }
 
 spec "source text" {
+    given "a host fn — an `extern fn` with a body" {
+        then "it prints as it was written" {
+            let source = "extern fn avra_ui_event(who: int, what: int) -> int { who + what }"
+            let p = parse_source(source)
+            render_source_of(p.store, p.stmts, source) == source
+        }
+        then "it is not the fn its body alone would be" {
+            !same_tree("extern fn told(n: int) -> int { n }\n", "fn told(n: int) -> int { n }\n")
+        }
+        then "beside a bodiless extern, each keeps its own form" {
+            stable(
+                "extern fn avra_dom_frame(frame: Bytes)\n\nextern fn avra_seat(room: int) -> Bytes {\n    avra_dom_frame(\"x\".bytes())\n    \"y\".bytes()\n}\n",
+            )
+        }
+    }
     given "a small program" {
         then "layout and precedence have one canonical spelling" {
             projected("let x=1+2*3\nif x>2 {\nlet y=x\ny\n} else {\n0\n}") == "let x = 1 + 2 * 3\nif x > 2 {\n    let y = x\n    y\n} else {\n    0\n}"
