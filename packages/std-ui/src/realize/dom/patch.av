@@ -129,15 +129,22 @@ export fn listening_of(a: Action) -> Listening {
 }
 
 /// A PROPERTY is live state the user moves — a field's text, a box's
-/// tick — where its attribute only seeds it. An attribute of these names
-/// is set as a property, as the value it means; every other name is an
-/// attribute. Every name spelled.
-fn property(a: HtmlAttr) -> Held? {
-    match a.name {
-        .Value -> Held.Text(a.value),
-        .Checked -> Held.Flag(true),
+/// tick — where its attribute only seeds it. What a property of this
+/// name holds AT REST, as an element new to the page does; none for a
+/// name that is an attribute. Every name spelled.
+fn rest_of(name: HtmlAttrName) -> Held? {
+    match name {
+        .Value -> Held.Text(""),
+        .Checked -> Held.Flag(false),
         .DataKey or .Class or .AriaLabel or .AriaSelected or .AriaInvalid or .AriaBusy or .AriaLive or .Title or .Href or .Min or .Max or .Open or .Placeholder or .Src or .Alt or .Disabled or .Type or .Role or .Closedby -> null,
     }
+}
+
+/// An attribute of a property's name is set as that property, as the
+/// value it means; every other is an attribute.
+fn property(a: HtmlAttr) -> Held? {
+    let rest? = rest_of(a.name) else { return null }
+    match rest { .Text(_) -> Held.Text(a.value), .Flag(_) -> Held.Flag(true) }
 }
 
 /// A DOOR is state an element is taken into by a verb of its own, where
@@ -162,6 +169,17 @@ fn at_rest(value: Held) -> Held {
     match value { .Text(_) -> Held.Text(""), .Flag(_) -> Held.Flag(false) }
 }
 
+fn rests(value: Held) -> bool { same_held(value, at_rest(value)) }
+
+/// Whether drawing `value` would tell the page anything: it is not what
+/// the program knows the page to hold, or the program knows nothing.
+fn news(known: Held?, value: Held) -> bool {
+    match known {
+        held? -> !same_held(held, value)
+        null -> true
+    }
+}
+
 /// Two values a property may hold, compared.
 fn same_held(a: Held, b: Held) -> bool {
     match a {
@@ -179,8 +197,11 @@ export type Diffed = { patches: List<Patch>, page: List<Element>, next: int }
 /// One property of an element, by its name.
 type Prop = { name: HtmlAttrName, value: Held }
 
+/// The properties an element NAMES: each its attributes seed, and each
+/// its node draws at rest.
 fn props_of(el: Tagged) -> List<Prop> {
     [Prop { name: a.name, value: v } for a in el.attrs for v in present(property(a))]
+        .concat([Prop { name: name, value: rest } for name in el.rests for rest in present(rest_of(name))])
 }
 
 fn present<T>(value: T?) -> List<T> {
@@ -386,7 +407,8 @@ impl Differ {
             .Tag(el) -> {
                 self.said.push(Patch.Create(id, el.tag))
                 self.say([Patch.SetAttr(id, a.name, a.value) for a in attrs_of(el)])
-                self.say([Patch.SetProp(id, p.name, p.value) for p in props_of(el)])
+                self
+                    .say([Patch.SetProp(id, p.name, p.value) for p in props_of(el) if !rests(p.value)])
                 self.say([Patch.Listen(id, listening_of(a)) for a in el.hears])
                 self.later([Patch.Call(id, d.enter) for d in doors_of(el)])
                 let within = self.siblings(id, [], el.kids, next + 1)
@@ -398,12 +420,12 @@ impl Differ {
         }
     }
 
-    /// What the page holds under each property of `id` that is off rest
-    /// or was drawn: what the user was heard to move it to, else what it
-    /// was last drawn with.
-    fn standing(id: NodeId, drawn: List<Prop>) -> List<Prop> {
-        let moved = [Prop { name: h.name, value: h.value } for h in self.heard if h.id == id]
-        moved.concat([p for p in drawn if !moved.any(it.name == p.name)])
+    /// What the program KNOWS the page holds under a property of `id`:
+    /// what a handler of its own heard since the last paint, else what
+    /// that paint drew — nothing, for a property it neither drew nor
+    /// heard.
+    fn known(id: NodeId, name: HtmlAttrName, drawn: List<Prop>) -> Held? {
+        self.heard.find(it.id == id && it.name == name)?.value ?? drawn.find(it.name == name)?.value
     }
 
     /// Whether a door stands open on the page: as the user was heard to
@@ -424,16 +446,18 @@ impl Differ {
             )
     }
 
-    /// A property is set when the page does not already hold its value:
-    /// what the program last drew is not what stands once a user has
-    /// typed, so the page's own value is the one compared. A property a
-    /// paint does not name goes back to rest — one the last paint drew,
-    /// and one only the user moved.
+    /// A PROPERTY IS THE PROGRAM'S WHILE ITS TREE NAMES IT, AND THE
+    /// HOST'S OTHERWISE. One the tree names is written when what is drawn
+    /// is not what the program knows the page to hold, so a paint that
+    /// draws what the last one drew writes nothing over what a user did
+    /// between. One the tree stops naming is drawn at rest, that once.
+    /// One it does not name and did not name is never written, whatever
+    /// was heard of it.
     fn properties(id: NodeId, old: List<Prop>, new: List<Prop>) -> List<Patch> {
-        let stood = self.standing(id, old)
-        [Patch.SetProp(id, p.name, p.value) for p in new if !same_held(stood.find(it.name == p.name)?.value ?? at_rest(p.value), p.value)]
+        [Patch.SetProp(id, p.name, p.value) for p in new if news(self.known(id, p.name, old), p.value)]
             .concat(
-                [Patch.SetProp(id, was.name, at_rest(was.value)) for was in stood if !new.any(it.name == was.name) && !same_held(was.value, at_rest(was.value))],
+                [Patch.SetProp(id, was.name, at_rest(was.value)) for was in old if !new.any(it.name == was.name) &&
+                    news(self.known(id, was.name, old), at_rest(was.value))],
             )
     }
 }

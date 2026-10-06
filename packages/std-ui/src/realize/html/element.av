@@ -28,13 +28,15 @@ export type Worded = { id: NodeId = unplaced, seat: string, reads: string, conte
 /// An element: where it stands among its siblings (`seat`, its step as
 /// matched; `reads`, the same step as a reader is shown it), its tag,
 /// its attributes in written order, what it hears, and what it holds. `id` is the number a page gave it — none until a
-/// page places it.
+/// page places it. `rests` names what its node draws AT REST: a box
+/// drawn unticked holds no attribute, and is drawn all the same.
 export type Tagged = {
     id: NodeId = unplaced,
     seat: string,
     reads: string,
     tag: HtmlTag,
     attrs: List<HtmlAttr> = [],
+    rests: List<HtmlAttrName> = [],
     hears: List<Action> = [],
     kids: List<Element> = [],
 }
@@ -99,6 +101,20 @@ fn attr_list(a: Attribute) -> List<HtmlAttr> {
 fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {
     let written = [h for a in attrs for h in attr_list(a)]
     [h for j, h in written if !written.drop(j + 1).any(it.name == h.name)]
+}
+
+/// The tick an attribute draws, when it draws one.
+fn ticks(a: Attribute) -> List<bool> {
+    match a { .Checked(flag) -> [flag], _ -> [] }
+}
+
+/// What a node's properties draw at rest: its tick, when the last
+/// property to draw one draws it off.
+fn rests_of(attrs: List<Attribute>) -> List<HtmlAttrName> {
+    match [on for a in attrs for on in ticks(a)].last() {
+        on? -> if on { [] } else { [HtmlAttrName.Checked] }
+        null -> []
+    }
 }
 
 /// An element's attributes from the neutral node: what kind of control it
@@ -187,6 +203,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 reads: control_part,
                 tag: tag_of(n),
                 attrs: element_attrs(n.prim, n.attrs),
+                rests: rests_of(n.attrs),
                 hears: n.events,
             },
         )
@@ -235,6 +252,7 @@ fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
                 reads: at.shown,
                 tag: tag_of(n),
                 attrs: element_attrs(n.prim, n.attrs).concat(node_attrs(n)),
+                rests: rests_of(n.attrs),
                 hears: heard(n),
                 kids: kids,
             },
