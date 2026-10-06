@@ -75,14 +75,14 @@ jobs:
             if git diff --quiet origin/main...HEAD -- $(sh tools/compiler_paths.sh) ':(exclude,glob)**/tests/**'; then compiler=0; fi
             if [ -z "$changed$pkgs" ] && [ "$compiler" = 0 ]; then build=0; fi
           fi
+          key=$(sh tools/compiler_paths.sh --key)
+          shards=$(printf '%s\n' "$pkgs" | python3 -c 'import json,sys; xs=[l.strip() for l in sys.stdin if l.strip()]; n=4; print(json.dumps([s for s in (xs[i::n] for i in range(n)) if s] or [[]]))')
           {
             echo "changed=${changed}"
             echo "packages=$(echo $pkgs)"
             echo "build=${build}"
-            echo "key=avrac-$(sh tools/compiler_paths.sh --key)"
-            echo "shards<<EOF"
-            printf '%s\n' "$pkgs" | python3 -c 'import json,sys; xs=[l.strip() for l in sys.stdin if l.strip()]; n=4; print(json.dumps([s for s in (xs[i::n] for i in range(n)) if s] or [[]]))'
-            echo "EOF"
+            echo "key=avrac-${key}"
+            echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
           echo "plan: $event — build=$build compiler-changed=$compiler packages: $(echo $pkgs)"
       # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
@@ -150,8 +150,9 @@ jobs:
       - name: keepers
         run: make -s -o avra keepers
 
-  # THE BUILD CACHE, ATTACKED — the train's, like the keepers. Its own job: it
-  # clears the store it builds through, and it runs beside the gate.
+  # THE SEED PROVED AND THE BUILD CACHE ATTACKED — the train's, like the
+  # keepers. Its own job: the attacks clear the store they build through, and
+  # it runs beside the gate.
   cache-attacks:
     needs: [prepare]
     if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
@@ -170,6 +171,14 @@ jobs:
       # job rebuilds what prepare built from the same commit.
       - name: built
         run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      # THE COMMITTED SEED STILL BUILDS THIS TREE: it links against the
+      # runtime and compiles HEAD. No other job starts from the seed once a
+      # cached compiler exists, so a removed runtime symbol the seed names, or
+      # source the seed cannot read, is refused here before it can land. It
+      # rides this job because this job always runs on a train and is not
+      # the slowest.
+      - name: seed-check
+        run: make -s -o avra seed-check
       - name: cache-attacks
         run: make -s -o avra cache-attacks
 

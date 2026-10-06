@@ -33,7 +33,11 @@ paths() {
     } | sort -u
 }
 if [ "$key" = 1 ]; then
-    git ls-files -s -- $(paths) ':(exclude,glob)**/tests/**' | git hash-object --stdin
+    # A listing that failed or came back empty names no tree: refuse, never
+    # hash nothing into a key every tree would share.
+    files=$(git ls-files -s -- $(paths) ':(exclude,glob)**/tests/**')
+    [ -n "$files" ] || { echo "compiler_paths: git lists no compiler source here" >&2; exit 1; }
+    printf '%s\n' "$files" | git hash-object --stdin
 else
     paths
 fi
