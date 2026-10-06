@@ -305,7 +305,7 @@ wasm-archive:
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -721,11 +721,24 @@ fingerprints:
 # held by nobody. Each names what it links as its own prerequisites.
 # Every keeper runs, and each that refuses is named.
 KEEPERS = fingerprints vocab families cited http-cites externs suites stems rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
-          ui-host ui-host-test ui-board ui-browser codecs fmt-lossless traps compile-slots witness
+          ui-host ui-host-test ui-board ui-browser codecs fmt-lossless traps compile-slots witness tool-witnesses
 keepers:
 	@fail=0; for k in $(KEEPERS); do \
 	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
 	done; exit $$fail
+
+# THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
+# on, proved on its fixtures — none reads the compiler.
+tool-witnesses:
+	@sh tools/capped.sh --self-test
+	@sh tools/gate_receipt.sh --self-test
+	@sh tools/watch.sh --self-test
+	@sh tools/memcap.sh --self-test
+	@sh tools/witness_fmt_changed.sh
+	@sh tools/witness_gate_changed.sh
+	@sh tools/witness_work_wait.sh
+	@sh tools/witness_work_run.sh
+	@sh tools/reclaim_test.sh
 
 # THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
 # compiler/codecs.av's registry runs every pair over its exemplars,
@@ -866,10 +879,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
-gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness cache-attacks
-	@sh tools/gate_receipt.sh --self-test
-	@sh tools/watch.sh --self-test
-	@sh tools/memcap.sh --self-test
+gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
