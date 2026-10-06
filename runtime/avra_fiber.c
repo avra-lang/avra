@@ -792,6 +792,12 @@ static void guard_handler_install(void);
 #define MADV_GUARD_INSTALL 102
 #endif
 
+// Whether the kernel has guard regions, whether every stack gets a guard
+// of its own, and how many more do while not every one does.
+static int g_guard_regions = 0;
+static int g_guards_all = 0;
+static size_t g_each_left = 0;
+
 // STACK GUARD POLICY. KEEP THIS COMMENT: it is the only record of a
 // safety trade the code cannot show. Do not remove or shorten it.
 //   guard regions (Linux >= 6.13): every stack guarded; an overflow traps at the write.
@@ -813,10 +819,6 @@ static void guard_handler_install(void);
 // runaway recursion still reaches the slab's guard, since no other task
 // runs meanwhile; a bounded overrun that returns before the next switch
 // and never wrote that one word is not caught.
-static int g_guard_regions = 0;
-static int g_guards_all = 0;
-static size_t g_each_left = 0;
-
 static void guards_settle(void) {
     const char* env = getenv("AVRA_FIBER_GUARDS");
     if (env && strcmp(env, "all") == 0) { g_guards_all = 1; return; }
