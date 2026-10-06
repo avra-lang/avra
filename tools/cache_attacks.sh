@@ -1396,6 +1396,20 @@ HR "bi: an edit elsewhere checks clean" check bi 0
 printf 'export fn pad() -> int { 0 }\n' > $R/bil/src/list_tell.av
 steps=$((steps+1)); bi_out=$(./avra check $R/bi 2>&1); bi_st=$?
 case "$bi_st:$bi_out" in 1:*"tell"*) [ -n "${VERBOSE:-}" ] && echo "ok    bi: the impl gone -> refused" ;; *) fails=$((fails+1)); echo "FAIL  bi: the impl over List is gone and the warm check did not refuse the call (exit $bi_st): $(printf '%s' "$bi_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+# A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
+# the build after it reads every file again — met through those records, in another
+# order than a cold build meets them. The binary must be the cold one's, byte for
+# byte. The store is cleared for each side: it is the one thing that differs. The
+# program is the tree's own soak driver — a fixture of a few files meets its files
+# in one order either way and attacks nothing.
+eo=packages/std-http-soak
+eo_built() { # eo_built <label>: the program built, its binary kept under the label
+    out=$(./avra build $eo 2>/dev/null); bin=$(printf '%s\n' "$out" | tail -1)
+    if [ -x "$bin" ]; then cp "$bin" $R/eo.$1; rm -f "$bin" "$bin.av.ll"; fi
+}
+steps=$((steps+1)); rm -rf .avra-cache $R/eo.cold $R/eo.warm; eo_built cold
+steps=$((steps+1)); rm -rf .avra-cache; ./avra check $eo >/dev/null 2>&1; eo_built warm
+if [ -s $R/eo.cold ] && [ -s $R/eo.warm ] && cmp -s $R/eo.cold $R/eo.warm; then [ -n "${VERBOSE:-}" ] && echo "ok    eo: a build after a check is the cold build's bytes"; else fails=$((fails+1)); echo "FAIL  eo: $eo built after a check differs from its cold build in $(cmp -l $R/eo.cold $R/eo.warm 2>/dev/null | wc -l | tr -d ' ') bytes (0 means one side did not build)"; fi
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
