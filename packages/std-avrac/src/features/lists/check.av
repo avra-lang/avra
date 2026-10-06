@@ -240,14 +240,14 @@ fn lookup_fits(cx: TypeCx, scan: Scan, plan: Plan) -> bool {
     seats.length == 2 && same_type(seats[1], filed)
 }
 
-/// Every clause's own binder types, accumulated in written order — a
-/// later head's `walked_types`/`counted_types` call types its own
-/// source/range bound under everything bound so far (`bind_types`
-/// already stands from the clause before it), and a filter types its
+/// Every clause's own binder types, accumulated in written order. The
+/// FIRST head's source and range bound are the comprehension's kids,
+/// typed before it; a later head's are typed here, under everything
+/// bound so far — so each is typed exactly once. A filter types its
 /// condition the same way, adding no binder of its own.
 fn type_clauses(mut cx: TypeCx, clauses: List<CompClause>) -> List<TypeId> {
     mut tys: List<TypeId> = []
-    for c in clauses {
+    for j, c in clauses {
         match c {
             .Head(index, _, source, hi) -> {
                 // A clause's own binders are keyed by its SOURCE alone — the
@@ -255,6 +255,7 @@ fn type_clauses(mut cx: TypeCx, clauses: List<CompClause>) -> List<TypeId> {
                 // whether an earlier name is read from the source or the
                 // range bound beside it.
                 cx.bind_types(source, tys)
+                if j > 0 { for own in [source].concat(some_list(hi)) { let _ = cx.walk_type(own) } }
                 let added = if hi == null { walked_types(cx, index?.of, source) } else { counted_types(cx, index?.of, source, hi!) }
                 tys = tys.concat(added)
             },
@@ -291,9 +292,8 @@ fn filter_checks(mut cx: TypeCx, cond: ExprId, tys: List<TypeId>) {
 /// the element binder wears the refusal's type — every downstream
 /// read stays total.
 fn walked_types(mut cx: TypeCx, index: string?, source: ExprId) -> List<TypeId> {
-    let st = cx.walk_type(source)
     if cx.errored(source) { return binders(cx, index, cx.error_type) }
-    let held? = cx.yielded(st) else { return binders(cx, index, not_walkable(cx, source)) }
+    let held? = cx.yielded(cx.type_at(source)) else { return binders(cx, index, not_walkable(cx, source)) }
     binders(cx, index, held)
 }
 
