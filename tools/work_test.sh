@@ -25,7 +25,7 @@ git init -q --bare "$scratch/origin.git"
 git init -q -b main "$scratch/avra"
 main=$scratch/avra
 mkdir -p "$main/tools" "$main/.github/ci"
-cp "$here/work" "$here/sprite-lib.sh" "$here/sprite-remote.sh" "$here/sprite-rsh.sh" "$main/tools/"
+cp "$here/work" "$here/compiler_paths.sh" "$here/sprite-lib.sh" "$here/sprite-remote.sh" "$here/sprite-rsh.sh" "$main/tools/"
 # No fixture installs anything: the toolchain list is empty.
 echo "# none" > "$main/.github/ci/packages.txt"
 git -C "$main" add -A
@@ -211,8 +211,7 @@ unset SPRITE_LOG
 sl=$scratch/seedlab
 git clone -q "$scratch/origin.git" "$sl/main" 2>/dev/null
 mkdir -p "$sl/main/tools"
-cp "$here/work" "$here/sprite-lib.sh" "$here/sprite-remote.sh" "$here/sprite-rsh.sh" "$sl/main/tools/"
-[ ! -f "$here/compiler_paths.sh" ] || cp "$here/compiler_paths.sh" "$sl/main/tools/"
+cp "$here/work" "$here/compiler_paths.sh" "$here/sprite-lib.sh" "$here/sprite-remote.sh" "$here/sprite-rsh.sh" "$sl/main/tools/"
 slc() { git -C "$sl/main" -c user.name=t -c user.email=t@t "$@"; }
 echo one > "$sl/main/Makefile"; slc add -A; slc commit -q -m one
 old_at=$(slc rev-parse HEAD)
