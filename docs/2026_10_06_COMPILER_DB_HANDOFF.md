@@ -30,16 +30,15 @@ Nothing after this can be believed without it. True state, checked 2026-10-06:
 |---|---|---|
 | one derivation alive at a time | **merged**: PR #289 → `9163515`. `turn-memory-attack` is in the CI keepers list (`checks.yml:110`) | nothing |
 | keepers in CI | `origin/keepers-green` @ `a23c730`: a branch, **no PR**. Four good commits (`5de48f0`, `1caf3d9`, `01c219c` the `Line` layout fix, `5f495f5` the CI list) and four titled `WIP`, the last "(unverified)". Its lane is still verifying | ask team-lead whether that lane is alive. If not: run `make keepers` and `make cache-attacks` on a Sprite from that branch; a WIP commit is verified when the keeper it touches is green there. Then `sh tools/work land` |
-| M3 harness | `origin/db-measure` @ `7182161`: one script, `tools/db_measure/warm_edit.sh`. First numbers are in the design §7.1 | the phase table (below) |
-| M1/M2 counters | **not written**. The db-measure lane is writing them | if that lane has stopped, write them to the spec below |
+| the measuring harness | `origin/db-measure` @ `6b12cf8`, no PR yet: `tools/db_measure/` holds `warm_edit.sh` (the one-edit check, per-family trace counts), `graph.py` + the kernel's `AVRA_DB_GRAPH=1` (every settled cell with the keys it read; it also tries the saved-answer rule on the graph), `digest_bench.sh`, `readbench/` (a row-read bench), `hist_point.sh`, `archive.sh` | land it as its own PR once its lane reports M2 and M3; do not rewrite it |
+| M1 · M2 · M3 | **M1 measured** (design §7.3: 70,015 cells, 5,314,590 edges). M2 and M3 are that lane's, in progress | if the lane has stopped: M2 to the spec below with `graph.py`; M3 as written below |
 | defects | filed: `.57.182`, `.57.183`, `.57.184`, `.57.185` | `.57.182` (the annotation trap) is independent — fix it any time |
 
 One ask for the owner, not a task: making `keepers` and `cache-attacks` **required** checks
 is a repository setting only he can change.
 
-**The M1/M2 counter spec.** Counters only, behind one env flag, printed once at exit to
-stderr as tab-separated lines; no behaviour change. Extend `Kernel.stats`
-(`query/kernel.av`). On a cold `check packages/cli`:
+**What M1/M2 must print** (`AVRA_DB_GRAPH=1` writes the graph; `graph.py` counts it). On a
+cold `check packages/cli`:
 
 | line | what is counted |
 |---|---|
@@ -61,25 +60,33 @@ points (the 09-21 tree and main) are in the design §7.1; nothing in between is 
 Done when: `make keepers` and `make cache-attacks` are green in CI; the counters print the
 lines above; the phase table exists; the three PENDING rows in the design are filled.
 
-### DB 01 — one engine (`.57.170`) · five PRs
+### DB 01 — one engine (`.57.170`) · five PRs · the first build
 
-Today `@query` is a second memo (std-relation `Memo<V>`, `db.av:475-580`) whose validity is
-one write counter for the whole Db, and `@input` records no read. The compiler's hooks
-`opened` / `settled` / `running` answer "no opinion" (`workspace.av:581`, `decls.av:702`).
+**The defect this fixes** (the owner: "PLEASE fix this"). There are two engines today:
+
+| | where | evidence |
+|---|---|---|
+| the kernel | `packages/std-avrac/src/query/kernel.av` (717 lines): cells, deps, red-green, early cutoff | READ |
+| a second memo | `packages/std-relation/src/db.av:475-580` `Memo<V>`: a `@query` is reused only while one whole-Db write counter has not moved (`:511-519`); `@input` records no read (`:625-649`) | READ(agent) |
+| the bridge | `Hooks`, nine closures (`db.av:50-62`). The compiler answers `opened: -1`, a no-op `settled`, `running: -1` (`workspace.av:581-582`, `features/decls.av:702-706`) | READ |
+| the result | M1, MEASURED: the three std-relation families hold **2** edges; declaration reads are recorded on `Named`, `Items`, `Methods` instead | branch `db-measure`, `AVRA_DB_GRAPH=1` |
+
+The engine moves into `@std/relation` (owner decision D11: one engine for the compiler *and*
+a running program; no new package). `std-avrac` depends on `@std/relation` as today.
 
 | PR | what | done when |
 |---|---|---|
-| **01a** the seam | The kernel **stays** in `packages/std-avrac/src/query/` (owner: "It is part of the compiler"). No new package. In `@std/relation`, `@query` and `@input` stop carrying a memo: they expand to "ask the engine" through one seam on the `Db` handle — the nine-closure `Hooks` shrinks to it — and `Memo<V>` and the write counter are deleted. The Db is not an argument (D3): the generated fn takes the key only. A plain run-time `new_db()` has no engine: the body runs on every ask (D11, pending) | std-relation's suite green with its 21 test queries rewritten to the D3 spelling; `grep -c "Memo<" packages/std-relation/src/db.av` → 0 |
-| **01b** the compiler arms it | the compiler's Db answers the seam with its kernel: a `@query` is a kernel cell with a dep list, red-green and early cutoff; `opened`/`settled`/`running` (unarmed today) are gone; `@input` and `Memo.input` are one thing and record the read | a compiler test (in `compiler/tests/`) runs the program below against a kernel-armed Db and gets `pure` **once**; `/tmp`-free: design §3.1's program still runs |
+| **01a** the kernel moves | `query/kernel.av` and `query/marks.av` → `packages/std-relation/src/kernel.av`, `marks.av`. They import only `core.{list_cell, map_cell}` (two four-line seeders, `core/table.av:48-57`) and `@std.meta.identity`: the seeders move with the kernel and `core` re-exports them. `query/memo.av` (190) and `query/fixpoint.av` (261) use `core.Table` and **stay** — they are the compiler's own use of the engine. `query/` re-exports the kernel's names, so the 12 files that `use query.{…}` do not change in this PR. No manifest row is needed (`@std/*` resolves from the toolchain; no manifest in the tree carries dependency rows for it). **Layering**: no keeper pins `core → query → grammar → features → compiler` today (nothing in `tools/` checks it). This PR restates CLAUDE.md's rule truthfully — "`@std/relation` holds the engine and sits below the compiler; inside `std-avrac`: `core → query → grammar → features → compiler`" — and adds the keeper `make layers`: a directory never imports one to its right, and `@std/relation` never imports `@std.avrac` | behaviour unchanged: `make bootstrap`, `seed-check`, std-relation's and std-avrac's suites green; `make layers` green, and red when a fixture imports upward |
+| **01b** one memo | `@query` and `@input` expand to kernel cells on **every** Db. `new_db()` owns a kernel; the compiler builds its relation Dbs on the workspace's kernel. `Memo<V>`, the write counter and `Hooks` are deleted (a refusal still speaks through one fn). `@input` and `Memo.input` become one thing and record the read. The Db is not an argument (D3): the generated fn takes the key only, and std-relation's 21 test queries are rewritten to that spelling — their memo assertions stay meaningful and stay | (1) a **program test in std-relation**: the program below prints `pure` once; (2) a **compiler test**: `named_decls` asked twice across an unrelated `Decl` write runs once; (3) the M1 graph (`AVRA_DB_GRAPH=1`) shows the compiler's `@query` cells holding their own edges, not 2 |
 | **01c** packed deps | a dependency is `family << 40 \| arg` in a `List<int>`. A negative `arg` is read as "no cell" today (`kernel.av:689`: `key.arg < 0 → null`); packing **refuses** one at the record site instead. Consumers of `deps_of` move with it: `cache_walk.av`, `dep_audit.av`, `searched`. The audit's `first_visit` stamp is the audit's; do not share it | on a Sprite, `AVRA_MEM_STATS=1 build/avra check packages/cli`: `Kernel.newly_read` under 60 MB (375 today, ticket `.57.167`) |
-| **01d** the read-cost census | there is **no tool in the tree**: the ~938 and ~315 figures came from the PERF lane's `kbench`, outside the repo (tickets `.57.8.1`, `.57.30`). Land `tools/db_measure/read_cost.sh`: one program doing N and 2N recorded reads under an instruction counter on a Sprite; the difference ÷ N | it prints instructions per recorded read for a kernel cell and a relation row; CI holds ≤ 350 once 01b makes it reachable |
+| **01d** the read-cost census | the ~938 and ~315 figures came from the PERF lane's `kbench`, outside the repo (tickets `.57.8.1`, `.57.30`). In the tree there is now `tools/db_measure/readbench/` on `origin/db-measure` (a row-read bench). Wire it under an instruction counter on a Sprite: N and 2N recorded reads, the difference ÷ N | it prints instructions per recorded read for a kernel cell and a relation row; CI holds ≤ 350 once 01b–01c make it reachable |
 | **01e** names, not ordinals | every family (and `@query`) registers by stable name; every kernel refusal names the query and its key. `make families-left` prints how many families still wear `@family` (32) and fails if it rose. The existing `make families` (`tools/families.py`, `tools/families.order`) holds the *opposite* contract — ordinals append-only, because "kernel rows, kept caches and witnesses are keyed by `ordinal`". It is retired **in this PR**, after showing both of: nothing saved is keyed by an ordinal across compilers (a store is one compiler print's), and no family fingerprint folds the ordinal (fold the name instead). Until 01e lands, no family is removed | `make families-left` → 32; `make families` and `tools/families.order` are gone from the Makefile, `checks.yml:110` and the gate; a two-owner refusal names its query |
 
-The acceptance program for 01b (the review's `c3`, in today's spelling). PROBED 2026-10-06
-on a plain Db: `icons,fonts,pure,icons,fonts,pure,icons,fonts,pure` — any write invalidates
-every answer. Under D3 the `db` arguments go; under D4 `icons` and `fonts` become two
-driver inserts into base relations. The assertion that survives: after unrelated writes,
-`pure` has run once.
+The acceptance program for 01b, in today's spelling. PROBED 2026-10-06 on a plain Db:
+`icons,fonts,pure,icons,fonts,pure,icons,fonts,pure` — any write invalidates every answer.
+In 01b the `db` arguments go (D3). `icons` and `fonts` write rows inside a query, which D4
+ends at DB 06; until then they stay as the "unrelated writes". The assertion: **`pure`
+appears once.**
 
 ```avra
 use @std.relation.{relation, query}
@@ -177,22 +184,20 @@ EXAMINED NOTHING" and "A CHECK CAN PASS *BECAUSE* OF THE BUG" (every acceptance 
 | a string that selects declarations (`by_marks("model")`) or names a rule | two packages' `@model` collide; select by the annotation's own declaration |
 | a relation named `Field`, `Variant`, `Param` or `Decl` | `@std/meta` already exports the first three and forbids the fourth |
 | converting more facts to recorded relation rows before the read costs ≤ 350 instructions | the likely cause of the regression (INFERRED until M3) |
-| a new package for the kernel (`@std/query`), or a flag that keeps the old re-ask of the sources | the owner refused both on 10-06 |
+| a new package for the kernel (`@std/query`), a kernel inside `std-avrac` that a program cannot link, or a flag that keeps the old re-ask of the sources | the owner decided all three on 10-06: the engine lives in `@std/relation`; no switch |
+| a second kernel in the evaluator's heap for a plugin | a plugin's Db is the compiler's: an ask is a host row into the same kernel |
 | quoting "≥51.6 M deps" | never committed; two later measurements say ~5 M |
 | a number without its source | label it MEASURED (command), PROBED, READ or ESTIMATED |
 
-## The owner's decisions (2026-10-06) and what is still pending
+## The owner's decisions (2026-10-06)
 
-Decided: always save · one engine first · the Db is never an argument (D3) · a query never
-writes rows — you return them (D4) · `rule` is the one way to write a lint (D5) · a plugin
-reads only what its manifest grants (D6) · one store per compiler binary now, keyed by the
-query's code later (D8; ticket `.57.186`) · the re-ask of the sources is retired at DB 07
-with **no switch** (D10) · the kernel stays in `std-avrac` · no bisect.
-
-| # | still pending | recommended | first PR that needs it |
-|---|---|---|---|
-| D9 | how we know a tool (clang, the linker) changed: read all of it every build, or trust path + size + modified-time? | the shortcut, for tools and the compiler binary only | DB 04 d |
-| D11 | where the one engine lives: in the compiler only (a run-time `@query` then has no memo), or `kernel.av` in `@std/relation` so one engine serves compile time and run time (it matters to the autonomous-systems/state and ORM work) | being put to the owner | DB 01a builds the same seam either way |
+Nothing is pending. Decided: always save · one engine first · the Db is never an argument
+(D3) · a query never writes rows — you return them (D4) · `rule` is the one way to write a
+lint (D5) · a plugin reads only what its manifest grants (D6) · one store per compiler
+binary now, keyed by the query's code later (D8; ticket `.57.186`) · a tool is identified by
+path + size + modified-time, full digest on demand (D9) · the re-ask of the sources is
+retired at DB 07 with **no switch** (D10) · the engine lives in `@std/relation`, no new
+package (D11) · no bisect.
 
 M1 is measured: 70,015 cells, 5.3 M direct edges, 37.2 M read calls (design §7.3). Waiting
 on: M2 (saved answers and reads per answer) and M3 (the phase table for a warm edit on main
@@ -202,17 +207,17 @@ today). The design's §7.3 says what each result changes.
 
 | # | question | answer |
 |---|---|---|
-| 1 | The M1/M2 counters do not exist — do I write them? What does M2 simulate now that no family is local? | The db-measure lane is writing them; if it has stopped, yes, to the spec under DB 00. M2 simulates "every family key has a name", replaces each row or bucket read by a read of its producer's part, and counts reads that land on keyless rows |
+| 1 | The M1/M2 counters — do I write them? | no: they exist on `origin/db-measure` (`AVRA_DB_GRAPH=1`, `graph.py`). M1 is measured; M2 is that lane's. Land the harness; do not rewrite it |
 | 2 | M3: which commits, and how is an old compiler built? | none: no bisect. Phase timings on main today (under DB 00) |
 | 3 | PR #289 — land it or wait? Is the memory attack in CI? | merged (`9163515`); `turn-memory-attack` is in `checks.yml:110` |
 | 4 | keepers-green: what was unverified, what counts as verified? | its top four commits. Verified = the keeper each touches is green on a Sprite from that branch, then `make keepers` and `make cache-attacks` whole. Ask team-lead first whether its lane is alive |
 | 5 | Who makes a CI job required? | **the owner** (a repository setting) |
 | 6 | D3 is pending and 01b needs it — build or wait? | decided 10-06: the Db is never an argument. Build 01a to that spelling |
 | 7 | `make families` exists with the opposite meaning | mine is `make families-left`; the old keeper and `tools/families.order` are retired in 01e, on the two conditions written there |
-| 8 | Where does the kernel live, and is there a manifest or seed ladder? | where it is: `packages/std-avrac/src/query/`. No package, no manifest row, no ladder |
-| 9 | Do a plain Db's kernel and the compiler's share family ids? | a plain Db has no kernel (D11). In the compiler an id is the interning of the query's stable name |
+| 8 | Where does the kernel live, and is there a manifest or seed ladder? | `packages/std-relation/src/kernel.av` after 01a. No manifest row. No new syntax, so the seed compiles it; `seed-check` is the proof |
+| 9 | Do a plain Db's kernel and the compiler's share family ids? | no. Each kernel interns a query's stable name to its own dense id |
 | 10 | What does a negative `arg` mean before I pack? | today it reads as "no cell" (`kernel.av:689`). Nothing should mint one; refuse it at the record site and see what trips |
-| 11 | What gives "instructions per recorded read"? | nothing in the tree. 01d adds `tools/db_measure/read_cost.sh` |
+| 11 | What gives "instructions per recorded read"? | `tools/db_measure/readbench/` on `origin/db-measure`, under an instruction counter (01d) |
 | 12 | Where is `c3`? | inline above, under DB 01 |
 | 13 | Do the documents land on main? | yes, one docs PR, opened by team-lead |
 | 14 | Tickets `.169–.185` are owned by `db-doc` — re-own them? | yes: `tasks update --claim <id>` as you start each. `db-doc` was the author of the plan, not an owner of the work |

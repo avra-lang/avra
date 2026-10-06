@@ -47,16 +47,14 @@ which) · `PROBED` I ran it; the command and its output are beside it · `MEASUR
 | D7 | **The speed bar**, `packages/cli`, cold process, no daemon. | unchanged `check` ≤ 60 ms · one body edit ≤ 300 ms (goal 150) · `build` after one edit ≤ 500 ms |
 | D8 | **One store per compiler binary now**; answers keyed by their query's own code later. | the later step is ticket `.57.186` |
 | D10 | **The re-ask of the sources is retired at DB 07, with no switch.** | Today a *failure* under a held answer is asked again of the sources. After DB 07 an answer stands on the digests of its reads; the edit corpus and the attack cases in CI are the net. No flag, no CI mode |
-| — | **The kernel stays in the compiler** (`std-avrac/src/query/`). No `@std/query` package. | §5.1 |
+| D9 | **A tool is identified by path + size + modified-time**; full digest on demand. | for tools and the compiler binary only. Source files are always read |
+| D11 | **The engine lives in `@std/relation`**, the library that already holds `@relation`/`@query`/`@input`. No new package. "ok fine do this" | the compiler and a running program share ONE engine (§5.1). It is a library, not `avrac-*`, because a running program imports it too |
 | — | **No bisect.** | M3 is phase timings on main today (§7.3) |
 | — | **A read list holds saved answers as well as inputs.** | a *verifying trace* |
 
 ### 1.3 PENDING OWNER
 
-| # | question | in plain words | recommended |
-|---|---|---|---|
-| D9 | How do we know `clang` or the linker changed? | To be sure, we would read all ~100 MB of the tool on every build (~100 ms, ESTIMATED). Instead: remember its path, size and modified-time, and treat it as changed when any of the three moves. Source files never get this shortcut — they are always read | the shortcut, for tools and the compiler binary only |
-| D11 | Where does the one engine live, so that a program **at run time** can use it too? | **A — in the compiler only** (as decided): a program cannot link the compiler (it links LLVM), so a run-time `@query` has no memo; its body runs on every ask. **B — the kernel file (717 lines) lives in `@std/relation`**, which the compiler already imports: one engine at compile time *and* run time, no new package. The run-time side matters to the autonomous-systems/state work and the ORM (`docs/2026_09_24_AUTONOMOUS_SYSTEMS_AND_STATE.md`, `docs/2026_09_24_ORM.md`), which want saved, incremental queries inside a running program. No shipped package uses a run-time `@query` today | A now is cheaper; B if those two campaigns are to stand on this engine. DB 01a is the same seam either way |
+Nothing is open. D1–D11 are decided above (there is no D-numbered question left).
 
 ---
 
@@ -132,31 +130,43 @@ Declaration.by_kind(Kind.Trait)                    // 5. an index read: recorded
 | a key recipe, a `Store.keep` call, a validity format and its `*_stands` fn (nine formats) | nothing: the read list is recorded |
 | a walk over every file or declaration to find its subjects | an index read |
 
-**Feature 1 — `embed`** (MEASURED: `git show --stat 04a6a89`, PR #282). Making "edit an
-embedded file → the binary rebuilds" true took a hand validity path in four files:
-`kept_settle.av` +5 (an `e` line kind), `build.av` +44 (`embed_line`, `embeds_key`,
-`keep_embeds`: key lines and a remembered row), `whole.av` +95 (`admit_embeds`: a walk over
-every expression, matching the callee by the string `"embed"`), `host.av` +23. On the DB the
-feature keeps its law (the path is beside the file, inside the package) and writes one read:
+**One family end to end: `Sig`, a declaration's signature.** Today (READ, line
+counts by `awk` at `36eb0a1`), ~80 lines in four files:
 
 ```avra
-fn embedded(from: string, path: string) -> string { text(beside(from, path)) ?? refused(path) }
+@family(6, "DeclId", "DeclSig")                 // families.av:41 — key and answer are unchecked strings
+type Sig = {}
+.Sig -> "Sig",                                  // workspace.av:531 family_word · :980 a `touch` arm
+fn sig(d: DeclId) -> DeclSig? {                 // workspace.av:1682-1709, 28 lines
+    let k = key(Family.Sig, d.index)
+    let x = self.decls.decl(d)
+    if self.is_held(x.file) {                   // the held path: a second way to answer
+        self.held_sig_dep(x.file)               //   :1719, 10 lines + held_sig :1738 + family HeldSig
+        self.file_ensured(x.file)               //   :856, 12 lines
+        self.fill_ensured(d)                    //   interface.av:307, 12 lines
+        return self.decls.sigs.get()[d.index]   //   the side table decls.av:447
+    }
+    if !(self.db.ask(k) is .Compute) || x.kind is .Builtin { return self.decls.sigs.get()[d.index] }
+    self.db.begin(k)
+    …                                           // sign it; keep its diagnostics in a second side table
+    self.db.settle(k, sig_hash(out))            // :2056, a hand fingerprint
+    out
+}                                               // + its lines in the module record, validated by hand
 ```
 
-The read is recorded, so whatever used it reruns. Those ~165 lines are never written
-(ESTIMATED: the four diffs summed).
-
-**Feature 2 — `avra docs`** (READ `compiler/doc_rows.av`, 38 lines; `compiler/db.av:84-153`
-and `:660-695`, ~105 lines). Today: two full scans that answer a `DocKey` and then re-find
-the row ("a dense id never crosses a query's answer"), plus `FileWitness`, `DocFacts`, two
-hand codecs, `still_valid`, `current_listing_digest`, `current_file_digest`. On the DB:
+On the DB, in the feature that computes it (PROPOSED):
 
 ```avra
-@query export fn named(name: string) -> List<Declaration> { Declaration.by_name(name) }
-@query export fn exported(package: string) -> List<Declaration> { Declaration.by_package(package).filter(it.exported) }
+/// A declaration's own signature.
+@query
+fn sig(d: DeclName) -> Signed { signed(declaration(d)) }     // Signed = { sig: DeclSig, voices: List<Diag> }
 ```
 
-~143 lines → ~6 (ESTIMATED after). The witness is the read list; the row is the answer.
+Memo, the held path, the two side tables, the fingerprint and the record lines are the
+saved-answer rule's job. ~80 lines → 3.
+
+Two more, worked the same way in appendix A19: `embed` (PR #282's hand validity path, ~165
+lines → one recorded read) and `avra docs` (~143 lines → ~6).
 
 ### The deletion ledger
 
@@ -165,8 +175,7 @@ MEASURED = `wc -l` or `grep` at `origin/main` @ `4294595`, non-test. "After" is 
 | what disappears | today | after |
 |---|---|---|
 | `compiler/kept_settle.av` — six line kinds, six `*_stands` fns | 324 lines | 0; four digest-only queries, ~40 |
-| `compiler/db.av` — the compiler's own `Db`, `DbRow`/`DbKind` (24 kinds), `DocFacts`, `still_valid` | 732 lines | 0 |
-| `compiler/answers.av` | 46 lines | 0 |
+| `compiler/db.av` — the compiler's own `Db`, `DbRow`/`DbKind` (24 kinds), `DocFacts`, `still_valid`; `answers.av` | 732 + 46 lines | 0 |
 | `compiler/verify_held.av` — the held path's hand checks | 439 lines | 0 |
 | `families.av` markers + `tools/families.py` + `families.order` + `family_word`'s 32 arms | 149 + 154 + 32 + 32 | 0; 32 `@query` declarations |
 | `compiler/record.av` — module record lines, `KeyParts`, `parts`/`seen` rows | 1,605 lines | ~300: the encoding is derived |
@@ -174,11 +183,10 @@ MEASURED = `wc -l` or `grep` at `origin/main` @ `4294595`, non-test. "After" is 
 | `compiler/derive.av` — try the held path, fail, derive again (what PR #289 tamed) | 867 lines | ~400: one path |
 | `compiler/workspace.av` — 37 fields, 35 string-keyed memo maps | 2,095 lines | ~800 |
 | `compiler/store/store.av` + 7,981 `.deps` files nobody reads | 197 lines | one packed store, ~400 new |
-| std-relation's second memo and hooks (`db.av`) | 660 lines | ~300 |
 | mentions of `KeyParts`/`stands_in`/`view_parts` · of the six key recipes · of held/unheld in `compiler/` | 41 · 22 · 135 lines | 0 |
 | world reads outside any door | 172 sites | ~35, each licensed at its site |
 
-Deleted whole, MEASURED: **1,908 lines** (the first five rows). Net of everything, ESTIMATED:
+Deleted whole, MEASURED: **1,908 lines** (the first four rows). Net of everything, ESTIMATED:
 4–6 thousand lines gone against ~1,000 new (the store, the name codec, `explain`).
 
 ### What becomes possible, almost for free, once reads are recorded
@@ -188,11 +196,9 @@ Deleted whole, MEASURED: **1,908 lines** (the first five rows). Net of everythin
 | `avra explain X --why` | X's record, its previous record, the reverse index |
 | `avra dev`'s watch set | the input manifest: every file any answer read (today a hand-built list that misses embeds, `.57.185`) |
 | test selection | a test reruns only if a read of `Proved(test)` moved (today `tools/work test` selects by package) |
-| unused exports, dead code | declarations whose `Refs` bucket root is empty |
 | docs; a formatter or linter that re-checks only what changed | `exported(package)` then `Doc(declaration)`; `Canon(file)`, `Findings(declaration)` |
-| find references, go to definition, hover | `RefRow.to(name)` · `Declaration.by_name` · `Sig(declaration)` — one read each |
+| find references, unused exports, go to definition, hover | `RefRow.to(name)` · `Declaration.by_name` · `Sig(declaration)` — one read each |
 | `collect xs = @mark in scope …` | `Declaration.wearing(mark)`: an index read; adding a member reruns exactly the collects that asked |
-| "what would this edit rebuild?" | the reverse index from one input, without building |
 
 ### Collections: no bespoke walks
 
@@ -205,16 +211,8 @@ let n = [d.name for d in Declaration.all(db) if d.exported].length             /
 Declaration.by_kind(db, "fn").any(it.name == "b")
 ```
 
-| a consumer wants | it writes | never |
-|---|---|---|
-| the rows with one column value | `R.by_<index>(v)` | a loop with an `if` over `R.all()` |
-| a filter, a projection, a count | `.filter(…)`, `.map(…)`, `.length`, a comprehension, `\|>` | a second relation holding the filtered copy |
-| a grouping | declare the `@index`; each group is a bucket | a `Map` built by hand |
-| a whole-program fact | a query over index reads, or a fixpoint group (§5.1) | a pass that walks every file |
-| every declaration wearing a mark | `collect`, or `Declaration.wearing(mark)` | `Decls.gathered` over a raw bucket |
-
 The standing rule (owner, 09-24): the store is a database — relations, indexes, typed
-queries, no bespoke whole-program walks.
+queries, no bespoke whole-program walks. What to write instead of each kind of walk: A19.
 
 ---
 
@@ -381,14 +379,18 @@ families (16, 19, 20, 30) are the ones that make any edit O(program); each is sp
   each register a kernel family by stable name (`@acme.icons.icons_in`). `@family` becomes a
   second spelling of that same call and is retired one family at a time (DB 12). A family is
   addressed by name, so its ordinal stops being a durable address (handoff, DB 01 e).
-- **The kernel stays in the compiler**: `packages/std-avrac/src/query/` (owner, 10-06).
-- **What a package imports is the thin surface**, where it is today: `@std/relation` (the
-  three annotations, the row and key types, the `Db` handle, the codec) and `@std/meta`
-  (`Type`, `Declared`, `quote`, the `…Row` relations). Neither holds an engine. `Memo<V>`,
-  the write counter and the nine-closure `Hooks` shrink to one seam: *ask the engine*.
-- **Still one engine.** The compiler arms that seam with its kernel for its own facts. A
-  plugin's `@query` runs in the evaluator, where "ask the engine" is a host row into the
-  **same** kernel (§5.4). A plain run-time Db has no engine and no memo (D11).
+- **The engine lives in `@std/relation`** (D11): `query/kernel.av` (717 lines) and
+  `marks.av` move beside the surface they serve. `std-avrac` depends on `@std/relation` as
+  today and arms nothing: the nine-closure `Hooks`, `Memo<V>` and the write counter are
+  deleted. `query/` in `std-avrac` keeps what is the compiler's own use of the engine
+  (`memo.av`, `fixpoint.av`).
+- **One engine, three users.** The compiler's Db is built on a kernel. A running program's
+  `new_db()` owns one. A plugin's query runs in the evaluator, where the Db *is* the
+  compiler's — an ask is a host row into the same kernel, never a second one in the
+  evaluator's heap (§5.4).
+- **This fixes what M1 found**: today the three std-relation families hold 2 edges between
+  them, and declaration reads are recorded on `Named`/`Items`/`Methods` instead — two
+  engines. After DB 01b a `@query` in the compiler is a kernel cell with its own edges.
 - **A dependency is a packed int.** Today each edge is a boxed `Key`: 375 MB in 5,326,142
   boxes on a cold `check packages/cli` (MEASURED, ticket `.57.167`). Packed: ~9 B an edge
   (ESTIMATED) → ~48 MB.
@@ -418,7 +420,7 @@ pinned("https://…/pet.yaml", "sha256:…")   // Bytes — refused unless the p
 ```
 
 Names are `package:relative/path`. Sources are always read and digested; only tools and
-the compiler binary may answer from a stamp (D9). A plugin reads only what its manifest
+the compiler binary may answer from a stamp (D9, decided). A plugin reads only what its manifest
 grants (D6). The rest — what is not an input, clock and cwd, a native tool in a child
 process, package C — is appendix A18.
 
@@ -450,7 +452,7 @@ settle(q):                                      one append per read; no walk; no
 | a plugin's rows | in the evaluator's heap | the encoded answer of its query, held by the kernel |
 | reading compiler facts | three ask verbs (`embed`, `type_named`, `type_exported`) | `@std/meta` row relations: `DeclRow`, `FieldRow`, `VariantRow`, `ParamRow`, `ImplRow`, `RefRow`. A decoded row is a different type with no `@local` columns (townhall §4.10) |
 | names | `Field`, `Variant`, `Param` are already `@std/meta` types; `Decl` is a name it forbids (`meta.av:480-482`) | the `…Row` names above |
-| `compiling()` | cannot exist as the first draft described | not needed: the Db is never an argument (D3) |
+| `compiling()` | cannot exist as the first draft described | not needed: the Db is never an argument (D3), and inside a compile-time run it is the compiler's |
 | direction | — | core never reads a plugin relation; a plugin writes only its own answers |
 | a plugin relation in a module nobody imports | would silently not register (townhall :2665, open) | a manifest dependency contributes all its files to registration. PROPOSED; decided in DB 10 |
 
@@ -566,7 +568,7 @@ Each lands alone and leaves main green. "Ladder" is what the seed and generation
 | PR | ticket | what lands | "when this lands, the owner can run …" | ladder | closes |
 |---|---|---|---|---|---|
 | **DB 00** secure, measure, fence | `.57.169` | the M1–M3 harness (`tools/db_measure/`, branch `db-measure`); PR #289 with its memory attack in CI; `keepers-green`: three keepers on every PR; defects filed | `make keepers` green and required · the per-family counters table · `sh tools/db_measure/warm_edit.sh` | none | `.57.165`; half of `.57.163` |
-| **DB 01** one engine, as a–e | `.57.170` | §5.1: (a) the seam — `@query`/`@input` ask an engine; std-relation's memo deleted; (b) the compiler arms it with its kernel, hooks gone; (c) packed deps; (d) the read-cost census; (e) families register by name, refusals speak, `make families-left` starts at 32, `tools/families.py`'s order contract retired | under the compiler's kernel three pure queries each run **once** after an unrelated write (nine times today) · `Kernel.newly_read` < 60 MB (375 today) | none; build twice before trusting a peak | `.57.167` |
+| **DB 01** one engine, as a–e | `.57.170` | §5.1: (a) the kernel moves into `@std/relation`; the layering rule restated and pinned by a keeper; (b) `@query`/`@input` are kernel cells on every Db, the second memo and the hooks deleted; (c) packed deps; (d) the read-cost census; (e) families register by name, refusals speak, `make families-left` starts at 32, `tools/families.py`'s order contract retired | a std-relation program test: three pure queries each run **once** after an unrelated write (nine times today) · the M1 graph shows the compiler's `@query` cells holding their own edges (2 today) · `Kernel.newly_read` < 60 MB (375) | `seed-check` must pass; build twice before trusting a peak | `.57.167` |
 | **DB 02** `avra explain` | `.57.171` | A14.4 over the in-memory graph: `--stats` and "what did this read". `--why` re-derives in process, as `avra cache why` does today, until DB 05–06 give it the store | `build/avra explain --stats packages/cli` · `explain <file>` prints its reads | none | — |
 | **DB 03** names, the id codec, as a–c | `.57.172` | §6.3, A13: (a) the name scheme and `Decl`'s key — waits on `file` leaving `@local` (`decl_rows.av:26`, owner: ERRORS); (b) the codec grows payload enums and recursive records; (c) one codec per family answer, ~20, each its own small PR | `make codecs` · a declaration inserted above changes no other declaration's bytes | none expected | — |
 | **DB 04** the input door a–e | `.57.173` | §5.2 as five PRs: (a) the digest row; (b) `Source`, `Manifest`; (c) `embed`, listings; (d) env, tool, target, compiler; (e) the rest | `make inputs` prints the count outside the door and fails on a new one | (a) is **two landings** | `.57.184` |
@@ -854,7 +856,7 @@ extraction made for this rewrite. The line numbers were read by those agents at
 | D9 the store's read slot | deleted; the record carries its reads (§6.1) | answered |
 | D10 `.57.4.6` before answers are saved | a query's code is one of its reads (§5.3) | **open** until DB 06 |
 | D11 the five rows outside P1–P5 | A2 | answered |
-| D12 a per-process tool memo | tools are identified by a stamp re-read at each ask (D9, pending); a digest memo lives one revision (§5.2) | **open**: D9 is the owner's |
+| D12 a per-process tool memo | tools are identified by a stamp re-read at each ask (D9, decided); a digest memo lives one revision (§5.2) | answered |
 | D13 who owns the two doors | the owner, with the sources session (§15a Q12); this document is the mechanism | answered |
 
 ## A11. Rows, buckets and index reads under L4 and L6
@@ -1016,7 +1018,7 @@ It never writes the store it inspects (the `.57.153` law).
 Restored without change after the first draft dropped them silently: "durable by default,
 with nothing to tune" (townhall :2277) · a recorded read ≤ ~350 instructions (:2106) · a
 decoded row is a different type (§4.10) · core never reads a plugin relation (:2656).
-| second draft: the kernel moves to a new package `@std/query` | it stays in `std-avrac/src/query/` | the owner, 10-06: "I don't want @std/query … It is part of the compiler" |
+| second draft: the kernel moves to a new package `@std/query` | no new package: it lives in `@std/relation` (D11) | the owner, 10-06: "I don't want @std/query", then, shown that a running program cannot link the compiler: "ok fine do this" |
 | second draft: an eight-commit bisect for M3 | phase timings on main today | the owner, 10-06: "it's too expensive" |
 
 ## A16. Every second mechanism on main, and the PR that removes it
@@ -1082,3 +1084,39 @@ A comment above a declaration: `Text(file)` moves → the file is parsed → eve
 | a plugin | reaches the reads through host rows, only for what its manifest grants (D6, decided). The grant rules are the sources design's |
 | a native tool in a child process | "the tool opens nothing": a read is a message the compiler checks, answers and records (sources design :649). This document supplies the input mechanism; the protocol is the sources campaign's |
 | package C run at const settlement | refused unless the row declares its inputs. Open; recorded under DB 04 e |
+
+## A19. Two more features, before and after
+
+**`embed`** (MEASURED: `git show --stat 04a6a89`, PR #282). Making "edit an
+embedded file → the binary rebuilds" true took a hand validity path in four files:
+`kept_settle.av` +5 (an `e` line kind), `build.av` +44 (`embed_line`, `embeds_key`,
+`keep_embeds`: key lines and a remembered row), `whole.av` +95 (`admit_embeds`: a walk over
+every expression, matching the callee by the string `"embed"`), `host.av` +23. On the DB the
+feature keeps its law (the path is beside the file, inside the package) and writes one read:
+
+```avra
+fn embedded(from: string, path: string) -> string { text(beside(from, path)) ?? refused(path) }
+```
+
+Whatever used the read reruns. Those ~165 lines are never written (ESTIMATED).
+
+**`avra docs`** (READ `compiler/doc_rows.av`, 38 lines; `compiler/db.av:84-153` and
+`:660-695`, ~105 lines). Today: two full scans that answer a `DocKey` and then re-find the
+row ("a dense id never crosses a query's answer"), plus `FileWitness`, `DocFacts`, two hand
+codecs, `still_valid`, `current_listing_digest`, `current_file_digest`. On the DB:
+
+```avra
+@query export fn named(name: string) -> List<Declaration> { Declaration.by_name(name) }
+@query export fn exported(package: string) -> List<Declaration> { Declaration.by_package(package).filter(it.exported) }
+```
+
+~143 lines → ~6 (ESTIMATED after). The witness is the read list; the row is the answer.
+
+**Collections — what a consumer writes instead of a walk**
+
+| a consumer wants | it writes | never |
+|---|---|---|
+| a filter, a projection, a count | `.filter(…)`, `.map(…)`, `.length`, a comprehension, `\|>` | a second relation holding the filtered copy |
+| one column value; a grouping | `R.by_<index>(v)`; each group is a bucket | a loop with an `if` over `R.all()`; a `Map` built by hand |
+| a whole-program fact | a query over index reads, or a fixpoint group (§5.1) | a pass that walks every file |
+| every declaration wearing a mark | `collect`, or `Declaration.wearing(mark)` | `Decls.gathered` over a raw bucket |
