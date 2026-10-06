@@ -1185,7 +1185,8 @@ void* avra_gate_new(void) {
     return gate;
 }
 
-int64_t avra_gate_claim(void* gate) {
+__attribute__((noinline))
+static int64_t gate_claimed(void* gate) {
     int64_t* cells = task_cells(gate);
     while (cells[GATE_HEAD]) {
         Waiter* w = (Waiter*)(uintptr_t)cells[GATE_HEAD];
@@ -1193,6 +1194,13 @@ int64_t avra_gate_claim(void* gate) {
         if (waiter_claims(w, id_of(g_current))) return member;
     }
     return -1;
+}
+
+// A gate nobody waits on is asked often — a ring with no one parked —
+// and answers from a load and a test.
+int64_t avra_gate_claim(void* gate) {
+    if (!task_cells(gate)[GATE_HEAD]) return -1;
+    return gate_claimed(gate);
 }
 
 // ── A task's life ───────────────────────────────────────────────
@@ -1232,6 +1240,7 @@ static void fiber_start(void) {
     if (self->due.filed) waiter_out(&self->due);
     for (int i = 0; i < AVRA_TASK_SLOTS; i++) {
         void* held = self->own.slot[i];
+        if (!held) continue;
         self->own.slot[i] = NULL;
         avra_rc_release(held);
     }

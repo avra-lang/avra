@@ -3255,11 +3255,18 @@ _Static_assert(AVRA_SLOT_ASKER < AVRA_TASK_SLOTS && AVRA_SLOT_FLOW < AVRA_TASK_S
 __attribute__((noinline, cold, noreturn))
 static void slot_refused(void) { avra_trap("a task has four slots, and this is none of them"); }
 
+__attribute__((noinline))
+static void* slot_retained(void* v) {
+    avra_rc_retain(v);
+    return v;
+}
+
+// An empty slot answers from a load and a test.
 void* avra_task_slot(int64_t key) {
     if (__builtin_expect((uint64_t)key >= AVRA_TASK_SLOTS, 0)) slot_refused();
     void* v = avra_task_local->slot[key];
-    avra_rc_retain(v);
-    return v;
+    if (!v) return NULL;
+    return slot_retained(v);
 }
 
 void avra_task_slot_set(int64_t key, void* v) {
