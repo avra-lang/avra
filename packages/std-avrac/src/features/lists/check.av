@@ -288,13 +288,23 @@ fn filter_checks(mut cx: TypeCx, cond: ExprId, tys: List<TypeId>) {
 }
 
 /// The binders' types over a list: the element's, under the index's
-/// int when one is named. A source that is not a list speaks, and
+/// int when one is named — or over a map: its key and its value. A
+/// source that is neither speaks, and
 /// the element binder wears the refusal's type — every downstream
 /// read stays total.
 fn walked_types(mut cx: TypeCx, index: string?, source: ExprId) -> List<TypeId> {
     if cx.errored(source) { return binders(cx, index, cx.error_type) }
+    let value: TypeId? = cx.view.types.map_value(cx.type_at(source))
+    if value != null { return keyed_types(cx, index, source, value!) }
     let held? = cx.yielded(cx.type_at(source)) else { return binders(cx, index, not_walkable(cx, source)) }
     binders(cx, index, held)
+}
+
+/// The binders over a map: the key's text, then its value. A map has
+/// no single element, so an unpaired head refuses.
+fn keyed_types(mut cx: TypeCx, index: string?, source: ExprId, value: TypeId) -> List<TypeId> {
+    if index == null { return [cx.map_needs_pair(source)] }
+    [cx.type(string), value]
 }
 
 /// The binders' types over a range: the counter is an int, both

@@ -6,9 +6,10 @@
 //! reaches the sink. A comprehension is a pipeline whose sink pushes.
 use core.{ExprId, DeclId, Reg, TypeId, Ins, Type, BinOp}
 
-/// A head's source: a list, a `Bytes`, a string's `chars` view, or the
-/// range `source..hi`. `index` binds the position before the element; a
-/// `lookup` is read in the source's place.
+/// A head's source: a list, a `Bytes`, a string's `chars` view, a map
+/// (walked as key and value), or the range `source..hi`. `index` binds
+/// the position before the element; a `lookup` is read in the source's
+/// place.
 export type Source = { source: ExprId, hi: ExprId?, index: bool, lookup: Lookup? }
 
 /// A relation's narrower read: `lookup(db, value)`, the value written
@@ -135,6 +136,11 @@ impl LowerCx {
     mut fn headed(p: Pipeline, at: int, t: Turn, s: Source) {
         self.bind_patterns(s.source, t.regs)
         self.looked_up(s.source, t.regs, s.lookup)
+        let vty: TypeId? = if s.hi == null { self.view.types.map_value(self.type_at(s.source)) } else { null }
+        if vty != null {
+            self.keyed(p, at, t, s.source, vty!)
+            return
+        }
         let w = if s.hi == null { self.opened(s.source, self.elem_of(s.source)) } else { self.counted(s.source, s.hi!) }
         let here = self.turn_open(w)
         let v = if s.hi == null { self.turn_elem(w, here) } else { here }
@@ -147,6 +153,20 @@ impl LowerCx {
                     value: v,
                 },
             )
+        self.loop_end()
+    }
+
+    /// A head over a map: its keys and values snapshot in insertion
+    /// order, each key bound before its value.
+    mut fn keyed(p: Pipeline, at: int, t: Turn, source: ExprId, vty: TypeId) {
+        let m = self.reg_of(source)
+        let keys = self.map_keys(self.view.types.shape_of(self.type(List<string>)), m)
+        let vals = self.map_vals(self.view.types.shape_of(self.type(List<vty>)), m)
+        let w = self.opened_reg(source, keys, self.type(List<string>), self.type(string))
+        let here = self.turn_open(w)
+        let key = self.turn_elem(w, here)
+        let v = self.elem_read(vals, here, vty)
+        self.staged(p, at + 1, Turn { regs: t.regs.concat([key, v]), value: v })
         self.loop_end()
     }
 

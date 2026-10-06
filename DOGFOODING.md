@@ -802,9 +802,10 @@ fn op_texts(r: LexResult) -> List<string> {
 }
 ```
 
-Lists AND ranges: `[f(i) for i in lo..hi]` counts and `[f(i, x) for
-i, x in xs]` pairs — the head is the `for` statement's, so whatever
-that spells, a comprehension spells too.
+Lists, ranges AND maps: `[f(i) for i in lo..hi]` counts, `[f(i, x)
+for i, x in xs]` pairs and `[f(k, v) for k, v in m]` walks a map's
+keys and values in insertion order — the head is the `for`
+statement's, so whatever that spells, a comprehension spells too.
 
 ## The enum vocabulary
 

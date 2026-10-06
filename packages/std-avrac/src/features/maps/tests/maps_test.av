@@ -86,11 +86,11 @@ spec "features/maps" {
                     "\${m.get(\"a\") ?? 0}\"",
             ) == "a b 10"
         }
-        then "a nullable value keeps presence" {
+        then "a null value keeps its place and reads absent" {
             shown(
                 "mut m: Map<string, int?> = {}\nm.set(\"p\", null)\nm.set(\"q\", 7)\nlet vs = m.values()\n\"" +
                     "\${vs.length} " +
-                    "\${vs[0] != null} " +
+                    "\${vs[0] == null} " +
                     "\${vs[1] ?? 0}\"",
             ) == "2 true 7"
 
@@ -108,11 +108,47 @@ spec "features/maps" {
                 "mut m: Map<string, int> = {}\nm.set(\"b\", 2)\nm.set(\"a\", 1)\nmut out: List<string> = []\nfor k, v in m { out.push(k) }\nout.join(\",\")",
             ) == "b,a"
         }
+        then "a null value is absent in the body" {
+            shown(
+                "let m: Map<string, int?> = { \"a\": null, \"b\": 2 }\nmut out: List<int> = []\nfor k, v in m { out.push(v ?? -1) }\nout[0] + (m.values()[0] ?? -1)",
+            ) == "-2"
+        }
         then "an unpaired head refuses" {
             refused_with(
                 "let m = { \"a\": 1 }\nfor k in m { 0 }\n0",
                 "a map walks as key and value",
             )
+        }
+    }
+    given "[… for k, v in m] — a comprehension's head is the statement's" {
+        then "keys and values pair in insertion order" {
+            shown(
+                "mut m: Map<string, int> = {}\nm.set(\"b\", 2)\nm.set(\"a\", 1)\n[k for k, v in m if v > 0].join(\",\")",
+            ) == "b,a"
+        }
+        then "an unpaired head refuses in the statement's words" {
+            refused_with(
+                "let m = { \"a\": 1 }\nlet ks = [k for k in m]\n0",
+                "a map walks as key and value",
+            )
+        }
+        then "the first binder is the key, not a position" {
+            refused_with("let m = { \"a\": 1 }\nlet ns = [k + 1 for k, v in m]\n0", "`string`")
+        }
+        then "a map of maps walks head inside head" {
+            shown(
+                "let mm = { \"x\": { \"a\": 1, \"b\": 2 }, \"y\": { \"c\": 3 } }\n[o + i for o, inner in mm for i, v in inner if v != 2].join(\",\")",
+            ) == "xa,yc"
+        }
+        then "a present null value is walked, not skipped" {
+            shown(
+                "let m: Map<string, int?> = { \"a\": null, \"b\": 2 }\n[v ?? -1 for k, v in m].sum()",
+            ) == "1"
+        }
+        then "a const settles one" {
+            shown(
+                "const ks: List<string> = [k for k, v in { \"p\": 1, \"q\": 2 } if v > 1]\nks.join(\",\")",
+            ) == "q"
         }
     }
     given "remove and is_empty — a key drops and the rest keep order" {

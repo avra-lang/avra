@@ -1078,10 +1078,11 @@ registry is the idiom engine's spec, written by dogfooding.
   one a map's output may use: `m.keys()` and `m.values()` read back in
   written order, an overwrite keeps a key's place, and a snapshot
   keeps the order it had. The hash seed never reaches output (tests
-  pin it with `AVRA_HASH_SEED`). AND A MAP CANNOT BE WALKED WITH
-  `for` YET: `for k in m` is F2000 "`for … in` walks a `List`, this
-  is `Map<K, V>`" — walk `m.keys()` instead. Its vocabulary is
-  `get`/`set`/`has`/`keys`/`values`/`length`.
+  pin it with `AVRA_HASH_SEED`). AND A MAP WALKS PAIRED, over a
+  snapshot: `for k, v in m` and `[f(k, v) for k, v in m]` bind the key
+  and its value; an unpaired `for k in m` is "a map walks as key and
+  value — `for k, v in m` binds both". Its vocabulary is
+  `get`/`set`/`has`/`remove`/`is_empty`/`keys`/`values`/`length`.
 - Grammar authoring: EVERY COMMA LIST TAKES A TRAILING COMMA — a
   repeated `( "," x )*` ends `","?` before its closer, in every
   rule (params, type params and args, payload declarations, lambda
