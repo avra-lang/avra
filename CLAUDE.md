@@ -495,6 +495,34 @@ registry is the idiom engine's spec, written by dogfooding.
   every declaration agree or the gate says which does not. Filled from
   the C in one sweep (46 rows, 141 seats): `const char*` is `Text`;
   the array, map and process rows say `List`/`Map` by name.
+- AN `extern fn` WITH A BODY DEFINES ITS SYMBOL; ONE WITHOUT NAMES
+  ONE. `extern fn avra_ui_event(who: int, …) { … }` is a HOST FN: the
+  host calls it by exactly that name, a non-host target exports it from
+  WHEREVER IT IS DECLARED, and a bodiless `extern fn` of the name in
+  any file is answered by it — which is how a test answers a host's
+  row in Avra (std-ui's `web/tests/mount` answers `avra_dom_frame`, so
+  the one module that names the page runs eval == native). `export` is
+  a module's visibility and exports nothing to a host. Its seats and
+  answer are plain `int`, `float`, `string`, `Bytes` or `ptr`
+  (type.host_fn); two of one name in a program are refused
+  (lower.host_fn_twice). The backend defines the bare symbol beside the
+  body under the extern row's shape; the evaluator, which has no
+  linker, turns a call of the name into a call of the body
+  (`hosted_within`).
+  AND A SYMBOL IS THE WHOLE LINK'S, so three things are held where the
+  host fn stands (compiler/whole.av's `host_fn_owes`). WHO OPENS IT: a
+  dependency's host fn is the program's export only when the program's
+  OWN sources import that package (lower.host_fn_unasked), and a build
+  lists each as `host fn: <package> <name>`, fresh or kept. WHAT IT
+  MAY NAME: nothing the platform already defines (lower.host_fn_shadows
+  — a host fn named `malloc` once linked and REPLACED the allocator),
+  and a bodiless extern of ANOTHER package only from the program's own
+  package (lower.host_fn_answers). THAT IT STAYS: a native link keeps
+  each with `-u <symbol>`, since no caller inside the program reaches
+  it. THE SHADOW CHECK ASKS THE BUILD MACHINE (`platform_defines`, the
+  compiler's own process), so its verdict is that machine's C library,
+  for every target; a name defined only in a package's C archive member
+  is not seen at all.
 - A ROW'S ANSWER IS THE ROW'S, NOT THE DECLARATION'S — the seat law's
   other end, and it was unheld while every argument was held. An
   extern naming a runtime row could answer ANY type:
