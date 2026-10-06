@@ -38,6 +38,9 @@ fn family_of(edge: int) -> int { edge >> 40 }
 
 fn arg_of(edge: int) -> int { edge & 1099511627775 }
 
+/// No edge: below every packed key, a negative arg's included.
+fn no_edge() -> int { 0 - 4611686018427387904 }
+
 fn edge_of(key: Key) -> int { packed(key.family, key.arg) }
 
 fn key_of(edge: int) -> Key { Key { family: family_of(edge), arg: arg_of(edge) } }
@@ -82,6 +85,9 @@ type Asker = {
     /// when none is open.
     readers: Cell<List<int>>,
     reader: Cell<int>,
+    /// The edge the innermost open query appended last, `no_edge`
+    /// when it has appended none since it began or resumed.
+    last: Cell<int>,
     /// Whether the innermost open query reads rows whole.
     whole: Cell<bool>,
 }
@@ -94,6 +100,7 @@ fn new_asker() -> Asker {
         began: list_cell(),
         readers: list_cell(),
         reader: Cell.new(0),
+        last: Cell.new(no_edge()),
         whole: Cell.new(false),
     }
 }
@@ -492,6 +499,7 @@ impl Kernel {
         self.asker.began.push(self.rev.get())
         self.asker.readers.push(reader)
         self.asker.reader.set(reader)
+        self.asker.last.set(no_edge())
         self.asker.whole.set(self.family_whole(key.family))
     }
 
@@ -564,6 +572,7 @@ impl Kernel {
         dropped(self.asker.began)
         dropped(self.asker.readers)
         self.asker.reader.set(self.asker.readers.get().last() ?? 0)
+        self.asker.last.set(no_edge())
         self.asker.whole.set(self.family_whole(family_of(self.asker.open.get().last() ?? 0 - 1)))
         if restored != null { for r in restored!.get() { self.stamped(family_of(r.edge), arg_of(r.edge), r.previous) } }
         edges.slice(0, edges.length)
@@ -587,37 +596,38 @@ impl Kernel {
 
     fn record_dep(key: Key) { self.record_at(key.family, key.arg) }
 
-    /// Records a read of a key in the innermost open query. A repeat
-    /// is one compare — the key's last-reader stamp against the
-    /// innermost reader — and allocates nothing. A MISMATCH is not
-    /// always "never read": a NESTED query reading the same key
-    /// overwrites the stamp with ITS OWN reader id, so the outer
-    /// query's next read mismatches too; `newly_read` tells them apart.
+    /// Records a read of a key in the innermost open query. A read of
+    /// the edge that query appended LAST is one compare; any other
+    /// repeat is the key's last-reader stamp against the innermost
+    /// reader. Neither allocates. A stamp MISMATCH is not always
+    /// "never read": a NESTED query reading the same key overwrites
+    /// the stamp with ITS OWN reader id, so the outer query's next
+    /// read mismatches too; `newly_read` tells them apart.
     fn record_at(family: int, arg: int) {
         let reader = self.asker.reader.get()
         if reader == 0 { return }
+        if packed(family, arg) == self.asker.last.get() { return }
         if self.graph.on.get() { self.graph.counted(family) }
-        let stamp = self.stamp_of(family, arg)
-        if stamp == reader { return }
-        self.newly_read(family, arg, stamp, reader)
+        let row = self.stamp_row(family)
+        let stamp = stamp_in(row.get(), arg)
+        if stamp != reader { self.newly_read(row, family, arg, stamp, reader) }
     }
 
     /// The reader that last recorded a key, 0 for none.
-    fn stamp_of(family: int, arg: int) -> int {
-        let stamps = self.stamp_row(family).get()
-        if arg >= 0 && arg < stamps.length { stamps[arg] } else { 0 }
-    }
+    fn stamp_of(family: int, arg: int) -> int { stamp_in(self.stamp_row(family).get(), arg) }
 
     /// Appends an edge to the innermost open query. When the stamp it
     /// overwrites belongs to a STILL-OPEN frame, that frame will read
     /// this key again and must see its own stamp restored, so the
     /// value is saved; a stamp a closed query left behind is never
     /// asked for again, so nothing is saved.
-    fn newly_read(family: int, arg: int, stamp: int, reader: int) {
+    fn newly_read(row: Cell<List<int>>, family: int, arg: int, stamp: int, reader: int) {
         if arg < 0 { negative_arg(family, arg) }
         if stamp != 0 && self.asker.readers.get().contains(stamp) { self.save_restore(packed(family, arg), stamp) }
-        self.stamped(family, arg, reader)
+        stamped_in(row, arg, reader)
         self.asker.pending.get().last()!.push(packed(family, arg))
+        // the graph counts every read, so no read may skip it
+        if !self.graph.on.get() { self.asker.last.set(packed(family, arg)) }
     }
 
     /// `family`'s stamp row; a family never registered is a defect.
@@ -628,11 +638,7 @@ impl Kernel {
     }
 
     /// Writes a key's stamp, growing its family's row to reach it.
-    fn stamped(family: int, arg: int, stamp: int) {
-        let row = self.stamp_row(family)
-        while row.get().length <= arg { row.push(0) }
-        row.set_at(arg, stamp)
-    }
+    fn stamped(family: int, arg: int, stamp: int) { stamped_in(self.stamp_row(family), arg, stamp) }
 
     /// Remembers a stamp about to be overwritten, for the innermost
     /// frame's close to hand back — its list minted on the first one.
@@ -677,6 +683,16 @@ impl Kernel {
     }
 
     fn stats() -> string { "rev ${self.rev.get()}: ${self.hits.get()} hits, ${self.misses.get()} misses" }
+}
+
+/// A stamp row's entry for `arg`, 0 past its end.
+fn stamp_in(stamps: List<int>, arg: int) -> int {
+    if arg >= 0 && arg < stamps.length { stamps[arg] } else { 0 }
+}
+
+fn stamped_in(row: Cell<List<int>>, arg: int, stamp: int) {
+    while row.get().length <= arg { row.push(0) }
+    row.set_at(arg, stamp)
 }
 
 /// The revision a prior cell last changed at, when its hash matches —

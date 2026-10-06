@@ -646,6 +646,33 @@ spec "query/kernel — the open stack, attacked" {
                 db.deps_of(middle).is_empty() &&
                 db.deps_of(inner).length == 1
         }
+        then "a key the nested frame read last is still the outer's to record" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let outer = Key { family: fam, arg: 1 }
+            let nested = Key { family: fam, arg: 2 }
+            db.begin(outer)
+            db.record_at(fam, 10)
+            db.begin(nested)
+            db.record_at(fam, 11)
+            db.settle(nested, 1)
+            db.record_at(fam, 11)
+            db.settle(outer, 1)
+            ["${d.arg}" for d in db.deps_of(outer)].join(",") == "10,11"
+        }
+        then "a key the outer read last is the nested frame's to record too" {
+            mut db = new_kernel()
+            let fam = plain_family(db)
+            let outer = Key { family: fam, arg: 1 }
+            let nested = Key { family: fam, arg: 2 }
+            db.begin(outer)
+            db.record_at(fam, 10)
+            db.begin(nested)
+            db.record_at(fam, 10)
+            db.settle(nested, 1)
+            db.settle(outer, 1)
+            db.deps_of(nested).length == 1 && db.deps_of(outer).length == 1
+        }
         then "the reader is the outer's own again once the nested frame closes" {
             mut db = new_kernel()
             let fam = plain_family(db)
