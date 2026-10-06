@@ -544,6 +544,12 @@ impl Decls {
         row with { word: f.word, marks: [a.name for a in f.annotations], external: f.external, told: told_of(f, self.file(row.file).path) }
     }
 
+    /// A row's facts as its file's parse tells them; none for a file with no store.
+    fn captured(f: FileId, d: Decl) -> DeclFacts? {
+        let st? = self.admitted_store(f) else { return null }
+        capture_facts(st, d)
+    }
+
     /// A minted row filed, and its facts landing beside it when it has them.
     fn file_minted(d: Decl, facts: DeclFacts?, known: DeclId?) {
         self.set_decl(d.id.index, self.faced_row(d, facts, known))
@@ -649,7 +655,6 @@ impl Decls {
     /// next; a member joins its parent's children. Every table here is a
     /// Cell, so a captured hook and a live reader see the same row with no
     /// clone either way.
-    @bracket("decls")
     fn mint(
         key: string,
         f: FileId,
@@ -661,6 +666,26 @@ impl Decls {
         parent: DeclId?,
         nested: bool,
         root: ExprId?,
+    ) -> DeclId {
+        self.mint_faced(key, f, s, name, kind, exported, owner, parent, nested, root, null)
+    }
+
+    /// `mint`, the row filed ONCE under facts its writer already holds —
+    /// a held file's record carries them — where a parse's are captured
+    /// from its store.
+    @bracket("decls")
+    fn mint_faced(
+        key: string,
+        f: FileId,
+        s: StmtId,
+        name: string,
+        kind: DeclKind,
+        exported: bool,
+        owner: string,
+        parent: DeclId?,
+        nested: bool,
+        root: ExprId?,
+        told: DeclFacts?,
     ) -> DeclId {
         let known: DeclId? = self.known_id(key)
         let id: DeclId = known ?? DeclId { index: self.decl_row_rows.get().next_id() }
@@ -690,10 +715,7 @@ impl Decls {
         // THE ONE CAPTURE, at the one place a declaration is minted from a parse. Six
         // readers asked the store per pass; they ask this row now, and a held file's row
         // comes from its record instead of a store it does not have.
-        let facts: DeclFacts? = match self.admitted_store(f) {
-            st? -> { capture_facts(st, d) }
-            null -> { null }
-        }
+        let facts: DeclFacts? = told ?? self.captured(f, d)
         if known == null {
             self.sigs.push(null)
             self.seat_types.push(null)
