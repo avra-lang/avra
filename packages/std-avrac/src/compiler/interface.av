@@ -633,6 +633,9 @@ impl Workspace {
 /// its own text; `wire_decl` reads too few words from it to decode.
 const NO_ORDINAL: int = 0 - 1
 
+/// Where a builtin's wire says it lives — no path, so no reader takes it for a file.
+const BUILTIN_HOME: string = "@language"
+
 impl Decls {
 
     /// A declaration as a wire: its file, kind, owner and name — never a
@@ -649,6 +652,9 @@ impl Decls {
         let x = self.decl(d)
         if x.owner.contains("~") || x.name.contains("~") { return "${self.file(x.file).path}~${NO_ORDINAL}" }
         let kind = kind_word(x.kind)
+        // A BUILTIN SITS IN NO FILE OF THE PROGRAM'S: its wire names the language, so
+        // one declaration has one spelling whichever file a process met first.
+        if self.is_builtin(d) { return "${BUILTIN_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
         let siblings = self.wire_siblings(x.file, kind, x.owner, x.name)
         let base = "${self.file(x.file).path}~${kind}~${field_text(x.owner)}~${field_text(x.name)}"
         if siblings.length <= 1 { return base }
@@ -847,8 +853,7 @@ impl Decls {
         let kind = words[at + 1]
         let owner = text_of_field(words[at + 2])
         let name = text_of_field(words[at + 3])
-        // A BUILTIN IS THE LANGUAGE'S, filed under no file of the program's: its wire
-        // names whichever file was first in the process that wrote it, so its name
+        // A BUILTIN IS THE LANGUAGE'S, filed under no file of the program's: its name
         // alone finds it.
         if builtin_word(kind) {
             let b? = self.builtin_decls().find((d) -> self.decl(d).name == name) else { return null }
