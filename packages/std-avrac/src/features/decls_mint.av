@@ -195,7 +195,10 @@ impl Decls {
                 }
                 let fields: List<Param> = store.struct_parts(s)?.fields ?? []
                 let seats: List<Param> = store.fn_parts(s)?.params ?? []
-                for dd in self.mint_defaults(key, f, s, fields.concat(seats), name, d) { minted.push(dd.index) }
+                minted = minted
+                    .concat(
+                        [dd.index for dd in self.mint_defaults(key, f, s, fields.concat(seats), name, d)],
+                    )
             }
             // a top-level `const` is a declaration like a fn: module-wide,
             // order-free, exported only when it says so.
@@ -248,7 +251,10 @@ impl Decls {
                     minted.push(md.index)
                     let seats: List<Param> = store.fn_parts(m)?.params ?? []
                     let mname = self.decl(md).name
-                    for dd in self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md) { minted.push(dd.index) }
+                    minted = minted
+                        .concat(
+                            [dd.index for dd in self.mint_defaults(mkey, f, m, seats, "${block.target}.${mname}", md)],
+                        )
                 }
             }
         }
@@ -315,6 +321,7 @@ impl Decls {
     }
 
     /// Of the declaration rows `f` owns, exactly those at `ids` kept.
+    @bracket("decls")
     fn file_keeps(f: FileId, ids: List<int>) {
         self.decl_row_rows.get().kept(self.decl_rows.get(), self.file_owners.get()[f.index], ids)
     }
