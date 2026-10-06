@@ -1,7 +1,7 @@
 //! The filesystem seam: a record of four questions, and the in-memory
 //! host a test hands in. The disk host is the CLI's.
 use core.{sorted_texts}
-use @std.path.{under_dir, joined_path, normalized, head_segment}
+use @std.path.{under_dir, joined_path, normalized, head_segment, dir_of, file_name}
 
 /// The filesystem, as its questions. `stamp` says a file's bytes have not moved
 /// without reading them — null when the host cannot tell.
@@ -31,6 +31,35 @@ impl Host {
         Read.Text(path, text)
     }
 
+    /// A file as text for a reader that can do without it: a file the
+    /// host cannot give as text is `Refused`, by the KIND of refusal —
+    /// never the host's own words, and never the end of the run. A file
+    /// reached through a link is read as `text` reads it.
+    fn spared_text(path: string) -> Read {
+        if !self.exists(path) { return Read.Text(path, null) }
+        match (self.beneath)(dir_of(path), file_name(path)) {
+            .Text(text) -> Read.Text(path, text),
+            .Missing -> Read.Text(path, null),
+            .Linked -> self.text(path),
+            .NotText(_) -> withheld(path, "not text"),
+            .Refused(_) -> withheld(path, "refused"),
+        }
+    }
+
+    /// Whether anything stands at `path`, through the door.
+    fn there(path: string) -> Read { Read.Exists(path, self.exists(path)) }
+
+    /// A directory's names through the door, sorted, each saying whether
+    /// it is a directory itself; nothing where no directory stands.
+    fn listing(dir: string) -> Read {
+        if !self.is_dir(dir) { return Read.Listing(dir, null) }
+        Read
+            .Listing(
+                dir,
+                [Listed { name: name, dir: self.is_dir(joined_path(dir, name)) } for name in sorted_texts(self.list(dir))],
+            )
+    }
+
     /// A file the program LISTED, as text. Nothing there is the host's
     /// to refuse: it is asked to read, so a host that speaks a refusal
     /// speaks it, and a listed file is never passed on as an empty one
@@ -55,6 +84,11 @@ impl Host {
 /// lone file's.
 export fn memory_host(files: Map<string, string>, names: List<string>) -> Host {
     memory_host_at(files, names, "")
+}
+
+/// A file's text the host would not give, by the kind of its refusal.
+fn withheld(path: string, kind: string) -> Read {
+    Read.Refused(InputName { kind: .Text, key: path }, kind)
 }
 
 /// An in-memory host standing in a directory: a relative path is

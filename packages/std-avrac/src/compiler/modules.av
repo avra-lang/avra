@@ -98,11 +98,10 @@ impl Workspace {
         let src = pkg.src
         if self.crosses_package(src, m.local()) { return [] }
         let dir = m.dir_under(src)
-        if self.host.is_dir(dir) {
-            return [joined_path(dir, f) for f in self.host.list(dir) if self.listed_source(dir, f)]
-        }
+        let entries = self.listing(dir)
+        if entries != null { return [joined_path(dir, e.name) for e in entries! if self.listed_source(dir, e.name)] }
         let file = m.file_under(src)
-        if self.host.exists(file) { return [file] }
+        if self.there(file) { return [file] }
         []
     }
 
@@ -171,7 +170,7 @@ impl Workspace {
 
     /// Whether a directory is a package root of its own.
     fn is_package_dir(dir: string) -> bool {
-        self.host.exists(joined_path(dir, "avra.toml"))
+        self.there(joined_path(dir, "avra.toml"))
     }
 
     /// Whether a module path passes through a nested package — any
@@ -486,9 +485,7 @@ impl Workspace {
     /// A name that is both a directory and a file under the source root.
     fn ambiguous_module(m: ModulePath) -> bool {
         let pkg: Package? = self.holder(m)
-        pkg != null &&
-            self.host.is_dir(m.dir_under(pkg!.src)) &&
-            self.host.exists(m.file_under(pkg!.src))
+        pkg != null && self.is_dir(m.dir_under(pkg!.src)) && self.there(m.file_under(pkg!.src))
     }
 
     /// Written names, then generated ones — the `not_exported` help's

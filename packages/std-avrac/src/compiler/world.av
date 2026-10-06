@@ -1,0 +1,133 @@
+//! THE WORLD, AS CELLS. Every read of the world a query makes is one
+//! `Family.Input` cell: asked through the door once, kept, and cut by
+//! its digest, so a query that read it is ordered after it. A cell
+//! stands until the DRIVER says the world may have moved — then every
+//! input is read again, and only one whose digest differs moves the
+//! revision.
+use compiler.families.{Family}
+use compiler.host.{Read, InputName, InputKind, Listed}
+use @std.relation.engine.{Loaded}
+
+/// A name as it is interned and shown: its kind's word, then its key.
+fn spelled(name: InputName) -> string { "${kind_word(name.kind)} ${name.key}" }
+
+fn kind_word(k: InputKind) -> string {
+    match k {
+        .Text -> "text",
+        .Octets -> "octets",
+        .Range -> "range",
+        .Listing -> "listing",
+        .Exists -> "exists",
+        .Env -> "env",
+        .Tool -> "tool",
+        .Compiler -> "compiler",
+    }
+}
+
+fn loaded(seen: Read) -> Loaded<DbRow> {
+    Loaded { value: DbRow.Input(seen), fingerprint: seen.input().digest.word }
+}
+
+impl Workspace {
+    /// Whether anything stands at `path` — one cell, read once.
+    fn there(path: string) -> bool {
+        match self.input(InputName { kind: .Exists, key: path }) {
+            .Exists(_, there) -> there,
+            _ -> false,
+        }
+    }
+
+    /// A directory's entries, sorted; null where no directory stands.
+    fn listing(dir: string) -> List<Listed>? {
+        match self.input(InputName { kind: .Listing, key: dir }) {
+            .Listing(_, entries) -> entries,
+            _ -> null,
+        }
+    }
+
+    /// The names in a directory, sorted; none where no directory stands.
+    fn listed(dir: string) -> List<string> {
+        [e.name for e in self.listing(dir) ?? []]
+    }
+
+    /// Whether a directory stands at `dir`.
+    fn is_dir(dir: string) -> bool { self.listing(dir) != null }
+
+    /// A LISTED file's text, through its cell. Nothing there is the
+    /// host's to refuse; under a host that refuses nothing it reads as
+    /// no text.
+    fn listed_text(path: string) -> string {
+        read_of(
+            self
+                .relation(Family.Input)
+                .input_loaded(self.text_key(path), () -> loaded(self.host.listed_text(path))),
+        )
+            .as_text() ?? ""
+    }
+
+    /// The cell key of a file's text.
+    fn text_key(path: string) -> int { self.world_key(InputName { kind: .Text, key: path }) }
+
+    /// A name's cell key, minted the first time it is asked.
+    fn world_key(name: InputName) -> int {
+        let known? = self.input_index.get().get(spelled(name)) else {
+            let next = self.input_names.get().length
+            self.input_index.put(spelled(name), next)
+            self.input_names.push(name)
+            return next
+        }
+        known
+    }
+
+    /// One read of the world by name, through its cell.
+    fn input(name: InputName) -> Read {
+        let at = self.world_key(name)
+        read_of(self.relation(Family.Input).input_loaded(at, () -> loaded(self.asked(name))))
+    }
+
+    fn input_at(at: int) -> Read { self.input(self.input_names.get()[at]) }
+
+    /// THE WORLD MAY HAVE MOVED: every input read so far is read again
+    /// through the door. One whose digest differs moves the revision;
+    /// the rest stand. The driver's verb, at the start of a request —
+    /// never a query's, which would move the ground it stands on.
+    /// Answers how many inputs were read again.
+    fn world_moved() -> Result<int, string> {
+        if !self.db.kernel.asker.open.get().is_empty() { fail world_moved_in_query() }
+        let cells = self.relation(Family.Input)
+        let names = self.input_names.get()
+        for at, name in names {
+            let seen = self.asked(name)
+            cells.set(at, DbRow.Input(seen), seen.input().digest.word)
+        }
+        names.length
+    }
+
+    /// Every file the root program's build reads, as the world stands
+    /// NOW — the driver's question at the start of a turn: the world is
+    /// read again first, so a file added, removed or changed since the
+    /// last turn is seen. None for a package with no entry.
+    export fn inputs_now() -> Result<List<string>, string> {
+        let _ = self.world_moved()?
+        let entry? = self.entry_of() else { return .Ok([]) }
+        .Ok(self.build_inputs(entry))
+    }
+
+    /// The door's answer for a name. A kind no cell asks for is a
+    /// defect: its door verb is not built.
+    fn asked(name: InputName) -> Read {
+        match name.kind {
+            .Exists -> self.host.there(name.key),
+            .Listing -> self.host.listing(name.key),
+            .Text -> self.host.spared_text(name.key),
+            .Octets or .Range or .Env or .Tool or .Compiler -> {
+                avra_trap("defect: no door verb reads a `${kind_word(name.kind)}` input")
+                Read.Refused(name, "")
+            },
+        }
+    }
+}
+
+fn world_moved_in_query() -> string {
+    "`world_moved` is the driver's verb — a query cannot re-read the world it is answering from"
+}
