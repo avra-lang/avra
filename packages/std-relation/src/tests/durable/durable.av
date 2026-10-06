@@ -1,8 +1,9 @@
 // proves: a `@query` answer outlives its Db where the owner keeps it — a
 // fresh Db (a later process) reads the record back instead of running;
 // a moved owner key, a record that does not read back, and a run that
-// wrote rows each run again — in both engines
-use @std.relation.{relation, query}
+// wrote rows each run again; an answer that read an input is never kept,
+// and an input set moves every answer read back — in both engines
+use @std.relation.{relation, query, input}
 use @std.relation.db.{Db, Durable, durable_db}
 
 @relation
@@ -100,6 +101,16 @@ fn shadow(_db: Db, cell: int, args: int, m: int, held: int) -> int {
     cell * 1000 + args * 100 + m * 10 + held
 }
 
+@input
+fn size(_db: Db, _k: string) -> int { 1 }
+
+/// Reads an input: its record would bring no word of it.
+@query
+fn doubled(db: Db, k: string) -> int {
+    counted()
+    size(db, k) * 2
+}
+
 fn since(before: int) -> int { computes().get() - before }
 
 fn mood_word(m: Mood) -> string {
@@ -163,6 +174,28 @@ fn midway() -> string {
     "${cold}${restored}${moved}${next} ${since(before)}"
 }
 
+/// An answer that read an input runs in every process, so a set input
+/// is answered.
+fn input_read() -> string {
+    let before = computes().get()
+    let cold = doubled(process(), "x")
+    let db = process()
+    let warm = doubled(db, "x")
+    set_size(db, "x", 5)
+    "${cold} ${warm} ${doubled(db, "x")} ${since(before)}"
+}
+
+/// An input set in this process moves an answer read back, whatever it
+/// read when it was kept.
+fn input_set() -> string {
+    let _ = fixed(process())
+    let before = computes().get()
+    let db = process()
+    let restored = fixed(db)
+    set_size(db, "y", 3)
+    "${restored} ${fixed(db)} ${since(before)}"
+}
+
 /// Seats named like the wrapper's locals reach the body as written.
 fn shadowed() -> string {
     let first = shadow(process(), 1, 2, 3, 4)
@@ -170,4 +203,4 @@ fn shadowed() -> string {
     "${first} ${again}"
 }
 
-"${survives()} | ${shapes()} | ${reruns()} | ${midway()} | ${shadowed()}"
+"${survives()} | ${shapes()} | ${reruns()} | ${midway()} | ${shadowed()} | ${input_read()} | ${input_set()}"

@@ -53,6 +53,7 @@ export type Db = {
     late: Cell<Late>,
     framed: Cell<bool>,
     moves: Cell<Map<string, Cell<Map<string, int>>>>,
+    row_families: Cell<List<int>>,
     hears: Cell<fn(string) -> void>,
     durable: Durable,
     restored: Cell<int>,
@@ -133,6 +134,7 @@ fn made(kernel: Kernel?, verifying: Verifying, late: Late, framed: bool, durable
     let closers: Cell<List<fn() -> void>> = Cell.new([])
     let sweepers: Cell<List<fn(Db, int, int) -> void>> = Cell.new([])
     let moves: Cell<Map<string, Cell<Map<string, int>>>> = Cell.new({})
+    let row_families: Cell<List<int>> = Cell.new([])
     let cells: Cell<Map<string, int>> = Cell.new({})
     let runs: Cell<List<int>> = Cell.new([0])
     let running: Cell<List<Frame>> = Cell.new([])
@@ -150,6 +152,7 @@ fn made(kernel: Kernel?, verifying: Verifying, late: Late, framed: bool, durable
         late: Cell.new(late),
         framed: Cell.new(framed),
         moves: moves,
+        row_families: row_families,
         hears: Cell.new(trapped),
         durable: durable,
         restored: Cell.new(0 - 1),
@@ -203,15 +206,27 @@ impl Db {
     /// A family of `kernel` over `verify`, a cell's live hash: verified
     /// by that hash, or by the revision a write last stamped the cell with.
     fn family(kernel: Kernel, verify: fn(int) -> int) -> int {
-        match self.verifying.get() {
+        let family = match self.verifying.get() {
             .ByHash -> kernel.hashed_family(verify),
-            .ByMove -> {
-                let moved_at: Cell<Map<string, int>> = Cell.new({})
-                let family = kernel.family((cell: int) -> moved_at.get().get("${cell}") ?? 0)
-                self.moves.put("${family}", moved_at)
-                family
-            },
+            .ByMove -> self.stamped_family(kernel),
         }
+        self.row_families.push(family)
+        family
+    }
+
+    /// A family of `kernel` verified by the revision a write last stamped
+    /// each cell with.
+    fn stamped_family(kernel: Kernel) -> int {
+        let moved_at: Cell<Map<string, int>> = Cell.new({})
+        let family = kernel.family((cell: int) -> moved_at.get().get("${cell}") ?? 0)
+        self.moves.put("${family}", moved_at)
+        family
+    }
+
+    /// Whether every one of `reads` is a cell of this Db's own rows.
+    fn rows_alone(reads: List<Key>) -> bool {
+        let own = self.row_families.get()
+        reads.all((read) -> own.contains(read.family))
     }
 
     /// The Db handed to an owner's kernel: every family registered here
@@ -225,15 +240,30 @@ impl Db {
 
     /// `kernel` taken as this Db's, every family here registered in it.
     fn homed(kernel: Kernel) {
-        let no_moves: Map<string, Cell<Map<string, int>>> = {}
-        self.moves.set(no_moves)
+        self.forgotten()
         self.kernel.set(kernel)
         for again in self.registrars.get() { again((verify: fn(int) -> int) -> self.family(kernel, verify)) }
+    }
+
+    /// Everything kept about the kernel being left: its families' ids and
+    /// stamps, and the frames of its queries — the next kernel numbers its
+    /// own from the start.
+    fn forgotten() {
+        let no_moves: Map<string, Cell<Map<string, int>>> = {}
+        let no_frames: Map<string, Frame> = {}
+        let no_rows: List<int> = []
+        let no_frame: Frame? = null
+        self.moves.set(no_moves)
+        self.owner_frames.set(no_frames)
+        self.row_families.set(no_rows)
+        self.last_query.set(0 - 1)
+        self.last_frame.set(no_frame)
     }
 
     /// The Db let go by its owner — back to no kernel, its families in none.
     fn released() {
         let none: Kernel? = null
+        self.forgotten()
         self.kernel.set(none)
         self.verifying.set(Verifying.ByHash)
         self.late.set(Late.Taken)
@@ -356,6 +386,13 @@ impl Db {
             .push(Frame { owner: owner, run: run, wrote: Cell.new(wrote), read: Cell.new(read) })
     }
 
+    /// The running query's run left open, its frame dropped: nothing is
+    /// swept, and no later write is stamped to it.
+    fn left() {
+        let open = self.running.get()
+        self.running.set(open.slice(0, open.length - 1))
+    }
+
     /// The running query's run closed: every relation sweeps the rows
     /// this owner did not write again. Answers whether the run wrote.
     fn ended(owner: int) -> bool {
@@ -400,7 +437,7 @@ impl Db {
 
     fn restored_cell(arg: int) -> Key { Key { family: self.restored.get(), arg: arg } }
 
-    /// A write, told to every answer read back.
+    /// A write — a row's or an input's — told to every answer read back.
     fn unsettles_restored() {
         if self.restored.get() < 0 { return }
         self.writes.set(self.writes.get() + 1)
@@ -619,8 +656,9 @@ impl AnswersUnder<V> {
 
     /// `ran`, for an answer that reads back: a call this process never
     /// answered takes the owner's record when it has one, and its first
-    /// run here hands its answer over when it wrote no rows — a record
-    /// read back brings no rows with it. A call answered here and gone
+    /// run here hands its answer over when it wrote no rows and read
+    /// nothing but this Db's rows — a record read back brings no rows and
+    /// no reads with it, and stands until the next write here. A call answered here and gone
     /// stale was moved in this process, which no record saw: it runs.
     fn ran_lasting(
         db: Db,
@@ -633,7 +671,7 @@ impl AnswersUnder<V> {
         if self.answered(arg) { return self.ran(db, arg, body, again, digest) }
         let restored? = self.restored(db, record) else {
             let done = self.run(db, arg, body, again, digest)
-            if !done.wrote {
+            if !done.wrote && db.rows_alone(self.memo.kernel.deps_of(self.memo.query_key(arg))) {
                 let keep = db.durable.keep
                 keep(record.query, record.args, encoded_with(done.value, record.write))
             }
@@ -659,23 +697,29 @@ impl AnswersUnder<V> {
 
     fn run(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> Run<V> {
         let settled = Cell.new(false)
-        defer self.abandoned_unless(settled, arg)
         self.again.keep(arg, again)
         let owner = db.cell(self.memo.family, arg)
         db.began(owner)
+        defer self.abandoned_unless(db, settled, arg)
         let value = body()
         let wrote = db.ended(owner)
         settled.set(true)
         Run { value: self.memo.finish_lazy(arg, value, digest), wrote: wrote }
     }
 
-    /// A call left before it settled keeps no open frame behind it.
-    fn abandoned_unless(settled: Cell<bool>, arg: int) {
-        if !settled.get() { self.memo.kernel.abandon(self.memo.query_key(arg)) }
+    /// A call left before it settled keeps no open frame behind it, in
+    /// the kernel or here.
+    fn abandoned_unless(db: Db, settled: Cell<bool>, arg: int) {
+        if settled.get() { return }
+        db.left()
+        self.memo.kernel.abandon(self.memo.query_key(arg))
     }
 
     /// The driver's own value for an input's call.
-    fn set(arg: int, value: V, digest: fn(V) -> int) { self.memo.set(arg, value, digest(value)) }
+    fn set(db: Db, arg: int, value: V, digest: fn(V) -> int) {
+        db.unsettles_restored()
+        self.memo.set(arg, value, digest(value))
+    }
 }
 
 /// A run's answer and whether it wrote rows.

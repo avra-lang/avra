@@ -84,4 +84,22 @@ spec "std/relation — a @query under an owner's kernel" {
         let _ = Glyph.insert(o.db, name: "b", set: "s")
         heard.get().length == 1 && heard.get()[0].contains("a producer runs before its readers")
     }
+    then "a framed Db given a second kernel keeps no frame of the first: a query there writes what a query numbered alike read" {
+        let first = new_kernel()
+        let db = db_over(first, Verifying.ByHash, Late.Refused, true)
+        let heard: Cell<List<string>> = Cell.new([])
+        db.heard_by((w: string) -> heard.push(w))
+        let reader = Key { family: first.family((_arg: int) -> 0), arg: 0 }
+        first.begin(reader)
+        let _ = Face.all(db)
+        first.settle(reader, 0)
+        let second = new_kernel()
+        let writer = Key { family: second.family((_arg: int) -> 0), arg: 0 }
+        db.given(second, Verifying.ByHash, Late.Refused, true)
+        second.bump()
+        second.begin(writer)
+        let _ = Face.insert(db, name: "f")
+        second.settle(writer, 0)
+        heard.get().is_empty()
+    }
 }
