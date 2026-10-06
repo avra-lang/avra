@@ -345,11 +345,15 @@ impl Rows<R> {
     /// other removed — `replaced`, for a writer that files by id.
     fn kept(db: Db, owner: int, ids: List<int>) {
         let stamp = Stamp { owner: owner, run: renewed(db, owner) }
-        let marks = self.stamps.get()
         for id in ids {
-            if id >= 0 && id < marks.length && marks[id].owner == owner { self.stamps.set_at(id, stamp) }
+            if self.owned_by(id, owner) { self.stamps.set_at(id, stamp) }
         }
         self.sweep(db, owner, stamp.run)
+    }
+
+    /// Whether the row at `id` is `owner`'s.
+    fn owned_by(id: int, owner: int) -> bool {
+        id >= 0 && id < self.next_id() && self.stamps.get()[id].owner == owner
     }
 
     /// A row filed at `id` under `stamp` — refused, not filed and false
@@ -429,7 +433,9 @@ impl Rows<R> {
     fn lands(db: Db, relation: string, touched: List<int>) -> bool {
         for b in touched {
             if b >= 0 &&
-                !self.cell_moved(db, relation, b + 1, "bucket ${b}", self.buckets.get()[b].read) { return false }
+                !self.cell_moved(db, relation, b + 1, "bucket ${b}", self.buckets.get()[b].read) {
+                return false
+            }
         }
         self.cell_moved(db, relation, 0, "the whole relation", self.read)
     }

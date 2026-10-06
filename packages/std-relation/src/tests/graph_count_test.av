@@ -1,0 +1,26 @@
+// The kernel's graph counts every read of a relation's cells — a repeat
+// by the query whose read already stands among them, though it records
+// no new edge.
+use @std.relation.{relation}
+use @std.relation.db.{db_over, Verifying, Late}
+use @std.relation.engine.{Key, new_kernel}
+
+@relation
+type Counted = { @key name: string, n: int }
+
+spec "relation/rows — the graph counts a repeated read" {
+    then "one open query reading two keys twice each counts four reads and keeps two edges" {
+        let kernel = new_kernel()
+        kernel.graph_on()
+        let queries = kernel.family((_arg: int) -> 0)
+        let db = db_over(kernel, Verifying.ByMove, Late.Refused)
+        let _ = Counted.insert(db, name: "a", n: 1)
+        let _ = Counted.insert(db, name: "b", n: 2)
+        let rows = Counted.rows_in(db).family.get()
+        let q = Key { family: queries, arg: 0 }
+        kernel.begin(q)
+        for name in ["a", "b", "a", "b"] { let _ = Counted.by_key(db, CountedKey { name: name }) }
+        kernel.settle(q, 0)
+        kernel.graph.reads.get()[rows] == 4 && kernel.deps_of(q).length == 2
+    }
+}

@@ -304,14 +304,15 @@ spec "compiler/failures — `Raised` rows are the fixpoint's own" {
 }
 
 spec "compiler/failures — `ErrorSite` rows are the survey's own (avra-8sb5.57.204)" {
-    then "a second survey replaces the first's rows: a fn it leaves out keeps no site, and none is doubled" {
+    then "a survey at a later revision replaces the first's rows: a fn it leaves out keeps no site, and none is doubled" {
         let ws = sites_workspace(mutual_source())
         let _ = ws.analyze_file("/w/src/main.av")
         let f = decl_named(ws, "f")
         let g = decl_named(ws, "g")
         let _ = ws.failures()
-        let _ = ws.surveyed([f, g])
         let both = ErrorSite.all(ws.failures_db.get())
+        // the solve read these rows this revision: a later survey follows an edit
+        ws.db.kernel.bump()
         let _ = ws.surveyed([f])
         let one = ErrorSite.all(ws.failures_db.get())
         both.any((s: ErrorSite) -> same_decl(s.owner, g)) &&
