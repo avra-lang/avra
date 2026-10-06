@@ -250,7 +250,7 @@ Each off `origin/main`, green alone, reported before the next.
 | P4a1 | a Db holds a kernel, its own or one given; `Hooks` deleted; `@query` / `@input` are cells; keys interned by bytes; a call left before it settles abandons its frame. The compiler's three Dbs are GIVEN the workspace's kernel, so it records what it records today. BUILT and verified (branch `db-04a1-one-kernel`) | MEASURED: the graph byte-identical to P3's, kernel ids included; c3's assertion on a plain Db (`tests/unrelated_writes`) and under an owner's kernel (`tests/given_kernel_test.av`) — in std-relation, where the engine now is, not `compiler/tests` |
 | P4a2 | D4: the insert refusal; `Frame` / `began` / `ended` and the self-read law deleted; std-relation's own program tests rewritten (`query/`, `owner_frames/` → `owner_runs/`, `named_owner/`, `swept_heard/`, `quiet_self_read/`, `unrelated_writes/`, `durable/`), `rerun_swept/` added. BUILT (branch `db-04a2-owned-runs`) | each rewritten test names the law it now proves; a mid-run read or an un-owned query write anywhere in the compiler would trap, so the whole std-avrac suite and a cold `check cli` passing IS the count: 0 |
 | P4a3 | three Dbs → one, verified BY MOVE throughout (ruling: no per-relation verifier flag; the hash's cutoff for `ErrorSite` / `Raised` is a deadline, `avra-8sb5.57.207`, paid for every relation at the saved-answer step); `Ref` rows a named owner's run, their reads recorded while the Db has its kernel (after a one-shot workspace disarms they are unheard, as today: `avra-8sb5.57.208`); `db_over` deleted; the Db's kind is two spellings, `new_db()` and `given_to(kernel)`, the second refused by name once a query has read the Db (`avra-8sb5.57.200`) | the graph CHANGES: the expected delta is stated before the run (the reference relation's cells and their readers' edges appear; nothing else moves) and compared after |
-| P4a4 | `revision_of_hash` + `move_stamps` → one kernel verb over dense rows | the graph identical |
+| P4a4 | `revision_of_hash` + `move_stamps` → one kernel verb over dense rows. ABSORBED: the hashed half went into P4a1 and the by-move half into P4a3 (a write's stamp is two list indexes, no key spelled) — P4a3 could not hold the warm line without it. No step is left under this name | the graph identical |
 | P4b | the D3 spelling: `@query`, `@input` and the generated relation accessors lose the Db seat (27 non-test call sites, 215 in tests); the ambient Db, `within_db` (restoring under `defer`) and THE `begin` LAW arrive here together — while the Db is still an argument (P4a1–a4) there is no ambient to disagree with it, and three Dbs share the workspace's kernel until P4a3, so "the kernel's own Db" has no meaning before then | the two-live-workspaces interleaved test, with a stored closure in it, failing without the `begin` law |
 | P5 | families register by name; refusals speak; `make families-left` = 32; `make families` and `families.order` retired on the hand-off's two conditions | — |
 | P6 | `Syntax` converted (families-left = 31); then `Sig`, once §3.2 has no OPEN row | `Syntax`'s cells and edges unchanged |
@@ -349,6 +349,51 @@ P4a1 / P4b — the compiler's own source wears `@query` / `@input` in `doc_rows`
 `inputs`, `findings`, `answers`; rewritten in the same commit. P6 — a `Family` variant
 removed and the ranks after it renumbered: source only. `@reentrant`, if it needs more
 than a mark the derive reads, is probed before it is relied on.
+
+### 4.0 P4a3 as built (branch `db-04a3-one-db`, stacked on P4a2)
+
+- ONE RELATION Db in the compiler, `Decls.rows_db`: declarations, files and modules,
+  references, error sites and raised sets. `failures_db`, `refs_db`, `settle_refs`,
+  `db_over`, `Verifying` and `Late` are gone. A Db's kind is one private two-variant
+  `Home` — `Own` (its own kernel: verified by hash, a late write taken) or `Given`
+  (an owner's: verified by move, a late write refused) — reached by two spellings,
+  `new_db()` and `db.given_to(kernel)`; `given_to` is refused by name once a query has
+  read the Db (`tests/given_kernel_test.av`). `avra-8sb5.57.200` closes with it.
+- REFERENCES IS ONE NAMED RUN, AND WHAT IT ASKS STANDS FIRST: every file's resolved
+  names and folded facts, and every module a held file's kept lines name, are asked
+  BEFORE the run opens — inside it nothing is asked that could mint a row, so a row
+  written there is a reference and nothing else joins the run.
+- THE GRAPH DELTA, measured on a cold `check packages/cli` (which computes References):
+  cells 71,480 → 71,480; families 70 → 71 (`Ref`, family 35); edges +9,981, each from
+  a `Lowered` cell to the `Ref` bucket `consumes` reads; the References cell holds the
+  same 13,284 reads in another order (the stand-first loop); read calls +462 on
+  `Resolved` and on `Folded`, +9,981 on `Ref`. `check --baseline` of std-text: 48 `Ref`
+  edges; `build tools/db_measure/readbench`: 473.
+- WHAT AN OWNED ROW COSTS, and what was done so the warm line held. The 93,608 `Ref`
+  rows a warm edit writes were un-owned rows in a kernel-less Db; owned rows in the
+  compiler's Db first cost +1.46 % retains on the warm check. Paid down by count:
+  stamps and per-owner id lists indexed by number, never by a spelled key; a row's
+  stamp one unboxed word; a run's stamp and its last relation's answer kept on the Db;
+  the close of a run walks no list stamped in that run; a relation no query has read
+  owes no late-write walk and no stamp (asked of the kernel's own record, nothing kept
+  on the read path). `read_cost.budget` holds the result: a written row un-owned
+  20 retains / 104 list reads / 58 list writes, owned 21 / 110 / 59.
+  COUNTED AGAINST P4a2 (census, same source): cold `check cli` is better on all four —
+  retains 1,336.6 M → 1,335.3 M, releases 1,755.8 M → 1,754.0 M, list reads 6,502.8 M →
+  6,498.3 M, list writes 1,746.5 M → 1,745.7 M. The one-edit warm check: retains
+  102.07 M → 102.26 M (+0.19 %), releases +0.03 %, list reads 459.2 M → 460.3 M
+  (+0.24 %), list writes 247.98 M → 247.49 M (−0.20 %). THE RESIDUE IS THE PRICE OF AN
+  OWNER: about two retains and twelve list reads a `Ref` row, 93,608 rows a warm edit.
+  Wall time cannot see it (±5 % on the Sprite). What removes it is not writing those
+  rows on a warm edit at all — a held file's references read from its record on
+  demand — which is the saved-answer step, not this one.
+- AN OPEN RUN'S WRITES ARE KEPT BY THE RELATION'S SEAT IN ITS Db (its number among the
+  relations reached), never by its kernel family: with no kernel every relation's
+  family is −1, and a run that wrote one relation kept every reader out. Found by
+  P4a3's suite; fixed in P4a2 as well (`tests/given_kernel_test.av`, failing without).
+- DEADLINES it leaves, each ticketed: the hash's cutoff for `ErrorSite` / `Raised`
+  (`avra-8sb5.57.207`); reads unheard after a one-shot workspace disarms
+  (`avra-8sb5.57.208`).
 
 ### 4.1 Tickets P4a1's review left (review 5), each owed outside P4a1
 
