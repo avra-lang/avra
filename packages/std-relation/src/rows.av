@@ -142,7 +142,7 @@ export type Rows<R> = {
     hashes: Cell<List<int>>,
     filed: Cell<List<List<List<IndexKey>>>>,
     stamps: Cell<List<Stamp>>,
-    stamped: Cell<Map<string, Cell<List<int>>>>,
+    stamped: Cell<List<Cell<List<int>>?>>,
     set: Cell<int>,
     live: Cell<int>,
     indexes: List<Index>,
@@ -161,7 +161,7 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
     let hashes: Cell<List<int>> = Cell.new([])
     let filed: Cell<List<List<List<IndexKey>>>> = Cell.new([])
     let stamps: Cell<List<Stamp>> = Cell.new([])
-    let stamped: Cell<Map<string, Cell<List<int>>>> = Cell.new({})
+    let stamped: Cell<List<Cell<List<int>>?>> = Cell.new([])
     let buckets: Cell<List<Bucket>> = Cell.new([])
     Rows {
         name: name,
@@ -350,11 +350,11 @@ impl Rows<R> {
     /// The ids an owner ever stamped, in stamping order — a row since
     /// removed or restamped is still listed, and the stamp decides.
     fn stamped_by(owner: int) -> Cell<List<int>> {
-        let key = "${owner}"
-        let known? = self.stamped.get().get(key) else {
+        while self.stamped.get().length <= owner { self.stamped.push(null) }
+        let known? = self.stamped.get()[owner] else {
             let none: List<int> = []
             let made = Cell.new(none)
-            self.stamped.put(key, made)
+            self.stamped.set_at(owner, made)
             return made
         }
         known
@@ -363,7 +363,8 @@ impl Rows<R> {
     /// The rows `owner` did not write again in `run`, removed — a removal
     /// is a write, under the same late law.
     fn sweep(db: Db, owner: int, run: int) {
-        let mine? = self.stamped.get().get("${owner}") else { return }
+        if owner >= self.stamped.get().length { return }
+        let mine? = self.stamped.get()[owner] else { return }
         let marks = self.stamps.get()
         let live = [id for id in mine.get() if marks[id].owner == owner && self.row(id) != null]
         let gone = [id for id in live if marks[id].run < run]
