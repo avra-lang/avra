@@ -87,7 +87,7 @@ Paths are under `packages/std-avrac/src/`.
 | `sorted_by` (comparator) | `core/lists.av:131` (merge sort) | 6 | `xs.sorted_with(before)` |
 | `sum_of` | `std-grammar/src/ast.av:120` | 4 | `xs.sum()` |
 | `repeat` | `std-text/src/text.av:56` | — | stays (text) |
-| `codepoints`, `chars` | `std-text/src/text.av:138`, `:143` | — | `s.codes()` |
+| `codepoints`, `chars` | `std-text/src/text.av:138`, `:143` | — | `s.chars()` |
 
 ### 1.5 Hand-rolled algorithms
 
@@ -117,7 +117,7 @@ Paths are under `packages/std-avrac/src/`.
 | `.10.113` | `flatten` reachable from std (std-grammar keeps a copy) | std-ui `realize/lists.av` |
 | `.10.133` | `(lo..n).find(p)` that stops early | `backend/interp_bytes.av` |
 | `.10.112` | `min`/`max` over ints | the terminal target's line widths (it calls `.max()` now: std-ui `realize/tui/layout.av`) |
-| `.10.27` | `for c in s.codes()` | the lexer |
+| `.10.27` | `for c in s.chars()` | the lexer |
 | `.10.56` | slicing a range | — |
 | `.10.24` | list spread `[0, ..xs]` | fingerprint arms |
 | `.11.105`, `avra-do6w` | int map keys (K1), struct/enum keys (K2) | `source_text.av` trivia tables |
@@ -263,7 +263,7 @@ trait Indexed<T> {
 | range `(lo..hi)` | Indexed | `int` | a flat value `{lo, hi}`, no box |
 | `Map<K, V>` | Indexed | `Entry<K, V> = { key: K, value: V }` | insertion order |
 | `s.bytes()` | Indexed | `int` | zero-copy (REUSE D1) |
-| `s.codes()` | Walk | `int` (a code point) | decoded as walked |
+| `s.chars()` | Walk | `int` (a code point) | decoded as walked |
 | `s.lines()`, `s.split(sep)` | Walk (as a source) | `string` | a `List` when named |
 | a user type | whichever it impls | its `T` | stage S3 (§3.10) |
 
@@ -652,8 +652,8 @@ then deleted (both copies where there are two).
 | `reversed(xs)` | `xs.reversed()` | 12 | `lists.free_reversed` |
 | `found_at(ns, n)` | `ns.index_of(n)` | 9 | `lists.found_at` |
 | `sorted_by(xs, before)` | `xs.sorted_with(before)` | 6 | `lists.free_sorted_by` |
-| `.char_code(i)` | `s.bytes()[i]` | 147 | `lists.char_code` |
-| `codepoints(s)`, `chars(s)` | `s.codes()`, `s.codes().map(from_codepoint)` | — | `lists.codepoints` |
+| `.char_code(i)` | `s.bytes().at(i)` | 147 | `lists.char_code` |
+| `codepoints(s)`, `chars(s)` | `s.chars()`, `s.chars().map(from_codepoint)` | — | `lists.codepoints` |
 | selection/insertion sorts (§1.5) | `sorted_by` / `distinct().sorted()` | 4 | hand |
 | max folds, `sum_of`, `larger`/`smaller` | `max`/`max_by`/`sum`, prelude `min`/`max` | ~8 | hand |
 | `[… for i in lo..hi].find/any/all` | `(lo..hi).find/any/all` | — | `lists.bool_comprehension_range` gains its rewrite |
@@ -698,7 +698,7 @@ then deleted (both copies where there are two).
 | Q6 | Where do Avra-written bodies (sort, `group_by`) live? | **An implicit toolchain package** that is the Avra half of the runtime (epic `.62`'s destination), linked like `libavra_runtime.a` and never imported |
 | Q7 | Map hash: fast seeded hash with a SipHash tripwire, or SipHash always? | **Tripwire.** Rust's default pays SipHash on every key to guard a case the tripwire bounds |
 | Q8 | Lazy/infinite sequences now? | **No.** Their own design over fibers (`Pull` in std-http, `Lines` in std-mcp are the wanting sites) |
-| Q9 | `string` not walkable; name the view (`bytes()`, `codes()`)? | **Yes** (Rust's choice); the lexer's `.10.27` ask is `s.codes()` |
+| Q9 | `string` not walkable; name the view (`bytes()`, `chars()`)? | **Yes** (Rust's choice); the lexer's `.10.27` ask is `s.chars()` |
 | Q10 | Rename `Cell.set_at`/`put` to match `List.set`/`Map.set`? | **No.** `Cell.set` already means "replace whole"; a cell is a slot, not a collection |
 | Q11 | `filter`/`map` or new words (`keep`, `where`)? | **Keep them.** Every language an LLM has read uses them (P1) |
 
@@ -717,15 +717,16 @@ parallel one.
 | strings doc | here | decision |
 |---|---|---|
 | `Seq<T>` protocol, "strings aren't special" | `Walk<T>` + `Indexed<T>` | ONE protocol. `Walk<T>` is the source half of `Seq`; `Indexed<T>` is its int-position half; a string's positions are `Cursor`s, not ints, so a string is `Walk` but never `Indexed` |
-| `s.chars`, `s.bytes`, `s.graphemes()` lenses | Q9: `string` not walkable, name the view | the lens NAMES come from the strings doc: `s.chars` (Unicode scalars), `s.bytes`, `s.graphemes()`; `codes()` is dropped |
+| `s.chars()`, `s.bytes()`, `s.graphemes()` lenses | Q9: `string` not walkable, name the view | the lens NAMES come from the strings doc — `chars` (Unicode scalars), `bytes`, `graphemes` — each spelled as a CALL; `codes()` is dropped; `graphemes` is avra-8sb5.65.3.15 |
 | `Cursor` (opaque byte offset, O(1)) | — | adopted for strings: `find` on a `chars` lens answers `Cursor?`, `s[c..]` is an O(1) slice |
 | no bare `s[i]`, no bare `.length` on a string | — | adopted, with the doc's F-code voice naming the three intents |
 | typed string patterns (`"{head}{tail}"`) | — | already built (lane strings, `features/dispatch.av`); unchanged |
 | `+=` in a loop is amortised append | reuse-in-place | already true for a unique buffer; stated as a guarantee |
 
-Built today: typed string patterns, `Bytes`, `.text()`. Not built: `Cursor`,
-the lenses, `graphemes`, small-string inline storage. Those land with S1
-(lenses as `Walk` sources) and S2 (`Cursor`, slices as views).
+Built today: typed string patterns, `Bytes`, `.text()`, and the `s.chars()`
+and `s.bytes()` lenses as `Walk` sources. Not built: `Cursor`,
+`s.graphemes()`, small-string inline storage. Those land with S2
+(`Cursor`, slices as views).
 
 ## How it is implemented: traits for the surface, the lowering for speed
 
