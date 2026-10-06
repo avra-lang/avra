@@ -182,6 +182,11 @@ fn constant(t: Type, i: Icon) -> Directive {
 fn stem(file: string) -> string { file.substring(0, file.length - 4) }
 ```
 
+PROBED: the same query in **today's** spelling — `listing`/`text` as local `@input` fns over
+`@std.io`, `svg: string` — inserts rows inside the `@query`, reads them back through
+`Icon.by_set`, and prints `2 2 2 close,open` (`/tmp/db-design/pk3`, same compiler). The
+annotation half and everything marked PROPOSED was not compiled.
+
 What the author did **not** write: a cache key, a file watcher, an invalidation rule, a
 codec. What happens: add `x.svg` → `Listing(assets/icons)` moves → `icons_in` reruns → its
 answer's digest moves → the annotation's saved answer is stale → it re-splices. Edit a
