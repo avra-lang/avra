@@ -11,10 +11,13 @@ function node(tagName) {
     },
     setAttribute(k, v) { this.attrs[k] = v; },
     removeAttribute(k) { delete this.attrs[k]; },
+    // As a page does it: before itself is where it stands, and before a
+    // node that is no child of this one is refused.
     insertBefore(c, at) {
+      if (at === c) at = c.nextSibling;
+      if (at && at.parentNode !== this) throw new Error("insertBefore: the node to insert before is not a child of this node");
       if (c.parentNode) c.parentNode.removeChild(c);
-      const i = at ? this.childNodes.indexOf(at) : this.childNodes.length;
-      this.childNodes.splice(i < 0 ? this.childNodes.length : i, 0, c);
+      this.childNodes.splice(at ? this.childNodes.indexOf(at) : this.childNodes.length, 0, c);
       c.parentNode = this;
     },
     removeChild(c) { const i = this.childNodes.indexOf(c); if (i >= 0) this.childNodes.splice(i, 1); c.parentNode = null; },

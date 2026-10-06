@@ -1,0 +1,152 @@
+//! `tests/support/edit.av` — a tree changed the way a program changes
+//! one between two paints: a row arrives, leaves, moves or takes another
+//! key; a node becomes another kind; an attribute, a property or a
+//! handler arrives, changes or goes. Two unrelated trees rarely share a
+//! key, so it is edits that reach the keyed paths.
+use style.tokens.{Tone}
+use tree.node.{Attribute}
+
+/// `s` with the node at `path` — a child's place at each level —
+/// replaced by what `to` makes of it.
+fn changed(s: Sketch, path: List<int>, to: fn(Sketch) -> Sketch) -> Sketch {
+    let step? = path.first() else { return to(s) }
+    s with { kids: [if j == step { changed(k, path.drop(1), to) } else { k } for j, k in s.kids] }
+}
+
+/// The node at `path`.
+fn at_path(s: Sketch, path: List<int>) -> Sketch {
+    let step? = path.first() else { return s }
+    at_path(s.kids[step], path.drop(1))
+}
+
+/// Every node's path, the root's first.
+fn paths(s: Sketch) -> List<List<int>> {
+    let root: List<int> = []
+    [root].concat([[j].concat(p) for j, k in s.kids for p in paths(k)])
+}
+
+/// Whether `a` leads to `b` or a node above it.
+fn opens(a: List<int>, b: List<int>) -> bool { a.length <= b.length && [j for j, step in a if b[j] != step].is_empty() }
+
+// ── one edit to one node ────────────────────────────────────────
+
+/// A child arrives, anywhere among the others.
+fn sprout(r: Rng, s: Sketch) -> Sketch {
+    s with { kids: s
+        .kids
+        .inserted(r.below(s.kids.length + 1), grown(r, 1) with { key: key_by(r, 1 + r.below(2), 0) }) }
+}
+
+/// A child leaves.
+fn prune(r: Rng, s: Sketch) -> Sketch {
+    if s.kids.is_empty() { return s }
+    s with { kids: s.kids.removed_at(r.below(s.kids.length)) }
+}
+
+/// A child moves to another place.
+fn carry(r: Rng, s: Sketch) -> Sketch {
+    if s.kids.is_empty() { return s }
+    let from = r.below(s.kids.length)
+    s with { kids: s.kids.removed_at(from).inserted(r.below(s.kids.length), s.kids[from]) }
+}
+
+/// The children turned end for end.
+fn turn(_r: Rng, s: Sketch) -> Sketch { s with { kids: [s.kids[s.kids.length - 1 - j] for j, k in s.kids] } }
+
+/// The node takes another key, or none.
+fn rekey(r: Rng, s: Sketch) -> Sketch { s with { key: key_by(r, 2, 0) } }
+
+/// The node becomes another primitive, all else kept.
+fn retag(r: Rng, s: Sketch) -> Sketch { s with { prim: leaf(r).prim } }
+
+/// An attribute arrives.
+fn attach(r: Rng, s: Sketch) -> Sketch { s with { attrs: s.attrs.inserted(r.below(s.attrs.length + 1), attr(r)) } }
+
+/// An attribute goes.
+fn detach(r: Rng, s: Sketch) -> Sketch {
+    if s.attrs.is_empty() { return s }
+    s with { attrs: s.attrs.removed_at(r.below(s.attrs.length)) }
+}
+
+/// An attribute is replaced where it stands.
+fn reword(r: Rng, s: Sketch) -> Sketch {
+    if s.attrs.is_empty() { return attach(r, s) }
+    let at = r.below(s.attrs.length)
+    s with { attrs: s.attrs.removed_at(at).inserted(at, attr(r)) }
+}
+
+/// The node says other words, or says some where it said none.
+fn respeak(r: Rng, s: Sketch) -> Sketch {
+    let at = s.attrs.find_index((a) -> says_words(a)) ?? -1
+    if at < 0 { return s with { attrs: [Attribute.Text(one_of(r, words))].concat(s.attrs) } }
+    s with { attrs: s.attrs.removed_at(at).inserted(at, Attribute.Text(one_of(r, words))) }
+}
+
+/// Whether an attribute is a node's own words. Every other is not.
+fn says_words(a: Attribute) -> bool {
+    match a { .Text(_) or .Label(_) -> true, _ -> false }
+}
+
+/// An event is heard that was not, or one that was is no longer.
+fn toggle(r: Rng, s: Sketch) -> Sketch {
+    let kind = one_of(r, kinds)
+    if s.hears.any(it.kind == kind) { return s with { hears: [h for h in s.hears if h.kind != kind] } }
+    s with { hears: s.hears.concat([hearing(r, kind)]) }
+}
+
+/// Every event heard is heard by a new handler, which may hear
+/// something else.
+fn rebind(r: Rng, s: Sketch) -> Sketch {
+    s with { hears: [if flag(r) { hearing(r, h.kind) } else { h with { tag: r.fresh() } } for h in s.hears] }
+}
+
+/// The node's look changes.
+fn recolor(r: Rng, s: Sketch) -> Sketch {
+    s with { tone: if s.tone == null { one_of(r, [Tone.Muted, Tone.Danger]) } else { null } }
+}
+
+/// The node is replaced by another tree, under its own key.
+fn replace(r: Rng, s: Sketch) -> Sketch { grown(r, 2) with { key: s.key } }
+
+/// A later child carried to the front.
+fn hoist(r: Rng, s: Sketch) -> Sketch {
+    if s.kids.is_empty() { return s }
+    let from = r.below(s.kids.length)
+    s with { kids: [s.kids[from]].concat(s.kids.removed_at(from)) }
+}
+
+/// One edit by chance: half the time to the children of a node that has
+/// some, else to any node's own facts.
+fn edited(r: Rng, s: Sketch) -> Sketch {
+    let parents = [p for p in paths(s) if !at_path(s, p).kids.is_empty()]
+    if flag(r) && !parents.is_empty() {
+        let edit = one_of(r, [sprout, prune, carry, turn, hoist, carry])
+        return changed(s, one_of(r, parents), (n) -> edit(r, n))
+    }
+    let edit = one_of(
+        r,
+        [sprout, rekey, retag, attach, detach, reword, respeak, toggle, rebind, recolor, replace],
+    )
+    changed(s, one_of(r, paths(s)), (n) -> edit(r, n))
+}
+
+/// Two subtrees change places, when two stand apart.
+fn swapped(r: Rng, s: Sketch) -> Sketch {
+    let all = paths(s)
+    let a = one_of(r, all)
+    let b = one_of(r, all)
+    if opens(a, b) || opens(b, a) { return s }
+    changed(changed(s, a, (_n) -> at_path(s, b)), b, (_n) -> at_path(s, a))
+}
+
+/// `s` after `count` edits.
+fn edits(r: Rng, s: Sketch, count: int) -> Sketch {
+    if count == 0 { return s }
+    edits(r, if r.chance(8) { swapped(r, s) } else { edited(r, s) }, count - 1)
+}
+
+/// The tree a program might paint after `old`: mostly `old` edited a few
+/// times, now and then `old` itself, or a tree that shares nothing with it.
+export fn after(r: Rng, old: Sketch) -> Sketch {
+    match r.below(16) { 0 -> old, 1 -> tree(r), _ -> edits(r, old, 1 + r.below(4)) }
+}

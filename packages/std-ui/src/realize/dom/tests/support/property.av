@@ -1,0 +1,248 @@
+//! `tests/support/property.av` — THE LAW A REPAINT ANSWERS TO, as one
+//! verdict over any two trees: a page showing the first, sent the frame
+//! that repaints it as the second, is the page the second tree is — the
+//! elements a host holds, the ones the program remembers, each kept
+//! element still itself, and each handler the second tree's own.
+use realize.dom.live.{Live, live}
+use realize.dom.patch.{Patch, Says}
+use realize.dom.wire.{frame}
+use realize.html.element.{Element, Tagged, lowered}
+use style.theme.{default_theme}
+use tree.identity.{NodeId}
+use tree.node.{Action, Handler, Said}
+
+/// A user speaking to a control between two paints: the `nth` control
+/// that reads an answer, counted round, given `value`.
+export type Typed = { nth: int, value: int }
+
+/// Two trees, and what a user does to the page between them.
+export type Case = { old: Sketch, new: Sketch, typed: List<Typed> = [] }
+
+/// An element a user spoke to: who, the event, what it said — nothing
+/// for an event that says nothing — and the property that now holds it:
+/// its name, the wire's tag for the value and the value as the wire's
+/// text.
+export type Move = { id: int, action: Action, said: Said?, reads: string, says: int, text: string }
+
+/// What a control hears when a user gives it `value` — nothing for one
+/// that reads no answer. One arm per thing a control can say.
+fn said_of(h: Handler, value: int) -> Said? {
+    match h {
+        .Nothing(_) -> null,
+        .Text(_) -> Said.Text(if value % 4 == 0 { "" } else { "typed ${value}" }),
+        .Flag(_) -> Said.Flag(value % 2 == 0),
+        .Number(_) -> Said.Number(value),
+    }
+}
+
+/// What a property holds once a control said `said`, as the wire's text.
+fn text_held(said: Said) -> string {
+    match said { .Text(t) -> t, .Number(n) -> "${n}", .Flag(on) -> if on { "1" } else { "" } }
+}
+
+/// The wire's tag for what a property holds once a control said `said`.
+fn tag_held(said: Said) -> Says {
+    match said { .Text(_) or .Number(_) -> .Text, .Flag(_) -> .Flag }
+}
+
+/// One event of one element, as a user could speak to it.
+type Bound = { id: NodeId, action: Action }
+
+fn bound(run: List<Element>) -> List<Bound> { [Bound { id: el.id, action: a } for el in elements(run) for a in el.hears] }
+
+/// The element `at` hearing `said`, and the property that then holds it.
+fn moved(at: Bound, said: Said?) -> Move {
+    Move {
+        id: at.id.n,
+        action: at.action,
+        said: said,
+        reads: read_of(voice(at.action.handler)),
+        says: [tag_held(s).code() for s in present(said)].first() ?? Says.Nothing.code(),
+        text: [text_held(s) for s in present(said)].first() ?? "",
+    }
+}
+
+/// `t` as the control it lands on among `readers`, and what it does there.
+fn move_of(readers: List<Bound>, t: Typed) -> List<Move> {
+    if readers.is_empty() { return [] }
+    let at = readers[t.nth % readers.length]
+    [moved(at, said) for said in present(said_of(at.action.handler, t.value))]
+}
+
+/// What `typed` does to the page as it stands, in order.
+export fn moves(page: Live, typed: List<Typed>) -> List<Move> {
+    let readers = [b for b in bound(page.page.get()) if read_of(voice(b.action.handler)) != ""]
+    [m for t in typed for m in move_of(readers, t)]
+}
+
+/// A user's moves as the program hears them: each control's echo.
+fn echo(page: Live, made: List<Move>) {
+    for m in made {
+        let _ = page.fire(NodeId { n: m.id }, m.action.kind, m.said)
+    }
+}
+
+/// A user's moves as a host holds them: each property moved, and each
+/// door the page's own answer shut.
+fn hold(mut at: Host, made: List<Move>) {
+    for m in made {
+        if m.said != null { at.set_prop(m.id, m.reads, m.says, m.text) }
+        if shuts(m.action.kind) { at.swing(m.id, false) }
+    }
+}
+
+/// Whether a patch changes the page's elements: every one but the sheet's.
+fn of_elements(p: Patch) -> bool {
+    match p { .Style(_) -> false, _ -> true }
+}
+
+/// `s` painted on `page`, as the frame of what changes its elements. The
+/// sheet a paint may send is no part of the law, and is left out.
+fn elements_frame(page: Live, s: Sketch, log: Cell<List<int>>) -> Bytes {
+    frame([p for p in page.patches(node_of(s, log), default_theme) if of_elements(p)])
+}
+
+/// `s` painted on `page` and the frame handed to the host `at`: what is
+/// wrong with the page then, or nothing.
+fn painted(page: Live, mut at: Host, s: Sketch, log: Cell<List<int>>) -> string? {
+    at.take(elements_frame(page, s, log))
+    let fault = at.faults.first()
+    if fault != null { return fault }
+    let want = told(page_of(lowered(node_of(s, log))), unnumbered)
+    let got = told(at.page(), unnumbered)
+    if got != want { return "the page is not the tree's\n— the tree's:\n${want}\n— the page:\n${got}" }
+    let kept = told(page_of(page.page.get()), whole)
+    let held = told(at.page(), whole)
+    if held != kept { return "the program remembers a page the host does not hold\n— remembered:\n${kept}\n— held:\n${held}" }
+    null
+}
+
+/// What tells an element's kind: its tag, or that it is text.
+fn kind_of(e: Element) -> string { e.tagged()?.tag?.word() ?? "#text" }
+
+fn kids_of(e: Element) -> List<Element> { e.tagged()?.kids ?? [] }
+
+/// The seats under `new` whose element is the same node as one under
+/// `old` — the same seat and kind under kept parents — and wears another
+/// number: an element made again where it should have stayed.
+fn remade(old: List<Element>, new: List<Element>, above: string) -> List<string> {
+    [seat for e in new for was in present(old.find(it.seat() == e.seat())) for seat in remade_at(was, e, above)]
+}
+
+fn remade_at(was: Element, now: Element, above: string) -> List<string> {
+    if kind_of(was) != kind_of(now) { return [] }
+    let here = "${above}/${now.seat()}"
+    let own = if was.id() == now.id() { [] } else { [here] }
+    own.concat(remade(kids_of(was), kids_of(now), here))
+}
+
+/// The number the handler under each event wrote when `ring` spoke to
+/// it, in page order: -1 for one that did not run.
+fn rung(run: List<Element>, log: Cell<List<int>>, ring: fn(Bound) -> bool) -> string {
+    ["${wrote(log, ring(b))}" for b in bound(run)].join(" ")
+}
+
+/// What the handler that just ran wrote, and the log cleared for the next.
+fn wrote(log: Cell<List<int>>, ran: bool) -> int {
+    let tag = if ran { log.get().last() ?? -1 } else { -1 }
+    log.set([])
+    tag
+}
+
+/// Something for a handler to hear. One arm per thing a control can say.
+fn probe(h: Handler) -> Said? {
+    match h {
+        .Nothing(_) -> null,
+        .Text(_) -> Said.Text("t"),
+        .Flag(_) -> Said.Flag(true),
+        .Number(_) -> Said.Number(1),
+    }
+}
+
+/// What a paint of `s` over a page that showed `before` breaks, or
+/// nothing: the page is the tree's, each element that stays is still
+/// itself, and a second paint of `s` is silent.
+fn repainted(page: Live, mut at: Host, s: Sketch, log: Cell<List<int>>) -> string? {
+    let before = page.page.get()
+    let wrong = painted(page, at, s, log)
+    if wrong != null { return wrong }
+    let again = remade(before, page.page.get(), "")
+    if !again.is_empty() { return "an element that stays was made again: ${again.join(", ")}" }
+    let more = page.patches(node_of(s, log), default_theme).length
+    if more != 0 { return "a second paint of the same tree said ${more} patches" }
+    null
+}
+
+/// What the handlers `page` bound break, or nothing: each event of `s`,
+/// spoken to, runs the handler `s` gave it. The host holds what each
+/// control was given to say, as a page whose user said it would.
+fn bound_wrong(page: Live, mut at: Host, s: Sketch, log: Cell<List<int>>) -> string? {
+    let want = rung(lowered(node_of(s, log)), log, (b) -> b.action.fire(probe(b.action.handler)))
+    let held = bound(page.page.get())
+    let got = rung(
+        page.page.get(),
+        log,
+        (b) -> page.fire(b.id, b.action.kind, probe(b.action.handler)),
+    )
+    hold(at, [moved(b, probe(b.action.handler)) for b in held])
+    if got == want { null } else { "the handlers bound are not the tree's: its events write ${want}, the page's ${got}" }
+}
+
+/// `wrong` under the name of the paint it is about, when there is any.
+fn of_paint(name: string, wrong: string?) -> string? {
+    let said? = wrong else { return null }
+    "${name}: ${said}"
+}
+
+/// What `c` breaks, or nothing — the law, clause by clause: the first
+/// tree painted on a bare page; the second painted over it after the
+/// user's moves, and its handlers spoken to; then the first painted back
+/// over that, and its handlers.
+export fn verdict(c: Case) -> string? {
+    let page = live()
+    let log: Cell<List<int>> = Cell.new([])
+    mut at = host()
+    let first = painted(page, at, c.old, log)
+    if first != null { return of_paint("the first paint", first) }
+    let made = moves(page, c.typed)
+    echo(page, made)
+    hold(at, made)
+    log.set([])
+    of_paint("the repaint", repainted(page, at, c.new, log)) ?? of_paint(
+        "after the repaint",
+        bound_wrong(page, at, c.new, log),
+    ) ?? of_paint("the paint back", repainted(page, at, c.old, log)) ?? of_paint(
+        "after the paint back",
+        bound_wrong(page, at, c.old, log),
+    )
+}
+
+/// A case played out on a page: the frame of its first paint, what the
+/// user then did, the frame of its repaint, every event
+/// then spoken to, and the frame that paints the first tree back.
+type Played = { first: Bytes, made: List<Move>, second: Bytes, spoken: List<Move>, back: Bytes }
+
+fn played(c: Case) -> Played {
+    let page = live()
+    let log: Cell<List<int>> = Cell.new([])
+    let first = elements_frame(page, c.old, log)
+    let made = moves(page, c.typed)
+    echo(page, made)
+    let second = elements_frame(page, c.new, log)
+    let spoken = [moved(b, probe(b.action.handler)) for b in bound(page.page.get())]
+    echo(page, spoken)
+    Played {
+        first: first,
+        made: made,
+        second: second,
+        spoken: spoken,
+        back: elements_frame(page, c.old, log),
+    }
+}
+
+/// The frame that repaints `c`'s first tree as its second, a record a line.
+export fn repaint(c: Case) -> List<string> { records(played(c).second) }
+
+/// The frame that paints `c`'s first tree back over its second, a
+/// record a line.
+export fn paint_back(c: Case) -> List<string> { records(played(c).back) }

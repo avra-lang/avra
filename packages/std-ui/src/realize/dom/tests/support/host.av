@@ -1,0 +1,379 @@
+//! `tests/support/host.av` — a HOST, modelled: a frame is read as the
+//! wire documents it (`realize/dom/wire.av`'s header) and each record
+//! applied as a page would. It shares the wire's numbers and nothing of
+//! the diff, so what it ends holding is what the patches SAID. A record a
+//! page could not apply — an element it does not hold, a sibling under
+//! another parent, a number given twice — is a FAULT, kept and told.
+use realize.dom.wire.{Op, wire_version, no_id}
+use realize.dom.patch.{Says}
+
+/// One record of a frame.
+enum Rec {
+    Create(id: int, tag: string)
+    CreateText(id: int, content: string)
+    Place(id: int, parent: int, after: int)
+    Remove(id: int)
+    SetAttr(id: int, at: Pair)
+    DropAttr(id: int, name: string)
+    SetProp(id: int, name: string, says: int, value: string)
+    SetText(id: int, content: string)
+    Listen(id: int, ear: Ear)
+    Unlisten(id: int, kind: int)
+    Style(css: string)
+    Call(id: int, verb: string)
+}
+
+// ── reading a frame ─────────────────────────────────────────────
+
+/// A frame being read, and how far.
+type Reader = { bytes: Bytes, at: Cell<int> = Cell.new(0) }
+
+impl Reader {
+    fn ended() -> bool { self.at.get() >= self.bytes.length }
+
+    /// The next `count` bytes, as where they start.
+    fn skip(count: int) -> int {
+        let from = self.at.get()
+        self.at.set(from + count)
+        from
+    }
+
+    fn byte() -> int { self.bytes.at(self.skip(1)) }
+
+    /// Four little-endian bytes as a number from zero up.
+    fn word() -> int {
+        let from = self.skip(4)
+        [self.bytes.at(from + j) << 8 * j for j in 0..4].sum()
+    }
+
+    /// Four little-endian bytes as a signed number.
+    fn int() -> int {
+        let w = self.word()
+        if w >= 2147483648 { w - 4294967296 } else { w }
+    }
+
+    /// Eight little-endian bytes as a signed number.
+    fn id() -> int {
+        let low = self.word()
+        self.int() * 4294967296 + low
+    }
+
+    /// A length, then that many bytes as text.
+    fn text() -> string {
+        let length = self.int()
+        let from = self.skip(length)
+        self.bytes.slice(from, from + length).text()!
+    }
+
+    fn ear() -> Ear {
+        Ear {
+            kind: self.int(),
+            event: self.text(),
+            says: self.int(),
+            reads: self.text(),
+            prevents: self.int() != 0,
+        }
+    }
+
+    /// The record under `op`, each field read in the order the wire
+    /// writes it. Every op spelled.
+    fn record(op: Op) -> Rec {
+        match op {
+            .Create -> Rec.Create(self.id(), self.text()),
+            .CreateText -> Rec.CreateText(self.id(), self.text()),
+            .Place -> Rec.Place(self.id(), self.id(), self.id()),
+            .Remove -> Rec.Remove(self.id()),
+            .SetAttr -> Rec.SetAttr(self.id(), Pair { name: self.text(), value: self.text() }),
+            .DropAttr -> Rec.DropAttr(self.id(), self.text()),
+            .SetProp -> Rec.SetProp(self.id(), self.text(), self.int(), self.text()),
+            .SetText -> Rec.SetText(self.id(), self.text()),
+            .Listen -> Rec.Listen(self.id(), self.ear()),
+            .Unlisten -> Rec.Unlisten(self.id(), self.int()),
+            .Style -> Rec.Style(self.text()),
+            .Call -> Rec.Call(self.id(), self.text()),
+        }
+    }
+}
+
+/// What a frame holds: its records, or why it could not be read.
+type Read = { records: List<Rec>, fault: string? = null }
+
+fn read(frame: Bytes) -> Read {
+    let from = Reader { bytes: frame }
+    if from.byte() != wire_version { return Read { records: [], fault: "a frame of another version" } }
+    mut records: List<Rec> = []
+    // LICENSED loops.push_loop: each record starts where the one before it ended
+    while !from.ended() {
+        let code = from.byte()
+        let op? = Op.coded_as(code) else { return Read { records: records, fault: "a record under ${code}, which is no op" } }
+        records.push(from.record(op))
+    }
+    Read { records: records }
+}
+
+// ── the page ────────────────────────────────────────────────────
+
+/// Where an element stands: made and not yet placed, on the page itself,
+/// or under another.
+enum Stood {
+    Loose
+    Top
+    Under(parent: int)
+}
+
+/// One element or run of text a host holds, and whether it has left.
+type Held = { seen: Seen, kids: List<int> = [], stood: Stood = Stood.Loose, gone: bool = false }
+
+/// A host's page: every element it was ever told to make, by number; the
+/// ones on the page itself, in order; and every record it could not apply.
+export type Host = {
+    held: Map<string, Held> = {},
+    made: List<int> = [],
+    top: List<int> = [],
+    faults: List<string> = [],
+    sheet: string = "",
+}
+
+/// A host showing nothing.
+export fn host() -> Host { Host {} }
+
+/// The door a page's element has, as a line shows it open, and the verbs
+/// that enter and leave it.
+const door = "open"
+const enter = "showModal"
+const leave = "close"
+
+/// `run` with `id` standing after `after`, or first.
+fn slotted(run: List<int>, id: int, after: int) -> List<int> {
+    let at = if after == no_id { 0 } else { run.index_of(after) + 1 }
+    run.slice(0, at).concat([id]).concat(run.slice(at, run.length))
+}
+
+/// A property's value as a line shows it — none for one at rest, which a
+/// host that never set it holds too.
+fn prop_shown(says: int, text: string) -> string? {
+    if says == Says.Flag.code() { return if text == "" { null } else { "true" } }
+    if text == "" { null } else { quoted(text) }
+}
+
+impl Host {
+    /// The element numbered `id`, while the page holds it.
+    fn live(id: int) -> Held? {
+        let h? = self.held.get("${id}") else { return null }
+        if h.gone { null } else { h }
+    }
+
+    /// Where `id` stands — nowhere, for one the page does not hold.
+    fn stood(id: int) -> Stood { self.live(id)?.stood ?? Stood.Loose }
+
+    /// Whether the page holds `id` as an element, never as text.
+    fn is_element(id: int) -> bool { self.live(id)?.seen?.tag != null }
+
+    /// The elements under `parent` — the page itself when it names none.
+    fn under(parent: int) -> List<int> {
+        if parent == no_id { self.top } else { self.live(parent)?.kids ?? [] }
+    }
+
+    /// Whether `id` is `of`, or stands anywhere under it.
+    fn within(id: int, of: int) -> bool {
+        if id == of { return true }
+        match self.stood(id) { .Under(parent) -> self.within(parent, of), .Loose or .Top -> false }
+    }
+
+    mut fn fault(said: string) { self.faults.push(said) }
+
+    mut fn put(id: int, h: Held) { self.held.set("${id}", h) }
+
+    /// The children of `parent` replaced.
+    mut fn hold(parent: int, kids: List<int>) {
+        if parent == no_id {
+            self.top = kids
+            return
+        }
+        let h? = self.live(parent) else { return }
+        self.put(parent, h with { kids: kids })
+    }
+
+    /// `id` taken from wherever it stands.
+    mut fn lift(id: int) {
+        match self.stood(id) {
+            .Top -> self.hold(no_id, [k for k in self.top if k != id]),
+            .Under(parent) -> self.hold(parent, [k for k in self.under(parent) if k != id]),
+            .Loose -> { return },
+        }
+    }
+
+    /// `id` and all under it, forgotten.
+    mut fn forget(id: int) {
+        let h? = self.live(id) else { return }
+        self.put(id, h with { gone: true })
+        for k in h.kids { self.forget(k) }
+    }
+
+    /// An element's own facts rewritten, when the page holds it as an
+    /// element; a record naming anything else is a fault.
+    mut fn rewrite(id: int, what: string, to: fn(Seen) -> Seen) {
+        let h? = self.live(id) else { return self.fault("${what} names ${id}, which is not on the page") }
+        if h.seen.tag == null { return self.fault("${what} names ${id}, which is text") }
+        self.put(id, h with { seen: to(h.seen) })
+    }
+
+    mut fn make(id: int, seen: Seen) {
+        if self.held.get("${id}") != null { return self.fault("create gives ${id}, a number already given") }
+        self.made.push(id)
+        self.put(id, Held { seen: seen })
+    }
+
+    mut fn place(id: int, parent: int, after: int) {
+        let h? = self.live(id) else { return self.fault("place names ${id}, which is not on the page") }
+        if parent != no_id && !self.is_element(parent) {
+            return self.fault("place puts ${id} under ${parent}, which is no element on the page")
+        }
+        if parent != no_id && self.within(parent, id) { return self.fault("place puts ${id} under itself") }
+        self.lift(id)
+        if after != no_id && !self.under(parent).contains(after) {
+            self.put(id, h with { stood: Stood.Loose })
+            return self
+                .fault("place puts ${id} after ${after}, which does not stand under ${parent}")
+        }
+        self.hold(parent, slotted(self.under(parent), id, after))
+        let now? = self.live(id) else { return }
+        self
+            .put(id, now with { stood: if parent == no_id { Stood.Top } else { Stood.Under(parent) } })
+    }
+
+    mut fn remove(id: int) {
+        if self.live(id) == null { return self.fault("remove names ${id}, which is not on the page") }
+        self.lift(id)
+        self.forget(id)
+    }
+
+    mut fn set_text(id: int, content: string) {
+        let h? = self.live(id) else { return self.fault("set_text names ${id}, which is not on the page") }
+        if h.seen.tag != null { return self.fault("set_text names ${id}, an element: its children would go") }
+        self.put(id, h with { seen: h.seen with { text: content } })
+    }
+
+    /// A property written — by a record, or by a user's own hand.
+    mut fn set_prop(id: int, name: string, says: int, value: string) {
+        if says != Says.Flag.code() && says != Says.Text.code() {
+            return self
+                .fault("set_prop writes ${name} of ${id} as ${says}, which no property holds")
+        }
+        let shown = [Pair { name: name, value: v } for v in present(prop_shown(says, value))]
+        self
+            .rewrite(
+                id,
+                "set_prop",
+                (s) -> s with { props: [p for p in s.props if p.name != name].concat(shown) },
+            )
+    }
+
+    mut fn listen(id: int, ear: Ear) {
+        if self.live(id)?.seen?.ears?.any(it.kind == ear.kind) ?? false {
+            return self.fault("listen names ${id}, which already hears ${ear.kind}")
+        }
+        self.rewrite(id, "listen", (s) -> s with { ears: s.ears.concat([ear]) })
+    }
+
+    /// Whether `id`'s door stands open.
+    fn open(id: int) -> bool { self.live(id)?.seen?.props?.any(it.name == door) ?? false }
+
+    /// `id`'s door set: by a verb, or by the page's own answer to an event.
+    mut fn swing(id: int, open: bool) {
+        self
+            .rewrite(
+                id,
+                "call",
+                (s) -> s with { props: [p for p in s.props if p.name != door]
+                    .concat(if open { [Pair { name: door, value: "true" }] } else { [] }) },
+            )
+    }
+
+    /// A verb of an element's own: a door entered or left. A page refuses
+    /// one entered where the element does not stand on it; one entered
+    /// while open or left while shut is a call the page did not need.
+    mut fn call(id: int, verb: string) {
+        if verb != enter && verb != leave { return self.fault("call asks ${id} for ${verb}, which is no verb of a page's element") }
+        if !self.rooted(id) { return self.fault("call asks ${id} for ${verb}, and it does not stand on the page") }
+        if self.open(id) == (verb == enter) { return self.fault("call asks ${id} for ${verb}, and its door already stands so") }
+        self.swing(id, verb == enter)
+    }
+
+    /// One record applied. Every record spelled.
+    mut fn apply(r: Rec) {
+        match r {
+            .Create(id, tag) -> self.make(id, Seen { id: id, tag: tag }),
+            .CreateText(id, content) -> self.make(id, Seen { id: id, text: content }),
+            .Place(id, parent, after) -> self.place(id, parent, after),
+            .Remove(id) -> self.remove(id),
+            .SetAttr(id, at) -> self
+                .rewrite(
+                    id,
+                    "set_attr",
+                    (s) -> s with { attrs: [a for a in s.attrs if a.name != at.name].concat([at]) },
+                ),
+            .DropAttr(id, name) -> self
+                .rewrite(id, "drop_attr", (s) -> s with { attrs: [a for a in s.attrs if a.name != name] }),
+            .SetProp(id, name, says, value) -> self.set_prop(id, name, says, value),
+            .SetText(id, content) -> self.set_text(id, content),
+            .Listen(id, ear) -> self.listen(id, ear),
+            .Unlisten(id, kind) -> self
+                .rewrite(id, "unlisten", (s) -> s with { ears: [e for e in s.ears if e.kind != kind] }),
+            .Style(css) -> { self.sheet = css },
+            .Call(id, verb) -> self.call(id, verb),
+        }
+    }
+
+    /// The element numbered `id` with all it holds.
+    fn seen(id: int) -> List<Seen> {
+        let h? = self.live(id) else { return [] }
+        [h.seen with { kids: [s for k in h.kids for s in self.seen(k)] }]
+    }
+
+    /// The page, in order.
+    fn page() -> List<Seen> { [s for id in self.top for s in self.seen(id)] }
+
+    /// Whether `id` stands on the page: under it, all the way up.
+    fn rooted(id: int) -> bool {
+        match self.stood(id) {
+            .Top -> true,
+            .Under(parent) -> self.rooted(parent),
+            .Loose -> false,
+        }
+    }
+
+    /// A frame applied whole. An element still held and standing nowhere
+    /// on the page when the frame ends is an orphan, and a fault.
+    mut fn take(frame: Bytes) {
+        let got = read(frame)
+        for r in got.records { self.apply(r) }
+        for f in present(got.fault) { self.fault(f) }
+        for id in self.made {
+            if self.live(id) != null && !self.rooted(id) { self.fault("${id} is held and stands nowhere on the page") }
+        }
+    }
+}
+
+/// The records of a frame, a line each, as a reader follows them.
+export fn records(frame: Bytes) -> List<string> { [rec_line(r) for r in read(frame).records] }
+
+/// An id as a line spells it: `-` where a record names none.
+fn id_word(id: int) -> string { if id == no_id { "-" } else { "${id}" } }
+
+fn rec_line(r: Rec) -> string {
+    match r {
+        .Create(id, tag) -> "create ${id} ${tag}",
+        .CreateText(id, content) -> "text ${id} ${quoted(content)}",
+        .Place(id, parent, after) -> "place ${id} in ${id_word(parent)} after ${id_word(after)}",
+        .Remove(id) -> "remove ${id}",
+        .SetAttr(id, at) -> "attr ${id} ${at.name}=${quoted(at.value)}",
+        .DropAttr(id, name) -> "unattr ${id} ${name}",
+        .SetProp(id, name, says, value) -> "prop ${id} ${name}=${says}:${quoted(value)}",
+        .SetText(id, content) -> "retext ${id} ${quoted(content)}",
+        .Listen(id, ear) -> "listen ${id} ${ear.kind}:${ear.event}:${ear.says}:${ear.reads}:${ear.prevents}",
+        .Unlisten(id, kind) -> "unlisten ${id} ${kind}",
+        .Style(_) -> "style",
+        .Call(id, verb) -> "call ${id} ${verb}",
+    }
+}

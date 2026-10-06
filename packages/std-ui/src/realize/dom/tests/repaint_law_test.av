@@ -1,0 +1,195 @@
+//! The diff, held to its law over trees nobody chose: a page showing one
+//! tree, sent the frame that repaints it as another, is the page the
+//! other tree is. The cases are grown and edited by chance from fixed
+//! seeds; the ones the law once caught are kept by name.
+use @std.ui.realize.dom.patch.{Says}
+use @std.ui.realize.dom.tests.support.{
+    Case,
+    Hears,
+    Sketch,
+    Typed,
+    all_hold,
+    case_at,
+    case_source,
+    repaint,
+    shrunk,
+    size,
+    source,
+    verdict,
+}
+use @std.ui.tree.node.{EventKind}
+
+/// Every record the first `count` repaints under `seed` say, a line each.
+fn said(seed: int, count: int) -> List<string> { [l for turn in 0..count for l in repaint(case_at(seed, turn))] }
+
+/// What a record's line opens with: its op.
+fn op_word(line: string) -> string { line.split(" ").first() ?? "" }
+
+/// The element a record's line names.
+fn named(line: string) -> string { line.split(" ").slice(1, 2).join("") }
+
+/// How many records of one frame place an element the frame did not make.
+fn carried(frame: List<string>) -> int {
+    let made = [named(l) for l in frame if op_word(l) == "create" || op_word(l) == "text"]
+    [l for l in frame if op_word(l) == "place" && !made.contains(named(l))].length
+}
+
+const every_op = [
+    "create",
+    "text",
+    "place",
+    "remove",
+    "attr",
+    "unattr",
+    "prop",
+    "retext",
+    "listen",
+    "unlisten",
+    "call",
+]
+
+spec "std/ui dom — a repaint, by its law" {
+    given "six hundred pairs of trees grown from three seeds" {
+        then "every repaint leaves the page its tree is" { [1, 2, 3].all((seed) -> all_hold(seed, 200)) }
+    }
+    given "the first two hundred repaints of one seed" {
+        then "say every kind of record a frame holds but the sheet" {
+            let ops = [op_word(l) for l in said(1, 200)]
+            every_op.all((op) -> ops.contains(op))
+        }
+        then "carry an element that stays to another place at least twenty times" {
+            [carried(repaint(case_at(1, turn))) for turn in 0..200].sum() >= 20
+        }
+    }
+    given "one seed and one turn" {
+        then "is one case, however often it is asked for" { case_source(case_at(7, 3)) == case_source(case_at(7, 3)) }
+        then "is another case under another seed" { case_source(case_at(7, 3)) != case_source(case_at(8, 3)) }
+    }
+}
+
+fn hears_checkbox(s: Sketch) -> bool { s.prim is .Checkbox || s.kids.any(hears_checkbox) }
+
+spec "std/ui dom — a failing case, shrunk" {
+    given "a case that fails while its first tree holds a checkbox anywhere" {
+        then "is shrunk to that checkbox alone, and a second tree of one node" {
+            let big = [turn for turn in 0..200]
+                .find(
+                    (turn) -> hears_checkbox(case_at(1, turn).old) &&
+                        size(case_at(1, turn).old) > 20,
+                )
+            let least = shrunk(case_at(1, big ?? 0), (c) -> hears_checkbox(c.old))
+            big != null &&
+                source(least.old) == "Sketch { prim: .Checkbox }" &&
+                size(least.new) == 1 &&
+                least.typed.is_empty()
+        }
+    }
+}
+
+/// A box drawn unticked both times, ticked by a user between.
+fn ticked() -> Case {
+    Case {
+        old: Sketch { prim: .Checkbox, hears: [Hears { kind: .Change, says: .Flag, tag: 1 }] },
+        new: Sketch { prim: .Checkbox, hears: [Hears { kind: .Change, says: .Flag, tag: 1 }] },
+        typed: [Typed { nth: 0, value: 0 }],
+    }
+}
+
+/// A control drawn with no value both times, given one by a user between.
+fn given_a_value() -> Case {
+    Case {
+        old: Sketch { prim: .List, hears: [Hears { kind: .Press, says: .Number, tag: 1 }] },
+        new: Sketch { prim: .List, hears: [Hears { kind: .Press, says: .Number, tag: 1 }] },
+        typed: [Typed { nth: 0, value: 8 }],
+    }
+}
+
+spec "std/ui dom — what the law caught" {
+    given "a node two of whose properties write one attribute" {
+        then "is one page first painted and repainted, and a second paint says nothing" {
+            verdict(
+                Case {
+                    old: Sketch { prim: .Alert },
+                    new: Sketch { prim: .Progress, attrs: [.Amount(2), .Value("")] },
+                },
+            ) == null
+        }
+    }
+    given "a box a user ticked while the program draws it unticked" {
+        then "holds the law" { verdict(ticked()) == null }
+        then "is unticked by the next paint" { repaint(ticked()).join("\n") == "prop 1 checked=2:\"\"" }
+    }
+    given "a control drawn with no value that a user gave one" {
+        then "holds the law" { verdict(given_a_value()) == null }
+        then "is put back to rest by the next paint" { repaint(given_a_value()).join("\n") == "prop 0 value=3:\"\"" }
+    }
+}
+
+/// An event whose handler hears a flag, then nothing.
+fn reheard() -> Case {
+    Case {
+        old: Sketch { prim: .Checkbox, hears: [Hears { kind: .Change, says: .Flag, tag: 1 }] },
+        new: Sketch { prim: .Checkbox, hears: [Hears { kind: .Change, says: .Nothing, tag: 2 }] },
+    }
+}
+
+/// A button whose press runs another handler, and nothing else changed.
+fn rebound() -> Case {
+    Case {
+        old: Sketch { prim: .Button, hears: [Hears { kind: .Press, says: .Nothing, tag: 1 }] },
+        new: Sketch { prim: .Button, hears: [Hears { kind: .Press, says: .Nothing, tag: 2 }] },
+    }
+}
+
+spec "std/ui dom — cases a broken diff was caught by" {
+    given "two keyed rows that change places beside an element that holds nothing" {
+        then "end in the new order" {
+            verdict(
+                Case {
+                    old: Sketch {
+                        prim: .Divider,
+                        kids: [Sketch { prim: .Checkbox, key: "a" }, Sketch { prim: .Field, key: "b" }],
+                    },
+                    new: Sketch {
+                        prim: .Divider,
+                        kids: [Sketch { prim: .Field, key: "b" }, Sketch { prim: .Checkbox, key: "a" }],
+                    },
+                },
+            ) == null
+        }
+    }
+    given "an event whose handler comes to hear something else" {
+        then "holds the law" { verdict(reheard()) == null }
+        then "is let go of before it is heard anew" {
+            repaint(reheard()).join("\n") == "unlisten 1 3\nlisten 1 3:change:0::false"
+        }
+    }
+    given "a keyed row carried past an unkeyed one" {
+        then "ends where the new tree puts it" {
+            verdict(
+                Case {
+                    old: Sketch {
+                        prim: .Checkbox,
+                        kids: [
+                            Sketch { prim: .Slider },
+                            Sketch { prim: .Checkbox, key: "a" },
+                            Sketch { prim: .Row },
+                        ],
+                    },
+                    new: Sketch {
+                        prim: .Checkbox,
+                        kids: [
+                            Sketch { prim: .Slider },
+                            Sketch { prim: .Row },
+                            Sketch { prim: .Checkbox, key: "a" },
+                        ],
+                    },
+                },
+            ) == null
+        }
+    }
+    given "a tree repainted with new handlers and nothing else changed" {
+        then "each event runs its new handler" { verdict(rebound()) == null }
+        then "says nothing" { repaint(rebound()).join("\n") == "" }
+    }
+}

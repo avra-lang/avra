@@ -1,0 +1,43 @@
+//! `tests/support/rng.av` — chance a test can replay: every number comes
+//! from a seed by arithmetic alone, so one seed is one run on any engine.
+
+/// A stream of numbers from a seed, and a count for numbers that must
+/// never repeat.
+export type Rng = { state: Cell<int>, minted: Cell<int> = Cell.new(0) }
+
+/// The largest state a stream holds: a prime, so every state below it
+/// leads through all the others.
+const modulus = 2147483647
+
+/// The stream `seed` names. Its first numbers are passed over: near
+/// seeds open with near numbers.
+export fn rng(seed: int) -> Rng {
+    let r = Rng { state: Cell.new(seed % (modulus - 1) + 1) }
+    for turn in 0..4 { r.state.set(stepped(r.state.get() + turn)) }
+    r
+}
+
+/// The state after `state`. The product stays under sixty-three bits.
+fn stepped(state: int) -> int { state % modulus * 48271 % modulus }
+
+impl Rng {
+    fn next() -> int {
+        self.state.set(stepped(self.state.get()))
+        self.state.get()
+    }
+
+    /// A number from zero up to, never reaching, `bound`.
+    fn below(bound: int) -> int { self.next() % bound }
+
+    /// True one time in `of`.
+    fn chance(of: int) -> bool { self.below(of) == 0 }
+
+    /// A number no earlier call on this stream gave.
+    fn fresh() -> int {
+        self.minted.set(self.minted.get() + 1)
+        self.minted.get()
+    }
+}
+
+/// One of `from`, by chance.
+export fn one_of<T>(r: Rng, from: List<T>) -> T { from[r.below(from.length)] }
