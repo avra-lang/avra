@@ -184,7 +184,8 @@ impl Db {
     }
 
     /// The Db's kernel, made on the first reach when it has none: every
-    /// family registered here so far is registered in it then.
+    /// family registered here so far is registered in it then. A program
+    /// that traces a plain Db asks for it: `db.engine().trace_on()`.
     fn engine() -> Kernel {
         let held? = self.kernel.get() else {
             let made = new_kernel()
@@ -663,7 +664,11 @@ impl AnswersUnder<V> {
     /// answered takes the owner's record when it has one, and its first
     /// run here hands its answer over when it wrote no rows and read
     /// nothing but this Db's rows — a record read back brings no rows and
-    /// no reads with it, and stands until the next write here. A call answered here and gone
+    /// no reads with it, and stands until the next write here. A KEPT
+    /// ANSWER IS VALID ONLY UNDER ITS OWNER'S KEY: `rows_alone` rules out
+    /// what this Db's kernel recorded, and sees neither a read of another
+    /// Db — recorded in that Db's kernel — nor rows the next process's Db
+    /// holds differently before it asks. A call answered here and gone
     /// stale was moved in this process, which no record saw: it runs.
     fn ran_lasting(
         db: Db,

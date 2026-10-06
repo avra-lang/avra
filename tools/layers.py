@@ -6,7 +6,8 @@
 A file names its own layer and the ones below it, never one above. Below
 them all stands `@std/relation`, whose `engine/` is the kernel a running
 program asks too: nothing under packages/std-relation/src names the
-compiler, and `engine/` names `@std/meta` and itself alone.
+compiler, and `engine/` names `@std/meta` and itself alone — never a
+sibling module of its own package (`use db.{…}`), which stands above it.
 
 A test drives the layers above the one it stands in — that is what a
 test of a feature is — so the compiler's `tests/` are not read.
@@ -47,6 +48,9 @@ def outside(text, engine, tests):
             out.append(f"`@std/relation` names the compiler — `use {target}`")
         if engine and not tests and target.startswith("@std.") and target.split(".")[1] not in ("meta", "relation"):
             out.append(f"the engine names `{target}` — it reads `@std/meta` alone")
+        if engine and not tests and (target == "@std.relation" or not target.startswith(("@std.", "engine"))) \
+                and not target.startswith("@std.relation.engine"):
+            out.append(f"the engine names `{target}`, its own package above it — it reads `@std/meta` and itself alone")
     return out
 
 
@@ -76,7 +80,10 @@ def selftest():
     assert len(outside("use @std.avrac.core.{T}\n", False, False)) == 1
     assert outside("use @std.avrac.core.{T}\n", False, True) == []
     assert len(outside("use @std.io.{env}\n", True, False)) == 1
-    assert outside("use @std.meta.{identity}\nuse engine.{Kernel}\n", True, False) == []
+    assert outside("use @std.meta.{identity}\nuse engine.{Kernel}\nuse @std.relation.engine.{Key}\n", True, False) == []
+    assert len(outside("use db.{Db}\n", True, False)) == 1
+    assert len(outside("use @std.relation.{relation}\n", True, False)) == 1
+    assert outside("use db.{Db}\n", False, False) == []
 
 
 def main():
@@ -86,6 +93,8 @@ def main():
         print(f"layers: {line}")
     if found:
         sys.exit(1)
+    if read == 0:
+        sys.exit("layers: 0 files read — run from the tree's root; a check that read nothing passed nothing")
     print(f"layers: no `use` climbs — {read} file(s) read")
 
 

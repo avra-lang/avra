@@ -2,7 +2,9 @@
 // fresh Db (a later process) reads the record back instead of running;
 // a moved owner key, a record that does not read back, and a run that
 // wrote rows each run again; an answer that read an input is never kept,
-// and an input set moves every answer read back — in both engines
+// and an input set moves every answer read back; what a record cannot
+// see — another Db's rows, this Db's rows held differently — is pinned
+// as it stands today — in both engines
 use @std.relation.{relation, query, input}
 use @std.relation.db.{Db, Durable, durable_db}
 
@@ -196,6 +198,35 @@ fn input_set() -> string {
     "${restored} ${fixed(db)} ${since(before)}"
 }
 
+once fn elsewhere() -> Db { process() }
+
+/// Reads another Db's rows: recorded in that Db's kernel, never in the
+/// asked one's.
+@query
+fn notes_elsewhere(_db: Db) -> int {
+    counted()
+    Note.all(elsewhere()).length
+}
+
+/// KNOWN, UNTIL A RECORD CARRIES ITS READS: an answer that read another
+/// Db's rows is kept, and the next process reads it back though those
+/// rows moved (1, where 2 is right); and an answer over this Db's rows is
+/// read back by a process whose Db holds other rows before it asks (0,
+/// where 1 is right) — the owner's key alone decides.
+fn blind() -> string {
+    file_key().set("f3")
+    let _ = Note.insert(elsewhere(), name: "one")
+    let cold = notes_elsewhere(process())
+    let _ = Note.insert(elsewhere(), name: "two")
+    let stale = notes_elsewhere(process())
+    let empty = notes(process())
+    let filled = process()
+    let _ = Note.insert(filled, name: "here")
+    let other = notes(filled)
+    file_key().set("f1")
+    "${cold}${stale} ${empty}${other}"
+}
+
 /// Seats named like the wrapper's locals reach the body as written.
 fn shadowed() -> string {
     let first = shadow(process(), 1, 2, 3, 4)
@@ -203,4 +234,4 @@ fn shadowed() -> string {
     "${first} ${again}"
 }
 
-"${survives()} | ${shapes()} | ${reruns()} | ${midway()} | ${shadowed()} | ${input_read()} | ${input_set()}"
+"${survives()} | ${shapes()} | ${reruns()} | ${midway()} | ${shadowed()} | ${input_read()} | ${input_set()} | ${blind()}"
