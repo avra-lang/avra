@@ -90,7 +90,14 @@ Labels: READ (I opened the line) · PROBED (I ran it) · MEASURED · PROPOSED (n
   local scratch: built from the outer's own recorded reads, dead with it.
 - **The query wrapper abandons its frame under `errdefer`**, so a body left by `fail`,
   `?`, a trap that unwinds or a cancel leaves no frame behind. Without it one failed
-  body kills the engine for the process.
+  body kills the engine for the process. BUILT in P4a1 as a `defer` over a settled flag;
+  it drops the Db's own frame (`Db.left`) as well as the kernel's. A DEADLINE, NOT A
+  GUARANTEE (CLAUDE.md): the branch is UNREACHABLE today — nothing leaves a query body
+  early but a trap, and a trap ends the process — so it has no test, and a green one
+  would prove an untaken branch. It becomes reachable the day a body can fail or be
+  cancelled: P4c. TEST OWED THERE, before P4c's code: a body left by `fail` and one left
+  by a cancel each leave the kernel's open stack and `db.running` as they found them,
+  and the next row write is stamped to no run.
 - **A converted compiler query finds its Workspace** as `workspaces()[current().id]`.
   The slot is cleared by that Db's CLOSERS — every Db, not only a one-shot one (a
   process-wide list of workspaces is the recorded 922 MB leak; CLAUDE.md's cycle law).
@@ -158,8 +165,12 @@ Labels: READ (I opened the line) · PROBED (I ran it) · MEASURED · PROPOSED (n
   `@input`, are closed under `defer`.
 - **An answer READ BACK from the owner (`Durable`) brings no reads with it**, so it
   stands only until the next write to its Db: it depends on one input cell every write
-  moves. A shim for the one law the durable tests hold; DB 06 replaces `Durable` with
-  records that carry their reads.
+  moves — a row write or an input set (`Db.unsettles_restored`). And a run is KEPT only
+  when it wrote no rows and read nothing but its own Db's rows (`Db.rows_alone`): a
+  record that read an input or another query would be restored blind by the next
+  process (review 5, F1 — PROBED wrong answer `2 2 2`, now `2 2 10` in
+  `tests/durable`). A STOPGAP, PENDING DB 06, which replaces `Durable` with records
+  that carry their reads: `avra-8sb5.57.203` names every piece that goes then.
 - **D4.** An un-owned row insert inside an open `@query` is REFUSED with a named voice.
   `Frame`, `began`, `ended` and the self-read law are deleted with it. Compiler families
   keep named owners until DB 07a.
@@ -308,6 +319,22 @@ P4a1 / P4b — the compiler's own source wears `@query` / `@input` in `doc_rows`
 removed and the ranks after it renumbered: source only. `@reentrant`, if it needs more
 than a mark the derive reads, is probed before it is relied on.
 
+### 4.1 Tickets P4a1's review left (review 5), each owed outside P4a1
+
+| ticket | what | where it is paid |
+|---|---|---|
+| `avra-8sb5.57.197` | a plain Db never clears a read mark and never evicts | the run-time work, before any server relies on `@std/relation` |
+| `avra-8sb5.57.198` | a Db that asked a `@query` lives until `close()` — a loop making Dbs leaks | P4b (the Db leaves the wrapper's closure with its seat) |
+| `avra-8sb5.57.199` | the durable record named by the args HASH, the cell by bytes | DB 06 |
+| `avra-8sb5.57.200` | named Db constructors, the three flags private | P4a3 |
+| `avra-8sb5.57.201` | refuse a write while the reader that marked the cell is still open | after P4a2 |
+| `avra-8sb5.57.202` | a `@query` ask re-encodes its arguments on every hit — the int / `@dense` fast path | P6, before its first conversion |
+| `avra-8sb5.57.203` | the durable stopgap (`rows_alone`, `Db.restored`) | DB 06 |
+
+A float argument or answer is REFUSED by `@query` (`query_arg` / `query_answer`: no
+stable encoding); a record and a list of records key a call by value
+(`tests/query_cells`). A payload enum is refused by the codec today.
+
 ## 7. What each PR is verified by and publishes
 
 Standing list: `make bootstrap` from the seed, `seed-check`, gen-2 and gen-3, the whole
@@ -325,7 +352,7 @@ time and peak · duplicate computations.
 |---|---|
 | every PR | cold instructions and peak no worse than its base; the graph as §4 says |
 | P1 | `newly_read` < 60 MB (375 today) |
-| P4a1 | a relation's recorded read ≤ 350 instructions (~938 today), the ambient and Db checks included; c3 = once |
+| P4a1 | a relation's recorded read ≤ 350 instructions (~938 today), the ambient and Db checks included; c3 = once. NEITHER MET NOR MISSED YET: the "3,563 → 3,432" P4a1 first published was the readbench's WHOLE PROCESS (fill, list pass and all four read passes) divided by ONE pass's 1,000,000 reads — not a per-read figure. The per-read quantity is P2's `read_cost.sh` (N against 2N, so setup cancels); readbench's own figure for a recorded dense-id read is ~100 ns on the Mac. A `@query` asked again costs 286 ns by an int and 953 ns by a 25-character text (`avra-8sb5.57.202`) |
 | P3, P4a4, P4b, P5 | neutral |
 | P6 | neutral; the converted family's cells and edges unchanged |
 
