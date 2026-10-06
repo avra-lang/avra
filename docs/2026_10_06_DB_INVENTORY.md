@@ -25,7 +25,7 @@ never joined up.
 | 3 | The compiler **barely uses it**: 12 `@relation`, 2 `@query`, 2 `@input` in `std-avrac`; its 32 query families use an internal `@family` mark instead, and `Db.answers` (the durable door for `@query`) has **no production caller**. | READ `compiler/doc_rows.av`, `compiler/inputs.av`, `compiler/families/families.av:149`, `compiler/answers.av`; grep `.answers(` |
 | 4 | The owner's rule ("value + what it read with digests, valid iff all match") is **already implemented by hand three times**, each with its own format: `KeyParts` (the hold), `DocFacts`+`FileWitness` (`avra docs`), and kept settlements' `u/c/m/f/b/e` lines. | READ `compiler/record.av:1097`, `compiler/db.av:84-123,658-668`, `compiler/kept_settle.av:171-180` |
 | 5 | The **general** version (kernel deps persisted) was built 09-28, **measured to be infeasible at kernel grain** (≥51.6 M deps on the cli, 279 MB pack, +62…216 % time), and deleted 10-01. That measurement is the fact every later design must respect. | READ townhall §6.5a (stale checkout `avra/docs/2026_09_26_COMPILER_DB_TOWNHALL.md:2402-2446`); PR #104 `85f1046` READ(agent) |
-| 6 | The epic's design doc (**the townhall, 2,973 lines**) is **not in git anywhere** — one untracked copy in the stale `avra/` checkout — yet code and tickets cite it. | READ `git ls-files docs \| grep -ci townhall` → 0 |
+| 6 | The epic's design doc (**the townhall, 2,973 lines**) is **not in git anywhere** — one untracked copy in the stale `avra/` checkout — yet code and tickets cite it. (This branch now commits that copy unchanged, as history.) | READ `git ls-files docs \| grep -ci townhall` → 0 |
 
 **The three most valuable unlanded pieces**
 

@@ -128,7 +128,7 @@ A query owns the rows it inserts; a rerun replaces exactly its own (on main: REA
 | `Package` | name | — | hand list |
 | `Module` | dotted path | package | `@relation` (`features/file_rows.av`) |
 | `File` | package-relative path | module | `@relation` |
-| `Decl` | module · owner · name · kind | name, word, **marks**, owner, file | `@relation` (`features/decl_rows.av`) |
+| `Decl` | module · owner · name · kind (PROPOSED; today keyless — `decl_rows.av:26` records the trigger) | `name`, `word`, **`marks`** (READ `decl_rows.av:44-56`); owner, file PROPOSED | `@relation` (`features/decl_rows.av:39`) |
 | `Field`, `Variant`, `Param` | decl key · name | decl | inside signatures (**new rows**) |
 | `Impl` | trait key · type key | trait, type | full scan `implementors_of` (`features/decls.av:2623`, READ(agent C2)) |
 | `Ref` | from decl · site | target | `@relation`, rebuilt whole |
@@ -603,6 +603,7 @@ numbers §4.7 owes.
 | map iteration order | a `Map` field is refused by the codec; relation set hashes are order-free; a kept list answer keeps the query's own order, which is deterministic because evaluation is sequential — parallel workers (§6.4) need key-ordered reads first |
 | the empty case of every encoding | absent input ≠ empty input; missing dir ≠ empty listing; a kept answer with zero reads stands always and `explain` says "reads nothing"; an empty value is saved as made; `T??` keeps both absences (one presence byte per layer); a zero-length `range` still names its file |
 | a held answer needing a program-wide fact no input names (the `Line` layout defect, .57.165) | the fact is a kept answer (`Layout(type key)`), read like any other — not a seventh line kind |
+| the seven witness defect classes found by `avra-m3-redteam` (11/17 on the deleted code) | trivia edit vs spans → §4.6 relative spans, L7 · a new file defining a missing name → absence is a recorded value, `Listing` moves · edge recorded only for the first asker → reads come from the walk at settle, not from who asked first · a never-existing file hashing → absent has its own digest · removed vs emptied file → same · a record of another shape → shape fingerprint · an out-of-range key → a name that resolves to nothing does not stand. These 17 cases are PR 3's acceptance suite |
 | a query declared in an imported module whose body changes (.57.4.6) | the record is named by the query's own path; its reads include the declaring unit; it does not stand |
 
 ---
@@ -672,8 +673,8 @@ and mtime; sources never get this shortcut.
 `.57.148`)
 
 ```avra
-@family(9, "FileId", "TypeFacts")  type Typed = {}                    // A: stays (two spellings)
-@query fn typed(db: Db, f: FileId) -> TypeFacts { … }                 // B: one spelling; not @kept
+@family(8, "DeclId", "TypeFacts")  type Typed = {}                    // A: stays (two spellings; READ families.av:49-50)
+@query fn typed(db: Db, d: DeclId) -> TypeFacts { … }                 // B: one spelling; not @kept
 ```
 **Recommend B, last (PR 11).** It buys one door and a typed catalog, not speed, and it is the
 only step with a two-landing bridge.
