@@ -25,7 +25,7 @@ checked() {
 traced() {
     AVRA_QTRACE=1 "$A" check packages/cli 2> "$out.q" > /dev/null
     echo "$1	$(awk -F'\t' '$1 == "Q" && $2 == "ask" { n[$5]++ } $1 == "Q" && $2 == "settle" { s++ }
-        /^Q parse/ { p++ } END { printf "reuse=%d compute=%d cycle=%d settle=%d parse=%d", n["reuse"], n["compute"], n["cycle"], s, p }' "$out.q")"
+        $1 == "Q" && $2 == "parse" { p++ } END { printf "reuse=%d compute=%d cycle=%d settle=%d parse=%d", n["reuse"], n["compute"], n["cycle"], s, p }' "$out.q")"
     rm -f "$out.q"
 }
 # scenario <label> <file> <literal>: the literal gains a fresh word each round.

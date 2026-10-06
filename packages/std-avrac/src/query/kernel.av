@@ -125,12 +125,13 @@ once fn kernels_made() -> Cell<int> { Cell.new(0) }
 /// keys that cell read (`G`), frame it abandons (`A`) and family it evicts (`E`), and
 /// counts every recorded read by the family read — repeats too, which no cell's list
 /// shows — written (`C`) each time the outermost query settles.
-type Graph = { on: bool, id: int, reads: Cell<List<int>> }
+@identity
+type Graph = { on: Cell<bool>, id: Cell<int>, reads: Cell<List<int>> }
 
 fn new_graph() -> Graph {
-    if graph_flag() == null { return Graph { on: false, id: 0, reads: list_cell() } }
+    if graph_flag() == null { return Graph { on: Cell.new(false), id: Cell.new(0), reads: list_cell() } }
     kernels_made().set(kernels_made().get() + 1)
-    Graph { on: true, id: kernels_made().get(), reads: list_cell() }
+    Graph { on: Cell.new(true), id: Cell.new(kernels_made().get()), reads: list_cell() }
 }
 
 impl Graph {
@@ -139,21 +140,21 @@ impl Graph {
 
     fn registered(family: int) {
         self.reads.push(0)
-        eprintln("F\t${self.id}\t${family}")
+        eprintln("F\t${self.id.get()}\t${family}")
     }
 
-    fn input_set(key: Key) { eprintln("I\t${self.id}\t${key.family}\t${key.arg}") }
+    fn input_set(key: Key) { eprintln("I\t${self.id.get()}\t${key.family}\t${key.arg}") }
 
     fn settled(key: Key, deps: List<Key>, outermost: bool) {
-        eprintln("G\t${self.id}\t${key.family}\t${key.arg}\t${deps.length}\t${spelled(deps)}")
-        if outermost { eprintln("C\t${self.id}\t${["${n}" for n in self.reads.get()].join(" ")}") }
+        eprintln("G\t${self.id.get()}\t${key.family}\t${key.arg}\t${deps.length}\t${spelled(deps)}")
+        if outermost { eprintln("C\t${self.id.get()}\t${["${n}" for n in self.reads.get()].join(" ")}") }
     }
 
     fn abandoned(key: Key, deps: List<Key>) {
-        eprintln("A\t${self.id}\t${key.family}\t${key.arg}\t${deps.length}")
+        eprintln("A\t${self.id.get()}\t${key.family}\t${key.arg}\t${deps.length}")
     }
 
-    fn evicted(family: int) { eprintln("E\t${self.id}\t${family}") }
+    fn evicted(family: int) { eprintln("E\t${self.id.get()}\t${family}") }
 }
 
 /// Keys as `family:arg`, space-separated.
@@ -354,7 +355,7 @@ impl Kernel {
         self.replace(s)
         let no_stamps: Cell<List<int>> = list_cell()
         self.stamps.push(no_stamps)
-        if self.graph.on { self.graph.registered(ordinal) }
+        if self.graph.on.get() { self.graph.registered(ordinal) }
         ordinal
     }
 
@@ -367,7 +368,7 @@ impl Kernel {
     }
 
     fn set_input(key: Key, value_hash: int) {
-        if self.graph.on { self.graph.input_set(key) }
+        if self.graph.on.get() { self.graph.input_set(key) }
         mut s = self.snapshot()
         let prior? = state_cell(s, key) else {
             write_cell(s, key, input_cell(state_revision(s), value_hash))
@@ -557,7 +558,7 @@ impl Kernel {
         if !same_key(s.open.last() ?? key, key) { abandoned_out_of_order(key) }
         let deps = self.closed_frame(s)
         self.replace(s)
-        if self.graph.on { self.graph.abandoned(key, deps) }
+        if self.graph.on.get() { self.graph.abandoned(key, deps) }
         for d in deps { self.record_dep(d) }
     }
 
@@ -597,7 +598,7 @@ impl Kernel {
             },
         )
         self.replace(s)
-        if self.graph.on { self.graph.settled(key, deps, s.open.is_empty()) }
+        if self.graph.on.get() { self.graph.settled(key, deps, s.open.is_empty()) }
         if self.audit.on.get() { self.judged() }
     }
 
@@ -610,7 +611,7 @@ impl Kernel {
     /// apart.
     fn record_dep(key: Key) {
         let reader? = self.readers.get().last() else { return }
-        if self.graph.on { self.graph.counted(key.family) }
+        if self.graph.on.get() { self.graph.counted(key.family) }
         let stamp = self.stamp_of(key.family, key.arg)
         if stamp == reader { return }
         self.newly_read(key, stamp, reader)
@@ -620,7 +621,7 @@ impl Kernel {
     /// repeat allocates nothing.
     fn record_at(family: int, arg: int) {
         let reader? = self.readers.get().last() else { return }
-        if self.graph.on { self.graph.counted(family) }
+        if self.graph.on.get() { self.graph.counted(family) }
         let stamp = self.stamp_of(family, arg)
         if stamp == reader { return }
         self.newly_read(Key { family: family, arg: arg }, stamp, reader)
@@ -698,7 +699,7 @@ impl Kernel {
         let none: List<QueryCell?> = []
         s.cells[family].set(none)
         self.replace(s)
-        if self.graph.on { self.graph.evicted(family) }
+        if self.graph.on.get() { self.graph.evicted(family) }
     }
 
     fn hit() -> Verdict {
