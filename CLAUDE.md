@@ -335,6 +335,21 @@ registry is the idiom engine's spec, written by dogfooding.
   revision one, every sig it will ask for is held, and an Analysis
   asked after is remade over the memoized parts, never kept. The
   language's answer is in the sugar backlog: weak captures.
+- ONE DERIVATION IS ALIVE AT A TIME. A derivation that turns, owes
+  its instantiations, or quarrels under a hold is asked AGAIN in a
+  fresh workspace, and the one before must be LET GO first or the
+  build's peak is their SUM — a file test then its directory's passed
+  5 GB where either alone is 2.2. Three holders keep one alive, and
+  each needs its own answer. THE STACK: a caller's binding stands for
+  the whole call, so the derivation that is superseded is bound in a
+  HELPER that returns the next attempt and dies (`stood_first`,
+  `heard`, `tried_anew`), never in the fn that asks again. THE HOOKS:
+  `Workspace.discarded()` ends every one, the registry's declare hook
+  among them — it captures the table that holds the registry. THE
+  PROCESS: a relation's rows stand in a process-wide store under their
+  Db until `close()`, whoever else died. `make turn-memory-attack`
+  holds it by memory: a rebuild that turns twelve times, under a
+  ceiling one attempt clears and their sum trips.
 - A VALUE ITS OWN HOOKS CAPTURE IS AN IDENTITY, AND A COPY FORKS IT.
   `mut q = p` is a copy (spec 11.5), hooks included: the copy's writes
   land in the copy while its hooks answer for the original. The
@@ -915,6 +930,28 @@ registry is the idiom engine's spec, written by dogfooding.
   from `tests/support/` and read as `use tests.support.{…}` — a program
   test is a module like the rest, so it reaches the same file
   (packages/std-http/src/tests/support).
+  AND A TEST READS ITS MODULE'S PRIVATE NAMES: a file DIRECTLY in a
+  module's own `tests/` may `use` a top-level name that module declares
+  and does not export — by an explicit `use`, never bare. Nothing else
+  may: another module's tests, a directory under `tests/`, another
+  package. A name two of the module's files each keep private is
+  `resolve.private_apart`, naming both; a private name is never
+  re-exported.
+- A DEPENDENCY IS ITS LIBRARY. The file a dependency's `[bin]` names
+  is that package's program and runs only where the package is the
+  root, so it is no module file of a program that depends on it — its
+  statements never run there and its names are not the library's
+  (tools/ui-board: the page program is the package's own `[bin]`, and
+  `term/` depends on it).
+- A SEALED TYPE IS BUILT WHERE IT IS DECLARED. `@sealed` (`@std/meta`)
+  on a type: outside the declaring MODULE no literal fills it, no
+  `Name(value)` converts into it, no record literal, `with`, field
+  write or variant makes one (type.sealed) — every seat a literal
+  reaches, a default and an annotation's argument included — while
+  every read stays open. The doors are the fns the module exports, so
+  a value anywhere is one a door answered (std-ui's `Url`). Generated
+  code is judged where it LANDS: a derive on a sealed type lands in its
+  module and builds it. The module's own `tests/` is another module.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
   suite does not have. "a comment-only line is a blank line" asserts
@@ -1564,7 +1601,6 @@ Syntax the grammar lacks:
   written bare (`nest self.depth - 1`) or bound first. Every other head
   (`if`, `while`, `for`, `match`, `if let`, `let … else`) takes a
   literal bare.
-- The pipe `|>`: "expected BREAK while parsing `stmt`".
 - A SEMICOLON between statements (`let a = 1; a + 1`): F0001
   "unexpected character" at the `;` — a statement ends at a line
   break, and a one-line body is `{ a }` with one statement. A
@@ -1707,11 +1743,15 @@ Syntax the grammar lacks:
   arm's block is not read as diverging. Write the statement `match`
   (`.Err(e) -> { … fail e }, .Ok(v) -> …`), as @std/process's three
   drivers do.
-- A LITERAL OF `null` ALONE names no type: `let xs = [null, null]`
-  is F2006 "a list element takes its type from its value, and `null`
-  has none of its own" — `{"a": null}` and `Cell.new(null)` alike.
-  Any sibling with a type names it (`[null, 7]` is a `List<int?>`),
-  and a declared want fills it (`let c: Cell<int?> = Cell.new(null)`).
+- A LITERAL OF `null` ALONE names no type WHERE NO SEAT NAMES ONE:
+  `let xs = [null, null]` is F2006 "a list element takes its type
+  from its value, and `null` has none of its own" — `{"a": null}` and
+  `Cell.new(null)` alike. Any sibling with a type names it (`[null,
+  7]` is a `List<int?>`), and so does the seat it lands in: a
+  declared want (`let c: Cell<int?> = Cell.new(null)`), an argument
+  (`count([null, null])` at a `List<string?>` seat), a field, a fn's
+  answer. A generic seat nothing else pins (`g([null])` at `List<T?>`)
+  is the same refusal, spoken once, at the literal.
 - A KEYED LIST (`list xs by it.id { x -> … }`): "`list` takes no head
   value — name it at a statement (`list name { … }`), or write `list
   { … }`". Write `list { for x in xs { item { key: "${x.id}" … } }
@@ -1853,7 +1893,12 @@ Runtime facts, ours to ratify:
   value is F2030 "`.at(…)` calls a method, and `Bytes?` has none" —
   while a `List<Bytes>`'s GATHERS the parts and answers a plain
   `Bytes`. One name, three receivers, and only the octet reading is
-  nullable.
+  nullable. AND TEXT OUT OF OCTETS HAS THREE READERS, by what a bad
+  octet should do: `b.text()` answers `string?` (null when any octet
+  is not UTF-8), `b.text_prefix()` the longest whole-UTF-8 prefix
+  (never null; the rest is `b.slice(prefix.length, b.length)`, and a
+  stream holds at most one unfinished character there), and
+  `b.text_lossy()` every octet, each ill-formed subpart one U+FFFD.
 - A STRING's `.length` is a LOAD — the header carries the length
   (lane A), as a list's does; `while i < s.length` costs a load per
   turn, and style.restrlen_loop retired with the strlen it ratcheted. WITH ONE
@@ -1967,14 +2012,35 @@ Runtime facts, ours to ratify:
   tree and compiler stay warm there between runs. Bootstraps, whole
   suites and censuses run there; the Mac keeps quick targeted checks and
   anything macOS-only. ONE RUN PER SPRITE, EVERY STEP BOUNDED: `run`
-  answers the command's status, or 75 (no answer), 76 (busy), 70 (the
-  compiler does not build), 124/125 (a bound; `--for <minutes>` raises
-  the command's), 137 (out of memory) — and the remote command is
-  stopped on each, since a run never outlives its caller. `sh tools/work
-  sprites` shows all of them in seconds. A Sprite sleeps thirty seconds
-  after its last command; one silent for minutes has lost its
-  filesystem and is destroyed and created again (provisioning is `run`'s
-  first step, from `.github/ci/packages.txt`).
+  answers the command's status, or 76 (busy), 70 (the compiler does not
+  build), 124/125 (a bound; `--for <minutes>` raises the command's), 137
+  (out of memory), 75 (the Sprite did not answer), 74 (the provider did
+  not answer) — and a failure's last line begins with the one of three
+  that failed: SPRITE, CONNECTION or COMMAND. A RUN BELONGS TO THE
+  SPRITE, NOT TO THE CONNECTION: a supervisor there keeps its output and
+  status and holds the Sprite awake while it lives, `run` only follows
+  it, and a dropped connection is followed again from the byte it stood
+  at — so an interrupt stops a run, a drop never does, a run is as long
+  as its `--for` says, and the Sprite ends it at its bound whoever is
+  watching (`work attach` follows again, `work stop` ends it, `work
+  done` ends it with the lane). `sh tools/work sprites` shows all of
+  them in seconds.
+  A RUN ANSWERS ABOUT THIS WORKTREE OR NOT AT ALL: rsync carries files
+  to the Sprite, a file the worktree no longer has is removed there by
+  name, and the Sprite's manifest (every path and its hash) must equal
+  the worktree's before anything starts — else `SPRITE — sync:` and 75.
+  What a run wrote is left: `build/`, `.avra-cache`, anything git ignores.
+  WHAT ENDS A RUN EARLY IS MEMORY, NOT TIME: a twenty-minute exec holds,
+  chatty or silent, and thirty-two spinning processes leave a Sprite
+  answering in a second — but a Sprite says 16 GB and a balloon holds
+  half, more while it idles (3.3 to 7.3 GB were free to a run), there is
+  no swap, and under about 250 MB the whole machine answers nobody for
+  minutes. The Sprite's keeper ends a run at 600 MB (137), and every run
+  says what it had to start with. A SPRITE WITH NO SESSION AND NO HOLD
+  IS SUSPENDED WITHIN SECONDS, MID-WRITE IF NEED BE, which is why
+  nothing runs there detached without the hold; one silent for minutes
+  has lost its filesystem and is destroyed and created again
+  (provisioning is `run`'s first step, from `.github/ci/packages.txt`).
 - A BRANCH IS REBASED ONTO `origin/main` ONLY, never onto another
   unlanded branch: that lands the other branch's work unverified. A
   branch built on a stale local main moves with `git rebase --onto
@@ -2029,7 +2095,9 @@ Runtime facts, ours to ratify:
   `Memo.settle` (family, arg, fingerprint) in query/memo.av, every
   `Binder.declare` (name, file) in features/namespace.av, every
   failed `named_type` lookup in compiler/typing/declare.av, every
-  file a check PARSES (`Q parse <path>`, compiler/program.av) — behind
+  file a check PARSES (`Q parse <path>`, compiler/program.av), every
+  ATTEMPT a derivation makes (`Q attempt <turn> hold … reading <n>`,
+  compiler/derive.av) — behind
   `avra_qtrace` (runtime/avra_runtime.c), inert without the flag.
   Run both binaries on the SAME input with `AVRA_QTRACE=1`, confirm
   each is deterministic against itself (diff two runs of the same

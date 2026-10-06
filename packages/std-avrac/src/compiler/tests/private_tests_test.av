@@ -1,0 +1,121 @@
+//! A TEST READS ITS MODULE'S PRIVATE NAMES: a file directly in a module's
+//! own `tests/` may `use` a name the module declares and does not
+//! export. Nothing else may — another module's tests, a directory under
+//! `tests/`, another package, the module's own callers.
+use @std.avrac.compiler.{avra, new_workspace}
+use @std.avrac.testing.{refused_in}
+use compiler.{Program}
+use compiler.host.{memory_host}
+
+const ASKS: string = "use build.{shipped}\n\"\${shipped(41)}\""
+
+/// The same ask, the name never called — one refusal, the import's.
+const NAMES: string = "use build.{shipped}\n1"
+
+/// A program whose module `build` declares `shipped` privately, and
+/// `twin` privately in each of two files; `entry` is the asking file.
+fn asking(entry: string, source: string) -> Program {
+    mut files = {
+        "/w/src/main.av": "fn idle() -> int {\n    1\n}\n",
+        "/w/src/build/mod.av": "fn shipped(n: int) -> int {\n    n + 1\n}\nfn twin() -> int {\n    1\n}\nexport fn built(n: int) -> int {\n    shipped(n)\n}\n",
+        "/w/src/build/other.av": "fn twin() -> int {\n    2\n}\n",
+        "/w/src/near/mod.av": "export fn near_by() -> int {\n    1\n}\n",
+    }
+    files.set(entry, source)
+    new_workspace(
+        memory_host(
+            files,
+            [
+                "/w/src/main.av",
+                "/w/src/build/mod.av",
+                "/w/src/build/other.av",
+                "/w/src/near/mod.av",
+                entry,
+            ],
+        ),
+        "/w",
+        avra(),
+    )
+        .program(entry)
+}
+
+/// A program `app` whose test asks a dependency's private name.
+fn asking_a_dependency() -> Program {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/far\" = { path = \"vendor/far\" }\n",
+                "/w/src/tests/far_test.av": "use @x.far.{secret}\n1",
+                "/w/vendor/far/avra.toml": "[package]\nname = \"@x/far\"\nversion = \"0.1.0\"\n",
+                "/w/vendor/far/src/far.av": "fn secret() -> int {\n    7\n}\nexport fn open() -> int {\n    secret()\n}\n",
+            },
+            [
+                "/w/avra.toml",
+                "/w/src/tests/far_test.av",
+                "/w/vendor/far/avra.toml",
+                "/w/vendor/far/src/far.av",
+            ],
+        ),
+        "/w",
+        avra(),
+    )
+        .program("/w/src/tests/far_test.av")
+}
+
+const UNEXPORTED: string = "`build` does not export `shipped`"
+
+spec "compiler/modules — a test reads its module's private names" {
+    given "a file directly in the module's own tests/" {
+        then "it calls a private fn it names in a `use`" {
+            (asking("/w/src/build/tests/shipped_test.av", ASKS).run() catch e -> e) == "42"
+        }
+        then "a private name it does not import stays out of reach" {
+            refused_in(
+                asking(
+                    "/w/src/build/tests/shipped_test.av",
+                    "use build.{built}\n\"\${shipped(41)}\"",
+                ),
+                "no `fn shipped` is defined",
+            )
+        }
+        then "a name two files each keep private refuses, naming both" {
+            refused_in(
+                asking("/w/src/build/tests/twin_test.av", "use build.{twin}\n1"),
+                "`twin` is private to each of `mod.av` and `other.av` in `build` — a test reads a private name its module declares once",
+            )
+        }
+        then "a name the module does not declare is said to be neither" {
+            refused_in(
+                asking("/w/src/build/tests/shipped_test.av", "use build.{shipt}\n1"),
+                "`build` declares no `shipt`, exported or private",
+            )
+        }
+        then "it cannot re-export a private name" {
+            refused_in(
+                asking("/w/src/build/tests/shipped_test.av", "export use build.{shipped}\n1"),
+                UNEXPORTED,
+            )
+        }
+    }
+    given "any other file" {
+        then "another module's test is refused" { refused_in(asking("/w/src/near/tests/near_test.av", NAMES), UNEXPORTED) }
+        then "a directory under the module's tests/ is refused" {
+            refused_in(asking("/w/src/build/tests/support/helpers.av", NAMES), UNEXPORTED)
+        }
+        then "the root's tests/ is not the module's" { refused_in(asking("/w/src/tests/build_test.av", NAMES), UNEXPORTED) }
+        then "a caller of the module is refused, and told of no private names" {
+            let p = asking("/w/src/near/caller.av", NAMES)
+            refused_in(p, UNEXPORTED) &&
+                p.report().contains("its exports: built") &&
+                !p.report().contains("private")
+        }
+        then "a test of another package is refused" {
+            refused_in(asking_a_dependency(), "`@x.far` does not export `secret`")
+        }
+    }
+    given "the refusal, rendered" {
+        then "a name kept apart" {
+            asking("/w/src/build/tests/twin_test.av", "use build.{twin}\n1").report() == "error[resolve.private_apart]: `twin` is private to each of `mod.av` and `other.av` in `build` — a test reads a private name its module declares once\n  ╭─[/w/src/build/tests/twin_test.av:1:1]\n1 │ use build.{twin}\n  · ┬\n  · ╰── in this use\n──╯\nhelp: rename one declaration, or test each through a name its own file exports"
+        }
+    }
+}

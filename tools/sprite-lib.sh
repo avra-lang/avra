@@ -46,16 +46,3 @@ born() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' '_'; }
 owner_live() {
     [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ "$(born "$1")" = "$2" ]
 }
-
-# Reads a Sprite's `run=` rows ("<run> <live|ended> <host> <pid> [<born>]")
-# and prints the runs to stop: one whose processes ended, and one this
-# host began whose owner is gone. Another host's run is its keeper's.
-orphaned() {
-    while read -r or_r or_state or_h or_p or_b; do
-        if [ "$or_state" = ended ]; then
-            printf '%s ' "$or_r"
-        elif [ "$or_h" = "$(hostname -s)" ]; then
-            if [ -n "$or_b" ]; then owner_live "$or_p" "$or_b"; else kill -0 "$or_p" 2>/dev/null; fi || printf '%s ' "$or_r"
-        fi
-    done
-}

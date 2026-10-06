@@ -1550,6 +1550,22 @@ impl Decls {
         self.composers_of.set(none_apart)
     }
 
+    /// A TABLE NOTHING ASKS AGAIN, LET GO: every hook, the ones a one-shot
+    /// keeps armed among them, so it holds no closure back to its workspace —
+    /// and its relations closed, since a relation's rows stand in the process
+    /// under their Db until it closes. A read after this is refused.
+    fn let_go() {
+        self.disarm()
+        self.ensure_target.set(no_ensure)
+        self.ensure_consumed.set(no_ensure)
+        self.ensure_refs.set(no_refs_ensure)
+        self.embed_judge.set(embed_unjudged)
+        self.audit_hook.set(no_audit)
+        self.types.disarm_declare()
+        self.decl_rows.get().close()
+        self.refs_db.get().close()
+    }
+
     /// The workspace arms the sig hook once.
     fn arm(ensure: fn(DeclId) -> void) {
         self.ensure.set(ensure)
@@ -2482,6 +2498,14 @@ impl Decls {
     fn lacking(record: DeclId) -> List<Lacked> {
         let file = self.annotation_home(record)
         [Lacked { field: a.args[0].text, why: a.args[1].text } for a in self.annotations_of(record) if self.lacks_mark(a, file)]
+    }
+
+    /// Whether a type carries `@std/meta`'s `@sealed`.
+    fn is_sealed(d: DeclId) -> bool {
+        let file = self.annotation_home(d)
+        self
+            .annotations_of(d)
+            .any((a: AnnotationFact) -> self.is_meta_annotation(a, file, "sealed"))
     }
 
     fn lacks_mark(a: AnnotationFact, file: FileId) -> bool {

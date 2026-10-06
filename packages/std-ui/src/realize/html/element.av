@@ -28,13 +28,15 @@ export type Worded = { id: NodeId = unplaced, seat: string, reads: string, conte
 /// An element: where it stands among its siblings (`seat`, its step as
 /// matched; `reads`, the same step as a reader is shown it), its tag,
 /// its attributes in written order, what it hears, and what it holds. `id` is the number a page gave it — none until a
-/// page places it.
+/// page places it. `rests` names what its node draws AT REST: a box
+/// drawn unticked holds no attribute, and is drawn all the same.
 export type Tagged = {
     id: NodeId = unplaced,
     seat: string,
     reads: string,
     tag: HtmlTag,
     attrs: List<HtmlAttr> = [],
+    rests: List<HtmlAttrName> = [],
     hears: List<Action> = [],
     kids: List<Element> = [],
 }
@@ -67,38 +69,56 @@ impl Element {
 
 // ── the attribute table ─────────────────────────────────────────
 
-/// A component property as an HTML attribute, or nothing (content and
+/// What one component property writes under an attribute's name: its
+/// value, or — a flag drawn `false` — the name left off.
+type Wrote = { name: HtmlAttrName, value: string = "", on: bool = true }
+
+fn flag(name: HtmlAttrName, on: bool, value: string) -> List<Wrote> {
+    [Wrote { name: name, value: value, on: on }]
+}
+
+/// A component property as what it writes, or nothing (content and
 /// levels are drawn, not attached). Every arm spelled.
-fn attr_list(a: Attribute) -> List<HtmlAttr> {
+fn wrote(a: Attribute) -> List<Wrote> {
     match a {
-        .Value(v) -> [HtmlAttr { name: .Value, value: v }],
-        .Amount(n) -> [HtmlAttr { name: .Value, value: "${n}" }],
-        .Placeholder(t) -> [HtmlAttr { name: .Placeholder, value: t }],
-        .Src(u) -> [HtmlAttr { name: .Src, value: u.text() }],
-        .Alt(t) -> [HtmlAttr { name: .Alt, value: t }],
-        .Href(u) -> [HtmlAttr { name: .Href, value: u.text() }],
-        .Min(n) -> [HtmlAttr { name: .Min, value: "${n}" }],
-        .Max(n) -> [HtmlAttr { name: .Max, value: "${n}" }],
-        .Disabled(flag) -> if flag { [HtmlAttr { name: .Disabled, value: "" }] } else { [] },
-        .Checked(flag) -> if flag { [HtmlAttr { name: .Checked, value: "" }] } else { [] },
-        .Selected(flag) -> if flag { [HtmlAttr { name: .AriaSelected, value: "true" }] } else { [] },
-        .Open(flag) -> if flag { [HtmlAttr { name: .Open, value: "" }] } else { [] },
-        .Invalid(flag) -> if flag { [HtmlAttr { name: .AriaInvalid, value: "true" }] } else { [] },
-        .Loading(flag) -> if flag { [HtmlAttr { name: .AriaBusy, value: "true" }] } else { [] },
-        .Urgency(u) -> [HtmlAttr { name: .AriaLive, value: u.word() }],
-        .Title(t) -> [HtmlAttr { name: .Title, value: t }],
-        .Name(t) or .Label(t) -> [HtmlAttr { name: .AriaLabel, value: t }],
+        .Value(v) -> [Wrote { name: .Value, value: v }],
+        .Amount(n) -> [Wrote { name: .Value, value: "${n}" }],
+        .Placeholder(t) -> [Wrote { name: .Placeholder, value: t }],
+        .Src(u) -> [Wrote { name: .Src, value: u.text() }],
+        .Alt(t) -> [Wrote { name: .Alt, value: t }],
+        .Href(u) -> [Wrote { name: .Href, value: u.text() }],
+        .Min(n) -> [Wrote { name: .Min, value: "${n}" }],
+        .Max(n) -> [Wrote { name: .Max, value: "${n}" }],
+        .Disabled(on) -> flag(.Disabled, on, ""),
+        .Checked(on) -> flag(.Checked, on, ""),
+        .Selected(on) -> flag(.AriaSelected, on, "true"),
+        .Open(on) -> flag(.Open, on, ""),
+        .Invalid(on) -> flag(.AriaInvalid, on, "true"),
+        .Loading(on) -> flag(.AriaBusy, on, "true"),
+        .Urgency(u) -> [Wrote { name: .AriaLive, value: u.word() }],
+        .Title(t) -> [Wrote { name: .Title, value: t }],
+        .Name(t) or .Label(t) -> [Wrote { name: .AriaLabel, value: t }],
         .Text(_) or .Level(_) or .Submits(_) -> [],
     }
 }
 
-/// A node's properties as attributes, EACH NAME ONCE: a name two
-/// properties write holds what the later one wrote, as a page set twice
-/// would — so the page written out, the page first painted and the page
-/// repainted are one page.
+/// What a node's properties write, EACH NAME ONCE: a name two properties
+/// write holds what the later one wrote, as a page set twice would — so
+/// the page written out, the page first painted and the page repainted
+/// are one page.
+fn written(attrs: List<Attribute>) -> List<Wrote> {
+    let all = [w for a in attrs for w in wrote(a)]
+    [w for j, w in all if !all.drop(j + 1).any(it.name == w.name)]
+}
+
+/// A node's properties as attributes.
 fn attrs_of(attrs: List<Attribute>) -> List<HtmlAttr> {
-    let written = [h for a in attrs for h in attr_list(a)]
-    [h for j, h in written if !written.drop(j + 1).any(it.name == h.name)]
+    [HtmlAttr { name: w.name, value: w.value } for w in written(attrs) if w.on]
+}
+
+/// The names a node draws AT REST: each flag its properties leave off.
+fn rests_of(attrs: List<Attribute>) -> List<HtmlAttrName> {
+    [w.name for w in written(attrs) if !w.on]
 }
 
 /// An element's attributes from the neutral node: what kind of control it
@@ -187,6 +207,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 reads: control_part,
                 tag: tag_of(n),
                 attrs: element_attrs(n.prim, n.attrs),
+                rests: rests_of(n.attrs),
                 hears: n.events,
             },
         )
@@ -235,6 +256,7 @@ fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
                 reads: at.shown,
                 tag: tag_of(n),
                 attrs: element_attrs(n.prim, n.attrs).concat(node_attrs(n)),
+                rests: rests_of(n.attrs),
                 hears: heard(n),
                 kids: kids,
             },

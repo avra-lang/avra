@@ -161,6 +161,16 @@ impl TypeCx {
         items.find((k) -> self.self_typed(k)) ?? items[0]
     }
 
+    /// AN AGGREGATE OF NOTHING BUT `null` names no element of its own:
+    /// it waits, hungry, for the seat it lands in to name one — true
+    /// while it waits. The first judging seat feeds it; with none, the
+    /// walk's end types it once more and it refuses in its own words.
+    mut fn awaits_seat(e: ExprId, head: ExprId) -> bool {
+        if self.starving || !(self.shape_at(head) is .Null) { return false }
+        self.go_hungry(e)
+        true
+    }
+
     fn self_typed(k: ExprId) -> bool {
         match self.shape_at(k) { .EmptyList or .EmptyMap or .Null or .Error -> false, _ -> true }
     }
@@ -397,6 +407,11 @@ impl TypeCx {
     mut fn named_accepts(e: ExprId, want: TypeId) -> bool {
         let of: TypeId? = self.view.types.stands_for(want)
         if of == null || !literal_form(self.view.store.expr(e)) { return false }
+        if self.seals(self.loc_of(e), want, "a literal fills it here") {
+            // spoken: the literal absorbs every later ask of it
+            self.facts.set_type(e, self.error_type)
+            return true
+        }
         self.accepts(e, of!)
     }
 
@@ -926,10 +941,12 @@ impl TypeCx {
     /// ONE field, which compares by that field. The one place equality is
     /// decided: `==`, a list's scans and a literal pattern all ask here.
     fn compares_by_value(ty: TypeId) -> bool {
-        let inner? = self.view.types.carried(ty) else {
-            return comparable(self.view.types.shape_of(ty)) ||
-                self.unit_enum(ty) ||
-                self.one_field(ty)
+        // a compare READS: a name is judged by the shape it stands over
+        let seen = self.view.types.seen_through(ty)
+        let inner? = self.view.types.carried(seen) else {
+            return comparable(self.view.types.shape_of(seen)) ||
+                self.unit_enum(seen) ||
+                self.one_field(seen)
         }
         self.compares_by_value(inner)
     }
@@ -1065,6 +1082,12 @@ impl TypeCx {
             )
     }
 
+    /// Where a call's written arguments stand, as its refusal says it
+    /// — a piped call's first one stands left of the `|>`.
+    fn arguments_from(e: ExprId) -> string {
+        if self.view.store.is_piped(e) { "the pipe and the parentheses give" } else { "the parentheses give" }
+    }
+
     /// A trailing block with no seat left for it — the arity refusal in
     /// the block's words: the parentheses already fill the callee.
     mut fn block_unseated(e: ExprId, callee: string, want: int, written: int, blocks: int) {
@@ -1073,7 +1096,7 @@ impl TypeCx {
                 refusal(
                     "type.mismatch",
                     self.loc_of(e),
-                    "`${callee}` takes ${want} arguments, and the parentheses give ${written} — a trailing block fills a fn seat, and there is no seat left for ${block_word(blocks)}",
+                    "`${callee}` takes ${want} arguments, and ${self.arguments_from(e)} ${written} — a trailing block fills a fn seat, and there is no seat left for ${block_word(blocks)}",
                     "this call",
                     "a trailing block is the call's LAST argument: declare a fn seat for it, or move the value into the parentheses",
                 ),
@@ -1814,10 +1837,11 @@ impl TypeCx {
 
     /// THE SETTLEMENT LAW: a call refused as a whole absorbs its
     /// arguments' hunger — the call spoke, and a hungry lambda's own
-    /// voice would be a second one for the same mistake. Every call
-    /// shape (named, valued, method) settles here.
-    mut fn settled_call(args: List<ExprId>, answer: TypeId) -> TypeId {
-        if self.errored_ty(answer) {
+    /// voice would be a second one for the same mistake. A call that
+    /// went HUNGRY itself refused nothing: its arguments wait with it.
+    /// Every call shape (named, valued, method) settles here.
+    mut fn settled_call(e: ExprId, args: List<ExprId>, answer: TypeId) -> TypeId {
+        if self.errored_ty(answer) && !self.facts.hungry_at(e) {
             for a in args { self.absorb_hunger(a) }
         }
         answer

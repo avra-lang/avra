@@ -1,0 +1,162 @@
+//! The evaluator's MAP: a view of a shared write log. The machine has
+//! no counts, so it cannot ask whether a map is held once — a place
+//! opened for writing is always a copy. A copy here is two words: a
+//! second view of the same log. Every write APPENDS (a set, an
+//! overwrite, a removal), and the view standing at the log's end
+//! appends in place; a view behind the end takes its own log first.
+//! So a map filled in a loop is filled in linear time, and no view
+//! ever sees a write it did not make.
+use core.{list_cell, map_cell}
+
+/// A map as the machine holds it: the first `len` entries of a log.
+type MapVal = { log: int, len: int }
+
+/// One write log. An entry is a key and the value written under it —
+/// or a removal, which is not `live`. `prev` is the same key's entry
+/// before this one (-1 for none), `count` the live keys once this
+/// entry stands, and `latest` each key's last entry in the whole log.
+type MapLog = {
+    keys: Cell<List<string>>,
+    vals: Cell<List<Val>>,
+    live: Cell<List<bool>>,
+    prev: Cell<List<int>>,
+    count: Cell<List<int>>,
+    latest: Cell<Map<string, int>>,
+}
+
+fn new_map_log() -> MapLog {
+    MapLog {
+        keys: list_cell<string>(),
+        vals: list_cell<Val>(),
+        live: list_cell<bool>(),
+        prev: list_cell<int>(),
+        count: list_cell<int>(),
+        latest: map_cell(),
+    }
+}
+
+impl MapLog {
+    fn length() -> int { self.keys.get().length }
+
+    /// The live keys among the first `len` entries.
+    fn count_at(len: int) -> int {
+        if len == 0 { 0 } else { self.count.get()[len - 1] }
+    }
+
+    /// `key`'s last entry among the first `len`, or -1.
+    fn entry(key: string, len: int) -> int {
+        let prev = self.prev.get()
+        mut p = self.latest.get().get(key) ?? -1
+        while p >= len { p = prev[p] }
+        p
+    }
+
+    /// The entry that holds `key`'s value among the first `len` — -1
+    /// when it was never written there, or was removed since.
+    fn slot(key: string, len: int) -> int {
+        let p = self.entry(key, len)
+        if p >= 0 && self.live.get()[p] { p } else { -1 }
+    }
+
+    /// One more entry. The caller stands at the log's end.
+    fn append(key: string, v: Val, live: bool) {
+        let at = self.length()
+        let before = self.latest.get().get(key) ?? -1
+        let was = before >= 0 && self.live.get()[before]
+        let step = if live && !was { 1 } else if !live && was { -1 } else { 0 }
+        self.count.push(self.count_at(at) + step)
+        self.keys.push(key)
+        self.vals.push(v)
+        self.live.push(live)
+        self.prev.push(before)
+        self.latest.put(key, at)
+    }
+
+    /// The entries that OPEN a key still held among the first `len`,
+    /// in order — a key written again after its removal opens anew, at
+    /// the later place, as the runtime's map appends it.
+    fn opened(len: int) -> List<int> {
+        let keys = self.keys.get()
+        let live = self.live.get()
+        mut open: Map<string, int> = {}
+        for p in 0..len {
+            if !live[p] {
+                open.set(keys[p], -1)
+            } else if open.get(keys[p]) ?? -1 < 0 {
+                open.set(keys[p], p)
+            }
+        }
+        [p for p in 0..len if live[p] && open.get(keys[p]) == p]
+    }
+}
+
+impl Machine {
+    /// A map of these keys and values, in order, as a fresh log.
+    fn fresh_map(keys: List<string>, vals: List<Val>) -> Val {
+        let log = new_map_log()
+        for j, k in keys { log.append(k, vals[j], true) }
+        self.logs.push(log)
+        self.maps.push(MapVal { log: self.logs.length - 1, len: keys.length })
+        Val.M(self.maps.length - 1)
+    }
+
+    /// A second view of the same entries — the whole cost of a copy.
+    fn map_copy(id: int) -> Val {
+        self.maps.push(self.maps[id])
+        Val.M(self.maps.length - 1)
+    }
+
+    /// The keys a map holds, in insertion order.
+    fn map_keys(id: int) -> List<string> {
+        let m = self.maps[id]
+        let keys = self.logs[m.log].keys.get()
+        [keys[p] for p in self.logs[m.log].opened(m.len)]
+    }
+
+    /// The values a map holds, each as stored, in its key's order.
+    fn map_vals(id: int) -> List<Val> {
+        let m = self.maps[id]
+        let log = self.logs[m.log]
+        let keys = log.keys.get()
+        let vals = log.vals.get()
+        [vals[log.slot(keys[p], m.len)] for p in log.opened(m.len)]
+    }
+
+    fn map_count(id: int) -> int {
+        let m = self.maps[id]
+        self.logs[m.log].count_at(m.len)
+    }
+
+    /// Where `key`'s value stands in the map's log, or -1.
+    fn map_slot(id: int, key: string) -> int {
+        let m = self.maps[id]
+        self.logs[m.log].slot(key, m.len)
+    }
+
+    /// The value at a slot `map_slot` named, as stored.
+    fn map_stored(id: int, slot: int) -> Val {
+        self.logs[self.maps[id].log].vals.get()[slot]
+    }
+
+    /// One entry written through the view: in place when the view
+    /// stands at its log's end, into the view's own log otherwise.
+    fn map_append(id: int, key: string, v: Val, live: bool) {
+        let m = self.map_at_end(id)
+        self.logs[m.log].append(key, v, live)
+        self.maps.set(id, MapVal { log: m.log, len: m.len + 1 })
+    }
+
+    /// The view, standing at the end of a log: its own when another
+    /// view has written past it.
+    fn map_at_end(id: int) -> MapVal {
+        let m = self.maps[id]
+        if self.logs[m.log].length() == m.len { return m }
+        let log = new_map_log()
+        let vals = self.map_vals(id)
+        for j, k in self.map_keys(id) { log.append(k, vals[j], true) }
+        self.logs.push(log)
+        let own = MapVal { log: self.logs.length - 1, len: log.length() }
+        self.maps.set(id, own)
+        own
+    }
+}

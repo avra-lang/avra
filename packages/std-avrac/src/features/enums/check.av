@@ -59,6 +59,7 @@ fn literal_type(mut cx: TypeCx, e: ExprId, name: string, args: List<ExprId>) -> 
     let want = cx.view.types.carried(wanted) ?? wanted
     let sig? = cx.variants_of(want) else { return unenumerated_want(cx, e, name, want) }
     if sig.tag_of(name) == null { return no_variant_wanted(cx, e, cx.view.types.name_of(want), name, sig) }
+    let _ = cx.seals(cx.loc_of(e), want, "built here")
     if !cx.seats_fit(e, ".${name}", args, sig.payloads_of(name)) { return cx.error_type }
     want
 }
@@ -88,8 +89,23 @@ fn matched_type(mut cx: TypeCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> 
         guard_checks(cx, a)
         let _ = cx.walk_type(a.value)
     }
+    absent_tailed(cx, e, [a.value for a in arms])
     coverage_checks(cx, e, subject, subject_ty, arms)
     arms_type(cx, e, [a.value for a in arms])
+}
+
+/// AN ARMS BLOCK AT A SEAT THAT READS ABSENCE — `find_map { .Title(t)
+/// -> t }` — answers what its arms answer, made nullable: the walk
+/// marked the tail before the body was typed, and no boundary declared
+/// an answer, so the want is the arms' own join under one `?`.
+fn absent_tailed(mut cx: TypeCx, e: ExprId, values: List<ExprId>) {
+    if !cx.facts.has_null_tail(e) || cx.want_at(e) != null { return }
+    let answering = [v for v in values if cx.stays(v)]
+    let head? = answering.find((v) -> !cx.errored(v)) else { return }
+    let joined = cx.arms_answer(head, answering)
+    cx
+        .facts
+        .set_want(e, if cx.view.types.carried(joined) == null { cx.type(joined?) } else { joined })
 }
 
 /// A guard is typed under its arm's binds, spoken by `arm_checks`
@@ -268,17 +284,25 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
     for n in missing { unhandled_variant(cx, e, sname, n) }
 }
 
-/// A trailing-arms-sugar `match` under a NULLABLE seat leaves its
-/// uncovered variants to an implicit `_ -> null` — the sugar's own
-/// law, never a hand-written match's: `match`'s own exhaustiveness
-/// law speaks for those. The mark rides the Match a program never
-/// wrote (`is_sugar_match`); the want a boundary already planted on
-/// it (`plant_want`, before the arms walked) says whether the tail
-/// is spendable.
+/// A trailing-arms-sugar `match` leaves its uncovered variants to an
+/// implicit tail where its seat gives the tail a meaning: `_ -> null`
+/// under a NULLABLE seat, `_ -> false` under a `bool` one — a
+/// predicate that names what it accepts. The sugar's own law, never a
+/// hand-written match's: `match`'s exhaustiveness law speaks for
+/// those. The mark rides the Match a program never wrote
+/// (`is_sugar_match`); the want a boundary already planted on it
+/// (`plant_want`, before the arms walked) says which tail is spendable.
 fn implicit_null_tail(cx: TypeCx, e: ExprId) -> bool {
     if !cx.view.store.is_sugar_match(e) { return false }
+    // a walk that reads absence marked the tail before the arms spoke
+    if cx.facts.has_null_tail(e) { return true }
     let want? = cx.want_at(e) else { return false }
-    cx.view.types.shape_of(want) is .Opt
+    tail_shaped(cx.view.types.shape_of(want))
+}
+
+/// The answers an implicit tail can make: absence, or `false`.
+fn tail_shaped(sh: Type) -> bool {
+    match sh { .Opt(_) or .Bool -> true, rest -> false }
 }
 
 /// The variants these patterns, as one row each, leave uncovered.

@@ -5,7 +5,7 @@ use @std.ui.tree.node.{Node}
 use @std.ui.realize.html.html.{fragment, render, page, Page}
 use @std.ui.realize.html.writer.{HtmlOp, source}
 use @std.ui.realize.html.tags.{HtmlAttr}
-use @std.ui.tree.url.{Url, url, local}
+use @std.ui.tree.url.{url, local, absolute}
 use @std.ui.env.{Env}
 use @std.ui.style.theme.{default_theme}
 use @std.ui.realize.tests.support.{
@@ -80,7 +80,7 @@ fn hostile_nodes() -> List<Node> {
         card_node(h, []),
         keyed(leaf(.Item, []), h),
         leaf(.Field, [.Label(h), .Placeholder(h)]),
-        leaf(.Icon, [.Src(Url.Local(h)), .Name(h)]),
+        leaf(.Icon, [.Src(local(h)), .Name(h)]),
         leaf(.Dialog, [.Label(h), .Open(true)]),
         leaf(.Alert, [.Text(h)]),
         leaf(.Spinner, [.Label(h)]),
@@ -184,17 +184,17 @@ spec "std/ui html — adversarial" {
             refuses("\\\\x.dev\\a") && refuses("\\javascript:x")
         }
         then "a local reference that spells a scheme is written as the path it is" {
-            fragment(leaf(.Link, [.Href(Url.Local("javascript:x"))])) == "<a href=\"./javascript:x\"></a>"
+            fragment(leaf(.Link, [.Href(local("javascript:x"))])) == "<a href=\"./javascript:x\"></a>"
         }
         then "a URL is safe on whatever primitive carries it" {
-            fragment(leaf(.Image, [.Href(Url.Local("vbscript:x")), .Src(local("/ok"))])) == "<img href=\"./vbscript:x\" src=\"/ok\">"
+            fragment(leaf(.Image, [.Href(local("vbscript:x")), .Src(local("/ok"))])) == "<img href=\"./vbscript:x\" src=\"/ok\">"
         }
         then "no value of the type spells a URL the reader refuses" {
             scripts
                 .all(
-                    (h) -> reads(Url.Local(h).text()) &&
-                        reads(Url.Absolute(.Https, h).text()) &&
-                        reads(Url.Absolute(.Mailto, h).text()),
+                    (h) -> reads(local(h).text()) &&
+                        reads(absolute(.Https, h).text()) &&
+                        reads(absolute(.Mailto, h).text()),
                 )
         }
         then "a refused link in a tree leaves no href holding its value" {

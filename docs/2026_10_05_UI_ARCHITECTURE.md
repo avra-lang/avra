@@ -53,16 +53,19 @@ Five attempts to lift a handler into a generated message failed.
    heard compare in one currency.
    A first paint is a diff against nothing; an unchanged page is no
    patch (the diff is a fold with no state of its own between paints:
-   old page and new in, patches and the numbered page out); a property is compared against what the PAGE holds, so a
+   old page and new in, patches and the numbered page out). THE PAGE IS
+   THE TREE FOR EVERYTHING THE TREE NAMES; EVERYTHING ELSE IS THE
+   HOST'S ("What the page keeps", below): a property is written only
+   when the program draws other than it knows the page to hold, so a
    field a user typed into is never written back to — and a door too: a
    dialog the user sent away is closed by the page before the program
    hears, so it is not closed again, and is shown again if the program
-   still says it is open. A property a
-   paint does not name is at rest, whether the last paint or the user
-   moved it. THE DIFF'S LAW IS RUN, NOT ARGUED: for trees grown and edited
-   by chance from a seed, the frame that repaints one as the next is
-   applied to a host modelled from the wire alone, and the page must be
-   the one the next tree lowers to, each kept element still itself, a
+   still says it is open. THE DIFF'S LAW IS RUN, NOT ARGUED: for trees
+   grown and edited by chance from a seed, a user's hand laid on the
+   page between paints — heard by a handler, and unheard — the frame
+   that repaints one as the next is applied to a host modelled from the
+   wire alone, and the page must be the next tree's for all it names and
+   as the host held it for all else, each kept element still itself, a
    second paint silent and each handler the new tree's
    (`realize/dom/tests/support`; `make ui-fuzz` runs it at length, and
    `make ui-host-test` holds the page's own host to the model's page).
@@ -124,7 +127,8 @@ Five attempts to lift a handler into a generated message failed.
    headless Firefox with the browser's own pointer and keys
    (`tools/ui-board/browser.mjs`): what only an engine can show — the
    sheet styling the page, a caret kept while typing, the keyboard's
-   reach. Event kinds need no host copy:
+   reach, the focus kept on a row that is carried. Event kinds need no
+   host copy:
    the host echoes a kind it never reads.
 7. **`mount(view)` is the app.** No app writes the host seam: the
    page's exports and its one import are the web module's own
@@ -167,6 +171,96 @@ Five attempts to lift a handler into a generated message failed.
     `Font`) are `style/tokens.av`'s; a value that shows itself where it
     is listed is `tree/shows.av`'s `Shows`. The old node's `spoken`
     is `tree/outline.av`'s `outline`.
+
+## What the page keeps (seam 1's law)
+
+**A property is written only when the value the program draws for it —
+rest, on the paint it stops naming it — is not the last value the
+program drew or heard there; a property its tree never names is never
+written.**
+
+A page holds more than any tree says: text being typed, a caret, a
+selection, the focus, how far a list is scrolled, an open `<details>`,
+where a video is, a canvas's pixels, an animation under way, and
+whatever a host yet to be written keeps. None of it is listed anywhere.
+It survives because of two things the diff does NOT do.
+
+1. **It writes no name the program does not draw.** On each node a
+   property is the PROGRAM's while its tree names it and the HOST's
+   otherwise. NAMING IS WRITING IT AT THE INSTANCE: `field "Name" {}`
+   names no value and `field "Name" { value: draft }` names one, empty
+   or not (an optional `@attr` member gives its attribute only when
+   given); `checked: false` names the tick as much as `checked: true`
+   does.
+   - **Named, and drawn as the program knows it**: nothing is said. A
+     paint that draws what the last one drew writes nothing over what a
+     user did between, so a repaint anywhere else never reaches a field
+     mid-typing.
+   - **Named, and drawn otherwise**: written. What the program KNOWS the
+     page holds is what a handler of its own heard since the last paint,
+     else what that paint drew. So typing that the program takes up
+     (heard `abc`, draws `abc`) writes nothing; `value: ""` after a send
+     clears the field; and a handler that keeps another value than the
+     one it heard (a mask, a limit, a refusal) gets the value it draws.
+   - **No longer named**: drawn at rest, that once, and the host's from
+     then on.
+   - **Newly named**: written, at rest or off it — the program knows
+     nothing of what stands there.
+   - **Never named**: never written, whatever a handler heard of it.
+   An element new to the page stands at rest, so it is sent only what it
+   holds off rest.
+2. **It never makes again a node that stays.** The same node is the same
+   element, paint to paint, so everything the page keeps on it is kept
+   with no word said about it.
+   - a keyed row that changes place is CARRIED (`place`), never made;
+   - an attribute, a property, a handler or a class that changes is set
+     on the element that stands;
+   - words that change rewrite their run of text; the element holding
+     them stands;
+   - an element already where it is put is not touched.
+
+THE CORNER. The program draws `checked: false` on every paint and a
+user ticks the box. With no handler on it the program never hears, draws
+what it drew, and the tick stands — until the program draws another
+value. With a handler it hears the tick; if it then draws `false` still,
+the box is unticked, and if it draws `true`, nothing is said. A box with
+no `checked` written is the host's either way.
+
+WHAT IS MADE AGAIN, and why — each is a node that became ANOTHER node:
+
+| what changed | why it is another node |
+|---|---|
+| its primitive, to one drawn as another element — or a heading's level | an element cannot become another kind |
+| words to an element, or an element to words, at one seat | the same |
+| its key | a key is who a row is |
+| its parent — a node, or a composition's instance, carried under another | a node is where it stands, its parent first (seam 2); the instance's state goes the same way |
+| a root that drew one node and now draws several, or the other way | the several stand under a column the one did not |
+
+An unkeyed row is told from its siblings by ORDER, so a row arriving
+above it leaves each element where it stood and rewrites what it shows:
+what the page kept on the third element is now beside the fourth row's
+words. What must keep its own through a reorder wears a key.
+
+THE HOST'S HALF (`runtime/dom/bootstrap.js`). A property is written only
+when it differs from what the element holds. An element is carried by
+the page's own verb for that where it has one (`moveBefore`), which
+drops nothing; a page without it takes the element off and puts it
+back, and the host hands back the focus and the caret under it — how
+far it was scrolled, a video's place and an animation's are lost on
+such a page, and only there.
+
+THE OTHER TARGETS. A headless screen is the tree itself, so it holds
+nothing a tree does not name. A terminal keeps one thing of its own, the
+focus, by the path a control stands at, so it follows a keyed row; it
+keeps no text, so a field shows what the view says it holds and one
+given no `value` shows none (avra-8sb5.11.336).
+
+AS OTHERS DO IT. React writes a controlled input back after every event
+and never touches an uncontrolled one; Elm writes `value` and `checked`
+on every render, by name; Solid writes a property when its signal
+changes and SwiftUI holds the state as the one truth through a binding.
+This law is Solid's rule for what is drawn, with React's for what a
+handler heard, and no property named in the diff.
 
 ## Compositions and instance state (seam 2's tenant)
 
@@ -503,14 +597,14 @@ one exhaustive match per target over the primitives.
 - THE NEUTRAL WORD IS `press`, never `click`: a mouse word names one
   platform. `on press { … }`.
 - A URL IN THE TREE IS CHECKED: `href` and `src` carry `Url`
-  (`tree/url.av`), a type with NO unsafe value — a reference inside
-  the site, or one of `Scheme`'s. `url(text)` reads foreign text
+  (`tree/url.av`), a SEALED type with NO unsafe value — only that
+  module builds one: a reference inside the site, or one of `Scheme`'s. `url(text)` reads foreign text
   strictly and answers absence: a scheme (read from the first path
   segment alone) that is not ours, a network path (`//host`, with
-  slashes or backslashes), any control character. `local("/docs")` and
-  `https("x.dev")` write one, and the writer makes a value built by
-  hand safe too — behind `./`, behind `/.`, a control character as its
-  percent escape. No target checks a URL. (`@std/url` is not used: it models
+  slashes or backslashes), any control character. `local("/docs")`,
+  `https("x.dev")` and `absolute(scheme, after)` make one from a
+  program's own text and write it safe — behind `./`, behind `/.`, a
+  control character as its percent escape. No target checks a URL. (`@std/url` is not used: it models
   an ABSOLUTE URL parsed by RFC 3986, and a link's usual target is a
   relative reference it refuses.)
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# THE HOST SEAM'S PROOF, END TO END: the board (tools/ui-board/web) is built
+# THE HOST SEAM'S PROOF, END TO END: the board (tools/ui-board) is built
 # as a wasm reactor and run over the real page glue by tools/ui-board/demo.mjs,
 # which checks each claim and exits 1 on the first that fails. This is the one
 # run that holds `mount`, the `avra_main` entry, the web module's exports and
@@ -29,7 +29,7 @@ fi
 # A COPY is built, so the tree's own object cache never holds a wasm object.
 mkdir -p "$work/tools"
 cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
-"$avra" build --target "$target" --wasm_reactor "$work/tools/ui-board/web" >"$work/build.out" 2>"$work/build.err" || built=$?
+"$avra" build --target "$target" --wasm_reactor "$work/tools/ui-board" >"$work/build.out" 2>"$work/build.err" || built=$?
 [ "${built:-0}" -ne 2 ] || skip "$(sed 's/^avra: //' "$work/build.err" | head -1)"
 if [ "${built:-0}" -ne 0 ]; then
     echo "ui-board: the board did not build for $target"; cat "$work/build.err"; tail -20 "$work/build.out"; exit 1

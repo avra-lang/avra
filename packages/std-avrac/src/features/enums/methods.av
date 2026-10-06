@@ -1,5 +1,6 @@
 //! `E.all` — every variant of a payload-free enum, as one list in
-//! declaration order. The variants are the DECLARATION's, so the list
+//! declaration order — and `v.name`, the word a variant was declared
+//! with, which every enum answers. The variants are the DECLARATION's, so the list
 //! is generated from the enum's own signature; nothing re-lists them.
 //!
 //! The receiver is the enum's TYPE NAME (`Family.all()`), reached
@@ -7,13 +8,49 @@
 //! row up by the enum's VALUE shape so a built-in or grammar type name
 //! cannot reach it. A value of the same enum reaches the row too, and
 //! answers the same list — one rule, two spellings of the receiver.
-use core.{Reg, Type, TypeId, TypeRegistry}
+use core.{ExprId, Ins, Reg, Type, TypeId, TypeRegistry}
 use features.{LowerCx, MethodCall, TypeCx}
+use diagnostics.{refusal}
 
 /// `E.all` — `List<E>`, every variant in declaration order.
-export fn check_enum_all(cx: TypeCx, mc: MethodCall) -> TypeId {
+export fn check_enum_all(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem? = enum_all_element(cx.view.types, cx.type_at(mc.subject)) else { return cx.error_type }
+    if !cx.seated(mc, "all", []) { return cx.error_type }
+    let sig? = cx.variants_of(elem) else { return cx.error_type }
+    let carrying: int? = sig.payloads.find_index(it.length > 0)
+    if carrying != null { return unlistable(cx, mc.e, cx.view.types.name_of(elem), sig.names[carrying!]) }
     cx.type(List<elem>)
+}
+
+/// `all` on an enum with a carrying variant: there is no value of that
+/// variant to list without its payload.
+fn unlistable(mut cx: TypeCx, e: ExprId, tname: string, variant: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.enum_all",
+                cx.loc_of(e),
+                "`all` lists an enum whose variants carry nothing, and `${tname}.${variant}` carries a payload",
+                "listed here",
+                "list the values you mean — or read a variant's word with `.name`, which every enum answers",
+            ),
+        )
+}
+
+/// `v.name` — the variant's own word, as declared.
+// LICENSED fns.dead_parameter: a property row's check names the node and the type; the answer needs neither
+export fn check_variant_name(cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
+    cx.type(string)
+}
+
+/// `v.name` — a jump table over the tag, one word per variant.
+export fn lower_variant_name(mut cx: LowerCx, e: ExprId, r: Reg, ty: TypeId) -> Reg {
+    let sig? = cx.variants_of(cx.seen(ty)) else { return cx.lower_defect(e, "a `name` without an enum survived typing") }
+    let last = sig.names.length - 1
+    if last == 0 { return cx.const_str_at(e, sig.names[0]) }
+    cx.emit(Ins.SwitchStart(cx.tag_of(r), [j for j in 0..last]))
+    for j in 0..last { cx.arm_end(cx.const_str(sig.names[j])) }
+    cx.close_region(e, cx.const_str(sig.names[last]))
 }
 
 /// The enum a receiver names: a TYPE NAME's value shape, or a value's

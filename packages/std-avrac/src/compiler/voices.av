@@ -137,13 +137,25 @@ fn reexport_twice(at: Loc?, name: string) -> Diag {
     )
 }
 
-fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>) -> Diag {
+/// `own_test` says the asker is one of `m`'s own tests, which reads the
+/// module's private names too — so the name is declared there at all.
+fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>, own_test: bool) -> Diag {
     refusal(
         "resolve.not_exported",
         at,
-        "`${m.text()}` does not export `${item}`",
+        if own_test { "`${m.text()}` declares no `${item}`, exported or private" } else { "`${m.text()}` does not export `${item}`" },
         "in this use",
-        "its exports: ${joined(exports, ", ")}",
+        if own_test { "a module's own tests read its private names as well as its exports: ${joined(exports, ", ")}" } else { "its exports: ${joined(exports, ", ")}" },
+    )
+}
+
+fn private_apart(at: Loc?, m: ModulePath, item: string, files: List<string>) -> Diag {
+    refusal(
+        "resolve.private_apart",
+        at,
+        "`${item}` is private to each of ${joined(["`${f}`" for f in files], " and ")} in `${m.text()}` — a test reads a private name its module declares once",
+        "in this use",
+        "rename one declaration, or test each through a name its own file exports",
     )
 }
 

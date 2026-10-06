@@ -304,7 +304,7 @@ wasm-archive:
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
+.PHONY: ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -506,6 +506,13 @@ compile-slots: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cache_attacks.sh
 	@sh tools/link_cache_attack.sh
+	@sh tools/turn_memory_attack.sh
+
+# ONE DERIVATION ALIVE AT A TIME, held by memory: a rebuild that turns once per
+# link of a chain of held bodies, under a ceiling one attempt clears and their
+# sum trips. It CLEARS the store, as the attacks above do.
+turn-memory-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/turn_memory_attack.sh
 
 # Exact refcount and list-write counts; the shipping runtime is put
 # back on every exit.   make census CMD="check packages/std-avrac"

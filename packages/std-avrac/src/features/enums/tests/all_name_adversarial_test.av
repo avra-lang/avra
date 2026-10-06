@@ -1,0 +1,60 @@
+// `all` and `name` under attack: `all` asked of an enum that carries
+// payloads, a variant spelled `all`, and the word of every kind of
+// variant.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/enums/all and name" {
+    given "`all`" {
+        then "a payload enum's type name refuses in `all`'s words" {
+            refused_with(
+                "enum P { A, B(int) }\nP.all().length",
+                "`all` lists an enum whose variants carry nothing, and `P.B` carries a payload",
+            )
+        }
+        then "a payload enum's value refuses alike" {
+            refused_with(
+                "enum P { A, B(int) }\nlet p = P.A\np.all().length",
+                "`P.B` carries a payload",
+            )
+        }
+        then "`all` takes no arguments" {
+            refused_with("enum E { A, B }\nE.all(1).length", "`all`")
+        }
+        then "a variant spelled `all` is the type's own" {
+            shown("enum E { all, B }\nE.all.ordinal") == "0"
+        }
+    }
+    given "`name`" {
+        then "a unit variant" {
+            shown("enum E { A, B }\nE.B.name") == "B"
+        }
+        then "a carrying variant" {
+            shown("enum P { A, B(int) }\nP.B(3).name") == "B"
+        }
+        then "a one-variant enum" {
+            shown("enum O { One }\nO.One.name") == "One"
+        }
+        then "a method called `name` stands beside the property" {
+            shown(
+                "enum E { A, B }\nimpl E { fn name() -> string { \"mine\" } }\n\"\${E.B.name()} \${E.B.name}\"",
+            ) == "mine B"
+        }
+        then "a record's own `name` field is the field" {
+            shown(
+                "enum E { A }\ntype S = { name: string, e: E }\nlet s = S { name: \"f\", e: E.A }\n\"\${s.name} \${s.e.name}\"",
+            ) == "f A"
+        }
+        then "a name over an enum answers the variant's word" {
+            shown("enum E { A, B }\ntype M = E\nlet m: M = M(E.B)\nm.name") == "B"
+        }
+        then "the type name has no `name`" {
+            refused_with("enum E { A, B }\nE.name", "has no variant `name`")
+        }
+        then "a nullable enum has no name until it is unwrapped" {
+            refused_with("enum E { A, B }\nlet e: E? = E.A\ne.name", "`.name` reads a guarantee")
+        }
+        then "the unwrapped nullable answers" {
+            shown("enum E { A, B }\nlet e: E? = E.B\ne?.name ?? \"-\"") == "B"
+        }
+    }
+}

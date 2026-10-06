@@ -15,6 +15,25 @@ use compiler.lower.{Lowered, program_symbol}
 /// in-process — `voice` is the text its trap's stderr must carry.
 export type RefusesCall = { path: string, voice: string }
 
+/// What the evaluator made of a held derivation: agreed with it, or quarrelled
+/// under a hold — the derivation let go, the sources to be asked.
+enum Hearing {
+    Agreed(Derived)
+    Quarrelled
+}
+
+/// A suite's own module, as one derivation tells it: every case in scope and
+/// the file its body is in, and each program the entry calls.
+fn suite_module(d: Derived, only: string?, calls: List<ProgramCall>) -> ProgramModule {
+    let told = [s for s in d.said if in_scope(only, s.path)]
+    let cases = flatten([s.cases for s in told])
+    ProgramModule {
+        main: (types: TypeRegistry) -> suite_entry(types, cases, calls),
+        rows: program_rows,
+        cases: flatten([[CaseHome { call: c, path: s.path } for c in s.cases] for s in told]),
+    }
+}
+
 impl Workspace {
     /// EVERY SUITE THE PACKAGE CARRIES: its own, and one per package nested under
     /// its sources — a module tree, a vendored dependency, a test that reaches
@@ -30,6 +49,7 @@ impl Workspace {
         for root in [r for r in nested_roots(self.host, joined_path(self.root, "src")) if in_scope(only, r)] {
             let inner = self.nested_at(root)
             let made: BuildOutcome? = inner.suite(null, told_from, tools)?
+            inner.discarded()
             if made != null { out.push(made!) }
         }
         out
@@ -52,7 +72,7 @@ impl Workspace {
         // is also the one build where `rules` can be held to what
         // `self.decls` actually declares (`rules_checked`).
         if self.manifest(0).name == "@std/avrac" {
-            let results = self.rules_checked()
+            let results = self.rules_proved()
             let missed = [c.label for c in results if !c.ok]
             if !missed.is_empty() { fail joined([rule_example_missed(l) for l in missed], "\n") }
             println("${counted(results.length, "rule example")} proved")
@@ -68,25 +88,35 @@ impl Workspace {
         if kept != null { return .Ok(kept! with { refuses: refuses }) }
         let store = self.opened_store()
         let owed = [path for path in programs if !self.native_only(path) && !store.has(Stored.Unit, self.proved_key(store, path))]
-        let d = self.evaluated(store, owed, told_from)?
-        let told = [s for s in d.said if in_scope(only, s.path)]
-        let cases = flatten([s.cases for s in told])
-        if cases.is_empty() && programs.is_empty() && refuses.is_empty() { return .Ok(null) }
-        let _ = make_dirs(dir_of(binary))
         let calls = [self.program_call(path, told_from) for path in programs]
-        let homes = flatten([[CaseHome { call: c, path: s.path } for c in s.cases] for s in told])
-        let made: BuildOutcome? = match d
-            .linked(
-                ProgramModule {
-                    main: (types: TypeRegistry) -> suite_entry(types, cases, calls),
-                    rows: program_rows,
-                    cases: homes,
-                },
-                under,
-                binary,
-                tools,
-            ) { .Ok(b) -> b with { refuses: refuses }, .Err(e) -> { fail e.describe().message } }
+        let d = self
+            .evaluated(
+                store,
+                owed,
+                told_from,
+                (met: Derived) -> link_owes(met, suite_module(met, only, calls), tools),
+            )?
+        let m = suite_module(d, only, calls)
+        if m.cases.is_empty() && programs.is_empty() && refuses.is_empty() { return .Ok(null) }
+        let _ = make_dirs(dir_of(binary))
+        let made: BuildOutcome? = match d.linked(m, under, binary, tools) {
+            .Ok(b) -> b with { refuses: refuses },
+            .Err(e) -> { fail e.describe().message },
+        }
+        // a suite's workspace is done at its link: a package's nested suites
+        // run one after another, never beside the ones before them
+        d.program.ws.discarded()
         made
+    }
+
+    /// The rule examples, proved in a workspace of their own: proving reads
+    /// every file of the package, and none of that stands beside the suite's
+    /// derivation.
+    fn rules_proved() -> List<ExampleCheck> {
+        let fresh = self.anew()
+        let results = fresh.rules_checked()
+        fresh.discarded()
+        results
     }
 
     /// The package's REFUSAL program tests, marked `.refuses` instead
@@ -109,14 +139,38 @@ impl Workspace {
     /// each run and held to its text — and remembered, so an unmoved program is
     /// not run again. A quarrel under a hold is asked again of the sources: a
     /// held body the record did not foresee is no verdict on the program.
-    fn evaluated(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
+    /// `owes` is the link's own whole question, asked here so no derivation is
+    /// made again at the link.
+    fn evaluated(store: Store, owed: List<string>, told_from: string, owes: fn(Derived) -> bool) -> Result<
+        Derived,
+        string,
+    > {
+        match self.heard(store, owed, told_from, owes)? {
+            .Agreed(d) -> .Ok(d),
+            .Quarrelled -> self.heard_whole(store, owed, told_from),
+        }
+    }
+
+    /// THE HELD DERIVATION, HEARD BY THE EVALUATOR: agreed with, or — quarrelling
+    /// under a hold — let go, so the sources' own derivation never stands beside
+    /// it. A quarrel with nothing held is the program's.
+    fn heard(store: Store, owed: List<string>, told_from: string, owes: fn(Derived) -> bool) -> Result<
+        Hearing,
+        string,
+    > {
         let reach = [ReadFile { path: path, why: Reads.Reached } for path in flatten([self.seen_files(store, path) for path in owed])]
-        let met = self.derived_reading(null, Want.Binary, reach)?
         // the evaluator runs bodies, an instantiation's among them
-        let d = if owed.is_empty() { met } else { met.program.ws.whole(met, reach)? }
+        let d = self
+            .derived_owing(null, Want.Binary, reach, (met: Derived) -> !owed.is_empty() || owes(met))?
         let first = d.program.ws.quarrels(d, owed, told_from)
-        if first.is_empty() { return d.program.ws.agreed(store, d, owed) }
+        if first.is_empty() { return Hearing.Agreed(d.program.ws.agreed(store, d, owed)) }
         if held_paths(d.program.ws).is_empty() { fail joined(first, "\n") }
+        d.program.ws.discarded()
+        Hearing.Quarrelled
+    }
+
+    /// The sources' own derivation, heard: the verdict on the program.
+    fn heard_whole(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
         let sure = self.from_sources(null, Want.Binary)?
         let last = sure.program.ws.quarrels(sure, owed, told_from)
         if !last.is_empty() { fail joined(last, "\n") }

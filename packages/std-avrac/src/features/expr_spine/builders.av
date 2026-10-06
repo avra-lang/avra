@@ -208,7 +208,7 @@ fn build_fold_coalesce(b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(acc)
 }
 
-/// `v ( .name | .name(args) | ?.name | [i] | (args) | { … } | .type(T) )*`
+/// `v ( .name | .name(args) | ?.name | [i] | (args) | ?.(args) | { … } | .type(T) )*`
 /// — ONE postfix star: property links, method calls, chains, indexes,
 /// applications, trailing blocks and type literals interleave freely, folded left
 /// in SOURCE order (a merge over the capture families' spans). The
@@ -231,6 +231,7 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
     let elses = b.exprs(10)?
     let spellings = b.type_refs(11)?
     let chained = b.type_refs(12)?
+    let call_chains = b.tokens(13)?
     if links.length != names.length { return .Err(zip_defect) }
     let whole? = b.span else { return .Err("defect: a postfix chain without a span — the arena and the grammar disagree") }
     let starts = whole.lo
@@ -244,6 +245,7 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
     mut jb = 0
     mut jt = 0
     mut jq = 0
+    mut jx = 0
     // a block after a block is a mistake named, never a third argument;
     // a block after a type literal too — a literal is no call
     mut blocked = false
@@ -385,7 +387,11 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
                 } else {
                     ends
                 }
-                acc = b.store.alloc_expr(Expr.CallValue(acc, args_here), span_of(starts, hi))
+                // a chain mark stands directly before its own paren, so
+                // the first unspent one behind this paren is this call's
+                let through = jx < call_chains.length && call_chains[jx].span.lo < cp
+                if through { jx = jx + 1 }
+                acc = if through { chained_apply(b, acc, args_here) } else { b.store.alloc_expr(Expr.CallValue(acc, args_here), span_of(starts, hi)) }
             }
         }
     }
@@ -398,6 +404,16 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
 fn chained_call(b: Builder, subject: ExprId, name: string, args: List<ExprId>) -> ExprId {
     let carried = b.store.alloc_expr(Expr.Ident(Scoped(chained_binder)), b.span)
     let call = b.store.alloc_expr(Expr.MethodCall(carried, Plain(name), args), b.span)
+    let absent = b.store.alloc_expr(Expr.NullLit, b.span)
+    b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span)
+}
+
+/// `f?.(args)` IS `match f { null -> null, v? -> v(args) }`: the fn
+/// that may be absent is called when it is held, and absence answers
+/// absence — the chain's law, over an application.
+fn chained_apply(b: Builder, subject: ExprId, args: List<ExprId>) -> ExprId {
+    let carried = b.store.alloc_expr(Expr.Ident(Scoped(chained_binder)), b.span)
+    let call = b.store.alloc_expr(Expr.CallValue(carried, args), b.span)
     let absent = b.store.alloc_expr(Expr.NullLit, b.span)
     b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span)
 }

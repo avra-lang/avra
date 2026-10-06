@@ -1,0 +1,82 @@
+// `f?.(args)` under attack: a callee that is never absent, a callee
+// that is no fn, the wrong arguments, and the neighbours it must not
+// disturb — `f?(x)` still propagates, `a?.m(x)` still chains.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/nullable/optional call — `f?.(args)`" {
+    given "a fn that may be absent" {
+        then "a held fn is called" {
+            shown("alias F = fn(int) -> int\nlet f: F? = (x: int) -> x + 1\nf?.(2) ?? -1") == "3"
+        }
+        then "an absent fn answers absence" {
+            shown("alias F = fn(int) -> int\nlet f: F? = null\nf?.(2) ?? -1") == "-1"
+        }
+        then "the answer is nullable" {
+            refused_with("alias F = fn() -> int\nlet f: F? = null\nlet n: int = f?.()\nn", "`int?`")
+        }
+        then "no arguments" {
+            shown("alias F = fn() -> int\nlet f: F? = () -> 9\nf?.() ?? 0") == "9"
+        }
+    }
+    given "a callee that cannot be absent" {
+        then "a plain fn value refuses in the chain's words" {
+            refused_with("let f = (x: int) -> x\nf?.(1)", "`?.` reaches into")
+        }
+    }
+    given "the seats" {
+        then "a wrong argument refuses at the seat" {
+            refused_with("alias F = fn(int) -> int\nlet f: F? = null\nf?.(\"a\") ?? 0", "`int`")
+        }
+        then "a nullable that holds no fn refuses the call" {
+            refused_with("let n: int? = 1\nn?.(2)", "not callable")
+        }
+    }
+    given "chains of chains" {
+        then "a held fn answering a fn that may be absent" {
+            shown(
+                "alias F = fn(int) -> int\nalias G = fn(int) -> F?\nfn mk(x: int) -> F? { (y: int) -> x * y }\nlet g: G? = mk\ng?.(3)?.(4) ?? -1",
+            ) == "12"
+        }
+        then "an absent element stops the whole chain" {
+            shown(
+                "alias F = fn(int) -> int\ntype B = { f: F? }\nlet bs: List<B?> = [B { f: (x: int) -> x + 1 }, null]\n\"\${bs[0]?.f?.(1) ?? -9} \${bs[1]?.f?.(1) ?? -9}\"",
+            ) == "2 -9"
+        }
+        then "a chain that answers nothing binds nothing" {
+            refused_with(
+                "alias T = fn(mut List<int>) -> void\nlet t: T? = null\nmut l: List<int> = []\nlet x = t?.(l)\n1",
+                "answers nothing",
+            )
+        }
+    }
+    given "the neighbours" {
+        then "`f?(x)` is still propagate-then-call" {
+            shown(
+                "alias F = fn(int) -> int\nfn go(f: F?) -> int? { f?(2) }\ngo((x: int) -> x * 3) ?? -1",
+            ) == "6"
+        }
+        then "`a?.m(x)` still chains a method" {
+            shown("let s: string? = \"ab\"\ns?.contains(\"a\") ?? false") == "true"
+        }
+        then "the two chains compose" {
+            shown("alias F = fn() -> string\nlet f: F? = () -> \"ab\"\nf?.()?.length ?? 0") == "2"
+        }
+    }
+    given "a nullable match that answers nothing — the chain's neighbour" {
+        then "the null arm runs when the subject is absent" {
+            shown(
+                "fn say(mut log: List<string>, w: string) { log.push(w) }\nmut log: List<string> = []\nlet s: string? = null\nmatch s {\n    v? -> say(log, v)\n    null -> say(log, \"none\")\n}\nlog.join(\",\")",
+            ) == "none"
+        }
+        then "the present arm runs when it is held, and only it" {
+            shown(
+                "fn say(mut log: List<string>, w: string) { log.push(w) }\nmut log: List<string> = []\nlet s: string? = \"a\"\nmatch s {\n    null -> say(log, \"none\")\n    v? -> say(log, v)\n}\nlog.join(\",\")",
+            ) == "a"
+        }
+        then "a chain into a call that answers nothing still runs nothing when absent" {
+            shown(
+                "alias Tell = fn(mut List<string>) -> void\nmut log: List<string> = []\nlet t: Tell? = null\nt?.(log)\nlog.length",
+            ) == "0"
+        }
+    }
+}
