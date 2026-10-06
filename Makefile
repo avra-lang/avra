@@ -774,6 +774,18 @@ tool-witnesses:
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
 
+# THE KEEPERS THAT NEED NO COMPILER, which a pull request's own check runs
+# before it builds anything: each reads the tree alone and all of them
+# together take half a minute, so a refusal stops on the PR instead of
+# failing a train and every PR riding it. Each is one of KEEPERS, which the
+# train runs whole.
+KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites
+keepers-static:
+	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
+	@fail=0; for k in $(KEEPERS_STATIC); do \
+	  $(MAKE) -s $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
+	done; exit $$fail
+
 # THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
 # compiler/codecs.av's registry runs every pair over its exemplars,
 # decode(encode(x)) compared to x field by field; tools/codecs.py
