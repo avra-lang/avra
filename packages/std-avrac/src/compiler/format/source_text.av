@@ -2352,7 +2352,7 @@ impl SourceText {
     /// so the walk never crosses a `?.`.
     mut fn chain_walk(e: ExprId, depth: int) -> ChainWalk {
         // a piped call is a pipeline's, never a link: it stands as the root
-        if self.store.is_piped(e) { return ChainWalk { root: e, links: [] } }
+        if self.store.is_piped(e) { return unlinked(e) }
         match self.store.expr(e) {
             .Prop(subject, name) -> {
                 let inner = self.chain_walk(subject, depth)
@@ -2368,7 +2368,7 @@ impl SourceText {
                     links: inner.links.concat([self.method_link_text(e, name, args, depth)]),
                 }
             },
-            rest -> ChainWalk { root: e, links: [] },
+            rest -> unlinked(e),
         }
     }
 
@@ -2417,14 +2417,14 @@ impl SourceText {
                 let head = "(${self.expression(subject, loosest_tier, depth + 1)})"
                 self.piped_stage(e, args, head, self.store.expr_is_closure(subject), depth)
             },
-            rest -> ChainWalk { root: e, links: [] },
+            rest -> unlinked(e),
         }
     }
 
     /// One stage: the walk through the piped value, then `head` and
     /// the arguments written after it.
     mut fn piped_stage(e: ExprId, args: List<ExprId>, head: string, short: bool, depth: int) -> ChainWalk {
-        let value? = args.first() else { return ChainWalk { root: e, links: [] } }
+        let value? = args.first() else { return unlinked(e) }
         let inner = self.pipe_walk(value, depth)
         let written = args.slice(1, args.length)
         let tail = if short && written.is_empty() { "" } else { self.call_tail(written, depth + 1) }
@@ -2512,6 +2512,9 @@ fn is_pronoun(params: List<Param>) -> bool {
     if params.length != 1 { return false }
     same_param_id(params[0].id, pronoun_param_id)
 }
+
+/// A walk that is its root alone.
+fn unlinked(root: ExprId) -> ChainWalk { ChainWalk { root: root, links: [] } }
 
 /// A walk whose LAST link carries `mark` — the postfix a pipeline's
 /// last stage was written with.
