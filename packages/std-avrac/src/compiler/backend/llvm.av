@@ -7,6 +7,8 @@
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
 use core.{
+    sorted_by,
+    text_before,
     Reg,
     body_symbol,
     hosted_symbol,
@@ -157,13 +159,31 @@ fn refs_of(bodies: List<Body>, statics: List<Static>) -> Refs {
     r
 }
 
+/// A MODULE'S STATICS IN THE ORDER ITS BODIES FIRST READ THEM. A static's name carries
+/// ids of the process that named it, so the reads order them, never the name; one no
+/// body reads follows, as it stood.
+fn in_read_order(statics: List<Static>, bodies: List<Body>, refs: Refs) -> List<Static> {
+    let read = if refs.whole { refs_of(bodies, statics).statics } else { refs.statics }
+    mut by: Map<string, Static> = {}
+    for st in statics { by.set(st.name, st) }
+    [by.get(n)! for n in read.keys() if by.get(n) != null]
+        .concat([st for st in statics if read.get(st.name) == null])
+}
+
 /// Does this module carry the name? Every name in a whole-program module;
 /// only what its own bodies named in a split one.
 fn carries(r: Refs, named: Map<string, bool>, name: string) -> bool { r.whole || named.get(name) != null }
 
 /// The whole program as verified `.ll` text; null means written, a string is
 /// the failure.
-export fn emit_ll(l: Lowered, path: string, target: string) -> string? { emit_mode(l, path, Owned.Whole, Written.Text, target) }
+export fn emit_ll(l: Lowered, path: string, target: string) -> string? { emit_mode(in_symbol_order(l), path, Owned.Whole, Written.Text, target) }
+
+/// THE PROGRAM IN EMISSION ORDER: its bodies by symbol name. A module declares and
+/// defines in this order, so what it writes is the source's alone, never the order a
+/// build met its files in.
+export fn in_symbol_order(l: Lowered) -> Lowered {
+    l with { fns: sorted_by(l.fns, (a: Body, b: Body) -> text_before(a.name, b.name)) }
+}
 
 /// ONE MODULE OF A SPLIT PROGRAM, as bitcode. It declares what its own bodies
 /// NAME — LLVM wants a called symbol declared where it is called — and lays out
@@ -238,9 +258,8 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     for bd in l.fns {
         if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd) }
     }
-    for st in l.statics {
-        if carries(refs, refs.statics, st.name) { emit_static(lc, m, st) }
-    }
+    let carried = [st for st in l.statics if carries(refs, refs.statics, st.name)]
+    for st in in_read_order(carried, scanned, refs) { emit_static(lc, m, st) }
     let rt = rt_index()
     for bd in l.fns {
         if mine.get(bd.name) != null {

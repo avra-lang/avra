@@ -1,6 +1,8 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
+    sorted_by,
+    text_before,
     ModulePath,
     module_path,
     SyntaxArena,
@@ -360,10 +362,22 @@ impl Workspace {
             // A non-host link carries the package C that TARGET can build —
             // the `wasm_objects` a manifest names — and never a native `-L`,
             // `-l` or `[link.raw]`. A package with none is refused, not linked.
-            flatten([self.package_wasm_objects(pkg) for pkg in self.packages()])
+            flatten([self.package_wasm_objects(pkg) for pkg in self.packages_by_name()])
         } else {
-            flatten([self.package_link(pkg) for pkg in self.packages()])
+            flatten([self.package_link(pkg) for pkg in self.packages_by_name()])
         }
+    }
+
+    /// THE PACKAGES IN LINK ORDER: by manifest name, so a link line is the program's
+    /// alone, never the order a build admitted its packages in.
+    fn packages_by_name() -> List<Package> {
+        sorted_by(
+            self.packages(),
+            (a: Package, b: Package) -> text_before(
+                self.manifest(a.ordinal).name,
+                self.manifest(b.ordinal).name,
+            ),
+        )
     }
 
     /// Whether a package's C resolves the program's own symbols by name
@@ -396,7 +410,8 @@ impl Workspace {
     /// Every file a link reads besides the program's own objects: the
     /// runtime archive, and each reached package's objects.
     fn linked_files(runtime: string, target: string) -> List<string> {
-        [runtime].concat(flatten([self.package_objects(pkg, target) for pkg in self.packages()]))
+        [runtime]
+            .concat(flatten([self.package_objects(pkg, target) for pkg in self.packages_by_name()]))
     }
 
     /// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —
