@@ -123,8 +123,11 @@ INERT_ROWS = re.compile(
     r"errno_text|ptr_at|qtrace|trap|utf8_bad_at|mem_live|fd_taken|fd_write|type_named)|"
     r"host|println)$")
 
-# A read through the filesystem seam: behind `Host`, not yet an input.
-HOSTED = re.compile(r"\bhost\.(read|exists|beneath|list|is_dir|stamp)\(")
+# A read through the filesystem seam: behind `Host`, not yet an input —
+# called as a member, as a field's value (`(host.beneath)(…)`), or on
+# the line under a chain that ends in `host`.
+HOSTED = re.compile(r"\bhost\.(read|exists|beneath|list|is_dir|stamp)\)?\(")
+CHAINED = re.compile(r"^\s*\.(read|exists|beneath|list|is_dir|stamp)\)?\(")
 
 USE = re.compile(r"^use\s+@std\.([a-z_]+)((?:\.[a-z_]+)*)\.(\{[^}]*\}|[A-Za-z_][A-Za-z_0-9]*)", re.M | re.S)
 EXTERN = re.compile(r"^\s*(?:export\s+)?extern\s+fn\s+([A-Za-z_][A-Za-z_0-9]*)", re.M)
@@ -214,6 +217,8 @@ def sites_in(path, text, module_rows=()):
             continue
         found = [(k, n, False) for pat, k, n in patterns if pat.search(code)]
         found += [("read", "host." + m.group(1), True) for m in HOSTED.finditer(code)]
+        if i > 0 and re.search(r"\bhost\s*$", code_of(lines[i - 1])):
+            found += [("read", "host." + m.group(1), True) for m in CHAINED.finditer(code)]
         if spawns:
             found += [("spawn", "." + m.group(1), False) for m in SPAWNS.finditer(code)]
         for kind, verb, hosted in found:
@@ -323,6 +328,9 @@ def selftest():
         ("packages/std-avrac/src/compiler/x.av", "extern fn avra_host_env(n: string) -> string?\nfn f() { avra_host_env(\"X\") }\n", [(2, "env", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", "fn f(ws: W) { ws.host.read(p) }\n", [(1, "read", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", io + "fn f() { xs.map(read_text) }\n", [(3, "read", "outside")]),
+        ("packages/std-avrac/src/compiler/x.av", "fn f(ws: W) { (ws.host.beneath)(root, rel) }\n", [(1, "read", "outside")]),
+        ("packages/std-avrac/src/compiler/x.av", "fn f(ws: W) {\n    ws\n        .host\n        .list(dir)\n}\n", [(4, "read", "outside")]),
+        ("packages/std-avrac/src/compiler/x.av", "fn f(ws: W) {\n    ws.rows\n        .list(dir)\n}\n", []),
         ("packages/std-avrac/src/compiler/x.av", "use @std.time.{now_ms}\nfn f() -> int { now_ms() }\n", [(2, "clock", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", "use @std.io.{env as os_env}\nfn env(k: string) -> string? { os_env(k) }\n", [(2, "env", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", "fn f() { avra_now_ns() }\n", "ROW"),
