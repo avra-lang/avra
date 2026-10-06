@@ -58,6 +58,11 @@ fn opened(port: int) -> Result<Conn, NetError> {
     .Ok(c)
 }
 
+/// The line a run prints when a stream fails before the last.
+fn cut_short(idle: int, stream: int, e: NetError) -> string {
+    "h2_open ${idle} idle: stream ${stream} failed — ${e.describe().message}"
+}
+
 fn run() -> Result<string, NetError> {
     let idle = number("H2_OPEN", 1000)
     let n = number("H2_N", 20000)
@@ -87,9 +92,7 @@ fn run() -> Result<string, NetError> {
     for i in 0..n {
         match asked(hot, 2 * i + 3, block) {
             .Ok(octets) -> { back = back + octets },
-            .Err(e) -> { return .Ok(
-                    "h2_open ${idle} idle: stream ${i} of ${n} failed — ${e.describe().message}",
-                ) },
+            .Err(e) -> { return .Ok(cut_short(idle, i, e)) },
         }
     }
     let each = (now_ns() - t0) / n
