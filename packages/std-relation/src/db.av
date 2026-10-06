@@ -499,15 +499,15 @@ fn open_hash<R>(s: Slot<R>) -> int {
 // ── queries and inputs ──
 
 /// One `@query`'s or `@input`'s answers under every Db, by the Db's id.
-export type Answers<V> = { held: Cell<List<Held<V>?>> }
+export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>> }
 
 /// One query's answers under one Db: its kernel family with the typed
 /// values, every call's spelled arguments interned to a dense arg, and
 /// how each call is asked again when the kernel verifies it.
-type Held<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, again: Table<fn() -> V> }
+type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, again: Table<fn() -> V> }
 
 export fn answers<V>() -> Answers<V> {
-    let none: List<Held<V>?> = []
+    let none: List<AnswersUnder<V>?> = []
     Answers { held: Cell.new(none) }
 }
 
@@ -515,13 +515,13 @@ impl Answers<V> {
     /// The answers under `db`: its family registered in the Db's kernel
     /// on the first ask, and dropped — to register again, empty — when
     /// the Db closes or is given another kernel.
-    fn under(db: Db) -> Held<V> {
+    fn under(db: Db) -> AnswersUnder<V> {
         let held = self.held.get()
         if db.id >= held.length { return self.opened(db) }
         held[db.id] ?? self.opened(db)
     }
 
-    fn opened(db: Db) -> Held<V> {
+    fn opened(db: Db) -> AnswersUnder<V> {
         while self.held.get().length <= db.id { self.held.push(null) }
         let slots = self.held
         let id = db.id
@@ -531,7 +531,7 @@ impl Answers<V> {
 
     /// `made` kept as the answers under `db`, until the Db closes or is
     /// given another kernel.
-    fn placed(db: Db, made: Held<V>) -> Held<V> {
+    fn placed(db: Db, made: AnswersUnder<V>) -> AnswersUnder<V> {
         let slots = self.held
         let id = db.id
         self.held.set_at(id, made)
@@ -542,16 +542,16 @@ impl Answers<V> {
 }
 
 /// A query's empty answers in one kernel family.
-fn held_in<V>(kernel: Kernel, family: int) -> Held<V> {
+fn held_in<V>(kernel: Kernel, family: int) -> AnswersUnder<V> {
     let memo: Relation<V> = new_memo(kernel, family)
     let args: Cell<Map<string, int>> = Cell.new({})
     let again: Table<fn() -> V> = new_table()
-    Held { memo: memo, args: args, again: again }
+    AnswersUnder { memo: memo, args: args, again: again }
 }
 
 /// A call verified: asked again when it is a query's, then the revision
 /// its cell last changed at.
-fn reasked<V>(held: Held<V>?, arg: int) -> int {
+fn reasked<V>(held: AnswersUnder<V>?, arg: int) -> int {
     let h? = held else { return 0 }
     match h.again.entry(arg) {
         .Present(ask) -> {
@@ -562,7 +562,7 @@ fn reasked<V>(held: Held<V>?, arg: int) -> int {
     h.memo.kernel.changed_at(h.memo.query_key(arg))
 }
 
-impl Held<V> {
+impl AnswersUnder<V> {
     /// A call's dense arg: its spelled arguments, interned.
     fn arg(spelled: string) -> int {
         let known? = self.args.get().get(spelled) else {
@@ -590,7 +590,7 @@ impl Held<V> {
         body: fn() -> V,
         again: fn() -> V,
         digest: fn(V) -> int,
-        record: Record<V>,
+        record: KeptRecord<V>,
     ) -> V {
         if self.answered(arg) { return self.ran(db, arg, body, again, digest) }
         let restored? = self.restored(db, record) else {
@@ -613,7 +613,7 @@ impl Held<V> {
 
     /// The owner's record for a call, read back — one that does not read
     /// back is recomputed, never guessed at.
-    fn restored(db: Db, record: Record<V>) -> V? {
+    fn restored(db: Db, record: KeptRecord<V>) -> V? {
         let answer = db.durable.answer
         let bytes? = answer(record.query, record.args) else { return null }
         match decoded_with(bytes, record.read) { .Ok(value) -> value, .Err(_) -> null }
@@ -645,7 +645,7 @@ type Run<V> = { value: V, wrote: bool }
 
 /// How an answer is kept past the process: the query's durable name, the
 /// call's arguments' stable hash, and the answer's codec.
-export type Record<V> = { query: string, args: int, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
+export type KeptRecord<V> = { query: string, args: int, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
 
 /// THE REVISION A HASH MOVED AT: a relation's verifier answers a cell's
 /// live HASH, and the kernel compares REVISIONS — so each cell's hash is
