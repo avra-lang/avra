@@ -349,8 +349,8 @@ impl Rows<R> {
         let cell = db.owner_named(owner)
         let keyed = how.keyed
         let keys = how.keys
-        let heard = db.read_ever()
-        // a keyless row on a Db no query read takes a new id and moves no read cell: nothing to ask
+        let heard = db.read_in(self.family.get())
+        // a keyless row on a relation no query read takes a new id and moves no read cell: nothing to ask
         let asked = keyed || heard
         let named = if asked { [keys(r) for r in rows] } else { [] }
         let moving = if heard { self.moving(cell, keyed, named) } else { [] }
@@ -359,8 +359,9 @@ impl Rows<R> {
             db.refuse(replaced_whole(self.name, owner, why!))
             return rows.slice(0, 0)
         }
-        // A CELL MOVES ONCE A CALL, however many rows file under it.
-        if heard { self.moves(db, moving) }
+        // A CELL MOVES ONCE A CALL, however many rows file under it; with
+        // no bucket ever read, the whole relation alone.
+        if db.read_ever() { self.moves(db, moving) }
         let stamp = Stamp { owner: cell, run: renewed(db, cell) }
         let mine = self.stamped_by(cell)
         let hash = how.hash
@@ -426,9 +427,10 @@ impl Rows<R> {
     /// in, and the ones a row it no longer names stood in.
     fn moving(owner: int, keyed: bool, named: List<List<List<IndexKey>>>) -> List<int> {
         let next = self.next_id()
+        let none: List<int> = []
         let moved = Marks {
             seen: Cell.new([false for _b in self.buckets.get()]),
-            out: Cell.new([]),
+            out: Cell.new(none),
         }
         // only a keyed row names a row to keep
         let nameable = if keyed { next } else { 0 }
