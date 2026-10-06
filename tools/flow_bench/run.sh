@@ -29,14 +29,10 @@ runtime_built() {
     echo "$rest"
 }
 
-# A scheduler variant `$1` (today|full|prefix) linked under the C bench.
+# The scheduler linked under the C bench.
 spawn_bench() {
-    case $1 in
-        today) src=$root/runtime/avra_fiber.c ;;
-        *) src=$out/fiber_$1.c; python3 "$here/probes/head.py" "$root/runtime/avra_fiber.c" "$1" "$src" ;;
-    esac
-    cc -c -O2 -fPIC $probes -I"$root/runtime" -o "$out/fiber_$1.o" "$src"
-    cc -O2 -I"$root/runtime" -o "$out/spawn_bench_$1" "$here/probes/spawn_bench.c" "$out/fiber_$1.o" $rest
+    cc -c -O2 -fPIC $probes -I"$root/runtime" -o "$out/fiber_today.o" "$root/runtime/avra_fiber.c"
+    cc -O2 -I"$root/runtime" -o "$out/spawn_bench_today" "$here/probes/spawn_bench.c" "$out/fiber_today.o" $rest
 }
 
 if [ "${1:-bench}" = probes ]; then
@@ -44,6 +40,7 @@ if [ "${1:-bench}" = probes ]; then
     probes=""
     [ "$(uname -s)" = Darwin ] || probes=-fstack-clash-protection
     cc -O2 -o "$out/stacks" "$here/probes/stacks.c"
+    spawn_bench
     echo "== $(uname -srm), page $(getconf PAGESIZE), vm.max_map_count $(cat /proc/sys/vm/max_map_count 2>/dev/null || echo n/a)"
     echo "== (b, c) reservation and guard, 448 bytes touched at each stack's top"
     for reserve in 1048576 262144; do
@@ -59,21 +56,17 @@ if [ "${1:-bench}" = probes ]; then
         "$out/stacks" 262144 mprotect 1000000 448
         "$out/stacks" 262144 none 1000000 448
     fi
-    echo "== (a) the fiber's record at 392 bytes: zeroed whole at spawn, or its live prefix alone"
-    for v in today full prefix; do
-        spawn_bench $v
-        for r in 1 2 3; do "$out/spawn_bench_$v" "$v"; done | sort | awk '{ k=$1; v=$2/$3; if (!(k in best) || v < best[k]) best[k]=v } END { for (k in best) printf "  %-28s %.1f ns\n", k, best[k] }' | sort
-    done
-    echo "== a stack bound at a task's first run, not at spawn (record on the heap), against today's"
-    spawn_bench late
-    for v in today late; do
-        for r in 1 2 3; do "$out/spawn_bench_$v" "$v"; "$out/spawn_bench_$v" "$v" parked; done | awk '{ k=$1; v=$2/$3; if (!(k in best) || v < best[k]) best[k]=v } END { for (k in best) printf "  %-28s %.1f ns\n", k, best[k] }' | sort
-    done
-    echo "== (b) the same rows, today's scheduler, a 256 KiB reservation"
-    for r in 1 2 3; do AVRA_FIBER_STACK=262144 "$out/spawn_bench_today" today256k; done | awk '{ k=$1; v=$2/$3; if (!(k in best) || v < best[k]) best[k]=v } END { for (k in best) printf "  %-28s %.1f ns\n", k, best[k] }' | sort
     echo "== the yield path: instructions in the object, and counted over ten million switches"
-    for f in avra_fiber_yield avra_fiber_switch; do
-        printf '  %-20s %s instructions\n' "$f" "$(objdump -d "$out/fiber_today.o" 2>/dev/null | awk -v f="$f" '$2 ~ "<_?" f ">:" { on=1; next } on && /^$/ { exit } on && /^ / { n++ } END { print n+0 }')"
+    # THE FRAME PROOF: a leaf's fast path saves nothing — no push, no stack
+    # adjustment — before its first branch.
+    for f in avra_fiber_yield avra_fiber_switch avra_wait_park avra_gate_claim avra_wait_gate avra_fiber_park_fd avra_task_slot avra_task_slot_set avra_task_id; do
+        o=$out/fiber_today.o
+        case $f in avra_task_*) o=$out/rt/avra_runtime.o ;; esac
+        objdump -d --no-show-raw-insn "$o" 2>/dev/null | awk -v f="$f" '
+            $2 ~ "<_?" f ">:" { on=1; next }
+            on && /^$/ { exit }
+            on && /^ / { n++; if (!branched) { if ($0 ~ /push|sub .*,%rsp|stp|sub\tsp/) frame++; if ($2 ~ /^(j|b\.|cb|tb|call|bl|ret)/ || $2 == "b") branched=1 } }
+            END { printf "  %-22s %3d instructions, %d frame op(s) before the first branch\n", f, n+0, frame+0 }'
     done
     if command -v perf > /dev/null 2>&1; then
         perf stat -e instructions,cycles "$out/spawn_bench_today" today switch 2>&1 | grep -E "instructions|cycles|today_switch" || echo "  perf stat refused"
@@ -97,7 +90,7 @@ fi
 (cd "$here/go" && GOFLAGS=-buildvcs=false "$go" build -o "$out/go/" ./...)
 
 # A tree with no compiler still measures the runtime's rows and Go.
-programs="switch spawn pingpong scope parked"
+programs="switch spawn spawnparked pingpong scope parked"
 [ "${FLOW_AVRA:-1}" = 1 ] && [ -x "$root/build/avra" ] || { echo "flow-bench: no compiler asked for or found — the compiled Avra rows are not run" >&2; programs=""; }
 for p in $programs; do
     "$root/build/avra" build "$here/avra/$p" > /dev/null 2> "$out/$p.build" || { cat "$out/$p.build"; exit 1; }
@@ -105,7 +98,7 @@ done
 rest=$(runtime_built)
 probes=""
 [ "$(uname -s)" = Darwin ] || probes=-fstack-clash-protection
-spawn_bench today
+spawn_bench
 
 : > "$out/raw"
 # One run of `$2…` under engine `$1`, each row's key wearing `$FLOW_SUFFIX`;
@@ -130,7 +123,12 @@ while [ "$r" -le "$rounds" ]; do
     done
     FLOW_ROW=spawn_bench
     ran c "$out/spawn_bench_today" c
-    for g in switch spawn pingpong deadline fanin selectn canceltree; do
+    ran c "$out/spawn_bench_today" c parked
+    ran c "$out/spawn_bench_today" c gate
+    FLOW_ROW=spawn_chan
+    ran go1 env GOMAXPROCS=1 FLOW_CHAN=1 "$out/go/spawn"
+    ran goN env FLOW_CHAN=1 "$out/go/spawn"
+    for g in switch spawn spawnparked pingpong deadline fanin selectn canceltree; do
         FLOW_ROW=$g
         ran go1 env GOMAXPROCS=1 "$out/go/$g"
         ran goN "$out/go/$g"
@@ -155,6 +153,27 @@ for n in $sizes; do
     ran go1 env FLOW_N=$n GOMAXPROCS=1 "$out/go/parked"
     ran goN env FLOW_N=$n "$out/go/parked"
 done
+
+# Where the host has no /proc, a parked task's bytes are read from outside:
+# the resident set `ps` reports while the tasks stand parked, less the
+# same program's with none.
+held_rss() {
+    "$@" > /dev/null &
+    sleep 2
+    kb=$(ps -o rss= -p $! 2>/dev/null | tr -d ' ')
+    wait
+    echo "${kb:-0}"
+}
+if [ ! -r /proc/self/status ]; then
+    for n in 1000 30000; do
+        none=$(held_rss "$out/spawn_bench_today" c hold 0 3000)
+        some=$(held_rss "$out/spawn_bench_today" c hold $n 3000)
+        echo "c parked_rss_$n $(((some - none) * 1024)) $n" >> "$out/raw"
+        none=$(held_rss env FLOW_N=0 FLOW_HOLD_MS=3000 GOMAXPROCS=1 "$out/go/parked")
+        some=$(held_rss env FLOW_N=$n FLOW_HOLD_MS=3000 GOMAXPROCS=1 "$out/go/parked")
+        echo "go1 parked_rss_$n $(((some - none) * 1024)) $n" >> "$out/raw"
+    done
+fi
 
 load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg)
 echo "$(uname -srm), $(nproc 2>/dev/null || sysctl -n hw.ncpu) cpus, page $(getconf PAGESIZE), load $load after the runs, least of $rounds, $("$go" version)"

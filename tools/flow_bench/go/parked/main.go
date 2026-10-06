@@ -3,6 +3,7 @@ package main
 
 import (
 	"sync"
+	"time"
 
 	"flowbench/internal/row"
 )
@@ -24,6 +25,7 @@ func main() {
 	started.Wait()
 	row.Say("parked_rss", row.Status("VmRSS:")-rss, n)
 	row.Say("parked_pte", row.Status("VmPTE:")-pte, n)
+	time.Sleep(time.Duration(row.Number("FLOW_HOLD_MS", 0)) * time.Millisecond)
 	close(stop)
 	done.Wait()
 }

@@ -1,4 +1,6 @@
-// A switch: two goroutines yielding to each other.
+// An explicit yield: two goroutines calling Gosched, which goes through
+// the global run queue. A Go program hands off through channels; the
+// round trip rows are that comparison.
 package main
 
 import (
@@ -23,5 +25,5 @@ func main() {
 		}()
 	}
 	wg.Wait()
-	row.Say("switch", time.Since(t0).Nanoseconds(), 2*n)
+	row.Say("yield_switch", time.Since(t0).Nanoseconds(), 2*n)
 }
