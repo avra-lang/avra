@@ -653,6 +653,34 @@ static void late_parker(void) {
     CHECK(avra_sched_fd_waiters() == 0 && avra_sched_timers() == 0, "nothing stays filed");
 }
 
+// A waiter gone by a hand other than the poller's — an interrupt, its
+// own time — while a byte it was never told of still waits: the byte is
+// the descriptor's, so the next task to park there is woken at once and
+// reads it. Nothing is lost with the waiter that left.
+static void late_parker_after_interrupt(void) {
+    void* early = spawn1(parks_on_pipe, 0);
+    avra_fiber_sleep(2);
+    CHECK(write(g_pipe[1], "e", 1) == 1, "the pipe takes a byte nobody has been told of");
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    int64_t t0 = now_ns();
+    void* late = spawn1(parks_briefly, 2000);
+    CHECK(joined(early) == 0, "the interrupted waiter answers as one whose time ran out");
+    CHECK(joined(late) == 11 && now_ns() - t0 < 1000000000, "the next task to park after an interrupted waiter left reads the byte, at once");
+
+    early = spawn1(parks_briefly, 3);
+    avra_fiber_yield();
+    int64_t until = now_ns() + 6000000;
+    while (now_ns() < until) {}
+    CHECK(write(g_pipe[1], "e", 1) == 1, "a byte comes after a waiter's time has passed, before any switch");
+    avra_fiber_yield();
+    CHECK(avra_sched_fd_waiters() == 0, "the waiter has left by its time");
+    t0 = now_ns();
+    late = spawn1(parks_briefly, 2000);
+    CHECK(joined(early) == 0, "the waiter answers as timed out");
+    CHECK(joined(late) == 11 && now_ns() - t0 < 1000000000, "the next task to park after a timed-out waiter left reads the byte, at once");
+    CHECK(avra_sched_fd_waiters() == 0 && avra_sched_timers() == 0, "nothing stays filed");
+}
+
 // ── the world's turn: bounded in time, and in switches ──────────
 
 static volatile int g_stop;
@@ -1183,6 +1211,7 @@ int main(int argc, char** argv) {
     claim_before_cancel();
     interrupt_is_time();
     late_parker();
+    late_parker_after_interrupt();
     timers_among_workers();
     timers_among_bursts();
     world_within_reach();
