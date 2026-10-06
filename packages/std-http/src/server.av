@@ -153,14 +153,16 @@ export type Server<A> = {
 }
 
 /// What a stop tells this process's connections: that it was asked,
-/// the clock reading every wait ends by, and which connections are
-/// parked reading — by descriptor, so the stop can wake them.
-type Drain = { asked: Cell<bool>, ends: Cell<int>, reading: Cell<List<bool>> }
+/// the clock reading every wait ends by, which connections are parked
+/// reading — by descriptor, so the stop can wake them — and the bells
+/// tasks are parked on, which it rouses.
+type Drain = { asked: Cell<bool>, ends: Cell<int>, reading: Cell<List<bool>>, bells: Cell<List<Bell?>> }
 
 /// A drain no stop has asked for.
 fn undrained() -> Drain {
     let reading: Cell<List<bool>> = Cell.new([])
-    Drain { asked: Cell.new(false), ends: Cell.new(0), reading: reading }
+    let bells: Cell<List<Bell?>> = Cell.new([])
+    Drain { asked: Cell.new(false), ends: Cell.new(0), reading: reading, bells: bells }
 }
 
 /// A server on `l`, each core's application made by `make` — isolated,
@@ -269,12 +271,17 @@ impl Server {
     /// No more connections accepted: the listener closes, every core
     /// is told to stop, every connection parked reading wakes to the
     /// drain, and `run` answers once each has answered what it was
-    /// asked — within `drain` of the first stop.
+    /// asked — within `drain` of the first stop. A task parked on an
+    /// HTTP/2 connection's bell — its own turn, or a handler reading a
+    /// body — is ROUSED, never failed: it finds the drain asked and goes
+    /// on under what the drain has left, so a body mid-flight is served
+    /// through the drain and cut at its end.
     fn stop() {
         if !self.drain.asked.get() { self.drain.ends.set(now_ms() + self.timing.drain.ms) }
         self.drain.asked.set(true)
         let _ = self.listener.close()
         for fd, parked in self.drain.reading.get() { if parked { Conn { fd: fd }.interrupt() } }
+        for b in self.drain.bells.get() { b?.rouse() }
         if self.group.get() != 0 { avra_cores_stop(self.group.get()) }
     }
 
@@ -658,6 +665,19 @@ impl Drain {
         while self.reading.get().length <= fd { self.reading.push(false) }
         self.reading.set_at(fd, now)
     }
+
+    /// A connection's bell, filed for its life so a stop rouses whoever
+    /// is parked on it: the place it was filed at, a free one taken
+    /// first.
+    fn filed(b: Bell) -> int {
+        let free = self.bells.get().find_index(it == null) ?? self.bells.get().length
+        if free == self.bells.get().length { self.bells.push(null) }
+        self.bells.set_at(free, b)
+        free
+    }
+
+    /// The connection whose bell is filed at `place` has ended.
+    fn unfiled(place: int) { self.bells.set_at(place, null) }
 }
 
 /// Whether a link waits between requests: nothing of the next one has
@@ -717,6 +737,7 @@ impl Serving {
         let inbox = Cell.new(Inbox { got: l.buf, closed: false, failed: null })
         l.buf = no_bytes
         let reader = spawn read_beside(l.conn, inbox, b)
+        let place = self.drain.filed(b)
         mut t = Talk {
             h: h2_server(self.limits),
             lines: [],
@@ -731,6 +752,7 @@ impl Serving {
         cut_lines(t.lines, b)
         let _ = l.conn.wire_unheard()
         let _ = reader.await
+        self.drain.unfiled(place)
         if parting { self.parted(l) } else { self.dropped(l) }
     }
 
@@ -826,15 +848,12 @@ impl Serving {
         if waiting && now_ms() - t.moved > self.timing.idle.ms && !t.h.closing { t.h.ended() }
     }
 
-    /// This task parked on the bell until something moves, filed with
-    /// the drain so a stop wakes it. Whether the peer is still within
-    /// its deadline — never once a stop's drain has run out.
+    /// This task parked on the connection's bell until something moves.
+    /// Whether the peer is still within its deadline — never once a
+    /// stop's drain has run out.
     fn waited_on(t: Talk, b: Bell, seen: int) -> bool {
         if self.drain.asked.get() && !self.drain.running() { return false }
-        self.drain.parked(b.heard.get(), true)
-        let kept = self.bell_waited(t, b, seen)
-        self.drain.parked(b.heard.get(), false)
-        kept
+        self.bell_waited(t, b, seen)
     }
 
     /// The wait itself — not at all when the bell rang after it had rung

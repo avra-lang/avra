@@ -1,8 +1,7 @@
-// A BELL NOBODY HOLDS OPENS WITH ITS FIRST WAITER AND CLOSES BEHIND
-// ITS LAST: every waiter wakes at one ring, a wait nobody rings ends at
-// its own timeout or its task's `within`, a ring nobody waits for is
-// kept by nobody, and a negative budget is spent. A HELD bell keeps its
-// pipe across waits until `close`, which wakes a task parked on it.
+// A BELL IS A GATE: every waiter wakes at one ring, a wait nobody rings
+// ends at its own timeout or its task's `within`, a ring nobody waits
+// for is kept by nobody, a negative budget is spent and a budget past
+// spelling waits, and every copy is the one bell.
 use @std.net.{Bell, bell}
 use @std.time.{ms, sleep, now_ms, within}
 
@@ -11,9 +10,8 @@ fn bl_waited(b: Bell, limit: int) -> string {
     if b.waited(ms(limit)) is .Ok { "woken" } else { "timed out" }
 }
 
-/// Every one of `n` waiters woken by ONE ring, and the pipe gone once
-/// the last has left: how many waited, how many woke, the pipe, how
-/// many wait after.
+/// Every one of `n` waiters woken by ONE ring: how many waited, how
+/// many woke, how many wait after.
 fn bl_broadcast(n: int) -> string {
     let b = Bell {}
     let waiters = [spawn bl_waited(b, 2000) for i in 0..n]
@@ -21,7 +19,7 @@ fn bl_broadcast(n: int) -> string {
     let counted = b.waiting.get()
     b.ring()
     let said = [w.await for w in waiters]
-    "${counted} ${[x for x in said if x == "woken"].length} ${b.heard.get()} ${b.waiting.get()}"
+    "${counted} ${[x for x in said if x == "woken"].length} ${b.waiting.get()}"
 }
 
 /// A wait nobody rings ends at its own timeout.
@@ -29,7 +27,7 @@ fn bl_timeout() -> string {
     let b = Bell {}
     let t0 = now_ms()
     let said = bl_waited(b, 100)
-    "${said} ${now_ms() - t0 >= 90} ${b.heard.get()}"
+    "${said} ${now_ms() - t0 >= 90}"
 }
 
 /// A task's `within` ends the wait before its own longer timeout.
@@ -50,7 +48,7 @@ fn bl_unkept() -> string {
 }
 
 /// Two rings before the waiter runs wake it once, and the next episode
-/// — a new pipe — wakes again.
+/// wakes again.
 fn bl_twice_then_again() -> string {
     let b = Bell {}
     let first = spawn bl_waited(b, 2000)
@@ -63,16 +61,16 @@ fn bl_twice_then_again() -> string {
     sleep(ms(20))
     let c = b.waiting.get()
     b.ring()
-    "${a} ${b.rings()} ${one} ${c} ${second.await} ${b.heard.get()}"
+    "${a} ${b.rings()} ${one} ${c} ${second.await}"
 }
 
-/// A budget is never a sentinel: a negative timeout is spent, answered
-/// at once, and opens nothing.
+/// A budget is never a sentinel: a negative timeout is spent and
+/// answered at once.
 fn bl_negative() -> string {
     let b = Bell {}
     let t0 = now_ms()
     let said = bl_waited(b, -1)
-    "${said} ${now_ms() - t0 < 50} ${b.heard.get()}"
+    "${said} ${now_ms() - t0 < 50}"
 }
 
 /// A copy is the same bell: a ring through one copy wakes a waiter on
@@ -86,45 +84,69 @@ fn bl_copies() -> string {
     waiter.await
 }
 
-/// A held bell keeps its pipe after its waiter leaves; `close` lets it
-/// go.
-fn bl_held() -> string {
+/// A bell made by `bell()` is a bell like any: a waiter parked before
+/// the ring wakes, one parked after it waits its time out.
+fn bl_made() -> string {
     let b = match bell() { .Ok(x) -> x, .Err(_) -> { return "no bell" } }
-    let opened = b.heard.get() >= 0
-    let said = bl_waited(b, 20)
-    let kept = b.heard.get() >= 0
-    b.close()
-    "${opened} ${said} ${kept} ${b.heard.get()}"
+    let waiter = spawn bl_waited(b, 2000)
+    sleep(ms(20))
+    b.ring()
+    "${waiter.await} ${bl_waited(b, 20)}"
 }
 
-/// Closing a held bell wakes the task parked on it at once, and leaves
-/// no pipe behind.
+/// A budget past what nanoseconds spell is a wait for ever, never one
+/// already due: its waiter is still parked when the ring comes.
+fn bl_huge() -> string {
+    let b = Bell {}
+    let waiter = spawn bl_waited(b, 9000000000000000)
+    sleep(ms(20))
+    let counted = b.waiting.get()
+    b.ring()
+    "${counted} ${waiter.await}"
+}
+
+/// A bell copied twice — into a binding, into a list, into a record —
+/// is one bell: a ring through the first wakes a waiter on each copy.
+fn bl_one_wake_set() -> string {
+    let b = Bell {}
+    let c = b
+    let held = [c, b]
+    let waiters = [
+        spawn bl_waited(c, 2000),
+        spawn bl_waited(held[0], 2000),
+        spawn bl_waited(held[1], 2000),
+    ]
+    sleep(ms(20))
+    let counted = "${b.waiting.get()} ${c.waiting.get()} ${held[1].waiting.get()}"
+    b.ring()
+    "${counted} | ${[w.await for w in waiters].join(" ")} | ${held[0].rings()}"
+}
+
+/// Closing a bell wakes the task parked on it at once.
 fn bl_closed_under_waiter() -> string {
     let b = match bell() { .Ok(x) -> x, .Err(_) -> { return "no bell" } }
     let t0 = now_ms()
     let waiter = spawn bl_waited(b, 2000)
     sleep(ms(20))
     b.close()
-    "${waiter.await} ${now_ms() - t0 < 1000} ${b.heard.get()} ${b.waiting.get()}"
+    "${waiter.await} ${now_ms() - t0 < 1000} ${b.waiting.get()}"
 }
 
-/// A closed bell, closed again, still parks — as one nobody holds,
-/// its pipe opened for the wait and closed behind it.
+/// A closed bell, closed again, still parks.
 fn bl_closed_still_parks() -> string {
     let b = match bell() { .Ok(x) -> x, .Err(_) -> { return "no bell" } }
     b.close()
     b.close()
     let t0 = now_ms()
     let said = bl_waited(b, 50)
-    "${said} ${now_ms() - t0 >= 45} ${b.heard.get()}"
+    "${said} ${now_ms() - t0 >= 45}"
 }
 
-/// A zero budget parks for no time: the wait yields, times out, and
-/// leaves no pipe.
+/// A zero budget parks for no time: the wait times out at once.
 fn bl_zero() -> string {
     let b = Bell {}
     let t0 = now_ms()
-    "${bl_waited(b, 0)} ${now_ms() - t0 < 50} ${b.heard.get()}"
+    "${bl_waited(b, 0)} ${now_ms() - t0 < 50}"
 }
 
 /// A waiter readied by a ring but not yet run does not carry the ring
@@ -136,33 +158,37 @@ fn bl_late_waiter() -> string {
     b.ring()
     let late = spawn bl_waited(b, 100)
     let t0 = now_ms()
-    "${early.await} ${late.await} ${now_ms() - t0 >= 90} ${b.heard.get()}"
+    "${early.await} ${late.await} ${now_ms() - t0 >= 90}"
 }
 
 spec "std.net bell" {
     given "waiters and one ring" {
-        then "one waiter wakes, and the pipe closes behind it" { bl_broadcast(1) == "1 1 -1 0" }
-        then "a hundred waiters all wake at one ring" { bl_broadcast(100) == "100 100 -1 0" }
+        then "one waiter wakes, and nobody waits after" { bl_broadcast(1) == "1 1 0" }
+        then "a hundred waiters all wake at one ring" { bl_broadcast(100) == "100 100 0" }
         then "a copy of the bell wakes a waiter on another copy" { bl_copies() == "woken" }
     }
     given "nobody rings" {
-        then "a wait ends at its own timeout, holding no pipe after" { bl_timeout() == "timed out true -1" }
+        then "a wait ends at its own timeout" { bl_timeout() == "timed out true" }
         then "the task's within ends it sooner" { bl_within() == "timed out true" }
-        then "a negative timeout is spent: answered at once, nothing opened" { bl_negative() == "timed out true -1" }
+        then "a negative timeout is spent: answered at once" { bl_negative() == "timed out true" }
     }
     given "rings nobody hears" {
         then "a ring before the wait is kept by nobody" { bl_unkept() == "0 timed out" }
         then "two rings before the waiter runs wake it once, and a later episode wakes again" {
-            bl_twice_then_again() == "1 3 woken 1 woken -1"
+            bl_twice_then_again() == "1 3 woken 1 woken"
         }
     }
-    given "a held bell" {
-        then "its pipe stays open across waits until close" { bl_held() == "true timed out true -1" }
-        then "closing it wakes a parked task and leaves no pipe" { bl_closed_under_waiter() == "woken true -1 0" }
-        then "closed twice, it still parks as a bell nobody holds" { bl_closed_still_parks() == "timed out true -1" }
+    given "a bell made and closed" {
+        then "one made by `bell()` wakes a waiter parked before the ring, and no other" { bl_made() == "woken timed out" }
+        then "closing it wakes a parked task" { bl_closed_under_waiter() == "woken true 0" }
+        then "closed twice, it still parks" { bl_closed_still_parks() == "timed out true" }
+    }
+    given "copies and budgets" {
+        then "a bell copied twice is one wake set" { bl_one_wake_set() == "3 3 3 | woken woken woken | 1" }
+        then "a budget past spelling in nanoseconds waits" { bl_huge() == "1 woken" }
     }
     given "degenerate budgets and late waiters" {
-        then "a zero budget yields and times out, leaving no pipe" { bl_zero() == "timed out true -1" }
-        then "a ring reaches only the tasks parked when it rang" { bl_late_waiter() == "woken timed out true -1" }
+        then "a zero budget times out at once" { bl_zero() == "timed out true" }
+        then "a ring reaches only the tasks parked when it rang" { bl_late_waiter() == "woken timed out true" }
     }
 }
