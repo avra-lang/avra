@@ -493,6 +493,11 @@ runtime-tests: $(RUNTIME_TESTS)
 runtime-mutations: $(RUNTIME_OBJS)
 	@python3 runtime/tests/mutations.py build/runtime-mutations "$(STACK_PROBES)" $(filter-out build/avra_fiber.o,$(RUNTIME_OBJS))
 
+# A TRACE HAS ONE SHAPE IN BOTH ENGINES: one program traced compiled
+# and evaluated, the reader's shape of each held to a committed text.
+flow-trace: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/flow_trace_engines.sh
+
 # The runtime's trap contract: the words and the verdict (exit 2).
 # No program test can hold it — a suite runs every program in
 # one process, and a trap ends it. AFTER `tested`, because a row may
@@ -770,7 +775,7 @@ footprint-accept: $(RUNTIME_LIB)
 # KEEPERS_ALONE are held to a clock (a timer firing within one round of the
 # scheduler), so nothing may compete with them for a core.
 KEEPERS_ALONE = runtime-tests
-KEEPERS_A = read-cost codecs traps compile-slots witness stems fmt-lossless
+KEEPERS_A = read-cost codecs traps compile-slots witness stems fmt-lossless flow-trace
 KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint
 KEEPERS = $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
@@ -972,7 +977,7 @@ bench-collections: build/libavra_runtime.a
 # THE FLOW BENCH: tasks, waits and wakes, each Avra program beside its Go
 # twin on this machine (tools/flow_bench/run.sh); `flow-probes` is the
 # stack allocator's own measurements.
-.PHONY: flow-bench flow-probes
+.PHONY: flow-bench flow-probes flow-trace
 flow-bench: build/libavra_runtime.a
 	@sh tools/flow_bench/run.sh
 flow-probes:

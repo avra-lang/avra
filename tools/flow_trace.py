@@ -1,6 +1,7 @@
 """A PER-TASK TIMELINE from a flow trace (`AVRA_FLOW_TRACE=<file>`).
 
     python3 tools/flow_trace.py <trace> [--task N]   the timelines
+    python3 tools/flow_trace.py <trace> --shape      what both engines say alike
     python3 tools/flow_trace.py --self-test          its own cases
 
 The runtime writes one line an event, `ts=<ns> <event> id=<task> …`
@@ -8,6 +9,15 @@ The runtime writes one line an event, `ts=<ns> <event> id=<task> …`
 order they happened, each stamped in milliseconds from the trace's
 first line. Task 0 is the program's own run. A line it cannot read is
 counted and said, never dropped in silence.
+
+A JOIN IS ONE LINE: a compiled join also files a wait on its task's
+gate, an evaluated one files nothing, so the wait a join files is read
+as part of it.
+
+THE SHAPE is each task's events in order with nothing an engine owns:
+no stamp, no address, no descriptor's number, no site, and no spawn of
+the program's own run. A program run evaluated and compiled prints the
+same shape wherever the two agree by design.
 """
 import re
 import sys
@@ -33,6 +43,9 @@ def worded(event, rest):
         return f"spawned by task {rest}"
     if event == "spawn-at":
         return f"spawned (evaluated) at site {rest}"
+    if event == "join":
+        on = rest.removeprefix("on=")
+        return "joins a task nothing runs" if on == "unrun" else f"joins task {on}"
     if event == "park":
         src = re.match(r"src=(\S+) arm=(\S+)", rest)
         return f"waits on {src.group(1)} as {src.group(2)}" if src else f"waits {rest}"
@@ -40,7 +53,8 @@ def worded(event, rest):
         by = re.match(r"by=(\S+) arm=(\S+)", rest)
         if not by:
             return f"claimed {rest}"
-        who = f"task {by.group(1)}" if by.group(1).lstrip("-").isdigit() else f"the {by.group(1)}"
+        hand = "a task nothing runs" if by.group(1) == "unrun" else f"the {by.group(1)}"
+        who = f"task {by.group(1)}" if by.group(1).lstrip("-").isdigit() else hand
         return f"woken by {who} on {by.group(2)}"
     if event == "retract":
         return f"takes back {rest} wait(s) that lost"
@@ -55,15 +69,54 @@ def worded(event, rest):
     return f"{event} {rest}".strip()
 
 
+def folded(events):
+    """The events with the gate wait a join files left out: the join said it."""
+    out, last = [], {}
+    for e in events:
+        _, event, task, rest = e
+        joins_gate = event == "park" and rest.startswith("src=gate:") and last.get(task) == "join"
+        last[task] = event
+        if not joins_gate:
+            out.append(e)
+    return out
+
+
 def timelines(events):
     """Each task's events in order: {task: [(ms, words)]}, tasks in order of first sight."""
     if not events:
         return {}
     origin = events[0][0]
     by_task = {}
-    for ts, event, task, rest in events:
+    for ts, event, task, rest in folded(events):
         by_task.setdefault(task, []).append(((ts - origin) / 1e6, worded(event, rest)))
     return by_task
+
+
+def shape_worded(event, rest):
+    """One event with what an engine owns left out."""
+    if event in ("spawn", "spawn-at"):
+        return "spawned"
+    if event == "deadline-set":
+        return "deadline filed"
+    if event == "park":
+        src = re.match(r"src=(gate|fd:[rw]|at)\S* arm=(\S+)", rest)
+        if src:
+            return f"waits on {src.group(1)} as {src.group(2)}"
+    return worded(event, rest)
+
+
+def shape(events):
+    """Each task's events in order, by id: the text both engines print alike."""
+    by_task = {}
+    for _, event, task, rest in folded(events):
+        if task == 0 and event == "spawn-at":
+            continue
+        by_task.setdefault(task, []).append(shape_worded(event, rest))
+    out = []
+    for task in sorted(by_task):
+        out.append("the program's own run" if task == 0 else f"task {task}")
+        out.extend(f"  {words}" for words in by_task[task])
+    return "\n".join(out)
 
 
 def rendered(events, strays, only=None):
@@ -79,6 +132,36 @@ def rendered(events, strays, only=None):
     if strays:
         out.append(f"{len(strays)} line(s) were no event; the first: {strays[0][:80]}")
     return "\n".join(out)
+
+
+COMPILED = (
+    "ts=10 spawn id=1 0\n"
+    "ts=20 join id=0 on=1\n"
+    "ts=30 park id=0 src=gate:0x7f00 arm=0:0\n"
+    "ts=40 park id=1 src=at arm=0:0\n"
+    "ts=50 claim id=1 by=timer arm=0:0\n"
+    "ts=60 claim id=0 by=1 arm=0:0\n"
+    "ts=70 end id=1 0\n"
+)
+EVALUATED = (
+    "ts=5 spawn-at id=0 0\n"
+    "ts=10 spawn-at id=1 17\n"
+    "ts=20 join id=0 on=1\n"
+    "ts=40 park id=1 src=at arm=0:0\n"
+    "ts=50 claim id=1 by=timer arm=0:0\n"
+    "ts=60 claim id=0 by=1 arm=0:0\n"
+    "ts=70 end id=1 0\n"
+)
+SHAPE = (
+    "the program's own run\n"
+    "  joins task 1\n"
+    "  woken by task 1 on 0:0\n"
+    "task 1\n"
+    "  spawned\n"
+    "  waits on at as 0:0\n"
+    "  woken by the timer on 0:0\n"
+    "  ends"
+)
 
 
 def self_test():
@@ -104,6 +187,13 @@ def self_test():
         ("a scheduler's hand is named as itself", any("woken by the timer on 1:0" in l for l in lines)),
         ("one task alone can be asked for", rendered(events, [], only=2).splitlines()[0].startswith("task 2 — 1 event(s)")),
         ("an empty trace renders nothing", rendered(*parsed("")) == ""),
+        ("a join names its task", worded("join", "on=2") == "joins task 2"),
+        ("a join of a task nothing runs says so", worded("join", "on=unrun") == "joins a task nothing runs"),
+        ("a waking by a task nothing runs says so", worded("claim", "by=unrun arm=0:0") == "woken by a task nothing runs on 0:0"),
+        ("the wait a join files is the join's", shape(parsed(COMPILED)[0]) == SHAPE),
+        ("a gate wait that follows no join stays", "waits on gate as 0:5" in shape(parsed(text)[0])),
+        ("both engines' traces have one shape", shape(parsed(EVALUATED)[0]) == shape(parsed(COMPILED)[0])),
+        ("the timeline folds the join's wait too", sum("gate" in l for l in rendered(*parsed(COMPILED)).splitlines()) == 0),
     ]
     failed = [name for name, ok in cases if not ok]
     for name in failed:
@@ -120,6 +210,9 @@ def main(argv):
         return 1
     only = int(argv[argv.index("--task") + 1]) if "--task" in argv else None
     events, strays = parsed(open(argv[1]).read())
+    if "--shape" in argv:
+        print(shape(events))
+        return 1 if strays else 0
     print(rendered(events, strays, only))
     print(f"flow_trace: read {len(events)} event(s) of {len(timelines(events))} task(s)")
     return 0

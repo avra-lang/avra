@@ -123,6 +123,11 @@ void avra_vtask_free(int64_t t);
 // A task whose body answered: the trace says so, then it is freed.
 void avra_vtask_end(int64_t t);
 void avra_vtask_ready(int64_t t);
+// A join in the evaluator's own files, said to the trace as a compiled
+// one is: `joins` when the task is about to wait for the task `on`
+// (negative: one nothing runs), `joined` when `by`'s end readies it.
+void avra_vtask_joins(int64_t t, int64_t on);
+void avra_vtask_joined(int64_t t, int64_t by);
 void avra_vtask_sleep(int64_t t, int64_t ms);
 // 1 when parked; 0 when it did not wait: the descriptor cannot be
 // watched (ready at once, so its read or write reports the error), or

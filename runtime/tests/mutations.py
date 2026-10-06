@@ -29,6 +29,8 @@ MUTATIONS = [
     ("the switch does not test the floor", *FLOOR),
     ("the switch does not test the canary", *CANARY),
     ("a claimant leaves the winner filed", "    waiter_out(w);\n    return set_claimed(w->fiber, w->arm, w->member, by);", "    return set_claimed(w->fiber, w->arm, w->member, by);"),
+    ("a compiled join is not in the trace", "    if (TRACING) traced_join(self, task_id(task));\n", ""),
+    ("a virtual join's waking is not in the trace", "    if (TRACING) traced_joined(virtual_at(t), by);\n", ""),
     ("a cancel displaces a claim", "    if (f->parked && !f->legacy) set_claimed(f, -1, 0, by);", "    if (!f->legacy) { f->arm = -1; f->member = 0; if (f->parked) set_claimed(f, -1, 0, by); }"),
     ("a cancel wakes a sleep or a join", "    if (f->parked && !f->legacy) set_claimed(f, -1, 0, by);", "    if (f->parked) set_claimed(f, -1, 0, by);"),
     ("a cancel is not heard at the next wait", "    if (f->cancel_by != 0) { set_claimed(f, -1, 0, f->cancel_by - 1); return 0; }\n", ""),
