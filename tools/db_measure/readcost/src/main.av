@@ -10,8 +10,10 @@
 //!   row.new         the same, a new query every hundred reads
 //!   ask.int         a `@query` asked again, its answer standing, by an int
 //!   ask.text        the same, by a text
+//!   write.unowned   a keyless row with two indexes written, no kernel, no owner
+//!   write.owned     the same, in an owner's open run under an open query
 use @std.relation.{relation, query}
-use @std.relation.db.{Db, db_over, new_db, Verifying, Late}
+use @std.relation.db.{Db, new_db}
 use @std.relation.engine.{Kernel, Key, new_kernel}
 use @std.io.{env_or}
 use @std.text.{parse_int}
@@ -43,7 +45,8 @@ fn kernel_reads(mode: string, n: int) -> int {
 }
 
 fn filled(kernel: Kernel, names: List<string>) -> Db {
-    let db = db_over(kernel, Verifying.ByMove, Late.Refused)
+    let db = new_db()
+    db.given_to(kernel)
     for i, name in names { let _ = Row.insert(db, name: name, tag: "t${i % 10}", n: i) }
     db
 }
@@ -87,8 +90,32 @@ fn asks(mode: string, n: int) -> int {
     sum
 }
 
+@relation
+type Use = { @index of: int, @index within: int, n: int }
+
+/// `n` keyless rows written: with no kernel and no owner, or as one run
+/// of an owner in a Db its owner's kernel holds, a query open.
+fn writes(mode: string, n: int) -> int {
+    let db = new_db()
+    if mode == "write.unowned" {
+        for i in 0..n { let _ = Use.insert(db, of: i % 50, within: i % 7, n: i) }
+        return Use.all(db).length
+    }
+    let kernel = new_kernel()
+    db.given_to(kernel)
+    let asked = asking(kernel.family((_arg: int) -> 0), 0)
+    kernel.begin(asked)
+    let owner = db.owner_named("uses")
+    let _ = db.opened_run(owner)
+    for i in 0..n { let _ = Use.insert(db, of: i % 50, within: i % 7, n: i) }
+    db.closed_run(owner)
+    kernel.settle(asked, 1)
+    Use.all(db).length
+}
+
 fn ran(mode: string, n: int) -> int {
     if mode.starts_with("kernel.") { return kernel_reads(mode, n) }
+    if mode.starts_with("write.") { return writes(mode, n) }
     if mode.starts_with("ask.") { asks(mode, n) } else { row_reads(mode, n) }
 }
 

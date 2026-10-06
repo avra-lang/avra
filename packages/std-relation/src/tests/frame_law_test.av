@@ -2,7 +2,7 @@
 // A Db built and read inside another Db's open query is that query's
 // scratch: its reads land in its own kernel, never in the outer frame.
 use @std.relation.{relation}
-use @std.relation.db.{Db, new_db, db_over, Verifying, Late}
+use @std.relation.db.{Db, new_db}
 use @std.relation.engine.{Kernel, Key, new_kernel}
 
 @relation
@@ -16,11 +16,9 @@ type Outer = { kernel: Kernel, query: Key, db: Db }
 
 fn outer() -> Outer {
     let kernel = new_kernel()
-    Outer {
-        kernel: kernel,
-        query: Key { family: kernel.family((_arg: int) -> 0), arg: 0 },
-        db: db_over(kernel, Verifying.ByHash, Late.Refused),
-    }
+    let db = new_db()
+    db.given_to(kernel)
+    Outer { kernel: kernel, query: Key { family: kernel.family((_arg: int) -> 0), arg: 0 }, db: db }
 }
 
 /// A throwaway Db filled in one pass, the way a pass files what it found.
@@ -72,7 +70,7 @@ spec "std/relation — a frame records its own kernel's keys alone" {
             let _ = Held.all(late)
             o.kernel.settle(o.query, 0)
             let before = o.kernel.deps_of(o.query).length
-            late.given(o.kernel, Verifying.ByMove, Late.Refused)
+            late.given_to(o.kernel)
             let again = Key { family: o.query.family, arg: 1 }
             o.kernel.begin(again)
             let _ = Held.all(late)

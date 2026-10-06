@@ -44,7 +44,6 @@ use features.{Decls, Decl, TypeCx, bound_decl_of}
 use @std.meta.{bracket}
 use @std.relation.{relation}
 use compiler.families.{Family}
-use @std.relation.db.{Db as RelDb}
 use @std.relation.engine.{FixpointRefusal, spoken as fixpoint_spoken}
 
 /// `Result<_, _>`'s error side — a bare `_`, checked by SHAPE: `_?`,
@@ -476,7 +475,7 @@ impl Workspace {
     /// their owner: the last survey's rows that this one does not write
     /// again are swept when it closes, and the solve reads them closed.
     fn surveyed(fns: List<DeclId>) -> List<FailSummary> {
-        let db = self.failures_db.get()
+        let db = self.decls.rows_db.get()
         let owner = db.owner_named("error sites")
         let _ = db.opened_run(owner)
         let sums = [self.fail_summary(d) for d in fns]
@@ -579,7 +578,7 @@ impl Workspace {
         let all = fails.concat(props)
         if all.any(is_unresolved) { self.decls.mark_inferred_unresolved(d) }
         let new_sites = built_error_sites(fs, self.decls, d, store, x.lo, x.hi)
-        let db = self.failures_db.get()
+        let db = self.decls.rows_db.get()
         let _ = [ErrorSite
             .insert(
                 db,
@@ -604,7 +603,7 @@ impl Workspace {
     /// re-raise inside its arm is already its OWN Fail/Propagate row
     /// (with `within` set), counted on its own turn.
     fn raised_compute(arg: int) -> List<TypeId> {
-        let rows = ErrorSite.by_owner(self.failures_db.get(), DeclId { index: arg })
+        let rows = ErrorSite.by_owner(self.decls.rows_db.get(), DeclId { index: arg })
         let sites = [s for s in rows if s.how is .Fail || s.how is .Propagate]
         flatten([s.errors.concat(self.raised_via_callee(s.callee)) for s in sites])
     }
@@ -621,7 +620,7 @@ impl Workspace {
     /// and the last solve's rows are swept when it does.
     /// Beside `Decls`' own Kleene loop, which typing reads.
     fn solve_raised(fns: List<DeclId>) {
-        let db = self.failures_db.get()
+        let db = self.decls.rows_db.get()
         let owner = db.owner_named("raised")
         let _ = db.opened_run(owner)
         let solved = self
@@ -639,12 +638,12 @@ impl Workspace {
     /// revision, so asking this never re-solves what is already settled.
     fn raised_by(d: DeclId) -> List<TypeId> {
         let _ = self.failures()
-        Raised.by_owner(self.failures_db.get(), d).first()?.errors ?? []
+        Raised.by_owner(self.decls.rows_db.get(), d).first()?.errors ?? []
     }
 
     /// Every site whose `callee` is `f` — the reverse edge `chain`
     /// walks up through.
-    fn error_sites_by_callee(f: DeclId) -> List<ErrorSite> { ErrorSite.by_callee(self.failures_db.get(), f) }
+    fn error_sites_by_callee(f: DeclId) -> List<ErrorSite> { ErrorSite.by_callee(self.decls.rows_db.get(), f) }
 
     /// Every site lexically within catch `c`'s own arm — `chain`'s
     /// downward step when it reaches a `Catch`. Scoped by `owner`
@@ -655,7 +654,7 @@ impl Workspace {
     /// fix, since it would index across files by a number that means
     /// nothing outside one).
     fn error_sites_within(owner: DeclId, c: ExprId) -> List<ErrorSite> {
-        [x for x in ErrorSite.by_owner(self.failures_db.get(), owner) if within_is(x.within, c)]
+        [x for x in ErrorSite.by_owner(self.decls.rows_db.get(), owner) if within_is(x.within, c)]
     }
 
     /// The error topology's own worked example (design doc §6.7,

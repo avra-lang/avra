@@ -26,7 +26,7 @@ export LLVM_PREFIX
 N=${DBM_READS:-200000}
 bench=tools/db_measure/readcost
 budget=tools/db_measure/read_cost.budget
-modes="kernel.last kernel.earlier kernel.new row.unheard row.repeat row.new ask.int ask.text"
+modes="kernel.last kernel.earlier kernel.new row.unheard row.repeat row.new ask.int ask.text write.unowned write.owned"
 census=build/census
 trap 'rm -f "$bench/src/main" "$bench/src/main.av.ll"' EXIT INT TERM
 mkdir -p "$census/build" "$census/obj"
