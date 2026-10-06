@@ -2,8 +2,9 @@
 //! relation no query is reading, and `get` inside a kernel query — once
 //! with the same query throughout (a repeat is the mark's fast path) and
 //! once with a new query each pass (every read is a new edge, as a
-//! query's first read is).
-use @std.relation.{relation}
+//! query's first read is) — and a `@query` ASKED again, its answer
+//! standing: by an int argument and by a text one.
+use @std.relation.{relation, query}
 use @std.meta.{dense}
 use @std.relation.db.{new_db, Db}
 use @std.relation.engine.{Key}
@@ -34,6 +35,24 @@ fn read_rows(db: Db, n: int) -> int {
         let x = Row.get(db, RowId { index: i })
         if x != null && x!.exported { sum = sum + 1 }
     }
+    sum
+}
+
+@query
+fn after(_db: Db, n: int) -> int { n + 1 }
+
+@query
+fn measure(_db: Db, name: string) -> int { name.length }
+
+fn ask_ints(db: Db, n: int) -> int {
+    mut sum = 0
+    for i in 0..n { sum = sum + after(db, i) }
+    sum
+}
+
+fn ask_texts(db: Db, names: List<string>) -> int {
+    mut sum = 0
+    for name in names { sum = sum + measure(db, name) }
     sum
 }
 
@@ -83,3 +102,9 @@ timed(
     },
 )
 println("edges\t${kernel.deps_of(Key { family: queries, arg: 1 }).length}")
+
+let asked = new_db()
+let names = ["a_declaration_named_${i}" for i in 0..n]
+let _ = ask_ints(asked, n) + ask_texts(asked, names)
+timed("query.ask.int", n, rounds, (_r: int) -> ask_ints(asked, n))
+timed("query.ask.text", n, rounds, (_r: int) -> ask_texts(asked, names))
