@@ -5,7 +5,8 @@
 # The base is unpacked beside the tree and built from its own seed. The
 # candidate is built here three times over: from the seed, by that, and by
 # that again. Both then check the BASE's packages/cli — one pinned source, so
-# what differs is the compiler alone — cold each time, every store moved aside:
+# what differs is the compiler alone, and each binary stands in the base's own
+# build/ so `@std/*` resolves there too — cold each time, every store moved aside:
 # the kernel's graph (which must be the same bytes when the candidate changes
 # no behaviour), the runtime's memory account, and wall time and peak per round.
 # Last, the candidate's first and second generations trace the same check.
@@ -68,8 +69,8 @@ measured() {
     i=1
     while [ "$i" -le "$R" ]; do
         aside
-        /usr/bin/time -v "$bin" check --time "$pkg" > "$out/t.$label" 2>&1
-        echo "$label	cold$i	wall=$(sed -n 's/.*Elapsed (wall clock) time.*: //p' "$out/t.$label")	peak_kb=$(sed -n 's/.*Maximum resident set size (kbytes): //p' "$out/t.$label")	$(grep '^time:' "$out/t.$label" | tail -n 1)"
+        echo "$label	cold$i	$(python3 "$here/spent.py" "$out/t" "$bin" check --time "$pkg")"
+        echo "$label	noop$i	$(python3 "$here/spent.py" "$out/t" "$bin" check --time "$pkg")"
         i=$((i + 1))
     done
     if command -v perf > /dev/null 2>&1; then
@@ -80,8 +81,11 @@ measured() {
         echo "$label	instructions	no perf on this Sprite"
     fi
 }
+cp "$tree/build/avra.gen1" "$at/build/avra.cand1"
+cp "$tree/build/avra.gen2" "$at/build/avra.cand2"
+cp "$tree/build/avra.gen3" "$at/build/avra.cand"
 measured base "$at/build/avra.gen2"
-measured cand "$tree/build/avra.gen3"
+measured cand "$at/build/avra.cand"
 if cmp -s "$out/graph.base" "$out/graph.cand"; then
     echo "graph	IDENTICAL	$(grep -c '^G' "$out/graph.cand") cells"
 else
@@ -89,9 +93,9 @@ else
     diff "$out/graph.base" "$out/graph.cand" | head -n 6 | cut -c1-300
 fi
 for g in 1 2; do
-    AVRA_QTRACE=1 cold "$tree/build/avra.gen$g" 2> "$out/q.gen$g" > /dev/null
+    AVRA_QTRACE=1 cold "$at/build/avra.cand$g" 2> "$out/q.gen$g" > /dev/null
 done
-AVRA_QTRACE=1 cold "$tree/build/avra.gen2" 2> "$out/q.gen2b" > /dev/null
+AVRA_QTRACE=1 cold "$at/build/avra.cand2" 2> "$out/q.gen2b" > /dev/null
 cmp -s "$out/q.gen2" "$out/q.gen2b" && echo "qtrace	gen2 against itself	IDENTICAL	$(wc -l < "$out/q.gen2") lines" || echo "qtrace	gen2 against itself	DIFFERS"
 cmp -s "$out/q.gen1" "$out/q.gen2" && echo "qtrace	gen1 against gen2	IDENTICAL" || {
     echo "qtrace	gen1 against gen2	DIFFERS"
