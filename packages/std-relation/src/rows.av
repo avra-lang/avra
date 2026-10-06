@@ -56,6 +56,9 @@ fn same_keys(a: List<List<IndexKey>>, b: List<List<IndexKey>>) -> bool {
     a.length == b.length && [same_run(ks, b[i]) for i, ks in a].all(it)
 }
 
+/// Whether `key` is among `run`, a row's keys in one index.
+fn holds_key(run: List<IndexKey>, key: IndexKey) -> bool { run.any((k: IndexKey) -> same_key(k, key)) }
+
 fn same_run(a: List<IndexKey>, b: List<IndexKey>) -> bool {
     a.length == b.length && [same_key(k, b[i]) for i, k in a].all(it)
 }
@@ -660,7 +663,10 @@ impl Rows<R> {
                 self.rows.set_at(id, row)
                 return
             }
-            self.unfile(id)
+            if self.row(id) != null {
+                self.refiled(id, row, hash, keys)
+                return
+            }
             self.rows.set_at(id, row)
             self.hashes.set_at(id, hash)
             self.filed.set_at(id, keys)
@@ -675,6 +681,42 @@ impl Rows<R> {
         for i, ks in keys {
             for k in ks { self.file(i, k, id, hash) }
         }
+    }
+
+    /// A live row filed again under another hash or other keys: it leaves
+    /// the buckets it no longer names and enters the ones it newly names;
+    /// a bucket it STAYS in keeps its members as they are and its hash
+    /// follows the row's. The same members, order and hashes as taking
+    /// the row out of every bucket and filing it afresh.
+    fn refiled(id: int, row: R, hash: int, keys: List<List<IndexKey>>) {
+        let was = self.filed.get()[id]
+        let old = self.hashes.get()[id]
+        for i, ks in was {
+            for k in ks {
+                if !holds_key(keys[i], k) { self.unfile_from(i, k, id, old) }
+            }
+        }
+        self.rows.set_at(id, row)
+        self.hashes.set_at(id, hash)
+        self.filed.set_at(id, keys)
+        self.set.set(self.set.get() - old + hash)
+        for i, ks in keys {
+            for k in ks {
+                if holds_key(was[i], k) { self.rehashed(i, k, old, hash) } else { self.file(i, k, id, hash) }
+            }
+        }
+    }
+
+    /// A bucket whose member's hash went from `old` to `hash`, its members
+    /// standing: the sum follows, an ordered fold is taken again.
+    fn rehashed(index: int, key: IndexKey, old: int, hash: int) {
+        if old == hash { return }
+        let bucket = self.buckets.get()[self.bucket_of(index, key)]
+        bucket
+            .hash
+            .set(
+                if self.indexes[index].ordered { self.ordered_fold(bucket.members.get()) } else { bucket.hash.get() - old + hash },
+            )
     }
 
     /// A live row whose stable hash and keys stand as they were — only its `@local`
