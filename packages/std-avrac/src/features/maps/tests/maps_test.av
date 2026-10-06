@@ -1,7 +1,7 @@
 // Maps, the vertical: the literal, `{}` adopted, `get` answering
 // absence, `set` on a place, `length`, and the refusals in their
 // own words.
-use @std.avrac.testing.{shown, refused_with, ir_of}
+use @std.avrac.testing.{shown, refused_with, ir_of, floored, answered, refused_in}
 use compiler.backend.{render_ir}
 
 /// The runtime rows a program's IR calls, as text.
@@ -172,6 +172,33 @@ spec "features/maps" {
             refused_with(
                 "let m = { \"a\": 1 }\nm.any(it.value > 0)",
                 "a map's entries wear the prelude's `Entry`, and this program sees no `@std/prelude`",
+            )
+        }
+        then "under the prelude it walks, and a kept map keeps its order" {
+            answered(
+                floored(
+                    "let m = { \"b\": 2, \"a\": 1, \"c\": 3 }\nm.filter(it.value != 1).keys().join(\",\")",
+                ),
+            ) == "b,c"
+        }
+        then "a verb that adds numbers says what the map holds" {
+            refused_in(
+                floored("let m = { \"a\": 1 }\nm.sum()"),
+                "`sum` needs numbers, and this map holds `Entry<string, int>`",
+            )
+        }
+        then "a scan by value says what the map holds" {
+            refused_in(
+                floored("let m = { \"a\": 1 }\nm.contains(m.entries()[0])"),
+                "and this map holds `Entry<string, int>`",
+            )
+        }
+        then "a file's own `Entry` is not the prelude's" {
+            refused_in(
+                floored(
+                    "type Entry = { view: string }\nfn f(e: Entry) -> string { e.view }\nlet m = { \"a\": 1 }\nf(m.entries()[0])",
+                ),
+                "argument 1 of `f` wants `Entry`, found `Entry<string, int>`",
             )
         }
         then "the empty literal names no map to walk" {
