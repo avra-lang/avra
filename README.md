@@ -67,7 +67,7 @@ guard small programs, not the compiler over a package.
 source(s)
   │  workspace     a package root's files; every stage below is a
   │                memoized query family over the red-green kernel
-  │                (`query/`), so a body edit re-runs only what read it
+  │                (`@std/relation`'s engine), so a body edit re-runs only what read it
   │  lex + parse   the grammar engine, executing the merged
   │                feature grammar; holes survive bad input
   │  resolve       names -> bindings (a param or a definition)
@@ -130,7 +130,6 @@ claim that this stays true.
 ```
 packages/std-avrac/src/
   core/        shared vocabulary: spans, nodes, types, the IR
-  query/       the memo kernel: red-green cells, families, revisions
   grammar/     the grammar engine (language-agnostic)
   features/    the language, one directory per feature; the contract
   compiler/    the driver: assembly, the derivation every command asks, the
@@ -139,6 +138,8 @@ packages/std-avrac/src/
                header of compiler/mod.av)
   diagnostics/ structured errors and their rendering
   testing/     what every spec asks of a program: shown, refused_with
+packages/std-relation/src/engine/  the memo kernel: red-green cells, families,
+               revisions — the compiler's and a running program's alike
 packages/*/corpus/  a package's proof by example, both engines
 packages/cli/  the avra command; each subcommand one file
 runtime/       avra_runtime.c — the native half of the semantics
@@ -146,9 +147,9 @@ backend/       llvm_wrapper.c — the compiler's LLVM binding
 tools/         the gate's scripts: the idiom ratchet, bench, fuzz
 ```
 
-Layering is one-way: core → query → grammar → features → language.
-`query/` and `diagnostics/` are infrastructure — language-agnostic,
-imported by everything above them.
+Layering is one-way: core → grammar → features → language, over
+`@std/relation`. Its engine and `diagnostics/` are infrastructure —
+language-agnostic, imported by everything above them.
 
 ## Toolchain
 

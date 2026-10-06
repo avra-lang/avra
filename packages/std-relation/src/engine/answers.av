@@ -1,18 +1,7 @@
 //! Typed values over the query kernel. A family owns one memo; copies
 //! share both its database and its value table, so higher-order query
 //! bodies may safely capture either handle.
-use core.{Table, new_table, qtrace}
-use @std.io.{env}
-
-/// `AVRA_QTRACE`'s own presence, read once — a trace line's
-/// interpolation (an int format, several concatenations) ran on every
-/// `ask`/`settle` whether or not the flag was set; this is the guard
-/// `traced()` reads instead, so the line itself is never built when
-/// nobody is reading it.
-once fn qtrace_flag() -> string? { env("AVRA_QTRACE") }
-
-/// Whether a query-kernel trace line is worth building at all.
-export fn traced() -> bool { qtrace_flag() != null }
+extern fn avra_qtrace(line: string)
 
 export enum MemoAsk<T> {
     Reuse(T)
@@ -50,7 +39,7 @@ impl Relation {
             .Compute -> MemoAsk.Compute,
             .Cycle -> MemoAsk.Cycle,
         }
-        if traced() { qtrace("Q\task\t${self.family}\t${arg}\t${ask_tag(a)}\n") }
+        if self.kernel.tracing.get() { avra_qtrace("Q\task\t${self.family}\t${arg}\t${ask_tag(a)}\n") }
         a
     }
 
@@ -107,19 +96,23 @@ impl Relation {
     fn settle(arg: int, value: T, fingerprint: int) -> T {
         self.kernel.settle(self.query_key(arg), fingerprint)
         self.values.keep(arg, value)
-        if traced() { qtrace("Q\tsettle\t${self.family}\t${arg}\t${fingerprint}\n") }
+        if self.kernel.tracing.get() { avra_qtrace("Q\tsettle\t${self.family}\t${arg}\t${fingerprint}\n") }
         value
     }
 
     /// `settle`'s lazy twin: `fingerprint` runs at most once, only
-    /// when the kernel's own cell already stands (query/kernel.av's
+    /// when the kernel's own cell already stands (the kernel's
     /// `settle_lazy`) — traced by reading the hash back rather than
     /// by holding what `fingerprint` answered, since it may never run.
     fn settle_lazy(arg: int, value: T, fingerprint: fn(T) -> int) -> T {
         let key = self.query_key(arg)
         self.kernel.settle_lazy(key, () -> fingerprint(value))
         self.values.keep(arg, value)
-        if traced() { qtrace("Q\tsettle\t${self.family}\t${arg}\t${self.kernel.value_hash_of(key) ?? -1}\n") }
+        if self.kernel.tracing.get() {
+            avra_qtrace(
+                "Q\tsettle\t${self.family}\t${arg}\t${self.kernel.value_hash_of(key) ?? -1}\n",
+            )
+        }
         value
     }
 

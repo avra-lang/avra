@@ -118,10 +118,16 @@ def selftest():
             sys.exit(f"fingerprints: splice self-test failed on {text!r}: {len(got)} != {want}")
 
 
+def sources():
+    """The compiler's files and the engine's: where a fingerprint is folded."""
+    return [p for root in ("packages/std-avrac/src", "packages/std-relation/src/engine")
+            for p in glob.glob(f"{root}/**/*.av", recursive=True)]
+
+
 def free_report():
     """The next free tag in each file that claims any."""
     out = []
-    for path in sorted(glob.glob("packages/std-avrac/src/**/*.av", recursive=True)):
+    for path in sorted(sources()):
         if "/tests/" in path:
             continue
         # a BORROWED tag is not this file's numbering, so it never
@@ -135,7 +141,7 @@ def main():
     selftest()
     bad = 0
     folds = 0
-    for path in sorted(glob.glob("packages/std-avrac/src/**/*.av", recursive=True)):
+    for path in sorted(sources()):
         if "/tests/" in path:
             continue
         text = open(path).read()

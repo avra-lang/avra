@@ -92,11 +92,16 @@ for b in gen2 cand; do
     echo "one-edit	$b"
     (cd "$at" && AVRA_BIN="$at/build/avra.$b" sh "$here/warm_edit.sh" "$R" packages/cli cli packages/cli/src/commands/shared.av '· memo' 2>&1 | grep -E "edit[0-9]|noop|restored|absent" | cut -c1-260)
 done
-if cmp -s "$out/graph.base" "$out/graph.cand"; then
-    echo "graph	IDENTICAL	$(grep -c '^G' "$out/graph.cand") cells"
+# A kernel is named by a count of the kernels its process made, which says nothing
+# about the graph: each is renamed by its first appearance before the two are compared.
+renamed() { awk -F'\t' -v OFS='\t' '{ if (!($2 in seen)) seen[$2] = ++made; $2 = seen[$2]; print }' "$1" > "$1.n"; }
+renamed "$out/graph.base"
+renamed "$out/graph.cand"
+if cmp -s "$out/graph.base.n" "$out/graph.cand.n"; then
+    echo "graph	IDENTICAL	$(grep -c '^G' "$out/graph.cand") cells	$(cmp -s "$out/graph.base" "$out/graph.cand" && echo "kernel ids too" || echo "kernel ids renamed")"
 else
     echo "graph	DIFFERS"
-    diff "$out/graph.base" "$out/graph.cand" | head -n 6 | cut -c1-300
+    diff "$out/graph.base.n" "$out/graph.cand.n" | head -n 6 | cut -c1-300
 fi
 for g in 1 2; do
     AVRA_QTRACE=1 cold "$at/build/avra.cand$g" 2> "$out/q.gen$g" > /dev/null

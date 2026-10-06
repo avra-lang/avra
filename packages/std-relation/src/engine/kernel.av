@@ -12,8 +12,6 @@
 //! driver sets. A key is a FAMILY number and the dense id the family
 //! keys by — two list indexes, no strings. Values live in the
 //! families' own typed tables; the kernel holds only bookkeeping.
-use core.{list_cell, map_cell}
-use @std.io.{env}
 use @std.meta.{identity}
 
 /// A cell's address: its family, and the dense id the family keys
@@ -136,13 +134,11 @@ export type Audit = {
     reach: Cell<Map<string, bool>>,
 }
 
-/// `AVRA_DB_GRAPH`'s presence, read once.
-once fn graph_flag() -> string? { env("AVRA_DB_GRAPH") }
-
 /// The kernels made so far — a graph line names its kernel by this count.
 once fn kernels_made() -> Cell<int> { Cell.new(0) }
 
-/// THE GRAPH, WRITTEN OUT: off, it is one flag. On, a kernel writes a line to stderr
+/// THE GRAPH, WRITTEN OUT: off, it is one flag. On — its owner turns it on, before
+/// any family registers — a kernel writes a line to stderr
 /// for each family it registers (`F`), input it sets (`I`), cell it settles with the
 /// keys that cell read (`G`), frame it abandons (`A`) and family it evicts (`E`), and
 /// counts every recorded read by the family read — repeats too, which no cell's list
@@ -150,13 +146,15 @@ once fn kernels_made() -> Cell<int> { Cell.new(0) }
 @identity
 type Graph = { on: Cell<bool>, id: Cell<int>, reads: Cell<List<int>> }
 
-fn new_graph() -> Graph {
-    if graph_flag() == null { return Graph { on: Cell.new(false), id: Cell.new(0), reads: list_cell() } }
-    kernels_made().set(kernels_made().get() + 1)
-    Graph { on: Cell.new(true), id: Cell.new(kernels_made().get()), reads: list_cell() }
-}
+fn new_graph() -> Graph { Graph { on: Cell.new(false), id: Cell.new(0), reads: list_cell() } }
 
 impl Graph {
+    fn opened() {
+        kernels_made().set(kernels_made().get() + 1)
+        self.id.set(kernels_made().get())
+        self.on.set(true)
+    }
+
     /// One more read of a key of `family`.
     fn counted(family: int) { self.reads.set_at(family, self.reads.get()[family] + 1) }
 
@@ -202,6 +200,8 @@ export type Kernel = {
     /// The last reader id minted; ids start at 1.
     minted: Cell<int>,
     asker: Asker,
+    /// Whether each ask and settle is traced; its owner's to turn on.
+    tracing: Cell<bool>,
     hits: Cell<int>,
     misses: Cell<int>,
     /// Each family's GRAIN — whether its queries read rows whole.
@@ -224,6 +224,7 @@ export fn new_kernel() -> Kernel {
         stamps: list_cell(),
         minted: Cell.new(0),
         asker: new_asker(),
+        tracing: Cell.new(false),
         hits: Cell.new(0),
         misses: Cell.new(0),
         whole_families: list_cell(),
@@ -350,6 +351,12 @@ impl Kernel {
         row.set_at(k.arg, round)
         true
     }
+
+    /// Every later registration, input, settle, abandon and eviction is written out.
+    fn graph_on() { self.graph.opened() }
+
+    /// Every later ask and settle is traced.
+    fn trace_on() { self.tracing.set(true) }
 
     fn revision() -> int { self.rev.get() }
 
