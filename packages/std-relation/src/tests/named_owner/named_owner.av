@@ -28,8 +28,11 @@ fn logged() -> Db {
     db
 }
 
-/// `name` filed under `tag`, owned by `owner` — its key's row, else a new one.
-fn put(db: Db, owner: int, name: string, tag: string) -> int {
+/// `name` filed under `tag` by the open run — its key's row, else a new one.
+fn put(db: Db, name: string, tag: string) -> int { Fact.insert(db, name: name, tag: tag).id }
+
+/// `name` filed under `tag` for `owner`, no run of it open.
+fn put_as(db: Db, owner: int, name: string, tag: string) -> int {
     let rs = Fact.rows_in(db)
     let at = Fact.by_key(db, FactKey { name: name })?.id ?? rs.next_id()
     let row = Fact { id: at, name: name, tag: tag }
@@ -49,7 +52,7 @@ fn ran(db: Db, owner: int, pairs: List<string>) {
     let _ = db.opened_run(owner)
     for p in pairs {
         let parts = p.split(":")
-        let _ = put(db, owner, parts[0], parts[1])
+        let _ = put(db, parts[0], parts[1])
     }
     db.closed_run(owner)
 }
@@ -97,8 +100,8 @@ fn between() -> string {
     let db = new_db()
     let o = db.owner_named("g.av")
     ran(db, o, ["a:x"])
-    let _ = put(db, o, "late", "x")
-    let _ = put(db, o, "kept", "x")
+    let _ = put_as(db, o, "late", "x")
+    let _ = put_as(db, o, "kept", "x")
     let held = tagged(db, "x")
     ran(db, o, ["a:x", "kept:x"])
     "${held} ${tagged(db, "x")}"
@@ -142,7 +145,7 @@ fn heard_removal() -> string {
 /// filing there is — where the Db's owner refuses a late write.
 fn late() -> string {
     let kernel = new_kernel()
-    let db = db_over(kernel, Verifying.ByHash, Late.Refused, false)
+    let db = db_over(kernel, Verifying.ByHash, Late.Refused)
     db.heard_by(noted)
     let o = db.owner_named("a.av")
     ran(db, o, ["a:x", "b:y"])

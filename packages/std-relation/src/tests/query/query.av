@@ -1,8 +1,9 @@
 // proves: a `@query` keeps its answer per call and reruns only after a
-// write to what it read; the rows a run inserts are its own — a keyed rerun upserts, a
-// keyless one replaces, two owners of one key are refused, a query
-// reading a relation it writes is refused, and `prior` reads the last
-// run's rows — in both engines
+// write to what it read; it writes no rows of its own — an insert in its
+// body with no owner's run open is refused; under a named owner's run a
+// keyed rerun upserts and a keyless one replaces, two owners of one key
+// are refused, and a relation an open run wrote is read by no one until
+// the run closes — in both engines
 use @std.relation.{relation, query}
 use @std.relation.db.{Db, new_db}
 
@@ -31,42 +32,48 @@ fn logged() -> Db {
     db
 }
 
-/// Every input name as an owned row, and a loose tag each.
+/// Every live input name as a row of the owner `mirror`, and a loose tag each.
 @query
 fn mirror(db: Db, bump: int) -> int {
     let r = runs()
     r.set(r.get() + 1)
     let live = [i for i in Input.all(db) if i.live]
+    let owner = db.owner_named("mirror")
+    let _ = db.opened_run(owner)
     for i in live {
         let _ = Owned.insert(db, name: i.name, n: bump)
         let _ = Loose.insert(db, tag: i.name)
     }
+    db.closed_run(owner)
     live.length
 }
 
 /// A second owner of the key `a`.
 @query
 fn rival(db: Db) -> int {
+    let owner = db.owner_named("rival")
+    let _ = db.opened_run(owner)
     let _ = Owned.insert(db, name: "a", n: 99)
+    db.closed_run(owner)
     1
 }
 
-/// Reads what it writes.
+/// Reads what its open run wrote.
 @query
 fn looping(db: Db) -> int {
+    let owner = db.owner_named("looping")
+    let _ = db.opened_run(owner)
     let _ = Loose.insert(db, tag: "x")
-    Loose.all(db).length
+    let seen = Loose.all(db).length
+    db.closed_run(owner)
+    seen
 }
 
-/// Grows by one past what its last run left, each time an input moves.
+/// Writes with no owner.
 @query
-fn grow(db: Db) -> int {
-    let _ = Input.all(db)
-    let before = Owned.prior(db).length
-    for i in 0..before + 1 {
-        let _ = Owned.insert(db, name: "g${i}", n: i)
-    }
-    before + 1
+fn ownerless(db: Db) -> int {
+    let _ = Loose.insert(db, tag: "bare")
+    1
 }
 
 fn memoized() -> string {
@@ -88,18 +95,16 @@ fn owners() -> string {
     let _ = mirror(db, 7)
     let before = heard().get().length
     let _ = rival(db)
+    let two = heard().get().length - before
     let _ = looping(db)
+    "${two} ${heard().get().length - before} ${Loose.all(db).length}"
+}
+
+fn unowned_write() -> string {
+    let db = logged()
+    let before = heard().get().length
+    let _ = ownerless(db)
     "${heard().get().length - before}"
 }
 
-fn priors() -> string {
-    let db = logged()
-    let before = heard().get().length
-    let outside = Owned.prior(db).length
-    let one = grow(db)
-    let _ = Input.insert(db, name: "poke", live: false)
-    let two = grow(db)
-    "${outside} ${heard().get().length - before} ${one}${two} ${Owned.all(db).length}"
-}
-
-"${memoized()} | ${owners()} | ${priors()} | ${heard().get()[0]}"
+"${memoized()} | ${owners()} | ${unowned_write()} | ${heard().get().join(" | ")}"
