@@ -450,6 +450,7 @@ static int64_t g_schedule = 0;
 static uint64_t g_seed_state = 0;
 static int64_t g_choices = 0;
 static int64_t g_pick_links = 0;
+static int64_t g_world_visits = 0;
 static int64_t g_pinned_until_poll = 0;
 
 static int64_t g_polls = 0;
@@ -1178,6 +1179,7 @@ static Fiber* ready_picked(void) {
 
 __attribute__((noinline))
 static Fiber* next_with_world(void) {
+    g_world_visits++;
     // A TASK THAT PARKS HAS WAITED: its count of reads of a frozen clock
     // begins again.
     if (avra_clock.virtual && g_current->state == FIBER_PARKED) g_current->local->clock_asks = 0;
@@ -1703,6 +1705,8 @@ void avra_fiber_forked(void) {
     g_ready_head = g_ready_tail = NULL;
     g_parked_fds = 0;
     if (g_fds) memset(g_fds, 0, g_fds_cap * sizeof(FdWaits));
+    // a schedule is its run's: the child's order is the queue's own
+    g_seeded = 0;
 }
 
 // ── The evaluator's tasks ───────────────────────────────────────
@@ -1792,6 +1796,15 @@ void avra_vtask_wait_until(int64_t t, int64_t at_ns, int64_t arm, int64_t member
 
 void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member) { waits_gate(virtual_at(t), gate, arm, member); }
 
+int64_t avra_vtask_join(int64_t t, void* task) {
+    Fiber* f = virtual_at(t);
+    if (task_cells(task)[GATE_OPEN]) return 0;
+    alone(f);
+    waits_gate(f, task, 0, 0);
+    legacy_parked(f);
+    return host_waited(1);
+}
+
 int64_t avra_vtask_park(int64_t t) { return host_waited(park_begun(virtual_at(t))); }
 
 int64_t avra_vtask_claim(int64_t t) { return claim_taken(virtual_at(t)); }
@@ -1844,3 +1857,5 @@ int64_t avra_sched_fd_waiters(void) { return g_parked_fds; }
 int64_t avra_sched_polls(void) { return g_polls; }
 
 int64_t avra_sched_pick_links(void) { return g_pick_links; }
+
+int64_t avra_sched_world_visits(void) { return g_world_visits; }

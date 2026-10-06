@@ -70,6 +70,29 @@ static void as_virtual(void) {
     for (int i = 0; i < 3; i++) avra_vtask_free(ts[i].id);
 }
 
+// A join by a virtual task parks as a compiled join does: readied where
+// the task ends, deaf to a cancel and to its own deadline.
+static int64_t in_ms(int64_t ms) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec + ms * 1000000;
+}
+static void joins(void) {
+    int64_t j = avra_vtask_new();
+    void* timed = avra_task_at(in_ms(40));
+    int64_t before = in_ms(0);
+    int64_t outer = avra_vtask_within(j, 5);
+    CHECK(avra_vtask_join(j, timed) == 1, "a virtual task joins a task the timer ends, and parks");
+    avra_vtask_cancel(j, 0);
+    CHECK(avra_vtask_next() == j, "the policy names it when the task's time comes");
+    CHECK(in_ms(0) - before >= 35 * 1000000, "at that time: not at its own deadline, and not at a cancel");
+    avra_vtask_within_end(j, outer);
+    CHECK(avra_vtask_join(j, timed) == 0, "a join of a task that has ended parks nothing");
+    CHECK(avra_sched_timers() == 0, "and nothing stays filed");
+    avra_rc_release(timed);
+    avra_vtask_free(j);
+}
+
 static void deadlocked(void) {
     int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
     (void)t;
@@ -77,6 +100,7 @@ static void deadlocked(void) {
 }
 
 int main(void) {
+    joins();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
     char fibers[128]; strcpy(fibers, g_log);

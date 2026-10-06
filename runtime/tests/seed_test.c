@@ -55,11 +55,12 @@ static void in_child(const char* what, void (*body)(void)) {
 
 // ── one scenario, both engines ──────────────────────────────────
 //
-// Three tasks of three steps. Between its first and second step `a`
+// Four tasks of three steps. Between its first and second step `a`
 // waits on a task nothing runs, which `b` answers there; `c` makes a
-// task the timer ends and waits on it. The root joins all three.
+// task the timer ends and waits on it; `d` makes one and JOINS it. The
+// root joins all four.
 
-enum { TASKS = 3 };
+enum { TASKS = 4 };
 static void* g_pending = NULL;
 
 static void* stepper(void* self) {
@@ -72,6 +73,11 @@ static void* stepper(void* self) {
         void* timed = avra_task_at(1);
         avra_wait_task(timed, 0, 0);
         avra_wait_park();
+        avra_rc_release(timed);
+    }
+    if (name == 'd') {
+        void* timed = avra_task_at(1);
+        avra_rc_release(avra_task_join(timed));
         avra_rc_release(timed);
     }
     note(name);
@@ -92,7 +98,7 @@ static void as_fibers(void) {
 // the root one of them, a join filed with the driver, and a timer's
 // task the runtime's own — waited on through its gate, never a task
 // the policy names.
-typedef struct { int64_t id; char name; int step, done, joined_by_root, parked; void* timed; } Virtual;
+typedef struct { int64_t id; char name; int step, done, joined_by_root, parked, joins; void* timed; } Virtual;
 
 static void as_virtual(void) {
     Virtual ts[TASKS + 1];
@@ -124,11 +130,15 @@ static void as_virtual(void) {
                 avra_vtask_wait_gate(v->id, on, 0, 0);
                 v->parked = (int)avra_vtask_park(v->id);
             }
-            runs_on = !v->parked;
+            if (v->name == 'd') {
+                v->timed = avra_task_at(1);
+                v->joins = (int)avra_vtask_join(v->id, v->timed);
+            }
+            runs_on = !v->parked && !v->joins;
             if (on && runs_on) avra_vtask_claim(v->id);
         } else if (v->step == 2) {
             if (v->parked) avra_vtask_claim(v->id);
-            v->parked = 0;
+            v->parked = v->joins = 0;
             if (v->timed) avra_rc_release(v->timed);
             v->timed = NULL;
             note(v->name);
@@ -164,7 +174,7 @@ static void engines_agree(void) {
         if (!known) strcpy(seen[distinct++], fibers);
     }
     CHECK(replayed == SCHEDULES, "one schedule gives one order, twice");
-    CHECK(same == SCHEDULES, "fibers and virtual tasks agree on every schedule, a timer's task and a fiberless task among them");
+    CHECK(same == SCHEDULES, "fibers and virtual tasks agree on every schedule: a fiberless task, a timer's task waited on and one joined among them");
     CHECK(distinct > 40, "schedules reach many orders");
 }
 
@@ -308,6 +318,30 @@ static void settled(void) {
     joined(a);
     joined(b);
     CHECK(avra_sched_pick_links() == links, "and no switch reaches the pick");
+    int64_t asked = avra_sched_world_visits();
+    a = spawn1(yields_n, 1000);
+    b = spawn1(yields_n, 1000);
+    joined(a);
+    joined(b);
+    CHECK(avra_sched_world_visits() - asked <= 4, "nor leaves the fast path: two thousand switches ask the world a handful of times");
+}
+
+// A forked child is a new program: its order is the queue's own.
+static void child_of_a_seeded_run(void) {
+    avra_fiber_forked();
+    int64_t links = avra_sched_pick_links();
+    int same = 1;
+    for (int i = 0; i < 8; i++) {
+        fresh(); three_once();
+        same &= strcmp(g_log, "abc") == 0;
+    }
+    CHECK(same && avra_sched_pick_links() == links, "a forked child does not inherit its parent's schedule");
+}
+
+static void forked_while_seeded(void) {
+    avra_sched_seed(11);
+    in_child("a forked child of a seeded run is unseeded", child_of_a_seeded_run);
+    avra_sched_settle();
 }
 
 int main(void) {
@@ -327,6 +361,7 @@ int main(void) {
     reader_among_yielders();
     bounded_pick();
     settled();
+    forked_while_seeded();
     CHECK(avra_mem_live() == live, "a seeded run leaves nothing behind");
     avra_fiber_fd_closing(g_pipe[0]);
     close(g_pipe[0]);
