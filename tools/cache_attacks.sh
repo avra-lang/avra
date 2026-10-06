@@ -1361,6 +1361,42 @@ printf '// moved\n' >> $R/abx/src/aaa.av
 AB "abx: a build from another entry" build abx
 S "abx: the binary from another entry" abx
 
+# ONE DECLARATION, ONE SPELLING. A builtin's wire names the language, never the file
+# a process happened to meet first — so a body edit under impls over builtins leaves
+# the module's interface where it was, its importer held, and the same package
+# inspected with no entry (`avra cache held`) sees no interface moved. And
+# an impl over a builtin that an importer dispatches through, in a file the importer
+# never names, is still the importer's: removed, the warm check refuses as a cold one.
+mkdir -p $R/bwl/src $R/bw/src
+printf '[package]\nname = "@rt/bwl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-bwl"\npath = "src/lib.av"\n' > $R/bwl/avra.toml
+printf '[package]\nname = "rt-bw"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/bwl" = { path = "../bwl" }\n' > $R/bw/avra.toml
+printf 'export fn base() -> int { 1 }\n' > $R/bwl/src/lib.av
+printf 'export trait Show { fn show() -> string }\nimpl Show for List<T> { fn show() -> string { "list" } }\nimpl Show for string { fn show() -> string { "text" } }\nexport fn shown() -> string {\n    let xs: List<int> = [1]\n    xs.show() + "s".show()\n}\n' > $R/bwl/src/shows.av
+printf 'use @rt.bwl.shows.{shown}\nexport fn used() -> string { shown() }\n' > $R/bw/src/user.av
+printf 'use user.{used}\nprintln(used())\n' > $R/bw/src/main.av
+HR "cold bw" check bw 0
+ed $R/bwl/src/shows.av '"list"' '"lst"'
+HR "bw: a body edit under impls over builtins holds the importer" check bw 0 user.av held
+ed $R/bwl/src/shows.av '"lst"' '"l"'
+HR "bw: and again" check bw 0 user.av held
+steps=$((steps+1)); bw_moved=$( (cd $R/bw && "$tree/avra" cache held 2>&1) | grep -c 'moved module')
+[ "$bw_moved" -eq 0 ] || { fails=$((fails+1)); echo "FAIL  bw: inspected with no entry, $bw_moved interfaces read as moved since the entry's own check"; }
+mkdir -p $R/bil/src $R/bi/src
+printf '[package]\nname = "@rt/bil"\nversion = "0.1.0"\n\n[lib]\nname = "rt-bil"\npath = "src/lib.av"\n' > $R/bil/avra.toml
+printf '[package]\nname = "rt-bi"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/bil" = { path = "../bil" }\n' > $R/bi/avra.toml
+printf 'export fn base() -> int { 1 }\n' > $R/bil/src/lib.av
+printf 'export trait Tell { fn tell() -> string }\n' > $R/bil/src/tell.av
+printf 'use tell.{Tell}\nimpl Tell for List<T> { fn tell() -> string { "list" } }\nexport fn pad() -> int { 0 }\n' > $R/bil/src/list_tell.av
+printf 'export fn other() -> int { 1 }\n' > $R/bi/src/other.av
+printf 'use @rt.bil.tell.{Tell}\nuse other.{other}\nlet xs: List<int> = [1]\nprintln("${xs.tell()} ${other()}")\n' > $R/bi/src/main.av
+S "cold bi: an impl over a builtin in a file the app never names" bi
+HR "bi checks clean" check bi 0
+ed $R/bi/src/other.av "{ 1 }" "{ 2 }"
+HR "bi: an edit elsewhere checks clean" check bi 0
+printf 'export fn pad() -> int { 0 }\n' > $R/bil/src/list_tell.av
+steps=$((steps+1)); bi_out=$(./avra check $R/bi 2>&1); bi_st=$?
+case "$bi_st:$bi_out" in 1:*"tell"*) [ -n "${VERBOSE:-}" ] && echo "ok    bi: the impl gone -> refused" ;; *) fails=$((fails+1)); echo "FAIL  bi: the impl over List is gone and the warm check did not refuse the call (exit $bi_st): $(printf '%s' "$bi_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }
