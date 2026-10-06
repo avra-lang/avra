@@ -86,6 +86,23 @@ spec "std/relation — a @query under an owner's kernel" {
         let _ = Glyph.insert(o.db, name: "b", set: "s")
         heard.get().length == 1 && heard.get()[0].contains("a producer runs before its readers")
     }
+    then "a run in a Db with no kernel keeps one relation's readers out, and no other's" {
+        let db = new_db()
+        let heard: Cell<List<string>> = Cell.new([])
+        db.heard_by((w: string) -> heard.push(w))
+        let _ = Face.insert(db, name: "f")
+        let owner = db.owner_named("glyphs")
+        let _ = db.opened_run(owner)
+        let _ = Glyph.insert(db, name: "a", set: "s")
+        let faces = Face.all(db).length
+        let other = heard.get().length
+        let _ = Glyph.by_set(db, "s")
+        db.closed_run(owner)
+        faces == 1 &&
+            other == 0 &&
+            heard.get().length == 1 &&
+            heard.get()[0].contains("`Glyph` is read while its owner `glyphs`")
+    }
     then "a Db a query has read is given no kernel: refused by name, on its own kernel as on an owner's" {
         let own = new_db()
         let heard: Cell<List<string>> = Cell.new([])

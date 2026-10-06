@@ -168,10 +168,13 @@ fn made(durable: Durable) -> Db {
 impl Db {
     /// A relation reached here for the first time: its set hash and its
     /// close, each already bound to this Db.
-    fn joined(hash: fn() -> int, close: fn() -> void, sweep: fn(Db, int, int) -> void) {
+    /// Answers the relation's seat here: its number among those reached,
+    /// whatever kernel the Db has.
+    fn joined(hash: fn() -> int, close: fn() -> void, sweep: fn(Db, int, int) -> void) -> int {
         self.hashes.push(hash)
         self.closers.push(close)
         self.sweepers.push(sweep)
+        self.hashes.get().length - 1
     }
 
     /// Whether a read here is heard by no one: no query is open in the
@@ -274,28 +277,29 @@ impl Db {
     /// The open kernel query's token, -1 with none open.
     fn reader_now() -> int { self.kernel.get()?.reader() ?? 0 - 1 }
 
-    /// The owner whose open run wrote `family`, when one has: its rows
-    /// are no one's to read until that run closes.
-    fn writing(family: int) -> int? {
-        self.open.get().find((run: OpenRun) -> run.wrote.get().contains(family))?.stamp?.owner()
+    /// The owner whose open run wrote the relation seated at `seat`, when
+    /// one has: its rows are no one's to read until that run closes.
+    fn writing(seat: int) -> int? {
+        self.open.get().find((run: OpenRun) -> run.wrote.get().contains(seat))?.stamp?.owner()
     }
 
     /// Whether no owner's run is open.
     fn idle() -> bool { self.open.get().is_empty() }
 
-    /// A write into `family` begun: counted, told to every answer read
-    /// back and to the innermost open run. Answers whether a reader may
-    /// hold a cell of it — whether the late-write walk is owed. A run asks
-    /// the kernel once per relation it writes in a row: nothing reads a
-    /// relation an open run has written, so the answer stands.
-    fn writing_into(family: int) -> bool {
+    /// A write into the relation seated at `seat` begun: counted, told to
+    /// every answer read back and to the innermost open run. Answers
+    /// whether a reader may hold a cell of its `family` — whether the
+    /// late-write walk is owed. A run asks the kernel once per relation it
+    /// writes in a row: nothing reads a relation an open run has written,
+    /// so the answer stands.
+    fn writing_into(seat: int, family: int) -> bool {
         self.written.set(self.written.get() + 1)
         self.unsettles_restored()
-        if self.top_last.get() == family { return self.top_owed.get() }
+        if self.top_last.get() == seat { return self.top_owed.get() }
         let owed = self.heard(family)
         let top? = self.open.get().last() else { return owed }
-        if !top.wrote.get().contains(family) { top.wrote.push(family) }
-        self.top_last.set(family)
+        if !top.wrote.get().contains(seat) { top.wrote.push(seat) }
+        self.top_last.set(seat)
         self.top_owed.set(owed)
         owed
     }
@@ -504,11 +508,15 @@ impl Stores<R> {
                         },
                     ),
             )
-        db
-            .joined(
-                () -> open_hash(slots.get()[id]),
-                () -> slots.set_at(id, Slot.Closed),
-                (on: Db, owner: int, run: int) -> swept(slots.get()[id], on, owner, run),
+        made
+            .seat
+            .set(
+                db
+                    .joined(
+                        () -> open_hash(slots.get()[id]),
+                        () -> slots.set_at(id, Slot.Closed),
+                        (on: Db, owner: int, run: int) -> swept(slots.get()[id], on, owner, run),
+                    ),
             )
         made
     }
