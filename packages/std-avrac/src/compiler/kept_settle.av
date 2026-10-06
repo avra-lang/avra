@@ -43,17 +43,25 @@ impl Workspace {
         let d = self.decls.decl_of(ask.file, s)
         let layout = self.kept_layout(ask.file, s)
         let keyed: string? = if d != null && layout != null && ask.seats.is_empty() { self.kept_settle_key(ask.file, d!) } else { null }
+        let id = "${self.settle_id(ask.file, SettleRoot.Const(s), ask.seats)}"
         if keyed != null {
-            let kept = self.kept_verdict(ask.file, keyed!, layout!)
+            let kept = self.kept_verdict(ask.file, keyed!, layout!, id)
             if kept != null { return kept! }
         }
         let asked = self.hold.body_asks.get().length
         let fresh: Cell<List<KeptLine>> = list_cell()
         self.hold.settle_frames.push(fresh)
+        // this settlement's reads alone, then joined to what its file's runs read before
+        let reader = self.decls.file(ask.file).path
+        let before = self.hold.runs.get().get(reader) ?? []
+        self.hold.runs.put(reader, no_paths())
         let r = self
             .settlement_of(ask.file, self.analysis(ask.file).view.store.const_value(s)!, ask.name, ask.seats)
         let frame = self.popped_settle_frame()
-        if keyed != null && self.hold.body_asks.get().length == asked { self.keep_verdict(keyed!, r, frame, layout!) }
+        let read = self.hold.runs.get().get(reader) ?? []
+        self.hold.runs.put(reader, distinct(before.concat(read)))
+        self.hold.settle_reads.put(id, read)
+        if keyed != null && self.hold.body_asks.get().length == asked { self.keep_verdict(keyed!, r, frame, layout!, read) }
         r
     }
 
@@ -149,6 +157,7 @@ impl Workspace {
         r: Result<Settled, Unsettled>,
         frame: List<KeptLine>,
         layout: string,
+        read: List<string>,
     ) {
         let store? = self.store.get() else { return }
         if frame.any(it.line == "x") { return }
@@ -165,16 +174,20 @@ impl Workspace {
             .concat(
                 [self.file_line(path) for path in distinct(flatten([self.module_files(m) for m in modules]))],
             )
-            .concat([budget_line(self.budgets()), layout])
+            .concat([budget_line(self.budgets()), layout, joined(["r"].concat(read), "\t")])
             .concat([joined(["e", path, self.embed_said(path)], "\t") for path in distinct(embedded)])
         let _ = store.keep(Stored.Unit, key, value!, [])
         let _ = store.keep(Stored.Unit, "${key}#lines", joined(lines, "\n"), [])
     }
 
     /// The kept verdict for `key`, when it was kept under this `layout` and
-    /// every line it was kept with stands; what its run read is read again, as
-    /// a run would.
-    fn kept_verdict(f: FileId, key: string, layout: string) -> Result<Settled, Unsettled>? {
+    /// every line it was kept with stands. A VERDICT CARRIES THE READS OF THE RUN
+    /// THAT MADE IT — its `r` line, there even when the run read nothing — and
+    /// standing on it records them for its file and for whoever reads the const.
+    fn kept_verdict(f: FileId, key: string, layout: string, id: string) -> Result<
+        Settled,
+        Unsettled,
+    >? {
         let store? = self.store.get() else { return null }
         let value? = store.get(Stored.Unit, key) else { return null }
         let lines? = store.get(Stored.Unit, "${key}#lines") else { return null }
@@ -182,7 +195,10 @@ impl Workspace {
         if !said.contains(layout) { return null }
         let rows = [l.split("\t") for l in said if !l.is_empty() && l != layout]
         if !rows.all((r: List<string>) -> self.kept_row_stands(r)) { return null }
-        self.read_by(self.decls.file(f).path, distinct([r[1] for r in rows if r[0] == "u"]))
+        let reads? = rows.find(it[0] == "r") else { return null }
+        let read = reads.slice(1, reads.length)
+        self.read_by(self.decls.file(f).path, read)
+        self.hold.settle_reads.put(id, read)
         let v = settled_from_wire(value)
         if v != null { return .Ok(v!) }
         let words? = reach_from_wire(value) else { return null }
@@ -197,6 +213,7 @@ impl Workspace {
             "f" -> self.kept_file_stands(r),
             "b" -> r.length == 2 && budget_line(self.budgets()) == joined(r, "\t"),
             "e" -> r.length == 3 && self.embed_said(r[1]) == r[2],
+            "r" -> true,
             rest -> false,
         }
     }
