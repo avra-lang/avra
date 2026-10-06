@@ -331,6 +331,16 @@ than a mark the derive reads, is probed before it is relied on.
 | `avra-8sb5.57.202` | a `@query` ask re-encodes its arguments on every hit — the int / `@dense` fast path | P6, before its first conversion |
 | `avra-8sb5.57.203` | the durable stopgap (`rows_alone`, `Db.restored`) | DB 06 |
 
+`avra-8sb5.57.204` — rows a kernel query writes into a framed Db are never swept (a
+rerun doubles them; `ErrorSite` is written so) — is fixed by P4a2's named owner.
+
+WHAT A KEPT ANSWER CANNOT SEE (review 8, pinned in `tests/durable` as today's
+behaviour, inherited by DB 06 as attacks, cited on `avra-8sb5.57.203`): a read of
+ANOTHER Db's rows is recorded in that Db's kernel, so the asked Db's dep list is empty
+and the answer is kept and read back stale (`1`, where `2` is right); and an answer
+over this Db's own rows is read back by a process whose Db holds other rows before it
+asks — the owner's key alone decides.
+
 A float argument or answer is REFUSED by `@query` (`query_arg` / `query_answer`: no
 stable encoding); a record and a list of records key a call by value
 (`tests/query_cells`). A payload enum is refused by the codec today.
@@ -346,7 +356,11 @@ source, every store moved aside, three rounds: cells · edges · read calls per 
 bytes per edge · bytes per cell · `Kernel.newly_read` MB · cold `check packages/cli`
 in INSTRUCTIONS, wall time and peak · no-op and one-edit time · instructions per recorded
 read (a kernel cell, a relation row) · bytes per `new_db()` · `test packages/std-avrac`
-time and peak · duplicate computations.
+time and peak · duplicate computations. PER READ MEANS `tools/db_measure/read_cost.sh`
+(P2): (count at 2N − count at N) / N on the census runtime — retains, releases, list
+reads and list writes, the same on every machine — with instructions printed beside
+them as the measuring machine's own. A whole-process figure divided by one pass's reads
+is not a per-read figure (the "3,563 → 3,432" P4a1 first published was that).
 
 | PR | budget |
 |---|---|
@@ -354,7 +368,7 @@ time and peak · duplicate computations.
 | P1 | `newly_read` < 60 MB (375 today) |
 | P4a1 | a relation's recorded read ≤ 350 instructions (~938 today), the ambient and Db checks included; c3 = once. NEITHER MET NOR MISSED YET: the "3,563 → 3,432" P4a1 first published was the readbench's WHOLE PROCESS (fill, list pass and all four read passes) divided by ONE pass's 1,000,000 reads — not a per-read figure. The per-read quantity is P2's `read_cost.sh` (N against 2N, so setup cancels); readbench's own figure for a recorded dense-id read is ~100 ns on the Mac. A `@query` asked again costs 286 ns by an int and 953 ns by a 25-character text (`avra-8sb5.57.202`) |
 | P3, P4a4, P4b, P5 | neutral |
-| P6 | neutral; the converted family's cells and edges unchanged |
+| P6 | neutral; the converted family's cells and edges unchanged. ENTRY CONDITION (`avra-8sb5.57.202`): a dense-keyed `@query` hit does NO encoding and NO list write, with its row in `tools/db_measure/read_cost.budget` at or under a recorded dense read. Today a hit costs 16 list writes and 295 ns by an int (82 and 978 ns by a 25-character text) against 70 ns for a recorded dense read; the 37.2 M read calls M1 counted on a cold `check cli` would cost ~11 s at that price. No family converts before the row is in the budget |
 
 ## 8. The three riskiest points
 
