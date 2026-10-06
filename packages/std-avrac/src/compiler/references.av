@@ -101,8 +101,9 @@ impl Workspace {
         let restored = if store == null { [] } else { [self.restored_refs(store!, f) for f in held] }
         // THE RELATION IS ONE VALUE: every row stands before one is filed,
         // so nothing asked here lands among the rows it writes.
-        let rows = Ref
-            .replaced(self.decls.rows_db.get(), "references", flatten(surveyed.concat(restored)))
+        let found = flatten(surveyed.concat(restored))
+        let rows = Ref.replaced(self.decls.rows_db.get(), "references", found)
+        if rows.length != found.length { self.defect(references_refused(found.length)) }
         self.decls.mark_refs_incomplete(store == null && !held.is_empty())
         self.db.settle(k, fp(41, [fp_list([ref_fp(r) for r in rows])]))
         rows.length
@@ -423,3 +424,9 @@ fn spanned_in(store: SyntaxArena, e: ExprId, quotes: List<Span>) -> bool {
 
 /// One expression's use of a declaration.
 fn expr_use(d: DeclId, f: FileId, e: ExprId, kind: UseKind) -> Ref { Ref { decl: d, file: f, at: At.Expr(e), kind: kind } }
+
+// ── voices ──
+
+fn references_refused(found: int) -> string {
+    "the references relation is filed whole or not at all — its ${found} rows were refused, so every answer from it is the last pass's"
+}

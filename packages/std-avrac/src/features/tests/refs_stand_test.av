@@ -1,0 +1,44 @@
+// The references relation is read only while it stands: the pass's hook
+// says whether it does, and a reader told no reads nothing — a row that
+// stands in the relation is not answered.
+use @std.avrac.features.{Decls, new_decls, Ref, UseKind}
+use @std.avrac.core.{DeclId, FileId, StmtId, At}
+
+const REFS_STAND_DECL: DeclId = DeclId { index: 7 }
+
+const REFS_STAND_FILE: FileId = FileId { index: 3 }
+
+/// A table whose relation holds one use of the declaration, in the file.
+fn refs_stand_table() -> Decls {
+    mut decls = new_decls()
+    let _ = Ref
+        .insert(
+            decls.rows_db.get(),
+            decl: REFS_STAND_DECL,
+            file: REFS_STAND_FILE,
+            at: At.Stmt(StmtId { index: 0 }),
+            kind: UseKind.Call,
+        )
+    decls
+}
+
+/// The uses it answers by declaration, then by file.
+fn refs_stand_answers(decls: Decls) -> string {
+    "${decls.refs_of(REFS_STAND_DECL).length} ${decls.refs_in_file(REFS_STAND_FILE).length}"
+}
+
+spec "features/decls — the references relation is read only while it stands" {
+    then "while the pass cannot run, a row that stands is not read, by declaration or by file" {
+        mut decls = refs_stand_table()
+        decls.arm_references(() -> false)
+        refs_stand_answers(decls) == "0 0"
+    }
+    then "once the pass says it stands, both readers answer the row" {
+        mut decls = refs_stand_table()
+        decls.arm_references(() -> true)
+        refs_stand_answers(decls) == "1 1"
+    }
+    then "a table no pass was armed on reads what it holds" {
+        refs_stand_answers(refs_stand_table()) == "1 1"
+    }
+}
