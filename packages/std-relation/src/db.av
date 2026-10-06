@@ -25,7 +25,7 @@
 //! asked again holds the Db. `close` lets both go. A Db that only ever
 //! held rows is let go with its last holder.
 //!
-use rows.{Rows, named_rows, Stamp, unowned}
+use rows.{Rows, named_rows, Stamp, unowned, run_stamp}
 use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table}
 use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with}
 
@@ -277,7 +277,7 @@ impl Db {
     /// The owner whose open run wrote `family`, when one has: its rows
     /// are no one's to read until that run closes.
     fn writing(family: int) -> int? {
-        self.open.get().find((run: OpenRun) -> run.wrote.get().contains(family))?.stamp?.owner
+        self.open.get().find((run: OpenRun) -> run.wrote.get().contains(family))?.stamp?.owner()
     }
 
     /// Whether no owner's run is open.
@@ -305,14 +305,14 @@ impl Db {
     /// write is refused.
     fn stamp() -> Stamp {
         let top = self.top.get()
-        if top.owner == 0 && self.asking.get() > 0 { self.refuse(query_writes()) }
+        if top.at == 0 && self.asking.get() > 0 { self.refuse(query_writes()) }
         top
     }
 
     /// A write `owner` makes in the run it has open.
     fn stamp_of(owner: int) -> Stamp {
         let top = self.top.get()
-        if top.owner == owner { top } else { Stamp { owner: owner, run: self.runs.get()[owner] } }
+        if top.owner() == owner { top } else { run_stamp(owner, self.runs.get()[owner]) }
     }
 
     /// The innermost open run, kept where a write reads it.
@@ -342,7 +342,7 @@ impl Db {
         let run = self.runs.get()[owner] + 1
         self.runs.set_at(owner, run)
         let wrote: List<int> = []
-        self.open.push(OpenRun { stamp: Stamp { owner: owner, run: run }, wrote: Cell.new(wrote) })
+        self.open.push(OpenRun { stamp: run_stamp(owner, run), wrote: Cell.new(wrote) })
         self.retopped()
         run
     }
@@ -352,7 +352,7 @@ impl Db {
     fn closed_run(owner: int) {
         let run = self.runs.get()[owner]
         for s in self.sweepers.get() { s(self, owner, run) }
-        self.open.set([r for r in self.open.get() if r.stamp.owner != owner])
+        self.open.set([r for r in self.open.get() if r.stamp.owner() != owner])
         self.retopped()
     }
 

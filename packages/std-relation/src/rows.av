@@ -95,11 +95,20 @@ impl Stamped {
     }
 }
 
-/// Who wrote a row: the query cell that owns it and which of its runs —
-/// owner 0 is no query.
-export type Stamp = { owner: int, run: int }
+/// Who wrote a row: the owner's cell and which of its runs, in one word
+/// — a row's stamp is a number, kept with no box. Owner 0 is no one.
+export type Stamp = { at: int }
 
-export const unowned: Stamp = Stamp { owner: 0, run: 0 }
+export const unowned: Stamp = Stamp { at: 0 }
+
+/// The stamp of `owner`'s run `run`.
+export fn run_stamp(owner: int, run: int) -> Stamp { Stamp { at: (owner << 32) + run } }
+
+impl Stamp {
+    fn owner() -> int { self.at >> 32 }
+
+    fn run() -> int { self.at & 4294967295 }
+}
 
 /// A cell never read.
 fn unread() -> ReadMark { ReadMark { revision: Cell.new(-1), reader: Cell.new(-1) } }
@@ -357,11 +366,12 @@ impl Rows<R> {
         // no query ever read here: no write can be late, and no cell owes a stamp
         if db.writing_into(self.family.get()) { self.late_check(db, relation, id, keys) }
         let held = self.row(id) != null
-        let was = if id < self.next_id() { self.stamps.get()[id].owner } else { 0 }
-        if held && was != stamp.owner { db.refuse(two_owners(relation, id)) }
+        let was = if id < self.next_id() { self.stamps.get()[id].owner() } else { 0 }
+        let owner = stamp.owner()
+        if held && was != owner { db.refuse(two_owners(relation, id)) }
         self.put(id, row, hash, keys)
         self.stamps.set_at(id, stamp)
-        if stamp.owner != 0 && (!held || was != stamp.owner) { self.stamped_by(stamp.owner).took(id, stamp.run) }
+        if owner != 0 && (!held || was != owner) { self.stamped_by(owner).took(id, stamp.run()) }
     }
 
     /// What `owner` stamped here, made on its first write — the owner that
@@ -393,14 +403,14 @@ impl Rows<R> {
         let mine? = self.stamped.get()[owner] else { return }
         if mine.since.get() == run { return }
         let marks = self.stamps.get()
-        let live = [id for id in mine.ids.get() if marks[id].owner == owner && self.row(id) != null]
-        let gone = [id for id in live if marks[id].run < run]
+        let live = [id for id in mine.ids.get() if marks[id].owner() == owner && self.row(id) != null]
+        let gone = [id for id in live if marks[id].run() < run]
         if !gone.is_empty() {
             if db.heard(self.family.get()) { self.late_among(db, self.name, self.filed_buckets(gone)) }
             db.unsettles_restored()
             for id in gone { self.remove(id) }
         }
-        let kept = [id for id in live if marks[id].run >= run]
+        let kept = [id for id in live if marks[id].run() >= run]
         mine.since.set(if kept.is_empty() { 0 } else { run })
         mine.ids.set(kept)
     }
