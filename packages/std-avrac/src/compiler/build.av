@@ -38,7 +38,7 @@ use compiler.backend.{
 }
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.store.{Store, Stored, Keeping, node_key}
-use compiler.host.{Host, no_target, read_manifest}
+use compiler.host.{no_target, read_manifest}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
 use @std.relation.engine.{map_cell}
@@ -411,16 +411,12 @@ fn tree_root(ws: Workspace) -> string {
     mut manifest_root = ws.root
     mut up = dir_of(ws.root)
     while up != dir_of(up) {
-        if has_git(ws.host, up) { return up }
-        if has_manifest(ws.host, up) { manifest_root = up }
+        if ws.there(joined_path(up, ".git")) { return up }
+        if ws.there(joined_path(up, "avra.toml")) { manifest_root = up }
         up = dir_of(up)
     }
     manifest_root
 }
-
-fn has_git(host: Host, dir: string) -> bool { host.exists(joined_path(dir, ".git")) }
-
-fn has_manifest(host: Host, dir: string) -> bool { host.exists(joined_path(dir, "avra.toml")) }
 
 /// What names a kept program: its name among the root's, and the inputs beside
 /// its sources.
@@ -638,8 +634,8 @@ impl Workspace {
     /// ordinal — a closure root has no ordinal before analysis admits it.
     fn manifest_objects(root: string) -> List<string> {
         let path = joined_path(root, "avra.toml")
-        if !self.host.exists(path) { return [] }
-        let m = read_manifest(new_source_file(path, self.host.read(path)))
+        if !self.there(path) { return [] }
+        let m = read_manifest(new_source_file(path, self.listed_text(path)))
         [joined_path(root, o) for o in filled_words(m.objects)]
     }
 

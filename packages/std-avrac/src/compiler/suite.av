@@ -8,7 +8,6 @@ use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized, under_di
 use @std.io.{make_dirs}
 use compiler.backend.{run_program}
 use compiler.store.{Store, Stored, node_key}
-use compiler.host.{Host}
 use compiler.lower.{Lowered, program_symbol}
 
 /// One `.refuses` program: a trap IS its proof, so it is never called
@@ -46,7 +45,7 @@ impl Workspace {
     > {
         let own: BuildOutcome? = self.suite(only, told_from, tools)?
         mut out: List<BuildOutcome> = if own == null { [] } else { [own!] }
-        for root in [r for r in nested_roots(self.host, joined_path(self.root, "src")) if in_scope(only, r)] {
+        for root in [r for r in self.nested_roots(joined_path(self.root, "src")) if in_scope(only, r)] {
             let inner = self.nested_at(root)
             let made: BuildOutcome? = inner.suite(null, told_from, tools)?
             inner.discarded()
@@ -59,7 +58,7 @@ impl Workspace {
     /// a DIRECTORY OF PROGRAMS — every file there its own module.
     fn nested_at(root: string) -> Workspace {
         let src = joined_path(root, "src")
-        if self.host.is_dir(src) { built(self.host, root, src, self.lang, self.clock, false, false) } else { built(self.host, root, root, self.lang, self.clock, false, true) }
+        if self.is_dir(src) { built(self.host, root, src, self.lang, self.clock, false, false) } else { built(self.host, root, root, self.lang, self.clock, false, true) }
     }
 
     /// One suite's binary, or null when there is nothing to prove.
@@ -128,7 +127,7 @@ impl Workspace {
     }
 
     fn refuses_call(path: string) -> RefusesCall {
-        let text = self.host.read(beside(path, "refuses"))
+        let text = self.listed_text(beside(path, "refuses"))
         RefusesCall {
             path: path,
             voice: if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text },
@@ -194,10 +193,10 @@ impl Workspace {
     }
 
     /// The text a program must print stands beside it.
-    fn expects_text(path: string) -> bool { self.host.exists(beside(path, "expected")) }
+    fn expects_text(path: string) -> bool { self.there(beside(path, "expected")) }
 
     /// The voice a program's trap must speak stands beside it.
-    fn expects_trap(path: string) -> bool { self.host.exists(beside(path, "refuses")) }
+    fn expects_trap(path: string) -> bool { self.there(beside(path, "refuses")) }
 
     /// WHETHER A FILE IS A PROGRAM, not a module: a proof stands beside it, so its
     /// top-level statements are its own to run. Discovery reads the same two
@@ -209,12 +208,12 @@ impl Workspace {
 
     /// A marker beside a program drops the evaluator's leg — the seam is the
     /// host's, and the marker's text says why.
-    fn native_only(path: string) -> bool { self.host.exists(beside(path, "native-only")) }
+    fn native_only(path: string) -> bool { self.there(beside(path, "native-only")) }
 
     /// One program as the binary needs it: the text beside it with its final
     /// newline dropped — the shape the capture answers.
     fn program_call(path: string, told_from: string) -> ProgramCall {
-        let text = self.host.read(beside(path, "expected"))
+        let text = self.listed_text(beside(path, "expected"))
         ProgramCall {
             symbol: program_symbol(path),
             label: relative_path(told_from, joined_path(dir_of(path), stem_of(path))),
@@ -239,7 +238,7 @@ impl Workspace {
         let texts = [self.text_digest(f) for f in self.seen_files(store, path)]
         node_key(
             Stored.Unit,
-            ["proved", path, self.host.read(beside(path, "expected")), joined(texts, "\n")],
+            ["proved", path, self.listed_text(beside(path, "expected")), joined(texts, "\n")],
         )
     }
 }
@@ -256,17 +255,18 @@ fn in_scope(only: string?, path: string) -> bool {
     at == top || under_dir(at, top)
 }
 
-/// Every nested package under a directory: one holding its own manifest is a
-/// package, and nothing under it is asked again.
-fn nested_roots(host: Host, dir: string) -> List<string> {
-    if !host.is_dir(dir) { return [] }
-    flatten(
-        [nested_under(host, joined_path(dir, name)) for name in sorted_texts(host.list(dir)) if host.is_dir(joined_path(dir, name))],
-    )
-}
+impl Workspace {
+    /// Every nested package under a directory: one holding its own manifest
+    /// is a package, and nothing under it is asked again.
+    fn nested_roots(dir: string) -> List<string> {
+        flatten(
+            [self.nested_under(joined_path(dir, e.name)) for e in self.listing(dir) ?? [] if e.dir],
+        )
+    }
 
-fn nested_under(host: Host, dir: string) -> List<string> {
-    if host.exists(joined_path(dir, "avra.toml")) { [dir] } else { nested_roots(host, dir) }
+    fn nested_under(dir: string) -> List<string> {
+        if self.there(joined_path(dir, "avra.toml")) { [dir] } else { self.nested_roots(dir) }
+    }
 }
 
 /// One program's disagreement with the evaluator, as none or one.
