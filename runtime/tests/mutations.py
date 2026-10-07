@@ -136,6 +136,7 @@ MUTATIONS = [
     ("an ask that is no plain file is taken as ours", "S_ISREG(st.st_mode) && st.st_uid", "st.st_uid"),
     ("an answered ask is left in place", "    rename(g_tmp_path, g_out_path);\n    unlink(g_ask_path);", "    rename(g_tmp_path, g_out_path);"),
     ("a never-run task is listed as waiting", '    else if (!f->virtual && f != &g_main && !f->sp) fputs(" ready, not yet run", out);\n', ""),
+    ("a forked child is asked under its parent's id", "    // the child is asked under its own id\n    tasks_door_named();\n", ""),
     ("the door is never opened", "    guard_handler_install();\n    tasks_door_opened();", "    guard_handler_install();"),
 ]
 CLOCK_MUTATIONS = [

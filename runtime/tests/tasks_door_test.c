@@ -119,6 +119,31 @@ static int spinning_scene(void) {
     return 0;
 }
 
+// A child forked after its parent spawned, asked under its own id: it
+// says its id and sleeps in the poller; the parent sleeps too.
+static int forked_scene(void) {
+    int p[2];
+    if (pipe(p) != 0) return 9;
+    spawn1(on_gate, avra_gate_new());
+    avra_fiber_yield();
+    pid_t child = fork();
+    if (child == 0) {
+        avra_fiber_forked();
+        spawn1(on_gate, avra_gate_new());
+        avra_fiber_yield();
+        char said[24];
+        int n = snprintf(said, sizeof said, "%d", (int)getpid());
+        ssize_t w = write(g_ready_fd, said, (size_t)n);
+        (void)w;
+        close(g_ready_fd);
+        avra_fiber_park_fd(p[0], 0, -1);
+        _exit(0);
+    }
+    close(g_ready_fd);
+    avra_fiber_park_fd(p[0], 0, -1);
+    return 0;
+}
+
 // A process that never spawned: the signal's own default.
 static int unspawned_scene(void) {
     ready();
@@ -128,7 +153,7 @@ static int unspawned_scene(void) {
 
 // ── the asker ───────────────────────────────────────────────────
 
-typedef struct { pid_t pid; char ask[64], out[64]; } Child;
+typedef struct { pid_t pid, scene; char ask[64], out[64]; } Child;
 
 static Child scene(const char* self, const char* name) {
     int p[2];
@@ -143,10 +168,12 @@ static Child scene(const char* self, const char* name) {
         _exit(9);
     }
     close(p[1]);
-    char r;
-    ssize_t got = read(p[0], &r, 1);
-    (void)got;
+    char said[24] = {0};
+    ssize_t got = read(p[0], said, sizeof said - 1);
     close(p[0]);
+    // a scene that forked names the process to ask
+    c.scene = c.pid;
+    if (got > 1) c.pid = (pid_t)atoi(said);
     snprintf(c.ask, sizeof c.ask, "/tmp/avra-tasks.%d.ask", (int)c.pid);
     snprintf(c.out, sizeof c.out, "/tmp/avra-tasks.%d", (int)c.pid);
     unlink(c.out);
@@ -176,8 +203,9 @@ static const char* answered(const Child* c, char* buf, size_t cap, int ms) {
 
 static int ended(Child* c) {
     kill(c->pid, SIGKILL);
+    if (c->scene != c->pid) kill(c->scene, SIGKILL);
     int status = 0;
-    waitpid(c->pid, &status, 0);
+    waitpid(c->scene, &status, 0);
     unlink(c->ask);
     unlink(c->out);
     return status;
@@ -260,6 +288,19 @@ static void door(const char* self) {
     CHECK(strstr(buf, "task 1, running, has not switched since it was asked") != NULL, "the second ask is answered by the handler itself");
     ended(&c);
 
+    c = scene(self, "forked");
+    char parent[64];
+    snprintf(parent, sizeof parent, "/tmp/avra-tasks.%d", (int)c.scene);
+    unlink(parent);
+    asked(&c);
+    kill(c.pid, SIGURG);
+    answered(&c, buf, sizeof buf, 2000);
+    char header[48];
+    snprintf(header, sizeof header, "process %d,", (int)c.pid);
+    CHECK(strstr(buf, header) != NULL && strstr(buf, "task 2, spawned at") != NULL, "a forked child answers under its own id");
+    CHECK(access(parent, F_OK) != 0, "and never under its parent's");
+    ended(&c);
+
     c = scene(self, "unspawned");
     kill(c.pid, SIGURG);
     int status = 0;
@@ -275,6 +316,7 @@ int main(int argc, char** argv) {
         if (strcmp(argv[1], "polled") == 0) return polled_scene();
         if (strcmp(argv[1], "spinning") == 0) return spinning_scene();
         if (strcmp(argv[1], "unspawned") == 0) return unspawned_scene();
+        if (strcmp(argv[1], "forked") == 0) return forked_scene();
         return 9;
     }
     listing(argv[0]);
