@@ -1,7 +1,7 @@
 //! `compiler/findings.av`'s own contract: a rule's own hit becomes a
 //! `Finding` row carrying its rule, its file, and its own source
 //! line — and code the rule does not fire on rows nothing for it.
-use compiler.{avra, new_workspace, findings_of, Finding}
+use compiler.{avra, new_workspace, findings_of, findings_read, findings_text, Finding}
 use compiler.host.{memory_host}
 
 fn findings_of_source(main: string) -> List<Finding> {
@@ -18,6 +18,27 @@ spec "compiler/findings — a rule hit becomes a row" {
     given "the same statement, `let`-bound instead of `mut`" {
         then "the rule does not fire — no row names it" {
             !findings_of_source("let a = 0\na\n").any(it.rule == "let_stmt.unmutated_mut")
+        }
+    }
+}
+
+spec "compiler/findings — the row as text" {
+    given "a row whose text holds a TAB, and one whose text is empty" {
+        then "each reads back as it was written" {
+            let rows = [
+                Finding { rule: "r.a", file: "f.av", text: "x\ty" },
+                Finding { rule: "r.b", file: "f.av", text: "" },
+            ]
+            let back = findings_read(findings_text(rows))
+            back.length == 2 &&
+                back[0].text == "x\ty" &&
+                back[1].rule == "r.b" &&
+                back[1].text == ""
+        }
+    }
+    given "a `#` line and a line of one field" {
+        then "neither is a row" {
+            findings_read("# header\nlonely\nr.a\tf.av\tt").length == 1
         }
     }
 }

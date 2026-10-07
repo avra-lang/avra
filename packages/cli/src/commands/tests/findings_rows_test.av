@@ -1,0 +1,78 @@
+//! A check's `Finding` rows: a parsed file's come from the rules that
+//! ran, a held file's from the row it kept, and a check whose findings
+//! row is missing is no hit.
+use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
+use @std.avrac.compiler.{Checked, DbKind, finding_line}
+use @std.avrac.compiler.store.{Stored, node_key}
+use commands.{checked_at, root_workspace}
+
+const unmutated_mut: string = "let_stmt.unmutated_mut"
+
+/// A package of two files under `src/`: `main.av` clean, `b.av` holding
+/// one rule site — its own root each run, so no earlier run answers.
+fn two_files(name: string) -> string {
+    let root = "/tmp/avra-findings-rows-test/${name}-${now_ns()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n\n[lib]\nname = \"${name}\"\npath = \"src/main.av\"\n",
+    )
+    let _ = write_text("${root}/src/main.av", "export fn f() -> int { 1 }\n")
+    let _ = write_text("${root}/src/b.av", "export fn g() -> int {\n    mut z = 0\n    z\n}\n")
+    root
+}
+
+fn checked_of(root: string) -> Checked? {
+    match checked_at(root) { .Ok(c) -> c, .Err(_) -> null }
+}
+
+/// `b.av`'s rule findings, as rows.
+fn b_rows(c: Checked) -> List<string> {
+    [finding_line(f) for f in c.findings if f.rule == unmutated_mut && f.file.ends_with("/src/b.av")]
+}
+
+/// The program's `Findings` row under the check's own key.
+fn findings_row_key(root: string) -> string {
+    let ws = root_workspace(root)
+    node_key(
+        Stored.Rows,
+        [DbKind.Findings.tag(), ws.program_key("check:${ws.entry_of() ?? ""}", [])],
+    )
+}
+
+/// A kept check, its findings row withdrawn, then checked again.
+type Unkept = { had: bool, again: Checked }
+
+fn unkept(name: string) -> Unkept {
+    let root = two_files(name)
+    let _ = checked_of(root)
+    let store = root_workspace(root).opened_store()
+    let key = findings_row_key(root)
+    let had = store.has(Stored.Rows, key)
+    let _ = store.uncommit(Stored.Rows, key)
+    Unkept {
+        had: had,
+        again: checked_of(root) ?? Checked { warnings: "", reused: true, timed: "" },
+    }
+}
+
+spec "commands/check findings rows" {
+    given "a warm check after an edit to the sibling file" {
+        then "the sibling is held, and its finding is the row its parse gave" {
+            let root = two_files("held")
+            let cold? = checked_of(root) else { return false }
+            let _ = write_text("${root}/src/main.av", "export fn f() -> int { 2 }\n")
+            let warm? = checked_of(root) else { return false }
+            b_rows(cold).length == 1 &&
+                !warm.reused &&
+                warm.held.any(it.ends_with("/src/b.av")) &&
+                b_rows(warm).join("\n") == b_rows(cold).join("\n")
+        }
+    }
+    given "a kept check whose findings row is gone" {
+        then "the row was kept before it went" { unkept("kept").had }
+        then "the next check is no hit" { !unkept("nohit").again.reused }
+        then "the next check reports the finding again" { b_rows(unkept("again").again).length == 1 }
+    }
+}

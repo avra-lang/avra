@@ -14,16 +14,14 @@ export type Finding = { rule: string, file: string, text: string }
 /// check. A check never asks: each file's rows are kept as it speaks
 /// (derive.av's `file_said`), and `Checked.findings` reads them back.
 export fn findings_of(p: Program) -> List<Finding> {
-    flatten([rows_found(p.ws.host, a, rule_findings(analysed(a), a.view.stmts)) for a in p.files])
+    flatten(
+        [file_findings(p.ws.host, a, rule_findings(analysed(a), a.view.stmts)) for a in p.files],
+    )
 }
 
-/// One file's findings, in `findings_read`'s lines — the row a held file
-/// answers with in place of its rules running again.
-export fn file_findings_text(host: Host, a: Analysis, found: List<Diag>) -> string {
-    joined([finding_line(f) for f in rows_found(host, a, found)], "\n")
-}
-
-fn rows_found(host: Host, a: Analysis, found: List<Diag>) -> List<Finding> {
+/// One file's findings — the rows a held file answers with in place of
+/// its rules running again.
+export fn file_findings(host: Host, a: Analysis, found: List<Diag>) -> List<Finding> {
     let src = current_source(host, a.view.source)
     flatten([filed_finding(src, d) for d in found])
 }
@@ -38,17 +36,26 @@ fn current_source(host: Host, src: SourceFile) -> SourceFile {
     new_source_file(src.file, text)
 }
 
-/// The kept rows read back: one `rule\tfile\ttext` per line, the
-/// shape `Db`'s durable `Findings` row holds (db.av).
+// ── THE ROW AS TEXT: one `rule\tfile\ttext` line — the `Findings` row
+// (db.av), a file's kept row, and a baseline file all read this one codec.
+
+export fn findings_text(rows: List<Finding>) -> string { joined([finding_line(f) for f in rows], "\n") }
+
+/// Every line that is a row; a line that is not — fewer than two fields,
+/// or the header prose a baseline opens with — names none.
 export fn findings_read(text: string) -> List<Finding> {
-    [finding_of_line(line) for line in text.split("\n") if line != ""]
+    [f! for f in [finding_of_line(line) for line in text.split("\n")] if f != null]
 }
 
-fn finding_line(f: Finding) -> string { "${f.rule}\t${f.file}\t${f.text}" }
+export fn finding_line(f: Finding) -> string { "${f.rule}\t${f.file}\t${f.text}" }
 
-fn finding_of_line(line: string) -> Finding {
+/// Total over any line: the text is everything after the second TAB, a
+/// TAB of its own included, and empty when the line ends there.
+fn finding_of_line(line: string) -> Finding? {
+    if line.starts_with("#") { return null }
     let parts = line.split("\t")
-    Finding { rule: parts[0], file: parts[1], text: parts[2] }
+    if parts.length < 2 { return null }
+    Finding { rule: parts[0], file: parts[1], text: parts.slice(2, parts.length).join("\t") }
 }
 
 /// A finding with no place to point (a locationless `Say` voice) rows
