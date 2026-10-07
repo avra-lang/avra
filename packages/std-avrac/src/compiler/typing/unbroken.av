@@ -1,0 +1,139 @@
+//! THE UNBROKEN LAW: a fn wearing `@std/meta`'s `@unbroken` lets no
+//! other task run inside it, so "nothing runs between a test and its
+//! park, or a claim and its append" holds by construction. Its own
+//! `while`s carry no check (compiler/cancel_reach.av). Every call it
+//! makes — a lambda's inside it included — is to C (a runtime row or
+//! an extern), to a vocabulary row that does not wait, to a
+//! constructor, or to another `@unbroken` fn; a spawn, a read that
+//! waits and a call through a value are refused. Judged from the
+//! body's own types and its callees' declarations alone, so the law
+//! costs nothing where the mark is absent and asks no other body.
+use core.{DeclId, ExprId, Expr}
+use features.{Decl, bound_decl_of, property_row, nothing}
+use features.impls.{callee_of}
+use diagnostics.{refusal}
+use @std.errors.{Loc}
+
+impl TypeCx {
+    mut fn unbroken_law(x: Decl) {
+        if !self.view.decls.marks_unbroken(x.id) { return }
+        let store = self.view.store
+        for e in store.exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.Spawn(ExprId { index: 0 }))) { self.broken_spawn(self.loc_of(e), x.name) }
+        for e in store
+            .exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.CallValue(ExprId { index: 0 }, []))) { self.broken_value(self.loc_of(e), x.name) }
+        for e in store.exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.Prop(ExprId { index: 0 }, ""))) { self.unbroken_read(x, e) }
+        for e in store.exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.Call("", [], []))) { self.unbroken_call(x, e) }
+        for e in store
+            .exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.MethodCall(ExprId { index: 0 }, "", []))) { self.unbroken_method(x, e) }
+    }
+
+    /// A property read whose row waits.
+    mut fn unbroken_read(x: Decl, e: ExprId) {
+        // one arm answers — a projection over the core node
+        match self.view.store.expr(e) {
+            .Prop(subject, name) -> {
+                let row = property_row(
+                    self.view.lang.properties,
+                    name.of,
+                    self.view.types.shape_of(self.type_at(subject)),
+                )
+                if row?.waits ?? false { self.broken_wait(self.loc_of(e), x.name, name.of) }
+            },
+            rest -> nothing(),
+        }
+    }
+
+    /// A call by name: to a declaration that cannot let a task run, or
+    /// refused — a name bound to a local, a parameter or a capture is a
+    /// value.
+    mut fn unbroken_call(x: Decl, e: ExprId) {
+        let g? = bound_decl_of(self.names, e) else { return self.broken_value(self.loc_of(e), x.name) }
+        if self.may_break(g) { self.broken_call(self.loc_of(e), x.name, self.view.decls.decl(g).name) }
+    }
+
+    /// A dot-call, by the callee its receiver's type dispatches to.
+    mut fn unbroken_method(x: Decl, e: ExprId) {
+        let mp? = self.view.store.method_parts(e) else { return }
+        match callee_of(self.view, self.type_at(mp.subject), mp.name) {
+            .Static(m, _) -> { if self.may_break(m) { self.broken_call(self.loc_of(e), x.name, mp.name) } },
+            .Declared(decl, _) -> { if self.declared_breaks(decl, mp.name) { self.broken_call(self.loc_of(e), x.name, mp.name) } },
+            .Row(r) -> { if r.waits { self.broken_wait(self.loc_of(e), x.name, mp.name) } },
+            .Bounded(_, _, _) or .Contract(_, _) or .FnField(_, _) -> self.broken_value(self.loc_of(e), x.name),
+            .Variant(_, _) or .Nameless -> nothing(),
+        }
+    }
+
+    /// A method the impl table answers; none found under the
+    /// declaration is one the law cannot name, which may.
+    fn declared_breaks(decl: DeclId, name: string) -> bool {
+        let m? = self.view.decls.method(decl, name) else { return true }
+        self.may_break(m)
+    }
+
+    /// Whether a call to `g` may let another task run, by its
+    /// declaration alone: C never does, a constructor never does, an
+    /// `@unbroken` fn never does, any other fn may, and a value may be
+    /// any fn.
+    fn may_break(g: DeclId) -> bool {
+        let x = self.view.decls.decl(g)
+        match x.kind {
+            .Fn or .Method or .Default or .Main or .Case -> !x.external && !self.view.decls.marks_unbroken(g),
+            .Const or .State -> true,
+            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Builtin -> false,
+        }
+    }
+
+    // ── The voices ──
+
+    mut fn broken_call(at: Loc?, owner: string, callee: string) {
+        self
+            .emit(
+                refusal(
+                    "flow.broken",
+                    at,
+                    "`${owner}` is `@unbroken`, and `${callee}` may let another task run",
+                    "called here",
+                    "mark `${callee}` `@unbroken` if nothing in it can wait, or make the call outside `${owner}`",
+                ),
+            )
+    }
+
+    mut fn broken_value(at: Loc?, owner: string) {
+        self
+            .emit(
+                refusal(
+                    "flow.broken",
+                    at,
+                    "`${owner}` is `@unbroken`, and a call through a value may be any fn",
+                    "called here",
+                    "call the fn by its name, and mark it `@unbroken`",
+                ),
+            )
+    }
+
+    mut fn broken_spawn(at: Loc?, owner: string) {
+        self
+            .emit(
+                refusal(
+                    "flow.broken",
+                    at,
+                    "`${owner}` is `@unbroken`, and a task it spawns is joined where its scope ends",
+                    "spawned here",
+                    "spawn outside `${owner}`",
+                ),
+            )
+    }
+
+    mut fn broken_wait(at: Loc?, owner: string, what: string) {
+        self
+            .emit(
+                refusal(
+                    "flow.broken",
+                    at,
+                    "`${owner}` is `@unbroken`, and `${what}` waits",
+                    "waits here",
+                    "wait outside `${owner}`",
+                ),
+            )
+    }
+}
