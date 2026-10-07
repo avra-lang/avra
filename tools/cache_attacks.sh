@@ -1518,6 +1518,27 @@ ke_refuses "the embedded text is gone" "finds no"
 printf 'back' > $R/ke/src/f/data.txt
 S "ke: the text stands again" ke; ke_says "the embedded text back" "back n=4"
 
+# AN EMBED REACHED THROUGH A HELD FILE IS NO FILE MINTED MID-QUERY. `kw`'s const runs a fn
+# that `util.av` declares, and the `embed` literal stands in that fn's body. Only main.av
+# is edited, so `util.av` is held and its literal is never scanned: the embedded text is
+# first met inside the const's own settlement. A warm build and a warm test must run, and
+# the binary print the embedded text, never trap on a row written after it was read.
+mkdir -p $R/kw/src/tests
+printf '[package]\nname = "rt-kw"\nversion = "0.1.0"\n' > $R/kw/avra.toml
+printf 'b' > $R/kw/src/b.txt
+printf 'use @std.meta.{embed}\nexport fn g() -> string { embed("b.txt") }\n' > $R/kw/src/util.av
+printf 'use util.{g}\nconst B: string = g()\nprintln("b=${B}")\n' > $R/kw/src/main.av
+printf 'use util.{g}\nconst T: string = g()\nspec "kw" { then "reads the embed" { T == "b" } }\n' > $R/kw/src/tests/kw_test.av
+kw_tested() { # kw_tested <label>: the package's tests run and pass
+    steps=$((steps+1)); out=$(./avra test $R/kw 2>&1); st=$?
+    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kw: $1: test exit $st: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -2 | tr '\n' ' ' | cut -c1-220)"; }
+}
+S "cold kw" kw; kw_tested "cold"
+printf '// moved\n' >> $R/kw/src/main.av
+S "kw: main.av edited, util.av held" kw
+printf '// moved\n' >> $R/kw/src/tests/kw_test.av
+kw_tested "the test file edited, util.av held"
+
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
 # order than a cold build meets them. The binary must be the cold one's, byte for
