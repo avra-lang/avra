@@ -12,6 +12,9 @@
 # right shape is held, one with no join and one with no line at all are
 # refused.
 #
+# The evaluated leg runs the compiler's binary itself: the `avra` shim
+# gives a program no standard input, and one program here waits on it.
+#
 # THE EVALUATED LEG TRACES THE COMPILER'S OWN PROCESS, so a task the
 # compiler itself spawned while evaluating would write into the
 # program's trace under a compiled task's id. It spawns none; a
@@ -94,7 +97,7 @@ for program in $PROGRAMS; do
         fails=$((fails + 1)); continue
     fi
     echo x | AVRA_FLOW_TRACE="$dir/compiled.trace" "$dir/src/main" > "$dir/compiled.out" 2>&1 || true
-    echo x | AVRA_FLOW_TRACE="$dir/evaluated.trace" ./avra run "$dir" > "$dir/evaluated.out" 2>&1 || true
+    echo x | AVRA_FLOW_TRACE="$dir/evaluated.trace" build/avra run "$dir" > "$dir/evaluated.out" 2>&1 || true
     for engine in compiled evaluated; do
         held "$engine" "$dir/$engine.trace" "$program.shape" || fails=$((fails + 1))
         events=$((events + $(grep -c '^ts=' "$dir/$engine.trace" 2>/dev/null || echo 0)))

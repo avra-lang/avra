@@ -1,7 +1,8 @@
 // A wait on a descriptor beside a spawned task, traced alike by both
 // engines (tools/flow_trace_engines.sh). The descriptor is the standard
 // input, which the keeper fills — so this is no program test: a suite's
-// own input is not a program's to wait on.
+// own input is not a program's to wait on. The task sleeps long enough
+// that the wait is always answered first, so the join always waits.
 use @std.time.{ms, sleep}
 
 extern fn avra_wait_fd(fd: int, writable: int, arm: int, member: int)
@@ -12,7 +13,7 @@ fn slept(wait: int) -> int {
     wait
 }
 
-let t = spawn slept(2)
+let t = spawn slept(100)
 avra_wait_fd(0, 0, 1, 2)
 let claim = avra_wait_park()
 "${claim >> 32}:${claim & 4294967295} ${t.await}"
