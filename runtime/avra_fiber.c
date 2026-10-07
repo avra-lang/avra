@@ -13,6 +13,7 @@
 // any number at once — and is woken by exactly one of them.
 
 #include <errno.h>
+#include <stdbool.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stddef.h>
@@ -2137,7 +2138,6 @@ static int64_t case_cleared(int dead) {
         waits_said(alive[i]);
         fputc('\n', stderr);
     }
-    if (g_seeded) fprintf(stderr, "avra: under schedule %lld\n", (long long)g_schedule);
     for (int64_t i = 0; i < n; i++) abandoned(alive[i]);
     free(alive);
     // A HOLD OUTLIVES NO HOLDER: what abandoned tasks held of the world
@@ -2208,6 +2208,73 @@ int64_t avra_case_run(int64_t (*body)(void)) {
     avra_rc_release(task);
     wide_given_back();
     return g_case_answer;
+}
+
+// ── The runner's verdict ────────────────────────────────────────
+
+// HOW MANY SCHEDULES, AND WHICH: settings read once, at the first case.
+#define SCHED_RUNS_SETTING "AVRA_SCHED_RUNS"
+#define SCHED_SEED_SETTING "AVRA_SCHED_SEED"
+enum { SCHED_RUNS_DEFAULT = 8 };
+static int64_t g_sched_runs = 0;
+static int64_t g_sched_only = -1;
+static int g_sched_settled = 0;
+static int g_any_chose = 0;
+
+static int64_t whole_setting(const char* name, int64_t least, int64_t fallback) {
+    const char* said = getenv(name);
+    if (!said || !*said) return fallback;
+    char* end = NULL;
+    long long n = strtoll(said, &end, 10);
+    if (*end != 0 || n < least) {
+        char words[160];
+        avra_fmt(words, sizeof words, "%s takes a whole number%s", name, least > 0 ? " above zero" : "");
+        avra_trap(words);
+    }
+    return n;
+}
+
+static void schedules_settled(void) {
+    if (g_sched_settled) return;
+    g_sched_runs = whole_setting(SCHED_RUNS_SETTING, 1, SCHED_RUNS_DEFAULT);
+    g_sched_only = whole_setting(SCHED_SEED_SETTING, 0, -1);
+    g_sched_settled = 1;
+}
+
+static bool (*g_case_body)(void) = NULL;
+static int64_t case_body_called(void) { return g_case_body() ? 1 : 0; }
+
+// One schedule of the case: its verdict, and how many choices it made.
+static int64_t case_under(int64_t schedule, int64_t* choices) {
+    avra_sched_seed(schedule);
+    int64_t held = avra_case_run(case_body_called);
+    *choices = avra_sched_settle();
+    return held;
+}
+
+__attribute__((noinline, cold))
+static int64_t case_failed_under(const char* label, int64_t schedule) {
+    fprintf(stderr, "avra: %s failed under schedule %lld — " SCHED_SEED_SETTING "=%lld replays it\n", label, (long long)schedule, (long long)schedule);
+    return 0;
+}
+
+int64_t avra_case_verdict(int64_t code, const char* label) {
+    schedules_settled();
+    g_case_body = (bool (*)(void))(uintptr_t)code;
+    int64_t choices = 0;
+    if (g_sched_only >= 0) return case_under(g_sched_only, &choices) ? 1 : case_failed_under(label, g_sched_only);
+    for (int64_t k = 0; k < g_sched_runs; k++) {
+        if (!case_under(k, &choices)) return case_failed_under(label, k);
+        // A CASE THAT MADE NO CHOICE HAS ONE ORDER: no other schedule differs.
+        if (choices == 0) return 1;
+        g_any_chose = 1;
+    }
+    return 1;
+}
+
+void avra_case_schedules_said(void) {
+    if (!g_any_chose || g_sched_only >= 0) return;
+    fprintf(stderr, "avra: a case that chose an order ran %lld schedule%s — orders past %d ready tasks are not all reachable\n", (long long)g_sched_runs, g_sched_runs == 1 ? "" : "s", PICK_WINDOW);
 }
 
 int64_t avra_sched_wide_resident(void) {
