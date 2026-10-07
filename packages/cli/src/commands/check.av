@@ -7,7 +7,7 @@
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
 use @std.path.{relative_path, under_dir}
-use @std.avrac.compiler.{Checked, findings_of}
+use @std.avrac.compiler.{Checked}
 
 type CheckCmd = {}
 
@@ -33,8 +33,7 @@ fn said(args: CliResult, path: string, c: Checked) -> int {
     if args.has_flag("baseline_accept") { return accepted(path, baseline, c) }
     if !c.licenses.is_empty() { return refused_licenses(rendered_licenses(c.licenses)) }
     if baseline != "" {
-        let keys = baseline_keys(baseline)
-        let bad = if c.findings != null { new_sites_from_text(c.findings!, keys) } else { new_sites(findings_of(c.program ?? root_program(path)), keys) }
+        let bad = loaded_baseline(baseline).news(c.findings)
         if !bad.is_empty() { return refused_sites(bad) }
     }
     if !c.warnings.is_empty() { println(c.warnings) }
@@ -67,11 +66,10 @@ fn refused_licenses(stale: List<string>) -> int {
 /// `--baseline_accept`'s whole verb: prune, write, report — exit 0
 /// whatever it kept, since pruning never fails the gate on its own.
 /// `c` is the SAME checked answer `said` already holds for `path` —
-/// the ratchet's "does it still fire" reads the SAME Program's own
-/// `Finding` relation, never a second derivation that could disagree
-/// (a bare `root_program` here once answered `unused_import` wrong:
-/// its own analysis skips the cross-file References a full check
-/// populates).
+/// the ratchet's "does it still fire" reads that check's own `Finding`
+/// rows, never a second derivation that could disagree (a bare
+/// `root_program` once answered `unused_import` wrong: its own analysis
+/// skips the cross-file References a full check populates).
 ///
 /// REACHED IS `path`'S OWN FILES, NEVER EVERY FILE ITS PROGRAM
 /// ANALYZED: `root_program(path).files` also holds every dependency
@@ -90,8 +88,8 @@ export fn accepted(path: string, baseline: string, c: Checked) -> int {
     let own = relative_path(here(), path)
     let prog = c.program ?? root_program(path)
     let reached = [f for f in [relative_path(here(), a.view.source.file) for a in prog.files] if f == own || under_dir(f, own)]
-    let fresh = fresh_keys(findings_of(prog))
-    let kept = pruned_baseline(baseline_keys(baseline), reached, fresh)
+    let kept = loaded_baseline(baseline)
+        .pruned(prog.ws, keyed(reached), keyed(fresh_keys(c.findings)))
     let _ = write_text(baseline, baseline_header + joined_lines(kept))
     println("baseline: ${kept.length} site(s) kept")
     0

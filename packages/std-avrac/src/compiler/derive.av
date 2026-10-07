@@ -24,7 +24,7 @@ use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered}
 use compiler.host.{no_source}
-use compiler.findings.{findings_text, file_findings_text}
+use compiler.findings.{Finding, findings_read, file_findings_text}
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
@@ -298,8 +298,8 @@ fn remember(store: Store, key: string, paths: List<string>) {
 
 /// What `check` says of a clean program: its warnings, its stale
 /// `// LICENSED` citations (compiler/licenses.av) and its rule
-/// findings (compiler/findings.av, TSV-encoded — a cache hit reads
-/// all three back, never rescanning or rebuilding), and whether they
+/// findings (compiler/findings.av's rows — a cache hit reads all
+/// three back, never rescanning or rebuilding), and whether they
 /// were kept from a check of these exact inputs — plus the PROGRAM
 /// this answer was derived from, when one was: a cache hit costs a
 /// hash and builds none, so a caller wanting the Program itself (a
@@ -307,7 +307,7 @@ fn remember(store: Store, key: string, paths: List<string>) {
 /// files a check REACHED and not merely what it found) falls back to
 /// building its own rather than forcing every `check` to pay for a
 /// Program it does not otherwise need.
-export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: string? = null }
+export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: List<Finding> = [] }
 
 impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
@@ -319,16 +319,15 @@ impl Workspace {
         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
         let key0 = self.program_key(under.named, under.beside)
         let kept: string? = self.db.warn(store, key0)
-        if kept != null {
+        let found: string? = self.db.findings(store, key0)
+        // A missing findings row is UNKNOWN, never EMPTY: no hit.
+        if kept != null && found != null {
             return Checked {
                 warnings: kept!,
                 reused: true,
                 timed: "",
                 licenses: self.db.licenses(store, key0) ?? "",
-                // A missing row reads as UNKNOWN, never as EMPTY — the
-                // empty-value law applied to a cache row. A caller reads
-                // null as "derive it yourself", "" as "no findings".
-                findings: self.db.findings(store, key0),
+                findings: findings_read(found!),
             }
         }
         let d = self.derived(entry, Want.Diagnostics)?
@@ -346,16 +345,22 @@ impl Workspace {
             timed: d.timed([]),
             program: d.program,
             licenses: licenses,
-            findings: findings,
+            findings: findings_read(findings),
         }
     }
 
-    /// EVERY RULE FINDING THE PROGRAM HOLDS: a read file's found now, a held
-    /// file's answered by the rows it kept — the hold read every file whose
-    /// rows were missing (`unruled`).
+    /// EVERY RULE FINDING THE PROGRAM HOLDS: each file's rows as it kept
+    /// them — a read file's as it spoke (`file_said`), a held file's from
+    /// before — so no rule runs twice.
     fn all_findings(store: Store, p: Program) -> string {
-        let held = [store.get(Stored.Warn, findings_key(self.held_okey(store, fi.path))) ?? "" for fi in self.decls.all_files() if self.is_held(fi.id)]
-        joined([t for t in [findings_text(p)].concat(held) if t != ""], "\n")
+        let paths = [a.view.source.file for a in p.files]
+            .concat([fi.path for fi in self.decls.all_files() if self.is_held(fi.id)])
+        joined([t for t in [self.kept_findings(store, path) for path in paths] if t != ""], "\n")
+    }
+
+    /// A file's findings rows as `file_said` kept them.
+    fn kept_findings(store: Store, path: string) -> string {
+        store.get(Stored.Warn, findings_key(self.held_okey(store, path))) ?? ""
     }
 
     /// NOTHING FOR `check` TO EXAMINE: a directory of programs (no `src/` —

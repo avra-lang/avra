@@ -3,13 +3,11 @@
 //! which sites are already accepted. A site the baseline does not
 //! list refuses the check; `avra check --baseline <file>
 //! --baseline_accept` prunes the file down to sites still found and
-//! never adds one. The live side is the `Finding` relation
-//! (`@std.avrac.compiler.findings_of`) — never a re-parse of rendered
-//! diagnostic text, which is what `tools/idioms.py` once did and this
-//! file itself once did too.
+//! never adds one. The live side is the check's own `Finding` rows
+//! (`Checked.findings`), never rendered diagnostic text.
 use @std.io.{read_text, write_text, exists}
 use @std.path.{relative_path}
-use @std.avrac.compiler.{Finding}
+use @std.avrac.compiler.{Finding, Workspace}
 
 /// One accepted (or newly found) site: the rule's own kind, the file
 /// it stands in, and the SOURCE LINE'S OWN TEXT — never a line number
@@ -19,54 +17,83 @@ export type Site = { kind: string, file: string, text: string }
 fn site_key(s: Site) -> string { "${s.kind}\t${s.file}\t${s.text}" }
 
 /// The file's own header — rewritten whole on every `--baseline_accept`
-/// write, never carried through `baseline_keys`' read (a `#` line is
+/// write, never carried through `loaded_baseline`'s read (a `#` line is
 /// prose, not a site to prune against).
 export const baseline_header: string = "# KNOWN idiom debt, one TAB-separated site per line: a rule's kind, its\n# file, and its own source line trimmed. This file only ever SHRINKS —\n# `avra check --baseline_accept` prunes what a fix made gone, and no\n# path through it ADDS a line: a new site is fixed in the code, or a\n# human adds the line here, reviewed at adoption and every time after\n# (CLAUDE.md's baseline law). `avra check --baseline <this file>` gates.\n"
 
-/// The live `Finding` relation's own rows, as the sites the ratchet
-/// ranks over — a `Finding` row is a RULE's hit alone (`findings_of`
-/// inserts one only where `rule_findings` fired), so every row here
+/// The live `Finding` rows, as the sites the ratchet ranks over — a
+/// `Finding` row is a RULE's hit alone (one exists only where
+/// `rule_findings` fired), so every row here
 /// counts, with no kind to match against a separate rule table.
 export fn sites_of(findings: List<Finding>) -> List<Site> {
     [Site { kind: f.rule, file: relative_path(here(), f.file), text: f.text } for f in findings]
 }
 
-/// The baseline file's own accepted keys — "" (never created yet)
-/// reads as none, the way a fresh ratchet starts. A `#`-led line is
-/// the file's own header prose, never a site.
-export fn baseline_keys(path: string) -> List<string> {
+/// The baseline file, loaded once: each accepted site under its key, in
+/// the file's own order. "" (never created yet) reads as none, the way a
+/// fresh ratchet starts; a `#`-led line is the header's prose, and a line
+/// that is not three fields names no site.
+export type Baseline = { sites: Map<string, Site> }
+
+export fn loaded_baseline(path: string) -> Baseline {
+    mut sites: Map<string, Site> = {}
+    for s in baseline_sites(path) { sites.set(site_key(s), s) }
+    Baseline { sites: sites }
+}
+
+fn baseline_sites(path: string) -> List<Site> {
     if path == "" || !exists(path) { return [] }
     let text = read_text(path) catch ""
-    [l for l in text.split("\n") if l != "" && !l.starts_with("#")]
+    [s! for s in [baseline_site(line) for line in text.split("\n")] if s != null]
 }
 
-/// Every live site `findings` reports that `keys` does not already
-/// accept — what the gate refuses on.
-export fn new_sites(findings: List<Finding>, keys: List<string>) -> List<Site> {
-    [s for s in sites_of(findings) if !keys.contains(site_key(s))]
-}
-
-/// `new_sites`, fed from `Checked.findings` — the durable TSV a cache
-/// hit already carries (compiler/db.av's `Findings` row), so the
-/// common gate (`avra check <pkg> --baseline <file>`, no
-/// `--baseline_accept`) never rebuilds the Program `findings_of`
-/// would need just to answer this.
-export fn new_sites_from_text(text: string, keys: List<string>) -> List<Site> {
-    [s for s in sites_from_text(text) if !keys.contains(site_key(s))]
-}
-
-/// `Db`'s `Findings` row, read back: one `rule\tfile\ttext` per line,
-/// the file still the writer's own — `sites_of`'s same `relative_path`
-/// door, applied at READ time so it answers under THIS caller's
-/// directory rather than whichever one wrote the row.
-fn sites_from_text(text: string) -> List<Site> {
-    if text == "" { return [] }
-    [site_of_line(line) for line in text.split("\n")]
-}
-
-fn site_of_line(line: string) -> Site {
+fn baseline_site(line: string) -> Site? {
+    if line.starts_with("#") { return null }
     let parts = line.split("\t")
-    Site { kind: parts[0], file: relative_path(here(), parts[1]), text: parts[2] }
+    if parts.length != 3 { return null }
+    Site { kind: parts[0], file: parts[1], text: parts[2] }
+}
+
+/// Keys as a keyed read: each present, answering true.
+fn keyed(keys: List<string>) -> Map<string, bool> {
+    mut m: Map<string, bool> = {}
+    for k in keys { m.set(k, true) }
+    m
+}
+
+impl Baseline {
+    /// Every live site `findings` reports that this baseline does not
+    /// already accept — what the gate refuses on.
+    fn news(findings: List<Finding>) -> List<Site> {
+        [s for s in sites_of(findings) if !self.sites.has(site_key(s))]
+    }
+
+    /// The accepted keys, pruned against a FRESH check that reached
+    /// `reached` (its own package's files) and currently fires `fresh`
+    /// (`fresh_keys` of that same check). A key whose file this check
+    /// REACHED is kept only when `fresh` still names it — a rule that
+    /// stops firing on an UNCHANGED line is gone, the same as a
+    /// rewritten one, so a detector fix pays down the debt it resolved
+    /// instead of banking it forever. A key whose file this check never
+    /// reached is left UNTOUCHED: one `avra check <pkg>` reaches only
+    /// its own package, so judging a file it never examined would drop
+    /// another package's accepted debt from this one shared file. A key
+    /// whose file is gone — asked of the check's own workspace — is
+    /// dropped outright: no future check will ever reach it either.
+    fn pruned(ws: Workspace, reached: Map<string, bool>, fresh: Map<string, bool>) -> List<string> {
+        [k for k in self.sites.keys() if kept_key(ws, self.sites.get(k)!.file, k, reached, fresh)]
+    }
+}
+
+fn kept_key(
+    ws: Workspace,
+    file: string,
+    key: string,
+    reached: Map<string, bool>,
+    fresh: Map<string, bool>,
+) -> bool {
+    if !ws.there(file) { return false }
+    !reached.has(file) || fresh.has(key)
 }
 
 /// The keys `findings` currently reports — a fresh check's OWN answer
@@ -74,38 +101,4 @@ fn site_of_line(line: string) -> Site {
 /// is kept or dropped by.
 export fn fresh_keys(findings: List<Finding>) -> List<string> {
     [site_key(s) for s in sites_of(findings)]
-}
-
-/// `keys`, pruned against a FRESH check that reached `reached` (its
-/// own package's files and everything it depends on) and currently
-/// fires `fresh` (`fresh_keys` of that same check). A key whose file
-/// this check REACHED is kept only when `fresh` still names it — a
-/// rule that stops firing on an UNCHANGED line is gone, the same as
-/// a rewritten one, so a detector fix pays down the debt it resolved
-/// instead of banking it forever. A key whose file this check never
-/// reached is left UNTOUCHED: a single `avra check <pkg>` only ever
-/// reaches its own package plus what it depends on, so judging a
-/// file no package here examined would silently drop another
-/// package's accepted debt from this one shared file — the same
-/// cross-package safety the old disk-text check wanted, kept here by
-/// asking what THIS check reached rather than what the disk still
-/// shows. A key whose file is gone from disk entirely is dropped
-/// outright: no future check will ever reach it either.
-export fn pruned_baseline(keys: List<string>, reached: List<string>, fresh: List<string>) -> List<
-    string,
-> {
-    [k for k in keys if kept_key(k, reached, fresh)]
-}
-
-fn kept_key(key: string, reached: List<string>, fresh: List<string>) -> bool {
-    let file? = key_file(key) else { return false }
-    if !exists(file) { return false }
-    if !reached.contains(file) { return true }
-    fresh.contains(key)
-}
-
-fn key_file(key: string) -> string? {
-    let parts = key.split("\t")
-    if parts.length != 3 { return null }
-    parts[1]
 }
