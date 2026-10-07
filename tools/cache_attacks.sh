@@ -1498,6 +1498,25 @@ S "ke: no-op after it" ke; ke_says "a no-op build" "three n=5"
 printf 'fourth' > $R/ke/src/f/data.txt
 HR "ke: moved a third time -> a check reads its file with no build between" check ke 0 "f/held.av" read
 S "ke: and the const derived from it follows" ke; ke_says "a derived const after a check" "fourth n=6"
+# A TEXT A RUN READ THAT THE HOST WILL NO LONGER GIVE IS A DIFFERENT ANSWER, NEVER THE END OF
+# THE RUN. The file's record names the embedded text, so the next key reads it again:
+# turned to octets that are no text, to a directory, or gone, a check and a build each
+# refuse in the embed law's own words, exit 1 — no host's refusal, no trap, and no build
+# that succeeds on the text that stood before.
+ke_refuses() { # ke_refuses <label> <the law's words>
+    for ke_verb in check build; do
+        steps=$((steps+1)); ke_out=$(./avra $ke_verb $R/ke 2>&1 | unwatched)
+        case "$ke_out" in *"error[type.embed_file]"*"$2"*) [ -n "${VERBOSE:-}" ] && echo "ok    ke: $1 -> $ke_verb refuses" ;; *) fails=$((fails+1)); echo "FAIL  ke: $1: $ke_verb did not refuse in the embed law's words ('$2'): $(printf '%s' "$ke_out" | grep -vE '^watch:|^time:' | head -2 | tr '\n' ' ' | cut -c1-220)" ;; esac
+    done
+}
+mv $R/ke/src/f/data.txt $R/ke/src/f/data.was; printf '\377\376' > $R/ke/src/f/data.txt
+ke_refuses "the embedded text turned into octets that are no text" "is not UTF-8"
+mv $R/ke/src/f/data.txt $R/ke/src/f/data.octets; mkdir $R/ke/src/f/data.txt
+ke_refuses "the embedded text turned into a directory" "could not read its file"
+mv $R/ke/src/f/data.txt $R/ke/src/f/data.dir
+ke_refuses "the embedded text is gone" "finds no"
+printf 'back' > $R/ke/src/f/data.txt
+S "ke: the text stands again" ke; ke_says "the embedded text back" "back n=4"
 
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
