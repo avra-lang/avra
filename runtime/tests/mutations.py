@@ -98,6 +98,13 @@ MUTATIONS = [
     ("a run's end restarts the outer schedule's stream", "    g_seed_state = outer.state;\n", "    g_seed_state = (uint64_t)outer.schedule;\n"),
     ("a run's choices are counted as its host's", "    g_choices = outer.choices;\n", ""),
     ("a run's schedule ends and its clock does not", "    g_choices = outer.choices;\n    avra_clock_run_ends();", "    g_choices = outer.choices;"),
+    ("a deadlock inside a case ends the process", "            if (case_deadlocked()) continue;\n", ""),
+    ("a case that leaks passes", "    g_case_answer = case_cleared(0) == 0 ? answer : 0;", "    case_cleared(0);\n    g_case_answer = answer;"),
+    ("a task that outlives its case is named and left alive", "    for (int64_t i = 0; i < n; i++) abandoned(alive[i]);\n", ""),
+    ("an abandoned task stays where it is filed", "    cells[TASK_END] = END_CANCELLED;\n    gone(f);", "    cells[TASK_END] = END_CANCELLED;"),
+    ("an abandoned task reads as alive to whoever holds it", "    gone(f);\n    avra_vgate_open(task);", "    gone(f);"),
+    ("a task's number counts from the process's first spawn", "(uint64_t)id_of(f) - g_case_first - 1);", "(uint64_t)id_of(f) - 1);"),
+    ("a case's body runs on a task's own stack", "    ((Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER])->wide = 1;\n", ""),
     ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("    if (g_until_poll > 0) return;\n", "")], None),
     ("a join answers a cancelled task", "    if (cells[TASK_END] == END_CANCELLED) join_refused();\n", ""),
     ("a fired timer's task answers nothing", "    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;\n", "    avra_rc_release(unit);\n"),
@@ -119,7 +126,7 @@ CLOCK_MUTATIONS = [
     ("a run begins with its host's holds", "    g_clock_outer[g_clock_runs++] = avra_clock;\n    avra_clock.held = 0;", "    g_clock_outer[g_clock_runs++] = avra_clock;"),
     ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
 ]
-TESTS = ["flow_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
+TESTS = ["flow_test", "case_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
 BOUND = 60
 
 os.makedirs(out, exist_ok=True)
