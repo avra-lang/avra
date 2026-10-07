@@ -1314,6 +1314,9 @@ static Fiber* next_with_world(void) {
         poller_turn();
         Fiber* next = g_seeded ? ready_picked() : ready_pop();
         if (next) {
+            // an ask counted during this pass, after its count was reset,
+            // brings the next switch back here
+            if (__builtin_expect(g_asked, 0)) g_until_poll = 0;
             g_in_world = 0;
             return next;
         }
