@@ -331,10 +331,23 @@ void avra_llvm_set_site(LLVMValueRef fn, const char* site) {
     LLVMSetInitializer(row, cells);
     LLVMSetLinkage(row, LLVMPrivateLinkage);
     LLVMSetAlignment(row, 8);
-    const char* triple = LLVMGetTarget(m);
-    int macho = triple && (strstr(triple, "apple") || strstr(triple, "darwin"));
-    LLVMSetSection(row, macho ? AVRA_SITES_MACHO_SEGMENT "," AVRA_SITES_MACHO_SECTION : AVRA_SITES_ELF_SECTION);
+    LLVMSetSection(row, AVRA_SITES_ELF_SECTION);
     kept_whole(m, row);
+}
+
+static int target_is_macho(const char* triple) {
+    return triple != NULL && (strstr(triple, "apple") || strstr(triple, "darwin"));
+}
+
+// A site row's section is spelled for the object format its module is
+// emitted as, known only once the target is final: Mach-O names a
+// segment beside the section.
+static void sites_placed(LLVMModuleRef m, const char* triple) {
+    if (!target_is_macho(triple)) return;
+    for (LLVMValueRef g = LLVMGetFirstGlobal(m); g; g = LLVMGetNextGlobal(g)) {
+        const char* s = LLVMGetSection(g);
+        if (s && strcmp(s, AVRA_SITES_ELF_SECTION) == 0) LLVMSetSection(g, AVRA_SITES_MACHO_SEGMENT "," AVRA_SITES_MACHO_SECTION);
+    }
 }
 
 // Whether this build counts the boxes runtime rows mint, by type:
@@ -1230,6 +1243,7 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
                            : level == 2 ? LLVMCodeGenLevelDefault : LLVMCodeGenLevelAggressive;
     LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), "", cg, LLVMRelocPIC, LLVMCodeModelDefault);
     LLVMSetTarget(m, triple);
+    sites_placed(m, triple);
     LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);
     LLVMSetModuleDataLayout(m, layout);
     int failed = 0;
