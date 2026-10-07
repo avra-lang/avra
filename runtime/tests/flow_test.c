@@ -352,14 +352,14 @@ static int traced_scene(void) {
     return 0;
 }
 
-// Code that carries a site as the backend lays it: the mark and the
-// distance to `file:line`, then the entry. Spawned and never run.
-static struct { char text[24]; AvraSite site; char entry[8]; } g_sited = { "pkg/main.av:7", { AVRA_SITE_MARK, 0, 0 }, {0} };
+// Code that carries a site as the backend lays it: `file:line` in its
+// padded room, its length, the mark, then the entry. Spawned and never
+// run.
+static struct { char text[16]; AvraSite site; char entry[8]; } g_sited = { "pkg/main.av:7", { 13, AVRA_SITE_MARK }, {0} };
 
 // Run alone, traced: a task whose code carries a site, one whose code
 // carries none, and a virtual task told its own.
 static int sited_scene(void) {
-    g_sited.site.away = (int32_t)(g_sited.text - g_sited.entry);
     spawn1((Code)(uintptr_t)g_sited.entry, 0);
     spawn1(answers_cap, 0);
     avra_vtask_sited(avra_vtask_new_at(0, 51), "pkg/other.av:3");

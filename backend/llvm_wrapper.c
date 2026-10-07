@@ -296,22 +296,22 @@ void avra_llvm_set_cold(LLVMValueRef fn) {
     LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "minsize"));
 }
 
-// A TASK BODY'S SITE, laid before its code (avra_box.h): the mark and
-// how far its `file:line` stands from the code. No instruction reads
-// it, so a program pays its bytes and nothing else.
+// A TASK BODY'S SITE, laid before its code (avra_box.h): the text, its
+// length, the mark. No instruction reads it, so a program pays its
+// bytes and nothing else.
 void avra_llvm_set_site(LLVMValueRef fn, const char* site) {
-    LLVMModuleRef m = LLVMGetGlobalParent(fn);
-    LLVMContextRef ctx = LLVMGetModuleContext(m);
-    LLVMValueRef text = LLVMConstStringInContext2(ctx, site, strlen(site), 0);
-    LLVMValueRef held = LLVMAddGlobal(m, LLVMTypeOf(text), "");
-    LLVMSetInitializer(held, text);
-    LLVMSetGlobalConstant(held, 1);
-    LLVMSetLinkage(held, LLVMPrivateLinkage);
-    LLVMSetUnnamedAddress(held, LLVMGlobalUnnamedAddr);
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
+    uint64_t length = strlen(site);
+    uint64_t room = avra_site_room(length);
+    char* text = calloc(room, 1);
+    memcpy(text, site, length);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
-    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
-    LLVMValueRef away = LLVMConstTrunc(LLVMConstSub(LLVMConstPtrToInt(held, i64), LLVMConstPtrToInt(fn, i64)), i32);
-    LLVMValueRef fields[3] = { LLVMConstInt(i64, AVRA_SITE_MARK, 0), away, LLVMConstInt(i32, 0, 0) };
+    LLVMValueRef fields[3] = {
+        LLVMConstStringInContext2(ctx, text, room, 1),
+        LLVMConstInt(i64, length, 0),
+        LLVMConstInt(i64, AVRA_SITE_MARK, 0),
+    };
+    free(text);
     LLVMSetPrefixData(fn, LLVMConstStructInContext(ctx, fields, 3, 0));
 }
 

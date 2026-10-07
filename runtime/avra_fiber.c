@@ -387,7 +387,7 @@ static const char* site_of(void* body) {
     const char* code = (const char*)(uintptr_t)((AvraArray*)body)->data[0];
     AvraSite site;
     memcpy(&site, code - sizeof site, sizeof site);
-    return site.mark == AVRA_SITE_MARK ? code + site.away : NULL;
+    return site.mark == AVRA_SITE_MARK ? code - sizeof site - avra_site_room(site.length) : NULL;
 }
 
 // A spawn, and where its body was written.
