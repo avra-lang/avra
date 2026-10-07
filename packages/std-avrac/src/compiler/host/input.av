@@ -25,6 +25,17 @@ use @std.relation.stable.{Writer, writer}
 /// What a read asks of the world.
 export enum InputKind { Text, Octets, Range, Listing, Exists, Env, Tool, Compiler, Embedded }
 
+impl InputKind {
+    /// Whether a read of this kind names the running process itself, so
+    /// it is read once and never again while the process runs.
+    fn stands_for_process() -> bool {
+        match self {
+            .Compiler -> true,
+            .Text or .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Embedded -> false,
+        }
+    }
+}
+
 /// An input's name: its kind and the key it was asked by.
 export type InputName = { kind: InputKind, key: string }
 
@@ -60,8 +71,9 @@ export enum Read {
     Env(key: string, value: string?)
     /// A tool by its word; null when none is found.
     Tool(key: string, stamp: Stamp?)
-    /// The running compiler; null when the host cannot name it.
-    Compiler(stamp: Stamp?)
+    /// The running compiler, by its bytes' digest; null when the host
+    /// cannot name it or read it.
+    Compiler(print: string?)
     /// A read the host would not perform, in its words.
     Refused(name: InputName, why: string)
     /// A file an `embed` names, read beneath the package root over it,
@@ -109,7 +121,8 @@ impl Read {
             .Listing(_, entries) -> listed(head, entries),
             .Exists(_, there) -> head.count(state(there)),
             .Env(_, value) -> head.count(state(value != null)),
-            .Tool(_, stamp) or .Compiler(stamp) -> stamped(head, stamp),
+            .Tool(_, stamp) -> stamped(head, stamp),
+            .Compiler(print) -> printed(head, print),
             .Refused(_, why) -> {
                 head.count(REFUSED)
                 head.text(why)
@@ -195,6 +208,13 @@ fn listed(head: Writer, entries: List<Listed>?) {
         head.text(e.name)
         head.bool(e.dir)
     }
+}
+
+/// A digest of octets behind its state.
+fn printed(head: Writer, print: string?) {
+    head.count(state(print != null))
+    let p? = print else { return }
+    head.text(p)
 }
 
 /// A stamp's three parts, each its own value.

@@ -12,6 +12,7 @@ use compiler.{
 use compiler.host.{Host, InputName, Listed, Beneath, memory_host}
 use compiler.families.{Family}
 use @std.relation.engine.{Key}
+use core.{digest_of_octets}
 
 /// A host over a table the test writes: `names` is what a listing sees.
 fn shifting(files: Cell<Map<string, string>>, names: Cell<List<string>>) -> Host {
@@ -122,6 +123,44 @@ fn turn(held: Cell<Workspace>) -> List<string> { inputs_this_turn(held) catch e 
 fn with_dependency() -> string { "${manifest()}\n[dependencies]\n\"@app/dep\" = { path = \"dep\" }\n" }
 
 fn source_text(w: World) -> string { w.ws.source(w.ws.file_id("/w/src/main.av")).text }
+
+/// A world with an environment and a compiler binary the test writes.
+type Machine = { ws: Workspace, files: Cell<Map<string, string>>, vars: Cell<Map<string, string>> }
+
+fn machine() -> Machine {
+    let files: Cell<Map<string, string>> = Cell
+        .new({"/w/src/a.av": "1\n", "/w/bin/avra": "one build"})
+    let names: Cell<List<string>> = Cell.new(["a.av"])
+    let vars: Cell<Map<string, string>> = Cell.new({"X": "1", "E": ""})
+    Machine {
+        ws: new_workspace(
+            machine_host(files, names, vars, () -> held_print(files, "/w/bin/avra")),
+            "/w",
+            avra(),
+        ),
+        files: files,
+        vars: vars,
+    }
+}
+
+fn machine_host(
+    files: Cell<Map<string, string>>,
+    names: Cell<List<string>>,
+    vars: Cell<Map<string, string>>,
+    print: fn() -> string?,
+) -> Host {
+    shifting(files, names) with { env: (k: string) -> vars.get().get(k), print: print, compiler: "/w/bin/avra" }
+}
+
+fn held_print(files: Cell<Map<string, string>>, at: string) -> string? {
+    let text? = files.get().get(at) else { return null }
+    digest_of_octets(text.bytes())
+}
+
+/// Whether the driver's turn read the world again and kept the graph.
+fn reread(m: Machine) -> bool {
+    match m.ws.world_moved() { .Ok(.Reread(_)) -> true, .Ok(.Graph) or .Err(_) -> false }
+}
 
 spec "compiler/world" {
     given "an edit inside one process, before the driver says the world moved" {
@@ -434,6 +473,51 @@ spec "compiler/world" {
                 .Err(why) -> why.contains("the driver's verb"),
                 .Ok(_) -> false,
             }
+        }
+    }
+    given "a variable, edited inside one process" {
+        then "it is read again only after the driver says the world moved" {
+            let m = machine()
+            let before = m.ws.env("X")
+            m.vars.put("X", "2")
+            let held = m.ws.env("X")
+            let _ = reread(m)
+            before == "1" && held == "1" && m.ws.env("X") == "2"
+        }
+        then "an unset variable answers none, and an empty one answers empty" {
+            let m = machine()
+            m.ws.env("Y") == null && m.ws.env("E") == ""
+        }
+        then "a changed variable moves the revision once" {
+            let m = machine()
+            let _ = m.ws.env("X")
+            let rev = m.ws.db.revision()
+            m.vars.put("X", "2")
+            reread(m) && m.ws.db.revision() == rev + 1
+        }
+        then "an unchanged variable moves nothing" {
+            let m = machine()
+            let _ = m.ws.env("X")
+            let rev = m.ws.db.revision()
+            reread(m) && m.ws.db.revision() == rev
+        }
+    }
+    given "the running compiler" {
+        then "its print is its binary's bytes" { machine().ws.running_print() == digest_of_octets("one build".bytes()) }
+        then "a binary replaced inside one process leaves the print and the revision unmoved" {
+            let m = machine()
+            let before = m.ws.running_print()
+            let rev = m.ws.db.revision()
+            m.files.put("/w/bin/avra", "another build")
+            reread(m) && m.ws.running_print() == before && m.ws.db.revision() == rev
+        }
+        then "a workspace opened after the binary moved reads the print its process started with" {
+            let m = machine()
+            let started = held_print(m.files, "/w/bin/avra")
+            m.files.put("/w/bin/avra", "another build")
+            let names: Cell<List<string>> = Cell.new(["a.av"])
+            new_workspace(machine_host(m.files, names, m.vars, () -> started), "/w", avra())
+                .running_print() == digest_of_octets("one build".bytes())
         }
     }
 }

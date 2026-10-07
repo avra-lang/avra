@@ -392,20 +392,20 @@ impl Workspace {
         let m = self.manifest(pkg.ordinal)
         self
             .package_objects(pkg, "")
-            .concat(["-L${d}" for d in filled_words(m.search)])
-            .concat(["-l${l}" for l in filled_words(m.libs)])
-            .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
+            .concat(["-L${d}" for d in self.filled_words(m.search)])
+            .concat(["-l${l}" for l in self.filled_words(m.libs)])
+            .concat(if pkg.ordinal == 0 { self.filled_words(m.raw) } else { [] })
     }
 
     /// The objects a package's manifest links into every program that
     /// reaches it.
     fn package_objects(pkg: Package, target: string) -> List<string> {
         let named = if target != "" { self.manifest(pkg.ordinal).wasm_objects } else { self.manifest(pkg.ordinal).objects }
-        [joined_path(pkg.root, o) for o in filled_words(named)]
+        [joined_path(pkg.root, o) for o in self.filled_words(named)]
     }
 
     fn package_wasm_objects(pkg: Package) -> List<string> {
-        [joined_path(pkg.root, o) for o in filled_words(self.manifest(pkg.ordinal).wasm_objects)]
+        [joined_path(pkg.root, o) for o in self.filled_words(self.manifest(pkg.ordinal).wasm_objects)]
     }
 
     /// Every file a link reads besides the program's own objects: the
@@ -637,26 +637,29 @@ fn same_body(c: Case, body: ExprId) -> bool {
     c.body.index == body.index
 }
 
-/// A row's words with their `${NAME}` holes filled, dropping any
-/// that fill to nothing. A hole naming nothing asks for NO WORD:
-/// an empty one would be an argument the linker still counts, and a
-/// bare `-L` eats the word after it.
-fn filled_words(words: List<string>) -> List<string> {
-    [w for w in [expanded(x) for x in words] if !w.is_empty()]
-}
+impl Workspace {
+    /// A row's words with their `${NAME}` holes filled, dropping any
+    /// that fill to nothing. A hole naming nothing asks for NO WORD:
+    /// an empty one would be an argument the linker still counts, and a
+    /// bare `-L` eats the word after it.
+    fn filled_words(words: List<string>) -> List<string> {
+        [w for w in [self.env_filled(x) for x in words] if !w.is_empty()]
+    }
 
-/// A link input with its `${NAME}` holes filled from the
-/// environment: a machine's own paths belong to the machine, not to
-/// a checked-in manifest.
-fn expanded(flag: string) -> string {
-    let opens = flag.index_of("\${")
-    if opens < 0 { return flag }
-    let closes = closing_brace(flag, opens)
-    if closes < opens { return flag }
-    let head = flag.substring(0, opens)
-    let name = flag.substring(opens + 2, closes)
-    let tail = flag.substring(closes + 1, flag.length)
-    expanded("${head}${avra_host_env(name)}${tail}")
+    /// A link input with its `${NAME}` holes filled from the
+    /// environment, each variable an input: a machine's own paths belong
+    /// to the machine, not to a checked-in manifest. A value is data — the
+    /// holes after it are filled, never the value itself.
+    fn env_filled(flag: string) -> string {
+        let opens = flag.index_of("\${")
+        if opens < 0 { return flag }
+        let closes = closing_brace(flag, opens)
+        if closes < opens { return flag }
+        let head = flag.substring(0, opens)
+        let name = flag.substring(opens + 2, closes)
+        let tail = flag.substring(closes + 1, flag.length)
+        "${head}${self.env(name) ?? ""}${self.env_filled(tail)}"
+    }
 }
 
 /// Where the hole closes, or -1.

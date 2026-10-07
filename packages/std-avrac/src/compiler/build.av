@@ -8,6 +8,7 @@ use core.{
     digest_bytes,
     digest_key,
     digest_of,
+    digest_of_octets,
     joined,
     distinct,
     flatten,
@@ -280,7 +281,8 @@ fn unnamed_print() -> string {
 
 /// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest and the mode
 /// it emits under (`codegen_mode`), since one binary writes two kinds of
-/// object. The digest is hashed FRESH every ask. A STAMP-KEYED SHORTCUT STOOD
+/// object. The digest is the Compiler input's: the binary's bytes, hashed
+/// at the door once for the running process. A STAMP-KEYED SHORTCUT STOOD
 /// HERE ONCE, trusting a size/time/inode match to skip the hash — the `compiler_id()` memoization already pays that
 /// hash at most once a workspace, and the shortcut bought a few milliseconds
 /// against a law it could not keep: a rebuilt binary at the SAME path can land
@@ -304,7 +306,7 @@ fn compiler_print(ws: Workspace) -> string {
     let roll = joined_path(stores_dir(ws), "compilers")
     // LICENSED compiler.host_asked_directly: the store's roll is read as it stands at this instant — a cell would answer what was read earlier
     let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
-    let digest? = digest_of_binary(at) else { return unnamed_print() }
+    let digest? = ws.running_print() else { return unnamed_print() }
     let mode = ws.keys.build_mode.get()
     let print = "${digest}${codegen_mode()}${if mode == "" { "" } else { "@${mode}" }}"
     rolled(
@@ -347,7 +349,7 @@ fn codegen_mode() -> string { if inlines_runtime() { "" } else { "-calls" } }
 fn print_of(line: string) -> string { line.split("\t")[0] }
 
 /// A binary's bytes as one digest — null when it cannot be read back.
-fn digest_of_binary(at: string) -> string? {
+export fn digest_of_binary(at: string) -> string? {
     match read_bytes(at) {
         .Ok(bytes) -> digest_key(digest_bytes(new_digest(), bytes)),
         .Err(_) -> null,
@@ -630,7 +632,7 @@ impl Workspace {
         let path = joined_path(root, "avra.toml")
         if !self.there(path) { return [] }
         let m = read_manifest(new_source_file(path, self.listed_text(path)))
-        [joined_path(root, o) for o in filled_words(m.objects)]
+        [joined_path(root, o) for o in self.filled_words(m.objects)]
     }
 
     /// An object's path paired with its CURRENT bytes' digest, read fresh —
@@ -693,17 +695,7 @@ impl Workspace {
         let broke = emit_closed(full, bc, Owned.Program, tools.target)
         if broke != null { fail BuildError.EmitFailed(broke!) }
         match read_bytes(bc) {
-            .Ok(bytes) -> .Ok(
-                node_key(
-                    Stored.Obj,
-                    [
-                        "entry",
-                        digest_key(digest_bytes(new_digest(), bytes)),
-                        tools.opt,
-                        tools.runtime,
-                    ],
-                ),
-            ),
+            .Ok(bytes) -> .Ok(node_key(Stored.Obj, ["entry", digest_of_octets(bytes), tools.opt, tools.runtime])),
             .Err(_) -> .Err(BuildError.ModuleUnreadable(bc)),
         }
     }
