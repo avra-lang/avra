@@ -1559,22 +1559,26 @@ S "kw: a|b.txt edited, every source held" kw; kw_says "a|b.txt edited under held
 
 # A COLLECT GATHERS WHAT ITS SCOPE HOLDS NOW, HELD OR NOT. `kg` depends on `@rt/gk`, whose
 # lib.av collects every `@kind` in its package; its members stand in files nothing imports, so
-# only the collect reaches them. A member is added, removed, a member file added and deleted —
+# only the collect reaches them, and the mark they wear is declared in a file of its own, so a
+# member's compile-time run never reads the collecting file. A member is added, removed, a member file added and deleted —
 # each edit touching no file the collect stands in, so lib.av is held — and A's ordinal follows
-# every time. The root package's own `in package` collect follows the same edits, and `@rt/cl`'s
+# every time. The root package's own `in package` collect follows the same edits, and `@rt/kc`'s
 # `in closure` list stands with no package collect beside it. After every step a held reading
 # answers what a fresh one does (`--verify-held`), and the evaluator agrees with the binary.
-mkdir -p $R/gk/src/m $R/cl/src/z $R/kg/src/m
+mkdir -p $R/gk/src/m $R/kc/src/z $R/kg/src/m
 printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $R/gk/avra.toml
-printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $R/gk/src/lib.av
-printf 'use lib.{kind}\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
-printf '[package]\nname = "@rt/cl"\nversion = "0.1.0"\n' > $R/cl/avra.toml
-printf 'use @std.meta.{Named}\nexport fn mark(_t: Named) {}\ntype Entry = { name: string }\ncollect near: List<Entry> = @mark in closure as Entry { name: it.name } by it.name\nexport fn c_at() -> int { near.length }\n' > $R/cl/src/cl.av
-printf 'use cl.{mark}\n@mark\nexport type Z = {}\n' > $R/cl/src/z/z.av
-printf '[package]\nname = "rt-kg"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n"@rt/cl" = { path = "../cl" }\n' > $R/kg/avra.toml
-printf 'use @std.meta.{Named}\nexport fn rank(_t: Named, _r: int) {}\nexport collect enum Rk = @rank in package by it.mark.args[0]\nexport fn r_at() -> int { Rk.P.ordinal }\n' > $R/kg/src/rk.av
-printf 'use rk.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
-printf 'use @rt.gk.lib.{a_at}\nuse @rt.cl.cl.{c_at}\nuse rk.{r_at}\nprintln("a=${a_at()} r=${r_at()} c=${c_at()}")\n' > $R/kg/src/main.av
+printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $R/gk/src/k.av
+printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $R/gk/src/lib.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
+printf '[package]\nname = "@rt/kc"\nversion = "0.1.0"\n' > $R/kc/avra.toml
+printf 'use @std.meta.{Named}\nexport fn mark(_t: Named) {}\n' > $R/kc/src/mk.av
+printf 'use mk.{mark}\ntype Entry = { name: string }\ncollect near: List<Entry> = @mark in closure as Entry { name: it.name } by it.name\nexport fn c_at() -> int { near.length }\n' > $R/kc/src/kc.av
+printf 'use mk.{mark}\n@mark\nexport type Z = {}\n' > $R/kc/src/z/z.av
+printf '[package]\nname = "rt-kg"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n"@rt/kc" = { path = "../kc" }\n' > $R/kg/avra.toml
+printf 'use @std.meta.{Named}\nexport fn rank(_t: Named, _r: int) {}\n' > $R/kg/src/rm.av
+printf 'use rm.{rank}\nexport collect enum Rk = @rank in package by it.mark.args[0]\nexport fn r_at() -> int { Rk.P.ordinal }\n' > $R/kg/src/rk.av
+printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
+printf 'use @rt.gk.lib.{a_at}\nuse @rt.kc.kc.{c_at}\nuse rk.{r_at}\nprintln("a=${a_at()} r=${r_at()} c=${c_at()}")\n' > $R/kg/src/main.av
 kg_step() { # kg_step <label> <wanted a=… r=…>: built, the binary agrees with the evaluator and prints it, a held reading agrees with a fresh one
     S "kg: $1" kg
     steps=$((steps+1)); kg_out=$($R/kg/src/main 2>&1)
@@ -1583,19 +1587,19 @@ kg_step() { # kg_step <label> <wanted a=… r=…>: built, the binary agrees wit
     [ $kg_st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kg: $1: --verify-held exit $kg_st: $(printf '%s' "$kg_v" | grep -aE 'held=|verify-held:|^avra:' | head -3 | tr '\n' ' ' | cut -c1-260)"; }
 }
 kg_step "cold" "a=0 r=0"
-printf 'use lib.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $R/gk/src/m/m.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $R/gk/src/m/m.av
 kg_step "a member added in the dependency, lib.av held" "a=1 r=0"
-printf 'use lib.{kind}\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
 kg_step "the member removed" "a=0 r=0"
-mkdir -p $R/gk/src/n; printf 'use lib.{kind}\n@kind(0)\nexport type C = {}\n' > $R/gk/src/n/n.av
+mkdir -p $R/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $R/gk/src/n/n.av
 kg_step "a member file added in a module of its own" "a=1 r=0"
 rm -rf $R/gk/src/n
 kg_step "the member file deleted" "a=0 r=0"
-printf 'use rk.{rank}\n@rank(5)\nexport type P = {}\n@rank(1)\nexport type Q = {}\n' > $R/kg/src/m/m.av
+printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n@rank(1)\nexport type Q = {}\n' > $R/kg/src/m/m.av
 kg_step "a member added to the root's own collect, rk.av held" "a=0 r=1"
-printf 'use rk.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
+printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
 kg_step "the root's member removed" "a=0 r=0"
-printf 'use cl.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/cl/src/z/z.av
+printf 'use mk.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/kc/src/z/z.av
 kg_step "an exported member added where only a closure list could gather it" "a=0 r=0"
 
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
