@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -192,6 +193,7 @@ struct Fiber {
     uint8_t expired;        // the deadline passed while a `within` stood
     uint8_t timed_out;      // whether the last legacy park ended by time
     uint8_t unwinding;      // a cancel met a cancel point
+    uint8_t wide;           // a case's own task: it runs on the wide stack
     int32_t arm, member;    // the claim
     uint32_t held_n;
     int64_t cancel_by;      // 1 + the id of the task that asked, else 0
@@ -1090,21 +1092,47 @@ static int world_waited_virtually(void) {
 }
 
 static void fiber_start(void);
+static int case_deadlocked(void);
 
 // A fiber's first run: a stack from the pool, and at its top a frame
 // `avra_fiber_switch` will restore — zeroed callee-saved registers and
 // `fiber_start` where the return goes. The top word stays untouched:
 // it is the word the stack above reads as its canary.
-static void fiber_bound(Fiber* f) {
-    Stack s = stack_take();
-    f->base = s.base;
+static void fiber_framed(Fiber* f, Stack s, size_t bytes) {
     f->guard = s.guard;
     f->floor = (uintptr_t)s.base;
     f->canary = own_guard(s) ? &g_untouched : (const uint64_t*)(s.base - sizeof(uint64_t));
-    uint64_t* frame = (uint64_t*)((((uintptr_t)s.base + g_stack_bytes - 16) & ~(uintptr_t)15) - FIBER_FRAME);
+    uint64_t* frame = (uint64_t*)((((uintptr_t)s.base + bytes - 16) & ~(uintptr_t)15) - FIBER_FRAME);
     memset(frame, 0, FIBER_FRAME);
     frame[FIBER_RETURN] = (uint64_t)(uintptr_t)fiber_start;
     f->sp = frame;
+}
+
+// THE WIDE STACK: one reservation the size of the main thread's stack,
+// its own guard page under it, for the one task at a time that runs a
+// case's body — which recurses as far as `main` would let it. It is
+// never pooled: a fiber on it keeps no `base`, so nothing gives it back.
+#define WIDE_STACK_LEAST ((size_t)8 << 20)
+static Stack g_wide = { NULL, NULL };
+static size_t g_wide_bytes = 0;
+
+static Stack wide_stack(void) {
+    if (g_wide.base) return g_wide;
+    struct rlimit main_stack;
+    g_wide_bytes = WIDE_STACK_LEAST;
+    if (getrlimit(RLIMIT_STACK, &main_stack) == 0 && main_stack.rlim_cur != RLIM_INFINITY && main_stack.rlim_cur > g_wide_bytes) g_wide_bytes = (size_t)main_stack.rlim_cur;
+    g_wide_bytes &= ~(g_page - 1);
+    char* low = reserved(g_wide_bytes + g_page);
+    if (mprotect(low, g_page, PROT_NONE) != 0) avra_trap("the scheduler could not guard a case's stack");
+    g_wide = (Stack){ low + g_page, low };
+    return g_wide;
+}
+
+static void fiber_bound(Fiber* f) {
+    if (f->wide) { fiber_framed(f, wide_stack(), g_wide_bytes); return; }
+    Stack s = stack_take();
+    f->base = s.base;
+    fiber_framed(f, s, g_stack_bytes);
 }
 
 // Where the switch goes when it finds a fiber under its floor or its
@@ -1207,7 +1235,10 @@ static Fiber* next_with_world(void) {
         poller_turn();
         Fiber* next = g_seeded ? ready_picked() : ready_pop();
         if (next) return next;
-        if (g_timers_len == 0 && g_parked_fds == 0) avra_trap("every task is waiting — deadlock");
+        if (g_timers_len == 0 && g_parked_fds == 0) {
+            if (case_deadlocked()) continue;
+            avra_trap("every task is waiting — deadlock");
+        }
         pool_trim();
         if (world_waited_virtually()) continue;
         int64_t wait = g_timers_len > 0 ? g_timers[0].at - now_ns() : -1;
@@ -1735,6 +1766,25 @@ void avra_fiber_forked(void) {
     g_seeded = 0;
 }
 
+// A task leaves every place the policy files it — its waiters and the
+// gates they keep, its deadline, the ready queue — and its record goes
+// back to the pool.
+static void gone(Fiber* f) {
+    retract(f);
+    waiter_out(&f->due);
+    if (f->state == FIBER_READY) {
+        Fiber* prev = NULL;
+        for (Fiber* q = g_ready_head; q; prev = q, q = q->next) {
+            if (q != f) continue;
+            if (prev) prev->next = q->next; else g_ready_head = q->next;
+            if (g_ready_tail == q) g_ready_tail = prev;
+            break;
+        }
+    }
+    f->state = FIBER_DONE;
+    fiber_freed(f);
+}
+
 // ── The evaluator's tasks ───────────────────────────────────────
 //
 // A VIRTUAL task has no stack: the evaluator runs every interpreted
@@ -1761,21 +1811,7 @@ int64_t avra_vtask_new_at(int64_t site, int64_t id) {
 
 // A task leaves every place the policy files it before it goes: its
 // waiters and the gates they keep, its deadline, the ready queue.
-void avra_vtask_free(int64_t t) {
-    Fiber* f = virtual_at(t);
-    retract(f);
-    waiter_out(&f->due);
-    if (f->state == FIBER_READY) {
-        Fiber* prev = NULL;
-        for (Fiber* q = g_ready_head; q; prev = q, q = q->next) {
-            if (q != f) continue;
-            if (prev) prev->next = q->next; else g_ready_head = q->next;
-            if (g_ready_tail == q) g_ready_tail = prev;
-            break;
-        }
-    }
-    fiber_freed(f);
-}
+void avra_vtask_free(int64_t t) { gone(virtual_at(t)); }
 
 // A virtual task whose body answered: said, then gone.
 void avra_vtask_end(int64_t t) {
@@ -1908,6 +1944,138 @@ void avra_sched_run_ends(void) {
     g_seed_state = outer.state;
     g_choices = outer.choices;
     avra_clock_run_ends();
+}
+
+// ── A case in its own task ──────────────────────────────────────
+
+// THE RUNNER WAITS ON TWO THINGS: its case's end, and an ALARM gate the
+// scheduler claims when every task waits and nothing can wake one.
+static void* g_case_alarm = NULL;
+static int g_case_waited = 0;
+static uint64_t g_case_first = 0;       // every task with a later id is the case's
+static int64_t g_case_answer = 0;
+
+// Every task waits and nothing can wake one, while a runner waits on a
+// case: the runner is woken to say so. 0 when no case is running.
+static int case_deadlocked(void) {
+    return g_case_waited && avra_gate_claim(g_case_alarm) >= 0;
+}
+
+// A task's number in its case: 0 the case's own, then in spawn order.
+static long long case_id(const Fiber* f) { return (long long)((uint64_t)id_of(f) - g_case_first - 1); }
+
+// What a waiter waits on, in words.
+static void waiter_said(const Fiber* f, const Waiter* w) {
+    if (!w->filed) return;
+    if (w->kind == W_AT) { fputs(" waits on a time", stderr); return; }
+    if (w->kind == W_DEADLINE) return;
+    if (w->kind != W_GATE) { fprintf(stderr, " waits on descriptor %d", w->on.fd); return; }
+    if (w->on.gate == f->joining) return;
+    if (((AvraArray*)w->on.gate)->len != TASK_CELLS) { fprintf(stderr, " waits on gate %p", w->on.gate); return; }
+    const Fiber* on = (const Fiber*)(uintptr_t)task_cells(w->on.gate)[TASK_FIBER];
+    if (on) fprintf(stderr, " waits on task %lld's end", case_id(on));
+    else fputs(" waits on a task nothing runs", stderr);
+}
+
+// One task: who it is and what it waits on.
+static void task_said(const Fiber* f) {
+    void* body = (void*)(uintptr_t)task_cells(f->task)[TASK_BODY];
+    fprintf(stderr, "task %lld,", case_id(f));
+    if (f->wide) fputs(" the case,", stderr);
+    else fprintf(stderr, " spawned at %p,", (void*)(uintptr_t)((AvraArray*)body)->data[0]);
+}
+static void waits_said(const Fiber* f) {
+    if (f->state == FIBER_READY) { fputs(" ready to run", stderr); return; }
+    if (f->joining) {
+        const Fiber* on = (const Fiber*)(uintptr_t)task_cells(f->joining)[TASK_FIBER];
+        if (on) fprintf(stderr, " joins task %lld", case_id(on));
+        else fputs(" joins a task nothing runs", stderr);
+    }
+    for (uint32_t i = 0; i < f->held_n; i++) waiter_said(f, &f->held[i]);
+    for (const Over* o = f->more; o; o = o->next) waiter_said(f, &o->w);
+}
+
+// A TASK ABANDONED LEAVES EVERY PLACE IT IS FILED and never runs again:
+// no `defer` of its runs, and what its frames held is not released.
+// Whoever waited on its end is woken; its task reads as cancelled.
+static void abandoned(Fiber* f) {
+    for (int i = 0; i < AVRA_TASK_SLOTS; i++) {
+        avra_rc_release(f->own.slot[i]);
+        f->own.slot[i] = NULL;
+    }
+    void* task = f->task;
+    Stack own = { f->base, f->guard };
+    if (own.base) stack_give(own);
+    int64_t* cells = task_cells(task);
+    cells[TASK_FIBER] = 0;
+    cells[TASK_END] = END_CANCELLED;
+    gone(f);
+    avra_vgate_open(task);
+    avra_rc_release(task);
+}
+
+static int of_the_case(const Fiber* f) { return f != g_current && !f->virtual && (uint64_t)id_of(f) > g_case_first && f->state != FIBER_DONE; }
+
+// Every task of the case still alive, named oldest first — as a
+// deadlock's, or as outliving the case — and then abandoned. How many.
+static int64_t case_cleared(int dead) {
+    int64_t n = 0;
+    for (const Fiber* f = g_all; f; f = f->all_next) n += of_the_case(f);
+    if (n == 0) return 0;
+    Fiber** alive = malloc((size_t)n * sizeof(Fiber*));
+    if (!alive) avra_trap("the scheduler ran out of memory naming a case's tasks");
+    // the list holds the newest first
+    int64_t at = n;
+    for (Fiber* f = g_all; f; f = f->all_next) if (of_the_case(f)) alive[--at] = f;
+    if (dead) fputs("avra: every task is waiting, and nothing can wake one:\n", stderr);
+    for (int64_t i = 0; i < n; i++) {
+        fputs(dead ? "  " : "avra: ", stderr);
+        task_said(alive[i]);
+        if (!dead) fputs(" outlived the case —", stderr);
+        waits_said(alive[i]);
+        fputc('\n', stderr);
+    }
+    if (g_seeded) fprintf(stderr, "avra: under schedule %lld\n", (long long)g_schedule);
+    for (int64_t i = 0; i < n; i++) abandoned(alive[i]);
+    free(alive);
+    return n;
+}
+
+// The case's own task: its body, and then — before any other task can
+// run — whoever it made that is still alive, named as outliving it.
+static void* case_ran(void* self) {
+    int64_t (*body)(void) = (int64_t (*)(void))(uintptr_t)((AvraArray*)self)->data[1];
+    int64_t answer = body();
+    g_case_answer = case_cleared(0) == 0 ? answer : 0;
+    return NULL;
+}
+
+enum { CASE_ENDED, CASE_ALARMED };
+
+int64_t avra_case_run(int64_t (*body)(void)) {
+    if (!g_case_alarm) g_case_alarm = avra_gate_new();
+    g_case_first = g_fiber_seq;
+    g_case_answer = 0;
+    void* box = avra_array_sized(2);
+    avra_array_push(box, (int64_t)(uintptr_t)case_ran);
+    avra_array_push(box, (int64_t)(uintptr_t)body);
+    void* task = avra_task_spawn(box);
+    avra_rc_release(box);
+    ((Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER])->wide = 1;
+    avra_wait_task(task, CASE_ENDED, 0);
+    avra_wait_gate(g_case_alarm, CASE_ALARMED, 0);
+    g_case_waited = 1;
+    int64_t claim = avra_wait_park();
+    g_case_waited = 0;
+    if (claim >> 32 == CASE_ALARMED) case_cleared(1);
+    avra_rc_release(task);
+    return g_case_answer;
+}
+
+int64_t avra_sched_tasks(void) {
+    int64_t n = 0;
+    for (const Fiber* f = g_all; f; f = f->all_next) n += f->state != FIBER_DONE;
+    return n;
 }
 
 // ── What a test and a dump read ─────────────────────────────────

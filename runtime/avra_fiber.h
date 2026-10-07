@@ -182,6 +182,17 @@ void avra_sched_run_ends(void);
 // choices it made. None means the run has one order.
 int64_t avra_sched_settle(void);
 
+// A CASE IN ITS OWN TASK: `body` runs as a task on a stack the size of
+// the main thread's, and the caller — the runner — waits on its end.
+// Answers what the body answered, or 0 when the case DEADLOCKED (every
+// task waiting and nothing able to wake one: each is named with what it
+// waits on) or LEAKED (a task it made outlived it: each is named). The
+// tasks are then abandoned — no `defer` runs — so the next case begins
+// with none. Outside a case, a deadlock is the trap it always was.
+int64_t avra_case_run(int64_t (*body)(void));
+// How many tasks are alive.
+int64_t avra_sched_tasks(void);
+
 // How many entries the timer heap holds, how many waiters are filed on
 // descriptors, how many times the poller has been asked, and how many
 // links of the queue the seeded pick has walked.
