@@ -1,0 +1,93 @@
+//! `avra tasks <pid>` — a running Avra process's tasks, listed by the
+//! process itself (runtime/avra_fiber.c, "The listing"). An ask file,
+//! then SIGURG, and the process writes the listing at its next switch;
+//! when none comes, a second signal makes it say which task has not
+//! switched. The answer is printed and both files are removed.
+use @std.cli.{CliResult, Runnable, command, arg}
+use @std.io.{exists, read_text, remove, write_text}
+use @std.process.{cmd, tool}
+use @std.text.{parse_int}
+use @std.time.{ms, sleep}
+
+type TasksCmd = {}
+
+impl Runnable for TasksCmd {
+    fn run(args: CliResult) -> int {
+        let pid? = parse_int(args.arg("pid")) else {
+            eprintln(no_pid(args.arg("pid")))
+            return 2
+        }
+        if pid < 1 {
+            eprintln(no_pid(args.arg("pid")))
+            return 2
+        }
+        listed(pid)
+    }
+}
+
+/// The listing a process answers, printed — 0 — or what kept it, said —
+/// 1. A signal the process does not hear harms nothing: its default is to
+/// be ignored.
+fn listed(pid: int) -> int {
+    let ask = "/tmp/avra-tasks.${pid}.ask"
+    let out = "/tmp/avra-tasks.${pid}"
+    let _ = remove(out)
+    if write_text(ask, "") is .Err {
+        eprintln(unaskable(ask))
+        return 1
+    }
+    if !signalled(pid) {
+        let _ = remove(ask)
+        eprintln(no_process(pid))
+        return 1
+    }
+    let first = awaited(out, 20)
+    let answer = first ?? if signalled(pid) { awaited(out, 10) } else { null }
+    let _ = remove(ask)
+    let said? = answer else {
+        eprintln(unanswered(pid))
+        return 1
+    }
+    let _ = remove(out)
+    println(said.trim())
+    0
+}
+
+/// SIGURG sent to `pid`: whether there is such a process to send it to.
+fn signalled(pid: int) -> bool {
+    let kill? = tool("kill") catch _ -> null else { return false }
+    match cmd(kill, ["-URG", "${pid}"]).outcome() { .Ok(o) -> o.exit is .Clean, .Err(_) -> false }
+}
+
+/// The answer at `path` within `turns` tenths of a second, or null.
+fn awaited(path: string, turns: int) -> string? {
+    for _turn in 0..turns {
+        sleep(ms(100))
+        if exists(path) { return read_text(path) catch _ -> null }
+    }
+    null
+}
+
+export command tasks {
+    description: "A running Avra process's tasks — where each was spawned, what it waits on, how long it has run at most — as the process itself lists them"
+    arg pid { description: "the process to ask" }
+    run: TasksCmd {}
+}
+
+// ── voices ──
+
+fn no_pid(word: string) -> string {
+    "avra tasks: `${word}` is no process id — `avra tasks <pid>`"
+}
+
+fn unaskable(path: string) -> string {
+    "avra tasks: the ask could not be written at ${path}"
+}
+
+fn no_process(pid: int) -> string {
+    "avra tasks: no process ${pid} that this user may signal"
+}
+
+fn unanswered(pid: int) -> string {
+    "avra tasks: process ${pid} did not answer in 3 s — it has spawned no task, is not an Avra program, or handles SIGURG itself"
+}
