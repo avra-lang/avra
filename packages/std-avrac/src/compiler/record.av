@@ -1112,9 +1112,18 @@ impl Workspace {
             path: path,
             text: if path == "" { "" } else { self.text_digest(path) },
             // an object that bakes a compile-time run's answer in reads the TEXT the run read
-            runs: [if self.host.exists(ran) { self.text_digest(ran) } else { "" } for ran in kept_runs(record_places(self, store, m).get(path))],
+            runs: [self.run_said(ran) for ran in kept_runs(record_places(self, store, m).get(path))],
             seen: self.view_parts(store, m),
         }
+    }
+
+    /// What a text a compile-time run read says NOW: a source file's digest,
+    /// "" for one that is gone — and for a file that is no source, what an
+    /// `embed` of it would answer, its refusal included: a text the host will
+    /// not give is a different answer, never the end of the run.
+    fn run_said(ran: string) -> string {
+        if !self.reads_as_source(ran) { return self.embed_said(ran) }
+        if self.there(ran) { self.text_digest(ran) } else { "" }
     }
 
     /// `key_parts`, remembered beside the key it digests to — cleared with it.

@@ -2,6 +2,7 @@
 // is SPOKEN: where a reader held one of its cells this revision, the
 // pass says a defect — it never settles as a program with no uses.
 use compiler.{new_workspace, avra, Workspace}
+use compiler.families.{Family}
 use compiler.host.{memory_host}
 use features.{Decl, Ref}
 use @std.relation.engine.{Key}
@@ -27,13 +28,12 @@ fn refs_refused_over(source: string) -> Workspace {
 
 fn refs_refused_workspace() -> Workspace {
     refs_refused_over(
-        "fn a() -> int { 1 }\nfn keep(xs: List<int>) -> List<int> { xs }\nfn b() -> int { a() + keep([1]).length }\nb()\n",
+        "fn a() -> int { 1 }\nfn keep(xs: List<int>) -> List<List<int>> { [xs] }\nfn b() -> int { a() + keep([1]).length }\nb()\n",
     )
 }
 
-/// A resolve in flight: `Family.Resolved`'s number, which the family table is
-/// private about, at a file no workspace here has.
-fn refs_refused_resolving() -> Key { Key { family: 5, arg: 900 } }
+/// A resolve in flight, at a file no workspace here has.
+fn refs_refused_resolving() -> Key { Key { family: Family.Resolved.ordinal, arg: 900 } }
 
 spec "compiler/references — a refused replacement" {
     then "under a reader that read a use's bucket this revision, the pass speaks one defect and one refusal is heard" {
@@ -97,7 +97,7 @@ spec "compiler/references — asked while a resolve is in flight" {
             heard.get().is_empty() &&
             ws.decls.refs_of(a).length == 1
     }
-    then "a seat's consumption is not inferred and not recorded; asked again once the references stand, it is" {
+    then "a seat's consumption is not inferred and not recorded; asked again once the references stand, it is inferred" {
         let ws = refs_refused_workspace()
         let keep = Decl.by_name(ws.decls.rows_db.get(), "keep").first()!.id
         let resolving = refs_refused_resolving()
@@ -109,6 +109,6 @@ spec "compiler/references — asked while a resolve is in flight" {
         !during.any(it) &&
             unrecorded &&
             ws.decls.consumed.get()[keep.index] != null &&
-            after.length == during.length
+            after.any(it)
     }
 }

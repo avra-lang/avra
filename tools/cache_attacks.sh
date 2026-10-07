@@ -1470,6 +1470,54 @@ S "kv: and the binary follows" kv
 steps=$((steps+1)); kv_out=$($R/kv/src/main 2>&1)
 [ "$kv_out" = "18 19 5" ] || { fails=$((fails+1)); echo "FAIL  kv: a const on the chain kept the value of the body J ran before: printed '$kv_out', wanted '18 19 5'"; }
 
+# A FILE IS HELD ONLY WHILE EVERY INPUT ITS COMPILE-TIME RUNS READ STANDS. `ke`'s TEXT is
+# an `embed` of a text file beside the file that declares it. The embedded text is
+# edited and nothing else: the declaring file's own text never moves, so a hold that
+# stands on its text alone keeps the const's old value — in the binary, with the key
+# missing and a derivation running. The file must be read again, in a check and in a
+# build, twice over, and with another file edited first so the declaring file is held;
+# a const derived from the embedded text moves with it.
+mkdir -p $R/ke/src/f
+printf '[package]\nname = "rt-ke"\nversion = "0.1.0"\n' > $R/ke/avra.toml
+printf 'one' > $R/ke/src/f/data.txt
+printf 'use @std.meta.{embed}\nexport const TEXT: string = embed("data.txt")\nexport const N: int = TEXT.length\nexport fn shown() -> string { "${TEXT} n=${N}" }\n' > $R/ke/src/f/held.av
+printf 'use f.{shown}\nprintln("text=${shown()}")\n' > $R/ke/src/main.av
+ke_says() { # ke_says <label> <wanted>: the built binary prints the embedded text as it stands
+    steps=$((steps+1)); ke_out=$($R/ke/src/main 2>&1)
+    [ "$ke_out" = "text=$2" ] || { fails=$((fails+1)); echo "FAIL  ke: $1: the binary printed '$ke_out', wanted 'text=$2'"; }
+}
+S "cold ke" ke; ke_says "cold" "one n=3"
+printf '// moved\n' >> $R/ke/src/main.av
+S "ke: an edit elsewhere, held.av held" ke; ke_says "an edit elsewhere" "one n=3"
+printf 'two' > $R/ke/src/f/data.txt
+HR "ke: the embedded text moved -> its file is read, not held" check ke 0 "f/held.av" read
+S "ke: and the binary follows the embedded text" ke; ke_says "the embedded text moved under a held file" "two n=3"
+printf 'three' > $R/ke/src/f/data.txt
+S "ke: moved again, nothing else touched" ke; ke_says "the embedded text moved again" "three n=5"
+S "ke: no-op after it" ke; ke_says "a no-op build" "three n=5"
+printf 'fourth' > $R/ke/src/f/data.txt
+HR "ke: moved a third time -> a check reads its file with no build between" check ke 0 "f/held.av" read
+S "ke: and the const derived from it follows" ke; ke_says "a derived const after a check" "fourth n=6"
+# A TEXT A RUN READ THAT THE HOST WILL NO LONGER GIVE IS A DIFFERENT ANSWER, NEVER THE END OF
+# THE RUN. The file's record names the embedded text, so the next key reads it again:
+# turned to octets that are no text, to a directory, or gone, a check and a build each
+# refuse in the embed law's own words, exit 1 — no host's refusal, no trap, and no build
+# that succeeds on the text that stood before.
+ke_refuses() { # ke_refuses <label> <the law's words>
+    for ke_verb in check build; do
+        steps=$((steps+1)); ke_out=$(./avra $ke_verb $R/ke 2>&1 | unwatched)
+        case "$ke_out" in *"error[type.embed_file]"*"$2"*) [ -n "${VERBOSE:-}" ] && echo "ok    ke: $1 -> $ke_verb refuses" ;; *) fails=$((fails+1)); echo "FAIL  ke: $1: $ke_verb did not refuse in the embed law's words ('$2'): $(printf '%s' "$ke_out" | grep -vE '^watch:|^time:' | head -2 | tr '\n' ' ' | cut -c1-220)" ;; esac
+    done
+}
+mv $R/ke/src/f/data.txt $R/ke/src/f/data.was; printf '\377\376' > $R/ke/src/f/data.txt
+ke_refuses "the embedded text turned into octets that are no text" "is not UTF-8"
+mv $R/ke/src/f/data.txt $R/ke/src/f/data.octets; mkdir $R/ke/src/f/data.txt
+ke_refuses "the embedded text turned into a directory" "could not read its file"
+mv $R/ke/src/f/data.txt $R/ke/src/f/data.dir
+ke_refuses "the embedded text is gone" "finds no"
+printf 'back' > $R/ke/src/f/data.txt
+S "ke: the text stands again" ke; ke_says "the embedded text back" "back n=4"
+
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
 # order than a cold build meets them. The binary must be the cold one's, byte for
