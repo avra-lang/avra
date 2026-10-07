@@ -1,6 +1,8 @@
 //! `// LICENSED <id>` citations (CLAUDE.md's exemption law), a colon
 //! and a reason after the id — the dotted id right after that word
-//! must still name a rule `avra rules` lists. `Workspace.checked()`
+//! must still name a rule `avra rules` lists, or be an `input.<why>`:
+//! the input keeper's own (tools/inputs.py), which holds it at its
+//! site. `Workspace.checked()`
 //! finds stale ones
 //! once, from the Program it already built, and caches the answer
 //! (compiler/db.av's `Licenses` row) under the same key as its
@@ -21,13 +23,19 @@ export fn stale_license_lines(p: Program) -> string {
     joined(flatten([file_stale_lines(a, known) for a in p.files]), "\n")
 }
 
+/// Whether a citation's id names nothing that reads it: no rule among
+/// `known`, and no `input.<why>` — the input keeper's.
+export fn cites_nothing(id: string, known: List<string>) -> bool {
+    !known.contains(id) && !id.starts_with("input.")
+}
+
 fn file_stale_lines(a: Analysis, known: List<string>) -> List<string> {
     flatten([remark_line(a, r, known) for r in a.view.store.remarks.get()])
 }
 
 fn remark_line(a: Analysis, r: Remark, known: List<string>) -> List<string> {
     let c? = claimed(r) else { return [] }
-    if known.contains(c.id) { return [] }
+    if !cites_nothing(c.id, known) { return [] }
     let line = a.view.source.linecol(r.at).line
     ["${a.view.source.file}\t${line}\t${c.id}"]
 }
