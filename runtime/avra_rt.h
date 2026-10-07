@@ -186,6 +186,7 @@ extern const char avra_rt_held_avra_bytes_ieq_at __asm__(AVRA_RT_LABEL(avra_byte
 extern const char avra_rt_held_avra_bytes_gathered __asm__(AVRA_RT_LABEL(avra_bytes_gathered));
 extern const char avra_rt_held_avra_bytes_adopted __asm__(AVRA_RT_LABEL(avra_bytes_adopted));
 extern const char avra_rt_held_avra_bytes_with_room __asm__(AVRA_RT_LABEL(avra_bytes_with_room));
+extern const char avra_rt_held_avra_sha256 __asm__(AVRA_RT_LABEL(avra_sha256));
 extern const char avra_rt_held_avra_mmap_open __asm__(AVRA_RT_LABEL(avra_mmap_open));
 extern const char avra_rt_held_avra_mmap_len __asm__(AVRA_RT_LABEL(avra_mmap_len));
 extern const char avra_rt_held_avra_mmap_slice __asm__(AVRA_RT_LABEL(avra_mmap_slice));
@@ -376,6 +377,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_bytes_gathered,
     &avra_rt_held_avra_bytes_adopted,
     &avra_rt_held_avra_bytes_with_room,
+    &avra_rt_held_avra_sha256,
     &avra_rt_held_avra_mmap_open,
     &avra_rt_held_avra_mmap_len,
     &avra_rt_held_avra_mmap_slice,
@@ -691,6 +693,8 @@ _Static_assert(__builtin_classify_type(avra_bytes_adopted(AVRA_RT_PTR, AVRA_RT_I
     "avra_bytes_adopted: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_bytes_with_room(AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_bytes_with_room: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_sha256(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_sha256: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_mmap_open(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_mmap_open: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_mmap_len(AVRA_RT_PTR)), int64_t),
