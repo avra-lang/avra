@@ -4,7 +4,9 @@
 // other's name only when it shares them.
 use compiler.{Workspace, makers_in}
 use compiler.record.{read_fields}
-use @std.avrac.testing.{provided_workspace}
+use @std.avrac.testing.{provided_workspace, vendored_meta, vendored_meta_paths}
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.host.{memory_host}
 use core.{DeclKind, no_stmt, named_ref}
 use features.{Decl, DeclareWork, new_decls}
 
@@ -164,7 +166,8 @@ fn restored() -> Restored {
             "made",
             null,
         )
-    let fields = [read_fields(line) for line in ws.lines_of(readmit_path())]
+    // through the record's own text: its lines joined, then split again
+    let fields = [read_fields(line) for line in ws.lines_of(readmit_path()).join("\n").split("\n")]
     let held = admitted_nothing()
     held.mint_file(readmit_path(), fields, makers_in(fields, readmit_path()))
     Restored {
@@ -232,6 +235,34 @@ fn real_makers() -> string {
     let ws = provided_workspace(both_main(), both_provider())
     let _ = ws.program("/w/src/main.av")
     [d.maker for d in ws.decls.all_decls() if d.maker.starts_with("echoed()")].join(" | ")
+}
+
+/// A module of two files: one exports an annotation that generates one fn,
+/// the other BEGINS with that annotation on its first statement.
+fn first_statement_annotated() -> Workspace {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/marks.av": "use @std.meta.{Fn, Directive}\nexport fn mark(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote { fn \${f}_made() -> int { 7 } } }]\n}\n",
+            "/w/src/main.av": "@mark\nfn f() -> int { 1 }\nf()\n",
+        },
+    )
+    new_workspace(
+        memory_host(
+            files,
+            ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+/// What `mark` generated in that program, as `name by maker`, in id order.
+fn first_statement_made() -> string {
+    let ws = first_statement_annotated()
+    let _ = ws.program("/w/src/main.av")
+    ["${d.name} by ${d.maker}" for d in ws.decls.all_decls() if d.maker.starts_with("mark()")]
+        .join(" | ")
 }
 
 spec "compiler/decl name — a declaration's key is its name" {
@@ -323,6 +354,11 @@ spec "compiler/decl name — a declaration's key is its name" {
     given "a real annotation's generated fn, on a fn a wrap written before it moved the body of" {
         then "its maker names the written fn, never the body the wrap moved" {
             real_makers() == "echoed()#0 @ fn .doubled#0"
+        }
+    }
+    given "an annotation on a file's first statement" {
+        then "its work is the statement's own declaration's: one generated fn, made once" {
+            first_statement_made() == "f_made by mark()#0 @ fn .f#0"
         }
     }
     given "two declarations one annotation generates" {

@@ -333,11 +333,14 @@ impl Workspace {
     /// inputs — nothing when the annotation is not a generator.
     fn declared_work(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<DeclareWork> {
         if self.decls.is_wrap_body(f, d) { return [] }
-        // an annotation is its statement's own declaration's: a default rides that
-        // statement and owes none of its work
-        if !self.decls.names_its_statement(d) { return [] }
         let x = self.decls.decl(d)
         let written = self.written_stmt(f, d)
+        // an annotation is its statement's own declaration's — the one the statement
+        // answers, or the body a wrap moved there. Whatever else rides the statement
+        // owes none of its work.
+        let own? = self.decls.decl_of(f, written) else { return [] }
+        let body = self.decls.wrap_body_of(f, d)
+        if !same_decl(own, d) && !(body != null && same_decl(own, body!)) { return [] }
         let anns = p.store.annotations_of(written)
         if anns.is_empty() { return [] }
         // A code directive needs no declaration shape; a twin walks a
