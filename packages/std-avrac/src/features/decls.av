@@ -2576,6 +2576,17 @@ impl Decls {
         module_symbol(self.module_name(info.module_id), "${stem_of(info.path)}\$l${e.index}")
     }
 
+    /// A file as a reader names it wherever it was built: its package,
+    /// its module's directories and its own name — never the building
+    /// machine's path.
+    fn file_named(f: FileId) -> string {
+        let info = self.file(f)
+        let module = self.module_name(info.module_id)
+        let root = if package_of_module(module).is_empty() { self.root_name.get() } else { "" }
+        let dirs = [d.replace(".", "/") for d in [root, module] if !d.is_empty()]
+        "${dirs.concat([stem_of(info.path)]).join("/")}.av"
+    }
+
     /// A literal's SITE: its file — module and stem — its own content,
     /// and its turn among the literals written alike in that file,
     /// folded. Content-addressed, so a line added above a literal moves

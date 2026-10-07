@@ -122,6 +122,8 @@ int64_t avra_vtask_new_at(int64_t site, int64_t id);
 void avra_vtask_free(int64_t t);
 // A task whose body answered: the trace says so, then it is freed.
 void avra_vtask_end(int64_t t);
+// Where the task's body was written, `file:line`, for the trace.
+void avra_vtask_sited(int64_t t, const char* site);
 void avra_vtask_ready(int64_t t);
 // A join in the evaluator's own files, said to the trace as a compiled
 // one is: `joins` when the task is about to wait for the task `on`

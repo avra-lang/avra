@@ -14,9 +14,12 @@ A JOIN IS ONE LINE: a compiled join also files a wait on its task's
 gate, an evaluated one files nothing, so the wait a join files is read
 as part of it.
 
+A SPAWN SAYS WHERE: the `site` line that follows a spawn is read into
+it — a source line, or the code's address where the code carries none.
+
 THE SHAPE is each task's events in order with nothing an engine owns:
-no stamp, no address, no descriptor's number, no site, and no spawn of
-the program's own run. A program run evaluated and compiled prints the
+no stamp, no address, no descriptor's number, and no spawn of the
+program's own run. A site that is a source line is both engines'. A program run evaluated and compiled prints the
 same shape wherever the two agree by design.
 """
 import re
@@ -37,12 +40,18 @@ def parsed(text):
     return events, strays
 
 
-def worded(event, rest):
+def is_line(site):
+    """Whether a site is a source line, not a bare address."""
+    return site is not None and not site.startswith("0x")
+
+
+def worded(event, rest, site=None):
     """One event in a reader's words."""
+    where = f" at {site}" if site else ""
     if event == "spawn":
-        return f"spawned by task {rest}"
+        return f"spawned by task {rest}{where}"
     if event == "spawn-at":
-        return f"spawned (evaluated) at site {rest}"
+        return f"spawned (evaluated){where}" if site else f"spawned (evaluated) at site {rest}"
     if event == "join":
         on = rest.removeprefix("on=")
         return "joins a task nothing runs" if on == "unrun" else f"joins task {on}"
@@ -69,11 +78,19 @@ def worded(event, rest):
     return f"{event} {rest}".strip()
 
 
+def sites(events):
+    """Where each task was spawned: {task: text}."""
+    return {task: rest for _, event, task, rest in events if event == "site"}
+
+
 def folded(events):
-    """The events with the gate wait a join files left out: the join said it."""
+    """The events a reader is told: no site line — its spawn says it — and
+    no gate wait a join files: the join said it."""
     out, last = [], {}
     for e in events:
         _, event, task, rest = e
+        if event == "site":
+            continue
         joins_gate = event == "park" and rest.startswith("src=gate:") and last.get(task) == "join"
         last[task] = event
         if not joins_gate:
@@ -86,16 +103,16 @@ def timelines(events):
     if not events:
         return {}
     origin = events[0][0]
-    by_task = {}
+    by_task, at = {}, sites(events)
     for ts, event, task, rest in folded(events):
-        by_task.setdefault(task, []).append(((ts - origin) / 1e6, worded(event, rest)))
+        by_task.setdefault(task, []).append(((ts - origin) / 1e6, worded(event, rest, at.get(task))))
     return by_task
 
 
-def shape_worded(event, rest):
+def shape_worded(event, rest, site=None):
     """One event with what an engine owns left out."""
     if event in ("spawn", "spawn-at"):
-        return "spawned"
+        return f"spawned at {site}" if is_line(site) else "spawned"
     if event == "deadline-set":
         return "deadline filed"
     if event == "park":
@@ -107,11 +124,11 @@ def shape_worded(event, rest):
 
 def shape(events):
     """Each task's events in order, by id: the text both engines print alike."""
-    by_task = {}
+    by_task, at = {}, sites(events)
     for _, event, task, rest in folded(events):
         if task == 0 and event == "spawn-at":
             continue
-        by_task.setdefault(task, []).append(shape_worded(event, rest))
+        by_task.setdefault(task, []).append(shape_worded(event, rest, at.get(task)))
     out = []
     for task in sorted(by_task):
         out.append("the program's own run" if task == 0 else f"task {task}")
@@ -151,6 +168,14 @@ EVALUATED = (
     "ts=50 claim id=1 by=timer arm=0:0\n"
     "ts=60 claim id=0 by=1 arm=0:0\n"
     "ts=70 end id=1 0\n"
+)
+SITED = (
+    "ts=1 spawn id=1 0\n"
+    "ts=2 site id=1 pkg/main.av:8\n"
+    "ts=3 spawn id=2 0\n"
+    "ts=4 site id=2 0x55d0\n"
+    "ts=5 spawn-at id=3 4\n"
+    "ts=6 site id=3 pkg/main.av:8\n"
 )
 SHAPE = (
     "the program's own run\n"
@@ -193,6 +218,11 @@ def self_test():
         ("the wait a join files is the join's", shape(parsed(COMPILED)[0]) == SHAPE),
         ("a gate wait that follows no join stays", "waits on gate as 0:5" in shape(parsed(text)[0])),
         ("both engines' traces have one shape", shape(parsed(EVALUATED)[0]) == shape(parsed(COMPILED)[0])),
+        ("a spawn says its source line", "spawned by task 0 at pkg/main.av:8" in rendered(*parsed(SITED))),
+        ("a spawn with no line says its code's address", "spawned by task 0 at 0x55d0" in rendered(*parsed(SITED))),
+        ("an evaluated spawn says its source line", "spawned (evaluated) at pkg/main.av:8" in rendered(*parsed(SITED))),
+        ("a site line is no event of its own", sum("site" in l and "spawned" not in l for l in rendered(*parsed(SITED)).splitlines()) == 0),
+        ("the shape keeps a source line and drops an address", shape(parsed(SITED)[0]) == "task 1\n  spawned at pkg/main.av:8\ntask 2\n  spawned\ntask 3\n  spawned at pkg/main.av:8"),
         ("the timeline folds the join's wait too", sum("gate" in l for l in rendered(*parsed(COMPILED)).splitlines()) == 0),
     ]
     failed = [name for name, ok in cases if not ok]

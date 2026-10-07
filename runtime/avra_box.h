@@ -70,4 +70,15 @@ typedef struct {
     int64_t icap;
 } AvraMap;
 
+// A TASK BODY'S SITE rides before its code: `file:line` as C text,
+// padded with zeros to a multiple of eight bytes, then its length, then
+// this mark, then the code. Bytes only — nothing for a linker or a
+// loader to rewrite. The backend lays it there for a task's body; the
+// scheduler reads it when a trace or a listing names the task. Code
+// that carries none — C's own — is known by the mark's absence.
+#define AVRA_SITE_MARK 0x4554495361727661ULL
+typedef struct { uint64_t length; uint64_t mark; } AvraSite;
+// The bytes a site's text of `length` stands in: its terminator kept.
+static inline uint64_t avra_site_room(uint64_t length) { return (length + 8) & ~(uint64_t)7; }
+
 #endif

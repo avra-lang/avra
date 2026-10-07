@@ -296,6 +296,25 @@ void avra_llvm_set_cold(LLVMValueRef fn) {
     LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "minsize"));
 }
 
+// A TASK BODY'S SITE, laid before its code (avra_box.h): the text, its
+// length, the mark. No instruction reads it, so a program pays its
+// bytes and nothing else.
+void avra_llvm_set_site(LLVMValueRef fn, const char* site) {
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
+    uint64_t length = strlen(site);
+    uint64_t room = avra_site_room(length);
+    char* text = calloc(room, 1);
+    memcpy(text, site, length);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMValueRef fields[3] = {
+        LLVMConstStringInContext2(ctx, text, room, 1),
+        LLVMConstInt(i64, length, 0),
+        LLVMConstInt(i64, AVRA_SITE_MARK, 0),
+    };
+    free(text);
+    LLVMSetPrefixData(fn, LLVMConstStructInContext(ctx, fields, 3, 0));
+}
+
 // Whether this build counts the boxes runtime rows mint, by type:
 // AVRA_CENSUS_TYPES set and not "0". The census's own build sets it.
 int64_t avra_llvm_census_types(void) {
