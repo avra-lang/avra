@@ -187,7 +187,10 @@ struct Fiber {
     uintptr_t floor;        // a saved stack top below this has left the stack; 0 for main
     const uint64_t* canary; // the word under the floor; non-zero when a neighbour was written
     AvraTaskLocal* local;   // the slots and id a program reads: main's are the core's
-    void* task;             // the task this fiber answers; NULL for main
+    union {
+        void* task;         // the task this fiber answers; NULL for main
+        const char* site;   // a virtual task's: where its body was written, or NULL
+    };
     Fiber* next;            // the run queue
     void* joining;          // the task this fiber waits to join, else NULL
     int state;
@@ -212,8 +215,6 @@ struct Fiber {
     Fiber* all_prev;
     char* base;             // the stack's lowest byte; NULL for main, a virtual task, or one not yet run
     char* guard;            // the page whose fault is this stack's overflow
-    int64_t ran_at;         // the scheduler's last clock reading at its first run; 0 until it runs
-    const char* site;       // where a virtual task's body was written; NULL when its machine named none
     AvraTaskLocal own;
 };
 
@@ -517,6 +518,15 @@ static void timer_down(size_t i) {
 #define POLL_IDLE ((int64_t)1 << 62)
 static int64_t g_until_poll = POLL_IDLE;
 
+// THE LISTING'S DOOR (at the end of this file): asks a signal has
+// counted and the world has not answered; whether the scheduler stands
+// in the world's path; whether the door is open; whether this process
+// evaluates.
+static volatile sig_atomic_t g_asked;
+static volatile sig_atomic_t g_in_world;
+static int g_door_open = 0;
+static volatile sig_atomic_t g_evaluated;
+
 // SEEDED, THE QUEUE ALONE NEVER DECIDES: `g_until_poll` is held at zero,
 // so every switch fails the fast path's own test and reaches the pick —
 // and an unseeded switch carries nothing for it. The poller's turn is
@@ -813,6 +823,8 @@ static void poller_wait(int64_t timeout_ns) {
     poller_open();
     g_polls++;
     poll_counted();
+    // an ask that came since the world last looked is answered before a sleep
+    if (__builtin_expect(g_asked, 0)) timeout_ns = 0;
     enum { BATCH = 256 };
 #if AVRA_KQUEUE
     struct kevent evs[BATCH];
@@ -1152,8 +1164,8 @@ static int world_waited_virtually(void) {
 
 static void fiber_start(void);
 static int case_deadlocked(void);
-static volatile sig_atomic_t g_asked;
 static void tasks_answered(void);
+static void ages_noted(int64_t now);
 
 // A fiber's first run: a stack from the pool, and at its top a frame
 // `avra_fiber_switch` will restore — zeroed callee-saved registers and
@@ -1189,10 +1201,7 @@ static Stack wide_stack(void) {
     return g_wide;
 }
 
-static int64_t g_seen_at;
-
 static void fiber_bound(Fiber* f) {
-    f->ran_at = g_seen_at;
     if (f->wide) { fiber_framed(f, wide_stack(), g_wide_bytes); return; }
     Stack s = stack_take();
     f->base = s.base;
@@ -1294,12 +1303,20 @@ static Fiber* next_with_world(void) {
     // A TASK THAT PARKS HAS WAITED: its count of reads of a frozen clock
     // begins again.
     if (avra_clock.virtual && g_current->state == FIBER_PARKED) g_current->local->clock_asks = 0;
+    g_in_world = 1;
     for (;;) {
         if (__builtin_expect(g_asked, 0)) tasks_answered();
-        if (g_timers_len > 0) fire_due_timers(g_seen_at = now_ns());
+        if (g_timers_len > 0) {
+            int64_t now = now_ns();
+            ages_noted(now);
+            fire_due_timers(now);
+        }
         poller_turn();
         Fiber* next = g_seeded ? ready_picked() : ready_pop();
-        if (next) return next;
+        if (next) {
+            g_in_world = 0;
+            return next;
+        }
         if (g_timers_len == 0 && g_parked_fds == 0) {
             if (case_deadlocked()) continue;
             avra_trap("every task is waiting — deadlock");
@@ -1311,6 +1328,8 @@ static Fiber* next_with_world(void) {
         if (held) avra_clock_hold(1);
         poller_wait(g_timers_len > 0 && wait < 0 ? 0 : wait);
         if (held) avra_clock_hold(-1);
+        // a wait that blocked may have lasted: the clock is asked again
+        if (wait != 0) ages_noted(now_ns());
     }
 }
 
@@ -1827,7 +1846,8 @@ void avra_fiber_forked(void) {
     g_ready_head = g_ready_tail = NULL;
     g_parked_fds = 0;
     if (g_fds) memset(g_fds, 0, g_fds_cap * sizeof(FdWaits));
-    // the child is asked under its own id
+    // the child is asked under its own id, and owes no ask its parent had
+    g_asked = 0;
     tasks_door_named();
     // a schedule is its run's: the child's order is the queue's own
     g_seeded = 0;
@@ -1862,7 +1882,8 @@ static void gone(Fiber* f) {
 static Fiber* virtual_at(int64_t t) { return (Fiber*)(uintptr_t)t; }
 
 int64_t avra_vtask_new(void) {
-    tasks_door_opened();
+    if (!g_door_open) tasks_door_opened();
+    g_evaluated = 1;
     Fiber* f = fiber_new(NULL, 1);
     f->state = FIBER_PARKED;
     return (int64_t)(uintptr_t)f;
@@ -2373,8 +2394,38 @@ int64_t avra_sched_world_visits(void) { return g_world_visits; }
 // listing is written beside the ask, renamed into place, and the ask
 // removed; with no ask file of ours there, a signal answers nothing.
 
-static int g_door_open = 0;
-static char g_ask_path[64], g_out_path[64], g_tmp_path[64];
+static char g_door_dir[200];
+static char g_ask_path[256], g_out_path[256], g_tmp_path[256], g_line_path[256];
+static struct sigaction g_prior_urg;
+
+// AGES BY ID: a task's id is minted in order, so a clock reading taken
+// when `g_fiber_seq` stood at n is a time every later task was spawned
+// after. The world's path notes one wherever it already reads the
+// clock; a task's age is at most the time since the latest reading
+// taken before it was spawned. The first stands for good.
+enum { AGES = 64 };
+typedef struct { uint64_t seq; int64_t at; } Aged;
+static Aged g_ages[AGES];
+static Aged g_first_age;
+static uint32_t g_ages_next = 0;
+
+__attribute__((noinline, cold))
+static void ages_noted(int64_t now) {
+    if (!g_door_open) return;
+    Aged* last = &g_ages[(g_ages_next + AGES - 1) % AGES];
+    if (g_ages_next && last->seq == g_fiber_seq) { last->at = now; return; }
+    g_ages[g_ages_next++ % AGES] = (Aged){ g_fiber_seq, now };
+}
+
+// The latest reading taken before task `id` was spawned.
+static int64_t spawned_after(uint64_t id) {
+    int64_t at = g_first_age.at;
+    uint32_t n = g_ages_next < AGES ? g_ages_next : AGES;
+    for (uint32_t i = 0; i < n; i++) {
+        if (g_ages[i].seq < id && g_ages[i].at > at) at = g_ages[i].at;
+    }
+    return at;
+}
 
 static long long own_id(const Fiber* f) { return (long long)id_of(f); }
 
@@ -2386,7 +2437,7 @@ static void task_listed(FILE* out, const Fiber* f, int64_t now) {
     else if (!f->virtual && f != &g_main && !f->sp) fputs(" ready, not yet run", out);
     else if (f->state == FIBER_PARKED && !f->joining && !f->held_n && !f->more) fputs(" waits on nothing the scheduler holds", out);
     else waits_said(out, own_id, f);
-    if (f->ran_at) fprintf(out, "; first ran at most %lld ms ago", (long long)((now - f->ran_at) / 1000000));
+    if (!f->virtual && f != &g_main) fprintf(out, "; spawned at most %lld ms ago", (long long)((now - spawned_after((uint64_t)id_of(f))) / 1000000));
     fputc('\n', out);
 }
 
@@ -2408,13 +2459,23 @@ void avra_tasks_listed(FILE* out) {
     }
 }
 
-// The three names, under this process's id: what a fork renames.
+// THE DOOR'S DIRECTORY IS THE USER'S OWN, never a name in a shared one:
+// macOS's per-user temporary directory, else `/tmp/avra-<uid>`, which
+// the asker makes 0700. Its names, under this process's id — what a
+// fork renames.
 static void tasks_door_named(void) {
     if (!g_door_open) return;
+#if defined(__APPLE__)
+    size_t got = confstr(_CS_DARWIN_USER_TEMP_DIR, g_door_dir, sizeof g_door_dir);
+    if (got == 0 || got > sizeof g_door_dir) snprintf(g_door_dir, sizeof g_door_dir, "/tmp/avra-%lld/", (long long)geteuid());
+#else
+    snprintf(g_door_dir, sizeof g_door_dir, "/tmp/avra-%lld/", (long long)geteuid());
+#endif
     long long pid = (long long)getpid();
-    snprintf(g_ask_path, sizeof g_ask_path, "/tmp/avra-tasks.%lld.ask", pid);
-    snprintf(g_out_path, sizeof g_out_path, "/tmp/avra-tasks.%lld", pid);
-    snprintf(g_tmp_path, sizeof g_tmp_path, "/tmp/avra-tasks.%lld.tmp", pid);
+    snprintf(g_ask_path, sizeof g_ask_path, "%savra-tasks.%lld.ask", g_door_dir, pid);
+    snprintf(g_out_path, sizeof g_out_path, "%savra-tasks.%lld", g_door_dir, pid);
+    snprintf(g_tmp_path, sizeof g_tmp_path, "%savra-tasks.%lld.tmp", g_door_dir, pid);
+    snprintf(g_line_path, sizeof g_line_path, "%savra-tasks.%lld.line", g_door_dir, pid);
 }
 
 // A decimal, written as a handler may.
@@ -2429,39 +2490,64 @@ static size_t digits_put(char* at, long long v) {
     return k;
 }
 
+// The door's directory and the ask in it are this user's alone: the
+// directory 0700, neither a link, both owned by whoever this process
+// runs as. Calls a handler may make.
+static int ask_ours(void) {
+    struct stat dir, ask;
+    uid_t me = geteuid();
+    return lstat(g_door_dir, &dir) == 0 && S_ISDIR(dir.st_mode) && dir.st_uid == me && (dir.st_mode & 077) == 0
+        && lstat(g_ask_path, &ask) == 0 && S_ISREG(ask.st_mode) && ask.st_uid == me;
+}
+
 // No task has switched since the last ask: said by the handler itself,
-// with calls a handler may make.
+// under a name of its own so it never touches a listing being written.
+// An evaluated program's running task is its machine's, which the
+// handler cannot name.
 static void unswitched_said(void) {
     char line[96];
     static const char head[] = "task ";
     static const char tail[] = ", running, has not switched since it was asked\n";
+    static const char evaluated[] = "the evaluated program has not switched since it was asked\n";
     size_t k = 0;
-    memcpy(line, head, sizeof head - 1);
-    k += sizeof head - 1;
-    k += digits_put(line + k, (long long)id_of(g_current));
-    memcpy(line + k, tail, sizeof tail - 1);
-    k += sizeof tail - 1;
-    unlink(g_tmp_path);
-    int fd = open(g_tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (g_evaluated) {
+        memcpy(line, evaluated, sizeof evaluated - 1);
+        k = sizeof evaluated - 1;
+    } else {
+        memcpy(line, head, sizeof head - 1);
+        k += sizeof head - 1;
+        k += digits_put(line + k, (long long)id_of(g_current));
+        memcpy(line + k, tail, sizeof tail - 1);
+        k += sizeof tail - 1;
+    }
+    unlink(g_line_path);
+    int fd = open(g_line_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) return;
     ssize_t w = write(fd, line, k);
     (void)w;
     close(fd);
-    rename(g_tmp_path, g_out_path);
+    rename(g_line_path, g_out_path);
 }
 
-static void tasks_asked(int sig) {
-    (void)sig;
+// A handler that stood before ours is still called.
+static void prior_called(int sig, siginfo_t* info, void* context) {
+    if (g_prior_urg.sa_flags & SA_SIGINFO) {
+        if (g_prior_urg.sa_sigaction) g_prior_urg.sa_sigaction(sig, info, context);
+        return;
+    }
+    if (g_prior_urg.sa_handler != SIG_DFL && g_prior_urg.sa_handler != SIG_IGN) g_prior_urg.sa_handler(sig);
+}
+
+// A SECOND ask while the first is unanswered is answered here only when
+// no task has switched since — the count still at the zero the first
+// stored — and the scheduler is not in the world's path, which answers
+// asks itself and may be sleeping or writing the listing.
+static void tasks_asked(int sig, siginfo_t* info, void* context) {
     int saved = errno;
-    if (g_asked++ > 0 && g_until_poll == 0 && access(g_ask_path, F_OK) == 0) unswitched_said();
+    if (g_asked++ > 0 && !g_in_world && g_until_poll == 0 && ask_ours()) unswitched_said();
     g_until_poll = 0;
+    prior_called(sig, info, context);
     errno = saved;
-}
-
-// The ask is ours: a plain file, owned by whoever this process runs as.
-static int ask_ours(void) {
-    struct stat st;
-    return lstat(g_ask_path, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid();
 }
 
 // At a switch, after a signal: the listing, if one was asked of us.
@@ -2481,15 +2567,16 @@ static void tasks_answered(void) {
 }
 
 // Once, at the first spawn or the evaluator's first task.
+__attribute__((noinline))
 static void tasks_door_opened(void) {
     if (g_door_open) return;
     g_door_open = 1;
-    g_seen_at = now_ns();
+    g_first_age = (Aged){ g_fiber_seq, now_ns() };
     tasks_door_named();
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
-    sa.sa_handler = tasks_asked;
-    sa.sa_flags = SA_RESTART | SA_ONSTACK;
+    sa.sa_sigaction = tasks_asked;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
-    sigaction(SIGURG, &sa, NULL);
+    sigaction(SIGURG, &sa, &g_prior_urg);
 }

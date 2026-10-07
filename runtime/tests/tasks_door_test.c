@@ -41,6 +41,20 @@ static void ready(void) {
     close(g_ready_fd);
 }
 
+// The door's directory, as `avra tasks` finds it: this user's own.
+static char g_dir[200];
+static const char* door_dir(void) {
+#if defined(__APPLE__)
+    size_t got = confstr(_CS_DARWIN_USER_TEMP_DIR, g_dir, sizeof g_dir);
+    if (got == 0 || got > sizeof g_dir) snprintf(g_dir, sizeof g_dir, "/tmp/avra-%d/", (int)geteuid());
+#else
+    snprintf(g_dir, sizeof g_dir, "/tmp/avra-%d/", (int)geteuid());
+    mkdir(g_dir, 0700);
+    chmod(g_dir, 0700);
+#endif
+    return g_dir;
+}
+
 // ── the scenes, each run alone in a child ───────────────────────
 
 static void* on_gate(void* self) {
@@ -144,6 +158,93 @@ static int forked_scene(void) {
     return 0;
 }
 
+// The program asleep on a pipe the asker fills a byte at a time: it
+// wakes, reads, and sleeps again — so an ask lands anywhere around the
+// world's sleep.
+static int pipeloop_scene(int fd) {
+    spawn1(on_gate, avra_gate_new());
+    avra_fiber_yield();
+    ready();
+    for (char b;;) {
+        avra_fiber_park_fd(fd, 0, -1);
+        ssize_t got = read(fd, &b, 1);
+        if (got <= 0) return 0;
+    }
+}
+
+// A hundred thousand tasks, so a listing takes long enough to be asked
+// again while it is written; the program asleep in the poller.
+static int crowded_scene(void) {
+    int p[2];
+    if (pipe(p) != 0) return 9;
+    for (int i = 0; i < 100000; i++) spawn1(on_time, NULL);
+    ready();
+    avra_fiber_park_fd(p[0], 0, -1);
+    return 0;
+}
+
+// An evaluated program's task taken from the policy, then spinning:
+// the host's own task is not the one running.
+static int vspin_scene(void) {
+    int64_t root = avra_vtask_new_at(0, 0);
+    int64_t five = avra_vtask_new_at(0, 5);
+    (void)root;
+    avra_vtask_ready(five);
+    if (avra_vtask_next() != five) return 9;
+    struct timespec t0, t;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    ready();
+    do clock_gettime(CLOCK_MONOTONIC, &t); while (t.tv_sec - t0.tv_sec < 3);
+    return 0;
+}
+
+// A SIGURG handler the program installed before it spawned: still called.
+static char g_prior_mark[256];
+static void prior_urg(int sig) {
+    (void)sig;
+    int fd = open(g_prior_mark, O_WRONLY | O_CREAT, 0600);
+    if (fd >= 0) close(fd);
+}
+static int prior_scene(void) {
+    int p[2];
+    if (pipe(p) != 0) return 9;
+    snprintf(g_prior_mark, sizeof g_prior_mark, "%savra-tasks.%d.prior", door_dir(), (int)getpid());
+    signal(SIGURG, prior_urg);
+    spawn1(on_gate, avra_gate_new());
+    avra_fiber_yield();
+    ready();
+    avra_fiber_park_fd(p[0], 0, -1);
+    return 0;
+}
+
+// A task asked while it spins, which forks: the child owes nothing of
+// its parent's ask, spins in its turn, and is asked once.
+static void* forks_spinning(void* self) {
+    (void)self;
+    raise(SIGURG);
+    pid_t child = fork();
+    if (child == 0) {
+        avra_fiber_forked();
+        char said[24];
+        int n = snprintf(said, sizeof said, "%d", (int)getpid());
+        ssize_t w = write(g_ready_fd, said, (size_t)n);
+        (void)w;
+        close(g_ready_fd);
+        struct timespec t0, t;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        do clock_gettime(CLOCK_MONOTONIC, &t); while (t.tv_sec - t0.tv_sec < 2);
+        _exit(0);
+    }
+    close(g_ready_fd);
+    return NULL;
+}
+static int forked_asked_scene(void) {
+    void* t = spawn1(forks_spinning, NULL);
+    avra_rc_release(avra_task_join(t));
+    pause();
+    return 0;
+}
+
 // A process that never spawned: the signal's own default.
 static int unspawned_scene(void) {
     ready();
@@ -153,18 +254,19 @@ static int unspawned_scene(void) {
 
 // ── the asker ───────────────────────────────────────────────────
 
-typedef struct { pid_t pid, scene; char ask[64], out[64]; } Child;
+typedef struct { pid_t pid, scene; char ask[256], out[256]; } Child;
 
-static Child scene(const char* self, const char* name) {
+static Child scene_with(const char* self, const char* name, int extra) {
     int p[2];
     if (pipe(p) != 0) { perror("pipe"); exit(1); }
     Child c;
     c.pid = fork();
     if (c.pid == 0) {
         close(p[0]);
-        char fd[16];
+        char fd[16], more[16];
         snprintf(fd, sizeof fd, "%d", p[1]);
-        execl(self, self, name, fd, (char*)NULL);
+        snprintf(more, sizeof more, "%d", extra);
+        execl(self, self, name, fd, more, (char*)NULL);
         _exit(9);
     }
     close(p[1]);
@@ -174,11 +276,13 @@ static Child scene(const char* self, const char* name) {
     // a scene that forked names the process to ask
     c.scene = c.pid;
     if (got > 1) c.pid = (pid_t)atoi(said);
-    snprintf(c.ask, sizeof c.ask, "/tmp/avra-tasks.%d.ask", (int)c.pid);
-    snprintf(c.out, sizeof c.out, "/tmp/avra-tasks.%d", (int)c.pid);
+    snprintf(c.ask, sizeof c.ask, "%savra-tasks.%d.ask", door_dir(), (int)c.pid);
+    snprintf(c.out, sizeof c.out, "%savra-tasks.%d", door_dir(), (int)c.pid);
     unlink(c.out);
     return c;
 }
+
+static Child scene(const char* self, const char* name) { return scene_with(self, name, -1); }
 
 static void asked(const Child* c) {
     int fd = open(c->ask, O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -188,7 +292,7 @@ static void asked(const Child* c) {
 // What the child answered within `ms`, or "" — read into `buf`.
 static const char* answered(const Child* c, char* buf, size_t cap, int ms) {
     buf[0] = 0;
-    for (int waited = 0; waited <= ms; waited += 20) {
+    for (int waited = 0; waited <= ms; waited += 2) {
         FILE* f = fopen(c->out, "r");
         if (f) {
             size_t n = fread(buf, 1, cap - 1, f);
@@ -196,9 +300,15 @@ static const char* answered(const Child* c, char* buf, size_t cap, int ms) {
             fclose(f);
             return buf;
         }
-        usleep(20000);
+        usleep(2000);
     }
     return buf;
+}
+
+// The child has finished answering: it takes the ask away after the
+// answer stands, so an ask written before that would be taken too.
+static void settled(const Child* c) {
+    for (int waited = 0; waited < 500 && access(c->ask, F_OK) == 0; waited += 1) usleep(1000);
 }
 
 static int ended(Child* c) {
@@ -238,7 +348,7 @@ static void listing(const char* self) {
     CHECK(strstr(buf, "waits on a time") != NULL, "a task asleep");
     CHECK(strstr(buf, "joins task 1") != NULL, "a join names the task it waits for");
     CHECK(strstr(buf, "task 5, spawned at 0x") != NULL && strstr(buf, "task 5, spawned at 0x") && strstr(strstr(buf, "task 5,"), "ready, not yet run") != NULL, "a task that has not run");
-    CHECK(strstr(buf, "first ran at most") != NULL, "a task that ran says for how long at most");
+    CHECK(strstr(buf, "task 1, spawned at 0x") && strstr(strstr(buf, "task 1,"), "spawned at most") != NULL, "a task says how long ago it was spawned, at most");
     const char* one = strstr(buf, "task 1,");
     const char* four = strstr(buf, "task 4,");
     CHECK(one && four && one < four, "oldest first");
@@ -261,6 +371,7 @@ static void door(const char* self) {
             kill(c.pid, SIGURG);
             answered(&c, buf, sizeof buf, 1000);
         }
+        settled(&c);
         listed_each &= strstr(buf, "task 1, spawned at") != NULL && strstr(buf, "task 2, spawned at") != NULL;
         never_unswitched &= strstr(buf, "has not switched") == NULL;
     }
@@ -304,8 +415,8 @@ static void door(const char* self) {
     ended(&c);
 
     c = scene(self, "forked");
-    char parent[64];
-    snprintf(parent, sizeof parent, "/tmp/avra-tasks.%d", (int)c.scene);
+    char parent[256];
+    snprintf(parent, sizeof parent, "%savra-tasks.%d", door_dir(), (int)c.scene);
     unlink(parent);
     asked(&c);
     kill(c.pid, SIGURG);
@@ -315,6 +426,89 @@ static void door(const char* self) {
     CHECK(strstr(buf, header) != NULL && strstr(buf, "task 2, spawned at") != NULL, "a forked child answers under its own id");
     CHECK(access(parent, F_OK) != 0, "and never under its parent's");
     ended(&c);
+
+    // M1: an ask that lands around the world's sleep is answered, and
+    // never by "has not switched" about a process that is asleep.
+    int fill[2];
+    if (pipe(fill) != 0) { perror("pipe"); exit(1); }
+    c = scene_with(self, "pipeloop", fill[0]);
+    close(fill[0]);
+    int answered_each = 1, never_false = 1;
+    for (int trial = 0; trial < 300 && answered_each; trial++) {
+        unlink(c.out);
+        asked(&c);
+        ssize_t w = write(fill[1], "b", 1);
+        (void)w;
+        for (volatile int spin = 0; spin < (trial * 7919) % 4000; spin++) {}
+        kill(c.pid, SIGURG);
+        answered(&c, buf, sizeof buf, 100);
+        if (!buf[0]) {
+            kill(c.pid, SIGURG);
+            answered(&c, buf, sizeof buf, 1000);
+        }
+        settled(&c);
+        answered_each &= strstr(buf, "process ") == buf;
+        never_false &= strstr(buf, "has not switched") == NULL;
+    }
+    CHECK(answered_each, "an ask around the world's sleep is answered with the listing, at the latest at the second signal");
+    CHECK(never_false, "and a sleeping process is never said not to switch");
+    close(fill[1]);
+    ended(&c);
+
+    // M2: asked again while a long listing is written, the listing stands.
+    c = scene(self, "crowded");
+    asked(&c);
+    kill(c.pid, SIGURG);
+    for (int more = 0; more < 4; more++) {
+        usleep(5000);
+        kill(c.pid, SIGURG);
+    }
+    answered(&c, buf, sizeof buf, 5000);
+    CHECK(strstr(buf, "process ") == buf && strstr(buf, "100001 task(s)") != NULL, "asks during a long listing never replace it");
+    ended(&c);
+
+    // M3: an evaluated program's spinning task is not named by the host's id.
+    c = scene(self, "vspin");
+    asked(&c);
+    kill(c.pid, SIGURG);
+    usleep(150000);
+    kill(c.pid, SIGURG);
+    answered(&c, buf, sizeof buf, 1000);
+    CHECK(strstr(buf, "the evaluated program has not switched since it was asked") == buf, "an evaluated program that does not switch is said so, with no task named");
+    ended(&c);
+
+    // a handler the program set first is still called, and the door answers
+    c = scene(self, "prior");
+    char mark[256];
+    snprintf(mark, sizeof mark, "%savra-tasks.%d.prior", door_dir(), (int)c.pid);
+    unlink(mark);
+    asked(&c);
+    kill(c.pid, SIGURG);
+    answered(&c, buf, sizeof buf, 2000);
+    CHECK(strstr(buf, "process ") == buf, "a program with a SIGURG handler of its own still answers");
+    CHECK(access(mark, F_OK) == 0, "and its own handler is still called");
+    unlink(mark);
+    ended(&c);
+
+    // a forked child owes nothing of an ask its parent had not answered
+    c = scene(self, "forked-asked");
+    asked(&c);
+    kill(c.pid, SIGURG);
+    answered(&c, buf, sizeof buf, 300);
+    CHECK(strstr(buf, "has not switched") == NULL, "a child's first ask is never taken for a second");
+    ended(&c);
+
+#if !defined(__APPLE__)
+    // M5: a door directory others may write is no door
+    c = scene(self, "polled");
+    chmod(door_dir(), 0755);
+    asked(&c);
+    kill(c.pid, SIGURG);
+    answered(&c, buf, sizeof buf, 400);
+    CHECK(buf[0] == 0, "a door directory that is not the user's alone answers nothing");
+    chmod(door_dir(), 0700);
+    ended(&c);
+#endif
 
     c = scene(self, "unspawned");
     kill(c.pid, SIGURG);
@@ -332,6 +526,11 @@ int main(int argc, char** argv) {
         if (strcmp(argv[1], "spinning") == 0) return spinning_scene();
         if (strcmp(argv[1], "unspawned") == 0) return unspawned_scene();
         if (strcmp(argv[1], "forked") == 0) return forked_scene();
+        if (strcmp(argv[1], "pipeloop") == 0) return pipeloop_scene(atoi(argv[3]));
+        if (strcmp(argv[1], "crowded") == 0) return crowded_scene();
+        if (strcmp(argv[1], "vspin") == 0) return vspin_scene();
+        if (strcmp(argv[1], "prior") == 0) return prior_scene();
+        if (strcmp(argv[1], "forked-asked") == 0) return forked_asked_scene();
         return 9;
     }
     listing(argv[0]);

@@ -1,6 +1,6 @@
 #!/bin/sh
 # THE FRAME PROOF, as one command: two copies of runtime/avra_fiber.c
-# built with the runtime's own flags, and every function's instructions
+# built with the runtime's own flags under build/frame-diff, and every function's instructions
 # compared — addresses and symbol offsets masked — so a change says
 # which functions it touched and by how many instructions.
 #
@@ -8,13 +8,13 @@
 set -e
 cd "$(dirname "$0")/../../.."
 base="$1"; change="$2"
-out=$(mktemp -d)
+out=build/frame-diff
+mkdir -p "$out"
 probes=$( [ "$(uname -s)" = Darwin ] || echo -fstack-clash-protection )
 for side in base change; do
     src=$(eval echo \$$side)
-    cp "$src" runtime/.frame_$side.c
-    cc -c -O2 -fPIC $probes -ffunction-sections -fdata-sections -Iruntime -o "$out/$side.o" runtime/.frame_$side.c
-    rm -f runtime/.frame_$side.c
+    cp "$src" "$out/$side.c"
+    cc -c -O2 -fPIC $probes -ffunction-sections -fdata-sections -Iruntime -o "$out/$side.o" "$out/$side.c"
     objdump -d --no-show-raw-insn "$out/$side.o" | python3 -c '
 import re, sys
 fn, out = None, {}
@@ -42,4 +42,3 @@ for k in sorted(set(a) | set(b)):
         continue
     print(f"  {k}: {a[k][1] if k in a else '-'} -> {b[k][1] if k in b else '-'}")
 PY
-rm -rf "$out"
