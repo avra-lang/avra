@@ -30,6 +30,7 @@ extern fn avra_io_drop(h: int) -> int
 extern fn avra_io_env_set(name: string) -> int
 extern fn avra_io_open_append(path: string) -> int
 extern fn avra_fd_sync(fd: int) -> int
+extern fn avra_fd_try_lock(fd: int) -> int
 extern fn avra_io_truncate(path: string, len: int) -> int
 extern fn avra_io_open_beneath(root: string, rel: string) -> int
 extern fn avra_io_fd_kind(fd: int) -> int
@@ -354,6 +355,10 @@ impl AppendFile {
     fn write(bytes: Bytes) -> Result<int, IoError> { poured(self.path, self.fd, bytes) }
 
     fn synced() -> Result<int, IoError> { done(self.path, avra_fd_sync(self.fd)) }
+    /// THE FILE'S ONE WRITER, if no other open file is: true when this
+    /// descriptor now holds the exclusive lock, false when another does.
+    /// Never waits. The lock ends at `closed`, or when the process dies.
+    fn locked() -> Result<bool, IoError> { done(self.path, avra_fd_try_lock(self.fd))? == 0 }
 
     fn closed() -> Result<int, IoError> { done(self.path, avra_io_close(self.fd)) }
 }
