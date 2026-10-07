@@ -17,8 +17,9 @@ step check_markdown build/avra rules --check-markdown DOGFOODING.md
 echo "== json: $(cd packages/cli && ../../build/avra rules --json | shasum | cut -c1-40)"
 echo "== markdown: $(cd packages/cli && ../../build/avra rules --markdown | shasum | cut -c1-40)"
 echo "== header: $(cd packages/cli && ../../build/avra rules | head -1)"
-began=$(date +%s.%N)
-(cd packages/cli && ../../build/avra rules >/dev/null)
-echo "== wall inside packages/cli: $(echo "$(date +%s.%N) - $began" | bc) s"
+echo "== wall inside packages/cli: $(cd packages/cli && python3 -c 'import subprocess, time
+began = time.time()
+subprocess.call(["../../build/avra", "rules"], stdout=subprocess.DEVNULL)
+print("%.2f s" % (time.time() - began))')"
 step idioms_cli build/avra check packages/cli --baseline tools/idioms.baseline
 exit $failed
