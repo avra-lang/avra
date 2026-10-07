@@ -30,18 +30,34 @@ fn grain_lib_text(note: string, one_head: string, one_body: string, two_body: st
 
 fn grain_base() -> string { grain_lib_text("", "one()", "1", "2") }
 
+/// What a checked package answers, read out while its workspace stands:
+/// main's frontier, the whole-file reads among it, its report, `caller`'s
+/// typed facts and whether main is clean.
+type GrainSeen = { frontier: List<string>, whole: List<string>, report: string, facts: int, clean: bool }
+
+fn grain_seen(ws: Workspace) -> GrainSeen {
+    let main = ws.analysis(ws.file_id(grain_main()))
+    GrainSeen {
+        frontier: grain_frontier(ws),
+        whole: grain_whole_reads(ws),
+        report: main.report(),
+        facts: type_facts_fp(ws.typed(decl_in_file(ws, grain_main(), "caller"))),
+        clean: main.clean(),
+    }
+}
+
 /// The package checked once, `main.av` first.
-fn grain_checked(lib: string) -> Workspace {
+fn grain_checked(lib: string) -> GrainSeen {
     let ws = a_process_over(
         {"/w/src/main.av": grain_caller(), "/w/src/lib/a.av": lib},
         [grain_main(), grain_lib()],
     )
     let _ = checked(ws, grain_main())
-    ws
+    grain_seen(ws)
 }
 
 /// The package with a second file in `a.av`'s module, checked once.
-fn grain_beside(sibling: string) -> Workspace {
+fn grain_beside(sibling: string) -> GrainSeen {
     let ws = a_process_over(
         {
             "/w/src/main.av": grain_caller(),
@@ -51,7 +67,7 @@ fn grain_beside(sibling: string) -> Workspace {
         [grain_main(), grain_lib(), "/w/src/lib/b.av"],
     )
     let _ = checked(ws, grain_main())
-    ws
+    grain_seen(ws)
 }
 
 /// `a.av` with one more declaration at its end.
@@ -60,11 +76,8 @@ fn grain_grown(extra: string) -> string { grain_base() + extra }
 /// `a.av` with one declaration's name changed.
 fn grain_renamed(from: string, to: string) -> string { grain_base().replace("fn ${from}()", "fn ${to}()") }
 
-/// Whether main's own analysis is clean.
-fn grain_clean(ws: Workspace) -> bool { ws.analysis(ws.file_id(grain_main())).clean() }
-
 /// `caller` reads a deprecated fn; the note is the only thing it varies.
-fn marked_checked(lead: string, note: string) -> Workspace {
+fn marked_checked(lead: string, note: string) -> GrainSeen {
     let files = vendored_meta(
         {
             "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
@@ -81,7 +94,7 @@ fn marked_checked(lead: string, note: string) -> Workspace {
     )
     for path in [grain_main(), grain_lib()] { let _ = ws.items(ws.file_id(path)) }
     let _ = checked(ws, grain_main())
-    ws
+    grain_seen(ws)
 }
 
 fn grain_is_main(ws: Workspace, k: Key) -> bool { ws.key_label(k).contains("src/main.av") }
@@ -120,24 +133,22 @@ fn grain_whole_reads(ws: Workspace) -> List<string> {
 fn grain_unknown(entry: string) -> bool { entry.ends_with("=-1") }
 
 /// Every frontier hash known, and the two frontiers alike: red-green keeps main.
-fn grain_kept(before: Workspace, after: Workspace) -> bool {
-    !grain_frontier(before).any(grain_unknown) &&
-        grain_frontier(before).join(";") == grain_frontier(after).join(";")
+fn grain_kept(before: GrainSeen, after: GrainSeen) -> bool {
+    !before.frontier.any(grain_unknown) && before.frontier.join(";") == after.frontier.join(";")
 }
 
 /// What main answers, its diagnostics and `caller`'s typed facts, alike in both.
-fn grain_same_answer(before: Workspace, after: Workspace) -> bool {
-    before.analysis(before.file_id(grain_main())).report() == after.analysis(after.file_id(grain_main())).report() &&
-        type_facts_fp(before.typed(decl_in_file(before, grain_main(), "caller"))) == type_facts_fp(after.typed(decl_in_file(after, grain_main(), "caller")))
+fn grain_same_answer(before: GrainSeen, after: GrainSeen) -> bool {
+    before.report == after.report && before.facts == after.facts
 }
 
 spec "compiler/workspace — a use reads the declaration, never its file" {
     given "a caller naming eight kinds of declaration from another file" {
         then "no query of main's reads that file's parse, resolve or namespace" {
-            grain_whole_reads(grain_checked(grain_base())).is_empty()
+            grain_checked(grain_base()).whole.is_empty()
         }
         then "every query it does read there fingerprints eagerly" {
-            let f = grain_frontier(grain_checked(grain_base()))
+            let f = grain_checked(grain_base()).frontier
             !f.is_empty() && !f.any(grain_unknown)
         }
     }
@@ -183,7 +194,7 @@ spec "compiler/workspace — a use reads the declaration, never its file" {
     given "the other file's declarations added or renamed where the caller reads" {
         then "`one` renamed moves the frontier, and main is refused" {
             let after = grain_checked(grain_renamed("one", "uno"))
-            !grain_kept(grain_checked(grain_base()), after) && !grain_clean(after)
+            !grain_kept(grain_checked(grain_base()), after) && !after.clean
         }
         then "a method `one` beside the fn `one` moves it" {
             !grain_kept(
@@ -202,7 +213,7 @@ spec "compiler/workspace — a use reads the declaration, never its file" {
     }
     given "a caller of a deprecated fn in another file" {
         then "no query of main's reads that file's parse, resolve or namespace" {
-            grain_whole_reads(marked_checked("", "use one")).is_empty()
+            marked_checked("", "use one").whole.is_empty()
         }
         then "a comment above it keeps every query of main's, answering alike" {
             let before = marked_checked("", "use one")
@@ -211,8 +222,7 @@ spec "compiler/workspace — a use reads the declaration, never its file" {
         }
         then "a new note moves the frontier, and the warning says it" {
             let after = marked_checked("", "use two")
-            !grain_kept(marked_checked("", "use one"), after) &&
-                after.analysis(after.file_id(grain_main())).report().contains("use two")
+            !grain_kept(marked_checked("", "use one"), after) && after.report.contains("use two")
         }
     }
 }

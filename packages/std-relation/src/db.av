@@ -44,6 +44,8 @@ extern fn avra_trap(message: string)
 export type Db = {
     id: int,
     closed: Cell<bool>,
+    /// What a reach after the close is refused with: the law its owner closed it under.
+    closed_voice: Cell<string>,
     hashes: Cell<List<fn() -> int>>,
     closers: Cell<List<fn() -> void>>,
     kernel: Cell<Kernel?>,
@@ -137,6 +139,7 @@ fn made(durable: Durable) -> Db {
     Db {
         id: id,
         closed: Cell.new(false),
+        closed_voice: Cell.new(closed_db(id)),
         hashes: hashes,
         closers: closers,
         kernel: Cell.new(none),
@@ -385,6 +388,13 @@ impl Db {
         self.closed.set(true)
         for c in self.closers.get() { c() }
     }
+
+    /// `close`, a later reach refused with `voice` — the law the owner let
+    /// its rows go under.
+    fn close_saying(voice: string) {
+        self.closed_voice.set(voice)
+        self.close()
+    }
 }
 
 /// One Db's rows of one relation: never reached, open, or let go when
@@ -453,7 +463,7 @@ impl Stores<R> {
     }
 
     fn refused(db: Db) -> Rows<R> {
-        avra_trap(closed_db(db.id))
+        avra_trap(db.closed_voice.get())
         self.fresh()
     }
 
