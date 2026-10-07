@@ -133,6 +133,22 @@ spec "compiler/cancel_reach — calls through a value" {
             ["any_napped"],
         ) == "any_napped=1"
     }
+    then "a call on a call's answer answers 1, though the first call reaches nothing" {
+        reaching(
+            ["fn make() -> fn() -> int { () -> 1 }", "fn calls() -> int { make()() }", "calls()"],
+            ["make", "calls"],
+        ) == "make=0 calls=1"
+    }
+    then "a call through a fn-typed field answers 1" {
+        reaching(
+            [
+                "type Cx = { get: fn() -> int }",
+                "fn fielded(c: Cx) -> int { c.get() }",
+                "fielded(Cx { get: () -> 1 })",
+            ],
+            ["fielded"],
+        ) == "fielded=1"
+    }
     then "a contract's method answers 1, whatever its impls do" {
         reaching(
             [
@@ -185,16 +201,17 @@ spec "compiler/cancel_reach — tasks" {
             ["work", "spawner"],
         ) == "work=0 spawner=1"
     }
-    then "an `.await` answers 1 and a `.done` answers 0" {
+    then "an `.await` answers 1 and a `.done` answers 0, with no spawn beside either" {
         reaching(
             [
                 "fn work(n: int) -> int { n * 2 }",
-                "fn awaits() -> int {",
-                "    let t = spawn work(2)",
-                "    t.await",
-                "}",
+                "fn awaits(t: Task<int>) -> int { t.await }",
                 "fn reader(t: Task<int>) -> bool { t.done }",
-                "awaits()",
+                "fn spawner() -> int {",
+                "    let t = spawn work(2)",
+                "    awaits(t)",
+                "}",
+                "spawner()",
             ],
             ["awaits", "reader"],
         ) == "awaits=1 reader=0"
