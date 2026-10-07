@@ -25,6 +25,7 @@ extern fn avra_vtask_wait_gate(t: int, gate: ptr, arm: int, member: int)
 extern fn avra_vtask_join(t: int, task: ptr) -> int
 extern fn avra_sched_run_begins()
 extern fn avra_sched_run_ends()
+extern fn avra_sched_guest_waits()
 extern fn avra_task_at(at_ns: int) -> ptr
 extern fn avra_task_done(task: ptr) -> int
 extern fn avra_task_cancel(task: ptr)
@@ -124,6 +125,7 @@ impl Machine {
     /// The program's own run, filed as a task the first time a row asks.
     fn rooted() {
         if !self.tasks.is_empty() { return }
+        avra_sched_guest_waits()
         self.tasks.push(job_of(avra_vtask_new_at(0, 0), 0, -1, null, []))
         self.running = 0
     }
@@ -328,7 +330,7 @@ impl Machine {
     fn finished(answer: Val?) -> Place {
         let t = self.tasks[self.running]
         self.tasks[self.running].frames = []
-        self.ended(self.running, answer ?? Val.N)
+        self.ended(self.running, answer ?? Val.N, t.id)
         avra_vtask_end(t.vt)
         if t.record >= 0 { self.releases_val(Val.A(t.record)) }
         self.resume_next()
@@ -336,12 +338,13 @@ impl Machine {
 
     /// The task `id` ended: its answer left in its record, its waiters
     /// ready, what it carried released, and its gate — when a wait set
-    /// asked for one — open for ever.
-    fn ended(id: int, answer: Val) {
+    /// asked for one — open for ever. `by` is the task that ended it: its
+    /// own, or the one that answered or cancelled a task nothing runs.
+    fn ended(id: int, answer: Val, by: int) {
         let t = self.tasks[id]
         if t.record >= 0 { self.arrays[t.record].set(2, answer) }
         self.tasks[id].done = true
-        for w in t.waiters { avra_vtask_joined(self.tasks[w].vt, t.id) }
+        for w in t.waiters { avra_vtask_joined(self.tasks[w].vt, by) }
         self.tasks[id].waiters = []
         for v in t.slots { self.releases_val(v) }
         self.tasks[id].slots = []
@@ -353,16 +356,16 @@ impl Machine {
 
     /// A task nothing runs ended with `answer`: a timer's leaves the
     /// heap, with the reference its time held to its record.
-    fn unrun_ended(id: int, answer: Val) {
+    fn unrun_ended(id: int, answer: Val, by: int) {
         let t = self.tasks[id]
         if t.clocked { stopped(t.gate) }
-        self.ended(id, answer)
+        self.ended(id, answer, by)
         if t.clocked { self.releases_val(Val.A(t.record)) }
     }
 
     /// A timer's time came: its task answers a unit box.
     fn fired(id: int) {
-        self.unrun_ended(id, self.fresh_array([Val.I(0)]))
+        self.unrun_ended(id, self.fresh_array([Val.I(0)]), self.tasks[id].id)
     }
 
     /// Whether the heap has ended the timer's task at `id` and the
@@ -558,7 +561,7 @@ impl Machine {
         if self.tasks[id].done { return self.trapped_val("a task answered twice") }
         if !self.tasks[id].unrun() { return self.trapped_val("a running task answers for itself") }
         self.retains(vals[1])
-        self.unrun_ended(id, vals[1])
+        self.unrun_ended(id, vals[1], self.tasks[self.running].id)
         Val.I(0)
     }
 
@@ -573,7 +576,7 @@ impl Machine {
             return Val.I(0)
         }
         self.tasks[id].cancelled = true
-        self.unrun_ended(id, Val.N)
+        self.unrun_ended(id, Val.N, self.tasks[self.running].id)
         Val.I(0)
     }
 

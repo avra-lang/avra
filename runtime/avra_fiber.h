@@ -192,8 +192,12 @@ int64_t avra_sched_settle(void);
 // tasks are then abandoned — no `defer` runs — so the next case begins
 // with none. Outside a case, a deadlock is the trap it always was.
 int64_t avra_case_run(int64_t (*body)(void));
-// How many tasks are alive.
+// How many tasks are alive; how many pages of the wide stack are resident.
 int64_t avra_sched_tasks(void);
+int64_t avra_sched_wide_resident(void);
+// An evaluated run's first task row: traps when its host has a timer or
+// a descriptor waiter filed, which the run would share.
+void avra_sched_guest_waits(void);
 
 // How many entries the timer heap holds, how many waiters are filed on
 // descriptors, how many times the poller has been asked, and how many
