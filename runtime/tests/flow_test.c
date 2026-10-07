@@ -352,7 +352,23 @@ static int traced_scene(void) {
     return 0;
 }
 
-static void trace_names_virtual_tasks(const char* self) {
+// Code that carries a site as the backend lays it: the mark and the
+// distance to `file:line`, then the entry. Spawned and never run.
+static struct { char text[24]; AvraSite site; char entry[8]; } g_sited = { "pkg/main.av:7", { AVRA_SITE_MARK, 0, 0 }, {0} };
+
+// Run alone, traced: a task whose code carries a site, one whose code
+// carries none, and a virtual task told its own.
+static int sited_scene(void) {
+    g_sited.site.away = (int32_t)(g_sited.text - g_sited.entry);
+    spawn1((Code)(uintptr_t)g_sited.entry, 0);
+    spawn1(answers_cap, 0);
+    avra_vtask_sited(avra_vtask_new_at(0, 51), "pkg/other.av:3");
+    return 0;
+}
+
+// What `scene` wrote to its trace, run alone in a process started with
+// the trace on; its exit status.
+static int traced_run(const char* self, const char* scene, char* buf, size_t cap) {
     int out[2];
     if (pipe(out) != 0) { perror("pipe"); exit(1); }
     pid_t pid = fork();
@@ -360,16 +376,31 @@ static void trace_names_virtual_tasks(const char* self) {
         dup2(out[1], 2);
         close(out[0]);
         setenv("AVRA_FLOW_TRACE", "1", 1);
-        execl(self, self, "traced-scene", (char*)NULL);
+        execl(self, self, scene, (char*)NULL);
         _exit(9);
     }
     close(out[1]);
-    char buf[4096] = {0};
+    memset(buf, 0, cap);
     size_t got = 0;
-    for (ssize_t n; got < sizeof buf - 1 && (n = read(out[0], buf + got, sizeof buf - 1 - got)) > 0;) got += (size_t)n;
+    for (ssize_t n; got < cap - 1 && (n = read(out[0], buf + got, cap - 1 - got)) > 0;) got += (size_t)n;
     close(out[0]);
     int status = 0;
     waitpid(pid, &status, 0);
+    return status;
+}
+
+static void trace_names_sites(const char* self) {
+    char buf[4096];
+    int status = traced_run(self, "sited-scene", buf, sizeof buf);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the sited scene runs");
+    CHECK(strstr(buf, "site id=1 pkg/main.av:7\n") != NULL, "a task whose code carries a site is traced by its source line");
+    CHECK(strstr(buf, "site id=2 0x") != NULL, "a task whose code carries none is traced by its address");
+    CHECK(strstr(buf, "site id=51 pkg/other.av:3\n") != NULL, "a virtual task is traced by the line its machine names");
+}
+
+static void trace_names_virtual_tasks(const char* self) {
+    char buf[4096];
+    int status = traced_run(self, "traced-scene", buf, sizeof buf);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the traced scene runs");
     CHECK(strstr(buf, "spawn-at id=42 8") != NULL, "a virtual task is traced under the id it was given, at its site");
     CHECK(strstr(buf, "claim id=42 by=41 arm=0:5") != NULL, "a virtual claim names the virtual claimant");
@@ -1190,6 +1221,7 @@ static void as_virtual(void) {
 int main(int argc, char** argv) {
     alarm(120);
     if (argc > 1 && strcmp(argv[1], "traced-scene") == 0) return traced_scene();
+    if (argc > 1 && strcmp(argv[1], "sited-scene") == 0) return sited_scene();
     if (pipe(g_pipe) != 0) { perror("pipe"); return 1; }
     fcntl(g_pipe[0], F_SETFL, O_NONBLOCK);
     in_child("a claimant takes the winner out of its list at the claim", winner_leaves_at_claim);
@@ -1232,6 +1264,7 @@ int main(int argc, char** argv) {
     CHECK(avra_mem_live() == live, "the fibers leave nothing behind");
     as_virtual();
     trace_names_virtual_tasks(argv[0]);
+    trace_names_sites(argv[0]);
     closed(g_pipe[0]);
     closed(g_pipe[1]);
 

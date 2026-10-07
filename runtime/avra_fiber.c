@@ -1820,8 +1820,14 @@ void avra_vtask_joins(int64_t t, int64_t on) {
     if (TRACING) traced_join(virtual_at(t), on);
 }
 
+__attribute__((noinline, cold))
+static void joined_traced(Fiber* f, int64_t by) {
+    traced_joined(f, by);
+    ready_push(f);
+}
+
 void avra_vtask_joined(int64_t t, int64_t by) {
-    if (TRACING) traced_joined(virtual_at(t), by);
+    if (TRACING) { joined_traced(virtual_at(t), by); return; }
     ready_push(virtual_at(t));
 }
 
