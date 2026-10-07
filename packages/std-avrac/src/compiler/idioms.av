@@ -712,10 +712,11 @@ fn raw_rt_call_found(name: Code) -> Fix {
 }
 
 /// A `Host` question asked outside the door — `host.read(p)`,
-/// `.exists`, `.list`, `.is_dir`, `.stamp`, `(host.peek)(p)` — records
-/// nothing: what it answers is no input, no query that depends on it is
-/// ordered after it, and a workspace that lives across turns never
-/// reads it again. Ask a cell (`ws.there`, `ws.listing`,
+/// `.exists`, `.list`, `.is_dir`, `.stamp`, `.peek`, or a door verb
+/// (`.there`, `.listing`, `.spared_text`) asked of the host itself —
+/// records nothing: what it answers is no input, no query that depends
+/// on it is ordered after it, and a workspace that lives across turns
+/// never reads it again. Ask a cell (`ws.there`, `ws.listing`,
 /// `ws.listed_text`). A driver's read that must see the disk as it is
 /// at that instant is licensed at its site, with that reason.
 @keeps("ws.there(path)")
@@ -725,18 +726,27 @@ export rule host_asked_directly {
     quote { ${h}.list(${p}) } if asks_a_host(h) -> host_asked_found(h, "list"),
     quote { ${h}.is_dir(${p}) } if asks_a_host(h) -> host_asked_found(h, "is_dir"),
     quote { ${h}.stamp(${p}) } if asks_a_host(h) -> host_asked_found(h, "stamp"),
+    quote { ${h}.peek(${p}) } if asks_a_host(h) -> host_asked_found(h, "peek"),
+    quote { (${h}.exists)(${p}) } if asks_a_host(h) -> host_asked_found(h, "exists"),
+    quote { (${h}.list)(${p}) } if asks_a_host(h) -> host_asked_found(h, "list"),
+    quote { (${h}.is_dir)(${p}) } if asks_a_host(h) -> host_asked_found(h, "is_dir"),
+    quote { (${h}.stamp)(${p}) } if asks_a_host(h) -> host_asked_found(h, "stamp"),
     quote { (${h}.peek)(${p}) } if asks_a_host(h) -> host_asked_found(h, "peek"),
+    quote { ${h}.there(${p}) } if asks_a_host(h) -> host_asked_found(h, "there"),
+    quote { ${h}.listing(${p}) } if asks_a_host(h) -> host_asked_found(h, "listing"),
+    quote { ${h}.spared_text(${p}) } if asks_a_host(h) -> host_asked_found(h, "spared_text"),
 }
 
-/// Whether `h` names a host, in the compiler or its CLI, outside the
-/// door's own file and outside a test.
+/// Whether `h` is a `Host`, asked in the compiler or its CLI outside
+/// the door — the file that defines its verbs and the one that asks
+/// them for a cell — and outside a test.
 fn asks_a_host(h: Code) -> bool {
-    let named = h.text()
-    if named != "host" && !named.ends_with(".host") { return false }
+    if h.type()?.name() != "Host" { return false }
     let f = h.of.view.source.file
     (f.contains("/std-avrac/src/") || f.contains("/cli/src/")) &&
         !f.contains("/tests/") &&
-        !f.ends_with("compiler/host/host.av")
+        !f.ends_with("compiler/host/host.av") &&
+        !f.ends_with("compiler/world.av")
 }
 
 fn host_asked_found(h: Code, question: string) -> Fix {
