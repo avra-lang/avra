@@ -1,15 +1,8 @@
-//! `avra cache` / `cache why <file|query>` / `dependents <file|query>` /
-//! `changed` / `held [<file>]` — the compiler's own cache, made visible. Every
-//! mode is a projection of one walk (compiler/cache_walk.av): the summary,
-//! `changed` and `held` read the hold against its kept parts, and `why` and
-//! `dependents` walk the in-process graph beside it. Each mode reads as a
-//! check would and keeps NOTHING, so it answers what moved since the last
-//! check however often it is asked. This file is wiring and text alone.
+//! `avra cache` — the older words for `avra explain`. Each mode IS one of
+//! explain's forms and prints what that form prints: no mode, `changed` and
+//! `held` are `explain --why`; `why <target>` and `held <file>` are `explain
+//! <target> --why`; `dependents <target>` is `explain <target>`.
 use @std.cli.{CliResult, Runnable, command, arg}
-use @std.avrac.compiler.{Workspace, CacheWalk, Trail, FileHold, PartMoved, HeldMismatch}
-use @std.avrac.core.{distinct, some_list}
-use @std.path.{relative_path}
-use @std.relation.engine.{Key}
 
 type CacheCmd = {}
 
@@ -35,245 +28,36 @@ impl Runnable for CacheCmd {
             eprintln(unknown_mode(args.arg("mode")))
             return 1
         }
-        match cache_answer(mode, here(), args.arg("target")) {
-            .Ok(lines) -> {
-                for line in lines { println(line) }
-                0
-            },
-            .Err(lines) -> {
-                for line in lines { eprintln(line) }
-                1
-            },
-        }
+        printed(cache_answer(mode, here(), args.arg("target")))
     }
 }
 
-/// What a mode answers for the package at `root`: the lines it prints, or the
-/// lines of its refusal.
+/// What a mode answers for the package at `root`: its form of `explain`,
+/// asked there.
 export fn cache_answer(mode: CacheMode, root: string, target: string) -> Result<
     List<string>,
     List<string>,
 > {
-    let ws = root_workspace(root)
-    let walk = match ws.cache_walk() { .Ok(w) -> w, .Err(why) -> { return .Err([why]) } }
     match mode {
-        .Summary -> summary_lines(walk),
-        .Why -> why_lines(ws, walk, target),
-        .Dependents -> dependents_lines(ws, walk, target),
-        .Changed -> changed_lines(walk, target),
-        .Held -> held_lines(ws, walk, target),
+        .Summary or .Changed -> if target == "" { why_asked(root, "") } else { .Err([takes_no_target(target)]) },
+        .Why -> if target == "" { .Err([mode_needs_target("why")]) } else { why_asked(root, target) },
+        .Held -> why_asked(root, target),
+        .Dependents -> if target == "" { .Err([mode_needs_target("dependents")]) } else { explain_answer(Asked { target: target, from: root }) },
     }
 }
 
-// ── naming what a mode is asked about ──
-
-fn plural(n: int) -> string { if n == 1 { "" } else { "s" } }
-
-fn queries(n: int) -> string { if n == 1 { "query" } else { "queries" } }
-
-fn capped(n: int, cap: int) -> int { if n < cap { n } else { cap } }
-
-/// The names a refused query still lets a person choose from, at most
-/// twenty, each on its own line under `prefix`.
-fn listing(prefix: string, names: List<string>) -> List<string> {
-    let head = names.slice(0, capped(names.length, 20))
-    ["${prefix}${n}" for n in head].concat(more_line(prefix, names.length, head.length))
-}
-
-fn more_line(prefix: string, total: int, listed: int) -> List<string> {
-    if total > listed { ["${prefix}… and ${total - listed} more"] } else { [] }
-}
-
-/// A file as the package's root sees it.
-fn shown(walk: CacheWalk, path: string) -> string { relative_path(walk.root, path) }
-
-/// The files a typed query means: an exact path when there is one, else
-/// every path holding it.
-fn files_named(walk: CacheWalk, query: string) -> List<FileHold> {
-    let exact = [h for h in walk.holds if shown(walk, h.path) == query]
-    if exact.is_empty() { [h for h in walk.holds if shown(walk, h.path).contains(query)] } else { exact }
-}
-
-/// The one thing a `why` or `dependents` query names, in the graph: a file's
-/// text when it names one file, else the one query whose label it names.
-fn subject(g: Workspace, walk: CacheWalk, query: string) -> Key? {
-    let files = files_named(walk, query)
-    if files.length == 1 { return g.input_key(files[0].path) }
-    let named = g.named_queries(query)
-    if named.length == 1 { named[0] } else { null }
-}
-
-/// Why a query named no one thing: every file and query it matched.
-fn unnamed(g: Workspace, walk: CacheWalk, mode: string, query: string) -> List<string> {
-    let matched = [shown(walk, h.path) for h in files_named(walk, query)]
-        .concat([g.key_label(k) for k in g.named_queries(query)])
-    if matched.is_empty() { return [nothing_matches(mode, query)] }
-    [many_match(matched.length, query)].concat(listing("${mode}:   ", matched))
-}
-
-// ── `avra cache` ──
-
-fn summary_lines(walk: CacheWalk) -> Result<List<string>, List<string>> {
-    let read = [h for h in walk.holds if !h.held].length
-    [
-        "cache: ${walk.holds.length} file${plural(walk.holds.length)} a check reads, ${walk.holds.length - read} held, ${read} read",
-        "cache: ${walk.moved.length} input${plural(walk.moved.length)} whose text moved since the kept state",
-    ]
-        .concat(["cache:   ${shown(walk, p)}" for p in walk.moved])
-}
-
-// ── `avra cache changed` ──
-
-fn changed_lines(walk: CacheWalk, target: string) -> Result<List<string>, List<string>> {
-    if target != "" { return .Err([changed_takes_none(target)]) }
-    let read = [h for h in walk.holds if !h.held]
-    let moved = if walk.moved.is_empty() {
-        ["changed: no input's text moved since the kept state"]
-    } else {
-        [
-            "changed: ${walk.moved.length} input${plural(walk.moved.length)} moved since the kept state:",
-        ]
-            .concat([line for h in walk.holds for line in text_moved(walk, h)])
-    }
-    let again = if read.is_empty() {
-        ["changed: every file is held — nothing is read again"]
-    } else {
-        ["changed: ${read.length} file${plural(read.length)} read again:"]
-            .concat([line for h in read for line in hold_lines("changed", walk, h)])
-    }
-    moved.concat(again)
-}
-
-/// A moved input's own line: its text's digest then and now.
-fn text_moved(walk: CacheWalk, h: FileHold) -> List<string> {
-    ["changed:   ${shown(walk, h.path)}: ${m.part.says()} ${m.was} -> ${m.now}" for m in h.moved if m.part is .Text]
-}
-
-// ── `avra cache held` ──
-
-fn held_lines(ws: Workspace, walk: CacheWalk, query: string) -> Result<List<string>, List<string>> {
-    if query == "" { return held_summary(walk) }
-    let named = files_named(walk, query)
-    if named.length != 1 {
-        let matched = [shown(walk, h.path) for h in named]
-        if matched.is_empty() { return .Err([nothing_matches("held", query)]) }
-        return .Err([many_match(matched.length, query)].concat(listing("held:   ", matched)))
-    }
-    let h = named[0]
-    hold_lines("held", walk, h).concat(if h.held { disagreements(ws, h.path) } else { [] })
-}
-
-/// Where a held file's declarations read differently from a fresh reading —
-/// `check --verify-held`'s comparison, for this one file, read as the walk's
-/// inspection reads.
-fn disagreements(ws: Workspace, path: string) -> List<string> {
-    match ws.anew().verify_held(null) {
-        .Ok(v) -> [disagreement_line(m) for m in v.mismatches if m.file == path],
-        .Err(why) -> ["held:   no fresh reading to compare: ${why}"],
-    }
-}
-
-export fn disagreement_line(m: HeldMismatch) -> string { "held:   ${m.decl}'s ${m.field}: ${m.held} held, ${m.fresh} fresh" }
-
-/// Every file's hold, counted, and each read one with why.
-fn held_summary(walk: CacheWalk) -> List<string> {
-    let read = [h for h in walk.holds if !h.held]
-    [
-        "held: ${walk.holds.length} file${plural(walk.holds.length)} a check reads, ${walk.holds.length - read.length} held, ${read.length} read",
-    ]
-        .concat([line for h in read for line in hold_lines("held", walk, h)])
-}
-
-/// One file's hold under its mode's word: held or read with why, then the
-/// rows it lacks and the parts of its key that moved.
-fn hold_lines(word: string, walk: CacheWalk, h: FileHold) -> List<string> {
-    ["${word}: ${shown(walk, h.path)} — ${hold_word(h)}"]
-        .concat(["${word}:   missing ${m}" for m in h.missing])
-        .concat([line for m in h.moved for line in moved_lines(word, m)])
-}
-
-/// One moved part, then the contract lines it lost and gained, a field apart by two spaces.
-fn moved_lines(word: string, m: PartMoved) -> List<string> {
-    ["${word}:   moved ${m.part.says()}: ${m.was} -> ${m.now}"]
-        .concat(["${word}:     ${l.replace("\t", "  ")}" for l in m.lines])
-}
-
-fn hold_word(h: FileHold) -> string {
-    if h.held { return "held" }
-    let why? = h.why else { return "read: no record of its module is kept — it was never built here" }
-    "read: ${why.says()}"
-}
-
-// ── `avra cache why` ──
-
-fn why_lines(ws: Workspace, walk: CacheWalk, query: string) -> Result<List<string>, List<string>> {
-    if query == "" { return .Err([needs_target("why")]) }
-    let files = files_named(walk, query)
-    if files.length == 1 { return file_why(ws, walk, files[0]) }
-    let g = ws.walk_graph()
-    let k? = subject(g, walk, query) else { return .Err(unnamed(g, walk, "why", query)) }
-    let n = g.reads_count(k)
-    ["why: ${g.key_label(k)}", "why:   reads ${n} ${queries(n)}"]
-        .concat(trail_lines(g.trails(k, walk.moved)))
-}
-
-/// A file's hold, and for a read one, the path down to each moved input it reads.
-fn file_why(ws: Workspace, walk: CacheWalk, h: FileHold) -> List<string> {
-    let hold = hold_lines("why", walk, h)
-    if h.held { return hold }
-    let g = ws.walk_graph()
-    let root? = g.analysis_key(h.path) else { return hold.concat(["why:   no analysis of it ran"]) }
-    hold.concat(trail_lines(g.trails(root, walk.moved)))
-}
-
-fn trail_lines(trails: List<Trail>) -> List<string> {
-    if trails.is_empty() { return ["why:   it reads no input whose text moved since the kept state"] }
-    [line for t in trails for line in trail_steps(t)]
-}
-
-/// One trail: the input, then each query from the root down, one level deeper per read.
-fn trail_steps(t: Trail) -> List<string> {
-    ["why:   down to ${t.input}, whose text moved:"]
-        .concat(["why:     ${step_line(i, s)}" for i, s in t.steps])
-}
-
-fn step_line(depth: int, label: string) -> string {
-    if depth == 0 { label } else { "${["  " for _k in 0..depth].join("")}reads ${label}" }
-}
-
-// ── `avra cache dependents` ──
-
-fn dependents_lines(ws: Workspace, walk: CacheWalk, query: string) -> Result<
-    List<string>,
-    List<string>,
-> {
-    if query == "" { return .Err([needs_target("dependents")]) }
-    let g = ws.walk_graph()
-    let target? = subject(g, walk, query) else { return .Err(unnamed(g, walk, "dependents", query)) }
-    let readers = g.readers(target)
-    let head = "dependents: ${g.key_label(target)}"
-    if readers.is_empty() { return [head, "dependents:   nothing reads it"] }
-    let analysed = [p for k in readers for p in some_list(g.analysed_path(k))]
-    let families = [g.key_family_word(k) for k in readers]
-    [
-        head,
-        "dependents:   ${readers.length} ${queries(readers.length)} read it, at any depth",
-        "dependents:   ${analysed.length} file${plural(analysed.length)} a check analyses, reading it:",
-    ]
-        .concat(["dependents:     ${p}" for p in analysed])
-        .concat(["dependents:   by family:"])
-        .concat(
-            ["dependents:     ${f}: ${[w for w in families if w == f].length}" for f in distinct(families)],
-        )
+/// `explain --why` of a target — of the package when there is none.
+fn why_asked(root: string, target: string) -> Result<List<string>, List<string>> {
+    explain_answer(Asked { target: target, from: root, why: true })
 }
 
 export command cache {
-    description: "The compiler's cache, made visible: with no mode, how many files a check holds and which inputs moved since the kept state; `why <file|query>` for why a file was read and the path down to each moved input it reads, `dependents <file|query>` for every query that reads it, `changed` for the inputs that moved and what they read again, `held [<file>]` for whether a check holds each file and why not. Each mode reads as a check does and keeps nothing, so it answers what moved since the last check however often it is asked"
+    description: "The older words for `avra explain`: no mode, `changed` and `held` are `explain --why`; `why <target>` and `held <file>` are `explain <target> --why`; `dependents <target>` is `explain <target>`"
     arg mode {
-        description: "none for the summary, or `why`, `dependents`, `changed` or `held`"
+        description: "none, or `why`, `dependents`, `changed` or `held`"
     }
     arg target {
-        description: "for `why` and `dependents`, part of a file's path or a query as `Family(subject)`, or any part of either that names exactly one; for `held`, part of a file's path (every read file when absent)"
+        description: "what `avra explain` takes: a file, `@name`, or an answer as `Family(subject)`"
     }
     run: CacheCmd {}
 }
@@ -281,13 +65,9 @@ export command cache {
 // ── voices ──
 
 fn unknown_mode(word: string) -> string {
-    "avra: `cache` takes no mode for the summary, or `why`, `dependents`, `changed` or `held` — not `${word}`"
+    "avra: `cache` takes no mode, or `why`, `dependents`, `changed` or `held` — not `${word}`"
 }
 
-fn needs_target(mode: string) -> string { "avra: `cache ${mode}` needs a file or a query — part of a path, or `Family(subject)`" }
+fn mode_needs_target(mode: string) -> string { "avra: `cache ${mode}` needs a file, `@name` or `Family(subject)`" }
 
-fn nothing_matches(mode: string, query: string) -> string { "avra: `cache ${mode}`: nothing this package's check reads matches `${query}`" }
-
-fn many_match(n: int, query: string) -> string { "avra: ${n} match `${query}` — name one exactly:" }
-
-fn changed_takes_none(target: string) -> string { "avra: `cache changed` takes no target — it answers for the whole package, not `${target}`" }
+fn takes_no_target(target: string) -> string { "avra: this mode of `cache` answers for the whole package, not `${target}`" }

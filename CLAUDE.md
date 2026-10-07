@@ -459,8 +459,9 @@ registry is the idiom engine's spec, written by dogfooding.
   second-generation product traps, run the first generation over the
   same source before reading the trap as the tree's.
 - THE `avra` SHIM MOVES TO THE TREE'S ROOT, so "." inside a command is
-  the TREE and `PWD` follows the move: `explain @name` and `explain
-  process` rooted at "." analysed nothing from the day they landed,
+  the TREE and `PWD` follows the move: `docs <name>` and `process`
+  (then spelled `explain @name` and `explain process`) rooted at "."
+  analysed nothing from the day they landed,
   and read as "no fn declared in this package" for a fn declared
   right there. The caller's directory is `AVRA_CWD`, exported by the
   shim before it moves; a command that reads the package it stands in
@@ -891,7 +892,7 @@ registry is the idiom engine's spec, written by dogfooding.
   and nothing a program can be compiled without; a name that fails
   that test belongs to a package above.
   It is a PACKAGE the toolchain carries, not a scope the resolver
-  injects (P7: a reader can open it, `explain` can point at it, and
+  injects (P7: a reader can open it, `docs` can point at it, and
   the layering `prelude <- text <- io <- process <- …` has a node at
   its bottom). It binds WEAKLY (`bind_weakly`, features/
   namespace.av): a file's own declaration, an explicit import, a

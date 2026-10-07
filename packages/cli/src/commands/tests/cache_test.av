@@ -1,11 +1,10 @@
-//! `avra cache` — its modes by their words, one spelling each, `held`
-//! answering a check's hold file by file, and every mode naming the input an
-//! edit moved — however often it is asked, since a mode keeps nothing.
+//! The hold a check keeps, file by file — what `avra explain --why` and its
+//! older words under `avra cache` read — and `cache`'s modes by their words.
 use @std.io.{make_dirs, write_text}
 use @std.time.{now_ns}
-use @std.avrac.compiler.{Want, FileHold, HeldMismatch}
+use @std.avrac.compiler.{Want, FileHold}
 use @std.avrac.compiler.families.{Family}
-use commands.{cache_mode, cache_answer, CacheMode, checked_at, root_workspace, disagreement_line}
+use commands.{cache_mode, CacheMode, checked_at, root_workspace}
 
 /// A package root of one file under `src/`, holding `text` — its own path
 /// each run, so nothing an earlier run kept answers for it.
@@ -38,16 +37,6 @@ fn edited_lib(name: string) -> string {
     let _ = holds_after_check(root)
     let _ = write_text("${root}/src/lib/a.av", "export fn one(n: int = 0) -> int { 1 }\n")
     root
-}
-
-/// A mode's printed lines, or none when it refused.
-fn mode_lines(mode: CacheMode, root: string, target: string) -> List<string> {
-    match cache_answer(mode, root, target) { .Ok(lines) -> lines, .Err(_) -> [] }
-}
-
-/// A mode's refusal, or nothing when it answered.
-fn mode_refusal(mode: CacheMode, root: string, target: string) -> List<string> {
-    match cache_answer(mode, root, target) { .Ok(_) -> [], .Err(lines) -> lines }
 }
 
 fn main_hold(rows: List<FileHold>) -> FileHold? { rows.find(it.path.ends_with("/src/main.av")) }
@@ -136,80 +125,7 @@ spec "commands/cache" {
             h != null && h!.held && h!.moved.is_empty()
         }
     }
-    given "a package checked, then a module's file edited" {
-        then "the summary counts the edited file as the one input whose text moved" {
-            let lines = mode_lines(CacheMode.Summary, edited_lib("summary_edit"), "")
-            lines.any(it == "cache: 1 input whose text moved since the kept state") &&
-                lines.any(it == "cache:   src/lib/a.av")
-        }
-        then "changed names the moved input, then the file read again because of it" {
-            let lines = mode_lines(CacheMode.Changed, edited_lib("changed_edit"), "")
-            lines.any(it.starts_with("changed:   src/lib/a.av: its text ")) &&
-                lines.any(it.starts_with("changed: src/main.av — read"))
-        }
-        then "why of the reader runs from its analysis down to the moved input's text" {
-            let lines = mode_lines(CacheMode.Why, edited_lib("why_edit"), "src/main.av")
-            lines.any(it == "why:   down to src/lib/a.av, whose text moved:") &&
-                lines.any(it == "why:     Analysis(src/main.av)") &&
-                lines.any(it.ends_with("reads Source(src/lib/a.av)"))
-        }
-        then "why of a query names the moved input it reads" {
-            let lines = mode_lines(
-                CacheMode.Why,
-                edited_lib("why_query"),
-                "Sig(one · src/lib/a.av)",
-            )
-            lines.first() ?? "" == "why: Sig(one · src/lib/a.av)" &&
-                lines.any(it == "why:   down to src/lib/a.av, whose text moved:")
-        }
-        then "dependents of the edited file names the file a check analyses that reads it" {
-            let lines = mode_lines(
-                CacheMode.Dependents,
-                edited_lib("dependents_edit"),
-                "src/lib/a.av",
-            )
-            lines.first() ?? "" == "dependents: Source(src/lib/a.av)" &&
-                lines.any(it == "dependents:     src/main.av")
-        }
-        then "a query naming nothing is refused, never answered empty" {
-            let lines = mode_refusal(CacheMode.Why, edited_lib("why_nothing"), "no-such-thing")
-            lines.length == 1 && lines[0].contains("matches `no-such-thing`")
-        }
-        then "changed asked twice answers the same move both times" {
-            let root = edited_lib("changed_twice")
-            let first = mode_lines(CacheMode.Changed, root, "")
-            first.any(it.starts_with("changed:   src/lib/a.av: its text ")) &&
-                first.join("\n") == mode_lines(CacheMode.Changed, root, "").join("\n")
-        }
-        then "held after changed still reads the edited file" {
-            let root = edited_lib("held_after_changed")
-            let _ = mode_lines(CacheMode.Changed, root, "")
-            mode_lines(CacheMode.Held, root, "").any(it.starts_with("held: src/lib/a.av — read"))
-        }
-        then "a check after the modes keeps the edit, and only then has nothing moved" {
-            let root = edited_lib("checked_after_modes")
-            let _ = mode_lines(CacheMode.Changed, root, "")
-            let _ = mode_lines(CacheMode.Why, root, "src/main.av")
-            let _ = checked_at(root)
-            mode_lines(CacheMode.Changed, root, "")
-                .any(it == "changed: no input's text moved since the kept state")
-        }
-        then "changed refuses a target, since it answers for the whole package" {
-            mode_refusal(CacheMode.Changed, edited_lib("changed_target"), "main").length == 1
-        }
-    }
     given "a held file a fresh reading disagrees with" {
-        then "a Reference-row count reads as the rows naming the declaration, held then fresh" {
-            disagreement_line(
-                HeldMismatch {
-                    file: "a.av",
-                    decl: "check_length",
-                    field: "Reference rows",
-                    held: "0",
-                    fresh: "1",
-                },
-            ) == "held:   check_length's Reference rows: 0 held, 1 fresh"
-        }
         then "calls to two impls' same-named methods land on each impl, held as fresh" {
             let root = cache_probe(
                 "twin_methods",

@@ -1,72 +1,133 @@
-//! THE CACHE, WALKED (P7, P12): every mode of `avra cache` is a projection of
-//! one walk. The hold's report judges each file against its kept `KeyParts`,
-//! the durable witness, and the files whose own text moved since are the
-//! walk's moved inputs. Fine-grained edges are never kept: a mode that asks
-//! why or who reads derives the program in-process with nothing held, and
-//! walks the kernel's own dependencies there. Nothing here runs in a check,
-//! and nothing here keeps: the walk inspects (`inspecting`), so its store
-//! sets every write aside and a second walk answers what the first did.
-use core.{FileId, ModuleId, DeclId, reversed}
-use @std.path.{relative_path}
+//! THE CACHE, WALKED (P7, P12): every form of `avra explain` is a fold here
+//! over the graph as the compiler's `Db` reads it — a cell by its key, the
+//! cells by family, an edge by its reader, an edge by what it reads
+//! (compiler/db.av). Nothing here reaches past those four. Two derivations
+//! feed them, never alive together: `--why`'s hold, judged against the kept
+//! `KeyParts` and let go, and the program analysed with nothing held, whose
+//! kernel is the graph. Nothing here runs in a check, and nothing here
+//! keeps: the walk inspects (`inspecting`), so its store sets every write
+//! aside and a second walk answers what the first did.
+use core.{FileId, ModuleId, DeclId, reversed, sorted_by, sorted_texts, some_list, text_before}
+use @std.path.{relative_path, joined_path, normalized}
+use @std.text.{parse_int}
 use compiler.families.{Family}
-use @std.relation.engine.{Key, same_key, KeyMarks, no_key_marks}
+use features.{Decl}
+use @std.relation.engine.{Key, same_key, no_key_marks}
 
 /// The hold against the kept state: every file a check reads, each held or
-/// read with why, and the files whose text moved since they were kept.
-export type CacheWalk = { root: string, holds: List<FileHold>, moved: List<string> }
+/// read with why, the files whose text moved since they were kept, and what
+/// the derivation that judged them spent — its attempts, those among them
+/// that did not stand, and its phases.
+export type CacheWalk = { root: string, holds: List<FileHold>, moved: List<string>, attempts: int, discarded: int, phases: List<Phase> }
+
+/// An answer as a person reads it, with its digest — none for an answer the
+/// kernel never digested.
+export type Digested = { label: string, digest: int? }
+
+/// ONE ANSWER, EXPLAINED: itself; what it read and who reads it, each directly
+/// and in label order; how many answers it reads and how many read it at any
+/// depth; and the files whose analysis is among those readers — the files a
+/// check reads again when this answer moves.
+export type Explained = { answer: Digested, reads: List<Digested>, deep: int, read_by: List<Digested>, deep_by: int, files: List<string> }
+
+/// One family's answers, counted: its cells, the reads they recorded, and how
+/// long one cell's list of reads runs — the median, the ninety-ninth in a
+/// hundred, the longest.
+export type FamilyCount = { family: string, cells: int, edges: int, p50: int, p99: int, longest: int }
+
+/// The program analysed with nothing held: the workspace whose kernel is the
+/// graph, and what analysing it spent.
+export type Graphed = { ws: Workspace, phases: List<Phase> }
+
+/// What a label, `Family(subject)`, names: the settled answers wearing it, a
+/// family no answer belongs to, or a subject its family holds no answer for.
+export enum Labelled {
+    Answers(keys: List<Key>)
+    NoFamily(word: string)
+    NoAnswer
+}
+
+/// What an answer's key names — `Row` for a relation's minted family, whose
+/// key is a row's place.
+enum KeyedBy { File, Module, Decl, Package, Program, Unit, Name, Input, Row }
+
+/// What each family keys by.
+fn keyed_by(f: Family) -> KeyedBy {
+    match f {
+        .Source or .Parsed or .Items or .Admitted or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> KeyedBy.File,
+        .Namespace or .HeldSig -> KeyedBy.Module,
+        .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Marks or .DeclReads -> KeyedBy.Decl,
+        .Manifest -> KeyedBy.Package,
+        .Receivers or .References or .Failures or .ReadReach -> KeyedBy.Program,
+        .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
+        .Named -> KeyedBy.Name,
+        .Input or .BlockScan or .ComponentScan or .ComponentNames -> KeyedBy.Input,
+    }
+}
+
+/// What a family's keys name — a row's place for a family no declaration
+/// names, a relation's minted one.
+fn keyed(family: int) -> KeyedBy {
+    let f? = Family.all().get(family) else { return KeyedBy.Row }
+    keyed_by(f)
+}
+
+/// A family by its word — a relation's minted family by its place.
+export fn family_word(family: int) -> string { Family.all().get(family)?.name ?? "${RELATION}${family}" }
+
+/// Whether a family keys by a declaration.
+fn keyed_by_decl(f: Family) -> bool {
+    match keyed_by(f) {
+        .Decl -> true,
+        .File or .Module or .Package or .Program or .Unit or .Name or .Input or .Row -> false,
+    }
+}
 
 /// A path down the walk from one query to a moved input: each step a query
 /// the one before it reads, the last the input's own text.
 export type Trail = { input: string, steps: List<string> }
 
-/// A query and the label a person reads it by.
-type Labelled = { key: Key, label: string }
-
 /// One query met going down from a root, and where in the walk the query
 /// that first read it stands (none for the root).
-type Reached = { key: Key, by: int? }
-
-/// Whether a query reads a target at any depth, and whether that answer
-/// holds beyond the path that asked: a "no" met through a query still on
-/// the path is that path's alone.
-type Reaching = { reads: bool, sure: bool }
+export type Reached = { key: Key, by: int? }
 
 /// A query no walk has met.
 const UNMET: int = 0
 
-/// A query met: on the breadth-first walk, or on the path being asked now.
-const ON_PATH: int = 1
-
-/// A query known to read the target.
-const READS: int = 2
-
-/// A query known not to.
-const READS_NOT: int = 3
+/// A query a walk has met.
+const MET: int = 1
 
 impl Workspace {
-    /// THE WALK'S FIRST HALF: the hold's report under a check's want, this
-    /// workspace an inspection from here on.
+    /// THE HOLD'S REPORT under a check's want, this workspace an inspection
+    /// from here on. The derivation that judged the hold is let go here, so
+    /// it never stands beside the graph's.
     fn cache_walk() -> Result<CacheWalk, string> {
         self.inspecting()
-        let holds = self.hold_report(Want.Diagnostics)?
-        CacheWalk {
+        let d = self.derived(null, Want.Diagnostics)?
+        let holds = d.program.ws.holds_of(d)
+        let walk = CacheWalk {
             root: self.root,
             holds: holds,
             moved: [h.path for h in holds if h.moved.any(it.part is .Text)],
+            attempts: d.turned + 1,
+            discarded: d.turned,
+            phases: grouped_phases(d.program.phases.concat(d.spans)),
         }
+        d.program.ws.discarded()
+        walk
     }
 
-    /// THE WALK'S SECOND HALF, asked only by a mode that reads it: the program
-    /// analysed afresh with nothing held, so the kernel holds every query a
-    /// check could run and what each read.
-    fn walk_graph() -> Workspace {
+    /// THE GRAPH: the program analysed afresh with nothing held and nothing
+    /// kept, so the kernel holds every query a check could run and what each
+    /// read.
+    fn walk_graph() -> Graphed {
+        self.inspecting()
         let g = self.anew()
-        let _ = g.program(null)
-        g
+        Graphed { ws: g, phases: grouped_phases(g.program(null).phases) }
     }
 
     /// The file at `path` as this workspace numbers it — never minting one.
-    fn walked_file(path: string) -> FileId? { self.decls.all_files().find(it.path == path)?.id }
+    fn walked_file(path: string) -> FileId? { self.decls.known_file_id(path) }
 
     /// A file's analysis: the query a check asks of it, the root of its trails.
     fn analysis_key(path: string) -> Key? {
@@ -80,19 +141,110 @@ impl Workspace {
         key(Family.Source, f.index)
     }
 
-    /// The queries a typed query means: an exact match on a label when there
-    /// is one, else every label holding it.
-    fn named_queries(query: string) -> List<Key> {
-        let all = [Labelled { key: k, label: self.key_label(k) } for k in self.db.settled_keys()]
-        let exact = [l.key for l in all if l.label == query]
-        if exact.is_empty() { [l.key for l in all if l.label.contains(query)] } else { exact }
+    /// What `label` names: its family by the family's word, its subject
+    /// through what that family keys by — `key_label`, read backwards.
+    fn labelled(label: string) -> Labelled {
+        let open = label.index_of("(")
+        if open < 0 || !label.ends_with(")") { return Labelled.NoAnswer }
+        let word = label.substring(0, open)
+        let family? = self.family_worded(word) else { return Labelled.NoFamily(word) }
+        let subject = label.substring(open + 1, label.length - 1)
+        if subject == "" { return Labelled.NoAnswer }
+        let keys = [Key { family: family, arg: arg } for arg in self.subject_args(keyed(family), subject)]
+        let settled = [k for k in keys if self.db.cell(k) != null]
+        if settled.is_empty() { Labelled.NoAnswer } else { Labelled.Answers(settled) }
+    }
+
+    /// The family a word names: a declared one by its name, a relation's
+    /// minted one by its place among the families holding an answer.
+    fn family_worded(word: string) -> int? {
+        let declared? = Family.all().find(it.name == word) else { return self.relation_worded(word) }
+        declared.ordinal
+    }
+
+    fn relation_worded(word: string) -> int? {
+        if !word.starts_with(RELATION) { return null }
+        let place? = parse_int(word.substring(RELATION.length, word.length)) else { return null }
+        if place < Family.all().length || place >= self.db.cells_by_family().length { null } else { place }
+    }
+
+    /// The keys a subject names in a family keying by `by` — `key_subject`,
+    /// read backwards.
+    fn subject_args(by: KeyedBy, subject: string) -> List<int> {
+        match by {
+            .File -> [f.index for f in some_list(self.walked_file(normalized(joined_path(self.root, subject))))],
+            .Module -> [m.index for m in some_list(self.decls.known_module_id(module_named(subject)))],
+            .Decl -> [d.id.index for d in self.decls_named(subject.split(DECL_AT).first() ?? subject) if self.decl_shown(d.id) == subject],
+            .Package -> [i for i, p in self.packages() if self.package_shown(p.root) == subject],
+            .Program -> if subject == THE_PROGRAM { [0] } else { [] },
+            .Unit -> if subject.starts_with(UNIT) { some_list(parse_int(subject.substring(UNIT.length, subject.length))) } else { [] },
+            .Name -> if subject.starts_with(BUCKET) { some_list(parse_int(subject.substring(BUCKET.length, subject.length))) } else { [self.decls.name_bucket(subject)] },
+            .Input -> some_list(self.input_index.get().get(subject)),
+            .Row -> some_list(parse_int(subject)),
+        }
+    }
+
+    /// The declarations a name means: by `Owner.name`, or by its name alone.
+    fn decls_named(name: string) -> List<Decl> {
+        let last = name.split(".").last() ?? name
+        let filed = if last == name { self.decls.named_rows(name) } else { self.decls.named_rows(name).concat(self.decls.named_rows(last)) }
+        [d for d in filed if d.name == name || "${d.owner}.${d.name}" == name]
+    }
+
+    /// Every settled answer keyed by this declaration: its key in each family
+    /// that keys by one.
+    fn decl_answers(d: DeclId) -> List<Key> {
+        [key(f, d.index) for f in Family.all() if keyed_by_decl(f) && self.db.cell(key(f, d.index)) != null]
+    }
+
+    /// An answer with its digest.
+    fn cited(k: Key) -> Digested { Digested { label: self.key_label(k), digest: self.db.cell(k)?.digest } }
+
+    /// Answers cited, in label order.
+    fn cited_all(keys: List<Key>) -> List<Digested> {
+        sorted_by(
+            [self.cited(k) for k in keys],
+            (a: Digested, b: Digested) -> text_before(a.label, b.label),
+        )
+    }
+
+    /// Each of `keys` explained.
+    fn explained_all(keys: List<Key>) -> List<Explained> { [self.explained(k) for k in keys] }
+
+    /// One answer: what it read, who reads it, and how far each goes.
+    fn explained(k: Key) -> Explained {
+        let above = self.readers_from(k)
+        Explained {
+            answer: self.cited(k),
+            reads: self.cited_all(self.db.edges_by_reader(k)),
+            deep: self.reached_from(k).length - 1,
+            read_by: self.cited_all(self.db.edges_by_read(k)),
+            deep_by: above.length - 1,
+            files: sorted_texts(
+                [p for r in above.slice(1, above.length) for p in some_list(self.analysed_path(r.key))],
+            ),
+        }
+    }
+
+    /// Every family holding an answer, counted, in the families' own order.
+    fn family_counts() -> List<FamilyCount> {
+        [self.family_count(f, [self.db.edges_by_reader(c.key).length for c in cells]) for f, cells in self.db.cells_by_family() if !cells.is_empty()]
+    }
+
+    fn family_count(family: int, reads: List<int>) -> FamilyCount {
+        let ranked = sorted_by(reads, (a: int, b: int) -> a < b)
+        FamilyCount {
+            family: family_word(family),
+            cells: ranked.length,
+            edges: total(ranked),
+            p50: ranked[(ranked.length - 1) / 2],
+            p99: ranked[(ranked.length - 1) * 99 / 100],
+            longest: ranked.last() ?? 0,
+        }
     }
 
     /// A query as a person reads it: its family's word and what it keys by.
-    fn key_label(k: Key) -> string { "${self.key_family_word(k)}(${self.key_subject(k)})" }
-
-    /// A query's family by its word — a relation's minted family by its place.
-    fn key_family_word(k: Key) -> string { Family.all().get(k.family)?.name ?? "Relation ${k.family}" }
+    fn key_label(k: Key) -> string { "${family_word(k.family)}(${self.key_subject(k)})" }
 
     /// The file a query analyses, for a file's analysis alone.
     fn analysed_path(k: Key) -> string? {
@@ -100,21 +252,34 @@ impl Workspace {
         self.shown_path(self.decls.file(FileId { index: k.arg }).path)
     }
 
-    /// What a family keys by, named: a file, a module, a declaration, a
+    /// What an answer is keyed by, named: a file, a module, a declaration, a
     /// package, the whole program, a name, or a unit known only by its number.
     fn key_subject(k: Key) -> string {
-        let all = Family.all()
-        if k.family >= all.length { return "${k.arg}" }
-        match all[k.family] {
-            .Source or .Parsed or .Items or .Admitted or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> self.shown_path(self.decls.file(FileId { index: k.arg }).path),
-            .Namespace or .HeldSig -> module_shown(self.decls.module_name(ModuleId { index: k.arg })),
-            .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Marks or .DeclReads -> self.decl_shown(DeclId { index: k.arg }),
-            .Manifest -> self.shown_path(self.packages()[k.arg].root),
-            .Receivers or .References or .Failures or .ReadReach -> "the program",
-            .Lowered or .LiftLowered or .Lifted or .Settled -> "unit ${k.arg}",
-            .Named -> self.decls.cell_name(k.arg),
-            .Input or .BlockScan or .ComponentScan or .ComponentNames -> spelled(self.input_names.get()[k.arg]),
+        match keyed(k.family) {
+            .File -> self.shown_path(self.decls.file(FileId { index: k.arg }).path),
+            .Module -> module_shown(self.decls.module_name(ModuleId { index: k.arg })),
+            .Decl -> self.decl_shown(DeclId { index: k.arg }),
+            .Package -> self.package_shown(self.packages()[k.arg].root),
+            .Program -> THE_PROGRAM,
+            .Unit -> "${UNIT}${k.arg}",
+            .Name -> self.bucket_shown(k.arg),
+            .Input -> spelled(self.input_names.get()[k.arg]),
+            .Row -> "${k.arg}",
         }
+    }
+
+    /// A bucket of the name index by the name it files — by its place when it
+    /// files none, so no two buckets wear one label.
+    fn bucket_shown(b: int) -> string {
+        let name = self.decls.cell_name(b)
+        if name == "" { "${BUCKET}${b}" } else { name }
+    }
+
+    /// A package by its root as the asked package's root sees it — the asked
+    /// package itself by `.`, so no package wears an empty label.
+    fn package_shown(root: string) -> string {
+        let shown = self.shown_path(root)
+        if shown == "" { HERE } else { shown }
     }
 
     /// A path as the package's root sees it.
@@ -125,32 +290,17 @@ impl Workspace {
         let x = self.decls.decl(d)
         let named = if x.owner == "" { x.name } else { "${x.owner}.${x.name}" }
         match x.kind {
-            .Builtin -> "${named} · builtin",
-            rest -> "${named} · ${self.shown_path(self.decls.file(x.file).path)}",
+            .Builtin -> "${named}${DECL_AT}builtin",
+            rest -> "${named}${DECL_AT}${self.shown_path(self.decls.file(x.file).path)}",
         }
     }
 
     /// Every query `root` reads at any depth, breadth first, each once, with
     /// where the query that first read it stands.
-    fn reached_from(root: Key) -> List<Reached> {
-        let seen = no_key_marks()
-        seen.mark(root, ON_PATH)
-        mut out = [Reached { key: root, by: null }]
-        mut at = 0
-        while at < out.length {
-            for d in self.db.deps_of(out[at].key) {
-                if seen.mark_of(d) == UNMET {
-                    seen.mark(d, ON_PATH)
-                    out.push(Reached { key: d, by: at })
-                }
-            }
-            at = at + 1
-        }
-        out
-    }
+    fn reached_from(root: Key) -> List<Reached> { reached(root, (k: Key) -> self.db.edges_by_reader(k)) }
 
-    /// How many queries `root` reads at any depth.
-    fn reads_count(root: Key) -> int { self.reached_from(root).length - 1 }
+    /// Every query that reads `root` at any depth, nearest first, each once.
+    fn readers_from(root: Key) -> List<Reached> { reached(root, (k: Key) -> self.db.edges_by_read(k)) }
 
     /// The shortest path from `root` down to each of `inputs` it reads.
     fn trails(root: Key, inputs: List<string>) -> List<Trail> {
@@ -168,36 +318,25 @@ impl Workspace {
             },
         ]
     }
+}
 
-    /// Every query that reads `target` at any depth.
-    fn readers(target: Key) -> List<Key> {
-        let marks = no_key_marks()
-        [k for k in self.db.settled_keys() if !same_key(k, target) && self.reaching(k, target, marks).reads]
-    }
-
-    fn reaching(k: Key, target: Key, marks: KeyMarks) -> Reaching {
-        if same_key(k, target) { return Reaching { reads: true, sure: true } }
-        let m = marks.mark_of(k)
-        if m == UNMET { return self.reaching_fresh(k, target, marks) }
-        Reaching { reads: m == READS, sure: m != ON_PATH }
-    }
-
-    /// A query not yet asked: on the path while its deps answer, then kept as
-    /// reading or not — a "no" that leaned on the path is forgotten.
-    fn reaching_fresh(k: Key, target: Key, marks: KeyMarks) -> Reaching {
-        marks.mark(k, ON_PATH)
-        mut sure = true
-        for d in self.db.deps_of(k) {
-            let r = self.reaching(d, target, marks)
-            if r.reads {
-                marks.mark(k, READS)
-                return r
+/// `root`, then every key `next` reaches from it at any depth, breadth first,
+/// each once, with where the key that first reached it stands.
+fn reached(root: Key, next: fn(Key) -> List<Key>) -> List<Reached> {
+    let seen = no_key_marks()
+    seen.mark(root, MET)
+    mut out = [Reached { key: root, by: null }]
+    mut at = 0
+    while at < out.length {
+        for d in next(out[at].key) {
+            if seen.mark_of(d) == UNMET {
+                seen.mark(d, MET)
+                out.push(Reached { key: d, by: at })
             }
-            sure = sure && r.sure
         }
-        marks.mark(k, if sure { READS_NOT } else { UNMET })
-        Reaching { reads: false, sure: sure }
+        at = at + 1
     }
+    out
 }
 
 /// The keys from the walk's root down to the one at `at`.
@@ -211,5 +350,30 @@ fn back_from(walk: List<Reached>, at: int) -> List<Key> {
     reversed(keys)
 }
 
+fn total(ns: List<int>) -> int {
+    mut sum = 0
+    for n in ns { sum = sum + n }
+    sum
+}
+
 /// A module by its name, the root's empty one spelled out.
-fn module_shown(name: string) -> string { if name == "" { "the root module" } else { name } }
+fn module_shown(name: string) -> string { if name == "" { ROOT_MODULE } else { name } }
+
+/// The module a shown name names.
+fn module_named(shown: string) -> string { if shown == ROOT_MODULE { "" } else { shown } }
+
+// The words a label is spelled with, one spelling for the label and its reading.
+
+const ROOT_MODULE: string = "the root module"
+
+const THE_PROGRAM: string = "the program"
+
+const UNIT: string = "unit "
+
+const HERE: string = "."
+
+const BUCKET: string = "bucket "
+
+const RELATION: string = "Relation "
+
+const DECL_AT: string = " · "
