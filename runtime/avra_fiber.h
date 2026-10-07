@@ -171,6 +171,13 @@ int64_t avra_vtask_next(void);
 // for a compiled program's tasks and the evaluator's alike. A run that
 // never calls this is untouched.
 void avra_sched_seed(int64_t schedule);
+// A RUN INSIDE ANOTHER PROGRAM — the evaluator's, in the compiler's own
+// process — HAS ITS OWN SCHEDULE AND ITS OWN CLOCK. It begins unseeded,
+// on its host's clock; a seed it takes, a clock it turns virtual and
+// every jump it makes end with it, and its host's stand again exactly
+// as they stood.
+void avra_sched_run_begins(void);
+void avra_sched_run_ends(void);
 // The seeded run ends and the order is the queue's own again: how many
 // choices it made. None means the run has one order.
 int64_t avra_sched_settle(void);

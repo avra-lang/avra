@@ -1883,6 +1883,33 @@ int64_t avra_sched_settle(void) {
     return g_choices;
 }
 
+// A run inside a run keeps the outer schedule whole, to put it back.
+typedef struct { int seeded; int64_t schedule; uint64_t state; int64_t choices; } Schedule;
+static Schedule* g_outer_schedules = NULL;
+static size_t g_runs = 0;
+static size_t g_runs_cap = 0;
+
+void avra_sched_run_begins(void) {
+    if (g_runs == g_runs_cap) {
+        g_runs_cap = g_runs_cap ? g_runs_cap * 2 : 8;
+        g_outer_schedules = realloc(g_outer_schedules, g_runs_cap * sizeof(Schedule));
+        if (!g_outer_schedules) avra_trap("the scheduler ran out of memory for a run's schedule");
+    }
+    g_outer_schedules[g_runs++] = (Schedule){ g_seeded, g_schedule, g_seed_state, g_choices };
+    g_seeded = 0;
+    avra_clock_run_begins();
+}
+
+void avra_sched_run_ends(void) {
+    if (g_runs == 0) avra_trap("defect: a run's schedule ended that never began");
+    Schedule outer = g_outer_schedules[--g_runs];
+    g_seeded = outer.seeded;
+    g_schedule = outer.schedule;
+    g_seed_state = outer.state;
+    g_choices = outer.choices;
+    avra_clock_run_ends();
+}
+
 // ── What a test and a dump read ─────────────────────────────────
 
 int64_t avra_sched_timers(void) { return (int64_t)g_timers_len; }

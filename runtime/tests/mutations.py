@@ -89,6 +89,11 @@ MUTATIONS = [
     ("a virtual join parks on nothing", "    alone(f);\n    waits_gate(f, task, 0, 0);\n    legacy_parked(f);\n    return host_waited(1);", "    alone(f);\n    legacy_parked(f);\n    return host_waited(1);"),
     ("a virtual join heeds its task's deadline", "    waits_gate(f, task, 0, 0);\n    legacy_parked(f);\n    return host_waited(1);", "    waits_gate(f, task, 0, 0);\n    return host_waited(park_begun(f));"),
     ("a virtual join of an ended task parks", "    if (task_cells(task)[GATE_OPEN]) return 0;\n    alone(f);", "    alone(f);"),
+    ("a run begins with its host's schedule", "    g_seeded = 0;\n    avra_clock_run_begins();", "    avra_clock_run_begins();"),
+    ("a run's end keeps its seed", "    g_seeded = outer.seeded;\n", ""),
+    ("a run's end restarts the outer schedule's stream", "    g_seed_state = outer.state;\n", "    g_seed_state = (uint64_t)outer.schedule;\n"),
+    ("a run's choices are counted as its host's", "    g_choices = outer.choices;\n", ""),
+    ("a run's schedule ends and its clock does not", "    g_choices = outer.choices;\n    avra_clock_run_ends();", "    g_choices = outer.choices;"),
     ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("    if (g_until_poll > 0) return;\n", "")], None),
     ("a join answers a cancelled task", "    if (cells[TASK_END] == END_CANCELLED) join_refused();\n", ""),
     ("a fired timer's task answers nothing", "    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;\n", "    avra_rc_release(unit);\n"),
@@ -107,7 +112,7 @@ CLOCK_MUTATIONS = [
     ("a limit that is no number is read as one", "    if (*end != 0 || n < 0) avra_trap(CLOCK_ASKS_SETTING", "    if (0) avra_trap(CLOCK_ASKS_SETTING"),
     ("a hold let go too often goes unsaid", "    if (avra_clock.held < 0) avra_trap(", "    if (0) avra_trap("),
     ("dropped holds still hold", "    int64_t held = avra_clock.held;\n    avra_clock.held = 0;", "    int64_t held = avra_clock.held;"),
-    ("a run begins with its host's holds", "    avra_clock.held = 0;\n    avra_clock.virtual = 1;", "    avra_clock.virtual = 1;"),
+    ("a run begins with its host's holds", "    g_clock_outer[g_clock_runs++] = avra_clock;\n    avra_clock.held = 0;", "    g_clock_outer[g_clock_runs++] = avra_clock;"),
     ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
 ]
 TESTS = ["flow_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]

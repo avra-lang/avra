@@ -78,9 +78,10 @@ int64_t avra_clock_jumped(int64_t at);
 void avra_clock_hold(int64_t by);
 // Every hold given up at once, for a run whose holders are gone: how many.
 int64_t avra_clock_holds_dropped(void);
-// A RUN UNDER TEST INSIDE ANOTHER PROGRAM: its clock is virtual from its
-// beginning, and its end puts the outer clock back exactly as it was —
-// no jump the run made stays, and no hold.
+// A RUN INSIDE ANOTHER PROGRAM: it begins on its host's clock with no
+// hold, and whatever it does to the clock — turns it virtual, jumps it,
+// holds it — ends with it: its end puts the outer clock back exactly as
+// it was.
 void avra_clock_run_begins(void);
 void avra_clock_run_ends(void);
 int64_t avra_clock_jumps(void);

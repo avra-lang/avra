@@ -22,6 +22,8 @@ extern fn avra_vtask_wait_fd(t: int, fd: int, writable: int, arm: int, member: i
 extern fn avra_vtask_wait_until(t: int, at_ns: int, arm: int, member: int)
 extern fn avra_vtask_wait_gate(t: int, gate: ptr, arm: int, member: int)
 extern fn avra_vtask_join(t: int, task: ptr) -> int
+extern fn avra_sched_run_begins()
+extern fn avra_sched_run_ends()
 extern fn avra_task_at(at_ns: int) -> ptr
 extern fn avra_task_done(task: ptr) -> int
 extern fn avra_task_cancel(task: ptr)
@@ -108,6 +110,16 @@ fn let_go(gate: ptr?) {
 }
 
 impl Machine {
+    /// A RUN HAS ITS OWN SCHEDULE AND ITS OWN CLOCK. The machine runs in
+    /// its host's process — the compiler's — so a seed the program
+    /// takes, a clock it turns virtual and every jump it makes begin
+    /// here and end with the run: the host's stand again as they stood.
+    /// A jump inside a run also fires a timer the host's own tasks had
+    /// filed; the host parks no task while a run stands.
+    fn run_begun() { avra_sched_run_begins() }
+
+    fn run_ended() { avra_sched_run_ends() }
+
     /// The program's own run, filed as a task the first time a row asks.
     fn rooted() {
         if !self.tasks.is_empty() { return }
