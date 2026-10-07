@@ -327,7 +327,8 @@ void avra_llvm_set_site(LLVMValueRef fn, const char* site) {
     LLVMSetUnnamedAddress(held, LLVMGlobalUnnamedAddr);
     LLVMValueRef fields[2] = { fn, held };
     LLVMValueRef cells = LLVMConstStructInContext(ctx, fields, 2, 0);
-    LLVMValueRef row = LLVMAddGlobal(m, LLVMTypeOf(cells), "");
+    // Named, as every `llvm.used` member must be; the module uniques it.
+    LLVMValueRef row = LLVMAddGlobal(m, LLVMTypeOf(cells), "avra.site");
     LLVMSetInitializer(row, cells);
     LLVMSetLinkage(row, LLVMPrivateLinkage);
     LLVMSetAlignment(row, 8);
