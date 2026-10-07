@@ -711,6 +711,46 @@ fn raw_rt_call_found(name: Code) -> Fix {
         )
 }
 
+/// A `Host` question asked outside the door — `host.read(p)`,
+/// `.exists`, `.list`, `.is_dir`, `.stamp`, `(host.peek)(p)` — records
+/// nothing: what it answers is no input, no query that depends on it is
+/// ordered after it, and a workspace that lives across turns never
+/// reads it again. Ask a cell (`ws.there`, `ws.listing`,
+/// `ws.listed_text`). A driver's read that must see the disk as it is
+/// at that instant is licensed at its site, with that reason.
+@keeps("ws.there(path)")
+export rule host_asked_directly {
+    quote { ${h}.read(${p}) } if asks_a_host(h) -> host_asked_found(h, "read"),
+    quote { ${h}.exists(${p}) } if asks_a_host(h) -> host_asked_found(h, "exists"),
+    quote { ${h}.list(${p}) } if asks_a_host(h) -> host_asked_found(h, "list"),
+    quote { ${h}.is_dir(${p}) } if asks_a_host(h) -> host_asked_found(h, "is_dir"),
+    quote { ${h}.stamp(${p}) } if asks_a_host(h) -> host_asked_found(h, "stamp"),
+    quote { (${h}.peek)(${p}) } if asks_a_host(h) -> host_asked_found(h, "peek"),
+}
+
+/// Whether `h` names a host, in the compiler or its CLI, outside the
+/// door's own file and outside a test.
+fn asks_a_host(h: Code) -> bool {
+    let named = h.text()
+    if named != "host" && !named.ends_with(".host") { return false }
+    let f = h.of.view.source.file
+    (f.contains("/std-avrac/src/") || f.contains("/cli/src/")) &&
+        !f.contains("/tests/") &&
+        !f.ends_with("compiler/host/host.av")
+}
+
+fn host_asked_found(h: Code, question: string) -> Fix {
+    Fix
+        .Say(
+            said(
+                h.loc(),
+                "`${h.text()}.${question}` asks the host directly — the answer is no input: nothing that depends on it is ordered after it, and a workspace that lives across turns never reads it again",
+                "this host",
+                "ask a cell (`ws.there`, `ws.listing`, `ws.listed_text`); a read that must see the disk as it is at this instant is licensed at its site",
+            ),
+        )
+}
+
 /// A `mut` list built to answer "have I seen this before" — a
 /// POSITION law once the whole list is already in hand: the first
 /// index a value occurs at is decided by `.index_of`, compared
