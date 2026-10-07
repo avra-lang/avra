@@ -1827,9 +1827,10 @@ void avra_fiber_forked(void) {
     g_ready_head = g_ready_tail = NULL;
     g_parked_fds = 0;
     if (g_fds) memset(g_fds, 0, g_fds_cap * sizeof(FdWaits));
+    // the child is asked under its own id
+    tasks_door_named();
     // a schedule is its run's: the child's order is the queue's own
     g_seeded = 0;
-    tasks_door_named();
 }
 
 // A task leaves every place the policy files it — its waiters and the
