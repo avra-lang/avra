@@ -5,6 +5,7 @@
 // workspace_fixtures.av's own.
 use compiler.{Workspace, Subject, avra, new_workspace, family_word}
 use compiler.host.{memory_host}
+use compiler.families.{Family}
 use core.{sorted_texts}
 use @std.relation.engine.{Key, same_key}
 
@@ -164,7 +165,7 @@ spec "compiler/cache_walk — down from a file's analysis" {
         found.length == 1 &&
             found[0].input == "src/a.av" &&
             found[0].steps.first() ?? "" == "Analysis(src/b.av)" &&
-            found[0].steps.last() ?? "" == "Source(src/a.av)"
+            found[0].steps.last() ?? "" == "Input(text src/a.av)"
     }
     then "a file the workspace never met has no trail and no key" {
         let ws = walked()
@@ -178,13 +179,14 @@ spec "compiler/cache_walk — down from a file's analysis" {
 }
 
 spec "compiler/cache_walk — up from a text" {
-    then "a callee's text is read by its own parse and by its caller's analysis, never by itself" {
+    then "a callee's text is read by its own source and parse and by its caller's analysis, never by itself" {
         let ws = walked()
         let text = ws.input_key("/w/src/a.av")!
         let labels = [ws.key_label(k) for k in above(ws, text)]
         labels.contains("Parsed(src/a.av)") &&
             labels.contains("Analysis(src/b.av)") &&
-            !labels.contains("Source(src/a.av)")
+            labels.contains("Source(src/a.av)") &&
+            !labels.contains("Input(text src/a.av)")
     }
     then "its direct readers are among its readers at any depth, and fewer" {
         let ws = walked()
@@ -226,7 +228,7 @@ spec "compiler/cache_walk — one answer explained" {
         let ws = walked()
         let said = ws.explained_all([ws.input_key("/w/src/a.av")!])
         said.length == 1 &&
-            said[0].answer.label == "Source(src/a.av)" &&
+            said[0].answer.label == "Input(text src/a.av)" &&
             said[0].reads.is_empty() &&
             said[0].deep == 0 &&
             said[0].deep_by >= said[0].read_by.length &&
@@ -249,10 +251,21 @@ spec "compiler/cache_walk — one answer explained" {
 
 spec "compiler/cache_walk — the families, counted" {
     then "each family's cells are counted once, and the input family reads nothing" {
+        let input = walked().family_counts().families.find(it.family == "Input")
+        input != null && input!.cells > 0 && input!.edges == 0 && input!.longest == 0
+    }
+    then "a source reads one thing, its text" {
+        let source = walked().family_counts().families.find(it.family == "Source")
+        source != null &&
+            source!.cells > 0 &&
+            source!.edges == source!.cells &&
+            source!.longest == 1
+    }
+    then "a source's one read is the text input of its own file" {
         let ws = walked()
-        let counts = ws.family_counts().families
-        let source = counts.find(it.family == "Source")
-        source != null && source!.cells > 0 && source!.edges == 0 && source!.longest == 0
+        let f? = ws.walked_file("/w/src/a.av") else { return false }
+        [ws.key_label(k) for k in ws.db.edges_by_reader(Key { family: Family.Source.ordinal, arg: f.index })]
+            .join(",") == "Input(text src/a.av)"
     }
     then "a family's median read list is no longer than its ninety-ninth, nor that than its longest" {
         walked()
