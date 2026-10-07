@@ -1,0 +1,33 @@
+//! The type test, emitted: a `dyn` box is its value, its trait's
+//! methods, then its type's tag — the tag compared with the narrowed
+//! type's, the value read out as that type.
+use core.{PatId, TypeId, Reg, DeclId, Type, BinOp}
+use features.{LowerCx}
+
+export fn narrow_accepts(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
+    let to? = narrowed(cx, p) else { return unnarrowed(cx) }
+    let tr? = cx.view.types.dyn_trait(vty) else { return unnarrowed(cx) }
+    let d? = cx.view.decls.implementor(to) else { return unnarrowed(cx) }
+    let tag = cx
+        .slot_read(v, 1 + cx.view.decls.trait_method_names(tr).length, cx.view.decls.types.type(int))
+    cx.bin(Type.Bool, BinOp.Eq, tag, cx.const_int(cx.view.decls.type_tag(d)))
+}
+
+export fn narrow_binds(mut cx: LowerCx, p: PatId, v: Reg) -> List<Reg> {
+    let to? = narrowed(cx, p) else {
+        cx.defect("a type pattern without its narrowed type reached the binds")
+        return []
+    }
+    [cx.slot_read(v, 0, to)]
+}
+
+/// The type typing recorded on the pattern's read.
+fn narrowed(cx: LowerCx, p: PatId) -> TypeId? {
+    let read? = cx.view.store.name_read(p) else { return null }
+    cx.type_at(read)
+}
+
+fn unnarrowed(mut cx: LowerCx) -> Reg {
+    cx.defect("a type pattern over no `dyn` survived typing")
+    cx.const_bool(false)
+}

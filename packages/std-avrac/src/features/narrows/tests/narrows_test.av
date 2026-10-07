@@ -1,0 +1,54 @@
+// A type pattern's laws, each refusal rendered whole: its subject is a
+// `dyn`, the type it names implements that `dyn`'s trait, and a `match`
+// over a `dyn` keeps its catch-all.
+use @std.avrac.compiler.{analyze_source}
+
+spec "features/narrows" {
+    given "the refusals, rendered whole" {
+        then "a subject that is no `dyn` is refused, naming its type" {
+            analyze_source(
+                "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Other = { o: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: int) -> int {\n    match x {\n        c: Sq -> 1\n        _ -> 0\n    }\n}\n",
+            )
+                .report()
+                .starts_with(
+                    "error[type.narrow]: a type pattern narrows a `dyn` — this is `int`\n   ╭─[<source>:12:9]\n12 │         c: Sq -> 1\n   ·         ┬\n   ·         ╰── this is `int`\n───╯\nhelp: only a `dyn` hides which type it holds; match this value by its own shape",
+                )
+        }
+        then "a `dyn` that may be absent is refused until unwrapped" {
+            analyze_source(
+                "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Other = { o: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape?) -> int {\n    match x {\n        c: Sq -> 1\n        _ -> 0\n    }\n}\n",
+            )
+                .report()
+                .starts_with(
+                    "error[type.narrow]: a type pattern narrows a `dyn`, and this `dyn Shape?` may be absent\n   ╭─[<source>:12:9]\n12 │         c: Sq -> 1\n   ·         ┬\n   ·         ╰── this is `dyn Shape?`\n───╯\nhelp: unwrap it first — a `v?` arm — then narrow the `dyn` it holds",
+                )
+        }
+        then "a type that does not implement the trait is refused, naming both" {
+            analyze_source(
+                "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Other = { o: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    match x {\n        c: Other -> 1\n        _ -> 0\n    }\n}\n",
+            )
+                .report()
+                .starts_with(
+                    "error[type.narrow]: `Other` does not implement `Shape`, so no `dyn Shape` holds one\n   ╭─[<source>:12:9]\n12 │         c: Other -> 1\n   ·         ┬\n   ·         ╰── narrowed here\n───╯\nhelp: narrow to a type with an `impl Shape for …`",
+                )
+        }
+        then "a match of type tests alone is refused: a `dyn` is open" {
+            analyze_source(
+                "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Other = { o: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    match x {\n        c: Sq -> 1\n    }\n}\n",
+            )
+                .report()
+                .starts_with(
+                    "error[type.match]: a `match` over `dyn Shape` needs a catch-all arm\n   ╭─[<source>:11:5]\n11 │     match x {\n   ·     ┬\n   ·     ╰── this match\n───╯\nhelp: end with `_ -> …` or `rest -> …`",
+                )
+        }
+        then "an unknown type in a pattern is refused where it stands" {
+            analyze_source(
+                "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\ntype Other = { o: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    match x {\n        c: Nope -> 1\n        _ -> 0\n    }\n}\n",
+            )
+                .report()
+                .starts_with(
+                    "error[type.unknown]: `Nope` names no type\n   ╭─[<source>:12:9]\n12 │         c: Nope -> 1\n   ·         ┬\n   ·         ╰── in this type pattern\n───╯\nhelp: the types today are `int`, `string`, `bool`, and your declared types",
+                )
+        }
+    }
+}

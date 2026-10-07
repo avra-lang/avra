@@ -1,0 +1,84 @@
+//! The laws a type test keeps: its subject is a `dyn`, and the type it
+//! names implements that `dyn`'s trait. The binder answers the named
+//! type, recorded on the pattern's read for lowering to test against.
+use core.{PatId, TypeId, TypeRef, DeclId}
+use features.{TypeCx, this_is}
+use diagnostics.{refusal, defect_at}
+
+export fn narrow_types(mut cx: TypeCx, p: PatId, ty: TypeRef, expected: TypeId) -> List<TypeId> {
+    let tr? = cx.view.types.dyn_trait(expected) else { return not_dyn(cx, p, expected) }
+    let to = cx.written_in_pattern(cx.view.origin_of_pat(p), cx.pat_loc(p), ty)
+    if cx.view.types.shape_of(to) is .Error { return [to] }
+    if !cx.implements_decl(to, tr) { return not_implementor(cx, p, to, tr, expected) }
+    let read? = cx.view.store.name_read(p) else { return unread(cx, p, to) }
+    cx.facts.set_type(read, to)
+    [to]
+}
+
+/// Whether a type may be absent and holds a `dyn` when present.
+fn absent_dyn(cx: TypeCx, ty: TypeId) -> bool {
+    match cx.view.types.shape_of(ty) {
+        .Opt(inner) -> cx.view.types.dyn_trait(inner) != null,
+        _ -> false,
+    }
+}
+
+fn not_dyn(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+    if absent_dyn(cx, expected) { return absent_subject(cx, p, expected) }
+    plain_subject(cx, p, expected)
+}
+
+// ── The voices ──
+
+fn plain_subject(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+    let n = cx.view.types.name_of(expected)
+    cx
+        .emit(
+            refusal(
+                "type.narrow",
+                cx.pat_loc(p),
+                "a type pattern narrows a `dyn` — this is `${n}`",
+                this_is(n),
+                "only a `dyn` hides which type it holds; match this value by its own shape",
+            ),
+        )
+    []
+}
+
+fn absent_subject(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+    let n = cx.view.types.name_of(expected)
+    cx
+        .emit(
+            refusal(
+                "type.narrow",
+                cx.pat_loc(p),
+                "a type pattern narrows a `dyn`, and this `${n}` may be absent",
+                this_is(n),
+                "unwrap it first — a `v?` arm — then narrow the `dyn` it holds",
+            ),
+        )
+    []
+}
+
+fn not_implementor(mut cx: TypeCx, p: PatId, to: TypeId, tr: DeclId, expected: TypeId) -> List<
+    TypeId,
+> {
+    let t = cx.view.types.name_of(to)
+    let trait_name = cx.view.decls.decl(tr).name
+    cx
+        .emit(
+            refusal(
+                "type.narrow",
+                cx.pat_loc(p),
+                "`${t}` does not implement `${trait_name}`, so no `${cx.view.types.name_of(expected)}` holds one",
+                "narrowed here",
+                "narrow to a type with an `impl ${trait_name} for …`",
+            ),
+        )
+    []
+}
+
+fn unread(mut cx: TypeCx, p: PatId, to: TypeId) -> List<TypeId> {
+    cx.emit(defect_at(cx.pat_loc(p), "a type pattern without its read reached typing"))
+    [to]
+}

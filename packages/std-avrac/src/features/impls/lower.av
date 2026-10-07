@@ -178,7 +178,7 @@ fn dispatched(
 ) -> Reg {
     let s = seated(cx, subject, args)
     let arg = args[d.seat]
-    let tr? = dyn_decl(cx, cx.type_at(arg)) else { return cx.lower_defect(e, "a dispatch over no `dyn` survived typing") }
+    let tr? = cx.view.types.dyn_trait(cx.type_at(arg)) else { return cx.lower_defect(e, "a dispatch over no `dyn` survived typing") }
     let int_ty = cx.view.decls.types.type(int)
     let tag = cx.slot_read(s.args[d.seat], 1 + cx.view.decls.trait_method_names(tr).length, int_ty)
     let value = boxed_value(cx, arg, s.args[d.seat], false)
@@ -225,11 +225,6 @@ fn member_tag(cx: LowerCx, m: DeclId, seat: int) -> int {
 fn member_called(mut cx: LowerCx, run: Run, m: DeclId) -> Reg {
     let seats = [if j == run.seat { run.value } else { r } for j, r in run.seated.args]
     cx.call_decl_at(run.e, cx.method_symbol(m, run.e, run.recv_ty), [run.seated.recv].concat(seats))
-}
-
-/// The trait a `dyn` type is over, or none.
-fn dyn_decl(cx: LowerCx, ty: TypeId) -> DeclId? {
-    match cx.view.decls.types.shape_of(ty) { .Dyn(d, _) -> d, _ -> null }
 }
 
 /// A STATIC's dispatch: a direct Call to the method's qualified
