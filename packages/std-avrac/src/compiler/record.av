@@ -167,7 +167,7 @@ export fn read_fields(line: string) -> List<string> {
 }
 
 /// THE SHAPE WORD — a declaration line's first column. A header line
-/// ("file"/"import"/"iface"/"bytes") is not a declaration and has none.
+/// ("file"/"import"/"gathers"/"iface"/"bytes") is not a declaration and has none.
 enum Shape { Struct, Boxed, Enum, Named, Alias, Const, Aims, Opaque, Fn, Extern, Collect, State }
 
 fn shape_of(word: string) -> Shape? {
@@ -381,6 +381,7 @@ fn lines_by_file(lines: List<string>) -> Map<string, List<string>> {
 /// The path a record line names, or "" — the second column, and nothing for a header line.
 fn named_file(line: string) -> string {
     if line.starts_with("import\t") ||
+        line.starts_with("gathers\t") ||
         line.starts_with("bytes\t") ||
         line.starts_with("iface\t") ||
         line.starts_with("file\t") {
@@ -705,6 +706,7 @@ fn load_imports(
             if key != null { ws.ensure_package(key!) }
             for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want) }
         }
+        if parts[0] == "gathers" && parts.length > 1 { load_gathered(ws, store, parts[1], entry, want) }
     }
     // a method table wants EVERY impl of a name, and a held impl names its trait by
     // name: where those live is known before any module is minted
@@ -718,6 +720,17 @@ fn load_imports(
                     distinct((ws.hold.named_in.get().get(parts[5]) ?? []).concat([m.text()])),
                 )
         }
+    }
+}
+
+/// A PACKAGE A HELD `collect` GATHERS WHOLE, met file by file under each file's own
+/// record — as a read `collect` admits it — so a file nothing imports stands, held,
+/// beside the ones its imports reach.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a package in.
+fn load_gathered(ws: Workspace, store: Store, key: string, entry: string?, want: Want) {
+    let pkg? = ws.packages().find(it.key == key) else { return }
+    for path in ws.all_files(pkg.src) {
+        if !ws.is_test_path(path) { load_named(ws, store, ws.module_path_of(path), [path], entry, want) }
     }
 }
 
@@ -847,11 +860,12 @@ fn written_from(at: Placed?, print: string) -> bool {
     at != null && at!.file.length >= 3 && at!.file[2] == print
 }
 
-/// Whether a record line is a DECLARATION's — the rest say what the module imports and
-/// digests to, (`ref`) what a held file's own body once referenced, or (`reexport`)
+/// Whether a record line is a DECLARATION's — the rest say what the module imports,
+/// gathers and digests to, (`ref`) what a held file's own body once referenced, or (`reexport`)
 /// a name its `export use` lines put on the module's surface.
 fn declares(parts: List<string>) -> bool {
     parts[0] != "import" &&
+        parts[0] != "gathers" &&
         parts[0] != "bytes" &&
         parts[0] != "iface" &&
         parts[0] != "file" &&
