@@ -22,6 +22,7 @@ use features.{
     lowering_plan_of,
 }
 use compiler.lower.{Lowered}
+use @std.relation.engine.{list_cell}
 
 /// One source, fully analyzed: the tree, every pass's facts, every
 /// diagnostic in pipeline order, and the registry to render them —
@@ -150,11 +151,25 @@ impl Language {
     /// The whole pipeline over ONE file — a program of one: its own
     /// declarations are its scope, and a `use` has no package to
     /// reach.
+    ///
+    /// ONE IS ALIVE AT A TIME: its rows stand in the process until its
+    /// workspace is let go, and nothing but the next analysis knows the
+    /// last one is done with — so the next lets it go.
     fn analyze(src: SourceFile) -> Analysis {
+        for prior in standing_one_shot().get() { prior.discarded() }
         let ws = lone_workspace(src.file, src.text, self)
+        standing_one_shot().set([ws])
         let a = ws.analysis(ws.file_id(src.file))
         ws.disarmed()
-        a
+        let program = a.program
+        let decl_reads = a.decl_reads
+        a with { program: () -> {
+            ws.standing()
+            program()
+        }, decl_reads: (d: DeclId) -> {
+            ws.standing()
+            decl_reads(d)
+        } }
     }
 
     /// Everything wrong with one source, rendered; "" means clean.
@@ -164,4 +179,18 @@ impl Language {
     fn check(src: SourceFile) -> string {
         self.analyze(src).check()
     }
+}
+
+/// The one-shot workspace whose Analysis may still be read.
+once fn standing_one_shot() -> Cell<List<Workspace>> { list_cell() }
+
+impl Workspace {
+    /// An Analysis read through this workspace is read while it stands.
+    fn standing() {
+        if self.let_go.get() { avra_trap(analysis_outlived()) }
+    }
+}
+
+fn analysis_outlived() -> string {
+    "an Analysis is read while its workspace stands; this one's was let go when the next was made"
 }
