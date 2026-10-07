@@ -17,6 +17,7 @@ use @std.avrac.compiler.{
     BuildOutcome,
     VerifyHeld,
     HeldMismatch,
+    Subject,
 }
 use @std.avrac.core.{joined, distinct}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, file_name, stem_of}
@@ -298,6 +299,53 @@ export fn root_workspace(root: string) -> Workspace {
         programs_workspace(disk_host(), root, avra(), () -> now_ns())
     }
 }
+
+/// A subject and the package it is asked of.
+type Aim = { root: string, subject: Subject }
+
+/// A target read by its spelling alone for the command named `word`, and
+/// the package it is asked of: nothing is the package, `@name` a declaration,
+/// `Family(subject)` an answer — each asked of the package above `from` —
+/// and anything else a path, asked of the package at or above it.
+fn aimed(word: string, target: string, from: string) -> Result<Aim, string> {
+    if target == "" { return under(word, from, Subject.Package) }
+    if target.starts_with("@") {
+        if target.length == 1 { return .Err(decl_unnamed(word)) }
+        return under(word, from, Subject.Decl(target.substring(1, target.length)))
+    }
+    if target.contains("(") {
+        if !target.ends_with(")") { return .Err(query_unclosed(target)) }
+        return under(word, from, Subject.Query(target))
+    }
+    let path = if is_absolute(target) { normalized(target) } else { normalized(joined_path(from, target)) }
+    under(word, path, Subject.File(path))
+}
+
+/// A subject against the world, asked through the door of the workspace the
+/// command goes on to derive in: a path nothing stands at is refused, and
+/// one a directory stands at is its package.
+fn placed(word: string, target: string, subject: Subject, ws: Workspace) -> Result<Subject, string> {
+    match subject {
+        .File(at) -> {
+            if !ws.there(at) { return .Err(no_such_path(word, target)) }
+            if ws.is_dir(at) { Subject.Package } else { subject }
+        },
+        .Package or .Decl(_) or .Query(_) -> subject,
+    }
+}
+
+fn under(word: string, dir: string, subject: Subject) -> Result<Aim, string> {
+    let root? = package_root(dir) else { return .Err(no_package_above(word, dir)) }
+    Aim { root: root, subject: subject }
+}
+
+fn decl_unnamed(word: string) -> string { "avra: `${word} @` names no declaration — write `@name` or `@Owner.name`" }
+
+fn query_unclosed(target: string) -> string { "avra: `${target}` opens an answer's subject and never closes it — write `Family(subject)`" }
+
+fn no_such_path(word: string, target: string) -> string { "avra: no `${target}` — `${word}` reads a file, a package's directory, `@name` or `Family(subject)`" }
+
+fn no_package_above(word: string, dir: string) -> string { "avra: no `avra.toml` at or above ${dir} — `${word}` answers for a package" }
 
 /// The package the command stands in: the CALLER's directory, which
 /// the `avra` shim records before moving to the tree's root — a bare

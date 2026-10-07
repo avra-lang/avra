@@ -17,33 +17,24 @@ use @std.avrac.compiler.{
     Explained,
     Digested,
     FamilyCount,
+    Counted,
+    Compared,
+    Subject,
     Graphed,
-    Labelled,
+    hex_word,
     Phase,
 }
-use @std.avrac.core.{joined, counted, some_list}
+use @std.avrac.core.{joined, counted}
 use @std.json.{Json, Field, field, to_text}
-use @std.path.{relative_path, joined_path, is_absolute, normalized}
+use @std.path.{relative_path}
 use @std.relation.engine.{Key}
-use @std.text.{pad_left, pad_right, from_codepoints}
+use @std.text.{pad_left, pad_right}
 
 type ExplainCmd = {}
 
 /// What `avra explain` was asked: about what, in which form, and the
 /// directory a relative target is read from.
 export type Asked = { target: string, from: string, stats: bool = false, why: bool = false, json: bool = false, time: bool = false }
-
-/// What a target names, by its spelling alone: nothing, a path, `@name`, or
-/// `Family(subject)`.
-enum Subject {
-    Package
-    File(at: string)
-    Decl(name: string)
-    Query(label: string)
-}
-
-/// A subject and the package it is asked of.
-type Aim = { root: string, subject: Subject }
 
 /// What an answer or a refusal prints, line by line.
 alias Lines = Result<List<string>, List<string>>
@@ -82,15 +73,20 @@ fn printed(said: Lines) -> int {
 /// What a form answers: the lines it prints, or the lines of its refusal.
 /// Every refusal the words alone decide is spoken before anything is derived.
 export fn explain_answer(a: Asked) -> Lines {
-    let aim = match placed(a.target, aimed(a.target, a.from)) {
+    let aim = match aimed("explain", a.target, a.from) {
         .Ok(aim) -> aim,
         .Err(why) -> { return .Err([why]) },
     }
     if a.stats && a.why { return .Err([stats_or_why()]) }
     if a.time && !a.stats { return .Err([time_wants_stats()]) }
-    match aim.subject {
-        .Package -> if a.stats || a.why { package_answer(a, aim.root) } else { .Err([needs_target()]) },
-        .File(_) or .Decl(_) or .Query(_) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { subject_answer(a, aim) },
+    let ws = root_workspace(aim.root)
+    let subject = match placed("explain", a.target, aim.subject, ws) {
+        .Ok(subject) -> subject,
+        .Err(why) -> { return .Err([why]) },
+    }
+    match subject {
+        .Package -> if a.stats || a.why { package_answer(a, ws) } else { .Err([needs_target()]) },
+        .File(_) or .Decl(_) or .Query(_) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { subject_answer(a, subject, ws) },
     }
 }
 
@@ -101,80 +97,22 @@ fn walk_of(ws: Workspace) -> Result<CacheWalk, List<string>> {
 
 // ── what a target names ──
 
-/// A target read by its spelling, and the package it is asked of: a path
-/// names the package at or above it, anything else the one above `from`.
-fn aimed(target: string, from: string) -> Result<Aim, string> {
-    if target == "" { return under(from, Subject.Package) }
-    if target.starts_with("@") {
-        if target.length == 1 { return .Err(decl_unnamed()) }
-        return under(from, Subject.Decl(target.substring(1, target.length)))
-    }
-    if target.contains("(") {
-        if !target.ends_with(")") { return .Err(query_unclosed(target)) }
-        return under(from, Subject.Query(target))
-    }
-    let path = if is_absolute(target) { normalized(target) } else { normalized(joined_path(from, target)) }
-    under(path, Subject.File(path))
-}
-
-/// A path target against the world, asked through its package's own door:
-/// nothing there is refused, and a directory there is its package.
-fn placed(target: string, aim: Result<Aim, string>) -> Result<Aim, string> {
-    let read = aim?
-    match read.subject {
-        .File(at) -> {
-            let ws = root_workspace(read.root)
-            if !ws.there(at) { return .Err(no_such_path(target)) }
-            if ws.is_dir(at) { Aim { root: read.root, subject: Subject.Package } } else { read }
-        },
-        .Package or .Decl(_) or .Query(_) -> read,
-    }
-}
-
-fn under(dir: string, subject: Subject) -> Result<Aim, string> {
-    let root? = package_root(dir) else { return .Err(no_package_above(dir)) }
-    Aim { root: root, subject: subject }
-}
-
-/// The answers a subject names in the walked graph, or why it names none.
+/// The answers a subject names in the walked graph, or its refusal's lines.
 fn answers_named(g: Workspace, subject: Subject) -> Result<List<Key>, List<string>> {
-    match subject {
-        .Package -> [],
-        .File(asked) -> file_answers(g, asked),
-        .Decl(name) -> decl_answers(g, name),
-        .Query(label) -> match g.labelled(label) {
-            .Answers(keys) -> keys,
-            .NoFamily(word) -> .Err([no_such_family(word)]),
-            .NoAnswer -> .Err([no_such_answer(label)]),
-        },
+    match g.meant(subject) {
+        .Answers(keys) -> keys,
+        .FileUnread(unread) -> .Err([file_unread(unread)]),
+        .NoDecl(name) -> .Err([no_such_decl(name)]),
+        .ManyDecls(name, shown) -> .Err([many_decls(shown.length, name)].concat(["  ${d}" for d in shown])),
+        .DeclUnanswered(name) -> .Err([decl_unanswered(name)]),
+        .NoFamily(word) -> .Err([no_such_family(word)]),
+        .NoAnswer(label) -> .Err([no_such_answer(label)]),
     }
-}
-
-/// A file is its text, the input, and its analysis, the answer a check asks.
-fn file_answers(g: Workspace, file: string) -> Result<List<Key>, List<string>> {
-    let unread = file_unread(g.shown_path(file))
-    let text? = g.input_key(file) else { return .Err([unread]) }
-    let settled = [k for k in [text].concat(some_list(g.analysis_key(file))) if g.db.cell(k) != null]
-    if settled.is_empty() { .Err([unread]) } else { settled }
-}
-
-/// A declaration is every answer keyed by it.
-fn decl_answers(g: Workspace, name: string) -> Result<List<Key>, List<string>> {
-    let found = g.decls_named(name)
-    if found.is_empty() { return .Err([no_such_decl(name)]) }
-    if found.length > 1 {
-        return .Err(
-            [many_decls(found.length, name)].concat(["  ${g.decl_shown(d.id)}" for d in found]),
-        )
-    }
-    let keys = g.decl_answers(found[0].id)
-    if keys.is_empty() { .Err([decl_unanswered(name)]) } else { keys }
 }
 
 // ── the package: `--stats`, `--why` ──
 
-fn package_answer(a: Asked, root: string) -> Lines {
-    let ws = root_workspace(root)
+fn package_answer(a: Asked, ws: Workspace) -> Lines {
     if a.stats { return stats_answer(a, ws.walk_graph()) }
     let walk = walk_of(ws)?
     if a.json { return [to_text(holds_json(walk))] }
@@ -229,28 +167,16 @@ fn at_root(walk: CacheWalk, file: string) -> string { relative_path(walk.root, f
 /// The graph's answers counted family by family — and under `--time`, what
 /// deriving them spent.
 fn stats_answer(a: Asked, g: Graphed) -> Lines {
-    let families = g.ws.family_counts()
-    if a.json { return [to_text(stats_json(a, g.phases, families))] }
+    let tally = g.ws.family_counts()
+    if a.json { return [to_text(stats_json(a, g.phases, tally))] }
     let rows = [["family", "cells", "edges", "p50", "p99", "longest"]]
         .concat(
-            [[f.family, "${f.cells}", "${f.edges}", "${f.p50}", "${f.p99}", "${f.longest}"] for f in families],
+            [[f.family, "${f.cells}", "${f.edges}", "${f.p50}", "${f.p99}", "${f.longest}"] for f in tally.families],
         )
-        .concat([["total", "${cells_in(families)}", "${edges_in(families)}"]])
+        .concat([["total", "${tally.cells}", "${tally.edges}"]])
     let widths = [widest(rows, column) for column in 0..6]
     let timed = if a.time { ["${pad_right("time", widths[0])}  ${joined([ph.shown() for ph in g.phases], ", ")}"] } else { [] }
     [table_row(r, widths) for r in rows].concat(timed)
-}
-
-fn cells_in(families: List<FamilyCount>) -> int {
-    mut sum = 0
-    for f in families { sum = sum + f.cells }
-    sum
-}
-
-fn edges_in(families: List<FamilyCount>) -> int {
-    mut sum = 0
-    for f in families { sum = sum + f.edges }
-    sum
 }
 
 /// The widest cell of one column, among the rows that reach it.
@@ -274,26 +200,25 @@ fn table_row(cells: List<string>, widths: List<int>) -> string {
 /// from it to each moved input.
 type Shown = { said: Explained, trails: List<Trail>? }
 
-fn subject_answer(a: Asked, aim: Aim) -> Lines {
-    let ws = root_workspace(aim.root)
-    if a.why { why_subject(a, aim, ws, walk_of(ws)?) } else { plain_subject(a, aim, ws) }
+fn subject_answer(a: Asked, subject: Subject, ws: Workspace) -> Lines {
+    if a.why { why_subject(a, subject, ws, walk_of(ws)?) } else { plain_subject(a, subject, ws) }
 }
 
 /// A subject's answers, each with what it read and who reads it.
-fn plain_subject(a: Asked, aim: Aim, ws: Workspace) -> Lines {
+fn plain_subject(a: Asked, subject: Subject, ws: Workspace) -> Lines {
     let g = ws.walk_graph().ws
-    let answers = [Shown { said: e, trails: null } for e in g.explained_all(answers_named(g, aim.subject)?)]
+    let answers = [Shown { said: e, trails: null } for e in g.explained_all(answers_named(g, subject)?)]
     if a.json { return [to_text(page_json([], answers))] }
     [line for s in answers for line in answer_lines(s)]
 }
 
 /// A subject's answers under `--why`: its file's hold first, then each
 /// answer with the way down from it to every moved input.
-fn why_subject(a: Asked, aim: Aim, ws: Workspace, walk: CacheWalk) -> Lines {
-    let hold = hold_of(walk, aim.subject)
+fn why_subject(a: Asked, subject: Subject, ws: Workspace, walk: CacheWalk) -> Lines {
+    let hold = hold_of(walk, subject)
     let fresh = compared_held(ws, hold)
     let g = ws.walk_graph().ws
-    let keys = answers_named(g, aim.subject)?
+    let keys = answers_named(g, subject)?
     let answers = [Shown { said: e, trails: g.trails(keys[i], walk.moved) } for i, e in g.explained_all(keys)]
     let held? = hold else {
         if a.json { return [to_text(page_json([], answers))] }
@@ -308,7 +233,7 @@ fn why_subject(a: Asked, aim: Aim, ws: Workspace, walk: CacheWalk) -> Lines {
 /// A held file against a fresh reading, nothing to compare for a file read or
 /// for no file — made and let go before the graph is derived.
 fn compared_held(ws: Workspace, hold: FileHold?) -> Compared {
-    if hold?.held ?? false { compared(ws, hold!.path) } else { Compared { odds: [], unread: null } }
+    if hold?.held ?? false { ws.held_compared(hold!.path) } else { Compared { odds: [], unread: null } }
 }
 
 /// The hold of the file a subject names — none for any other subject.
@@ -316,19 +241,6 @@ fn hold_of(walk: CacheWalk, subject: Subject) -> FileHold? {
     match subject {
         .File(asked) -> walk.holds.find(it.path == asked),
         .Package or .Decl(_) or .Query(_) -> null,
-    }
-}
-
-/// A held file against a fresh reading: where its declarations read
-/// differently, or why no fresh reading could be made.
-type Compared = { odds: List<HeldMismatch>, unread: string? }
-
-/// `check --verify-held`'s comparison, for this one file, read as the walk's
-/// inspection reads.
-fn compared(ws: Workspace, file: string) -> Compared {
-    match ws.anew().verify_held(null) {
-        .Ok(v) -> Compared { odds: [m for m in v.mismatches if m.file == file], unread: null },
-        .Err(why) -> Compared { odds: [], unread: why },
     }
 }
 
@@ -382,10 +294,8 @@ fn step_line(depth: int, label: string) -> string {
 /// A digest as sixteen hex digits — an answer never digested says so.
 fn digest_shown(digest: int?) -> string {
     let d? = digest else { return "undigested" }
-    from_codepoints([hex_digit((d >> 60 - 4 * i) & 15) for i in 0..16])
+    hex_word(d)
 }
-
-fn hex_digit(n: int) -> int { if n < 10 { 48 + n } else { 87 + n } }
 
 // ── `--json` ──
 
@@ -485,14 +395,14 @@ fn holds_json(walk: CacheWalk) -> Json {
         )
 }
 
-fn stats_json(a: Asked, phases: List<Phase>, families: List<FamilyCount>) -> Json {
+fn stats_json(a: Asked, phases: List<Phase>, tally: Counted) -> Json {
     let timed = if a.time { [field("time_ns", Json.Obj([field(ph.name, Json.Int(ph.ns)) for ph in phases]))] } else { [] }
     Json
         .Obj(
             [
-                field("families", Json.Arr([family_json(f) for f in families])),
-                field("cells", Json.Int(cells_in(families))),
-                field("edges", Json.Int(edges_in(families))),
+                field("families", Json.Arr([family_json(f) for f in tally.families])),
+                field("cells", Json.Int(tally.cells)),
+                field("edges", Json.Int(tally.edges)),
             ]
                 .concat(timed),
         )
@@ -533,14 +443,6 @@ fn stats_or_why() -> string { "avra: `explain` takes `--stats` or `--why`, never
 fn time_wants_stats() -> string { "avra: `explain --time` times the derivation `--stats` counts — it goes with `--stats`" }
 
 fn stats_wants_package(target: string) -> string { "avra: `explain --stats` counts a whole package — `${target}` names one thing in it" }
-
-fn decl_unnamed() -> string { "avra: `explain @` names no declaration — write `@name` or `@Owner.name`" }
-
-fn query_unclosed(target: string) -> string { "avra: `${target}` opens an answer's subject and never closes it — write `Family(subject)`" }
-
-fn no_such_path(target: string) -> string { "avra: no `${target}` — `explain` reads a file, a package's directory, `@name` or `Family(subject)`" }
-
-fn no_package_above(dir: string) -> string { "avra: no `avra.toml` at or above ${dir} — `explain` answers for a package" }
 
 fn file_unread(file: string) -> string { "avra: `explain`: this package's check never reads ${file}" }
 
