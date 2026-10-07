@@ -385,12 +385,17 @@ static void traced_joined(const Fiber* f, int64_t by) {
 // for code that carries no site.
 static const char* site_of(void* body) {
     const char* code = (const char*)(uintptr_t)((AvraArray*)body)->data[0];
-    uint64_t mark;
-    const char* site;
-    memcpy(&mark, code - 16, sizeof mark);
-    if (mark != AVRA_SITE_MARK) return NULL;
-    memcpy(&site, code - 8, sizeof site);
-    return site;
+    AvraSite site;
+    memcpy(&site, code - sizeof site, sizeof site);
+    return site.mark == AVRA_SITE_MARK ? code + site.away : NULL;
+}
+
+// A spawn, and where its body was written.
+static void traced_site(const Fiber* f, const char* site, const void* code);
+__attribute__((noinline, cold))
+static void traced_spawn(const Fiber* f, void* body) {
+    traced_fiber("spawn", f, (long long)id_of(g_current));
+    traced_site(f, site_of(body), (const void*)(uintptr_t)((AvraArray*)body)->data[0]);
 }
 
 // A task's site, said once: its source line, or — for code that
@@ -1480,10 +1485,7 @@ void* avra_task_spawn(void* body) {
     f->task = task;
     f->deadline = g_current->deadline;          // a task inherits its spawner's `within`
     avra_rc_retain(task);                       // the running fiber's own reference
-    if (TRACING) {
-        traced_fiber("spawn", f, (long long)id_of(g_current));
-        traced_site(f, site_of(body), (const void*)(uintptr_t)((AvraArray*)body)->data[0]);
-    }
+    if (TRACING) traced_spawn(f, body);
     ready_push(f);
     return task;
 }
