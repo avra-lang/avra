@@ -2215,7 +2215,9 @@ int64_t avra_case_run(int64_t (*body)(void)) {
 // HOW MANY SCHEDULES, AND WHICH: settings read once, at the first case.
 #define SCHED_RUNS_SETTING "AVRA_SCHED_RUNS"
 #define SCHED_SEED_SETTING "AVRA_SCHED_SEED"
-enum { SCHED_RUNS_DEFAULT = 8 };
+// ONE UNTIL TIME IS VIRTUAL: a suite whose tasks wait in real time
+// would pay each extra schedule in wall time.
+enum { SCHED_RUNS_DEFAULT = 1 };
 static int64_t g_sched_runs = 0;
 static int64_t g_sched_only = -1;
 static int g_sched_settled = 0;
@@ -2247,7 +2249,9 @@ static int64_t case_body_called(void) { return g_case_body() ? 1 : 0; }
 // One schedule of the case: its verdict, and how many choices it made.
 static int64_t case_under(int64_t schedule, int64_t* choices) {
     avra_sched_seed(schedule);
+    avra_case_schedule = schedule;
     int64_t held = avra_case_run(case_body_called);
+    avra_case_schedule = -1;
     *choices = avra_sched_settle();
     return held;
 }
@@ -2274,7 +2278,7 @@ int64_t avra_case_verdict(int64_t code, const char* label) {
 
 void avra_case_schedules_said(void) {
     if (!g_any_chose || g_sched_only >= 0) return;
-    fprintf(stderr, "avra: a case that chose an order ran %lld schedule%s — orders past %d ready tasks are not all reachable\n", (long long)g_sched_runs, g_sched_runs == 1 ? "" : "s", PICK_WINDOW);
+    fprintf(stderr, "avra: a case that chose an order ran %lld schedule%s — " SCHED_RUNS_SETTING "=8 runs more; orders past %d ready tasks are not all reachable\n", (long long)g_sched_runs, g_sched_runs == 1 ? "" : "s", PICK_WINDOW);
 }
 
 int64_t avra_sched_wide_resident(void) {

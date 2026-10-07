@@ -1027,11 +1027,16 @@ const char* avra_case_now(void) {
 // The program's own lines come first: stdout is block-buffered into a
 // pipe, so without the flush a trap's words land AHEAD of lines printed
 // before it, in exactly the logs a reader reads after a wreck.
+// The schedule the case in flight runs under, or -1: a trap names it
+// with the number that replays it.
+int64_t avra_case_schedule = -1;
+
 void avra_trap(const char* msg) {
     fflush(stdout);
     if (g_case) {
         fputs("avra: while running ", stderr);
         fputs(g_case, stderr);
+        if (avra_case_schedule >= 0) fprintf(stderr, " under schedule %lld — AVRA_SCHED_SEED=%lld replays it", (long long)avra_case_schedule, (long long)avra_case_schedule);
         fputc('\n', stderr);
     }
     fputs("avra: ", stderr);

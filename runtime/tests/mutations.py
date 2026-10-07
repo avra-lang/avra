@@ -119,6 +119,7 @@ MUTATIONS = [
     ("the seed setting is not heard", "    if (g_sched_only >= 0) return case_under", "    if (0) return case_under"),
     ("the runs setting is not heard", "    g_sched_runs = whole_setting(SCHED_RUNS_SETTING, 1, SCHED_RUNS_DEFAULT);", "    g_sched_runs = SCHED_RUNS_DEFAULT;"),
     ("the count is never said", "    if (!g_any_chose || g_sched_only >= 0) return;", "    return;"),
+    ("a trap does not know its case's schedule", "    avra_case_schedule = schedule;\n", ""),
     ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("    if (g_until_poll > 0) return;\n", "")], None),
     ("a join answers a cancelled task", "    if (cells[TASK_END] == END_CANCELLED) join_refused();\n", ""),
     ("a fired timer's task answers nothing", "    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;\n", "    avra_rc_release(unit);\n"),

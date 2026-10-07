@@ -84,7 +84,12 @@ static int says(const char* w) { return strstr(g_said, w) != NULL; }
 
 static int64_t verdict(bool (*body)(void)) { return avra_case_verdict((int64_t)(uintptr_t)body, "a case"); }
 
+static void by_default(void) {
+    g_runs = 0;
+    CHECK(verdict(three_any) == 1 && g_runs == 1, "by default a case that chose runs schedule 0 alone");
+}
 static void once_or_eight(void) {
+    setenv("AVRA_SCHED_RUNS", "8", 1);
     g_runs = 0;
     CHECK(verdict(alone) == 1 && g_runs == 1, "a case that made no choice runs once");
     g_runs = 0;
@@ -97,6 +102,7 @@ static void fewer(void) {
 }
 static int64_t g_failed_at = -1;
 static void found(void) {
+    setenv("AVRA_SCHED_RUNS", "8", 1);
     g_runs = 0;
     CHECK(verdict(a_first) == 0, "a case that fails in some order fails");
     CHECK(g_runs >= 2 && g_runs <= 8, "found after schedule 0, within eight");
@@ -119,13 +125,24 @@ static void misspelled(void) {
     setenv("AVRA_SCHED_RUNS", "eight", 1);
     verdict(alone);
 }
+static bool traps_unless_a_first(void) {
+    if (!a_first()) avra_trap("the order was not the one it wanted");
+    return true;
+}
+static void trapped_under_a_schedule(void) {
+    setenv("AVRA_SCHED_RUNS", "8", 1);
+    avra_case_begin("a case that traps");
+    verdict(traps_unless_a_first);
+}
 static void said_at_the_end(void) {
+    setenv("AVRA_SCHED_RUNS", "8", 1);
     verdict(three_any);
     avra_case_schedules_said();
 }
 
 int main(void) {
     alarm(120);
+    heard("by default, one schedule", by_default);
     heard("a case runs once, or eight times", once_or_eight);
     CHECK(g_said[0] == 0, "a passing case says nothing");
     heard("the setting", fewer);
@@ -142,7 +159,20 @@ int main(void) {
     heard("the failing schedule, replayed", replayed);
     heard("schedule 0 alone", zero_alone);
     heard("the count, said once", said_at_the_end);
-    CHECK(says("8 schedules") && says("orders past 16 ready tasks are not all reachable"), "the count is said with what it cannot reach");
+    CHECK(says("8 schedules") && says("AVRA_SCHED_RUNS=8 runs more") && says("orders past 16 ready tasks are not all reachable"), "the count is said with how to run more and what it cannot reach");
+    {
+        int out[2];
+        if (pipe(out) != 0) return 1;
+        pid_t pid = fork();
+        if (pid == 0) { dup2(out[1], 2); close(out[0]); trapped_under_a_schedule(); _exit(0); }
+        close(out[1]);
+        size_t got = 0;
+        for (ssize_t n; got < sizeof g_said - 1 && (n = read(out[0], g_said + got, sizeof g_said - 1 - got)) > 0;) got += (size_t)n;
+        g_said[got] = 0;
+        int status = 0;
+        waitpid(pid, &status, 0);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2 && says("while running a case that traps under schedule ") && says("replays it") && !says("under schedule 0"), "a trap in a seeded case names its schedule");
+    }
     {
         int out[2];
         if (pipe(out) != 0) return 1;
