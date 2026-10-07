@@ -857,6 +857,57 @@ spec "collect's own laws" {
             ) == "Dot/flag Line/"
         }
     }
+    given "a gathered payload is held to the slot law" {
+        then "a void field is refused once, by its record, and its payload reads as nothing to bind" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: void }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nlet y: int = match Shape.Dot(1) { .Dot(x) -> x }\ny",
+                    ui(),
+                ),
+                "a struct field cannot hold nothing",
+            )
+        }
+        then "a task field is refused once, by its record" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { t: Task<int> }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "a task cannot outlive the block that spawned it",
+            )
+        }
+        then "a misspelled field type is refused once, by the name law" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: Nope }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "Nope",
+            )
+        }
+        then "a member gathered by two enums is refused once" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: void }\ncollect enum A = @numbered in self by it.mark.args[0] dense\ncollect enum B = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "a struct field cannot hold nothing",
+            )
+        }
+        then "a nullable field crosses as a payload unchanged" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: int? }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nmatch Shape.Dot(null) { .Dot(x) -> x ?? 7 }",
+                    ui(),
+                ),
+            ) == "7"
+        }
+    }
     given "the order's currency law" {
         // The `by` key's own TYPE is its currency: a literal read at
         // its value (never lexed), a whole mark/list/field refused at

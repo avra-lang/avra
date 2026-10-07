@@ -163,17 +163,20 @@ impl TypeCx {
         // the member's signature is this table's recorded input: its answer is
         // not read, so a member in flight costs nothing but the edge
         let _ = self.view.decls.sig(m.id)
-        [self.gathered_slot(s, m, f.ty) for f in self.view.decls.store_of(m.file).declared_fields(m.stmt)]
+        [self.gathered_slot(s, m, f) for f in self.view.decls.store_of(m.file).declared_fields(m.stmt)]
     }
 
-    /// One written field of a member as a payload's type. The member's
-    /// own declaration speaks for a type it cannot name.
-    mut fn gathered_slot(s: StmtId, m: Decl, written: TypeRef?) -> TypeId {
-        let ty? = written else { return self.error_type }
+    /// One written field of a member as a payload's type, read in the
+    /// member's file and held to the slot law: a refused slot is the
+    /// Error type, as a written variant's is. The member's own
+    /// declaration speaks for the same field, so only the verdict lands.
+    mut fn gathered_slot(s: StmtId, m: Decl, f: Param) -> TypeId {
+        let ty? = f.ty else { return self.error_type }
         let spoken = self.facts.voices
-        let named = self.written_by(m.file, self.stmt_loc(s), ty)
+        let at = self.stmt_loc(s)
+        let held = self.payload_verdict(at, "`${f.name}`", ty, self.written_by(m.file, at, ty))
         self.facts.voices = spoken
-        named
+        held
     }
 
     /// What a variant carries, in order — each payload judged by the
@@ -187,13 +190,20 @@ impl TypeCx {
     fn carried_type(s: StmtId, variant: string, p: Param) -> TypeId? {
         if p.ty == null { return null }
         let who = if p.name.is_empty() { "`.${variant}`" } else { "`${p.name}`" }
+        let at = self.stmt_loc(s)
+        self.payload_verdict(at, who, p.ty!, self.full_type(at, p.ty!))
+    }
+
+    /// The slot law's verdict on a payload `who` carries, written `ty`
+    /// and read as `named`.
+    fn payload_verdict(at: Loc?, who: string, ty: TypeRef, named: TypeId) -> TypeId {
         self
-            .held_slot(
-                s,
+            .held_verdict(
+                at,
                 "type.enum_payload",
                 "an enum payload cannot hold nothing",
-                "${who} carries `${spelled(p.ty!)}`",
-                p.ty!,
+                "${who} carries `${spelled(ty)}`",
+                named,
             )
     }
 
@@ -467,19 +477,30 @@ impl TypeCx {
     /// the NAME law speaks first, and a second refusal for one
     /// mistake is a cascade.
     fn slot_law(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
-        let named = self.full_type(self.stmt_loc(s), ty)
+        self
+            .slot_verdict(self.stmt_loc(s), kind, message, label, self.full_type(self.stmt_loc(s), ty))
+    }
+
+    /// The slot law's verdict on a type already read.
+    fn slot_verdict(at: Loc?, kind: string, message: string, label: string, named: TypeId) -> TypeId {
         let sh: Type = self.view.types.shape_of(named)
         if sh is .Error { return named }
         if slot_worthy(sh) { return named }
-        self.emit(refusal(kind, self.stmt_loc(s), message, label, null))
+        self.emit(refusal(kind, at, message, label, null))
         self.error_type
     }
 
     /// A slot inside a record or a payload — which outlives the block,
     /// so a task never rides in one.
     fn held_slot(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
-        let held = self.slot_law(s, kind, message, label, ty)
-        if self.escapes_with_task(self.stmt_loc(s), label, held) { return self.error_type }
+        self
+            .held_verdict(self.stmt_loc(s), kind, message, label, self.full_type(self.stmt_loc(s), ty))
+    }
+
+    /// `held_slot`'s verdict on a type already read.
+    fn held_verdict(at: Loc?, kind: string, message: string, label: string, named: TypeId) -> TypeId {
+        let held = self.slot_verdict(at, kind, message, label, named)
+        if self.escapes_with_task(at, label, held) { return self.error_type }
         held
     }
 
