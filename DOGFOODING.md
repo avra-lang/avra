@@ -702,6 +702,21 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       that has a declaration of its own, which is a field with a
       default.
 
+- style.mark_by_construction (unratcheted) A WRITTEN VARIANT'S MARK AND A
+      GATHERED MEMBER'S MARK AGREE BY CONSTRUCTION ONLY ON `Decls.is_mark`.
+      On a written variant, `@x` is a mark because of WHERE it stands:
+      the grammar files it in `Variant.marks`, never resolved. On a
+      gathered member the same `@x` is an ANNOTATION on a `type`
+      statement, so the member side asks its SIGNATURE: a fn answering
+      `@std.meta.Marker` is a mark (`Effect.Marks`, never run), and the
+      collect's own gathering word never is. THE TYPE CARRIES THE
+      CATEGORY: "answers void with an empty body" was tried first and
+      read one enum's gathering word as a mark of the other enum
+      gathering the same member (collects/tests/gathered_same_name). THE
+      SMELL: a second reader of a member's marks that filters
+      annotations by its own rule. Not ratcheted; the keeper is
+      collects_test's "a gathered member's marks are its variant's".
+
 - style.mutable_slot_not_cell (unratcheted) A MUTABLE SLOT IS A `Cell`, NEVER A ONE-ELEMENT
       LIST. `ensure: List<fn(DeclId)>` written `self.ensure.set(0, f)`
       and read `self.ensure[0]` is a Cell spelled as a list: its writes

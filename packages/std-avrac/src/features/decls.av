@@ -50,7 +50,7 @@ use core.{
     Annotation,
     At,
 }
-use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck}
+use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck, Mark, CollectKind}
 use @std.relation.db.{Db, new_db}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
 use core.{Fingerprint, Exemplar, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
@@ -2378,6 +2378,32 @@ impl Decls {
     fn is_meta_annotation(a: AnnotationFact, file: FileId, word: string) -> bool {
         let callee? = self.annotation_callee(a, file) else { return false }
         self.is_meta_fn(callee, word)
+    }
+
+    /// Whether an annotation on `d` is a MARK — a word a reader claims
+    /// — rather than work it runs: its callee answers `Marker`. The fn a
+    /// `collect` gathers `d` by (`gathering`) is never one of its marks.
+    fn is_mark(d: DeclId, a: AnnotationFact, gathering: DeclId?) -> bool {
+        let callee? = self.annotation_callee(a, self.annotation_home(d)) else { return false }
+        if gathering != null && same_decl(callee, gathering!) { return false }
+        let ret? = self.sig(callee)?.fn_sig()?.ret else { return false }
+        self.answers_mark(ret)
+    }
+
+    /// The fn a `collect` in `file` gathers by — absent for a kind that
+    /// gathers by anything else.
+    fn gathering_fn(kind: CollectKind, file: FileId) -> DeclId? {
+        let word? = kind.mark() else { return null }
+        (self.namespace_of.get())(file).fn_decl(word)
+    }
+
+    /// Whether an answer is `@std.meta.Marker` — a mark's answer.
+    fn answers_mark(ret: TypeId) -> bool { self.meta_type(ret, "Marker") }
+
+    /// A gathered member's marks: the annotations on it that are marks,
+    /// as a written variant's `@word`s are.
+    fn member_marks(d: DeclId, gathering: DeclId?) -> List<Mark> {
+        [Mark { name: a.name, args: [x.text for x in a.args], span: a.span } for a in self.annotations_of(d) if self.is_mark(d, a, gathering)]
     }
 
     /// The file an annotation on `d` resolves in. A COPIED TEMPLATE'S
