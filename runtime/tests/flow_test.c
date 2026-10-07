@@ -352,16 +352,24 @@ static int traced_scene(void) {
     return 0;
 }
 
-// Code that carries a site as the backend lays it: `file:line` in its
-// padded room, its length, the mark, then the entry. Spawned and never
-// run.
-static struct { char text[16]; AvraSite site; char entry[8]; } g_sited = { "pkg/main.av:7", { 13, AVRA_SITE_MARK }, {0} };
+// Task bodies with a row in the site table, as the backend files one.
+// Spawned and never run.
+static void* sited_body(void* body) { return answer(cap(body)); }
+static void* other_sited(void* body) { return answer(cap(body) + 1); }
+#if defined(__APPLE__)
+#define SITES_SECTION AVRA_SITES_MACHO_SEGMENT "," AVRA_SITES_MACHO_SECTION
+#else
+#define SITES_SECTION AVRA_SITES_ELF_SECTION
+#endif
+__attribute__((used, section(SITES_SECTION))) static const AvraSiteRow g_sited = { (const void*)sited_body, "pkg/main.av:7" };
+__attribute__((used, section(SITES_SECTION))) static const AvraSiteRow g_other_sited = { (const void*)other_sited, "pkg/two.av:12" };
 
 // Run alone, traced: a task whose code carries a site, one whose code
 // carries none, and a virtual task told its own.
 static int sited_scene(void) {
-    spawn1((Code)(uintptr_t)g_sited.entry, 0);
+    spawn1(sited_body, 0);
     spawn1(answers_cap, 0);
+    spawn1(other_sited, 0);
     avra_vtask_sited(avra_vtask_new_at(0, 51), "pkg/other.av:3");
     return 0;
 }
@@ -393,8 +401,9 @@ static void trace_names_sites(const char* self) {
     char buf[4096];
     int status = traced_run(self, "sited-scene", buf, sizeof buf);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the sited scene runs");
-    CHECK(strstr(buf, "site id=1 pkg/main.av:7\n") != NULL, "a task whose code carries a site is traced by its source line");
-    CHECK(strstr(buf, "site id=2 0x") != NULL, "a task whose code carries none is traced by its address");
+    CHECK(strstr(buf, "site id=1 pkg/main.av:7\n") != NULL, "a task whose body has a row is traced by its source line");
+    CHECK(strstr(buf, "site id=2 0x") != NULL, "a task whose body has none is traced by its address");
+    CHECK(strstr(buf, "site id=3 pkg/two.av:12\n") != NULL, "each body by its own row");
     CHECK(strstr(buf, "site id=51 pkg/other.av:3\n") != NULL, "a virtual task is traced by the line its machine names");
 }
 

@@ -296,23 +296,45 @@ void avra_llvm_set_cold(LLVMValueRef fn) {
     LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "minsize"));
 }
 
-// A TASK BODY'S SITE, laid before its code (avra_box.h): the text, its
-// length, the mark. No instruction reads it, so a program pays its
-// bytes and nothing else.
+// A global the linker keeps though no code names it: `llvm.used`, grown
+// by one.
+static void kept_whole(LLVMModuleRef m, LLVMValueRef g) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(LLVMGetModuleContext(m), 0);
+    LLVMValueRef old = LLVMGetNamedGlobal(m, "llvm.used");
+    unsigned n = old ? (unsigned)LLVMGetNumOperands(LLVMGetInitializer(old)) : 0;
+    LLVMValueRef* items = malloc((n + 1) * sizeof *items);
+    for (unsigned i = 0; i < n; i++) items[i] = LLVMGetOperand(LLVMGetInitializer(old), i);
+    items[n] = g;
+    if (old) LLVMDeleteGlobal(old);
+    LLVMValueRef all = LLVMConstArray2(ptr, items, n + 1);
+    free(items);
+    LLVMValueRef used = LLVMAddGlobal(m, LLVMTypeOf(all), "llvm.used");
+    LLVMSetInitializer(used, all);
+    LLVMSetLinkage(used, LLVMAppendingLinkage);
+    LLVMSetSection(used, "llvm.metadata");
+}
+
+// A TASK BODY'S SITE, filed as a row of the site table (avra_box.h).
+// No instruction reads it, so a program pays its bytes and nothing else.
 void avra_llvm_set_site(LLVMValueRef fn, const char* site) {
-    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
-    uint64_t length = strlen(site);
-    uint64_t room = avra_site_room(length);
-    char* text = calloc(room, 1);
-    memcpy(text, site, length);
-    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
-    LLVMValueRef fields[3] = {
-        LLVMConstStringInContext2(ctx, text, room, 1),
-        LLVMConstInt(i64, length, 0),
-        LLVMConstInt(i64, AVRA_SITE_MARK, 0),
-    };
-    free(text);
-    LLVMSetPrefixData(fn, LLVMConstStructInContext(ctx, fields, 3, 0));
+    LLVMModuleRef m = LLVMGetGlobalParent(fn);
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMValueRef text = LLVMConstStringInContext2(ctx, site, strlen(site), 0);
+    LLVMValueRef held = LLVMAddGlobal(m, LLVMTypeOf(text), "");
+    LLVMSetInitializer(held, text);
+    LLVMSetGlobalConstant(held, 1);
+    LLVMSetLinkage(held, LLVMPrivateLinkage);
+    LLVMSetUnnamedAddress(held, LLVMGlobalUnnamedAddr);
+    LLVMValueRef fields[2] = { fn, held };
+    LLVMValueRef cells = LLVMConstStructInContext(ctx, fields, 2, 0);
+    LLVMValueRef row = LLVMAddGlobal(m, LLVMTypeOf(cells), "");
+    LLVMSetInitializer(row, cells);
+    LLVMSetLinkage(row, LLVMPrivateLinkage);
+    LLVMSetAlignment(row, 8);
+    const char* triple = LLVMGetTarget(m);
+    int macho = triple && (strstr(triple, "apple") || strstr(triple, "darwin"));
+    LLVMSetSection(row, macho ? AVRA_SITES_MACHO_SEGMENT "," AVRA_SITES_MACHO_SECTION : AVRA_SITES_ELF_SECTION);
+    kept_whole(m, row);
 }
 
 // Whether this build counts the boxes runtime rows mint, by type:
