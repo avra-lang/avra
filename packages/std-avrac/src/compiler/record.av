@@ -84,9 +84,10 @@ fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
 }
 
 /// WHERE ONE FILE STANDS IN ITS MODULE'S RECORD: its `file` line, and the run of its
-/// declaration lines — a record lists a file's declarations together. Asked per
-/// file, a scan of the whole record is the module's lines squared.
-type Placed = { file: List<string>, lo: int, hi: int }
+/// declaration lines — a record lists a file's declarations together — and the
+/// files its compile-time runs read. Asked per file, a scan of the whole record
+/// is the module's lines squared.
+type Placed = { file: List<string>, runs: List<string>, lo: int, hi: int }
 
 /// A record's files, each placed — memoized for the build.
 // LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
@@ -103,9 +104,10 @@ fn places_of(fields: List<List<string>>) -> Map<string, Placed> {
     mut out: Map<string, Placed> = {}
     for j, parts in fields {
         if places_file(parts) {
-            out.set(parts[1], Placed { file: parts, lo: 0, hi: 0 })
+            let runs? = runs_of(parts) else { continue }
+            out.set(parts[1], Placed { file: parts, runs: runs, lo: 0, hi: 0 })
         } else if declares(parts) && parts.length > 1 {
-            let at = out.get(parts[1]) ?? Placed { file: [], lo: 0, hi: 0 }
+            let at = out.get(parts[1]) ?? Placed { file: [], runs: [], lo: 0, hi: 0 }
             out.set(parts[1], at with { lo: if at.hi == 0 { j } else { at.lo }, hi: j + 1 })
         }
     }
@@ -1537,8 +1539,19 @@ fn opens_decl_wire(word: string) -> bool {
 fn seen_digest(seen: List<SeenPart>) -> string { digest_of(joined([s.bytes_key for s in seen], "\n")) }
 
 /// The files a record says one file's compile-time runs read.
-fn kept_runs(at: Placed?) -> List<string> {
-    if at == null || at!.file.length < 4 { [] } else { at!.file[3].split("|") }
+fn kept_runs(at: Placed?) -> List<string> { at?.runs ?? [] }
+
+/// A `file` line's runs field: each path as hex, so no character a path
+/// may hold is spent on the record's own separators.
+fn runs_field(paths: List<string>) -> string { joined([hex(p.bytes()) for p in paths], "|") }
+
+/// A `file` line's runs read back; null when a field is no path's hex — a
+/// line this compiler never wrote, so it places nothing.
+fn runs_of(parts: List<string>) -> List<string>? {
+    if parts.length < 4 { return [] }
+    let runs = [unhex(field)?.text() for field in parts[3].split("|")]
+    if runs.any(it == null) { return null }
+    [r! for r in runs]
 }
 
 /// The modules a module's record says it imports — memoized for the build.

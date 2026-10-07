@@ -547,25 +547,16 @@ impl Workspace {
         )
     }
 
-    /// Where the files a program EMBEDS are remembered.
-    fn embeds_key(named: string) -> string { node_key(Stored.Unit, ["embeds", self.root, named]) }
-
-    /// EVERY FILE A PROGRAM'S CONSTS EMBED, as its last derivation admitted
-    /// them: an embedded file is no source, so no package's listing names
-    /// it, and its edit must still move the key. Remembered as the closure
-    /// is, and for its reason — the key is asked before anything is read.
-    fn embeds(named: string) -> List<string> {
+    /// EVERY FILE A PROGRAM'S COMPILE-TIME RUNS READ THAT IS NOT ONE OF ITS
+    /// INPUTS, as each input's record names it: an embedded file is no
+    /// source of the program, so no package's listing names it, and its edit
+    /// must still move the key.
+    fn embeds(inputs: List<string>) -> List<string> {
+        let store = self.opened_store()
         sorted_texts(
-            [line for line in remembered(self.opened_store(), self.embeds_key(named)) if !line.is_empty()],
-        )
-    }
-
-    /// The embedded files as they stand now, remembered for the next key.
-    fn keep_embeds(named: string) {
-        remember(
-            self.opened_store(),
-            self.embeds_key(named),
-            [path for path in self.decls.file_paths() if !self.reads_as_source(path)],
+            distinct(
+                [ran for path in inputs for ran in kept_runs(record_places(self, store, self.module_path_of(path)).get(path)) if !inputs.contains(ran)],
+            ),
         )
     }
 
@@ -579,12 +570,11 @@ impl Workspace {
     /// An embedded file's line of the key.
     fn embed_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.embed_said(path)}" }
 
-    /// The key a finished derivation keeps under: its closure and its
-    /// embedded files remembered first, so the next ask — before anything
-    /// is read — names the same inputs.
+    /// The key a finished derivation keeps under: its closure remembered
+    /// first, so the next ask — before anything is read — names the same
+    /// inputs.
     fn kept_key(under: Keyed) -> string {
         self.keep_closure(under.named)
-        self.keep_embeds(under.named)
         self.program_key(under.named, under.beside)
     }
 
@@ -603,7 +593,7 @@ impl Workspace {
         let named_inputs = self.build_inputs(named).concat(beside)
         let inputs = joined(
             [self.input_line(f) for f in named_inputs]
-                .concat([self.embed_line(f) for f in self.embeds(named)]),
+                .concat([self.embed_line(f) for f in self.embeds(named_inputs)]),
             "\n",
         )
         let objects = joined([self.object_line(o) for o in self.reached_objects(named)], "\n")

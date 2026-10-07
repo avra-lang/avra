@@ -24,7 +24,7 @@ use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of, EmbedFault
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
 use compiler.lower.{LinkedPackage}
-use compiler.host.{library_stem}
+use compiler.host.{library_stem, Beneath, Read, InputName}
 use compiler.backend.{platform_defines}
 use @std.errors.{Loc}
 
@@ -160,27 +160,6 @@ impl Workspace {
             let scope = p.store.collect_scope(s)
             if scope != null { self.decls.admit_scope(scope!, f) }
         }
-        self.admit_embeds(p)
-    }
-
-    /// `embed("literal")` names a file at compile time — the same
-    /// declared reach a `use` line names. Minted here, before anything
-    /// reads the File relation this revision, so a const's own
-    /// Settled-family query never mints a late row mid-read. EVERY
-    /// literal of the file, however deep it is written: a const reads
-    /// one through a fn's body or under a property as readily as at its
-    /// own top. A FILE THE LAW REFUSES IS NO INPUT and is not minted —
-    /// typing speaks of it at the literal, and a minted row would be
-    /// read as a source first. A computed path cannot be found this
-    /// way and typing refuses it.
-    fn admit_embeds(p: Parsed) {
-        for e in p.store.expr_ids() {
-            let rel? = embed_literal_at(p.store, e) else { continue }
-            match self.embed_placed_beside(p.source.file, rel) {
-                .Ok(path) -> { let _ = self.minted_file(path) },
-                .Err(_) -> { let _ = 0 },
-            }
-        }
     }
 
     /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
@@ -262,8 +241,9 @@ impl Workspace {
 
     fn embed_placed_beside(source: string, rel: string) -> Result<string, EmbedFault> {
         let place = self.embed_place(source, rel)?
-        match (self.host.beneath)(place.root, place.rel) {
-            .Text(_) -> joined_path(place.root, place.rel),
+        let path = joined_path(place.root, place.rel)
+        match self.embedded(path) {
+            .Text(_) -> path,
             .Missing -> .Err(EmbedFault.Missing),
             .Linked -> .Err(EmbedFault.Linked),
             .NotText(at) -> .Err(EmbedFault.NotText(at)),
@@ -278,13 +258,34 @@ impl Workspace {
     fn embed_read(path: string) -> Result<string, string> {
         let root? = self.root_over(path) else { fail embed_literal_law }
         let place? = beneath_root(root, path) else { fail embed_literal_law }
-        match (self.host.beneath)(place.root, place.rel) {
+        match self.embedded(path) {
             .Text(text) -> text,
             .Missing -> .Err("`embed` finds no `${place.rel}`"),
             .Linked -> .Err("`embed` follows no link — one stands on the way to `${place.rel}`"),
             .NotText(at) -> .Err("`embed` answers text, and `${place.rel}` is not UTF-8 — byte ${at}"),
             .Refused(why) -> .Err("`embed` could not read its file — ${why}"),
         }
+    }
+
+    /// What stands at an embedded file, through its cell: AN EMBEDDED FILE
+    /// IS AN INPUT, NEVER A FILE ROW — a query that reads it depends on its
+    /// cell, and no row is minted while a query reads the File relation.
+    fn embedded(path: string) -> Beneath {
+        match self.input(InputName { kind: .Embedded, key: path }) {
+            .Embedded(_, seen) -> seen,
+            .Text(_, _) or .Octets(_, _) or .Range(_, _, _, _) or .Listing(_, _) or .Exists(_, _) or .Env(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> {
+                avra_trap("defect: an `embedded` input answered another kind of read")
+                Beneath.Missing
+            },
+        }
+    }
+
+    /// The door's read of an embedded file: beneath the package root over
+    /// it, as the key alone names it, through no link.
+    fn embedded_asked(path: string) -> Read {
+        let root? = self.root_over(path) else { return unrooted(path) }
+        let place? = beneath_root(root, path) else { return unrooted(path) }
+        self.host.embedded(path, place.root, place.rel)
     }
 
     /// Whether a file is Avra source, by its shape alone (`is_source` — a lone
@@ -551,26 +552,15 @@ fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> 
     place
 }
 
+/// An embedded file no package root stands over: the law's refusal.
+fn unrooted(path: string) -> Read { Read.Embedded(path, Beneath.Refused(embed_literal_law)) }
+
 /// `path` as it stands beneath `root`, or null when it does not.
 fn beneath_root(root: string, path: string) -> EmbedPlace? {
     let held = normalized(root)
     let at = normalized(path)
     if !at.starts_with("${held}/") { return null }
     EmbedPlace { root: held, rel: at.substring(held.length + 1, at.length) }
-}
-
-/// A call to a name spelled `embed`, with one string-literal argument
-/// — the path it names, or null for any other call, arity, or a
-/// computed argument (typing refuses that one, where the callee is
-/// resolved).
-fn embed_literal_at(store: SyntaxArena, e: ExprId) -> string? {
-    match store.expr(e) {
-        .Call(callee, _, args) -> {
-            if callee.of != "embed" || args.length != 1 { return null }
-            store.expr(args[0]).text_of()
-        },
-        _ -> null,
-    }
 }
 
 fn segments_of(dotted_text: string) -> List<string> {

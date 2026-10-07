@@ -23,7 +23,7 @@ use core.{new_digest, digest_bytes, digest_text, digest_key, mix_final}
 use @std.relation.stable.{Writer, writer}
 
 /// What a read asks of the world.
-export enum InputKind { Text, Octets, Range, Listing, Exists, Env, Tool, Compiler }
+export enum InputKind { Text, Octets, Range, Listing, Exists, Env, Tool, Compiler, Embedded }
 
 /// An input's name: its kind and the key it was asked by.
 export type InputName = { kind: InputKind, key: string }
@@ -64,6 +64,9 @@ export enum Read {
     Compiler(stamp: Stamp?)
     /// A read the host would not perform, in its words.
     Refused(name: InputName, why: string)
+    /// A file an `embed` names, read beneath the package root over it,
+    /// through no link.
+    Embedded(key: string, seen: Beneath)
 }
 
 impl Read {
@@ -78,6 +81,7 @@ impl Read {
             .Tool(key, _) -> InputName { kind: .Tool, key: key },
             .Compiler(_) -> InputName { kind: .Compiler, key: "" },
             .Refused(name, _) -> name,
+            .Embedded(key, _) -> InputName { kind: .Embedded, key: key },
         }
     }
 
@@ -110,6 +114,7 @@ impl Read {
                 head.count(REFUSED)
                 head.text(why)
             },
+            .Embedded(_, seen) -> beneath_found(head, seen),
         }
         head.bytes()
     }
@@ -118,6 +123,7 @@ impl Read {
     fn body() -> Body {
         match self {
             .Text(_, text) or .Env(_, text) -> if text == null { Body.None } else { Body.Text(text!) },
+            .Embedded(_, seen) -> match seen { .Text(text) -> Body.Text(text), _ -> Body.None },
             .Octets(_, octets) or .Range(_, _, _, octets) -> if octets == null { Body.None } else { Body.Octets(octets!) },
             .Listing(_, _) or .Exists(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> Body.None,
         }
@@ -154,6 +160,29 @@ fn kind_tag(k: InputKind) -> int {
         .Env -> 6,
         .Tool -> 7,
         .Compiler -> 8,
+        .Embedded -> 9,
+    }
+}
+
+/// What a read beneath a root saw: a state, then why it was refused.
+fn beneath_found(head: Writer, seen: Beneath) {
+    match seen {
+        .Text(_) -> head.count(PRESENT),
+        .Missing -> head.count(ABSENT),
+        .Linked -> {
+            head.count(REFUSED)
+            head.count(1)
+        },
+        .NotText(at) -> {
+            head.count(REFUSED)
+            head.count(2)
+            head.int(at)
+        },
+        .Refused(why) -> {
+            head.count(REFUSED)
+            head.count(3)
+            head.text(why)
+        },
     }
 }
 

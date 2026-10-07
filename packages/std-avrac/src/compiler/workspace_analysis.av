@@ -584,11 +584,9 @@ impl Workspace {
         }
         let ask = self.settle_asks.get()[id]
         let r = self.settle_result(ask)
-        // `embed` is the one permitted build-world read. Make every
-        // file it opened a source input dependency before this query
-        // closes, so its content participates in revalidation.
+        // every file `embed` read is this query's input, a held answer's too
         match r {
-            .Ok(value) -> { for path in value.embeds { touch(self.source(self.file_id(path))) } },
+            .Ok(value) -> { for path in value.embeds { let _ = self.embedded(path) } },
             .Err(_) -> { let _ = 0 },
         }
         let held = match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
