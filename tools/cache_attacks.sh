@@ -1561,12 +1561,12 @@ S "kw: a|b.txt edited, every source held" kw; kw_says "a|b.txt edited under held
 # lib.av collects every `@kind` in its package; the one member stands in m/m.av, which
 # nothing imports, so only the collect reaches it. Only m/m.av is edited — a second member
 # ranked first — so lib.av, whose text and imports never move, is held: the enum must still
-# gather the new member, moving A's ordinal 0 -> 1 — and so must a collect `in closure`,
-# which gathers whatever the program admitted. Then a held reading of the program
+# gather the new member, moving A's ordinal 0 -> 1 — and a list collect `in closure`, which
+# gathers whatever the program admitted, must count it: 1 -> 2. Then a held reading of the program
 # answers every reference a fresh one does — m/m.av's own included.
 mkdir -p $R/gk/src/m $R/kg/src
 printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $R/gk/avra.toml
-printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\nexport collect enum Near = @kind in closure by it.mark.args[0]\nexport fn c_at() -> int { Near.A.ordinal }\n' > $R/gk/src/lib.av
+printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\ntype Entry = { name: string }\ncollect near: List<Entry> = @kind in closure as Entry { name: it.name } by it.name\nexport fn c_at() -> int { near.length }\n' > $R/gk/src/lib.av
 printf 'use lib.{kind}\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
 printf '[package]\nname = "rt-kg"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $R/kg/avra.toml
 printf 'use @rt.gk.lib.{a_at, c_at}\nprintln("a=${a_at()} c=${c_at()}")\n' > $R/kg/src/main.av
@@ -1574,9 +1574,9 @@ kg_says() { # kg_says <label> <wanted>: the built binary prints A's ordinal as t
     steps=$((steps+1)); kg_out=$($R/kg/src/main 2>&1)
     [ "$kg_out" = "$2" ] || { fails=$((fails+1)); echo "FAIL  kg: $1: the binary printed '$kg_out', wanted '$2'"; }
 }
-S "cold kg" kg; kg_says "cold" "a=0 c=0"
+S "cold kg" kg; kg_says "cold" "a=0 c=1"
 printf 'use lib.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $R/gk/src/m/m.av
-S "kg: a member added in the dependency, lib.av held" kg; kg_says "a gathered member added under a held collect" "a=1 c=1"
+S "kg: a member added in the dependency, lib.av held" kg; kg_says "a gathered member added under a held collect" "a=1 c=2"
 printf '// moved\n' >> $R/kg/src/main.av
 HR "kg: main.av edited" check kg 0
 steps=$((steps+1)); kg_v=$(./avra check --verify-held $R/kg 2>&1); kg_st=$?
