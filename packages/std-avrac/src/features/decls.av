@@ -349,6 +349,10 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
     // tables do not cover — `statics`, `grammars`, the parts tables trap past their end.
     // Absence there is "declares nothing", not a defect.
     let readable = x.stmt.index < store.stmts.count()
+    // A declaration riding another's statement (a field's default)
+    // wears none of that statement's own words: its seats, its doc, its
+    // annotations are the owner's.
+    let owns = readable && names_its_stmt(x.kind)
     DeclFacts {
         external: readable && x.kind is .Fn && store.extern_parts(x.stmt) != null,
         stat: store.is_static(x.stmt),
@@ -357,14 +361,14 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         span: occupied(store, x),
         tparams: if readable { store.decl_tparams(x.stmt) } else { [] },
         bounds: if readable { [p.ty?.name ?? "" for p in store.decl_tbounds(x.stmt)] } else { [] },
-        seats: if readable && !(x.kind is .Default) { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
+        seats: if owns { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
         host: if readable { extern_host(store, x.stmt) } else { [] },
-        annotated: readable && !store.annotations_of(x.stmt).is_empty(),
+        annotated: owns && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
         instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
         word: if x.kind is .Const { store.instance_of(x.stmt) } else { null },
-        doc: if readable { store.doc_comment(x.stmt) } else { null },
-        annotations: if readable { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
+        doc: if owns { store.doc_comment(x.stmt) } else { null },
+        annotations: if owns { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
         mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },
         trait_args: if readable && x.kind is .Impl { [spelled(a) for a in store.trait_args_of(x.stmt)] } else { [] },
         hosted: readable && x.kind is .Fn && store.is_host_fn(x.stmt),

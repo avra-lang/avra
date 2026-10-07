@@ -908,6 +908,43 @@ spec "collect's own laws" {
             ) == "7"
         }
     }
+    given "a field default rides its owner's statement and wears none of its annotations" {
+        then "a record with a defaulted field gathers as one variant" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: int = 0 }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nmatch Shape.Dot(1) { .Dot(x) -> x }",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a state field with a default gathers as one variant" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {\n    state n: int = 0\n}\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nmatch Shape.Dot(1) { .Dot(x) -> x }",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a derive over a record with a defaulted field runs once" {
+            answered(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive}\n@derive(Claimer)\ntype Dot = { v: int = 0 }\n\"[\${Dot.said()}]\"",
+                    claimer(),
+                ),
+            ) == "[]"
+        }
+        then "a validator over a record with a defaulted field speaks once" {
+            refused_in(
+                provided(
+                    "use @std.meta.{Named, Diagnostic}\nfn vetted(what: Named) -> List<Diagnostic> { [Diagnostic { message: \"vetted says no\", help: null, at: null }] }\n@vetted\ntype Dot = { v: int = 0, w: int = 1 }\n1",
+                    ui(),
+                ),
+                "vetted says no",
+            )
+        }
+    }
     given "the order's currency law" {
         // The `by` key's own TYPE is its currency: a literal read at
         // its value (never lexed), a whole mark/list/field refused at
