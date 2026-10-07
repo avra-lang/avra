@@ -10,7 +10,8 @@ use @std.relation.engine.{Loaded}
 
 /// What reading the world again found.
 export enum Moved {
-    /// Every input was read again — so many — and each one that
+    /// Every input that can move under a running process was read again
+    /// — so many — and each one that
     /// differed moved the revision.
     Reread(inputs: int)
     /// The set of files moved, or a manifest's text did. The package
@@ -94,6 +95,20 @@ impl Workspace {
         text
     }
 
+    /// A variable's value, through its cell; none when it is unset.
+    fn env(name: string) -> string? {
+        match self.input(InputName { kind: .Env, key: name }) { .Env(_, value) -> value, _ -> null }
+    }
+
+    /// The running compiler's bytes as one digest, through its cell — read
+    /// once for the process; none when the host cannot name or read it.
+    fn running_print() -> string? {
+        match self.input(InputName { kind: .Compiler, key: "" }) {
+            .Compiler(print) -> print,
+            _ -> null,
+        }
+    }
+
     /// The cell a file's text stands in, when it was read — asking mints
     /// nothing.
     fn text_cell(path: string) -> int? { self.input_index.get().get(spelled(text_named(path))) }
@@ -124,7 +139,7 @@ impl Workspace {
     fn text_word(path: string) -> int { self.db.value_hash_of(key(Family.Input, self.text_key(path))) ?? 0 }
 
     /// THE WORLD MAY HAVE MOVED: every input read so far is read again
-    /// through the door. A TEXT that differs moves the revision — a
+    /// through the door, but one that stands for the running process. A TEXT that differs moves the revision — a
     /// source and a scan are queries over their text's input, so they
     /// follow. The SET of files that differs — something stands or no
     /// longer stands, a directory lists otherwise — or a manifest's
@@ -135,13 +150,13 @@ impl Workspace {
     export fn world_moved() -> Result<Moved, string> {
         if !self.db.kernel.asker.open.get().is_empty() { fail world_moved_in_query() }
         if self.let_go.get() { fail asked_after_let_go() }
-        let names = self.input_names.get()
-        if [at for at, name in names if self.input_reread(at, name)]
+        let again = [at for at, name in self.input_names.get() if !name.kind.stands_for_process()]
+        if [at for at in again if self.input_reread(at, self.input_names.get()[at])]
             .any((at) -> self.shapes_graph(at)) {
             self.discarded()
             return .Ok(Moved.Graph)
         }
-        .Ok(Moved.Reread(names.length))
+        .Ok(Moved.Reread(again.length))
     }
 
     /// Whether an input cell is one the package graph is shaped by: one
@@ -190,7 +205,9 @@ impl Workspace {
             .Listing -> self.host.listing(name.key),
             .Text -> self.host.spared_text(name.key),
             .Embedded -> self.embedded_asked(name.key),
-            .Octets or .Range or .Env or .Tool or .Compiler -> {
+            .Env -> self.host.variable(name.key),
+            .Compiler -> self.host.running(),
+            .Octets or .Range or .Tool -> {
                 avra_trap("defect: no door verb reads a `${kind_word(name.kind)}` input")
                 Read.Refused(name, "")
             },

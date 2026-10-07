@@ -50,7 +50,44 @@ fn spec_package(toml: string) -> Workspace {
             "/w/src/main.av",
             "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n    }\n}\n",
         )
-    new_workspace(memory_host(fs, ws_names().concat(["/w/avra.toml"])), "/w", avra())
+    new_workspace(
+        memory_host(fs, ws_names().concat(["/w/avra.toml"])) with { env: path_only },
+        "/w",
+        avra(),
+    )
+}
+
+/// An environment holding `PATH` alone.
+fn path_only(name: string) -> string? {
+    if name == "PATH" { return "/usr/bin" }
+    null
+}
+
+/// An environment whose `X` names another variable, and whose `Z`
+/// names itself.
+fn self_naming(name: string) -> string? {
+    if name == "X" { return "\${" + "Y}" }
+    if name == "Y" { return "/y" }
+    if name == "Z" { return "\${" + "Z}" }
+    null
+}
+
+/// The link words of a package whose search row is `word`, under
+/// `self_naming`'s environment.
+fn searched(word: string) -> List<string> {
+    mut fs = ws_files()
+    fs
+        .set(
+            "/w/avra.toml",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"${word}\"]\n",
+        )
+    fs.set("/w/src/main.av", "1\n")
+    new_workspace(
+        memory_host(fs, ws_names().concat(["/w/avra.toml"])) with { env: self_naming },
+        "/w",
+        avra(),
+    )
+        .link_words("")
 }
 
 /// A manifest whose raw link option is a shell command — the
@@ -259,6 +296,13 @@ spec "compiler/workspace" {
             let words = spec_package(holed_manifest()).link_words("")
             !words.any(it.is_empty()) && words.length == 1
         }
+        then "a value holding a hole is data: the hole it holds is never filled" {
+            searched("\$" + "{X}").join(" ") == "-L\$" + "{Y}"
+        }
+        then "a value naming its own variable is filled once" {
+            searched("\$" + "{Z}/lib").join(" ") == "-L\$" + "{Z}/lib"
+        }
+        then "the holes after a value are filled" { searched("\$" + "{Y}:\$" + "{Y}").join(" ") == "-L/y:/y" }
         then "a hole naming nothing leaves no BARE `-L` either — it would eat the word after it" {
             !spec_package(holed_manifest()).link_words("").any(it == "-L")
         }

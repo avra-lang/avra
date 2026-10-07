@@ -5,7 +5,7 @@
 // two different compilers reading the very same input, or a newer
 // compiler silently trusts an older one's row — the "index 221 is out
 // of bounds (length 181)" trap this ticket traces.
-use @std.avrac.compiler.{avra, new_workspace, build_cache_root, db_qualified}
+use @std.avrac.compiler.{avra, new_workspace, build_cache_root, db_qualified, digest_of_binary}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
 use compiler.store.{store_at}
@@ -43,10 +43,16 @@ fn print_workspace(binary: string?) -> Workspace {
                 "/w/src/main.av": "fn a() { 1 }\n",
             },
             ["/w/avra.toml", "/w/src/main.av"],
-        ) with { compiler: binary },
+        ) with { compiler: binary, print: () -> print_at(binary) },
         "/w",
         avra(),
     )
+}
+
+/// A binary's print, as a host that names it settles it; none for none.
+fn print_at(binary: string?) -> string? {
+    let at? = binary else { return null }
+    digest_of_binary(at)
 }
 
 spec "compiler/build — a durable row's key names the compiler that wrote it" {

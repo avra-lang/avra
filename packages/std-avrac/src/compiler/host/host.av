@@ -2,6 +2,7 @@
 //! host a test hands in. The disk host is the CLI's.
 use core.{sorted_texts}
 use @std.path.{under_dir, joined_path, normalized, head_segment}
+use @std.io.{env}
 
 /// The filesystem, as its questions. `stamp` says a file's bytes have not moved
 /// without reading them — null when the host cannot tell.
@@ -10,7 +11,7 @@ use @std.path.{under_dir, joined_path, normalized, head_segment}
 /// byte), or the host's own refusal.
 export enum Beneath { Text(text: string), Missing, Linked, NotText(at: int), Refused(why: string) }
 
-export type Host = { exists: fn(string) -> bool, peek: fn(string) -> Beneath, refused: fn(string) -> void, beneath: fn(string, string) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, std_root: string? = null, cwd: string = "", compiler: string? = null }
+export type Host = { exists: fn(string) -> bool, peek: fn(string) -> Beneath, refused: fn(string) -> void, beneath: fn(string, string) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, env: fn(string) -> string?, print: fn() -> string?, std_root: string? = null, cwd: string = "", compiler: string? = null }
 
 impl Host {
     /// One spelling for one directory: a relative path rooted at the
@@ -54,6 +55,13 @@ impl Host {
 
     /// Whether anything stands at `path`, through the door.
     fn there(path: string) -> Read { Read.Exists(path, self.exists(path)) }
+
+    /// A variable's value through the door; none when it is unset.
+    fn variable(name: string) -> Read { Read.Env(name, (self.env)(name)) }
+
+    /// The running compiler through the door, by its bytes' digest as the
+    /// host settled it.
+    fn running() -> Read { Read.Compiler((self.print)()) }
 
     /// A directory's names through the door, sorted, each saying whether
     /// it is a directory itself; nothing where no directory stands.
@@ -104,6 +112,8 @@ export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: s
         is_dir: (dir: string) -> names.any(under_dir(it, normalized(joined_path(cwd, dir)))),
         stamp: no_stamp,
         reads_ahead: any_reads,
+        env: unset,
+        print: no_print,
         cwd: cwd,
     }
 }
@@ -113,6 +123,16 @@ fn memory_beneath(held: Cell<Map<string, string>>, at: string) -> Beneath {
     let text? = held.get().get(at) else { return Beneath.Missing }
     Beneath.Text(text)
 }
+
+/// The process's own environment: a variable's value, none when it is
+/// unset — the disk host's variable read.
+export fn process_env(name: string) -> string? { env(name) }
+
+/// A host that names no running compiler.
+export fn no_print() -> string? { null }
+
+/// A host whose environment holds no variable.
+export fn unset(_name: string) -> string? { null }
 
 /// A host with no links, over what it can already say of a path: what
 /// stands there is its text.

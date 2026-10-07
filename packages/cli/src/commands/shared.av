@@ -18,6 +18,7 @@ use @std.avrac.compiler.{
     VerifyHeld,
     HeldMismatch,
     Subject,
+    digest_of_binary,
 }
 use @std.avrac.core.{joined, distinct}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, file_name, stem_of}
@@ -49,7 +50,7 @@ use @std.io.{
     Entry,
 }
 use @std.avrac.compiler.backend.{emit_ll}
-use @std.avrac.compiler.host.{Host, no_target, Beneath}
+use @std.avrac.compiler.host.{Host, no_target, Beneath, process_env}
 use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
 
 // THE TWO TRUE EXTERNS: no std package owns "re-exec this image" or
@@ -72,6 +73,8 @@ fn disk_host() -> Host {
         is_dir: (dir: string) -> is_dir(dir),
         stamp: (p: string) -> stamp(p),
         reads_ahead: (files: int) -> light_or_leave(files),
+        env: process_env,
+        print: own_print,
         std_root: std_root(),
         cwd: env("PWD") ?? ".",
         compiler: own_binary(),
@@ -153,6 +156,14 @@ fn light_or_leave(files: int) {
 /// This binary's own path — the compiler a store's rows are the work of.
 fn own_binary() -> string? {
     toolchain_files([file_name(avra_selfhost_get_arg_cstr(0))]).find(exists(it))
+}
+
+/// THE RUNNING COMPILER'S PRINT: its binary's bytes as one digest, read
+/// once a process — a binary rebuilt under a running process is not the
+/// code that runs.
+once fn own_print() -> string? {
+    let at? = own_binary() else { return null }
+    digest_of_binary(at)
 }
 
 /// Write a file, making its directory first — a cache keeps artifacts

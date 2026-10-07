@@ -6,7 +6,7 @@
 use compiler.{Workspace, Subject, avra, new_workspace, family_word}
 use compiler.host.{memory_host}
 use compiler.families.{Family}
-use core.{sorted_texts}
+use core.{sorted_texts, digest_of}
 use @std.relation.engine.{Key, same_key}
 
 /// The package checked in one process, so the kernel holds what each file read.
@@ -278,5 +278,35 @@ spec "compiler/cache_walk — the families, counted" {
         mut cells = 0
         for c in ws.family_counts().families { cells = cells + c.cells }
         cells == [1 for family in ws.db.cells_by_family() for _c in family].length
+    }
+}
+
+/// A workspace that has read one variable and the running compiler.
+fn on_a_machine() -> Workspace {
+    let ws = new_workspace(
+        memory_host({"/w/bin/avra": "b"}, []) with { env: prefix_only, print: () -> digest_of("b"), compiler: "/w/bin/avra" },
+        "/w",
+        avra(),
+    )
+    let _ = ws.env("LLVM_PREFIX")
+    let _ = ws.running_print()
+    ws
+}
+
+fn prefix_only(name: string) -> string? {
+    if name == "LLVM_PREFIX" { return "/opt/llvm" }
+    null
+}
+
+/// The labels of every input the workspace read.
+fn input_labels(ws: Workspace) -> List<string> { [ws.key_label(c.key) for c in ws.db.cells_by_family()[Family.Input.ordinal]] }
+
+spec "compiler/cache_walk — an input that is no path" {
+    then "a variable is shown by its name" { input_labels(on_a_machine()).contains("Input(env LLVM_PREFIX)") }
+    then "the compiler is shown by its word alone" { input_labels(on_a_machine()).contains("Input(compiler)") }
+    then "each one's label names it again" {
+        let ws = on_a_machine()
+        ws.db.cells_by_family()[Family.Input.ordinal]
+            .all((c) -> named_by(ws, ws.key_label(c.key)).any((k: Key) -> same_key(k, c.key)))
     }
 }
