@@ -156,6 +156,7 @@ impl Language {
     /// workspace is let go, and nothing but the next analysis knows the
     /// last one is done with — so the next lets it go.
     fn analyze(src: SourceFile) -> Analysis {
+        one_shot_let_go()
         let ws = lone_workspace(src.file, src.text, self)
         ws.alone()
         let a = ws.analysis(ws.file_id(src.file))
@@ -183,18 +184,24 @@ impl Language {
 /// The one-shot workspace that stands: the one whose answers may still be read.
 once fn standing_one_shot() -> Cell<List<Workspace>> { list_cell() }
 
+/// ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME: its rows stand in the
+/// process until it is let go, and nothing but the next one knows the last
+/// is done with — so the next lets it go BEFORE it is made, and two never
+/// stand at once.
+export fn one_shot_let_go() {
+    for prior in standing_one_shot().get() { prior.superseded() }
+    let none: List<Workspace> = []
+    standing_one_shot().set(none)
+}
+
 /// Whether a workspace stands, or was let go — by its holder, or by the
 /// next one-shot workspace made after it.
 export enum Stand { Open, LetGo, Superseded }
 
 impl Workspace {
-    /// ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME: its rows stand in the
-    /// process until it is let go, and nothing but the next one knows the
-    /// last is done with — so this one lets the last go and stands alone.
-    fn alone() {
-        for prior in standing_one_shot().get() { prior.superseded() }
-        standing_one_shot().set([self])
-    }
+    /// This one-shot workspace is the one that stands — made only after
+    /// `one_shot_let_go` let the last go.
+    fn alone() { standing_one_shot().set([self]) }
 
     fn superseded() {
         if self.let_go() { return }
