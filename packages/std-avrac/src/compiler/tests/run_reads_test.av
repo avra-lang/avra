@@ -1,0 +1,48 @@
+// A compile-time run's read of the world is a recorded read of the file
+// whose run asks: the record names it, so the file is held only while
+// that text stands.
+use compiler.{new_workspace, avra, Workspace}
+use compiler.host.{memory_host}
+
+const RUN_READS_MAIN: string = "/w/src/main.av"
+
+fn run_reads_workspace() -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "1\n",
+                "/w/src/data.txt": "one",
+            },
+            ["/w/avra.toml", RUN_READS_MAIN, "/w/src/data.txt"],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+/// What the file's runs are recorded as having read.
+fn run_reads_of(ws: Workspace) -> string { (ws.hold.runs.get().get(RUN_READS_MAIN) ?? []).join(",") }
+
+spec "compiler/settle — a run's read of the world is recorded" {
+    then "a file a run reads is recorded for the file whose run asks, and its text answers" {
+        let ws = run_reads_workspace()
+        let before = run_reads_of(ws)
+        let text = ws.run_read(ws.file_id(RUN_READS_MAIN), "/w/src/data.txt")
+        let read = match text { .Ok(t) -> t, .Err(why) -> "refused: ${why}" }
+        before == "" && read == "one" && run_reads_of(ws) == "/w/src/data.txt"
+    }
+    then "a file that is not there is recorded all the same: its arrival moves what the run would answer" {
+        let ws = run_reads_workspace()
+        let gone = ws.run_read(ws.file_id(RUN_READS_MAIN), "/w/src/none.txt")
+        let refused = match gone { .Ok(_) -> false, .Err(_) -> true }
+        refused && run_reads_of(ws) == "/w/src/none.txt"
+    }
+    then "read twice, it is recorded once" {
+        let ws = run_reads_workspace()
+        let f = ws.file_id(RUN_READS_MAIN)
+        let _ = ws.run_read(f, "/w/src/data.txt")
+        let _ = ws.run_read(f, "/w/src/data.txt")
+        run_reads_of(ws) == "/w/src/data.txt"
+    }
+}

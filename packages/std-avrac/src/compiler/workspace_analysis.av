@@ -471,6 +471,15 @@ impl Workspace {
         }
     }
 
+    /// A COMPILE-TIME RUN'S READ OF THE WORLD, the one door for it: the path
+    /// is recorded as read by the file whose run asks, THEN read — so the
+    /// file's record names it, its object key digests it, and the file is
+    /// held only while that text stands. `embed` is the one such read.
+    fn run_read(f: FileId, path: string) -> Result<string, string> {
+        self.read_by(self.decls.file(f).path, [path])
+        self.embed_read(path)
+    }
+
     /// `paths` joined to what `reader`'s compile-time runs read.
     fn read_by(reader: string, paths: List<string>) {
         self.hold.runs.put(reader, distinct((self.hold.runs.get().get(reader) ?? []).concat(paths)))
@@ -637,7 +646,7 @@ impl Workspace {
         let r = run_settle(
             l,
             self.budgets(),
-            (path: string) -> ws.embed_read(path),
+            (path: string) -> ws.run_read(f, path),
             (nm: string) -> ws.type_named_lifted(f, nm),
         )
         let chain = match r { .Err(.Reach(_)) -> world_witness(l, true), _ -> null }
@@ -679,7 +688,7 @@ impl Workspace {
         match run_crossed(
             l,
             self.budgets(),
-            (path: string) -> ws.embed_read(path),
+            (path: string) -> ws.run_read(f, path),
             (nm: string) -> ws.type_named_lifted(f, nm),
         ) { .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)), .Err(why) -> .Err(why) }
     }

@@ -1475,25 +1475,29 @@ steps=$((steps+1)); kv_out=$($R/kv/src/main 2>&1)
 # edited and nothing else: the declaring file's own text never moves, so a hold that
 # stands on its text alone keeps the const's old value — in the binary, with the key
 # missing and a derivation running. The file must be read again, in a check and in a
-# build, twice over, and with another file edited first so the declaring file is held.
+# build, twice over, and with another file edited first so the declaring file is held;
+# a const derived from the embedded text moves with it.
 mkdir -p $R/ke/src/f
 printf '[package]\nname = "rt-ke"\nversion = "0.1.0"\n' > $R/ke/avra.toml
 printf 'one' > $R/ke/src/f/data.txt
-printf 'use @std.meta.{embed}\nexport const TEXT: string = embed("data.txt")\nexport fn shown() -> string { TEXT }\n' > $R/ke/src/f/held.av
+printf 'use @std.meta.{embed}\nexport const TEXT: string = embed("data.txt")\nexport const N: int = TEXT.length\nexport fn shown() -> string { "${TEXT} n=${N}" }\n' > $R/ke/src/f/held.av
 printf 'use f.{shown}\nprintln("text=${shown()}")\n' > $R/ke/src/main.av
 ke_says() { # ke_says <label> <wanted>: the built binary prints the embedded text as it stands
     steps=$((steps+1)); ke_out=$($R/ke/src/main 2>&1)
     [ "$ke_out" = "text=$2" ] || { fails=$((fails+1)); echo "FAIL  ke: $1: the binary printed '$ke_out', wanted 'text=$2'"; }
 }
-S "cold ke" ke; ke_says "cold" one
+S "cold ke" ke; ke_says "cold" "one n=3"
 printf '// moved\n' >> $R/ke/src/main.av
-S "ke: an edit elsewhere, held.av held" ke; ke_says "an edit elsewhere" one
+S "ke: an edit elsewhere, held.av held" ke; ke_says "an edit elsewhere" "one n=3"
 printf 'two' > $R/ke/src/f/data.txt
 HR "ke: the embedded text moved -> its file is read, not held" check ke 0 "f/held.av" read
-S "ke: and the binary follows the embedded text" ke; ke_says "the embedded text moved under a held file" two
+S "ke: and the binary follows the embedded text" ke; ke_says "the embedded text moved under a held file" "two n=3"
 printf 'three' > $R/ke/src/f/data.txt
-S "ke: moved again, nothing else touched" ke; ke_says "the embedded text moved again" three
-S "ke: no-op after it" ke; ke_says "a no-op build" three
+S "ke: moved again, nothing else touched" ke; ke_says "the embedded text moved again" "three n=5"
+S "ke: no-op after it" ke; ke_says "a no-op build" "three n=5"
+printf 'fourth' > $R/ke/src/f/data.txt
+HR "ke: moved a third time -> a check reads its file with no build between" check ke 0 "f/held.av" read
+S "ke: and the const derived from it follows" ke; ke_says "a derived const after a check" "fourth n=6"
 
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
