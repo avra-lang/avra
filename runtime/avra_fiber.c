@@ -2380,6 +2380,7 @@ static void task_listed(FILE* out, const Fiber* f, int64_t now) {
     task_said(out, own_id, f);
     if (f == g_current && f->state == FIBER_RUNNING) fputs(" running", out);
     else if (!f->virtual && f != &g_main && !f->sp) fputs(" ready, not yet run", out);
+    else if (f->state == FIBER_PARKED && !f->joining && !f->held_n && !f->more) fputs(" waits on nothing the scheduler holds", out);
     else waits_said(out, own_id, f);
     if (f->ran_at) fprintf(out, "; first ran at most %lld ms ago", (long long)((now - f->ran_at) / 1000000));
     fputc('\n', out);
