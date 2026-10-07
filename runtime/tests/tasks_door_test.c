@@ -320,8 +320,9 @@ static const char* asked_again(const Child* c, char* buf, size_t cap, int tries)
 
 // The child has finished answering: it takes the ask away after the
 // answer stands, so an ask written before that would be taken too.
-static void settled(const Child* c) {
+static int settled(const Child* c) {
     for (int waited = 0; waited < 500 && access(c->ask, F_OK) == 0; waited += 1) usleep(1000);
+    return access(c->ask, F_OK) != 0;
 }
 
 static int ended(Child* c) {
@@ -378,7 +379,7 @@ static void door(const char* self) {
         unlink(c.out);
         asked(&c);
         asked_again(&c, buf, sizeof buf, 20);
-        settled(&c);
+        listed_each &= settled(&c);
         listed_each &= strstr(buf, "task 1, spawned at") != NULL && strstr(buf, "task 2, spawned at") != NULL;
         never_unswitched &= strstr(buf, "has not switched") == NULL;
     }
@@ -448,7 +449,7 @@ static void door(const char* self) {
         (void)w;
         for (volatile int spin = 0; spin < (trial * 7919) % 4000; spin++) {}
         asked_again(&c, buf, sizeof buf, 20);
-        settled(&c);
+        answered_each &= settled(&c);
         answered_each &= strstr(buf, "process ") == buf;
         never_false &= strstr(buf, "has not switched") == NULL;
     }
