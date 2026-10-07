@@ -7,7 +7,7 @@
 //! Ids are opaque: compared or looked up, never inspected. All
 //! allocation goes through the one `alloc_*` seam per arena, so
 //! interning can arrive without call-site churn.
-use @std.meta.{dense, derive, Field, Mark as MetaMark}
+use @std.meta.{dense, derive, Field, Mark as MetaMark, Named}
 use @std.errors.{Loc}
 use @std.relation.{relation, arena}
 
@@ -764,23 +764,11 @@ export fn same_pat(a: PatId, b: PatId) -> bool {
 @derive(Grammar)
 @derive(Matchable)
 @derive(Exact)
-export enum Pat {
-    Wild
-    Rest
-    Bind(name: Scoped)
-    Variant(name: Plain, args: List<PatId>)
-    Lit(value: ExprId)
-    /// A text FORMAT: literal `head`, then a hole and the literal
-    /// that follows it, repeated. `"a{x}b{y}c"` is head `"a"` with
-    /// parts `[{x, "b"}, {y, "c"}]`; a format with no holes is head
-    /// alone. The count relationship between literals and holes is
-    /// true by construction and unspellable otherwise.
-    Format(head: string, parts: List<FormatPart>)
-    /// A CODE SHAPE: `body` is the quote expression the primary
-    /// already mints, wrapped — the same node, matched structurally
-    /// instead of spliced. A hole binds the code at its seat.
-    Quote(body: ExprId)
-}
+export collect enum Pat = @pat_node in package by it.mark.args[0] dense
+
+/// Marks a record as `Pat`'s variant at `rank` — its fields are the
+/// variant's payload.
+export fn pat_node(_node: Named, _rank: int) {}
 
 /// One hole of a format: the name it binds — `_` binds nothing, as
 /// `Wild` spells it — the type it parses through, absent when it
