@@ -339,6 +339,7 @@ impl Workspace {
     /// is held twice while it is written, and every line copies it.
     fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) {
         let f = self.file_id(path)
+        self.decls.held_opened(f, makers.values())
         mut by_stmt = self.decls.decl_ids.get()[f.index].get()
         for parts in rows {
             let id: DeclId? = self.minted(f, path, parts, makers)
@@ -361,12 +362,9 @@ impl Workspace {
             return null
         }
         let root: ExprId? = if row.root < 0 { null } else { ExprId { index: row.root } }
-        // the ordinal is the record's identity within a held file: a name/kind key
-        // collapses generated members and same-named methods
         let id = self
             .decls
             .mint_faced(
-                "${f.index}#held#${row.ordinal}",
                 f,
                 StmtId { index: row.stmt },
                 row.name,

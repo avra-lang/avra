@@ -127,6 +127,15 @@ impl Workspace {
     /// name — never a computed value that needs this file's typed
     /// answers, which do not exist yet.
     fn materialized(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace) -> List<DeclId> {
+        let maker = self.maker_said(f, w)
+        self.decls.generation_opened(f, maker)
+        let made = self.directed(f, w, p, vis, maker)
+        self.decls.generation_kept(f, maker, made)
+        made
+    }
+
+    /// One annotation's directives, each fulfilled under `maker`.
+    fn directed(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace, maker: string) -> List<DeclId> {
         if !w
             .args
             .all((e: ExprId) -> source_spelled(p.store.expr(e)) || p.store.ident_name(e) != null) {
@@ -143,7 +152,9 @@ impl Workspace {
         } else {
             self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.at)
         }
-        flatten([self.materialized_directive(f, w, directive, vis) for directive in directives])
+        flatten(
+            [self.materialized_directive(f, w, directive, vis, maker) for directive in directives],
+        )
     }
 
     /// Whether an argument names a declaration where the seat takes a
@@ -189,27 +200,33 @@ impl Workspace {
     /// beside the original, a `twin` mints a fn beside it, and
     /// `wraps` REPLACES what the original compiles to instead of
     /// adding beside it — mutually exclusive with both.
-    fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive, vis: Namespace) -> List<
-        DeclId,
-    > {
+    fn materialized_directive(
+        f: FileId,
+        w: DeclareWork,
+        directive: Directive,
+        vis: Namespace,
+        maker: string,
+    ) -> List<DeclId> {
         let ann = self.decls.decl(w.ann).name
         if directive.wraps { return self.wrap_directive(f, w, directive, ann) }
         let source? = directive.source else { return self.twinned(f, w, directive, ann, vis) }
-        self.admit_code(f, source.node, self.maker_said(f, w), ann, w.at, vis)
+        self.admit_code(f, source.node, maker, ann, w.at, vis)
     }
 
     /// WHAT MADE A GENERATED DECLARATION, as the source says it: the annotation
     /// as written, its place among the same annotation written twice on one
-    /// declaration, and that declaration's own name.
+    /// declaration, and that declaration's own name. Work no written
+    /// annotation asked for is named by the declaration that does it.
     fn maker_said(f: FileId, w: DeclareWork) -> string {
         let p = self.parsed(f)
         let anns = p.store.annotations_of(w.stmt)
-        let said = [annotation_said(p, a.name, a.args) for a in anns]
-        let at = [j for j, a in anns if same_expr(a.callee, w.callee)].first() ?? 0
-        let mine = if at < said.length { said[at] } else { self.decls.decl(w.ann).name }
-        let nth = [j for j, text in said if j < at && text == mine].length
         let x = self.decls.decl(w.annotated)
-        "${mine}#${nth} @ ${kind_word(x.kind)} ${x.owner}.${x.name}#${x.sibling}"
+        let on = "${kind_word(x.kind)} ${x.owner}.${x.name}#${x.sibling}"
+        let at? = [j for j, a in anns if same_expr(a.callee, w.callee)].first() else {
+            return "${self.decls.decl(w.ann).name}#0 @ ${on}"
+        }
+        let said = [annotation_said(p, a.name, a.args) for a in anns]
+        "${said[at]}#${[j for j, text in said if j < at && text == said[at]].length} @ ${on}"
     }
 
     /// A WRAP directive over the annotated declaration. An expansion
@@ -318,9 +335,13 @@ impl Workspace {
             at: p.store.stmt_span(written),
             annotated: d,
         }
-        flatten(
-            [self.materialized_directive(f, w, directive, vis) for directive in self.trait_directives(composer, w, f)],
+        let maker = self.maker_said(f, w)
+        self.decls.generation_opened(f, maker)
+        let made = flatten(
+            [self.materialized_directive(f, w, directive, vis, maker) for directive in self.trait_directives(composer, w, f)],
         )
+        self.decls.generation_kept(f, maker, made)
+        made
     }
 
     /// Whether an annotation's work names the trait `tr` among its
@@ -518,13 +539,7 @@ impl Workspace {
             return []
         }
         self.decls.note_generation(f, Generation { runs: took, at: at })
-        // The tag is the declarations' fingerprint, so two derives that
-        // answer different impls mint two, and a re-run of one mints
-        // nothing new.
-        let tag = fp(117, [store.stmt_fingerprint(s) for s in stmts])
-        let made = self
-            .decls
-            .mint_generated_code(f, store, stmts, before.exprs, "${tag}", maker, ann, at)
+        let made = self.decls.mint_generated_code(f, store, stmts, before.exprs, maker, ann, at)
         for d in made { self.decls.note_template(d, template_site(code)) }
         made
     }

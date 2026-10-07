@@ -60,7 +60,6 @@ fn generated(names: List<string>) -> List<Decl> {
     let f = decls.file_id("/w/src/lib.av", "w:src/lib.av", "lib", false)
     let ids = [decls
         .mint_faced(
-            "made ${j}",
             f,
             no_stmt,
             n,
@@ -96,50 +95,11 @@ fn shared_block() -> List<Decl> {
     let f = decls.file_id("/w/src/lib.av", "w:src/lib.av", "lib", false)
     let ids = [
         decls
-            .mint_faced(
-                "block one",
-                f,
-                no_stmt,
-                "Reg",
-                DeclKind.Impl,
-                false,
-                "",
-                null,
-                false,
-                null,
-                maker_a(),
-                null,
-            ),
+            .mint_faced(f, no_stmt, "Reg", DeclKind.Impl, false, "", null, false, null, maker_a(), null),
         decls
-            .mint_faced(
-                "block one",
-                f,
-                no_stmt,
-                "Reg",
-                DeclKind.Impl,
-                false,
-                "",
-                null,
-                false,
-                null,
-                maker_b(),
-                null,
-            ),
+            .mint_faced(f, no_stmt, "Reg", DeclKind.Impl, false, "", null, false, null, maker_b(), null),
         decls
-            .mint_faced(
-                "block two",
-                f,
-                no_stmt,
-                "Reg",
-                DeclKind.Impl,
-                false,
-                "",
-                null,
-                false,
-                null,
-                maker_b(),
-                null,
-            ),
+            .mint_faced(f, no_stmt, "Reg", DeclKind.Impl, false, "", null, false, null, maker_b(), null),
     ]
     [decls.decl(d) for d in ids]
 }
@@ -156,16 +116,7 @@ fn restored() -> Restored {
     let f = ws.file_id(readmit_path())
     let _ = ws
         .decls
-        .mint_generated_code(
-            f,
-            ws.decls.store_of(f),
-            ws.parsed(f).stmts.slice(0, 1),
-            0,
-            "one",
-            awkward_maker(),
-            "made",
-            null,
-        )
+        .mint_generated_code(f, ws.decls.store_of(f), ws.parsed(f).stmts.slice(0, 1), 0, awkward_maker(), "made", null)
     // through the record's own text: its lines joined, then split again
     let fields = [read_fields(line) for line in ws.lines_of(readmit_path()).join("\n").split("\n")]
     let held = admitted_nothing()
@@ -270,18 +221,23 @@ fn made_by(ws: Workspace, maker: string) -> string {
     ["${d.name}#${d.sibling}" for d in ws.decls.all_decls() if d.maker == maker].join(",")
 }
 
+/// One run of the maker over `two_fns`' first `n` statements, closed on what it made.
+fn one_run(ws: Workspace, n: int) {
+    let f = ws.file_id(readmit_path())
+    ws.decls.generation_opened(f, run_maker())
+    let made = ws
+        .decls
+        .mint_generated_code(f, ws.decls.store_of(f), ws.parsed(f).stmts.slice(0, n), 0, run_maker(), "made", null)
+    ws.decls.generation_kept(f, run_maker(), made)
+}
+
+fn run_maker() -> string { "made()#0 @ fn .first#0" }
+
 /// `two_fns` admitted, then one maker generating from its first `first` statements and again from its first `again`.
 fn generated_twice(first: int, again: int) -> Workspace {
     let ws = admitted(two_fns())
-    let f = ws.file_id(readmit_path())
-    let p = ws.parsed(f)
-    let store = ws.decls.store_of(f)
-    let _ = ws
-        .decls
-        .mint_generated_code(f, store, p.stmts.slice(0, first), 0, "one", "made()#0 @ fn .first#0", "made", null)
-    let _ = ws
-        .decls
-        .mint_generated_code(f, store, p.stmts.slice(0, again), 0, "two", "made()#0 @ fn .first#0", "made", null)
+    one_run(ws, first)
+    one_run(ws, again)
     ws
 }
 
@@ -384,26 +340,14 @@ spec "compiler/decl name — a declaration's key is its name" {
     given "an expansion that runs again within one admission" {
         then "fixture: its first run's two declarations stand" {
             let ws = admitted(two_fns())
-            let f = ws.file_id(readmit_path())
-            let _ = ws
-                .decls
-                .mint_generated_code(
-                    f,
-                    ws.decls.store_of(f),
-                    ws.parsed(f).stmts.slice(0, 2),
-                    0,
-                    "one",
-                    "made()#0 @ fn .first#0",
-                    "made",
-                    null,
-                )
-            made_by(ws, "made()#0 @ fn .first#0") == "first#0,second#0"
+            one_run(ws, 2)
+            made_by(ws, run_maker()) == "first#0,second#0"
         }
         then "generating one where it generated two leaves one, under the name it had" {
-            made_by(generated_twice(2, 1), "made()#0 @ fn .first#0") == "first#0"
+            made_by(generated_twice(2, 1), run_maker()) == "first#0"
         }
         then "generating the same two again leaves the same two" {
-            made_by(generated_twice(2, 2), "made()#0 @ fn .first#0") == "first#0,second#0"
+            made_by(generated_twice(2, 2), run_maker()) == "first#0,second#0"
         }
     }
     given "two declarations one annotation generates" {
