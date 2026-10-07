@@ -9,7 +9,7 @@
 //! body's own types and its callees' declarations alone, so the law
 //! costs nothing where the mark is absent and asks no other body.
 use core.{DeclId, ExprId, Expr}
-use features.{Decl, bound_decl_of, property_row, nothing}
+use features.{TypeCx, Decl, bound_decl_of, property_row, nothing}
 use features.impls.{callee_of}
 use diagnostics.{refusal}
 use @std.errors.{Loc}
@@ -20,11 +20,15 @@ impl TypeCx {
         let store = self.view.store
         for e in store.exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.Spawn(ExprId { index: 0 }))) { self.broken_spawn(self.loc_of(e), x.name) }
         for e in store
-            .exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.CallValue(ExprId { index: 0 }, []))) { self.broken_value(self.loc_of(e), x.name) }
+            .exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.CallValue(ExprId { index: 0 }, []))) {
+            self.broken_value(self.loc_of(e), x.name)
+        }
         for e in store.exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.Prop(ExprId { index: 0 }, ""))) { self.unbroken_read(x, e) }
         for e in store.exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.Call("", [], []))) { self.unbroken_call(x, e) }
         for e in store
-            .exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.MethodCall(ExprId { index: 0 }, "", []))) { self.unbroken_method(x, e) }
+            .exprs_by_kind(x.lo, x.hi, store.tag_expr(Expr.MethodCall(ExprId { index: 0 }, "", []))) {
+            self.unbroken_method(x, e)
+        }
     }
 
     /// A property read whose row waits.
