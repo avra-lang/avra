@@ -11,13 +11,17 @@ use compiler.lower.{Body}
 /// line its verdict prints.
 export type CaseCall = { symbol: string, label: string }
 
-/// The host fns the test binary declares: the status it leaves by,
-/// and the marker naming the case in flight — a suite runs in ONE
-/// process, so a trap kills every case after it, and the marker is
-/// how the wreck says which case it was running.
+/// The host fns the test binary declares: the status it leaves by, the
+/// marker naming the case in flight — a suite runs in ONE process, so a
+/// trap kills every case after it, and the marker is how the wreck says
+/// which case it was running — and the runner's verdict on a case: its
+/// body run as a task under each schedule (runtime/avra_fiber.h), and the
+/// count of schedules said once at the end.
 export const runner_rows: List<RtSig> = [
     extern_row("avra_process_exit", RtKind.Void, [RtKind.I64]),
     extern_row("avra_case_begin", RtKind.Void, [RtKind.Ptr]),
+    extern_row("avra_case_verdict", RtKind.I64, [RtKind.I64, RtKind.Ptr]),
+    extern_row("avra_case_schedules_said", RtKind.Void, []),
 ]
 
 /// One program test as the entry needs it: the symbol that runs it,
@@ -84,7 +88,10 @@ export fn suite_entry(types: TypeRegistry, cases: List<CaseCall>, programs: List
     mut e = new_entry(types)
     let tally = e.counter()
     for c in cases { one_case(e, c, tally) }
-    if !cases.is_empty() { e.tally(cases.length, e.failures(tally)) }
+    if !cases.is_empty() {
+        e.tally(cases.length, e.failures(tally))
+        e.give(Ins.CallRtVoid("avra_case_schedules_said", []))
+    }
     for pr in programs { one_program(e, pr, tally) }
     e
         .leaves_by_verdict(
@@ -166,12 +173,11 @@ fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
     e.give(Ins.Release(line))
 }
 
-/// One case: called, judged, and counted when it fails.
+/// One case: run as a task under its schedules, judged, and counted
+/// when it fails.
 fn one_case(mut e: EntryBuild, c: CaseCall, tally: Reg) {
     e.give(Ins.CallRtVoid("avra_case_begin", [e.text(c.label)]))
-    let ok = e.called(c.symbol, e.types.type(bool))
-    e.give(Ins.IfStart(ok))
-    e.give(Ins.ArmEnd(e.constant(0)))
+    e.give(Ins.IfStart(e.zero_test(e.verdict(c))))
     // only a FAILURE speaks — a green case is the tally's business
     e.say("    ✗ ${c.label}")
     let held = e.mint(e.types.type(int))
@@ -181,6 +187,7 @@ fn one_case(mut e: EntryBuild, c: CaseCall, tally: Reg) {
     let more = e.mint(e.types.type(int))
     e.give(Ins.Bin(more, BinOp.Add, held, one))
     e.give(Ins.Store(tally, more))
+    e.give(Ins.ArmEnd(e.constant(0)))
     let gives = e.constant(0)
     let merged = e.mint(e.types.type(int))
     e.give(Ins.RegionEnd(merged, gives))
@@ -233,6 +240,18 @@ impl EntryBuild {
         let answer = self.mint(ret)
         self.give(Ins.Call(answer, symbol, []))
         answer
+    }
+
+    /// The runner's verdict on a case: 1 it held under every schedule
+    /// it ran, else 0. The case's body is handed over by its address.
+    fn verdict(c: CaseCall) -> Reg {
+        let code = self.mint(self.types.type(int))
+        self.give(Ins.FnAddr(code, c.symbol))
+        // THE MINT LAW: operands first, the answer last
+        let label = self.text(c.label)
+        let held = self.mint(self.types.type(int))
+        self.give(Ins.CallRt(held, "avra_case_verdict", [code, label]))
+        held
     }
 
     /// An int constant in a fresh register.

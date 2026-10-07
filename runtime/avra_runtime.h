@@ -31,6 +31,8 @@ enum { AVRA_SLOT_ASKER = 0, AVRA_SLOT_FLOW = 1, AVRA_TASK_SLOTS = 4 };
 typedef struct { void* slot[AVRA_TASK_SLOTS]; int64_t id; int64_t clock_asks; } AvraTaskLocal;
 extern AvraTaskLocal avra_main_local __attribute__((visibility("hidden")));
 extern AvraTaskLocal* avra_task_local __attribute__((visibility("hidden")));
+// The schedule the case in flight runs under, or -1; a trap says it.
+extern int64_t avra_case_schedule __attribute__((visibility("hidden")));
 // The running task's slot `key`, owned; and `v` kept in it, what it
 // held released. A slot past the table is a trap.
 void* avra_task_slot(int64_t key);

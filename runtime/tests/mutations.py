@@ -114,6 +114,15 @@ MUTATIONS = [
     ("a deep case's pages stay resident", "    wide_given_back();\n    return g_case_answer;", "    return g_case_answer;"),
     ("a guest waits beside its host's timer", "    if (g_runs == 0 || (g_timers_len == 0 && g_parked_fds == 0)) return;", "    return;"),
     ("a host outside any run is tripped", "    if (g_runs == 0 || (g_timers_len == 0", "    if ((g_timers_len == 0"),
+    ("a case that made no choice runs every schedule", "        if (choices == 0) return 1;\n", ""),
+    ("a failing schedule passes the case", "        if (!case_under(k, &choices)) return choices == 0 && k == 0 ? 0 : case_failed_under(label, k);", "        case_under(k, &choices);"),
+    ("the seed setting is not heard", "    if (g_sched_only >= 0) return case_under", "    if (0) return case_under"),
+    ("the runs setting is not heard", "    g_sched_runs = whole_setting(SCHED_RUNS_SETTING, 1, SCHED_RUNS_DEFAULT);", "    g_sched_runs = SCHED_RUNS_DEFAULT;"),
+    ("the count is never said", "    if (!g_any_chose || g_sched_only >= 0) return;", "    return;"),
+    ("a trap does not know its case's schedule", "    avra_case_schedule = schedule;\n", ""),
+    ("a seeded deadlock names no schedule", "    if (g_seeded) fprintf(stderr, \"avra: under schedule %lld — \" SCHED_SEED_SETTING", "    if (0) fprintf(stderr, \"avra: under schedule %lld — \" SCHED_SEED_SETTING"),
+    ("a case's answer is read past its lowest bit", "{ return g_case_body() & 1; }", "{ return g_case_body() != 0; }"),
+    ("a case with one order names a schedule when it fails", "return choices == 0 && k == 0 ? 0 : case_failed_under(label, k);", "return case_failed_under(label, k);"),
     ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    if (!next->virtual)", "    Fiber* next = next_with_world();\n    if (!next->virtual)"), ("    if (g_until_poll > 0) return;\n", "")], None),
     ("a join answers a cancelled task", "    if (cells[TASK_END] == END_CANCELLED) join_refused();\n", ""),
     ("a fired timer's task answers nothing", "    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;\n", "    avra_rc_release(unit);\n"),
@@ -135,7 +144,7 @@ CLOCK_MUTATIONS = [
     ("a run begins with its host's holds", "    g_clock_outer[g_clock_runs++] = avra_clock;\n    avra_clock.held = 0;", "    g_clock_outer[g_clock_runs++] = avra_clock;"),
     ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
 ]
-TESTS = ["flow_test", "case_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
+TESTS = ["flow_test", "case_test", "verdict_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
 BOUND = 60
 
 os.makedirs(out, exist_ok=True)

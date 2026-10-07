@@ -170,6 +170,11 @@ static void deadlocked_pair(void) {
     CHECK(avra_sched_tasks() == 0 && avra_sched_timers() == 0, "and its tasks are gone");
     CHECK(avra_case_run(spawns_and_joins) == 1, "the next case runs, and passes");
 }
+static void deadlocked_seeded(void) {
+    avra_sched_seed(3);
+    CHECK(avra_case_run(each_waits_on_the_other) == 0, "a seeded case whose tasks all wait fails");
+    avra_sched_settle();
+}
 static void deadlocked_alone(void) {
     CHECK(avra_case_run(waits_alone) == 0, "a case that waits on a gate nobody holds fails");
     CHECK(avra_case_run(passes) == 1, "and the next passes");
@@ -296,6 +301,8 @@ int main(void) {
     CHECK(says("task 1, spawned at 0x") && says("task 2, spawned at 0x"), "each task and where it was spawned");
     CHECK(strstr(g_said, "waits on gate 0x") != NULL && strstr(strstr(g_said, "waits on gate 0x") + 1, "waits on gate 0x") != NULL, "and the gate each waits on");
 
+    heard("a seeded deadlock", deadlocked_seeded);
+    CHECK(says("avra: under schedule 3 — AVRA_SCHED_SEED=3 replays it"), "a deadlock under a schedule names it");
     heard("a case alone on a gate fails and the next runs", deadlocked_alone);
     CHECK(says("task 0, the case, waits on gate 0x"), "the case's own wait is named");
 
