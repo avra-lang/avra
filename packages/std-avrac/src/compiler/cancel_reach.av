@@ -14,7 +14,7 @@
 //! answers from its interface, where the bit is contract
 //! (`interface_form`): a callee that starts to wait moves its
 //! dependents' key.
-use core.{DeclId, ExprId, Expr, Stmt, fp, fp_list, rt_waits, touch}
+use core.{DeclId, ExprId, Expr, Stmt, fp, fp_list, rt_waits}
 use features.{NameFacts, TypeFacts, FileView, bound_decl_of, property_row}
 use features.impls.{callee_of}
 use compiler.families.{Family}
@@ -81,20 +81,13 @@ impl Workspace {
         match x.kind {
             .Fn or .Method or .Default or .Main or .Case -> when {
                 x.external -> rt_waits(x.name)
-                self.is_held(x.file) -> self.held_waits(g)
+                self.is_held(x.file) -> self.decls.held_waits_at(g)
                 x.root == null -> true
                 _ -> self.cancel_fixpoint.value_at(g.index)
             },
             .Const or .State -> true,
             .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Builtin -> false,
         }
-    }
-
-    /// A held fn's recorded bit — read once its signature, which the
-    /// record fills it with, is.
-    fn held_waits(g: DeclId) -> bool {
-        touch(self.sig(g))
-        self.decls.held_waits_at(g)
     }
 
     /// One member's own evidence, and its calls' answers.
