@@ -112,7 +112,8 @@ RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c))
 RUNTIME_LIB = build/libavra_runtime.a
 
 COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrapper.o \
-                build/ffi.o build/std_io.o build/std_io_watch.o build/std_process.o build/std_time.o build/std_net.o
+                build/ffi.o build/std_io.o build/std_io_watch.o build/std_process.o build/std_time.o build/std_net.o \
+                build/std_hash.a
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
@@ -171,6 +172,35 @@ build/std_compress.a: $(COMPRESS_OBJS)
 	@rm -f $@
 	ar rcs $@ $^
 
+# THE VENDORED BLAKE3, one object per upstream unit
+# (packages/std-hash/vendor/import.sh writes the wrappers), ARCHIVED
+# with @std/hash's own C. Only this machine's SIMD units are built, each
+# under the flags its intrinsics need, and blake3_dispatch asks the CPU
+# at run time which of them to run; any other machine runs the portable
+# unit alone.
+HASH_ARCH := $(shell uname -m)
+B3_SIMD := $(if $(filter arm64 aarch64,$(HASH_ARCH)),neon,$(if $(filter x86_64 amd64,$(HASH_ARCH)),sse2 sse41 avx2 avx512))
+HASH_OBJS := build/std_hash.o $(patsubst %,build/b3_%.o,blake3 blake3_dispatch blake3_portable $(addprefix blake3_,$(B3_SIMD)))
+$(foreach o,$(HASH_OBJS),$(eval CFLAGS_$(basename $(notdir $(o))) := -Ipackages/std-hash/vendor))
+CFLAGS_b3_blake3_sse2 += -msse2
+CFLAGS_b3_blake3_sse41 += -msse4.1
+CFLAGS_b3_blake3_avx2 += -mavx2
+CFLAGS_b3_blake3_avx512 += -mavx512f -mavx512vl
+
+build/std_hash.a: $(HASH_OBJS)
+	@rm -f $@
+	ar rcs $@ $^
+
+# THE HASHER'S DOOR, FORGED: @std/hash takes a hasher's state back as a
+# value, so forged states are pushed through it with the package's C
+# rebuilt under ASan and UBSan, each unit under its own flags.
+HASH_DOOR_SAN := -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
+hash-door: packages/std-hash/src/c/tests/door_test.c $(HASH_OBJS)
+	@mkdir -p build/hash-door
+	@$(foreach o,$(HASH_OBJS),cc -c $(HASH_DOOR_SAN) $(CFLAGS_$(basename $(notdir $(o)))) -o build/hash-door/$(notdir $(o)) $(if $(filter build/std_hash.o,$(o)),packages/std-hash/src/c/std_hash.c,packages/std-hash/vendor/$(basename $(notdir $(o))).c) &&) true
+	@cc $(HASH_DOOR_SAN) -Ipackages/std-hash/vendor -o build/hash-door/door_test $< $(addprefix build/hash-door/,$(notdir $(HASH_OBJS)))
+	@build/hash-door/door_test
+
 # A HEADER IS A SOURCE. cc writes each object's dependency list beside
 # it and the next make reads it back, so editing a .h rebuilds what
 # includes it — without this a package that grows a header links a
@@ -188,7 +218,7 @@ build/%.o: %.c build/%.sha
 	@mkdir -p build
 	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(SECTIONS) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
--include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS) $(COMPRESS_OBJS))))
+-include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS) $(COMPRESS_OBJS) $(HASH_OBJS))))
 
 # THE HOT LEAVES AS BYTES THE COMPILER CARRIES (runtime/avra_hot.h):
 # runtime/avra_hot.c compiled to bitcode by the LLVM the compiler links,
@@ -304,7 +334,7 @@ wasm-archive:
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: footprint footprint-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
+.PHONY: footprint footprint-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -776,7 +806,7 @@ footprint-accept: $(RUNTIME_LIB)
 # KEEPERS_ALONE are held to a clock (a timer firing within one round of the
 # scheduler), so nothing may compete with them for a core.
 KEEPERS_ALONE = runtime-tests
-KEEPERS_A = read-cost codecs traps compile-slots witness stems fmt-lossless flow-trace
+KEEPERS_A = read-cost codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
 KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint
 KEEPERS = $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
