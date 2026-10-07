@@ -8,7 +8,7 @@ use @std.avrac.testing.{provided_workspace, vendored_meta, vendored_meta_paths}
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.host.{memory_host}
 use core.{DeclId, DeclKind, flatten, no_stmt, named_ref}
-use features.{Decl, DeclareWork, new_decls}
+use features.{Decl, DeclareWork, decl_key_text, new_decls}
 
 /// The key of every declaration of one kind and name, in id order.
 fn keys_named(ws: Workspace, kind: DeclKind, name: string) -> string {
@@ -387,6 +387,9 @@ fn inner_moved() -> Workspace {
     ws
 }
 
+/// A written top-level fn's key in its file, as a maker names the declaration it annotates.
+fn fn_key(name: string) -> string { decl_key_text("", name, DeclKind.Fn, "", "", "", 0) }
+
 fn run_maker() -> string { "made()#0 @ fn .first#0" }
 
 /// `two_fns` admitted, then one maker generating from its first `first` statements and again from its first `again`.
@@ -493,15 +496,15 @@ spec "compiler/decl name — a declaration's key is its name" {
             maker_twice().moved
         }
         then "its maker names the annotated declaration before the wrap" {
-            maker_twice().before == "inline()#0 @ fn .orig#0"
+            maker_twice().before == "inline()#0 @ ${fn_key("orig")}"
         }
         then "and the same after it" {
-            maker_twice().after == "inline()#0 @ fn .orig#0"
+            maker_twice().after == "inline()#0 @ ${fn_key("orig")}"
         }
     }
     given "a real annotation's generated fn, on a fn a wrap written before it moved the body of" {
         then "its maker names the written fn, never the body the wrap moved" {
-            real_makers() == "echoed()#0 @ fn .doubled#0"
+            real_makers() == "echoed()#0 @ ${fn_key("doubled")}"
         }
     }
     given "two makers generating one name in one file" {
@@ -519,6 +522,15 @@ spec "compiler/decl name — a declaration's key is its name" {
             let ws = interleaved(maker_b(), 1)
             made_by(ws, maker_a()) == "first#0,first#1,first#2" &&
                 made_by(ws, maker_b()) == "first#0"
+        }
+    }
+    given "a maker's run, closed with no run of its name around it" {
+        then "it leaves no run behind" {
+            let ws = admitted(two_fns())
+            let runs = ws.decls.counted.get().runs.get().length
+            run_by(ws, maker_a(), 2)
+            run_by(ws, maker_b(), 1)
+            ws.decls.counted.get().runs.get().length == runs
         }
     }
     given "a maker's run re-entered by a run of the same maker" {
@@ -567,12 +579,12 @@ spec "compiler/decl name — a declaration's key is its name" {
     }
     given "an annotation on a statement another annotation generated" {
         then "the statement is made, and its annotation makes nothing: generated code is not expanded" {
-            generated_made() == "f_inner by outer()#0 @ fn .f#0"
+            generated_made() == "f_inner by outer()#0 @ ${fn_key("f")}"
         }
     }
     given "an annotation on a file's first statement" {
         then "its work is the statement's own declaration's: one generated fn, made once" {
-            first_statement_made() == "f_made by mark()#0 @ fn .f#0"
+            first_statement_made() == "f_made by mark()#0 @ ${fn_key("f")}"
         }
     }
     given "an expansion that runs again within one admission" {

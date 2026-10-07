@@ -107,7 +107,9 @@ const external_index: int = 5
 /// A run opened again counts from nothing, so what it mints again takes the
 /// places it took. A run opened INSIDE another of its name — an expansion
 /// re-entered from a resolve it asked — counts on its own, and the outer
-/// one resumes its counts when the inner closes.
+/// one resumes its counts when the inner closes. A closed run with none
+/// around it is gone, so a run of a maker stands only while it is open; a
+/// file's admission is the one run that stands until the next.
 type Siblings = { runs: Cell<Map<string, Cell<Map<string, int>>>> }
 
 /// The counts of a run of the same name already open when another opened —
@@ -123,10 +125,18 @@ impl Siblings {
         prior
     }
 
-    /// A run closed: the run it stood inside counts on from where it was.
+    /// A run closed: the run it stood inside counts on from where it was,
+    /// and with none around it the run is gone.
     fn resumed(f: FileId, maker: string, prior: RunPrior) {
-        let counts? = prior.counts else { return }
+        let counts? = prior.counts else { return self.closed(f, maker) }
         self.runs.put(run_named(f, maker), counts)
+    }
+
+    /// The run of `maker` over `f` is no longer.
+    fn closed(f: FileId, maker: string) {
+        mut open = self.runs.get()
+        open.remove(run_named(f, maker))
+        self.runs.set(open)
     }
 
     /// The next place in `group` within the open run of `maker` over `f` —
