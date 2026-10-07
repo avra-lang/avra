@@ -70,7 +70,10 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     // its fn must stand in ANOTHER file, or it would need this file's
     // names while they are still being made.
     let act = effect!
-    let declares = match act { .Declares or .Derives -> true, .Records or .Validates -> false }
+    let declares = match act {
+        .Declares or .Derives -> true,
+        .Records or .Validates or .Marks -> false,
+    }
     if declares && same_file(cx.view.decls.decl(d).file, cx.view.file) {
         same_file_annotation(cx, a)
         return
@@ -93,7 +96,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
             match act {
                 .Records or .Validates -> speak_saids(cx, a, d, s, crossed.saids()),
                 .Declares -> { if cx.view.decls.meta_type(sig.ret, "Declared") { speak_saids(cx, a, d, s, crossed.declared_problems()) } },
-                .Derives -> nothing(),
+                .Derives or .Marks -> nothing(),
             }
         },
         .Err(why) -> unsettled(cx, a, why),
@@ -165,7 +168,7 @@ fn arguments_fit(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) -> bool {
 /// An annotation's ANSWER as what it does — the effect census the
 /// gate and the voice share. A new answer effect is one arm here,
 /// one row in `effect_census`, and one sentence in `effect_words`.
-enum Effect { Records, Validates, Declares, Derives }
+enum Effect { Records, Validates, Declares, Derives, Marks }
 
 /// The effect an answer has, or null when it has none.
 fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
@@ -178,6 +181,7 @@ fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
         },
         .Struct(_, _) if cx.view.decls.meta_type(ret, "Derived") -> Effect.Derives,
         .Struct(_, _) if cx.view.decls.meta_type(ret, "Declared") -> Effect.Declares,
+        .Struct(_, _) if cx.view.decls.answers_mark(ret) -> Effect.Marks,
         rest -> null,
     }
 }
@@ -189,6 +193,7 @@ const effect_census: List<Effect> = [
     Effect.Validates,
     Effect.Declares,
     Effect.Derives,
+    Effect.Marks,
 ]
 
 /// The written arguments: a DECLARATION'S NAME in a meta seat is its
@@ -489,6 +494,7 @@ fn effect_words(e: Effect) -> string {
         .Validates -> "`List<Diagnostic>` validates the declaration",
         .Declares -> "`List<Directive>` generates declarations beside the one stood under",
         .Derives -> "`Derived` runs each named trait's `derive` over the declaration",
+        .Marks -> "`Marker` marks the declaration for a reader that claims the word",
     }
 }
 

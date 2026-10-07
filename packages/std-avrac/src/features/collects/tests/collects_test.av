@@ -61,6 +61,21 @@ fn shapes() -> string {
     "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int, to: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n"
 }
 
+/// A mark fn: its answer is `Marker`, so a reader gives it meaning.
+fn flag_decl() -> string { "use @std.meta.{Marker}\nfn flag(what: Named) -> Marker { Marker {} }\n" }
+
+/// `shapes()` with `Dot` wearing `extra` beside its gathering mark.
+fn member_marked(extra: string) -> string {
+    "@numbered(0)\n" +
+        extra +
+        "\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n"
+}
+
+/// A derive reading each variant's marks, claiming `flag`.
+fn claimer() -> string {
+    "use @std.meta.{Type, Directive, literal}\nexport trait Claimer {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { static fn said() -> string { \${literal([v.name + \"/\" + [m.name for m in v.marks].join(\"+\") for v in t.variants].join(\" \"))} } } } }]\n    }\n    static fn marks(t: Type) -> List<string> { [\"flag\"] }\n}\n"
+}
+
 fn ui2() -> string {
     "export component widget {\n    run: fn(int) -> int?\n}\nexport component gadget {\n    run: fn(int) -> int?\n}\n"
 }
@@ -736,6 +751,89 @@ spec "collect's own laws" {
                     ],
                 ),
             ) == "build other"
+        }
+    }
+    given "a gathered member's marks are its variant's" {
+        then "a member's mark no reader claims is refused" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + member_marked("@flag") + "1", ui()),
+                "nothing on this declaration reads it",
+            )
+        }
+        then "a member's field mark no reader claims is refused" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { @key at: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "nothing on this declaration reads it",
+            )
+        }
+        then "a misspelled member mark is unresolved, never a mark" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + member_marked("@flga") + "1", ui()),
+                "is not defined",
+            )
+        }
+        then "the gathering annotation is no mark" {
+            answered(provided(numbered_decl() + shapes() + "1", ui())) == "1"
+        }
+        then "a user's own `Marker` makes no mark — the answer must be @std/meta's" {
+            let p = provided(
+                numbered_decl() +
+                    "type Marker = {}\nfn flag(what: Named) -> Marker { Marker {} }\n" +
+                    member_marked("@flag") +
+                    "1",
+                ui(),
+            )
+            refused_in(p, "an annotation answers an effect") &&
+                !refused_in(p, "nothing on this declaration reads it")
+        }
+        then "a member's void annotation stays the record's" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "fn noted(what: Named) -> void {\n    let _n = 1\n}\n" +
+                        member_marked("@noted") +
+                        "1",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a member's validating annotation stays the record's" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "use @std.meta.{Diagnostic}\nfn vetted(what: Named) -> List<Diagnostic> { [] }\n" +
+                        member_marked("@vetted") +
+                        "1",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a member gathered twice is held to each enum's readers: claimed by one, refused by the other" {
+            refused_in(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive}\n" +
+                        numbered_decl() +
+                        flag_decl() +
+                        "@numbered(0)\n@flag\ntype Dot = {}\n@derive(Claimer)\ncollect enum Read = @numbered in self by it.mark.args[0] dense\ncollect enum Unread = @numbered in self by it.mark.args[0] dense\n1",
+                    claimer(),
+                ),
+                "nothing on this declaration reads it",
+            )
+        }
+        then "a claimed member mark reaches the enum's derive" {
+            answered(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive}\n" +
+                        numbered_decl() +
+                        flag_decl() +
+                        "@numbered(0)\n@flag\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int }\n@derive(Claimer)\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nShape.said()",
+                    claimer(),
+                ),
+            ) == "Dot/flag Line/"
         }
     }
     given "the order's currency law" {
