@@ -1,0 +1,60 @@
+// `Pat` is a GATHERED enum (core/pat): each derive it wears is asked
+// here for something only that derive generates over its variants.
+use @std.avrac.core.{
+    new_node_store,
+    classifier,
+    Pat,
+    Expr,
+    Scoped,
+    Plain,
+    node_payload_rows,
+    row_for,
+}
+
+fn name_of(p: Pat) -> string {
+    match p {
+        .Bind(name) -> name.of,
+        .Wild or .Rest or .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) -> "",
+    }
+}
+
+spec "core/pat — a gathered node enum" {
+    given "the derives `Pat` wears" {
+        then "Matchable numbers the seven variants by their records' ranks" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let tags = [
+                s.tag_pat(Pat.Wild),
+                s.tag_pat(Pat.Rest),
+                s.tag_pat(Pat.Bind(Scoped("x"))),
+                s.tag_pat(Pat.Variant(Plain("V"), [])),
+                s.tag_pat(Pat.Lit(one)),
+                s.tag_pat(Pat.Format("h", [])),
+                s.tag_pat(Pat.Quote(one)),
+            ]
+            ["${t}" for t in tags].join(" ") == "0 1 2 3 4 5 6"
+        }
+        then "Matchable's shallow fold tells two payload-free variants apart" {
+            let s = new_node_store()
+            s.shallow_pat(Pat.Wild) != s.shallow_pat(Pat.Rest)
+        }
+        then "Exact compares a variant's payload by value" {
+            let s = new_node_store()
+            s.exact_pat(Pat.Bind(Scoped("x")), Pat.Bind(Scoped("x"))) &&
+                !s.exact_pat(Pat.Bind(Scoped("x")), Pat.Bind(Scoped("y"))) &&
+                !s.exact_pat(Pat.Wild, Pat.Rest)
+        }
+        then "Rebuild builds a variant again from its payload" {
+            mut rb = classifier(new_node_store(), [])
+            name_of(Pat.Bind(Scoped("kept")).rebuilt(rb)) == "kept"
+        }
+        then "Grammar answers a variant's payload row from its record's fields" {
+            let row = row_for(node_payload_rows(), "Pat", "Variant")
+            ["${f.name}: ${f.ty}" for f in row?.payloads ?? []].join(", ") == "name: Plain, args: List<PatId>"
+        }
+        then "Grammar answers a payload-free variant as present and empty" {
+            let rows = [r for r in node_payload_rows() if r.owner == "Pat" && r.variant == "Wild"]
+            rows.length == 1 && rows[0].payloads.is_empty()
+        }
+    }
+}
