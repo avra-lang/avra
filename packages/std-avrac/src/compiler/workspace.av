@@ -332,8 +332,9 @@ export type Workspace = {
     // the Text cells that are manifests' — the one text the package
     // graph is shaped by
     manifest_texts: Cell<List<int>>,
-    // whether this workspace was let go: it answers nothing after
-    let_go: Cell<bool>,
+    // whether this workspace stands, or was let go and why: it answers
+    // nothing after
+    stand: Cell<Stand>,
     // plain for its identity: the host capability table, set once at
     // construction and never reassigned
     host: Host,
@@ -652,7 +653,7 @@ fn built(
         input_index: map_cell(),
         input_names: list_cell(),
         manifest_texts: list_cell(),
-        let_go: Cell.new(false),
+        stand: Cell.new(Stand.Open),
     }
     // The registration IS `Family`'s declaration order: `Family.all()`
     // answers the variants in ordinal order, so `db.family`'s minted index
@@ -709,7 +710,7 @@ impl Workspace {
     /// family's table through this one door instead. The ordinal is
     /// `Family`'s own declaration place, so it always names a slot.
     fn relation(fam: Family) -> Relation<DbRow> {
-        if self.let_go.get() { avra_trap(asked_after_let_go()) }
+        self.standing()
         self.db.relation(fam.ordinal)
     }
 
@@ -739,7 +740,7 @@ impl Workspace {
         for f in Family.all() { self.relation(f).evict() }
         self.db.disarm()
         self.decls.let_go()
-        self.let_go.set(true)
+        self.stand.set(Stand.LetGo)
     }
 
     fn ensured(d: DeclId) {

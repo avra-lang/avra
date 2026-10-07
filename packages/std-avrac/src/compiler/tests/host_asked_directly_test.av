@@ -1,6 +1,7 @@
 //! `compiler.host_asked_directly`: a `Host` question asked in the
 //! compiler or its CLI outside the door's own file is refused.
-use compiler.{avra, new_workspace, findings_of, Finding}
+use @std.avrac.testing.{test_workspace}
+use compiler.{findings_of, Finding}
 use compiler.host.{memory_host}
 
 const HOST = "type Host = { exists: fn(string) -> bool, peek: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int }\nimpl Host {\n    fn read(p: string) -> string { p }\n    fn there(p: string) -> bool { p.is_empty() }\n    fn listing(p: string) -> List<string> { [p] }\n    fn spared_text(p: string) -> string { p }\n}\ntype Ws = { host: Host }\n"
@@ -8,7 +9,7 @@ const HOST = "type Host = { exists: fn(string) -> bool, peek: fn(string) -> stri
 /// Findings of the rule over one file, `rel` under the package at `root`.
 fn asked_at(root: string, rel: string, body: string) -> int {
     let path = "${root}/src/${rel}"
-    let ws = new_workspace(memory_host({"${path}": "${HOST}${body}"}, [path]), root, avra())
+    let ws = test_workspace(memory_host({"${path}": "${HOST}${body}"}, [path]), root)
     [f for f in findings_of(ws.program(path)) if f.rule == "compiler.host_asked_directly"].length
 }
 

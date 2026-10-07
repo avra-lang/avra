@@ -1,7 +1,8 @@
 // Packages over an in-memory host: a root manifest names a path
 // dependency, `use @scope.name.a.{x}` reaches its module, the graph's
 // laws refuse in their own words, and the entry is the manifest's.
-use @std.avrac.compiler.{avra, new_workspace, Program}
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.compiler.{Program}
 use @std.avrac.diagnostics.{suggested}
 use diagnostics.{Diag}
 use compiler.{Workspace}
@@ -37,14 +38,14 @@ fn names() -> List<string> {
 }
 
 fn workspace() -> Workspace {
-    new_workspace(memory_host(files(), names()), "/w", avra())
+    test_workspace(memory_host(files(), names()), "/w")
 }
 
 /// The package with one file replaced.
 fn with_file(path: string, text: string) -> Workspace {
     mut fs = files()
     fs.set(path, text)
-    new_workspace(memory_host(fs, names()), "/w", avra())
+    test_workspace(memory_host(fs, names()), "/w")
 }
 
 /// The package with two files replaced or added.
@@ -57,7 +58,7 @@ fn with_two(p1: string, t1: string, p2: string, t2: string) -> Workspace {
     mut fs = files()
     fs.set(p1, t1)
     fs.set(p2, t2)
-    new_workspace(memory_host(fs, names().concat([p1, p2])), "/w", avra())
+    test_workspace(memory_host(fs, names().concat([p1, p2])), "/w")
 }
 
 fn both_deps() -> string {
@@ -285,7 +286,7 @@ spec "compiler/packages" {
     }
     given "every reached file is analysed, however deep the chain" {
         then "a four-package dependency chain lands every link in the program's own files" {
-            let ws = new_workspace(memory_host(chain_files(), chain_names()), "/w", avra())
+            let ws = test_workspace(memory_host(chain_files(), chain_names()), "/w")
             let paths = [a.view.source.file for a in ws.program("/w/src/main.av").files]
             paths.length == 5 &&
                 paths.any(it == "/w/vendor/p3/src/p3.av") &&

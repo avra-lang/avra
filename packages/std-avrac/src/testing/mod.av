@@ -2,7 +2,7 @@
 //! Test files are separate compilation units, so each used to carry
 //! its own copy of these — 26 of them, byte-identical.
 use compiler.{analyze_source, parse_source, Program, Workspace, avra, new_workspace}
-use compiler.host.{memory_host}
+use compiler.host.{Host, memory_host}
 use @std.avrac.diagnostics.{Diag}
 use @std.avrac.core.{flatten}
 use @std.meta.{embed}
@@ -156,7 +156,16 @@ export fn provided_workspace(main: string, provider: string, modules: List<Modul
     for m in modules { files.set(m.path(), m.text) }
     let paths = ["/w/avra.toml", "/w/src/main.av", "/w/vendor/c/avra.toml", "/w/vendor/c/src/c.av"]
         .concat([m.path() for m in modules])
-    new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
+}
+
+/// A workspace a test makes — ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME,
+/// so the one made before it is let go: read what a workspace answers
+/// before making the next.
+export fn test_workspace(host: Host, root: string) -> Workspace {
+    let ws = new_workspace(host, root, avra())
+    ws.alone()
+    ws
 }
 
 // ── The prelude, carried in memory ───────────────────────────────────
@@ -173,7 +182,7 @@ export fn floored(main: string) -> Program {
         "/std/std-prelude/avra.toml": "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n",
         "/std/std-prelude/src/prelude.av": prelude_real,
     }
-    new_workspace(memory_host(files, files.keys()) with { std_root: "/std" }, "/w", avra())
+    test_workspace(memory_host(files, files.keys()) with { std_root: "/std" }, "/w")
         .program("/w/src/main.av")
 }
 

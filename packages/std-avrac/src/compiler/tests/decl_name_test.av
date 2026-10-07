@@ -2,10 +2,10 @@
 // what generated it, the declaration it is nested in, its own name, and its
 // place among the declarations of that file sharing all six. A declaration written above another moves the
 // other's name only when it shares them.
+use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace, makers_in}
 use compiler.record.{read_fields}
 use @std.avrac.testing.{provided_workspace, vendored_meta, vendored_meta_paths}
-use @std.avrac.compiler.{avra, new_workspace}
 use compiler.host.{memory_host}
 use core.{DeclId, DeclKind, flatten, no_stmt, named_ref}
 use features.{Decl, DeclareWork, decl_key_text, new_decls}
@@ -227,13 +227,12 @@ fn first_statement_annotated() -> Workspace {
             "/w/src/main.av": "@mark\nfn f() -> int { 1 }\nf()\n",
         },
     )
-    new_workspace(
+    test_workspace(
         memory_host(
             files,
             ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
         ),
         "/w",
-        avra(),
     )
 }
 
@@ -255,13 +254,12 @@ fn generated_annotated() -> Workspace {
             "/w/src/main.av": "fn pad() -> int { 0 }\n@outer\nfn f() -> int { 1 }\nf()\n",
         },
     )
-    new_workspace(
+    test_workspace(
         memory_host(
             files,
             ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
         ),
         "/w",
-        avra(),
     )
 }
 
@@ -282,7 +280,7 @@ fn nested_package_path(early: bool) -> string {
         "/w/src/greet/avra.toml": "[package]\nname = \"@acme/greet\"\nversion = \"0.1.0\"\n",
         "/w/src/greet/src/greet.av": "export fn greet(n: int) -> int {\n    n + 40\n}\n",
     }
-    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    let ws = test_workspace(memory_host(files, files.keys()), "/w")
     if early { let _ = ws.file_id("/w/src/greet/src/greet.av") }
     let _ = ws.program(null)
     [d.path for d in ws.decls.all_decls() if d.name == "greet"].join(" | ")
@@ -298,13 +296,12 @@ fn two_annotations(main: string) -> string {
             "/w/src/main.av": main,
         },
     )
-    let ws = new_workspace(
+    let ws = test_workspace(
         memory_host(
             files,
             ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
         ),
         "/w",
-        avra(),
     )
     let _ = ws.program("/w/src/main.av")
     keys_named(ws, DeclKind.Fn, "f_a") + " || " + keys_named(ws, DeclKind.Fn, "f_b")

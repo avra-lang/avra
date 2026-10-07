@@ -1,7 +1,7 @@
 // The workspace over an in-memory host: a module is a directory or a
 // file, siblings see each other, `use` reaches a module's exports,
 // and every failed `use` speaks in its own words.
-use @std.avrac.compiler.{avra, new_workspace}
+use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace, sig_hash}
 use @std.avrac.core.{TypeId, DeclId}
 use @std.avrac.features.{DeclSig, EnumSig, StructSig, NamedSig}
@@ -30,14 +30,14 @@ fn ws_names() -> List<string> {
 }
 
 fn ws_of() -> Workspace {
-    new_workspace(memory_host(ws_files(), ws_names()), "/w", avra())
+    test_workspace(memory_host(ws_files(), ws_names()), "/w")
 }
 
 /// The package with its root file replaced.
 fn with_main(text: string) -> Workspace {
     mut fs = ws_files()
     fs.set("/w/src/main.av", text)
-    new_workspace(memory_host(fs, ws_names()), "/w", avra())
+    test_workspace(memory_host(fs, ws_names()), "/w")
 }
 
 /// The package with a manifest beside its sources, its entry a spec
@@ -50,10 +50,9 @@ fn spec_package(toml: string) -> Workspace {
             "/w/src/main.av",
             "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n    }\n}\n",
         )
-    new_workspace(
+    test_workspace(
         memory_host(fs, ws_names().concat(["/w/avra.toml"])) with { env: path_only },
         "/w",
-        avra(),
     )
 }
 
@@ -82,10 +81,9 @@ fn searched(word: string) -> List<string> {
             "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"${word}\"]\n",
         )
     fs.set("/w/src/main.av", "1\n")
-    new_workspace(
+    test_workspace(
         memory_host(fs, ws_names().concat(["/w/avra.toml"])) with { env: self_naming },
         "/w",
-        avra(),
     )
         .link_words("")
 }
@@ -119,7 +117,7 @@ fn depending_on(rows: string) -> Workspace {
         "/w/vendor/dep/avra.toml": "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n${rows}",
         "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int {\n    n\n}\n",
     }
-    new_workspace(
+    test_workspace(
         memory_host(
             files,
             [
@@ -130,7 +128,6 @@ fn depending_on(rows: string) -> Workspace {
             ],
         ),
         "/w",
-        avra(),
     )
 }
 
@@ -258,7 +255,7 @@ spec "compiler/workspace" {
         then "a run-time statement outside the entry refuses, naming the entry" {
             mut fs = ws_files()
             fs.set("/w/src/helper.av", "fn helper(n: int) -> int {\n    n\n}\nhelper(2)\n")
-            let ws = new_workspace(memory_host(fs, ws_names()), "/w", avra())
+            let ws = test_workspace(memory_host(fs, ws_names()), "/w")
             let p = ws.program("/w/src/main.av")
             p.clean() &&
                 p.lowered().diagnostics.length == 1 &&
@@ -422,7 +419,7 @@ fn toolchain_names() -> List<string> {
 fn toolchain_app(main: string) -> Workspace {
     mut fs = toolchain_files()
     fs.set("/w/src/main.av", main)
-    new_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w", avra())
+    test_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w")
 }
 
 /// The same program with a manifest of its own: a declared row for
@@ -439,7 +436,7 @@ fn pinned_app(main: string) -> Workspace {
         .set("/w/vendor/text/src/text.av", "export fn shout(s: string) -> string {\n    s + \"?\"\n}\n")
     fs.set("/w/src/main.av", main)
     let names = toolchain_names().concat(["/w/vendor/text/avra.toml", "/w/vendor/text/src/text.av"])
-    new_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w", avra())
+    test_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w")
 }
 
 fn toolchain_report(ws: Workspace) -> string {
@@ -520,7 +517,7 @@ spec "the toolchain's std packages" {
             let names = toolchain_names()
                 .concat(["/w/vendor/text/avra.toml", "/w/vendor/text/src/text.av"])
             package_voice(
-                new_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w", avra()),
+                test_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w"),
                 "`@std/text` is claimed by two directories",
             )
         }
@@ -550,11 +547,7 @@ spec "one directory, one spelling" {
                 "w/avra.toml",
                 "w/src/main.av",
             ]
-            let ws = new_workspace(
-                memory_host_at(fs, names, "/") with { std_root: "/tc" },
-                "w",
-                avra(),
-            )
+            let ws = test_workspace(memory_host_at(fs, names, "/") with { std_root: "/tc" }, "w")
             ws.analyze_file("w/src/main.av").diagnostics.is_empty()
         }
     }
@@ -574,11 +567,7 @@ spec "the prelude" {
                 )
             fs.set("/w/src/main.av", "use @std.text.{shout}\nshout(\"x\")\n")
             ran_as(
-                new_workspace(
-                    memory_host(fs, toolchain_names()) with { std_root: "/tc" },
-                    "/w",
-                    avra(),
-                )
+                test_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w")
                     .program("/w/src/main.av")
                     .run(),
                 "hi x!",
@@ -609,21 +598,16 @@ spec "the prelude" {
                 )
             fs.set("/w/src/main.av", "use @std.text.{greet}\ngreet(\"x\")\n")
             ran_as(
-                new_workspace(
-                    memory_host(fs, toolchain_names()) with { std_root: "/tc" },
-                    "/w",
-                    avra(),
-                )
+                test_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w")
                     .program("/w/src/main.av")
                     .run(),
                 "text x",
             )
         }
         then "the prelude's own file does not see itself twice" {
-            new_workspace(
+            test_workspace(
                 memory_host(toolchain_files(), toolchain_names()) with { std_root: "/tc" },
                 "/tc/std-prelude",
-                avra(),
             )
                 .analyze_file("/tc/std-prelude/src/prelude.av")
                 .diagnostics
@@ -640,11 +624,7 @@ spec "the prelude" {
                 )
             fs.set("/w/src/main.av", "greet(\"x\")\n")
             package_voice(
-                new_workspace(
-                    memory_host(fs, toolchain_names()) with { std_root: "/tc" },
-                    "/w",
-                    avra(),
-                ),
+                test_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w"),
                 "`@std/prelude` depends on nothing",
             )
         }
@@ -726,11 +706,7 @@ spec "avra fmt --write's own receipt" {
                 "/w/src/lib.av": "export component Widget {\n    depth: int\n}\n",
                 "/w/src/main.av": "use lib.{Widget}\n\nWidget w {\n    depth: 8\n}\n\nfn names(t: string) -> bool {\n    [\n        \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n        \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n        \"ccccccccccccccccccccccccccccccc\"\n    ].any((p) -> t == p)\n}\n",
             }
-            let ws = new_workspace(
-                memory_host(fs, ["/w/src/lib.av", "/w/src/main.av"]),
-                "/w",
-                avra(),
-            )
+            let ws = test_workspace(memory_host(fs, ["/w/src/lib.av", "/w/src/main.av"]), "/w")
             let f = ws.file_id("/w/src/main.av")
             match ws.write_checked_source(f) {
                 .Ok(text) -> text.contains("ccccccccccccccccccccccccccccccc\",\n    ]"),
