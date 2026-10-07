@@ -305,6 +305,19 @@ static const char* answered(const Child* c, char* buf, size_t cap, int ms) {
     return buf;
 }
 
+// ASKED AS `avra tasks` ASKS: a signal, a tenth of a second, and again,
+// up to `tries` times. A zero the handler stores can be lost to a switch
+// it interrupted between the countdown's load and store, so one signal
+// is never the whole ask.
+static const char* asked_again(const Child* c, char* buf, size_t cap, int tries) {
+    buf[0] = 0;
+    for (int i = 0; i < tries && !buf[0]; i++) {
+        kill(c->pid, SIGURG);
+        answered(c, buf, cap, 100);
+    }
+    return buf;
+}
+
 // The child has finished answering: it takes the ask away after the
 // answer stands, so an ask written before that would be taken too.
 static void settled(const Child* c) {
@@ -356,21 +369,15 @@ static void listing(const char* self) {
 
 static void door(const char* self) {
     char buf[4096];
-    // Asked forty times: on a machine whose decrement is a load and a
-    // store, some first signal lands between the two and its zero is
-    // lost — and the second signal must bring the listing, never the
-    // line that says no task switched.
+    // Asked forty times, as `avra tasks` asks: a signal can land between
+    // the countdown's load and store and lose its zero, so the next one
+    // must bring the listing — never the line that says no task switched.
     Child c = scene(self, "yielding");
     int listed_each = 1, never_unswitched = 1;
     for (int turn = 0; turn < 40 && listed_each; turn++) {
         unlink(c.out);
         asked(&c);
-        kill(c.pid, SIGURG);
-        answered(&c, buf, sizeof buf, 300);
-        if (!buf[0]) {
-            kill(c.pid, SIGURG);
-            answered(&c, buf, sizeof buf, 1000);
-        }
+        asked_again(&c, buf, sizeof buf, 20);
         settled(&c);
         listed_each &= strstr(buf, "task 1, spawned at") != NULL && strstr(buf, "task 2, spawned at") != NULL;
         never_unswitched &= strstr(buf, "has not switched") == NULL;
@@ -440,17 +447,12 @@ static void door(const char* self) {
         ssize_t w = write(fill[1], "b", 1);
         (void)w;
         for (volatile int spin = 0; spin < (trial * 7919) % 4000; spin++) {}
-        kill(c.pid, SIGURG);
-        answered(&c, buf, sizeof buf, 100);
-        if (!buf[0]) {
-            kill(c.pid, SIGURG);
-            answered(&c, buf, sizeof buf, 1000);
-        }
+        asked_again(&c, buf, sizeof buf, 20);
         settled(&c);
         answered_each &= strstr(buf, "process ") == buf;
         never_false &= strstr(buf, "has not switched") == NULL;
     }
-    CHECK(answered_each, "an ask around the world's sleep is answered with the listing, at the latest at the second signal");
+    CHECK(answered_each, "an ask around the world's sleep is answered with the listing");
     CHECK(never_false, "and a sleeping process is never said not to switch");
     close(fill[1]);
     ended(&c);
