@@ -1,6 +1,6 @@
 #!/bin/sh
 # A TRACE HAS ONE SHAPE IN BOTH ENGINES. Each program is run compiled
-# and evaluated under `AVRA_FLOW_TRACE`, and what the reader prints as
+# and evaluated under `AVRA_FLOW_TRACE`, and what `avra trace` prints as
 # each trace's shape — a task's events in order, with nothing an engine
 # owns — must be the text committed beside the program, from both: a
 # join of a spawned task, a join of a timer's task, a join of a task
@@ -40,7 +40,7 @@ held() {
         echo "flow-trace: the compiler spawned a task of its own while it evaluated $want"
         return 1
     fi
-    if ! python3 tools/flow_trace.py "$trace" --shape > "$trace.shape" 2> "$trace.strays"; then
+    if ! build/avra trace "$trace" --shape > "$trace.shape" 2> "$trace.strays"; then
         echo "flow-trace: the $engine trace of $want holds a line that is no event"; sed -n '1p' "$trace.strays"
         return 1
     fi
