@@ -282,9 +282,9 @@ compiler_objs() {
         echo "build/$s.o build/$s.sha build/$s.d"
     done
     echo build/std_hash.a
-    for f in build/b3_*.o; do
+    for f in packages/std-hash/vendor/b3_*.c; do
         [ -f "$f" ] || continue
-        s=$(basename "$f" .o)
+        s=$(basename "$f" .c)
         echo "build/$s.o build/$s.sha build/$s.d"
     done
 }
