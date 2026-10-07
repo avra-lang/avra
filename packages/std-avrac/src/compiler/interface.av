@@ -20,6 +20,7 @@ use core.{
 }
 use features.{
     Decl,
+    LANGUAGE_HOME,
     DeclAt,
     FnSig,
     StructSig,
@@ -339,6 +340,7 @@ impl Workspace {
     /// is held twice while it is written, and every line copies it.
     fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) {
         let f = self.file_id(path)
+        self.decls.held_opened(f, makers.values())
         mut by_stmt = self.decls.decl_ids.get()[f.index].get()
         for parts in rows {
             let id: DeclId? = self.minted(f, path, parts, makers)
@@ -346,6 +348,7 @@ impl Workspace {
             by_stmt.grow_to(stmt_index + 1)
             if id != null && by_stmt.get(stmt_index).decl == null { by_stmt.set(stmt_index, DeclAt { decl: id }) }
         }
+        self.decls.held_closed(f, makers.values())
         self.decls.keep_stmt_decls(f, by_stmt)
     }
 
@@ -361,12 +364,9 @@ impl Workspace {
             return null
         }
         let root: ExprId? = if row.root < 0 { null } else { ExprId { index: row.root } }
-        // the ordinal is the record's identity within a held file: a name/kind key
-        // collapses generated members and same-named methods
         let id = self
             .decls
             .mint_faced(
-                "${f.index}#held#${row.ordinal}",
                 f,
                 StmtId { index: row.stmt },
                 row.name,
@@ -374,7 +374,7 @@ impl Workspace {
                 row.exported,
                 row.owner,
                 null,
-                row.nested,
+                row.within,
                 root,
                 makers.get("${row.ordinal}") ?? "",
                 facts!,
@@ -408,7 +408,7 @@ impl Workspace {
         // THE CODEC IS HELD TO ITSELF WHERE IT WRITES: a fact the decoder does not give
         // back is a defect said now, never a check every reader pays
         if facts_unblocked(block)?.fingerprint() != facts.fingerprint() { self.defect("`${d.name}`'s facts do not survive their record") }
-        "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${if d.nested { "1" } else { "0" }}\t${root}\t${if item { "1" } else { "0" }}\t${block}\t${payload}"
+        "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.within)}\t${root}\t${if item { "1" } else { "0" }}\t${block}\t${payload}"
     }
 
     /// The shape word and payload a declaration's record line carries.
@@ -583,7 +583,7 @@ impl Workspace {
     /// collect's synthesized aggregate by its own answer type. A NESTED
     /// declaration joins no namespace, so no symbol names it.
     fn stub_of(d: Decl) -> Body? {
-        if d.nested { return null }
+        if d.nested() { return null }
         if self.decls.is_instance(d.id) { return self.instance_stub(d) }
         if d.kind is .Collect { return self.collect_own_stub(d) }
         let s? = self.sig(d.id) else { return null }
@@ -638,9 +638,6 @@ impl Workspace {
 /// its own text; `wire_decl` reads too few words from it to decode.
 const NO_ORDINAL: int = 0 - 1
 
-/// Where a builtin's wire says it lives — no path, so no reader takes it for a file.
-const BUILTIN_HOME: string = "@language"
-
 impl Decls {
 
     /// A declaration as a wire: its file, kind, owner and name — never a
@@ -659,7 +656,7 @@ impl Decls {
         let kind = kind_word(x.kind)
         // A BUILTIN SITS IN NO FILE OF THE PROGRAM'S: its wire names the language, so
         // one declaration has one spelling whichever file a process met first.
-        if self.is_builtin(d) { return "${BUILTIN_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
+        if self.is_builtin(d) { return "${LANGUAGE_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
         let siblings = self.wire_siblings(x.file, kind, x.owner, x.name)
         let base = "${self.file(x.file).path}~${kind}~${field_text(x.owner)}~${field_text(x.name)}"
         if siblings.length <= 1 { return base }

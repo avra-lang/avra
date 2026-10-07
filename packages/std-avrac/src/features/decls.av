@@ -67,7 +67,6 @@ use features.{
     MetaVal,
     StructSig,
     EnumSig,
-    generated_key,
     Decl,
     DeclAt,
     Origin,
@@ -100,6 +99,59 @@ const word_index: int = 2
 const marks_index: int = 3
 const home_index: int = 4
 const external_index: int = 5
+
+/// SIBLINGS, COUNTED. A declaration's `sibling` is its place among the
+/// declarations of its group that ONE RUN of one maker over one file mints:
+/// a file's admission is a run of the empty maker, an annotation's expansion
+/// a run of its own, a held file's rows a run of each maker its record names.
+/// A run opened again counts from nothing, so what it mints again takes the
+/// places it took. A run opened INSIDE another of its name — an expansion
+/// re-entered from a resolve it asked — counts on its own, and the outer
+/// one resumes its counts when the inner closes. A closed run with none
+/// around it is gone, so a run of a maker stands only while it is open; a
+/// file's admission is the one run that stands until the next.
+type Siblings = { runs: Cell<Map<string, Cell<Map<string, int>>>> }
+
+/// The counts of a run of the same name already open when another opened —
+/// none when it was the only one.
+export type RunPrior = { counts: Cell<Map<string, int>>? }
+
+impl Siblings {
+    /// A new run of `maker` over `f`; answers the run it stands inside.
+    fn opened(f: FileId, maker: string) -> RunPrior {
+        let prior = RunPrior { counts: self.runs.get().get(run_named(f, maker)) }
+        let fresh: Cell<Map<string, int>> = map_cell()
+        self.runs.put(run_named(f, maker), fresh)
+        prior
+    }
+
+    /// A run closed: the run it stood inside counts on from where it was,
+    /// and with none around it the run is gone.
+    fn resumed(f: FileId, maker: string, prior: RunPrior) {
+        let counts? = prior.counts else { return self.closed(f, maker) }
+        self.runs.put(run_named(f, maker), counts)
+    }
+
+    /// The run of `maker` over `f` is no longer.
+    fn closed(f: FileId, maker: string) {
+        mut open = self.runs.get()
+        open.remove(run_named(f, maker))
+        self.runs.set(open)
+    }
+
+    /// The next place in `group` within the open run of `maker` over `f` —
+    /// a run nothing opened is opened by its first taking.
+    fn taken(f: FileId, maker: string, group: string) -> int {
+        if self.runs.get().get(run_named(f, maker)) == null { let _ = self.opened(f, maker) }
+        let counts = self.runs.get().get(run_named(f, maker))!
+        let place = counts.get().get(group) ?? 0
+        counts.put(group, place + 1)
+        place
+    }
+}
+
+/// One maker's run over one file, as the table files it.
+fn run_named(f: FileId, maker: string) -> string { "${f.index} ${maker}" }
 
 /// `sigs`, `children`, `methods` and `impls` are dense by
 /// DeclId; `stores` and `decl_ids` dense by FileId. The two hooks
@@ -386,11 +438,8 @@ export type Decls = {
     mains: Cell<List<DeclId?>>,
     /// Each file's name, dense by FileId — what a row's key spells its file by.
     file_names: Cell<List<string>>,
-    /// How many times each file was admitted, and, within the current one, the
-    /// sibling each minted declaration took and the next its group gives.
-    admissions: Cell<Map<string, int>>,
-    siblings: Cell<Map<string, int>>,
-    sibling_next: Cell<Map<string, int>>,
+    /// The sibling each group's next declaration takes, per run.
+    counted: Cell<Siblings>,
     stores: Cell<List<SyntaxArena?>>,
     ensure_store: Cell<fn(FileId) -> void>,
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
@@ -703,9 +752,7 @@ export fn new_decls() -> Decls {
         types: new_type_registry(),
         mains: Cell.new(no_mains),
         file_names: list_cell(),
-        admissions: map_cell(),
-        siblings: map_cell(),
-        sibling_next: map_cell(),
+        counted: Cell.new(Siblings { runs: map_cell() }),
         // LICENSED compiler.repeated_projection: each `Cell.new` mints its own cell — one binding would make two hooks one slot
         stores: Cell.new(no_stores),
         auditing: Cell.new(false),
@@ -2194,18 +2241,7 @@ impl Decls {
 
     fn admit_builtin(r: TypeRow) {
         let id = self
-            .mint(
-                "builtin::${r.name}",
-                FileId { index: 0 },
-                no_stmt,
-                r.name,
-                DeclKind.Builtin,
-                true,
-                "",
-                null,
-                false,
-                null,
-            )
+            .mint(FileId { index: 0 }, no_stmt, r.name, DeclKind.Builtin, true, "", null, "", null)
         self.builtins.push(id)
         self.declare_builtin(id, r)
     }
@@ -2789,14 +2825,6 @@ impl Decls {
     fn holds_impl(ty: DeclId, tr: DeclId) -> bool {
         self.impls.get()[ty.index].get().any(same_decl(it, tr))
     }
-}
-
-/// A key seen already in this admit is a repeated declaration: the
-/// repeat is keyed by its statement, so it stays a declaration of
-/// its own for the namespace law to refuse.
-fn fresh_key(key: string, s: StmtId, seen: List<string>) -> string {
-    if seen.contains(key) { return "${key}#${s.index}" }
-    key
 }
 
 /// A range whose first expression never landed starts at zero.

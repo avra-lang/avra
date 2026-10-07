@@ -1,14 +1,14 @@
 // A DECLARATION'S NAME IS ITS KEY: its file's name, its kind, its owner,
-// what generated it, its own name, and its place among the declarations of
-// that file sharing all five. A declaration written above another moves the
+// what generated it, the declaration it is nested in, its own name, and its
+// place among the declarations of that file sharing all six. A declaration written above another moves the
 // other's name only when it shares them.
 use compiler.{Workspace, makers_in}
 use compiler.record.{read_fields}
 use @std.avrac.testing.{provided_workspace, vendored_meta, vendored_meta_paths}
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.host.{memory_host}
-use core.{DeclKind, no_stmt, named_ref}
-use features.{Decl, DeclareWork, new_decls}
+use core.{DeclId, DeclKind, flatten, no_stmt, named_ref}
+use features.{Decl, DeclareWork, decl_key_text, new_decls}
 
 /// The key of every declaration of one kind and name, in id order.
 fn keys_named(ws: Workspace, kind: DeclKind, name: string) -> string {
@@ -59,20 +59,7 @@ fn generated(names: List<string>) -> List<Decl> {
     let decls = new_decls()
     let f = decls.file_id("/w/src/lib.av", "w:src/lib.av", "lib", false)
     let ids = [decls
-        .mint_faced(
-            "made ${j}",
-            f,
-            no_stmt,
-            n,
-            DeclKind.Fn,
-            false,
-            "",
-            null,
-            false,
-            null,
-            "derive(Shown)#0 @ type .T#0",
-            null,
-        ) for j, n in names]
+        .mint_faced(f, no_stmt, n, DeclKind.Fn, false, "", null, "", null, "derive(Shown)#0 @ type .T#0", null) for j, n in names]
     [decls.decl(d) for d in ids]
 }
 
@@ -96,50 +83,11 @@ fn shared_block() -> List<Decl> {
     let f = decls.file_id("/w/src/lib.av", "w:src/lib.av", "lib", false)
     let ids = [
         decls
-            .mint_faced(
-                "block one",
-                f,
-                no_stmt,
-                "Reg",
-                DeclKind.Impl,
-                false,
-                "",
-                null,
-                false,
-                null,
-                maker_a(),
-                null,
-            ),
+            .mint_faced(f, no_stmt, "Reg", DeclKind.Impl, false, "", null, "", null, maker_a(), null),
         decls
-            .mint_faced(
-                "block one",
-                f,
-                no_stmt,
-                "Reg",
-                DeclKind.Impl,
-                false,
-                "",
-                null,
-                false,
-                null,
-                maker_b(),
-                null,
-            ),
+            .mint_faced(f, no_stmt, "Reg", DeclKind.Impl, false, "", null, "", null, maker_b(), null),
         decls
-            .mint_faced(
-                "block two",
-                f,
-                no_stmt,
-                "Reg",
-                DeclKind.Impl,
-                false,
-                "",
-                null,
-                false,
-                null,
-                maker_b(),
-                null,
-            ),
+            .mint_faced(f, no_stmt, "Reg", DeclKind.Impl, false, "", null, "", null, maker_b(), null),
     ]
     [decls.decl(d) for d in ids]
 }
@@ -156,16 +104,7 @@ fn restored() -> Restored {
     let f = ws.file_id(readmit_path())
     let _ = ws
         .decls
-        .mint_generated_code(
-            f,
-            ws.decls.store_of(f),
-            ws.parsed(f).stmts.slice(0, 1),
-            0,
-            "one",
-            awkward_maker(),
-            "made",
-            null,
-        )
+        .mint_generated_code(f, ws.decls.store_of(f), ws.parsed(f).stmts.slice(0, 1), 0, awkward_maker(), "made", null)
     // through the record's own text: its lines joined, then split again
     let fields = [read_fields(line) for line in ws.lines_of(readmit_path()).join("\n").split("\n")]
     let held = admitted_nothing()
@@ -175,6 +114,47 @@ fn restored() -> Restored {
         held: [Decl.key_text(d.key()) for d in held.decls.all_decls() if d.maker != ""].join(" | "),
         lines: [p for p in fields if p[0] == "maker"].length,
     }
+}
+
+/// One record held twice into one table: the keys and the row count after
+/// the first hold, then after the second.
+type HeldTwice = { first: string, second: string, rows_first: int, rows_second: int }
+
+fn held_twice() -> HeldTwice {
+    let ws = admitted(two_fns())
+    let f = ws.file_id(readmit_path())
+    let _ = ws
+        .decls
+        .mint_generated_code(f, ws.decls.store_of(f), ws.parsed(f).stmts.slice(0, 1), 0, awkward_maker(), "made", null)
+    let fields = [read_fields(line) for line in ws.lines_of(readmit_path())]
+    let held = admitted_nothing()
+    held.mint_file(readmit_path(), fields, makers_in(fields, readmit_path()))
+    let first = all_keys(held)
+    let rows_first = held.decls.all_decls().length
+    held.mint_file(readmit_path(), fields, makers_in(fields, readmit_path()))
+    HeldTwice {
+        first: first,
+        second: all_keys(held),
+        rows_first: rows_first,
+        rows_second: held.decls.all_decls().length,
+    }
+}
+
+fn all_keys(ws: Workspace) -> string { [Decl.key_text(d.key()) for d in ws.decls.all_decls()].join(" | ") }
+
+/// How many sibling counts the table keeps, every run's groups summed.
+fn counts_kept(ws: Workspace) -> int {
+    mut n = 0
+    for c in ws.decls.counted.get().runs.get().values() { n = n + c.get().length }
+    n
+}
+
+/// The counts kept after one admission, then after five more of the same text.
+fn counts_readmitted() -> List<int> {
+    let ws = admitted(nested_once())
+    let first = counts_kept(ws)
+    for _i in 0..5 { admit_again(ws, readmit_path(), nested_once()) }
+    [first, counts_kept(ws), ws.decls.all_decls().length]
 }
 
 /// A workspace over the same file, nothing of it read.
@@ -265,6 +245,161 @@ fn first_statement_made() -> string {
         .join(" | ")
 }
 
+/// A module whose `outer` generates a fn that wears `@mark(5)`: the
+/// annotation's statement is a copy, spanned in `marks.av`.
+fn generated_annotated() -> Workspace {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/marks.av": "use @std.meta.{Fn, Directive}\nexport fn mark(f: Fn, n: int) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote { fn \${f}_made() -> int { 7 } } }]\n}\nexport fn outer(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote { @mark(5)\nfn \${f}_inner() -> int { 3 } } }]\n}\n",
+            "/w/src/main.av": "fn pad() -> int { 0 }\n@outer\nfn f() -> int { 1 }\nf()\n",
+        },
+    )
+    new_workspace(
+        memory_host(
+            files,
+            ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+/// Every declaration that program generated, as `name by maker`, in id order.
+fn generated_made() -> string {
+    let ws = generated_annotated()
+    let _ = ws.program("/w/src/main.av")
+    ["${d.name} by ${d.maker}" for d in ws.decls.all_decls() if d.maker != ""].join(" | ")
+}
+
+/// A program whose dependency is a package nested inside the root's own
+/// source directory; with `early`, its file is named before anything
+/// admits that package. Answers the path `greet`'s row is keyed under.
+fn nested_package_path(early: bool) -> string {
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/greet\" = { path = \"src/greet\" }\n",
+        "/w/src/main.av": "use @acme.greet.{greet}\ngreet(2)\n",
+        "/w/src/greet/avra.toml": "[package]\nname = \"@acme/greet\"\nversion = \"0.1.0\"\n",
+        "/w/src/greet/src/greet.av": "export fn greet(n: int) -> int {\n    n + 40\n}\n",
+    }
+    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    if early { let _ = ws.file_id("/w/src/greet/src/greet.av") }
+    let _ = ws.program(null)
+    [d.path for d in ws.decls.all_decls() if d.name == "greet"].join(" | ")
+}
+
+/// A program whose `f` wears two annotations, written as `main`, each
+/// generating one fn — answered as every generated row's key, by name.
+fn two_annotations(main: string) -> string {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/marks.av": "use @std.meta.{Fn, Directive}\nexport fn ma(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote { fn \${f}_a() -> int { 1 } } }]\n}\nexport fn mb(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote { fn \${f}_b() -> int { 2 } } }]\n}\n",
+            "/w/src/main.av": main,
+        },
+    )
+    let ws = new_workspace(
+        memory_host(
+            files,
+            ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
+    let _ = ws.program("/w/src/main.av")
+    keys_named(ws, DeclKind.Fn, "f_a") + " || " + keys_named(ws, DeclKind.Fn, "f_b")
+}
+
+fn a_then_b() -> string { "@ma\n@mb\nfn f() -> int { 0 }\nf()\n" }
+
+fn b_then_a() -> string { "@mb\n@ma\nfn f() -> int { 0 }\nf()\n" }
+
+/// The rows one maker has in the admitted file, as `name#sibling`, in id order.
+fn made_by(ws: Workspace, maker: string) -> string {
+    ["${d.name}#${d.sibling}" for d in ws.decls.all_decls() if d.maker == maker].join(",")
+}
+
+/// One run of the maker over `two_fns`' first `n` statements, closed on what it made.
+fn one_run(ws: Workspace, n: int) { run_by(ws, run_maker(), n) }
+
+/// One run of `maker` over the admitted file's first `n` statements, closed on what it made.
+fn run_by(ws: Workspace, maker: string, n: int) {
+    let f = ws.file_id(readmit_path())
+    let prior = ws.decls.generation_opened(f, maker)
+    ws.decls.generation_kept(f, maker, made_from(ws, maker, n), prior)
+}
+
+/// What `maker` mints from the admitted file's first `n` statements, in a run already open.
+fn made_from(ws: Workspace, maker: string, n: int) -> List<DeclId> {
+    let f = ws.file_id(readmit_path())
+    ws
+        .decls
+        .mint_generated_code(f, ws.decls.store_of(f), ws.parsed(f).stmts.slice(0, n), 0, maker, "made", null)
+}
+
+/// A run of `maker_a` that mints `first` twice, then — while it is open — a
+/// whole run of `inner_maker` minting `first` `inner` times, then `first`
+/// once more. A re-entered expansion is the whole run again, so a same-maker
+/// inner run mints all three.
+fn interleaved(inner_maker: string, inner: int) -> Workspace {
+    let ws = admitted(two_fns())
+    let f = ws.file_id(readmit_path())
+    let prior = ws.decls.generation_opened(f, maker_a())
+    let before = made_from(ws, maker_a(), 1).concat(made_from(ws, maker_a(), 1))
+    let inner_prior = ws.decls.generation_opened(f, inner_maker)
+    ws
+        .decls
+        .generation_kept(f, inner_maker, flatten([made_from(ws, inner_maker, 1) for _j in 0..inner]), inner_prior)
+    ws.decls.generation_kept(f, maker_a(), before.concat(made_from(ws, maker_a(), 1)), prior)
+    ws
+}
+
+fn deleted_wide() -> string {
+    "fn a() -> int { 1 }\nfn bbbbbbbbbbbbbbbbbbbbbbbbbbbbb() -> int { 2 }\n"
+}
+
+/// `i` nested in `a`, where `deleted_wide`'s `b` stood — a narrower span over `i` than `a`'s.
+fn nested_where_deleted_stood() -> string { "fn a() -> int {\n        fn i() -> int { 3 }\n    1\n}\n" }
+
+fn readmitted_over_deleted() -> Workspace {
+    let ws = admitted(deleted_wide())
+    admit_again(ws, readmit_path(), nested_where_deleted_stood())
+    ws
+}
+
+/// The key of every row `maker` made, in id order.
+fn keys_by(ws: Workspace, maker: string) -> string {
+    [Decl.key_text(d.key()) for d in ws.decls.all_decls() if d.maker == maker].join(" | ")
+}
+
+fn inner_in_outer() -> string {
+    "fn outer() -> int {\n    fn inner() -> int {\n        1\n    }\n    1\n}\nfn other() -> int {\n    2\n}\n"
+}
+
+fn inner_in_other() -> string {
+    "fn outer() -> int {\n    1\n}\nfn other() -> int {\n    fn inner() -> int {\n        2\n    }\n    2\n}\n"
+}
+
+/// `inner` written in `outer`'s body, then the file admitted again with it in `other`'s.
+fn inner_moved() -> Workspace {
+    let ws = admitted(inner_in_outer())
+    admit_again(ws, readmit_path(), inner_in_other())
+    ws
+}
+
+/// A written top-level fn's key in its file, as a maker names the declaration it annotates.
+fn fn_key(name: string) -> string { decl_key_text("", name, DeclKind.Fn, "", "", "", 0) }
+
+fn run_maker() -> string { "made()#0 @ fn .first#0" }
+
+/// `two_fns` admitted, then one maker generating from its first `first` statements and again from its first `again`.
+fn generated_twice(first: int, again: int) -> Workspace {
+    let ws = admitted(two_fns())
+    one_run(ws, first)
+    one_run(ws, again)
+    ws
+}
+
 spec "compiler/decl name — a declaration's key is its name" {
     given "a declaration written above two others" {
         then "neither one's key moves" {
@@ -311,12 +446,15 @@ spec "compiler/decl name — a declaration's key is its name" {
     }
     given "a nested fn added inside one body" {
         then "under another name, no other body's nested fn moves" {
-            siblings_named(admitted(nested_once()), DeclKind.Fn, "inner") == "0,1" &&
-                siblings_named(admitted(nested_other_name()), DeclKind.Fn, "inner") == "0,1"
+            siblings_named(admitted(nested_once()), DeclKind.Fn, "inner") == "0,0" &&
+                siblings_named(admitted(nested_other_name()), DeclKind.Fn, "inner") == "0,0"
         }
-        then "under the same name in an earlier body, the later ones are numbered after it" {
-            siblings_named(admitted(nested_once()), DeclKind.Fn, "inner") == "0,1" &&
-                siblings_named(admitted(nested_same_name()), DeclKind.Fn, "inner") == "0,1,2"
+        then "under the same name in an earlier body, no later body's nested fn moves" {
+            siblings_named(admitted(nested_once()), DeclKind.Fn, "inner") == "0,0" &&
+                siblings_named(admitted(nested_same_name()), DeclKind.Fn, "inner") == "0,0,0"
+        }
+        then "a file's declaration of a name is never a nested fn of that name" {
+            admitted(nested_once()).decls.named_decl(readmit_path(), DeclKind.Fn, "inner") == null
         }
     }
     given "two annotated types whose makers generate one identical block, the second one more" {
@@ -340,25 +478,126 @@ spec "compiler/decl name — a declaration's key is its name" {
             unmoved(restored().parsed, restored().held) && restored().parsed.contains("\n\t1,")
         }
     }
+    given "one record held twice into one table" {
+        then "the second hold finds every row the first minted: no row added, no key moved" {
+            let h = held_twice()
+            h.rows_first == h.rows_second && unmoved(h.first, h.second)
+        }
+    }
+    given "a file admitted again, five times, with the same text" {
+        then "the table keeps no more sibling counts, and no more rows, than after the first" {
+            let c = counts_readmitted()
+            let fresh = admitted(nested_once())
+            c[0] > 0 && c[0] == c[1] && c[2] == fresh.decls.all_decls().length
+        }
+    }
     given "an annotation on a declaration a wrap moved the body of" {
         then "fixture: the statement answers the body now" {
             maker_twice().moved
         }
         then "its maker names the annotated declaration before the wrap" {
-            maker_twice().before == "inline()#0 @ fn .orig#0"
+            maker_twice().before == "inline()#0 @ ${fn_key("orig")}"
         }
         then "and the same after it" {
-            maker_twice().after == "inline()#0 @ fn .orig#0"
+            maker_twice().after == "inline()#0 @ ${fn_key("orig")}"
         }
     }
     given "a real annotation's generated fn, on a fn a wrap written before it moved the body of" {
         then "its maker names the written fn, never the body the wrap moved" {
-            real_makers() == "echoed()#0 @ fn .doubled#0"
+            real_makers() == "echoed()#0 @ ${fn_key("doubled")}"
+        }
+    }
+    given "two makers generating one name in one file" {
+        then "one maker running again over more leaves the other's row where it was" {
+            let ws = admitted(two_fns())
+            run_by(ws, maker_a(), 1)
+            run_by(ws, maker_b(), 1)
+            let before = keys_by(ws, maker_b())
+            run_by(ws, maker_a(), 2)
+            unmoved(before, keys_by(ws, maker_b())) && made_by(ws, maker_a()) == "first#0,second#0"
+        }
+    }
+    given "a maker's run with another maker's whole run inside it" {
+        then "the outer counts on from its own places, and the inner's `first` is 0" {
+            let ws = interleaved(maker_b(), 1)
+            made_by(ws, maker_a()) == "first#0,first#1,first#2" &&
+                made_by(ws, maker_b()) == "first#0"
+        }
+    }
+    given "a maker's run, closed with no run of its name around it" {
+        then "it leaves no run behind" {
+            let ws = admitted(two_fns())
+            let runs = ws.decls.counted.get().runs.get().length
+            run_by(ws, maker_a(), 2)
+            run_by(ws, maker_b(), 1)
+            ws.decls.counted.get().runs.get().length == runs
+        }
+    }
+    given "a maker's run re-entered by a run of the same maker" {
+        then "the outer counts on from its own places, and keeps the row the inner made" {
+            made_by(interleaved(maker_a(), 3), maker_a()) == "first#0,first#1,first#2"
+        }
+    }
+    given "a fn nested where a deleted declaration stood, admitted again" {
+        then "its key names the encloser this text has, never the deleted one" {
+            unmoved(
+                keys_named(readmitted_over_deleted(), DeclKind.Fn, "i"),
+                keys_named(admitted(nested_where_deleted_stood()), DeclKind.Fn, "i"),
+            )
+        }
+    }
+    given "two annotations on one fn, written in the other order" {
+        then "fixture: each generated its fn" {
+            let keys = two_annotations(a_then_b())
+            keys.contains("ma()#0") &&
+                keys.contains("mb()#0") &&
+                !keys.starts_with(" ||") &&
+                !keys.ends_with("|| ")
+        }
+        then "no generated declaration's key moves" {
+            unmoved(two_annotations(a_then_b()), two_annotations(b_then_a()))
+        }
+    }
+    given "a nested fn moved from one body to another" {
+        then "its key names its new encloser, and the old row is gone" {
+            unmoved(
+                keys_named(inner_moved(), DeclKind.Fn, "inner"),
+                keys_named(admitted(inner_in_other()), DeclKind.Fn, "inner"),
+            )
+        }
+        then "fixture: the two placements are two keys" {
+            keys_named(admitted(inner_in_outer()), DeclKind.Fn, "inner") != keys_named(admitted(inner_in_other()), DeclKind.Fn, "inner")
+        }
+    }
+    given "a file of a package nested in the root's source directory" {
+        then "its rows are keyed under its own package's name" {
+            nested_package_path(false) == "@acme/greet:src/greet.av"
+        }
+        then "and the same when the file was named before its package joined" {
+            nested_package_path(true) == "@acme/greet:src/greet.av"
+        }
+    }
+    given "an annotation on a statement another annotation generated" {
+        then "the statement is made, and its annotation makes nothing: generated code is not expanded" {
+            generated_made() == "f_inner by outer()#0 @ ${fn_key("f")}"
         }
     }
     given "an annotation on a file's first statement" {
         then "its work is the statement's own declaration's: one generated fn, made once" {
-            first_statement_made() == "f_made by mark()#0 @ fn .f#0"
+            first_statement_made() == "f_made by mark()#0 @ ${fn_key("f")}"
+        }
+    }
+    given "an expansion that runs again within one admission" {
+        then "fixture: its first run's two declarations stand" {
+            let ws = admitted(two_fns())
+            one_run(ws, 2)
+            made_by(ws, run_maker()) == "first#0,second#0"
+        }
+        then "generating one where it generated two leaves one, under the name it had" {
+            made_by(generated_twice(2, 1), run_maker()) == "first#0"
+        }
+        then "generating the same two again leaves the same two" {
+            made_by(generated_twice(2, 2), run_maker()) == "first#0,second#0"
         }
     }
     given "two declarations one annotation generates" {
