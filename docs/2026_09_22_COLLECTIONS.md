@@ -90,6 +90,22 @@ match e {
 }   // a third `impl Error` anywhere refuses here, naming it
 ```
 
+**A gathered variant carries its member record's fields**, in field order — a
+member that is no record carries nothing. The mark says which enum a member
+joins, so one record may be a variant of two. A `@derive` on the `collect enum`
+is handed every member as a variant: name, fields, the record's annotations.
+
+```avra
+@shape(0) type Dot = {}
+@shape(1) type Line = { from: int, to: int }
+collect enum Shape = @shape in package by it.mark.args[0] dense
+
+match Shape.Line(1, 4) { .Dot -> 0, .Line(a, b) -> b - a }   // 3
+```
+
+A member record that takes type parameters or spreads another's fields is
+refused (`collect_enum.member`).
+
 Also: a tag → decoder table for serialisation (keys checked unique), `explain`
 pages, benchmarks, fuzz targets, scheduled jobs.
 

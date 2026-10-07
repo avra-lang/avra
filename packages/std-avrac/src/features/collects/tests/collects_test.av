@@ -56,6 +56,11 @@ fn mark_decl() -> string {
     "use @std.meta.{Named}\ntrait Mark {\n    fn label() -> string\n}\nimpl Mark for int {\n    fn label() -> string { \"i\" }\n}\nimpl Mark for string {\n    fn label() -> string { self }\n}\nfn mark(what: Named, label: dyn Mark) -> void {}\n"
 }
 
+/// A gathered enum of two records: one empty, one of two fields.
+fn shapes() -> string {
+    "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int, to: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n"
+}
+
 fn ui2() -> string {
     "export component widget {\n    run: fn(int) -> int?\n}\nexport component gadget {\n    run: fn(int) -> int?\n}\n"
 }
@@ -547,7 +552,7 @@ spec "collect's own laws" {
         // `checked_scope`/`order_required` a value collect does.
         then "an unknown declaration kind refuses" {
             refused_in(
-                built("collect enum X = spell in closure by it.name\n1"),
+                built("collect enum X = spell in package by it.name\n1"),
                 "is not a declaration kind",
             )
         }
@@ -559,7 +564,7 @@ spec "collect's own laws" {
         }
         then "no `by` refuses — order is declared, same as a value collect" {
             refused_in(
-                built("collect enum X = widget in closure\n1"),
+                built("collect enum X = widget in package\n1"),
                 "a collection declares its order",
             )
         }
@@ -574,6 +579,104 @@ spec "collect's own laws" {
                     ui(),
                 ),
             ) == "build init 0 1"
+        }
+        then "a gathered variant carries its member record's fields, in field order" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        shapes() +
+                        "match Shape.Line(1, 4) { .Dot -> 0, .Line(a, b) -> b - a }",
+                    ui(),
+                ),
+            ) == "3"
+        }
+        then "a match missing a gathered variant names it" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        shapes() +
+                        "fn f(s: Shape) -> int { match s { .Dot -> 0 } }\n1",
+                    ui(),
+                ),
+                "must handle `.Line`",
+            )
+        }
+        then "a member record naming an unknown type refuses once, at the member" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { at: Nowhere }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n" +
+                        "match Shape.Dot(1) { .Dot(_) -> 0 }",
+                    ui(),
+                ),
+                "`Nowhere` names no type",
+            )
+        }
+        then "a member naming its own enum carries that field when the member is signed first" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Neg = { inner: Shape? }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n" +
+                        "match Shape.Neg(Shape.Neg(null)) { .Dot -> 0, .Neg(inner) -> if inner == null { 1 } else { 2 } }",
+                    ui(),
+                ),
+            ) == "2"
+        }
+        then "an enum gathering `in closure` refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\ncollect enum Shape = @numbered in closure by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "gathers `in closure`",
+            )
+        }
+        then "an enum with no `by` is refused once, for its order" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Line = { to: int }\n" +
+                        "collect enum Shape = @numbered in self\n1",
+                    ui(),
+                ),
+                "a collection declares its order",
+            )
+        }
+        then "two members sharing an order key refuse" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(0)\ntype Line = { to: int }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0]\n1",
+                    ui(),
+                ),
+                "two members share a key",
+            )
+        }
+        then "a member record taking type parameters refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Wrap<T> = { held: T }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Wrap` takes type parameters",
+            )
+        }
+        then "a member record spreading another's fields refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "type Base = { id: int }\n@numbered(0)\ntype Line = { ..Base, to: int }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Line` spreads another record's",
+            )
         }
         then "a record field of the collect enum's own type, and a fn matching it exhaustively, both resolve — written BEFORE the collect enum's own declaration, pinning `sig_rank`'s order" {
             answered(
@@ -788,25 +891,25 @@ spec "collect's own laws" {
         }
         then "a nameless `collect enum` names the name" {
             refused_in(
-                built("collect enum = widget in closure by it.name\n1"),
+                built("collect enum = widget in package by it.name\n1"),
                 "expected the collected enum's name",
             )
         }
         then "a `collect enum` missing `=` names it" {
             refused_in(
-                built("collect enum K widget in closure by it.name\n1"),
+                built("collect enum K widget in package by it.name\n1"),
                 "expected `=` after the collected enum's name",
             )
         }
         then "a `collect enum` missing `in` names the scope" {
             refused_in(
-                built("collect enum K = widget closure by it.name\n1"),
+                built("collect enum K = widget package by it.name\n1"),
                 "expected `in` and a scope",
             )
         }
         then "a word after a `collect enum`'s order names the line's end" {
             refused_in(
-                built("collect enum K = widget in closure by it.name extra\n1"),
+                built("collect enum K = widget in package by it.name extra\n1"),
                 "expected the line to end after the collect",
             )
         }
