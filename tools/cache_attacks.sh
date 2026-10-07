@@ -1470,6 +1470,31 @@ S "kv: and the binary follows" kv
 steps=$((steps+1)); kv_out=$($R/kv/src/main 2>&1)
 [ "$kv_out" = "18 19 5" ] || { fails=$((fails+1)); echo "FAIL  kv: a const on the chain kept the value of the body J ran before: printed '$kv_out', wanted '18 19 5'"; }
 
+# A FILE IS HELD ONLY WHILE EVERY INPUT ITS COMPILE-TIME RUNS READ STANDS. `ke`'s TEXT is
+# an `embed` of a text file beside the file that declares it. The embedded text is
+# edited and nothing else: the declaring file's own text never moves, so a hold that
+# stands on its text alone keeps the const's old value — in the binary, with the key
+# missing and a derivation running. The file must be read again, in a check and in a
+# build, twice over, and with another file edited first so the declaring file is held.
+mkdir -p $R/ke/src/f
+printf '[package]\nname = "rt-ke"\nversion = "0.1.0"\n' > $R/ke/avra.toml
+printf 'one' > $R/ke/src/f/data.txt
+printf 'use @std.meta.{embed}\nexport const TEXT: string = embed("data.txt")\nexport fn shown() -> string { TEXT }\n' > $R/ke/src/f/held.av
+printf 'use f.{shown}\nprintln("text=${shown()}")\n' > $R/ke/src/main.av
+ke_says() { # ke_says <label> <wanted>: the built binary prints the embedded text as it stands
+    steps=$((steps+1)); ke_out=$($R/ke/src/main 2>&1)
+    [ "$ke_out" = "text=$2" ] || { fails=$((fails+1)); echo "FAIL  ke: $1: the binary printed '$ke_out', wanted 'text=$2'"; }
+}
+S "cold ke" ke; ke_says "cold" one
+printf '// moved\n' >> $R/ke/src/main.av
+S "ke: an edit elsewhere, held.av held" ke; ke_says "an edit elsewhere" one
+printf 'two' > $R/ke/src/f/data.txt
+HR "ke: the embedded text moved -> its file is read, not held" check ke 0 "f/held.av" read
+S "ke: and the binary follows the embedded text" ke; ke_says "the embedded text moved under a held file" two
+printf 'three' > $R/ke/src/f/data.txt
+S "ke: moved again, nothing else touched" ke; ke_says "the embedded text moved again" three
+S "ke: no-op after it" ke; ke_says "a no-op build" three
+
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
 # order than a cold build meets them. The binary must be the cold one's, byte for
