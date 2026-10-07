@@ -84,6 +84,13 @@ static int says(const char* w) { return strstr(g_said, w) != NULL; }
 
 static int64_t verdict(bool (*body)(void)) { return avra_case_verdict((int64_t)(uintptr_t)body, "a case"); }
 
+// An `i1` answer with its upper bits unspecified: only the lowest counts.
+static uint8_t false_with_noise_above(void) { return 0xfe; }
+static uint8_t true_with_noise_above(void) { return 0x81; }
+static void lowest_bit(void) {
+    CHECK(avra_case_verdict((int64_t)(uintptr_t)false_with_noise_above, "noise") == 0, "a case's answer is its lowest bit: 0xfe is false");
+    CHECK(avra_case_verdict((int64_t)(uintptr_t)true_with_noise_above, "noise") == 1, "and 0x81 is true");
+}
 static void by_default(void) {
     g_runs = 0;
     CHECK(verdict(three_any) == 1 && g_runs == 1, "by default a case that chose runs schedule 0 alone");
@@ -143,6 +150,7 @@ static void said_at_the_end(void) {
 int main(void) {
     alarm(120);
     heard("by default, one schedule", by_default);
+    heard("a case answers by its lowest bit", lowest_bit);
     heard("a case runs once, or eight times", once_or_eight);
     CHECK(g_said[0] == 0, "a passing case says nothing");
     heard("the setting", fewer);
