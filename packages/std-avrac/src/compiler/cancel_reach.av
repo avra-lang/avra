@@ -15,8 +15,8 @@
 //! linear in the call graph. A held fn answers from its interface,
 //! where the bit is contract (`interface_form`): a callee that starts
 //! to wait moves its dependents' key.
-use core.{DeclId, ExprId, Expr, Stmt, fp, fp_list, rt_waits, flatten}
-use features.{NameFacts, TypeFacts, FileView, Decls, bound_decl_of, property_row}
+use core.{DeclId, DeclKind, ExprId, Stmt, TypeId, fp, fp_list, rt_waits, flatten}
+use features.{NameFacts, TypeFacts, FileView, Decls, bound_decl_of, property_row, declaring_decl}
 use features.impls.{callee_of}
 use compiler.families.{Family}
 use @std.relation.engine.{Table, new_table}
@@ -75,6 +75,9 @@ impl Workspace {
         let x = self.decls.decl(g)
         match x.kind {
             .Fn or .Method or .Default or .Main or .Case -> when {
+                // a row by its column; any other extern is package C,
+                // which never switches a task out — it reaches the
+                // scheduler only through a row
                 x.external -> rt_waits(x.name)
                 self.is_held(x.file) -> self.decls.cancel_bit(g) ?? true
                 _ -> true
@@ -101,14 +104,10 @@ impl Workspace {
             lo: x.lo,
             hi: x.hi,
         }
-        let calls = s.calls()
+        let answers = s.answers()
         CancelSummary {
-            own: s.spins() ||
-                s.spawns() ||
-                s.waiting_reads() ||
-                s.through_values() ||
-                calls.any(known_true),
-            callees: flatten([via_member(a) for a in calls]),
+            own: s.spins() || answers.any(known_true),
+            callees: flatten([via_member(a) for a in answers]),
         }
     }
 }
@@ -151,10 +150,6 @@ impl CancelSurvey {
         e.index >= self.lo && e.index < self.hi
     }
 
-    fn of_kind(e: Expr) -> List<ExprId> {
-        self.view.store.exprs_by_kind(self.lo, self.hi, self.view.store.tag_expr(e))
-    }
-
     /// A `while` whose condition stands in the range.
     fn spins() -> bool {
         let store = self.view.store
@@ -166,38 +161,59 @@ impl CancelSurvey {
         match s { .While(cond, _) -> self.within(cond), rest -> false }
     }
 
-    fn spawns() -> bool {
-        !self.of_kind(Expr.Spawn(ExprId { index: 0 })).is_empty()
+    /// Every node in the range answered — a lambda's, a `defer`'s and
+    /// a component instance's expansion among them.
+    fn answers() -> List<CallAnswer> {
+        flatten([self.node_answers(ExprId { index: i }) for i in self.lo..self.hi])
     }
 
-    /// A property read whose row waits — `t.await`.
-    fn waiting_reads() -> bool {
-        self.of_kind(Expr.Prop(ExprId { index: 0 }, "")).any((e) -> self.read_waits(e))
-    }
-
-    fn read_waits(e: ExprId) -> bool {
+    /// What one node may reach. EVERY VARIANT IS SPELLED: a node added
+    /// later breaks the build here, and never answers "cannot" unasked.
+    fn node_answers(e: ExprId) -> List<CallAnswer> {
         match self.view.store.expr(e) {
-            .Prop(subject, name) -> self.row_waits(subject, name.of),
-            rest -> false,
+            .Call(_, _, _) -> [self.named_call(e)].concat(self.defaults_of_call(e)),
+            .MethodCall(_, _, _) -> [self.method_call(e)],
+            // a call on a value that is no name — `make()()` — may be any fn
+            .CallValue(_, _) -> [CallAnswer.Known(true)],
+            // the task is joined where its owner's scope ends
+            .Spawn(_) -> [CallAnswer.Known(true)],
+            .Prop(subject, name) -> [CallAnswer.Known(self.row_waits(self.facts.type_at(subject), name.of))],
+            .Chain(subject, name) -> [CallAnswer.Known(self.chain_waits(subject, name.of))],
+            // a record literal runs the defaults of the fields it leaves out
+            .StructLit(_, _, _) -> self.defaults_of_record(e),
+            // the expansion stands in the instance's place, inside this
+            // range, and is answered node by node
+            .Component(_, _, _, _, _) -> [],
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_, _) or .Index(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Error or .Collect(_) or .BytesLit(_) or .Range(_, _) or .Env(_) -> [],
         }
     }
 
-    fn row_waits(subject: ExprId, name: string) -> bool {
-        let shape = self.view.types.shape_of(self.facts.type_at(subject))
-        property_row(self.ws.lang.rows.properties, name, shape)?.waits ?? false
+    /// Whether reading `name` off a value of `ty` waits — `t.await`.
+    fn row_waits(ty: TypeId, name: string) -> bool {
+        property_row(self.ws.lang.rows.properties, name, self.view.types.shape_of(ty))?.waits ?? false
     }
 
-    /// A call on a value that is no name — `make()()`.
-    fn through_values() -> bool {
-        !self.of_kind(Expr.CallValue(ExprId { index: 0 }, [])).is_empty()
+    /// A chain reads its member off what the nullable carries —
+    /// `t?.await` as `t.await` does.
+    fn chain_waits(subject: ExprId, name: string) -> bool {
+        let held? = self.view.types.carried(self.facts.type_at(subject)) else { return false }
+        self.row_waits(held, name)
     }
 
-    /// Every call by name and every dot-call, answered.
-    fn calls() -> List<CallAnswer> {
-        [self.named_call(e) for e in self.of_kind(Expr.Call("", [], []))]
-            .concat(
-                [self.method_call(e) for e in self.of_kind(Expr.MethodCall(ExprId { index: 0 }, "", []))],
-            )
+    /// A call may leave any of its callee's seats to their defaults,
+    /// which run in the caller.
+    fn defaults_of_call(e: ExprId) -> List<CallAnswer> {
+        let g? = bound_decl_of(self.names, e) else { return [] }
+        self.defaults_of(g)
+    }
+
+    fn defaults_of_record(e: ExprId) -> List<CallAnswer> {
+        let r? = declaring_decl(self.view.types.shape_of(self.facts.type_at(e))) else { return [] }
+        self.defaults_of(r)
+    }
+
+    fn defaults_of(owner: DeclId) -> List<CallAnswer> {
+        [self.ws.call_answer(c) for c in self.view.decls.children_of(owner) if is_default(self.view.decls.decl(c).kind)]
     }
 
     /// A call by name: its declaration's answer, or — bound to a local,
@@ -224,6 +240,14 @@ impl CancelSurvey {
     fn declared_answer(decl: DeclId, name: string) -> CallAnswer {
         let m? = self.view.decls.method(decl, name) else { return CallAnswer.Known(true) }
         self.ws.call_answer(m)
+    }
+}
+
+/// A seat's or a field's default — the one kind whose body a caller runs.
+fn is_default(k: DeclKind) -> bool {
+    match k {
+        .Default -> true,
+        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Impl or .Main or .Case or .Builtin or .Const or .Collect or .CollectEnum or .State -> false,
     }
 }
 

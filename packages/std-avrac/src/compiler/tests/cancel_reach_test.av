@@ -8,6 +8,8 @@ use compiler.{Workspace}
 use compiler.host.{memory_host}
 use compiler.record.{read_fields, iface_digest}
 use core.{DeclId}
+use @std.avrac.testing.{provided}
+use @std.avrac.compiler.{Program}
 
 const REACH_PATH: string = "/w/src/main.av"
 
@@ -284,5 +286,70 @@ spec "compiler/cancel_reach — the interface" {
     then "the bit moves the interface digest, so a caller keyed on it is rebuilt" {
         let lines = napping().concat(["nap()"])
         iface_digest([line_with(lines, "nap", "1")]) != iface_digest([line_with(lines, "nap", "0")])
+    }
+}
+
+/// A provider whose component's template calls a fn that sleeps.
+fn napping_provider() -> string {
+    [
+        "extern fn avra_fiber_sleep(ms: int)",
+        "export fn rest(ms: int) { avra_fiber_sleep(ms) }",
+        "export component napped(limit: Code) {",
+        "    body: Code",
+        "    fn expand() -> Code {",
+        "        quote {",
+        "            {",
+        "                rest(\${self.limit})",
+        "                \${self.body}",
+        "            }",
+        "        }",
+        "    }",
+        "}",
+        "",
+    ]
+        .join("\n")
+}
+
+fn provided_word(p: Program, name: string) -> string {
+    let d = [x.id for x in p.ws.decls.all_decls() if x.name == name][0]
+    "${name}=${if p.ws.reaches_cancel(d) { 1 } else { 0 }}"
+}
+
+spec "compiler/cancel_reach — nodes that call without a call node" {
+    then "a fn whose only wait is inside a component instance it makes answers 1" {
+        let p = provided(
+            "use @x.c.{napped}\nfn waits_inside() -> int { napped 1 { 2 } }\nfn plain() -> int { 3 }\nwaits_inside() + plain()\n",
+            napping_provider(),
+        )
+        provided_word(p, "waits_inside") + " " + provided_word(p, "plain") == "waits_inside=1 plain=0"
+    }
+    then "a `?.await` answers 1, and a `?.done` answers 0" {
+        reaching(
+            [
+                "fn maybe(t: Task<int>?) -> int? { t?.await }",
+                "fn peek(t: Task<int>?) -> bool? { t?.done }",
+                "1",
+            ],
+            ["maybe", "peek"],
+        ) == "maybe=1 peek=0"
+    }
+    then "a call that leaves a seat to its default answers that default's answer" {
+        reaching(
+            napping()
+                .concat(
+                    [
+                        "fn slept() -> int {",
+                        "    nap()",
+                        "    1",
+                        "}",
+                        "fn f(n: int = slept()) -> int { n }",
+                        "fn g() -> int { f() }",
+                        "fn h(n: int = 2) -> int { n }",
+                        "fn k() -> int { h() }",
+                        "g() + k()",
+                    ],
+                ),
+            ["g", "k"],
+        ) == "g=1 k=0"
     }
 }
