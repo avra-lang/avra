@@ -3,10 +3,10 @@
 # and evaluated under `AVRA_FLOW_TRACE`, and what the reader prints as
 # each trace's shape — a task's events in order, with nothing an engine
 # owns — must be the text committed beside the program, from both: a
-# join of a spawned task, a join of a timer's task, a wait on a
-# descriptor, a task spawned in a generic fn another file uses. The
-# program's directory is its package: the other `.av` files there go
-# with it.
+# join of a spawned task, a join of a timer's task, a join of a task
+# nothing runs answered by another, a wait on a descriptor, a task
+# spawned in a generic fn another file uses. The program's directory
+# is its package: the other `.av` files there go with it.
 #
 # A program is a package of its own under build/, so each engine reads
 # one small file and a spawn's site reads the same wherever the tree
@@ -27,7 +27,7 @@ cd "$(dirname "$0")/.."
 export LLVM_PREFIX
 
 TESTS=packages/std-avrac/src/features/tasks/tests
-PROGRAMS="$TESTS/traced_join/traced_join $TESTS/traced_timer/traced_timer $TESTS/traced_generic/traced_generic tools/flow_trace/traced_fd"
+PROGRAMS="$TESTS/traced_join/traced_join $TESTS/traced_timer/traced_timer $TESTS/traced_answer/traced_answer $TESTS/traced_generic/traced_generic tools/flow_trace/traced_fd"
 ROOT=build/flow-trace
 mkdir -p "$ROOT"
 

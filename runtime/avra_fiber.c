@@ -2005,7 +2005,21 @@ void avra_sched_run_ends(void) {
     g_schedule = outer.schedule;
     g_seed_state = outer.state;
     g_choices = outer.choices;
+    // THE SCHEDULE IS PUT BACK BEFORE THE CLOCK: ending the clock's run
+    // asks the switch whether it is pinned, which reads the schedule —
+    // the outer one, or the next switches run on the inner run's pin.
     avra_clock_run_ends();
+}
+
+// THE TRIPWIRE: a run evaluated inside its host shares the host's one
+// scheduler — its timer heap, its poller. Its first task row asks here:
+// a host timer or descriptor waiter filed beside a run that will wait
+// would be fired by the run's clock, or would hide the run's deadlock.
+void avra_sched_guest_waits(void) {
+    if (g_runs == 0 || (g_timers_len == 0 && g_parked_fds == 0)) return;
+    char words[200];
+    avra_fmt(words, sizeof words, "a program waits inside a host that is itself waiting (%lld timer(s), %lld descriptor waiter(s) filed) — the two share one scheduler, so its clock would fire the host's timers", (long long)g_timers_len, (long long)g_parked_fds);
+    avra_trap(words);
 }
 
 // ── A case in its own task ──────────────────────────────────────
@@ -2043,7 +2057,9 @@ static void waiter_said(const Fiber* f, const Waiter* w) {
 static void task_said(const Fiber* f) {
     void* body = (void*)(uintptr_t)task_cells(f->task)[TASK_BODY];
     fprintf(stderr, "task %lld,", case_id(f));
+    const char* site = site_of(body);
     if (f->wide) fputs(" the case,", stderr);
+    else if (site) fprintf(stderr, " spawned at %s,", site);
     else fprintf(stderr, " spawned at %p,", (void*)(uintptr_t)((AvraArray*)body)->data[0]);
 }
 static void waits_said(const Fiber* f) {
@@ -2076,6 +2092,30 @@ static void abandoned(Fiber* f) {
     avra_rc_release(task);
 }
 
+// A TIMER'S TASK LEFT FILED outlives the case as surely as a task it
+// spawned: the next case would run beside it. A case begins with no
+// timer filed, so every one in the heap now is the case's. Each is
+// named and ended, cancelled, through the row a program would use.
+// How many.
+static int g_case_spoiled = 0;
+static int64_t case_timers_cleared(void) {
+    int64_t n = 0;
+    for (size_t i = 0; i < g_timers_len; i++) n += g_timers[i].kind == T_TASK;
+    if (n == 0) return 0;
+    void** made = malloc((size_t)n * sizeof(void*));
+    if (!made) avra_trap("the scheduler ran out of memory naming a case's timers");
+    int64_t at = 0;
+    int64_t now = now_ns();
+    for (size_t i = 0; i < g_timers_len; i++) {
+        if (g_timers[i].kind != T_TASK) continue;
+        made[at++] = g_timers[i].who;
+        fprintf(stderr, "avra: a task the timer ends, made by the case, outlived it — due in %lld ms\n", (long long)((g_timers[i].at - now) / 1000000));
+    }
+    for (int64_t i = 0; i < n; i++) avra_task_cancel(made[i]);
+    free(made);
+    return n;
+}
+
 static int of_the_case(const Fiber* f) { return f != g_current && !f->virtual && (uint64_t)id_of(f) > g_case_first && f->state != FIBER_DONE; }
 
 // Every task of the case still alive, named oldest first — as a
@@ -2100,6 +2140,10 @@ static int64_t case_cleared(int dead) {
     if (g_seeded) fprintf(stderr, "avra: under schedule %lld\n", (long long)g_schedule);
     for (int64_t i = 0; i < n; i++) abandoned(alive[i]);
     free(alive);
+    // A HOLD OUTLIVES NO HOLDER: what abandoned tasks held of the world
+    // is let go, or every later case's clock would flow at wall rate.
+    int64_t held = avra_clock_holds_dropped();
+    if (held) fprintf(stderr, "avra: they held the clock %lld time(s); let go\n", (long long)held);
     return n;
 }
 
@@ -2108,15 +2152,46 @@ static int64_t case_cleared(int dead) {
 static void* case_ran(void* self) {
     int64_t (*body)(void) = (int64_t (*)(void))(uintptr_t)((AvraArray*)self)->data[1];
     int64_t answer = body();
-    g_case_answer = case_cleared(0) == 0 ? answer : 0;
+    int64_t left = case_cleared(0) + case_timers_cleared();
+    g_case_answer = left == 0 && !g_case_spoiled ? answer : 0;
     return NULL;
 }
 
 enum { CASE_ENDED, CASE_ALARMED };
 
+// The wide stack's pages back to the kernel: a deep case leaves none
+// resident for the cases after it.
+static void wide_given_back(void) {
+    if (!g_wide.base) return;
+#ifdef __linux__
+    madvise(g_wide.base, g_wide_bytes, MADV_DONTNEED);
+#else
+    madvise(g_wide.base, g_wide_bytes, MADV_FREE);
+#endif
+}
+
+// A CASE RUNS WHERE NOTHING ELSE WAITS: a timer or a descriptor filed
+// beside it would keep the scheduler waiting on the world, and the
+// case's deadlock would never be seen. And a case runs inside no case:
+// a case's tasks are told apart from its runner's by when they were
+// made. Either FAILS THE CASE with its words — never the process, which
+// would hide every later verdict.
+__attribute__((noinline, cold))
+static int64_t case_refused(void) {
+    if (g_case_waited) {
+        fputs("avra: a case ran inside a case — a case's tasks are told apart from its runner's by when they were made\n", stderr);
+        g_case_spoiled = 1;
+        return 0;
+    }
+    fprintf(stderr, "avra: a case runs where nothing else waits — %lld timer(s) and %lld descriptor waiter(s) are filed beside it, and would hide its deadlock\n", (long long)g_timers_len, (long long)g_parked_fds);
+    return 0;
+}
+
 int64_t avra_case_run(int64_t (*body)(void)) {
+    if (g_case_waited || g_timers_len > 0 || g_parked_fds > 0) return case_refused();
     if (!g_case_alarm) g_case_alarm = avra_gate_new();
     g_case_first = g_fiber_seq;
+    g_case_spoiled = 0;
     g_case_answer = 0;
     void* box = avra_array_sized(2);
     avra_array_push(box, (int64_t)(uintptr_t)case_ran);
@@ -2131,7 +2206,23 @@ int64_t avra_case_run(int64_t (*body)(void)) {
     g_case_waited = 0;
     if (claim >> 32 == CASE_ALARMED) case_cleared(1);
     avra_rc_release(task);
+    wide_given_back();
     return g_case_answer;
+}
+
+int64_t avra_sched_wide_resident(void) {
+    if (!g_wide.base) return 0;
+    size_t pages = g_wide_bytes / g_page;
+#ifdef __APPLE__
+    char* in = malloc(pages);
+#else
+    unsigned char* in = malloc(pages);
+#endif
+    if (!in || mincore(g_wide.base, g_wide_bytes, in) != 0) { free(in); return -1; }
+    int64_t n = 0;
+    for (size_t i = 0; i < pages; i++) n += in[i] & 1;
+    free(in);
+    return n;
 }
 
 int64_t avra_sched_tasks(void) {
