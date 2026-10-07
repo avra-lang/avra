@@ -249,8 +249,15 @@ static void door(const char* self) {
     Child c = scene(self, "yielding");
     asked(&c);
     kill(c.pid, SIGURG);
-    answered(&c, buf, sizeof buf, 2000);
+    answered(&c, buf, sizeof buf, 1000);
+    // the zero a first signal stores can be lost to the switch it
+    // interrupted: asked again, as `avra tasks` asks
+    if (!buf[0]) {
+        kill(c.pid, SIGURG);
+        answered(&c, buf, sizeof buf, 1000);
+    }
     CHECK(strstr(buf, "task 1, spawned at") != NULL && strstr(buf, "task 2, spawned at") != NULL, "tasks that only yield answer at their next switch");
+    CHECK(strstr(buf, "has not switched") == NULL, "and a switching program is never said not to switch");
     CHECK(access(c.ask, F_OK) != 0, "an answered ask is taken away");
     CHECK(alive(&c), "and the program runs on");
     ended(&c);

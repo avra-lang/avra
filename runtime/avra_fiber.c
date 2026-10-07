@@ -2363,9 +2363,13 @@ int64_t avra_sched_world_visits(void) { return g_world_visits; }
 // handler may: it counts the ask and zeroes the switch's countdown (the
 // word the fast switch already tests), so the next switch takes the
 // world's path, which writes the listing; a process asleep in the
-// poller is woken by the signal itself. A SECOND signal while the first
-// is unanswered means no task has switched since: the handler writes
-// that one line itself, with open, write, close and rename alone. The
+// poller is woken by the signal itself. The countdown's own decrement
+// is a load and a store on some machines, so the zero can be lost to a
+// switch the signal interrupted; a switch since then has moved the
+// count. So a SECOND signal while the first is unanswered finds the
+// count either still zero — no task has switched, and the handler
+// writes that one line itself, with open, write, close and rename
+// alone — or moved, and zeroes it again. The
 // listing is written beside the ask, renamed into place, and the ask
 // removed; with no ask file of ours there, a signal answers nothing.
 
@@ -2449,7 +2453,7 @@ static void unswitched_said(void) {
 static void tasks_asked(int sig) {
     (void)sig;
     int saved = errno;
-    if (g_asked++ > 0 && access(g_ask_path, F_OK) == 0) unswitched_said();
+    if (g_asked++ > 0 && g_until_poll == 0 && access(g_ask_path, F_OK) == 0) unswitched_said();
     g_until_poll = 0;
     errno = saved;
 }
