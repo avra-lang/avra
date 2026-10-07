@@ -91,6 +91,11 @@ static void lowest_bit(void) {
     CHECK(avra_case_verdict((int64_t)(uintptr_t)false_with_noise_above, "noise") == 0, "a case's answer is its lowest bit: 0xfe is false");
     CHECK(avra_case_verdict((int64_t)(uintptr_t)true_with_noise_above, "noise") == 1, "and 0x81 is true");
 }
+static bool fails_alone(void) { return false; }
+static void one_order_fails_quietly(void) {
+    setenv("AVRA_SCHED_RUNS", "8", 1);
+    CHECK(verdict(fails_alone) == 0, "a case with one order that fails, fails");
+}
 static void by_default(void) {
     g_runs = 0;
     CHECK(verdict(three_any) == 1 && g_runs == 1, "by default a case that chose runs schedule 0 alone");
@@ -149,6 +154,8 @@ static void said_at_the_end(void) {
 
 int main(void) {
     alarm(120);
+    heard("a case with one order fails", one_order_fails_quietly);
+    CHECK(g_said[0] == 0, "and names no schedule: none would replay anything");
     heard("by default, one schedule", by_default);
     heard("a case answers by its lowest bit", lowest_bit);
     heard("a case runs once, or eight times", once_or_eight);

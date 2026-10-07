@@ -2275,7 +2275,9 @@ int64_t avra_case_verdict(int64_t code, const char* label) {
     int64_t choices = 0;
     if (g_sched_only >= 0) return case_under(g_sched_only, &choices) ? 1 : case_failed_under(label, g_sched_only);
     for (int64_t k = 0; k < g_sched_runs; k++) {
-        if (!case_under(k, &choices)) return case_failed_under(label, k);
+        // A CASE WITH ONE ORDER FAILS IN EVERY ORDER: no schedule replays
+        // anything, so none is named.
+        if (!case_under(k, &choices)) return choices == 0 && k == 0 ? 0 : case_failed_under(label, k);
         // A CASE THAT MADE NO CHOICE HAS ONE ORDER: no other schedule differs.
         if (choices == 0) return 1;
         g_any_chose = 1;
