@@ -660,6 +660,9 @@ export type Decls = {
     // structurally resolve — a refusal, never a silently missing member
     inferred_unresolved: Table<bool>,
     ensure_failures: Cell<fn() -> void>,
+    // whether a HELD fn may reach a cancel point, as its interface
+    // recorded it — a held body is never surveyed
+    held_waits: Table<bool>,
 }
 
 /// Where no workspace stands behind the table, nothing lifts.
@@ -822,6 +825,7 @@ export fn new_decls() -> Decls {
         inferred_errs: new_table(),
         inferred_unresolved: new_table(),
         ensure_failures: Cell.new(no_failures_ensure),
+        held_waits: new_table(),
         consumed: Cell.new(empty_consumed),
         ensure_consumed: Cell.new(no_ensure),
         lifter: Cell.new(no_lifter),
@@ -2024,6 +2028,16 @@ impl Decls {
     /// resolve — a real refusal of `_`, never a silently missing member.
     fn inferred_is_unresolved(d: DeclId) -> bool {
         self.inferred_unresolved.at(d.index) ?? false
+    }
+
+    /// A held fn's recorded answer to "may it reach a cancel point".
+    fn record_held_waits(d: DeclId, waits: bool) {
+        self.held_waits.keep(d.index, waits)
+    }
+
+    /// The recorded answer; a held fn whose record said nothing may.
+    fn held_waits_at(d: DeclId) -> bool {
+        self.held_waits.at(d.index) ?? true
     }
 
     fn mark_inferred_unresolved(d: DeclId) {
