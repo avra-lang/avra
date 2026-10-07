@@ -5,18 +5,17 @@
 //! a doc's committed block to that one rendering.
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{read_text}
-use @std.avrac.compiler.{RuleEntry, rule_id, declared_law}
+use @std.avrac.compiler.{RuleEntry, rule_id, declared_law, rules as rule_table}
 use @std.json.{Json, field, to_text}
 
 type RulesCmd = {}
 
 impl Runnable for RulesCmd {
     fn run(args: CliResult) -> int {
-        let entries = root_program(here()).rule_listing()
         let doc = args.option("check-markdown")
-        if doc != "" { return markdown_said(doc, entries) }
+        if doc != "" { return markdown_said(doc, rule_table) }
         println(
-            if args.has_flag("json") { to_text(Json.Arr([rule_json(r) for r in entries])) } else if args.has_flag("markdown") { rules_markdown(entries) } else { rules_listing(entries) },
+            if args.has_flag("json") { to_text(Json.Arr([rule_json(r) for r in rule_table])) } else if args.has_flag("markdown") { rules_markdown(rule_table) } else { rules_listing(rule_table) },
         )
         0
     }
@@ -45,7 +44,7 @@ fn law_json(law: string?) -> Json {
 /// Every rule's identity and doc, one per line in the collect's own
 /// order, under a header naming the count.
 export fn rules_listing(entries: List<RuleEntry>) -> string {
-    ["rules this package declares — ${entries.length}"]
+    ["rules the compiler carries — ${entries.length}"]
         .concat(["${rule_id(r)} — ${r.doc}" for r in entries])
         .join("\n")
 }
