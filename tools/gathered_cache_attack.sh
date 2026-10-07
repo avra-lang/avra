@@ -8,8 +8,11 @@
 # file must become a variant; an edit nothing reads must change nothing.
 set -u
 cd "$(dirname "$0")/.."
-T=$(pwd); R=build/gathered-cache-attack; W=build/gathered-cache-attack-recursive; fails=0; steps=0
-rm -rf "$R" "$W" && mkdir -p $R/src/shapes $W/src/shapes
+T=$(pwd); B=build/gathered-cache-attack; R=$B/plain; W=$B/recursive; fails=0; steps=0
+rm -rf "$B" && mkdir -p $R/src/shapes $W/src/shapes
+# a store stands at the nearest checkout root ABOVE a package, so the fixtures'
+# directory is marked as one: their store is their own, cold here, never the tree's
+: > $B/.git
 cat > $R/avra.toml <<'TOML'
 [package]
 name = "gathered-cache-attack"
@@ -57,7 +60,6 @@ import sys
 p,old,new=sys.argv[1:4]; t=open(p).read(); assert old in t,(p,old); open(p,'w').write(t.replace(old,new,1))
 PY
 }
-# each fixture is run from its own directory, so its store is its own
 ran() { (cd ${1:-$R} && "$T/build/avra" run . 2>&1 | grep -v '^watch:' | tail -1); }
 
 steps=$((steps+1)); cold=$(ran)
@@ -139,5 +141,6 @@ ed $W/src/shapes/shapes.av 'Shape.Line(7, null)' 'Shape.Line("seven", null)'
 steps=$((steps+1)); turned=$(ran $W)
 [ "$turned" = "seven." ] || { fails=$((fails+1)); echo "FAIL  recursive, after the member's field changed type: got '$turned' (a held enum signature would still carry int)"; }
 
+[ -d $B/.avra-cache ] || { fails=$((fails+1)); echo "FAIL  the fixtures kept no store of their own — the runs were not warm"; }
 echo "gathered-cache-attack: $steps runs through one store, $fails failed"
 [ $fails -eq 0 ]
