@@ -11,7 +11,7 @@ use core.{FileId, ModuleId, DeclId, reversed, sorted_by, sorted_texts, some_list
 use @std.path.{relative_path, joined_path, normalized}
 use @std.text.{parse_int}
 use compiler.families.{Family}
-use compiler.host.{InputName}
+use compiler.host.{InputName, InputKind}
 use features.{Decl}
 use @std.relation.engine.{Key, same_key, no_key_marks}
 
@@ -228,7 +228,7 @@ impl Workspace {
             .Program -> if subject == THE_PROGRAM { [0] } else { [] },
             .Unit -> if subject.starts_with(UNIT) { some_list(parse_int(subject.substring(UNIT.length, subject.length))) } else { [] },
             .Name -> if subject.starts_with(BUCKET) { some_list(parse_int(subject.substring(BUCKET.length, subject.length))) } else { [self.decls.name_bucket(subject)] },
-            .Input -> [at for at, name in self.input_names.get() if self.input_shown(name) == subject],
+            .Input -> some_list(self.input_named(subject)),
             .Row -> some_list(parse_int(subject)),
         }
     }
@@ -297,9 +297,39 @@ impl Workspace {
         }
     }
 
-    /// An input as a person reads it: what kind of read, then its path as
-    /// every other answer shows a path.
-    fn input_shown(name: InputName) -> string { "${kind_word(name.kind)} ${self.shown_path(name.key)}" }
+    /// An input as a person reads it: what kind of read, then its key — a
+    /// path as every other answer shows a path, a variable or a tool by its
+    /// name, the compiler by its word alone.
+    fn input_shown(name: InputName) -> string {
+        match name.kind {
+            .Text or .Octets or .Range or .Listing or .Exists -> "${kind_word(name.kind)} ${self.shown_path(name.key)}",
+            .Env or .Tool -> "${kind_word(name.kind)} ${name.key}",
+            .Compiler -> kind_word(name.kind),
+        }
+    }
+
+    /// The input a label names — `input_shown`, read backwards: one index
+    /// read.
+    fn input_named(subject: string) -> int? {
+        let kind? = InputKind
+            .all()
+            .find((k) -> subject == kind_word(k) || subject.starts_with("${kind_word(k)} ")) else { return null }
+        let shown = if subject == kind_word(kind) { "" } else { subject.substring(kind_word(kind).length + 1, subject.length) }
+        let at? = self
+            .input_index
+            .get()
+            .get(spelled(InputName { kind: kind, key: self.key_unshown(kind, shown) })) else { return null }
+        if self.input_shown(self.input_names.get()[at]) == subject { at } else { null }
+    }
+
+    /// An input's key from how `input_shown` shows it.
+    fn key_unshown(kind: InputKind, shown: string) -> string {
+        match kind {
+            .Text or .Octets or .Range or .Listing or .Exists -> normalized(joined_path(self.root, shown)),
+            .Env or .Tool -> shown,
+            .Compiler -> "",
+        }
+    }
 
     /// A query as a person reads it: its family's word and what it keys by.
     fn key_label(k: Key) -> string { "${family_word(k.family)}(${self.key_subject(k)})" }

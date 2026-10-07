@@ -4,6 +4,7 @@
 use @std.io.{make_dirs, write_text, list_dir}
 use @std.time.{now_ns}
 use @std.avrac.compiler.{HeldMismatch}
+use @std.avrac.core.{flatten}
 use commands.{
     explain_answer,
     Asked,
@@ -52,6 +53,45 @@ fn table_rows(a: Asked) -> List<string> {
 }
 
 fn page(a: Asked) -> string { [undigested(l) for l in explain_lines(a)].join("\n") }
+
+/// What a check of a lib probe reads from the world, by label: its three
+/// texts; the asks that place its manifest and its module; its two
+/// listings; the prelude's, when the host carries one; and the checkout
+/// walk's two asks at each ancestor below the filesystem's root.
+fn probe_inputs(root: string) -> List<string> {
+    let ups = [[".." for _j in 0..i + 1].join("/") for i in 0..[s for s in root.split("/") if s != ""].length - 1]
+    [
+        "text avra.toml",
+        "text src/main.av",
+        "text src/lib/a.av",
+        "exists avra.toml",
+        "exists src/lib.av",
+        "exists src/lib/avra.toml",
+        "listing src",
+        "listing src/lib",
+    ]
+        .concat(prelude_inputs(root))
+        .concat(flatten([["exists ${up}/.git", "exists ${up}/avra.toml"] for up in ups]))
+        .map("Input(${it})")
+}
+
+/// The prelude's manifest, listing and file, as a page shows them from
+/// `root` — none when the host carries no prelude, so no check analyses
+/// one.
+fn prelude_inputs(root: string) -> List<string> {
+    let file? = explain_lines(Asked { target: "src/lib/a.av", from: root })
+        .find(it.ends_with("/src/prelude.av")) else {
+        return []
+    }
+    let shown = file.trim()
+    let std = shown.substring(0, shown.length - "/src/prelude.av".length)
+    [
+        "text ${std}/avra.toml",
+        "text ${std}/src/prelude.av",
+        "exists ${std}/avra.toml",
+        "listing ${std}/src",
+    ]
+}
 
 /// A directory with no package at or above it.
 fn bare_dir(name: string) -> string {
@@ -139,15 +179,25 @@ spec "commands/explain" {
         then "its text is an input: it reads nothing, and the page leads with it" {
             page(Asked { target: "src/lib/a.av", from: lib_probe("file_page") })
                 .starts_with(
-                    "Input(text src/lib/a.av)  <digest>\n  reads    nothing — it stands always\n  read by  ",
+                    "Input(text src/lib/a.av)  <digest>\n  reads    nothing — it stands always\n  read by  3 directly, ",
                 )
+        }
+        then "the text's direct readers are its two scans, keyed by the text, and its source" {
+            let lines = [undigested(l) for l in explain_lines(Asked { target: "src/lib/a.av", from: lib_probe("file_readers") })]
+            [
+                "BlockScan(text src/lib/a.av)",
+                "ComponentScan(text src/lib/a.av)",
+                "Source(src/lib/a.av)",
+            ]
+                .all((r) -> lines.contains("    ${r}  <digest>"))
         }
         then "the file's source is among the text's direct readers, under the text's own digest" {
             let lines = explain_lines(
                 Asked { target: "src/lib/a.av", from: lib_probe("file_source") },
             )
-            let text = (lines.first() ?? "").split("  ").last() ?? ""
-            text != "" && lines.any(it == "    Source(src/lib/a.av)  ${text}")
+            let first = lines.first() ?? ""
+            let text = first.split("  ").last() ?? ""
+            ends_digested(first) && lines.any(it == "    Source(src/lib/a.av)  ${text}")
         }
         then "the file's source reads one thing, its text" {
             page(Asked { target: "Source(src/lib/a.av)", from: lib_probe("source_page") })
@@ -199,10 +249,16 @@ spec "commands/explain" {
                             it.starts_with("attempts "),
                     )
         }
-        then "the input family reads nothing, and says so in every column" {
-            let rows = table_rows(Asked { target: "", from: lib_probe("stats_input"), stats: true })
-            let row = rows.find(it.starts_with("Input ")) ?? ""
-            row != "" && row.ends_with(" 0 0 0 0")
+        then "the input family holds what a check of the probe reads, each answering, none reading" {
+            let root = lib_probe("stats_input")
+            let inputs = probe_inputs(root)
+            let rows = table_rows(Asked { target: "", from: root, stats: true })
+            rows.find(it.starts_with("Input ")) ?? "" == "Input ${inputs.length} 0 0 0 0" &&
+                inputs
+                    .all(
+                        (l) -> (explain_lines(Asked { target: l, from: root }).first() ?? "")
+                            .starts_with("${l}  "),
+                    )
         }
         then "a source reads its text alone: one read a cell, in every column" {
             let rows = table_rows(
