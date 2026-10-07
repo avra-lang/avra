@@ -55,7 +55,7 @@ fn listed(pid: int) -> int {
 
 /// SIGURG sent to `pid`: whether there is such a process to send it to.
 fn signalled(pid: int) -> bool {
-    let kill? = tool("kill") catch _ -> null else { return false }
+    let kill = match tool("kill") { .Ok(t) -> t, .Err(_) -> { return false } }
     match cmd(kill, ["-URG", "${pid}"]).outcome() { .Ok(o) -> o.exit is .Clean, .Err(_) -> false }
 }
 
@@ -63,7 +63,7 @@ fn signalled(pid: int) -> bool {
 fn awaited(path: string, turns: int) -> string? {
     for _turn in 0..turns {
         sleep(ms(100))
-        if exists(path) { return read_text(path) catch _ -> null }
+        if exists(path) { return match read_text(path) { .Ok(text) -> text, .Err(_) -> null } }
     }
     null
 }
