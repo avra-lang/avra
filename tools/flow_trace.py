@@ -2,6 +2,7 @@
 
     python3 tools/flow_trace.py <trace> [--task N]   the timelines
     python3 tools/flow_trace.py <trace> --shape      what both engines say alike
+    python3 tools/flow_trace.py <trace> --graph [--at MS]   who waits on whom
     python3 tools/flow_trace.py --self-test          its own cases
 
 The runtime writes one line an event, `ts=<ns> <event> id=<task> …`
@@ -21,6 +22,13 @@ THE SHAPE is each task's events in order with nothing an engine owns:
 no stamp, no address, no descriptor's number, and no spawn of the
 program's own run. A site that is a source line is both engines'. A program run evaluated and compiled prints the
 same shape wherever the two agree by design.
+
+THE WAIT GRAPH is who waits on whom at one instant — the trace's end
+unless `--at` names a millisecond: a task on the task it joins, on a
+descriptor, on a time, or on a gate, named with the last task whose
+claim came through it. A ring of joins is named as one. The graph is
+built from a table of waits, so a listing of a live process prints by
+the same code.
 """
 import re
 import sys
@@ -136,6 +144,92 @@ def shape(events):
     return "\n".join(out)
 
 
+def waits_at(events, at_ms=None):
+    """At `at_ms` from the first line (the end when None): what each live
+    task waits on — {task: [(kind, what)]}, kind one of task, fd, time,
+    gate — the tasks alive, and who last claimed through each gate."""
+    if not events:
+        return {}, [], {}
+    origin = events[0][0]
+    waits, alive, rung, last = {}, [0], {}, {}
+    for ts, event, task, rest in events:
+        if at_ms is not None and (ts - origin) / 1e6 > at_ms:
+            break
+        if event in ("spawn", "spawn-at") and task not in alive:
+            alive.append(task)
+        elif event == "end":
+            alive = [t for t in alive if t != task]
+            waits.pop(task, None)
+        elif event == "join":
+            on = rest.removeprefix("on=")
+            waits[task] = [("task", None if on == "unrun" else int(on))]
+        elif event == "park":
+            src = re.match(r"src=(\S+) arm=(\S+)", rest)
+            if src and not (src.group(1).startswith("gate:") and last.get(task) == "join"):
+                waits.setdefault(task, []).append(waited(src.group(1), src.group(2)))
+        elif event == "claim":
+            by = re.match(r"by=(\S+) arm=(\S+)", rest)
+            for kind, what in waits.pop(task, []):
+                if kind == "gate" and by and what[1] == by.group(2) and by.group(1).lstrip("-").isdigit():
+                    rung[what[0]] = int(by.group(1))
+        last[task] = event
+    return waits, alive, rung
+
+
+def waited(src, arm):
+    """One park's source as the graph names it."""
+    if src.startswith("fd:"):
+        return ("fd", src.removeprefix("fd:"))
+    if src.startswith("gate:"):
+        return ("gate", (src.removeprefix("gate:"), arm))
+    return ("time", None)
+
+
+def task_named(task):
+    return "the program's own run" if task == 0 else f"task {task}"
+
+
+def edge_named(kind, what, rung):
+    if kind == "task":
+        return "a task nothing runs" if what is None else task_named(what)
+    if kind == "fd":
+        way, fd = what.split(":", 1)
+        return f"descriptor {fd} ({'readable' if way == 'r' else 'writable'})"
+    if kind == "gate":
+        by = rung.get(what[0])
+        return f"gate {what[0]}" + (f" (last claimed through by {task_named(by)})" if by is not None else "")
+    return "a time"
+
+
+def rings(waits):
+    """Every ring of joins, each once, from its smallest task."""
+    joins = {t: ws[0][1] for t, ws in waits.items() if ws and ws[0][0] == "task" and ws[0][1] is not None}
+    found = []
+    for start in sorted(joins):
+        path, t = [start], joins[start]
+        while t in joins and t not in path:
+            path.append(t)
+            t = joins[t]
+        if t == start and start == min(path):
+            found.append(path)
+    return found
+
+
+def graph(waits, alive, rung, at_ms=None):
+    """The wait graph as text."""
+    waiting = [t for t in alive if waits.get(t)]
+    when = "at the trace's end" if at_ms is None else f"at +{at_ms:.3f} ms"
+    out = [f"{when}: {len(alive)} task(s) alive, {len(waiting)} waiting, {len(alive) - len(waiting)} ready or running"]
+    for t in sorted(waiting):
+        for kind, what in waits[t]:
+            out.append(f"  {task_named(t)} -> {edge_named(kind, what, rung)}")
+    found = rings(waits)
+    out.extend(f"  RING: {' -> '.join(task_named(t) for t in r + r[:1])}" for r in found)
+    if not found:
+        out.append("  no ring of joins")
+    return "\n".join(out)
+
+
 def rendered(events, strays, only=None):
     out = []
     for task, rows in timelines(events).items():
@@ -189,6 +283,30 @@ SHAPE = (
 )
 
 
+GRAPHED = (
+    "ts=0 spawn id=1 0\n"
+    "ts=0 spawn id=2 0\n"
+    "ts=0 spawn id=3 0\n"
+    "ts=0 spawn id=4 0\n"
+    "ts=1000000 join id=0 on=1\n"
+    "ts=1000000 park id=0 src=gate:0x10 arm=0:0\n"
+    "ts=1000000 park id=1 src=fd:r:7 arm=1:2\n"
+    "ts=1000000 park id=1 src=at arm=0:9\n"
+    "ts=1000000 park id=2 src=gate:0xg arm=0:3\n"
+    "ts=1000000 park id=3 src=gate:0xg arm=0:4\n"
+    "ts=2000000 claim id=2 by=4 arm=0:3\n"
+    "ts=2000000 park id=2 src=gate:0xg arm=0:3\n"
+    "ts=3000000 claim id=1 by=poller arm=1:2\n"
+)
+RINGED = (
+    "ts=0 spawn id=1 0\n"
+    "ts=0 spawn id=2 0\n"
+    "ts=1 join id=1 on=2\n"
+    "ts=2 join id=2 on=1\n"
+    "ts=3 join id=0 on=1\n"
+)
+
+
 def self_test():
     text = (
         "ts=1000000 spawn id=1 0\n"
@@ -212,6 +330,24 @@ def self_test():
         ("a scheduler's hand is named as itself", any("woken by the timer on 1:0" in l for l in lines)),
         ("one task alone can be asked for", rendered(events, [], only=2).splitlines()[0].startswith("task 2 — 1 event(s)")),
         ("an empty trace renders nothing", rendered(*parsed("")) == ""),
+        ("the graph at the end", graph(*waits_at(parsed(GRAPHED)[0])).splitlines() == [
+            "at the trace's end: 5 task(s) alive, 3 waiting, 2 ready or running",
+            "  the program's own run -> task 1",
+            "  task 2 -> gate 0xg (last claimed through by task 4)",
+            "  task 3 -> gate 0xg (last claimed through by task 4)",
+            "  no ring of joins",
+        ]),
+        ("the graph at an instant holds every source of a set",
+         graph(*waits_at(parsed(GRAPHED)[0], 1.5), 1.5).splitlines()[2:4] == [
+            "  task 1 -> descriptor 7 (readable)",
+            "  task 1 -> a time",
+        ]),
+        ("a gate nobody claimed through is named alone", "  task 2 -> gate 0xg" in graph(*waits_at(parsed(GRAPHED)[0], 1.5), 1.5).splitlines()),
+        ("an ended task waits on nothing", "task 1" not in graph(*waits_at(parsed(COMPILED)[0]))),
+        ("a ring of joins is named once, from its smallest task", [l for l in graph(*waits_at(parsed(RINGED)[0])).splitlines() if "RING" in l] == [
+            "  RING: task 1 -> task 2 -> task 1",
+        ]),
+        ("a join of a task nothing runs is named so", "-> a task nothing runs" in graph(*waits_at(parsed("ts=0 join id=0 on=unrun\n")[0]))),
         ("a join names its task", worded("join", "on=2") == "joins task 2"),
         ("a join of a task nothing runs says so", worded("join", "on=unrun") == "joins a task nothing runs"),
         ("a waking by a task nothing runs says so", worded("claim", "by=unrun arm=0:0") == "woken by a task nothing runs on 0:0"),
@@ -240,6 +376,10 @@ def main(argv):
         return 1
     only = int(argv[argv.index("--task") + 1]) if "--task" in argv else None
     events, strays = parsed(open(argv[1]).read())
+    if "--graph" in argv:
+        at = float(argv[argv.index("--at") + 1]) if "--at" in argv else None
+        print(graph(*waits_at(events, at), at))
+        return 1 if strays else 0
     if "--shape" in argv:
         print(shape(events))
         if strays:
