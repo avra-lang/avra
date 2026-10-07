@@ -8,6 +8,7 @@
 //! real component to name.
 use @std.avrac.testing.{
     refused_in,
+    refused_n,
     shown,
     provided,
     answered,
@@ -757,7 +758,7 @@ spec "collect's own laws" {
         then "a member's mark no reader claims is refused" {
             refused_in(
                 provided(numbered_decl() + flag_decl() + member_marked("@flag") + "1", ui()),
-                "nothing on this declaration reads it",
+                "nothing on `Shape`, which gathers this, reads it",
             )
         }
         then "a member's field mark no reader claims is refused" {
@@ -767,7 +768,7 @@ spec "collect's own laws" {
                         "@numbered(0)\ntype Dot = { @key at: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
                     ui(),
                 ),
-                "nothing on this declaration reads it",
+                "nothing on `Shape`, which gathers this, reads it",
             )
         }
         then "a misspelled member mark is unresolved, never a mark" {
@@ -788,7 +789,7 @@ spec "collect's own laws" {
                 ui(),
             )
             refused_in(p, "an annotation answers an effect") &&
-                !refused_in(p, "nothing on this declaration reads it")
+                !refused_in(p, "which gathers this, reads it")
         }
         then "a member's void annotation stays the record's" {
             answered(
@@ -821,8 +822,28 @@ spec "collect's own laws" {
                         "@numbered(0)\n@flag\ntype Dot = {}\n@derive(Claimer)\ncollect enum Read = @numbered in self by it.mark.args[0] dense\ncollect enum Unread = @numbered in self by it.mark.args[0] dense\n1",
                     claimer(),
                 ),
-                "nothing on this declaration reads it",
+                "nothing on `Unread`, which gathers this, reads it",
             )
+        }
+        then "a member two enums leave unread is refused once by each, each naming its enum" {
+            let p = provided(
+                numbered_decl() +
+                    flag_decl() +
+                    "@numbered(0)\n@flag\ntype Dot = {}\ncollect enum A = @numbered in self by it.mark.args[0] dense\ncollect enum B = @numbered in self by it.mark.args[0] dense\n1",
+                ui(),
+            )
+            refused_n(p, "nothing on `A`, which gathers this", 2) &&
+                p.report().contains("nothing on `B`, which gathers this")
+        }
+        then "a mark fn is never run" {
+            answered(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive, Marker}\n" +
+                        numbered_decl() +
+                        "fn flag(what: Named) -> Marker {\n    let xs: List<int> = []\n    let _boom = xs[3]\n    Marker {}\n}\n@numbered(0)\n@flag\ntype Dot = {}\n@derive(Claimer)\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nShape.said()",
+                    claimer(),
+                ),
+            ) == "Dot/flag"
         }
         then "a claimed member mark reaches the enum's derive" {
             answered(

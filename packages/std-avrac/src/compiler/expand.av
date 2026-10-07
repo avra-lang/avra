@@ -78,7 +78,7 @@ use core.{
     all_codes,
     is_name_cont,
 }
-use diagnostics.{loc_at}
+use diagnostics.{loc_at, Diag}
 use compiler.families.{Family}
 use compiler.lower.{ordered_collect_members}
 use features.collects.{gathered_members}
@@ -88,7 +88,9 @@ use @std.testing.{words}
 export type Spelled = { file: FileId, e: ExprId }
 
 /// A mark and the file that wrote it.
-type WornMark = { mark: Mark, file: FileId }
+/// A mark, the file that wrote it, and — for a gathered member's — the
+/// enum it is held to.
+type WornMark = { mark: Mark, file: FileId, gatherer: string? = null }
 
 /// How many consts a chain of names may pass through — past it, a
 /// cycle the const law refuses.
@@ -430,6 +432,11 @@ impl Workspace {
     /// this a misspelled mark sits there doing nothing, forever and
     /// silently, which is the whole class this seam exists to kill.
     ///
+    /// A GATHERED member's marks are held by the enum gathering it, to
+    /// that enum's readers. A declaration no enum in this build gathers
+    /// holds its `Marker` annotations to no reader here: an exported
+    /// one may be gathered by a package outside the build.
+    ///
     /// ASKED PER DECLARING STATEMENT, never per declaration: a field's
     /// default is a declaration of its own standing on its OWNER's
     /// statement, so a per-decl walk asks the same marks twice — once
@@ -455,10 +462,7 @@ impl Workspace {
         // very line — the unknown speaks instead of falling through.
         self
             .decls
-            .speak_expansion(
-                f,
-                [unclaimed_mark(w.mark, claimed, loc_at(self.decls.file(w.file).path, w.mark.span)) for w in worn if !claimed.contains(w.mark.name)],
-            )
+            .speak_expansion(f, [self.unclaimed(w, claimed) for w in worn if !claimed.contains(w.mark.name)])
     }
 
     /// The marks a declaring statement wears, each with the file that
@@ -468,16 +472,28 @@ impl Workspace {
         let written = [WornMark { mark: m, file: f } for m in p.store.marks_written(s)]
         let gathers? = p.store.collect_enum_parts(s) else { return written }
         let members = gathered_members(self.decls, gathers.kind, gathers.scope, f)
+        let by = self.decls.gathering_fn(gathers.kind, f)
         written
             .concat(
                 flatten(
-                    [[WornMark { mark: m, file: d.file } for m in self.member_worn(d, gathers.kind.mark())] for d in members],
+                    [[WornMark { mark: m, file: d.file, gatherer: gathers.name } for m in self.member_worn(d, by)] for d in members],
                 ),
             )
     }
 
+    /// A worn mark no reader claims, refused where it was written — a
+    /// gathered member's naming the enum that leaves it unread.
+    fn unclaimed(w: WornMark, claimed: List<string>) -> Diag {
+        unclaimed_mark(
+            w.mark,
+            claimed,
+            w.gatherer,
+            loc_at(self.decls.file(w.file).path, w.mark.span),
+        )
+    }
+
     /// A gathered member's marks: its own, and its fields'.
-    fn member_worn(d: Decl, gathering: string?) -> List<Mark> {
+    fn member_worn(d: Decl, gathering: DeclId?) -> List<Mark> {
         self
             .decls
             .member_marks(d.id, gathering)
@@ -1027,7 +1043,8 @@ impl Workspace {
             gathers.order,
             self.decls.decl(d).file,
         )
-        [self.gathered_variant(m, gathers.kind.mark(), self.payload_kinds_named(d, m.name)) for m in members]
+        let by = self.decls.gathering_fn(gathers.kind, self.decls.decl(d).file)
+        [self.gathered_variant(m, by, self.payload_kinds_named(d, m.name)) for m in members]
     }
 
     /// One variant's payload shapes, found BY NAME in the enum's own
@@ -1043,7 +1060,7 @@ impl Workspace {
     /// writes as the payload — the list the enum's signature was made
     /// from — its marks and its own annotations, read where the member
     /// stands.
-    fn gathered_variant(m: Decl, gathering: string?, kinds: List<Kind>) -> MetaVariant {
+    fn gathered_variant(m: Decl, gathering: DeclId?, kinds: List<Kind>) -> MetaVariant {
         let v = file_view(self.lang, self.parsed(m.file), self.decls, m.file)
         let fields = v.store.declared_fields(m.stmt)
         MetaVariant {
