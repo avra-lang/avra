@@ -87,6 +87,23 @@ int64_t avra_fd_sync(int64_t fd) {
     return 0;
 }
 
+/* An exclusive advisory lock on the descriptor's open file, taken
+   without waiting: 0 held, 1 another open file holds it, -errno
+   otherwise. It ends when the descriptor closes or its process dies —
+   the kernel releases it, so a kill never leaves it standing. */
+int64_t avra_fd_try_lock(int64_t fd) {
+#if defined(__wasm32__)
+    (void)fd;
+    return -ENOTSUP;
+#else
+    while (flock((int)fd, LOCK_EX | LOCK_NB) != 0) {
+        if (errno == EWOULDBLOCK) return 1;
+        if (errno != EINTR) return -errno;
+    }
+    return 0;
+#endif
+}
+
 /* The file cut back to exactly `len` bytes. A caller trims a TORN
    TAIL — bytes past the last frame it could verify, left by a writer
    that crashed mid-append — to this before appending past it, so a
