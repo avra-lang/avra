@@ -208,8 +208,7 @@ impl Workspace {
         let at = [j for j, a in anns if same_expr(a.callee, w.callee)].first() ?? 0
         let mine = if at < said.length { said[at] } else { self.decls.decl(w.ann).name }
         let nth = [j for j, text in said if j < at && text == mine].length
-        let d? = self.decls.decl_of(f, w.stmt) else { return "${mine}#${nth}" }
-        let x = self.decls.decl(d)
+        let x = self.decls.decl(w.annotated)
         "${mine}#${nth} @ ${kind_word(x.kind)} ${x.owner}.${x.name}#${x.sibling}"
     }
 
@@ -334,6 +333,9 @@ impl Workspace {
     /// inputs — nothing when the annotation is not a generator.
     fn declared_work(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<DeclareWork> {
         if self.decls.is_wrap_body(f, d) { return [] }
+        // an annotation is its statement's own declaration's: a default rides that
+        // statement and owes none of its work
+        if !self.decls.names_its_statement(d) { return [] }
         let x = self.decls.decl(d)
         let written = self.written_stmt(f, d)
         let anns = p.store.annotations_of(written)
