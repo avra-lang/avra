@@ -1,24 +1,62 @@
-//! The laws a type test keeps: its subject is a `dyn`, and the type it
-//! names implements that `dyn`'s trait. The binder answers the named
-//! type, recorded on the pattern's read for lowering to test against.
-use core.{PatId, TypeId, TypeRef, DeclId}
+//! The laws a type test keeps: its subject is a `dyn` (read through a
+//! name, as any read is), the type it names is ONE concrete type — a
+//! box's tag names a declaration, so it tells no `dyn`, absence, type
+//! parameter or generic instance apart — and that type implements the
+//! `dyn`'s trait. The binder answers the named type, recorded on the
+//! pattern's read for lowering to test against.
+use core.{PatId, Type, TypeId, TypeRef, DeclId}
 use features.{TypeCx, this_is}
 use diagnostics.{refusal, defect_at}
 
 export fn narrow_types(mut cx: TypeCx, p: PatId, ty: TypeRef, expected: TypeId) -> List<TypeId> {
-    let tr? = cx.view.types.dyn_trait(expected) else { return not_dyn(cx, p, expected) }
+    let tr? = cx.view.types.dyn_trait(cx.seen(expected)) else { return not_dyn(cx, p, expected) }
     let to = cx.written_in_pattern(cx.view.origin_of_pat(p), cx.pat_loc(p), ty)
     if cx.view.types.shape_of(to) is .Error { return [to] }
+    let fault? = untaggable(cx.view.types.shape_of(to)) else { return implementing(cx, p, to, tr, expected) }
+    refused_target(cx, p, fault, to, tr)
+}
+
+/// The named type, once the tag can tell it: it implements the trait.
+fn implementing(mut cx: TypeCx, p: PatId, to: TypeId, tr: DeclId, expected: TypeId) -> List<TypeId> {
     if !cx.implements_decl(to, tr) { return not_implementor(cx, p, to, tr, expected) }
     let read? = cx.view.store.name_read(p) else { return unread(cx, p, to) }
     cx.facts.set_type(read, to)
     [to]
 }
 
+/// Why a box's tag cannot tell a named type apart, or absence when it can.
+enum Untaggable {
+    Dyn
+    Absent(inner: TypeId)
+    Param
+    Shared
+}
+
+fn untaggable(sh: Type) -> Untaggable? {
+    match sh {
+        .Dyn(_, _) -> .Dyn,
+        .Opt(inner) -> .Absent(inner),
+        .Var(_, _, _) -> .Param,
+        .App(_, _, _) or .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Res(_, _) -> .Shared,
+        .Int or .Float or .Bool or .Str or .Bytes or .Ptr or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Fn(_, _, _) or .Tasks or .Void or .Null or .EmptyList or .EmptyMap or .Union(_) or .Range or .Error -> null,
+    }
+}
+
+fn refused_target(mut cx: TypeCx, p: PatId, fault: Untaggable, to: TypeId, tr: DeclId) -> List<
+    TypeId,
+> {
+    match fault {
+        .Dyn -> dyn_target(cx, p, to, tr),
+        .Absent(inner) -> absent_target(cx, p, to, inner),
+        .Param -> param_target(cx, p, to),
+        .Shared -> shared_target(cx, p, to),
+    }
+}
+
 /// Whether a type may be absent and holds a `dyn` when present.
 fn absent_dyn(cx: TypeCx, ty: TypeId) -> bool {
-    match cx.view.types.shape_of(ty) {
-        .Opt(inner) -> cx.view.types.dyn_trait(inner) != null,
+    match cx.view.types.shape_of(cx.seen(ty)) {
+        .Opt(inner) -> cx.view.types.dyn_trait(cx.seen(inner)) != null,
         _ -> false,
     }
 }
@@ -73,6 +111,62 @@ fn not_implementor(mut cx: TypeCx, p: PatId, to: TypeId, tr: DeclId, expected: T
                 "`${t}` does not implement `${trait_name}`, so no `${cx.view.types.name_of(expected)}` holds one",
                 "narrowed here",
                 "narrow to a type with an `impl ${trait_name} for …`",
+            ),
+        )
+    []
+}
+
+fn dyn_target(mut cx: TypeCx, p: PatId, to: TypeId, tr: DeclId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.narrow",
+                cx.pat_loc(p),
+                "a type pattern names what a box holds, and `${cx.view.types.name_of(to)}` is a box itself",
+                "narrowed here",
+                "narrow to a type with an `impl ${cx.view.decls.decl(tr).name} for …`",
+            ),
+        )
+    []
+}
+
+fn absent_target(mut cx: TypeCx, p: PatId, to: TypeId, inner: TypeId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.narrow",
+                cx.pat_loc(p),
+                "a box never holds absence, so no value is a `${cx.view.types.name_of(to)}` here",
+                "narrowed here",
+                "narrow to `${cx.view.types.name_of(inner)}`",
+            ),
+        )
+    []
+}
+
+fn param_target(mut cx: TypeCx, p: PatId, to: TypeId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.narrow",
+                cx.pat_loc(p),
+                "a type pattern names one concrete type, and `${cx.view.types.name_of(to)}` is a type parameter",
+                "narrowed here",
+                "narrow to a declared type",
+            ),
+        )
+    []
+}
+
+fn shared_target(mut cx: TypeCx, p: PatId, to: TypeId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.narrow",
+                cx.pat_loc(p),
+                "a type pattern names one concrete type, and `${cx.view.types.name_of(to)}` is one instance of a generic — every instance shares one tag",
+                "narrowed here",
+                "narrow to a type of your own that holds it — `type Ints = { held: List<int> }`",
             ),
         )
     []
