@@ -193,13 +193,18 @@ build/std_hash.a: $(HASH_OBJS)
 
 # THE HASHER'S DOOR, FORGED: @std/hash takes a hasher's state back as a
 # value, so forged states are pushed through it with the package's C
-# rebuilt under ASan and UBSan, each unit under its own flags.
+# rebuilt under ASan and UBSan, each unit under its own flags. A machine
+# whose compiler carries no sanitizer runtime says so and runs nothing.
 HASH_DOOR_SAN := -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
 hash-door: packages/std-hash/src/c/tests/door_test.c $(HASH_OBJS)
 	@mkdir -p build/hash-door
-	@$(foreach o,$(HASH_OBJS),cc -c $(HASH_DOOR_SAN) $(CFLAGS_$(basename $(notdir $(o)))) -o build/hash-door/$(notdir $(o)) $(if $(filter build/std_hash.o,$(o)),packages/std-hash/src/c/std_hash.c,packages/std-hash/vendor/$(basename $(notdir $(o))).c) &&) true
-	@cc $(HASH_DOOR_SAN) -Ipackages/std-hash/vendor -o build/hash-door/door_test $< $(addprefix build/hash-door/,$(notdir $(HASH_OBJS)))
-	@build/hash-door/door_test
+	@if ! { printf 'int main(void) { return 0; }\n' | cc $(HASH_DOOR_SAN) -x c - -o build/hash-door/probe 2>/dev/null && build/hash-door/probe; }; then \
+	  echo "hash-door: ASan unavailable — not run"; \
+	else \
+	  $(foreach o,$(HASH_OBJS),cc -c $(HASH_DOOR_SAN) $(CFLAGS_$(basename $(notdir $(o)))) -o build/hash-door/$(notdir $(o)) $(if $(filter build/std_hash.o,$(o)),packages/std-hash/src/c/std_hash.c,packages/std-hash/vendor/$(basename $(notdir $(o))).c) &&) \
+	  cc $(HASH_DOOR_SAN) -Ipackages/std-hash/vendor -o build/hash-door/door_test $< $(addprefix build/hash-door/,$(notdir $(HASH_OBJS))) && \
+	  build/hash-door/door_test; \
+	fi
 
 # A HEADER IS A SOURCE. cc writes each object's dependency list beside
 # it and the next make reads it back, so editing a .h rebuilds what
