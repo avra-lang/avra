@@ -24,8 +24,8 @@
 //! id left a tombstone.
 //!
 //! A ROW'S NAME IS ITS KEY: its file's name, its kind, its owner, what
-//! generated it, its own name, and its place among the declarations of that
-//! file sharing all five. A declaration written above another moves the other's
+//! generated it, the declaration it is nested in, its own name, and its place
+//! among the declarations of that file sharing all six. A declaration written above another moves the other's
 //! name only when it shares them. `id` is where the name stands in this
 //! process: `mint` finds the id its key already has, and `set_decl` reseats by id.
 use core.{DeclId, FileId, StmtId, ExprId, DeclKind, SideTable}
@@ -48,11 +48,13 @@ export type Decl = {
     @key owner: string,
     /// What generated it — an annotation's tag; empty for a written one.
     @key maker: string,
+    /// The declaration whose body it is nested in, by its key without the
+    /// path; empty for one at the top of its file.
+    @key within: string,
     /// Its place among the declarations of one file that share its kind,
-    /// owner, maker and name, counted as the file is admitted.
+    /// owner, maker, encloser and name, counted as the file is admitted.
     @key sibling: int,
     @local parent: DeclId?,
-    nested: bool,
     @local root: ExprId?,
     @local lo: int,
     @local hi: int,
@@ -86,6 +88,7 @@ export fn decl_key_text(
     kind: DeclKind,
     owner: string,
     maker: string,
+    within: string,
     sibling: int,
 ) -> string {
     Decl
@@ -96,6 +99,7 @@ export fn decl_key_text(
                 kind: kind,
                 owner: owner,
                 maker: maker,
+                within: within,
                 sibling: sibling,
             },
         )
@@ -112,3 +116,8 @@ export fn decl_key_text(
 @relation
 @side
 export type DeclAt = { decl: DeclId? }
+
+impl Decl {
+    /// Whether it is declared inside another declaration's body.
+    fn nested() -> bool { self.within != "" }
+}

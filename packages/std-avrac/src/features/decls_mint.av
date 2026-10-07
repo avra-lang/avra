@@ -161,7 +161,7 @@ impl Decls {
                 let k = kind!
                 let name = store.declared_name(s) ?? ""
                 let d = self
-                    .mint(f, s, name, k, store.is_exported(s), "", null, false, store.fn_parts(s)?.body)
+                    .mint(f, s, name, k, store.is_exported(s), "", null, "", store.fn_parts(s)?.body)
                 by_stmt.set(s.index, DeclAt { decl: d })
                 out.push(d)
                 minted.push(d.index)
@@ -182,7 +182,7 @@ impl Decls {
             if store.const_value(s) != null {
                 let name = store.let_name(s) ?? ""
                 let d = self
-                    .mint(f, s, name, DeclKind.Const, store.is_exported(s), "", null, false, null)
+                    .mint(f, s, name, DeclKind.Const, store.is_exported(s), "", null, "", null)
                 by_stmt.set(s.index, DeclAt { decl: d })
                 out.push(d)
                 minted.push(d.index)
@@ -193,7 +193,7 @@ impl Decls {
                 let suite = sp!
                 for k, c in suite.cases {
                     let made = self
-                        .mint(f, s, c.name, DeclKind.Case, false, suite.name, null, false, c.body)
+                        .mint(f, s, c.name, DeclKind.Case, false, suite.name, null, "", c.body)
                     minted.push(made.index)
                 }
             }
@@ -201,7 +201,7 @@ impl Decls {
             if ip != null {
                 let block = ip!
                 let block_decl = self
-                    .mint(f, s, block.target, DeclKind.Impl, false, "", null, false, null)
+                    .mint(f, s, block.target, DeclKind.Impl, false, "", null, "", null)
                 by_stmt.set(s.index, DeclAt { decl: block_decl })
                 minted.push(block_decl.index)
                 self.orphan(block_decl)
@@ -219,19 +219,22 @@ impl Decls {
             }
         }
         let main = self
-            .mint(f, stmts.first() ?? no_stmt, "main", DeclKind.Main, false, "", null, false, null)
+            .mint(f, stmts.first() ?? no_stmt, "main", DeclKind.Main, false, "", null, "", null)
         self.mains.set_at(f.index, main)
         minted.push(main.index)
         // A declaration NESTED in a body is refused by its feature, but
         // typing still walks it: it gets an identity of its own, and joins
         // no namespace.
+        let owners = self.owner_spans(f)
         // LICENSED compiler.stmt_index_walk: the index keys `by_stmt`
         for i in 0..store.stmts.count() {
             let s = StmtId { index: i }
             let nested: DeclKind? = store.declared_kind(s)
             if by_stmt.get(i).decl == null && nested != null {
                 let name = store.declared_name(s) ?? ""
-                let nd = self.mint(f, s, name, nested!, false, "", null, true, null)
+                let around = self.innermost(owners, store.stmt_span(s)) ?? main
+                let nd = self
+                    .mint(f, s, name, nested!, false, "", null, self.within_text(around), null)
                 by_stmt.set(i, DeclAt { decl: nd })
                 minted.push(nd.index)
             }
@@ -376,7 +379,7 @@ impl Decls {
     /// takes the rest), not nested (its enclosing body walks it).
     fn owns_a_range(d: DeclId) -> bool {
         let x = self.decl(d)
-        !(x.kind is .Main) && !x.nested && self.decl_span(d) != null
+        !(x.kind is .Main) && !x.nested() && self.decl_span(d) != null
     }
 
     /// The source a declaration occupies: its statement's span — a
@@ -484,11 +487,12 @@ impl Decls {
     /// off the store.
     fn is_static_of(d: DeclId) -> bool { self.facts_of(d)?.stat ?? true }
 
-    /// The smallest owner span holding `sp`, or absence. The spans
+    /// The smallest owner span holding `at`, or absence. The spans
     /// were read ONCE per file: this runs per expression, and a
     /// store lookup per (expression, owner) pair was the parse's
     /// hottest frame.
-    fn innermost(owners: List<OwnerSpan>, sp: Span) -> DeclId? {
+    fn innermost(owners: List<OwnerSpan>, at: Span?) -> DeclId? {
+        let sp? = at else { return null }
         mut best: DeclId? = null
         mut best_size = 0 - 1
         for o in owners {
@@ -509,6 +513,12 @@ impl Decls {
         [self.owner_span(d) for d in self.decls_of_file(f) if self.owns_a_range(d) && self.spanned_here(f, d)]
     }
 
+    /// What a declaration nested in `d`'s body names as its encloser: `d`'s key, its path left out.
+    fn within_text(d: DeclId) -> string {
+        let x = self.decl(d)
+        decl_key_text("", x.name, x.kind, x.owner, x.maker, x.within, x.sibling)
+    }
+
     fn spanned_here(f: FileId, d: DeclId) -> bool { self.spanned_stmt_of(f, self.decl(d).stmt) == null }
 
     fn owner_span(d: DeclId) -> OwnerSpan {
@@ -527,7 +537,7 @@ impl Decls {
         maker: string,
     ) -> DeclId {
         let name = store.fn_parts(m)?.name ?? ""
-        self.mint_faced(f, m, name, DeclKind.Method, false, owner, parent, false, root, maker, null)
+        self.mint_faced(f, m, name, DeclKind.Method, false, owner, parent, "", root, maker, null)
     }
 
     /// Each default a record's fields or a fn's seats carry: a body
@@ -543,7 +553,7 @@ impl Decls {
         maker: string,
     ) -> List<DeclId> {
         [self
-            .mint_faced(f, s, p.name.of, DeclKind.Default, false, owner, parent, false, p.default, maker, null) for p in members if p.default != null]
+            .mint_faced(f, s, p.name.of, DeclKind.Default, false, owner, parent, "", p.default, maker, null) for p in members if p.default != null]
     }
 
     /// A parent admitted again lists its members afresh.
@@ -561,10 +571,10 @@ impl Decls {
         exported: bool,
         owner: string,
         parent: DeclId?,
-        nested: bool,
+        within: string,
         root: ExprId?,
     ) -> DeclId {
-        self.mint_faced(f, s, name, kind, exported, owner, parent, nested, root, "", null)
+        self.mint_faced(f, s, name, kind, exported, owner, parent, within, root, "", null)
     }
 
     /// An id for a declaration: the one its NAME already has (its row
@@ -583,7 +593,7 @@ impl Decls {
         exported: bool,
         owner: string,
         parent: DeclId?,
-        nested: bool,
+        within: string,
         root: ExprId?,
         maker: string,
         told: DeclFacts?,
@@ -593,8 +603,9 @@ impl Decls {
         let sibling = self
             .counted
             .get()
-            .taken(f, maker, decl_key_text(path, name, kind, owner, maker, 0))
-        let known: DeclId? = self.known_id(decl_key_text(path, name, kind, owner, maker, sibling))
+            .taken(f, maker, decl_key_text(path, name, kind, owner, maker, within, 0))
+        let known: DeclId? = self
+            .known_id(decl_key_text(path, name, kind, owner, maker, within, sibling))
         let id: DeclId = known ?? DeclId { index: self.decl_row_rows.get().next_id() }
         let d = Decl {
             id: id,
@@ -608,7 +619,7 @@ impl Decls {
             maker: maker,
             sibling: sibling,
             parent: parent,
-            nested: nested,
+            within: within,
             root: root,
             lo: 0,
             hi: 0,
@@ -679,7 +690,7 @@ impl Decls {
     /// A file's declaration of one kind and name, the first of its siblings.
     fn named_decl(path: string, kind: DeclKind, name: string) -> DeclId? {
         let f? = self.known_file_id(path) else { return null }
-        self.known_id(decl_key_text(self.path_named(f), name, kind, "", "", 0))
+        self.known_id(decl_key_text(self.path_named(f), name, kind, "", "", "", 0))
     }
 
     /// A run of `maker` over `f` opens: what it mints counts its siblings from nothing.
@@ -780,7 +791,7 @@ impl Decls {
     ) -> DeclId {
         let name = store.let_name(s) ?? ""
         let d = self
-            .mint_faced(f, s, name, DeclKind.Const, store.is_exported(s), "", null, false, null, maker, null)
+            .mint_faced(f, s, name, DeclKind.Const, store.is_exported(s), "", null, "", null, maker, null)
         self.note_provenance(d, ann, name, at)
         self.set_decl(d.index, self.decl(d) with { lo: lo, hi: store.const_value(s)!.index + 1 })
         d
@@ -810,7 +821,7 @@ impl Decls {
         // at the splice) — the decl table reads it here rather than
         // spelling a second, wrong answer.
         let d = self
-            .mint_faced(f, s, name, kind, store.is_exported(s), "", null, false, body, maker, null)
+            .mint_faced(f, s, name, kind, store.is_exported(s), "", null, "", body, maker, null)
         self.note_provenance(d, ann, name, at)
         let fns: List<StmtId> = store.trait_parts(s)?.fns ?? []
         mut cursor = lo
@@ -857,7 +868,7 @@ impl Decls {
         lo: int,
     ) -> List<DeclId> {
         let block_decl = self
-            .mint_faced(f, s, block.target, DeclKind.Impl, false, "", null, false, null, maker, null)
+            .mint_faced(f, s, block.target, DeclKind.Impl, false, "", null, "", null, maker, null)
         self.note_provenance(block_decl, ann, block.target, at)
         mut cursor = lo
         mut methods: List<DeclId> = []
@@ -905,7 +916,7 @@ impl Decls {
         at: Span?,
     ) -> DeclId {
         let known: DeclId? = self
-            .known_id(decl_key_text(self.path_named(f), name, DeclKind.Fn, "", "", 0))
+            .known_id(decl_key_text(self.path_named(f), name, DeclKind.Fn, "", "", "", 0))
         if known != null { return known! }
         let store = self.store_of(f)
         // THE GENERATED RANGE's LO: the arena's edge BEFORE any of the
@@ -923,7 +934,7 @@ impl Decls {
         let l2 = store.alloc_stmt(Stmt.Let(Scoped(v), null, call), at)
         let body = store.alloc_expr(Expr.Block([l2], bound), at)
         let s = store.alloc_stmt(Stmt.FnDecl(Scoped(name), tparams, params, ret, body), at)
-        let d = self.mint(f, s, name, DeclKind.Fn, false, "", null, false, body)
+        let d = self.mint(f, s, name, DeclKind.Fn, false, "", null, "", body)
         // THE GENERATED RANGE: the twin's own nodes, minted last, so
         // its body's exprs sit at the arena's end — lo its first, hi
         // the arena's edge (nothing after it is another's). Typing,
@@ -1009,7 +1020,7 @@ impl Decls {
         if known != null { return known! }
         let name = "${original}\$body"
         let d = self
-            .mint(f, orig.stmt, name, orig.kind, false, orig.owner, orig.parent, false, orig.root)
+            .mint(f, orig.stmt, name, orig.kind, false, orig.owner, orig.parent, "", orig.root)
         self.set_decl(d.index, self.decl(d) with { lo: orig.lo, hi: orig.hi })
         self.record_generated(f, [d])
         self.note_provenance(d, ann, original, at)
@@ -1024,7 +1035,8 @@ impl Decls {
 
     /// The body a WRAP moved out of `original` under `owner`, once it has.
     fn wrap_body_named(f: FileId, kind: DeclKind, owner: string, original: string) -> DeclId? {
-        self.known_id(decl_key_text(self.path_named(f), "${original}\$body", kind, owner, "", 0))
+        self
+            .known_id(decl_key_text(self.path_named(f), "${original}\$body", kind, owner, "", "", 0))
     }
 
     /// Whether `d` is the body a WRAP moved behind a written declaration:
