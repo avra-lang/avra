@@ -136,10 +136,23 @@ spec "commands/explain" {
         }
     }
     given "a file of a package of two" {
-        then "its text is an input: it reads nothing, and the page says who reads it" {
+        then "its text is an input: it reads nothing, and the page leads with it" {
             page(Asked { target: "src/lib/a.av", from: lib_probe("file_page") })
                 .starts_with(
-                    "Source(src/lib/a.av)  <digest>\n  reads    nothing — it stands always\n  read by  1 directly, ",
+                    "Input(text src/lib/a.av)  <digest>\n  reads    nothing — it stands always\n  read by  ",
+                )
+        }
+        then "the file's source is among the text's direct readers, under the text's own digest" {
+            let lines = explain_lines(
+                Asked { target: "src/lib/a.av", from: lib_probe("file_source") },
+            )
+            let text = (lines.first() ?? "").split("  ").last() ?? ""
+            text != "" && lines.any(it == "    Source(src/lib/a.av)  ${text}")
+        }
+        then "the file's source reads one thing, its text" {
+            page(Asked { target: "Source(src/lib/a.av)", from: lib_probe("source_page") })
+                .starts_with(
+                    "Source(src/lib/a.av)  <digest>\n  reads    1 directly, 1 at any depth\n    Input(text src/lib/a.av)  <digest>\n",
                 )
         }
         then "its analysis follows, with what it read directly and how far down that goes" {
@@ -186,11 +199,16 @@ spec "commands/explain" {
                             it.starts_with("attempts "),
                     )
         }
-        then "an input family reads nothing, and says so in every column" {
+        then "the input family reads nothing, and says so in every column" {
+            let rows = table_rows(Asked { target: "", from: lib_probe("stats_input"), stats: true })
+            let row = rows.find(it.starts_with("Input ")) ?? ""
+            row != "" && row.ends_with(" 0 0 0 0")
+        }
+        then "a source reads its text alone: one read a cell, in every column" {
             let rows = table_rows(
                 Asked { target: "", from: lib_probe("stats_source"), stats: true },
             )
-            rows.find(it.starts_with("Source ")) ?? "" == "Source 2 0 0 0 0"
+            rows.find(it.starts_with("Source ")) ?? "" == "Source 2 2 1 1 1"
         }
         then "the total row sums the families above it" {
             table_rows(Asked { target: "", from: lib_probe("stats_total"), stats: true })
@@ -225,7 +243,7 @@ spec "commands/explain" {
             )
             said.length == 1 &&
                 said[0]
-                    .starts_with("{\"answers\":[{\"answer\":\"Source(src/lib/a.av)\",\"digest\":\"") &&
+                    .starts_with("{\"answers\":[{\"answer\":\"Input(text src/lib/a.av)\",\"digest\":\"") &&
                 said[0]
                     .contains("\",\"reads\":[],\"reads_at_any_depth\":0,\"read_by\":[{\"answer\":\"")
         }
@@ -250,7 +268,7 @@ spec "commands/explain" {
             )
                 .join("")
             let head = said.split("},")
-            head.first() ?? "" == "{\"families\":[{\"family\":\"Source\",\"cells\":2,\"edges\":0,\"p50\":0,\"p99\":0,\"longest\":0"
+            head.first() ?? "" == "{\"families\":[{\"family\":\"Source\",\"cells\":2,\"edges\":2,\"p50\":1,\"p99\":1,\"longest\":1"
         }
         then "and closes with its totals, nothing of the hold after them" {
             let said = explain_lines(
@@ -276,7 +294,7 @@ spec "commands/explain" {
             let before = store_names(root)
             let lines = explain_lines(Asked { target: "src/lib/a.av", from: root, why: true })
             lines.first() ?? "" == "src/lib/a.av — held" &&
-                lines.any(it.starts_with("Source(src/lib/a.av)  ")) &&
+                lines.any(it.starts_with("Input(text src/lib/a.av)  ")) &&
                 before != "" &&
                 store_names(root) == before
         }
@@ -296,7 +314,7 @@ spec "commands/explain" {
             )
             lines.any(it == "  moved    src/lib/a.av, read by way of:") &&
                 lines.any(it == "    Analysis(src/main.av)") &&
-                lines.any(it.ends_with("reads Source(src/lib/a.av)"))
+                lines.any(it.ends_with("reads Input(text src/lib/a.av)"))
         }
         then "`--why` of an answer names the moved input it reads" {
             let lines = explain_lines(
@@ -311,8 +329,9 @@ spec "commands/explain" {
         }
         then "the edited file's text is read by the file a check analyses again" {
             let lines = explain_lines(Asked { target: "src/lib/a.av", from: edited_lib("readers") })
-            (lines.first() ?? "").starts_with("Source(src/lib/a.av)  ") &&
+            (lines.first() ?? "").starts_with("Input(text src/lib/a.av)  ") &&
                 lines.any(it == "  reads    nothing — it stands always") &&
+                lines.any(it.starts_with("    Source(src/lib/a.av)  ")) &&
                 lines.any(it == "    src/main.av")
         }
         then "`--why` after every other form still reads the edited file" {

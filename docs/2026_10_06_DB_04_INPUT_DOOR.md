@@ -79,6 +79,21 @@ What the keeper does not see, by design or by limit:
 - a pure fn that reaches the world only through a METHOD;
 - `tests/`, and every package but `std-avrac` and `cli`.
 
+## What a workspace that lives across turns sees
+
+A cell stands until the driver says the world may have moved (`world_moved`, or
+`inputs_this_turn` for the whole turn). Then every input read so far is read
+again, and the KIND of what differed decides:
+
+| what differed | answer | why |
+|---|---|---|
+| a file's text | `Reread` — the revision moves, and the source and scans over that text follow | the kernel re-derives what read it |
+| what stands, or what a directory lists | `Graph` — the workspace is let go and another opened | `module_files` and the file-to-module map are memos, not queries, and a deleted file keeps its id: the file set cannot be patched in place (`avra-8sb5.57.229`) |
+| a manifest's text | `Graph` | the package list is append-only and its voices are spoken once; its kind is Text, so its loader marks the cell (`manifest_texts`) |
+
+A one-shot `check`, `build` or `test` never calls the verb. A query that calls
+it is refused, and so is a workspace asked again after `Graph`.
+
 ## The cut for b–e
 
 Each PR ends with `make inputs-accept`; the baseline falls by the count in its row.
@@ -86,12 +101,14 @@ Each PR ends with `make inputs-accept`; the baseline falls by the count in its r
 | PR | what moves | files | removes | leaves |
 |---|---|---|---|---|
 | **b** | `Host.text(path) -> Read` lands as the door's first verb, over the fields `Host` already has. The `Source` and `Manifest` loaders read through it and the kernel cell is cut by one word of the input's digest. `compiler/inputs.av` (`@input file_text` / `env_value`) is deleted; findings reads `host.text` | `host/host.av`, `host/input.av`, `workspace.av` (the Source loader), `packages.av` (the Manifest loader), `findings.av`, `derive.av` (one call), `compiler/inputs.av` (deleted) | 4 | 196 |
-| **c1** | the general cell — `Family.Input` over an interned `InputName` (`compiler/world.av`) — the door verbs `there`, `listing`, `spared_text`, and `world_moved`, the driver's verb that reads every input cell again. Every read made INSIDE A QUERY and recorded by nothing moves onto a cell | `modules.av` 6, `packages.av` 4, `voices.av` 3, `workspace.av` 1, `whole.av` 1 | 15 | 181 |
-| **c2** | Source and Manifest under `world_moved` (first commit); then the driver's reads behind `Host`, the manifest re-reads in `build.av` and `manifest_source`; `embed` as `Text`; `admit_embeds`' string match deleted | `suite.av` 11, `build.av` 10, `modules.av` 5, `record.av` 3, `whole.av` 2, `derive.av` 2, `packages.av` 1, `rule_proof.av` 1, `testing/mod.av` 3 | 38 | 143 |
+| **c1** | the general cell — `Family.Input` over an interned `InputName` (`compiler/world.av`) — the door verbs `there`, `listing`, `spared_text`, and `world_moved`. Every read made INSIDE A QUERY and recorded by nothing moves onto a cell; each scan of a sibling's text is a query over that text's cell. At this commit a long-lived workspace sees an edited listing, existence or scanned text after `world_moved`, and does NOT yet see an edited source or manifest | `modules.av` 6, `packages.av` 4, `voices.av` 3, `workspace.av` 1, `whole.av` 1 | 15 | 181 |
+| **c2a** | one Text cell a file: a source is a query over its text's input, a manifest's row loads over it, and `Host.peek` is the one whole-file read that never ends a run (`Host.text`'s two questions are gone). `world_moved` is one loop: a TEXT that differs moves the revision; the SET of files that differs (an Exists or a Listing) or a manifest's text answers `Moved.Graph`, and the driver lets the workspace go and opens another (`inputs_this_turn`). From this commit `avra dev` sees every edit | `world.av`, `workspace.av` (`source`), `packages.av` (`loaded_manifest`), `host/host.av`, `cli/commands/dev.av`, `cli/commands/shared.av` | 0 | 181 |
+| **c2b** | the driver's reads behind `Host`, the manifest re-reads in `build.av` and `manifest_source`. A driver read that must see the disk as it is NOW (a hold check, a kept record's validity, the store's roll) stays a direct read, licensed at its site and printed by the keeper as its own group | `suite.av` 11, `build.av` 10, `modules.av` 5, `record.av` 3, `whole.av` 2, `derive.av` 2, `packages.av` 1, `rule_proof.av` 1 | 35 | 146 |
+| **c2c** | `embed` as a Text cell; `admit_embeds`' string match deleted | `testing/mod.av` 3, `whole.av`, `build.av` | 3 | 143 |
 | **d** | env, tool, target, the compiler's identity: `Env`, `Tool`, `Compiler` reads; `Target` declared; the three `Host` fields become inputs | `cli/commands/shared.av` 42, `whole.av` (link words) 1 | 43 | 100 |
 | **e** | the remaining direct sites by subsystem, and a `// LICENSED input.<why>:` line on each read that is no input | commands 47 · `build.av` 9, `db.av` 4 · debug flags 6 (licensed) · clock 21, evaluator 8, store 5 (licensed) | 100 | 0 |
 
-Order is b, c1, c2, d, e: c needs b's verb; d and e are independent of each other
+Order is b, c1, c2a, c2b, c2c, d, e: c needs b's verb; d and e are independent of each other
 once c is in. A read sent through the door while recording nothing would fall off
 the keeper's count without becoming an input, so a site moves only with its cell.
 

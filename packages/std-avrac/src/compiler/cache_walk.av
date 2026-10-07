@@ -11,6 +11,7 @@ use core.{FileId, ModuleId, DeclId, reversed, sorted_by, sorted_texts, some_list
 use @std.path.{relative_path, joined_path, normalized}
 use @std.text.{parse_int}
 use compiler.families.{Family}
+use compiler.host.{InputName}
 use features.{Decl}
 use @std.relation.engine.{Key, same_key, no_key_marks}
 
@@ -154,10 +155,13 @@ impl Workspace {
         key(Family.Analysis, f.index)
     }
 
-    /// A file's text: the input every reader of the file reaches.
+    /// A file's text: the input its source and its scans read, and the one
+    /// leaf under every reader of the file. Looked up, never minted: a file
+    /// nothing read has no text here.
     fn input_key(path: string) -> Key? {
         let f? = self.walked_file(path) else { return null }
-        key(Family.Source, f.index)
+        let at? = self.text_cell(self.decls.file(f).path) else { return null }
+        key(Family.Input, at)
     }
 
     /// What `label` names: its family by the family's word, its subject
@@ -224,7 +228,7 @@ impl Workspace {
             .Program -> if subject == THE_PROGRAM { [0] } else { [] },
             .Unit -> if subject.starts_with(UNIT) { some_list(parse_int(subject.substring(UNIT.length, subject.length))) } else { [] },
             .Name -> if subject.starts_with(BUCKET) { some_list(parse_int(subject.substring(BUCKET.length, subject.length))) } else { [self.decls.name_bucket(subject)] },
-            .Input -> some_list(self.input_index.get().get(subject)),
+            .Input -> [at for at, name in self.input_names.get() if self.input_shown(name) == subject],
             .Row -> some_list(parse_int(subject)),
         }
     }
@@ -293,6 +297,10 @@ impl Workspace {
         }
     }
 
+    /// An input as a person reads it: what kind of read, then its path as
+    /// every other answer shows a path.
+    fn input_shown(name: InputName) -> string { "${kind_word(name.kind)} ${self.shown_path(name.key)}" }
+
     /// A query as a person reads it: its family's word and what it keys by.
     fn key_label(k: Key) -> string { "${family_word(k.family)}(${self.key_subject(k)})" }
 
@@ -313,7 +321,7 @@ impl Workspace {
             .Program -> THE_PROGRAM,
             .Unit -> "${UNIT}${k.arg}",
             .Name -> self.bucket_shown(k.arg),
-            .Input -> spelled(self.input_names.get()[k.arg]),
+            .Input -> self.input_shown(self.input_names.get()[k.arg]),
             .Row -> "${k.arg}",
         }
     }
