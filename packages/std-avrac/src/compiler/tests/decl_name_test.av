@@ -272,19 +272,72 @@ fn generated_made() -> string {
     ["${d.name} by ${d.maker}" for d in ws.decls.all_decls() if d.maker != ""].join(" | ")
 }
 
+/// A program whose dependency is a package nested inside the root's own
+/// source directory; with `early`, its file is named before anything
+/// admits that package. Answers the path `greet`'s row is keyed under.
+fn nested_package_path(early: bool) -> string {
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/greet\" = { path = \"src/greet\" }\n",
+        "/w/src/main.av": "use @acme.greet.{greet}\ngreet(2)\n",
+        "/w/src/greet/avra.toml": "[package]\nname = \"@acme/greet\"\nversion = \"0.1.0\"\n",
+        "/w/src/greet/src/greet.av": "export fn greet(n: int) -> int {\n    n + 40\n}\n",
+    }
+    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    if early { let _ = ws.file_id("/w/src/greet/src/greet.av") }
+    let _ = ws.program(null)
+    [d.path for d in ws.decls.all_decls() if d.name == "greet"].join(" | ")
+}
+
 /// The rows one maker has in the admitted file, as `name#sibling`, in id order.
 fn made_by(ws: Workspace, maker: string) -> string {
     ["${d.name}#${d.sibling}" for d in ws.decls.all_decls() if d.maker == maker].join(",")
 }
 
 /// One run of the maker over `two_fns`' first `n` statements, closed on what it made.
-fn one_run(ws: Workspace, n: int) {
+fn one_run(ws: Workspace, n: int) { run_by(ws, run_maker(), n) }
+
+/// One run of `maker` over the admitted file's first `n` statements, closed on what it made.
+fn run_by(ws: Workspace, maker: string, n: int) {
     let f = ws.file_id(readmit_path())
-    ws.decls.generation_opened(f, run_maker())
+    ws.decls.generation_opened(f, maker)
     let made = ws
         .decls
-        .mint_generated_code(f, ws.decls.store_of(f), ws.parsed(f).stmts.slice(0, n), 0, run_maker(), "made", null)
-    ws.decls.generation_kept(f, run_maker(), made)
+        .mint_generated_code(f, ws.decls.store_of(f), ws.parsed(f).stmts.slice(0, n), 0, maker, "made", null)
+    ws.decls.generation_kept(f, maker, made)
+}
+
+/// The key of every row `maker` made, in id order.
+fn keys_by(ws: Workspace, maker: string) -> string {
+    [Decl.key_text(d.key()) for d in ws.decls.all_decls() if d.maker == maker].join(" | ")
+}
+
+/// `two_fns` admitted, then runs of `maker_a` and `maker_b` over its first
+/// statement, in the order given — each maker's rows as its keys.
+fn makers_run(a_first: bool) -> List<string> {
+    let ws = admitted(two_fns())
+    if a_first {
+        run_by(ws, maker_a(), 1)
+        run_by(ws, maker_b(), 1)
+    } else {
+        run_by(ws, maker_b(), 1)
+        run_by(ws, maker_a(), 1)
+    }
+    [keys_by(ws, maker_a()), keys_by(ws, maker_b())]
+}
+
+fn inner_in_outer() -> string {
+    "fn outer() -> int {\n    fn inner() -> int {\n        1\n    }\n    1\n}\nfn other() -> int {\n    2\n}\n"
+}
+
+fn inner_in_other() -> string {
+    "fn outer() -> int {\n    1\n}\nfn other() -> int {\n    fn inner() -> int {\n        2\n    }\n    2\n}\n"
+}
+
+/// `inner` written in `outer`'s body, then the file admitted again with it in `other`'s.
+fn inner_moved() -> Workspace {
+    let ws = admitted(inner_in_outer())
+    admit_again(ws, readmit_path(), inner_in_other())
+    ws
 }
 
 fn run_maker() -> string { "made()#0 @ fn .first#0" }
@@ -402,6 +455,46 @@ spec "compiler/decl name — a declaration's key is its name" {
     given "a real annotation's generated fn, on a fn a wrap written before it moved the body of" {
         then "its maker names the written fn, never the body the wrap moved" {
             real_makers() == "echoed()#0 @ fn .doubled#0"
+        }
+    }
+    given "two makers generating one name in one file" {
+        then "each makes its own row, both first of their group" {
+            let ws = admitted(two_fns())
+            run_by(ws, maker_a(), 1)
+            run_by(ws, maker_b(), 1)
+            made_by(ws, maker_a()) == "first#0" && made_by(ws, maker_b()) == "first#0"
+        }
+        then "one maker running again over more leaves the other's row where it was" {
+            let ws = admitted(two_fns())
+            run_by(ws, maker_a(), 1)
+            run_by(ws, maker_b(), 1)
+            let before = keys_by(ws, maker_b())
+            run_by(ws, maker_a(), 2)
+            unmoved(before, keys_by(ws, maker_b())) && made_by(ws, maker_a()) == "first#0,second#0"
+        }
+        then "the order the makers run in moves no key" {
+            let ab = makers_run(true)
+            let ba = makers_run(false)
+            unmoved(ab[0], ba[0]) && unmoved(ab[1], ba[1])
+        }
+    }
+    given "a nested fn moved from one body to another" {
+        then "its key names its new encloser, and the old row is gone" {
+            unmoved(
+                keys_named(inner_moved(), DeclKind.Fn, "inner"),
+                keys_named(admitted(inner_in_other()), DeclKind.Fn, "inner"),
+            )
+        }
+        then "fixture: the two placements are two keys" {
+            keys_named(admitted(inner_in_outer()), DeclKind.Fn, "inner") != keys_named(admitted(inner_in_other()), DeclKind.Fn, "inner")
+        }
+    }
+    given "a file of a package nested in the root's source directory" {
+        then "its rows are keyed under its own package's name" {
+            nested_package_path(false) == "@acme/greet:src/greet.av"
+        }
+        then "and the same when the file was named before its package joined" {
+            nested_package_path(true) == "@acme/greet:src/greet.av"
         }
     }
     given "an annotation on a statement another annotation generated" {
