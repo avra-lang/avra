@@ -38,7 +38,7 @@ use compiler.backend.{
 }
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.store.{Store, Stored, Keeping, node_key}
-use compiler.host.{Host, no_target, read_manifest}
+use compiler.host.{no_target, read_manifest}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
 use @std.relation.engine.{map_cell}
@@ -302,6 +302,7 @@ fn unnamed_print() -> string {
 fn compiler_print(ws: Workspace) -> string {
     let at? = ws.host.compiler else { return unnamed_print() }
     let roll = joined_path(stores_dir(ws), "compilers")
+    // LICENSED compiler.host_asked_directly: the store's roll is read as it stands at this instant — a cell would answer what was read earlier
     let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
     let digest? = digest_of_binary(at) else { return unnamed_print() }
     let mode = ws.keys.build_mode.get()
@@ -369,7 +370,9 @@ fn user_pid_alive(name: string) -> bool {
 // LICENSED compiler.free_state_verb: a pure PROJECTION's write-back — a workspace and a store directory in.
 fn has_live_user(ws: Workspace, store: string) -> bool {
     let users = joined_path(store, ".users")
+    // LICENSED compiler.host_asked_directly: whether another process uses this store is asked of the disk at this instant, never of what was read earlier
     if !ws.host.is_dir(users) { return false }
+    // LICENSED compiler.host_asked_directly: the users of this store are listed as they stand at this instant
     let names = ws.host.list(users)
     for name in names {
         if !user_pid_alive(name) { let _ = remove(joined_path(users, name)) }
@@ -394,6 +397,7 @@ fn rolled(ws: Workspace, roll: string, lines: List<string>) {
     let _ = ws.host.write(staged, joined(kept, "\n"))
     let _ = published(staged, roll)
     let named = [print_of(line) for line in kept].concat(["compilers", LEGACY_UNNAMED_STORE])
+    // LICENSED compiler.host_asked_directly: the stores that stand are listed at this instant — a sweep judges the disk, not a cell
     for name in ws.host.list(stores_dir(ws)) {
         let dir = joined_path(stores_dir(ws), name)
         let live = has_live_user(ws, dir)
@@ -411,16 +415,12 @@ fn tree_root(ws: Workspace) -> string {
     mut manifest_root = ws.root
     mut up = dir_of(ws.root)
     while up != dir_of(up) {
-        if has_git(ws.host, up) { return up }
-        if has_manifest(ws.host, up) { manifest_root = up }
+        if ws.there(joined_path(up, ".git")) { return up }
+        if ws.there(joined_path(up, "avra.toml")) { manifest_root = up }
         up = dir_of(up)
     }
     manifest_root
 }
-
-fn has_git(host: Host, dir: string) -> bool { host.exists(joined_path(dir, ".git")) }
-
-fn has_manifest(host: Host, dir: string) -> bool { host.exists(joined_path(dir, "avra.toml")) }
 
 /// What names a kept program: its name among the root's, and the inputs beside
 /// its sources.
@@ -638,8 +638,8 @@ impl Workspace {
     /// ordinal — a closure root has no ordinal before analysis admits it.
     fn manifest_objects(root: string) -> List<string> {
         let path = joined_path(root, "avra.toml")
-        if !self.host.exists(path) { return [] }
-        let m = read_manifest(new_source_file(path, self.host.read(path)))
+        if !self.there(path) { return [] }
+        let m = read_manifest(new_source_file(path, self.listed_text(path)))
         [joined_path(root, o) for o in filled_words(m.objects)]
     }
 
@@ -648,19 +648,17 @@ impl Workspace {
     /// and nothing here keeps a memo across the one key this answers.
     fn object_line(path: string) -> string { "${relative_path(self.root, path)}\t${digest_of_binary(path) ?? "-"}" }
 
-    /// A file's bytes as one digest, memoized in memory for the build — always
-    /// read and hashed fresh. A DURABLE STAMP-KEYED SHORTCUT STOOD HERE ONCE,
-    /// trusting a size/time/inode match to skip the read across PROCESSES: the
-    /// SAME shape `compiler_print`'s roll cache used for the compiler's own
-    /// binary (avra-8sb5.57.25), and it failed the identical attack — a stamp
-    /// that does not move while the file's bytes do, which an edit between two
-    /// `avra test` runs is the ordinary way to hit (avra-8sb5.57.19). A stamp
-    /// match is a claim about the bytes, never the bytes; only the digest is.
+    /// A file's text as one digest, through its Text input: kept per read
+    /// of that input, so a turn that reads the file again digests the text
+    /// it read. Never a stamp — a stamp match is a claim about the bytes,
+    /// never the bytes.
     fn text_digest(path: string) -> string {
-        let known: string? = self.keys.text_digests.get().get(path)
+        let text = self.listed_text(path)
+        let at = "${self.text_word(path)}\t${path}"
+        let known: string? = self.keys.text_digests.get().get(at)
         if known != null { return known! }
-        let made = digest_of_file(self.host.read(path))
-        self.keys.text_digests.put(path, made)
+        let made = digest_of_file(text)
+        self.keys.text_digests.put(at, made)
         made
     }
 

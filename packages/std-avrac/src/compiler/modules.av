@@ -217,12 +217,12 @@ impl Workspace {
         if seen.contains(here) { return [] }
         let below = seen.concat([here])
         mut out: List<string> = []
-        for f in self.host.list(dir) {
-            let full = joined_path(dir, f)
-            if self.host.is_dir(full) {
+        for e in self.listing(dir) ?? [] {
+            let full = joined_path(dir, e.name)
+            if e.dir {
                 // a directory of programs holds only its own files
                 if !self.per_file && !self.is_package_dir(full) && !self.excluded(full) { out = out.concat(self.all_files_under(full, below)) }
-            } else if self.listed_source(dir, f) {
+            } else if self.listed_source(dir, e.name) {
                 out.push(full)
             }
         }
@@ -264,11 +264,11 @@ impl Workspace {
     /// backend's and runtime's own trees hold no packages.
     fn engine_sources(dir: string) -> List<string> {
         mut out: List<string> = []
-        for f in self.host.list(dir) {
-            let full = joined_path(dir, f)
-            if self.host.is_dir(full) {
+        for e in self.listing(dir) ?? [] {
+            let full = joined_path(dir, e.name)
+            if e.dir {
                 out = out.concat(self.engine_sources(full))
-            } else if f.ends_with(".c") || f.ends_with(".h") { out.push(full) }
+            } else if e.name.ends_with(".c") || e.name.ends_with(".h") { out.push(full) }
         }
         out
     }
@@ -289,7 +289,7 @@ impl Workspace {
                 .concat(self.engine_sources(joined_path(tree, "backend")))
                 .concat(self.engine_sources(joined_path(tree, "runtime")))
         }
-        let manifests = [joined_path(at[1], "avra.toml") for at in covered if at.length > 1 && self.host.exists(joined_path(at[1], "avra.toml"))]
+        let manifests = [joined_path(at[1], "avra.toml") for at in covered if at.length > 1 && self.there(joined_path(at[1], "avra.toml"))]
         sorted_texts(
             flatten([self.all_files(at[0]) for at in covered]).concat(manifests).concat(engine),
         )

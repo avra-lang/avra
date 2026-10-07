@@ -1,0 +1,76 @@
+//! `compiler.host_asked_directly`: a `Host` question asked in the
+//! compiler or its CLI outside the door's own file is refused.
+use compiler.{avra, new_workspace, findings_of, Finding}
+use compiler.host.{memory_host}
+
+const HOST = "type Host = { exists: fn(string) -> bool, peek: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int }\nimpl Host {\n    fn read(p: string) -> string { p }\n    fn there(p: string) -> bool { p.is_empty() }\n    fn listing(p: string) -> List<string> { [p] }\n    fn spared_text(p: string) -> string { p }\n}\ntype Ws = { host: Host }\n"
+
+/// Findings of the rule over one file, `rel` under the package at `root`.
+fn asked_at(root: string, rel: string, body: string) -> int {
+    let path = "${root}/src/${rel}"
+    let ws = new_workspace(memory_host({"${path}": "${HOST}${body}"}, [path]), root, avra())
+    [f for f in findings_of(ws.program(path)) if f.rule == "compiler.host_asked_directly"].length
+}
+
+fn in_compiler(body: string) -> int { asked_at("/w/std-avrac", "compiler/x.av", body) }
+
+spec "compiler/idioms (host_asked_directly)" {
+    given "a host asked in the compiler" {
+        then "`host.read` fires" { in_compiler("fn f(host: Host) -> string { host.read(\"a\") }\n") == 1 }
+        then "`.exists` through a field fires" { in_compiler("fn f(ws: Ws) -> bool { ws.host.exists(\"a\") }\n") == 1 }
+        then "`.list` fires" { in_compiler("fn f(host: Host) -> List<string> { host.list(\"a\") }\n") == 1 }
+        then "`.is_dir` fires" { in_compiler("fn f(host: Host) -> bool { host.is_dir(\"a\") }\n") == 1 }
+        then "`.stamp` fires" { in_compiler("fn f(host: Host) -> int { host.stamp(\"a\") }\n") == 1 }
+        then "`.peek` fires" { in_compiler("fn f(host: Host) -> string { host.peek(\"a\") }\n") == 1 }
+        then "a field read then called fires" {
+            in_compiler(
+                "fn f(ws: Ws) -> bool { (ws.host.exists)(\"a\") || (ws.host.is_dir)(\"a\") || (ws.host.stamp)(\"a\") > 0 || (ws.host.list)(\"a\").is_empty() || (ws.host.peek)(\"a\").is_empty() }\n",
+            ) == 5
+        }
+        then "a door verb asked of the host fires" {
+            in_compiler(
+                "fn f(host: Host) -> bool { host.there(\"a\") || host.listing(\"a\").is_empty() || host.spared_text(\"a\").is_empty() }\n",
+            ) == 3
+        }
+        then "a host bound under another name fires" { in_compiler("fn f(cache: Host) -> string { cache.read(\"a\") }\n") == 1 }
+        then "the CLI is the compiler's too" {
+            asked_at("/w/cli", "commands/x.av", "fn f(host: Host) -> string { host.read(\"a\") }\n") == 1
+        }
+    }
+    given "anything else" {
+        then "the door's own file asks the host" {
+            asked_at(
+                "/w/std-avrac",
+                "compiler/host/host.av",
+                "fn f(host: Host) -> string { host.read(\"a\") }\n",
+            ) == 0
+        }
+        then "the file that asks the door for a cell asks the host" {
+            asked_at(
+                "/w/std-avrac",
+                "compiler/world.av",
+                "fn f(host: Host) -> bool { host.there(\"a\") }\n",
+            ) == 0
+        }
+        then "a test asks the host" {
+            asked_at(
+                "/w/std-avrac",
+                "compiler/tests/x_test.av",
+                "fn f(host: Host) -> string { host.read(\"a\") }\n",
+            ) == 0
+        }
+        then "a package outside the compiler asks the host" {
+            asked_at("/w/std-io", "x.av", "fn f(host: Host) -> string { host.read(\"a\") }\n") == 0
+        }
+        then "a receiver named host that is no `Host` is not asked" {
+            in_compiler(
+                "type Cache = { n: int }\nimpl Cache {\n    fn read(p: string) -> string { p }\n}\nfn f(host: Cache) -> string { host.read(\"a\") }\n",
+            ) == 0
+        }
+        then "a site license clears it" {
+            in_compiler(
+                "fn f(host: Host) -> string {\n    // LICENSED compiler.host_asked_directly: the disk at this instant\n    host.read(\"a\")\n}\n",
+            ) == 0
+        }
+    }
+}
