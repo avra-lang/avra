@@ -706,7 +706,8 @@ fn load_imports(
             if key != null { ws.ensure_package(key!) }
             for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want) }
         }
-        if parts[0] == "gathers" && parts.length > 1 { load_gathered(ws, store, parts[1], entry, want) }
+        // the ROOT package's key may be empty, and `split` drops a trailing empty field
+        if parts[0] == "gathers" { load_gathered(ws, store, if parts.length > 1 { parts[1] } else { "" }, entry, want) }
     }
     // a method table wants EVERY impl of a name, and a held impl names its trait by
     // name: where those live is known before any module is minted
@@ -728,7 +729,10 @@ fn load_imports(
 /// beside the ones its imports reach.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a package in.
 fn load_gathered(ws: Workspace, store: Store, key: string, entry: string?, want: Want) {
-    let pkg? = ws.packages().find(it.key == key) else { return }
+    let pkg? = ws.packages().find(it.key == key) else {
+        ws.defect(gathers_unadmitted(key))
+        return
+    }
     let modules = distinct(
         [ws.module_of(path) for path in ws.all_files(pkg.src) if !ws.is_test_path(path)],
     )
@@ -1649,3 +1653,6 @@ export fn held_stubs(ws: Workspace) -> List<Body> {
         )
 }
 
+fn gathers_unadmitted(key: string) -> string {
+    "a record gathers package `${key}` whole, and this workspace has not admitted it — the collect's own package stands before its record is read"
+}
