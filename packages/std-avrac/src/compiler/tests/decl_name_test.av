@@ -288,6 +288,32 @@ fn nested_package_path(early: bool) -> string {
     [d.path for d in ws.decls.all_decls() if d.name == "greet"].join(" | ")
 }
 
+/// A program whose `f` wears two annotations, written as `main`, each
+/// generating one fn — answered as every generated row's key, by name.
+fn two_annotations(main: string) -> string {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/marks.av": "use @std.meta.{Fn, Directive}\nexport fn ma(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote { fn \${f}_a() -> int { 1 } } }]\n}\nexport fn mb(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote { fn \${f}_b() -> int { 2 } } }]\n}\n",
+            "/w/src/main.av": main,
+        },
+    )
+    let ws = new_workspace(
+        memory_host(
+            files,
+            ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
+    let _ = ws.program("/w/src/main.av")
+    keys_named(ws, DeclKind.Fn, "f_a") + " || " + keys_named(ws, DeclKind.Fn, "f_b")
+}
+
+fn a_then_b() -> string { "@ma\n@mb\nfn f() -> int { 0 }\nf()\n" }
+
+fn b_then_a() -> string { "@mb\n@ma\nfn f() -> int { 0 }\nf()\n" }
+
 /// The rows one maker has in the admitted file, as `name#sibling`, in id order.
 fn made_by(ws: Workspace, maker: string) -> string {
     ["${d.name}#${d.sibling}" for d in ws.decls.all_decls() if d.maker == maker].join(",")
@@ -476,6 +502,18 @@ spec "compiler/decl name — a declaration's key is its name" {
             let ab = makers_run(true)
             let ba = makers_run(false)
             unmoved(ab[0], ba[0]) && unmoved(ab[1], ba[1])
+        }
+    }
+    given "two annotations on one fn, written in the other order" {
+        then "fixture: each generated its fn" {
+            let keys = two_annotations(a_then_b())
+            keys.contains("ma()#0") &&
+                keys.contains("mb()#0") &&
+                !keys.starts_with(" ||") &&
+                !keys.ends_with("|| ")
+        }
+        then "no generated declaration's key moves" {
+            unmoved(two_annotations(a_then_b()), two_annotations(b_then_a()))
         }
     }
     given "a nested fn moved from one body to another" {
