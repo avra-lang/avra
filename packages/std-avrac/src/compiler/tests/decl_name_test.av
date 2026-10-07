@@ -4,6 +4,7 @@
 // other's name only when it shares them.
 use compiler.{Workspace, makers_in}
 use compiler.record.{read_fields}
+use @std.avrac.testing.{provided_workspace}
 use core.{DeclKind, no_stmt, named_ref}
 use features.{Decl, DeclareWork, new_decls}
 
@@ -217,6 +218,22 @@ fn maker_twice() -> Twice {
     }
 }
 
+/// A provider with a WRAP and a generator, and a fn that wears both, the wrap first.
+fn both_provider() -> string {
+    "use @std.meta.{Fn, Directive, wrapped}\nexport fn counted(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}(n: int) -> int { \${wrapped(f)}(n) + 1 } } }]\n}\nexport fn echoed(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote { fn \${f}_echo(n: int) -> int { \${f}(n) } } }]\n}\n"
+}
+
+fn both_main() -> string {
+    "use @x.c.{counted, echoed}\n@counted\n@echoed\nfn doubled(n: int) -> int { n * 2 }\ndoubled(5)\n"
+}
+
+/// The maker of every declaration `echoed` generated, once the program is analysed.
+fn real_makers() -> string {
+    let ws = provided_workspace(both_main(), both_provider())
+    let _ = ws.program("/w/src/main.av")
+    [d.maker for d in ws.decls.all_decls() if d.maker.starts_with("echoed()")].join(" | ")
+}
+
 spec "compiler/decl name — a declaration's key is its name" {
     given "a declaration written above two others" {
         then "neither one's key moves" {
@@ -301,6 +318,11 @@ spec "compiler/decl name — a declaration's key is its name" {
         }
         then "and the same after it" {
             maker_twice().after == "inline()#0 @ fn .orig#0"
+        }
+    }
+    given "a real annotation's generated fn, on a fn a wrap written before it moved the body of" {
+        then "its maker names the written fn, never the body the wrap moved" {
+            real_makers() == "echoed()#0 @ fn .doubled#0"
         }
     }
     given "two declarations one annotation generates" {
