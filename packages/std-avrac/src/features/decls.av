@@ -415,7 +415,7 @@ export type Decls = {
     /// Each file's name, dense by FileId — what a row's key spells its file by.
     file_names: Cell<List<string>>,
     /// The sibling each group's next declaration takes, per run.
-    counted: Siblings,
+    counted: Cell<Siblings>,
     stores: Cell<List<SyntaxArena?>>,
     ensure_store: Cell<fn(FileId) -> void>,
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
@@ -728,7 +728,7 @@ export fn new_decls() -> Decls {
         types: new_type_registry(),
         mains: Cell.new(no_mains),
         file_names: list_cell(),
-        counted: Siblings { runs: map_cell() },
+        counted: Cell.new(Siblings { runs: map_cell() }),
         // LICENSED compiler.repeated_projection: each `Cell.new` mints its own cell — one binding would make two hooks one slot
         stores: Cell.new(no_stores),
         auditing: Cell.new(false),
@@ -2217,18 +2217,7 @@ impl Decls {
 
     fn admit_builtin(r: TypeRow) {
         let id = self
-            .mint(
-                "builtin::${r.name}",
-                FileId { index: 0 },
-                no_stmt,
-                r.name,
-                DeclKind.Builtin,
-                true,
-                "",
-                null,
-                false,
-                null,
-            )
+            .mint(FileId { index: 0 }, no_stmt, r.name, DeclKind.Builtin, true, "", null, false, null)
         self.builtins.push(id)
         self.declare_builtin(id, r)
     }

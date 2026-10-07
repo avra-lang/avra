@@ -144,7 +144,7 @@ impl Decls {
     fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
         let before = self.decls_so_far(f)
         self.stores.set_at(f.index, store)
-        self.counted.opened(f, "")
+        self.counted.get().opened(f, "")
         mut minted: List<int> = []
         mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
         mut out: List<DeclId> = []
@@ -590,7 +590,10 @@ impl Decls {
     ) -> DeclId {
         let home = homed(kind, f)
         let path = self.path_named(home)
-        let sibling = self.counted.taken(f, maker, decl_key_text(path, name, kind, owner, maker, 0))
+        let sibling = self
+            .counted
+            .get()
+            .taken(f, maker, decl_key_text(path, name, kind, owner, maker, 0))
         let known: DeclId? = self.known_id(decl_key_text(path, name, kind, owner, maker, sibling))
         let id: DeclId = known ?? DeclId { index: self.decl_row_rows.get().next_id() }
         let d = Decl {
@@ -680,7 +683,7 @@ impl Decls {
     }
 
     /// A run of `maker` over `f` opens: what it mints counts its siblings from nothing.
-    fn generation_opened(f: FileId, maker: string) { self.counted.opened(f, maker) }
+    fn generation_opened(f: FileId, maker: string) { self.counted.get().opened(f, maker) }
 
     /// A run of `maker` over `f` closes on what it `made`: a row of that
     /// file and maker the run did not mint is the file's no longer.
@@ -696,7 +699,7 @@ impl Decls {
     /// A held file's rows are about to be minted from its record: a run of
     /// the empty maker, and of each maker the record names.
     fn held_opened(f: FileId, makers: List<string>) {
-        for maker in [""].concat(makers) { self.counted.opened(f, maker) }
+        for maker in [""].concat(makers) { self.counted.get().opened(f, maker) }
     }
 
     /// The name a row's key spells its file by: a builtin is the language's.
