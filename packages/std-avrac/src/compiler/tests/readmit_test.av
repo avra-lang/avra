@@ -137,9 +137,10 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
         }
         then "a name's bucket hash is the new text's" {
             let ws = readmitted(readmit_before(), readmit_after())
+            let kept = name_bucket(ws, "kept")
+            let gone = name_bucket(ws, "gone")
             let fresh = admitted(readmit_after())
-            name_bucket(ws, "kept") == name_bucket(fresh, "kept") &&
-                name_bucket(ws, "gone") == name_bucket(fresh, "gone")
+            kept == name_bucket(fresh, "kept") && gone == name_bucket(fresh, "gone")
         }
         then "a renamed declaration is a new one, the old name gone" {
             let ws = readmitted(
@@ -167,9 +168,8 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
             let f = ws.file_id(readmit_path())
             let settled = ws.db.value_hash_of(Key { family: items_ordinal(), arg: f.index })
             admit_again(ws, readmit_path(), readmit_after())
-            settled != null &&
-                settled! == rows_print(admitted(readmit_before())) &&
-                settled! != rows_print(ws)
+            let now = rows_print(ws)
+            settled != null && settled! != now && settled! == rows_print(admitted(readmit_before()))
         }
     }
     given "a declaration moved between two files of one module" {
