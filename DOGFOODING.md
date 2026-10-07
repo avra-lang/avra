@@ -1718,7 +1718,7 @@ wrong thing; `declare` answers "the program has this name," not
 "this name's facts were recomputed this run." The signal for "was
 this recomputed" is the family-specific `ask`/`settle` pair
 (`Q ask <family> <arg> compute` then `Q settle <family> <arg> …`),
-read by family ordinal (`key_family_word`, compiler/cache_walk.av), never
+read by family ordinal (`family_word`, compiler/cache_walk.av), never
 by proximity to a `declare` or `parse` line.
 
 ## Typing is one later whole-program pass, not per-file
