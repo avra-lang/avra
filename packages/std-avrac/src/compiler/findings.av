@@ -1,44 +1,29 @@
-//! THE FINDINGS RELATION — one row per rule hit: the rule that fired,
+//! THE FINDINGS ROWS — one row per rule hit: the rule that fired,
 //! the file it fired in, and the source line it named, trimmed. A row
 //! exists only where `rule_findings` (rule_pass.av) fired, so a
 //! `Finding` names a RULE alone, never a compiler-law warning — no
 //! kind-matching needed to tell the two apart, the way the rendered
 //! `warning[kind]: …` text once required.
-use core.{joined}
+use core.{joined, flatten}
 use diagnostics.{Diag, SourceFile, new_source_file}
 use compiler.host.{Host}
-use @std.relation.{relation}
-use @std.relation.db.{Db as RelDb, new_db as new_findings_db}
 
-@relation
-export type Finding = { @index rule: string, @index file: string, text: string }
+export type Finding = { rule: string, file: string, text: string }
 
-/// Every rule finding across `p`, as relation rows — built fresh each
-/// ask. The durable form (`findings_text`, below) carries the same
-/// rows across processes; this fn is what fills it on a miss.
+/// Every rule finding across `p`, found now — a program built outside a
+/// check. A check never asks: each file's rows are kept as it speaks
+/// (derive.av's `file_said`), and `Checked.findings` reads them back.
 export fn findings_of(p: Program) -> List<Finding> {
-    let db = new_findings_db()
-    defer db.close()
-    for a in p.files { file_findings(db, p.ws.host, a) }
-    Finding.all(db)
+    flatten(
+        [file_findings(p.ws.host, a, rule_findings(analysed(a), a.view.stmts)) for a in p.files],
+    )
 }
 
-fn file_findings(db: RelDb, host: Host, a: Analysis) {
-    filed_findings(db, host, a, rule_findings(analysed(a), a.view.stmts))
-}
-
-fn filed_findings(db: RelDb, host: Host, a: Analysis, found: List<Diag>) {
+/// One file's findings — the rows a held file answers with in place of
+/// its rules running again.
+export fn file_findings(host: Host, a: Analysis, found: List<Diag>) -> List<Finding> {
     let src = current_source(host, a.view.source)
-    for d in found { filed_finding(db, src, d) }
-}
-
-/// One file's findings, in `findings_text`'s lines — the row a held file
-/// answers with in place of its rules running again.
-export fn file_findings_text(host: Host, a: Analysis, found: List<Diag>) -> string {
-    let db = new_findings_db()
-    defer db.close()
-    filed_findings(db, host, a, found)
-    joined([finding_line(f) for f in Finding.all(db)], "\n")
+    flatten([filed_finding(src, d) for d in found])
 }
 
 /// The file's line table over its CURRENT text — read through the
@@ -51,23 +36,33 @@ fn current_source(host: Host, src: SourceFile) -> SourceFile {
     new_source_file(src.file, text)
 }
 
-/// `findings_of`'s rows, TSV-encoded one line each (`rule\tfile\ttext`)
-/// — the shape `Db`'s durable `Findings` row keeps them in (db.av): a
-/// `Finding` is `@relation`-backed and a durable row is text, so this
-/// is the one door between the two, read back by whichever caller
-/// wants the list without rebuilding the Program that made it.
-export fn findings_text(p: Program) -> string {
-    joined([finding_line(f) for f in findings_of(p)], "\n")
+// ── THE ROW AS TEXT: one `rule\tfile\ttext` line — the `Findings` row
+// (db.av), a file's kept row, and a baseline file all read this one codec.
+
+export fn findings_text(rows: List<Finding>) -> string { joined([finding_line(f) for f in rows], "\n") }
+
+/// Every line that is a row; a line that is not — fewer than two fields,
+/// or the header prose a baseline opens with — names none.
+export fn findings_read(text: string) -> List<Finding> {
+    [f! for f in [finding_of_line(line) for line in text.split("\n")] if f != null]
 }
 
-fn finding_line(f: Finding) -> string { "${f.rule}\t${f.file}\t${f.text}" }
+export fn finding_line(f: Finding) -> string { "${f.rule}\t${f.file}\t${f.text}" }
+
+/// Total over any line: the text is everything after the second TAB, a
+/// TAB of its own included, and empty when the line ends there.
+fn finding_of_line(line: string) -> Finding? {
+    if line.starts_with("#") { return null }
+    let parts = line.split("\t")
+    if parts.length < 2 { return null }
+    Finding { rule: parts[0], file: parts[1], text: parts.slice(2, parts.length).join("\t") }
+}
 
 /// A finding with no place to point (a locationless `Say` voice) rows
 /// nothing — a baseline site is always a source line, never a bare
 /// claim.
-fn filed_finding(db: RelDb, src: SourceFile, d: Diag) {
-    let loc? = d.primary.loc else { return }
+fn filed_finding(src: SourceFile, d: Diag) -> List<Finding> {
+    let loc? = d.primary.loc else { return [] }
     let line = src.linecol(loc.lo).line
-    let _ = Finding
-        .insert(db, rule: d.kind, file: loc.file ?? src.file, text: src.line_text(line).trim())
+    [Finding { rule: d.kind, file: loc.file ?? src.file, text: src.line_text(line).trim() }]
 }

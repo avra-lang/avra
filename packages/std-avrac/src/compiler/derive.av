@@ -8,6 +8,7 @@
 //! hold is answered again from the sources alone.
 use core.{
     distinct,
+    flatten,
     joined,
     sorted_texts,
     digest_of,
@@ -24,7 +25,7 @@ use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered}
 use compiler.host.{no_source}
-use compiler.findings.{findings_text, file_findings_text}
+use compiler.findings.{Finding, findings_read, findings_text, file_findings}
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
@@ -145,7 +146,7 @@ fn or_refused<T>(r: Result<T, string>) -> Result<T, Turn> {
 
 /// What a file SAID the last time it parsed: its warnings, rendered, and the
 /// cases it declares — what stands in for it under every want.
-export type Said = { path: string, warnings: string, cases: List<CaseCall> }
+export type Said = { path: string, warnings: string, cases: List<CaseCall>, findings: List<Finding> = [] }
 
 /// A program derived: clean, every parsed body lowered, its records and what
 /// each file said kept. `program.ws` is the workspace the attempt that stood
@@ -246,7 +247,7 @@ fn ruled(store: Store, okey: string) -> bool {
 type Spoken = { said: Said, rules: Ruled? }
 
 /// A file's rule findings: rendered for what it says, and as findings rows.
-type Ruled = { rendered: string, rows: string }
+type Ruled = { rendered: string, rows: List<Finding> }
 
 /// A `Said` as its row: the case count, a line per case, then the warnings.
 fn said_wire(s: Said) -> string {
@@ -298,16 +299,17 @@ fn remember(store: Store, key: string, paths: List<string>) {
 
 /// What `check` says of a clean program: its warnings, its stale
 /// `// LICENSED` citations (compiler/licenses.av) and its rule
-/// findings (compiler/findings.av, TSV-encoded — a cache hit reads
-/// all three back, never rescanning or rebuilding), and whether they
+/// findings (compiler/findings.av's rows — a cache hit reads all
+/// three back, never rescanning or rebuilding), and whether they
 /// were kept from a check of these exact inputs — plus the PROGRAM
 /// this answer was derived from, when one was: a cache hit costs a
 /// hash and builds none, so a caller wanting the Program itself (a
 /// baseline ratchet's own `--baseline_accept` prune, which needs the
 /// files a check REACHED and not merely what it found) falls back to
 /// building its own rather than forcing every `check` to pay for a
-/// Program it does not otherwise need.
-export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: string? = null }
+/// Program it does not otherwise need. `held` names the files a derived
+/// answer stood in for from the store rather than read.
+export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: List<Finding> = [], held: List<string> = [] }
 
 impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
@@ -319,16 +321,15 @@ impl Workspace {
         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
         let key0 = self.program_key(under.named, under.beside)
         let kept: string? = self.db.warn(store, key0)
-        if kept != null {
+        let found: string? = self.db.findings(store, key0)
+        // A missing findings row is UNKNOWN, never EMPTY: no hit.
+        if kept != null && found != null {
             return Checked {
                 warnings: kept!,
                 reused: true,
                 timed: "",
                 licenses: self.db.licenses(store, key0) ?? "",
-                // A missing row reads as UNKNOWN, never as EMPTY — the
-                // empty-value law applied to a cache row. A caller reads
-                // null as "derive it yourself", "" as "no findings".
-                findings: self.db.findings(store, key0),
+                findings: findings_read(found!),
             }
         }
         let d = self.derived(entry, Want.Diagnostics)?
@@ -336,26 +337,19 @@ impl Workspace {
         // the key only when a binary or an object is what is kept
         let key = d.program.ws.kept_key(under)
         let licenses = stale_license_lines(d.program)
-        let findings = d.program.ws.all_findings(d.store, d.program)
+        let found = flatten([s.findings for s in d.said])
         self.db.insert_warn(store, key, d.warnings)
         self.db.insert_licenses(store, key, licenses)
-        self.db.insert_findings(store, key, findings)
+        self.db.insert_findings(store, key, findings_text(found))
         Checked {
             warnings: d.warnings,
             reused: false,
             timed: d.timed([]),
             program: d.program,
             licenses: licenses,
-            findings: findings,
+            findings: found,
+            held: held_paths(d.program.ws),
         }
-    }
-
-    /// EVERY RULE FINDING THE PROGRAM HOLDS: a read file's found now, a held
-    /// file's answered by the rows it kept — the hold read every file whose
-    /// rows were missing (`unruled`).
-    fn all_findings(store: Store, p: Program) -> string {
-        let held = [store.get(Stored.Warn, findings_key(self.held_okey(store, fi.path))) ?? "" for fi in self.decls.all_files() if self.is_held(fi.id)]
-        joined([t for t in [findings_text(p)].concat(held) if t != ""], "\n")
     }
 
     /// NOTHING FOR `check` TO EXAMINE: a directory of programs (no `src/` —
@@ -914,14 +908,14 @@ impl Workspace {
         self.keep_parts(store, path)
         let rules? = told.rules else { return told.said }
         let _ = store.keep_once(Stored.Warn, rules_key(okey), rules.rendered)
-        let _ = store.keep_once(Stored.Warn, findings_key(okey), rules.rows)
-        told.said with { warnings: spoken([told.said.warnings, rules.rendered]) }
+        let _ = store.keep_once(Stored.Warn, findings_key(okey), findings_text(rules.rows))
+        told.said with { warnings: spoken([told.said.warnings, rules.rendered]), findings: rules.rows }
     }
 }
 
 /// A file's rule findings found now.
 fn ruled_now(p: Program, a: Analysis, found: List<Diag>) -> Ruled {
-    Ruled { rendered: p.warned(found), rows: file_findings_text(p.ws.host, a, found) }
+    Ruled { rendered: p.warned(found), rows: file_findings(p.ws.host, a, found) }
 }
 
 /// A `boxed` row's name, when it names `path` — null for every other row.
@@ -936,7 +930,8 @@ fn held_said(store: Store, okey: string, said: Said, want: Want) -> Said? {
     match want {
         .Diagnostics -> {
             let rules? = store.get(Stored.Warn, rules_key(okey)) else { return null }
-            said with { warnings: spoken([said.warnings, rules]) }
+            let rows? = store.get(Stored.Warn, findings_key(okey)) else { return null }
+            said with { warnings: spoken([said.warnings, rules]), findings: findings_read(rows) }
         },
         .Binary -> said,
     }
