@@ -409,9 +409,6 @@ export type Workspace = {
     /// The whole-program read-reach fixpoint over the declarations' call
     /// graph — whether each declaration reads `state`, transitively.
     read_fixpoint: Fixpoint<bool>,
-    /// The whole-program cancel-reach fixpoint over the declarations' call
-    /// graph — whether a call to each may reach a cancel point.
-    cancel_fixpoint: Fixpoint<bool>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
@@ -528,7 +525,7 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
 fn reads_rows_whole(f: Family) -> bool {
     match f {
         .Lowered or .LiftLowered or .Lifted or .Settled -> true,
-        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach or .DeclCancels -> false,
+        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach -> false,
     }
 }
 
@@ -653,13 +650,6 @@ fn built(
         phases: list_cell(),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
         read_fixpoint: new_fixpoint<bool>(kernel, Family.DeclReads.ordinal, false, read_reach_join, read_reach_fp),
-        cancel_fixpoint: new_fixpoint<bool>(
-            kernel,
-            Family.DeclCancels.ordinal,
-            false,
-            cancel_reach_join,
-            cancel_reach_fp,
-        ),
         input_index: map_cell(),
         input_names: list_cell(),
         manifest_texts: list_cell(),
@@ -929,7 +919,6 @@ impl Workspace {
             .ComponentScan -> touch(file_declares_component(self, self.input_names.get()[arg].key)),
             .ComponentNames -> touch(component_names(self, self.input_names.get()[arg].key)),
             .CancelReach -> touch(self.cancel_reach()),
-            .DeclCancels -> touch(self.reaches_cancel(decl_at_arg(arg))),
         }
         self.db.changed_at(key(f, arg))
     }

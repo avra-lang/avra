@@ -8,17 +8,28 @@
 //! parameter, any of which may be anything — or calls a fn that may.
 //! A lambda's body counts as its maker's: where it runs, it runs
 //! inside a call the maker made, and where it runs elsewhere that call
-//! is through a value. A WHOLE-PROGRAM FIXPOINT over per-fn
-//! contributions, each read from the body's TYPED facts, so a method
-//! call's callee is the one `callee_of` dispatches to. A held fn
-//! answers from its interface, where the bit is contract
-//! (`interface_form`): a callee that starts to wait moves its
-//! dependents' key.
-use core.{DeclId, ExprId, Expr, Stmt, fp, fp_list, rt_waits}
-use features.{NameFacts, TypeFacts, FileView, bound_decl_of, property_row}
+//! is through a value. A WHOLE-PROGRAM PASS: each member surveyed ONCE
+//! from its typed facts (a method call's callee is the one `callee_of`
+//! dispatches to) into its own evidence and the members it calls, then
+//! the answer spreads from every member with evidence to its callers —
+//! linear in the call graph. A held fn answers from its interface,
+//! where the bit is contract (`interface_form`): a callee that starts
+//! to wait moves its dependents' key.
+use core.{DeclId, ExprId, Expr, Stmt, fp, fp_list, rt_waits, flatten}
+use features.{NameFacts, TypeFacts, FileView, Decls, bound_decl_of, property_row}
 use features.impls.{callee_of}
 use compiler.families.{Family}
-use @std.relation.engine.{spoken as fixpoint_spoken}
+use @std.relation.engine.{Table, new_table}
+
+/// One member's survey: whether its own body may reach a cancel point,
+/// and the members it calls, whose answers it takes.
+type CancelSummary = { own: bool, callees: List<DeclId> }
+
+/// What one call answers a survey: known now, or a member's answer.
+enum CallAnswer {
+    Known(may: bool)
+    Via(member: DeclId)
+}
 
 impl Workspace {
     /// The pass: every member's answer, settled once per program state
@@ -31,24 +42,9 @@ impl Workspace {
         if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)
         let fns = [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
-        let solved = self
-            .cancel_fixpoint
-            .solve([d.index for d in fns], (arg: int) -> self.cancel_contribution(DeclId { index: arg }))
-        self
-            .db
-            .settle(
-                k,
-                fp(
-                    1,
-                    [
-                        fp_list(
-                            [cancel_reach_fp(self.cancel_fixpoint.value_at(d.index)) for d in fns],
-                        ),
-                    ],
-                ),
-            )
-        let refusal? = refusal_of(solved) else { return fns.length }
-        self.defect("defect: ${fixpoint_spoken(refusal)}")
+        self.decls.clear_cancels(fns)
+        self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
+        self.db.settle(k, fp(1, [fp_list([cancel_word(self.decls.cancel_bit(d)) for d in fns])]))
         fns.length
     }
 
@@ -58,10 +54,10 @@ impl Workspace {
         if !self.cancel_member(d) { return self.callee_cancels(d) }
         let _ = self.cancel_reach()
         if self.db.value_hash_of(key(Family.CancelReach, 0)) == null { return true }
-        self.cancel_fixpoint.value_at(d.index)
+        self.decls.cancel_bit(d) ?? true
     }
 
-    /// A declaration the fixpoint holds: a body this compile surveys.
+    /// A declaration the pass surveys: a body this compile holds.
     fn cancel_member(d: DeclId) -> bool {
         let x = self.decls.decl(d)
         if x.external || x.root == null || self.is_held(x.file) { return false }
@@ -71,27 +67,31 @@ impl Workspace {
         }
     }
 
-    /// What a callee answers a caller's survey: a runtime row by its
-    /// column, a held fn by its interface, a sig with no body as a
-    /// value would, a member through the fixpoint — which records the
-    /// edge the worklist propagates on. A value bound to a name may be
+    /// What a call to a declaration that is no member answers: a
+    /// runtime row by its column, a held fn by its interface, a sig
+    /// with no body as a value would. A value bound to a name may be
     /// any fn; a type answers no call that waits.
     fn callee_cancels(g: DeclId) -> bool {
         let x = self.decls.decl(g)
         match x.kind {
             .Fn or .Method or .Default or .Main or .Case -> when {
                 x.external -> rt_waits(x.name)
-                self.is_held(x.file) -> self.decls.held_waits_at(g)
-                x.root == null -> true
-                _ -> self.cancel_fixpoint.value_at(g.index)
+                self.is_held(x.file) -> self.decls.cancel_bit(g) ?? true
+                _ -> true
             },
             .Const or .State -> true,
             .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Builtin -> false,
         }
     }
 
-    /// One member's own evidence, and its calls' answers.
-    fn cancel_contribution(d: DeclId) -> bool {
+    /// A call's answer to a survey: a member's, through the spread;
+    /// any other declaration's, now.
+    fn call_answer(g: DeclId) -> CallAnswer {
+        if self.cancel_member(g) { CallAnswer.Via(g) } else { CallAnswer.Known(self.callee_cancels(g)) }
+    }
+
+    /// One member surveyed: its own evidence, and the members it calls.
+    fn cancel_summary(d: DeclId) -> CancelSummary {
         let x = self.decls.decl(d)
         let s = CancelSurvey {
             ws: self,
@@ -101,7 +101,44 @@ impl Workspace {
             lo: x.lo,
             hi: x.hi,
         }
-        s.spins() || s.spawns() || s.waiting_reads() || s.calls_reach()
+        let calls = s.calls()
+        CancelSummary {
+            own: s.spins() ||
+                s.spawns() ||
+                s.waiting_reads() ||
+                s.through_values() ||
+                calls.any(known_true),
+            callees: flatten([via_member(a) for a in calls]),
+        }
+    }
+}
+
+impl Decls {
+    /// Every member's bit falls before the pass re-earns it; a held
+    /// fn's bit is its interface's, never the pass's.
+    fn clear_cancels(fns: List<DeclId>) {
+        for d in fns { self.record_cancel(d, false) }
+    }
+
+    /// Each member with evidence may reach, and so does every member
+    /// that calls one — breadth first over the callers, each set once.
+    fn spread_cancels(fns: List<DeclId>, sums: List<CancelSummary>) {
+        let callers: Table<List<DeclId>> = new_table<List<DeclId>>()
+        for j, d in fns {
+            for c in sums[j].callees { callers.keep(c.index, (callers.at(c.index) ?? []).concat([d])) }
+        }
+        mut reached = [d for j, d in fns if sums[j].own]
+        for d in reached { self.record_cancel(d, true) }
+        mut at = 0
+        while at < reached.length {
+            for c in callers.at(reached[at].index) ?? [] {
+                if !(self.cancel_bit(c) ?? false) {
+                    self.record_cancel(c, true)
+                    reached.push(c)
+                }
+            }
+            at = at + 1
+        }
     }
 }
 
@@ -150,44 +187,56 @@ impl CancelSurvey {
         property_row(self.ws.lang.rows.properties, name, shape)?.waits ?? false
     }
 
-    fn calls_reach() -> bool {
-        !self.of_kind(Expr.CallValue(ExprId { index: 0 }, [])).is_empty() ||
-            self.of_kind(Expr.Call("", [], [])).any((e) -> self.named_call_reaches(e)) ||
-            self
-                .of_kind(Expr.MethodCall(ExprId { index: 0 }, "", []))
-                .any((e) -> self.method_call_reaches(e))
+    /// A call on a value that is no name — `make()()`.
+    fn through_values() -> bool {
+        !self.of_kind(Expr.CallValue(ExprId { index: 0 }, [])).is_empty()
+    }
+
+    /// Every call by name and every dot-call, answered.
+    fn calls() -> List<CallAnswer> {
+        [self.named_call(e) for e in self.of_kind(Expr.Call("", [], []))]
+            .concat(
+                [self.method_call(e) for e in self.of_kind(Expr.MethodCall(ExprId { index: 0 }, "", []))],
+            )
     }
 
     /// A call by name: its declaration's answer, or — bound to a local,
     /// a parameter or a capture — a value's.
-    fn named_call_reaches(e: ExprId) -> bool {
-        let g? = bound_decl_of(self.names, e) else { return true }
-        self.ws.callee_cancels(g)
+    fn named_call(e: ExprId) -> CallAnswer {
+        let g? = bound_decl_of(self.names, e) else { return CallAnswer.Known(true) }
+        self.ws.call_answer(g)
     }
 
     /// A dot-call, by the callee its receiver's type dispatches to.
-    fn method_call_reaches(e: ExprId) -> bool {
-        let mp? = self.view.store.method_parts(e) else { return false }
+    fn method_call(e: ExprId) -> CallAnswer {
+        let mp? = self.view.store.method_parts(e) else { return CallAnswer.Known(false) }
         match callee_of(self.view, self.facts.type_at(mp.subject), mp.name) {
-            .Static(m, _) -> self.ws.callee_cancels(m),
-            .Declared(decl, _) -> self.declared_reaches(decl, mp.name),
-            .Row(r) -> r.waits,
-            .Bounded(_, _, _) or .Contract(_, _) or .FnField(_, _) -> true,
-            .Variant(_, _) or .Nameless -> false,
+            .Static(m, _) -> self.ws.call_answer(m),
+            .Declared(decl, _) -> self.declared_answer(decl, mp.name),
+            .Row(r) -> CallAnswer.Known(r.waits),
+            .Bounded(_, _, _) or .Contract(_, _) or .FnField(_, _) -> CallAnswer.Known(true),
+            .Variant(_, _) or .Nameless -> CallAnswer.Known(false),
         }
     }
 
     /// A method the impl table answers, or — none found under the
     /// declaration — one the survey cannot name, which may.
-    fn declared_reaches(decl: DeclId, name: string) -> bool {
-        let m? = self.view.decls.method(decl, name) else { return true }
-        self.ws.callee_cancels(m)
+    fn declared_answer(decl: DeclId, name: string) -> CallAnswer {
+        let m? = self.view.decls.method(decl, name) else { return CallAnswer.Known(true) }
+        self.ws.call_answer(m)
     }
 }
 
-// ── The cancel-reach lattice ──
+fn known_true(a: CallAnswer) -> bool {
+    match a { .Known(may) -> may, .Via(_) -> false }
+}
 
-/// `Fixpoint`'s join: a declaration may reach when ANY of its sites may.
-fn cancel_reach_join(a: bool, b: bool) -> bool { a || b }
+fn via_member(a: CallAnswer) -> List<DeclId> {
+    match a { .Known(_) -> [], .Via(m) -> [m] }
+}
 
-fn cancel_reach_fp(v: bool) -> int { if v { 1 } else { 0 } }
+/// A bit as the settled fingerprint reads it — an unsettled one as `2`.
+fn cancel_word(bit: bool?) -> int {
+    let b? = bit else { return 2 }
+    if b { 1 } else { 0 }
+}

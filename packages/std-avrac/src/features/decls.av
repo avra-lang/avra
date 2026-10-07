@@ -660,9 +660,9 @@ export type Decls = {
     // structurally resolve — a refusal, never a silently missing member
     inferred_unresolved: Table<bool>,
     ensure_failures: Cell<fn() -> void>,
-    // whether a HELD fn may reach a cancel point, as its interface
-    // recorded it — a held body is never surveyed
-    held_waits: Table<bool>,
+    // whether a call to each fn may reach a cancel point — a held fn's
+    // as its interface recorded it, every other as the pass found it
+    cancels: Table<bool>,
 }
 
 /// Where no workspace stands behind the table, nothing lifts.
@@ -825,7 +825,7 @@ export fn new_decls() -> Decls {
         inferred_errs: new_table(),
         inferred_unresolved: new_table(),
         ensure_failures: Cell.new(no_failures_ensure),
-        held_waits: new_table(),
+        cancels: new_table(),
         consumed: Cell.new(empty_consumed),
         ensure_consumed: Cell.new(no_ensure),
         lifter: Cell.new(no_lifter),
@@ -2030,14 +2030,14 @@ impl Decls {
         self.inferred_unresolved.at(d.index) ?? false
     }
 
-    /// A held fn's recorded answer to "may it reach a cancel point".
-    fn record_held_waits(d: DeclId, waits: bool) {
-        self.held_waits.keep(d.index, waits)
+    /// Whether a call to `d` may reach a cancel point, recorded.
+    fn record_cancel(d: DeclId, may: bool) {
+        self.cancels.keep(d.index, may)
     }
 
-    /// The recorded answer; a held fn whose record said nothing may.
-    fn held_waits_at(d: DeclId) -> bool {
-        self.held_waits.at(d.index) ?? true
+    /// The recorded answer — null where nothing has said.
+    fn cancel_bit(d: DeclId) -> bool? {
+        self.cancels.at(d.index)
     }
 
     fn mark_inferred_unresolved(d: DeclId) {
