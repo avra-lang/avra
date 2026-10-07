@@ -137,9 +137,9 @@ impl Workspace {
     /// answers, which do not exist yet.
     fn materialized(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace) -> List<DeclId> {
         let maker = self.maker_said(f, w)
-        self.decls.generation_opened(f, maker)
+        let prior = self.decls.generation_opened(f, maker)
         let made = self.directed(f, w, p, vis, maker)
-        self.decls.generation_kept(f, maker, made)
+        self.decls.generation_kept(f, maker, made, prior)
         made
     }
 
@@ -230,7 +230,7 @@ impl Workspace {
         let p = self.parsed(f)
         let anns = p.store.annotations_of(w.stmt)
         let x = self.decls.decl(w.annotated)
-        let on = "${kind_word(x.kind)} ${x.owner}.${x.name}#${x.sibling}"
+        let on = "${kind_word(x.kind)} ${x.owner}.${x.name}#${x.sibling}${x.within}"
         let at? = [j for j, a in anns if same_expr(a.callee, w.callee)].first() else {
             return "${self.decls.decl(w.ann).name}#0 @ ${on}"
         }
@@ -345,11 +345,11 @@ impl Workspace {
             annotated: d,
         }
         let maker = self.maker_said(f, w)
-        self.decls.generation_opened(f, maker)
+        let prior = self.decls.generation_opened(f, maker)
         let made = flatten(
             [self.materialized_directive(f, w, directive, vis, maker) for directive in self.trait_directives(composer, w, f)],
         )
-        self.decls.generation_kept(f, maker, made)
+        self.decls.generation_kept(f, maker, made, prior)
         made
     }
 

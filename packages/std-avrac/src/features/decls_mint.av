@@ -144,7 +144,7 @@ impl Decls {
     fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
         let before = self.decls_so_far(f)
         self.stores.set_at(f.index, store)
-        self.counted.get().opened(f, "")
+        let _ = self.counted.get().opened(f, "")
         mut minted: List<int> = []
         mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
         mut out: List<DeclId> = []
@@ -225,7 +225,7 @@ impl Decls {
         // A declaration NESTED in a body is refused by its feature, but
         // typing still walks it: it gets an identity of its own, and joins
         // no namespace.
-        let owners = self.owner_spans(f)
+        let owners = self.owners_among(f, [DeclId { index: i } for i in minted])
         // LICENSED compiler.stmt_index_walk: the index keys `by_stmt`
         for i in 0..store.stmts.count() {
             let s = StmtId { index: i }
@@ -509,8 +509,11 @@ impl Decls {
     /// declaration spanned in its template's file is left out: its span
     /// is that file's offsets, and read as this one's it would claim
     /// whatever code happens to sit there.
-    fn owner_spans(f: FileId) -> List<OwnerSpan> {
-        [self.owner_span(d) for d in self.decls_of_file(f) if self.owns_a_range(d) && self.spanned_here(f, d)]
+    fn owner_spans(f: FileId) -> List<OwnerSpan> { self.owners_among(f, self.decls_of_file(f)) }
+
+    /// Of `ids`, the range-owning declarations of `f` with their spans.
+    fn owners_among(f: FileId, ids: List<DeclId>) -> List<OwnerSpan> {
+        [self.owner_span(d) for d in ids if self.owns_a_range(d) && self.spanned_here(f, d)]
     }
 
     /// What a declaration nested in `d`'s body names as its encloser: `d`'s key, its path left out.
@@ -693,13 +696,17 @@ impl Decls {
         self.known_id(decl_key_text(self.path_named(f), name, kind, "", "", "", 0))
     }
 
-    /// A run of `maker` over `f` opens: what it mints counts its siblings from nothing.
-    fn generation_opened(f: FileId, maker: string) { self.counted.get().opened(f, maker) }
+    /// A run of `maker` over `f` opens: what it mints counts its siblings
+    /// from nothing. Answers the run of that name it opened inside, for
+    /// `generation_kept` to resume.
+    fn generation_opened(f: FileId, maker: string) -> RunPrior { self.counted.get().opened(f, maker) }
 
     /// A run of `maker` over `f` closes on what it `made`: a row of that
-    /// file and maker the run did not mint is the file's no longer.
+    /// file and maker the run did not mint is the file's no longer, and
+    /// the run it opened inside counts on.
     @bracket("decls")
-    fn generation_kept(f: FileId, maker: string, made: List<DeclId>) {
+    fn generation_kept(f: FileId, maker: string, made: List<DeclId>, prior: RunPrior) {
+        self.counted.get().resumed(f, maker, prior)
         let rows = self.decls_so_far(f)
         let stale = [d for d in rows if self.raw_decl(d).maker == maker && !made.any(same_decl(it, d))]
         if stale.is_empty() { return }
@@ -710,7 +717,7 @@ impl Decls {
     /// A held file's rows are about to be minted from its record: a run of
     /// the empty maker, and of each maker the record names.
     fn held_opened(f: FileId, makers: List<string>) {
-        for maker in [""].concat(makers) { self.counted.get().opened(f, maker) }
+        for maker in [""].concat(makers) { let _ = self.counted.get().opened(f, maker) }
     }
 
     /// The name a row's key spells its file by: a builtin is the language's.

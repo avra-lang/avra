@@ -105,20 +105,34 @@ const external_index: int = 5
 /// a file's admission is a run of the empty maker, an annotation's expansion
 /// a run of its own, a held file's rows a run of each maker its record names.
 /// A run opened again counts from nothing, so what it mints again takes the
-/// places it took.
+/// places it took. A run opened INSIDE another of its name — an expansion
+/// re-entered from a resolve it asked — counts on its own, and the outer
+/// one resumes its counts when the inner closes.
 type Siblings = { runs: Cell<Map<string, Cell<Map<string, int>>>> }
 
+/// The counts of a run of the same name already open when another opened —
+/// none when it was the only one.
+export type RunPrior = { counts: Cell<Map<string, int>>? }
+
 impl Siblings {
-    /// A new run of `maker` over `f`.
-    fn opened(f: FileId, maker: string) {
+    /// A new run of `maker` over `f`; answers the run it stands inside.
+    fn opened(f: FileId, maker: string) -> RunPrior {
+        let prior = RunPrior { counts: self.runs.get().get(run_named(f, maker)) }
         let fresh: Cell<Map<string, int>> = map_cell()
         self.runs.put(run_named(f, maker), fresh)
+        prior
+    }
+
+    /// A run closed: the run it stood inside counts on from where it was.
+    fn resumed(f: FileId, maker: string, prior: RunPrior) {
+        let counts? = prior.counts else { return }
+        self.runs.put(run_named(f, maker), counts)
     }
 
     /// The next place in `group` within the open run of `maker` over `f` —
     /// a run nothing opened is opened by its first taking.
     fn taken(f: FileId, maker: string, group: string) -> int {
-        if self.runs.get().get(run_named(f, maker)) == null { self.opened(f, maker) }
+        if self.runs.get().get(run_named(f, maker)) == null { let _ = self.opened(f, maker) }
         let counts = self.runs.get().get(run_named(f, maker))!
         let place = counts.get().get(group) ?? 0
         counts.put(group, place + 1)
