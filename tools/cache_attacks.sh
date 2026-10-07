@@ -1422,9 +1422,16 @@ printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/kr/src/y/calc.av
 printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/kr/src/x/mid.av
 printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\nfn scaled(const n: int, factor: int) -> int { n * factor }\nexport fn seated() -> int { scaled(J, 10) }\n' > $R/kr/src/f/held.av
 printf 'use f.{shown, seated}\nprintln("${shown()} ${seated()}")\n' > $R/kr/src/main.av
-kr_runs() { # the files the record says held.av's compile-time runs read, by name
-    grep -rah "$(printf '^file\t')" .avra-cache/*/rows 2>/dev/null | awk -F'\t' '$2 ~ /cache-attacks\/kr\/src\/f\/held.av$/ { m = split($4, b, "|"); for (i = 1; i <= m; i++) { k = split(b[i], c, "/"); if (c[k] != "") printf "%s ", c[k] } }'
+record_runs() { # record_runs <path suffix>: the files a record says that file's compile-time runs read, by name
+    grep -rah "$(printf '^file\t')" .avra-cache/*/rows 2>/dev/null | python3 -c '
+import sys
+for line in sys.stdin:
+    f = line.rstrip("\n").split("\t")
+    if len(f) > 3 and f[1].endswith(sys.argv[1]):
+        print("".join(bytes.fromhex(r).decode().split("/")[-1] + " " for r in f[3].split("|") if r), end="")
+' "$1"
 }
+kr_runs() { record_runs cache-attacks/kr/src/f/held.av; } # the files the record says held.av's compile-time runs read, by name
 HR "cold kr" check kr 0
 kr_cold=$(kr_runs)
 steps=$((steps+1)); case "$kr_cold" in *mid.av*) ;; *) fails=$((fails+1)); echo "FAIL  kr: a cold check records no run of held.av reading mid.av ('$(kr_runs)'), so the fixture has no run to lose" ;; esac
@@ -1452,9 +1459,7 @@ printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n
 printf 'use f.{K}\nexport const L: int = K + 1\nexport fn topped() -> int { L }\n' > $R/kv/src/g/top.av
 printf 'export const E: int = 5\nexport fn alone() -> int { E }\n' > $R/kv/src/e/alone.av
 printf 'use f.{shown}\nuse g.{topped}\nuse e.{alone}\nprintln("${shown()} ${topped()} ${alone()}")\n' > $R/kv/src/main.av
-kv_runs() { # kv_runs <file>: the files the record says its compile-time runs read, by name
-    grep -rah "$(printf '^file\t')" .avra-cache/*/rows 2>/dev/null | awk -F'\t' -v f="cache-attacks/kv/src/$1" 'index($2, f) && substr($2, length($2) - length(f) + 1) == f { m = split($4, b, "|"); for (i = 1; i <= m; i++) { k = split(b[i], c, "/"); if (c[k] != "") printf "%s ", c[k] } }'
-}
+kv_runs() { record_runs "cache-attacks/kv/src/$1"; } # kv_runs <file>: the files the record says its compile-time runs read, by name
 HR "cold kv" check kv 0
 kv_held=$(kv_runs f/held.av); kv_top=$(kv_runs g/top.av); kv_alone=$(kv_runs e/alone.av)
 steps=$((steps+1)); case "$kv_held|$kv_top|$kv_alone" in *mid.av*"|"*held.av*"|") ;; *) fails=$((fails+1)); echo "FAIL  kv: a cold check records held.av's runs as '$kv_held', top.av's as '$kv_top', alone.av's as '$kv_alone' — the chain has no run to carry, or the empty one is not empty" ;; esac
@@ -1518,26 +1523,39 @@ ke_refuses "the embedded text is gone" "finds no"
 printf 'back' > $R/ke/src/f/data.txt
 S "ke: the text stands again" ke; ke_says "the embedded text back" "back n=4"
 
-# AN EMBED REACHED THROUGH A HELD FILE IS NO FILE MINTED MID-QUERY. `kw`'s const runs a fn
-# that `util.av` declares, and the `embed` literal stands in that fn's body. Only main.av
-# is edited, so `util.av` is held and its literal is never scanned: the embedded text is
-# first met inside the const's own settlement. A warm build and a warm test must run, and
-# the binary print the embedded text, never trap on a row written after it was read.
+# AN EMBED REACHED THROUGH A HELD FILE IS NO FILE MINTED MID-QUERY. `kw`'s const runs fns
+# that `util.av` declares, and the `embed` literals stand in their bodies. Only main.av
+# is edited, so `util.av` is held and its literals are never scanned: the embedded texts
+# are first met inside the const's own settlement. A warm build and a warm test must run,
+# and the binary print the embedded texts, never trap on a row written after it was read.
+# THEN THE KEY ALONE: an embedded text edited while every source is held moves the
+# program's key through the records' runs — one named `a|b.txt` too, whose name holds
+# the character a record once spent between runs.
 mkdir -p $R/kw/src/tests
 printf '[package]\nname = "rt-kw"\nversion = "0.1.0"\n' > $R/kw/avra.toml
 printf 'b' > $R/kw/src/b.txt
-printf 'use @std.meta.{embed}\nexport fn g() -> string { embed("b.txt") }\n' > $R/kw/src/util.av
-printf 'use util.{g}\nconst B: string = g()\nprintln("b=${B}")\n' > $R/kw/src/main.av
+printf 'p' > "$R/kw/src/a|b.txt"
+printf 'use @std.meta.{embed}\nexport fn g() -> string { embed("b.txt") }\nexport fn h() -> string { embed("a|b.txt") }\n' > $R/kw/src/util.av
+printf 'use util.{g, h}\nconst B: string = g()\nconst P: string = h()\nprintln("b=${B} p=${P}")\n' > $R/kw/src/main.av
 printf 'use util.{g}\nconst T: string = g()\nspec "kw" { then "reads the embed" { T == "b" } }\n' > $R/kw/src/tests/kw_test.av
 kw_tested() { # kw_tested <label>: the package's tests run and pass
     steps=$((steps+1)); out=$(./avra test $R/kw 2>&1); st=$?
     [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kw: $1: test exit $st: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -2 | tr '\n' ' ' | cut -c1-220)"; }
 }
-S "cold kw" kw; kw_tested "cold"
+kw_says() { # kw_says <label> <wanted>: the built binary prints the embedded texts as they stand
+    steps=$((steps+1)); kw_out=$($R/kw/src/main 2>&1)
+    [ "$kw_out" = "$2" ] || { fails=$((fails+1)); echo "FAIL  kw: $1: the binary printed '$kw_out', wanted '$2'"; }
+}
+S "cold kw" kw; kw_says "cold" "b=b p=p"; kw_tested "cold"
 printf '// moved\n' >> $R/kw/src/main.av
-S "kw: main.av edited, util.av held" kw
+S "kw: main.av edited, util.av held" kw; kw_says "main.av edited" "b=b p=p"
 printf '// moved\n' >> $R/kw/src/tests/kw_test.av
 kw_tested "the test file edited, util.av held"
+S "kw: no-op, every source held" kw; kw_says "a no-op build" "b=b p=p"
+printf 'b2' > $R/kw/src/b.txt
+S "kw: b.txt edited, every source held" kw; kw_says "b.txt edited under held sources" "b=b2 p=p"
+printf 'p2' > "$R/kw/src/a|b.txt"
+S "kw: a|b.txt edited, every source held" kw; kw_says "a|b.txt edited under held sources" "b=b2 p=p2"
 
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another

@@ -547,14 +547,15 @@ impl Workspace {
         )
     }
 
-    /// EVERY FILE A PROGRAM'S COMPILE-TIME RUNS READ THAT IS NO SOURCE, as
-    /// each source's record names it: an embedded file is no source, so no
-    /// package's listing names it, and its edit must still move the key.
-    fn embeds(named: string) -> List<string> {
+    /// EVERY FILE A PROGRAM'S COMPILE-TIME RUNS READ THAT IS NOT ONE OF ITS
+    /// INPUTS, as each input's record names it: an embedded file is no
+    /// source of the program, so no package's listing names it, and its edit
+    /// must still move the key.
+    fn embeds(inputs: List<string>) -> List<string> {
         let store = self.opened_store()
         sorted_texts(
             distinct(
-                [ran for path in self.build_inputs(named) for ran in kept_runs(record_places(self, store, self.module_path_of(path)).get(path)) if !self.reads_as_source(ran)],
+                [ran for path in inputs for ran in kept_runs(record_places(self, store, self.module_path_of(path)).get(path)) if !inputs.contains(ran)],
             ),
         )
     }
@@ -592,7 +593,7 @@ impl Workspace {
         let named_inputs = self.build_inputs(named).concat(beside)
         let inputs = joined(
             [self.input_line(f) for f in named_inputs]
-                .concat([self.embed_line(f) for f in self.embeds(named)]),
+                .concat([self.embed_line(f) for f in self.embeds(named_inputs)]),
             "\n",
         )
         let objects = joined([self.object_line(o) for o in self.reached_objects(named)], "\n")
