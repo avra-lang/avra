@@ -7,7 +7,7 @@ use compiler.record.{read_fields}
 use @std.avrac.testing.{provided_workspace, vendored_meta, vendored_meta_paths}
 use @std.avrac.compiler.{avra, new_workspace}
 use compiler.host.{memory_host}
-use core.{DeclId, DeclKind, no_stmt, named_ref}
+use core.{DeclId, DeclKind, flatten, no_stmt, named_ref}
 use features.{Decl, DeclareWork, new_decls}
 
 /// The key of every declaration of one kind and name, in id order.
@@ -338,13 +338,18 @@ fn made_from(ws: Workspace, maker: string, n: int) -> List<DeclId> {
 }
 
 /// A run of `maker_a` that mints `first` twice, then — while it is open — a
-/// whole run of `inner_maker`, then `first` once more.
-fn interleaved(inner_maker: string) -> Workspace {
+/// whole run of `inner_maker` minting `first` `inner` times, then `first`
+/// once more. A re-entered expansion is the whole run again, so a same-maker
+/// inner run mints all three.
+fn interleaved(inner_maker: string, inner: int) -> Workspace {
     let ws = admitted(two_fns())
     let f = ws.file_id(readmit_path())
     let prior = ws.decls.generation_opened(f, maker_a())
     let before = made_from(ws, maker_a(), 1).concat(made_from(ws, maker_a(), 1))
-    run_by(ws, inner_maker, 1)
+    let inner_prior = ws.decls.generation_opened(f, inner_maker)
+    ws
+        .decls
+        .generation_kept(f, inner_maker, flatten([made_from(ws, inner_maker, 1) for _j in 0..inner]), inner_prior)
     ws.decls.generation_kept(f, maker_a(), before.concat(made_from(ws, maker_a(), 1)), prior)
     ws
 }
@@ -511,14 +516,14 @@ spec "compiler/decl name — a declaration's key is its name" {
     }
     given "a maker's run with another maker's whole run inside it" {
         then "the outer counts on from its own places, and the inner's `first` is 0" {
-            let ws = interleaved(maker_b())
+            let ws = interleaved(maker_b(), 1)
             made_by(ws, maker_a()) == "first#0,first#1,first#2" &&
                 made_by(ws, maker_b()) == "first#0"
         }
     }
     given "a maker's run re-entered by a run of the same maker" {
         then "the outer counts on from its own places, and keeps the row the inner made" {
-            made_by(interleaved(maker_a()), maker_a()) == "first#0,first#1,first#2"
+            made_by(interleaved(maker_a(), 3), maker_a()) == "first#0,first#1,first#2"
         }
     }
     given "a fn nested where a deleted declaration stood, admitted again" {
