@@ -84,20 +84,20 @@ use @std.relation.engine.{list_cell, map_cell, Table, new_table, Kernel, Key, ne
 /// `test` is the caller's structural fact (the package's own test
 /// root, `Workspace.is_test_path`), never recomputed here by
 /// matching the path.
-export type FileInfo = { id: FileId, path: string, module_id: ModuleId, test: bool }
+export type FileInfo = { id: FileId, path: string, name: string, module_id: ModuleId, test: bool }
 
 /// A range-owning declaration and the source span it holds.
 type OwnerSpan = { d: DeclId, lo: int, hi: int }
 
-/// `Decl`'s indexes, numbered in field order: its name, a component
-/// instance's `word`, every `@name` it wears, its interning key, the
+/// `Decl`'s indexes: its key's first, then in field order its name, a component
+/// instance's `word`, every `@name` it wears, the
 /// file that homes it, and whether it is an `extern fn`. `word` and `marks` are TWO INDEXES, never one —
 /// sharing a bucket would let a component named `rule` and an annotation
 /// `@rule` answer for each other.
-const name_index: int = 0
-const word_index: int = 1
-const marks_index: int = 2
-const key_index: int = 3
+const key_index: int = 0
+const name_index: int = 1
+const word_index: int = 2
+const marks_index: int = 3
 const home_index: int = 4
 const external_index: int = 5
 
@@ -384,6 +384,13 @@ export type WireIndex = { count: int, by: Map<string, List<DeclId>> }
 export type Decls = {
     types: TypeRegistry,
     mains: Cell<List<DeclId?>>,
+    /// Each file's name, dense by FileId — what a row's key spells its file by.
+    file_names: Cell<List<string>>,
+    /// How many times each file was admitted, and, within the current one, the
+    /// sibling each minted declaration took and the next its group gives.
+    admissions: Cell<Map<string, int>>,
+    siblings: Cell<Map<string, int>>,
+    sibling_next: Cell<Map<string, int>>,
     stores: Cell<List<SyntaxArena?>>,
     ensure_store: Cell<fn(FileId) -> void>,
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
@@ -695,6 +702,10 @@ export fn new_decls() -> Decls {
     let d = Decls {
         types: new_type_registry(),
         mains: Cell.new(no_mains),
+        file_names: list_cell(),
+        admissions: map_cell(),
+        siblings: map_cell(),
+        sibling_next: map_cell(),
         // LICENSED compiler.repeated_projection: each `Cell.new` mints its own cell — one binding would make two hooks one slot
         stores: Cell.new(no_stores),
         auditing: Cell.new(false),

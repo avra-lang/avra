@@ -9,6 +9,7 @@ use core.{
     Variant,
     Mark,
     same_stmt,
+    same_expr,
     same_decl,
     DeclId,
     FileId,
@@ -45,7 +46,7 @@ use features.{
     Generation,
     Decl,
 }
-use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
+use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind, kind_word}
 use @std.meta.{
     Directive,
     Node,
@@ -194,7 +195,21 @@ impl Workspace {
         let ann = self.decls.decl(w.ann).name
         if directive.wraps { return self.wrap_directive(f, w, directive, ann) }
         let source? = directive.source else { return self.twinned(f, w, directive, ann, vis) }
-        self.admit_code(f, source.node, ann, w.at, vis)
+        self.admit_code(f, source.node, self.maker_said(f, w), ann, w.at, vis)
+    }
+
+    /// WHAT MADE A GENERATED DECLARATION, as the source says it: the annotation
+    /// as written, its place among the same annotation written twice on one
+    /// declaration, and that declaration's own name.
+    fn maker_said(f: FileId, w: DeclareWork) -> string {
+        let p = self.parsed(f)
+        let anns = p.store.annotations_of(w.stmt)
+        let said = [annotation_said(p, a.name, a.args) for a in anns]
+        let at = [j for j, a in anns if same_expr(a.callee, w.callee)].first() ?? 0
+        let mine = if at < said.length { said[at] } else { self.decls.decl(w.ann).name }
+        let nth = [j for j, text in said if j < at && text == mine].length
+        let x = self.decls.decl(w.annotated)
+        "${mine}#${nth} @ ${kind_word(x.kind)} ${x.owner}.${x.name}#${x.sibling}"
     }
 
     /// A WRAP directive over the annotated declaration. An expansion
@@ -320,6 +335,12 @@ impl Workspace {
         if self.decls.is_wrap_body(f, d) { return [] }
         let x = self.decls.decl(d)
         let written = self.written_stmt(f, d)
+        // an annotation is its statement's own declaration's — the one the statement
+        // answers, or the body a wrap moved there. Whatever else rides the statement
+        // owes none of its work.
+        let own? = self.decls.decl_of(f, written) else { return [] }
+        let body = self.decls.wrap_body_of(f, d)
+        if !same_decl(own, d) && !(body != null && same_decl(own, body!)) { return [] }
         let anns = p.store.annotations_of(written)
         if anns.is_empty() { return [] }
         // A code directive needs no declaration shape; a twin walks a
@@ -479,7 +500,9 @@ impl Workspace {
     /// its holes filled, each copied node wearing the file that wrote
     /// it — and their GENERATION recorded: the arena ranges the nodes
     /// took and the annotation that asked.
-    fn admit_code(f: FileId, code: Node, ann: string, at: Span?, vis: Namespace) -> List<DeclId> {
+    fn admit_code(f: FileId, code: Node, maker: string, ann: string, at: Span?, vis: Namespace) -> List<
+        DeclId,
+    > {
         let store = self.decls.store_of(f)
         let before = store.marks()
         let stmts = self.spliced_stmts(f, code)
@@ -499,7 +522,9 @@ impl Workspace {
         // answer different impls mint two, and a re-run of one mints
         // nothing new.
         let tag = fp(117, [store.stmt_fingerprint(s) for s in stmts])
-        let made = self.decls.mint_generated_code(f, store, stmts, before.exprs, "${tag}", ann, at)
+        let made = self
+            .decls
+            .mint_generated_code(f, store, stmts, before.exprs, "${tag}", maker, ann, at)
         for d in made { self.decls.note_template(d, template_site(code)) }
         made
     }
@@ -1149,4 +1174,15 @@ fn declares_record(kind: DeclKind) -> bool {
 fn names_decl(named: DeclId?, d: DeclId) -> bool {
     let found? = named else { return false }
     same_decl(found, d)
+}
+
+/// An annotation as its source spells it: its name, then each argument's own text.
+fn annotation_said(p: Parsed, name: string, args: List<ExprId>) -> string {
+    "${name}(${[written(p, e) for e in args].join(", ")})"
+}
+
+/// An expression's source text — empty for one with no place of its own.
+fn written(p: Parsed, e: ExprId) -> string {
+    let at? = p.store.expr_span(e) else { return p.store.ident_name(e) ?? "" }
+    p.source.text.substring(at.lo, at.hi)
 }

@@ -8,9 +8,9 @@
 //! `stmt`, `parent`, `root`, `lo`, `hi`, `home`, `external`, `bucket` and
 //! `standing` are
 //! process-local (`@dense` ids, arena indexes, offsets, a fact a record
-//! carries elsewhere) and `@local`, so none enters the stable hash, and so
-//! is `key`, the process's own interning text. `name`, `word`, `marks`,
-//! `key`, `home` and `external` are indexed, each index numbered in field
+//! carries elsewhere) and `@local`, so none enters the stable hash.
+//! The key is indexed first, then `name`, `word`, `marks`,
+//! `home` and `external`, each in field
 //! order: a lookup reads a bucket, never a hand-kept table.
 //!
 //! A READ OF A ROW IS A READ OF ITS NAME'S BUCKET (`Decls.decl`): the
@@ -23,12 +23,11 @@
 //! step — what the new run did not mint is removed from every bucket, its
 //! id left a tombstone.
 //!
-//! RECORDED TRIGGER: `@key (file, owner, name, sibling)` arrives when `file`
-//! stops being `@local` (decision 10(a)) — owner: ERRORS. That tuple, not the
-//! interning string, is the row's stable name (townhall doc §6, "same-(owner,
-//! name) siblings only"); no `sibling` column exists yet — it is an ordinal
-//! among same-(owner, name) declarations, computed, not stored. `Decl` is
-//! keyless meanwhile: `mint` files a new id once and `set_decl` reseats by id.
+//! A ROW'S NAME IS ITS KEY: its file's name, its kind, its owner, what
+//! generated it, its own name, and its place among the declarations of that
+//! file sharing all five. A declaration written above another moves the other's
+//! name only when it shares them. `id` is where the name stands in this
+//! process: `mint` finds the id its key already has, and `set_decl` reseats by id.
 use core.{DeclId, FileId, StmtId, ExprId, DeclKind, SideTable}
 use @std.relation.{relation, side}
 
@@ -39,12 +38,19 @@ use @std.relation.{relation, side}
 @relation
 export type Decl = {
     id: DeclId,
+    /// Its file's name: its package, then its path within it.
+    @key path: string,
     @local file: FileId,
     @local stmt: StmtId,
-    @index name: string,
-    kind: DeclKind,
+    @key @index name: string,
+    @key kind: DeclKind,
     exported: bool,
-    owner: string,
+    @key owner: string,
+    /// What generated it — an annotation's tag; empty for a written one.
+    @key maker: string,
+    /// Its place among the declarations of one file that share its kind,
+    /// owner, maker and name, counted as the file is admitted.
+    @key sibling: int,
     @local parent: DeclId?,
     nested: bool,
     @local root: ExprId?,
@@ -54,8 +60,6 @@ export type Decl = {
     @index word: string?,
     /// Every `@name` the declaration wears, filed once per distinct name.
     @index marks: List<string>,
-    /// The interning key `mint` files it under — one row per key.
-    @local @index key: string,
     /// The file whose admission owns the row: its rows, filed here, are
     /// what a re-admission replaces. A builtin is no file's.
     @local @index home: FileId?,
@@ -73,6 +77,28 @@ export type Decl = {
     /// facts with every position nulled, and its home's path. Stable, so
     /// its name's bucket moves whenever a reader's answer could.
     told: int,
+}
+
+/// A declaration's key as the text its index files it under.
+export fn decl_key_text(
+    path: string,
+    name: string,
+    kind: DeclKind,
+    owner: string,
+    maker: string,
+    sibling: int,
+) -> string {
+    Decl
+        .key_text(
+            DeclKey {
+                path: path,
+                name: name,
+                kind: kind,
+                owner: owner,
+                maker: maker,
+                sibling: sibling,
+            },
+        )
 }
 
 /// A node's declaration, in its file's own partition at the node's

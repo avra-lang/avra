@@ -28,20 +28,23 @@ use core.{
     Scoped,
 }
 use diagnostics.{Diag}
-use features.{generated_key, Decl, DeclAt, no_origins}
+use features.{generated_key, Decl, DeclAt, decl_key_text, no_origins}
 use @std.relation.rows.{dense_key}
 
 /// A `File` row read back as the hand shape every other pass still
 /// wants — the relation and `FileInfo` name `module` differently, and
 /// carry it either side of that name.
-fn file_info(r: File) -> FileInfo { FileInfo { id: r.id, path: r.path, module_id: r.module, test: r.test } }
+fn file_info(r: File) -> FileInfo { FileInfo { id: r.id, path: r.path, name: r.name, module_id: r.module, test: r.test } }
 
 impl Decls {
 
-    fn file_id(path: string, module: string, test: bool) -> FileId {
+    fn file_id(path: string, name: string, module: string, test: bool) -> FileId {
         let known? = self.known_file_id(path) else {
             let m = self.module_id(module)
-            let id = File.insert(self.rows_db.get(), path: path, module: m, test: test).id
+            let id = File
+                .insert(self.rows_db.get(), path: path, name: name, module: m, test: test)
+                .id
+            self.file_names.push(name)
             self.stores.push(null)
             self.decl_ids.push(Cell.new(side_table("decl_ids", 0, 0, DeclAt { decl: null })))
             self.file_owners.push(self.rows_db.get().owner_named("file ${id.index}"))
@@ -141,6 +144,7 @@ impl Decls {
     fn admit(f: FileId, store: SyntaxArena, stmts: List<StmtId>) -> List<DeclId> {
         let before = self.decls_so_far(f)
         self.stores.set_at(f.index, store)
+        self.admissions.put("${f.index}", (self.admissions.get().get("${f.index}") ?? 0) + 1)
         mut minted: List<int> = []
         mut by_stmt = side_table("decl_ids", 0, store.stmts.count(), DeclAt { decl: null })
         mut out: List<DeclId> = []
@@ -622,12 +626,9 @@ impl Decls {
         self.children.set_at(parent.index, Cell.new(none))
     }
 
-    /// An id for a key: the existing one (its row refreshed), or the
-    /// next; a member joins its parent's children. Every table here is a
-    /// Cell, so a captured hook and a live reader see the same row with no
-    /// clone either way.
+    /// A written declaration minted: one nothing generated, its facts captured from its parse.
     fn mint(
-        key: string,
+        said: string,
         f: FileId,
         s: StmtId,
         name: string,
@@ -638,15 +639,20 @@ impl Decls {
         nested: bool,
         root: ExprId?,
     ) -> DeclId {
-        self.mint_faced(key, f, s, name, kind, exported, owner, parent, nested, root, null)
+        self.mint_faced(said, f, s, name, kind, exported, owner, parent, nested, root, "", null)
     }
 
-    /// `mint`, the row filed ONCE under facts its writer already holds —
-    /// a held file's record carries them — where a parse's are captured
-    /// from its store.
+    /// An id for a declaration: the one its NAME already has (its row
+    /// refreshed), or the next; a member joins its parent's children. `said`
+    /// tells one minting from another within a file's admission, so a
+    /// declaration minted twice keeps its sibling; `maker` is what generated
+    /// it. The row is filed ONCE under facts its writer already holds — a
+    /// held file's record carries them — where a parse's are captured from
+    /// its store. Every table here is a Cell, so a captured hook and a live
+    /// reader see the same row with no clone either way.
     @bracket("decls")
     fn mint_faced(
-        key: string,
+        said: string,
         f: FileId,
         s: StmtId,
         name: string,
@@ -656,19 +662,25 @@ impl Decls {
         parent: DeclId?,
         nested: bool,
         root: ExprId?,
+        maker: string,
         told: DeclFacts?,
     ) -> DeclId {
-        let known: DeclId? = self.known_id(key)
-        let id: DeclId = known ?? DeclId { index: self.decl_row_rows.get().next_id() }
         let home = homed(kind, f)
+        let path = self.path_named(home)
+        let sibling = self.sibling_said(f, said, decl_key_text(path, name, kind, owner, maker, 0))
+        let known: DeclId? = self.known_id(decl_key_text(path, name, kind, owner, maker, sibling))
+        let id: DeclId = known ?? DeclId { index: self.decl_row_rows.get().next_id() }
         let d = Decl {
             id: id,
+            path: path,
             file: f,
             stmt: s,
             name: name,
             kind: kind,
             exported: exported,
             owner: owner,
+            maker: maker,
+            sibling: sibling,
             parent: parent,
             nested: nested,
             root: root,
@@ -676,7 +688,6 @@ impl Decls {
             hi: 0,
             word: null,
             marks: [],
-            key: key,
             home: home,
             external: false,
             bucket: 0 - 1,
@@ -731,16 +742,46 @@ impl Decls {
         }
     }
 
-    /// A DECLARATION BY ITS IDENTITY — the key `mint` files it under, so the loader finds
-    /// it without an ordinal that depend on parse/expand order.
-    fn named_decl(path: string, word: string, name: string) -> DeclId? { self.known_id("${path}::${word}::${name}") }
-
     /// The id a key already names, read unrecorded off its bucket.
     @bracket("decls")
     fn known_id(key: string) -> DeclId? {
         let rs = self.decl_row_rows.get()
         let id? = rs.first_id(rs.bucket_of_text(key_index, key)) else { return null }
         DeclId { index: id }
+    }
+
+    /// The written declaration `said` minted in this admission of `f`, named but for its sibling.
+    fn minted_said(f: FileId, said: string, name: string, kind: DeclKind, owner: string) -> DeclId? {
+        let turn = "${f.index}@${self.admissions.get().get("${f.index}") ?? 0}"
+        let group = decl_key_text(self.path_named(f), name, kind, owner, "", 0)
+        let sibling? = self.siblings.get().get("${turn} ${group} ${said}") else { return null }
+        self.known_id(decl_key_text(self.path_named(f), name, kind, owner, "", sibling))
+    }
+
+    /// A file's declaration of one kind and name, the first of its siblings.
+    fn named_decl(path: string, kind: DeclKind, name: string) -> DeclId? {
+        let f? = self.known_file_id(path) else { return null }
+        self.known_id(decl_key_text(self.path_named(f), name, kind, "", "", 0))
+    }
+
+    /// The name a row's key spells its file by: a builtin is the language's.
+    fn path_named(home: FileId?) -> string {
+        let f? = home else { return LANGUAGE_HOME }
+        self.file_names.get()[f.index]
+    }
+
+    /// The sibling a minting takes: the one `said` took before in its `group`
+    /// in this admission of `f`, else the group's next. One `said` under two
+    /// groups is two mintings.
+    fn sibling_said(f: FileId, said: string, group: string) -> int {
+        let turn = "${f.index}@${self.admissions.get().get("${f.index}") ?? 0}"
+        let known? = self.siblings.get().get("${turn} ${group} ${said}") else {
+            let next = self.sibling_next.get().get("${turn} ${group}") ?? 0
+            self.sibling_next.put("${turn} ${group}", next + 1)
+            self.siblings.put("${turn} ${group} ${said}", next)
+            return next
+        }
+        known
     }
 
     // ── generated source, parsed and admitted ──
@@ -757,6 +798,7 @@ impl Decls {
         stmts: List<StmtId>,
         lo: int,
         tag: string,
+        maker: string,
         ann: string,
         at: Span?,
     ) -> List<DeclId> {
@@ -765,7 +807,7 @@ impl Decls {
         mut cursor = lo
         mut made: List<DeclId> = []
         for j, s in stmts {
-            let one = self.mint_code_stmt(f, store, s, "${tag}\$${j}", ann, at, cursor)
+            let one = self.mint_code_stmt(f, store, s, "${tag}\$${j}", maker, ann, at, cursor)
             made = made.concat(one)
             cursor = self.stmts_end(one, cursor)
         }
@@ -792,15 +834,16 @@ impl Decls {
         store: SyntaxArena,
         s: StmtId,
         tag: string,
+        maker: string,
         ann: string,
         at: Span?,
         lo: int,
     ) -> List<DeclId> {
         let kind: DeclKind? = store.declared_kind(s)
-        if kind != null { return self.mint_code_decl(f, store, s, kind!, tag, ann, at, lo) }
-        if store.const_value(s) != null { return [self.mint_code_const(f, store, s, tag, ann, at, lo)] }
+        if kind != null { return self.mint_code_decl(f, store, s, kind!, tag, maker, ann, at, lo) }
+        if store.const_value(s) != null { return [self.mint_code_const(f, store, s, tag, maker, ann, at, lo)] }
         let ip: ImplParts? = store.impl_parts(s)
-        if ip != null { return self.mint_code_impl(f, store, s, ip!, tag, ann, at, lo) }
+        if ip != null { return self.mint_code_impl(f, store, s, ip!, tag, maker, ann, at, lo) }
         []
     }
 
@@ -811,13 +854,14 @@ impl Decls {
         store: SyntaxArena,
         s: StmtId,
         tag: string,
+        maker: string,
         ann: string,
         at: Span?,
         lo: int,
     ) -> DeclId {
         let name = store.let_name(s) ?? ""
         let d = self
-            .mint(
+            .mint_faced(
                 generated_key(f, "${tag}\$${name}"),
                 f,
                 s,
@@ -827,6 +871,8 @@ impl Decls {
                 "",
                 null,
                 false,
+                null,
+                maker,
                 null,
             )
         self.note_provenance(d, ann, name, at)
@@ -848,6 +894,7 @@ impl Decls {
         s: StmtId,
         kind: DeclKind,
         tag: string,
+        maker: string,
         ann: string,
         at: Span?,
         lo: int,
@@ -858,7 +905,8 @@ impl Decls {
         // THE COPIER ALREADY CARRIED THE MARK (rebuild.av's `mark_exported`,
         // at the splice) — the decl table reads it here rather than
         // spelling a second, wrong answer.
-        let d = self.mint(key, f, s, name, kind, store.is_exported(s), "", null, false, body)
+        let d = self
+            .mint_faced(key, f, s, name, kind, store.is_exported(s), "", null, false, body, maker, null)
         self.note_provenance(d, ann, name, at)
         let fns: List<StmtId> = store.trait_parts(s)?.fns ?? []
         mut cursor = lo
@@ -900,13 +948,14 @@ impl Decls {
         s: StmtId,
         block: ImplParts,
         tag: string,
+        maker: string,
         ann: string,
         at: Span?,
         lo: int,
     ) -> List<DeclId> {
         let key = generated_key(f, "${tag}\$${block.target}\$\$impl")
         let block_decl = self
-            .mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
+            .mint_faced(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null, maker, null)
         self.note_provenance(block_decl, ann, block.target, at)
         mut cursor = lo
         mut methods: List<DeclId> = []
@@ -955,7 +1004,7 @@ impl Decls {
         at: Span?,
     ) -> DeclId {
         let key = generated_key(f, name)
-        let known: DeclId? = self.known_id(key)
+        let known: DeclId? = self.minted_said(f, key, name, DeclKind.Fn, "")
         if known != null { return known! }
         let store = self.store_of(f)
         // THE GENERATED RANGE's LO: the arena's edge BEFORE any of the
@@ -1056,7 +1105,7 @@ impl Decls {
     /// answers the same id and mints nothing.
     fn mint_wrap_body(f: FileId, orig: Decl, ann: string, original: string, at: Span?) -> DeclId {
         let key = wrap_body_key(f, orig.owner, original)
-        let known: DeclId? = self.known_id(key)
+        let known: DeclId? = self.wrap_body_said(f, orig.kind, orig.owner, original)
         if known != null { return known! }
         let name = "${original}\$body"
         let d = self
@@ -1070,7 +1119,12 @@ impl Decls {
     /// The body a WRAP moved out of `d`, once it has.
     fn wrap_body_of(f: FileId, d: DeclId) -> DeclId? {
         let x = self.decl(d)
-        self.known_id(wrap_body_key(f, x.owner, x.name))
+        self.wrap_body_said(f, x.kind, x.owner, x.name)
+    }
+
+    /// The body a WRAP moved out of `original` under `owner`, once it has.
+    fn wrap_body_said(f: FileId, kind: DeclKind, owner: string, original: string) -> DeclId? {
+        self.minted_said(f, wrap_body_key(f, owner, original), "${original}\$body", kind, owner)
     }
 
     /// Whether `d` is the body a WRAP moved behind a written declaration:
@@ -1078,7 +1132,8 @@ impl Decls {
     /// all, and owes no expansion of its own.
     fn is_wrap_body(f: FileId, d: DeclId) -> bool {
         let p? = self.provenance_of(d) else { return false }
-        let body? = self.known_id(wrap_body_key(f, self.decl(d).owner, p.original)) else { return false }
+        let x = self.decl(d)
+        let body? = self.wrap_body_said(f, x.kind, x.owner, p.original) else { return false }
         same_decl(body, d)
     }
 
@@ -1123,6 +1178,9 @@ fn member_key(owner_key: string, store: SyntaxArena, m: StmtId, siblings: List<S
 
 /// The file a declaration of this kind is homed in: its own, or none
 /// for a builtin, which the language declares and no file admits.
+/// Where a builtin's row says it lives: in no file of the program's.
+export const LANGUAGE_HOME: string = "@language"
+
 fn homed(kind: DeclKind, f: FileId) -> FileId? {
     match kind {
         .Builtin -> null,

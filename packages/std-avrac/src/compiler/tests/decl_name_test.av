@@ -1,0 +1,377 @@
+// A DECLARATION'S NAME IS ITS KEY: its file's name, its kind, its owner,
+// what generated it, its own name, and its place among the declarations of
+// that file sharing all five. A declaration written above another moves the
+// other's name only when it shares them.
+use compiler.{Workspace, makers_in}
+use compiler.record.{read_fields}
+use @std.avrac.testing.{provided_workspace, vendored_meta, vendored_meta_paths}
+use @std.avrac.compiler.{avra, new_workspace}
+use compiler.host.{memory_host}
+use core.{DeclKind, no_stmt, named_ref}
+use features.{Decl, DeclareWork, new_decls}
+
+/// The key of every declaration of one kind and name, in id order.
+fn keys_named(ws: Workspace, kind: DeclKind, name: string) -> string {
+    [Decl.key_text(d.key()) for d in ws.decls.all_decls() if d.name == name && same_kind(d.kind, kind)]
+        .join(" | ")
+}
+
+/// The stable hash of every declaration of one kind and name, in id order.
+fn prints_named(ws: Workspace, kind: DeclKind, name: string) -> string {
+    ["${d.stable_hash()}" for d in ws.decls.all_decls() if d.name == name && same_kind(d.kind, kind)]
+        .join(" | ")
+}
+
+fn same_kind(a: DeclKind, b: DeclKind) -> bool { a == b }
+
+/// The siblings of every declaration of one kind and name, in id order.
+fn siblings_named(ws: Workspace, kind: DeclKind, name: string) -> string {
+    ["${d.sibling}" for d in ws.decls.all_decls() if d.name == name && same_kind(d.kind, kind)]
+        .join(",")
+}
+
+fn two_fns() -> string { "fn first() -> int {\n    1\n}\nfn second() -> int {\n    2\n}\n" }
+
+fn one_above() -> string { "fn above() -> int {\n    0\n}\n" + two_fns() }
+
+fn one_impl() -> string {
+    "export type Box = { v: int }\nfn kept() -> int {\n    2\n}\nimpl Box {\n    fn late() -> int {\n        3\n    }\n}\n"
+}
+
+fn two_impls() -> string {
+    "export type Box = { v: int }\nfn kept() -> int {\n    2\n}\nimpl Box {\n    fn early() -> int {\n        1\n    }\n}\nimpl Box {\n    fn late() -> int {\n        3\n    }\n}\n"
+}
+
+fn nested_once() -> string {
+    "fn outer() -> int {\n    fn inner() -> int {\n        1\n    }\n    1\n}\nfn other() -> int {\n    fn inner() -> int {\n        2\n    }\n    2\n}\n"
+}
+
+fn nested_other_name() -> string {
+    "fn outer() -> int {\n    fn helper() -> int {\n        0\n    }\n    fn inner() -> int {\n        1\n    }\n    1\n}\nfn other() -> int {\n    fn inner() -> int {\n        2\n    }\n    2\n}\n"
+}
+
+fn nested_same_name() -> string {
+    "fn before() -> int {\n    fn inner() -> int {\n        0\n    }\n    0\n}\n" + nested_once()
+}
+
+/// One annotation's generated fns minted under `names`, in that order.
+fn generated(names: List<string>) -> List<Decl> {
+    let decls = new_decls()
+    let f = decls.file_id("/w/src/lib.av", "w:src/lib.av", "lib", false)
+    let ids = [decls
+        .mint_faced(
+            "made ${j}",
+            f,
+            no_stmt,
+            n,
+            DeclKind.Fn,
+            false,
+            "",
+            null,
+            false,
+            null,
+            "derive(Shown)#0 @ type .T#0",
+            null,
+        ) for j, n in names]
+    [decls.decl(d) for d in ids]
+}
+
+fn generated_key_of(names: List<string>, which: string) -> string {
+    [Decl.key_text(d.key()) for d in generated(names) if d.name == which].join(" | ")
+}
+
+fn generated_siblings(names: List<string>) -> string { ["${d.sibling}" for d in generated(names)].join(",") }
+
+/// Two texts that are one, and say something: an empty side examined nothing.
+fn unmoved(a: string, b: string) -> bool { a != "" && a == b }
+
+fn maker_a() -> string { "gen()#0 @ type .A#0" }
+
+fn maker_b() -> string { "gen()#0 @ type .B#0" }
+
+/// Two annotated types' generated impls of one target: both make the same
+/// first block, the second makes one more of its own.
+fn shared_block() -> List<Decl> {
+    let decls = new_decls()
+    let f = decls.file_id("/w/src/lib.av", "w:src/lib.av", "lib", false)
+    let ids = [
+        decls
+            .mint_faced(
+                "block one",
+                f,
+                no_stmt,
+                "Reg",
+                DeclKind.Impl,
+                false,
+                "",
+                null,
+                false,
+                null,
+                maker_a(),
+                null,
+            ),
+        decls
+            .mint_faced(
+                "block one",
+                f,
+                no_stmt,
+                "Reg",
+                DeclKind.Impl,
+                false,
+                "",
+                null,
+                false,
+                null,
+                maker_b(),
+                null,
+            ),
+        decls
+            .mint_faced(
+                "block two",
+                f,
+                no_stmt,
+                "Reg",
+                DeclKind.Impl,
+                false,
+                "",
+                null,
+                false,
+                null,
+                maker_b(),
+                null,
+            ),
+    ]
+    [decls.decl(d) for d in ids]
+}
+
+/// A maker whose annotation was written over two lines, with a tab in it.
+fn awkward_maker() -> string { "made(\n\t1,\n)#0 @ fn .first#0" }
+
+/// `two_fns` with one generated declaration, and its rows read back from
+/// its record's lines into a workspace that never parsed it.
+type Restored = { parsed: string, held: string, lines: int }
+
+fn restored() -> Restored {
+    let ws = admitted(two_fns())
+    let f = ws.file_id(readmit_path())
+    let _ = ws
+        .decls
+        .mint_generated_code(
+            f,
+            ws.decls.store_of(f),
+            ws.parsed(f).stmts.slice(0, 1),
+            0,
+            "one",
+            awkward_maker(),
+            "made",
+            null,
+        )
+    // through the record's own text: its lines joined, then split again
+    let fields = [read_fields(line) for line in ws.lines_of(readmit_path()).join("\n").split("\n")]
+    let held = admitted_nothing()
+    held.mint_file(readmit_path(), fields, makers_in(fields, readmit_path()))
+    Restored {
+        parsed: [Decl.key_text(d.key()) for d in ws.decls.all_decls() if d.maker != ""].join(" | "),
+        held: [Decl.key_text(d.key()) for d in held.decls.all_decls() if d.maker != ""].join(" | "),
+        lines: [p for p in fields if p[0] == "maker"].length,
+    }
+}
+
+/// A workspace over the same file, nothing of it read.
+fn admitted_nothing() -> Workspace {
+    let files: Map<string, string> = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        "/w/src/main.av": two_fns(),
+    }
+    readmit_files(files, [readmit_path()])
+}
+
+fn wrapped_source() -> string { "@inline\nfn orig() -> int {\n    1\n}\n" }
+
+/// What `orig`'s one annotation is spelled as the maker of, before and
+/// after a wrap moved `orig`'s body behind it — and whether its statement
+/// then answers the body.
+type Twice = { before: string, after: string, moved: bool }
+
+fn maker_twice() -> Twice {
+    let ws = admitted(wrapped_source())
+    let f = ws.file_id(readmit_path())
+    let d = ws.decls.named_decl(readmit_path(), DeclKind.Fn, "orig")!
+    let x = ws.decls.decl(d)
+    let a = ws.parsed(f).store.annotations_of(x.stmt)[0]
+    let w = DeclareWork {
+        ann: d,
+        stmt: x.stmt,
+        callee: a.callee,
+        args: a.args,
+        ret: ws.decls.types.type(int),
+        tparams: [],
+        params: [],
+        answer: named_ref("void"),
+        original: "orig",
+        at: null,
+        annotated: d,
+    }
+    let before = ws.maker_said(f, w)
+    let body = ws.decls.mint_wrap_body(f, x, "inline", "orig", null)
+    Twice {
+        before: before,
+        after: ws.maker_said(f, w),
+        moved: ws.decls.decl_of(f, x.stmt)?.index == body.index,
+    }
+}
+
+/// A provider with a WRAP and a generator, and a fn that wears both, the wrap first.
+fn both_provider() -> string {
+    "use @std.meta.{Fn, Directive, wrapped}\nexport fn counted(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}(n: int) -> int { \${wrapped(f)}(n) + 1 } } }]\n}\nexport fn echoed(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote { fn \${f}_echo(n: int) -> int { \${f}(n) } } }]\n}\n"
+}
+
+fn both_main() -> string {
+    "use @x.c.{counted, echoed}\n@counted\n@echoed\nfn doubled(n: int) -> int { n * 2 }\ndoubled(5)\n"
+}
+
+/// The maker of every declaration `echoed` generated, once the program is analysed.
+fn real_makers() -> string {
+    let ws = provided_workspace(both_main(), both_provider())
+    let _ = ws.program("/w/src/main.av")
+    [d.maker for d in ws.decls.all_decls() if d.maker.starts_with("echoed()")].join(" | ")
+}
+
+/// A module of two files: one exports an annotation that generates one fn,
+/// the other BEGINS with that annotation on its first statement.
+fn first_statement_annotated() -> Workspace {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/marks.av": "use @std.meta.{Fn, Directive}\nexport fn mark(f: Fn) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote { fn \${f}_made() -> int { 7 } } }]\n}\n",
+            "/w/src/main.av": "@mark\nfn f() -> int { 1 }\nf()\n",
+        },
+    )
+    new_workspace(
+        memory_host(
+            files,
+            ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+/// What `mark` generated in that program, as `name by maker`, in id order.
+fn first_statement_made() -> string {
+    let ws = first_statement_annotated()
+    let _ = ws.program("/w/src/main.av")
+    ["${d.name} by ${d.maker}" for d in ws.decls.all_decls() if d.maker.starts_with("mark()")]
+        .join(" | ")
+}
+
+spec "compiler/decl name — a declaration's key is its name" {
+    given "a declaration written above two others" {
+        then "neither one's key moves" {
+            unmoved(
+                    keys_named(admitted(two_fns()), DeclKind.Fn, "first"),
+                    keys_named(admitted(one_above()), DeclKind.Fn, "first"),
+                ) &&
+                unmoved(
+                    keys_named(admitted(two_fns()), DeclKind.Fn, "second"),
+                    keys_named(admitted(one_above()), DeclKind.Fn, "second"),
+                )
+        }
+        then "neither one's stable hash moves" {
+            unmoved(
+                prints_named(admitted(two_fns()), DeclKind.Fn, "second"),
+                prints_named(admitted(one_above()), DeclKind.Fn, "second"),
+            )
+        }
+        then "admitted again in one workspace, each keeps its id" {
+            let ws = admitted(two_fns())
+            let was = ws.decls.named_decl(readmit_path(), DeclKind.Fn, "second")
+            admit_again(ws, readmit_path(), one_above())
+            let now = ws.decls.named_decl(readmit_path(), DeclKind.Fn, "second")
+            was != null && now != null && was!.index == now!.index
+        }
+    }
+    given "an `impl` written above another `impl` of the same type" {
+        then "fixture: one impl is sibling 0, two are 0 and 1" {
+            siblings_named(admitted(one_impl()), DeclKind.Impl, "Box") == "0" &&
+                siblings_named(admitted(two_impls()), DeclKind.Impl, "Box") == "0,1"
+        }
+        then "the type of that name keeps its key — an impl is another kind" {
+            unmoved(
+                keys_named(admitted(one_impl()), DeclKind.Record, "Box"),
+                keys_named(admitted(two_impls()), DeclKind.Record, "Box"),
+            )
+        }
+        then "a declaration of another name keeps its key" {
+            unmoved(
+                keys_named(admitted(one_impl()), DeclKind.Fn, "kept"),
+                keys_named(admitted(two_impls()), DeclKind.Fn, "kept"),
+            )
+        }
+    }
+    given "a nested fn added inside one body" {
+        then "under another name, no other body's nested fn moves" {
+            siblings_named(admitted(nested_once()), DeclKind.Fn, "inner") == "0,1" &&
+                siblings_named(admitted(nested_other_name()), DeclKind.Fn, "inner") == "0,1"
+        }
+        then "under the same name in an earlier body, the later ones are numbered after it" {
+            siblings_named(admitted(nested_once()), DeclKind.Fn, "inner") == "0,1" &&
+                siblings_named(admitted(nested_same_name()), DeclKind.Fn, "inner") == "0,1,2"
+        }
+    }
+    given "two annotated types whose makers generate one identical block, the second one more" {
+        then "the three are three declarations" {
+            [d.id.index for d in shared_block()].length == 3 &&
+                shared_block()[1].id.index != shared_block()[2].id.index &&
+                shared_block()[0].id.index != shared_block()[1].id.index
+        }
+        then "each maker numbers its own: 0 for the first's, 0 and 1 for the second's" {
+            ["${d.sibling}" for d in shared_block()].join(",") == "0,0,1"
+        }
+        then "the identical block is one row per maker, never one row for both" {
+            shared_block()[0].maker == maker_a() && shared_block()[1].maker == maker_b()
+        }
+    }
+    given "a generated declaration read back from its module's record" {
+        then "fixture: the record carries one maker line, on one line" {
+            restored().lines == 1
+        }
+        then "its key is the key its parse gave it, tab and line break in the maker included" {
+            unmoved(restored().parsed, restored().held) && restored().parsed.contains("\n\t1,")
+        }
+    }
+    given "an annotation on a declaration a wrap moved the body of" {
+        then "fixture: the statement answers the body now" {
+            maker_twice().moved
+        }
+        then "its maker names the annotated declaration before the wrap" {
+            maker_twice().before == "inline()#0 @ fn .orig#0"
+        }
+        then "and the same after it" {
+            maker_twice().after == "inline()#0 @ fn .orig#0"
+        }
+    }
+    given "a real annotation's generated fn, on a fn a wrap written before it moved the body of" {
+        then "its maker names the written fn, never the body the wrap moved" {
+            real_makers() == "echoed()#0 @ fn .doubled#0"
+        }
+    }
+    given "an annotation on a file's first statement" {
+        then "its work is the statement's own declaration's: one generated fn, made once" {
+            first_statement_made() == "f_made by mark()#0 @ fn .f#0"
+        }
+    }
+    given "two declarations one annotation generates" {
+        then "of two names, each key is the same whichever is generated first — and names its maker" {
+            unmoved(
+                    generated_key_of(["made_a", "made_b"], "made_b"),
+                    generated_key_of(["made_b", "made_a"], "made_b"),
+                ) &&
+                generated_key_of(["made_a", "made_b"], "made_b")
+                    .contains("derive(Shown)#0 @ type .T#0")
+        }
+        then "two of one name, kind and owner are siblings 0 and 1 in generation order" {
+            generated_siblings(["twin", "twin"]) == "0,1"
+        }
+    }
+}

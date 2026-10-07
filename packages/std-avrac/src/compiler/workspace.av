@@ -40,7 +40,7 @@ use core.{
     Annotation,
     DeclKind,
 }
-use @std.path.{dir_of, joined_path}
+use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
 use features.{
     takes_receiver,
@@ -939,7 +939,18 @@ impl Workspace {
         known
     }
 
-    fn minted_file(path: string) -> FileId { self.decls.file_id(path, self.module_of(path), self.is_test_path(path)) }
+    fn minted_file(path: string) -> FileId {
+        self
+            .decls
+            .file_id(path, self.file_name(path), self.module_of(path), self.is_test_path(path))
+    }
+
+    /// A FILE'S NAME: its package, then its path within it as written — never
+    /// where the tree stands, never a number this process gave it.
+    fn file_name(path: string) -> string {
+        let pkg = self.packages()[self.holder_of_path(path)]
+        "${pkg.key}:${relative_path(pkg.root, path)}"
+    }
 
     /// THE FILE AS WRITTEN, canonically printed — from a PARSE, never
     /// an analysis.
