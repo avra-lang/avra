@@ -129,6 +129,14 @@ MUTATIONS = [
     ("a virtual claim names whoever the host runs", "    return gate_claimed(gate, id_of(virtual_at(t)));", "    return gate_claimed(gate, id_of(g_current));"),
     ("a virtual task's end is not traced", "    if (TRACING) traced_fiber(\"end\", virtual_at(t), 0);\n", ""),
     ("a virtual task keeps the policy's count for its id", "    virtual_at(t)->own.id = id;\n", ""),
+    ("the handler leaves the switch's countdown alone", "    g_until_poll = 0;\n    errno = saved;", "    errno = saved;"),
+    ("a switch never answers an ask", "        if (__builtin_expect(g_asked, 0)) tasks_answered();\n", ""),
+    ("a second signal is not answered by the handler", "    if (g_asked++ > 0 && access(g_ask_path, F_OK) == 0) unswitched_said();", "    g_asked++;"),
+    ("an ask is answered without an ask file", "    if (!ask_ours()) return;\n", ""),
+    ("an ask that is no plain file is taken as ours", "S_ISREG(st.st_mode) && st.st_uid", "st.st_uid"),
+    ("an answered ask is left in place", "    rename(g_tmp_path, g_out_path);\n    unlink(g_ask_path);", "    rename(g_tmp_path, g_out_path);"),
+    ("a never-run task is listed as waiting", '    else if (!f->virtual && f != &g_main && !f->sp) fputs(" ready, not yet run", out);\n', ""),
+    ("the door is never opened", "    guard_handler_install();\n    tasks_door_opened();", "    guard_handler_install();"),
 ]
 CLOCK_MUTATIONS = [
     ("freezing loses the present reading", "        avra_clock.at = clock_real() + avra_clock.skew;", "        avra_clock.at = 0;"),
@@ -144,7 +152,7 @@ CLOCK_MUTATIONS = [
     ("a run begins with its host's holds", "    g_clock_outer[g_clock_runs++] = avra_clock;\n    avra_clock.held = 0;", "    g_clock_outer[g_clock_runs++] = avra_clock;"),
     ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
 ]
-TESTS = ["flow_test", "case_test", "verdict_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
+TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
 BOUND = 60
 
 os.makedirs(out, exist_ok=True)

@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -211,6 +212,8 @@ struct Fiber {
     Fiber* all_prev;
     char* base;             // the stack's lowest byte; NULL for main, a virtual task, or one not yet run
     char* guard;            // the page whose fault is this stack's overflow
+    int64_t ran_at;         // the scheduler's last clock reading at its first run; 0 until it runs
+    const char* site;       // where a virtual task's body was written; NULL when its machine named none
     AvraTaskLocal own;
 };
 
@@ -912,6 +915,8 @@ static Pool g_guarded = {0};
 static Pool g_shared = {0};
 
 static void guard_handler_install(void);
+static void tasks_door_opened(void);
+static void tasks_door_named(void);
 
 #ifndef MADV_GUARD_INSTALL
 #define MADV_GUARD_INSTALL 102
@@ -1003,6 +1008,7 @@ static void stacks_settle(void) {
     g_stack_bytes = (want + g_page - 1) / g_page * g_page;
     guards_settle();
     guard_handler_install();
+    tasks_door_opened();
 }
 
 static int own_guard(Stack s) { return s.guard == s.base - g_page; }
@@ -1146,6 +1152,8 @@ static int world_waited_virtually(void) {
 
 static void fiber_start(void);
 static int case_deadlocked(void);
+static volatile sig_atomic_t g_asked;
+static void tasks_answered(void);
 
 // A fiber's first run: a stack from the pool, and at its top a frame
 // `avra_fiber_switch` will restore — zeroed callee-saved registers and
@@ -1181,7 +1189,10 @@ static Stack wide_stack(void) {
     return g_wide;
 }
 
+static int64_t g_seen_at;
+
 static void fiber_bound(Fiber* f) {
+    f->ran_at = g_seen_at;
     if (f->wide) { fiber_framed(f, wide_stack(), g_wide_bytes); return; }
     Stack s = stack_take();
     f->base = s.base;
@@ -1284,7 +1295,8 @@ static Fiber* next_with_world(void) {
     // begins again.
     if (avra_clock.virtual && g_current->state == FIBER_PARKED) g_current->local->clock_asks = 0;
     for (;;) {
-        if (g_timers_len > 0) fire_due_timers(now_ns());
+        if (__builtin_expect(g_asked, 0)) tasks_answered();
+        if (g_timers_len > 0) fire_due_timers(g_seen_at = now_ns());
         poller_turn();
         Fiber* next = g_seeded ? ready_picked() : ready_pop();
         if (next) return next;
@@ -1817,6 +1829,7 @@ void avra_fiber_forked(void) {
     if (g_fds) memset(g_fds, 0, g_fds_cap * sizeof(FdWaits));
     // a schedule is its run's: the child's order is the queue's own
     g_seeded = 0;
+    tasks_door_named();
 }
 
 // A task leaves every place the policy files it — its waiters and the
@@ -1848,6 +1861,7 @@ static void gone(Fiber* f) {
 static Fiber* virtual_at(int64_t t) { return (Fiber*)(uintptr_t)t; }
 
 int64_t avra_vtask_new(void) {
+    tasks_door_opened();
     Fiber* f = fiber_new(NULL, 1);
     f->state = FIBER_PARKED;
     return (int64_t)(uintptr_t)f;
@@ -1873,6 +1887,7 @@ void avra_vtask_end(int64_t t) {
 }
 
 void avra_vtask_sited(int64_t t, const char* site) {
+    virtual_at(t)->site = site;
     if (TRACING) traced_site(virtual_at(t), site, NULL);
 }
 
@@ -2038,40 +2053,51 @@ static int case_deadlocked(void) {
     return g_case_waited && avra_gate_claim(g_case_alarm) >= 0;
 }
 
+typedef long long (*Numbered)(const Fiber*);
+
 // A task's number in its case: 0 the case's own, then in spawn order.
 static long long case_id(const Fiber* f) { return (long long)((uint64_t)id_of(f) - g_case_first - 1); }
 
-// What a waiter waits on, in words.
-static void waiter_said(const Fiber* f, const Waiter* w) {
+// What a waiter waits on, in words, its task numbered by `no`.
+static void waiter_said(FILE* out, Numbered no, const Fiber* f, const Waiter* w) {
     if (!w->filed) return;
-    if (w->kind == W_AT) { fputs(" waits on a time", stderr); return; }
+    if (w->kind == W_AT) { fputs(" waits on a time", out); return; }
     if (w->kind == W_DEADLINE) return;
-    if (w->kind != W_GATE) { fprintf(stderr, " waits on descriptor %d", w->on.fd); return; }
+    if (w->kind != W_GATE) { fprintf(out, " waits on descriptor %d", w->on.fd); return; }
     if (w->on.gate == f->joining) return;
-    if (((AvraArray*)w->on.gate)->len != TASK_CELLS) { fprintf(stderr, " waits on gate %p", w->on.gate); return; }
+    if (((AvraArray*)w->on.gate)->len != TASK_CELLS) { fprintf(out, " waits on gate %p", w->on.gate); return; }
     const Fiber* on = (const Fiber*)(uintptr_t)task_cells(w->on.gate)[TASK_FIBER];
-    if (on) fprintf(stderr, " waits on task %lld's end", case_id(on));
-    else fputs(" waits on a task nothing runs", stderr);
+    if (on) fprintf(out, " waits on task %lld's end", no(on));
+    else fputs(" waits on a task nothing runs", out);
 }
 
-// One task: who it is and what it waits on.
-static void task_said(const Fiber* f) {
+// One task: who it is — the program's own run, a case, or where its
+// body was written.
+static void task_said(FILE* out, Numbered no, const Fiber* f) {
+    fprintf(out, "task %lld,", no(f));
+    if (f == &g_main) { fputs(" the program's own run,", out); return; }
+    if (f->wide) { fputs(" the case,", out); return; }
+    if (f->virtual) {
+        if (f->site) fprintf(out, " spawned at %s,", f->site);
+        else fputs(" the evaluated program's own run,", out);
+        return;
+    }
     void* body = (void*)(uintptr_t)task_cells(f->task)[TASK_BODY];
-    fprintf(stderr, "task %lld,", case_id(f));
     const char* site = site_of(body);
-    if (f->wide) fputs(" the case,", stderr);
-    else if (site) fprintf(stderr, " spawned at %s,", site);
-    else fprintf(stderr, " spawned at %p,", (void*)(uintptr_t)((AvraArray*)body)->data[0]);
+    if (site) fprintf(out, " spawned at %s,", site);
+    else fprintf(out, " spawned at %p,", (void*)(uintptr_t)((AvraArray*)body)->data[0]);
 }
-static void waits_said(const Fiber* f) {
-    if (f->state == FIBER_READY) { fputs(" ready to run", stderr); return; }
+
+// What a task is doing: ready, or each thing it waits on.
+static void waits_said(FILE* out, Numbered no, const Fiber* f) {
+    if (f->state == FIBER_READY) { fputs(" ready to run", out); return; }
     if (f->joining) {
         const Fiber* on = (const Fiber*)(uintptr_t)task_cells(f->joining)[TASK_FIBER];
-        if (on) fprintf(stderr, " joins task %lld", case_id(on));
-        else fputs(" joins a task nothing runs", stderr);
+        if (on) fprintf(out, " joins task %lld", no(on));
+        else fputs(" joins a task nothing runs", out);
     }
-    for (uint32_t i = 0; i < f->held_n; i++) waiter_said(f, &f->held[i]);
-    for (const Over* o = f->more; o; o = o->next) waiter_said(f, &o->w);
+    for (uint32_t i = 0; i < f->held_n; i++) waiter_said(out, no, f, &f->held[i]);
+    for (const Over* o = f->more; o; o = o->next) waiter_said(out, no, f, &o->w);
 }
 
 // A TASK ABANDONED LEAVES EVERY PLACE IT IS FILED and never runs again:
@@ -2137,9 +2163,9 @@ static int64_t case_cleared(int dead) {
     if (dead) fputs("avra: every task is waiting, and nothing can wake one:\n", stderr);
     for (int64_t i = 0; i < n; i++) {
         fputs(dead ? "  " : "avra: ", stderr);
-        task_said(alive[i]);
+        task_said(stderr, case_id, alive[i]);
         if (!dead) fputs(" outlived the case —", stderr);
-        waits_said(alive[i]);
+        waits_said(stderr, case_id, alive[i]);
         fputc('\n', stderr);
     }
     if (g_seeded) fprintf(stderr, "avra: under schedule %lld — " SCHED_SEED_SETTING "=%lld replays it\n", (long long)g_schedule, (long long)g_schedule);
@@ -2322,3 +2348,142 @@ int64_t avra_sched_polls(void) { return g_polls; }
 int64_t avra_sched_pick_links(void) { return g_pick_links; }
 
 int64_t avra_sched_world_visits(void) { return g_world_visits; }
+
+// ── The listing: `avra tasks <pid>` ─────────────────────────────
+//
+// THE WALK AND WRITE IS ONE PLAIN FUNCTION, `avra_tasks_listed`: every
+// live task, one line each — who, where it was spawned, what it waits
+// on, and how long it has run at most. A signal is one door to it;
+// a target with no signals calls it from its own.
+//
+// THE SIGNAL DOOR. `avra tasks` writes an ASK FILE, then sends SIGURG,
+// whose default action is to be ignored — so a process that never
+// spawned, or is not ours, is unharmed. The HANDLER does only what a
+// handler may: it counts the ask and zeroes the switch's countdown (the
+// word the fast switch already tests), so the next switch takes the
+// world's path, which writes the listing; a process asleep in the
+// poller is woken by the signal itself. A SECOND signal while the first
+// is unanswered means no task has switched since: the handler writes
+// that one line itself, with open, write, close and rename alone. The
+// listing is written beside the ask, renamed into place, and the ask
+// removed; with no ask file of ours there, a signal answers nothing.
+
+static int g_door_open = 0;
+static char g_ask_path[64], g_out_path[64], g_tmp_path[64];
+
+static long long own_id(const Fiber* f) { return (long long)id_of(f); }
+
+static int listed(const Fiber* f) { return f->state != FIBER_DONE; }
+
+static void task_listed(FILE* out, const Fiber* f, int64_t now) {
+    task_said(out, own_id, f);
+    if (f == g_current && f->state == FIBER_RUNNING) fputs(" running", out);
+    else if (!f->virtual && f != &g_main && !f->sp) fputs(" ready, not yet run", out);
+    else waits_said(out, own_id, f);
+    if (f->ran_at) fprintf(out, "; first ran at most %lld ms ago", (long long)((now - f->ran_at) / 1000000));
+    fputc('\n', out);
+}
+
+void avra_tasks_listed(FILE* out) {
+    int64_t now = now_ns();
+    int64_t n = 0;
+    int evaluated = 0;
+    for (const Fiber* f = g_all; f; f = f->all_next) {
+        n += listed(f);
+        evaluated |= f->virtual;
+    }
+    fprintf(out, "process %lld, %lld task(s)%s\n", (long long)getpid(), (long long)(n + !evaluated), evaluated ? ", evaluated" : "");
+    if (!evaluated) task_listed(out, &g_main, now);
+    // the list holds the newest first: walk it from its end
+    const Fiber* last = g_all;
+    while (last && last->all_next) last = last->all_next;
+    for (const Fiber* f = last; f; f = f->all_prev) {
+        if (listed(f)) task_listed(out, f, now);
+    }
+}
+
+// The three names, under this process's id: what a fork renames.
+static void tasks_door_named(void) {
+    if (!g_door_open) return;
+    long long pid = (long long)getpid();
+    snprintf(g_ask_path, sizeof g_ask_path, "/tmp/avra-tasks.%lld.ask", pid);
+    snprintf(g_out_path, sizeof g_out_path, "/tmp/avra-tasks.%lld", pid);
+    snprintf(g_tmp_path, sizeof g_tmp_path, "/tmp/avra-tasks.%lld.tmp", pid);
+}
+
+// A decimal, written as a handler may.
+static size_t digits_put(char* at, long long v) {
+    char rev[24];
+    size_t n = 0;
+    unsigned long long u = v < 0 ? (unsigned long long)-v : (unsigned long long)v;
+    do { rev[n++] = (char)('0' + u % 10); u /= 10; } while (u);
+    size_t k = 0;
+    if (v < 0) at[k++] = '-';
+    while (n) at[k++] = rev[--n];
+    return k;
+}
+
+// No task has switched since the last ask: said by the handler itself,
+// with calls a handler may make.
+static void unswitched_said(void) {
+    char line[96];
+    static const char head[] = "task ";
+    static const char tail[] = ", running, has not switched since it was asked\n";
+    size_t k = 0;
+    memcpy(line, head, sizeof head - 1);
+    k += sizeof head - 1;
+    k += digits_put(line + k, (long long)id_of(g_current));
+    memcpy(line + k, tail, sizeof tail - 1);
+    k += sizeof tail - 1;
+    unlink(g_tmp_path);
+    int fd = open(g_tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) return;
+    ssize_t w = write(fd, line, k);
+    (void)w;
+    close(fd);
+    rename(g_tmp_path, g_out_path);
+}
+
+static void tasks_asked(int sig) {
+    (void)sig;
+    int saved = errno;
+    if (g_asked++ > 0 && access(g_ask_path, F_OK) == 0) unswitched_said();
+    g_until_poll = 0;
+    errno = saved;
+}
+
+// The ask is ours: a plain file, owned by whoever this process runs as.
+static int ask_ours(void) {
+    struct stat st;
+    return lstat(g_ask_path, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid();
+}
+
+// At a switch, after a signal: the listing, if one was asked of us.
+__attribute__((noinline, cold))
+static void tasks_answered(void) {
+    g_asked = 0;
+    if (!ask_ours()) return;
+    unlink(g_tmp_path);
+    int fd = open(g_tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) return;
+    FILE* out = fdopen(fd, "w");
+    if (!out) { close(fd); return; }
+    avra_tasks_listed(out);
+    fclose(out);
+    rename(g_tmp_path, g_out_path);
+    unlink(g_ask_path);
+}
+
+// Once, at the first spawn or the evaluator's first task.
+static void tasks_door_opened(void) {
+    if (g_door_open) return;
+    g_door_open = 1;
+    g_seen_at = now_ns();
+    tasks_door_named();
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = tasks_asked;
+    sa.sa_flags = SA_RESTART | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGURG, &sa, NULL);
+}

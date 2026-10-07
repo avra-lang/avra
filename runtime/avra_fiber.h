@@ -5,6 +5,7 @@
 #define AVRA_FIBER_H
 
 #include <stdint.h>
+#include <stdio.h>
 
 // A new task running the closure box `body` (`[code, captures…]`,
 // called with the box at seat 0, answering one managed box — the
@@ -125,6 +126,10 @@ void avra_vtask_end(int64_t t);
 // Where the task's body was written, `file:line`, for the trace.
 void avra_vtask_sited(int64_t t, const char* site);
 void avra_vtask_ready(int64_t t);
+// Every live task, one line each — who, where it was spawned, what it
+// waits on, how long it has run at most. `avra tasks <pid>` reads it
+// through the signal door; a target with no signals calls it directly.
+void avra_tasks_listed(FILE* out);
 // A join in the evaluator's own files, said to the trace as a compiled
 // one is: `joins` when the task is about to wait for the task `on`
 // (negative: one nothing runs), `joined` when `by`'s end readies it.
