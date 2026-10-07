@@ -252,7 +252,7 @@ static void door(const char* self) {
     // line that says no task switched.
     Child c = scene(self, "yielding");
     int listed_each = 1, never_unswitched = 1;
-    for (int turn = 0; turn < 40; turn++) {
+    for (int turn = 0; turn < 40 && listed_each; turn++) {
         unlink(c.out);
         asked(&c);
         kill(c.pid, SIGURG);
