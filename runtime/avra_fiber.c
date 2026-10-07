@@ -2119,6 +2119,10 @@ static int64_t case_timers_cleared(void) {
 
 static int of_the_case(const Fiber* f) { return f != g_current && !f->virtual && (uint64_t)id_of(f) > g_case_first && f->state != FIBER_DONE; }
 
+// The two settings a schedule is named by.
+#define SCHED_RUNS_SETTING "AVRA_SCHED_RUNS"
+#define SCHED_SEED_SETTING "AVRA_SCHED_SEED"
+
 // Every task of the case still alive, named oldest first — as a
 // deadlock's, or as outliving the case — and then abandoned. How many.
 static int64_t case_cleared(int dead) {
@@ -2138,6 +2142,7 @@ static int64_t case_cleared(int dead) {
         waits_said(alive[i]);
         fputc('\n', stderr);
     }
+    if (g_seeded) fprintf(stderr, "avra: under schedule %lld — " SCHED_SEED_SETTING "=%lld replays it\n", (long long)g_schedule, (long long)g_schedule);
     for (int64_t i = 0; i < n; i++) abandoned(alive[i]);
     free(alive);
     // A HOLD OUTLIVES NO HOLDER: what abandoned tasks held of the world
@@ -2213,8 +2218,6 @@ int64_t avra_case_run(int64_t (*body)(void)) {
 // ── The runner's verdict ────────────────────────────────────────
 
 // HOW MANY SCHEDULES, AND WHICH: settings read once, at the first case.
-#define SCHED_RUNS_SETTING "AVRA_SCHED_RUNS"
-#define SCHED_SEED_SETTING "AVRA_SCHED_SEED"
 // ONE UNTIL TIME IS VIRTUAL: a suite whose tasks wait in real time
 // would pay each extra schedule in wall time.
 enum { SCHED_RUNS_DEFAULT = 1 };
@@ -2243,8 +2246,12 @@ static void schedules_settled(void) {
     g_sched_settled = 1;
 }
 
-static bool (*g_case_body)(void) = NULL;
-static int64_t case_body_called(void) { return g_case_body() ? 1 : 0; }
+// A CASE'S BODY ANSWERS AN LLVM `i1`, which the backend returns with no
+// extension: only its lowest bit is the answer. So it is called as a
+// byte and that bit read — never as a C `bool`, whose caller may trust
+// the bits above it.
+static uint8_t (*g_case_body)(void) = NULL;
+static int64_t case_body_called(void) { return g_case_body() & 1; }
 
 // One schedule of the case: its verdict, and how many choices it made.
 static int64_t case_under(int64_t schedule, int64_t* choices) {
@@ -2264,7 +2271,7 @@ static int64_t case_failed_under(const char* label, int64_t schedule) {
 
 int64_t avra_case_verdict(int64_t code, const char* label) {
     schedules_settled();
-    g_case_body = (bool (*)(void))(uintptr_t)code;
+    g_case_body = (uint8_t (*)(void))(uintptr_t)code;
     int64_t choices = 0;
     if (g_sched_only >= 0) return case_under(g_sched_only, &choices) ? 1 : case_failed_under(label, g_sched_only);
     for (int64_t k = 0; k < g_sched_runs; k++) {
@@ -2278,7 +2285,7 @@ int64_t avra_case_verdict(int64_t code, const char* label) {
 
 void avra_case_schedules_said(void) {
     if (!g_any_chose || g_sched_only >= 0) return;
-    fprintf(stderr, "avra: a case that chose an order ran %lld schedule%s — " SCHED_RUNS_SETTING "=8 runs more; orders past %d ready tasks are not all reachable\n", (long long)g_sched_runs, g_sched_runs == 1 ? "" : "s", PICK_WINDOW);
+    fprintf(stderr, "avra: a case that chose an order ran up to %lld schedule%s — " SCHED_RUNS_SETTING "=8 runs more; orders past %d ready tasks are not all reachable\n", (long long)g_sched_runs, g_sched_runs == 1 ? "" : "s", PICK_WINDOW);
 }
 
 int64_t avra_sched_wide_resident(void) {
