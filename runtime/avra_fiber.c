@@ -25,6 +25,10 @@
 #include <unistd.h>
 
 #include "avra_box.h"
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
+#endif
 #include "avra_fiber.h"
 #include "avra_runtime.h"
 
@@ -383,13 +387,34 @@ static void traced_joined(const Fiber* f, int64_t by) {
     traced(line);
 }
 
-// Where a task's body was written, as its code carries it — or NULL
-// for code that carries no site.
+// The program's site table (avra_box.h): its rows and their count.
+#if defined(__APPLE__)
+static const AvraSiteRow* site_rows(size_t* n) {
+    unsigned long bytes = 0;
+    const struct mach_header_64* image = (const struct mach_header_64*)_dyld_get_image_header(0);
+    const uint8_t* at = getsectiondata(image, AVRA_SITES_MACHO_SEGMENT, AVRA_SITES_MACHO_SECTION, &bytes);
+    *n = at ? bytes / sizeof(AvraSiteRow) : 0;
+    return (const AvraSiteRow*)at;
+}
+#else
+extern const AvraSiteRow __start_avra_sites[] __attribute__((weak));
+extern const AvraSiteRow __stop_avra_sites[] __attribute__((weak));
+static const AvraSiteRow* site_rows(size_t* n) {
+    *n = __start_avra_sites ? (size_t)(__stop_avra_sites - __start_avra_sites) : 0;
+    return __start_avra_sites;
+}
+#endif
+
+// Where a task's body was written — the row that names its entry — or
+// NULL for code no row names.
 static const char* site_of(void* body) {
-    const char* code = (const char*)(uintptr_t)((AvraArray*)body)->data[0];
-    AvraSite site;
-    memcpy(&site, code - sizeof site, sizeof site);
-    return site.mark == AVRA_SITE_MARK ? code - sizeof site - avra_site_room(site.length) : NULL;
+    const void* code = (const void*)(uintptr_t)((AvraArray*)body)->data[0];
+    size_t n = 0;
+    const AvraSiteRow* rows = site_rows(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (rows[i].code == code) return rows[i].site;
+    }
+    return NULL;
 }
 
 // A spawn, and where its body was written.

@@ -70,15 +70,14 @@ typedef struct {
     int64_t icap;
 } AvraMap;
 
-// A TASK BODY'S SITE rides before its code: `file:line` as C text,
-// padded with zeros to a multiple of eight bytes, then its length, then
-// this mark, then the code. Bytes only — nothing for a linker or a
-// loader to rewrite. The backend lays it there for a task's body; the
-// scheduler reads it when a trace or a listing names the task. Code
-// that carries none — C's own — is known by the mark's absence.
-#define AVRA_SITE_MARK 0x4554495361727661ULL
-typedef struct { uint64_t length; uint64_t mark; } AvraSite;
-// The bytes a site's text of `length` stands in: its terminator kept.
-static inline uint64_t avra_site_room(uint64_t length) { return (length + 8) & ~(uint64_t)7; }
+// A TASK BODY'S SITE is a row of the program's site table: the body's
+// entry and where it was written, `file:line` as C text. The backend
+// files one row for each task body in the section named here; the
+// scheduler names a task by the row whose entry is its body's, and code
+// no row names — C's own — by its address. Nothing reads code's bytes.
+typedef struct { const void* code; const char* site; } AvraSiteRow;
+#define AVRA_SITES_MACHO_SEGMENT "__DATA"
+#define AVRA_SITES_MACHO_SECTION "__avra_sites"
+#define AVRA_SITES_ELF_SECTION "avra_sites"
 
 #endif

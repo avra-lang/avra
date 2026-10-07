@@ -4,7 +4,9 @@
 # each trace's shape — a task's events in order, with nothing an engine
 # owns — must be the text committed beside the program, from both: a
 # join of a spawned task, a join of a timer's task, a wait on a
-# descriptor.
+# descriptor, a task spawned in a generic fn another file uses. The
+# program's directory is its package: the other `.av` files there go
+# with it.
 #
 # A program is a package of its own under build/, so each engine reads
 # one small file and a spawn's site reads the same wherever the tree
@@ -25,7 +27,7 @@ cd "$(dirname "$0")/.."
 export LLVM_PREFIX
 
 TESTS=packages/std-avrac/src/features/tasks/tests
-PROGRAMS="$TESTS/traced_join/traced_join $TESTS/traced_timer/traced_timer tools/flow_trace/traced_fd"
+PROGRAMS="$TESTS/traced_join/traced_join $TESTS/traced_timer/traced_timer $TESTS/traced_generic/traced_generic tools/flow_trace/traced_fd"
 ROOT=build/flow-trace
 mkdir -p "$ROOT"
 
@@ -91,6 +93,9 @@ for program in $PROGRAMS; do
     programs=$((programs + 1))
     mkdir -p "$dir/src"
     printf '[package]\nname    = "zz-%s"\nversion = "0.0.1"\n' "$name" > "$dir/avra.toml"
+    for other in "$(dirname "$program")"/*.av; do
+        [ "$other" = "$program.av" ] || cp "$other" "$dir/src/"
+    done
     cp "$program.av" "$dir/src/main.av"
     if ! ./avra build "$dir" > "$dir/build.out" 2>&1; then
         echo "flow-trace: $name did not COMPILE"; sed -n '1,6p' "$dir/build.out"
