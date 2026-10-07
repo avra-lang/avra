@@ -46,7 +46,16 @@ use features.{
     Generation,
     Decl,
 }
-use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind, kind_word}
+use features.{
+    meta_of_fn,
+    meta_of_type,
+    meta_of_named,
+    meta_of_trait,
+    kind_of,
+    no_kind,
+    kind_word,
+    arg_text,
+}
 use @std.meta.{
     Directive,
     Node,
@@ -1196,8 +1205,10 @@ fn annotation_said(p: Parsed, name: string, args: List<ExprId>) -> string {
     "${name}(${[written(p, e) for e in args].join(", ")})"
 }
 
-/// An expression's source text — empty for one with no place of its own.
+/// An expression's source text — for one with no place in this file's text
+/// (none at all, or a copy spanned in its origin's), its literal's own text.
 fn written(p: Parsed, e: ExprId) -> string {
-    let at? = p.store.expr_span(e) else { return p.store.ident_name(e) ?? "" }
+    let here: Span? = if p.store.spanned_elsewhere(e) { null } else { p.store.expr_span(e) }
+    let at? = here else { return arg_text(p.store, e) }
     p.source.text.substring(at.lo, at.hi)
 }
