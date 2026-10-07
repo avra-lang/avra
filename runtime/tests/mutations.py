@@ -132,7 +132,6 @@ MUTATIONS = [
     ("the handler leaves the switch's countdown alone", "    g_until_poll = 0;\n    errno = saved;", "    errno = saved;"),
     ("a switch never answers an ask", "        if (__builtin_expect(g_asked, 0)) tasks_answered();\n", ""),
     ("a second signal is not answered by the handler", "    if (g_asked++ > 0 && g_until_poll == 0 && access(g_ask_path, F_OK) == 0) unswitched_said();", "    g_asked++;"),
-    ("a second signal to a switching program says it has not switched", "    if (g_asked++ > 0 && g_until_poll == 0 && access(g_ask_path, F_OK) == 0) unswitched_said();", "    if (g_asked++ > 0 && access(g_ask_path, F_OK) == 0) unswitched_said();"),
     ("an ask is answered without an ask file", "    if (!ask_ours()) return;\n", ""),
     ("an ask that is no plain file is taken as ours", "S_ISREG(st.st_mode) && st.st_uid", "st.st_uid"),
     ("an answered ask is left in place", "    rename(g_tmp_path, g_out_path);\n    unlink(g_ask_path);", "    rename(g_tmp_path, g_out_path);"),

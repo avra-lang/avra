@@ -246,18 +246,26 @@ static void listing(const char* self) {
 
 static void door(const char* self) {
     char buf[4096];
+    // Asked forty times: on a machine whose decrement is a load and a
+    // store, some first signal lands between the two and its zero is
+    // lost — and the second signal must bring the listing, never the
+    // line that says no task switched.
     Child c = scene(self, "yielding");
-    asked(&c);
-    kill(c.pid, SIGURG);
-    answered(&c, buf, sizeof buf, 1000);
-    // the zero a first signal stores can be lost to the switch it
-    // interrupted: asked again, as `avra tasks` asks
-    if (!buf[0]) {
+    int listed_each = 1, never_unswitched = 1;
+    for (int turn = 0; turn < 40; turn++) {
+        unlink(c.out);
+        asked(&c);
         kill(c.pid, SIGURG);
-        answered(&c, buf, sizeof buf, 1000);
+        answered(&c, buf, sizeof buf, 300);
+        if (!buf[0]) {
+            kill(c.pid, SIGURG);
+            answered(&c, buf, sizeof buf, 1000);
+        }
+        listed_each &= strstr(buf, "task 1, spawned at") != NULL && strstr(buf, "task 2, spawned at") != NULL;
+        never_unswitched &= strstr(buf, "has not switched") == NULL;
     }
-    CHECK(strstr(buf, "task 1, spawned at") != NULL && strstr(buf, "task 2, spawned at") != NULL, "tasks that only yield answer at their next switch");
-    CHECK(strstr(buf, "has not switched") == NULL, "and a switching program is never said not to switch");
+    CHECK(listed_each, "tasks that only yield answer at their next switch, every time");
+    CHECK(never_unswitched, "and a switching program is never said not to switch");
     CHECK(access(c.ask, F_OK) != 0, "an answered ask is taken away");
     CHECK(alive(&c), "and the program runs on");
     ended(&c);
