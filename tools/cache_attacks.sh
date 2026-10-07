@@ -1595,6 +1595,7 @@ mkdir -p $R/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $R
 kg_step "a member file added in a module of its own" "a=1 r=0"
 rm -rf $R/gk/src/n
 kg_step "the member file deleted" "a=0 r=0"
+steps=$((steps+1)); case "$(sed -n '/^read:/,$p' $R/kg.err)" in *"gk/src/lib.av — its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  kg: the member file deleted: lib.av was not read for what it gathers: $(sed -n '/^read:/,$p' $R/kg.err | tr '\n' ' ' | cut -c1-240)" ;; esac
 printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n@rank(1)\nexport type Q = {}\n' > $R/kg/src/m/m.av
 kg_step "a member added to the root's own collect, rk.av held" "a=0 r=1"
 printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
