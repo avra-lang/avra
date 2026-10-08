@@ -1728,6 +1728,80 @@ steps=$((steps+1)); rm -rf .avra-cache $R/eo.cold $R/eo.warm; eo_built cold
 steps=$((steps+1)); rm -rf .avra-cache; ./avra check $eo >/dev/null 2>&1; eo_built warm
 if [ -s $R/eo.cold ] && [ -s $R/eo.warm ] && cmp -s $R/eo.cold $R/eo.warm; then [ -n "${VERBOSE:-}" ] && echo "ok    eo: a build after a check is the cold build's bytes"; else fails=$((fails+1)); echo "FAIL  eo: $eo built after a check differs from its cold build in $(cmp -l $R/eo.cold $R/eo.warm 2>/dev/null | wc -l | tr -d ' ') bytes (0 means one side did not build)"; fi
 
+# THE PREKEY, ATTACKED. A held file's object key is remembered under the inputs it was
+# keyed by (its dependency list), so an edit that moves none of them is answered from
+# the store and not re-keyed. Each edit is held to the evaluator, and the trace names
+# what the check did: a `prekey hit` for a file the edit cannot reach, a `prekey miss`
+# for a file it moved.
+pk=$R/pk
+rm -rf $pk && mkdir -p $pk/dep/src $pk/lib/src $pk/a/src
+NL=$(printf '\nx'); NL=${NL%x}
+cat > $pk/dep/avra.toml <<'TOML'
+[package]
+name = "@rt/pkd"
+version = "0.1.0"
+
+[lib]
+name = "rt-pkd"
+path = "src/d.av"
+TOML
+cat > $pk/dep/src/d.av <<'AV'
+export type Tag = { n: int }
+export fn base() -> int { 1 }
+AV
+cat > $pk/lib/avra.toml <<'TOML'
+[package]
+name = "@rt/pk"
+version = "0.1.0"
+
+[dependencies]
+"@rt/pkd" = { path = "../dep" }
+
+[lib]
+name = "rt-pk"
+path = "src/lib.av"
+TOML
+cat > $pk/lib/src/lib.av <<'AV'
+use @rt.pkd.{base, Tag}
+use @std.meta.{embed}
+export fn one() -> int { leaf() + base() }
+export fn tag() -> Tag { Tag { n: 1 } }
+export const banner: string = embed("banner.txt")
+AV
+printf 'fn leaf() -> int { 1 }\n' > $pk/lib/src/leaf.av
+printf 'first\n' > $pk/lib/src/banner.txt
+cat > $pk/a/avra.toml <<'TOML'
+[package]
+name = "rt-pk-a"
+version = "0.1.0"
+
+[dependencies]
+"@rt/pk" = { path = "../lib" }
+TOML
+cat > $pk/a/src/main.av <<'AV'
+use @rt.pk.{one, tag, banner}
+println("a ${one()} ${tag().n} ${banner}")
+AV
+
+# pk_expect <label> <hit|miss> <path suffix> <app>: the trace names the file's pre-key
+pk_expect() {
+    if grep -F "$(printf 'Q\tprekey\t%s\t' "$2")" "$R/$4.err" | grep -q "$3\$"; then [ -n "${VERBOSE:-}" ] && echo "ok    $1: prekey $2 $3"; else fails=$((fails+1)); echo "FAIL  $1: no prekey $2 for $3"; fi
+}
+export AVRA_QTRACE=1
+S "pk cold" pk/a
+S "pk warm, nothing edited" pk/a
+ed $pk/lib/src/leaf.av "{ 1 }" "{ 100 }";                                   S "pk private body edit in lib" pk/a
+pk_expect "private body edit: main is reached by no moved input" hit pk/a/src/main.av pk/a
+printf 'export fn extra() -> int { 2 }\n' > $pk/lib/src/extra.av;          S "pk new file in a seen module" pk/a
+pk_expect "new file in a seen module: main re-keyed" miss pk/a/src/main.av pk/a
+ed $pk/lib/src/banner.txt "first" "second";                                 S "pk embed text edit" pk/a
+pk_expect "embed text edit: the file that embeds it re-keyed" miss pk/lib/src/lib.av pk/a
+ed $pk/lib/src/lib.av "use @std.meta.{embed}" "use @std.meta.{embed}${NL}use @std.text.{codepoints}"; S "pk import added in a reached file" pk/a
+pk_expect "import added in a reached file: that file re-keyed" miss pk/lib/src/lib.av pk/a
+ed $pk/dep/src/d.av "{ n: int }" "{ n: string }"
+ed $pk/lib/src/lib.av 'Tag { n: 1 }' 'Tag { n: "1" }';                      S "pk dependency's type changes shape" pk/a
+pk_expect "dependency interface change: main re-keyed" miss pk/a/src/main.av pk/a
+unset AVRA_QTRACE
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }
