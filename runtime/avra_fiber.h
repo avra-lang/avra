@@ -43,8 +43,10 @@ void avra_fiber_sleep(int64_t ms);
 // Parks the caller until `fd` is readable (`writable` 0) or writable
 // (`writable` 1), or `timeout_ms` passes (below zero: never). 1 when
 // the descriptor may be ready — a caller retries its read or write —
-// and 0 when the time ran out.
+// and 0 when the time ran out or the park was interrupted.
 int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms);
+// Whether the caller's last descriptor park ended by an interrupt.
+int64_t avra_fiber_interrupted(void);
 
 // ── The wait set ────────────────────────────────────────────────
 //
@@ -118,8 +120,9 @@ int64_t avra_fiber_fd_ready(int64_t fd, int64_t writing);
 // and the number's next tenant inherits none.
 void avra_fiber_fd_closing(int64_t fd);
 
-// Every task parked reading `fd` wakes as if its `within` ran out; the
-// descriptor stays open, registered, and unread.
+// Every task parked reading `fd` wakes on a claim of its own, `-1:2` —
+// no deadline, no cancel: a descriptor park answers 0 and says it was
+// interrupted. The descriptor stays open, registered, and unread.
 void avra_fiber_fd_interrupt(int64_t fd);
 
 // The caller is a FORKED CHILD, and the calling task is all it keeps:
@@ -157,6 +160,7 @@ void avra_vtask_sleep(int64_t t, int64_t ms);
 // the task's deadline has passed (`avra_vtask_timed_out` says 1).
 int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms);
 int64_t avra_vtask_timed_out(int64_t t);
+int64_t avra_vtask_interrupted(int64_t t);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
 void avra_vtask_within_end(int64_t t, int64_t id);
 // The task's deadline, in ns; 0 when none.

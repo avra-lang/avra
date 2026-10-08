@@ -1033,12 +1033,70 @@ static void claim_before_cancel(void) {
 
 static void* parks_on_pipe(void* self) { (void)self; return answer(avra_fiber_park_fd(g_pipe[0], 0, -1)); }
 
-static void interrupt_is_time(void) {
-    void* t = spawn1(parks_on_pipe, 0);
+// A descriptor park, and whether it was interrupted: 10 + the latter
+// when the park answered 0, else the park's own answer.
+static void* parks_and_tells(void* self) {
+    int64_t woken = avra_fiber_park_fd(g_pipe[0], 0, cap(self));
+    return answer(woken ? woken : 10 + avra_fiber_interrupted());
+}
+
+// Under a scope of its own, the interrupt asks nothing of it.
+static void* parks_under_a_scope(void* self) {
+    (void)self;
+    int64_t scope = avra_fiber_within(5000);
+    int64_t woken = avra_fiber_park_fd(g_pipe[0], 0, -1);
+    int64_t landed = avra_scope_end(scope);
+    return answer(woken == 0 && avra_fiber_interrupted() == 1 && landed == 0);
+}
+
+// Interrupted once, then a park a passed deadline answers at once.
+static void* interrupted_then_late(void* self) {
+    (void)self;
+    avra_fiber_park_fd(g_pipe[0], 0, -1);
+    int64_t first = avra_fiber_interrupted();
+    int64_t scope = avra_fiber_within(0);
+    int64_t woken = avra_fiber_park_fd(g_pipe[0], 0, -1);
+    avra_scope_end(scope);
+    return answer(first == 1 && woken == 0 && avra_fiber_interrupted() == 0);
+}
+
+static void* waits_on_the_pipe(void* self) {
+    (void)self;
+    avra_wait_fd(g_pipe[0], 0, 0, 0);
+    return answer(avra_wait_park());
+}
+
+// AN INTERRUPT IS NOT A DEADLINE: its own claim, `-1:2`. A descriptor
+// park still answers 0 for it, and says it was interrupted.
+static void interrupt_is_its_own_claim(void) {
+    void* t = spawn1(parks_and_tells, -1);
     avra_fiber_sleep(2);
     avra_fiber_fd_interrupt(g_pipe[0]);
-    CHECK(joined(t) == 0, "a descriptor park that is interrupted answers as one whose time ran out");
+    CHECK(joined(t) == 11, "a descriptor park that is interrupted answers 0, and says it was interrupted");
     CHECK(avra_sched_fd_waiters() == 0, "and leaves the descriptor");
+    CHECK(joined(spawn1(parks_and_tells, 5)) == 10, "one whose own time ran out says it was not");
+    int64_t scope = avra_fiber_within(5);
+    t = spawn1(parks_and_tells, -1);
+    avra_scope_end(scope);
+    CHECK(joined(t) == 10, "nor does one a deadline ended");
+    t = spawn1(parks_under_a_scope, 0);
+    avra_fiber_sleep(2);
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    CHECK(joined(t) == 1, "an interrupt under a scope makes no request, and the scope's end lands nothing");
+    t = spawn1(interrupted_then_late, 0);
+    avra_fiber_sleep(2);
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    CHECK(joined(t) == 1, "a park after an interrupted one says only what ended it");
+    t = spawn1(waits_on_the_pipe, 0);
+    avra_fiber_sleep(2);
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    int64_t claim = joined(t);
+    CHECK(arm_of(claim) == -1 && member_of(claim) == 2, "a wait set's descriptor wait is claimed -1:2");
+    int64_t v = avra_vtask_new();
+    CHECK(avra_vtask_park_fd(v, g_pipe[0], 0, -1) == 1, "a virtual task parks on the descriptor");
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    CHECK(avra_vtask_timed_out(v) == 1 && avra_vtask_interrupted(v) == 1, "and is told its park was interrupted");
+    avra_vtask_free(v);
 }
 
 // ── an edge belongs to whoever waited when it came ──────────────
@@ -2054,7 +2112,7 @@ int main(int argc, char** argv) {
     deadline_reach();
     fork_forgets_deadlines();
     claim_before_cancel();
-    interrupt_is_time();
+    interrupt_is_its_own_claim();
     late_parker();
     late_parker_after_interrupt();
     timers_among_workers();

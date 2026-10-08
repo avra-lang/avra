@@ -207,6 +207,7 @@ struct Fiber {
     uint8_t deaf;           // a scope's end joining what it owns: no cancel cuts the join
     uint8_t heeds;          // the task's deadline may claim this set
     uint8_t timed_out;      // whether the last legacy park ended by time
+    uint8_t interrupted;    // whether the last descriptor park ended by an interrupt
     uint8_t unwinding;      // the unwind bit while switched out (`avra_unwinding` while running)
     uint8_t wide;           // a case's own task: it runs on the wide stack
     int32_t arm, member;    // the claim
@@ -754,6 +755,7 @@ static int set_claimed(Fiber* f, int32_t arm, int32_t member, int64_t by) {
     if (TRACING) traced_claim(f, by);
     if (f->legacy) {
         f->timed_out = arm != 0;
+        f->interrupted = arm == -1 && member == 2;
         f->legacy = 0;
         f->heeds = 0;
         f->claimed = 0;
@@ -1962,7 +1964,7 @@ void avra_fiber_fd_interrupt(int64_t fd) {
     while (w->head[0]) {
         Fiber* f = w->head[0]->fiber;
         waiter_out(w->head[0]);
-        set_claimed(f, -1, 1, BY_CLOSE);
+        set_claimed(f, -1, 2, BY_CLOSE);
     }
 }
 
@@ -1971,6 +1973,7 @@ void avra_fiber_fd_interrupt(int64_t fd) {
 // already (`timed_out` says which).
 static int park_fd_filed(Fiber* f, int64_t fd, int64_t writable, int64_t timeout_ms) {
     f->timed_out = 0;
+    f->interrupted = 0;
     if (fd < 0 || fd > INT32_MAX) return 0;
     if (!f->virtual && cancel_stands(f)) { f->timed_out = 1; return 0; }
     alone(f);
@@ -1993,6 +1996,8 @@ int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms) {
     }
     return self->timed_out ? 0 : 1;
 }
+
+int64_t avra_fiber_interrupted(void) { return g_current->interrupted; }
 
 int64_t avra_fiber_within(int64_t ms) { return within_opened(g_current, ms); }
 
@@ -2142,6 +2147,8 @@ int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t time
 }
 
 int64_t avra_vtask_timed_out(int64_t t) { return virtual_at(t)->timed_out; }
+
+int64_t avra_vtask_interrupted(int64_t t) { return virtual_at(t)->interrupted; }
 
 int64_t avra_vtask_within(int64_t t, int64_t ms) { return within_opened(virtual_at(t), ms); }
 
