@@ -215,8 +215,6 @@ impl LowerCx {
     }
 
     fn declared_seat(d: DeclId, index: int, ty: TypeId) -> SeatValue? {
-        let held = self.view.decls.held_value(d)
-        if held != null { return seat_value(index, ty, held!) }
         let x = self.view.decls.decl(d)
         self.settled_seat(x.file, SettleRoot.Const(x.stmt), [], index, ty)
     }
@@ -533,13 +531,12 @@ impl LowerCx {
     }
 
     /// A DECLARED const read: settled in the declaration's OWN file, on
-    /// no seats — a declaration has none — and named by the declaration,
-    /// held or read alike, so a reader's object is the same either way.
+    /// no seats — a declaration has none — and named by the declaration.
+    /// Held or read, it is ASKED of the settlement, which answers a held
+    /// const off its record and notes the read for any run that made it.
     fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
         if self.view.decls.is_instance(d) && !self.settles(ty) { return self.instance_value_reg(e, d) }
         let x = self.view.decls.decl(d)
-        let held = self.view.decls.held_value(d)
-        if held != null { return self.materialized(held!.answer, held!.heap, ty, self.view.decls.symbol(d)) }
         self.settled_value_reg(x.file, x.stmt, ty, [], self.view.decls.symbol(d))
     }
 

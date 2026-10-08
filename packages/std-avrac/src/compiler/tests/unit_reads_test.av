@@ -1,0 +1,63 @@
+// A unit is lowered once and reused by every compile-time run that reaches
+// it, so a const its lowering reads is a read of EVERY run that uses it —
+// never only of the run that lowered it first.
+use compiler.{new_workspace, avra, Workspace}
+use compiler.host.{memory_host}
+use features.{SettleRoot}
+
+const UNIT_READS_ROOT: string = "/w"
+
+fn unit_reads_workspace() -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/k/k.av": "fn forty() -> List<int> { [40] }\n\nexport const K: List<int> = forty()\n",
+                "/w/src/s/s.av": "use k.{K}\n\nexport fn shared() -> int { K[0] + 1 }\n",
+                "/w/src/a/a.av": "use s.{shared}\n\nexport const A: int = shared()\n",
+                "/w/src/b/b.av": "use s.{shared}\n\nexport const B: int = shared() * 2\n",
+                "/w/src/main.av": "use a.{A}\nuse b.{B}\n\nA + B\n",
+            },
+            [
+                "/w/avra.toml",
+                "/w/src/k/k.av",
+                "/w/src/s/s.av",
+                "/w/src/a/a.av",
+                "/w/src/b/b.av",
+                "/w/src/main.av",
+            ],
+        ),
+        UNIT_READS_ROOT,
+        avra(),
+    )
+}
+
+/// The const `name` of `path`, settled.
+fn settle_named(ws: Workspace, path: string, name: string) {
+    let _ = ws.analyze_file(path)
+    let f = ws.file_id(path)
+    for d in ws.decls.decls_of_file(f) {
+        let x = ws.decls.decl(d)
+        if x.name == name { let _ = ws.settled(f, SettleRoot.Const(x.stmt), []) }
+    }
+}
+
+/// Whether `path`'s runs are recorded as reading `read`.
+fn reads(ws: Workspace, path: string, read: string) -> bool { (ws.hold.runs.get().get(path) ?? []).contains(read) }
+
+spec "compiler/settle — a reused unit's const reads are each run's" {
+    then "the run that lowers the shared unit second reads its const too" {
+        let ws = unit_reads_workspace()
+        let _ = ws.analyze_file("/w/src/main.av")
+        settle_named(ws, "/w/src/a/a.av", "A")
+        settle_named(ws, "/w/src/b/b.av", "B")
+        reads(ws, "/w/src/a/a.av", "/w/src/k/k.av") && reads(ws, "/w/src/b/b.av", "/w/src/k/k.av")
+    }
+    then "whichever order the runs go in" {
+        let ws = unit_reads_workspace()
+        let _ = ws.analyze_file("/w/src/main.av")
+        settle_named(ws, "/w/src/b/b.av", "B")
+        settle_named(ws, "/w/src/a/a.av", "A")
+        reads(ws, "/w/src/a/a.av", "/w/src/k/k.av") && reads(ws, "/w/src/b/b.av", "/w/src/k/k.av")
+    }
+}

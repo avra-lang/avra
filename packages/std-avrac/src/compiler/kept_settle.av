@@ -132,11 +132,15 @@ impl Workspace {
         top
     }
 
-    /// One unit a settlement lowers, noted in the open frame.
+    /// One unit a settlement lowers, noted in the open frame — with every
+    /// const its lowering asked for asked again here, so a run that REUSES
+    /// the unit reads what the run that lowered it read.
     fn logged_unit(w: Wanted) -> Unit {
-        let u = self.lowered_for_eval(self.spec_id(w))
+        let id = self.spec_id(w)
+        let u = self.lowered_for_eval(id)
         let top = self.hold.settle_frames.get().last()
         if top != null { top!.push(self.kept_unit_line(w, u)) }
+        for ask in self.hold.unit_asks.get().get("${id}") ?? [] { let _ = self.settled(ask.file, ask.root, ask.seats) }
         u
     }
 

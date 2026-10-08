@@ -369,7 +369,10 @@ impl Workspace {
             .Reuse(value) -> { return lowered_of(value) },
             .Compute -> nothing(),
         }
+        self.hold.lowering.push(id)
         let out = self.lower_requested(self.asks.get()[id])
+        let open = self.hold.lowering.get()
+        self.hold.lowering.set(open.slice(0, open.length - 1))
         lowered_of(
             self
                 .relation(fam)
@@ -449,6 +452,8 @@ impl Workspace {
     fn settled(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
         // a run that reads this const reads its file, and what its settlement read
         let reader: string? = self.hold.settling.get().last()
+        let unit = self.hold.lowering.get().last()
+        if unit != null { self.unit_asked(unit!, ConstAsk { file: f, root: root, seats: seats }) }
         if reader != null { self.read_by(reader!, [self.decls.file(f).path]) }
         let id = self.settle_id(f, root, seats)
         let r = self.settled_at(id)
@@ -476,6 +481,14 @@ impl Workspace {
     fn run_read(f: FileId, path: string) -> Result<string, string> {
         self.read_by(self.decls.file(f).path, [path])
         self.embed_read(path)
+    }
+
+    /// A const a unit's lowering asked for, noted on the UNIT: a unit is
+    /// lowered once and reused by every run that reaches it, so its reads
+    /// belong to each of them, never to the run that happened to lower it.
+    fn unit_asked(unit: int, ask: ConstAsk) {
+        let key = "${unit}"
+        self.hold.unit_asks.put(key, (self.hold.unit_asks.get().get(key) ?? []).concat([ask]))
     }
 
     /// `paths` joined to what `reader`'s compile-time runs read.
