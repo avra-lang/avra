@@ -11,6 +11,7 @@ use @std.meta.{derive}
 use @std.io.{env}
 use @std.errors.{Frame}
 use core.{
+    text_before,
     Fingerprint,
     StmtId,
     ExprId,
@@ -1176,8 +1177,9 @@ fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts, 
 }
 
 /// A member beside its `by` key — one TYPED value per `by` field, a
-/// TUPLE, so two different keys never read as one and a tie keeps both.
-type SortedMember = { key: List<SortValue>, decl: Decl }
+/// TUPLE, so two different keys never read as one and a tie keeps both —
+/// and its qualified name, which orders a tie.
+type SortedMember = { key: List<SortValue>, named: string, decl: Decl }
 
 /// Every matching declaration, in `by` order — shared by both collect
 /// flavors (a value's rows, an enum's variants); only `Decls` is
@@ -1191,11 +1193,19 @@ export fn ordered_collect_members(
     owner: FileId,
 ) -> List<Decl> {
     let found = gathered_members(decls, kind, scope, owner)
-    let keyed = [SortedMember { key: [sort_value(decls, kind, k, d) for k in order], decl: d } for d in found]
+    let keyed = [SortedMember {
+        key: [sort_value(decls, kind, k, d) for k in order],
+        named: decls.qualified_name(d),
+        decl: d,
+    } for d in found]
     [m.decl for m in sorted_by(keyed, member_before)]
 }
 
-fn member_before(x: SortedMember, y: SortedMember) -> bool { sort_key_before(x.key, y.key) }
+/// `by` order, and a tie by qualified name — never by the order files were read in.
+fn member_before(x: SortedMember, y: SortedMember) -> bool {
+    if sort_key_before(x.key, y.key) { return true }
+    !sort_key_before(y.key, x.key) && text_before(x.named, y.named)
+}
 
 /// One entry: its fields read by NAME off the projected type's own
 /// signature, filled from `p.proj.fields` — so their declared order

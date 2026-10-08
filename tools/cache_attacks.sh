@@ -1622,6 +1622,24 @@ case "$gw_out" in *"gk/src/c/lib.av — its collect gathers"*) ;; *) fails=$((fa
 steps=$((steps+1)); [ "$($gw/app/src/main 2>&1)" = "a=1" ] || { fails=$((fails+1)); echo "FAIL  gw: the binary printed '$($gw/app/src/main 2>&1)', wanted 'a=1'"; }
 rm -rf $gw
 
+# A LIST COLLECT'S TIE IS ORDERED BY QUALIFIED NAME, never by the order files were read in: two
+# members whose `by` keys tie, in p/ and q/, and p/ moved to z/ — the move moves the order
+# (z.X now after q.Y).
+gt=$(mktemp -d); mkdir -p $gt/gk/src/c $gt/gk/src/p $gt/gk/src/q $gt/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gt/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $gt/gk/src/k.av
+printf 'use k.{seq}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name } by it.mark.args[0]\nexport fn x_at() -> int { [e.name for e in xs].index_of("X") }\n' > $gt/gk/src/c/lib.av
+printf 'use k.{seq}\n@seq(0)\nexport type X = {}\n' > $gt/gk/src/p/p.av
+printf 'use k.{seq}\n@seq(0)\nexport type Y = {}\n' > $gt/gk/src/q/q.av
+printf '[package]\nname = "rt-gt"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gt/app/avra.toml
+printf 'use @rt.gk.c.{x_at}\nprintln("x=${x_at()}")\n' > $gt/app/src/main.av
+steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_cold=$($gt/app/src/main 2>&1)
+mkdir -p $gt/gk/src/z; mv $gt/gk/src/p/p.av $gt/gk/src/z/z.av; rmdir $gt/gk/src/p
+rm -rf $gt/app/.avra-cache
+steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_fresh=$($gt/app/src/main 2>&1)
+[ "$gt_cold" = "x=0" ] && [ "$gt_fresh" = "x=1" ] || { fails=$((fails+1)); echo "FAIL  gt: a list collect's tie: cold '$gt_cold' (wanted x=0), fresh after the move '$gt_fresh' (wanted x=1)"; }
+rm -rf $gt
+
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
 # order than a cold build meets them. The binary must be the cold one's, byte for
