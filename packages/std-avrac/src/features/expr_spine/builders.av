@@ -120,6 +120,8 @@ fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
     let asked: Token? = token_at(b.args, 3)
     if asked != null { return asked_expr(b, l, asked!, pat_ids_at(b.args, 4)) }
+    let narrowed: Token? = token_at(b.args, 5)
+    if narrowed != null { return narrowed_expr(b, l, narrowed!, b.type_ref(6)?) }
     let op_tok? = token_at(b.args, 1) else { return b.wrap_expr(l) }
     let r = b.expr(2)?
     let op = want(binop_of(op_tok.text), "a comparison operator")?
@@ -151,6 +153,15 @@ fn asked_expr(b: Builder, l: ExprId, asked: Token, payload: List<PatId>) -> Resu
         let pat = b.store.alloc_pat(Pat.Variant(Plain(asked.text), payload), b.span)
         b.store.mark_is_payload(id, pat, true)
     }
+    b.wrap_expr(id)
+}
+
+/// `l is c: T` — a type test that binds, kept beside the node as the
+/// `Pat.Typed` it names: the `if` that means to bind desugars it to a
+/// match, exactly as a payload `is`.
+fn narrowed_expr(b: Builder, l: ExprId, name: Token, ty: TypeRef) -> Result<LangNode, string> {
+    let id = b.expr_node(Expr.Is(l, Plain(ty.name)))
+    b.store.mark_is_payload(id, b.store.alloc_pat(Pat.Typed(Scoped(name.text), ty), b.span), true)
     b.wrap_expr(id)
 }
 

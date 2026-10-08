@@ -1,7 +1,9 @@
 // A type pattern's laws, each refusal rendered whole: its subject is a
 // `dyn`, the type it names implements that `dyn`'s trait, and a `match`
 // over a `dyn` keeps its catch-all.
-use @std.avrac.compiler.{analyze_source}
+use @std.avrac.compiler.{analyze_source, avra, new_workspace}
+use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.testing.{refused_with}
 
 spec "features/narrows" {
     given "the refusals, rendered whole" {
@@ -95,5 +97,46 @@ spec "features/narrows" {
                     "error[type.unknown]: `Nope` names no type\n   ╭─[<source>:12:9]\n12 │         c: Nope -> 1\n   ·         ┬\n   ·         ╰── in this type pattern\n───╯\nhelp: the types today are `int`, `string`, `bool`, and your declared types",
                 )
         }
+    }
+}
+
+spec "features/narrows — a type test under `is`" {
+    given "a binding `is` anywhere but an `if` condition" {
+        then "an operand of `&&` is refused as a payload `is` is" {
+            refused_with(
+                "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\nfn f(x: dyn Shape) -> int {\n    if x is q: Sq && true { 1 } else { 0 }\n}\n",
+                "a payload `is` binds only in an `if` condition",
+            )
+        }
+        then "under `!` it is refused as a payload `is` is" {
+            refused_with(
+                "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\nfn f(x: dyn Shape) -> int {\n    if !(x is q: Sq) { 1 } else { 0 }\n}\n",
+                "a payload `is` binds only in an `if` condition",
+            )
+        }
+        then "a `while` condition is refused as a payload `is` is" {
+            refused_with(
+                "trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\nfn f(x: dyn Shape) -> int {\n    while x is q: Sq { return 1 }\n    0\n}\n",
+                "a payload `is` binds only in an `if` condition",
+            )
+        }
+    }
+    given "the formatter" {
+        then "prints `if x is q: Sq` back as written" {
+            printed(
+                    "trait Shape {\n    fn area() -> int\n}\n\ntype Sq = { s: int }\n\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    if x is q: Sq { q.s } else { 0 }\n}\n\nfn g(x: dyn Shape) -> int {\n    if x is q: Sq {\n        return q.s\n    }\n    1\n}\n",
+                ) +
+                "\n" == "trait Shape {\n    fn area() -> int\n}\n\ntype Sq = { s: int }\n\nimpl Shape for Sq {\n    fn area() -> int { self.s }\n}\n\nfn f(x: dyn Shape) -> int {\n    if x is q: Sq { q.s } else { 0 }\n}\n\nfn g(x: dyn Shape) -> int {\n    if x is q: Sq {\n        return q.s\n    }\n    1\n}\n"
+        }
+    }
+}
+
+/// A one-file program as the formatter prints it — its last line
+/// unterminated, as `formatted_source` answers.
+fn printed(src: string) -> string {
+    let ws = new_workspace(memory_host({"/w/src/main.av": src}, ["/w/src/main.av"]), "/w", avra())
+    match ws.formatted_source(ws.file_id("/w/src/main.av")) {
+        .Ok(text) -> text,
+        .Err(why) -> "refused: ${why}",
     }
 }
