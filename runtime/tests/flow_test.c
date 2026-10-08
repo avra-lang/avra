@@ -172,10 +172,15 @@ static void claim_then_cancel(void) {
 
 // ── a cancel and the rows that predate the set ──────────────────
 
-static void* sleeper(void* self) { int64_t t0 = now_ns(); avra_fiber_sleep(cap(self)); return answer((now_ns() - t0) / 1000000); }
+// What it slept, by the process's own clock: virtual where the case is.
+static void* sleeper(void* self) { int64_t t0 = avra_now_ns(); avra_fiber_sleep(cap(self)); return answer((avra_now_ns() - t0) / 1000000); }
 static void* joiner(void* self) { (void)self; avra_rc_retain(g_task); return answer(joined(g_task)); }
 
+// Under the virtual clock: the sleeper's thirty milliseconds come after
+// the caller's seven however slow the machine is.
 static void cancel_and_old_rows(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
     g_task = spawn1(sleeper, 30);
     void* j = spawn1(joiner, 0);
     avra_fiber_sleep(2);
@@ -185,6 +190,7 @@ static void cancel_and_old_rows(void) {
     CHECK(!avra_task_done(g_task) && !avra_task_done(j), "a cancel wakes neither a sleep nor a join");
     CHECK(joined(j) >= 29, "the join answers what the sleeper answered, after its whole sleep");
     CHECK(joined(g_task) >= 29, "the sleeper slept its time");
+    avra_clock_run_ends();
 }
 
 // ── one set at a time ───────────────────────────────────────────
@@ -198,23 +204,32 @@ static void park_in_set(void) { g_gate = avra_gate_new(); joined(spawn1(parks_in
 
 // ── a time falls due on a set already claimed ───────────────────
 
+// THE ORDER IS MADE, NOT WAITED FOR: under the virtual clock the time is
+// far, the gate is claimed, and only then does the clock reach the time.
+// Each such case is a run of its own, so the hour it jumps ends with it
+// and the cases after it read the wall again.
+static int64_t g_due_at = 0;
 static void* gate_or_time(void* self) {
+    (void)self;
     avra_wait_gate(g_gate, 0, 1);
-    avra_wait_until(in_ms(cap(self)), 1, 2);
+    g_due_at = avra_now_ns() + (int64_t)60000 * 1000000;
+    avra_wait_until(g_due_at, 1, 2);
     int64_t claim = avra_wait_park();
     return answer(arm_of(claim) * 100 + member_of(claim) + avra_sched_timers() * 1000);
 }
 
 static void due_on_a_claimed_set(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
     g_gate = avra_gate_new();
-    void* t = spawn1(gate_or_time, 3);
-    avra_fiber_sleep(1);
+    void* t = spawn1(gate_or_time, 0);
+    avra_fiber_yield();
     CHECK(avra_gate_claim(g_gate) == 1, "the gate claims first");
-    int64_t until = in_ms(6);
-    while (now_ns() < until) {}
+    CHECK(avra_clock_jumped(g_due_at) == 1, "and then the clock reaches the time");
     avra_fiber_yield();
     CHECK(joined(t) == 1, "a time due on a claimed set is dropped: the task resumes on the gate's arm, the heap empty");
     avra_rc_release(g_gate);
+    avra_clock_run_ends();
 }
 
 // ── a forked child keeps no other task's waiters ────────────────
@@ -761,32 +776,37 @@ static void* sleeps_counting(void* self) {
     return answer(g_due_turn ? g_turns - g_due_turn : 0);
 }
 
-static void* deadline_five(void* self) {
+// A 5 ms deadline on a gate nobody claims; answers how many turns of the
+// others passed between its time and its waking, or -1.
+static void* deadline_counting(void* self) {
     (void)self;
-    int64_t t0 = now_ns();
     int64_t outer = avra_fiber_within(5);
+    g_due = now_ns() + 5000000;
     avra_wait_gate(g_gate, 0, 0);
     int64_t claim = avra_wait_park();
     avra_fiber_within_end(outer);
-    return answer(arm_of(claim) == -1 ? (now_ns() - t0) / 1000000 : -1);
+    return answer(arm_of(claim) == -1 ? (g_due_turn ? g_turns - g_due_turn : 0) : -1);
 }
 
 // Eight tasks that each compute 2 ms between yields: a 5 ms sleep and a
 // 5 ms deadline are heard at the first switch after they are due — one
-// round of the eight at most, never a window of rounds.
+// round of the eight at most, never a window of rounds. COUNTED IN
+// TURNS, never timed: a loaded machine stretches a turn, never adds one.
 static void timers_among_workers(void) {
-    g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
     g_gate = avra_gate_new();
     void* workers[8];
+    g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
     for (int i = 0; i < 8; i++) workers[i] = spawn1(works_between_yields, 2);
-    void* s = spawn1(sleeper, 5);
-    void* d = spawn1(deadline_five, 0);
-    int64_t slept = joined(s);
-    int64_t heard = joined(d);
+    int64_t slept = joined(spawn1(sleeps_counting, 5));
     g_stop = 1;
     for (int i = 0; i < 8; i++) joined(workers[i]);
-    CHECK(slept >= 5 && slept <= 45, "a sleep among tasks that compute between yields wakes within one round of them");
-    CHECK(heard >= 5 && heard <= 45, "a deadline among them is heard within one round too");
+    g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
+    for (int i = 0; i < 8; i++) workers[i] = spawn1(works_between_yields, 2);
+    int64_t heard = joined(spawn1(deadline_counting, 0));
+    g_stop = 1;
+    for (int i = 0; i < 8; i++) joined(workers[i]);
+    CHECK(slept >= 0 && slept <= 8 + 2, "a sleep among tasks that compute between yields wakes within one round of them");
+    CHECK(heard >= 0 && heard <= 8 + 2, "a deadline among them is heard within one round too");
     avra_rc_release(g_gate);
 
     // counted, not timed: two such tasks, a 46 ms sleep — woken at the
@@ -802,45 +822,53 @@ static void timers_among_workers(void) {
 // Yields `g_quick` times at once, then computes 2 ms between yields
 // `g_slow` times; over and over.
 static int g_quick, g_slow;
+static void burst_turn(void) {
+    g_turns++;
+    if (g_due && !g_due_turn && now_ns() >= g_due) g_due_turn = g_turns;
+    avra_fiber_yield();
+}
 static void* works_in_bursts(void* self) {
     (void)self;
     while (!g_stop) {
-        for (int i = 0; i < g_quick && !g_stop; i++) avra_fiber_yield();
+        for (int i = 0; i < g_quick && !g_stop; i++) burst_turn();
         for (int i = 0; i < g_slow && !g_stop; i++) {
             int64_t until = now_ns() + 2000000;
             while (now_ns() < until) {}
-            avra_fiber_yield();
+            burst_turn();
         }
     }
     return answer(0);
 }
 
-// `cap` sleeps of 5 ms; the worst any of them ran over, in ms.
+// `cap` sleeps of 5 ms; the most turns of the others any of them was
+// woken past its time.
 static void* naps(void* self) {
     int64_t worst = 0;
     for (int64_t i = 0; i < cap(self); i++) {
-        int64_t t0 = now_ns();
+        g_due_turn = 0;
+        g_due = now_ns() + 5000000;
         avra_fiber_sleep(5);
-        int64_t late = (now_ns() - t0) / 1000000 - 5;
+        int64_t late = g_due_turn ? g_turns - g_due_turn : 0;
+        g_due = 0;
         if (late > worst) worst = late;
     }
     return answer(worst);
 }
 
 // Tasks that alternate a run of quick yields with a run of long slices:
-// a sleep is never later than one round of the long slices, however the
-// quick run before it went.
+// a sleep is never later than one round of them, however the quick run
+// before it went — counted in turns.
 static void timers_among_bursts(void) {
     static const int shapes[2][3] = { { 8, 100, 8 }, { 2, 300, 40 } };
     for (int s = 0; s < 2; s++) {
         int workers = shapes[s][0];
-        g_stop = 0; g_quick = shapes[s][1]; g_slow = shapes[s][2];
+        g_stop = 0; g_quick = shapes[s][1]; g_slow = shapes[s][2]; g_turns = 0; g_due = 0; g_due_turn = 0;
         void* w[8];
         for (int i = 0; i < workers; i++) w[i] = spawn1(works_in_bursts, 0);
         int64_t worst = joined(spawn1(naps, 20));
         g_stop = 1;
         for (int i = 0; i < workers; i++) joined(w[i]);
-        CHECK(worst <= workers * 2 + 12, s == 0 ? "twenty sleeps among eight bursting tasks are each late by one round of slices at most" : "twenty sleeps among two bursting tasks are each late by one round of slices at most");
+        CHECK(worst <= workers + 2, s == 0 ? "twenty sleeps among eight bursting tasks are each late by one round of slices at most" : "twenty sleeps among two bursting tasks are each late by one round of slices at most");
     }
 }
 
