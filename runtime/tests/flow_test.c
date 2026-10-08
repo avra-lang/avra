@@ -1636,17 +1636,32 @@ static void* inner_fires_outer_stands(void* self) {
     return answer(0);
 }
 
+// A child copies the owner: which scope owns a tie is seen in its request.
+static void* hears_the_outer(void* self) {
+    (void)self;
+    g_byte_d = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    return answer(0);
+}
+
 static void* equal_limits_outer_owns(void* self) {
     (void)self;
     g_outer = avra_fiber_within(20);
     g_inner = avra_fiber_within(20);
-    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    ended(spawn1(hears_the_outer, 0));
+    g_byte_a = g_byte_d == 1 && parks_silent() == 0 && avra_fiber_request() == g_outer;
     g_byte_b = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
-    // the tie found again, once the earlier inner limit has asked
+    // the tie found again: once an earlier inner scope has ended, and
+    // once one has asked
     g_outer = avra_fiber_within(20);
     int64_t mid = avra_fiber_within(20);
+    avra_scope_end(avra_fiber_within(10));
+    g_byte_d = 0;
+    ended(spawn1(hears_the_outer, 0));
+    g_byte_c = g_byte_d == 1 && avra_scope_end(mid) == 0 && avra_scope_end(g_outer) == 0;
+    g_outer = avra_fiber_within(20);
+    mid = avra_fiber_within(20);
     g_inner = avra_fiber_within(10);
-    g_byte_c = parks_silent() == 0 && avra_fiber_request() == g_inner;
+    g_byte_c = g_byte_c && parks_silent() == 0 && avra_fiber_request() == g_inner;
     g_byte_c = g_byte_c && parks_silent() == 0 && avra_fiber_request() == g_inner;
     avra_fiber_sleep(30);
     g_byte_d = avra_fiber_request() == g_outer && avra_scope_end(g_inner) == 0 && avra_scope_end(mid) == 0 && avra_scope_end(g_outer) == 1;

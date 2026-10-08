@@ -85,7 +85,7 @@ MUTATIONS = [
     ("a standing scope request lets a park wait", "    if (f->scope_by != 0) return 1;\n    if (f->deadline == 0) return 0;", "    if (f->deadline == 0) return 0;"),
     ("a limit found passed at a park asks nothing", "        deadline_reached(f);\n        return f->scope_by != 0;", "        return 0;"),
     ("a task's cancel leaves a scope's request standing", "    if (f->scope_by != 0) {\n        if (TRACING) traced_dropped(f, f->scope_by, by + 1);\n        f->scope_by = 0;\n    }\n", ""),
-    ("the request read is the scope's over the task's", "{ return g_current->cancel_by ? g_current->cancel_by : g_current->scope_by; }", "{ return g_current->scope_by ? g_current->scope_by : g_current->cancel_by; }"),
+    ("the request read forgets a task's cancel", "{ return g_current->cancel_by ? g_current->cancel_by : g_current->scope_by; }", "{ return g_current->scope_by; }"),
     ("a fork keeps other tasks' waiters", "        retract(f);\n        if (f != g_current) waiter_out(&f->due);\n", "        if (f != g_current) waiter_out(&f->due);\n"),
     ("a fork keeps other tasks' deadlines", "        retract(f);\n        if (f != g_current) waiter_out(&f->due);\n", "        retract(f);\n"),
     ("a fork drops the timer's tasks", "    g_ready_head = g_ready_tail = NULL;\n    g_parked_fds = 0;", "    g_ready_head = g_ready_tail = NULL;\n    g_timers_len = 0;\n    g_parked_fds = 0;"),
