@@ -280,11 +280,8 @@ void avra_llvm_set_weak_odr(LLVMValueRef fn) {
     LLVMSetLinkage(fn, LLVMWeakODRLinkage);
 }
 
-// A body the compiler proved runs at most once (R12, cold_bodies):
-// `cold` tells the optimizer it is rarely reached, `minsize` tells it
-// to favor fewer bytes over fewer cycles inside it — together, the
-// straight-line table-building this marks stops paying for the hot
-// leaves' inlined bodies it will only ever execute once.
+// `cold` tells the optimizer a fn is rarely reached, `minsize` to favor
+// fewer bytes over fewer cycles inside it.
 static LLVMAttributeRef enum_attr(LLVMContextRef ctx, const char* name) {
     unsigned kind = LLVMGetEnumAttributeKindForName(name, strlen(name));
     return LLVMCreateEnumAttribute(ctx, kind, 0);
