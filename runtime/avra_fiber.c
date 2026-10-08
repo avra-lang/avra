@@ -174,8 +174,10 @@ struct Waiter {
 typedef struct Over Over;
 struct Over { Waiter w; Over* next; };
 
-// A `within`'s scope on its task: its id and its limit, in ns.
-typedef struct { int64_t id, at; } Scope;
+// A `within`'s scope on its task: its id, its limit in ns, and the scope
+// with the earliest limit of it and every scope outside it — the outer
+// one on a tie — so a window's owner is read, never searched for.
+typedef struct { int64_t id, at; uint32_t first; } Scope;
 enum { SCOPES = 4 };
 
 enum { HELD = 4 };
@@ -886,13 +888,12 @@ static Scope* scope_at(const Fiber* f, uint32_t i) {
 }
 
 static void owner_found(Fiber* f) {
-    f->deadline = 0;
-    for (uint32_t i = 0; i < f->armed; i++) {
-        int64_t at = scope_at(f, i)->at;
-        if (f->deadline != 0 && at >= f->deadline) continue;
-        f->owner = i;
-        f->deadline = at;
+    if (f->armed == 0) {
+        f->deadline = 0;
+        return;
     }
+    f->owner = scope_at(f, f->armed - 1)->first;
+    f->deadline = scope_at(f, f->owner)->at;
 }
 
 __attribute__((noinline, cold))
@@ -911,17 +912,21 @@ static int64_t within_opened(Fiber* f, int64_t ms) {
     if (i >= SCOPES && i - SCOPES >= f->deeper_cap) scopes_deepened(f);
     int64_t at = deadline_after(ms < 0 ? 0 : ms);
     int64_t id = SCOPE_IDS | ++g_scope_seq;
-    *scope_at(f, i) = (Scope){ id, at };
+    uint32_t first = i;
+    if (i > 0) {
+        uint32_t outer = scope_at(f, i - 1)->first;
+        if (scope_at(f, outer)->at <= at) first = outer;
+    }
+    *scope_at(f, i) = (Scope){ id, at, first };
     f->scopes_n = i + 1;
     if (f->armed != i) return id;
     f->armed = i + 1;
-    if (f->deadline == 0 || at < f->deadline) {
-        f->owner = i;
-        f->deadline = at;
-    }
+    owner_found(f);
     return id;
 }
 
+// Only a `within` whose end is not its `defer` reaches this: a deferred
+// end runs innermost first, whatever leaves the block.
 __attribute__((noinline, cold, noreturn))
 static void scope_out_of_order(Fiber* f, int64_t id) {
     for (uint32_t i = 0; i < f->scopes_n; i++)
@@ -1009,7 +1014,7 @@ static void deadline_fired(Fiber* f) {
 static void scope_inherited(Fiber* child, const Fiber* from) {
     const Scope* s = from->scope_by != 0 ? scope_at(from, from->armed) : from->deadline != 0 ? scope_at(from, from->owner) : NULL;
     if (!s) return;
-    child->scope[0] = *s;
+    child->scope[0] = (Scope){ s->id, s->at, 0 };
     child->scopes_n = child->armed = 1;
     child->owner = 0;
     child->deadline = s->at;

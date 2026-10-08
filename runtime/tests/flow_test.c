@@ -75,7 +75,11 @@ static int64_t g_seen = 0;
 
 // ── a trap, in a child: its words and its status ────────────────
 
-static void trapped(const char* what, void (*body)(void), const char* words) {
+// A CASE ON THE VIRTUAL CLOCK RUNS IN A CHILD UNDER A SHORT BOUND: a
+// clock that never moves hangs it, and the bound turns the hang into a
+// failing check.
+// Whether the bound ended it.
+static int trapped_within(const char* what, void (*body)(void), const char* words, unsigned seconds) {
     int out[2];
     if (pipe(out) != 0) { perror("pipe"); exit(1); }
     pid_t pid = fork();
@@ -83,7 +87,7 @@ static void trapped(const char* what, void (*body)(void), const char* words) {
         avra_fiber_forked();
         dup2(out[1], 2);
         close(out[0]);
-        alarm(60);
+        alarm(seconds);
         body();
         _exit(0);
     }
@@ -99,7 +103,10 @@ static void trapped(const char* what, void (*body)(void), const char* words) {
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2, label);
     snprintf(label, sizeof label, "%s says \"%s\"", what, words);
     CHECK(strstr(buf, words) != NULL, label);
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGALRM;
 }
+
+static void trapped(const char* what, void (*body)(void), const char* words) { trapped_within(what, body, words, 60); }
 
 // ── three sources in one set ────────────────────────────────────
 
@@ -1331,7 +1338,8 @@ static void world_within_reach(void) {
 
 // `body` in a child that a hang cannot outlive; passes when every check
 // the child made held.
-static void in_child_within(const char* what, void (*body)(void), unsigned seconds) {
+// Whether the bound ended it.
+static int in_child_within(const char* what, void (*body)(void), unsigned seconds) {
     fflush(stderr);
     pid_t pid = fork();
     if (pid == 0) {
@@ -1344,9 +1352,24 @@ static void in_child_within(const char* what, void (*body)(void), unsigned secon
     int status = 0;
     waitpid(pid, &status, 0);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, what);
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGALRM;
 }
 
 static void in_child(const char* what, void (*body)(void)) { in_child_within(what, body, 30); }
+
+// A CLOCK THAT NEVER MOVES HANGS EVERY CASE ON IT: the first one its
+// bound ends says so, and each after it fails at once, unrun.
+static int g_clock_stuck = 0;
+
+static void on_virtual_clock(const char* what, void (*body)(void)) {
+    if (g_clock_stuck) { CHECK(0, what); return; }
+    g_clock_stuck = in_child_within(what, body, 5);
+}
+
+static void trapped_on_virtual_clock(const char* what, void (*body)(void), const char* words) {
+    if (g_clock_stuck) { CHECK(0, what); return; }
+    g_clock_stuck = trapped_within(what, body, words, 5);
+}
 
 static void winner_leaves_at_claim(void) {
     g_gate = avra_gate_new();
@@ -1906,6 +1929,18 @@ static void a_fifth_scope(void) {
     CHECK(g_byte_c == 1 && g_byte_d == 1, "the outermost of six owns its limit over five inner ones");
 }
 
+// A hundred thousand nested scopes, each earlier than the one outside
+// it, so each owns the limit while it stands: they open and end in
+// time proportional to their number.
+static void a_deep_nest_ends_in_linear_time(void) {
+    enum { DEEP = 100000 };
+    static int64_t ids[DEEP];
+    int64_t t0 = avra_now_ns();
+    for (int i = 0; i < DEEP; i++) ids[i] = avra_fiber_within(10000000 - i);
+    for (int i = DEEP - 1; i >= 0; i--) avra_scope_end(ids[i]);
+    CHECK(ms_since(t0) < 500, "a hundred thousand nested scopes, each the owner, open and end in linear time");
+}
+
 static void scope_ended_out_of_order(void) {
     int64_t outer = avra_fiber_within(1000);
     avra_fiber_within(2000);
@@ -2058,6 +2093,8 @@ int main(int argc, char** argv) {
     in_child("a closed descriptor's number is watched afresh for its next tenant", closed_number_is_watched_afresh);
     in_child("a sleep and a reader among yielding tasks wake within reach", world_within_reach);
     in_child("timers among tasks that compute between yields fire at the first switch after", timers_among_workers);
+    in_child_within("a deadline is filed once, and heard", deadline_once, 10);
+    in_child_within("a deadline reaches what it must, and no further", deadline_reach, 10);
     if (g_fails) {
         printf("flow: %d checks, %d failed — the rest would hang on what these hold\n", g_checks, g_fails);
         return 1;
@@ -2074,30 +2111,31 @@ int main(int argc, char** argv) {
     // ON THE VIRTUAL CLOCK, each in a child: a clock that never moves is
     // a hang, which the short alarm turns into a failing check, and the
     // cases after them run on a clock nothing here can have left moved
-    in_child_within("a cancel cuts a sleep, on the virtual clock", cancel_cuts_sleep, 5);
-    trapped("a join a cancel cuts", cut_join, "a join was cut by a cancel, and its task has not answered");
-    trapped("a join under a standing cancel", standing_join, "a join was cut by a cancel, and its task has not answered");
-    in_child_within("a scope's end cancels what it owns, then joins it", a_scopes_end_cancels_what_it_owns, 5);
+    on_virtual_clock("a cancel cuts a sleep, on the virtual clock", cancel_cuts_sleep);
+    trapped_on_virtual_clock("a join a cancel cuts", cut_join, "a join was cut by a cancel, and its task has not answered");
+    trapped_on_virtual_clock("a join under a standing cancel", standing_join, "a join was cut by a cancel, and its task has not answered");
+    on_virtual_clock("a scope's end cancels what it owns, then joins it", a_scopes_end_cancels_what_it_owns);
     in_child_within("a cut yield still switches", a_cut_yield_still_switches, 5);
     in_child_within("a cancel cuts a descriptor park", cancel_cuts_fd_park, 5);
-    in_child_within("a park a cancel claims sets the bit, a deadline does not yet", wait_park_sets_the_bit, 5);
+    on_virtual_clock("a park a cancel claims sets the bit, a deadline does not yet", wait_park_sets_the_bit);
     in_child_within("a yield is a cancel point", a_yield_is_a_cancel_point, 5);
-    in_child_within("a claim made before a cancel is taken first", claim_first_then_cancel, 5);
-    in_child_within("a task cancelled before it runs meets the cancel at its first point", cancelled_before_it_runs, 5);
-    in_child_within("the unwind bit is the running task's", the_bit_is_the_running_tasks, 5);
-    in_child_within("a second cancel changes nothing", cancel_twice, 5);
+    on_virtual_clock("a claim made before a cancel is taken first", claim_first_then_cancel);
+    on_virtual_clock("a task cancelled before it runs meets the cancel at its first point", cancelled_before_it_runs);
+    on_virtual_clock("the unwind bit is the running task's", the_bit_is_the_running_tasks);
+    on_virtual_clock("a second cancel changes nothing", cancel_twice);
     in_child_within("a standing cancel parks no descriptor", a_standing_cancel_parks_no_descriptor, 5);
-    in_child_within("a cancel passes down a scope's join to what it owns", cancel_passes_down_a_scopes_join, 5);
-    trapped("a join of a cancelled task", join_of_cancelled, "a join takes a task that answers, and this one was cancelled");
-    in_child_within("a time due on a claimed set is dropped, on the virtual clock", due_on_a_claimed_set, 5);
-    in_child_within("every scope keeps its own limit", every_scope_its_own_limit, 5);
+    on_virtual_clock("a cancel passes down a scope's join to what it owns", cancel_passes_down_a_scopes_join);
+    trapped_on_virtual_clock("a join of a cancelled task", join_of_cancelled, "a join takes a task that answers, and this one was cancelled");
+    on_virtual_clock("a time due on a claimed set is dropped, on the virtual clock", due_on_a_claimed_set);
+    on_virtual_clock("every scope keeps its own limit", every_scope_its_own_limit);
     in_child_within("scope ids never collide", scope_ids, 10);
     in_child_within("three scopes keep one deadline entry", one_entry_under_three_scopes, 5);
-    in_child_within("a fifth scope behaves as the four", a_fifth_scope, 5);
+    on_virtual_clock("a fifth scope behaves as the four", a_fifth_scope);
+    in_child_within("a deep nest of scopes ends in linear time", a_deep_nest_ends_in_linear_time, 30);
     trapped("a scope ended while one inside it stands", scope_ended_out_of_order, "a `within` ended while one inside it stands");
-    in_child_within("a task's cancel outranks a scope's request", task_cancel_outranks_a_scope, 5);
+    on_virtual_clock("a task's cancel outranks a scope's request", task_cancel_outranks_a_scope);
     in_child_within("a scope's request does not displace a task's cancel", a_scope_does_not_displace_a_task_cancel, 5);
-    in_child_within("the outer scope's request stands", the_outer_request_stands, 5);
+    on_virtual_clock("the outer scope's request stands", the_outer_request_stands);
     a_dropped_request_is_traced(argv[0]);
     in_child_within("a fork keeps the caller's scopes", forked_keeps_the_callers_scopes, 5);
     in_child_within("a virtual task inherits a scope", virtual_scopes, 5);
@@ -2106,10 +2144,8 @@ int main(int argc, char** argv) {
     joins_of_tasks_nothing_runs();
     overflow_list();
     opened_gate();
-    deadline_once();
     slots();
     ends_without_parking();
-    deadline_reach();
     fork_forgets_deadlines();
     claim_before_cancel();
     interrupt_is_its_own_claim();
