@@ -3430,6 +3430,11 @@ AvraTaskLocal avra_main_local;
 AvraTaskLocal* avra_task_local = &avra_main_local;
 _Static_assert(AVRA_SLOT_ASKER < AVRA_TASK_SLOTS && AVRA_SLOT_FLOW < AVRA_TASK_SLOTS, "a slot key outside the table");
 
+// THE RUNNING TASK'S UNWIND BIT: set where a cancel meets a cancel
+// point, and read after every call that may reach one. A switch saves
+// it into the task it leaves and loads the next task's.
+uint8_t avra_unwinding = 0;
+
 __attribute__((noinline, cold, noreturn))
 static void slot_refused(void) { avra_trap("a task has four slots, and this is none of them"); }
 

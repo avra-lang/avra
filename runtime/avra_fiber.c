@@ -312,8 +312,6 @@ static void fiber_freed(Fiber* f) {
 
 static int64_t id_of(const Fiber* f) { return f->local->id; }
 
-uint8_t avra_unwinding = 0;
-
 // ── The trace ───────────────────────────────────────────────────
 //
 // `AVRA_FLOW_TRACE=1` writes one line per event to stderr, any other
@@ -2157,6 +2155,10 @@ int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t time
 int64_t avra_vtask_timed_out(int64_t t) { return virtual_at(t)->timed_out; }
 
 int64_t avra_vtask_interrupted(int64_t t) { return virtual_at(t)->interrupted; }
+
+// The task's unwind bit, as the task itself wears it: what a read of
+// the flag inside that task answers.
+int64_t avra_vtask_unwinding(int64_t t) { return virtual_at(t)->unwinding; }
 
 int64_t avra_vtask_within(int64_t t, int64_t ms) { return within_opened(virtual_at(t), ms); }
 

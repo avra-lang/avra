@@ -41,6 +41,10 @@ CLEAN = ("hello", "data", "slot")
 SPAWNING = "spawns"
 SIZED = ("hello", "data")
 CEILING = 10
+# A C program that only reads the runtime's unwind byte. The tree cannot
+# spell that read in Avra yet, so the fixture is C: it proves the read
+# links the core runtime and no scheduler member.
+READ = os.path.join(FIXTURES, "read.c")
 
 
 def say(words):
@@ -175,6 +179,15 @@ def built(avra, name, work):
     return binary, ran(avra, "emit", at).stdout
 
 
+def built_read(work, archive):
+    """The flag read fixture, linked against the archive -> (binary, the link's words)."""
+    binary = os.path.join(work, "read")
+    made = ran(os.environ.get("CC", "cc"), "-O2", READ, archive, "-o", binary)
+    if made.returncode != 0 or not os.path.isfile(binary):
+        return None, (made.stdout + made.stderr).strip()
+    return binary, ""
+
+
 def gate(accept):
     avra = os.environ.get("AVRA", os.path.join(ROOT, "build", "avra"))
     archive = os.path.join(os.path.dirname(avra), "libavra_runtime.a")
@@ -228,6 +241,25 @@ def gate(accept):
             if name in SIZED:
                 sizes[name] = (stripped_size(binary), code_size(binary))
 
+        binary, why = built_read(work, archive)
+        if binary is None:
+            say(f"the flag read did not link:\n{why}")
+            fail = 1
+        else:
+            symbols = symbols_of(ran("nm", binary).stdout)
+            read += len(symbols)
+            if not symbols:
+                say("the flag read names no symbol — a stripped binary proves nothing")
+                fail = 1
+            else:
+                found = carried(symbols, banned)
+                if found:
+                    say(f"a program that reads the flag and spawns nothing carries {shown(found, banned)}; "
+                        f"{pulled_by(found, banned, members, '')}")
+                    fail = 1
+                else:
+                    say("a program that reads the flag and spawns nothing carries no scheduler symbol")
+
     for name, now in sizes.items():
         base = accepted.get(here + (name,))
         if 0 in now:
@@ -252,7 +284,7 @@ def gate(accept):
     if fail:
         say("REFUSED")
         return 1
-    say(f"clean — {len(CLEAN)} program(s) carry no scheduler, 1 witness refused, {read} symbol(s) read, "
+    say(f"clean — {len(CLEAN)} Avra program(s) and the C flag read carry no scheduler, 1 witness refused, {read} symbol(s) read, "
         f"{len(sizes)} sized, {sum(1 for n in sizes if here + (n,) in accepted)} held to a baseline")
     return 0
 
@@ -295,6 +327,7 @@ def self_test():
          ("linux-x86_64", "cc: z; link: b", "hello") not in baseline_rows("linux-x86_64 hello 10 20 cc: a; link: b\n")),
         ("a row with no toolchain is no row", baseline_rows("linux-x86_64 hello 10 20\n") == {}),
         ("a binary's names are read", symbols_of("0000 T main\n     U malloc\n") == {"main", "malloc"}),
+        ("the read fixture reads the flag", "avra_unwinding" in open(READ).read()),
     ]
     failed = [what for what, held in checks if not held]
     for what in failed:
