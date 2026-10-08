@@ -424,7 +424,7 @@ impl Decls {
                 Wanted {
                     file: files[at].view.file,
                     decl: null,
-                    name: program_symbol(self.file(files[at].view.file).path),
+                    name: program_symbol(self.file(files[at].view.file).name),
                     sub: null,
                     seats: [],
                     root: null,
@@ -825,22 +825,23 @@ fn program_main(a: Analysis) -> Wanted {
     Wanted {
         file: a.view.file,
         decl: null,
-        name: program_symbol(a.view.decls.file(a.view.file).path),
+        name: program_symbol(a.view.decls.file(a.view.file).name),
         sub: null,
         seats: [],
         root: null,
     }
 }
 
-/// The symbol a program's body wears in a programs binary: its whole
-/// PATH, every separator written as `_`, so a wreck names its file
-/// and no two programs collide. A STEM ALONE COLLIDED: a package's
-/// program test is named after the module it proves
-/// (`std-path/src/tests/path/path.av` beside `std-path/src/path.av`), both
-/// wanted `program$path`, and the one the worklist minted was the
-/// module's — an empty body that printed nothing.
-export fn program_symbol(path: string) -> string {
-    "program\$${path.replace("/", "_").replace(".", "_")}"
+/// The symbol a program's body wears in a programs binary: its file's
+/// NAME (`Workspace.file_name` — its package and its path within it), every
+/// separator written as `_`, so a wreck names its file, no two programs
+/// collide, and no symbol carries where the building machine keeps the tree.
+/// A STEM ALONE COLLIDED: a package's program test is named after the module
+/// it proves (`std-path/src/tests/path/path.av` beside
+/// `std-path/src/path.av`), both wanted `program$path`, and the one the
+/// worklist minted was the module's — an empty body that printed nothing.
+export fn program_symbol(name: string) -> string {
+    "program\$${name.replace("/", "_").replace(".", "_").replace(":", "_")}"
 }
 
 fn declared(a: Analysis) -> List<Wanted> {
@@ -1615,7 +1616,7 @@ fn claim_seen(mut seen: Map<string, bool>, name: string) -> bool {
 impl Decls {
 
     fn mangle(name: string, sub: Sub) -> string {
-        let ids = joined([self.type_wire(a) for a in sub.args], "_")
+        let ids = joined([self.type_symbol(a) for a in sub.args], "_")
         if sub.consts.is_empty() { return "${name}\$${ids}" }
         "${name}\$${ids}@${joined(sub.consts, "_")}"
     }

@@ -497,13 +497,19 @@ impl Workspace {
                     entry,
                     Want.Binary,
                     [],
-                    (met: Derived) -> link_owes(met, runner_module(entry), tools),
+                    (met: Derived) -> link_owes(met, runner_module(self.file_name(entry)), tools),
                 ),
         )?
         let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(self.root)])) }
         if main.view.stmts.is_empty() { fail BuildError.Empty }
         let _ = make_dirs(dir_of(binary))
-        d.linked(runner_module(entry), Keyed { named: entry, beside: [] }, binary, tools)
+        d
+            .linked(
+                runner_module(self.file_name(entry)),
+                Keyed { named: entry, beside: [] },
+                binary,
+                tools,
+            )
     }
 
     /// A binary these exact inputs linked before, placed where a fresh one would
@@ -861,8 +867,8 @@ impl Workspace {
 }
 
 /// A program's own module.
-fn runner_module(entry: string) -> ProgramModule {
-    ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)) }
+fn runner_module(named: string) -> ProgramModule {
+    ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(named)) }
 }
 
 /// WHETHER A LINK OWES THE INSTANTIATIONS A DERIVATION LEFT UNLOWERED: no build
