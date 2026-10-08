@@ -1558,17 +1558,17 @@ printf 'p2' > "$R/kw/src/a|b.txt"
 S "kw: a|b.txt edited, every source held" kw; kw_says "a|b.txt edited under held sources" "b=b2 p=p2"
 
 # A COLLECT GATHERS WHAT ITS SCOPE HOLDS NOW, HELD OR NOT. `kg` depends on `@rt/gk`, whose
-# lib.av collects every `@kind` in its package; its members stand in files nothing imports, so
+# c/lib.av collects every `@kind` in its package, in a module of its own; its members stand in files nothing imports, so
 # only the collect reaches them, and the mark they wear is declared in a file of its own, so a
 # member's compile-time run never reads the collecting file. A member is added, removed, a member file added and deleted —
 # each edit touching no file the collect stands in, so lib.av is held — and A's ordinal follows
 # every time. The root package's own `in package` collect follows the same edits, and `@rt/kc`'s
 # `in closure` list stands with no package collect beside it. After every step a held reading
 # answers what a fresh one does (`--verify-held`), and the evaluator agrees with the binary.
-mkdir -p $R/gk/src/m $R/kc/src/z $R/kg/src/m
+mkdir -p $R/gk/src/m $R/gk/src/c $R/kc/src/z $R/kg/src/m
 printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $R/gk/avra.toml
 printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $R/gk/src/k.av
-printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $R/gk/src/lib.av
+printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $R/gk/src/c/lib.av
 printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
 printf '[package]\nname = "@rt/kc"\nversion = "0.1.0"\n' > $R/kc/avra.toml
 printf 'use @std.meta.{Named}\nexport fn mark(_t: Named) {}\n' > $R/kc/src/mk.av
@@ -1578,7 +1578,7 @@ printf '[package]\nname = "rt-kg"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk"
 printf 'use @std.meta.{Named}\nexport fn rank(_t: Named, _r: int) {}\n' > $R/kg/src/rm.av
 printf 'use rm.{rank}\nexport collect enum Rk = @rank in package by it.mark.args[0]\nexport fn r_at() -> int { Rk.P.ordinal }\n' > $R/kg/src/rk.av
 printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
-printf 'use @rt.gk.lib.{a_at}\nuse @rt.kc.kc.{c_at}\nuse rk.{r_at}\nprintln("a=${a_at()} r=${r_at()} c=${c_at()}")\n' > $R/kg/src/main.av
+printf 'use @rt.gk.c.{a_at}\nuse @rt.kc.kc.{c_at}\nuse rk.{r_at}\nprintln("a=${a_at()} r=${r_at()} c=${c_at()}")\n' > $R/kg/src/main.av
 kg_step() { # kg_step <label> <wanted a=… r=…>: built, the binary agrees with the evaluator and prints it, a held reading agrees with a fresh one
     S "kg: $1" kg
     steps=$((steps+1)); kg_out=$($R/kg/src/main 2>&1)
@@ -1596,7 +1596,7 @@ kg_step "the member removed" "a=0 r=0"
 mkdir -p $R/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $R/gk/src/n/n.av
 kg_step "a member file added in a module of its own" "a=1 r=0"
 kg_read=$(printf '%s\n' "$out" | cat - $R/kg.err | sed -n '/^read:/,$p')
-steps=$((steps+1)); case "$kg_read" in *"gk/src/lib.av — its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  kg: a member file added: lib.av was not read for what it gathers: $(printf '%s' "$kg_read" | tr '\n' ' ' | cut -c1-240)" ;; esac
+steps=$((steps+1)); case "$kg_read" in *"gk/src/c/lib.av — its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  kg: a member file added: lib.av was not read for what it gathers: $(printf '%s' "$kg_read" | tr '\n' ' ' | cut -c1-240)" ;; esac
 rm -rf $R/gk/src/n
 printf 'use k.{kind}\n// n removed\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
 kg_step "the member file deleted, another edited beside it" "a=0 r=0"
