@@ -1,0 +1,57 @@
+//! The IR's read of a runtime flag: one load of the runtime's own byte,
+//! in every consumer, before any lowering emits it.
+use @std.io.{make_dirs, read_text}
+use @std.time.{now_ns}
+use @std.avrac.core.{Ins, Reg, RtFlag}
+use @std.avrac.testing.{ir_of}
+use compiler.backend.{emit_ll, render_ir, run_symbol}
+use compiler.lower.{Lowered}
+
+/// One directory per run, so no earlier run's module answers for this one.
+once fn emit_base() -> string { "/tmp/avra-flag-read-test/${now_ns()}" }
+
+/// A constant bool read as the unwind flag instead.
+fn flagged(i: Ins) -> Ins {
+    match i { .ConstBool(d, _) -> Ins.FlagRead(d, RtFlag.Unwinding), rest -> i }
+}
+
+/// A program whose `probe` answers the unwind flag.
+fn reading_flag() -> Lowered {
+    let l = ir_of("fn probe() -> bool { true }\nprobe()")
+    l with { fns: [b with { ins: [flagged(i) for i in b.ins] } for b in l.fns] }
+}
+
+fn probe_symbol(l: Lowered) -> string { l.fns.find(it.name.contains("probe"))?.name ?? "probe" }
+
+/// The program's LLVM text, or nothing when it did not verify.
+fn emitted() -> string {
+    let _ = make_dirs(emit_base())
+    let path = "${emit_base()}/flag.ll"
+    if emit_ll(reading_flag(), path, "") != null { return "" }
+    read_text(path) catch ""
+}
+
+fn clear(r: Result<bool, string>) -> bool {
+    match r { .Ok(v) -> !v, .Err(_) -> false }
+}
+
+spec "compiler/backend — a runtime flag read" {
+    given "a body that reads the unwind flag" {
+        then "its text names the flag" { render_ir(reading_flag()).contains("= flag unwinding") }
+        // A SET bit is not exercised here: no writer exists yet, so
+        // this pins the read path over the runtime's task, not a value
+        // written to it. The writer is ladder 9's (see the PR).
+        then "evaluated with no task and no writer, the bit reads clear" {
+            let l = reading_flag()
+            clear(run_symbol(l, probe_symbol(l)))
+        }
+        then "native, it loads the runtime's byte, declared and never defined here" {
+            let ll = emitted()
+            ll.contains("@avra_unwinding = external global i8") &&
+                ll.contains("load i8, ptr @avra_unwinding")
+        }
+        then "its identity is its own, never a bool constant's" {
+            Ins.FlagRead(Reg { index: 0 }, RtFlag.Unwinding).fingerprint() != Ins.ConstBool(Reg { index: 0 }, false).fingerprint()
+        }
+    }
+}

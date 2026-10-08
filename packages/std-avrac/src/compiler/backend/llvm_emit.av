@@ -1,6 +1,6 @@
 //! The instruction emitter: `impl Emit`, one arm per IR instruction.
 //! The module/declaration/entry machinery lives in llvm.av.
-use core.{Ins, Reg, BinOp, UnOp, TypeId, RtKind, RtSig}
+use core.{Ins, Reg, BinOp, UnOp, RtFlag, flag_symbol, TypeId, RtKind, RtSig}
 use features.{nothing, absent_tag}
 
 impl Emit {
@@ -58,6 +58,18 @@ impl Emit {
         let _ = self.call("avra_once_slot_commit", [key, self.vals[value.index], slot])
     }
 
+    /// A runtime flag's byte, loaded and asked whether it is set.
+    fn flag_value(flag: RtFlag) -> ptr {
+        let i8 = avra_llvm_int8_type(self.lc)
+        let byte = avra_llvm_build_load(
+            self.b,
+            i8,
+            avra_llvm_runtime_byte(self.m, flag_symbol(flag)),
+            "flag",
+        )
+        avra_llvm_build_icmp(self.b, 33, byte, avra_llvm_const_int(i8, 0, 0), "set")
+    }
+
     fn emit_ins(i: Ins) {
         match i {
             .ConstInt(dst, v) -> self.define(self.const_int_value(dst, v)),
@@ -91,6 +103,7 @@ impl Emit {
                     ),
                 ),
             .OnceCommit(sym, value) -> self.once_committed(sym, value),
+            .FlagRead(_, flag) -> self.define(self.flag_value(flag)),
             .CallPtr(d, f, args) -> self.define(self.call_ptr_value(d, f, args)),
             .Release(r) -> self.released(r),
             .Retain(r) -> self.retained(r),

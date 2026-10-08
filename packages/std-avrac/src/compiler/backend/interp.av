@@ -16,6 +16,7 @@ use core.{
     Reg,
     BinOp,
     UnOp,
+    RtFlag,
     RtSig,
     RtKind,
     Takes,
@@ -832,6 +833,7 @@ impl Machine {
             .ConstInt(d, v) -> self.put_at(d, self.const_int_val(b, d, v), pc),
             .ConstFloat(d, bits) -> self.put_at(d, Val.F(bits), pc),
             .ConstBool(d, v) -> self.put_at(d, Val.B(v), pc),
+            .FlagRead(d, flag) -> self.put_at(d, Val.B(self.flag_now(flag)), pc),
             .ConstStr(d, s) -> self.put_at(d, Val.S(s), pc),
             .Bin(d, op, a, x) -> self.put_at(d, self.bin_val(op, a, x), pc),
             .Un(d, op, src) -> self.put_at(d, self.un_val(op, src), pc),
@@ -992,6 +994,14 @@ impl Machine {
 
     fn trapped(msg: string) {
         self.failures.push(msg)
+    }
+
+    /// A runtime flag as the running task reads it: the task's own bit,
+    /// which the runtime keeps and both engines read.
+    fn flag_now(flag: RtFlag) -> bool {
+        match flag {
+            .Unwinding -> self.running >= 0 && avra_vtask_unwinding(self.tasks[self.running].vt) != 0,
+        }
     }
 
     fn trapped_val(msg: string) -> Val {

@@ -29,10 +29,6 @@ void* avra_task_join(void* task);
 int64_t avra_task_done(void* task);
 // How a task ended: 0 live, 1 answered, 2 cancelled.
 int64_t avra_task_ended(void* task);
-// THE RUNNING TASK'S UNWIND BIT: set where a cancel meets a cancel point,
-// and read after every call that may reach one. A switch saves it into
-// the task it leaves and loads the next task's.
-extern uint8_t avra_unwinding;
 
 // Every other ready task runs once before the caller resumes.
 void avra_fiber_yield(void);
@@ -161,6 +157,9 @@ void avra_vtask_sleep(int64_t t, int64_t ms);
 int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms);
 int64_t avra_vtask_timed_out(int64_t t);
 int64_t avra_vtask_interrupted(int64_t t);
+// The task's unwind bit, as the task itself wears it: what a read of
+// the flag inside that task answers.
+int64_t avra_vtask_unwinding(int64_t t);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
 void avra_vtask_within_end(int64_t t, int64_t id);
 // The task's deadline, in ns; 0 when none.
