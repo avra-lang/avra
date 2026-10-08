@@ -1,0 +1,54 @@
+//! A check run with the sound check asked is never answered by a check
+//! kept without it: the flag changes what a check reports, so it is part of
+//! the store a check is kept in. `avra_bin` is hang_test's own.
+use @std.io.{make_dirs, write_text}
+use @std.process.{tool, cmd, minimal, Env}
+use @std.time.{ms, now_ns}
+
+/// One directory per run, so no earlier run's store answers for this one.
+once fn run_base() -> string { "/tmp/avra-sound-check-cache-test/${now_ns()}" }
+
+/// A one-file package.
+fn sound_package(name: string) -> string {
+    let r = "${run_base()}/${name}"
+    let _ = make_dirs("${r}/src")
+    let _ = write_text("${r}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${r}/src/main.av", "fn f() -> int { 1 }\nf()\n")
+    r
+}
+
+/// Whether `avra check --time root` under `env` answered from a kept check.
+fn hit(root: string, env: Env) -> bool? {
+    let avra = match tool(avra_bin()) { .Ok(t) -> t, .Err(_) -> { return null } }
+    match (cmd(avra, ["check", "--time", root]) with { env: env, timeout: ms(60000) }).outcome() {
+        .Ok(ran) -> ran.out.stderr.contains("cache hit"),
+        .Err(_) -> null,
+    }
+}
+
+fn plain() -> Env { minimal().passing(["LLVM_PREFIX"]) }
+
+fn sound() -> Env { plain().with_var("AVRA_SOUND_CHECK", "1") }
+
+spec "avra check — the sound check is part of what a check is kept under" {
+    given "a package checked twice without the sound check" {
+        then "the second check is answered from the first" {
+            let r = sound_package("plain")
+            let _ = hit(r, plain())
+            hit(r, plain()) == true
+        }
+    }
+    given "a package checked without the sound check, then with it" {
+        then "the sound check runs: the kept check does not answer it" {
+            let r = sound_package("asked")
+            let _ = hit(r, plain())
+            hit(r, sound()) == false
+        }
+        then "a second sound check is answered from the first sound one" {
+            let r = sound_package("asked-twice")
+            let _ = hit(r, plain())
+            let _ = hit(r, sound())
+            hit(r, sound()) == true
+        }
+    }
+}
