@@ -2632,5 +2632,3 @@ error[type.interp_hole]: an interpolation hole prints as a scalar or string, fou
 ──╯
 help: interpolate an element or the `length` instead
 ```
-
-A line the compiler never wrote — this file is stale.
