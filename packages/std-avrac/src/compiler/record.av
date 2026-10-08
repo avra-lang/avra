@@ -306,14 +306,16 @@ fn bytes_key_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
     made
 }
 
-/// ONE FILE'S OBJECT KEY, memoized for the build. The key is the module together with
-/// the file's path, so a module-level ask and a file-level ask do not collide.
+/// ONE FILE'S OBJECT KEY, memoized for the build: its parts, with the sets its collects
+/// gather now. The key is the module together with the file's path, so a module-level
+/// ask and a file-level ask do not collide.
 // LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
 fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
-    let key = "${m.text()}\t${path}"
+    let now = [ws.gathered_set(g, ws.file_id(path)) for g in ws.gatherings(path)]
+    let key = "${m.text()}\t${path}\t${fields_wire(now)}"
     let known: string? = ws.keys.object_keys.get().get(key)
     if known != null { return known! }
-    let made = key_of_parts(ws.key_parts_cached(store, m, path))
+    let made = key_of_parts(ws.key_parts_cached(store, m, path) with { gathered: now })
     ws.keys.object_keys.put(key, made)
     made
 }
@@ -1226,13 +1228,6 @@ fn files_iface(ws: Workspace, store: Store, m: ModulePath, paths: List<string>) 
 
 /// Files' interface digests as one — in name order, so the order they were asked in is no part of it.
 fn ifaces_digest(ifaces: List<string>) -> string { digest_of(joined(sorted_texts(ifaces), "\n")) }
-
-/// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its
-/// text, the texts its compile-time runs read, and the interfaces its bodies can see.
-// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
-export fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
-    key_of_parts(ws.key_parts(store, m, path))
-}
 
 /// WHAT ONE FILE'S KEY IS MADE OF: its module and path, its text's digest, the
 /// digest of each text its compile-time runs read ("" for one that is gone), the
