@@ -6,6 +6,7 @@ use compiler.{Workspace, sig_hash}
 use @std.avrac.core.{TypeId, DeclId}
 use @std.avrac.features.{DeclSig, EnumSig, StructSig, NamedSig}
 use compiler.host.{memory_host, memory_host_at}
+use @std.avrac.diagnostics.{Diag, render, new_source_file}
 
 /// A small package: a root file, a root sibling, a directory module
 /// with two ws_files, and a lone-file module.
@@ -86,6 +87,24 @@ fn searched(word: string) -> List<string> {
         "/w",
     )
         .link_words("")
+}
+
+/// The manifest of a package whose search row is `word`.
+fn searching(word: string) -> string {
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"${word}\"]\n"
+}
+
+/// What a package whose search row is `word` says, under `self_naming`'s
+/// environment.
+fn unset_voices(word: string) -> List<Diag> {
+    mut fs = ws_files()
+    fs.set("/w/avra.toml", searching(word))
+    fs.set("/w/src/main.av", "1\n")
+    let ws = test_workspace(
+        memory_host(fs, ws_names().concat(["/w/avra.toml"])) with { env: self_naming },
+        "/w",
+    )
+    [d for d in ws.program(null).voices if d.kind == "manifest.unset_link_variable"]
 }
 
 /// A manifest whose raw link option is a shell command — the
@@ -712,6 +731,23 @@ spec "avra fmt --write's own receipt" {
                 .Ok(text) -> text.contains("ccccccccccccccccccccccccccccccc\",\n    ]"),
                 .Err(_) -> false,
             }
+        }
+    }
+    given "a `[link]` hole whose variable is unset" {
+        then "inside a longer word, it is refused naming the variable" {
+            let said = unset_voices("\$" + "{UNSET}/lib")
+            said.length == 1 && said[0].message.contains("`UNSET`")
+        }
+        then "as the whole word, it is dropped and nothing is said" { unset_voices("\$" + "{UNSET}").is_empty() }
+        then "a set variable inside a word is filled and nothing is said" { unset_voices("\$" + "{Y}/lib").is_empty() }
+        then "the refusal renders at its row" {
+            let word = "\$" + "{UNSET}/lib"
+            render(unset_voices(word)[0], new_source_file("/w/avra.toml", searching(word)))
+                .starts_with(
+                    "error[manifest.unset_link_variable]: `" +
+                        word +
+                        "` in `search` fills `UNSET`, which is not set — a hole inside a `[link]` word needs its variable, or the word names another path\n  ╭─[/w/avra.toml:6:1]",
+                )
         }
     }
 }

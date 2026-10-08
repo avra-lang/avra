@@ -17,6 +17,8 @@ use compiler.host.{
     name_mismatch,
     prelude_depends,
     read_manifest,
+    row_at,
+    unset_link_variable,
 }
 
 // ── The packages ──
@@ -39,6 +41,21 @@ fn empty_manifest() -> Manifest {
         tools: [],
         voices: [],
     }
+}
+
+/// A manifest row whose words are filled from the environment.
+type LinkRow = { section: string, key: string, words: List<string> }
+
+/// The rows a link fills from the environment — `[link.raw]` only for the
+/// program's own manifest, the one it is heard from.
+fn link_rows(m: Manifest, own: bool) -> List<LinkRow> {
+    [
+        LinkRow { section: "link", key: "objects", words: m.objects },
+        LinkRow { section: "link", key: "wasm_objects", words: m.wasm_objects },
+        LinkRow { section: "link", key: "search", words: m.search },
+        LinkRow { section: "link", key: "libs", words: m.libs },
+    ]
+        .concat(if own { [LinkRow { section: "link.raw", key: "flags", words: m.raw }] } else { [] })
 }
 
 impl Workspace {
@@ -180,7 +197,27 @@ impl Workspace {
     fn packages_voiced() -> List<Diag> {
         flatten([self.manifest(pkg.ordinal).voices for pkg in self.packages()])
             .concat([borrowed_raw(pkg) for pkg in self.packages() if self.raw_from_dependency(pkg)])
+            .concat(flatten([self.unset_link_holes(pkg) for pkg in self.packages()]))
             .concat(self.package_voices.get())
+    }
+
+    /// Every hole inside a longer `[link]` word whose variable is unset,
+    /// refused by name.
+    fn unset_link_holes(pkg: Package) -> List<Diag> {
+        flatten(
+            [self.unset_in(pkg, row, w) for row in link_rows(self.manifest(pkg.ordinal), pkg.ordinal == 0) for w in row.words],
+        )
+    }
+
+    /// One word's unset holes; none for a word that is only its hole.
+    fn unset_in(pkg: Package, row: LinkRow, word: string) -> List<Diag> {
+        if whole_hole(word) { return [] }
+        [unset_link_variable(
+            row_at(self.manifest_source(pkg), row.section, row.key),
+            row.key,
+            word,
+            name,
+        ) for name in holes(word) if self.env(name) == null]
     }
 
     /// A dependency asking for raw linker options: `[link.raw]` is the

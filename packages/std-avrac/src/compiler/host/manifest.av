@@ -702,6 +702,24 @@ export fn duplicate_package(at: Loc?, key: string, first: string, second: string
     )
 }
 
+/// Where a manifest writes `section.key`; none where it does not.
+export fn row_at(src: SourceFile, section: string, key: string) -> Loc? {
+    let e? = parse_toml(src.text).entry(section, key) else { return null }
+    loc_at(src.file, span_of(e.lo, e.hi))
+}
+
+/// A `[link]` word whose hole names a variable this machine does not set,
+/// with more of the word around it.
+export fn unset_link_variable(at: Loc?, key: string, word: string, name: string) -> Diag {
+    refusal(
+        "manifest.unset_link_variable",
+        at,
+        "`${word}` in `${key}` fills `${name}`, which is not set — a hole inside a `[link]` word needs its variable, or the word names another path",
+        "here",
+        "set `${name}`, or write the word without the hole; a word that is only the hole is dropped while its variable is unset",
+    )
+}
+
 export fn no_target(root: string) -> Diag {
     refusal(
         "manifest.no_target",
