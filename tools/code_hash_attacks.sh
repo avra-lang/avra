@@ -12,7 +12,7 @@ set -u
 cd "$(dirname "$0")/.."
 A=$(pwd)/avra
 R=build/code-hash-attacks; fails=0; cases=0
-rm -rf "$R" && mkdir -p "$R"
+rm -rf "$R" .avra-cache && mkdir -p "$R"
 
 # One program: the leaf's value, the path's declarations, the query's body,
 # and what the program does before it asks.
