@@ -146,11 +146,6 @@ ACKNOWLEDGED_GAPS = {
         "fn_wire_marks_test.av's own shape) mints no declaration, only scalar "
         "and structural types. type_wire/interface_type's own exemplars stay "
         "at scalars and composites for the same reason.",
-    ("type_wire", "read_type_wire"):
-        "read_type_wire is the lower-level primitive (words, at) both "
-        "registered decoders wrap — interface.type_wire/interface_type and "
-        "interface.type_wire/settlement_wire.type_from_wire already exercise "
-        "it through those two call sites.",
 }
 
 
