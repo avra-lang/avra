@@ -1,0 +1,469 @@
+//! A FN'S CODE HASH (`@std/meta`'s `code_hash`): what its lowered code
+//! does, and everything it can reach, as one key — never its name, a
+//! comment or a span. A body is digested with every symbol it names
+//! replaced by that symbol's own hash, so a rename moves nothing; a
+//! recursion cycle is hashed as one unit, each member by its COLOUR
+//! (`close`), never its name. A call THROUGH a fn value reaches every fn
+//! whose address the program takes, so the callee it cannot name is
+//! covered all the same. EVERY REFERENCE LIST IS POSITIONAL — a body's
+//! in the order its instructions name them, a static's in slot order —
+//! but the fn values', a set, since a value dispatches by address.
+//!
+//! THE LAW OF A CYCLE: two members with equal final colours have equal
+//! unfoldings, so they behave alike — equal hashes are never stale.
+//!
+//! A body held from an earlier build has no instructions here. A hash
+//! that reaches one cannot be computed, so it is ABSENT, and what it keys
+//! is neither read nor kept: a recompute, never a stale answer. The
+//! process says so once.
+use @std.text.{parse_int}
+use core.{
+    Ins,
+    Reg,
+    Level,
+    Stack,
+    new_stack,
+    sorted_texts,
+    Static,
+    StaticBox,
+    Slot,
+    TypeId,
+    TypeRegistry,
+    Digest,
+    new_digest,
+    digest_int,
+    digest_text,
+    digest_bytes,
+    digest_key,
+    digest_ins,
+    resymbolled,
+    symbols_of,
+    static_code_syms,
+    flatten,
+    qtrace,
+}
+
+/// The symbol of the body that answers `target`'s code hash.
+export fn code_hash_symbol(target: string) -> string { "avra.code_hash.${target}" }
+
+/// The code hashes a program answers: a body for each, and each as
+/// `target=hash`, or the target alone where it has none.
+export type CodeHashes = { bodies: List<Body>, keys: List<string> }
+
+/// Each asked target's code hash, over the program's bodies and statics
+/// and the code of every held file; `held` names the bodies an earlier
+/// build stands in for. A held file's own asks are answered too.
+export fn code_hashes(
+    types: TypeRegistry,
+    bodies: List<Body>,
+    statics: List<Static>,
+    held: List<string>,
+    targets: List<string>,
+    kept: List<CodeFacts>,
+) -> CodeHashes {
+    let asked = distinct_targets(targets.concat(flatten([f.asked for f in kept])))
+    if asked.is_empty() { return CodeHashes { bodies: [], keys: [] } }
+    // fresh code last, so it wins over a kept record of the same name
+    let facts = kept.concat([code_facts(types, bodies, statics, targets)])
+    mut g = code_graph(facts, held)
+    mut out: List<Body> = []
+    mut keys: List<string> = []
+    for t in asked {
+        let h = g.hash(t)
+        out.push(hash_body(types, t, h))
+        keys.push(if h == null { t } else { "${t}=${h!}" })
+    }
+    CodeHashes { bodies: out, keys: keys }
+}
+
+/// The body answering one target's hash: its text, or absence when it
+/// reaches a held body.
+fn hash_body(types: TypeRegistry, target: string, hash: string?) -> Body {
+    let r0 = Reg { index: 0 }
+    let answer = types.type(string?)
+    let made = if hash == null { Ins.ConstInt(r0, 0) } else { Ins.ConstStr(r0, hash!) }
+    Body {
+        name: code_hash_symbol(target),
+        params: [],
+        ret: answer,
+        gives: r0,
+        ins: [Ins.ScopeEnter(Level.Application), made, Ins.ScopeExit(r0), Ins.RetVal(r0)],
+        reg_types: [answer],
+        weak: true,
+    }
+}
+
+fn distinct_targets(targets: List<string>) -> List<string> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<string> = []
+    for t in targets {
+        if seen.get(t) == null {
+            seen.set(t, true)
+            out.push(t)
+        }
+    }
+    out
+}
+
+/// One node of the code graph: what it is made of with the names it
+/// reaches left out (`own`), and the names it reaches — in the order it
+/// reaches them, or as a SET when the node is the program's fn values.
+type CodeNode = { own: string, refs: List<string>, set: bool = false }
+
+/// THE PROGRAM'S FN VALUES, as one node: every address the program
+/// takes. A body that calls through a value reaches this node, so the
+/// fold costs one edge however many addresses there are. No symbol holds
+/// a space, so this name is no body's.
+const values_node: string = "fn values"
+
+/// The program's code as a graph, and the hashes asked of it so far.
+type CodeGraph = {
+    nodes: Map<string, CodeNode>,
+    held: Map<string, bool>,
+    hashes: Map<string, string>,
+    /// The symbols whose hash reaches a held body, so has none.
+    unhashed: Map<string, bool>,
+    /// Tarjan's walk: each node's visit number and lowest reach, the
+    /// open stack, and the next number.
+    order: Map<string, int>,
+    low: Map<string, int>,
+    stack: Stack<string>,
+    open: Map<string, bool>,
+    next: int,
+}
+
+fn code_graph(facts: List<CodeFacts>, held: List<string>) -> CodeGraph {
+    mut nodes: Map<string, CodeNode> = {}
+    let values = distinct_targets(flatten([f.addressed for f in facts]))
+    nodes.set(values_node, CodeNode { own: digest_of_name(values_node), refs: values, set: true })
+    for f in facts {
+        for n in f.nodes { nodes.set(n.name, CodeNode { own: n.own, refs: n.refs }) }
+    }
+    mut held_names: Map<string, bool> = {}
+    for h in held { held_names.set(h, true) }
+    CodeGraph {
+        nodes: nodes,
+        held: held_names,
+        hashes: {},
+        unhashed: {},
+        order: {},
+        low: {},
+        stack: new_stack(),
+        open: {},
+        next: 0,
+    }
+}
+
+/// WHAT A FILE'S CODE IS, as the code graph reads it: each body and
+/// static as a node, the fn addresses they take, and the hashes they ask
+/// — kept beside the file's object, so a build that holds the file
+/// hashes through it all the same.
+export type CodeFacts = { nodes: List<FactNode>, addressed: List<string>, asked: List<string> }
+
+/// One node of a file's code: its name, what it is made of, what it
+/// reaches.
+export type FactNode = { name: string, own: string, refs: List<string> }
+
+/// The code of these bodies and statics, and the hashes they ask.
+export fn code_facts(
+    types: TypeRegistry,
+    bodies: List<Body>,
+    statics: List<Static>,
+    asked: List<string>,
+) -> CodeFacts {
+    let lowered = [b for b in bodies if !b.ins.is_empty()]
+    CodeFacts {
+        nodes: [fact_node(b.name, body_node(types, b)) for b in lowered]
+            .concat([fact_node(s.name, static_node(s)) for s in statics]),
+        addressed: addressed(lowered, statics),
+        asked: distinct_targets(asked),
+    }
+}
+
+fn fact_node(name: string, n: CodeNode) -> FactNode { FactNode { name: name, own: n.own, refs: n.refs } }
+
+/// A file's code as text: every field behind its length, every list
+/// behind its count, so no field's text can move a boundary.
+export fn code_facts_wire(f: CodeFacts) -> string {
+    let nodes = [field(n.name) + field(n.own) + fields(n.refs) for n in f.nodes]
+    field("${nodes.length}") + nodes.join("") + fields(f.addressed) + fields(f.asked)
+}
+
+fn field(s: string) -> string { "${s.length}:${s}" }
+
+fn fields(xs: List<string>) -> string { field("${xs.length}") + [field(x) for x in xs].join("") }
+
+/// A file's code read back from its text — none for text no
+/// `code_facts_wire` wrote.
+export fn code_facts_from_wire(text: string) -> CodeFacts? {
+    mut r = WireRead { text: text, at: 0, ok: true }
+    let count = r.count()
+    mut nodes: List<FactNode> = []
+    while r.ok && nodes.length < count {
+        let name = r.field()
+        let own = r.field()
+        nodes.push(FactNode { name: name, own: own, refs: r.list() })
+    }
+    let addressed = r.list()
+    let asked = r.list()
+    if !r.ok || r.at != text.length { return null }
+    CodeFacts { nodes: nodes, addressed: addressed, asked: asked }
+}
+
+/// A cursor over a wire's text; `ok` falls the first time a field does
+/// not read.
+type WireRead = { text: string, at: int, ok: bool }
+
+const colon: int = 58
+const zero: int = 48
+
+impl WireRead {
+    /// One field's text, or "" once the wire has failed — its length's
+    /// digits read in place, so a read copies the field and nothing more.
+    mut fn field() -> string {
+        if !self.ok { return "" }
+        mut n = 0
+        mut i = self.at
+        while i < self.text.length && self.text.char_code(i) != colon {
+            let d = self.text.char_code(i) - zero
+            if d < 0 || d > 9 || i - self.at > 18 {
+                self.ok = false
+                return ""
+            }
+            n = n * 10 + d
+            i = i + 1
+        }
+        let from = i + 1
+        if i == self.at || from + n > self.text.length {
+            self.ok = false
+            return ""
+        }
+        self.at = from + n
+        self.text.substring(from, from + n)
+    }
+
+    /// A count field.
+    mut fn count() -> int {
+        let n? = parse_int(self.field()) else {
+            self.ok = false
+            return 0
+        }
+        n
+    }
+
+    /// A list: its count, then each field.
+    mut fn list() -> List<string> {
+        let n = self.count()
+        mut out: List<string> = []
+        while self.ok && out.length < n { out.push(self.field()) }
+        out
+    }
+}
+
+/// Every fn address the program takes, in a body or a static's slot.
+fn addressed(bodies: List<Body>, statics: List<Static>) -> List<string> {
+    distinct_targets(
+        flatten([addressed_in(b) for b in bodies])
+            .concat(flatten([static_code_syms(s.boxes) for s in statics])),
+    )
+}
+
+fn addressed_in(b: Body) -> List<string> { flatten([addressed_at(i) for i in b.ins]) }
+
+fn addressed_at(i: Ins) -> List<string> {
+    match i { .FnAddr(_, sym) -> [sym], rest -> [] }
+}
+
+/// A body as a node: its instructions with each symbol replaced by its
+/// place among the body's references, its seat and register types, and —
+/// when it calls through a fn value — the program's fn values, since a
+/// value may hold any of them.
+fn body_node(types: TypeRegistry, b: Body) -> CodeNode {
+    let refs = distinct_targets(flatten([symbols_of(i) for i in b.ins]))
+    let placed = (sym: string) -> "#${refs.index_of(sym)}"
+    let typed = [types.name_of(t) for t in b.params.concat([b.ret]).concat(b.reg_types)]
+    mut d = digest_int(new_digest(), typed.length)
+    for t in typed { d = digest_text(d, t) }
+    d = digest_int(d, b.ins.length)
+    for i in b.ins { d = digest_ins(d, resymbolled(i, placed)) }
+    CodeNode {
+        own: digest_key(d),
+        refs: if b.ins.any(calls_through) { refs.concat([values_node]) } else { refs },
+    }
+}
+
+fn calls_through(i: Ins) -> bool { i is .CallPtr }
+
+/// A static as a node: its boxes, each code slot replaced by its place.
+fn static_node(s: Static) -> CodeNode {
+    let refs = distinct_targets(static_code_syms(s.boxes))
+    mut d = digest_int(new_digest(), s.boxes.length)
+    for b in s.boxes { d = box_digest(d, b, refs) }
+    CodeNode { own: digest_key(d), refs: refs }
+}
+
+fn box_digest(d: Digest, b: StaticBox, refs: List<string>) -> Digest {
+    match b {
+        .Slots(cells) -> slots_digest(digest_int(d, 1), cells, refs),
+        .Table(keys, values) -> slots_digest(
+            keys.fold(digest_int(digest_int(d, 2), keys.length), (acc, k) -> digest_text(acc, k)),
+            values,
+            refs,
+        ),
+        .Octets(o) -> digest_bytes(digest_int(d, 3), o),
+    }
+}
+
+fn slots_digest(d: Digest, cells: List<Slot>, refs: List<string>) -> Digest {
+    cells.fold(digest_int(d, cells.length), (acc, c) -> slot_digest(acc, c, refs))
+}
+
+fn slot_digest(d: Digest, c: Slot, refs: List<string>) -> Digest {
+    match c {
+        .Int(v) -> digest_int(digest_int(d, 1), v),
+        .Float(bits) -> digest_int(digest_int(d, 2), bits),
+        .Bool(v) -> digest_int(digest_int(d, 3), if v { 1 } else { 0 }),
+        .Text(s) -> digest_text(digest_int(d, 4), s),
+        .Box(at) -> digest_int(digest_int(d, 5), at),
+        .Null -> digest_int(d, 6),
+        .Absent -> digest_int(d, 7),
+        .Code(sym) -> digest_int(digest_int(d, 8), refs.index_of(sym)),
+    }
+}
+
+impl CodeGraph {
+    /// A symbol's code hash: a node's, by its cycle; none for a held body
+    /// and all that reach one; any other name (a runtime row, an
+    /// extern), the name.
+    mut fn hash(sym: string) -> string? {
+        if self.unhashed.get(sym) != null { return null }
+        let known? = self.hashes.get(sym) else { return self.computed(sym) }
+        known
+    }
+
+    mut fn computed(sym: string) -> string? {
+        if self.nodes.get(sym) == null && self.held.get(sym) != null { return self.unhashable(sym) }
+        if self.nodes.get(sym) == null { return digest_of_name(sym) }
+        self.visit(sym)
+        self.hash(sym)
+    }
+
+    /// A held body has no hash, and the process says once that it could
+    /// not compute one.
+    mut fn unhashable(sym: string) -> string? {
+        qtrace("Q\tcode_hash\theld\t${sym}")
+        held_spoken()
+        self.unhashed.set(sym, true)
+        null
+    }
+
+    /// Whether a symbol's hash, or its want of one, is settled.
+    fn settled(sym: string) -> bool { self.hashes.get(sym) != null || self.unhashed.get(sym) != null }
+
+    /// Tarjan's walk from `v`: each finished cycle is hashed as it closes.
+    mut fn visit(v: string) {
+        let n = self.next
+        self.next = n + 1
+        self.order.set(v, n)
+        self.low.set(v, n)
+        self.stack.push(v)
+        self.open.set(v, true)
+        for w in self.edges(v) {
+            if self.nodes.get(w) == null || self.settled(w) { continue }
+            let seen: int? = self.order.get(w)
+            if seen == null {
+                self.visit(w)
+                self.lower_to(v, self.low.get(w) ?? n)
+            } else if self.open.get(w) ?? false {
+                self.lower_to(v, seen!)
+            }
+        }
+        if self.low.get(v) == self.order.get(v) { self.close(v) }
+    }
+
+    mut fn lower_to(v: string, to: int) {
+        if to < self.low.get(v) ?? to { self.low.set(v, to) }
+    }
+
+    /// A node's references.
+    fn edges(v: string) -> List<string> { self.nodes.get(v)?.refs ?? [] }
+
+    /// The cycle rooted at `v`, popped and hashed. A member's place in
+    /// it is its COLOUR: first its own digest, then — round by round
+    /// until no colour splits further — its own colour beside its
+    /// references', a member by its colour and anything outside by its
+    /// hash. Two members share a final colour only when every path out
+    /// of them unfolds alike, so the cycle's digest (its colours,
+    /// sorted, so no name orders them) moves with any edit or rewiring
+    /// that changes what a member can do. None for them all when a
+    /// reference out of the cycle has none.
+    mut fn close(v: string) {
+        mut members: List<string> = []
+        mut more = true
+        while more {
+            let w = self.stack.pop() ?? v
+            self.open.set(w, false)
+            members.push(w)
+            more = w != v
+        }
+        mut inside: Map<string, bool> = {}
+        for m in members { inside.set(m, true) }
+        // every reference out of the cycle is hashed already
+        let outside = flatten(
+            [[r for r in self.edges(m) if inside.get(r) == null] for m in members],
+        )
+        let reached = [self.hash(r) for r in outside]
+        if reached.any(it == null) {
+            for m in members { self.unhashed.set(m, true) }
+            return
+        }
+        mut colours: Map<string, string> = {}
+        // a member is a node by construction: the walk visits nodes alone
+        for m in members { colours.set(m, self.nodes.get(m)!.own) }
+        mut classes = distinct_count(colours.values())
+        mut round = 0
+        while round < members.length {
+            mut next: Map<string, string> = {}
+            for m in members { next.set(m, self.recoloured(m, colours)) }
+            let split = distinct_count(next.values())
+            colours = next
+            if split == classes { break }
+            classes = split
+            round = round + 1
+        }
+        let cycle = digest_key(texts_digest(sorted_texts(colours.values())))
+        for m in members { self.hashes.set(m, digest_key(texts_digest([cycle, colours.get(m)!]))) }
+    }
+
+    /// A member's next colour: its colour, then each reference's — a
+    /// member's colour, or the hash of anything outside; the fn values
+    /// node's references as a sorted set.
+    mut fn recoloured(m: string, colours: Map<string, string>) -> string {
+        let node = self.nodes.get(m)!
+        // a reference out of the cycle has a hash: `close` returned before
+        // recolouring when one had none
+        let parts = [colours.get(r) ?? self.hash(r)! for r in node.refs]
+        digest_key(
+            texts_digest(
+                [colours.get(m)!].concat(if node.set { sorted_texts(parts) } else { parts }),
+            ),
+        )
+    }
+}
+
+/// How many different texts a list holds.
+fn distinct_count(xs: List<string>) -> int { distinct_targets(xs).length }
+
+/// Texts folded in order, each behind its length, the count first.
+fn texts_digest(parts: List<string>) -> Digest { parts.fold(digest_int(new_digest(), parts.length), (d, t) -> digest_text(d, t)) }
+
+fn digest_of_name(sym: string) -> string { digest_key(digest_text(digest_int(new_digest(), 0), sym)) }
+
+/// Said once per process, however many hashes reach a held body.
+once fn held_spoken() -> string {
+    eprintln(
+        "avra: a code hash reached a body held from an earlier build, so what it keys is neither read nor kept this run (AVRA_QTRACE names each)",
+    )
+    ""
+}
+

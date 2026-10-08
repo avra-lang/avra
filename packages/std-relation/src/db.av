@@ -585,12 +585,13 @@ impl AnswersUnder<V> {
         digest: fn(V) -> int,
         record: KeptRecord<V>,
     ) -> V {
+        let query? = record.query else { return self.ran(db, arg, body, again, digest) }
         if self.answered(arg) { return self.ran(db, arg, body, again, digest) }
-        let restored? = self.restored(db, record) else {
+        let restored? = self.restored(db, query, record) else {
             let done = self.run(db, arg, body, again, digest)
             if !done.wrote && db.rows_alone(self.memo.kernel.deps_of(self.memo.query_key(arg))) {
                 let keep = db.durable.keep
-                keep(record.query, record.args, encoded_with(done.value, record.write))
+                keep(query, record.args, encoded_with(done.value, record.write))
             }
             return done.value
         }
@@ -606,9 +607,9 @@ impl AnswersUnder<V> {
 
     /// The owner's record for a call, read back — one that does not read
     /// back is recomputed, never guessed at.
-    fn restored(db: Db, record: KeptRecord<V>) -> V? {
+    fn restored(db: Db, query: string, record: KeptRecord<V>) -> V? {
         let answer = db.durable.answer
-        let bytes? = answer(record.query, record.args) else { return null }
+        let bytes? = answer(query, record.args) else { return null }
         match decoded_with(bytes, record.read) { .Ok(value) -> value, .Err(_) -> null }
     }
 
@@ -644,7 +645,14 @@ type Run<V> = { value: V, wrote: bool }
 
 /// How an answer is kept past the process: the query's durable name, the
 /// call's arguments' stable hash, and the answer's codec.
-export type KeptRecord<V> = { query: string, args: int, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
+/// The name a query's answers are kept under: its durable name and its
+/// code's hash — none when the code has no hash, so nothing is kept.
+export fn code_keyed(name: string, hash: string?) -> string? {
+    let h? = hash else { return null }
+    "${name}#${h}"
+}
+
+export type KeptRecord<V> = { query: string?, args: int, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
 
 // ── voices ──
 

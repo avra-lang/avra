@@ -9,6 +9,8 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
         .Call(callee, _, args) -> {
             let host: string? = cx.extern_callee(e)
             if host != null { return extern_call_reg(cx, e, host!, host_regs(cx, e, args)) }
+            let hashed: Reg? = code_hash_reg(cx, e, args)
+            if hashed != null { return hashed! }
             let regs = embedded_regs(cx, e, args) ?? call_arg_regs(cx, e, args)
             let made: Reg? = named_reg(cx, e, regs)
             if made != null { return made! }
@@ -20,6 +22,19 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
         },
         rest -> cx.foreign_node(e),
     }
+}
+
+/// `code_hash(f)` over a declared fn: the hash of `f`'s code, which the
+/// program answers once every body is lowered. Null for every other
+/// call — and for an argument that names no declared fn, which reaches
+/// `code_hash`'s own body and traps there.
+fn code_hash_reg(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> Reg? {
+    let d? = bound_decl_of(cx.names, e) else { return null }
+    if !cx.view.decls.is_meta_fn(d, "code_hash") || args.length != 1 { return null }
+    let target? = bound_decl_of(cx.names, args[0]) else { return null }
+    // the value wants the target's body, as any fn value does
+    let _ = cx.reg_of(args[0])
+    cx.code_hash_read(e, cx.symbol_at(target, args[0]))
 }
 
 /// `embed("…")`'s one seat: the path of the file the literal names from

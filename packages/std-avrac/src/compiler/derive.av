@@ -8,6 +8,7 @@
 //! hold is answered again from the sources alone.
 use core.{
     distinct,
+    in_file,
     flatten,
     joined,
     sorted_texts,
@@ -23,7 +24,7 @@ use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path, joined_path}
 use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Lowered}
+use compiler.lower.{Lowered, code_facts, code_facts_wire}
 use compiler.host.{no_source}
 use compiler.findings.{Finding, findings_read, findings_text, file_findings}
 
@@ -466,7 +467,11 @@ impl Workspace {
 
     /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
     fn stands_in(s: Store, okey: string, want: Want) -> bool {
-        if !s.has(Stored.Warn, said_key(okey)) || !s.has(Stored.Unit, self.asks_key(okey)) { return false }
+        if !s.has(Stored.Warn, said_key(okey)) ||
+            !s.has(Stored.Unit, self.asks_key(okey)) ||
+            !s.has(Stored.Unit, self.codes_key(okey)) {
+            return false
+        }
         want is .Diagnostics || s.has(Stored.Obj, okey)
     }
 
@@ -511,6 +516,10 @@ impl Workspace {
             StoreRow {
                 says: "what its bodies ask",
                 kept: store.has(Stored.Unit, self.asks_key(okey)),
+            },
+            StoreRow {
+                says: "what its code is",
+                kept: store.has(Stored.Unit, self.codes_key(okey)),
             },
             match want {
                 .Diagnostics -> StoreRow { says: "its rule findings", kept: ruled(store, okey) },
@@ -615,6 +624,7 @@ impl Workspace {
         if !p.clean() { fail Turn.Refused(p.report()) }
         if self.layouts_moved(store, p) { fail at.unheld("a sealed layout moved") }
         at.having_read(self.read_held_asks(store))?
+        at.having_read(self.read_held_codes(store))?
         p
     }
 
@@ -644,7 +654,10 @@ impl Workspace {
         let _ = self.keep_const_units(store, moved)
         let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), at.want)]
         if !adrift.is_empty() { fail at.adrift(adrift) }
-        for a in p.files { self.keep_asks(store, lo, a) }
+        for a in p.files {
+            self.keep_asks(store, lo, a)
+            self.keep_codes(store, lo, a)
+        }
         let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
         said
     }
@@ -657,6 +670,23 @@ impl Workspace {
                 Stored.Unit,
                 self.asks_key(self.held_okey(store, a.view.source.file)),
                 self.wanted_list_wire(asks),
+            )
+    }
+
+    /// What one read file's code is, kept under the file's key.
+    fn keep_codes(store: Store, lo: Lowered, a: Analysis) {
+        let f = a.view.file
+        let facts = code_facts(
+            lo.types,
+            [b for b in lo.unmanaged if in_file(b.file, f)],
+            [s for s in lo.statics if in_file(s.file, f)],
+            [h.target for h in lo.hash_asks if in_file(h.by, f)],
+        )
+        let _ = store
+            .keep_once(
+                Stored.Unit,
+                self.codes_key(self.held_okey(store, a.view.source.file)),
+                code_facts_wire(facts),
             )
     }
 

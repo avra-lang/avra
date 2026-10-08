@@ -52,7 +52,7 @@ use compiler.backend.{
     reaches_world,
 }
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Lowered, Body, Unit, lower_unit}
+use compiler.lower.{Lowered, Body, Unit, lower_unit, code_facts_from_wire}
 use compiler.memory.{memory}
 use @std.relation.engine.{FixpointRefusal, spoken as fixpoint_spoken}
 
@@ -403,6 +403,23 @@ impl Workspace {
             let wants = self
                 .wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
             if wants == null { unread.push(ReadFile { path: path, why: Reads.AsksUnread }) } else { self.hold.held_wants.set(self.hold.held_wants.get().concat(wants!)) }
+        }
+        unread
+    }
+
+    /// Where a file's code lives: beside its object, under the object's key.
+    fn codes_key(okey: string) -> string { node_key(Stored.Unit, ["codes", okey]) }
+
+    /// WHAT EVERY HELD FILE'S CODE IS, read where its bodies are not — so a
+    /// code hash reaching one is computed through it — and the held files
+    /// whose row could NOT be read, which must parse.
+    fn read_held_codes(s: Store) -> List<ReadFile> {
+        mut unread: List<ReadFile> = []
+        for path in held_paths(self) {
+            let codes = code_facts_from_wire(
+                s.get(Stored.Unit, self.codes_key(self.held_okey(s, path))) ?? "",
+            )
+            if codes == null { unread.push(ReadFile { path: path, why: Reads.CodesUnread }) } else { self.hold.held_codes.push(codes!) }
         }
         unread
     }

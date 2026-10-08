@@ -28,6 +28,7 @@ use features.{
 }
 use compiler.{avra, new_workspace, Workspace}
 use compiler.host.{memory_host}
+use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
 
 // ── THE HARNESS ─────────────────────────────────────────────────────
 
@@ -520,6 +521,38 @@ fn same_seen_list(a: List<SeenPart>, b: List<SeenPart>) -> bool { list_eq(a, b, 
 
 fn same_seen(a: SeenPart, b: SeenPart) -> bool { a.module == b.module && a.bytes_key == b.bytes_key && a.files == b.files }
 
+// ── `code_facts_wire`/`code_facts_from_wire` — a held file's code. ──
+
+fn code_facts_exemplars() -> List<CodeFacts> {
+    [
+        CodeFacts { nodes: [], addressed: [], asked: [] },
+        CodeFacts {
+            nodes: [FactNode { name: "leaf", own: "d0", refs: [] }],
+            addressed: [],
+            asked: [],
+        },
+        CodeFacts {
+            nodes: [FactNode { name: "a:b", own: "d1", refs: ["leaf", "c:d"] }],
+            addressed: ["leaf"],
+            asked: ["answer\$body"],
+        },
+    ]
+}
+
+fn code_facts_labels() -> List<string> {
+    ["no code", "a node with no references", "names holding a colon, an address and an ask"]
+}
+
+fn same_code_facts(a: CodeFacts, b: CodeFacts) -> bool {
+    list_eq(a.nodes, b.nodes, same_fact_node) &&
+        same_texts(a.addressed, b.addressed) &&
+        same_texts(a.asked, b.asked)
+}
+
+fn same_fact_node(a: FactNode, b: FactNode) -> bool { a.name == b.name && a.own == b.own && same_texts(a.refs, b.refs) }
+
+fn same_texts(a: List<string>, b: List<string>) -> bool { list_eq(a, b, (x, y) -> x == y) }
+
 // ── `use_kind_word`/`use_kind_of_word` — every variant, one character each. ──
 
 fn use_kind_exemplars() -> List<UseKind> {
@@ -550,6 +583,14 @@ fn same_text(a: string, b: string) -> bool { a == b }
 export fn codec_pairs() -> List<CodecCheck> {
     let ws = codec_workspace()
     [
+        derived(
+            "lower.code_facts_wire/code_facts_from_wire",
+            code_facts_exemplars(),
+            code_facts_labels(),
+            code_facts_wire,
+            code_facts_from_wire,
+            same_code_facts,
+        ),
         derived(
             "record.parts_wire/parts_of",
             key_parts_exemplars(),

@@ -154,6 +154,12 @@ run-time statements belong to the entry file
 
 No witness yet.
 
+## lower.code_hash_const
+
+a const's value holds no code hash — at compile time the program is only what the const reaches
+
+No witness yet.
+
 ## lower.host_fn_twice
 
 a host fn's name is a symbol, and a symbol has one body in a program
@@ -2463,6 +2469,12 @@ No witness yet.
 ## type.embed_file
 
 `embed` answers a file's text — the file stands there and is UTF-8
+
+No witness yet.
+
+## type.code_hash_named
+
+`code_hash` hashes a declared fn, named where it is called
 
 No witness yet.
 
