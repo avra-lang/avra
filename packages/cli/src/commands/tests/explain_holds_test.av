@@ -1,10 +1,9 @@
-//! The hold a check keeps, file by file — what `avra explain --why` and its
-//! older words under `avra cache` read — and `cache`'s modes by their words.
+//! The hold a check keeps, file by file — what `avra explain --why` reads.
 use @std.io.{make_dirs, write_text}
 use @std.time.{now_ns}
 use @std.avrac.compiler.{Want, FileHold}
 use @std.avrac.compiler.families.{Family}
-use commands.{cache_mode, CacheMode, checked_at, root_workspace}
+use commands.{checked_at, root_workspace}
 
 /// A package root of one file under `src/`, holding `text` — its own path
 /// each run, so nothing an earlier run kept answers for it.
@@ -41,18 +40,7 @@ fn edited_lib(name: string) -> string {
 
 fn main_hold(rows: List<FileHold>) -> FileHold? { rows.find(it.path.ends_with("/src/main.av")) }
 
-spec "commands/cache" {
-    given "a mode's word" {
-        then "no word is the summary" {
-            cache_mode("") == CacheMode.Summary
-        }
-        then "each question answers to its own word" {
-            ["why", "dependents", "changed", "held"].all(cache_mode(it) != null)
-        }
-        then "the retired spellings name no mode" {
-            cache_mode("db") == null && cache_mode("explain") == null
-        }
-    }
+spec "commands/explain — held files" {
     given "a package a check has just read" {
         then "every file is held" {
             let rows = holds_after_check(cache_probe("all_held", "let a = 1\na\n"))
