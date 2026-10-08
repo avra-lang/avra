@@ -68,12 +68,13 @@ export fn code_hashes(
     held: List<string>,
     targets: List<string>,
     kept: List<CodeFacts>,
+    known: List<string>,
 ) -> CodeHashes {
     let asked = distinct_targets(targets.concat(flatten([f.asked for f in kept])))
     if asked.is_empty() { return CodeHashes { bodies: [], keys: [] } }
     // fresh code last, so it wins over a kept record of the same name
     let facts = kept.concat([code_facts(decls, bodies, statics, targets)])
-    mut g = code_graph(facts, held)
+    mut g = code_graph(facts, held, known, asked)
     mut out: List<Body> = []
     mut keys: List<string> = []
     for t in asked {
@@ -134,6 +135,7 @@ const values_node: string = "fn values"
 type CodeGraph = {
     nodes: Map<string, CodeNode>,
     held: Map<string, bool>,
+    known: Map<string, bool>,
     hashes: Map<string, string>,
     /// The symbols whose hash reaches a held body, so has none.
     unhashed: Map<string, bool>,
@@ -146,18 +148,32 @@ type CodeGraph = {
     next: int,
 }
 
-fn code_graph(facts: List<CodeFacts>, held: List<string>) -> CodeGraph {
+export fn code_graph(
+    facts: List<CodeFacts>,
+    held: List<string>,
+    known: List<string>,
+    asked: List<string>,
+) -> CodeGraph {
     mut nodes: Map<string, CodeNode> = {}
     let values = distinct_targets(flatten([f.addressed for f in facts]))
     nodes.set(values_node, CodeNode { own: digest_of_name(values_node), refs: values, set: true })
     for f in facts {
         for n in f.nodes { nodes.set(n.name, CodeNode { own: n.own, refs: n.refs }) }
     }
+    // The synthetic body that answers an asked target's hash refers to that target, so
+    // a cycle through it is one the walk already closes.
+    for t in asked {
+        nodes
+            .set(code_hash_symbol(t), CodeNode { own: digest_of_name(code_hash_symbol(t)), refs: [t] })
+    }
     mut held_names: Map<string, bool> = {}
     for h in held { held_names.set(h, true) }
+    mut known_names: Map<string, bool> = {}
+    for k in known { known_names.set(k, true) }
     CodeGraph {
         nodes: nodes,
         held: held_names,
+        known: known_names,
         hashes: {},
         unhashed: {},
         order: {},
@@ -404,8 +420,8 @@ fn slot_digest(d: Digest, c: Slot, refs: List<string>) -> Digest {
 
 impl CodeGraph {
     /// A symbol's code hash: a node's, by its cycle; none for a held body
-    /// and all that reach one; any other name (a runtime row, an
-    /// extern), the name.
+    /// and all that reach one; the name of a runtime row or an extern; none
+    /// for any other symbol, which nothing kept answers for.
     mut fn hash(sym: string) -> string? {
         if self.unhashed.get(sym) != null { return null }
         let known? = self.hashes.get(sym) else { return self.computed(sym) }
@@ -414,6 +430,7 @@ impl CodeGraph {
 
     mut fn computed(sym: string) -> string? {
         if self.nodes.get(sym) == null && self.held.get(sym) != null { return self.unhashable(sym) }
+        if self.nodes.get(sym) == null && self.known.get(sym) == null { return null }
         if self.nodes.get(sym) == null { return digest_of_name(sym) }
         self.visit(sym)
         self.hash(sym)
