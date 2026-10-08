@@ -112,7 +112,10 @@ jobs:
       # rather than on a train. The train runs every keeper regardless.
       - if: github.event_name == 'pull_request'
         name: static keepers
-        run: make -s keepers-static
+        run: |
+          s=$(date +%s)
+          make -s keepers-static
+          echo "speed static $(( $(date +%s) - s ))" >> speed.log
       # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
       # tree whose compiler is main's takes main's binary and builds nothing.
       # Otherwise the newest cached binary only has to BUILD this tree — one
@@ -130,7 +133,10 @@ jobs:
             avra-
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true'
         name: compiler
-        run: if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
+        run: |
+          s=$(date +%s)
+          if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
+          echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
@@ -156,6 +162,29 @@ jobs:
           path: avra-build.tar
           retention-days: 1
 
+      - name: speed baseline
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: speed-base.metrics
+          key: speed-main-prepare-${{ github.sha }}
+          restore-keys: speed-main-prepare-
+      - if: always()
+        name: speed note
+        continue-on-error: true
+        run: |
+          sh tools/speed_note.sh collect speed.log > speed-now.metrics
+          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
+      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+        name: speed baseline copy
+        continue-on-error: true
+        run: cp speed-now.metrics speed-base.metrics
+      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: speed-base.metrics
+          key: speed-main-prepare-${{ github.sha }}
   keepers:
     needs: [prepare]
     if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
@@ -195,15 +224,41 @@ jobs:
           alone=0; a=0; b=0
           make -s -o avra keepers-alone || alone=1
           cp -a . ../keepers-b
+          tb=$(date +%s)
           (cd ../keepers-b && export AVRA_BUILD_LOCK=/tmp/avra-build-b.lock && s=0 && { make -s -o avra keepers-b || s=1; } && { t0=$(date +%s); make -s -o avra seed-check || s=1; echo "keepers: seed-check $(( $(date +%s) - t0 ))s"; } && exit $s) > ../keepers-b.log 2>&1 &
-          make -s -o avra keepers-a || a=1
+          ta=$(date +%s); make -s -o avra keepers-a > keepers-a.log 2>&1 || a=1; cat keepers-a.log
+          echo "speed keepers-a $(( $(date +%s) - ta ))" >> speed.log
           wait $! || b=1
+          echo "speed keepers-b $(( $(date +%s) - tb ))" >> speed.log
           echo "::group::keepers-b and seed-check"; cat ../keepers-b.log; echo "::endgroup::"
           [ "$alone" = 0 ] || echo "::error::a keeper that runs alone refused"
           [ "$a" = 0 ] || echo "::error::a keeper in the first half refused"
           [ "$b" = 0 ] || echo "::error::a keeper in the second half, or the seed check, refused"
           exit $((alone + a + b))
 
+      - name: speed baseline
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: speed-base.metrics
+          key: speed-main-keepers-${{ github.sha }}
+          restore-keys: speed-main-keepers-
+      - if: always()
+        name: speed note
+        continue-on-error: true
+        run: |
+          sh tools/speed_note.sh collect speed.log keepers-a.log ../keepers-b.log > speed-now.metrics
+          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
+      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+        name: speed baseline copy
+        continue-on-error: true
+        run: cp speed-now.metrics speed-base.metrics
+      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: speed-base.metrics
+          key: speed-main-keepers-${{ github.sha }}
   # THE BUILD CACHE, ATTACKED — the train's, like the keepers. Its own job: it
   # clears the store it builds through, and it runs beside the gate.
   cache-attacks:
@@ -225,10 +280,36 @@ jobs:
       - name: built
         run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
       - name: cache-attacks
-        run: make -s -o avra cache-attacks
+        run: |
+          s=$(date +%s)
+          make -s -o avra cache-attacks
+          echo "speed cache-attacks $(( $(date +%s) - s ))" >> speed.log
       - name: code-hash-attacks
         run: make -s -o avra code-hash-attacks
 
+      - name: speed baseline
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: speed-base.metrics
+          key: speed-main-cache-attacks-${{ github.sha }}
+          restore-keys: speed-main-cache-attacks-
+      - if: always()
+        name: speed note
+        continue-on-error: true
+        run: |
+          sh tools/speed_note.sh collect speed.log > speed-now.metrics
+          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
+      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+        name: speed baseline copy
+        continue-on-error: true
+        run: cp speed-now.metrics speed-base.metrics
+      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: speed-base.metrics
+          key: speed-main-cache-attacks-${{ github.sha }}
   gate:
     needs: [prepare]
     if: github.event_name != 'push' && (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '')
@@ -305,10 +386,33 @@ jobs:
             t=$(date +%s)
             build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
-            echo "$p $(( $(date +%s) - t ))s"
+            echo "$p $(( $(date +%s) - t ))s" | tee -a speed.log
           done
           exit $fail
 
+      - name: speed baseline
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: speed-base.metrics
+          key: speed-main-suites-${{ strategy.job-index }}-${{ github.sha }}
+          restore-keys: speed-main-suites-${{ strategy.job-index }}-
+      - if: always()
+        name: speed note
+        continue-on-error: true
+        run: |
+          sh tools/speed_note.sh collect speed.log > speed-now.metrics
+          sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
+      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+        name: speed baseline copy
+        continue-on-error: true
+        run: cp speed-now.metrics speed-base.metrics
+      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: speed-base.metrics
+          key: speed-main-suites-${{ strategy.job-index }}-${{ github.sha }}
   # THE ONE REQUIRED CHECK. Every other job is a shard or a step; this passes
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
