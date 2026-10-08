@@ -4,6 +4,7 @@
 use @std.io.{IoError, OwnDir, own_dir, make_dirs, remove}
 use @std.process.{Signal, Signalled, signalled, tool, cmd}
 use @std.time.{now_ns}
+use commands.{listing_said, read_trace}
 
 /// A fresh directory of this test's own under /tmp, not yet made.
 fn fresh(name: string) -> string { "/tmp/avra-tasks-test-${now_ns()}-${name}" }
@@ -92,5 +93,22 @@ spec "commands/tasks — a signal by number" {
     }
     given "a number that names no one process" {
         then "it is refused by name, before anything is sent" { signalled(0, Signal.Urgent) is .Refused && signalled(-1, Signal.Urgent) is .Refused }
+    }
+}
+
+spec "commands/tasks — a listing, printed" {
+    given "a live process's listing" {
+        then "each task says where it was spawned and what it waits on, then the graph" {
+            listing_said(
+                read_trace(
+                    "ts=9 join id=0 on=1\nts=9 spawn id=1\nts=9 site id=1 pkg/main.av:4\nts=9 park id=1 src=fd:r:6 arm=0:0\nts=9 age id=1 ms=120\n",
+                ),
+            ) == "the program's own run: joins task 1\ntask 1: spawned at pkg/main.av:4; waits on fd:r:6 as 0:0; spawned at most 120 ms before it was listed\nat the trace's end: 2 task(s) alive, 2 waiting, 0 ready or running\n  the program's own run -> task 1\n  task 1 -> descriptor 6 (readable)\n  no ring of joins"
+        }
+    }
+    given "the handler's own line" {
+        then "it is said alone" {
+            listing_said(read_trace("ts=5 unswitched id=1\n")) == "task 1: running, has not switched since it was asked"
+        }
     }
 }

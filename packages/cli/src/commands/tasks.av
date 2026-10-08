@@ -69,8 +69,11 @@ fn listed(pid: int, dir: OwnDir) -> int {
     dir.drop(ask)
     match answer {
         .Answered(text) -> {
-            println(text.trim())
-            0
+            let r = read_trace(text)
+            println(listing_said(r))
+            if r.strays.is_empty() { return 0 }
+            eprintln(listing_strayed(r.strays.length, r.strays[0]))
+            1
         },
         .Silent -> {
             eprintln(unanswered(pid))
@@ -90,6 +93,26 @@ fn listed(pid: int, dir: OwnDir) -> int {
         },
     }
 }
+
+/// A LIVE PROCESS'S LISTING IS A TRACE (runtime/avra_fiber.c), read by
+/// `avra trace`'s own code: a line a task, in the trace's words, then who
+/// waits on whom — or the one line a process that has not switched
+/// answers with.
+export fn listing_said(r: TraceRead) -> string {
+    let lines = [listed_task(t) for t in timelines(r.events)]
+    if r.events.any(said_unswitched(it.ev)) { return lines.join("\n") }
+    lines.concat([graph(waits_at(r.events, null), null)]).join("\n")
+}
+
+/// Whether an event is the handler's own line.
+fn said_unswitched(ev: Happened) -> bool {
+    match ev {
+        .Unswitched -> true,
+        .Spawn or .SpawnAt or .Site or .Join or .Park or .Claim or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .End or .Age or .Other(_) -> false,
+    }
+}
+
+fn listed_task(t: TaskTimeline) -> string { "${task_named(t.task)}: ${[row.words for row in t.rows].join("; ")}" }
 
 /// What an ask came to.
 enum Answer {
@@ -149,6 +172,10 @@ fn unanswered(pid: int) -> string {
 
 fn not_ours(why: string) -> string {
     "avra tasks: the door's directory is not this user's alone (it must be a directory, no link, owned by this user, mode 0700) — ${why}"
+}
+
+fn listing_strayed(n: int, first: string) -> string {
+    "avra tasks: ${n} line(s) of the listing were no event; the first: ${first}"
 }
 
 fn unasked(why: string) -> string { "avra tasks: ${why}" }
