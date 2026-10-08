@@ -731,10 +731,9 @@ ed $R/vh3/src/leaf/mod.av 'raise_thing(n)?' 'let m = n + 0
     raise_thing(m)?'
 S "vh3: a body-only edit in leaf/mod.av — helper/mod.av stays held" vh3
 
-# RULE FINDINGS ARE A CHECK'S WANT: a build keeps none and prints none; a check
-# after that build reads no rule row, so it runs the rules over the file (a miss,
-# never a wrong answer) and speaks what a cold check speaks; a check held on a
-# check's rows speaks the same again.
+# RULE FINDINGS ARE KEPT BY EVERY WANT AND SPOKEN BY A CHECK: a build keeps the
+# rows and prints none; a check after that build holds them and speaks what a
+# cold check speaks; a check held on a check's rows speaks the same again.
 mkdir -p $R/rw/src
 printf '[package]\nname = "rt-rw"\nversion = "0.1.0"\n' > $R/rw/avra.toml
 printf 'mut n = 1\nprintln("${n}")\n' > $R/rw/src/main.av
@@ -966,7 +965,7 @@ HR "ee: what inferred fails moves its inferred E — user's stale row is refused
 S "ee: and the binary reads the inferred E" ee
 ee_got=$($R/ee/src/main 2>&1); steps=$((steps+1))
 [ "$ee_got" = "ee ok 1 err neg err inferred" ] || { fails=$((fails+1)); echo "FAIL  ee printed '$ee_got', wanted 'ee ok 1 err neg err inferred'"; }
-HR "ee: a check reads user, whose rule findings no build kept" check ee 0 user/mod.av read
+HR "ee: a check holds user, whose rule findings the build kept" check ee 0 user/mod.av held
 printf '// checked\n' >> $R/ee/src/main.av
 HR "ee: and the next check holds it" check ee 0 user/mod.av held
 ed $R/ee/src/errs/mod.av "Result<int, Said> {
