@@ -1636,7 +1636,7 @@ rm -rf $gw
 
 # A LIST COLLECT'S TIE IS ORDERED BY QUALIFIED NAME, never by the order files were read in: two
 # members whose `by` keys tie, in p/ and q/, and p/ moved to z/ — the move moves the order
-# (z.X now after q.Y).
+# (z.X now after q.Y), and a warm build answers as a fresh one.
 gt=$(mktemp -d); mkdir -p $gt/gk/src/c $gt/gk/src/p $gt/gk/src/q $gt/app/src
 printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gt/gk/avra.toml
 printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $gt/gk/src/k.av
@@ -1647,15 +1647,15 @@ printf '[package]\nname = "rt-gt"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk"
 printf 'use @rt.gk.c.{x_at}\nprintln("x=${x_at()}")\n' > $gt/app/src/main.av
 steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_cold=$($gt/app/src/main 2>&1)
 mkdir -p $gt/gk/src/z; mv $gt/gk/src/p/p.av $gt/gk/src/z/z.av; rmdir $gt/gk/src/p
+steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_warm=$($gt/app/src/main 2>&1)
 rm -rf $gt/app/.avra-cache
 steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_fresh=$($gt/app/src/main 2>&1)
-[ "$gt_cold" = "x=0" ] && [ "$gt_fresh" = "x=1" ] || { fails=$((fails+1)); echo "FAIL  gt: a list collect's tie: cold '$gt_cold' (wanted x=0), fresh after the move '$gt_fresh' (wanted x=1)"; }
+[ "$gt_cold" = "x=0" ] && [ "$gt_warm" = "x=1" ] && [ "$gt_fresh" = "x=1" ] || { fails=$((fails+1)); echo "FAIL  gt: a list collect's tie: cold '$gt_cold' (wanted x=0), warm '$gt_warm' and fresh '$gt_fresh' after the move (both wanted x=1)"; }
 rm -rf $gt
 
 # AND ORDER IS PART OF THE SET: a list's members whose `by` keys tie are gathered in their own
 # order, so two member files whose order flips change what the collector gathered, with no
-# member's print moved — and the collector is read for it. (That the warm answer equals a
-# fresh one waits on the tie being broken by qualified name: avra-8sb5.57.255.)
+# member's print moved — and the collector is read for it.
 go=$(mktemp -d); mkdir -p $go/gk/src/c $go/gk/src/p $go/gk/src/q $go/app/src
 printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $go/gk/avra.toml
 printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $go/gk/src/k.av
