@@ -71,6 +71,7 @@ use rows.{
     Filing,
     IndexKey,
     text_key,
+    int_fits,
     int_key,
     dense_key,
     bool_key,
@@ -479,10 +480,19 @@ const every_member: List<string> = [
     "all",
 ]
 
+/// The key's index identity: a single int key files under its own slot below
+/// the cap, every other key under its text.
+fn key_index_member(t: Type, keys: List<Field>) -> Decls {
+    if keys.length == 1 && keys[0].kind is .Int {
+        return quote { static fn index_key(k: ${t}Key) -> IndexKey { if int_fits(k.${keys[0].name}) { dense_key(k.${keys[0].name}) } else { text_key(${name(t.name)}.key_text(k)) } } }
+    }
+    quote { static fn index_key(k: ${t}Key) -> IndexKey { text_key(${name(t.name)}.key_text(k)) } }
+}
+
 /// The member names the derive writes onto this relation: every
 /// relation's, the key's when it has one, and one per named lookup.
 fn member_names(t: Type) -> List<string> {
-    let keyed: List<string> = if key_fields(t).is_empty() { [] } else { ["key", "key_text", "by_key"] }
+    let keyed: List<string> = if key_fields(t).is_empty() { [] } else { ["key", "key_text", "index_key", "by_key"] }
     let whole: List<string> = if unique_checks(t).is_empty() { ["replaced"] } else { [] }
     every_member.concat(whole).concat(keyed).concat(["by_${f.name}" for f in named_lookups(t)])
 }
@@ -645,7 +655,7 @@ fn all_member(t: Type) -> Decls {
 
 /// The row's key in each index, in the store's index order.
 fn index_keys_member(t: Type) -> Decls {
-    let keyed = if key_fields(t).is_empty() { [] } else { [quote { [text_key(${name(t.name)}.key_text(self.key()))] }] }
+    let keyed = if key_fields(t).is_empty() { [] } else { [quote { [${name(t.name)}.index_key(self.key())] }] }
     let parts = keyed.concat([keys_of(f) for f in named_lookups(t)])
     quote { fn index_keys() -> List<List<IndexKey>> { [${..parts}] } }
 }
@@ -807,12 +817,8 @@ fn key_members(t: Type) -> List<Decls> {
     [
         quote { fn key() -> ${t}Key { ${t}Key { ..${inits} } } },
         quote { static fn key_text(k: ${t}Key) -> string { ${joined_parts(parts)} } },
-        quote {
-            static fn by_key(db: Db, k: ${t}Key) -> ${t}? {
-                let rs = ${name(t.name)}.rows_in(db)
-                rs.row(rs.first_id(rs.read_text(db, 0, ${name(t.name)}.key_text(k))) ?? -1)
-            }
-        },
+        key_index_member(t, keys),
+        by_key_member(t, keys),
     ]
 }
 
@@ -1344,4 +1350,24 @@ fn snake_letter(c: string, i: int) -> string {
     if at < 0 { return c }
     let low = lower_letters.substring(at, at + 1)
     if i == 0 { low } else { "_${low}" }
+}
+
+/// `by_key`: an int key reads its own slot, a text key its text — the same
+/// `int_fits` test the filing in `index_key` makes, so both find one bucket.
+fn by_key_member(t: Type, keys: List<Field>) -> Decls {
+    if keys.length == 1 && keys[0].kind is .Int {
+        return quote {
+            static fn by_key(db: Db, k: ${t}Key) -> ${t}? {
+                let rs = ${name(t.name)}.rows_in(db)
+                let b = if int_fits(k.${keys[0].name}) { rs.read_slot(db, 0, k.${keys[0].name}) } else { rs.read_text(db, 0, ${name(t.name)}.key_text(k)) }
+                rs.row(rs.first_id(b) ?? -1)
+            }
+        }
+    }
+    quote {
+        static fn by_key(db: Db, k: ${t}Key) -> ${t}? {
+            let rs = ${name(t.name)}.rows_in(db)
+            rs.row(rs.first_id(rs.read_text(db, 0, ${name(t.name)}.key_text(k))) ?? -1)
+        }
+    }
 }
