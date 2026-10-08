@@ -1412,6 +1412,12 @@ error[type.derive_contract]: a trait's `derive` answers the declarations it make
 help: take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>`, or `Declared` when it also has problems to speak, as a `static fn`
 ```
 
+## shape.identity_clash
+
+two variants of one type fold to one identity
+
+No witness here: two variant names fold to one 64-bit identity, which no source can be written to produce — the refusal is reached only by a hash collision.
+
 ## resolve.immutable
 
 assignment needs a `mut` binding

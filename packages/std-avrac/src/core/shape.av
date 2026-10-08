@@ -84,15 +84,18 @@ impl SyntaxArena {
     /// hole narrows to, since no field's spelling can be folded for it. A
     /// kind key admits candidates the matcher refuses, never misses one.
     fn kind_at(at: At) -> int {
-        let parts = match at {
-            .Expr(id) -> [0, self.tag_expr(self.expr(id))],
-            .Stmt(id) -> [1, self.tag_stmt(self.stmt(id))],
-            .Pat(id) -> [2, self.tag_pat(self.pat(id))],
-            .Field(_, _) -> [3, 0],
-            .Param(_, _) -> [4, 0],
+        match at {
+            .Expr(id) -> self.kind_key(0, self.tag_expr(self.expr(id))),
+            .Stmt(id) -> self.kind_key(1, self.tag_stmt(self.stmt(id))),
+            .Pat(id) -> self.kind_key(2, self.tag_pat(self.pat(id))),
+            .Field(_, _) -> self.kind_key(3, 0),
+            .Param(_, _) -> self.kind_key(4, 0),
         }
-        fp(307, parts)
     }
+
+    /// The key of one kind: its category (`At`'s arm, in order) and its
+    /// tag within that category.
+    fn kind_key(category: int, tag: int) -> int { fp(307, [category, tag]) }
 
     /// A node's children, dispatched by kind — read lazily; the
     /// subject is never built into a value of its own. A struct
@@ -800,4 +803,16 @@ export fn matched_runs(store: SyntaxArena, subject: At, shape: Shape) -> List<Li
 export fn matched(store: SyntaxArena, subject: At, shape: Shape) -> List<At>? {
     let acc? = matched_runs(store, subject, shape) else { return null }
     [a.first()! for a in acc]
+}
+
+impl SyntaxArena {
+    /// EVERY NODE KIND THIS COMPILER FOLDS, as `kind_at` folds them — the set a
+    /// rule baked by another compiler is checked against: a kind outside it is
+    /// one this compiler never produces, so the rule naming it matches nothing.
+    fn known_kinds() -> List<int> {
+        [self.kind_key(0, id) for id in self.ids_expr()]
+            .concat([self.kind_key(1, id) for id in self.ids_stmt()])
+            .concat([self.kind_key(2, id) for id in self.ids_pat()])
+            .concat([self.kind_key(3, 0), self.kind_key(4, 0)])
+    }
 }
