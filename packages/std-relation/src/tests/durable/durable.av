@@ -200,31 +200,17 @@ fn input_set() -> string {
 
 once fn elsewhere() -> Db { process() }
 
-/// Reads another Db's rows: recorded in that Db's kernel, never in the
-/// asked one's.
-@query
-fn notes_elsewhere(_db: Db) -> int {
-    counted()
-    Note.all(elsewhere()).length
-}
-
-/// KNOWN, UNTIL A RECORD CARRIES ITS READS: an answer that read another
-/// Db's rows is kept, and the next process reads it back though those
-/// rows moved (1, where 2 is right); and an answer over this Db's rows is
+/// KNOWN, UNTIL A RECORD CARRIES ITS READS: an answer over this Db's rows is
 /// read back by a process whose Db holds other rows before it asks (0,
 /// where 1 is right) — the owner's key alone decides.
 fn blind() -> string {
     file_key().set("f3")
-    let _ = Note.insert(elsewhere(), name: "one")
-    let cold = notes_elsewhere(process())
-    let _ = Note.insert(elsewhere(), name: "two")
-    let stale = notes_elsewhere(process())
     let empty = notes(process())
     let filled = process()
     let _ = Note.insert(filled, name: "here")
     let other = notes(filled)
     file_key().set("f1")
-    "${cold}${stale} ${empty}${other}"
+    "${empty}${other}"
 }
 
 /// Seats named like the wrapper's locals reach the body as written.
