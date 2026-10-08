@@ -364,7 +364,13 @@ impl Rows<R> {
             db.refuse(replaced_whole(self.name, owner, why!))
             return rows.slice(0, 0)
         }
-        let cells = if heard { self.moving(cell, keyed, named, ids) } else { [] }
+        let live = self.live_of(cell)
+        // a keyless owner's rows, held in filing order and the same, are rewritten in place
+        let identical = !keyed &&
+            live.length == rows.length &&
+            [self.hashes.get()[live[i]] == how.hash(r) for i, r in rows].all(it)
+        let same = if keyed { [self.filed_same(ids[n], how.hash(r), named[n]) for n, r in rows] } else { [] }
+        let cells = if heard && !identical { self.moving(cell, keyed, named, ids, same) } else { [] }
         let torn = if heard { self.held(db, self.name, cells) } else { null }
         if torn != null {
             db.refuse(replaced_whole(self.name, owner, torn!))
@@ -373,8 +379,10 @@ impl Rows<R> {
         // A CELL MOVES ONCE A CALL, however many rows file under it. Where
         // no query read the relation there is no cell to tell, and the
         // whole-relation move alone says the Db was written — what an
-        // answer read back from a record stands on.
-        if db.read_ever() { self.moves(db, cells) }
+        // answer read back from a record stands on. Rows filed as they stood, and
+        // none removed, write nothing, so nothing moves.
+        let unchanged = identical || keyed && same.all(it) && live.length == rows.length
+        if db.read_ever() && !unchanged { self.moves(db, cells) }
         let stamp = Stamp { owner: cell, run: renewed(db, cell) }
         let mine = self.stamped_by(cell)
         let hash = how.hash
@@ -383,7 +391,7 @@ impl Rows<R> {
         mut stored = rows.slice(0, 0)
         for i, r in rows {
             let ks = if asked { named[i] } else { keys(r) }
-            let id = if keyed && ids[i] < next { ids[i] } else { self.next_id() }
+            let id = if keyed && ids[i] < next { ids[i] } else if identical { live[i] } else { self.next_id() }
             if id == self.next_id() { mine.push(id) }
             let row = seated(r, id)
             self.placed(id, row, hash(r), ks, stamp)
@@ -435,9 +443,13 @@ impl Rows<R> {
     /// Every bucket a replacement of `owner`'s rows by ones with these keys
     /// moves, each ONCE: the ones a row names, the ones a named row stood
     /// in, and the ones a row it no longer names stood in.
-    fn moving(owner: int, keyed: bool, named: List<List<List<IndexKey>>>, ids: List<int>) -> List<
-        int,
-    > {
+    fn moving(
+        owner: int,
+        keyed: bool,
+        named: List<List<List<IndexKey>>>,
+        ids: List<int>,
+        same: List<bool>,
+    ) -> List<int> {
         let next = self.next_id()
         let none: List<int> = []
         let moved = Marks {
@@ -451,7 +463,7 @@ impl Rows<R> {
             for i, per in ks {
                 for k in per { moved.mark(self.bucket_of(i, k)) }
             }
-            if keyed { self.mark_named(moved, kept, ids[n], next) }
+            if keyed { self.mark_named(moved, kept, ids[n], next, same[n]) }
         }
         for id in self.live_of(owner) {
             if !keyed || !kept.get()[id] { self.mark_filed(moved, id) }
@@ -459,11 +471,20 @@ impl Rows<R> {
         moved.out.get()
     }
 
-    /// A keyed row's own id kept, and the buckets its row stood in marked.
-    fn mark_named(moved: Marks, kept: Cell<List<bool>>, id: int, next: int) {
+    /// A keyed row's own id kept, and the buckets its row stood in marked —
+    /// unless the row is filed as it already stood, which moves nothing.
+    fn mark_named(moved: Marks, kept: Cell<List<bool>>, id: int, next: int, same: bool) {
         if id >= next { return }
         kept.set_at(id, true)
-        self.mark_filed(moved, id)
+        if !same { self.mark_filed(moved, id) }
+    }
+
+    /// Whether a keyed row is already filed under `id` with this content and these keys.
+    fn filed_same(id: int, hash: int, named: List<List<IndexKey>>) -> bool {
+        id < self.next_id() &&
+            self.row(id) != null &&
+            self.hashes.get()[id] == hash &&
+            same_keys(self.filed.get()[id], [distinct_keys(ks) for ks in named])
     }
 
     /// Every bucket the row at `id` is filed in, marked.
