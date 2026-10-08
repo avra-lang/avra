@@ -1469,21 +1469,17 @@ static void waits_gate(Fiber* f, void* gate, int64_t arm, int64_t member) {
     if (TRACING) traced_waiter(f, w);
 }
 
-// A CANCEL MEETS A CANCEL POINT: the task's unwind bit is set — the
-// running task's in `avra_unwinding`, an evaluated task's on its record.
-static void cancel_met(Fiber* f) {
-    if (f == g_current) avra_unwinding = 1;
-    else f->unwinding = 1;
-}
+// A CANCEL MEETS A CANCEL POINT: the running task's unwind bit is set.
+static void cancel_met(void) { avra_unwinding = 1; }
 
 // Whether the claim a task resumed on was a cancel's: `-1:0`.
 static int claimed_by_cancel(const Fiber* f) { return f->arm == -1 && f->member == 0; }
 
 // A row that predates the wait set, about to park: under a standing
 // cancel it parks nothing and the cancel is met at once.
-static int cancel_stands(Fiber* f) {
+static int cancel_stands(const Fiber* f) {
     if (__builtin_expect(f->cancel_by == 0, 1)) return 0;
-    cancel_met(f);
+    cancel_met();
     return 1;
 }
 
@@ -1521,7 +1517,7 @@ void avra_wait_task(void* task, int64_t arm, int64_t member) { waits_gate(g_curr
 int64_t avra_wait_park(void) {
     Fiber* self = g_current;
     if (park_begun(self)) run_next();
-    if (claimed_by_cancel(self)) cancel_met(self);
+    if (claimed_by_cancel(self)) cancel_met();
     return claim_taken(self);
 }
 
@@ -1579,16 +1575,11 @@ static void fiber_start(void) {
     TaskCode code = (TaskCode)(uintptr_t)((AvraArray*)body)->data[0];
     void* answer = code(body);
     int64_t* cells = task_cells(task);
-    // A BODY THAT COMES BACK UNWINDING HAS NO ANSWER: it left at a cancel
-    // point, and nothing is made up for it.
-    int cancelled = avra_unwinding;
-    if (cancelled) {
-        avra_rc_release(answer);
-        answer = NULL;
-    }
     cells[TASK_ANSWER] = (int64_t)(uintptr_t)answer;
     cells[TASK_FIBER] = 0;
-    cells[TASK_END] = cancelled ? END_CANCELLED : END_ANSWERED;
+    // A BODY THAT COMES BACK UNWINDING LEFT AT A CANCEL POINT: it ended
+    // cancelled, and a join refuses what it answered.
+    cells[TASK_END] = avra_unwinding ? END_CANCELLED : END_ANSWERED;
     gate_opened(task, id_of(self));
     // A TASK THAT ENDS WAITS ON NOTHING: what it registered and never
     // parked on leaves with it, before its record is anyone else's.
@@ -1669,7 +1660,7 @@ static int64_t* task_awaited(void* task, int deaf) {
     run_next();
     self->joining = NULL;
     self->deaf = 0;
-    if (claimed_by_cancel(self)) cancel_met(self);
+    if (claimed_by_cancel(self)) cancel_met();
     return task_cells(task);
 }
 
@@ -1827,7 +1818,7 @@ static void slept(int64_t ms) {
     waits_until(self, deadline_after(ms), 0, 0);
     legacy_parked(self);
     run_next();
-    if (claimed_by_cancel(self)) cancel_met(self);
+    if (claimed_by_cancel(self)) cancel_met();
 }
 
 // A sleep of no time is a yield, and costs what a yield costs.
@@ -1877,7 +1868,7 @@ int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms) {
     Fiber* self = g_current;
     if (park_fd_filed(self, fd, writable, timeout_ms)) {
         run_next();
-        if (claimed_by_cancel(self)) cancel_met(self);
+        if (claimed_by_cancel(self)) cancel_met();
     }
     return self->timed_out ? 0 : 1;
 }

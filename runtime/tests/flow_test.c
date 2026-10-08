@@ -397,6 +397,32 @@ static void the_bit_is_the_running_tasks(void) {
     avra_clock_run_ends();
 }
 
+// An owner whose scope's end is already joining when the cancel comes.
+static void* owns_a_sleeper(void* self) {
+    (void)self;
+    g_task = spawn1(sleeper, 10000);
+    avra_rc_retain(g_task);
+    avra_task_settle(g_task);
+    g_byte_a = avra_unwinding;
+    avra_rc_release(g_task);
+    return answer(0);
+}
+
+static void cancel_passes_down_a_scopes_join(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    int64_t t0 = avra_now_ns();
+    void* t = spawn1(owns_a_sleeper, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 1, "an owner whose only wait was its scope's end met no cancel point: it ends answered");
+    CHECK(g_byte_a == 0, "its bit stays clear");
+    CHECK(avra_task_ended(g_task) == 2 && ms_since(t0) < 1000, "the cancel passed down the join it was waiting in, and cut what it owns");
+    avra_rc_release(g_task);
+    avra_clock_run_ends();
+}
+
 // A cancelled task has no answer, and a join that reads one refuses it.
 static void* cancelled_sleeper(void* self) { (void)self; avra_fiber_sleep(10000); return answer(5); }
 static void join_of_cancelled(void) {
@@ -1521,6 +1547,7 @@ int main(int argc, char** argv) {
     in_child_within("a task cancelled before it runs meets the cancel at its first point", cancelled_before_it_runs, 5);
     in_child_within("the unwind bit is the running task's", the_bit_is_the_running_tasks, 5);
     in_child_within("a second cancel changes nothing", cancel_twice, 5);
+    in_child_within("a cancel passes down a scope's join to what it owns", cancel_passes_down_a_scopes_join, 5);
     trapped("a join of a cancelled task", join_of_cancelled, "a join takes a task that answers, and this one was cancelled");
     in_child_within("a time due on a claimed set is dropped, on the virtual clock", due_on_a_claimed_set, 5);
     fork_forgets_gate_waiters();
