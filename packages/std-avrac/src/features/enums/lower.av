@@ -92,6 +92,7 @@ fn whole_test(cx: LowerCx, a: Arm) -> string? {
     if a.guard != null || a.pats.length != 1 { return null }
     match cx.view.store.pat(a.pats[0]) {
         .Variant(name, args) if all_irrefutable(cx.view.store, cx.names, args) -> name.of,
+        .Member(name, _) -> name.of,
         .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> null,
     }
 }
@@ -268,6 +269,7 @@ export fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg>
         // a name that compares to a const binds nothing
         .Bind(_) -> if cx.names.compared(cx.view.store, p) == null { [v] } else { [] },
         .Variant(name, args) -> payload_binds(cx, name.of, args, v, vty),
+        .Member(name, _) -> member_binds(cx, p, name.of, v, vty),
         .Format(_, _) -> {
             cx.defect("a format pattern reached the enum lowering's binds")
             []
@@ -290,7 +292,7 @@ export fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg>
 /// a SHORTER variant read past its end.
 fn looks_inside(cx: LowerCx, p: PatId) -> bool {
     match cx.view.store.pat(p) {
-        .Bind(_) or .Variant(_, _) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> true,
+        .Bind(_) or .Variant(_, _) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) -> true,
         .Wild or .Rest or .Lit(_) -> false,
     }
 }
@@ -306,6 +308,21 @@ fn payload_binds(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: 
         }
     }
     out
+}
+
+/// `.V as r` binds the member's record, packed from the variant's
+/// payloads in order.
+fn member_binds(mut cx: LowerCx, p: PatId, name: string, v: Reg, vty: TypeId) -> List<Reg> {
+    let declared? = cx.variants_of(vty) else { return [] }
+    let read? = cx.view.store.name_read(p) else {
+        cx.defect("a member pattern without its read reached the binds")
+        return []
+    }
+    let carried = declared.payloads_of(name)
+    [
+        cx
+            .packed_struct(cx.type_at(read), [cx.payload_at(v, k, carried) for k in 0..carried.length]),
+    ]
 }
 
 /// Whether the arm accepts the subject: any alternative does —
@@ -346,6 +363,7 @@ export fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
         .Bind(_) -> named_pat_reg(cx, p, v, vty),
         .Lit(lit) -> literal_pat_reg(cx, lit, v, vty),
         .Variant(name, args) -> variant_reg(cx, name.of, args, v, vty),
+        .Member(name, _) -> variant_reg(cx, name.of, [], v, vty),
         .Format(_, _) -> {
             cx.defect("a format pattern reached the enum lowering's test")
             cx.const_bool(false)

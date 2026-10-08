@@ -213,6 +213,7 @@ export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId>
         },
         .Bind(_) -> named_types(cx, p, expected),
         .Variant(name, args) -> variant_types(cx, p, name.of, args, expected),
+        .Member(name, _) -> member_types(cx, p, name.of, expected),
         .Lit(v) -> lit_types(cx, p, v, expected),
     }
 }
@@ -228,6 +229,20 @@ fn variant_types(mut cx: TypeCx, p: PatId, name: string, args: List<PatId>, expe
     if args.is_empty() { return [] }
     if carried.length != args.length { return pattern_arity(cx, p, name, carried.length, args.length) }
     flatten([pat_types_of(cx, a, carried[k]) for k, a in args])
+}
+
+/// `.V as r`: `V` tests a gathered variant of the subject's enum, and
+/// `r` binds its member's record, recorded on the binder's read.
+fn member_types(mut cx: TypeCx, p: PatId, name: string, expected: TypeId) -> List<TypeId> {
+    let sig? = cx.variants_of(expected) else { return not_variant_shaped(cx, p, name, expected) }
+    if sig.tag_of(name) == null { return unknown_arm(cx, p, cx.view.types.name_of(expected), name, sig) }
+    let record? = cx.view.decls.member_record(expected, name) else { return member_written(cx, p, name, expected) }
+    let read? = cx.view.store.name_read(p) else {
+        cx.emit(defect_at(cx.pat_loc(p), "a member pattern without its read reached typing"))
+        return [record]
+    }
+    cx.facts.set_type(read, record)
+    [record]
 }
 
 /// A literal in a pattern is typed like any literal, then judged
@@ -394,7 +409,7 @@ fn tests_first(cx: TypeCx, rows: List<Row>, name: string) -> bool {
 
 fn names_variant(cx: TypeCx, p: PatId, name: string) -> bool {
     match cx.view.store.pat(p) {
-        .Variant(n, _) -> n.of == name,
+        .Variant(n, _) or .Member(n, _) -> n.of == name,
         .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> false,
     }
 }
@@ -433,7 +448,8 @@ fn held(p: PatId) -> PatId? {
 fn variant_args(cx: TypeCx, p: PatId, name: string, arity: int) -> List<PatId?>? {
     match cx.view.store.pat(p) {
         .Variant(n, args) if n.of == name -> padded(args, arity),
-        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> null,
+        .Member(n, _) if n.of == name -> blanks(arity),
+        .Variant(_, _) or .Member(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> null,
     }
 }
 
@@ -461,10 +477,15 @@ fn rest_of(r: Row) -> Row {
 /// Whether any of the arm's alternatives is a variant test —
 /// structural, no type asked.
 fn tests_variant(store: SyntaxArena, a: Arm) -> bool {
-    for p in a.pats {
-        if store.pat(p) is .Variant { return true }
+    a.pats.any(variant_test(store, it))
+}
+
+/// Whether a pattern tests a variant.
+fn variant_test(store: SyntaxArena, p: PatId) -> bool {
+    match store.pat(p) {
+        .Variant(_, _) or .Member(_, _) -> true,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> false,
     }
-    false
 }
 
 /// How many of a `match`'s arms test one variant each, up to (not
@@ -507,6 +528,7 @@ fn hole_binds(cx: TypeCx, hole: PatId) -> bool {
 fn whole_variant(cx: TypeCx, p: PatId) -> string? {
     match cx.view.store.pat(p) {
         .Variant(name, args) if all_irrefutable(cx.view.store, cx.names, args) -> name.of,
+        .Member(name, _) -> name.of,
         .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> null,
     }
 }
@@ -774,6 +796,21 @@ fn not_variant_shaped(mut cx: TypeCx, p: PatId, name: string, expected: TypeId) 
                 "`.${name}` tests a variant, but this is `${n}`",
                 this_is(n),
                 null,
+            ),
+        )
+    []
+}
+
+fn member_written(mut cx: TypeCx, p: PatId, name: string, expected: TypeId) -> List<TypeId> {
+    let n = cx.view.types.name_of(expected)
+    cx
+        .emit(
+            refusal(
+                "type.member_pattern",
+                cx.pat_loc(p),
+                "`as` takes a gathered variant whole, as its member's record",
+                "`.${name}` of `${n}` is written, so it has no record",
+                "match its payloads instead: `.${name}(…)`",
             ),
         )
     []

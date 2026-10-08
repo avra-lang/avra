@@ -1618,6 +1618,29 @@ impl Decls {
         [d for d in self.indexed(word) if self.collectible(d, scope, owner)]
     }
 
+    /// A collect's members — A REGISTRY, exhaustive over `CollectKind`:
+    /// `.Component`'s instances read `gathered`, `.Annotated`'s every
+    /// declaration wearing that mark reads `gathered_by_mark`;
+    /// `.UnknownKind` was refused at its own check and gathers nothing.
+    fn gathered_into(kind: CollectKind, scope: CollectScope, owner: FileId) -> List<Decl> {
+        match kind {
+            .Component(w) -> self.gathered(w, scope, owner),
+            .Annotated(w) -> self.gathered_by_mark(w, scope, owner),
+            .UnknownKind(_) -> [],
+        }
+    }
+
+    /// The record a gathered variant was gathered from — the member
+    /// named `variant` of the `collect enum` whose type is `e`; absent
+    /// for a written enum's variant.
+    fn member_record(e: TypeId, variant: string) -> TypeId? {
+        let d? = enum_decl(self.types.shape_of(e)) else { return null }
+        let x = self.decl(d)
+        let parts? = self.store_of(x.file).collect_enum_parts(x.stmt) else { return null }
+        let m? = self.gathered_into(parts.kind, parts.scope, x.file).find(it.name == variant) else { return null }
+        self.record_type(m.id)
+    }
+
     /// `gathered`'s mark twin: every declaration wearing `@name`,
     /// filtered to `scope` the same way.
     fn gathered_by_mark(name: string, scope: CollectScope, owner: FileId) -> List<Decl> {
@@ -2985,4 +3008,9 @@ fn gone_decl(d: DeclId) {
     wreck(
         "declaration ${d.index} was read after its file was admitted again without it — a DeclId lives only as long as the admission that mints it",
     )
+}
+
+/// An enum type's declaration; absent for every other shape.
+fn enum_decl(t: Type) -> DeclId? {
+    match t { .Enum(d, _) -> d, _ -> null }
 }

@@ -837,7 +837,7 @@ impl SyntaxArena {
     /// read is never walked: typing records the narrowed type on it.
     fn read_of(p: Pat, span: Span?) -> ExprId? {
         match p {
-            .Bind(name) or .Typed(name, _) -> self.alloc_expr(Expr.Ident(name), span),
+            .Bind(name) or .Typed(name, _) or .Member(_, name) -> self.alloc_expr(Expr.Ident(name), span),
             rest -> null,
         }
     }
@@ -871,7 +871,7 @@ impl SyntaxArena {
     /// node: a hole is not a sub-pattern.
     fn pattern_binds(id: PatId) -> List<Binder> {
         match self.pat(id) {
-            .Bind(name) or .Typed(name, _) -> [Binder { pat: id, name: name.of }],
+            .Bind(name) or .Typed(name, _) or .Member(_, name) -> [Binder { pat: id, name: name.of }],
             .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
             .Format(_, parts) -> named_binders(id, bound_names(parts)),
             .Quote(body) -> named_binders(id, quote_pat_names(quote_pat_holes(self, body))),
@@ -888,7 +888,7 @@ impl SyntaxArena {
     fn irrefutable(id: PatId) -> bool {
         match self.pat(id) {
             .Wild or .Rest or .Bind(_) -> true,
-            .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> false,
+            .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) -> false,
         }
     }
 
@@ -904,6 +904,7 @@ impl SyntaxArena {
             .Format(head, parts) -> fp(129, [fp_str(head), fp_list([hole_fp(p) for p in parts])]),
             .Quote(body) -> fp(143, [self.expr_fingerprint(body)]),
             .Typed(name, ty) -> fp(196, [fp_str(name.of), type_fp(ty)]),
+            .Member(name, bind) -> fp(197, [fp_str(name.of), fp_str(bind.of)]),
         }
     }
 

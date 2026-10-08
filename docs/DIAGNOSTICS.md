@@ -2052,6 +2052,29 @@ a pattern fits the shape it tests: a variant of the enum, with exactly its paylo
 
 No witness yet.
 
+## type.member_pattern
+
+`.V as r` takes a gathered variant whole, as its member's record
+
+```avra
+enum E {
+    a(int)
+}
+match E.a(1) {
+    .a as x -> 1
+}
+```
+
+```
+error[type.member_pattern]: `as` takes a gathered variant whole, as its member's record
+  ╭─[witness.av:5:5]
+5 │     .a as x -> 1
+  ·     ┬
+  ·     ╰── `.a` of `E` is written, so it has no record
+──╯
+help: match its payloads instead: `.a(…)`
+```
+
 ## type.or_binds
 
 every alternative of an `or` arm binds the same names at the same types
