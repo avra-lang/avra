@@ -35,7 +35,7 @@ for p in packages backend runtime Makefile; do
     [ -e "$census/$p" ] || ln -s "../../$p" "$census/$p"
 done
 probes=$([ "$(uname -s)" = Darwin ] || echo -fstack-clash-protection)
-for c in runtime/*.c; do
+for c in runtime/*.c runtime/host/*.c; do
     o=$census/obj/$(basename "$c" .c).o
     # shellcheck disable=SC2086
     cc -c -O2 -fPIC $probes -ffunction-sections -fdata-sections -Wall -Werror -DAVRA_CENSUS -o "$o" "$c"
