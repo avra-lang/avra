@@ -71,7 +71,7 @@ use rows.{
     Filing,
     IndexKey,
     text_key,
-    int_slot,
+    int_fits,
     int_key,
     dense_key,
     bool_key,
@@ -484,7 +484,7 @@ const every_member: List<string> = [
 /// the cap, every other key under its text.
 fn key_index_member(t: Type, keys: List<Field>) -> Decls {
     if keys.length == 1 && keys[0].kind is .Int {
-        return quote { static fn index_key(k: ${t}Key) -> IndexKey { int_slot(k.${keys[0].name}) ?? text_key(${name(t.name)}.key_text(k)) } }
+        return quote { static fn index_key(k: ${t}Key) -> IndexKey { if int_fits(k.${keys[0].name}) { dense_key(k.${keys[0].name}) } else { text_key(${name(t.name)}.key_text(k)) } } }
     }
     quote { static fn index_key(k: ${t}Key) -> IndexKey { text_key(${name(t.name)}.key_text(k)) } }
 }
@@ -818,12 +818,7 @@ fn key_members(t: Type) -> List<Decls> {
         quote { fn key() -> ${t}Key { ${t}Key { ..${inits} } } },
         quote { static fn key_text(k: ${t}Key) -> string { ${joined_parts(parts)} } },
         key_index_member(t, keys),
-        quote {
-            static fn by_key(db: Db, k: ${t}Key) -> ${t}? {
-                let rs = ${name(t.name)}.rows_in(db)
-                rs.row(rs.first_id(rs.read_key(db, 0, ${name(t.name)}.index_key(k))) ?? -1)
-            }
-        },
+        by_key_member(t, keys),
     ]
 }
 
@@ -1355,4 +1350,24 @@ fn snake_letter(c: string, i: int) -> string {
     if at < 0 { return c }
     let low = lower_letters.substring(at, at + 1)
     if i == 0 { low } else { "_${low}" }
+}
+
+/// `by_key`: an int key reads its own slot, a text key its text — the same
+/// `int_fits` test the filing in `index_key` makes, so both find one bucket.
+fn by_key_member(t: Type, keys: List<Field>) -> Decls {
+    if keys.length == 1 && keys[0].kind is .Int {
+        return quote {
+            static fn by_key(db: Db, k: ${t}Key) -> ${t}? {
+                let rs = ${name(t.name)}.rows_in(db)
+                let b = if int_fits(k.${keys[0].name}) { rs.read_slot(db, 0, k.${keys[0].name}) } else { rs.read_text(db, 0, ${name(t.name)}.key_text(k)) }
+                rs.row(rs.first_id(b) ?? -1)
+            }
+        }
+    }
+    quote {
+        static fn by_key(db: Db, k: ${t}Key) -> ${t}? {
+            let rs = ${name(t.name)}.rows_in(db)
+            rs.row(rs.first_id(rs.read_text(db, 0, ${name(t.name)}.key_text(k))) ?? -1)
+        }
+    }
 }

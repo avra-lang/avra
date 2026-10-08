@@ -43,10 +43,8 @@ export fn dense_key(v: int) -> IndexKey { IndexKey.Slot(v) }
 /// other int files under its text. Shared by the int-arg and int-key paths.
 export const INT_CAP: int = 4096
 
-/// An int key's own slot, or none past the cap, where its text files instead.
-export fn int_slot(v: int) -> IndexKey? {
-    if v >= 0 && v < INT_CAP { IndexKey.Slot(v) } else { null }
-}
+/// Whether an int key files under its own slot, rather than its text.
+export fn int_fits(v: int) -> bool { v >= 0 && v < INT_CAP }
 
 /// One key field as text no other split can spell: its length, then
 /// itself — `("ab", "c")` and `("a", "bc")` never meet.
@@ -299,6 +297,12 @@ impl Rows<R> {
     /// A key's bucket read under `db` — opened when absent, so a row filed
     /// there later moves what this read saw.
     fn read_key(db: Db, index: int, key: IndexKey) -> int { self.seen(db, self.opened_bucket(index, key)) }
+
+    /// `read_key`'s slot twin, with no key boxed on a hit.
+    fn read_slot(db: Db, index: int, n: int) -> int {
+        let have = if n >= 0 && n < self.indexes[index].slots.get().length { self.indexes[index].slots.get()[n] } else { -1 }
+        self.seen(db, if have >= 0 { have } else { self.opened_bucket(index, dense_key(n)) })
+    }
 
     /// `read_key`'s text twin, with no key boxed on a hit.
     fn read_text(db: Db, index: int, v: string) -> int {
