@@ -40,15 +40,30 @@ impl Workspace {
     /// A read file's const, settled: its kept verdict when everything it is a
     /// function of stands, else a settlement run, kept when it may be.
     fn const_settlement(ask: SettleAsk, s: StmtId) -> Result<Settled, Unsettled> {
-        let d = self.decls.decl_of(ask.file, s)
-        let layout = self.kept_layout(ask.file, s)
-        let keyed: string? = if d != null && layout != null && ask.seats.is_empty() { self.kept_settle_key(ask.file, d!) } else { null }
         let id = "${self.settle_id(ask.file, SettleRoot.Const(s), ask.seats)}"
-        if keyed != null {
-            let kept = self.kept_verdict(ask.file, keyed!, layout!, id)
-            if kept != null { return kept! }
-        }
+        let at? = self.kept_at(ask, s) else { return self.settle_run(ask, s, id, self.hold.body_asks.get().length, null) }
+        let kept = self.kept_verdict(ask.file, at.key, at.layout, id)
+        if kept != null { return kept! }
         let asked = self.hold.body_asks.get().length
+        self.ask_kept_reads(at.key)
+        self.settle_run(ask, s, id, asked, at)
+    }
+
+    /// Where a const's verdict is kept, and under which layout: a declared
+    /// const, on no seats, whose answer carries a type.
+    fn kept_at(ask: SettleAsk, s: StmtId) -> KeptAt? {
+        if !ask.seats.is_empty() { return null }
+        let d? = self.decls.decl_of(ask.file, s) else { return null }
+        let layout? = self.kept_layout(ask.file, s) else { return null }
+        KeptAt { key: self.kept_settle_key(ask.file, d), layout: layout }
+    }
+
+    /// A settlement run, its verdict kept at `at` when the run asked no body
+    /// a held file has.
+    fn settle_run(ask: SettleAsk, s: StmtId, id: string, asked: int, at: KeptAt?) -> Result<
+        Settled,
+        Unsettled,
+    > {
         let fresh: Cell<List<KeptLine>> = list_cell()
         self.hold.settle_frames.push(fresh)
         // this settlement's reads alone, then joined to what its file's runs read before
@@ -61,7 +76,8 @@ impl Workspace {
         let read = self.hold.runs.get().get(reader) ?? []
         self.hold.runs.put(reader, distinct(before.concat(read)))
         self.hold.settle_reads.put(id, read)
-        if keyed != null && self.hold.body_asks.get().length == asked { self.keep_verdict(keyed!, r, frame, layout!, read) }
+        let kept? = at else { return r }
+        if self.hold.body_asks.get().length == asked { self.keep_verdict(kept.key, r, frame, kept.layout, read) }
         r
     }
 
@@ -76,14 +92,36 @@ impl Workspace {
     /// Where `d`'s kept verdict lives: its file's path and its name.
     fn kept_settle_key(f: FileId, d: DeclId) -> string { kept_key_for(self.decls.file(f).path, self.decls.decl(d).name) }
 
-    /// The files a read file's runs force read: none when every const its
-    /// record lists has a kept verdict, which answers without running.
+    /// The files a read file's runs force read: none when its kept const
+    /// verdicts will answer without running AND account for every run its
+    /// record lists — a run no verdict answers for (a derive's) runs again.
     fn forced_runs(store: Store, path: string) -> List<string> {
         let m = self.module_path_of(path)
         let runs = kept_runs(record_places(self, store, m).get(path))
         let consts = [parts[5] for parts in record_fields(self, store, m) if parts.length > 5 && parts[0] == "const" && parts[1] == path]
-        if !consts.is_empty() && consts.all((n) -> store.has(Stored.Unit, kept_key_for(path, n))) { return [] }
-        runs
+        let kept = [kept_reads(store, kept_key_for(path, n)) for n in consts]
+        if consts.is_empty() || kept.any(it == null) { return runs }
+        let read = flatten([r ?? [] for r in kept])
+        let answered = distinct(read.concat(flatten([self.ran_by(store, p) for p in read])))
+        if runs.all((p) -> answered.contains(p)) { [] } else { runs }
+    }
+
+    /// A KEPT VERDICT THAT DID NOT STAND ASKS ALL IT READ AT ONCE: the run
+    /// about to replace it reads the bodies the verdict's run read, so every
+    /// held one among them — and what their own runs read — is asked now, and
+    /// the attempt turns once, never once per level the run would reach.
+    fn ask_kept_reads(key: string) {
+        let store? = self.store.get() else { return }
+        let read = kept_reads(store, key) ?? []
+        let all = distinct(read.concat(flatten([self.ran_by(store, p) for p in read])))
+        let held = [p for p in all if self.held_path(p)]
+        if !held.is_empty() { self.hold.body_asks.set(self.hold.body_asks.get().concat(held)) }
+    }
+
+    /// Whether `path` is a file this attempt holds.
+    fn held_path(path: string) -> bool {
+        let f? = self.decls.known_file_id(path) else { return false }
+        self.is_held(f)
     }
 
     /// The innermost open settlement's lines, its frame closed.
@@ -319,6 +357,16 @@ impl Workspace {
         }
         "${verdict_fp(self.settled(f, SettleRoot.Const(self.decls.decl(d).stmt), []))}" == r[3]
     }
+}
+
+/// Where a const's verdict is kept, and the layout it was kept under.
+type KeptAt = { key: string, layout: string }
+
+/// What a kept verdict's run read — its `r` line — or null when none is kept.
+fn kept_reads(store: Store, key: string) -> List<string>? {
+    let lines? = store.get(Stored.Unit, "${key}#lines") else { return null }
+    let reads? = [l.split("\t") for l in lines.split("\n") if !l.is_empty()].find(it[0] == "r") else { return null }
+    reads.slice(1, reads.length)
 }
 
 /// Where a const's kept verdict lives: its file's path and its name.
