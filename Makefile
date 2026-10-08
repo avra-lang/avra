@@ -339,7 +339,7 @@ wasm-archive:
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: footprint footprint-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
+.PHONY: try footprint footprint-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -419,6 +419,19 @@ avra: $(COMPILER_OBJS)
 	@# what this binary was built from, for a worktree that wants to start from it
 	@sh tools/work built-from . > build/.avra-built-from 2>/dev/null || rm -f build/.avra-built-from
 	@echo "avra: build/avra"
+
+# THE EDIT LOOP: the source built by the STANDING compiler into
+# build/avra-try, never over it — so the builder's print, and every row its
+# store holds, stands from one edit to the next. `./avra-try` runs it. A
+# change the compiler must READ to build itself (codegen, the front end, a
+# refusal about its own source) reaches the product only through `make avra`.
+try: $(COMPILER_OBJS)
+	@sh tools/capped.sh build/avra-try-build.out 200000 ./avra build packages/cli --time || { cat build/avra-try-build.out; exit 1; }
+	@grep '^time: ast' build/avra-try-build.out | grep -oE 'held [0-9]+/[0-9]+' || true
+	@cp packages/cli/src/main build/avra-try
+	@codesign -f -s - build/avra-try 2>/dev/null || true
+	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
+	@echo "try: build/avra-try — ./avra-try runs it"
 
 # THE INSTALL: the binary under bin/, and what it finds from its own
 # directory — the runtime's object and every std package — under

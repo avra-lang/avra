@@ -23,10 +23,17 @@ heavy=0
 n=0
 for a in "$@"; do n=$((n + 1)); [ "$n" -gt 1 ] && [ -d "$a" ] && heavy=1; done
 cd "$root" || exit 2
-if [ -x build/avra ]; then
+# THE BINARY THAT ANSWERS: `build/avra`, or `AVRA_BIN` — `make try`'s
+# `build/avra-try`, which `./avra-try` names.
+bin="${AVRA_BIN:-build/avra}"
+if [ "$bin" != build/avra ] && [ ! -x "$bin" ]; then
+    echo "avra: no $bin — \`make try\` builds it" >&2
+    exit 2
+fi
+if [ -x "$bin" ]; then
     # A SERVER IS NOT A STEP: `dev` lives as long as its developer does, and
     # a lock held that long stops every other build on the machine.
-    [ "$1" = dev ] && exec build/avra "$@"
+    [ "$1" = dev ] && exec "$bin" "$@"
     if [ "$heavy" = 1 ] && [ -z "$AVRA_WATCH_HELD" ]; then
         # WHETHER A RUN IS HEAVY IS THE COMPILER'S TO SAY, not an argument's
         # shape: a `check` or a `build` the store answers reads a file or two,
@@ -35,12 +42,12 @@ if [ -x build/avra ]; then
         # nothing — and only then is the run the watchdog's.
         # A suite and the evaluator run whole programs; they are never light.
         case "$1" in check|build|fmt)
-            AVRA_LIGHT=1 build/avra "$@"; st=$?
+            AVRA_LIGHT=1 "$bin" "$@"; st=$?
             [ "$st" -ne 75 ] && exit "$st" ;;
         esac
-        exec sh tools/watch.sh "${AVRA_CAP_MB:-4000}" build/avra "$@"
+        exec sh tools/watch.sh "${AVRA_CAP_MB:-4000}" "$bin" "$@"
     fi
-    exec build/avra "$@"
+    exec "$bin" "$@"
 fi
 
 # COLD TREE: no compiler yet. The SEED is the way back — the compiler
