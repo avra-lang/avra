@@ -87,15 +87,23 @@ void* avra_task_at(int64_t at_ns);
 void avra_task_answer(void* task, void* v);
 // Records a cancel on the task and claims its set when nothing has —
 // a claim is never displaced: the task resumes on its arm and hears the
-// cancel at its next wait. A task parked by a sleep, a join or a
-// descriptor park is not woken. A fiberless task ends, unanswered.
+// cancel at its next cancel point. A sleep and a descriptor park are
+// cut; a join is cut and traps. A fiberless task ends, unanswered.
 void avra_task_cancel(void* task);
 
-// A `within`'s scope opens: the calling task's deadline narrows to
-// `ms` from now (never widens) for every park until it ends. Answers
-// the outer deadline, which `avra_fiber_within_end` restores.
+// A `within`'s scope opens on the calling task with its own limit, `ms`
+// from now, and answers the scope's id — process-unique, never a task's.
+// The task's deadline is the earliest limit of its scopes; the scope
+// holding it OWNS it, the outer one on a tie.
 int64_t avra_fiber_within(int64_t ms);
-void avra_fiber_within_end(int64_t outer);
+// The innermost scope, `id`, ends (any other traps by name): 1 when the
+// request that stands is this scope's, which then stands no longer.
+int64_t avra_scope_end(int64_t id);
+void avra_fiber_within_end(int64_t id);
+// The calling task's standing request: 0 for none, a scope's id when its
+// limit passed, else 1 + the id of the task that cancelled it. ONE
+// STANDS: a task's cancel outranks any scope, an outer scope an inner one.
+int64_t avra_fiber_request(void);
 
 // 1 when a read (`writing` 0) or write (1) on `fd` may find something —
 // always, until a task has waited on it; 0 once a read found it drained
@@ -148,8 +156,12 @@ void avra_vtask_sleep(int64_t t, int64_t ms);
 int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms);
 int64_t avra_vtask_timed_out(int64_t t);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
-void avra_vtask_within_end(int64_t t, int64_t outer);
+void avra_vtask_within_end(int64_t t, int64_t id);
+// The task's deadline, in ns; 0 when none.
 int64_t avra_vtask_deadline(int64_t t);
+// The new task `t` takes the limit `from` stands under, as a compiled
+// spawn does.
+void avra_vtask_inherits(int64_t t, int64_t from);
 // The wait set, for the task `t`. `avra_vtask_park` answers 1 when the
 // task is parked — the policy names it once it is claimed — and 0 when
 // its set is claimed already; either way `avra_vtask_claim` reads the

@@ -1596,10 +1596,343 @@ static void as_virtual(void) {
     CHECK(avra_sched_timers() == 0 && avra_mem_live() == live, "the virtual tasks leave nothing behind");
 }
 
+// ── every scope's own limit, and which request stands ───────────
+
+// A descriptor park on the silent pipe with no time of its own: 0 when
+// a deadline cut it.
+static int64_t parks_silent(void) { return avra_fiber_park_fd(g_pipe[0], 0, -1); }
+
+static int64_t g_outer = 0, g_inner = 0;
+
+static void* outer_fires_inner_passes(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    g_inner = avra_fiber_within(5000);
+    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    g_byte_b = avra_scope_end(g_inner) == 0 && avra_fiber_request() == g_outer;
+    g_byte_c = avra_scope_end(g_outer) == 1 && avra_fiber_request() == 0;
+    return answer(0);
+}
+
+static void* inner_fires_outer_stands(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(5000);
+    g_inner = avra_fiber_within(20);
+    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_inner;
+    g_byte_b = avra_sched_timers() == 1;
+    g_byte_c = avra_scope_end(g_inner) == 1 && avra_fiber_request() == 0 && avra_sched_timers() == 1;
+    int64_t t0 = avra_now_ns();
+    avra_fiber_sleep(30);
+    g_spent_ms = ms_since(t0);
+    g_byte_d = avra_scope_end(g_outer) == 0 && avra_sched_timers() == 0;
+    return answer(0);
+}
+
+static void* equal_limits_outer_owns(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    g_inner = avra_fiber_within(20);
+    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    g_byte_b = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
+    return answer(0);
+}
+
+// The inner limit passes while nothing heeds it: the next park hears it.
+static void* fires_while_running(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(5000);
+    g_inner = avra_fiber_within(20);
+    avra_fiber_sleep(30);
+    g_byte_a = avra_fiber_request() == 0;
+    g_byte_b = parks_silent() == 0 && avra_fiber_request() == g_inner;
+    g_byte_c = avra_scope_end(g_inner) == 1 && avra_scope_end(g_outer) == 0;
+    return answer(0);
+}
+
+// A limit that passes after the block's last park asks nothing.
+static void* late_limit(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    avra_fiber_sleep(30);
+    g_byte_a = avra_scope_end(g_outer) == 0 && avra_fiber_request() == 0;
+    return answer(0);
+}
+
+static void* child_under_the_outer(void* self) {
+    (void)self;
+    int64_t own = avra_fiber_within(5000);
+    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    g_byte_b = avra_scope_end(own) == 0 && avra_fiber_request() == g_outer;
+    return answer(0);
+}
+
+static void* spawns_under_the_outer(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    void* c = spawn1(child_under_the_outer, 0);
+    g_byte_c = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    ended(c);
+    g_byte_d = avra_scope_end(g_outer) == 1;
+    return answer(0);
+}
+
+static void scopes_on(void* (*body)(void*)) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    ended(spawn1(body, 0));
+}
+
+static void every_scope_its_own_limit(void) {
+    scopes_on(outer_fires_inner_passes);
+    CHECK(g_byte_a == 1, "an outer limit that passes first is the request, whichever scope is innermost");
+    CHECK(g_byte_b == 1, "the inner scope's end passes it on");
+    CHECK(g_byte_c == 1, "and the outer's end lands it");
+    scopes_on(inner_fires_outer_stands);
+    CHECK(g_byte_a == 1, "an inner limit that passes first is the inner's request");
+    CHECK(g_byte_b == 1, "and the outer's limit is filed in its place, the one entry");
+    CHECK(g_byte_c == 1, "the inner's end lands it, and the outer's entry stands");
+    CHECK(g_spent_ms >= 30 && g_byte_d == 1, "the outer scope runs on, and its end takes its entry out");
+    scopes_on(equal_limits_outer_owns);
+    CHECK(g_byte_a == 1 && g_byte_b == 1, "two limits on one instant are the outer's");
+    scopes_on(fires_while_running);
+    CHECK(g_byte_a == 1, "a limit that passes while nothing heeds it asks nothing yet");
+    CHECK(g_byte_b == 1 && g_byte_c == 1, "the next park hears it as the inner's");
+    scopes_on(late_limit);
+    CHECK(g_byte_a == 1, "a limit that passes after the last park leaves the scope's end nothing to land");
+    scopes_on(spawns_under_the_outer);
+    CHECK(g_byte_a == 1 && g_byte_b == 1, "a child under an inherited limit hears the spawner's scope, and passes its own");
+    CHECK(g_byte_c == 1 && g_byte_d == 1, "and the spawner's scope lands its own request");
+    avra_clock_run_ends();
+}
+
+enum { SCOPE_TASKS = 10, SCOPES_EACH = 10000 };
+static int64_t g_scope_ids[SCOPE_TASKS * SCOPES_EACH];
+static int64_t g_task_ids[SCOPE_TASKS + 1];
+
+static void* opens_scopes(void* self) {
+    int64_t k = cap(self);
+    g_task_ids[k] = avra_task_id();
+    for (int i = 0; i < SCOPES_EACH; i++) {
+        int64_t id = avra_fiber_within(1000);
+        g_scope_ids[k * SCOPES_EACH + i] = id;
+        avra_scope_end(id);
+        if (i % 1000 == 0) avra_fiber_yield();
+    }
+    return answer(0);
+}
+
+static int ids_ordered(const void* a, const void* b) {
+    int64_t x = *(const int64_t*)a, y = *(const int64_t*)b;
+    return (x > y) - (x < y);
+}
+
+static void scope_ids(void) {
+    void* ts[SCOPE_TASKS];
+    for (int k = 0; k < SCOPE_TASKS; k++) ts[k] = spawn1(opens_scopes, k);
+    for (int k = 0; k < SCOPE_TASKS; k++) joined(ts[k]);
+    g_task_ids[SCOPE_TASKS] = avra_task_id();
+    qsort(g_scope_ids, SCOPE_TASKS * SCOPES_EACH, sizeof(int64_t), ids_ordered);
+    int unique = 1, apart = 1;
+    for (int i = 1; i < SCOPE_TASKS * SCOPES_EACH; i++) unique = unique && g_scope_ids[i] != g_scope_ids[i - 1];
+    for (int i = 0; i < SCOPE_TASKS * SCOPES_EACH; i++)
+        for (int k = 0; k <= SCOPE_TASKS; k++) apart = apart && g_scope_ids[i] != g_task_ids[k] && g_scope_ids[i] != g_task_ids[k] + 1;
+    CHECK(unique, "a hundred thousand scopes across ten tasks have a hundred thousand ids");
+    CHECK(apart, "and none is a task's, nor a task's request");
+}
+
+static void one_entry_under_three_scopes(void) {
+    int64_t a = avra_fiber_within(7000), b = avra_fiber_within(6000), c = avra_fiber_within(5000);
+    g_gate = avra_gate_new();
+    void* helper = spawn1(claims_when_filed, 1000);
+    int most = 0;
+    for (int i = 0; i < 1000; i++) {
+        avra_wait_gate(g_gate, 0, i);
+        avra_wait_park();
+        if (avra_sched_timers() > most) most = (int)avra_sched_timers();
+    }
+    joined(helper);
+    CHECK(most == 1, "a thousand parks under three scopes keep one deadline entry");
+    CHECK(avra_scope_end(c) == 0 && avra_sched_timers() == 0, "the owner's end takes it out");
+    helper = spawn1(claims_when_filed, 1);
+    avra_wait_gate(g_gate, 0, 0);
+    avra_wait_park();
+    joined(helper);
+    CHECK(avra_sched_timers() == 1, "and the next park files the next owner's");
+    CHECK(avra_scope_end(b) == 0 && avra_scope_end(a) == 0 && avra_sched_timers() == 0, "nothing is left after the last scope");
+    avra_rc_release(g_gate);
+}
+
+// Six scopes, the innermost earliest, then the outermost: the records
+// past the inline four behave as the four do.
+static void* six_deep(void* self) {
+    (void)self;
+    int64_t ids[6];
+    for (int i = 0; i < 6; i++) ids[i] = avra_fiber_within(i == 5 ? 20 : 5000 + i);
+    g_byte_a = parks_silent() == 0 && avra_fiber_request() == ids[5];
+    int landed = 0;
+    for (int i = 5; i >= 0; i--) landed += (int)avra_scope_end(ids[i]) << i;
+    g_byte_b = landed == 1 << 5;
+    for (int i = 0; i < 6; i++) ids[i] = avra_fiber_within(i == 0 ? 20 : 5000 + i);
+    g_byte_c = parks_silent() == 0 && avra_fiber_request() == ids[0];
+    landed = 0;
+    for (int i = 5; i >= 0; i--) landed += (int)avra_scope_end(ids[i]) << i;
+    g_byte_d = landed == 1 && avra_sched_timers() == 0;
+    return answer(0);
+}
+
+static void a_fifth_scope(void) {
+    scopes_on(six_deep);
+    CHECK(g_byte_a == 1 && g_byte_b == 1, "a sixth scope's limit is its own request, and only its end lands it");
+    CHECK(g_byte_c == 1 && g_byte_d == 1, "the outermost of six owns its limit over five inner ones");
+    avra_clock_run_ends();
+}
+
+static void scope_ended_out_of_order(void) {
+    int64_t outer = avra_fiber_within(1000);
+    avra_fiber_within(2000);
+    avra_scope_end(outer);
+}
+
+// A deadline's request stands; then the task is cancelled.
+static void* fired_then_cancelled(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    avra_fiber_sleep(10000);
+    g_byte_b = avra_fiber_request() == 1;
+    g_byte_c = avra_scope_end(g_outer) == 0 && avra_fiber_request() == 1;
+    return answer(0);
+}
+
+// A cancel stands; then the deadline passes.
+static void* cancelled_then_fired(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    avra_wait_gate(g_gate, 0, 0);
+    avra_wait_park();
+    int64_t t0 = avra_now_ns();
+    while (ms_since(t0) < 40) avra_fiber_yield();
+    g_byte_a = avra_fiber_request() == 1;
+    g_byte_b = avra_scope_end(g_outer) == 0 && avra_fiber_request() == 1;
+    return answer(0);
+}
+
+static void task_cancel_outranks_a_scope(void) {
+    bytes_unseen();
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    void* t = spawn1(fired_then_cancelled, 0);
+    avra_fiber_sleep(30);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2 && g_byte_a == 1, "a deadline's request stands, and the task is cancelled after");
+    CHECK(g_byte_b == 1 && g_byte_c == 1, "the task's request displaces the scope's, and the scope's end lands nothing");
+    avra_clock_run_ends();
+}
+
+static void a_scope_does_not_displace_a_task_cancel(void) {
+    bytes_unseen();
+    g_gate = avra_gate_new();
+    void* t = spawn1(cancelled_then_fired, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2 && g_byte_a == 1, "a limit that passes under a task's cancel leaves the task's request standing");
+    CHECK(g_byte_b == 1, "and the scope's end lands nothing");
+    avra_rc_release(g_gate);
+}
+
+// Two limits pass during one sleep, the inner's first: the outer's stands.
+static void* inner_then_outer(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(40);
+    g_inner = avra_fiber_within(20);
+    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_inner;
+    avra_fiber_sleep(60);
+    g_byte_b = avra_fiber_request() == g_outer;
+    g_byte_c = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
+    return answer(0);
+}
+
+// The outer's first: the inner's limit asks nothing.
+static void* outer_then_inner(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    g_inner = avra_fiber_within(40);
+    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    avra_fiber_sleep(60);
+    g_byte_b = avra_fiber_request() == g_outer && avra_sched_timers() == 0;
+    g_byte_c = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
+    return answer(0);
+}
+
+static void the_outer_request_stands(void) {
+    scopes_on(inner_then_outer);
+    CHECK(g_byte_a == 1, "the inner limit passes first");
+    CHECK(g_byte_b == 1, "the outer's, passing later, displaces it");
+    CHECK(g_byte_c == 1, "and only the outer's end lands it");
+    scopes_on(outer_then_inner);
+    CHECK(g_byte_a == 1, "the outer limit passes first");
+    CHECK(g_byte_b == 1, "the inner's, passing later, asks nothing and files nothing");
+    CHECK(g_byte_c == 1, "and only the outer's end lands it");
+    avra_clock_run_ends();
+}
+
+// Run alone, traced: a cancel stands when a deadline passes.
+static int dropped_scene(void) {
+    if (pipe(g_pipe) != 0) return 1;
+    a_scope_does_not_displace_a_task_cancel();
+    return g_fails ? 1 : 0;
+}
+
+static void a_dropped_request_is_traced(const char* self) {
+    char buf[8192];
+    int status = traced_run(self, "dropped-scene", buf, sizeof buf);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the dropped scene runs");
+    char want[64];
+    snprintf(want, sizeof want, "request-dropped id=1 by=scope:");
+    CHECK(strstr(buf, want) != NULL && strstr(buf, " for=task:0") != NULL, "a request a standing one outranks is one line naming both askers");
+}
+
+static void forked_keeps_the_callers_scopes(void) {
+    int64_t outer = avra_fiber_within(5000), inner = avra_fiber_within(6000);
+    g_gate = avra_gate_new();
+    void* helper = spawn1(claims_when_filed, 1);
+    avra_wait_gate(g_gate, 0, 0);
+    avra_wait_park();
+    joined(helper);
+    pid_t pid = fork();
+    if (pid == 0) {
+        avra_fiber_forked();
+        int kept = avra_sched_timers() == 1;
+        kept = kept && avra_scope_end(inner) == 0 && avra_sched_timers() == 1;
+        kept = kept && avra_scope_end(outer) == 0 && avra_sched_timers() == 0;
+        _exit(kept ? 0 : 1);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "a forked child keeps the caller's scopes and their one entry");
+    avra_scope_end(inner);
+    avra_scope_end(outer);
+    avra_rc_release(g_gate);
+}
+
+// A virtual task inherits a scope as a fiber does.
+static void virtual_scopes(void) {
+    int64_t parent = avra_vtask_new(), child = avra_vtask_new();
+    int64_t outer = avra_vtask_within(parent, 1000);
+    avra_vtask_inherits(child, parent);
+    CHECK(avra_vtask_deadline(child) == avra_vtask_deadline(parent) && avra_vtask_deadline(child) != 0, "a virtual child inherits its spawner's limit");
+    avra_vtask_within_end(parent, outer);
+    CHECK(avra_vtask_deadline(parent) == 0 && avra_vtask_deadline(child) != 0, "and keeps it after the spawner's scope ends");
+    avra_vtask_free(child);
+    avra_vtask_free(parent);
+}
+
 int main(int argc, char** argv) {
     alarm(120);
     if (argc > 1 && strcmp(argv[1], "traced-scene") == 0) return traced_scene();
     if (argc > 1 && strcmp(argv[1], "sited-scene") == 0) return sited_scene();
+    if (argc > 1 && strcmp(argv[1], "dropped-scene") == 0) return dropped_scene();
     if (pipe(g_pipe) != 0) { perror("pipe"); return 1; }
     fcntl(g_pipe[0], F_SETFL, O_NONBLOCK);
     in_child("a claimant takes the winner out of its list at the claim", winner_leaves_at_claim);
@@ -1639,6 +1972,17 @@ int main(int argc, char** argv) {
     in_child_within("a cancel passes down a scope's join to what it owns", cancel_passes_down_a_scopes_join, 5);
     trapped("a join of a cancelled task", join_of_cancelled, "a join takes a task that answers, and this one was cancelled");
     in_child_within("a time due on a claimed set is dropped, on the virtual clock", due_on_a_claimed_set, 5);
+    in_child_within("every scope keeps its own limit", every_scope_its_own_limit, 5);
+    in_child_within("scope ids never collide", scope_ids, 10);
+    in_child_within("three scopes keep one deadline entry", one_entry_under_three_scopes, 5);
+    in_child_within("a fifth scope behaves as the four", a_fifth_scope, 5);
+    trapped("a scope ended while one inside it stands", scope_ended_out_of_order, "a `within` ended while one inside it stands");
+    in_child_within("a task's cancel outranks a scope's request", task_cancel_outranks_a_scope, 5);
+    in_child_within("a scope's request does not displace a task's cancel", a_scope_does_not_displace_a_task_cancel, 5);
+    in_child_within("the outer scope's request stands", the_outer_request_stands, 5);
+    a_dropped_request_is_traced(argv[0]);
+    in_child_within("a fork keeps the caller's scopes", forked_keeps_the_callers_scopes, 5);
+    in_child_within("a virtual task inherits a scope", virtual_scopes, 5);
     fork_forgets_gate_waiters();
     fiberless_tasks();
     joins_of_tasks_nothing_runs();
