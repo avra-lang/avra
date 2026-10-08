@@ -34,7 +34,7 @@ use core.{
     SeatMark,
     Span,
 }
-use features.{DeclSig, DeclFacts, AnnotationFact, LitArg, LitKind}
+use features.{DeclSig, DeclFacts, AnnotationFact, LitArg, LitKind, CancelReach}
 use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, node_key}
 use @std.path.{relative_path}
@@ -257,8 +257,9 @@ impl Row {
     /// `Fn`'s bounded seats' trait arguments, one `seat=wire|wire` each.
     fn bounds() -> List<string> { self.list_at(4) }
 
-    /// `Fn`/`Extern`'s cancel bit: a record that says nothing says it may.
-    fn waits() -> bool { self.field(5) != "0" }
+    /// `Fn`/`Extern`'s cancel bits, parks then spins: a record that says
+    /// nothing says it may.
+    fn reach() -> CancelReach { CancelReach { parks: self.field(5) != "0", spins: self.field(6) != "0" } }
 }
 
 /// A record as this build now knows it: its words, its lines and their fields.
@@ -358,8 +359,8 @@ export fn iface_digest(items: List<string>) -> string {
 }
 
 /// ONE DECLARATION'S CONTRACT, as one line: the fields a caller can see, and never the
-/// span, the statement/expression indices, or the `writes` bits. A fn's cancel bit IS
-/// contract: a caller's code tests after the call by it.
+/// span, the statement/expression indices, or the `writes` bits. A fn's cancel bits ARE
+/// contract: a caller's code tests after the call by them.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a record line in, its contract out.
 fn interface_form(line: string) -> string {
     let p = line.split("\t")
@@ -369,9 +370,11 @@ fn interface_form(line: string) -> string {
     let top = unpacked(p[12])
     let facts = if top.is_empty() { [] } else { top[0].split(";") }
     let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }
+    // the payload skips its `writes` bits (field 16); past them stand a fn's bounds,
+    // then its cancel bits, parks and spins
     [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")]
         .concat(p.slice(13, 16))
-        .concat(p.slice(17, 19))
+        .concat(p.slice(17, 20))
         .join("\t")
 }
 

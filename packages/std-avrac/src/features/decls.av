@@ -660,9 +660,26 @@ export type Decls = {
     // structurally resolve — a refusal, never a silently missing member
     inferred_unresolved: Table<bool>,
     ensure_failures: Cell<fn() -> void>,
-    // whether a call to each fn may reach a cancel point — a held fn's
-    // as its interface recorded it, every other as the pass found it
-    cancels: Table<bool>,
+    // what a call to each fn may reach — a held fn's as its interface
+    // recorded it, every other as the pass found it
+    cancels: Table<CancelReach>,
+}
+
+/// What a call to a fn may reach, here or in a callee: a cancel point it
+/// waits at (`parks`), or a `while` whose back-edge is one (`spins`).
+export type CancelReach = { parks: bool, spins: bool }
+
+impl CancelReach {
+    /// Whether the call may reach a cancel point at all.
+    fn may() -> bool { self.parks || self.spins }
+
+    /// Whether this already reaches everything `o` does.
+    fn covers(o: CancelReach) -> bool { (self.parks || !o.parks) && (self.spins || !o.spins) }
+
+    /// What either reaches.
+    fn with_reach(o: CancelReach) -> CancelReach {
+        CancelReach { parks: self.parks || o.parks, spins: self.spins || o.spins }
+    }
 }
 
 /// Where no workspace stands behind the table, nothing lifts.
@@ -2056,13 +2073,13 @@ impl Decls {
         self.inferred_unresolved.at(d.index) ?? false
     }
 
-    /// Whether a call to `d` may reach a cancel point, recorded.
-    fn record_cancel(d: DeclId, may: bool) {
-        self.cancels.keep(d.index, may)
+    /// What a call to `d` may reach, recorded.
+    fn record_cancel(d: DeclId, r: CancelReach) {
+        self.cancels.keep(d.index, r)
     }
 
     /// The recorded answer — null where nothing has said.
-    fn cancel_bit(d: DeclId) -> bool? {
+    fn cancel_bits(d: DeclId) -> CancelReach? {
         self.cancels.at(d.index)
     }
 

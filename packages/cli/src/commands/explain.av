@@ -221,7 +221,12 @@ fn plain_subject(a: Asked, subject: Subject, ws: Workspace) -> Lines {
     let g = ws.walk_graph().ws
     let answers = [Shown { said: e, trails: null } for e in g.explained_all(answers_named(g, subject)?)]
     if a.json { return [to_text(page_json([], answers))] }
-    [line for s in answers for line in answer_lines(s)]
+    [line for s in answers for line in answer_lines(s)].concat(cancel_lines(g, subject))
+}
+
+/// What a declaration subject says of the cancel points a call to it may reach.
+fn cancel_lines(g: Workspace, subject: Subject) -> List<string> {
+    match subject { .Decl(name) -> g.cancel_lines(name), rest -> [] }
 }
 
 /// A subject's answers under `--why`: its file's hold first, then each
@@ -234,12 +239,13 @@ fn why_subject(a: Asked, subject: Subject, ws: Workspace, walk: CacheWalk) -> Li
     let answers = [Shown { said: e, trails: g.trails(keys[i], walk.moved) } for i, e in g.explained_all(keys)]
     let held? = hold else {
         if a.json { return [to_text(page_json([], answers))] }
-        return [line for s in answers for line in answer_lines(s)]
+        return [line for s in answers for line in answer_lines(s)].concat(cancel_lines(g, subject))
     }
     if a.json { return [to_text(page_json(held_json(walk, held, fresh), answers))] }
     hold_lines(walk, held)
         .concat(compared_lines(fresh))
         .concat([line for s in answers for line in answer_lines(s)])
+        .concat(cancel_lines(g, subject))
 }
 
 /// A held file against a fresh reading, nothing to compare for a file read or
