@@ -12,11 +12,19 @@
 //! THE LAW OF A CYCLE: two members with equal final colours have equal
 //! unfoldings, so they behave alike — equal hashes are never stale.
 //!
+//! A TYPE IS ITS SHAPE, so a renamed type or field moves nothing — sound
+//! only while no name reaches output except through the IR: a record has
+//! no text projection, and a codec or derive spells a name as a literal
+//! (`ConstStr`, or a static's text). A projection that prints names must
+//! print them so.
+//!
 //! A body held from an earlier build has no instructions here. A hash
 //! that reaches one cannot be computed, so it is ABSENT, and what it keys
 //! is neither read nor kept: a recompute, never a stale answer. The
 //! process says so once.
 use @std.text.{parse_int}
+use features.{Decls}
+use compiler.{mark_word}
 use core.{
     Ins,
     Reg,
@@ -54,7 +62,7 @@ export type CodeHashes = { bodies: List<Body>, keys: List<string> }
 /// and the code of every held file; `held` names the bodies an earlier
 /// build stands in for. A held file's own asks are answered too.
 export fn code_hashes(
-    types: TypeRegistry,
+    decls: Decls,
     bodies: List<Body>,
     statics: List<Static>,
     held: List<string>,
@@ -64,13 +72,13 @@ export fn code_hashes(
     let asked = distinct_targets(targets.concat(flatten([f.asked for f in kept])))
     if asked.is_empty() { return CodeHashes { bodies: [], keys: [] } }
     // fresh code last, so it wins over a kept record of the same name
-    let facts = kept.concat([code_facts(types, bodies, statics, targets)])
+    let facts = kept.concat([code_facts(decls, bodies, statics, targets)])
     mut g = code_graph(facts, held)
     mut out: List<Body> = []
     mut keys: List<string> = []
     for t in asked {
         let h = g.hash(t)
-        out.push(hash_body(types, t, h))
+        out.push(hash_body(decls.types, t, h))
         keys.push(if h == null { t } else { "${t}=${h!}" })
     }
     CodeHashes { bodies: out, keys: keys }
@@ -164,16 +172,18 @@ export type CodeFacts = { nodes: List<FactNode>, addressed: List<string>, asked:
 /// reaches.
 export type FactNode = { name: string, own: string, refs: List<string> }
 
-/// The code of these bodies and statics, and the hashes they ask.
-export fn code_facts(
-    types: TypeRegistry,
-    bodies: List<Body>,
-    statics: List<Static>,
-    asked: List<string>,
-) -> CodeFacts {
+/// The code of these bodies and statics, and the hashes they ask. Each
+/// type is read by its shape, once.
+export fn code_facts(decls: Decls, bodies: List<Body>, statics: List<Static>, asked: List<string>) -> CodeFacts {
     let lowered = [b for b in bodies if !b.ins.is_empty()]
+    mut shapes: Map<string, string> = {}
+    for b in lowered {
+        for t in typed_by(b) {
+            if shapes.get("${t.index}") == null { shapes.set("${t.index}", type_shape(decls, t)) }
+        }
+    }
     CodeFacts {
-        nodes: [fact_node(b.name, body_node(types, b)) for b in lowered]
+        nodes: [fact_node(b.name, body_node(shapes, b)) for b in lowered]
             .concat([fact_node(s.name, static_node(s)) for s in statics]),
         addressed: addressed(lowered, statics),
         asked: distinct_targets(asked),
@@ -278,10 +288,11 @@ fn addressed_at(i: Ins) -> List<string> {
 /// place among the body's references, its seat and register types, and —
 /// when it calls through a fn value — the program's fn values, since a
 /// value may hold any of them.
-fn body_node(types: TypeRegistry, b: Body) -> CodeNode {
+fn body_node(shapes: Map<string, string>, b: Body) -> CodeNode {
     let refs = distinct_targets(flatten([symbols_of(i) for i in b.ins]))
     let placed = (sym: string) -> "#${refs.index_of(sym)}"
-    let typed = [types.name_of(t) for t in b.params.concat([b.ret]).concat(b.reg_types)]
+    // every type was shaped by `code_facts` before a body is read
+    let typed = [shapes.get("${t.index}")! for t in typed_by(b)]
     mut d = digest_int(new_digest(), typed.length)
     for t in typed { d = digest_text(d, t) }
     d = digest_int(d, b.ins.length)
@@ -293,6 +304,60 @@ fn body_node(types: TypeRegistry, b: Body) -> CodeNode {
 }
 
 fn calls_through(i: Ins) -> bool { i is .CallPtr }
+
+/// The types a body names: its seats, its answer, its registers.
+fn typed_by(b: Body) -> List<TypeId> { b.params.concat([b.ret]).concat(b.reg_types) }
+
+/// A TYPE BY ITS SHAPE: what its values are made of, never its name — a
+/// record's field types in order, an enum's payloads in variant order, a
+/// named type its shape; a declared type met again inside itself is its
+/// depth in that walk.
+export fn type_shape(decls: Decls, t: TypeId) -> string { shape_in(decls, t, []) }
+
+fn shape_in(decls: Decls, t: TypeId, open: List<int>) -> string {
+    let seen = decls.types.seen_through(t)
+    let depth = open.index_of(seen.index)
+    if depth >= 0 { return "rec ${depth}" }
+    let inner = open.concat([seen.index])
+    match decls.types.shape_of(seen) {
+        .Int -> "int",
+        .Float -> "float",
+        .Bool -> "bool",
+        .Str -> "string",
+        .Bytes -> "Bytes",
+        .Ptr -> "ptr",
+        .Struct(_, _) or .App(_, _, _) or .Enum(_, _) -> declared_shape(decls, seen, inner),
+        .Dyn(_, _) -> "dyn",
+        .List(e) -> "List<${shape_in(decls, e, inner)}>",
+        .Cell(c) -> "Cell<${shape_in(decls, c, inner)}>",
+        .Task(a) -> "Task<${shape_in(decls, a, inner)}>",
+        .Tasks -> "Tasks",
+        .Map(k, v) -> "Map<${shape_in(decls, k, inner)}, ${shape_in(decls, v, inner)}>",
+        .Res(ok, err) -> "Result<${shape_in(decls, ok, inner)}, ${shape_in(decls, err, inner)}>",
+        .Fn(params, marks, ret) -> "fn(${[shape_in(decls, p, inner) for p in params].join(", ")} | ${[mark_word(m) for m in marks].join(",")}) -> ${shape_in(decls, ret, inner)}",
+        .Void -> "void",
+        .Opt(o) -> "${shape_in(decls, o, inner)}?",
+        .Null -> "null",
+        .EmptyList -> "[]",
+        .EmptyMap -> "{}",
+        .TypeName(_, _) -> decls.types.name_of(seen),
+        .Var(_, ordinal, _) -> "var ${ordinal}",
+        .Union(members) -> [shape_in(decls, m, inner) for m in members].join(" or "),
+        .Error -> "error",
+        .Range -> "Range",
+    }
+}
+
+/// A declared box by its parts: a record's field types, or an enum's
+/// payloads, each list behind its count.
+fn declared_shape(decls: Decls, t: TypeId, open: List<int>) -> string {
+    let fields? = decls.fields_of_type(t) else {
+        let variants? = decls.variants_of_type(t) else { return decls.types.name_of(t) }
+        let arms = ["(${[shape_in(decls, p, open) for p in payload].join(", ")})" for payload in variants.payloads]
+        return "enum ${arms.length} ${arms.join(" ")}"
+    }
+    "record ${fields.types.length} (${[shape_in(decls, f, open) for f in fields.types].join(", ")})"
+}
 
 /// A static as a node: its boxes, each code slot replaced by its place.
 fn static_node(s: Static) -> CodeNode {
