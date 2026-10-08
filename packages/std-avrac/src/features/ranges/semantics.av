@@ -3,7 +3,9 @@
 //! `Type.Range` — a two-slot box, its own identity so a method row can
 //! name a range receiver without a string tag.
 use core.{Expr, ExprId, Type, TypeId, Reg}
-use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+
+use core.expr.{Range}
 
 export type RangesSemantics = {}
 
@@ -12,6 +14,9 @@ impl NodeSemantics for RangesSemantics {
         match e { .Range(lo, hi) -> [lo, hi], rest -> [] }
     }
 
+}
+
+impl Meaning for Range {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         match cx.view.store.expr(e) {
             .Range(lo, hi) -> {
@@ -21,7 +26,6 @@ impl NodeSemantics for RangesSemantics {
             rest -> nothing(),
         }
     }
-
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         let int = cx.type(int)
         match cx.view.store.expr(e) {
@@ -33,7 +37,6 @@ impl NodeSemantics for RangesSemantics {
         }
         cx.view.types.intern(Type.Range)
     }
-
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         match cx.view.store.expr(e) {
             .Range(lo, hi) -> {

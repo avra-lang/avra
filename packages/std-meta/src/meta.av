@@ -604,13 +604,38 @@ export fn delegate(what: Type, tr: Trait) -> List<Directive> {
     ]
 }
 
+/// The impl of `tr` over `over`, written on the trait: a trait whose
+/// methods name what the enum's own layer cannot (`@delegates(Expr)`).
+/// A gathered member with no impl of `tr` is refused, naming it; the
+/// impl is still made, so the enum keeps the method and one mistake
+/// is one refusal.
+export fn delegates(tr: Trait, over: Type) -> Declared {
+    let problems = [unimplemented_member(tr, over, v) for v in over.variants if !v.impls.contains(tr.name)]
+    Declared { made: delegate(over, tr), problems: problems }
+}
+
+fn unimplemented_member(tr: Trait, over: Type, v: Variant) -> Diagnostic {
+    refuse_as_at(
+        "delegates-member",
+        v.at,
+        "`${v.name}` is gathered into `${over.name}` and has no `impl ${tr.name} for ${v.name}`",
+        "write `impl ${tr.name} for ${v.name}` beside the record",
+    )
+}
+
 fn delegated(t: Type, tr: Trait, f: Fn) -> Decls {
-    let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
+    let seats = [seat(p) for p in f.params]
     quote {
         fn ${f.name}(..${seats}) -> ${f.answer} {
             match self { ${[delegated_arm(tr, f, v) for v in t.variants]} }
         }
     }
+}
+
+/// One parameter of a delegated method, keeping its `mut` mark.
+fn seat(p: Param) -> Decls {
+    if p.mutable { return quote { fn _(mut ${p.name}: ${p.ty}) {} } }
+    quote { fn _(${p.name}: ${p.ty}) {} }
 }
 
 /// One variant's arm. A member with no impl of `tr` is refused where it

@@ -3,7 +3,11 @@
 //! node's. A new node kind breaks the map at compile time, and the
 //! impl it names owes every pass, enforced by the traits. The walk
 //! order every pass shares lives here too.
-use core.{Expr, Stmt, ExprId, SyntaxArena, flatten, Pat, body_behavior}
+use core.{Expr, Stmt, ExprId, SyntaxArena, flatten, Pat, body_behavior, TypeId, Reg}
+use core.expr.{Body}
+use features.str_lit.{str_type, str_lower}
+use features.quote.{quote_type, quote_reg}
+use features.sublang.{block_type, block_reg}
 
 /// Every feature's boxed semantics, built ONCE per assembly — the
 /// exhaustive maps below only SELECT. The language builds it (the
@@ -153,4 +157,26 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
 export fn post_order(d: Dispatch, store: SyntaxArena, root: ExprId) -> List<ExprId> {
     let node = store.expr(root)
     flatten([post_order(d, store, k) for k in semantics_of(d, node).kids(node)]).concat([root])
+}
+
+impl Meaning for Body {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        let bp? = cx.view.store.expr(e).body_of() else { return cx.error_type }
+        match body_behavior(bp.word) {
+            .Text -> str_type(cx, e),
+            .Quote -> quote_type(cx, e),
+            .Foreign -> block_type(cx, e),
+        }
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        let bp? = cx.view.store.expr(e).body_of() else { return cx.lower_defect(e, "a body node without its parts") }
+        match body_behavior(bp.word) {
+            .Text -> str_lower(cx, e),
+            .Quote -> quote_reg(cx, e),
+            .Foreign -> block_reg(cx, e),
+        }
+    }
 }

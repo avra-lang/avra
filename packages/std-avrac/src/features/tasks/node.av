@@ -1,10 +1,21 @@
 //! The `spawn` node: a variant of `Expr` (core/nodes.av), declared
 //! where its meaning is.
-use core.{expr_node, ExprId}
+use core.{expr_node, ExprId, TypeId, Reg}
 use core.marks.{apart}
+
+use features.{Meaning, ResolveCx, TypeCx, LowerCx, nothing}
 
 /// `spawn e` — `e` runs as a task beside the spawner; the node is
 /// its task handle. `body` is the zero-seat lambda `e` became.
 @expr_node(27)
 @apart
-type Spawn = { body: ExprId }
+export type Spawn = { body: ExprId }
+
+impl Meaning for Spawn {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        // a feature cannot enumerate OTHER features' variants
+        match cx.view.store.expr(e) { .Spawn(body) -> cx.walk(body), rest -> nothing() }
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { task_expr_type(cx, e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { task_expr_reg(cx, e) }
+}

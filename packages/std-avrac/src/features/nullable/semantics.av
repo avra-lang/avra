@@ -3,7 +3,9 @@
 //! lowering (its right side runs only on absence) but plain for the
 //! earlier passes: both sides resolve and type in the same scope.
 use core.{Expr, ExprId, TypeId, Reg}
-use features.{named_bind, NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use features.{named_bind, NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+
+use core.expr.{NullLit, Coalesce, Force, Propagate, MatchOpt, Chain}
 
 export type NullableSemantics = {}
 
@@ -25,21 +27,81 @@ impl NodeSemantics for NullableSemantics {
         match e { .MatchOpt(_, _, present, absent) -> [present, absent], _ -> [] }
     }
 
-    fn resolve(mut cx: ResolveCx, e: ExprId) {
-        match cx.view.store.expr(e) {
-            .MatchOpt(_, bind, present, absent) -> {
-                cx.arm_scope(cx.bound_at(e, named_bind(bind.of)), present)
-                cx.arm_scope([], absent)
-            },
-            _ -> nothing(),
-        }
-    }
+}
 
+impl Meaning for NullLit {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nullable_resolve(cx, e)
+    }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         nullable_type(cx, e)
     }
-
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         nullable_reg(cx, e)
+    }
+}
+impl Meaning for Coalesce {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nullable_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        nullable_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        nullable_reg(cx, e)
+    }
+}
+impl Meaning for Force {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nullable_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        nullable_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        nullable_reg(cx, e)
+    }
+}
+impl Meaning for Propagate {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nullable_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        nullable_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        nullable_reg(cx, e)
+    }
+}
+impl Meaning for MatchOpt {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nullable_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        nullable_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        nullable_reg(cx, e)
+    }
+}
+impl Meaning for Chain {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nullable_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        nullable_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        nullable_reg(cx, e)
+    }
+}
+
+fn nullable_resolve(mut cx: ResolveCx, e: ExprId) {
+    match cx.view.store.expr(e) {
+        .MatchOpt(_, bind, present, absent) -> {
+            cx.arm_scope(cx.bound_at(e, named_bind(bind.of)), present)
+            cx.arm_scope([], absent)
+        },
+        _ -> nothing(),
     }
 }
