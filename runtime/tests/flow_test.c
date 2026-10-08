@@ -1608,14 +1608,16 @@ static int64_t parks_silent(void) {
 }
 
 static int64_t g_outer = 0, g_inner = 0;
+static void* g_me;      // the task the case runs as
+static void* g_kid;     // the task it spawns
 
 static void* outer_fires_inner_passes(void* self) {
     (void)self;
     g_outer = avra_fiber_within(20);
     g_inner = avra_fiber_within(5000);
-    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_outer;
-    g_byte_b = avra_scope_end(g_inner) == 0 && avra_fiber_request() == g_outer;
-    g_byte_c = avra_scope_end(g_outer) == 1 && avra_fiber_request() == 0;
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_outer;
+    g_byte_b = avra_scope_end(g_inner) == 0 && avra_task_request(g_me) == g_outer;
+    g_byte_c = avra_scope_end(g_outer) == 1 && avra_task_request(g_me) == 0;
     return answer(0);
 }
 
@@ -1623,12 +1625,12 @@ static void* inner_fires_outer_stands(void* self) {
     (void)self;
     g_outer = avra_fiber_within(5000);
     g_inner = avra_fiber_within(20);
-    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_inner;
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_inner;
     g_byte_b = avra_sched_timers() == 1;
     int64_t under = avra_fiber_within(10);
     avra_fiber_sleep(20);
-    g_byte_c = avra_scope_end(under) == 0 && avra_fiber_request() == g_inner && avra_sched_timers() == 1;
-    g_byte_c = g_byte_c && avra_scope_end(g_inner) == 1 && avra_fiber_request() == 0 && avra_sched_timers() == 1;
+    g_byte_c = avra_scope_end(under) == 0 && avra_task_request(g_me) == g_inner && avra_sched_timers() == 1;
+    g_byte_c = g_byte_c && avra_scope_end(g_inner) == 1 && avra_task_request(g_me) == 0 && avra_sched_timers() == 1;
     int64_t t0 = avra_now_ns();
     avra_fiber_sleep(30);
     g_spent_ms = ms_since(t0);
@@ -1639,7 +1641,7 @@ static void* inner_fires_outer_stands(void* self) {
 // A child copies the owner: which scope owns a tie is seen in its request.
 static void* hears_the_outer(void* self) {
     (void)self;
-    g_byte_d = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    g_byte_d = parks_silent() == 0 && avra_task_request(g_kid) == g_outer;
     return answer(0);
 }
 
@@ -1647,8 +1649,9 @@ static void* equal_limits_outer_owns(void* self) {
     (void)self;
     g_outer = avra_fiber_within(20);
     g_inner = avra_fiber_within(20);
-    ended(spawn1(hears_the_outer, 0));
-    g_byte_a = g_byte_d == 1 && parks_silent() == 0 && avra_fiber_request() == g_outer;
+    g_kid = spawn1(hears_the_outer, 0);
+    ended(g_kid);
+    g_byte_a = g_byte_d == 1 && parks_silent() == 0 && avra_task_request(g_me) == g_outer;
     g_byte_b = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
     // the tie found again: once an earlier inner scope has ended, and
     // once one has asked
@@ -1656,15 +1659,16 @@ static void* equal_limits_outer_owns(void* self) {
     int64_t mid = avra_fiber_within(20);
     avra_scope_end(avra_fiber_within(10));
     g_byte_d = 0;
-    ended(spawn1(hears_the_outer, 0));
+    g_kid = spawn1(hears_the_outer, 0);
+    ended(g_kid);
     g_byte_c = g_byte_d == 1 && avra_scope_end(mid) == 0 && avra_scope_end(g_outer) == 0;
     g_outer = avra_fiber_within(20);
     mid = avra_fiber_within(20);
     g_inner = avra_fiber_within(10);
-    g_byte_c = g_byte_c && parks_silent() == 0 && avra_fiber_request() == g_inner;
-    g_byte_c = g_byte_c && parks_silent() == 0 && avra_fiber_request() == g_inner;
+    g_byte_c = g_byte_c && parks_silent() == 0 && avra_task_request(g_me) == g_inner;
+    g_byte_c = g_byte_c && parks_silent() == 0 && avra_task_request(g_me) == g_inner;
     avra_fiber_sleep(30);
-    g_byte_d = avra_fiber_request() == g_outer && avra_scope_end(g_inner) == 0 && avra_scope_end(mid) == 0 && avra_scope_end(g_outer) == 1;
+    g_byte_d = avra_task_request(g_me) == g_outer && avra_scope_end(g_inner) == 0 && avra_scope_end(mid) == 0 && avra_scope_end(g_outer) == 1;
     return answer(0);
 }
 
@@ -1674,8 +1678,8 @@ static void* fires_while_running(void* self) {
     g_outer = avra_fiber_within(5000);
     g_inner = avra_fiber_within(20);
     avra_fiber_sleep(30);
-    g_byte_a = avra_fiber_request() == 0;
-    g_byte_b = parks_silent() == 0 && avra_fiber_request() == g_inner;
+    g_byte_a = avra_task_request(g_me) == 0;
+    g_byte_b = parks_silent() == 0 && avra_task_request(g_me) == g_inner;
     g_byte_c = avra_scope_end(g_inner) == 1 && avra_scope_end(g_outer) == 0;
     return answer(0);
 }
@@ -1685,24 +1689,24 @@ static void* late_limit(void* self) {
     (void)self;
     g_outer = avra_fiber_within(20);
     avra_fiber_sleep(30);
-    g_byte_a = avra_scope_end(g_outer) == 0 && avra_fiber_request() == 0;
+    g_byte_a = avra_scope_end(g_outer) == 0 && avra_task_request(g_me) == 0;
     return answer(0);
 }
 
 static void* child_under_the_outer(void* self) {
     (void)self;
     int64_t own = avra_fiber_within(5000);
-    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_outer;
-    g_byte_b = avra_scope_end(own) == 0 && avra_fiber_request() == g_outer;
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_kid) == g_outer;
+    g_byte_b = avra_scope_end(own) == 0 && avra_task_request(g_kid) == g_outer;
     return answer(0);
 }
 
 static void* spawns_under_the_outer(void* self) {
     (void)self;
     g_outer = avra_fiber_within(20);
-    void* c = spawn1(child_under_the_outer, 0);
-    g_byte_c = parks_silent() == 0 && avra_fiber_request() == g_outer;
-    ended(c);
+    g_kid = spawn1(child_under_the_outer, 0);
+    g_byte_c = parks_silent() == 0 && avra_task_request(g_me) == g_outer;
+    ended(g_kid);
     g_byte_d = avra_scope_end(g_outer) == 1;
     return answer(0);
 }
@@ -1711,7 +1715,7 @@ static void* spawns_under_the_outer(void* self) {
 static void* child_of_a_request(void* self) {
     (void)self;
     int64_t t0 = avra_now_ns();
-    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_inner && ms_since(t0) < 1000;
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_kid) == g_inner && ms_since(t0) < 1000;
     return answer(0);
 }
 
@@ -1720,7 +1724,8 @@ static void* spawns_under_a_request(void* self) {
     g_outer = avra_fiber_within(5000);
     g_inner = avra_fiber_within(20);
     parks_silent();
-    ended(spawn1(child_of_a_request, 0));
+    g_kid = spawn1(child_of_a_request, 0);
+    ended(g_kid);
     g_byte_b = avra_scope_end(g_inner) == 1 && avra_scope_end(g_outer) == 0;
     return answer(0);
 }
@@ -1731,7 +1736,8 @@ static void scopes_on(void* (*body)(void*)) {
     avra_clock_virtual(1);
     bytes_unseen();
     g_silent = avra_gate_new();
-    ended(spawn1(body, 0));
+    g_me = spawn1(body, 0);
+    ended(g_me);
     avra_rc_release(g_silent);
     avra_clock_run_ends();
 }
@@ -1824,12 +1830,12 @@ static void* six_deep(void* self) {
     (void)self;
     int64_t ids[6];
     for (int i = 0; i < 6; i++) ids[i] = avra_fiber_within(i == 5 ? 20 : 5000 + i);
-    g_byte_a = parks_silent() == 0 && avra_fiber_request() == ids[5];
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == ids[5];
     int landed = 0;
     for (int i = 5; i >= 0; i--) landed += (int)avra_scope_end(ids[i]) << i;
     g_byte_b = landed == 1 << 5;
     for (int i = 0; i < 6; i++) ids[i] = avra_fiber_within(i == 0 ? 20 : 5000 + i);
-    g_byte_c = parks_silent() == 0 && avra_fiber_request() == ids[0];
+    g_byte_c = parks_silent() == 0 && avra_task_request(g_me) == ids[0];
     landed = 0;
     for (int i = 5; i >= 0; i--) landed += (int)avra_scope_end(ids[i]) << i;
     g_byte_d = landed == 1 && avra_sched_timers() == 0;
@@ -1852,10 +1858,10 @@ static void scope_ended_out_of_order(void) {
 static void* fired_then_cancelled(void* self) {
     (void)self;
     g_outer = avra_fiber_within(20);
-    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_outer;
     avra_fiber_sleep(10000);
-    g_byte_b = avra_fiber_request() == 1;
-    g_byte_c = avra_scope_end(g_outer) == 0 && avra_fiber_request() == 1;
+    g_byte_b = avra_task_request(g_me) == 1;
+    g_byte_c = avra_scope_end(g_outer) == 0 && avra_task_request(g_me) == 1;
     return answer(0);
 }
 
@@ -1867,8 +1873,8 @@ static void* cancelled_then_fired(void* self) {
     avra_wait_park();
     int64_t t0 = avra_now_ns();
     while (ms_since(t0) < 40) avra_fiber_yield();
-    g_byte_a = avra_fiber_request() == 1;
-    g_byte_b = avra_scope_end(g_outer) == 0 && avra_fiber_request() == 1;
+    g_byte_a = avra_task_request(g_me) == 1;
+    g_byte_b = avra_scope_end(g_outer) == 0 && avra_task_request(g_me) == 1;
     return answer(0);
 }
 
@@ -1877,7 +1883,7 @@ static void task_cancel_outranks_a_scope(void) {
     avra_clock_run_begins();
     avra_clock_virtual(1);
     g_silent = avra_gate_new();
-    void* t = spawn1(fired_then_cancelled, 0);
+    void* t = g_me = spawn1(fired_then_cancelled, 0);
     avra_fiber_sleep(30);
     avra_task_cancel(t);
     CHECK(ended(t) == 2 && g_byte_a == 1, "a deadline's request stands, and the task is cancelled after");
@@ -1889,7 +1895,7 @@ static void task_cancel_outranks_a_scope(void) {
 static void a_scope_does_not_displace_a_task_cancel(void) {
     bytes_unseen();
     g_gate = avra_gate_new();
-    void* t = spawn1(cancelled_then_fired, 0);
+    void* t = g_me = spawn1(cancelled_then_fired, 0);
     avra_fiber_sleep(2);
     avra_task_cancel(t);
     CHECK(ended(t) == 2 && g_byte_a == 1, "a limit that passes under a task's cancel leaves the task's request standing");
@@ -1902,9 +1908,9 @@ static void* inner_then_outer(void* self) {
     (void)self;
     g_outer = avra_fiber_within(40);
     g_inner = avra_fiber_within(20);
-    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_inner;
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_inner;
     avra_fiber_sleep(60);
-    g_byte_b = avra_fiber_request() == g_outer;
+    g_byte_b = avra_task_request(g_me) == g_outer;
     g_byte_c = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
     return answer(0);
 }
@@ -1914,9 +1920,9 @@ static void* outer_then_inner(void* self) {
     (void)self;
     g_outer = avra_fiber_within(20);
     g_inner = avra_fiber_within(40);
-    g_byte_a = parks_silent() == 0 && avra_fiber_request() == g_outer;
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_outer;
     avra_fiber_sleep(60);
-    g_byte_b = avra_fiber_request() == g_outer && avra_sched_timers() == 0;
+    g_byte_b = avra_task_request(g_me) == g_outer && avra_sched_timers() == 0;
     g_byte_c = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
     return answer(0);
 }

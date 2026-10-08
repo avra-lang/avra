@@ -100,10 +100,12 @@ int64_t avra_fiber_within(int64_t ms);
 // request that stands is this scope's, which then stands no longer.
 int64_t avra_scope_end(int64_t id);
 void avra_fiber_within_end(int64_t id);
-// The calling task's standing request: 0 for none, a scope's id when its
-// limit passed, else 1 + the id of the task that cancelled it. ONE
-// STANDS: a task's cancel outranks any scope, an outer scope an inner one.
-int64_t avra_fiber_request(void);
+// The task's standing request: 0 for none (or a task that has ended), a
+// scope's id when its limit passed, else 1 + the id of the task that
+// cancelled it. ONE STANDS: a task's cancel outranks any scope, an outer
+// scope an inner one. A deadline's request claims a park as its time
+// (`-1:1`) and sets no unwind bit: no code can land it yet.
+int64_t avra_task_request(void* task);
 
 // 1 when a read (`writing` 0) or write (1) on `fd` may find something —
 // always, until a task has waited on it; 0 once a read found it drained
