@@ -502,7 +502,7 @@ export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>> }
 /// One query's answers under one Db: its kernel family with the typed
 /// values, every call's spelled arguments interned to a dense arg, and
 /// how each call is asked again when the kernel verifies it.
-type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, ints: Cell<List<int>>, again: Table<fn() -> V>, cap: int, since: Cell<int>, next: Cell<int> }
+type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, ints: Cell<List<int>>, again: Table<fn() -> V>, cap: int, since: Cell<int>, next: Cell<int>, free: Cell<List<int>> }
 
 export fn answers<V>() -> Answers<V> {
     let none: List<AnswersUnder<V>?> = []
@@ -549,6 +549,7 @@ impl Answers<V> {
 
 /// A query's empty answers in one kernel family.
 fn held_in<V>(kernel: Kernel, family: int, cap: int) -> AnswersUnder<V> {
+    let free: Cell<List<int>> = Cell.new([])
     let memo: Relation<V> = new_memo(kernel, family)
     let args: Cell<Map<string, int>> = Cell.new({})
     let ints: Cell<List<int>> = Cell.new([])
@@ -561,6 +562,7 @@ fn held_in<V>(kernel: Kernel, family: int, cap: int) -> AnswersUnder<V> {
         cap: cap,
         since: Cell.new(0),
         next: Cell.new(0),
+        free: free,
     }
 }
 
@@ -599,25 +601,41 @@ impl AnswersUnder<V> {
             return
         }
         mut kept: Map<string, int> = {}
+        mut dropped: List<int> = []
         for e in self.args.get().entries() {
             if self.memo.open(e.value) {
                 kept.set(e.key, e.value)
             } else {
                 self.memo.evict_call(e.value)
                 self.again.drop(e.value)
+                dropped.push(e.value)
             }
         }
         self.args.set(kept)
+        self.free.set(self.free.get().concat(dropped))
         self.ints.set([if x >= 0 && self.memo.open(x) { x } else { -1 } for x in self.ints.get()])
         self.memo.kernel.bump()
         self.since.set(1)
     }
 
+    /// A dense arg for a new call: the newest one an epoch freed, else one never used before.
+    /// A freed arg comes back with a new cell, which settles at a revision past any stale
+    /// dependent's verification, so that dependent re-verifies and never reuses.
+    fn take_arg() -> int {
+        let free = self.free.get()
+        let reused? = free.last() else {
+            let made = self.next.get()
+            self.next.set(made + 1)
+            return made
+        }
+        self.free.set(free.slice(0, free.length - 1))
+        reused
+    }
+
     fn arg(spelled: string) -> int {
         let known? = self.args.get().get(spelled) else {
             self.make_room()
-            let made = self.next.get()
-            self.next.set(made + 1)
+            let made = self.take_arg()
             self.args.put(spelled, made)
             return made
         }
