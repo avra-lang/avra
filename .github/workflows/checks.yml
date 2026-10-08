@@ -242,8 +242,13 @@ jobs:
       # job rebuilds what prepare built from the same commit.
       - name: built
         run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
-      # The keepers are the train's (its keepers job); a PR's gate is the
-      # changed files' formatting and its touched packages' idioms.
+      # The keepers a PR can break alone, under the compiler it just built
+      # (`make keepers-pr`); the train runs every keeper in its keepers job.
+      - name: PR keepers
+        if: github.event_name == 'pull_request'
+        run: make -s -o avra keepers-pr
+      # A PR's gate is the changed files' formatting and its touched
+      # packages' idioms.
       - name: gate
         run: sh tools/gate_changed.sh --files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers
 
