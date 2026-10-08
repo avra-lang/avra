@@ -252,6 +252,16 @@ impl Workspace {
         self.all_files(self.packages()[0].src)
     }
 
+    /// THE ROOT FILES A DERIVATION MEETS: every one for a check, and for the
+    /// BUILD of an entry outside `tests/` every one but the tests' — a test
+    /// module that entry reaches is admitted by its `use`, as any module is.
+    fn entry_files(built: string?) -> List<string> {
+        let all = self.root_files()
+        let at? = built else { return all }
+        if self.is_test_path(at) { return all }
+        [p for p in all if !self.is_test_path(p)]
+    }
+
     /// The tree the toolchain's packages stand in: `<tree>/packages`
     /// when the host was given a std root, else nothing.
     fn toolchain_root() -> string {
@@ -520,7 +530,10 @@ impl Workspace {
     fn used_packages(k: string) -> List<string> {
         let pkg? = self.packages().find(it.key == k) else { return [] }
         let root = self.packages()[0].key
-        let used = [m.package() ?? root for m in flatten([self.imported_by(path) for path in self.all_files(pkg.src)])]
+        // a dependency is its library: what its tests use is no edge of it
+        let used = [m.package() ?? root for m in flatten(
+            [self.imported_by(path) for path in self.all_files(pkg.src) if !self.is_test_path(path)],
+        )]
         distinct([u for u in used if u != k])
     }
 }
