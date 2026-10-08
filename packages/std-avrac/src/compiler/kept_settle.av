@@ -76,14 +76,37 @@ impl Workspace {
     /// Where `d`'s kept verdict lives: its file's path and its name.
     fn kept_settle_key(f: FileId, d: DeclId) -> string { kept_key_for(self.decls.file(f).path, self.decls.decl(d).name) }
 
-    /// The files a read file's runs force read: none when every const its
-    /// record lists has a kept verdict, which answers without running.
+    /// The files a read file's runs force read: none when its kept const
+    /// verdicts will answer without running AND account for every run its
+    /// record lists — a run no verdict answers for (a derive's) runs again.
     fn forced_runs(store: Store, path: string) -> List<string> {
         let m = self.module_path_of(path)
         let runs = kept_runs(record_places(self, store, m).get(path))
         let consts = [parts[5] for parts in record_fields(self, store, m) if parts.length > 5 && parts[0] == "const" && parts[1] == path]
-        if !consts.is_empty() && consts.all((n) -> store.has(Stored.Unit, kept_key_for(path, n))) { return [] }
-        runs
+        let kept = [self.kept_unmoved_reads(store, kept_key_for(path, n)) for n in consts]
+        if consts.is_empty() || kept.any(it == null) { return runs }
+        let read = flatten([r ?? [] for r in kept])
+        let answered = distinct(read.concat(flatten([self.ran_by(store, p) for p in read])))
+        if runs.all((p) -> answered.contains(p)) { [] } else { runs }
+    }
+
+    /// What a kept verdict's run read, when the verdict stands on the one test
+    /// answered before a parse: every unit it lowered sits in unmoved text. A
+    /// moved unit may still stand on its syntax, but only a parse says so — and
+    /// a run that does not stand asks its bodies one level an attempt, where
+    /// reading its runs costs one.
+    fn kept_unmoved_reads(store: Store, key: string) -> List<string>? {
+        let lines? = store.get(Stored.Unit, "${key}#lines") else { return null }
+        let rows = [l.split("\t") for l in lines.split("\n") if !l.is_empty()]
+        if !rows.all((r) -> self.unit_unmoved(r)) { return null }
+        let reads? = rows.find(it[0] == "r") else { return null }
+        reads.slice(1, reads.length)
+    }
+
+    /// A kept line's unit, if it is one, sits in the text it was kept from.
+    fn unit_unmoved(r: List<string>) -> bool {
+        if r[0] != "u" { return true }
+        r.length > 2 && self.text_digest(r[1]) == r[2]
     }
 
     /// The innermost open settlement's lines, its frame closed.
