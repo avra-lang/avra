@@ -1187,8 +1187,9 @@ registry is the idiom engine's spec, written by dogfooding.
   minted. One mechanism, one loud door and one mute one, and the
   mute one is the door every `@derive` takes. All three doors read
   one `unsettled_label` now.
-- A FAMILY IS APPENDED, NEVER INSERTED. A `@family(rank)` is persisted, so inserting a
-  family moves every later one. A node kind is keyed by its NAME (`@…_node`), order is free.
+- A FAMILY, LIKE A NODE KIND, IS KEYED BY ITS NAME. `@family` markers mint `Family`
+  `by it.name`, so a family may be declared in any order; nothing saved keys by an ordinal
+  and no family fingerprint folds one.
 - Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
   and a block word's `{` hand their body over whole, so the lexer emits
   the `}` that ends it too, and the rule consumes it (`"grammar" "{"
