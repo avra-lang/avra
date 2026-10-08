@@ -1,0 +1,67 @@
+// proves: an owner that replaces its rows with identical rows moves
+// nothing a query read — the query answers from its cell and runs once —
+// for keyed and keyless rows alike, while rows that differ, or come in
+// another order, do move it.
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, new_db}
+use @std.relation.engine.{new_kernel}
+
+@relation
+type Site = { @key name: string, @index set: string }
+
+@relation
+type Tally = { @index set: string, n: int }
+
+once fn runs() -> Cell<int> { Cell.new(0) }
+
+once fn tally_runs() -> Cell<int> { Cell.new(0) }
+
+@query
+fn sites_in(db: Db, set: string) -> int {
+    runs().set(runs().get() + 1)
+    Site.by_set(db, set).length
+}
+
+@query
+fn summary(db: Db) -> string {
+    tally_runs().set(tally_runs().get() + 1)
+    ["${m.n}" for m in Tally.all(db)].join(",")
+}
+
+fn main_run() -> string {
+    let kernel = new_kernel()
+    let db = new_db()
+    db.given_to(kernel)
+    let rows = [Site { name: "a", set: "s" }, Site { name: "b", set: "s" }]
+    let _ = Site.replaced(db, "survey", rows)
+    let first = sites_in(db, "s")
+    kernel.bump()
+    let _ = Site.replaced(db, "survey", rows)
+    let again = sites_in(db, "s")
+    kernel.bump()
+    let _ = Site
+        .replaced(
+            db,
+            "survey",
+            [
+                Site { name: "c", set: "s" },
+                Site { name: "a", set: "s" },
+                Site { name: "b", set: "s" },
+            ],
+        )
+    let changed = sites_in(db, "s")
+    let _ = Tally.replaced(db, "tallies", [Tally { set: "s", n: 1 }, Tally { set: "s", n: 2 }])
+    let kept = summary(db)
+    kernel.bump()
+    let _ = Tally.replaced(db, "tallies", [Tally { set: "s", n: 1 }, Tally { set: "s", n: 2 }])
+    let same = summary(db)
+    kernel.bump()
+    let _ = Tally.replaced(db, "tallies", [Tally { set: "s", n: 1 }, Tally { set: "s", n: 3 }])
+    let edited = summary(db)
+    kernel.bump()
+    let _ = Tally.replaced(db, "tallies", [Tally { set: "s", n: 3 }, Tally { set: "s", n: 1 }])
+    let reordered = summary(db)
+    "first=${first} again=${again} changed=${changed} runs=${runs().get()} kept=${kept} same=${same} edited=${edited} reordered=${reordered} tallies_runs=${tally_runs().get()}"
+}
+
+main_run()
