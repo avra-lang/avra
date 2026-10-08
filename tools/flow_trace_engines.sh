@@ -1,6 +1,6 @@
 #!/bin/sh
 # A TRACE HAS ONE SHAPE IN BOTH ENGINES. Each program is run compiled
-# and evaluated under `AVRA_FLOW_TRACE`, and what the reader prints as
+# and evaluated under `AVRA_FLOW_TRACE`, and what `avra trace` prints as
 # each trace's shape — a task's events in order, with nothing an engine
 # owns — must be the text committed beside the program, from both: a
 # join of a spawned task, a join of a timer's task, a join of a task
@@ -40,7 +40,8 @@ held() {
         echo "flow-trace: the compiler spawned a task of its own while it evaluated $want"
         return 1
     fi
-    if ! python3 tools/flow_trace.py "$trace" --shape > "$trace.shape" 2> "$trace.strays"; then
+    case "$trace" in /*) whole_path=$trace ;; *) whole_path=$PWD/$trace ;; esac
+    if ! build/avra trace "$whole_path" --shape > "$trace.shape" 2> "$trace.strays"; then
         echo "flow-trace: the $engine trace of $want holds a line that is no event"; sed -n '1p' "$trace.strays"
         return 1
     fi
@@ -108,5 +109,34 @@ for program in $PROGRAMS; do
         events=$((events + $(grep -c '^ts=' "$dir/$engine.trace" 2>/dev/null || echo 0)))
     done
 done
-echo "flow-trace: 4 fixtures, $programs programs in 2 engines, $events events read, $fails refused"
+# A LIVE PROCESS'S LISTING IS A TRACE: the runtime's own scene of a task
+# in every state, listed, and read back by the same graph — addresses and
+# descriptor numbers left out, since they are the machine's. EACH STEP'S
+# STATUS IS ITS OWN: `avra trace` refuses a listing line it cannot read
+# (exit 1) and a pipe would answer the masking's status instead, so the
+# graph is written to a file, its status tested, and only then masked.
+# The scene's stderr is never the listing's.
+listing() {
+    dump="$1"
+    if ! build/runtime-tests/tasks_door_test listed -1 > "$dump" 2> "$dump.err"; then
+        echo "flow-trace: the runtime's listed scene did not run"; sed -n '1,4p' "$dump.err"
+        return 1
+    fi
+    if ! build/avra trace "$PWD/$dump" --graph > "$dump.raw" 2> "$dump.strays"; then
+        echo "flow-trace: a live listing holds a line that is no event"; sed -n '1p' "$dump.strays"
+        return 1
+    fi
+    sed 's/0x[0-9a-f]*/0x/g; s/descriptor [0-9]*/descriptor N/' "$dump.raw" > "$dump.graph"
+    cmp -s "$dump.graph" tools/flow_trace/listed.graph && return 0
+    echo "flow-trace: a live listing's graph is not tools/flow_trace/listed.graph"
+    diff tools/flow_trace/listed.graph "$dump.graph" || true
+    return 1
+}
+dump=$ROOT/listed.trace
+if listing "$dump"; then
+    events=$((events + $(grep -c '^ts=' "$dump")))
+else
+    fails=$((fails + 1))
+fi
+echo "flow-trace: 4 fixtures, $programs programs in 2 engines and a live listing, $events events read, $fails refused"
 [ "$fails" -eq 0 ]

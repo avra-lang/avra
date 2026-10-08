@@ -539,7 +539,7 @@ runtime-mutations: $(RUNTIME_OBJS)
 
 # A TRACE HAS ONE SHAPE IN BOTH ENGINES: one program traced compiled
 # and evaluated, the reader's shape of each held to a committed text.
-flow-trace: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+flow-trace: $(COMPILER_OBJS) $(PACKAGE_OBJS) build/runtime-tests/tasks_door_test
 	@sh tools/flow_trace_engines.sh
 
 # The runtime's trap contract: the words and the verdict (exit 2).
@@ -835,7 +835,7 @@ keepers keepers-alone keepers-a keepers-b:
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
 TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test \
-                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_queue_keeper.sh work_test.sh reclaim_test.sh witness_flow_trace.sh
+                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_queue_keeper.sh work_test.sh reclaim_test.sh
 tool-witnesses:
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }

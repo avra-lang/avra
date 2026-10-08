@@ -1,0 +1,210 @@
+//! `avra trace` — a flow trace read back: the timeline, the shape both
+//! engines print alike, and the wait graph (commands/trace.av).
+use commands.{
+    read_trace,
+    timelines_said,
+    timelines,
+    shape,
+    waits_at,
+    graph,
+    worded,
+    ms_said,
+    ns_of_ms,
+    Happened,
+}
+
+fn mixed() -> string {
+    "ts=1000000 spawn id=1 0\nts=1500000 park id=1 src=gate:0x55 arm=0:5\nts=1600000 park id=1 src=at arm=1:0\nts=3500000 claim id=1 by=0 arm=0:5\nts=3600000 retract id=1 1\nts=3700000 claim id=2 by=timer arm=1:0\nts=3900000 end id=1 0\nflow trace: capped\n"
+}
+
+fn compiled() -> string {
+    "ts=10 spawn id=1 0\nts=20 join id=0 on=1\nts=30 park id=0 src=gate:0x7f00 arm=0:0\nts=40 park id=1 src=at arm=0:0\nts=50 claim id=1 by=timer arm=0:0\nts=60 claim id=0 by=1 arm=0:0\nts=70 end id=1 0\n"
+}
+
+fn evaluated() -> string {
+    "ts=5 spawn-at id=0 0\nts=10 spawn-at id=1 17\nts=20 join id=0 on=1\nts=40 park id=1 src=at arm=0:0\nts=50 claim id=1 by=timer arm=0:0\nts=60 claim id=0 by=1 arm=0:0\nts=70 end id=1 0\n"
+}
+
+fn sited() -> string {
+    "ts=1 spawn id=1 0\nts=2 site id=1 pkg/main.av:8\nts=3 spawn id=2 0\nts=4 site id=2 0x55d0\nts=5 spawn-at id=3 4\nts=6 site id=3 pkg/main.av:8\n"
+}
+
+fn graphed() -> string {
+    "ts=0 spawn id=1 0\nts=0 spawn id=2 0\nts=0 spawn id=3 0\nts=0 spawn id=4 0\nts=1000000 join id=0 on=1\nts=1000000 park id=0 src=gate:0x10 arm=0:0\nts=1000000 park id=1 src=fd:r:7 arm=1:2\nts=1000000 park id=1 src=at arm=0:9\nts=1000000 park id=2 src=gate:0xg arm=0:3\nts=1000000 park id=3 src=gate:0xg arm=0:4\nts=2000000 claim id=2 by=4 arm=0:3\nts=2000000 park id=2 src=gate:0xg arm=0:3\nts=3000000 claim id=1 by=poller arm=1:2\n"
+}
+
+fn ringed() -> string {
+    "ts=0 spawn id=1 0\nts=0 spawn id=2 0\nts=1 join id=1 on=2\nts=2 join id=2 on=1\nts=3 join id=0 on=1\n"
+}
+
+fn timeline_lines(text: string) -> List<string> { timelines_said(read_trace(text), null).split("\n") }
+
+fn graph_lines(text: string, at: int?) -> List<string> {
+    let r = read_trace(text)
+    graph(waits_at(r.events, at), at).split("\n")
+}
+
+spec "commands/trace — the timeline" {
+    given "a trace with a line that is no event" {
+        then "every event line is read" { read_trace(mixed()).events.length == 7 }
+        then "a line that is no event is counted" {
+            read_trace(mixed()).strays.length == 1 &&
+                (timeline_lines(mixed()).last() ?? "").contains("1 line(s) were no event")
+        }
+        then "tasks keep the order of first sight" {
+            [t.task for t in timelines(read_trace(mixed()).events)].length == 2 &&
+                timelines(read_trace(mixed()).events)[0].task == 1
+        }
+        then "a task's head counts its events and waits" {
+            timeline_lines(mixed())[0] == "task 1 — 6 event(s), 2 wait(s), 2.900 ms from first to last"
+        }
+        then "a stamp is milliseconds from the first line" { timeline_lines(mixed())[2].trim() == "+     0.500 ms  waits on gate:0x55 as 0:5" }
+        then "a task claimant is named as a task" { timeline_lines(mixed())[4].contains("woken by task 0 on 0:5") }
+        then "a scheduler's hand is named as itself" { timeline_lines(mixed()).any(it.contains("woken by the timer on 1:0")) }
+        then "one task alone can be asked for" {
+            timelines_said(read_trace(mixed()), 2).split("\n")[0]
+                .starts_with("task 2 — 1 event(s)")
+        }
+    }
+    given "an empty trace" {
+        then "it renders nothing" { timelines_said(read_trace(""), null) == "" }
+    }
+    given "joins" {
+        then "a join names its task" { worded(Happened.Join, "on=2", null) == "joins task 2" }
+        then "a join of a task nothing runs says so" { worded(Happened.Join, "on=unrun", null) == "joins a task nothing runs" }
+        then "a waking by a task nothing runs says so" { worded(Happened.Claim, "by=unrun arm=0:0", null) == "woken by a task nothing runs on 0:0" }
+        then "the timeline folds the join's wait too" { !timeline_lines(compiled()).any(it.contains("gate")) }
+    }
+    given "sites" {
+        then "a spawn says its source line" { timeline_lines(sited()).any(it.contains("spawned by task 0 at pkg/main.av:8")) }
+        then "a spawn with no line says its code's address" { timeline_lines(sited()).any(it.contains("spawned by task 0 at 0x55d0")) }
+        then "an evaluated spawn says its source line" { timeline_lines(sited()).any(it.contains("spawned (evaluated) at pkg/main.av:8")) }
+        then "a site line is no event of its own" { !timeline_lines(sited()).any(it.contains("site") && !it.contains("spawned")) }
+    }
+    given "milliseconds" {
+        then "three places, rounded to the microsecond" { ms_said(2900000) == "2.900" && ms_said(1500) == "0.002" && ms_said(0) == "0.000" }
+        then "an instant in milliseconds is nanoseconds" { ns_of_ms("1.5") == 1500000 }
+        then "a whole number of milliseconds" { ns_of_ms("2") == 2000000 }
+        then "no number is no instant" { ns_of_ms("x") == null }
+        then "an absent instant is none" { ns_of_ms("") == null }
+    }
+}
+
+spec "commands/trace — the shape" {
+    given "a compiled and an evaluated trace of one program" {
+        then "the wait a join files is the join's" {
+            shape(read_trace(compiled()).events) == "the program's own run\n  joins task 1\n  woken by task 1 on 0:0\ntask 1\n  spawned\n  waits on at as 0:0\n  woken by the timer on 0:0\n  ends"
+        }
+        then "both engines' traces have one shape" { shape(read_trace(evaluated()).events) == shape(read_trace(compiled()).events) }
+    }
+    given "a gate wait that follows no join" {
+        then "it stays" { shape(read_trace(mixed()).events).contains("waits on gate as 0:5") }
+    }
+    given "sites" {
+        then "the shape keeps a source line and drops an address" {
+            shape(read_trace(sited()).events) == "task 1\n  spawned at pkg/main.av:8\ntask 2\n  spawned\ntask 3\n  spawned at pkg/main.av:8"
+        }
+    }
+}
+
+spec "commands/trace — the wait graph" {
+    given "tasks on a join, a descriptor and a time, and a gate" {
+        then "the graph at the end" {
+            graph_lines(graphed(), null).join("\n") == "at the trace's end: 5 task(s) alive, 3 waiting, 2 ready or running\n  the program's own run -> task 1\n  task 2 -> gate 0xg (last claimed through by task 4)\n  task 3 -> gate 0xg (last claimed through by task 4)\n  no ring of joins"
+        }
+        then "the graph at an instant holds every source of a set" {
+            graph_lines(graphed(), 1500000).slice(2, 4).join("\n") == "  task 1 -> descriptor 7 (readable)\n  task 1 -> a time"
+        }
+        then "a gate nobody claimed through is named alone" { graph_lines(graphed(), 1500000).contains("  task 2 -> gate 0xg") }
+    }
+    given "a task that ended" {
+        then "it waits on nothing" { !graph_lines(compiled(), null).any(it.contains("task 1")) }
+    }
+    given "a ring of joins" {
+        then "it is named once, from its smallest task" {
+            [l for l in graph_lines(ringed(), null) if l.contains("RING")].join("\n") == "  RING: task 1 -> task 2 -> task 1"
+        }
+    }
+    given "a join of a task nothing runs" {
+        then "it is named so" {
+            graph_lines("ts=0 join id=0 on=unrun\n", null)
+                .contains("  the program's own run -> a task nothing runs")
+        }
+    }
+}
+
+fn dumped() -> string {
+    "ts=9 spawn id=1\nts=9 site id=1 pkg/main.av:4\nts=9 park id=1 src=fd:r:6 arm=0:0\nts=9 age id=1 ms=120\nts=9 spawn id=2\nts=9 site id=2 0x55d0\nts=9 join id=2 on=1\nts=9 age id=2 ms=80\n"
+}
+
+spec "commands/trace — a line cut short or missing what it must say" {
+    given "a last line with no newline" {
+        then "it is no event" { read_trace("ts=1 spawn id=1 0\nts=2 park id=1 src=gate:0x5").strays.length == 1 }
+        then "and the lines before it are read" { read_trace("ts=1 spawn id=1 0\nts=2 park id=1 src=gate:0x5").events.length == 1 }
+    }
+    given "a park without its source or its arm" {
+        then "a park without its source is no event" { read_trace("ts=1 park id=4 sr\n").strays.length == 1 }
+        then "a park without its arm is no event" { read_trace("ts=1 park id=4 src=at\n").strays.length == 1 }
+    }
+    given "a join without a task it joins" {
+        then "a join cut before its task is no event" { read_trace("ts=1 join id=3 o\n").strays.length == 1 }
+        then "a join of no task is no event" { read_trace("ts=1 join id=3 on=x\n").strays.length == 1 }
+        then "a join of a task nothing runs is one" { read_trace("ts=1 join id=3 on=unrun\n").events.length == 1 }
+    }
+    given "a claim without its claimant or its arm" {
+        then "a claim without its arm is no event" { read_trace("ts=1 claim id=1 by=2\n").strays.length == 1 }
+        then "a claim without its claimant is no event" { read_trace("ts=1 claim id=1 arm=0:0\n").strays.length == 1 }
+    }
+    given "an age without its milliseconds" {
+        then "it is no event" { read_trace("ts=1 age id=1 ms=\n").strays.length == 1 }
+    }
+    given "a line that swallowed the next" {
+        then "it is no event" { read_trace("ts=1 site id=1 pkg/a.avts=2 end id=1 0\n").strays.length == 1 }
+        then "a path that only holds the letters is no splice" { read_trace("ts=1 site id=1 pkg/posts=x.av:3\n").events.length == 1 }
+    }
+}
+
+spec "commands/trace — the graph's edges" {
+    given "a task whose join leads into a ring" {
+        then "the ring is named once, without the tail" {
+            [l for l in graph_lines(
+                "ts=0 spawn id=1 0\nts=0 spawn id=2 0\nts=0 spawn id=3 0\nts=1 join id=3 on=1\nts=2 join id=1 on=2\nts=3 join id=2 on=1\n",
+                null,
+            ) if l.contains("RING")]
+                .join("\n") == "  RING: task 1 -> task 2 -> task 1"
+        }
+    }
+    given "the graph at the trace's first instant" {
+        then "it holds only what came then" {
+            graph_lines(ringed(), 0)[0] == "at +0.000 ms: 3 task(s) alive, 0 waiting, 3 ready or running"
+        }
+    }
+    given "a task that ends while it waits" {
+        then "it waits on nothing and is gone" {
+            graph_lines("ts=0 spawn id=1 0\nts=1 park id=1 src=at arm=0:0\nts=2 end id=1 0\n", null)[0] == "at the trace's end: 1 task(s) alive, 0 waiting, 1 ready or running"
+        }
+    }
+    given "an empty trace" {
+        then "no task is alive" { graph_lines("", null)[0] == "at the trace's end: 0 task(s) alive, 0 waiting, 0 ready or running" }
+    }
+}
+
+spec "commands/trace — a live process's listing" {
+    given "a listing, in the trace's own lines" {
+        then "the graph reads it as a trace" {
+            graph_lines(dumped(), null).join("\n") == "at the trace's end: 3 task(s) alive, 2 waiting, 1 ready or running\n  task 1 -> descriptor 6 (readable)\n  task 2 -> task 1\n  no ring of joins"
+        }
+        then "a spawn with no parent says where alone" { timeline_lines(dumped()).any(it.contains("spawned at pkg/main.av:4")) }
+        then "a task's age is said as at most" { timeline_lines(dumped()).any(it.contains("spawned at most 120 ms before it was listed")) }
+    }
+    given "the handler's own line" {
+        then "a task that has not switched is said so" {
+            timeline_lines("ts=0 unswitched id=1\n")
+                .any(it.contains("running, has not switched since it was asked"))
+        }
+        then "an evaluated program that has not is said so" {
+            timeline_lines("ts=0 unswitched id=0 evaluated\n")
+                .any(it.contains("the evaluated program has not switched since it was asked"))
+        }
+    }
+}
