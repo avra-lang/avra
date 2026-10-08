@@ -324,10 +324,12 @@ static int64_t g_trace_left = 0;
 static int64_t now_ns(void);
 
 static void clock_turned(void);
+static void case_spun(const char* words);
 
 __attribute__((constructor))
 static void trace_settle(void) {
     avra_clock_turned_hook = clock_turned;
+    avra_clock_spun_hook = case_spun;
     const char* env = getenv("AVRA_FLOW_TRACE");
     if (!env || !*env) return;
     if (strcmp(env, "1") != 0) {
@@ -2296,8 +2298,12 @@ static void task_said(FILE* out, Numbered no, const Fiber* f) {
 }
 
 // What a task is doing: ready, or each thing it waits on.
+// The case's task stopped for spinning on the frozen clock, if one was.
+static const Fiber* g_case_spinner = NULL;
+
 static void waits_said(FILE* out, Numbered no, const Fiber* f) {
     if (f->state == FIBER_READY) { fputs(" ready to run", out); return; }
+    if (f == g_case_spinner) { fputs(" stopped: it waited on the frozen clock without sleeping", out); return; }
     if (f->joining) {
         const Fiber* on = (const Fiber*)(uintptr_t)task_cells(f->joining)[TASK_FIBER];
         if (on) fprintf(out, " joins task %lld", no(on));
@@ -2412,6 +2418,24 @@ static void* case_ran(void* self) {
 
 enum { CASE_ENDED, CASE_ALARMED };
 
+// A TASK OF A CASE THAT WAITS ON A FROZEN CLOCK WITHOUT SLEEPING FAILS
+// THAT CASE, never the process: it is said, the runner is woken by the
+// alarm, and the task parks for good — the runner abandons it with the
+// case's others. Outside a case this returns, and the caller traps.
+static int g_case_spun = 0;
+static Fiber* g_case_runner = NULL;
+static void case_spun(const char* words) {
+    if (!g_case_waited || g_current == g_case_runner) return;
+    fprintf(stderr, "avra: %s\n", words);
+    g_case_spun = 1;
+    g_case_spinner = g_current;
+    avra_gate_claim(g_case_alarm);
+    Fiber* self = g_current;
+    self->state = FIBER_PARKED;
+    run_next();
+    avra_trap("defect: a task stopped for spinning on the clock ran again");
+}
+
 // The wide stack's pages back to the kernel: a deep case leaves none
 // resident for the cases after it.
 static void wide_given_back(void) {
@@ -2445,6 +2469,8 @@ int64_t avra_case_run(int64_t (*body)(void)) {
     if (!g_case_alarm) g_case_alarm = avra_gate_new();
     g_case_first = g_fiber_seq;
     g_case_spoiled = 0;
+    g_case_spun = 0;
+    g_case_spinner = NULL;
     g_case_answer = 0;
     void* box = avra_array_sized(2);
     avra_array_push(box, (int64_t)(uintptr_t)case_ran);
@@ -2454,10 +2480,21 @@ int64_t avra_case_run(int64_t (*body)(void)) {
     ((Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER])->wide = 1;
     avra_wait_task(task, CASE_ENDED, 0);
     avra_wait_gate(g_case_alarm, CASE_ALARMED, 0);
+    // RUNS THE CASE OPENS END WITH IT: a case stopped inside one — the
+    // evaluator opens a run for every program — leaves it open, so the
+    // runner closes it, the schedule's first (which closes its own clock),
+    // then any clock run left.
+    int64_t runs = (int64_t)g_runs;
+    int64_t clocks = avra_clock_run_depth();
     g_case_waited = 1;
+    g_case_runner = g_current;
     int64_t claim = avra_wait_park();
     g_case_waited = 0;
-    if (claim >> 32 == CASE_ALARMED) case_cleared(1);
+    if (claim >> 32 == CASE_ALARMED) {
+        while ((int64_t)g_runs > runs) avra_sched_run_ends();
+        while (avra_clock_run_depth() > clocks) avra_clock_run_ends();
+        case_cleared(!g_case_spun);
+    }
     avra_rc_release(task);
     wide_given_back();
     return g_case_answer;
@@ -2487,10 +2524,25 @@ static int64_t whole_setting(const char* name, int64_t least, int64_t fallback) 
     return n;
 }
 
+// A CASE RUNS ON THE VIRTUAL CLOCK unless `AVRA_CLOCK=real` says the
+// wall's: a sleep in it takes no time, and a wait on the world still
+// takes the world's (`make clock-holds`).
+#define CLOCK_SETTING "AVRA_CLOCK"
+static int g_case_clock_virtual = 1;
+static int g_any_failed = 0;
+
+static void case_clock_settled(void) {
+    const char* said = getenv(CLOCK_SETTING);
+    if (!said || !*said || !strcmp(said, "virtual")) return;
+    if (strcmp(said, "real")) avra_trap(CLOCK_SETTING " is `virtual` or `real`");
+    g_case_clock_virtual = 0;
+}
+
 static void schedules_settled(void) {
     if (g_sched_settled) return;
     g_sched_runs = whole_setting(SCHED_RUNS_SETTING, 1, SCHED_RUNS_DEFAULT);
     g_sched_only = whole_setting(SCHED_SEED_SETTING, 0, -1);
+    case_clock_settled();
     g_sched_settled = 1;
 }
 
@@ -2505,9 +2557,16 @@ static int64_t case_body_called(void) { return g_case_body() & 1; }
 static int64_t case_under(int64_t schedule, int64_t* choices) {
     avra_sched_seed(schedule);
     avra_case_schedule = schedule;
+    // the case's clock is a run of its own: what it jumps ends with it
+    if (g_case_clock_virtual) {
+        avra_clock_run_begins();
+        avra_clock_virtual(1);
+    }
     int64_t held = avra_case_run(case_body_called);
+    if (g_case_clock_virtual) avra_clock_run_ends();
     avra_case_schedule = -1;
     *choices = avra_sched_settle();
+    if (!held) g_any_failed = 1;
     return held;
 }
 
@@ -2534,6 +2593,7 @@ int64_t avra_case_verdict(int64_t code, const char* label) {
 }
 
 void avra_case_schedules_said(void) {
+    if (g_any_failed && g_case_clock_virtual) fputs("avra: the cases ran on the virtual clock — " CLOCK_SETTING "=real runs them on the wall's\n", stderr);
     if (!g_any_chose || g_sched_only >= 0) return;
     fprintf(stderr, "avra: a case that chose an order ran up to %lld schedule%s — " SCHED_RUNS_SETTING "=8 runs more, as the nightly `orders` run does; orders past %d ready tasks are not all reachable\n", (long long)g_sched_runs, g_sched_runs == 1 ? "" : "s", PICK_WINDOW);
 }
@@ -2552,6 +2612,8 @@ int64_t avra_sched_wide_resident(void) {
     free(in);
     return n;
 }
+
+int64_t avra_sched_run_depth(void) { return (int64_t)g_runs; }
 
 int64_t avra_sched_tasks(void) {
     int64_t n = 0;

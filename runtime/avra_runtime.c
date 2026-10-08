@@ -3797,6 +3797,7 @@ const char* avra_host_env(const char* name) {
 
 AvraClock avra_clock;
 void (*avra_clock_turned_hook)(void) = NULL;
+void (*avra_clock_spun_hook)(const char* words) = NULL;
 static int64_t g_clock_jumps = 0;
 
 static int64_t clock_real(void) {
@@ -3842,6 +3843,7 @@ __attribute__((noinline, cold, noreturn))
 static void clock_never_comes(void) {
     char words[240];
     avra_fmt(words, sizeof words, "a task is waiting on the clock without sleeping — the clock is virtual and moves only when every task waits (task %lld read it %lld times with no wait between; " CLOCK_ASKS_SETTING " sets how many, 0 for never)", (long long)avra_task_local->id, (long long)g_clock_asks_most);
+    if (avra_clock_spun_hook) avra_clock_spun_hook(words);
     avra_trap(words);
     abort();
 }
@@ -3914,6 +3916,8 @@ void avra_clock_run_begins(void) {
     clock_settled();
     clock_run_turned();
 }
+
+int64_t avra_clock_run_depth(void) { return (int64_t)g_clock_runs; }
 
 void avra_clock_run_ends(void) {
     if (g_clock_runs == 0) avra_trap("defect: a run's clock ended that never began");
