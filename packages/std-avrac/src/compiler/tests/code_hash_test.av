@@ -6,6 +6,7 @@ use @std.avrac.compiler.{Program}
 use @std.avrac.compiler.host.{memory_host}
 use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths, refused_in}
 use compiler.workspace_analysis.{inst_key_of}
+use compiler.lower.{code_graph, CodeFacts, FactNode}
 
 fn hashing(main: string) -> Program {
     let held = vendored_meta(
@@ -177,6 +178,36 @@ spec "compiler — an instantiation's kept key" {
     given "a home whose object key differs" {
         then "names another key" {
             inst_key_of("home", "int", "g\$^T") != inst_key_of("home2", "int", "g\$^T")
+        }
+    }
+}
+
+/// The hash of a fn whose one ref names `target`, which has no facts of its own.
+fn ref_hash(target: string, known: List<string>) -> string? {
+    mut g = code_graph(
+        [
+            CodeFacts {
+                nodes: [FactNode { name: "a", own: "x", refs: [target] }],
+                addressed: [],
+                asked: [],
+            },
+        ],
+        [],
+        known,
+        [],
+    )
+    g.hash("a")
+}
+
+spec "compiler — a code hash's unknown symbols" {
+    given "a ref to a symbol with no facts and no runtime row" {
+        then "reads absent" {
+            ref_hash("ghost", []) == null
+        }
+    }
+    given "a ref to a runtime row" {
+        then "hashes by the row's name" {
+            ref_hash("ghost", ["ghost"]) != null
         }
     }
 }
