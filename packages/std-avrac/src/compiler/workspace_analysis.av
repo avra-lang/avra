@@ -163,7 +163,11 @@ impl Workspace {
         // program closure points back here.
         if self.closed.get() { return self.analyzed(f) }
         match self.relation(Family.Analysis).start_recursive(f.index) {
-            .Reuse(value) -> { return analysis_of(value) },
+            .Reuse(value) -> {
+                let held = analysis_of(value)
+                if self.covers_arena(f, held.facts) { return held }
+                self.relation(Family.Analysis).begin(f.index)
+            },
             .Compute -> nothing(),
         }
         let out = self.analyzed(f)

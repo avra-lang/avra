@@ -1918,6 +1918,12 @@ impl Workspace {
         )
     }
 
+    /// Whether facts made for `f` cover every node the file holds now. Facts made before
+    /// the file's arena grew are stale: their memo is made again.
+    fn covers_arena(f: FileId, facts: TypeFacts) -> bool {
+        facts.of_expr.lo + facts.of_expr.cells.length == self.parsed(f).store.exprs.count()
+    }
+
     /// A file's bodies as one table: Main's facts first (its range
     /// spans the file), each declaration's laid over its own range,
     /// their voices in source order — what the facade and lowering
@@ -1926,7 +1932,11 @@ impl Workspace {
         // Annotation evaluation re-enters the file after the active
         // annotation has been hidden; that recursive view is smaller.
         match self.relation(Family.Folded).start_recursive(f.index) {
-            .Reuse(value) -> { return folded_of(value) },
+            .Reuse(value) -> {
+                let held = folded_of(value)
+                if self.covers_arena(f, held) { return held }
+                self.relation(Family.Folded).begin(f.index)
+            },
             .Compute -> nothing(),
         }
         let p = self.parsed(f)
