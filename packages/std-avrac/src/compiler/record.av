@@ -13,6 +13,7 @@
 use @std.text.{parse_int}
 use core.{
     CollectKind,
+    Plain,
     wire_fields,
     some_list,
     new_digest,
@@ -752,7 +753,7 @@ fn load_gathered(ws: Workspace, store: Store, parts: List<string>, entry: string
                 collector: parts[2],
                 package: relative_path(ws.root, pkg.src),
                 kind: kind,
-                order: order,
+                order: [Plain(o) for o in order],
                 digest: parts[6],
             },
         )
@@ -766,7 +767,9 @@ fn gathered_files(ws: Workspace, src: string) -> List<string> { [path for path i
 /// what order, and the set.
 fn gathers_line(key: string, path: string, g: Gathering, set: string) -> string {
     joined(
-        ["gathers", key, path].concat(kind_words(g.kind)).concat([hex_fields(g.order), set]),
+        ["gathers", key, path]
+            .concat(kind_words(g.kind))
+            .concat([hex_fields(["${o}" for o in g.order]), set]),
         "\t",
     )
 }
@@ -1634,7 +1637,10 @@ fn hex_fields_of(field: string) -> List<string>? {
 
 /// A `file` line's runs read back; null when one is no path's hex — a line this
 /// compiler never wrote, so it places nothing.
-fn runs_of(parts: List<string>) -> List<string>? { if parts.length < 4 { [] } else { hex_fields_of(parts[3]) } }
+fn runs_of(parts: List<string>) -> List<string>? {
+    if parts.length < 4 { return [] }
+    hex_fields_of(parts[3])
+}
 
 /// The modules a module's record says it imports — memoized for the build.
 // LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.

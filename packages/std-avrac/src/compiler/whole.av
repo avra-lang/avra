@@ -2,6 +2,7 @@
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
     digest_of,
+    some_list,
     CollectScope,
     CollectKind,
     StmtId,
@@ -183,7 +184,7 @@ impl Workspace {
         let f = self.file_id(path)
         let p = self.parsed(f)
         let key = self.packages()[self.holder_of_path(path)].key
-        [gathers_line(key, path, g, self.gathered_set(g, f)) for g in [package_gathering(p.store, s)? for s in p.stmts]]
+        [gathers_line(key, path, g, self.gathered_set(g, f)) for g in flatten([some_list(package_gathering(p.store, s)) for s in p.stmts])]
     }
 
     /// WHAT A COLLECT GATHERED, as one digest: each member folded whole — its name,
@@ -208,7 +209,7 @@ impl Workspace {
     /// The arguments of the mark a collect gathers a member by; none for a kind
     /// that gathers by no mark.
     fn mark_args(kind: CollectKind, m: Decl) -> List<string> {
-        let w? = mark_word(kind) else { return [] }
+        let w? = gathered_mark(kind) else { return [] }
         let fact? = self.decls.annotations_of(m.id).find(it.name == w) else { return [] }
         [a.text for a in fact.args]
     }
@@ -618,7 +619,7 @@ fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> 
 }
 
 /// The mark a collect gathers by; none for a kind that gathers by no mark.
-fn mark_word(kind: CollectKind) -> string? {
+fn gathered_mark(kind: CollectKind) -> string? {
     match kind { .Annotated(w) -> w, .Component(_) or .UnknownKind(_) -> null }
 }
 
