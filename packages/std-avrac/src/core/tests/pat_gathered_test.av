@@ -2,6 +2,8 @@
 // here for something only that derive generates over its variants.
 use @std.avrac.core.{
     new_node_store,
+    fp_str,
+    distinct,
     classifier,
     Pat,
     Expr,
@@ -21,7 +23,11 @@ fn name_of(p: Pat) -> string {
 
 spec "core/pat — a gathered node enum" {
     given "the derives `Pat` wears" {
-        then "Matchable numbers the eight variants by their records' ranks" {
+        then "Matchable tags a variant by its qualified name: `Pat.Wild` is `fp_str(\"Pat.Wild\")`" {
+            let s = new_node_store()
+            s.tag_pat(Pat.Wild) == fp_str("Pat.Wild")
+        }
+        then "Matchable's tags tell the eight variants apart" {
             mut s = new_node_store()
             let one = s.alloc_expr(Expr.IntLit(1))
             let tags = [
@@ -34,7 +40,7 @@ spec "core/pat — a gathered node enum" {
                 s.tag_pat(Pat.Quote(one)),
                 s.tag_pat(Pat.Typed(Scoped("c"), named_ref("Code"))),
             ]
-            ["${t}" for t in tags].join(" ") == "0 1 2 3 4 5 6 7"
+            distinct(["${t}" for t in tags]).length == 8
         }
         then "Matchable's shallow fold tells two payload-free variants apart" {
             let s = new_node_store()

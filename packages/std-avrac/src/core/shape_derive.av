@@ -19,11 +19,10 @@
 //! code (`shallow_part`'s catch-all); `kids`'s catch-all can afford
 //! to stay silent because THAT refusal already closes the hole.
 //!
-//! `tag_*` answers a node's own variant, no payload, as its
-//! declaration-order INDEX — the same `at` `shallow_*` already folds
-//! in, read back bare (COMPILER DB townhall §6.11's `@index kind`: a
-//! pass keys a bucket by this int instead of matching every node's
-//! payload by hand). It is the SAME exhaustive walk over `t.variants`
+//! `tag_*` answers a node's own variant, no payload, as its IDENTITY
+//! (the `fp_str` hash `shallow_*` folds in), read back bare: a pass
+//! keys a bucket by this int instead of matching every node's payload
+//! by hand. It is a key, never an index into a list. It is the SAME exhaustive walk over `t.variants`
 //! as `shallow_*`/`kids_*`, so a variant this derive's owner gains
 //! gains a tag the same build, never a hand-kept mirror to fall
 //! behind it.
@@ -34,51 +33,106 @@ use @std.meta.{
     Variant as MetaVariant,
     Field,
     Directive,
+    Declared,
+    Diagnostic,
     Code,
     Arms,
     name,
-    as_code,
-    int_node,
+    refuse_as_at,
 }
 
 /// The compiler's derive for the structural matcher.
 export trait Matchable {
-    static fn derive(t: MetaType) -> List<Directive> {
-        [
-            Directive {
-                twin: "",
-                name: t.name,
-                at: t.at,
-                source: quote {
-            impl SyntaxArena {
-                fn ${shallow_of(t.name)}(node: ${t}) -> int {
-                    match node { ${[shallow_case(t, v, j) for j, v in t.variants]} }
+    static fn derive(t: MetaType) -> Declared {
+        let problems = collisions(t)
+        if !problems.is_empty() { return Declared { made: [refused_shape(t)], problems: problems } }
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote {
+                impl SyntaxArena {
+                    fn ${shallow_of(t.name)}(node: ${t}) -> int {
+                        match node { ${[shallow_case(t, v) for v in t.variants]} }
+                    }
+                    fn ${kids_of(t.name)}(node: ${t}) -> List<At> {
+                        match node { ${[kids_case(v) for v in t.variants]} }
+                    }
+                    fn ${tag_of(t.name)}(node: ${t}) -> int {
+                        match node { ${[tag_case(t, v) for v in t.variants]} }
+                    }
+                    fn ${ids_of(t.name)}() -> List<int> { ${known_ids(t)} }
                 }
-                fn ${kids_of(t.name)}(node: ${t}) -> List<At> {
-                    match node { ${[kids_case(v) for v in t.variants]} }
-                }
-                fn ${tag_of(t.name)}(node: ${t}) -> int {
-                    match node { ${[tag_case(v, j) for j, v in t.variants]} }
-                }
-            }
-        },
             },
-        ]
+                },
+            ],
+            problems: [],
+        }
     }
 
     /// No marks: a payload's type says everything this derive folds.
     static fn marks(t: MetaType) -> List<string> { [] }
 }
 
-/// One variant's shallow arm — its INDEX pins the arity, same as
-/// Identity's.
-fn shallow_case(t: MetaType, v: MetaVariant, at: int) -> Arms {
-    if v.fields.is_empty() { return quote { .${v} -> ${shallow_parted(t, v, at)} } }
-    quote { .${v}(${binders(v)}) -> ${shallow_parted(t, v, at)} }
+/// One variant's shallow arm — its IDENTITY pins the kind, never its
+/// position: a shape a compiler bakes names the same variant whatever
+/// order a later compiler declares them in.
+fn shallow_case(t: MetaType, v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${shallow_parted(t, v)} } }
+    quote { .${v}(${binders(v)}) -> ${shallow_parted(t, v)} }
 }
 
-fn shallow_parted(t: MetaType, v: MetaVariant, at: int) -> Code {
-    parted_at(t.name, at, [shallow_part(f) for f in v.fields])
+fn shallow_parted(t: MetaType, v: MetaVariant) -> Code {
+    parted_at(t.name, variant_id(t, v), [shallow_part(f) for f in v.fields])
+}
+
+/// A variant's stable identity: its qualified name, folded — what a
+/// baked shape and a running compiler agree on across a reordering.
+fn variant_id(t: MetaType, v: MetaVariant) -> int { fp_str("${t.name}.${v.name}") }
+
+/// Every variant's identity, as the list a running compiler checks a
+/// baked shape against.
+fn known_ids(t: MetaType) -> Code {
+    concatenated([quote { [${int_lit(variant_id(t, v))}] } for v in t.variants])
+}
+
+/// Each variant that folds to an identity an earlier variant already
+/// holds — two variants no shape could tell apart.
+fn collisions(t: MetaType) -> List<Diagnostic> {
+    let ids = [variant_id(t, v) for v in t.variants]
+    [identity_clash(t, t.variants[ids.index_of(id)], t.variants[i]) for i, id in ids if ids.index_of(id) < i]
+}
+
+/// What a refused type is given: the walk, answering nothing anyone
+/// wrote — the build is already refused, so no caller is blamed for a
+/// method that was never made.
+fn refused_shape(t: MetaType) -> Directive {
+    Directive {
+        twin: "",
+        name: t.name,
+        at: t.at,
+        source: quote {
+            impl SyntaxArena {
+                fn ${shallow_of(t.name)}(_node: ${t}) -> int { 0 }
+                fn ${kids_of(t.name)}(_node: ${t}) -> List<At> { [] }
+                fn ${tag_of(t.name)}(_node: ${t}) -> int { 0 }
+                fn ${ids_of(t.name)}() -> List<int> { [] }
+            }
+        },
+    }
+}
+
+// ── voices ──
+
+fn identity_clash(t: MetaType, first: MetaVariant, second: MetaVariant) -> Diagnostic {
+    refuse_as_at(
+        "shape.identity_clash",
+        second.at,
+        "`${t.name}.${first.name}` and `${t.name}.${second.name}` fold to one identity — rename one",
+        "give one of the two variants another name",
+    )
 }
 
 /// HOW A PAYLOAD'S TYPE FOLDS SHALLOWLY — Identity's registry
@@ -118,10 +172,10 @@ fn shallow_part(f: Field) -> Code {
     }
 }
 
-/// One variant's tag arm — the same INDEX `shallow_case` folds,
+/// One variant's tag arm — the same IDENTITY `shallow_case` folds,
 /// answered bare instead of mixed into a fingerprint.
-fn tag_case(v: MetaVariant, at: int) -> Arms {
-    let lit = as_code(int_node(at))
+fn tag_case(t: MetaType, v: MetaVariant) -> Arms {
+    let lit = int_lit(variant_id(t, v))
     if v.fields.is_empty() { return quote { .${v} -> ${lit} } }
     quote { .${v}(${binders(v)}) -> ${lit} }
 }
@@ -174,3 +228,4 @@ fn kind_of(owner: string) -> string {
 fn shallow_of(owner: string) -> string { "shallow_${kind_of(owner)}" }
 fn kids_of(owner: string) -> string { "kids_${kind_of(owner)}" }
 fn tag_of(owner: string) -> string { "tag_${kind_of(owner)}" }
+fn ids_of(owner: string) -> string { "ids_${kind_of(owner)}" }

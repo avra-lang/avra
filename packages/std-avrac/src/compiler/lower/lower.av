@@ -26,6 +26,8 @@ use core.{
     flatten,
     sorted_by,
     root_kind_of,
+    pattern_kinds,
+    Arm,
     SyntaxArena,
     DeclId,
     FileId,
@@ -1226,6 +1228,8 @@ export enum FieldPlan {
     Value
     /// A component instance's root-kind indices, off its written body.
     RootKind
+    /// Every node kind a component instance's patterns name, off its written body.
+    NodeKinds
     /// An `.Annotated` kind's matched mark, for `it.mark`.
     Mark
     /// A component's OWN field, read off its instance's built value.
@@ -1246,6 +1250,7 @@ export fn field_plan(
         return if decls.takes_a_decl(field_seat(decls, entry_ty, name)) { FieldPlan.Crossed } else { FieldPlan.Value }
     }
     if is_root_kind_path(path) { return FieldPlan.RootKind }
+    if is_node_kinds_path(path) { return FieldPlan.NodeKinds }
     if is_mark_path(path) && by_mark(kind) { return FieldPlan.Mark }
     if path.length == 1 && !generic_words.contains(path[0].of) && by_component(kind) { return FieldPlan.Component(path[0].of) }
     FieldPlan.Text(path)
@@ -1278,6 +1283,7 @@ fn collect_field_reg(
         .Crossed -> decl_crossed_reg(lo, field_seat(a.view.decls, entry_ty, name), d.id),
         .Value -> collect_fn_reg(lo, d.id, field_seat(a.view.decls, entry_ty, name)),
         .RootKind -> int_list_box(lo, component_root_kind(a.view.decls, d)),
+        .NodeKinds -> int_list_box(lo, component_node_kinds(a.view.decls, d)),
         .Mark -> mark_field_reg(lo, field_seat(a.view.decls, entry_ty, name), kind, d),
         .Component(word) -> component_field_reg(lo, a, field_seat(a.view.decls, entry_ty, name), word, d),
         .Text(p) -> lo.const_str(collect_field_text(a.view.decls, d, p)),
@@ -1308,6 +1314,11 @@ fn is_root_kind_path(path: List<Plain>) -> bool {
     path.length == 1 && path[0].of == "root_kind"
 }
 
+/// `node_kinds` — the other field read off a component instance's written body.
+fn is_node_kinds_path(path: List<Plain>) -> bool {
+    path.length == 1 && path[0].of == "node_kinds"
+}
+
 /// A component instance's ROOT-KIND INDICES: its one-seat fn field's
 /// WRITTEN arms, every pattern's own kind (`core.root_kind_of`) —
 /// `[any_root]` when the field is not there, is not an arms body,
@@ -1318,12 +1329,26 @@ fn is_root_kind_path(path: List<Plain>) -> bool {
 /// (docs/2026_09_22_COLLECTIONS.md §5 — nodes touched, never nodes
 /// × rules).
 export fn component_root_kind(decls: Decls, d: Decl) -> List<int> {
+    let arms? = component_arms(decls, d) else { return [any_root] }
+    root_kind_of(decls.store_of(d.file), arms) ?? [any_root]
+}
+
+/// EVERY NODE KIND A COMPONENT INSTANCE'S PATTERNS NAME — read off the
+/// PARSED body as `component_root_kind` is, settled once at lowering by
+/// the compiler that builds it, so a running compiler can tell a rule it
+/// cannot match.
+export fn component_node_kinds(decls: Decls, d: Decl) -> List<int> {
+    let arms? = component_arms(decls, d) else { return [] }
+    pattern_kinds(decls.store_of(d.file), arms)
+}
+
+/// A component instance's one-seat fn field's written arms, when it has them.
+fn component_arms(decls: Decls, d: Decl) -> List<Arm>? {
     let store = decls.store_of(d.file)
-    let v? = store.stmt_value(d.stmt) else { return [any_root] }
-    let block? = match store.expr(v) { .Component(_, _, b, _, _) -> b, rest -> null } else { return [any_root] }
-    let parts? = store.lambda_parts(block) else { return [any_root] }
-    let arms? = match store.expr(parts.body) { .Match(_, ar) -> ar, rest -> null } else { return [any_root] }
-    root_kind_of(store, arms) ?? [any_root]
+    let v? = store.stmt_value(d.stmt) else { return null }
+    let block? = match store.expr(v) { .Component(_, _, b, _, _) -> b, rest -> null } else { return null }
+    let parts? = store.lambda_parts(block) else { return null }
+    match store.expr(parts.body) { .Match(_, ar) -> ar, rest -> null }
 }
 
 /// `mark` — the one field an `.Annotated` kind's declarations may

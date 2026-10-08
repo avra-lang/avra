@@ -2,6 +2,8 @@
 // here for something only that derive generates over its variants.
 use @std.avrac.core.{
     new_node_store,
+    fp_str,
+    distinct,
     classifier,
     Expr,
     Scoped,
@@ -17,12 +19,12 @@ fn int_held(e: Expr) -> int {
 
 spec "core/expr — a gathered node enum" {
     given "the derives `Expr` wears" {
-        then "a record declared in a feature dir keeps its rank: `Spawn` (features/tasks) is 27" {
+        then "a record declared in a feature dir is tagged by its qualified name: `Spawn` (features/tasks) is `Expr.Spawn`" {
             mut s = new_node_store()
             let one = s.alloc_expr(Expr.IntLit(1))
-            s.tag_expr(Expr.Spawn(one)) == 27
+            s.tag_expr(Expr.Spawn(one)) == fp_str("Expr.Spawn")
         }
-        then "Matchable numbers the first, a middle and the last variant by their records' ranks" {
+        then "Matchable tags the first, a middle and the last variant by their qualified names" {
             let s = new_node_store()
             let tags = [
                 s.tag_expr(Expr.IntLit(1)),
@@ -30,7 +32,20 @@ spec "core/expr — a gathered node enum" {
                 s.tag_expr(Expr.Error),
                 s.tag_expr(Expr.NullLit),
             ]
-            ["${t}" for t in tags].join(" ") == "0 5 36 23"
+            tags[0] == fp_str("Expr.IntLit") &&
+                tags[1] == fp_str("Expr.Receiver") &&
+                tags[2] == fp_str("Expr.Error") &&
+                tags[3] == fp_str("Expr.NullLit")
+        }
+        then "Matchable's tags tell four variants apart" {
+            let s = new_node_store()
+            let tags = [
+                s.tag_expr(Expr.IntLit(1)),
+                s.tag_expr(Expr.Receiver),
+                s.tag_expr(Expr.Error),
+                s.tag_expr(Expr.NullLit),
+            ]
+            distinct(["${t}" for t in tags]).length == 4
         }
         then "Matchable's shallow fold tells two payload-free variants apart" {
             let s = new_node_store()
