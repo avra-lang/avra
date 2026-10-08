@@ -260,6 +260,9 @@ int64_t avra_net_errno_pipe(void) { return EPIPE; }
 // no longer its own.
 int64_t avra_net_errno_closed(void) { return EBADF; }
 
+// The errno a read answers when another task interrupted its park.
+int64_t avra_net_errno_interrupted(void) { return EINTR; }
+
 // The errno a connect answers when admission refused every address.
 int64_t avra_net_errno_denied(void) { return EACCES; }
 

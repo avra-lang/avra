@@ -32,6 +32,7 @@ extern fn avra_net_lookup_close(h: int) -> int
 extern fn avra_net_dial_address(address: string, port: int) -> int
 extern fn avra_net_dialed(fd: int) -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+extern fn avra_fiber_interrupted() -> int
 extern fn avra_fiber_fd_ready(fd: int, writing: int) -> int
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
@@ -55,6 +56,7 @@ extern fn avra_errno_timed_out() -> int
 extern fn avra_net_errno_reset() -> int
 extern fn avra_net_errno_pipe() -> int
 extern fn avra_net_errno_closed() -> int
+extern fn avra_net_errno_interrupted() -> int
 extern fn avra_net_errno_denied() -> int
 extern fn avra_net_entropy32() -> int
 extern fn avra_gate_new() -> List<int>
@@ -95,6 +97,10 @@ impl NetError {
 
     /// Whether the verb was asked of a connection already closed.
     fn closed() -> bool { self.errno == avra_net_errno_closed() }
+
+    /// Whether another task woke the verb's park with `interrupt` — no
+    /// deadline passed, and the socket is open and whole.
+    fn interrupted() -> bool { self.errno == avra_net_errno_interrupted() }
 }
 
 impl Error for NetError {
@@ -221,13 +227,21 @@ fn streamed(fd: int, verb: string, subject: string) -> Result<Conn, NetError> {
 }
 
 /// The calling task parked until `fd` is readable, or writable —
-/// false when the task's `within` ran out first.
+/// false when the task's `within` ran out first, or another task
+/// interrupted it.
 fn parked(fd: int, write: bool) -> bool {
     avra_fiber_park_fd(fd, if write { 1 } else { 0 }, -1) != 0
 }
 
 fn timed_out<T>(verb: string, subject: string) -> Result<T, NetError> {
     failed(verb, subject, 0 - avra_errno_timed_out())
+}
+
+/// What a park that found no readiness answers: interrupted when another
+/// task woke it, else timed out.
+fn unparked<T>(verb: string, subject: string) -> Result<T, NetError> {
+    if avra_fiber_interrupted() != 0 { return failed(verb, subject, 0 - avra_net_errno_interrupted()) }
+    timed_out(verb, subject)
 }
 
 fn gone<T>(verb: string, fd: int) -> Result<T, NetError> {
@@ -274,7 +288,7 @@ impl Listener {
     /// The next connection, the calling task parked until one arrives.
     fn accept() -> Result<Conn, NetError> {
         let c? = self.try_accept()? else {
-            if !parked(self.live("accept")?, false) { return timed_out("accept", "port ${self.port}") }
+            if !parked(self.live("accept")?, false) { return unparked("accept", "port ${self.port}") }
             return self.accept()
         }
         .Ok(c)
@@ -315,12 +329,12 @@ impl Conn {
     /// nothing.
     fn read(max: int) -> Result<Bytes?, NetError> {
         let fd = self.live("read")?
-        if avra_fiber_fd_ready(fd, 0) == 0 && !parked(fd, false) { return timed_out("read", self.named()) }
+        if avra_fiber_fd_ready(fd, 0) == 0 && !parked(fd, false) { return unparked("read", self.named()) }
         match self.try_read(max)? {
             .Data(b) -> .Ok(b),
             .Eof -> .Ok(null),
             .Pending -> {
-                if !parked(fd, false) { return timed_out("read", self.named()) }
+                if !parked(fd, false) { return unparked("read", self.named()) }
                 self.read(max)
             },
         }
@@ -379,9 +393,9 @@ impl Conn {
         .Ok(fd)
     }
 
-    /// Every task parked reading this socket answers timed out, as if
-    /// its `within` ran out; the socket stays open and nothing it holds
-    /// is lost. A closed conn has no task to wake, and its number may be
+    /// Every task parked reading this socket answers `interrupted()` —
+    /// no deadline passed, so no `within` around it ran out; the socket
+    /// stays open and nothing it holds is lost. A closed conn has no task to wake, and its number may be
     /// another's, so nothing is interrupted through it.
     fn interrupt() {
         if self.live("interrupt") is .Ok { let _ = avra_net_interrupt(self.fd) }
