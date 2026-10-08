@@ -1557,6 +1557,71 @@ S "kw: b.txt edited, every source held" kw; kw_says "b.txt edited under held sou
 printf 'p2' > "$R/kw/src/a|b.txt"
 S "kw: a|b.txt edited, every source held" kw; kw_says "a|b.txt edited under held sources" "b=b2 p=p2"
 
+# A COLLECT GATHERS WHAT ITS SCOPE HOLDS NOW, HELD OR NOT. `kg` depends on `@rt/gk`, whose
+# c/lib.av collects every `@kind` in its package, in a module of its own; its members stand in files nothing imports, so
+# only the collect reaches them, and the mark they wear is declared in a file of its own, so a
+# member's compile-time run never reads the collecting file. A member is added, removed, a member file added and deleted —
+# each edit touching no file the collect stands in, so lib.av is held — and A's ordinal follows
+# every time. The root package's own `in package` collect follows the same edits, and `@rt/kc`'s
+# `in closure` list stands with no package collect beside it. After every step a held reading
+# answers what a fresh one does (`--verify-held`), and the evaluator agrees with the binary.
+mkdir -p $R/gk/src/m $R/gk/src/c $R/kc/src/z $R/kg/src/m
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $R/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $R/gk/src/k.av
+printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $R/gk/src/c/lib.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
+printf '[package]\nname = "@rt/kc"\nversion = "0.1.0"\n' > $R/kc/avra.toml
+printf 'use @std.meta.{Named}\nexport fn mark(_t: Named) {}\n' > $R/kc/src/mk.av
+printf 'use mk.{mark}\ntype Entry = { name: string }\ncollect near: List<Entry> = @mark in closure as Entry { name: it.name } by it.name\nexport fn c_at() -> int { near.length }\n' > $R/kc/src/kc.av
+printf 'use mk.{mark}\n@mark\nexport type Z = {}\n' > $R/kc/src/z/z.av
+printf '[package]\nname = "rt-kg"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n"@rt/kc" = { path = "../kc" }\n' > $R/kg/avra.toml
+printf 'use @std.meta.{Named}\nexport fn rank(_t: Named, _r: int) {}\n' > $R/kg/src/rm.av
+printf 'use rm.{rank}\nexport collect enum Rk = @rank in package by it.mark.args[0]\nexport fn r_at() -> int { Rk.P.ordinal }\n' > $R/kg/src/rk.av
+printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
+printf 'use @rt.gk.c.{a_at}\nuse @rt.kc.kc.{c_at}\nuse rk.{r_at}\nprintln("a=${a_at()} r=${r_at()} c=${c_at()}")\n' > $R/kg/src/main.av
+kg_step() { # kg_step <label> <wanted a=… r=…>: built, the binary agrees with the evaluator and prints it, a held reading agrees with a fresh one
+    S "kg: $1" kg
+    steps=$((steps+1)); kg_out=$($R/kg/src/main 2>&1)
+    case "$kg_out" in "$2 c="*) ;; *) fails=$((fails+1)); echo "FAIL  kg: $1: the binary printed '$kg_out', wanted '$2 c=…'" ;; esac
+    steps=$((steps+1)); kg_v=$(./avra check --verify-held $R/kg 2>&1); kg_st=$?
+    [ $kg_st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kg: $1: --verify-held exit $kg_st: $(printf '%s' "$kg_v" | grep -aE 'held=|verify-held:|^avra:' | head -3 | tr '\n' ' ' | cut -c1-260)"; }
+}
+kg_step "cold" "a=0 r=0"
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $R/gk/src/m/m.av
+kg_step "a member added in the dependency, lib.av held" "a=1 r=0"
+printf 'use k.{kind}\n// B removed\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
+kg_step "the member removed" "a=0 r=0"
+# a member file in a module of its own: no key of lib.av reaches it, so what it gathers is
+# the first reason lib.av is read
+mkdir -p $R/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $R/gk/src/n/n.av
+kg_step "a member file added in a module of its own" "a=1 r=0"
+rm -rf $R/gk/src/n
+printf 'use k.{kind}\n// n removed\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
+kg_step "the member file deleted, another edited beside it" "a=0 r=0"
+printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n@rank(1)\nexport type Q = {}\n' > $R/kg/src/m/m.av
+kg_step "a member added to the root's own collect, rk.av held" "a=0 r=1"
+printf 'use rm.{rank}\n// Q removed\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
+kg_step "the root's member removed" "a=0 r=0"
+printf 'use mk.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/kc/src/z/z.av
+kg_step "an exported member added where only a closure list could gather it" "a=0 r=0"
+
+# AND WHAT IT GATHERS IS A REASON OF ITS OWN, said first where nothing else moved the
+# collector: a member module added under a collector in a module of its own reaches no key of
+# it. In a store of its own, so no other attack's history decides which reason comes first.
+gw=$(mktemp -d); mkdir -p $gw/gk/src/m $gw/gk/src/c $gw/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gw/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gw/gk/src/k.av
+printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gw/gk/src/c/lib.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $gw/gk/src/m/m.av
+printf '[package]\nname = "rt-gw"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gw/app/avra.toml
+printf 'use @rt.gk.c.{a_at}\nprintln("a=${a_at()}")\n' > $gw/app/src/main.av
+steps=$((steps+1)); ./avra build $gw/app > /dev/null 2>&1
+mkdir -p $gw/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gw/gk/src/n/n.av
+steps=$((steps+1)); gw_out=$(./avra build --time $gw/app 2>&1)
+case "$gw_out" in *"gk/src/c/lib.av — its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  gw: a member module added under a held collector: lib.av was not read for what it gathers: $(printf '%s' "$gw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)" ;; esac
+steps=$((steps+1)); [ "$($gw/app/src/main 2>&1)" = "a=1" ] || { fails=$((fails+1)); echo "FAIL  gw: the binary printed '$($gw/app/src/main 2>&1)', wanted 'a=1'"; }
+rm -rf $gw
+
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
 # order than a cold build meets them. The binary must be the cold one's, byte for

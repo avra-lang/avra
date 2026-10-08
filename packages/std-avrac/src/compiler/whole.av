@@ -1,6 +1,7 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
+    CollectScope,
     sorted_by,
     text_before,
     ModulePath,
@@ -20,7 +21,17 @@ use core.{
     key_spelled,
 }
 use @std.path.{under_dir, joined_path, normalized, dir_of}
-use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of, EmbedFault, embed_literal_law}
+use features.{
+    Decls,
+    Decl,
+    Import,
+    NameFacts,
+    nothing,
+    bound_decl_of,
+    EmbedFault,
+    embed_literal_law,
+    admits_package,
+}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
 use compiler.lower.{LinkedPackage}
@@ -160,6 +171,16 @@ impl Workspace {
             let scope = p.store.collect_scope(s)
             if scope != null { self.decls.admit_scope(scope!, f) }
         }
+    }
+
+    /// A read file's `gathers` line, when a `collect` of it gathers its package whole:
+    /// the package, the file, and what files the package holds — the reach a record
+    /// keeps for its held walk, and what moves the file when the package moves.
+    fn gathers_lines(path: string) -> List<string> {
+        let p = self.parsed(self.file_id(path))
+        if !p.stmts.any((s) -> gathers_package(p.store.collect_scope(s))) { return [] }
+        let pkg = self.packages()[self.holder_of_path(path)]
+        ["gathers\t${pkg.key}\t${path}\t${package_listing(self, gathered_files(self, pkg.src))}"]
     }
 
     /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
@@ -550,6 +571,12 @@ type EmbedPlace = { root: string, rel: string }
 fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> {
     let place? = beneath_root(root, path) else { fail EmbedFault.Outside }
     place
+}
+
+/// Whether a statement is a `collect` that gathers its package whole.
+fn gathers_package(scope: CollectScope?) -> bool {
+    let s? = scope else { return false }
+    admits_package(s)
 }
 
 /// An embedded file no package root stands over: the law's refusal.
