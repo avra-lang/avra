@@ -1,0 +1,182 @@
+//! WHAT ONE NODE MAY SWITCH THE TASK OUT THROUGH — answered once, here,
+//! for every reader of the question: the cancel fact (cancel_reach.av),
+//! the `@unbroken` law (typing/unbroken.av), and the test lowering
+//! emits after a call. Two steps: which node kinds may wait at all
+//! (`wait_probe`, every `Expr` variant spelled, so a node added later
+//! breaks the build here and is never "cannot" unasked), then what a
+//! node of such a kind waits through, read from the body's names and
+//! types (`node_waits`).
+use core.{DeclId, ExprId, Expr, DeclKind, TypeId, flatten}
+use features.{NameFacts, TypeFacts, FileView, bound_decl_of, property_row, declaring_decl}
+use features.impls.{callee_of}
+
+/// How a node may wait, before its names and types are read.
+export enum WaitProbe {
+    None
+    Call
+    Method
+    Value
+    Spawn
+    Read
+    Chain
+    Record
+}
+
+/// Whether a node of this kind may wait at all.
+export fn may_wait(p: WaitProbe) -> bool {
+    match p {
+        .None -> false,
+        .Call or .Method or .Value or .Spawn or .Read or .Chain or .Record -> true,
+    }
+}
+
+/// What one node may switch the task out through.
+export enum NodeWait {
+    /// a spawned task, joined where its owner's scope ends
+    Spawns
+    /// a property read or a vocabulary row that waits, by its name
+    Reads(name: string)
+    /// a call through a value — a closure, a fn-typed field, a contract,
+    /// a bounded receiver — which may be any fn
+    Value
+    /// a call to a declaration — a fn, a method, a default left out —
+    /// whose own answer decides, by the name the source spells
+    Calls(callee: DeclId, name: string)
+}
+
+/// The one spelling of which node kinds may wait.
+export fn wait_probe(e: Expr) -> WaitProbe {
+    match e {
+        .Call(_, _, _) -> WaitProbe.Call,
+        .MethodCall(_, _, _) -> WaitProbe.Method,
+        .CallValue(_, _) -> WaitProbe.Value,
+        .Spawn(_) -> WaitProbe.Spawn,
+        .Prop(_, _) -> WaitProbe.Read,
+        .Chain(_, _) -> WaitProbe.Chain,
+        // a record literal runs the defaults of the fields it leaves out
+        .StructLit(_, _, _) -> WaitProbe.Record,
+        // a component instance's expansion stands in its place, inside
+        // the body's range, and is answered node by node
+        .Component(_, _, _, _, _) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_, _) or .Index(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Error or .Collect(_) or .BytesLit(_) or .Range(_, _) or .Env(_) -> WaitProbe.None,
+    }
+}
+
+/// What a body's names and types say one node waits through.
+export type WaitReader = { view: FileView, names: NameFacts, facts: TypeFacts }
+
+impl WaitReader {
+    fn node_waits(e: ExprId) -> List<NodeWait> {
+        let node = self.view.store.expr(e)
+        match wait_probe(node) {
+            .None -> [],
+            .Call -> self.named_call(e, node),
+            .Method -> self.method_call(e),
+            .Value -> [NodeWait.Value],
+            .Spawn -> [NodeWait.Spawns],
+            .Read -> self.read(node),
+            .Chain -> self.chained(node),
+            .Record -> self.record(e, node),
+        }
+    }
+
+    /// A call by name: its declaration and the defaults it leaves out;
+    /// bound to a local, a parameter or a capture, a value.
+    fn named_call(e: ExprId, node: Expr) -> List<NodeWait> {
+        let g? = bound_decl_of(self.names, e) else { return [NodeWait.Value] }
+        [NodeWait.Calls(g, self.view.decls.decl(g).name)]
+            .concat(self.left_out(g, call_args(node), 0))
+    }
+
+    /// A dot-call, by the callee its receiver's type dispatches to.
+    fn method_call(e: ExprId) -> List<NodeWait> {
+        let mp? = self.view.store.method_parts(e) else { return [] }
+        match callee_of(self.view, self.facts.type_at(mp.subject), mp.name) {
+            .Static(m, _) -> [NodeWait.Calls(m, mp.name)].concat(self.left_out(m, mp.args, 0)),
+            .Declared(decl, _) -> self.declared(decl, mp.name, mp.args),
+            .Row(r) -> if r.waits { [NodeWait.Reads(mp.name)] } else { [] },
+            .Bounded(_, _, _) or .Contract(_, _) or .FnField(_, _) -> [NodeWait.Value],
+            .Variant(_, _) or .Nameless -> [],
+        }
+    }
+
+    /// A method the impl table answers; none found under the
+    /// declaration is one this reader cannot name, which may be any.
+    fn declared(decl: DeclId, name: string, args: List<ExprId>) -> List<NodeWait> {
+        let m? = self.view.decls.method(decl, name) else { return [NodeWait.Value] }
+        [NodeWait.Calls(m, name)].concat(self.left_out(m, args, 1))
+    }
+
+    fn read(node: Expr) -> List<NodeWait> {
+        match node {
+            .Prop(subject, name) -> self.row_reads(self.facts.type_at(subject), name.of),
+            rest -> [],
+        }
+    }
+
+    /// A chain reads its member off what the nullable carries —
+    /// `t?.await` as `t.await` does.
+    fn chained(node: Expr) -> List<NodeWait> {
+        match node {
+            .Chain(subject, name) -> {
+                let held? = self.view.types.carried(self.facts.type_at(subject)) else { return [] }
+                self.row_reads(held, name.of)
+            },
+            rest -> [],
+        }
+    }
+
+    fn row_reads(ty: TypeId, name: string) -> List<NodeWait> {
+        let row? = property_row(self.view.lang.properties, name, self.view.types.shape_of(ty)) else { return [] }
+        if row.waits { [NodeWait.Reads(name)] } else { [] }
+    }
+
+    /// The defaults a record literal leaves out.
+    fn record(e: ExprId, node: Expr) -> List<NodeWait> {
+        let r? = declaring_decl(self.view.types.shape_of(self.facts.type_at(e))) else { return [] }
+        let passed = literal_fields(node)
+        [NodeWait.Calls(c, self.view.decls.decl(c).name) for c in self.defaults_of(r) if !passed.contains(self.view.decls.decl(c).name)]
+    }
+
+    /// The defaults of the seats a call leaves out: past its positional
+    /// arguments and not named — seats numbered from `base` (a
+    /// method's receiver is seat 0).
+    fn left_out(g: DeclId, args: List<ExprId>, base: int) -> List<NodeWait> {
+        let seats = self.view.decls.facts_of(g)?.seats ?? []
+        let positional = args.length - named_args(self.view, args).length
+        let passed = seats
+            .slice(0, min_int(positional + base, seats.length))
+            .concat(named_args(self.view, args))
+        [NodeWait.Calls(c, self.view.decls.decl(c).name) for c in self.defaults_of(g) if !passed.contains(self.view.decls.decl(c).name)]
+    }
+
+    fn defaults_of(owner: DeclId) -> List<DeclId> {
+        [c for c in self.view.decls.children_of(owner) if is_default(self.view.decls.decl(c).kind)]
+    }
+}
+
+/// A seat's or a field's default — the one kind whose body a caller runs.
+export fn is_default(k: DeclKind) -> bool {
+    match k {
+        .Default -> true,
+        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Impl or .Main or .Case or .Builtin or .Const or .Collect or .CollectEnum or .State -> false,
+    }
+}
+
+fn call_args(node: Expr) -> List<ExprId> {
+    match node { .Call(_, _, args) -> args, rest -> [] }
+}
+
+fn literal_fields(node: Expr) -> List<string> {
+    match node { .StructLit(_, fields, _) -> [f.of for f in fields], rest -> [] }
+}
+
+/// The names a call's named arguments give.
+fn named_args(view: FileView, args: List<ExprId>) -> List<string> {
+    flatten([named_arg(view.store.expr(a)) for a in args])
+}
+
+fn named_arg(node: Expr) -> List<string> {
+    match node { .Named(name, _) -> [name.of], rest -> [] }
+}
+
+fn min_int(a: int, b: int) -> int { if a < b { a } else { b } }

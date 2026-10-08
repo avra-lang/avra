@@ -91,6 +91,22 @@ spec "compiler/typing — the unbroken law" {
             unbroken_report("@unbroken\nfn ring() {\n    let t = spawn helper(1)\n}\nring()")
                 .contains("`ring` is `@unbroken`, and a task it spawns is joined where its scope ends")
         }
+        then "a `?.await` is refused, as `.await` is" {
+            unbroken_report("@unbroken\nfn f(t: Task<int>?) -> int { t?.await ?? 0 }\n1")
+                .contains("`f` is `@unbroken`, and `await` waits")
+        }
+        then "a call that leaves a seat to a default that may wait is refused, naming the seat" {
+            unbroken_report(
+                "@unbroken\nfn take(n: int = helper(1)) -> int { n }\n@unbroken\nfn ring() -> int { take() }\nring()",
+            )
+                .contains("`ring` is `@unbroken`, and the default this call leaves to `n` may wait")
+        }
+        then "a call that passes every seat is not judged by the defaults it does not use" {
+            !unbroken_report(
+                "@unbroken\nfn take(n: int = helper(1)) -> int { n }\n@unbroken\nfn ring() -> int { take(2) }\nring()",
+            )
+                .contains("`ring` is `@unbroken`")
+        }
         then "an `.await` is refused" {
             unbroken_report("@unbroken\nfn ring(t: Task<int>) -> int { t.await }\n1")
                 .contains("`ring` is `@unbroken`, and `await` waits")
