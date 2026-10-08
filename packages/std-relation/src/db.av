@@ -62,6 +62,8 @@ export type Db = {
     names: Cell<List<string>>,
     asking: Cell<int>,
     written: Cell<int>,
+    /// Settled calls one query keeps under this Db before an epoch drops them; 0 keeps all.
+    cap: Cell<int>,
 }
 
 /// Whose kernel a Db's cells live in, and so how a write is heard.
@@ -155,11 +157,19 @@ fn made(durable: Durable) -> Db {
         runs: runs,
         names: names,
         asking: Cell.new(0),
+        cap: Cell.new(0),
         written: Cell.new(0),
     }
 }
 
 impl Db {
+    /// This Db, keeping at most `n` settled calls per query before an epoch drops
+    /// them. A Db made without it keeps every call, as before.
+    fn with_cap(n: int) -> Db {
+        self.cap.set(n)
+        self
+    }
+
     /// A relation reached here for the first time: its set hash and its
     /// close, each already bound to this Db.
     fn joined(hash: fn() -> int, close: fn() -> void) {
@@ -492,7 +502,7 @@ export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>> }
 /// One query's answers under one Db: its kernel family with the typed
 /// values, every call's spelled arguments interned to a dense arg, and
 /// how each call is asked again when the kernel verifies it.
-type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, ints: Cell<List<int>>, again: Table<fn() -> V> }
+type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, ints: Cell<List<int>>, again: Table<fn() -> V>, cap: int, since: Cell<int> }
 
 export fn answers<V>() -> Answers<V> {
     let none: List<AnswersUnder<V>?> = []
@@ -514,7 +524,15 @@ impl Answers<V> {
         let slots = self.held
         let id = db.id
         let kernel = db.engine()
-        self.placed(db, held_in(kernel, kernel.family((arg: int) -> reasked(slots.get()[id], arg))))
+        self
+            .placed(
+                db,
+                held_in(
+                    kernel,
+                    kernel.family((arg: int) -> reasked(slots.get()[id], arg)),
+                    db.cap.get(),
+                ),
+            )
     }
 
     /// `made` kept as the answers under `db`, until the Db closes or is
@@ -530,12 +548,12 @@ impl Answers<V> {
 }
 
 /// A query's empty answers in one kernel family.
-fn held_in<V>(kernel: Kernel, family: int) -> AnswersUnder<V> {
+fn held_in<V>(kernel: Kernel, family: int, cap: int) -> AnswersUnder<V> {
     let memo: Relation<V> = new_memo(kernel, family)
     let args: Cell<Map<string, int>> = Cell.new({})
     let ints: Cell<List<int>> = Cell.new([])
     let again: Table<fn() -> V> = new_table()
-    AnswersUnder { memo: memo, args: args, ints: ints, again: again }
+    AnswersUnder { memo: memo, args: args, ints: ints, again: again, cap: cap, since: Cell.new(0) }
 }
 
 /// A kept record's answer, read back only when it was kept for `spelled`.
@@ -563,8 +581,27 @@ fn reasked<V>(held: AnswersUnder<V>?, arg: int) -> int {
 
 impl AnswersUnder<V> {
     /// A call's dense arg: its spelled arguments, interned.
+    /// A new call's room. Past the cap, every settled call not in flight is dropped
+    /// at once, the revision moves once so dependents re-verify, and the count starts over.
+    fn make_room() {
+        if self.cap == 0 { return }
+        if self.since.get() < self.cap {
+            self.since.set(self.since.get() + 1)
+            return
+        }
+        for arg in 0..self.args.get().length {
+            if !self.memo.open(arg) {
+                self.memo.evict_call(arg)
+                self.again.drop(arg)
+            }
+        }
+        self.memo.kernel.bump()
+        self.since.set(1)
+    }
+
     fn arg(spelled: string) -> int {
         let known? = self.args.get().get(spelled) else {
+            self.make_room()
             let made = self.args.get().length
             self.args.put(spelled, made)
             return made

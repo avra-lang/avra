@@ -1,0 +1,53 @@
+// proves: a Db made with a cap drops its settled calls at an epoch. An evicted
+// call answers as never asked — its re-ask computes again and answers the same —
+// and a dependent whose edge names an evicted call re-verifies, never reusing.
+use @std.relation.{query}
+use @std.relation.db.{Db, new_db}
+
+once fn sq_runs() -> Cell<int> { Cell.new(0) }
+
+once fn twice_runs() -> Cell<int> { Cell.new(0) }
+
+@query
+fn sq(_db: Db, n: int) -> int {
+    sq_runs().set(sq_runs().get() + 1)
+    n * n
+}
+
+@query
+fn twice(db: Db, n: int) -> int {
+    twice_runs().set(twice_runs().get() + 1)
+    sq(db, n) + 1
+}
+
+fn flat() -> string {
+    let db = new_db().with_cap(64)
+    mut total = 0
+    for i in 0..2000 { total = total + sq(db, i) }
+    let again = sq(db, 0)
+    "total_ok=${total == 2664667000} again=${again} flat_sq=${sq_runs().get()}"
+}
+
+fn dependent() -> string {
+    let before = sq_runs().get()
+    let twice_before = twice_runs().get()
+    let db = new_db().with_cap(2)
+    let a = twice(db, 1)
+    let b = sq(db, 2)
+    let c = sq(db, 3)
+    let d = twice(db, 1)
+    "a=${a} b=${b} c=${c} d=${d} dep_sq=${sq_runs().get() - before} dep_twice=${twice_runs().get() - twice_before}"
+}
+
+fn uncapped() -> string {
+    let before = sq_runs().get()
+    let twice_before = twice_runs().get()
+    let db = new_db()
+    let a = twice(db, 1)
+    let b = sq(db, 2)
+    let c = sq(db, 3)
+    let d = twice(db, 1)
+    "a=${a} b=${b} c=${c} d=${d} plain_sq=${sq_runs().get() - before} plain_twice=${twice_runs().get() - twice_before}"
+}
+
+"${flat()} | ${dependent()} | ${uncapped()}"
