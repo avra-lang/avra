@@ -49,6 +49,7 @@ impl Workspace {
             if kept != null { return kept! }
         }
         let asked = self.hold.body_asks.get().length
+        if keyed != null { self.ask_kept_reads(keyed!) }
         let fresh: Cell<List<KeptLine>> = list_cell()
         self.hold.settle_frames.push(fresh)
         // this settlement's reads alone, then joined to what its file's runs read before
@@ -83,33 +84,29 @@ impl Workspace {
         let m = self.module_path_of(path)
         let runs = kept_runs(record_places(self, store, m).get(path))
         let consts = [parts[5] for parts in record_fields(self, store, m) if parts.length > 5 && parts[0] == "const" && parts[1] == path]
-        let kept = [self.kept_unmoved_reads(store, kept_key_for(path, n)) for n in consts]
+        let kept = [kept_reads(store, kept_key_for(path, n)) for n in consts]
         if consts.is_empty() || kept.any(it == null) { return runs }
         let read = flatten([r ?? [] for r in kept])
         let answered = distinct(read.concat(flatten([self.ran_by(store, p) for p in read])))
         if runs.all((p) -> answered.contains(p)) { [] } else { runs }
     }
 
-    /// What a kept verdict's run read, when the verdict stands on the one test
-    /// answered before a parse: every unit it lowered sits in unmoved text. A
-    /// moved unit may still stand on its syntax, but only a parse says so — and
-    /// a run that does not stand asks its bodies one level an attempt, where
-    /// reading its runs costs one.
-    fn kept_unmoved_reads(store: Store, key: string) -> List<string>? {
-        let lines? = store.get(Stored.Unit, "${key}#lines") else { return null }
-        let rows = [l.split("\t") for l in lines.split("\n") if !l.is_empty()]
-        if !rows.all((r) -> self.unit_unmoved(r)) { return null }
-        let reads? = rows.find(it[0] == "r") else { return null }
-        reads.slice(1, reads.length)
+    /// A KEPT VERDICT THAT DID NOT STAND ASKS ALL IT READ AT ONCE: the run
+    /// about to replace it reads the bodies the verdict's run read, so every
+    /// held one among them — and what their own runs read — is asked now, and
+    /// the attempt turns once, never once per level the run would reach.
+    fn ask_kept_reads(key: string) {
+        let store? = self.store.get() else { return }
+        let read = kept_reads(store, key) ?? []
+        let all = distinct(read.concat(flatten([self.ran_by(store, p) for p in read])))
+        let held = [p for p in all if self.held_path(p)]
+        if !held.is_empty() { self.hold.body_asks.set(self.hold.body_asks.get().concat(held)) }
     }
 
-    /// A kept line's unit, if it is one, sits in the text it was kept from —
-    /// or the run only REACHED it, and a reached unit stands on its shape,
-    /// which `kept_unit_stands` asks once it is lowered.
-    fn unit_unmoved(r: List<string>) -> bool {
-        if r[0] != "u" { return true }
-        if r.length > 6 && r[6] == "0" { return true }
-        r.length > 2 && self.text_digest(r[1]) == r[2]
+    /// Whether `path` is a file this attempt holds.
+    fn held_path(path: string) -> bool {
+        let f? = self.decls.known_file_id(path) else { return false }
+        self.is_held(f)
     }
 
     /// The innermost open settlement's lines, its frame closed.
@@ -345,6 +342,13 @@ impl Workspace {
         }
         "${verdict_fp(self.settled(f, SettleRoot.Const(self.decls.decl(d).stmt), []))}" == r[3]
     }
+}
+
+/// What a kept verdict's run read — its `r` line — or null when none is kept.
+fn kept_reads(store: Store, key: string) -> List<string>? {
+    let lines? = store.get(Stored.Unit, "${key}#lines") else { return null }
+    let reads? = [l.split("\t") for l in lines.split("\n") if !l.is_empty()].find(it[0] == "r") else { return null }
+    reads.slice(1, reads.length)
 }
 
 /// Where a const's kept verdict lives: its file's path and its name.
