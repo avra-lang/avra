@@ -1,9 +1,16 @@
 //! The vocabulary a build links with: clang's words for a link, and the binary
 //! a source names.
-use compiler.backend.{unreached_dropped, host_export_words, reactor_entry_words, host_kept_words}
+use compiler.backend.{
+    unreached_dropped,
+    host_export_words,
+    reactor_entry_words,
+    host_kept_words,
+    link_named,
+}
 
 /// clang's words for a link: the objects, the packages' own objects and
-/// flags, the runtime, then the binary's path.
+/// flags, the runtime, then the path it is staged at — `binary` is where it
+/// lands.
 /// A PROGRAM CARRIES WHAT IT REACHES: the link drops every fn and object
 /// member nothing reaches, so a package imported and not called costs
 /// nothing. A program whose packages resolve its own symbols by name keeps
@@ -18,6 +25,7 @@ fn link_objects(
     ws: Workspace,
     runtime: string,
     out: string,
+    binary: string,
     target: string,
     reactor: bool,
     debug: bool,
@@ -55,6 +63,7 @@ fn link_objects(
         // program, which the linker cannot see reaching it.
         ["-w", if ws.names_its_symbols() { "-rdynamic" } else { unreached_dropped() }]
             .concat(host_kept_words(hosted))
+            .concat(link_named(binary))
             .concat(objs)
             .concat(ws.link_words(""))
             .concat([runtime, "-o", out])
