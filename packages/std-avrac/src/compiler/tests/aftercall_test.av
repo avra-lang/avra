@@ -1,0 +1,54 @@
+//! The test after a call that may reach a cancel point: one read of the
+//! running task's unwind bit, emitted where the cancel fact says a call
+//! may reach and nowhere else; set, the fn runs its deferred calls and
+//! leaves.
+use @std.avrac.testing.{ir_of}
+use compiler.backend.{render_ir}
+
+/// The IR text of a program.
+fn ir(lines: List<string>) -> string { render_ir(ir_of(lines.concat([""]).join("\n"))) }
+
+/// How many times `word` stands in `text`.
+fn times(text: string, word: string) -> int { text.split(word).length - 1 }
+
+fn tests(lines: List<string>) -> int { times(ir(lines), "flag unwinding") }
+
+fn napping() -> List<string> {
+    ["extern fn avra_fiber_sleep(ms: int)", "fn nap() { avra_fiber_sleep(1) }"]
+}
+
+spec "compiler/lower — the test after a call" {
+    then "a row that waits, a fn calling it, and the entry calling that fn are each tested once" {
+        tests(napping().concat(["fn later() { nap() }", "later()"])) == 3
+    }
+    then "calls that reach no cancel point carry no test" {
+        tests(["fn one() -> int { 1 }", "fn two() -> int { one() + one() }", "two()"]) == 0
+    }
+    then "a call through a value is tested, and so is a call to the fn that makes it" {
+        tests(["fn call(f: fn() -> int) -> int { f() }", "call(() -> 1)"]) == 2
+    }
+    then "the unwind arm runs the open `defer`, then leaves" {
+        let text = ir(
+            napping()
+                .concat(
+                    [
+                        "fn tidy() { }",
+                        "fn work() -> int {",
+                        "    defer { tidy() }",
+                        "    nap()",
+                        "    7",
+                        "}",
+                        "work()",
+                    ],
+                ),
+        )
+        // the deferred closure runs at the scope's close and again in the arm
+        times(text, "= callptr ") == 2 && times(text, "return r") >= 1
+    }
+    then "the call that runs a `defer` carries no test; the deferred closure's own call is its own" {
+        // nap's row call, the closure's call to nap, and the entry's call to work
+        tests(
+            napping().concat(["fn work() -> int {", "    defer { nap() }", "    7", "}", "work()"]),
+        ) == 3
+    }
+}
