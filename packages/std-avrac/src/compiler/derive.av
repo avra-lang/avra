@@ -664,6 +664,7 @@ impl Workspace {
             self.keep_asks(store, lo, a)
             self.keep_codes(store, lo, a)
         }
+        self.keep_instances(store, lo)
         let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
         said
     }
@@ -677,6 +678,23 @@ impl Workspace {
                 self.asks_key(self.held_okey(store, a.view.source.file)),
                 self.wanted_list_wire(asks),
             )
+    }
+
+    /// Each fresh instantiation's code, kept under its own key — what a held
+    /// home's stub reads back in a later build.
+    fn keep_instances(store: Store, lo: Lowered) {
+        for ic in lo.instances {
+            let key = self.inst_key(store, ic.key)
+            let facts = code_facts(self.decls, ic.bodies, ic.statics, [])
+            let _ = store.keep_once(Stored.Unit, key, code_facts_wire(facts))
+            let rows = flatten([[c.symbol, self.inst_key(store, c)] for c in ic.callees])
+            let _ = store
+                .keep_once(
+                    Stored.Unit,
+                    self.callees_key(key),
+                    ["${ic.callees.length}"].concat(rows).join("\n"),
+                )
+        }
     }
 
     /// What one read file's code is, kept under the file's key.

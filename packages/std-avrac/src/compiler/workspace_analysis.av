@@ -3,6 +3,8 @@
 //! workspace.av.
 use core.{
     StmtId,
+    qtrace,
+    traced,
     DeclId,
     DeclKind,
     FileId,
@@ -52,7 +54,16 @@ use compiler.backend.{
     reaches_world,
 }
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Lowered, Body, Unit, lower_unit, code_facts_from_wire}
+use compiler.lower.{
+    Lowered,
+    Body,
+    Unit,
+    Instance,
+    CodeFacts,
+    KeptInstance,
+    lower_unit,
+    code_facts_from_wire,
+}
 use compiler.memory.{memory}
 use @std.relation.engine.{FixpointRefusal, spoken as fixpoint_spoken}
 
@@ -81,6 +92,22 @@ fn diags_fingerprint(out: List<Diag>) -> int {
 /// One expression of file `f` wanted as a program's entry.
 fn entry_wanted(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Wanted {
     Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }
+}
+
+/// A kept instantiation's reference: its store key and its symbol.
+type KeptRef = { key: string, symbol: string }
+
+/// The roaming callees a callee row lists: a count, then each callee's symbol and key.
+fn callee_refs(row: string) -> List<KeptRef> {
+    let parts = row.split("\n")
+    let n = parts.length / 2
+    [KeptRef { symbol: parts[2 * j + 1], key: parts[2 * j + 2] } for j in 0..n]
+}
+
+/// An instantiation's key: its home's object key, its type arguments' shapes, and its
+/// symbol. The object key covers every module the generic's body sees.
+export fn inst_key_of(home_key: string, shapes: string, symbol: string) -> string {
+    node_key(Stored.Unit, ["codes", "inst", home_key, shapes, symbol])
 }
 
 impl Workspace {
@@ -409,6 +436,43 @@ impl Workspace {
 
     /// Where a file's code lives: beside its object, under the object's key.
     fn codes_key(okey: string) -> string { node_key(Stored.Unit, ["codes", okey]) }
+
+    /// Where an instantiation's code is kept: its symbol, its type arguments'
+    /// shapes, and the object key of the file its generic lowers from, so an
+    /// edit to any of the three reads no old record.
+    fn inst_key(s: Store, i: Instance) -> string {
+        inst_key_of(self.held_okey(s, self.decls.file(i.home).path), i.shapes, i.symbol)
+    }
+
+    /// Where an instantiation's roaming callees are listed, beside its facts.
+    fn callees_key(key: string) -> string { node_key(Stored.Unit, [key, "callees"]) }
+
+    /// An instantiation's kept code and that of every roaming instantiation it reaches,
+    /// read to the bottom. A symbol whose facts or callee list is missing is HELD, so a
+    /// hash that reaches it is absent and never named by its symbol.
+    fn kept_instance(i: Instance) -> KeptInstance {
+        let s? = self.store.get() else { return KeptInstance { facts: [], held: [i.symbol] } }
+        mut facts: List<CodeFacts> = []
+        mut held: List<string> = []
+        mut seen: Map<string, bool> = {}
+        mut todo: List<KeptRef> = [KeptRef { key: self.inst_key(s, i), symbol: i.symbol }]
+        while !todo.is_empty() {
+            let r = todo.pop()
+            if seen.get(r.key) != null { continue }
+            seen.set(r.key, true)
+            let f? = code_facts_from_wire(s.get(Stored.Unit, r.key) ?? "") else {
+                held.push(r.symbol)
+                continue
+            }
+            let callees? = s.get(Stored.Unit, self.callees_key(r.key)) else {
+                held.push(r.symbol)
+                continue
+            }
+            facts.push(f)
+            todo = todo.concat(callee_refs(callees))
+        }
+        KeptInstance { facts: facts, held: held }
+    }
 
     /// WHAT EVERY HELD FILE'S CODE IS, read where its bodies are not — so a
     /// code hash reaching one is computed through it — and the held files
