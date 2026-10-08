@@ -12,6 +12,8 @@
 //! module's types exist.
 use @std.text.{parse_int}
 use core.{
+    CollectKind,
+    Plain,
     wire_fields,
     some_list,
     new_digest,
@@ -33,7 +35,7 @@ use core.{
     Span,
 }
 use features.{DeclSig, DeclFacts, AnnotationFact, LitArg, LitKind}
-use compiler.lower.{Body, program_symbol}
+use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, node_key}
 use @std.path.{relative_path}
 
@@ -711,8 +713,7 @@ fn load_imports(
             if key != null { ws.ensure_package(key!) }
             for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want) }
         }
-        // the ROOT package's key may be empty, and `split` drops a trailing empty field
-        if parts[0] == "gathers" && parts.length > 3 { load_gathered(ws, store, parts[1], parts[2], parts[3], entry, want) }
+        if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want) }
     }
     // a method table wants EVERY impl of a name, and a held impl names its trait by
     // name: where those live is known before any module is minted
@@ -731,56 +732,40 @@ fn load_imports(
 
 /// A PACKAGE A HELD `collect` GATHERS WHOLE, met module by module under each one's own
 /// record — as a read `collect` admits it — so a file nothing imports stands, held,
-/// beside the ones its imports reach. AND THE COLLECTING FILE IS READ when the package
-/// moved: a file of it that is not held, or a file added or gone — what it gathers is
-/// known only once a moved member is read.
+/// beside the ones its imports reach. What the collector gathered is held to the set
+/// its record names, judged once the program is analysed (`gathered_moved`).
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a package in.
-fn load_gathered(
-    ws: Workspace,
-    store: Store,
-    key: string,
-    collector: string,
-    listing: string,
-    entry: string?,
-    want: Want,
-) {
-    let pkg? = ws.packages().find(it.key == key) else {
-        ws.defect(gathers_unadmitted(key))
+fn load_gathered(ws: Workspace, store: Store, parts: List<string>, entry: string?, want: Want) {
+    if parts.length < 3 {
+        ws.defect(gathers_collectorless())
+        return
+    }
+    let pkg? = ws.packages().find(it.key == parts[1]) else {
+        ws.defect(gathers_unadmitted(parts[1]))
         return
     }
     let files = gathered_files(ws, pkg.src)
     for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want) }
-    let moved? = moved_member(ws, pkg.src, files, collector, listing) else { return }
-    ws.hold.read_with.push(collector)
-    ws
-        .hold
-        .read_seeds
-        .push(ReadFile { path: collector, why: Reads.Gathered(relative_path(ws.root, moved)) })
+    let held? = held_gather(parts, relative_path(ws.root, pkg.src)) else {
+        ws.hold.read_with.push(parts[2])
+        ws.hold.read_seeds.push(ReadFile { path: parts[2], why: Reads.GathersUnread })
+        return
+    }
+    if !ws.hold.gathered.get().any(it.collector == held.collector && it.digest == held.digest) { ws.hold.gathered.push(held) }
 }
 
-/// What moved in a gathered package, when anything did: a file it holds whose
-/// members may have moved, or its directory when a file was added or is gone.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a package's files in, the moved one out.
-fn moved_member(ws: Workspace, src: string, files: List<string>, collector: string, listing: string) -> string? {
-    if package_listing(ws, files) != listing { return src }
-    let asked = ws.hold.hold_asked.get()
-    let reads = ws.hold.read_files.get()
-    files
-        .find(
-            (f) -> f != collector &&
-                !asked.contains(f) &&
-                moves_members(reads.find(it.path == f)?.why),
-        )
-}
-
-/// Whether a gathered file read for this reason may have moved what a `collect`
-/// gathers: its text moved, its record is gone or refused — a file read only for
-/// what it is (the entry, a run's) still says what it said.
-fn moves_members(why: Reads?) -> bool {
-    let w? = why else { return true }
-    match w {
-        .Moved or .Unkept or .Undecodable(_) -> true,
-        .Entry or .Home or .Consts or .Unholdable or .RunBy(_) or .Reached or .BodyAsked or .AsksUnread or .Unruled or .Gathered(_) -> false,
+/// A `gathers` line read back as the collect it holds a file to; null for a line
+/// this compiler never wrote.
+fn held_gather(parts: List<string>, package: string) -> HeldGather? {
+    if parts.length < 8 { return null }
+    let kind? = kind_of_words(parts[3], parts[4]) else { return null }
+    let order? = hex_fields_of(parts[5]) else { return null }
+    let plans? = plans_of(parts[6]) else { return null }
+    HeldGather {
+        collector: parts[2],
+        package: package,
+        gathering: Gathering { kind: kind, order: [Plain(o) for o in order], plans: plans },
+        digest: parts[7],
     }
 }
 
@@ -788,9 +773,75 @@ fn moves_members(why: Reads?) -> bool {
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a source root in, the files out.
 fn gathered_files(ws: Workspace, src: string) -> List<string> { [path for path in ws.all_files(src) if !ws.is_test_path(path)] }
 
-/// What files a gathered package holds, as one digest.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and files in, their digest out.
-fn package_listing(ws: Workspace, files: List<string>) -> string { digest_of(joined(sorted_texts([relative_path(ws.root, f) for f in files]), "\n")) }
+/// A `gathers` line: the package, the collecting file, what it gathers by, in what
+/// order, what it reads of each member, and the set.
+fn gathers_line(key: string, path: string, g: Gathering, set: string) -> string {
+    joined(
+        ["gathers", key, path]
+            .concat(kind_words(g.kind))
+            .concat(
+                [
+                    hex_fields(["${o}" for o in g.order]),
+                    hex_fields([hex_fields(plan_words(p)) for p in g.plans]),
+                    set,
+                ],
+            ),
+        "\t",
+    )
+}
+
+/// A field's plan as a record's words.
+fn plan_words(p: FieldPlan) -> List<string> {
+    match p {
+        .Crossed -> ["crossed"],
+        .Value -> ["value"],
+        .RootKind -> ["root_kind"],
+        .Mark -> ["mark"],
+        .Component(word) -> ["component", word],
+        .Text(path) -> ["text"].concat(["${s}" for s in path]),
+    }
+}
+
+/// A record's plans read back; null for any it never wrote.
+fn plans_of(field: string) -> List<FieldPlan>? {
+    let each? = hex_fields_of(field) else { return null }
+    let plans = [plan_of_field(f) for f in each]
+    if plans.any(it == null) { return null }
+    [p! for p in plans]
+}
+
+fn plan_of_field(field: string) -> FieldPlan? {
+    let words? = hex_fields_of(field) else { return null }
+    if words.is_empty() { return null }
+    match words[0] {
+        "crossed" -> FieldPlan.Crossed,
+        "value" -> FieldPlan.Value,
+        "root_kind" -> FieldPlan.RootKind,
+        "mark" -> FieldPlan.Mark,
+        "component" -> if words.length == 2 { FieldPlan.Component(words[1]) } else { null },
+        "text" -> FieldPlan.Text([Plain(w) for w in words.slice(1, words.length)]),
+        _ -> null,
+    }
+}
+
+/// What a collect gathers by, as a record's two words.
+fn kind_words(kind: CollectKind) -> List<string> {
+    match kind {
+        .Annotated(w) -> ["mark", w],
+        .Component(w) -> ["component", w],
+        .UnknownKind(w) -> ["unknown", w],
+    }
+}
+
+/// `kind_words` read back; null for words no kind writes.
+fn kind_of_words(word: string, name: string) -> CollectKind? {
+    match word {
+        "mark" -> CollectKind.Annotated(name),
+        "component" -> CollectKind.Component(name),
+        "unknown" -> CollectKind.UnknownKind(name),
+        _ -> null,
+    }
+}
 
 /// Whether a kept `gathers` line stands for the next record: its collecting file was held.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a line in.
@@ -850,6 +901,7 @@ export enum Reads {
     AsksUnread
     Unruled
     Gathered(string)
+    GathersUnread
 }
 
 export type ReadFile = { path: string, why: Reads }
@@ -869,7 +921,8 @@ impl Reads {
             .BodyAsked -> "a compile-time run called one of its bodies",
             .AsksUnread -> "what its bodies ask could not be read back",
             .Unruled -> "a check wants its rule findings, and none were kept",
-            .Gathered(by) -> "its collect gathers ${by}, which moved",
+            .Gathered(by) -> "what its collect gathers from ${by} moved",
+            .GathersUnread -> "its record's `gathers` line cannot be read",
         }
     }
 }
@@ -1178,11 +1231,11 @@ export fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -
 }
 
 /// WHAT ONE FILE'S KEY IS MADE OF: its module and path, its text's digest, the
-/// digest of each text its compile-time runs read ("" for one that is gone), and
-/// every module its bodies can see with that module's interface key and how many
-/// files it held. The key is these parts' digest, so a key and the parts it is
-/// shown as never disagree.
-export type KeyParts = { module: string, path: string, text: string, runs: List<string>, seen: List<SeenPart> }
+/// digest of each text its compile-time runs read ("" for one that is gone), the
+/// set each of its package-wide collects gathered, and every module its bodies can
+/// see with that module's interface key and how many files it held. The key is
+/// these parts' digest, so a key and the parts it is shown as never disagree.
+export type KeyParts = { module: string, path: string, text: string, runs: List<string>, gathered: List<string>, seen: List<SeenPart> }
 
 /// A module a file sees: its name, its interface's bytes key, its file count.
 export type SeenPart = { module: string, bytes_key: string, files: int }
@@ -1196,8 +1249,18 @@ impl Workspace {
             text: if path == "" { "" } else { self.text_digest(path) },
             // an object that bakes a compile-time run's answer in reads the TEXT the run read
             runs: [self.run_said(ran) for ran in kept_runs(record_places(self, store, m).get(path))],
+            // an object that bakes a collect's members in reads the set it gathered
+            gathered: self.gathered_said(store, m, path),
             seen: self.view_parts(store, m),
         }
+    }
+
+    /// What a file's package-wide collects gathered, as its record names it — read
+    /// before anything is parsed, so a key asked while holds settle parses nothing. A
+    /// held file is held to it (`gathered_moved`); a read file's object is keyed by
+    /// the set it gathers now (`gathered_now`).
+    fn gathered_said(store: Store, m: ModulePath, path: string) -> List<string> {
+        [p[7] for p in record_fields(self, store, m) if p.length > 7 && p[0] == "gathers" && p[2] == path]
     }
 
     /// What a text a compile-time run read says NOW: a source file's digest,
@@ -1399,6 +1462,7 @@ fn key_of_parts(k: KeyParts) -> string {
         d = digest_text(d, k.text)
     }
     for r in k.runs { d = digest_text(d, r) }
+    d = digest_text(d, fields_wire(k.gathered))
     digest_key(digest_text(d, seen_digest(k.seen)))
 }
 
@@ -1411,6 +1475,7 @@ export fn parts_wire(k: KeyParts) -> string {
     joined(
         ["module\t${k.module}", "path\t${k.path}", "text\t${k.text}"]
             .concat(["run\t${r}" for r in k.runs])
+            .concat(["gathered\t${g}" for g in k.gathered])
             .concat(seen_lines(k.seen)),
         "\n",
     )
@@ -1446,6 +1511,7 @@ export fn parts_of(raw: string) -> KeyParts? {
         path: path,
         text: text,
         runs: [r[1] for r in rows if r.length == 2 && r[0] == "run"],
+        gathered: [r[1] for r in rows if r.length == 2 && r[0] == "gathered"],
         seen: [s! for s in seen],
     }
 }
@@ -1473,6 +1539,7 @@ export enum KeyPart {
     Came(module: string)
     Went(module: string)
     Interface(module: string)
+    Gathered
 }
 
 impl KeyPart {
@@ -1482,6 +1549,7 @@ impl KeyPart {
             .Runs -> "what its compile-time runs read",
             .Came(m) or .Went(m) -> "module ${m}",
             .Interface(m) -> "module ${m}'s interface",
+            .Gathered -> "what its collects gathered",
         }
     }
 }
@@ -1504,7 +1572,19 @@ export fn parts_moved(store: Store, bodies: RecordBodies, was: KeyParts, now: Ke
             },
         ]
     }
-    text.concat(runs).concat(seen_list_moved(store, bodies, was.seen, now.seen))
+    let gathered = if fields_wire(was.gathered) == fields_wire(now.gathered) {
+        []
+    } else {
+        [
+            PartMoved {
+                part: KeyPart.Gathered,
+                was: joined(was.gathered, ","),
+                now: joined(now.gathered, ","),
+                lines: [],
+            },
+        ]
+    }
+    text.concat(runs).concat(gathered).concat(seen_list_moved(store, bodies, was.seen, now.seen))
 }
 
 /// What moved between the modules seen then and now: each whose interface
@@ -1622,17 +1702,23 @@ fn seen_digest(seen: List<SeenPart>) -> string { digest_of(joined([s.bytes_key f
 /// The files a record says one file's compile-time runs read.
 fn kept_runs(at: Placed?) -> List<string> { at?.runs ?? [] }
 
-/// A `file` line's runs field: each path as hex, so no character a path
-/// may hold is spent on the record's own separators.
-fn runs_field(paths: List<string>) -> string { joined([hex(p.bytes()) for p in paths], "|") }
+/// A list of texts as one record field: each as hex, so no character a text may
+/// hold is spent on the record's own separators.
+fn hex_fields(xs: List<string>) -> string { joined([hex(x.bytes()) for x in xs], "|") }
 
-/// A `file` line's runs read back; null when a field is no path's hex — a
-/// line this compiler never wrote, so it places nothing.
+/// `hex_fields` read back; null when a part is no text's hex — a field this
+/// compiler never wrote.
+fn hex_fields_of(field: string) -> List<string>? {
+    let xs = [unhex(part)?.text() for part in field.split("|")]
+    if xs.any(it == null) { return null }
+    [x! for x in xs]
+}
+
+/// A `file` line's runs read back; null when one is no path's hex — a line this
+/// compiler never wrote, so it places nothing.
 fn runs_of(parts: List<string>) -> List<string>? {
     if parts.length < 4 { return [] }
-    let runs = [unhex(field)?.text() for field in parts[3].split("|")]
-    if runs.any(it == null) { return null }
-    [r! for r in runs]
+    hex_fields_of(parts[3])
 }
 
 /// The modules a module's record says it imports — memoized for the build.
@@ -1713,6 +1799,10 @@ export fn held_stubs(ws: Workspace) -> List<Body> {
                 file: ws.file_id(path),
             } for path in held_paths(ws)],
         )
+}
+
+fn gathers_collectorless() -> string {
+    "a record's `gathers` line names no collecting file — a line this compiler never writes"
 }
 
 fn gathers_unadmitted(key: string) -> string {

@@ -801,13 +801,21 @@ impl Workspace {
     /// builds of one tree share a file only when they would write the same bytes.
     fn object_of(store: Store, a: Analysis) -> Made {
         let path = a.view.source.file
-        let key = self.held_okey(store, path)
+        let key = self.read_okey(store, path)
         Made {
             which: Owned.File(a.view.file),
             key: key,
             obj: "${build_cache_root(self)}/${key}.o",
             source: path,
         }
+    }
+
+    /// A read file's object key: its parts, with the sets its collects gather now —
+    /// a member that moved what a collect bakes moves the object its collector builds.
+    fn read_okey(store: Store, path: string) -> string {
+        let parts = self.key_parts_cached(store, self.module_path_of(path), path)
+        let now = [self.gathered_set(g, self.file_id(path)) for g in self.gatherings(path)]
+        if fields_wire(now) == fields_wire(parts.gathered) { self.held_okey(store, path) } else { key_of_parts(parts with { gathered: now }) }
     }
 
     /// THE PROGRAM'S MODULE AS AN OBJECT: keyed by its own bytes when it was lowered

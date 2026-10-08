@@ -1,7 +1,11 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
+    digest_of,
+    some_list,
     CollectScope,
+    CollectKind,
+    StmtId,
     sorted_by,
     text_before,
     ModulePath,
@@ -31,10 +35,20 @@ use features.{
     EmbedFault,
     embed_literal_law,
     admits_package,
+    AnnotationFact,
+    LitArg,
 }
+use features.collects.{collect_field_text}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
-use compiler.lower.{LinkedPackage}
+use compiler.lower.{
+    LinkedPackage,
+    ordered_collect_members,
+    gathering_mark,
+    field_plan,
+    FieldPlan,
+    collect_answer_type,
+}
 use compiler.host.{library_stem, Beneath, Read, InputName}
 use compiler.backend.{platform_defines}
 use @std.errors.{Loc}
@@ -173,14 +187,100 @@ impl Workspace {
         }
     }
 
-    /// A read file's `gathers` line, when a `collect` of it gathers its package whole:
-    /// the package, the file, and what files the package holds — the reach a record
-    /// keeps for its held walk, and what moves the file when the package moves.
+    /// A read file's `gathers` lines, one for each `collect` of it that gathers its
+    /// package whole: the package, the file, what it gathers, what it reads of each
+    /// member and the set it gathered — the reach a record keeps for its held walk,
+    /// and what a held file is held to.
     fn gathers_lines(path: string) -> List<string> {
-        let p = self.parsed(self.file_id(path))
-        if !p.stmts.any((s) -> gathers_package(p.store.collect_scope(s))) { return [] }
-        let pkg = self.packages()[self.holder_of_path(path)]
-        ["gathers\t${pkg.key}\t${path}\t${package_listing(self, gathered_files(self, pkg.src))}"]
+        let f = self.file_id(path)
+        let key = self.packages()[self.holder_of_path(path)].key
+        [gathers_line(key, path, g, self.gathered_set(g, f)) for g in self.gatherings(path)]
+    }
+
+    /// A read file's package-wide collects, each as what it gathers.
+    fn gatherings(path: string) -> List<Gathering> {
+        let f = self.file_id(path)
+        let p = self.parsed(f)
+        flatten([some_list(self.package_gathering(f, p.store, s)) for s in p.stmts])
+    }
+
+    /// What a statement gathers, in what order, and what it reads of each member,
+    /// when it is a `collect` that gathers its package whole.
+    fn package_gathering(f: FileId, store: SyntaxArena, s: StmtId) -> Gathering? {
+        let scope? = store.collect_scope(s) else { return null }
+        if !admits_package(scope) { return null }
+        let parts? = store.collect_parts(s) else {
+            let e? = store.collect_enum_parts(s) else { return null }
+            return Gathering { kind: e.kind, order: e.order, plans: [] }
+        }
+        let rt = collect_answer_type(self.decls, f, s)
+        let entry = self.decls.types.element(rt) ?? rt
+        Gathering {
+            kind: parts.kind,
+            order: parts.order,
+            plans: [field_plan(self.decls, entry, pf.field.of, pf.path, parts.kind) for pf in parts.proj.fields],
+        }
+    }
+
+    /// WHAT A COLLECT GATHERED, as one digest: each member folded whole, in the
+    /// order the collect itself gathers them, so two sets differ exactly when what
+    /// the collect would bake moved.
+    fn gathered_set(g: Gathering, owner: FileId) -> string {
+        let members = ordered_collect_members(
+            self.decls,
+            g.kind,
+            CollectScope.Package,
+            g.order,
+            owner,
+        )
+        digest_of(fields_wire([self.member_print(g, m) for m in members]))
+    }
+
+    /// One member as its collect sees it: where it is declared, its name, the mark
+    /// that gathered it, its shape, and what each projected field reads of it.
+    fn member_print(g: Gathering, m: Decl) -> string {
+        digest_of(
+            fields_wire(
+                [
+                    self.decls.module_of(m.id),
+                    m.name,
+                    fields_wire(mark_prints(gathering_mark(self.decls, g.kind, m))),
+                    self.signed_shape(m),
+                    fields_wire([self.plan_print(plan, m) for plan in g.plans]),
+                ],
+            ),
+        )
+    }
+
+    /// What one field's plan reads of a member, as the key folds it: a read off
+    /// the member's written source folds that source's text.
+    fn plan_print(plan: FieldPlan, m: Decl) -> string {
+        match plan {
+            .Crossed -> fields_wire(["crossed", self.member_text(m)]),
+            .Value -> fields_wire(["value", self.decls.symbol(m.id)]),
+            .RootKind -> fields_wire(["root_kind", self.member_text(m)]),
+            .Mark -> "mark",
+            .Component(word) -> fields_wire(
+                ["component", word, self.decls.instance_unit(m.id).name, self.member_text(m)],
+            ),
+            .Text(path) -> fields_wire(["text", collect_field_text(self.decls, m, path)]),
+        }
+    }
+
+    /// The text a member is declared in, as one digest.
+    fn member_text(m: Decl) -> string { self.text_digest(self.decls.file(m.file).path) }
+
+    /// EVERY HELD COLLECTOR WHOSE SET MOVED, to be read: what it gathers now, from
+    /// held members' records and moved members' fresh declarations, against what
+    /// its record says it gathered.
+    fn gathered_moved() -> List<ReadFile> {
+        [ReadFile { path: g.collector, why: Reads.Gathered(g.package) } for g in self.hold.gathered.get() if self.gathered_away(g)]
+    }
+
+    /// Whether a held collector's set moved since its record was written.
+    fn gathered_away(g: HeldGather) -> bool {
+        let f = self.file_id(g.collector)
+        self.is_held(f) && self.gathered_set(g.gathering, f) != g.digest
     }
 
     /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
@@ -573,11 +673,14 @@ fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> 
     place
 }
 
-/// Whether a statement is a `collect` that gathers its package whole.
-fn gathers_package(scope: CollectScope?) -> bool {
-    let s? = scope else { return false }
-    admits_package(s)
+/// A gathering mark's arguments as the key folds them; none for no mark.
+fn mark_prints(mark: AnnotationFact?) -> List<string> {
+    let m? = mark else { return [] }
+    [lit_print(a) for a in m.args]
 }
+
+/// A mark's argument as the key folds it: its kind beside its text.
+fn lit_print(a: LitArg) -> string { fields_wire([lit_kind_word(a.kind), a.text]) }
 
 /// An embedded file no package root stands over: the law's refusal.
 fn unrooted(path: string) -> Read { Read.Embedded(path, Beneath.Refused(embed_literal_law)) }
