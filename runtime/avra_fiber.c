@@ -296,6 +296,8 @@ static void fiber_freed(Fiber* f) {
 
 static int64_t id_of(const Fiber* f) { return f->local->id; }
 
+uint8_t avra_unwinding = 0;
+
 // ── The trace ───────────────────────────────────────────────────
 //
 // `AVRA_FLOW_TRACE=1` writes one line per event to stderr, any other
@@ -1687,6 +1689,10 @@ void avra_task_settle_all(void* list) {
 
 int64_t avra_task_done(void* task) {
     return task_cells(task)[GATE_OPEN];
+}
+
+int64_t avra_task_ended(void* task) {
+    return task_cells(task)[TASK_END];
 }
 
 // ── Tasks nothing runs ──────────────────────────────────────────
