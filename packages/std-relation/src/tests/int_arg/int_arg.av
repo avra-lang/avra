@@ -1,0 +1,26 @@
+// proves: a @query over one int answers every int by its own number — zero,
+// a value past the int table's cap, and a negative one — and each computes
+// once, however often it is asked again.
+use @std.relation.{query}
+use @std.relation.db.{Db, new_db}
+
+once fn computes() -> Cell<int> { Cell.new(0) }
+
+@query
+fn square(_db: Db, n: int) -> int {
+    computes().set(computes().get() + 1)
+    n * n
+}
+
+fn main_run() -> string {
+    let db = new_db()
+    let zero = square(db, 0)
+    let past = square(db, 5000)
+    let negative = square(db, -3)
+    let zero_again = square(db, 0)
+    let past_again = square(db, 5000)
+    let negative_again = square(db, -3)
+    "${zero} ${past} ${negative} ${zero_again} ${past_again} ${negative_again} computes=${computes().get()}"
+}
+
+main_run()
