@@ -16,6 +16,7 @@ use core.{
     ExprId,
     fp,
     flatten,
+    some_list,
     TypeId,
     Type,
     same_file,
@@ -118,6 +119,7 @@ impl Workspace {
                 made = made.concat(self.materialized(f, w, p, vis))
             }
             made = made.concat(self.composed(f, d, p, vis))
+            made = made.concat(self.delegated(f, d, p, vis))
         }
         self.hold_marks_to_a_reader(f, p, vis)
         self
@@ -347,6 +349,43 @@ impl Workspace {
         )
         self.decls.generation_kept(f, maker, made, prior)
         made
+    }
+
+    /// A `collect enum E: T`'s impls: `@std/meta`'s `delegate` run over
+    /// the enum once per trait, as a declaring annotation is, homed at
+    /// the trait's name.
+    fn delegated(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<DeclId> {
+        let written = self.written_stmt(f, d)
+        let parts? = p.store.collect_enum_parts(written) else { return [] }
+        if parts.traits.is_empty() || self.decls.meta_disagreement() != null { return [] }
+        let made_by? = self.decls.meta_named("delegate") else { return [] }
+        let sig? = self.decls.sig(made_by)?.fn_sig() else { return [] }
+        flatten(
+            [self.materialized(f, self.delegation(made_by, sig.ret, written, d, t, p), p, vis) for t in parts.traits if self.names_trait(p, vis, t)],
+        )
+    }
+
+    /// `delegate`'s work over one trait, as an annotation's would be.
+    fn delegation(made_by: DeclId, ret: TypeId, written: StmtId, d: DeclId, t: ExprId, p: Parsed) -> DeclareWork {
+        DeclareWork {
+            ann: made_by,
+            stmt: written,
+            callee: t,
+            args: [t],
+            ret: ret,
+            tparams: [],
+            params: [],
+            answer: named_ref("void"),
+            original: self.decls.decl(d).name,
+            at: p.store.stmt_span(written),
+            annotated: d,
+        }
+    }
+
+    /// Whether `t` names a trait this file sees — the law refuses any other name.
+    fn names_trait(p: Parsed, vis: Namespace, t: ExprId) -> bool {
+        let named? = self.named_arg(p, vis, t) else { return false }
+        self.decls.is_trait(named)
     }
 
     /// Whether an annotation's work names the trait `tr` among its
@@ -910,20 +949,7 @@ impl Workspace {
         let v = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
         let at = placed(v, v.store.stmt_span(x.stmt))
         match self.decls.meta_seat(want) {
-            .Fn -> meta_of_fn(
-                MetaFn {
-                    name: x.name,
-                    params: self.crossed_params(v, x.stmt, d),
-                    answer: self.crossed_answer(v, x.stmt),
-                    at: at,
-                    answers: self.answer_kind(d),
-                    doc: self.decl_doc_text(d),
-                    annotations: self.decl_annotations(v, d),
-                    owner: self.crossed_owner(v, d),
-                },
-                self.decls.loaded_slots("Fn"),
-                heap,
-            ),
+            .Fn -> meta_of_fn(self.crossed_fn(v, d), self.decls.loaded_slots("Fn"), heap),
             .Type -> meta_of_type(
                 MetaType {
                     name: x.name,
@@ -940,8 +966,31 @@ impl Workspace {
                 heap,
             ),
             .Named -> meta_of_named(Named { name: x.name, at: at }, heap),
-            .Trait -> meta_of_trait(MetaTrait { name: x.name, at: at }, heap),
+            .Trait -> meta_of_trait(
+                MetaTrait {
+                    name: x.name,
+                    at: at,
+                    fns: [self.crossed_fn(v, m) for m in self.decls.trait_fns(d) if !self.decls.is_static_of(m)],
+                },
+                self.decls.loaded_slots("Fn"),
+                heap,
+            ),
             .Other -> MetaVal.Absent,
+        }
+    }
+
+    /// A fn declared in `v`'s file as `@std/meta`'s `Fn`.
+    fn crossed_fn(v: FileView, d: DeclId) -> MetaFn {
+        let x = self.decls.decl(d)
+        MetaFn {
+            name: x.name,
+            params: self.crossed_params(v, x.stmt, d),
+            answer: self.crossed_answer(v, x.stmt),
+            at: placed(v, v.store.stmt_span(x.stmt)),
+            answers: self.answer_kind(d),
+            doc: self.decl_doc_text(d),
+            annotations: self.decl_annotations(v, d),
+            owner: self.crossed_owner(v, d),
         }
     }
 
@@ -1085,7 +1134,15 @@ impl Workspace {
             marks: crossed_marks(v, self.decls.member_marks(m.id, gathering)),
             doc: self.decl_doc_text(m.id),
             annotations: self.decl_annotations(v, m.id),
+            impls: self.implemented_by(m),
         }
+    }
+
+    /// The traits a member's record implements by an `impl … for` that
+    /// can see it — a name-keyed bucket crosses modules, so each impl
+    /// is held to what its own file names.
+    fn implemented_by(m: Decl) -> List<string> {
+        [tr for b in self.decls.impls_named(m.name) if self.aims_at(b, m.id) for tr in some_list(self.decls.facts_of(b)?.of) if !tr.is_empty()]
     }
 
     fn crossed_variant(v: FileView, va: Variant, kinds: List<Kind>) -> MetaVariant {

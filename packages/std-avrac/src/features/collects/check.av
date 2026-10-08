@@ -5,6 +5,7 @@
 //! a collect carries none; its body is synthesised at lowering
 //! (compiler/lower/lower.av) from these same recorded parts.
 use core.{
+    ExprId,
     StmtId,
     TypeId,
     FileId,
@@ -17,7 +18,7 @@ use core.{
     list_eq,
 }
 use features.{TypeCx, Decl, Decls, nothing, duplicate_names}
-use diagnostics.{refusal, Diag}
+use diagnostics.{refusal, Diag, loc_at}
 use @std.errors.{Loc}
 
 /// The generic `it` vocabulary every kind answers, beside its own.
@@ -59,10 +60,28 @@ export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
     )
     for d in twice { cx.emit(d) }
     for m in members { checked_member(cx, s, p.name, m) }
+    for t in p.traits { checked_trait(cx, p.name, t, members) }
     checked_enum_scope(cx, s, p.name, p.scope)
     // two members of one name are refused as that; their shared key is the same mistake
     if !p.dense && twice.is_empty() { checked_ties(cx, s, p.kind, p.order, members) }
 }
+
+/// Every member implements each trait the enum is written over; one
+/// that does not is refused where it is declared.
+fn checked_trait(mut cx: TypeCx, owner: string, t: ExprId, members: List<Decl>) {
+    let word = cx.view.store.ident_name(t) ?? ""
+    let tr? = cx.view.decls.trait_named(cx.names, word) else {
+        // a name nothing declares is resolve's to refuse
+        if cx.bound_decl(t) != null { cx.emit(no_trait(cx.loc_of(t), owner, word)) }
+        return
+    }
+    for m in members {
+        if !cx.view.decls.implements(m.id, tr) { cx.emit(unimplemented(member_loc(cx.view.decls, m), owner, word, m.name)) }
+    }
+}
+
+/// Where a member is declared, in its own file.
+fn member_loc(decls: Decls, m: Decl) -> Loc? { loc_at(decls.file(m.file).path, decls.facts_of(m.id)?.span) }
 
 /// A REGISTRY match over `CollectScope`: an enum's variants are the
 /// same set whoever asks and whenever, so it gathers what its own
@@ -387,6 +406,26 @@ fn mixed_order(at: Loc?, key: Plain) -> Diag {
 /// The label every `by` key's refusal shares — one spelling for one
 /// seat, so the same sentence is not duplicated per voice.
 fn order_at() -> string { "in this collect's order" }
+
+fn no_trait(at: Loc?, owner: string, word: string) -> Diag {
+    refusal(
+        "collect_enum.trait",
+        at,
+        "every member of a `collect enum E: T` implements `T` — `${word}` names no trait here",
+        "`${owner}` implements it over its members",
+        "name a trait this file can see",
+    )
+}
+
+fn unimplemented(at: Loc?, owner: string, word: string, member: string) -> Diag {
+    refusal(
+        "collect_enum.trait",
+        at,
+        "every member of a `collect enum E: T` implements `T`",
+        "`${member}` is gathered into `${owner}` and has no `impl ${word} for ${member}`",
+        "write `impl ${word} for ${member} { … }` — an empty `impl ${word} for ${member} {}` takes every default",
+    )
+}
 
 fn closure_enum(at: Loc?, owner: string) -> Diag {
     refusal(

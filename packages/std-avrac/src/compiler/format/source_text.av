@@ -634,11 +634,19 @@ impl SourceText {
                         ),
                 ),
             ],
-            .CollectEnum(name, kind, scope, order) -> [
+            .CollectEnum(name, kind, scope, order, traits) -> [
                 source_line(
                     depth,
                     self
-                        .collect_enum_decl(exported, name.of, kind, scope, order, self.store.is_collect_dense(s)),
+                        .collect_enum_decl(
+                            exported,
+                            name.of,
+                            traits,
+                            kind,
+                            scope,
+                            order,
+                            self.store.is_collect_dense(s),
+                        ),
                 ),
             ],
             .Jump(label, again) -> [source_line(depth, jump_line(again, self.written_label(label)))],
@@ -1248,13 +1256,15 @@ impl SourceText {
     fn collect_enum_decl(
         exported: string,
         name: string,
+        traits: List<ExprId>,
         kind: CollectKind,
         scope: CollectScope,
         order: List<Plain>,
         dense: bool,
     ) -> string {
         let by = self.collect_order_text(order, dense)
-        "${exported}collect enum ${source_name(name)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)}${by}"
+        let over = if traits.is_empty() { "" } else { ": ${joined([self.store.ident_name(t) ?? "" for t in traits], ", ")}" }
+        "${exported}collect enum ${source_name(name)}${over} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)}${by}"
     }
 
     /// One case's `then` line, standing alone (its group is empty).

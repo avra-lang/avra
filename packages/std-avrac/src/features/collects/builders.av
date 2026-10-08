@@ -7,7 +7,19 @@
 //! ANCHORED WINDOW read — the field name always arrives, so
 //! `aligned_binds` finds the `.NAME` written in its window, or "" for
 //! the bare `it`.
-use core.{Stmt, Scoped, Plain, TypeRef, CollectKind, CollectScope, Projection, ProjField, named_ref}
+use core.{
+    Stmt,
+    Expr,
+    ExprId,
+    Scoped,
+    Plain,
+    TypeRef,
+    CollectKind,
+    CollectScope,
+    Projection,
+    ProjField,
+    named_ref,
+}
 use features.{LangNode, Builder, aligned_binds}
 use grammar.{Token, TokenKind}
 
@@ -86,7 +98,8 @@ fn build_collect_enum_decl(b: Builder) -> Result<LangNode, string> {
     let bp = b.tokens(5)?
     let bidx = b.tokens(6)?
     let dn = b.tokens(7)?
-    let bad_it? = biws.find(not_word("it")) else { return collect_enum_node(b, bws, biws, n, k, sc, bp, bidx, dn, ends) }
+    let traits = [b.store.alloc_expr(Expr.Ident(Scoped(t.text)), t.span) for t in b.tokens(8)?]
+    let bad_it? = biws.find(not_word("it")) else { return collect_enum_node(b, bws, biws, n, k, sc, bp, bidx, dn, traits, ends) }
     .Err("a collect enum's order reads its declaration through `it` — found `${bad_it.text}`")
 }
 
@@ -100,6 +113,7 @@ fn collect_enum_node(
     bp: List<Token>,
     bidx: List<Token>,
     dn: List<Token>,
+    traits: List<ExprId>,
     ends: int,
 ) -> Result<LangNode, string> {
     let bad? = bws.find(not_word("by")) else {
@@ -107,7 +121,13 @@ fn collect_enum_node(
         let made = b
             .make_stmt(
                 Stmt
-                    .CollectEnum(Scoped(n.text), kind_of(b, k), scope_of(sc), order_paths(biws, bp, bidx, ends)),
+                    .CollectEnum(
+                        Scoped(n.text),
+                        kind_of(b, k),
+                        scope_of(sc),
+                        order_paths(biws, bp, bidx, ends),
+                        traits,
+                    ),
             )?
         let s? = match made { .NStmt(id) -> id, rest -> null } else { return .Ok(made) }
         b.store.mark_collect_dense(s, dense)

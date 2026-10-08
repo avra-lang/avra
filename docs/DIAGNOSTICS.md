@@ -988,6 +988,27 @@ two members of a collected enum share an order key
 
 No witness yet.
 
+## collect_enum.trait
+
+every member of a `collect enum E: T` implements `T`
+
+```avra
+type Nope = {}
+type Dot = {}
+collect enum Shape: Nope = @numbered in self by it.mark.args[0] dense
+1
+```
+
+```
+error[collect_enum.trait]: every member of a `collect enum E: T` implements `T` — `Nope` names no trait here
+  ╭─[witness.av:3:21]
+3 │ collect enum Shape: Nope = @numbered in self by it.mark.args[0] dense
+  ·                     ┬
+  ·                     ╰── `Shape` implements it over its members
+──╯
+help: name a trait this file can see
+```
+
 ## type.binding
 
 an annotated binding holds what it declares
