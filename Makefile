@@ -337,7 +337,9 @@ wasm-archive:
 # the manifests (tools/suites.py), never listed: a hand-kept list is a
 # registry that forgets its next member, and the gate would report
 # green over a suite it never ran. `suites` is the keeper that speaks.
-SUITES := $(shell python3 tools/suites.py 2>/dev/null)
+# DEFERRED, so only a recipe that reads it pays for the walk — an immediate
+# `$(shell)` runs on every make, `try` included.
+SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: try footprint footprint-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
@@ -487,21 +489,12 @@ test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites libs
 # repeated build recompiles nothing. ONE RULE FOR EVERY OBJECT: the
 # stem resolves the source through vpath exactly as `build/%.o` does,
 # so a named-object copy of this rule would be the stem law's second
-# definition. One cost, stated: the stamp depends on FORCE, so
-# `make -q` always reports work pending for these objects even when
-# none is — nothing here reads `make -q`, and the alternative is to
-# trust the timestamps again.
-.PHONY: FORCE
-FORCE:
+# definition.
 
-# THE STAMP IS A LINK IN A CHAIN — `a.c -> a.sha -> a.o`, made by one
-# pattern rule and consumed by another — and make deletes the middle
-# of a chain as an intermediate file once the end is built. A stamp
-# rule with no source prerequisite (`%.sha: FORCE`, hashing a named
-# path) never joins a chain and needs none of this; the generic form
-# does, and without it every stamp is minted afresh on the next run
-# and every object rebuilds every time — which reads as a slow build,
-# never as a wrong rule. Precious keeps the stamps.
+# A STAMP IS NEVER AN INTERMEDIATE: make deletes the middle of a
+# pattern chain once its end is built, and a deleted stamp is minted
+# afresh next run, rebuilding every object every time — which reads as
+# a slow build, never as a wrong rule. Precious keeps the stamps.
 .PRECIOUS: build/%.sha
 
 # A HEADER RIDES THE CONTENT HASH when a named list says so. The chain
@@ -511,17 +504,20 @@ FORCE:
 # it instead of trusting a mtime. AN OBJECT'S FLAGS RIDE ITS STAMP TOO
 # (`CFLAGS_<stem>`), so a census build's -DAVRA_CENSUS object is rebuilt
 # the moment the flag is dropped, and never ships as the runtime.
-build/avra_runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h runtime/avra_hot.h
-build/avra_hot.sha: SHA_SRC := runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
-build/avra_fiber.sha: SHA_SRC := runtime/avra_fiber.c runtime/avra_box.h runtime/avra_fiber.h runtime/avra_runtime.h
-build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h runtime/avra_hot.c runtime/avra_hot.h
-build/ffi.sha: SHA_SRC := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
+SHA_SRC_avra_runtime := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h runtime/avra_hot.h
+SHA_SRC_avra_hot := runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
+SHA_SRC_avra_fiber := runtime/avra_fiber.c runtime/avra_box.h runtime/avra_fiber.h runtime/avra_runtime.h
+SHA_SRC_llvm_wrapper := backend/llvm_wrapper.c runtime/avra_box.h runtime/avra_hot.c runtime/avra_hot.h
+SHA_SRC_ffi := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
 
-build/%.sha: %.c FORCE
-	@mkdir -p build
-	@{ shasum -a 256 $(if $(SHA_SRC),$(SHA_SRC),$<); echo 'flags: $(SECTIONS) $(CFLAGS_$*)'; } | shasum -a 256 | cut -d' ' -f1 > $@.tmp
-	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
-	@rm -f $@.tmp
+# EVERY STAMP IN ONE PROCESS, SETTLED WHILE MAKE READS THIS FILE:
+# tools/stamps.py is handed every source's stamp — its sources and its
+# flags — and rewrites only those whose digest moved, before make looks
+# at any object's mtime, so the first build after a change sees it. One
+# process where six a stamp ran, and the same content-hash law.
+quoted = '$(subst ','\'',$1)'
+stamp_args = $(call quoted,build/$1.sha) $(call quoted,$(or $(SHA_SRC_$1),$2)) $(call quoted,$(SECTIONS) $(CFLAGS_$1))
+build/%.sha: ;
 
 
 # THE RUNTIME'S OWN TESTS: C programs under runtime/tests/, each linked
@@ -1088,3 +1084,7 @@ scaffold-check: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	  rm -rf packages/std-avrac/src/features/zz_probe; \
 	  if [ $$s -ne 0 ]; then echo "scaffold-check FAILED"; tail -20 build/scaffold.out; exit 1; fi; \
 	  echo "scaffold-check: the templates compile and their test passes"
+
+# THE STAMPS SETTLE LAST, once every flag they read is defined (see
+# `stamp_args`, above): an earlier settling would hash a flag still empty.
+STAMPS_SETTLED := $(shell python3 tools/stamps.py $(foreach c,$(TREE_C),$(call stamp_args,$(basename $(notdir $(c))),$(c))))
