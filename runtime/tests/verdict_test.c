@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "../avra_box.h"
@@ -96,6 +97,63 @@ static void one_order_fails_quietly(void) {
     setenv("AVRA_SCHED_RUNS", "8", 1);
     CHECK(verdict(fails_alone) == 0, "a case with one order that fails, fails");
 }
+// A case that sleeps a minute.
+static int64_t g_case_clock = 0;
+static bool sleeps_a_minute(void) {
+    int64_t c0 = avra_now_ns();
+    avra_fiber_sleep(60000);
+    g_case_clock = avra_now_ns() - c0;
+    return true;
+}
+static bool sleeps_briefly(void) {
+    int64_t c0 = avra_now_ns();
+    avra_fiber_sleep(30);
+    g_case_clock = avra_now_ns() - c0;
+    return true;
+}
+static int64_t wall_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec; }
+static void on_the_virtual_clock(void) {
+    int64_t before = avra_now_ns() - wall_ns();
+    int64_t w0 = wall_ns();
+    CHECK(verdict(sleeps_a_minute) == 1, "a case that sleeps a minute passes");
+    CHECK(g_case_clock == (int64_t)60000 * 1000000 && wall_ns() - w0 < 1000000000, "in a minute of its clock and none of the wall");
+    int64_t drift = avra_now_ns() - wall_ns() - before;
+    CHECK(drift > -1000000000 && drift < 1000000000, "and the runner's clock is the one it had: the minute ended with the case");
+}
+static void on_the_wall_clock(void) {
+    setenv("AVRA_CLOCK", "real", 1);
+    int64_t w0 = wall_ns();
+    CHECK(verdict(sleeps_briefly) == 1 && wall_ns() - w0 >= 25 * 1000000, "AVRA_CLOCK=real runs a case on the wall's clock");
+}
+static bool fails_on_the_clock(void) { return false; }
+static void failed_on_the_virtual_clock(void) {
+    verdict(fails_on_the_clock);
+    avra_case_schedules_said();
+}
+static void clock_misspelled(void) {
+    setenv("AVRA_CLOCK", "wall", 1);
+    verdict(alone);
+}
+// Spins on the frozen clock: in the case's own task, or in a task it made.
+static bool spins_itself(void) {
+    int64_t until = avra_now_ns() + 1000000;
+    while (avra_now_ns() < until) {}
+    return true;
+}
+static void* spinner(void* self) { (void)self; spins_itself(); return NULL; }
+static bool spins_in_a_task(void) {
+    void* t = spawn1(spinner, 0);
+    joined(t);
+    return true;
+}
+static void spun_cases(void) {
+    setenv("AVRA_CLOCK_ASKS", "1000", 1);
+    CHECK(verdict(spins_itself) == 0, "a case that spins on the frozen clock fails");
+    CHECK(verdict(alone) == 1, "and the next case runs, and passes");
+    CHECK(verdict(spins_in_a_task) == 0, "a case whose task spins on the frozen clock fails");
+    CHECK(avra_sched_tasks() == 0, "its tasks are gone");
+    CHECK(verdict(alone) == 1, "and the next case passes");
+}
 static void by_default(void) {
     g_runs = 0;
     CHECK(verdict(three_any) == 1 && g_runs == 1, "by default a case that chose runs schedule 0 alone");
@@ -157,6 +215,12 @@ int main(void) {
     heard("a case with one order fails", one_order_fails_quietly);
     CHECK(g_said[0] == 0, "and names no schedule: none would replay anything");
     heard("by default, one schedule", by_default);
+    heard("a case on the virtual clock", on_the_virtual_clock);
+    heard("cases that spin on the frozen clock fail, and the suite goes on", spun_cases);
+    CHECK(says("avra: a task is waiting on the clock without sleeping"), "the spin is named");
+    heard("a case on the wall's clock", on_the_wall_clock);
+    heard("a failed case on the virtual clock", failed_on_the_virtual_clock);
+    CHECK(says("the cases ran on the virtual clock — AVRA_CLOCK=real runs them on the wall's"), "a suite that failed says how to run it on the wall's clock");
     heard("a case answers by its lowest bit", lowest_bit);
     heard("a case runs once, or eight times", once_or_eight);
     CHECK(g_said[0] == 0, "a passing case says nothing");
@@ -200,6 +264,19 @@ int main(void) {
         int status = 0;
         waitpid(pid, &status, 0);
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2 && says("AVRA_SCHED_RUNS takes a whole number"), "a setting that is no number traps by name");
+    }
+    {
+        int out[2];
+        if (pipe(out) != 0) return 1;
+        pid_t pid = fork();
+        if (pid == 0) { dup2(out[1], 2); close(out[0]); clock_misspelled(); _exit(0); }
+        close(out[1]);
+        size_t got = 0;
+        for (ssize_t n; got < sizeof g_said - 1 && (n = read(out[0], g_said + got, sizeof g_said - 1 - got)) > 0;) got += (size_t)n;
+        g_said[got] = 0;
+        int status = 0;
+        waitpid(pid, &status, 0);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2 && says("AVRA_CLOCK is `virtual` or `real`"), "a clock setting that is neither traps by name");
     }
     printf("verdict: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

@@ -208,7 +208,8 @@ int64_t avra_case_run(int64_t (*body)(void));
 // schedule 0, then — only if it made a choice — under schedules 1, 2, …
 // up to AVRA_SCHED_RUNS (1 until time is virtual). The first schedule that fails is named on
 // stderr with the number that replays it; AVRA_SCHED_SEED=<k> runs
-// schedule k alone. 1 the case held under every schedule run, else 0.
+// schedule k alone. Each schedule runs on a VIRTUAL CLOCK of its own,
+// or the wall's under AVRA_CLOCK=real. 1 the case held under every schedule run, else 0.
 int64_t avra_case_verdict(int64_t code, const char* label);
 // Once, at a suite's end: how many schedules a case that chose ran, and
 // what they cannot reach. Nothing when no case chose.

@@ -72,6 +72,10 @@ static inline int64_t avra_clock_read(void) {
 }
 // The scheduler's, called when the clock becomes virtual or real again.
 extern void (*avra_clock_turned_hook)(void);
+// The scheduler's, called with the watchdog's words when a task waits on
+// a frozen clock without sleeping: inside a case it fails that case and
+// never returns; outside one it returns, and the process traps.
+extern void (*avra_clock_spun_hook)(const char* words);
 // Frozen: the clock set to `at` when that is later, and 1. Flowing: 0.
 int64_t avra_clock_jumped(int64_t at);
 // THE WORLD IS HELD while something waits on it in real time: the
