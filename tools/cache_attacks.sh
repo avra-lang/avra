@@ -1605,6 +1605,24 @@ kg_step "the root's member removed" "a=0 r=0"
 printf 'use mk.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/kc/src/z/z.av
 kg_step "an exported member added where only a closure list could gather it" "a=0 r=0"
 
+# A READ STATES ITS CAUSE, NEVER ITS CONSEQUENCE. A collector in its package's ROOT module,
+# whose key covers every module under it: a member module added moves that key, so the walk
+# sees only a key with nothing kept under it — the read must still name what moved it, the set
+# its collect gathers. In a store of its own.
+gc=$(mktemp -d); mkdir -p $gc/gk/src/m $gc/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gc/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gc/gk/src/k.av
+printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gc/gk/src/lib.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $gc/gk/src/m/m.av
+printf '[package]\nname = "rt-gc"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gc/app/avra.toml
+printf 'use @rt.gk.lib.{a_at}\nprintln("a=${a_at()}")\n' > $gc/app/src/main.av
+steps=$((steps+1)); ./avra build $gc/app > /dev/null 2>&1
+mkdir -p $gc/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gc/gk/src/n/n.av
+steps=$((steps+1)); gc_out=$(./avra build --time $gc/app 2>&1); gc_got=$($gc/app/src/main 2>&1)
+[ "$gc_got" = "a=1" ] || { fails=$((fails+1)); echo "FAIL  gc: a member module added: the binary printed '$gc_got', wanted 'a=1'"; }
+case "$gc_out" in *"gk/src/lib.av — what its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  gc: a member module added: lib.av's read names its key, not the set that moved it: $(printf '%s' "$gc_out" | sed -n '/^read:/,$p' | grep 'lib.av' | cut -c1-200)" ;; esac
+rm -rf $gc
+
 # AND A COLLECTOR IS HELD TO THE SET IT GATHERED, never to its package's bytes. In a store of
 # its own, so no other attack's history decides which reason a read is given first: a member's
 # BODY edit leaves the set and holds the collector; two members swapping their marks' arguments
