@@ -155,6 +155,14 @@ static bool spins_in_a_run(void) {
     avra_sched_run_ends();
     return true;
 }
+// And inside a clock run alone, with no schedule's run around it.
+static bool spins_in_a_clock_run(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    spins_itself();
+    avra_clock_run_ends();
+    return true;
+}
 static void spun_in_a_run(void) {
     setenv("AVRA_CLOCK_ASKS", "1000", 1);
     CHECK(verdict(spins_in_a_run) == 0, "a case that spins inside a run of its own fails");
@@ -164,6 +172,12 @@ static void spun_in_a_run(void) {
     nanosleep(&nap, NULL);
     CHECK(avra_now_ns() - t0 >= 1000000, "the runner's clock flows again, as it did before the case");
     CHECK(verdict(alone) == 1, "and the next case passes");
+    int64_t clocks = avra_clock_run_depth();
+    CHECK(verdict(spins_in_a_clock_run) == 0, "a case that spins inside a clock run of its own fails");
+    CHECK(avra_clock_run_depth() == clocks, "and no clock run it opened stands after it");
+    t0 = avra_now_ns();
+    nanosleep(&nap, NULL);
+    CHECK(avra_now_ns() - t0 >= 1000000, "the runner's clock flows again");
 }
 static void spun_cases(void) {
     setenv("AVRA_CLOCK_ASKS", "1000", 1);
