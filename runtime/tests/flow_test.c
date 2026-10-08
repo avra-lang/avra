@@ -182,7 +182,6 @@ static void claim_then_cancel(void) {
 
 // What it slept, by the process's own clock: virtual where the case is.
 static void* sleeper(void* self) { int64_t t0 = avra_now_ns(); avra_fiber_sleep(cap(self)); return answer((avra_now_ns() - t0) / 1000000); }
-static void* joiner(void* self) { (void)self; avra_rc_retain(g_task); return answer(joined(g_task)); }
 
 static int64_t g_byte_a = -1, g_byte_b = -1, g_byte_c = -1, g_byte_d = -1;
 static int64_t g_spent_ms = -1;
