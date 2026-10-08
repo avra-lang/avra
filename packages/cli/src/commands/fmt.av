@@ -25,7 +25,7 @@
 //! warm re-run skips its parse and its print both — only a file that
 //! moved, or one this compiler has never seen, pays for either.
 use @std.cli.{CliResult, Runnable, command, flag, arg}
-use @std.io.{exists, write_text, is_dir, list_dir}
+use @std.io.{write_text, is_dir}
 use @std.avrac.compiler.{Workspace, Phase, phase_total}
 use @std.avrac.compiler.store.{Store}
 use @std.avrac.core.{FileId, digest_of, joined, distinct, sorted_texts}
@@ -39,7 +39,9 @@ impl Runnable for FmtCmd {
     fn run(args: CliResult) -> int {
         if args.has_flag("check") || args.has_flag("write") { return walked(args, args.has_flag("write")) }
         let path = path_arg(args)
-        if !exists(path) {
+        // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+        let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
+        if !there {
             no_such_file(path)
             return 2
         }
@@ -165,8 +167,18 @@ fn dir_groups(dirs: List<string>) -> List<Group> {
 /// it stands at one, never descending past it into a package nested
 /// inside a package.
 fn package_roots_under(dir: string) -> List<string> {
-    if exists(joined_path(dir, "avra.toml")) { return [dir] }
-    match list_dir(dir) { .Ok(names) -> roots_from(dir, names), .Err(_) -> [] }
+    let host = disk_host()
+    // LICENSED compiler.host_asked_directly: package roots are found on disk before any workspace exists — no query frame is open
+    let rooted = match host.there(joined_path(dir, "avra.toml")) {
+        .Exists(_, t) -> t,
+        rest -> false,
+    }
+    if rooted { return [dir] }
+    // LICENSED compiler.host_asked_directly: package roots are found on disk before any workspace exists — no query frame is open
+    match host.listing(dir) {
+        .Listing(_, entries) -> roots_from(dir, [e.name for e in entries ?? []]),
+        rest -> [],
+    }
 }
 
 fn roots_from(dir: string, names: List<string>) -> List<string> {

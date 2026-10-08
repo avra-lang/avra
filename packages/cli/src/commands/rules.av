@@ -4,7 +4,6 @@
 //! DOGFOODING.md's generated block, and `--check-markdown <doc>` holds
 //! a doc's committed block to that one rendering.
 use @std.cli.{CliResult, Runnable, command, flag, option}
-use @std.io.{read_text}
 use @std.avrac.compiler.{RuleEntry, rule_id, declared_law, rules as rule_table}
 use @std.json.{Json, field, to_text}
 
@@ -110,12 +109,10 @@ fn line_at(lines: List<string>, i: int) -> string? {
 
 /// `rules --check-markdown <doc>`: the verdict printed, 0 or 1.
 fn markdown_said(path: string, entries: List<RuleEntry>) -> int {
-    let doc = match read_text(rooted(path)) {
-        .Ok(text) -> text,
-        .Err(_) -> {
-            eprintln(unreadable(path))
-            return 1
-        },
+    // LICENSED compiler.host_asked_directly: a command's read of the file it was given, at this instant — no query frame is open
+    let doc? = disk_host().spared_text(rooted(path)).as_text() else {
+        eprintln(unreadable(path))
+        return 1
     }
     match block_checked(path, doc, entries) {
         .Ok(n) -> {

@@ -4,7 +4,6 @@
 use @std.cli.{CliResult, Runnable, command, arg}
 use @std.path.{joined_path}
 use @std.process.{Tool, tool, tool_from_env, ProcessError}
-use @std.io.{read_text, exists}
 use @std.avrac.diagnostics.{Diag, new_source_file, render}
 use @std.avrac.compiler.host.{ToolRow, read_manifest}
 
@@ -20,11 +19,15 @@ impl Runnable for ProcessCmd {
 /// root when absent.
 fn explained_process(dir: string) -> int {
     let manifest = joined_path(if dir.length == 0 { here() } else { dir }, "avra.toml")
-    if !exists(manifest) {
+    let host = disk_host()
+    // LICENSED compiler.host_asked_directly: a command's read of the manifest it was given, at this instant — no query frame is open
+    let there = match host.there(manifest) { .Exists(_, t) -> t, rest -> false }
+    if !there {
         eprintln("avra: no ${manifest} — `process` reads a package's manifest")
         return 1
     }
-    let src = new_source_file(manifest, read_text(manifest) catch "")
+    // LICENSED compiler.host_asked_directly: a command's read of the manifest it was given, at this instant — no query frame is open
+    let src = new_source_file(manifest, host.spared_text(manifest).as_text() ?? "")
     let m = read_manifest(src)
     for d in m.voices { eprintln(render(d, src)) }
     if m.voices.any(refuses(it)) { return 1 }
