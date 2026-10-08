@@ -190,8 +190,9 @@ fn shape_of(word: string) -> Shape? {
 
 /// ONE DECLARATION LINE, DECODED — named fields over `record_line`'s columns
 /// (interface.av, the one writer). `payload` is what is left past the facts
-/// block: one field for most shapes, four for `Fn`/`Extern` (seats, return,
-/// marks, written bits), read through `Row`'s own verbs below.
+/// block: one field for most shapes, six for `Fn`/`Extern` (seats, return,
+/// marks, written bits, bounds, whether it may reach a cancel point), read
+/// through `Row`'s own verbs below.
 type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent_at: int, within: string, root: int, item: bool, facts: string, payload: List<string> }
 
 /// A declaration row, decoded from its already-split fields — null for a
@@ -253,6 +254,9 @@ impl Row {
 
     /// `Fn`'s bounded seats' trait arguments, one `seat=wire|wire` each.
     fn bounds() -> List<string> { self.list_at(4) }
+
+    /// `Fn`/`Extern`'s cancel bit: a record that says nothing says it may.
+    fn waits() -> bool { self.field(5) != "0" }
 }
 
 /// A record as this build now knows it: its words, its lines and their fields.
@@ -352,7 +356,8 @@ export fn iface_digest(items: List<string>) -> string {
 }
 
 /// ONE DECLARATION'S CONTRACT, as one line: the fields a caller can see, and never the
-/// span, the statement/expression indices, or the `writes` bits.
+/// span, the statement/expression indices, or the `writes` bits. A fn's cancel bit IS
+/// contract: a caller's code tests after the call by it.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a record line in, its contract out.
 fn interface_form(line: string) -> string {
     let p = line.split("\t")
@@ -364,7 +369,7 @@ fn interface_form(line: string) -> string {
     let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }
     [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")]
         .concat(p.slice(13, 16))
-        .concat(p.slice(17, 18))
+        .concat(p.slice(17, 19))
         .join("\t")
 }
 

@@ -380,6 +380,8 @@ impl Workspace {
                 facts!,
             )
         self.decls.held_joins(f, id, kind! is .Main, row.item)
+        // the cancel bit is read before any signature is asked, so it lands with the row
+        self.decls.record_cancel(id, row.waits())
         id
     }
 
@@ -435,7 +437,8 @@ impl Workspace {
             .type_wire(self.decls.type_of_const(d.file, d.stmt) ?? self.decls.types.intern(Type.Error))
     }
 
-    /// A fn's or a method's shape: its signature, then its seats' contracts and written bits.
+    /// A fn's or a method's shape: its signature, then its seats' contracts and written
+    /// bits, its bounds, and whether a call to it may reach a cancel point.
     fn fn_shape(d: Decl) -> string {
         let sig? = self.sig(d.id) else { return "opaque" }
         // THE SEATS' CONTRACTS AND WHAT THE BODY WROTE are parse facts a held file
@@ -457,7 +460,9 @@ impl Workspace {
             [if self.decls.seat_written(d.id, j) { "1" } else { "0" } for j in 0..n],
             "",
         )
-        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}"
+        // a record is kept once the build has lowered every body, never inside a resolve,
+        // so the cancel bit is the settled pass's and not its conservative stand-in
+        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}\t${if self.reaches_cancel(d.id) { "1" } else { "0" }}"
     }
 
     /// A type's shape from its signature — `opaque` for a declaration that has none.

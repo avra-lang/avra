@@ -1,0 +1,353 @@
+// Whether a call may reach a cancel point (`Family.CancelReach`): a
+// whole-program fixpoint over the calls each body makes, seeded by a
+// row that may switch the task out, a read that waits, a spawn, a
+// `while`, and a call through a value. A held fn answers from its
+// interface, where the bit is contract.
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use compiler.record.{read_fields, iface_digest}
+use core.{DeclId}
+use @std.avrac.testing.{provided, test_workspace}
+use @std.avrac.compiler.{Program}
+
+const REACH_PATH: string = "/w/src/main.av"
+
+fn reach_workspace(main: string) -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": main,
+            },
+            ["/w/avra.toml", REACH_PATH],
+        ),
+        "/w",
+    )
+}
+
+fn reach_decl(ws: Workspace, name: string) -> DeclId {
+    [x.id for x in ws.decls.all_decls() if x.name == name][0]
+}
+
+/// The program analysed, then each named fn's answer, `name=0|1`.
+fn reaching(lines: List<string>, names: List<string>) -> string {
+    let ws = reach_workspace(lines.concat([""]).join("\n"))
+    let _ = ws.analyze_file(REACH_PATH)
+    [reach_word(ws, n) for n in names].join(" ")
+}
+
+fn reach_word(ws: Workspace, name: string) -> string {
+    "${name}=${if ws.reaches_cancel(reach_decl(ws, name)) { 1 } else { 0 }}"
+}
+
+/// A sleeping fn, the seed most cases call.
+fn napping() -> List<string> {
+    ["extern fn avra_fiber_sleep(ms: int)", "fn nap() { avra_fiber_sleep(1) }"]
+}
+
+spec "compiler/cancel_reach — a row that may switch the task out" {
+    then "the fn calling it, its caller and its caller's caller answer 1; a fn calling neither answers 0" {
+        reaching(
+            napping()
+                .concat(
+                    [
+                        "fn later() {",
+                        "    nap()",
+                        "}",
+                        "fn later_still() { later() }",
+                        "fn plain() -> int { 1 }",
+                        "plain()",
+                    ],
+                ),
+            ["nap", "later", "later_still", "plain"],
+        ) == "nap=1 later=1 later_still=1 plain=0"
+    }
+    then "a row that cannot switch the task out reaches nothing" {
+        reaching(
+            ["extern fn avra_now_ns() -> int", "fn clock() -> int { avra_now_ns() }", "clock()"],
+            ["clock"],
+        ) == "clock=0"
+    }
+}
+
+spec "compiler/cancel_reach — loops" {
+    then "a fn holding a `while` answers 1" {
+        reaching(
+            [
+                "fn spin(n: int) -> int {",
+                "    mut i = 0",
+                "    while i < n { i = i + 1 }",
+                "    i",
+                "}",
+                "spin(3)",
+            ],
+            ["spin"],
+        ) == "spin=1"
+    }
+    then "a fn holding only a `for` over a range answers 0" {
+        reaching(
+            [
+                "fn count(n: int) -> int {",
+                "    mut s = 0",
+                "    for i in 0..n { s = s + i }",
+                "    s",
+                "}",
+                "count(3)",
+            ],
+            ["count"],
+        ) == "count=0"
+    }
+    then "a `while` in one fn is not another fn's" {
+        reaching(
+            [
+                "fn spin(n: int) -> int {",
+                "    mut i = 0",
+                "    while i < n { i = i + 1 }",
+                "    i",
+                "}",
+                "fn beside() -> int { 2 }",
+                "spin(3) + beside()",
+            ],
+            ["beside"],
+        ) == "beside=0"
+    }
+}
+
+spec "compiler/cancel_reach — calls through a value" {
+    then "a fn calling its fn-typed parameter answers 1" {
+        reaching(["fn run(f: fn() -> int) -> int { f() }", "run(() -> 1)"], ["run"]) == "run=1"
+    }
+    then "a lambda's call is its maker's: a maker handing a sleeping lambda to a list method answers 1" {
+        reaching(
+            napping()
+                .concat(
+                    [
+                        "fn napped(x: int) -> bool {",
+                        "    nap()",
+                        "    x > 1",
+                        "}",
+                        "fn any_napped(xs: List<int>) -> bool { xs.any((x: int) -> napped(x)) }",
+                        "any_napped([1])",
+                    ],
+                ),
+            ["any_napped"],
+        ) == "any_napped=1"
+    }
+    then "a call on a call's answer answers 1, though the first call reaches nothing" {
+        reaching(
+            ["fn make() -> fn() -> int { () -> 1 }", "fn calls() -> int { make()() }", "calls()"],
+            ["make", "calls"],
+        ) == "make=0 calls=1"
+    }
+    then "a call through a fn-typed field answers 1" {
+        reaching(
+            [
+                "type Cx = { get: fn() -> int }",
+                "fn fielded(c: Cx) -> int { c.get() }",
+                "fielded(Cx { get: () -> 1 })",
+            ],
+            ["fielded"],
+        ) == "fielded=1"
+    }
+    then "a contract's method answers 1, whatever its impls do" {
+        reaching(
+            [
+                "trait Show {",
+                "    fn show() -> string",
+                "}",
+                "type P = { n: int }",
+                "impl Show for P {",
+                "    fn show() -> string { \"p\" }",
+                "}",
+                "fn shown(s: dyn Show) -> string { s.show() }",
+                "shown(P { n: 1 })",
+            ],
+            ["shown"],
+        ) == "shown=1"
+    }
+}
+
+spec "compiler/cancel_reach — methods" {
+    then "a call to a declared method answers that method's answer" {
+        reaching(
+            napping()
+                .concat(
+                    [
+                        "type Clock = { n: int }",
+                        "impl Clock {",
+                        "    fn tick() { nap() }",
+                        "    fn read() -> int { self.n }",
+                        "}",
+                        "fn ticks(c: Clock) { c.tick() }",
+                        "fn reads(c: Clock) -> int { c.read() }",
+                        "reads(Clock { n: 1 })",
+                    ],
+                ),
+            ["tick", "read", "ticks", "reads"],
+        ) == "tick=1 read=0 ticks=1 reads=0"
+    }
+}
+
+spec "compiler/cancel_reach — tasks" {
+    then "a spawner answers 1: its task is joined where its scope ends" {
+        reaching(
+            [
+                "fn work(n: int) -> int { n * 2 }",
+                "fn spawner() {",
+                "    let t = spawn work(2)",
+                "}",
+                "spawner()",
+            ],
+            ["work", "spawner"],
+        ) == "work=0 spawner=1"
+    }
+    then "an `.await` answers 1 and a `.done` answers 0, with no spawn beside either" {
+        reaching(
+            [
+                "fn work(n: int) -> int { n * 2 }",
+                "fn awaits(t: Task<int>) -> int { t.await }",
+                "fn reader(t: Task<int>) -> bool { t.done }",
+                "fn spawner() -> int {",
+                "    let t = spawn work(2)",
+                "    awaits(t)",
+                "}",
+                "spawner()",
+            ],
+            ["awaits", "reader"],
+        ) == "awaits=1 reader=0"
+    }
+}
+
+spec "compiler/cancel_reach — recursion" {
+    then "a cycle that reaches nothing settles at 0" {
+        reaching(
+            [
+                "fn a(n: int) -> int { if n > 0 { b(n - 1) } else { 0 } }",
+                "fn b(n: int) -> int { a(n) }",
+                "a(3)",
+            ],
+            ["a", "b"],
+        ) == "a=0 b=0"
+    }
+    then "a cycle with a row in it answers 1 at every member" {
+        reaching(
+            napping()
+                .concat(
+                    [
+                        "fn a(n: int) -> int { if n > 0 { b(n - 1) } else { 0 } }",
+                        "fn b(n: int) -> int {",
+                        "    nap()",
+                        "    a(n)",
+                        "}",
+                        "a(3)",
+                    ],
+                ),
+            ["a", "b"],
+        ) == "a=1 b=1"
+    }
+}
+
+/// The record lines of the program's file, and a fresh workspace
+/// that holds the file from them alone.
+fn held_from(lines: List<string>) -> Workspace {
+    let source = lines.concat([""]).join("\n")
+    let parsed = reach_workspace(source)
+    let _ = parsed.analyze_file(REACH_PATH)
+    let f? = parsed.decls.known_file_id(REACH_PATH) else { return parsed }
+    let records = [parsed.record_line(parsed.decls.raw_decl(d), ordinal, false) for ordinal, d in parsed.decls.decls_of_file(f)]
+    let held = reach_workspace(source)
+    held.hold_only(REACH_PATH)
+    held.mint_file(REACH_PATH, [read_fields(line) for line in records], {})
+    held
+}
+
+/// One fn's record line, with its cancel bit set to `bit`.
+fn line_with(lines: List<string>, name: string, bit: string) -> string {
+    let ws = reach_workspace(lines.concat([""]).join("\n"))
+    let _ = ws.analyze_file(REACH_PATH)
+    let d = reach_decl(ws, name)
+    let fields = ws.record_line(ws.decls.raw_decl(d), 0, false).split("\t")
+    fields.slice(0, fields.length - 1).concat([bit]).join("\t")
+}
+
+spec "compiler/cancel_reach — the interface" {
+    then "a held fn answers the bit its record carries" {
+        let held = held_from(napping().concat(["fn plain() -> int { 1 }", "plain()"]))
+        [reach_word(held, n) for n in ["nap", "plain"]].join(" ") == "nap=1 plain=0"
+    }
+    then "the record line's last field is the bit" {
+        let lines = napping().concat(["nap()"])
+        let ws = reach_workspace(lines.concat([""]).join("\n"))
+        let _ = ws.analyze_file(REACH_PATH)
+        ws.record_line(ws.decls.raw_decl(reach_decl(ws, "nap")), 0, false) == line_with(lines, "nap", "1")
+    }
+    then "the bit moves the interface digest, so a caller keyed on it is rebuilt" {
+        let lines = napping().concat(["nap()"])
+        iface_digest([line_with(lines, "nap", "1")]) != iface_digest([line_with(lines, "nap", "0")])
+    }
+}
+
+/// A provider whose component's template calls a fn that sleeps.
+fn napping_provider() -> string {
+    [
+        "extern fn avra_fiber_sleep(ms: int)",
+        "export fn rest(ms: int) { avra_fiber_sleep(ms) }",
+        "export component napped(limit: Code) {",
+        "    body: Code",
+        "    fn expand() -> Code {",
+        "        quote {",
+        "            {",
+        "                rest(\${self.limit})",
+        "                \${self.body}",
+        "            }",
+        "        }",
+        "    }",
+        "}",
+        "",
+    ]
+        .join("\n")
+}
+
+fn provided_word(p: Program, name: string) -> string {
+    let d = [x.id for x in p.ws.decls.all_decls() if x.name == name][0]
+    "${name}=${if p.ws.reaches_cancel(d) { 1 } else { 0 }}"
+}
+
+spec "compiler/cancel_reach — nodes that call without a call node" {
+    then "a fn whose only wait is inside a component instance it makes answers 1" {
+        let p = provided(
+            "use @x.c.{napped}\nfn waits_inside() -> int { napped 1 { 2 } }\nfn plain() -> int { 3 }\nwaits_inside() + plain()\n",
+            napping_provider(),
+        )
+        provided_word(p, "waits_inside") + " " + provided_word(p, "plain") == "waits_inside=1 plain=0"
+    }
+    then "a `?.await` answers 1, and a `?.done` answers 0" {
+        reaching(
+            [
+                "fn maybe(t: Task<int>?) -> int? { t?.await }",
+                "fn peek(t: Task<int>?) -> bool? { t?.done }",
+                "1",
+            ],
+            ["maybe", "peek"],
+        ) == "maybe=1 peek=0"
+    }
+    then "a call that leaves a seat to its default answers that default's answer" {
+        reaching(
+            napping()
+                .concat(
+                    [
+                        "fn slept() -> int {",
+                        "    nap()",
+                        "    1",
+                        "}",
+                        "fn f(n: int = slept()) -> int { n }",
+                        "fn g() -> int { f() }",
+                        "fn h(n: int = 2) -> int { n }",
+                        "fn k() -> int { h() }",
+                        "g() + k()",
+                    ],
+                ),
+            ["g", "k"],
+        ) == "g=1 k=0"
+    }
+}

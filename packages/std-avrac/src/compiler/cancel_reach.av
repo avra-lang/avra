@@ -1,0 +1,264 @@
+//! WHETHER A CALL MAY REACH A CANCEL POINT — the fact a caller's test
+//! after the call is emitted by. A fn MAY REACH when its body calls a
+//! runtime row that may switch the task out (`RtSig.waits`), reads a
+//! property or calls a vocabulary method that may (`waits` on the
+//! row), spawns (the task is joined where its owner's scope ends),
+//! holds a `while` (its back-edge is a cancel point), or calls through
+//! a value — a closure, a fn-typed field, a contract or a bounded
+//! parameter, any of which may be anything — or calls a fn that may.
+//! A lambda's body counts as its maker's: where it runs, it runs
+//! inside a call the maker made, and where it runs elsewhere that call
+//! is through a value. A WHOLE-PROGRAM PASS: each member surveyed ONCE
+//! from its typed facts (a method call's callee is the one `callee_of`
+//! dispatches to) into its own evidence and the members it calls, then
+//! the answer spreads from every member with evidence to its callers —
+//! linear in the call graph. A held fn answers from its interface,
+//! where the bit is contract (`interface_form`): a callee that starts
+//! to wait moves its dependents' key.
+use core.{DeclId, DeclKind, ExprId, Stmt, TypeId, fp, fp_list, rt_waits, flatten}
+use features.{NameFacts, TypeFacts, FileView, Decls, bound_decl_of, property_row, declaring_decl}
+use features.impls.{callee_of}
+use compiler.families.{Family}
+use @std.relation.engine.{Table, new_table}
+
+/// One member's survey: whether its own body may reach a cancel point,
+/// and the members it calls, whose answers it takes.
+type CancelSummary = { own: bool, callees: List<DeclId> }
+
+/// What one call answers a survey: known now, or a member's answer.
+enum CallAnswer {
+    Known(may: bool)
+    Via(member: DeclId)
+}
+
+impl Workspace {
+    /// The pass: every member's answer, settled once per program state
+    /// and keyed by `Family.CancelReach`.
+    fn cancel_reach() -> int {
+        // A pass that ran inside a resolve would read a half-built
+        // namespace; the caller answers conservatively instead.
+        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
+        let k = key(Family.CancelReach, 0)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
+        let fns = [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
+        self.decls.clear_cancels(fns)
+        self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
+        self.db.settle(k, fp(1, [fp_list([cancel_word(self.decls.cancel_bit(d)) for d in fns])]))
+        fns.length
+    }
+
+    /// Whether a call to `d` may reach a cancel point. A member the
+    /// pass could not settle (asked mid-resolve) answers that it may.
+    fn reaches_cancel(d: DeclId) -> bool {
+        if !self.cancel_member(d) { return self.callee_cancels(d) }
+        let _ = self.cancel_reach()
+        if self.db.value_hash_of(key(Family.CancelReach, 0)) == null { return true }
+        self.decls.cancel_bit(d) ?? true
+    }
+
+    /// A declaration the pass surveys: a body this compile holds.
+    fn cancel_member(d: DeclId) -> bool {
+        let x = self.decls.decl(d)
+        if x.external || x.root == null || self.is_held(x.file) { return false }
+        match x.kind {
+            .Fn or .Method or .Default or .Main or .Case -> true,
+            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .State or .Builtin -> false,
+        }
+    }
+
+    /// What a call to a declaration that is no member answers: a
+    /// runtime row by its column, a held fn by its interface, a sig
+    /// with no body as a value would. A value bound to a name may be
+    /// any fn; a type answers no call that waits.
+    fn callee_cancels(g: DeclId) -> bool {
+        let x = self.decls.decl(g)
+        match x.kind {
+            .Fn or .Method or .Default or .Main or .Case -> when {
+                // a row by its column; any other extern is package C,
+                // which never switches a task out — it reaches the
+                // scheduler only through a row
+                x.external -> rt_waits(x.name)
+                self.is_held(x.file) -> self.decls.cancel_bit(g) ?? true
+                _ -> true
+            },
+            .Const or .State -> true,
+            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Builtin -> false,
+        }
+    }
+
+    /// A call's answer to a survey: a member's, through the spread;
+    /// any other declaration's, now.
+    fn call_answer(g: DeclId) -> CallAnswer {
+        if self.cancel_member(g) { CallAnswer.Via(g) } else { CallAnswer.Known(self.callee_cancels(g)) }
+    }
+
+    /// One member surveyed: its own evidence, and the members it calls.
+    fn cancel_summary(d: DeclId) -> CancelSummary {
+        let x = self.decls.decl(d)
+        let s = CancelSurvey {
+            ws: self,
+            view: file_view(self.lang, self.parsed(x.file), self.decls, x.file),
+            names: self.names_of(d),
+            facts: self.typed(d),
+            lo: x.lo,
+            hi: x.hi,
+        }
+        let answers = s.answers()
+        CancelSummary {
+            own: s.spins() || answers.any(known_true),
+            callees: flatten([via_member(a) for a in answers]),
+        }
+    }
+}
+
+impl Decls {
+    /// Every member's bit falls before the pass re-earns it; a held
+    /// fn's bit is its interface's, never the pass's.
+    fn clear_cancels(fns: List<DeclId>) {
+        for d in fns { self.record_cancel(d, false) }
+    }
+
+    /// Each member with evidence may reach, and so does every member
+    /// that calls one — breadth first over the callers, each set once.
+    fn spread_cancels(fns: List<DeclId>, sums: List<CancelSummary>) {
+        let callers: Table<List<DeclId>> = new_table<List<DeclId>>()
+        for j, d in fns {
+            for c in sums[j].callees { callers.keep(c.index, (callers.at(c.index) ?? []).concat([d])) }
+        }
+        mut reached = [d for j, d in fns if sums[j].own]
+        for d in reached { self.record_cancel(d, true) }
+        mut at = 0
+        while at < reached.length {
+            for c in callers.at(reached[at].index) ?? [] {
+                if !(self.cancel_bit(c) ?? false) {
+                    self.record_cancel(c, true)
+                    reached.push(c)
+                }
+            }
+            at = at + 1
+        }
+    }
+}
+
+/// What one member's survey reads: its file, its names, its typed
+/// facts, its expression range — a lambda's nodes among them.
+type CancelSurvey = { ws: Workspace, view: FileView, names: NameFacts, facts: TypeFacts, lo: int, hi: int }
+
+impl CancelSurvey {
+    fn within(e: ExprId) -> bool {
+        e.index >= self.lo && e.index < self.hi
+    }
+
+    /// A `while` whose condition stands in the range.
+    fn spins() -> bool {
+        let store = self.view.store
+        let tag = store.tag_stmt(Stmt.While(ExprId { index: 0 }, []))
+        store.stmts_by_kind(0, store.stmts.count(), tag).any((s) -> self.spins_at(store.stmt(s)))
+    }
+
+    fn spins_at(s: Stmt) -> bool {
+        match s { .While(cond, _) -> self.within(cond), rest -> false }
+    }
+
+    /// Every node in the range answered — a lambda's, a `defer`'s and
+    /// a component instance's expansion among them.
+    fn answers() -> List<CallAnswer> {
+        flatten([self.node_answers(ExprId { index: i }) for i in self.lo..self.hi])
+    }
+
+    /// What one node may reach. EVERY VARIANT IS SPELLED: a node added
+    /// later breaks the build here, and never answers "cannot" unasked.
+    fn node_answers(e: ExprId) -> List<CallAnswer> {
+        match self.view.store.expr(e) {
+            .Call(_, _, _) -> [self.named_call(e)].concat(self.defaults_of_call(e)),
+            .MethodCall(_, _, _) -> [self.method_call(e)],
+            // a call on a value that is no name — `make()()` — may be any
+            // fn; a spawned task is joined where its owner's scope ends
+            .CallValue(_, _) or .Spawn(_) -> [CallAnswer.Known(true)],
+            .Prop(subject, name) -> [CallAnswer.Known(self.row_waits(self.facts.type_at(subject), name.of))],
+            .Chain(subject, name) -> [CallAnswer.Known(self.chain_waits(subject, name.of))],
+            // a record literal runs the defaults of the fields it leaves out
+            .StructLit(_, _, _) -> self.defaults_of_record(e),
+            // a component instance's expansion stands in its place, inside
+            // this range, and is answered node by node
+            .Component(_, _, _, _, _) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_, _) or .Index(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Error or .Collect(_) or .BytesLit(_) or .Range(_, _) or .Env(_) -> [],
+        }
+    }
+
+    /// Whether reading `name` off a value of `ty` waits — `t.await`.
+    fn row_waits(ty: TypeId, name: string) -> bool {
+        property_row(self.ws.lang.rows.properties, name, self.view.types.shape_of(ty))?.waits ?? false
+    }
+
+    /// A chain reads its member off what the nullable carries —
+    /// `t?.await` as `t.await` does.
+    fn chain_waits(subject: ExprId, name: string) -> bool {
+        let held? = self.view.types.carried(self.facts.type_at(subject)) else { return false }
+        self.row_waits(held, name)
+    }
+
+    /// A call may leave any of its callee's seats to their defaults,
+    /// which run in the caller.
+    fn defaults_of_call(e: ExprId) -> List<CallAnswer> {
+        let g? = bound_decl_of(self.names, e) else { return [] }
+        self.defaults_of(g)
+    }
+
+    fn defaults_of_record(e: ExprId) -> List<CallAnswer> {
+        let r? = declaring_decl(self.view.types.shape_of(self.facts.type_at(e))) else { return [] }
+        self.defaults_of(r)
+    }
+
+    fn defaults_of(owner: DeclId) -> List<CallAnswer> {
+        [self.ws.call_answer(c) for c in self.view.decls.children_of(owner) if is_default(self.view.decls.decl(c).kind)]
+    }
+
+    /// A call by name: its declaration's answer, or — bound to a local,
+    /// a parameter or a capture — a value's.
+    fn named_call(e: ExprId) -> CallAnswer {
+        let g? = bound_decl_of(self.names, e) else { return CallAnswer.Known(true) }
+        self.ws.call_answer(g)
+    }
+
+    /// A dot-call, by the callee its receiver's type dispatches to.
+    fn method_call(e: ExprId) -> CallAnswer {
+        let mp? = self.view.store.method_parts(e) else { return CallAnswer.Known(false) }
+        match callee_of(self.view, self.facts.type_at(mp.subject), mp.name) {
+            .Static(m, _) -> self.ws.call_answer(m),
+            .Declared(decl, _) -> self.declared_answer(decl, mp.name),
+            .Row(r) -> CallAnswer.Known(r.waits),
+            .Bounded(_, _, _) or .Contract(_, _) or .FnField(_, _) -> CallAnswer.Known(true),
+            .Variant(_, _) or .Nameless -> CallAnswer.Known(false),
+        }
+    }
+
+    /// A method the impl table answers, or — none found under the
+    /// declaration — one the survey cannot name, which may.
+    fn declared_answer(decl: DeclId, name: string) -> CallAnswer {
+        let m? = self.view.decls.method(decl, name) else { return CallAnswer.Known(true) }
+        self.ws.call_answer(m)
+    }
+}
+
+/// A seat's or a field's default — the one kind whose body a caller runs.
+fn is_default(k: DeclKind) -> bool {
+    match k {
+        .Default -> true,
+        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Impl or .Main or .Case or .Builtin or .Const or .Collect or .CollectEnum or .State -> false,
+    }
+}
+
+fn known_true(a: CallAnswer) -> bool {
+    match a { .Known(may) -> may, .Via(_) -> false }
+}
+
+fn via_member(a: CallAnswer) -> List<DeclId> {
+    match a { .Known(_) -> [], .Via(m) -> [m] }
+}
+
+/// A bit as the settled fingerprint reads it — an unsettled one as `2`.
+fn cancel_word(bit: bool?) -> int {
+    let b? = bit else { return 2 }
+    if b { 1 } else { 0 }
+}

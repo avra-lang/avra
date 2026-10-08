@@ -61,7 +61,8 @@ export type MethodCall = { e: ExprId, subject: ExprId, args: List<ExprId> }
 /// and its typing and lowering rules. THE METHOD VOCABULARY is
 /// these rows — declared by the feature that owns the receiver,
 /// assembled with the language, queried by the dot-call — never
-/// a chain of forks.
+/// a chain of forks. `waits`: the call may switch the task out — a
+/// cancel point, as a row's is.
 export enum ReceiverEffect {
     Read
     /// a read answering a value the receiver HOLDS (`c.get()`,
@@ -71,7 +72,7 @@ export enum ReceiverEffect {
     Shared
 }
 
-export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, MethodCall) -> TypeId, lower: fn(mut LowerCx, MethodCall) -> Reg, effect: ReceiverEffect, answers: fn(TypeRegistry, TypeId) -> TypeId? }
+export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, MethodCall) -> TypeId, lower: fn(mut LowerCx, MethodCall) -> Reg, effect: ReceiverEffect, answers: fn(TypeRegistry, TypeId) -> TypeId?, waits: bool = false }
 
 /// What a row answers on a receiver of this type, told from the
 /// receiver alone — for a pass that types no body. Null when only the
@@ -129,8 +130,9 @@ export type TypeArgs = { parts: List<TypeId> }
 /// One PROPERTY a receiver shape answers (`.length` and its kin):
 /// both rules take the read and the receiver's TYPE, the lowering
 /// its REGISTER too — the chain holds a carried value and no
-/// subject node, and one registry answers both readers.
-export type PropertyRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, ExprId, TypeId) -> TypeId, lower: fn(mut LowerCx, ExprId, Reg, TypeId) -> Reg }
+/// subject node, and one registry answers both readers. `waits`: the
+/// read may switch the task out — a cancel point, as a row's is.
+export type PropertyRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, ExprId, TypeId) -> TypeId, lower: fn(mut LowerCx, ExprId, Reg, TypeId) -> Reg, waits: bool = false }
 
 /// The constructor a name selects; null when the language owns none.
 export fn type_row(rows: List<TypeRow>, name: string) -> TypeRow? {
