@@ -381,14 +381,14 @@ impl Workspace {
             )
         self.decls.held_joins(f, id, kind! is .Main, row.item)
         // the cancel bit is read before any signature is asked, so it lands with the row
-        self.decls.record_cancel(id, row.waits())
+        self.decls.record_cancel(id, row.reach())
         id
     }
 
     fn record_line(d: Decl, ordinal: int, item: bool) -> string {
         let shape = self.record_shape(d)
         let at = shape.index_of("\t")
-        let visibility = if d.exported { "1" } else { "0" }
+        let visibility = bit_word(d.exported)
         // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
         // and a held file has no store, so the record must carry it: the word is the one
         // column every kind already has, and the payload's layout is unchanged.
@@ -410,7 +410,7 @@ impl Workspace {
         // THE CODEC IS HELD TO ITSELF WHERE IT WRITES: a fact the decoder does not give
         // back is a defect said now, never a check every reader pays
         if facts_unblocked(block)?.fingerprint() != facts.fingerprint() { self.defect("`${d.name}`'s facts do not survive their record") }
-        "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.within)}\t${root}\t${if item { "1" } else { "0" }}\t${block}\t${payload}"
+        "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.within)}\t${root}\t${bit_word(item)}\t${block}\t${payload}"
     }
 
     /// The shape word and payload a declaration's record line carries.
@@ -462,7 +462,8 @@ impl Workspace {
         )
         // a record is kept once the build has lowered every body, never inside a resolve,
         // so the cancel bit is the settled pass's and not its conservative stand-in
-        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}\t${if self.reaches_cancel(d.id) { "1" } else { "0" }}"
+        let reach = self.reach_of(d.id)
+        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}\t${bit_word(reach.parks)}\t${bit_word(reach.spins)}"
     }
 
     /// A type's shape from its signature — `opaque` for a declaration that has none.
@@ -912,4 +913,9 @@ export fn makers_in(fields: List<List<string>>, path: string) -> Map<string, str
         if p.length == 4 && p[0] == "maker" && p[1] == path { out.set(p[2], text_of_field(p[3])) }
     }
     out
+}
+
+/// A bit as a record field writes it.
+fn bit_word(b: bool) -> string {
+    if b { "1" } else { "0" }
 }

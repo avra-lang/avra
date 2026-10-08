@@ -6,7 +6,7 @@
 use compiler.{Workspace}
 use compiler.host.{memory_host}
 use compiler.record.{read_fields, iface_digest}
-use core.{DeclId}
+use core.{DeclId, flatten}
 use @std.avrac.testing.{provided, test_workspace}
 use @std.avrac.compiler.{Program}
 
@@ -43,6 +43,69 @@ fn reach_word(ws: Workspace, name: string) -> string {
 /// A sleeping fn, the seed most cases call.
 fn napping() -> List<string> {
     ["extern fn avra_fiber_sleep(ms: int)", "fn nap() { avra_fiber_sleep(1) }"]
+}
+
+/// Each named fn's two bits, `name=ps`: `p` where it parks, `s` where it
+/// spins, `-` where it does neither.
+fn bits_of(lines: List<string>, names: List<string>) -> string {
+    let ws = reach_workspace(lines.concat([""]).join("\n"))
+    let _ = ws.analyze_file(REACH_PATH)
+    [bits_word(ws, n) for n in names].join(" ")
+}
+
+fn bits_word(ws: Workspace, name: string) -> string {
+    let r = ws.reach_of(reach_decl(ws, name))
+    "${name}=${if r.parks { "p" } else { "-" }}${if r.spins { "s" } else { "-" }}"
+}
+
+/// A fn whose only cancel point is a `while`'s back-edge.
+fn spinning() -> List<string> {
+    ["fn spin() {", "    mut i = 0", "    while i < 3 { i = i + 1 }", "}"]
+}
+
+spec "compiler/cancel_reach — the two bits" {
+    then "a row parks and a `while` spins, each to its callers, and a fn calling both holds both" {
+        bits_of(
+            napping()
+                .concat(spinning())
+                .concat(
+                    [
+                        "fn naps() { nap() }",
+                        "fn spins() { spin() }",
+                        "fn both() {",
+                        "    naps()",
+                        "    spins()",
+                        "}",
+                        "fn plain() -> int { 1 }",
+                        "plain()",
+                    ],
+                ),
+            ["nap", "spin", "naps", "spins", "both", "plain"],
+        ) == "nap=p- spin=-s naps=p- spins=-s both=ps plain=--"
+    }
+    then "a call through a value parks and does not spin" {
+        bits_of(["fn call(f: fn() -> int) -> int { f() }", "call(() -> 1)"], ["call"]) == "call=p-"
+    }
+    then "a cycle takes both bits of whatever it reaches" {
+        bits_of(
+            napping()
+                .concat(spinning())
+                .concat(
+                    [
+                        "fn a(n: int) {",
+                        "    if n > 0 { b(n - 1) }",
+                        "    nap()",
+                        "}",
+                        "fn b(n: int) {",
+                        "    if n > 0 { a(n - 1) }",
+                        "    spin()",
+                        "}",
+                        "a(2)",
+                    ],
+                ),
+            ["a", "b"],
+        ) == "a=ps b=ps"
+    }
 }
 
 spec "compiler/cancel_reach — a row that may switch the task out" {
@@ -249,7 +312,10 @@ spec "compiler/cancel_reach — recursion" {
 
 /// The record lines of the program's file, and a fresh workspace
 /// that holds the file from them alone.
-fn held_from(lines: List<string>) -> Workspace {
+fn held_from(lines: List<string>) -> Workspace { held_reading(lines, (line) -> line) }
+
+/// As `held_from`, each record line passed through `edited` first.
+fn held_reading(lines: List<string>, edited: fn(string) -> string) -> Workspace {
     let source = lines.concat([""]).join("\n")
     let parsed = reach_workspace(source)
     let _ = parsed.analyze_file(REACH_PATH)
@@ -257,17 +323,23 @@ fn held_from(lines: List<string>) -> Workspace {
     let records = [parsed.record_line(parsed.decls.raw_decl(d), ordinal, false) for ordinal, d in parsed.decls.decls_of_file(f)]
     let held = reach_workspace(source)
     held.hold_only(REACH_PATH)
-    held.mint_file(REACH_PATH, [read_fields(line) for line in records], {})
+    held.mint_file(REACH_PATH, [read_fields(edited(line)) for line in records], {})
     held
 }
 
-/// One fn's record line, with its cancel bit set to `bit`.
-fn line_with(lines: List<string>, name: string, bit: string) -> string {
+/// A record line without its two cancel bits, as a record written before them.
+fn bitless(line: string) -> string {
+    let fields = line.split("\t")
+    fields.slice(0, fields.length - 2).join("\t")
+}
+
+/// One fn's record line, with its cancel bits set to `parks` and `spins`.
+fn line_with(lines: List<string>, name: string, parks: string, spins: string) -> string {
     let ws = reach_workspace(lines.concat([""]).join("\n"))
     let _ = ws.analyze_file(REACH_PATH)
     let d = reach_decl(ws, name)
     let fields = ws.record_line(ws.decls.raw_decl(d), 0, false).split("\t")
-    fields.slice(0, fields.length - 1).concat([bit]).join("\t")
+    fields.slice(0, fields.length - 2).concat([parks, spins]).join("\t")
 }
 
 spec "compiler/cancel_reach — the interface" {
@@ -275,15 +347,33 @@ spec "compiler/cancel_reach — the interface" {
         let held = held_from(napping().concat(["fn plain() -> int { 1 }", "plain()"]))
         [reach_word(held, n) for n in ["nap", "plain"]].join(" ") == "nap=1 plain=0"
     }
-    then "the record line's last field is the bit" {
-        let lines = napping().concat(["nap()"])
+    then "a held fn answers both bits its record carries" {
+        let held = held_from(
+            napping().concat(spinning()).concat(["fn plain() -> int { 1 }", "plain()"]),
+        )
+        [bits_word(held, n) for n in ["nap", "spin", "plain"]].join(" ") == "nap=p- spin=-s plain=--"
+    }
+    then "the record line's last two fields are the bits, parks then spins" {
+        let lines = napping().concat(spinning()).concat(["nap()"])
         let ws = reach_workspace(lines.concat([""]).join("\n"))
         let _ = ws.analyze_file(REACH_PATH)
-        ws.record_line(ws.decls.raw_decl(reach_decl(ws, "nap")), 0, false) == line_with(lines, "nap", "1")
+        let line = (name: string) -> ws
+            .record_line(ws.decls.raw_decl(reach_decl(ws, name)), 0, false)
+        line("nap") == line_with(lines, "nap", "1", "0") &&
+            line("spin") == line_with(lines, "spin", "0", "1")
     }
-    then "the bit moves the interface digest, so a caller keyed on it is rebuilt" {
+    then "each bit moves the interface digest, so a caller keyed on it is rebuilt" {
         let lines = napping().concat(["nap()"])
-        iface_digest([line_with(lines, "nap", "1")]) != iface_digest([line_with(lines, "nap", "0")])
+        let none = iface_digest([line_with(lines, "nap", "0", "0")])
+        iface_digest([line_with(lines, "nap", "1", "0")]) != none &&
+            iface_digest([line_with(lines, "nap", "0", "1")]) != none
+    }
+    then "a record that says nothing of either bit says a fn may reach both" {
+        let held = held_reading(
+            ["fn plain() -> int { 1 }", "plain()"],
+            (line) -> if line.contains("\tplain\t") { bitless(line) } else { line },
+        )
+        bits_word(held, "plain") == "plain=ps"
     }
 }
 
@@ -349,5 +439,47 @@ spec "compiler/cancel_reach — nodes that call without a call node" {
                 ),
             ["g", "k"],
         ) == "g=1 k=0"
+    }
+}
+
+/// What `explain` says of each named fn.
+fn said_of(lines: List<string>, names: List<string>) -> List<string> {
+    let ws = reach_workspace(lines.concat([""]).join("\n"))
+    let _ = ws.analyze_file(REACH_PATH)
+    flatten([ws.cancel_lines(n) for n in names])
+}
+
+spec "compiler/cancel_reach — what `explain` says" {
+    then "each bit names what earned it: a row, a callee, a `while`, or nothing" {
+        said_of(
+            napping()
+                .concat(spinning())
+                .concat(
+                    [
+                        "fn both() {",
+                        "    nap()",
+                        "    spin()",
+                        "}",
+                        "fn plain() -> int { 1 }",
+                        "plain()",
+                    ],
+                ),
+            ["nap", "spin", "both", "plain"],
+        )
+            .join("\n") == [
+            "`nap` may reach a cancel point",
+            "  parks — calls the runtime row `avra_fiber_sleep`",
+            "  spins — no",
+            "`spin` may reach a cancel point",
+            "  parks — no",
+            "  spins — a `while` here",
+            "`both` may reach a cancel point",
+            "  parks — calls `nap`",
+            "  spins — calls `spin`",
+            "`plain` reaches no cancel point",
+            "  parks — no",
+            "  spins — no",
+        ]
+            .join("\n")
     }
 }
