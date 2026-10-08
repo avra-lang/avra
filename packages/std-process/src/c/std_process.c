@@ -168,6 +168,10 @@ int64_t avra_proc_executable(const char* path) {
 
 extern char** environ;
 
+// The runtime's: a blocking call here holds the world, so a virtual
+// clock flows at wall rate across it.
+void avra_clock_hold(int64_t by);
+
 enum {
     PROC_PIPE_IN = 0x1, PROC_PIPE_OUT = 0x2, PROC_PIPE_ERR = 0x4, PROC_MERGE_ERR = 0x8,
     PROC_NULL_IN = 0x10, PROC_NULL_OUT = 0x20, PROC_NULL_ERR = 0x40,
@@ -487,7 +491,9 @@ int64_t avra_proc_ready(int64_t h, int64_t timeout_ms) {
     if (p->in_fd >= 0 && !p->in_gone) { fds[n].fd = p->in_fd; fds[n].events = POLLOUT; slot_in = n++; }
     int64_t ev = 0;
     if (n > 0) {
+        avra_clock_hold(1);
         int r = poll(fds, (nfds_t)n, timeout_ms < 0 ? -1 : (int)timeout_ms);
+        avra_clock_hold(-1);
         if (r < 0 && errno != EINTR) return -errno;
         if (r > 0) {
             if (slot_out >= 0 && fds[slot_out].revents) {
@@ -515,7 +521,9 @@ int64_t avra_proc_ready(int64_t h, int64_t timeout_ms) {
            permanently done reaches this same branch once every
            watched descriptor is exhausted, without a second mechanism. */
         struct timespec ts = { timeout_ms / 1000, (timeout_ms % 1000) * 1000000L };
+        avra_clock_hold(1);
         nanosleep(&ts, NULL);
+        avra_clock_hold(-1);
     }
     if (p->pid < 0) ev |= READY_GONE;
     return ev;
@@ -531,6 +539,7 @@ int64_t avra_proc_reap(int64_t h) {
     if (p->pid < 0) return p->status;
     int st = 0;
     pid_t r;
+    // the clock: not a wait on time — WNOHANG answers at once
     while ((r = waitpid(p->pid, &st, WNOHANG)) < 0 && errno == EINTR) {}
     if (r == 0) return 0;
     if (r < 0) return -errno;
@@ -598,6 +607,7 @@ int64_t avra_proc_close(int64_t h) {
     close_fd(&p->err_fd);
     if (p->pid >= 0) {
         int st = 0;
+        // the clock: not a wait on time — WNOHANG answers at once
         if (waitpid(p->pid, &st, WNOHANG) > 0) p->pid = -1;
     }
     p->live = 0;

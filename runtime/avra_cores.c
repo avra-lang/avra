@@ -170,7 +170,9 @@ int64_t avra_cores_fork(int64_t g, int64_t serving) {
             int64_t err = -errno;
             close(gr->stop_write);
             gr->stop_write = -1;
+            avra_clock_hold(1);
             for (int64_t j = 0; j < i; j++) waitpid(gr->core[j].pid, NULL, 0);
+            avra_clock_hold(-1);
             group_free(gr);
             return err;
         }
@@ -227,6 +229,7 @@ int64_t avra_cores_heard(int64_t g, int64_t core) {
     ssize_t got = read(gr->core[core].end_read, b, sizeof b);
     if (got != 0 && !(got < 0 && errno != EAGAIN && errno != EINTR)) return -EAGAIN;
     int status = 0;
+    // the clock: not a wait on time — its end pipe has closed, the core has ended
     while (waitpid(gr->core[core].pid, &status, 0) < 0 && errno == EINTR) {}
     gr->core[core].status = status;
     gr->core[core].ended = 1;

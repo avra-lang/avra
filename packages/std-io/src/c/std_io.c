@@ -359,6 +359,7 @@ int64_t avra_io_compile_slot(void) {
             fprintf(stderr, "avra: waiting for a compile slot (AVRA_MAX_COMPILES=%ld)\n", n);
             said = 1;
         }
+        // the clock: the compiler's own wait for a slot, before any program runs
         usleep(200000);
     }
 #endif

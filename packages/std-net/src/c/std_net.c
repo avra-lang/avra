@@ -50,6 +50,9 @@
 
 // The runtime's trap: a verdict, exit 2, the words on stderr.
 void avra_trap(const char* msg);
+// The runtime's: a blocking call here holds the world, so a virtual
+// clock flows at wall rate across it.
+void avra_clock_hold(int64_t by);
 // The scheduler's word that `fd` is closing: whoever is parked on it
 // wakes to find it gone.
 void avra_fiber_fd_closing(int64_t fd);
@@ -309,6 +312,7 @@ int64_t avra_net_watch(int64_t pfd, int64_t fd, int64_t interest) {
     EV_SET(&ch[0], (uintptr_t)fd, EVFILT_READ, ((interest & NET_READ) ? EV_ADD | EV_ENABLE : EV_DELETE) | EV_RECEIPT, 0, 0, NULL);
     EV_SET(&ch[1], (uintptr_t)fd, EVFILT_WRITE, ((interest & NET_WRITE) ? EV_ADD | EV_ENABLE : EV_DELETE) | EV_RECEIPT, 0, 0, NULL);
     int r;
+    // the clock: not a wait on time — a change list answered by receipts
     while ((r = kevent((int)pfd, ch, 2, receipt, 2, NULL)) < 0 && errno == EINTR) {}
     if (r < 0) return -errno;
     for (int i = 0; i < r; i++) {
@@ -347,9 +351,13 @@ int64_t avra_net_wait(int64_t pfd, int64_t timeout_ms) {
 #ifdef __APPLE__
     int64_t ms = timeout_ms < 0 ? 0 : timeout_ms;
     struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
+    avra_clock_hold(1);
     int n = kevent((int)pfd, NULL, 0, g_net_events, NET_EVENTS, timeout_ms < 0 ? NULL : &ts);
+    avra_clock_hold(-1);
 #else
+    avra_clock_hold(1);
     int n = epoll_wait((int)pfd, g_net_events, NET_EVENTS, timeout_ms < 0 ? -1 : net_int(timeout_ms));
+    avra_clock_hold(-1);
 #endif
     g_net_nev = n > 0 ? n : 0;
     if (n >= 0) return n;

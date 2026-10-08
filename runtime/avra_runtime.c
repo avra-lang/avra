@@ -3869,7 +3869,16 @@ int64_t avra_clock_jumped(int64_t at) {
 
 void avra_clock_hold(int64_t by) {
     avra_clock.held += (int32_t)by;
+    avra_task_local->clock_holds += by;
+    if (by < 0) avra_task_local->clock_asks = 0;
     if (avra_clock.held < 0) avra_trap("the world was let go more often than it was held — a hold on the clock is a count");
+    clock_settled();
+}
+
+void avra_clock_holds_let_go(int64_t n) {
+    if (n <= 0) return;
+    avra_clock.held -= (int32_t)n;
+    if (avra_clock.held < 0) avra_clock.held = 0;
     clock_settled();
 }
 
@@ -4162,7 +4171,10 @@ int64_t avra_spawn_status(const char* prog, void* args) {
     free(argv);
     if (started != 0) return 127;
     int status;
-    if (waitpid(pid, &status, 0) < 0) return 127;
+    avra_clock_hold(1);
+    pid_t waited = waitpid(pid, &status, 0);
+    avra_clock_hold(-1);
+    if (waited < 0) return 127;
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return (int64_t)WEXITSTATUS(status);
 }
@@ -4190,7 +4202,10 @@ int64_t avra_spawn_in(const char* dir, const char* prog, void* args) {
     free(argv);
     if (started != 0) return 127;
     int status;
-    if (waitpid(pid, &status, 0) < 0) return 127;
+    avra_clock_hold(1);
+    pid_t waited = waitpid(pid, &status, 0);
+    avra_clock_hold(-1);
+    if (waited < 0) return 127;
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return (int64_t)WEXITSTATUS(status);
 }
