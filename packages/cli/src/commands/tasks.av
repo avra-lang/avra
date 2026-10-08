@@ -5,9 +5,15 @@
 //! store of its countdown and be lost, and an ask repeated is never
 //! misread. A process whose running task does not switch answers that it
 //! has not. The answer is printed and both files are removed.
+//!
+//! THE DIRECTORY IS HELD, NEVER NAMED: it is opened once with no link
+//! followed and held to its owner and mode, and the ask and the answer
+//! are named from it (@std/io's `OwnDir`, runtime/avra_door.h) — the
+//! same directory the program's door opens. `AVRA_TASKS_DIR` names
+//! another, for both.
 use @std.cli.{CliResult, Runnable, command, arg}
-use @std.io.{exists, read_text, remove, write_text}
-use @std.process.{cmd, tool}
+use @std.io.{IoError, OwnDir, own_dir, user_dir, env}
+use @std.process.{Signal, signalled}
 use @std.text.{parse_int}
 use @std.time.{ms, sleep}
 
@@ -23,79 +29,89 @@ impl Runnable for TasksCmd {
             eprintln(no_pid(args.arg("pid")))
             return 2
         }
-        let dir = match door_dir() {
+        let dir = match door() {
             .Ok(d) -> d,
-            .Err(words) -> {
-                eprintln(words)
+            .Err(e) -> {
+                eprintln(not_ours(e.describe().message))
                 return 1
             },
         }
+        defer dir.close()
         listed(pid, dir)
     }
 }
 
-/// THE DOOR'S DIRECTORY, as the runtime finds it: macOS's per-user
-/// temporary directory, else `/tmp/avra-<uid>/` — made 0700 here, and
-/// refused when it is anyone else's or anyone else may write it.
-fn door_dir() -> Result<string, string> {
-    let darwin = said_by("getconf", ["DARWIN_USER_TEMP_DIR"]) ?? ""
-    if darwin != "" { return if darwin.ends_with("/") { darwin } else { darwin + "/" } }
-    let uid? = said_by("id", ["-u"]) else { fail no_uid() }
-    let dir = "/tmp/avra-${uid}/"
-    let _ = said_by("mkdir", ["-m", "700", "-p", dir])
-    let listing? = said_by("ls", ["-ldn", dir]) else { fail not_ours(dir) }
-    let fields = [f for f in listing.split(" ") if f != ""]
-    if fields.length < 3 || !fields[0].starts_with("drwx------") || fields[2] != uid { fail not_ours(dir) }
-    dir
-}
-
-/// What `name` prints, trimmed, when it ran and finished clean.
-fn said_by(name: string, args: List<string>) -> string? {
-    // LICENSED input.live_process: the asker's own machine, and no compile answer reads it
-    let t = match tool(name) { .Ok(found) -> found, .Err(_) -> { return null } }
-    // LICENSED input.live_process: the asker's own machine, and no compile answer reads it
-    match cmd(t, args).outcome() {
-        .Ok(o) -> if o.exit is .Clean { o.out.stdout.trim() } else { null },
-        .Err(_) -> null,
+/// The door's directory: `AVRA_TASKS_DIR` when it is set, else the
+/// user's own.
+fn door() -> Result<OwnDir, IoError> {
+    // LICENSED input.live_process: where a running process is asked, and no compile answer reads it
+    let named = env("AVRA_TASKS_DIR") ?? ""
+    if named != "" {
+        // LICENSED input.live_process: where a running process is asked, and no compile answer reads it
+        return own_dir(named)
     }
+    // LICENSED input.live_process: where a running process is asked, and no compile answer reads it
+    user_dir()
 }
 
 /// The answer a process gives, printed — 0 — or what kept it, said —
 /// 1. A signal the process does not hear harms nothing: its default is to
 /// be ignored.
-fn listed(pid: int, dir: string) -> int {
-    let ask = "${dir}avra-tasks.${pid}.ask"
-    let out = "${dir}avra-tasks.${pid}"
-    let _ = remove(out)
-    if write_text(ask, "") is .Err {
-        eprintln(unaskable(ask))
+fn listed(pid: int, dir: OwnDir) -> int {
+    let ask = "avra-tasks.${pid}.ask"
+    let out = "avra-tasks.${pid}"
+    dir.drop(out)
+    if dir.put(ask, "") is .Err(e) {
+        eprintln(unaskable(e.describe().message))
         return 1
     }
-    let answer = asked(pid, out, 20)
-    let _ = remove(ask)
-    let said? = answer else {
-        eprintln(if signalled(pid) { unanswered(pid) } else { no_process(pid) })
-        return 1
+    let answer = asked(pid, dir, out, 20)
+    dir.drop(ask)
+    match answer {
+        .Answered(text) -> {
+            println(text.trim())
+            0
+        },
+        .Silent -> {
+            eprintln(unanswered(pid))
+            1
+        },
+        .Gone -> {
+            eprintln(no_process(pid))
+            1
+        },
+        .Unread(why) -> {
+            eprintln(unreadable(why))
+            1
+        },
     }
-    let _ = remove(out)
-    println(said.trim())
-    0
 }
 
-/// SIGURG sent, then a tenth of a second, `turns` times at most: the
-/// answer, or null when none came or the process is gone.
-fn asked(pid: int, out: string, turns: int) -> string? {
+/// What an ask came to.
+enum Answer {
+    Answered(text: string)
+    Silent
+    Gone
+    Unread(why: string)
+}
+
+/// SIGURG sent, then a tenth of a second, `turns` times at most.
+fn asked(pid: int, dir: OwnDir, out: string, turns: int) -> Answer {
     for _turn in 0..turns {
-        if !signalled(pid) { return null }
+        // LICENSED input.live_process: asks a running process, and no compile answer reads it
+        if !signalled(pid, Signal.Urgent) { return Answer.Gone }
         sleep(ms(100))
         // LICENSED input.live_process: a running process's answer, and no compile answer reads it
-        if exists(out) { return match read_text(out) { .Ok(text) -> text, .Err(_) -> null } }
+        match dir.taken(out) {
+            .Ok(text) -> {
+                let said? = text else { continue }
+                return Answer.Answered(said)
+            },
+            .Err(e) -> { return Answer.Unread(e.describe().message) },
+        }
     }
-    null
+    Answer.Silent
 }
-
-/// SIGURG sent to `pid`: whether there is such a process to send it to.
-fn signalled(pid: int) -> bool { said_by("kill", ["-URG", "${pid}"]) != null }
 
 export command tasks {
     description: "A running Avra process's tasks — where each was spawned, what it waits on, how long it has run at most — as the process itself lists them"
@@ -109,9 +125,7 @@ fn no_pid(word: string) -> string {
     "avra tasks: `${word}` is no process id — `avra tasks <pid>`"
 }
 
-fn unaskable(path: string) -> string {
-    "avra tasks: the ask could not be written at ${path}"
-}
+fn unaskable(why: string) -> string { "avra tasks: the ask could not be written — ${why}" }
 
 fn no_process(pid: int) -> string {
     "avra tasks: no process ${pid} that this user may signal"
@@ -121,8 +135,8 @@ fn unanswered(pid: int) -> string {
     "avra tasks: process ${pid} did not answer in 2 s — it has spawned no task, is not an Avra program, or set its SIGURG to be ignored"
 }
 
-fn no_uid() -> string { "avra tasks: `id -u` did not say who asks, so the door's directory has no name" }
-
-fn not_ours(dir: string) -> string {
-    "avra tasks: ${dir} is not this user's alone (owner and mode 0700 are checked), so no ask is written there"
+fn not_ours(why: string) -> string {
+    "avra tasks: the door's directory is not this user's alone (it must be a directory, no link, owned by this user, mode 0700) — ${why}"
 }
+
+fn unreadable(why: string) -> string { "avra tasks: the answer could not be read — ${why}" }

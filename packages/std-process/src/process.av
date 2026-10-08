@@ -36,6 +36,7 @@ extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
 extern fn avra_proc_pid(h: int) -> int
 extern fn avra_proc_close(h: int) -> int
 extern fn avra_proc_executable(path: string) -> int
+extern fn avra_proc_signal_pid(pid: int, which: int) -> int
 
 // THE RUNTIME'S OWN — the descriptor rows.
 extern fn avra_fd_read(fd: int, max: int) -> int
@@ -269,6 +270,24 @@ fn stream_text(s: Stream) -> string {
 }
 
 // ── Minting ─────────────────────────────────────────────────────
+
+/// A signal to a process this one did not start, named by its meaning —
+/// the numbers differ by system.
+export enum Signal {
+    /// SIGURG: ignored by any program that has not asked for it.
+    Urgent
+    Terminate
+    Interrupt
+    Hangup
+    Kill
+}
+
+/// `s` sent to the process `pid`: whether there was such a process this
+/// user may signal.
+export fn signalled(pid: int, s: Signal) -> bool {
+    let which = match s { .Urgent -> 0, .Terminate -> 1, .Interrupt -> 2, .Hangup -> 3, .Kill -> 4 }
+    avra_proc_signal_pid(pid, which) == 0
+}
 
 /// The one widening from a name to a tool: resolved on the invoker's
 /// PATH now — relative entries never searched — and pinned as an
