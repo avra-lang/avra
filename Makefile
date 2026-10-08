@@ -272,18 +272,24 @@ WASM_RUNTIME_SRCS := $(filter-out runtime/avra_fiber.c runtime/avra_cores.c,$(wi
 WASM_RUNTIME_OBJS := $(patsubst runtime/%.c,build/wasm32/%.o,$(WASM_RUNTIME_SRCS))
 WASM_RUNTIME_LIB := build/wasm32/libavra_runtime.a
 
-build/wasm32/%.o: runtime/%.c
+# A WASM OBJECT FOLLOWS ITS SOURCE'S CONTENT AS A HOST OBJECT DOES: it rides
+# the same stamp (`build/<stem>.sha`, the headers it names included) and writes
+# its own dependency list, so neither a source older than its object nor an
+# edited header links a stale member.
+build/wasm32/%.o: runtime/%.c build/%.sha
 	@mkdir -p build/wasm32
-	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -DAVRA_INSTRUMENTS=$(WASM_INSTRUMENTS) -Iruntime -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
+	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -DAVRA_INSTRUMENTS=$(WASM_INSTRUMENTS) -Iruntime -MMD -MP -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
 
 # A PACKAGE'S C FOR WASM, from the paths its manifest's `wasm_objects` names.
 # A package opts in by naming its wasm objects; one that names none is refused
 # by the build, never compiled here.
 WASM_PACKAGE_OBJS := $(sort $(foreach o,$(shell sed -n 's/.*wasm_objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml 2>/dev/null | tr ',' '\n' | tr -d ' "'),build/wasm32/$(notdir $(o))))
 
-build/wasm32/%.o: %.c
+build/wasm32/%.o: %.c build/%.sha
 	@mkdir -p build/wasm32
-	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -I$(dir $<) -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
+	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -I$(dir $<) -MMD -MP -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
+
+-include $(patsubst %.o,%.d,$(WASM_RUNTIME_OBJS) $(WASM_PACKAGE_OBJS))
 
 $(WASM_RUNTIME_LIB): $(WASM_RUNTIME_OBJS)
 	@mkdir -p build/wasm32
