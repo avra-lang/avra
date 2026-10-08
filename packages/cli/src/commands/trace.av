@@ -97,8 +97,35 @@ fn event_of(line: string) -> Traced? {
     let head = words[0].length + words[1].length + words[2].length + 3
     let rest = if head < line.length { line.substring(head, line.length) } else { "" }
     let ev = ev_of(words[1])
-    if !whole(ev, rest) { return null }
+    if !whole(ev, rest) || spliced(rest) { return null }
     Traced { ts: ts, ev: ev, task: task, rest: rest }
+}
+
+/// WHETHER A NEXT LINE WAS SWALLOWED: the runtime cuts a long line short
+/// with no newline, and the event after it lands in its tail.
+fn spliced(rest: string) -> bool {
+    let at = rest.index_of("ts=")
+    at >= 0 && at + 3 < rest.length && parse_int(rest.substring(at + 3, at + 4)) != null
+}
+
+/// What the reader does with an event beyond saying it: a site, a wait,
+/// a join, an evaluated spawn, or nothing more.
+enum Role {
+    SiteOf
+    Waits
+    Joins
+    EvaluatedSpawn
+    Said
+}
+
+fn role(ev: Happened) -> Role {
+    match ev {
+        .Site -> Role.SiteOf,
+        .Park -> Role.Waits,
+        .Join -> Role.Joins,
+        .SpawnAt -> Role.EvaluatedSpawn,
+        .Spawn or .Claim or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .End or .Age or .Unswitched or .Other(_) -> Role.Said,
+    }
 }
 
 /// WHETHER A LINE SAYS ALL IT MUST: a line a program was killed in the
@@ -202,7 +229,7 @@ fn claimant(by: string) -> string {
 fn sites(events: List<Traced>) -> Map<string, string> {
     mut out: Map<string, string> = {}
     for e in events {
-        if e.ev is .Site { out.set("${e.task}", e.rest) }
+        if role(e.ev) is .SiteOf { out.set("${e.task}", e.rest) }
     }
     out
 }
@@ -213,12 +240,12 @@ fn folded(events: List<Traced>) -> List<Traced> {
     mut out: List<Traced> = []
     mut joined: Map<string, bool> = {}
     for e in events {
-        if e.ev is .Site { continue }
+        if role(e.ev) is .SiteOf { continue }
         let key = "${e.task}"
-        let joins_gate = e.ev is .Park &&
+        let joins_gate = role(e.ev) is .Waits &&
             e.rest.starts_with("src=gate:") &&
             joined.get(key) ?? false
-        joined.set(key, e.ev is .Join)
+        joined.set(key, role(e.ev) is .Joins)
         if !joins_gate { out.push(e) }
     }
     out
@@ -267,8 +294,10 @@ export fn timelines_said(r: TraceRead, only: int?) -> string {
 fn first_chars(s: string, n: int) -> string { if s.length > n { s.substring(0, n) } else { s } }
 
 fn timeline_said(t: TaskTimeline) -> List<string> {
+    let first? = t.rows.first() else { return [] }
+    let last? = t.rows.last() else { return [] }
     let waits = [r for r in t.rows if r.words.starts_with("waits")].length
-    let span = (t.rows.last()?.at ?? 0) - (t.rows.first()?.at ?? 0)
+    let span = last.at - first.at
     [
         "${task_named(t.task)} — ${t.rows.length} event(s), ${waits} wait(s), ${ms_said(span)} ms from first to last",
     ]
@@ -299,7 +328,7 @@ fn parked_shape(rest: string) -> string? {
 /// Each task's events in order, by id: the text both engines print alike.
 export fn shape(events: List<Traced>) -> string {
     let at = sites(events)
-    let told = [e for e in folded(events) if !(e.task == 0 && e.ev is .SpawnAt)]
+    let told = [e for e in folded(events) if !(e.task == 0 && role(e.ev) is .EvaluatedSpawn)]
     let groups = sorted_by(grouped(told), (a, b) -> a.task < b.task)
     flatten([shape_of(g, at) for g in groups]).join("\n")
 }
@@ -383,7 +412,7 @@ export fn waits_at(events: List<Traced>, at: int?) -> WaitGraph {
             },
             .Site or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .Age or .Unswitched or .Other(_) -> touch(e),
         }
-        joined.set(key, e.ev is .Join)
+        joined.set(key, role(e.ev) is .Joins)
     }
     let alive = [t for t in spawned if live.get("${t}") ?? false]
     WaitGraph {
