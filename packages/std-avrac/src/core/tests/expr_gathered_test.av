@@ -1,0 +1,68 @@
+// `Expr` is a GATHERED enum (core/expr): each derive it wears is asked
+// here for something only that derive generates over its variants.
+use @std.avrac.core.{
+    new_node_store,
+    classifier,
+    Expr,
+    Scoped,
+    Plain,
+    node_payload_rows,
+    row_for,
+    BodyView,
+}
+
+fn int_held(e: Expr) -> int {
+    match e { .IntLit(v) -> v, _ -> -1 }
+}
+
+spec "core/expr — a gathered node enum" {
+    given "the derives `Expr` wears" {
+        then "Matchable numbers the first, a middle and the last variant by their records' ranks" {
+            let s = new_node_store()
+            let tags = [
+                s.tag_expr(Expr.IntLit(1)),
+                s.tag_expr(Expr.Receiver),
+                s.tag_expr(Expr.Error),
+                s.tag_expr(Expr.NullLit),
+            ]
+            ["${t}" for t in tags].join(" ") == "0 5 36 23"
+        }
+        then "Matchable's shallow fold tells two payload-free variants apart" {
+            let s = new_node_store()
+            s.shallow_expr(Expr.Receiver) != s.shallow_expr(Expr.NullLit)
+        }
+        then "Exact compares a variant's payload by value" {
+            let s = new_node_store()
+            s.exact_expr(Expr.IntLit(1), Expr.IntLit(1)) &&
+                !s.exact_expr(Expr.IntLit(1), Expr.IntLit(2)) &&
+                !s.exact_expr(Expr.Receiver, Expr.NullLit)
+        }
+        then "Rebuild builds a variant again from its payload" {
+            mut rb = classifier(new_node_store(), [])
+            int_held(Expr.IntLit(7).rebuilt(rb)) == 7
+        }
+        then "ValueProtocol projects a literal's payload" {
+            Expr.IntLit(7).int_of() == 7 &&
+                Expr.StrLit("a").text_of() == "a" &&
+                Expr.Receiver.int_of() == null
+        }
+        then "Children reads `@expands`: a component reaches what its expansion holds, never its heads" {
+            mut s = new_node_store()
+            let head = s.alloc_expr(Expr.IntLit(1))
+            let inner = s.alloc_expr(Expr.IntLit(2))
+            let wrapped = s.alloc_expr(Expr.Not(inner))
+            let made = s
+                .alloc_expr(Expr.Component("w", [head], null, BodyView.Expanded(wrapped), null))
+            let kids = s.expr_children(made)
+            kids.length == 1 && kids[0].index == inner.index
+        }
+        then "Grammar answers a variant's payload row, spelling and kind, from its record's fields" {
+            let row = row_for(node_payload_rows(), "Expr", "Prop")
+            ["${f.name}: ${f.ty} = ${kind_shown(f.kind)}" for f in row?.payloads ?? []].join(", ") == "subject: ExprId = ExprId, name: Plain = Plain"
+        }
+        then "Grammar answers a payload-free variant as present and empty" {
+            let rows = [r for r in node_payload_rows() if r.owner == "Expr" && r.variant == "Receiver"]
+            rows.length == 1 && rows[0].payloads.is_empty()
+        }
+    }
+}
