@@ -5,7 +5,7 @@
 //! --baseline_accept` prunes the file down to sites still found and
 //! never adds one. The live side is the check's own `Finding` rows
 //! (`Checked.findings`), never rendered diagnostic text.
-use @std.io.{read_text, write_text, exists}
+use @std.io.{write_text}
 use @std.path.{relative_path}
 use @std.avrac.compiler.{Finding, Workspace, finding_line, findings_read}
 
@@ -35,9 +35,13 @@ export fn loaded_baseline(path: string) -> Baseline {
 }
 
 fn baseline_sites(path: string) -> List<Finding> {
-    if path == "" || !exists(path) { return [] }
-    let text = read_text(path) catch ""
-    findings_read(text)
+    if path == "" { return [] }
+    let host = disk_host()
+    // LICENSED compiler.host_asked_directly: a command's read of the file it was given, at this instant — no query frame is open
+    let there = match host.there(path) { .Exists(_, t) -> t, rest -> false }
+    if !there { return [] }
+    // LICENSED compiler.host_asked_directly: a command's read of the file it was given, at this instant — no query frame is open
+    findings_read(host.spared_text(path).as_text() ?? "")
 }
 
 /// Keys as a keyed read: each present, answering true.
