@@ -530,11 +530,11 @@ impl Workspace {
     /// A RUN'S PROGRAM, lowered for `f`: every body it reaches remains a
     /// shared `Lowered` query. What it reads is the caller's to record, once
     /// the run's own outcome answers whether the whole of it was needed.
-    fn run_lowered_for(f: FileId, root: Wanted) -> Lowered {
+    fn run_lowered_for(f: FileId, root: Wanted, refuses_hash: bool) -> Lowered {
         let ws = self
         let reader = self.decls.file(f).path
         self.hold.settling.set(self.hold.settling.get().concat([reader]))
-        let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.logged_unit(w)))
+        let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.logged_unit(w), refuses_hash))
         let open = self.hold.settling.get()
         self.hold.settling.set(open.slice(0, open.length - 1))
         l
@@ -666,7 +666,7 @@ impl Workspace {
             self.recorded_reads(f, early!, null)
             return .Err(Unsettled.Reach(world_reached(early!, true) ?? "reaches the world"))
         }
-        let l = self.standalone(f, root, "settling\$${name}", seats)
+        let l = self.standalone(f, root, "settling\$${name}", seats, true)
         if has_errors(l.diagnostics) {
             self.recorded_reads(f, l, null)
             return .Err(Unsettled.Trap(l.diagnostics.first()!.message))
@@ -703,14 +703,14 @@ impl Workspace {
 
     /// One expression lowered as a program of its own, while every
     /// body it reaches remains a shared `Lowered` query.
-    fn standalone(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered {
-        self.run_lowered_for(f, entry_wanted(f, root, name, seats))
+    fn standalone(f: FileId, root: ExprId, name: string, seats: List<SeatValue>, refuses_hash: bool) -> Lowered {
+        self.run_lowered_for(f, entry_wanted(f, root, name, seats), refuses_hash)
     }
 
     /// An annotation argument evaluated directly into the crossing
     /// transport, including every nested aggregate.
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
-        let l = self.standalone(f, e, self.decls.expr_symbol(f, e), [])
+        let l = self.standalone(f, e, self.decls.expr_symbol(f, e), [], false)
         self.recorded_reads(f, l, null)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let ws = self
@@ -779,6 +779,7 @@ impl Workspace {
                     seats: [],
                     root: null,
                 },
+                false,
             )
         // the annotation's own body is the first thing the run reads
         self.read_by(self.decls.file(f).path, [self.decls.file(x.file).path])

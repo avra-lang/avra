@@ -615,11 +615,11 @@ impl Decls {
         )
     }
 
-    /// A const's initializer as a program of its own: the root unit's
-    /// first body is the entry, and everything it reaches follows —
-    /// through the same `unit_of`, so a body the program also runs
-    /// lowers once.
-    fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit) -> Lowered {
+    /// A settled run as a program of its own: the root unit's first body
+    /// is the entry, and everything it reaches follows — through the same
+    /// `unit_of`, so a body the program also runs lowers once. A code hash
+    /// it reaches is refused where `refuses_hash` holds, else answered absent.
+    fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit, refuses_hash: bool) -> Lowered {
         let ru = unit_of(root)
         let d = drained(
             ru.wants,
@@ -631,15 +631,16 @@ impl Decls {
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let lowered_fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
         let laid_out = distinct_statics(ru.statics.concat(d.statics))
-        let hashed = ru.hashes.concat([h.target for h in d.hashes]).is_empty()
+        let reached = ru.hashes.concat([h.target for h in d.hashes])
         let fns = lowered_fns
+            .concat(if refuses_hash { [] } else { absent_hashes(self.types, reached) })
         let every_body = fns.concat([entry])
         let spoken = ru
             .voices
             .list
             .concat(d.spoken)
             .concat(minted_pointers(self.types, every_body))
-            .concat(if hashed { [] } else { [self.code_hash_in_const(root)] })
+            .concat(if refuses_hash && !reached.is_empty() { [self.code_hash_in_const(root)] } else { [] })
         Lowered {
             fns: fns,
             entry: entry,
