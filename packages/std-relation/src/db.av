@@ -502,7 +502,7 @@ export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>> }
 /// One query's answers under one Db: its kernel family with the typed
 /// values, every call's spelled arguments interned to a dense arg, and
 /// how each call is asked again when the kernel verifies it.
-type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, ints: Cell<List<int>>, again: Table<fn() -> V>, cap: int, since: Cell<int> }
+type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, ints: Cell<List<int>>, again: Table<fn() -> V>, cap: int, since: Cell<int>, next: Cell<int> }
 
 export fn answers<V>() -> Answers<V> {
     let none: List<AnswersUnder<V>?> = []
@@ -553,7 +553,15 @@ fn held_in<V>(kernel: Kernel, family: int, cap: int) -> AnswersUnder<V> {
     let args: Cell<Map<string, int>> = Cell.new({})
     let ints: Cell<List<int>> = Cell.new([])
     let again: Table<fn() -> V> = new_table()
-    AnswersUnder { memo: memo, args: args, ints: ints, again: again, cap: cap, since: Cell.new(0) }
+    AnswersUnder {
+        memo: memo,
+        args: args,
+        ints: ints,
+        again: again,
+        cap: cap,
+        since: Cell.new(0),
+        next: Cell.new(0),
+    }
 }
 
 /// A kept record's answer, read back only when it was kept for `spelled`.
@@ -580,21 +588,27 @@ fn reasked<V>(held: AnswersUnder<V>?, arg: int) -> int {
 }
 
 impl AnswersUnder<V> {
-    /// A call's dense arg: its spelled arguments, interned.
-    /// A new call's room. Past the cap, every settled call not in flight is dropped
-    /// at once, the revision moves once so dependents re-verify, and the count starts over.
+    /// A new call's room. Past the cap, every settled call not in flight is dropped at
+    /// once — its value, its cell, its `again`, its spelled-key entry and its int slot —
+    /// the revision moves once so dependents re-verify, and the count starts over. A
+    /// dropped call is new the next time it is asked: its arg number is never reused.
     fn make_room() {
         if self.cap == 0 { return }
         if self.since.get() < self.cap {
             self.since.set(self.since.get() + 1)
             return
         }
-        for arg in 0..self.args.get().length {
-            if !self.memo.open(arg) {
-                self.memo.evict_call(arg)
-                self.again.drop(arg)
+        mut kept: Map<string, int> = {}
+        for e in self.args.get().entries() {
+            if self.memo.open(e.value) {
+                kept.set(e.key, e.value)
+            } else {
+                self.memo.evict_call(e.value)
+                self.again.drop(e.value)
             }
         }
+        self.args.set(kept)
+        self.ints.set([if x >= 0 && self.memo.open(x) { x } else { -1 } for x in self.ints.get()])
         self.memo.kernel.bump()
         self.since.set(1)
     }
@@ -602,7 +616,8 @@ impl AnswersUnder<V> {
     fn arg(spelled: string) -> int {
         let known? = self.args.get().get(spelled) else {
             self.make_room()
-            let made = self.args.get().length
+            let made = self.next.get()
+            self.next.set(made + 1)
             self.args.put(spelled, made)
             return made
         }
