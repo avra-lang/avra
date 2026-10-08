@@ -56,6 +56,12 @@ spec "compiler — a fn's code hash" {
                 "fn even(n: int) -> bool { if n == 0 { true } else { odd(n - 1) } }\nfn odd(n: int) -> bool { if n == 0 { true } else { even(n - 1) } }\nfn answer() -> bool { even(4) }",
             )
         }
+        then "a field's type it carries moves it" {
+            moved(
+                "type P = { a: int, b: List<int> }\nfn make() -> P { P { a: 1, b: [] } }\nfn answer() -> int { make().a }",
+                "type P = { a: int, b: List<string> }\nfn make() -> P { P { a: 1, b: [] } }\nfn answer() -> int { make().a }",
+            )
+        }
         then "a const it reads moves it" {
             moved(
                 "const K: List<int> = [1, 2]\nfn answer() -> int { K[0] }",
@@ -98,6 +104,18 @@ spec "compiler — a fn's code hash" {
             same(
                 "fn even(n: int) -> bool { if n == 0 { true } else { odd(n - 1) } }\nfn odd(n: int) -> bool { if n == 0 { false } else { even(n - 1) } }\nfn answer() -> bool { even(4) }",
                 "fn even(n: int) -> bool { if n == 0 { true } else { uneven(n - 1) } }\nfn uneven(n: int) -> bool { if n == 0 { false } else { even(n - 1) } }\nfn answer() -> bool { even(4) }",
+            )
+        }
+        then "a type renamed moves nothing" {
+            same(
+                "type P = { a: int }\nfn answer() -> int { P { a: 1 }.a }",
+                "type Q = { a: int }\nfn answer() -> int { Q { a: 1 }.a }",
+            )
+        }
+        then "a field renamed moves nothing" {
+            same(
+                "type P = { a: int }\nfn answer() -> int { P { a: 1 }.a }",
+                "type P = { b: int }\nfn answer() -> int { P { b: 1 }.b }",
             )
         }
         then "a comment moves nothing" {
