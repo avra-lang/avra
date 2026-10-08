@@ -33,6 +33,23 @@ fn two_fns() -> string { "fn first() -> int {\n    1\n}\nfn second() -> int {\n 
 
 fn one_above() -> string { "fn above() -> int {\n    0\n}\n" + two_fns() }
 
+/// A fn `lower` whose body declares a nested `inner`.
+fn lower_nested() -> string {
+    "fn lower() -> int {\n    fn inner() -> int {\n        1\n    }\n    1\n}\n"
+}
+
+/// `lower_nested` with a declaration written above it — one carrying its own,
+/// same-named nested fn.
+fn above_nested() -> string {
+    "fn above() -> int {\n    fn inner() -> int {\n        0\n    }\n    0\n}\n" + lower_nested()
+}
+
+/// The key of every fn `inner` nested in the top-level fn `enclosing`, in id order.
+fn inner_key_of(ws: Workspace, enclosing: string) -> string {
+    [Decl.key_text(d.key()) for d in ws.decls.all_decls() if d.name == "inner" && d.within == fn_key(enclosing)]
+        .join(" | ")
+}
+
 fn one_impl() -> string {
     "export type Box = { v: int }\nfn kept() -> int {\n    2\n}\nimpl Box {\n    fn late() -> int {\n        3\n    }\n}\n"
 }
@@ -420,6 +437,28 @@ spec "compiler/decl name — a declaration's key is its name" {
             let was = ws.decls.named_decl(readmit_path(), DeclKind.Fn, "second")
             admit_again(ws, readmit_path(), one_above())
             let now = ws.decls.named_decl(readmit_path(), DeclKind.Fn, "second")
+            was != null && now != null && was!.index == now!.index
+        }
+    }
+    given "a declaration written above another, each with a same-named nested fn" {
+        then "the lower declaration and its nested fn keep their keys" {
+            unmoved(
+                    keys_named(admitted(lower_nested()), DeclKind.Fn, "lower"),
+                    keys_named(admitted(above_nested()), DeclKind.Fn, "lower"),
+                ) &&
+                unmoved(
+                    inner_key_of(admitted(lower_nested()), "lower"),
+                    inner_key_of(admitted(above_nested()), "lower"),
+                )
+        }
+        then "the two same-named nested fns are each sibling 0 of their own encloser" {
+            siblings_named(admitted(above_nested()), DeclKind.Fn, "inner") == "0,0"
+        }
+        then "admitted again in one workspace, the lower declaration keeps its id" {
+            let ws = admitted(lower_nested())
+            let was = ws.decls.named_decl(readmit_path(), DeclKind.Fn, "lower")
+            admit_again(ws, readmit_path(), above_nested())
+            let now = ws.decls.named_decl(readmit_path(), DeclKind.Fn, "lower")
             was != null && now != null && was!.index == now!.index
         }
     }
