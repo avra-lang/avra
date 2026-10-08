@@ -34,6 +34,7 @@ export fn collects() -> LanguageFeature {
         "collect_enum.member"        | "a gathered member's record cannot be a variant's payload"
         "collect_enum.scope"         | "an enum gathers its own file or package, never a closure"
         "collect_enum.tie"           | "two members of a collected enum share an order key"
+        "collect_enum.trait"         | "every member of a `collect enum E: T` implements `T`"
     }
     LanguageFeature collects {
         gram: grammar {
@@ -48,14 +49,14 @@ export fn collects() -> LanguageFeature {
                 @expect("}", "expected `}` to close the projection — each field is `name: it.path`")
                 @expect("END", "expected the line to end after the collect's order — `by it.field, …`")
                 -> collect_decl(n, t, k, sc, pt, fn, iw, fp, bw, biw, bp, bidx, dn)
-            stmt = "collect" "enum" n:NAME "=" ( k:PKG | k:NAME ) "in" sc:NAME
+            stmt = "collect" "enum" n:NAME ( ":" tr:NAME ( "," tr:NAME )* ","? )? "=" ( k:PKG | k:NAME ) "in" sc:NAME
                 ( bw:NAME BREAK? biw:NAME ( "." bp:NAME )+ ( "[" bidx:NUMBER "]" )? ( "," BREAK? biw:NAME ( "." bp:NAME )+ ( "[" bidx:NUMBER "]" )? )* ","? ( dn:NAME )? )?
                 END
                 @expect("NAME", "expected the collected enum's name — `collect enum Kind = …`")
                 @expect("=", "expected `=` after the collected enum's name")
                 @expect("in", "expected `in` and a scope — `widget in closure`")
                 @expect("END", "expected the line to end after the collect's order — `by it.field, …`")
-                -> collect_enum_decl(n, k, sc, bw, biw, bp, bidx, dn)
+                -> collect_enum_decl(n, k, sc, bw, biw, bp, bidx, dn, tr)
         }
         builders: rows
         diags: codes

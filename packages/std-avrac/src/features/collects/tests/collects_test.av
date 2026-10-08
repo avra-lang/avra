@@ -942,6 +942,58 @@ spec "collect's own laws" {
             )
         }
     }
+    given "`collect enum E: T` — every member implements the trait" {
+        then "a member with no impl is refused once, where it is declared" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "trait Size {\n    fn size() -> int\n}\n@numbered(0)\ntype Dot = {}\nimpl Size for Dot {\n    fn size() -> int { 1 }\n}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape: Size = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Line` is gathered into `Shape` and has no `impl Size for Line`",
+            )
+        }
+        then "a declared name that is no trait is refused once" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "type Nope = {}\n@numbered(0)\ntype Dot = {}\ncollect enum Shape: Nope = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Nope` names no trait here",
+            )
+        }
+        then "an undefined name is resolve's alone" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\ncollect enum Shape: Nope = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Nope` is not defined",
+            )
+        }
+        then "a same-named record's impl in another module does not stand for the member's" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "use shapes.{Size}\n@numbered(0)\ntype Line = { from: int }\ncollect enum Shape: Size = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                    [
+                        Module {
+                            name: "shapes",
+                            text: "export trait Size {\n    fn size() -> int\n}\n",
+                        },
+                        Module {
+                            name: "other",
+                            text: "use shapes.{Size}\ntype Line = { from: int }\nimpl Size for Line {\n    fn size() -> int { 1 }\n}\n",
+                        },
+                    ],
+                ),
+                "`Line` is gathered into `Shape` and has no `impl Size for Line`",
+            )
+        }
+    }
     given "the order's currency law" {
         // The `by` key's own TYPE is its currency: a literal read at
         // its value (never lexed), a whole mark/list/field refused at

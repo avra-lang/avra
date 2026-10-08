@@ -202,8 +202,10 @@ export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unsp
 /// capture label binds to, beside its spelling and its shape. A
 /// payload IS a parameter compiler-side, so `fields` runs with
 /// `payload` and says what `payload` cannot. `doc`/`annotations`
-/// read as `Fn`'s.
-export type Variant = { name: string, payload: List<string>, at: Loc?, fields: List<Field> = [], marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [] }
+/// read as `Fn`'s. `impls` is the traits a GATHERED variant's member
+/// record implements by an `impl … for` it can see — empty for a
+/// written variant.
+export type Variant = { name: string, payload: List<string>, at: Loc?, fields: List<Field> = [], marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], impls: List<string> = [] }
 
 /// A type declaration as an annotation's first seat receives it: a
 /// record has fields, an enum has variants. `doc`/`annotations` read
@@ -259,8 +261,9 @@ export fn warn(message: string) -> Diagnostic {
 /// Any declaration, for an annotation that only needs to NAME it.
 export type Named = { name: string, at: Loc? }
 
-/// A trait as an annotation's argument sees it (`@derive(Show)`).
-export type Trait = { name: string, at: Loc? }
+/// A trait as an annotation's argument sees it (`@derive(Show)`):
+/// `fns` is its instance methods, as a `Fn` each.
+export type Trait = { name: string, at: Loc?, fns: List<Fn> = [] }
 
 /// The declaration is out of favour; every use is warned with the
 /// note. A warning, so the build still runs.
@@ -581,3 +584,40 @@ export fn derive(what: Named, tr: Trait) -> Derived {
 /// its word is data for a reader that claims it — a `@derive` whose
 /// trait declares `marks` — on a gathered member as on a written variant.
 export type Marker = {}
+
+// ── `collect enum E: T` — `T` implemented over a gathered enum ──
+
+/// The impl of `tr` over `what`: each instance method matches the
+/// variant and calls the member record's own.
+export fn delegate(what: Type, tr: Trait) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: what.name,
+            at: what.at,
+            source: quote {
+                impl ${tr} for ${what} {
+                    ${[delegated(what, tr, f) for f in tr.fns]}
+                }
+            },
+        },
+    ]
+}
+
+fn delegated(t: Type, tr: Trait, f: Fn) -> Decls {
+    let seats = [quote { fn _(${p.name}: ${p.ty}) {} } for p in f.params]
+    quote {
+        fn ${f.name}(..${seats}) -> ${f.answer} {
+            match self { ${[delegated_arm(tr, f, v) for v in t.variants]} }
+        }
+    }
+}
+
+/// One variant's arm. A member with no impl of `tr` is refused where it
+/// is declared (`collect_enum.trait`), so its arm exists only in
+/// a build already refused, and never runs.
+fn delegated_arm(tr: Trait, f: Fn, v: Variant) -> Arms {
+    let args = [name(p.name) for p in f.params]
+    if !v.impls.contains(tr.name) { return quote { .${v} -> self.${f.name}(${..args}) } }
+    quote { .${v} as member -> member.${f.name}(${..args}) }
+}
