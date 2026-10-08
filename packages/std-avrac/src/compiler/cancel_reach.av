@@ -173,10 +173,9 @@ impl CancelSurvey {
         match self.view.store.expr(e) {
             .Call(_, _, _) -> [self.named_call(e)].concat(self.defaults_of_call(e)),
             .MethodCall(_, _, _) -> [self.method_call(e)],
-            // a call on a value that is no name — `make()()` — may be any fn
-            .CallValue(_, _) -> [CallAnswer.Known(true)],
-            // the task is joined where its owner's scope ends
-            .Spawn(_) -> [CallAnswer.Known(true)],
+            // a call on a value that is no name — `make()()` — may be any
+            // fn; a spawned task is joined where its owner's scope ends
+            .CallValue(_, _) or .Spawn(_) -> [CallAnswer.Known(true)],
             .Prop(subject, name) -> [CallAnswer.Known(self.row_waits(self.facts.type_at(subject), name.of))],
             .Chain(subject, name) -> [CallAnswer.Known(self.chain_waits(subject, name.of))],
             // a record literal runs the defaults of the fields it leaves out
