@@ -5,15 +5,7 @@ use @std.io.{make_dirs, write_text, list_dir}
 use @std.time.{now_ns}
 use @std.avrac.compiler.{HeldMismatch}
 use @std.avrac.core.{flatten}
-use commands.{
-    explain_answer,
-    Asked,
-    cache_answer,
-    CacheMode,
-    checked_at,
-    disagreement_line,
-    decl_unanswered,
-}
+use commands.{explain_answer, Asked, checked_at, disagreement_line, decl_unanswered}
 
 /// A form's printed lines, or none when it refused.
 fn explain_lines(a: Asked) -> List<string> {
@@ -23,14 +15,6 @@ fn explain_lines(a: Asked) -> List<string> {
 /// A form's refusal as one text, or nothing when it answered.
 fn explain_refusal(a: Asked) -> string {
     match explain_answer(a) { .Ok(_) -> "", .Err(lines) -> lines.join("\n") }
-}
-
-/// An answer or a refusal as one text, each marked for what it is.
-fn in_words(said: Result<List<string>, List<string>>) -> string {
-    match said {
-        .Ok(lines) -> "answered\n${lines.join("\n")}",
-        .Err(lines) -> "refused\n${lines.join("\n")}",
-    }
 }
 
 /// Whether a line ends in a digest: two spaces, then sixteen hex digits.
@@ -446,36 +430,6 @@ spec "commands/explain" {
             let _ = explain_lines(Asked { target: "src/main.av", from: root, why: true })
             let _ = explain_lines(Asked { target: "@one", from: root })
             before != "" && store_names(root) == before
-        }
-    }
-    given "`avra cache`, the older words" {
-        then "no mode, `changed` and `held` are `explain --why`" {
-            let root = edited_lib("alias_package")
-            let said = in_words(explain_answer(Asked { target: "", from: root, why: true }))
-            said.starts_with("answered\n") &&
-                [CacheMode.Summary, CacheMode.Changed, CacheMode.Held]
-                    .all(in_words(cache_answer(it, root, "")) == said)
-        }
-        then "`why` and `held` of a file are `explain <file> --why`" {
-            let root = edited_lib("alias_why")
-            let said = in_words(
-                explain_answer(Asked { target: "src/main.av", from: root, why: true }),
-            )
-            said.starts_with("answered\n") &&
-                [CacheMode.Why, CacheMode.Held]
-                    .all(in_words(cache_answer(it, root, "src/main.av")) == said)
-        }
-        then "`dependents` is `explain <target>`" {
-            let root = edited_lib("alias_dependents")
-            let said = in_words(explain_answer(Asked { target: "src/lib/a.av", from: root }))
-            said.starts_with("answered\n") &&
-                in_words(cache_answer(CacheMode.Dependents, root, "src/lib/a.av")) == said
-        }
-        then "`why` with nothing to explain is refused in its own word" {
-            in_words(cache_answer(CacheMode.Why, lib_probe("alias_bare_why"), "")) == "refused\navra: `cache why` needs a file, `@name` or `Family(subject)`"
-        }
-        then "`changed` given a target is refused, since it answers for the package" {
-            in_words(cache_answer(CacheMode.Changed, lib_probe("alias_changed"), "main")) == "refused\navra: this mode of `cache` answers for the whole package, not `main`"
         }
     }
 }
