@@ -1,0 +1,37 @@
+// A file line kept while its file was held has no outline, and `split` drops its
+// empty last field: the line reads back with three fields. It stands while the
+// file's text has not moved.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+
+const KEPT_LINE_PATH: string = "/w/src/main.av"
+
+fn kept_line_workspace() -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "fn one() -> int { 1 }\none()\n",
+            },
+            ["/w/avra.toml", KEPT_LINE_PATH],
+        ),
+        "/w",
+    )
+}
+
+/// The line a held file keeps: its path and text digest, the outline empty.
+fn held_file_line(ws: Workspace) -> List<string> {
+    "f\t${KEPT_LINE_PATH}\t${ws.text_digest(KEPT_LINE_PATH)}\t".split("\t")
+}
+
+spec "compiler/kept_settle — a file line kept without an outline" {
+    then "reads back with three fields" {
+        held_file_line(kept_line_workspace()).length == 3
+    }
+    then "stands while its file's text has not moved" {
+        let ws = kept_line_workspace()
+        let _ = ws.analyze_file(KEPT_LINE_PATH)
+        ws.kept_file_stands(held_file_line(ws))
+    }
+}

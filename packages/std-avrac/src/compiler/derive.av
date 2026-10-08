@@ -14,6 +14,7 @@ use core.{
     sorted_texts,
     digest_of,
     module_path,
+    ModulePath,
     same_file,
     qtrace,
     traced,
@@ -559,7 +560,8 @@ impl Workspace {
         let fresh = self.anew()
         mut clock = fresh.marking()
         let began = clock.last
-        let answer = fresh.tried(at, clock)
+        let lead = [rf for rf in fresh.lead_reads(at) if !at.parse.any(it.path == rf.path)]
+        let answer = fresh.tried(at with { parse: at.parse.concat(lead) }, clock)
         let held = !held_paths(fresh).is_empty()
         if answer is .Ok { return Tried { answer: answer, held: held, spans: [], ns: 0 } }
         // the phase it left in closes under its own name
@@ -618,6 +620,40 @@ impl Workspace {
         self.host.reads_ahead(self.reads_ahead())
         self.hold.holds_settled.set(true)
         store
+    }
+
+    /// The reads an attempt takes up front: the files a held module's kept verdicts read,
+    /// for those whose file lines already refuse them — read from the store alone, before
+    /// the attempt starts, so the attempt never turns to read them.
+    fn lead_reads(at: Attempt) -> List<ReadFile> {
+        if !at.hold { return [] }
+        let store = self.opened_store()
+        [ReadFile { path: path, why: Reads.Unkept } for path in self.verdict_reads_first(store, held_modules(self, store, built_entry(at)))]
+    }
+
+    /// The files a held module's kept const verdicts read, for those whose file lines
+    /// already refuse them: a verdict that cannot stand re-runs, and its run's reads come first.
+    fn verdict_reads_first(store: Store, mods: List<ModulePath>) -> List<string> {
+        flatten(
+            [self.const_reads(store, parts) for m in mods for parts in record_fields(self, store, m)],
+        )
+    }
+
+    /// The reads of a record line's const verdict, when the line is a const.
+    fn const_reads(store: Store, parts: List<string>) -> List<string> {
+        let row? = read_row(parts) else { return [] }
+        if row.kind != "const" { return [] }
+        self.cheap_reads(store, row.path, row.name)
+    }
+
+    /// The files a const's kept verdict read, when one of its kept rows that needs no
+    /// analysis refuses it; none when every such row stands.
+    fn cheap_reads(store: Store, path: string, name: string) -> List<string> {
+        let said = store.get(Stored.Unit, "${kept_key_for(path, name)}#lines") ?? ""
+        let rows = [l.split("\t") for l in said.split("\n") if !l.is_empty()]
+        if !rows.any((r: List<string>) -> judged_by_files(r) && !self.kept_row_stands(r)) { return [] }
+        let reads = rows.find(it[0] == "r") ?? []
+        reads.slice(1, reads.length)
     }
 
     /// THE PROGRAM, ANALYSED AND CLEAN — with every file its compile-time runs and
@@ -1017,4 +1053,9 @@ fn nothing_held(why: string) -> string {
 
 fn records_adrift(paths: List<string>) -> string {
     "avra: interface records did not stabilize — still moving under ${joined(paths, ", ")}"
+}
+
+/// Whether a kept row is judged from its file alone, with no analysis run.
+fn judged_by_files(r: List<string>) -> bool {
+    match r[0] { "f" or "m" or "b" or "e" -> true, rest -> false }
 }
