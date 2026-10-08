@@ -47,6 +47,7 @@ use features.enums.{answering_arms, binders}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
 use @std.relation.{relation}
+use @std.meta.{Subject}
 use @std.relation.db.{Db as RelDb, new_db}
 
 /// What every bound hole shares: the file a rule reads, and the two
@@ -80,14 +81,17 @@ export fn run_coded(of: Analysed, ats: List<At>) -> List<Code> {
     [Code { of: of, at: a } for a in ats]
 }
 
-impl Code {
+/// The compiler's own handle IS a rule's subject.
+impl Subject for Code {
     /// The node's own source, verbatim — "" for one no span names
     /// (a generated node).
     fn text() -> string {
         let sp? = self.of.view.store.span_at(self.at) else { return "" }
         self.of.view.source.text.substring(sp.lo, sp.hi)
     }
+}
 
+impl Code {
     /// This node's children, each still carrying this Code's facts —
     /// `kids_at`'s walk, wrapped.
     fn kids() -> List<Code> {

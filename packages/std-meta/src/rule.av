@@ -1,0 +1,42 @@
+//! A `rule` — a rewrite of code the compiler checks, declared where any
+//! package can write one: `rule name { quote { … } -> quote { … }, … }`
+//! fills `run`, its `///` fills `doc`, and `@fixes`/`@keeps`/`@law` fill
+//! the examples and the claim. The subject a rule reads is a `Subject`,
+//! the code in hand; what it answers is a `Fix`.
+
+/// The code a rule reads: one node of an analysed file. The compiler's
+/// own handle implements it.
+export trait Subject {
+    fn text() -> string
+}
+
+/// A rule's answer: a REWRITE (a template, proven or tested), a DELETE
+/// of the declarations named by their sites, or a SAY — a finding with
+/// no rewrite.
+export enum Fix {
+    Rewrite(to: Code)
+    Delete(what: List<Site>)
+    Say(said: Diagnostic)
+}
+
+/// One `@fixes` example: code the rule rewrites, and what it becomes —
+/// absent for a `Delete`.
+export type Fixes = { before: string, after: string? = null }
+
+export component rule {
+    run: fn(dyn Subject) -> Fix?
+    doc: string = ""
+    fixes: List<Fixes> = []
+    keeps: List<string> = []
+    law: List<string> = []
+
+    fn check() -> List<Diagnostic> {
+        if self.fixes.is_empty() && self.keeps.is_empty() {
+            return [
+                refuse("a rule with no `@fixes` or `@keeps` has nothing to prove itself against"),
+            ]
+        }
+        if self.law.length > 1 { return [refuse("a rule takes at most one `@law` — the claim is singular")] }
+        []
+    }
+}

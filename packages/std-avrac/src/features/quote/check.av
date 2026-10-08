@@ -88,7 +88,7 @@ export fn template_kind(decls: Decls, ty: TypeId) -> MetaKind? {
 export fn class_of(decls: Decls, ty: TypeId, shape: Type) -> FillClass? {
     let own: MetaKind? = template_kind(decls, ty)
     if own != null { return FillClass.Template(own!) }
-    if decls.avrac_type(ty, "Code") { return FillClass.Held }
+    if decls.avrac_type(ty, "Code") || decls.meta_type(ty, "Subject") { return FillClass.Held }
     if decls.meta_type(ty, "Format") { return FillClass.Pattern }
     let elem: TypeId? = decls.elem_of(ty)
     if elem != null {
@@ -244,6 +244,7 @@ fn subject_types(
     holes: List<QuoteHole>,
     names: List<string>,
 ) -> List<TypeId> {
+    if cx.view.decls.meta_type(expected, "Subject") { return subject_binders(cx, p, expected, holes, names) }
     let run_ty? = avrac_answer(cx, "run_coded") else { return no_avrac(cx, p) }
     let code_ty? = cx.view.decls.elem_of(run_ty) else { return no_avrac(cx, p) }
     if cx.types_disagree(expected, code_ty) { return wrong_subject(cx, p, cx.view.types.name_of(expected)) }
@@ -251,6 +252,22 @@ fn subject_types(
     let type_ty? = present_of(cx, own_ty) else { return no_avrac(cx, p) }
     let string_ty = cx.type(string)
     [binder_type(holes, n, string_ty, run_ty, type_ty, code_ty) for n in names]
+}
+
+/// A rule's own subject, `dyn Subject` — a package's rule, where no
+/// compiler handle is in hand: a code binder answers the subject, a run
+/// a list of it, and a name its text. A type binder reads the
+/// compiler's own `TypeRef`, which a package has none of.
+fn subject_binders(
+    mut cx: TypeCx,
+    p: PatId,
+    subject: TypeId,
+    holes: List<QuoteHole>,
+    names: List<string>,
+) -> List<TypeId> {
+    if names.any((n) -> quote_pat_is_type(holes, n)) { return typed_in_package(cx, p) }
+    let string_ty = cx.type(string)
+    [binder_type(holes, n, string_ty, cx.type(List<subject>), subject, subject) for n in names]
 }
 
 /// A `@std/avrac` verb's declared answer — how a quote pattern
@@ -303,6 +320,20 @@ fn no_avrac(mut cx: TypeCx, p: PatId) -> List<TypeId> {
                 "a `quote` pattern reads code — this program does not load `@std/avrac`",
                 "this pattern",
                 "the handle arrives with `@std/avrac`",
+            ),
+        )
+    []
+}
+
+fn typed_in_package(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.quote_pat_subj",
+                cx.pat_loc(p),
+                "a type hole reads the compiler's own written type, and a rule over a `Subject` holds none",
+                "this pattern",
+                "match the code around the type, or write the rule beside the compiler",
             ),
         )
     []
