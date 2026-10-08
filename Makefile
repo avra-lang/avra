@@ -713,6 +713,11 @@ layers:
 inputs:
 	@python3 tools/inputs.py
 
+# EVERY BLOCKING CALL IN C HOLDS THE WORLD: a virtual clock flows across
+# it, or the call says why it waits on no time (tools/clock_holds.py).
+clock-holds:
+	@python3 tools/clock_holds.py
+
 inputs-accept:
 	@python3 tools/inputs.py --accept
 
@@ -825,7 +830,7 @@ KEEPERS_ALONE = runtime-tests
 KEEPERS_A = read-cost codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
 KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint
-KEEPERS = $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
+KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-b:
 	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))); do \
 	  t0=$$(date +%s); \

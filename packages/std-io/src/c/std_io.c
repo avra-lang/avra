@@ -16,6 +16,10 @@
 #include <stdlib.h>
 #include <time.h>
 
+// The runtime's: a blocking call here holds the world, so a virtual
+// clock flows at wall rate across it.
+void avra_clock_hold(int64_t by);
+
 /* What stands at the path: 0 nothing, 1 a file, 2 a directory, 3
    something else; -errno when the host will not say. */
 int64_t avra_io_kind(const char* path) {
@@ -83,7 +87,12 @@ int64_t avra_io_open_append(const char* path) {
 /* The descriptor's writes durable on the device — a crash after this
    returns cannot lose bytes already written through it. */
 int64_t avra_fd_sync(int64_t fd) {
-    while (fsync((int)fd) != 0) { if (errno != EINTR) return -errno; }
+    avra_clock_hold(1);
+    int synced;
+    while ((synced = fsync((int)fd)) != 0 && errno == EINTR) {}
+    int err = synced != 0 ? errno : 0;
+    avra_clock_hold(-1);
+    if (err) return -err;
     return 0;
 }
 
@@ -96,6 +105,7 @@ int64_t avra_fd_try_lock(int64_t fd) {
     (void)fd;
     return -ENOTSUP;
 #else
+    // the clock: LOCK_NB answers at once, never waits
     while (flock((int)fd, LOCK_EX | LOCK_NB) != 0) {
         if (errno == EWOULDBLOCK) return 1;
         if (errno != EINTR) return -errno;
@@ -347,6 +357,7 @@ int64_t avra_io_compile_slot(void) {
             snprintf(path, sizeof path, "%s/%ld", dir, i);
             int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
             if (fd < 0) continue;
+            // the clock: LOCK_NB answers at once, never waits
             if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
                 char slot[24];
                 snprintf(slot, sizeof slot, "%ld", i);
@@ -359,6 +370,7 @@ int64_t avra_io_compile_slot(void) {
             fprintf(stderr, "avra: waiting for a compile slot (AVRA_MAX_COMPILES=%ld)\n", n);
             said = 1;
         }
+        // the clock: the compiler's own wait for a slot, before any program runs
         usleep(200000);
     }
 #endif

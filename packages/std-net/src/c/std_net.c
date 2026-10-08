@@ -50,6 +50,9 @@
 
 // The runtime's trap: a verdict, exit 2, the words on stderr.
 void avra_trap(const char* msg);
+// The runtime's: a blocking call here holds the world, so a virtual
+// clock flows at wall rate across it.
+void avra_clock_hold(int64_t by);
 // The scheduler's word that `fd` is closing: whoever is parked on it
 // wakes to find it gone.
 void avra_fiber_fd_closing(int64_t fd);
@@ -143,7 +146,9 @@ static int64_t net_resolved(const char* host, int64_t port, int passive, struct 
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_NUMERICSERV | (passive ? AI_PASSIVE : 0);
+    avra_clock_hold(1);
     int rc = getaddrinfo(host, service, &hints, out);
+    avra_clock_hold(-1);
     return rc == 0 ? 0 : gai_errno(rc);
 }
 
@@ -214,9 +219,11 @@ static int net_accept_retries(int err) {
 int64_t avra_net_accept(int64_t lfd) {
     for (;;) {
 #if defined(__linux__) && defined(_GNU_SOURCE)
+        // the clock: the listener is O_NONBLOCK, an accept answers at once
         int fd = accept4((int)lfd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (fd >= 0) { net_stream_options(fd); return fd; }
 #else
+        // the clock: the listener is O_NONBLOCK, an accept answers at once
         int fd = accept((int)lfd, NULL, NULL);
         if (fd >= 0) {
             int64_t err = net_prepared(fd);
@@ -237,6 +244,7 @@ static int64_t net_dialed_to(const struct addrinfo* ai) {
     int64_t err = net_prepared(fd);
     if (err == 0) {
         net_stream_options(fd);
+        // the clock: the socket is O_NONBLOCK, a connect starts and answers EINPROGRESS
         if (connect(fd, ai->ai_addr, ai->ai_addrlen) != 0 && errno != EINPROGRESS) err = -errno;
     }
     if (err < 0) { close(fd); return err; }
@@ -309,6 +317,7 @@ int64_t avra_net_watch(int64_t pfd, int64_t fd, int64_t interest) {
     EV_SET(&ch[0], (uintptr_t)fd, EVFILT_READ, ((interest & NET_READ) ? EV_ADD | EV_ENABLE : EV_DELETE) | EV_RECEIPT, 0, 0, NULL);
     EV_SET(&ch[1], (uintptr_t)fd, EVFILT_WRITE, ((interest & NET_WRITE) ? EV_ADD | EV_ENABLE : EV_DELETE) | EV_RECEIPT, 0, 0, NULL);
     int r;
+    // the clock: not a wait on time — a change list answered by receipts
     while ((r = kevent((int)pfd, ch, 2, receipt, 2, NULL)) < 0 && errno == EINTR) {}
     if (r < 0) return -errno;
     for (int i = 0; i < r; i++) {
@@ -347,9 +356,13 @@ int64_t avra_net_wait(int64_t pfd, int64_t timeout_ms) {
 #ifdef __APPLE__
     int64_t ms = timeout_ms < 0 ? 0 : timeout_ms;
     struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
+    avra_clock_hold(1);
     int n = kevent((int)pfd, NULL, 0, g_net_events, NET_EVENTS, timeout_ms < 0 ? NULL : &ts);
+    avra_clock_hold(-1);
 #else
+    avra_clock_hold(1);
     int n = epoll_wait((int)pfd, g_net_events, NET_EVENTS, timeout_ms < 0 ? -1 : net_int(timeout_ms));
+    avra_clock_hold(-1);
 #endif
     g_net_nev = n > 0 ? n : 0;
     if (n >= 0) return n;
@@ -532,6 +545,7 @@ static void lookup_fill(NetLookup* l, int flags) {
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = flags;
     struct addrinfo* list = NULL;
+    // the clock: on the resolver's own thread; the task waits on its pipe through the scheduler
     int rc = getaddrinfo(l->host, NULL, &hints, &list);
     if (rc != 0) {
         l->status = gai_errno(rc);

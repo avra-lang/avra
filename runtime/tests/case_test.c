@@ -93,10 +93,17 @@ static int64_t leaves_one_asleep(void) {
     return 1;
 }
 
-static int64_t holds_the_clock(void) {
+static void* holds_then_waits(void* self) {
     avra_clock_hold(1);
-    spawn1(waits_on, avra_gate_new());
+    return waits_on(self);
+}
+static int64_t holds_the_clock(void) {
+    spawn1(holds_then_waits, avra_gate_new());
     avra_fiber_yield();
+    return 1;
+}
+static int64_t ends_holding(void) {
+    avra_clock_hold(1);
     return 1;
 }
 
@@ -212,6 +219,26 @@ static void host_task_across_a_case(void) {
     avra_rc_release(host);
 }
 
+static void live_hold_stands(void) {
+    avra_clock_virtual(1);
+    avra_clock_hold(1);
+    CHECK(avra_case_run(holds_the_clock) == 0, "a case whose task held the clock and leaked fails");
+    int64_t c0 = avra_now_ns();
+    avra_fiber_sleep(20);
+    CHECK(avra_now_ns() - c0 >= 15 * 1000000 && avra_now_ns() - c0 < (int64_t)60000 * 1000000, "the runner's own hold stands: only the leaked task's share is let go");
+    avra_clock_hold(-1);
+    avra_clock_virtual(0);
+}
+
+static void case_holds(void) {
+    avra_clock_virtual(1);
+    CHECK(avra_case_run(ends_holding) == 0, "a case that ends holding the clock fails");
+    int64_t c0 = avra_now_ns();
+    avra_fiber_sleep(60000);
+    CHECK(avra_now_ns() - c0 == (int64_t)60000 * 1000000, "and its hold is let go: the next sleep is a jump");
+    avra_clock_virtual(0);
+}
+
 static void held_clock(void) {
     avra_clock_virtual(1);
     CHECK(avra_case_run(holds_the_clock) == 0, "a case whose task held the clock and leaked fails");
@@ -319,8 +346,11 @@ int main(void) {
 
     heard("a task the runner made before its case", host_task_across_a_case);
     CHECK(g_said[0] == 0, "is never named");
+    heard("a live hold outlives the case beside it", live_hold_stands);
     heard("a held clock outlives no case", held_clock);
-    CHECK(says("they held the clock 1 time(s); let go"), "the hold is said to be let go");
+    CHECK(says("they held the clock 1 time(s); let go"), "a leaked task's hold is said to be let go");
+    heard("a case that ends holding the clock", case_holds);
+    CHECK(says("the case ended holding the clock 1 time(s); let go"), "and says so");
     heard("abandoning gives back what it can", abandoning_costs_nothing);
     heard("the wide stack's pages", wide_pages);
     heard("a guest's tripwire stays quiet with nothing filed", guest_alone);

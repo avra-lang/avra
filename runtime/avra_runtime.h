@@ -27,8 +27,8 @@ extern void (*avra_fd_drained_hook)(int64_t fd);
 // program that never spawns has them and links no scheduler.
 enum { AVRA_SLOT_ASKER = 0, AVRA_SLOT_FLOW = 1, AVRA_TASK_SLOTS = 4 };
 // `clock_asks`: how often the task has read a frozen clock since it
-// last waited.
-typedef struct { void* slot[AVRA_TASK_SLOTS]; int64_t id; int64_t clock_asks; } AvraTaskLocal;
+// last waited; `clock_holds`: the holds on the world it stands in.
+typedef struct { void* slot[AVRA_TASK_SLOTS]; int64_t id; int64_t clock_asks; int64_t clock_holds; } AvraTaskLocal;
 extern AvraTaskLocal avra_main_local __attribute__((visibility("hidden")));
 extern AvraTaskLocal* avra_task_local __attribute__((visibility("hidden")));
 // The schedule the case in flight runs under, or -1; a trap says it.
@@ -74,10 +74,16 @@ static inline int64_t avra_clock_read(void) {
 extern void (*avra_clock_turned_hook)(void);
 // Frozen: the clock set to `at` when that is later, and 1. Flowing: 0.
 int64_t avra_clock_jumped(int64_t at);
-// THE WORLD IS HELD while something waits on it in real time — the
-// poller with a descriptor waiter filed, a child not yet reaped. A
-// count; giving back more than was taken traps.
+// THE WORLD IS HELD while something waits on it in real time: the
+// poller with a descriptor waiter filed, and every blocking call in C
+// (`make clock-holds` finds each). A count, charged to the task that
+// takes it; giving back more than was taken traps, and a task that
+// waited on the world has waited — its count of clock reads begins
+// again.
 void avra_clock_hold(int64_t by);
+// What tasks abandoned while holding the world held, let go: only that
+// share, never the holds a live task stands in.
+void avra_clock_holds_let_go(int64_t n);
 // Every hold given up at once, for a run whose holders are gone: how many.
 int64_t avra_clock_holds_dropped(void);
 // A RUN INSIDE ANOTHER PROGRAM: it begins on its host's clock with no

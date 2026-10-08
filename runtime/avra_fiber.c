@@ -645,6 +645,7 @@ static int fd_arm(int fd) {
     int n = 0;
     if (missing & ARMED_READ) { EV_SET(&evs[n], fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL); n++; }
     if (missing & ARMED_WRITE) { EV_SET(&evs[n], fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, NULL); n++; }
+    // the clock: not a wait on time — a change list, no event asked for
     int ok = kevent(g_poller, evs, n, NULL, 0, NULL) == 0;
     if (ok) { w->armed |= missing; w->ready |= missing; }
 #else
@@ -829,6 +830,7 @@ static void poller_wait(int64_t timeout_ns) {
 #if AVRA_KQUEUE
     struct kevent evs[BATCH];
     struct timespec ts = { (time_t)(timeout_ns / 1000000000), (long)(timeout_ns % 1000000000) };
+    // the clock: held by the caller whenever this waits (`next_with_world`)
     int n = kevent(g_poller, NULL, 0, evs, BATCH, timeout_ns < 0 ? NULL : &ts);
     for (int i = 0; i < n; i++) {
         if (evs[i].filter == EVFILT_READ && (evs[i].flags & EV_EOF)) fd_closed((int)evs[i].ident);
@@ -837,6 +839,7 @@ static void poller_wait(int64_t timeout_ns) {
 #else
     struct epoll_event evs[BATCH];
     int ms = timeout_ns < 0 ? -1 : (int)((timeout_ns + 999999) / 1000000);
+    // the clock: held by the caller whenever this waits (`next_with_world`)
     int n = epoll_wait(g_poller, evs, BATCH, ms);
     for (int i = 0; i < n; i++) {
         int fd = evs[i].data.fd;
@@ -2169,6 +2172,17 @@ static int64_t case_timers_cleared(void) {
     return n;
 }
 
+// A CASE THAT ENDS HOLDING THE WORLD has leaked the hold: it is let go,
+// said, and the case fails. 1 when it held one.
+static int64_t case_holds_cleared(void) {
+    int64_t held = g_current->own.clock_holds;
+    if (held <= 0) return 0;
+    g_current->own.clock_holds = 0;
+    avra_clock_holds_let_go(held);
+    fprintf(stderr, "avra: the case ended holding the clock %lld time(s); let go\n", (long long)held);
+    return 1;
+}
+
 static int of_the_case(const Fiber* f) { return f != g_current && !f->virtual && (uint64_t)id_of(f) > g_case_first && f->state != FIBER_DONE; }
 
 // The two settings a schedule is named by.
@@ -2195,12 +2209,16 @@ static int64_t case_cleared(int dead) {
         fputc('\n', stderr);
     }
     if (g_seeded) fprintf(stderr, "avra: under schedule %lld — " SCHED_SEED_SETTING "=%lld replays it\n", (long long)g_schedule, (long long)g_schedule);
+    // What abandoned tasks held of the world is let go, or every later
+    // case's clock would flow at wall rate — and only that share: a live
+    // task's holds stand. A task that ENDED holding is not charged back
+    // here; no hold can outlive the C call that took it today.
+    int64_t held = 0;
+    for (int64_t i = 0; i < n; i++) held += alive[i]->own.clock_holds;
     for (int64_t i = 0; i < n; i++) abandoned(alive[i]);
     free(alive);
-    // A HOLD OUTLIVES NO HOLDER: what abandoned tasks held of the world
-    // is let go, or every later case's clock would flow at wall rate.
-    int64_t held = avra_clock_holds_dropped();
-    if (held) fprintf(stderr, "avra: they held the clock %lld time(s); let go\n", (long long)held);
+    avra_clock_holds_let_go(held);
+    if (held > 0) fprintf(stderr, "avra: they held the clock %lld time(s); let go\n", (long long)held);
     return n;
 }
 
@@ -2209,7 +2227,7 @@ static int64_t case_cleared(int dead) {
 static void* case_ran(void* self) {
     int64_t (*body)(void) = (int64_t (*)(void))(uintptr_t)((AvraArray*)self)->data[1];
     int64_t answer = body();
-    int64_t left = case_cleared(0) + case_timers_cleared();
+    int64_t left = case_cleared(0) + case_timers_cleared() + case_holds_cleared();
     g_case_answer = left == 0 && !g_case_spoiled ? answer : 0;
     return NULL;
 }

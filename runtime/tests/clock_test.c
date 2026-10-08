@@ -356,6 +356,21 @@ static void working_through_gates(void) {
     avra_clock_virtual(0);
 }
 
+// A task that waited on the world has waited: a hold given back begins
+// its count of reads again.
+static void world_waited(void) {
+    asks_most("1000");
+    avra_clock_virtual(1);
+    int64_t sum = 0;
+    for (int turn = 0; turn < 5; turn++) {
+        for (int i = 0; i < 900; i++) sum += avra_now_ns() & 1;
+        avra_clock_hold(1);
+        avra_clock_hold(-1);
+    }
+    CHECK(sum >= 0, "reads with a wait on the world between them are no spin");
+    avra_clock_virtual(0);
+}
+
 static void never_told(void) {
     asks_most("0");
     avra_clock_virtual(1);
@@ -477,6 +492,7 @@ int main(void) {
         { "a run inside a run", runs },
         { "tasks that work and read the clock", working_through_gates },
         { "a limit of none", never_told },
+        { "a wait on the world restarts the count", world_waited },
     };
     for (size_t i = 0; i < sizeof groups / sizeof groups[0]; i++) {
         in_child(groups[i].what, groups[i].body);
