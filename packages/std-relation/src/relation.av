@@ -806,7 +806,7 @@ fn key_members(t: Type) -> List<Decls> {
     let parts = [part_of(quote { k.${f.name} }, f.kind) for f in keys]
     [
         quote { fn key() -> ${t}Key { ${t}Key { ..${inits} } } },
-        quote { static fn key_text(k: ${t}Key) -> string { [${..parts}].join("") } },
+        quote { static fn key_text(k: ${t}Key) -> string { ${joined_parts(parts)} } },
         quote {
             static fn by_key(db: Db, k: ${t}Key) -> ${t}? {
                 let rs = ${name(t.name)}.rows_in(db)
@@ -856,6 +856,13 @@ fn key_record(t: Type) -> List<Decls> {
     if keys.is_empty() { return [] }
     let fields = [quote { type _ = { ${f.name}: ${f.ty} } } for f in keys]
     [quote { export type ${t}Key = { ..${fields} } }]
+}
+
+/// The key's parts concatenated left to right, one string built with no list.
+fn joined_parts(parts: List<Code>) -> Code {
+    mut text = parts[0]
+    for p in parts.slice(1, parts.length) { text = quote { ${text} + ${p} } }
+    text
 }
 
 /// One key field's text, by its kind.
