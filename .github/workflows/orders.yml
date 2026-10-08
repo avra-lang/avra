@@ -1,0 +1,109 @@
+# EIGHT ORDERS, EVERY NIGHT. A train runs each case in one order (the
+# owner's ruling: `AVRA_SCHED_RUNS` stays 1 on every PR and train, a suite
+# whose tasks wait on real sockets paying each extra order in wall time);
+# this runs every package's suite on main with `AVRA_SCHED_RUNS=8`, so an
+# ordering bug is found here, by schedule, with the number that replays it.
+# A failure writes the case, its schedule and its `AVRA_SCHED_SEED` replay
+# line into the job summary. A PR that changes this file runs it once, so
+# the workflow is proved before it lands.
+name: orders
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths: [.github/workflows/orders.yml]
+
+concurrency:
+  group: orders-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 60
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        name: plan
+        run: |
+          for d in packages/*/; do
+            [ -d "${d}src" ] || { echo "::error::${d} has no src — a nightly run would pass it by untested"; exit 1; }
+          done
+          echo "key=avrac-$(sh tools/compiler_paths.sh --key)" >> "$GITHUB_OUTPUT"
+          echo "shards=$(ls packages | python3 tools/shards.py 4)" >> "$GITHUB_OUTPUT"
+      # The compiler main's own checks cached, or built as they build it.
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: build/avra
+          key: ${{ steps.plan.outputs.key }}
+          restore-keys: |
+            avrac-
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: compiler
+        run: if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
+      - name: objects and libs
+        run: |
+          make -s -j"$(nproc)" -o avra objects libs || make -s -o avra objects libs
+          tar -cf avra-build.tar build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orders-build
+          path: avra-build.tar
+          retention-days: 1
+
+  suites:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: orders-build }
+      - name: built
+        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - name: eight orders
+        env:
+          AVRA_SCHED_RUNS: "8"
+        run: |
+          fail=0
+          for p in ${{ join(matrix.shard, ' ') }}; do
+            [ -d "packages/$p/src" ] || continue
+            echo "::group::$p"
+            t=$(date +%s)
+            if build/avra test "packages/$p" > "suite-$p.log" 2>&1; then
+              cat "suite-$p.log"
+            else
+              fail=1
+              cat "suite-$p.log"
+              echo "::error::suite $p failed under eight orders"
+              {
+                echo "### \`$p\` failed under eight orders"
+                echo '```'
+                grep -E '✗|failed under schedule|while running|every task is waiting|outlived the case|AVRA_SCHED_SEED=' "suite-$p.log" | head -40
+                echo '```'
+                echo "Replay one schedule: \`AVRA_SCHED_SEED=<k> build/avra test packages/$p\`"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "::endgroup::"
+            echo "$p $(( $(date +%s) - t ))s"
+          done
+          exit $fail

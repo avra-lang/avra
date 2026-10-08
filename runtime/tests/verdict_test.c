@@ -174,7 +174,7 @@ int main(void) {
     heard("the failing schedule, replayed", replayed);
     heard("schedule 0 alone", zero_alone);
     heard("the count, said once", said_at_the_end);
-    CHECK(says("8 schedules") && says("AVRA_SCHED_RUNS=8 runs more") && says("orders past 16 ready tasks are not all reachable"), "the count is said with how to run more and what it cannot reach");
+    CHECK(says("8 schedules") && says("AVRA_SCHED_RUNS=8 runs more, as the nightly `orders` run does") && says("orders past 16 ready tasks are not all reachable"), "the count is said with how to run more and what it cannot reach");
     {
         int out[2];
         if (pipe(out) != 0) return 1;
