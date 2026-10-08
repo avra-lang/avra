@@ -151,6 +151,8 @@ impl Workspace {
         let u = self.lowered_for_eval(id)
         let top = self.hold.settle_frames.get().last()
         if top != null { top!.push(self.kept_unit_line(w, u)) }
+        let d = w.decl ?? self.root_decl(w)
+        if d != null { self.note_decl_types(d!) }
         for ask in self.hold.unit_asks.get().get("${id}") ?? [] { let _ = self.settled(ask.file, ask.root, ask.seats) }
         u
     }
@@ -265,7 +267,13 @@ impl Workspace {
     /// was typed, before any settlement, so they are read from the typed facts of its range.
     fn note_const_types(f: FileId, s: StmtId) {
         let d? = self.decls.decl_of(f, s) else { return }
+        self.note_decl_types(d)
+    }
+
+    /// The named types a declaration's own expressions carry, read from its typed facts.
+    fn note_decl_types(d: DeclId) {
         let x = self.decls.decl(d)
+        if self.is_held(x.file) { return }
         let facts = self.typed(d)
         for i in x.lo..x.hi { self.decls.note_named(facts.type_at(ExprId { index: i })) }
     }

@@ -214,34 +214,40 @@ fi
 
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
-# field of a named type it resolves (through that type's shape, transitively), a fn it
-# reaches, or a name a seen module declares. A declaration it never reaches leaves it standing.
-# `x.mid`'s verdict is traced by name, from a store of its own: each case is its own repo, and the
-# store sits beside the repo, at the nearest `.git` above the package's parent.
+# named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
+# or a name a seen module declares. A declaration it never reaches leaves it standing.
+# Each const is traced by its module, from a store of its own: each case is its own repo,
+# and the store sits beside it, at the nearest `.git` above the package's parent.
 vd_fixture() {
   rm -rf $R/vdc; mkdir -p $R/vdc/vd/src/f $R/vdc/vd/src/x $R/vdc/vd/src/y; git -C $R/vdc init -q
   printf '[package]\nname = "rt-vd"\nversion = "0.1.0"\n' > $R/vdc/vd/avra.toml
-  printf 'export type Deep = { q: int }\nexport type Cfg = { a: int, d: Deep }\nexport fn dflt() -> Deep { Deep { q: 1 } }\nexport type Other = { z: int }\nexport fn twice(n: int) -> int { n * 2 }\n' > $R/vdc/vd/src/y/calc.av
+  printf 'export type Deep = { q: int }\nexport type Cfg = { a: int, d: Deep }\nexport fn dflt() -> Deep { Deep { q: 1 } }\nexport type Other = { z: int }\nexport fn twice(n: int) -> int { n * 2 }\nexport fn g() -> int { Cfg { a: 3, d: dflt() }.a }\nexport enum E { V(int) }\nexport fn unwrap(e: E) -> int { match e { .V(n) -> n, _ -> 0 } }\nexport type S = { s: int }\nimpl S { fn m() -> int { self.s } }\n' > $R/vdc/vd/src/y/calc.av
   printf 'use y.{twice, Cfg, dflt}\nexport const J: int = Entry { key: "a", value: twice(Cfg { a: 3, d: dflt() }.a) }.value\n' > $R/vdc/vd/src/x/mid.av
-  printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n' > $R/vdc/vd/src/f/held.av
+  printf 'use y.{twice, g}\nexport const F: int = twice(g())\n' > $R/vdc/vd/src/x/fg.av
+  printf 'use y.{E, unwrap}\nexport const G: int = unwrap(E.V(3))\n' > $R/vdc/vd/src/x/gg.av
+  printf 'use y.{S}\nexport const H: int = S { s: 3 }.m()\n' > $R/vdc/vd/src/x/hh.av
+  printf 'use x.{J, F, G, H}\nexport const K: int = J * 2 + F + G + H\nexport fn shown() -> int { K }\n' > $R/vdc/vd/src/f/held.av
   printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/vdc/vd/src/main.av
 }
-vd_case() { # vd_case <label> <ran|stood> <edit command>: warm, edit, then x.mid's verdict in the trace
+vd_case() { # vd_case <label> <ran|stood> <const module> <edit command>: warm, edit, then that const's verdict
   vd_fixture
   ./avra check $R/vdc/vd > /dev/null 2>&1; ./avra check $R/vdc/vd > /dev/null 2>&1
-  eval "$3"
+  eval "$4"
   steps=$((steps+1))
   AVRA_QTRACE=1 ./avra check $R/vdc/vd > $R/vd.out 2>&1; st=$?
-  got=$(awk -F'\t' '$1 == "Q" && $2 == "const_verdict" && $3 ~ /^x\.mid/ { v = $4 } END { print v }' $R/vd.out)
+  got=$(awk -F'\t' -v m="^x\\.$3" '$1 == "Q" && $2 == "const_verdict" && $3 ~ m { v = $4 } END { print v }' $R/vd.out)
   if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"
-  elif [ "$got" != "$2" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: x.mid's verdict was '$got', wanted '$2'"
+  elif [ "$got" != "$2" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the $3 verdict was '$got', wanted '$2'"
   else [ -n "${VERBOSE:-}" ] && echo "ok    vd: $1 -> $got"; fi
 }
-vd_case "a: a field of a type the const reads is added" ran 'printf "export type Deep = { q: int }\nexport type Cfg = { a: int, d: Deep, b: int = 0 }\nexport fn dflt() -> Deep { Deep { q: 1 } }\nexport type Other = { z: int }\nexport fn twice(n: int) -> int { n * 2 }\n" > $R/vdc/vd/src/y/calc.av'
-vd_case "b: a fn the const reaches changes its signature" ran 'printf "export type Deep = { q: int }\nexport type Cfg = { a: int, d: Deep }\nexport fn dflt() -> Deep { Deep { q: 1 } }\nexport type Other = { z: int }\nexport fn twice(n: int, m: int = 1) -> int { n * 2 * m }\n" > $R/vdc/vd/src/y/calc.av'
-vd_case "c: a new declaration takes a name the const resolves" ran 'printf "export type Entry = { key: string, value: int }\n" > $R/vdc/vd/src/x/local.av'
-vd_case "d: a type the const never reaches changes a field" stood 'printf "export type Deep = { q: int }\nexport type Cfg = { a: int, d: Deep }\nexport fn dflt() -> Deep { Deep { q: 1 } }\nexport type Other = { z: int, w: int }\nexport fn twice(n: int) -> int { n * 2 }\n" > $R/vdc/vd/src/y/calc.av'
-vd_case "e: a type reached only through a field of a type it reads gains a field" ran 'printf "export type Deep = { q: int, r: int = 0 }\nexport type Cfg = { a: int, d: Deep }\nexport fn dflt() -> Deep { Deep { q: 1 } }\nexport type Other = { z: int }\nexport fn twice(n: int) -> int { n * 2 }\n" > $R/vdc/vd/src/y/calc.av'
+vd_case "a: a field of a type the const reads is added" ran mid 'ed $R/vdc/vd/src/y/calc.av "export type Cfg = { a: int, d: Deep }" "export type Cfg = { a: int, d: Deep, b: int = 0 }"'
+vd_case "b: a fn the const reaches changes its signature" ran mid 'ed $R/vdc/vd/src/y/calc.av "export fn twice(n: int) -> int { n * 2 }" "export fn twice(n: int, m: int = 1) -> int { n * 2 * m }"'
+vd_case "c: a new declaration takes a name the const resolves" ran mid 'printf "export type Entry = { key: string, value: int }\n" > $R/vdc/vd/src/x/local.av'
+vd_case "d: a type the const never reaches changes a field" stood mid 'ed $R/vdc/vd/src/y/calc.av "export type Other = { z: int }" "export type Other = { z: int, w: int }"'
+vd_case "e: a type reached only through a field of a type it reads gains a field" ran mid 'ed $R/vdc/vd/src/y/calc.av "export type Deep = { q: int }" "export type Deep = { q: int, r: int = 0 }"'
+vd_case "f: a fn the const calls reads a type's field, which changes type" ran fg 'ed $R/vdc/vd/src/y/calc.av "export type Cfg = { a: int, d: Deep }" "export type Cfg = { a: int, d: Deep, b: int = 0 }"'
+vd_case "g: a variant of an enum the const builds gains a variant" ran gg 'ed $R/vdc/vd/src/y/calc.av "export enum E { V(int) }" "export enum E { V(int), W }"'
+vd_case "h: a method the const calls on a type gains a field the receiver shows" ran hh 'ed $R/vdc/vd/src/y/calc.av "export type S = { s: int }" "export type S = { s: int, t: int = 0 }"'
 fi
 
 # CACHE_ATTACKS set: the sections named above are the whole run.
