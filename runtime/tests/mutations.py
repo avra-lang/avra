@@ -18,8 +18,11 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 out, flags, objects = sys.argv[1], sys.argv[2].split(), sys.argv[3:]
-FIBER, CLOCK = "avra_fiber", "avra_runtime"
+FIBER, CLOCK, DOOR = "avra_fiber", "avra_runtime", "avra_door"
 sources = {name: open(f"runtime/{name}.c").read() for name in (FIBER, CLOCK)}
+# THE DOOR'S HEADER is the scheduler's too: a break of it is written beside
+# an unbroken copy of the scheduler, whose include finds it first.
+sources[DOOR] = open(f"runtime/{DOOR}.h").read()
 arm = platform.machine() in ("arm64", "aarch64")
 
 FLOOR = ('    "    b.lo 1f\\n"\n', '    "    nop\\n"\n') if arm else ('    "    jb 1f\\n"\n', '    "    nop\\n"\n')
@@ -133,20 +136,24 @@ MUTATIONS = [
     ("a virtual task keeps the policy's count for its id", "    virtual_at(t)->own.id = id;\n", ""),
     ("the handler leaves the switch's countdown alone", "    g_until_poll = 0;\n    prior_called(", "    prior_called("),
     ("a switch never answers an ask", "        if (__builtin_expect(g_asked, 0)) tasks_answered();\n", ""),
-    ("a forked child is asked under its parent's id", "    g_asked = 0;\n    tasks_door_named();\n", "    g_asked = 0;\n"),
+    ("a forked child is asked under its parent's id", "    g_asked = 0;\n    tasks_door_named();\n    // a schedule", "    g_asked = 0;\n    // a schedule"),
     ("an evaluated program's line names the host's task", "    if (g_evaluated) {", "    if (0) {"),
     ("a handler set before ours is no longer called", "    prior_called(sig, info, context);\n", ""),
-    ("a forked child owes its parent's ask", "    g_asked = 0;\n    tasks_door_named();\n", "    tasks_door_named();\n"),
+    ("a forked child owes its parent's ask", "    g_asked = 0;\n    tasks_door_named();\n    // a schedule", "    tasks_door_named();\n    // a schedule"),
     ("a second signal is not answered by the handler", "    if (g_asked++ > 0 && !g_in_world && g_until_poll == 0) {", "    if (0) {"),
     ("the handler answers from inside the world's path", "    if (g_asked++ > 0 && !g_in_world && g_until_poll == 0) {", "    if (g_asked++ > 0 && g_until_poll == 0) {"),
-    ("an ask is answered without an ask file", "    if (ask_ours(dfd)) listing_written(dfd);", "    listing_written(dfd);"),
+    ("an ask is answered without an ask file", "    if (ask_ours(dfd, names)) listing_written(dfd, names);", "    listing_written(dfd, names);"),
     ("an ask that is no plain file is taken as ours", "S_ISREG(st.st_mode) && st.st_uid == geteuid();\n}", "st.st_uid == geteuid();\n}"),
-    ("an answered ask is left in place", "    unlinkat(dfd, g_ask_name, 0);\n    renameat(dfd, g_tmp_name,", "    renameat(dfd, g_tmp_name,"),
-    ("the handler's line shares the listing's file", "    unlinkat(dfd, g_line_name, 0);\n    int fd = openat(dfd, g_line_name,", "    unlinkat(dfd, g_tmp_name, 0);\n    int fd = openat(dfd, g_tmp_name,"),
-    ("a door directory others may write is a door", " && (st.st_mode & 077) == 0) return dfd;", ") return dfd;"),
-    ("a door directory that is a link is followed", "    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);", "    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);"),
+    ("an answered ask is left in place", "    unlinkat(dfd, names->ask, 0);\n    renameat(dfd, names->tmp,", "    renameat(dfd, names->tmp,"),
+    ("the handler's line shares the listing's file", "    unlinkat(dfd, names->line, 0);\n    int fd = openat(dfd, names->line,", "    unlinkat(dfd, names->tmp, 0);\n    int fd = openat(dfd, names->tmp,"),
+    ("the door's directory is chosen once", "    g_asked = 0;\n    tasks_door_named();\n    const DoorNames*", "    g_asked = 0;\n    const DoorNames*"),
+    ("the handler's line is stamped with no time", "    k += digits_put(line + k, (long long)now_ns());", "    line[k++] = '0';"),
     ("a task that has not run is listed as parked", "    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);", "    if (!f->sp) fprintf(out, \"ts=%lld park id=%lld src=at arm=0:0\\n\", (long long)now, id);\n    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);"),
     ("the door is never opened", "    guard_handler_install();\n    tasks_door_opened();", "    guard_handler_install();"),
+]
+DOOR_MUTATIONS = [
+    ("a door directory others may write is a door", " && (st.st_mode & 077) == 0) return dfd;", ") return dfd;"),
+    ("a door directory that is a link is followed", "    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);", "    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);"),
 ]
 CLOCK_MUTATIONS = [
     ("a hold on the world is charged to no task", "    avra_task_local->clock_holds += by;\n", ""),
@@ -173,9 +180,9 @@ for test in TESTS:
 
 # What a break of one file links beside it: every other object, and for
 # the clock's the scheduler built whole.
-ALL = [(FIBER, m) for m in MUTATIONS] + [(CLOCK, m) for m in CLOCK_MUTATIONS]
+ALL = [(FIBER, m) for m in MUTATIONS] + [(CLOCK, m) for m in CLOCK_MUTATIONS] + [(DOOR, m) for m in DOOR_MUTATIONS]
 subprocess.run(["cc", "-c", "-O2", *flags, "-Iruntime", "-o", f"{out}/{FIBER}.o", f"runtime/{FIBER}.c"], check=True)
-rest = {FIBER: objects, CLOCK: [o for o in objects if not o.endswith(f"/{CLOCK}.o")] + [f"{out}/{FIBER}.o"]}
+rest = {FIBER: objects, CLOCK: [o for o in objects if not o.endswith(f"/{CLOCK}.o")] + [f"{out}/{FIBER}.o"], DOOR: objects}
 
 
 def tried(numbered):
@@ -187,8 +194,12 @@ def tried(numbered):
         text = text.replace(a, b)
     here = f"{out}/{at}"
     os.makedirs(here, exist_ok=True)
-    open(f"{here}/{which}.c", "w").write(text)
-    built = subprocess.run(["cc", "-c", "-O2", *flags, "-Iruntime", "-o", f"{here}/{which}.o", f"{here}/{which}.c"], capture_output=True, text=True)
+    unit = FIBER if which == DOOR else which
+    if which == DOOR:
+        open(f"{here}/{DOOR}.h", "w").write(text)
+        text = sources[FIBER]
+    open(f"{here}/{unit}.c", "w").write(text)
+    built = subprocess.run(["cc", "-c", "-O2", *flags, "-Iruntime", "-o", f"{here}/{which}.o", f"{here}/{unit}.c"], capture_output=True, text=True)
     if built.returncode:
         return name, "rotten", "does not build — " + built.stderr.strip().splitlines()[0][:120]
     for test in TESTS:

@@ -72,7 +72,7 @@ WORLD = {
         "status_of": P, "scripted": P, "plan": P, "exit": E,
         "Tool": T, "Command": T, "Exit": T, "Output": T, "Outcome": T, "Env": T,
         "EnvPair": T, "Stdin": T, "Streams": T, "Ready": T, "Stream": T,
-        "ProcessError": T, "Child": T, "Pipeline": T, "PipeOutcome": T, "Script": T, "Signal": T,
+        "ProcessError": T, "Child": T, "Pipeline": T, "PipeOutcome": T, "Script": T, "Signal": T, "Signalled": T,
         "Runner": T,
     },
     "time": {

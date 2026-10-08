@@ -193,6 +193,21 @@ static int pipeloop_scene(int fd) {
     }
 }
 
+// Asleep on a pipe; each byte the asker sends moves the door's directory
+// to the one named next — as a login's own directory appears to a
+// program started outside it.
+static int rechosen_scene(int fd) {
+    spawn1(on_gate, avra_gate_new());
+    avra_fiber_yield();
+    ready();
+    for (char b;;) {
+        avra_fiber_park_fd(fd, 0, -1);
+        ssize_t got = read(fd, &b, 1);
+        if (got <= 0) return 0;
+        setenv("AVRA_TASKS_DIR", getenv("AVRA_TASKS_DIR_NEXT"), 1);
+    }
+}
+
 // A hundred thousand tasks, so a listing takes long enough to be asked
 // again while it is written; the program asleep in the poller.
 static int crowded_scene(void) {
@@ -457,7 +472,7 @@ static void door(const char* self) {
     CHECK(access(c.out, F_OK) != 0, "a task that does not switch answers nothing at the first ask");
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 1000);
-    CHECK(strcmp(buf, "ts=0 unswitched id=1\n") == 0, "the second ask is answered by the handler itself");
+    CHECK(strncmp(buf, "ts=", 3) == 0 && strncmp(buf, "ts=0 ", 5) != 0 && strstr(buf, " unswitched id=1\n") != NULL, "the second ask is answered by the handler itself, stamped with the time");
     ended(&c);
 
     c = scene(self, "forked");
@@ -493,6 +508,30 @@ static void door(const char* self) {
     close(fill[1]);
     ended(&c);
 
+    // the door's directory is chosen again at every answer
+    char next[200];
+    snprintf(next, sizeof next, "%s/next", g_root);
+    mkdir(next, 0700);
+    setenv("AVRA_TASKS_DIR_NEXT", next, 1);
+    int moved[2];
+    if (pipe(moved) != 0) { perror("pipe"); exit(1); }
+    c = scene_with(self, "rechosen", moved[0]);
+    close(moved[0]);
+    asked(&c);
+    asked_again(&c, buf, sizeof buf, 20);
+    int first_here = strstr(buf, "ts=") == buf;
+    ssize_t sent = write(moved[1], "m", 1);
+    (void)sent;
+    usleep(50000);
+    snprintf(c.ask, sizeof c.ask, "%s/avra-tasks.%d.ask", next, (int)c.pid);
+    snprintf(c.out, sizeof c.out, "%s/avra-tasks.%d", next, (int)c.pid);
+    asked(&c);
+    asked_again(&c, buf, sizeof buf, 20);
+    CHECK(first_here && strstr(buf, "ts=") == buf, "a door's directory that moves is found again at the next answer");
+    close(moved[1]);
+    ended(&c);
+    unsetenv("AVRA_TASKS_DIR_NEXT");
+
     // M2: asked again while a long listing is written, the listing stands.
     c = scene(self, "crowded");
     asked(&c);
@@ -520,7 +559,7 @@ static void door(const char* self) {
     usleep(150000);
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 1000);
-    CHECK(strcmp(buf, "ts=0 unswitched id=0 evaluated\n") == 0, "an evaluated program that does not switch is said so, with no task named");
+    CHECK(strncmp(buf, "ts=", 3) == 0 && strstr(buf, " unswitched id=0 evaluated\n") != NULL, "an evaluated program that does not switch is said so, with no task named");
     ended(&c);
 
     // a handler the program set first is still called, and the door answers
@@ -542,6 +581,9 @@ static void door(const char* self) {
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 300);
     CHECK(strstr(buf, "unswitched") == NULL, "a child's first ask is never taken for a second");
+    kill(c.pid, SIGURG);
+    answered(&c, buf, sizeof buf, 500);
+    CHECK(strstr(buf, " unswitched id=1\n") != NULL, "and its second, while it has not switched, is answered under its own id");
     ended(&c);
 
     // M5: a door directory others may write is no door
@@ -616,6 +658,7 @@ int main(int argc, char** argv) {
         if (strcmp(argv[1], "forked") == 0) return forked_scene();
         if (strcmp(argv[1], "pipeloop") == 0) return pipeloop_scene(atoi(argv[3]));
         if (strcmp(argv[1], "crowded") == 0) return crowded_scene();
+        if (strcmp(argv[1], "rechosen") == 0) return rechosen_scene(atoi(argv[3]));
         if (strcmp(argv[1], "vspin") == 0) return vspin_scene();
         if (strcmp(argv[1], "prior") == 0) return prior_scene();
         if (strcmp(argv[1], "forked-asked") == 0) return forked_asked_scene();
@@ -632,6 +675,7 @@ int main(int argc, char** argv) {
     gone("door");
     gone("wide");
     gone("target");
+    gone("next");
     rmdir(g_root);
     printf("tasks_door: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

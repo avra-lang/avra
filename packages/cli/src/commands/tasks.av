@@ -13,7 +13,7 @@
 //! another, for both.
 use @std.cli.{CliResult, Runnable, command, arg}
 use @std.io.{IoError, OwnDir, own_dir, user_dir, env}
-use @std.process.{Signal, signalled}
+use @std.process.{Signal, Signalled, signalled}
 use @std.text.{parse_int}
 use @std.time.{ms, sleep}
 
@@ -80,6 +80,10 @@ fn listed(pid: int, dir: OwnDir) -> int {
             eprintln(no_process(pid))
             1
         },
+        .Unasked(why) -> {
+            eprintln(unasked(why))
+            2
+        },
         .Unread(why) -> {
             eprintln(unreadable(why))
             1
@@ -92,14 +96,22 @@ enum Answer {
     Answered(text: string)
     Silent
     Gone
+    Unasked(why: string)
     Unread(why: string)
+}
+
+/// A signal that did not reach the process, as what the ask came to —
+/// null when it was sent.
+fn not_sent(s: Signalled) -> Answer? {
+    match s { .Sent -> null, .NoProcess -> Answer.Gone, .Refused(why) -> Answer.Unasked(why) }
 }
 
 /// SIGURG sent, then a tenth of a second, `turns` times at most.
 fn asked(pid: int, dir: OwnDir, out: string, turns: int) -> Answer {
     for _turn in 0..turns {
         // LICENSED input.live_process: asks a running process, and no compile answer reads it
-        if !signalled(pid, Signal.Urgent) { return Answer.Gone }
+        let stopped = not_sent(signalled(pid, Signal.Urgent))
+        if stopped != null { return stopped! }
         sleep(ms(100))
         // LICENSED input.live_process: a running process's answer, and no compile answer reads it
         match dir.taken(out) {
@@ -138,5 +150,7 @@ fn unanswered(pid: int) -> string {
 fn not_ours(why: string) -> string {
     "avra tasks: the door's directory is not this user's alone (it must be a directory, no link, owned by this user, mode 0700) — ${why}"
 }
+
+fn unasked(why: string) -> string { "avra tasks: ${why}" }
 
 fn unreadable(why: string) -> string { "avra tasks: the answer could not be read — ${why}" }

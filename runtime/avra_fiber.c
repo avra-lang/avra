@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "avra_box.h"
+#include "avra_door.h"
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
@@ -1168,7 +1169,8 @@ static int world_waited_virtually(void) {
 static void fiber_start(void);
 static int case_deadlocked(void);
 static void tasks_answered(void);
-static void listing_written(int dfd);
+typedef struct DoorNames DoorNames;
+static void listing_written(int dfd, const DoorNames* names);
 static void ages_noted(int64_t now);
 
 // A fiber's first run: a stack from the pool, and at its top a frame
@@ -2416,8 +2418,13 @@ int64_t avra_sched_world_visits(void) { return g_world_visits; }
 // listing is written beside the ask, renamed into place, and the ask
 // removed; with no ask file of ours there, a signal answers nothing.
 
-static char g_door_dir[200];
-static char g_ask_name[64], g_out_name[64], g_tmp_name[64], g_line_name[64];
+// THE DOOR'S NAMES, TWICE: they are written into the copy no handler
+// reads and then made the one it does by a single store, so a signal
+// landing while they are rewritten — at an answer, at a fork — reads
+// the whole of the old names or the whole of the new, never half.
+struct DoorNames { char dir[256]; char ask[64], out[64], tmp[64], line[64]; };
+static DoorNames g_doors[2];
+static volatile sig_atomic_t g_door_at;
 static struct sigaction g_prior_urg;
 
 // AGES BY ID: a task's id is minted in order, so a clock reading taken
@@ -2502,38 +2509,30 @@ void avra_tasks_listed(FILE* out) {
 }
 
 // THE DOOR'S DIRECTORY IS THE USER'S OWN, never a name in a shared one:
-// `AVRA_TASKS_DIR` when it is set; else macOS's per-user temporary
-// directory; else `/run/user/<uid>` when it is ours, else
-// `/tmp/avra-<uid>`, which the asker makes 0700. It is opened with no
-// link followed and held to its owner and mode at every use, and every
-// file in it is named relative to that open directory — so a name in it
-// can never be swapped for a link elsewhere. Its file names carry this
-// process's id: what a fork renames.
-static int door_held(const char* dir);
-
+// `AVRA_TASKS_DIR` when it is set, else the user's own directory
+// (runtime/avra_door.h, the one definition `avra tasks` shares). It is
+// CHOSEN AGAIN AT EVERY ANSWER, so a program started outside a login
+// is answered in the directory an asker inside one finds. It is opened
+// with no link followed and held to its owner and mode at every use,
+// and every file in it is named relative to that open directory. Its
+// file names carry this process's id: what a fork renames.
 static void tasks_door_named(void) {
     if (!g_door_open) return;
+    DoorNames* next = &g_doors[!g_door_at];
     const char* chosen = getenv("AVRA_TASKS_DIR");
     if (chosen && *chosen) {
-        snprintf(g_door_dir, sizeof g_door_dir, "%s", chosen);
+        snprintf(next->dir, sizeof next->dir, "%s", chosen);
+        size_t n = strlen(next->dir);
+        while (n > 1 && next->dir[n - 1] == '/') next->dir[--n] = 0;
     } else {
-#if defined(__APPLE__)
-        size_t got = confstr(_CS_DARWIN_USER_TEMP_DIR, g_door_dir, sizeof g_door_dir);
-        if (got == 0 || got > sizeof g_door_dir) snprintf(g_door_dir, sizeof g_door_dir, "/tmp/avra-%lld", (long long)geteuid());
-#else
-        snprintf(g_door_dir, sizeof g_door_dir, "/run/user/%lld", (long long)geteuid());
-        int dfd = door_held(g_door_dir);
-        if (dfd >= 0) close(dfd);
-        else snprintf(g_door_dir, sizeof g_door_dir, "/tmp/avra-%lld", (long long)geteuid());
-#endif
+        avra_user_dir(next->dir, sizeof next->dir);
     }
-    size_t n = strlen(g_door_dir);
-    while (n > 1 && g_door_dir[n - 1] == '/') g_door_dir[--n] = 0;
     long long pid = (long long)getpid();
-    snprintf(g_ask_name, sizeof g_ask_name, "avra-tasks.%lld.ask", pid);
-    snprintf(g_out_name, sizeof g_out_name, "avra-tasks.%lld", pid);
-    snprintf(g_tmp_name, sizeof g_tmp_name, "avra-tasks.%lld.tmp", pid);
-    snprintf(g_line_name, sizeof g_line_name, "avra-tasks.%lld.line", pid);
+    snprintf(next->ask, sizeof next->ask, "avra-tasks.%lld.ask", pid);
+    snprintf(next->out, sizeof next->out, "avra-tasks.%lld", pid);
+    snprintf(next->tmp, sizeof next->tmp, "avra-tasks.%lld.tmp", pid);
+    snprintf(next->line, sizeof next->line, "avra-tasks.%lld.line", pid);
+    g_door_at = !g_door_at;
 }
 
 // A decimal, written as a handler may.
@@ -2548,50 +2547,42 @@ static size_t digits_put(char* at, long long v) {
     return k;
 }
 
-// The door's directory, open, when it is this user's alone — a
-// directory and no link, owned by whoever this process runs as, 0700 —
-// else -1. Calls a handler may make.
-static int door_held(const char* dir) {
-    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (dfd < 0) return -1;
-    struct stat st;
-    if (fstat(dfd, &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == geteuid() && (st.st_mode & 077) == 0) return dfd;
-    close(dfd);
-    return -1;
-}
-
 // The ask in the open door is ours: a plain file, no link, owned by
 // whoever this process runs as.
-static int ask_ours(int dfd) {
+static int ask_ours(int dfd, const DoorNames* names) {
     struct stat st;
-    return fstatat(dfd, g_ask_name, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid();
+    return fstatat(dfd, names->ask, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid();
 }
 
 // No task has switched since the last ask: said by the handler itself,
 // as a trace line under a name of its own, so it never touches a
 // listing being written. An evaluated program's running task is its
 // machine's, which the handler cannot name.
-static void unswitched_said(int dfd) {
-    char line[96];
-    static const char head[] = "ts=0 unswitched id=";
-    static const char evaluated[] = "ts=0 unswitched id=0 evaluated\n";
+static void unswitched_said(int dfd, const DoorNames* names) {
+    char line[128];
+    static const char evaluated[] = " unswitched id=0 evaluated\n";
+    static const char head[] = " unswitched id=";
     size_t k = 0;
+    line[k++] = 't';
+    line[k++] = 's';
+    line[k++] = '=';
+    k += digits_put(line + k, (long long)now_ns());
     if (g_evaluated) {
-        memcpy(line, evaluated, sizeof evaluated - 1);
-        k = sizeof evaluated - 1;
+        memcpy(line + k, evaluated, sizeof evaluated - 1);
+        k += sizeof evaluated - 1;
     } else {
-        memcpy(line, head, sizeof head - 1);
+        memcpy(line + k, head, sizeof head - 1);
         k += sizeof head - 1;
         k += digits_put(line + k, (long long)id_of(g_current));
         line[k++] = '\n';
     }
-    unlinkat(dfd, g_line_name, 0);
-    int fd = openat(dfd, g_line_name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    unlinkat(dfd, names->line, 0);
+    int fd = openat(dfd, names->line, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) return;
     ssize_t w = write(fd, line, k);
     (void)w;
     close(fd);
-    renameat(dfd, g_line_name, dfd, g_out_name);
+    renameat(dfd, names->line, dfd, names->out);
 }
 
 // A handler that stood before ours is still called.
@@ -2610,9 +2601,10 @@ static void prior_called(int sig, siginfo_t* info, void* context) {
 static void tasks_asked(int sig, siginfo_t* info, void* context) {
     int saved = errno;
     if (g_asked++ > 0 && !g_in_world && g_until_poll == 0) {
-        int dfd = door_held(g_door_dir);
+        const DoorNames* names = &g_doors[g_door_at];
+        int dfd = avra_dir_held(names->dir);
         if (dfd >= 0) {
-            if (ask_ours(dfd)) unswitched_said(dfd);
+            if (ask_ours(dfd, names)) unswitched_said(dfd, names);
             close(dfd);
         }
     }
@@ -2625,24 +2617,26 @@ static void tasks_asked(int sig, siginfo_t* info, void* context) {
 __attribute__((noinline, cold))
 static void tasks_answered(void) {
     g_asked = 0;
-    int dfd = door_held(g_door_dir);
+    tasks_door_named();
+    const DoorNames* names = &g_doors[g_door_at];
+    int dfd = avra_dir_held(names->dir);
     if (dfd < 0) return;
-    if (ask_ours(dfd)) listing_written(dfd);
+    if (ask_ours(dfd, names)) listing_written(dfd, names);
     close(dfd);
 }
 
 // The listing beside the ask, then into place — the ask taken first, so
 // an asker who asks again on seeing the answer is answered again.
-static void listing_written(int dfd) {
-    unlinkat(dfd, g_tmp_name, 0);
-    int fd = openat(dfd, g_tmp_name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+static void listing_written(int dfd, const DoorNames* names) {
+    unlinkat(dfd, names->tmp, 0);
+    int fd = openat(dfd, names->tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) return;
     FILE* out = fdopen(fd, "w");
     if (!out) { close(fd); return; }
     avra_tasks_listed(out);
     fclose(out);
-    unlinkat(dfd, g_ask_name, 0);
-    renameat(dfd, g_tmp_name, dfd, g_out_name);
+    unlinkat(dfd, names->ask, 0);
+    renameat(dfd, names->tmp, dfd, names->out);
 }
 
 // Once, at the first spawn or the evaluator's first task.
