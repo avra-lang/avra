@@ -406,6 +406,7 @@ fn dispatched_call(
         let refused: TypeId? = embed_law(cx, e, placed.args[0])
         if refused != null { return refused! }
     }
+    if cx.view.decls.is_meta_fn(d, "code_hash") && !names_a_fn(cx, placed.args[0]) { return code_hash_unnamed(cx, placed.args[0]) }
     if !cx.seat_contracts(e, callee, d, 0, placed.args, null) { return cx.error_type }
     if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, d, placed.args) }
     let tp: List<string> = cx.tparams(d)
@@ -676,6 +677,25 @@ fn value_takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
                 "`${callee}` is a fn VALUE — it takes no type arguments",
                 "pinned here",
                 null,
+            ),
+        )
+}
+
+/// Whether an argument names a declared fn — what `code_hash` hashes.
+fn names_a_fn(cx: TypeCx, f: ExprId) -> bool {
+    let d? = cx.bound_decl(f) else { return false }
+    cx.view.decls.decl(d).kind is .Fn
+}
+
+fn code_hash_unnamed(mut cx: TypeCx, f: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.code_hash_named",
+                cx.loc_of(f),
+                "`code_hash` hashes a declared fn, named where it is called",
+                "this names no declared fn",
+                "name the fn itself — `code_hash(answer)` — never a value or a call",
             ),
         )
 }

@@ -1,0 +1,145 @@
+//! A FN'S CODE HASH moves when what the fn can reach does, and only
+//! then: an edit anywhere it reaches moves it, a rename, a comment or an
+//! edit it never reaches does not. Each case runs two programs and
+//! compares what `code_hash(answer)` says in each.
+use @std.avrac.compiler.{Program}
+use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths, refused_in}
+
+fn hashing(main: string) -> Program {
+    let held = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/main.av": "use @std.meta.{code_hash}\n${main}",
+        },
+    )
+    test_workspace(
+        memory_host(held, ["/w/avra.toml", "/w/src/main.av"].concat(vendored_meta_paths())),
+        "/w",
+    )
+        .program("/w/src/main.av")
+}
+
+/// What `code_hash(answer)` says in a program of `decls`.
+fn hash_in(decls: string) -> string { hashing("${decls}\n\ncode_hash(answer) ?? \"absent\"").run() catch e -> "refused: ${e}" }
+
+fn same(a: string, b: string) -> bool { hash_in(a) == hash_in(b) && !hash_in(a).starts_with("refused") && hash_in(a) != "absent" }
+
+fn moved(a: string, b: string) -> bool {
+    hash_in(a) != hash_in(b) &&
+        !hash_in(a).starts_with("refused") &&
+        !hash_in(b).starts_with("refused")
+}
+
+spec "compiler — a fn's code hash" {
+    given "one program" {
+        then "two runs agree" { same("fn answer() -> int { 1 }", "fn answer() -> int { 1 }") }
+        then "a fn every body of is lowered has a hash" { hash_in("fn answer() -> int { 1 }") != "absent" }
+    }
+    given "an edit the fn reaches" {
+        then "its own body moves it" { moved("fn answer() -> int { 1 }", "fn answer() -> int { 2 }") }
+        then "a callee's body moves it" {
+            moved(
+                "fn leaf() -> int { 1 }\nfn answer() -> int { leaf() }",
+                "fn leaf() -> int { 2 }\nfn answer() -> int { leaf() }",
+            )
+        }
+        then "a callee two calls down moves it" {
+            moved(
+                "fn deep() -> int { 1 }\nfn leaf() -> int { deep() }\nfn answer() -> int { leaf() }",
+                "fn deep() -> int { 3 }\nfn leaf() -> int { deep() }\nfn answer() -> int { leaf() }",
+            )
+        }
+        then "a fn in a recursion cycle moves it" {
+            moved(
+                "fn even(n: int) -> bool { if n == 0 { true } else { odd(n - 1) } }\nfn odd(n: int) -> bool { if n == 0 { false } else { even(n - 1) } }\nfn answer() -> bool { even(4) }",
+                "fn even(n: int) -> bool { if n == 0 { true } else { odd(n - 1) } }\nfn odd(n: int) -> bool { if n == 0 { true } else { even(n - 1) } }\nfn answer() -> bool { even(4) }",
+            )
+        }
+        then "a const it reads moves it" {
+            moved(
+                "const K: List<int> = [1, 2]\nfn answer() -> int { K[0] }",
+                "const K: List<int> = [3, 2]\nfn answer() -> int { K[0] }",
+            )
+        }
+        then "a fn its fn value may call moves it" {
+            moved(
+                "fn leaf() -> int { 1 }\nfn other() -> int { 0 }\nfn answer() -> int {\n    let f = if other() == 0 { leaf } else { other }\n    f()\n}",
+                "fn leaf() -> int { 2 }\nfn other() -> int { 0 }\nfn answer() -> int {\n    let f = if other() == 0 { leaf } else { other }\n    f()\n}",
+            )
+        }
+        then "a cycle of the same bodies wired another way moves it" {
+            moved(
+                "fn f(n: int) -> int { if n == 0 { 1 } else { g(n - 1) } }\nfn g(n: int) -> int { if n == 0 { 2 } else { h(n - 1) } }\nfn h(n: int) -> int { if n == 0 { 3 } else { f(n - 1) } }\nfn answer() -> int { f(4) }",
+                "fn f(n: int) -> int { if n == 0 { 1 } else { h(n - 1) } }\nfn g(n: int) -> int { if n == 0 { 2 } else { f(n - 1) } }\nfn h(n: int) -> int { if n == 0 { 3 } else { g(n - 1) } }\nfn answer() -> int { f(4) }",
+            )
+        }
+        then "a cycle of two alike bodies wired to different leaves moves it" {
+            moved(
+                "fn a(n: int) -> int { if n == 0 { x() } else { b(n - 1) } }\nfn b(n: int) -> int { if n == 0 { x() } else { a(n - 1) } }\nfn x() -> int { 1 }\nfn y() -> int { 2 }\nfn answer() -> int { a(3) }",
+                "fn a(n: int) -> int { if n == 0 { x() } else { b(n - 1) } }\nfn b(n: int) -> int { if n == 0 { y() } else { a(n - 1) } }\nfn x() -> int { 1 }\nfn y() -> int { 2 }\nfn answer() -> int { a(3) }",
+            )
+        }
+        then "a fn handed in through a cell moves it" {
+            moved(
+                "fn leaf() -> int { 1 }\nfn zero() -> int { 0 }\nonce fn slot() -> Cell<fn() -> int> { Cell.new(zero) }\nfn answer() -> int { slot().get()() }\nfn setup() { slot().set(leaf) }\nsetup()",
+                "fn leaf() -> int { 2 }\nfn zero() -> int { 0 }\nonce fn slot() -> Cell<fn() -> int> { Cell.new(zero) }\nfn answer() -> int { slot().get()() }\nfn setup() { slot().set(leaf) }\nsetup()",
+            )
+        }
+    }
+    given "an edit that moves no code the fn reaches" {
+        then "a rename of a callee moves nothing" {
+            same(
+                "fn leaf() -> int { 1 }\nfn answer() -> int { leaf() }",
+                "fn leaf_renamed() -> int { 1 }\nfn answer() -> int { leaf_renamed() }",
+            )
+        }
+        then "a rename inside a recursion cycle moves nothing" {
+            same(
+                "fn even(n: int) -> bool { if n == 0 { true } else { odd(n - 1) } }\nfn odd(n: int) -> bool { if n == 0 { false } else { even(n - 1) } }\nfn answer() -> bool { even(4) }",
+                "fn even(n: int) -> bool { if n == 0 { true } else { uneven(n - 1) } }\nfn uneven(n: int) -> bool { if n == 0 { false } else { even(n - 1) } }\nfn answer() -> bool { even(4) }",
+            )
+        }
+        then "a comment moves nothing" {
+            same(
+                "fn answer() -> int { 1 }",
+                "// the answer\nfn answer() -> int {\n    // one\n    1\n}",
+            )
+        }
+        then "a fn it never reaches moves nothing" {
+            same(
+                "fn answer() -> int { 1 }\nfn elsewhere() -> int { 1 }",
+                "fn answer() -> int { 1 }\nfn elsewhere() -> int { 2 }",
+            )
+        }
+    }
+    given "a symmetric cycle of alike bodies" {
+        then "entered at either member hashes alike" {
+            same(
+                "fn a(n: int) -> int { if n == 0 { 0 } else { b(n - 1) } }\nfn b(n: int) -> int { if n == 0 { 0 } else { a(n - 1) } }\nfn answer() -> int { a(3) }",
+                "fn a(n: int) -> int { if n == 0 { 0 } else { b(n - 1) } }\nfn b(n: int) -> int { if n == 0 { 0 } else { a(n - 1) } }\nfn answer() -> int { b(3) }",
+            )
+        }
+        then "renamed hashes alike" {
+            same(
+                "fn a(n: int) -> int { if n == 0 { 0 } else { b(n - 1) } }\nfn b(n: int) -> int { if n == 0 { 0 } else { a(n - 1) } }\nfn answer() -> int { a(3) }",
+                "fn p(n: int) -> int { if n == 0 { 0 } else { q(n - 1) } }\nfn q(n: int) -> int { if n == 0 { 0 } else { p(n - 1) } }\nfn answer() -> int { p(3) }",
+            )
+        }
+    }
+    given "an argument that names no declared fn" {
+        then "is refused where it is written" {
+            refused_in(
+                hashing("fn answer() -> int { 1 }\nlet f = answer\ncode_hash(f)"),
+                "`code_hash` hashes a declared fn",
+            )
+        }
+    }
+    given "a const reaching `code_hash`" {
+        then "traps settling, saying a const's value holds no code hash" {
+            (hashing("fn answer() -> int { 1 }\nconst H: string = code_hash(answer) ?? \"none\"\nH")
+                .run() catch e -> e)
+                .contains("a const's value cannot hold a code hash")
+        }
+    }
+}

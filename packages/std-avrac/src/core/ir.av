@@ -270,6 +270,64 @@ impl Ins {
     }
 }
 
+/// `i` absorbed into `d` WHOLE — its variant, every number and every
+/// text, each sequence folded with its length — so two instructions
+/// that differ anywhere digest apart. `fingerprint`'s strong twin, for
+/// identities that outlive the process.
+export fn digest_ins(d: Digest, i: Ins) -> Digest {
+    let w = ins_words(i)
+    let numbers = w
+        .ints
+        .fold(digest_int(digest_int(d, w.tag), w.ints.length), (acc, n) -> digest_int(acc, n))
+    w.texts.fold(digest_int(numbers, w.texts.length), (acc, t) -> digest_text(acc, t))
+}
+
+/// An instruction's payload as words: its tag, its numbers (a register
+/// by its index, a list by its length then its members), its texts.
+type InsWords = { tag: int, ints: List<int>, texts: List<string> }
+
+fn ins_words(i: Ins) -> InsWords {
+    match i {
+        .ConstInt(dst, v) -> InsWords { tag: 0, ints: [dst.index, v], texts: [] },
+        .ConstFloat(dst, bits) -> InsWords { tag: 1, ints: [dst.index, bits], texts: [] },
+        .ConstStr(dst, s) -> InsWords { tag: 2, ints: [dst.index], texts: [s] },
+        .ConstBool(dst, v) -> InsWords { tag: 3, ints: [dst.index, if v { 1 } else { 0 }], texts: [] },
+        .Bin(dst, op, a, b) -> InsWords { tag: 4, ints: [dst.index, op.fingerprint(), a.index, b.index], texts: [] },
+        .Un(dst, op, src) -> InsWords { tag: 5, ints: [dst.index, op.fingerprint(), src.index], texts: [] },
+        .CallRtVoid(callee, args) -> InsWords { tag: 6, ints: indices(args), texts: [callee] },
+        .CallRt(dst, callee, args) -> InsWords { tag: 7, ints: [dst.index].concat(indices(args)), texts: [callee] },
+        .Pack(dst, elems) -> InsWords { tag: 8, ints: [dst.index].concat(indices(elems)), texts: [] },
+        .Extract(dst, src, at) -> InsWords { tag: 9, ints: [dst.index, src.index, at], texts: [] },
+        .FnAddr(dst, sym) -> InsWords { tag: 10, ints: [dst.index], texts: [sym] },
+        .StaticAddr(dst, sym) -> InsWords { tag: 11, ints: [dst.index], texts: [sym] },
+        .OnceRead(dst, sym) -> InsWords { tag: 31, ints: [dst.index], texts: [sym] },
+        .OnceCommit(sym, value) -> InsWords { tag: 32, ints: [value.index], texts: [sym] },
+        .ScopeEnter(tier) -> InsWords { tag: 12, ints: [tier.fingerprint()], texts: [] },
+        .ScopeExit(gives) -> InsWords { tag: 13, ints: if gives == null { [0] } else { [1, gives!.index] }, texts: [] },
+        .IfStart(cond) -> InsWords { tag: 14, ints: [cond.index], texts: [] },
+        .SwitchStart(selector, cases) -> InsWords { tag: 15, ints: [selector.index, cases.length].concat(cases), texts: [] },
+        .ArmEnd(gives) -> InsWords { tag: 16, ints: [gives.index], texts: [] },
+        .RegionEnd(dst, gives) -> InsWords { tag: 17, ints: [dst.index, gives.index], texts: [] },
+        .Call(dst, callee, args) -> InsWords { tag: 18, ints: [dst.index].concat(indices(args)), texts: [callee] },
+        .CallPtr(dst, f, args) -> InsWords { tag: 19, ints: [dst.index, f.index].concat(indices(args)), texts: [] },
+        .RetVal(r) -> InsWords { tag: 20, ints: [r.index], texts: [] },
+        .FnExit(gives) -> InsWords { tag: 21, ints: [gives.index], texts: [] },
+        .Alloca(dst) -> InsWords { tag: 22, ints: [dst.index], texts: [] },
+        .Load(dst, slot) -> InsWords { tag: 23, ints: [dst.index, slot.index], texts: [] },
+        .Store(slot, src) -> InsWords { tag: 24, ints: [slot.index, src.index], texts: [] },
+        .LoopStart -> InsWords { tag: 25, ints: [], texts: [] },
+        .LoopCond(c) -> InsWords { tag: 26, ints: [c.index], texts: [] },
+        .LoopEnd -> InsWords { tag: 27, ints: [], texts: [] },
+        .LoopJump(outward, again) -> InsWords { tag: 33, ints: [outward, if again { 1 } else { 0 }], texts: [] },
+        .Retain(r) -> InsWords { tag: 28, ints: [r.index], texts: [] },
+        .Release(r) -> InsWords { tag: 29, ints: [r.index], texts: [] },
+        .Ret(code) -> InsWords { tag: 30, ints: [code], texts: [] },
+    }
+}
+
+/// A register list as its length, then each index — one fixed arity.
+fn indices(rs: List<Reg>) -> List<int> { [rs.length].concat([r.index for r in rs]) }
+
 /// `i` WITH EVERY REGISTER PASSED THROUGH `m` — every `Reg`-typed
 /// payload, destination and operands alike, one arm per variant
 /// (compiler.refusal_assembled's registry: a new instruction owes this arm or the rewrite
@@ -314,6 +372,29 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
         .Retain(r) -> Ins.Retain(m(r)),
         .Release(r) -> Ins.Release(m(r)),
         .Ret(code) -> Ins.Ret(code),
+    }
+}
+
+/// `i` WITH EVERY SYMBOL IT NAMES PASSED THROUGH `s` — a callee, a fn
+/// address, a once slot, a static; registers and runtime rows stand.
+/// `remapped`'s sibling, one arm per variant for the same reason: a
+/// rewrite that misses a variant compares two bodies wrongly.
+export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
+    match i {
+        .FnAddr(dst, sym) -> Ins.FnAddr(dst, s(sym)),
+        .StaticAddr(dst, sym) -> Ins.StaticAddr(dst, s(sym)),
+        .OnceRead(dst, sym) -> Ins.OnceRead(dst, s(sym)),
+        .OnceCommit(sym, value) -> Ins.OnceCommit(s(sym), value),
+        .Call(dst, callee, args) -> Ins.Call(dst, s(callee), args),
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> i,
+    }
+}
+
+/// The symbols `i` names — `resymbolled`'s read.
+export fn symbols_of(i: Ins) -> List<string> {
+    match i {
+        .FnAddr(_, sym) or .StaticAddr(_, sym) or .OnceRead(_, sym) or .OnceCommit(sym, _) or .Call(_, sym, _) -> [sym],
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> [],
     }
 }
 

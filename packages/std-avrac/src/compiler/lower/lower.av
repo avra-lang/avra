@@ -173,7 +173,22 @@ export type Lowered = {
     libraries: List<LinkedPackage> = [],
     // the settled aggregates its bodies read by address, each once
     statics: List<Static>,
+    /// The code hashes the program answers, each `target=hash` — what
+    /// the program's own module, which holds their bodies, is keyed by.
+    code_hashes: List<string> = [],
+    /// Each code hash asked, and the file whose body asked it — what a
+    /// file keeps beside its object, so a build that holds it still
+    /// answers its asks.
+    hash_asks: List<HashAsk> = [],
+    /// The bodies as lowered, before the memory pass — what a file's
+    /// code is kept as, so a held file's record and a fresh body hash
+    /// alike.
+    unmanaged: List<Body> = [],
 }
+
+/// A code hash a body asks, and the file the body is in — none for a
+/// body no file owns.
+export type HashAsk = { by: FileId?, target: string }
 
 impl Decls {
     /// The program's extern fns by symbol — what every emitter refuses
@@ -276,6 +291,7 @@ export fn lower(a: Analysis) -> Lowered {
             false,
             false,
             [],
+            [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
             (_f: FileId) -> false,
@@ -286,7 +302,7 @@ export fn lower(a: Analysis) -> Lowered {
 /// wrappers it minted (they never escape it), the bodies of OTHER
 /// declarations it wants — the program asks for those, and asking
 /// twice reuses — and every voice lowering earned.
-export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static> }
+export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static>, hashes: List<string> = [] }
 
 /// A unit lowered in its file's analysis: the body, then its own
 /// lifts and wrappers drained locally — a lambda's body may mint
@@ -350,6 +366,7 @@ export fn lower_unit(
     mut lifts: List<Lift> = first.jobs.lifts
     mut wraps: List<Wrap> = first.jobs.wraps
     mut statics: List<Static> = first.jobs.statics
+    mut hashes: List<string> = first.jobs.hashes
     // a wrapper may be wanted by several of the unit's bodies — once
     mut wrapped: Map<string, bool> = {}
     while !lifts.is_empty() || !wraps.is_empty() {
@@ -370,9 +387,16 @@ export fn lower_unit(
             lifts = lifts.concat(lf.jobs.lifts)
             wraps = wraps.concat(lf.jobs.wraps)
             statics = statics.concat(lf.jobs.statics)
+            hashes = hashes.concat(lf.jobs.hashes)
         }
     }
-    Unit { bodies: bodies, wants: wants, voices: Voices { list: spoken }, statics: statics }
+    Unit {
+        bodies: bodies,
+        wants: wants,
+        voices: Voices { list: spoken },
+        statics: statics,
+        hashes: hashes,
+    }
 }
 
 impl Decls {
@@ -394,6 +418,7 @@ impl Decls {
         every: bool,
         programs: bool,
         held_asks: List<Wanted>,
+        held_codes: List<CodeFacts>,
         unit_of: fn(Wanted) -> Unit,
         is_held: fn(FileId) -> bool,
         is_program: fn(FileId) -> bool,
@@ -425,6 +450,7 @@ impl Decls {
         }
         mut entry_body: Body = empty_main(self.types).body
         mut statics: List<Static> = []
+        mut hashes: List<HashAsk> = []
         if main_unit != null {
             let mu = main_unit!
             entry_body = mu.bodies.first() ?? entry_body
@@ -432,6 +458,7 @@ impl Decls {
             spoken = spoken.concat(mu.voices.list)
             wants = wants.concat(mu.wants)
             statics = mu.statics
+            hashes = [HashAsk { by: files[at].view.file, target: h } for h in mu.hashes]
         }
         let d = drained(
             wants.concat(held_asks),
@@ -442,6 +469,18 @@ impl Decls {
         )
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
+        let laid_out = distinct_statics(statics.concat(d.statics))
+        let asked = hashes.concat(d.hashes)
+        let unmanaged = fns
+        let answered = code_hashes(
+            self.types,
+            fns.concat([entry_body]),
+            laid_out,
+            d.held,
+            [h.target for h in asked],
+            held_codes,
+        )
+        fns = fns.concat(answered.bodies)
         let every_body = fns.concat([entry_body])
         spoken = spoken.concat(minted_pointers(self.types, every_body))
         Lowered {
@@ -452,8 +491,11 @@ impl Decls {
             types: self.types,
             diagnostics: spoken,
             externs: self.extern_rows(),
-            statics: distinct_statics(statics.concat(d.statics)),
+            statics: laid_out,
             libraries: [],
+            code_hashes: answered.keys,
+            hash_asks: asked,
+            unmanaged: unmanaged,
         }
     }
 
@@ -462,6 +504,16 @@ impl Decls {
     /// where it stands.
     fn host_fns_twice(hosted: List<DeclId>) -> List<Diag> {
         [self.host_fn_twice(d, hosted[first_named(self, hosted, d)]) for j, d in hosted if first_named(self, hosted, d) < j]
+    }
+
+    fn code_hash_in_const(root: Wanted) -> Diag {
+        refusal(
+            "lower.code_hash_const",
+            if root.decl == null { null } else { self.loc(root.decl!) },
+            "a const's value cannot hold a code hash — at compile time the program is only what the const reaches",
+            "reaches `code_hash`",
+            "ask `code_hash` where the program runs, in a fn body",
+        )
     }
 
     fn host_fn_twice(d: DeclId, first: DeclId) -> Diag {
@@ -584,16 +636,24 @@ impl Decls {
             (_w: Wanted) -> null,
         )
         let entry = ru.bodies.first() ?? empty_main(self.types).body
-        let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
+        let lowered_fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
+        let laid_out = distinct_statics(ru.statics.concat(d.statics))
+        let hashed = ru.hashes.concat([h.target for h in d.hashes]).is_empty()
+        let fns = lowered_fns
         let every_body = fns.concat([entry])
-        let spoken = ru.voices.list.concat(d.spoken).concat(minted_pointers(self.types, every_body))
+        let spoken = ru
+            .voices
+            .list
+            .concat(d.spoken)
+            .concat(minted_pointers(self.types, every_body))
+            .concat(if hashed { [] } else { [self.code_hash_in_const(root)] })
         Lowered {
             fns: fns,
             entry: entry,
             types: self.types,
             diagnostics: spoken,
             externs: self.extern_rows(),
-            statics: distinct_statics(ru.statics.concat(d.statics)),
+            statics: laid_out,
             libraries: [],
         }
     }
@@ -634,7 +694,7 @@ impl Decls {
 
 /// The bodies a worklist reaches, each name once, the statics they
 /// read, and what they spoke.
-type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId> }
+type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId>, hashes: List<HashAsk>, held: List<string> }
 
 fn drained(
     pending: List<Wanted>,
@@ -647,6 +707,8 @@ fn drained(
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
     mut statics: List<Static> = []
+    mut hashes: List<HashAsk> = []
+    mut held: List<string> = []
     mut asks: List<Ask> = []
     mut homes: List<FileId> = []
     mut seen: Map<string, bool> = {}
@@ -671,6 +733,7 @@ fn drained(
             let stub: Body? = held_stub(w)
             if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("drained: name=${w.name} stub_null=${stub == null}") }
             if stub != null { fns.push(stub!) }
+            held.push(w.name)
         }
         if fresh && !is_held(w.file) {
             minted = minted + 1
@@ -686,6 +749,8 @@ fn drained(
             }
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
             for st in u.statics { statics.push(st) }
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for h in u.hashes { hashes.push(HashAsk { by: if roams { null } else { w.file }, target: h }) }
         }
     }
     if !wants.is_empty() {
@@ -697,7 +762,15 @@ fn drained(
                 ),
             )
     }
-    Drained { fns: fns, spoken: spoken, statics: statics, asks: asks, homes: homes }
+    Drained {
+        fns: fns,
+        spoken: spoken,
+        statics: statics,
+        asks: asks,
+        homes: homes,
+        hashes: hashes,
+        held: held,
+    }
 }
 
 /// Each static once: units read one const independently and each
