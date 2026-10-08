@@ -119,21 +119,28 @@ impl Workspace {
 
     /// The cell a file's text stands in, when it was read — asking mints
     /// nothing.
-    fn text_cell(path: string) -> int? { self.input_index.get().get(spelled(text_named(path))) }
+    fn text_cell(path: string) -> int? { self.known_key(spelled(text_named(path))) }
 
     /// The cell key of a file's text.
     fn text_key(path: string) -> int { self.world_key(text_named(path)) }
 
     /// A name's cell key, minted the first time it is asked.
     fn world_key(name: InputName) -> int {
-        let known? = self.input_index.get().get(spelled(name)) else {
-            let next = self.input_names.get().length
-            self.input_index.put(spelled(name), next)
-            self.input_names.push(name)
-            return next
-        }
-        known
+        let key = spelled(name)
+        self.known_key(key) ?? self.minted_key(name, key)
     }
+
+    /// The cell key a spelled name already holds, or none.
+    fn known_key(key: string) -> int? { self.input_index.get().get(key) }
+
+    fn minted_key(name: InputName, key: string) -> int {
+        let next = self.names_count()
+        self.input_index.put(key, next)
+        self.input_names.push(name)
+        next
+    }
+
+    fn names_count() -> int { self.input_names.get().length }
 
     /// One read of the world by name, through its cell.
     fn input(name: InputName) -> Read {
