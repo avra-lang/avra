@@ -936,11 +936,11 @@ static void world_within_reach(void) {
 
 // `body` in a child that a hang cannot outlive; passes when every check
 // the child made held.
-static void in_child(const char* what, void (*body)(void)) {
+static void in_child_within(const char* what, void (*body)(void), unsigned seconds) {
     fflush(stderr);
     pid_t pid = fork();
     if (pid == 0) {
-        alarm(30);
+        alarm(seconds);
         g_fails = 0;
         body();
         _exit(g_fails ? 1 : 0);
@@ -949,6 +949,8 @@ static void in_child(const char* what, void (*body)(void)) {
     waitpid(pid, &status, 0);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, what);
 }
+
+static void in_child(const char* what, void (*body)(void)) { in_child_within(what, body, 30); }
 
 static void winner_leaves_at_claim(void) {
     g_gate = avra_gate_new();
@@ -1279,8 +1281,11 @@ int main(int argc, char** argv) {
     int64_t live = avra_mem_live();
     three_sources_as_fibers();
     claim_then_cancel();
-    cancel_and_old_rows();
-    due_on_a_claimed_set();
+    // ON THE VIRTUAL CLOCK, each in a child: a clock that never moves is
+    // a hang, which the short alarm turns into a failing check, and the
+    // cases after them run on a clock nothing here can have left moved
+    in_child_within("a cancel wakes neither a sleep nor a join, on the virtual clock", cancel_and_old_rows, 5);
+    in_child_within("a time due on a claimed set is dropped, on the virtual clock", due_on_a_claimed_set, 5);
     fork_forgets_gate_waiters();
     fiberless_tasks();
     joins_of_tasks_nothing_runs();
