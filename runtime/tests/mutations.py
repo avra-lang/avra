@@ -169,7 +169,7 @@ MUTATIONS = [
     ("a trap does not know its case's schedule", "    avra_case_schedule = schedule;\n", ""),
     ("a seeded deadlock names no schedule", "    if (g_seeded) fprintf(stderr, \"avra: under schedule %lld — \" SCHED_SEED_SETTING", "    if (0) fprintf(stderr, \"avra: under schedule %lld — \" SCHED_SEED_SETTING"),
     ("a case's answer is read past its lowest bit", "{ return g_case_body() & 1; }", "{ return g_case_body() != 0; }"),
-    ("a case with one order names a schedule when it fails", "return choices == 0 && k == 0 ? 0 : case_failed_under(label, k);", "return case_failed_under(label, k);"),
+    ("a case with one order names a schedule when it fails", "return choices == 0 && k == 0 ? 0 : case_failed_under(what, label, k);", "return case_failed_under(what, label, k);"),
     ("a case runs on the wall's clock", "    if (g_case_clock_virtual) {\n        avra_clock_run_begins();\n        avra_clock_virtual(1);\n    }", "    if (0) {\n        avra_clock_run_begins();\n        avra_clock_virtual(1);\n    }"),
     ("a case's clock outlives it", "    if (g_case_clock_virtual) avra_clock_run_ends();\n", "    if (g_case_clock_virtual) avra_clock_virtual(0);\n"),
     ("the clock setting is not heard", "    g_case_clock_virtual = 0;\n", ""),
