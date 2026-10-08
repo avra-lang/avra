@@ -19,38 +19,23 @@ impl NodeSemantics for MethodSemantics {
 
 impl Meaning for MethodCall {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        impls_resolve(cx, e)
+        nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        impls_type_of(cx, e)
+        method_call_type(cx, e)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        impls_lower(cx, e)
+        method_call_reg(cx, e)
     }
 }
 impl Meaning for Receiver {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        impls_resolve(cx, e)
+        cx.use_receiver(e)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        impls_type_of(cx, e)
+        cx.target_type(e)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        impls_lower(cx, e)
+        receiver_reg(cx, e)
     }
-}
-
-fn impls_resolve(mut cx: ResolveCx, e: ExprId) {
-    // a feature matching its own variants
-    match cx.view.store.expr(e) { .Receiver -> cx.use_receiver(e), _ -> nothing() }
-}
-
-fn impls_type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-    if cx.view.store.expr(e) is .Receiver { return cx.target_type(e) }
-    method_call_type(cx, e)
-}
-
-fn impls_lower(mut cx: LowerCx, e: ExprId) -> Reg {
-    if cx.view.store.expr(e) is .Receiver { return receiver_reg(cx, e) }
-    method_call_reg(cx, e)
 }

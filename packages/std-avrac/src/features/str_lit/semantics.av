@@ -27,10 +27,10 @@ impl Meaning for StrLit {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        str_type(cx, e)
+        cx.type(string)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        str_lower(cx, e)
+        str_reg(cx, e)
     }
 }
 impl Meaning for BytesLit {
@@ -38,10 +38,10 @@ impl Meaning for BytesLit {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        str_type(cx, e)
+        cx.type(Bytes)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        str_lower(cx, e)
+        cx.spelled_static(e) ?? undecoded_bytes(cx, e)
     }
 }
 
@@ -56,8 +56,12 @@ export fn str_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 export fn str_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     match cx.view.store.expr(e) {
         .Body(_, parts, holes, _) -> interp_reg(cx, e, parts, holes),
-        .BytesLit(_) -> cx.spelled_static(e) ?? cx
-            .lower_defect(e, "a byte string the lexer admitted did not decode"),
+        .BytesLit(_) -> cx.spelled_static(e) ?? undecoded_bytes(cx, e),
         _ -> str_reg(cx, e),
     }
+}
+
+/// A byte literal the lexer admitted that did not decode to octets.
+fn undecoded_bytes(mut cx: LowerCx, e: ExprId) -> Reg {
+    cx.lower_defect(e, "a byte string the lexer admitted did not decode")
 }

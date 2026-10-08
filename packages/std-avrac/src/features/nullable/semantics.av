@@ -31,7 +31,7 @@ impl NodeSemantics for NullableSemantics {
 
 impl Meaning for NullLit {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        nullable_resolve(cx, e)
+        nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         nullable_type(cx, e)
@@ -42,7 +42,7 @@ impl Meaning for NullLit {
 }
 impl Meaning for Coalesce {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        nullable_resolve(cx, e)
+        nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         nullable_type(cx, e)
@@ -53,7 +53,7 @@ impl Meaning for Coalesce {
 }
 impl Meaning for Force {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        nullable_resolve(cx, e)
+        nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         nullable_type(cx, e)
@@ -64,7 +64,7 @@ impl Meaning for Force {
 }
 impl Meaning for Propagate {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        nullable_resolve(cx, e)
+        nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         nullable_type(cx, e)
@@ -75,7 +75,8 @@ impl Meaning for Propagate {
 }
 impl Meaning for MatchOpt {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        nullable_resolve(cx, e)
+        cx.arm_scope(cx.bound_at(e, named_bind(self.bind.of)), self.present)
+        cx.arm_scope([], self.absent)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         nullable_type(cx, e)
@@ -86,22 +87,12 @@ impl Meaning for MatchOpt {
 }
 impl Meaning for Chain {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        nullable_resolve(cx, e)
+        nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         nullable_type(cx, e)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         nullable_reg(cx, e)
-    }
-}
-
-fn nullable_resolve(mut cx: ResolveCx, e: ExprId) {
-    match cx.view.store.expr(e) {
-        .MatchOpt(_, bind, present, absent) -> {
-            cx.arm_scope(cx.bound_at(e, named_bind(bind.of)), present)
-            cx.arm_scope([], absent)
-        },
-        _ -> nothing(),
     }
 }
