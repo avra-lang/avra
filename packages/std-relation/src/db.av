@@ -27,7 +27,7 @@
 //!
 use rows.{Rows, named_rows, Stamp}
 use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table}
-use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with}
+use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with, spelled_with}
 
 extern fn avra_trap(message: string)
 
@@ -492,7 +492,11 @@ export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>> }
 /// One query's answers under one Db: its kernel family with the typed
 /// values, every call's spelled arguments interned to a dense arg, and
 /// how each call is asked again when the kernel verifies it.
-type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, again: Table<fn() -> V> }
+type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, ints: Cell<List<int>>, again: Table<fn() -> V> }
+
+/// The int arguments an int-keyed query answers by their own number, below this
+/// bound; any other int is interned by its spelled form.
+const INT_ARG_CAP: int = 4096
 
 export fn answers<V>() -> Answers<V> {
     let none: List<AnswersUnder<V>?> = []
@@ -533,8 +537,9 @@ impl Answers<V> {
 fn held_in<V>(kernel: Kernel, family: int) -> AnswersUnder<V> {
     let memo: Relation<V> = new_memo(kernel, family)
     let args: Cell<Map<string, int>> = Cell.new({})
+    let ints: Cell<List<int>> = Cell.new([])
     let again: Table<fn() -> V> = new_table()
-    AnswersUnder { memo: memo, args: args, again: again }
+    AnswersUnder { memo: memo, args: args, ints: ints, again: again }
 }
 
 /// A kept record's answer, read back only when it was kept for `spelled`.
@@ -569,6 +574,24 @@ impl AnswersUnder<V> {
             return made
         }
         known
+    }
+
+    /// An int argument's dense arg: read from the int table below the cap, else
+    /// interned by its spelled form, as `arg` interns it.
+    fn int_arg(n: int) -> int {
+        let inside = n >= 0 && n < INT_ARG_CAP
+        if inside {
+            let known = self.ints.get()
+            if n < known.length && known[n] >= 0 { return known[n] }
+        }
+        let made = self.arg(spelled_with([(w: Writer) -> w.int(n)]))
+        if inside { self.remember_int(n, made) }
+        made
+    }
+
+    fn remember_int(n: int, made: int) {
+        while self.ints.get().length <= n { self.ints.push(-1) }
+        self.ints.set_at(n, made)
     }
 
     /// An open call computed: `body` run, its answer settled under the

@@ -113,11 +113,13 @@ fn wrapper(f: Fn) -> Decls {
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
                 let held = ${kept_name(f)}().under(${db})
-                let spelled = ${args_spelled(f)}
-                let arg = held.arg(spelled)
+                let arg = ${arg_code(f)}
                 match held.memo.start(arg) {
                     .Reuse(value) -> value,
-                    .Compute -> held.ran_lasting(${db}, arg, spelled, ${body}, ${again}, ${answer_hash(f)}, ${record}),
+                    .Compute -> {
+                        let spelled = ${args_spelled(f)}
+                        held.ran_lasting(${db}, arg, spelled, ${body}, ${again}, ${answer_hash(f)}, ${record})
+                    },
                 }
             }
         }
@@ -125,7 +127,7 @@ fn wrapper(f: Fn) -> Decls {
     quote {
         fn ${f.name}(..${seats}) -> ${f.answer} {
             let held = ${kept_name(f)}().under(${db})
-            let arg = held.arg(${args_spelled(f)})
+            let arg = ${arg_code(f)}
             match held.memo.start(arg) {
                 .Reuse(value) -> value,
                 .Compute -> held.ran(${db}, arg, ${body}, ${again}, ${answer_hash(f)}),
@@ -140,6 +142,15 @@ fn wrapper(f: Fn) -> Decls {
 export fn args_spelled(f: Fn) -> Code {
     let writes = [quote { (w: Writer) -> ${written(quote { w }, name(p.name), p.kind)} } for p in f.params.slice(1, f.params.length)]
     quote { spelled_with([${..writes}]) }
+}
+
+/// The dense arg a call is asked under: an int seat's own number, else its spelled arguments.
+fn arg_code(f: Fn) -> Code {
+    if f.params.length == 2 && f.params[1].kind is .Int {
+        quote { held.int_arg(${name(f.params[1].name)}) }
+    } else {
+        quote { held.arg(${args_spelled(f)}) }
+    }
 }
 
 /// The answer's own stable hash, one value folded alone.
