@@ -311,8 +311,14 @@ static void kept_whole(LLVMModuleRef m, LLVMValueRef g) {
     LLVMSetSection(used, "llvm.metadata");
 }
 
+// The name every site row is added under.
+#define SITE_ROW "avra.site"
+
 // A TASK BODY'S SITE, filed as a row of the site table (avra_box.h).
 // No instruction reads it, so a program pays its bytes and nothing else.
+// The row is named SITE_ROW and carries no section: a module's IR is the
+// same on every target, and the section is spelled where an object is
+// written (`sites_placed`).
 void avra_llvm_set_site(LLVMValueRef fn, const char* site) {
     LLVMModuleRef m = LLVMGetGlobalParent(fn);
     LLVMContextRef ctx = LLVMGetModuleContext(m);
@@ -325,11 +331,10 @@ void avra_llvm_set_site(LLVMValueRef fn, const char* site) {
     LLVMValueRef fields[2] = { fn, held };
     LLVMValueRef cells = LLVMConstStructInContext(ctx, fields, 2, 0);
     // Named, as every `llvm.used` member must be; the module uniques it.
-    LLVMValueRef row = LLVMAddGlobal(m, LLVMTypeOf(cells), "avra.site");
+    LLVMValueRef row = LLVMAddGlobal(m, LLVMTypeOf(cells), SITE_ROW);
     LLVMSetInitializer(row, cells);
     LLVMSetLinkage(row, LLVMPrivateLinkage);
     LLVMSetAlignment(row, 8);
-    LLVMSetSection(row, AVRA_SITES_ELF_SECTION);
     kept_whole(m, row);
 }
 
@@ -339,12 +344,16 @@ static int target_is_macho(const char* triple) {
 
 // A site row's section is spelled for the object format its module is
 // emitted as, known only once the target is final: Mach-O names a
-// segment beside the section.
+// segment beside the section. A row is a global the module uniqued from
+// SITE_ROW (`avra.site`, `avra.site.1`, …) — no program symbol is spelled
+// so, every one of those starting `av_`.
 static void sites_placed(LLVMModuleRef m, const char* triple) {
-    if (!target_is_macho(triple)) return;
+    const char* section = target_is_macho(triple) ? AVRA_SITES_MACHO_SEGMENT "," AVRA_SITES_MACHO_SECTION : AVRA_SITES_ELF_SECTION;
+    size_t n = strlen(SITE_ROW);
     for (LLVMValueRef g = LLVMGetFirstGlobal(m); g; g = LLVMGetNextGlobal(g)) {
-        const char* s = LLVMGetSection(g);
-        if (s && strcmp(s, AVRA_SITES_ELF_SECTION) == 0) LLVMSetSection(g, AVRA_SITES_MACHO_SEGMENT "," AVRA_SITES_MACHO_SECTION);
+        size_t len = 0;
+        const char* name = LLVMGetValueName2(g, &len);
+        if (len >= n && strncmp(name, SITE_ROW, n) == 0 && (len == n || name[n] == '.')) LLVMSetSection(g, section);
     }
 }
 
