@@ -24,7 +24,7 @@ use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, stem_of}
 use @std.process.{Tool, tool_at, cmd, Command, Exit, Streams, inherited, ProcessError, exit}
 use @std.time.{now_ns}
 use @std.io.{exists, make_dirs, compile_slot, Entry}
-use @std.avrac.compiler.backend.{emit_ll}
+use @std.avrac.compiler.backend.{emit_ll, links_with_ld64}
 use @std.avrac.compiler.host.{no_target, Stamp, Host}
 use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
 
@@ -563,8 +563,15 @@ export fn toolchain(ws: Workspace, target: string, reactor: bool, debug: bool) -
     if target == "" {
         let word = chosen(ws, "CC", "clang")
         let host? = ws.tool(word) else { return .Err(refused_by_host(ProcessError.NotFound(word, ws.env("PATH") ?? ""))) }
+        let ld = if links_with_ld64() { null } else { ws.tool(joined_path(dir_of(host.path), "ld.lld")) }
         return .Ok(
-            Toolchain { opt: "-O1", runtime: runtime_library(), linker: host.path, tools: [host] },
+            Toolchain {
+                opt: "-O1",
+                runtime: runtime_library(),
+                linker: host.path,
+                tools: [host].concat(some_list(ld)),
+                ld: ld?.path ?? "",
+            },
         )
     }
     let wasm = match wasm_tools(ws, target) {
