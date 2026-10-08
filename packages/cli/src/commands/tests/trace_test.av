@@ -49,7 +49,7 @@ spec "commands/trace — the timeline" {
         then "every event line is read" { read_trace(mixed()).events.length == 7 }
         then "a line that is no event is counted" {
             read_trace(mixed()).strays.length == 1 &&
-                (timeline_lines(mixed()).last() ?? "").starts_with("1 line(s) were no event")
+                (timeline_lines(mixed()).last() ?? "").contains("1 line(s) were no event")
         }
         then "tasks keep the order of first sight" {
             [t.task for t in timelines(read_trace(mixed()).events)].length == 2 &&
@@ -129,6 +129,75 @@ spec "commands/trace — the wait graph" {
         then "it is named so" {
             graph_lines("ts=0 join id=0 on=unrun\n", null)
                 .contains("  the program's own run -> a task nothing runs")
+        }
+    }
+}
+
+fn dumped() -> string {
+    "ts=9 spawn id=1\nts=9 site id=1 pkg/main.av:4\nts=9 park id=1 src=fd:r:6 arm=0:0\nts=9 age id=1 ms=120\nts=9 spawn id=2\nts=9 site id=2 0x55d0\nts=9 join id=2 on=1\nts=9 age id=2 ms=80\n"
+}
+
+spec "commands/trace — a line cut short or missing what it must say" {
+    given "a last line with no newline" {
+        then "it is no event" { read_trace("ts=1 spawn id=1 0\nts=2 park id=1 src=gate:0x5").strays.length == 1 }
+        then "and the lines before it are read" { read_trace("ts=1 spawn id=1 0\nts=2 park id=1 src=gate:0x5").events.length == 1 }
+    }
+    given "a park without its source or its arm" {
+        then "a park without its source is no event" { read_trace("ts=1 park id=4 sr\n").strays.length == 1 }
+        then "a park without its arm is no event" { read_trace("ts=1 park id=4 src=at\n").strays.length == 1 }
+    }
+    given "a join without a task it joins" {
+        then "a join cut before its task is no event" { read_trace("ts=1 join id=3 o\n").strays.length == 1 }
+        then "a join of no task is no event" { read_trace("ts=1 join id=3 on=x\n").strays.length == 1 }
+        then "a join of a task nothing runs is one" { read_trace("ts=1 join id=3 on=unrun\n").events.length == 1 }
+    }
+    given "a claim without its claimant or its arm" {
+        then "a claim without its arm is no event" { read_trace("ts=1 claim id=1 by=2\n").strays.length == 1 }
+        then "a claim without its claimant is no event" { read_trace("ts=1 claim id=1 arm=0:0\n").strays.length == 1 }
+    }
+}
+
+spec "commands/trace — the graph's edges" {
+    given "a task whose join leads into a ring" {
+        then "the ring is named once, without the tail" {
+            [l for l in graph_lines(
+                "ts=0 spawn id=1 0\nts=0 spawn id=2 0\nts=0 spawn id=3 0\nts=1 join id=3 on=1\nts=2 join id=1 on=2\nts=3 join id=2 on=1\n",
+                null,
+            ) if l.contains("RING")]
+                .join("\n") == "  RING: task 1 -> task 2 -> task 1"
+        }
+    }
+    given "the graph at the trace's first instant" {
+        then "it holds only what came then" {
+            graph_lines(ringed(), 0)[0] == "at +0.000 ms: 3 task(s) alive, 0 waiting, 3 ready or running"
+        }
+    }
+    given "a task that ends while it waits" {
+        then "it waits on nothing and is gone" {
+            graph_lines("ts=0 spawn id=1 0\nts=1 park id=1 src=at arm=0:0\nts=2 end id=1 0\n", null)[0] == "at the trace's end: 1 task(s) alive, 0 waiting, 1 ready or running"
+        }
+    }
+    given "an empty trace" {
+        then "no task is alive" { graph_lines("", null)[0] == "at the trace's end: 0 task(s) alive, 0 waiting, 0 ready or running" }
+    }
+}
+
+spec "commands/trace — a live process's listing" {
+    given "a listing, in the trace's own lines" {
+        then "the graph reads it as a trace" {
+            graph_lines(dumped(), null).join("\n") == "at the trace's end: 3 task(s) alive, 2 waiting, 1 ready or running\n  task 1 -> descriptor 6 (readable)\n  task 2 -> task 1\n  no ring of joins"
+        }
+        then "a spawn with no parent says where alone" { timeline_lines(dumped()).any(it.contains("spawned at pkg/main.av:4")) }
+        then "a task's age is said as at most" { timeline_lines(dumped()).any(it.contains("spawned at most 120 ms before it was listed")) }
+    }
+    given "the handler's own line" {
+        then "a task that has not switched is said so" {
+            timeline_lines("ts=0 unswitched id=1\n")
+                .any(it.contains("running, has not switched since it was asked"))
+        }
+        then "an evaluated program that has not is said so" {
+            timeline_lines("ts=0 unswitched id=0 evaluated\n")
+                .any(it.contains("the evaluated program has not switched since it was asked"))
         }
     }
 }

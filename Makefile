@@ -543,7 +543,7 @@ runtime-mutations: $(RUNTIME_OBJS)
 
 # A TRACE HAS ONE SHAPE IN BOTH ENGINES: one program traced compiled
 # and evaluated, the reader's shape of each held to a committed text.
-flow-trace: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+flow-trace: $(COMPILER_OBJS) $(PACKAGE_OBJS) build/runtime-tests/tasks_door_test
 	@sh tools/flow_trace_engines.sh
 
 # The runtime's trap contract: the words and the verdict (exit 2).

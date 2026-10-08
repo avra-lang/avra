@@ -18,7 +18,7 @@
 use @std.cli.{CliResult, Runnable, command, arg, flag, option}
 use @std.io.{read_text}
 use @std.text.{parse_int, pad_left, repeat, lines}
-use @std.avrac.core.{sorted_by, some_list, touch}
+use @std.avrac.core.{sorted_by, touch, flatten}
 
 /// What a trace line says happened.
 export enum Happened {
@@ -33,6 +33,8 @@ export enum Happened {
     DeadlineFired
     Cancel
     End
+    Age
+    Unswitched
     Other(word: string)
 }
 
@@ -74,6 +76,8 @@ fn ev_of(word: string) -> Happened {
         "deadline-fired" -> Happened.DeadlineFired,
         "cancel" -> Happened.Cancel,
         "end" -> Happened.End,
+        "age" -> Happened.Age,
+        "unswitched" -> Happened.Unswitched,
         _ -> Happened.Other(word),
     }
 }
@@ -92,19 +96,46 @@ fn event_of(line: string) -> Traced? {
     let task? = number_after(words[2], "id=") else { return null }
     let head = words[0].length + words[1].length + words[2].length + 3
     let rest = if head < line.length { line.substring(head, line.length) } else { "" }
-    Traced { ts: ts, ev: ev_of(words[1]), task: task, rest: rest }
+    let ev = ev_of(words[1])
+    if !whole(ev, rest) { return null }
+    Traced { ts: ts, ev: ev, task: task, rest: rest }
 }
 
-/// Every event of a trace's text, and every line that was none.
-export fn read_trace(text: string) -> TraceRead {
-    let all = lines(text)
-    TraceRead {
-        events: flatten_events([some_list(event_of(l)) for l in all]),
-        strays: [l for l in all if event_of(l) == null && l.trim() != ""],
+/// WHETHER A LINE SAYS ALL IT MUST: a line a program was killed in the
+/// middle of writing is no event, never one with its fields made up.
+fn whole(ev: Happened, rest: string) -> bool {
+    match ev {
+        .Park -> field(rest, "src") != null && field(rest, "arm") != null,
+        .Join -> joined_ok(field(rest, "on")),
+        .Claim -> field(rest, "by") != null && field(rest, "arm") != null,
+        .Age -> parse_int(field(rest, "ms") ?? "") != null,
+        .Spawn or .SpawnAt or .Site or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .End or .Unswitched or .Other(_) -> true,
     }
 }
 
-fn flatten_events(xs: List<List<Traced>>) -> List<Traced> { [e for x in xs for e in x] }
+fn joined_ok(on: string?) -> bool {
+    let task? = on else { return false }
+    task == "unrun" || parse_int(task) != null
+}
+
+/// Every event of a trace's text, and every line that was none.
+/// A last line with no newline is a line cut short, and counted as none.
+export fn read_trace(text: string) -> TraceRead {
+    let all = lines(text)
+    let cut = text.length > 0 && !text.ends_with("\n")
+    mut events: List<Traced> = []
+    mut strays: List<string> = []
+    for i, l in all {
+        let e = if cut && i == all.length - 1 { null } else { event_of(l) }
+        match e {
+            ev? -> events.push(ev)
+            null -> {
+                if l.trim() != "" { strays.push(l) }
+            }
+        }
+    }
+    TraceRead { events: events, strays: strays }
+}
 
 /// The value of `name=` among a line's words, or null.
 fn field(rest: string, name: string) -> string? {
@@ -126,7 +157,7 @@ fn task_named(task: int) -> string {
 export fn worded(ev: Happened, rest: string, site: string?) -> string {
     let where = if site != null { " at ${site!}" } else { "" }
     match ev {
-        .Spawn -> "spawned by task ${rest}${where}",
+        .Spawn -> if rest == "" { "spawned${where}" } else { "spawned by task ${rest}${where}" },
         .SpawnAt -> if site != null { "spawned (evaluated)${where}" } else { "spawned (evaluated) at site ${rest}" },
         .Site -> "site ${rest}",
         .Join -> joined_words(field(rest, "on") ?? rest),
@@ -137,6 +168,8 @@ export fn worded(ev: Happened, rest: string, site: string?) -> string {
         .DeadlineFired -> "its deadline came",
         .Cancel -> "cancelled by task ${rest}",
         .End -> "ends",
+        .Age -> "spawned at most ${field(rest, "ms") ?? "?"} ms before it was listed",
+        .Unswitched -> if rest.contains("evaluated") { "the evaluated program has not switched since it was asked" } else { "running, has not switched since it was asked" },
         .Other(word) -> "${word} ${rest}".trim(),
     }
 }
@@ -226,12 +259,10 @@ fn pad_zeros(n: int, width: int) -> string {
 /// Every task's timeline, or `only`'s, and the lines that were none.
 export fn timelines_said(r: TraceRead, only: int?) -> string {
     let shown = [t for t in timelines(r.events) if only == null || t.task == only!]
-    let told = flatten_lines([timeline_said(t) for t in shown])
-    let strays = if r.strays.is_empty() { [] } else { ["${r.strays.length} line(s) were no event; the first: ${first_chars(r.strays[0], 80)}"] }
+    let told = flatten([timeline_said(t) for t in shown])
+    let strays = if r.strays.is_empty() { [] } else { [strayed(r.strays.length, first_chars(r.strays[0], 80))] }
     told.concat(strays).join("\n")
 }
-
-fn flatten_lines(xs: List<List<string>>) -> List<string> { [l for x in xs for l in x] }
 
 fn first_chars(s: string, n: int) -> string { if s.length > n { s.substring(0, n) } else { s } }
 
@@ -248,10 +279,13 @@ fn timeline_said(t: TaskTimeline) -> List<string> {
 
 /// One event with what an engine owns left out.
 fn shape_worded(ev: Happened, rest: string, site: string?) -> string {
-    if ev is .Spawn || ev is .SpawnAt { return if is_line(site) { "spawned at ${site!}" } else { "spawned" } }
-    if ev is .DeadlineSet { return "deadline filed" }
-    if ev is .Park { return parked_shape(rest) ?? worded(ev, rest, null) }
-    worded(ev, rest, null)
+    match ev {
+        .Spawn or .SpawnAt -> if is_line(site) { "spawned at ${site!}" } else { "spawned" },
+        .DeadlineSet -> "deadline filed",
+        .Park -> parked_shape(rest) ?? worded(ev, rest, null),
+        .Age -> "age",
+        .Site or .Join or .Claim or .Retract or .DeadlineFired or .Cancel or .End or .Unswitched or .Other(_) -> worded(ev, rest, null),
+    }
 }
 
 /// A park's source by its kind alone — `gate`, `fd:r`, `fd:w` or `at`.
@@ -267,7 +301,7 @@ export fn shape(events: List<Traced>) -> string {
     let at = sites(events)
     let told = [e for e in folded(events) if !(e.task == 0 && e.ev is .SpawnAt)]
     let groups = sorted_by(grouped(told), (a, b) -> a.task < b.task)
-    flatten_lines([shape_of(g, at) for g in groups]).join("\n")
+    flatten([shape_of(g, at) for g in groups]).join("\n")
 }
 
 /// One task's events, in order.
@@ -280,12 +314,16 @@ fn grouped(events: List<Traced>) -> List<TaskEvents> {
     mut place: Map<string, int> = {}
     for e in events {
         let key = "${e.task}"
-        if !place.has(key) {
-            place.set(key, order.length)
-            order.push(e.task)
-            lists.push([])
+        let slot = match place.get(key) {
+            at? -> at
+            null -> {
+                place.set(key, order.length)
+                order.push(e.task)
+                lists.push([])
+                order.length - 1
+            }
         }
-        lists[place.get(key) ?? 0].push(e)
+        lists[slot].push(e)
     }
     [TaskEvents { task: t, events: lists[i] } for i, t in order]
 }
@@ -310,7 +348,7 @@ fn waited(src: string, arm: string) -> WaitOn {
 /// What each live task waits on at `at` ns from the first line — the
 /// trace's end when null.
 export fn waits_at(events: List<Traced>, at: int?) -> WaitGraph {
-    let first? = events.first() else { return WaitGraph { alive: [0], waiting: [], rung: {} } }
+    let first? = events.first() else { return WaitGraph { alive: [], waiting: [], rung: {} } }
     mut spawned: List<int> = [0]
     mut live: Map<string, bool> = {"0": true}
     mut waits: Map<string, List<WaitOn>> = {}
@@ -343,7 +381,7 @@ export fn waits_at(events: List<Traced>, at: int?) -> WaitGraph {
                 for w in waits.get(key) ?? [] { gate_rung(w, e.rest, rung) }
                 let _ = waits.remove(key)
             },
-            .Site or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .Other(_) -> touch(e),
+            .Site or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .Age or .Unswitched or .Other(_) -> touch(e),
         }
         joined.set(key, e.ev is .Join)
     }
@@ -393,29 +431,38 @@ fn joined_task(w: TaskWaits) -> int? {
     match first { .OnTask(task) -> task, _ -> null }
 }
 
-/// Every ring of joins, each once, from its smallest task.
+/// Every ring of joins, each once, from its smallest task. Each task is
+/// walked once: a walk ends at a task an earlier walk reached, and a ring
+/// is found where a walk reaches itself.
 export fn rings(waits: WaitGraph) -> List<List<int>> {
     mut joins: Map<string, int> = {}
     for w in waits.waiting {
         let on? = joined_task(w) else { continue }
         joins.set("${w.task}", on)
     }
-    let starts = sorted_by(
-        [w.task for w in waits.waiting if joins.has("${w.task}")],
-        (a, b) -> a < b,
-    )
-    [r for r in [ring_from(s, joins) for s in starts] if !r.is_empty()]
+    mut walked: Map<string, int> = {}
+    mut found: List<List<int>> = []
+    for start in sorted_by([w.task for w in waits.waiting], (a, b) -> a < b) {
+        if walked.has("${start}") { continue }
+        mut path: List<int> = []
+        mut t: int? = start
+        while t != null && !walked.has("${t!}") {
+            walked.set("${t!}", start)
+            path.push(t!)
+            t = joins.get("${t!}")
+        }
+        if t != null && walked.get("${t!}") == start {
+            found.push(from_smallest(path.slice(path.index_of(t!), path.length)))
+        }
+    }
+    sorted_by(found, (a, b) -> a[0] < b[0])
 }
 
-/// The ring that starts at `start` and has no smaller task, or [].
-fn ring_from(start: int, joins: Map<string, int>) -> List<int> {
-    mut path = [start]
-    mut t = joins.get("${start}")
-    while t != null && !path.contains(t!) {
-        path.push(t!)
-        t = joins.get("${t!}")
-    }
-    if t != null && t! == start && path.all(start <= it) { path } else { [] }
+/// A ring turned to begin at its smallest task.
+fn from_smallest(ring: List<int>) -> List<int> {
+    let least = sorted_by(ring, (a, b) -> a < b)[0]
+    let at = ring.index_of(least)
+    ring.slice(at, ring.length).concat(ring.slice(0, at))
 }
 
 /// The wait graph as text: at `at` ns, or at the trace's end.
@@ -439,6 +486,7 @@ fn ring_said(r: List<int>) -> string {
 
 /// `MS` as a whole number of nanoseconds — `1`, `1.5`, `0.250`.
 export fn ns_of_ms(text: string) -> int? {
+    if text.starts_with("-") || text.starts_with("+") { return null }
     let parts = text.split(".")
     let whole? = parse_int(parts.first() ?? "") else { return null }
     if parts.length == 1 { return whole * 1000000 }
@@ -454,7 +502,14 @@ type TraceCmd = {}
 
 impl Runnable for TraceCmd {
     fn run(args: CliResult) -> int {
-        let path = args.arg("file")
+        let asked = match asked_of(args) {
+            .Ok(a) -> a,
+            .Err(words) -> {
+                eprintln(words)
+                return 2
+            },
+        }
+        let path = rooted(args.arg("file"))
         // LICENSED input.trace_file: a running program's record, and no compile answer reads it
         let text = match read_text(path) {
             .Ok(t) -> t,
@@ -464,19 +519,39 @@ impl Runnable for TraceCmd {
             },
         }
         let r = read_trace(text)
-        if args.has_flag("graph") {
-            let at = ns_of_ms(args.option("at"))
-            println(graph(waits_at(r.events, at), at))
-            return strays_said(r)
+        match asked.view {
+            .Graph -> println(graph(waits_at(r.events, asked.at), asked.at)),
+            .Shape -> println(shape(r.events)),
+            .Timelines -> {
+                println(timelines_said(r, asked.task))
+                println(read_count(r.events.length, timelines(r.events).length))
+            },
         }
-        if args.has_flag("shape") {
-            println(shape(r.events))
-            return strays_said(r)
-        }
-        println(timelines_said(r, parse_int(args.option("task"))))
-        println(read_count(r.events.length, timelines(r.events).length))
-        0
+        strays_said(r)
     }
+}
+
+/// What the command was asked to print.
+enum TraceView {
+    Timelines
+    Shape
+    Graph
+}
+
+/// The view, the instant for a graph, and the one task for a timeline.
+type TraceAsked = { view: TraceView, at: int?, task: int? }
+
+/// The options read whole, or the words that refuse them.
+fn asked_of(args: CliResult) -> Result<TraceAsked, string> {
+    let view = if args.has_flag("graph") { TraceView.Graph } else if args.has_flag("shape") { TraceView.Shape } else { TraceView.Timelines }
+    let at_text = args.option("at")
+    let task_text = args.option("task")
+    if at_text != "" && !(view is .Graph) { fail at_alone() }
+    let at = if at_text == "" { null } else { ns_of_ms(at_text) }
+    if at_text != "" && at == null { fail at_garbled(at_text) }
+    let task = if task_text == "" { null } else { parse_int(task_text) }
+    if task_text != "" && task == null { fail task_garbled(task_text) }
+    TraceAsked { view: view, at: at, task: task }
 }
 
 /// 1, said on stderr, when the trace held a line that was no event.
@@ -503,3 +578,11 @@ fn unreadable(path: string) -> string { "avra trace: no trace could be read at $
 fn strayed(n: int, first: string) -> string { "avra trace: ${n} line(s) were no event; the first: ${first}" }
 
 fn read_count(events: int, tasks: int) -> string { "avra trace: read ${events} event(s) of ${tasks} task(s)" }
+
+fn at_alone() -> string { "avra trace: `--at` names an instant of the wait graph, so it is asked with `--graph`" }
+
+fn at_garbled(text: string) -> string {
+    "avra trace: `--at ${text}` is no instant — milliseconds from the trace's first line, as `12` or `12.5`"
+}
+
+fn task_garbled(text: string) -> string { "avra trace: `--task ${text}` is no task id — a whole number, as `3`" }

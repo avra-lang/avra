@@ -40,7 +40,8 @@ held() {
         echo "flow-trace: the compiler spawned a task of its own while it evaluated $want"
         return 1
     fi
-    if ! build/avra trace "$trace" --shape > "$trace.shape" 2> "$trace.strays"; then
+    case "$trace" in /*) whole_path=$trace ;; *) whole_path=$PWD/$trace ;; esac
+    if ! build/avra trace "$whole_path" --shape > "$trace.shape" 2> "$trace.strays"; then
         echo "flow-trace: the $engine trace of $want holds a line that is no event"; sed -n '1p' "$trace.strays"
         return 1
     fi
@@ -108,5 +109,18 @@ for program in $PROGRAMS; do
         events=$((events + $(grep -c '^ts=' "$dir/$engine.trace" 2>/dev/null || echo 0)))
     done
 done
-echo "flow-trace: 4 fixtures, $programs programs in 2 engines, $events events read, $fails refused"
+# A LIVE PROCESS'S LISTING IS A TRACE: the runtime's own scene of a task
+# in every state, listed, and read back by the same graph — addresses and
+# descriptor numbers left out, since they are the machine's.
+dump=$ROOT/listed.trace
+if build/runtime-tests/tasks_door_test listed -1 > "$dump" 2>&1 \
+    && build/avra trace "$PWD/$dump" --graph | sed 's/0x[0-9a-f]*/0x/g; s/descriptor [0-9]*/descriptor N/' > "$dump.graph" \
+    && cmp -s "$dump.graph" tools/flow_trace/listed.graph; then
+    events=$((events + $(grep -c '^ts=' "$dump")))
+else
+    echo "flow-trace: a live listing's graph is not tools/flow_trace/listed.graph"
+    diff tools/flow_trace/listed.graph "$dump.graph" || true
+    fails=$((fails + 1))
+fi
+echo "flow-trace: 4 fixtures, $programs programs in 2 engines and a live listing, $events events read, $fails refused"
 [ "$fails" -eq 0 ]
