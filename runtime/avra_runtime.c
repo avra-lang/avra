@@ -3462,7 +3462,10 @@ int64_t avra_fd_read(int64_t fd, int64_t max) {
     if (max == 0) return fd_landed(0);
     size_t n = max > FD_SCRATCH ? FD_SCRATCH : (size_t)max;
     for (;;) {
+        // A DESCRIPTOR MAY BLOCK: stdin, a pipe a program opened itself.
+        avra_clock_hold(1);
         ssize_t got = read((int)fd, g_fd_buf, n);
+        avra_clock_hold(-1);
         if (got > 0) {
             if ((size_t)got < n && avra_fd_drained_hook) avra_fd_drained_hook(fd);
             return fd_landed(got);
@@ -3878,7 +3881,7 @@ void avra_clock_hold(int64_t by) {
 void avra_clock_holds_let_go(int64_t n) {
     if (n <= 0) return;
     avra_clock.held -= (int32_t)n;
-    if (avra_clock.held < 0) avra_clock.held = 0;
+    if (avra_clock.held < 0) avra_trap("defect: abandoned tasks were charged more holds on the world than stand");
     clock_settled();
 }
 
@@ -4318,6 +4321,7 @@ const char* avra_capture_end(void) {
     char* buf = (char*)malloc((size_t)size + 1);
     size_t got = 0;
     while (got < (size_t)size) {
+        // the clock: a regular file of this process's own, read back whole
         ssize_t n = read(g_cap_file, buf + got, (size_t)size - got);
         if (n <= 0) break;
         got += (size_t)n;

@@ -373,6 +373,7 @@ static void routed(Watch* w, const struct inotify_event* ev) {
 static int drained(Watch* w) {
     static _Alignas(struct inotify_event) char buf[1 << 16];
     for (;;) {
+        // the clock: the inotify descriptor is IN_NONBLOCK, a read answers at once
         ssize_t n = read(w->fd, buf, sizeof buf);
         if (n < 0 && errno == EINTR) continue;
         if (n < 0) return errno == EAGAIN ? 0 : -errno;

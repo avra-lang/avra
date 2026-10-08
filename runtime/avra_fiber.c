@@ -2209,9 +2209,10 @@ static int64_t case_cleared(int dead) {
         fputc('\n', stderr);
     }
     if (g_seeded) fprintf(stderr, "avra: under schedule %lld — " SCHED_SEED_SETTING "=%lld replays it\n", (long long)g_schedule, (long long)g_schedule);
-    // A HOLD OUTLIVES NO HOLDER: what abandoned tasks held of the world
-    // is let go, or every later case's clock would flow at wall rate —
-    // and only that share: a live task's holds stand.
+    // What abandoned tasks held of the world is let go, or every later
+    // case's clock would flow at wall rate — and only that share: a live
+    // task's holds stand. A task that ENDED holding is not charged back
+    // here; no hold can outlive the C call that took it today.
     int64_t held = 0;
     for (int64_t i = 0; i < n; i++) held += alive[i]->own.clock_holds;
     for (int64_t i = 0; i < n; i++) abandoned(alive[i]);

@@ -146,7 +146,9 @@ static int64_t net_resolved(const char* host, int64_t port, int passive, struct 
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_NUMERICSERV | (passive ? AI_PASSIVE : 0);
+    avra_clock_hold(1);
     int rc = getaddrinfo(host, service, &hints, out);
+    avra_clock_hold(-1);
     return rc == 0 ? 0 : gai_errno(rc);
 }
 
@@ -217,9 +219,11 @@ static int net_accept_retries(int err) {
 int64_t avra_net_accept(int64_t lfd) {
     for (;;) {
 #if defined(__linux__) && defined(_GNU_SOURCE)
+        // the clock: the listener is O_NONBLOCK, an accept answers at once
         int fd = accept4((int)lfd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (fd >= 0) { net_stream_options(fd); return fd; }
 #else
+        // the clock: the listener is O_NONBLOCK, an accept answers at once
         int fd = accept((int)lfd, NULL, NULL);
         if (fd >= 0) {
             int64_t err = net_prepared(fd);
@@ -240,6 +244,7 @@ static int64_t net_dialed_to(const struct addrinfo* ai) {
     int64_t err = net_prepared(fd);
     if (err == 0) {
         net_stream_options(fd);
+        // the clock: the socket is O_NONBLOCK, a connect starts and answers EINPROGRESS
         if (connect(fd, ai->ai_addr, ai->ai_addrlen) != 0 && errno != EINPROGRESS) err = -errno;
     }
     if (err < 0) { close(fd); return err; }
@@ -540,6 +545,7 @@ static void lookup_fill(NetLookup* l, int flags) {
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = flags;
     struct addrinfo* list = NULL;
+    // the clock: on the resolver's own thread; the task waits on its pipe through the scheduler
     int rc = getaddrinfo(l->host, NULL, &hints, &list);
     if (rc != 0) {
         l->status = gai_errno(rc);
