@@ -26,7 +26,17 @@
 //! held rows is let go with its last holder.
 //!
 use rows.{Rows, named_rows, Stamp, INT_CAP}
-use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table}
+use engine.{
+    Kernel,
+    Key,
+    new_kernel,
+    Relation,
+    new_memo,
+    Table,
+    new_table,
+    foreign_since,
+    frames_epoch,
+}
 use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with, spelled_with}
 
 extern fn avra_trap(message: string)
@@ -64,6 +74,7 @@ export type Db = {
     written: Cell<int>,
     /// Settled calls one query keeps under this Db before an epoch drops them; 0 keeps all.
     cap: Cell<int>,
+    born: int,
 }
 
 /// Whose kernel a Db's cells live in, and so how a write is heard.
@@ -158,6 +169,7 @@ fn made(durable: Durable) -> Db {
         names: names,
         asking: Cell.new(0),
         cap: Cell.new(0),
+        born: frames_epoch(),
         written: Cell.new(0),
     }
 }
@@ -384,6 +396,12 @@ impl Db {
     fn reader(token: int) -> string { "a query (reader ${token})" }
 
     /// A write the law refuses, told to whoever hears.
+    /// A read of this Db while a query is open: refused when this Db was made before the
+    /// outermost open query, since then it is another query's input, not this query's scratch.
+    fn check_read(relation: string) {
+        if foreign_since(self.born) { self.refuse(foreign_read(relation)) }
+    }
+
     fn refuse(words: string) {
         let heard = self.hears.get()
         heard(words)
@@ -768,6 +786,10 @@ export fn code_keyed(name: string, hash: string?) -> string? {
 export type KeptRecord<V> = { query: string?, args: int, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
 
 // ── voices ──
+
+fn foreign_read(relation: string) -> string {
+    "a query reads its own Db; a Db made before it opened is another query's input — `${relation}` was read through one"
+}
 
 fn query_writes() -> string {
     "a `@query` wrote a row with no owner — a query answers, it writes no rows of its own; hand the rows to a named owner (`Rel.replaced(db, owner, rows)`)"
