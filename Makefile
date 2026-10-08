@@ -849,11 +849,27 @@ tool-witnesses:
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
 KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites
-.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static
+.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@fail=0; for k in $(KEEPERS_STATIC); do \
 	  $(MAKE) -s $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
+	done; exit $$fail
+
+# THE KEEPERS A PULL REQUEST CAN BREAK ALONE, which its own check runs once
+# its compiler is built: each holds a file the tree generates or carries to
+# what that compiler says — the runtime header and namespace, the
+# diagnostics index, the idiom registry, the runtime's footprint — or
+# attacks a feature mechanically, in seconds. A refusal stops on the PR
+# instead of failing a train. Each is one of KEEPERS, which the train runs
+# whole.
+KEEPERS_PR = rt-header rt-ns witnesses dogfooding-rules footprint attack
+keepers-pr:
+	@left="$(filter-out $(KEEPERS),$(KEEPERS_PR))"; [ -z "$$left" ] || { echo "keepers-pr: $$left is no keeper — the train would not hold it" >&2; exit 1; }
+	@fail=0; for k in $(KEEPERS_PR); do \
+	  t0=$$(date +%s); \
+	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
+	  echo "keepers: $$k $$(( $$(date +%s) - t0 ))s"; \
 	done; exit $$fail
 
 # THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.

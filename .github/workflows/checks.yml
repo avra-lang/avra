@@ -55,6 +55,7 @@ jobs:
       shards: ${{ steps.plan.outputs.shards }}
       changed: ${{ steps.plan.outputs.changed }}
       packages: ${{ steps.plan.outputs.packages }}
+      build: ${{ steps.plan.outputs.build }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
@@ -93,6 +94,8 @@ jobs:
             pkgs=$(sh tools/affected_packages.sh --touched origin/main HEAD "$PWD")
             if git diff --quiet origin/main...HEAD -- $(sh tools/compiler_paths.sh) ':(exclude,glob)**/tests/**'; then compiler=0; fi
             if [ -z "$changed$pkgs" ] && [ "$compiler" = 0 ]; then build=0; fi
+            # a file a PR keeper holds to the compiler wants one built to hold it to
+            if ! git diff --quiet origin/main...HEAD -- docs/DIAGNOSTICS.md DOGFOODING.md Makefile 'tools/footprint*' tools/attack.sh; then build=1; fi
           fi
           key=$(sh tools/compiler_paths.sh --key)
           shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py 4)
@@ -247,6 +250,28 @@ jobs:
       - name: gate
         run: sh tools/gate_changed.sh --files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers
 
+  # THE KEEPERS A PR CAN BREAK ALONE (`make keepers-pr`), under the compiler
+  # the PR built: a refusal stops on the PR instead of failing a train. The
+  # train runs every keeper in its keepers job.
+  pr-keepers:
+    needs: [prepare]
+    if: github.event_name == 'pull_request' && needs.prepare.outputs.build == '1'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - uses: actions/download-artifact@v4
+        with: { name: avra-build }
+      - name: built
+        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - name: PR keepers
+        run: make -s -o avra keepers-pr
+
   suites:
     needs: [prepare]
     if: github.event_name != 'push' && needs.prepare.outputs.packages != ''
@@ -286,7 +311,7 @@ jobs:
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers, cache-attacks, gate, suites]
+    needs: [prepare, keepers, pr-keepers, cache-attacks, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
