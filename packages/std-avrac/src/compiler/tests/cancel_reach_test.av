@@ -83,8 +83,8 @@ spec "compiler/cancel_reach — the two bits" {
             ["nap", "spin", "naps", "spins", "both", "plain"],
         ) == "nap=p- spin=-s naps=p- spins=-s both=ps plain=--"
     }
-    then "a call through a value parks and does not spin" {
-        bits_of(["fn call(f: fn() -> int) -> int { f() }", "call(() -> 1)"], ["call"]) == "call=p-"
+    then "a call through a value parks and spins — a value may be any fn" {
+        bits_of(["fn call(f: fn() -> int) -> int { f() }", "call(() -> 1)"], ["call"]) == "call=ps"
     }
     then "a cycle takes both bits of whatever it reaches" {
         bits_of(
@@ -327,10 +327,18 @@ fn held_reading(lines: List<string>, edited: fn(string) -> string) -> Workspace 
     held
 }
 
-/// A record line without its two cancel bits, as a record written before them.
+/// A record line with BOTH cancel bits dropped: one that says nothing
+/// of either.
 fn bitless(line: string) -> string {
     let fields = line.split("\t")
     fields.slice(0, fields.length - 2).join("\t")
+}
+
+/// A record line whose spins bit is dropped but whose parks bit stands:
+/// one written between the two bits landed.
+fn spin_less(line: string) -> string {
+    let fields = line.split("\t")
+    fields.slice(0, fields.length - 1).join("\t")
 }
 
 /// Each named fn's record line as its analysed pass writes it, one a line.
@@ -375,6 +383,13 @@ spec "compiler/cancel_reach — the interface" {
         let held = held_reading(
             ["fn plain() -> int { 1 }", "plain()"],
             (line) -> if line.contains("\tplain\t") { bitless(line) } else { line },
+        )
+        bits_word(held, "plain") == "plain=ps"
+    }
+    then "a record with a parks bit and no spins bit says a fn may spin" {
+        let held = held_reading(
+            ["fn plain() -> int { 1 }", "plain()"],
+            (line) -> if line.contains("\tplain\t") { spin_less(line) } else { line },
         )
         bits_word(held, "plain") == "plain=ps"
     }
