@@ -283,13 +283,21 @@ impl Workspace {
         out
     }
 
+    /// Everything a whole-program build watches: its source inputs, and the
+    /// files its compile-time runs embedded — an embedded file is no source,
+    /// yet its edit must rebuild.
+    export fn build_inputs(named: string) -> List<string> {
+        let sources = self.source_inputs(named)
+        sorted_texts(sources.concat(self.embeds(sources)))
+    }
+
     /// Everything a whole-program build reads, ordered: the closure's
     /// `.av` files, the manifests, and the compiler's own non-package
     /// sources — the backend, the runtime, the Makefile. No `use`
     /// reaches for the last group, so nothing else would put them in
     /// the key, and a code-generator change must invalidate every
     /// module it could have emitted.
-    export fn build_inputs(named: string) -> List<string> {
+    fn source_inputs(named: string) -> List<string> {
         let covered = [line.split("\t") for line in self.closure(named)]
         let tree = self.toolchain_root()
         let engine: List<string> = if tree == "" {
