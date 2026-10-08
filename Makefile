@@ -348,7 +348,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: try footprint footprint-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
+.PHONY: try footprint footprint-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -575,6 +575,12 @@ cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/static_names_attack.sh
 	@sh tools/moved_tree_attack.sh
 	@sh tools/held_runs_attack.sh
+
+# A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
+# reaches and must recompute it, edits what it never reaches and must read it back. It
+# CLEARS the store it builds through, as the attacks above do.
+code-hash-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/code_hash_attacks.sh
 
 # ONE DERIVATION ALIVE AT A TIME, held by memory: a rebuild that turns once per
 # link of a chain of held bodies, under a ceiling one attempt clears and their
