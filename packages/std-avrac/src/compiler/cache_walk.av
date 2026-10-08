@@ -7,7 +7,18 @@
 //! kernel is the graph. Nothing here runs in a check, and nothing here
 //! keeps: the walk inspects (`inspecting`), so its store sets every write
 //! aside and a second walk answers what the first did.
-use core.{FileId, ModuleId, DeclId, reversed, sorted_by, sorted_texts, some_list, text_before}
+use core.{
+    FileId,
+    ModuleId,
+    DeclId,
+    reversed,
+    sorted_by,
+    sorted_texts,
+    some_list,
+    text_before,
+    distinct,
+}
+use compiler.store.{Store, Stored, Keeping}
 use @std.path.{relative_path, joined_path, normalized}
 use @std.text.{parse_int}
 use compiler.families.{Family}
@@ -131,7 +142,15 @@ impl Workspace {
         let walk = CacheWalk {
             root: self.root,
             holds: holds,
-            moved: [h.path for h in holds if h.moved.any(it.part is .Text)],
+            moved: distinct(
+                [h.path for h in holds if h.moved.any(it.part is .Text)]
+                    .concat(
+                        d
+                            .program
+                            .ws
+                            .text_moved_paths(d.program.ws.kept_store(), [h.path for h in holds]),
+                    ),
+            ),
             attempts: d.turned + 1,
             discarded: d.turned,
             phases: grouped_phases(d.program.phases.concat(d.spans)),
@@ -396,6 +415,20 @@ impl Workspace {
 
     /// Every query that reads `root` at any depth, nearest first, each once.
     fn readers_from(root: Key) -> List<Reached> { reached(root, (k: Key) -> self.db.edges_by_read(k)) }
+
+    /// The store as a check keeps it: its rows on disk, never the inspection's writes.
+    fn kept_store() -> Store { self.opened_store() with { keeping: Keeping.Disk } }
+
+    /// The files whose text differs from the kept state. Each is compared by its
+    /// kept parts row, so a file the derivation held is compared too.
+    fn text_moved_paths(store: Store, paths: List<string>) -> List<string> {
+        [p for p in paths if self.text_moved_since(store, p)]
+    }
+
+    fn text_moved_since(store: Store, path: string) -> bool {
+        let kept = parts_of(store.get(Stored.Unit, parts_key(path)) ?? "")
+        kept != null && kept!.text != self.text_digest(path)
+    }
 
     /// The answers a moved input reaches. Each is re-verified when the input moved;
     /// an answer whose value stands is still reached, and changes nothing.
