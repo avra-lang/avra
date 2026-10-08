@@ -5,7 +5,7 @@
 //! input is read again, and only one whose digest differs moves the
 //! revision.
 use compiler.families.{Family}
-use compiler.host.{Read, InputName, InputKind, Listed}
+use compiler.host.{Read, InputName, InputKind, Listed, Stamp}
 use @std.relation.engine.{Loaded}
 
 /// What reading the world again found.
@@ -98,6 +98,14 @@ impl Workspace {
     /// A variable's value, through its cell; none when it is unset.
     fn env(name: string) -> string? {
         match self.input(InputName { kind: .Env, key: name }) { .Env(_, value) -> value, _ -> null }
+    }
+
+    /// A tool by its word, through its cell; none when no tool answers.
+    fn tool(word: string) -> Stamp? {
+        match self.input(InputName { kind: .Tool, key: word }) {
+            .Tool(_, stamp) -> stamp,
+            _ -> null,
+        }
     }
 
     /// The running compiler's bytes as one digest, through its cell — read
@@ -207,7 +215,8 @@ impl Workspace {
             .Embedded -> self.embedded_asked(name.key),
             .Env -> self.host.variable(name.key),
             .Compiler -> self.host.running(),
-            .Octets or .Range or .Tool -> {
+            .Tool -> self.host.found(name.key),
+            .Octets or .Range -> {
                 avra_trap("defect: no door verb reads a `${kind_word(name.kind)}` input")
                 Read.Refused(name, "")
             },

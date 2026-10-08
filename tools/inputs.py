@@ -2,8 +2,8 @@
 """EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR, and this counts
 the reads that are not: a call in the compiler or its CLI that asks the
 disk, the environment, a tool, a child process, the clock, the process
-table or argv, outside the door — the one file that defines the input
-verbs (DOOR), never the directory it stands in.
+table or argv, outside the door — the files that define the input verbs
+and the disk's answers to them (DOOR), never the directories they stand in.
 
 A SITE IS FOUND FROM WHAT ITS FILE IMPORTS, never from a verb's
 spelling: a name taken from a world package is looked up in that
@@ -42,9 +42,10 @@ import re
 import sys
 
 SCOPE = ["packages/std-avrac/src", "packages/cli/src"]
-# The door is the FILE that defines the input verbs. A read beside it,
-# in the same directory, is outside like any other.
-DOOR = {"packages/std-avrac/src/compiler/host/host.av"}
+# The door is the FILES that define the input verbs and the disk's
+# answers to them. A read beside one, in the same directory, is outside
+# like any other.
+DOOR = {"packages/std-avrac/src/compiler/host/host.av", "packages/cli/src/commands/disk_host.av"}
 BASELINE = "tools/inputs.baseline"
 
 # What a call asks of the world. A kind in COUNTED is a read; the rest
@@ -422,6 +423,8 @@ def selftest():
         ("packages/std-avrac/src/compiler/x.av", "fn f() { avra_now_ns() }\n", "ROW"),
         # accepts: the door, a licence, a write, a local fn, a method, a comment, a longer name
         (sorted(DOOR)[0], io + "fn f() { env(\"HOME\") }\n", [(3, "env", "door")]),
+        (sorted(DOOR)[1], io + "fn f() { env(\"HOME\") }\n", [(3, "env", "door")]),
+        (os.path.dirname(sorted(DOOR)[1]) + "/manifest.av", io + "fn f() { read_text(\"/etc/passwd\") catch \"\" }\n", [(3, "read", "outside")]),
         # the door is its file: a neighbour in the directory is outside
         (os.path.dirname(sorted(DOOR)[0]) + "/manifest.av", io + "fn f() { read_text(\"/etc/passwd\") catch \"\" }\n", [(3, "read", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", io + "// LICENSED input.debug_flag: read once, changes no answer\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "licensed")]),

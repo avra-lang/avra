@@ -258,23 +258,23 @@ fn glue_dir() -> string? { toolchain_files(["../runtime/dom", "../lib/avra/dom"]
 /// The page of the package at `root`, nothing built yet — or the exit
 /// code of the refusal spoken: what this machine lacks to build one.
 fn page_at(root: string, target: string) -> Result<Page, int> {
-    let tools = toolchain(target, true, false)?
+    let lister = root_workspace(root)
+    let tools = toolchain(lister, target, true, false)?
     let glue? = glue_dir() else { return .Err(unequipped(no_glue())) }
     let own? = own_binary() else { return .Err(unequipped(no_compiler())) }
     match tool(own) {
-        .Ok(compiler) -> page_of(root, tools, compiler, glue),
+        .Ok(compiler) -> page_of(lister, tools, compiler, glue),
         .Err(e) -> .Err(refused_by_host(e)),
     }
 }
 
-/// The page of the package at `root`, built by `compiler` for `tools` and
-/// served with the glue standing in `glue`; nothing built yet.
-export fn page_of(root: string, tools: Toolchain, compiler: Tool, glue: string) -> Page {
-    let lister = root_workspace(root)
+/// The page of the package `lister` stands over, built by `compiler` for
+/// `tools` and served with the glue standing in `glue`; nothing built yet.
+export fn page_of(lister: Workspace, tools: Toolchain, compiler: Tool, glue: string) -> Page {
     lister.built_for(tools)
     let none: List<Watched> = []
     Page {
-        root: root,
+        root: lister.root,
         tools: tools,
         compiler: compiler,
         glue: glue,

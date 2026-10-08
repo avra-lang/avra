@@ -14,8 +14,8 @@ fn same(a: Read, b: Read) -> bool {
 
 fn no_octets() -> Bytes { "".bytes() }
 
-fn stamp(path: string, size: int, mtime: int) -> Stamp {
-    Stamp { path: path, size: size, mtime: mtime }
+fn stamp(path: string, mark: int?) -> Stamp {
+    Stamp { path: path, mark: mark }
 }
 
 fn entry(name: string, dir: bool) -> Listed {
@@ -113,38 +113,33 @@ spec "compiler/input_door" {
         }
     }
     given "a stamp" {
-        then "no tool, a zero-size tool and one modified at zero digest apart" {
+        then "no tool, a tool the host cannot tell, and a zero mark digest apart" {
             apart(
                 [
                     Read.Tool("cc", null),
-                    Read.Tool("cc", stamp("", 0, 0)),
-                    Read.Tool("cc", stamp("/bin/cc", 0, 0)),
-                    Read.Tool("cc", stamp("/bin/cc", 0, 1)),
-                    Read.Tool("cc", stamp("/bin/cc", 1, 0)),
+                    Read.Tool("cc", stamp("/bin/cc", null)),
+                    Read.Tool("cc", stamp("/bin/cc", 0)),
+                    Read.Tool("cc", stamp("", null)),
+                    Read.Tool("cc", stamp("", 0)),
                 ],
             )
         }
-        then "each of a stamp's three parts moves the digest alone" {
+        then "each of a stamp's two parts moves the digest alone" {
             apart(
                 [
-                    Read.Tool("cc", stamp("/bin/cc", 7, 9)),
-                    Read.Tool("cc", stamp("/bin/c2", 7, 9)),
-                    Read.Tool("cc", stamp("/bin/cc", 8, 9)),
-                    Read.Tool("cc", stamp("/bin/cc", 7, 10)),
+                    Read.Tool("cc", stamp("/bin/cc", 7)),
+                    Read.Tool("cc", stamp("/bin/c2", 7)),
+                    Read.Tool("cc", stamp("/bin/cc", 8)),
                 ],
             )
         }
-        then "a size and a time that trade places are not one stamp" {
-            apart(
-                [Read.Tool("cc", stamp("/bin/cc", 7, 9)), Read.Tool("cc", stamp("/bin/cc", 9, 7))],
-            )
-        }
-        then "a negative time is a value of its own" {
+        then "a mark the host cannot give is apart from every mark" {
             apart(
                 [
-                    Read.Tool("cc", stamp("/bin/cc", 7, 0 - 1)),
-                    Read.Tool("cc", stamp("/bin/cc", 7, 1)),
-                    Read.Tool("cc", stamp("/bin/cc", 7, 0)),
+                    Read.Tool("cc", stamp("/bin/cc", null)),
+                    Read.Tool("cc", stamp("/bin/cc", 0)),
+                    Read.Tool("cc", stamp("/bin/cc", 1)),
+                    Read.Tool("cc", stamp("/bin/cc", 0 - 1)),
                 ],
             )
         }
@@ -155,12 +150,7 @@ spec "compiler/input_door" {
             apart([Read.Compiler("a"), Read.Compiler("b"), Read.Compiler(""), Read.Compiler(null)])
         }
         then "one tool found under two words is two names" {
-            apart(
-                [
-                    Read.Tool("cc", stamp("/bin/cc", 7, 9)),
-                    Read.Tool("clang", stamp("/bin/cc", 7, 9)),
-                ],
-            )
+            apart([Read.Tool("cc", stamp("/bin/cc", 7)), Read.Tool("clang", stamp("/bin/cc", 7))])
         }
     }
     given "the boundary between a name and what it saw" {
@@ -287,7 +277,7 @@ spec "compiler/input_door" {
             Read.Env("k", "abc").input().digest.key == "4412473339591067876.5677397376644605598.4746208766272113353.2323011884379538753"
         }
         then "a tool digests to its pinned key" {
-            Read.Tool("k", stamp("/bin/cc", 10, 20)).input().digest.key == "7521667078907550781.3912117083000040133.1757992495942672447.1779814990831660594"
+            Read.Tool("k", stamp("/bin/cc", 20)).input().digest.key == "3484984252483962707.8242636371264288409.5821597432889002321.933557532801633499"
         }
         then "the compiler digests to its pinned key" {
             Read.Compiler("p").input().digest.key == "9116279676013257292.1657888199770755869.7328125130344962750.2447678528928507617"

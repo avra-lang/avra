@@ -12,9 +12,11 @@
 //! source spells it, a variable's name, a tool's word. A file reached
 //! under two names is two inputs with two digests — the name is in the
 //! frame, so a digest is no address of the bytes. A tool's `Stamp` names
-//! the path the tool was found at and the size and modified time of what
-//! stands there after links are followed — a link re-aimed at a
-//! different binary moves the stamp, a link renamed does not.
+//! the path the tool was found at and the host's mark of what stands
+//! there after links are followed — its size, times and inode as one
+//! number — so a link re-aimed at a different binary moves the stamp and
+//! a link renamed does not. A mark the host cannot give (a file written
+//! too recently to tell) is absent, and digests apart from every mark.
 //!
 //! THE DIGEST IS OF A FRAME: a head that says the kind, the name and
 //! what was found — every part behind its own length, so no two shapes
@@ -43,8 +45,8 @@ export type InputName = { kind: InputKind, key: string }
 export type Listed = { name: string, dir: bool }
 
 /// A tool's identity without reading it: where it was found, and the
-/// size and modified time of the file there.
-export type Stamp = { path: string, size: int, mtime: int }
+/// host's mark of the file there — none when the host cannot tell.
+export type Stamp = { path: string, mark: int? }
 
 /// A digest of an input's frame: the key it is stored and compared by,
 /// and one word of it — what a memo cell is cut by.
@@ -217,11 +219,12 @@ fn printed(head: Writer, print: string?) {
     head.text(p)
 }
 
-/// A stamp's three parts, each its own value.
+/// A stamp's path, then its mark behind its own state.
 fn stamped(head: Writer, stamp: Stamp?) {
     head.count(state(stamp != null))
     let s? = stamp else { return }
     head.text(s.path)
-    head.int(s.size)
-    head.int(s.mtime)
+    head.count(state(s.mark != null))
+    let m? = s.mark else { return }
+    head.int(m)
 }

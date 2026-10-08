@@ -4,7 +4,7 @@ use @std.cli.{CliResult, flag, arg}
 use @std.avrac.compiler.{
     Program,
     Workspace,
-    lone_workspace,
+    lone_workspace_on,
     timed_workspace,
     programs_workspace,
     avra,
@@ -18,10 +18,9 @@ use @std.avrac.compiler.{
     VerifyHeld,
     HeldMismatch,
     Subject,
-    digest_of_binary,
 }
-use @std.avrac.core.{joined, distinct}
-use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, file_name, stem_of}
+use @std.avrac.core.{joined, distinct, some_list}
+use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, stem_of}
 use @std.process.{
     Tool,
     tool,
@@ -35,22 +34,9 @@ use @std.process.{
     exit,
 }
 use @std.time.{now_ns}
-use @std.io.{
-    read_text,
-    write_text,
-    exists,
-    is_dir,
-    list_dir,
-    env,
-    make_dirs,
-    stamp,
-    compile_slot,
-    open_beneath,
-    IoError,
-    Entry,
-}
+use @std.io.{exists, is_dir, env, make_dirs, compile_slot, Entry}
 use @std.avrac.compiler.backend.{emit_ll}
-use @std.avrac.compiler.host.{Host, no_target, Beneath, process_env}
+use @std.avrac.compiler.host.{no_target, Stamp}
 use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
 
 // THE TWO TRUE EXTERNS: no std package owns "re-exec this image" or
@@ -58,129 +44,6 @@ use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
 extern fn avra_exec_self(args: List<string>) -> int
 extern fn avra_self_dir() -> string
 extern fn avra_selfhost_get_arg_cstr(i: int) -> string
-
-/// The disk, as the workspace's four questions — a listing the host
-/// refuses reads as empty (the workspace asks `exists` first); a FILE
-/// it refuses is spoken and exits, never parsed as empty.
-fn disk_host() -> Host {
-    Host {
-        exists: (p: string) -> exists(p),
-        peek: (p: string) -> disk_peek(p),
-        refused: (p: string) -> refusal_spoken(p),
-        beneath: (root: string, rel: string) -> disk_beneath(root, rel),
-        list: (dir: string) -> list_dir(dir) catch [],
-        write: (p: string, text: string) -> write_file(p, text),
-        is_dir: (dir: string) -> is_dir(dir),
-        stamp: (p: string) -> stamp(p),
-        reads_ahead: (files: int) -> light_or_leave(files),
-        env: process_env,
-        print: own_print,
-        std_root: std_root(),
-        cwd: env("PWD") ?? ".",
-        compiler: own_binary(),
-    }
-}
-
-/// What stands at `rel` beneath `root` on the disk, opened segment by
-/// segment and never through a link (`@std/io`'s `open_beneath`). A
-/// refusal the path itself survives — something stands there when
-/// links are followed — was a link's.
-fn disk_beneath(root: string, rel: string) -> Beneath {
-    let o = match open_beneath(root, rel) {
-        .Ok(o) -> o,
-        .Err(e) -> { return unopened(e, exists(joined_path(root, rel))) },
-    }
-    defer o.close()
-    match o.kind {
-        .File -> match o.text() { .Ok(text) -> Beneath.Text(text), .Err(e) -> unread(e) },
-        .Missing or .Dir or .Other -> Beneath.Refused("`${rel}` is not a file"),
-    }
-}
-
-/// Why a path beneath a root did not open.
-fn unopened(e: IoError, stands: bool) -> Beneath {
-    match e {
-        .NotFound(_) -> Beneath.Missing,
-        .Denied(_) or .Holed(_, _) or .NotText(_, _) -> Beneath.Refused(e.describe().message),
-        .IsDirectory(_) or .NotDirectory(_) or .Failed(_, _) -> if stands { Beneath.Linked } else { Beneath.Refused(e.describe().message) },
-    }
-}
-
-/// The disk host's refusal of a file it would not give: read again for
-/// the reason, spoken, and the run ended.
-fn refusal_spoken(path: string) {
-    let _ = read_or_die(path)
-}
-
-/// The disk's whole-file read, links followed.
-fn disk_text(path: string) -> Result<string, IoError> { read_text(path) }
-
-/// What stands at a path on the disk, links followed — and never the
-/// end of the run.
-fn disk_peek(path: string) -> Beneath {
-    match disk_text(path) { .Ok(text) -> Beneath.Text(text), .Err(e) -> unpeeked(e) }
-}
-
-/// Why a whole-file read gave no text.
-fn unpeeked(e: IoError) -> Beneath {
-    match e {
-        .NotFound(_) -> Beneath.Missing,
-        .NotText(_, at) -> Beneath.NotText(at),
-        .Denied(_) or .IsDirectory(_) or .NotDirectory(_) or .Holed(_, _) or .Failed(_, _) -> Beneath.Refused(e.describe().message),
-    }
-}
-
-/// Why an opened file gave no text.
-fn unread(e: IoError) -> Beneath {
-    match e {
-        .NotText(_, at) -> Beneath.NotText(at),
-        .NotFound(_) or .Denied(_) or .IsDirectory(_) or .NotDirectory(_) or .Holed(_, _) or .Failed(_, _) -> Beneath.Refused(e.describe().message),
-    }
-}
-
-/// How many files a LIGHT run may read: an edit's, never a cold tree's.
-const LIGHT_READS: int = 16
-
-/// The status a run leaves with when it was asked to stay light and cannot:
-/// whoever asked runs it again where heavy work is allowed. Nothing was said
-/// and nothing was read.
-const TOO_HEAVY: int = 75
-
-/// `AVRA_LIGHT` asks a run to do no heavy work where it stands — the tree's
-/// shim tries every package-scale `check`, `build` and `fmt` so, and sends the ones
-/// that leave through the machine's watchdog.
-fn light_or_leave(files: int) {
-    if files > LIGHT_READS && env("AVRA_LIGHT") != null { exit(Exit.Code(TOO_HEAVY)) }
-}
-
-/// This binary's own path — the compiler a store's rows are the work of.
-fn own_binary() -> string? {
-    toolchain_files([file_name(avra_selfhost_get_arg_cstr(0))]).find(exists(it))
-}
-
-/// THE RUNNING COMPILER'S PRINT: its binary's bytes as one digest, read
-/// once a process — a binary rebuilt under a running process is not the
-/// code that runs.
-once fn own_print() -> string? {
-    let at? = own_binary() else { return null }
-    digest_of_binary(at)
-}
-
-/// Write a file, making its directory first — a cache keeps artifacts
-/// where nothing has stood before.
-fn write_file(path: string, text: string) -> string? {
-    let _ = make_dirs(dir_of(path))
-    match write_text(path, text) { .Ok(_) -> null, .Err(e) -> e.describe().message }
-}
-
-/// THE TOOLCHAIN'S STD ROOT, found from the binary's own directory: a
-/// checkout keeps its packages beside `build/`, an install keeps them
-/// under `lib/avra/std/`. Null when neither stands — a bare binary
-/// with no std beside it, which resolves what its manifests declare
-/// and nothing more.
-fn std_root() -> string? {
-    toolchain_files(["../packages", "../lib/avra/std"]).find(is_dir(it))
-}
 
 /// The runtime's library, the same two ways: beside the binary in a
 /// checkout, under `lib/avra/` in an install.
@@ -206,23 +69,30 @@ fn triples_of(spelled: string) -> List<string> {
 }
 
 /// A C compiler and a triple it links a wasm module for.
-type WasmTools = { linker: Tool, target: string }
+type WasmTools = { linker: Stamp, target: string }
 
 /// The C compilers that may link a wasm module, in the order they are
 /// asked: `CC` alone when it is set — the developer chose — else the LLVM
 /// `LLVM_PREFIX` names, then `clang` on the PATH.
-fn wasm_linkers() -> List<Tool> {
-    if env("CC") != null { return found([tool_from_env("CC", "clang")]) }
-    let prefixed: List<Result<Tool, ProcessError>> = match env("LLVM_PREFIX") {
-        prefix? -> [tool(joined_path(prefix, "bin/clang"))]
-        null -> []
+fn wasm_linkers(ws: Workspace) -> List<Stamp> {
+    let words = if ws.env("CC") ?? "" != "" {
+        [chosen(ws, "CC", "clang")]
+    } else {
+        [joined_path(p, "bin/clang") for p in some_list(ws.env("LLVM_PREFIX"))].concat(["clang"])
     }
-    found(prefixed.concat([tool("clang")]))
+    [s for w in words for s in some_list(ws.tool(w))]
 }
 
 /// The tools the host found, of those asked for.
 fn found(asked: List<Result<Tool, ProcessError>>) -> List<Tool> {
     [t for r in asked for t in match r { .Ok(t) -> [t], .Err(_) -> [] }]
+}
+
+/// The word a variable names a tool by, taken as written — a path or a
+/// name — or `fallback` when the variable is unset or empty.
+fn chosen(ws: Workspace, name: string, fallback: string) -> string {
+    let named = ws.env(name) ?? ""
+    if named.is_empty() { fallback } else { named }
 }
 
 /// Whether `clang` links a module for `triple`: where it says that target's
@@ -235,13 +105,16 @@ fn links_wasm(clang: Tool, triple: string) -> bool {
     }
 }
 
+/// A tool the host found, as a program to run.
+fn ran(s: Stamp) -> Tool { Tool { name: s.path, path: s.path, terminator: null } }
+
 /// THE WASM TOOLCHAIN THIS MACHINE HAS: the first C compiler, of those that
 /// may link, with a WASI libc for one of the triples `spelled` may mean — or
 /// what was asked of which, so the refusal says what to point where.
-fn wasm_tools(spelled: string) -> Result<WasmTools, string> {
+fn wasm_tools(ws: Workspace, spelled: string) -> Result<WasmTools, string> {
     let triples = triples_of(spelled)
-    let linkers = wasm_linkers()
-    let fits = [WasmTools { linker: clang, target: triple } for clang in linkers for triple in triples if links_wasm(clang, triple)]
+    let linkers = wasm_linkers(ws)
+    let fits = [WasmTools { linker: clang, target: triple } for clang in linkers for triple in triples if links_wasm(ran(clang), triple)]
     let first? = fits.first() else { return .Err(no_wasm_toolchain([l.path for l in linkers], triples)) }
     first
 }
@@ -320,7 +193,7 @@ export fn file_workspace(path: string) -> Workspace {
 
 /// A file outside any package: a package of one holding just it.
 fn lone(path: string) -> Workspace {
-    lone_workspace(path, read_or_die(path), avra())
+    lone_workspace_on(disk_host(), path, read_or_die(path), avra())
 }
 
 /// A package ROOT'S workspace, the one choice every caller who already
@@ -514,13 +387,6 @@ fn host_refused(message: string) -> int {
     1
 }
 
-/// The C compiler that links: `CC`, else `clang` on the PATH — the
-/// row `[process.tools] clang` in this package's own manifest says the
-/// same, and mints it the day the manifest mints.
-fn linker() -> Result<Tool, ProcessError> {
-    tool_from_env("CC", "clang")
-}
-
 /// A command run where the developer sits: their environment, their
 /// terminal for its words, their Ctrl-C reaching it — the compiler's
 /// own tools are the developer's, not a service's.
@@ -661,27 +527,33 @@ fn build_report(e: BuildError) -> string {
 /// WHAT A BUILD FOR `target` LINKS WITH — the host's own C compiler and
 /// runtime for the empty target, a wasm toolchain found on this machine for
 /// any other — or the exit code of the refusal it spoke, naming what is
-/// missing and how to point at one.
-export fn toolchain(target: string, reactor: bool, debug: bool) -> Result<Toolchain, int> {
+/// missing and how to point at one. Each tool is an input of `ws`.
+export fn toolchain(ws: Workspace, target: string, reactor: bool, debug: bool) -> Result<
+    Toolchain,
+    int,
+> {
     if target == "" {
-        let host = match linker() { .Ok(t) -> t, .Err(e) -> { return .Err(refused_by_host(e)) } }
-        return .Ok(Toolchain { opt: "-O1", runtime: runtime_library(), linker: host.path })
+        let word = chosen(ws, "CC", "clang")
+        let host? = ws.tool(word) else { return .Err(refused_by_host(ProcessError.NotFound(word, ws.env("PATH") ?? ""))) }
+        return .Ok(
+            Toolchain { opt: "-O1", runtime: runtime_library(), linker: host.path, tools: [host] },
+        )
     }
-    let wasm = match wasm_tools(target) {
+    let wasm = match wasm_tools(ws, target) {
         .Ok(w) -> w,
         .Err(why) -> { return .Err(unequipped(why)) },
     }
-    let wasm_opt = match tool_from_env("WASM_OPT", "wasm-opt") { .Ok(t) -> t.path, .Err(_) -> "" }
-    if wasm_opt == "" { return .Err(unequipped(no_wasm_opt())) }
+    let wasm_opt? = ws.tool(chosen(ws, "WASM_OPT", "wasm-opt")) else { return .Err(unequipped(no_wasm_opt())) }
     if !exists(wasm_runtime_library()) { return .Err(unequipped(no_wasm_runtime(wasm_runtime_library()))) }
     Toolchain {
         opt: "-Oz",
         runtime: wasm_runtime_library(),
         linker: wasm.linker.path,
+        tools: [wasm.linker, wasm_opt],
         target: wasm.target,
         reactor: reactor,
         debug: debug,
-        wasm_opt: wasm_opt,
+        wasm_opt: wasm_opt.path,
     }
 }
 
@@ -696,12 +568,14 @@ fn unequipped(why: string) -> int {
 /// The cache is the library's; the link and the print are the caller's.
 export fn built_binary(args: CliResult) -> Result<string, int> {
     let path? = slotted_path(args) else { return .Err(2) }
+    let ws = build_workspace(path)
     let tools = match toolchain(
+        ws,
         args.option("target"),
         args.has_flag("wasm_reactor"),
         args.has_flag("wasm_debug"),
     ) { .Ok(t) -> t, .Err(code) -> { return .Err(code) } }
-    let b = built_outcome(path, tools)?
+    let b = built_outcome(ws, path, tools)?
     if b.warnings != "" { eprintln(b.warnings) }
     if timed(args) {
         for line in b.host_fns { eprintln("host fn: ${line}") }
@@ -713,8 +587,7 @@ export fn built_binary(args: CliResult) -> Result<string, int> {
 
 /// What a build of `path` with `tools` came to — or the exit code its
 /// refusal spoke. What it warned of is the caller's to say.
-fn built_outcome(path: string, tools: Toolchain) -> Result<BuildOutcome, int> {
-    let ws = build_workspace(path)
+fn built_outcome(ws: Workspace, path: string, tools: Toolchain) -> Result<BuildOutcome, int> {
     let entry? = build_entry(ws, path) else {
         eprintln("avra: ${ws.root} declares no entry point")
         return .Err(1)

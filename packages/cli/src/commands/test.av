@@ -13,9 +13,11 @@ type TestCmd = {}
 impl Runnable for TestCmd {
     fn run(args: CliResult) -> int {
         let path? = slotted_path(args) else { return 1 }
-        let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
         let ws = proving_workspace(path)
-        let tools = Toolchain { opt: "-O1", runtime: runtime_library(), linker: tool.path }
+        let tools = match toolchain(ws, "", false, false) {
+            .Ok(t) -> t,
+            .Err(code) -> { return code },
+        }
         let scope = scope_of(path)
         match ws.suites(scope, here(), tools) {
             .Ok(made) -> proved(args, path, scope, made, tools),
