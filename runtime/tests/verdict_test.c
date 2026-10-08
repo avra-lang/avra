@@ -208,6 +208,16 @@ static void programs(void) {
     CHECK(prog(sleeps_then_prints, "woke") == 1 && wall_ns() - w0 < 1000000000, "a program that sleeps a minute prints what it must in no wall time");
     CHECK(prog(two_tasks_print, "a\nb") == 0, "a program whose order shows fails under some schedule");
 }
+// The evaluated leg's readers: what the native leg runs, read whole.
+static void evaluated_settings(void) {
+    setenv("AVRA_SCHED_RUNS", "8", 1);
+    CHECK(avra_sched_runs_wanted() == 8 && avra_sched_schedule_at(5) == 5, "the evaluated leg runs the schedules the setting names, in order");
+}
+static void evaluated_replay(void) {
+    setenv("AVRA_SCHED_RUNS", "8", 1);
+    setenv("AVRA_SCHED_SEED", "6", 1);
+    CHECK(avra_sched_runs_wanted() == 1 && avra_sched_schedule_at(0) == 6, "a replay runs the evaluated leg once, under the seed it names");
+}
 static void by_default(void) {
     g_runs = 0;
     CHECK(verdict(three_any) == 1 && g_runs == 1, "by default a case that chose runs schedule 0 alone");
@@ -269,8 +279,10 @@ int main(void) {
     heard("a case with one order fails", one_order_fails_quietly);
     CHECK(g_said[0] == 0, "and names no schedule: none would replay anything");
     heard("by default, one schedule", by_default);
-    heard("program tests run as cases, under their schedules", programs);
+    heard("program tests run on the root, under their schedules", programs);
     CHECK(says("avra: a program failed under schedule") && says("AVRA_SCHED_SEED="), "a program that printed otherwise names the schedule that replays it");
+    heard("the evaluated leg reads the schedules", evaluated_settings);
+    heard("the evaluated leg replays a seed", evaluated_replay);
     heard("a case on the virtual clock", on_the_virtual_clock);
     heard("cases that spin on the frozen clock fail, and the suite goes on", spun_cases);
     heard("a spin inside a run the case opened", spun_in_a_run);
