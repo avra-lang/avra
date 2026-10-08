@@ -1,0 +1,149 @@
+//! THE DISK HOST: the workspace's questions answered by this machine's
+//! disk, environment and running binary — the door's body on the CLI's side.
+use @std.avrac.compiler.{digest_of_binary}
+use @std.avrac.compiler.host.{Host, Beneath, Stamp, process_env}
+use @std.path.{dir_of, joined_path, file_name}
+use @std.process.{tool, exit, Exit}
+use @std.io.{
+    read_text,
+    write_text,
+    exists,
+    is_dir,
+    list_dir,
+    env,
+    make_dirs,
+    stamp,
+    open_beneath,
+    IoError,
+}
+
+/// The disk, as the workspace's four questions — a listing the host
+/// refuses reads as empty (the workspace asks `exists` first); a FILE
+/// it refuses is spoken and exits, never parsed as empty.
+fn disk_host() -> Host {
+    Host {
+        exists: (p: string) -> exists(p),
+        peek: (p: string) -> disk_peek(p),
+        refused: (p: string) -> refusal_spoken(p),
+        beneath: (root: string, rel: string) -> disk_beneath(root, rel),
+        list: (dir: string) -> list_dir(dir) catch [],
+        write: (p: string, text: string) -> write_file(p, text),
+        is_dir: (dir: string) -> is_dir(dir),
+        stamp: (p: string) -> stamp(p),
+        reads_ahead: (files: int) -> light_or_leave(files),
+        env: process_env,
+        print: own_print,
+        tool: disk_tool,
+        std_root: std_root(),
+        cwd: env("PWD") ?? ".",
+        compiler: own_binary(),
+    }
+}
+
+/// What stands at `rel` beneath `root` on the disk, opened segment by
+/// segment and never through a link (`@std/io`'s `open_beneath`). A
+/// refusal the path itself survives — something stands there when
+/// links are followed — was a link's.
+fn disk_beneath(root: string, rel: string) -> Beneath {
+    let o = match open_beneath(root, rel) {
+        .Ok(o) -> o,
+        .Err(e) -> { return unopened(e, exists(joined_path(root, rel))) },
+    }
+    defer o.close()
+    match o.kind {
+        .File -> match o.text() { .Ok(text) -> Beneath.Text(text), .Err(e) -> unread(e) },
+        .Missing or .Dir or .Other -> Beneath.Refused("`${rel}` is not a file"),
+    }
+}
+
+/// Why a path beneath a root did not open.
+fn unopened(e: IoError, stands: bool) -> Beneath {
+    match e {
+        .NotFound(_) -> Beneath.Missing,
+        .Denied(_) or .Holed(_, _) or .NotText(_, _) -> Beneath.Refused(e.describe().message),
+        .IsDirectory(_) or .NotDirectory(_) or .Failed(_, _) -> if stands { Beneath.Linked } else { Beneath.Refused(e.describe().message) },
+    }
+}
+
+/// The disk host's refusal of a file it would not give: read again for
+/// the reason, spoken, and the run ended.
+fn refusal_spoken(path: string) {
+    let _ = read_or_die(path)
+}
+
+/// The disk's whole-file read, links followed.
+fn disk_text(path: string) -> Result<string, IoError> { read_text(path) }
+
+/// What stands at a path on the disk, links followed — and never the
+/// end of the run.
+fn disk_peek(path: string) -> Beneath {
+    match disk_text(path) { .Ok(text) -> Beneath.Text(text), .Err(e) -> unpeeked(e) }
+}
+
+/// Why a whole-file read gave no text.
+fn unpeeked(e: IoError) -> Beneath {
+    match e {
+        .NotFound(_) -> Beneath.Missing,
+        .NotText(_, at) -> Beneath.NotText(at),
+        .Denied(_) or .IsDirectory(_) or .NotDirectory(_) or .Holed(_, _) or .Failed(_, _) -> Beneath.Refused(e.describe().message),
+    }
+}
+
+/// Why an opened file gave no text.
+fn unread(e: IoError) -> Beneath {
+    match e {
+        .NotText(_, at) -> Beneath.NotText(at),
+        .NotFound(_) or .Denied(_) or .IsDirectory(_) or .NotDirectory(_) or .Holed(_, _) or .Failed(_, _) -> Beneath.Refused(e.describe().message),
+    }
+}
+
+/// How many files a LIGHT run may read: an edit's, never a cold tree's.
+const LIGHT_READS: int = 16
+
+/// The status a run leaves with when it was asked to stay light and cannot:
+/// whoever asked runs it again where heavy work is allowed. Nothing was said
+/// and nothing was read.
+const TOO_HEAVY: int = 75
+
+/// `AVRA_LIGHT` asks a run to do no heavy work where it stands — the tree's
+/// shim tries every package-scale `check`, `build` and `fmt` so, and sends the ones
+/// that leave through the machine's watchdog.
+fn light_or_leave(files: int) {
+    if files > LIGHT_READS && env("AVRA_LIGHT") != null { exit(Exit.Code(TOO_HEAVY)) }
+}
+
+/// This binary's own path — the compiler a store's rows are the work of.
+fn own_binary() -> string? {
+    toolchain_files([file_name(avra_selfhost_get_arg_cstr(0))]).find(exists(it))
+}
+
+/// THE RUNNING COMPILER'S PRINT: its binary's bytes as one digest, read
+/// once a process — a binary rebuilt under a running process is not the
+/// code that runs.
+once fn own_print() -> string? {
+    let at? = own_binary() else { return null }
+    digest_of_binary(at)
+}
+
+/// A tool by its word on the disk: where `PATH` finds it, or the path as
+/// written, and the disk's mark of what stands there; none when no tool
+/// answers to the word.
+fn disk_tool(word: string) -> Stamp? {
+    match tool(word) { .Ok(t) -> Stamp { path: t.path, mark: stamp(t.path) }, .Err(_) -> null }
+}
+
+/// Write a file, making its directory first — a cache keeps artifacts
+/// where nothing has stood before.
+fn write_file(path: string, text: string) -> string? {
+    let _ = make_dirs(dir_of(path))
+    match write_text(path, text) { .Ok(_) -> null, .Err(e) -> e.describe().message }
+}
+
+/// THE TOOLCHAIN'S STD ROOT, found from the binary's own directory: a
+/// checkout keeps its packages beside `build/`, an install keeps them
+/// under `lib/avra/std/`. Null when neither stands — a bare binary
+/// with no std beside it, which resolves what its manifests declare
+/// and nothing more.
+fn std_root() -> string? {
+    toolchain_files(["../packages", "../lib/avra/std"]).find(is_dir(it))
+}

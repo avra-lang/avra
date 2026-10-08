@@ -8,7 +8,7 @@ use compiler.{
     file_lexes_block,
     inputs_this_turn,
 }
-use compiler.host.{Host, InputName, Listed, Beneath, memory_host}
+use compiler.host.{Host, InputName, Listed, Beneath, Stamp, memory_host}
 use compiler.families.{Family}
 use @std.relation.engine.{Key}
 use core.{digest_of_octets}
@@ -158,6 +158,22 @@ fn held_print(files: Cell<Map<string, string>>, at: string) -> string? {
 /// Whether the driver's turn read the world again and kept the graph.
 fn reread(m: Machine) -> bool {
     match m.ws.world_moved() { .Ok(.Reread(_)) -> true, .Ok(.Graph) or .Err(_) -> false }
+}
+
+/// A workspace whose host finds `cc` in a table the test re-marks.
+type Bench = { ws: Workspace, marks: Cell<Map<string, Stamp>> }
+
+fn bench() -> Bench {
+    let files: Cell<Map<string, string>> = Cell.new({"/w/src/a.av": "1\n"})
+    let names: Cell<List<string>> = Cell.new(["a.av"])
+    let marks: Cell<Map<string, Stamp>> = Cell.new({"cc": Stamp { path: "/bin/cc", mark: 7 }})
+    Bench {
+        ws: test_workspace(
+            shifting(files, names) with { tool: (w: string) -> marks.get().get(w) },
+            "/w",
+        ),
+        marks: marks,
+    }
 }
 
 spec "compiler/world" {
@@ -514,5 +530,24 @@ spec "compiler/world" {
             test_workspace(machine_host(m.files, names, m.vars, () -> started), "/w")
                 .running_print() == digest_of_octets("one build".bytes())
         }
+    }
+    given "a tool, re-marked inside one process" {
+        then "it is read again only after the driver says the world moved" {
+            let b = bench()
+            let before = b.ws.tool("cc")?.mark
+            b.marks.put("cc", Stamp { path: "/bin/cc", mark: 8 })
+            let held = b.ws.tool("cc")?.mark
+            let _ = b.ws.world_moved()
+            before == 7 && held == 7 && b.ws.tool("cc")?.mark == 8
+        }
+        then "a re-marked tool moves the revision once" {
+            let b = bench()
+            let _ = b.ws.tool("cc")
+            let rev = b.ws.db.revision()
+            b.marks.put("cc", Stamp { path: "/bin/cc", mark: 8 })
+            let _ = b.ws.world_moved()
+            b.ws.db.revision() == rev + 1
+        }
+        then "a word no tool answers to is none" { bench().ws.tool("ld") == null }
     }
 }

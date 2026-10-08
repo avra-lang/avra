@@ -40,7 +40,7 @@ use compiler.backend.{
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.memory.{sound_checked}
 use compiler.store.{Store, Stored, Keeping, node_key}
-use compiler.host.{no_target, read_manifest}
+use compiler.host.{no_target, read_manifest, Stamp, Read}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
 use @std.relation.engine.{map_cell}
@@ -159,9 +159,10 @@ export type ProgramModule = { main: fn(TypeRegistry) -> ProgramMain, rows: List<
 /// A case the entry calls, and the path of the file its body is in.
 export type CaseHome = { call: CaseCall, path: string }
 
-/// What one build links with: the optimisation level, the runtime object and
-/// the linker the host found.
-export type Toolchain = { opt: string, runtime: string, linker: string, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false }
+/// What one build links with: the optimisation level, the runtime object,
+/// the linker the host found, and the stamp of the driver of each tool it
+/// runs — never what a driver runs in its turn.
+export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false }
 
 impl Workspace {
     /// THE PRODUCING COMPILER'S OWN IDENTITY — memoized once a workspace, so
@@ -334,12 +335,25 @@ fn links_text(files: List<string>) -> string {
     joined(["${f}\t${digest_of_binary(f) ?? "-"}" for f in files], "\n")
 }
 
-/// Whether every file a kept binary linked still holds the bytes it linked. A
-/// binary kept with no such record is not trusted.
-fn links_unchanged(store: Store, key: string) -> bool {
+/// Whether every file a kept binary linked still holds the bytes it linked,
+/// and every tool that made it still stands as it did. A binary kept with
+/// no such record is not trusted.
+fn links_unchanged(store: Store, key: string, tools: Toolchain) -> bool {
     let kept? = store.get(Stored.Unit, links_key(key)) else { return false }
     let files = [line.split("\t")[0] for line in kept.split("\n") if !line.is_empty()]
-    links_text(files) == kept
+    let now? = told(tools.tools) else { return false }
+    links_text(files) == kept && store.get(Stored.Unit, tools_key(key)) == now
+}
+
+/// Where a kept binary's tools are listed.
+fn tools_key(key: string) -> string { node_key(Stored.Unit, ["tools", key]) }
+
+/// The tools as their inputs' digests, one per line — none for no tools,
+/// and none when the host cannot tell one: a toolchain that names nothing
+/// it can tell makes nothing a kept binary can be trusted for.
+fn told(tools: List<Stamp>) -> string? {
+    if tools.is_empty() || tools.any(it.mark == null) { return null }
+    joined([Read.Tool(s.path, s).input().digest.key for s in tools], "\n")
 }
 
 /// HOW THIS PROCESS EMITS, as a suffix on the compiler's print: the runtime's
@@ -489,7 +503,7 @@ impl Workspace {
         BuildError,
     > {
         self.built_for(tools)
-        let kept = self.kept_binary(self.program_key(entry, []), binary)
+        let kept = self.kept_binary(self.program_key(entry, []), binary, tools)
         if kept != null { return .Ok(kept!) }
         let d = diagnosed(
             self
@@ -514,11 +528,11 @@ impl Workspace {
 
     /// A binary these exact inputs linked before, placed where a fresh one would
     /// be — with the warnings that build spoke.
-    fn kept_binary(key: string, binary: string) -> BuildOutcome? {
+    fn kept_binary(key: string, binary: string, tools: Toolchain) -> BuildOutcome? {
         let store = self.opened_store()
         let staged = staged_beside(binary)
         if !store.has(Stored.Bin, key) ||
-            !links_unchanged(store, key) ||
+            !links_unchanged(store, key, tools) ||
             !store.place(Stored.Bin, key, staged) {
             return null
         }
@@ -770,6 +784,8 @@ impl Workspace {
                 links_text(self.linked_files(tools.runtime, tools.target)),
                 [key],
             )
+        let row = told(tools.tools)
+        if row != null { let _ = d.store.keep(Stored.Unit, tools_key(key), row!, [key]) }
         let _ = d.store.keep_file(Stored.Bin, key, ready, [key])
         let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
         let host_fns = self.host_fn_lines([a.view.file for a in d.program.files])
