@@ -1998,7 +1998,10 @@ int64_t avra_scope_end(int64_t id) { return scope_ended(g_current, id); }
 
 void avra_fiber_within_end(int64_t id) { scope_ended(g_current, id); }
 
-int64_t avra_fiber_request(void) { return g_current->cancel_by ? g_current->cancel_by : g_current->scope_by; }
+int64_t avra_task_request(void* task) {
+    const Fiber* f = (const Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER];
+    return !f ? 0 : f->cancel_by ? f->cancel_by : f->scope_by;
+}
 
 // A FORKED CHILD KEEPS THE CALLING TASK ALONE: every other fiber leaves
 // every list it is filed in — a gate lives in memory the child copied,
