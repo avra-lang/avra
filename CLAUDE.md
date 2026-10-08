@@ -2091,6 +2091,12 @@ Runtime facts, ours to ratify:
   and every PR ahead of it land together (HEADGREEN). A failing train
   drops its PR with the log on the PR. Main's own push run caches the
   compiler every run starts from.
+- A LANE ITERATES WITH `make try`, NEVER `make avra`: it builds the
+  compiler with the STANDING `build/avra` into `build/avra-try` and never
+  replaces the builder, so its store stays warm (a leaf edit, ~4 s held
+  464/466) and `./avra-try <cmd>` probes the change. `make avra` is for
+  a change the compiler must READ to build itself — codegen, the front
+  end, a refusal about its own source — and before landing.
 - A PRE-COMMIT HOOK refuses staged `.av` that is not canonical; the fix
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
 - HEAVY RUNS GO ON SPRITES, ONE SPRITE A LANE: `sh tools/work run <cmd>`
