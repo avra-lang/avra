@@ -1,0 +1,40 @@
+// A collect's `it.root_kind` read folds into a held collector's key as its
+// member's written source: the root kind is read off that source, so the
+// source's text is what the key holds the collector to.
+use compiler.{new_workspace, avra, Workspace}
+use compiler.host.{memory_host}
+use compiler.lower.{FieldPlan}
+
+const ROOT_KIND_MEMBER: string = "/w/src/p/p.av"
+
+fn root_kind_workspace(member: string) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "1\n",
+                ROOT_KIND_MEMBER: member,
+            },
+            ["/w/avra.toml", "/w/src/main.av", ROOT_KIND_MEMBER],
+        ),
+        "/w",
+        avra(),
+    )
+}
+
+/// How the key folds a root-kind read of the member `X`.
+fn root_kind_print(member: string) -> string {
+    let ws = root_kind_workspace(member)
+    let f = ws.file_id(ROOT_KIND_MEMBER)
+    let x? = [ws.decls.decl(d) for d in ws.items(f)].find(it.name == "X") else { return "no X" }
+    ws.plan_print(FieldPlan.RootKind, x)
+}
+
+spec "compiler/gathers — a root-kind read folds its member's written source (a path only a program that loads @std/avrac reaches)" {
+    then "the same source folds alike" {
+        root_kind_print("export type X = {}\n") == root_kind_print("export type X = {}\n")
+    }
+    then "an edit to the source that keeps the member's name and shape folds otherwise" {
+        root_kind_print("export type X = {}\n") != root_kind_print("export type X = {}\n// moved\n")
+    }
+}

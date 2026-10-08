@@ -1668,7 +1668,32 @@ steps=$((steps+1)); ./avra build $go/app > /dev/null 2>&1
 mkdir -p $go/gk/src/z; mv $go/gk/src/p/p.av $go/gk/src/z/z.av; rmdir $go/gk/src/p
 steps=$((steps+1)); go_out=$(./avra build --time $go/app 2>&1)
 case "$go_out" in *"gk/src/c/lib.av — what its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  go: member files whose order flipped: lib.av was not read for what it gathers: $(printf '%s' "$go_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)" ;; esac
+printf '// again\n' >> $go/app/src/main.av
+steps=$((steps+1)); go_again=$(./avra build --time $go/app 2>&1)
+case "$go_again" in *"gk/src/c/lib.av — what its collect gathers"*) fails=$((fails+1)); echo "FAIL  go: the next build read lib.av for what it gathers again — a held collector must stand on the set it was read for" ;; esac
 rm -rf $go
+
+# AND A COLLECTOR IS HELD TO WHAT IT BAKES OF EACH MEMBER, not only to the members' names and
+# shapes: a list projecting a member's module, its doc and the member itself as a fn value. A
+# member moved to another module and a member's `///` edited each move what the held
+# collector's object holds, so each must be read again — in a store of its own.
+gm=$(mktemp -d); mkdir -p $gm/gk/src/c $gm/gk/src/p $gm/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gm/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $gm/gk/src/k.av
+printf 'use k.{seq}\ntype Entry = { name: string, module: string, doc: string, call: fn() -> int }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name, module: it.module, doc: it.doc, call: it } by it.mark.args[0]\nexport fn shown() -> string { "${xs[0].module} ${xs[0].doc} ${xs[0].call()}" }\n' > $gm/gk/src/c/lib.av
+printf 'use k.{seq}\n/// one\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $gm/gk/src/p/p.av
+printf '[package]\nname = "rt-gm"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gm/app/avra.toml
+printf 'use @rt.gk.c.{shown}\nprintln(shown())\n' > $gm/app/src/main.av
+gm_step() { # gm_step <label> <wanted>
+    steps=$((steps+1)); gm_out=$(./avra build $gm/app 2>&1); gm_got=$($gm/app/src/main 2>&1)
+    [ "$gm_got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  gm: $1: the binary printed '$gm_got', wanted '$2': $(printf '%s' "$gm_out" | grep -aE '^error|^avra:' | head -2 | tr '\n' ' ' | cut -c1-200)"; }
+}
+gm_step "cold" "p one 1"
+mkdir -p $gm/gk/src/z; mv $gm/gk/src/p/p.av $gm/gk/src/z/z.av; rmdir $gm/gk/src/p
+gm_step "the member moved to another module" "z one 1"
+printf 'use k.{seq}\n/// uno\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $gm/gk/src/z/z.av
+gm_step "the member's doc edited" "z uno 1"
+rm -rf $gm
 
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another

@@ -1219,14 +1219,57 @@ fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectP
     lo.packed_struct(entry_ty, [byname.get(n)! for n in sig.names])
 }
 
-/// One field's register: the declaration crossed WHOLE as the
-/// `@std/meta` value its seat names (`Fn`/`Type`/`Named`/`Trait`) for
-/// a bare `it` whose seat asks for one — the declaration ITSELF (a
-/// callable fn value) for a bare `it` that asks for anything else;
-/// an `.Annotated` kind's matched mark, for `it.mark`; a component's
-/// OWN field, read off its instance's built value, for a named path
-/// that is not one of the generic words; else the GENERIC text
-/// projection, const.
+/// WHAT ONE PROJECTED FIELD READS OFF EACH MEMBER — decided once per field
+/// from the collect's own types, and dispatched on by the lowering and by a
+/// held collector's key alike, so a read the lowering learns is one the key
+/// folds.
+export enum FieldPlan {
+    /// The declaration crossed WHOLE as the `@std/meta` value its seat names
+    /// (`Fn`/`Type`/`Named`/`Trait`), for a bare `it` whose seat asks for one.
+    Crossed
+    /// The declaration ITSELF, a callable fn value, for any other bare `it`.
+    Value
+    /// A component instance's root-kind indices, off its written body.
+    RootKind
+    /// An `.Annotated` kind's matched mark, for `it.mark`.
+    Mark
+    /// A component's OWN field, read off its instance's built value.
+    Component(word: string)
+    /// The GENERIC text projection, const.
+    Text(path: List<Plain>)
+}
+
+/// The read one projected field makes, by its seat's type and its path.
+export fn field_plan(
+    decls: Decls,
+    entry_ty: TypeId,
+    name: string,
+    path: List<Plain>,
+    kind: CollectKind,
+) -> FieldPlan {
+    if path.is_empty() {
+        return if decls.takes_a_decl(field_seat(decls, entry_ty, name)) { FieldPlan.Crossed } else { FieldPlan.Value }
+    }
+    if is_root_kind_path(path) { return FieldPlan.RootKind }
+    if is_mark_path(path) && by_mark(kind) { return FieldPlan.Mark }
+    if path.length == 1 && !generic_words.contains(path[0].of) && by_component(kind) { return FieldPlan.Component(path[0].of) }
+    FieldPlan.Text(path)
+}
+
+/// A projected field's declared type; the absorbing one when none is.
+fn field_seat(decls: Decls, entry_ty: TypeId, name: string) -> TypeId {
+    decls.field_type_named(entry_ty, name) ?? decls.types.intern(Type.Error)
+}
+
+fn by_mark(kind: CollectKind) -> bool {
+    match kind { .Annotated(_) -> true, .Component(_) or .UnknownKind(_) -> false }
+}
+
+fn by_component(kind: CollectKind) -> bool {
+    match kind { .Component(_) -> true, .Annotated(_) or .UnknownKind(_) -> false }
+}
+
+/// One field's register: what its plan reads off the member, lowered.
 fn collect_field_reg(
     mut lo: LowerCx,
     a: Analysis,
@@ -1236,24 +1279,14 @@ fn collect_field_reg(
     kind: CollectKind,
     d: Decl,
 ) -> Reg {
-    if path.is_empty() {
-        let fnty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo
-            .view
-            .types
-            .intern(Type.Error)
-        if a.view.decls.takes_a_decl(fnty) { return decl_crossed_reg(lo, fnty, d.id) }
-        return collect_fn_reg(lo, d.id, fnty)
+    match field_plan(a.view.decls, entry_ty, name, path, kind) {
+        .Crossed -> decl_crossed_reg(lo, field_seat(a.view.decls, entry_ty, name), d.id),
+        .Value -> collect_fn_reg(lo, d.id, field_seat(a.view.decls, entry_ty, name)),
+        .RootKind -> int_list_box(lo, component_root_kind(a.view.decls, d)),
+        .Mark -> mark_field_reg(lo, field_seat(a.view.decls, entry_ty, name), kind, d),
+        .Component(word) -> component_field_reg(lo, a, field_seat(a.view.decls, entry_ty, name), word, d),
+        .Text(p) -> lo.const_str(collect_field_text(a.view.decls, d, p)),
     }
-    if is_root_kind_path(path) { return int_list_box(lo, component_root_kind(a.view.decls, d)) }
-    mark_field_reg(lo, a, entry_ty, name, path, kind, d) ?? component_field_reg(
-        lo,
-        a,
-        entry_ty,
-        name,
-        path,
-        kind,
-        d,
-    ) ?? lo.const_str(collect_field_text(a.view.decls, d, path))
 }
 
 /// A declaration crossed WHOLE as the meta value `want` names — the
@@ -1308,24 +1341,19 @@ fn is_mark_path(path: List<Plain>) -> bool {
     path.length == 1 && path[0].of == "mark"
 }
 
-fn mark_field_reg(
-    mut lo: LowerCx,
-    a: Analysis,
-    entry_ty: TypeId,
-    name: string,
-    path: List<Plain>,
-    kind: CollectKind,
-    d: Decl,
-) -> Reg? {
-    if !is_mark_path(path) { return null }
-    let word? = match kind { .Annotated(w) -> w, rest -> null } else { return null }
-    let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo
-        .view
-        .types
-        .intern(Type.Error)
-    let matched? = a.view.decls.annotations_of(d.id).find(it.name == word) else { return lo.mint_ty(field_ty) }
+fn mark_field_reg(mut lo: LowerCx, field_ty: TypeId, kind: CollectKind, d: Decl) -> Reg {
+    let matched? = gathering_mark(lo.view.decls, kind, d) else { return lo.mint_ty(field_ty) }
     let sig? = lo.fields_of(field_ty) else { return lo.mint_ty(field_ty) }
     lo.packed_struct(field_ty, [mark_part_reg(lo, matched, n) for n in sig.names])
+}
+
+/// The mark a member was gathered by; none for a kind that gathers by no mark,
+/// or a member that no longer wears it.
+export fn gathering_mark(decls: Decls, kind: CollectKind, d: Decl) -> AnnotationFact? {
+    match kind {
+        .Annotated(w) -> decls.annotations_of(d.id).find(it.name == w),
+        .Component(_) or .UnknownKind(_) -> null,
+    }
 }
 
 /// `mark`'s own record, filled by field NAME — `name` the matched
@@ -1357,21 +1385,7 @@ fn int_list_box(mut lo: LowerCx, ns: List<int>) -> Reg {
 /// declared type stands in), then the named field read off it
 /// (`values.av`'s `field_named`, whose own DEFECT is the honest
 /// answer for a word that names no field).
-fn component_field_reg(
-    mut lo: LowerCx,
-    a: Analysis,
-    entry_ty: TypeId,
-    name: string,
-    path: List<Plain>,
-    kind: CollectKind,
-    d: Decl,
-) -> Reg? {
-    if path.length != 1 || generic_words.contains(path[0].of) || !(kind is .Component) { return null }
-    let word = path[0].of
-    let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo
-        .view
-        .types
-        .intern(Type.Error)
+fn component_field_reg(mut lo: LowerCx, a: Analysis, field_ty: TypeId, word: string, d: Decl) -> Reg {
     let inst_ty: TypeId = a.view.decls.type_of_const(d.file, d.stmt) ?? lo
         .view
         .types

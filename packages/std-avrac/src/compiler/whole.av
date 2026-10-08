@@ -35,10 +35,20 @@ use features.{
     EmbedFault,
     embed_literal_law,
     admits_package,
+    AnnotationFact,
+    LitArg,
 }
+use features.collects.{collect_field_text}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
-use compiler.lower.{LinkedPackage, ordered_collect_members}
+use compiler.lower.{
+    LinkedPackage,
+    ordered_collect_members,
+    gathering_mark,
+    field_plan,
+    FieldPlan,
+    collect_answer_type,
+}
 use compiler.host.{library_stem, Beneath, Read, InputName}
 use compiler.backend.{platform_defines}
 use @std.errors.{Loc}
@@ -178,19 +188,25 @@ impl Workspace {
     }
 
     /// A read file's `gathers` lines, one for each `collect` of it that gathers its
-    /// package whole: the package, the file, what it gathers and the set it gathered —
-    /// the reach a record keeps for its held walk, and what a held file is held to.
+    /// package whole: the package, the file, what it gathers, what it reads of each
+    /// member and the set it gathered — the reach a record keeps for its held walk,
+    /// and what a held file is held to.
     fn gathers_lines(path: string) -> List<string> {
         let f = self.file_id(path)
-        let p = self.parsed(f)
         let key = self.packages()[self.holder_of_path(path)].key
-        [gathers_line(key, path, g, self.gathered_set(g, f)) for g in flatten([some_list(package_gathering(p.store, s)) for s in p.stmts])]
+        [gathers_line(key, path, g, self.gathered_set(g, f)) for g in self.gatherings(path)]
     }
 
-    /// WHAT A COLLECT GATHERED, as one digest: each member folded whole — its name,
-    /// its mark's arguments, its shape — in the order the collect itself gathers them,
-    /// so two sets differ exactly when a member came, went, moved its mark or its
-    /// shape, or changed its place.
+    /// A read file's package-wide collects, each as what it gathers.
+    fn gatherings(path: string) -> List<Gathering> {
+        let f = self.file_id(path)
+        let p = self.parsed(f)
+        flatten([some_list(package_gathering(self.decls, f, p.store, s)) for s in p.stmts])
+    }
+
+    /// WHAT A COLLECT GATHERED, as one digest: each member folded whole, in the
+    /// order the collect itself gathers them, so two sets differ exactly when what
+    /// the collect would bake moved.
     fn gathered_set(g: Gathering, owner: FileId) -> string {
         let members = ordered_collect_members(
             self.decls,
@@ -199,20 +215,42 @@ impl Workspace {
             g.order,
             owner,
         )
-        digest_of(fields_wire([self.member_print(g.kind, m) for m in members]))
+        digest_of(fields_wire([self.member_print(g, m) for m in members]))
     }
 
-    fn member_print(kind: CollectKind, m: Decl) -> string {
-        digest_of(fields_wire([m.name, fields_wire(self.mark_args(kind, m)), self.signed_shape(m)]))
+    /// One member as its collect sees it: where it is declared, its name, the mark
+    /// that gathered it, its shape, and what each projected field reads of it.
+    fn member_print(g: Gathering, m: Decl) -> string {
+        digest_of(
+            fields_wire(
+                [
+                    self.decls.module_of(m.id),
+                    m.name,
+                    fields_wire(mark_prints(gathering_mark(self.decls, g.kind, m))),
+                    self.signed_shape(m),
+                    fields_wire([self.plan_print(plan, m) for plan in g.plans]),
+                ],
+            ),
+        )
     }
 
-    /// The arguments of the mark a collect gathers a member by; none for a kind
-    /// that gathers by no mark.
-    fn mark_args(kind: CollectKind, m: Decl) -> List<string> {
-        let w? = gathered_mark(kind) else { return [] }
-        let fact? = self.decls.annotations_of(m.id).find(it.name == w) else { return [] }
-        [a.text for a in fact.args]
+    /// What one field's plan reads of a member, as the key folds it: a read off
+    /// the member's written source folds that source's text.
+    fn plan_print(plan: FieldPlan, m: Decl) -> string {
+        match plan {
+            .Crossed -> fields_wire(["crossed", self.member_text(m)]),
+            .Value -> fields_wire(["value", self.decls.symbol(m.id)]),
+            .RootKind -> fields_wire(["root_kind", self.member_text(m)]),
+            .Mark -> "mark",
+            .Component(word) -> fields_wire(
+                ["component", word, self.decls.instance_unit(m.id).name, self.member_text(m)],
+            ),
+            .Text(path) -> fields_wire(["text", collect_field_text(self.decls, m, path)]),
+        }
     }
+
+    /// The text a member is declared in, as one digest.
+    fn member_text(m: Decl) -> string { self.text_digest(self.decls.file(m.file).path) }
 
     /// EVERY HELD COLLECTOR WHOSE SET MOVED, to be read: what it gathers now, from
     /// held members' records and moved members' fresh declarations, against what
@@ -224,8 +262,7 @@ impl Workspace {
     /// Whether a held collector's set moved since its record was written.
     fn gathered_away(g: HeldGather) -> bool {
         let f = self.file_id(g.collector)
-        self.is_held(f) &&
-            self.gathered_set(Gathering { kind: g.kind, order: g.order }, f) != g.digest
+        self.is_held(f) && self.gathered_set(g.gathering, f) != g.digest
     }
 
     /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
@@ -618,21 +655,33 @@ fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> 
     place
 }
 
-/// The mark a collect gathers by; none for a kind that gathers by no mark.
-fn gathered_mark(kind: CollectKind) -> string? {
-    match kind { .Annotated(w) -> w, .Component(_) or .UnknownKind(_) -> null }
-}
-
-/// What a statement gathers and in what order, when it is a `collect` that gathers
-/// its package whole.
-fn package_gathering(store: SyntaxArena, s: StmtId) -> Gathering? {
+/// What a statement gathers, in what order, and what it reads of each member,
+/// when it is a `collect` that gathers its package whole.
+fn package_gathering(decls: Decls, f: FileId, store: SyntaxArena, s: StmtId) -> Gathering? {
     let scope? = store.collect_scope(s) else { return null }
     if !admits_package(scope) { return null }
     let parts = store.collect_parts(s)
-    if parts != null { return Gathering { kind: parts!.kind, order: parts!.order } }
+    if parts != null {
+        let rt = collect_answer_type(decls, f, s)
+        let entry = decls.types.element(rt) ?? rt
+        return Gathering {
+            kind: parts!.kind,
+            order: parts!.order,
+            plans: [field_plan(decls, entry, pf.field.of, pf.path, parts!.kind) for pf in parts!.proj.fields],
+        }
+    }
     let e? = store.collect_enum_parts(s) else { return null }
-    Gathering { kind: e.kind, order: e.order }
+    Gathering { kind: e.kind, order: e.order, plans: [] }
 }
+
+/// A gathering mark's arguments as the key folds them; none for no mark.
+fn mark_prints(mark: AnnotationFact?) -> List<string> {
+    let m? = mark else { return [] }
+    [lit_print(a) for a in m.args]
+}
+
+/// A mark's argument as the key folds it: its kind beside its text.
+fn lit_print(a: LitArg) -> string { fields_wire([lit_kind_word(a.kind), a.text]) }
 
 /// An embedded file no package root stands over: the law's refusal.
 fn unrooted(path: string) -> Read { Read.Embedded(path, Beneath.Refused(embed_literal_law)) }
