@@ -996,7 +996,7 @@ static int deadline_passed(Fiber* f) {
 static void deadline_fired(Fiber* f) {
     if (TRACING) traced_fiber("deadline-fired", f, (long long)f->deadline);
     deadline_reached(f);
-    if (f->parked && f->heeds && f->scope_by != 0) set_claimed(f, -1, 1, BY_DEADLINE);
+    if (f->parked && f->heeds) set_claimed(f, -1, 1, BY_DEADLINE);
 }
 
 // A TASK STARTS UNDER ITS SPAWNER'S LIMIT: one record, the scope whose
