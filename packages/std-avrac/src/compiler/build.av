@@ -38,6 +38,7 @@ use compiler.backend.{
     unsupported_on_wasm,
 }
 use compiler.lower.{Body, Lowered, program_symbol}
+use compiler.memory.{sound_checked}
 use compiler.store.{Store, Stored, Keeping, node_key}
 use compiler.host.{no_target, read_manifest}
 use @std.errors.{Error, ErrorInfo, info}
@@ -308,7 +309,7 @@ fn compiler_print(ws: Workspace) -> string {
     let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
     let digest? = ws.running_print() else { return unnamed_print() }
     let mode = ws.keys.build_mode.get()
-    let print = "${digest}${codegen_mode()}${if mode == "" { "" } else { "@${mode}" }}"
+    let print = "${digest}${codegen_mode()}${proof_mode()}${if mode == "" { "" } else { "@${mode}" }}"
     rolled(
         ws,
         roll,
@@ -344,6 +345,11 @@ fn links_unchanged(store: Store, key: string) -> bool {
 /// HOW THIS PROCESS EMITS, as a suffix on the compiler's print: the runtime's
 /// hot leaves inlined, or kept as calls.
 fn codegen_mode() -> string { if inlines_runtime() { "" } else { "-calls" } }
+
+/// WHAT THIS PROCESS PROVES, as a suffix on the compiler's print: the
+/// memory pass's proof adds findings to a check, so a check made with it
+/// is kept apart from one made without.
+fn proof_mode() -> string { if sound_checked() { "+sound" } else { "" } }
 
 /// A roll line's print: its first field. A roll holds no empty line.
 fn print_of(line: string) -> string { line.split("\t")[0] }
