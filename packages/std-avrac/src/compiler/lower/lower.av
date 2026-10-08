@@ -44,7 +44,6 @@ use core.{
     CollectScope,
     Plain,
     DeclKind,
-    body_symbol,
 }
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{
@@ -102,10 +101,6 @@ export type Body = {
     /// Where a task's body was written, `file:line` — what a trace and
     /// a listing name the task by. Absent for a body that is no task's.
     site: string? = null,
-    /// A `once fn`'s own — its runtime guard runs every call, its
-    /// computation at most one. A GROWTH: every other construction
-    /// site answers false.
-    memoized: bool = false,
     /// The declared fn's own seat marks, `mut`/`const`/`isolated`
     /// written and `consumed` inferred (R3) — what the memory pass
     /// reads to seed a consuming param scope-owned at entry, and what
@@ -178,9 +173,6 @@ export type Lowered = {
     libraries: List<LinkedPackage> = [],
     // the settled aggregates its bodies read by address, each once
     statics: List<Static>,
-    /// Bodies reachable from a `once fn` alone — the backend compiles
-    /// them for size, never speed. `cold_bodies` names the members.
-    cold: Map<string, bool> = {},
 }
 
 impl Decls {
@@ -462,7 +454,6 @@ impl Decls {
             externs: self.extern_rows(),
             statics: distinct_statics(statics.concat(d.statics)),
             libraries: [],
-            cold: cold_bodies(every_body),
         }
     }
 
@@ -604,7 +595,6 @@ impl Decls {
             externs: self.extern_rows(),
             statics: distinct_statics(ru.statics.concat(d.statics)),
             libraries: [],
-            cold: cold_bodies(every_body),
         }
     }
 
@@ -750,67 +740,6 @@ fn pointer_constant(name: string) -> Diag {
         null,
         "a non-zero constant reached a pointer register in `${name}` — a pointer's only constant is null",
     )
-}
-
-/// A body reachable from a `once fn` alone: every caller into it is
-/// itself one, so nothing under a once-memoized root runs more than
-/// the root does. The backend compiles the set for size, not speed.
-/// `body_symbol` names a call's target and an address taken alike, so
-/// a hot reference either way keeps a body hot — the set is
-/// self-correcting, never a hand-kept list.
-export fn cold_bodies(bodies: List<Body>) -> Map<string, bool> {
-    let g = call_graph(bodies)
-    mut cold: Map<string, bool> = {}
-    mut queue: List<string> = []
-    for b in bodies {
-        if b.memoized {
-            cold.set(b.name, true)
-            queue.push(b.name)
-        }
-    }
-    mut at = 0
-    while at < queue.length {
-        let name = queue[at]
-        at = at + 1
-        for callee in edges_of(g.callees, name) {
-            if cold.get(callee) == null &&
-                edges_of(g.callers, callee).all((c: string) -> cold.get(c) != null) {
-                cold.set(callee, true)
-                queue.push(callee)
-            }
-        }
-    }
-    cold
-}
-
-/// The program's call edges, forward and reverse, by name. Each
-/// adjacency is a `Cell` so an edge grows in PLACE (`claim_seen`'s
-/// law, above) — a list read back out of a `Map` on every edge would
-/// copy the list whole.
-type CallGraph = { callees: Map<string, Cell<List<string>>>, callers: Map<string, Cell<List<string>>> }
-
-fn call_graph(bodies: List<Body>) -> CallGraph {
-    mut callees: Map<string, Cell<List<string>>> = {}
-    mut callers: Map<string, Cell<List<string>>> = {}
-    for b in bodies {
-        for i in b.ins {
-            let target = body_symbol(i)
-            if target != null {
-                grown(callees, b.name, target!)
-                grown(callers, target!, b.name)
-            }
-        }
-    }
-    CallGraph { callees: callees, callers: callers }
-}
-
-fn grown(mut adj: Map<string, Cell<List<string>>>, from: string, to: string) {
-    let cell = adj.get(from)
-    if cell != null { cell!.push(to) } else { adj.set(from, Cell.new([to])) }
-}
-
-fn edges_of(adj: Map<string, Cell<List<string>>>, name: string) -> List<string> {
-    adj.get(name)?.get() ?? []
 }
 
 /// The ceiling on DISTINCT bodies one program mints. A source
@@ -967,8 +896,7 @@ fn lower_fn(
     for pt in ptypes { let _ = lo.mint_ty(pt) }
     lo.seeded()
     lo.seats_enter()
-    let memoized = a.view.store.is_once(x.stmt)
-    let r = if memoized { lo.once_body(fname, root, rt) } else { lo.reg_of(root) }
+    let r = if a.view.store.is_once(x.stmt) { lo.once_body(fname, root, rt) } else { lo.reg_of(root) }
     // A `then` case is a body like any fn's, but a FAILURE shows its
     // two sides when its answer is one equality — the driver knows
     // the case kind, as typing's `case_body` does, and the rule lives
@@ -986,7 +914,6 @@ fn lower_fn(
             reg_types: lo.out.reg_types,
             file: a.view.file,
             weak: sub != null,
-            memoized: memoized,
             marks: body_marks,
             hosted: a.view.decls.is_host_fn(x.id),
         },
