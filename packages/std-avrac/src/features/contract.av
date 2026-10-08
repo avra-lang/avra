@@ -19,7 +19,7 @@
 //! values.av the runtime VALUE representation, builder.av the
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
-use @std.meta.{derive}
+use @std.meta.{derive, delegates}
 use core.{
     Expr,
     ExprId,
@@ -37,8 +37,8 @@ use core.{
     Binding,
 }
 use core.{SeatMark, SideTable, Fingerprint, nothing_bound}
-// LICENSED modules.unused_import: the GENERATED impls call these; the keeper reads source, and generated code is not source
 use core.{fp, fp_list, fp_str}
+// LICENSED modules.unused_import: the GENERATED impls call these; the keeper reads source, and generated code is not source
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
@@ -413,9 +413,13 @@ export trait NodeSemantics {
     fn heirs(e: Expr) -> List<ExprId> {
         []
     }
-    fn resolve(mut cx: ResolveCx, e: ExprId) {
-        nothing()
-    }
+}
+
+/// A syntax node's meaning at resolve, typing and lowering, delegated
+/// over `Expr`: each record writes its own impl.
+@delegates(Expr)
+export trait Meaning {
+    fn resolve(mut cx: ResolveCx, e: ExprId)
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg
 }

@@ -1,8 +1,10 @@
 //! The list literal's NodeSemantics — dispatch one-liners; the rule
 //! bodies live beside this file, by concern.
 use core.{Expr, ExprId, TypeId, Reg, CompClause, some_list}
-use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Bound}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Bound, Meaning}
 use diagnostics.{refusal}
+
+use core.expr.{ListLit, Comp, Collect}
 
 export type ListSemantics = {}
 
@@ -29,33 +31,6 @@ impl NodeSemantics for ListSemantics {
     fn heirs(e: Expr) -> List<ExprId> {
         // a feature cannot enumerate OTHER features' variants
         match e { .Comp(elem, _) -> [elem], _ -> [] }
-    }
-
-    fn resolve(mut cx: ResolveCx, e: ExprId) {
-        // a feature cannot enumerate OTHER features' variants
-        match cx.view.store.expr(e) {
-            .Comp(elem, clauses) -> resolve_comp(cx, e, elem, clauses),
-            .Collect(body) -> cx.walk(body),
-            rest -> nothing(),
-        }
-    }
-
-    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        // a feature cannot enumerate OTHER features' variants
-        match cx.view.store.expr(e) {
-            .Comp(elem, clauses) -> comp_type(cx, e, elem, clauses),
-            .Collect(body) -> collect_type(cx, e, body),
-            rest -> literal_type(cx, e),
-        }
-    }
-
-    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        // a feature cannot enumerate OTHER features' variants
-        match cx.view.store.expr(e) {
-            .Comp(elem, clauses) -> comp_reg(cx, e, elem, clauses),
-            .Collect(body) -> collect_reg(cx, e, body),
-            rest -> literal_reg(cx, e),
-        }
     }
 
 }
@@ -122,4 +97,65 @@ fn literal_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 fn literal_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     let elems? = cx.view.store.expr(e).elems_of() else { return cx.lower_defect(e, "a list literal without its elements") }
     list_reg(cx, e, elems)
+}
+
+impl Meaning for ListLit {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        lists_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        lists_type_of(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        lists_lower(cx, e)
+    }
+}
+impl Meaning for Comp {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        lists_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        lists_type_of(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        lists_lower(cx, e)
+    }
+}
+impl Meaning for Collect {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        lists_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        lists_type_of(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        lists_lower(cx, e)
+    }
+}
+
+fn lists_resolve(mut cx: ResolveCx, e: ExprId) {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
+        .Comp(elem, clauses) -> resolve_comp(cx, e, elem, clauses),
+        .Collect(body) -> cx.walk(body),
+        rest -> nothing(),
+    }
+}
+
+fn lists_type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
+        .Comp(elem, clauses) -> comp_type(cx, e, elem, clauses),
+        .Collect(body) -> collect_type(cx, e, body),
+        rest -> literal_type(cx, e),
+    }
+}
+
+fn lists_lower(mut cx: LowerCx, e: ExprId) -> Reg {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
+        .Comp(elem, clauses) -> comp_reg(cx, e, elem, clauses),
+        .Collect(body) -> collect_reg(cx, e, body),
+        rest -> literal_reg(cx, e),
+    }
 }

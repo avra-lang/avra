@@ -1,7 +1,9 @@
 //! The map literal's NodeSemantics — dispatch one-liners; the rule
 //! bodies live beside this file, by concern.
 use core.{Expr, ExprId, TypeId, Reg}
-use features.{NodeSemantics, TypeCx, LowerCx}
+use features.{NodeSemantics, TypeCx, LowerCx, Meaning, ResolveCx, nothing}
+
+use core.expr.{MapLit}
 
 export type MapsSemantics = {}
 
@@ -11,11 +13,16 @@ impl NodeSemantics for MapsSemantics {
         pairs.keys.concat(pairs.values)
     }
 
+}
+
+impl Meaning for MapLit {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         let pairs? = cx.view.store.expr(e).pairs_of() else { return cx.error_type }
         map_type(cx, e, pairs.keys, pairs.values)
     }
-
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         let pairs? = cx.view.store.expr(e).pairs_of() else { return cx.lower_defect(e, "a map literal without its pairs") }
         map_reg(cx, e, pairs.keys, pairs.values)

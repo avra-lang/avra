@@ -3,7 +3,9 @@
 //! arguments are ordinary children — nothing is scoped or hidden;
 //! `self` binds to the enclosing method's receiver seat.
 use core.{Expr, ExprId, TypeId, Reg}
-use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+
+use core.expr.{MethodCall, Receiver}
 
 export type MethodSemantics = {}
 
@@ -13,18 +15,42 @@ impl NodeSemantics for MethodSemantics {
         match e { .MethodCall(subject, _, args) -> [subject].concat(args), _ -> [] }
     }
 
+}
+
+impl Meaning for MethodCall {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        // a feature matching its own variants
-        match cx.view.store.expr(e) { .Receiver -> cx.use_receiver(e), _ -> nothing() }
+        impls_resolve(cx, e)
     }
-
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        if cx.view.store.expr(e) is .Receiver { return cx.target_type(e) }
-        method_call_type(cx, e)
+        impls_type_of(cx, e)
     }
-
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        if cx.view.store.expr(e) is .Receiver { return receiver_reg(cx, e) }
-        method_call_reg(cx, e)
+        impls_lower(cx, e)
     }
+}
+impl Meaning for Receiver {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        impls_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        impls_type_of(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        impls_lower(cx, e)
+    }
+}
+
+fn impls_resolve(mut cx: ResolveCx, e: ExprId) {
+    // a feature matching its own variants
+    match cx.view.store.expr(e) { .Receiver -> cx.use_receiver(e), _ -> nothing() }
+}
+
+fn impls_type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+    if cx.view.store.expr(e) is .Receiver { return cx.target_type(e) }
+    method_call_type(cx, e)
+}
+
+fn impls_lower(mut cx: LowerCx, e: ExprId) -> Reg {
+    if cx.view.store.expr(e) is .Receiver { return receiver_reg(cx, e) }
+    method_call_reg(cx, e)
 }

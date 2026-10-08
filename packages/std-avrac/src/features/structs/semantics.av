@@ -5,7 +5,9 @@
 //! names through the naming law and walks each field default as a
 //! body of its own.
 use core.{Expr, ExprId, StmtId, TypeId, Reg, SyntaxArena}
-use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+
+use core.expr.{StructLit, With}
 
 export type StructsSemantics = {}
 
@@ -19,20 +21,6 @@ impl NodeSemantics for StructsSemantics {
         }
     }
 
-    fn resolve(mut cx: ResolveCx, e: ExprId) {
-        match cx.view.store.expr(e) {
-            .StructLit(name, _, _) -> cx.use_type(e, name.of),
-            _ -> nothing(),
-        }
-    }
-
-    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        structs_type(cx, e)
-    }
-
-    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        structs_reg(cx, e)
-    }
 }
 
 export type StructDeclSemantics = {}
@@ -71,5 +59,35 @@ export type NamedTypeSemantics = {}
 impl StmtSemantics for NamedTypeSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
         let _ = cx.refuses_nested(s, "resolve.nested_type", "type declarations")
+    }
+}
+
+impl Meaning for StructLit {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        structs_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        structs_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        structs_reg(cx, e)
+    }
+}
+impl Meaning for With {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        structs_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        structs_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        structs_reg(cx, e)
+    }
+}
+
+fn structs_resolve(mut cx: ResolveCx, e: ExprId) {
+    match cx.view.store.expr(e) {
+        .StructLit(name, _, _) -> cx.use_type(e, name.of),
+        _ -> nothing(),
     }
 }

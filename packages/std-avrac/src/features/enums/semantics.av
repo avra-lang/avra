@@ -14,8 +14,11 @@ use features.{
     LowerCx,
     NameFacts,
     nothing,
+    Meaning,
 }
 use features.enums.{bind_types, pat_reg, bind_regs}
+
+use core.expr.{Match, Is, VariantLit}
 
 export type EnumsSemantics = {}
 
@@ -45,18 +48,6 @@ impl NodeSemantics for EnumsSemantics {
         match e { .Match(_, arms) -> [a.value for a in arms], _ -> [] }
     }
 
-    fn resolve(mut cx: ResolveCx, e: ExprId) {
-        // a feature cannot enumerate OTHER features' variants
-        match cx.view.store.expr(e) { .Match(_, arms) -> resolve_arms(cx, arms), _ -> nothing() }
-    }
-
-    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        enums_type(cx, e)
-    }
-
-    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        enums_reg(cx, e)
-    }
 }
 
 export type EnumDeclSemantics = {}
@@ -129,4 +120,43 @@ export fn hole_of(store: SyntaxArena, names: NameFacts, ids: List<PatId>) -> Pat
 export fn arm_binds(store: SyntaxArena, names: NameFacts, a: Arm) -> List<Binder> {
     let first? = a.pats.first() else { return [] }
     binders(store, names, first)
+}
+
+impl Meaning for Match {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        enums_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        enums_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        enums_reg(cx, e)
+    }
+}
+impl Meaning for Is {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        enums_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        enums_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        enums_reg(cx, e)
+    }
+}
+impl Meaning for VariantLit {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        enums_resolve(cx, e)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        enums_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        enums_reg(cx, e)
+    }
+}
+
+fn enums_resolve(mut cx: ResolveCx, e: ExprId) {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) { .Match(_, arms) -> resolve_arms(cx, arms), _ -> nothing() }
 }
