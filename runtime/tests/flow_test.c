@@ -2093,6 +2093,8 @@ int main(int argc, char** argv) {
     in_child("a closed descriptor's number is watched afresh for its next tenant", closed_number_is_watched_afresh);
     in_child("a sleep and a reader among yielding tasks wake within reach", world_within_reach);
     in_child("timers among tasks that compute between yields fire at the first switch after", timers_among_workers);
+    in_child_within("a deadline is filed once, and heard", deadline_once, 10);
+    in_child_within("a deadline reaches what it must, and no further", deadline_reach, 10);
     if (g_fails) {
         printf("flow: %d checks, %d failed — the rest would hang on what these hold\n", g_checks, g_fails);
         return 1;
@@ -2142,10 +2144,8 @@ int main(int argc, char** argv) {
     joins_of_tasks_nothing_runs();
     overflow_list();
     opened_gate();
-    deadline_once();
     slots();
     ends_without_parking();
-    deadline_reach();
     fork_forgets_deadlines();
     claim_before_cancel();
     interrupt_is_its_own_claim();
