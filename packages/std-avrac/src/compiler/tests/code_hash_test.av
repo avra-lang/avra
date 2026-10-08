@@ -5,6 +5,7 @@
 use @std.avrac.compiler.{Program}
 use @std.avrac.compiler.host.{memory_host}
 use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths, refused_in}
+use compiler.workspace_analysis.{inst_key_of}
 
 fn hashing(main: string) -> Program {
     let held = vendored_meta(
@@ -158,6 +159,24 @@ spec "compiler — a fn's code hash" {
             (hashing("fn answer() -> int { 1 }\nconst H: string = code_hash(answer) ?? \"none\"\nH")
                 .run() catch e -> e)
                 .contains("a const's value cannot hold a code hash")
+        }
+    }
+}
+
+spec "compiler — an instantiation's kept key" {
+    given "the same home, arguments and symbol" {
+        then "name one key" {
+            inst_key_of("home", "int", "g\$^T") == inst_key_of("home", "int", "g\$^T")
+        }
+    }
+    given "a type argument whose shape differs" {
+        then "names another key" {
+            inst_key_of("home", "int", "g\$^T") != inst_key_of("home", "record 1 (int)", "g\$^T")
+        }
+    }
+    given "a home whose object key differs" {
+        then "names another key" {
+            inst_key_of("home", "int", "g\$^T") != inst_key_of("home2", "int", "g\$^T")
         }
     }
 }
