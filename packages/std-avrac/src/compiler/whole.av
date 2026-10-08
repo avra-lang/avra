@@ -2,7 +2,6 @@
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
     digest_of,
-    sorted_texts,
     CollectScope,
     CollectKind,
     StmtId,
@@ -38,8 +37,7 @@ use features.{
 }
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
-use features.collects.{gathered_members}
-use compiler.lower.{LinkedPackage}
+use compiler.lower.{LinkedPackage, ordered_collect_members}
 use compiler.host.{library_stem, Beneath, Read, InputName}
 use compiler.backend.{platform_defines}
 use @std.errors.{Loc}
@@ -185,20 +183,22 @@ impl Workspace {
         let f = self.file_id(path)
         let p = self.parsed(f)
         let key = self.packages()[self.holder_of_path(path)].key
-        [gathers_line(key, path, k, self.gathered_set(k, f)) for k in [package_kind(p.store, s)? for s in p.stmts]]
+        [gathers_line(key, path, g, self.gathered_set(g, f)) for g in [package_gathering(p.store, s)? for s in p.stmts]]
     }
 
     /// WHAT A COLLECT GATHERED, as one digest: each member folded whole — its name,
-    /// its mark's arguments, its shape — and the members in name order, so two sets
-    /// differ exactly when a member came, went or moved its mark or its shape.
-    fn gathered_set(kind: CollectKind, owner: FileId) -> string {
-        digest_of(
-            fields_wire(
-                sorted_texts(
-                    [self.member_print(kind, m) for m in gathered_members(self.decls, kind, CollectScope.Package, owner)],
-                ),
-            ),
+    /// its mark's arguments, its shape — in the order the collect itself gathers them,
+    /// so two sets differ exactly when a member came, went, moved its mark or its
+    /// shape, or changed its place.
+    fn gathered_set(g: Gathering, owner: FileId) -> string {
+        let members = ordered_collect_members(
+            self.decls,
+            g.kind,
+            CollectScope.Package,
+            g.order,
+            owner,
         )
+        digest_of(fields_wire([self.member_print(g.kind, m) for m in members]))
     }
 
     fn member_print(kind: CollectKind, m: Decl) -> string {
@@ -218,8 +218,14 @@ impl Workspace {
     /// held members' records and moved members' fresh declarations, against what
     /// its record says it gathered.
     fn gathered_moved() -> List<ReadFile> {
-        [ReadFile { path: g.collector, why: Reads.Gathered(g.package) } for g in self.hold.gathered.get() if self.is_held(self.file_id(g.collector)) &&
-            self.gathered_set(g.kind, self.file_id(g.collector)) != g.digest]
+        [ReadFile { path: g.collector, why: Reads.Gathered(g.package) } for g in self.hold.gathered.get() if self.gathered_away(g)]
+    }
+
+    /// Whether a held collector's set moved since its record was written.
+    fn gathered_away(g: HeldGather) -> bool {
+        let f = self.file_id(g.collector)
+        self.is_held(f) &&
+            self.gathered_set(Gathering { kind: g.kind, order: g.order }, f) != g.digest
     }
 
     /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
@@ -612,11 +618,15 @@ fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> 
     place
 }
 
-/// What a statement gathers, when it is a `collect` that gathers its package whole.
-fn package_kind(store: SyntaxArena, s: StmtId) -> CollectKind? {
+/// What a statement gathers and in what order, when it is a `collect` that gathers
+/// its package whole.
+fn package_gathering(store: SyntaxArena, s: StmtId) -> Gathering? {
     let scope? = store.collect_scope(s) else { return null }
     if !admits_package(scope) { return null }
-    store.collect_parts(s)?.kind ?? store.collect_enum_parts(s)?.kind
+    let parts = store.collect_parts(s)
+    if parts != null { return Gathering { kind: parts!.kind, order: parts!.order } }
+    let e? = store.collect_enum_parts(s) else { return null }
+    Gathering { kind: e.kind, order: e.order }
 }
 
 /// An embedded file no package root stands over: the law's refusal.
