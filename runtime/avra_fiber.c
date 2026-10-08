@@ -2179,8 +2179,12 @@ static void task_said(FILE* out, Numbered no, const Fiber* f) {
 }
 
 // What a task is doing: ready, or each thing it waits on.
+// The case's task stopped for spinning on the frozen clock, if one was.
+static const Fiber* g_case_spinner = NULL;
+
 static void waits_said(FILE* out, Numbered no, const Fiber* f) {
     if (f->state == FIBER_READY) { fputs(" ready to run", out); return; }
+    if (f == g_case_spinner) { fputs(" stopped: it waited on the frozen clock without sleeping", out); return; }
     if (f->joining) {
         const Fiber* on = (const Fiber*)(uintptr_t)task_cells(f->joining)[TASK_FIBER];
         if (on) fprintf(out, " joins task %lld", no(on));
@@ -2305,6 +2309,7 @@ static void case_spun(const char* words) {
     if (!g_case_waited || g_current == g_case_runner) return;
     fprintf(stderr, "avra: %s\n", words);
     g_case_spun = 1;
+    g_case_spinner = g_current;
     avra_gate_claim(g_case_alarm);
     Fiber* self = g_current;
     self->state = FIBER_PARKED;
@@ -2346,6 +2351,7 @@ int64_t avra_case_run(int64_t (*body)(void)) {
     g_case_first = g_fiber_seq;
     g_case_spoiled = 0;
     g_case_spun = 0;
+    g_case_spinner = NULL;
     g_case_answer = 0;
     void* box = avra_array_sized(2);
     avra_array_push(box, (int64_t)(uintptr_t)case_ran);
@@ -2355,11 +2361,21 @@ int64_t avra_case_run(int64_t (*body)(void)) {
     ((Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER])->wide = 1;
     avra_wait_task(task, CASE_ENDED, 0);
     avra_wait_gate(g_case_alarm, CASE_ALARMED, 0);
+    // RUNS THE CASE OPENS END WITH IT: a case stopped inside one — the
+    // evaluator opens a run for every program — leaves it open, so the
+    // runner closes it, the schedule's first (which closes its own clock),
+    // then any clock run left.
+    int64_t runs = (int64_t)g_runs;
+    int64_t clocks = avra_clock_run_depth();
     g_case_waited = 1;
     g_case_runner = g_current;
     int64_t claim = avra_wait_park();
     g_case_waited = 0;
-    if (claim >> 32 == CASE_ALARMED) case_cleared(!g_case_spun);
+    if (claim >> 32 == CASE_ALARMED) {
+        while ((int64_t)g_runs > runs) avra_sched_run_ends();
+        while (avra_clock_run_depth() > clocks) avra_clock_run_ends();
+        case_cleared(!g_case_spun);
+    }
     avra_rc_release(task);
     wide_given_back();
     return g_case_answer;
@@ -2477,6 +2493,8 @@ int64_t avra_sched_wide_resident(void) {
     free(in);
     return n;
 }
+
+int64_t avra_sched_run_depth(void) { return (int64_t)g_runs; }
 
 int64_t avra_sched_tasks(void) {
     int64_t n = 0;

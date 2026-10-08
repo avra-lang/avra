@@ -146,6 +146,25 @@ static bool spins_in_a_task(void) {
     joined(t);
     return true;
 }
+// A spin INSIDE A RUN the case opened — as the evaluator opens one for
+// every program it runs — then nothing of that run outlives the case.
+static bool spins_in_a_run(void) {
+    avra_sched_run_begins();
+    avra_clock_virtual(1);
+    spins_itself();
+    avra_sched_run_ends();
+    return true;
+}
+static void spun_in_a_run(void) {
+    setenv("AVRA_CLOCK_ASKS", "1000", 1);
+    CHECK(verdict(spins_in_a_run) == 0, "a case that spins inside a run of its own fails");
+    CHECK(avra_sched_run_depth() == 0, "and no run it opened stands after it");
+    int64_t t0 = avra_now_ns();
+    struct timespec nap = { 0, 2000000 };
+    nanosleep(&nap, NULL);
+    CHECK(avra_now_ns() - t0 >= 1000000, "the runner's clock flows again, as it did before the case");
+    CHECK(verdict(alone) == 1, "and the next case passes");
+}
 static void spun_cases(void) {
     setenv("AVRA_CLOCK_ASKS", "1000", 1);
     CHECK(verdict(spins_itself) == 0, "a case that spins on the frozen clock fails");
@@ -217,7 +236,9 @@ int main(void) {
     heard("by default, one schedule", by_default);
     heard("a case on the virtual clock", on_the_virtual_clock);
     heard("cases that spin on the frozen clock fail, and the suite goes on", spun_cases);
+    heard("a spin inside a run the case opened", spun_in_a_run);
     CHECK(says("avra: a task is waiting on the clock without sleeping"), "the spin is named");
+    CHECK(says("the case, outlived the case — stopped: it waited on the frozen clock without sleeping"), "and the stopped task says why it stopped");
     heard("a case on the wall's clock", on_the_wall_clock);
     heard("a failed case on the virtual clock", failed_on_the_virtual_clock);
     CHECK(says("the cases ran on the virtual clock — AVRA_CLOCK=real runs them on the wall's"), "a suite that failed says how to run it on the wall's clock");

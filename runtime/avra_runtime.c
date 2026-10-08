@@ -3917,6 +3917,8 @@ void avra_clock_run_begins(void) {
     clock_run_turned();
 }
 
+int64_t avra_clock_run_depth(void) { return (int64_t)g_clock_runs; }
+
 void avra_clock_run_ends(void) {
     if (g_clock_runs == 0) avra_trap("defect: a run's clock ended that never began");
     avra_clock = g_clock_outer[--g_clock_runs];

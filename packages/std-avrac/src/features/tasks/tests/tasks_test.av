@@ -6,6 +6,7 @@ use @std.avrac.testing.{shown, refused_at_run}
 extern fn avra_sched_timers() -> int
 extern fn avra_sched_pick_links() -> int
 extern fn avra_now_ns() -> int
+extern fn avra_clock_virtual(on: int)
 
 spec "features/tasks" {
     given "spawn and await" {
@@ -99,15 +100,25 @@ spec "features/tasks" {
                 ) == 0
         }
         then "a clock a run turned virtual, and the hour it jumped, end with the run" {
+            // on the wall's clock, so a clock the run left frozen shows
+            avra_clock_virtual(0)
             let before = avra_now_ns()
-            let frozen = avra_now_ns() == avra_now_ns()
             shown(
                     "extern fn avra_clock_virtual(on: int)\nextern fn avra_fiber_sleep(ms: int)\navra_clock_virtual(1)\navra_fiber_sleep(3600000)\n\"slept\"",
                 ) == "slept" &&
                 avra_now_ns() - before < 60000000000 &&
-                (avra_now_ns() == avra_now_ns()) == frozen
+                flows()
         }
     }
+}
+
+/// Whether the clock moves: it reads a later instant within a million
+/// reads.
+fn flows() -> bool {
+    let t0 = avra_now_ns()
+    mut i = 0
+    while i < 1000000 && avra_now_ns() == t0 { i = i + 1 }
+    i < 1000000
 }
 
 /// How many links of the queue the seeded pick walked while `run` ran:

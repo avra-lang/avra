@@ -96,6 +96,8 @@ int64_t avra_clock_holds_dropped(void);
 // it was.
 void avra_clock_run_begins(void);
 void avra_clock_run_ends(void);
+// How many runs' clocks stand open.
+int64_t avra_clock_run_depth(void);
 int64_t avra_clock_jumps(void);
 // The suite case in flight, else NULL — what a trap names first.
 void avra_case_begin(const char* label);

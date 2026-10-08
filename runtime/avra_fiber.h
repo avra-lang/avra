@@ -215,6 +215,8 @@ int64_t avra_case_verdict(int64_t code, const char* label);
 // what they cannot reach. Nothing when no case chose.
 void avra_case_schedules_said(void);
 
+// How many runs inside the program stand open (`avra_sched_run_begins`).
+int64_t avra_sched_run_depth(void);
 // How many tasks are alive; how many pages of the wide stack are resident.
 int64_t avra_sched_tasks(void);
 int64_t avra_sched_wide_resident(void);
