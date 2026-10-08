@@ -34,9 +34,9 @@ use @std.process.{
     exit,
 }
 use @std.time.{now_ns}
-use @std.io.{exists, env, make_dirs, compile_slot, Entry}
+use @std.io.{exists, make_dirs, compile_slot, Entry}
 use @std.avrac.compiler.backend.{emit_ll}
-use @std.avrac.compiler.host.{no_target, Stamp}
+use @std.avrac.compiler.host.{no_target, Stamp, Host}
 use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
 
 // THE TWO TRUE EXTERNS: no std package owns "re-exec this image" or
@@ -163,7 +163,9 @@ fn rooted(path: string) -> string {
 /// The argued file as a PROGRAM, entered. Null when it does not exist.
 fn program_arg(args: CliResult) -> Program? {
     let path = path_arg(args)
-    if !exists(path) {
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
+    if !there {
         no_such_file(path)
         return null
     }
@@ -183,7 +185,9 @@ fn program_arg(args: CliResult) -> Program? {
 export fn file_workspace(path: string) -> Workspace {
     let root? = package_root(dir_of(path)) else { return lone(path) }
     let src = joined_path(root, "src")
-    if !exists(src) {
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    let there = match disk_host().there(src) { .Exists(_, t) -> t, rest -> false }
+    if !there {
         if dir_of(path) != root { return lone(path) }
         return root_workspace(root)
     }
@@ -202,7 +206,12 @@ fn lone(path: string) -> Workspace {
 /// once it has settled a file's ancestor root; a directory argument IS its
 /// own root already, so `build_workspace` reaches here directly.
 export fn root_workspace(root: string) -> Workspace {
-    if exists(joined_path(root, "src")) {
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    let there = match disk_host().there(joined_path(root, "src")) {
+        .Exists(_, t) -> t,
+        rest -> false,
+    }
+    if there {
         timed_workspace(disk_host(), root, avra(), () -> now_ns())
     } else {
         programs_workspace(disk_host(), root, avra(), () -> now_ns())
@@ -260,7 +269,13 @@ fn no_package_above(word: string, dir: string) -> string { "avra: no `avra.toml`
 /// the `avra` shim records before moving to the tree's root — a bare
 /// `.` would be the tree.
 fn here() -> string {
-    env("AVRA_CWD") ?? env("PWD") ?? "."
+    let host = disk_host()
+    env_of(host, "AVRA_CWD") ?? env_of(host, "PWD") ?? "."
+}
+
+/// A variable through the door: the value, or none when it is unset.
+fn env_of(host: Host, name: string) -> string? {
+    match host.variable(name) { .Env(_, value) -> value, rest -> null }
 }
 
 /// A package root as a program entered at its `[bin]` when it has
@@ -358,9 +373,12 @@ fn timed(args: CliResult) -> bool {
 
 /// The nearest ancestor holding `avra.toml`, if any.
 fn package_root(dir: string) -> string? {
+    let host = disk_host()
     mut d = dir
     while d.length > 0 {
-        if exists("${d}/avra.toml") { return d }
+        // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+        let there = match host.there("${d}/avra.toml") { .Exists(_, t) -> t, rest -> false }
+        if there { return d }
         d = dir_of(d)
     }
     null
@@ -453,7 +471,9 @@ fn build_entry(ws: Workspace, path: string) -> string? {
 /// out of a record is a copy the hooks never see.
 export fn argued_path(args: CliResult) -> string? {
     let path = path_arg(args)
-    if !exists(path) {
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
+    if !there {
         no_such_file(path)
         return null
     }
