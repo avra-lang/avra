@@ -328,6 +328,12 @@ error[type.task_escape]: a task cannot outlive the block that spawned it
 help: keep it in a binding or a list of tasks here — its answer can leave: `t.await`
 ```
 
+## flow.broken
+
+an `@unbroken` fn lets no other task run
+
+No witness here: `@unbroken` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is compiler/tests/unbroken_test.av.
+
 ## type.component_expand
 
 a component's `expand` answers the code an instance becomes

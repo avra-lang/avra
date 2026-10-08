@@ -2401,6 +2401,17 @@ impl Decls {
     /// the same name answers false. Call with `annotation_home(d)`,
     /// never `decl(d).file`: a generated declaration's annotation is
     /// the TEMPLATE's word, not the landing file's.
+    /// `d`'s own annotations resolving to `@std/meta`'s `word` — by
+    /// declaration, never a bare compare of the word: a package's own
+    /// fn of the same name answers none.
+    fn meta_annotations(d: DeclId, word: string) -> List<AnnotationFact> {
+        let file = self.annotation_home(d)
+        [a for a in self.annotations_of(d) if self.is_meta_annotation(a, file, word)]
+    }
+
+    /// Whether `d` wears `@std/meta`'s `@unbroken`.
+    fn marks_unbroken(d: DeclId) -> bool { !self.meta_annotations(d, "unbroken").is_empty() }
+
     fn is_meta_annotation(a: AnnotationFact, file: FileId, word: string) -> bool {
         let callee? = self.annotation_callee(a, file) else { return false }
         self.is_meta_fn(callee, word)
