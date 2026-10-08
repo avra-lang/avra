@@ -333,6 +333,13 @@ fn bitless(line: string) -> string {
     fields.slice(0, fields.length - 2).join("\t")
 }
 
+/// Each named fn's record line as its analysed pass writes it, one a line.
+fn record_lines(lines: List<string>, names: List<string>) -> string {
+    let ws = reach_workspace(lines.concat([""]).join("\n"))
+    let _ = ws.analyze_file(REACH_PATH)
+    [ws.record_line(ws.decls.raw_decl(reach_decl(ws, n)), 0, false) for n in names].join("\n")
+}
+
 /// One fn's record line, with its cancel bits set to `parks` and `spins`.
 fn line_with(lines: List<string>, name: string, parks: string, spins: string) -> string {
     let ws = reach_workspace(lines.concat([""]).join("\n"))
@@ -355,12 +362,8 @@ spec "compiler/cancel_reach — the interface" {
     }
     then "the record line's last two fields are the bits, parks then spins" {
         let lines = napping().concat(spinning()).concat(["nap()"])
-        let ws = reach_workspace(lines.concat([""]).join("\n"))
-        let _ = ws.analyze_file(REACH_PATH)
-        let line = (name: string) -> ws
-            .record_line(ws.decls.raw_decl(reach_decl(ws, name)), 0, false)
-        line("nap") == line_with(lines, "nap", "1", "0") &&
-            line("spin") == line_with(lines, "spin", "0", "1")
+        let analysed = record_lines(lines, ["nap", "spin"])
+        analysed == [line_with(lines, "nap", "1", "0"), line_with(lines, "spin", "0", "1")].join("\n")
     }
     then "each bit moves the interface digest, so a caller keyed on it is rebuilt" {
         let lines = napping().concat(["nap()"])
