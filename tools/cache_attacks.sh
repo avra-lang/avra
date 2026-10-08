@@ -1595,8 +1595,6 @@ kg_step "the member removed" "a=0 r=0"
 # the first reason lib.av is read
 mkdir -p $R/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $R/gk/src/n/n.av
 kg_step "a member file added in a module of its own" "a=1 r=0"
-kg_read=$(printf '%s\n' "$out" | cat - $R/kg.err | sed -n '/^read:/,$p')
-steps=$((steps+1)); case "$kg_read" in *"gk/src/c/lib.av — its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  kg: a member file added: lib.av was not read for what it gathers: $(printf '%s' "$kg_read" | tr '\n' ' ' | cut -c1-240)" ;; esac
 rm -rf $R/gk/src/n
 printf 'use k.{kind}\n// n removed\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
 kg_step "the member file deleted, another edited beside it" "a=0 r=0"
@@ -1606,6 +1604,23 @@ printf 'use rm.{rank}\n// Q removed\n@rank(5)\nexport type P = {}\n' > $R/kg/src
 kg_step "the root's member removed" "a=0 r=0"
 printf 'use mk.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/kc/src/z/z.av
 kg_step "an exported member added where only a closure list could gather it" "a=0 r=0"
+
+# AND WHAT IT GATHERS IS A REASON OF ITS OWN, said first where nothing else moved the
+# collector: a member module added under a collector in a module of its own reaches no key of
+# it. In a store of its own, so no other attack's history decides which reason comes first.
+gw=$(mktemp -d); mkdir -p $gw/gk/src/m $gw/gk/src/c $gw/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gw/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gw/gk/src/k.av
+printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gw/gk/src/c/lib.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $gw/gk/src/m/m.av
+printf '[package]\nname = "rt-gw"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gw/app/avra.toml
+printf 'use @rt.gk.c.{a_at}\nprintln("a=${a_at()}")\n' > $gw/app/src/main.av
+steps=$((steps+1)); ./avra build $gw/app > /dev/null 2>&1
+mkdir -p $gw/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gw/gk/src/n/n.av
+steps=$((steps+1)); gw_out=$(./avra build --time $gw/app 2>&1)
+case "$gw_out" in *"gk/src/c/lib.av — its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  gw: a member module added under a held collector: lib.av was not read for what it gathers: $(printf '%s' "$gw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)" ;; esac
+steps=$((steps+1)); [ "$($gw/app/src/main 2>&1)" = "a=1" ] || { fails=$((fails+1)); echo "FAIL  gw: the binary printed '$($gw/app/src/main 2>&1)', wanted 'a=1'"; }
+rm -rf $gw
 
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another
