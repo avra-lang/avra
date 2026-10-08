@@ -2416,7 +2416,7 @@ int64_t avra_case_verdict(int64_t code, const char* label) {
 
 void avra_case_schedules_said(void) {
     if (!g_any_chose || g_sched_only >= 0) return;
-    fprintf(stderr, "avra: a case that chose an order ran up to %lld schedule%s — " SCHED_RUNS_SETTING "=8 runs more; orders past %d ready tasks are not all reachable\n", (long long)g_sched_runs, g_sched_runs == 1 ? "" : "s", PICK_WINDOW);
+    fprintf(stderr, "avra: a case that chose an order ran up to %lld schedule%s — " SCHED_RUNS_SETTING "=8 runs more, as the nightly `orders` run does; orders past %d ready tasks are not all reachable\n", (long long)g_sched_runs, g_sched_runs == 1 ? "" : "s", PICK_WINDOW);
 }
 
 int64_t avra_sched_wide_resident(void) {
