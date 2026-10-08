@@ -125,6 +125,13 @@ MUTATIONS = [
     ("a poll in a seeded run hands the next switches to the fast path", "    g_polls++;\n    poll_counted();", "    g_polls++;\n    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;"),
     ("a settle leaves the order seeded", "    g_seeded = 0;\n    return g_choices;", "    return g_choices;"),
     ("the pick walks the whole queue", "enum { PICK_WINDOW = 16 };", "enum { PICK_WINDOW = 16384 };"),
+    ("a seeded run holds no tick", "    __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);\n    avra_tick_wanted = 0;\n    poll_counted();", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    avra_tick_wanted = 0;\n    poll_counted();"),
+    ("a seeded count never falls", "        if (--f->tick_turns > 0) return;\n        f->tick_turns = tick_turns_drawn();\n        avra_fiber_yield();", "        return;\n        f->tick_turns = tick_turns_drawn();\n        avra_fiber_yield();"),
+    ("schedule 0 preempts like any other", "        if (g_schedule == 0) return;\n", ""),
+    ("the seeded draw is not the schedule's", "    return (uint32_t)chosen(TICK_TURNS) + 1;", "    return 1;"),
+    ("the switch ignores the tick", "    return __builtin_expect(!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) && left > 0, 1);", "    return __builtin_expect(left > 0, 1);"),
+    ("the timer countdown is never armed", "    if (g_until_poll > g_timer_turns) g_until_poll = g_timer_turns;\n", ""),
+    ("a forked child gets no source", "    if (!pinned()) avra_tick_armed();\n}", "}"),
     ("a seed does not restart the count of choices", "    g_choices = 0;\n", ""),
     ("a frozen clock never jumps", "        if (world_waited_virtually()) continue;\n", ""),
     ("the clock jumps past a descriptor's waiter", "    return g_parked_fds == 0 && g_timers_len > 0 && avra_clock_jumped(g_timers[0].at);", "    return g_timers_len > 0 && avra_clock_jumped(g_timers[0].at);"),
@@ -229,7 +236,7 @@ CLOCK_MUTATIONS = [
     ("a run begins with its host's holds", "    g_clock_outer[g_clock_runs++] = avra_clock;\n    avra_clock.held = 0;", "    g_clock_outer[g_clock_runs++] = avra_clock;"),
     ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
 ]
-TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
+TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test"]
 BOUND = 60
 
 os.makedirs(out, exist_ok=True)

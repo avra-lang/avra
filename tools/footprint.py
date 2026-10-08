@@ -34,7 +34,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(ROOT, "tools", "footprint")
 BASELINE = os.environ.get("FOOTPRINT_BASELINE", os.path.join(ROOT, "tools", "footprint.baseline"))
 SCHEDULER = ("avra_fiber.o", "avra_cores.o")
-SCHEDULER_NAMED = re.compile(r"avra_(fiber|wait_|gate_|vgate_|vtask|task_|tasks_|sched_|cores)")
+SCHEDULER_NAMED = re.compile(r"avra_(fiber|wait_|gate_|vgate_|vtask|task_|tasks_|sched_|cores|tick)")
 TASK_STATE = {"avra_task_slot", "avra_task_slot_set", "avra_task_id", "avra_task_local"}
 # Programs that spawn nothing, and the one that must be refused.
 CLEAN = ("hello", "data", "slot")
@@ -306,7 +306,7 @@ def self_test():
          strays(members_of(elf + "\navra_hot.o:\n0000 T avra_wait_fd\n")) == [("avra_wait_fd", "avra_hot.o")]),
         ("each scheduler prefix is read", all(SCHEDULER_NAMED.match(n) for n in (
             "avra_fiber_yield", "avra_wait_fd", "avra_gate_new", "avra_vgate_open", "avra_vtask_new",
-            "avra_task_join", "avra_tasks_push", "avra_sched_polls", "avra_cores_fork"))),
+            "avra_task_join", "avra_tasks_push", "avra_sched_polls", "avra_cores_fork", "avra_tick_cold"))),
         ("a core name is not the scheduler's", not SCHEDULER_NAMED.match("avra_array_push")),
         ("the program's own call is named",
          pulled_by(["avra_task_spawn"], banned, members, "call ptr @avra_task_spawn(ptr %f)")

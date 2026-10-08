@@ -58,7 +58,7 @@ export LLVM_PREFIX
 # by nobody while its manifest linked the runtime. Our own C is held
 # to -Wall -Werror; a vendored unit takes its author's flags
 # (CFLAGS_<stem>) and no warning of ours.
-TREE_C := $(wildcard packages/*/src/c/*.c packages/*/vendor/*.c backend/*.c runtime/*.c)
+TREE_C := $(wildcard packages/*/src/c/*.c packages/*/vendor/*.c backend/*.c runtime/*.c runtime/host/*.c)
 vpath %.c $(sort $(dir $(TREE_C)))
 
 # A STEM NAMES ITS OBJECT, so a stem is UNIQUE TREE-WIDE. One flat
@@ -108,7 +108,7 @@ TREE_STEM_LAW = $(if $(TREE_CLASH),$(error A STEM NAMES ITS OBJECT, \
 # compiler one, and belongs here the day its package lands.
 # The runtime's objects are GLOBBED, one per runtime/*.c, so a new
 # runtime file joins the library without a line here.
-RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c))
+RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c)) build/avra_tick.o
 RUNTIME_LIB = build/libavra_runtime.a
 
 COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrapper.o \
@@ -125,6 +125,7 @@ PACKAGE_OBJS = $(TREE_STEM_LAW)$(sort $(foreach o,$(shell sed -n \
 # PER-OBJECT FLAGS, by stem. The LLVM binding needs its headers; the
 # vendored amalgamation takes its author's whole flag set, which its
 # own suite asks the LIBRARY to confirm.
+CFLAGS_avra_tick := -Iruntime
 CFLAGS_llvm_wrapper := -I$(LLVM_PREFIX)/include
 CFLAGS_ffi := -Iruntime
 CFLAGS_std_io := -Iruntime
@@ -348,7 +349,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: try edit-loop footprint footprint-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
+.PHONY: try edit-loop footprint footprint-accept tick-object no-threads ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -518,6 +519,7 @@ test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites libs
 SHA_SRC_avra_runtime := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h runtime/avra_hot.h
 SHA_SRC_avra_hot := runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
 SHA_SRC_avra_fiber := runtime/avra_fiber.c runtime/avra_box.h runtime/avra_fiber.h runtime/avra_runtime.h
+SHA_SRC_avra_tick := runtime/host/avra_tick.c runtime/avra_fiber.h
 SHA_SRC_llvm_wrapper := backend/llvm_wrapper.c runtime/avra_box.h runtime/avra_hot.c runtime/avra_hot.h
 SHA_SRC_ffi := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
 
@@ -830,6 +832,16 @@ footprint: $(RUNTIME_LIB)
 footprint-accept: $(RUNTIME_LIB)
 	@python3 tools/footprint.py --accept
 
+# THE TICK'S TWO KEEPERS. `tick-object` holds the hosted source's
+# undefined symbols to the no-lock set a forked child may inherit;
+# `no-threads` holds the scheduler's own `runtime/*.c` free of threads
+# and thread-locals (D7).
+tick-object: $(RUNTIME_LIB)
+	@python3 tools/tick.py object --self-test
+
+no-threads:
+	@python3 tools/tick.py threads --self-test
+
 # THE KEEPERS, ONE LIST. The train's keepers job and a lane's own
 # tools/gate_changed.sh both run `make keepers`, so a keeper named here
 # is held on every train, and one left off is held by nobody. A pull
@@ -848,7 +860,7 @@ footprint-accept: $(RUNTIME_LIB)
 KEEPERS_ALONE = runtime-tests
 KEEPERS_A = read-cost codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
 KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
-            ui-host ui-host-test ui-board ui-browser tool-witnesses footprint
+            ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-b:
 	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))); do \
