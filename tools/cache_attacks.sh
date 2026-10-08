@@ -212,6 +212,35 @@ steps=$((steps+1)); kv_out=$($R/kv/src/main 2>&1)
 
 fi
 
+if section vd; then
+# THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
+# field of a type it reads, a fn it reaches, or a name it resolves. A declaration it never
+# reaches leaves it standing. `x.mid`'s verdict is traced by name, from a store of its own.
+vd_fixture() {
+  rm -rf $R/vd; mkdir -p $R/vd/src/f $R/vd/src/x $R/vd/src/y; git -C $R/vd init -q
+  printf '[package]\nname = "rt-vd"\nversion = "0.1.0"\n' > $R/vd/avra.toml
+  printf 'export type Cfg = { a: int }\nexport type Other = { z: int }\nexport fn twice(n: int) -> int { n * 2 }\n' > $R/vd/src/y/calc.av
+  printf 'use y.{twice, Cfg}\nexport const J: int = Entry { key: "a", value: twice(Cfg { a: 3 }.a) }.value\n' > $R/vd/src/x/mid.av
+  printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n' > $R/vd/src/f/held.av
+  printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/vd/src/main.av
+}
+vd_case() { # vd_case <label> <ran|stood> <edit command>: warm, edit, then x.mid's verdict in the trace
+  vd_fixture
+  ./avra check $R/vd > /dev/null 2>&1; ./avra check $R/vd > /dev/null 2>&1
+  eval "$3"
+  steps=$((steps+1))
+  AVRA_QTRACE=1 ./avra check $R/vd > $R/vd.out 2>&1; st=$?
+  got=$(awk -F'\t' '$1 == "Q" && $2 == "const_verdict" && $3 ~ /^x\.mid/ { v = $4 } END { print v }' $R/vd.out)
+  if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"
+  elif [ "$got" != "$2" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: x.mid's verdict was '$got', wanted '$2'"
+  else [ -n "${VERBOSE:-}" ] && echo "ok    vd: $1 -> $got"; fi
+}
+vd_case "a: a field of a type the const reads is added" ran 'printf "export type Cfg = { a: int, b: int = 0 }\nexport type Other = { z: int }\nexport fn twice(n: int) -> int { n * 2 }\n" > $R/vd/src/y/calc.av'
+vd_case "b: a fn the const reaches changes its signature" ran 'printf "export type Cfg = { a: int }\nexport type Other = { z: int }\nexport fn twice(n: int, m: int = 1) -> int { n * 2 * m }\n" > $R/vd/src/y/calc.av'
+vd_case "c: a new declaration takes a name the const resolves" ran 'printf "export type Entry = { key: string, value: int }\n" > $R/vd/src/x/local.av'
+vd_case "d: a type the const never reaches changes a field" stood 'printf "export type Cfg = { a: int }\nexport type Other = { z: int, w: int }\nexport fn twice(n: int) -> int { n * 2 }\n" > $R/vd/src/y/calc.av'
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
