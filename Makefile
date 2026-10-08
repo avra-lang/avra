@@ -348,7 +348,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: try footprint footprint-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
+.PHONY: try edit-loop footprint footprint-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -441,6 +441,10 @@ try: $(COMPILER_OBJS)
 	@codesign -f -s - build/avra-try 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
 	@echo "try: build/avra-try — ./avra-try runs it"
+
+# THE WARM EDIT LOOP, measured: a one-edit check and build of the cli, and `make try` on a leaf and a core edit.
+edit-loop:
+	@sh tools/db_measure/edit_loop.sh
 
 # THE INSTALL: the binary under bin/, and what it finds from its own
 # directory — the runtime's object and every std package — under
