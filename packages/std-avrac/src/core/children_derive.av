@@ -62,6 +62,7 @@ export trait Children {
         },
             },
         ]
+            .concat(value_walk(t))
     }
 
     /// The words this derive reads off a variant — and no others. A
@@ -69,6 +70,47 @@ export trait Children {
     /// say nothing: the word stops being refused without anything
     /// having started to read it.
     static fn marks(t: MetaType) -> List<string> { ["declares", "expands"] }
+}
+
+/// The expression node's own children read off its value alone: the
+/// ExprId payloads, which need no store. A payload that reaches through the
+/// store (a statement list, a body view) is not here, so a variant carrying
+/// one keeps its feature's own answer.
+fn value_walk(t: MetaType) -> List<Directive> {
+    if t.name != "Expr" { return [] }
+    [
+        Directive {
+            twin: "",
+            name: t.name,
+            at: t.at,
+            source: quote {
+        impl Expr {
+            fn kids_of() -> List<ExprId> {
+                match self { ${[value_arm(v) for v in t.variants]} }
+            }
+        }
+    },
+        },
+    ]
+}
+
+fn value_arm(v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> [] } }
+    quote { .${v}(${binders(v)}) -> ${concatenated(value_parts(v))} }
+}
+
+fn value_parts(v: MetaVariant) -> List<Code> {
+    [r! for r in [value_reach(f) for f in v.fields] if r != null]
+}
+
+fn value_reach(f: Field) -> Code? {
+    let b = name(f.name)
+    match f.ty {
+        "ExprId" -> quote { [${b}] },
+        "ExprId?" -> quote { some_list(${b}) },
+        "List<ExprId>" -> b,
+        _ -> null,
+    }
 }
 
 /// One variant's arm: its payloads bound, the expression-bearing ones
