@@ -1585,6 +1585,7 @@ kg_step() { # kg_step <label> <wanted a=… r=…>: built, the binary agrees wit
     case "$kg_out" in "$2 c="*) ;; *) fails=$((fails+1)); echo "FAIL  kg: $1: the binary printed '$kg_out', wanted '$2 c=…'" ;; esac
     steps=$((steps+1)); kg_v=$(./avra check --verify-held $R/kg 2>&1); kg_st=$?
     [ $kg_st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kg: $1: --verify-held exit $kg_st: $(printf '%s' "$kg_v" | grep -aE 'held=|verify-held:|^avra:' | head -3 | tr '\n' ' ' | cut -c1-260)"; }
+    ./avra build $R/kg > /dev/null 2>&1 # the next step stands on a build's kept objects, never on the evaluator's run
 }
 kg_step "cold" "a=0 r=0"
 printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $R/gk/src/m/m.av
@@ -1597,6 +1598,7 @@ mkdir -p $R/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $R
 kg_step "a member file added in a module of its own" "a=1 r=0"
 rm -rf $R/gk/src/n
 kg_step "the member file deleted" "a=0 r=0"
+[ -n "${KG_INFO:-}" ] && echo "kg-info: the member file deleted: $(grep -ao 'held [0-9]*/[0-9]*' $R/kg.err | tail -1) $(printf '%s\n' "$out" | cat - $R/kg.err | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-400)"
 printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n@rank(1)\nexport type Q = {}\n' > $R/kg/src/m/m.av
 kg_step "a member added to the root's own collect, rk.av held" "a=0 r=1"
 printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
