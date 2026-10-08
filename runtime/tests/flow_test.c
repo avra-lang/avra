@@ -397,6 +397,35 @@ static void the_bit_is_the_running_tasks(void) {
     avra_clock_run_ends();
 }
 
+// Cut once, then a join and a descriptor park under the cancel that stands.
+static void* cut_then_waits(void* self) {
+    (void)self;
+    avra_fiber_sleep(10000);
+    g_task = spawn1(sleeper, 10000);
+    int64_t t0 = avra_now_ns();
+    void* r = avra_task_join(g_task);
+    avra_rc_release(r);
+    g_spent_ms = ms_since(t0);
+    g_byte_b = avra_fiber_park_fd(g_pipe[0], 0, -1);
+    g_byte_a = avra_unwinding;
+    return answer(0);
+}
+
+static void a_standing_cancel_parks_nothing(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    void* t = spawn1(cut_then_waits, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "the task ends cancelled");
+    CHECK(g_spent_ms < 1000, "a join under a standing cancel answers at once");
+    CHECK(g_byte_b == 0 && g_byte_a == 1, "so does a descriptor park, and the bit stays set");
+    avra_task_settle(g_task);
+    avra_rc_release(g_task);
+    avra_clock_run_ends();
+}
+
 // An owner whose scope's end is already joining when the cancel comes.
 static void* owns_a_sleeper(void* self) {
     (void)self;
@@ -1547,6 +1576,7 @@ int main(int argc, char** argv) {
     in_child_within("a task cancelled before it runs meets the cancel at its first point", cancelled_before_it_runs, 5);
     in_child_within("the unwind bit is the running task's", the_bit_is_the_running_tasks, 5);
     in_child_within("a second cancel changes nothing", cancel_twice, 5);
+    in_child_within("a standing cancel parks neither a join nor a descriptor park", a_standing_cancel_parks_nothing, 5);
     in_child_within("a cancel passes down a scope's join to what it owns", cancel_passes_down_a_scopes_join, 5);
     trapped("a join of a cancelled task", join_of_cancelled, "a join takes a task that answers, and this one was cancelled");
     in_child_within("a time due on a claimed set is dropped, on the virtual clock", due_on_a_claimed_set, 5);
