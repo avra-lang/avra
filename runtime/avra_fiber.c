@@ -174,6 +174,10 @@ struct Waiter {
 typedef struct Over Over;
 struct Over { Waiter w; Over* next; };
 
+// A `within`'s scope on its task: its id and its limit, in ns.
+typedef struct { int64_t id, at; } Scope;
+enum { SCOPES = 4 };
+
 enum { HELD = 4 };
 
 // A fiber's record is the task's place in the scheduler, apart from
@@ -202,15 +206,21 @@ struct Fiber {
     uint8_t legacy;         // parked by a sleep, a join or a descriptor park: cleared at its claim
     uint8_t deaf;           // a scope's end joining what it owns: no cancel cuts the join
     uint8_t heeds;          // the task's deadline may claim this set
-    uint8_t expired;        // the deadline passed while a `within` stood
     uint8_t timed_out;      // whether the last legacy park ended by time
     uint8_t unwinding;      // the unwind bit while switched out (`avra_unwinding` while running)
     uint8_t wide;           // a case's own task: it runs on the wide stack
     int32_t arm, member;    // the claim
     uint32_t held_n;
     int64_t cancel_by;      // 1 + the id of the task that asked, else 0
-    int64_t deadline;       // the innermost `within`'s end, in ns; 0 when none
+    int64_t scope_by;       // the scope whose limit passed and whose request stands, else 0
+    int64_t deadline;       // the owner's limit, in ns; 0 when no scope may still ask
     int64_t due_at;         // the deadline `due` is filed under
+    uint32_t scopes_n;      // the scopes open, outermost first
+    uint32_t armed;         // the scopes below this depth may still ask
+    uint32_t owner;         // the armed scope whose limit is `deadline`
+    uint32_t deeper_cap;
+    Scope scope[SCOPES];
+    Scope* deeper;          // the scopes past the inline ones
     Waiter held[HELD];
     Waiter due;             // the deadline's own waiter
     Over* more;
@@ -291,6 +301,7 @@ static void fiber_unlisted(Fiber* f) {
 
 static void fiber_freed(Fiber* f) {
     fiber_unlisted(f);
+    free(f->deeper);
     f->next = g_fiber_pool;
     g_fiber_pool = f;
 }
@@ -860,46 +871,144 @@ static void poller_wait(int64_t timeout_ns) {
 
 // ── The deadline ────────────────────────────────────────────────
 
-// THE DEADLINE IS THE TASK'S: a `within` narrows it for its scope and
-// every wait inside heeds it; a nested `within` never widens it.
-// Answers the outer one, which the scope's end restores.
-static int64_t within_opened(Fiber* f, int64_t ms) {
-    int64_t outer = f->deadline;
-    int64_t at = deadline_after(ms < 0 ? 0 : ms);
-    f->deadline = outer != 0 && outer < at ? outer : at;
-    return outer;
+// EVERY SCOPE KEEPS ITS OWN LIMIT. The task's deadline is the earliest
+// limit of the scopes that may still ask; the scope holding it OWNS it,
+// the outer one on a tie, and the heap holds that one limit.
+#define SCOPE_IDS ((int64_t)1 << 62)
+static int64_t g_scope_seq = 0;
+
+static Scope* scope_at(const Fiber* f, uint32_t i) {
+    return i < SCOPES ? (Scope*)&f->scope[i] : &f->deeper[i - SCOPES];
 }
 
-static void within_ended(Fiber* f, int64_t outer) {
-    f->deadline = outer;
-    f->expired = 0;
-    if (f->due.filed && f->due_at != outer) waiter_out(&f->due);
-}
-
-// IT IS ARMED AT THE FIRST WAIT UNDER IT, ONCE: that wait reads the
-// clock and files the deadline's waiter, which stays until the scope
-// ends — so a `within` nothing waits under does no heap work, and a
-// second wait under one reads no clock. Whether it has passed.
-static int deadline_passed(Fiber* f) {
-    if (f->deadline == 0) return 0;
-    if (f->expired) return 1;
-    if (f->due.filed && f->due_at == f->deadline) return 0;
-    waiter_out(&f->due);
-    if (now_ns() >= f->deadline) {
-        f->expired = 1;
-        return 1;
+static void owner_found(Fiber* f) {
+    f->deadline = 0;
+    for (uint32_t i = 0; i < f->armed; i++) {
+        int64_t at = scope_at(f, i)->at;
+        if (f->deadline != 0 && at >= f->deadline) continue;
+        f->owner = i;
+        f->deadline = at;
     }
+}
+
+__attribute__((noinline, cold))
+static void scopes_deepened(Fiber* f) {
+    uint32_t cap = f->deeper_cap ? f->deeper_cap * 2 : SCOPES;
+    Scope* more = realloc(f->deeper, cap * sizeof(Scope));
+    if (!more) avra_trap("the scheduler ran out of memory for a `within`");
+    f->deeper = more;
+    f->deeper_cap = cap;
+}
+
+// Answers the scope's id. A scope opened under a standing request is
+// inside the scope that asked, so it may never ask.
+static int64_t within_opened(Fiber* f, int64_t ms) {
+    uint32_t i = f->scopes_n;
+    if (i >= SCOPES && i - SCOPES >= f->deeper_cap) scopes_deepened(f);
+    int64_t at = deadline_after(ms < 0 ? 0 : ms);
+    int64_t id = SCOPE_IDS | ++g_scope_seq;
+    *scope_at(f, i) = (Scope){ id, at };
+    f->scopes_n = i + 1;
+    if (f->armed != i) return id;
+    f->armed = i + 1;
+    if (f->deadline == 0 || at < f->deadline) {
+        f->owner = i;
+        f->deadline = at;
+    }
+    return id;
+}
+
+__attribute__((noinline, cold, noreturn))
+static void scope_out_of_order(Fiber* f, int64_t id) {
+    for (uint32_t i = 0; i < f->scopes_n; i++)
+        if (scope_at(f, i)->id == id) avra_trap("a `within` ended while one inside it stands");
+    avra_trap("a `within` ended that its task never opened");
+}
+
+// The innermost scope ends: 1 when the request that stands was its own.
+static int64_t scope_ended(Fiber* f, int64_t id) {
+    uint32_t n = f->scopes_n;
+    if (n == 0 || scope_at(f, n - 1)->id != id) scope_out_of_order(f, id);
+    f->scopes_n = --n;
+    int64_t landed = f->scope_by == id;
+    if (landed) f->scope_by = 0;
+    if (f->armed > n) {
+        f->armed = n;
+        owner_found(f);
+    }
+    if (f->due.filed && f->due_at != f->deadline) waiter_out(&f->due);
+    return landed;
+}
+
+static void due_filed(Fiber* f) {
     f->due = (Waiter){ .fiber = f, .arm = -1, .member = 1, .kind = W_DEADLINE, .filed = 1 };
     f->due_at = f->deadline;
     timer_set(T_WAITER, &f->due, f->deadline);
     if (TRACING) traced_fiber("deadline-set", f, (long long)f->deadline);
+}
+
+// A request a standing one outranks: the scope that asked, and the
+// request that stands — a scope's id, or 1 + the asking task's.
+__attribute__((noinline, cold))
+static void traced_dropped(const Fiber* f, int64_t scope, int64_t standing) {
+    char line[160];
+    if (standing & SCOPE_IDS) avra_fmt(line, sizeof line, "request-dropped id=%lld by=scope:%lld for=scope:%lld", (long long)id_of(f), (long long)scope, (long long)standing);
+    else avra_fmt(line, sizeof line, "request-dropped id=%lld by=scope:%lld for=task:%lld", (long long)id_of(f), (long long)scope, (long long)(standing - 1));
+    traced(line);
+}
+
+// THE OWNER'S LIMIT HAS PASSED, AND ITS SCOPE ASKS. A task's cancel
+// outranks it, and then no scope of the task asks again; otherwise it
+// stands, displacing an inner scope's request, and only the scopes
+// outside it may still ask — the next of them is filed at once.
+static void deadline_reached(Fiber* f) {
+    int64_t id = scope_at(f, f->owner)->id;
+    if (f->cancel_by != 0) {
+        if (TRACING) traced_dropped(f, id, f->cancel_by);
+        f->armed = 0;
+        f->deadline = 0;
+        return;
+    }
+    if (TRACING && f->scope_by != 0) traced_dropped(f, f->scope_by, id);
+    f->scope_by = id;
+    f->armed = f->owner;
+    owner_found(f);
+    if (f->deadline != 0) due_filed(f);
+}
+
+// IT IS ARMED AT THE FIRST WAIT UNDER IT, ONCE: that wait reads the
+// clock and files the deadline's waiter, which stays until its owner
+// changes — so a `within` nothing waits under does no heap work, and a
+// second wait under one reads no clock. Whether a scope's request stands.
+static int deadline_passed(Fiber* f) {
+    if (f->scope_by != 0) return 1;
+    if (f->deadline == 0) return 0;
+    if (f->due.filed && f->due_at == f->deadline) return 0;
+    waiter_out(&f->due);
+    if (now_ns() >= f->deadline) {
+        deadline_reached(f);
+        return f->scope_by != 0;
+    }
+    due_filed(f);
     return 0;
 }
 
 static void deadline_fired(Fiber* f) {
-    f->expired = 1;
     if (TRACING) traced_fiber("deadline-fired", f, (long long)f->deadline);
+    deadline_reached(f);
     if (f->parked && f->heeds) set_claimed(f, -1, 1, BY_DEADLINE);
+}
+
+// A TASK STARTS UNDER ITS SPAWNER'S LIMIT: one record, the scope whose
+// request stands or else the owner, copied whole — its id is the
+// spawner's scope's, so no scope of the child's own lands it.
+static void scope_inherited(Fiber* child, const Fiber* from) {
+    const Scope* s = from->scope_by != 0 ? scope_at(from, from->armed) : from->deadline != 0 ? scope_at(from, from->owner) : NULL;
+    if (!s) return;
+    child->scope[0] = *s;
+    child->scopes_n = child->armed = 1;
+    child->owner = 0;
+    child->deadline = s->at;
 }
 
 // ── Stacks ──────────────────────────────────────────────────────
@@ -1605,7 +1714,7 @@ void* avra_task_spawn(void* body) {
     Fiber* f = fiber_new(NULL, 0);
     void* task = task_made(f, body);
     f->task = task;
-    f->deadline = g_current->deadline;          // a task inherits its spawner's `within`
+    scope_inherited(f, g_current);
     avra_rc_retain(task);                       // the running fiber's own reference
     if (TRACING) traced_spawn(f, body);
     ready_push(f);
@@ -1792,6 +1901,10 @@ static void task_fired(void* task) {
 static void fiber_cancelled(Fiber* f, int64_t by) {
     f->cancel_by = by + 1;
     if (TRACING) traced_fiber("cancel", f, (long long)by);
+    if (f->scope_by != 0) {
+        if (TRACING) traced_dropped(f, f->scope_by, by + 1);
+        f->scope_by = 0;
+    }
     if (f->deaf && f->joining) { task_cancelled(f->joining, by); return; }
     if (f->parked && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);
 }
@@ -1881,7 +1994,11 @@ int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms) {
 
 int64_t avra_fiber_within(int64_t ms) { return within_opened(g_current, ms); }
 
-void avra_fiber_within_end(int64_t outer) { within_ended(g_current, outer); }
+int64_t avra_scope_end(int64_t id) { return scope_ended(g_current, id); }
+
+void avra_fiber_within_end(int64_t id) { scope_ended(g_current, id); }
+
+int64_t avra_fiber_request(void) { return g_current->cancel_by ? g_current->cancel_by : g_current->scope_by; }
 
 // A FORKED CHILD KEEPS THE CALLING TASK ALONE: every other fiber leaves
 // every list it is filed in — a gate lives in memory the child copied,
@@ -2023,9 +2140,11 @@ int64_t avra_vtask_timed_out(int64_t t) { return virtual_at(t)->timed_out; }
 
 int64_t avra_vtask_within(int64_t t, int64_t ms) { return within_opened(virtual_at(t), ms); }
 
-void avra_vtask_within_end(int64_t t, int64_t outer) { within_ended(virtual_at(t), outer); }
+void avra_vtask_within_end(int64_t t, int64_t id) { scope_ended(virtual_at(t), id); }
 
 int64_t avra_vtask_deadline(int64_t t) { return virtual_at(t)->deadline; }
+
+void avra_vtask_inherits(int64_t t, int64_t from) { scope_inherited(virtual_at(t), virtual_at(from)); }
 
 void avra_vtask_wait_fd(int64_t t, int64_t fd, int64_t writable, int64_t arm, int64_t member) { waits_fd(virtual_at(t), fd, writable, arm, member); }
 
