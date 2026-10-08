@@ -1,0 +1,148 @@
+//! `avra tasks` asks through a directory this user alone holds
+//! (@std/io's `OwnDir`): a link, a directory others may write and a
+//! file that is a link are refused, and a name is one segment.
+use @std.io.{IoError, OwnDir, own_dir, make_dirs, remove}
+use @std.process.{Signal, Signalled, signalled, tool, cmd}
+use @std.time.{now_ns}
+use commands.{listing_said, read_trace, whose}
+
+/// A fresh directory of this test's own under /tmp, not yet made.
+fn fresh(name: string) -> string { "/tmp/avra-tasks-test-${now_ns()}-${name}" }
+
+fn linked(target: string, at: string) -> bool {
+    let ln = match tool("ln") { .Ok(t) -> t, .Err(_) -> { return false } }
+    cmd(ln, ["-s", target, at]).outcome() is .Ok
+}
+
+/// `body` over a directory made and held at `path`, then let go and
+/// removed — false when it could not be held.
+fn within_dir(path: string, body: fn(OwnDir) -> bool) -> bool {
+    match own_dir(path) {
+        .Ok(dir) -> {
+            let held = body(dir)
+            dir.close()
+            let _ = remove(path)
+            held
+        },
+        .Err(_) -> false,
+    }
+}
+
+fn refused_as_denied(r: Result<OwnDir, IoError>) -> bool {
+    match r {
+        .Ok(d) -> {
+            d.close()
+            false
+        },
+        .Err(e) -> e is .Denied,
+    }
+}
+
+spec "commands/tasks — the door's directory" {
+    given "a directory made here" {
+        then "it is held, and a file put in it is taken back once" {
+            within_dir(fresh("own")) { dir ->
+                let put = dir.put("ask", "hello") is .Ok
+                let first = (dir.taken("ask") catch _ -> null) ?? ""
+                let second = dir.taken("ask") catch _ -> "gone wrong"
+                put && first == "hello" && second == null
+            }
+        }
+        then "a name of more than one segment is refused" {
+            within_dir(fresh("segments")) { dir -> dir.put("a/b", "x") is .Err && dir.put("..", "x") is .Err }
+        }
+    }
+    given "a directory others may write" {
+        then "it is no door" {
+            let path = fresh("wide")
+            let _ = make_dirs(path)
+            let denied = refused_as_denied(own_dir(path))
+            let _ = remove(path)
+            denied
+        }
+    }
+    given "a link standing where the directory is named" {
+        then "it is no door, though it points at a directory of ours" {
+            let target = fresh("target")
+            let at = fresh("link")
+            within_dir(target) { _held ->
+                let denied = linked(target, at) && refused_as_denied(own_dir(at))
+                let _ = remove(at)
+                denied
+            }
+        }
+    }
+    given "a link standing where an answer is named" {
+        then "it is refused, never read through" {
+            let path = fresh("held")
+            within_dir(path) { dir ->
+                let _ = dir.put("real", "secret")
+                let made = linked("${path}/real", "${path}/answer")
+                let refused = dir.taken("answer") is .Err
+                dir.drop("answer")
+                dir.drop("real")
+                made && refused
+            }
+        }
+    }
+}
+
+spec "commands/tasks — a signal by number" {
+    given "no such process" {
+        then "the signal reaches nobody" { signalled(999999999, Signal.Urgent) is .NoProcess }
+    }
+    given "a number that names no one process" {
+        then "it is refused by name, before anything is sent" { signalled(0, Signal.Urgent) is .Refused && signalled(-1, Signal.Urgent) is .Refused }
+    }
+}
+
+spec "commands/tasks — a listing, printed" {
+    given "a live process's listing" {
+        then "each task says where it was spawned and what it waits on, then the graph" {
+            listing_said(
+                read_trace(
+                    "ts=9 listing id=0 pid=77\nts=9 join id=0 on=1\nts=9 spawn id=1\nts=9 site id=1 pkg/main.av:4\nts=9 park id=1 src=fd:r:6 arm=0:0\nts=9 age id=1 ms=120\n",
+                ),
+            ) == "the program's own run: listed by process 77; joins task 1\ntask 1: spawned at pkg/main.av:4; waits on fd:r:6 as 0:0; spawned at most 120 ms before it was listed\nat the trace's end: 2 task(s) alive, 2 waiting, 0 ready or running\n  the program's own run -> task 1\n  task 1 -> descriptor 6 (readable)\n  no ring of joins"
+        }
+    }
+    given "the handler's own line" {
+        then "it is said alone" {
+            listing_said(read_trace("ts=5 unswitched id=1 pid=77\n")) == "task 1: running, has not switched since it was asked"
+        }
+    }
+}
+
+extern fn avra_own_pid() -> int
+extern fn avra_proc_signal_pid(pid: int, which: int) -> int
+
+/// What `kill` takes: 32 bits.
+fn past_pids() -> int { 4294967296 }
+
+spec "commands/tasks — whose answer" {
+    given "a listing" {
+        then "it names the process that wrote it" { whose(read_trace("ts=9 listing id=0 pid=77\n")) == 77 }
+        then "the handler's line names it too" { whose(read_trace("ts=9 unswitched id=1 pid=78\n")) == 78 }
+        then "a file that names none says so" { whose(read_trace("ts=9 spawn id=1\n")) == null }
+        then "a listing line without its process is no event" { read_trace("ts=9 listing id=0\n").strays.length == 1 }
+    }
+}
+
+spec "commands/tasks — a number past what kill takes" {
+    given "2^32 - 1, which kill would read as -1: every process the user may signal" {
+        then "it is refused by name" { signalled(past_pids() - 1, Signal.Urgent) is .Refused }
+        then "and the C refuses it before anything is sent" { avra_proc_signal_pid(past_pids() - 1, 99) == -34 }
+    }
+    given "2^32, which kill would read as 0: this process's own group" {
+        then "it is refused by name" { signalled(past_pids(), Signal.Urgent) is .Refused }
+        then "and the C refuses it before anything is sent" { avra_proc_signal_pid(past_pids(), 99) == -34 }
+    }
+    given "this process's own number plus 2^32, which kill would read as this process" {
+        then "it is refused by name" { signalled(avra_own_pid() + past_pids(), Signal.Urgent) is .Refused }
+        then "and the C refuses it before anything is sent" { avra_proc_signal_pid(avra_own_pid() + past_pids(), 99) == -34 }
+    }
+    given "this process's own number" {
+        then "it is refused by name" { signalled(avra_own_pid(), Signal.Urgent) is .Refused }
+    }
+}
+

@@ -37,6 +37,11 @@ extern fn avra_io_fd_kind(fd: int) -> int
 extern fn avra_io_fd_size(fd: int) -> int
 extern fn avra_io_fd_mtime(fd: int) -> int
 extern fn avra_io_seek(fd: int, at: int) -> int
+extern fn avra_io_own_dir(path: string) -> int
+extern fn avra_io_user_dir() -> int
+extern fn avra_io_put_new(dir: int, name: string) -> int
+extern fn avra_io_open_own(dir: int, name: string) -> int
+extern fn avra_io_unlink_at(dir: int, name: string) -> int
 extern fn avra_io_compile_slot() -> int
 
 // THE RUNTIME'S OWN, which mint or answer immortal text — the only
@@ -256,6 +261,62 @@ impl Opened {
 }
 
 fn min_of(a: int, b: int) -> int { if a < b { a } else { b } }
+
+// ── A directory this user alone holds ───────────────────────────
+
+/// A DIRECTORY THIS USER ALONE HOLDS, open: made 0700 when absent, opened
+/// with no link followed, and held to its owner and mode — a directory
+/// that stands and is another's, or that others may write, is `Denied`.
+/// Every file in it is named FROM the open directory, never by a path,
+/// so no name in it can be swapped for a link elsewhere. A name is one
+/// segment. Close it with `close`.
+export type OwnDir = { fd: int, path: string }
+
+/// `path` as a directory this user alone holds.
+export fn own_dir(path: string) -> Result<OwnDir, IoError> {
+    OwnDir { fd: done(path, avra_io_own_dir(one_path(path)?))?, path: path }
+}
+
+/// The user's own directory: macOS's per-user temporary directory,
+/// elsewhere `/run/user/<uid>` when it is the user's, else
+/// `/tmp/avra-<uid>` (runtime/avra_door.h, the one definition the
+/// scheduler's listing door shares).
+export fn user_dir() -> Result<OwnDir, IoError> {
+    OwnDir { fd: done(user_dir_named(), avra_io_user_dir())?, path: user_dir_named() }
+}
+
+fn user_dir_named() -> string { "the user's own directory" }
+
+impl OwnDir {
+    /// `text` as a FRESH file `name`, 0600: whatever stood there is
+    /// removed first. Answers the name.
+    fn put(name: string, text: string) -> Result<string, IoError> {
+        let fd = done(name, avra_io_put_new(self.fd, one_path(name)?))?
+        defer avra_io_close(fd)
+        poured(name, fd, text.bytes())?
+        name
+    }
+
+    /// `name`'s text, and the file removed — or null when nothing stands
+    /// there. A link, or a file another owns, is `Denied`.
+    fn taken(name: string) -> Result<string?, IoError> {
+        let opened = avra_io_open_own(self.fd, one_path(name)?)
+        if opened == 0 - enoent { return .Ok(null) }
+        let fd = done(name, opened)?
+        defer avra_io_close(fd)
+        let text = text_of(name, drained(name, fd)?)?
+        self.drop(name)
+        .Ok(text)
+    }
+
+    /// `name` removed, when it stands.
+    fn drop(name: string) {
+        let held = match one_path(name) { .Ok(n) -> n, .Err(_) -> { return } }
+        let _ = avra_io_unlink_at(self.fd, held)
+    }
+
+    fn close() { let _ = avra_io_close(self.fd) }
+}
 
 /// A file's bytes as text. TEXT THAT IS NOT TEXT IS A REFUSAL, and
 /// the refusal CARRIES THE OFFSET: `at` is the first byte that is not

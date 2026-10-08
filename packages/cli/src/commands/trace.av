@@ -35,6 +35,7 @@ export enum Happened {
     End
     Age
     Unswitched
+    Listing
     Other(word: string)
 }
 
@@ -78,6 +79,7 @@ fn ev_of(word: string) -> Happened {
         "end" -> Happened.End,
         "age" -> Happened.Age,
         "unswitched" -> Happened.Unswitched,
+        "listing" -> Happened.Listing,
         _ -> Happened.Other(word),
     }
 }
@@ -124,7 +126,7 @@ fn role(ev: Happened) -> Role {
         .Park -> Role.Waits,
         .Join -> Role.Joins,
         .SpawnAt -> Role.EvaluatedSpawn,
-        .Spawn or .Claim or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .End or .Age or .Unswitched or .Other(_) -> Role.Said,
+        .Spawn or .Claim or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .End or .Age or .Unswitched or .Listing or .Other(_) -> Role.Said,
     }
 }
 
@@ -136,7 +138,8 @@ fn whole(ev: Happened, rest: string) -> bool {
         .Join -> joined_ok(field(rest, "on")),
         .Claim -> field(rest, "by") != null && field(rest, "arm") != null,
         .Age -> parse_int(field(rest, "ms") ?? "") != null,
-        .Spawn or .SpawnAt or .Site or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .End or .Unswitched or .Other(_) -> true,
+        .Unswitched or .Listing -> parse_int(field(rest, "pid") ?? "") != null,
+        .Spawn or .SpawnAt or .Site or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .End or .Other(_) -> true,
     }
 }
 
@@ -196,6 +199,7 @@ export fn worded(ev: Happened, rest: string, site: string?) -> string {
         .Cancel -> "cancelled by task ${rest}",
         .End -> "ends",
         .Age -> "spawned at most ${field(rest, "ms") ?? "?"} ms before it was listed",
+        .Listing -> "listed by process ${field(rest, "pid") ?? "?"}",
         .Unswitched -> if rest.contains("evaluated") { "the evaluated program has not switched since it was asked" } else { "running, has not switched since it was asked" },
         .Other(word) -> "${word} ${rest}".trim(),
     }
@@ -313,7 +317,7 @@ fn shape_worded(ev: Happened, rest: string, site: string?) -> string {
         .DeadlineSet -> "deadline filed",
         .Park -> parked_shape(rest) ?? worded(ev, rest, null),
         .Age -> "age",
-        .Site or .Join or .Claim or .Retract or .DeadlineFired or .Cancel or .End or .Unswitched or .Other(_) -> worded(ev, rest, null),
+        .Site or .Join or .Claim or .Retract or .DeadlineFired or .Cancel or .End or .Unswitched or .Listing or .Other(_) -> worded(ev, rest, null),
     }
 }
 
@@ -410,7 +414,7 @@ export fn waits_at(events: List<Traced>, at: int?) -> WaitGraph {
                 for w in waits.get(key) ?? [] { gate_rung(w, e.rest, rung) }
                 let _ = waits.remove(key)
             },
-            .Site or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .Age or .Unswitched or .Other(_) -> touch(e),
+            .Site or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .Age or .Unswitched or .Listing or .Other(_) -> touch(e),
         }
         joined.set(key, role(e.ev) is .Joins)
     }

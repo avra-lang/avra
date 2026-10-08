@@ -36,6 +36,7 @@ extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
 extern fn avra_proc_pid(h: int) -> int
 extern fn avra_proc_close(h: int) -> int
 extern fn avra_proc_executable(path: string) -> int
+extern fn avra_proc_signal_pid(pid: int, which: int) -> int
 
 // THE RUNTIME'S OWN — the descriptor rows.
 extern fn avra_fd_read(fd: int, max: int) -> int
@@ -269,6 +270,54 @@ fn stream_text(s: Stream) -> string {
 }
 
 // ── Minting ─────────────────────────────────────────────────────
+
+/// A SIGNAL TO A PROCESS THIS ONE DID NOT START — NOT A GENERAL KILL.
+/// The signals are a closed set holding what a tool of this toolchain
+/// needs and nothing more: `Urgent` is SIGURG, which every program
+/// ignores unless it asked for it, so a mistaken number harms nothing.
+/// Widening the set is a decision, never a convenience.
+export enum Signal {
+    /// SIGURG: how `avra tasks` asks a running program for its tasks.
+    Urgent
+}
+
+/// What a signal to a process by its number came to.
+export enum Signalled {
+    Sent
+    /// No process stands at that number.
+    NoProcess
+    /// The number names no process this one may signal, in words.
+    Refused(why: string)
+}
+
+/// `s` sent to the process numbered `pid`. A number of 0 or below names
+/// a GROUP, never a process; one past what a process number holds would
+/// arrive as such a group; and this process does not signal itself. All
+/// three are refused by name, before anything is sent.
+export fn signalled(pid: int, s: Signal) -> Signalled {
+    if pid <= 0 { return Signalled.Refused(no_group(pid)) }
+    if pid > most_pid { return Signalled.Refused(too_large(pid)) }
+    let which = match s { .Urgent -> 0 }
+    let sent = avra_proc_signal_pid(pid, which)
+    if sent == 0 { return Signalled.Sent }
+    if sent == 0 - esrch { return Signalled.NoProcess }
+    if sent == 0 - itself { return Signalled.Refused(not_self(pid)) }
+    Signalled.Refused(not_ours(pid))
+}
+
+const esrch: int = 3
+/// What the C answers for this process's own number.
+const itself: int = 1000
+/// The most a process number holds: `kill` takes 32 bits.
+const most_pid: int = 2147483647
+
+fn no_group(pid: int) -> string { "`${pid}` names a process group or every process, never one process" }
+
+fn too_large(pid: int) -> string { "`${pid}` is past any process number, and would reach a group if sent" }
+
+fn not_self(pid: int) -> string { "process ${pid} is this one, which does not signal itself" }
+
+fn not_ours(pid: int) -> string { "process ${pid} is not this user's to signal" }
 
 /// The one widening from a name to a tool: resolved on the invoker's
 /// PATH now — relative entries never searched — and pinned as an

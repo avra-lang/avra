@@ -614,3 +614,21 @@ int64_t avra_proc_close(int64_t h) {
     p->gen++;
     return 0;
 }
+
+/* A PROCESS NAMED BY ITS NUMBER, signalled — one this process did not
+   start, and never a general kill: the signal is named by its place in
+   @std/process's closed `Signal`, since the numbers differ by system —
+   0 urgent (SIGURG, ignored unless asked for). A number of 0 or below
+   names a group and is refused, and so is one past what a process
+   number holds: `kill` takes 32 bits, so 2^32 would arrive as 0 (this
+   process's group) and 2^32 - 1 as -1 (every process the user may
+   signal) — -ERANGE, before anything is sent. This process's own number
+   answers -1000, as @std/process names it. 0, or -errno: ESRCH no such
+   process, EPERM not this user's. */
+int64_t avra_proc_signal_pid(int64_t pid, int64_t which) {
+    static const int signals[] = { SIGURG };
+    if ((int64_t)(pid_t)pid != pid) return -ERANGE;
+    if (pid <= 0 || which < 0 || which >= (int64_t)(sizeof signals / sizeof signals[0])) return -EINVAL;
+    if ((pid_t)pid == getpid()) return -1000;
+    return kill((pid_t)pid, signals[which]) == 0 ? 0 : -errno;
+}

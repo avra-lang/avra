@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "avra_door.h"
+
 // The runtime's: a blocking call here holds the world, so a virtual
 // clock flows at wall rate across it.
 void avra_clock_hold(int64_t by);
@@ -375,3 +377,84 @@ int64_t avra_io_compile_slot(void) {
     }
 #endif
 }
+
+/* ── A DIRECTORY THIS USER ALONE HOLDS (runtime/avra_door.h) ──────────
+   Opened once with no link followed and held to its owner and mode;
+   every file in it is then named FROM that descriptor, never by a path
+   another user could swap for a link. A name is one segment: no `/`,
+   never `.` or `..`. */
+
+/* `path` made 0700 when absent, then open when it is this user's alone
+   — a descriptor, or -errno (EPERM: it stands and is not ours). */
+int64_t avra_io_own_dir(const char* path) {
+#if defined(__wasm32__)
+    (void)path;
+    return -ENOTSUP;
+#else
+    if (mkdir(path, 0700) != 0 && errno != EEXIST) return -errno;
+    return avra_dir_held(path);
+#endif
+}
+
+/* The user's own directory (avra_door.h), made 0700 when absent and
+   open — or -errno. */
+int64_t avra_io_user_dir(void) {
+#if defined(__wasm32__)
+    return -ENOTSUP;
+#else
+    char path[256];
+    avra_user_dir(path, sizeof path);
+    return avra_io_own_dir(path);
+#endif
+}
+
+static int one_segment(const char* name) {
+    return name[0] && !strchr(name, '/') && strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
+}
+
+/* A FRESH file `name` in the open directory, 0600, open for writing:
+   whatever stood at the name is removed first, and the open refuses a
+   link. A descriptor, or -errno. */
+int64_t avra_io_put_new(int64_t dir, const char* name) {
+#if defined(__wasm32__)
+    (void)dir; (void)name;
+    return -ENOTSUP;
+#else
+    if (!one_segment(name)) return -EINVAL;
+    if (unlinkat((int)dir, name, 0) != 0 && errno != ENOENT) return -errno;
+    int fd;
+    while ((fd = openat((int)dir, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)) < 0 && errno == EINTR) {}
+    return fd < 0 ? -errno : fd;
+#endif
+}
+
+/* `name` in the open directory open for reading when it is a plain file
+   this user owns — a descriptor, -ENOENT when nothing stands there, or
+   -errno (EPERM: a link, or another's file). */
+int64_t avra_io_open_own(int64_t dir, const char* name) {
+#if defined(__wasm32__)
+    (void)dir; (void)name;
+    return -ENOTSUP;
+#else
+    if (!one_segment(name)) return -EINVAL;
+    int fd;
+    while ((fd = openat((int)dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)) < 0 && errno == EINTR) {}
+    if (fd < 0) return errno == ELOOP ? -EPERM : -errno;
+    struct stat st;
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid()) return fd;
+    close(fd);
+    return -EPERM;
+#endif
+}
+
+/* `name` removed from the open directory: 0, or -errno. */
+int64_t avra_io_unlink_at(int64_t dir, const char* name) {
+#if defined(__wasm32__)
+    (void)dir; (void)name;
+    return -ENOTSUP;
+#else
+    if (!one_segment(name)) return -EINVAL;
+    return unlinkat((int)dir, name, 0) == 0 ? 0 : -errno;
+#endif
+}
+
