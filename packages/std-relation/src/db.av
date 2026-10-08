@@ -537,6 +537,16 @@ fn held_in<V>(kernel: Kernel, family: int) -> AnswersUnder<V> {
     AnswersUnder { memo: memo, args: args, again: again }
 }
 
+/// A kept record's answer, read back only when it was kept for `spelled`.
+fn proved<V>(r: Reader, spelled: string, read: fn(Reader) -> Result<V, CodecFault>) -> Result<
+    V,
+    CodecFault,
+> {
+    let kept = r.text()?
+    if kept != spelled { fail CodecFault.OtherArguments }
+    read(r)
+}
+
 /// A call verified: asked again when it is a query's, then the revision
 /// its cell last changed at.
 fn reasked<V>(held: AnswersUnder<V>?, arg: int) -> int {
@@ -580,6 +590,7 @@ impl AnswersUnder<V> {
     fn ran_lasting(
         db: Db,
         arg: int,
+        spelled: string,
         body: fn() -> V,
         again: fn() -> V,
         digest: fn(V) -> int,
@@ -587,11 +598,21 @@ impl AnswersUnder<V> {
     ) -> V {
         let query? = record.query else { return self.ran(db, arg, body, again, digest) }
         if self.answered(arg) { return self.ran(db, arg, body, again, digest) }
-        let restored? = self.restored(db, query, record) else {
+        let restored? = self.restored(db, query, record, spelled) else {
             let done = self.run(db, arg, body, again, digest)
             if !done.wrote && db.rows_alone(self.memo.kernel.deps_of(self.memo.query_key(arg))) {
                 let keep = db.durable.keep
-                keep(query, record.args, encoded_with(done.value, record.write))
+                keep(
+                    query,
+                    record.args,
+                    encoded_with(
+                        done.value,
+                        (w, v) -> {
+                            w.text(spelled)
+                            record.write(w, v)
+                        },
+                    ),
+                )
             }
             return done.value
         }
@@ -607,10 +628,13 @@ impl AnswersUnder<V> {
 
     /// The owner's record for a call, read back — one that does not read
     /// back is recomputed, never guessed at.
-    fn restored(db: Db, query: string, record: KeptRecord<V>) -> V? {
+    fn restored(db: Db, query: string, record: KeptRecord<V>, spelled: string) -> V? {
         let answer = db.durable.answer
         let bytes? = answer(query, record.args) else { return null }
-        match decoded_with(bytes, record.read) { .Ok(value) -> value, .Err(_) -> null }
+        match decoded_with(bytes, (r: Reader) -> proved(r, spelled, record.read)) {
+            .Ok(value) -> value,
+            .Err(_) -> null,
+        }
     }
 
     fn run(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> Run<V> {
