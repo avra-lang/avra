@@ -129,6 +129,22 @@ MUTATIONS = [
     ("a virtual claim names whoever the host runs", "    return gate_claimed(gate, id_of(virtual_at(t)));", "    return gate_claimed(gate, id_of(g_current));"),
     ("a virtual task's end is not traced", "    if (TRACING) traced_fiber(\"end\", virtual_at(t), 0);\n", ""),
     ("a virtual task keeps the policy's count for its id", "    virtual_at(t)->own.id = id;\n", ""),
+    ("the handler leaves the switch's countdown alone", "    g_until_poll = 0;\n    prior_called(", "    prior_called("),
+    ("a switch never answers an ask", "        if (__builtin_expect(g_asked, 0)) tasks_answered();\n", ""),
+    ("a forked child is asked under its parent's id", "    g_asked = 0;\n    tasks_door_named();\n", "    g_asked = 0;\n"),
+    ("an evaluated program's line names the host's task", "    if (g_evaluated) {", "    if (0) {"),
+    ("a handler set before ours is no longer called", "    prior_called(sig, info, context);\n", ""),
+    ("a forked child owes its parent's ask", "    g_asked = 0;\n    tasks_door_named();\n", "    tasks_door_named();\n"),
+    ("a second signal is not answered by the handler", "    if (g_asked++ > 0 && !g_in_world && g_until_poll == 0) {", "    if (0) {"),
+    ("the handler answers from inside the world's path", "    if (g_asked++ > 0 && !g_in_world && g_until_poll == 0) {", "    if (g_asked++ > 0 && g_until_poll == 0) {"),
+    ("an ask is answered without an ask file", "    if (ask_ours(dfd)) listing_written(dfd);", "    listing_written(dfd);"),
+    ("an ask that is no plain file is taken as ours", "S_ISREG(st.st_mode) && st.st_uid == geteuid();\n}", "st.st_uid == geteuid();\n}"),
+    ("an answered ask is left in place", "    unlinkat(dfd, g_ask_name, 0);\n    renameat(dfd, g_tmp_name,", "    renameat(dfd, g_tmp_name,"),
+    ("the handler's line shares the listing's file", "    unlinkat(dfd, g_line_name, 0);\n    int fd = openat(dfd, g_line_name,", "    unlinkat(dfd, g_tmp_name, 0);\n    int fd = openat(dfd, g_tmp_name,"),
+    ("a door directory others may write is a door", " && (st.st_mode & 077) == 0) return dfd;", ") return dfd;"),
+    ("a door directory that is a link is followed", "    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);", "    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);"),
+    ("a task that has not run is listed as parked", "    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);", "    if (!f->sp) fprintf(out, \"ts=%lld park id=%lld src=at arm=0:0\\n\", (long long)now, id);\n    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);"),
+    ("the door is never opened", "    guard_handler_install();\n    tasks_door_opened();", "    guard_handler_install();"),
 ]
 CLOCK_MUTATIONS = [
     ("freezing loses the present reading", "        avra_clock.at = clock_real() + avra_clock.skew;", "        avra_clock.at = 0;"),
@@ -144,7 +160,7 @@ CLOCK_MUTATIONS = [
     ("a run begins with its host's holds", "    g_clock_outer[g_clock_runs++] = avra_clock;\n    avra_clock.held = 0;", "    g_clock_outer[g_clock_runs++] = avra_clock;"),
     ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
 ]
-TESTS = ["flow_test", "case_test", "verdict_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
+TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test"]
 BOUND = 60
 
 os.makedirs(out, exist_ok=True)
