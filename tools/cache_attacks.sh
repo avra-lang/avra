@@ -1589,17 +1589,20 @@ kg_step() { # kg_step <label> <wanted a=… r=…>: built, the binary agrees wit
 kg_step "cold" "a=0 r=0"
 printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $R/gk/src/m/m.av
 kg_step "a member added in the dependency, lib.av held" "a=1 r=0"
-kg_read=$(printf '%s\n' "$out" | cat - $R/kg.err | sed -n '/^read:/,$p')
-steps=$((steps+1)); case "$kg_read" in *"gk/src/lib.av — "*) ;; *) fails=$((fails+1)); echo "FAIL  kg: a member added: lib.av was held: $(printf '%s' "$kg_read" | tr '\n' ' ' | cut -c1-240)" ;; esac
-printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
+printf 'use k.{kind}\n// B removed\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
 kg_step "the member removed" "a=0 r=0"
+# a member file in a module of its own: no key of lib.av reaches it, so what it gathers is
+# the first reason lib.av is read
 mkdir -p $R/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $R/gk/src/n/n.av
 kg_step "a member file added in a module of its own" "a=1 r=0"
+kg_read=$(printf '%s\n' "$out" | cat - $R/kg.err | sed -n '/^read:/,$p')
+steps=$((steps+1)); case "$kg_read" in *"gk/src/lib.av — its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  kg: a member file added: lib.av was not read for what it gathers: $(printf '%s' "$kg_read" | tr '\n' ' ' | cut -c1-240)" ;; esac
 rm -rf $R/gk/src/n
-kg_step "the member file deleted" "a=0 r=0"
+printf 'use k.{kind}\n// n removed\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
+kg_step "the member file deleted, another edited beside it" "a=0 r=0"
 printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n@rank(1)\nexport type Q = {}\n' > $R/kg/src/m/m.av
 kg_step "a member added to the root's own collect, rk.av held" "a=0 r=1"
-printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
+printf 'use rm.{rank}\n// Q removed\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
 kg_step "the root's member removed" "a=0 r=0"
 printf 'use mk.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/kc/src/z/z.av
 kg_step "an exported member added where only a closure list could gather it" "a=0 r=0"
