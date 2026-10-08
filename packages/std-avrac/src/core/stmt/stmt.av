@@ -20,14 +20,14 @@ use core.marks.{apart, branches, declares, sequence}
 /// `let name = v`, optionally `let name: T = v` — the written
 /// type, when declared, is what the binding HOLDS; the value
 /// must be accepted by it.
-@stmt_node(0)
+@stmt_node
 @sequence
 type Let = { name: Scoped, ty: TypeRef?, value: ExprId }
 
 /// A reassignable binding — unmanaged values only, until
 /// ownership analysis; optionally annotated, holding what it
 /// declares exactly as `let` does.
-@stmt_node(1)
+@stmt_node
 @sequence
 type MutLet = { name: Scoped, ty: TypeRef?, value: ExprId }
 
@@ -36,38 +36,38 @@ type MutLet = { name: Scoped, ty: TypeRef?, value: ExprId }
 /// initializer is evaluated at compile time, which is also the
 /// law it must satisfy: nothing the host answers, nothing that
 /// does not settle.
-@stmt_node(2)
+@stmt_node
 @apart
 type ConstDecl = { name: Scoped, ty: TypeRef?, value: ExprId }
 
 /// Reassignment of a `mut` binding, by name.
-@stmt_node(3)
+@stmt_node
 @branches
 type Assign = { target: ExprId, value: ExprId }
 
 /// An expression at statement position.
-@stmt_node(4)
+@stmt_node
 @sequence
 type ExprStmt = { value: ExprId }
 
 /// `let _ = v` — the value run for its effect, never an answer.
-@stmt_node(5)
+@stmt_node
 @sequence
 type Discard = { value: ExprId }
 
-@stmt_node(6)
+@stmt_node
 @declares
 @apart
 type FnDecl = { name: Scoped, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId }
 
 /// `extern fn name(params) -> ret` — a fn the host provides: a
 /// signature with no body, called by its bare symbol.
-@stmt_node(7)
+@stmt_node
 @apart
 type ExternFn = { name: Scoped, params: List<Param>, ret: TypeRef }
 
 /// Condition re-evaluated each turn; the body is a scope.
-@stmt_node(8)
+@stmt_node
 @branches
 type While = { cond: ExprId, stmts: List<StmtId> }
 
@@ -75,7 +75,7 @@ type While = { cond: ExprId, stmts: List<StmtId> }
 /// position: the branches are statement lists and the whole
 /// carries no value — the guard idiom's home. An absent else
 /// IS the empty list.
-@stmt_node(9)
+@stmt_node
 @branches
 type IfStmt = { cond: ExprId, then_stmts: List<StmtId>, else_stmts: List<StmtId> }
 
@@ -83,22 +83,22 @@ type IfStmt = { cond: ExprId, then_stmts: List<StmtId>, else_stmts: List<StmtId>
 /// `v` against the declared return; lowering exits with every
 /// open scope's debts settled at the site.
 /// `return`, with a value or bare — a bare one leaves a void fn.
-@stmt_node(10)
+@stmt_node
 @branches
 type Return = { value: ExprId? }
 
 /// `fail value` — raise: the enclosing fn answers the failure
 /// channel of its Result right here. Diverges, like `return`.
-@stmt_node(11)
+@stmt_node
 @branches
 type Fail = { value: ExprId }
 
-@stmt_node(12)
+@stmt_node
 @declares
 @apart
 type ImplDecl = { of: Nominal?, target: Nominal, fns: List<StmtId> }
 
-@stmt_node(13)
+@stmt_node
 @declares
 @apart
 type TraitDecl = { name: Scoped, fns: List<StmtId> }
@@ -108,7 +108,7 @@ type TraitDecl = { name: Scoped, fns: List<StmtId> }
 /// in the enclosing scope; an absent one runs the else, which
 /// must leave. Parsed by `let_stmt`; nullability gives it
 /// meaning.
-@stmt_node(14)
+@stmt_node
 @branches
 type LetElse = { name: Scoped, subject: ExprId, stmts: List<StmtId> }
 
@@ -116,25 +116,25 @@ type LetElse = { name: Scoped, subject: ExprId, stmts: List<StmtId> }
 /// and `step` are parse-time desugar (`name < to`, `name + 1`):
 /// real nodes every pass walks, so the loop is mut+while in
 /// costume.
-@stmt_node(15)
+@stmt_node
 @branches
 type For = { name: Scoped, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId> }
 
 /// `use a.b.{x, y}` — the path's segments (a `@pkg` head kept
 /// as written) and the items brought into scope.
-@stmt_node(16)
+@stmt_node
 @apart
 type Use = { path: List<string>, items: List<string>, aliases: List<string> }
 
 /// `for x in xs` — or `for i, x in xs`, the index beside the
 /// element, the loop's own counter with a name.
-@stmt_node(17)
+@stmt_node
 @branches
 type ForEach = { index: Scoped?, name: Scoped, subject: ExprId, stmts: List<StmtId> }
 
 /// `type Name = { field: ty, ... }` — a nominal record; the
 /// name lives in the TYPE namespace, program-wide like fns.
-@stmt_node(18)
+@stmt_node
 @apart
 type StructDecl = { name: Scoped, tparams: List<Plain>, fields: List<Param> }
 
@@ -142,20 +142,20 @@ type StructDecl = { name: Scoped, tparams: List<Plain>, fields: List<Param> }
 /// never an `alias`: the name counts at every seat and the shape
 /// answers every read. It travels AS its shape (a flat record
 /// of one anonymous field), so the name is free at runtime.
-@stmt_node(19)
+@stmt_node
 @apart
 type NamedType = { name: Scoped, tparams: List<Plain>, of: TypeRef }
 
 /// `enum Name { A B(payload: int) }` — a nominal closed set
 /// sharing the TYPE namespace with records. A variant is a
 /// Param: an ABSENT `ty` IS a unit variant.
-@stmt_node(20)
+@stmt_node
 @apart
 type EnumDecl = { name: Scoped, tparams: List<Plain>, variants: List<Variant> }
 
 /// `spec "name" { given "…" { then "…" { … } } }` — a test
 /// suite; each case is a declaration of its own.
-@stmt_node(21)
+@stmt_node
 @apart
 type Spec = { name: string, cases: List<Case> }
 
@@ -163,14 +163,14 @@ type Spec = { name: string, cases: List<Case> }
 /// with defaults that a block instantiates. The head's fields
 /// are filled positionally, the rest by name; the fns are its
 /// methods, and `expand` among them is its effect.
-@stmt_node(22)
+@stmt_node
 @declares
 @apart
 type ComponentDecl = { name: Scoped, head: List<Param>, fields: List<Param>, fns: List<StmtId> }
 
 /// `syntax sql { … }` — a sublanguage declared: the block word and
 /// the grammar notation, kept as text; the workspace readies it.
-@stmt_node(23)
+@stmt_node
 @apart
 type SyntaxDecl = { name: Scoped, text: string }
 
@@ -179,32 +179,32 @@ type SyntaxDecl = { name: Scoped, text: string }
 /// an `errdefer`, which runs only when the fn exits through its
 /// failure channel. The body is a lambda of no seats: captures
 /// are copied at the statement, the call happens at the exit.
-@stmt_node(24)
+@stmt_node
 @apart
 type Defer = { body: ExprId, on_error: bool }
 
 /// `collect name: List<T> = kind in scope as Ty { … } by …` —
 /// every declaration of `kind`, in `scope`, projected and
 /// ordered. `order` is the `by` list's `it.field` paths.
-@stmt_node(25)
+@stmt_node
 @apart
 type Collect = { name: Scoped, ty: TypeRef, kind: CollectKind, scope: CollectScope, proj: Projection, order: List<Plain> }
 
-@stmt_node(26)
+@stmt_node
 @apart
 type Error = {}
 
 /// `name: value` inside a component instance's body — a setting of
 /// the record the instance builds. Consumed where the instance is
 /// built, so no pass meets one elsewhere.
-@stmt_node(27)
+@stmt_node
 @apart
 type Setting = { name: Plain, value: ExprId }
 
 /// `alias Name<T> = <type>` — a SHORTHAND: the name stands for the
 /// shape it is written over, which is the same type wherever it is
 /// read. `type` makes a new type; `alias` names an existing one.
-@stmt_node(28)
+@stmt_node
 @apart
 type Alias = { name: Scoped, tparams: List<Plain>, of: TypeRef }
 
@@ -214,7 +214,7 @@ type Alias = { name: Scoped, tparams: List<Plain>, of: TypeRef }
 /// paths, the same currency `Collect` orders by. `traits` is each
 /// `: T` the enum implements over its members, a name read where the
 /// enum is written.
-@stmt_node(29)
+@stmt_node
 @apart
 @declares
 type CollectEnum = { name: Scoped, kind: CollectKind, scope: CollectScope, order: List<Plain>, traits: List<ExprId> }
@@ -222,6 +222,6 @@ type CollectEnum = { name: Scoped, kind: CollectKind, scope: CollectScope, order
 /// `break` or `continue` (`again`) — the turn of a loop ends here:
 /// the innermost loop's, or the `for` whose name `label` reads.
 /// Diverges, like `return`.
-@stmt_node(30)
+@stmt_node
 @branches
 type Jump = { label: ExprId?, again: bool }

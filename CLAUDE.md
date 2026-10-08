@@ -1187,16 +1187,8 @@ registry is the idiom engine's spec, written by dogfooding.
   minted. One mechanism, one loud door and one mute one, and the
   mute one is the door every `@derive` takes. All three doors read
   one `unsettled_label` now.
-- A NODE VARIANT IS APPENDED, NEVER INSERTED. A `rule`'s pattern is
-  baked into the compiler as constants by the compiler that BUILDS it,
-  and its `shallow` fold names each node kind by its POSITION in
-  `Expr`/`Stmt`/`Pat` (`@derive(Matchable)`). Insert a variant mid-enum
-  and every later one moves: the product's baked shapes carry the old
-  positions while it computes the new ones, `match_node` trusts two
-  equal shallows to share an arity, and the product traps checking its
-  own tree ("index 0 is out of bounds (length 0)" in `match_kids`,
-  under `rule_candidates`) — the generation law with a derive as the
-  carrier. `Collect` hit it and moved to the end.
+- A FAMILY IS APPENDED, NEVER INSERTED. A `@family(rank)` is persisted, so inserting a
+  family moves every later one. A node kind is keyed by its NAME (`@…_node`), order is free.
 - Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
   and a block word's `{` hand their body over whole, so the lexer emits
   the `}` that ends it too, and the rule consumes it (`"grammar" "{"
