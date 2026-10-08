@@ -1667,10 +1667,15 @@ static int64_t* task_awaited(void* task, int deaf) {
 __attribute__((noinline, cold, noreturn))
 static void join_refused(void) { avra_trap("a join takes a task that answers, and this one was cancelled"); }
 
+__attribute__((noinline, cold, noreturn))
+static void join_cut(void) { avra_trap("a join was cut by a cancel, and its task has not answered"); }
+
 // A JOIN TAKES A TASK THAT ANSWERS: a cancelled one has no answer, and
-// none is made up for it.
+// none is made up for it. A join a cancel cut has none either — until
+// the code after it tests the unwind bit, it traps.
 void* avra_task_join(void* task) {
     int64_t* cells = task_awaited(task, 0);
+    if (!cells[GATE_OPEN]) join_cut();
     if (cells[TASK_END] == END_CANCELLED) join_refused();
     void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];
     avra_rc_retain(answer);
@@ -1803,8 +1808,10 @@ void avra_task_cancel(void* task) { task_cancelled(task, id_of(g_current)); }
 
 // ── The rows that predate the wait set ──────────────────────────
 
+// A YIELD WAITS FOR NOTHING, SO A CANCEL CUTS NOTHING: it is met here
+// and the task still lets the others run.
 void avra_fiber_yield(void) {
-    if (cancel_stands(g_current)) return;
+    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();
     if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;
     ready_push(g_current);
     run_next();
