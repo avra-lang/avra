@@ -1,0 +1,30 @@
+// proves: a keyless owner's replacement that reuses a removed row's id moves
+// the bucket that row stood in, so a query reading that bucket recomputes, and
+// the bucket the reused id now stands in answers the new row.
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, new_db}
+
+@relation
+type Tag = { @index set: string, n: int }
+
+once fn runs() -> Cell<int> { Cell.new(0) }
+
+@query
+fn in_set(db: Db, set: string) -> int {
+    runs().set(runs().get() + 1)
+    Tag.by_set(db, set).length
+}
+
+fn main_run() -> string {
+    let db = new_db()
+    let _ = Tag.replaced(db, "owner", [Tag { set: "s", n: 1 }])
+    let a = in_set(db, "s")
+    let _ = Tag.replaced(db, "owner", [Tag { set: "t", n: 2 }])
+    let c = in_set(db, "t")
+    let _ = Tag.replaced(db, "owner", [Tag { set: "s", n: 3 }])
+    let a2 = in_set(db, "s")
+    let b2 = in_set(db, "t")
+    "a=${a} c=${c} a2=${a2} b2=${b2} runs=${runs().get()}"
+}
+
+main_run()

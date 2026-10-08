@@ -7,8 +7,9 @@
 //! never holds a hook reaching back to its owner, which would be a cycle.
 //!
 //! Ids never move: a removed row leaves a tombstone its id keeps, and no
-//! bucket lists one. Compacting ids is the durable write's business,
-//! where ids are free to move anyway.
+//! bucket lists one. A keyless owner's next rows take its removed ids first,
+//! so a keyless relation never grows past its largest replacement. Compacting
+//! ids is the durable write's business, where ids are free to move anyway.
 //!
 //! A bucket's hash is the wrapping sum of its rows' FINISHED stable
 //! hashes, updated on every file and unfile — order-free, a duplicate
@@ -162,6 +163,8 @@ export type Rows<R> = {
     hashes: Cell<List<int>>,
     filed: Cell<List<List<List<IndexKey>>>>,
     stamps: Cell<List<Stamp>>,
+    /// Row ids a keyless owner removed, reused by its next rows before any new id is minted.
+    free: Cell<List<int>>,
     stamped: Cell<Map<string, Cell<List<int>>>>,
     writers: Cell<Map<string, int>>,
     set: Cell<int>,
@@ -182,6 +185,7 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
     let hashes: Cell<List<int>> = Cell.new([])
     let filed: Cell<List<List<List<IndexKey>>>> = Cell.new([])
     let stamps: Cell<List<Stamp>> = Cell.new([])
+    let free: Cell<List<int>> = Cell.new([])
     let stamped: Cell<Map<string, Cell<List<int>>>> = Cell.new({})
     let writers: Cell<Map<string, int>> = Cell.new({})
     let buckets: Cell<List<Bucket>> = Cell.new([])
@@ -191,6 +195,7 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
         hashes: hashes,
         filed: filed,
         stamps: stamps,
+        free: free,
         stamped: stamped,
         writers: writers,
         set: Cell.new(0),
@@ -402,15 +407,21 @@ impl Rows<R> {
         let seated = how.seated
         db.counted()
         mut stored = rows.slice(0, 0)
+        let spare = if keyed || identical { [] } else { self.free.get() }
         for i, r in rows {
             let ks = if asked { named[i] } else { keys(r) }
-            let id = if keyed && ids[i] < next { ids[i] } else if identical { live[i] } else { self.next_id() }
-            if id == self.next_id() { mine.push(id) }
+            let id = if keyed && ids[i] < next { ids[i] } else if identical { live[i] } else if i < spare.length { spare[i] } else { self.next_id() }
+            if id == self.next_id() || !keyed && !identical && i < spare.length { mine.push(id) }
             let row = seated(r, id)
             self.placed(id, row, hash(r), ks, stamp)
             stored.push(row)
         }
-        self.remove_all(self.stale(cell, stamp.run))
+        let gone = self.stale(cell, stamp.run)
+        self.remove_all(gone)
+        if !keyed && !identical {
+            let used = if spare.length < rows.length { spare.length } else { rows.length }
+            self.free.set(spare.slice(used, spare.length).concat(gone))
+        }
         stored
     }
 
