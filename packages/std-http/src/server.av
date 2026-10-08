@@ -449,7 +449,7 @@ impl Serving {
             self.drain.parked(l.conn.wire_fd(), false)
             match read {
                 .Ok(b) -> heard(l, b),
-                .Err(_) -> { if !self.drain.running() { return self.dropped(l) } },
+                .Err(e) -> { if !stopped(e) && !self.drain.running() { return self.dropped(l) } },
             }
         }
         l.conn.wire_fd()
@@ -1113,6 +1113,12 @@ fn breach_of(e: WireError) -> H2Error? {
 /// Whether a transport verb failed only because its deadline passed.
 fn timed_out(e: WireError) -> bool {
     match e { .Net(n) -> n.timed_out(), .Secure(_) or .Reset -> false }
+}
+
+/// Whether a read was woken by a stop's interrupt — the drain, never
+/// the peer's silence.
+fn stopped(e: WireError) -> bool {
+    match e { .Net(n) -> n.interrupted(), .Secure(_) or .Reset -> false }
 }
 
 /// Every pour's producer released: the link is going.
