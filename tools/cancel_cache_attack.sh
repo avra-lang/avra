@@ -8,15 +8,17 @@
 set -u
 cd "$(dirname "$0")/.."
 
-R=build/cancel-cache-attack; fails=0; steps=0; inspected_files=""
+R=build/cancel-cache-attack; fails=0; steps=0
 rm -rf "$R" .avra-cache && mkdir -p $R/src/lib
 printf '[package]\nname = "rt-cc"\nversion = "0.1.0"\n' > $R/avra.toml
 printf 'use lib.{work}\nfn handle() -> int { work() }\nhandle()\n' > $R/src/main.av
 printf 'export fn work() -> int { 1 }\n' > $R/src/lib/a.av
 ./avra check $R >/dev/null 2>&1
 tree=$(pwd)
+# `inspected` runs in a command substitution, so the file it was asked
+# about is noted on disk, not in a variable the subshell would drop.
 inspected() {
-    case "$1" in *.av) case " $inspected_files " in *" $1 "*) ;; *) inspected_files="$inspected_files $1" ;; esac ;; esac
+    case "$1" in *.av) printf '%s\n' "$1" >> $R/.inspected ;; esac
     (cd $R && "$tree/avra" explain "$@" 2>&1)
 }
 says() { # says <label> <a line the answer holds> <the answer>
@@ -62,6 +64,6 @@ export fn work() -> int {
 }'
 says "a parking body edit that moves no bit" "src/main.av — held" "$(inspected src/main.av --why)"
 
-files=0; for f in $inspected_files; do files=$((files+1)); done
+files=$(sort -u $R/.inspected 2>/dev/null | grep -c .)
 echo "cancel cache attack: $steps step(s), $fails failed, $files file(s) inspected"
 [ "$fails" -eq 0 ]
