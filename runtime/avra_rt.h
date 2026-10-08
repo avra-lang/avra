@@ -62,6 +62,7 @@
 #define AVRA_RT_TEXT(x) #x
 #define AVRA_RT_SPELLED(x) AVRA_RT_TEXT(x)
 #define AVRA_RT_LABEL(name) AVRA_RT_SPELLED(__USER_LABEL_PREFIX__) #name
+extern const char avra_rt_held_avra_qtrace __asm__(AVRA_RT_LABEL(avra_qtrace));
 extern const char avra_rt_held_avra_puts __asm__(AVRA_RT_LABEL(avra_puts));
 extern const char avra_rt_held_avra_trap __asm__(AVRA_RT_LABEL(avra_trap));
 extern const char avra_rt_held_avra_streq __asm__(AVRA_RT_LABEL(avra_streq));
@@ -252,6 +253,7 @@ extern const char avra_rt_held_avra_exec_self __asm__(AVRA_RT_LABEL(avra_exec_se
 extern const char avra_rt_held_avra_spawn_status __asm__(AVRA_RT_LABEL(avra_spawn_status));
 extern const char avra_rt_held_avra_spawn_in __asm__(AVRA_RT_LABEL(avra_spawn_in));
 __attribute__((used)) static const void* const avra_rt_held[] = {
+    &avra_rt_held_avra_qtrace,
     &avra_rt_held_avra_puts,
     &avra_rt_held_avra_trap,
     &avra_rt_held_avra_streq,
@@ -443,6 +445,8 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_spawn_in,
 };
 #else
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_qtrace(AVRA_RT_PTR)), void),
+    "avra_qtrace: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_puts(AVRA_RT_PTR)), void),
     "avra_puts: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_trap(AVRA_RT_PTR)), void),
