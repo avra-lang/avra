@@ -20,47 +20,23 @@ impl NodeSemantics for ClosureSemantics {
 
 impl Meaning for Lambda {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        closures_resolve(cx, e)
+        cx.lambda_scope(e, self.params, self.body)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        closures_type_of(cx, e)
+        lambda_type(cx, e)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        closures_lower(cx, e)
+        lambda_reg(cx, e)
     }
 }
 impl Meaning for CallValue {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        closures_resolve(cx, e)
+        nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        closures_type_of(cx, e)
+        call_value_type(cx, e, self.subject, self.args)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        closures_lower(cx, e)
-    }
-}
-
-fn closures_resolve(mut cx: ResolveCx, e: ExprId) {
-    // a feature cannot enumerate OTHER features' variants
-    match cx.view.store.expr(e) {
-        .Lambda(params, body) -> cx.lambda_scope(e, params, body),
-        _ -> nothing(),
-    }
-}
-
-fn closures_type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-    // a feature cannot enumerate OTHER features' variants
-    match cx.view.store.expr(e) {
-        .CallValue(subject, args) -> call_value_type(cx, e, subject, args),
-        _ -> lambda_type(cx, e),
-    }
-}
-
-fn closures_lower(mut cx: LowerCx, e: ExprId) -> Reg {
-    // a feature cannot enumerate OTHER features' variants
-    match cx.view.store.expr(e) {
-        .CallValue(subject, args) -> call_value_reg(cx, e, subject, args),
-        _ -> lambda_reg(cx, e),
+        call_value_reg(cx, e, self.subject, self.args)
     }
 }

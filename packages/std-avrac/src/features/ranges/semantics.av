@@ -18,34 +18,19 @@ impl NodeSemantics for RangesSemantics {
 
 impl Meaning for Range {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        match cx.view.store.expr(e) {
-            .Range(lo, hi) -> {
-                cx.walk(lo)
-                cx.walk(hi)
-            },
-            rest -> nothing(),
-        }
+        cx.walk(self.lo)
+        cx.walk(self.hi)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         let int = cx.type(int)
-        match cx.view.store.expr(e) {
-            .Range(lo, hi) -> {
-                if !cx.accepts(lo, int) { return cx.error_type }
-                if !cx.accepts(hi, int) { return cx.error_type }
-            },
-            rest -> nothing(),
-        }
+        if !cx.accepts(self.lo, int) { return cx.error_type }
+        if !cx.accepts(self.hi, int) { return cx.error_type }
         cx.view.types.intern(Type.Range)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        match cx.view.store.expr(e) {
-            .Range(lo, hi) -> {
-                let dst = cx.array_sized(Type.Range, cx.const_int(2))
-                cx.push_slot(dst, cx.reg_of(lo))
-                cx.push_slot(dst, cx.reg_of(hi))
-                dst
-            },
-            rest -> cx.foreign_node(e),
-        }
+        let dst = cx.array_sized(Type.Range, cx.const_int(2))
+        cx.push_slot(dst, cx.reg_of(self.lo))
+        cx.push_slot(dst, cx.reg_of(self.hi))
+        dst
     }
 }
