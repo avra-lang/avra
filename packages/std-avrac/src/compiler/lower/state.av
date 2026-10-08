@@ -39,7 +39,6 @@ use features.{
     Unsettled,
     Settled,
     SettleRoot,
-    const_symbol,
     settled_symbol,
     seat_symbol,
     semantics_of,
@@ -534,13 +533,14 @@ impl LowerCx {
     }
 
     /// A DECLARED const read: settled in the declaration's OWN file, on
-    /// no seats — a declaration has none.
+    /// no seats — a declaration has none — and named by the declaration,
+    /// held or read alike, so a reader's object is the same either way.
     fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
         if self.view.decls.is_instance(d) && !self.settles(ty) { return self.instance_value_reg(e, d) }
         let x = self.view.decls.decl(d)
         let held = self.view.decls.held_value(d)
         if held != null { return self.materialized(held!.answer, held!.heap, ty, self.view.decls.symbol(d)) }
-        self.const_reg(e, x.file, x.stmt, ty, [])
+        self.settled_value_reg(x.file, x.stmt, ty, [], self.view.decls.symbol(d))
     }
 
     /// Whether a value of type `ty` is DATA the compiler can lay out
@@ -578,16 +578,16 @@ impl LowerCx {
         let store: SyntaxArena = self.view.decls.store_of(f)
         let written: Expr = store.expr(store.const_value(s)!)
         if is_literal(written) { return self.settled_reg(e, written) }
-        self.settled_value_reg(f, s, ty, seats)
+        self.settled_value_reg(f, s, ty, seats, self.view.decls.const_symbol(f, s))
     }
 
     /// What the evaluator settled for the const at `s` in file `f`,
     /// materialized here — a scalar its constant, an aggregate the
     /// address of its static data; a refusal spoken at the const's
-    /// own value.
-    fn settled_value_reg(f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>) -> Reg? {
+    /// own value. Its static data is `named`, its seats' fingerprints after.
+    fn settled_value_reg(f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>, named: string) -> Reg? {
         match self.jobs.settle(f, SettleRoot.Const(s), seats) {
-            .Ok(x) -> self.materialized(x.answer, x.heap, ty, settled_symbol(const_symbol(f, s), seats)),
+            .Ok(x) -> self.materialized(x.answer, x.heap, ty, settled_symbol(named, seats)),
             .Err(why) -> {
                 self.unsettled(self.view.decls.store_of(f), self.view.decls.file(f).path, s, why)
                 self.zero_of(ty)
@@ -642,7 +642,8 @@ impl LowerCx {
             let ty = self.seat_ty(j)
             let r: Reg = match self.seat_at(j) {
                 // a gap: nothing settled this seat, and no const may read it
-                sv? -> self.materialized(sv.value, sv.heap, ty, seat_symbol(ty, sv.fp))
+                sv? -> self
+                    .materialized(sv.value, sv.heap, ty, seat_symbol(self.view.decls.type_wire(ty), sv.fp))
                 null -> {
                     let dst = self.out.mint_ty(ty)
                     self.out.give(Ins.ConstInt(dst, 0))

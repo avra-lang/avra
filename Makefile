@@ -569,6 +569,7 @@ cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/link_cache_attack.sh
 	@sh tools/turn_memory_attack.sh
 	@sh tools/gathered_cache_attack.sh
+	@sh tools/static_names_attack.sh
 
 # ONE DERIVATION ALIVE AT A TIME, held by memory: a rebuild that turns once per
 # link of a chain of held bodies, under a ceiling one attempt clears and their
