@@ -5,7 +5,8 @@
 // two different compilers reading the very same input, or a newer
 // compiler silently trusts an older one's row — the "index 221 is out
 // of bounds (length 181)" trap this ticket traces.
-use @std.avrac.compiler.{avra, new_workspace, build_cache_root, db_qualified, digest_of_binary}
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.compiler.{build_cache_root, db_qualified, digest_of_binary}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
 use compiler.store.{store_at}
@@ -36,7 +37,7 @@ fn real_binary(name: string, bytes: string) -> string {
 /// `binary` — everything else (the roll file, the tree's `.git`/
 /// `avra.toml` walk) stays in-memory and never touches real disk.
 fn print_workspace(binary: string?) -> Workspace {
-    new_workspace(
+    test_workspace(
         memory_host(
             {
                 "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
@@ -45,7 +46,6 @@ fn print_workspace(binary: string?) -> Workspace {
             ["/w/avra.toml", "/w/src/main.av"],
         ) with { compiler: binary, print: () -> print_at(binary) },
         "/w",
-        avra(),
     )
 }
 
@@ -58,25 +58,26 @@ fn print_at(binary: string?) -> string? {
 spec "compiler/build — a durable row's key names the compiler that wrote it" {
     given "two workspaces whose compiler binaries hold different bytes" {
         then "compiler_id disagrees" {
-            let a = print_workspace(real_binary("id-a", "the old compiler's bytes"))
-            let b = print_workspace(real_binary("id-b", "the new compiler's bytes, changed"))
-            a.compiler_id() != b.compiler_id()
+            let a = print_workspace(real_binary("id-a", "the old compiler's bytes")).compiler_id()
+            a != print_workspace(real_binary("id-b", "the new compiler's bytes, changed")).compiler_id()
         }
         then "their store roots disagree too — no store is ever shared across them" {
-            let a = print_workspace(real_binary("root-a", "compiler one"))
-            let b = print_workspace(real_binary("root-b", "compiler two, a different one"))
-            build_cache_root(a) != build_cache_root(b)
+            let a = build_cache_root(print_workspace(real_binary("root-a", "compiler one")))
+            a != build_cache_root(
+                print_workspace(real_binary("root-b", "compiler two, a different one")),
+            )
         }
         then "a module's record key disagrees — an old compiler's Sig row is never read by a new one" {
-            let a = print_workspace(real_binary("record-a", "compiler generation one"))
-            let b = print_workspace(real_binary("record-b", "compiler generation two"))
             let m = module_path(["app"])
-            a.record_key(m) != b.record_key(m)
+            let a = print_workspace(real_binary("record-a", "compiler generation one"))
+                .record_key(m)
+            a != print_workspace(real_binary("record-b", "compiler generation two")).record_key(m)
         }
         then "avra docs's own qualified name disagrees for the same package and the same lookup" {
-            let a = print_workspace(real_binary("docs-a", "the renderer, before"))
+            let a = print_workspace(real_binary("docs-a", "the renderer, before")).compiler_id()
             let b = print_workspace(real_binary("docs-b", "the renderer, after a change"))
-            db_qualified("/pkg", a.compiler_id(), "widget") != db_qualified("/pkg", b.compiler_id(), "widget")
+                .compiler_id()
+            db_qualified("/pkg", a, "widget") != db_qualified("/pkg", b, "widget")
         }
     }
     given "two workspaces whose compiler binaries hold the SAME bytes at different paths" {
@@ -92,9 +93,8 @@ spec "compiler/build — a durable row's key names the compiler that wrote it" {
     }
     given "a host that names no compiler at all — a test's, or a harness that lost track" {
         then "two such workspaces still disagree — the fallback is never one shared store for every generation" {
-            let a = print_workspace(null)
-            let b = print_workspace(null)
-            a.compiler_id() != b.compiler_id()
+            let a = print_workspace(null).compiler_id()
+            a != print_workspace(null).compiler_id()
         }
     }
     given "one workspace, asked twice" {
@@ -106,24 +106,27 @@ spec "compiler/build — a durable row's key names the compiler that wrote it" {
     given "a record durably written by one compiler print, over the SAME real store" {
         then "another print's record key misses it — the held/mint read answers absent, never a stranger's bytes" {
             let store = store_at("${print_pkg_named("held-mint-a")}/.avra-cache")
-            let a = print_workspace(real_binary("held-mint-a-bin", "compiler generation one"))
-            let b = print_workspace(real_binary("held-mint-b-bin", "compiler generation two"))
             let m = module_path(["app"])
+            let a = print_workspace(real_binary("held-mint-a-bin", "compiler generation one"))
             a.db.insert_sig(store, a.record_key(m), "a record generation one wrote")
+            let b = print_workspace(real_binary("held-mint-b-bin", "compiler generation two"))
             b.db.sig(store, b.record_key(m)) == null
         }
         then "another print's record BODY key differs too — a body is never read across compilers" {
             let a = print_workspace(real_binary("body-key-a-bin", "compiler generation one"))
-            let b = print_workspace(real_binary("body-key-b-bin", "compiler generation two"))
-            a.record_bodies().key("app", "i") != b.record_bodies().key("app", "i")
+                .record_bodies()
+                .key("app", "i")
+            a != print_workspace(real_binary("body-key-b-bin", "compiler generation two"))
+                .record_bodies()
+                .key("app", "i")
         }
         then "the SAME compiler print still reads its own record back, over the SAME store" {
             let store = store_at("${print_pkg_named("held-mint-same")}/.avra-cache")
             let bin = real_binary("held-mint-same-bin", "one compiler, asked twice")
-            let a = print_workspace(bin)
-            let b = print_workspace(bin)
             let m = module_path(["app"])
+            let a = print_workspace(bin)
             a.db.insert_sig(store, a.record_key(m), "the one true record")
+            let b = print_workspace(bin)
             b.db.sig(store, b.record_key(m)) == "the one true record"
         }
     }

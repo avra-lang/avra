@@ -3,13 +3,14 @@
 // module's line, and the crossings that must simply work. The
 // vertical story lives in workspace_test.av; these are the programs
 // that tried to break it.
-use @std.avrac.compiler.{avra, new_workspace, analyze_source, Analysis}
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.compiler.{analyze_source, Analysis}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
 
 /// A root file plus whatever the attack adds.
 fn package(files: Map<string, string>, names: List<string>) -> Workspace {
-    new_workspace(memory_host(files, names), "/w", avra())
+    test_workspace(memory_host(files, names), "/w")
 }
 
 /// The root file's ONE refusal, saying this.
@@ -379,7 +380,7 @@ spec "compiler/workspace (adversarial)" {
                 "/std/std-high/avra.toml": "[package]\nname = \"@std/high\"\nversion = \"0.1.0\"\n",
                 "/std/std-high/src/high.av": "use @std.low.{g}\nexport fn h() -> int {\n    g() + 1\n}\n",
             }
-            let a = new_workspace(
+            let a = test_workspace(
                 memory_host(
                     files,
                     [
@@ -392,7 +393,6 @@ spec "compiler/workspace (adversarial)" {
                     ],
                 ) with { std_root: "/std" },
                 "/std/std-low",
-                avra(),
             )
                 .analyze_file("/std/std-low/src/low.av")
             a

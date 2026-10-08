@@ -1559,6 +1559,34 @@ fn file_id_across_relation_found(col: Code) -> Fix {
         )
 }
 
+/// A test's workspace made through `new_workspace` stands beside every
+/// other one its suite makes, and its rows stand in the process until it
+/// is let go — ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME.
+/// `test_workspace(host, root)` (@std.avrac.testing) is the door that holds
+/// the law: the workspace made before it is let go.
+@keeps("new_workspace(h, \"/w\", avra())")
+export rule direct_test_workspace {
+    quote { new_workspace(${host}, ${root}, ${lang}) } if in_a_test(host) -> direct_test_workspace_found(host),
+}
+
+/// Whether a node stands in a package's test file.
+fn in_a_test(c: Code) -> bool {
+    let f = c.of.view.source.file
+    f.contains("/src/") && f.contains("/tests/")
+}
+
+fn direct_test_workspace_found(host: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                host.loc(),
+                "a test's workspace stands beside every other its suite makes until it is let go — one one-shot workspace is alive at a time",
+                "made here",
+                "make it with `test_workspace(host, root)` from @std.avrac.testing, which lets the one before it go",
+            ),
+        )
+}
+
 /// A test's fixed `/tmp/` path: two runs on one machine share it, so
 /// the second reads what the first left behind — a cache, a database,
 /// a built program. A test file that names a per-run base (a
@@ -1569,8 +1597,7 @@ fn file_id_across_relation_found(col: Code) -> Fix {
 export rule fixed_tmp_path { quote { ${lit} } if is_fixed_tmp_path(lit) -> fixed_tmp_path_found(lit) }
 
 fn is_fixed_tmp_path(lit: Code) -> bool {
-    let f = lit.of.view.source.file
-    if !f.contains("/src/") || !f.contains("/tests/") { return false }
+    if !in_a_test(lit) { return false }
     let v? = lit.text_head() else { return false }
     v.starts_with("/tmp/") && !lit.file_callees().any(names_run_base)
 }

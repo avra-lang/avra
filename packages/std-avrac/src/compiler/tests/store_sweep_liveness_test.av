@@ -7,7 +7,8 @@
 // this reuses `source_stamp_adversarial_test.av`'s `real_disk_host`
 // pieces, same module, with `compiler` set so `compiler_id()` resolves a
 // real digest from a real file instead of the null-compiler fallback.
-use @std.avrac.compiler.{avra, new_workspace, build_cache_root, digest_of_binary}
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.compiler.{build_cache_root, digest_of_binary}
 use compiler.host.{Host, unlinked, plainly, unrefusing, unset}
 use @std.io.{exists, read_text, write_text, list_dir, is_dir, make_dirs}
 use @std.path.{dir_of}
@@ -50,7 +51,7 @@ spec "compiler/build — a store sweep is gated by liveness, not only by the rol
             let compiler_path = "${root}/fake-avra"
             let _ = write_file_safe(compiler_path, "fake-binary-bytes-live")
             let orphan = orphan_marked(root, "1")
-            let ws = new_workspace(host_at(compiler_path), root, avra())
+            let ws = test_workspace(host_at(compiler_path), root)
             let _ = ws.compiler_id()
             is_dir(orphan)
         }
@@ -61,7 +62,7 @@ spec "compiler/build — a store sweep is gated by liveness, not only by the rol
             let compiler_path = "${root}/fake-avra"
             let _ = write_file_safe(compiler_path, "fake-binary-bytes-dead")
             let orphan = orphan_marked(root, "999999999")
-            let ws = new_workspace(host_at(compiler_path), root, avra())
+            let ws = test_workspace(host_at(compiler_path), root)
             let _ = ws.compiler_id()
             !is_dir(orphan)
         }
@@ -71,7 +72,7 @@ spec "compiler/build — a store sweep is gated by liveness, not only by the rol
             let root = rollrace_root("self")
             let compiler_path = "${root}/fake-avra"
             let _ = write_file_safe(compiler_path, "fake-binary-bytes-self")
-            let ws = new_workspace(host_at(compiler_path), root, avra())
+            let ws = test_workspace(host_at(compiler_path), root)
             let store = build_cache_root(ws)
             is_dir("${store}/.users")
         }

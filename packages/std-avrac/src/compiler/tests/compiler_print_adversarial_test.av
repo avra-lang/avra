@@ -3,7 +3,8 @@
 // syntax, so the attacks are the ones that matter for a cache identity:
 // degenerate inputs to the digest, a fallback that must never collide,
 // and the root module's own empty-name edge.
-use @std.avrac.compiler.{avra, new_workspace, build_cache_root, digest_of_binary}
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.compiler.{build_cache_root, digest_of_binary}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
 use core.{module_path}
@@ -29,7 +30,7 @@ fn adv_binary(name: string, bytes: string) -> string {
 fn same_stamp_always(_p: string) -> int? { 999999 }
 
 fn adv_workspace(binary: string?) -> Workspace {
-    new_workspace(
+    test_workspace(
         memory_host(
             {
                 "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
@@ -38,7 +39,6 @@ fn adv_workspace(binary: string?) -> Workspace {
             ["/w/avra.toml", "/w/src/main.av"],
         ) with { compiler: binary, print: () -> print_at(binary) },
         "/w",
-        avra(),
     )
 }
 
@@ -77,10 +77,9 @@ spec "compiler/build — compiler_id under degenerate and hostile inputs" {
     }
     given "the root module — the one name that is EMPTY, not absent" {
         then "the root module's record key still differs across two compilers" {
-            let a = adv_workspace(adv_binary("root-a", "compiler one"))
-            let b = adv_workspace(adv_binary("root-b", "compiler two"))
             let root_module = module_path([])
-            a.record_key(root_module) != b.record_key(root_module)
+            let a = adv_workspace(adv_binary("root-a", "compiler one")).record_key(root_module)
+            a != adv_workspace(adv_binary("root-b", "compiler two")).record_key(root_module)
         }
         then "the root module's key differs from a NAMED module's key under the SAME compiler" {
             let ws = adv_workspace(adv_binary("root-vs-named", "one compiler"))
@@ -92,12 +91,11 @@ spec "compiler/build — compiler_id under degenerate and hostile inputs" {
     given "workspace restart — anew()'s fresh Keys" {
         then "build_cache_root agrees before and after an internal restart, over the same real binary" {
             let bin = adv_binary("restart", "one compiler, asked twice")
-            let first = adv_workspace(bin)
-            let second = adv_workspace(bin)
             // two SEPARATE workspace constructions over the identical real
             // file stand in for `anew()`'s fresh Keys: both must still
             // agree, since nothing about the compiler changed between them
-            build_cache_root(first) == build_cache_root(second)
+            let first = build_cache_root(adv_workspace(bin))
+            first == build_cache_root(adv_workspace(bin))
         }
     }
     given "the roll's own stamp-based shortcut, attacked directly — a stamp that never changes" {
@@ -115,9 +113,9 @@ spec "compiler/build — compiler_id under degenerate and hostile inputs" {
             // the SAME host (its roll file lives in its own in-memory table)
             // asked twice — a rebuild that lands at the same stamp must not
             // let the second ask reuse the first's cached print
-            let a = new_workspace(host, "/w", avra()).compiler_id()
+            let a = test_workspace(host, "/w").compiler_id()
             let _ = write_text(path, "generation two, a longer and very different body")
-            let b = new_workspace(host, "/w", avra()).compiler_id()
+            let b = test_workspace(host, "/w").compiler_id()
             a != b
         }
         then "three rebuilds in a row at the same stamp are pairwise distinct, not just each new one from its predecessor" {
@@ -131,11 +129,11 @@ spec "compiler/build — compiler_id under degenerate and hostile inputs" {
                 },
                 ["/w/avra.toml", "/w/src/main.av"],
             ) with { compiler: path, stamp: same_stamp_always, print: () -> digest_of_binary(path) }
-            let a = new_workspace(host, "/w", avra()).compiler_id()
+            let a = test_workspace(host, "/w").compiler_id()
             let _ = write_text(path, "v2, different")
-            let b = new_workspace(host, "/w", avra()).compiler_id()
+            let b = test_workspace(host, "/w").compiler_id()
             let _ = write_text(path, "v3, different again")
-            let c = new_workspace(host, "/w", avra()).compiler_id()
+            let c = test_workspace(host, "/w").compiler_id()
             a != b && b != c && a != c
         }
     }

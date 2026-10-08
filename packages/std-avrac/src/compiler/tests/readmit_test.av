@@ -1,12 +1,12 @@
 // A FILE ADMITTED AGAIN REPLACES ITS ROWS IN ONE STEP. The second
-// admission reads another parse of the same path — a workspace over the
-// new text parses it — and what the file no longer declares is gone
+// admission reads another parse of the same path — the new text's own,
+// no workspace beside the one that admits it — and what the file no longer declares is gone
 // from every read the table answers: the whole table, the file's own
 // list, each index, the interning key, the impls a target names. A
 // declaration that survives keeps its id, and every hash agrees with a
 // table that only ever admitted the new text.
-use @std.avrac.compiler.{avra, new_workspace}
-use compiler.{Workspace}
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace, parse_source}
 use compiler.host.{memory_host}
 use core.{DeclId, DeclKind, Param, named_ref, fp_list, same_file}
 use features.{Decl}
@@ -15,7 +15,7 @@ use @std.relation.engine.{Key}
 fn readmit_path() -> string { "/w/src/main.av" }
 
 fn readmit_files(files: Map<string, string>, paths: List<string>) -> Workspace {
-    new_workspace(memory_host(files, ["/w/avra.toml"].concat(paths)), "/w", avra())
+    test_workspace(memory_host(files, ["/w/avra.toml"].concat(paths)), "/w")
 }
 
 /// A workspace over one file holding `text`, its declarations admitted.
@@ -31,12 +31,7 @@ fn admitted(text: string) -> Workspace {
 
 /// `path` in `ws` admitted again from `text`'s own parse.
 fn admit_again(ws: Workspace, path: string, text: string) {
-    mut files: Map<string, string> = {
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
-    }
-    files.set(path, text)
-    let again = readmit_files(files, [path])
-    let p = again.parsed(again.file_id(path))
+    let p = parse_source(text)
     let _ = ws.decls.admit(ws.file_id(path), p.store, p.stmts)
 }
 
@@ -142,9 +137,10 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
         }
         then "a name's bucket hash is the new text's" {
             let ws = readmitted(readmit_before(), readmit_after())
+            let kept = name_bucket(ws, "kept")
+            let gone = name_bucket(ws, "gone")
             let fresh = admitted(readmit_after())
-            name_bucket(ws, "kept") == name_bucket(fresh, "kept") &&
-                name_bucket(ws, "gone") == name_bucket(fresh, "gone")
+            kept == name_bucket(fresh, "kept") && gone == name_bucket(fresh, "gone")
         }
         then "a renamed declaration is a new one, the old name gone" {
             let ws = readmitted(
@@ -172,9 +168,8 @@ spec "compiler/readmit — a file admitted again replaces its rows" {
             let f = ws.file_id(readmit_path())
             let settled = ws.db.value_hash_of(Key { family: items_ordinal(), arg: f.index })
             admit_again(ws, readmit_path(), readmit_after())
-            settled != null &&
-                settled! == rows_print(admitted(readmit_before())) &&
-                settled! != rows_print(ws)
+            let now = rows_print(ws)
+            settled != null && settled! != now && settled! == rows_print(admitted(readmit_before()))
         }
     }
     given "a declaration moved between two files of one module" {

@@ -1,8 +1,7 @@
 // The world as cells: a read stands until the driver says the world may
 // have moved, and then every input is read again.
+use @std.avrac.testing.{test_workspace}
 use compiler.{
-    avra,
-    new_workspace,
     Workspace,
     component_names,
     file_declares_component,
@@ -37,7 +36,7 @@ type World = { ws: Workspace, files: Cell<Map<string, string>>, names: Cell<List
 fn world() -> World {
     let files: Cell<Map<string, string>> = Cell.new({"/w/src/a.av": "1\n"})
     let names: Cell<List<string>> = Cell.new(["a.av"])
-    World { ws: new_workspace(shifting(files, names), "/w", avra()), files: files, names: names }
+    World { ws: test_workspace(shifting(files, names), "/w"), files: files, names: names }
 }
 
 fn manifest() -> string { "[package]\nname = \"app\"\nversion = \"0.1.0\"\n" }
@@ -46,14 +45,14 @@ fn manifest() -> string { "[package]\nname = \"app\"\nversion = \"0.1.0\"\n" }
 fn library() -> World {
     let files: Cell<Map<string, string>> = Cell.new({"/w/avra.toml": manifest()})
     let names: Cell<List<string>> = Cell.new([])
-    World { ws: new_workspace(shifting(files, names), "/w", avra()), files: files, names: names }
+    World { ws: test_workspace(shifting(files, names), "/w"), files: files, names: names }
 }
 
 /// A package whose manifest names a dependency no directory holds yet.
 fn depending() -> World {
     let files: Cell<Map<string, string>> = Cell.new({"/w/avra.toml": with_dependency()})
     let names: Cell<List<string>> = Cell.new([])
-    World { ws: new_workspace(shifting(files, names), "/w", avra()), files: files, names: names }
+    World { ws: test_workspace(shifting(files, names), "/w"), files: files, names: names }
 }
 
 fn importer() -> string { "use helper.{one}\nexport fn two() -> int {\n    one() + 1\n}\n" }
@@ -69,7 +68,7 @@ fn importing() -> World {
             },
         )
     let names: Cell<List<string>> = Cell.new(["main.av", "helper.av"])
-    World { ws: new_workspace(shifting(files, names), "/w", avra()), files: files, names: names }
+    World { ws: test_workspace(shifting(files, names), "/w"), files: files, names: names }
 }
 
 fn helper_deleted(w: World) {
@@ -133,10 +132,9 @@ fn machine() -> Machine {
     let names: Cell<List<string>> = Cell.new(["a.av"])
     let vars: Cell<Map<string, string>> = Cell.new({"X": "1", "E": ""})
     Machine {
-        ws: new_workspace(
+        ws: test_workspace(
             machine_host(files, names, vars, () -> held_print(files, "/w/bin/avra")),
             "/w",
-            avra(),
         ),
         files: files,
         vars: vars,
@@ -360,10 +358,7 @@ spec "compiler/world" {
             let _ = w.ws.manifest(0)
             let open_before = !w.ws.decls.rows_db.get().closed.get()
             w.files.set({})
-            open_before &&
-                graph_moved(w) &&
-                w.ws.decls.rows_db.get().closed.get() &&
-                w.ws.let_go.get()
+            open_before && graph_moved(w) && w.ws.decls.rows_db.get().closed.get() && w.ws.let_go()
         }
         then "asked for the world again, it is refused, naming its replacement" {
             let w = library()
@@ -516,7 +511,7 @@ spec "compiler/world" {
             let started = held_print(m.files, "/w/bin/avra")
             m.files.put("/w/bin/avra", "another build")
             let names: Cell<List<string>> = Cell.new(["a.av"])
-            new_workspace(machine_host(m.files, names, m.vars, () -> started), "/w", avra())
+            test_workspace(machine_host(m.files, names, m.vars, () -> started), "/w")
                 .running_print() == digest_of_octets("one build".bytes())
         }
     }

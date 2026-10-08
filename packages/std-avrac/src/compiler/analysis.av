@@ -156,9 +156,9 @@ impl Language {
     /// workspace is let go, and nothing but the next analysis knows the
     /// last one is done with — so the next lets it go.
     fn analyze(src: SourceFile) -> Analysis {
-        for prior in standing_one_shot().get() { prior.discarded() }
+        one_shot_let_go()
         let ws = lone_workspace(src.file, src.text, self)
-        standing_one_shot().set([ws])
+        ws.alone()
         let a = ws.analysis(ws.file_id(src.file))
         ws.disarmed()
         let program = a.program
@@ -181,16 +181,55 @@ impl Language {
     }
 }
 
-/// The one-shot workspace whose Analysis may still be read.
+/// The one-shot workspace that stands: the one whose answers may still be read.
 once fn standing_one_shot() -> Cell<List<Workspace>> { list_cell() }
 
+/// ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME: its rows stand in the
+/// process until it is let go, and nothing but the next one knows the last
+/// is done with — so the next lets it go BEFORE it is made, and two never
+/// stand at once.
+export fn one_shot_let_go() {
+    for prior in standing_one_shot().get() { prior.superseded() }
+    let none: List<Workspace> = []
+    standing_one_shot().set(none)
+}
+
+/// Whether a workspace stands, or was let go — by its holder, or by the
+/// next one-shot workspace made after it.
+export enum Stand { Open, LetGo, Superseded }
+
 impl Workspace {
-    /// An Analysis read through this workspace is read while it stands.
+    /// This one-shot workspace is the one that stands — made only after
+    /// `one_shot_let_go` let the last go.
+    fn alone() { standing_one_shot().set([self]) }
+
+    fn superseded() {
+        if self.let_go() { return }
+        self.ended(Stand.Superseded)
+    }
+
+    fn let_go() -> bool {
+        match self.stand.get() { .Open -> false, .LetGo or .Superseded -> true }
+    }
+
+    /// THE ONE GUARD every read through a workspace passes: it stands, or
+    /// the read is refused with why it does not.
     fn standing() {
-        if self.let_go.get() { avra_trap(analysis_outlived()) }
+        if self.let_go() { avra_trap(stand_voice(self.stand.get())) }
     }
 }
 
-fn analysis_outlived() -> string {
-    "an Analysis is read while its workspace stands; this one's was let go when the next was made"
+/// What a read through a workspace that does not stand is refused with.
+fn stand_voice(s: Stand) -> string {
+    match s {
+        .Open -> standing_refused(),
+        .LetGo -> asked_after_let_go(),
+        .Superseded -> read_after_superseded(),
+    }
+}
+
+fn standing_refused() -> string { "defect: a workspace that stands was refused as let go" }
+
+fn read_after_superseded() -> string {
+    "a one-shot workspace is read while it stands; this one was let go when the next was made — read what it answers before making another"
 }

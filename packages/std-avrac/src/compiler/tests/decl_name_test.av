@@ -4,8 +4,7 @@
 // other's name only when it shares them.
 use compiler.{Workspace, makers_in}
 use compiler.record.{read_fields}
-use @std.avrac.testing.{provided_workspace, vendored_meta, vendored_meta_paths}
-use @std.avrac.compiler.{avra, new_workspace}
+use @std.avrac.testing.{provided_workspace, test_workspace, vendored_meta, vendored_meta_paths}
 use compiler.host.{memory_host}
 use core.{DeclId, DeclKind, flatten, no_stmt, named_ref}
 use features.{Decl, DeclareWork, decl_key_text, new_decls}
@@ -107,10 +106,11 @@ fn restored() -> Restored {
         .mint_generated_code(f, ws.decls.store_of(f), ws.parsed(f).stmts.slice(0, 1), 0, awkward_maker(), "made", null)
     // through the record's own text: its lines joined, then split again
     let fields = [read_fields(line) for line in ws.lines_of(readmit_path()).join("\n").split("\n")]
+    let parsed = [Decl.key_text(d.key()) for d in ws.decls.all_decls() if d.maker != ""].join(" | ")
     let held = admitted_nothing()
     held.mint_file(readmit_path(), fields, makers_in(fields, readmit_path()))
     Restored {
-        parsed: [Decl.key_text(d.key()) for d in ws.decls.all_decls() if d.maker != ""].join(" | "),
+        parsed: parsed,
         held: [Decl.key_text(d.key()) for d in held.decls.all_decls() if d.maker != ""].join(" | "),
         lines: [p for p in fields if p[0] == "maker"].length,
     }
@@ -227,13 +227,12 @@ fn first_statement_annotated() -> Workspace {
             "/w/src/main.av": "@mark\nfn f() -> int { 1 }\nf()\n",
         },
     )
-    new_workspace(
+    test_workspace(
         memory_host(
             files,
             ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
         ),
         "/w",
-        avra(),
     )
 }
 
@@ -255,13 +254,12 @@ fn generated_annotated() -> Workspace {
             "/w/src/main.av": "fn pad() -> int { 0 }\n@outer\nfn f() -> int { 1 }\nf()\n",
         },
     )
-    new_workspace(
+    test_workspace(
         memory_host(
             files,
             ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
         ),
         "/w",
-        avra(),
     )
 }
 
@@ -282,7 +280,7 @@ fn nested_package_path(early: bool) -> string {
         "/w/src/greet/avra.toml": "[package]\nname = \"@acme/greet\"\nversion = \"0.1.0\"\n",
         "/w/src/greet/src/greet.av": "export fn greet(n: int) -> int {\n    n + 40\n}\n",
     }
-    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    let ws = test_workspace(memory_host(files, files.keys()), "/w")
     if early { let _ = ws.file_id("/w/src/greet/src/greet.av") }
     let _ = ws.program(null)
     [d.path for d in ws.decls.all_decls() if d.name == "greet"].join(" | ")
@@ -298,13 +296,12 @@ fn two_annotations(main: string) -> string {
             "/w/src/main.av": main,
         },
     )
-    let ws = new_workspace(
+    let ws = test_workspace(
         memory_host(
             files,
             ["/w/avra.toml", "/w/src/marks.av", "/w/src/main.av"].concat(vendored_meta_paths()),
         ),
         "/w",
-        avra(),
     )
     let _ = ws.program("/w/src/main.av")
     keys_named(ws, DeclKind.Fn, "f_a") + " || " + keys_named(ws, DeclKind.Fn, "f_b")
