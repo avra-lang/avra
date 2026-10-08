@@ -114,6 +114,11 @@ INERT = {
     "derive": {"rows": set(), "world": {}},
     "errors": {"rows": set(), "world": {}},
     "grammar": {"rows": set(), "world": {}},
+    "hash": {
+        "rows": {"avra_b3_state_len", "avra_b3_fresh", "avra_b3_update",
+                 "avra_b3_digest", "avra_b3_oneshot", "avra_bytes_adopted", "avra_trap"},
+        "world": {},
+    },
     "json": {"rows": set(), "world": {}},
     "math": {"rows": set(), "world": {}},
     "path": {"rows": set(), "world": {}},
