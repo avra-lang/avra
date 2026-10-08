@@ -2562,10 +2562,10 @@ static void schedules_settled(void) {
 // the bits above it.
 static uint8_t (*g_case_body)(void) = NULL;
 static int64_t case_body_called(void) { return g_case_body() & 1; }
+static int64_t case_body_held(void) { return avra_case_run(case_body_called); }
 
-// One schedule of `body` run as a case: its verdict, and how many
-// choices it made.
-static int64_t scheduled(int64_t schedule, int64_t* choices, int64_t (*body)(void)) {
+// One schedule of `run`: its verdict, and how many choices it made.
+static int64_t scheduled(int64_t schedule, int64_t* choices, int64_t (*run)(void)) {
     avra_sched_seed(schedule);
     avra_case_schedule = schedule;
     // the case's clock is a run of its own: what it jumps ends with it
@@ -2573,7 +2573,7 @@ static int64_t scheduled(int64_t schedule, int64_t* choices, int64_t (*body)(voi
         avra_clock_run_begins();
         avra_clock_virtual(1);
     }
-    int64_t held = avra_case_run(body);
+    int64_t held = run();
     if (g_case_clock_virtual) avra_clock_run_ends();
     avra_case_schedule = -1;
     *choices = avra_sched_settle();
@@ -2587,7 +2587,7 @@ static int64_t case_failed_under(const char* label, int64_t schedule) {
     return 0;
 }
 
-static int64_t case_under(int64_t schedule, int64_t* choices) { return scheduled(schedule, choices, case_body_called); }
+static int64_t case_under(int64_t schedule, int64_t* choices) { return scheduled(schedule, choices, case_body_held); }
 
 // THE SCHEDULES A VERDICT RUNS: schedule 0, then — only when it chose —
 // the next, up to the setting; or the one AVRA_SCHED_SEED names.
@@ -2617,9 +2617,10 @@ const char* avra_capture_end(void);
 int64_t avra_streq(const char* a, const char* b);
 void avra_puts(const char* s);
 
-// A PROGRAM TEST IS A CASE TOO: its top level runs as a task under each
-// schedule, its output captured, and every schedule must print what it
-// must. The first schedule that prints otherwise is said with what it
+// A PROGRAM TEST RUNS AS A PROGRAM DOES: its top level on the process's
+// own root, never in a case's task, under each schedule a case runs and
+// on the same clock — its output captured, and every schedule must print
+// what it must. The first that prints otherwise is said with what it
 // printed.
 static int64_t (*g_program_body)(void) = NULL;
 static const char* g_program_label = NULL;

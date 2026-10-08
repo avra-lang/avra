@@ -233,8 +233,8 @@ int64_t avra_case_verdict(int64_t code, const char* label);
 // what they cannot reach. Nothing when no case chose.
 void avra_case_schedules_said(void);
 // A program test's verdict: its top level (`code`, answering a word) run
-// as a case under the same schedules, each one's output held to
-// `expected`; the first that prints otherwise is said on stdout.
+// on the root under a case's schedules and clock, each one's output held
+// to `expected`; the first that prints otherwise is said on stdout.
 int64_t avra_program_verdict(int64_t code, const char* label, const char* expected);
 // The settings an EVALUATED leg reads, as the native one does: how many
 // schedules to run, the schedule the i-th run uses, and whether a run's
