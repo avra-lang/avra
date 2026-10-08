@@ -1196,7 +1196,7 @@ static void* deadline_counting(void* self) {
 // many switches, never every switch — plus one round of the eight. The
 // deadline is read at most that late too. COUNTED IN TURNS, never timed:
 // a loaded machine stretches a turn, never adds one.
-static void timers_among_workers(void) {
+static void timers_heard_within_the_window(void) {
     g_gate = avra_gate_new();
     void* workers[8];
     g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
@@ -1262,7 +1262,7 @@ static void* naps(void* self) {
 // Tasks that alternate a run of quick yields with a run of long slices:
 // a sleep is heard within AVRA_TIMER_TURNS or one tick, plus one round of
 // them, however the quick run before it went — counted in turns.
-static void timers_among_bursts(void) {
+static void timers_heard_within_the_window_among_bursts(void) {
     static const int shapes[2][3] = { { 8, 100, 8 }, { 2, 300, 40 } };
     for (int s = 0; s < 2; s++) {
         int workers = shapes[s][0];
@@ -2096,7 +2096,7 @@ int main(int argc, char** argv) {
     in_child("a freed virtual task leaves every source it was filed with", freed_vtask_leaves_its_sources);
     in_child("a closed descriptor's number is watched afresh for its next tenant", closed_number_is_watched_afresh);
     in_child("a sleep and a reader among yielding tasks wake within reach", world_within_reach);
-    in_child("timers among tasks that compute between yields fire at the first switch after", timers_among_workers);
+    in_child("a sleep and a deadline among tasks that compute between yields are heard within the window", timers_heard_within_the_window);
     in_child_within("a deadline is filed once, and heard", deadline_once, 10);
     in_child_within("a deadline reaches what it must, and no further", deadline_reach, 10);
     if (g_fails) {
@@ -2155,8 +2155,8 @@ int main(int argc, char** argv) {
     interrupt_is_its_own_claim();
     late_parker();
     late_parker_after_interrupt();
-    timers_among_workers();
-    timers_among_bursts();
+    timers_heard_within_the_window();
+    timers_heard_within_the_window_among_bursts();
     world_within_reach();
     CHECK(avra_mem_live() == live, "the fibers leave nothing behind");
     as_virtual();

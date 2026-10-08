@@ -121,6 +121,14 @@ static void body_seeded_do(void) {
     // a different schedule is a different order.
     order_under(2);
     CHECK(strcmp(one, g_log) != 0, "a different schedule draws a different turn");
+
+    // THE BACK-EDGE COUNT IS DRAWN FROM THE SCHEDULE'S STREAM: one
+    // spinner's next yield is a counted choice. A constant count draws
+    // nothing and leaves the schedule's choices at zero.
+    fresh();
+    avra_sched_seed(1);
+    joined(spawn1(spinner, 'A'));
+    CHECK(avra_sched_settle() > 0, "the seeded back-edge count is drawn from the schedule");
 }
 
 // ── the source the switch reads ─────────────────────────────────
