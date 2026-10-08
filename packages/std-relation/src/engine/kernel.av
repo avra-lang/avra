@@ -154,45 +154,47 @@ once fn kernels_made() -> Cell<int> { Cell.new(0) }
 /// counts every recorded read by the family read — repeats too, which no cell's list
 /// shows — written (`C`) each time the outermost query settles.
 @identity
-type Graph = { on: Cell<bool>, id: Cell<int>, reads: Cell<List<int>> }
+type Graph = { writes: Cell<bool>, id: Cell<int>, reads: Cell<List<int>> }
 
-fn new_graph() -> Graph { Graph { on: Cell.new(false), id: Cell.new(0), reads: list_cell() } }
+fn new_graph() -> Graph { Graph { writes: Cell.new(false), id: Cell.new(0), reads: list_cell() } }
 
 impl Graph {
     fn opened() {
         kernels_made().set(kernels_made().get() + 1)
         self.id.set(kernels_made().get())
-        self.on.set(true)
+        self.writes.set(true)
     }
 
     /// One more read of a key of `family`.
-    fn counted(family: int) { self.reads.set_at(family, self.reads.get()[family] + 1) }
+    fn counted(family: int) {
+        self.reads.set_at(family, self.reads.get()[family] + 1)
+    }
 
     fn registered(family: int) {
         self.reads.push(0)
-        if self.on.get() { avra_qtrace("F\t${self.id.get()}\t${family}\n") }
+        if self.writes.get() { avra_qtrace("F\t${self.id.get()}\t${family}\n") }
     }
 
     fn input_set(key: Key) {
-        if self.on.get() { avra_qtrace("I\t${self.id.get()}\t${key.family}\t${key.arg}\n") }
+        if self.writes.get() { avra_qtrace("I\t${self.id.get()}\t${key.family}\t${key.arg}\n") }
     }
 
     fn settled(key: Key, deps: List<int>, outermost: bool) {
-        if self.on.get() {
+        if self.writes.get() {
             avra_qtrace(
                 "G\t${self.id.get()}\t${key.family}\t${key.arg}\t${deps.length}\t${spelled(deps)}\n",
             )
         }
-        if outermost && self.on.get() {
+        if outermost && self.writes.get() {
             avra_qtrace("C\t${self.id.get()}\t${["${n}" for n in self.reads.get()].join(" ")}\n")
         }
     }
 
     fn abandoned(key: Key, deps: List<int>) {
-        if self.on.get() { avra_qtrace("A\t${self.id.get()}\t${key.family}\t${key.arg}\t${deps.length}\n") }
+        if self.writes.get() { avra_qtrace("A\t${self.id.get()}\t${key.family}\t${key.arg}\t${deps.length}\n") }
     }
 
-    fn evicted(family: int) { if self.on.get() { avra_qtrace("E\t${self.id.get()}\t${family}\n") } }
+    fn evicted(family: int) { if self.writes.get() { avra_qtrace("E\t${self.id.get()}\t${family}\n") } }
 }
 
 /// Edges as `family:arg`, space-separated.
@@ -227,6 +229,12 @@ export type Kernel = {
     whole_families: Cell<List<bool>>,
     audit: Audit,
     graph: Graph,
+    /// Recorded reads, counted here for every kernel — the process tally shares this cell.
+    tally: Cell<int>,
+    /// Whether this kernel counts its reads and abandoned frames — off unless asked for.
+    counting: Cell<bool>,
+    /// Whether the graph writes its trace, mirrored here so a counted read never reaches into the graph.
+    writes: Cell<bool>,
 }
 
 fn unheard(_b: Bypass) {}
@@ -261,6 +269,9 @@ export fn new_kernel() -> Kernel {
             reach: map_cell(),
         },
         graph: new_graph(),
+        tally: reads_tally(),
+        counting: Cell.new(counting_all().get()),
+        writes: Cell.new(false),
     }
 }
 
@@ -372,7 +383,11 @@ impl Kernel {
     }
 
     /// Every later registration, input, settle, abandon and eviction is written out.
-    fn graph_on() { self.graph.opened() }
+    fn graph_on() {
+        self.graph.opened()
+        self.writes.set(true)
+        self.counting.set(true)
+    }
 
     /// Every later ask and settle is traced.
     fn trace_on() { self.tracing.set(true) }
@@ -409,7 +424,7 @@ impl Kernel {
         let no_stamps: Cell<List<int>> = list_cell()
         self.stamps.push(no_stamps)
         let ordinal = self.verifiers.get().length - 1
-        if self.graph.on.get() { self.graph.registered(ordinal) }
+        if self.counting.get() { self.graph.registered(ordinal) }
         ordinal
     }
 
@@ -425,7 +440,7 @@ impl Kernel {
     }
 
     fn set_input(key: Key, value_hash: int) {
-        if self.graph.on.get() { self.graph.input_set(key) }
+        if self.graph.writes.get() { self.graph.input_set(key) }
         let rev = self.rev.get()
         let prior? = self.cell(key) else {
             self.write_cell(key, input_cell(rev, value_hash))
@@ -533,8 +548,12 @@ impl Kernel {
 
     /// A read its reader's standing edge already covers: recorded nowhere,
     /// counted where the graph counts every read.
-    fn repeated(family: int) {
-        if self.graph.on.get() { self.graph.counted(family) }
+    fn repeated(family: int) { if self.counting.get() { self.count_read(family) } }
+
+    /// One recorded read counted: the process tally always, the per-family rows while the graph writes.
+    fn count_read(family: int) {
+        self.tally.set(self.tally.get() + 1)
+        if self.writes.get() { self.graph.counted(family) }
     }
 
     fn changed_at(key: Key) -> int { self.cell(key)?.changed_at ?? self.rev.get() }
@@ -652,7 +671,8 @@ impl Kernel {
         let innermost = self.asker.open.get().last() ?? edge_of(key)
         if innermost != edge_of(key) { abandoned_out_of_order(key) }
         let deps = self.closed_frame()
-        if self.graph.on.get() { self.graph.abandoned(key, deps) }
+        if self.counting.get() { frames_tally().set(frames_tally().get() + 1) }
+        if self.writes.get() { self.graph.abandoned(key, deps) }
         for e in deps { self.record_at(family_of(e), arg_of(e)) }
     }
 
@@ -687,7 +707,7 @@ impl Kernel {
                     value_hash: value_hash,
                 },
             )
-        if self.graph.on.get() { self.graph.settled(key, deps, self.asker.open.get().is_empty()) }
+        if self.graph.writes.get() { self.graph.settled(key, deps, self.asker.open.get().is_empty()) }
         if self.audit.on.get() { self.judged() }
     }
 
@@ -704,7 +724,7 @@ impl Kernel {
         let reader = self.asker.reader.get()
         if reader == 0 { return }
         if packed(family, arg) == self.asker.last.get() { return }
-        if self.graph.on.get() { self.graph.counted(family) }
+        if self.counting.get() { self.count_read(family) }
         let row = self.stamp_row(family)
         let stamp = stamp_in(row.get(), arg)
         if stamp != reader { self.newly_read(row, family, arg, stamp, reader) }
@@ -723,8 +743,7 @@ impl Kernel {
         if stamp != 0 && self.asker.readers.get().contains(stamp) { self.save_restore(packed(family, arg), stamp) }
         stamped_in(row, arg, reader)
         self.asker.pending.get().last()!.push(packed(family, arg))
-        // the graph counts every read, so no read may skip it
-        if !self.graph.on.get() { self.asker.last.set(packed(family, arg)) }
+        if !self.counting.get() { self.asker.last.set(packed(family, arg)) }
     }
 
     /// Whether any key of `family` was ever recorded as read. A STAMP ROW
@@ -773,7 +792,7 @@ impl Kernel {
         if family < 0 || family >= rows.length { return }
         let none: List<QueryCell?> = []
         rows[family].set(none)
-        if self.graph.on.get() { self.graph.evicted(family) }
+        if self.graph.writes.get() { self.graph.evicted(family) }
     }
 
     fn hit() -> Verdict {
@@ -829,3 +848,21 @@ fn never_verify(arg: int) -> int {
     avra_trap("defect: a disarmed query database was reused")
     arg
 }
+
+/// Recorded reads, and abandoned frames, over every kernel that counted them.
+once fn reads_tally() -> Cell<int> { Cell.new(0) }
+
+once fn frames_tally() -> Cell<int> { Cell.new(0) }
+
+/// The reads counted over every kernel, since the process began.
+export fn read_calls() -> int { reads_tally().get() }
+
+/// The frames abandoned over every counting kernel, since the process began.
+export fn abandoned_frames() -> int { frames_tally().get() }
+
+/// Whether kernels made from here on count their reads and abandoned frames —
+/// set by `explain --stats`, which asks for the exact counts.
+once fn counting_all() -> Cell<bool> { Cell.new(false) }
+
+/// Every kernel made from here on counts its reads and abandoned frames.
+export fn count_reads() { counting_all().set(true) }
