@@ -604,6 +604,8 @@ impl Kernel {
     fn value_hash_of(key: Key) -> int? { self.cell(key)?.value_hash }
 
     fn begin(key: Key) {
+        let state = frame_state().get()
+        frame_state().set(if state % 65536 == 0 { state + 65536 + 1 } else { state + 1 })
         let none: List<int> = []
         let no_restore: Cell<List<Restore>>? = null
         let reader = self.minted.get() + 1
@@ -679,6 +681,7 @@ impl Kernel {
     /// Closes the innermost open frame: its edges, held at their own
     /// size, with the frame's restores replayed and its stacks popped.
     fn closed_frame() -> List<int> {
+        frame_state().set(frame_state().get() - 1)
         let edges = self.asker.pending.get().last()!.get()
         let restores = self.asker.restore.get()
         // LICENSED lists.last_index: `last()!` of a nullable element never lets its referent go
@@ -866,3 +869,18 @@ once fn counting_all() -> Cell<bool> { Cell.new(false) }
 
 /// Every kernel made from here on counts its reads and abandoned frames.
 export fn count_reads() { counting_all().set(true) }
+
+/// Frames open process-wide and the outermost frames opened so far, packed as
+/// `epoch * 65536 + depth`. A Db records the epoch at birth: one born before the
+/// outermost open frame is another query's input.
+once fn frame_state() -> Cell<int> { Cell.new(0) }
+
+/// Whether a Db born at `epoch` is another query's input now: a frame is open and
+/// the outermost one opened after the Db was made.
+export fn foreign_since(epoch: int) -> bool {
+    let state = frame_state().get()
+    state % 65536 > 0 && epoch < state / 65536
+}
+
+/// The outermost frames opened so far.
+export fn frames_epoch() -> int { frame_state().get() / 65536 }
