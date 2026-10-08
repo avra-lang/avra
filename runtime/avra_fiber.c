@@ -24,6 +24,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1290,6 +1291,7 @@ static int world_waited_virtually(void) {
 
 static void fiber_start(void);
 static int case_deadlocked(void);
+static int run_deadlocked(void);
 static void tasks_answered(void);
 typedef struct DoorNames DoorNames;
 static void listing_written(int dfd, const DoorNames* names);
@@ -1454,6 +1456,7 @@ static Fiber* next_with_world(void) {
         }
         if (g_timers_len == 0 && g_parked_fds == 0) {
             if (case_deadlocked()) continue;
+            if (run_deadlocked()) { g_in_world = 0; return NULL; }
             avra_trap("every task is waiting — deadlock");
         }
         pool_trim();
@@ -2193,8 +2196,15 @@ int64_t avra_vgate_claim(int64_t t, void* gate) {
     return gate_claimed(gate, id_of(virtual_at(t)));
 }
 
+// The evaluator is asking for its next task: a deadlock is its answer
+// to file, while a run stands.
+static int g_vnext_asking = 0;
+
 int64_t avra_vtask_next(void) {
+    g_vnext_asking = 1;
     Fiber* next = next_ready();
+    g_vnext_asking = 0;
+    if (!next) return 0;
     if (!next->virtual) avra_trap("defect: the evaluator's scheduler met a compiled task");
     next->state = FIBER_RUNNING;
     return (int64_t)(uintptr_t)next;
@@ -2225,6 +2235,7 @@ int64_t avra_sched_settle(void) {
 typedef struct { int seeded; int64_t schedule; uint64_t state; int64_t choices; } Schedule;
 static Schedule* g_outer_schedules = NULL;
 static size_t g_runs = 0;
+static int run_deadlocked(void) { return g_vnext_asking && g_runs > 0; }
 static size_t g_runs_cap = 0;
 
 void avra_sched_run_begins(void) {
@@ -2567,9 +2578,10 @@ static void schedules_settled(void) {
 // the bits above it.
 static uint8_t (*g_case_body)(void) = NULL;
 static int64_t case_body_called(void) { return g_case_body() & 1; }
+static int64_t case_body_held(void) { return avra_case_run(case_body_called); }
 
-// One schedule of the case: its verdict, and how many choices it made.
-static int64_t case_under(int64_t schedule, int64_t* choices) {
+// One schedule of `run`: its verdict, and how many choices it made.
+static int64_t scheduled(int64_t schedule, int64_t* choices, int64_t (*run)(void)) {
     avra_sched_seed(schedule);
     avra_case_schedule = schedule;
     // the case's clock is a run of its own: what it jumps ends with it
@@ -2577,7 +2589,7 @@ static int64_t case_under(int64_t schedule, int64_t* choices) {
         avra_clock_run_begins();
         avra_clock_virtual(1);
     }
-    int64_t held = avra_case_run(case_body_called);
+    int64_t held = run();
     if (g_case_clock_virtual) avra_clock_run_ends();
     avra_case_schedule = -1;
     *choices = avra_sched_settle();
@@ -2586,25 +2598,119 @@ static int64_t case_under(int64_t schedule, int64_t* choices) {
 }
 
 __attribute__((noinline, cold))
-static int64_t case_failed_under(const char* label, int64_t schedule) {
-    fprintf(stderr, "avra: %s failed under schedule %lld — " SCHED_SEED_SETTING "=%lld replays it\n", label, (long long)schedule, (long long)schedule);
+static int64_t case_failed_under(const char* what, const char* label, int64_t schedule) {
+    fprintf(stderr, "avra: %s%s failed under schedule %lld — " SCHED_SEED_SETTING "=%lld replays it\n", what, label, (long long)schedule, (long long)schedule);
     return 0;
 }
 
-int64_t avra_case_verdict(int64_t code, const char* label) {
+static int64_t case_under(int64_t schedule, int64_t* choices) { return scheduled(schedule, choices, case_body_held); }
+
+// THE SCHEDULES A VERDICT RUNS: schedule 0, then — only when it chose —
+// the next, up to the setting; or the one AVRA_SCHED_SEED names.
+static int64_t over_schedules(const char* what, const char* label, int64_t (*one)(int64_t, int64_t*)) {
     schedules_settled();
-    g_case_body = (uint8_t (*)(void))(uintptr_t)code;
     int64_t choices = 0;
-    if (g_sched_only >= 0) return case_under(g_sched_only, &choices) ? 1 : case_failed_under(label, g_sched_only);
+    if (g_sched_only >= 0) return one(g_sched_only, &choices) ? 1 : case_failed_under(what, label, g_sched_only);
     for (int64_t k = 0; k < g_sched_runs; k++) {
         // A CASE WITH ONE ORDER FAILS IN EVERY ORDER: no schedule replays
         // anything, so none is named.
-        if (!case_under(k, &choices)) return choices == 0 && k == 0 ? 0 : case_failed_under(label, k);
+        if (!one(k, &choices)) return choices == 0 && k == 0 ? 0 : case_failed_under(what, label, k);
         // A CASE THAT MADE NO CHOICE HAS ONE ORDER: no other schedule differs.
         if (choices == 0) return 1;
         g_any_chose = 1;
     }
     return 1;
+}
+
+int64_t avra_case_verdict(int64_t code, const char* label) {
+    g_case_body = (uint8_t (*)(void))(uintptr_t)code;
+    return over_schedules("", label, case_under);
+}
+
+// The runtime's: the capture of what a program prints, and its words.
+void avra_capture_begin(void);
+const char* avra_capture_end(void);
+int64_t avra_streq(const char* a, const char* b);
+void avra_puts(const char* s);
+
+// A PROGRAM TEST RUNS AS A PROGRAM DOES: its top level on the process's
+// own root, never in a case's task, under each schedule a case runs and
+// on the same clock — its output captured, and every schedule must print
+// what it must. The first that prints otherwise is said with what it
+// printed.
+static int64_t (*g_program_body)(void) = NULL;
+static const char* g_program_label = NULL;
+static const char* g_program_expected = NULL;
+static int64_t program_body_called(void) { g_program_body(); return 1; }
+
+__attribute__((noinline, cold))
+static void program_said_otherwise(const char* got, int ended, int status) {
+    printf("%s: native != expected\n", g_program_label);
+    if (!ended && WIFSIGNALED(status)) printf("(it ended on signal %d)\n", WTERMSIG(status));
+    else if (!ended) printf("(it ended with status %d)\n", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+    avra_puts(got);
+    fflush(stdout);
+    g_any_failed = 1;
+}
+
+// ONE SCHEDULE IS ONE CHILD, forked before the program runs: what the
+// program leaves dies with it, so the next schedule starts from the image
+// as it stood and a failure replays from its seed alone; a trap or a
+// deadlock ends the child, never the suite. The child's choices come back
+// over a pipe, and a child that never says them made an unknown number.
+static int64_t program_under(int64_t schedule, int64_t* choices) {
+    int told[2];
+    if (pipe(told) != 0) avra_trap("a program test has no pipe to its schedule");
+    // the runtime owns the capture: begun before the fork, ended and
+    // released after the child
+    avra_capture_begin();
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid < 0) avra_trap("a program test cannot fork its schedule");
+    if (pid == 0) {
+        close(told[0]);
+        int64_t made = 0;
+        scheduled(schedule, &made, program_body_called);
+        fflush(stdout);
+        _exit(write(told[1], &made, sizeof made) == sizeof made ? 0 : 3);
+    }
+    close(told[1]);
+    int64_t made = -1;
+    // the clock: the suite waits on its child, outside every clock run
+    ssize_t heard = read(told[0], &made, sizeof made);
+    close(told[0]);
+    int status = 0;
+    // the clock: the suite waits on its child, outside every clock run
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    const char* got = avra_capture_end();
+    int ended = heard == sizeof made && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    *choices = ended ? made : -1;
+    int64_t same = ended && avra_streq(got, g_program_expected);
+    if (!same) program_said_otherwise(got, ended, status);
+    avra_rc_release((void*)got);
+    return same;
+}
+
+int64_t avra_program_verdict(int64_t code, const char* label, const char* expected) {
+    g_program_body = (int64_t (*)(void))(uintptr_t)code;
+    g_program_label = label;
+    g_program_expected = expected;
+    return over_schedules("program ", label, program_under);
+}
+
+int64_t avra_sched_runs_wanted(void) {
+    schedules_settled();
+    return g_sched_only >= 0 ? 1 : g_sched_runs;
+}
+
+int64_t avra_sched_schedule_at(int64_t i) {
+    schedules_settled();
+    return g_sched_only >= 0 ? g_sched_only : i;
+}
+
+int64_t avra_case_clock_virtual(void) {
+    schedules_settled();
+    return g_case_clock_virtual;
 }
 
 void avra_case_schedules_said(void) {

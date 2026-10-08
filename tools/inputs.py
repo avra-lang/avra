@@ -129,13 +129,14 @@ ROWS = {
     "avra_spawn_in": "spawn", "avra_spawn_status": "spawn", "avra_exec_self": "spawn",
     "avra_self_dir": "tool", "avra_now_ns": "clock",
     "avra_own_pid": "pid", "avra_pid_alive": "pid",
+    "avra_sched_runs_wanted": "env", "avra_sched_schedule_at": "env", "avra_case_clock_virtual": "env",
     "avra_selfhost_argc": "argv", "avra_selfhost_get_arg_cstr": "argv",
 }
 INERT_ROWS = re.compile(
     r"^(LLVM\w*|avra_(llvm|float|int|str|bytes|vtask|fiber|ffi)_\w+|avra_(debug|eputs|puts|"
     r"errno_text|ptr_at|qtrace|trap|utf8_bad_at|mem_live|fd_taken|fd_write|type_named|"
     r"vgate_open|vgate_claim|gate_new|rc_release|task_at|task_done|task_cancel|"
-    r"sched_seed|sched_settle|sched_run_begins|sched_run_ends|sched_guest_waits)|"
+    r"sched_seed|sched_settle|sched_run_begins|sched_run_ends|sched_guest_waits|clock_virtual)|"
     r"host|println)$")
 
 # A read through the filesystem seam: behind `Host`, not yet an input —

@@ -137,6 +137,10 @@ type Machine = {
     parking: bool,
     // how many tasks the run has spawned: the newest one's id
     spawned: int = 0,
+    // the schedule the run is seeded with, or -1 for none; and how many
+    // choices it made
+    schedule: int = -1,
+    choices: int = 0,
     // the runtime's gate behind a program's, by the id of the box the
     // program holds; let go when that box dies
     gates: List<ptr?> = [],
@@ -363,6 +367,20 @@ export fn run_live(l: Lowered) -> Ended {
 /// One PROGRAM of a programs binary, run in the evaluator: its body by
 /// symbol, its printed lines as the answer — what `run_lowered` does
 /// for the entry.
+/// What a program printed under one schedule, and how many choices that
+/// schedule made: none means the program has one order.
+export type Scheduled = { out: string, choices: int }
+
+/// A program run as an evaluated leg runs one: seeded with `schedule`,
+/// and on the virtual clock when the suite's cases are.
+export fn run_scheduled(l: Lowered, symbol: string, schedule: int) -> Result<Scheduled, string> {
+    let body = named_body(l, symbol)?
+    mut m = fresh_machine(l) with { freeing: true, schedule: schedule }
+    let _ = m.run_body(body)
+    if !m.failures.is_empty() { return .Err(m.failures.first()!) }
+    .Ok(Scheduled { out: joined(m.out, "\n"), choices: m.choices })
+}
+
 export fn run_program(l: Lowered, symbol: string) -> Result<string, string> {
     let body = named_body(l, symbol)?
     .Ok(printed(ran(l, body)?))
