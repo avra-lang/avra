@@ -208,10 +208,9 @@ impl Workspace {
     /// The arguments of the mark a collect gathers a member by; none for a kind
     /// that gathers by no mark.
     fn mark_args(kind: CollectKind, m: Decl) -> List<string> {
-        match kind {
-            .Annotated(w) -> [a.text for a in self.decls.annotations_of(m.id).find(it.name == w)?.args ?? []],
-            .Component(_) or .UnknownKind(_) -> [],
-        }
+        let w? = mark_word(kind) else { return [] }
+        let fact? = self.decls.annotations_of(m.id).find(it.name == w) else { return [] }
+        [a.text for a in fact.args]
     }
 
     /// EVERY HELD COLLECTOR WHOSE SET MOVED, to be read: what it gathers now, from
@@ -616,6 +615,11 @@ type EmbedPlace = { root: string, rel: string }
 fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> {
     let place? = beneath_root(root, path) else { fail EmbedFault.Outside }
     place
+}
+
+/// The mark a collect gathers by; none for a kind that gathers by no mark.
+fn mark_word(kind: CollectKind) -> string? {
+    match kind { .Annotated(w) -> w, .Component(_) or .UnknownKind(_) -> null }
 }
 
 /// What a statement gathers and in what order, when it is a `collect` that gathers
