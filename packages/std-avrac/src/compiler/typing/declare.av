@@ -31,6 +31,7 @@ use core.{
 use diagnostics.{refusal, Diag}
 use features.{
     TypeCx,
+    WrittenIn,
     FnSig,
     StructSig,
     slot_want,
@@ -921,6 +922,16 @@ impl TypeCx {
         ty
     }
 
+    /// A type pattern's written type, read as `written_by` reads one —
+    /// an unknown name's refusal says it stands in a pattern.
+    mut fn written_in_pattern(origin: FileId?, at: Loc?, t: TypeRef) -> TypeId {
+        let was = self.written_in
+        self.written_in = WrittenIn.Pattern
+        let ty = self.written_by(origin, at, t)
+        self.written_in = was
+        ty
+    }
+
     /// A written type in full — its arguments and its `?` both. The
     /// element of an application comes back through here, so
     /// `List<int?>` and `List<List<int>>` need no rule of their own.
@@ -1188,7 +1199,7 @@ impl TypeCx {
                     "type.unknown",
                     at,
                     "`${name}` names no type",
-                    "in this signature",
+                    written_label(self.written_in),
                     "the types today are `int`, `string`, `bool`, and your declared types",
                 ),
             )
@@ -1365,4 +1376,9 @@ impl TypeCx {
                 ),
             )
     }
+}
+
+/// Where an unknown type name stands, as its refusal's label says it.
+fn written_label(w: WrittenIn) -> string {
+    match w { .Signature -> "in this signature", .Pattern -> "in this type pattern" }
 }

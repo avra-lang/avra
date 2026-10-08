@@ -306,10 +306,10 @@ fn dispatched_answer(
 /// argument is the only `dyn`, every other fits every member, each
 /// member's seat there implements its trait, and all answer one type.
 fn dispatch_of(cx: TypeCx, many: List<DeclId>, args: List<ExprId>) -> RunChoice? {
-    let dyns = [j for j, a in args if dyn_trait(cx, cx.type_at(a)) != null]
+    let dyns = [j for j, a in args if cx.view.types.dyn_trait(cx.type_at(a)) != null]
     if dyns.length != 1 { return null }
     let k = dyns[0]
-    let tr = dyn_trait(cx, cx.type_at(args[k]))!
+    let tr = cx.view.types.dyn_trait(cx.type_at(args[k]))!
     let sigs = [cx.view.decls.sig(m)?.fn_sig() for m in many]
     if !sigs.all((s) -> s != null && takes_dispatched(cx, s!, args, k, tr)) { return null }
     let answer = sigs[0]!.ret
@@ -331,7 +331,7 @@ fn takes_dispatched(cx: TypeCx, s: FnSig, args: List<ExprId>, k: int, tr: DeclId
 /// this call is one some member takes, and the run-time choice never
 /// misses. Answers the names of the types left without one.
 fn unrealized(cx: TypeCx, d: RunChoice, args: List<ExprId>) -> List<string> {
-    let tr = dyn_trait(cx, cx.type_at(args[d.seat]))!
+    let tr = cx.view.types.dyn_trait(cx.type_at(args[d.seat]))!
     let taken = [seat_decl(cx, m, d.seat) for m in d.members]
     [cx.view.decls.decl(t).name for t in cx.view.decls.implementors_of(tr) if !taken.any((x) -> same_decl_as(t, x))]
 }
@@ -350,11 +350,6 @@ fn same_decl_as(t: DeclId, d: DeclId?) -> bool {
 fn implements_at(cx: TypeCx, ty: TypeId, tr: DeclId) -> bool {
     let d? = cx.view.decls.implementor(ty) else { return false }
     cx.view.decls.implements(d, tr)
-}
-
-/// The trait a `dyn` type is over, or none.
-fn dyn_trait(cx: TypeCx, ty: TypeId) -> DeclId? {
-    match cx.view.types.shape_of(ty) { .Dyn(d, _) -> d, _ -> null }
 }
 
 /// How many members the names share, a generic trait's arguments
