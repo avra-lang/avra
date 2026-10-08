@@ -159,7 +159,7 @@ CLOCK_MUTATIONS = [
     ("a limit of none still traps", "    if (g_clock_asks_most > 0 && ++avra_task_local->clock_asks", "    if (++avra_task_local->clock_asks"),
     ("the limit is not the setting's", "    g_clock_asks_most = n;\n", ""),
     ("a limit that is no number is read as one", "    if (*end != 0 || n < 0) avra_trap(CLOCK_ASKS_SETTING", "    if (0) avra_trap(CLOCK_ASKS_SETTING"),
-    ("a hold let go too often goes unsaid", "    if (avra_clock.held < 0) avra_trap(", "    if (0) avra_trap("),
+    ("a hold let go too often goes unsaid", "    if (avra_clock.held < 0) avra_trap(\"the world was let go", "    if (0) avra_trap(\"the world was let go"),
     ("dropped holds still hold", "    int64_t held = avra_clock.held;\n    avra_clock.held = 0;", "    int64_t held = avra_clock.held;"),
     ("a run begins with its host's holds", "    g_clock_outer[g_clock_runs++] = avra_clock;\n    avra_clock.held = 0;", "    g_clock_outer[g_clock_runs++] = avra_clock;"),
     ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
