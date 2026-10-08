@@ -24,8 +24,6 @@ use features.{
     Unsettled,
     Settled,
     Settlement,
-    const_symbol,
-    expr_symbol,
     MetaVal,
     MetaHeap,
     new_meta_heap,
@@ -529,7 +527,10 @@ impl Workspace {
     /// plus the settled seats' fingerprints when a unit fixes them —
     /// so two units of one body settle their own values.
     fn settle_symbol(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> string {
-        let own = match root { .Const(s) -> const_symbol(f, s), .Expr(e) -> expr_symbol(f, e) }
+        let own = match root {
+            .Const(s) -> self.decls.const_symbol(f, s),
+            .Expr(e) -> self.decls.expr_symbol(f, e),
+        }
         settled_symbol(own, seats)
     }
 
@@ -679,7 +680,7 @@ impl Workspace {
     /// An annotation argument evaluated directly into the crossing
     /// transport, including every nested aggregate.
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
-        let l = self.standalone(f, e, expr_symbol(f, e), [])
+        let l = self.standalone(f, e, self.decls.expr_symbol(f, e), [])
         self.recorded_reads(f, l, null)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let ws = self
