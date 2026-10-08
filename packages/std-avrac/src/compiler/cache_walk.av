@@ -17,6 +17,7 @@ use core.{
     some_list,
     text_before,
     distinct,
+    flatten,
 }
 use compiler.store.{Store, Stored, Keeping}
 use @std.path.{relative_path, joined_path, normalized}
@@ -30,7 +31,10 @@ use @std.relation.engine.{Key, same_key, no_key_marks}
 /// read with why, the files whose text moved since they were kept, and what
 /// the derivation that judged them spent — its attempts, those among them
 /// that did not stand, and its phases.
-export type CacheWalk = { root: string, holds: List<FileHold>, moved: List<string>, attempts: int, discarded: int, phases: List<Phase> }
+export type CacheWalk = { root: string, holds: List<FileHold>, moved: List<string>, texts: List<TextMoved>, attempts: int, discarded: int, phases: List<Phase> }
+
+/// A file whose text digest differs from its kept parts row, then and now.
+export type TextMoved = { path: string, moved: PartMoved }
 
 /// An answer as a person reads it, with its digest — none for an answer the
 /// kernel never digested.
@@ -139,18 +143,15 @@ impl Workspace {
         self.inspecting()
         let d = self.derived(null, Want.Diagnostics)?
         let holds = d.program.ws.holds_of(d)
+        let texts = d.program.ws.text_moves_of(d.program.ws.kept_store(), [h.path for h in holds])
         let walk = CacheWalk {
             root: self.root,
             holds: holds,
             moved: distinct(
                 [h.path for h in holds if h.moved.any(it.part is .Text)]
-                    .concat(
-                        d
-                            .program
-                            .ws
-                            .text_moved_paths(d.program.ws.kept_store(), [h.path for h in holds]),
-                    ),
+                    .concat([t.path for t in texts]),
             ),
+            texts: texts,
             attempts: d.turned + 1,
             discarded: d.turned,
             phases: grouped_phases(d.program.phases.concat(d.spans)),
@@ -421,13 +422,18 @@ impl Workspace {
 
     /// The files whose text differs from the kept state. Each is compared by its
     /// kept parts row, so a file the derivation held is compared too.
-    fn text_moved_paths(store: Store, paths: List<string>) -> List<string> {
-        [p for p in paths if self.text_moved_since(store, p)]
+    fn text_moves_of(store: Store, paths: List<string>) -> List<TextMoved> {
+        flatten([some_list(self.text_moved_at(store, p)) for p in paths])
     }
 
-    fn text_moved_since(store: Store, path: string) -> bool {
-        let kept = parts_of(store.get(Stored.Unit, parts_key(path)) ?? "")
-        kept != null && kept!.text != self.text_digest(path)
+    fn text_moved_at(store: Store, path: string) -> TextMoved? {
+        let kept? = parts_of(store.get(Stored.Unit, parts_key(path)) ?? "") else { return null }
+        let now = self.text_digest(path)
+        if kept.text == now { return null }
+        TextMoved {
+            path: path,
+            moved: PartMoved { part: KeyPart.Text, was: kept.text, now: now, lines: [] },
+        }
     }
 
     /// The answers a moved input reaches. Each is re-verified when the input moved;

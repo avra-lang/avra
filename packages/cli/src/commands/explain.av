@@ -16,6 +16,7 @@ use @std.avrac.compiler.{
     HeldMismatch,
     Explained,
     Changed,
+    TextMoved,
     Digested,
     FamilyCount,
     Counted,
@@ -122,6 +123,7 @@ fn package_answer(a: Asked, ws: Workspace) -> Lines {
     [files_line(walk), attempts_line(walk), moved_line(walk)]
         .concat([line for h in walk.holds for line in text_moved(walk, h)])
         .concat([line for h in read for line in hold_lines(walk, h)])
+        .concat([line for t in unshown_texts(walk) for line in text_lines(walk, t)])
         .concat(reached_lines(walk, changed))
 }
 
@@ -171,6 +173,19 @@ fn hold_lines(walk: CacheWalk, h: FileHold) -> List<string> {
     ["${at_root(walk, h.path)} — ${hold_word(h)}"]
         .concat(["  missing ${m}" for m in h.missing])
         .concat([line for m in h.moved for line in moved_lines(m)])
+}
+
+/// Each file whose text moved and no hold shows: a held file, whose text no
+/// derivation read.
+fn unshown_texts(walk: CacheWalk) -> List<TextMoved> {
+    [t for t in walk.texts if !walk.holds.any((h) -> h.path == t.path && h.moved.any(it.part is .Text))]
+}
+
+fn text_lines(walk: CacheWalk, t: TextMoved) -> List<string> {
+    [
+        "${at_root(walk, t.path)} — its text moved",
+        "  moved its text: ${t.moved.was} -> ${t.moved.now}",
+    ]
 }
 
 /// One moved part, then the contract lines it lost and gained, a field apart by two spaces.
