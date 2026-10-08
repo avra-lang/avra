@@ -182,8 +182,10 @@ fn new_keys() -> Keys {
 /// moved in each file's key when this build replaced its kept parts
 /// (`moved`); each file's module (`file_module`), the revision each
 /// module's `HeldSig` was last asked at (`sig_asked`), each open
-/// settlement's kept lines, innermost last (`settle_frames`), and what each
-/// settlement read, by its ask (`settle_reads`).
+/// settlement's kept lines, innermost last (`settle_frames`), what each
+/// settlement read, by its ask (`settle_reads`), the units being lowered,
+/// innermost last (`lowering`), and the consts each unit's lowering asked
+/// for, by the unit (`unit_asks`).
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
@@ -210,7 +212,12 @@ type Hold = {
     settle_frames: Cell<List<Cell<List<KeptLine>>>>,
     // each held collector, with the set its record says it gathered
     gathered: Cell<List<HeldGather>>,
+    lowering: Cell<List<int>>,
+    unit_asks: Cell<Map<string, List<ConstAsk>>>,
 }
+
+/// One const a unit's lowering asked the settlement for.
+type ConstAsk = { file: FileId, root: SettleRoot, seats: List<SeatValue> }
 
 /// A held file's `collect` that gathers its package: the file, the package's source,
 /// what it gathers, and the set it gathered when it was last read.
@@ -261,6 +268,8 @@ fn new_hold() -> Hold {
         reexports: Cell.new(no_reexports),
         settle_frames: list_cell(),
         gathered: list_cell(),
+        lowering: list_cell(),
+        unit_asks: map_cell(),
     }
 }
 
