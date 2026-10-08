@@ -442,6 +442,8 @@ export type Decls = {
     mains: Cell<List<DeclId?>>,
     /// Each file's name, dense by FileId — what a row's key spells its file by.
     file_names: Cell<List<string>>,
+    /// Every named type the typer resolved, in order: a settlement keeps the ones it resolved.
+    touched_types: Cell<List<TypeId>>,
     /// The sibling each group's next declaration takes, per run.
     counted: Cell<Siblings>,
     stores: Cell<List<SyntaxArena?>>,
@@ -776,6 +778,7 @@ export fn new_decls() -> Decls {
         types: new_type_registry(),
         mains: Cell.new(no_mains),
         file_names: list_cell(),
+        touched_types: list_cell(),
         counted: Cell.new(Siblings { runs: map_cell() }),
         // LICENSED compiler.repeated_projection: each `Cell.new` mints its own cell — one binding would make two hooks one slot
         stores: Cell.new(no_stores),
@@ -899,6 +902,18 @@ export fn kind_word(k: DeclKind) -> string {
 }
 
 impl Decls {
+    /// A type a declaration's expression carries, kept when it is a named type.
+    fn note_named(t: TypeId) {
+        let named = match self.types.shape_of(t) {
+            .Struct(_, _) or .Enum(_, _) -> true,
+            rest -> false,
+        }
+        if named { self.note_type(t) }
+    }
+
+    /// A named type the typer resolved, kept in order.
+    fn note_type(t: TypeId) { self.touched_types.set(self.touched_types.get().concat([t])) }
+
     // ── files ──
 
     /// A declaration's row — THE ONE DOOR every pass reads it through.
@@ -1935,7 +1950,11 @@ impl Decls {
     }
 
     /// A record declaration's own type.
-    fn record_type(record: DeclId) -> TypeId { self.types.intern(Type.Struct(record, self.decl(record).name)) }
+    fn record_type(record: DeclId) -> TypeId {
+        let t = self.types.intern(Type.Struct(record, self.decl(record).name))
+        self.note_type(t)
+        t
+    }
 
     fn tparams(d: DeclId) -> List<string> {
         let x = self.decl(d)

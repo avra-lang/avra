@@ -17,6 +17,10 @@
 //! stands only in a program that lays them out alike.
 use core.{
     StmtId,
+    ExprId,
+    Type,
+    TypeId,
+    digest_of,
     qtrace,
     traced,
     FileId,
@@ -35,7 +39,8 @@ use core.{
 use features.{Unsettled, Settled, Wanted, SettleRoot, SeatValue, Budgets}
 use compiler.backend.{reaches_world}
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Unit}
+use compiler.lower.{Unit, type_shape}
+use core.{Type}
 use @std.relation.engine.{list_cell}
 
 impl Workspace {
@@ -73,8 +78,11 @@ impl Workspace {
         let reader = self.decls.file(ask.file).path
         let before = self.hold.runs.get().get(reader) ?? []
         self.hold.runs.put(reader, no_paths())
+        let touched_from = self.decls.touched_types.get().length
         let r = self
             .settlement_of(ask.file, self.analysis(ask.file).view.store.const_value(s)!, ask.name, ask.seats)
+        self.note_const_types(ask.file, s)
+        self.note_touched(touched_from)
         let frame = self.popped_settle_frame()
         let read = self.hold.runs.get().get(reader) ?? []
         self.hold.runs.put(reader, distinct(before.concat(read)))
@@ -192,7 +200,7 @@ impl Workspace {
                 "\t",
             )
         }
-        top.push(KeptLine { line: line, unit: false, path: "", bodies: [], wire: "" })
+        top.push(plain_kept(line))
     }
 
     /// A settlement's verdict and its lines, kept — a value, or a structural
@@ -216,6 +224,7 @@ impl Workspace {
         let modules = self.viewed_modules(distinct([k.path for k in frame if k.unit]))
         let lines = distinct([finished_line(k, ran) for k in frame])
             .concat([self.module_line(m) for m in modules])
+            .concat([joined(["n", self.names_digest(modules)], "\t")])
             .concat(
                 [self.file_line(path) for path in distinct(flatten([self.module_files(m) for m in modules]))],
             )
@@ -240,6 +249,8 @@ impl Workspace {
         if !said.contains(layout) { return null }
         let rows = [l.split("\t") for l in said if !l.is_empty() && l != layout]
         if !rows.all((r: List<string>) -> self.kept_row_stands(r)) { return null }
+        let mods = [module_path(r[1].split(".")) for r in rows if r[0] == "m"]
+        if !rows.all((r: List<string>) -> r[0] != "n" || r[1] == self.names_digest(mods)) { return null }
         let reads? = rows.find(it[0] == "r") else { return null }
         let read = reads.slice(1, reads.length)
         self.read_by(self.decls.file(f).path, read)
@@ -250,17 +261,51 @@ impl Workspace {
         .Err(Unsettled.Reach(words))
     }
 
+    /// The named types a const's own expressions carry: the typer resolved them when the file
+    /// was typed, before any settlement, so they are read from the typed facts of its range.
+    fn note_const_types(f: FileId, s: StmtId) {
+        let d? = self.decls.decl_of(f, s) else { return }
+        let x = self.decls.decl(d)
+        let facts = self.typed(d)
+        for i in x.lo..x.hi { self.decls.note_named(facts.type_at(ExprId { index: i })) }
+    }
+
+    /// The named types a settlement resolved since `from`, noted in its open frame.
+    fn note_touched(from: int) {
+        let top? = self.hold.settle_frames.get().last() else { return }
+        let all = self.decls.touched_types.get()
+        top.set(top.get().concat([self.touched_line(t) for t in all.slice(from, all.length)]))
+    }
+
+    /// A named type's kept line: its declaration, and the shape it has now.
+    fn touched_line(t: TypeId) -> KeptLine {
+        let line = match self.decls.types.shape_of(t) {
+            .Struct(d, name) or .Enum(d, name) -> joined(["t", self.decl_ref(d), name, "${type_shape(self.decls, t)}"], "\t"),
+            rest -> "",
+        }
+        plain_kept(line)
+    }
+
     fn kept_row_stands(r: List<string>) -> bool {
         match r[0] {
             "u" -> self.kept_unit_stands(r),
+            "t" -> self.kept_type_stands(r),
             "c" -> self.kept_const_stands(r),
             "m" -> r.length == 3 && self.module_files(module_path(r[1].split("."))).join(",") == r[2],
             "f" -> self.kept_file_stands(r),
             "b" -> r.length == 2 && budget_line(self.budgets()) == joined(r, "\t"),
             "e" -> r.length == 3 && self.embed_said(r[1]) == r[2],
-            "r" -> true,
+            "r" or "n" -> true,
             rest -> false,
         }
+    }
+
+    /// A named type's line stands when its declaration still lays out as its shape.
+    fn kept_type_stands(r: List<string>) -> bool {
+        if r.length != 4 { return false }
+        let d? = self.decl_from_ref(r[1]) else { return false }
+        let t = if self.decls.is_enum(d) { self.decls.types.intern(Type.Enum(d, r[2])) } else { self.decls.types.intern(Type.Struct(d, r[2])) }
+        "${type_shape(self.decls, t)}" == r[3]
     }
 
     /// A unit line stands when its file's text has not moved; or when its
@@ -317,7 +362,7 @@ impl Workspace {
                 "f",
                 path,
                 self.text_digest(path),
-                if self.file_is_read(path) { self.outline(path) } else { "" },
+                if self.file_is_read(path) { "2${self.outline_values(path)}" } else { "" },
             ],
             "\t",
         )
@@ -326,9 +371,46 @@ impl Workspace {
     /// A file line stands when its text has not moved, or when it is read and
     /// its outline has not.
     fn kept_file_stands(r: List<string>) -> bool {
-        if r.length != 4 { return false }
+        if r.length < 3 || r.length > 4 { return false }
         if self.text_digest(r[1]) == r[2] { return true }
-        r[3] != "" && self.file_is_read(r[1]) && self.outline(r[1]) == r[3]
+        r.length == 4 && r[3] != "" && self.file_is_read(r[1]) && self.outline_matches(r[1], r[3])
+    }
+
+    /// A file's `use` lines, each a fingerprint of its path, items and aliases.
+    fn use_fps(f: FileId) -> List<int> {
+        [fp(312, [texts_fp(u.path), texts_fp(u.items), texts_fp(u.aliases)]) for u in use_lines(self.parsed(f))]
+    }
+
+    /// A file's outline as a verdict keeps it: its declarations that are not named types (a
+    /// named type is keyed by its shape, in a `t` line) and its `use` lines.
+    fn outline_values(path: string) -> string {
+        let f? = self.decls.known_file_id(path) else { return "" }
+        let decls = [fp_str("${self.syntax(d)}") for d in self.decls.decls_of_file(f) if outlined_value(self.decls.decl(d).kind)]
+        let uses = self.use_fps(f)
+        "${fp(313, [fp_list(decls), fp_list(uses)])}"
+    }
+
+    /// Whether a kept file outline still stands: a `2` outline is the value outline, any
+    /// other is the whole outline an older verdict kept.
+    fn outline_matches(path: string, kept: string) -> bool {
+        if kept.starts_with("2") { self.outline_values(path) == kept.substring(1, kept.length) } else { self.outline(path) == kept }
+    }
+
+    /// The declaration names of the modules a verdict sees, as one digest: a name a
+    /// seen module gains or loses moves it.
+    fn names_digest(mods: List<ModulePath>) -> string {
+        digest_of(joined(sorted_texts(flatten([self.module_decl_names(m) for m in mods])), "\n"))
+    }
+
+    /// A module's declaration names, over the files it holds.
+    fn module_decl_names(m: ModulePath) -> List<string> {
+        flatten([self.file_decl_names(path) for path in self.module_files(m)])
+    }
+
+    /// A file's declaration names, when the file is known.
+    fn file_decl_names(path: string) -> List<string> {
+        let f? = self.decls.known_file_id(path) else { return [] }
+        [self.decls.decl(d).name for d in self.decls.decls_of_file(f) if binds_name(self.decls.decl(d).kind)]
     }
 
     /// What a file says to a body it does not hold: every declaration but a
@@ -336,7 +418,7 @@ impl Workspace {
     fn outline(path: string) -> string {
         let f? = self.decls.known_file_id(path) else { return "" }
         let decls = [fp_str("${self.syntax(d)}") for d in self.decls.decls_of_file(f) if outlined(self.decls.decl(d).kind)]
-        let uses = [fp(312, [texts_fp(u.path), texts_fp(u.items), texts_fp(u.aliases)]) for u in use_lines(self.parsed(f))]
+        let uses = self.use_fps(f)
         "${fp(311, [fp_list(decls), fp_list(uses)])}"
     }
 
@@ -389,6 +471,29 @@ fn finished_line(k: KeptLine, ran: List<string>) -> string {
 
 /// Whether a declaration of this kind speaks to bodies outside it: all but a
 /// body's own statements, which a unit line answers for.
+/// A kept line that names no unit, path or body.
+fn plain_kept(line: string) -> KeptLine {
+    KeptLine { line: line, unit: false, path: "", bodies: [], wire: "" }
+}
+
+/// Whether a declaration's name is one a module's namespace binds: not a default, a method,
+/// an impl, or a case, whose names a file's other declarations never resolve.
+fn binds_name(k: DeclKind) -> bool {
+    match k {
+        .Default or .Method or .Impl or .Case -> false,
+        .Fn or .Main or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Builtin or .State -> true,
+    }
+}
+
+/// Whether a declaration kind is in a file's value outline: every kind but a fn-like one
+/// (a default is one, reached at its call sites) and a named type, whose shape a `t` line keys.
+fn outlined_value(k: DeclKind) -> bool {
+    match k {
+        .Fn or .Method or .Default or .Main or .Case or .Record or .Named or .Alias or .Enum -> false,
+        .Const or .Trait or .Syntax or .Impl or .Collect or .CollectEnum or .Builtin or .State -> true,
+    }
+}
+
 fn outlined(k: DeclKind) -> bool {
     match k {
         .Fn or .Method or .Main or .Case -> false,
