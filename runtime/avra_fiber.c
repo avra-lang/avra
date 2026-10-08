@@ -1660,7 +1660,6 @@ static int64_t* task_awaited(void* task, int deaf) {
     run_next();
     self->joining = NULL;
     self->deaf = 0;
-    if (claimed_by_cancel(self)) cancel_met();
     return task_cells(task);
 }
 

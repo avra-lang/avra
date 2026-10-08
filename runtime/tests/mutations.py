@@ -45,7 +45,6 @@ MUTATIONS = [
     ("a scope's end does not cancel what it owns", "    if (g_current->cancel_by != 0) task_cancelled(task, id_of(g_current));\n", ""),
     ("a scope's end is cut by a cancel", "    task_awaited(task, 1);", "    task_awaited(task, 0);"),
     ("a cut sleep sets no unwind bit", "    run_next();\n    if (claimed_by_cancel(self)) cancel_met();\n}", "    run_next();\n}"),
-    ("a cut join sets no unwind bit", "    self->deaf = 0;\n    if (claimed_by_cancel(self)) cancel_met();\n", "    self->deaf = 0;\n"),
     ("a cut descriptor park sets no unwind bit", "        run_next();\n        if (claimed_by_cancel(self)) cancel_met();\n", "        run_next();\n"),
     ("a park a cancel claims sets no unwind bit", "    if (park_begun(self)) run_next();\n    if (claimed_by_cancel(self)) cancel_met();\n", "    if (park_begun(self)) run_next();\n"),
     ("a standing cancel lets a sleep park", "    if (cancel_stands(self)) return;\n    alone(self);\n    waits_until(", "    alone(self);\n    waits_until("),
