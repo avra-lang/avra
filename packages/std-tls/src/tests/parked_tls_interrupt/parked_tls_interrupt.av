@@ -1,0 +1,39 @@
+//! proves: a TLS read parked on its socket and woken by an interrupt
+//! answers the wire's `interrupted()` — never timed out, though a
+//! `within` stands around it — and loses nothing: what the peer sends
+//! after is the next read's
+use @std.net.{listen, Listener}
+use @std.time.{ms, secs, sleep, within}
+use @std.tls.{TlsConn, TlsError, dial, handshake, wired}
+use @std.tls.testing.{trusting_localhost, serving_localhost}
+
+/// How one read ended.
+fn told(r: Result<Bytes?, TlsError>) -> string {
+    match r {
+        .Ok(b) -> if b == null { "end" } else { b!.text() ?? "?" },
+        .Err(.Net(e)) -> if e.interrupted() { "interrupted" } else if e.timed_out() { "timed out" } else { "failed" },
+        .Err(_) -> "refused",
+    }
+}
+
+fn accepted(l: Listener) -> Result<TlsConn, TlsError> {
+    handshake(wired(l.accept())?, (serving_localhost()?).offering(["http/1.1"])?, "")
+}
+
+fn run() -> Result<string, TlsError> {
+    let l = wired(listen("127.0.0.1", 0))?
+    let server = spawn accepted(l)
+    let c = dial("localhost", l.port, secs(5), (trusting_localhost()?).offering(["http/1.1"])?)?
+    let s = server.await?
+    let reader = spawn told(within secs(10) { s.read(64) })
+    sleep(ms(20))
+    s.conn.interrupt()
+    let woke = reader.await
+    let _ = c.write("after".bytes())?
+    let next = told(within secs(2) { s.read(64) })
+    c.close()?
+    s.close()?
+    "${woke} | ${next}"
+}
+
+run() catch e -> e.describe().message

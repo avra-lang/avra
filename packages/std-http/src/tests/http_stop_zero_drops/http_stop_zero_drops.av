@@ -1,0 +1,43 @@
+//! proves: a stop with no drain drops a connection whose read it
+//! interrupted — the request goes unanswered, and both the stop and the
+//! run's join complete. It passes with AND without #481's `!stopped(e)`
+//! guard: a zero drain re-reads under 0 ms and drops either way.
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, sleep, within}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Timing, served}
+
+type App = {}
+
+/// Everything the peer sends until its end, or two seconds of silence.
+fn drained(c: Conn) -> string {
+    mut got = "".bytes()
+    while true {
+        match within secs(2) { c.read(65536) } {
+            .Ok(b) -> {
+                let more? = b else { break }
+                got = got.concat(more)
+            },
+            .Err(_) -> { break },
+        }
+    }
+    (got.text() ?? "?").replace("\r\n", "/")
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App {}, limits(), Timing { drain: ms(0) }) { _app, q -> text(200, "${q.target() ?? "?"}") }
+    let run = spawn s.run(cores: 1)
+    let late = connect("127.0.0.1", l.port, secs(2))?
+    defer { let _ = late.close() }
+    let _ = late.write("GET /late HTTP/1.1\r\nHo".bytes())?
+    sleep(ms(50))
+    let _ = late.write("st: a\r\n\r\n".bytes())?
+    s.stop()
+    let got = drained(late)
+    let _ = run.await?
+    .Ok("answered: ${got.starts_with("HTTP/1.1 200")} ${got.ends_with("/late")}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }
