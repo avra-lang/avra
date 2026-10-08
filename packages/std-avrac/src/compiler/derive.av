@@ -37,6 +37,12 @@ export enum Want { Diagnostics, Binary }
 /// the attempts that gave way to it.
 type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0, turned: int = 0, left: List<Left> = [] }
 
+/// The entry a derivation trims its root walk by: a build's, whose program is
+/// what the entry reaches; a check reads every file of the package.
+fn built_entry(at: Attempt) -> string? {
+    match at.want { .Binary -> at.entry, .Diagnostics -> null }
+}
+
 /// AN ATTEMPT THAT DID NOT STAND: what it spent, phase by phase up to where it
 /// left, and what the attempt made instead does that it did not.
 export type Left = { spans: List<Phase>, ns: int, turn: string }
@@ -595,7 +601,7 @@ impl Workspace {
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
         if at.hold {
-            for m in held_modules(self, store) { load_interface(self, store, m, at.entry, at.want) }
+            for m in held_modules(self, store, built_entry(at)) { load_interface(self, store, m, at.entry, at.want) }
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
             self.settle_holds(store)
@@ -608,7 +614,7 @@ impl Workspace {
     /// THE PROGRAM, ANALYSED AND CLEAN — with every file its compile-time runs and
     /// its held asks reach read beside it, or the attempt that reads them.
     fn analysed(at: Attempt, store: Store) -> Result<Program, Turn> {
-        let p = self.program(at.entry)
+        let p = self.program(at.entry, built_entry(at))
         at.having_read(self.bodies_asked())?
         // a held collector judged against what it gathers now, before a stale set is refused
         at.having_read(self.gathered_moved())?

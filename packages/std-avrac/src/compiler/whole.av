@@ -58,10 +58,10 @@ impl Workspace {
     // ── The whole program ──
     /// Every file under the root analyzed, in FileId order — each step
     /// asked for every file before the next, so the phases time apart.
-    fn analyze_all() -> List<Analysis> {
+    fn analyze_all(built: string?) -> List<Analysis> {
         let t0 = self.clock()
         // a held file is not parsed — and asking its items would mint its module for nothing
-        for path in self.root_files() { let _ = self.file_id(path) }
+        for path in self.entry_files(built) { let _ = self.file_id(path) }
         self.admit_all()
         self.timed("parse", self.clock() - t0)
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
@@ -119,9 +119,10 @@ impl Workspace {
         for msg in self.decls.types.drain_stale() { self.defect(msg) }
     }
 
-    /// The program rooted at `ws.root`, entered at one of its files.
-    fn program(entry: string?) -> Program {
-        let files = self.analyze_all()
+    /// The program rooted at `ws.root`, entered at one of its files — its root
+    /// walk trimmed to what `built` reaches when a build of it asks (`entry_files`).
+    fn program(entry: string?, built: string? = null) -> Program {
+        let files = self.analyze_all(built)
         self.report_layout_defects()
         let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
         let seat: Entry? = if at == null { null } else { Entry { at: at! } }
