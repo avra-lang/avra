@@ -201,6 +201,22 @@ static int64_t sleeps_then_prints(void) {
     if (write(1, "woke\n", 5) != 5) _exit(3);
     return 0;
 }
+// A task waiting on a gate nothing opens, joined: every task waits.
+static void* waits_forever(void* self) { (void)self; void* g = avra_gate_new(); avra_wait_gate(g, 0, 0); avra_wait_park(); return NULL; }
+static int64_t deadlocks(void) { joined(spawn1(waits_forever, 0)); return 0; }
+static int64_t prints_ok(void) { if (write(1, "ok\n", 3) != 3) _exit(3); return 0; }
+// A count a schedule leaves behind, as a `once fn`'s cache would be.
+static int64_t g_runs_seen = 0;
+static void* idles(void* self) { (void)self; return NULL; }
+static int64_t counts_its_runs(void) {
+    void* a = spawn1(idles, 0);
+    void* b = spawn1(idles, 0);
+    joined(a);
+    joined(b);
+    char w[3] = { (char)('0' + ++g_runs_seen), '\n', 0 };
+    if (write(1, w, 2) != 2) _exit(3);
+    return 0;
+}
 static int64_t prog(int64_t (*body)(void), const char* expected) { return avra_program_verdict((int64_t)(uintptr_t)body, "a program", expected); }
 static void programs(void) {
     setenv("AVRA_SCHED_RUNS", "8", 1);
@@ -209,6 +225,16 @@ static void programs(void) {
     CHECK(prog(two_tasks_print, "a\nb") == 0, "a program whose order shows fails under some schedule");
 }
 // The evaluated leg's readers: what the native leg runs, read whole.
+static void deadlock_fails_one(void) {
+    setenv("AVRA_SCHED_RUNS", "8", 1);
+    CHECK(prog(prints_ok, "ok") == 1, "the first program passes");
+    CHECK(prog(deadlocks, "") == 0, "a program that deadlocks fails");
+    CHECK(prog(prints_ok, "ok") == 1, "the program after a deadlocked one runs and passes");
+}
+static void schedules_start_fresh(void) {
+    setenv("AVRA_SCHED_RUNS", "8", 1);
+    CHECK(prog(counts_its_runs, "1") == 1, "every schedule starts from the image before the program: none sees another's state");
+}
 static void evaluated_settings(void) {
     setenv("AVRA_SCHED_RUNS", "8", 1);
     CHECK(avra_sched_runs_wanted() == 8 && avra_sched_schedule_at(5) == 5, "the evaluated leg runs the schedules the setting names, in order");
@@ -280,7 +306,9 @@ int main(void) {
     CHECK(g_said[0] == 0, "and names no schedule: none would replay anything");
     heard("by default, one schedule", by_default);
     heard("program tests run on the root, under their schedules", programs);
-    CHECK(says("avra: a program failed under schedule") && says("AVRA_SCHED_SEED="), "a program that printed otherwise names the schedule that replays it");
+    CHECK(says("avra: program a program failed under schedule") && says("AVRA_SCHED_SEED="), "a program that printed otherwise names the schedule that replays it");
+    heard("a deadlocked program fails alone", deadlock_fails_one);
+    heard("a program's schedules share no state", schedules_start_fresh);
     heard("the evaluated leg reads the schedules", evaluated_settings);
     heard("the evaluated leg replays a seed", evaluated_replay);
     heard("a case on the virtual clock", on_the_virtual_clock);
