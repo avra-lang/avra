@@ -26,6 +26,10 @@ extern fn avra_vtask_join(t: int, task: ptr) -> int
 extern fn avra_sched_run_begins()
 extern fn avra_sched_run_ends()
 extern fn avra_sched_guest_waits()
+extern fn avra_sched_seed(schedule: int)
+extern fn avra_sched_settle() -> int
+extern fn avra_clock_virtual(on: int)
+extern fn avra_case_clock_virtual() -> int
 extern fn avra_task_at(at_ns: int) -> ptr
 extern fn avra_task_done(task: ptr) -> int
 extern fn avra_task_cancel(task: ptr)
@@ -118,9 +122,18 @@ impl Machine {
     /// here and end with the run: the host's stand again as they stood.
     /// A jump inside a run also fires a timer the host's own tasks had
     /// filed; the host parks no task while a run stands.
-    fn run_begun() { avra_sched_run_begins() }
+    fn run_begun() {
+        avra_sched_run_begins()
+        if self.schedule < 0 { return }
+        avra_sched_seed(self.schedule)
+        // LICENSED input.test_setting: whether a suite's runs are on the virtual clock, never an input of what is built
+        if avra_case_clock_virtual() != 0 { avra_clock_virtual(1) }
+    }
 
-    fn run_ended() { avra_sched_run_ends() }
+    fn run_ended() {
+        if self.schedule >= 0 { self.choices = avra_sched_settle() }
+        avra_sched_run_ends()
+    }
 
     /// The program's own run, filed as a task the first time a row asks.
     fn rooted() {

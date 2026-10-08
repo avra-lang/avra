@@ -2563,8 +2563,9 @@ static void schedules_settled(void) {
 static uint8_t (*g_case_body)(void) = NULL;
 static int64_t case_body_called(void) { return g_case_body() & 1; }
 
-// One schedule of the case: its verdict, and how many choices it made.
-static int64_t case_under(int64_t schedule, int64_t* choices) {
+// One schedule of `body` run as a case: its verdict, and how many
+// choices it made.
+static int64_t scheduled(int64_t schedule, int64_t* choices, int64_t (*body)(void)) {
     avra_sched_seed(schedule);
     avra_case_schedule = schedule;
     // the case's clock is a run of its own: what it jumps ends with it
@@ -2572,7 +2573,7 @@ static int64_t case_under(int64_t schedule, int64_t* choices) {
         avra_clock_run_begins();
         avra_clock_virtual(1);
     }
-    int64_t held = avra_case_run(case_body_called);
+    int64_t held = avra_case_run(body);
     if (g_case_clock_virtual) avra_clock_run_ends();
     avra_case_schedule = -1;
     *choices = avra_sched_settle();
@@ -2586,20 +2587,80 @@ static int64_t case_failed_under(const char* label, int64_t schedule) {
     return 0;
 }
 
-int64_t avra_case_verdict(int64_t code, const char* label) {
+static int64_t case_under(int64_t schedule, int64_t* choices) { return scheduled(schedule, choices, case_body_called); }
+
+// THE SCHEDULES A VERDICT RUNS: schedule 0, then — only when it chose —
+// the next, up to the setting; or the one AVRA_SCHED_SEED names.
+static int64_t over_schedules(const char* label, int64_t (*one)(int64_t, int64_t*)) {
     schedules_settled();
-    g_case_body = (uint8_t (*)(void))(uintptr_t)code;
     int64_t choices = 0;
-    if (g_sched_only >= 0) return case_under(g_sched_only, &choices) ? 1 : case_failed_under(label, g_sched_only);
+    if (g_sched_only >= 0) return one(g_sched_only, &choices) ? 1 : case_failed_under(label, g_sched_only);
     for (int64_t k = 0; k < g_sched_runs; k++) {
         // A CASE WITH ONE ORDER FAILS IN EVERY ORDER: no schedule replays
         // anything, so none is named.
-        if (!case_under(k, &choices)) return choices == 0 && k == 0 ? 0 : case_failed_under(label, k);
+        if (!one(k, &choices)) return choices == 0 && k == 0 ? 0 : case_failed_under(label, k);
         // A CASE THAT MADE NO CHOICE HAS ONE ORDER: no other schedule differs.
         if (choices == 0) return 1;
         g_any_chose = 1;
     }
     return 1;
+}
+
+int64_t avra_case_verdict(int64_t code, const char* label) {
+    g_case_body = (uint8_t (*)(void))(uintptr_t)code;
+    return over_schedules(label, case_under);
+}
+
+// The runtime's: the capture of what a program prints, and its words.
+void avra_capture_begin(void);
+const char* avra_capture_end(void);
+int64_t avra_streq(const char* a, const char* b);
+void avra_puts(const char* s);
+
+// A PROGRAM TEST IS A CASE TOO: its top level runs as a task under each
+// schedule, its output captured, and every schedule must print what it
+// must. The first schedule that prints otherwise is said with what it
+// printed.
+static int64_t (*g_program_body)(void) = NULL;
+static const char* g_program_label = NULL;
+static const char* g_program_expected = NULL;
+static int64_t program_body_called(void) { g_program_body(); return 1; }
+
+static int64_t program_under(int64_t schedule, int64_t* choices) {
+    avra_capture_begin();
+    int64_t held = scheduled(schedule, choices, program_body_called);
+    const char* got = avra_capture_end();
+    int64_t same = held && avra_streq(got, g_program_expected);
+    if (!same) {
+        printf("%s: native != expected\n", g_program_label);
+        avra_puts(got);
+        fflush(stdout);
+        g_any_failed = 1;
+    }
+    avra_rc_release((void*)got);
+    return same;
+}
+
+int64_t avra_program_verdict(int64_t code, const char* label, const char* expected) {
+    g_program_body = (int64_t (*)(void))(uintptr_t)code;
+    g_program_label = label;
+    g_program_expected = expected;
+    return over_schedules(label, program_under);
+}
+
+int64_t avra_sched_runs_wanted(void) {
+    schedules_settled();
+    return g_sched_only >= 0 ? 1 : g_sched_runs;
+}
+
+int64_t avra_sched_schedule_at(int64_t i) {
+    schedules_settled();
+    return g_sched_only >= 0 ? g_sched_only : i;
+}
+
+int64_t avra_case_clock_virtual(void) {
+    schedules_settled();
+    return g_case_clock_virtual;
 }
 
 void avra_case_schedules_said(void) {

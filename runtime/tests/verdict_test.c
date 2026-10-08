@@ -187,6 +187,27 @@ static void spun_cases(void) {
     CHECK(avra_sched_tasks() == 0, "its tasks are gone");
     CHECK(verdict(alone) == 1, "and the next case passes");
 }
+// Program tests: a top level that prints.
+static void* says_name(void* self) { char w[2] = { (char)((AvraArray*)self)->data[1], '\n' }; if (write(1, w, 2) != 2) _exit(3); return NULL; }
+static int64_t two_tasks_print(void) {
+    void* a = spawn1(says_name, 'a');
+    void* b = spawn1(says_name, 'b');
+    joined(a);
+    joined(b);
+    return 0;
+}
+static int64_t sleeps_then_prints(void) {
+    avra_fiber_sleep(60000);
+    if (write(1, "woke\n", 5) != 5) _exit(3);
+    return 0;
+}
+static int64_t prog(int64_t (*body)(void), const char* expected) { return avra_program_verdict((int64_t)(uintptr_t)body, "a program", expected); }
+static void programs(void) {
+    setenv("AVRA_SCHED_RUNS", "8", 1);
+    int64_t w0 = wall_ns();
+    CHECK(prog(sleeps_then_prints, "woke") == 1 && wall_ns() - w0 < 1000000000, "a program that sleeps a minute prints what it must in no wall time");
+    CHECK(prog(two_tasks_print, "a\nb") == 0, "a program whose order shows fails under some schedule");
+}
 static void by_default(void) {
     g_runs = 0;
     CHECK(verdict(three_any) == 1 && g_runs == 1, "by default a case that chose runs schedule 0 alone");
@@ -248,6 +269,8 @@ int main(void) {
     heard("a case with one order fails", one_order_fails_quietly);
     CHECK(g_said[0] == 0, "and names no schedule: none would replay anything");
     heard("by default, one schedule", by_default);
+    heard("program tests run as cases, under their schedules", programs);
+    CHECK(says("avra: a program failed under schedule") && says("AVRA_SCHED_SEED="), "a program that printed otherwise names the schedule that replays it");
     heard("a case on the virtual clock", on_the_virtual_clock);
     heard("cases that spin on the frozen clock fail, and the suite goes on", spun_cases);
     heard("a spin inside a run the case opened", spun_in_a_run);

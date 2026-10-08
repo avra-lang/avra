@@ -33,15 +33,10 @@ export const runner_rows: List<RtSig> = [
 export type ProgramCall = { symbol: string, label: string, expected: string, evaluated: bool }
 
 /// The host fns a programs binary declares beyond the runner's: the
-/// capture of everything a program prints, so the entry can compare
-/// it in-process.
+/// runner's verdict on a program — run as a case under its schedules,
+/// everything it prints captured and compared in-process.
 export const program_rows: List<RtSig> = runner_rows
-    .concat(
-        [
-            extern_row("avra_capture_begin", RtKind.Void, []),
-            extern_row("avra_capture_end", RtKind.Ptr, []),
-        ],
-    )
+    .concat([extern_row("avra_program_verdict", RtKind.I64, [RtKind.I64, RtKind.Ptr, RtKind.Ptr])])
 
 /// What a test or programs binary's status MEANS. It says its tally
 /// itself and answers 0 or 1; 127 is a binary that could not start;
@@ -101,38 +96,24 @@ export fn suite_entry(types: TypeRegistry, cases: List<CaseCall>, programs: List
     e.built()
 }
 
-/// One program: named for the wreck, run under capture, compared,
-/// and counted when it disagrees.
+/// One program: named for the wreck, run as a case under its schedules —
+/// its output captured and held to what it must print under each — and
+/// counted when one prints otherwise, which the runtime says.
 fn one_program(mut e: EntryBuild, pr: ProgramCall, tally: Reg) {
     e.give(Ins.CallRtVoid("avra_case_begin", [e.text(pr.label)]))
-    e.give(Ins.CallRtVoid("avra_capture_begin", []))
-    let answered = e.called(pr.symbol, e.types.type(int))
-    let got = e.mint(e.types.type(string))
-    e.give(Ins.CallRt(got, "avra_capture_end", []))
-    // THE MINT LAW: operands first, the answer last
-    let wanted = e.text(pr.expected)
-    let same = e.mint(e.types.type(bool))
-    e.give(Ins.CallRt(same, "avra_streq", [got, wanted]))
-    e.give(Ins.IfStart(same))
-    e.say("${pr.label}: ${legs_of(pr)} == expected")
-    e.give(Ins.ArmEnd(e.constant(0)))
-    e.say("${pr.label}: native != expected")
-    e.give(Ins.CallRtVoid("avra_puts", [got]))
+    e.give(Ins.IfStart(e.zero_test(e.program_verdict(pr))))
     let held = e.mint(e.types.type(int))
     e.give(Ins.Load(held, tally))
+    // THE MINT LAW: operands first, the answer last
     let one = e.constant(1)
     let more = e.mint(e.types.type(int))
     e.give(Ins.Bin(more, BinOp.Add, held, one))
     e.give(Ins.Store(tally, more))
+    e.give(Ins.ArmEnd(e.constant(0)))
+    e.say("${pr.label}: ${legs_of(pr)} == expected")
     let gives = e.constant(0)
     let merged = e.mint(e.types.type(int))
     e.give(Ins.RegionEnd(merged, gives))
-    // `got` is `avra_capture_end`'s own answer, owned by this entry —
-    // read by both arms above (the compare, and the red arm's print),
-    // never by the memory pass, which never sees hand-built IR. One
-    // release here, after the arms converge, is what a lowered body
-    // would have emitted for itself.
-    e.give(Ins.Release(got))
 }
 
 /// The engines a program's line names — the evaluator ran it here
@@ -251,6 +232,19 @@ impl EntryBuild {
         let label = self.text(c.label)
         let held = self.mint(self.types.type(int))
         self.give(Ins.CallRt(held, "avra_case_verdict", [code, label]))
+        held
+    }
+
+    /// The runner's verdict on a program test: 1 it printed what it must
+    /// under every schedule it ran, else 0.
+    fn program_verdict(pr: ProgramCall) -> Reg {
+        let code = self.mint(self.types.type(int))
+        self.give(Ins.FnAddr(code, pr.symbol))
+        // THE MINT LAW: operands first, the answer last
+        let label = self.text(pr.label)
+        let wanted = self.text(pr.expected)
+        let held = self.mint(self.types.type(int))
+        self.give(Ins.CallRt(held, "avra_program_verdict", [code, label, wanted]))
         held
     }
 

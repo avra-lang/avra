@@ -6,9 +6,14 @@
 use core.{sorted_texts, joined, flatten, module_path, TypeRegistry, counted, FileId}
 use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized, under_dir}
 use @std.io.{make_dirs}
-use compiler.backend.{run_program}
+use compiler.backend.{run_scheduled}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, program_symbol}
+
+/// How many schedules a suite runs, and the one its i-th run uses — the
+/// runtime's settings, read as the native leg reads them.
+extern fn avra_sched_runs_wanted() -> int
+extern fn avra_sched_schedule_at(i: int) -> int
 
 /// One `.refuses` program: a trap IS its proof, so it is never called
 /// in-process — `voice` is the text its trap's stderr must carry.
@@ -270,9 +275,20 @@ impl Workspace {
 }
 
 /// One program's disagreement with the evaluator, as none or one.
+/// A program's evaluated leg under the schedules its native leg runs:
+/// schedule 0, then — only when it chose — the next, up to the setting.
 fn quarrel(lo: Lowered, pr: ProgramCall) -> List<string> {
-    match run_program(lo, pr.symbol) {
-        .Ok(out) -> if out == pr.expected { [] } else { [said_otherwise(pr, out)] },
+    // LICENSED input.test_setting: how many orders a suite runs, never an input of what is built
+    let runs = avra_sched_runs_wanted()
+    quarrel_from(lo, pr, 0, runs)
+}
+
+fn quarrel_from(lo: Lowered, pr: ProgramCall, i: int, runs: int) -> List<string> {
+    if i >= runs { return [] }
+    // LICENSED input.test_setting: which order a suite runs, never an input of what is built
+    let schedule = avra_sched_schedule_at(i)
+    match run_scheduled(lo, pr.symbol, schedule) {
+        .Ok(r) -> if r.out != pr.expected { [said_otherwise_under(pr, r.out, schedule)] } else if r.choices == 0 { [] } else { quarrel_from(lo, pr, i + 1, runs) },
         .Err(why) -> [eval_wrecked(pr, why)],
     }
 }
@@ -285,6 +301,13 @@ fn rule_example_missed(label: string) -> string {
 
 fn said_otherwise(pr: ProgramCall, out: string) -> string {
     "${pr.label}: eval != expected\n${out}"
+}
+
+/// What a schedule printed when it was not what the program must, and the
+/// number that replays it.
+fn said_otherwise_under(pr: ProgramCall, out: string, schedule: int) -> string {
+    if schedule == 0 { return said_otherwise(pr, out) }
+    "${pr.label}: eval != expected under schedule ${schedule} — AVRA_SCHED_SEED=${schedule} replays it\n${out}"
 }
 
 fn eval_wrecked(pr: ProgramCall, why: string) -> string {

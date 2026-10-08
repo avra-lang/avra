@@ -232,6 +232,16 @@ int64_t avra_case_verdict(int64_t code, const char* label);
 // Once, at a suite's end: how many schedules a case that chose ran, and
 // what they cannot reach. Nothing when no case chose.
 void avra_case_schedules_said(void);
+// A program test's verdict: its top level (`code`, answering a word) run
+// as a case under the same schedules, each one's output held to
+// `expected`; the first that prints otherwise is said on stdout.
+int64_t avra_program_verdict(int64_t code, const char* label, const char* expected);
+// The settings an EVALUATED leg reads, as the native one does: how many
+// schedules to run, the schedule the i-th run uses, and whether a run's
+// clock is virtual.
+int64_t avra_sched_runs_wanted(void);
+int64_t avra_sched_schedule_at(int64_t i);
+int64_t avra_case_clock_virtual(void);
 
 // How many runs inside the program stand open (`avra_sched_run_begins`).
 int64_t avra_sched_run_depth(void);
