@@ -1165,6 +1165,7 @@ static int world_waited_virtually(void) {
 static void fiber_start(void);
 static int case_deadlocked(void);
 static void tasks_answered(void);
+static void listing_written(int dfd);
 static void ages_noted(int64_t now);
 
 // A fiber's first run: a stack from the pool, and at its top a frame
@@ -2398,7 +2399,7 @@ int64_t avra_sched_world_visits(void) { return g_world_visits; }
 // removed; with no ask file of ours there, a signal answers nothing.
 
 static char g_door_dir[200];
-static char g_ask_path[256], g_out_path[256], g_tmp_path[256], g_line_path[256];
+static char g_ask_name[64], g_out_name[64], g_tmp_name[64], g_line_name[64];
 static struct sigaction g_prior_urg;
 
 // AGES BY ID: a task's id is minted in order, so a clock reading taken
@@ -2430,55 +2431,91 @@ static int64_t spawned_after(uint64_t id) {
     return at;
 }
 
-static long long own_id(const Fiber* f) { return (long long)id_of(f); }
+// THE LISTING IS A TRACE: every live task as the trace's own lines, all
+// stamped now — its spawn and site, a `join` or a `park` for each wait
+// it has filed, and its `age` — so one reader prints a trace and a live
+// process alike (`avra trace`, `avra tasks`). The program's own run is
+// task 0 and needs no spawn.
 
-static int listed(const Fiber* f) { return f->state != FIBER_DONE; }
+// What a waiter waits on, as a trace's `park` line; nothing for a
+// deadline, which is no wait of its own, or a join's gate, which the
+// `join` line says.
+static void waiter_listed(FILE* out, int64_t now, const Fiber* f, const Waiter* w) {
+    if (!w->filed || w->kind == W_DEADLINE) return;
+    if (w->kind == W_GATE && w->on.gate == f->joining) return;
+    fprintf(out, "ts=%lld park id=%lld src=", (long long)now, (long long)id_of(f));
+    switch (w->kind) {
+        case W_FD_READ: fprintf(out, "fd:r:%d", w->on.fd); break;
+        case W_FD_WRITE: fprintf(out, "fd:w:%d", w->on.fd); break;
+        case W_GATE: fprintf(out, "gate:%p", w->on.gate); break;
+        case W_AT: fputs("at", out); break;
+        case W_DEADLINE: break;
+    }
+    fprintf(out, " arm=%d:%d\n", w->arm, w->member);
+}
 
 static void task_listed(FILE* out, const Fiber* f, int64_t now) {
-    task_said(out, own_id, f);
-    if (f == g_current && f->state == FIBER_RUNNING) fputs(" running", out);
-    else if (!f->virtual && f != &g_main && !f->sp) fputs(" ready, not yet run", out);
-    else if (f->state == FIBER_PARKED && !f->joining && !f->held_n && !f->more) fputs(" waits on nothing the scheduler holds", out);
-    else waits_said(out, own_id, f);
-    if (!f->virtual && f != &g_main) fprintf(out, "; spawned at most %lld ms ago", (long long)((now - spawned_after((uint64_t)id_of(f))) / 1000000));
-    fputc('\n', out);
+    long long id = (long long)id_of(f);
+    if (f != &g_main && id != 0) fprintf(out, "ts=%lld %s id=%lld\n", (long long)now, f->virtual ? "spawn-at" : "spawn", id);
+    const char* site = f->virtual ? f->site : f != &g_main ? site_of((void*)(uintptr_t)task_cells(f->task)[TASK_BODY]) : NULL;
+    if (site) fprintf(out, "ts=%lld site id=%lld %s\n", (long long)now, id, site);
+    else if (!f->virtual && f != &g_main) fprintf(out, "ts=%lld site id=%lld %p\n", (long long)now, id, (void*)(uintptr_t)((AvraArray*)task_cells(f->task)[TASK_BODY])->data[0]);
+    if (f->joining) {
+        const Fiber* on = (const Fiber*)(uintptr_t)task_cells(f->joining)[TASK_FIBER];
+        if (on) fprintf(out, "ts=%lld join id=%lld on=%lld\n", (long long)now, id, (long long)id_of(on));
+        else fprintf(out, "ts=%lld join id=%lld on=unrun\n", (long long)now, id);
+    }
+    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);
+    for (const Over* o = f->more; o; o = o->next) waiter_listed(out, now, f, &o->w);
+    if (!f->virtual && f != &g_main) fprintf(out, "ts=%lld age id=%lld ms=%lld\n", (long long)now, id, (long long)((now - spawned_after((uint64_t)id_of(f))) / 1000000));
 }
 
 void avra_tasks_listed(FILE* out) {
     int64_t now = now_ns();
-    int64_t n = 0;
     int evaluated = 0;
-    for (const Fiber* f = g_all; f; f = f->all_next) {
-        n += listed(f);
-        evaluated |= f->virtual;
-    }
-    fprintf(out, "process %lld, %lld task(s)%s\n", (long long)getpid(), (long long)(n + !evaluated), evaluated ? ", evaluated" : "");
+    for (const Fiber* f = g_all; f; f = f->all_next) evaluated |= f->virtual;
     if (!evaluated) task_listed(out, &g_main, now);
     // the list holds the newest first: walk it from its end
     const Fiber* last = g_all;
     while (last && last->all_next) last = last->all_next;
     for (const Fiber* f = last; f; f = f->all_prev) {
-        if (listed(f)) task_listed(out, f, now);
+        if (f->state != FIBER_DONE) task_listed(out, f, now);
     }
 }
 
 // THE DOOR'S DIRECTORY IS THE USER'S OWN, never a name in a shared one:
-// macOS's per-user temporary directory, else `/tmp/avra-<uid>`, which
-// the asker makes 0700. Its names, under this process's id — what a
-// fork renames.
+// `AVRA_TASKS_DIR` when it is set; else macOS's per-user temporary
+// directory; else `/run/user/<uid>` when it is ours, else
+// `/tmp/avra-<uid>`, which the asker makes 0700. It is opened with no
+// link followed and held to its owner and mode at every use, and every
+// file in it is named relative to that open directory — so a name in it
+// can never be swapped for a link elsewhere. Its file names carry this
+// process's id: what a fork renames.
+static int door_held(const char* dir);
+
 static void tasks_door_named(void) {
     if (!g_door_open) return;
+    const char* chosen = getenv("AVRA_TASKS_DIR");
+    if (chosen && *chosen) {
+        snprintf(g_door_dir, sizeof g_door_dir, "%s", chosen);
+    } else {
 #if defined(__APPLE__)
-    size_t got = confstr(_CS_DARWIN_USER_TEMP_DIR, g_door_dir, sizeof g_door_dir);
-    if (got == 0 || got > sizeof g_door_dir) snprintf(g_door_dir, sizeof g_door_dir, "/tmp/avra-%lld/", (long long)geteuid());
+        size_t got = confstr(_CS_DARWIN_USER_TEMP_DIR, g_door_dir, sizeof g_door_dir);
+        if (got == 0 || got > sizeof g_door_dir) snprintf(g_door_dir, sizeof g_door_dir, "/tmp/avra-%lld", (long long)geteuid());
 #else
-    snprintf(g_door_dir, sizeof g_door_dir, "/tmp/avra-%lld/", (long long)geteuid());
+        snprintf(g_door_dir, sizeof g_door_dir, "/run/user/%lld", (long long)geteuid());
+        int dfd = door_held(g_door_dir);
+        if (dfd >= 0) close(dfd);
+        else snprintf(g_door_dir, sizeof g_door_dir, "/tmp/avra-%lld", (long long)geteuid());
 #endif
+    }
+    size_t n = strlen(g_door_dir);
+    while (n > 1 && g_door_dir[n - 1] == '/') g_door_dir[--n] = 0;
     long long pid = (long long)getpid();
-    snprintf(g_ask_path, sizeof g_ask_path, "%savra-tasks.%lld.ask", g_door_dir, pid);
-    snprintf(g_out_path, sizeof g_out_path, "%savra-tasks.%lld", g_door_dir, pid);
-    snprintf(g_tmp_path, sizeof g_tmp_path, "%savra-tasks.%lld.tmp", g_door_dir, pid);
-    snprintf(g_line_path, sizeof g_line_path, "%savra-tasks.%lld.line", g_door_dir, pid);
+    snprintf(g_ask_name, sizeof g_ask_name, "avra-tasks.%lld.ask", pid);
+    snprintf(g_out_name, sizeof g_out_name, "avra-tasks.%lld", pid);
+    snprintf(g_tmp_name, sizeof g_tmp_name, "avra-tasks.%lld.tmp", pid);
+    snprintf(g_line_name, sizeof g_line_name, "avra-tasks.%lld.line", pid);
 }
 
 // A decimal, written as a handler may.
@@ -2493,25 +2530,33 @@ static size_t digits_put(char* at, long long v) {
     return k;
 }
 
-// The door's directory and the ask in it are this user's alone: the
-// directory 0700, neither a link, both owned by whoever this process
-// runs as. Calls a handler may make.
-static int ask_ours(void) {
-    struct stat dir, ask;
-    uid_t me = geteuid();
-    return lstat(g_door_dir, &dir) == 0 && S_ISDIR(dir.st_mode) && dir.st_uid == me && (dir.st_mode & 077) == 0
-        && lstat(g_ask_path, &ask) == 0 && S_ISREG(ask.st_mode) && ask.st_uid == me;
+// The door's directory, open, when it is this user's alone — a
+// directory and no link, owned by whoever this process runs as, 0700 —
+// else -1. Calls a handler may make.
+static int door_held(const char* dir) {
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dfd < 0) return -1;
+    struct stat st;
+    if (fstat(dfd, &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == geteuid() && (st.st_mode & 077) == 0) return dfd;
+    close(dfd);
+    return -1;
+}
+
+// The ask in the open door is ours: a plain file, no link, owned by
+// whoever this process runs as.
+static int ask_ours(int dfd) {
+    struct stat st;
+    return fstatat(dfd, g_ask_name, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid();
 }
 
 // No task has switched since the last ask: said by the handler itself,
-// under a name of its own so it never touches a listing being written.
-// An evaluated program's running task is its machine's, which the
-// handler cannot name.
-static void unswitched_said(void) {
+// as a trace line under a name of its own, so it never touches a
+// listing being written. An evaluated program's running task is its
+// machine's, which the handler cannot name.
+static void unswitched_said(int dfd) {
     char line[96];
-    static const char head[] = "task ";
-    static const char tail[] = ", running, has not switched since it was asked\n";
-    static const char evaluated[] = "the evaluated program has not switched since it was asked\n";
+    static const char head[] = "ts=0 unswitched id=";
+    static const char evaluated[] = "ts=0 unswitched id=0 evaluated\n";
     size_t k = 0;
     if (g_evaluated) {
         memcpy(line, evaluated, sizeof evaluated - 1);
@@ -2520,16 +2565,15 @@ static void unswitched_said(void) {
         memcpy(line, head, sizeof head - 1);
         k += sizeof head - 1;
         k += digits_put(line + k, (long long)id_of(g_current));
-        memcpy(line + k, tail, sizeof tail - 1);
-        k += sizeof tail - 1;
+        line[k++] = '\n';
     }
-    unlink(g_line_path);
-    int fd = open(g_line_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    unlinkat(dfd, g_line_name, 0);
+    int fd = openat(dfd, g_line_name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) return;
     ssize_t w = write(fd, line, k);
     (void)w;
     close(fd);
-    rename(g_line_path, g_out_path);
+    renameat(dfd, g_line_name, dfd, g_out_name);
 }
 
 // A handler that stood before ours is still called.
@@ -2547,7 +2591,13 @@ static void prior_called(int sig, siginfo_t* info, void* context) {
 // asks itself and may be sleeping or writing the listing.
 static void tasks_asked(int sig, siginfo_t* info, void* context) {
     int saved = errno;
-    if (g_asked++ > 0 && !g_in_world && g_until_poll == 0 && ask_ours()) unswitched_said();
+    if (g_asked++ > 0 && !g_in_world && g_until_poll == 0) {
+        int dfd = door_held(g_door_dir);
+        if (dfd >= 0) {
+            if (ask_ours(dfd)) unswitched_said(dfd);
+            close(dfd);
+        }
+    }
     g_until_poll = 0;
     prior_called(sig, info, context);
     errno = saved;
@@ -2557,16 +2607,24 @@ static void tasks_asked(int sig, siginfo_t* info, void* context) {
 __attribute__((noinline, cold))
 static void tasks_answered(void) {
     g_asked = 0;
-    if (!ask_ours()) return;
-    unlink(g_tmp_path);
-    int fd = open(g_tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    int dfd = door_held(g_door_dir);
+    if (dfd < 0) return;
+    if (ask_ours(dfd)) listing_written(dfd);
+    close(dfd);
+}
+
+// The listing beside the ask, then into place — the ask taken first, so
+// an asker who asks again on seeing the answer is answered again.
+static void listing_written(int dfd) {
+    unlinkat(dfd, g_tmp_name, 0);
+    int fd = openat(dfd, g_tmp_name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) return;
     FILE* out = fdopen(fd, "w");
     if (!out) { close(fd); return; }
     avra_tasks_listed(out);
     fclose(out);
-    rename(g_tmp_path, g_out_path);
-    unlink(g_ask_path);
+    unlinkat(dfd, g_ask_name, 0);
+    renameat(dfd, g_tmp_name, dfd, g_out_name);
 }
 
 // Once, at the first spawn or the evaluator's first task.

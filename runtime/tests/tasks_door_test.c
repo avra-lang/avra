@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -41,18 +42,38 @@ static void ready(void) {
     close(g_ready_fd);
 }
 
-// The door's directory, as `avra tasks` finds it: this user's own.
+// THE DOOR'S DIRECTORY for every scene: `AVRA_TASKS_DIR`, a 0700
+// directory of this test's own, made fresh under one made by `mkdtemp`
+// — never a shared name, and never `chmod`, which follows a link.
+static char g_root[128];
 static char g_dir[200];
 static const char* door_dir(void) {
-#if defined(__APPLE__)
-    size_t got = confstr(_CS_DARWIN_USER_TEMP_DIR, g_dir, sizeof g_dir);
-    if (got == 0 || got > sizeof g_dir) snprintf(g_dir, sizeof g_dir, "/tmp/avra-%d/", (int)geteuid());
-#else
-    snprintf(g_dir, sizeof g_dir, "/tmp/avra-%d/", (int)geteuid());
-    mkdir(g_dir, 0700);
-    chmod(g_dir, 0700);
-#endif
+    const char* set = getenv("AVRA_TASKS_DIR");
+    snprintf(g_dir, sizeof g_dir, "%s/", set ? set : "");
     return g_dir;
+}
+
+// A directory of this test's, emptied and removed.
+static void gone(const char* name) {
+    char dir[200];
+    snprintf(dir, sizeof dir, "%s/%s", g_root, name);
+    DIR* d = opendir(dir);
+    for (struct dirent* e; d && (e = readdir(d));) {
+        if (e->d_name[0] == '.' && (!e->d_name[1] || (e->d_name[1] == '.' && !e->d_name[2]))) continue;
+        char file[400];
+        snprintf(file, sizeof file, "%s/%s", dir, e->d_name);
+        unlink(file);
+    }
+    if (d) closedir(d);
+    rmdir(dir);
+}
+
+// The door's directory a scene is told, made here, 0700.
+static void door_at(const char* name, mode_t mode) {
+    char dir[200];
+    snprintf(dir, sizeof dir, "%s/%s", g_root, name);
+    mkdir(dir, mode);
+    setenv("AVRA_TASKS_DIR", dir, 1);
 }
 
 // ── the scenes, each run alone in a child ───────────────────────
@@ -337,6 +358,19 @@ static int ended(Child* c) {
 
 static int alive(const Child* c) { return kill(c->pid, 0) == 0; }
 
+// Every line `ts=<n> <event> id=<n>…`, as the trace's reader reads one.
+static int every_line_traced(const char* buf) {
+    for (const char* at = buf; *at; ) {
+        const char* end = strchr(at, '\n');
+        if (!end) return 0;
+        long long ts = 0, id = 0;
+        char word[32];
+        if (sscanf(at, "ts=%lld %31s id=%lld", &ts, word, &id) != 3) return 0;
+        at = end + 1;
+    }
+    return buf[0] != 0;
+}
+
 static void listing(const char* self) {
     int p[2];
     if (pipe(p) != 0) { perror("pipe"); exit(1); }
@@ -355,16 +389,17 @@ static void listing(const char* self) {
     int status = 0;
     waitpid(pid, &status, 0);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the listed scene runs");
-    CHECK(strstr(buf, "6 task(s)") != NULL, "the listing counts the program's own run and five tasks");
-    CHECK(strstr(buf, "task 0, the program's own run, running") != NULL, "the asker's own task is running");
-    CHECK(strstr(buf, "task 1, spawned at 0x") != NULL && strstr(buf, "waits on gate 0x") != NULL, "a task on a gate");
-    CHECK(strstr(buf, "waits on descriptor") != NULL, "a task on a descriptor");
-    CHECK(strstr(buf, "waits on a time") != NULL, "a task asleep");
-    CHECK(strstr(buf, "joins task 1") != NULL, "a join names the task it waits for");
-    CHECK(strstr(buf, "task 5, spawned at 0x") != NULL && strstr(buf, "task 5, spawned at 0x") && strstr(strstr(buf, "task 5,"), "ready, not yet run") != NULL, "a task that has not run");
-    CHECK(strstr(buf, "task 1, spawned at 0x") && strstr(strstr(buf, "task 1,"), "spawned at most") != NULL, "a task says how long ago it was spawned, at most");
-    const char* one = strstr(buf, "task 1,");
-    const char* four = strstr(buf, "task 4,");
+    CHECK(every_line_traced(buf), "every line of the listing is a trace's line");
+    CHECK(strstr(buf, " spawn id=0") == NULL && strstr(buf, " id=0 ") == NULL, "the program's own run, running, files nothing");
+    CHECK(strstr(buf, " spawn id=1\n") != NULL && strstr(buf, " site id=1 0x") != NULL, "a task's spawn and its code, where it carries no line");
+    CHECK(strstr(buf, " park id=1 src=gate:0x") != NULL, "a task on a gate");
+    CHECK(strstr(buf, " park id=2 src=fd:r:") != NULL, "a task on a descriptor, read");
+    CHECK(strstr(buf, " park id=3 src=at arm=0:0\n") != NULL, "a task asleep");
+    CHECK(strstr(buf, " join id=4 on=1\n") != NULL && strstr(buf, " park id=4 ") == NULL, "a join names the task it waits for, and its gate is the join's");
+    CHECK(strstr(buf, " spawn id=5\n") != NULL && strstr(buf, " park id=5 ") == NULL, "a task that has not run waits on nothing");
+    CHECK(strstr(buf, " age id=1 ms=") != NULL, "a task says how long ago it was spawned, at most");
+    const char* one = strstr(buf, " spawn id=1\n");
+    const char* four = strstr(buf, " spawn id=4\n");
     CHECK(one && four && one < four, "oldest first");
 }
 
@@ -373,16 +408,19 @@ static void door(const char* self) {
     // Asked forty times, as `avra tasks` asks: a signal can land between
     // the countdown's load and store and lose its zero, so the next one
     // must bring the listing — never the line that says no task switched.
+    // Each ask is written the moment the last answer is read: the ask is
+    // taken before the answer stands, so a new one is never taken with it.
+    door_at("door", 0700);
     Child c = scene(self, "yielding");
     int listed_each = 1, never_unswitched = 1;
     for (int turn = 0; turn < 40 && listed_each; turn++) {
         unlink(c.out);
         asked(&c);
         asked_again(&c, buf, sizeof buf, 20);
-        listed_each &= settled(&c);
-        listed_each &= strstr(buf, "task 1, spawned at") != NULL && strstr(buf, "task 2, spawned at") != NULL;
-        never_unswitched &= strstr(buf, "has not switched") == NULL;
+        listed_each &= strstr(buf, " spawn id=1\n") != NULL && strstr(buf, " spawn id=2\n") != NULL;
+        never_unswitched &= strstr(buf, "unswitched") == NULL;
     }
+    listed_each &= settled(&c);
     CHECK(listed_each, "tasks that only yield answer at their next switch, every time");
     CHECK(never_unswitched, "and a switching program is never said not to switch");
     CHECK(access(c.ask, F_OK) != 0, "an answered ask is taken away");
@@ -393,7 +431,7 @@ static void door(const char* self) {
     asked(&c);
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 2000);
-    CHECK(strstr(buf, "task 0, the program's own run, waits on descriptor") != NULL, "a program asleep in the poller is woken to answer");
+    CHECK(strstr(buf, " park id=0 src=fd:r:") != NULL, "a program asleep in the poller is woken to answer");
     CHECK(alive(&c), "and sleeps on");
     ended(&c);
 
@@ -419,7 +457,7 @@ static void door(const char* self) {
     CHECK(access(c.out, F_OK) != 0, "a task that does not switch answers nothing at the first ask");
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 1000);
-    CHECK(strstr(buf, "task 1, running, has not switched since it was asked") != NULL, "the second ask is answered by the handler itself");
+    CHECK(strcmp(buf, "ts=0 unswitched id=1\n") == 0, "the second ask is answered by the handler itself");
     ended(&c);
 
     c = scene(self, "forked");
@@ -429,9 +467,7 @@ static void door(const char* self) {
     asked(&c);
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 2000);
-    char header[48];
-    snprintf(header, sizeof header, "process %d,", (int)c.pid);
-    CHECK(strstr(buf, header) != NULL && strstr(buf, "task 2, spawned at") != NULL, "a forked child answers under its own id");
+    CHECK(strstr(buf, " spawn id=2\n") != NULL && strstr(buf, " spawn id=1\n") == NULL, "a forked child answers under its own id, with its own tasks");
     CHECK(access(parent, F_OK) != 0, "and never under its parent's");
     ended(&c);
 
@@ -449,9 +485,8 @@ static void door(const char* self) {
         (void)w;
         for (volatile int spin = 0; spin < (trial * 7919) % 4000; spin++) {}
         asked_again(&c, buf, sizeof buf, 20);
-        answered_each &= settled(&c);
-        answered_each &= strstr(buf, "process ") == buf;
-        never_false &= strstr(buf, "has not switched") == NULL;
+        answered_each &= strstr(buf, "ts=") == buf;
+        never_false &= strstr(buf, "unswitched") == NULL;
     }
     CHECK(answered_each, "an ask around the world's sleep is answered with the listing");
     CHECK(never_false, "and a sleeping process is never said not to switch");
@@ -467,7 +502,15 @@ static void door(const char* self) {
         kill(c.pid, SIGURG);
     }
     answered(&c, buf, sizeof buf, 5000);
-    CHECK(strstr(buf, "process ") == buf && strstr(buf, "100001 task(s)") != NULL, "asks during a long listing never replace it");
+    char tail[256] = {0};
+    FILE* whole = fopen(c.out, "r");
+    if (whole) {
+        fseek(whole, -200, SEEK_END);
+        size_t got = fread(tail, 1, sizeof tail - 1, whole);
+        tail[got] = 0;
+        fclose(whole);
+    }
+    CHECK(strstr(buf, "ts=") == buf && strstr(tail, " age id=100000 ") != NULL, "asks during a long listing never replace it");
     ended(&c);
 
     // M3: an evaluated program's spinning task is not named by the host's id.
@@ -477,7 +520,7 @@ static void door(const char* self) {
     usleep(150000);
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 1000);
-    CHECK(strstr(buf, "the evaluated program has not switched since it was asked") == buf, "an evaluated program that does not switch is said so, with no task named");
+    CHECK(strcmp(buf, "ts=0 unswitched id=0 evaluated\n") == 0, "an evaluated program that does not switch is said so, with no task named");
     ended(&c);
 
     // a handler the program set first is still called, and the door answers
@@ -488,7 +531,7 @@ static void door(const char* self) {
     asked(&c);
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 2000);
-    CHECK(strstr(buf, "process ") == buf, "a program with a SIGURG handler of its own still answers");
+    CHECK(strstr(buf, "ts=") == buf, "a program with a SIGURG handler of its own still answers");
     CHECK(access(mark, F_OK) == 0, "and its own handler is still called");
     unlink(mark);
     ended(&c);
@@ -498,20 +541,62 @@ static void door(const char* self) {
     asked(&c);
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 300);
-    CHECK(strstr(buf, "has not switched") == NULL, "a child's first ask is never taken for a second");
+    CHECK(strstr(buf, "unswitched") == NULL, "a child's first ask is never taken for a second");
     ended(&c);
 
-#if !defined(__APPLE__)
     // M5: a door directory others may write is no door
+    door_at("wide", 0755);
     c = scene(self, "polled");
-    chmod(door_dir(), 0755);
     asked(&c);
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 400);
     CHECK(buf[0] == 0, "a door directory that is not the user's alone answers nothing");
-    chmod(door_dir(), 0700);
     ended(&c);
+
+    // M5: a door directory that is a link — another user's, aimed at a
+    // directory of ours — answers nothing and writes nothing there
+    char target[200], link[200];
+    snprintf(target, sizeof target, "%s/target", g_root);
+    snprintf(link, sizeof link, "%s/link", g_root);
+    mkdir(target, 0700);
+    int linked = symlink(target, link) == 0;
+    setenv("AVRA_TASKS_DIR", link, 1);
+    c = scene(self, "polled");
+    asked(&c);
+    kill(c.pid, SIGURG);
+    answered(&c, buf, sizeof buf, 400);
+    char wrote[256];
+    snprintf(wrote, sizeof wrote, "%s/avra-tasks.%d", target, (int)c.pid);
+    CHECK(linked && buf[0] == 0, "a door directory that is a link answers nothing");
+    CHECK(access(wrote, F_OK) != 0, "and writes nothing where the link points");
+    ended(&c);
+    door_at("door", 0700);
+
+    // the default directory, with nothing set: the user's own
+    unsetenv("AVRA_TASKS_DIR");
+    char home[200];
+#if defined(__APPLE__)
+    size_t got = confstr(_CS_DARWIN_USER_TEMP_DIR, home, sizeof home);
+    if (got == 0 || got > sizeof home) snprintf(home, sizeof home, "/tmp/avra-%d", (int)geteuid());
+#else
+    snprintf(home, sizeof home, "/run/user/%d", (int)geteuid());
+    struct stat run;
+    if (stat(home, &run) != 0 || run.st_uid != geteuid() || (run.st_mode & 077) != 0) {
+        snprintf(home, sizeof home, "/tmp/avra-%d", (int)geteuid());
+        mkdir(home, 0700);
+    }
 #endif
+    size_t n = strlen(home);
+    while (n > 1 && home[n - 1] == '/') home[--n] = 0;
+    c = scene(self, "polled");
+    snprintf(c.ask, sizeof c.ask, "%s/avra-tasks.%d.ask", home, (int)c.pid);
+    snprintf(c.out, sizeof c.out, "%s/avra-tasks.%d", home, (int)c.pid);
+    asked(&c);
+    kill(c.pid, SIGURG);
+    answered(&c, buf, sizeof buf, 2000);
+    CHECK(strstr(buf, " park id=0 src=fd:r:") != NULL, "with no directory set, the user's own is the door");
+    ended(&c);
+    door_at("door", 0700);
 
     c = scene(self, "unspawned");
     kill(c.pid, SIGURG);
@@ -536,8 +621,18 @@ int main(int argc, char** argv) {
         if (strcmp(argv[1], "forked-asked") == 0) return forked_asked_scene();
         return 9;
     }
+    snprintf(g_root, sizeof g_root, "/tmp/avra-door-test.XXXXXX");
+    if (!mkdtemp(g_root)) { perror("mkdtemp"); return 1; }
+    door_at("door", 0700);
     listing(argv[0]);
     door(argv[0]);
+    char link[200];
+    snprintf(link, sizeof link, "%s/link", g_root);
+    unlink(link);
+    gone("door");
+    gone("wide");
+    gone("target");
+    rmdir(g_root);
     printf("tasks_door: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }
