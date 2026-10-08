@@ -1191,9 +1191,11 @@ static void* deadline_counting(void* self) {
 }
 
 // Eight tasks that each compute 2 ms between yields: a 5 ms sleep and a
-// 5 ms deadline are heard at the first switch after they are due — one
-// round of the eight at most, never a window of rounds. COUNTED IN
-// TURNS, never timed: a loaded machine stretches a turn, never adds one.
+// 5 ms deadline are heard within AVRA_TIMER_TURNS switches of due or one
+// tick, whichever is sooner — the switch reads the timer heap every that
+// many switches, never every switch — plus one round of the eight. The
+// deadline is read at most that late too. COUNTED IN TURNS, never timed:
+// a loaded machine stretches a turn, never adds one.
 static void timers_among_workers(void) {
     g_gate = avra_gate_new();
     void* workers[8];
@@ -1207,8 +1209,8 @@ static void timers_among_workers(void) {
     int64_t heard = joined(spawn1(deadline_counting, 0));
     g_stop = 1;
     for (int i = 0; i < 8; i++) joined(workers[i]);
-    CHECK(slept >= 0 && slept <= 8 + 2, "a sleep among tasks that compute between yields wakes within one round of them");
-    CHECK(heard >= 0 && heard <= 8 + 2, "a deadline among them is heard within one round too");
+    CHECK(slept >= 0 && slept <= avra_sched_timer_turns() + 8 + 2, "a sleep among tasks that compute between yields is heard within AVRA_TIMER_TURNS or one tick, plus a round");
+    CHECK(heard >= 0 && heard <= avra_sched_timer_turns() + 8 + 2, "a deadline among them is heard within AVRA_TIMER_TURNS or one tick, plus a round");
     avra_rc_release(g_gate);
 
     // counted, not timed: two such tasks, a 46 ms sleep — woken at the
@@ -1218,7 +1220,7 @@ static void timers_among_workers(void) {
     int64_t late = joined(spawn1(sleeps_counting, 46));
     g_stop = 1;
     for (int i = 0; i < 2; i++) joined(workers[i]);
-    CHECK(late <= 5, "a sleep among them is asked about at the first switch after its time, not a window of switches later");
+    CHECK(late <= avra_sched_timer_turns() + 5, "a sleep among them is asked about within AVRA_TIMER_TURNS or one tick, not a window of rounds later");
 }
 
 // Yields `g_quick` times at once, then computes 2 ms between yields
@@ -1258,8 +1260,8 @@ static void* naps(void* self) {
 }
 
 // Tasks that alternate a run of quick yields with a run of long slices:
-// a sleep is never later than one round of them, however the quick run
-// before it went — counted in turns.
+// a sleep is heard within AVRA_TIMER_TURNS or one tick, plus one round of
+// them, however the quick run before it went — counted in turns.
 static void timers_among_bursts(void) {
     static const int shapes[2][3] = { { 8, 100, 8 }, { 2, 300, 40 } };
     for (int s = 0; s < 2; s++) {
@@ -1270,7 +1272,7 @@ static void timers_among_bursts(void) {
         int64_t worst = joined(spawn1(naps, 20));
         g_stop = 1;
         for (int i = 0; i < workers; i++) joined(w[i]);
-        CHECK(worst <= workers + 2, s == 0 ? "twenty sleeps among eight bursting tasks are each late by one round of slices at most" : "twenty sleeps among two bursting tasks are each late by one round of slices at most");
+        CHECK(worst <= avra_sched_timer_turns() + workers + 2, s == 0 ? "twenty sleeps among eight bursting tasks are each heard within AVRA_TIMER_TURNS or one tick, plus a round" : "twenty sleeps among two bursting tasks are each heard within AVRA_TIMER_TURNS or one tick, plus a round");
     }
 }
 
@@ -1316,13 +1318,15 @@ static void* writes_once_parked(void* self) {
 }
 
 static void world_within_reach(void) {
-    enum { YIELDERS = 4, MOST = 1000000, REACH = 2 * 64 + 4 * YIELDERS };
+    enum { YIELDERS = 4, MOST = 1000000 };
+    // two windows (the timer heap's and the poller's) plus a round.
+    int64_t reach = 2 * avra_sched_timer_turns() + 4 * YIELDERS;
     void* y[YIELDERS];
     g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
     for (int i = 0; i < YIELDERS; i++) y[i] = spawn1(yields_counting, MOST);
     int64_t late = joined(spawn1(sleeps_among_yielders, 0));
     for (int i = 0; i < YIELDERS; i++) joined(y[i]);
-    CHECK(late >= 0 && late <= REACH, "a sleep filed among yielding tasks wakes within a window of switches of its time");
+    CHECK(late >= 0 && late <= reach, "a sleep filed among yielding tasks wakes within a window of switches of its time");
 
     g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
     for (int i = 0; i < YIELDERS; i++) y[i] = spawn1(yields_counting, MOST);
@@ -1331,7 +1335,7 @@ static void world_within_reach(void) {
     late = joined(r);
     joined(w);
     for (int i = 0; i < YIELDERS; i++) joined(y[i]);
-    CHECK(late >= 0 && late <= REACH + 64, "a reader parked among yielding tasks wakes within a window of switches of its byte");
+    CHECK(late >= 0 && late <= reach + avra_sched_timer_turns(), "a reader parked among yielding tasks wakes within a window of switches of its byte");
 }
 
 // ── laws whose breaking would hang the rest: each in a child ────

@@ -333,6 +333,11 @@ uint8_t avra_tick_wanted = 0;
 // The source's period, in microseconds. Read once, in `tick_settle`.
 int64_t avra_tick_us = 10000;
 static int64_t g_timer_turns = 64;
+// Switches left before the timer heap is read again. THE SAME COUNTDOWN
+// SEEDED AND UNSEDED: a schedule holds `avra_tick` for its back-edges,
+// and this is what the switch's clock read is gated on, so the two
+// engines fire a timer at the same switch.
+static int64_t g_timer_until = 0;
 
 // ── The trace ───────────────────────────────────────────────────
 //
@@ -613,6 +618,12 @@ static int64_t g_pinned_until_poll = 0;
 static int64_t g_polls = 0;
 
 static void timer_set(uint32_t kind, void* who, int64_t at) {
+    // THE FIRST TIMER OF A BURST SETS THE WINDOW: the clock is read at
+    // the next switch, then every AVRA_TIMER_TURNS. Measured from the
+    // heap's own empty-to-filed edge, so both engines and both runs of
+    // one schedule read the clock at the same switch — and the switch
+    // is not left on the fast path past that edge.
+    if (g_timers_len == 0) { g_timer_until = 0; g_until_poll = 0; }
     if (g_timers_len == g_timers_cap) {
         g_timers_cap = g_timers_cap ? g_timers_cap * 2 : 64;
         g_timers = realloc(g_timers, g_timers_cap * sizeof(Timer));
@@ -1499,17 +1510,32 @@ static Fiber* next_with_world(void) {
     for (;;) {
         if (__builtin_expect(g_asked, 0)) tasks_answered();
         if (g_timers_len > 0) {
-            int64_t now = now_ns();
-            ages_noted(now);
-            fire_due_timers(now);
+            // THE CLOCK IS READ EVERY AVRA_TIMER_TURNS SWITCHES while
+            // tasks are ready, or at a real tick — the SAME quantity
+            // whether or not a schedule holds the byte for its
+            // back-edges. With NOBODY READY it is read at once: a parked
+            // task's deadline is not deferred behind the window, and a
+            // virtual clock hands its timers over by JUMPING.
+            int forced = !g_seeded && __atomic_load_n(&avra_tick, __ATOMIC_RELAXED);
+            if (g_ready_head == NULL || avra_clock.virtual || forced || g_timer_until <= 0) {
+                g_timer_until = g_timer_turns;
+                int64_t now = now_ns();
+                ages_noted(now);
+                fire_due_timers(now);
+            }
         }
         // the switch heard the tick: clear it so the fast path stands
         // again. A seeded run HOLDS it set — every back-edge must hear.
         if (!g_seeded) __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
         poller_turn();
-        // the countdown is spent: arm the next stretch, so the timer
-        // heap is read again within AVRA_TIMER_TURNS switches.
-        poll_counted();
+        // the countdown is spent: give the next stretch back, so the
+        // timer heap is read again within AVRA_TIMER_TURNS switches. A
+        // pinned switch stays pinned — its own cadence is the poller's.
+        if (!pinned()) {
+            if (g_timers_len > 0) g_until_poll = g_timer_turns;
+            else if (g_parked_fds > 0) g_until_poll = FAIR_TURNS;
+            else g_until_poll = POLL_IDLE;
+        }
         Fiber* next = g_seeded ? ready_picked() : ready_pop();
         if (next) {
             // an ask counted during this pass, after its count was reset,
@@ -1541,6 +1567,7 @@ static Fiber* next_with_world(void) {
 __attribute__((always_inline))
 static inline int queue_alone(void) {
     int64_t left = --g_until_poll;
+    if (g_timer_until > 0) --g_timer_until;
     return __builtin_expect(!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) && left > 0, 1);
 }
 
@@ -2317,6 +2344,9 @@ int64_t avra_vtask_next(void) {
 // slow half, or let go.
 static void clock_turned(void) { poll_counted(); }
 
+// The timer window's length, for a test that asserts its bound.
+int64_t avra_sched_timer_turns(void) { return g_timer_turns; }
+
 // ── The seeded order ────────────────────────────────────────────
 
 void avra_sched_seed(int64_t schedule) {
@@ -2328,6 +2358,7 @@ void avra_sched_seed(int64_t schedule) {
     // its cold side, where the turn is drawn from the schedule.
     __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);
     avra_tick_wanted = 0;
+    g_timer_until = 0;
     poll_counted();
 }
 

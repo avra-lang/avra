@@ -271,6 +271,10 @@ int64_t avra_sched_wide_resident(void);
 // a descriptor waiter filed, which the run would share.
 void avra_sched_guest_waits(void);
 
+// The switches between two reads of the timer heap — AVRA_TIMER_TURNS.
+// A due timer is heard at most that many switches late, or at one tick.
+int64_t avra_sched_timer_turns(void);
+
 // How many entries the timer heap holds, how many waiters are filed on
 // descriptors, how many times the poller has been asked, and how many
 // links of the queue the seeded pick has walked.
