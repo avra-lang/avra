@@ -25,7 +25,7 @@
 //! asked again holds the Db. `close` lets both go. A Db that only ever
 //! held rows is let go with its last holder.
 //!
-use rows.{Rows, named_rows, Stamp}
+use rows.{Rows, named_rows, Stamp, INT_CAP}
 use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table}
 use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with, spelled_with}
 
@@ -494,10 +494,6 @@ export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>> }
 /// how each call is asked again when the kernel verifies it.
 type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, ints: Cell<List<int>>, again: Table<fn() -> V> }
 
-/// The int arguments an int-keyed query answers by their own number, below this
-/// bound; any other int is interned by its spelled form.
-const INT_ARG_CAP: int = 4096
-
 export fn answers<V>() -> Answers<V> {
     let none: List<AnswersUnder<V>?> = []
     Answers { held: Cell.new(none) }
@@ -579,7 +575,7 @@ impl AnswersUnder<V> {
     /// An int argument's dense arg: read from the int table below the cap, else
     /// interned by its spelled form, as `arg` interns it.
     fn int_arg(n: int) -> int {
-        let inside = n >= 0 && n < INT_ARG_CAP
+        let inside = n >= 0 && n < INT_CAP
         if inside {
             let known = self.ints.get()
             if n < known.length && known[n] >= 0 { return known[n] }
