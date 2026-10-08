@@ -105,8 +105,10 @@ fn links_wasm(clang: Tool, triple: string) -> bool {
     }
 }
 
-/// A tool the host found, as a program to run.
-fn ran(s: Stamp) -> Tool { Tool { name: s.path, path: s.path, terminator: null } }
+/// A stamped binary as a tool: the door's mint, or nothing when it refuses the path.
+fn tool_at(s: Stamp) -> Tool? {
+    match tool(s.path) { .Ok(t) -> t, .Err(_) -> null }
+}
 
 /// THE WASM TOOLCHAIN THIS MACHINE HAS: the first C compiler, of those that
 /// may link, with a WASI libc for one of the triples `spelled` may mean — or
@@ -114,7 +116,7 @@ fn ran(s: Stamp) -> Tool { Tool { name: s.path, path: s.path, terminator: null }
 fn wasm_tools(ws: Workspace, spelled: string) -> Result<WasmTools, string> {
     let triples = triples_of(spelled)
     let linkers = wasm_linkers(ws)
-    let fits = [WasmTools { linker: clang, target: triple } for clang in linkers for triple in triples if links_wasm(ran(clang), triple)]
+    let fits = [WasmTools { linker: s, target: triple } for s in linkers for t in some_list(tool_at(s)) for triple in triples if links_wasm(t, triple)]
     let first? = fits.first() else { return .Err(no_wasm_toolchain([l.path for l in linkers], triples)) }
     first
 }
