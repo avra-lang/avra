@@ -38,7 +38,10 @@ fn clear(r: Result<bool, string>) -> bool {
 spec "compiler/backend — a runtime flag read" {
     given "a body that reads the unwind flag" {
         then "its text names the flag" { render_ir(reading_flag()).contains("= flag unwinding") }
-        then "evaluated outside any task, the bit is clear" {
+        // A SET bit is not exercised here: no writer exists yet, so
+        // this pins the read path over the runtime's task, not a value
+        // written to it. The writer is ladder 9's (see the PR).
+        then "evaluated with no task and no writer, the bit reads clear" {
             let l = reading_flag()
             clear(run_symbol(l, probe_symbol(l)))
         }
