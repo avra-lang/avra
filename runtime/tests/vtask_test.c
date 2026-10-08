@@ -155,6 +155,13 @@ int main(void) {
     waitpid(pid, &status, 0);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2 && strstr(buf, "every task is waiting — deadlock"), "a virtual deadlock is the policy's trap");
 
+    // inside a run, the same deadlock is the evaluator's to file
+    avra_sched_run_begins();
+    int64_t stuck = avra_vtask_new();
+    CHECK(avra_vtask_next() == 0, "inside a run, a virtual deadlock answers the evaluator: no task");
+    avra_vtask_free(stuck);
+    avra_sched_run_ends();
+
     printf("vtasks: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }
