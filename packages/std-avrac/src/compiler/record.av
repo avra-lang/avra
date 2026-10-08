@@ -27,6 +27,8 @@ use core.{
     same_decl,
     module_path,
     ModulePath,
+    traced,
+    qtrace,
     TypeRegistry,
     TypeId,
     DeclId,
@@ -313,10 +315,82 @@ fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> s
     let key = "${m.text()}\t${path}"
     let known: string? = ws.keys.object_keys.get().get(key)
     if known != null { return known! }
-    let made = key_of_parts(ws.key_parts_cached(store, m, path))
+    let hit: string? = prekey_hit(ws, store, m, path)
+    if hit != null {
+        if traced() { qtrace("Q\tprekey\thit\t${path}\n") }
+        ws.keys.object_keys.put(key, hit!)
+        return hit!
+    }
+    let made = keyed_fresh(ws, store, m, path)
     ws.keys.object_keys.put(key, made)
     made
 }
+
+/// A file's object key worked out from its parts, with the pre-key row that lets the
+/// next load answer it without the parts (`prekey_hit`).
+fn keyed_fresh(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
+    let parts = ws.key_parts_cached(store, m, path)
+    let made = key_of_parts(parts)
+    if traced() { qtrace("Q\tprekey\tmiss\t${path}\n") }
+    let _ = store.keep_once(Stored.Unit, prekey_key(m, path), prekey_wire(ws, m, made, parts))
+    made
+}
+
+/// Where a file's pre-key row is kept.
+fn prekey_key(m: ModulePath, path: string) -> string { node_key(Stored.Unit, ["prekey", m.text(), path]) }
+
+/// The pre-key row: the file's parts, the key they digest to, and the inputs the
+/// seen part reads — each seen module's file list and each reached file's text.
+fn prekey_wire(ws: Workspace, m: ModulePath, okey: string, parts: KeyParts) -> string {
+    let plan = ws.keys.view_plans.get().get(m.text()) ?? []
+    joined([parts_wire(parts), "okey\t${okey}"].concat([plan_row(ws, line) for line in plan]), "\n")
+}
+
+/// One plan line as a row: `mod` names a seen module, `file` a file reached in one.
+fn plan_of(dep: string, r: Reach) -> List<string> {
+    ["mod\t${dep}"].concat(["file\t${dep}\t${f}" for f in r.files_of(dep)])
+}
+
+fn plan_row(ws: Workspace, line: string) -> string {
+    let f = wire_fields(line, "\t")
+    if f[0] == "mod" { return "list\t${f[1]}\t${module_list_digest(ws, f[1])}" }
+    "reach\t${f[1]}\t${f[2]}\t${file_digest(ws, f[2])}"
+}
+
+fn module_list_digest(ws: Workspace, dep: string) -> string {
+    digest_of(joined(ws.module_files(module_path(dep.split("."))), "\n"))
+}
+
+/// The key a file's pre-key row answers, when every input it recorded stands now; null
+/// when the row is missing or any input moved, and the file is keyed from its parts.
+fn prekey_hit(ws: Workspace, store: Store, m: ModulePath, path: string) -> string? {
+    let raw? = store.get(Stored.Unit, prekey_key(m, path)) else { return null }
+    let stored? = parts_of(raw) else { return null }
+    let rows = [wire_fields(line, "\t") for line in wire_fields(raw, "\n")]
+    let okey? = field_named(rows, "okey") else { return null }
+    if stored.module != m.text() || stored.path != path { return null }
+    if path != "" && stored.text != file_digest(ws, path) { return null }
+    let runs = [ws.run_said(ran) for ran in kept_runs(record_places(ws, store, m).get(path))]
+    if !same_lines(stored.runs, runs) ||
+        !same_lines(stored.gathered, ws.gathered_said(store, m, path)) {
+        return null
+    }
+    let lists = [r for r in rows if r.length == 3 && r[0] == "list"]
+    let reaches = [r for r in rows if r.length == 4 && r[0] == "reach"]
+    if lists.any(list_moved(ws, it)) || reaches.any(reach_moved(ws, it)) { return null }
+    let now = [ws.seen_part_for(store, m, r[1], [f[2] for f in reaches if f[1] == r[1]]) for r in lists]
+    if !same_lines(seen_lines(now), seen_lines(stored.seen)) { return null }
+    okey
+}
+
+fn list_moved(ws: Workspace, r: List<string>) -> bool { module_list_digest(ws, r[1]) != r[2] }
+
+fn reach_moved(ws: Workspace, r: List<string>) -> bool { file_digest(ws, r[2]) != r[3] }
+
+/// A file's text digest, "" for a file that is gone.
+fn file_digest(ws: Workspace, f: string) -> string { if ws.there(f) { ws.text_digest(f) } else { "" } }
+
+fn same_lines(a: List<string>, b: List<string>) -> bool { a.length == b.length && joined(a, "\n") == joined(b, "\n") }
 
 /// A TYPE'S SHAPE, as one line — the declaration it belongs to, and what it stands over.
 /// A NAMED type's line carries the shape it IS, so re-interning reproduces the same type
@@ -596,6 +670,8 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         let no_view: Map<string, List<SeenPart>> = {}
         ws.keys.bytes_keys.set(no_bytes)
         ws.keys.view_parts.set(no_view)
+        let no_plans: Map<string, List<string>> = {}
+        ws.keys.view_plans.set(no_plans)
         let no_typed: Map<string, Map<string, List<string>>> = {}
         ws.keys.typed_files.set(no_typed)
         ws.keys.file_owners.set(no_bytes)
@@ -1291,9 +1367,15 @@ impl Workspace {
         let known: List<SeenPart>? = self.keys.view_parts.get().get(m.text())
         if known != null { return known! }
         let r = self.reach(store, m)
-        let made = [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, r.files_of(dep)) } for dep in sorted_texts([m.text()].concat(r.mods))]
+        let deps = sorted_texts([m.text()].concat(r.mods))
+        let made = [self.seen_part_for(store, m, dep, r.files_of(dep)) for dep in deps]
         self.keys.view_parts.put(m.text(), made)
+        self.keys.view_plans.put(m.text(), flatten([plan_of(dep, r) for dep in deps]))
         made
+    }
+
+    fn seen_part_for(store: Store, m: ModulePath, dep: string, files: List<string>) -> SeenPart {
+        if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, files) }
     }
 
     /// EVERY OTHER MODULE'S FILE A MODULE'S OBJECTS CAN DEPEND ON: each file its own
