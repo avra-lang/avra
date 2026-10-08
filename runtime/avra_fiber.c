@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2497,6 +2498,8 @@ static void task_listed(FILE* out, const Fiber* f, int64_t now) {
 
 void avra_tasks_listed(FILE* out) {
     int64_t now = now_ns();
+    // whose listing this is: an asker holds it to the process it asked
+    fprintf(out, "ts=%lld listing id=0 pid=%lld\n", (long long)now, (long long)getpid());
     int evaluated = 0;
     for (const Fiber* f = g_all; f; f = f->all_next) evaluated |= f->virtual;
     if (!evaluated) task_listed(out, &g_main, now);
@@ -2521,7 +2524,8 @@ static void tasks_door_named(void) {
     DoorNames* next = &g_doors[!g_door_at];
     const char* chosen = getenv("AVRA_TASKS_DIR");
     if (chosen && *chosen) {
-        snprintf(next->dir, sizeof next->dir, "%s", chosen);
+        // a relative directory means two places to the asker and to us: none
+        snprintf(next->dir, sizeof next->dir, "%s", chosen[0] == '/' ? chosen : "");
         size_t n = strlen(next->dir);
         while (n > 1 && next->dir[n - 1] == '/') next->dir[--n] = 0;
     } else {
@@ -2532,6 +2536,7 @@ static void tasks_door_named(void) {
     snprintf(next->out, sizeof next->out, "avra-tasks.%lld", pid);
     snprintf(next->tmp, sizeof next->tmp, "avra-tasks.%lld.tmp", pid);
     snprintf(next->line, sizeof next->line, "avra-tasks.%lld.line", pid);
+    atomic_signal_fence(memory_order_release);
     g_door_at = !g_door_at;
 }
 
@@ -2560,8 +2565,9 @@ static int ask_ours(int dfd, const DoorNames* names) {
 // machine's, which the handler cannot name.
 static void unswitched_said(int dfd, const DoorNames* names) {
     char line[128];
-    static const char evaluated[] = " unswitched id=0 evaluated\n";
+    static const char evaluated[] = " unswitched id=0 evaluated pid=";
     static const char head[] = " unswitched id=";
+    static const char whose[] = " pid=";
     size_t k = 0;
     line[k++] = 't';
     line[k++] = 's';
@@ -2574,8 +2580,11 @@ static void unswitched_said(int dfd, const DoorNames* names) {
         memcpy(line + k, head, sizeof head - 1);
         k += sizeof head - 1;
         k += digits_put(line + k, (long long)id_of(g_current));
-        line[k++] = '\n';
+        memcpy(line + k, whose, sizeof whose - 1);
+        k += sizeof whose - 1;
     }
+    k += digits_put(line + k, (long long)getpid());
+    line[k++] = '\n';
     unlinkat(dfd, names->line, 0);
     int fd = openat(dfd, names->line, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) return;

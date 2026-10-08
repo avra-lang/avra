@@ -386,6 +386,13 @@ static int every_line_traced(const char* buf) {
     return buf[0] != 0;
 }
 
+// The handler's line, as `said` then ` pid=<pid>`.
+static int unswitched_by(const char* buf, const char* said, pid_t pid) {
+    char want[96];
+    snprintf(want, sizeof want, "%s pid=%d\n", said, (int)pid);
+    return strstr(buf, want) != NULL;
+}
+
 static void listing(const char* self) {
     int p[2];
     if (pipe(p) != 0) { perror("pipe"); exit(1); }
@@ -405,7 +412,10 @@ static void listing(const char* self) {
     waitpid(pid, &status, 0);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the listed scene runs");
     CHECK(every_line_traced(buf), "every line of the listing is a trace's line");
-    CHECK(strstr(buf, " spawn id=0") == NULL && strstr(buf, " id=0 ") == NULL, "the program's own run, running, files nothing");
+    char whose[64];
+    snprintf(whose, sizeof whose, " listing id=0 pid=%d\n", (int)pid);
+    CHECK(strstr(buf, whose) != NULL && strstr(buf, whose) == strchr(buf, ' '), "the listing names its process first");
+    CHECK(strstr(buf, " spawn id=0") == NULL && strstr(buf, " park id=0 ") == NULL && strstr(buf, " join id=0 ") == NULL, "the program's own run, running, files nothing");
     CHECK(strstr(buf, " spawn id=1\n") != NULL && strstr(buf, " site id=1 0x") != NULL, "a task's spawn and its code, where it carries no line");
     CHECK(strstr(buf, " park id=1 src=gate:0x") != NULL, "a task on a gate");
     CHECK(strstr(buf, " park id=2 src=fd:r:") != NULL, "a task on a descriptor, read");
@@ -472,7 +482,7 @@ static void door(const char* self) {
     CHECK(access(c.out, F_OK) != 0, "a task that does not switch answers nothing at the first ask");
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 1000);
-    CHECK(strncmp(buf, "ts=", 3) == 0 && strncmp(buf, "ts=0 ", 5) != 0 && strstr(buf, " unswitched id=1\n") != NULL, "the second ask is answered by the handler itself, stamped with the time");
+    CHECK(strncmp(buf, "ts=", 3) == 0 && strncmp(buf, "ts=0 ", 5) != 0 && unswitched_by(buf, " unswitched id=1", c.pid), "the second ask is answered by the handler itself, stamped with the time and its process");
     ended(&c);
 
     c = scene(self, "forked");
@@ -559,7 +569,7 @@ static void door(const char* self) {
     usleep(150000);
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 1000);
-    CHECK(strncmp(buf, "ts=", 3) == 0 && strstr(buf, " unswitched id=0 evaluated\n") != NULL, "an evaluated program that does not switch is said so, with no task named");
+    CHECK(strncmp(buf, "ts=", 3) == 0 && unswitched_by(buf, " unswitched id=0 evaluated", c.pid), "an evaluated program that does not switch is said so, with no task named");
     ended(&c);
 
     // a handler the program set first is still called, and the door answers
@@ -583,7 +593,7 @@ static void door(const char* self) {
     CHECK(strstr(buf, "unswitched") == NULL, "a child's first ask is never taken for a second");
     kill(c.pid, SIGURG);
     answered(&c, buf, sizeof buf, 500);
-    CHECK(strstr(buf, " unswitched id=1\n") != NULL, "and its second, while it has not switched, is answered under its own id");
+    CHECK(unswitched_by(buf, " unswitched id=1", c.pid), "and its second, while it has not switched, is answered under its own id");
     ended(&c);
 
     // M5: a door directory others may write is no door
@@ -611,6 +621,27 @@ static void door(const char* self) {
     snprintf(wrote, sizeof wrote, "%s/avra-tasks.%d", target, (int)c.pid);
     CHECK(linked && buf[0] == 0, "a door directory that is a link answers nothing");
     CHECK(access(wrote, F_OK) != 0, "and writes nothing where the link points");
+    ended(&c);
+    door_at("door", 0700);
+
+    // a relative directory is two places — the asker's and the program's —
+    // and so no door
+    // the program stands where the name would resolve, so only the rule
+    // keeps it from answering there
+    char here[512];
+    char* stood = getcwd(here, sizeof here);
+    char whole_self[512];
+    snprintf(whole_self, sizeof whole_self, "%s/%s", stood ? here : ".", self);
+    setenv("AVRA_TASKS_DIR", "door", 1);
+    if (chdir(g_root) != 0) perror("chdir");
+    c = scene(self[0] == '/' ? self : whole_self, "polled");
+    if (stood && chdir(here) != 0) perror("chdir");
+    snprintf(c.ask, sizeof c.ask, "%s/door/avra-tasks.%d.ask", g_root, (int)c.pid);
+    snprintf(c.out, sizeof c.out, "%s/door/avra-tasks.%d", g_root, (int)c.pid);
+    asked(&c);
+    kill(c.pid, SIGURG);
+    answered(&c, buf, sizeof buf, 400);
+    CHECK(buf[0] == 0, "a relative door directory answers nothing");
     ended(&c);
     door_at("door", 0700);
 

@@ -29,7 +29,13 @@ impl Runnable for TasksCmd {
             eprintln(no_pid(args.arg("pid")))
             return 2
         }
-        let dir = match door() {
+        // LICENSED input.live_process: where a running process is asked, and no compile answer reads it
+        let named = env("AVRA_TASKS_DIR") ?? ""
+        if named != "" && !named.starts_with("/") {
+            eprintln(dir_relative(named))
+            return 2
+        }
+        let dir = match door(named) {
             .Ok(d) -> d,
             .Err(e) -> {
                 eprintln(not_ours(e.describe().message))
@@ -41,11 +47,9 @@ impl Runnable for TasksCmd {
     }
 }
 
-/// The door's directory: `AVRA_TASKS_DIR` when it is set, else the
-/// user's own.
-fn door() -> Result<OwnDir, IoError> {
-    // LICENSED input.live_process: where a running process is asked, and no compile answer reads it
-    let named = env("AVRA_TASKS_DIR") ?? ""
+/// The door's directory: `named` (`AVRA_TASKS_DIR`) when it is set, else
+/// the user's own.
+fn door(named: string) -> Result<OwnDir, IoError> {
     if named != "" {
         // LICENSED input.live_process: where a running process is asked, and no compile answer reads it
         return own_dir(named)
@@ -70,6 +74,12 @@ fn listed(pid: int, dir: OwnDir) -> int {
     match answer {
         .Answered(text) -> {
             let r = read_trace(text)
+            // a number reused within the wait names another process: its
+            // answer is never shown as the one asked
+            if whose(r) != pid {
+                eprintln(another_answered(pid, whose(r)))
+                return 1
+            }
             println(listing_said(r))
             if r.strays.is_empty() { return 0 }
             eprintln(listing_strayed(r.strays.length, r.strays[0]))
@@ -104,11 +114,26 @@ export fn listing_said(r: TraceRead) -> string {
     lines.concat([graph(waits_at(r.events, null), null)]).join("\n")
 }
 
+/// The process an answer names — its listing's first line, or the
+/// handler's — or null when it names none.
+export fn whose(r: TraceRead) -> int? {
+    let named? = r.events.find(names_process(it.ev)) else { return null }
+    parse_int(field(named.rest, "pid") ?? "")
+}
+
+/// Whether an event names the process that answered.
+fn names_process(ev: Happened) -> bool {
+    match ev {
+        .Listing or .Unswitched -> true,
+        .Spawn or .SpawnAt or .Site or .Join or .Park or .Claim or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .End or .Age or .Other(_) -> false,
+    }
+}
+
 /// Whether an event is the handler's own line.
 fn said_unswitched(ev: Happened) -> bool {
     match ev {
         .Unswitched -> true,
-        .Spawn or .SpawnAt or .Site or .Join or .Park or .Claim or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .End or .Age or .Other(_) -> false,
+        .Spawn or .SpawnAt or .Site or .Join or .Park or .Claim or .Retract or .DeadlineSet or .DeadlineFired or .Cancel or .End or .Age or .Listing or .Other(_) -> false,
     }
 }
 
@@ -172,6 +197,14 @@ fn unanswered(pid: int) -> string {
 
 fn not_ours(why: string) -> string {
     "avra tasks: the door's directory is not this user's alone (it must be a directory, no link, owned by this user, mode 0700) — ${why}"
+}
+
+fn dir_relative(named: string) -> string {
+    "avra tasks: AVRA_TASKS_DIR=${named} is relative — it would name one directory here and another where the program runs, so it must begin with `/`"
+}
+
+fn another_answered(pid: int, named: int?) -> string {
+    "avra tasks: the answer at process ${pid}'s name came from ${if named != null { "process ${named!}" } else { "no process it names" }} — the number was reused, or the file is not an answer"
 }
 
 fn listing_strayed(n: int, first: string) -> string {

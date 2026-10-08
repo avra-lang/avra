@@ -146,6 +146,7 @@ MUTATIONS = [
     ("an ask that is no plain file is taken as ours", "S_ISREG(st.st_mode) && st.st_uid == geteuid();\n}", "st.st_uid == geteuid();\n}"),
     ("an answered ask is left in place", "    unlinkat(dfd, names->ask, 0);\n    renameat(dfd, names->tmp,", "    renameat(dfd, names->tmp,"),
     ("the handler's line shares the listing's file", "    unlinkat(dfd, names->line, 0);\n    int fd = openat(dfd, names->line,", "    unlinkat(dfd, names->tmp, 0);\n    int fd = openat(dfd, names->tmp,"),
+    ("a relative door directory is used", "chosen[0] == '/' ? chosen : \"\"", "chosen"),
     ("the door's directory is chosen once", "    g_asked = 0;\n    tasks_door_named();\n    const DoorNames*", "    g_asked = 0;\n    const DoorNames*"),
     ("the handler's line is stamped with no time", "    k += digits_put(line + k, (long long)now_ns());", "    line[k++] = '0';"),
     ("a task that has not run is listed as parked", "    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);", "    if (!f->sp) fprintf(out, \"ts=%lld park id=%lld src=at arm=0:0\\n\", (long long)now, id);\n    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);"),

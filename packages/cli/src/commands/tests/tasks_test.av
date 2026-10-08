@@ -4,7 +4,7 @@
 use @std.io.{IoError, OwnDir, own_dir, make_dirs, remove}
 use @std.process.{Signal, Signalled, signalled, tool, cmd}
 use @std.time.{now_ns}
-use commands.{listing_said, read_trace}
+use commands.{listing_said, read_trace, whose}
 
 /// A fresh directory of this test's own under /tmp, not yet made.
 fn fresh(name: string) -> string { "/tmp/avra-tasks-test-${now_ns()}-${name}" }
@@ -101,14 +101,48 @@ spec "commands/tasks — a listing, printed" {
         then "each task says where it was spawned and what it waits on, then the graph" {
             listing_said(
                 read_trace(
-                    "ts=9 join id=0 on=1\nts=9 spawn id=1\nts=9 site id=1 pkg/main.av:4\nts=9 park id=1 src=fd:r:6 arm=0:0\nts=9 age id=1 ms=120\n",
+                    "ts=9 listing id=0 pid=77\nts=9 join id=0 on=1\nts=9 spawn id=1\nts=9 site id=1 pkg/main.av:4\nts=9 park id=1 src=fd:r:6 arm=0:0\nts=9 age id=1 ms=120\n",
                 ),
-            ) == "the program's own run: joins task 1\ntask 1: spawned at pkg/main.av:4; waits on fd:r:6 as 0:0; spawned at most 120 ms before it was listed\nat the trace's end: 2 task(s) alive, 2 waiting, 0 ready or running\n  the program's own run -> task 1\n  task 1 -> descriptor 6 (readable)\n  no ring of joins"
+            ) == "the program's own run: listed by process 77; joins task 1\ntask 1: spawned at pkg/main.av:4; waits on fd:r:6 as 0:0; spawned at most 120 ms before it was listed\nat the trace's end: 2 task(s) alive, 2 waiting, 0 ready or running\n  the program's own run -> task 1\n  task 1 -> descriptor 6 (readable)\n  no ring of joins"
         }
     }
     given "the handler's own line" {
         then "it is said alone" {
-            listing_said(read_trace("ts=5 unswitched id=1\n")) == "task 1: running, has not switched since it was asked"
+            listing_said(read_trace("ts=5 unswitched id=1 pid=77\n")) == "task 1: running, has not switched since it was asked"
         }
     }
 }
+
+extern fn avra_own_pid() -> int
+extern fn avra_proc_signal_pid(pid: int, which: int) -> int
+
+/// What `kill` takes: 32 bits.
+fn past_pids() -> int { 4294967296 }
+
+spec "commands/tasks — whose answer" {
+    given "a listing" {
+        then "it names the process that wrote it" { whose(read_trace("ts=9 listing id=0 pid=77\n")) == 77 }
+        then "the handler's line names it too" { whose(read_trace("ts=9 unswitched id=1 pid=78\n")) == 78 }
+        then "a file that names none says so" { whose(read_trace("ts=9 spawn id=1\n")) == null }
+        then "a listing line without its process is no event" { read_trace("ts=9 listing id=0\n").strays.length == 1 }
+    }
+}
+
+spec "commands/tasks — a number past what kill takes" {
+    given "2^32 - 1, which kill would read as -1: every process the user may signal" {
+        then "it is refused by name" { signalled(past_pids() - 1, Signal.Urgent) is .Refused }
+        then "and the C refuses it before anything is sent" { avra_proc_signal_pid(past_pids() - 1, 99) == -34 }
+    }
+    given "2^32, which kill would read as 0: this process's own group" {
+        then "it is refused by name" { signalled(past_pids(), Signal.Urgent) is .Refused }
+        then "and the C refuses it before anything is sent" { avra_proc_signal_pid(past_pids(), 99) == -34 }
+    }
+    given "this process's own number plus 2^32, which kill would read as this process" {
+        then "it is refused by name" { signalled(avra_own_pid() + past_pids(), Signal.Urgent) is .Refused }
+        then "and the C refuses it before anything is sent" { avra_proc_signal_pid(avra_own_pid() + past_pids(), 99) == -34 }
+    }
+    given "this process's own number" {
+        then "it is refused by name" { signalled(avra_own_pid(), Signal.Urgent) is .Refused }
+    }
+}
+

@@ -291,22 +291,29 @@ export enum Signalled {
 }
 
 /// `s` sent to the process numbered `pid`. A number of 0 or below names
-/// a GROUP, never a process, and this process does not signal itself:
-/// both are refused by name, before anything is sent.
+/// a GROUP, never a process; one past what a process number holds would
+/// arrive as such a group; and this process does not signal itself. All
+/// three are refused by name, before anything is sent.
 export fn signalled(pid: int, s: Signal) -> Signalled {
     if pid <= 0 { return Signalled.Refused(no_group(pid)) }
+    if pid > most_pid { return Signalled.Refused(too_large(pid)) }
     let which = match s { .Urgent -> 0 }
     let sent = avra_proc_signal_pid(pid, which)
     if sent == 0 { return Signalled.Sent }
     if sent == 0 - esrch { return Signalled.NoProcess }
-    if sent == 0 - edeadlk { return Signalled.Refused(not_self(pid)) }
+    if sent == 0 - itself { return Signalled.Refused(not_self(pid)) }
     Signalled.Refused(not_ours(pid))
 }
 
 const esrch: int = 3
-const edeadlk: int = 1000
+/// What the C answers for this process's own number.
+const itself: int = 1000
+/// The most a process number holds: `kill` takes 32 bits.
+const most_pid: int = 2147483647
 
 fn no_group(pid: int) -> string { "`${pid}` names a process group or every process, never one process" }
+
+fn too_large(pid: int) -> string { "`${pid}` is past any process number, and would reach a group if sent" }
 
 fn not_self(pid: int) -> string { "process ${pid} is this one, which does not signal itself" }
 
