@@ -657,15 +657,18 @@ impl Decls {
     /// kind the law does not police (defaults, generated members) — a tilde in
     /// owner or name (case labels are sentences) has none of decl_wire's
     /// callers, and wears NO_ORDINAL rather than corrupt the tilde stream.
-    fn decl_wire(d: DeclId) -> string {
+    fn decl_wire(d: DeclId) -> string { self.decl_wire_from(d, (f: FileId) -> self.file(f).path) }
+
+    /// `decl_wire`, its file spelled by `home`.
+    fn decl_wire_from(d: DeclId, home: fn(FileId) -> string) -> string {
         let x = self.decl(d)
-        if x.owner.contains("~") || x.name.contains("~") { return "${self.file(x.file).path}~${NO_ORDINAL}" }
+        if x.owner.contains("~") || x.name.contains("~") { return "${home(x.file)}~${NO_ORDINAL}" }
         let kind = kind_word(x.kind)
         // A BUILTIN SITS IN NO FILE OF THE PROGRAM'S: its wire names the language, so
         // one declaration has one spelling whichever file a process met first.
         if self.is_builtin(d) { return "${LANGUAGE_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
         let siblings = self.wire_siblings(x.file, kind, x.owner, x.name)
-        let base = "${self.file(x.file).path}~${kind}~${field_text(x.owner)}~${field_text(x.name)}"
+        let base = "${home(x.file)}~${kind}~${field_text(x.owner)}~${field_text(x.name)}"
         if siblings.length <= 1 { return base }
         let at = [j for j, id in siblings if same_decl(id, d)].first() ?? 0
         "${base}~${at}"
@@ -807,10 +810,15 @@ impl Decls {
     }
 
     /// A type as a record writes it.
-    fn type_wire(id: TypeId) -> string { "^${self.wire_body(id)}" }
+    fn type_wire(id: TypeId) -> string { "^${self.wire_body(id, (f: FileId) -> self.file(f).path)}" }
 
-    /// The wire without its mark — what a wire nests.
-    fn wire_body(id: TypeId) -> string {
+    /// A type as a SYMBOL spells it: the record's wire with each file named
+    /// by its package and its path within it, never where the building
+    /// machine keeps the tree — an object is the same bytes on every machine.
+    fn type_symbol(id: TypeId) -> string { "^${self.wire_body(id, (f: FileId) -> self.file(f).name)}" }
+
+    /// The wire without its mark — what a wire nests — each file spelled by `home`.
+    fn wire_body(id: TypeId, home: fn(FileId) -> string) -> string {
         match self.types.shape_of(id) {
             .Int -> "i",
             .Float -> "f",
@@ -823,34 +831,37 @@ impl Decls {
             .EmptyList -> "e",
             .EmptyMap -> "h",
             .Error -> "x",
-            .Struct(d, _) -> "S~${self.decl_wire(d)}",
-            .Enum(d, _) -> "E~${self.decl_wire(d)}",
-            .Dyn(d, _) -> "D~${self.decl_wire(d)}",
-            .TypeName(d, _) -> "N~${self.decl_wire(d)}",
-            .Var(d, j, _) -> "R~${self.decl_wire(d)}~${j}",
-            .App(d, _, args) -> "A~${self.decl_wire(d)}~${args.length}~${joined([self.wire_body(a) for a in args], "~")}",
-            .List(t) -> "L~${self.wire_body(t)}",
-            .Cell(t) -> "C~${self.wire_body(t)}",
-            .Task(t) -> "K~${self.wire_body(t)}",
+            .Struct(d, _) -> "S~${self.decl_wire_from(d, home)}",
+            .Enum(d, _) -> "E~${self.decl_wire_from(d, home)}",
+            .Dyn(d, _) -> "D~${self.decl_wire_from(d, home)}",
+            .TypeName(d, _) -> "N~${self.decl_wire_from(d, home)}",
+            .Var(d, j, _) -> "R~${self.decl_wire_from(d, home)}~${j}",
+            .App(d, _, args) -> "A~${self.decl_wire_from(d, home)}~${args.length}~${joined([self.wire_body(a, home) for a in args], "~")}",
+            .List(t) -> "L~${self.wire_body(t, home)}",
+            .Cell(t) -> "C~${self.wire_body(t, home)}",
+            .Task(t) -> "K~${self.wire_body(t, home)}",
             .Tasks -> "T",
-            .Opt(t) -> "O~${self.wire_body(t)}",
-            .Map(k, v) -> "M~${self.wire_body(k)}~${self.wire_body(v)}",
-            .Res(ok, err) -> "Q~${self.wire_body(ok)}~${self.wire_body(err)}",
+            .Opt(t) -> "O~${self.wire_body(t, home)}",
+            .Map(k, v) -> "M~${self.wire_body(k, home)}~${self.wire_body(v, home)}",
+            .Res(ok, err) -> "Q~${self.wire_body(ok, home)}~${self.wire_body(err, home)}",
             .Fn(params, marks, ret) -> joined(
                 ["F", "${params.length}"]
-                    .concat([self.wire_body(t) for t in params])
+                    .concat([self.wire_body(t, home) for t in params])
                     .concat(
                         [
                             joined(
                                 [mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length],
                                 "",
                             ),
-                            self.wire_body(ret),
+                            self.wire_body(ret, home),
                         ],
                     ),
                 "~",
             ),
-            .Union(members) -> joined(["U", "${members.length}"].concat([self.wire_body(m) for m in members]), "~"),
+            .Union(members) -> joined(
+                ["U", "${members.length}"].concat([self.wire_body(m, home) for m in members]),
+                "~",
+            ),
             .Range -> "g",
         }
     }
