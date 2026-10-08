@@ -85,6 +85,7 @@ type Asker = {
     reader: Cell<int>,
     /// The edge the innermost open query appended last, `no_edge`
     /// when it has appended none since it began or resumed.
+    last: Cell<int>,
     /// Whether the innermost open query reads rows whole.
     whole: Cell<bool>,
 }
@@ -97,6 +98,7 @@ fn new_asker() -> Asker {
         began: list_cell(),
         readers: list_cell(),
         reader: Cell.new(0),
+        last: Cell.new(no_edge()),
         whole: Cell.new(false),
     }
 }
@@ -166,7 +168,6 @@ impl Graph {
     /// One more read of a key of `family`.
     fn counted(family: int) {
         self.reads.set_at(family, self.reads.get()[family] + 1)
-        reads_tally().set(reads_tally().get() + 1)
     }
 
     fn registered(family: int) {
@@ -190,7 +191,6 @@ impl Graph {
     }
 
     fn abandoned(key: Key, deps: List<int>) {
-        frames_tally().set(frames_tally().get() + 1)
         if self.writes.get() { avra_qtrace("A\t${self.id.get()}\t${key.family}\t${key.arg}\t${deps.length}\n") }
     }
 
@@ -229,6 +229,12 @@ export type Kernel = {
     whole_families: Cell<List<bool>>,
     audit: Audit,
     graph: Graph,
+    /// Recorded reads, counted here for every kernel — the process tally shares this cell.
+    tally: Cell<int>,
+    /// Whether this kernel counts its reads and abandoned frames — off unless asked for.
+    counting: Cell<bool>,
+    /// Whether the graph writes its trace, mirrored here so a counted read never reaches into the graph.
+    writes: Cell<bool>,
 }
 
 fn unheard(_b: Bypass) {}
@@ -263,6 +269,9 @@ export fn new_kernel() -> Kernel {
             reach: map_cell(),
         },
         graph: new_graph(),
+        tally: reads_tally(),
+        counting: Cell.new(counting_all().get()),
+        writes: Cell.new(false),
     }
 }
 
@@ -374,7 +383,11 @@ impl Kernel {
     }
 
     /// Every later registration, input, settle, abandon and eviction is written out.
-    fn graph_on() { self.graph.opened() }
+    fn graph_on() {
+        self.graph.opened()
+        self.writes.set(true)
+        self.counting.set(true)
+    }
 
     /// Every later ask and settle is traced.
     fn trace_on() { self.tracing.set(true) }
@@ -404,7 +417,7 @@ impl Kernel {
         let no_stamps: Cell<List<int>> = list_cell()
         self.stamps.push(no_stamps)
         let ordinal = self.verifiers.get().length - 1
-        self.graph.registered(ordinal)
+        if self.counting.get() { self.graph.registered(ordinal) }
         ordinal
     }
 
@@ -528,8 +541,12 @@ impl Kernel {
 
     /// A read its reader's standing edge already covers: recorded nowhere,
     /// counted where the graph counts every read.
-    fn repeated(family: int) {
-        self.graph.counted(family)
+    fn repeated(family: int) { if self.counting.get() { self.count_read(family) } }
+
+    /// One recorded read counted: the process tally always, the per-family rows while the graph writes.
+    fn count_read(family: int) {
+        self.tally.set(self.tally.get() + 1)
+        if self.writes.get() { self.graph.counted(family) }
     }
 
     fn changed_at(key: Key) -> int { self.cell(key)?.changed_at ?? self.rev.get() }
@@ -590,6 +607,7 @@ impl Kernel {
         self.asker.began.push(self.rev.get())
         self.asker.readers.push(reader)
         self.asker.reader.set(reader)
+        self.asker.last.set(no_edge())
         self.asker.whole.set(self.family_whole(key.family))
     }
 
@@ -646,7 +664,8 @@ impl Kernel {
         let innermost = self.asker.open.get().last() ?? edge_of(key)
         if innermost != edge_of(key) { abandoned_out_of_order(key) }
         let deps = self.closed_frame()
-        self.graph.abandoned(key, deps)
+        if self.counting.get() { frames_tally().set(frames_tally().get() + 1) }
+        if self.writes.get() { self.graph.abandoned(key, deps) }
         for e in deps { self.record_at(family_of(e), arg_of(e)) }
     }
 
@@ -663,6 +682,7 @@ impl Kernel {
         dropped(self.asker.began)
         dropped(self.asker.readers)
         self.asker.reader.set(self.asker.readers.get().last() ?? 0)
+        self.asker.last.set(no_edge())
         self.asker.whole.set(self.family_whole(family_of(self.asker.open.get().last() ?? 0 - 1)))
         if restored != null { for r in restored!.get() { self.stamped(family_of(r.edge), arg_of(r.edge), r.previous) } }
         edges.slice(0, edges.length)
@@ -696,7 +716,8 @@ impl Kernel {
     fn record_at(family: int, arg: int) {
         let reader = self.asker.reader.get()
         if reader == 0 { return }
-        self.graph.counted(family)
+        if packed(family, arg) == self.asker.last.get() { return }
+        if self.counting.get() { self.count_read(family) }
         let row = self.stamp_row(family)
         let stamp = stamp_in(row.get(), arg)
         if stamp != reader { self.newly_read(row, family, arg, stamp, reader) }
@@ -715,6 +736,7 @@ impl Kernel {
         if stamp != 0 && self.asker.readers.get().contains(stamp) { self.save_restore(packed(family, arg), stamp) }
         stamped_in(row, arg, reader)
         self.asker.pending.get().last()!.push(packed(family, arg))
+        if !self.counting.get() { self.asker.last.set(packed(family, arg)) }
     }
 
     /// Whether any key of `family` was ever recorded as read. A STAMP ROW
@@ -830,3 +852,10 @@ export fn read_calls() -> int { reads_tally().get() }
 
 /// The frames abandoned over every counting kernel, since the process began.
 export fn abandoned_frames() -> int { frames_tally().get() }
+
+/// Whether kernels made from here on count their reads and abandoned frames —
+/// set by `explain --stats`, which asks for the exact counts.
+once fn counting_all() -> Cell<bool> { Cell.new(false) }
+
+/// Every kernel made from here on counts its reads and abandoned frames.
+export fn count_reads() { counting_all().set(true) }
