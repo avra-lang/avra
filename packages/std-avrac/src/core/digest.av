@@ -1,8 +1,10 @@
-//! A WIDE CONTENT DIGEST — four independent 64-bit lanes read as one key. `fp`/`fp_str`
-//! are in-process fingerprints: thirty bits, plenty to cut a memo wave, far too few to
-//! name an artifact that outlives the process. A cache key decides which bytes a later
-//! build TRUSTS, so a collision is a silently wrong binary; four 64-bit lanes put that
-//! far below any artifact count this tree can reach.
+//! A WIDE CONTENT DIGEST. `blake3`/`blake_key` name an artifact that outlives the
+//! process: a store key decides which bytes a later build TRUSTS, so a collision is a
+//! silently wrong binary, and the vendored BLAKE3 is the one content hash the store uses.
+//! The four-lane fold below (`new_digest`/`digest_key`) is the fast digest for values
+//! that never leave one process — an IR fingerprint, a code hash. `fp`/`fp_str` are
+//! narrower still: thirty bits, plenty to cut a memo wave, far too few to name an
+//! artifact.
 //!
 //! Absorb the WHOLE value a consumer reads. A digest over a projection certifies
 //! "unchanged" about something that changed — the early-cutoff law one layer out, where
@@ -14,6 +16,8 @@
 //! cycles each, so a word now costs what a byte did. This is the xxh64/wyhash family's
 //! shape — the fastest scalar construction for exactly this purpose, a content-addressed
 //! key that must not collide.
+
+use @std.hash.{blake3}
 
 export type Digest = { a: int, b: int, c: int, d: int }
 
@@ -125,8 +129,18 @@ export fn digest_key(d: Digest) -> string {
 /// The low 63 bits, as a non-negative number — a key's lane.
 fn clear_sign(x: int) -> int { x & 9223372036854775807 }
 
-/// A whole string's key — the common case.
-export fn digest_of(s: string) -> string { digest_key(digest_text(new_digest(), s)) }
+/// A whole string's key — the common case, and a STORE key: BLAKE3 over the bytes.
+export fn digest_of(s: string) -> string { blake_key(s) }
 
-/// Octets as one digest key.
-export fn digest_of_octets(b: Bytes) -> string { digest_key(digest_bytes(new_digest(), b)) }
+/// Octets as one store key: BLAKE3 over the octets.
+export fn digest_of_octets(b: Bytes) -> string { hex_of(blake3(b)) }
+
+/// A string's BLAKE3 digest as 64 hex characters — a key a file name may wear.
+export fn blake_key(s: string) -> string { hex_of(blake3(s.bytes())) }
+
+/// Octets as lowercase hex, two characters each.
+export fn hex_of(b: Bytes) -> string { [hex_octet(b.at(i)) for i in 0..b.length].join("") }
+
+fn hex_octet(o: int) -> string { "${hex_digit(o >> 4)}${hex_digit(o & 15)}" }
+
+fn hex_digit(d: int) -> string { "0123456789abcdef".substring(d, d + 1) }

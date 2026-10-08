@@ -21,7 +21,8 @@
 //! THE DIGEST IS OF A FRAME: a head that says the kind, the name and
 //! what was found — every part behind its own length, so no two shapes
 //! spell the same octets — then the body, last and whole.
-use core.{new_digest, digest_bytes, digest_text, digest_key, mix_final}
+use core.{new_digest, digest_bytes, digest_text, mix_final, hex_of}
+use @std.hash.{hasher}
 use @std.relation.stable.{Writer, writer}
 
 /// What a read asks of the world.
@@ -151,7 +152,9 @@ impl Read {
     }
 }
 
-/// The digest of a frame — the ONE place an input's digest is computed.
+/// The digest of a frame — the ONE place an input's digest is computed. Its KEY is
+/// BLAKE3 over the framed octets (a content hash, recorded durably); its WORD is the
+/// in-process fold, which never leaves this build.
 fn digested(head: Bytes, body: Body) -> InputDigest {
     let framed = digest_bytes(new_digest(), head)
     let whole = match body {
@@ -159,7 +162,12 @@ fn digested(head: Bytes, body: Body) -> InputDigest {
         .Text(text) -> digest_text(framed, text),
         .Octets(octets) -> digest_bytes(framed, octets),
     }
-    InputDigest { key: digest_key(whole), word: mix_final(whole.a) }
+    let content = match body {
+        .None -> hasher().update(head).digest(),
+        .Text(text) -> hasher().update(head).update(text.bytes()).digest(),
+        .Octets(octets) -> hasher().update(head).update(octets).digest(),
+    }
+    InputDigest { key: hex_of(content), word: mix_final(whole.a) }
 }
 
 const ABSENT: int = 0
