@@ -15,6 +15,7 @@
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
 use core.{
+    CollectKind,
     SyntaxArena,
     StmtId,
     same_decl,
@@ -206,7 +207,13 @@ type Hold = {
     // each held file's re-exports, read off its record as its module mints
     reexports: Cell<Map<string, List<Reexport>>>,
     settle_frames: Cell<List<Cell<List<KeptLine>>>>,
+    // each held collector, with the set its record says it gathered
+    gathered: Cell<List<HeldGather>>,
 }
+
+/// A held file's `collect` that gathers its package: the file, the package's source,
+/// what it gathers by, and the set it gathered when it was last read.
+type HeldGather = { collector: string, package: string, kind: CollectKind, digest: string }
 
 /// One line a settlement keeps: what it says, the unit's file when it names
 /// a unit, the bodies it covers, so the run's entered set can mark it when
@@ -248,6 +255,7 @@ fn new_hold() -> Hold {
         sig_asked: new_table<int>(),
         reexports: Cell.new(no_reexports),
         settle_frames: list_cell(),
+        gathered: list_cell(),
     }
 }
 

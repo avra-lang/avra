@@ -12,6 +12,7 @@
 //! module's types exist.
 use @std.text.{parse_int}
 use core.{
+    CollectKind,
     wire_fields,
     some_list,
     new_digest,
@@ -712,7 +713,7 @@ fn load_imports(
             for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want) }
         }
         // the ROOT package's key may be empty, and `split` drops a trailing empty field
-        if parts[0] == "gathers" && parts.length > 3 { load_gathered(ws, store, parts[1], parts[2], parts[3], entry, want) }
+        if parts[0] == "gathers" && parts.length > 5 { load_gathered(ws, store, parts, entry, want) }
     }
     // a method table wants EVERY impl of a name, and a held impl names its trait by
     // name: where those live is known before any module is minted
@@ -731,66 +732,57 @@ fn load_imports(
 
 /// A PACKAGE A HELD `collect` GATHERS WHOLE, met module by module under each one's own
 /// record — as a read `collect` admits it — so a file nothing imports stands, held,
-/// beside the ones its imports reach. AND THE COLLECTING FILE IS READ when the package
-/// moved: a file of it that is not held, or a file added or gone — what it gathers is
-/// known only once a moved member is read.
+/// beside the ones its imports reach. What the collector gathered is held to the set
+/// its record names, judged once the program is analysed (`gathered_moved`).
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a package in.
-fn load_gathered(
-    ws: Workspace,
-    store: Store,
-    key: string,
-    collector: string,
-    listing: string,
-    entry: string?,
-    want: Want,
-) {
-    let pkg? = ws.packages().find(it.key == key) else {
-        ws.defect(gathers_unadmitted(key))
+fn load_gathered(ws: Workspace, store: Store, parts: List<string>, entry: string?, want: Want) {
+    let pkg? = ws.packages().find(it.key == parts[1]) else {
+        ws.defect(gathers_unadmitted(parts[1]))
         return
     }
     let files = gathered_files(ws, pkg.src)
     for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want) }
-    let moved? = moved_member(ws, pkg.src, files, collector, listing) else { return }
-    ws.hold.read_with.push(collector)
+    let kind? = kind_of_words(parts[3], parts[4]) else { return }
     ws
         .hold
-        .read_seeds
-        .push(ReadFile { path: collector, why: Reads.Gathered(relative_path(ws.root, moved)) })
-}
-
-/// What moved in a gathered package, when anything did: a file it holds whose
-/// members may have moved, or its directory when a file was added or is gone.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a package's files in, the moved one out.
-fn moved_member(ws: Workspace, src: string, files: List<string>, collector: string, listing: string) -> string? {
-    if package_listing(ws, files) != listing { return src }
-    let asked = ws.hold.hold_asked.get()
-    let reads = ws.hold.read_files.get()
-    files
-        .find(
-            (f) -> f != collector &&
-                !asked.contains(f) &&
-                moves_members(reads.find(it.path == f)?.why),
+        .gathered
+        .push(
+            HeldGather {
+                collector: parts[2],
+                package: relative_path(ws.root, pkg.src),
+                kind: kind,
+                digest: parts[5],
+            },
         )
-}
-
-/// Whether a gathered file read for this reason may have moved what a `collect`
-/// gathers: its text moved, its record is gone or refused — a file read only for
-/// what it is (the entry, a run's) still says what it said.
-fn moves_members(why: Reads?) -> bool {
-    let w? = why else { return true }
-    match w {
-        .Moved or .Unkept or .Undecodable(_) -> true,
-        .Entry or .Home or .Consts or .Unholdable or .RunBy(_) or .Reached or .BodyAsked or .AsksUnread or .Unruled or .Gathered(_) -> false,
-    }
 }
 
 /// A package's files a `collect` gathers from: every one that is not a test.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a source root in, the files out.
 fn gathered_files(ws: Workspace, src: string) -> List<string> { [path for path in ws.all_files(src) if !ws.is_test_path(path)] }
 
-/// What files a gathered package holds, as one digest.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and files in, their digest out.
-fn package_listing(ws: Workspace, files: List<string>) -> string { digest_of(joined(sorted_texts([relative_path(ws.root, f) for f in files]), "\n")) }
+/// A `gathers` line: the package, the collecting file, what it gathers by, and the set.
+fn gathers_line(key: string, path: string, kind: CollectKind, set: string) -> string {
+    joined(["gathers", key, path].concat(kind_words(kind)).concat([set]), "\t")
+}
+
+/// What a collect gathers by, as a record's two words.
+fn kind_words(kind: CollectKind) -> List<string> {
+    match kind {
+        .Annotated(w) -> ["mark", w],
+        .Component(w) -> ["component", w],
+        .UnknownKind(w) -> ["unknown", w],
+    }
+}
+
+/// `kind_words` read back; null for words no kind writes.
+fn kind_of_words(word: string, name: string) -> CollectKind? {
+    match word {
+        "mark" -> CollectKind.Annotated(name),
+        "component" -> CollectKind.Component(name),
+        "unknown" -> CollectKind.UnknownKind(name),
+        _ -> null,
+    }
+}
 
 /// Whether a kept `gathers` line stands for the next record: its collecting file was held.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a line in.
@@ -869,7 +861,7 @@ impl Reads {
             .BodyAsked -> "a compile-time run called one of its bodies",
             .AsksUnread -> "what its bodies ask could not be read back",
             .Unruled -> "a check wants its rule findings, and none were kept",
-            .Gathered(by) -> "its collect gathers ${by}, which moved",
+            .Gathered(by) -> "what its collect gathers from ${by} moved",
         }
     }
 }

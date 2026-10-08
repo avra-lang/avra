@@ -1605,21 +1605,33 @@ kg_step "the root's member removed" "a=0 r=0"
 printf 'use mk.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/kc/src/z/z.av
 kg_step "an exported member added where only a closure list could gather it" "a=0 r=0"
 
-# AND WHAT IT GATHERS IS A REASON OF ITS OWN, said first where nothing else moved the
-# collector: a member module added under a collector in a module of its own reaches no key of
-# it. In a store of its own, so no other attack's history decides which reason comes first.
+# AND A COLLECTOR IS HELD TO THE SET IT GATHERED, never to its package's bytes. In a store of
+# its own, so no other attack's history decides which reason a read is given first: a member's
+# BODY edit leaves the set and holds the collector; two members swapping their marks' arguments
+# move it; a member module added under a collector in a module of its own reaches no key of it,
+# so what it gathers is the first reason it is read.
 gw=$(mktemp -d); mkdir -p $gw/gk/src/m $gw/gk/src/c $gw/app/src
 printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gw/gk/avra.toml
 printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gw/gk/src/k.av
 printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gw/gk/src/c/lib.av
-printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $gw/gk/src/m/m.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 1 }\n' > $gw/gk/src/m/m.av
 printf '[package]\nname = "rt-gw"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gw/app/avra.toml
 printf 'use @rt.gk.c.{a_at}\nprintln("a=${a_at()}")\n' > $gw/app/src/main.av
-steps=$((steps+1)); ./avra build $gw/app > /dev/null 2>&1
+gw_step() { # gw_step <label> <wanted a=…> <collector read: yes|no>
+    steps=$((steps+1)); gw_out=$(./avra build --time $gw/app 2>&1)
+    gw_got=$($gw/app/src/main 2>&1)
+    [ "$gw_got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  gw: $1: the binary printed '$gw_got', wanted '$2'"; }
+    case "$gw_out" in *"gk/src/c/lib.av — what its collect gathers"*) gw_read=yes ;; *) gw_read=no ;; esac
+    [ "$gw_read" = "$3" ] || { fails=$((fails+1)); echo "FAIL  gw: $1: lib.av read for what it gathers: $gw_read, wanted $3: $(printf '%s' "$gw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)"; }
+}
+gw_step "cold" "a=1" no
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
+gw_step "a member's file edited, its marks and shapes unmoved" "a=1" no
+printf 'use k.{kind}\n@kind(1)\nexport type A = {}\n@kind(5)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
+steps=$((steps+1)); ./avra build $gw/app > /dev/null 2>&1; gw_got=$($gw/app/src/main 2>&1)
+[ "$gw_got" = "a=0" ] || { fails=$((fails+1)); echo "FAIL  gw: two members swap their marks' arguments: the binary printed '$gw_got', wanted 'a=0'"; }
 mkdir -p $gw/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gw/gk/src/n/n.av
-steps=$((steps+1)); gw_out=$(./avra build --time $gw/app 2>&1)
-case "$gw_out" in *"gk/src/c/lib.av — its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  gw: a member module added under a held collector: lib.av was not read for what it gathers: $(printf '%s' "$gw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)" ;; esac
-steps=$((steps+1)); [ "$($gw/app/src/main 2>&1)" = "a=1" ] || { fails=$((fails+1)); echo "FAIL  gw: the binary printed '$($gw/app/src/main 2>&1)', wanted 'a=1'"; }
+gw_step "a member module added under the collector" "a=1" yes
 rm -rf $gw
 
 # A LIST COLLECT'S TIE IS ORDERED BY QUALIFIED NAME, never by the order files were read in: two
