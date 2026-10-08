@@ -22,6 +22,21 @@ export enum Level { Application, Systems, Bare, Hardware }
 @derive(Fingerprint)
 export enum UnOp { Not }
 
+/// A byte the runtime keeps about the running task, which compiled code
+/// reads in place: its unwind bit.
+@derive(Fingerprint)
+export enum RtFlag { Unwinding }
+
+/// The runtime's own name for the byte.
+export fn flag_symbol(f: RtFlag) -> string {
+    match f { .Unwinding -> "avra_unwinding" }
+}
+
+/// The flag's word in the IR's text.
+export fn flag_word(f: RtFlag) -> string {
+    match f { .Unwinding -> "unwinding" }
+}
+
 /// The operator's surface symbol — the projection beside its enum.
 export fn un_symbol(op: UnOp) -> string {
     match op { .Not -> "!" }
@@ -110,6 +125,11 @@ export enum Ins {
     /// value won. `value` is BORROWED, as a runtime row's seats are:
     /// the commit takes its own reference.
     OnceCommit(sym: string, value: Reg)
+    /// A runtime FLAG, READ as a bool: one load of a byte the runtime
+    /// writes, with no call. The runtime keeps it for the running task
+    /// and a switch swaps it, so a read always answers for the task
+    /// that reads. Nothing is owed for it: the answer is a scalar.
+    FlagRead(@dst dst: Reg, flag: RtFlag)
 
     // Structure: scopes, regions, and calls — all BRACKETS in the
     // one flat list, never labels or jumps. Each branch of a region
@@ -224,6 +244,7 @@ impl Ins {
             .StaticAddr(dst, sym) -> derived([fp_str("Ins"), 11, dst.fingerprint(), fp_str(sym)]),
             .OnceRead(dst, sym) -> derived([fp_str("Ins"), 31, dst.fingerprint(), fp_str(sym)]),
             .OnceCommit(sym, value) -> derived([fp_str("Ins"), 32, fp_str(sym), value.fingerprint()]),
+            .FlagRead(dst, flag) -> derived([fp_str("Ins"), 34, dst.fingerprint(), flag.fingerprint()]),
             .ScopeEnter(tier) -> derived([fp_str("Ins"), 12, tier.fingerprint()]),
             .ScopeExit(gives) -> derived(
                 [
@@ -302,6 +323,7 @@ fn ins_words(i: Ins) -> InsWords {
         .StaticAddr(dst, sym) -> InsWords { tag: 11, ints: [dst.index], texts: [sym] },
         .OnceRead(dst, sym) -> InsWords { tag: 31, ints: [dst.index], texts: [sym] },
         .OnceCommit(sym, value) -> InsWords { tag: 32, ints: [value.index], texts: [sym] },
+        .FlagRead(dst, flag) -> InsWords { tag: 34, ints: [dst.index, flag.fingerprint()], texts: [] },
         .ScopeEnter(tier) -> InsWords { tag: 12, ints: [tier.fingerprint()], texts: [] },
         .ScopeExit(gives) -> InsWords { tag: 13, ints: if gives == null { [0] } else { [1, gives!.index] }, texts: [] },
         .IfStart(cond) -> InsWords { tag: 14, ints: [cond.index], texts: [] },
@@ -352,6 +374,7 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
         .StaticAddr(dst, sym) -> Ins.StaticAddr(m(dst), sym),
         .OnceRead(dst, sym) -> Ins.OnceRead(m(dst), sym),
         .OnceCommit(sym, value) -> Ins.OnceCommit(sym, m(value)),
+        .FlagRead(dst, flag) -> Ins.FlagRead(m(dst), flag),
         .ScopeEnter(tier) -> Ins.ScopeEnter(tier),
         .ScopeExit(gives) -> Ins.ScopeExit(remapped_opt(gives, m)),
         .IfStart(cond) -> Ins.IfStart(m(cond)),
@@ -386,7 +409,7 @@ export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
         .OnceRead(dst, sym) -> Ins.OnceRead(dst, s(sym)),
         .OnceCommit(sym, value) -> Ins.OnceCommit(s(sym), value),
         .Call(dst, callee, args) -> Ins.Call(dst, s(callee), args),
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> i,
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> i,
     }
 }
 
@@ -394,7 +417,7 @@ export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
 export fn symbols_of(i: Ins) -> List<string> {
     match i {
         .FnAddr(_, sym) or .StaticAddr(_, sym) or .OnceRead(_, sym) or .OnceCommit(sym, _) or .Call(_, sym, _) -> [sym],
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> [],
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> [],
     }
 }
 
@@ -730,6 +753,7 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
         .StaticAddr(d1, s1) -> match b { .StaticAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
         .OnceRead(d1, s1) -> match b { .OnceRead(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
         .OnceCommit(s1, v1) -> match b { .OnceCommit(s2, v2) -> s1 == s2 && same_reg(v1, v2), rest -> false },
+        .FlagRead(d1, f1) -> match b { .FlagRead(d2, f2) -> same_reg(d1, d2) && f1 == f2, rest -> false },
         .ScopeEnter(t1) -> match b { .ScopeEnter(t2) -> t1 == t2, rest -> false },
         .ScopeExit(g1) -> match b { .ScopeExit(g2) -> same_reg_opt(g1, g2), rest -> false },
         .IfStart(c1) -> match b { .IfStart(c2) -> same_reg(c1, c2), rest -> false },

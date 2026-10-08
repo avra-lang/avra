@@ -873,6 +873,17 @@ LLVMValueRef avra_llvm_once_slot(LLVMModuleRef m, const char* name) {
     return g;
 }
 
+// A BYTE THE RUNTIME KEEPS, named: declared here, defined by the
+// runtime, so a read is a load of the runtime's own global. Idempotent
+// by name.
+LLVMValueRef avra_llvm_runtime_byte(LLVMModuleRef m, const char* name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    if (g) { return g; }
+    g = LLVMAddGlobal(m, LLVMInt8TypeInContext(LLVMGetModuleContext(m)), name);
+    LLVMSetLinkage(g, LLVMExternalLinkage);
+    return g;
+}
+
 // ── Calls ──
 
 LLVMValueRef avra_llvm_build_call(LLVMBuilderRef b, LLVMTypeRef fn_type, LLVMValueRef fn_val, LLVMValueRef* args, int count, const char* name) {
