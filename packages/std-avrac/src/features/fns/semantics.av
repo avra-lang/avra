@@ -25,10 +25,27 @@ impl Meaning for Call {
         cx.use_call(e, self.callee.of)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        call_type(cx, e)
+        cx.warn_use(e)
+        let sig? = cx.sig_of(e) else {
+            return cx
+                .settled_call(e, self.args, valued_call(cx, e, self.callee.of, self.pins, self.args))
+        }
+        cx
+            .settled_call(e, self.args, dispatched_call(cx, e, self.callee.of, self.pins, self.args, sig))
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        call_lower(cx, e)
+        let host: string? = cx.extern_callee(e)
+        if host != null { return extern_call_reg(cx, e, host!, host_regs(cx, e, self.args)) }
+        let hashed: Reg? = code_hash_reg(cx, e, self.args)
+        if hashed != null { return hashed! }
+        let regs = embedded_regs(cx, e, self.args) ?? call_arg_regs(cx, e, self.args)
+        let made: Reg? = named_reg(cx, e, regs)
+        if made != null { return made! }
+        let through: Reg? = cx.indirect_callee(e)
+        if through != null { return valued_call_reg(cx, e, through!, regs) }
+        // THE MINT LAW: the defaults' registers first, the answer last
+        let seated = seated_left(cx, e, self.args, regs)
+        cx.call_decl_at(e, cx.callee_of(e, self.callee.of), seated)
     }
 }
 impl Meaning for Named {
@@ -36,9 +53,9 @@ impl Meaning for Named {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        call_type(cx, e)
+        cx.type_at(self.value)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        call_lower(cx, e)
+        cx.reg_of(self.value)
     }
 }

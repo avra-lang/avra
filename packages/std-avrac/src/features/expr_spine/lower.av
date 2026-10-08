@@ -7,26 +7,6 @@
 use core.{ExprId, BinOp, Reg, Ins, Type, TypeId}
 use features.{LowerCx, EnumSig, variant_defect, PropertyRow, property_of, property_row}
 
-fn spine_lower(mut cx: LowerCx, e: ExprId) -> Reg {
-    // a feature cannot enumerate OTHER features' variants
-    match cx.view.store.expr(e) {
-        .IntLit(v) -> cx.const_int_at(e, v),
-        // A real has its OWN constant: the variant is the type, so an
-        // instruction never means one thing here and another there.
-        .FloatLit(bits) -> {
-            let dst = cx.result(e)
-            cx.emit(Ins.ConstFloat(dst, bits))
-            dst
-        },
-        .Ident(_) -> ident_reg(cx, e),
-        .Binary(op, l, r) -> binary_reg(cx, e, op, l, r),
-        .Not(v) -> not_reg(cx, e, v),
-        .Index(s, i) -> index_reg(cx, e, s, i),
-        .Prop(s, name) -> prop_reg(cx, e, s, name.of),
-        rest -> cx.foreign_node(e),
-    }
-}
-
 /// The presence test's subject — the typing projection's shape
 /// twin: exactly one nullable beside the absence, for `==`/`!=`.
 fn asked_subject(cx: LowerCx, op: BinOp, l: ExprId, r: ExprId) -> ExprId? {
