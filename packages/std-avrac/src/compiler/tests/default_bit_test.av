@@ -1,0 +1,81 @@
+// A held field default answers the cancel bit its analysed pass gave: the
+// record line of a default writes the bit where a held reader takes it.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use compiler.record.{read_fields}
+use core.{DeclId}
+
+const DEFAULT_BIT_PATH: string = "/w/src/main.av"
+
+fn default_bit_source() -> string {
+    [
+        "extern fn avra_fiber_sleep(ms: int)",
+        "fn nap() { avra_fiber_sleep(1) }",
+        "fn napped() -> int {",
+        "    nap()",
+        "    1",
+        "}",
+        "fn quiet_value() -> int { 1 }",
+        "type Knobs = { quiet: int = quiet_value(), loud: int = napped() }",
+        "Knobs {}",
+        "",
+    ]
+        .join("\n")
+}
+
+fn default_bit_workspace() -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": default_bit_source(),
+            },
+            ["/w/avra.toml", DEFAULT_BIT_PATH],
+        ),
+        "/w",
+    )
+}
+
+fn default_id(ws: Workspace, name: string) -> DeclId {
+    [x.id for x in ws.decls.all_decls() if x.name == name][0]
+}
+
+fn bit_word(name: string, bit: bool) -> string {
+    "${name}=${if bit { 1 } else { 0 }}"
+}
+
+/// Each default's bit as its analysed pass answers it.
+fn analysed_bits() -> string {
+    let ws = default_bit_workspace()
+    let _ = ws.analyze_file(DEFAULT_BIT_PATH)
+    ["quiet", "loud"].map((n) -> bit_word(n, ws.reaches_cancel(default_id(ws, n)))).join(" ")
+}
+
+/// Each default's bit as a held file restores it from its record lines.
+fn held_bits() -> string {
+    let parsed = default_bit_workspace()
+    let _ = parsed.analyze_file(DEFAULT_BIT_PATH)
+    let f? = parsed.decls.known_file_id(DEFAULT_BIT_PATH) else { return "" }
+    let rows = [parsed.decls.raw_decl(d) for d in parsed.decls.decls_of_file(f)]
+    let lines = [parsed.record_line(d, ordinal, false) for ordinal, d in rows]
+    let held = default_bit_workspace()
+    held.mint_file(DEFAULT_BIT_PATH, [read_fields(line) for line in lines], {})
+    ["quiet", "loud"]
+        .map((n) -> bit_word(n, held.decls.cancel_bit(default_id(held, n)) ?? true))
+        .join(" ")
+}
+
+spec "compiler/interface — a held default's cancel bit" {
+    then "a held default reads back the bit its analysed pass gave" {
+        held_bits() == analysed_bits()
+    }
+    given "the bits the comparison rests on" {
+        then "a default whose call waits answers 1" {
+            analysed_bits().contains("loud=1")
+        }
+        then "a default whose call does not wait answers 0" {
+            analysed_bits().contains("quiet=0")
+        }
+    }
+}
