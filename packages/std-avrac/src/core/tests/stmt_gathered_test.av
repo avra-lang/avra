@@ -1,0 +1,67 @@
+// `Stmt` is a GATHERED enum (core/stmt): each derive it wears is asked
+// here for something only that derive generates over its variants.
+use @std.avrac.core.{
+    new_node_store,
+    classifier,
+    Stmt,
+    Expr,
+    Scoped,
+    Plain,
+    node_payload_rows,
+    row_for,
+    named_ref,
+}
+
+fn value_of(s: Stmt) -> int {
+    match s { .ExprStmt(v) -> v.index, _ -> -1 }
+}
+
+spec "core/stmt — a gathered node enum" {
+    given "the derives `Stmt` wears" {
+        then "Matchable numbers the first, a middle and the last variant by their records' ranks" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let tags = [
+                s.tag_stmt(Stmt.Let(Scoped("x"), null, one)),
+                s.tag_stmt(Stmt.FnDecl(Scoped("f"), [], [], named_ref("int"), one)),
+                s.tag_stmt(Stmt.Error),
+                s.tag_stmt(Stmt.Jump(null, false)),
+            ]
+            ["${t}" for t in tags].join(" ") == "0 6 26 30"
+        }
+        then "Matchable's shallow fold tells two variants of one payload apart" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            s.shallow_stmt(Stmt.ExprStmt(one)) != s.shallow_stmt(Stmt.Discard(one))
+        }
+        then "Exact compares a variant's payload by value" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let two = s.alloc_expr(Expr.IntLit(2))
+            s.exact_stmt(Stmt.ExprStmt(one), Stmt.ExprStmt(one)) &&
+                !s.exact_stmt(Stmt.ExprStmt(one), Stmt.ExprStmt(two)) &&
+                !s.exact_stmt(Stmt.ExprStmt(one), Stmt.Discard(one))
+        }
+        then "Rebuild builds a variant again from its payload" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            mut rb = classifier(s, [])
+            value_of(Stmt.ExprStmt(one).rebuilt(rb)) >= 0
+        }
+        then "Children reads `@declares`: a declaring statement reaches no child" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let f = s.alloc_stmt(Stmt.FnDecl(Scoped("f"), [], [], named_ref("int"), one))
+            let e = s.alloc_stmt(Stmt.ExprStmt(one))
+            s.stmt_children(f).is_empty() && s.stmt_children(e).length == 1
+        }
+        then "Grammar answers a variant's payload row, spelling and kind, from its record's fields" {
+            let row = row_for(node_payload_rows(), "Stmt", "Use")
+            ["${f.name}: ${f.ty} = ${kind_shown(f.kind)}" for f in row?.payloads ?? []].join(", ") == "path: List<string> = List<string>, items: List<string> = List<string>, aliases: List<string> = List<string>"
+        }
+        then "Grammar answers a payload-free variant as present and empty" {
+            let rows = [r for r in node_payload_rows() if r.owner == "Stmt" && r.variant == "Error"]
+            rows.length == 1 && rows[0].payloads.is_empty()
+        }
+    }
+}
