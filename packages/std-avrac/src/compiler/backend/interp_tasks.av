@@ -19,6 +19,11 @@ extern fn avra_vtask_interrupted(t: int) -> int
 extern fn avra_vtask_unwinding(t: int) -> int
 extern fn avra_vtask_within(t: int, ms: int) -> int
 extern fn avra_vtask_within_end(t: int, id: int)
+extern fn avra_vtask_shield_enter(t: int)
+extern fn avra_vtask_shield_leave(t: int)
+/// The evaluator raises the task's unwind bit with this when a wait cuts
+/// it, the way the switch raises a compiled task's.
+extern fn avra_vtask_set_unwinding(t: int, v: int)
 extern fn avra_vtask_inherits(t: int, from: int)
 extern fn avra_vtask_next() -> int
 extern fn avra_vtask_wait_fd(t: int, fd: int, writable: int, arm: int, member: int)
@@ -317,6 +322,23 @@ impl Machine {
     fn fiber_within_end_val(vals: List<Val>) -> Val {
         self.rooted()
         avra_vtask_within_end(self.tasks[self.running].vt, self.whole(vals[0]))
+        Val.I(0)
+    }
+
+    /// A frame's cold exit about to run its deferred calls: the task's
+    /// unwind bit is saved and cleared, so a call that may reach is not
+    /// cut between them. A nested bracket is a depth.
+    fn fiber_shield_enter_val() -> Val {
+        self.rooted()
+        avra_vtask_shield_enter(self.tasks[self.running].vt)
+        Val.I(0)
+    }
+
+    /// The bracket's close: the saved bit goes back, so a cancel a wait
+    /// met inside the shield stands.
+    fn fiber_shield_leave_val() -> Val {
+        self.rooted()
+        avra_vtask_shield_leave(self.tasks[self.running].vt)
         Val.I(0)
     }
 
