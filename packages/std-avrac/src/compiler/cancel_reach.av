@@ -46,12 +46,24 @@ impl Workspace {
         let fns = [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
         self.decls.clear_cancels(fns)
         self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
+        // WHETHER THE PROGRAM LINKS A SCHEDULER: any member parks or
+        // spawns. A program that reaches none emits no while check — it
+        // has no source to preempt and no row to call (the wasm target
+        // among them).
+        self.decls.record_schedulers(fns.any((d) -> self.decls.cancel_bits(d)?.parks ?? false))
         self.db.settle(k, fp(1, [fp_list([cancel_word(self.decls.cancel_bits(d)) for d in fns])]))
         fns.length
     }
 
     /// Whether a call to `d` may reach a cancel point.
     fn reaches_cancel(d: DeclId) -> bool { self.reach_of(d).may() }
+
+    /// Whether the program links a scheduler at all — the pass settled
+    /// first. A program that reaches none emits no while check.
+    fn scheduler_linked() -> bool {
+        let _ = self.cancel_reach()
+        self.decls.links_scheduler()
+    }
 
     /// What a call to `d` may reach. A member the pass could not settle
     /// (asked mid-resolve) answers that it may, both ways.
