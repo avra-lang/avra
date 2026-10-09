@@ -25,7 +25,10 @@ use features.{
     MetaVal,
     UseKind,
     kind_word,
+    Unsettled,
+    Settlement,
 }
+use diagnostics.{SourceFile}
 use compiler.{avra, new_workspace, Workspace}
 use compiler.host.{memory_host}
 use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
@@ -394,6 +397,12 @@ fn same_string_list(a: List<string>, b: List<string>) -> bool {
     list_eq(a, b, (x, y) -> x == y)
 }
 
+/// The names a file's `component` declarations wear — a `List<string>`,
+/// the one shape `packed`/`unpacked` already carries.
+fn component_name_exemplars() -> List<List<string>> { [[], [""], ["a", "b"]] }
+
+fn component_name_labels() -> List<string> { ["no names", "one empty name", "two names"] }
+
 // ── `doc_wire`/`doc_of_wire` — `List<string>?`, present vs absent. ──
 
 fn doc_wire_exemplars() -> List<List<string>?> {
@@ -742,6 +751,54 @@ export fn codec_pairs() -> List<CodecCheck> {
             reach_wire,
             reach_from_wire,
             same_text,
+        ),
+        derived(
+            "family.source_file_wire/source_file_of_wire",
+            SourceFile.exemplars(),
+            SourceFile.exemplar_labels(),
+            source_file_wire,
+            source_file_of_wire,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived(
+            "family.unsettled_wire/unsettled_of_wire",
+            Unsettled.exemplars(),
+            Unsettled.exemplar_labels(),
+            unsettled_wire,
+            unsettled_of_wire,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived(
+            "family.settlement_enum_wire/settlement_enum_of_wire",
+            Settlement.exemplars(),
+            Settlement.exemplar_labels(),
+            settlement_enum_wire,
+            settlement_enum_of_wire,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived(
+            "family.lift_result_wire/lift_result_of_wire",
+            LiftResult.exemplars(),
+            LiftResult.exemplar_labels(),
+            lift_result_wire,
+            lift_result_of_wire,
+            (x, y) -> x.codec_same(y),
+        ),
+        derived_total(
+            "record.packed/unpacked (ComponentNames)",
+            component_name_exemplars(),
+            component_name_labels(),
+            packed,
+            unpacked,
+            same_string_list,
+        ),
+        derived(
+            "interface.type_wire/read_type_wire",
+            ws.codec_type_exemplars(),
+            type_exemplar_labels(),
+            (t) -> ws.decls.type_wire(t),
+            (w) -> ws.read_type_wire_of_wire(w),
+            (x, y) -> ws.codec_same_type_shape(x, y),
         ),
         dbrow_check(),
     ]
